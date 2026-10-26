@@ -66,6 +66,9 @@ rymembra-scrobble = { path = "../../../core/rymembra-scrobble" }
 # descrivono i token gliele passa la finestra — e non conosce il portachiavi: la
 # chiave la prende `ia.rs`, un istante prima della richiesta.
 rymembra-ia = { path = "../../../core/rymembra-ia" }
+# «Ascolta insieme»: la rete fra due o più Rymembra della stessa LAN. Il
+# trasporto non sa niente del lettore; il desktop lo collega al motore.
+rymembra-insieme = { path = "../../../core/rymembra-insieme" }
 rymembra-skin = { path = "../../../core/rymembra-skin" }
 # I cataloghi liberi: l'unico posto dell'albero che va a prendere dei byte
 # musicali, e lo fa solo dove prenderli è espressamente permesso. Nessun

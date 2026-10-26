@@ -40,10 +40,11 @@
 //! mobile e vanno consegnati tutti insieme o per niente.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use rymembra_domain::errors::AppError;
 
+pub mod ancora;
 mod ape;
 pub mod attacchi;
 pub mod decodifica;
@@ -52,17 +53,20 @@ pub mod equalizzatore;
 pub mod impronta;
 pub mod intensita;
 pub mod motore;
+pub mod sincronia;
 pub mod spettro;
+pub mod tempo;
 pub mod uscita;
 
+pub use ancora::Ancora;
 pub use decodifica::{Flusso, FormatoSuonato, Segmento, Sorgente};
 pub use dispositivi::Dispositivo;
 pub use equalizzatore::{BANDE, CENTRI_HZ, LIMITE_DB, PRESET_DI_SERIE};
-pub use motore::{BranoAperto, Evento, Motore, Posizione};
+pub use motore::{BranoAperto, Contatori, Evento, Motore, Posizione, RifiutoAvvio};
 pub use spettro::{
     Bande, RISOLUZIONE_DI_SERIE, RISOLUZIONE_MAX, RISOLUZIONE_MIN, RISOLUZIONI, Spettro,
 };
-pub use uscita::FormatoUscita;
+pub use uscita::{FormatoUscita, Ponte};
 
 /// Cosa sappiamo suonare.
 ///
@@ -240,6 +244,62 @@ pub(crate) struct Condiviso {
     /// Un lucchetto e non un atomico perché a toccarla sono solo il filo della
     /// finestra e quello della decodifica, mai la callback audio.
     pub in_lettura: std::sync::Mutex<Option<Arc<AtomicBool>>>,
+
+    // ── il tempo condiviso: «Ascolta insieme» ───────────────────────────────
+    //
+    // Le caselle qui sotto a riposo valgono zero, e a zero la callback fa
+    // esattamente quel che faceva prima che esistessero: la prova
+    // `il_percorso_inattivo_e_identico_al_bit` in `uscita.rs` lo tiene vero.
+    /// Quante volte l'anello è stato svuotato.
+    ///
+    /// Cresce in `Contesto::scarta_in_volo`, **dopo** che i fotogrammi sono
+    /// tornati a zero e i segni sono stati buttati e **prima** che entri un
+    /// campione nuovo. Così un'ancora — che porta l'epoca letta dalla callback
+    /// dopo aver consumato i suoi campioni — non si legge mai attraverso i
+    /// segni di un'altra epoca: vedi [`crate::ancora`]. La scrive solo il filo
+    /// della decodifica.
+    pub epoca: AtomicU32,
+    /// I fotogrammi entrati davvero nell'anello in questa epoca.
+    ///
+    /// Non i `spinti` del filo, che contano anche quel che aspetta ancora fuori
+    /// dall'anello: questi sono quelli che la callback può già consumare, e la
+    /// differenza con [`Condiviso::fotogrammi`] è la riserva — quanto si può
+    /// saltare in avanti senza aspettare il decodificatore.
+    pub spinti: AtomicU64,
+    /// L'istante in cui far ripartire la musica, in nanosecondi di
+    /// [`crate::tempo`], già al netto della latenza dichiarata. Zero: nessuno.
+    ///
+    /// Lo scrive `Motore::riprendi_a`, lo consuma la callback quando il primo
+    /// fotogramma di musica esce; lo azzerano i comandi che cambiano idea —
+    /// pausa, ripresa, brano nuovo, stop.
+    pub avvio_ns: AtomicU64,
+    /// Un gradino chiesto e non ancora preso dalla callback: positivo inserisce
+    /// tanti fotogrammi di silenzio, negativo ne salta altrettanti di musica.
+    pub gradino: AtomicI64,
+    /// C'è un gradino chiesto o in corso: chi corregge aspetta che torni basso
+    /// prima di misurare di nuovo.
+    pub in_correzione: AtomicBool,
+    /// Quanti gradini la callback ha eseguito.
+    pub gradini_fatti: AtomicU64,
+    /// Di quante parti per milione accelerare (positivo) o rallentare
+    /// (negativo) il consumo dell'anello. Vedi `uscita::Andamento::accumulo`.
+    pub deriva_ppm: AtomicI32,
+    /// Una sessione d'ascolto insieme è aperta: il flusso non va mai a riposo.
+    ///
+    /// Il riposo costa la ripresa — qualche decina di millisecondi per
+    /// rimettere in moto il dispositivo — e una ripresa programmata a un istante
+    /// preciso non può pagarli. Vedi `uscita::Sonno::passo`.
+    pub sessione: AtomicBool,
+    /// Il flusso è a riposo: lo scrive il filo dell'uscita quando lo ferma e
+    /// quando lo rimette in moto. Nasce vero, perché il flusso nasce fermo.
+    pub dorme: AtomicBool,
+    /// Quante volte il dispositivo ha detto di essere rimasto senza campioni.
+    ///
+    /// Non è una perdita — vedi `uscita::codice_errore` — ma per chi misura
+    /// lo sfasamento fra due computer è un buco nel tempo, e va contato.
+    pub xrun: AtomicU64,
+    /// L'ultima ancora pubblicata dalla callback. Vedi [`crate::ancora`].
+    pub ancora: ancora::Sigillo,
 }
 
 impl Condiviso {
@@ -259,6 +319,17 @@ impl Condiviso {
             abbandonato: AtomicBool::new(false),
             spettro: AtomicBool::new(false),
             in_lettura: std::sync::Mutex::new(None),
+            epoca: AtomicU32::new(0),
+            spinti: AtomicU64::new(0),
+            avvio_ns: AtomicU64::new(0),
+            gradino: AtomicI64::new(0),
+            in_correzione: AtomicBool::new(false),
+            gradini_fatti: AtomicU64::new(0),
+            deriva_ppm: AtomicI32::new(0),
+            sessione: AtomicBool::new(false),
+            dorme: AtomicBool::new(true),
+            xrun: AtomicU64::new(0),
+            ancora: ancora::Sigillo::default(),
         })
     }
 

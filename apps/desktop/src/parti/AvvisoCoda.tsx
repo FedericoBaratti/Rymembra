@@ -22,8 +22,10 @@
  */
 import { useEffect, useState } from "react";
 
+import { gestoPermesso } from "../insieme";
 import { ipc } from "../ipc";
 import { useAscolto } from "../pagine";
+import { useLettore } from "../riproduzione";
 import { Annuncio } from "./Annuncio";
 import { Icona } from "./Icone";
 import { brani_ } from "../formato";
@@ -47,8 +49,24 @@ interface CodaSostituita {
 
 export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
   const [avviso, setAvviso] = useState<CodaSostituita | null>(null);
+  /*
+   * In una sessione di «Ascolta insieme» l'«Annulla» non c'è, per nessuno:
+   * rimetterebbe una coda di prima della sessione, fatta di brani che gli
+   * altri non hanno, e il nucleo lo rifiuta (`strada.rs`). Non si spegne il
+   * tasto: si tace l'avviso intero, perché «Coda sostituita — Annulla» senza
+   * un annulla è una notizia su un gesto che si è appena visto fare.
+   */
+  const ripristinabile = useLettore((s) => gestoPermesso(s.insieme, "ripristina"));
 
-  useAscolto<CodaSostituita>("coda:sostituita", setAvviso);
+  useAscolto<CodaSostituita>("coda:sostituita", (carico) => {
+    if (ripristinabile) setAvviso(carico);
+  });
+
+  // Una sessione che comincia con l'avviso a schermo lo chiude: l'«Annulla»
+  // di prima, premuto adesso, chiederebbe la stessa cosa che la sessione vieta.
+  useEffect(() => {
+    if (!ripristinabile) setAvviso(null);
+  }, [ripristinabile]);
 
   // Un avviso nuovo riparte da dieci secondi: ogni evento è un oggetto nuovo,
   // quindi il conto si rifà anche quando uno ne sostituisce un altro a schermo.
@@ -72,7 +90,7 @@ export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
     <>
       <Annuncio testo={frase} />
       {avviso !== null && (
-        <div className="notizia avviso-coda toast-card">
+        <div className="notizia toast-card">
           <Icona nome="i-check" dim={16} />
           <span>{frase}</span>
           <button

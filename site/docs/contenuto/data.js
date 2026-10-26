@@ -15,7 +15,7 @@
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 30"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 35"],
               ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
               ["`skin/`", "Installed `.ryskin` packages and Studio drafts (`skin/bozze/`)"],
@@ -25,7 +25,7 @@
           },
         },
         { h: "Opening" },
-        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < 30`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason.",
+        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason.",
         { h: "Pragmas and the journal" },
         {
           ol: [
@@ -99,6 +99,7 @@
               ["`settings`", "Key/value preferences — see [Settings](#settings-store)"],
               ["`sync_tombstones`, `sync_ascolti`, `sync_dispositivi`, `sync_sequenza`, `sync_posizioni`", "Device sync state — see [Sync](#sync)"],
               ["`desiderati`", "Wanted tracks and the download queue (ex `spotify_wanted`, so two index names still say so)"],
+              ["`insieme_pari`", "The PCs paired for «Listen together»: public key (`UNIQUE`), name, blocked, when paired and last seen, last address (migration 035) — see [Listen together](#together)"],
               ["`spotify_account`, `import_reports`", "Imported account, saved import reports"],
               ["`scrobble_queue`", "Durable scrobble queue, UNIQUE `(service, played_at, artist, title)`"],
               ["`enrich_cache`, `enrich_undo`, `track_meta_arricchita`", "HTTP cache, legacy undo, fields set by enrichment"],
@@ -120,7 +121,7 @@
       title: "Migrations and the pre-migration copy",
       src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
-        "`MIGRATIONS` is an ordered list of 30 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
+        "`MIGRATIONS` is an ordered list of 35 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
         "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },
@@ -190,7 +191,8 @@
               ["`ui.tour.seenVersion`", "Tour script version already seen", "—", "yes"],
               ["`player.volume`, `player.eq`, `player.eq.presets`, `player.replaygain`, `player.crossfade`, `player.autoplay`", "Sound and behaviour", "see [Playback](#playback)", "yes"],
               ["`player.spectrum.bands`, `player.spectrum.visible`, `player.fileFormat.visible`", "Display choices", "—", "yes"],
-              ["`player.output`, `player.spectrum.quality`, `audio.latenza_ms`", "Facts about this machine's hardware", "system default / auto / 0", "no"],
+              ["`player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`", "Facts about this machine's hardware (the last one: latency per output device)", "system default / auto / 0 / none", "no"],
+              ["`insieme.attivo`, `insieme.nome`, `insieme.indirizzi`, `insieme.firewall_spiegato`", "Listen together: on/off, this PC's name, hand-typed addresses, firewall dialog seen", "off / computer name / none / no", "no"],
               ["`player.queue`, `player.position`", "The saved queue and resume point", "—", "no (row ids)"],
               ["`enrich.auto`, `testi.rete`, `aggiornamenti.attivo`, `scrobble.attivo`, `nuvola.attivo`", "Feature switches", "per feature", "yes"],
               ["`testi.accanto`, `sincronia.attiva`", "Write `.lrc` beside tracks, device sync", "off", "no"],
@@ -225,7 +227,7 @@
         },
         "JSON entries are deflated; already-compressed entries are stored. Reading and writing stream one entry at a time — no archive is ever held in memory. Limits (`archivio::limiti`), checked from the zip index: archive 2 GiB, 200,000 entries, 64 MiB per entry, 4 GiB total uncompressed, compression ratio ≤ 200; above 500 MB the export warns.",
         { h: "What travels" },
-        "Preferences use an **inclusion** list, `CATALOGO`: a new key travels only once someone adds it, so a machine-specific key such as `nuvola.dispositivo` can never leak by default. Left out on purpose: the queue (row ids), `player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `ui.zoom`, the Folders tree state, the Last.fm API key, and all derived data (affinity, fingerprints, loudness, weekly, `enrich_undo`, `track_meta_arricchita`).",
+        "Preferences use an **inclusion** list, `CATALOGO`: a new key travels only once someone adds it, so a machine-specific key such as `nuvola.dispositivo` can never leak by default. Left out on purpose: the queue (row ids), `player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`, the `insieme.*` keys and the `insieme_pari` table, `ui.zoom`, the Folders tree state, the Last.fm API key, and all derived data (affinity, fingerprints, loudness, weekly, `enrich_undo`, `track_meta_arricchita`).",
         { h: "Import" },
         "`profilo_piano` and `profilo_importa` run the **same** code (`esegui`): the plan is the import inside a transaction that is rolled back. Steps:",
         {

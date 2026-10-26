@@ -22,6 +22,7 @@ import { memo, type CSSProperties } from "react";
 
 import { Stelle } from "../Stelle";
 import { useVolumeSottoIlDito } from "../volume";
+import { idDiLibreria } from "../insieme";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
 import { Formato } from "./Formato";
 import { Icona } from "./Icone";
@@ -68,24 +69,32 @@ export const Giudizio = memo(function Giudizio({
     onErrore,
   );
 
+  // Cuore e stelle sono della libreria di questo PC: su una voce di «Ascolta
+  // insieme» — un brano che sta in coda perché la sessione ce l'ha messo —
+  // non c'è una riga su cui scriverli. Spariscono invece di spegnersi: il
+  // volume e i dati del file accanto restano, e sono quel che qui serve.
+  const diLibreria = idDiLibreria(brano.id);
+
   return (
     // L'ancora del giro guidato. Sta qui e non nelle due schermate che montano
     // questa fascia, per la stessa ragione per cui ci sta il formato del file:
     // scritta una volta, illuminata in tutti e due i posti.
     <div className="giudizio rating" data-giro="giudizio">
-      <button
-        type="button"
-        className="cuore icon-btn heart"
-        aria-pressed={brano.liked}
-        aria-label={brano.liked ? t("track.unlike") : t("track.like")}
-        onClick={() => onPreferito(brano)}
-      >
-        <Icona
-          nome={brano.liked ? "i-heart-f" : "i-heart"}
-          dim={CUORE[taglia]}
-        />
-      </button>
-      {conStelle && (
+      {diLibreria && (
+        <button
+          type="button"
+          className="cuore icon-btn heart"
+          aria-pressed={brano.liked}
+          aria-label={brano.liked ? t("track.unlike") : t("track.like")}
+          onClick={() => onPreferito(brano)}
+        >
+          <Icona
+            nome={brano.liked ? "i-heart-f" : "i-heart"}
+            dim={CUORE[taglia]}
+          />
+        </button>
+      )}
+      {conStelle && diLibreria && (
         <Stelle
           valore={brano.rating}
           onVoto={(stelle) => onVoto(brano, stelle)}

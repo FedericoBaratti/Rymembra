@@ -44,6 +44,18 @@
 //! Non apre file, non parla con la rete e non decide niente. Il deposito è un
 //! [`rymembra_sync::Magazzino`], la decisione è in [`rymembra_sync::fondi`], e chi
 //! mette insieme le tre cose è la finestra. Qui c'è solo la traduzione.
+//!
+//! # «Ascolta insieme» non viaggia, e nemmeno passa di qui
+//!
+//! I PC associati (`insieme_pari`) e le chiavi `insieme.*` non entrano nel
+//! documento, e non per una riga che li escluda: [`contenuto`] sceglie campo
+//! per campo cosa leggere, e delle impostazioni legge solo le cartelle e la
+//! skin. È voluto. Un'associazione è una fiducia data da questo PC a una
+//! chiave dopo un codice confermato su due schermi; arrivata col documento su
+//! un telefono o su un altro computer, direbbe che si fida chi non ha mai
+//! visto quel codice. E non va confusa con [`dispositivi`]: quella è la fiducia
+//! nei documenti di chi scrive nello stesso Drive, un'altra domanda con
+//! un'altra tabella. Una prova in fondo tiene vere tutte e due le cose.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1907,5 +1919,64 @@ mod prove {
 
         assert!(dimentica(&connection, "telefono").expect("dimenticato"));
         assert_eq!(dispositivi(&connection).expect("dispositivi").len(), 1);
+    }
+
+    #[test]
+    fn i_pc_associati_e_le_chiavi_di_insieme_non_viaggiano_con_la_sincronia() {
+        let mut connection = libreria();
+        // Una playlist, perché il documento abbia qualcosa da dire.
+        playlist_con(&connection, "sera", &[1, 2]);
+        let chiave = "5e".repeat(32);
+        crate::insieme::associa(&connection, &chiave, "Portatile-di-Zaira-7Q", 1_000)
+            .expect("associato");
+        crate::insieme::salva_attivo(&connection, true).expect("acceso");
+        crate::insieme::salva_nome(&connection, "Fisso-in-mansarda-K2").expect("nome");
+        crate::insieme::salva_indirizzi(&connection, &["10.20.30.40:47812".to_owned()])
+            .expect("indirizzi");
+
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        let mio = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        // Il documento com'è prima della compressione: cercare dentro i byte
+        // compressi passerebbe sempre, e non direbbe niente.
+        let documento = Documento::nuovo("portatile", mio.clone(), 2_000);
+        let json = serde_json::to_string(&documento).expect("in JSON");
+        assert!(
+            json.contains("sera"),
+            "il documento c'è, e porta la playlist"
+        );
+        for segreto in [
+            chiave.as_str(),
+            "Portatile-di-Zaira-7Q",
+            "Fisso-in-mansarda-K2",
+            "10.20.30.40",
+            "insieme",
+        ] {
+            assert!(
+                !json.contains(segreto),
+                "«{segreto}» viaggerebbe col documento"
+            );
+        }
+
+        // I PC associati non sono dispositivi della sincronia: due fiducie,
+        // due tabelle.
+        assert!(
+            dispositivi(&connection)
+                .expect("dispositivi")
+                .iter()
+                .all(|d| d.id != chiave && d.nome.as_deref() != Some("Portatile-di-Zaira-7Q"))
+        );
+
+        // E l'altro verso: una passata che applica un documento venuto da
+        // fuori non tocca né i PC associati né le impostazioni di qui.
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 2_000),
+            Documento::nuovo("telefono", Contenuto::default(), 2_000),
+        ]);
+        applica(&mut connection, &fuso, 2_000).expect("applicazione");
+        assert_eq!(crate::insieme::pari(&connection).expect("pari").len(), 1);
+        let impostazioni = crate::insieme::impostazioni(&connection).expect("impostazioni");
+        assert!(impostazioni.attivo);
+        assert_eq!(impostazioni.indirizzi, ["10.20.30.40:47812"]);
     }
 }

@@ -9,6 +9,7 @@
 import { memo } from "react";
 
 import { Copertina } from "../Copertina";
+import { idDiLibreria } from "../insieme";
 import type { Brano } from "../ipc";
 import { statoSuono } from "../segnali";
 import { Icona } from "./Icone";
@@ -59,7 +60,9 @@ export const Ora = memo(function Ora({
           <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
         </div>
       </div>
-      {conCuore && (
+      {/* Il cuore scrive sulla riga della libreria, e una voce di «Ascolta
+          insieme» su questo PC una riga non ce l'ha: vedi `idDiLibreria`. */}
+      {conCuore && idDiLibreria(brano.id) && (
         <button
           type="button"
           className="cuore icon-btn heart"

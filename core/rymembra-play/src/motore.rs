@@ -51,10 +51,12 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 
+use crate::ancora::{Ancora, Mappa, SegnoPubblico};
 use crate::decodifica::{Decodificatore, FormatoSuonato, Sorgente};
 use crate::equalizzatore::{BANDE, Coefficienti};
 use crate::uscita::{FormatoUscita, RISERVA_MS, Uscita};
@@ -156,6 +158,33 @@ pub struct Posizione {
     /// non quando la decodifica lo apre — qualche secondo prima, quanto
     /// l'anello tiene da parte.
     pub formato: Option<FormatoSuonato>,
+}
+
+/// I contatori di quel che è andato storto o è stato corretto, dall'apertura.
+///
+/// Crescono e basta: chi li legge confronta il valore con quello della volta
+/// prima, come per [`fili_caduti`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Contatori {
+    /// I campioni serviti a vuoto perché l'anello era secco: vedi
+    /// [`Motore::vuoti`].
+    pub vuoti: u64,
+    /// Le volte che il dispositivo è rimasto senza campioni, secondo `cpal`.
+    pub xrun: u64,
+    /// I gradini eseguiti dalla callback: vedi [`Motore::gradino`].
+    pub gradini_fatti: u64,
+}
+
+/// Perché [`Motore::riprendi_a`] ha rifiutato l'avvio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RifiutoAvvio {
+    /// L'istante chiesto è passato da più di un secondo: non è più un avvio
+    /// programmato, è un salto, e va chiesto come tale.
+    NelPassato,
+    /// Il flusso è a riposo: risvegliarlo costa decine di millisecondi che
+    /// nessuno sa prevedere, e l'avvio arriverebbe in ritardo. Prima va
+    /// chiamato [`Motore::tieni_sveglio`] o [`Motore::sveglia`].
+    FlussoARiposo,
 }
 
 /// Un [`Evento`], con quel che serve a chi lo riceve per decidere se vale ancora.
@@ -346,7 +375,22 @@ const SFUMATURA_DB: f32 = 60.0;
 
 /// Quel che si può chiedere al motore.
 enum Comando {
-    Suona(Box<BranoAperto>),
+    /// Un brano nuovo, dal millisecondo `da_ms`.
+    ///
+    /// L'apertura e il salto viaggiano **insieme** perché il filo li faccia
+    /// uno dopo l'altro senza decodificare niente in mezzo: con due comandi,
+    /// fra l'uno e l'altro il filo riempirebbe l'anello dal punto zero, e quei
+    /// campioni si sentirebbero o andrebbero buttati con uno svuotamento in
+    /// più. Vedi [`Motore::apri_fermo`].
+    ///
+    /// Se il brano debba partire fermo non lo dice il comando: la pausa la
+    /// scrive la maniglia **prima** di mandarlo, come ogni altra pausa (vedi
+    /// [`Motore::pausa`]), e il filo la allinea dopo lo svuotamento come per
+    /// ogni brano nuovo. Un campo `in_pausa` qui non avrebbe nessuno a leggerlo.
+    Suona {
+        brano: Box<BranoAperto>,
+        da_ms: u64,
+    },
     Prepara(Option<Box<BranoAperto>>),
     Ferma,
     VaiA(u64),
@@ -386,6 +430,9 @@ pub struct Motore {
     comandi: Sender<Comando>,
     condiviso: Arc<Condiviso>,
     posizione: Arc<std::sync::Mutex<Posizione>>,
+    /// I segni del filo della decodifica, per tradurre le ancore: vedi
+    /// [`Motore::ancora`].
+    mappa: Arc<Mutex<Mappa>>,
     formato: FormatoUscita,
     /// Il lettore dello spettro.
     ///
@@ -523,6 +570,11 @@ impl Motore {
         // Il filo degli eventi **prima** del dispositivo: se non parte, non
         // resta aperto un flusso audio che nessuno chiuderà.
         let voce = voce_su_filo(Box::new(osservatore))?;
+        // L'orologio del processo prima di aprire l'uscita: la sua prima
+        // lettura lo inizializza, e un'inizializzazione può aspettare un altro
+        // filo. Fatta qui, la callback — che lo legge a ogni blocco — non può
+        // mai essere la prima. Vedi [`crate::tempo`].
+        let _ = crate::tempo::base();
         let condiviso = Condiviso::nuovo();
 
         // L'anello si dimensiona prima di sapere la frequenza vera, quindi si
@@ -578,6 +630,7 @@ impl Motore {
             voce,
         );
         let intese = Arc::clone(&contesto.intese);
+        let mappa = Arc::clone(&contesto.mappa);
 
         std::thread::Builder::new()
             .name("rymembra-decodifica".to_owned())
@@ -591,6 +644,7 @@ impl Motore {
             comandi: manda,
             condiviso,
             posizione,
+            mappa,
             formato,
             spettro: Arc::new(std::sync::Mutex::new(crate::spettro::Spettro::nuovo(
                 ricevi_spettro,
@@ -722,6 +776,23 @@ impl Motore {
     ///
     /// Il brano arriva **già aperto**: il perché sta in [`BranoAperto`].
     pub fn suona(&self, brano: BranoAperto) {
+        self.suona_da(brano, 0);
+    }
+
+    /// Come [`Motore::suona`], ma dal millisecondo `da_ms`.
+    ///
+    /// # Perché non `suona` e poi `vai_a`
+    ///
+    /// Per la stessa ragione di [`Motore::apri_fermo`]: fra i due comandi il
+    /// filo può già aver messo nell'anello qualche millisecondo dall'inizio
+    /// del brano, e la callback farlo sentire prima del salto. Qui apertura e
+    /// salto sono un comando solo, eseguito prima di qualunque decodifica.
+    ///
+    /// E non `apri_fermo` più `riprendi`, che pure farebbe lo stesso suono:
+    /// `riprendi` è il gesto di chi preme play, e annulla una sfumatura del
+    /// timer di spegnimento in corso — una riapertura del dispositivo a metà
+    /// sfumatura la cancellerebbe senza che nessuno l'abbia chiesto.
+    pub fn suona_da(&self, brano: BranoAperto, da_ms: u64) {
         // Il flusso prima di tutto: il comando fa svuotare l'anello, e lo
         // svuotamento è una stretta di mano con la callback che a flusso fermo
         // nessuno stringe. Vedi [`Uscita::sveglia`].
@@ -737,10 +808,48 @@ impl Motore {
         // callback suonerebbe quel che ci era rimasto del brano di prima. Vedi
         // `Intese::pausa_voluta`.
         self.intese.pausa_voluta.store(false, Ordering::SeqCst);
+        // Un avvio programmato apparteneva al brano di prima.
+        self.condiviso.avvio_ns.store(0, Ordering::Release);
         // Quel che il filo sta aspettando dalla rete non serve più: vedi
         // `Condiviso::in_lettura`. Prima del comando, non dopo.
         self.condiviso.interrompi_la_lettura();
-        self.manda(Comando::Suona(Box::new(brano)));
+        self.manda(Comando::Suona {
+            brano: Box::new(brano),
+            da_ms,
+        });
+    }
+
+    /// Apre un brano **fermo**, già al millisecondo `da_ms`: in pausa, con
+    /// l'anello pieno dal punto giusto, pronto a ripartire all'istante.
+    ///
+    /// # Perché non `suona`, `vai_a` e `pausa` in fila
+    ///
+    /// Perché era così, e aveva due difetti. Il primo è una gara: `suona` scrive
+    /// che la pausa non la si vuole più, e una `pausa` arrivata un istante dopo
+    /// deve vincere su un comando che è ancora in coda — vince, ma nel
+    /// frattempo la callback può aver già fatto sentire qualche millisecondo
+    /// dal punto zero. Il secondo è il salto in mezzo: fra i due comandi il filo
+    /// riempie l'anello dall'inizio del brano, e il salto lo deve buttare.
+    ///
+    /// Qui la pausa — voluta e in corso — si scrive **prima** di mandare il
+    /// comando, come fa [`Motore::pausa`], e il comando porta con sé il punto
+    /// d'arrivo: il filo apre e salta senza decodificare niente in mezzo. Dal
+    /// punto zero non esce nessun campione.
+    ///
+    /// Per ripartire: [`Motore::riprendi`], o [`Motore::riprendi_a`] per un
+    /// istante preciso.
+    pub fn apri_fermo(&self, brano: BranoAperto, da_ms: u64) {
+        // Come `suona`: lo svuotamento è una stretta di mano con la callback,
+        // e a flusso fermo nessuno la stringe.
+        self.uscita.sveglia();
+        self.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        self.condiviso.avvio_ns.store(0, Ordering::Release);
+        self.intese.pausa(&self.condiviso);
+        self.condiviso.interrompi_la_lettura();
+        self.manda(Comando::Suona {
+            brano: Box::new(brano),
+            da_ms,
+        });
     }
 
     /// Tiene pronto il brano dopo, per attaccarlo senza buco.
@@ -761,8 +870,115 @@ impl Motore {
     pub fn riprendi(&self) {
         // A flusso fermo, togliere la pausa non farebbe uscire niente.
         self.uscita.sveglia();
+        // Adesso, non a un istante programmato prima.
+        self.condiviso.avvio_ns.store(0, Ordering::Release);
         self.intese.riprendi(&self.condiviso);
         self.manda(Comando::AnnullaSfuma);
+    }
+
+    /// Riprende in modo che la musica arrivi all'orecchio all'istante
+    /// `quando_ns`, sull'orologio di [`crate::tempo`].
+    ///
+    /// È la ripresa di chi ascolta insieme a un altro computer: l'istante è
+    /// quello in cui l'altro sentirà lo stesso fotogramma. La callback tace fino
+    /// al primo fotogramma del suo blocco che non suonerebbe **prima**
+    /// dell'istante, e da lì apre la porta; se l'istante è già passato quando
+    /// la callback ci arriva, parte subito e salta la musica che doveva essere
+    /// già uscita.
+    ///
+    /// # Come si fa il conto
+    ///
+    /// 1. Si toglie la latenza dichiarata a mano: `quando_ns` è un istante
+    ///    dell'orecchio, la callback ragiona sull'istante in cui il fotogramma
+    ///    lascia il dispositivo.
+    /// 2. Si scrive in `Condiviso::avvio_ns`, e **poi** si toglie la pausa:
+    ///    nell'ordine inverso la callback potrebbe ripartire subito.
+    ///
+    /// La specifica voleva l'istante portato sull'orologio del flusso col
+    /// ponte. Resta invece su quello del processo, e il conto torna lo stesso:
+    /// il ponte è uno spostamento fisso, e la callback porta già **il suo**
+    /// istante di qua — una volta per blocco, in un posto solo (vedi
+    /// `uscita::Battito`). Così l'avvio e l'ancora parlano lo stesso orologio,
+    /// e le prove lo possono fingere.
+    ///
+    /// # Errori
+    ///
+    /// [`RifiutoAvvio::FlussoARiposo`] se il flusso è a riposo — il risveglio
+    /// mangerebbe l'istante — e [`RifiutoAvvio::NelPassato`] se l'istante è
+    /// passato da più di un secondo: lì il salto da fare non è più un
+    /// dettaglio dell'avvio, e chi chiama deve chiederlo per quel che è.
+    pub fn riprendi_a(&self, quando_ns: u64) -> Result<(), RifiutoAvvio> {
+        if self.condiviso.dorme.load(Ordering::Acquire) {
+            return Err(RifiutoAvvio::FlussoARiposo);
+        }
+        let latenza_ms = self.latenza_della_mappa();
+        let avvio = i128::from(quando_ns) - i128::from(latenza_ms).saturating_mul(1_000_000);
+        // Zero vuol dire «nessun avvio»: un istante vero non ci cade mai, ma
+        // se ci cadesse un nanosecondo in più non si sente.
+        let avvio = u64::try_from(avvio.max(1)).unwrap_or(u64::MAX);
+        if avvio.saturating_add(1_000_000_000) < crate::tempo::adesso_ns() {
+            return Err(RifiutoAvvio::NelPassato);
+        }
+        self.condiviso.avvio_ns.store(avvio, Ordering::Release);
+        self.intese.riprendi(&self.condiviso);
+        self.manda(Comando::AnnullaSfuma);
+        Ok(())
+    }
+
+    /// Sposta la musica di tanti fotogrammi d'uscita: positivo inserisce
+    /// silenzio, negativo salta musica.
+    ///
+    /// La callback chiude la porta in una dozzina di millisecondi, esegue, e la
+    /// riapre allo stesso passo; il conto dei fotogrammi segue esatto, quindi
+    /// la posizione, le ancore e la fine della coda restano vere. Un salto più
+    /// lungo di quel che l'anello tiene si completa quando il decodificatore
+    /// ne porta altro. Una pausa, un salto o un brano nuovo lo fanno cadere.
+    ///
+    /// Finché non è finito [`Motore::in_correzione`] dice vero: chi corregge
+    /// aspetta che torni falso prima di misurare di nuovo.
+    pub fn gradino(&self, fotogrammi: i64) {
+        if fotogrammi == 0 {
+            return;
+        }
+        // La richiesta **prima** della bandiera: vedi `uscita::libera`, che le
+        // legge nell'ordine opposto.
+        self.condiviso
+            .gradino
+            .fetch_add(fotogrammi, Ordering::SeqCst);
+        self.condiviso.in_correzione.store(true, Ordering::SeqCst);
+    }
+
+    /// Accelera (positivo) o rallenta (negativo) il consumo della musica di
+    /// tante parti per milione, fino a ±[`crate::uscita::DERIVA_MASSIMA_PPM`].
+    ///
+    /// Serve a tenere in pari due schede audio i cui quarzi non contano allo
+    /// stesso passo: vedi `uscita::Andamento::accumulo` per come si fa senza
+    /// che si senta. Zero la spegne.
+    pub fn deriva(&self, ppm: i32) {
+        let tetto = crate::uscita::DERIVA_MASSIMA_PPM;
+        self.condiviso
+            .deriva_ppm
+            .store(ppm.clamp(-tetto, tetto), Ordering::Relaxed);
+    }
+
+    /// Tiene il flusso sveglio anche in pausa, per tutta una sessione
+    /// d'ascolto insieme; `false` torna al riposo di sempre.
+    ///
+    /// Acceso, sveglia anche il flusso se riposava: è la condizione che
+    /// [`Motore::riprendi_a`] chiede.
+    pub fn tieni_sveglio(&self, acceso: bool) {
+        self.condiviso.sessione.store(acceso, Ordering::Release);
+        if acceso {
+            self.uscita.sveglia();
+        }
+    }
+
+    /// Rimette in moto il flusso se riposava, e torna quando la callback gira.
+    ///
+    /// È [`crate::uscita::Uscita::sveglia`], per chi deve chiamarla da fuori:
+    /// può aspettare fino a mezzo secondo.
+    pub fn sveglia(&self) {
+        self.uscita.sveglia();
     }
 
     /// Mette in pausa.
@@ -792,6 +1008,8 @@ impl Motore {
     /// dice cosa si vuole e quella che legge la callback. Il perché delle due
     /// sta su `Intese::pausa_voluta`.
     pub fn pausa(&self) {
+        // Un avvio programmato non sopravvive a una pausa chiesta dopo.
+        self.condiviso.avvio_ns.store(0, Ordering::Release);
         self.intese.pausa(&self.condiviso);
     }
 
@@ -800,6 +1018,7 @@ impl Motore {
         // Anche fermarsi svuota l'anello: stessa stretta di mano di `suona`.
         self.uscita.sveglia();
         self.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        self.condiviso.avvio_ns.store(0, Ordering::Release);
         // Il bit prima del comando: svuotare l'anello è lavoro del filo, dire
         // che siamo fermi no — vedi [`Motore::pausa`].
         self.intese.pausa(&self.condiviso);
@@ -1033,6 +1252,92 @@ impl Motore {
         self.condiviso.vuoti.load(Ordering::Relaxed)
     }
 
+    /// I contatori di quel che è andato storto o è stato corretto.
+    #[must_use]
+    pub fn contatori(&self) -> Contatori {
+        Contatori {
+            vuoti: self.condiviso.vuoti.load(Ordering::Relaxed),
+            xrun: self.condiviso.xrun.load(Ordering::Relaxed),
+            gradini_fatti: self.condiviso.gradini_fatti.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Quale fotogramma di quale brano arriva all'orecchio, e quando.
+    ///
+    /// L'ultima ancora pubblicata dalla callback, tradotta con i segni del filo
+    /// della decodifica: vedi [`crate::ancora`] e [`Ancora`].
+    ///
+    /// `None` finché non c'è musica, quando l'ancora e i segni sono di due
+    /// epoche diverse — un salto o un brano nuovo appena chiesti — e quando la
+    /// callback era a metà di una scrittura per otto letture di fila. In tutti
+    /// e tre i casi la risposta giusta arriva al blocco dopo.
+    #[must_use]
+    pub fn ancora(&self) -> Option<Ancora> {
+        let grezza = self.condiviso.ancora.leggi()?;
+        let mappa = self.mappa.lock().unwrap_or_else(PoisonError::into_inner);
+        mappa.traduci(&grezza)
+    }
+
+    /// In pausa: l'etichetta del brano e la posizione, in microsecondi, del
+    /// fotogramma da cui la musica ripartirà.
+    ///
+    /// È la domanda di chi deve far ripartire questo motore insieme a un altro:
+    /// da dove riparto, per sapere quanto saltare. `None` se non si è in pausa,
+    /// se uno svuotamento è in corso — il punto sta cambiando — o se la mappa
+    /// non è ancora quella dell'epoca in cui si è.
+    #[must_use]
+    pub fn in_attesa(&self) -> Option<(Option<u64>, u64)> {
+        if !self.condiviso.in_pausa.load(Ordering::Acquire)
+            || self.condiviso.svuota.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        // L'epoca prima e dopo il contatore: se è cambiata in mezzo, il
+        // contatore può essere già quello dell'epoca nuova.
+        let epoca = self.condiviso.epoca.load(Ordering::Acquire);
+        let prossimo = self.condiviso.fotogrammi.load(Ordering::Relaxed);
+        if self.condiviso.epoca.load(Ordering::Acquire) != epoca {
+            return None;
+        }
+        let mappa = self.mappa.lock().unwrap_or_else(PoisonError::into_inner);
+        mappa.attesa(epoca, prossimo)
+    }
+
+    /// Quanta musica la callback ha già davanti, in microsecondi: quanto si può
+    /// saltare in avanti con [`Motore::gradino`] senza aspettare il
+    /// decodificatore.
+    #[must_use]
+    pub fn riserva_us(&self) -> u64 {
+        let entrati = self.condiviso.spinti.load(Ordering::Relaxed);
+        let usciti = self.condiviso.fotogrammi.load(Ordering::Relaxed);
+        crate::ancora::us_da_fotogrammi(entrati.saturating_sub(usciti), self.formato.frequenza)
+    }
+
+    /// C'è un gradino chiesto o in corso: vedi [`Motore::gradino`].
+    #[must_use]
+    pub fn in_correzione(&self) -> bool {
+        self.condiviso.in_correzione.load(Ordering::Acquire)
+    }
+
+    /// Il ponte fra l'orologio del flusso e quello del processo, misurato
+    /// all'apertura: diagnostica. Vedi [`crate::uscita::Ponte`].
+    #[must_use]
+    pub const fn ponte(&self) -> crate::uscita::Ponte {
+        self.uscita.ponte
+    }
+
+    /// La latenza dichiarata a mano, come la sa la mappa.
+    ///
+    /// Dalla mappa e non da una copia qui: è lo stesso numero con cui
+    /// [`Motore::ancora`] sposta gli istanti, e un avvio e un'ancora che lo
+    /// leggessero da due posti diversi potrebbero non andare d'accordo.
+    fn latenza_della_mappa(&self) -> i64 {
+        self.mappa
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .latenza_manuale_ms
+    }
+
     fn manda(&self, comando: Comando) {
         // Il canale è chiuso quando il filo della decodifica non c'è più, e da
         // qui non c'è niente di utile da farne: chi doveva accorgersene lo ha
@@ -1131,6 +1436,9 @@ pub struct BranoAperto {
     decodificatore: Decodificatore,
     durata_ms: u64,
     livello: Livello,
+    /// L'etichetta che chi sta sopra gli ha dato: vedi
+    /// [`BranoAperto::con_etichetta`].
+    etichetta: Option<u64>,
 }
 
 impl BranoAperto {
@@ -1168,6 +1476,7 @@ impl BranoAperto {
             decodificatore,
             durata_ms,
             livello,
+            etichetta: None,
         })
     }
 
@@ -1175,6 +1484,28 @@ impl BranoAperto {
     #[must_use]
     pub const fn track_id(&self) -> i64 {
         self.decodificatore.track_id()
+    }
+
+    /// Lo stesso brano, con un'etichetta che lo segue fino all'[`Ancora`].
+    ///
+    /// # Perché non basta `track_id`
+    ///
+    /// Perché in un ascolto insieme l'identificativo del brano è quello della
+    /// libreria di **questo** computer, e l'altro computer ne ha un altro per
+    /// lo stesso file — se lo ha. L'etichetta è il numero della voce della
+    /// sessione, uguale su tutti i PC: è quello che due ancore devono
+    /// confrontare per sapere se parlano dello stesso brano. Fuori da una
+    /// sessione non serve, e resta `None`.
+    #[must_use]
+    pub const fn con_etichetta(mut self, etichetta: u64) -> Self {
+        self.etichetta = Some(etichetta);
+        self
+    }
+
+    /// L'etichetta data con [`BranoAperto::con_etichetta`], se c'è.
+    #[must_use]
+    pub const fn etichetta(&self) -> Option<u64> {
+        self.etichetta
     }
 }
 
@@ -1191,27 +1522,40 @@ impl std::fmt::Debug for BranoAperto {
 ///
 /// # La regola che lega i due numeri
 ///
-/// `da` e `offset_ms` devono descrivere **lo stesso istante**: `da` dice quando
-/// si sente, contato in fotogrammi d'uscita, e `offset_ms` dice a che punto del
-/// brano si è in quel preciso momento. [`Contesto::aggiorna`] somma al secondo il
-/// tempo scorso dal primo, quindi due istanti diversi dentro lo stesso segno
-/// sfasano la posizione **per tutta la vita del segno**, cioè per tutto il brano.
+/// `da` e `offset_fotogrammi` devono descrivere **lo stesso istante**: `da` dice
+/// quando si sente, contato in fotogrammi d'uscita, e `offset_fotogrammi` dice a
+/// che punto del brano si è in quel preciso momento. [`Contesto::aggiorna`]
+/// somma al secondo il tempo scorso dal primo, quindi due istanti diversi dentro
+/// lo stesso segno sfasano la posizione **per tutta la vita del segno**, cioè
+/// per tutto il brano.
 ///
-/// I tre posti che annotano un segno lo fanno per tre istanti diversi, e ognuno
-/// scrive la coppia coerente: l'avvio di un brano (`0`, `0`), un salto (`0`, il
-/// millisecondo raggiunto), e metà dissolvenza (`spinti + meta`, mezza
-/// dissolvenza in millisecondi).
+/// I posti che annotano un segno lo fanno per istanti diversi, e ognuno scrive
+/// la coppia coerente: l'avvio di un brano (`0`, `0`), un salto (`0`, il
+/// fotogramma raggiunto), il passaggio senza buco (`spinti + rinvio`, `0`) e
+/// metà dissolvenza (`spinti + meta`, `meta`).
 struct Segno {
     /// Da quale fotogramma d'uscita in poi si sente questo brano.
     da: u64,
     track_id: i64,
     durata_ms: u64,
-    /// A che punto del brano si è nell'istante indicato da `da`.
+    /// A che punto del brano si è nell'istante indicato da `da`, in fotogrammi
+    /// alla frequenza d'uscita.
     ///
     /// Non è «quanto è stato saltato»: è la posizione dentro il brano in
     /// quell'istante, che per un salto coincide col punto raggiunto e per una
     /// dissolvenza vale mezza curva. Vedi la regola in testa al tipo.
-    offset_ms: u64,
+    ///
+    /// # Perché in fotogrammi e non più in millisecondi
+    ///
+    /// Era `offset_ms`, e [`Contesto::aggiorna`] gli sommava i millisecondi
+    /// scorsi: due troncamenti, uno per addendo, che insieme potevano perdere
+    /// quasi due millisecondi — e uno era perso **per tutta la vita del
+    /// segno**. Per il cursore non contava niente; per due computer che devono
+    /// suonare lo stesso fotogramma sì. Adesso la somma si fa in fotogrammi
+    /// esatti e si tronca una volta sola, alla fine.
+    offset_fotogrammi: u64,
+    /// L'etichetta del brano: vedi [`BranoAperto::con_etichetta`].
+    etichetta: Option<u64>,
     replaygain_db: Option<f32>,
     /// A quale ascolto appartiene: un numero nuovo per ogni volta che un brano
     /// **comincia**, lo stesso numero per un salto dentro l'ascolto in corso.
@@ -1228,6 +1572,19 @@ struct Segno {
     /// Com'è fatto il brano: va in [`Posizione::formato`] quando il segno è
     /// raggiunto.
     formato: Option<FormatoSuonato>,
+}
+
+impl Segno {
+    /// Il segno come lo vede chi traduce le ancore: vedi [`Mappa`].
+    const fn pubblico(&self) -> SegnoPubblico {
+        SegnoPubblico {
+            da: self.da,
+            offset_fotogrammi: self.offset_fotogrammi,
+            track_id: self.track_id,
+            ascolto: self.ascolto,
+            etichetta: self.etichetta,
+        }
+    }
 }
 
 /// Un brano decodificato per intero che si sta ancora sentendo.
@@ -1263,6 +1620,22 @@ struct Contesto {
     produttore: rtrb::Producer<f32>,
     condiviso: Arc<Condiviso>,
     posizione: Arc<std::sync::Mutex<Posizione>>,
+    /// I segni pubblicati per chi traduce le ancore: vedi [`Mappa`].
+    ///
+    /// Un lucchetto accanto a quello della posizione, e per la stessa ragione:
+    /// lo prendono questo filo e quello di chi comanda, mai la callback.
+    mappa: Arc<Mutex<Mappa>>,
+    /// I segni, la latenza o l'epoca sono cambiati da quando la mappa è stata
+    /// pubblicata. Si ripubblica alla fine di [`Contesto::aggiorna`], una volta
+    /// per giro al più: i segni cambiano a ogni brano e a ogni salto, non a ogni
+    /// blocco.
+    mappa_sporca: bool,
+    /// L'ultimo segno tolto dalla fila da [`Contesto::aggiorna`]: vedi
+    /// `Mappa::tolto` per il perché serve ancora.
+    tolto: Option<SegnoPubblico>,
+    /// L'etichetta del brano in `corrente`: segue `corrente` in ogni scambio,
+    /// come [`Contesto::durata_corrente_ms`].
+    etichetta_corrente: Option<u64>,
     /// Dove vanno gli annunci: vedi [`Voce`] e [`voce_su_filo`].
     voce: Voce,
     /// Gli accordi con la maniglia: vedi [`Intese`].
@@ -1544,7 +1917,7 @@ fn compatta(lotto: &mut Vec<Comando>) {
                 // arrivato in quattro millisecondi, cioè una manciata.
                 lotto.remove(i);
             }
-            Comando::VaiA(_) | Comando::Suona(_) | Comando::Ferma => superfluo = true,
+            Comando::VaiA(_) | Comando::Suona { .. } | Comando::Ferma => superfluo = true,
             _ => {}
         }
     }
@@ -1601,11 +1974,19 @@ impl Contesto {
         formato: FormatoUscita,
         voce: Voce,
     ) -> Self {
+        let mappa = Mappa {
+            frequenza: formato.frequenza,
+            ..Mappa::default()
+        };
         Self {
             comandi,
             produttore,
             condiviso,
             posizione,
+            mappa: Arc::new(Mutex::new(mappa)),
+            mappa_sporca: false,
+            tolto: None,
+            etichetta_corrente: None,
             voce,
             intese: Intese::nuove(),
             formato,
@@ -1651,8 +2032,14 @@ impl Contesto {
 
     fn esegui(&mut self, comando: Comando) {
         match comando {
-            Comando::Suona(brano) => {
+            Comando::Suona { brano, da_ms } => {
                 self.avvia_brano(*brano);
+                // Il salto subito, prima di qualunque decodifica: l'anello è
+                // appena stato buttato e nessun campione del punto zero ci è
+                // ancora entrato. Vedi `Comando::Suona`.
+                if da_ms > 0 {
+                    self.cerca_dall_avvio(da_ms);
+                }
                 // Contata **dopo** aver buttato l'anello, e la pausa in corso
                 // allineata dopo ancora: finché la svolta risulta in viaggio,
                 // `Intese::riprendi` lascia la pausa in corso alzata, e una
@@ -1707,6 +2094,10 @@ impl Contesto {
             // loro.
             Comando::Latenza { ms } => {
                 self.latenza_manuale_ms = ms;
+                // Ma chi traduce le ancore la somma agli istanti: la mappa va
+                // ripubblicata, o `Motore::ancora` continuerebbe con la vecchia
+                // finché un segno non cambia.
+                self.mappa_sporca = true;
             }
             Comando::Equalizzatore { guadagni, attivo } => {
                 // Spegnere non è un salto a piatto: è una corsa verso lo zero,
@@ -1836,7 +2227,18 @@ impl Contesto {
         }
         self.condiviso.fotogrammi.store(0, Ordering::Relaxed);
         self.spinti = 0;
+        self.condiviso.spinti.store(0, Ordering::Relaxed);
         self.segni.clear();
+        self.tolto = None;
+        // Un'epoca nuova: i fotogrammi ricominciano da zero, e un'ancora
+        // contata prima di questa riga non deve trovare i segni che verranno.
+        // **Dopo** l'azzeramento e lo sgombero dei segni, **prima** di spingere
+        // un campione nuovo: la callback legge l'epoca dopo aver consumato i
+        // suoi campioni, e i campioni nuovi entrano nell'anello solo dopo
+        // questa scrittura — l'anello stesso la porta fino a lei. Vedi
+        // [`crate::ancora`].
+        self.condiviso.epoca.fetch_add(1, Ordering::Release);
+        self.mappa_sporca = true;
         // Con l'anello vuoto non si sente più niente di quel che c'era dentro:
         // il brano messo da parte non ha più nessuno che lo ascolti. Vedi
         // [`Contesto::uscente`].
@@ -1855,9 +2257,11 @@ impl Contesto {
         let track_id = brano.decodificatore.track_id();
         let durata_ms = brano.durata_ms;
         let livello = brano.livello;
+        let etichetta = brano.etichetta;
         let formato = brano.decodificatore.formato_suonato();
         self.scarta_in_volo();
         self.corrente = Some(brano.decodificatore);
+        self.etichetta_corrente = etichetta;
         self.prossimo = None;
         self.annunciato = None;
         self.fine_dichiarata = false;
@@ -1877,11 +2281,51 @@ impl Contesto {
             da: 0,
             track_id,
             durata_ms,
-            offset_ms: 0,
+            offset_fotogrammi: 0,
+            etichetta,
             replaygain_db: livello.guadagno_db,
             ascolto,
             formato: Some(formato),
         });
+        self.mappa_sporca = true;
+    }
+
+    /// Il salto che accompagna un brano appena avviato: vedi
+    /// [`Motore::apri_fermo`].
+    ///
+    /// Non è [`Contesto::vai_a`]: qui non c'è niente da buttare — l'anello è
+    /// vuoto da un istante e nessun blocco è ancora stato decodificato — e
+    /// nessuna puntina da rimettere a posto, perché il brano che si sentirà è
+    /// questo. Si sposta il decodificatore e si corregge il segno appena
+    /// annotato: comincia sempre al fotogramma d'anello zero, ma da più avanti
+    /// nel brano. Il primo blocco dirà dove si è atterrati davvero, come dopo
+    /// ogni salto.
+    ///
+    /// Un salto che fallisce lascia il brano dove il decodificatore è rimasto —
+    /// di solito il suo inizio — come fa un salto fallito a musica in corso, e
+    /// la finestra riceve l'errore per dirlo. Il segno segue il decodificatore
+    /// in tutti e due i casi: con l'anello vuoto non c'è altro da tenere in
+    /// pari.
+    fn cerca_dall_avvio(&mut self, ms: u64) {
+        let Some(decodificatore) = self.corrente.as_mut() else {
+            return;
+        };
+        self.condiviso.pubblica_lettura(decodificatore.bandiera());
+        let cercato = decodificatore.cerca(ms);
+        self.condiviso.ritira_lettura();
+        let raggiunto = decodificatore.consegnati();
+        if let Some(segno) = self.segni.back_mut() {
+            segno.offset_fotogrammi = raggiunto;
+        }
+        self.riallinea_segno = true;
+        self.mappa_sporca = true;
+        // Annullato vuol dire che il comando dopo è già in fila: un avviso per
+        // un salto che nessuno vuole più sarebbe sbagliato, come in `vai_a`.
+        if let Err(err) = cercato
+            && err.code().kind() != ErrorCodeKind::InternalAborted
+        {
+            self.annuncia(Evento::Errore(Box::new(err)));
+        }
     }
 
     /// Il numero di un ascolto che comincia adesso: vedi [`Segno::ascolto`].
@@ -2026,6 +2470,7 @@ impl Contesto {
                 decodificatore,
                 durata_ms: self.durata_corrente_ms,
                 livello: self.rg_decodifica,
+                etichetta: self.etichetta_corrente,
             };
             if futuro.decodificatore.cerca(0).is_ok() {
                 self.prossimo = Some(futuro);
@@ -2033,6 +2478,7 @@ impl Contesto {
         }
         self.durata_corrente_ms = uscente.brano.durata_ms;
         self.rg_decodifica = uscente.brano.livello;
+        self.etichetta_corrente = uscente.brano.etichetta;
         self.ascolto_corrente = uscente.ascolto;
         self.corrente = Some(uscente.brano.decodificatore);
         Puntina::Riportata
@@ -2076,6 +2522,7 @@ impl Contesto {
         if si_sente_l_entrante {
             self.durata_corrente_ms = entrante.durata_ms;
             self.rg_decodifica = entrante.livello;
+            self.etichetta_corrente = entrante.etichetta;
             self.ascolto_corrente = self.ascolto_entrante;
             self.corrente = Some(entrante.decodificatore);
         } else if self.prossimo.is_none() && entrante.decodificatore.cerca(0).is_ok() {
@@ -2099,7 +2546,6 @@ impl Contesto {
         if matches!(puntina, Puntina::Persa) {
             return;
         }
-        let frequenza = self.formato.frequenza;
         let Some(decodificatore) = self.corrente.as_mut() else {
             return;
         };
@@ -2109,14 +2555,15 @@ impl Contesto {
         self.condiviso.pubblica_lettura(decodificatore.bandiera());
         let cercato = decodificatore.cerca(ms);
         self.condiviso.ritira_lettura();
-        let raggiunto_ms = match cercato {
+        let raggiunto = match cercato {
             // Dove si è atterrati, che non è sempre dove si era chiesto: sopra
             // la fine del flusso `Decodificatore::cerca` mette un tetto invece
             // di fallire, e scrivere qui il millisecondo **chiesto** manderebbe
-            // il cursore fuori dalla barra per gli ultimi istanti del brano.
-            Ok(()) => ms_da_fotogrammi(decodificatore.consegnati(), frequenza),
+            // il cursore fuori dalla barra per gli ultimi istanti del brano. In
+            // fotogrammi e non in millisecondi: vedi `Segno::offset_fotogrammi`.
+            Ok(()) => decodificatore.consegnati(),
             Err(err) => {
-                let dov_e = ms_da_fotogrammi(decodificatore.consegnati(), frequenza);
+                let dov_e = decodificatore.consegnati();
                 // Si annuncia e si torna indietro, **senza** fermare: un salto
                 // che non riesce lascia la puntina dov'era, e dov'era è ancora
                 // un posto buono da cui continuare.
@@ -2164,13 +2611,15 @@ impl Contesto {
             da: 0,
             track_id,
             durata_ms: self.durata_corrente_ms,
-            offset_ms: raggiunto_ms,
+            offset_fotogrammi: raggiunto,
+            etichetta: self.etichetta_corrente,
             replaygain_db: self.rg_decodifica.guadagno_db,
             ascolto: self.ascolto_corrente,
             formato: self.corrente.as_ref().map(Decodificatore::formato_suonato),
         });
         self.fine_dichiarata = false;
         self.riallinea_segno = true;
+        self.mappa_sporca = true;
     }
 
     /// Riempie l'anello finché c'è posto e c'è roba. `true` se ha fatto qualcosa.
@@ -2184,7 +2633,23 @@ impl Contesto {
     /// una volta, copia tutto quel che ci sta e pubblica il nuovo indice una
     /// volta sola. Il suono è lo stesso; il filo della decodifica torna prima a
     /// fare il suo mestiere, che è decodificare.
+    ///
+    /// Alla fine pubblica quanti fotogrammi sono entrati davvero nell'anello:
+    /// vedi `Condiviso::spinti`.
     fn riempi(&mut self) -> bool {
+        let fatto = self.riempi_anello();
+        // Non `self.spinti`: quello conta anche i campioni ancora in `resto`,
+        // decodificati e non ancora entrati. La riserva che si può saltare è
+        // quella che la callback ha già davanti.
+        let fuori = fotogrammi(self.resto.len(), self.formato.canali);
+        self.condiviso
+            .spinti
+            .store(self.spinti.saturating_sub(fuori), Ordering::Relaxed);
+        fatto
+    }
+
+    /// Il corpo di [`Contesto::riempi`].
+    fn riempi_anello(&mut self) -> bool {
         let mut fatto = false;
         loop {
             if !self.resto.is_empty() {
@@ -2372,13 +2837,15 @@ impl Contesto {
             return;
         }
         let inizio = arrivati.saturating_sub(fotogrammi(self.blocco.len(), self.formato.canali));
-        let frequenza = self.formato.frequenza;
         let (spinti, ascolto) = (self.spinti, self.ascolto_corrente);
         if let Some(segno) = self.segni.back_mut()
             && segno.da == spinti
             && segno.ascolto == ascolto
         {
-            segno.offset_ms = ms_da_fotogrammi(inizio, frequenza);
+            // Il fotogramma esatto, non il millisecondo: è l'inizio vero del
+            // primo blocco, ed è quel che l'ancora deve poter ritrovare.
+            segno.offset_fotogrammi = inizio;
+            self.mappa_sporca = true;
         }
     }
 
@@ -2582,10 +3049,11 @@ impl Contesto {
         // allora vorrebbe dire una finestra che cambia titolo mentre si sente
         // ancora l'altro — e uno scrobble attribuito al brano sbagliato.
         //
-        // # `da` e `offset_ms` descrivono lo stesso istante
+        // # `da` e `offset_fotogrammi` descrivono lo stesso istante
         //
         // È la regola di tutto il tipo [`Segno`], e qui era rotta. `da` dice
-        // *quando* si sente — il fotogramma d'uscita — e `offset_ms` dice *dove*
+        // *quando* si sente — il fotogramma d'uscita — e `offset_fotogrammi`
+        // dice *dove*
         // si è, dentro il brano, in quell'istante. Devono parlare dello stesso
         // momento, altrimenti `aggiorna` somma una posizione a un tempo scorso
         // che parte da un'altra parte.
@@ -2594,7 +3062,7 @@ impl Contesto {
         // fotogramma zero esce a `self.spinti`. Quindi quando il contatore
         // arriva a `spinti + meta`, l'entrante ha già prodotto `meta`
         // fotogrammi — è a metà dissolvenza del *suo* inizio, non al suo inizio.
-        // Con `offset_ms: 0`, com'era scritto qui, la posizione riportata
+        // Con un offset a zero, com'era scritto qui, la posizione riportata
         // restava indietro di mezza dissolvenza **per tutto il brano**: con sei
         // secondi di dissolvenza, tre secondi, dal primo all'ultimo istante. È
         // la causa numero uno dello sfasamento dei testi, e sballava insieme
@@ -2628,11 +3096,13 @@ impl Contesto {
                     da: self.spinti.saturating_add(meta),
                     track_id: preparato.decodificatore.track_id(),
                     durata_ms: preparato.durata_ms,
-                    offset_ms: ms_da_fotogrammi(meta, self.formato.frequenza),
+                    offset_fotogrammi: meta,
+                    etichetta: preparato.etichetta,
                     replaygain_db: preparato.livello.guadagno_db,
                     ascolto,
                     formato: Some(preparato.decodificatore.formato_suonato()),
                 });
+                self.mappa_sporca = true;
             }
             self.segno_dissolvenza = true;
             self.fine_dichiarata = false;
@@ -2708,6 +3178,7 @@ impl Contesto {
                     decodificatore,
                     durata_ms: self.durata_corrente_ms,
                     livello: self.rg_decodifica,
+                    etichetta: self.etichetta_corrente,
                 },
             });
         }
@@ -2718,14 +3189,14 @@ impl Contesto {
                 // metà sovrapposizione, e rimetterlo qui vorrebbe dire lo
                 // stesso brano che comincia due volte.
                 //
-                // # Perché qui `offset_ms` è zero, e non va «uniformato»
+                // # Perché qui `offset_fotogrammi` è zero, e non va «uniformato»
                 //
                 // Perché qui il brano attacca **dal suo primo campione**: senza
                 // dissolvenza il passaggio è un gapless, e il fotogramma zero
                 // dell'entrante esce esattamente a `self.spinti` — più la coda
                 // del corrente, quando è passata col ricampionatore e uscirà
                 // davanti a lui: è `rinvio`. `da` e
-                // `offset_ms` descrivono lo stesso istante — la regola di
+                // `offset_fotogrammi` descrivono lo stesso istante — la regola di
                 // [`Segno`] — e quell'istante è l'inizio del brano, quindi zero è
                 // la verità.
                 //
@@ -2745,11 +3216,13 @@ impl Contesto {
                         da: self.spinti.saturating_add(rinvio),
                         track_id,
                         durata_ms: preparato.durata_ms,
-                        offset_ms: 0,
+                        offset_fotogrammi: 0,
+                        etichetta: preparato.etichetta,
                         replaygain_db: preparato.livello.guadagno_db,
                         ascolto,
                         formato: Some(preparato.decodificatore.formato_suonato()),
                     });
+                    self.mappa_sporca = true;
                 }
                 if dissolveva {
                     // Se la curva non era finita, il brano che entrava è
@@ -2774,6 +3247,7 @@ impl Contesto {
                 }
                 self.rg_decodifica = preparato.livello;
                 self.durata_corrente_ms = preparato.durata_ms;
+                self.etichetta_corrente = preparato.etichetta;
                 self.chiudi_sovrapposizione();
                 self.corrente = Some(preparato.decodificatore);
                 true
@@ -2826,7 +3300,37 @@ impl Contesto {
     /// millisecondi riportati — raccontare dove si è, per definizione, è
     /// raccontare dov'è l'orecchio. I `suonati` grezzi vanno a
     /// [`Contesto::forse_fine`], e il perché è scritto là.
+    ///
+    /// In fondo ripubblica la [`Mappa`], se qualcosa è cambiato da quando la
+    /// si è pubblicata l'ultima volta: una volta per giro al più, e mai a
+    /// metà di un cambio.
     fn aggiorna(&mut self) {
+        self.aggiorna_posizione();
+        self.pubblica_la_mappa();
+    }
+
+    /// I segni come li vede chi traduce le ancore, se sono cambiati.
+    ///
+    /// L'epoca si legge qui, dalla casella che solo questo filo scrive: è
+    /// l'epoca dei segni che si stanno pubblicando, sempre.
+    fn pubblica_la_mappa(&mut self) {
+        if !std::mem::take(&mut self.mappa_sporca) {
+            return;
+        }
+        let epoca = self.condiviso.epoca.load(Ordering::Acquire);
+        let mut mappa = self.mappa.lock().unwrap_or_else(PoisonError::into_inner);
+        mappa.epoca = epoca;
+        mappa.frequenza = self.formato.frequenza;
+        mappa.latenza_manuale_ms = self.latenza_manuale_ms;
+        mappa.tolto = self.tolto;
+        // Lo stesso vettore, svuotato e riempito: dopo il primo brano la mappa
+        // non chiede più memoria a nessuno.
+        mappa.segni.clear();
+        mappa.segni.extend(self.segni.iter().map(Segno::pubblico));
+    }
+
+    /// Il corpo di [`Contesto::aggiorna`]: la posizione e gli annunci.
+    fn aggiorna_posizione(&mut self) {
         let suonati = self.condiviso.fotogrammi.load(Ordering::Relaxed);
         let ritardo = self.ritardo_fotogrammi();
         let uditi = if ritardo >= 0 {
@@ -2842,7 +3346,11 @@ impl Contesto {
         while self.segni.len() > 1 {
             let prossimo_arrivato = self.segni.get(1).is_some_and(|s| s.da <= uditi);
             if prossimo_arrivato {
-                self.segni.pop_front();
+                // Tolto dalla fila, ma non dimenticato: con una latenza
+                // dichiarata negativa gli uditi corrono davanti alla callback,
+                // e le sue ancore parlano ancora di lui. Vedi `Mappa::tolto`.
+                self.tolto = self.segni.pop_front().as_ref().map(Segno::pubblico);
+                self.mappa_sporca = true;
             } else {
                 break;
             }
@@ -2874,10 +3382,13 @@ impl Contesto {
             return;
         };
 
+        // Una somma di fotogrammi e una divisione sola: vedi
+        // `Segno::offset_fotogrammi` per il troncamento che toglie.
         let scorsi = uditi.saturating_sub(segno.da);
-        let ms = segno
-            .offset_ms
-            .saturating_add(ms_da_fotogrammi(scorsi, self.formato.frequenza));
+        let ms = ms_da_fotogrammi(
+            segno.offset_fotogrammi.saturating_add(scorsi),
+            self.formato.frequenza,
+        );
         let (track_id, durata_ms, replaygain_db, ascolto, formato) = (
             segno.track_id,
             segno.durata_ms,
@@ -2959,6 +3470,8 @@ impl Contesto {
             // deve sentirsi dire «fermo», e il pulsante diventare il triangolo.
             self.intese.pausa(&self.condiviso);
             self.segni.clear();
+            self.tolto = None;
+            self.mappa_sporca = true;
             // Con la musica finita non c'è più niente da sentire, e il brano
             // messo da parte è solo un file che resta aperto — su Windows, un
             // file che non si può cancellare. Vedi [`Contesto::uscente`].
@@ -3397,6 +3910,14 @@ mod prove {
         BranoAperto::apri(sorgente, ctx.formato).expect("la sorgente di prova si apre")
     }
 
+    /// Il comando che manda [`Motore::suona`]: un brano dal suo inizio.
+    fn suona(brano: BranoAperto) -> Comando {
+        Comando::Suona {
+            brano: Box::new(brano),
+            da_ms: 0,
+        }
+    }
+
     /// Il filo della decodifica senza il filo e senza il dispositivo.
     struct Banco {
         ctx: Contesto,
@@ -3604,7 +4125,7 @@ mod prove {
         let mut banco = banco_con(48_000, osservatore);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -3634,7 +4155,7 @@ mod prove {
         let mut banco = banco_con(48_000, osservatore);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
         banco.ctx.esegui(Comando::VaiA(900));
@@ -3673,7 +4194,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -3693,7 +4214,7 @@ mod prove {
     fn due_brani_a_44(osservatore: Box<dyn Fn(Evento) + Send>) -> Banco {
         let mut banco = banco_con(48_000, osservatore);
         let primo = aperto(&banco.ctx, brano_onesto(1, 44_100, 0.5, 1_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano_onesto(2, 44_100, 0.5, 1_000));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
         banco
@@ -3764,7 +4285,7 @@ mod prove {
             .ctx
             .esegui(Comando::Dissolvenza { ms: dissolvenza_ms });
         let primo = aperto(&banco.ctx, brano(7, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let di_nuovo = aperto(&banco.ctx, brano(7, 48_000, 0.8));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(di_nuovo))));
         let _ = suona_raccontando(&mut banco, &registro);
@@ -3796,7 +4317,7 @@ mod prove {
             let (registro, osservatore) = spia();
             let mut banco = banco_con(48_000, osservatore);
             let primo = aperto(&banco.ctx, brano(3, 48_000, 0.8));
-            banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+            banco.ctx.esegui(suona(primo));
             if !prima_di_annunciare {
                 banco.ctx.aggiorna();
             }
@@ -3828,7 +4349,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -3910,7 +4431,7 @@ mod prove {
             osservatore,
         );
         let primo = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 2_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         // La coda che resta da consegnare, come farebbe chi sta sopra: uno alla
         // volta, appena la canna si libera.
         let mut resto = vec![
@@ -4026,7 +4547,7 @@ mod prove {
             osservatore,
         );
         let primo = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 2_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
 
         // Nessun preparato: si gira finché la decodifica finisce il primo brano
         // e non trova niente da attaccare.
@@ -4115,7 +4636,7 @@ mod prove {
             .store(misurata, Ordering::Relaxed);
         banco.ctx.esegui(Comando::Latenza { ms: manuale_ms });
         let solo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
-        banco.ctx.esegui(Comando::Suona(Box::new(solo)));
+        banco.ctx.esegui(suona(solo));
         suona_raccontando(&mut banco, &registro)
     }
 
@@ -4219,7 +4740,7 @@ mod prove {
         let mut banco = banco(48_000);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 24_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -4253,7 +4774,7 @@ mod prove {
         let mut banco = banco(48_000);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 24_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -4280,7 +4801,7 @@ mod prove {
         let mut banco = banco(48_000);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
         let primo = aperto(&banco.ctx, brano_da(1, 48_000, 0.8, 800));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -4335,7 +4856,7 @@ mod prove {
         // campioni, e l'anello del banco ne tiene sedicimilatrecentottantaquattro:
         // il brano ci sta tutto, che è la condizione da riprodurre.
         let primo = aperto(&banco.ctx, brano_da(1, 48_000, 0.8, 200));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         // Nessuno svuota l'anello: la decodifica corre fino in fondo al file
         // mentre dalle casse non è ancora uscito un campione.
         for _ in 0..100 {
@@ -4383,7 +4904,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let vuoto = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.5, 0));
-        banco.ctx.esegui(Comando::Suona(Box::new(vuoto)));
+        banco.ctx.esegui(suona(vuoto));
         let mut visti = 0usize;
         let mut fra_quanti: Option<u32> = None;
         for _ in 0..2_000 {
@@ -5123,7 +5644,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let primo = aperto(&banco.ctx, brano_che_muore(1, 48_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
 
         let _ = suona_tutto(&mut banco, |_| {});
 
@@ -5150,7 +5671,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let primo = aperto(&banco.ctx, brano_che_muore(1, 48_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.2));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -5181,7 +5702,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let primo = aperto(&banco.ctx, brano_rotto(1, 48_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.2));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -5290,7 +5811,7 @@ mod prove {
         let mut banco = banco_con(48_000, osservatore);
         let condiviso = Arc::clone(&banco.condiviso);
         let primo = aperto(&banco.ctx, brano_che_panica(1, 48_000));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
 
         let Banco {
             ctx,
@@ -5364,7 +5885,7 @@ mod prove {
         // Il contrappeso: da vivo il motore parla. Senza questa metà la prova
         // passerebbe anche con un osservatore mai collegato.
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         banco.ctx.esegui(Comando::Ferma);
         assert_eq!(
             eventi(&registro),
@@ -5379,7 +5900,7 @@ mod prove {
         // nuovo, che sta suonando.
         banco.condiviso.abbandonato.store(true, Ordering::Release);
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.5));
-        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        banco.ctx.esegui(suona(secondo));
         banco.ctx.esegui(Comando::Ferma);
 
         assert_eq!(
@@ -5473,7 +5994,7 @@ mod prove {
         let voce = voce_su_filo(osservatore).expect("il filo degli eventi parte");
         let mut banco = banco_con_voce(48_000, 16_384, voce);
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -5519,7 +6040,7 @@ mod prove {
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
         // Come fa `Motore::suona`: la svolta si conta prima di partire.
         banco.ctx.intese.chieste.fetch_add(1, Ordering::SeqCst);
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let _ = un_giro(&mut banco);
         let vecchio = annunci
             .lock()
@@ -5541,7 +6062,7 @@ mod prove {
 
         // Il filo esegue: quel che annuncia da qui in poi è la risposta.
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
-        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        banco.ctx.esegui(suona(secondo));
         let _ = un_giro(&mut banco);
         let nuovo = annunci
             .lock()
@@ -5574,7 +6095,7 @@ mod prove {
         let mut banco = banco_con_voce(48_000, 16_384, voce);
         let primo = aperto(&banco.ctx, brano_che_muore(1, 48_000));
         chiedi_un_brano(&banco);
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         for _ in 0..100_000 {
             let (_, mosso) = un_giro(&mut banco);
             if !mosso && banco.ctx.corrente.is_none() {
@@ -5627,7 +6148,7 @@ mod prove {
         let mut banco = banco(48_000);
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
         chiedi_un_brano(&banco);
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let _ = un_giro(&mut banco);
         banco.ctx.intese.pausa(&banco.condiviso);
 
@@ -5646,7 +6167,7 @@ mod prove {
         assert!(banco.condiviso.in_pausa.load(Ordering::SeqCst));
 
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
-        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        banco.ctx.esegui(suona(secondo));
         assert!(
             !banco.condiviso.in_pausa.load(Ordering::SeqCst),
             "svuotato l'anello, il brano nuovo deve suonare"
@@ -5662,7 +6183,7 @@ mod prove {
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
         chiedi_un_brano(&banco);
         banco.ctx.intese.pausa(&banco.condiviso);
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         assert!(banco.condiviso.in_pausa.load(Ordering::SeqCst));
         assert!(istantanea(&banco.ctx.posizione, &banco.ctx.intese).in_pausa);
     }
@@ -5683,7 +6204,7 @@ mod prove {
         let mut banco = banco_con_anello(48_000, 4_800, osservatore);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 600 });
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
@@ -5800,7 +6321,7 @@ mod prove {
             osservatore,
         );
         let primo = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.8, 800));
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         // Come chi sta sopra con «ripeti uno»: il successivo è lo stesso brano,
         // consegnato alla partenza e poi a ogni annuncio.
         let di_nuovo = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.8, 800));
@@ -5891,7 +6412,7 @@ mod prove {
         });
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
         chiedi_un_brano(&banco);
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         banco.ctx.esegui(Comando::Sfuma { ms: 80 });
 
         std::thread::sleep(Duration::from_millis(40));
@@ -5938,14 +6459,14 @@ mod prove {
         let mut banco = banco(48_000);
         let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
         chiedi_un_brano(&banco);
-        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(suona(primo));
         banco.ctx.esegui(Comando::Sfuma { ms: 60_000 });
         std::thread::sleep(Duration::from_millis(5));
         banco.ctx.avanza_sfumatura();
 
         let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
         chiedi_un_brano(&banco);
-        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        banco.ctx.esegui(suona(secondo));
         banco.ctx.avanza_sfumatura();
         assert!(
             banco.ctx.sfumatura.is_none(),
@@ -5956,6 +6477,317 @@ mod prove {
             (guadagno - volume_uscita(0.8, false)).abs() < 1e-6,
             "il brano nuovo parte col volume sfumato: {guadagno}"
         );
+    }
+
+    // ── il tempo condiviso: epoca, mappa, etichette ─────────────────────────
+
+    /// La mappa com'è pubblicata adesso.
+    fn mappa_di(banco: &Banco) -> Mappa {
+        banco
+            .ctx
+            .mappa
+            .lock()
+            .map_or_else(|avvelenata| avvelenata.into_inner().clone(), |m| m.clone())
+    }
+
+    /// Un'ancora grezza del fotogramma `contenuto`, in un'epoca.
+    fn grezza(contenuto: u64, epoca: u32) -> crate::ancora::AncoraGrezza {
+        crate::ancora::AncoraGrezza {
+            contenuto,
+            udito_ns: 1_000_000_000,
+            epoca,
+            in_corso: true,
+            ..crate::ancora::AncoraGrezza::default()
+        }
+    }
+
+    /// Un giro con la callback finta: vedi [`un_giro`].
+    fn gira(banco: &mut Banco) -> bool {
+        un_giro(banco).1
+    }
+
+    #[test]
+    fn l_epoca_cresce_a_ogni_svuotamento() {
+        // Ogni volta che il conteggio dei fotogrammi ricomincia da zero l'epoca
+        // cresce: è quel che impedisce a un'ancora contata prima di un salto di
+        // essere letta coi segni di dopo.
+        let mut banco = banco(48_000);
+        assert_eq!(banco.condiviso.epoca.load(Ordering::Acquire), 0);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+        banco.ctx.esegui(suona(primo));
+        assert_eq!(banco.condiviso.epoca.load(Ordering::Acquire), 1);
+        let _ = gira(&mut banco);
+        assert_eq!(mappa_di(&banco).epoca, 1, "la mappa porta la sua epoca");
+        banco.ctx.esegui(Comando::VaiA(500));
+        assert_eq!(banco.condiviso.epoca.load(Ordering::Acquire), 2);
+        banco.ctx.esegui(Comando::Ferma);
+        assert_eq!(banco.condiviso.epoca.load(Ordering::Acquire), 3);
+        let _ = gira(&mut banco);
+        assert_eq!(mappa_di(&banco).epoca, 3);
+        assert!(mappa_di(&banco).segni.is_empty(), "fermo, nessun segno");
+    }
+
+    #[test]
+    fn dopo_un_salto_il_segno_e_al_fotogramma_esatto() {
+        let mut banco = banco(48_000);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+        banco.ctx.esegui(suona(primo));
+        let _ = gira(&mut banco);
+        banco.ctx.esegui(Comando::VaiA(250));
+        let segno = banco.ctx.segni.back().map(Segno::pubblico);
+        assert_eq!(
+            segno.map(|s| (s.da, s.offset_fotogrammi)),
+            Some((0, 12_000))
+        );
+        // Il primo blocco conferma dove si è atterrati, al fotogramma.
+        assert!(banco.ctx.riempi());
+        let segno = banco.ctx.segni.back().map(Segno::pubblico);
+        assert_eq!(segno.map(|s| s.offset_fotogrammi), Some(12_000));
+        banco.ctx.aggiorna();
+        let mappa = mappa_di(&banco);
+        let ancora = mappa
+            .traduci(&grezza(0, banco.condiviso.epoca.load(Ordering::Acquire)))
+            .expect("il fotogramma zero dell'epoca è il punto del salto");
+        assert_eq!(ancora.posizione_us, 250_000);
+    }
+
+    #[test]
+    fn nel_gapless_con_rinvio_il_segno_e_al_fotogramma_esatto() {
+        // Due brani a 44,1 kHz su un'uscita a 48: la coda del primo passa col
+        // ricampionatore e uscirà davanti al secondo. Il segno del secondo sta
+        // dopo di lei, al fotogramma esatto in cui il primo finisce — un
+        // secondo a 48 kHz — e dal suo inizio.
+        let mut banco = due_brani_a_44(Box::new(|_| {}));
+        let mut visto = None;
+        for _ in 0..10_000 {
+            let mosso = gira(&mut banco);
+            if let Some(secondo) = banco.ctx.segni.iter().find(|s| s.track_id == 2) {
+                visto = Some(secondo.pubblico());
+                break;
+            }
+            if !mosso {
+                break;
+            }
+        }
+        let secondo = visto.expect("il secondo brano non ha mai avuto un segno");
+        assert_eq!(secondo.offset_fotogrammi, 0);
+        assert_eq!(secondo.da, 48_000, "il segno non è dove il primo finisce");
+    }
+
+    #[test]
+    fn la_posizione_somma_i_fotogrammi_prima_di_troncare() {
+        // Il cambiamento voluto della Fase 0. Quarantasette fotogrammi di salto
+        // e quarantasette di musica a 48 kHz sono quasi due millisecondi: prima
+        // ognuno dei due addendi si troncava per conto suo e la posizione
+        // diceva zero, adesso la somma si fa in fotogrammi e dice uno.
+        let mut banco = banco(48_000);
+        banco.ctx.segni.push_back(Segno {
+            da: 0,
+            track_id: 9,
+            durata_ms: 1_000,
+            offset_fotogrammi: 47,
+            etichetta: None,
+            replaygain_db: None,
+            ascolto: 1,
+            formato: None,
+        });
+        banco.condiviso.fotogrammi.store(47, Ordering::Relaxed);
+        banco.ctx.aggiorna();
+        let posizione = istantanea(&banco.ctx.posizione, &banco.ctx.intese);
+        assert_eq!(
+            ms_da_fotogrammi(47, 48_000) + ms_da_fotogrammi(47, 48_000),
+            0,
+            "il conto di prima"
+        );
+        assert_eq!(posizione.ms, 1, "il conto di adesso");
+    }
+
+    /// Le coppie (brano, etichetta) che la mappa ha pubblicato suonando due
+    /// brani etichettati, con la dissolvenza data.
+    fn etichette_viste(dissolvenza_ms: u64) -> Vec<(i64, Option<u64>)> {
+        let mut banco = banco(48_000);
+        banco
+            .ctx
+            .esegui(Comando::Dissolvenza { ms: dissolvenza_ms });
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8)).con_etichetta(11);
+        banco.ctx.esegui(suona(primo));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4)).con_etichetta(22);
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+        let mut viste = Vec::new();
+        for _ in 0..200_000 {
+            let mosso = gira(&mut banco);
+            for segno in &mappa_di(&banco).segni {
+                if !viste.contains(&(segno.track_id, segno.etichetta)) {
+                    viste.push((segno.track_id, segno.etichetta));
+                }
+            }
+            if !mosso && banco.ctx.corrente.is_none() {
+                break;
+            }
+        }
+        viste
+    }
+
+    #[test]
+    fn l_etichetta_segue_il_cambio_di_brano() {
+        // Senza buco e con la dissolvenza: due strade diverse per annotare il
+        // segno del brano dopo, e tutte e due devono portare la sua etichetta.
+        for dissolvenza_ms in [0, 400] {
+            assert_eq!(
+                etichette_viste(dissolvenza_ms),
+                [(1, Some(11)), (2, Some(22))],
+                "con {dissolvenza_ms} ms di dissolvenza"
+            );
+        }
+        // E un salto resta col brano che si sente.
+        let mut banco = banco(48_000);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8)).con_etichetta(11);
+        assert_eq!(primo.etichetta(), Some(11));
+        banco.ctx.esegui(suona(primo));
+        banco.ctx.esegui(Comando::VaiA(300));
+        let _ = gira(&mut banco);
+        let etichette: Vec<_> = mappa_di(&banco).segni.iter().map(|s| s.etichetta).collect();
+        assert_eq!(etichette, [Some(11)]);
+    }
+
+    /// Un secondo di rampa a 48 kHz: ogni campione dice a che punto del brano
+    /// sta, in secondi.
+    fn brano_a_rampa(track_id: i64) -> Sorgente {
+        let campioni: Vec<f32> = (0..48_000u16).map(|n| f32::from(n) / 48_000.0).collect();
+        Sorgente {
+            media: Box::new(Byte(std::io::Cursor::new(wav(48_000, &campioni)))),
+            ..brano(track_id, 48_000, 0.0)
+        }
+    }
+
+    #[test]
+    fn apri_fermo_non_fa_uscire_niente_dal_punto_zero() {
+        // Il brano si apre in pausa e già a metà: il primo campione che entra
+        // nell'anello è quello del mezzo secondo, e nessuno di prima.
+        let mut banco = banco(48_000);
+        let rampa = aperto(&banco.ctx, brano_a_rampa(5)).con_etichetta(3);
+        banco.ctx.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        banco.ctx.intese.pausa(&banco.condiviso);
+        banco.ctx.esegui(Comando::Suona {
+            brano: Box::new(rampa),
+            da_ms: 500,
+        });
+        assert!(banco.ctx.riempi());
+        let primo = banco.consumatore.pop().expect("l'anello si è riempito");
+        assert!(
+            (primo - 0.5).abs() < 0.001,
+            "il primo campione è a {primo} s"
+        );
+        let mut minimo = primo;
+        while let Ok(campione) = banco.consumatore.pop() {
+            minimo = minimo.min(campione);
+        }
+        assert!(
+            minimo > 0.499,
+            "un campione del punto zero è entrato: {minimo}"
+        );
+        assert!(
+            banco.condiviso.in_pausa.load(Ordering::SeqCst),
+            "aperto fermo, resta fermo"
+        );
+        // E chi aspetta sa da dove si ripartirà.
+        banco.ctx.aggiorna();
+        let epoca = banco.condiviso.epoca.load(Ordering::Acquire);
+        assert_eq!(mappa_di(&banco).attesa(epoca, 0), Some((Some(3), 500_000)));
+        assert_eq!(istantanea(&banco.ctx.posizione, &banco.ctx.intese).ms, 500);
+    }
+
+    #[test]
+    fn suona_da_parte_dal_punto_senza_passare_dal_punto_zero() {
+        // La ripresa a metà di chi suona: `Motore::suona_da` manda lo stesso
+        // comando con la pausa **non** voluta. Il primo campione è quello del
+        // mezzo secondo, e dopo lo svuotamento la pausa in corso si abbassa.
+        let mut banco = banco(48_000);
+        let rampa = aperto(&banco.ctx, brano_a_rampa(5));
+        banco.ctx.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        banco.ctx.intese.pausa_voluta.store(false, Ordering::SeqCst);
+        banco.ctx.esegui(Comando::Suona {
+            brano: Box::new(rampa),
+            da_ms: 500,
+        });
+        assert!(banco.ctx.riempi());
+        let primo = banco.consumatore.pop().expect("l'anello si è riempito");
+        assert!(
+            (primo - 0.5).abs() < 0.001,
+            "il primo campione è a {primo} s"
+        );
+        let mut minimo = primo;
+        while let Ok(campione) = banco.consumatore.pop() {
+            minimo = minimo.min(campione);
+        }
+        assert!(
+            minimo > 0.499,
+            "un campione del punto zero è entrato: {minimo}"
+        );
+        assert!(
+            !banco.condiviso.in_pausa.load(Ordering::SeqCst),
+            "suonando, la pausa in corso si abbassa a svolta eseguita"
+        );
+    }
+
+    #[test]
+    fn una_latenza_negativa_non_perde_il_brano_dell_ancora() {
+        // Trecento millisecondi di latenza negativa: gli uditi corrono davanti
+        // alla callback, e il segno del primo brano esce dalla fila mentre la
+        // callback ne sta ancora consegnando gli ultimi fotogrammi. Un'ancora
+        // di quei fotogrammi deve trovare ancora il primo brano.
+        let mut banco = banco(48_000);
+        banco.ctx.esegui(Comando::Latenza { ms: -300 });
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+        banco.ctx.esegui(suona(primo));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.5));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+        let mut provata = false;
+        for _ in 0..100_000 {
+            let _ = gira(&mut banco);
+            let contati = banco.condiviso.fotogrammi.load(Ordering::Relaxed);
+            let tolto_il_primo = banco.ctx.tolto.is_some_and(|t| t.track_id == 1);
+            if tolto_il_primo && contati < 48_000 {
+                let mappa = mappa_di(&banco);
+                assert!(mappa.segni.iter().all(|s| s.track_id == 2));
+                let epoca = banco.condiviso.epoca.load(Ordering::Acquire);
+                let ancora = mappa
+                    .traduci(&grezza(contati, epoca))
+                    .expect("l'ancora ha perso il suo brano");
+                assert_eq!(ancora.track_id, 1);
+                assert_eq!(
+                    ancora.posizione_us,
+                    crate::ancora::us_da_fotogrammi(contati, 48_000)
+                );
+                assert_eq!(ancora.udito_ns, 700_000_000, "latenza sommata col segno");
+                provata = true;
+                break;
+            }
+        }
+        assert!(
+            provata,
+            "il primo segno non è mai uscito prima della callback"
+        );
+    }
+
+    #[test]
+    fn un_epoca_diversa_non_si_traduce_e_dopo_il_salto_si_rimette_in_pari() {
+        let mut banco = banco(48_000);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+        banco.ctx.esegui(suona(primo));
+        let _ = gira(&mut banco);
+        assert!(mappa_di(&banco).traduci(&grezza(10, 1)).is_some());
+        assert_eq!(mappa_di(&banco).traduci(&grezza(10, 0)), None);
+
+        // Il salto alza l'epoca subito; la mappa la segue al giro dopo. In
+        // mezzo un'ancora nuova non trova niente, invece di trovare i segni
+        // vecchi.
+        banco.ctx.esegui(Comando::VaiA(500));
+        assert_eq!(mappa_di(&banco).traduci(&grezza(10, 2)), None);
+        let _ = gira(&mut banco);
+        let ancora = mappa_di(&banco).traduci(&grezza(0, 2)).expect("in pari");
+        assert_eq!(ancora.posizione_us, 500_000);
+        assert_eq!(mappa_di(&banco).traduci(&grezza(10, 1)), None);
     }
 
     // ── le tracce di un'immagine CD ─────────────────────────────────────────
@@ -6038,7 +6870,7 @@ mod prove {
             .ctx
             .esegui(Comando::Dissolvenza { ms: dissolvenza_ms });
         let prima = aperto(&banco.ctx, prima);
-        banco.ctx.esegui(Comando::Suona(Box::new(prima)));
+        banco.ctx.esegui(suona(prima));
         let dopo = aperto(&banco.ctx, dopo);
         banco.ctx.esegui(Comando::Prepara(Some(Box::new(dopo))));
         let fuori = suona_e_raccogli(&mut banco);
@@ -6155,7 +6987,7 @@ mod prove {
         let (registro, osservatore) = spia();
         let mut banco = banco_con(48_000, osservatore);
         let vuota = aperto(&banco.ctx, pezzo(7, &disco, 300, None, 0));
-        banco.ctx.esegui(Comando::Suona(Box::new(vuota)));
+        banco.ctx.esegui(suona(vuota));
         let mut visti = 0usize;
         let mut fra_quanti: Option<u32> = None;
         for _ in 0..2_000 {

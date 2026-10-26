@@ -319,6 +319,8 @@ export function statoFinto(conBrano: boolean, inPausa: boolean): StatoRiproduzio
       bitsPerSample: 24,
       outputRate: 48_000,
     },
+    // Fuori sessione: l'anteprima di una skin non sta ascoltando con nessuno.
+    insieme: null,
   };
 }
 

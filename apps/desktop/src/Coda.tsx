@@ -26,8 +26,10 @@ import type { KeyboardEvent } from "react";
 
 import { durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import { useFuoco } from "./fuoco";
+import { gestoPermesso, proprietarioDellaRiga, righeDaChiedere } from "./insieme";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
+import { useProprietari } from "./parti/Insieme";
 import { usePresaPerRiordino } from "./riordino";
 import { t, tSe, useLingua } from "./lingue";
 import { useVirtuale } from "./virtuale";
@@ -55,10 +57,21 @@ import { Presenza } from "./presenza";
  * I voti e i preferiti delle righe già in mano non si rinfrescano da qui: la
  * colonna li legge dallo stato del brano in ascolto, e una riga della coda mostra
  * titolo, artista e album, che non cambiano mentre il brano sta in coda.
+ *
+ * # Tranne le voci di «Ascolta insieme»
+ *
+ * Una voce della sessione (id negativo) arriva prima con quel che si sa e poi
+ * si completa — la copertina viaggia dopo — con lo stesso id: chiesta una
+ * volta sola, la riga restava senza copertina per sempre. `voci` è il segno
+ * che le descrizioni sono cambiate (`InsiemeNelLettore.revisione`), `null`
+ * fuori sessione; quando cambia, le voci si richiedono (`righeDaChiedere`).
+ * Anche entrando e uscendo da una sessione: le maniglie sono della sessione, e
+ * la `-3` di quella di prima non è la `-3` di questa.
  */
 export function useRigheCoda(
   coda: readonly number[],
   onErrore: (e: unknown) => void,
+  voci: number | null,
 ): Map<number, Brano> {
   const [righe, setRighe] = useState<Map<number, Brano>>(new Map());
   const letture = useDati().ipc;
@@ -68,19 +81,26 @@ export function useRigheCoda(
   // l'effetto ripartirebbe per chiedere quel che ha appena ricevuto.
   const inMano = useRef(righe);
   inMano.current = righe;
+  // Il segno delle voci per cui le righe in mano sono state lette. Si scrive
+  // solo a lettura riuscita: un cambio di coda che annulla la richiesta a metà
+  // la lascia da rifare al giro dopo, invece di darla per fatta.
+  const vociLette = useRef<number | null | undefined>(undefined);
 
   useEffect(() => {
     const ids = chiave.length > 0 ? chiave.split(",").map(Number) : [];
     if (ids.length === 0) {
       setRighe(new Map());
+      vociLette.current = voci;
       return;
     }
     const nominati = new Set(ids);
     const prima = inMano.current;
-    const mancanti = [...nominati].filter((id) => !prima.has(id));
+    const stantie = vociLette.current !== undefined && vociLette.current !== voci;
+    const mancanti = righeDaChiedere(ids, (id) => prima.has(id), stantie);
     const restano = (mappa: Map<number, Brano>) =>
       new Map([...mappa].filter(([id]) => nominati.has(id)));
     if (mancanti.length === 0) {
+      vociLette.current = voci;
       if (prima.size !== nominati.size) setRighe(restano(prima));
       return;
     }
@@ -89,6 +109,7 @@ export function useRigheCoda(
       .braniPerId(mancanti)
       .then((trovate) => {
         if (annullato) return;
+        vociLette.current = voci;
         setRighe((adesso) => {
           const fusa = restano(adesso);
           for (const brano of trovate) fusa.set(brano.id, brano);
@@ -99,7 +120,7 @@ export function useRigheCoda(
     return () => {
       annullato = true;
     };
-  }, [chiave, onErrore, letture]);
+  }, [chiave, onErrore, letture, voci]);
 
   return righe;
 }
@@ -153,6 +174,18 @@ export function RigheCoda({
   const [mirato, setMirato] = useState<number | null>(null);
 
   /*
+   * In una sessione di «Ascolta insieme», chi segue tocca la coda solo quando
+   * l'host inoltra i suoi gesti (`gesti`, fase 2): fino ad allora far partire,
+   * togliere e spostare una riga sono spenti qui, invece di accendersi e
+   * rispondere con un errore. Il perché lo dice la fascia della sessione: un
+   * tasto spento non mostra il suo suggerimento.
+   */
+  const codaLibera = gestoPermesso(stato.insieme, "coda");
+  /* Di chi sono le voci degli altri PC: «di Marco» su ogni riga che non è di
+     questo PC. Fuori sessione la mappa è vuota e non costa niente. */
+  const proprietari = useProprietari();
+
+  /*
    * Solo le righe che si vedono, come l'elenco dei brani. La coda è una lista
    * come le altre, e «Tutti i brani» fatto partire la riempie di diciottomila
    * righe: disegnarle tutte erano decine di migliaia di nodi nella terza
@@ -204,10 +237,10 @@ export function RigheCoda({
   const vai = useCallback(
     (indice: number) => {
       const id = coda[indice];
-      if (id === undefined || !righe.has(id)) return;
+      if (!codaLibera || id === undefined || !righe.has(id)) return;
       ipc.codaVai(indice).catch(onErrore);
     },
-    [coda, righe, onErrore],
+    [coda, righe, onErrore, codaLibera],
   );
 
   const fuoco = useFuoco({
@@ -257,7 +290,7 @@ export function RigheCoda({
   }, [coda, vaiA]);
 
   const daTastiera = (e: KeyboardEvent<HTMLElement>) => {
-    if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    if (codaLibera && e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       const riga =
         e.target instanceof HTMLElement ? e.target.closest<HTMLElement>(".riga-coda") : null;
       const indice = Number(riga?.dataset.indice);
@@ -320,6 +353,10 @@ export function RigheCoda({
            non disegna niente — un motivo che l'interfaccia non conosce si tace
            invece di mostrare la propria chiave. */
         const perche = codice === null ? "" : tSe(`queue.why.${codice}`, "");
+        /* «di Marco»: di chi è la voce, in una sessione dove i brani arrivano
+           da più PC. Su ogni riga che non è di questo PC; vedi
+           `proprietarioDellaRiga`. */
+        const diChi = proprietarioDellaRiga(id, proprietari);
         return (
           <li
             /* L'indice fa parte della chiave: la stessa canzone può stare due
@@ -337,8 +374,12 @@ export function RigheCoda({
             /* La sola fermata di tabulazione della coda: vedi la nota. */
             tabIndex={indice === fuoco.fermata ? 0 : -1}
             onFocus={() => fuoco.segna(indice)}
-            onPointerDown={(e) => presa(e, indice)}
-            onDoubleClick={() => comanda(ipc.codaVai(indice))}
+            onPointerDown={(e) => {
+              if (codaLibera) presa(e, indice);
+            }}
+            onDoubleClick={() => {
+              if (codaLibera) comanda(ipc.codaVai(indice));
+            }}
           >
             <span className="presa" aria-hidden="true">
               <Icona nome={inAscolto ? "i-play" : "i-grip"} dim={13} />
@@ -351,7 +392,7 @@ export function RigheCoda({
               tabIndex={-1}
               /* Un brano sparito dalla libreria non si può far partire, ma si
                  deve poter togliere: il tasto si spegne, la riga no. */
-              disabled={!brano}
+              disabled={!brano || !codaLibera}
             >
               {/* `dir="auto"`: un titolo arabo o ebraico si legge da destra. */}
               <span className="nome" dir="auto">
@@ -364,6 +405,17 @@ export function RigheCoda({
               </span>
               {perche !== "" && !compatta && (
                 <span className="perche">{perche}</span>
+              )}
+              {/* Una riga sola coi puntini: il `title` porta il nome intero,
+                  che è proprio la parte che i puntini tagliano. */}
+              {diChi !== null && (
+                <span
+                  className="di-chi"
+                  dir="auto"
+                  title={t("together.sign.owner", { nome: diChi })}
+                >
+                  {t("together.sign.owner", { nome: diChi })}
+                </span>
               )}
             </button>
             {!compatta && (
@@ -385,8 +437,9 @@ export function RigheCoda({
               })}
               /* Il `title` resta la frase corta: al passaggio del mouse il titolo
                  del brano è già scritto accanto, a due centimetri dal puntatore. */
-              title={t("queue.remove")}
+              title={codaLibera ? t("queue.remove") : t("together.gestures.off.title")}
               tabIndex={-1}
+              disabled={!codaLibera}
               onClick={() => comanda(ipc.codaTogli(indice))}
             >
               <Icona nome="i-x" dim={14} />
@@ -423,7 +476,7 @@ export const Coda = memo(function Coda({
   // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
   // l'iscrizione i testi resterebbero quelli del primo disegno.
   useLingua();
-  const righe = useRigheCoda(stato.coda, onErrore);
+  const righe = useRigheCoda(stato.coda, onErrore, stato.insieme?.revisione ?? null);
 
   return (
     <Presenza parte="queue-panel">
@@ -440,7 +493,8 @@ export const Coda = memo(function Coda({
           <button
             type="button"
             className="bottone minuto btn-ghost"
-            disabled={stato.coda.length === 0}
+            disabled={stato.coda.length === 0 || !gestoPermesso(stato.insieme, "svuota")}
+            title={gestoPermesso(stato.insieme, "svuota") ? undefined : t("together.clear.off")}
             onClick={() => {
               ipc.codaSvuota().catch(onErrore);
             }}

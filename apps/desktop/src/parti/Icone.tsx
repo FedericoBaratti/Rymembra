@@ -99,7 +99,12 @@ export type NomeIcona =
   // Il rimando alla pagina pubblica di un brano di catalogo. La freccia che
   // esce dal riquadro è il glifo con cui si dice «questo apre il browser» da
   // sempre, e qui quel che apre è un obbligo di certe licenze.
-  | "i-external";
+  | "i-external"
+  // «Ascolta insieme»: un punto che suona e due onde per lato. Non due
+  // persone, che qui dentro vorrebbero dire «artista»: quel che conta di una
+  // sessione è che lo stesso suono arriva da più parti, e le onde dicono
+  // proprio quello.
+  | "i-insieme";
 
 /** Le proprietà comuni ai simboli col tratto. */
 const TRATTO = {
@@ -300,6 +305,11 @@ export function Simboli() {
         <symbol id="i-external" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M15.6 11v3.4a1.2 1.2 0 0 1-1.2 1.2H5.6a1.2 1.2 0 0 1-1.2-1.2V5.6a1.2 1.2 0 0 1 1.2-1.2H9" />
           <path d="M12.2 4.4h3.4v3.4M15.6 4.4 9.4 10.6" />
+        </symbol>
+        <symbol id="i-insieme" viewBox="0 0 20 20" {...TRATTO}>
+          <circle cx="10" cy="10" r="1.7" />
+          <path d="M6.9 6.9a4.4 4.4 0 0 0 0 6.2M13.1 6.9a4.4 4.4 0 0 1 0 6.2" />
+          <path d="M4.3 4.3a8 8 0 0 0 0 11.4M15.7 4.3a8 8 0 0 1 0 11.4" />
         </symbol>
         <symbol id="i-sort" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M4.4 5.8h11.2M4.4 10h7M4.4 14.2h4" />

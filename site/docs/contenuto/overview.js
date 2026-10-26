@@ -13,12 +13,12 @@
         { h: "The domain decides, the application executes" },
         "`rymembra-domain` has no I/O, no clock and no global state: every function is a pure function. The decisions that can **lose data** live there — which rows a scan removes (`plan_scan`), whether two files are the same track (`TrackKey`, `ContentKey`), how two copies of a play count merge (`merge_stats`), what a restore would change (`plan_restore`). They are tested as plain calls, and several are checked against golden outputs recorded from the previous TypeScript implementation (`core/rymembra-domain/tests/parita_*.rs`). `rymembra-app` owns the database, the filesystem and the clock, and only executes those plans.",
         { h: "No lock is held while waiting for the network or a slow disk" },
-        "Every crate that talks to the outside world — `rymembra-net`, `rymembra-meta`, `rymembra-catalogo`, `rymembra-cloud`, `rymembra-scrobble`, `rymembra-ia`, `rymembra-archivio`, `rymembra-sync` — has no access to `rusqlite`. Holding the library lock during a request therefore cannot be written: the type that would be needed never crosses the crate boundary. Long jobs are split into phases that take and release the lock:",
+        "Every crate that talks to the outside world — `rymembra-net`, `rymembra-meta`, `rymembra-catalogo`, `rymembra-cloud`, `rymembra-scrobble`, `rymembra-ia`, `rymembra-archivio`, `rymembra-sync`, `rymembra-insieme` — has no access to `rusqlite`. Holding the library lock during a request therefore cannot be written: the type that would be needed never crosses the crate boundary. Long jobs are split into phases that take and release the lock:",
         { code: "candidates()  →  decide()      →  apply()      →  record()\n(lock held)      (no lock,        (no lock,        (lock held,\n                  network)         disk)            one transaction)" },
         { h: "Your music files are not written" },
         "Metadata found online, corrections, covers, lyrics, plays and ratings live in the library database (`rymembra.db`). The only writes into a music folder are: the file a download produces (tagged by `tag_scrittura::scrivi_tag`), an optional `.lrc` beside a track (`testi.accanto`, off by default), and the temporary «write tags back into the files» action that undoes what versions up to 2.3.0 wrote — see [Enrichment](#enrich).",
         { h: "The network only answers a feature you use" },
-        "There is no telemetry and no Rymembra server. Every outbound request belongs to a feature: the free catalogs, MusicBrainz and the cover archives, LRCLIB, GitHub for updates, and — only once connected — Google Drive, ListenBrainz, Last.fm or a language model. `PRIVACY.md` lists each request and what it carries. Secrets (OAuth refresh tokens, API keys, client secrets) live in the OS keychain under the service `io.github.federicobaratti.rymembra` and are read by the core just before a request; they never travel through the window.",
+        "There is no telemetry and no Rymembra server. Every outbound request belongs to a feature: the free catalogs, MusicBrainz and the cover archives, LRCLIB, GitHub for updates, and — only once connected — Google Drive, ListenBrainz, Last.fm or a language model. «Listen together», when switched on, talks only to other PCs on the local network: discovery datagrams, and encrypted connections to PCs that have been paired by comparing a four-digit code ([Listen together](#together)). `PRIVACY.md` lists each request and what it carries. Secrets (OAuth refresh tokens, API keys, client secrets) live in the OS keychain under the service `io.github.federicobaratti.rymembra` and are read by the core just before a request; they never travel through the window.",
         { h: "Blocking code, no async runtime of our own" },
         "HTTP is `ureq` (blocking), not `reqwest`; background work runs on named `std::thread`s; cancellation is a `Fn() -> bool` closure or an `AtomicBool` polled between blocks; deadlines come from `rymembra_app::scadenza`. Tauri's own runtime is used only to dispatch IPC commands.",
         { h: "Failures are data, and they are visible" },
@@ -33,7 +33,7 @@
       title: "Workspace and crates",
       src: ["Cargo.toml", "core", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/rymembra-barra/Cargo.toml", "apps/desktop/package.json"],
       body: [
-        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.90\"`, version `3.0.1`) with 15 members, plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
+        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.90\"`, version `3.1.0`) with 16 members, plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
         {
           table: {
             head: ["Crate", "Role", "Internal dependencies"],
@@ -51,6 +51,7 @@
               ["`rymembra-scrobble`", "Last.fm and ListenBrainz protocols", "domain, net"],
               ["`rymembra-ia`", "OpenAI-compatible chat client, SSE parser, patch-block extractor", "domain, net"],
               ["`rymembra-skin`", "Skin format, validation, CSS compiler, `.ryskin` packages", "domain"],
+              ["`rymembra-insieme`", "Listen together on the LAN: discovery, Noise-encrypted connections, pairing code, file reads and relay between PCs, clock exchanges", "domain"],
               ["`rymembra-desktop`", "Tauri 2 shell (binary `rymembra`): IPC commands, threads, Windows integration", "all of the above"],
               ["`rymembra-barra`", "Taskbar thumbnail buttons — the only crate with `unsafe`", "—"],
             ],
@@ -113,6 +114,7 @@
               ["`rymembra-analisi`", "`analisi`", "After 2 min, every 20 min; yields while music plays"],
               ["`rymembra-scrobble`", "`scrobble`", "Drains the queue on demand or every 300 s"],
               ["`rymembra-aggiornamenti`", "`aggiornamenti`", "10 s after the window is ready, then every 30 min"],
+              ["`rymembra-insieme`", "`insieme::filo`", "Listen together, when on: the session's single thread (network events, commands, state and anchors); helpers `-rete`, `-esecutore` (members' gestures on the host), `-preparazione`, `-descrittori`, `-copertine`, and `-segui` (a member's regulator, 10 Hz)"],
             ],
           },
         },
@@ -127,7 +129,7 @@
       title: "Errors: from the catalog to the window",
       src: ["core/rymembra-domain/src/errors/catalog.rs", "core/rymembra-domain/src/errors/mod.rs", "core/rymembra-domain/src/errors/rete.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts", "apps/desktop/src/parti/Avvisi.tsx"],
       body: [
-        "Every failure in Rymembra is one of **130 codes** declared in a single `catalogo!` macro invocation. One line per error generates `ErrorCode` (with typed parameters, `#[non_exhaustive]`), `ErrorCodeKind` (without them, with `ALL`), and the metadata: `code()` (`\"net.offline\"`), `i18n_key()` — always `concat!(\"errors.\", code)`, never written by hand —, `domain()`, `severity()`, `retry_rule()` and the `legacy_code()` of the previous app.",
+        "Every failure in Rymembra is one of **153 codes** declared in a single `catalogo!` macro invocation. One line per error generates `ErrorCode` (with typed parameters, `#[non_exhaustive]`), `ErrorCodeKind` (without them, with `ALL`), and the metadata: `code()` (`\"net.offline\"`), `i18n_key()` — always `concat!(\"errors.\", code)`, never written by hand —, `domain()`, `severity()`, `retry_rule()` and the `legacy_code()` of the previous app.",
         {
           table: {
             head: ["Domain", "Codes", "Domain", "Codes"],
@@ -136,10 +138,11 @@
               ["db", "10", "spotify", "3"],
               ["fs", "11", "catalogo", "4"],
               ["playback", "8", "skin", "12"],
-              ["library", "10", "transfer (reserved for phone transfer)", "9"],
+              ["library", "11", "transfer (reserved for phone transfer)", "9"],
               ["metadata", "11", "sync", "7"],
               ["settings", "7", "ia", "8"],
               ["ipc", "3", "internal", "5"],
+              ["insieme (Listen together)", "22", "—", "—"],
             ],
           },
         },
@@ -241,7 +244,7 @@
           table: {
             head: ["Path", "Contents"],
             rows: [
-              ["`core/`", "The 13 core crates"],
+              ["`core/`", "The 14 core crates"],
               ["`apps/desktop/src-tauri/`", "The Tauri shell (`rymembra-desktop`), `tauri.conf.json`, `capabilities/`"],
               ["`apps/desktop/rymembra-barra/`", "Taskbar buttons crate"],
               ["`apps/desktop/src/`", "React frontend; `test/` holds its `node --test` suites"],

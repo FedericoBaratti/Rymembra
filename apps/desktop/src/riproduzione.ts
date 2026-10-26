@@ -80,6 +80,8 @@ const FERMO: StatoRiproduzione = {
   // se e solo se il dato è arrivato, e finché il nucleo non risponde non è
   // arrivato niente.
   formato: null,
+  // Fuori sessione finché il nucleo non dice il contrario.
+  insieme: null,
 };
 
 // ── L'anticipo dei testi, fuori da React ────────────────────────────────────

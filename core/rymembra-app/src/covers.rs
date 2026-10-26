@@ -161,6 +161,56 @@ fn decodifica(byte: &[u8], hash: &str) -> Result<image::DynamicImage, AppError> 
     })
 }
 
+/// Quanti byte può pesare una copertina arrivata da un altro PC: 1 MiB.
+///
+/// È il tetto con cui il proprietario la serve (la «piena» del suo archivio,
+/// che a 640 pixel in JPEG sta molto sotto), ripetuto qui perché è qui che si
+/// decide cosa entra: un PC fidato per il codice non è fidato per i byte, e
+/// un'immagine da cinquanta megabyte non diventa una copertina solo perché è
+/// arrivata cifrata.
+pub const MASSIMO_ESTRANEA: usize = 1024 * 1024;
+
+/// Una copertina arrivata da un altro PC, ricodificata da Rymembra.
+///
+/// Per «Ascolta insieme»: il membro riceve la copertina di una voce dal PC che
+/// la possiede, e quel che arriva alla finestra non devono essere quei byte
+/// così come sono. Passano dalla stessa porta delle copertine nei tag —
+/// [`decodifica`] dentro i [`limiti`], cioè niente bomba di decompressione — e
+/// ne esce una JPEG nostra, ridotta a [`MAX_LATO`] con la qualità della piena:
+/// un formato solo, che il visualizzatore della finestra apre senza sorprese,
+/// e senza i metadati dell'originale (EXIF, profili, commenti), che non sono
+/// affari di chi ascolta.
+///
+/// # Niente disco, niente store
+///
+/// Non scrive niente e non tocca [`CoverStore`]. Chi chiama la tiene in
+/// memoria per la durata della sessione: nello store la pulizia delle orfane
+/// la cancellerebbe al primo giro — nessuna riga del database la nomina — e
+/// finché c'era sporcherebbe la libreria con l'immagine di un disco che qui
+/// non esiste.
+///
+/// # Errori
+///
+/// Lo stesso codice di ogni copertina illeggibile (`metadata.tagReadFailed`):
+/// per byte che non sono un'immagine, per un'immagine oltre i limiti di
+/// decodifica, e per più di [`MASSIMO_ESTRANEA`] byte in ingresso — rifiutati
+/// prima di guardarli. Il messaggio dice «copertina estranea» e non
+/// un'impronta: un'impronta di byte altrui nel diario non aiuta nessuno.
+pub fn ricodifica_estranea(byte: &[u8]) -> Result<Vec<u8>, AppError> {
+    const ETICHETTA: &str = "estranea";
+    if byte.len() > MASSIMO_ESTRANEA {
+        return Err(decode_error(
+            ETICHETTA,
+            &format!(
+                "{} byte in ingresso, il tetto è {MASSIMO_ESTRANEA}",
+                byte.len()
+            ),
+        ));
+    }
+    let immagine = decodifica(byte, ETICHETTA)?;
+    encode_jpeg(&fit(&immagine, MAX_LATO), QUALITA, ETICHETTA)
+}
+
 /// Da dove viene una copertina. Serve a decidere se una trovata online debba
 /// sostituirne una già presente, o lasciarla stare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1388,5 +1438,107 @@ mod tests {
                 "su {w}×{h}"
             );
         }
+    }
+
+    // ── le copertine arrivate da un altro PC ──
+
+    /// Il codice di un rifiuto, e il rifiuto stesso per leggerne il testo.
+    fn rifiuto(byte: &[u8]) -> AppError {
+        let errore = ricodifica_estranea(byte).expect_err("va rifiutata");
+        assert_eq!(
+            errore.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::MetadataTagReadFailed,
+            "lo stesso codice di ogni copertina illeggibile: {errore}"
+        );
+        errore
+    }
+
+    #[test]
+    fn una_jpeg_estranea_torna_jpeg_nostra_e_ridotta() {
+        let mut jpeg = Vec::new();
+        image::load_from_memory(&png(2000, 1000))
+            .expect("png di prova")
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("jpeg di prova");
+        assert!(
+            jpeg.len() <= MASSIMO_ESTRANEA,
+            "la prova sta sotto il tetto"
+        );
+
+        let ricodificata = ricodifica_estranea(&jpeg).expect("ricodificata");
+        assert_eq!(
+            image::guess_format(&ricodificata).expect("formato"),
+            image::ImageFormat::Jpeg
+        );
+        let letta = image::load_from_memory(&ricodificata).expect("si rilegge");
+        assert_eq!(
+            (letta.width(), letta.height()),
+            (MAX_LATO, MAX_LATO / 2),
+            "ridotta alla piena, senza deformarla"
+        );
+
+        // Anche una PNG piccola esce JPEG: il formato che arriva alla finestra
+        // è sempre il nostro, non quello di chi l'ha mandata.
+        let piccola = ricodifica_estranea(&png(100, 100)).expect("ricodificata");
+        assert_eq!(
+            image::guess_format(&piccola).expect("formato"),
+            image::ImageFormat::Jpeg
+        );
+    }
+
+    #[test]
+    fn una_bomba_estranea_si_ferma_ai_limiti() {
+        // Le stesse tre intestazioni della prova di `store`: i limiti sono gli
+        // stessi, e devono scattare prima della memoria anche qui.
+        for (larghezza, altezza, profondita, colore) in
+            [(8000, 8000, 16, 6), (8200, 8200, 8, 0), (1, 100_000, 8, 0)]
+        {
+            let bomba = png_finto(larghezza, altezza, profondita, colore);
+            let errore = rifiuto(&bomba);
+            assert!(
+                errore.to_string().contains("oltre i limiti"),
+                "{larghezza}×{altezza}: {errore}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_a_caso_non_sono_una_copertina() {
+        let mut stato = 0x2545_F491_u32;
+        let caso: Vec<u8> = (0..4096)
+            .map(|_| {
+                stato ^= stato << 13;
+                stato ^= stato >> 17;
+                stato ^= stato << 5;
+                stato.to_le_bytes()[0]
+            })
+            .collect();
+        rifiuto(&caso);
+        rifiuto(&[]);
+        rifiuto(b"GIF89a e poi niente");
+    }
+
+    #[test]
+    fn oltre_un_mebibyte_si_rifiuta_prima_di_guardare() {
+        // Un'immagine **vera** appena sopra il tetto, così il rifiuto è per il
+        // peso e non per i byte: la stessa immagine passa dalla decodifica.
+        let mut grande = png(64, 64);
+        grande.resize(MASSIMO_ESTRANEA + 1, 0);
+        assert!(
+            decodifica(&grande, "prova").is_ok(),
+            "i byte in coda a una PNG non ne impediscono la lettura"
+        );
+        let errore = rifiuto(&grande);
+        assert!(
+            errore.cause().is_some_and(|causa| causa.contains("tetto")),
+            "{errore:?}"
+        );
+        // Al tetto esatto invece passa.
+        let mut al_tetto = png(64, 64);
+        al_tetto.resize(MASSIMO_ESTRANEA, 0);
+        assert!(ricodifica_estranea(&al_tetto).is_ok());
     }
 }

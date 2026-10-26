@@ -14,6 +14,7 @@
  */
 import { memo } from "react";
 
+import { gestoPermesso } from "../insieme";
 import { ipc, type StatoRiproduzione } from "../ipc";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
@@ -100,6 +101,19 @@ export const Trasporto = memo(function Trasporto({
   /** Un suggerimento, dove la taglia ne vuole. */
   const forse = (testo: string) => (titoli ? testo : undefined);
 
+  /*
+   * In una sessione di «Ascolta insieme» certi tasti non fanno niente, e qui
+   * si spengono prima del clic invece di rispondere con un errore dopo: il
+   * casuale per tutti (cambierebbe l'ordine agli altri di nascosto), gli
+   * altri quattro per chi segue finché l'host non ne inoltra i gesti. La
+   * ragione va nel suggerimento **sempre**, anche nella taglia senza
+   * suggerimenti: un tasto spento senza spiegazione sembra rotto. La dice per
+   * esteso, visibile, la fascia della sessione.
+   */
+  const trasporto = gestoPermesso(stato.insieme, "trasporto");
+  const mescola = gestoPermesso(stato.insieme, "mescola");
+  const spento = t("together.gestures.off.title");
+
   return (
     <div className={classe}>
       {/* Le due modalità si possono togliere; i tre tasti in mezzo no. Non è
@@ -111,7 +125,8 @@ export const Trasporto = memo(function Trasporto({
           className="tasto icon-btn"
           aria-pressed={stato.shuffle}
           aria-label={t("player.shuffle")}
-          title={forse(t("player.shuffle"))}
+          title={mescola ? forse(t("player.shuffle")) : t("together.shuffle.off")}
+          disabled={!mescola}
           onClick={() => comanda(ipc.mescola())}
         >
           <Icona nome="i-shuffle" dim={icona} />
@@ -121,7 +136,8 @@ export const Trasporto = memo(function Trasporto({
         type="button"
         className="tasto icon-btn"
         aria-label={t("player.previous")}
-        title={forse(t("player.previous.short"))}
+        title={trasporto ? forse(t("player.previous.short")) : spento}
+        disabled={!trasporto}
         onClick={() => comanda(ipc.precedente())}
       >
         <Icona nome="i-prev" dim={icona} />
@@ -131,11 +147,16 @@ export const Trasporto = memo(function Trasporto({
         className="tasto grande play-btn-primary"
         {...statoSuono(stato.brano !== null, stato.inPausa)}
         aria-label={stato.inPausa ? t("player.resume") : t("player.pause")}
-        title={forse(
-          `${stato.inPausa ? t("player.resume") : t("player.pause.short")}${
-            scorciatoia ? ` · ${t("keys.space")}` : ""
-          }`,
-        )}
+        title={
+          trasporto
+            ? forse(
+                `${stato.inPausa ? t("player.resume") : t("player.pause.short")}${
+                  scorciatoia ? ` · ${t("keys.space")}` : ""
+                }`,
+              )
+            : spento
+        }
+        disabled={!trasporto}
         onClick={() => comanda(ipc.alterna())}
       >
         <Icona nome={stato.inPausa ? "i-play" : "i-pause"} dim={play} />
@@ -144,7 +165,8 @@ export const Trasporto = memo(function Trasporto({
         type="button"
         className="tasto icon-btn"
         aria-label={t("player.next")}
-        title={forse(t("player.next.short"))}
+        title={trasporto ? forse(t("player.next.short")) : spento}
+        disabled={!trasporto}
         onClick={() => comanda(ipc.prossimo())}
       >
         <Icona nome="i-next" dim={icona} />
@@ -155,7 +177,8 @@ export const Trasporto = memo(function Trasporto({
           className="tasto icon-btn"
           aria-pressed={stato.ripeti !== "off"}
           aria-label={ripetizione()[stato.ripeti]}
-          title={forse(ripetizione()[stato.ripeti])}
+          title={trasporto ? forse(ripetizione()[stato.ripeti]) : spento}
+          disabled={!trasporto}
           onClick={() => comanda(ipc.ripeti())}
         >
           <Icona nome="i-repeat" dim={icona} />

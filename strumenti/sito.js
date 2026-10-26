@@ -561,7 +561,7 @@ function documentazione(r, problemi) {
       ...comuni(""),
       $titolo: "Rymembra — Technical documentation",
       $descrizione:
-        "How Rymembra works, from the code: architecture, the library database, scanning, the audio engine, network, services, skins, the interface and the build.",
+        "How Rymembra works, from the code: architecture, the library database, scanning, the audio engine, network, listening together on the LAN, services, skins, the interface and the build.",
       $canonico: `${DOMINIO}/docs/`,
       $testa: rimando,
       $lato: latoCon("", null),

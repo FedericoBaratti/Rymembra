@@ -8,10 +8,13 @@
  */
 import { memo, useCallback, useEffect, useRef, type CSSProperties } from "react";
 
+import { useQuandoSiRitira } from "./finestrella";
 import { numero } from "./formato";
+import { branoDaMostrare } from "./insieme";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { PannelloEq } from "./parti/Equalizzatore";
 import { Icona } from "./parti/Icone";
+import { BottoneInsieme, SegnoInsieme, chiudiPannelloDellaBarra } from "./parti/Insieme";
 import { Ora } from "./parti/Ora";
 import { statoSuono } from "./segnali";
 import { useStatoPresente } from "./presenza";
@@ -52,6 +55,11 @@ export const Lettore = memo(function Lettore({
   // l'iscrizione i testi resterebbero quelli del primo disegno.
   useLingua();
   const [eqAperto, setEqAperto] = useStatoPresente(false);
+  const chiudiEq = useCallback(() => setEqAperto(false), [setEqAperto]);
+  // Sotto i 560 pixel il foglio ritira il guscio, e un pannello aperto
+  // restava montato e invisibile, contato fra i modali: si chiude. Vedi
+  // `useQuandoSiRitira`.
+  const guscioEq = useQuandoSiRitira(chiudiEq);
   const tastoMuto = useRef<HTMLButtonElement>(null);
   // Il cursore segue il dito, e il nucleo lo sente venti volte al secondo:
   // vedi `volume.ts`. Le frecce e la rotella sul tasto muto restano scatti
@@ -105,7 +113,14 @@ export const Lettore = memo(function Lettore({
 
   return (
     <footer className="lettore player-shell" {...statoSuono(true, stato.inPausa)}>
-      <Ora brano={brano} inPausa={stato.inPausa} onPreferito={onPreferito} />
+      {/* Il titolo della voce di calibrazione nella lingua di chi guarda:
+          vedi `branoDaMostrare`. Fuori dalla calibrazione è lo stesso brano,
+          con la stessa identità, e `Ora` sotto `memo` non si ridisegna. */}
+      <Ora
+        brano={branoDaMostrare(brano, stato.insieme, t)}
+        inPausa={stato.inPausa}
+        onPreferito={onPreferito}
+      />
 
       {/* L'ancora del giro guidato: il guscio e non i due pezzi, perché il
           passo racconta trasporto e cursore come una cosa sola — «si comanda
@@ -117,7 +132,17 @@ export const Lettore = memo(function Lettore({
             lo schermo intero li mostravano, la barra no: e la barra è quel che
             resta sotto i 1100 pixel, quando la colonna si chiude — cioè chi
             teneva la finestra stretta non li vedeva mai. */}
-        <Formato formato={stato.formato} classe="formato lettore-formato" />
+        {/* In sessione, al posto della riga del formato: con chi, di chi è
+            quel che suona, e se si sta ancora agganciando. Stesso vestito — è
+            la stessa specie di informazione, su quel che si sente e non sul
+            brano — e lo stesso posto, perché la barra è alta 92 pixel e una
+            quarta riga usciva tagliata dal bordo di sotto. Il formato resta
+            nella colonna e nello schermo intero. */}
+        {stato.insieme ? (
+          <SegnoInsieme insieme={stato.insieme} dove="barra" />
+        ) : (
+          <Formato formato={stato.formato} classe="formato lettore-formato" />
+        )}
       </div>
 
       <div className="suono">
@@ -143,10 +168,19 @@ export const Lettore = memo(function Lettore({
         >
           <Icona nome="i-queue" dim={17} />
         </button>
+        {/* «Ascolta insieme» prima dell'equalizzatore: è il tasto di una
+            cosa che riguarda **a chi** arriva il suono, ed è un pannello come
+            il suo. Si disegna da sé, e non c'è finché il nucleo non risponde.
+
+            I due pannelli si aprono nello stesso punto, e aprirne uno chiude
+            l'altro: il velo di «Ascolta insieme» sta dentro il suo guscio, e
+            il tasto dell'equalizzatore — nel guscio dopo — gli restava sopra,
+            premibile, e apriva il suo pannello sopra l'altro. */}
+        <BottoneInsieme onErrore={onErrore} onApri={chiudiEq} />
         {/* L'equalizzatore accanto al volume: sono la stessa famiglia di
             comandi — quanto forte, e com'è fatto — e chi cerca il secondo lo
             cerca dove ha trovato il primo. */}
-        <div className="con-pannello">
+        <div ref={guscioEq} className="con-pannello">
           <button
             type="button"
             className="tasto icon-btn"
@@ -155,7 +189,10 @@ export const Lettore = memo(function Lettore({
             aria-label={t("player.eq")}
             title={t("player.eq")}
             data-acceso={stato.eqAttivo || undefined}
-            onClick={() => setEqAperto((prima) => !prima)}
+            onClick={() => {
+              if (!eqAperto) chiudiPannelloDellaBarra();
+              setEqAperto((prima) => !prima);
+            }}
           >
             <Icona nome="i-eq" dim={17} />
           </button>
@@ -163,7 +200,7 @@ export const Lettore = memo(function Lettore({
             <PannelloEq
               attivo={stato.eqAttivo}
               guadagni={stato.eqGuadagni}
-              onChiudi={() => setEqAperto(false)}
+              onChiudi={chiudiEq}
               onErrore={onErrore}
             />
           )}

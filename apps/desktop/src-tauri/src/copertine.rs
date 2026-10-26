@@ -73,20 +73,56 @@ pub(crate) fn e_un_impronta(value: &str) -> bool {
 }
 
 fn risposta(status: u16, tipo: &str, corpo: Vec<u8>) -> http::Response<Vec<u8>> {
+    // Il contenuto è indirizzato dall'impronta: gli stessi byte daranno
+    // sempre lo stesso indirizzo, quindi non c'è niente da rivalidare.
+    risposta_con(status, tipo, corpo, "public, max-age=31536000, immutable")
+}
+
+fn risposta_con(
+    status: u16,
+    tipo: &str,
+    corpo: Vec<u8>,
+    cache: &'static str,
+) -> http::Response<Vec<u8>> {
     http::Response::builder()
         .status(status)
         .header(http::header::CONTENT_TYPE, tipo)
-        // Il contenuto è indirizzato dall'impronta: gli stessi byte daranno
-        // sempre lo stesso indirizzo, quindi non c'è niente da rivalidare.
-        .header(
-            http::header::CACHE_CONTROL,
-            "public, max-age=31536000, immutable",
-        )
+        .header(http::header::CACHE_CONTROL, cache)
         .body(corpo)
         .unwrap_or_else(|_| http::Response::new(Vec::new()))
 }
 
+/// Il prefisso delle chiavi delle copertine di sessione: `insieme-<uid>`.
+///
+/// Vedi `riproduzione::ospiti::SchedaVoce::copertina`.
+const PREFISSO_SESSIONE: &str = "insieme-";
+
+/// Una chiave di copertina di sessione: il prefisso e un numero, nient'altro.
+///
+/// Lo stesso principio di [`e_un_impronta`] — l'alfabeto permesso, non i
+/// caratteri vietati — con un alfabeto ancora più stretto: solo cifre. La
+/// chiave non diventa mai un percorso (le copertine di sessione stanno in
+/// memoria, vedi `crate::insieme::copertina`), ma una regola stretta costa
+/// niente e toglie la domanda.
+fn e_una_chiave_di_sessione(chiave: &str) -> bool {
+    chiave
+        .strip_prefix(PREFISSO_SESSIONE)
+        .is_some_and(|numero| {
+            !numero.is_empty() && numero.len() <= 20 && numero.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
 /// Risponde a una richiesta di copertina.
+///
+/// # Le copertine di sessione
+///
+/// Una voce d'«Ascolta insieme» che arriva da un altro PC ha la copertina in
+/// memoria, scaricata e decodificata dalla sessione, con la chiave
+/// `insieme-<uid>`. Si guardano **prima** del controllo dell'impronta, che il
+/// trattino lo rifiuterebbe, e non passano mai dallo store delle copertine:
+/// lì la pulizia delle orfane le cancellerebbe, e una copertina di un altro PC
+/// sporcherebbe la libreria di questo. Le tre misure sono la stessa immagine:
+/// è una sola per voce, e al più un mebibyte.
 pub fn servi(
     ctx: UriSchemeContext<'_, tauri::Wry>,
     request: http::Request<Vec<u8>>,
@@ -95,6 +131,22 @@ pub fn servi(
     let percorso = request.uri().path().trim_start_matches('/').to_owned();
     let (impronta, misura) = misura_da(&percorso);
     let impronta = impronta.to_owned();
+
+    if e_una_chiave_di_sessione(&impronta) {
+        // In memoria: nessun disco da aspettare, nessun filo da prestare.
+        // Mai in cache: la chiave è un numero di voce, e i numeri ricominciano
+        // a ogni sessione. Con «immutable» la voce 5 della sessione dopo
+        // mostrava la copertina della voce 5 di quella prima — o il «non c'è»
+        // di quando la copertina non era ancora arrivata.
+        let senza_cache = "no-store";
+        match crate::insieme::copertina(ctx.app_handle(), &impronta) {
+            Some(byte) => {
+                responder.respond(risposta_con(200, "image/jpeg", byte.to_vec(), senza_cache))
+            }
+            None => responder.respond(risposta_con(404, "text/plain", Vec::new(), senza_cache)),
+        }
+        return;
+    }
 
     if !e_un_impronta(&impronta) {
         responder.respond(risposta(400, "text/plain", b"impronta non valida".to_vec()));
@@ -174,6 +226,31 @@ mod tests {
         assert!(!e_un_impronta("a3f9.jpg"));
         assert!(!e_un_impronta("C:\\Windows"));
         assert!(!e_un_impronta(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn solo_le_chiavi_di_sessione_vere_vanno_alla_sessione() {
+        assert!(e_una_chiave_di_sessione("insieme-1"));
+        assert!(e_una_chiave_di_sessione("insieme-18446744073709551615"));
+        // Le misure si staccano prima: una chiave con il suffisso arriva qui
+        // senza.
+        let (chiave, misura) = misura_da("insieme-42.t");
+        assert_eq!(misura, Misura::Miniatura);
+        assert!(e_una_chiave_di_sessione(chiave));
+        // Tutto il resto no, e non diventa nemmeno un'impronta.
+        for falsa in [
+            "insieme-",
+            "insieme-x1",
+            "insieme-1/../2",
+            "insieme--1",
+            "insieme-1.jpg",
+            "insieme-123456789012345678901",
+            "Insieme-1",
+            "a3f9",
+        ] {
+            assert!(!e_una_chiave_di_sessione(falsa), "{falsa}");
+        }
+        assert!(!e_un_impronta("insieme-1"));
     }
 
     #[test]

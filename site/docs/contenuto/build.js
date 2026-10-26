@@ -32,7 +32,7 @@
       title: "Tests",
       src: ["core/rymembra-domain/tests", "core/rymembra-skin/tests", "core/rymembra-sync/tests/convergenza.rs", "apps/desktop/test", "apps/desktop/test/risolvi.mjs", "strumenti/docs.test.js"],
       body: [
-        "About 2,400 Rust tests and 200 web tests run in `npm run verify`, all without network access.",
+        "About 3,100 Rust tests and 300 web tests run in `npm run verify`, all without network access: the «Listen together» tests open sockets only on 127.0.0.1, never on all interfaces.",
         {
           ul: [
             "**Unit tests** live beside the code (`mod tests` / `mod prove`) — most modules prove the specific bug their doc comment describes.",
@@ -41,7 +41,7 @@
             "**Sync convergence** (`rymembra-sync/tests/convergenza.rs`): seeded random histories merged in every order must converge.",
             "**Database**: migrations from version 0 on in-memory databases, schema checks, SQLite version floor (3.53.2), error translation built from synthetic SQLite codes.",
             "**Audio**: decoding real fixture files (FLAC, Opus, …), gapless seams across sample rates, crossfade power conservation — as pure functions or with the engine on test streams.",
-            "**Web** (`apps/desktop/test`, 31 suites): `node --test` over `.ts` files with a resolve hook (`risolvi.mjs`); they test the DOM-free modules (selection, sparse lists, modal rules, tour rules, Studio patch/history/prompt, …).",
+            "**Web** (`apps/desktop/test`, 38 suites): `node --test` over `.ts` files with a resolve hook (`risolvi.mjs`); they test the DOM-free modules (selection, sparse lists, modal rules, tour rules, Studio patch/history/prompt, …).",
           ],
         },
         "Some old file tests point at `Z:/non/esiste`, so on a machine where `Z:` is a mapped network drive that is off, `cargo test` waits for SMB timeouts.",

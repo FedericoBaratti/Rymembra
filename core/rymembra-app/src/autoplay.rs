@@ -188,15 +188,28 @@ pub const DA_TANTO_MS: i64 = 180 * 24 * 60 * 60 * 1000;
 /// già in coda, cioè quel che si è appena sentito. `None` solo su una libreria
 /// vuota, o quando ogni candidato è già stato scartato.
 ///
+/// # Un corrente che non è una riga
+///
+/// Un brano **sparito** — tolto da una scansione mentre suonava — continua
+/// lo stesso, coi passi che non hanno bisogno di lui: è il comportamento di
+/// sempre, e una radio peggiore non è una radio rotta. Un corrente ≤ 0 invece
+/// si rifiuta: è una voce di «Ascolta insieme», e lasciarlo cadere negli
+/// ultimi due passi vorrebbe dire scegliere un brano qualunque di questa
+/// libreria e metterlo **nella coda della sessione**, che è di tutti. Chi
+/// chiama (`riproduzione::coda::scegli_da_solo`) legge un errore come «niente
+/// da proporre».
+///
 /// # Errori
 ///
-/// `db.queryFailed` se il database non risponde.
+/// `library.trackNotFound` se `corrente` ≤ 0; `db.queryFailed` se il database
+/// non risponde.
 pub fn prossimo(
     connection: &Connection,
     corrente: i64,
     esclusi: &[i64],
     adesso_ms: i64,
 ) -> Result<Option<Scelta>, AppError> {
+    crate::playback::riga_della_libreria(corrente)?;
     let brano = library::read_summary(connection, corrente)?;
 
     // Il primo gradino non lo tocca nessuno: un disco è un disco, e nessuna
@@ -269,15 +282,22 @@ pub const TETTO_ARTISTA: usize = 3;
 /// Il seme non è nel risultato: chi chiama lo mette davanti, perché è il brano
 /// che sta già suonando.
 ///
+/// Un seme ≤ 0 si rifiuta, per la ragione detta in [`prossimo`]: senza un
+/// seme che sia una riga, il pavimento qui sopra è un mescolamento della
+/// libreria intera, e «radio da questa voce di sessione» diventerebbe trenta
+/// brani a caso in coda.
+///
 /// # Errori
 ///
-/// `db.queryFailed` se il database non risponde.
+/// `library.trackNotFound` se `seme` ≤ 0; `db.queryFailed` se il database non
+/// risponde.
 pub fn radio(
     connection: &Connection,
     seme: i64,
     quanti: usize,
     adesso_ms: i64,
 ) -> Result<Vec<i64>, AppError> {
+    crate::playback::riga_della_libreria(seme)?;
     if quanti == 0 {
         return Ok(Vec::new());
     }
@@ -1373,6 +1393,50 @@ mod prove {
             codici.len(),
             tutti.len(),
             "due motivi hanno lo stesso codice"
+        );
+    }
+
+    // ── le guardie: una voce di sessione non semina niente ──────────────────
+
+    /// Una voce di «Ascolta insieme» come corrente non porta un brano di
+    /// questa libreria nella coda della sessione, né con l'autoplay né con la
+    /// radio.
+    ///
+    /// Le righe con id 0 e negativo ci sono davvero, dentro l'album che
+    /// l'autoplay continuerebbe: senza la guardia la scelta cadrebbe sul resto
+    /// del disco, e la prova se ne accorgerebbe. Un brano **sparito** invece —
+    /// un id positivo che non c'è più — continua a dare una scelta, come
+    /// sempre.
+    #[test]
+    fn una_voce_di_sessione_non_semina_l_autoplay_ne_la_radio() {
+        let connection = libreria();
+        connection
+            .execute_batch(
+                "INSERT INTO tracks
+                     (id, path, track_key, title, artist, album, album_key, genre,
+                      track_number, duration_ms, file_size, date_added, date_modified)
+                 VALUES
+                   (0,  'z.mp3', 'k0', 'Zero',  'Art', 'Primo', 'art|primo', 'Rock', 4, 1000, 1, 1, 1),
+                   (-7, 'n.mp3', 'kn', 'Meno7', 'Art', 'Primo', 'art|primo', 'Rock', 5, 1000, 1, 1, 1);",
+            )
+            .expect("righe impossibili");
+        for id in [0, -7] {
+            assert_eq!(
+                prossimo(&connection, id, &[id], 0)
+                    .err()
+                    .map(|err| err.code().kind()),
+                Some(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound),
+                "autoplay da {id}"
+            );
+            assert_eq!(
+                radio(&connection, id, 4, 0).map_err(|err| err.code().kind()),
+                Err(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound),
+                "radio da {id}"
+            );
+        }
+        assert!(
+            chi(&connection, 999, &[], 0).is_some(),
+            "un brano sparito continua come sempre"
         );
     }
 }

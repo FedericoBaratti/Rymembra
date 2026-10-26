@@ -44,12 +44,18 @@ const SISTEMA = "";
 /**
  * Di quanto sposta una tacca del cursore della latenza.
  *
- * Dieci millisecondi. Sotto, una tacca non si sente — dieci millisecondi sono
- * già il limite di quel che l'orecchio distingue su uno sfasamento fra immagine
- * e suono — e cento tacche per mezzo secondo sono una corsa ragionevole col
- * dito o con le frecce.
+ * Un millisecondo. Erano dieci, e la ragione scritta qui era giusta finché il
+ * cursore serviva a una cosa sola: mettere d'accordo il testo sincronizzato con
+ * la voce, dove dieci millisecondi sono il limite di quel che l'occhio
+ * distingue. Con «Ascolta insieme» lo stesso numero mette d'accordo **due
+ * casse nella stessa stanza**, e lì l'orecchio sente lo spostamento
+ * dell'immagine stereo per pochi millisecondi: a passi di dieci il punto
+ * giusto cadeva quasi sempre fra due tacche. Mille tacche per mezzo secondo
+ * sono troppe da trascinare con precisione, ed è per questo che il cursore
+ * della calibrazione ha accanto i due tasti da un millisecondo; le frecce
+ * della tastiera fanno lo stesso passo.
  */
-const PASSO_LATENZA = 10;
+const PASSO_LATENZA = 1;
 
 export function SchedaUscita({
   onErrore,
@@ -191,6 +197,52 @@ export function SchedaUscita({
  * sessantasette di `Impostazioni`.
  */
 function Latenza({ onErrore }: { onErrore: (e: unknown) => void }) {
+  return (
+    <>
+      {/* `titolo-gruppo` e non una classe nuova: è già il modo in cui questo
+          albero intitola un gruppo dentro una scheda — lo fa l'elenco delle
+          scorciatoie in `Impostazioni` — e un cursore senza titolo, in una
+          scheda che parla di elenchi di uscite, sembrerebbe un residuo. */}
+      <div className="titolo-gruppo">{t("settings.output.latency.title")}</div>
+      <CursoreLatenza
+        limite={LATENZA_MASSIMA_MS}
+        etichetta={t("settings.output.latency.title")}
+        onErrore={onErrore}
+      />
+    </>
+  );
+}
+
+/**
+ * Il cursore della latenza dell'uscita corrente, da solo.
+ *
+ * # Perché è uscito da `Latenza`
+ *
+ * Perché adesso lo usano due posti: la scheda dell'uscita qui sopra e la
+ * calibrazione di «Ascolta insieme» (`parti/Insieme.tsx`). È lo **stesso**
+ * numero — il comando `latenza` lo scrive sull'uscita aperta adesso — e due
+ * cursori scritti a parte avrebbero due idee diverse di quando scrivere, cioè
+ * due valori diversi a schermo per la stessa preferenza.
+ *
+ * Quel che cambia fra i due è quanto è lunga la corsa (`limite`) e se accanto
+ * ci sono i due tasti da un millisecondo (`conPassi`): la calibrazione si fa a
+ * orecchio, un colpo alla volta, mentre si ascolta — e un cursore di seicento
+ * tacche trascinato col mouse salta di cinque alla volta.
+ */
+export function CursoreLatenza({
+  limite,
+  etichetta,
+  conPassi = false,
+  onErrore,
+}: {
+  /** Fin dove arriva, in ms, nei due versi. Mai oltre `LATENZA_MASSIMA_MS`. */
+  limite: number;
+  /** Il nome del cursore, per chi ascolta lo schermo. */
+  etichetta: string;
+  /** I due tasti «un millisecondo in meno / in più». */
+  conPassi?: boolean | undefined;
+  onErrore: (e: unknown) => void;
+}) {
   const [scritta, setScritta] = useState<number | null>(null);
   const [trascinato, setTrascinato] = useState<number | null>(null);
 
@@ -221,7 +273,11 @@ function Latenza({ onErrore }: { onErrore: (e: unknown) => void }) {
     setScritta(stato.latenzaMs),
   );
 
-  const dove = trascinato ?? scritta ?? 0;
+  // Un valore scritto fuori dalla corsa di questo cursore — mezzo secondo
+  // dichiarato nelle Impostazioni, aperta poi la calibrazione che arriva a
+  // trecento — si disegna al bordo: il numero accanto resta quello vero, e il
+  // primo gesto lo riporta dentro.
+  const dove = Math.min(limite, Math.max(-limite, trascinato ?? scritta ?? 0));
 
   const rilascia = () => {
     if (trascinato === null) return;
@@ -231,40 +287,71 @@ function Latenza({ onErrore }: { onErrore: (e: unknown) => void }) {
     setTrascinato(null);
   };
 
-  // Il cursore va da −massimo a +massimo, quindi l'avanzamento per il tracciato
+  /**
+   * Un millisecondo da un tasto: si scrive subito, non al rilascio.
+   *
+   * Non c'è niente da rilasciare — il gesto è il clic — e chi calibra preme,
+   * ascolta, e preme di nuovo: aspettare un evento che non arriva lascerebbe
+   * il valore a metà strada. La risposta del comando è il numero **rimasto
+   * scritto**, che il nucleo taglia ai suoi limiti, ed è quello che si adotta.
+   */
+  const passo = (verso: 1 | -1) => {
+    const nuovo = Math.min(limite, Math.max(-limite, (scritta ?? 0) + verso * PASSO_LATENZA));
+    if (nuovo === scritta) return;
+    ipc.latenza(nuovo).then(setScritta).catch(onErrore);
+  };
+
+  // Il cursore va da −limite a +limite, quindi l'avanzamento per il tracciato
   // si misura da sinistra e non dal valore: a zero il riempimento sta a metà.
-  const avanzamento =
-    ((dove + LATENZA_MASSIMA_MS) / (2 * LATENZA_MASSIMA_MS)) * 100;
-  const etichetta =
-    dove === 0
+  const avanzamento = ((dove + limite) / (2 * limite)) * 100;
+  const mostrato = trascinato ?? scritta ?? 0;
+  const valore =
+    mostrato === 0
       ? t("settings.output.latency.none")
-      : t("settings.output.latency.ms", { n: dove });
+      : t("settings.output.latency.ms", { n: mostrato });
 
   return (
-    <>
-      {/* `titolo-gruppo` e non una classe nuova: è già il modo in cui questo
-          albero intitola un gruppo dentro una scheda — lo fa l'elenco delle
-          scorciatoie in `Impostazioni` — e un cursore senza titolo, in una
-          scheda che parla di elenchi di uscite, sembrerebbe un residuo. */}
-      <div className="titolo-gruppo">{t("settings.output.latency.title")}</div>
-      <div className="latenza">
-        <input
-          type="range"
-          className="scorrimento range-accent"
-          min={-LATENZA_MASSIMA_MS}
-          max={LATENZA_MASSIMA_MS}
-          step={PASSO_LATENZA}
-          value={dove}
-          style={{ "--avanzamento": `${avanzamento}%` } as CSSProperties}
-          aria-label={t("settings.output.latency.title")}
-          aria-valuetext={etichetta}
-          onChange={(e) => setTrascinato(Number(e.target.value))}
-          onPointerUp={rilascia}
-          onKeyUp={rilascia}
-          onBlur={rilascia}
-        />
-        <span className="valore">{etichetta}</span>
-      </div>
-    </>
+    <div className="latenza">
+      {conPassi && (
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          aria-label={t("together.calibrate.less")}
+          title={t("together.calibrate.less")}
+          disabled={scritta === null || scritta <= -limite}
+          onClick={() => passo(-1)}
+        >
+          −1
+        </button>
+      )}
+      <input
+        type="range"
+        className="scorrimento range-accent"
+        min={-limite}
+        max={limite}
+        step={PASSO_LATENZA}
+        value={dove}
+        style={{ "--avanzamento": `${avanzamento}%` } as CSSProperties}
+        aria-label={etichetta}
+        aria-valuetext={valore}
+        onChange={(e) => setTrascinato(Number(e.target.value))}
+        onPointerUp={rilascia}
+        onKeyUp={rilascia}
+        onBlur={rilascia}
+      />
+      {conPassi && (
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          aria-label={t("together.calibrate.more")}
+          title={t("together.calibrate.more")}
+          disabled={scritta === null || scritta >= limite}
+          onClick={() => passo(1)}
+        >
+          +1
+        </button>
+      )}
+      <span className="valore">{valore}</span>
+    </div>
   );
 }

@@ -40,6 +40,7 @@
     "disco": "Il tuo disco",
     "cataloghi": "Cataloghi liberi",
     "suono": "Suono",
+    "insieme": "Insieme",
     "skin": "Skin",
     "tuo": "Tuo",
     "scarica": "Scarica"
@@ -80,6 +81,15 @@
     "alt": "La schermata di riproduzione con l'analizzatore di spettro",
     "didascalia": "In riproduzione, con la scena dello spettro e la riga che dice che cos'è il file. [Come funziona il motore audio]({base}docs/audio/) (in inglese)."
   },
+  "insieme": {
+    "titolo": "E si ascolta insieme.",
+    "testo": "Colleghi sulla stessa rete, ognuno col suo Rymembra, sentono la stessa musica nello stesso istante: un PC ospita, gli altri seguono, e ognuno la suona per conto suo. La prima volta i due schermi mostrano lo stesso codice di quattro cifre; da lì i PC si riconoscono, e quel che passa fra loro è cifrato.",
+    "punti": [
+      "Chi ospita sceglie, per ognuno che entra, se ascolta e basta, se comanda — pausa, salti, il brano dopo — o se fa tutto, anche mettere in coda i suoi brani, che arrivano agli altri dal PC di chi li ha.",
+      "Allineati al millisecondo, abbastanza per due coppie di casse nella stessa stanza; per le cuffie Bluetooth c'è la calibrazione.",
+      "Niente Internet e nessun server: solo la rete dell'ufficio o di casa. Il PC che ospita apre una porta in LAN, e Windows chiede il permesso una volta."
+    ]
+  },
   "skin": {
     "titolo": "Ha l'aspetto che vuoi tu.",
     "testo": "Una skin può ridipingere e animare ognuna delle 101 parti della finestra — colori, caratteri, bordi, movimento — e il suo contrasto viene controllato prima che la condividi. Lo Studio integrato modifica le skin sulle pagine vere del programma, e può chiedere a un modello linguistico, sul tuo computer o remoto, di fare la modifica al posto tuo.",
@@ -118,7 +128,14 @@
     "account": "Account",
     "nessuno": "nessuno",
     "backup": "Backup",
-    "backupDove": "la tua cartella, o il tuo Drive"
+    "backupDove": "la tua cartella, o il tuo Drive",
+    "insiemeOspita": "Ospita",
+    "insiemeSegue": "Segue",
+    "pcUno": "PC di Anna",
+    "pcDue": "PC di Marco",
+    "insiemeCodice": "Codice",
+    "insiemeLegame": "LAN · cifrato",
+    "insiemeNota": "Lo stesso istante sui due PC: lo scarto si misura in millisecondi."
   },
   "scarica": {
     "titolo": "Pronto da ascoltare.",
@@ -185,8 +202,12 @@
         "r": "Sì. Chiedi i tuoi dati a Spotify dalla pagina sulla privacy del tuo account: arrivano come ZIP, di solito in pochi giorni, e la cronologia completa degli ascolti richiede più tempo. Rymembra lo legge sul tuo computer e confronta ogni brano con la tua libreria e con i cataloghi liberi. Nello ZIP non c'è audio: quello che non hai e che nessun catalogo libero ha finisce nella lista acquisti."
       },
       {
+        "d": "Si può ascoltare insieme a un collega?",
+        "r": "Sì, se siete sulla stessa rete e avete tutti e due Rymembra 3.1 o successivo. Uno ospita una sessione da «Ascolta insieme»; l'altro la trova da solo, o scrive l'indirizzo che il primo vede sullo schermo, e la prima volta confrontate un codice di quattro cifre. Sul PC che ospita Windows chiede se lasciar passare Rymembra: «Consenti», anche per le «Reti pubbliche» se la rete è segnata così."
+      },
+      {
         "d": "Manda i miei dati da qualche parte?",
-        "r": "Non c'è telemetria e non c'è un server di Rymembra. Il programma parla solo con i servizi che usi — i cataloghi, MusicBrainz per i tag, LRCLIB per i testi, GitHub per controllare gli aggiornamenti, e quello che colleghi tu. [PRIVACY.md]({privacy}) elenca ogni richiesta e che cosa trasmette."
+        "r": "Non c'è telemetria e non c'è un server di Rymembra. Il programma parla solo con i servizi che usi — i cataloghi, MusicBrainz per i tag, LRCLIB per i testi, GitHub per controllare gli aggiornamenti, e quello che colleghi tu; se ascolti insieme, con gli altri PC della tua rete, e con nessun altro. [PRIVACY.md]({privacy}) elenca ogni richiesta e che cosa trasmette."
       }
     ]
   },

@@ -360,19 +360,33 @@ export function ascoltoFallito(evento: string, e: unknown): void {
  * Serve allo spettro con la sorgente sintetica (`Spettro3D`, `sorgente:
  * "finto"`), che le sue file se le fabbrica e non deve né ricevere né chiedere
  * quelle del motore.
+ *
+ * # `poi`, per chi chiede anche la fotografia
+ *
+ * Chi segue uno stato che il nucleo manda a ogni cambiamento ne chiede anche
+ * una fotografia all'avvio, e l'ordine conta: chiederla **prima** che
+ * l'ascolto sia aperto lascia una finestra in cui un cambiamento arriva, non
+ * trova nessuno ad ascoltarlo, e la fotografia — già scattata — non lo
+ * contiene. Lo stato resta quello vecchio fino al cambiamento dopo, che può
+ * non arrivare per minuti. `poi` gira quando l'ascolto è aperto, e quindi è il
+ * posto dove chiederla; gira anche se l'ascolto si rifiuta, perché una
+ * fotografia sola è meglio di niente.
  */
 export function useAscolto<T>(
   evento: string,
   gestore: (carico: T) => void,
   acceso = true,
+  poi?: () => void,
 ): void {
   const ultimo = useRef(gestore);
+  const dopo = useRef(poi);
   // Il nucleo nella finestra, niente nell'anteprima dello Studio: vedi `dati.tsx`.
   const { ascolta } = useDati();
   // Senza array di dipendenze: gira dopo ogni disegno, che è precisamente
   // quando `gestore` può essere cambiato.
   useEffect(() => {
     ultimo.current = gestore;
+    dopo.current = poi;
   });
   useEffect(() => {
     if (!acceso) return;
@@ -382,6 +396,7 @@ export function useAscolto<T>(
       (stop) => {
         if (vivo) {
           sciogli = stop;
+          dopo.current?.();
         } else {
           // La promessa si è risolta dopo lo smontaggio: l'ascoltatore esiste
           // già ed è orfano. Si scioglie qui, che è l'unico posto in cui lo si
@@ -392,8 +407,10 @@ export function useAscolto<T>(
       // Nel diario sempre; a schermo solo se il componente c'è ancora: un
       // ascolto rifiutato dopo lo smontaggio non toglie niente a nessuno.
       (e: unknown) => {
-        if (vivo) ascoltoFallito(evento, e);
-        else ipc.diarioAnnota("ascolto", `${evento}: ${testoErrore(e)}`);
+        if (vivo) {
+          ascoltoFallito(evento, e);
+          dopo.current?.();
+        } else ipc.diarioAnnota("ascolto", `${evento}: ${testoErrore(e)}`);
       },
     );
     return () => {

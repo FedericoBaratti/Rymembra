@@ -25,7 +25,7 @@
         "Controls are pessimistic: commands return the full new state and the UI paints from that; ratings and likes are the optimistic exception. Covers are plain `<img>` with `srcset` over the `rymembra-cover` scheme, never IPC.",
         "Build: Vite targeting `chrome125` (View Transitions, `light-dark()`, `@starting-style`), strict TypeScript (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`). Runtime dependencies are React, ReactDOM, `@tauri-apps/api`, `@tauri-apps/plugin-dialog` and CodeMirror — no state, i18n, icon or animation library.",
       ],
-      see: ["views", "lists", "ipc", "player"],
+      see: ["views", "lists", "ipc", "player", "together"],
     },
     {
       id: "views",
@@ -102,7 +102,7 @@
       title: "Translations",
       src: ["apps/desktop/src/lingue/index.ts", "apps/desktop/src/lingue/plurali.ts", "apps/desktop/src/lingue/Trans.tsx", "apps/desktop/src/lingue/it.json", "apps/desktop/src/lingue/en.json", "strumenti/lingue.js"],
       body: [
-        "Languages are the files in `lingue/`, discovered with `import.meta.glob`: adding one is adding a JSON file (its display name in the reserved key `_nome`). `it.json` is the reference — `Chiave = keyof typeof it`, so an unknown key is a compile error — with 2,482 flat dotted keys.",
+        "Languages are the files in `lingue/`, discovered with `import.meta.glob`: adding one is adding a JSON file (its display name in the reserved key `_nome`). `it.json` is the reference — `Chiave = keyof typeof it`, so an unknown key is a compile error — with 2,734 flat dotted keys.",
         {
           ul: [
             "**Choice**: saved `ui.language`, else the system language reduced to its root (`de-DE` → `de`), else English (`RIPIEGO` = `en`). A key missing in a language falls back to English, not to the key; a missing key in dev renders the key and warns.",

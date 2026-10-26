@@ -961,10 +961,21 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     // l'applicazione funziona ancora, e un disco zittito al clic su «Aggiorna»
     // per tutto quel tempo — o per sempre, se lo scaricamento o la firma non
     // vanno — era una pausa che nessuno aveva chiesto.
+    let mut musica_fermata = false;
     let esito = scarica(app, aggiornamento).and_then(|byte| {
         fermare_la_musica(app);
+        musica_fermata = true;
         aggiornamento.install(byte).map_err(guasto)
     });
+    // «Ascolta insieme» si era spento con la musica, per non lasciare gli altri
+    // in una sessione che stava per sparire. Se siamo ancora qui l'installer
+    // non è partito, e restare spenti con l'interruttore acceso vorrebbe dire un
+    // «Ospita» che risponde «spento» finché qualcuno non spegne e riaccende a
+    // mano: torna com'era all'avvio. La sessione no — quella è finita davvero, e
+    // gli altri lo hanno già saputo.
+    if musica_fermata {
+        crate::insieme::riaccendi(app);
+    }
 
     // Se si arriva qui su Windows, è andata male: l'installazione riuscita non
     // torna mai, perché il plugin fa uscire il processo. Un annullamento non è
@@ -1096,6 +1107,10 @@ fn fermare_la_musica(app: &AppHandle) {
     {
         return;
     }
+    // Prima fuori dalla sessione, se ce n'è una: in sessione la pausa di chi
+    // segue andrebbe all'host, e fermerebbe la musica a tutti per un
+    // aggiornamento che riguarda solo questo PC.
+    crate::insieme::ferma(app);
     let lettore = app.state::<crate::riproduzione::StatoLettore>();
     let _ = crate::riproduzione::pausa(app.clone(), lettore);
 }

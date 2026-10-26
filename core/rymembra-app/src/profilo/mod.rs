@@ -265,6 +265,12 @@ const CATALOGO: &[(&str, Genere)] = &[
     // di un decimo di secondo dalla parte sbagliata, in silenzio e senza che
     // nessuno colleghi le due cose. Vale la stessa nota di
     // `player.spectrum.quality`: il danno sarebbe invisibile.
+    // `audio.latenza_per_uscita` **non** c'è nemmeno lei, ed è la stessa
+    // omissione detta per ogni uscita: un numero per scheda, con il nome della
+    // scheda come chiave. Fuori di qui le ragioni sono due invece di una — i
+    // numeri descrivono catene che di là non esistono, e i nomi sono quelli di
+    // `player.output`, che non nominano niente. Tutto `audio.` è fatto di
+    // questa macchina, e la prova in fondo al file lo tiene vero per prefisso.
     // ── la tastiera ──
     (crate::preferenze::CHIAVE_SCORCIATOIE, Genere::Preferenza),
     // ── gli automatismi ──
@@ -293,6 +299,22 @@ const CATALOGO: &[(&str, Genere)] = &[
     // fatto per essere passato in giro, e una credenziale personale dentro un
     // file che si passa in giro è la definizione del guasto. Dalla 2.3.1 sta nel
     // portachiavi, che è il posto dove questo modulo non arriva.
+    // ── «Ascolta insieme» ──
+    // `insieme.*` **non** c'è, nessuna delle quattro, ed è la settima
+    // omissione deliberata. L'interruttore, il nome del PC, gli indirizzi
+    // scritti a mano e il dialogo del firewall già visto sono tutti fatti di
+    // **questa** macchina e di **questa** rete: un profilo portato in ufficio
+    // accenderebbe da solo una porta in ascolto su un PC che non l'ha chiesto,
+    // col nome di un altro computer, a cercare indirizzi della rete di casa.
+    // Di tutte le omissioni è quella con il danno peggiore, perché tocca il
+    // firewall di qualcun altro. La prova lo tiene vero per prefisso, e
+    // l'importazione lo tiene vero anche per un profilo scritto a mano: una
+    // chiave fuori da questo elenco finisce fra le sconosciute e non si scrive.
+    //
+    // Fuori anche la tabella `insieme_pari`, i PC associati, e non serve una
+    // riga per dirlo: la biblioteca porta solo le tabelle che nomina. Una
+    // fiducia data da questo PC a una chiave, ritrovata su un altro, direbbe
+    // che si fida di qualcuno a cui nessuno di là ha mai confermato un codice.
     // ── i percorsi ──
     // Viaggiano, e il piano dice quali non esistono di qua. L'alternativa —
     // lasciarli fuori — renderebbe inutile il caso più comune di tutti: la
@@ -325,10 +347,11 @@ const FUORI: &[&str] = &[
     "i token e le credenziali (stanno nel portachiavi di sistema)",
     "l'identificativo di dispositivo del backup (nuvola.dispositivo)",
     "la coda di riproduzione (nomina righe di questa libreria)",
-    "l'uscita audio, la qualità dello spettro e la latenza (fatti di questa macchina)",
+    "l'uscita audio, la qualità dello spettro e le latenze d'uscita (fatti di questa macchina)",
     "i nodi aperti del pannello Cartelle (percorsi di questa macchina)",
     "l'affinità, le impronte sonore e la settimana (derivati ricalcolabili)",
     "l'arricchimento in database (ri-derivabile da una passata)",
+    "«Ascolta insieme»: i PC associati, il nome di questo PC e gli indirizzi (fatti di questa macchina)",
 ];
 
 /// Il file v1, come sta sul disco.

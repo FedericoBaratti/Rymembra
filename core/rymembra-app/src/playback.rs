@@ -662,11 +662,20 @@ fn estensione_di(path: &str) -> Option<String> {
 /// contribuire. Vedi [`crate::sincronia::conta_ascolto`] sul perché la somma
 /// è l'unica forma che regge fra due macchine — con un numero solo, fondere può
 /// solo raddoppiare la storia o perderne metà.
+///
+/// # Errori
+///
+/// `library.trackNotFound` per un identificativo ≤ 0, senza aprire nessuna
+/// transazione: vedi [`riga_della_libreria`].
 pub fn record_play(
     connection: &mut Connection,
     ascolto: &Listen,
     dispositivo: &str,
 ) -> Result<bool, AppError> {
+    // Prima di tutto, anche prima di `counts`: l'invariante è «mai un id ≤ 0
+    // sul database», e una guardia che dipende da un'altra condizione è una
+    // guardia che un giorno qualcuno sposta senza accorgersene.
+    riga_della_libreria(ascolto.track_id)?;
     if !ascolto.counts {
         return Ok(false);
     }
@@ -734,8 +743,92 @@ fn ripetizione_da_nome(nome: &str) -> RepeatMode {
     }
 }
 
+/// Il brano è una riga della libreria di questo computer?
+///
+/// # La regola, e da dove viene
+///
+/// **id > 0 è una riga di `tracks`, id ≤ 0 non lo è mai.** Gli identificativi
+/// che SQLite assegna partono da 1, e da «Ascolta insieme» in poi i numeri
+/// negativi sono le voci di una sessione: maniglie che esistono solo in
+/// memoria, e che su un altro computer — o su questo, a sessione finita — non
+/// nominano niente. Lo zero non è di nessuno dei due, e si rifiuta con loro.
+///
+/// Le tre scritture della riproduzione — [`record_play`], [`save_posizione`] e
+/// [`save_queue`] — passano di qui **prima** di toccare il database. È l'ultima
+/// difesa e non la prima: chi sta in una sessione non dovrebbe nemmeno
+/// chiamarle. Se un giorno un comando nuovo salta quella strada, il danno si
+/// ferma qui invece di arrivare a una cronologia o a una coda salvata.
+///
+/// # Perché un errore e non un `Ok` muto
+///
+/// Perché un rifiuto qui vuol dire che qualcuno, più su, ha sbagliato strada, e
+/// la finestra lo deve poter scrivere nel diario. È sicuro farlo: nessuno dei
+/// chiamanti ripete la scrittura su un `Err` — la coda abbassa la sua bandiera e
+/// annota una riga, l'ascolto annota una riga e non fa scrobble, la posizione
+/// scarta l'esito — quindi un rifiuto costa al più una riga per gesto, non un
+/// ciclo. La causa porta il numero e basta: un identificativo non dice niente
+/// di chi ascolta.
+///
+/// # Chi altro passa di qui
+///
+/// `pub(crate)` e non copiata: l'audit delle guardie della 3.1.0 l'ha messa in
+/// testa a ogni altra strada di questo crate in cui un id ≤ 0 farebbe nascere
+/// una riga o entrerebbe in una coda — l'aggiunta a una playlist
+/// (`playlists::accoda`), le scritture dei testi che ricevono un
+/// `BranoDaTestare` già in mano, l'autoplay e la radio seminati da un brano —
+/// e nelle due letture di questo modulo che darebbero a una voce qualcosa che
+/// non è suo: il segno di posizione di prima ([`load_posizione`]) e una coda
+/// sul disco che non dovrebbe esserci ([`load_queue`]). Una regola sola detta
+/// in un posto solo: una seconda copia sarebbe la prima a dimenticarsi dello
+/// zero.
+///
+/// # Errori
+///
+/// `library.trackNotFound` se `track_id` ≤ 0.
+pub(crate) fn riga_della_libreria(track_id: i64) -> Result<(), AppError> {
+    if track_id > 0 {
+        return Ok(());
+    }
+    Err(AppError::new(ErrorCode::LibraryTrackNotFound {
+        track_id: Some(track_id),
+    })
+    .with_cause(format!(
+        "id {track_id}: non è una riga della libreria, non si scrive"
+    )))
+}
+
 /// Conserva la coda perché sopravviva alla chiusura.
+///
+/// # Una voce che non è della libreria, e la coda non si scrive affatto
+///
+/// Basta **un** identificativo ≤ 0, in qualunque punto, e la scrittura si
+/// rifiuta tutta: sul database resta l'ultima coda fatta solo di righe della
+/// libreria. Le due alternative avevano ciascuna un buco.
+///
+/// - **Rifiutare solo se il corrente è ≤ 0, e filtrare il resto.** Una coda di
+///   sessione è fatta tutta di maniglie, e può non avere un corrente — finita,
+///   o appena svuotata del brano che suonava. Lì il corrente è `None`, la
+///   guardia non scatta, il filtro toglie tutto, e sul disco finisce una coda
+///   **vuota** al posto di quella dell'utente: chiusa l'applicazione a metà
+///   sessione, la sua coda di prima non c'è più.
+/// - **Filtrare.** Togliere delle voci vuol dire rinumerare `order` e
+///   spostare `order_pos`: codice nuovo che riscrive una permutazione, con
+///   `Queue::restore` a scoprirne gli errori solo al prossimo avvio. E quel che
+///   resta è una coda che l'utente non ha mai avuto davanti.
+///
+/// Rifiutare tutto non inventa niente: o si scrive la coda com'è, o resta
+/// quella di prima. Una coda mista — righe e maniglie insieme — secondo il
+/// piano non esiste; se esistesse, sarebbe un errore di chi l'ha costruita, e
+/// il diario lo dice. Vedi [`riga_della_libreria`].
+///
+/// # Errori
+///
+/// `library.trackNotFound` se una voce ha id ≤ 0, senza scrivere niente;
+/// `db.queryFailed` se il database non risponde.
 pub fn save_queue(connection: &Connection, coda: &QueueSnapshot) -> Result<(), AppError> {
+    for id in &coda.tracks {
+        riga_della_libreria(*id)?;
+    }
     let su_disco = CodaSuDisco {
         tracks: coda.tracks.clone(),
         order: coda.order.clone(),
@@ -756,6 +849,13 @@ pub fn save_queue(connection: &Connection, coda: &QueueSnapshot) -> Result<(), A
 ///
 /// Gli invarianti — che l'ordine sia davvero una permutazione — li verifica
 /// `Queue::restore`, che è dove stanno le regole della coda.
+///
+/// Una coda con un id ≤ 0 è illeggibile come una storta, ed è lo specchio di
+/// [`save_queue`], che non la scrive mai: se c'è, l'ha messa qualcun altro, e
+/// all'avvio quelle voci finirebbero nella coda del lettore come voci di
+/// «Ascolta insieme» di una sessione che non c'è. Toglierle una per una non
+/// si può — `order` e `order_pos` sono indici, e cambierebbero significato —
+/// quindi vale la regola di tutta la funzione: coda vuota.
 pub fn load_queue(connection: &Connection) -> Result<QueueSnapshot, AppError> {
     let Some(json) = crate::settings::read(connection, CHIAVE_CODA)? else {
         return Ok(QueueSnapshot::default());
@@ -763,6 +863,13 @@ pub fn load_queue(connection: &Connection) -> Result<QueueSnapshot, AppError> {
     let Ok(su_disco) = serde_json::from_str::<CodaSuDisco>(&json) else {
         return Ok(QueueSnapshot::default());
     };
+    if su_disco
+        .tracks
+        .iter()
+        .any(|id| riga_della_libreria(*id).is_err())
+    {
+        return Ok(QueueSnapshot::default());
+    }
     Ok(QueueSnapshot {
         tracks: su_disco.tracks,
         order: su_disco.order,
@@ -987,8 +1094,11 @@ pub const CHIAVE_POSIZIONE: &str = "player.position";
 ///
 /// # Errori
 ///
+/// `library.trackNotFound` se `track_id` ≤ 0, senza scrivere niente — il segno
+/// che c'era resta quello di prima: vedi [`riga_della_libreria`].
 /// `db.queryFailed` se il database non risponde.
 pub fn save_posizione(connection: &Connection, track_id: i64, ms: u64) -> Result<(), AppError> {
+    riga_della_libreria(track_id)?;
     crate::settings::write_json(
         connection,
         CHIAVE_POSIZIONE,
@@ -1006,10 +1116,20 @@ pub fn save_posizione(connection: &Connection, track_id: i64, ms: u64) -> Result
 /// è l'unica lettura che quel formato ha sempre avuto, ed è giusta nel caso di
 /// gran lunga più comune — chi aggiorna a metà di una canzone e riapre.
 ///
+/// Un id ≤ 0 vale l'inizio senza nemmeno leggere. Il numero nudo vale per
+/// «il brano che si chiede», e una voce di «Ascolta insieme» non è mai stata
+/// quel brano: senza questa riga, la prima voce di una sessione partirebbe al
+/// secondo in cui l'utente aveva lasciato una canzone sua, prima
+/// dell'aggiornamento. Un segno `DelBrano` con un id ≤ 0 invece non può
+/// esserci, perché [`save_posizione`] non lo scrive.
+///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn load_posizione(connection: &Connection, track_id: i64) -> Result<u64, AppError> {
+    if riga_della_libreria(track_id).is_err() {
+        return Ok(0);
+    }
     Ok(
         match crate::settings::read_json::<SegnoPosizione>(connection, CHIAVE_POSIZIONE)? {
             Some(SegnoPosizione::DelBrano { brano, ms }) if brano == track_id => ms,
@@ -1168,6 +1288,210 @@ pub fn load_latenza(connection: &Connection) -> Result<i64, AppError> {
             .map(sana_latenza)
             .unwrap_or(0),
     )
+}
+
+/// La latenza dichiarata **per ogni uscita**, accanto a quella globale.
+///
+/// # Perché una per uscita
+///
+/// Perché [`CHIAVE_LATENZA`] è una sola e le catene sono tante: le casse col
+/// cavo, le cuffie Bluetooth e il DAC sulla scrivania ritardano ciascuno del
+/// suo, e chi passa dall'una all'altra ritrovava il numero tarato per quella di
+/// prima. Ascoltare insieme su più computer lo rende un difetto e non più un
+/// fastidio: lì il numero sposta **il suono**, non solo il cursore.
+///
+/// # Come sta scritta
+///
+/// Un oggetto JSON da nome d'uscita a [`LatenzaUscita`]. Il nome è quello che
+/// `rymembra_play::Motore::dispositivo` dice di aver **davvero** aperto, non la
+/// preferenza `player.output`: quando la scheda scelta non c'è l'apertura
+/// ripiega su un'altra, e il numero va a chi sta suonando.
+///
+/// Sta sotto `audio.` come la globale, e per la stessa ragione resta fuori dal
+/// profilo: descrive questa catena su questo computer — e in più dentro ci
+/// sono i nomi delle sue schede.
+pub const CHIAVE_LATENZA_PER_USCITA: &str = "audio.latenza_per_uscita";
+
+/// Da dove viene il numero di un'uscita.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FonteLatenza {
+    /// Il cursore delle impostazioni: un numero dichiarato, non misurato.
+    Mano,
+    /// Una taratura a orecchio, guardando il cursore contro la musica.
+    Orecchio,
+    /// Una misura col microfono.
+    Microfono,
+}
+
+/// La latenza di un'uscita, con quel che serve a sapere quanto fidarsene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LatenzaUscita {
+    /// I millisecondi, nel verso e dentro i limiti di [`CHIAVE_LATENZA`].
+    pub ms: i64,
+    /// Chi ha deciso il numero.
+    pub fonte: FonteLatenza,
+    /// Il numero è stato confermato e niente l'ha smentito da allora. Un
+    /// evento che cambia la catena — le cuffie che si ricollegano con un altro
+    /// codec — lo riporta a `false` senza toccare `ms`.
+    pub verificata: bool,
+    /// Quando è stato scritto, in millisecondi dall'epoca.
+    pub quando_ms: i64,
+}
+
+/// Le latenze delle uscite, per nome. Un `BTreeMap` perché il JSON che ne esce
+/// sia lo stesso a parità di contenuto: due scritture uguali, una riga uguale.
+pub type LatenzePerUscita = std::collections::BTreeMap<String, LatenzaUscita>;
+
+/// Quel che [`load_latenze_per_uscita`] ha trovato, e quel che ha dovuto
+/// lasciare fuori.
+///
+/// Il nucleo non ha un diario, e una mappa rotta che diventa vuota senza dirlo
+/// è un utente che ritrova tutte le uscite a zero senza sapere perché. I due
+/// campi accanto alle voci sono il modo di dirlo alla finestra, che il diario
+/// ce l'ha — e sono solo un `bool` e un numero: niente nomi, che sono le schede
+/// di qualcuno.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LatenzeLette {
+    /// Le voci lette, già riportate dentro i limiti.
+    pub voci: LatenzePerUscita,
+    /// La chiave c'era ma non era un oggetto JSON: vale come vuota.
+    pub illeggibile: bool,
+    /// Quante voci c'erano ma non si leggevano, e sono rimaste fuori.
+    pub scartate: usize,
+}
+
+/// Rilegge le latenze per uscita. Assente vale **nessuna voce**, cioè la
+/// globale per tutte.
+///
+/// # Una voce rotta non porta via le altre
+///
+/// Si legge voce per voce: un nome con un campo storto — una `fonte` che questa
+/// versione non conosce, scritta da una più nuova — resta fuori da solo, e le
+/// tarature delle altre uscite restano. Solo un valore che non è nemmeno un
+/// oggetto vale tutto vuoto. In tutti e due i casi lo dice [`LatenzeLette`].
+///
+/// Come per la globale, i millisecondi si stringono **in lettura** oltre che in
+/// scrittura: la riga può arrivare da un database ritoccato a mano.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Il JSON storto non ne produce
+/// nessuno.
+pub fn load_latenze_per_uscita(connection: &Connection) -> Result<LatenzeLette, AppError> {
+    let mut lette = LatenzeLette::default();
+    let Some(grezzo) = crate::settings::read(connection, CHIAVE_LATENZA_PER_USCITA)? else {
+        return Ok(lette);
+    };
+    let Ok(voci) =
+        serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&grezzo)
+    else {
+        lette.illeggibile = true;
+        return Ok(lette);
+    };
+    for (nome, valore) in voci {
+        match serde_json::from_value::<LatenzaUscita>(valore) {
+            Ok(voce) => {
+                lette.voci.insert(nome, sana_voce(voce));
+            }
+            Err(_) => lette.scartate = lette.scartate.saturating_add(1),
+        }
+    }
+    Ok(lette)
+}
+
+/// Conserva la latenza di un'uscita, lasciando com'erano le altre.
+///
+/// Rilegge la mappa, cambia la voce di `nome` e la riscrive intera. Le voci
+/// che la lettura ha scartato perché rotte se ne vanno con questa scrittura,
+/// ed è voluto: una mappa illeggibile si ripara da sola alla prima taratura
+/// invece di restare illeggibile per sempre.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_latenza_per_uscita(
+    connection: &Connection,
+    nome: &str,
+    voce: LatenzaUscita,
+) -> Result<(), AppError> {
+    let mut voci = load_latenze_per_uscita(connection)?.voci;
+    voci.insert(nome.to_owned(), sana_voce(voce));
+    crate::settings::write_json(connection, CHIAVE_LATENZA_PER_USCITA, &voci)
+}
+
+/// La latenza da dare al motore che suona su `dispositivo`.
+///
+/// Il numero dell'uscita se c'è, altrimenti la globale. `None` — nessun motore
+/// aperto, o un nome che non si sa — vale la globale anche lui.
+///
+/// La globale come ripiego, e non zero, perché è il numero che chi aggiorna ha
+/// già tarato: prima di questa versione valeva per tutte le uscite, e
+/// un'uscita che non ha ancora un numero suo continua a sentirsi come ieri.
+#[must_use]
+pub fn latenza_effettiva(globale: i64, mappa: &LatenzePerUscita, dispositivo: Option<&str>) -> i64 {
+    sana_latenza(
+        dispositivo
+            .and_then(|nome| mappa.get(nome))
+            .map_or(globale, |voce| voce.ms),
+    )
+}
+
+/// Il cursore delle impostazioni: scrive il numero per l'uscita che suona e
+/// anche come globale, e rilegge le due cose.
+///
+/// # Perché tutte e due
+///
+/// Quella dell'uscita perché è la ragione per cui la mappa esiste. La globale
+/// perché il cursore di oggi è uno solo e deve continuare a valere: è il
+/// ripiego di ogni uscita che un numero suo non ce l'ha ancora, e senza
+/// aggiornarla le casse mai tarate continuerebbero a usare quello di ieri
+/// mentre il cursore ne mostra un altro.
+///
+/// `uscita` è `None` quando nessun motore è aperto: allora si scrive la sola
+/// globale. La voce porta `fonte: mano` e `verificata: false`, perché il
+/// cursore dice quanto si **vuole** correggere, non quanto si è misurato; la
+/// verifica la darà la taratura, quando ci sarà.
+///
+/// Restituisce la globale e la mappa come sono rimaste scritte: chi chiama ne
+/// ricava la latenza per l'uscita che ha davanti con [`latenza_effettiva`] —
+/// che è la stessa uscita di prima, o quella nuova se nel frattempo il motore è
+/// stato riaperto.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn dichiara_latenza(
+    connection: &Connection,
+    uscita: Option<&str>,
+    ms: i64,
+    quando_ms: i64,
+) -> Result<(i64, LatenzePerUscita), AppError> {
+    if let Some(nome) = uscita {
+        save_latenza_per_uscita(
+            connection,
+            nome,
+            LatenzaUscita {
+                ms,
+                fonte: FonteLatenza::Mano,
+                verificata: false,
+                quando_ms,
+            },
+        )?;
+    }
+    save_latenza(connection, ms)?;
+    Ok((
+        load_latenza(connection)?,
+        load_latenze_per_uscita(connection)?.voci,
+    ))
+}
+
+/// Una voce con i millisecondi dentro i limiti della globale.
+fn sana_voce(voce: LatenzaUscita) -> LatenzaUscita {
+    LatenzaUscita {
+        ms: sana_latenza(voce.ms),
+        ..voce
+    }
 }
 
 // ── da quale scheda esce il suono ───────────────────────────────────────────
@@ -2167,6 +2491,341 @@ mod prove {
         let c = db();
         crate::settings::write(&c, CHIAVE_LATENZA, "{non è json").expect("scritta");
         assert_eq!(load_latenza(&c).expect("riletta"), 0);
+    }
+
+    // ── la latenza per uscita ──
+
+    fn voce(ms: i64, fonte: FonteLatenza) -> LatenzaUscita {
+        LatenzaUscita {
+            ms,
+            fonte,
+            verificata: true,
+            quando_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[test]
+    fn un_uscita_senza_numero_suo_usa_la_globale() {
+        let mut mappa = LatenzePerUscita::new();
+        mappa.insert("Cuffie BT".to_owned(), voce(180, FonteLatenza::Microfono));
+        // L'uscita con la sua voce usa la sua, anche quando vale zero.
+        assert_eq!(latenza_effettiva(40, &mappa, Some("Cuffie BT")), 180);
+        mappa.insert("DAC".to_owned(), voce(0, FonteLatenza::Mano));
+        assert_eq!(latenza_effettiva(40, &mappa, Some("DAC")), 0);
+        // Le altre, e il motore che non c'è, ripiegano sulla globale.
+        assert_eq!(latenza_effettiva(40, &mappa, Some("Altoparlanti")), 40);
+        assert_eq!(latenza_effettiva(-30, &mappa, None), -30);
+        assert_eq!(
+            latenza_effettiva(40, &LatenzePerUscita::new(), Some("DAC")),
+            40
+        );
+        // E il limite vale anche qui: un numero arrivato da fuori non passa.
+        assert_eq!(
+            latenza_effettiva(9_000, &LatenzePerUscita::new(), None),
+            LATENZA_MASSIMA_MS
+        );
+    }
+
+    #[test]
+    fn la_mappa_delle_uscite_torna_identica() {
+        let c = db();
+        assert_eq!(
+            load_latenze_per_uscita(&c).expect("riletta"),
+            LatenzeLette::default(),
+            "mai scritta vale nessuna voce, senza niente da annotare"
+        );
+        save_latenza_per_uscita(&c, "Cuffie BT", voce(180, FonteLatenza::Microfono))
+            .expect("scritta");
+        save_latenza_per_uscita(&c, "Altoparlanti", voce(-20, FonteLatenza::Orecchio))
+            .expect("scritta");
+        // Riscrivere una voce non tocca l'altra.
+        save_latenza_per_uscita(&c, "Cuffie BT", voce(150, FonteLatenza::Mano)).expect("riscritta");
+
+        let mut attesa = LatenzePerUscita::new();
+        attesa.insert("Altoparlanti".to_owned(), voce(-20, FonteLatenza::Orecchio));
+        attesa.insert("Cuffie BT".to_owned(), voce(150, FonteLatenza::Mano));
+        assert_eq!(
+            load_latenze_per_uscita(&c).expect("riletta"),
+            LatenzeLette {
+                voci: attesa,
+                illeggibile: false,
+                scartate: 0,
+            }
+        );
+        // La forma sul disco è quella promessa: la leggerà anche la finestra.
+        let grezzo = crate::settings::read(&c, CHIAVE_LATENZA_PER_USCITA)
+            .expect("letta")
+            .expect("c'è");
+        assert!(grezzo.contains(r#""fonte":"orecchio""#), "{grezzo}");
+        assert!(grezzo.contains(r#""quando_ms":1700000000000"#), "{grezzo}");
+    }
+
+    #[test]
+    fn la_latenza_di_un_uscita_si_taglia_come_la_globale() {
+        let c = db();
+        save_latenza_per_uscita(&c, "DAC", voce(5_000, FonteLatenza::Mano)).expect("scritta");
+        assert_eq!(
+            load_latenze_per_uscita(&c)
+                .expect("riletta")
+                .voci
+                .get("DAC")
+                .map(|v| v.ms),
+            Some(LATENZA_MASSIMA_MS),
+            "si taglia in scrittura"
+        );
+        // E in lettura: la riga può arrivare da un database ritoccato a mano.
+        crate::settings::write(
+            &c,
+            CHIAVE_LATENZA_PER_USCITA,
+            r#"{"DAC":{"ms":5000,"fonte":"mano","verificata":false,"quando_ms":0},
+               "BT":{"ms":-3600000,"fonte":"microfono","verificata":true,"quando_ms":0}}"#,
+        )
+        .expect("scritta a mano");
+        let lette = load_latenze_per_uscita(&c).expect("riletta");
+        assert_eq!(
+            lette.voci.get("DAC").map(|v| v.ms),
+            Some(LATENZA_MASSIMA_MS)
+        );
+        assert_eq!(
+            lette.voci.get("BT").map(|v| v.ms),
+            Some(-LATENZA_MASSIMA_MS)
+        );
+    }
+
+    #[test]
+    fn una_mappa_illeggibile_vale_vuota_e_lo_dice() {
+        let c = db();
+        crate::settings::write(&c, CHIAVE_LATENZA_PER_USCITA, "{non è json").expect("scritta");
+        let lette = load_latenze_per_uscita(&c).expect("non è un errore");
+        assert!(lette.voci.is_empty());
+        assert!(
+            lette.illeggibile,
+            "la finestra deve poterlo scrivere nel diario"
+        );
+
+        // Un JSON valido ma di un'altra forma è illeggibile allo stesso modo.
+        crate::settings::write(&c, CHIAVE_LATENZA_PER_USCITA, "[1,2,3]").expect("scritta");
+        assert!(load_latenze_per_uscita(&c).expect("letta").illeggibile);
+
+        // E la prima taratura la ripara invece di lasciarla rotta per sempre.
+        save_latenza_per_uscita(&c, "DAC", voce(30, FonteLatenza::Mano)).expect("scritta");
+        let riparata = load_latenze_per_uscita(&c).expect("riletta");
+        assert!(!riparata.illeggibile);
+        assert_eq!(riparata.voci.get("DAC").map(|v| v.ms), Some(30));
+    }
+
+    #[test]
+    fn una_voce_rotta_non_porta_via_le_altre() {
+        // Il caso vero: una `fonte` che questa versione non conosce, scritta
+        // da una più nuova. Le tarature delle altre uscite restano.
+        let c = db();
+        crate::settings::write(
+            &c,
+            CHIAVE_LATENZA_PER_USCITA,
+            r#"{"DAC":{"ms":25,"fonte":"mano","verificata":false,"quando_ms":0},
+               "BT":{"ms":200,"fonte":"radar","verificata":true,"quando_ms":0}}"#,
+        )
+        .expect("scritta");
+        let lette = load_latenze_per_uscita(&c).expect("letta");
+        assert!(!lette.illeggibile);
+        assert_eq!(lette.scartate, 1);
+        assert_eq!(lette.voci.len(), 1);
+        assert_eq!(lette.voci.get("DAC").map(|v| v.ms), Some(25));
+    }
+
+    #[test]
+    fn il_cursore_scrive_l_uscita_corrente_e_la_globale() {
+        let c = db();
+        save_latenza(&c, 40).expect("globale di ieri");
+        save_latenza_per_uscita(&c, "Cuffie BT", voce(180, FonteLatenza::Microfono))
+            .expect("taratura delle cuffie");
+
+        let (globale, voci) =
+            dichiara_latenza(&c, Some("DAC"), 75, 1_800_000_000_000).expect("dichiarata");
+        // L'uscita che suona ha il suo numero, scritto come gesto a mano.
+        assert_eq!(
+            voci.get("DAC"),
+            Some(&LatenzaUscita {
+                ms: 75,
+                fonte: FonteLatenza::Mano,
+                verificata: false,
+                quando_ms: 1_800_000_000_000,
+            })
+        );
+        assert_eq!(latenza_effettiva(globale, &voci, Some("DAC")), 75);
+        // La globale segue il cursore: è il ripiego di chi non ha un numero suo.
+        assert_eq!(globale, 75);
+        assert_eq!(load_latenza(&c).expect("riletta"), 75);
+        assert_eq!(latenza_effettiva(globale, &voci, Some("Altoparlanti")), 75);
+        // Le cuffie tarate col microfono non le tocca nessuno.
+        assert_eq!(latenza_effettiva(globale, &voci, Some("Cuffie BT")), 180);
+        assert_eq!(
+            voci.get("Cuffie BT").map(|v| v.fonte),
+            Some(FonteLatenza::Microfono)
+        );
+
+        // Un valore fuori scala torna tagliato, ed è quel che il cursore mostra.
+        let (globale, voci) = dichiara_latenza(&c, Some("DAC"), -9_000, 0).expect("dichiarata");
+        assert_eq!(globale, -LATENZA_MASSIMA_MS);
+        assert_eq!(
+            latenza_effettiva(globale, &voci, Some("DAC")),
+            -LATENZA_MASSIMA_MS
+        );
+    }
+
+    #[test]
+    fn senza_motore_il_cursore_scrive_solo_la_globale() {
+        let c = db();
+        let (globale, voci) = dichiara_latenza(&c, None, 60, 0).expect("dichiarata");
+        assert_eq!(globale, 60);
+        assert!(voci.is_empty(), "nessun nome da inventare");
+    }
+
+    // ── le guardie: nessun id ≤ 0 sul database ──
+
+    #[test]
+    fn un_ascolto_di_una_voce_di_sessione_non_si_scrive() {
+        // Le righe ci sono davvero, con id 0 e negativo: SQLite le accetta se
+        // gliele si dà a mano. Così la prova cade se cade la guardia, e non
+        // passa per caso perché l'UPDATE non trova niente.
+        let mut c = db();
+        for id in [0, -5] {
+            brano(&c, id, 180_000);
+            let esito = record_play(
+                &mut c,
+                &Listen {
+                    track_id: id,
+                    started_at: 1_700_000_000_000,
+                    listened_ms: 120_000,
+                    counts: true,
+                },
+                "prova",
+            );
+            assert_eq!(
+                esito.map_err(|err| err.code().kind()),
+                Err(ErrorCodeKind::LibraryTrackNotFound),
+                "id {id}"
+            );
+            assert_eq!(conteggio(&c, id), (0, None, 0), "id {id}");
+        }
+        let cronologia: i64 = c
+            .query_row("SELECT COUNT(*) FROM play_history", [], |r| r.get(0))
+            .expect("cronologia");
+        assert_eq!(cronologia, 0);
+    }
+
+    #[test]
+    fn la_posizione_di_una_voce_di_sessione_non_si_scrive() {
+        let c = db();
+        save_posizione(&c, 7, 42_000).expect("scritta");
+        for id in [0, -3] {
+            assert_eq!(
+                save_posizione(&c, id, 99_000).map_err(|err| err.code().kind()),
+                Err(ErrorCodeKind::LibraryTrackNotFound),
+                "id {id}"
+            );
+        }
+        // Il segno di prima è ancora lì, intatto.
+        assert_eq!(load_posizione(&c, 7).expect("letta"), 42_000);
+    }
+
+    #[test]
+    fn il_segno_di_prima_non_vale_per_una_voce_di_sessione() {
+        // Il numero nudo che scriveva la versione di prima vale per qualunque
+        // brano si chieda: è il motivo per cui esiste, ed è il buco. Una voce
+        // di sessione partirebbe lì.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_POSIZIONE, "42000").expect("segno di prima");
+        assert_eq!(
+            load_posizione(&c, 7).expect("letta"),
+            42_000,
+            "per una riga vale"
+        );
+        for id in [0, -3] {
+            assert_eq!(load_posizione(&c, id).expect("letta"), 0, "id {id}");
+        }
+    }
+
+    #[test]
+    fn una_coda_sul_disco_con_una_voce_di_sessione_vale_vuota() {
+        // Scritta a mano, perché `save_queue` non la scriverebbe: è il caso del
+        // database toccato da fuori, e all'avvio quelle voci entrerebbero nel
+        // lettore.
+        let c = db();
+        crate::settings::write(
+            &c,
+            CHIAVE_CODA,
+            r#"{"tracks":[3,-1],"order":[0,1],"order_pos":0,"shuffle":false,"repeat":"off"}"#,
+        )
+        .expect("coda a mano");
+        assert_eq!(load_queue(&c).expect("letta"), QueueSnapshot::default());
+
+        // La stessa forma con sole righe vere si rilegge com'è.
+        crate::settings::write(
+            &c,
+            CHIAVE_CODA,
+            r#"{"tracks":[3,1],"order":[0,1],"order_pos":0,"shuffle":false,"repeat":"off"}"#,
+        )
+        .expect("coda a mano");
+        assert_eq!(load_queue(&c).expect("letta").tracks, [3, 1]);
+    }
+
+    #[test]
+    fn una_coda_con_una_voce_di_sessione_non_si_scrive_affatto() {
+        let c = db();
+        let mia = QueueSnapshot {
+            tracks: vec![3, 1, 2],
+            order: vec![0, 1, 2],
+            order_pos: Some(1),
+            shuffle: false,
+            repeat: RepeatMode::Off,
+        };
+        save_queue(&c, &mia).expect("salvata");
+
+        let rifiutate = [
+            // Il corrente è una maniglia.
+            QueueSnapshot {
+                tracks: vec![-1, -2],
+                order: vec![0, 1],
+                order_pos: Some(0),
+                ..QueueSnapshot::default()
+            },
+            // Una coda di sessione finita: nessun corrente. È il buco della
+            // guardia sul solo corrente — filtrata, diventerebbe una coda vuota
+            // scritta sopra quella dell'utente.
+            QueueSnapshot {
+                tracks: vec![-1, -2, -3],
+                order: vec![0, 1, 2],
+                order_pos: None,
+                ..QueueSnapshot::default()
+            },
+            // Mista, con il corrente che è una riga vera.
+            QueueSnapshot {
+                tracks: vec![4, -9],
+                order: vec![0, 1],
+                order_pos: Some(0),
+                ..QueueSnapshot::default()
+            },
+            // Lo zero non è di nessuno, e si rifiuta con i negativi.
+            QueueSnapshot {
+                tracks: vec![5, 0],
+                order: vec![0, 1],
+                order_pos: Some(0),
+                ..QueueSnapshot::default()
+            },
+        ];
+        for coda in &rifiutate {
+            assert_eq!(
+                save_queue(&c, coda).map_err(|err| err.code().kind()),
+                Err(ErrorCodeKind::LibraryTrackNotFound),
+                "{coda:?}"
+            );
+            assert_eq!(
+                load_queue(&c).expect("riletta"),
+                mia,
+                "sul disco deve restare la coda dell'utente"
+            );
+        }
     }
 
     #[test]

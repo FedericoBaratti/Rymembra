@@ -59,6 +59,9 @@ import { useAscolto } from "../pagine";
 import { Aggiornamenti } from "../parti/Aggiornamenti";
 import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
+import { gestoPermesso } from "../insieme";
+import { SchedaInsieme } from "../parti/Insieme";
+import { useLettore } from "../riproduzione";
 import { Interruttore } from "../parti/Interruttore";
 import { ModelliIA } from "../parti/ModelliIA";
 import type { UsoImportazioni } from "../parti/Importazioni";
@@ -266,6 +269,11 @@ function voci(): readonly {
     v("nuvola", "drive"),
     v("sincronia", "sync"),
     v("sincronia", "devices"),
+    // Nessuno cerca «ascolta insieme» sapendo che si chiama così: si cerca
+    // «lan», «sessione», «jam», «firewall», o la parola «insieme». E chi cerca
+    // «firewall» lo fa dopo aver risposto di fretta alla richiesta di Windows,
+    // cioè proprio quando trovare la scheda conta.
+    v("sincronia", "together"),
     v("legacy", "legacy"),
     v("esterno", "link"),
     v("esterno", "account"),
@@ -1076,6 +1084,12 @@ function SchedaSpegnimento({
   onSpegnimento: (minuti: number) => void;
 }) {
   const [scelta, setScelta] = useState<string>("spento");
+  // In una sessione di «Ascolta insieme» il timer non c'è: fermerebbe la
+  // musica a tutti, e il nucleo lo annulla all'ingresso e lo rifiuta dopo.
+  // Le linguette si spengono con la ragione accanto, nello stile delle altre
+  // spente: raggiungibili, e lette da chi ci arriva.
+  const spento = useLettore((s) => !gestoPermesso(s.insieme, "timer"));
+  const ragione = spento ? t("together.sleep.off") : undefined;
 
   // Il nucleo è la verità: se il timer non c'è più, la linguetta torna a
   // «spento» qualunque cosa avesse scelto questa finestra.
@@ -1084,12 +1098,13 @@ function SchedaSpegnimento({
   }, [spegnimentoMs]);
 
   const voci = [
-    { chiave: "spento", etichetta: t("settings.sleep.off") },
+    { chiave: "spento", etichetta: t("settings.sleep.off"), spenta: ragione },
     ...DURATE_SPEGNIMENTO.map((minuti) => ({
       chiave: String(minuti),
       etichetta: t("settings.sleep.minutes", { n: minuti }),
+      spenta: ragione,
     })),
-    { chiave: "brano", etichetta: t("settings.sleep.endOfTrack") },
+    { chiave: "brano", etichetta: t("settings.sleep.endOfTrack"), spenta: ragione },
   ];
 
   return (
@@ -1113,6 +1128,36 @@ function SchedaSpegnimento({
         </p>
       )}
     </Scheda>
+  );
+}
+
+/**
+ * «Continua quando la coda finisce», spento in una sessione di «Ascolta
+ * insieme».
+ *
+ * Un componente suo per una ragione sola: deve sapere se c'è una sessione, e
+ * chiederlo qui sotto vuol dire ridisegnare questo interruttore e non la
+ * schermata intera quando si entra o si esce. In sessione la coda non continua
+ * da sola — riempirebbe la coda di tutti con brani che nessuno ha scelto — e
+ * il nucleo lo rifiuta: l'interruttore lo dice con `impedito`, che è la
+ * ragione al posto della spiegazione, come per ogni interruttore che non si
+ * può toccare. La preferenza resta com'era, e torna a valere all'uscita.
+ */
+function InterruttoreAutoplay({
+  acceso,
+  onCambia,
+}: {
+  acceso: boolean;
+  onCambia: (attivo: boolean) => void;
+}) {
+  const spento = useLettore((s) => !gestoPermesso(s.insieme, "autoplay"));
+  return (
+    <Interruttore
+      etichetta={t("settings.autoplay.toggle")}
+      acceso={acceso}
+      onCambia={onCambia}
+      impedito={spento ? t("together.autoplay.off") : undefined}
+    />
   );
 }
 
@@ -2446,11 +2491,7 @@ export function Impostazioni({
                   ]}
                 />
                 <VolumeUniforme onErrore={onErrore} />
-                <Interruttore
-                  etichetta={t("settings.autoplay.toggle")}
-                  acceso={autoplay}
-                  onCambia={onAutoplay}
-                />
+                <InterruttoreAutoplay acceso={autoplay} onCambia={onAutoplay} />
                 {/* Qui e non in «Aspetto», per la regola di questa sezione: il
                     dominio della chiave è `player.*`. E dentro questa scheda e
                     non in una sua, perché una scheda intera per un interruttore
@@ -3020,6 +3061,15 @@ export function Impostazioni({
                   </ul>
                 </details>
               )}
+            </Scheda>
+          )}
+          {/* «Ascolta insieme» accanto alla sincronia: è l'altra risposta alla
+              domanda della sezione — cosa esce da questo computer, e verso chi
+              — con la differenza che qui non esce verso un servizio ma verso i
+              PC della stessa rete, e solo quelli associati con un codice. */}
+          {sezione === "sincronia" && (
+            <Scheda icona="i-insieme" titolo={t("settings.together.title")} guida="together">
+              <SchedaInsieme onErrore={onErrore} />
             </Scheda>
           )}
           {sezione === "legacy" && (

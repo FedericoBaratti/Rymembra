@@ -34,11 +34,13 @@ import { AvvisoAudio } from "./AvvisoAudio";
 import { Cronologia } from "./Cronologia";
 import { Giudizio } from "./Giudizio";
 import { Icona } from "./Icone";
+import { SegnoInsieme, TastoInsieme } from "./Insieme";
 import { Scrubber } from "./Scrubber";
 import { Segmentato } from "./Segmentato";
 import { Trasporto } from "./Trasporto";
 import { t, useLingua } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
+import { branoDaMostrare, gestoPermesso } from "../insieme";
 import { statoSuono, useCambio } from "../segnali";
 import { Presenza } from "../presenza";
 
@@ -62,8 +64,9 @@ export const Colonna = memo(function Colonna({
   // l'iscrizione i testi resterebbero quelli del primo disegno.
   useLingua();
   const [scheda, setScheda] = useState<"coda" | "cronologia">("coda");
-  const righe = useRigheCoda(stato.coda, onErrore);
-  const brano = stato.brano;
+  const righe = useRigheCoda(stato.coda, onErrore, stato.insieme?.revisione ?? null);
+  // Con il titolo della voce di calibrazione tradotto: vedi `branoDaMostrare`.
+  const brano = stato.brano === null ? null : branoDaMostrare(stato.brano, stato.insieme, t);
   const suono = statoSuono(brano !== null, stato.inPausa);
   const cambio = useCambio(brano?.id);
 
@@ -92,6 +95,10 @@ export const Colonna = memo(function Colonna({
 
         <header className="testa column-header">
           <span className="occhiello hero-eyebrow">{t("column.aria")}</span>
+          {/* Con la colonna aperta la barra non c'è, e con lei il tasto di
+              «Ascolta insieme»: questo apre lo stesso pannello come
+              finestrella. Anche a funzione spenta — vedi `TastoInsieme`. */}
+          <TastoInsieme />
           <button
             type="button"
             className="tasto icon-btn"
@@ -164,6 +171,7 @@ export const Colonna = memo(function Colonna({
               >
                 <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
               </div>
+              <SegnoInsieme insieme={stato.insieme} dove="colonna" />
             </div>
 
             <Scrubber stato={stato} onErrore={onErrore} />
@@ -205,7 +213,11 @@ export const Colonna = memo(function Colonna({
               <button
                 type="button"
                 className="bottone minuto btn-ghost"
-                disabled={stato.coda.length === 0}
+                /* In sessione la coda è di tutti, e la svuota solo chi ospita. */
+                disabled={stato.coda.length === 0 || !gestoPermesso(stato.insieme, "svuota")}
+                title={
+                  gestoPermesso(stato.insieme, "svuota") ? undefined : t("together.clear.off")
+                }
                 onClick={() => comanda(ipc.codaSvuota())}
               >
                 {t("queue.clear")}

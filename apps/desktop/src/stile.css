@@ -2363,8 +2363,15 @@ body {
    dell'albero, cioè quasi sempre con la cima della pagina fuori vista, e un
    annulla che non si vede non annulla niente. Un gradino sopra gli aderenti:
    l'intestazione dell'elenco dei brani è aderente anche lei, e viene dopo nel
-   DOM. */
-.avviso-coda {
+   DOM.
+
+   Aderente è il contenitore e non ognuno degli avvisi: lo stesso bisogno ce
+   l'hanno l'«Annulla» di una playlist eliminata e gli inviti di «Ascolta
+   insieme», che valgono un minuto, e tre aderenti fratelli con `top: 0` si
+   fermano tutti nello stesso punto, uno sopra l'altro — si leggeva solo
+   l'ultimo. Dentro un contenitore solo si impilano come nel flusso, e si
+   fermano insieme. */
+.aderenti-pagina {
   position: sticky;
   top: 0;
   z-index: calc(var(--strato-aderente) + 1);
@@ -2868,9 +2875,6 @@ body {
 .in-riproduzione .avvisi-np > * {
   pointer-events: auto;
   box-shadow: var(--shadow-player);
-}
-.in-riproduzione .avvisi-np > .avviso-coda {
-  position: static;
 }
 
 .in-riproduzione .testa {
@@ -8538,9 +8542,19 @@ body {
 }
 /* `min-width: 0` su un figlio di flex non è superstizione: senza, la larghezza
    minima è quella del contenuto, il titolo lungo non si accorcia e spinge i
-   comandi fuori dalla barra invece di andare in ellissi. */
+   comandi fuori dalla barra invece di andare in ellissi.
+
+   Non basta però alla **griglia** della barra: la sua prima colonna non scende
+   sotto il `min-content` di `.ora`, e il `min-content` di una riga che non va a
+   capo è la riga intera — un artista lungo («Needle · Songs Your Mother Never
+   Sang You») allargava la colonna e spingeva fuori dal bordo destro
+   equalizzatore e volume, a una finestra di 900 pixel. `contain: inline-size`
+   toglie a titolo e autore la loro misura intrinseca, e `flex: 1` dà loro lo
+   spazio che la colonna ha davvero: i puntini fanno il resto. */
 .lettore .chi {
+  flex: 1;
   min-width: 0;
+  contain: inline-size;
 }
 .lettore .chi .nome,
 .lettore .chi .autore {
@@ -8586,7 +8600,7 @@ body {
   cursor: pointer;
   transition: color var(--transition-fast), background var(--transition-fast);
 }
-.tasto:hover {
+.tasto:hover:not(:disabled) {
   background: var(--color-surface-3);
   color: var(--color-text-1);
 }
@@ -8603,10 +8617,24 @@ body {
   color: var(--color-surface-0);
   font-size: 16px;
 }
-.tasto.grande:hover {
+.tasto.grande:hover:not(:disabled) {
   background: var(--accent);
   color: var(--color-surface-0);
   filter: brightness(1.08);
+}
+/* Un tasto spento si vede spento, e al passaggio non si accende. Fino alla
+   3.1.0 lo era solo a schermo intero (`.in-riproduzione .comandi`), perché
+   altrove un tasto del trasporto o della coda non si spegneva mai; adesso lo
+   spegne una sessione — il casuale per tutti, il trasporto e la coda per chi
+   segue senza averli avuti da chi ospita — e un tasto che sembra acceso e non
+   risponde insegna che il lettore è rotto. Il perché è nel `title`. */
+.tasto:disabled {
+  color: var(--color-text-3);
+  opacity: 0.55;
+  cursor: default;
+}
+.tasto.grande:disabled {
+  color: var(--color-surface-0);
 }
 /* Il «1» di «ripeti questo brano»: un esponente, non un'icona diversa — il
    gesto è lo stesso e cambiarne il disegno costringerebbe a riconoscerne due. */
@@ -8648,6 +8676,13 @@ body {
   line-height: 1.2;
   color: var(--color-text-3);
   text-align: center;
+  /* La riga dei dati del file non decide quanto è larga la colonna del
+     trasporto: senza, «FLAC · 44,1 kHz · 24-bit · Stereo · 1058 kbps» teneva
+     la colonna larga quanto lei, e su una barra stretta a pagare era il titolo
+     del brano, ridotto a cinque lettere. Come per la riga della sessione, più
+     sotto: nessuna misura sua, tutta la larghezza della colonna, i puntini. */
+  contain: inline-size;
+  align-self: stretch;
 }
 
 .lettore .suono {
@@ -12101,7 +12136,8 @@ body {
  * Una riga sola, a differenza delle altre due: quelle sono il nome del brano e
  * vanno lette intere, questa è un commento — e un commento che va a capo
  * pesa nella riga quanto il titolo. */
-.riga-coda .perche {
+.riga-coda .perche,
+.riga-coda .di-chi {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -12897,4 +12933,282 @@ body {
 }
 .attribuzione-brano .bottone {
   gap: 5px;
+}
+
+/* ── Ascolta insieme ──────────────────────────────────────────────────────────
+ *
+ * Il pannello, la fascia della sessione, gli inviti, il codice e il segno
+ * accanto a quel che suona (`parti/Insieme.tsx`). Quasi tutto riusa vestiti che
+ * ci sono già — la cornice del pannello dell'equalizzatore, la fascia delle
+ * notizie, la riga dei dati del file — e qui sta solo quel che quei vestiti non
+ * sapevano fare: un elenco di PC con un tasto per riga, un conto alla rovescia,
+ * quattro cifre da confrontare a colpo d'occhio.
+ */
+
+/* Il tasto, nella barra e nella colonna: in accento finché si è in una
+   sessione, come quello dell'equalizzatore quando i filtri sono accesi. Nella
+   barra lo direbbe già `.con-pannello .tasto[data-acceso]`; nella colonna il
+   guscio non c'è, e la regola deve dirlo da sé. */
+.tasto-insieme[data-acceso] {
+  color: var(--accent);
+}
+
+/* Il pannello appeso alla barra: la cornice di `.pannello-eq`, più una colonna
+   che scorre. L'equalizzatore ha un'altezza fissa — dieci cursori — mentre qui
+   un elenco di PC, la calibrazione e gli inviti insieme superano l'altezza di
+   una finestra bassa, e un pannello che esce dallo schermo dall'alto perde
+   proprio la sua prima riga. */
+.pannello-insieme {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  max-height: min(600px, calc(100vh - 140px));
+  overflow-y: auto;
+}
+.titolo-insieme {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Il contenuto, uguale nel pannello e nella finestrella. */
+.insieme {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  min-width: 0;
+}
+.insieme p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+.insieme h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+/* Le note in fondo — la rete, la porta, la sincronia — un gradino sotto le
+   spiegazioni: si leggono quando qualcosa non va, non ogni volta. */
+.insieme p.nota-insieme {
+  font-size: 11.5px;
+  color: var(--color-text-3);
+}
+.azioni-insieme {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+}
+.gruppo-insieme {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+
+/* Un PC per riga: il nome — con l'impronta sotto, quando serve a distinguere
+   due PC omonimi — e a destra il suo tasto. Il nome cede e va in puntini; il
+   tasto no, perché è la sola cosa della riga che si preme. */
+.elenco-insieme {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.riga-insieme {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 5px var(--spazio-2);
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  font-size: 12.5px;
+}
+.riga-insieme .bottone {
+  flex: none;
+}
+/* `overflow-wrap: anywhere` per le frasi con un nome dentro — «Marco ti
+   invita…» negli inviti, «L'indirizzo di questo PC: …» — che vanno a capo:
+   un nome di PC senza spazi più largo della riga non si spezzava, e alzava il
+   minimo della riga fino a spingere fuori i tasti. Il nome da solo invece
+   resta su una riga e cede ai puntini, col `title` che lo porta intero. */
+.chi-insieme {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.nome-insieme {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-1);
+}
+
+/* Le righe con le linguette di «che cosa potrà fare» — la richiesta, l'invito,
+   un membro visto da chi ospita — hanno tre parole in più accanto al nome e al
+   tasto. Quando non ci stanno — il pannello stretto, un nome lungo, l'inglese
+   — vanno a capo invece di stringere il nome a tre lettere: il nome tiene il
+   suo minimo, e linguette e tasto scendono sotto, insieme. Nella fascia sopra
+   la pagina il minimo è più largo, perché lì il nome sta dentro una frase. */
+.riga-insieme.con-diritti,
+.attesa-insieme.con-diritti {
+  flex-wrap: wrap;
+}
+.riga-insieme.con-diritti > .chi-insieme {
+  flex-basis: 8em;
+}
+.attesa-insieme.con-diritti > .chi-insieme {
+  flex-basis: 14em;
+}
+/* Il guscio delle linguette, che porta la spiegazione nel `title`: non cede,
+   come i tasti. Nella fascia il selettore è più forte per la stessa ragione
+   del conto alla rovescia: `.notizia > span` allarga ogni `span` figlio. */
+.diritti-insieme,
+.attesa-insieme > .diritti-insieme {
+  display: inline-flex;
+  flex: none;
+}
+
+/* L'indirizzo di questo PC, con «Copia» accanto: una riga come quelle dei PC,
+   senza il fondo — non è un elemento di un elenco ma una cosa da leggere. Le
+   cifre in chiaro e non nel grigio di `.percorso`: sono il contenuto, e vanno
+   dettate. */
+.indirizzo-insieme {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.indirizzo-insieme .bottone {
+  flex: none;
+}
+.indirizzo-insieme .percorso {
+  font-size: 12.5px;
+  color: var(--color-text-1);
+}
+
+/* Dentro il pannello le fasce del guasto e dell'avviso stanno nella colonna,
+   che ha già il suo passo: il margine sotto, pensato per la cima della
+   pagina, lo raddoppierebbe. E la frase va a capo dove serve: in quattrocento
+   pixel un nome di PC senza spazi, o il dettaglio di un guasto, uscivano dal
+   bordo e facevano scorrere il pannello di lato — la fascia d'errore, a
+   differenza di quella delle notizie, non lo diceva da sé. */
+.insieme > .errore,
+.insieme > .notizia {
+  margin-bottom: 0;
+}
+.insieme > .errore > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.etichetta-insieme {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+
+/* Il conto alla rovescia e il numero delle persone: cifre a larghezza fissa,
+   o il testo accanto ballerebbe a ogni secondo. Nella fascia il selettore è
+   più forte, perché `.notizia > span` allarga ogni `span` figlio, e il conto
+   si prenderebbe metà della riga. */
+.conto-insieme,
+.attesa-insieme > .conto-insieme {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-2);
+}
+
+/* Le cose da controllare quando non si vede nessuno, e gli altri indirizzi di
+   questo PC: chiusi di serie, servono solo a chi li cerca. */
+.cause-insieme,
+.altri-insieme {
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.cause-insieme summary,
+.altri-insieme summary {
+  cursor: pointer;
+  color: var(--color-text-1);
+}
+.cause-insieme ul,
+.altri-insieme ul {
+  display: grid;
+  gap: 3px;
+  margin: var(--spazio-1) 0 0;
+  padding-left: var(--spazio-4);
+}
+
+/* La calibrazione: il cursore della latenza con i due tasti da un
+   millisecondo ai lati. I tasti non cedono, il cursore sì. */
+.calibra-insieme .latenza {
+  gap: var(--spazio-2);
+}
+.latenza .bottone {
+  flex: none;
+}
+
+/* Le quattro cifre. Grandi e con le cifre a larghezza fissa: si confrontano
+   con quelle dell'altro schermo da un metro di distanza, e «48 21» deve stare
+   nello stesso punto su tutti e due. Selezionabili, perché qualcuno lo
+   detterà al telefono. */
+.codice-insieme {
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 40px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: var(--color-text-1);
+  user-select: text;
+}
+
+/* La fascia della sessione e gli inviti: il vestito di `.notizia`, con i
+   tasti che non si stringono e una seconda riga più piccola. */
+.sotto-insieme {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.fascia-insieme .bottone,
+.attesa-insieme .bottone {
+  flex: none;
+}
+/* Gli inviti restano in vista a elenco scorso, come l'«Annulla» della coda e
+   per la stessa ragione: valgono un minuto, e la finestra può tornare dal
+   vassoio con la pagina a metà di un elenco lungo. Aderenti però non da sé:
+   stanno nel contenitore aderente di quell'«Annulla», `.aderenti-pagina`, e
+   lì si impilano invece di coprirsi. */
+
+/* Il segno accanto a quel che suona, in accento: è la sola riga della barra e
+   della colonna che parla di **con chi** si sta ascoltando, e il grigio della
+   riga dei dati del file la confonderebbe con quelli. */
+.lettore .segno-insieme,
+.colonna .segno-insieme {
+  color: var(--accent);
+}
+/* Nella barra la riga non deve allargare la colonna di mezzo. La griglia della
+   barra dà a ogni colonna almeno il suo `min-content`, e il `min-content` di
+   una riga che non va a capo è la riga intera: con «In ascolto con» e il nome
+   lungo di un PC la colonna del trasporto cresceva fino a spingere fuori dal
+   bordo destro muto e volume. `contain: inline-size` toglie alla riga la sua
+   misura intrinseca — conta zero, e prende la larghezza che la colonna ha già
+   — e `align-self: stretch` gliela dà tutta, perché `.comandi` centra i figli
+   e una riga senza misura centrata sarebbe larga zero. I puntini fanno il
+   resto, e il `title` porta la frase intera. */
+.lettore .segno-insieme {
+  contain: inline-size;
+  align-self: stretch;
 }
