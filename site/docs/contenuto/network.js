@@ -2,7 +2,7 @@
 (window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "network",
   title: "Network",
-  lead: "One blocking HTTP client for every service, per-service pacing with a circuit breaker, seekable HTTP streams, and the OAuth pieces that do not depend on the provider.",
+  lead: "One blocking HTTP client for every service, per-service pacing with a circuit breaker, seekable HTTP streams, and the OAuth pieces that do not depend on the provider. The LAN transport of «Listen together» is a separate crate, `rymembra-insieme`: see [Listen together](#together).",
   entries: [
     {
       id: "http",
@@ -77,7 +77,7 @@
         },
         "**Errors must look like the network.** Symphonia only sees `io::Error`s; `da_app` maps `net.offline` to OS error 1231, `net.timeout` to 121, everything else to 64 (`ERROR_NETNAME_DELETED`) — numbers `errors::rete::e_di_rete` recognises — so a dropped stream becomes a retryable `playback.streamInterrupted` instead of «file damaged».",
       ],
-      see: ["streaming", "http"],
+      see: ["streaming", "http", "together"],
     },
     {
       id: "oauth",
@@ -93,7 +93,7 @@
             "**Expiry**: tokens are refreshed `ANTICIPO` = 60 s before they expire.",
           ],
         },
-        "Never written into an error (and therefore never into the log): the code verifier, authorization codes, access and refresh tokens. Keys stored in the keychain include `google.refresh_token`, `google.client_secret`, `lastfm.api_key`, `lastfm.segreto`, `lastfm.sessione`, `listenbrainz.token` and the per-profile language-model keys.",
+        "Never written into an error (and therefore never into the log): the code verifier, authorization codes, access and refresh tokens. Keys stored in the keychain include `google.refresh_token`, `google.client_secret`, `lastfm.api_key`, `lastfm.segreto`, `lastfm.sessione`, `listenbrainz.token`, the per-profile language-model keys, and `insieme.chiave.<device id>`, the private key with which this PC identifies itself to the PCs it is paired with.",
       ],
       see: ["cloud", "scrobbling", "models"],
     },

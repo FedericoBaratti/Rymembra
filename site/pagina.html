@@ -113,9 +113,10 @@
       <li><a href="#disco" data-rotta="disco"><span class="n">2</span><span class="nome">{{=rotta.disco}}</span></a></li>
       <li><a href="#cataloghi" data-rotta="cataloghi"><span class="n">3</span><span class="nome">{{=rotta.cataloghi}}</span></a></li>
       <li><a href="#suono" data-rotta="suono"><span class="n">4</span><span class="nome">{{=rotta.suono}}</span></a></li>
-      <li><a href="#skin" data-rotta="skin"><span class="n">5</span><span class="nome">{{=rotta.skin}}</span></a></li>
-      <li><a href="#tuo" data-rotta="tuo"><span class="n">6</span><span class="nome">{{=rotta.tuo}}</span></a></li>
-      <li><a href="#scarica" data-rotta="scarica"><span class="n">7</span><span class="nome">{{=rotta.scarica}}</span></a></li>
+      <li><a href="#insieme" data-rotta="insieme"><span class="n">5</span><span class="nome">{{=rotta.insieme}}</span></a></li>
+      <li><a href="#skin" data-rotta="skin"><span class="n">6</span><span class="nome">{{=rotta.skin}}</span></a></li>
+      <li><a href="#tuo" data-rotta="tuo"><span class="n">7</span><span class="nome">{{=rotta.tuo}}</span></a></li>
+      <li><a href="#scarica" data-rotta="scarica"><span class="n">8</span><span class="nome">{{=rotta.scarica}}</span></a></li>
     </ol>
   </nav>
 
@@ -250,7 +251,32 @@
     </div>
   </section>
 
-  <!-- 5 · Le skin: la stessa griglia, Plain e Neon, con una tendina guidata dallo scorrimento. -->
+  <!-- 5 · Insieme: due PC, lo stesso codice, e la stessa musica nello stesso istante. -->
+  <section class="tappa" id="insieme" data-tappa aria-labelledby="t-insieme">
+    <div class="tappa-testo">
+      <h2 id="t-insieme">{{insieme.titolo}}</h2>
+      <p>{{insieme.testo}}</p>
+      <ul class="punti">{{#insieme.punti}}<li>{{.}}</li>{{/insieme.punti}}</ul>
+    </div>
+    <div class="scena scena-insieme" aria-hidden="true" data-insieme>
+      <div class="pc pc-uno">
+        <p class="scena-titolo">{{=scena.insiemeOspita}}</p>
+        <p class="titolo">{{=scena.pcUno}}</p>
+        <p class="codice"><span>{{=scena.insiemeCodice}}</span> 48 21</p>
+        <div class="barre-insieme"><span style="--h:.62"></span><span style="--h:.88"></span><span style="--h:.44"></span><span style="--h:.7"></span><span style="--h:.36"></span><span style="--h:.8"></span><span style="--h:.52"></span><span style="--h:.66"></span></div>
+      </div>
+      <p class="legame"><span>{{=scena.insiemeLegame}}</span></p>
+      <div class="pc pc-due">
+        <p class="scena-titolo">{{=scena.insiemeSegue}}</p>
+        <p class="titolo">{{=scena.pcDue}}</p>
+        <p class="codice"><span>{{=scena.insiemeCodice}}</span> 48 21</p>
+        <div class="barre-insieme"><span style="--h:.62"></span><span style="--h:.88"></span><span style="--h:.44"></span><span style="--h:.7"></span><span style="--h:.36"></span><span style="--h:.8"></span><span style="--h:.52"></span><span style="--h:.66"></span></div>
+      </div>
+      <p class="scena-nota">{{=scena.insiemeNota}}</p>
+    </div>
+  </section>
+
+  <!-- 6 · Le skin: la stessa griglia, Plain e Neon, con una tendina guidata dallo scorrimento. -->
   <section class="tappa" id="skin" data-tappa aria-labelledby="t-skin">
     <div class="tappa-testo">
       <h2 id="t-skin">{{skin.titolo}}</h2>
@@ -272,7 +298,7 @@
     </figure>
   </section>
 
-  <!-- 6 · Tuo: niente account, niente telemetria, un profilo che si porta a mano. -->
+  <!-- 7 · Tuo: niente account, niente telemetria, un profilo che si porta a mano. -->
   <section class="tappa" id="tuo" data-tappa aria-labelledby="t-tuo">
     <div class="tappa-testo">
       <h2 id="t-tuo">{{tuo.titolo}}</h2>
@@ -294,7 +320,7 @@
   </section>
 </div>
 
-<!-- 7 · L'arrivo: la riga che ha fatto il viaggio è il pulsante. -->
+<!-- 8 · L'arrivo: la riga che ha fatto il viaggio è il pulsante. -->
 <section class="arrivo" id="scarica" aria-labelledby="t-scarica">
   <div class="arrivo-testa">
     <h2 id="t-scarica">{{scarica.titolo}}</h2>

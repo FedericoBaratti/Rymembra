@@ -132,6 +132,9 @@ pub(crate) fn sgombera(app: &tauri::AppHandle, brani: &[i64], ferma: bool) {
 /// `internal.aborted` se lo stato non c'è più, `db.*` se la scrittura fallisce.
 #[tauri::command]
 pub async fn brani_togli(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Cancellazione> {
+    // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
+    // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
+    crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
     let mano = app.clone();
     let esito = in_disparte("rimozione di brani dalla libreria", move || {
         let stato = stato_di(&mano, "rimozione di brani")?;
@@ -397,6 +400,9 @@ fn immagini_per_chiave(
 /// c'è più, `db.*` se la lettura fallisce.
 #[tauri::command]
 pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usize> {
+    // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
+    // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
+    crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
     in_disparte("collocazione dei brani da eliminare", move || {
         let stato = stato_di(&app, "collocazione dei brani")?;
         let piano = con_libreria(&stato, |libreria| {
@@ -507,6 +513,9 @@ pub async fn brani_elimina(
     brani: Vec<i64>,
     definitivi: Option<bool>,
 ) -> Esito<usize> {
+    // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
+    // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
+    crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
     let mano = app.clone();
     let definitivi = definitivi.unwrap_or(false);
     let esito = in_disparte("eliminazione di brani dal disco", move || {

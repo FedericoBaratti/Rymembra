@@ -32,7 +32,7 @@
       title: "IPC: commands, events, URI schemes",
       src: ["apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts"],
       body: [
-        "**262 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
+        "**283 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
         {
           table: {
             head: ["Area", "Commands", "Area", "Commands"],
@@ -51,16 +51,18 @@
               ["Deletion", "3", "Zoom", "3"],
               ["Watched folders", "2", "Tour", "2"],
               ["Drag and drop", "1", "Views", "1"],
+              ["Listen together (`insieme/mod.rs`)", "21", "—", "—"],
             ],
           },
         },
         "Anything that may wait on a disk or that reads a lot runs on the blocking pool ([Runtime](#runtime)). Commands that change what the backup covers end with `nuvola::se_riuscito`, which wakes the backup.",
-        { h: "Events (37 names)" },
+        { h: "Events (38 names)" },
         {
           table: {
             head: ["Prefix", "Events"],
             rows: [
               ["`riproduzione:`", "`stato`, `tempo`, `spettro`, `audio`, `errore`, `dispositivi`, `volume`, `eq`"],
+              ["`insieme:`", "`stato`, `avviso`"],
               ["`coda:`", "`sostituita`"],
               ["`scansione:`, `cartelle:`", "`avanzamento`, `finita`; `cambiate`"],
               ["`scarico:`", "`brano`, `avanzamento`, `guasto`, `finito`, `in_libreria`, `riconciliato`"],
@@ -105,7 +107,7 @@
         },
         "Inside the core: untrusted archives (`.ryskin`, `.ryprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. `unsafe` is forbidden in every crate except `rymembra-barra`, where it is confined to `finestra.rs` with a justification on each block (`undocumented_unsafe_blocks` is denied).",
       ],
-      see: ["skin-package", "profile", "http", "oauth"],
+      see: ["skin-package", "profile", "http", "oauth", "together-security"],
     },
     {
       id: "logs",

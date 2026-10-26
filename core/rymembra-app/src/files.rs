@@ -971,7 +971,13 @@ const BUFFER_LETTURA: usize = 64 * 1024;
 /// Un orologio che non si legge dà 0: un file «modificato all'epoca zero» verrà
 /// riletto a ogni scansione, che è lento ma corretto — il contrario, dargli
 /// l'ora attuale, lo farebbe sembrare aggiornato per sempre.
-fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
+///
+/// `pub(crate)` per il descrittore di «Ascolta insieme» (`insieme::descrittore`),
+/// che deve dire la data **nella stessa forma** in cui la scansione l'ha scritta:
+/// è il numero che l'altro PC confronta con `tracks.date_modified`, e una
+/// seconda copia di questa funzione sarebbe il primo posto in cui le due forme
+/// si separano.
+pub(crate) fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
     metadata
         .modified()
         .ok()

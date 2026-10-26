@@ -37,7 +37,7 @@
         "The clock thread `rymembra-orologio` (250 ms) also saves what is dirty (queue, volume, EQ; 2 s lock budget, 400 ms when exiting), detects device loss, fires the sleep timer, saves the resume position every 20 beats (5 s) in `player.position`, and sets `in_attesa` after two «dry» beats in which a stream did not advance — the window then says «Waiting for data…». The window interpolates the playhead between beats ([Frontend](#frontend)).",
         "`riprendi_coda` restores yesterday's queue and position at startup without playing; `primo_stato_fuori` then shows it in SMTC, tray and taskbar.",
       ],
-      see: ["queue", "engine", "output", "listens"],
+      see: ["queue", "engine", "output", "listens", "together"],
     },
     {
       id: "queue",
@@ -55,7 +55,7 @@
         "Commands: `suona` (replace and play), `coda_accoda` (append), `coda_dopo` (play next), `coda_vai`, `coda_togli`, `coda_riordina`, `coda_svuota`, `ripeti`, `mescola`, `brani_per_id` (rows for the panel; the state carries ids only), `coda_prepara` (fill without playing, used by the tour). Replacing a queue of at least `SOGLIA_DI_UNA_SESSIONE` = 25 tracks (or a curated/emptied one) keeps the old queue and emits `coda:sostituita`, so `coda_ripristina` can undo it.",
         "The queue is persisted as JSON in `player.queue` (ids, order, index, shuffle, repeat). Saving only sets a flag; the clock thread writes it within 250 ms. It does not travel in a profile: ids name rows of this library.",
       ],
-      see: ["player", "autoplay"],
+      see: ["player", "autoplay", "together"],
     },
     {
       id: "listens",
@@ -74,7 +74,7 @@
         { h: "Recording" },
         "`playback::record_play(conn, &Listen, device)` writes nothing if the listen does not count. Otherwise, in one Immediate transaction: `last_played_at` and `stats_updated_at` = the **start** time; `sincronia::conta_ascolto` increments this device's counter in `sync_ascolti` and sets `play_count` to the sum over devices on every row with the same `track_key`; a `play_history` row (unique on `(track_id, played_at)`, so re-imports cannot double it). Only then are scrobbles queued for each enabled service ([Scrobbling](#scrobbling)).",
       ],
-      see: ["sync", "scrobbling"],
+      see: ["sync", "scrobbling", "together"],
     },
     {
       id: "autoplay",
@@ -151,7 +151,7 @@
         "`spegnimento(minuti)`: 0 switches off, `FINE_DEL_BRANO` (−1) stops at the end of the current track, any positive value is minutes from now, clamped to 1…1,440 (24 h). Minutes rather than a timestamp, so the window's and the core's clocks never have to agree.",
         "When the timer is due, the clock thread asks the engine to fade (`Motore::sfuma`) over `SFUMATURA_SPEGNIMENTO` = 6 s — linear in dB down to −60 dB (`SFUMATURA_DB`) — and then pauses, checking again 500 ms after the fade should have ended. The position is kept, so resuming continues from there. «End of track» simply does not prepare a next track. The timer is not saved and does not travel in a profile: it is tonight's decision. The remaining time is part of `StatoRiproduzione` (`spegnimento_ms`, `0` meaning «end of track»).",
       ],
-      see: ["crossfade", "player"],
+      see: ["crossfade", "player", "together"],
     },
     {
       id: "os-media",
@@ -162,7 +162,7 @@
         "**Taskbar thumbnail buttons** (previous, play/pause, next under the window preview) live in the crate `rymembra-barra`, the only code with `unsafe` in Rymembra, confined to `finestra.rs`: `ITaskbarList3::ThumbBarAddButtons` plus a window subclass (`SetWindowSubclass`) that handles `TaskbarButtonCreated` (Explorer restarting recreates the buttons with the last remembered look), `THBN_CLICKED` and a private update message. Icons are drawn procedurally at the small-icon size (`glifi.rs`); button logic is pure (`aspetto.rs`). `Barra::mostra` can be called from any thread.",
         "The tray icon's transport items use the same `media::premi` path. All three surfaces get their first state from `primo_stato_fuori` at startup, and `media::stacca` / `vassoio::stacca` remove them on exit.",
       ],
-      see: ["background", "player"],
+      see: ["background", "player", "together"],
     },
   ],
 });

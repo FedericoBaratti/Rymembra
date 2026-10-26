@@ -95,6 +95,7 @@ import {
   ImpostazioniDellaFinestra,
   type AzioniImpostazioni,
 } from "./ImpostazioniFinestra";
+import { gestoPermesso, idDiLibreria } from "./insieme";
 import {
   eRitentabile,
   guastoDa,
@@ -131,6 +132,7 @@ import { AvvisoDatabase } from "./parti/Avvisi";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
 import { ConImportazioni } from "./parti/Importazioni";
+import { AvvisiInsieme, InsiemeInApp, InvitiInsieme } from "./parti/Insieme";
 import { Intestazione } from "./parti/Intestazione";
 import type { Vista } from "./parti/Navigazione";
 import { PilaToast } from "./parti/PilaToast";
@@ -1498,10 +1500,15 @@ export function App() {
           (id) => elencoCorrenteRef.current.cerca((b) => b.id === id),
           fai,
           t,
+          // Letto al momento del tasto destro, senza iscriversi: `App` non deve
+          // ridisegnarsi a ogni stato del lettore per sapere se c'è una
+          // sessione, e il menù si costruisce adesso. Vedi `vociBrani`.
+          !gestoPermesso(riproduzione.archivio.leggi().insieme, "radio"),
+          !gestoPermesso(riproduzione.archivio.leggi().insieme, "coda"),
         ),
       });
     },
-    [segnalaErrore, artisti],
+    [segnalaErrore, artisti, riproduzione.archivio],
   );
 
   /** Il menù di una playlist nella barra di navigazione: vedi `vociPlaylist`. */
@@ -1557,23 +1564,25 @@ export function App() {
           .then((tracce) => comando(tracce.map((b) => b.id)))
           .catch(segnalaErrore);
       };
-      setMenu({
-        x: e.clientX,
-        y: e.clientY,
-        voci: vociAlbum(
-          {
-            radio: conBrani((ids) => {
-              const primo = ids[0];
-              return primo === undefined ? Promise.resolve() : ipc.radio(primo);
-            }),
-            dopo: conBrani(ipc.codaDopo),
-            accoda: conBrani(ipc.codaAccoda),
-          },
-          t,
-        ),
-      });
+      const voci = vociAlbum(
+        {
+          radio: conBrani((ids) => {
+            const primo = ids[0];
+            return primo === undefined ? Promise.resolve() : ipc.radio(primo);
+          }),
+          dopo: conBrani(ipc.codaDopo),
+          accoda: conBrani(ipc.codaAccoda),
+        },
+        t,
+        !gestoPermesso(riproduzione.archivio.leggi().insieme, "radio"),
+        !gestoPermesso(riproduzione.archivio.leggi().insieme, "coda"),
+      );
+      // In una sessione dove la coda non è concessa a questo PC, con un disco
+      // non resta niente da fare: nessun menù, invece di una scatola vuota.
+      if (voci.length === 0) return;
+      setMenu({ x: e.clientX, y: e.clientY, voci });
     },
-    [segnalaErrore],
+    [segnalaErrore, riproduzione.archivio],
   );
 
   /** Il menù dell'ordinamento: quattro voci, dove sta il bottone. */
@@ -1598,6 +1607,11 @@ export function App() {
    */
   const cambiaVoto = useCallback(
     async (brano: Brano, stelle: number) => {
+      // Una voce di «Ascolta insieme» non è una riga di questa libreria: il voto
+      // finirebbe sulla riga che ha lo stesso numero cambiato di segno, o su
+      // nessuna. I tasti non ci sono (`idDiLibreria` in `Giudizio`), e questa
+      // guardia copre le strade che non passano da un tasto.
+      if (!idDiLibreria(brano.id)) return;
       const aggiorna = (elenco: Brano[]) =>
         elenco.map((b) => (b.id === brano.id ? { ...b, rating: stelle } : b));
       aggiornaBrani(aggiorna);
@@ -1622,6 +1636,8 @@ export function App() {
 
   const cambiaPreferito = useCallback(
     async (brano: Brano) => {
+      // Come per il voto: vedi `cambiaVoto`.
+      if (!idDiLibreria(brano.id)) return;
       const valore = !brano.liked;
       const aggiorna = (elenco: Brano[]) =>
         elenco.map((b) => (b.id === brano.id ? { ...b, liked: valore } : b));
@@ -2970,7 +2986,16 @@ export function App() {
    * posti: là, e sopra lo schermo intero — che copre la pagina e la rende
    * `inert`, cioè proprio dove un brano che non si apre falliva senza dirlo.
    * Gli stessi due stati, quindi chiuderne uno lo chiude in tutti e due i posti.
+   *
+   * Il guasto va anche in un terzo posto, il pannello di «Ascolta insieme»
+   * (`InsiemeInApp`), che copre la pagina come lo schermo intero: per questo
+   * chiuderlo è una funzione sola, la stessa per la × della fascia e per quella
+   * del pannello.
    */
+  const chiudiErrore = () => {
+    setErrore(null);
+    riproduzione.scartaErrore();
+  };
   const notizieDiFascia = (
     <Fascia
       notizia={notizia}
@@ -2985,10 +3010,7 @@ export function App() {
             }
           : undefined
       }
-      onChiudiErrore={() => {
-        setErrore(null);
-        riproduzione.scartaErrore();
-      }}
+      onChiudiErrore={chiudiErrore}
     />
   );
 
@@ -3005,7 +3027,7 @@ export function App() {
    * Lo dice una regione sola, sempre montata, accanto a quella delle notizie.
    */
   const avvisoCancellata = cancellata !== null && (
-    <div className="notizia avviso-coda toast-card">
+    <div className="notizia toast-card">
       <Icona nome="i-check" dim={16} />
       <span>{t("playlist.deleted", { nome: cancellata.nome })}</span>
       <button
@@ -3102,6 +3124,12 @@ export function App() {
                               pagina è sotto, `inert`. Vede gli avvisi che nascono a
                               schermo intero; quelli di prima erano già a schermo. */}
                           <AvvisoCoda onErrore={segnalaErrore} />
+                          {/* Gli inviti e la sessione, per la stessa ragione:
+                              chi ascolta a schermo intero è proprio chi può
+                              ricevere un invito senza guardare altro. Qui senza
+                              contenitore aderente: la pila sta già ferma da sé. */}
+                          <InvitiInsieme onErrore={segnalaErrore} />
+                          <AvvisiInsieme onErrore={segnalaErrore} />
                           {avvisoCancellata}
                           {notizieDiFascia}
                         </>
@@ -3148,11 +3176,26 @@ export function App() {
                         c'è niente da mostrare quasi sempre — e non torna dopo un
                         «non ora», perché il rifiuto è scritto nel database. */}
                     <AvvisoAggiornamento onErrore={segnalaErrore} />
-                    {/* «Coda sostituita — Annulla»: si disegna da sé quando il
-                        nucleo manda `coda:sostituita`, e passa da sé. */}
-                    <AvvisoCoda onErrore={segnalaErrore} />
-                    {/* «Playlist eliminata — Annulla», gemello di quello sopra. */}
-                    {avvisoCancellata}
+                    {/* Gli avvisi che restano in vista a elenco scorso, in un
+                        contenitore aderente solo: ognuno aderente per conto suo,
+                        si fermavano tutti nello stesso punto uno sopra l'altro,
+                        e di tre se ne leggeva uno. */}
+                    <div className="aderenti-pagina">
+                      {/* «Coda sostituita — Annulla»: si disegna da sé quando il
+                          nucleo manda `coda:sostituita`, e passa da sé. */}
+                      <AvvisoCoda onErrore={segnalaErrore} />
+                      {/* «Ascolta insieme»: gli inviti che scadono in un
+                          minuto. Dopo l'«Annulla» della coda e non prima:
+                          quello vale dieci secondi e riguarda un gesto appena
+                          fatto, gli inviti aspettano un minuto. */}
+                      <InvitiInsieme onErrore={segnalaErrore} />
+                      {/* «Playlist eliminata — Annulla», gemello del primo. */}
+                      {avvisoCancellata}
+                    </div>
+                    {/* «Ascolta insieme»: l'ultimo avviso, e la sessione in
+                        corso col suo «Esci», che vale tutta la sessione. Si
+                        disegna da sé, e quasi sempre non c'è. */}
+                    <AvvisiInsieme onErrore={segnalaErrore} />
                     {/* Col primo avvio aperto le notizie le mostra lui: qui
                         sarebbero sotto la sua schermata, e due copie della stessa
                         fascia d'errore si annuncerebbero due volte. */}
@@ -3164,6 +3207,14 @@ export function App() {
             ),
           }}
         />
+
+        {/* Una volta sola, fuori dalle due copie della pagina: gli ascolti di
+            `insieme:stato` e `insieme:avviso`, e le finestrelle che ne nascono
+            — il codice dell'associazione, la spiegazione del firewall, il
+            pannello aperto dalla fascia o dalla colonna. Vedi `parti/Insieme`.
+            Il guasto della fascia gli arriva per disegnarlo anche dentro il
+            pannello, che copre la fascia: vedi `VistaInsieme.guasto`. */}
+        <InsiemeInApp onErrore={segnalaErrore} guasto={guasto} onChiudiGuasto={chiudiErrore} />
 
         {filePlaylist !== null && (
           <ImportaPlaylist

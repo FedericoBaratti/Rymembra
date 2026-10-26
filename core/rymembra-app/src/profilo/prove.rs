@@ -129,8 +129,8 @@ fn l_identificativo_del_dispositivo_non_esce() {
 
 #[test]
 fn le_chiavi_di_questa_macchina_restano_qui() {
-    // Cinque omissioni deliberate in una prova sola, ognuna con la sua
-    // ragione, perché senza di questa sarebbero indistinguibili da cinque
+    // Sei omissioni deliberate in una prova sola, ognuna con la sua
+    // ragione, perché senza di questa sarebbero indistinguibili da sei
     // dimenticanze — che è il difetto che un elenco di inclusioni si porta
     // dietro.
     //
@@ -139,17 +139,23 @@ fn le_chiavi_di_questa_macchina_restano_qui() {
     //   sarebbe **muto**: la scena continua a disegnarsi, solo peggio.
     // - `audio.latenza_ms` è il ritardo di questa catena audio: portarlo
     //   sposterebbe i testi di un decimo di secondo dalla parte sbagliata.
+    // - `audio.latenza_per_uscita` è lo stesso ritardo detto per ogni scheda,
+    //   con i nomi delle schede come chiavi: due ragioni invece di una.
     // - `player.queue` sono identificativi di righe: su un'altra libreria
     //   nominano canzoni diverse.
     // - `ui.zoom` è la correzione che resta dopo la scalatura di Windows su
     //   **questo** monitor: cambiato il monitor o la scalatura, il gradino
     //   giusto è un altro. Qui il danno si vede — e `Ctrl+0` lo annulla — ma
-    //   l'omissione è deliberata come le altre quattro.
+    //   l'omissione è deliberata come le altre cinque.
     let mut c = libreria();
     for (chiave, valore) in [
         ("player.output", r#""FiiO K11""#),
         ("player.spectrum.quality", r#""alta""#),
         (crate::playback::CHIAVE_LATENZA, "-120"),
+        (
+            crate::playback::CHIAVE_LATENZA_PER_USCITA,
+            r#"{"FiiO K11":{"ms":-120,"fonte":"microfono","verificata":true,"quando_ms":0}}"#,
+        ),
         ("player.queue", r#"{"tracks":[1,2,3]}"#),
         (crate::preferenze::CHIAVE_ZOOM, "1.5"),
     ] {
@@ -169,6 +175,7 @@ fn le_chiavi_di_questa_macchina_restano_qui() {
         "player.output",
         "player.spectrum.quality",
         crate::playback::CHIAVE_LATENZA,
+        crate::playback::CHIAVE_LATENZA_PER_USCITA,
         "player.queue",
         crate::preferenze::CHIAVE_ZOOM,
     ] {
@@ -179,6 +186,29 @@ fn le_chiavi_di_questa_macchina_restano_qui() {
         assert!(
             raccolto.lasciate.contains(&chiave.to_owned()),
             "e va detto che è rimasta qui: «{chiave}»"
+        );
+    }
+    // E nessun nome di scheda esce per un'altra porta, dentro un valore.
+    assert!(
+        !raccolto
+            .preferenze
+            .voci
+            .values()
+            .any(|valore| valore.contains("FiiO K11")),
+        "il nome di un'uscita audio non deve stare in un file che si passa in giro"
+    );
+}
+
+#[test]
+fn niente_di_audio_viaggia_nel_profilo() {
+    // Per prefisso, come per le cartelle aperte: `audio.` è lo spazio dei
+    // fatti di questa catena — la carta di `CHIAVE_LATENZA` lo dice — e una
+    // terza chiave aggiunta un giorno lì sotto deve restare qui senza che
+    // qualcuno si ricordi di questa prova.
+    for (chiave, _) in CATALOGO {
+        assert!(
+            !chiave.starts_with("audio."),
+            "«{chiave}» descrive l'uscita audio di questa macchina e non deve viaggiare"
         );
     }
 }
@@ -236,6 +266,155 @@ fn la_chiave_di_lastfm_non_esce_dal_profilo() {
             .lasciate
             .contains(&crate::scrobble::CHIAVE_LFM_API_KEY.to_owned())
     );
+}
+
+#[test]
+fn niente_di_insieme_viaggia_nel_profilo() {
+    // Per prefisso, come `audio.`: le chiavi di «Ascolta insieme» sono fatti di
+    // questa macchina e di questa rete, e una quinta aggiunta un giorno deve
+    // restare qui senza che qualcuno si ricordi di questa prova.
+    for (chiave, _) in CATALOGO {
+        assert!(
+            !chiave.starts_with("insieme."),
+            "«{chiave}» è di «Ascolta insieme» e non deve viaggiare"
+        );
+    }
+}
+
+/// Le cose di «Ascolta insieme» che non devono uscire, in una libreria: un PC
+/// associato e le quattro impostazioni. Restituisce le stringhe da cercare.
+fn libreria_che_ascolta_insieme(connection: &Connection) -> Vec<String> {
+    let chiave = "5e".repeat(32);
+    let nome_del_pari = "Portatile-di-Zaira-7Q";
+    let nome_di_qui = "Fisso-in-mansarda-K2";
+    let indirizzo = "10.20.30.40:47812";
+    crate::insieme::associa(connection, &chiave, nome_del_pari, 1_000).expect("associato");
+    crate::insieme::salva_attivo(connection, true).expect("acceso");
+    crate::insieme::salva_nome(connection, nome_di_qui).expect("nome");
+    crate::insieme::salva_indirizzi(connection, &[indirizzo.to_owned()]).expect("indirizzi");
+    crate::insieme::segna_firewall_spiegato(connection).expect("firewall");
+    vec![
+        chiave,
+        nome_del_pari.to_owned(),
+        nome_di_qui.to_owned(),
+        indirizzo.to_owned(),
+    ]
+}
+
+/// Nessuna delle stringhe sta in `testo`.
+fn non_contiene(dove: &str, testo: &str, segreti: &[String]) {
+    for segreto in segreti {
+        assert!(
+            !testo.contains(segreto.as_str()),
+            "«{segreto}» è uscito con il profilo, in {dove}"
+        );
+    }
+}
+
+#[test]
+fn i_pc_associati_e_le_chiavi_di_insieme_restano_qui() {
+    let mut c = libreria();
+    brano(&c, 1, r"D:\M\a.flac", "artista|titolo|album");
+    let segreti = libreria_che_ascolta_insieme(&c);
+
+    let raccolto = raccogli(
+        &mut c,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        0,
+        &identita_fissa,
+    )
+    .expect("raccolta");
+    for chiave in [
+        crate::insieme::CHIAVE_ATTIVO,
+        crate::insieme::CHIAVE_NOME,
+        crate::insieme::CHIAVE_INDIRIZZI,
+        crate::insieme::CHIAVE_FIREWALL,
+    ] {
+        assert!(!raccolto.preferenze.voci.contains_key(chiave), "{chiave}");
+        assert!(
+            raccolto.lasciate.contains(&chiave.to_owned()),
+            "e va detto che è rimasta qui: «{chiave}»"
+        );
+    }
+
+    // Poi l'archivio vero, letto come lo legge l'importazione. Si guardano i
+    // documenti **decodificati**: il documento di sincronia viaggia compresso,
+    // e cercare un nome dentro byte compressi passerebbe sempre.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let archivio = esporta(&mut c, dir.path(), "qui", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+    non_contiene("preferenze", &in_json(&letto.preferenze), &segreti);
+    non_contiene("biblioteca", &in_json(&letto.biblioteca), &segreti);
+    non_contiene("manifesto", &in_json(&letto.manifesto), &segreti);
+    let sincronia = letto.sincronia.as_ref().expect("il documento di sincronia");
+    non_contiene("sincronia", &in_json(sincronia), &segreti);
+
+    // E ogni voce dell'archivio, scompattata: anche quella che domani qualcuno
+    // aggiungerà senza passare da uno dei quattro documenti qui sopra.
+    let file = std::fs::File::open(&archivio).expect("archivio");
+    let mut zip = zip::ZipArchive::new(file).expect("zip");
+    for posto in 0..zip.len() {
+        let mut voce = zip.by_index(posto).expect("voce");
+        let nome = voce.name().to_owned();
+        let mut byte = Vec::new();
+        std::io::Read::read_to_end(&mut voce, &mut byte).expect("scompattata");
+        non_contiene(&nome, &String::from_utf8_lossy(&byte), &segreti);
+    }
+}
+
+#[test]
+fn un_profilo_scritto_a_mano_non_accende_insieme() {
+    // Il guasto da tenere chiuso: un profilo passato di mano in mano che,
+    // importato, apre una porta in ascolto su un PC che non l'ha chiesto e lo
+    // fa cercare indirizzi di un'altra rete. Un profilo si scrive anche a mano,
+    // quindi non basta che l'esportazione non le scriva: l'importazione deve
+    // non leggerle.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let scritto = dir.path().join("regalo.json");
+    std::fs::write(
+        &scritto,
+        r#"{"rymembra":"rymembra.profilo","versione":1,"creato_ms":1700000000000,
+            "voci":{"player.volume":"0.42",
+                    "insieme.attivo":"true",
+                    "insieme.nome":"\"Ufficio\"",
+                    "insieme.indirizzi":"[\"6.6.6.6:47811\"]",
+                    "insieme.firewall_spiegato":"true"}}"#,
+    )
+    .expect("profilo a mano");
+
+    let letto = leggi(&scritto).expect("lettura");
+    let mut c = libreria();
+    let piano = importa(&mut c, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    for chiave in [
+        crate::insieme::CHIAVE_ATTIVO,
+        crate::insieme::CHIAVE_NOME,
+        crate::insieme::CHIAVE_INDIRIZZI,
+        crate::insieme::CHIAVE_FIREWALL,
+    ] {
+        assert!(
+            piano.sconosciute.contains(&chiave.to_owned()),
+            "«{chiave}» va detta sconosciuta: {:?}",
+            piano.sconosciute
+        );
+        assert_eq!(settings::read(&c, chiave), Ok(None), "{chiave}");
+    }
+    assert_eq!(
+        crate::insieme::impostazioni(&c).expect("lette"),
+        crate::insieme::Impostazioni::default()
+    );
+    // Il resto del profilo entra lo stesso: le chiavi sconosciute si saltano,
+    // non fanno fallire l'importazione.
+    assert_eq!(
+        settings::read(&c, "player.volume"),
+        Ok(Some("0.42".to_owned()))
+    );
+}
+
+/// Un documento qualunque in JSON, per cercarci dentro.
+fn in_json<T: serde::Serialize>(valore: &T) -> String {
+    serde_json::to_string(valore).expect("in JSON")
 }
 
 #[test]

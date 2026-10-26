@@ -1002,6 +1002,8 @@ pub struct Aggiunta {
 /// # Errori
 ///
 /// `library.playlistNotFound`, `library.playlistIsSmart`, `db.*`.
+/// `library.trackNotFound` se un id è ≤ 0, e allora non entra niente: vedi
+/// `accoda`.
 pub fn aggiungi_brani(
     connection: &mut Connection,
     id: i64,
@@ -1041,8 +1043,8 @@ pub fn aggiungi_brani(
 ///
 /// # Errori
 ///
-/// `library.playlistNameInvalid`, `library.playlistExists`, `db.*`. In tutti e
-/// tre i casi la playlist non c'è.
+/// `library.playlistNameInvalid`, `library.playlistExists`, `db.*`, e
+/// `library.trackNotFound` se un id è ≤ 0. In tutti i casi la playlist non c'è.
 pub fn crea_e_aggiungi(
     connection: &mut Connection,
     name: &str,
@@ -1067,7 +1069,22 @@ pub fn crea_e_aggiungi(
 /// Dentro la transazione di chi chiama, e `Immediate`: fra il controllo e la
 /// scrittura nessun altro scrittore può togliere il brano. Vedi
 /// [`aggiungi_brani`] per il perché del controllo.
+///
+/// # Un id ≤ 0 non è un brano sparito
+///
+/// Un brano che non c'è più si salta e si conta, ed è giusto: la finestra l'ha
+/// letto quando c'era. Un id ≤ 0 invece non è **mai** stato una riga — è una
+/// voce di «Ascolta insieme», che vive in memoria finché dura la sessione — e
+/// chi lo manda qui ha sbagliato strada. Saltarlo come i brani spariti
+/// vorrebbe dire che «aggiungi a una nuova playlist» su una voce di sessione
+/// crea una playlist vuota col nome appena scelto, e dice «un brano saltato»
+/// come se la colpa fosse di una scansione. Quindi si rifiuta **tutto**, prima
+/// di scrivere: l'errore esce dalla transazione di chi chiama, che si annulla,
+/// e in [`crea_e_aggiungi`] la playlist non nasce.
 fn accoda(tx: &Transaction<'_>, id: i64, track_ids: &[i64]) -> Result<(usize, usize), AppError> {
+    for track_id in track_ids {
+        crate::playback::riga_della_libreria(*track_id)?;
+    }
     let guasto = |err: rusqlite::Error| db_error("aggiunta a una playlist", &err);
     let mut aggiunti = 0_usize;
     let mut saltati = 0_usize;
@@ -1834,5 +1851,83 @@ mod prove {
             0,
             "la riga a metà è stata disfatta, non lasciata lì"
         );
+    }
+
+    // ── le guardie: nessun id ≤ 0 in una playlist ──
+
+    /// La libreria di sempre più due righe con id 0 e negativo, scritte a mano.
+    ///
+    /// Ci sono davvero, così la chiave esterna di `playlist_tracks` le
+    /// accetterebbe: se la prova passa è per la guardia, non perché
+    /// l'inserimento cade da sé o perché il brano «non c'è più».
+    fn libreria_con_le_righe_impossibili() -> Connection {
+        let connection = libreria();
+        connection
+            .execute_batch(
+                "INSERT INTO tracks
+                     (id, path, track_key, title, artist, album, duration_ms,
+                      file_size, date_added, date_modified)
+                 VALUES (0,  'z.mp3', 'k0', 'Zero',   'Art', 'Al', 1000, 1, 1, 1),
+                        (-5, 'n.mp3', 'kn', 'Meno5',  'Art', 'Al', 1000, 1, 1, 1);",
+            )
+            .expect("righe impossibili");
+        connection
+    }
+
+    #[test]
+    fn una_voce_di_sessione_non_entra_in_una_playlist() {
+        let mut c = libreria_con_le_righe_impossibili();
+        let playlist = create(&c, "Sera").expect("creata").id;
+        aggiungi_brani(&mut c, playlist, &[1]).expect("una riga vera entra");
+        let toccata: i64 = c
+            .query_row(
+                "SELECT updated_at FROM playlists WHERE id = ?1",
+                [playlist],
+                |r| r.get(0),
+            )
+            .expect("data");
+
+        for id in [0, -5] {
+            // Mista, con il brano vero davanti: non entra nemmeno lui.
+            let esito = aggiungi_brani(&mut c, playlist, &[2, id]);
+            assert_eq!(
+                esito.map_err(|err| err.code().kind()),
+                Err(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound),
+                "id {id}"
+            );
+        }
+        assert_eq!(
+            tracks(&c, playlist)
+                .expect("brani")
+                .iter()
+                .map(|b| b.id)
+                .collect::<Vec<_>>(),
+            [1],
+            "la playlist è com'era"
+        );
+        let ancora: i64 = c
+            .query_row(
+                "SELECT updated_at FROM playlists WHERE id = ?1",
+                [playlist],
+                |r| r.get(0),
+            )
+            .expect("data");
+        assert_eq!(ancora, toccata, "e non risulta toccata");
+    }
+
+    #[test]
+    fn una_voce_di_sessione_non_fa_nascere_una_playlist_vuota() {
+        let mut c = libreria_con_le_righe_impossibili();
+        let esito = crea_e_aggiungi(&mut c, "Dalla sessione", &[-5]);
+        assert_eq!(
+            esito.map_err(|err| err.code().kind()),
+            Err(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound)
+        );
+        assert_eq!(
+            conta(&c, "SELECT COUNT(*) FROM playlists"),
+            0,
+            "il nome resta libero: niente playlist vuota a ricordare il gesto"
+        );
+        assert_eq!(conta(&c, "SELECT COUNT(*) FROM playlist_tracks"), 0);
     }
 }

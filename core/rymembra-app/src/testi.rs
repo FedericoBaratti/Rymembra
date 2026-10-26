@@ -1020,6 +1020,13 @@ pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
 /// sul disco, e non dice niente su cosa abbia risposto la rete. Confondere i due
 /// vorrebbe dire che un brano con il testo nel tag non viene mai cercato, cioè
 /// non ottiene mai i tempi.
+///
+/// Un brano con id ≤ 0 non si ricorda, in silenzio: non è una riga di questa
+/// libreria (vedi `playback::riga_della_libreria`), e la sua `track_key` —
+/// che `lyrics` usa come chiave, senza nessuna chiave esterna a fare da
+/// guardia — sarebbe una riga di testo per un brano che a sessione finita non
+/// esiste più. Il testo letto dal disco si mostra lo stesso: è solo la cache
+/// che non si scrive, e una cache che non si scrive non è un guasto da dire.
 fn ricorda(
     connection: &Connection,
     brano: &BranoDaTestare,
@@ -1027,6 +1034,9 @@ fn ricorda(
     testo: &Testo,
     fonte: Fonte,
 ) {
+    if brano.id <= 0 {
+        return;
+    }
     let (synced, plain) = if testo.sincronizzato() {
         (Some(grezzo), None)
     } else {
@@ -1382,11 +1392,16 @@ where
 ///
 /// `db.queryFailed`. Qui l'errore si propaga: una passata che crede di aver
 /// registrato un esito senza averlo fatto rifà lo stesso lavoro per sempre.
+/// `library.trackNotFound` se `brano.id` ≤ 0, senza scrivere niente: è una
+/// voce di «Ascolta insieme», non una riga di questa libreria (vedi
+/// `playback::riga_della_libreria`). Vale per tutte le scritture di questo
+/// modulo che ricevono un [`BranoDaTestare`] già in mano.
 pub fn ricorda_esito(
     connection: &Connection,
     brano: &BranoDaTestare,
     voce: Option<&Voce>,
 ) -> Result<(), AppError> {
+    crate::playback::riga_della_libreria(brano.id)?;
     let Some(voce) = voce else {
         return connection
             .execute(
@@ -1463,12 +1478,14 @@ pub fn ricorda_esito(
 ///
 /// # Errori
 ///
-/// `db.queryFailed`.
+/// `db.queryFailed`; `library.trackNotFound` per un id ≤ 0, come
+/// [`ricorda_esito`].
 pub fn ricorda_scelta(
     connection: &Connection,
     brano: &BranoDaTestare,
     voce: &Voce,
 ) -> Result<(), AppError> {
+    crate::playback::riga_della_libreria(brano.id)?;
     connection
         .execute(
             "INSERT INTO lyrics
@@ -1562,8 +1579,10 @@ pub const RIPROVA_DOPO_UN_GUASTO_MS: i64 = 24 * 60 * 60 * 1000;
 ///
 /// # Errori
 ///
-/// `db.queryFailed`.
+/// `db.queryFailed`; `library.trackNotFound` per un id ≤ 0, come
+/// [`ricorda_esito`].
 pub fn rimanda(connection: &Connection, brano: &BranoDaTestare) -> Result<(), AppError> {
+    crate::playback::riga_della_libreria(brano.id)?;
     let adesso = now_ms();
     let finto = adesso
         .saturating_sub(RIPROVA_MS)
@@ -1852,14 +1871,19 @@ pub fn salva_a_mano(
 
 /// La metà di [`salva_a_mano`] che scrive nel database, e nient'altro.
 ///
+/// La guardia sull'id sta qui e non in [`salva_a_mano`], che passa di qui per
+/// prima: così un id ≤ 0 si ferma prima della riga **e** prima del sidecar.
+///
 /// # Errori
 ///
-/// `db.queryFailed`.
+/// `db.queryFailed`; `library.trackNotFound` per un id ≤ 0, come
+/// [`ricorda_esito`].
 pub fn registra_a_mano(
     connection: &Connection,
     brano: &BranoDaTestare,
     lrc: &str,
 ) -> Result<(), AppError> {
+    crate::playback::riga_della_libreria(brano.id)?;
     connection
         .execute(
             "INSERT INTO lyrics
@@ -3443,5 +3467,71 @@ mod prove {
 
         let errore = da_restituire(&connection, id).expect_err("non c'è niente");
         assert_eq!(errore.code().kind().code(), "metadata.lyricsPublishRefused");
+    }
+
+    // ── le guardie: nessuna riga di testo per un id ≤ 0 ──
+
+    /// Un brano come lo costruirebbe chi ha in mano una voce di sessione: un
+    /// id ≤ 0 e una `track_key` qualunque. `lyrics` è chiavata su quella, senza
+    /// chiave esterna, quindi senza la guardia ogni scrittura qui sotto
+    /// creerebbe una riga — la prova cade se cade la guardia.
+    fn voce_di_sessione(id: i64, percorso: &Path) -> BranoDaTestare {
+        BranoDaTestare {
+            id,
+            path: Some(percorso.display().to_string()),
+            track_key: "chiave-di-sessione".to_owned(),
+            title: "Titolo".to_owned(),
+            artist: "Artista".to_owned(),
+            album: "Album".to_owned(),
+            duration_ms: 120_000,
+            lyrics: None,
+        }
+    }
+
+    #[test]
+    fn una_voce_di_sessione_non_scrive_testi_nella_libreria() {
+        let (dir, connection) = libreria();
+        let percorso = dir.path().join("di-un-altro.mp3");
+        std::fs::write(&percorso, b"finto").expect("file");
+        std::fs::write(percorso.with_extension("lrc"), LRC).expect("sidecar");
+
+        for id in [0, -4] {
+            let brano = voce_di_sessione(id, &percorso);
+            let rifiuti = [
+                ricorda_esito(&connection, &brano, None),
+                ricorda_esito(&connection, &brano, Some(&voce_con_i_tempi())),
+                ricorda_scelta(&connection, &brano, &voce_con_i_tempi()),
+                rimanda(&connection, &brano),
+                registra_a_mano(&connection, &brano, LRC),
+                salva_a_mano(&connection, &brano, "[00:05.00]sopra il sidecar\n"),
+            ];
+            for esito in rifiuti {
+                assert_eq!(
+                    esito.map_err(|err| err.code().kind().code()),
+                    Err("library.trackNotFound"),
+                    "id {id}"
+                );
+            }
+
+            // La lettura invece funziona: il testo accanto al file si mostra,
+            // solo non si ricorda.
+            let letto = per_questo_brano(&connection, &brano);
+            assert_eq!(letto.fonte, Fonte::Sidecar, "id {id}");
+            assert!(
+                leggi_riga(&connection, "chiave-di-sessione").is_none(),
+                "id {id}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(percorso.with_extension("lrc")).expect("sidecar"),
+            LRC,
+            "e il sidecar non si è toccato"
+        );
+
+        // La stessa lettura con una riga vera la ricorda: è la prova che la
+        // guardia, e non altro, ha tenuto vuota la tabella.
+        let vero = voce_di_sessione(1, &percorso);
+        let _ = per_questo_brano(&connection, &vero);
+        assert!(leggi_riga(&connection, "chiave-di-sessione").is_some());
     }
 }

@@ -24,9 +24,11 @@
 import { memo } from "react";
 
 import { brani_ } from "../formato";
+import { gestoPermesso } from "../insieme";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
 import { Presenza } from "../presenza";
+import { useLettore } from "../riproduzione";
 
 export const BarraSelezione = memo(function BarraSelezione({
   quanti,
@@ -51,6 +53,12 @@ export const BarraSelezione = memo(function BarraSelezione({
   // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
   // l'iscrizione i testi resterebbero quelli del primo disegno.
   useLingua();
+  // In una sessione dove chi ospita non ha dato la coda a questo PC, i tre
+  // gesti che la toccano si spengono con la loro ragione, come i tasti del
+  // trasporto: un tasto acceso che risponde «non concesso» insegna che il
+  // lettore è rotto. Il nucleo si difende comunque da sé.
+  const codaLibera = useLettore((s) => gestoPermesso(s.insieme, "coda"));
+  const spento = codaLibera ? undefined : t("together.gestures.off.title");
   return (
     <Presenza parte="selection-bar">
       <div
@@ -75,6 +83,8 @@ export const BarraSelezione = memo(function BarraSelezione({
         <button
           type="button"
           className="bottone minuto btn-accent"
+          disabled={!codaLibera}
+          title={spento}
           onClick={onRiproduci}
         >
           <Icona nome="i-play" dim={14} />
@@ -83,6 +93,8 @@ export const BarraSelezione = memo(function BarraSelezione({
         <button
           type="button"
           className="bottone minuto btn-ghost"
+          disabled={!codaLibera}
+          title={spento}
           onClick={onDopo}
         >
           {t("action.playNext")}
@@ -90,6 +102,8 @@ export const BarraSelezione = memo(function BarraSelezione({
         <button
           type="button"
           className="bottone minuto btn-ghost"
+          disabled={!codaLibera}
+          title={spento}
           onClick={onAccoda}
         >
           <Icona nome="i-queue" dim={14} />

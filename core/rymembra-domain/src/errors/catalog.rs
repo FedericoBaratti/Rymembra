@@ -36,6 +36,14 @@ pub enum Domain {
     Skin,
     /// Trasferimento diretto PC↔telefono.
     Transfer,
+    /// «Ascolta insieme»: la sessione d'ascolto fra PC della stessa rete.
+    ///
+    /// Non `Transfer`, benché anche lì ci siano due macchine, un codice da
+    /// confrontare e una rete locale: là si accoppia un telefono per
+    /// spostare file, qui si associa un PC per sentire la stessa musica, e le
+    /// frasi che rimediano — «controlla il firewall del PC che ospita», «chiedi
+    /// a chi ospita di invitarti di nuovo» — non hanno niente in comune.
+    Insieme,
     /// Sincronizzazione con Drive.
     Sync,
     /// Impostazioni e segreti.
@@ -668,6 +676,109 @@ catalogo! {
     TransferIntegrityMismatch = "transfer.integrityMismatch", Transfer, Error, Always, None, { expected: String, actual: String };
     /// Metodo non supportato dall'altra estremità.
     TransferMethodNotSupported = "transfer.methodNotSupported", Transfer, Info, Never, Some("LAN_METHOD_NOT_SUPPORTED"), { method: String };
+
+    // ── insieme ─────────────────────────────────────────────────────────────
+    //
+    // Sono anche i soli codici che attraversano la rete fra due PC: in un
+    // rifiuto viaggia `code()` e nient'altro, mai un testo libero. Chi lo riceve
+    // lo traduce nella propria lingua, e un PC estraneo non può far comparire
+    // una frase sua sullo schermo di un altro.
+    /// L'altro PC non risponde: spento, su un'altra rete, o un firewall che
+    /// non lo lascia raggiungere.
+    InsiemeIrraggiungibile = "insieme.irraggiungibile", Insieme, Warning, Always, None;
+    /// Quel PC non è fra quelli associati, o non lo è più.
+    ///
+    /// `Never`: aspettare non lo rende fidato. Si rifà l'associazione.
+    InsiemeNonAssociato = "insieme.nonAssociato", Insieme, Warning, Never, None;
+    /// I due codici non coincidevano, o una delle due persone ha detto di no.
+    ///
+    /// Un codice solo per i due casi di proposito: dire a un estraneo quale
+    /// dei due è successo gli direbbe se il suo tentativo era andato vicino.
+    InsiemeCodiceRifiutato = "insieme.codiceRifiutato", Insieme, Warning, Never, None;
+    /// Troppe associazioni tentate in poco tempo.
+    InsiemeTroppiTentativi = "insieme.troppiTentativi", Insieme, Warning, Always, None, { riprova_fra_ms: Option<u64> };
+    /// L'associazione è cominciata, ma il codice non è stato confermato su
+    /// tutti e due i PC entro il suo tempo (due minuti).
+    ///
+    /// Separato da `insieme.codiceRifiutato`, che fino alla revisione del 26
+    /// ottobre copriva anche questo caso: a chi si era solo distratto diceva
+    /// che i codici non coincidevano, cioè che forse c'era qualcuno nel mezzo.
+    /// `Info`: non è un guasto, è un tempo scaduto; e si conta fra i tentativi
+    /// come un no.
+    InsiemeAssociazioneScaduta = "insieme.associazioneScaduta", Insieme, Info, Never, None;
+    /// Il PC che ospita sta già associando un altro PC: una sola associazione
+    /// alla volta, per tutto l'host.
+    ///
+    /// `Always`: fra poco l'altra sarà finita. Non chiude la connessione e
+    /// non conta fra i tentativi: è un «non adesso», non un no.
+    InsiemeAssociazioneOccupata = "insieme.associazioneOccupata", Insieme, Info, Always, None;
+    /// Una connessione con un PC non associato è rimasta aperta per il tempo
+    /// che chi ospita concede agli estranei (due minuti) senza cominciare ad
+    /// associarsi, e chi ospita l'ha chiusa.
+    ///
+    /// `Info` e `Always`: ricollegarsi basta, e il desktop lo fa da sé con gli
+    /// host che vede. Fino alla revisione del 26 ottobre la chiusura arrivava
+    /// senza un perché, e non si distingueva da un host che smette di
+    /// ospitare.
+    InsiemeEstraneoScaduto = "insieme.estraneoScaduto", Insieme, Info, Always, None;
+    /// La sessione ha già il numero massimo di persone.
+    InsiemeSessionePiena = "insieme.sessionePiena", Insieme, Info, Never, None, { massimo: u32 };
+    /// L'altro PC parla una versione del protocollo che questa non capisce.
+    ///
+    /// Il rimedio è aggiornare il più vecchio dei due, e la frase lo dice: per
+    /// questo le due versioni viaggiano nel codice.
+    InsiemeVersione = "insieme.versione", Insieme, Warning, Never, None, { loro: u32, nostra: u32 };
+    /// Nessuna porta libera per ospitare.
+    InsiemePortaOccupata = "insieme.portaOccupata", Insieme, Error, Never, None, { porta: u16 };
+    /// Il file è cambiato sul disco del PC che lo condivide mentre lo si leggeva.
+    ///
+    /// Si ferma la lettura invece di cucire metà del file vecchio e metà del
+    /// nuovo: il decodificatore non saprebbe distinguerle.
+    InsiemeFileCambiato = "insieme.fileCambiato", Insieme, Warning, Never, None;
+    /// Il permesso di leggere quel brano non vale più: tolto dalla coda, o la
+    /// sessione è finita.
+    InsiemeGettoneScaduto = "insieme.gettoneScaduto", Insieme, Warning, Never, None;
+    /// La connessione con l'altro PC è caduta.
+    InsiemeConnessioneCaduta = "insieme.connessioneCaduta", Insieme, Warning, Always, None;
+    /// L'identità di questo PC non si legge o non si scrive nel portachiavi.
+    ///
+    /// `Error`: senza la chiave di questo PC nessuna associazione vale, e
+    /// ripiegare su una chiave nuova a ogni avvio vorrebbe dire rifarle tutte
+    /// in silenzio. Vedi `Portachiavi` per la stessa regola sui token.
+    InsiemeIdentitaPersa = "insieme.identitaPersa", Insieme, Error, Never, None;
+    /// Un gesto che in sessione non si può fare: la radio, lo shuffle, il
+    /// timer, o svuotare la coda da chi segue.
+    InsiemeGestoNonDisponibile = "insieme.gestoNonDisponibile", Insieme, Info, Never, None, { gesto: String };
+    /// Un gesto di chi segue che chi ospita non gli ha concesso: chi è entrato
+    /// per ascoltare non comanda, e chi comanda non tocca la coda.
+    ///
+    /// Separato da `insieme.gestoNonDisponibile`, che è un no per tutti: questo
+    /// lo decide una persona, e la cambia quando vuole.
+    InsiemeNonConcesso = "insieme.nonConcesso", Insieme, Info, Never, None;
+    /// Il gesto di un membro (avanti, indietro, un salto) nominava la voce che
+    /// lui vedeva suonare, e sull'host suonava già un'altra: qualcuno l'aveva
+    /// fatto prima di lui, e ripeterlo avrebbe saltato un brano di troppo.
+    ///
+    /// `Info`: non è un guasto. Prima arrivava come un «fatto» muto, e chi
+    /// aveva premuto non capiva perché non fosse successo niente.
+    InsiemeSuperato = "insieme.superato", Insieme, Info, Never, None;
+    /// L'invito o la richiesta è stata rifiutata, o è scaduta senza risposta.
+    InsiemeRifiutato = "insieme.rifiutato", Insieme, Info, Never, None;
+    /// La coda della sessione è al suo tetto: i brani in più sono rimasti fuori.
+    ///
+    /// `Info`: non è un guasto, è un tetto del protocollo — uno stato con più
+    /// voci ogni membro lo rifiuterebbe — detto invece di tacerlo.
+    InsiemeCodaPiena = "insieme.codaPiena", Insieme, Info, Never, None, { massimo: u32, fuori: u32 };
+    /// Questo PC è già in una sessione: prima se ne esce.
+    InsiemeGiaInSessione = "insieme.giaInSessione", Insieme, Info, Never, None;
+    /// «Ascolta insieme» è spento nelle impostazioni di questo PC.
+    InsiemeSpenta = "insieme.spenta", Insieme, Info, Never, None;
+    /// L'altro PC ha mandato qualcosa che il protocollo non ammette.
+    ///
+    /// Una cornice troppo grande, un messaggio fuori posto, un valore oltre i
+    /// tetti: la connessione si chiude. Non dice di più, perché più di così lo
+    /// sa solo il diario di chi l'ha mandato.
+    InsiemeProtocollo = "insieme.protocollo", Insieme, Warning, Never, None;
 
     // ── sync ────────────────────────────────────────────────────────────────
     /// L'autorizzazione Google è scaduta.

@@ -1,0 +1,46 @@
+[package]
+name = "rymembra-insieme"
+description = "«Ascolta insieme» fra PC della stessa rete: scoperta, canale cifrato Noise, associazione col codice di quattro cifre, letture dei brani."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Vedi `rymembra-oauth`: nessuno di questi crate va su crates.io.
+publish = false
+
+[dependencies]
+rymembra-domain = { path = "../rymembra-domain" }
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+blake3.workspace = true
+# Il canale cifrato: Noise `XX_25519_ChaChaPoly_SHA256`.
+#
+# Senza le feature di serie, che porterebbero anche AES-GCM, BLAKE2 e il
+# risolutore di `ring`: qui si usa una suite sola, e ogni primitiva in più è
+# codice crittografico in più nel binario senza che nessuno lo chiami.
+# Senza nemmeno `std`, che in snow 0.10 accende `ring/std` e `blake2/std` — cioè
+# porta dentro proprio `ring` e BLAKE2 — per dare a `snow::Error` l'impl di
+# `std::error::Error`. Qui gli errori di snow diventano `AppError` col loro
+# `Display`, e quell'impl non serve.
+snow = { version = "0.10", default-features = false, features = [
+    "use-curve25519",
+    "use-chacha20poly1305",
+    "use-sha2",
+    "use-getrandom",
+] }
+# Le schede di rete e le loro sottoreti, per il broadcast diretto di ciascuna:
+# su un PC con più schede `255.255.255.255` esce da una sola, quella che sceglie
+# la tabella d'instradamento. È l'unica cosa per cui servirebbe `unsafe`.
+if-addrs = "0.15"
+# La chiave segreta di questo PC si azzera in memoria quando l'`Identita` se ne
+# va. C'era già nell'albero, portata dalla curva: qui si usa e basta.
+zeroize = "1"
+# La compressione dei messaggi grandi (lo stato della sessione): deflate
+# grezzo, vedi «La compressione» in `cornice`. C'era già nell'albero
+# (`rymembra-cloud`, `rymembra-sync`).
+flate2.workspace = true
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@
  * una funzione `t`. Così questo modulo non tocca né il nucleo né le lingue, e
  * `node --test` lo carica senza niente intorno.
  */
+import { idDiLibreria } from "./insieme";
 import type { Brano, Playlist } from "./ipc";
 import type { Chiave } from "./lingue";
 import type { Voce } from "./Menu";
@@ -44,15 +45,45 @@ export interface AzioniBrani {
  * difende comunque da sé.
  */
 export function vociBrani(
-  brani: number[],
+  scelti: number[],
   inMano: (id: number) => Brano | undefined,
   fai: AzioniBrani,
   t: Traduci,
+  /**
+   * Questo PC è in una sessione di «Ascolta insieme»: la radio non c'è.
+   *
+   * Il nucleo la rifiuta per tutti e due i ruoli (`insieme/strada.rs`), e una
+   * voce che risponde con un errore rosso a un clic ragionevole è peggio di
+   * una voce che non c'è. Un valore e non una domanda al lettore: chi apre il
+   * menù lo legge al momento del gesto, e questo modulo resta senza nucleo.
+   */
+  inSessione = false,
+  /**
+   * Chi ospita la sessione non ha dato la coda a questo PC: «Dopo» e «In
+   * coda» non ci sono, per la stessa ragione della radio qui sopra. Vedi
+   * `gestoPermesso`.
+   */
+  senzaCoda = false,
 ): Voce[] {
+  /*
+   * Solo le righe della libreria di questo PC.
+   *
+   * Una voce di «Ascolta insieme» (id negativo) è un brano che sta in coda
+   * perché la sessione ce l'ha messo: preferito, playlist, disco, artista,
+   * cartella e cancellazione scriverebbero tutti su una riga che qui non c'è.
+   * Oggi gli elenchi da cui si apre questo menù sono tutti della libreria e
+   * una voce non ci arriva; il filtro sta qui perché è qui che si decide quali
+   * voci esistono, e il primo elenco che mostrerà la coda di sessione non
+   * dovrà ricordarsene. Senza nessuna riga di libreria, nessuna voce: un menù
+   * di gesti che non vanno da nessuna parte è peggio di nessun menù.
+   */
+  const brani = scelti.filter(idDiLibreria);
+  if (brani.length === 0) return [];
   // La radio ha **un** seme, e con più brani selezionati non si sa quale:
   // la voce sparisce invece di far finta di scegliere. È lo stesso motivo
   // per cui «rinomina» non compare su una selezione multipla.
   const primo = brani.length === 1 ? brani[0] : undefined;
+  const conRadio = primo !== undefined && !inSessione;
   /*
    * Le tre voci che su un brano solo mancavano: portarsi al suo disco, al
    * suo artista, e al suo file. Il menù aveva «radio», «dopo», «in coda» e
@@ -114,11 +145,13 @@ export function vociBrani(
       return brano !== undefined && brano.fonte != null;
     });
   return [
-    ...(primo === undefined
+    ...(conRadio ? [{ etichetta: t("action.radio"), azione: () => fai.radio(primo) }] : []),
+    ...(senzaCoda
       ? []
-      : [{ etichetta: t("action.radio"), azione: () => fai.radio(primo) }]),
-    { etichetta: t("action.playNext"), azione: () => fai.dopo(brani) },
-    { etichetta: t("action.enqueue"), azione: () => fai.accoda(brani) },
+      : [
+          { etichetta: t("action.playNext"), azione: () => fai.dopo(brani) },
+          { etichetta: t("action.enqueue"), azione: () => fai.accoda(brani) },
+        ]),
     { etichetta: t("action.addToPlaylist"), azione: () => fai.aggiungiAPlaylist(brani) },
     ...daUnBrano,
     /*
@@ -150,15 +183,30 @@ export interface AzioniAlbum {
   accoda: () => void;
 }
 
-/** Le voci del menù di una scheda album. */
-export function vociAlbum(fai: AzioniAlbum, t: Traduci): Voce[] {
+/**
+ * Le voci del menù di una scheda album.
+ *
+ * `inSessione` toglie la radio e `senzaCoda` «Dopo» e «In coda», come in
+ * [`vociBrani`]. Senza nessuna delle tre il menù è vuoto, e un menù vuoto non
+ * si apre.
+ */
+export function vociAlbum(
+  fai: AzioniAlbum,
+  t: Traduci,
+  inSessione = false,
+  senzaCoda = false,
+): Voce[] {
   return [
     // Il seme è la **prima traccia** e non un brano a caso del disco: è
     // quella che chi apre un album sente per prima, quindi è quella di
     // cui sta chiedendo «portami dove porta questo».
-    { etichetta: t("action.radio"), azione: fai.radio },
-    { etichetta: t("action.playNext"), azione: fai.dopo },
-    { etichetta: t("action.enqueue"), azione: fai.accoda },
+    ...(inSessione ? [] : [{ etichetta: t("action.radio"), azione: fai.radio }]),
+    ...(senzaCoda
+      ? []
+      : [
+          { etichetta: t("action.playNext"), azione: fai.dopo },
+          { etichetta: t("action.enqueue"), azione: fai.accoda },
+        ]),
   ];
 }
 

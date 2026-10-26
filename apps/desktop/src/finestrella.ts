@@ -132,8 +132,34 @@
  * `document.activeElement` ogni volta. Con l'effetto a dipendenze vuote e la
  * chiusura in un `ref`, il fuoco si prende e si restituisce una volta sola, e
  * nessun chiamante deve ricordarsi di un `useCallback`.
+ *
+ * # Il nodo col fuoco che sparisce
+ *
+ * Tutto quel che sta scritto sopra dà per buono che il fuoco, una volta
+ * dentro, ci resti. Non è vero quando il nodo che lo tiene **sparisce**: il
+ * tasto premuto se ne va perché il gesto ha cambiato la finestrella sotto le
+ * dita — «Ospita una sessione» nel pannello di «Ascolta insieme» diventa
+ * l'elenco delle persone, «Associa» smonta la sua riga — o si spegne. Il
+ * browser allora rimette il fuoco sul `<body>`, senza dirlo a nessuno, e da lì
+ * l'Escape non passa più per il nodo della finestrella e il Tab non torna:
+ * il primo vero tentativo fra due PC ha trovato il pannello sordo a tutti e
+ * due dopo il primo clic.
+ *
+ * Quindi una sentinella guarda la finestrella (figli e `disabled`, in tutto
+ * il sottoalbero) e, se dopo un cambiamento il fuoco è sul `<body>`, lo rimette
+ * sulla radice — che col suo `tabindex="-1"` è proprio il posto da cui Escape
+ * e Tab ripartono. Solo la finestrella in cima: quelle sotto sono inerti, e
+ * tirare il fuoco giù da una domanda aperta sopra sarebbe peggio del difetto.
+ *
+ * Per sapere chi è in cima le radici aperte stanno in una pila, ed è la stessa
+ * pila che serve alla chiusura: quando chi aveva aperto non c'è più — il tasto
+ * «Associa» di una riga che nel frattempo è diventata «Chiedi di unirti» — il
+ * fuoco va alla finestrella che resta sotto, invece di cadere sul `<body>`
+ * proprio mentre quella è ancora aperta. E `tastiera.ts` la legge per l'ultimo
+ * caso: un Escape arrivato col fuoco sul `<body>` lo stesso, che chiude quella
+ * in cima invece di non chiudere niente.
  */
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
 import { useDati } from "./dati";
 import {
@@ -192,6 +218,40 @@ function eUnCampoDaSostituire(nodo: HTMLElement): nodo is HTMLInputElement {
     tipo === "password" ||
     tipo === "number"
   );
+}
+
+/** Una finestrella aperta: la radice, e quel che fa Escape. */
+interface Aperta {
+  radice: HTMLElement;
+  chiudi: RefObject<() => void>;
+}
+
+/**
+ * Le finestrelle aperte, nell'ordine in cui si sono aperte: l'ultima è quella
+ * in cima. Vedi «Il nodo col fuoco che sparisce».
+ */
+const aperte: Aperta[] = [];
+
+/** Il fuoco non è da nessuna parte: è caduto sul `<body>`. */
+function fuocoCaduto(): boolean {
+  const adesso = document.activeElement;
+  return adesso === null || adesso === document.body;
+}
+
+/** `nodo` è la radice della finestrella in cima. */
+export function inCima(nodo: HTMLElement): boolean {
+  return aperte[aperte.length - 1]?.radice === nodo;
+}
+
+/**
+ * Chiude la finestrella in cima, se il fuoco è caduto sul `<body>`: l'Escape
+ * che il suo nodo non ha potuto sentire. `true` se c'era qualcosa da chiudere.
+ */
+export function chiudiQuellaInCima(): boolean {
+  const cima = aperte[aperte.length - 1];
+  if (cima === undefined || !fuocoCaduto()) return false;
+  cima.chiudi.current();
+  return true;
 }
 
 /**
@@ -271,19 +331,82 @@ export function useFinestrella<E extends HTMLElement>(
     };
     dentro.addEventListener("keydown", suTasto);
 
+    const questa: Aperta = { radice: dentro, chiudi };
+    aperte.push(questa);
+    // Il nodo col fuoco è sparito o si è spento: il fuoco torna alla radice.
+    // Solo in cima, e solo se è proprio caduto — un fuoco spostato altrove da
+    // chi disegna la finestrella è una scelta sua. `preventScroll` perché la
+    // radice è anche quel che scorre: rimetterle il fuoco non deve riportare
+    // in cima l'elenco che si stava guardando.
+    const sentinella = new MutationObserver(() => {
+      if (inCima(dentro) && fuocoCaduto()) dentro.focus({ preventScroll: true });
+    });
+    sentinella.observe(dentro, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    });
+
     return () => {
       chiudiModale();
+      sentinella.disconnect();
       dentro.removeEventListener("keydown", suTasto);
+      const dove = aperte.indexOf(questa);
+      if (dove !== -1) aperte.splice(dove, 1);
       if (
         daRidare !== null &&
         daRidare !== document.body &&
         daRidare.isConnected
-      )
+      ) {
         daRidare.focus();
+        return;
+      }
+      // Chi aveva aperto non c'è più. Se sotto resta una finestrella, il fuoco
+      // va a lei: vedi «Il nodo col fuoco che sparisce».
+      const sotto = aperte[aperte.length - 1];
+      if (sotto !== undefined && sotto.radice.isConnected && fuocoCaduto()) {
+        sotto.radice.focus({ preventScroll: true });
+      }
     };
   }, [anteprima]);
 
   return radice;
+}
+
+/**
+ * Quando il guscio di un pannello sparisce dallo schermo, `fai`.
+ *
+ * Per i pannelli appesi alla barra del lettore, l'equalizzatore e «Ascolta
+ * insieme»: sotto i 560 pixel di barra il foglio ritira il loro guscio
+ * (`.con-pannello`, `display: none`), e un pannello aperto restava montato e
+ * invisibile — e, montato, contava fra i modali: le scorciatoie globali
+ * restavano spente per una finestrella che nessuno vedeva e che nessun tasto
+ * poteva chiudere. Chi lo usa decide cosa vuol dire «ritirato»: chiudere, o
+ * passare il pannello a un'altra cornice.
+ *
+ * Un `ResizeObserver` e non una domanda al foglio: la soglia è una `@container`
+ * della barra, e da qui non si legge; un nodo che smette di essere disegnato
+ * invece cambia misura, e l'osservatore lo dice. Appena iscritto risponde una
+ * volta da sé, quindi vale anche per un guscio già ritirato alla nascita.
+ *
+ * Restituisce un riferimento a funzione da appendere al guscio, e non prende un
+ * `useRef`: la barra esce senza disegnare niente quando non c'è un brano, e un
+ * effetto legato a un riferimento che non cambia non ripartirebbe quando il
+ * guscio compare dopo. Il riferimento a funzione si chiama quando il nodo c'è,
+ * e la pulizia che restituisce quando se ne va.
+ */
+export function useQuandoSiRitira(fai: () => void): (nodo: HTMLElement | null) => () => void {
+  const ultimo = useRef(fai);
+  ultimo.current = fai;
+  return useCallback((nodo: HTMLElement | null) => {
+    if (nodo === null) return () => undefined;
+    const guarda = new ResizeObserver(() => {
+      if (nodo.getClientRects().length === 0) ultimo.current();
+    });
+    guarda.observe(nodo);
+    return () => guarda.disconnect();
+  }, []);
 }
 
 // ── il resto della finestra, inerte ────────────────────────────────────────

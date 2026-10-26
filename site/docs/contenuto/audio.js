@@ -75,9 +75,9 @@
         },
         "Modes of `riapri_su`: `Automatica` (the device watcher: the pinned device or nothing, music resumes as it was), `AMano` («Reopen», or a new output chosen in Settings: falls back if the pinned one is missing), `Suona` (play pressed while the device is lost: falls back and plays — the gesture wins over the state saved at the failure), `SoloDispositivo` (a track is about to start by itself: only a live device is needed). When the pinned device returns, the watcher moves the engine back to it without losing the position. With no device pinned, a change of the Windows default is followed.",
         { h: "Latency" },
-        "The measured device-buffer latency plus `audio.latenza_ms` shift only the **reported** position (lyrics, scrubber, SMTC), never the sound or the track change. On Bluetooth the radio dominates, which is why the setting exists.",
+        "Outside a session, the measured device-buffer latency plus the output's latency setting shift only the **reported** position (lyrics, scrubber, SMTC), never the sound or the track change. In a «Listen together» session they also move the **sound**: what the regulator aligns is what each PC's listener hears ([sync](#together-sync)). On Bluetooth the radio dominates, which is why the setting exists. The value belongs to the output: `audio.latenza_per_uscita` keeps one per device name (steps of 1 ms, −500…+500), and `audio.latenza_ms` is the fallback for an output that never had its own.",
       ],
-      see: ["engine", "player", "lyrics"],
+      see: ["engine", "player", "lyrics", "together-sync"],
     },
     {
       id: "crossfade",
@@ -99,7 +99,7 @@
           ],
         },
       ],
-      see: ["playback", "engine", "sleep"],
+      see: ["playback", "engine", "sleep", "together"],
     },
     {
       id: "playback",

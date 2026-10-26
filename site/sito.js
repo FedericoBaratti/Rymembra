@@ -540,6 +540,15 @@
     }).observe(barre.closest(".scena") || barre);
   }
 
+  /* Le barre dei due PC di «Insieme» pulsano solo mentre la loro scena è sullo
+     schermo: fuori, un'animazione infinita costerebbe per niente. */
+  var insieme = document.querySelector("[data-insieme]");
+  if (insieme && "IntersectionObserver" in window) {
+    new IntersectionObserver(function (righe) {
+      insieme.toggleAttribute("data-vista", righe[0].isIntersecting);
+    }).observe(insieme);
+  }
+
   /* Otto bande, a passi uguali sulla scala dei toni, da 60 Hz a 12 kHz: la
      potenza media di ciascuna, in dB, più 4,5 dB per ottava. La musica ha meno
      energia in alto, e senza la pendenza le ultime barre starebbero a terra. */

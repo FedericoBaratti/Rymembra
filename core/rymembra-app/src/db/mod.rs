@@ -1985,6 +1985,105 @@ mod tests {
         assert_eq!(quante(c, "fogli_cue"), 1);
     }
 
+    /// Lo schema intero, riga per riga: tabelle, indici e trigger col loro SQL.
+    fn schema(connection: &Connection) -> Vec<String> {
+        colonna(
+            connection,
+            "SELECT type || ' ' || name || ' ' || COALESCE(sql, '')
+               FROM sqlite_master ORDER BY type, name",
+        )
+    }
+
+    #[test]
+    fn la_trentacinque_aggiunge_i_pari_e_non_tocca_il_resto() {
+        // Una libreria alla 34 con dentro le cose che si perderebbero, poi la
+        // 35 per la strada vera: la tabella c'è, e il resto è com'era.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 34);
+        libreria_da_perdere(&connection);
+        let prima = schema(&connection);
+
+        let applicate = migrate(&connection).expect("la 35");
+        assert_eq!(
+            u32::try_from(applicate).expect("il conto delle migrazioni sta in un u32"),
+            LATEST_VERSION - 34
+        );
+        for tabella in [
+            "tracks",
+            "playlist_tracks",
+            "play_history",
+            "track_overrides",
+        ] {
+            assert_eq!(quante(&connection, tabella), 1, "{tabella}");
+        }
+        // Solo righe in più nello schema: nessuna tabella di prima è cambiata.
+        let dopo = schema(&connection);
+        assert!(
+            prima.iter().all(|riga| dopo.contains(riga)),
+            "la 35 ha toccato qualcosa che c'era già"
+        );
+        // E nessuna chiave esterna, in nessuno dei due versi: è quel che rende
+        // economico il ritorno indietro scritto in testa alla 035.
+        assert_eq!(
+            quante(&connection, "pragma_foreign_key_list('insieme_pari')"),
+            0
+        );
+    }
+
+    #[test]
+    fn i_vincoli_della_trentacinque_tengono() {
+        let db = open_in_memory().expect("apertura");
+        let c = &db.connection;
+        let chiave = "ab".repeat(32);
+        let inserisci = |chiave: &str, bloccato: i64| {
+            c.execute(
+                "INSERT INTO insieme_pari (chiave, nome, bloccato, associato_ms)
+                 VALUES (?1, 'PC', ?2, 1)",
+                rusqlite::params![chiave, bloccato],
+            )
+        };
+        inserisci(&chiave, 0).expect("una chiave in forma");
+        assert!(inserisci(&chiave, 0).is_err(), "una chiave è un PC solo");
+        for storta in [
+            "AB".repeat(32),
+            "ab".repeat(31),
+            format!("{}g", "a".repeat(63)),
+        ] {
+            assert!(inserisci(&storta, 0).is_err(), "{storta}");
+        }
+        assert!(inserisci(&"cd".repeat(32), 2).is_err(), "bloccato è 0 o 1");
+        assert_eq!(quante(c, "insieme_pari"), 1);
+        let visto: Option<i64> = c
+            .query_row("SELECT visto_ms FROM insieme_pari", [], |r| r.get(0))
+            .expect("letto");
+        assert_eq!(visto, None, "mai visto finché non si fa vedere");
+    }
+
+    #[test]
+    fn togliere_la_trentacinque_a_mano_riporta_lo_schema_della_trentaquattro() {
+        // Il ritorno indietro a mano scritto in testa alla 035 — `DROP TABLE` e
+        // `user_version` — deve dare **esattamente** il database che una 3.0.2
+        // si aspetta: se un giorno la 035 crescesse di un indice o di un
+        // trigger e il commento no, questa prova lo direbbe.
+        let alla_34 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_34, 34);
+
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 35);
+        tornata
+            .execute(
+                "INSERT INTO insieme_pari (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                ["ab".repeat(32)],
+            )
+            .expect("un PC associato");
+        tornata
+            .execute_batch("DROP TABLE insieme_pari; PRAGMA user_version = 34;")
+            .expect("ritorno a mano");
+
+        assert_eq!(schema(&tornata), schema(&alla_34));
+        assert_eq!(user_version(&tornata).expect("versione"), 34);
+    }
+
     /// La colonna di testo di una query, riga per riga, nell'ordine chiesto.
     fn colonna(connection: &Connection, sql: &str) -> Vec<String> {
         let mut query = connection

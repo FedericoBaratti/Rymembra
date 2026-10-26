@@ -1544,6 +1544,8 @@ pub fn preferito(
     id: i64,
     valore: bool,
 ) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let esito = con_libreria(&stato, |libreria| {
         let now = adesso_ms();
         libreria
@@ -1580,6 +1582,8 @@ pub fn preferito(
 /// non c'è o il gestore file rifiuta di aprirsi.
 #[tauri::command(async)]
 pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let percorso = con_libreria(&stato, |libreria| {
         file_da_mostrare(&libreria.connection, id)
     })
@@ -1661,6 +1665,8 @@ fn file_da_mostrare(connection: &rusqlite::Connection, id: i64) -> Result<String
 /// browser non si apre.
 #[tauri::command(async)]
 pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let pagina = con_libreria(&stato, |libreria| {
         let brano = rymembra_app::library::read_summary(&libreria.connection, id)?
             .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
@@ -1701,6 +1707,8 @@ pub fn valutazione(
     id: i64,
     stelle: i64,
 ) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     // Tagliato qui, non lasciato arrivare al database. Lo schema dichiara
     // `CHECK (rating BETWEEN 0 AND 5)`: un sei arriverebbe alla finestra come
     // un errore di vincolo SQL, cioè come un guasto del programma, quando è
@@ -2277,6 +2285,7 @@ const ANCORE_GUIDA: &[&str] = &[
     "motion",
     "cloud",
     "sync",
+    "together",
     "legacy",
     "import",
     "scrobbling",

@@ -64,6 +64,7 @@
  */
 import { useEffect, useRef } from "react";
 
+import { chiudiQuellaInCima } from "./finestrella";
 import { posizioneAdesso } from "./riproduzione";
 import { t, type Chiave } from "./lingue";
 import { modaleAperto, passaLaScorciatoia } from "./modale";
@@ -507,8 +508,13 @@ export function useScorciatoie(
         // Con una finestrella aperta Escape è suo, e lo prende sul suo nodo
         // (`finestrella.ts`). Se arriva fin qui il fuoco era fuori da lei, e la
         // scala dietro il velo non deve perdere un livello per un tasto che
-        // nessuno le ha rivolto.
-        if (modaleAperto()) return;
+        // nessuno le ha rivolto. Tranne quando il fuoco è caduto sul `<body>`
+        // perché il tasto premuto è sparito: allora l'Escape era per lei, e
+        // la chiude — vedi «Il nodo col fuoco che sparisce».
+        if (modaleAperto()) {
+          if (chiudiQuellaInCima()) e.preventDefault();
+          return;
+        }
         if (azioni.chiudi()) e.preventDefault();
         return;
       }

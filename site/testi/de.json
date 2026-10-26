@@ -40,6 +40,7 @@
     "disco": "Deine Festplatte",
     "cataloghi": "Freie Kataloge",
     "suono": "Klang",
+    "insieme": "Zusammen",
     "skin": "Skins",
     "tuo": "Deins",
     "scarica": "Herunterladen"
@@ -80,6 +81,15 @@
     "alt": "Der Wiedergabebildschirm mit dem Spektrumanalysator",
     "didascalia": "Jetzt läuft, mit der Spektrum-Szene und der Zeile, die sagt, was die Datei ist. [Wie die Audio-Engine funktioniert]({base}docs/audio/) (auf Englisch)."
   },
+  "insieme": {
+    "titolo": "Und man hört zusammen.",
+    "testo": "Kollegen im selben Netz, jeder mit seinem Rymembra, hören dieselbe Musik im selben Moment: Ein PC lädt ein, die anderen folgen, und jeder spielt sie selbst ab. Beim ersten Mal zeigen beide Bildschirme denselben vierstelligen Code; danach erkennen sich die PCs, und was zwischen ihnen läuft, ist verschlüsselt.",
+    "punti": [
+      "Wer einlädt, wählt für jeden, der dazukommt: nur zuhören, die Bedienung — Pause, Springen, der nächste Titel — oder alles, auch die eigenen Titel in der Warteschlange, die von dem PC zu den anderen kommen, der sie hat.",
+      "Auf die Millisekunde abgestimmt, genug für zwei Paar Lautsprecher im selben Raum; für Bluetooth-Kopfhörer gibt es die Kalibrierung.",
+      "Kein Internet und kein Server: nur das Netz im Büro oder zu Hause. Der einladende PC öffnet einen Port im LAN, und Windows fragt einmal um Erlaubnis."
+    ]
+  },
   "skin": {
     "titolo": "Er sieht aus, wie du willst.",
     "testo": "Ein Skin kann jeden der 101 Teile des Fensters neu gestalten und animieren — Farben, Schrift, Rahmen, Bewegung — und sein Kontrast wird geprüft, bevor du ihn teilst. Das eingebaute Studio bearbeitet Skins auf den echten Seiten des Programms und kann ein Sprachmodell, auf deinem Rechner oder entfernt, bitten, die Änderung für dich vorzunehmen.",
@@ -118,7 +128,14 @@
     "account": "Konto",
     "nessuno": "keins",
     "backup": "Sicherung",
-    "backupDove": "dein Ordner oder dein Drive"
+    "backupDove": "dein Ordner oder dein Drive",
+    "insiemeOspita": "Lädt ein",
+    "insiemeSegue": "Folgt",
+    "pcUno": "Annas PC",
+    "pcDue": "Marcos PC",
+    "insiemeCodice": "Code",
+    "insiemeLegame": "LAN · verschlüsselt",
+    "insiemeNota": "Derselbe Moment auf beiden PCs: der Abstand wird in Millisekunden gemessen."
   },
   "scarica": {
     "titolo": "Bereit zum Hören.",
@@ -185,8 +202,12 @@
         "r": "Ja. Fordere deine Daten auf der Datenschutzseite deines Spotify-Kontos an: Sie kommen als ZIP, meist innerhalb weniger Tage, der vollständige Hörverlauf dauert länger. Rymembra liest sie auf deinem Computer und gleicht jeden Titel mit deiner Bibliothek und den freien Katalogen ab. Das ZIP enthält keine Audiodateien: Was du nicht hast und kein freier Katalog hat, kommt auf die Einkaufsliste."
       },
       {
+        "d": "Kann ich mit einem Kollegen zusammen hören?",
+        "r": "Ja, wenn ihr im selben Netz seid und beide Rymembra 3.1 oder neuer habt. Einer lädt über „Zusammen hören“ zu einer Sitzung ein; der andere findet sie von selbst oder tippt die Adresse ein, die der erste auf dem Bildschirm sieht, und beim ersten Mal vergleicht ihr einen vierstelligen Code. Auf dem einladenden PC fragt Windows, ob Rymembra durchgelassen werden soll: „Zulassen“, auch für „Öffentliche Netzwerke“, wenn das Netz so markiert ist."
+      },
+      {
         "d": "Schickt er meine Daten irgendwohin?",
-        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, LRCLIB für Songtexte, GitHub für die Update-Prüfung und allem, was du selbst verbindest. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
+        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, LRCLIB für Songtexte, GitHub für die Update-Prüfung und allem, was du selbst verbindest; wenn du zusammen hörst, mit den anderen PCs in deinem Netz, und sonst niemandem. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
       }
     ]
   },

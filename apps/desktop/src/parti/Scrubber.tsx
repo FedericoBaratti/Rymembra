@@ -38,6 +38,7 @@
 import { memo, useEffect, useState, type CSSProperties } from "react";
 
 import { durata } from "../formato";
+import { gestoPermesso } from "../insieme";
 import { ipc, type StatoRiproduzione } from "../ipc";
 import { usePosizioneMs } from "../riproduzione";
 import { t, useLingua } from "../lingue";
@@ -140,6 +141,10 @@ export const Scrubber = memo(function Scrubber({
   // del salto e il tetto di quel che si vede sono lo stesso numero, e tenerli a
   // due righe di distanza è il modo di non correggerne uno solo.
   const durataMs = stato.durataMs;
+  // Chi segue una sessione di «Ascolta insieme» salta solo quando l'host ne
+  // inoltra i gesti: vedi `gestoPermesso`, e lo stesso spegnimento in
+  // `Trasporto`.
+  const saltoLibero = gestoPermesso(stato.insieme, "trasporto");
 
   const rilascia = async () => {
     if (trascinato === null) return;
@@ -274,7 +279,8 @@ export const Scrubber = memo(function Scrubber({
           posizione: durata(dove),
           durata: durata(durataMs),
         })}
-        disabled={durataMs === 0}
+        disabled={durataMs === 0 || !saltoLibero}
+        title={saltoLibero ? undefined : t("together.gestures.off.title")}
         onChange={(e) => setTrascinato(Number(e.target.value))}
         onPointerUp={() => void rilascia()}
         onKeyUp={() => void rilascia()}

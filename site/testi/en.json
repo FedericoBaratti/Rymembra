@@ -40,6 +40,7 @@
     "disco": "Your disk",
     "cataloghi": "Free catalogs",
     "suono": "Sound",
+    "insieme": "Together",
     "skin": "Skins",
     "tuo": "Yours",
     "scarica": "Download"
@@ -80,6 +81,15 @@
     "alt": "The now-playing screen with the spectrum analyzer",
     "didascalia": "Now playing, with the spectrum scene and the line that says what the file is. [How the audio engine works]({base}docs/audio/)."
   },
+  "insieme": {
+    "titolo": "And it listens together.",
+    "testo": "Colleagues on the same network, each with their own Rymembra, hear the same music at the same moment: one PC hosts, the others follow, and each plays it on its own. The first time, both screens show the same four-digit code; from then on the PCs recognise each other, and whatever passes between them is encrypted.",
+    "punti": [
+      "The host chooses, for each person who joins, whether they just listen, take the controls — pause, seeking, the next track — or do everything, their own tracks in the queue included, which reach the others from the PC that has them.",
+      "Aligned to the millisecond, enough for two pairs of speakers in one room; for Bluetooth headphones there's calibration.",
+      "No internet and no server: just the office or home network. The hosting PC opens a port on the LAN, and Windows asks for permission once."
+    ]
+  },
   "skin": {
     "titolo": "It looks the way you want.",
     "testo": "A skin can repaint and animate any of the 101 parts of the window — colors, type, borders, motion — and its contrast is checked before you share it. The built-in Studio edits skins on the program's real pages, and can ask a language model, on your machine or remote, to make the change for you.",
@@ -118,7 +128,14 @@
     "account": "Account",
     "nessuno": "none",
     "backup": "Backup",
-    "backupDove": "your folder, or your Drive"
+    "backupDove": "your folder, or your Drive",
+    "insiemeOspita": "Hosts",
+    "insiemeSegue": "Follows",
+    "pcUno": "Anna's PC",
+    "pcDue": "Marco's PC",
+    "insiemeCodice": "Code",
+    "insiemeLegame": "LAN · encrypted",
+    "insiemeNota": "The same moment on both PCs: the gap is measured in milliseconds."
   },
   "scarica": {
     "titolo": "Ready to listen.",
@@ -185,8 +202,12 @@
         "r": "Yes. Ask Spotify for your data from your account's privacy page: it arrives as a ZIP, usually within days, and the full listening history takes longer. Rymembra reads it on your computer and matches each track against your library and the free catalogs. The ZIP holds no audio: what you don't own and no free catalog has goes on the shopping list."
       },
       {
+        "d": "Can I listen together with a colleague?",
+        "r": "Yes, if you're on the same network and both have Rymembra 3.1 or later. One of you hosts a session from «Listen together»; the other finds it by itself, or types the address the first one sees on screen, and the first time you compare a four-digit code. On the hosting PC Windows asks whether to let Rymembra through: «Allow», for «Public networks» too if the network is marked that way."
+      },
+      {
         "d": "Does it send my data anywhere?",
-        "r": "There's no telemetry and no Rymembra server. The program only talks to the services you use — the catalogs, MusicBrainz for tags, LRCLIB for lyrics, GitHub to check for updates, and whatever you connect yourself. [PRIVACY.md]({privacy}) lists every request and what it sends."
+        "r": "There's no telemetry and no Rymembra server. The program only talks to the services you use — the catalogs, MusicBrainz for tags, LRCLIB for lyrics, GitHub to check for updates, and whatever you connect yourself; if you listen together, with the other PCs on your network, and nobody else. [PRIVACY.md]({privacy}) lists every request and what it sends."
       }
     ]
   },

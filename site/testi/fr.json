@@ -40,6 +40,7 @@
     "disco": "Votre disque",
     "cataloghi": "Catalogues libres",
     "suono": "Son",
+    "insieme": "Ensemble",
     "skin": "Skins",
     "tuo": "À vous",
     "scarica": "Télécharger"
@@ -80,6 +81,15 @@
     "alt": "L'écran de lecture avec l'analyseur de spectre",
     "didascalia": "En lecture, avec la scène du spectre et la ligne qui dit ce qu'est le fichier. [Comment fonctionne le moteur audio]({base}docs/audio/) (en anglais)."
   },
+  "insieme": {
+    "titolo": "Et on l'écoute ensemble.",
+    "testo": "Des collègues sur le même réseau, chacun avec son Rymembra, entendent la même musique au même instant : un PC accueille, les autres suivent, et chacun la joue de son côté. La première fois, les deux écrans affichent le même code à quatre chiffres ; ensuite les PC se reconnaissent, et ce qui passe entre eux est chiffré.",
+    "punti": [
+      "Celui qui accueille choisit, pour chaque personne qui entre, si elle écoute seulement, si elle a les commandes — pause, déplacements, le morceau suivant — ou si elle fait tout, y compris mettre ses propres morceaux dans la file, qui arrivent aux autres depuis le PC qui les possède.",
+      "Alignés à la milliseconde, assez pour deux paires d'enceintes dans la même pièce ; pour les casques Bluetooth, il y a l'étalonnage.",
+      "Ni Internet ni serveur : seulement le réseau du bureau ou de la maison. Le PC qui accueille ouvre un port sur le réseau local, et Windows demande l'autorisation une fois."
+    ]
+  },
   "skin": {
     "titolo": "Il a l'allure que vous voulez.",
     "testo": "Une skin peut repeindre et animer chacune des 101 parties de la fenêtre — couleurs, typographie, bordures, mouvement — et son contraste est vérifié avant que vous la partagiez. Le Studio intégré modifie les skins sur les vraies pages du programme, et peut demander à un modèle de langage, sur votre machine ou à distance, de faire la modification pour vous.",
@@ -118,7 +128,14 @@
     "account": "Compte",
     "nessuno": "aucun",
     "backup": "Sauvegarde",
-    "backupDove": "votre dossier, ou votre Drive"
+    "backupDove": "votre dossier, ou votre Drive",
+    "insiemeOspita": "Accueille",
+    "insiemeSegue": "Suit",
+    "pcUno": "PC d'Anna",
+    "pcDue": "PC de Marco",
+    "insiemeCodice": "Code",
+    "insiemeLegame": "Réseau local · chiffré",
+    "insiemeNota": "Le même instant sur les deux PC : l'écart se mesure en millisecondes."
   },
   "scarica": {
     "titolo": "Prêt à écouter.",
@@ -185,8 +202,12 @@
         "r": "Oui. Demandez vos données à Spotify depuis la page de confidentialité de votre compte : elles arrivent sous forme de ZIP, en général en quelques jours, et l'historique d'écoute complet demande plus de temps. Rymembra le lit sur votre ordinateur et compare chaque titre à votre bibliothèque et aux catalogues libres. Le ZIP ne contient pas d'audio : ce que vous ne possédez pas et qu'aucun catalogue libre n'a va dans la liste d'achats."
       },
       {
+        "d": "Peut-on écouter avec un collègue ?",
+        "r": "Oui, si vous êtes sur le même réseau et avez tous les deux Rymembra 3.1 ou plus récent. L'un accueille une session depuis « Écouter ensemble » ; l'autre la trouve tout seul, ou saisit l'adresse que le premier voit à l'écran, et la première fois vous comparez un code à quatre chiffres. Sur le PC qui accueille, Windows demande s'il faut laisser passer Rymembra : « Autoriser », aussi pour les « Réseaux publics » si le réseau est marqué ainsi."
+      },
+      {
         "d": "Envoie-t-il mes données quelque part ?",
-        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour, et ce que vous connectez vous-même. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
+        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour, et ce que vous connectez vous-même ; si vous écoutez ensemble, avec les autres PC de votre réseau, et personne d'autre. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
       }
     ]
   },

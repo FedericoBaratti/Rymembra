@@ -768,10 +768,10 @@
   text-wrap: pretty;
 }
 
-/* La rotta: le sette tappe, e dove si è. È anche un indice. */
+/* La rotta: le otto tappe, e dove si è. È anche un indice. */
 .rotta {
   grid-column: 1;
-  grid-row: 2 / span 6;
+  grid-row: 2 / span 7;
 }
 .rotta ol {
   position: sticky;
@@ -1337,7 +1337,127 @@
   line-height: 1.45;
 }
 
-/* 5 · le skin: Neon scopre Plain, da sinistra, con lo scorrimento. */
+/* 5 · insieme: il PC che ospita, il legame, il PC che segue — e lo stesso
+   codice e le stesse barre sui due. Entrano con lo scorrimento; le barre
+   pulsano insieme solo mentre la scena è sullo schermo (`data-vista`, lo
+   scrive lo script), e solo con `transform`: niente che ridisegni la pagina. */
+.scena-insieme {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+.scena-insieme .pc {
+  --a: clamp(0, var(--p) * 3 - 0.3, 1);
+  padding: 16px 14px 14px;
+  border: 1px solid var(--linea);
+  border-radius: 16px;
+  background: var(--sup-1);
+  opacity: calc(0.25 + var(--a) * 0.75);
+  transform: translateY(calc((1 - var(--a)) * 18px));
+}
+.scena-insieme .pc-due {
+  --a: clamp(0, var(--p) * 3 - 1.1, 1);
+}
+.scena-insieme .pc p {
+  margin: 0;
+}
+.scena-insieme .scena-titolo {
+  margin-bottom: 4px;
+}
+.scena-insieme .titolo {
+  overflow: hidden;
+  font: 680 18px/1.2 var(--titoli);
+  letter-spacing: -0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scena-insieme .codice {
+  margin: 12px 0 14px !important;
+  color: var(--ciano);
+  font: 500 22px/1 var(--mono);
+  letter-spacing: 0.08em;
+}
+.scena-insieme .codice span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--t3);
+  font: 400 11.5px/1 var(--mono);
+  letter-spacing: 0;
+}
+.barre-insieme {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 58px;
+}
+.barre-insieme > span {
+  flex: 1;
+  height: 100%;
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(180deg, var(--viola-chiaro), var(--viola));
+  transform: scaleY(var(--h));
+  transform-origin: 50% 100%;
+}
+.scena-insieme .legame {
+  --a: clamp(0, var(--p) * 3 - 0.7, 1);
+  position: relative;
+  margin: 0;
+  color: var(--t3);
+  font: 400 11.5px/1.3 var(--mono);
+  text-align: center;
+  opacity: var(--a);
+}
+.scena-insieme .legame::before {
+  content: "";
+  display: block;
+  width: 64px;
+  height: 2px;
+  margin: 0 auto 8px;
+  background: linear-gradient(90deg, var(--viola), var(--ciano));
+  transform: scaleX(var(--a));
+}
+.scena-insieme .legame span {
+  display: block;
+  max-width: 8em;
+  margin: 0 auto;
+}
+.scena-insieme .scena-nota {
+  grid-column: 1 / -1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* La stessa animazione, con lo stesso inizio, sulle due schede: è il
+     punto. Il ritardo di ogni barra è nella sua posizione, non nel PC. */
+  [data-vista] .barre-insieme > span {
+    animation: insieme 1.6s ease-in-out infinite alternate;
+  }
+  [data-vista] .barre-insieme > span:nth-child(2n) {
+    animation-duration: 1.1s;
+  }
+  [data-vista] .barre-insieme > span:nth-child(3n) {
+    animation-duration: 0.8s;
+  }
+}
+@keyframes insieme {
+  from {
+    transform: scaleY(var(--h));
+  }
+  to {
+    transform: scaleY(calc(1.15 - var(--h)));
+  }
+}
+@media (max-width: 560px) {
+  .scena-insieme {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scena-insieme .legame::before {
+    width: 2px;
+    height: 28px;
+    transform: scaleY(var(--a));
+  }
+}
+
+/* 6 · le skin: Neon scopre Plain, da sinistra, con lo scorrimento. */
 .scena-skin {
   --a: clamp(0, var(--p) * 1.7 - 0.35, 1);
   padding: 14px;
@@ -1390,7 +1510,7 @@ html:not(.js) .scena-skin {
   opacity: clamp(0, (1 - var(--a)) * 5, 1);
 }
 
-/* 6 · tuo: un file, e tre interruttori che dicono di no. */
+/* 7 · tuo: un file, e tre interruttori che dicono di no. */
 .profilo {
   display: grid;
   justify-items: center;

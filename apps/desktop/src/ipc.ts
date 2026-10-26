@@ -1078,6 +1078,11 @@ export interface StatoRiproduzione {
    */
   formato: FormatoFile | null;
   /**
+   * «Ascolta insieme», quando questo PC è in una sessione. `null` fuori.
+   * Gemello di `InsiemeNelLettore` in `src-tauri/src/insieme/ipc.rs`.
+   */
+  insieme: InsiemeNelLettore | null;
+  /**
    * Suona, ma i dati non arrivano: il cursore è fermo e lo si dice.
    *
    * Non lo manda `riproduzione:stato`: lo porta il colpo d'orologio (vedi
@@ -2702,6 +2707,194 @@ export interface Resoconto {
 }
 
 /**
+ * Che cosa può fare chi segue una sessione: lo sceglie chi ospita quando lo
+ * fa entrare, e lo può cambiare finché resta.
+ *
+ * - `ascolta`: nessun gesto sulla musica degli altri;
+ * - `comanda`: pausa, avanti, indietro, salto, ripeti;
+ * - `tutto`: anche la coda — scegliere, togliere, spostare, aggiungere.
+ *
+ * Volume, equalizzatore, uscita e latenza restano di ciascuno a ogni livello.
+ * Gemello di `Diritti` (`core/rymembra-insieme/src/messaggi.rs`).
+ */
+export type DirittiInsieme = "ascolta" | "comanda" | "tutto";
+
+/**
+ * «Ascolta insieme» visto dal lettore: il campo `insieme` di
+ * `StatoRiproduzione`.
+ */
+export interface InsiemeNelLettore {
+  /** Questo PC ospita (`true`) o segue (`false`). */
+  ospita: boolean;
+  /** Il nome del PC che ospita. */
+  host: string;
+  /** Quante persone, l'host compreso. */
+  persone: number;
+  /** Di chi è la voce che suona: `null` se è di questo PC. */
+  proprietario: string | null;
+  /** La voce che suona si legge da un file di questo PC, non dalla rete. */
+  locale: boolean;
+  /** Chi segue: la sincronia è agganciata. Chi ospita: sempre `true`. */
+  agganciato: boolean;
+  /**
+   * Che cosa fanno i gesti di trasporto e di coda: chi ospita `tutto`, chi
+   * segue quel che chi ospita gli ha concesso.
+   */
+  diritti: DirittiInsieme;
+  /**
+   * Suona la voce di calibrazione: il titolo si scrive nella lingua di chi
+   * guarda, non quello che la voce porta.
+   */
+  calibrazione: boolean;
+  /**
+   * Cresce ogni volta che le descrizioni delle voci della sessione cambiano:
+   * una copertina arrivata, un titolo o una durata corretti. La coda tiene le
+   * righe per id, e un id che non cambia non si richiede da solo: questo
+   * numero è il segno che le righe con l'id negativo vanno rilette.
+   */
+  revisione: number;
+}
+
+/** In che fase è questo PC. */
+export type FaseInsieme =
+  | "spenta"
+  | "libera"
+  | "entrando"
+  | "ospita"
+  | "membro"
+  | "uscendo";
+
+/**
+ * Il pannello «Ascolta insieme». Evento `insieme:stato`, comando
+ * `insieme_stato`. Gemello di `StatoInsiemeIpc` in
+ * `src-tauri/src/insieme/ipc.rs`: chi cambia uno dei due cambia l'altro.
+ */
+export interface StatoInsieme {
+  attivo: boolean;
+  nome: string;
+  fase: FaseInsieme;
+  porta: number | null;
+  firewallSpiegato: boolean;
+  sessione: SessioneInsieme | null;
+  vicini: VicinoInsieme[];
+  fidati: FidatoInsieme[];
+  associazione: AssociazioneInsieme | null;
+  inviti: InvitoInsieme[];
+  richieste: RichiestaInsieme[];
+  indirizzi: string[];
+  sincronia: SincroniaInsieme | null;
+  /**
+   * Mentre questo PC ospita: gli `ip:porta` che un collega può scrivere a mano
+   * nei suoi «Indirizzi scritti a mano», il migliore per primo — quello della
+   * strada di serie — e poi gli altri. Vuoto quando non si ospita.
+   */
+  indirizziDiQui: string[];
+}
+
+/** La sessione in corso. */
+export interface SessioneInsieme {
+  host: string;
+  /** Questo PC è l'host. */
+  mia: boolean;
+  persone: PersonaInsieme[];
+  /** I clic di calibrazione stanno suonando. */
+  calibrazione: boolean;
+  /**
+   * Le voci della coda che un **membro** ha aggiunto e che non sono di questo
+   * PC, per maniglia (l'id in coda): la riga scrive «di Marco». Le voci di chi
+   * ospita non ci sono: sono la coda stessa, e la fascia dice già di chi è.
+   */
+  proprietari: ProprietarioInsieme[];
+}
+
+/** Di chi è una voce della coda. */
+export interface ProprietarioInsieme {
+  /** La maniglia: l'id della voce nella coda di questo PC. */
+  id: number;
+  nome: string;
+}
+
+/** Una persona nella sessione; `membro` 0 è l'host. */
+export interface PersonaInsieme {
+  membro: number;
+  nome: string;
+  io: boolean;
+  /** Che cosa può fare: chi ospita lo cambia da «In sessione». L'host è `tutto`. */
+  diritti: DirittiInsieme;
+}
+
+/** Un PC che ospita, visto in rete. */
+export interface VicinoInsieme {
+  /** La chiave per `insiemeAssocia`. */
+  chiave: string;
+  /** L'impronta a gruppi, per distinguere due PC con lo stesso nome. */
+  impronta: string;
+  nome: string | null;
+  /** L'id fra i PC associati, se lo è. */
+  pari: number | null;
+  bloccato: boolean;
+}
+
+/** Un PC associato. */
+export interface FidatoInsieme {
+  id: number;
+  nome: string;
+  impronta: string;
+  bloccato: boolean;
+  associatoMs: number;
+  vistoMs: number | null;
+  /** Collegato adesso. */
+  presente: boolean;
+  ospita: boolean;
+  inSessione: boolean;
+}
+
+/** L'associazione in corso. */
+export interface AssociazioneInsieme {
+  id: number;
+  nome: string;
+  /** Quattro cifre; `null` mentre si calcolano. */
+  codice: string | null;
+  /** Questo PC ha già confermato e aspetta l'altro. */
+  confermato: boolean;
+}
+
+/** Un invito ricevuto. */
+export interface InvitoInsieme {
+  id: number;
+  da: string;
+  pari: number;
+  /** Quando scade, ms dall'epoca su questo PC. */
+  scadeMs: number;
+}
+
+/** Una richiesta d'ingresso ricevuta da chi ospita. */
+export interface RichiestaInsieme {
+  id: number;
+  da: string;
+  pari: number;
+  scadeMs: number;
+}
+
+/** Com'è agganciato chi segue. */
+export interface SincroniaInsieme {
+  agganciato: boolean;
+  /** Positivo se questo PC è avanti. */
+  erroreMs: number | null;
+  incertezzaMs: number | null;
+}
+
+/**
+ * Un avviso di passaggio. Evento `insieme:avviso`: la **chiave** della frase
+ * (`together.notice.joined`, `errors.insieme.connessioneCaduta`) e il nome da
+ * metterci dentro.
+ */
+export interface AvvisoInsieme {
+  chiave: string;
+  nome: string | null;
+}
+
+/**
  * Lo stato della sincronia fra dispositivi.
  *
  * Come `StatoNuvola`, ogni campo è non opzionale: è ciò che fa scoprire a `tsc`
@@ -4238,6 +4431,45 @@ export const ipc = {
     invoke<DispositivoSincronia[]>("sincronia_accoppia", { id, nome }),
   sincroniaDimentica: (id: string) =>
     invoke<DispositivoSincronia[]>("sincronia_dimentica", { id }),
+
+  // ── ascolta insieme ──────────────────────────────────────────────────────
+  // Chi cambia qualcosa riceve lo stato intero, come per la sincronia; il resto
+  // arriva dall'evento `insieme:stato`, che il nucleo manda a ogni cambiamento
+  // — anche a quelli decisi da un altro PC, che nessun comando di qui vede.
+  insiemeStato: () => invoke<StatoInsieme>("insieme_stato"),
+  insiemeAttiva: (attivo: boolean) =>
+    invoke<StatoInsieme>("insieme_attiva", { attivo }),
+  insiemeNome: (nome: string) => invoke<StatoInsieme>("insieme_nome", { nome }),
+  insiemeFirewallVisto: () => invoke<void>("insieme_firewall_visto"),
+  insiemeOspita: () => invoke<StatoInsieme>("insieme_ospita"),
+  insiemeTermina: () => invoke<StatoInsieme>("insieme_termina"),
+  insiemeEsci: () => invoke<StatoInsieme>("insieme_esci"),
+  insiemeCerca: () => invoke<void>("insieme_cerca"),
+  insiemeAssocia: (vicino: string) =>
+    invoke<void>("insieme_associa", { vicino }),
+  insiemeCodice: (associazione: number, uguale: boolean) =>
+    invoke<void>("insieme_codice", { associazione, uguale }),
+  insiemeInvita: (pari: number, diritti: DirittiInsieme) =>
+    invoke<void>("insieme_invita", { pari, diritti }),
+  insiemeRispondi: (invito: number, accetta: boolean) =>
+    invoke<void>("insieme_rispondi", { invito, accetta }),
+  insiemeChiedi: (pari: number) => invoke<void>("insieme_chiedi", { pari }),
+  insiemeAmmetti: (richiesta: number, accetta: boolean, diritti: DirittiInsieme) =>
+    invoke<void>("insieme_ammetti", { richiesta, accetta, diritti }),
+  insiemeAllontana: (membro: number) =>
+    invoke<void>("insieme_allontana", { membro }),
+  insiemeConcedi: (membro: number, diritti: DirittiInsieme) =>
+    invoke<void>("insieme_concedi", { membro, diritti }),
+  insiemePariRinomina: (id: number, nome: string) =>
+    invoke<StatoInsieme>("insieme_pari_rinomina", { id, nome }),
+  insiemePariDimentica: (id: number) =>
+    invoke<StatoInsieme>("insieme_pari_dimentica", { id }),
+  insiemePariBlocca: (id: number, bloccato: boolean) =>
+    invoke<StatoInsieme>("insieme_pari_blocca", { id, bloccato }),
+  insiemeIndirizzi: (indirizzi: string[]) =>
+    invoke<StatoInsieme>("insieme_indirizzi", { indirizzi }),
+  insiemeCalibra: (attiva: boolean) =>
+    invoke<void>("insieme_calibra", { attiva }),
 
   // ── gli aggiornamenti ────────────────────────────────────────────────────
   // Il controllo vero non passa mai di qui: lo fa un filo di sottofondo — una

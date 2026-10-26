@@ -23,6 +23,7 @@ pub mod import_esterno;
 pub mod import_legacy;
 pub mod import_playlist;
 pub mod incerti;
+pub mod insieme;
 pub mod intensita;
 pub mod library;
 pub mod metadata;

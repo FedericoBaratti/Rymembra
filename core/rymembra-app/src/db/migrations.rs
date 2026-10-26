@@ -246,6 +246,13 @@ pub const MIGRATIONS: &[Migration] = &[
         // Solo `ADD COLUMN`: SQLite le aggiunge senza ricostruire `tracks`.
         ricostruisce: false,
     },
+    Migration {
+        version: 35,
+        name: "insieme",
+        sql: include_str!("schema/035_insieme.sql"),
+        // Una tabella nuova e sola, senza chiavi esterne: non tocca niente.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

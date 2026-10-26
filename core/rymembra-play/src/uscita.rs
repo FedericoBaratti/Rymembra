@@ -94,6 +94,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 use rymembra_domain::errors::{AppError, ErrorCode};
 
+use crate::ancora::AncoraGrezza;
 use crate::equalizzatore::{Coefficienti, Stato as StatoEq};
 use crate::{Condiviso, limita};
 
@@ -104,6 +105,67 @@ pub struct FormatoUscita {
     pub frequenza: u32,
     /// Quanti canali.
     pub canali: u16,
+}
+
+/// Il ponte fra l'orologio del flusso e quello del processo.
+///
+/// # Perché serve
+///
+/// Perché `cpal` dice **quando** un blocco suonerà sull'orologio del flusso
+/// (`StreamInstant`), che non ha un'epoca nota a nessuno, mentre per stare a
+/// tempo con un altro computer serve l'orologio di [`crate::tempo`], l'unico
+/// che si possa scrivere e confrontare. Il ponte è una coppia di letture degli
+/// stessi istanti sui due orologi: da lì in poi ogni istante del flusso si
+/// porta sull'altro con una somma.
+///
+/// Si misura una volta, appena il flusso è costruito, e non cambia per tutta la
+/// sua vita: su WASAPI i due orologi sono lo **stesso** contatore di
+/// prestazioni del sistema (`QueryPerformanceCounter`, a passi di cento
+/// nanosecondi dalla parte di `cpal`), quindi la distanza fra i due è fissa e
+/// misurarla di nuovo non insegnerebbe niente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Ponte {
+    /// Un istante sull'orologio del flusso, in nanosecondi
+    /// (`StreamInstant::as_nanos`).
+    pub flusso_ns: u64,
+    /// Lo stesso istante sull'orologio del processo ([`crate::tempo`]).
+    pub locale_ns: u64,
+}
+
+impl Ponte {
+    /// Il ponte da tre letture fatte una dopo l'altra: l'orologio del
+    /// processo, quello del flusso, di nuovo quello del processo.
+    ///
+    /// La lettura del flusso sta in mezzo alle altre due, e il suo gemello
+    /// locale è il **punto medio**: l'errore è al più metà del tempo che separa
+    /// le due letture locali — qualche centinaio di nanosecondi — invece di
+    /// tutto.
+    #[expect(
+        clippy::integer_division,
+        reason = "metà di un intervallo in nanosecondi: mezzo nanosecondo non \
+                  si misura"
+    )]
+    #[must_use]
+    pub const fn misurato(prima_ns: u64, flusso_ns: u64, dopo_ns: u64) -> Self {
+        let locale_ns = prima_ns.saturating_add(dopo_ns.saturating_sub(prima_ns) / 2);
+        Self {
+            flusso_ns,
+            locale_ns,
+        }
+    }
+
+    /// Un istante dell'orologio del flusso, sull'orologio del processo.
+    ///
+    /// Una somma con segno: gli istanti del flusso possono stare prima o dopo
+    /// quello del ponte. Fuori dal `u64` si resta al bordo invece di traboccare.
+    #[must_use]
+    pub fn locale_da_flusso(&self, flusso_ns: u64) -> u64 {
+        let spostato = i128::from(self.locale_ns)
+            .saturating_add(i128::from(flusso_ns))
+            .saturating_sub(i128::from(self.flusso_ns))
+            .max(0);
+        u64::try_from(spostato).unwrap_or(u64::MAX)
+    }
 }
 
 /// Quanto suono tenere pronto davanti alla callback, nel caso peggiore.
@@ -277,6 +339,9 @@ pub struct Uscita {
     /// (`BTHENUM`); un'uscita che non sa dirlo vale come non Bluetooth, cioè
     /// tiene i trenta secondi di sempre.
     pub bluetooth: bool,
+    /// Il ponte fra l'orologio di questo flusso e quello del processo, misurato
+    /// appena il flusso è stato costruito. Vedi [`Ponte`].
+    pub ponte: Ponte,
     /// Il campanello del filo che tiene il flusso.
     ///
     /// Non si clona e non esce di qui: lasciarlo cadere è il modo in cui il filo
@@ -449,22 +514,31 @@ pub(crate) fn apri(
             // vanno con l'unwind, e di fuori resta solo `Condiviso`, che sono
             // atomiche.
             let esito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                let veglia = Arc::new(Veglia {
-                    giri: AtomicU64::new(0),
-                    a_riposo: AtomicBool::new(false),
-                });
+                let veglia = Arc::new(Veglia::nuova());
                 let anelli = Anelli {
                     campioni: anello,
                     coefficienti,
                     spettro: campioni_spettro,
                 };
                 match costruisci(anelli, &veglia, &condiviso, voluto.as_deref()) {
-                    Ok((flusso, aperta)) => {
+                    Ok((flusso, mut aperta)) => {
                         let riposo_in_pausa = if aperta.bluetooth {
                             RIPOSO_BLUETOOTH
                         } else {
                             RIPOSO_DOPO
                         };
+                        // Il ponte qui, a flusso costruito e ancora fermo: la
+                        // callback non gira finché qualcuno non suona il
+                        // campanello, e il campanello si può suonare solo dopo
+                        // che l'`Uscita` è arrivata a chi l'ha chiesta — cioè
+                        // dopo la `send` qui sotto. Quando la callback legge
+                        // il ponte, il ponte c'è.
+                        let prima = crate::tempo::adesso_ns();
+                        let del_flusso = ns_del_flusso(flusso.now());
+                        let dopo = crate::tempo::adesso_ns();
+                        let ponte = Ponte::misurato(prima, del_flusso, dopo);
+                        veglia.posa_il_ponte(ponte);
+                        aperta.ponte = ponte;
                         if manda_aperta.send(Ok(aperta)).is_err() {
                             return;
                         }
@@ -522,8 +596,17 @@ pub(crate) fn apri(
         dispositivo: aperta.dispositivo,
         era_predefinito: aperta.era_predefinito,
         bluetooth: aperta.bluetooth,
+        ponte: aperta.ponte,
         ordini: Arc::new(ordini),
     })
+}
+
+/// Un istante del flusso in nanosecondi, nel `u64` di [`crate::tempo`].
+///
+/// Un `u128` di nanosecondi esce dal `u64` dopo cinque secoli di contatore: il
+/// tetto è un ripiego che non si raggiunge.
+fn ns_del_flusso(istante: cpal::StreamInstant) -> u64 {
+    u64::try_from(istante.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Quel che il filo dell'uscita rimanda indietro appena ha aperto.
@@ -536,6 +619,9 @@ struct Aperta {
     dispositivo: String,
     era_predefinito: bool,
     bluetooth: bool,
+    /// Il ponte fra gli orologi: lo misura il filo dell'uscita appena
+    /// `costruisci` torna, e fino ad allora vale zero.
+    ponte: Ponte,
 }
 
 /// Il lavoro del filo dell'uscita, finché l'`Uscita` è viva: rispondere al
@@ -570,6 +656,7 @@ fn custodisci(
                     in_pausa: condiviso.in_pausa.load(Ordering::Acquire),
                     svuota: condiviso.svuota.load(Ordering::Acquire),
                     a_riposo: veglia.a_riposo.load(Ordering::Acquire),
+                    sessione: condiviso.sessione.load(Ordering::Acquire),
                 };
                 match sonno.passo(sguardo, Instant::now()) {
                     Mossa::Niente => {}
@@ -578,6 +665,7 @@ fn custodisci(
                     // perché. Non c'è niente da aggiungere.
                     Mossa::Riposa => {
                         let _ = flusso.pause();
+                        condiviso.dorme.store(true, Ordering::Release);
                     }
                     Mossa::Sveglia => rimetti_in_moto(flusso, condiviso, veglia),
                 }
@@ -604,6 +692,10 @@ fn rimetti_in_moto(flusso: &cpal::Stream, condiviso: &Condiviso, veglia: &Veglia
         segnala_perdita(condiviso, codice_errore(err.kind()).unwrap_or(CAUSA_GUASTO));
         return;
     }
+    // Sveglio da qui, e non da quando la callback gira: chi guarda questa
+    // casella — `Motore::riprendi_a` — vuole sapere se il flusso è stato messo
+    // a riposo, non se ha già servito il suo primo blocco.
+    condiviso.dorme.store(false, Ordering::Release);
     let scadenza = Instant::now() + ATTESA_RISVEGLIO;
     while veglia.giri.load(Ordering::Acquire) == prima && Instant::now() < scadenza {
         std::thread::sleep(Duration::from_millis(1));
@@ -633,6 +725,8 @@ struct Sguardo {
     /// chiusa e l'anello vuoto: non c'è più niente da suonare. Vedi
     /// [`Veglia::a_riposo`].
     a_riposo: bool,
+    /// Una sessione d'ascolto insieme è aperta: vedi `Condiviso::sessione`.
+    sessione: bool,
 }
 
 /// Cosa deve fare il filo dell'uscita dopo una passata.
@@ -709,15 +803,21 @@ impl Sonno {
     }
 
     /// Una passata: guarda com'è il motore adesso e dice cosa fare.
+    ///
+    /// Con la sessione accesa non si riposa mai, nemmeno in pausa: chi ascolta
+    /// insieme a un altro computer riprende a un istante preciso, e il
+    /// risveglio del flusso — qualche decina di millisecondi che nessuno sa
+    /// prevedere — non ci sta dentro. E se il flusso stava già riposando, la
+    /// sessione lo sveglia, come la rete di sicurezza fa per chi suona.
     fn passo(&mut self, sguardo: Sguardo, adesso: Instant) -> Mossa {
         if self.dorme {
-            if !sguardo.in_pausa || sguardo.svuota {
+            if !sguardo.in_pausa || sguardo.svuota || sguardo.sessione {
                 let _ = self.sveglia();
                 return Mossa::Sveglia;
             }
             return Mossa::Niente;
         }
-        if !sguardo.in_pausa {
+        if !sguardo.in_pausa || sguardo.sessione {
             self.zitto_da = None;
             self.vuoto_da = None;
             return Mossa::Niente;
@@ -766,6 +866,47 @@ struct Veglia {
     /// è in pausa viene scambiato per la fine, e il prezzo è una ripresa che
     /// deve svegliare il flusso: qualche millisecondo.
     a_riposo: AtomicBool,
+    /// Il [`Ponte`], metà flusso: lo posa il filo dell'uscita prima che la
+    /// callback giri la prima volta, e da lì non cambia più.
+    ///
+    /// # Perché passa di qui e non dentro la chiusura
+    ///
+    /// Perché la chiusura della callback si costruisce **prima** del flusso — è
+    /// un argomento di `build_output_stream` — e il ponte si può misurare solo
+    /// **dopo**, chiedendo l'ora al flusso costruito. Due atomici scritti una
+    /// volta e letti con `Acquire` a ogni blocco sono il modo di consegnarglielo
+    /// senza lucchetti: la callback lo ricompone in un [`Ponte`] per valore.
+    ponte_flusso_ns: AtomicU64,
+    /// Il [`Ponte`], metà processo.
+    ponte_locale_ns: AtomicU64,
+}
+
+impl Veglia {
+    /// Nessun giro, nessun riposo, nessun ponte.
+    const fn nuova() -> Self {
+        Self {
+            giri: AtomicU64::new(0),
+            a_riposo: AtomicBool::new(false),
+            ponte_flusso_ns: AtomicU64::new(0),
+            ponte_locale_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Consegna il ponte alla callback. Una volta sola, prima che giri.
+    fn posa_il_ponte(&self, ponte: Ponte) {
+        self.ponte_flusso_ns
+            .store(ponte.flusso_ns, Ordering::Release);
+        self.ponte_locale_ns
+            .store(ponte.locale_ns, Ordering::Release);
+    }
+
+    /// Il ponte, per la callback.
+    fn ponte(&self) -> Ponte {
+        Ponte {
+            flusso_ns: self.ponte_flusso_ns.load(Ordering::Acquire),
+            locale_ns: self.ponte_locale_ns.load(Ordering::Acquire),
+        }
+    }
 }
 
 /// I tre capi d'anello che la callback legge o riempie, prima che diventino
@@ -849,6 +990,14 @@ fn costruisci(
             // buffer, la priorità in tempo reale negata — non sono una
             // perdita, e scambiarli per una vorrebbe dire ricostruire il
             // motore per un singhiozzo.
+            //
+            // Il buco nel buffer però si conta: non ferma niente, ma per chi
+            // misura quanto due computer suonano insieme è un pezzo di tempo
+            // sparito, e senza contarlo uno sfasamento improvviso non avrebbe
+            // una spiegazione.
+            if matches!(err.kind(), cpal::ErrorKind::Xrun) {
+                stato.xrun.fetch_add(1, Ordering::Relaxed);
+            }
             if let Some(codice) = codice_errore(err.kind()) {
                 segnala_perdita(&stato, codice);
             }
@@ -887,6 +1036,7 @@ fn costruisci(
             dispositivo: scelta.id,
             era_predefinito: scelta.predefinito,
             bluetooth,
+            ponte: Ponte::default(),
         },
     ))
 }
@@ -915,12 +1065,65 @@ where
     dispositivo.build_output_stream(
         configurazione,
         move |dati: &mut [T], info: &cpal::OutputCallbackInfo| {
-            annota_latenza(info, frequenza, &stato);
-            riempi(dati, &mut voce, &stato, converti);
+            // L'orologio del processo per primo: è la controprova dell'ancora,
+            // e vale quanto è vicino all'istante in cui `cpal` ha letto il suo.
+            let ingresso_ns = crate::tempo::adesso_ns();
+            // I due istanti di `cpal` una volta sola: la latenza e il battito
+            // devono parlare dello stesso blocco.
+            let tempi = info.timestamp();
+            annota_latenza(tempi, frequenza, &stato);
+            let battito = Battito::di(tempi, voce.veglia.ponte(), frequenza, ingresso_ns);
+            riempi(dati, &mut voce, &stato, &battito, converti);
         },
         su_errore,
         None,
     )
+}
+
+/// Quando suonerà il blocco che la callback sta riempiendo, sull'orologio del
+/// processo.
+///
+/// # Perché un tipo e non `cpal::OutputCallbackInfo`
+///
+/// Perché quello lo costruisce solo il backend audio, con gli istanti del suo
+/// orologio: una prova non può fabbricarlo. Questo invece è fatto di numeri, e
+/// le prove di [`riempi`] ci scrivono il tempo che vogliono — un blocco che
+/// suona fra un secondo, un avvio che cade a metà del blocco dopo.
+#[derive(Debug, Clone, Copy, Default)]
+struct Battito {
+    /// Quando il primo fotogramma del blocco lascia il dispositivo, in
+    /// nanosecondi di [`crate::tempo`]: il `playback` di `cpal`, portato di qua
+    /// col [`Ponte`].
+    playback_ns: u64,
+    /// `playback − callback`: quanto il blocco aspetta nel buffer del
+    /// dispositivo. Zero se `cpal` li dà al contrario.
+    anticipo_ns: u64,
+    /// La frequenza d'uscita.
+    frequenza: u32,
+    /// L'orologio del processo all'ingresso della callback: la base della
+    /// controprova.
+    ingresso_ns: u64,
+}
+
+impl Battito {
+    /// Il battito di un blocco, dagli istanti di `cpal`.
+    fn di(
+        tempi: cpal::OutputStreamTimestamp,
+        ponte: Ponte,
+        frequenza: u32,
+        ingresso_ns: u64,
+    ) -> Self {
+        let anticipo = tempi
+            .playback
+            .checked_duration_since(tempi.callback)
+            .unwrap_or(Duration::ZERO);
+        Self {
+            playback_ns: ponte.locale_da_flusso(ns_del_flusso(tempi.playback)),
+            anticipo_ns: u64::try_from(anticipo.as_nanos()).unwrap_or(u64::MAX),
+            frequenza,
+            ingresso_ns,
+        }
+    }
 }
 
 /// Annota quanti fotogrammi stanno fra questo blocco e le casse.
@@ -961,8 +1164,7 @@ where
 /// Nessuna allocazione, nessun lucchetto, nessun panico: due letture di campi
 /// `Copy`, un'aritmetica intera e uno `store` rilassato. Vedi il `//!` in testa
 /// al file.
-fn annota_latenza(info: &cpal::OutputCallbackInfo, frequenza: u32, condiviso: &Condiviso) {
-    let tempi = info.timestamp();
+fn annota_latenza(tempi: cpal::OutputStreamTimestamp, frequenza: u32, condiviso: &Condiviso) {
     // `None` quando `playback` precede `callback`, che da cpal 0.18 non
     // dovrebbe succedere più — `playback` è tenuto monotono — e su un orologio
     // costruito a mano non è impossibile lo stesso. In quel caso si lascia
@@ -1169,6 +1371,84 @@ struct Andamento {
     /// ogni interruzione. Su un disco lento il cursore mente in difetto, sempre
     /// di più, senza che niente lo segnali.
     resto: u64,
+    /// A che punto è il gradino in corso, se ce n'è uno. Vedi [`Fase`].
+    fase: Fase,
+    /// La deriva accumulata, in milionesimi di fotogramma.
+    ///
+    /// # Perché la deriva si corregge qui
+    ///
+    /// Perché due schede audio non contano il tempo allo stesso passo: un
+    /// quarzo da 48 kHz che ne fa 48 004,8 è avanti di cento parti per milione,
+    /// cioè di sei millisecondi al minuto. Il ricampionatore non lo può
+    /// assorbire — `FftFixedIn` di rubato lavora a rapporto fisso — e
+    /// ricampionare l'uscita intera per un decimillesimo sarebbe un filtro in
+    /// più dentro il percorso in tempo reale per niente.
+    ///
+    /// Si fa come i lettori di rete: a ogni fotogramma di musica a porta aperta
+    /// si sommano le parti per milione chieste, e ogni volta che la somma passa
+    /// un fotogramma intero se ne toglie uno — due fotogrammi d'anello escono
+    /// come la loro media — o se ne aggiunge uno — la media fra l'ultimo uscito
+    /// e il prossimo, senza consumarlo. Una media e non un fotogramma buttato o
+    /// ripetuto: il gradino fra due campioni lontani è un clic, la media fra
+    /// due vicini non si sente. A cinquecento parti per milione — il tetto —
+    /// succede una volta ogni duemila fotogrammi, cioè ventiquattro volte al
+    /// secondo a 48 kHz.
+    accumulo: i64,
+    /// I campioni dell'ultimo fotogramma uscito dall'anello, così come vi
+    /// erano: la prima metà della media di un fotogramma aggiunto.
+    ultimo: [f32; CANALI_DERIVA],
+}
+
+/// Quanti canali al massimo può avere un'uscita perché la deriva la corregga.
+///
+/// Trentadue: più di ogni scheda che si trova in una casa. Oltre, la deriva
+/// semplicemente non si applica, invece di chiedere memoria alla callback.
+const CANALI_DERIVA: usize = 32;
+
+/// Il tetto della deriva, in parti per milione.
+///
+/// Cinquecento: dieci volte lo scarto dei quarzi peggiori. Oltre non è una
+/// deriva da correggere, è una frequenza sbagliata, e un fotogramma medio ogni
+/// meno di duemila comincerebbe a sentirsi.
+pub const DERIVA_MASSIMA_PPM: i32 = 500;
+
+/// Un fotogramma intero, nell'unità di [`Andamento::accumulo`].
+const MILIONE: i64 = 1_000_000;
+
+/// A che punto è un gradino.
+///
+/// # Cos'è un gradino
+///
+/// Uno spostamento netto della musica rispetto al tempo: un pezzo di silenzio
+/// inserito, o un pezzo di musica saltato. Serve a chi sta a tempo con un altro
+/// computer e scopre di essere avanti o indietro di qualche decina di
+/// millisecondi — troppo per la [`Andamento::accumulo`], che ne recupera mezzo
+/// al secondo.
+///
+/// Riusa la porta della pausa, perché ha lo stesso problema: un taglio a metà
+/// onda è un clic. Quindi la porta si chiude in [`DISSOLVENZA_MS`], a porta
+/// chiusa si salta o si tace, e si riapre allo stesso passo.
+///
+/// # L'esattezza
+///
+/// Il fotogramma in cui la porta arriva a zero **consuma** un fotogramma
+/// d'anello, a guadagno zero, invece di tacere come nella pausa. Così il conto
+/// torna al fotogramma: un salto di N sposta la musica di N esatti, e un
+/// silenzio di N inserisce N fotogrammi che non consumano niente — né uno di
+/// più per la porta, né uno di meno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fase {
+    /// Nessun gradino: la porta segue la pausa e basta.
+    Libera,
+    /// La porta si chiude per un gradino di `quanto` fotogrammi: positivo di
+    /// silenzio, negativo di musica saltata. La musica che sfuma si consuma e
+    /// si conta come sempre.
+    Chiude { quanto: i64 },
+    /// A porta chiusa. `resto` positivo: fotogrammi di silenzio ancora da
+    /// dare; negativo: fotogrammi da saltare che l'anello non aveva ancora.
+    Esegue { resto: i64 },
+    /// La porta si riapre, al passo con cui si è chiusa.
+    Riapre,
 }
 
 impl Andamento {
@@ -1179,6 +1459,9 @@ impl Andamento {
             porta: 0,
             corsa: corsa_della_porta(frequenza),
             resto: 0,
+            fase: Fase::Libera,
+            accumulo: 0,
+            ultimo: [0.0; CANALI_DERIVA],
         }
     }
 
@@ -1307,12 +1590,35 @@ struct Voce {
 /// Con la porta chiusa il volume torna a zero, così la ripresa sale anche con
 /// la rampa del volume; e se era uno svuotamento, **solo allora** l'anello si
 /// svuota e la bandiera si abbassa — il punto vecchio sfuma, poi sparisce.
+///
+/// # Il tempo condiviso
+///
+/// Dalla Fase 0 di «Ascolta insieme» il giro sa fare tre cose in più, tutte
+/// spente finché le loro caselle in [`Condiviso`] valgono zero — e spente il giro
+/// è identico al bit a quello di prima, come dice la prova
+/// `il_percorso_inattivo_e_identico_al_bit`:
+///
+/// - **l'avvio programmato** (`avvio_ns`): la musica riparte dal primo fotogramma
+///   del blocco che non si sentirà prima dell'istante chiesto;
+/// - **il gradino** (`gradino`): silenzio inserito o musica saltata, con la
+///   porta che si chiude e si riapre intorno — vedi [`Fase`];
+/// - **la deriva** (`deriva_ppm`): un fotogramma tolto o aggiunto ogni tanto —
+///   vedi [`Andamento::accumulo`].
+///
+/// E a ogni blocco con della musica pubblica l'**ancora**: quale fotogramma
+/// d'anello si sentirà, e quando. Vedi [`crate::ancora`].
 #[expect(
     clippy::integer_division,
     reason = "un fotogramma è esattamente `canali` campioni; il resto sarebbe un \
               fotogramma servito a metà, che non esiste"
 )]
-fn riempi<T>(dati: &mut [T], voce: &mut Voce, condiviso: &Condiviso, converti: impl Fn(f32) -> T) {
+fn riempi<T>(
+    dati: &mut [T],
+    voce: &mut Voce,
+    condiviso: &Condiviso,
+    battito: &Battito,
+    converti: impl Fn(f32) -> T,
+) {
     // Il battito, prima di ogni altra cosa: chi ha appena rimesso in moto il
     // flusso aspetta proprio questo numero. Vedi `rimetti_in_moto`.
     voce.veglia.giri.fetch_add(1, Ordering::Release);
@@ -1334,22 +1640,33 @@ fn riempi<T>(dati: &mut [T], voce: &mut Voce, condiviso: &Condiviso, converti: i
     // Una volta per blocco e non una per campione: con i cursori a zero
     // l'equalizzatore non deve costare niente.
     let filtra = !voce.filtro.stato.piatto();
-    // Idem per lo spettro: chi non ha la schermata aperta non paga un `push`
-    // per campione, che a 48 kHz sarebbero quarantottomila al secondo per
-    // riempire un anello che nessuno svuota.
-    let guarda = condiviso.spettro.load(Ordering::Relaxed);
-    // Il limitatore morbido, solo quando qualcosa nella catena **alza**: la
-    // normalizzazione sopra l'unità o l'equalizzatore. A guadagno pieno o
-    // più basso un brano masterizzato fino a 0 dBFS deve uscire com'è — il
-    // ginocchio di [`limita`] sta a −1 dBFS, e piegare i picchi di un disco
-    // che nessuno ha alzato vorrebbe dire colorarlo per niente. Deciso per
-    // blocco, sul guadagno voluto: la rampa che attraversa l'unità dura
-    // qualche millisecondo, e lì la differenza è di un paio di decimi di
-    // decibel sui soli picchi.
-    let piega = voluto > 1.0 || filtra;
+    let catena = Catena {
+        filtra,
+        // Idem per lo spettro: chi non ha la schermata aperta non paga un
+        // `push` per campione, che a 48 kHz sarebbero quarantottomila al
+        // secondo per riempire un anello che nessuno svuota.
+        guarda: condiviso.spettro.load(Ordering::Relaxed),
+        // Il limitatore morbido, solo quando qualcosa nella catena **alza**:
+        // la normalizzazione sopra l'unità o l'equalizzatore. A guadagno pieno
+        // o più basso un brano masterizzato fino a 0 dBFS deve uscire com'è —
+        // il ginocchio di [`limita`] sta a −1 dBFS, e piegare i picchi di un
+        // disco che nessuno ha alzato vorrebbe dire colorarlo per niente.
+        // Deciso per blocco, sul guadagno voluto: la rampa che attraversa
+        // l'unità dura qualche millisecondo, e lì la differenza è di un paio
+        // di decimi di decibel sui soli picchi.
+        piega: voluto > 1.0 || filtra,
+        per_fotogramma,
+    };
     let mut presi = 0u64;
     let mut mancati = 0u64;
     let mut apertura = voce.andamento.apertura();
+
+    // Il resto **prima** del giro: l'ancora vale solo se il blocco comincia su
+    // un fotogramma intero, altrimenti il primo campione preso è il compagno
+    // di uno già contato e il conteggio non dice più quale fotogramma sia.
+    let resto_iniziale = voce.andamento.resto;
+    let mut regia = Regia::del_blocco(voce, condiviso, battito, tace, per_fotogramma);
+    let mut modo = Modo::Anello;
 
     for (indice, posto) in dati.iter_mut().enumerate() {
         // `indice % per_fotogramma` dà il canale: cpal consegna sempre
@@ -1357,63 +1674,95 @@ fn riempi<T>(dati: &mut [T], voce: &mut Voce, condiviso: &Condiviso, converti: i
         // qui sotto dà già per buona.
         let canale = indice % per_fotogramma;
         if canale == 0 {
-            voce.andamento.muovi_porta(!tace);
+            // Tutte le decisioni si prendono qui, una volta per fotogramma:
+            // un fotogramma esce intero dall'anello, intero tace, o intero
+            // viene composto dalla deriva — mai mezzo e mezzo.
+            let consumati = resto_iniziale
+                .saturating_add(presi)
+                .saturating_add(regia.saltati);
+            let allineato = consumati.is_multiple_of(u64::from(canali));
+            modo = regia.fotogramma(
+                voce,
+                condiviso,
+                indice / per_fotogramma,
+                tace,
+                allineato,
+                &mut presi,
+            );
             apertura = voce.andamento.apertura();
         }
-        // Porta chiusa e silenzio chiesto: zeri, e l'anello non si tocca — in
-        // pausa quel che c'è dentro è la ripresa, e deve restare dov'è.
-        if tace && voce.andamento.porta == 0 {
-            *posto = converti(0.0);
-            continue;
-        }
-        voce.andamento.guadagno = avvicina(voce.andamento.guadagno, voluto);
-        match voce.lettore.pop() {
-            Ok(campione) => {
-                presi += 1;
-                // L'equalizzatore **prima** del volume: così il volume resta
-                // l'ultima cosa che tocca il campione e la sua rampa continua a
-                // fare il suo lavoro, e così la preamplificazione dei filtri non
-                // dipende da quanto è alzato il volume.
-                let campione = if filtra {
-                    voce.filtro.stato.applica(campione, canale)
-                } else {
-                    campione
-                };
-                // Lo spettro prende il campione **qui**: dopo l'equalizzatore,
-                // così una curva che alza i bassi si vede nelle barre, e prima
-                // del volume, perché uno spettro che si abbassa quando si
-                // abbassa la manopola descrive la manopola e non la musica.
-                if guarda {
-                    voce.spia.campione(campione, per_fotogramma);
-                }
-                let alzato = campione * voce.andamento.guadagno * apertura;
-                *posto = converti(if piega { limita(alzato) } else { alzato });
+        match modo {
+            // Porta chiusa e silenzio chiesto: zeri, e l'anello non si tocca —
+            // in pausa quel che c'è dentro è la ripresa, e deve restare dov'è.
+            Modo::Zero => *posto = converti(0.0),
+            Modo::Cornice => {
+                voce.andamento.guadagno = avvicina(voce.andamento.guadagno, voluto);
+                let campione = regia.cornice.get(canale).copied().unwrap_or(0.0);
+                *posto = converti(esce(voce, catena, campione, canale, apertura));
             }
-            Err(_) => {
-                // L'anello è vuoto. Suonando vuol dire che il decodificatore
-                // non ce l'ha fatta: silenzio, che è un buco — l'alternativa
-                // sarebbe ripetere l'ultimo campione, che è un ronzio — e si
-                // conta. Sfumando verso il silenzio chiesto no: la coda finita
-                // arriva proprio così, e non è un disco lento.
-                if !tace {
-                    mancati += 1;
+            Modo::Anello => {
+                voce.andamento.guadagno = avvicina(voce.andamento.guadagno, voluto);
+                match voce.lettore.pop() {
+                    Ok(campione) => {
+                        regia.preso(&mut voce.andamento, indice, canale, campione);
+                        presi += 1;
+                        *posto = converti(esce(voce, catena, campione, canale, apertura));
+                    }
+                    Err(_) => {
+                        // L'anello è vuoto. Suonando vuol dire che il
+                        // decodificatore non ce l'ha fatta: silenzio, che è un
+                        // buco — l'alternativa sarebbe ripetere l'ultimo
+                        // campione, che è un ronzio — e si conta. Sfumando
+                        // verso il silenzio chiesto no: la coda finita arriva
+                        // proprio così, e non è un disco lento.
+                        if !tace {
+                            mancati += 1;
+                        }
+                        regia.ricorda(&mut voce.andamento, canale, 0.0);
+                        *posto = converti(0.0);
+                    }
                 }
-                *posto = converti(0.0);
             }
         }
     }
 
     // Il resto del blocco precedente entra nel conto di questo: i campioni di un
     // fotogramma servito a metà escono dalle casse a cavallo di due callback, e
-    // il fotogramma che formano insieme va contato una volta — non zero.
-    let campioni = voce.andamento.resto.saturating_add(presi);
+    // il fotogramma che formano insieme va contato una volta — non zero. Con
+    // loro i fotogrammi saltati da un gradino: sono musica passata, e mappa,
+    // posizione e fine della coda devono saperlo.
+    let campioni = voce
+        .andamento
+        .resto
+        .saturating_add(presi)
+        .saturating_add(regia.saltati);
     let canali = u64::from(canali);
-    condiviso
+    let contati_prima = condiviso
         .fotogrammi
         .fetch_add(campioni / canali, Ordering::Relaxed);
     voce.andamento.resto = campioni % canali;
     if mancati > 0 {
         condiviso.vuoti.fetch_add(mancati, Ordering::Relaxed);
+    }
+
+    // L'epoca **dopo** il giro e **prima** di `svuota_anello`. Dopo, perché i
+    // campioni di un'epoca nuova arrivano nell'anello solo dopo che il filo
+    // della decodifica l'ha alzata: chi li ha appena consumati la vede. Prima,
+    // perché l'epoca non può cambiare finché la bandiera dello svuotamento è
+    // alzata — il filo aspetta proprio che si abbassi.
+    let epoca = condiviso.epoca.load(Ordering::Acquire);
+    if resto_iniziale == 0
+        && !regia.storto
+        && let Some(k) = regia.primo
+        && let Some(ancora) = ancora_del_blocco(
+            battito,
+            k,
+            contati_prima.saturating_add(regia.saltati_prima),
+            epoca,
+            !tace,
+        )
+    {
+        condiviso.ancora.scrivi(&ancora);
     }
 
     let chiusa = voce.andamento.porta == 0;
@@ -1430,6 +1779,521 @@ fn riempi<T>(dati: &mut [T], voce: &mut Voce, condiviso: &Condiviso, converti: i
         in_pausa && chiusa && voce.lettore.is_empty(),
         Ordering::Release,
     );
+}
+
+/// Come esce un fotogramma: la decisione che [`Regia::fotogramma`] prende al
+/// primo campione e che vale per tutti i suoi canali.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modo {
+    /// Dall'anello, un campione per canale: il giro di sempre.
+    Anello,
+    /// Zero, e l'anello non si tocca.
+    Zero,
+    /// Da [`Regia::cornice`]: un fotogramma composto dalla deriva.
+    Cornice,
+}
+
+/// Le scelte del blocco che valgono per ogni campione.
+#[derive(Debug, Clone, Copy)]
+struct Catena {
+    filtra: bool,
+    guarda: bool,
+    piega: bool,
+    per_fotogramma: usize,
+}
+
+/// Un campione d'anello fino alla conversione: equalizzatore, spettro, volume,
+/// porta, limitatore. Sempre in quest'ordine e con le stesse operazioni: è il
+/// pezzo che tiene il percorso inattivo identico al bit.
+#[inline]
+fn esce(voce: &mut Voce, catena: Catena, campione: f32, canale: usize, apertura: f32) -> f32 {
+    // L'equalizzatore **prima** del volume: così il volume resta l'ultima
+    // cosa che tocca il campione e la sua rampa continua a fare il suo
+    // lavoro, e così la preamplificazione dei filtri non dipende da quanto è
+    // alzato il volume.
+    let campione = if catena.filtra {
+        voce.filtro.stato.applica(campione, canale)
+    } else {
+        campione
+    };
+    // Lo spettro prende il campione **qui**: dopo l'equalizzatore, così una
+    // curva che alza i bassi si vede nelle barre, e prima del volume, perché
+    // uno spettro che si abbassa quando si abbassa la manopola descrive la
+    // manopola e non la musica.
+    if catena.guarda {
+        voce.spia.campione(campione, catena.per_fotogramma);
+    }
+    let alzato = campione * voce.andamento.guadagno * apertura;
+    if catena.piega { limita(alzato) } else { alzato }
+}
+
+/// Le primitive di tempo, per un blocco: chi decide fotogramma per fotogramma
+/// se si suona, si tace, si salta o si compone.
+///
+/// Vive quanto il blocco: quel che deve sopravvivere — la fase del gradino,
+/// l'accumulo della deriva — sta in [`Andamento`].
+struct Regia {
+    /// Il fotogramma del blocco da cui l'avvio programmato lascia suonare;
+    /// quelli prima tacciono. `None`: nessuna attesa.
+    attesa: Option<usize>,
+    /// L'avvio letto a inizio blocco: lo si azzera solo se è ancora quello,
+    /// così un avvio nuovo scritto nel frattempo vale per il blocco dopo.
+    avvio: u64,
+    /// La deriva del blocco in parti per milione, già tagliata; zero: spenta.
+    ppm: i64,
+    /// I canali dell'uscita.
+    canali: usize,
+    /// Il fotogramma del blocco da cui è uscito il primo campione d'anello.
+    primo: Option<usize>,
+    /// Il primo campione d'anello non era il primo canale di un fotogramma:
+    /// niente ancora per questo blocco.
+    storto: bool,
+    /// I campioni saltati da un gradino in questo blocco: si contano.
+    saltati: u64,
+    /// I fotogrammi saltati prima del primo campione preso: spostano il numero
+    /// del fotogramma dell'ancora.
+    saltati_prima: u64,
+    /// Il fotogramma composto dalla deriva, quando il modo è
+    /// [`Modo::Cornice`].
+    cornice: [f32; CANALI_DERIVA],
+}
+
+/// Dove cade un avvio programmato rispetto al primo fotogramma di un blocco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cade {
+    /// Fra tanti fotogrammi, almeno uno: si tace fin lì.
+    Fra(u64),
+    /// Già passato, di tanti fotogrammi interi: si parte subito, e quel che si
+    /// è perso si salta.
+    Ritardo(u64),
+}
+
+/// Dove cade l'avvio `avvio_ns` in un blocco il cui primo fotogramma si sente
+/// a `playback_ns`.
+///
+/// Il fotogramma `k` si sente a `playback + k/frequenza`: il primo che non
+/// suona **prima** dell'avvio è `k = ⌈(avvio − playback)·frequenza / 10⁹⌉`. In
+/// `i128`, perché la differenza può essere negativa e il prodotto per la
+/// frequenza non sta in un `i64` oltre i tre anni.
+#[expect(
+    clippy::integer_division,
+    reason = "fotogrammi interi da un tempo: la divisione per eccesso è scritta \
+              a mano, e il resto è meno di un fotogramma"
+)]
+fn dove_cade(avvio_ns: u64, playback_ns: u64, frequenza: u32) -> Cade {
+    const MILIARDO: i128 = 1_000_000_000;
+    let distanza = i128::from(avvio_ns) - i128::from(playback_ns);
+    let frequenza = i128::from(frequenza);
+    if distanza > 0 {
+        let fra = (distanza.saturating_mul(frequenza) + MILIARDO - 1) / MILIARDO;
+        Cade::Fra(u64::try_from(fra).unwrap_or(u64::MAX))
+    } else {
+        let persi = distanza.saturating_neg().saturating_mul(frequenza) / MILIARDO;
+        Cade::Ritardo(u64::try_from(persi).unwrap_or(u64::MAX))
+    }
+}
+
+/// I nanosecondi di tanti fotogrammi, alla frequenza d'uscita.
+#[expect(
+    clippy::integer_division,
+    reason = "il resto è meno di un nanosecondo per fotogramma: l'orologio che \
+              lo deve confrontare va a passi di cento"
+)]
+fn ns_di_fotogrammi(fotogrammi: u64, frequenza: u32) -> u64 {
+    let ns = u128::from(fotogrammi).saturating_mul(1_000_000_000) / u128::from(frequenza.max(1));
+    u64::try_from(ns).unwrap_or(u64::MAX)
+}
+
+/// L'ancora di un blocco il cui primo campione d'anello è uscito al fotogramma
+/// `k` ed era il fotogramma d'anello `contenuto`. `None` senza frequenza.
+///
+/// # Quando la misura si butta
+///
+/// Con la stessa regola di `Contesto::ritardo_fotogrammi`: un anticipo oltre
+/// [`LATENZA_MASSIMA_MS`] non è un buffer lento, è un orologio che ha detto una
+/// sciocchezza. Allora l'istante di partenza è quello della callback — il
+/// `playback` meno l'anticipo — e l'ancora lo dice, perché chi la legge sappia
+/// che la latenza del buffer non c'è dentro.
+fn ancora_del_blocco(
+    battito: &Battito,
+    k: usize,
+    contenuto: u64,
+    epoca: u32,
+    in_corso: bool,
+) -> Option<AncoraGrezza> {
+    if battito.frequenza == 0 {
+        return None;
+    }
+    let tetto = LATENZA_MASSIMA_MS.saturating_mul(1_000_000);
+    let scartata = battito.anticipo_ns > tetto;
+    let (base, controprova) = if scartata {
+        (
+            battito.playback_ns.saturating_sub(battito.anticipo_ns),
+            battito.ingresso_ns,
+        )
+    } else {
+        (
+            battito.playback_ns,
+            battito.ingresso_ns.saturating_add(battito.anticipo_ns),
+        )
+    };
+    let dopo = ns_di_fotogrammi(u64::try_from(k).unwrap_or(u64::MAX), battito.frequenza);
+    Some(AncoraGrezza {
+        contenuto,
+        udito_ns: base.saturating_add(dopo),
+        anticipo_ns: battito.anticipo_ns,
+        controprova_ns: controprova.saturating_add(dopo),
+        epoca,
+        in_corso,
+        latenza_scartata: scartata,
+    })
+}
+
+/// Il gradino è stato eseguito: lo si conta, e la porta si riapre.
+fn fatto(condiviso: &Condiviso) -> Fase {
+    condiviso.gradini_fatti.fetch_add(1, Ordering::Relaxed);
+    Fase::Riapre
+}
+
+/// La porta si è riaperta del tutto: non c'è più niente in correzione — a meno
+/// che nel frattempo non ne sia stata chiesta un'altra.
+///
+/// L'ordine conta: prima si abbassa, poi si guarda se c'è altro. Chi chiede un
+/// gradino scrive la richiesta **prima** di alzare la bandiera, quindi o la
+/// richiesta si vede qui, o la sua bandiera arriva dopo questa scrittura.
+fn libera(condiviso: &Condiviso) {
+    condiviso.in_correzione.store(false, Ordering::SeqCst);
+    if condiviso.gradino.load(Ordering::SeqCst) != 0 {
+        condiviso.in_correzione.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Fa cadere il gradino in corso e quello chiesto: vedi [`Regia::del_blocco`].
+///
+/// Legge prima di scrivere: a riposo, con niente da far cadere, non scrive
+/// niente.
+fn lascia_cadere_il_gradino(andamento: &mut Andamento, condiviso: &Condiviso) {
+    andamento.fase = Fase::Libera;
+    if condiviso.gradino.load(Ordering::Relaxed) != 0 {
+        condiviso.gradino.store(0, Ordering::Release);
+    }
+    if condiviso.in_correzione.load(Ordering::Relaxed) {
+        condiviso.in_correzione.store(false, Ordering::Release);
+    }
+}
+
+impl Regia {
+    /// Le decisioni del blocco, prese una volta all'inizio.
+    ///
+    /// A riposo — avvio a zero, nessun gradino, deriva a zero — legge quattro
+    /// atomici e non scrive niente.
+    fn del_blocco(
+        voce: &mut Voce,
+        condiviso: &Condiviso,
+        battito: &Battito,
+        tace: bool,
+        canali: usize,
+    ) -> Self {
+        let mut regia = Self {
+            attesa: None,
+            avvio: 0,
+            ppm: 0,
+            canali,
+            primo: None,
+            storto: false,
+            saltati: 0,
+            saltati_prima: 0,
+            cornice: [0.0; CANALI_DERIVA],
+        };
+        if tace {
+            // Una pausa o uno svuotamento fanno cadere il gradino, in corso o
+            // chiesto: era calcolato su un tempo che non c'è più, e chi
+            // l'aveva chiesto lo rifarà sulla musica che ripartirà. La porta
+            // si chiude lo stesso, per la pausa.
+            lascia_cadere_il_gradino(&mut voce.andamento, condiviso);
+            return regia;
+        }
+
+        let avvio = condiviso.avvio_ns.load(Ordering::Acquire);
+        if avvio != 0 && battito.frequenza > 0 {
+            match dove_cade(avvio, battito.playback_ns, battito.frequenza) {
+                Cade::Fra(k) => {
+                    regia.attesa = Some(usize::try_from(k).unwrap_or(usize::MAX));
+                    regia.avvio = avvio;
+                }
+                Cade::Ritardo(persi) => {
+                    let _ = condiviso.avvio_ns.compare_exchange(
+                        avvio,
+                        0,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    );
+                    // In ritardo e a porta chiusa: si parte adesso, e la musica
+                    // che doveva già essere uscita si salta — un gradino come
+                    // gli altri, che la porta chiusa fa partire subito. A
+                    // porta aperta invece la musica stava già andando, e un
+                    // avvio nel passato non ha niente da far ripartire.
+                    if persi > 0 && voce.andamento.porta == 0 {
+                        condiviso
+                            .gradino
+                            .fetch_sub(i64::try_from(persi).unwrap_or(i64::MAX), Ordering::AcqRel);
+                        condiviso.in_correzione.store(true, Ordering::Release);
+                    }
+                }
+            }
+        }
+
+        // Un gradino si prende solo a fase libera e senza un avvio da
+        // aspettare: la porta chiusa del gradino consumerebbe musica proprio
+        // mentre l'avvio la tiene ferma.
+        if regia.attesa.is_none()
+            && voce.andamento.fase == Fase::Libera
+            && condiviso.gradino.load(Ordering::Acquire) != 0
+        {
+            let chiesto = condiviso.gradino.swap(0, Ordering::AcqRel);
+            if chiesto != 0 {
+                voce.andamento.fase = Fase::Chiude { quanto: chiesto };
+                condiviso.in_correzione.store(true, Ordering::Release);
+            }
+        }
+
+        let ppm = condiviso.deriva_ppm.load(Ordering::Relaxed);
+        if ppm != 0 && canali <= CANALI_DERIVA {
+            regia.ppm = i64::from(ppm.clamp(-DERIVA_MASSIMA_PPM, DERIVA_MASSIMA_PPM));
+        }
+        regia
+    }
+
+    /// Il primo campione di un fotogramma: come esce tutto il fotogramma.
+    fn fotogramma(
+        &mut self,
+        voce: &mut Voce,
+        condiviso: &Condiviso,
+        numero: usize,
+        tace: bool,
+        allineato: bool,
+        presi: &mut u64,
+    ) -> Modo {
+        let aspetta = self.aspetta(condiviso, numero);
+        if tace || aspetta {
+            // La pausa di sempre: la porta si chiude, e chiusa tace.
+            voce.andamento.muovi_porta(false);
+            return if voce.andamento.porta == 0 {
+                Modo::Zero
+            } else {
+                Modo::Anello
+            };
+        }
+        match voce.andamento.fase {
+            Fase::Libera => {
+                voce.andamento.muovi_porta(true);
+                self.forse_deriva(voce, allineato, presi)
+            }
+            Fase::Chiude { quanto } => {
+                voce.andamento.muovi_porta(false);
+                if voce.andamento.porta > 0 {
+                    return Modo::Anello;
+                }
+                // La porta si è chiusa adesso. Il silenzio comincia dal
+                // fotogramma dopo, e questo consuma a guadagno zero: vedi
+                // l'esattezza in [`Fase`].
+                if quanto > 0 {
+                    voce.andamento.fase = Fase::Esegue { resto: quanto };
+                    return Modo::Anello;
+                }
+                self.salta_o_aspetta(voce, condiviso, quanto.unsigned_abs(), allineato)
+            }
+            Fase::Esegue { resto } => {
+                if resto > 0 {
+                    let resto = resto - 1;
+                    voce.andamento.fase = if resto == 0 {
+                        fatto(condiviso)
+                    } else {
+                        Fase::Esegue { resto }
+                    };
+                    return Modo::Zero;
+                }
+                self.salta_o_aspetta(voce, condiviso, resto.unsigned_abs(), allineato)
+            }
+            Fase::Riapre => {
+                voce.andamento.muovi_porta(true);
+                if voce.andamento.porta >= voce.andamento.corsa {
+                    voce.andamento.fase = Fase::Libera;
+                    libera(condiviso);
+                }
+                Modo::Anello
+            }
+        }
+    }
+
+    /// Il fotogramma `numero` deve ancora tacere per l'avvio programmato. Al
+    /// fotogramma dell'avvio l'attesa finisce, e la casella si azzera.
+    fn aspetta(&mut self, condiviso: &Condiviso, numero: usize) -> bool {
+        match self.attesa {
+            Some(k) if numero < k => true,
+            Some(_) => {
+                self.attesa = None;
+                let _ = condiviso.avvio_ns.compare_exchange(
+                    self.avvio,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                );
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// A porta chiusa, salta quel che manca di un gradino all'indietro.
+    ///
+    /// Fatto tutto, il fotogramma consuma a guadagno zero e la porta si
+    /// riapre; se l'anello non ne aveva abbastanza, il resto resta in sospeso e
+    /// il fotogramma tace.
+    fn salta_o_aspetta(
+        &mut self,
+        voce: &mut Voce,
+        condiviso: &Condiviso,
+        quanti: u64,
+        allineato: bool,
+    ) -> Modo {
+        let mancano = self.salta(voce, quanti, allineato);
+        if mancano == 0 {
+            voce.andamento.fase = fatto(condiviso);
+            return Modo::Anello;
+        }
+        voce.andamento.fase = Fase::Esegue {
+            resto: 0i64.saturating_sub_unsigned(mancano),
+        };
+        Modo::Zero
+    }
+
+    /// Butta fino a `quanti` fotogrammi interi dall'anello, contandoli.
+    /// Restituisce quanti ne mancano.
+    ///
+    /// Un pezzo letto e liberato in un colpo solo: per dei `f32` liberare non
+    /// ha niente da distruggere, e il salto costa quanto spostare un indice —
+    /// non mille `pop`. Solo a fotogramma intero, perché saltare da metà
+    /// fotogramma scambierebbe i canali per sempre.
+    #[expect(
+        clippy::integer_division,
+        reason = "i fotogrammi interi che l'anello contiene: quel che avanza è un \
+                  fotogramma a metà, e quello non si salta"
+    )]
+    fn salta(&mut self, voce: &mut Voce, quanti: u64, allineato: bool) -> u64 {
+        if !allineato || quanti == 0 {
+            return quanti;
+        }
+        let canali = self.canali.max(1);
+        let interi = u64::try_from(voce.lettore.slots() / canali).unwrap_or(0);
+        let fatti = quanti.min(interi);
+        if fatti == 0 {
+            return quanti;
+        }
+        let campioni = usize::try_from(fatti).unwrap_or(0).saturating_mul(canali);
+        let Ok(pezzo) = voce.lettore.read_chunk(campioni) else {
+            return quanti;
+        };
+        pezzo.commit_all();
+        self.saltati = self
+            .saltati
+            .saturating_add(u64::try_from(campioni).unwrap_or(0));
+        if self.primo.is_none() {
+            self.saltati_prima = self.saltati_prima.saturating_add(fatti);
+        }
+        quanti - fatti
+    }
+
+    /// Un fotogramma a porta tutta aperta: se la deriva ha accumulato un
+    /// fotogramma intero, lo toglie o lo aggiunge qui.
+    ///
+    /// Mai sul primo fotogramma di musica del blocco: è quello dell'ancora, e
+    /// deve essere esattamente il fotogramma d'anello che il conteggio dice.
+    fn forse_deriva(&mut self, voce: &mut Voce, allineato: bool, presi: &mut u64) -> Modo {
+        if self.ppm == 0
+            || self.primo.is_none()
+            || !allineato
+            || voce.andamento.porta < voce.andamento.corsa
+        {
+            return Modo::Anello;
+        }
+        voce.andamento.accumulo = voce.andamento.accumulo.saturating_add(self.ppm);
+        let canali = self.canali;
+        if voce.andamento.accumulo >= MILIONE {
+            // Avanti: due fotogrammi escono come uno, la loro media. Se
+            // l'anello non li ha si riprova al fotogramma dopo, con l'accumulo
+            // ancora pieno.
+            let Ok(pezzo) = voce.lettore.read_chunk(canali.saturating_mul(2)) else {
+                return Modo::Anello;
+            };
+            let (a, b) = pezzo.as_slices();
+            let mut tutti = a.iter().chain(b).copied();
+            for posto in self.cornice.iter_mut().take(canali) {
+                *posto = tutti.next().unwrap_or(0.0);
+            }
+            for posto in self.cornice.iter_mut().take(canali) {
+                *posto = (*posto + tutti.next().unwrap_or(0.0)) * 0.5;
+            }
+            pezzo.commit_all();
+            voce.andamento.accumulo -= MILIONE;
+            let due = u64::try_from(canali.saturating_mul(2)).unwrap_or(0);
+            *presi = presi.saturating_add(due);
+            return Modo::Cornice;
+        }
+        if voce.andamento.accumulo <= -MILIONE {
+            // Indietro: fra l'ultimo uscito e il prossimo si mette la loro
+            // media. Il prossimo si **guarda** senza consumarlo — un pezzo
+            // letto e non liberato — e uscirà al fotogramma dopo.
+            let Ok(pezzo) = voce.lettore.read_chunk(canali) else {
+                return Modo::Anello;
+            };
+            let (a, b) = pezzo.as_slices();
+            for ((posto, prima), dopo) in self
+                .cornice
+                .iter_mut()
+                .zip(voce.andamento.ultimo.iter())
+                .zip(a.iter().chain(b))
+            {
+                *posto = (*prima + *dopo) * 0.5;
+            }
+            voce.andamento.accumulo += MILIONE;
+            return Modo::Cornice;
+        }
+        Modo::Anello
+    }
+
+    /// Un campione è uscito dall'anello: annota il primo del blocco, e ricorda
+    /// com'era per la deriva.
+    fn preso(&mut self, andamento: &mut Andamento, indice: usize, canale: usize, campione: f32) {
+        if self.primo.is_none() && !self.storto {
+            if canale == 0 {
+                self.primo = Some(fotogramma_di(indice, self.canali));
+            } else {
+                self.storto = true;
+            }
+        }
+        self.ricorda(andamento, canale, campione);
+    }
+
+    /// Ricorda l'ultimo campione uscito di un canale: la prima metà della
+    /// media di un fotogramma aggiunto. Solo con la deriva accesa.
+    fn ricorda(&self, andamento: &mut Andamento, canale: usize, campione: f32) {
+        if self.ppm != 0
+            && let Some(posto) = andamento.ultimo.get_mut(canale)
+        {
+            *posto = campione;
+        }
+    }
+}
+
+/// Il fotogramma del blocco a cui appartiene un campione.
+#[expect(
+    clippy::integer_division,
+    reason = "l'indice del fotogramma in un blocco interlacciato: il resto è il \
+              canale"
+)]
+fn fotogramma_di(indice: usize, canali: usize) -> usize {
+    indice / canali.max(1)
 }
 
 /// Butta quel che c'è nell'anello e abbassa la bandiera dello svuotamento.
@@ -1449,6 +2313,9 @@ fn svuota_anello(voce: &mut Voce, condiviso: &Condiviso) {
     // nell'anello: portarlo oltre il salto conterebbe un fotogramma vecchio
     // dentro il conteggio nuovo, che il decodificatore sta per azzerare.
     voce.andamento.resto = 0;
+    // Anche l'ultimo fotogramma ricordato per la deriva: una media fra il
+    // punto vecchio e il nuovo sarebbe un pezzo di tutti e due.
+    voce.andamento.ultimo = [0.0; CANALI_DERIVA];
     // La bandiera si abbassa **dopo** aver svuotato, e non prima.
     //
     // # Perché l'ordine conta
@@ -1541,7 +2408,6 @@ const fn codice_errore(tipo: cpal::ErrorKind) -> Option<u32> {
 mod prove {
     use super::*;
     use crate::equalizzatore::{BANDE, LIMITE_DB};
-    use std::sync::atomic::AtomicU32;
 
     /// Una frequenza a cui la porta si chiude in un fotogramma solo.
     ///
@@ -1555,21 +2421,26 @@ mod prove {
     /// per guardarla muoversi, poco abbastanza per stare in un blocco di prova.
     const LENTA: u32 = 1_000;
 
+    /// Il battito delle prove che non parlano di tempo: nessuna frequenza,
+    /// quindi nessuna ancora e nessun avvio programmato. Il giro che ne esce è
+    /// quello di sempre.
+    const SENZA_OROLOGIO: Battito = Battito {
+        playback_ns: 0,
+        anticipo_ns: 0,
+        frequenza: 0,
+        ingresso_ns: 0,
+    };
+
+    /// Le caselle condivise di un motore che sta suonando, con tanti canali.
+    ///
+    /// Da `Condiviso::nuovo` e non scritte a mano: le caselle crescono, e una
+    /// copia del valore di riposo qui dentro sarebbe la seconda verità da
+    /// tenere in pari con la prima.
     fn condiviso(canali: u16) -> Arc<Condiviso> {
-        Arc::new(Condiviso {
-            in_pausa: AtomicBool::new(false),
-            svuota: AtomicBool::new(false),
-            guadagno: AtomicU32::new(1.0f32.to_bits()),
-            fotogrammi: AtomicU64::new(0),
-            vuoti: AtomicU64::new(0),
-            canali: AtomicU32::new(u32::from(canali)),
-            latenza_fotogrammi: AtomicU64::new(0),
-            perso: AtomicBool::new(false),
-            causa_perdita: AtomicU32::new(0),
-            abbandonato: AtomicBool::new(false),
-            spettro: AtomicBool::new(false),
-            in_lettura: std::sync::Mutex::new(None),
-        })
+        let condiviso = Condiviso::nuovo();
+        condiviso.in_pausa.store(false, Ordering::Release);
+        condiviso.canali.store(u32::from(canali), Ordering::Relaxed);
+        condiviso
     }
 
     /// La voce di una callback che sta già suonando: porta aperta e volume al
@@ -1598,10 +2469,7 @@ mod prove {
                     somma: 0.0,
                     quanti: 0,
                 },
-                veglia: Arc::new(Veglia {
-                    giri: AtomicU64::new(0),
-                    a_riposo: AtomicBool::new(false),
-                }),
+                veglia: Arc::new(Veglia::nuova()),
             },
         )
     }
@@ -1710,7 +2578,7 @@ mod prove {
         let (_manda, mut voce) = voce(anello(16, 8, 0.9), LENTA);
         voce.andamento.porta = 0;
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(dati, [0.0; 4]);
         // Niente è stato consumato: riprendere non deve aspettare.
         assert_eq!(voce.lettore.slots(), 8);
@@ -1726,7 +2594,7 @@ mod prove {
         stato.in_pausa.store(true, Ordering::Release);
         let (_manda, mut voce) = voce(anello(128, 128, 0.5), LENTA);
         let mut dati = [9.0f32; 40];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
 
         // A 1 kHz la porta si chiude in dodici fotogrammi: i primi undici
         // escono, sempre più piano, e da lì solo silenzio.
@@ -1766,7 +2634,7 @@ mod prove {
         voce.andamento.porta = 0;
         voce.andamento.guadagno = 0.0;
         let mut dati = [0.0f32; 256];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         let primo = dati.first().copied().unwrap_or(1.0);
         assert!(primo < 0.01, "primo campione della ripresa: {primo}");
         // Sale e non torna indietro: un passo all'indietro sarebbe un tremolio.
@@ -1789,7 +2657,7 @@ mod prove {
         let (_manda, mut voce) = voce(anello(64, 64, 1.0), LENTA);
         voce.andamento.porta = 6;
         let mut dati = [0.0f32; 1];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         let uscito = dati.first().copied().unwrap_or(0.0);
         // Sei fotogrammi su dodici, più il passo di questo: sette dodicesimi.
         assert!((uscito - 7.0 / 12.0).abs() < 1e-6, "{uscito}");
@@ -1802,7 +2670,7 @@ mod prove {
         let (_manda, mut voce) = voce(anello(16, 8, 0.9), LENTA);
         voce.andamento.porta = 0;
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(voce.lettore.slots(), 0, "l'anello doveva restare vuoto");
         assert!(!stato.svuota.load(Ordering::Acquire), "doveva disarmarsi");
@@ -1821,12 +2689,12 @@ mod prove {
         // e la bandiera deve restare alzata — chi aspetta dall'altra parte
         // aspetta ancora.
         let mut primo = [0.0f32; 6];
-        riempi(&mut primo, &mut voce, &stato, |v| v);
+        riempi(&mut primo, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(primo.iter().all(|c| *c > 0.0), "{primo:?}");
         assert!(stato.svuota.load(Ordering::Acquire), "troppo presto");
 
         let mut secondo = [9.0f32; 10];
-        riempi(&mut secondo, &mut voce, &stato, |v| v);
+        riempi(&mut secondo, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(!stato.svuota.load(Ordering::Acquire), "doveva disarmarsi");
         assert_eq!(voce.lettore.slots(), 0, "il punto vecchio doveva sparire");
         assert_eq!(secondo.last().copied(), Some(0.0));
@@ -1864,7 +2732,7 @@ mod prove {
                 let (_manda, mut voce) = voce(lettore, 48_000);
                 let mut dati = [0.0f32; 512];
                 while !fermati.load(Ordering::Acquire) {
-                    riempi(&mut dati, &mut voce, &stato, |v| v);
+                    riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
                     // Il passo di un dispositivo vero, e non un giro a vuoto il
                     // più in fretta possibile: senza, questo filo svuoterebbe
                     // l'anello in pochi microsecondi e la finestra da riprodurre
@@ -1943,7 +2811,7 @@ mod prove {
         let stato = condiviso(2);
         let (_manda, mut voce) = voce(anello(16, 0, 0.0), SECCA);
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(stato.vuoti.load(Ordering::Relaxed), 4);
     }
@@ -1953,7 +2821,7 @@ mod prove {
         let stato = condiviso(2);
         let (_manda, mut voce) = voce(anello(16, 8, 0.5), SECCA);
         let mut dati = [0.0f32; 8];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         // Otto campioni su due canali sono quattro fotogrammi.
         assert_eq!(stato.fotogrammi.load(Ordering::Relaxed), 4);
     }
@@ -1976,7 +2844,7 @@ mod prove {
             let _ = scrittore.push(0.5);
         }
         let mut dati = [0.0f32; 4];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(
             stato.fotogrammi.load(Ordering::Relaxed),
             1,
@@ -1987,7 +2855,7 @@ mod prove {
         // secondo fotogramma, e va contato.
         let _ = scrittore.push(0.5);
         let mut ancora = [0.0f32; 2];
-        riempi(&mut ancora, &mut voce, &stato, |v| v);
+        riempi(&mut ancora, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(
             stato.fotogrammi.load(Ordering::Relaxed),
             2,
@@ -2004,7 +2872,7 @@ mod prove {
         let stato = condiviso(2);
         let (_manda, mut voce) = voce(anello(64, 1, 0.5), SECCA);
         let mut dati = [0.0f32; 2];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(
             voce.andamento.resto, 1,
             "un campione spaiato è rimasto in sospeso"
@@ -2012,7 +2880,7 @@ mod prove {
 
         stato.svuota.store(true, Ordering::Release);
         let mut silenzio = [0.0f32; 2];
-        riempi(&mut silenzio, &mut voce, &stato, |v| v);
+        riempi(&mut silenzio, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert_eq!(
             voce.andamento.resto, 0,
             "il fotogramma a metà era del punto di prima"
@@ -2025,7 +2893,7 @@ mod prove {
         let (_manda, mut voce) = voce(anello(64, 64, 1.0), SECCA);
         voce.andamento.guadagno = 0.0;
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         // Il primo campione è quasi zero, non uno: nessun gradino.
         let primo = dati.first().copied().unwrap_or(1.0);
         assert!(primo < 0.01, "primo campione: {primo}");
@@ -2039,7 +2907,7 @@ mod prove {
         let stato = condiviso(2);
         let (_manda, mut voce) = voce(anello(8, 4, 4.0), SECCA);
         let mut dati = [0i16; 4];
-        riempi(&mut dati, &mut voce, &stato, a_i16);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, a_i16);
         assert!(dati.iter().all(|&v| v > 0), "un picco è diventato negativo");
     }
 
@@ -2097,7 +2965,7 @@ mod prove {
         let stato = condiviso(2);
         let (_manda, mut voce) = voce(lettore, SECCA);
         let mut dati = [0.0f32; 4];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         // Il guadagno parte già a uno, quindi la rampa non sposta niente di
         // percettibile: quel che è entrato è quel che esce.
         for (uscito, atteso) in dati.iter().zip([0.1f32, -0.2, 0.3, -0.4]) {
@@ -2115,7 +2983,7 @@ mod prove {
         // Tutto abbassato: il preamp resta a uno e i filtri tagliano.
         let _ = manda.push(Coefficienti::calcola(&[-LIMITE_DB; BANDE], true, 48_000));
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(
             !voce.filtro.stato.piatto(),
             "la curva doveva essere ritirata"
@@ -2139,11 +3007,11 @@ mod prove {
         let (mut manda, mut voce) = voce(lettore, SECCA);
         let _ = manda.push(Coefficienti::calcola(&[LIMITE_DB; BANDE], true, 48_000));
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut voce, &stato, |v| v);
+        riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
 
         stato.svuota.store(true, Ordering::Release);
         let mut silenzio = [0.0f32; 4];
-        riempi(&mut silenzio, &mut voce, &stato, |v| v);
+        riempi(&mut silenzio, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(!stato.svuota.load(Ordering::Acquire), "doveva disarmarsi");
 
         // Con la memoria azzerata, un silenzio in ingresso dà un silenzio in
@@ -2153,7 +3021,7 @@ mod prove {
             let _ = scrittore.push(0.0);
         }
         let mut dopo = [1.0f32; 8];
-        riempi(&mut dopo, &mut voce, &stato, |v| v);
+        riempi(&mut dopo, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
         for (n, valore) in dopo.iter().enumerate() {
             assert!(valore.abs() < 1e-6, "campione {n} vale {valore}, non zero");
         }
@@ -2167,7 +3035,7 @@ mod prove {
         let (_manda, mut voce) = voce(anello(16, 0, 0.0), SECCA);
         let mut dati = [0.0f32; 4];
         for atteso in 1..=3u64 {
-            riempi(&mut dati, &mut voce, &stato, |v| v);
+            riempi(&mut dati, &mut voce, &stato, &SENZA_OROLOGIO, |v| v);
             assert_eq!(voce.veglia.giri.load(Ordering::Acquire), atteso);
         }
     }
@@ -2179,18 +3047,18 @@ mod prove {
 
         // Suonando: mai a riposo, nemmeno con l'anello secco.
         let (_manda, mut vuota) = voce(anello(16, 0, 0.0), SECCA);
-        riempi(&mut dati, &mut vuota, &stato, |v| v);
+        riempi(&mut dati, &mut vuota, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(!vuota.veglia.a_riposo.load(Ordering::Acquire));
 
         stato.in_pausa.store(true, Ordering::Release);
         // In pausa con l'anello vuoto — la coda finita, il lettore fermato.
-        riempi(&mut dati, &mut vuota, &stato, |v| v);
+        riempi(&mut dati, &mut vuota, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(vuota.veglia.a_riposo.load(Ordering::Acquire));
 
         // In pausa con l'anello pieno — la pausa di chi riprenderà: no.
         let (_manda, mut piena) = voce(anello(16, 16, 0.5), SECCA);
         piena.andamento.porta = 0;
-        riempi(&mut dati, &mut piena, &stato, |v| v);
+        riempi(&mut dati, &mut piena, &stato, &SENZA_OROLOGIO, |v| v);
         assert!(!piena.veglia.a_riposo.load(Ordering::Acquire));
     }
 
@@ -2295,6 +3163,7 @@ mod prove {
             in_pausa,
             svuota: false,
             a_riposo,
+            sessione: false,
         }
     }
 
@@ -2419,6 +3288,7 @@ mod prove {
             in_pausa: true,
             svuota: true,
             a_riposo: true,
+            sessione: false,
         };
         assert_eq!(sonno.passo(aspetta, t0), Mossa::Niente);
         assert_eq!(sonno.passo(aspetta, t0 + RIPOSO_DOPO * 2), Mossa::Niente);
@@ -2473,6 +3343,7 @@ mod prove {
             in_pausa: true,
             svuota: true,
             a_riposo: false,
+            sessione: false,
         };
         assert_eq!(sonno.passo(aspetta, t0), Mossa::Niente);
         assert_eq!(
@@ -2512,7 +3383,821 @@ mod prove {
             in_pausa: true,
             svuota: true,
             a_riposo: false,
+            sessione: false,
         };
         assert_eq!(sonno.passo(aspetta, t0), Mossa::Sveglia);
+    }
+
+    // ── il percorso inattivo, identico al bit ───────────────────────────────
+
+    /// Un lato del confronto: una callback con il suo anello e le sue caselle.
+    struct Lato {
+        voce: Voce,
+        stato: Arc<Condiviso>,
+        scrittore: rtrb::Producer<f32>,
+        curve: rtrb::Producer<Coefficienti>,
+    }
+
+    /// Una callback appena aperta: porta chiusa, volume a zero.
+    fn lato(canali: u16, frequenza: u32) -> Lato {
+        let (scrittore, lettore) = rtrb::RingBuffer::<f32>::new(4_096);
+        let stato = condiviso(canali);
+        let (curve, mut voce) = voce(lettore, frequenza);
+        voce.andamento.porta = 0;
+        voce.andamento.guadagno = 0.0;
+        Lato {
+            voce,
+            stato,
+            scrittore,
+            curve,
+        }
+    }
+
+    /// Numeri pseudocasuali fra −1,3 e 1,3: oltre il fondo scala apposta, così
+    /// anche il limitatore e i tagli delle conversioni passano dal confronto.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "un numero fra −1,3 e 1,3 sta in un f32"
+    )]
+    fn rumore(seme: &mut u32, quanti: usize) -> Vec<f32> {
+        (0..quanti)
+            .map(|_| {
+                *seme = seme.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (f64::from(*seme >> 8) / f64::from(1u32 << 24) * 2.6 - 1.3) as f32
+            })
+            .collect()
+    }
+
+    /// Un passo del copione: cosa cambia prima del blocco, quanti campioni
+    /// entrano nell'anello, quanto è lungo il blocco.
+    struct Passo {
+        pausa: bool,
+        svuota: bool,
+        guadagno: f32,
+        spettro: bool,
+        curva: bool,
+        entrano: usize,
+        blocco: usize,
+    }
+
+    /// Lo stesso copione sulla callback di adesso e su quella di prima: ogni
+    /// campione, ogni contatore, ogni pezzo di stato devono coincidere.
+    ///
+    /// La callback di adesso riceve un battito **vero** — una frequenza, degli
+    /// istanti — così il confronto copre anche il lavoro che fa sempre,
+    /// pubblicare l'ancora: deve costare tempo, non suono.
+    fn stesso_copione<T: Copy>(converti: fn(f32) -> T, in_bit: fn(T) -> u64) {
+        let copione = [
+            // La ripresa da porta chiusa, col limitatore acceso.
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 1.3,
+                spettro: false,
+                curva: false,
+                entrano: 400,
+                blocco: 64,
+            },
+            // Un blocco che non è un multiplo dei canali.
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 1.3,
+                spettro: true,
+                curva: false,
+                entrano: 0,
+                blocco: 7,
+            },
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 0.4,
+                spettro: false,
+                curva: false,
+                entrano: 0,
+                blocco: 64,
+            },
+            // La pausa che sfuma a metà blocco, poi il silenzio.
+            Passo {
+                pausa: true,
+                svuota: false,
+                guadagno: 0.4,
+                spettro: false,
+                curva: false,
+                entrano: 0,
+                blocco: 20,
+            },
+            Passo {
+                pausa: true,
+                svuota: false,
+                guadagno: 0.4,
+                spettro: false,
+                curva: false,
+                entrano: 0,
+                blocco: 64,
+            },
+            // La ripresa, con l'anello che si secca a metà fotogramma.
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 0.9,
+                spettro: false,
+                curva: false,
+                entrano: 0,
+                blocco: 512,
+            },
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 0.9,
+                spettro: false,
+                curva: false,
+                entrano: 3,
+                blocco: 8,
+            },
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 0.9,
+                spettro: false,
+                curva: true,
+                entrano: 101,
+                blocco: 64,
+            },
+            // Un salto: il punto vecchio sfuma, poi sparisce.
+            Passo {
+                pausa: false,
+                svuota: true,
+                guadagno: 0.9,
+                spettro: false,
+                curva: false,
+                entrano: 50,
+                blocco: 10,
+            },
+            Passo {
+                pausa: false,
+                svuota: true,
+                guadagno: 0.9,
+                spettro: false,
+                curva: false,
+                entrano: 0,
+                blocco: 64,
+            },
+            Passo {
+                pausa: false,
+                svuota: false,
+                guadagno: 1.0,
+                spettro: false,
+                curva: false,
+                entrano: 300,
+                blocco: 128,
+            },
+        ];
+        let mut adesso = lato(2, LENTA);
+        let mut prima = lato(2, LENTA);
+        let mut seme = 7u32;
+        let mut battito = Battito {
+            playback_ns: 1_000_000_000,
+            anticipo_ns: 9_000_000,
+            frequenza: LENTA,
+            ingresso_ns: 990_000_000,
+        };
+        for (numero, passo) in copione.iter().enumerate() {
+            let entrano = rumore(&mut seme, passo.entrano);
+            for lato in [&mut adesso, &mut prima] {
+                lato.stato.in_pausa.store(passo.pausa, Ordering::Release);
+                lato.stato.svuota.store(passo.svuota, Ordering::Release);
+                lato.stato
+                    .guadagno
+                    .store(passo.guadagno.to_bits(), Ordering::Relaxed);
+                lato.stato.spettro.store(passo.spettro, Ordering::Relaxed);
+                if passo.curva {
+                    let mut curva = [0.0; BANDE];
+                    curva[2] = 6.0;
+                    let _ = lato.curve.push(Coefficienti::calcola(&curva, true, 48_000));
+                }
+                for campione in &entrano {
+                    let _ = lato.scrittore.push(*campione);
+                }
+            }
+            let mut fuori_adesso = vec![converti(9.0); passo.blocco];
+            let mut fuori_prima = vec![converti(9.0); passo.blocco];
+            riempi(
+                &mut fuori_adesso,
+                &mut adesso.voce,
+                &adesso.stato,
+                &battito,
+                converti,
+            );
+            riempi_di_prima(&mut fuori_prima, &mut prima.voce, &prima.stato, converti);
+            battito.playback_ns += 500_000 * u64::try_from(passo.blocco).unwrap_or(0);
+
+            for (n, (a, b)) in fuori_adesso.iter().zip(&fuori_prima).enumerate() {
+                assert_eq!(
+                    in_bit(*a),
+                    in_bit(*b),
+                    "passo {numero}, campione {n}: il percorso inattivo è cambiato"
+                );
+            }
+            let contatori = |l: &Lato| {
+                (
+                    l.stato.fotogrammi.load(Ordering::Relaxed),
+                    l.stato.vuoti.load(Ordering::Relaxed),
+                    l.stato.svuota.load(Ordering::Acquire),
+                    l.voce.andamento.resto,
+                    l.voce.andamento.porta,
+                    l.voce.andamento.guadagno.to_bits(),
+                    l.voce.veglia.a_riposo.load(Ordering::Acquire),
+                    l.voce.lettore.slots(),
+                )
+            };
+            assert_eq!(
+                contatori(&adesso),
+                contatori(&prima),
+                "passo {numero}: lo stato della callback è cambiato"
+            );
+        }
+        // E il lavoro in più c'è stato davvero: l'ancora è stata pubblicata,
+        // senza che il suono se ne accorgesse.
+        assert!(adesso.stato.ancora.leggi().is_some());
+        assert_eq!(adesso.stato.gradini_fatti.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn il_percorso_inattivo_e_identico_al_bit() {
+        // La regola della Fase 0: con l'avvio a zero, nessun gradino, nessuna
+        // deriva e la sessione spenta, la callback deve suonare **esattamente**
+        // come prima — non «quasi», non entro una tolleranza. Chi non usa
+        // l'ascolto insieme non deve poter sentire che esiste.
+        stesso_copione(|v| v, |v: f32| u64::from(v.to_bits()));
+        stesso_copione(a_i16, |v: i16| {
+            u64::from(u16::from_ne_bytes(v.to_ne_bytes()))
+        });
+    }
+
+    // ── l'ancora ────────────────────────────────────────────────────────────
+
+    /// Un milione di nanosecondi: un fotogramma a [`LENTA`], dove i conti del
+    /// tempo si fanno a mente.
+    const MS: u64 = 1_000_000;
+
+    /// Il battito di un blocco che si sentirà a `playback_ns`, a [`LENTA`].
+    const fn battito(playback_ns: u64) -> Battito {
+        Battito {
+            playback_ns,
+            anticipo_ns: 10 * MS,
+            frequenza: LENTA,
+            ingresso_ns: playback_ns.saturating_sub(10 * MS + 3_000),
+        }
+    }
+
+    /// Un anello mono in cui ogni campione dice da dove viene: il numero del
+    /// fotogramma, in sessantaquattromillesimi. Esatto in un `f32`, e la media
+    /// di due vicini cade esattamente a metà.
+    fn anello_contato(
+        capacita: usize,
+        quanti: usize,
+    ) -> (rtrb::Producer<f32>, rtrb::Consumer<f32>) {
+        let (mut scrittore, lettore) = rtrb::RingBuffer::<f32>::new(capacita);
+        for n in 0..quanti {
+            let _ = scrittore.push(numero_in_campione(n + 1));
+        }
+        (scrittore, lettore)
+    }
+
+    fn numero_in_campione(n: usize) -> f32 {
+        f32::from(u16::try_from(n).unwrap_or(u16::MAX)) / 65_536.0
+    }
+
+    /// Da campione a numero di fotogramma, in metà: un numero dispari è una
+    /// media fra due fotogrammi.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "i campioni di prova sono numeri di fotogramma piccoli e positivi"
+    )]
+    fn meta_di(campione: f32) -> u64 {
+        (campione * 131_072.0).round() as u64
+    }
+
+    #[test]
+    fn l_indice_dell_ancora_e_il_contatore_prima_del_blocco() {
+        let stato = condiviso(1);
+        stato.fotogrammi.store(1_000, Ordering::Relaxed);
+        stato.epoca.store(4, Ordering::Release);
+        let (_scrittore, lettore) = anello_contato(256, 200);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        let mut dati = [0.0f32; 16];
+        riempi(&mut dati, &mut voce, &stato, &battito(5_000 * MS), |v| v);
+        let ancora = stato
+            .ancora
+            .leggi()
+            .expect("un blocco di musica pubblica l'ancora");
+        assert_eq!(ancora.contenuto, 1_000, "il primo fotogramma del blocco");
+        assert_eq!(ancora.udito_ns, 5_000 * MS);
+        assert_eq!(ancora.controprova_ns, 5_000 * MS - 3_000);
+        assert_eq!(ancora.epoca, 4);
+        assert!(ancora.in_corso && !ancora.latenza_scartata);
+
+        // Il blocco dopo comincia dove questo ha finito.
+        riempi(&mut dati, &mut voce, &stato, &battito(5_016 * MS), |v| v);
+        let dopo = stato.ancora.leggi().expect("anche il secondo");
+        assert_eq!(dopo.contenuto, 1_016);
+        assert_eq!(dopo.udito_ns, 5_016 * MS);
+    }
+
+    #[test]
+    fn l_ancora_e_esatta_anche_con_zeri_in_testa() {
+        // L'avvio programmato tace per i primi tre fotogrammi: l'ancora è il
+        // quarto, che si sente tre millesimi di secondo dopo l'inizio del
+        // blocco, ed è il fotogramma d'anello che il contatore aveva prima.
+        let stato = condiviso(1);
+        stato.fotogrammi.store(77, Ordering::Relaxed);
+        let (_scrittore, lettore) = anello_contato(256, 200);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        voce.andamento.porta = 0;
+        stato.avvio_ns.store(2_003 * MS, Ordering::Release);
+        let mut dati = [9.0f32; 16];
+        riempi(&mut dati, &mut voce, &stato, &battito(2_000 * MS), |v| v);
+        assert_eq!(&dati[..3], &[0.0; 3], "prima dell'avvio, silenzio");
+        assert!(dati[3] > 0.0, "all'avvio, musica");
+        let ancora = stato.ancora.leggi().expect("c'è musica nel blocco");
+        assert_eq!(ancora.contenuto, 77);
+        assert_eq!(ancora.udito_ns, 2_003 * MS);
+        assert_eq!(stato.avvio_ns.load(Ordering::Acquire), 0, "avvio consumato");
+    }
+
+    #[test]
+    fn nessuna_ancora_senza_musica_o_a_meta_fotogramma() {
+        // Senza musica: in pausa a porta chiusa.
+        let stato = condiviso(2);
+        stato.in_pausa.store(true, Ordering::Release);
+        let (_manda, mut ferma) = voce(anello(64, 64, 0.5), LENTA);
+        ferma.andamento.porta = 0;
+        let mut dati = [0.0f32; 16];
+        riempi(&mut dati, &mut ferma, &stato, &battito(MS), |v| v);
+        assert_eq!(
+            stato.ancora.leggi(),
+            None,
+            "in pausa non c'è niente da ancorare"
+        );
+
+        // Senza musica: l'anello è secco.
+        stato.in_pausa.store(false, Ordering::Release);
+        let (_manda, mut secca) = voce(anello(64, 0, 0.0), LENTA);
+        riempi(&mut dati, &mut secca, &stato, &battito(MS), |v| v);
+        assert_eq!(stato.ancora.leggi(), None, "un anello secco non è musica");
+
+        // A metà fotogramma: il primo campione preso è il compagno di uno già
+        // contato, e il contatore non dice quale fotogramma sia.
+        let (_manda, mut storta) = voce(anello(64, 64, 0.5), LENTA);
+        storta.andamento.resto = 1;
+        riempi(&mut dati, &mut storta, &stato, &battito(MS), |v| v);
+        assert_eq!(stato.ancora.leggi(), None, "un resto aperto non si ancora");
+    }
+
+    #[test]
+    fn una_latenza_assurda_ancora_alla_callback_e_lo_dice() {
+        let stato = condiviso(1);
+        let (_scrittore, lettore) = anello_contato(64, 64);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        let mut dati = [0.0f32; 4];
+        let assurdo = Battito {
+            anticipo_ns: (LATENZA_MASSIMA_MS + 1) * MS,
+            ..battito(9_000 * MS)
+        };
+        riempi(&mut dati, &mut voce, &stato, &assurdo, |v| v);
+        let ancora = stato.ancora.leggi().expect("c'è musica");
+        assert!(ancora.latenza_scartata);
+        assert_eq!(ancora.udito_ns, (9_000 - LATENZA_MASSIMA_MS - 1) * MS);
+    }
+
+    // ── l'avvio programmato ─────────────────────────────────────────────────
+
+    /// Fa girare blocchi da `blocco` fotogrammi mono finché non esce musica, e
+    /// dice a che istante esce il primo campione non nullo e quanti fotogrammi
+    /// d'anello erano stati consumati prima.
+    fn primo_suono(avvio_ns: u64, inizio_ns: u64, blocco: usize) -> (u64, u64) {
+        let stato = condiviso(1);
+        let (_manda, mut voce) = voce(anello(4_096, 4_096, 1.0), LENTA);
+        voce.andamento.porta = 0;
+        voce.andamento.guadagno = 0.0;
+        stato.avvio_ns.store(avvio_ns, Ordering::Release);
+        let mut playback = inizio_ns;
+        for _ in 0..100 {
+            let prima = stato.fotogrammi.load(Ordering::Relaxed);
+            let mut dati = vec![0.0f32; blocco];
+            riempi(&mut dati, &mut voce, &stato, &battito(playback), |v| v);
+            if let Some(n) = dati.iter().position(|c| *c != 0.0) {
+                return (playback + MS * u64::try_from(n).unwrap_or(0), prima);
+            }
+            assert_eq!(
+                stato.fotogrammi.load(Ordering::Relaxed),
+                0,
+                "si è consumata musica prima dell'avvio"
+            );
+            playback += MS * u64::try_from(blocco).unwrap_or(0);
+        }
+        panic!("la musica non è mai partita");
+    }
+
+    #[test]
+    fn l_avvio_programmato_e_esatto_a_cavallo_di_piu_blocchi() {
+        // Cento millisecondi e tre decimi dopo l'inizio del primo blocco, con
+        // blocchi da sessantaquattro: il primo tace tutto e non tocca l'anello,
+        // il secondo tace fino al fotogramma che si sente al centounesimo
+        // millisecondo — il primo che non suona prima dell'avvio.
+        let avvio = 1_000 * MS + 100 * MS + 300_000;
+        let (suona, consumati) = primo_suono(avvio, 1_000 * MS, 64);
+        assert_eq!(suona, 1_101 * MS);
+        assert_eq!(consumati, 0);
+    }
+
+    #[test]
+    fn l_avvio_non_suona_mai_prima_della_scadenza() {
+        // Ogni sfasamento fra l'avvio e la griglia dei fotogrammi, e ogni
+        // posizione rispetto ai blocchi: il primo suono non è mai prima
+        // dell'avvio, e mai più di un fotogramma dopo.
+        for dopo_ns in [
+            0,
+            1,
+            999_999,
+            MS,
+            MS + 1,
+            5 * MS + 500_000,
+            63 * MS + 999_999,
+            64 * MS,
+            200 * MS + 7,
+        ] {
+            let avvio = 1_000 * MS + dopo_ns;
+            let (suona, _) = primo_suono(avvio, 1_000 * MS, 64);
+            assert!(
+                suona >= avvio,
+                "{dopo_ns} ns: suona a {suona}, prima di {avvio}"
+            );
+            assert!(
+                suona < avvio + MS,
+                "{dopo_ns} ns: suona a {suona}, troppo dopo {avvio}"
+            );
+        }
+    }
+
+    #[test]
+    fn un_avvio_in_ritardo_diventa_un_salto() {
+        // Dieci millisecondi e mezzo di ritardo: si parte subito, e i dieci
+        // fotogrammi interi che dovevano già essere usciti si saltano.
+        let stato = condiviso(1);
+        let (_scrittore, lettore) = anello_contato(1_024, 1_000);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        voce.andamento.porta = 0;
+        voce.andamento.guadagno = 1.0;
+        let playback = 3_000 * MS;
+        stato
+            .avvio_ns
+            .store(playback - 10 * MS - 500_000, Ordering::Release);
+        let mut dati = [0.0f32; 64];
+        riempi(&mut dati, &mut voce, &stato, &battito(playback), |v| v);
+
+        assert_eq!(stato.avvio_ns.load(Ordering::Acquire), 0);
+        assert_eq!(stato.gradini_fatti.load(Ordering::Relaxed), 1);
+        // Nessun fotogramma che non consuma: i dieci saltati più i
+        // sessantaquattro del blocco.
+        assert_eq!(stato.fotogrammi.load(Ordering::Relaxed), 74);
+        // E l'ancora sa che il primo fotogramma uscito è il decimo.
+        let ancora = stato.ancora.leggi().expect("c'è musica");
+        assert_eq!(ancora.contenuto, 10);
+        assert_eq!(ancora.udito_ns, playback);
+        // Il secondo fotogramma del blocco è l'undicesimo dell'anello.
+        assert_eq!(meta_di(dati[1] * 12.0), 2 * (11 + 1), "{}", dati[1]);
+    }
+
+    // ── il gradino ──────────────────────────────────────────────────────────
+
+    /// Quel che un gradino fa a una callback che sta suonando: fotogrammi
+    /// d'anello consumati, fotogrammi d'uscita che non ne hanno consumato
+    /// nessuno, e l'ultimo campione uscito.
+    fn con_un_gradino(gradino: i64, blocchi: usize) -> (u64, u64, f32, Arc<Condiviso>) {
+        let stato = condiviso(1);
+        let (_scrittore, lettore) = anello_contato(4_096, 4_000);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        if gradino != 0 {
+            stato.gradino.store(gradino, Ordering::Release);
+        }
+        let mut usciti = 0u64;
+        let mut ultimo = 0.0;
+        for _ in 0..blocchi {
+            let mut dati = [0.0f32; 64];
+            riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+            usciti += 64;
+            ultimo = dati[63];
+        }
+        let consumati = stato.fotogrammi.load(Ordering::Relaxed);
+        (consumati, usciti.saturating_sub(consumati), ultimo, stato)
+    }
+
+    #[test]
+    fn un_gradino_in_avanti_fa_salire_il_contatore_di_n() {
+        let (senza, fermi_senza, ultimo_senza, _) = con_un_gradino(0, 4);
+        let (con, fermi_con, ultimo_con, stato) = con_un_gradino(-30, 4);
+        assert_eq!(
+            con - senza,
+            30,
+            "trenta fotogrammi saltati, né uno di più né uno di meno"
+        );
+        assert_eq!(fermi_senza, 0);
+        assert_eq!(
+            fermi_con, 0,
+            "un salto non deve lasciare fotogrammi che non consumano"
+        );
+        assert_eq!(
+            meta_di(ultimo_con) - meta_di(ultimo_senza),
+            60,
+            "la musica è avanti di trenta"
+        );
+        assert_eq!(stato.gradini_fatti.load(Ordering::Relaxed), 1);
+        assert!(
+            !stato.in_correzione.load(Ordering::Acquire),
+            "la porta si è riaperta"
+        );
+    }
+
+    #[test]
+    fn un_gradino_all_indietro_lascia_fermo_il_contatore_per_n_fotogrammi() {
+        let (senza, _, ultimo_senza, _) = con_un_gradino(0, 4);
+        let (con, fermi, ultimo_con, stato) = con_un_gradino(30, 4);
+        assert_eq!(
+            senza - con,
+            30,
+            "trenta fotogrammi di silenzio non consumano niente"
+        );
+        assert_eq!(
+            fermi, 30,
+            "esattamente trenta fotogrammi d'uscita senza musica"
+        );
+        assert_eq!(
+            meta_di(ultimo_senza) - meta_di(ultimo_con),
+            60,
+            "la musica è indietro di trenta"
+        );
+        assert_eq!(stato.gradini_fatti.load(Ordering::Relaxed), 1);
+        assert!(!stato.in_correzione.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn un_gradino_oltre_l_anello_resta_in_sospeso() {
+        // Quaranta fotogrammi nell'anello, cinquanta da saltare. La porta si
+        // chiude consumandone undici, il salto prende i ventinove rimasti, e
+        // gli altri ventuno aspettano che il decodificatore ne porti.
+        let stato = condiviso(1);
+        let (mut scrittore, lettore) = anello_contato(4_096, 40);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        stato.gradino.store(-50, Ordering::Release);
+        let mut dati = [0.0f32; 64];
+        riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+        assert_eq!(stato.fotogrammi.load(Ordering::Relaxed), 40);
+        assert_eq!(voce.andamento.fase, Fase::Esegue { resto: -21 });
+        assert!(stato.in_correzione.load(Ordering::Acquire));
+        assert_eq!(stato.gradini_fatti.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            stato.vuoti.load(Ordering::Relaxed),
+            0,
+            "a porta chiusa non è un buco"
+        );
+
+        // Arriva altra musica: il salto finisce, e da lì si suona.
+        for n in 40..140 {
+            let _ = scrittore.push(numero_in_campione(n + 1));
+        }
+        riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+        assert_eq!(stato.gradini_fatti.load(Ordering::Relaxed), 1);
+        assert_eq!(stato.fotogrammi.load(Ordering::Relaxed), 40 + 21 + 64);
+    }
+
+    #[test]
+    fn una_pausa_fa_cadere_il_gradino() {
+        let stato = condiviso(1);
+        let (_manda, mut voce) = voce(anello(4_096, 4_000, 0.5), LENTA);
+        stato.gradino.store(25, Ordering::Release);
+        let mut dati = [0.0f32; 4];
+        riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+        assert!(matches!(voce.andamento.fase, Fase::Chiude { quanto: 25 }));
+        stato.in_pausa.store(true, Ordering::Release);
+        stato.gradino.store(-8, Ordering::Release);
+        riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+        assert_eq!(voce.andamento.fase, Fase::Libera);
+        assert_eq!(stato.gradino.load(Ordering::Acquire), 0);
+        assert!(!stato.in_correzione.load(Ordering::Acquire));
+    }
+
+    // ── la deriva ───────────────────────────────────────────────────────────
+
+    /// Cento blocchi da centouno fotogrammi mono, con la deriva data: le medie
+    /// uscite, e i fotogrammi consumati meno quelli usciti.
+    fn con_la_deriva(ppm: i32) -> (usize, i64) {
+        let stato = condiviso(1);
+        let (_scrittore, lettore) = anello_contato(16_384, 12_000);
+        let (_manda, mut voce) = voce(lettore, LENTA);
+        stato.deriva_ppm.store(ppm, Ordering::Relaxed);
+        let mut medie = 0usize;
+        for _ in 0..100 {
+            let mut dati = [0.0f32; 101];
+            riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+            medie += dati.iter().filter(|c| meta_di(**c) % 2 == 1).count();
+        }
+        let consumati = i64::try_from(stato.fotogrammi.load(Ordering::Relaxed)).unwrap_or(0);
+        (medie, consumati - 10_100)
+    }
+
+    #[test]
+    fn la_deriva_interviene_un_numero_esatto_di_volte() {
+        // Diecimila fotogrammi che possono intervenire — il primo di ogni
+        // blocco no — a cinquecento parti per milione: cinque interventi, né
+        // quattro né sei.
+        assert_eq!(con_la_deriva(500).0, 5);
+        assert_eq!(con_la_deriva(-500).0, 5);
+        assert_eq!(con_la_deriva(0).0, 0);
+        // Oltre il tetto vale il tetto.
+        assert_eq!(con_la_deriva(5_000).0, 5);
+    }
+
+    #[test]
+    fn i_fotogrammi_tolti_si_contano_e_quelli_aggiunti_no() {
+        // Avanti: ogni intervento consuma un fotogramma in più, e si conta.
+        assert_eq!(con_la_deriva(500).1, 5);
+        // Indietro: ogni intervento esce senza consumare niente.
+        assert_eq!(con_la_deriva(-500).1, -5);
+    }
+
+    #[test]
+    fn la_deriva_non_tocca_mai_il_primo_fotogramma_del_blocco() {
+        // L'accumulo è già oltre il fotogramma intero: il primo fotogramma che
+        // può intervenire interviene. Non è mai il primo del blocco — quello è
+        // l'ancora — ma sempre il secondo.
+        for ppm in [500, -500] {
+            let stato = condiviso(1);
+            let (_scrittore, lettore) = anello_contato(4_096, 4_000);
+            let (_manda, mut voce) = voce(lettore, LENTA);
+            stato.deriva_ppm.store(ppm, Ordering::Relaxed);
+            for _ in 0..10 {
+                voce.andamento.accumulo = i64::from(ppm.signum()) * 3 * MILIONE;
+                let mut dati = [0.0f32; 4];
+                riempi(&mut dati, &mut voce, &stato, &battito(MS), |v| v);
+                assert_eq!(meta_di(dati[0]) % 2, 0, "{ppm} ppm: il primo è una media");
+                assert_eq!(meta_di(dati[1]) % 2, 1, "{ppm} ppm: il secondo non lo è");
+            }
+        }
+    }
+
+    // ── il riposo e il ponte ────────────────────────────────────────────────
+
+    #[test]
+    fn con_la_sessione_accesa_il_flusso_non_riposa_mai() {
+        let mut sonno = sveglio_dopo(RIPOSO_BLUETOOTH);
+        let t0 = Instant::now();
+        let insieme = Sguardo {
+            in_pausa: true,
+            svuota: false,
+            a_riposo: true,
+            sessione: true,
+        };
+        for secondi in 0..120 {
+            assert_eq!(
+                sonno.passo(insieme, t0 + Duration::from_secs(secondi)),
+                Mossa::Niente
+            );
+        }
+        assert!(!sonno.dorme);
+        // E un flusso già a riposo la sessione lo sveglia.
+        let mut sonno = Sonno::nuovo(RIPOSO_DOPO);
+        assert_eq!(sonno.passo(insieme, t0), Mossa::Sveglia);
+        // Spenta la sessione, il riposo torna quello di sempre.
+        let solo = Sguardo {
+            sessione: false,
+            ..insieme
+        };
+        assert_eq!(sonno.passo(solo, t0), Mossa::Niente);
+        assert_eq!(sonno.passo(solo, t0 + RIPOSO_A_VUOTO), Mossa::Riposa);
+    }
+
+    #[test]
+    fn il_ponte_porta_un_istante_del_flusso_sull_orologio_del_processo() {
+        // Il punto medio delle due letture locali.
+        let ponte = Ponte::misurato(10_000, 5_000, 10_400);
+        assert_eq!(ponte.locale_ns, 10_200);
+        assert_eq!(ponte.locale_da_flusso(5_000), 10_200);
+        assert_eq!(ponte.locale_da_flusso(7_500), 12_700);
+        assert_eq!(ponte.locale_da_flusso(4_000), 9_200);
+        // Prima dell'inizio dell'orologio locale si resta a zero.
+        assert_eq!(ponte.locale_da_flusso(0), 5_200);
+        assert_eq!(Ponte::misurato(0, 9_000, 0).locale_da_flusso(0), 0);
+        assert_eq!(ponte.locale_da_flusso(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn dove_cade_l_avvio_rispetto_al_blocco() {
+        assert_eq!(dove_cade(1_000, 1_000, 48_000), Cade::Ritardo(0));
+        assert_eq!(dove_cade(1_001, 1_000, 1_000), Cade::Fra(1));
+        assert_eq!(dove_cade(1_000 + 3 * MS, 1_000, 1_000), Cade::Fra(3));
+        assert_eq!(
+            dove_cade(1_000, 1_000 + 3 * MS + 1, 1_000),
+            Cade::Ritardo(3)
+        );
+    }
+
+    // ── il percorso di prima, congelato ─────────────────────────────────────
+    //
+    // `riempi` e `svuota_anello` com'erano prima delle primitive di tempo di
+    // «Ascolta insieme», copiati qui senza i commenti e mai più toccati. Sono la
+    // misura del percorso inattivo: con tutte le caselle nuove a zero la callback
+    // di adesso deve dare, campione per campione, quel che dà questa.
+
+    #[expect(clippy::integer_division, reason = "come l'originale")]
+    fn riempi_di_prima<T>(
+        dati: &mut [T],
+        voce: &mut Voce,
+        condiviso: &Condiviso,
+        converti: impl Fn(f32) -> T,
+    ) {
+        voce.veglia.giri.fetch_add(1, Ordering::Release);
+
+        voce.filtro.ritira();
+
+        let svuota = condiviso.svuota.load(Ordering::Acquire);
+        let in_pausa = condiviso.in_pausa.load(Ordering::Acquire);
+        let tace = svuota || in_pausa;
+
+        let voluto = f32::from_bits(condiviso.guadagno.load(Ordering::Relaxed));
+        let canali = condiviso.canali.load(Ordering::Relaxed).max(1);
+        let per_fotogramma = usize::try_from(canali).unwrap_or(2);
+        let filtra = !voce.filtro.stato.piatto();
+        let guarda = condiviso.spettro.load(Ordering::Relaxed);
+        let piega = voluto > 1.0 || filtra;
+        let mut presi = 0u64;
+        let mut mancati = 0u64;
+        let mut apertura = voce.andamento.apertura();
+
+        for (indice, posto) in dati.iter_mut().enumerate() {
+            let canale = indice % per_fotogramma;
+            if canale == 0 {
+                voce.andamento.muovi_porta(!tace);
+                apertura = voce.andamento.apertura();
+            }
+            if tace && voce.andamento.porta == 0 {
+                *posto = converti(0.0);
+                continue;
+            }
+            voce.andamento.guadagno = avvicina(voce.andamento.guadagno, voluto);
+            match voce.lettore.pop() {
+                Ok(campione) => {
+                    presi += 1;
+                    let campione = if filtra {
+                        voce.filtro.stato.applica(campione, canale)
+                    } else {
+                        campione
+                    };
+                    if guarda {
+                        voce.spia.campione(campione, per_fotogramma);
+                    }
+                    let alzato = campione * voce.andamento.guadagno * apertura;
+                    *posto = converti(if piega { limita(alzato) } else { alzato });
+                }
+                Err(_) => {
+                    if !tace {
+                        mancati += 1;
+                    }
+                    *posto = converti(0.0);
+                }
+            }
+        }
+
+        let campioni = voce.andamento.resto.saturating_add(presi);
+        let canali = u64::from(canali);
+        condiviso
+            .fotogrammi
+            .fetch_add(campioni / canali, Ordering::Relaxed);
+        voce.andamento.resto = campioni % canali;
+        if mancati > 0 {
+            condiviso.vuoti.fetch_add(mancati, Ordering::Relaxed);
+        }
+
+        let chiusa = voce.andamento.porta == 0;
+        if tace && chiusa {
+            voce.andamento.guadagno = 0.0;
+            if svuota {
+                svuota_anello_di_prima(voce, condiviso);
+            }
+        }
+        voce.veglia.a_riposo.store(
+            in_pausa && chiusa && voce.lettore.is_empty(),
+            Ordering::Release,
+        );
+    }
+
+    fn svuota_anello_di_prima(voce: &mut Voce, condiviso: &Condiviso) {
+        while voce.lettore.pop().is_ok() {}
+        voce.filtro.stato.azzera();
+        voce.spia.azzera();
+        voce.andamento.resto = 0;
+        condiviso.svuota.store(false, Ordering::Release);
     }
 }

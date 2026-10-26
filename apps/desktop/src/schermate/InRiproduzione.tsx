@@ -110,6 +110,7 @@ import { Trasporto } from "../parti/Trasporto";
 import { t } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
 import { useDati } from "../dati";
+import { branoDaMostrare, gestoPermesso, idDiLibreria } from "../insieme";
 import { RecintoErrori } from "../Recinto";
 import { vinceLUltima } from "../ultima";
 
@@ -212,8 +213,16 @@ export function InRiproduzione({
     // non è una di quelle.
     ipc.spettroBandeScegli(quante).then(setBarre).catch(onErrore);
   };
-  const righe = useRigheCoda(stato.coda, onErrore);
-  const brano = stato.brano;
+  const righe = useRigheCoda(stato.coda, onErrore, stato.insieme?.revisione ?? null);
+  // Con il titolo della voce di calibrazione tradotto: vedi `branoDaMostrare`.
+  const brano = stato.brano === null ? null : branoDaMostrare(stato.brano, stato.insieme, t);
+  // Il testo si legge, si cerca e si corregge per id di libreria, e una voce
+  // di «Ascolta insieme» qui un id di libreria non ce l'ha: il pannello
+  // cercherebbe il testo di un'altra canzone, o di nessuna. Tasto e pannello
+  // spariscono finché suona una voce, e la preferenza resta com'era — alla
+  // prossima canzone di questo PC il testo torna dove lo si era lasciato.
+  const conTesto = brano !== null && idDiLibreria(brano.id);
+  const testoMostrato = testoVisibile && conTesto;
 
   // ── un pannello solo, quando non ci stanno ──
   const schermata = useRef<HTMLElement>(null);
@@ -239,10 +248,10 @@ export function InRiproduzione({
   // La finestra si è stretta con tutti e due aperti. Prima della pittura, così
   // il fotogramma con tre colonne schiacciate non si vede.
   useLayoutEffect(() => {
-    if (!unPannelloSolo || !testoVisibile || !codaVisibile) return;
+    if (!unPannelloSolo || !testoMostrato || !codaVisibile) return;
     if (ultimoAperto.current === "testo") setCodaVisibile(false);
     else setTestoVisibile(false);
-  }, [unPannelloSolo, testoVisibile, codaVisibile]);
+  }, [unPannelloSolo, testoMostrato, codaVisibile]);
   const alternaTesto = () => {
     const apre = !testoVisibile;
     setTestoVisibile(apre);
@@ -356,16 +365,19 @@ export function InRiproduzione({
           {/* Acceso. Stava spento con la sua ragione nel suggerimento — «il
               nucleo non legge ancora i testi» — e adesso li legge: il sidecar
               accanto al brano, la riga in tabella, il tag. Il posto era deciso
-              da prima, e questo è quel che ci è arrivato dentro. */}
-          <button
-            type="button"
-            className="tasto icon-btn"
-            aria-pressed={testoVisibile}
-            aria-label={t("np.lyrics.toggle")}
-            onClick={alternaTesto}
-          >
-            <Icona nome="i-text" dim={16} titolo={t("np.lyrics")} />
-          </button>
+              da prima, e questo è quel che ci è arrivato dentro.
+              Non c'è su una voce di «Ascolta insieme»: vedi `conTesto`. */}
+          {conTesto && (
+            <button
+              type="button"
+              className="tasto icon-btn"
+              aria-pressed={testoVisibile}
+              aria-label={t("np.lyrics.toggle")}
+              onClick={alternaTesto}
+            >
+              <Icona nome="i-text" dim={16} titolo={t("np.lyrics")} />
+            </button>
+          )}
           {/* Questo invece è acceso, e lo è da quando il motore espone le
               bande: `rymembra-play::spettro` le prende dai campioni che escono
               davvero. La regola non è cambiata — quel che si disegna viene dal
@@ -441,7 +453,7 @@ export function InRiproduzione({
         ref={corpo}
         className="corpo"
         data-con-coda={codaVisibile || undefined}
-        data-con-testo={testoVisibile || undefined}
+        data-con-testo={testoMostrato || undefined}
       >
         {/* Lo stato dello spettro arriva al CSS come attributo: quel che cambia
             accendendolo non è cosa c'è nella colonna, ma dove si appoggia — al
@@ -505,7 +517,7 @@ export function InRiproduzione({
 
         {/* Prima della coda: si legge da sinistra, e il testo è quel che si
             guarda mentre la coda è quel che viene dopo. */}
-        {testoVisibile && <Testo brano={brano} onErrore={onErrore} />}
+        {testoMostrato && <Testo brano={brano} onErrore={onErrore} />}
 
         {codaVisibile && (
           <aside className="coda-np" aria-label={t("queue.panel.aria")}>
@@ -516,7 +528,10 @@ export function InRiproduzione({
               <button
                 type="button"
                 className="bottone minuto btn-ghost"
-                disabled={stato.coda.length === 0}
+                disabled={stato.coda.length === 0 || !gestoPermesso(stato.insieme, "svuota")}
+                title={
+                  gestoPermesso(stato.insieme, "svuota") ? undefined : t("together.clear.off")
+                }
                 onClick={() => comanda(ipc.codaSvuota())}
               >
                 {t("queue.clear")}

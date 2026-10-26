@@ -24,6 +24,15 @@
 //!   cosa più rumorosa del progetto, anche sulla rete. Della bozza si salva il
 //!   solo `skin.json`.
 //!
+//! - **«Ascolta insieme».** I PC associati (`insieme_pari`) e le chiavi
+//!   `insieme.*`: chi è fidato, come si chiama questo PC, quali indirizzi della
+//!   rete di casa interrogare. Sono fatti di **questa** macchina, e un
+//!   ripristino su un computer nuovo che li riportasse farebbe fidare quel
+//!   computer di PC a cui nessuno, di là, ha confermato un codice. Non c'è una
+//!   riga che li escluda, ed è la garanzia: [`Contenuto`] ha una forma fissa,
+//!   delle impostazioni porta solo le cartelle e la skin, e [`interpreta`]
+//!   butta via quel che non conosce. Una prova in fondo lo tiene vero.
+//!
 //! Scritto qui perché la tentazione di «aggiungerci anche» è forte e arriva
 //! sempre da qualcuno che non ha visto la bolletta.
 //!
@@ -1729,5 +1738,61 @@ mod prove {
         let unione = fondi(&locale, &remoto);
         assert!(unione.playlists.is_empty());
         assert_eq!(unione.tombstones.playlists.get("serata"), Some(&100));
+    }
+
+    #[test]
+    fn i_pc_associati_e_le_chiavi_di_insieme_non_vanno_su_drive() {
+        // Una libreria con dentro tutto quel che «Ascolta insieme» ricorda, e
+        // il file che il backup caricherebbe: JSON in chiaro, quindi cercarci
+        // dentro dice davvero cosa parte.
+        let connection = libreria();
+        statistica(&connection, 1, "play_count = 3");
+        let chiave = "5e".repeat(32);
+        crate::insieme::associa(&connection, &chiave, "Portatile-di-Zaira-7Q", 1_000)
+            .expect("associato");
+        crate::insieme::salva_attivo(&connection, true).expect("acceso");
+        crate::insieme::salva_nome(&connection, "Fisso-in-mansarda-K2").expect("nome");
+        crate::insieme::salva_indirizzi(&connection, &["10.20.30.40:47812".to_owned()])
+            .expect("indirizzi");
+
+        let qui = stato_locale(&connection).expect("stato locale");
+        let bytes = serializza(&Salvataggio::nuovo(
+            snapshot(&qui, BTreeMap::new(), BTreeMap::new()),
+            1_700_000_000_000,
+            "prova".into(),
+        ))
+        .expect("serializzato");
+        let testo = String::from_utf8(bytes).expect("JSON");
+        assert!(
+            testo.contains("art|uno|al"),
+            "il backup c'è, e porta i brani"
+        );
+        for segreto in [
+            chiave.as_str(),
+            "Portatile-di-Zaira-7Q",
+            "Fisso-in-mansarda-K2",
+            "10.20.30.40",
+            "insieme",
+        ] {
+            assert!(!testo.contains(segreto), "«{segreto}» andrebbe su Drive");
+        }
+    }
+
+    #[test]
+    fn un_backup_che_porta_insieme_non_lo_rimette() {
+        // L'altro verso: un file scritto da qualcun altro — o da una versione
+        // futura — con dentro delle impostazioni di «Ascolta insieme». Il
+        // contenuto ha una forma fissa, e quel che non conosce non arriva
+        // nemmeno alla fusione.
+        let file = br#"{"version":1,"generatedAt":1,"generatedBy":"x",
+            "content":{"roots":["C:\\Musica"],
+                       "settings":{"insieme.attivo":"true"},
+                       "insiemePari":[{"chiave":"5e5e","nome":"Intruso"}]}}"#;
+        let letto = interpreta(file).expect("letto");
+        let canonici =
+            String::from_utf8(canonico(&letto.content).expect("canonico")).expect("JSON");
+        assert_eq!(letto.content.roots, ["C:\\Musica".to_owned()]);
+        assert!(!canonici.contains("insieme"), "{canonici}");
+        assert!(!canonici.contains("Intruso"), "{canonici}");
     }
 }
