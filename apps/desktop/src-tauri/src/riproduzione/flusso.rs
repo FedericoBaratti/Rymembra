@@ -374,6 +374,203 @@ impl rymembra_play::Flusso for FlussoDiRete {
     }
 }
 
+/// I byte di un brano che sta sul disco di un altro PC della sessione, vestiti
+/// da [`rymembra_play::Flusso`].
+///
+/// Gemello di [`FlussoDiRete`], con una differenza sola che è tutto il punto:
+/// **`remoto()` è falso**. Per un catalogo «remoto» vuol dire salti
+/// grossolani, perché un salto accurato su un MP3 rileggerebbe megabyte da un
+/// server lontano. Qui la stessa scelta sarebbe la peggiore: in una sessione il
+/// salto deve finire **esattamente** sul fotogramma che l'host sta suonando,
+/// e un salto «a grandi linee» lascerebbe al regolatore un errore di decine di
+/// millisecondi da correggere a gradini dopo ogni riapertura. In una LAN
+/// rileggere qualche megabyte costa poco: vedi la misura nel rapporto della
+/// fase 1 e la prova `una_riapertura_in_rete_si_misura`.
+pub(super) struct FlussoDiPari(FlussoHttp);
+
+impl FlussoDiPari {
+    /// L'involucro intorno a un flusso, per le prove degli altri moduli: qui
+    /// lo costruisce solo [`apri_da_pari`].
+    #[cfg(test)]
+    pub(super) const fn per_prova(flusso: FlussoHttp) -> Self {
+        Self(flusso)
+    }
+}
+
+impl std::io::Read for FlussoDiPari {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for FlussoDiPari {
+    fn seek(&mut self, verso: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(verso)
+    }
+}
+
+impl rymembra_play::Flusso for FlussoDiPari {
+    /// La dimensione del file, come l'ha detta chi lo serve: senza, symphonia
+    /// dichiarerebbe il flusso non percorribile e il salto non si farebbe.
+    fn lunghezza(&self) -> Option<u64> {
+        self.0.lunghezza()
+    }
+
+    /// Falso: vedi il tipo.
+    fn remoto(&self) -> bool {
+        false
+    }
+
+    /// Un salto o una voce nuova: la lettura in corso smette di aspettare
+    /// l'altro PC. La connessione di lettura la butta il trasporto (vedi
+    /// `LettoreRemoto`), che è il solo modo di annullare una richiesta già
+    /// partita.
+    fn ascolta_annullo(&mut self, annullo: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.0.ascolta_annullo(annullo);
+    }
+}
+
+/// Quel che serve a fare di una sorgente di un pari un brano: tutto tranne i
+/// byte, che li dà la chiusura.
+pub(super) struct DaPari {
+    /// La maniglia: il `track_id` che il motore annuncerà.
+    pub(super) maniglia: i64,
+    /// L'estensione, per il riconoscimento del formato.
+    pub(super) estensione: Option<String>,
+    /// La durata dichiarata dalla voce.
+    pub(super) durata_ms: u64,
+    /// La correzione dichiarata dalla voce: la stessa su ogni PC.
+    pub(super) replaygain_db: Option<f32>,
+    /// Il picco dichiarato dalla voce.
+    pub(super) picco: Option<f32>,
+    /// Il tratto, per un brano d'immagine CD.
+    pub(super) segmento: Option<rymembra_play::Segmento>,
+}
+
+/// Apre una voce che sta sul disco di un altro PC: la sorgente dalla
+/// chiusura della sessione, la finestra scorrevole di [`FlussoHttp`] sopra, e
+/// il riconoscimento del contenitore — tutto dentro la scadenza dei flussi,
+/// come un brano di catalogo e per la stessa ragione: è la rete, e chi ha
+/// premuto play deve avere una risposta.
+///
+/// Senza nessun lucchetto in mano: vedi il preambolo del modulo padre.
+///
+/// # Errori
+///
+/// Quelli della chiusura (il trasporto: `insieme.*`), quelli della lettura
+/// tradotti come per un flusso interrotto, `net.timeout` alla scadenza e
+/// `playback.formatUnsupported` per un contenitore che non si riconosce.
+pub(super) fn apri_da_pari(
+    apri: super::ospiti::ApriInRete,
+    dati: DaPari,
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
+    let esito = rymembra_app::scadenza::con_scadenza_o_caduta(
+        super::APERTURA_BRANO_NOME,
+        super::APERTURA_FLUSSO,
+        move || {
+            let sorgente = apri()?;
+            let flusso = FlussoHttp::da(sorgente)?;
+            let sorgente = rymembra_play::Sorgente {
+                track_id: dati.maniglia,
+                media: Box::new(FlussoDiPari(flusso)),
+                estensione: dati.estensione,
+                durata_ms: dati.durata_ms,
+                replaygain_db: dati.replaygain_db,
+                picco: dati.picco,
+                segmento: dati.segmento,
+            };
+            rymembra_play::BranoAperto::apri(sorgente, formato)
+                .map_err(super::interruzione_di_flusso)
+        },
+    );
+    esito.unwrap_or_else(|mancato| {
+        Err(super::apertura_mancata(
+            &mancato,
+            super::APERTURA_FLUSSO,
+            true,
+            None,
+        ))
+    })
+}
+
+/// Apre un brano di catalogo per una voce di sessione: la stessa strada di un
+/// brano di catalogo della libreria, con la maniglia come `track_id` e i
+/// numeri della voce al posto di quelli di una riga.
+///
+/// # Errori
+///
+/// Quelli di [`apri_flusso`], `net.timeout` alla scadenza, e
+/// `internal.aborted` se il lettore non c'è più.
+pub(super) fn apri_da_catalogo(
+    app: &tauri::AppHandle,
+    maniglia: i64,
+    rif: &RiferimentoFlusso,
+    scheda: &super::ospiti::SchedaVoce,
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
+    let cataloghi = super::cataloghi_di(app, "apertura di una voce di catalogo")?;
+    let finta = SchedaSorgente {
+        track_id: maniglia,
+        collocazione: Collocazione::Catalogo {
+            fonte: rif.fonte,
+            url: rif.url.clone(),
+        },
+        durata_ms: i64::try_from(scheda.durata_ms).unwrap_or(i64::MAX),
+        replaygain_db: scheda.replaygain_db.map(f64::from),
+        picco: scheda.picco.map(f64::from),
+    };
+    let rif = rif.clone();
+    let esito = rymembra_app::scadenza::con_scadenza_o_caduta(
+        super::APERTURA_BRANO_NOME,
+        super::APERTURA_FLUSSO,
+        move || {
+            let (flusso, da_suonare) = apri_flusso(&cataloghi, &rif)?;
+            let sorgente = sorgente_da_flusso(&finta, &da_suonare, flusso);
+            rymembra_play::BranoAperto::apri(sorgente, formato)
+                .map_err(super::interruzione_di_flusso)
+        },
+    );
+    esito.unwrap_or_else(|mancato| {
+        Err(super::apertura_mancata(
+            &mancato,
+            super::APERTURA_FLUSSO,
+            true,
+            None,
+        ))
+    })
+}
+
+/// Il separatore fra la fonte e l'indirizzo in un riferimento di voce.
+///
+/// I due punti, perché nessun nome di [`Fonte::nome`] li contiene: il primo
+/// che si incontra separa sempre la fonte, e quel che resta — un `https://…`
+/// coi suoi due punti, o un percorso di Audius — è l'indirizzo intero.
+const SEPARATORE_RIFERIMENTO: char = ':';
+
+/// Il riferimento con cui un brano di catalogo viaggia in una sessione:
+/// `<fonte>:<indirizzo>`, con il nome stabile della fonte.
+///
+/// Il nome stabile e non l'etichetta, perché è quello che sta già in tabella e
+/// attraversa l'IPC: lo rilegge [`Fonte::da_testo`] su qualunque PC, anche uno
+/// più vecchio di un catalogo che questo conosce — e allora vale una fonte che
+/// byte non ne dà, cioè una voce che non si apre invece di una voce aperta
+/// con la rete sbagliata.
+pub(super) fn riferimento_in_testo(fonte: Fonte, url: &str) -> String {
+    format!("{}{SEPARATORE_RIFERIMENTO}{url}", fonte.nome())
+}
+
+/// Il contrario di [`riferimento_in_testo`], **con il cancello di questo PC**.
+///
+/// Il riferimento arriva da un altro PC, e chi lo manda può mandare quel che
+/// vuole: passa quindi da [`riferimento_da_testo`], la stessa allowlist di una
+/// riga della libreria. Un indirizzo che qui non è ammesso non si apre, anche
+/// se l'altro PC lo ha suonato.
+pub(super) fn riferimento_da_voce(testo: &str) -> Option<RiferimentoFlusso> {
+    let (fonte, url) = testo.split_once(SEPARATORE_RIFERIMENTO)?;
+    riferimento_da_testo(Fonte::da_testo(fonte), url)
+}
+
 /// Da un flusso aperto alla sorgente che il motore sa suonare.
 ///
 /// Quel che il motore riceve è indistinguibile da un file: stesso `track_id`,
@@ -652,6 +849,172 @@ mod prove {
                 url_finale: None,
             })
         }
+    }
+
+    /// Il riferimento di una voce di catalogo va e torna, e al ritorno passa
+    /// dal cancello di questo PC.
+    #[test]
+    fn il_riferimento_di_una_voce_va_e_torna_dal_cancello() {
+        let url = "https://archive.org/download/gd1977-05-08/gd77-05-08d1t01.mp3";
+        let testo = riferimento_in_testo(Fonte::InternetArchive, url);
+        assert_eq!(testo, format!("internet-archive:{url}"));
+        assert_eq!(
+            riferimento_da_voce(&testo),
+            Some(RiferimentoFlusso {
+                fonte: Fonte::InternetArchive,
+                url: url.to_owned(),
+            })
+        );
+        // Audius, che porta un percorso e non un indirizzo.
+        let audius = riferimento_in_testo(Fonte::Audius, "/v1/tracks/aB3dE/stream");
+        assert!(riferimento_da_voce(&audius).is_some());
+        // Quel che un altro PC può mandare e qui non si apre: un dominio che
+        // non ci ha invitati, una fonte che non dà byte, una forma storta.
+        for cattivo in [
+            "internet-archive:https://evilarchive.org/download/x/y.mp3",
+            "internet-archive:http://archive.org/download/x/y.mp3",
+            "audius:https://127.0.0.1/v1/tracks/x/stream",
+            "archivio-spotify:https://archive.org/download/x/y.mp3",
+            "sconosciuta:https://archive.org/download/x/y.mp3",
+            "https://archive.org/download/x/y.mp3",
+            "",
+        ] {
+            assert_eq!(riferimento_da_voce(cattivo), None, "«{cattivo}»");
+        }
+    }
+
+    /// Un file in memoria servito come lo servirebbe un altro PC: ogni pezzo
+    /// costa un ritardo fisso (l'andata e ritorno) più il tempo dei suoi byte
+    /// sulla linea. Conta le richieste e i byte, per la misura.
+    #[derive(Debug)]
+    struct PariFinto {
+        byte: Vec<u8>,
+        andata_e_ritorno: std::time::Duration,
+        byte_al_secondo: u64,
+        richieste: std::sync::atomic::AtomicU64,
+        letti: std::sync::atomic::AtomicU64,
+    }
+
+    impl rymembra_net::flusso::Sorgente for PariFinto {
+        fn pezzo(&self, da: u64, quanti: u64) -> Result<rymembra_net::Pezzo, AppError> {
+            let inizio = usize::try_from(da)
+                .unwrap_or(usize::MAX)
+                .min(self.byte.len());
+            let fine = inizio
+                .saturating_add(usize::try_from(quanti).unwrap_or(0))
+                .min(self.byte.len());
+            let pezzo = self.byte.get(inizio..fine).unwrap_or(&[]).to_vec();
+            let n = u64::try_from(pezzo.len()).unwrap_or(0);
+            let linea = std::time::Duration::from_nanos(
+                n.saturating_mul(1_000_000_000)
+                    .checked_div(self.byte_al_secondo)
+                    .unwrap_or(0),
+            );
+            std::thread::sleep(self.andata_e_ritorno + linea);
+            self.richieste
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.letti
+                .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            Ok(rymembra_net::Pezzo {
+                byte: pezzo,
+                totale: Some(u64::try_from(self.byte.len()).unwrap_or(0)),
+                url_finale: None,
+            })
+        }
+    }
+
+    /// Quanto costa riaprire una voce che sta su un altro PC e saltare al
+    /// punto dell'host: è la mossa `Riapri` del regolatore, e deve stare dentro
+    /// l'anticipo di 250 ms con cui l'host programma le partenze.
+    ///
+    /// Un MP3 vero (`site/audio/machina.mp3`, 3,6 MB) servito da un pari
+    /// finto, con l'involucro di sessione — `remoto()` falso, quindi salto
+    /// **accurato**: symphonia conta i fotogrammi dall'inizio del file, e per
+    /// arrivare a tre quarti li deve leggere quasi tutti. Si misura apertura
+    /// più salto più il primo blocco decodificato, su tre linee: quella di
+    /// `127.0.0.1`, una LAN via cavo da un gigabit, un Wi-Fi qualunque.
+    ///
+    /// Non è una prova di velocità — sul banco di prova i tempi cambiano col
+    /// carico — e per questo è ignorata: si lancia a mano con
+    /// `--ignored --nocapture`, e i numeri vanno nel rapporto.
+    #[test]
+    #[ignore = "misura: si lancia a mano con --ignored --nocapture"]
+    fn una_riapertura_in_rete_si_misura() {
+        let percorso = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../site/audio/machina.mp3");
+        let byte = std::fs::read(&percorso).expect("il file della misura");
+        let linee = [
+            ("127.0.0.1", 200_u64, 1_000_000_000_u64),
+            ("LAN 1 Gbit", 1_000, 110_000_000),
+            ("Wi-Fi", 4_000, 20_000_000),
+        ];
+        for (nome, rtt_us, banda) in linee {
+            let pari = std::sync::Arc::new(PariFinto {
+                byte: byte.clone(),
+                andata_e_ritorno: std::time::Duration::from_micros(rtt_us),
+                byte_al_secondo: banda,
+                richieste: std::sync::atomic::AtomicU64::new(0),
+                letti: std::sync::atomic::AtomicU64::new(0),
+            });
+            let inizio = std::time::Instant::now();
+            let flusso = FlussoHttp::da(Box::new(Condiviso(std::sync::Arc::clone(&pari))))
+                .expect("il pari finto risponde");
+            let sorgente = rymembra_play::Sorgente {
+                track_id: -1,
+                media: Box::new(FlussoDiPari(flusso)),
+                estensione: Some("mp3".to_owned()),
+                durata_ms: 0,
+                replaygain_db: None,
+                picco: None,
+                segmento: None,
+            };
+            let mut decodificatore =
+                rymembra_play::decodifica::Decodificatore::apri(sorgente, 48_000, 2)
+                    .expect("l'MP3 si apre");
+            let aperto = inizio.elapsed();
+            let durata = decodificatore.fine_flusso_ms().unwrap_or(120_000);
+            let bersaglio = durata.saturating_mul(3).checked_div(4).unwrap_or(0);
+            decodificatore.cerca(bersaglio).expect("il salto riesce");
+            let mut blocco = Vec::new();
+            let _ = decodificatore.prossimo(&mut blocco);
+            let totale = inizio.elapsed();
+            println!(
+                "[misura] {nome}: aperto in {} ms, salto a {} s e primo blocco in {} ms in tutto; \
+                 {} richieste, {} KiB letti su {} KiB",
+                aperto.as_millis(),
+                bersaglio.checked_div(1000).unwrap_or(0),
+                totale.as_millis(),
+                pari.richieste.load(std::sync::atomic::Ordering::Relaxed),
+                pari.letti
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .checked_div(1024)
+                    .unwrap_or(0),
+                byte.len().checked_div(1024).unwrap_or(0),
+            );
+            assert!(!blocco.is_empty(), "dopo il salto si decodifica");
+        }
+    }
+
+    /// Il pari finto, condiviso fra la misura e il flusso che lo legge.
+    #[derive(Debug)]
+    struct Condiviso(std::sync::Arc<PariFinto>);
+
+    impl rymembra_net::flusso::Sorgente for Condiviso {
+        fn pezzo(&self, da: u64, quanti: u64) -> Result<rymembra_net::Pezzo, AppError> {
+            self.0.pezzo(da, quanti)
+        }
+    }
+
+    /// L'involucro di sessione dichiara i byte locali: è quel che fa saltare
+    /// il decodificatore al fotogramma esatto.
+    #[test]
+    fn l_involucro_di_sessione_salta_preciso() {
+        let Ok(flusso) = FlussoHttp::da(Box::new(FintaRete(vec![0; 64]))) else {
+            panic!("la finta non fallisce mai");
+        };
+        let pari = FlussoDiPari(flusso);
+        assert!(!rymembra_play::Flusso::remoto(&pari));
+        assert_eq!(rymembra_play::Flusso::lunghezza(&pari), Some(64));
     }
 
     /// Quel che arriva al motore è indistinguibile da un file.

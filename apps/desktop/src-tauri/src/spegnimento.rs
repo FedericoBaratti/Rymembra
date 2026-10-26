@@ -124,6 +124,10 @@ pub fn spegni(mano: &tauri::AppHandle) {
     if prima_volta {
         nota!("[uscita] si chiude: sequenza di spegnimento");
     }
+    // «Ascolta insieme» prima di tutto quel che salva: chi ospita avvisa gli
+    // altri che la sessione finisce, chi segue esce, e il lettore torna alla
+    // coda di questo PC — che è quella che `salva_uscendo` deve trovare.
+    crate::insieme::ferma(mano);
     // L'ultima posizione di un cursore mosso un attimo prima di chiudere: il
     // filo dell'orologio, che di solito la scrive, è appena uscito per via
     // della bandiera.

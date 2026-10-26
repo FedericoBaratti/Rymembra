@@ -27,9 +27,10 @@ What increments what:
   send a field it did not send before. Nothing breaks in the meantime — that is
   what separates this from a major;
 - **major** — an incompatible change to the skin format
-  (`SKIN_FORMAT_VERSION`) or to the transport protocol
-  (`SKIN_TRANSFER_PROTOCOL`), that is, the two points at which an updated device
-  would stop understanding one that stayed put.
+  (`SKIN_FORMAT_VERSION`), to the transport protocol
+  (`SKIN_TRANSFER_PROTOCOL`) or, since 3.1.0, to the «Listen together»
+  protocol (`rymembra_insieme::messaggi::VERSIONE`), that is, the three points
+  at which an updated device would stop understanding one that stayed put.
 
 ### Migrations and the number — amended in 2.3.1
 
@@ -84,6 +85,272 @@ everything else, which is most of what happens here.
 Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
+
+## [3.1.0] — 2026-10-26
+
+**Listen together.** Two or more PCs with Rymembra on the same network now
+play the same music at the same moment, close enough for two sets of speakers
+in one room: one PC hosts, the others follow, and each still decodes the music
+for itself. It is a minor and not a patch under the rule above, for the reason
+that rule gives: a colleague's Rymembra has to be 3.1 to listen with you. A
+3.0.x that stays put loses nothing, and simply does not see the session.
+
+Everything else in this release serves that feature or came out of building it.
+Some of it changes how every user's playback starts, even someone who never
+turns the feature on; that part is listed first, because it is the part
+nobody asked for.
+
+### Changed — playback starts exactly where it should
+
+- **Resuming in the middle of a track no longer lets a few milliseconds of its
+  beginning slip out.** Opening a track at a position used to be three
+  commands in a row (play, seek, pause), and between the first and the others
+  the output could already be playing from zero: a faint tick at the start of a
+  resume. Opening and seeking are now one command, carried out before anything
+  is decoded. The same goes for a track reopened on another output while
+  paused: it stays paused at the same millisecond.
+- **The reported position no longer loses up to a millisecond after a seek or
+  a crossfade.** It was kept in whole milliseconds from the seek point on; it
+  is now counted in frames and rounded once, at the end. Synced lyrics may
+  move by that millisecond.
+- **The output latency setting is remembered per output.** The value you set
+  for the speakers stays with the speakers, the one for the Bluetooth
+  headphones with the headphones, and switching between them — by hand or
+  because one disappeared — brings the right value back. An output that never
+  had a value of its own uses the old single value. Like that one, it is a
+  fact of this machine and does not travel in a profile export. The slider
+  now moves in steps of 1 ms instead of 10.
+
+With nothing asking for the new timing features, the audio that leaves the
+engine is bit-for-bit what it was in 3.0.3, and a test checks exactly that.
+
+### New — Listen together
+
+Off by default: *Settings › Listen together*, or the button beside the volume.
+
+- **Hosting.** «Host a session» turns your queue into the session's queue;
+  everyone who joins hears it from the track and the millisecond you are at.
+  The first time, a dialog explains the question Windows is about to ask —
+  choose «Allow», tick «Public networks» too, or make the network Private —
+  and that «Cancel» creates a blocking rule that has to be removed by hand,
+  with where. Only the hosting PC opens a port (47811, TCP and UDP, or one of
+  the nine after it); a PC that follows opens none.
+- **Finding each other.** PCs with the feature on find hosts on the local
+  network by themselves. Where broadcasts do not pass, an address can be typed
+  by hand.
+- **Pairing, once.** The first time two PCs meet, both screens show the same
+  four-digit code and both people confirm it; from then on they recognise each
+  other, and either side can rename, block or forget the other. Everything
+  after the discovery datagram is encrypted (Noise, X25519 and
+  ChaCha20-Poly1305), and only paired PCs exchange anything beyond their names.
+- **Joining.** The host invites a paired PC that is online, with an invitation
+  that brings Rymembra to the front even from the tray and expires after a
+  minute; or a PC asks to join, and the host accepts. Up to nine people.
+- **In sync.** Each follower measures the offset between its clock and the
+  host's, and keeps its own output aligned to the host's by dropping or
+  repeating single frames, by short exact steps, or by reopening the track;
+  resumes, seeks and track changes are scheduled a quarter of a second ahead
+  so everyone starts together. On one PC with two outputs — the built-in
+  speakers and Bluetooth headphones — the engine kept the second within 0.3 ms
+  of the first (median, by the engine's own timestamps), was back under 1 ms
+  within 0.3 s of every pause, seek and forced step, and had no dropouts in six
+  minutes of scripted pauses, seeks, track changes and forced drift.
+- **Calibration.** Bluetooth adds a delay Windows does not report. «Calibrate»
+  plays identical clicks on every PC of the session, generated on each PC so
+  nothing travels, with the latency slider of the current output beside them:
+  stand halfway between the speakers and move it until the click seems to come
+  **from the centre** — or, with Bluetooth headphones and speakers together,
+  until the double knock disappears.
+- **The host decides who controls what.** Every time someone joins — on a
+  join request or with an invitation — the host picks one of three levels next
+  to «Let in» or «Invite», and can change it later from «In the session»:
+  **Listen** (no controls), **Control** (pause, skip, previous, seek, repeat)
+  or **Everything** (the queue too: play a track of the queue, remove and
+  reorder, and add tracks **of their own**, which then play from their PC for
+  everyone, labelled «by Marco»). «Control» is preselected, and nothing is
+  remembered per PC. The host checks every gesture as it arrives and answers
+  «The host hasn't given you this control»; on a member's PC the buttons that
+  aren't theirs are greyed out — in the player, the queue and the selection
+  bar — the library menus leave out «Play next» and «Enqueue», and the media
+  keys don't even send it. Volume, equalizer, output and latency stay each person's own at
+  every level. Shuffle, radio, autoplay, the sleep timer and «Undo» on a
+  replaced queue are off during a session, and say why: each would change the
+  music for the others without them seeing it.
+- **Identical copies stay local.** When a follower already has an identical
+  copy of a track — the same file on the same network share, or a file with the
+  same size and the same fingerprint of its first and last 64 KiB — it plays
+  its own copy instead of streaming it. That copy counts as a listen on that
+  PC; a track only streamed from another PC is not counted and not scrobbled.
+- **Leaving.** A member leaves, or the host ends the session, and everyone finds
+  their own queue exactly as they left it — same track, same point. During a
+  session nothing is written to the saved queue, the resume point or the
+  settings, so not even a crash in the middle of one changes them.
+- **Catalog tracks are never passed on.** A track from the Internet Archive or
+  Audius in the session queue is fetched by each PC from the catalog, under
+  that catalog's terms.
+
+What it sends, to whom and when is in `PRIVACY.md` § 4-ter; what it must
+withstand is in `SECURITY.md`; what it means for the music's licenses is in
+`TERMS.md` § 3-ter.
+
+**Tested between two PCs, and fixed after.** On 26 October the whole path ran
+between two real PCs on an office network, with the music on a NAS: discovery,
+pairing, joining and following worked, and three things did not — gestures
+that arrived seconds late or seemed lost, connecting that took guessing, and
+a panel and a bar that drew badly. What follows came from measuring them, on
+three instances on one PC with a proxy in the middle that behaves like a cable
+or like a Wi-Fi link, and the numbers are those. Still unmeasured between real
+PCs: whether the follower's discovery triggers the firewall question, and the
+acoustic delay of Bluetooth outputs, which no driver reports.
+
+### Fixed — after the first test between two PCs
+
+- **Gestures no longer wait seconds, or get lost.** The host sent every member
+  the whole session state — the queue window, up to a thousand voices,
+  hundreds of kilobytes — every time anything changed, and while it was still
+  describing the voices of a new queue that meant nine times a second for the
+  first twenty seconds of a session, and longer from a NAS: its session thread
+  spent two thirds of its time on it, and a member's pause waited behind (up
+  to 8 s measured in the queue; three of the first twenty gestures never
+  arrived). Now a state that changes only because more voices are described
+  goes at most once a second, the voice that is playing is described before
+  all the others, trimming a state to the frame limit takes linear time
+  instead of one full serialisation per voice removed, a copy descriptor no
+  longer triggers a state of its own, and messages over 8 KiB are compressed
+  (a 971-voice state: 603 KB → 118 KB, 2 ms) with only the newest state kept
+  when several are queued. Measured with 40 random gestures from the host and
+  two members: none lost, members aligned within 0.42 s (95th percentile) through a «cable»
+  proxy and within 0.53 s through a «Wi-Fi» one (20 Mbit/s, 5 ± 15 ms); a
+  pause reaches the members in about 0.2 s; a seek made while paused puts them
+  at the new point, still paused, within a second, and the resume after it is
+  aligned within 0.16 s.
+- **A member always knows what the host is playing.** Anchors for a voice that
+  no state had described yet made the member reopen a voice it did not have
+  (`playback.sourceUnavailable`, in the log of that test), and a failed move
+  left its regulator deaf to pauses and seeks for two seconds. The host now
+  waits for the voice to be described and for the state that carries it before
+  announcing it, the regulator decides again right after a move that failed,
+  and when the host's engine has nothing in its hands — an open from the NAS
+  that failed — the members hear an explicit stop instead of playing on alone.
+- **«Next» and a track chosen from the queue start at once on members.** A
+  change of voice was treated as a possible gapless transition, and members
+  kept playing the old track for a second over the new title. Starts the host
+  announced in advance now carry that flag, and are not waited for.
+- **Gestures that no longer apply say so.** Two people pressing «next» at
+  once: the second used to be answered «done» and did nothing; now it is
+  answered «the track had already changed» (`insieme.superato`). A seek or a
+  queue click on a member with nothing playing in its mirror is refused on the
+  spot instead of vanishing.
+- **A pause or a seek made while a track is still opening is kept.** An open
+  from a network share can take seconds, and the title changes at the click:
+  a pause pressed meanwhile stopped the old track, then the open finished and
+  started the new one; a seek moved the old track, and the new one started
+  from the beginning (in a session, six seeks out of ten right after a voice
+  chosen from the queue). The latest pause or resume now wins, and a seek is
+  kept for the track that is opening — for everybody, in a session or not.
+- **Two quick choices land on the second.** Choosing a track and then, about
+  a second later, another one — two people picking from the queue, or one
+  changing their mind — could leave the player on the first track, under the
+  title of the track *after* the second: the start of the first, announced
+  late (a programmed start in a session, a Bluetooth output), was read as a
+  gapless transition and moved the queue one step on, and nobody opened what
+  it pointed to. Members followed the sound, so they stayed on the old track
+  too. Found twice in 400 random gestures, then reproduced with two choices
+  1.15 s apart; now the start of the track that was asked for never moves the
+  queue — for everybody, in a session or not.
+- **The clock settles on a slow Wi-Fi too.** Clock exchanges with a round trip
+  over 20 ms were all discarded: on a busy Wi-Fi a member never got an
+  estimate and never started. The cap is now 100 ms; below it, only exchanges
+  close to the minimum count, as before, and the panel shows the uncertainty.
+- **Connecting is in plain sight.** Settings › Listen together lists the
+  hosting PCs it finds, with «Pair» and «Ask to join», and opens the panel; a
+  hosting PC shows its own address, with «Copy», to dictate to a colleague; a
+  pairing with a PC that is hosting offers «Join the session» right away; and
+  «Host a session» while a paired PC already hosts offers to join instead. An
+  unpaired connection that expires says so (`insieme.estraneoScaduto`), a
+  pairing that runs out of time no longer says the codes did not match
+  (`insieme.associazioneScaduta`), and a host busy pairing another PC answers
+  «busy» without counting it as a failed attempt. The wait between attempts
+  to reach a paired PC starts over when you search or type an address, instead
+  of growing to a minute while you are trying to connect.
+- **The panel and the bar.** Errors and notices raised while the panel is open
+  are drawn inside it — behind its veil they were invisible, and a button
+  seemed to do nothing; focus comes back to the panel after an action, so
+  Escape and Tab keep working; a host that stopped hosting no longer lingers in
+  the list; the equalizer panel no longer opens on top of this one; in the bar
+  the session line takes the place of the file format instead of being cut off
+  below it, and a long artist name no longer pushes the equalizer and the
+  volume out of a narrow window; long PC names end with an ellipsis and a
+  tooltip; queue rows of the session pick up their covers when they arrive,
+  and a cover of a previous session no longer shows on a voice of this one.
+- **The diagnosis is in the log.** When a session feels slow the log now says
+  where the time went — how long a member waited for the host's answer, how
+  long a gesture waited on the host, how long the session's thread was busy —
+  in milliseconds and codes, never names or addresses (`PRIVACY.md` § 4-ter).
+- **The transport, read once more.** An event could be delivered after the
+  close of its connection; a newer peer's gesture or source type closed the
+  connection instead of being ignored; a peer that became trusted while a
+  message was being read was still held to the 4 KiB limit of strangers; a
+  third read connection could close a healthy one instead of an idle one, and
+  a read on a fresh connection that dropped was not retried; cancelling an
+  open could wait up to eight seconds. Each has its test.
+- **Failures, tried on purpose.** With the network stopped for 20 seconds the
+  members leave after about 17 (15 of silence), each with its own queue back,
+  and the host goes on hosting; with the host's process killed they leave
+  within 2.3 seconds; with a member's killed, the host removes it within a
+  third of a second and the others stay in sync. A PC that a paired PC has
+  forgotten is now told so, once, with what to do («… no longer recognises this
+  PC»), instead of trying to reconnect in silence.
+- **«Retry» on a member no longer resumes everybody.** When a member's audio
+  output went missing, or the track it was opening failed, «Retry» became a
+  play — and a member's play is sent to the host, so one PC's broken
+  headphones took the whole session out of pause. Now it reopens that PC's own
+  output, and nothing else: the regulator already reopens the host's track by
+  itself whenever that PC has nothing playing.
+
+### Security
+
+- **A new listening surface, and what it withstands.** A PC that hosts listens
+  on the local network while it hosts, and only then. Before release the
+  transport and the session were read by two reviewers trying to break them,
+  and what they found was fixed, each with a test that failed before:
+  - pairing attempts are counted from the moment they start, and a host runs
+    one at a time — before, someone in the middle could open a dozen
+    handshakes at once and reveal only where the code happened to match;
+  - four silent connections from any PC on the network could keep everyone
+    else out; now a handshake has two per address, a second to begin, and a
+    PC that is not paired gets one control connection per address, eight in
+    all, nothing larger than 4 KiB, and two minutes to start pairing;
+  - a member could have taken over a file permission of the host and fed its
+    own bytes to everyone; permissions can no longer be taken over, and only
+    the members of the session can use them;
+  - a member reading slowly could make the host hold hundreds of megabytes
+    per connection; now at most 8 MiB wait, and the network does the rest;
+  - a revoked permission now also stops the answers already queued, and a
+    member connects to a discovered host only if its key matches the
+    fingerprint that announced it.
+- `snow` 0.10 (Noise), `if-addrs` 0.15 and `zeroize` are new dependencies, all
+  under licenses already allowed. `snow` is built without its default features:
+  one cipher suite, no `ring`, no BLAKE2, no AES. In development builds these
+  crates are compiled with optimizations, so a debug instance is not a hundred
+  times slower than the program that ships.
+- `SECURITY.md` now names two listening surfaces instead of one, and says what
+  the new one must withstand.
+
+### Database
+
+One migration, schema 34 → 35, additive.
+
+- `035_insieme` — a new table, `insieme_pari`: the PCs paired for «Listen
+  together», with their public key (64 lowercase hex digits), the name shown,
+  whether they are blocked, and when they were paired and last seen. No
+  foreign keys, nothing else changes. It never travels: not in a profile, not
+  in the Drive backup, not in sync.
+
+As with every migration, the library is copied first, to
+`rymembra.db.schema-034.bak`; 3.0.3 does not open schema 35. Going back means
+that copy, or by hand `DROP TABLE insieme_pari; PRAGMA user_version = 34;`,
+which loses only the pairings.
 
 ## [3.0.3] — 2026-10-25
 

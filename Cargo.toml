@@ -21,12 +21,13 @@ members = [
     "core/rymembra-cloud",
     "core/rymembra-scrobble",
     "core/rymembra-ia",
+    "core/rymembra-insieme",
     "apps/desktop/src-tauri",
     "apps/desktop/rymembra-barra",
 ]
 
 [workspace.package]
-version = "3.0.3"
+version = "3.1.0"
 edition = "2024"
 # Era 1.85, che è il minimo dell'edizione 2024. L'ha alzata prima `opus-pure`,
 # il decodificatore Opus di `rymembra-play`, che ne dichiara 1.88; poi `tauri
@@ -123,6 +124,27 @@ indexing_slicing = "deny"
 integer_division = "warn"
 cast_possible_truncation = "warn"
 cast_sign_loss = "warn"
+
+# La cifratura di «Ascolta insieme» ottimizzata anche nelle build di sviluppo.
+#
+# Solo questi crate, e solo il livello di ottimizzazione: il codice di Rymembra
+# resta in debug come sempre. Senza, ChaCha20-Poly1305 non ottimizzato cifra
+# circa 2,7 MB/s — cento volte meno che in rilascio, misurato su 127.0.0.1 da
+# `rymembra-insieme/tests/due_pari.rs` — e nelle istanze di prova un salto in
+# un MP3 letto in rete, che rilegge il file dall'inizio, costerebbe secondi:
+# si proverebbe un programma più lento di quello che si consegna.
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.snow]
+opt-level = 3
 
 # I profili di rilascio: il nucleo gira anche su telefono, dove ogni MB
 # dell'.so e ogni millisecondo di avvio si vedono.

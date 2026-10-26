@@ -25,6 +25,7 @@ mod esplora;
 mod giro;
 mod ia;
 mod importa;
+mod insieme;
 mod manutenzione;
 mod media;
 mod metadati;
@@ -411,6 +412,14 @@ fn main() {
             app.manage(scrobble::StatoScrobble::nuovo());
             scrobble::avvia(app.handle());
 
+            // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
+            // legge le impostazioni da lì e parla col lettore attraverso il
+            // ponte. Spento di serie, e da spento il suo filo dorme: nessun
+            // pacchetto in rete finché qualcuno non accende l'interruttore.
+            let (insieme, orecchio) = insieme::StatoInsieme::nuovo();
+            app.manage(insieme);
+            insieme::avvia_filo(app.handle().clone(), orecchio);
+
             // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
             // nessun filo. Qui non parte niente da solo — non c'e` niente da
             // riprendere e nessuna coda da svuotare — e finche' nessuno apre la
@@ -659,6 +668,27 @@ fn main() {
             riproduzione::dissolvenza,
             riproduzione::latenza,
             riproduzione::riapri_audio,
+            insieme::insieme_stato,
+            insieme::insieme_attiva,
+            insieme::insieme_nome,
+            insieme::insieme_firewall_visto,
+            insieme::insieme_ospita,
+            insieme::insieme_termina,
+            insieme::insieme_esci,
+            insieme::insieme_cerca,
+            insieme::insieme_associa,
+            insieme::insieme_codice,
+            insieme::insieme_invita,
+            insieme::insieme_rispondi,
+            insieme::insieme_chiedi,
+            insieme::insieme_ammetti,
+            insieme::insieme_allontana,
+            insieme::insieme_concedi,
+            insieme::insieme_pari_rinomina,
+            insieme::insieme_pari_dimentica,
+            insieme::insieme_pari_blocca,
+            insieme::insieme_indirizzi,
+            insieme::insieme_calibra,
             riproduzione::dispositivi_audio,
             riproduzione::scegli_dispositivo_audio,
             riproduzione::riprova_corrente,

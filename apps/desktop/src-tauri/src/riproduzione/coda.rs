@@ -25,9 +25,11 @@ use crate::stato::{Stato, adesso_ms, con_libreria};
 
 use super::fili::prepara_prossimo;
 use super::{
-    Lettore, StatoLettore, avvia_corrente, avvio_fallito, brano_di, chiudi_ascolto, con_lettore,
-    manda_stato, manda_stato_con_posizione, seme,
+    Lettore, StatoLettore, Strada, avvia_corrente, avvio_fallito, brano_di, chiudi_ascolto,
+    con_lettore, insieme, manda_stato, manda_stato_con_posizione, ospiti, seme, strada,
+    voci_dalla_strada,
 };
+use crate::insieme::Gesto;
 
 // ── la coda di prima ────────────────────────────────────────────────────────
 
@@ -97,6 +99,14 @@ pub(super) fn ricorda_coda_di_prima(
     lettore: &mut Lettore,
     nuovi: Option<&[i64]>,
 ) {
+    // In sessione no: l'«Annulla» rimetterebbe una coda di prima della
+    // sessione, o di voci che gli altri non hanno più, e la strada lo
+    // rifiuta (`Gesto::CodaRipristina`). Offrirlo nell'avviso vorrebbe dire un
+    // tasto che risponde con un errore. La coda dell'utente da rimettere
+    // all'uscita la tiene la sessione: vedi `insieme::Sessione`.
+    if lettore.sessione.is_some() {
+        return;
+    }
     let istantanea = lettore.coda.snapshot();
     if istantanea.tracks.is_empty() || nuovi == Some(istantanea.tracks.as_slice()) {
         return;
@@ -187,7 +197,19 @@ pub(super) fn scrivi_coda(
     stato: &StatoLettore,
     entro: std::time::Duration,
 ) -> Option<Result<(), AppError>> {
-    let istantanea = con_lettore(stato, |lettore| Ok(lettore.coda.snapshot())).ok()?;
+    // In sessione la coda non si scrive: è fatta di maniglie, che domani non
+    // vorranno dire niente, e quella sul disco deve restare la coda
+    // dell'utente — se l'app cadesse a metà sessione, al prossimo avvio
+    // tornerebbe quella. Detto «scritta» perché non c'è niente da riprovare:
+    // all'uscita la bandiera si rialza con la coda di prima. Vedi
+    // `insieme::coda_si_scrive`.
+    let istantanea = con_lettore(stato, |lettore| {
+        Ok(insieme::coda_si_scrive(lettore).then(|| lettore.coda.snapshot()))
+    })
+    .ok()?;
+    let Some(istantanea) = istantanea else {
+        return Some(Ok(()));
+    };
     let stato_app = app.try_state::<Stato>()?;
     crate::stato::con_libreria_entro(&stato_app, entro, |libreria| {
         playback::save_queue(&libreria.connection, &istantanea)
@@ -237,7 +259,13 @@ pub(super) struct Salvato {
     normalizzazione: playback::Normalizzazione,
     autoplay: bool,
     dissolvenza_s: u64,
+    /// La latenza **globale**: il ripiego delle uscite senza un numero loro.
+    /// Quella che va al motore la sceglie [`rimetti_il_salvato`], che sa su
+    /// quale uscita il motore si è aperto.
     latenza_ms: i64,
+    /// Le latenze delle uscite che ne hanno una. Vedi
+    /// `playback::CHIAVE_LATENZA_PER_USCITA`.
+    latenze: playback::LatenzePerUscita,
     bande: u16,
 }
 
@@ -258,6 +286,8 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
     let letto = super::libreria_di(app, "coda salvata").and_then(|stato| {
         con_libreria(&stato, |libreria| {
             let c = &libreria.connection;
+            let latenze = playback::load_latenze_per_uscita(c).unwrap_or_default();
+            let guasto_latenze = riga_delle_latenze(&latenze);
             Ok((
                 playback::load_queue(c).map(Queue::restore),
                 Salvato {
@@ -268,13 +298,15 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
                     autoplay: playback::load_autoplay(c).unwrap_or(false),
                     dissolvenza_s: playback::load_crossfade(c).unwrap_or(0),
                     latenza_ms: playback::load_latenza(c).unwrap_or(0),
+                    latenze: latenze.voci,
                     bande: playback::load_spettro_bande(c)
                         .unwrap_or(rymembra_play::RISOLUZIONE_DI_SERIE),
                 },
+                guasto_latenze,
             ))
         })
     });
-    let (coda, mut salvato) = letto.unwrap_or_else(|err| {
+    let (coda, mut salvato, guasto_latenze) = letto.unwrap_or_else(|err| {
         (
             Err(err),
             Salvato {
@@ -285,10 +317,16 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
                 autoplay: false,
                 dissolvenza_s: 0,
                 latenza_ms: 0,
+                latenze: playback::LatenzePerUscita::new(),
                 bande: rymembra_play::RISOLUZIONE_DI_SERIE,
             },
+            None,
         )
     });
+    // Anche questa qui, a lucchetti lasciati, come la coda qui sotto.
+    if let Some(riga) = guasto_latenze {
+        nota!("{riga}");
+    }
     match coda {
         Ok(coda) => salvato.coda = Some(coda),
         Err(err) => nota!(
@@ -336,18 +374,27 @@ pub(super) fn rimetti_il_salvato(
     // La dissolvenza invece sì: è il motore a doverla fare, ed è l'unico che sa
     // quando un brano sta per finire. Si manda anche quando vale zero, per la
     // stessa ragione della normalizzazione qui sopra.
-    lettore
-        .motore
-        .dissolvenza(salvato.dissolvenza_s.saturating_mul(1000));
     lettore.dissolvenza_s = salvato.dissolvenza_s;
+    lettore.motore.dissolvenza(insieme::dissolvenza_ms(lettore));
 
     // E la latenza d'uscita dichiarata a mano, per la stessa ragione: la
     // compensazione la fa il motore, e un motore appena aperto non sa niente di
     // quel che l'utente aveva dichiarato. Senza questa riga il cursore delle
     // impostazioni mostrerebbe il numero scritto e la posizione non ne terrebbe
     // conto, che è la peggiore delle due bugie possibili.
-    lettore.motore.latenza(salvato.latenza_ms);
-    lettore.latenza_ms = salvato.latenza_ms;
+    //
+    // Quella dell'uscita **davvero aperta**, se ne ha una sua, altrimenti la
+    // globale: il nome è quello di `dispositivo()` e non della preferenza,
+    // perché quando la scheda scelta non c'è l'apertura ripiega su un'altra, e
+    // il numero va a chi suona. La copia nel lettore è la stessa, ed è quel che
+    // il cursore mostra: il numero dell'uscita che si sta ascoltando.
+    let latenza = playback::latenza_effettiva(
+        salvato.latenza_ms,
+        &salvato.latenze,
+        Some(lettore.motore.dispositivo()),
+    );
+    lettore.motore.latenza(latenza);
+    lettore.latenza_ms = latenza;
 
     // Quante barre vuole vedere chi guarda. Si applica all'avvio anche se la
     // schermata è chiusa: costa un messaggio e vuol dire che la prima apertura
@@ -358,6 +405,32 @@ pub(super) fn rimetti_il_salvato(
         .spettro_bande
         .store(salvato.bande, std::sync::atomic::Ordering::Relaxed);
     lettore.motore.spettro_dettaglio(salvato.bande);
+}
+
+/// La riga del diario per le latenze per uscita che non si sono lette tutte,
+/// o `None` se non c'è niente da dire.
+///
+/// Solo una bandiera e un numero. I nomi delle uscite non ci vanno — sono le
+/// schede, le cuffie e le casse di qualcuno — e nemmeno il messaggio di
+/// `serde`, che per dire cosa non andava ripete il valore che ha trovato, cioè
+/// spesso proprio un nome. La riga serve a capire perché una taratura è
+/// tornata a quella globale; a quale uscita fosse, lo sa chi la sta guardando.
+///
+/// La chiamano la lettura all'avvio, qui, e quella della riapertura: tutte e
+/// due a lucchetti lasciati, perché il diario scrive su disco.
+pub(super) fn riga_delle_latenze(lette: &playback::LatenzeLette) -> Option<String> {
+    if lette.illeggibile {
+        return Some(
+            "[riproduzione] latenze per uscita illeggibili: vale la globale per tutte".to_owned(),
+        );
+    }
+    (lette.scartate > 0).then(|| {
+        format!(
+            "[riproduzione] latenze per uscita: {} voci illeggibili lasciate fuori, per loro vale \
+             la globale",
+            lette.scartate
+        )
+    })
 }
 
 /// Un gesto sulla coda, e poi — se il gesto lo chiede — la partenza.
@@ -388,9 +461,19 @@ pub fn coda_accoda(
     stato: State<'_, StatoLettore>,
     brani: Vec<i64>,
 ) -> Esito<()> {
+    let gesto = Gesto::Accoda { ids: brani.clone() };
+    let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
+        return Ok(());
+    };
     gesto_di_coda(&app, &stato, |lettore| {
+        // Voci o righe lo decide il lettore: vedi `insieme::brani_da_mettere`.
+        let (brani, da_dimenticare) =
+            insieme::brani_da_mettere(insieme::ospita(lettore), brani, voci);
+        insieme::dimentica_voci(&app, &da_dimenticare);
         let era_vuota = lettore.coda.is_empty();
-        lettore.coda.enqueue(&brani);
+        // In sessione la coda ha un tetto: vedi `insieme::entrano`.
+        let brani = insieme::entrano(&app, lettore, &brani);
+        lettore.coda.enqueue(brani);
         lettore.coda_curata = true;
         if era_vuota {
             return Ok(true);
@@ -410,9 +493,17 @@ pub fn coda_dopo(
     stato: State<'_, StatoLettore>,
     brani: Vec<i64>,
 ) -> Esito<()> {
+    let gesto = Gesto::Dopo { ids: brani.clone() };
+    let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
+        return Ok(());
+    };
     gesto_di_coda(&app, &stato, |lettore| {
+        let (brani, da_dimenticare) =
+            insieme::brani_da_mettere(insieme::ospita(lettore), brani, voci);
+        insieme::dimentica_voci(&app, &da_dimenticare);
         let era_vuota = lettore.coda.is_empty();
-        lettore.coda.play_next(&brani);
+        let brani = insieme::entrano(&app, lettore, &brani);
+        lettore.coda.play_next(brani);
         lettore.coda_curata = true;
         if era_vuota {
             return Ok(true);
@@ -428,6 +519,9 @@ pub fn coda_dopo(
 /// Salta a una posizione della coda.
 #[tauri::command(async)]
 pub fn coda_vai(app: tauri::AppHandle, stato: State<'_, StatoLettore>, indice: usize) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::CodaVai { indice }).map_err(errore)? {
+        return Ok(());
+    }
     gesto_di_coda(&app, &stato, |lettore| {
         // L'indice arriva dalla coda **come si vede**, cioè nell'ordine di
         // riproduzione: con lo shuffle acceso non è quello dell'elenco interno.
@@ -472,6 +566,12 @@ pub fn coda_togli(
     stato: State<'_, StatoLettore>,
     indice: usize,
 ) -> Esito<()> {
+    let gesto = Gesto::CodaTogli {
+        indici: vec![indice],
+    };
+    if let Strada::Fatto = strada(&app, &gesto).map_err(errore)? {
+        return Ok(());
+    }
     let partenza = con_lettore(&stato, |lettore| {
         // Stesso spazio di coordinate di `coda_vai`: l'ordine di riproduzione.
         let suonava = lettore.coda.position() == Some(indice);
@@ -544,6 +644,15 @@ pub(crate) fn sgombra_dalla_coda(
     if brani.is_empty() {
         return Ok(());
     }
+    // In sessione la coda di chi ospita ha le maniglie delle voci, non le
+    // righe: si tolgono anche le voci che aprono quelle righe. Senza, il file
+    // che sta per finire nel Cestino resterebbe aperto dal motore sotto la sua
+    // maniglia, e l'eliminazione fallirebbe con `fs.inUse`. Il registro si
+    // chiede prima del lettore: è un lucchetto foglia, e non si prende mai
+    // dopo averlo in mano.
+    let mut brani = brani.to_vec();
+    brani.extend(ospiti::maniglie_di_righe(app, &brani));
+    let brani = brani.as_slice();
     let partenza = con_lettore(stato, |lettore| {
         let c_e_un_dopo = lettore.coda.position().is_some_and(|posizione| {
             lettore
@@ -600,6 +709,9 @@ pub fn coda_riordina(
     da: usize,
     a: usize,
 ) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::CodaRiordina { da, a }).map_err(errore)? {
+        return Ok(());
+    }
     con_lettore(&stato, |lettore| {
         lettore.coda.reorder(da, a);
         lettore.coda_curata = true;
@@ -618,6 +730,9 @@ pub fn coda_riordina(
 /// `super::sveglia_fuori_dal_lucchetto`.
 #[tauri::command]
 pub fn coda_svuota(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::CodaSvuota).map_err(errore)? {
+        return Ok(());
+    }
     super::sveglia_fuori_dal_lucchetto(&stato);
     con_lettore(&stato, |lettore| {
         ricorda_coda_di_prima(&app, lettore, None);
@@ -650,7 +765,10 @@ pub fn coda_prepara(
     brani: Vec<i64>,
 ) -> Esito<bool> {
     con_lettore(&stato, |lettore| {
-        if !lettore.coda.is_empty() || brani.is_empty() {
+        // In sessione no: la coda è di voci, e i brani del giro sono righe
+        // della libreria che gli altri non hanno. Il giro trova la coda «già
+        // piena», come quando qualcuno ci ha messo qualcosa.
+        if !lettore.coda.is_empty() || brani.is_empty() || lettore.sessione.is_some() {
             return Ok(false);
         }
         lettore.coda.play_tracks(brani, 0, seme());
@@ -686,6 +804,9 @@ pub fn coda_ripristina(
     stato: State<'_, StatoLettore>,
     numero: u64,
 ) -> Esito<bool> {
+    if let Strada::Fatto = strada(&app, &Gesto::CodaRipristina).map_err(errore)? {
+        return Ok(false);
+    }
     // ── 1. la coda torna, e si decide se torna anche la musica ──
     // Due `Option` una dentro l'altra: fuori «c'era qualcosa da rimettere»,
     // dentro «e c'è un brano da riaprire».
@@ -766,6 +887,9 @@ pub fn coda_ripristina(
 /// Passa al modo di ripetizione successivo.
 #[tauri::command(async)]
 pub fn ripeti(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Ripeti).map_err(errore)? {
+        return Ok(());
+    }
     con_lettore(&stato, |lettore| {
         lettore.coda.cycle_repeat();
         // Il prossimo cambia: con «ripeti uno» è di nuovo questo.
@@ -777,9 +901,50 @@ pub fn ripeti(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()
     .map_err(errore)
 }
 
+/// Impone un modo di ripetizione.
+///
+/// La strada dei gesti dei membri, sull'host: arrivano con un modo
+/// (`Azione::Ripeti{modo}`) e non con un «il prossimo», perché fra il gesto e
+/// il suo arrivo il modo dell'host può essere già cambiato, e ciclare da lì
+/// darebbe un modo che nessuno ha scelto. Per il resto è [`ripeti`]: la strada
+/// in testa, il brano dopo rimesso in canna, lo stato.
+///
+/// Non è un comando della finestra: la finestra cicla, con [`ripeti`].
+///
+/// # Errori
+///
+/// Quelli della strada del gesto; `internal.aborted` se il lettore non c'è.
+#[allow(
+    dead_code,
+    reason = "fase 2: la chiama la sessione per `Azione::Ripeti` dei membri"
+)]
+pub fn imposta_ripeti(app: &tauri::AppHandle, modo: RepeatMode) -> Result<(), AppError> {
+    if let Strada::Fatto = strada(app, &Gesto::Ripeti)? {
+        return Ok(());
+    }
+    let stato = app.try_state::<StatoLettore>().ok_or_else(|| {
+        AppError::new(rymembra_domain::errors::ErrorCode::InternalAborted {
+            what: Some("modo di ripetizione".to_owned()),
+        })
+    })?;
+    con_lettore(&stato, |lettore| {
+        if lettore.coda.repeat() == modo {
+            return Ok(());
+        }
+        lettore.coda.set_repeat(modo);
+        prepara_prossimo(app, lettore);
+        salva_coda(app, lettore);
+        manda_stato(app, lettore);
+        Ok(())
+    })
+}
+
 /// Accende o spegne lo shuffle.
 #[tauri::command(async)]
 pub fn mescola(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Shuffle).map_err(errore)? {
+        return Ok(());
+    }
     con_lettore(&stato, |lettore| {
         lettore.coda.toggle_shuffle(seme());
         prepara_prossimo(&app, lettore);
@@ -795,10 +960,108 @@ pub fn mescola(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<(
 /// L'ordine chiesto si conserva: la coda non è ordinata come il database, e
 /// restituirla ordinata per `id` vorrebbe dire mostrare all'utente un elenco che
 /// non è quello che sentirà.
+///
+/// # In sessione
+///
+/// La coda è di maniglie, e una maniglia il database non la conosce: la sua
+/// scheda la dà la voce ([`ospiti::scheda`]), senza toccare la libreria. Le
+/// righe vere si leggono come sempre, tutte insieme; poi si rimette l'ordine
+/// chiesto, doppioni compresi, e quel che non c'è più — una riga cancellata,
+/// una voce tolta — si salta come prima.
 #[tauri::command]
-pub fn brani_per_id(stato: State<'_, Stato>, brani: Vec<i64>) -> Esito<Vec<TrackSummary>> {
-    con_libreria(&stato, |libreria| {
-        rymembra_app::library::summaries_by_id(&libreria.connection, &brani)
-    })
-    .map_err(errore)
+pub fn brani_per_id(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    brani: Vec<i64>,
+) -> Esito<Vec<TrackSummary>> {
+    let righe: Vec<i64> = brani
+        .iter()
+        .copied()
+        .filter(|id| ospiti::e_di_libreria(*id))
+        .collect();
+    // Tutte righe — fuori sessione, sempre — e la strada di sempre, intera.
+    if righe.len() == brani.len() {
+        return con_libreria(&stato, |libreria| {
+            rymembra_app::library::summaries_by_id(&libreria.connection, &brani)
+        })
+        .map_err(errore);
+    }
+    let lette = if righe.is_empty() {
+        Vec::new()
+    } else {
+        con_libreria(&stato, |libreria| {
+            rymembra_app::library::summaries_by_id(&libreria.connection, &righe)
+        })
+        .map_err(errore)?
+    };
+    let per_id: std::collections::HashMap<i64, TrackSummary> = lette
+        .into_iter()
+        .map(|scheda| (scheda.id, scheda))
+        .collect();
+    Ok(brani
+        .iter()
+        .filter_map(|&id| match ospiti::chi(&app, id) {
+            ospiti::Chi::Libreria(riga) => per_id.get(&riga).cloned(),
+            ospiti::Chi::Voce(voce) => Some(ospiti::scheda(id, &voce)),
+            ospiti::Chi::Sparita => None,
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn le_latenze_lette_per_intero_non_scrivono_niente() {
+        let mut voci = playback::LatenzePerUscita::new();
+        voci.insert(
+            "Cuffie di Mario".to_owned(),
+            playback::LatenzaUscita {
+                ms: 180,
+                fonte: playback::FonteLatenza::Microfono,
+                verificata: true,
+                quando_ms: 0,
+            },
+        );
+        let lette = playback::LatenzeLette {
+            voci,
+            illeggibile: false,
+            scartate: 0,
+        };
+        assert_eq!(riga_delle_latenze(&lette), None);
+    }
+
+    #[test]
+    fn la_riga_delle_latenze_non_nomina_nessuna_uscita() {
+        // La riga si costruisce da un `bool` e da un numero: la prova tiene
+        // vero che resti così anche il giorno in cui qualcuno vorrà
+        // «aggiungere il nome, per capire meglio».
+        let mut voci = playback::LatenzePerUscita::new();
+        voci.insert(
+            "Cuffie di Mario".to_owned(),
+            playback::LatenzaUscita {
+                ms: 180,
+                fonte: playback::FonteLatenza::Mano,
+                verificata: false,
+                quando_ms: 0,
+            },
+        );
+        for lette in [
+            playback::LatenzeLette {
+                voci,
+                illeggibile: false,
+                scartate: 2,
+            },
+            playback::LatenzeLette {
+                voci: playback::LatenzePerUscita::new(),
+                illeggibile: true,
+                scartate: 0,
+            },
+        ] {
+            let riga = riga_delle_latenze(&lette).expect("c'è qualcosa da dire");
+            assert!(riga.starts_with("[riproduzione] "), "{riga}");
+            assert!(!riga.contains("Mario"), "{riga}");
+        }
+    }
 }

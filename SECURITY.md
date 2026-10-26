@@ -31,11 +31,11 @@ half an hour.
 
 ## What counts as a vulnerability here
 
-Rymembra is a local application with no account and no server. There's no network
-surface listening — with **one** exception, and it's worth naming — and there
-is no other user's data to expose. The things that really matter are four, and
-they're the ones that can get code executed or carry off something that isn't
-ours.
+Rymembra is a local application with no account and no Rymembra server. There's no network
+surface listening — with **two** exceptions, and they're worth naming — and
+there is no other user's data to expose. The things that really matter are
+five, and they're the ones that can get code executed or carry off something
+that isn't ours.
 
 **The update chain.** It's the only part of Rymembra that downloads an executable
 and launches it. The installer is verified with minisign against the public key
@@ -50,9 +50,47 @@ shouldn't is a report too.
 
 **The OAuth return port.** Google's consent screen opens in the system browser
 and comes back to `127.0.0.1`, on a port open for the length of one
-authorization (`rymembra-oauth::loopback`). It's the only thing that listens, and
-it listens for a few seconds: if you can get it to accept a code that came from
+authorization (`rymembra-oauth::loopback`). It listens for a few seconds and
+only on this machine: if you can get it to accept a code that came from
 someone else, or keep it open beyond that, it's a problem.
+
+**«Listen together», while a PC hosts.** From 3.1 a PC that **hosts** a
+listening session listens on the local network, on TCP and UDP port 47811 (or
+one of the nine after it, or any free one), for as long as it hosts and not a
+second more; with the feature off, or on but not hosting, nothing listens
+(`rymembra-insieme`, and `PRIVACY.md` § 4-ter for what travels). What is
+supposed to hold:
+
+- every connection is Noise `XX_25519_ChaChaPoly_SHA256`, and a PC that is not
+  paired can do exactly two things after the handshake: say its name and ask
+  to pair. Pairing needs the same four-digit code confirmed on both screens,
+  built on a commit–reveal exchange so that a machine in the middle cannot
+  steer the two codes to match; only one pairing runs at a time on a host, an
+  attempt is counted from the moment it starts, and pairing stops after three
+  failures in ten minutes from one key, ten from any. A PC that is not paired
+  gets at most eight connections in all and one per address, may send nothing
+  larger than 4 KiB, and is dropped after two minutes if it does not pair;
+- a PC can read **only** the files of the tracks in the session queue, each
+  through a random 16-byte permission, only while it is a member of the
+  session, and only while the file still has the size and date it had when the
+  permission was given. A member cannot take over a permission that belongs to
+  the host or to another member;
+- every message is size-checked before anything is allocated (1 MiB) and
+  validated field by field before it is used; messages over 8 KiB travel
+  deflated, and inflating one stops at the same 1 MiB without reserving more —
+  a PC that is not paired cannot send a compressed message at all, so its
+  4 KiB limit cannot be stretched by a decompression bomb; no connection holds
+  more than 8 MiB of answers waiting to be sent; a host accepts at most 48
+  connections, 6 per address and 4 handshakes at a time (2 per address, whose
+  first message must arrive within a second), and answers discovery at most 4
+  times a second per address and 50 in all, with an answer shorter than the
+  question.
+
+Reading a file that is not in the session queue, getting anything past the
+handshake without the code, two matching codes with a machine in the middle, a
+datagram or a message that crashes the host or makes it allocate without
+bound, or a way to make it answer someone else's address faster than those
+limits: all problems.
 
 **Untrusted input.** A `.ryskin` skin is a zip archive somebody sends you, and
 so is the Spotify GDPR export. `rymembra-skin::package` has explicit ceilings —
@@ -61,8 +99,9 @@ something from writing outside its own folder or filling the disk. A path that
 escapes the install folder, a zip that explodes, a manifest that sends the
 compiler into recursion: all problems.
 
-**Secrets at rest.** OAuth tokens live in the system keychain
-(`rymembra-oauth::portachiavi`), not in the database. If they end up anywhere else
+**Secrets at rest.** OAuth tokens, and from 3.1 the private key that
+identifies the PC to the others in «Listen together», live in the system
+keychain (`rymembra-oauth::portachiavi`), not in the database. If they end up anywhere else
 — in a log, in the database, in a temporary file — that's a problem, and it
 stays one even if it's «only» in the clear on the user's own disk. The entries
 saved by the previous version are moved to the current ones the first time they
