@@ -7,9 +7,10 @@
     {
       id: "data",
       title: "The data folder and the database connection",
-      src: ["core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/trasloco.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs"],
+      src: ["core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/trasloco.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/msix/LEGGIMI.md"],
       body: [
         "Everything Rymembra keeps lives in the application data folder, `%APPDATA%\\io.github.federicobaratti.rymembra` on Windows (asked to Tauri, never composed by hand). The environment variable `RYMEMBRA_DATI` replaces it at startup — the way to try an import or a migration on a copy without touching the real library; it also disables the single-instance guard.",
+        "**A copy from the Microsoft Store** asks for the same folder, and Windows (1903 and later) redirects by itself the files it **creates** there to the package's private folder under `%LOCALAPPDATA%\\Packages\\`, which uninstalling the package removes. Files that already exist are used where they are: on a PC where the installer copy has already made a library, the Store copy would open that `rymembra.db` while its new `-wal` and `-shm` went to the private folder. That has not been tried, which is why the site says to keep one copy per PC; keychain entries are not virtualized, so connected accounts are the same for both.",
         "**Coming from the previous version.** On the first start the data of the previous version are transferred automatically, before the log or the database is opened (`trasloco.rs`, only for the default folder): the old data folder is renamed to this one — library, settings, covers, skins, drafts, profile copies and log files, which take the new names — and an interrupted transfer resumes at the next start. Nothing is overwritten and nothing is deleted: if the new folder already holds a library, it wins and the old one is left untouched; if the previous version is still running (its database is open), nothing is moved and Rymembra says so in a dialog and closes. Skins and profile archives written by the previous version still import, and its keychain entries and Drive files are picked up on first use ([OAuth](#oauth), [Drive backup](#cloud)).",
         {
           table: {
@@ -61,8 +62,8 @@
     },
     {
       id: "schema",
-      title: "The schema (version 30)",
-      src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql"],
+      title: "The schema (version 35)",
+      src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql", "core/rymembra-app/src/db/schema/035_insieme.sql"],
       body: [
         "Times are milliseconds since the epoch, durations milliseconds. There are no views. The central table is `tracks`; almost everything else hangs off `tracks.id` (with `ON DELETE CASCADE`) or off a stable key.",
         { h: "tracks" },
@@ -99,7 +100,7 @@
               ["`settings`", "Key/value preferences — see [Settings](#settings-store)"],
               ["`sync_tombstones`, `sync_ascolti`, `sync_dispositivi`, `sync_sequenza`, `sync_posizioni`", "Device sync state — see [Sync](#sync)"],
               ["`desiderati`", "Wanted tracks and the download queue (ex `spotify_wanted`, so two index names still say so)"],
-              ["`insieme_pari`", "The PCs paired for «Listen together»: public key (`UNIQUE`), name, blocked, when paired and last seen, last address (migration 035) — see [Listen together](#together)"],
+              ["`insieme_pari`", "The PCs paired for «Listen together»: public key (`UNIQUE`, 64 lowercase hex digits by `CHECK`), name, blocked, when paired and last seen (migration 035; addresses typed by hand are the setting `insieme.indirizzi`) — see [Listen together](#together)"],
               ["`spotify_account`, `import_reports`", "Imported account, saved import reports"],
               ["`scrobble_queue`", "Durable scrobble queue, UNIQUE `(service, played_at, artist, title)`"],
               ["`enrich_cache`, `enrich_undo`, `track_meta_arricchita`", "HTTP cache, legacy undo, fields set by enrichment"],
@@ -128,7 +129,7 @@
         "Each runs as `BEGIN; <sql>; PRAGMA user_version = N; COMMIT`. If the third fails, the first two stay applied and `user_version` says so — one transaction for all would turn a partial upgrade into one that never starts. A failure is `db.migrationFailed { from, to, step }`.",
         "Migration 026 is the only one with `ricostruisce: true`: it rebuilds `tracks` to drop a `NOT NULL`. `DROP TABLE` with foreign keys on would fire every `ON DELETE CASCADE` into `tracks`, so `foreign_keys` is switched off **before** `BEGIN` (inside a transaction the pragma is ignored), `PRAGMA foreign_key_check` must find nothing before `COMMIT`, and afterwards the code verifies that foreign keys are back on.",
         { h: "The copy taken before migrating" },
-        "When there is something to migrate and something to protect (`0 < version < 30`, a file database), `prima_di_migrare` runs:",
+        "When there is something to migrate and something to protect (`0 < version < LATEST_VERSION`, a file database), `prima_di_migrare` runs:",
         {
           ol: [
             "if `rymembra.db.schema-NNN.bak` (NNN = the version the copy **contains**) already exists, keep it — it predates every failed attempt;",

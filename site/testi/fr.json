@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — lecteur de musique gratuit pour Windows : FLAC, sans blanc, volume constant",
-    "descrizione": "Lecteur de musique gratuit et open source pour Windows. FLAC et MP3 sans blanc et au même volume, vos playlists depuis vos données Spotify, et les titres manquants depuis des catalogues libres.",
+    "descrizione": "Lecteur de musique gratuit et open source pour Windows : FLAC et MP3 sans blanc et au même volume, playlists Spotify, catalogues libres, écoute à plusieurs en LAN.",
     "immagine": "Rymembra, un lecteur de musique pour Windows"
   },
   "nav": {
@@ -85,8 +85,8 @@
     "titolo": "Et on l'écoute ensemble.",
     "testo": "Des collègues sur le même réseau, chacun avec son Rymembra, entendent la même musique au même instant : un PC accueille, les autres suivent, et chacun la joue de son côté. La première fois, les deux écrans affichent le même code à quatre chiffres ; ensuite les PC se reconnaissent, et ce qui passe entre eux est chiffré.",
     "punti": [
-      "Celui qui accueille choisit, pour chaque personne qui entre, si elle écoute seulement, si elle a les commandes — pause, déplacements, le morceau suivant — ou si elle fait tout, y compris mettre ses propres morceaux dans la file, qui arrivent aux autres depuis le PC qui les possède.",
-      "Alignés à la milliseconde, assez pour deux paires d'enceintes dans la même pièce ; pour les casques Bluetooth, il y a l'étalonnage.",
+      "Celui qui accueille choisit, pour chaque personne qui entre, si elle écoute seulement, si elle a les commandes — pause, déplacements, le morceau suivant et le précédent — ou si elle fait tout, y compris mettre ses propres morceaux dans la file, qui arrivent aux autres depuis le PC qui les possède.",
+      "Alignés à quelques millisecondes près, assez pour deux paires d'enceintes dans la même pièce ; pour les casques Bluetooth, il y a l'étalonnage.",
       "Ni Internet ni serveur : seulement le réseau du bureau ou de la maison. Le PC qui accueille ouvre un port sur le réseau local, et Windows demande l'autorisation une fois."
     ]
   },
@@ -146,7 +146,7 @@
       "titolo": "Depuis le Microsoft Store",
       "sotto": "Les mises à jour viennent du Store, sans avertissement SmartScreen.",
       "azione": "Télécharger",
-      "nota": "La copie du Store a sa propre bibliothèque et ses propres réglages, distincts de ceux de l'installateur."
+      "nota": "Choisissez-en une seule par PC : les deux copies n'ont pas été testées ensemble, et elles partageraient les mêmes comptes connectés."
     },
     "file": "Le fichier est `{file}`, publié le {data}. [Les nouveautés]({note}), [toutes les versions]({tutte}).",
     "impronta": {
@@ -179,7 +179,7 @@
     "elenco": [
       {
         "d": "Est-ce vraiment gratuit ?",
-        "r": "Oui, et ça le restera. Il n'existe pas de version payante et aucune n'est prévue : deux de ses sources, le Live Music Archive et Jamendo, ont des clauses non commerciales qu'une version payante enfreindrait. Le développement est financé par les dons."
+        "r": "Oui, et ça le restera. Il n'existe pas de version payante et aucune n'est prévue : l'une de ses sources, le Live Music Archive, a une clause non commerciale qu'une version payante enfreindrait. Le développement est financé par les dons."
       },
       {
         "d": "Fonctionne-t-il sous macOS ou Linux ?",
@@ -187,7 +187,7 @@
       },
       {
         "d": "Pourquoi Windows m'avertit-il à l'installation ?",
-        "r": "Parce que l'installateur n'est pas signé avec un certificat de signature de code, qui exige une vérification d'identité et des frais annuels. SmartScreen arrête les programmes non signés qu'il a peu vus : cliquez sur « Informations complémentaires », puis sur « Exécuter quand même ». Les mises à jour, c'est autre chose : le programme vérifie leur signature avant d'installer quoi que ce soit."
+        "r": "Parce que l'installateur n'est pas signé avec un certificat de signature de code, qui exige une vérification d'identité et des frais annuels. SmartScreen arrête les programmes non signés qu'il a peu vus : cliquez sur « Informations complémentaires », puis sur « Exécuter quand même ». Les mises à jour, c'est autre chose : le programme vérifie leur signature avant d'installer quoi que ce soit. La copie du Microsoft Store n'affiche pas cet avertissement : c'est le Store qui la signe."
       },
       {
         "d": "D'où vient la musique ? Est-ce légal ?",
@@ -207,7 +207,7 @@
       },
       {
         "d": "Envoie-t-il mes données quelque part ?",
-        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour, et ce que vous connectez vous-même ; si vous écoutez ensemble, avec les autres PC de votre réseau, et personne d'autre. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
+        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, Cover Art Archive, iTunes et Deezer pour les pochettes, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour (pas la copie du Store), et ce que vous connectez vous-même ; si vous écoutez ensemble, avec les autres PC de votre réseau, et personne d'autre. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
       }
     ]
   },

@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — free music player for Windows: FLAC, gapless, even loudness",
-    "descrizione": "Free, open-source music player for Windows. Gapless FLAC and MP3 at even loudness, playlists from your Spotify data, and the missing tracks from free catalogs.",
+    "descrizione": "Free, open-source music player for Windows: gapless FLAC and MP3 at even loudness, playlists from Spotify, free catalogs, and listening together on your LAN.",
     "immagine": "Rymembra, a music player for Windows"
   },
   "nav": {
@@ -85,8 +85,8 @@
     "titolo": "And it listens together.",
     "testo": "Colleagues on the same network, each with their own Rymembra, hear the same music at the same moment: one PC hosts, the others follow, and each plays it on its own. The first time, both screens show the same four-digit code; from then on the PCs recognise each other, and whatever passes between them is encrypted.",
     "punti": [
-      "The host chooses, for each person who joins, whether they just listen, take the controls — pause, seeking, the next track — or do everything, their own tracks in the queue included, which reach the others from the PC that has them.",
-      "Aligned to the millisecond, enough for two pairs of speakers in one room; for Bluetooth headphones there's calibration.",
+      "The host chooses, for each person who joins, whether they just listen, take the controls — pause, seeking, the next track and the one before — or do everything, their own tracks in the queue included, which reach the others from the PC that has them.",
+      "Aligned within a few milliseconds, enough for two pairs of speakers in one room; for Bluetooth headphones there's calibration.",
       "No internet and no server: just the office or home network. The hosting PC opens a port on the LAN, and Windows asks for permission once."
     ]
   },
@@ -146,7 +146,7 @@
       "titolo": "From the Microsoft Store",
       "sotto": "Updates come from the Store, with no SmartScreen warning.",
       "azione": "Download",
-      "nota": "The Store copy keeps its own library and settings, separate from the installer's."
+      "nota": "Pick one per PC: the two copies haven't been tested side by side, and they would share the same connected accounts."
     },
     "file": "The file is `{file}`, released {data}. [What's new]({note}), [all versions]({tutte}).",
     "impronta": {
@@ -179,7 +179,7 @@
     "elenco": [
       {
         "d": "Is it really free?",
-        "r": "Yes, and it will stay free. There's no paid version and none is planned: two of its sources, the Live Music Archive and Jamendo, have non-commercial clauses that a paid version would break. Development is funded by donations."
+        "r": "Yes, and it will stay free. There's no paid version and none is planned: one of its sources, the Live Music Archive, has a non-commercial clause that a paid version would break. Development is funded by donations."
       },
       {
         "d": "Does it run on macOS or Linux?",
@@ -187,7 +187,7 @@
       },
       {
         "d": "Why does Windows warn me when I install it?",
-        "r": "Because the installer isn't signed with a code-signing certificate, which needs an identity check and a yearly fee. SmartScreen stops unsigned programs it hasn't seen often: click «More info», then «Run anyway». Updates are a different matter: the program verifies their signature before installing anything."
+        "r": "Because the installer isn't signed with a code-signing certificate, which needs an identity check and a yearly fee. SmartScreen stops unsigned programs it hasn't seen often: click «More info», then «Run anyway». Updates are a different matter: the program verifies their signature before installing anything. The Microsoft Store copy doesn't show this warning: the Store signs it."
       },
       {
         "d": "Where does the music come from? Is it legal?",
@@ -207,7 +207,7 @@
       },
       {
         "d": "Does it send my data anywhere?",
-        "r": "There's no telemetry and no Rymembra server. The program only talks to the services you use — the catalogs, MusicBrainz for tags, LRCLIB for lyrics, GitHub to check for updates, and whatever you connect yourself; if you listen together, with the other PCs on your network, and nobody else. [PRIVACY.md]({privacy}) lists every request and what it sends."
+        "r": "There's no telemetry and no Rymembra server. The program only talks to the services you use — the catalogs, MusicBrainz for tags, Cover Art Archive, iTunes and Deezer for cover art, LRCLIB for lyrics, GitHub to check for updates (not the Store copy), and whatever you connect yourself; if you listen together, with the other PCs on your network, and nobody else. [PRIVACY.md]({privacy}) lists every request and what it sends."
       }
     ]
   },

@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — kostenloser Musikplayer für Windows: FLAC, lückenlos, gleiche Lautstärke",
-    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows. FLAC und MP3 lückenlos und gleich laut, Playlists aus deinen Spotify-Daten und fehlende Titel aus freien Katalogen.",
+    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows: FLAC und MP3 lückenlos und gleich laut, Playlists aus Spotify, freie Kataloge und gemeinsames Hören im LAN.",
     "immagine": "Rymembra, ein Musikplayer für Windows"
   },
   "nav": {
@@ -85,8 +85,8 @@
     "titolo": "Und man hört zusammen.",
     "testo": "Kollegen im selben Netz, jeder mit seinem Rymembra, hören dieselbe Musik im selben Moment: Ein PC lädt ein, die anderen folgen, und jeder spielt sie selbst ab. Beim ersten Mal zeigen beide Bildschirme denselben vierstelligen Code; danach erkennen sich die PCs, und was zwischen ihnen läuft, ist verschlüsselt.",
     "punti": [
-      "Wer einlädt, wählt für jeden, der dazukommt: nur zuhören, die Bedienung — Pause, Springen, der nächste Titel — oder alles, auch die eigenen Titel in der Warteschlange, die von dem PC zu den anderen kommen, der sie hat.",
-      "Auf die Millisekunde abgestimmt, genug für zwei Paar Lautsprecher im selben Raum; für Bluetooth-Kopfhörer gibt es die Kalibrierung.",
+      "Wer einlädt, wählt für jeden, der dazukommt: nur zuhören, die Bedienung — Pause, Springen, der nächste und der vorige Titel — oder alles, auch die eigenen Titel in der Warteschlange, die von dem PC zu den anderen kommen, der sie hat.",
+      "Bis auf wenige Millisekunden abgestimmt, genug für zwei Paar Lautsprecher im selben Raum; für Bluetooth-Kopfhörer gibt es die Kalibrierung.",
       "Kein Internet und kein Server: nur das Netz im Büro oder zu Hause. Der einladende PC öffnet einen Port im LAN, und Windows fragt einmal um Erlaubnis."
     ]
   },
@@ -146,7 +146,7 @@
       "titolo": "Aus dem Microsoft Store",
       "sotto": "Updates kommen über den Store, ohne SmartScreen-Warnung.",
       "azione": "Herunterladen",
-      "nota": "Die Store-Version hat eine eigene Bibliothek und eigene Einstellungen, getrennt von denen des Installers."
+      "nota": "Nimm pro PC nur eine: Beide Versionen zusammen sind nicht getestet, und sie würden dieselben verbundenen Konten nutzen."
     },
     "file": "Die Datei heißt `{file}`, erschienen am {data}. [Was ist neu]({note}), [alle Versionen]({tutte}).",
     "impronta": {
@@ -179,7 +179,7 @@
     "elenco": [
       {
         "d": "Ist er wirklich kostenlos?",
-        "r": "Ja, und das bleibt so. Es gibt keine Bezahlversion und es ist keine geplant: Zwei seiner Quellen, das Live Music Archive und Jamendo, haben nicht-kommerzielle Klauseln, die eine Bezahlversion verletzen würde. Die Entwicklung wird über Spenden finanziert."
+        "r": "Ja, und das bleibt so. Es gibt keine Bezahlversion und es ist keine geplant: Eine seiner Quellen, das Live Music Archive, hat eine nicht-kommerzielle Klausel, die eine Bezahlversion verletzen würde. Die Entwicklung wird über Spenden finanziert."
       },
       {
         "d": "Läuft er unter macOS oder Linux?",
@@ -187,7 +187,7 @@
       },
       {
         "d": "Warum warnt mich Windows bei der Installation?",
-        "r": "Weil der Installer nicht mit einem Code-Signing-Zertifikat signiert ist, das eine Identitätsprüfung und eine jährliche Gebühr verlangt. SmartScreen hält unsignierte Programme auf, die es selten gesehen hat: Klicke auf „Weitere Informationen“ und dann auf „Trotzdem ausführen“. Bei Updates ist das anders: Das Programm prüft ihre Signatur, bevor es irgendetwas installiert."
+        "r": "Weil der Installer nicht mit einem Code-Signing-Zertifikat signiert ist, das eine Identitätsprüfung und eine jährliche Gebühr verlangt. SmartScreen hält unsignierte Programme auf, die es selten gesehen hat: Klicke auf „Weitere Informationen“ und dann auf „Trotzdem ausführen“. Bei Updates ist das anders: Das Programm prüft ihre Signatur, bevor es irgendetwas installiert. Die Version aus dem Microsoft Store zeigt diese Warnung nicht: Der Store signiert sie."
       },
       {
         "d": "Woher kommt die Musik? Ist das legal?",
@@ -207,7 +207,7 @@
       },
       {
         "d": "Schickt er meine Daten irgendwohin?",
-        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, LRCLIB für Songtexte, GitHub für die Update-Prüfung und allem, was du selbst verbindest; wenn du zusammen hörst, mit den anderen PCs in deinem Netz, und sonst niemandem. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
+        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, Cover Art Archive, iTunes und Deezer für Cover, LRCLIB für Songtexte, GitHub für die Update-Prüfung (nicht die Store-Version) und allem, was du selbst verbindest; wenn du zusammen hörst, mit den anderen PCs in deinem Netz, und sonst niemandem. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
       }
     ]
   },

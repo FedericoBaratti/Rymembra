@@ -138,6 +138,8 @@
         "core/rymembra-play/src/sincronia/regolatore.rs",
         "apps/desktop/src-tauri/src/riproduzione/insieme.rs",
         "apps/desktop/src-tauri/src/insieme/segui.rs",
+        "apps/desktop/src-tauri/src/insieme/filo.rs",
+        "apps/desktop/src-tauri/src/riproduzione/riapertura.rs",
         "apps/desktop/src/parti/UscitaAudio.tsx",
         "apps/desktop/src/parti/Insieme.tsx",
       ],
@@ -146,11 +148,12 @@
         {
           ul: [
             "**One time base** per process (`rymembra_play::tempo`), nanoseconds as `u64`: the engine's anchors and the transport's clock samples use the same one, or the offset estimate would be meaningless.",
-            "**Anchors**: the audio callback publishes «content P is heard at local instant T» — cpal's playback timestamp plus the output latency — through a seqlock. The host sends `Ancora` 4 times a second and at once on every change, labelled with the voice uid; a member only compares anchors with the same label.",
-            "**Clock**: NTP-style ping/pong on the control connection; `t2` is taken right after the read and `t3` right before the write, in the reading thread. A ping every 250 ms for the first 10 s, then one a second. The estimator filters on minimum round-trip and regresses offset and drift. Between two PCs the regulator never runs without an estimate: until there is one, the member waits and the window says «syncing…».",
+            "**Anchors**: the audio callback publishes «content P is heard at local instant T» — cpal's playback timestamp plus the output latency — through a seqlock. The host sends `Ancora` 4 times a second and at once on every change, labelled with the voice uid; a member only compares anchors with the same label. When the host's engine has nothing in its hands but the session has a current voice — an open from a network share that failed — the host sends an explicit «stopped» anchor for that voice, so members fall silent with it instead of playing on alone.",
+            "**Clock**: NTP-style ping/pong on the control connection; `t2` is taken right after the read and `t3` right before the write, in the reading thread. A ping every 250 ms for the first 10 s, then one a second. The estimator filters on minimum round-trip and regresses offset and drift; an exchange whose round trip exceeds 100 ms (`rtt_tetto_ns`) is discarded whatever the minimum. The cap was 20 ms, and on a busy Wi-Fi every exchange went over it: the member never got an estimate and never started. Between two PCs the regulator never runs without an estimate: until there is one, the member waits and the window says «syncing…».",
             "**Regulator** at 10 Hz on each member: `Riapri` beyond 500 ms of error; `Gradino` between 20 and 500 ms — positive is **silence** (the member is ahead and waits), negative skips music — with the 12 ms gate fade; `Deriva` for slow drift, dropping or repeating single interpolated frames up to ±200 ppm.",
             "**Scheduled start**: resume, seek and the start of a new track are scheduled 250 ms ahead with `riprendi_a`, sample-accurate, so everyone starts together; the anchor announces the future instant. Pause is immediate, and the few milliseconds a member stops late are recovered by the next resume. A scheduled start (`AvviaA`) is never executed as a step: while the engine is paused the callback drops steps.",
             "**Gapless**: a member pre-opens the next voice of the mirrored queue, but the switch is decided by the host's anchor; if the next voice did not arrive in time, the regulator reopens it.",
+            "**A member's own output**: when it goes missing, or the track it was opening fails, «Retry» on the member reopens that PC's output if it was lost, and does nothing else (`riprova_corrente`). It used to become a play, and a member's play is sent to the host: one PC's broken headphones took the whole session out of pause. The host's track needs no button — the regulator reopens it whenever the member has nothing playing.",
           ],
         },
         { h: "Calibration" },

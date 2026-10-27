@@ -7,16 +7,17 @@
     {
       id: "building",
       title: "Building and running",
-      src: ["apps/desktop/package.json", "Cargo.toml", "rust-toolchain.toml", "apps/desktop/src-tauri/build.rs", "apps/desktop/vite.config.ts", "README.md"],
+      src: ["apps/desktop/package.json", "Cargo.toml", "rust-toolchain.toml", "apps/desktop/src-tauri/build.rs", "apps/desktop/vite.config.ts", "strumenti/msix.js", "apps/desktop/src-tauri/msix/LEGGIMI.md", "README.md"],
       body: [
-        "Requirements: Rust stable ≥ 1.90 (`rust-version`; CI pins 1.97.1), Node.js 24 (the web tests use Node's own type stripping), Windows — the only installer target is NSIS.",
+        "Requirements: Rust stable ≥ 1.90 (`rust-version`; CI pins 1.97.1), Node.js 24 (the web tests use Node's own type stripping), Windows — the only installer target is NSIS. The Microsoft Store package (MSIX) is not a Tauri target: `strumenti/msix.js` builds it ([Repository checks](#tooling)).",
         {
           table: {
             head: ["Command (from `apps/desktop`)", "What"],
             rows: [
               ["`npm install`, `npm run dev`", "Vite on port 5173 (`strictPort`) + `tauri dev`"],
               ["`npm run build`", "`tauri build`: the NSIS installer, whose hook `src-tauri/installer/precedente.nsh` removes the previous version"],
-              ["`npm run verify`", "Everything CI checks, offline: versions, translations, docs, CSS classes, `tsc` + Vite build, web tests, tool tests, `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`"],
+              ["`npx tauri build --no-bundle -- --locked`, then `node strumenti/msix.js` (root)", "The MSIX package for the Microsoft Store, in `target/msix/`. The executable is the `--no-bundle` one, because a bundled build writes the installer's kind into it for the updater. Needs `makeappx` and `makepri` from the Windows SDK; `--solo-cartella` stops at the unpacked folder, which is how it is tried before the Store has signed it"],
+              ["`npm run verify`", "Everything CI checks, offline: versions, translations, docs, the website build, CSS classes, `tsc` + Vite build, web tests, tool tests, `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`"],
               ["`npm run version:set <x.y.z>`", "Rewrites the version in `Cargo.toml`, `package.json`, `tauri.conf.json`, `Cargo.lock`"],
               ["`npm run licenze`", "Regenerates `THIRD-PARTY-NOTICES.md`"],
               ["`cargo deny check` (root)", "Licences, advisories, sources of Rust dependencies"],
@@ -51,7 +52,7 @@
     {
       id: "tooling",
       title: "Repository checks (strumenti)",
-      src: ["strumenti/classi.js", "strumenti/lingue.js", "strumenti/docs.js", "strumenti/sito.js", "strumenti/versione.js", "strumenti/licenze.js", "strumenti/manifesto.js", "strumenti/firma.js", "strumenti/finto-aggiornamento.js"],
+      src: ["strumenti/classi.js", "strumenti/lingue.js", "strumenti/docs.js", "strumenti/sito.js", "strumenti/versione.js", "strumenti/licenze.js", "strumenti/manifesto.js", "strumenti/firma.js", "strumenti/finto-aggiornamento.js", "strumenti/msix.js"],
       body: [
         "Plain CommonJS scripts with no dependencies, paths resolved from `__dirname`:",
         {
@@ -67,24 +68,26 @@
               ["`manifesto.js`", "Writes the updater's `latest.json` (version, signature, installer URL, notes from the CHANGELOG) and checks the signing key id"],
               ["`firma.js`", "Pre-flight of the signing secret (decodes, has the minisign header, password without stray whitespace); never prints it"],
               ["`finto-aggiornamento.js`", "A fake GitHub on `127.0.0.1:8787` to test updates end to end (`--guasta-firma` for the negative case), with the debug-only `RYMEMBRA_AGGIORNAMENTI_ENDPOINT`"],
+              ["`msix.js`", "Builds the Microsoft Store package: the `--no-bundle` executable, the resources listed in `bundle.resources`, the logos in `msix/Assets`, the marker `rymembra-store.txt` that turns off the update check ([Updates](#update)), and `AppxManifest.xml` with the identity Partner Center assigned — from `msix/identita.json`, `--nome`/`--editore`/`--nome-editore` or `MSIX_NOME`/`MSIX_EDITORE`/`MSIX_NOME_EDITORE` — refusing the example values. The version is `tauri.conf.json`'s with a fourth digit at zero (`3.1.0.0`); `makepri` indexes the logos and `makeappx` packs and validates. The package is left unsigned: the Store signs it after certification"],
             ],
           },
         },
-        "`docs.test.js`, `lingue.test.js`, `manifesto.test.js` and `sito.test.js` test the tools themselves (`npm run test:strumenti`).",
+        "`docs.test.js`, `lingue.test.js`, `manifesto.test.js`, `msix.test.js` and `sito.test.js` test the tools themselves (`npm run test:strumenti`).",
       ],
       see: ["ci", "writing-docs", "language"],
     },
     {
       id: "ci",
       title: "CI and the release pipeline",
-      src: [".github/workflows/verify.yml", ".github/workflows/release.yml", ".github/workflows/sito.yml", "deny.toml"],
+      src: [".github/workflows/verify.yml", ".github/workflows/release.yml", ".github/workflows/sito.yml", ".github/workflows/msix.yml", "deny.toml"],
       body: [
         "Every action is pinned to a commit hash (tags can be moved; see the March 2025 `tj-actions` incident), with the version in a comment.",
         {
           ul: [
-            "**`verify.yml`** — on push, pull request, manual, or called by the release. Job `verifica` (Windows, toolchain 1.97.1, `RUSTFLAGS=-D warnings`): versions, translations, CSS classes, docs, the website build, tool tests, fmt, clippy and tests with `--locked`, web build and tests, and a check that `THIRD-PARTY-NOTICES.md` is up to date. Job `dipendenze`: `cargo deny check` (Windows target only; licence allow-list without GPL/LGPL; yanked crates denied; crates.io only) and `npm audit --omit=dev`. Job `niente-di-vietato`: fails on bundled binaries, on code that names YouTube downloaders or lyrics scrapers, and on missing public documents.",
+            "**`verify.yml`** — on push, pull request, manual, or called by `release.yml` and `msix.yml`. Job `verifica` (Windows, toolchain 1.97.1, `RUSTFLAGS=-D warnings`): versions, translations, CSS classes, docs, the website build, tool tests, fmt, clippy and tests with `--locked`, web build and tests, and a check that `THIRD-PARTY-NOTICES.md` is up to date. Job `dipendenze`: `cargo deny check` (Windows target only; licence allow-list without GPL/LGPL; yanked crates denied; crates.io only) and `npm audit --omit=dev`. Job `niente-di-vietato`: fails on bundled binaries, on code that names YouTube downloaders or lyrics scrapers, and on missing public documents.",
             "**`release.yml`** — on a `v*` tag: `tag` (validate the tag, versions must match) → `verifica` (the whole verify on the tag) → `costruisci` (Windows, no cache, `--locked`, installer built **without** the signing key and without updater artifacts) → `firma` (a clean runner that compiles nothing: `npm ci --ignore-scripts`, `firma.js`, `tauri signer sign --app-version`, `manifesto.js`) → `pubblica` (the only job with `contents: write`) creating a **draft** release.",
-            "**`sito.yml`** — on `release: published`, or by hand: downloads that release's installer, builds `_site/` from `site/` with `strumenti/sito.js --versione <tag> --installer <folder>` and publishes it to GitHub Pages. The version is the tag of the published release, not the one in the code, so the site never announces — or links — an installer that does not exist yet.",
+            "**`sito.yml`** — on `release: published`, or by hand: downloads that release's installer, builds `_site/` from `site/` with `strumenti/sito.js --versione <tag> --installer <folder>` and publishes it to GitHub Pages. The version is the tag of the published release, not the one in the code, so the site never announces — or links — an installer that does not exist yet. After the upload it fetches the home page from the published address until it is byte for byte the `index.html` just built, and fails if it never is: Pages can report a deployment as successful and keep serving the previous build, which is how the site went on announcing 3.0.2 for hours after 3.1.0 was published.",
+            "**`msix.yml`** — by hand, on a tag that already exists: `tag` (the tag must match the versions) → `verifica` (the whole verify on that tag) → `pacchetto` (Windows, no cache, `tauri build --no-bundle -- --locked`, then `msix.js`), which uploads the unsigned `.msix` as the artifact `rymembra-msix`. No secrets and no write permission: the package goes to Partner Center by hand, and the Store signs it.",
           ],
         },
         "The release starts as a draft on purpose: `/releases/latest` skips drafts, so no installed copy sees an update until a person publishes it.",
@@ -97,7 +100,7 @@
       src: ["strumenti/manifesto.js", "strumenti/firma.js", "apps/desktop/src-tauri/tauri.conf.json", ".github/workflows/release.yml", "README.md"],
       body: [
         "Updates are signed with a minisign key pair generated once (`npm run tauri signer generate -- -w ../../.chiavi/rymembra.key`; `.chiavi/` is git-ignored). The public key is `plugins.updater.pubkey` in `tauri.conf.json`; the private key and its password are the repository secrets `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`. Losing the private key means no installed copy can ever update again.",
-        "Since 3.0 the signature is bound to the version (`tauri signer sign --app-version <version>`), and `requireSignedVersion: true` makes the updater refuse a signature that does not match the version the manifest announces — a tampered manifest cannot pair a new version number with an older installer. `manifesto.js` checks that the key id in the signature matches the public key compiled into the app before publishing, and stops if a signature lacks the version. Code signing for SmartScreen is not done (no certificate).",
+        "Since 3.0 the signature is bound to the version (`tauri signer sign --app-version <version>`), and `requireSignedVersion: true` makes the updater refuse a signature that does not match the version the manifest announces — a tampered manifest cannot pair a new version number with an older installer. `manifesto.js` checks that the key id in the signature matches the public key compiled into the app before publishing, and stops if a signature lacks the version. Code signing for SmartScreen is not done (no certificate). The Microsoft Store package carries none of this: the Store signs it after certification and keeps that copy up to date itself ([Updates](#update)).",
       ],
       see: ["update", "ci"],
     },
