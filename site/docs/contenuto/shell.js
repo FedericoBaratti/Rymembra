@@ -13,11 +13,11 @@
         { h: "Setup order" },
         {
           ol: [
-            "mark the UI thread (for `con_libreria`), resolve the data folder (`RYMEMBRA_DATI` or `%APPDATA%\\io.github.federicobaratti.rymembra`), bring in the previous version's data if there are any ([Data](#data)), open the log;",
+            "mark the UI thread (for `con_libreria`), resolve the data folder (`RYMEMBRA_DATI` or `%APPDATA%\\io.github.federicobaratti.rymembra`, which Windows partly redirects for a Microsoft Store copy), bring in the previous version's data if there are any ([Data](#data)), open the log;",
             "register lightweight states that open nothing yet: imports, Explore, account, procurement, lyrics, the Folders index;",
             "open the library (`Stato::apri`) and write the startup line (`dati=… migrazioni=… fts5=… giornale=…`);",
             "register SMTC and taskbar-button states, start the player (opens the output device, restores yesterday's queue), the preparer, clock, spectrum and device-watcher threads, then SMTC and taskbar buttons;",
-            "backup, sync, enrichment, maintenance, analysis, scrobbling, AI, updates — each with its own start delay so they do not contend with the first seconds of use;",
+            "backup, sync, enrichment, maintenance, analysis, scrobbling, «Listen together» (`insieme::avvia_filo`, which opens nothing while the feature is off), AI, updates — each with its own start delay so they do not contend with the first seconds of use;",
             "the tray, the first state to SMTC/tray/taskbar, the folder watcher, and the 2 s safety net that shows the window if the frontend never calls `pronto`.",
           ],
         },
@@ -56,7 +56,7 @@
           },
         },
         "Anything that may wait on a disk or that reads a lot runs on the blocking pool ([Runtime](#runtime)). Commands that change what the backup covers end with `nuvola::se_riuscito`, which wakes the backup.",
-        { h: "Events (38 names)" },
+        { h: "Events (39 names)" },
         {
           table: {
             head: ["Prefix", "Events"],
@@ -105,7 +105,7 @@
             "**Reads**: the cover scheme accepts only a hash, the skin scheme only a checked id and a name from the package's closed list, typed by magic bytes. Documents and the docs open in the **system browser** from closed lists (`apri_documento`, `apri_guida` with `ANCORE_GUIDA`), never from a URL the page composes.",
           ],
         },
-        "Inside the core: untrusted archives (`.ryskin`, `.ryprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. `unsafe` is forbidden in every crate except `rymembra-barra`, where it is confined to `finestra.rs` with a justification on each block (`undocumented_unsafe_blocks` is denied).",
+        "Inside the core: untrusted archives (`.ryskin`, `.ryprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. Two things listen for connections, and nothing else: the OAuth return port on `127.0.0.1`, open for the length of one authorization ([OAuth](#oauth)), and — only while this PC hosts a «Listen together» session — TCP and UDP 47811 (or one of the nine after it) on the local network, behind Noise and pairing ([Encryption and pairing](#together-security)). `unsafe` is forbidden in every crate except `rymembra-barra`, where it is confined to `finestra.rs` with a justification on each block (`undocumented_unsafe_blocks` is denied).",
       ],
       see: ["skin-package", "profile", "http", "oauth", "together-security"],
     },

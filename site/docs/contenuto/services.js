@@ -121,7 +121,7 @@
     {
       id: "update",
       title: "Updates, logs and documents",
-      src: ["apps/desktop/src-tauri/src/aggiornamenti.rs", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/installer/precedente.nsh", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src/parti/Aggiornamenti.tsx", "strumenti/manifesto.js"],
+      src: ["apps/desktop/src-tauri/src/aggiornamenti.rs", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/installer/precedente.nsh", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src/parti/Aggiornamenti.tsx", "strumenti/manifesto.js", "strumenti/msix.js"],
       body: [
         "`tauri-plugin-updater` is driven only by `aggiornamenti.rs`; the window has no updater permission. The endpoint is `https://github.com/FedericoBaratti/Rymembra/releases/latest/download/latest.json`.",
         { h: "Checking" },
@@ -130,6 +130,7 @@
             "Thread `rymembra-aggiornamenti`: first check `DOPO_PRONTO` = 10 s after the window reports ready (or 60 s if it never does), then every 30 min; skipped at start only if the last success was less than 5 min ago and found nothing. Offline: retry after 1, 5 and 15 min.",
             "The request carries **nothing of yours**: no identifier, not even the installed version (the comparison happens locally) and no Rymembra user agent — GitHub sees an IP fetching a public file.",
             "No public key in `tauri.conf.json` → no check at all (an updater that cannot verify must not download). `aggiornamenti.attivo` off → only «Check now». A found version is remembered (`aggiornamenti.trovata`); «Skip this version» writes `aggiornamenti.saltata`.",
+            "**A copy from the Microsoft Store never checks.** `strumenti/msix.js` puts `rymembra-store.txt` next to the executable (`MARCATORE_STORE`), and when the file is there `configurato()` is false: the thread still starts, but every pass ends as `Giro::Saltato` without a request, the switch in Settings › Updates is disabled with `settings.update.store` as its explanation, and «Check now» is disabled. A file and not `GetCurrentPackageFullName`, because that call is `unsafe` and the workspace forbids it; the NSIS installer could not write inside a read-only MSIX package anyway. The Store updates that copy.",
           ],
         },
         { h: "Installing" },

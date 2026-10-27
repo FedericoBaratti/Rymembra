@@ -260,6 +260,17 @@ function autore() {
   return m[1];
 }
 
+/**
+ * Le lingue in cui parla il programma, che non sono quelle del sito: l'elenco
+ * è il contenuto di `apps/desktop/src/lingue/`, come per il programma stesso.
+ */
+function lingueDelProgramma() {
+  return fs
+    .readdirSync(path.join(REPO, "apps/desktop/src/lingue"))
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => f.slice(0, -".json".length));
+}
+
 /** La data della voce di una versione nel changelog, `AAAA-MM-GG`. */
 function dataNelChangelog(changelog, versione) {
   const v = versione.replace(/\./g, "\\.");
@@ -431,7 +442,7 @@ function landing(r, testi, problemi, usate) {
           name: "Rymembra",
           url: urlLingua(l),
           description: piano(t.meta.descrizione),
-          inLanguage: l.codice,
+          inLanguage: lingueDelProgramma(),
           operatingSystem: "Windows",
           applicationCategory: "MultimediaApplication",
           softwareVersion: r.versione,

@@ -94,8 +94,18 @@ a zero (`3.0.3.0`). La versione viene da `tauri.conf.json`, cioè da
 
 ## I dati dell'utente
 
-Dentro un pacchetto MSIX le scritture in `%APPDATA%` e `%LOCALAPPDATA%` vanno in
-una cartella privata sotto `%LOCALAPPDATA%\Packages\<nome del pacchetto>\`. Per
-Rymembra è trasparente. Due conseguenze: la libreria della copia del Store è
-**separata** da quella dell'installer NSIS, e disinstallare il pacchetto da
-Windows cancella quella cartella.
+Dentro un pacchetto MSIX, da Windows 10 1903 in poi, i file **nuovi** che il
+programma crea in `%APPDATA%` e `%LOCALAPPDATA%` vanno in una cartella privata
+sotto `%LOCALAPPDATA%\Packages\<nome del pacchetto>\`; quelli che esistono già
+si usano dove sono. Per Rymembra è trasparente, con tre conseguenze:
+
+- su un PC senza la copia NSIS, la libreria della copia del Store è sua e basta,
+  e disinstallare il pacchetto da Windows cancella quella cartella;
+- su un PC dove l'installer NSIS ha già creato la libreria, la copia del Store
+  aprirebbe quella, ma i file nuovi — il `-wal` e lo `-shm` del database
+  compresi — finirebbero nella cartella privata, lontano dal database. **Non è
+  stato provato**, e due copie aperte insieme non vedrebbero l'una i lucchetti
+  dell'altra: per questo il sito e `PRIVACY.md` dicono di tenerne una per PC;
+- il Gestore credenziali di Windows non è virtualizzato: gli account collegati
+  (servizio `io.github.federicobaratti.rymembra`) sono gli stessi per le due
+  copie.

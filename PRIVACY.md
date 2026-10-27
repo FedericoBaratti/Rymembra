@@ -561,9 +561,14 @@ GitHub for `latest.json`, the table above doesn't apply to it, and the switch in
 *Settings → Updates* says so instead of turning anything on. The Store, for its
 part, is Microsoft's service, with Microsoft's privacy statement: what it learns
 when you install or update an app is between you and it, and Rymembra doesn't see
-any of it. The same copy keeps its data in the application's private folder under
-`%LOCALAPPDATA%\Packages\` instead of `%APPDATA%`, which Windows arranges by
-itself; uninstalling it from Windows removes that folder.
+any of it. The same copy writes the files it creates in the application's
+private folder under `%LOCALAPPDATA%\Packages\` instead of `%APPDATA%`, which
+Windows arranges by itself; uninstalling it from Windows removes that folder.
+Files that already exist in `%APPDATA%` — the library of a copy installed with
+the installer on the same PC — Windows, from version 1903 on, lets it use where
+they are, and the connected accounts in the Windows Credential Manager are the
+same for both copies. The two have not been tried side by side: keep one of
+them per PC.
 
 ---
 
