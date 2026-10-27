@@ -69,7 +69,9 @@ concurrency:
 jobs:
   pubblica:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Dieci per costruire e caricare, e altri dieci al massimo per aspettare
+    # che la pagina servita sia quella nuova: vedi l'ultimo passo.
+    timeout-minutes: 20
     environment:
       name: github-pages
       url: ${{ steps.pubblicazione.outputs.page_url }}
@@ -129,3 +131,32 @@ jobs:
 
       - id: pubblicazione
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+      # Un deploy «riuscito» non vuol dire che online ci sia questa build. Con la
+      # 3.1.0 il lavoro partito dalla release — sullo stesso commit di un lancio
+      # a mano della sera prima, che aveva annunciato la 3.0.2 — è finito verde,
+      # e Pages ha continuato a servire la build della sera prima: il sito ha
+      # offerto la 3.0.2 per ore, e nessuno lo sapeva.
+      #
+      # Si confronta quindi la pagina servita, byte per byte, con
+      # `_site/index.html` appena costruito: così si vede anche una correzione
+      # fra due release che non arriva online, che con lo stesso numero di
+      # versione un confronto sul numero non vedrebbe. Senza `--compressed`,
+      # perché Pages serve il file così com'è solo a chi non chiede gzip. Per
+      # dieci minuti al massimo, quanto la cache davanti a Pages tiene una
+      # pagina (`max-age=600`).
+      - name: Online c'è questa build
+        env:
+          URL: ${{ steps.pubblicazione.outputs.page_url }}
+        run: |
+          attesa=$(sha256sum _site/index.html | cut -d' ' -f1)
+          for _ in $(seq 1 40); do
+            servita=$(curl -fsS "$URL" | sha256sum | cut -d' ' -f1) || servita=""
+            if [ "$servita" = "$attesa" ]; then
+              echo "Online c'è la build appena costruita ($attesa)."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::$URL serve ancora una build diversa da questa. Di solito è un deploy dello stesso commit di uno già pubblicato: serve un commit nuovo su main, poi «sito» a mano."
+          exit 1
