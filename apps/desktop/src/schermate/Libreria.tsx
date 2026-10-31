@@ -276,6 +276,9 @@ export function GrigliaAlbum({
  * spiegazione. `secondaria` lascia il gesto nel suo grigio: quando la pagina
  * vuota non è un guasto da riparare ma un posto dove si arriverà — la coda
  * delle importazioni — un tasto colorato lo farebbe sembrare un dovere.
+ *
+ * `altra` è un secondo gesto, sempre grigio, per la pagina che ha due strade
+ * per riempirsi: le importazioni, da un link o dall'archivio di Spotify.
  */
 export function StatoVuoto({
   icona,
@@ -283,6 +286,7 @@ export function StatoVuoto({
   testo,
   nota,
   azione,
+  altra,
 }: {
   icona: NomeIcona;
   titolo: string;
@@ -291,6 +295,7 @@ export function StatoVuoto({
   azione?:
     | { etichetta: string; fai: () => void; secondaria?: boolean | undefined }
     | undefined;
+  altra?: { etichetta: string; fai: () => void } | undefined;
 }) {
   return (
     <div className="vuoto empty-state">
@@ -307,6 +312,11 @@ export function StatoVuoto({
           onClick={azione.fai}
         >
           {azione.etichetta}
+        </button>
+      )}
+      {altra && (
+        <button type="button" className="bottone" onClick={altra.fai}>
+          {altra.etichetta}
         </button>
       )}
     </div>

@@ -100,10 +100,54 @@ pub fn playlist_rinomina(
 /// fotografia più vecchia di [`DURATA_ANNULLO`] non la chiede più nessuno. Si
 /// puliscono a ogni cancellazione, non con un orologio: un filo che si sveglia
 /// per buttare via qualche chilobyte costerebbe più di quel che libera.
-static CANCELLATE: std::sync::Mutex<Vec<Tenuta>> = std::sync::Mutex::new(Vec::new());
+static CANCELLATE: std::sync::Mutex<Annullabili<playlists::Cancellata>> =
+    std::sync::Mutex::new(Annullabili::nuovo());
 
 /// Una cancellazione annullabile: il gettone, quando, e la fotografia.
-type Tenuta = (u64, std::time::Instant, playlists::Cancellata);
+type Tenuta<T> = (u64, std::time::Instant, T);
+
+/// Le cancellazioni annullabili: scadenza, tetto, gettone e ritorno al posto.
+///
+/// Un tipo a parte, generico sulla fotografia e con l'ora data da chi chiama,
+/// perché è l'unica via di ritorno da una cancellazione già scritta (e la cui
+/// lapide è già partita per Drive): le prove lo esercitano con `T = ()` e un
+/// orologio scelto da loro, invece di aspettare un minuto vero.
+struct Annullabili<T> {
+    tenute: Vec<Tenuta<T>>,
+}
+
+impl<T> Annullabili<T> {
+    /// Nessuna cancellazione tenuta.
+    const fn nuovo() -> Self {
+        Self { tenute: Vec::new() }
+    }
+
+    /// Tiene la fotografia di una cancellazione appena fatta. Le scadute si
+    /// buttano adesso, e oltre il tetto se ne va la più vecchia: mai quella
+    /// appena entrata, che è l'«Annulla» che l'utente ha sotto gli occhi.
+    fn tieni(&mut self, gettone: u64, adesso: std::time::Instant, fotografia: T) {
+        self.tenute
+            .retain(|(_, quando, _)| adesso.saturating_duration_since(*quando) < DURATA_ANNULLO);
+        if self.tenute.len() >= CANCELLATE_MASSIME {
+            self.tenute.remove(0);
+        }
+        self.tenute.push((gettone, adesso, fotografia));
+    }
+
+    /// Toglie e restituisce la tenuta del gettone, se c'è e non è scaduta.
+    fn prendi(&mut self, gettone: u64, adesso: std::time::Instant) -> Option<Tenuta<T>> {
+        let dove = self.tenute.iter().position(|(segno, quando, _)| {
+            *segno == gettone && adesso.saturating_duration_since(*quando) < DURATA_ANNULLO
+        })?;
+        Some(self.tenute.remove(dove))
+    }
+
+    /// Rimette al suo posto una tenuta presa, quando il ripristino è caduto:
+    /// un secondo «Annulla» deve poterci riprovare, con la scadenza di prima.
+    fn rimetti(&mut self, tenuta: Tenuta<T>) {
+        self.tenute.push(tenuta);
+    }
+}
 
 /// Il prossimo gettone. Parte da uno: lo zero non lo riceve nessuna cancellazione.
 static GETTONI: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -123,7 +167,7 @@ const CANCELLATE_MASSIME: usize = 8;
 /// Un mutex avvelenato vuol dire soltanto che un filo è caduto mentre ci
 /// scriveva: le fotografie dentro sono intere, e rinunciarci vorrebbe dire
 /// rinunciare a un «Annulla» per un guasto che non le ha toccate.
-fn cancellate() -> std::sync::MutexGuard<'static, Vec<Tenuta>> {
+fn cancellate() -> std::sync::MutexGuard<'static, Annullabili<playlists::Cancellata>> {
     CANCELLATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -144,12 +188,7 @@ pub async fn playlist_cancella(app: tauri::AppHandle, id: i64) -> Esito<u64> {
     .await
     .map(|fotografia| {
         let gettone = GETTONI.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut tenute = cancellate();
-        tenute.retain(|(_, quando, _)| quando.elapsed() < DURATA_ANNULLO);
-        if tenute.len() >= CANCELLATE_MASSIME {
-            tenute.remove(0);
-        }
-        tenute.push((gettone, std::time::Instant::now(), fotografia));
+        cancellate().tieni(gettone, std::time::Instant::now(), fotografia);
         gettone
     })
     .map_err(errore);
@@ -172,20 +211,14 @@ pub async fn playlist_ripristina(
     app: tauri::AppHandle,
     gettone: u64,
 ) -> Esito<Option<PlaylistSummary>> {
-    let presa = {
-        let mut tenute = cancellate();
-        tenute
-            .iter()
-            .position(|(segno, quando, _)| *segno == gettone && quando.elapsed() < DURATA_ANNULLO)
-            .map(|dove| tenute.remove(dove))
-    };
-    let Some((segno, quando, fotografia)) = presa else {
+    let presa = cancellate().prendi(gettone, std::time::Instant::now());
+    let Some(tenuta) = presa else {
         return Ok(None);
     };
     let esito = leggi_la_libreria(app.clone(), "ripristino di una playlist", move |libreria| {
-        let tornata = playlists::ripristina(&mut libreria.connection, &fotografia);
+        let tornata = playlists::ripristina(&mut libreria.connection, &tenuta.2);
         if tornata.is_err() {
-            cancellate().push((segno, quando, fotografia));
+            cancellate().rimetti(tenuta);
         }
         tornata
     })
@@ -346,23 +379,32 @@ impl InsiemeIpc {
     }
 
     /// Il contrario, per riaprire nell'editor delle regole già salvate.
+    ///
+    /// Il `match` sul valore è esaustivo apposta, senza `_ =>`: un genere di
+    /// valore nuovo nel dominio (una data, un intervallo) non deve diventare
+    /// in silenzio «nessun valore», che `nel_dominio` ricostruirebbe come
+    /// `Valore::Nessuno` e `Regola::valida` scarterebbe. Basterebbe riaprire e
+    /// risalvare una playlist intelligente per perderne una condizione. Così
+    /// non compila finché qualcuno non decide come tradurlo, e la prova
+    /// `le_regole_salvate_tornano_uguali_dall_editor` fissa l'andata e ritorno.
     fn dal_dominio(insieme: &Insieme) -> Self {
         Self {
             combinazione: insieme.combinazione.come_testo().to_owned(),
             regole: insieme
                 .regole
                 .iter()
-                .map(|r| RegolaIpc {
-                    campo: r.campo.come_testo().to_owned(),
-                    operatore: r.operatore.come_testo().to_owned(),
-                    testo: match &r.valore {
-                        Valore::Testo(t) => Some(t.clone()),
-                        _ => None,
-                    },
-                    numero: match &r.valore {
-                        Valore::Numero(n) => Some(*n),
-                        _ => None,
-                    },
+                .map(|r| {
+                    let (testo, numero) = match &r.valore {
+                        Valore::Testo(t) => (Some(t.clone()), None),
+                        Valore::Numero(n) => (None, Some(*n)),
+                        Valore::Nessuno => (None, None),
+                    };
+                    RegolaIpc {
+                        campo: r.campo.come_testo().to_owned(),
+                        operatore: r.operatore.come_testo().to_owned(),
+                        testo,
+                        numero,
+                    }
                 })
                 .collect(),
             limite: insieme.limite,
@@ -581,7 +623,11 @@ fn leggi_file(percorso: &str) -> Result<(PlaylistLetta, String, Option<PathBuf>)
 /// `fs.extensionRefused` o `fs.pathInvalid` per un percorso che la finestra non
 /// può chiedere; quelli della libreria e della scrittura per il resto.
 #[tauri::command(async)]
-pub fn playlist_esporta(stato: State<'_, Stato>, id: i64, percorso: String) -> Esito<usize> {
+pub fn playlist_esporta(
+    stato: State<'_, Stato>,
+    id: i64,
+    percorso: String,
+) -> Esito<PlaylistEsportata> {
     let file = destinazioni::file_da_scrivere(&percorso, destinazioni::ESTENSIONI_PLAYLIST)
         .map_err(errore)?;
     // Non succede: `ESTENSIONI_PLAYLIST` e `da_estensione` sono tenute allineate
@@ -597,13 +643,148 @@ pub fn playlist_esporta(stato: State<'_, Stato>, id: i64, percorso: String) -> E
         }))
     })?;
     let path = file.percorso;
-    let (testo, quanti) = con_libreria(&stato, |libreria| {
-        let testo = import_playlist::esporta(&libreria.connection, id, formato)?;
-        let quanti = playlists::tracks(&libreria.connection, id)?.len();
-        Ok((testo, quanti))
+    let fatta = con_libreria(&stato, |libreria| {
+        import_playlist::esporta(&libreria.connection, id, formato)
     })
     .map_err(errore)?;
-    std::fs::write(&path, testo.as_bytes())
+    std::fs::write(&path, fatta.testo.as_bytes())
         .map_err(|err| errore(rymembra_app::files::io_error(&percorso, &err)))?;
-    Ok(quanti)
+    Ok(PlaylistEsportata {
+        scritti: fatta.scritti,
+        lasciati_fuori: fatta.lasciati_fuori,
+    })
+}
+
+/// Com'è andata un'esportazione: quanti brani sono nel file e quanti ne sono
+/// rimasti fuori.
+///
+/// I due numeri vengono da chi scrive il file (`import_playlist::esporta`), e
+/// non dalla playlist: prima la finestra diceva i brani della playlist, e una
+/// playlist con dieci brani del cloud su trenta usciva come «30 brani scritti»
+/// in un file che ne aveva venti. Una playlist tutta del cloud si scrive lo
+/// stesso — un file vuoto è un'esportazione legittima — e lo dice: «0 brani».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistEsportata {
+    /// I brani scritti nel file: i brani, non le voci (una fila di brani dello
+    /// stesso `.cue` è una voce sola).
+    pub scritti: usize,
+    /// I brani del cloud o di un catalogo, che un file di playlist non può
+    /// nominare.
+    pub lasciati_fuori: usize,
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // ── l'«Annulla» delle cancellazioni ─────────────────────────────────────
+
+    #[test]
+    fn il_nono_annullo_butta_il_piu_vecchio_e_tiene_l_ultimo() {
+        let adesso = Instant::now();
+        let mut tenute = Annullabili::nuovo();
+        for gettone in 1..=9 {
+            tenute.tieni(gettone, adesso, ());
+        }
+        assert!(
+            tenute.prendi(1, adesso).is_none(),
+            "oltre il tetto se ne va la più vecchia"
+        );
+        assert!(
+            tenute.prendi(9, adesso).is_some(),
+            "l'«Annulla» appena comparso vale sempre"
+        );
+        assert!(tenute.prendi(2, adesso).is_some());
+    }
+
+    #[test]
+    fn un_annullo_dopo_un_minuto_non_vale() {
+        let allora = Instant::now();
+        let mut tenute = Annullabili::nuovo();
+        tenute.tieni(7, allora, ());
+        assert!(tenute.prendi(7, allora + Duration::from_secs(61)).is_none());
+        // Arrivato tardi non la consuma: dentro il minuto si ritrova.
+        assert!(tenute.prendi(7, allora + Duration::from_secs(59)).is_some());
+        // E una cancellazione nuova butta via le scadute.
+        tenute.tieni(8, allora, ());
+        tenute.tieni(9, allora + Duration::from_secs(61), ());
+        assert!(tenute.prendi(8, allora + Duration::from_secs(30)).is_none());
+        assert!(tenute.prendi(9, allora + Duration::from_secs(61)).is_some());
+    }
+
+    #[test]
+    fn un_ripristino_fallito_si_puo_ripetere() {
+        let adesso = Instant::now();
+        let mut tenute = Annullabili::nuovo();
+        tenute.tieni(3, adesso, "fotografia");
+        let presa = tenute.prendi(3, adesso).expect("la prima volta");
+        // Il ripristino è caduto: la fotografia torna al suo posto.
+        tenute.rimetti(presa);
+        let ripresa = tenute.prendi(3, adesso).expect("il secondo «Annulla»");
+        assert_eq!(ripresa.2, "fotografia");
+        // Con la sua ora di prima, non con quella del guasto.
+        assert_eq!(ripresa.1, adesso);
+    }
+
+    #[test]
+    fn un_gettone_si_usa_una_volta() {
+        let adesso = Instant::now();
+        let mut tenute = Annullabili::nuovo();
+        tenute.tieni(4, adesso, ());
+        tenute.tieni(5, adesso, ());
+        assert!(tenute.prendi(4, adesso).is_some());
+        assert!(tenute.prendi(4, adesso).is_none());
+        assert!(tenute.prendi(5, adesso).is_some(), "l'altra resta");
+        assert!(tenute.prendi(0, adesso).is_none());
+    }
+
+    // ── le regole intelligenti, dall'editor e ritorno ───────────────────────
+
+    /// Un valore che `Regola::valida` accetta per quel campo e operatore.
+    fn valore_per(campo: Campo, operatore: Operatore) -> Valore {
+        use rymembra_domain::regole::GenereCampo;
+        if !operatore.vuole_valore() {
+            return Valore::Nessuno;
+        }
+        match campo.genere() {
+            GenereCampo::Testo => Valore::Testo(format!("{} di prova", campo.come_testo())),
+            GenereCampo::Data => Valore::Numero(30),
+            GenereCampo::Booleano => Valore::Numero(1),
+            GenereCampo::Numero => Valore::Numero(-7),
+        }
+    }
+
+    #[test]
+    fn le_regole_salvate_tornano_uguali_dall_editor() {
+        let mut regole = Vec::new();
+        for &campo in Campo::tutti() {
+            for &operatore in Operatore::per(campo.genere()) {
+                let regola = Regola {
+                    campo,
+                    operatore,
+                    valore: valore_per(campo, operatore),
+                };
+                assert!(regola.valida(), "{regola:?}");
+                regole.push(regola);
+            }
+        }
+        for (combinazione, limite, ordinamento) in [
+            (Combinazione::Qualsiasi, Some(25), Ordinamento::PiuAscoltati),
+            (Combinazione::Tutte, None, Ordinamento::Scaffale),
+            (Combinazione::Tutte, Some(1), Ordinamento::MenoAscoltati),
+            (Combinazione::Qualsiasi, None, Ordinamento::Recenti),
+            (Combinazione::Tutte, Some(5000), Ordinamento::Casuale),
+        ] {
+            let insieme = Insieme {
+                combinazione,
+                regole: regole.clone(),
+                limite,
+                ordinamento,
+            };
+            let tornato = InsiemeIpc::dal_dominio(&insieme).nel_dominio();
+            assert_eq!(tornato, insieme);
+        }
+    }
 }

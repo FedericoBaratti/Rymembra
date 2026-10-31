@@ -17,8 +17,9 @@
  * guardando e come lo sta guardando.
  */
 import type { Validazione } from "../ipc";
+import { senzaCaratteriDi } from "./risorse";
 import { DOVE, SCENA_DI_SERIE, scenaPer, type Larghezza, type Scena } from "./scena";
-import { annulla, ripeti, scrivi, storiaDa, type Storia } from "./storia";
+import { annulla, ripeti, riscritta, scrivi, storiaDa, type Storia } from "./storia";
 
 /** Quel che si sta modificando. */
 export type Selezione =
@@ -83,6 +84,8 @@ export interface StatoStudio {
    * riportarci il cursore anche se nel frattempo lo si è spostato.
    */
   riga: { riga: number; colonna: number; volta: number } | null;
+  /** Quante istantanee ha preso lo Studio in questa sessione. */
+  istantanee: number;
 }
 
 /** I campi dell'interfaccia che si impostano così come sono. */
@@ -121,6 +124,13 @@ export type Azione =
   | { tipo: "vaiRiga"; riga: number; colonna: number }
   /** L'editor ha mostrato la riga chiesta con quel contatore: si dimentica. */
   | { tipo: "rigaMostrata"; volta: number }
+  /**
+   * Un file del pacchetto è stato cancellato dal disco: le dichiarazioni dei
+   * caratteri che lo usavano si tolgono da tutta la storia, senza un passo.
+   */
+  | { tipo: "risorsaTolta"; nome: string }
+  /** È stata presa un'istantanea: Ctrl+S, «Salva e usa», «Esporta», la chat. */
+  | { tipo: "fotografata" }
   | { tipo: "imposta"; campi: Partial<CampiUi> };
 
 export function iniziale(id: string): StatoStudio {
@@ -148,6 +158,7 @@ export function iniziale(id: string): StatoStudio {
     rigioca: 0,
     inPausa: false,
     riga: null,
+    istantanee: 0,
   };
 }
 
@@ -233,6 +244,20 @@ export function riduci(stato: StatoStudio, azione: Azione): StatoStudio {
       return stato.riga?.volta === azione.volta ? { ...stato, riga: null } : stato;
     case "imposta":
       return { ...stato, ...azione.campi };
+    case "fotografata":
+      // Il pannello delle istantanee rilegge l'elenco quando questo cambia:
+      // fino alla 3.2 lo faceva solo coi suoi tasti, e un Ctrl+S — che
+      // l'ispettore vuoto presenta come «salva e prende un'istantanea» —
+      // sembrava non aver fatto niente.
+      return { ...stato, istantanee: stato.istantanee + 1 };
+    case "risorsaTolta":
+      // Non un passo: il file non torna con Ctrl+Z, e le dichiarazioni dei
+      // caratteri che lo usavano spariscono da ogni versione della storia.
+      // Vedi `risorse.ts`.
+      return {
+        ...stato,
+        storia: riscritta(stato.storia, (t) => senzaCaratteriDi(t, azione.nome)),
+      };
   }
 }
 
@@ -251,6 +276,22 @@ export function daSalvare(stato: StatoStudio): boolean {
 /** La validazione è indietro rispetto al testo. */
 export function inValidazione(stato: StatoStudio): boolean {
   return stato.caricato && stato.validato !== testo(stato);
+}
+
+/**
+ * Lo scafale si può riscrivere dall'albero che si vede.
+ *
+ * L'albero viene da `valido`, che si aggiorna solo quando torna la
+ * validazione: con un testo che ha errori è quello dell'ultima versione
+ * buona, e mentre la validazione è in volo è quello del testo di prima. In
+ * tutti e due i casi una scrittura riscriverebbe `layout.shell` intero da una
+ * versione vecchia — due Canc rapidi, e il secondo rimetteva il nodo tolto
+ * dal primo. La nota «correggi gli errori» guarda solo gli errori: questa è
+ * la guardia muta delle scritture (`AlberoScafale.tsx`).
+ */
+export function scafaleScrivibile(stato: StatoStudio): boolean {
+  if (stato.esito !== null && stato.esito.errori.length > 0) return false;
+  return !inValidazione(stato);
 }
 
 /** Il nome della parte selezionata, se è una parte. */

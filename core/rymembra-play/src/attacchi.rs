@@ -193,10 +193,16 @@ fn flusso_spettrale(sorgente: Sorgente) -> Result<Vec<f32>, AppError> {
 
 /// I millesimi a cui corrisponde una finestra.
 ///
-/// La finestra `n` copre i campioni che finiscono a `(n + 1) · PASSO`, ma
-/// l'attacco che ha rilevato sta al **suo inizio**: il flusso confronta questa
-/// finestra con la precedente, e quel che è cambiato è cambiato lì. Da qui il
-/// `+ 1` e non un `+ 2`, che sposterebbe ogni attacco in avanti di 23 ms.
+/// `flusso[n]` confronta la finestra che copre i campioni
+/// `(n + 1) · PASSO .. (n + 3) · PASSO` con la precedente: la prima trasformata,
+/// sui campioni `0 .. 2 · PASSO`, non ha niente con cui confrontarsi e non dà
+/// flusso, quindi `flusso[0]` viene dalla seconda. L'attacco si data
+/// all'**inizio** di quella finestra, `(n + 1) · PASSO`: è lì che comincia quel
+/// che la precedente non aveva. Da qui il `+ 1` e non un `+ 2`, che sposterebbe
+/// ogni attacco in avanti di 23 ms. Con la finestra di Hann il massimo del
+/// flusso cade in media mezzo passo — circa 11,6 ms — dopo quell'istante: molto
+/// meno delle finestre con cui il dominio aggancia una battuta a un attacco
+/// (`FINESTRA_PRIMA_MS` e `FINESTRA_DOPO_MS` in `rymembra_domain::testo`).
 #[expect(
     clippy::integer_division,
     reason = "convertire dei campioni in millesimi è una divisione per la frequenza"
@@ -308,7 +314,8 @@ mod prove {
 
     #[test]
     fn i_millesimi_partono_dall_inizio_della_finestra() {
-        // La finestra 0 finisce a 512 campioni, cioè 23 ms a 22 050 Hz.
+        // `flusso[0]` viene dalla finestra che comincia a 512 campioni, cioè
+        // 23 ms a 22 050 Hz.
         assert_eq!(quando(0), 23);
         // (43 + 1) · 512 = 22 528 campioni, cioè 1021,67 ms troncati.
         assert_eq!(quando(43), 1_021);

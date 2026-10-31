@@ -222,7 +222,15 @@ pub(crate) const fn rovescia(mut valore: usize, bit: u32) -> usize {
     fuori
 }
 
-/// La trasformata, in posto, radix-2 decimata in frequenza.
+/// La trasformata, in posto, radix-2 a decimazione nel tempo: vuole l'ingresso
+/// già permutato a bit rovesciati ([`rovescia`]) e lascia i bin in ordine
+/// naturale.
+///
+/// Gli stadi vanno da due a `n`, e la farfalla moltiplica per il fattore il
+/// secondo elemento prima di sommare e sottrarre: è il Cooley-Tukey nel tempo.
+/// Chi le passasse i campioni in ordine naturale avrebbe uno spettro
+/// plausibile e sbagliato, con i bin rimescolati: tutti i chiamanti — lo
+/// spettro, l'impronta, gli attacchi — permutano prima.
 ///
 /// # Perché scritta a mano
 ///

@@ -37,7 +37,7 @@
 //! servizi restituiscono, e servono a capire cosa è successo.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
@@ -108,6 +108,10 @@ pub struct StatoScrobble {
     sveglia: (Mutex<bool>, Condvar),
     /// Un giro è in corso.
     in_corso: AtomicBool,
+    /// L'ultimo «sta suonando» chiesto: vedi [`sta_suonando`].
+    adesso: Arc<Casella>,
+    /// Il filo che lo manda, nato al primo brano.
+    filo_adesso: OnceLock<()>,
 }
 
 impl StatoScrobble {
@@ -118,6 +122,8 @@ impl StatoScrobble {
             attesa_lastfm: Mutex::new(None),
             sveglia: (Mutex::new(false), Condvar::new()),
             in_corso: AtomicBool::new(false),
+            adesso: Arc::new(Casella::default()),
+            filo_adesso: OnceLock::new(),
         }
     }
 }
@@ -440,28 +446,66 @@ pub async fn scrobble_invia(app: AppHandle) -> Esito<EsitoInvio> {
     .map_err(errore)
 }
 
-/// Rimette in fila gli ascolti abbandonati.
+/// Rimette in fila gli ascolti abbandonati di un servizio.
+///
+/// `servizio` è la chiave stabile (`listenbrainz` o `lastfm`): ogni coda della
+/// schermata ha i suoi pulsanti, e «Riprova» sotto ListenBrainz non deve
+/// rimettere in fila anche quel che Last.fm ha rifiutato.
 #[tauri::command]
-pub fn scrobble_riprova(stato: State<'_, Stato>, app: AppHandle) -> Esito<StatoScrobbleIpc> {
+pub fn scrobble_riprova(
+    stato: State<'_, Stato>,
+    app: AppHandle,
+    servizio: String,
+) -> Esito<StatoScrobbleIpc> {
     con_libreria(&stato, |libreria| {
-        coda::rimetti_in_fila(&libreria.connection, None)
+        riprova_abbandonati(&libreria.connection, &servizio)
     })
     .map_err(errore)?;
     sveglia(&app);
     stato_ipc(&stato, &app.state::<StatoScrobble>()).map_err(errore)
 }
 
-/// Butta gli ascolti abbandonati.
+/// Butta gli ascolti abbandonati di un servizio: vedi [`scrobble_riprova`].
 #[tauri::command]
 pub fn scrobble_dimentica(
     stato: State<'_, Stato>,
     scrobble: State<'_, StatoScrobble>,
+    servizio: String,
 ) -> Esito<StatoScrobbleIpc> {
     con_libreria(&stato, |libreria| {
-        coda::dimentica(&libreria.connection, None, true)
+        dimentica_abbandonati(&libreria.connection, &servizio)
     })
     .map_err(errore)?;
     stato_ipc(&stato, &scrobble).map_err(errore)
+}
+
+/// Il servizio scritto dalla finestra. `Servizio` non ha `serde`: arriva la
+/// chiave, e una chiave sconosciuta è una richiesta storta, non «tutti».
+fn servizio_da(canale: &str, chiave: &str) -> Result<Servizio, AppError> {
+    Servizio::da_chiave(chiave).ok_or_else(|| {
+        AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: canale.to_owned(),
+            detail: Some(format!("«{chiave}» non è un servizio")),
+        })
+    })
+}
+
+/// Il corpo di [`scrobble_riprova`], sotto il lucchetto.
+fn riprova_abbandonati(
+    connection: &rusqlite::Connection,
+    servizio: &str,
+) -> Result<usize, AppError> {
+    let servizio = servizio_da("scrobble_riprova", servizio)?;
+    coda::rimetti_in_fila(connection, Some(servizio))
+}
+
+/// Il corpo di [`scrobble_dimentica`], sotto il lucchetto.
+fn dimentica_abbandonati(
+    connection: &rusqlite::Connection,
+    servizio: &str,
+) -> Result<usize, AppError> {
+    let servizio = servizio_da("scrobble_dimentica", servizio)?;
+    coda::dimentica(connection, Some(servizio), true)
 }
 
 /// Accoda tutta la cronologia già in casa verso ListenBrainz.
@@ -514,7 +558,15 @@ pub fn dopo_un_ascolto(app: &AppHandle, ascolto: &Listen) {
     };
     let servizi = match collegati(&stato) {
         Ok(servizi) if !servizi.is_empty() => servizi,
-        _ => return,
+        Ok(_) => return,
+        // Il portachiavi di Windows non ha risposto: non si sa a chi mandarlo,
+        // e l'ascolto resta fuori dalla coda. Prima succedeva in silenzio —
+        // proprio la perdita che la coda esiste per evitare —; adesso almeno
+        // il diario lo dice. La cronologia ce l'ha comunque.
+        Err(err) => {
+            lamenta("ascolto non accodato: il portachiavi non risponde", &err);
+            return;
+        }
     };
 
     let esito = con_libreria(&stato, |libreria| {
@@ -540,46 +592,174 @@ pub fn dopo_un_ascolto(app: &AppHandle, ascolto: &Listen) {
 /// Non entra mai in coda. Un «sta ascoltando» rimasto indietro perché non c'era
 /// rete descriverebbe un brano finito venti minuti fa: si manda subito o non si
 /// manda.
+///
+/// # Un filo solo, e l'ultimo brano soltanto
+///
+/// Fino alla 3.2.0 di prova ogni brano apriva un filo suo. Cinque salti di fila con
+/// «prossimo» erano cinque richieste in parallelo, e con la rete lenta quella
+/// del brano 2 poteva arrivare al servizio dopo quella del 5: il profilo diceva
+/// «sta ascoltando» il 2 mentre suonava il 5, fino al brano dopo. Adesso
+/// questa funzione scrive il brano in una [`Casella`] e sveglia un filo solo,
+/// «rymembra-scrobble-adesso», nato al primo uso come quello di
+/// `media::premi`: il filo prende sempre l'ultimo brano chiesto, i saltati nel
+/// frattempo non escono, e le richieste partono una alla volta, in ordine.
+/// Prima di ogni servizio il filo guarda se il brano è ancora l'ultimo
+/// ([`manda_finche_vale`]).
 pub fn sta_suonando(app: &AppHandle, track_id: i64) {
-    let manico = app.clone();
-    let avviato = std::thread::Builder::new()
-        .name("rymembra-scrobble-adesso".to_owned())
-        .spawn(move || {
-            let Some(stato) = manico.try_state::<Stato>() else {
-                return;
-            };
-            let Ok(servizi) = collegati(&stato) else {
-                return;
-            };
-            if servizi.is_empty() {
-                return;
-            }
-            let letto = con_libreria(&stato, |libreria| {
-                coda::ascolto_di(&libreria.connection, track_id, 0)
-            });
-            let Ok(Some(ascolto)) = letto else {
-                return;
-            };
-            if !ascolto.valido() {
-                return;
-            }
+    let Some(scrobble) = app.try_state::<StatoScrobble>() else {
+        return;
+    };
+    scrobble.adesso.metti(track_id);
+    scrobble.filo_adesso.get_or_init(|| {
+        let manico = app.clone();
+        let casella = Arc::clone(&scrobble.adesso);
+        let avviato = std::thread::Builder::new()
+            .name("rymembra-scrobble-adesso".to_owned())
+            .spawn(move || filo_adesso(&manico, &casella));
+        if let Err(err) = avviato {
+            nota!("[scrobble] il filo del «sta suonando» non è partito: {err}");
+        }
+    });
+}
 
-            for servizio in servizi {
-                // Un guasto qui non si ritenta e non si registra da nessuna
-                // parte: è un'informazione che vale finché dura il brano, e fra
-                // tre minuti sarà comunque vecchia.
-                let esito = match servizio {
-                    Servizio::ListenBrainz => listenbrainz(&stato).and_then(|c| c.adesso(&ascolto)),
-                    Servizio::LastFm => lastfm(&stato)
-                        .and_then(|(client, sessione)| client.adesso(&sessione, &ascolto)),
-                };
-                if let Err(err) = esito {
-                    lamenta(&format!("«sta suonando» verso {}", servizio.nome()), &err);
-                }
+/// Il corpo del filo «rymembra-scrobble-adesso»: un brano alla volta, sempre
+/// l'ultimo chiesto.
+fn filo_adesso(manico: &AppHandle, casella: &Casella) {
+    loop {
+        let chiesto = casella.aspetta();
+        // All'uscita se ne va e basta, come il filo della coda.
+        if crate::spegnimento::in_uscita() {
+            return;
+        }
+        let Some(stato) = manico.try_state::<Stato>() else {
+            return;
+        };
+        manda_adesso(&stato, casella, chiesto);
+    }
+}
+
+/// Il «sta suonando» di un brano, a ciascun servizio collegato.
+fn manda_adesso(stato: &Stato, casella: &Casella, chiesto: Chiesto) {
+    let Ok(servizi) = collegati(stato) else {
+        return;
+    };
+    if servizi.is_empty() {
+        return;
+    }
+    let letto = con_libreria(stato, |libreria| {
+        coda::ascolto_di(&libreria.connection, chiesto.track_id, 0)
+    });
+    let Ok(Some(ascolto)) = letto else {
+        return;
+    };
+    if !ascolto.valido() {
+        return;
+    }
+    manda_finche_vale(casella, chiesto, &servizi, |servizio| {
+        // Un guasto qui non entra in coda e non si registra da nessuna parte
+        // se non nel diario: è un'informazione che vale finché dura il brano,
+        // e fra tre minuti sarà comunque vecchia. Il client però la ritenta da
+        // sé, come ogni sua richiesta (`ritenta` con i suoi `TENTATIVI`, nei
+        // moduli `listenbrainz` e `lastfm` del crate): una richiesta già
+        // partita non si ferma a metà. Quel che non succede più è che arrivi
+        // dopo quella del brano successivo: il filo è uno, e il brano dopo
+        // parte solo quando questa è finita.
+        let esito = match servizio {
+            Servizio::ListenBrainz => listenbrainz(stato).and_then(|c| c.adesso(&ascolto)),
+            Servizio::LastFm => {
+                lastfm(stato).and_then(|(client, sessione)| client.adesso(&sessione, &ascolto))
             }
-        });
-    if let Err(err) = avviato {
-        nota!("[scrobble] il filo del «sta suonando» non è partito: {err}");
+        };
+        if let Err(err) = esito {
+            lamenta(&format!("«sta suonando» verso {}", servizio.nome()), &err);
+        }
+    });
+}
+
+/// Un brano di cui dire «sta suonando», col numero d'ordine della richiesta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Chiesto {
+    track_id: i64,
+    /// Cresce di uno a ogni [`Casella::metti`]: dice se dopo questo brano ne
+    /// è partito un altro.
+    generazione: u64,
+}
+
+/// L'ultimo «sta suonando» chiesto: una casella sola, non una coda.
+///
+/// Chi mette prende il posto di chi non è ancora stato preso: dei brani
+/// saltati in fretta non si dice niente, perché quando il filo arriva a loro
+/// non suonano già più.
+#[derive(Debug, Default)]
+pub(crate) struct Casella {
+    /// Il brano non ancora preso, e la generazione dell'ultimo messo.
+    dentro: Mutex<(Option<i64>, u64)>,
+    sveglia: Condvar,
+}
+
+impl Casella {
+    /// Mette un brano al posto di quello non ancora preso, e sveglia il filo.
+    fn metti(&self, track_id: i64) {
+        let mut dentro = self.dentro.lock().unwrap_or_else(PoisonError::into_inner);
+        dentro.0 = Some(track_id);
+        dentro.1 = dentro.1.wrapping_add(1);
+        drop(dentro);
+        self.sveglia.notify_one();
+    }
+
+    /// L'ultimo brano chiesto, se c'è; la casella resta vuota.
+    ///
+    /// Solo per le prove: il filo usa [`Casella::aspetta`], che è la stessa
+    /// presa senza tornare a mani vuote.
+    #[cfg(test)]
+    fn prendi(&self) -> Option<Chiesto> {
+        let mut dentro = self.dentro.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::togli(&mut dentro)
+    }
+
+    /// L'ultima presa (vedi `prendi` nelle prove), aspettando che qualcuno
+    /// metta.
+    fn aspetta(&self) -> Chiesto {
+        let mut dentro = self.dentro.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(chiesto) = Self::togli(&mut dentro) {
+                return chiesto;
+            }
+            dentro = self
+                .sveglia
+                .wait(dentro)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Dopo `chiesto` non è partito nessun altro brano.
+    fn vale(&self, chiesto: Chiesto) -> bool {
+        self.dentro.lock().unwrap_or_else(PoisonError::into_inner).1 == chiesto.generazione
+    }
+
+    fn togli(dentro: &mut (Option<i64>, u64)) -> Option<Chiesto> {
+        let generazione = dentro.1;
+        dentro.0.take().map(|track_id| Chiesto {
+            track_id,
+            generazione,
+        })
+    }
+}
+
+/// Manda `chiesto` a un servizio dopo l'altro, finché resta l'ultimo brano
+/// chiesto: se nel frattempo ne è partito un altro, i servizi che restano non
+/// ricevono più questo, e il filo passa a quello nuovo.
+fn manda_finche_vale<S: Copy>(
+    casella: &Casella,
+    chiesto: Chiesto,
+    servizi: &[S],
+    mut manda: impl FnMut(S),
+) {
+    for &servizio in servizi {
+        if !casella.vale(chiesto) {
+            return;
+        }
+        manda(servizio);
     }
 }
 
@@ -1186,6 +1366,115 @@ fn lamenta(cosa: &str, err: &AppError) {
 mod prove {
     use super::*;
     use rymembra_oauth::portachiavi::{Guasto, InMemoria};
+
+    /// Una coda con due ascolti abbandonati per servizio.
+    fn coda_con_abbandonati() -> rusqlite::Connection {
+        let c = libreria();
+        for (i, servizio) in ["listenbrainz", "listenbrainz", "lastfm", "lastfm"]
+            .into_iter()
+            .enumerate()
+        {
+            c.execute(
+                "INSERT INTO scrobble_queue (service, played_at, artist, title, attempts, queued_at)
+                 VALUES (?1, ?2, 'Artista', 'Titolo', ?3, 0)",
+                rusqlite::params![
+                    servizio,
+                    1_700_000_000_000_i64 + i64::try_from(i).expect("piccolo") * 1000,
+                    coda::MASSIMI_TENTATIVI
+                ],
+            )
+            .expect("riga");
+        }
+        c
+    }
+
+    fn abbandonati(c: &rusqlite::Connection, servizio: Servizio) -> i64 {
+        coda::conteggi(c, Some(servizio))
+            .expect("conteggi")
+            .abbandonati
+    }
+
+    #[test]
+    fn riprova_tocca_solo_il_servizio_chiesto() {
+        let c = coda_con_abbandonati();
+        assert_eq!(riprova_abbandonati(&c, "listenbrainz"), Ok(2));
+        assert_eq!(abbandonati(&c, Servizio::ListenBrainz), 0);
+        assert_eq!(
+            abbandonati(&c, Servizio::LastFm),
+            2,
+            "«Riprova» sotto ListenBrainz non tocca la coda di Last.fm"
+        );
+        assert_eq!(riprova_abbandonati(&c, "lastfm"), Ok(2));
+        assert_eq!(abbandonati(&c, Servizio::LastFm), 0);
+        // Una chiave che non è un servizio è una richiesta storta, non «tutti».
+        let storta = riprova_abbandonati(&c, "spotify").expect_err("storta");
+        assert!(matches!(
+            storta.code(),
+            ErrorCode::IpcPayloadInvalid { channel, .. } if channel == "scrobble_riprova"
+        ));
+    }
+
+    #[test]
+    fn dimentica_tocca_solo_il_servizio_chiesto() {
+        let c = coda_con_abbandonati();
+        assert_eq!(dimentica_abbandonati(&c, "lastfm"), Ok(2));
+        assert_eq!(abbandonati(&c, Servizio::LastFm), 0);
+        assert_eq!(
+            abbandonati(&c, Servizio::ListenBrainz),
+            2,
+            "«Dimentica» sotto Last.fm non butta la coda di ListenBrainz"
+        );
+        let storta = dimentica_abbandonati(&c, "").expect_err("storta");
+        assert!(matches!(
+            storta.code(),
+            ErrorCode::IpcPayloadInvalid { channel, .. } if channel == "scrobble_dimentica"
+        ));
+        assert_eq!(abbandonati(&c, Servizio::ListenBrainz), 2);
+    }
+
+    #[test]
+    fn la_casella_del_sta_ascoltando_tiene_solo_l_ultimo() {
+        let casella = Casella::default();
+        assert_eq!(casella.prendi(), None);
+        casella.metti(1);
+        casella.metti(2);
+        casella.metti(3);
+        // Tre brani partiti prima che il filo li guardasse: si dice solo il
+        // terzo, e i due saltati non escono più.
+        let preso = casella.prendi().expect("l'ultimo");
+        assert_eq!(preso.track_id, 3);
+        assert_eq!(casella.prendi(), None);
+        assert!(casella.vale(preso), "nessun brano è partito dopo");
+        // E `aspetta` non aspetta se c'è già qualcosa.
+        casella.metti(4);
+        assert_eq!(casella.aspetta().track_id, 4);
+        assert!(!casella.vale(preso));
+    }
+
+    #[test]
+    fn un_salto_durante_l_invio_non_manda_il_vecchio_dopo() {
+        let casella = Casella::default();
+        let mut registro: Vec<(i64, &str)> = Vec::new();
+        casella.metti(1);
+        let primo = casella.prendi().expect("il brano 1");
+        // Mentre il «sta suonando» del brano 1 va al primo servizio, l'utente
+        // passa al 2: il secondo servizio non riceve più l'1.
+        manda_finche_vale(&casella, primo, &["listenbrainz", "lastfm"], |servizio| {
+            registro.push((primo.track_id, servizio));
+            if registro.len() == 1 {
+                casella.metti(2);
+            }
+        });
+        let secondo = casella.prendi().expect("il brano 2");
+        manda_finche_vale(&casella, secondo, &["listenbrainz", "lastfm"], |servizio| {
+            registro.push((secondo.track_id, servizio));
+        });
+        assert_eq!(
+            registro,
+            [(1, "listenbrainz"), (2, "listenbrainz"), (2, "lastfm")],
+            "in ordine, uno alla volta, e mai l'1 dopo il 2"
+        );
+    }
 
     /// Una libreria vuota in memoria.
     fn libreria() -> rusqlite::Connection {

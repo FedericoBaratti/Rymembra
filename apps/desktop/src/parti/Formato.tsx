@@ -12,7 +12,8 @@
  *
  * I numeri sono quelli del decodificatore quando il brano suona (il codec vero
  * dentro un M4A, l'MP3 che si ascolta di un FLAC dell'Internet Archive), e
- * quelli del database nell'istante prima: vedi `FormatoFile` in `ipc.ts`.
+ * quelli del database nell'istante prima: vedi `FormatoFile` in
+ * `ipc/libreria.ts`.
  *
  * # Perché è un componente puro
  *

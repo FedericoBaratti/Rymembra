@@ -258,6 +258,7 @@ pub fn leggi(grezzo: &str) -> Testo {
         .replace('\r', "\n");
     for riga in normalizzato.lines() {
         let (tag, resto) = separa_tag(riga);
+        let ha_tag = !tag.is_empty();
         let mut tempi: Vec<u32> = Vec::new();
         for uno in tag {
             if let Some(ms) = tempo_ms(uno) {
@@ -272,21 +273,44 @@ pub fn leggi(grezzo: &str) -> Testo {
         }
 
         if tempi.is_empty() {
-            senza_tempo.push(riga);
+            // Una riga di sole intestazioni — `[ar:…]`, `[ti:…]`, `[offset:…]` —
+            // non è testo nemmeno in un file senza tempi: si tiene solo quel che
+            // le sta dopo, se c'è. `[Ritornello]` non passa di qui, perché
+            // `separa_tag` si ferma prima e `tag` resta vuoto.
+            if !ha_tag {
+                senza_tempo.push(riga);
+            } else if !resto.trim().is_empty() {
+                senza_tempo.push(resto);
+            }
             continue;
         }
 
-        let (piatta, parole) = separa_parole(resto);
+        let (piatta, prefisso, parole) = separa_parole(resto);
         let piatta = piatta.trim().to_owned();
         for ms in tempi {
             // Una riga con più tempi è la stessa riga cantata più volte, e ogni
             // volta è una riga sua: fondere i tempi in una sola voce
             // significherebbe accenderla al primo e lasciarla accesa fino
             // all'ultimo.
+            //
+            // Il pezzo prima della prima parola con un tempo — `Oh <00:10.50>…`,
+            // chi scrive l'LRC esteso non tagga la parola che cade sul tempo
+            // della riga — comincia con la riga, quindi prende il suo tempo: di
+            // ciascuna, non della prima. Senza, la finestra, che quando ci sono
+            // le parole disegna quelle, non lo mostrava.
+            let parole = match &prefisso {
+                Some(pezzo) => std::iter::once(Parola {
+                    ms,
+                    testo: pezzo.clone(),
+                })
+                .chain(parole.iter().cloned())
+                .collect(),
+                None => parole.clone(),
+            };
             righe.push(Riga {
                 ms,
                 testo: piatta.clone(),
-                parole: parole.clone(),
+                parole,
                 secondaria: None,
             });
         }
@@ -400,9 +424,13 @@ fn e_un_tag(dentro: &str) -> bool {
 /// Un `<…>` che non contiene un tempo resta dov'è, per la stessa ragione per cui
 /// `[Ritornello]` resta dov'è: in un testo ci sono i segni di punteggiatura, e
 /// non si mangiano.
-fn separa_parole(testo: &str) -> (String, Vec<Parola>) {
+///
+/// Il pezzo che sta prima del primo tempo torna a parte, e solo quando ci sono
+/// delle parole e il pezzo non è di soli spazi: non ha un tempo suo, e il tempo
+/// che gli spetta — quello della riga — lo sa solo [`leggi`].
+fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     if !testo.contains('<') {
-        return (testo.to_owned(), Vec::new());
+        return (testo.to_owned(), None, Vec::new());
     }
 
     let mut segmenti: Vec<(Option<u32>, String)> = Vec::new();
@@ -438,12 +466,19 @@ fn separa_parole(testo: &str) -> (String, Vec<Parola>) {
     segmenti.push((corrente, pezzo));
 
     let piatta: String = segmenti.iter().map(|(_, t)| t.as_str()).collect();
-    let parole = segmenti
-        .into_iter()
-        .filter_map(|(ms, testo)| Some(Parola { ms: ms?, testo }))
-        .filter(|p| !p.testo.trim().is_empty())
-        .collect();
-    (piatta, parole)
+    let mut prefisso: Option<String> = None;
+    let mut parole: Vec<Parola> = Vec::new();
+    for (ms, testo) in segmenti {
+        match ms {
+            Some(ms) => parole.push(Parola { ms, testo }),
+            // Solo il primo segmento è senza tempo: dopo il primo `<mm:ss>`
+            // ogni pezzo ne ha uno.
+            None => prefisso = Some(testo),
+        }
+    }
+    parole.retain(|p| !p.testo.trim().is_empty());
+    let prefisso = prefisso.filter(|p| !p.trim().is_empty() && !parole.is_empty());
+    (piatta, prefisso, parole)
 }
 
 /// Legge `mm:ss`, `mm:ss.xx`, `mm:ss,xxx`, `mm:ss:xx` o `hh:mm:ss.xx`.
@@ -873,9 +908,12 @@ pub fn parole_combaciano(riga: &Riga) -> bool {
 ///    perché la media diventi inutilizzabile, e in una sessione di
 ///    sincronizzazione una battuta sbagliata c'è sempre.
 ///
-/// Il risultato è monotono: una battuta non può finire prima di quella prima di
-/// lei. Se l'aggancio la porterebbe indietro, resta dov'era la precedente —
-/// meglio due righe attaccate che due righe scambiate.
+/// Il risultato è strettamente crescente: una battuta non può finire prima di
+/// quella prima di lei, e nemmeno sul suo stesso tempo. Se l'aggancio la
+/// porterebbe indietro, si ferma un centesimo dopo la precedente — meglio due
+/// righe attaccate che due righe scambiate, e «attaccate» vuol dire a un
+/// centesimo l'una dall'altra: sullo stesso centesimo, riscritte e rilette,
+/// sarebbero diventate una riga sola con la seconda come traduzione.
 ///
 /// # Senza attacchi
 ///
@@ -924,7 +962,7 @@ pub fn aggancia(battute: &[u32], attacchi: &[u32]) -> Vec<u32> {
     let latenza = mediana(&mut scarti);
 
     // Seconda passata: chi non ha trovato niente si corregge della mediana, e
-    // nessuno finisce prima di chi lo precede.
+    // nessuno finisce prima di chi lo precede — né sul suo stesso centesimo.
     let mut fuori: Vec<u32> = Vec::with_capacity(battute.len());
     let mut minimo = 0_i64;
     for (indice, battuta) in battute.iter().enumerate() {
@@ -933,11 +971,22 @@ pub fn aggancia(battute: &[u32], attacchi: &[u32]) -> Vec<u32> {
             None => i64::from(*battuta).saturating_sub(latenza),
         };
         let tenuta = corretta.max(minimo).max(0);
-        minimo = tenuta;
+        // La prossima almeno un centesimo dopo questa. Un millesimo non
+        // basterebbe: [`scrivi`] arrotonda al centesimo, e due righe sullo
+        // stesso centesimo, rilette, diventano una riga e la sua traduzione
+        // (vedi `fondi_allo_stesso_tempo`). A dieci millesimi di distanza
+        // l'arrotondamento le tiene sempre su due centesimi diversi.
+        minimo = tenuta.saturating_add(PASSO_MINIMO_MS);
         fuori.push(u32::try_from(tenuta).unwrap_or(u32::MAX));
     }
     fuori
 }
+
+/// Di quanto, almeno, due battute raddrizzate da [`aggancia`] stanno lontane.
+///
+/// Un centesimo di secondo: è la risoluzione con cui [`scrivi`] riscrive i
+/// tempi.
+const PASSO_MINIMO_MS: i64 = 10;
 
 /// La mediana di un insieme di scarti; zero se non ce ne sono.
 ///
@@ -1292,6 +1341,56 @@ mod prove {
     }
 
     #[test]
+    fn il_pezzo_prima_della_prima_parola_prende_il_tempo_della_riga() {
+        // Un LRC esteso che non tagga la prima parola, perché cade sul tempo
+        // della riga: senza tempo, quel pezzo spariva dalle parole, e la
+        // finestra — che disegna le parole quando ci sono — non lo mostrava.
+        let testo = leggi("[00:10.00]prima <00:10.50>riga <00:11.00>qui");
+        let riga = testo.righe.first().expect("una riga");
+        assert_eq!(riga.testo, "prima riga qui");
+        assert_eq!(
+            riga.parole.first(),
+            Some(&Parola {
+                ms: 10_000,
+                testo: "prima ".to_owned(),
+            })
+        );
+        assert_eq!(riga.parole.len(), 3);
+        assert!(parole_combaciano(riga));
+        assert_eq!(leggi(&scrivi(&testo)), testo);
+
+        // Una riga con due tempi è due righe, e il pezzo prende il tempo di
+        // ciascuna.
+        let due = leggi("[00:10.00][01:10.00]prima <00:10.50>riga");
+        assert_eq!(
+            due.righe
+                .iter()
+                .map(|r| r.parole.first().map(|p| p.ms))
+                .collect::<Vec<_>>(),
+            vec![Some(10_000), Some(70_000)]
+        );
+
+        // Un pezzo di soli spazi non è una parola: sparisce come prima.
+        let spazi = leggi("[00:10.00] <00:10.00>una <00:10.50>due");
+        assert_eq!(
+            spazi.righe.first().map(|r| r.parole.len()),
+            Some(2),
+            "{spazi:?}"
+        );
+    }
+
+    #[test]
+    fn le_intestazioni_non_entrano_nel_testo_piatto() {
+        // Un `.lrc` senza tempi ma con le intestazioni: sono tag e non testo,
+        // come in un file sincronizzato.
+        let testo = leggi("[ar:qualcuno]\n[ti:un titolo]\n[offset:+0]\nprima riga\nseconda");
+        assert_eq!(testo.piatto.as_deref(), Some("prima riga\nseconda"));
+        // Un tag con del testo dopo, sulla stessa riga: resta il testo.
+        let testo = leggi("[ar:qualcuno]prima riga\nseconda");
+        assert_eq!(testo.piatto.as_deref(), Some("prima riga\nseconda"));
+    }
+
+    #[test]
     fn un_minore_che_non_e_un_tempo_resta_dov_e() {
         let testo = leggi("[00:10.00]tre <2 e non < di due");
         assert_eq!(
@@ -1526,13 +1625,48 @@ mod prove {
     #[test]
     fn l_esito_non_torna_mai_indietro() {
         // Un attacco che tirerebbe la seconda riga prima della prima: si tiene
-        // dov'era la prima invece di scambiarle.
+        // subito dopo la prima invece di scambiarle.
         let attacchi = vec![10_000, 9_000];
         let esito = aggancia(&[10_100, 9_100], &attacchi);
         assert!(
-            esito.windows(2).all(|due| due.first() <= due.get(1)),
+            esito.windows(2).all(|due| due.first() < due.get(1)),
             "i tempi devono restare in ordine: {esito:?}"
         );
+    }
+
+    #[test]
+    fn due_righe_raddrizzate_non_cadono_sullo_stesso_centesimo() {
+        // La prima riga battuta 110 ms in anticipo, la seconda subito dopo: la
+        // prima si aggancia a 10 100, la seconda non trova un attacco libero e
+        // si corregge della mediana (200), cioè cadrebbe a 9 950 — prima della
+        // prima. Tenerla dov'era la prima vorrebbe dire due righe allo stesso
+        // tempo, che riscritte e rilette diventano una riga e la sua traduzione.
+        let battute = vec![9_990, 10_150, 20_200, 30_200, 40_200];
+        let attacchi = vec![10_100, 20_000, 30_000, 40_000];
+        let esito = aggancia(&battute, &attacchi);
+        assert!(
+            esito
+                .windows(2)
+                .all(|due| due[1] >= due[0].saturating_add(10)),
+            "a un centesimo l'una dall'altra almeno: {esito:?}"
+        );
+        assert_ne!(scrivi_tempo(esito[0]), scrivi_tempo(esito[1]));
+
+        let testo = Testo {
+            righe: esito
+                .iter()
+                .enumerate()
+                .map(|(posto, ms)| Riga {
+                    ms: *ms,
+                    testo: format!("riga {posto}"),
+                    ..Riga::default()
+                })
+                .collect(),
+            ..Testo::default()
+        };
+        let riletto = leggi(&scrivi(&testo));
+        assert_eq!(riletto.righe.len(), 5, "{riletto:?}");
+        assert!(riletto.righe.iter().all(|r| r.secondaria.is_none()));
     }
 
     #[test]

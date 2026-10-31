@@ -1,0 +1,930 @@
+/* Copertine, griglia degli album, elenco dei brani, stelle, stati vuoti, primo
+   avvio, e le fasce d'errore, di notizia e d'aggiornamento.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── le copertine ─────────────────────────────────────────────────────────────
+ *
+ * Sono le uniche immagini dell'applicazione, e l'unica cosa colorata: tutto il
+ * resto è cromo. Quel che segue vale per tutte e sei le misure in cui compaiono
+ * — miniatura di riga, scheda della griglia, tassello del mosaico, testata di
+ * un album, terza colonna, schermo intero — perché `Copertina` emette `foto`
+ * accanto alla classe del posto in cui sta.
+ *
+ * Entrano in dissolvenza. Con `loading="lazy"` una griglia le riceve **mentre**
+ * si scorre, e quaranta comparse istantanee di file diversi sono uno
+ * sfarfallio; con una dissolvenza da `--dur-2` diventano un arrivo. Chi ha già
+ * l'immagine in cache non vede niente di tutto questo: `load` scatta prima del
+ * primo disegno, quindi l'attributo c'è già e la regola di partenza non si
+ * applica mai.
+ */
+.foto {
+  opacity: 0;
+  transition: opacity var(--transition-med);
+}
+.foto[data-pronta] {
+  opacity: 1;
+}
+
+/* Il filo attorno a una copertina.
+ *
+ * Una copertina scura su un fondo scuro non ha un bordo, e allora non ha
+ * nemmeno una forma: il quadrato finisce dove capita. Un pixel di spigolo
+ * gliela ridà, e su una copertina chiara non si vede perché è chiaro anche lui.
+ *
+ * `outline` con scostamento negativo e non `box-shadow: inset`: su un `<img>`
+ * l'ombra interna si dipinge **sotto** il contenuto, cioè sotto l'immagine, e
+ * non si vedrebbe mai. La regola che disegna un contorno d'accento — il fuoco
+ * sulla copertina della colonna — resta più specifica e continua a vincere. Il
+ * sorvolo di una scheda non ne disegna più: alza la copertina, perché un
+ * anello d'accento è il segno del fuoco.
+ */
+.copertina,
+.miniatura,
+.hero-art,
+.column-art,
+.np-art,
+.mosaico {
+  outline: 1px solid var(--spigolo);
+  outline-offset: -1px;
+}
+
+/*
+ * L'ambiente è la copertina, sfocata fino a non essere più un'immagine.
+ *
+ * `--hero-rgb` resta sotto e non è stato tolto: è il fondo di quando la
+ * copertina non c'è, cioè di metà libreria vera. Quando c'è, questa immagine lo
+ * copre — ed è meglio di una tinta estratta perché una copertina non ha *un*
+ * colore: un disco rosso con la fascia gialla dà un ambiente rosso e giallo,
+ * ognuno dalla parte in cui sta davvero.
+ *
+ * Lo `scale` viene prima della sfocatura nell'ordine in cui si legge, e conta:
+ * un `blur` porta dentro il riquadro i pixel trasparenti di fuori, e senza
+ * l'ingrandimento il bordo dell'immagine si vedrebbe come una cornice chiara.
+ *
+ * Il costo è una rasterizzazione sola: l'immagine è ferma, il livello si
+ * compone una volta e poi resta. Cambia solo quando cambia il brano.
+ */
+.tinta {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.3);
+  filter: blur(64px) saturate(1.35);
+  pointer-events: none;
+}
+/* I colori di una maschera non si vedono — contano solo le opacità — quindi
+   `black` qui non è un colore ma la parola per «opaco», e non è il letterale
+   che la disciplina dei token vieta. */
+.colonna .ambiente .tinta {
+  opacity: 0.5;
+  mask-image: radial-gradient(130% 100% at 50% 0%, black 18%, transparent 76%);
+}
+.in-riproduzione .ambiente .tinta {
+  opacity: 0.8;
+  mask-image: linear-gradient(180deg, black 8%, rgb(0 0 0 / 0.4) 66%, transparent);
+}
+
+/* ── griglia degli album ─────────────────────────────────────────────────── */
+.griglia {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+  gap: var(--spazio-4) var(--spazio-3);
+}
+
+.scheda {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.copertina {
+  aspect-ratio: 1;
+  width: 100%;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  object-fit: cover;
+  display: block;
+  box-shadow: var(--shadow-2);
+}
+
+/* Il quadrato con la nota, dove la copertina non c'è — e ce n'è una su due in
+   una libreria vera. La regola vale per tutte e sei le misure: era scritta due
+   volte, per la scheda e per la riga, e le altre quattro non l'avevano —
+   `np-art` senza immagine metteva la nota nell'angolo in alto a sinistra di un
+   quadrato da trecentosessanta pixel. Resta per taglia solo la misura del
+   glifo, che è l'unica cosa che cambia davvero. */
+.vuota {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}
+.copertina.vuota {
+  font-size: 26px;
+}
+.hero-art.vuota,
+.column-art.vuota,
+.np-art.vuota {
+  font-size: 44px;
+}
+
+.scheda .titolo {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scheda .sotto {
+  font-size: 12px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── elenco dei brani ─────────────────────────────────────────────────────────
+ *
+ * Righe da quaranta pixel. Non è una misura scelta per far stare più roba: è la
+ * misura in cui una miniatura da trentaquattro sta comoda e due righe di testo
+ * — titolo a 13.5, artista a 12 — ci stanno senza schiacciarsi. Sotto i
+ * quaranta il titolo e l'artista si toccano, sopra i cinquanta l'elenco comincia
+ * a sembrare un modulo.
+ *
+ * L'intestazione di colonna condivide la griglia con le righe, e la condivide
+ * **per costruzione**: `--colonne-riga` è dichiarata una volta e letta da tutte
+ * e due. Due `grid-template-columns` copiati sono due misure che si scollano
+ * alla prima colonna che cambia larghezza, ed è il difetto che si vede solo
+ * quando le intestazioni non stanno più sopra le loro colonne.
+ */
+.elenco {
+  display: flex;
+  flex-direction: column;
+  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 82px 46px 32px;
+}
+
+/*
+ * Dentro una playlist modificabile la riga ha una colonna in più: il tasto che
+ * la toglie da lì.
+ *
+ * Va **dichiarata**. Prima ci si affidava a `grid-auto-columns: 32px`, che è la
+ * proprietà giusta per un'altra cosa: dimensiona le tracce implicite di
+ * *colonna*, e quelle nascono solo con `grid-auto-flow: column`. Con il flusso
+ * di serie — per righe — l'ottavo figlio non finisce in fondo alla riga, va a
+ * capo: la × si vedeva sotto la riga a cui apparteneva, allineata a sinistra.
+ */
+.elenco[data-con-togli] {
+  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 82px 46px 32px 32px;
+}
+
+/*
+ * L'elenco che si stringe.
+ *
+ * `@container` e non `@media`, e la differenza si vede il giorno in cui si apre
+ * la terza colonna: la finestra non ha cambiato misura, il **contenuto** sì, di
+ * trecentoquarantotto pixel. Una media query non se ne accorgerebbe e il titolo
+ * verrebbe schiacciato a nulla mentre album e voto restano larghi come prima.
+ * Il contenitore è la zona che contiene `content`, e chi lo dichiara è il
+ * compilatore dello scafale: la skin non lo sceglie e non può toglierlo.
+ *
+ * Le colonne si ritirano in ordine di quanto pesano: prima l'album, che è la
+ * seconda informazione dopo il titolo; poi il voto, che si vede comunque nella
+ * terza colonna e nel lettore. Titolo, durata e cuore non si tolgono mai —
+ * sotto quella soglia l'elenco smetterebbe di essere un elenco di brani.
+ *
+ * `--colonne-riga` si riscrive una volta sola e le due griglie la seguono, che è
+ * la proprietà per cui esiste.
+ */
+@container (max-width: 760px) {
+  .elenco {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 82px 46px 32px;
+  }
+  .elenco[data-con-togli] {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 82px 46px 32px 32px;
+  }
+  .testa-elenco .disco,
+  .riga .disco {
+    display: none;
+  }
+}
+@container (max-width: 560px) {
+  .elenco {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 46px 32px;
+  }
+  .elenco[data-con-togli] {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 46px 32px 32px;
+  }
+  .testa-elenco .voto,
+  .riga .stelle {
+    display: none;
+  }
+}
+
+.testa-elenco {
+  display: grid;
+  grid-template-columns: var(--colonne-riga);
+  gap: 12px;
+  align-items: center;
+  padding: 0 var(--spazio-2) 8px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.testa-elenco .indice,
+.testa-elenco .durata {
+  text-align: right;
+}
+
+/*
+ * `min-height` e non `height`, ed è una sottrazione.
+ *
+ * Quaranta pixel meno i dieci del padding (`box-sizing: border-box`) lasciano
+ * trenta di contenuto, e `.riga .chi` ne impila due: 13,5px e 12px a
+ * `line-height: 1.25`, cioè 31,9. L'artista sbordava sotto il bordo arrotondato
+ * di un pixel e nove, su ogni riga dell'elenco.
+ *
+ * Quaranta diventa quindi il **pavimento** e la riga si assesta a 41,9. Il
+ * numero nuovo conta meno del fatto che sia **uno solo per tutte**, perché la
+ * finestra virtuale misura l'altezza della prima `.riga` disegnata e con quella
+ * calcola dove stanno le altre diciottomila: righe di altezza diversa la
+ * farebbero saltare. Quel che le tiene uguali sono due cose, e nessuna delle due
+ * si tocca: l'`white-space: nowrap` con l'ellissi su `.nome` e `.autore` qui
+ * sotto, che impedisce a un titolo lungo di andare a capo, e il fatto che
+ * `.autore` abbia sempre un testo — `formato.ts:nomeArtista` restituisce
+ * «Artista sconosciuto» e mai la stringa vuota, quindi la seconda riga c'è
+ * sempre e misura sempre quanto l'altra.
+ *
+ * Resta una riga di scarto dichiarata: `.riga.finta`, il segnaposto, impila due
+ * barre da 11 con 5 di stacco e si ferma al pavimento, cioè a quaranta contro i
+ * 41,9 della riga vera. Sono due pixel di salto all'arrivo dei dati, ed è il
+ * difetto che il commento di `.scheda.finta` dice di non voler avere — qui si
+ * accetta perché la finestra virtuale rimisura con un `ResizeObserver`, quindi
+ * il salto è visibile una volta e non sfalsa il calcolo.
+ */
+.riga {
+  display: grid;
+  grid-template-columns: var(--colonne-riga);
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 5px var(--spazio-2);
+  border-radius: var(--radius-card);
+  cursor: default;
+}
+/* Le celle che non sono una scatola.
+ *
+ * In un `role="grid"` i figli di una riga devono essere celle, e i comandi non
+ * lo erano: un `role="gridcell"` messo **sul** bottone gli toglie il ruolo
+ * nativo, e chi ascolta lo schermo sentirebbe «cella» dove oggi sente
+ * «bottone» — cioè perderebbe proprio la cosa per cui questo elenco è una
+ * griglia e non un `listbox`. La cella quindi avvolge il comando invece di
+ * esserlo.
+ *
+ * `display: contents` è ciò che rende l'involucro gratuito: `--colonne-riga`
+ * assegna sette o otto colonne **per ordine dei figli**, e un contenitore vero
+ * conterebbe per uno — le sette colonne collasserebbero in una. Con `contents`
+ * la scatola sparisce dalla disposizione e resta il ruolo, che è l'unica cosa
+ * per cui l'elemento esiste.
+ *
+ * Due nomi e una regola sola: quel che avvolgono non è la stessa cosa — un
+ * comando l'una, la copertina l'altra — e un nome che mente su cosa contiene è
+ * un nome che al primo ritocco manda a ridipingere la cella sbagliata. La
+ * regola invece è la stessa, e scriverla due volte sarebbe una copia. */
+.cella-comando,
+.cella-miniatura {
+  display: contents;
+}
+/* Il sorvolo è un velo, non una superficie.
+   `--color-surface-1` sopra `--color-surface-0` sono due grigi a cinque unità
+   di distanza: sulla riga sotto il dito non si vedeva quasi niente. Una
+   percentuale del colore di testo funziona su qualunque fondo — anche sopra la
+   riga in riproduzione, che è già tinta d'accento — e si inverte da sola nel
+   tema chiaro. */
+.riga:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+}
+/* Il brano che sta suonando. `aria-current` e non una classe: l'informazione
+   serve identica a chi guarda e a chi ascolta lo schermo, e tenerla in un posto
+   solo è ciò che impedisce alle due di divergere. `data-active` accanto è per le
+   skin — è lo stato che il registro delle parti chiama «attivo» — e non
+   sostituisce l'attributo di accessibilità, gli sta accanto. */
+.riga[aria-current="true"] {
+  background: var(--accent-soft);
+}
+/* Il velo si somma alla tinta invece di essere coperto da essa: senza questa
+   riga la riga che suona era l'unica dell'elenco che non rispondeva al dito. */
+.riga[aria-current="true"]:hover {
+  background:
+    linear-gradient(color-mix(in srgb, var(--color-text-1) 6%, transparent) 0 0),
+    var(--accent-soft);
+}
+.riga[aria-current="true"] .nome {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.riga .chi {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.25;
+}
+.riga .disco {
+  font-size: 12px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.riga .indice {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+  text-align: right;
+  cursor: pointer;
+}
+/* Il numero lascia il posto al triangolo quando il dito è sulla riga: due
+   informazioni nello stesso spazio, quella utile a seconda del momento. Restano
+   entrambe raggiungibili da tastiera perché il fuoco conta come sorvolo. */
+.riga .via {
+  display: none;
+  color: var(--color-text-1);
+}
+/* ── il riordino: dove cadrebbe la riga che si sta trascinando ────────────────
+ *
+ * Un filo d'accento sul bordo alto della riga sorvolata, e la riga presa che si
+ * fa trasparente. Il trascinamento c'era già nel pannello della coda e non
+ * diceva **dove** sarebbe finita la riga: si lasciava andare e si scopriva
+ * dopo. Il segno sta sul bordo e non come fondo perché quel che si sta per
+ * scegliere è una posizione **fra** due righe, non una riga.
+ *
+ * `outline` e non `border`: un bordo cambierebbe l'altezza della riga, e
+ * l'elenco salterebbe di due pixel a ogni riga sorvolata.
+ */
+.riga[data-riordino] {
+  cursor: grab;
+}
+.riga[data-sopra] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* Durante il gesto, su tutta la pagina: il puntatore esce dalla riga e passa
+   su titoli e tasti, che hanno cursori loro e testo selezionabile. Il
+   trascinamento è quello di `riordino.ts`, che accende l'attributo alla presa
+   e lo spegne al rilascio. `body *` per battere i cursori dei tasti, che hanno
+   la stessa specificità e vengono dopo nel foglio. */
+:root[data-riordinando] {
+  user-select: none;
+}
+:root[data-riordinando] body * {
+  cursor: grabbing;
+}
+
+.riga:hover .indice .numero,
+.riga .indice:focus-visible .numero {
+  display: none;
+}
+.riga:hover .indice .via,
+.riga .indice:focus-visible .via {
+  display: inline;
+}
+
+.riga .miniatura {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-2);
+  object-fit: cover;
+}
+.miniatura.vuota {
+  font-size: 15px;
+}
+.riga .nome {
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.riga .autore {
+  color: var(--color-text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.riga .durata {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+  text-align: right;
+}
+
+/* ── valutazione ─────────────────────────────────────────────────────────── */
+.stelle {
+  display: flex;
+  gap: 1px;
+}
+
+.stella {
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 15px;
+  height: 15px;
+  color: var(--color-text-3);
+  line-height: 1;
+  cursor: pointer;
+}
+.stella[aria-pressed="true"] {
+  color: var(--warning);
+}
+/* Un brano non votato mostra cinque stelle vuote, e cinque stelle vuote su ogni
+   riga sono rumore su tutta la libreria: restano quasi invisibili finché il
+   dito non passa sulla riga o il fuoco non entra nel gruppo. */
+.stelle:not(:hover) .stella[aria-pressed="false"] {
+  opacity: 0.18;
+}
+.stelle:focus-within .stella[aria-pressed="false"] {
+  opacity: 1;
+}
+
+.cuore {
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+  border-radius: var(--raggio-minuto);
+}
+.cuore[aria-pressed="true"] {
+  /* `--accent-like` e non `--accent`: è il token che esiste apposta perché una
+     skin possa portare il cuore al rosso senza toccare l'accento di tutto il
+     resto, ed è quel che fa Nothing col suo unico rosso. */
+  color: var(--accent-like);
+}
+.cuore:hover {
+  background: var(--color-surface-2);
+}
+
+/* Qui c'era `.intestazione`, la vecchia testata dell'album aperto: copertina da
+   168, `h1` e riga di metadati. Non la emetteva più nessuno da quando l'album
+   aperto usa `Intestazione`, cioè la stessa testata di tutte le altre pagine —
+   erano ventisette righe che nessun selettore poteva raggiungere. La copertina
+   è tornata lassù, in `.intestazione-pagina .hero-art`.
+
+   Le è sopravvissuto per un po' il solo `.intestazione.playlist`, che alzava
+   in cima la testata senza copertina: un modificatore rimasto senza la classe
+   che modificava, cioè un selettore che non poteva colpire niente nemmeno lui.
+   Adesso non c'è più neanche quello. */
+
+/* ── stati ───────────────────────────────────────────────────────────────── */
+.vuoto {
+  display: grid;
+  /* `align-content` e non `align-items`: il primo centra il gruppo di righe,
+     il secondo centra ognuna dentro la propria riga — e con la griglia alta
+     quanto il contenitore le righe si distribuiscono su tutta l'altezza,
+     lasciando il titolo in cima e il bottone in fondo. */
+  align-content: center;
+  justify-items: center;
+  gap: var(--spazio-3);
+  height: 100%;
+  text-align: center;
+  color: var(--color-text-2);
+}
+.vuoto h2 {
+  margin: 0;
+  color: var(--color-text-1);
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 20px;
+  letter-spacing: -0.015em;
+  /* Uno stato vuoto è la prima cosa che si legge in una libreria appena
+     installata, e un titolo che va a capo lasciando una parola sola sulla
+     seconda riga si legge come un errore di impaginazione. */
+  text-wrap: balance;
+}
+.vuoto p {
+  margin: 0;
+  max-width: 46ch;
+  text-wrap: pretty;
+}
+
+/* ── il primo avvio ─────────────────────────────────────────────────────────
+   Copre tutto invece di stare dentro la colonna centrale: al primo avvio non
+   c'è ancora una libreria da guardare dietro, e una scheda che galleggia sopra
+   una griglia vuota chiede di capire cosa sia quella griglia prima di leggere
+   cosa c'è scritto sopra. */
+.primo {
+  position: fixed;
+  inset: 0;
+  z-index: var(--strato-primo);
+  display: grid;
+  place-items: center;
+  padding: var(--spazio-4);
+  background: var(--color-surface-0);
+}
+.primo-scheda {
+  display: grid;
+  /* `minmax(0, …)` e non la colonna di serie: un elemento di griglia non scende
+     sotto il suo contenuto, e un percorso trascinato da una cartella profonda —
+     su una riga sola, per scelta di `.primo-percorso` — allargava la colonna
+     oltre la scheda, con elenco e avvisi dietro di lui. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spazio-3);
+  width: min(560px, 100%);
+  padding: var(--spazio-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-1);
+}
+.primo-scheda h1 {
+  margin: 0;
+  color: var(--color-text-1);
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.primo-scheda p {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+.primo-sotto {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 17px;
+}
+.primo-attesa {
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.primo-cartelle {
+  display: grid;
+  /* Lo stesso `minmax` della scheda, e per la stessa ragione. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spazio-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.primo-cartella {
+  display: flex;
+  gap: var(--spazio-2);
+  align-items: center;
+  padding: var(--spazio-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+.primo-cartella:hover {
+  background: var(--color-surface-3);
+}
+/* Il percorso può essere lunghissimo e non deve spingere via il conteggio:
+   `min-width: 0` è quel che permette al troncamento di avvenire dentro un
+   contenitore flessibile invece di allargarlo. */
+.primo-percorso {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.primo-conto {
+  flex: none;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+.primo-avviso {
+  margin: var(--spazio-1) 0 0 var(--spazio-3);
+  color: var(--warning);
+  font-size: 11px;
+}
+.primo-pronto {
+  color: var(--accent);
+  font-size: 13px;
+}
+/* Gli avvisi della finestra, dentro la scheda: vedi `Primo`. La scheda è una
+   griglia con il suo passo, e il margine sotto di una notizia lo raddoppierebbe. */
+.primo-avvisi {
+  display: grid;
+  gap: var(--spazio-2);
+}
+.primo-avvisi:empty {
+  display: none;
+}
+.primo-avvisi > * {
+  margin-bottom: 0;
+}
+.primo-tasti {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+  align-items: center;
+  margin-top: var(--spazio-2);
+}
+
+/* Si seleziona e si copia, tutta. `body` dichiara `user-select: none` perché
+   l'interfaccia è cromo, ma un messaggio di guasto non è cromo: è l'unico posto
+   in cui l'applicazione dice una cosa che va incollata altrove — in una
+   segnalazione, in una ricerca. Ventidue elementi del foglio fanno già questo
+   rientro, e stava proprio dove serviva di più. Sull'intera fascia e non solo su
+   `> span`, così vengono anche `.dettaglio-errore` e il `<code>` della causa
+   tecnica: è il pezzo che si cerca di copiare, non la frase. */
+.errore {
+  user-select: text;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spazio-2);
+  border: 1px solid var(--danger);
+  border-left-width: 2px;
+  border-radius: var(--radius-card);
+  padding: var(--spazio-3);
+  margin-bottom: var(--spazio-3);
+  background: var(--danger-soft);
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+.errore > svg {
+  color: var(--danger);
+  margin-top: 2px;
+}
+
+/* Una notizia riuscita. Stessa forma della fascia d'errore — sta nello stesso
+   posto, si chiude allo stesso modo — e un colore che dice l'opposto: ci ho
+   messo dentro «5 brani scritti in …» sul canale sbagliato e a schermo è
+   comparso in rosso col triangolo d'avviso, cioè un'esportazione andata bene
+   che sembrava fallita. */
+.notizia {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  border: 1px solid var(--accent);
+  border-left-width: 2px;
+  border-radius: var(--radius-card);
+  padding: var(--spazio-3);
+  margin-bottom: var(--spazio-3);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+.notizia > svg {
+  color: var(--accent);
+}
+.notizia > span {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* L'«Annulla» della coda sostituita resta in vista a elenco scorso. Le altre
+   notizie stanno in cima alla pagina e scorrono via con lei, e per loro va
+   bene: si leggono. Questa invece nasce da un Invio su una cartella a metà
+   dell'albero, cioè quasi sempre con la cima della pagina fuori vista, e un
+   annulla che non si vede non annulla niente. Un gradino sopra gli aderenti:
+   l'intestazione dell'elenco dei brani è aderente anche lei, e viene dopo nel
+   DOM.
+
+   Aderente è il contenitore e non ognuno degli avvisi: lo stesso bisogno ce
+   l'hanno l'«Annulla» di una playlist eliminata e gli inviti di «Ascolta
+   insieme», che valgono un minuto, e tre aderenti fratelli con `top: 0` si
+   fermano tutti nello stesso punto, uno sopra l'altro — si leggeva solo
+   l'ultimo. Dentro un contenitore solo si impilano come nel flusso, e si
+   fermano insieme. */
+.aderenti-pagina {
+  position: sticky;
+  top: 0;
+  z-index: calc(var(--strato-aderente) + 1);
+}
+
+/* Una versione nuova è una notizia, non un allarme: stessa fascia, stesso
+   posto, stesso modo di chiudersi. Quel che cambia è che qui dentro può
+   starci un paragrafo di note di rilascio, quindi gli elementi si allineano
+   in alto invece che al centro — con `align-items: center` un tasto
+   «Aggiorna» finirebbe a metà di sei righe di changelog. */
+.aggiornamento {
+  align-items: flex-start;
+}
+.aggiornamento > svg {
+  margin-top: 2px;
+}
+.aggiornamento .bottone,
+.aggiornamento .tasto {
+  flex: none;
+}
+/* Chiuse di serie: chi vuole aggiornare preme e basta, e chi vuole sapere
+   cosa cambia apre. Un changelog aperto d'ufficio sposta in basso mezza
+   schermata per una cosa che quasi nessuno legge. */
+.aggiornamento .note-versione {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.aggiornamento .note-versione > summary {
+  cursor: pointer;
+  color: var(--color-text-3);
+}
+.aggiornamento .note-versione > p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.aggiornamento .scaricamento {
+  display: block;
+  margin-top: 6px;
+}
+/* Un aggiornamento che non si è potuto installare. Rosso ma dentro la fascia
+   della notizia, non una seconda fascia sopra: è la risposta a «Aggiorna», e
+   deve stare accanto al tasto che l'ha chiesta. */
+.aggiornamento .guasto {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger);
+}
+.aggiornamento .quanto {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+/* Senza `Content-Length` la barra non sa dove arriva. Non si finge: si
+   riempie e si spegne, che è il modo onesto di dire «sta succedendo, non so
+   quanto manca» — una barra che avanza a caso è peggio di nessuna barra. */
+.aggiornamento .toast-progress > span:not([style]) {
+  width: 40%;
+  animation: aggiornamento-ignoto 1.4s ease-in-out infinite;
+}
+@keyframes aggiornamento-ignoto {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aggiornamento .toast-progress > span:not([style]) {
+    width: 100%;
+    animation: none;
+  }
+}
+
+/* Il dispositivo audio mancante non è un'operazione fallita: è una condizione
+   che dura finché qualcuno non riapre. Colore d'avviso e non di pericolo —
+   niente si è rotto e niente è andato perso, semplicemente non si sente — e
+   il tasto allineato al centro perché è la risposta, non un'aggiunta. */
+.audio-perso {
+  align-items: center;
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+.audio-perso > svg {
+  color: var(--warning);
+  margin-top: 0;
+}
+.audio-perso .bottone {
+  flex: none;
+}
+/* Dentro la terza colonna la fascia non è un `toast-card`: sta in cima alla
+   colonna, sopra la copertina, e i margini della pagina lì non ci sono. */
+.colonna .audio-perso {
+  display: flex;
+  gap: var(--spazio-2);
+  margin: 0 var(--spazio-3) var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.colonna .audio-perso .cosa {
+  flex: 1;
+  min-width: 0;
+}
+/* Il suono che si è spostato non è un guasto: è la riapertura automatica che
+   ha funzionato. Stessa forma della fascia rossa — così non salta la riga
+   sotto quando l'una sostituisce l'altra — e la tinta dell'accento al posto di
+   quella dell'avviso. Dare le due notizie con lo stesso colore insegnerebbe a
+   ignorare quella che conta. */
+.audio-spostato {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+.audio-spostato > svg {
+  color: var(--accent);
+}
+.colonna .audio-spostato {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+
+/* L'elenco delle uscite audio. Righe intere cliccabili: il pallino da solo è
+   un bersaglio da tredici pixel, e questa è una schermata in cui si arriva
+   quando qualcosa non si sente — cioè già infastiditi. */
+.uscite {
+  list-style: none;
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.uscite label {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-2);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  font-size: 13px;
+}
+.uscite label:hover {
+  background: var(--color-surface-2);
+}
+.uscite input {
+  flex: none;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.uscite .nome {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Le etichette a destra dicono un fatto, non un'azione: piccole, spente, e
+   mai più larghe del nome che accompagnano. */
+.uscite .stato {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.uscite .stato.in-uso {
+  color: var(--accent);
+}
+/* Scelto ma staccato. Spento e non tolto: una riga che sparisce racconta che
+   la preferenza è stata dimenticata, e invece è ancora lì. */
+.uscite .assente label {
+  opacity: 0.55;
+}
+
+/* Il `user-select: text` che stava qui è salito su `.errore`: lì copre anche il
+   dettaglio e il codice, e ripeterlo qui sarebbe una dichiarazione che non fa
+   niente e che un giorno qualcuno sposterebbe credendola portante. */
+.errore > span {
+  flex: 1;
+}
+/* Nel toast il dettaglio sta dentro la stessa colonna della frase, sotto. */
+.errore .dettaglio-errore {
+  color: var(--color-text-2);
+}
+.errore code {
+  font-family: var(--font-mono);
+  color: var(--danger);
+}
+
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+}

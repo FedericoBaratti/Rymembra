@@ -22,7 +22,7 @@
  * impedisce di salvare. Un editor che si blocca a metà di una modifica è un
  * editor in cui non si può cambiare idea.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   campiSmart,
@@ -45,6 +45,13 @@ import { Icona } from "./parti/Icone";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 import { Presenza } from "./presenza";
+import {
+  creaProva,
+  durataDaCampo,
+  durataInCampo,
+  limiteDaCampo,
+  numeroDaCampo,
+} from "./editorRegole";
 
 /** Il genere di un campo, per sapere quali operatori mostrargli accanto. */
 function genereDi(campo: CampoSmart): GenereSmart {
@@ -147,6 +154,42 @@ function conUnaRiga(insieme: InsiemeSmart): InsiemeSmart {
   return { ...insieme, regole: [regolaNuova()] };
 }
 
+/**
+ * Il valore della durata, in minuti e secondi.
+ *
+ * Si chiedeva in millisecondi, e «più lunghi di 5» erano cinque millesimi di
+ * secondo. Il nucleo riceve ancora millisecondi: la conversione, nei due versi,
+ * sta in `editorRegole.ts`.
+ *
+ * Tiene il testo che si sta scrivendo: «5:» non è ancora una durata, e
+ * ricavarlo dai millisecondi a ogni battuta lo cancellerebbe sotto le dita.
+ * Si riallinea quando il valore cambia da fuori — le regole lette dal nucleo,
+ * un cambio di campo — e il testo scritto non lo dice già.
+ */
+function CampoDurata({
+  ms,
+  onCambia,
+}: {
+  ms: number | null;
+  onCambia: (ms: number | null) => void;
+}) {
+  const [testo, setTesto] = useState(() => durataInCampo(ms));
+  useEffect(() => {
+    setTesto((prima) => (durataDaCampo(prima) === ms ? prima : durataInCampo(ms)));
+  }, [ms]);
+  return (
+    <input
+      type="text"
+      aria-label={t("rules.value")}
+      value={testo}
+      onChange={(e) => {
+        setTesto(e.target.value);
+        onCambia(durataDaCampo(e.target.value));
+      }}
+    />
+  );
+}
+
 export function Regole({
   /** La playlist da modificare, o `null` per crearne una nuova. */
   playlist,
@@ -163,6 +206,9 @@ export function Regole({
   const [insieme, setInsieme] = useState<InsiemeSmart>(() => conUnaRiga(VUOTO));
   const [anteprima, setAnteprima] = useState<AnteprimaRegole | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
+  // L'errore dell'anteprima, a parte: un'anteprima riuscita lo toglie, e non
+  // deve togliere quello della lettura delle regole o del salvataggio.
+  const [erroreAnteprima, setErroreAnteprima] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
   const [caricato, setCaricato] = useState(playlist === null);
   const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
@@ -197,15 +243,17 @@ export function Regole({
 
   // L'anteprima, a ogni modifica. Nessun ritardo artificiale: la query gira su
   // indici che la libreria ha già, e un `debounce` qui vorrebbe dire un numero
-  // che resta indietro di mezzo secondo su quel che si sta scrivendo.
-  const prova = useCallback(
-    (quali: InsiemeSmart) => {
-      ipc
-        .playlistRegoleProva(quali)
-        .then(setAnteprima)
-        .catch((e: unknown) => setErrore(testoErrore(e)));
-    },
-    [],
+  // che resta indietro di mezzo secondo su quel che si sta scrivendo. Con il
+  // turno, però: delle domande in volo insieme vince l'ultima chiesta, e una
+  // riuscita toglie l'errore di una fallita (`creaProva`).
+  const [prova] = useState(() =>
+    creaProva((quali: InsiemeSmart) => ipc.playlistRegoleProva(quali), {
+      risposta: (arrivata: AnteprimaRegole) => {
+        setAnteprima(arrivata);
+        setErroreAnteprima(null);
+      },
+      errore: (e) => setErroreAnteprima(testoErrore(e)),
+    }),
   );
 
   useEffect(() => {
@@ -321,7 +369,9 @@ export function Regole({
               />
             </p>
 
-            {errore && <div className="errore">{errore}</div>}
+            {(errore ?? erroreAnteprima) && (
+              <div className="errore">{errore ?? erroreAnteprima}</div>
+            )}
 
             {playlist === null && (
               <label>
@@ -411,13 +461,23 @@ export function Regole({
                         <option value="1">{t("rules.yes")}</option>
                         <option value="0">{t("rules.no")}</option>
                       </select>
+                    ) : regola.campo === "durata" ? (
+                      <CampoDurata
+                        ms={regola.numero ?? null}
+                        onCambia={(ms) => cambia(indice, { numero: ms })}
+                      />
                     ) : (
+                      // Interi soltanto, e vuoto vuol dire vuoto: un «3.5»
+                      // arrivava al nucleo e tornava come errore di
+                      // deserializzazione, e un campo svuotato diventava 0, cioè
+                      // una regola finita invece che una da finire.
                       <input
                         type="number"
+                        step={1}
                         aria-label={t("rules.value")}
-                        value={regola.numero ?? 0}
+                        value={regola.numero ?? ""}
                         onChange={(e) =>
-                          cambia(indice, { numero: Number(e.target.value) })
+                          cambia(indice, { numero: numeroDaCampo(e.target.value) })
                         }
                       />
                     )}
@@ -492,15 +552,13 @@ export function Regole({
                   <input
                     type="number"
                     min={0}
+                    step={1}
                     placeholder={t("rules.atMost.all")}
                     value={insieme.limite ?? ""}
                     onChange={(e) =>
                       setInsieme((p) => ({
                         ...p,
-                        limite:
-                          e.target.value.trim() === ""
-                            ? null
-                            : Math.max(0, Number(e.target.value)),
+                        limite: limiteDaCampo(e.target.value),
                       }))
                     }
                   />

@@ -238,3 +238,128 @@ export function tintaNel(
   }
   return null;
 }
+
+/**
+ * Gli angoli che uno smusso (`chamfer`) taglia quando `corners` non c'è.
+ *
+ * Gli stessi del nucleo (`document.rs`, ramo `"chamfer"`: `None =>
+ * vec![Corner::TopRight, Corner::BottomLeft]`) — il registro non li espone, e
+ * il registro lo dice a parole: «Senza, in alto a destra e in basso a
+ * sinistra». Fino alla 3.2 qui si leggeva «nessun angolo dichiarato vuol dire
+ * tutti», che era falso: i tasti si vedevano tutti spenti mentre la tela ne
+ * tagliava due, e il primo tocco li perdeva.
+ */
+export const ANGOLI_DI_SERIE: readonly string[] = ["topRight", "bottomLeft"];
+
+/** Gli angoli che uno smusso taglia davvero, dichiarati o di serie. */
+export function angoliTagliati(valore: unknown): string[] {
+  return Array.isArray(valore) ? valore.map(String) : [...ANGOLI_DI_SERIE];
+}
+
+/**
+ * Gli angoli dopo aver premuto `angolo`, partendo da quelli tagliati davvero.
+ *
+ * `null` se il gesto non si può fare: spegnere l'ultimo angolo acceso. Il
+ * formato vuole da uno a quattro angoli (`lista_fra(1, 4)`), e togliere il
+ * campo — quel che si faceva prima — riaccendeva i due di serie: il tasto
+ * dell'ultimo angolo si spegne invece.
+ */
+export function angoliDopo(valore: unknown, angolo: string): string[] | null {
+  const tagliati = angoliTagliati(valore);
+  const nuovi = tagliati.includes(angolo) ? tagliati.filter((a) => a !== angolo) : [...tagliati, angolo];
+  return nuovi.length === 0 ? null : nuovi;
+}
+
+/** Le unità che il formato accetta per una lunghezza. Vengono da `LengthUnit`. */
+export const UNITA = ["px", "rem", "em", "%", "vh", "vw", "cqw", "cqh", "ch"] as const;
+
+/**
+ * L'unità di una lunghezza già scritta, o `null` se è un numero puro.
+ *
+ * Si legge dalla coda e non con una regex sull'intero: `-0.5rem` comincia con un
+ * segno e contiene un punto, e ogni tentativo di riconoscere «la parte numerica»
+ * in avanti finisce per rifare `parse_length` in TypeScript. Il suffisso invece
+ * è chiuso — sono le nove unità di `LengthUnit` — quindi si cerca quello.
+ */
+export function unitaDi(valore: unknown): string | null {
+  if (typeof valore !== "string") return null;
+  const testo = valore.trim();
+  // Dalla più lunga: `cqw` prima di `w`… e soprattutto `rem` prima di `em`, che
+  // ne è un suffisso e ruberebbe ogni `rem` se venisse prima.
+  const ordinate = [...UNITA].sort((a, b) => b.length - a.length);
+  return ordinate.find((u) => testo.endsWith(u)) ?? null;
+}
+
+/**
+ * Una lunghezza col numero nuovo e l'unità che aveva; `predefinita` se non ne
+ * aveva una.
+ *
+ * I cursori dell'ombra e del ritaglio scrivevano sempre la loro unità — `px`
+ * l'una, `%` l'altro — su campi che il formato accetta in qualunque lunghezza:
+ * «0.5rem» toccato diventava «1px», un inset in px diventava in %. È il difetto
+ * che `Cursore` e `ValoreLunghezza` avevano già corretto (`controlli.tsx`).
+ */
+export function conUnita(valore: unknown, numero: number | string, predefinita = "px"): string {
+  return `${numero}${unitaDi(valore) ?? predefinita}`;
+}
+
+/**
+ * I quattro lati di un `inset` con il lato `indice` portato a `numero`: gli
+ * altri restano scritti com'erano, e quello toccato tiene la sua unità.
+ */
+export function latoCambiato(lati: readonly unknown[], indice: number, numero: number): string[] {
+  return [0, 1, 2, 3].map((j) => {
+    const lato = lati[j];
+    if (j === indice) return conUnita(lato, numero, "%");
+    return typeof lato === "string" ? lato : `${Number(lato) || 0}%`;
+  });
+}
+
+/**
+ * Quante fermate al massimo in un gradiente: `document.rs`, `lista_fra(…, 2, 8)`.
+ *
+ * Il registro non porta questi due tetti (porta quelli del movimento, come
+ * `maxFotogrammi`): sono scritti qui, col rimando al nucleo. Fino alla 3.2 i
+ * tasti che aggiungono non avevano tetto, mentre quello che toglie le fermate
+ * si spegneva a due: la nona fermata o il settimo livello rompevano il
+ * documento, contro la prima regola dello Studio — non si può scrivere quel
+ * che il formato non accetta.
+ */
+export const FERMATE_MASSIME = 8;
+/** Quanti livelli al massimo in un'ombra: `document.rs`, `lista_fra(…, 0, 6)`. */
+export const LIVELLI_OMBRA_MASSIMI = 6;
+
+/** Se ne può aggiungere un altro, con `quanti` già scritti e quel tetto. */
+export function puoAggiungere(quanti: number, tetto: number): boolean {
+  return quanti < tetto;
+}
+
+/**
+ * Il numero di una casella della `cubicBezier` (x1, y1, x2, y2), o `null` per
+ * non scriverlo.
+ *
+ * `null` per quel che non è un numero finito — una casella svuotata per
+ * riscriverla, un segno meno da solo — e per quel che esce dagli estremi che
+ * `document.rs::easing` verifica: le x fra 0 e 1, le y fra -5 e 5. Fino alla
+ * 3.2 si scriveva `Number.parseFloat` così com'era: una casella vuota
+ * diventava `NaN`, cioè `null` nel testo, e un errore di validazione a ogni
+ * battuta.
+ */
+export function puntoDaCasella(testo: string, indice: number): number | null {
+  if (testo.trim() === "") return null;
+  const numero = Number(testo);
+  if (!Number.isFinite(numero)) return null;
+  const [min, max] = indice % 2 === 0 ? [0, 1] : [-5, 5];
+  return numero >= min && numero <= max ? numero : null;
+}
+
+/**
+ * Il cursore del peso di un carattere variabile.
+ *
+ * Un `<input type="range">` ammette solo `min + k·passo`: con min 1 e passo 50
+ * — com'era fino alla 3.2 — i pesi raggiungibili erano 1, 51, 101… 951, e il
+ * [100, 900] scritto dal selettore si spostava a [101, 901] al primo tocco.
+ * Da 100 a passi di 50 si arriva a ogni peso con un nome. Un peso dichiarato
+ * sotto 100 resta scrivibile nel codice, che per un carattere vero basta.
+ */
+export const CURSORE_PESO_VARIABILE = { min: 100, max: 1000, passo: 50 } as const;

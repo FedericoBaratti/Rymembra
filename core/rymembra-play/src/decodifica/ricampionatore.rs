@@ -66,7 +66,10 @@ use rubato::Resampler as _;
 use rymembra_domain::errors::{AppError, ErrorCode};
 
 use super::canali::Matrice;
-use super::{BLOCCO, CANALI_MAX, FREQUENZA_MAX, FREQUENZA_MIN, frequenza_accettabile};
+use super::{
+    BLOCCO, CANALI_MAX, FREQUENZA_MAX, FREQUENZA_MIN, USCITA_MAX, frequenza_accettabile,
+    frequenza_d_uscita_accettabile,
+};
 
 /// Il ricampionatore, con le sue code per canale e i suoi due conti.
 ///
@@ -110,6 +113,13 @@ impl Ricampionatore {
     /// fatto che i due numeri siano già stati guardati, senza doverselo
     /// ricordare.
     ///
+    /// Ognuna col **suo** tetto. Quello dei file, 384 kHz, misurato
+    /// sull'uscita rifiutava ogni brano su un DAC impostato a 705,6 o 768 kHz,
+    /// e lo rifiutava come file danneggiato: l'uscita ha il suo, vedi
+    /// `decodifica::USCITA_MAX`. Un'uscita oltre quello non arriva fin qui —
+    /// la rifiuta l'apertura del dispositivo — e il controllo resta per chi
+    /// costruisce un ricampionatore con un numero che non viene da lì.
+    ///
     /// # Perché nessun ripiego
     ///
     /// Qui c'era `usize::try_from(da).unwrap_or(44_100)`: una conversione che
@@ -132,10 +142,16 @@ impl Ricampionatore {
             })
             .with_cause(causa)
         };
-        if !frequenza_accettabile(da) || !frequenza_accettabile(a) {
+        if !frequenza_accettabile(da) {
             return Err(rifiuta(format!(
-                "ricampionatore {da}→{a}: frequenza fuori scala, attesa fra \
+                "ricampionatore {da}→{a}: frequenza del file fuori scala, attesa fra \
                  {FREQUENZA_MIN} e {FREQUENZA_MAX}"
+            )));
+        }
+        if !frequenza_d_uscita_accettabile(a) {
+            return Err(rifiuta(format!(
+                "ricampionatore {da}→{a}: frequenza d'uscita fuori scala, attesa fra \
+                 {FREQUENZA_MIN} e {USCITA_MAX}"
             )));
         }
         if canali == 0 || canali > CANALI_MAX {
@@ -412,6 +428,26 @@ mod prove {
         // E il caso normale continua a costruirsi: è tutta la libreria di
         // questo progetto.
         assert!(Ricampionatore::nuovo(44_100, 48_000, 2, 1).is_ok());
+    }
+
+    #[test]
+    fn un_uscita_a_768_khz_ricampiona_i_file_a_44_1() {
+        // Un DAC USB impostato in Windows a 705,6 o 768 kHz: il formato del mix
+        // lo dice il dispositivo, e nessun file ha quella frequenza. Misurata
+        // col tetto dei **file**, l'uscita faceva fallire ogni brano come
+        // «file danneggiato».
+        assert!(Ricampionatore::nuovo(44_100, 768_000, 2, 1).is_ok());
+        assert!(Ricampionatore::nuovo(44_100, 705_600, 2, 1).is_ok());
+        let ingresso = vec![0.25f32; 44_100];
+        assert_eq!(
+            ricampiona(&ingresso, 44_100, 768_000).len(),
+            attesi(44_100, 44_100, 768_000)
+        );
+        // Il tetto dei file resta per i file: un ingresso a 768 kHz è ancora
+        // un'intestazione letta male.
+        assert!(Ricampionatore::nuovo(768_000, 48_000, 2, 1).is_err());
+        // E l'uscita ha il suo: oltre, è un dispositivo che non sappiamo servire.
+        assert!(Ricampionatore::nuovo(44_100, 768_001, 2, 1).is_err());
     }
 
     #[test]

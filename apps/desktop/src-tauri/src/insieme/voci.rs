@@ -55,9 +55,11 @@ pub const PREFISSO_COPERTINA: &str = "insieme-";
 /// copertina accettata.
 pub const BYTE_MASSIMI_COPERTINA: usize = rymembra_app::covers::MASSIMO_ESTRANEA;
 
-/// Quanta memoria possono occupare le copertine di una sessione, da chi segue.
+/// Quanta memoria possono occupare le copertine arrivate dalla rete in una
+/// sessione: da chi segue, e da chi ospita per le voci dei membri.
 /// Sessantaquattro mebibyte: un migliaio di copertine da sessanta kilobyte, che
-/// è la coda più lunga. Oltre, le voci restano senza.
+/// è la coda più lunga. Oltre, le voci restano senza; quelle uscite dalla coda
+/// liberano il loro posto (vedi [`Copertine::dimentica`]).
 pub const TETTO_COPERTINE: usize = 64 * 1024 * 1024;
 
 /// Quanto può pesare lo stato serializzato. La cornice ammette 1 MiB per il
@@ -468,14 +470,20 @@ impl Servite {
             .is_none_or(|s| s.file.as_ref().is_none_or(|f| self.copie.contains_key(f)))
     }
 
-    /// Tiene solo le voci in `uids`, e revoca i gettoni che nessuna usa più.
-    pub fn tieni(&mut self, uids: &HashSet<u64>) -> Vec<Servizio> {
-        let via: Vec<u64> = self
-            .voci
+    /// Le voci descritte che non sono in `uids`: quelle che [`Servite::tieni`]
+    /// toglierebbe.
+    #[must_use]
+    pub fn fuori(&self, uids: &HashSet<u64>) -> Vec<u64> {
+        self.voci
             .keys()
             .filter(|uid| !uids.contains(uid))
             .copied()
-            .collect();
+            .collect()
+    }
+
+    /// Tiene solo le voci in `uids`, e revoca i gettoni che nessuna usa più.
+    pub fn tieni(&mut self, uids: &HashSet<u64>) -> Vec<Servizio> {
+        let via = self.fuori(uids);
         self.dimentica(&via)
     }
 
@@ -901,9 +909,35 @@ impl Copertine {
         true
     }
 
-    /// Dimentica le voci che non ci sono più, e i byte che nessuna usa.
-    pub fn tieni(&mut self, uids: &HashSet<u64>) {
-        self.per_voce.retain(|uid, _| uids.contains(uid));
+    /// Dimentica le voci che non ci sono più, e i byte che nessuna usa. Chi
+    /// segue, a ogni stato. Restituisce i gettoni che nessuna voce usa più:
+    /// vedi [`Copertine::dimentica`].
+    pub fn tieni(&mut self, uids: &HashSet<u64>) -> Vec<Gettone> {
+        let via: Vec<u64> = self
+            .per_voce
+            .keys()
+            .filter(|uid| !uids.contains(uid))
+            .copied()
+            .collect();
+        self.dimentica(&via)
+    }
+
+    /// Dimentica queste voci, e i byte che nessuna voce usa più. Chi ospita,
+    /// per le voci dei membri uscite dalla coda, di un membro uscito, di
+    /// un'aggiunta rifiutata o rimasta fuori: prima nessuno lo faceva, e in
+    /// una serata lunga, raggiunto [`TETTO_COPERTINE`], le voci aggiunte dopo
+    /// restavano senza copertina.
+    ///
+    /// Restituisce i gettoni delle voci tolte che nessuna voce usa più: chi li
+    /// aveva già chiesti li toglie dalle chieste, così una voce che torna con
+    /// lo stesso gettone (un membro che riaggiunge lo stesso disco, una voce
+    /// che rientra nella finestra di chi segue) li richiede invece di restare
+    /// senza.
+    pub fn dimentica(&mut self, uids: &[u64]) -> Vec<Gettone> {
+        let tolti: Vec<Gettone> = uids
+            .iter()
+            .filter_map(|uid| self.per_voce.remove(uid))
+            .collect();
         let usati: HashSet<Gettone> = self.per_voce.values().copied().collect();
         let mut liberati = 0_usize;
         self.per_gettone.retain(|g, byte| {
@@ -914,6 +948,13 @@ impl Copertine {
             tieni
         });
         self.occupati = self.occupati.saturating_sub(liberati);
+        let mut senza_voci: Vec<Gettone> = Vec::new();
+        for gettone in tolti {
+            if !usati.contains(&gettone) && !senza_voci.contains(&gettone) {
+                senza_voci.push(gettone);
+            }
+        }
+        senza_voci
     }
 
     /// Fine della sessione.
@@ -1332,6 +1373,33 @@ mod prove {
         c.tieni(&HashSet::new());
         assert_eq!(c.byte("insieme-5"), None);
         assert_eq!(c.occupati, 0);
+    }
+
+    #[test]
+    fn l_host_libera_le_copertine_delle_voci_uscite() {
+        let mut c = Copertine::default();
+        let (g1, g2, g3) = (Gettone([1; 16]), Gettone([2; 16]), Gettone([3; 16]));
+        // Il tetto raggiunto dalle voci dei membri: una nuova resta senza.
+        c.collega(1, g1);
+        assert!(c.metti(g1, Arc::from(vec![0_u8; TETTO_COPERTINE - 10])));
+        c.collega(2, g2);
+        assert!(!c.metti(g2, Arc::from(vec![0_u8; 100])));
+        // La voce 1 esce dalla coda: il suo posto si libera, e il gettone
+        // torna a chi lo vuole richiedere.
+        assert_eq!(c.dimentica(&[1]), vec![g1]);
+        assert_eq!(c.byte("insieme-1"), None);
+        assert_eq!(c.occupati, 0);
+        assert!(c.metti(g2, Arc::from(vec![0_u8; 100])));
+        assert_eq!(c.byte("insieme-2").map(|b| b.len()), Some(100));
+        // Un gettone che un'altra voce usa ancora resta, coi suoi byte.
+        c.collega(5, g3);
+        c.collega(6, g3);
+        assert!(c.metti(g3, Arc::from(vec![0_u8; 10])));
+        assert!(c.dimentica(&[5]).is_empty());
+        assert_eq!(c.byte("insieme-6").map(|b| b.len()), Some(10));
+        // `tieni` è la stessa cosa vista da chi segue.
+        assert_eq!(c.tieni(&HashSet::from([2])), vec![g3]);
+        assert_eq!(c.occupati, 100);
     }
 
     #[test]

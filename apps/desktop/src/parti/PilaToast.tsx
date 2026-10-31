@@ -43,11 +43,17 @@ function cosaDice(scansione: Avanzamento): string {
 export function PilaToast({
   scansione,
   onApriScansione,
+  onAnnullaScansione,
   children,
 }: {
   /** La scansione in corso, o `null` quando non c'è o non va mostrata qui. */
   scansione: Avanzamento | null;
   onApriScansione: () => void;
+  /**
+   * Ferma la scansione. Prima c'era solo «Apri»: per fermarla bisognava andare
+   * in Impostazioni › Cartelle e scansione, l'unico posto col suo «Annulla».
+   */
+  onAnnullaScansione: () => void;
   /** Gli altri toast, che sanno da sé quando disegnarsi. */
   children?: ReactNode;
 }) {
@@ -105,6 +111,13 @@ export function PilaToast({
               onClick={onApriScansione}
             >
               {t("toast.open")}
+            </button>
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={onAnnullaScansione}
+            >
+              {t("common.cancel")}
             </button>
           </div>
         </Presenza>

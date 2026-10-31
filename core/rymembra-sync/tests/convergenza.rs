@@ -249,6 +249,46 @@ fn fondere_in_ordini_diversi_da_sempre_lo_stesso_stato() {
     }
 }
 
+/// Come la prova di sopra, per gli inventari delle skin e delle bozze: lo stesso
+/// identificativo con impronte diverse su dispositivi diversi. A parte, e non un
+/// gesto in più di [`Replica::gesto`], perché un gesto in più cambierebbe i casi
+/// che ogni seme genera per tutte le altre prove di questo file.
+#[test]
+fn le_skin_e_le_bozze_non_dipendono_dall_ordine() {
+    const PACCHETTI: &[&str] = &["notte", "giorno"];
+    for seme in 1..=40_u64 {
+        let mut dadi = Dadi::nuovi(seme);
+        let mut repliche: Vec<Replica> = ["uno", "due", "tre", "quattro"]
+            .iter()
+            .map(|nome| Replica::nuova(nome))
+            .collect();
+
+        for _ in 0..12 {
+            let quale = dadi.fino_a(repliche.len());
+            let id = PACCHETTI[dadi.fino_a(PACCHETTI.len())].to_owned();
+            let impronta = format!("{:016x}", dadi.prossimo());
+            let contenuto = &mut repliche[quale].contenuto;
+            if dadi.fino_a(2) == 0 {
+                contenuto.skin.insert(id, impronta);
+            } else {
+                contenuto.bozze.insert(id, impronta);
+            }
+        }
+
+        let documenti: Vec<Documento> = repliche.iter().map(Replica::documento).collect();
+        let atteso = fondi(&documenti);
+        for _ in 0..6 {
+            let mut mescolati = documenti.clone();
+            dadi.mescola(&mut mescolati);
+            assert_eq!(
+                fondi(&mescolati),
+                atteso,
+                "seme {seme}: l'ordine di consegna ha cambiato le skin o le bozze"
+            );
+        }
+    }
+}
+
 #[test]
 fn il_giro_completo_non_gonfia_e_non_perde_gli_ascolti() {
     // Il ciclo vero dell'applicazione: si fonde, si applica al database, si

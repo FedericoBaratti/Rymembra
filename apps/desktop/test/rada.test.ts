@@ -250,3 +250,53 @@ test("l'intervallo chiede le pagine che mancano e le aspetta", async () => {
   assert.equal(righe[0], 5);
   assert.equal(righe[19], 24);
 });
+
+test("l'intervallo oltre la capienza restituisce tutte le righe", async () => {
+  // Capienza due pagine, intervallo di cinque: le pagine arrivate prima
+  // venivano sfoltite prima che l'intervallo le rileggesse dalla cache, e
+  // Maiusc+clic su trentamila righe ne selezionava ottomila, a buchi.
+  const { a, richieste } = archivio(10, 2);
+  a.imposta("v", 100);
+  let finito = false;
+  const promessa = a.intervallo(0, 49).finally(() => {
+    finito = true;
+  });
+  let servite = 0;
+  for (let giri = 0; giri < 50 && !finito; giri += 1) {
+    while (servite < richieste.length) {
+      const r = richieste[servite]!;
+      r.risolvi(pagina(r.offset, r.limite, 100));
+      servite += 1;
+    }
+    await giro();
+  }
+  const righe = await promessa;
+  assert.deepEqual(
+    righe,
+    Array.from({ length: 50 }, (_, i) => i),
+  );
+  // E la capienza resta quella: l'intervallo non gonfia la cache.
+  assert.ok(a.pagineInMano <= 2);
+});
+
+test("l'intervallo non chiede tutte le pagine insieme", async () => {
+  const { a, richieste } = archivio(10, 40);
+  a.imposta("v", 1000);
+  const promessa = a.intervallo(0, 999);
+  // Cento pagine: in volo ne partono poche alla volta, non cento richieste
+  // che aspettano tutte lo stesso lucchetto della libreria.
+  assert.ok(richieste.length > 0);
+  assert.ok(richieste.length < 100, `in volo: ${richieste.length}`);
+  let servite = 0;
+  for (let giri = 0; giri < 500 && servite < 100; giri += 1) {
+    while (servite < richieste.length) {
+      const r = richieste[servite]!;
+      r.risolvi(pagina(r.offset, r.limite, 1000));
+      servite += 1;
+    }
+    await giro();
+  }
+  const righe = await promessa;
+  assert.equal(righe.length, 1000);
+  assert.ok(righe.every((r, i) => r === i));
+});

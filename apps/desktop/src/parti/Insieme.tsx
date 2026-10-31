@@ -57,8 +57,10 @@ import {
   MASSIMO_NOME,
   aggiungiIndirizzo,
   ancoraValidi,
+  annuncioSincronia,
   avvisoEGuasto,
   causeIrraggiungibile,
+  chiedeConfermaPerTerminare,
   chiaveAvviso,
   codiceDaLeggere,
   codiceLeggibile,
@@ -95,6 +97,7 @@ import { useAscolto } from "../pagine";
 import { Presenza, useSpecchioPresente } from "../presenza";
 import { useLettore } from "../riproduzione";
 import { Annuncio } from "./Annuncio";
+import { useCopia } from "./Copia";
 import { Icona } from "./Icone";
 import { Interruttore } from "./Interruttore";
 import { Segmentato } from "./Segmentato";
@@ -120,7 +123,11 @@ interface VistaInsieme {
   /** La spiegazione del firewall è da mostrare, prima di ospitare. */
   firewall: boolean;
   /**
-   * «Terminare la sessione?» è da chiedere.
+   * «Terminare la sessione?» è da chiedere, e per quale gesto: `"termina"`
+   * dai tasti «Termina la sessione», `"spegni"` dall'interruttore della
+   * funzione, che spegnendosi chiude la sessione lo stesso. Il «sì» fa il
+   * gesto da cui la domanda è nata (`eseguiTermina`): l'interruttore deve
+   * anche spegnere, non solo terminare.
    *
    * Qui e non nella fascia che ha il tasto: una delle due copie della fascia
    * sta dentro gli avvisi dello schermo intero, che hanno un `transform`, e un
@@ -128,7 +135,7 @@ interface VistaInsieme {
    * velo della domanda avrebbe coperto la sola striscia degli avvisi invece
    * della finestra. Le finestrelle stanno tutte in `InsiemeInApp`.
    */
-  terminare: boolean;
+  terminare: "termina" | "spegni" | false;
   /**
    * Il pannello è aperto, e dove: appeso al tasto della barra, o come
    * finestrella.
@@ -247,7 +254,7 @@ function adotta(stato: StatoInsieme): void {
     ...prima,
     stato,
     firewall: prima.firewall && stato.fase === "libera",
-    terminare: prima.terminare && stato.fase === "ospita",
+    terminare: stato.fase === "ospita" ? prima.terminare : false,
     invitati: invitiAncoraAperti(prima.invitati, stato, Date.now()),
     livelli: livelliAncoraAperti(prima.livelli, stato),
     scelta:
@@ -305,12 +312,30 @@ function dimenticaLivello(dove: "richieste" | "inviti", id: number): void {
  * eventi» in testa.
  */
 function comanda(azione: Promise<StatoInsieme>, onErrore: (e: unknown) => void): void {
+  void comandaPoi(azione, onErrore);
+}
+
+/**
+ * Come `comanda`, e dice com'è andata: `true` se il nucleo ha detto sì.
+ *
+ * Per chi deve fare qualcosa solo a risposta buona: il campo di un indirizzo
+ * si svuota quando il nucleo l'ha preso, non prima — svuotato al clic, un
+ * rifiuto lasciava l'errore e si portava via quel che si era scritto.
+ */
+function comandaPoi(
+  azione: Promise<StatoInsieme>,
+  onErrore: (e: unknown) => void,
+): Promise<boolean> {
   const prima = eventiArrivati;
-  azione
+  return azione
     .then((stato) => {
       if (eventiArrivati === prima) adotta(stato);
+      return true;
     })
-    .catch(onErrore);
+    .catch((e: unknown) => {
+      onErrore(e);
+      return false;
+    });
 }
 
 /**
@@ -461,6 +486,35 @@ function ospitaDopoIlFirewall(onErrore: (e: unknown) => void): void {
 /** Chi ospita termina per tutti; chi segue (o sta entrando) esce. */
 function esci(ospita: boolean, onErrore: (e: unknown) => void): void {
   comanda(ospita ? ipc.insiemeTermina() : ipc.insiemeEsci(), onErrore);
+}
+
+/**
+ * Chi ospita chiude la sessione di tutti: con «Termina la sessione» o
+ * spegnendo la funzione. Una conferma solo se c'è qualcuno da lasciare a metà
+ * brano (`chiedeConfermaPerTerminare`); la domanda la disegna `InsiemeInApp`,
+ * vedi `VistaInsieme.terminare`.
+ *
+ * Un posto solo per i quattro da cui si chiude — la fascia, il pannello, le
+ * Impostazioni, l'interruttore — perché la domanda la chiedeva la fascia sola:
+ * dal pannello, dove i tasti sono più fitti, e dall'interruttore la musica si
+ * fermava a tutti senza una parola.
+ */
+function terminaPerTutti(
+  stato: StatoInsieme,
+  gesto: "termina" | "spegni",
+  onErrore: (e: unknown) => void,
+): void {
+  if (chiedeConfermaPerTerminare(stato.sessione?.persone.length ?? 0)) {
+    ARCHIVIO.scrivi((prima) => ({ ...prima, terminare: gesto }));
+  } else {
+    eseguiTermina(gesto, onErrore);
+  }
+}
+
+/** Il gesto, confermato o senza nessuno da lasciare a metà: termina, o spegne. */
+function eseguiTermina(gesto: "termina" | "spegni", onErrore: (e: unknown) => void): void {
+  if (gesto === "spegni") comanda(ipc.insiemeAttiva(false), onErrore);
+  else esci(true, onErrore);
 }
 
 /**
@@ -655,6 +709,7 @@ export function InsiemeInApp({
   const chiudiTerminare = () => ARCHIVIO.scrivi((prima) => ({ ...prima, terminare: false }));
   const chiudiScelta = () => ARCHIVIO.scrivi((prima) => ({ ...prima, scelta: null }));
   const stato = vista.stato;
+  const gestoDaConfermare = vista.terminare;
   const daScegliere =
     vista.scelta === null || stato === null
       ? undefined
@@ -689,13 +744,13 @@ export function InsiemeInApp({
           onChiudi={chiudiFirewall}
         />
       )}
-      {vista.terminare && stato?.fase === "ospita" && (
+      {gestoDaConfermare !== false && stato?.fase === "ospita" && (
         <ConfermaGesto
           domanda={{
             titolo: t("together.end.confirm.title"),
             descrizione: t("together.end.confirm.body"),
             conferma: t("together.end.confirm"),
-            fai: () => esci(true, onErrore),
+            fai: () => eseguiTermina(gestoDaConfermare, onErrore),
           }}
           onChiudi={chiudiTerminare}
         />
@@ -915,16 +970,9 @@ function FasciaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) {
               ? t("together.sync.locking")
               : null;
 
-  const termina = () => {
-    // Una conferma solo se c'è qualcuno da lasciare a metà brano: chiudere una
-    // sessione dove si è da soli non toglie niente a nessuno. La domanda la
-    // disegna `InsiemeInApp`: vedi `VistaInsieme.terminare`.
-    if ((sessione?.persone.length ?? 0) > 1) {
-      ARCHIVIO.scrivi((prima) => ({ ...prima, terminare: true }));
-    } else {
-      esci(true, onErrore);
-    }
-  };
+  // Una conferma solo se c'è qualcuno da lasciare a metà brano: vedi
+  // `terminaPerTutti`, che è la stessa strada del pannello e delle Impostazioni.
+  const termina = () => terminaPerTutti(stato, "termina", onErrore);
 
   return (
     <div
@@ -1629,7 +1677,13 @@ function ContenutoInsieme({
         )}
       </p>
       <div className="azioni-insieme">
-        <button type="button" className="bottone" onClick={() => esci(ospito, onErrore)}>
+        <button
+          type="button"
+          className="bottone"
+          onClick={() =>
+            ospito ? terminaPerTutti(stato, "termina", onErrore) : esci(false, onErrore)
+          }
+        >
           {ospito ? t("together.end") : t("together.leave")}
         </button>
       </div>
@@ -1983,9 +2037,6 @@ function DaInvitare({ stato, onErrore }: { stato: StatoInsieme; onErrore: (e: un
   );
 }
 
-/** Quanto resta scritto «Copiato» sul tasto, in millisecondi. */
-const DURATA_COPIATO = 2_000;
-
 /**
  * Dove si trova questo PC, per chi ospita: l'indirizzo da dettare a un collega
  * la cui rete non lascia passare la ricerca, con «Copia» accanto.
@@ -1997,34 +2048,19 @@ const DURATA_COPIATO = 2_000;
  * scheda di rete, una VPN — stanno sotto «Altri indirizzi», chiusi: tutti in
  * fila farebbero scegliere a caso proprio chi non sa quale sia quello giusto.
  *
- * «Copia» è il primo tasto dell'albero che scrive negli appunti, quindi
- * l'idioma è nuovo e il più piccolo che basti: la scritta diventa «Copiato» per
- * due secondi, e la regione viva lo dice a chi ascolta lo schermo. Se gli
- * appunti rifiutano, l'indirizzo resta selezionabile e una riga dice di
- * copiarlo a mano.
+ * «Copia» è nato qui, e adesso sta in `Copia.tsx` (`useCopia`): la scritta
+ * diventa «Copiato» per due secondi, e la regione viva lo dice a chi ascolta
+ * lo schermo. Se gli appunti rifiutano, l'indirizzo resta selezionabile e una
+ * riga sotto dice di copiarlo a mano — sotto l'indirizzo, ed è per questo che
+ * qui si usa l'hook e non il tasto già fatto.
  */
 function IndirizziDiQui({ indirizzi }: { indirizzi: readonly string[] }) {
-  const [esito, setEsito] = useState<{ indirizzo: string; riuscito: boolean } | null>(null);
-  useEffect(() => {
-    if (esito === null || !esito.riuscito) return;
-    const conto = window.setTimeout(() => setEsito(null), DURATA_COPIATO);
-    return () => window.clearTimeout(conto);
-  }, [esito]);
+  const { esito, copia } = useCopia();
 
   const [primo, ...altri] = indirizzi;
   if (primo === undefined) return null;
 
-  const copia = (indirizzo: string) => {
-    // Dentro una promessa anche la chiamata: senza appunti (`clipboard`
-    // assente) l'errore è sincrono, e deve finire nello stesso ramo.
-    Promise.resolve()
-      .then(() => navigator.clipboard.writeText(indirizzo))
-      .then(
-        () => setEsito({ indirizzo, riuscito: true }),
-        () => setEsito({ indirizzo, riuscito: false }),
-      );
-  };
-  const copiato = esito?.riuscito === true && esito.indirizzo === primo;
+  const copiato = esito?.riuscito === true && esito.testo === primo;
 
   return (
     <section className="gruppo-insieme">
@@ -2033,8 +2069,8 @@ function IndirizziDiQui({ indirizzi }: { indirizzi: readonly string[] }) {
           esito === null
             ? null
             : esito.riuscito
-              ? t("together.here.copied.aria", { indirizzo: esito.indirizzo })
-              : t("together.here.copyFailed")
+              ? t("together.here.copied.aria", { indirizzo: esito.testo })
+              : t("copy.failed")
         }
       />
       <div className="indirizzo-insieme">
@@ -2050,11 +2086,11 @@ function IndirizziDiQui({ indirizzi }: { indirizzi: readonly string[] }) {
           aria-label={t("together.here.copy.aria", { indirizzo: primo })}
           onClick={() => copia(primo)}
         >
-          {copiato ? t("together.here.copied") : t("together.here.copy")}
+          {copiato ? t("copy.done") : t("copy.button")}
         </button>
       </div>
       {esito !== null && !esito.riuscito && (
-        <p className="nota-insieme">{t("together.here.copyFailed")}</p>
+        <p className="nota-insieme">{t("copy.failed")}</p>
       )}
       <p className="nota-insieme">{t("together.here.hint")}</p>
       {altri.length > 0 && (
@@ -2080,21 +2116,27 @@ function IndirizziDiQui({ indirizzi }: { indirizzi: readonly string[] }) {
  * questo PC è avanti. Prima dell'aggancio il numero oscilla di decine di
  * millisecondi per qualche secondo, e mostrarlo farebbe credere a un guasto
  * quel che è solo il regolatore al lavoro.
+ *
+ * Nella regione viva c'è solo «agganciato» o «aggancio…» (`annuncioSincronia`):
+ * scarto e incertezza cambiano quasi a ogni secondo, e stavano dentro — un
+ * lettore di schermo che ridiceva tre numeri al secondo sopra qualunque altra
+ * lettura del pannello. Restano scritti accanto, fuori dalla regione.
  */
 function Sincronia({ stato }: { stato: StatoInsieme }) {
   const s = stato.sincronia;
   if (s === null) return null;
-  const pezzi: string[] = [s.agganciato ? t("together.sync.locked") : t("together.sync.locking")];
+  const numeri: string[] = [];
   if (s.agganciato && s.erroreMs !== null) {
     const ms = numero(Math.round(s.erroreMs * 10) / 10, 1);
-    pezzi.push(t("together.sync.offset", { ms: s.erroreMs > 0 ? `+${ms}` : ms }));
+    numeri.push(t("together.sync.offset", { ms: s.erroreMs > 0 ? `+${ms}` : ms }));
     if (s.incertezzaMs !== null) {
-      pezzi.push(t("together.sync.uncertainty", { ms: numero(Math.round(s.incertezzaMs * 10) / 10, 1) }));
+      numeri.push(t("together.sync.uncertainty", { ms: numero(Math.round(s.incertezzaMs * 10) / 10, 1) }));
     }
   }
   return (
-    <p className="nota-insieme" role="status">
-      {pezzi.join(" · ")}
+    <p className="nota-insieme">
+      <span role="status">{t(annuncioSincronia(s))}</span>
+      {numeri.length > 0 && ` · ${numeri.join(" · ")}`}
     </p>
   );
 }
@@ -2237,8 +2279,12 @@ export function SchedaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) 
       return;
     }
     setGuastoIndirizzo(null);
-    setNuovo("");
-    comanda(ipc.insiemeIndirizzi(esito.elenco), onErrore);
+    // Il campo si svuota a risposta buona, e solo se nel frattempo non ci si è
+    // scritto altro: un rifiuto del nucleo lascia lì quel che si era scritto.
+    const scritto = nuovo;
+    void comandaPoi(ipc.insiemeIndirizzi(esito.elenco), onErrore).then((preso) => {
+      if (preso) setNuovo((ora) => (ora === scritto ? "" : ora));
+    });
   };
 
   const togliIndirizzo = (indirizzo: string) =>
@@ -2254,7 +2300,11 @@ export function SchedaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) 
       <button
         type="button"
         className="bottone btn-ghost"
-        onClick={() => esci(fase === "ospita", onErrore)}
+        onClick={() =>
+          fase === "ospita"
+            ? terminaPerTutti(stato, "termina", onErrore)
+            : esci(false, onErrore)
+        }
       >
         {fase === "ospita" ? t("together.end") : t("together.leave")}
       </button>
@@ -2280,7 +2330,13 @@ export function SchedaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) 
         etichetta={t("settings.together.toggle")}
         spiegazione={t("settings.together.toggle.hint")}
         acceso={stato.attivo}
-        onCambia={(attivo) => comanda(ipc.insiemeAttiva(attivo), onErrore)}
+        /* Spegnere mentre si ospita chiude la sessione di tutti: la stessa
+           domanda di «Termina la sessione». Chi segue, spegnendo, esce e basta. */
+        onCambia={(attivo) =>
+          !attivo && fase === "ospita"
+            ? terminaPerTutti(stato, "spegni", onErrore)
+            : comanda(ipc.insiemeAttiva(attivo), onErrore)
+        }
       />
 
       <h3 className="titoletto" id={idNome}>

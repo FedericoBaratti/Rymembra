@@ -55,7 +55,7 @@
  * modalità agent si prende un'istantanea **prima** del primo giro: quattro
  * giri sono quattro modifiche, e annullarle una per una sarebbe la punizione
  * sbagliata per aver provato. Ctrl+Z dentro il campo della chat è del campo:
- * lo Studio non lo prende (`Guscio.tsx`, `siScrive`).
+ * lo Studio non lo prende (`annullo.ts`, `haAnnulloProprio`).
  *
  * # La validazione del candidato si chiede a parte
  *
@@ -87,9 +87,13 @@ import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useStudio } from "./contesto";
 import {
+  GIRI_MASSIMI,
+  apreUnAltroGiro,
   leggiSalvata,
+  senzaDomandaFallita,
   mostraCambi,
   serializza,
+  vicinoAlFondo,
   type Battuta,
   type CambioMostrato,
   type Conversazione,
@@ -111,15 +115,6 @@ import {
 } from "./prompt";
 import { useAlloSmontaggio, useAscoltiTenaci } from "./tenace";
 import { useVai } from "./vai";
-
-/**
- * Quanti giri può fare la modalità agent.
- *
- * Quattro. Sotto, un modello che sbaglia un nome al primo giro non fa in tempo
- * a correggersi; sopra, un modello che non ci arriva brucia gettoni e minuti
- * ripetendo la stessa cosa — e su un servizio a pagamento quei giri si pagano.
- */
-const GIRI_MASSIMI = 4;
 
 /**
  * Quanti caratteri di ragionamento si mostrano mentre arriva.
@@ -371,6 +366,20 @@ export function Chat({
    */
   const ultimoCandidato = useRef<string | null>(null);
   /**
+   * La modalità della domanda in corso, fissata quando la si fa.
+   *
+   * Il `Segmentato` resta acceso durante un turno: leggere `modalita` alla
+   * fine voleva dire che chi passava ad «agent» mentre arrivava una risposta
+   * in «proposta» se la vedeva applicare senza l'istantanea che `chiedi`
+   * prende solo in agent.
+   */
+  const modoDelGiro = useRef<Modalita>("agent");
+  /**
+   * Il ciclo dell'agent è vivo: può aprire un altro giro. Vedi
+   * `apreUnAltroGiro` in `conversazione.ts`.
+   */
+  const cicloAgent = useRef(false);
+  /**
    * Una richiesta è partita e non è ancora finita.
    *
    * Serve a una corsa sola: il filo che genera comincia a emettere appena parte,
@@ -495,9 +504,14 @@ export function Chat({
     [salva],
   );
 
-  /** Il pannello segue quel che arriva, senza rubare il fuoco al campo. */
+  /**
+   * Il pannello segue quel che arriva, senza rubare il fuoco al campo — ma
+   * solo se si era in fondo: vedi `vicinoAlFondo`. Si misura a ogni
+   * scorrimento, cioè **prima** che il pezzo nuovo allunghi il pannello.
+   */
+  const inFondo = useRef(true);
   useEffect(() => {
-    fondo.current?.scrollIntoView({ block: "end" });
+    if (inFondo.current) fondo.current?.scrollIntoView({ block: "end" });
   }, [battute, parziale, proposta]);
 
   /**
@@ -566,6 +580,10 @@ export function Chat({
         .then(setTurno)
         .catch((e: unknown) => {
           inVolo.current = false;
+          cicloAgent.current = false;
+          // La domanda non è partita: non resta nella conversazione. Vedi
+          // `senzaDomandaFallita`.
+          conversazione.current = senzaDomandaFallita(conversazione.current);
           setTurno(null);
           setGiro(0);
           onErrore(e);
@@ -611,11 +629,15 @@ export function Chat({
           segnaRisposta(false);
           setProposta(ragioni.length > 0 ? { operazioni: [], ragioni } : null);
           if (
-            modalita !== "agent" ||
-            ragioni.length === 0 ||
-            tagliato ||
-            giro >= GIRI_MASSIMI
+            !apreUnAltroGiro({
+              ciclo: cicloAgent.current,
+              giro,
+              restano: ragioni.length,
+              tagliato,
+              impuntato: false,
+            })
           ) {
+            cicloAgent.current = false;
             setGiro(0);
             return;
           }
@@ -628,7 +650,7 @@ export function Chat({
           return;
         }
 
-        if (modalita === "proposta") {
+        if (modoDelGiro.current === "proposta") {
           setProposta({ operazioni: lette.operazioni, ragioni });
           return;
         }
@@ -664,11 +686,15 @@ export function Chat({
         // un blocco tagliato non si ripete: chiedere di rifare una risposta
         // troncata darebbe una seconda risposta troncata allo stesso punto.
         if (
-          restano.length === 0 ||
-          tagliato ||
-          impuntato ||
-          giro >= GIRI_MASSIMI
+          !apreUnAltroGiro({
+            ciclo: cicloAgent.current,
+            giro,
+            restano: restano.length,
+            tagliato,
+            impuntato,
+          })
         ) {
+          cicloAgent.current = false;
           setGiro(0);
           return;
         }
@@ -679,11 +705,12 @@ export function Chat({
           controllo,
         );
       } catch (e: unknown) {
+        cicloAgent.current = false;
         setGiro(0);
         onErrore(e);
       }
     },
-    [sorgente, modalita, giro, esito, manda, onSorgente, onErrore, segnaRisposta],
+    [sorgente, giro, esito, manda, onSorgente, onErrore, segnaRisposta],
   );
 
   const chiedi = useCallback(async () => {
@@ -716,9 +743,13 @@ export function Chat({
     }
 
     const battuta: Battuta = { mio: true, testo };
+    // Chi chiede vuole vedere la risposta: da qui il pannello torna a seguire.
+    inFondo.current = true;
     if (cosa !== null) battuta.selezione = cosa;
     if (immagine !== undefined) battuta.immagine = immagine;
     setBattute((prima) => [...prima, battuta]);
+    modoDelGiro.current = modalita;
+    cicloAgent.current = modalita === "agent";
     if (modalita === "agent") {
       // L'istantanea **prima** del primo giro, non a ogni giro: quel che si
       // vuole poter ritrovare è il documento com'era prima di chiedere.
@@ -749,8 +780,11 @@ export function Chat({
 
   const ferma = useCallback(() => {
     if (turno === null) return;
-    // Il giro si azzera **prima** della risposta: il turno può ancora
-    // consegnare l'ultimo blocco, e senza questo l'agent ne aprirebbe un altro.
+    // Il ciclo si chiude **prima** della risposta: il turno può ancora
+    // consegnare l'ultimo blocco — si applica, è quel che si è pagato — ma da
+    // lì non parte un altro giro. Azzerare il giro non bastava: vedi
+    // `apreUnAltroGiro`.
+    cicloAgent.current = false;
     setGiro(0);
     ipc.iaFerma(turno).catch(onErrore);
   }, [turno, onErrore]);
@@ -761,6 +795,7 @@ export function Chat({
     conversazione.current = [];
     richiesta.current = "";
     ultimoCandidato.current = null;
+    cicloAgent.current = false;
     setBattute([]);
     setProposta(null);
     setGiro(0);
@@ -785,6 +820,9 @@ export function Chat({
   const alGuasto = (guasto: GuastoIa) => {
     if (!mio(guasto.turno)) return;
     inVolo.current = false;
+    cicloAgent.current = false;
+    // La domanda è caduta prima della risposta: vedi `senzaDomandaFallita`.
+    conversazione.current = senzaDomandaFallita(conversazione.current);
     arrivato.current = "";
     pensato.current = "";
     setTurno(null);
@@ -828,6 +866,7 @@ export function Chat({
       // Un blocco troncato non si applica: la cronologia non deve dire il
       // contrario.
       segnaRisposta(false);
+      cicloAgent.current = false;
       setGiro(0);
       return;
     }
@@ -997,7 +1036,14 @@ export function Chat({
         )}
       </p>
 
-      <div className="chat-conversazione" aria-live="polite" aria-busy={occupata}>
+      <div
+        className="chat-conversazione"
+        aria-live="polite"
+        aria-busy={occupata}
+        onScroll={(e) => {
+          inFondo.current = vicinoAlFondo(e.currentTarget);
+        }}
+      >
         {battute.length === 0 && turno === null && (
           <p className="chat-vuota">{t("studio.chat.empty")}</p>
         )}
@@ -1188,7 +1234,13 @@ export function Chat({
           rows={3}
           placeholder={t("studio.chat.placeholder")}
           value={scritto}
-          disabled={occupata}
+          // In sola lettura e non spento: un campo spento perde il fuoco, che
+          // torna al corpo della pagina, e finita la risposta quel che si
+          // scriveva finiva alle scorciatoie dello Studio — «f» rigiocava la
+          // tela, Ctrl+Z annullava la modifica appena applicata. `chiedi`
+          // rifiuta già una domanda mentre un turno è in volo.
+          readOnly={occupata}
+          aria-disabled={occupata || undefined}
           onChange={(e) => setScritto(e.target.value)}
           onKeyDown={(e) => {
             // Invio manda, Maiusc+Invio va a capo: è la convenzione di ogni

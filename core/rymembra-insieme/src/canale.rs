@@ -159,6 +159,16 @@ pub(crate) fn primo_messaggio(presa: &mut TcpStream, scadenza: Instant) -> Resul
 
 /// La stretta `XX`, fino a `scadenza`.
 ///
+/// # Il posto fra le strette
+///
+/// `curva_fatta` si chiama una volta, appena prima di aspettare un messaggio
+/// dalla rete. Per chi risponde col primo messaggio già letto è il momento in
+/// cui ha scritto il secondo: il lavoro sulla curva che chi bussa gli può far
+/// fare gratis è finito, ed è lì che chi ospita lascia il suo posto fra le
+/// strette (vedi «Le strette, e chi non parla» in `ascolto`). Chi non ha un
+/// posto da lasciare passa una chiusura vuota. Se la stretta finisce prima,
+/// la chiusura se ne va con lei, e quel che teneva con la chiusura.
+///
 /// # Errori
 ///
 /// [`Guasto::Silenzio`] o [`Guasto::Rete`] se l'altro capo non c'è, o non
@@ -169,6 +179,7 @@ pub(crate) fn stringi(
     identita: &Identita,
     iniziatore: bool,
     primo: Option<&[u8]>,
+    curva_fatta: impl FnOnce(),
     scadenza: Instant,
 ) -> Result<Canale, Guasto> {
     let schema = SCHEMA.parse().map_err(|_| Guasto::Protocollo)?;
@@ -188,6 +199,7 @@ pub(crate) fn stringi(
     // Chi risponde può aver già letto il primo messaggio (vedi
     // [`primo_messaggio`]): si usa quello, una volta.
     let mut gia_letto = primo;
+    let mut curva_fatta = Some(curva_fatta);
     // `XX` ha tre messaggi; il tetto c'è perché un ciclo che dipende da quel
     // che dice l'altro capo deve avere una fine anche se l'altro capo mente.
     for _ in 0..3 {
@@ -205,6 +217,10 @@ pub(crate) fn stringi(
                 .read_message(messaggio, &mut chiaro)
                 .map_err(|_| Guasto::Protocollo)?;
         } else {
+            // Prima di aspettare la rete: vedi «Il posto fra le strette».
+            if let Some(lascia) = curva_fatta.take() {
+                lascia();
+            }
             let letti = leggi_cornice(presa, &mut cifrato, scadenza)?;
             let messaggio = cifrato.get(..letti).ok_or(Guasto::Protocollo)?;
             stretta
@@ -338,7 +354,7 @@ impl Decifratore {
     /// fidato (un'associazione finita dall'altro filo, il desktop che chiama
     /// `pari`) o smettere di esserlo. Fino alla revisione del 26 ottobre i
     /// tetti si fissavano prima dell'attesa, e il primo `Stato` dopo
-    /// un'associazione — cento kibibyte — trovava ancora i quattro
+    /// un'associazione — fino a centinaia di kibibyte — trovava ancora i quattro
     /// dell'estraneo e chiudeva con `insieme.protocollo`. Il controllo resta
     /// prima dell'allocazione: vedi «Il controllo prima dell'allocazione» in
     /// `cornice`.
@@ -534,6 +550,7 @@ pub(crate) mod prove {
                 &identita_b,
                 false,
                 None,
+                || (),
                 Instant::now() + Duration::from_secs(5),
             )
             .expect("stretta dal lato che risponde");
@@ -546,6 +563,7 @@ pub(crate) mod prove {
             &identita_a,
             true,
             None,
+            || (),
             Instant::now() + Duration::from_secs(5),
         )
         .expect("stretta dal lato che comincia");

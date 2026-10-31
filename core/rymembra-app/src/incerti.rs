@@ -280,9 +280,11 @@ fn non_trovato(track_id: i64) -> AppError {
 /// 3. **ricostruisce gli aggregati**, perché un artista o un album appena
 ///    corretti devono esistere come schede.
 ///
-/// I campi corretti diventano [`Origine::Manuale`], che non è solo
-/// un'etichetta: `enrich::plan_write` non tocca un campo manuale con nessun
-/// verdetto, nemmeno quando è sicuro di sé.
+/// I campi corretti diventano [`Origine::Manuale`]. Non è `enrich::plan_write` a
+/// proteggerli: quello non sa delle correzioni, e su un campo manuale propone
+/// il valore del catalogo come su ogni altro. A tenerli è il punto 2: subito
+/// dopo ogni scrittura dell'arricchimento `enrich::registra` chiama
+/// [`riapplica_sopra_i_tag`], che rimette sopra la correzione — campi e chiave.
 ///
 /// # Errori
 ///

@@ -361,23 +361,22 @@ fn blocco(selector: &str, dichiarazioni: &[Dichiarazione]) -> String {
 
 // ── I colori ────────────────────────────────────────────────────────────────
 
-/// I due nomi con cui la copertina arriva nel foglio.
-///
-/// Oggi il runtime estrae **una** tinta dalla copertina e la scrive in
-/// `--accent`, quindi tutte e quattro le sorgenti puntano lì. Il `match` rende
-/// la cosa una decisione dichiarata invece di un ramo ripetuto.
+/// I due nomi con cui la copertina arriva nel foglio: vedi
+/// [`DynamicSource::variabili`].
 const fn nomi_della_copertina(source: DynamicSource) -> (&'static str, &'static str) {
-    match source {
-        DynamicSource::Vibrant
-        | DynamicSource::Muted
-        | DynamicSource::DarkVibrant
-        | DynamicSource::LightVibrant => ("--accent", "--accent-rgb"),
-    }
+    source.variabili()
 }
 
 fn risolvi_colore(value: &ColorValue) -> String {
     match *value {
         ColorValue::Literal(colore) => format_color(colore),
+        // Un token che esiste **solo** come tripla — `color.hero` — non è un
+        // colore: `var(--hero-rgb)` dove ci va un colore vale `139 124 246`, e
+        // il fondo o il testo cadevano senza un avviso. Lo Studio lo propone
+        // fra i colori, e come colore si scrive.
+        ColorValue::Token(def) if def.rgb_triple == Some(def.css) => {
+            format!("rgb(var({}))", def.css)
+        }
         // Il nome della variabile viene dal registro, non dal documento.
         ColorValue::Token(def) => format!("var({})", def.css),
         ColorValue::Palette { ref name, alpha } => {
@@ -729,10 +728,12 @@ fn compila_motivi(patterns: &[(String, Effect)], ambito: &Ambito) -> Vec<Dichiar
 /// `@font-face` ha dichiarato.
 fn compila_token(
     tokens: &TokenSet,
+    base: Option<&TokenSet>,
     famiglia: &dyn Fn(&str) -> Option<String>,
 ) -> (Vec<Dichiarazione>, Vec<&'static str>) {
     let mut dichiarazioni = Vec::with_capacity(tokens.len() * 2);
     let mut dinamici = Vec::new();
+    let dove = Riferimenti { tokens, base };
 
     for (def, value) in tokens.iter() {
         match *value {
@@ -740,7 +741,7 @@ fn compila_token(
                 if matches!(*color, ColorValue::Source { .. }) {
                     dinamici.push(def.id);
                 }
-                compila_colore(def, color, &mut dichiarazioni);
+                compila_colore(def, color, dove, &mut dichiarazioni);
             }
             TokenValue::Length(length) => {
                 dichiarazioni.push(dichiara(def.css, format_length_value(length)));
@@ -775,24 +776,125 @@ fn compila_token(
     (dichiarazioni, dinamici)
 }
 
-fn compila_colore(def: &TokenDef, color: &ColorValue, dichiarazioni: &mut Vec<Dichiarazione>) {
-    // La tripla derivata dal colore. Un riferimento o una sorgente non hanno un
-    // valore qui: si rimanda alla tripla dell'accento, che è quella che il
-    // runtime aggiorna.
-    let tripla = |color: &ColorValue| {
-        colore_letterale(color).map_or_else(|| "var(--accent-rgb)".to_owned(), format_rgb_triple)
-    };
+/// Dove si seguono i riferimenti fra token di un insieme: l'insieme stesso, e
+/// quello su cui ricade — la base, per la variante e per il telefono. È la
+/// stessa cascata del CSS, e la stessa di `colore_di` nella validazione.
+#[derive(Clone, Copy)]
+struct Riferimenti<'a> {
+    tokens: &'a TokenSet,
+    base: Option<&'a TokenSet>,
+}
 
+/// Quanti rimandi fra token si seguono prima di arrendersi: `a → b → a` è un
+/// ciclo che il formato non vieta.
+const PASSI_DEI_RIMANDI: u8 = 8;
+
+/// La tripla `r g b` di un colore, da dichiarare in `nome`, o `None` se non si
+/// può scrivere.
+///
+/// Fino alla 3.2.0 di prova tutto quel che non era un letterale ripiegava sulla tripla
+/// dell'accento, e per l'accento stesso — scritto con la tavolozza da Neon e
+/// da Vinile — usciva `--accent-rgb: var(--accent-rgb)`: un ciclo, che al
+/// valore calcolato non vale niente e trascinava con sé `--hero-rgb`, l'alone
+/// senza copertina e l'anello del giro guidato. Adesso la tripla viene da
+/// quel che il colore **è**:
+///
+/// - un letterale dà la sua;
+/// - un colore della tavolozza dà la variabile della tavolozza, che il blocco
+///   della variante ridefinisce quando la variante ridefinisce il colore;
+/// - un token con una tripla sua la richiama; uno senza si segue fino a un
+///   colore che ne ha una;
+/// - la copertina dà la tripla dell'accento, che è quella che il runtime
+///   aggiorna.
+///
+/// Quel che finirebbe per rimandare a `nome` stesso non si scrive: resta la
+/// tripla di serie di `stile.css`, che almeno è un colore.
+fn tripla_di(color: &ColorValue, nome: &str, dove: Riferimenti<'_>, passi: u8) -> Option<String> {
+    let tripla = match color {
+        ColorValue::Literal(colore) => format_rgb_triple(*colore),
+        ColorValue::Palette { name, .. } => format!(
+            "var({PREFISSO_TAVOLOZZA}{}-rgb)",
+            nel_suo_alfabeto(name, TRATTINO)
+        ),
+        ColorValue::Source { source, .. } => format!("var({})", nomi_della_copertina(*source).1),
+        ColorValue::Token(def) => match def.rgb_triple {
+            Some(sua) => format!("var({sua})"),
+            None => {
+                let valore = dove
+                    .tokens
+                    .get(def.id)
+                    .or_else(|| dove.base.and_then(|base| base.get(def.id)))?;
+                let TokenValue::Color(dentro) = valore else {
+                    return None;
+                };
+                return tripla_di(dentro, nome, dove, passi.checked_sub(1)?);
+            }
+        },
+    };
+    (tripla != format!("var({nome})")).then_some(tripla)
+}
+
+fn compila_colore(
+    def: &TokenDef,
+    color: &ColorValue,
+    dove: Riferimenti<'_>,
+    dichiarazioni: &mut Vec<Dichiarazione>,
+) {
     // `color.hero` esiste **solo** come tripla.
     if def.rgb_triple == Some(def.css) {
-        dichiarazioni.push(dichiara(def.css, tripla(color)));
+        if let Some(tripla) = tripla_di(color, def.css, dove, PASSI_DEI_RIMANDI) {
+            dichiarazioni.push(dichiara(def.css, tripla));
+        }
         return;
     }
 
-    dichiarazioni.push(dichiara(def.css, risolvi_colore(color)));
-    if let Some(nome) = def.rgb_triple {
-        dichiarazioni.push(dichiara(nome, tripla(color)));
+    // Una dichiarazione che rimanda a sé stessa — `--accent: var(--accent)`,
+    // da un `$token` che si nomina o da una sorgente sull'accento costruita
+    // senza passare dalla validazione — è un ciclo: non si scrive.
+    let valore = risolvi_colore(color);
+    if !valore.contains(&format!("var({})", def.css)) {
+        dichiarazioni.push(dichiara(def.css, valore));
     }
+    if let Some(nome) = def.rgb_triple
+        && let Some(tripla) = tripla_di(color, nome, dove, PASSI_DEI_RIMANDI)
+    {
+        dichiarazioni.push(dichiara(nome, tripla));
+    }
+}
+
+/// Le triple della base che nel tema della variante valgono un altro colore
+/// senza che la variante le dichiari.
+///
+/// `color.accent: { "$token": "color.danger" }` nella base, e `color.danger`
+/// ridefinito nella variante: `--accent` è `var(--danger)` e il CSS lo segue
+/// da solo, la tripla scritta nella base invece no. Si riscrive nel blocco
+/// della variante, risolta con la cascata della variante.
+fn triple_della_variante(base: &TokenSet, variante: &TokenSet) -> Vec<Dichiarazione> {
+    let nella_base = Riferimenti {
+        tokens: base,
+        base: None,
+    };
+    let nella_variante = Riferimenti {
+        tokens: variante,
+        base: Some(base),
+    };
+    let mut dichiarazioni = Vec::new();
+    for (def, valore) in base.iter() {
+        let (Some(nome), TokenValue::Color(colore)) = (def.rgb_triple, valore) else {
+            continue;
+        };
+        if variante.contains(def.id) {
+            continue;
+        }
+        let prima = tripla_di(colore, nome, nella_base, PASSI_DEI_RIMANDI);
+        let dopo = tripla_di(colore, nome, nella_variante, PASSI_DEI_RIMANDI);
+        if dopo != prima
+            && let Some(tripla) = dopo
+        {
+            dichiarazioni.push(dichiara(nome, tripla));
+        }
+    }
+    dichiarazioni
 }
 
 /// I token **calcolati**: conseguenze, non scelte.
@@ -853,7 +955,7 @@ fn blocchi_di_serie(ambito: &Ambito) -> String {
         return String::new();
     };
     let nessuna = |_: &str| -> Option<String> { None };
-    let (mut base, _) = compila_token(&plain.tokens, &nessuna);
+    let (mut base, _) = compila_token(&plain.tokens, None, &nessuna);
     for (id, valore) in DIFETTI_DEL_MOTORE {
         if let Some(def) = crate::tokens::token(id)
             && !plain.tokens.contains(id)
@@ -868,7 +970,7 @@ fn blocchi_di_serie(ambito: &Ambito) -> String {
     let mut css = blocco(&format!(":where({})", ambito.radice()), &base);
 
     if let Some(chiari) = plain.variante_tokens() {
-        let (mut luce, _) = compila_token(chiari, &nessuna);
+        let (mut luce, _) = compila_token(chiari, Some(&plain.tokens), &nessuna);
         luce.extend(calcolati(chiari, false));
         luce.push(dichiara("color-scheme", "light"));
         css.push_str(&blocco(
@@ -1527,16 +1629,18 @@ fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento
     }
 
     // L'anello del fuoco: sta sotto lo stato del fuoco, qualunque sia la
-    // regola in cui è stato scritto.
+    // regola in cui è stato scritto. Quello della base qui; quello di uno
+    // stato sotto lo stato **e** il fuoco, più giù. Fino alla 3.2.0 di prova l'anello di
+    // `current` finiva nella regola di `current`, e la riga in ascolto portava
+    // un anello anche senza fuoco: chi naviga con la tastiera ne vedeva due.
+    let fuoco = ambito.stato(PartState::Focus, stile.def.fuoco);
     if let Some(anello) = stile.appearance.focus_ring.as_ref() {
         css.push_str(&blocco(
-            &format!(
-                "{base}:where({})",
-                ambito.stato(PartState::Focus, stile.def.fuoco)
-            ),
+            &format!("{base}:where({fuoco})"),
             &compila_anello(anello),
         ));
     }
+    let mut anelli_degli_stati = String::new();
 
     for stato in PartState::ALL {
         let aspetto = stile.states.get(*stato);
@@ -1550,7 +1654,19 @@ fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento
             .map(|a| compila_aspetto(a, ambito))
             .unwrap_or_default();
         if let Some(anello) = aspetto.and_then(|a| a.focus_ring.as_ref()) {
-            dichiarazioni.extend(compila_anello(anello));
+            if *stato == PartState::Focus {
+                dichiarazioni.extend(compila_anello(anello));
+            } else {
+                // Dopo tutti gli stati, `focus` compreso: una riga corrente
+                // col fuoco porta l'anello scritto per la riga corrente.
+                anelli_degli_stati.push_str(&blocco(
+                    &format!(
+                        "{base}:where({}):where({fuoco})",
+                        ambito.stato(*stato, stile.def.fuoco)
+                    ),
+                    &compila_anello(anello),
+                ));
+            }
         }
         if let Some((_, voce)) = animazione {
             let mut lista = liste.base.clone();
@@ -1565,6 +1681,7 @@ fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento
             &dichiarazioni,
         ));
     }
+    css.push_str(&anelli_degli_stati);
 
     // Il cambio di contenuto **dentro** uno stato animato.
     //
@@ -2021,7 +2138,7 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
         css.push_str(&blocchi_di_serie(ambito));
     }
 
-    let (base, dinamici) = compila_token(&skin.tokens, &famiglia);
+    let (base, dinamici) = compila_token(&skin.tokens, None, &famiglia);
     let mut dichiarazioni = compila_tavolozza(&skin.palette);
     dichiarazioni.extend(base);
     dichiarazioni.extend(calcolati(&skin.tokens, false));
@@ -2033,7 +2150,8 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
 
     let tema_variante = ambito.tema(skin.scheme.opposto());
     if let Some(variante) = skin.variant.as_ref() {
-        let (mut dichiarazioni, _) = compila_token(&variante.tokens, &famiglia);
+        let (mut dichiarazioni, _) = compila_token(&variante.tokens, Some(&skin.tokens), &famiglia);
+        dichiarazioni.extend(triple_della_variante(&skin.tokens, &variante.tokens));
         dichiarazioni.extend(calcolati(&variante.tokens, false));
         dichiarazioni.extend(compila_tavolozza(&variante.palette));
         dichiarazioni.extend(compila_motivi(&variante.patterns, ambito));
@@ -2042,7 +2160,7 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
     }
 
     if let Some(telefono) = skin.mobile.as_ref() {
-        let (mut dichiarazioni, _) = compila_token(telefono, &famiglia);
+        let (mut dichiarazioni, _) = compila_token(telefono, Some(&skin.tokens), &famiglia);
         dichiarazioni.extend(calcolati(telefono, false));
         css.push_str(&blocco(&ambito.telefono(), &dichiarazioni));
     }

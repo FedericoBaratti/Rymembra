@@ -94,14 +94,29 @@ import { indiceDi, type Finestra } from "./virtuale";
  * fuoco in sospeso resterebbe in sospeso per sempre e proverebbe a prendersi la
  * scena a ogni disegno successivo, anche mezz'ora dopo.
  *
- * È un tempo e **non un numero di disegni**, ed è il punto: mentre un brano
- * suona `App` si ridisegna una ventina di volte al secondo per la posizione, e
- * un tetto di «quattro disegni» si esaurirebbe in duecento millisecondi — cioè
- * prima che lo scorrimento e il ricalcolo abbiano finito. Trecento millisecondi
- * sono venti fotogrammi: abbastanza per uno scorrimento e la rimisura, troppo
- * pochi perché qualcuno se ne accorga.
+ * È un tempo e **non un numero di disegni**, ed è il punto: gli elenchi che
+ * usano questo modulo non si ridisegnano a un ritmo fisso, ma quando arriva una
+ * pagina, si sposta la finestra o cambia una riga — la posizione di quel che
+ * suona sta fuori da React (`riproduzione.ts`) e non li ridisegna. Un tetto
+ * contato in disegni non ha quindi nessun rapporto col tempo: su un elenco
+ * fermo potrebbe non scadere mai, e lasciare la riga in sospeso per sempre;
+ * durante una raffica di pagine scadrebbe prima che lo scorrimento e il
+ * ricalcolo abbiano finito. Trecento millisecondi sono venti fotogrammi:
+ * abbastanza per uno scorrimento e la rimisura, troppo pochi perché qualcuno se
+ * ne accorga.
  */
 const ATTESA_MS = 300;
+
+/**
+ * La riga `dove` è fuori dalla finestra disegnata, e `vaiA` deve scorrere.
+ *
+ * Fuori vuol dire fuori da `[primo, ultimo)`: la riga col fuoco può restare
+ * montata anche lontano dalla finestra (la vista Brani la tiene), ma non è
+ * dentro quel che si vede.
+ */
+export function daScorrere(dove: number, finestra: Pick<Finestra, "primo" | "ultimo">): boolean {
+  return dove < finestra.primo || dove >= finestra.ultimo;
+}
 
 /** Il fuoco dentro un elenco, e i modi di spostarlo. */
 export interface Fuoco {
@@ -236,7 +251,7 @@ export function useFuoco(opzioni: {
       const dove = stretto(indice, totale);
       setAttivo(dove);
       const f = finestraRef.current;
-      if (dove >= f.primo && dove < f.ultimo) {
+      if (!daScorrere(dove, f)) {
         // Già disegnata: il fuoco ci va adesso, e non c'è niente da mettere in
         // sospeso. Metterlo in sospeso comunque sarebbe un errore silenzioso:
         // `setAttivo` con lo stesso valore non ridisegna — ↑ sulla prima riga,
@@ -248,8 +263,17 @@ export function useFuoco(opzioni: {
         return;
       }
       inSospeso.current = { indice: dove, da: performance.now() };
+      // E si scorre adesso, senza aspettare l'effetto che lo fa dopo ogni
+      // disegno: quando la riga d'arrivo è già quella attiva — Inizio sulla
+      // prima dopo aver scorso con la rotella, Fine di nuovo sull'ultima, ↑
+      // sulla prima, ↓ sull'ultima — `setAttivo` riceve lo stesso valore, il
+      // disegno non c'è, l'effetto non gira, e il tasto preso non faceva
+      // niente. Lo scorrimento rifà la finestra, e il disegno che segue porta
+      // il fuoco come sempre; l'effetto, se gira, riscrive lo stesso
+      // `scrollTop`.
+      scorriA(dove);
     },
-    [totale, nodoDi],
+    [totale, nodoDi, scorriA],
   );
 
   const segna = useCallback((indice: number) => setAttivo(indice), []);

@@ -24,6 +24,14 @@
  * si vede è quello dell'ultima versione buona: modificarlo riscriverebbe lo
  * scafale da una versione vecchia, cancellando quel che nel frattempo si è
  * scritto nel codice. Allora l'albero si guarda e non si tocca, e lo dice.
+ *
+ * Lo stesso vale, in silenzio, per il breve tratto in cui la validazione del
+ * testo di adesso è in volo: l'albero è ancora quello di prima, e un secondo
+ * gesto rapido (due Canc, Alt+Giù tenuto premuto) lo riscriveva disfacendo il
+ * primo. Il gesto si ignora finché non torna l'esito (`scafaleScrivibile`).
+ * Nell'ispettore del nodo la guardia vale per le scelte discrete
+ * (`IspezioneNodo`); i suoi cursori no: trascinati, perderebbero l'ultima
+ * posizione, e le loro scritture rapide toccano tutte lo stesso campo.
  */
 import { useCallback, useState, type KeyboardEvent } from "react";
 
@@ -47,6 +55,7 @@ import {
   type Via,
 } from "./albero";
 import { useStudio } from "./contesto";
+import { scafaleScrivibile } from "./negozio";
 import { coloreCosto } from "./valori";
 import { descrizioneWidget, nomeGruppo } from "./vocabolario";
 
@@ -124,6 +133,11 @@ export function AlberoScafale() {
   const { s, manda, registro, documento, scriviMolti } = useStudio();
   const albero = s.valido?.layout?.shell ?? null;
   const bloccato = s.esito !== null && s.esito.errori.length > 0;
+  // La guardia muta delle scritture: anche mentre la validazione è in volo
+  // l'albero che si vede è vecchio, e due gesti rapidi partivano tutti e due
+  // da lui — il secondo disfaceva il primo. Non tocca la nota né i tasti, che
+  // dicono solo degli errori: vedi `scafaleScrivibile`.
+  const scrivibile = scafaleScrivibile(s);
   const scelto = s.selezione?.tipo === "nodo" ? s.selezione.via : null;
   const [chiusi, setChiusi] = useState<ReadonlySet<string>>(new Set());
   const [preso, setPreso] = useState<Preso | null>(null);
@@ -173,7 +187,7 @@ export function AlberoScafale() {
   };
 
   function rilascia(dove: Via, indice: number, cosa: Preso) {
-    if (albero === null || bloccato) return;
+    if (albero === null || !scrivibile) return;
     const dentro = nodoA(albero, dove);
     if (dentro === null || !accetta(dentro, cosa)) return;
     if (cosa.tipo === "nodo") {
@@ -210,18 +224,19 @@ export function AlberoScafale() {
 
   const togli = (via: Via) => {
     const nodo = nodoA(albero, via);
-    if (via.length === 0 || nodo === null) return;
+    if (!scrivibile || via.length === 0 || nodo === null) return;
     scriviAlbero(senzaNodo(albero, via), t("studio3.step.shellRemove", { cosa: nodo.name }));
     scegli(via.length > 1 ? via.slice(0, -1) : null);
   };
 
-  const sposta = (via: Via, verso: -1 | 1) => {
+  /** Sposta di un posto fra i fratelli; restituisce dove è arrivato, o `null`. */
+  const sposta = (via: Via, verso: -1 | 1): Via | null => {
     const indice = via[via.length - 1];
     const padre = via.slice(0, -1);
     const zona = nodoA(albero, padre);
-    if (indice === undefined || zona === null) return;
+    if (!scrivibile || indice === undefined || zona === null) return null;
     const arrivo = indice + verso;
-    if (arrivo < 0 || arrivo >= zona.children.length) return;
+    if (arrivo < 0 || arrivo >= zona.children.length) return null;
     const nodo = nodoA(albero, via);
     // `spostato` inserisce **prima** dell'indice dato, a nodo già tolto: per
     // scendere di uno si punta due posti più in là.
@@ -229,12 +244,14 @@ export function AlberoScafale() {
       spostato(albero, via, padre, verso === 1 ? arrivo + 1 : arrivo),
       t("studio3.step.shellMove", { cosa: nodo?.name ?? "" }),
     );
-    scegli([...padre, arrivo]);
+    const dove = [...padre, arrivo];
+    scegli(dove);
+    return dove;
   };
 
   const faiPrefab = (via: Via) => {
     const nodo = nodoA(albero, via);
-    if (nodo === null || nodo.kind !== "zone" || nodo.fromPrefab !== null) return;
+    if (!scrivibile || nodo === null || nodo.kind !== "zone" || nodo.fromPrefab !== null) return;
     const nome = nomePrefabLibero(nodo, prefabs);
     // Il corpo prima del riferimento, in un passo solo: al contrario, per un
     // istante il documento richiamerebbe un prefab che non c'è.
@@ -282,7 +299,13 @@ export function AlberoScafale() {
     };
     let fatto = true;
     if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      if (!bloccato && voce.via.length > 0) sposta(voce.via, e.key === "ArrowUp" ? -1 : 1);
+      // Il fuoco segue il nodo. Restando sulla via di partenza, dopo la
+      // validazione quella riga mostrava il fratello salito al suo posto, e
+      // il secondo Alt+Giù spostava lui: i due tornavano com'erano. La riga
+      // d'arrivo c'è già nell'albero di adesso, ed è lo stesso elemento che
+      // dopo la validazione mostra il nodo spostato.
+      const arrivo = !bloccato && voce.via.length > 0 ? sposta(voce.via, e.key === "ArrowUp" ? -1 : 1) : null;
+      if (arrivo !== null) vaiA(chiaveVia(arrivo));
     } else if (e.key === "ArrowDown") altra(qui + 1);
     else if (e.key === "ArrowUp") altra(qui - 1);
     else if (e.key === "Home") altra(0);

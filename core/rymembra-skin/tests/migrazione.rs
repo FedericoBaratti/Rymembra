@@ -18,7 +18,11 @@
 //! - una tinta piena che non sta in fondo a un `background` si scrive come un
 //!   gradiente di un colore solo. Prima era CSS non valido, e il browser
 //!   buttava l'intero fondo: è l'unico caso in cui l'aspetto cambia, perché
-//!   prima non c'era.
+//!   prima non c'era;
+//! - la tripla di un accento preso dalla tavolozza è la tripla di quel colore
+//!   della tavolozza. Prima era `--accent-rgb: var(--accent-rgb)`, un ciclo che
+//!   al valore calcolato non valeva niente: anche qui l'aspetto cambia perché
+//!   prima la tripla non c'era (3.2.0, z14-skin-a-01).
 
 use std::collections::BTreeSet;
 
@@ -183,6 +187,28 @@ fn ripara_sfondo(terna: Terna) -> Terna {
     Terna { valore, ..terna }
 }
 
+/// La tripla dell'accento com'è scritta oggi: dove il formato 1 scriveva il
+/// ciclo `--accent-rgb: var(--accent-rgb)` per un accento della tavolozza, oggi
+/// c'è la tripla di quel colore della tavolozza. `accenti` è il valore di
+/// `--accent` nella stessa regola, letto dall'oro.
+fn ripara_tripla(terna: Terna, accenti: &[(String, String)]) -> Terna {
+    if terna.proprieta != "--accent-rgb" || terna.valore != "var(--accent-rgb)" {
+        return terna;
+    }
+    let colore = accenti
+        .iter()
+        .find(|(regola, _)| *regola == terna.regola)
+        .and_then(|(_, valore)| valore.strip_prefix("var(--skin-color-"))
+        .and_then(|resto| resto.strip_suffix(')'));
+    match colore {
+        Some(nome) => Terna {
+            valore: format!("var(--skin-color-{nome}-rgb)"),
+            ..terna
+        },
+        None => terna,
+    }
+}
+
 /// `.da` → `.a` dove `.da` è una classe intera, non l'inizio di un'altra.
 fn cambia_classe(regola: &str, da: &str, a: &str) -> Option<String> {
     let cercato = format!(".{da}");
@@ -240,9 +266,15 @@ fn la_migrazione_non_cambia_l_aspetto() {
         let oggi = compile_skin(&skin).css;
 
         let (prima, ordine_prima) = terne(oro);
+        let accenti: Vec<(String, String)> = prima
+            .iter()
+            .filter(|terna| terna.proprieta == "--accent")
+            .map(|terna| (terna.regola.clone(), terna.valore.clone()))
+            .collect();
         let prima: BTreeSet<Terna> = prima
             .into_iter()
             .map(|terna| {
+                let terna = ripara_tripla(terna, &accenti);
                 ripara_sfondo(Terna {
                     regola: rinomina(&terna.regola),
                     ..terna

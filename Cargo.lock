@@ -1340,7 +1340,7 @@ dependencies = [
  "rustc_version",
  "toml 1.1.6+spec-1.1.0",
  "vswhom",
- "winreg",
+ "winreg 0.55.0",
 ]
 
 [[package]]
@@ -4393,7 +4393,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rymembra-app"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "blake3",
  "filetime",
@@ -4417,7 +4417,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-archivio"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "rymembra-domain",
  "serde_json",
@@ -4427,14 +4427,14 @@ dependencies = [
 
 [[package]]
 name = "rymembra-barra"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "rymembra-catalogo"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "rymembra-domain",
  "rymembra-net",
@@ -4443,10 +4443,12 @@ dependencies = [
 
 [[package]]
 name = "rymembra-cloud"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
+ "blake3",
  "flate2",
  "getrandom 0.3.4",
+ "quick-xml",
  "rymembra-app",
  "rymembra-domain",
  "rymembra-net",
@@ -4460,9 +4462,10 @@ dependencies = [
 
 [[package]]
 name = "rymembra-desktop"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "notify",
+ "rfd",
  "rusqlite",
  "rymembra-app",
  "rymembra-archivio",
@@ -4490,11 +4493,12 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "trash",
+ "zeroize",
 ]
 
 [[package]]
 name = "rymembra-domain"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -4504,7 +4508,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-ia"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "rymembra-domain",
  "rymembra-net",
@@ -4514,7 +4518,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-insieme"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "blake3",
  "flate2",
@@ -4529,7 +4533,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-meta"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "rymembra-domain",
  "rymembra-net",
@@ -4539,7 +4543,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-net"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "rymembra-domain",
  "ureq",
@@ -4547,7 +4551,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-oauth"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "getrandom 0.3.4",
  "keyring",
@@ -4557,7 +4561,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-play"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "ape-decoder",
  "cpal",
@@ -4573,7 +4577,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-scrobble"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "md-5",
  "rymembra-domain",
@@ -4584,7 +4588,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-skin"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "rymembra-domain",
  "serde_json",
@@ -4593,7 +4597,7 @@ dependencies = [
 
 [[package]]
 name = "rymembra-sync"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "blake3",
  "flate2",
@@ -6249,6 +6253,7 @@ dependencies = [
  "ureq-proto",
  "utf8-zero",
  "webpki-roots",
+ "winreg 0.56.0",
 ]
 
 [[package]]
@@ -7133,6 +7138,16 @@ name = "winreg"
 version = "0.55.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",

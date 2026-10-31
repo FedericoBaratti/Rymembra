@@ -98,3 +98,20 @@ test("due contatori non si disturbano", () => {
   playlist();
   assert.equal(mioAvvio(), true);
 });
+
+test("una fotografia più vecchia non sovrascrive un evento arrivato prima di lei", async () => {
+  const { eventiEFotografia } = await import("../src/ultima");
+  assert.equal(typeof eventiEFotografia, "function");
+  const conto = eventiEFotografia();
+  // La fotografia chiesta, poi un evento più nuovo, poi la risposta: si butta.
+  const prima = conto.chiedi();
+  conto.evento();
+  assert.equal(prima(), false);
+  // Chiesta dopo l'ultimo evento, e nessun evento nel mezzo: si adotta.
+  const seconda = conto.chiedi();
+  assert.equal(seconda(), true);
+  // Due contatori non si disturbano.
+  const altro = eventiEFotografia();
+  altro.evento();
+  assert.equal(seconda(), true);
+});

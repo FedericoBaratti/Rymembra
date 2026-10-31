@@ -284,17 +284,68 @@ fn indice_percorsi(connection: &Connection) -> Result<HashMap<String, i64>, AppE
 /// di quel `.cue` non ha brani — un foglio che non descrive un'immagine, o
 /// una cartella non ancora scansionata.
 ///
-/// Serve all'importazione di una playlist che nomina un `.cue`, e a chi
-/// trascina un `.cue` sulla finestra: tutti e due vogliono il disco, non il
-/// foglio.
+/// Una domanda sola: costruisce l'indice di tutti i fogli per risponderle. Chi
+/// ne ha molte — i file trascinati sulla finestra — tiene l'indice
+/// ([`indice_dei_fogli`]). Tutti e due vogliono il disco, non il foglio.
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se la libreria non risponde.
 pub fn brani_del_foglio(connection: &Connection, percorso_cue: &str) -> Result<Vec<i64>, AppError> {
-    Ok(fogli_della_libreria(connection)?
-        .remove(&normalizza(percorso_cue))
-        .unwrap_or_default())
+    Ok(indice_dei_fogli(connection)?.brani(percorso_cue))
+}
+
+/// I dischi d'immagine della libreria, per percorso: dei `.cue`
+/// ([`indice_dei_fogli`]) o delle immagini ([`indice_delle_immagini`]).
+///
+/// # Perché un indice da tenere
+///
+/// Costruirlo è una lettura di **tutti** i brani d'immagine — migliaia, su una
+/// libreria di CD — con due chiavi di percorso per riga; chiedergli un disco è
+/// una ricerca in una mappa. [`brani_del_foglio`] e [`brani_dell_immagine`] lo
+/// costruiscono per una domanda sola, e vanno bene per una domanda sola. Chi
+/// ne ha molte — i file trascinati sulla finestra, di solito tutti fuori
+/// libreria — lo costruisce una volta e chiede quante volte vuole: prima era
+/// una lettura della tabella per file, col lucchetto della libreria in mano.
+///
+/// La chiave è quella della scansione, e resta qui dentro: chi chiede passa
+/// il percorso com'è.
+#[derive(Debug, Default)]
+pub struct Dischi(HashMap<String, Vec<i64>>);
+
+impl Dischi {
+    /// I brani del disco che sta a `percorso`, in ordine di numero; vuoto se
+    /// non è un disco della libreria.
+    ///
+    /// Non consuma: lo stesso disco chiesto due volte — anche scritto in due
+    /// modi che la chiave unifica, barre o maiuscole — risponde tutte e due le
+    /// volte, invece di finire la seconda fra i file sconosciuti.
+    #[must_use]
+    pub fn brani(&self, percorso: &str) -> Vec<i64> {
+        self.0
+            .get(&normalizza(percorso))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// L'indice dei `.cue` della libreria: vedi [`Dischi`] e [`brani_del_foglio`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se la libreria non risponde.
+pub fn indice_dei_fogli(connection: &Connection) -> Result<Dischi, AppError> {
+    Ok(Dischi(fogli_della_libreria(connection)?))
+}
+
+/// L'indice delle immagini CD della libreria: vedi [`Dischi`] e
+/// [`brani_dell_immagine`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se la libreria non risponde.
+pub fn indice_delle_immagini(connection: &Connection) -> Result<Dischi, AppError> {
+    Ok(Dischi(immagini_della_libreria(connection)?))
 }
 
 /// Ogni `.cue` con dei brani in libreria, per chiave di percorso, con i suoi
@@ -336,17 +387,16 @@ fn fogli_della_libreria(connection: &Connection) -> Result<HashMap<String, Vec<i
 /// scansione. Vuoto se il file non è l'immagine di nessun brano — un file
 /// intero, o un'immagine senza foglio.
 ///
-/// Serve a chi trascina sulla finestra il file grande invece del `.cue`, e
-/// all'importazione di una playlist che lo nomina: tutti e due vogliono il
-/// disco, e il file grande in libreria non è una riga.
+/// Una domanda sola, come [`brani_del_foglio`]: chi trascina sulla finestra
+/// molti file tiene l'indice ([`indice_delle_immagini`]). Chi trascina il file
+/// grande invece del `.cue` vuole il disco, e il file grande in libreria non è
+/// una riga.
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se la libreria non risponde.
 pub fn brani_dell_immagine(connection: &Connection, percorso: &str) -> Result<Vec<i64>, AppError> {
-    Ok(immagini_della_libreria(connection)?
-        .remove(&normalizza(percorso))
-        .unwrap_or_default())
+    Ok(indice_delle_immagini(connection)?.brani(percorso))
 }
 
 /// Ogni immagine con dei brani in libreria, per chiave di percorso, con i suoi
@@ -424,11 +474,79 @@ fn chiave_percorso(scritto: &str, accanto_a: Option<&Path>) -> String {
         (false, Some(base)) => base.join(&ripulito),
         _ => PathBuf::from(&ripulito),
     };
-    let chiave = normalizza(&candidato.to_string_lossy());
+    // I punti si tolgono dopo la normalizzazione, assoluti compresi: vedi
+    // [`senza_punti`].
+    let chiave = senza_punti(&normalizza(&candidato.to_string_lossy()));
     // Se il percorso composto non è in libreria ci penserà chi chiama, con il
     // ripiego sul nome del file: qui si restituisce comunque la chiave piena,
     // perché è quella giusta quando c'è.
     chiave
+}
+
+/// Toglie da una chiave i segmenti `.` e `..`, senza chiedere niente al disco.
+///
+/// `path_key` unifica barre e maiuscole ma non risolve i punti, e `join` non lo
+/// fa nemmeno: una riga `..\Musica\…` accanto a `D:\Playlist\Serata.m3u`
+/// diventava `d:/playlist/../musica/…`, che non coincide con nessun percorso
+/// della libreria — la scansione non ne produce mai con i punti. Si scendeva
+/// al solo nome del file, che risponde solo se è unico, e `01.mp3` non lo è.
+///
+/// Lessicale e non `fs::canonicalize`: quello chiede al disco, si blocca su una
+/// condivisione che non risponde, aggiunge `\\?\` e fallisce su un file che
+/// non c'è. È anche la regola di Windows, che risolve `..` sulla stringa. La
+/// radice resta ferma e non si risale oltre: `c:`, `//server/share` o `/`. Un
+/// percorso rimasto relativo tiene i `..` in testa, che non sa dove portino.
+/// La chiave entra già passata da `path_key`, quindi con le barre `/`.
+fn senza_punti(chiave: &str) -> String {
+    if !chiave
+        .split('/')
+        .any(|segmento| segmento == "." || segmento == "..")
+    {
+        return chiave.to_owned();
+    }
+    let (radice, resto): (String, &str) = if let Some(dopo) = chiave.strip_prefix("//") {
+        let mut pezzi = dopo.splitn(3, '/');
+        let server = pezzi.next().unwrap_or_default();
+        let share = pezzi.next().unwrap_or_default();
+        (
+            format!("//{server}/{share}"),
+            pezzi.next().unwrap_or_default(),
+        )
+    } else if let Some(dopo) = chiave.strip_prefix('/') {
+        ("/".to_owned(), dopo)
+    } else if chiave.as_bytes().get(1) == Some(&b':')
+        && chiave
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+    {
+        let (unita, dopo) = chiave.split_at(2);
+        (unita.to_owned(), dopo.trim_start_matches('/'))
+    } else {
+        (String::new(), chiave)
+    };
+
+    let mut segmenti: Vec<&str> = Vec::new();
+    for segmento in resto.split('/') {
+        match segmento {
+            "" | "." => {}
+            ".." => {
+                if segmenti.last().is_some_and(|ultimo| *ultimo != "..") {
+                    segmenti.pop();
+                } else if radice.is_empty() {
+                    segmenti.push("..");
+                }
+            }
+            altro => segmenti.push(altro),
+        }
+    }
+    let corpo = segmenti.join("/");
+    match radice.as_str() {
+        "" => corpo,
+        "/" => format!("/{corpo}"),
+        _ if corpo.is_empty() => radice,
+        _ => format!("{radice}/{corpo}"),
+    }
 }
 
 /// Toglie `file://` e scioglie le sequenze `%NN`.
@@ -558,6 +676,14 @@ fn nome_file(percorso: &str) -> Option<String> {
 /// disco, tutti: chi aveva in playlist due tracce di un disco se lo ritrova
 /// intero, che è il prezzo di un file che altri lettori sanno leggere.
 ///
+/// # Quanti
+///
+/// [`Esportata`] dice quanti **brani** sono entrati nel file e quanti ne sono
+/// rimasti fuori (cloud e cataloghi). La finestra lo riferisce: prima diceva
+/// il numero dei brani della playlist, e una playlist tutta del cloud usciva
+/// come un file vuoto annunciato pieno. Si contano i brani e non le voci: una
+/// fila dello stesso `.cue` è una voce sola, e conta tutti i suoi brani.
+///
 /// # Errori
 ///
 /// `library.playlistNotFound` se la playlist non c'è; `db.queryFailed` se la
@@ -566,10 +692,18 @@ pub fn esporta(
     connection: &Connection,
     playlist_id: i64,
     formato: FormatoPlaylist,
-) -> Result<String, AppError> {
-    let riepilogo = crate::playlists::list(connection)?
-        .into_iter()
-        .find(|p| p.id == playlist_id)
+) -> Result<Esportata, AppError> {
+    use rusqlite::OptionalExtension as _;
+    // Il solo nome, dalla sua riga: `playlists::list` rifarebbe i conteggi di
+    // tutte le playlist intelligenti per leggerne uno.
+    let nome: String = connection
+        .query_row(
+            "SELECT name FROM playlists WHERE id = ?1",
+            [playlist_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| db_error("nome della playlist da esportare", &err))?
         .ok_or_else(|| {
             AppError::new(ErrorCode::LibraryPlaylistNotFound {
                 playlist_id: Some(playlist_id),
@@ -577,6 +711,8 @@ pub fn esporta(
         })?;
     let brani = crate::playlists::tracks(connection, playlist_id)?;
     let mut voci: Vec<VocePlaylist> = Vec::with_capacity(brani.len());
+    let mut scritti = 0_usize;
+    let mut lasciati_fuori = 0_usize;
     // Il `.cue` dell'ultima voce scritta, se era un disco: il brano d'immagine
     // che segue dallo stesso foglio allunga quella voce invece di ripeterla.
     let mut foglio_di_prima: Option<String> = None;
@@ -588,8 +724,17 @@ pub fn esporta(
         // niente — e l'elenco uscirebbe di casa portandosi dietro un indirizzo
         // che i termini di certi cataloghi non vogliono veder ridistribuito.
         let Some(percorso) = b.path else {
+            lasciati_fuori = lasciati_fuori.saturating_add(1);
             continue;
         };
+        // Un brano del cloud lo stesso, per la stessa ragione: il suo percorso,
+        // `nuvola://…`, esiste solo dentro Rymembra, e un altro lettore non
+        // saprebbe aprirlo — né saprebbe arrivare al servizio da cui viene.
+        if rymembra_domain::nuvola::e_nuvola(&percorso) {
+            lasciati_fuori = lasciati_fuori.saturating_add(1);
+            continue;
+        }
+        scritti = scritti.saturating_add(1);
         let durata_ms = u64::try_from(b.duration_ms).ok();
         let Some((cue, _)) = rymembra_domain::cue::brano_d_immagine(&percorso) else {
             foglio_di_prima = None;
@@ -618,11 +763,24 @@ pub fn esporta(
             durata_ms,
         });
     }
-    Ok(rymembra_domain::playlist_file::scrivi(
-        &riepilogo.name,
-        &voci,
-        formato,
-    ))
+    Ok(Esportata {
+        testo: rymembra_domain::playlist_file::scrivi(&nome, &voci, formato),
+        scritti,
+        lasciati_fuori,
+    })
+}
+
+/// Una playlist pronta da scrivere in un file, e quanti brani ci sono entrati:
+/// vedi [`esporta`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Esportata {
+    /// Il testo del file.
+    pub testo: String,
+    /// I brani scritti: i brani, non le voci.
+    pub scritti: usize,
+    /// I brani lasciati fuori: del cloud o di un catalogo, che un altro
+    /// lettore non saprebbe aprire.
+    pub lasciati_fuori: usize,
 }
 
 #[cfg(test)]
@@ -701,6 +859,61 @@ mod prove {
         };
         let r = plan(&mut c, &letta, "Prova", Some(Path::new("C:\\Musica"))).expect("piano");
         assert_eq!(r.matched_by_path, 1);
+    }
+
+    #[test]
+    fn un_percorso_relativo_con_i_punti_si_risolve_per_intero() {
+        // foobar2000 e MusicBee scrivono `..\Musica\…` quando playlist e
+        // musica stanno in cartelle sorelle. Un secondo «01 Joga.flac» rende
+        // ambiguo il ripiego sul nome: deve rispondere il percorso intero.
+        let mut c = libreria();
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                 file_size, date_added, date_modified)
+             VALUES (4, 'D:\\Altro\\01 Joga.flac', 'k4', 'Altra', 'Altro', 'Altro', 1, 1, 1, 1)",
+            [],
+        )
+        .expect("omonimo");
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("..\\Bjork\\01 Joga.flac", None, None),
+                // Assoluto, con un giro inutile dentro.
+                voce(
+                    "C:\\Musica\\.\\Altro\\..\\Bjork\\02 Bachelorette.flac",
+                    None,
+                    None,
+                ),
+                // Oltre la radice non si risale: è la regola di Windows.
+                voce("..\\..\\..\\..\\Musica\\Bjork\\01 Joga.flac", None, None),
+            ],
+            illeggibili: 0,
+        };
+        let r = plan(
+            &mut c,
+            &letta,
+            "Prova",
+            Some(Path::new("C:\\Musica\\Playlist")),
+        )
+        .expect("piano");
+        assert_eq!(r.matched_by_path, 3, "{r:?}");
+        assert!(r.missing.is_empty());
+    }
+
+    #[test]
+    fn i_punti_si_tolgono_senza_risalire_oltre_la_radice() {
+        for (dentro, fuori) in [
+            ("c:/a/b/../c", "c:/a/c"),
+            ("c:/a/./b", "c:/a/b"),
+            ("c:/../a", "c:/a"),
+            ("//server/share/../x/./y", "//server/share/x/y"),
+            ("/a/../../b", "/b"),
+            ("../a/b", "../a/b"),
+            ("a/../../b", "../b"),
+            ("c:/a/b", "c:/a/b"),
+        ] {
+            assert_eq!(senza_punti(dentro), fuori, "{dentro}");
+        }
     }
 
     #[test]
@@ -830,7 +1043,7 @@ mod prove {
             FormatoPlaylist::Pls,
             FormatoPlaylist::Xspf,
         ] {
-            let testo = esporta(&c, id, formato).expect("esportata");
+            let testo = esporta(&c, id, formato).expect("esportata").testo;
             let riletta = rymembra_domain::playlist_file::leggi_testo(&testo, formato);
             assert_eq!(riletta.voci.len(), 2, "{}", formato.nome());
             let mut c2 = libreria();
@@ -842,6 +1055,43 @@ mod prove {
                 formato.nome()
             );
         }
+    }
+
+    #[test]
+    fn un_brano_del_cloud_non_esce_con_la_playlist() {
+        // Come un brano di catalogo: `nuvola://…` non è un file che un altro
+        // lettore sappia aprire.
+        let mut c = libreria();
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                 file_size, date_added, date_modified)
+             VALUES (9, 'nuvola://onedrive-abcdefgh/Musica/nuvoloso.flac', 'k9', 'Nuvoloso',
+                     'Tale', 'Cielo', 1000, 1, 1, 1)",
+            [],
+        )
+        .expect("un brano del cloud");
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("C:\\Altro\\pezzo.mp3", None, None),
+                voce(
+                    "nuvola://onedrive-abcdefgh/Musica/nuvoloso.flac",
+                    None,
+                    None,
+                ),
+            ],
+            illeggibili: 0,
+        };
+        let r = import(&mut c, &letta, "Mista", None).expect("importata");
+        assert_eq!(
+            r.matched_by_path, 2,
+            "in Rymembra la playlist li ha tutti e due"
+        );
+        let testo = esporta(&c, r.playlist_id.expect("creata"), FormatoPlaylist::M3u)
+            .expect("esportata")
+            .testo;
+        assert!(testo.contains("pezzo.mp3"), "{testo}");
+        assert!(!testo.contains("nuvola"), "{testo}");
     }
 
     // ── i dischi d'immagine e i loro `.cue` ─────────────────────────────────
@@ -948,6 +1198,99 @@ mod prove {
     }
 
     #[test]
+    fn un_indice_dei_dischi_risponde_a_ogni_domanda_senza_consumarsi() {
+        // Chi trascina sulla finestra lo stesso disco due volte, anche scritto
+        // in due modi, lo deve trovare tutte e due le volte: l'indice si
+        // costruisce una volta per gesto e non si consuma.
+        let c = con_un_disco();
+        let fogli = indice_dei_fogli(&c).expect("fogli");
+        let immagini = indice_delle_immagini(&c).expect("immagini");
+        for _ in 0..2 {
+            assert_eq!(
+                fogli.brani("C:\\Musica\\Disco\\Album.cue"),
+                vec![20, 21, 22]
+            );
+            assert_eq!(fogli.brani("C:/Musica/Disco/Album.cue"), vec![20, 21, 22]);
+            assert_eq!(
+                immagini.brani("C:\\Musica\\Disco\\Album.flac"),
+                vec![20, 21, 22]
+            );
+            assert_eq!(
+                immagini.brani("C:/Musica/Disco/Album.flac"),
+                vec![20, 21, 22]
+            );
+        }
+        assert!(fogli.brani("C:\\Musica\\Disco\\Album.flac").is_empty());
+        assert!(immagini.brani("C:\\Altro\\pezzo.mp3").is_empty());
+    }
+
+    #[test]
+    fn l_esportazione_conta_solo_quel_che_scrive() {
+        // Due brani locali e uno del cloud: il file ne ha due, e la finestra
+        // deve dire due scritti e uno lasciato fuori — non tre scritti.
+        let mut c = libreria();
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                 file_size, date_added, date_modified)
+             VALUES (9, 'nuvola://onedrive-x/a.flac', 'k9', 'Nuvoloso', 'Tale', 'Cielo',
+                     1000, 1, 1, 1)",
+            [],
+        )
+        .expect("un brano del cloud");
+        let mista = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("C:\\Musica\\Bjork\\01 Joga.flac", None, None),
+                voce("nuvola://onedrive-x/a.flac", None, None),
+                voce("C:\\Altro\\pezzo.mp3", None, None),
+            ],
+            illeggibili: 0,
+        };
+        let r = import(&mut c, &mista, "Mista", None).expect("importata");
+        let fatta =
+            esporta(&c, r.playlist_id.expect("creata"), FormatoPlaylist::M3u).expect("esportata");
+        assert_eq!((fatta.scritti, fatta.lasciati_fuori), (2, 1));
+        let riletta =
+            rymembra_domain::playlist_file::leggi_testo(&fatta.testo, FormatoPlaylist::M3u);
+        assert_eq!(riletta.voci.len(), 2);
+
+        // Tutta del cloud: il file si scrive lo stesso, senza voci, e lo dice.
+        let nuvola = PlaylistLetta {
+            nome: None,
+            voci: vec![voce("nuvola://onedrive-x/a.flac", None, None)],
+            illeggibili: 0,
+        };
+        let r = import(&mut c, &nuvola, "Nuvola", None).expect("importata");
+        let fatta =
+            esporta(&c, r.playlist_id.expect("creata"), FormatoPlaylist::M3u).expect("esportata");
+        assert_eq!((fatta.scritti, fatta.lasciati_fuori), (0, 1));
+
+        // I brani, non le voci: una fila di tre brani dello stesso `.cue` è
+        // una voce sola, e sono tre brani scritti.
+        let mut d = con_un_disco();
+        let disco = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("C:\\Musica\\Disco\\Album.cue|01", None, None),
+                voce("C:\\Musica\\Disco\\Album.cue|02", None, None),
+                voce("C:\\Musica\\Disco\\Album.cue|03", None, None),
+            ],
+            illeggibili: 0,
+        };
+        let r = import(&mut d, &disco, "Disco", None).expect("importata");
+        let fatta =
+            esporta(&d, r.playlist_id.expect("creata"), FormatoPlaylist::M3u).expect("esportata");
+        assert_eq!((fatta.scritti, fatta.lasciati_fuori), (3, 0));
+        let riletta =
+            rymembra_domain::playlist_file::leggi_testo(&fatta.testo, FormatoPlaylist::M3u);
+        assert_eq!(riletta.voci.len(), 1, "una voce per la fila");
+
+        // Una playlist che non c'è resta un rifiuto chiaro.
+        let err = esporta(&d, 9_999, FormatoPlaylist::M3u).expect_err("non c'è");
+        assert_eq!(err.code().kind().code(), "library.playlistNotFound");
+    }
+
+    #[test]
     fn un_disco_si_esporta_come_il_suo_cue_una_volta_per_fila() {
         let mut c = con_un_disco();
         // Una playlist scritta a mano, con i brani nell'ordine che si vuole.
@@ -967,8 +1310,9 @@ mod prove {
             "i percorsi virtuali sono percorsi della libreria"
         );
 
-        let testo =
-            esporta(&c, r.playlist_id.expect("creata"), FormatoPlaylist::M3u).expect("esportata");
+        let testo = esporta(&c, r.playlist_id.expect("creata"), FormatoPlaylist::M3u)
+            .expect("esportata")
+            .testo;
         assert!(
             !testo.contains('|'),
             "nessun percorso virtuale nel file:\n{testo}"

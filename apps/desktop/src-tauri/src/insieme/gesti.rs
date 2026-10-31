@@ -79,11 +79,12 @@ fn non_disponibile(gesto: &Gesto) -> AppError {
 
 /// Le righe della libreria fra quelle chieste: le maniglie (le voci della
 /// sessione, id negativi) non si aggiungono una seconda volta, e il tetto è
-/// quello di un'aggiunta sola.
+/// quello di un'aggiunta sola. Il segno lo guarda `ospiti`, attraverso il
+/// ponte: vedi il suo `//!`.
 fn righe(ids: &[i64]) -> Vec<i64> {
     ids.iter()
         .copied()
-        .filter(|id| *id > 0)
+        .filter(|id| crate::riproduzione::insieme::e_di_libreria(*id))
         .take(MASSIMO_AGGIUNTE)
         .collect()
 }

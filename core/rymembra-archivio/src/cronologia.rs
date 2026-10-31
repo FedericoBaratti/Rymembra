@@ -29,8 +29,10 @@
 //!
 //! # I podcast
 //!
-//! Ci sono, in entrambi, e si riconoscono da `episode_name` non nullo (esteso) o
-//! da un titolo di brano assente (breve). Si scartano **contandoli**: sono
+//! Ci sono, in entrambi, e si riconoscono da `episode_name` o
+//! `spotify_episode_uri` non nulli (esteso), o da `episodeName` o `podcastName`
+//! al posto di `trackName` (breve, nel file `StreamingHistory_podcast_0.json`,
+//! che arriva qui insieme a quelli della musica). Si scartano **contandoli**: sono
 //! legittimamente in un archivio di Spotify e legittimamente fuori da una
 //! libreria musicale, e la differenza fra «ne ho ignorati 3.400» e il silenzio è
 //! che nel secondo caso qualcuno passa una sera a cercare gli ascolti mancanti.
@@ -127,6 +129,17 @@ fn riga_ad_ascolto(riga: &Value) -> Esito {
             testo(riga, "spotify_track_uri"),
         )
     } else if let Some(fine) = testo(riga, "endTime") {
+        // Nella cronologia breve i podcast stanno in un file loro,
+        // `StreamingHistory_podcast_0.json`, con `podcastName` ed
+        // `episodeName` al posto di `trackName`. Il nome del file comincia
+        // come quello della musica, quindi le sue righe arrivano qui. Serve il
+        // nome della puntata o del programma, non basta il titolo che manca:
+        // una riga senza niente è illeggibile, non un podcast.
+        if testo(riga, "trackName").is_none()
+            && (testo(riga, "episodeName").is_some() || testo(riga, "podcastName").is_some())
+        {
+            return Esito::Podcast;
+        }
         (
             fine,
             numero(riga, "msPlayed"),
@@ -263,6 +276,29 @@ mod prove {
         assert!(letti.ascolti.is_empty());
         assert_eq!(letti.podcast, 1);
         assert_eq!(letti.illeggibili, 0);
+    }
+
+    #[test]
+    fn una_riga_di_podcast_breve_e_un_podcast() {
+        // `StreamingHistory_podcast_0.json` sta nello stesso archivio e il suo
+        // nome comincia come quello della musica: le sue righe arrivano qui.
+        // Senza `trackName` finivano fra le illeggibili, cioè le «3.400 righe
+        // illeggibili» che mandano a cercare un guasto che non c'è.
+        let corpo = json!([
+            {"endTime": "2023-01-01 12:00", "podcastName": "P", "episodeName": "E", "msPlayed": 1},
+            {"endTime": "2023-01-01 12:30", "podcastName": "P", "msPlayed": 1},
+            {"endTime": "2023-01-01 13:00", "episodeName": "E", "msPlayed": 1},
+        ]);
+        let letti = leggi(&corpo);
+        assert!(letti.ascolti.is_empty());
+        assert_eq!(letti.podcast, 3);
+        assert_eq!(letti.illeggibili, 0);
+
+        // Una riga breve senza titolo e senza niente che dica «podcast» resta
+        // illeggibile: il titolo assente da solo non basta a chiamarla puntata.
+        let muta = leggi(&json!([{"endTime": "2023-01-01 12:00", "msPlayed": 1}]));
+        assert_eq!(muta.podcast, 0);
+        assert_eq!(muta.illeggibili, 1);
     }
 
     #[test]

@@ -8,6 +8,20 @@ import { RecintoErrori } from "./Recinto";
 import { BarraTitolo } from "./parti/BarraTitolo";
 import { Simboli } from "./parti/Icone";
 import "./stile.css";
+import "./stile/navigazione.css";
+import "./stile/libreria.css";
+import "./stile/ascolto.css";
+import "./stile/artisti-cartelle.css";
+import "./stile/studio.css";
+import "./stile/studio3.css";
+import "./stile/impostazioni.css";
+import "./stile/lettore.css";
+import "./stile/finestrelle.css";
+import "./stile/movimento.css";
+import "./stile/importazioni.css";
+import "./stile/casa.css";
+import "./stile/contrasto.css";
+import "./stile/esplora-insieme.css";
 
 /*
  * La lingua **prima** del primo disegno, e non in un effetto.

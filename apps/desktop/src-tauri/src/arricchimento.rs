@@ -50,16 +50,10 @@
 //! deve essere spegnibile e reversibile da un posto che quel qualcuno trova —
 //! e il posto sono le Impostazioni, accanto alle cartelle sorvegliate.
 //!
-//! # Il terzo comando, che è un'uscita a termine
-//!
-//! [`arricchimento_riporta_nei_file`] è l'unica cosa in tutta Rymembra che
-//! riscriva ancora i tag dentro i file dell'utente, ed è lì solo per **disfare
-//! quel che hanno fatto le versioni passate**: le righe di `enrich_undo` che
-//! la 2.3.0 e prima di lei hanno lasciato in tabella. Non si può chiamare per
-//! sbaglio — è un comando a parte, con la sua etichetta che dice che scrive nei
-//! file — non ha un valore di serie, e il CHANGELOG dichiara che sparirà in una
-//! release futura, quando quelle righe non serviranno più a nessuno. È una via
-//! d'uscita a termine, non una funzione del programma.
+//! Il terzo comando che c'era, `arricchimento_riporta_nei_file`, riscriveva nei
+//! file i tag fotografati dalla 2.3.0 e prima. Era promesso per una sola
+//! versione nella 2.3.1, ed era l'ultima cosa in Rymembra che riscrivesse i file
+//! dell'utente: se n'è andato nella 3.2.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -217,22 +211,13 @@ pub struct StatoArricchimentoIpc {
     /// c'è niente da dimenticare, e mostrarlo attivo prometterebbe qualcosa che
     /// non succede.
     pub annullabili: i64,
-    /// Quanti file le versioni passate hanno riscritto e non hanno mai disfatto.
-    ///
-    /// Conta le righe di `enrich_undo`, che dalla 2.3.1 nessuno scrive più: può
-    /// solo calare, e a zero l'uscita a termine di
-    /// [`arricchimento_riporta_nei_file`] non ha più niente da riportare. È un
-    /// campo a parte da `annullabili` perché sono due gesti diversi — uno
-    /// dimentica una tabella, l'altro riapre migliaia di file — e mostrarli
-    /// sotto lo stesso numero farebbe premere il secondo a chi voleva il primo.
-    pub nei_file: i64,
     /// Quando è finita l'ultima passata.
     pub ultimo_ms: Option<i64>,
     /// Com'è andata l'ultima passata automatica.
     pub errore: Option<ErroreIpc>,
 }
 
-/// Com'è andato un ritorno indietro, dell'uno o dell'altro tipo.
+/// Com'è andato «Dimentica l'arricchimento».
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EsitoAnnullamentoIpc {
@@ -317,8 +302,7 @@ pub fn arricchimento_annulla(
         // dipenderebbe dall'ordine in cui i due fili arrivano alla transazione.
         let _turno = Turno::prendi(&arricchimento.in_corso).ok_or_else(occupato)?;
 
-        // Poi tre tempi, come [`arricchimento_riporta_nei_file`]: il lucchetto
-        // della libreria nel primo e nel terzo, e in mezzo la rilettura di un
+        // Poi tre tempi: il lucchetto della libreria nel primo e nel terzo, e in mezzo la rilettura di un
         // file per ogni brano arricchito — che su un NAS addormentato sono
         // secondi l'uno, con scansione, backup e play fermi ad aspettare.
         //
@@ -354,79 +338,6 @@ pub fn arricchimento_annulla(
         Ok(EsitoAnnullamentoIpc {
             riportati: annullati.riportati,
             falliti: annullati.falliti,
-            stato: stato_ipc(&stato, &arricchimento)?,
-        })
-    });
-    riferisci(&app);
-    esito.map_err(errore)
-}
-
-/// Riscrive nei file i tag di prima, per quel che le versioni passate hanno già toccato.
-///
-/// # Che cosa fa che nessun altro comando fa
-///
-/// **Apre e riscrive i file dell'utente.** È l'unico che lo faccia in tutta
-/// Rymembra, esiste solo per disfare le scritture della 2.3.0 e di prima, e lo
-/// dice l'etichetta del bottone che lo chiama: senza quella scritta, un utente
-/// che ha appena letto «Rymembra non modifica i tuoi file» premerebbe un pulsante
-/// che glieli modifica. Vedi la nota in testa al modulo: è una via d'uscita a
-/// termine, e il CHANGELOG la dà per rimossa in una release futura.
-///
-/// Non spegne l'interruttore, e non deve: non sta dicendo «l'arricchimento ha
-/// sbagliato», sta dicendo «togli dai miei file quel che una vecchia versione
-/// ci ha messo». Chi vuole anche l'altra cosa preme anche l'altro pulsante.
-///
-/// # Perché `(async)`
-///
-/// La stessa ragione di [`arricchimento_annulla`], moltiplicata: qui i file si
-/// riaprono **in scrittura**, uno per uno, e su una libreria vera sono decine
-/// di secondi in cui la finestra sarebbe congelata.
-#[tauri::command(async)]
-pub fn arricchimento_riporta_nei_file(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    arricchimento: State<'_, StatoArricchimento>,
-) -> Esito<EsitoAnnullamentoIpc> {
-    let riportati = (|| {
-        // Come sopra: una passata in corso non deve incrociare una riscrittura
-        // di file a metà.
-        let _turno = Turno::prendi(&arricchimento.in_corso).ok_or_else(occupato)?;
-        // Tre tempi, e il lucchetto della libreria solo nel primo e nel terzo:
-        // in mezzo si riaprono in scrittura migliaia di file, e su una share
-        // sono minuti in cui ogni altro comando restava fermo ad aspettare.
-        // Il turno resta preso per tutti e tre, quindi nessuna passata
-        // dell'arricchimento può scrivere nelle stesse righe nel frattempo.
-        let da_fare = con_libreria(&stato, |libreria| {
-            enrich::da_riportare(&libreria.connection)
-        })?;
-        // Fra un file e l'altro si guarda se l'applicazione sta uscendo: sono
-        // minuti su una share, e chi chiude non deve aspettare né trovarsi il
-        // processo trattenuto. Quel che è già riscritto si registra lo stesso
-        // qui sotto; il resto resta in `enrich_undo` per la volta dopo. Un
-        // «Annulla» dalla finestra non c'è ancora: il predicato è il posto
-        // dove attaccarlo.
-        let riscritti = enrich::riscrivi_nei_file(da_fare, &crate::spegnimento::in_uscita);
-        // Il solo esito che chiede a qualcuno di guardare il disco: accanto a
-        // questi brani è rimasta la copia intera di com'erano. Il numero e il
-        // nome con cui riconoscerle, non i percorsi: sono i titoli della
-        // libreria di qualcuno, e il diario si spedisce.
-        if riscritti.riserve_rimaste() > 0 {
-            nota!(
-                "[arricchimento] {} brani non si sono potuti rimettere com'erano: accanto a ognuno è rimasta la sua copia intera, col nome del brano più «.{}-<numero>.tmp»",
-                riscritti.riserve_rimaste(),
-                std::process::id()
-            );
-        }
-        con_libreria(&stato, |libreria| {
-            enrich::registra_riportati(&mut libreria.connection, riscritti)
-        })
-    })();
-    scorda_errore(&arricchimento);
-
-    let esito = riportati.and_then(|riportati| {
-        Ok(EsitoAnnullamentoIpc {
-            riportati: riportati.riportati,
-            falliti: riportati.falliti,
             stato: stato_ipc(&stato, &arricchimento)?,
         })
     });
@@ -603,9 +514,8 @@ fn passata_vera(
         return Ok(None);
     };
     let Some(_turno) = Turno::prendi(&arricchimento.in_corso) else {
-        // Qualcuno sta dimenticando l'arricchimento a mano, o riportando i tag
-        // nei file. La passata successiva arriva fra mezz'ora: non c'è niente
-        // da segnalare.
+        // Qualcuno sta dimenticando l'arricchimento a mano. La passata
+        // successiva arriva fra mezz'ora: non c'è niente da segnalare.
         return Ok(None);
     };
 
@@ -658,6 +568,10 @@ fn passata_vera(
     // non lo avrebbe saputo. Si ferma il ciclo, si chiude la passata, e solo
     // dopo si restituisce l'errore.
     let mut guasto: Option<AppError> = None;
+    // Il ciclo si è fermato perché nessuna fonte rispondeva, e quanti gruppi
+    // erano già registrati: vedi la chiusura qui sotto.
+    let mut senza_rete = false;
+    let mut registrati = 0_usize;
     for (fatti, gruppo) in da_fare.gruppi.iter().enumerate() {
         // Prima di ogni gruppo, e non solo all'inizio della passata: dodici
         // gruppi sono minuti di richieste a una al secondo, e in quei minuti si
@@ -694,11 +608,16 @@ fn passata_vera(
         avanza(app, fatti, totale);
 
         let decisione = enrich::decidi(servizi, gruppo);
-        if decisione.non_raggiungibile {
+        if let Some(err) = guasto_del_gruppo(&decisione) {
             // Nessuna fonte ha risposto. **Non si registra niente**: marchiare
             // come introvabili i brani incontrati mentre il portatile era
             // staccato dal wifi vorrebbe dire non riprovarli per un mese. Ci si
-            // ferma anche per i gruppi dopo, che troverebbero la stessa rete.
+            // ferma anche per i gruppi dopo, che troverebbero la stessa rete,
+            // e si salta `vicini`, che la troverebbe anche lui. Vedi
+            // [`guasto_del_gruppo`].
+            interrotta = true;
+            senza_rete = true;
+            guasto = Some(err);
             break;
         }
 
@@ -754,6 +673,7 @@ fn passata_vera(
                 break;
             }
         };
+        registrati += 1;
 
         bilancio.applicati = bilancio.applicati.saturating_add(conto.applicati);
         bilancio.astenuti = bilancio.astenuti.saturating_add(conto.astenuti);
@@ -815,9 +735,19 @@ fn passata_vera(
     // con `db.locked` mentre girava. Il risultato è lo stesso: vedi
     // [`ricostruisci_aggregati`], che rifà anche gli album **fusi** con quelli
     // toccati attraverso un identificativo condiviso.
-    let chiusura = con_libreria(&stato, |libreria| {
-        chiudi_la_passata(&mut libreria.connection, bilancio.applicati > 0, &toccati)
-    });
+    //
+    // Una passata caduta per la rete prima di registrare un solo gruppo non
+    // ha niente da chiudere: nessun album toccato, e l'ora dell'ultima
+    // passata dice quando sono arrivati metadati (vedi `chiudi_la_passata`),
+    // che qui non sono arrivati. Scriverla farebbe dire al pannello «ultima
+    // passata: adesso» accanto all'errore che dice che non si è fatto niente.
+    let chiusura = if senza_rete && registrati == 0 {
+        Ok(())
+    } else {
+        con_libreria(&stato, |libreria| {
+            chiudi_la_passata(&mut libreria.connection, bilancio.applicati > 0, &toccati)
+        })
+    };
 
     // Il guasto che ha fermato il ciclo viene prima di quello della chiusura:
     // è lui che dice perché la passata non è finita.
@@ -826,6 +756,23 @@ fn passata_vera(
     }
     chiusura?;
     Ok(Some(bilancio))
+}
+
+/// Il guasto di un gruppo che nessuna fonte ha raggiunto, o `None`.
+///
+/// Senza rete il ciclo si ferma al primo gruppo, e la passata deve finire come
+/// un guasto: `Err` con `metadata.musicbrainzUnavailable`, l'errore che resta
+/// nel pannello e nessun evento di zeri. Prima si fermava e basta: la passata
+/// tornava `Ok` con un bilancio vuoto, cancellava l'errore di quella prima e
+/// mandava proprio la riga di «zero applicati» che [`passata`] dice di non
+/// mandare. L'interruttore di MusicBrainz non basta a coprirlo: si apre dopo
+/// tre guasti e si richiude dopo cinque minuti, meno dell'intervallo fra due
+/// passate.
+fn guasto_del_gruppo(decisione: &enrich::Decisione) -> Option<AppError> {
+    decisione.non_raggiungibile.then(|| {
+        AppError::new(ErrorCode::MetadataMusicbrainzUnavailable)
+            .with_cause("nessuna fonte ha risposto: niente rete, o servizi giù")
+    })
 }
 
 /// La finestra 3 di una passata: gli aggregati per le chiavi toccate, e l'ora
@@ -1045,24 +992,12 @@ fn stato_ipc(
                 &libreria.connection,
                 "SELECT COUNT(*) FROM track_meta_arricchita",
             )?,
-            nei_file: quanti(&libreria.connection, CONTA_DA_RIPORTARE)?,
             ultimo_ms: settings::read(&libreria.connection, CHIAVE_ULTIMO)?
                 .and_then(|quando| quando.parse().ok()),
             errore,
         })
     })
 }
-
-/// Quante fotografie di `enrich_undo` «Riporta nei file» riporterebbe.
-///
-/// Lo stesso filtro di `rymembra_app::enrich::da_riportare`: le righe che sono
-/// brani d'immagine CD restano fuori, perché nei file non si riportano mai —
-/// il file è l'immagine di tutto il disco. Contarle lo stesso lasciava il
-/// numero sopra zero per sempre, e il pulsante acceso su un lavoro che non
-/// avrebbe fatto niente. Le fotografie senza più la riga contano, come là.
-const CONTA_DA_RIPORTARE: &str = "SELECT COUNT(*) FROM enrich_undo u
-                                    LEFT JOIN tracks t ON t.id = u.track_id
-                                   WHERE t.immagine IS NULL";
 
 /// Le cartelle dei `.cue` dei brani d'immagine CD arricchiti.
 ///
@@ -1116,6 +1051,24 @@ fn quanti(connection: &rusqlite::Connection, sql: &str) -> Result<i64, AppError>
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// Senza rete la passata è un guasto, non una passata riuscita a zero.
+    ///
+    /// Il ciclo si ferma al primo gruppo che nessuna fonte ha raggiunto; prima
+    /// lo faceva senza dirlo, e la passata tornava `Ok` con un bilancio di
+    /// zeri: l'errore della passata di prima spariva, e il pannello diceva «0
+    /// applicati» al posto di «MusicBrainz non risponde».
+    #[test]
+    fn una_passata_senza_rete_e_un_guasto() {
+        let senza_rete = enrich::Decisione {
+            non_raggiungibile: true,
+            ..enrich::Decisione::default()
+        };
+        let guasto = guasto_del_gruppo(&senza_rete).expect("senza rete è un guasto");
+        assert_eq!(guasto.code(), &ErrorCode::MetadataMusicbrainzUnavailable);
+        // Un gruppo a cui qualcuno ha risposto, anche con niente, non lo è.
+        assert!(guasto_del_gruppo(&enrich::Decisione::default()).is_none());
+    }
 
     /// L'interruttore spento a passata in corso si legge prima del gruppo dopo.
     ///
@@ -1193,7 +1146,8 @@ mod prove {
     }
 
     /// Un file intero e due brani di un'immagine CD, arricchiti tutti e tre,
-    /// con le fotografie di `enrich_undo` di una versione passata.
+    /// con le fotografie di `enrich_undo` di una versione passata — che non
+    /// legge più nessuno, e non devono disturbare.
     fn banco_d_immagine(connection: &rusqlite::Connection) {
         connection
             .execute_batch(
@@ -1214,18 +1168,6 @@ mod prove {
                         (2, 'C:\M\Disco\Album.flac', '{}', 0);",
             )
             .expect("banco");
-    }
-
-    /// Le fotografie dei brani d'immagine non si riportano mai nei file, e
-    /// non devono tenere acceso il numero che dice quante ce ne sono.
-    #[test]
-    fn i_brani_d_immagine_non_contano_fra_quelli_da_riportare_nei_file() {
-        let dir = tempfile::tempdir().expect("cartella");
-        let stato = Stato::apri(dir.path().to_path_buf());
-        let guardia = stato.libreria.lock().expect("lucchetto");
-        let connection = &guardia.as_ref().expect("libreria aperta").connection;
-        banco_d_immagine(connection);
-        assert_eq!(quanti(connection, CONTA_DA_RIPORTARE), Ok(1));
     }
 
     /// Dopo «Dimentica» i brani d'immagine si ricostruiscono dal loro `.cue`

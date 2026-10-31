@@ -4,9 +4,9 @@
  * # Il problema che risolve
  *
  * La versione finisce in quattro file che nessuno tiene allineati a mano a
- * lungo: `Cargo.toml` in radice (da cui i tredici crate la ereditano),
- * `apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`, e
- * `Cargo.lock`, che la rigenera `cargo`.
+ * lungo: `Cargo.toml` in radice (da cui i sedici membri del workspace la
+ * ereditano), `apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`,
+ * e `Cargo.lock`, che la rigenera `cargo`.
  *
  * Quattro numeri indipendenti sono quattro occasioni di divergere, e il sintomo
  * non è un errore: è un installer che si chiama in un modo e un programma che

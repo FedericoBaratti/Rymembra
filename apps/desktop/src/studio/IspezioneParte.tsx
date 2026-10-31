@@ -25,6 +25,7 @@ import type { ParteRegistro } from "../ipc";
 import { t, tSe } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
+import { chiAnnulla, chiRipete } from "./annullo";
 import { nomeStato } from "./Centro";
 import { useAzioniStudio, useStudio } from "./contesto";
 import {
@@ -43,7 +44,7 @@ import { EditorCodice, useFonti } from "./EditorCodice";
 import { Livelli as PilaSfondi } from "./Pila";
 import { radiceParti, sentieroParte } from "./sentieri";
 import { immaginiDi } from "./usaPacchetto";
-import { coloreCosto, costoDi, type Livello } from "./valori";
+import { angoliDopo, angoliTagliati, coloreCosto, costoDi, type Livello } from "./valori";
 
 const oggetto = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -539,7 +540,9 @@ function Raggio({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown) 
 /** Lo smusso degli angoli: un `chamfer` con la sua misura e gli angoli tagliati. */
 function Smusso({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown) => void }) {
   const dentro = oggetto(valore);
-  const tagliati = Array.isArray(dentro["corners"]) ? dentro["corners"].map(String) : [];
+  // Quelli tagliati davvero: senza `corners` il formato ne taglia due. Vedi
+  // `angoliTagliati` in `valori.ts`.
+  const tagliati = angoliTagliati(dentro["corners"]);
   const acceso = dentro["effect"] === "chamfer";
   return (
     <div className="ritaglio">
@@ -554,6 +557,7 @@ function Smusso({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown) 
       <div className="angoli" role="group" aria-label={t("studio3.clip.corners")}>
         {(["topLeft", "topRight", "bottomLeft", "bottomRight"] as const).map((angolo) => {
           const su = tagliati.includes(angolo);
+          const quali = angoliDopo(dentro["corners"], angolo);
           return (
             <button
               key={angolo}
@@ -562,13 +566,11 @@ function Smusso({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown) 
               aria-label={t(`studio3.radius.${angolo}`)}
               aria-pressed={su}
               data-active={su || undefined}
-              disabled={!acceso}
+              // L'ultimo angolo acceso non si spegne: il formato ne vuole
+              // almeno uno, e togliere il campo riaccenderebbe i due di serie.
+              disabled={!acceso || quali === null}
               onClick={() => {
-                const quali = su ? tagliati.filter((a) => a !== angolo) : [...tagliati, angolo];
-                // Nessun angolo dichiarato vuol dire tutti: togliere l'ultimo
-                // toglie il campo, invece di scrivere una lista vuota.
-                const { corners: _via, ...resto } = dentro;
-                onCambia(quali.length === 0 ? resto : { ...resto, corners: quali });
+                if (quali !== null) onCambia({ ...dentro, corners: quali });
               }}
             />
           );
@@ -1067,8 +1069,18 @@ function CodiceParte({ parte }: { parte: string }) {
       <EditorCodice
         testo={testo}
         onCambia={setTesto}
-        onAnnulla={() => manda({ tipo: "annulla" })}
-        onRipeti={() => manda({ tipo: "ripeti" })}
+        // Una battuta in attesa del timer ha la precedenza sulla storia dello
+        // Studio: vedi `chiAnnulla` e `chiRipete` in `annullo.ts`. Rimettere
+        // `scritto` spegne anche il timer, che riparte solo a testo diverso.
+        onAnnulla={() => {
+          if (chiAnnulla(testo, scritto) === "locale") {
+            setTesto(scritto);
+            setErrore(false);
+          } else manda({ tipo: "annulla" });
+        }}
+        onRipeti={() => {
+          if (chiRipete(testo, scritto) === "studio") manda({ tipo: "ripeti" });
+        }}
         etichetta={t("studio3.code.partAria", { parte })}
         fonti={fonti}
         classe="codice-frammento"

@@ -99,15 +99,54 @@ const ETA_DEGLI_AVANZI: Duration = Duration::from_secs(24 * 60 * 60);
 
 // ── lo stato ────────────────────────────────────────────────────────────────
 
+/// Come è finito il controllo del database.
+///
+/// Sul filo è una parola sola — `daFare`, `sano`, `interrotto`, `saltato`,
+/// `danneggiato`, `nonRiuscito`, le stesse dell'unione in `ipc/servizi.ts` —
+/// ma qui è un `enum`: fino alla 3.2 era una stringa scritta in due posti, e la
+/// guardia che ferma le scritture su un file malformato (`Salute::danneggiato`)
+/// confrontava a mano la parola scritta da `salute_da`. Un refuso in uno solo
+/// dei due la spegneva senza che niente fallisse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EsitoDelControllo {
+    /// Il controllo non è ancora stato fatto.
+    DaFare,
+    /// Sano.
+    Sano,
+    /// Fermato dalla scadenza prima della fine.
+    Interrotto,
+    /// Non fatto, con il giornale che non è WAL o senza la cartella dati.
+    Saltato,
+    /// Il database è malformato: da qui il filo non scrive più.
+    Danneggiato,
+    /// Il controllo stesso non è riuscito.
+    NonRiuscito,
+}
+
+impl EsitoDelControllo {
+    /// La parola del filo, per il diario: la stessa che la finestra riceve, e
+    /// che il diario scriveva quando l'esito era una stringa.
+    const fn parola(self) -> &'static str {
+        match self {
+            Self::DaFare => "daFare",
+            Self::Sano => "sano",
+            Self::Interrotto => "interrotto",
+            Self::Saltato => "saltato",
+            Self::Danneggiato => "danneggiato",
+            Self::NonRiuscito => "nonRiuscito",
+        }
+    }
+}
+
 /// Com'è andato il controllo del database in questa sessione, come lo vede la
 /// finestra.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Salute {
-    /// `daFare`, `sano`, `interrotto`, `saltato`, `danneggiato`,
-    /// `nonRiuscito`. Una parola e non un `enum` con dei dati: la finestra ne
-    /// legge una sola, e i campi qui sotto sono vuoti dove non servono.
-    pub esito: &'static str,
+    /// Una parola e non un `enum` con dei dati: la finestra ne legge una sola,
+    /// e i campi qui sotto sono vuoti dove non servono. Vedi [`EsitoDelControllo`].
+    pub esito: EsitoDelControllo,
     /// Quando è finito, in millisecondi dall'epoca.
     pub quando_ms: Option<i64>,
     /// Quanto è durato.
@@ -121,7 +160,7 @@ impl Salute {
     /// Il controllo non è ancora stato fatto.
     fn da_fare() -> Self {
         Self {
-            esito: "daFare",
+            esito: EsitoDelControllo::DaFare,
             quando_ms: None,
             millisecondi: None,
             errore: None,
@@ -129,7 +168,7 @@ impl Salute {
     }
 
     /// Un esito senza guasto.
-    fn fatto(esito: &'static str, millisecondi: Option<u64>) -> Self {
+    fn fatto(esito: EsitoDelControllo, millisecondi: Option<u64>) -> Self {
         Self {
             esito,
             quando_ms: Some(adesso_ms()),
@@ -139,7 +178,7 @@ impl Salute {
     }
 
     /// Un esito con un guasto.
-    fn guasto(esito: &'static str, err: AppError) -> Self {
+    fn guasto(esito: EsitoDelControllo, err: AppError) -> Self {
         Self {
             esito,
             quando_ms: Some(adesso_ms()),
@@ -150,7 +189,7 @@ impl Salute {
 
     /// Il database è stato trovato danneggiato: da qui non si scrive più.
     fn danneggiato(&self) -> bool {
-        self.esito == "danneggiato"
+        self.esito == EsitoDelControllo::Danneggiato
     }
 }
 
@@ -248,20 +287,48 @@ fn passata(app: &AppHandle, controllato: &mut bool) {
         return;
     };
 
-    if !*controllato {
-        *controllato = true;
-        let salute = controlla(&stato);
-        manutenzione.scrivi_salute(salute.clone());
+    passata_su(
+        controllato,
+        &manutenzione,
+        || controlla(&stato),
         // Sempre, anche quando è sano: le Impostazioni aperte in quel momento
         // mostrano «non ancora controllato» finché qualcuno non glielo dice.
-        app.emetti("manutenzione:salute", salute);
+        |salute| app.emetti("manutenzione:salute", salute.clone()),
+        || scrivi(app, &stato),
+    );
+}
+
+/// Il controllo, una volta per sessione, e poi le scritture — solo se il
+/// database non è stato trovato danneggiato.
+///
+/// Fuori da [`passata`] perché è l'unica guardia fra un file malformato e
+/// `PRAGMA optimize` o la pulizia delle copertine (vedi il `//!`), e una
+/// guardia così si prova: senza un'applicazione attorno, con il controllo, il
+/// suo annuncio e le scritture passati da fuori.
+fn passata_su(
+    controllato: &mut bool,
+    manutenzione: &StatoManutenzione,
+    controlla: impl FnOnce() -> Salute,
+    annuncia: impl FnOnce(&Salute),
+    scrivi: impl FnOnce(),
+) {
+    if !*controllato {
+        *controllato = true;
+        let salute = controlla();
+        manutenzione.scrivi_salute(salute.clone());
+        annuncia(&salute);
     }
     if manutenzione.salute().danneggiato() {
         // Vedi il `//!`: su un file malformato non si scrive.
         return;
     }
+    scrivi();
+}
 
-    if let Err(err) = con_libreria(&stato, |libreria| db::ottimizza(&libreria.connection)) {
+/// Le scritture di una passata: l'ottimizzazione e, se ci sono orfane, la
+/// pulizia delle copertine.
+fn scrivi(app: &AppHandle, stato: &Stato) {
+    if let Err(err) = con_libreria(stato, |libreria| db::ottimizza(&libreria.connection)) {
         nota!(
             "[manutenzione] ottimizzazione non riuscita codice={} causa={}",
             err.code().kind().code(),
@@ -269,11 +336,11 @@ fn passata(app: &AppHandle, controllato: &mut bool) {
         );
     }
 
-    match con_libreria(&stato, |libreria| {
+    match con_libreria(stato, |libreria| {
         covers::quante_orfane(&libreria.connection)
     }) {
         Ok(0) => {}
-        Ok(_) => match pulisci(app, &stato) {
+        Ok(_) => match pulisci(app, stato) {
             Ok(pulizia) => nota!(
                 "[manutenzione] copertine pulite righe={} file={} byte={}",
                 pulizia.righe,
@@ -309,38 +376,56 @@ fn passata(app: &AppHandle, controllato: &mut bool) {
 fn controlla(stato: &Stato) -> Salute {
     let giornale = con_libreria(stato, |libreria| Ok(libreria.giornale.clone()));
     let Some(cartella) = stato.cartella_dati() else {
-        return Salute::fatto("saltato", None);
+        return Salute::fatto(EsitoDelControllo::Saltato, None);
     };
     match giornale {
         Ok(giornale) if giornale == "wal" => {}
         Ok(giornale) => {
             nota!("[manutenzione] controllo del database saltato: giornale={giornale}");
-            return Salute::fatto("saltato", None);
+            return Salute::fatto(EsitoDelControllo::Saltato, None);
         }
-        Err(err) => return Salute::guasto("nonRiuscito", err),
+        Err(err) => return Salute::guasto(EsitoDelControllo::NonRiuscito, err),
     }
-    match db::controlla_il_file(&cartella.join(NOME_DATABASE), TEMPO_DEL_CONTROLLO) {
-        Ok(Controllo::Sano { millisecondi }) => {
+    let salute = salute_da(db::controlla_il_file(
+        &cartella.join(NOME_DATABASE),
+        TEMPO_DEL_CONTROLLO,
+    ));
+    match (&salute.esito, &salute.millisecondi, &salute.errore) {
+        (EsitoDelControllo::Sano, Some(millisecondi), _) => {
             nota!("[manutenzione] controllo del database: sano in {millisecondi} ms");
-            Salute::fatto("sano", Some(millisecondi))
+        }
+        (EsitoDelControllo::Interrotto, Some(millisecondi), _) => {
+            nota!("[manutenzione] controllo del database interrotto dopo {millisecondi} ms");
+        }
+        (esito, _, Some(err)) => nota!(
+            "[manutenzione] controllo del database: {} codice={} causa={}",
+            esito.parola(),
+            err.code,
+            err.cause.as_deref().unwrap_or("—")
+        ),
+        _ => {}
+    }
+    salute
+}
+
+/// La salute da quel che `controlla_il_file` ha risposto.
+///
+/// Pura, perché è metà della guardia del `//!`: `db.corrupt` — e solo lui —
+/// vuol dire [`EsitoDelControllo::Danneggiato`], cioè niente più scritture. Ogni altro
+/// guasto del controllo è [`EsitoDelControllo::NonRiuscito`], che le scritture non le
+/// ferma: un controllo che non ha potuto leggere non ha trovato un danno.
+fn salute_da(esito: Result<Controllo, AppError>) -> Salute {
+    match esito {
+        Ok(Controllo::Sano { millisecondi }) => {
+            Salute::fatto(EsitoDelControllo::Sano, Some(millisecondi))
         }
         Ok(Controllo::Interrotto { millisecondi }) => {
-            nota!("[manutenzione] controllo del database interrotto dopo {millisecondi} ms");
-            Salute::fatto("interrotto", Some(millisecondi))
+            Salute::fatto(EsitoDelControllo::Interrotto, Some(millisecondi))
         }
-        Err(err) => {
-            let esito = if matches!(err.code(), ErrorCode::DbCorrupt { .. }) {
-                "danneggiato"
-            } else {
-                "nonRiuscito"
-            };
-            nota!(
-                "[manutenzione] controllo del database: {esito} codice={} causa={}",
-                err.code().kind().code(),
-                err.cause().unwrap_or("—")
-            );
-            Salute::guasto(esito, err)
+        Err(err) if matches!(err.code(), ErrorCode::DbCorrupt { .. }) => {
+            Salute::guasto(EsitoDelControllo::Danneggiato, err)
         }
+        Err(err) => Salute::guasto(EsitoDelControllo::NonRiuscito, err),
     }
 }
 
@@ -545,4 +630,101 @@ fn fuori_servizio() -> AppError {
         what: Some("manutenzione".to_owned()),
     })
     .with_cause("la libreria non è più fra gli stati gestiti")
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use std::cell::Cell;
+
+    fn corrotto() -> AppError {
+        AppError::new(ErrorCode::DbCorrupt {
+            path: None,
+            quarantined_as: None,
+        })
+    }
+
+    #[test]
+    fn un_db_corrupt_e_danneggiato_e_gli_altri_guasti_no() {
+        assert!(salute_da(Err(corrotto())).danneggiato());
+        assert!(
+            !salute_da(Err(AppError::new(ErrorCode::DbQueryFailed {
+                detail: None
+            })))
+            .danneggiato()
+        );
+        assert!(
+            !salute_da(Ok(Controllo::Interrotto {
+                millisecondi: 30_000
+            }))
+            .danneggiato()
+        );
+        assert!(!salute_da(Ok(Controllo::Sano { millisecondi: 12 })).danneggiato());
+        // Sul filo le parole di sempre, quelle dell'unione in `ipc/servizi.ts`.
+        let scritto = serde_json::to_value(salute_da(Err(corrotto()))).expect("serializzata");
+        assert_eq!(scritto["esito"], "danneggiato");
+        let scritto = serde_json::to_value(Salute::da_fare()).expect("serializzata");
+        assert_eq!(scritto["esito"], "daFare");
+        let scritto =
+            serde_json::to_value(Salute::guasto(EsitoDelControllo::NonRiuscito, corrotto()))
+                .expect("ok");
+        assert_eq!(scritto["esito"], "nonRiuscito");
+        // E il diario scrive la stessa parola del filo.
+        for esito in [
+            EsitoDelControllo::DaFare,
+            EsitoDelControllo::Sano,
+            EsitoDelControllo::Interrotto,
+            EsitoDelControllo::Saltato,
+            EsitoDelControllo::Danneggiato,
+            EsitoDelControllo::NonRiuscito,
+        ] {
+            assert_eq!(
+                serde_json::to_value(esito).expect("serializzato"),
+                esito.parola()
+            );
+        }
+    }
+
+    #[test]
+    fn su_un_database_danneggiato_la_passata_non_scrive() {
+        let manutenzione = StatoManutenzione {
+            salute: Mutex::new(Salute::da_fare()),
+        };
+        let mut controllato = false;
+        let scritto = Cell::new(false);
+        let annunciato = Cell::new(false);
+        passata_su(
+            &mut controllato,
+            &manutenzione,
+            || salute_da(Err(corrotto())),
+            |_| annunciato.set(true),
+            || scritto.set(true),
+        );
+        assert!(annunciato.get(), "l'esito del controllo non è stato detto");
+        assert!(!scritto.get(), "su un file malformato si è scritto");
+        // Il controllo è uno per sessione: alla passata dopo non si rifà, e la
+        // guardia tiene lo stesso.
+        passata_su(
+            &mut controllato,
+            &manutenzione,
+            || panic!("il controllo si è rifatto"),
+            |_| {},
+            || scritto.set(true),
+        );
+        assert!(!scritto.get(), "alla seconda passata si è scritto");
+
+        // Su un database sano, invece, si scrive.
+        let manutenzione = StatoManutenzione {
+            salute: Mutex::new(Salute::da_fare()),
+        };
+        let mut controllato = false;
+        passata_su(
+            &mut controllato,
+            &manutenzione,
+            || salute_da(Ok(Controllo::Sano { millisecondi: 1 })),
+            |_| {},
+            || scritto.set(true),
+        );
+        assert!(scritto.get());
+    }
 }

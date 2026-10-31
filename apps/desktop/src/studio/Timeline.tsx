@@ -25,8 +25,9 @@ import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useAzioniStudio, useStudio } from "./contesto";
 import { Cursore, ValoreColore, ValoreLunghezza, ValoreOmbra } from "./controlli";
-import { campiAnimati, durataMs, risolutoriDi, versoAnimazione, type Fotogramma } from "./fotogrammi";
+import { campiAnimati, durataMs, gestoRombo, risolutoriDi, versoAnimazione, type Fotogramma } from "./fotogrammi";
 import { parteScelta } from "./negozio";
+import { conUnita, latoCambiato, unitaDi } from "./valori";
 
 const oggetto = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -256,10 +257,13 @@ function TimelineDi({
     bersaglio.setPointerCapture(e.pointerId);
     const minimo = Number(fotogrammi[i - 1]?.at ?? 0) + 1;
     const massimo = i === fotogrammi.length - 1 ? 100 : Number(fotogrammi[i + 1]?.at ?? 100) - 1;
+    // Con l'ultima posizione scritta, non con quella di partenza: vedi
+    // `gestoRombo`.
+    const daScrivere = gestoRombo(Number(fotogrammi[i]?.at));
     const muovi = (m: PointerEvent) => {
       const at = Math.min(massimo, Math.max(minimo, Math.round(posto(m.clientX) * 100)));
       const f = fotogrammi[i];
-      if (f !== undefined && Number(f.at) !== at) {
+      if (f !== undefined && daScrivere(at)) {
         cambiaFotogramma(i, { ...f, at }, t("studio3.step.frameMove", { nome }));
         setTestina(at / 100);
       }
@@ -591,7 +595,15 @@ function ValoreCampo({
         />
       );
     case "color":
-      return <ValoreColore valore={valore} tokens={registro.tokens} tavolozza={tavolozza} onCambia={onCambia} />;
+      return (
+        <ValoreColore
+          valore={valore}
+          tokens={registro.tokens}
+          tavolozza={tavolozza}
+          etichetta={nomeCampoFotogramma(campo.name)}
+          onCambia={onCambia}
+        />
+      );
     case "shadow":
       return <ValoreOmbra valore={valore} tokens={registro.tokens} tavolozza={tavolozza} conToken onCambia={onCambia} />;
     case "clip":
@@ -641,7 +653,8 @@ function Spostamento({
 function Ritaglio({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown) => void }) {
   const d = oggetto(valore);
   const forma = Array.isArray(d["inset"]) ? "inset" : d["circle"] !== undefined ? "circle" : "polygon";
-  const lati = Array.isArray(d["inset"]) ? (d["inset"] as unknown[]).map((x) => Number.parseFloat(String(x)) || 0) : [0, 0, 0, 0];
+  const scritti: unknown[] = Array.isArray(d["inset"]) ? (d["inset"] as unknown[]) : [];
+  const lati = Array.isArray(d["inset"]) ? scritti.map((x) => Number.parseFloat(String(x)) || 0) : [0, 0, 0, 0];
   const raggio = Number.parseFloat(String(oggetto(d["circle"])["radius"] ?? "50")) || 0;
   return (
     <div className="ritaglio-fotogramma">
@@ -672,9 +685,11 @@ function Ritaglio({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown
             min={0}
             max={50}
             passo={1}
-            suffisso="%"
+            suffisso={unitaDi(scritti[i]) ?? "%"}
             etichetta={tSe(`studio3.clip.${lato}`, lato)}
-            onCambia={(v) => onCambia({ inset: lati.map((x, j) => `${j === i ? Number(v ?? 0) : x}%`) })}
+            // Gli altri lati restano come sono scritti, e questo tiene la sua
+            // unità: vedi `latoCambiato`.
+            onCambia={(v) => onCambia({ inset: latoCambiato(scritti, i, Number(v ?? 0)) })}
           />
         ))}
       {forma === "circle" && (
@@ -683,9 +698,13 @@ function Ritaglio({ valore, onCambia }: { valore: unknown; onCambia: (v: unknown
           min={0}
           max={150}
           passo={1}
-          suffisso="%"
+          suffisso={unitaDi(oggetto(d["circle"])["radius"]) ?? "%"}
           etichetta={t("studio3.clip.radius")}
-          onCambia={(v) => onCambia({ circle: { ...oggetto(d["circle"]), radius: `${Number(v ?? 0)}%` } })}
+          onCambia={(v) =>
+            onCambia({
+              circle: { ...oggetto(d["circle"]), radius: conUnita(oggetto(d["circle"])["radius"], Number(v ?? 0), "%") },
+            })
+          }
         />
       )}
       {forma === "polygon" && <p className="nota-ispezione">{t("studio3.clip.polygonHint")}</p>}

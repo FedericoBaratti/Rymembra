@@ -84,11 +84,11 @@ graphify-out/
 .DS_Store
 Thumbs.db
 
-# -- Credenziali OAuth della macchina di build ---------------------------------
-# Le si passa a `build.rs` da qui o dalle variabili d'ambiente. Se questo file
-# finisse in un commit, il rimedio NON e' toglierlo: e' eliminare il client in
-# Google Cloud Console e farne uno nuovo. Togliere le righe non le de-pubblica
-# dalla storia di git.
+# -- Credenziali OAuth della macchina di build (fino alla 3.1) ------------------
+# Dalla 3.2 `build.rs` non lo legge piu': ogni app e' dell'utente e si scrive
+# nelle Impostazioni. Resta ignorato perche' chi ne ha ancora uno sul disco non
+# lo committi per sbaglio. Se finisse in un commit, il rimedio NON e' toglierlo:
+# e' eliminare il client in Google Cloud Console e farne uno nuovo.
 apps/desktop/src-tauri/oauth.local.toml
 
 # -- Le chiavi di firma degli aggiornamenti -------------------------------------

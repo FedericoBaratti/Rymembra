@@ -1,0 +1,811 @@
+/* Le finestrelle e i loro campi: regole, velo, spostamenti, playlist, cartelle,
+   testi e tema nuovo; in mezzo, la cronologia della coda.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── l'editor delle regole ────────────────────────────────────────────────── */
+/*
+ * # I controlli
+ *
+ * Prendono la forma di casa — `.campo`, qui accanto — invece di restare i
+ * widget di sistema. Non è pignoleria: un `<select>` non vestito si disegna
+ * col cromo del sistema operativo, alto una ventina di pixel contro i
+ * trentaquattro di ogni altro campo dell'applicazione, e su un modale di vetro
+ * scuro è l'unica cosa che sembra ritagliata da un'altra finestra. Vale anche
+ * per il fuoco: senza queste righe l'anello d'accento che si vede ovunque qui
+ * dentro non compariva, e restava il contorno di sistema.
+ *
+ * Sono i selettori a estendersi a `.campo` invece di ricopiarne le dichiarazioni
+ * più sotto: due copie della stessa forma sono due forme, e divergono.
+ */
+.editor-regole input,
+.editor-regole select {
+  min-width: 0;
+}
+.editor-regole select {
+  /* Il cromo del menù resta quello di sistema — la freccina la disegna lui, e
+     ridisegnarla vorrebbe dire scegliere un colore che nessuna skin conosce —
+     ma la scatola è la nostra. */
+  cursor: pointer;
+}
+
+/* Il sottotitolo sta attaccato al suo titolo: il passo della finestrella è
+   quello fra un blocco e l'altro, e questa è la seconda riga del primo. */
+.editor-regole .sottotitolo {
+  margin-top: calc(var(--spazio-2) * -1);
+}
+
+/*
+ * # Il ritmo
+ *
+ * `.finestrella` ha già un `gap` fra i figli. Ogni blocco qui sotto aggiungeva
+ * il proprio `margin-top`, e i due si sommavano: in ordine di lettura la
+ * colonna faceva 14, 36, 28, 22, 14, 28, 42, 22 — otto passi diversi, col salto
+ * più grande sotto il blocco meno importante. I margini sono spariti; restano
+ * solo i tre avvicinamenti voluti, dichiarati come tali.
+ *
+ * Una riga per condizione, e le tre parti in griglia invece che in flex: i
+ * menù di righe diverse devono incolonnarsi, altrimenti «Artista contiene …»
+ * sopra «Anno > …» disegna due file di controlli disallineati che sembrano due
+ * moduli diversi. La terza colonna è `minmax(0, 1fr)` perché un campo di testo
+ * dentro una griglia, senza quel minimo, si rifiuta di restringersi e spinge
+ * fuori il tasto che toglie la riga.
+ */
+.riga-combinazione {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.regole {
+  list-style: none;
+  /* Attaccata alla riga che la introduce: «…queste condizioni:» e le condizioni
+     sono una frase sola. */
+  margin: calc(var(--spazio-2) * -1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.regola {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 26px;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.regola select,
+.regola input {
+  width: 100%;
+  min-width: 0;
+}
+.regola .senza-valore {
+  color: var(--color-text-3);
+  text-align: center;
+}
+
+/*
+ * Il tasto che allunga l'elenco, largo quanto l'elenco e tratteggiato: è la
+ * riga che ancora non c'è, e si legge come tale. Prima era un bottone grigio
+ * piccolo in fondo a sinistra — l'azione che porta avanti questa finestrella
+ * vestita da ripensamento, mentre l'accento pieno stava su «Crea».
+ *
+ * Tratteggiato e non pieno perché secondario resta: l'accento pieno è uno solo
+ * per finestrella, ed è quello che la chiude.
+ */
+.editor-regole .azioni {
+  margin-top: calc(var(--spazio-2) * -1);
+}
+.aggiungi-regola {
+  width: 100%;
+  border-style: dashed;
+  background: transparent;
+  color: var(--color-text-2);
+}
+.aggiungi-regola:hover:not(:disabled) {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--color-text-1);
+}
+
+/*
+ * # Il risultato
+ *
+ * Sotto il filo: come esce quel che è entrato, quanto è, e i primi. L'ordine e
+ * il limite stanno qui dentro e non su fra le condizioni — vedi il commento in
+ * `Regole.tsx` — e il passo interno è più stretto di quello della finestrella,
+ * perché queste sono parti di un blocco solo e non blocchi diversi.
+ */
+.anteprima-regole {
+  padding-top: var(--spazio-3);
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.riga-ordine {
+  display: flex;
+  gap: var(--spazio-3);
+}
+.riga-ordine label {
+  flex: 1;
+  min-width: 0;
+}
+.anteprima-regole .quanti {
+  font-size: 15px;
+  color: var(--color-text-1);
+}
+.anteprima-regole .quanti .nota {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/* L'avviso qui è una frase, non il riquadro con la barretta dello Studio. */
+.anteprima-regole .avviso {
+  display: block;
+  margin: 0;
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+.anteprima-regole > .nota {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 12.5px;
+  color: var(--color-text-3);
+}
+/*
+ * La prosa arriva fino al bordo come tutto il resto.
+ *
+ * `.nota` e `.avviso` portano un `max-width: 72ch` che altrove è giusto: dentro
+ * un pannello largo tiene la riga leggibile. Qui la finestrella è già stretta
+ * quanto quella misura — è `.finestrella.media` che se ne occupa — e il tetto
+ * non farebbe altro che fermare due blocchi qualche pixel prima di tutti gli
+ * altri, cioè disegnare un margine destro sfrangiato per niente.
+ */
+.editor-regole .nota,
+.editor-regole .avviso,
+.editor-regole .sottotitolo {
+  max-width: none;
+}
+.anteprima-regole .primi {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+}
+.anteprima-regole .primi li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 48px;
+  gap: var(--spazio-2);
+  padding: 3px 0;
+  color: var(--color-text-2);
+}
+.anteprima-regole .primi .nome {
+  color: var(--color-text-1);
+}
+.anteprima-regole .primi .nome,
+.anteprima-regole .primi .autore {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anteprima-regole .primi .durata {
+  font-family: var(--font-mono);
+  text-align: right;
+  color: var(--color-text-3);
+}
+/* Il percorso di un brano mancante, nell'elenco dell'importazione da file: è
+   l'unica cosa utile per andarselo a prendere, quindi si vede per intero e
+   tronca a sinistra come nelle cartelle sorvegliate. */
+.mancanti-account .percorso {
+  display: block;
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+
+/* ── la cronologia, sotto la stessa linguetta della coda ──────────────────── */
+/*
+ * Riusa `.riga-coda` perché è la stessa riga — icona, titolo con sotto
+ * l'interprete, un dato a destra — e ridisegnarla da capo vorrebbe dire due
+ * elenchi che si somigliano fino al giorno in cui uno dei due cambia. Quel che
+ * qui è diverso è diverso davvero: tre colonne invece di quattro (non c'è
+ * niente da togliere: un ascolto è successo, e cancellarlo dalla cronologia non
+ * lo farebbe non succedere), e nessun trascinamento.
+ */
+.cronologia {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* La scatola che scorre la porta `.coda-in-colonna .righe-coda`, che questo
+   elenco ha per classe insieme alla sua. Qui resta solo il caso in cui la
+   cronologia sta da sola, senza quella cornice. */
+.righe-cronologia {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.righe-cronologia .riga-coda {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  cursor: default;
+}
+/* La presa della coda dice «questa riga si trascina», e qui non è vero. Al suo
+   posto l'icona resta visibile sempre, perché porta un'informazione: distingue
+   un ascolto fatto qui da uno importato da Spotify. */
+.righe-cronologia .riga-coda .presa {
+  opacity: 1;
+  color: var(--color-text-3);
+}
+.righe-cronologia .riga-coda:active {
+  cursor: default;
+}
+.altri-ascolti {
+  flex: none;
+  margin: 0 var(--spazio-2) var(--spazio-2);
+}
+
+/* ── il menù contestuale ─────────────────────────────────────────────────── */
+/* Lo strato sta qui e non sulla variante scura, che prima era l'unica ad
+   averlo: i due veli fanno lo stesso lavoro — prendere il clic che chiude — e
+   quello del menù, senza strato, si appoggiava dove capitava nell'ordine del
+   DOM. `--strato-menu` è un gradino sopra questo, così il menù resta davanti
+   al suo velo senza che nessuno dei due debba conoscere l'altro.
+
+   Detto al rovescio, ed è la metà che costa: `.velo` vuol dire **bersaglio**, e
+   da quando ha uno strato non è più un nome che si possa prestare. Una
+   decorazione grande quanto lo schermo che lo indossasse salirebbe a quaranta
+   sopra il contenuto e se ne mangerebbe i clic — è successo, allo scrim di «In
+   riproduzione», che adesso si chiama `np-scrim` e basta. */
+.velo {
+  position: fixed;
+  inset: 0;
+  z-index: var(--strato-velo);
+}
+/* Il velo del menù è trasparente — serve solo a prendere il clic di chiusura —
+   mentre quello di una finestrella oscura: lì l'attenzione deve stare tutta
+   sulla decisione da prendere. Cambia quel che dipinge, non dove sta. */
+.velo.scuro {
+  display: grid;
+  place-items: center;
+  background: rgb(var(--surface-0-rgb) / 0.72);
+}
+
+/* ── finestrelle ─────────────────────────────────────────────────────────── */
+.finestrella {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  width: min(560px, calc(100vw - var(--spazio-5) * 2));
+  max-height: calc(100vh - var(--spazio-5) * 2);
+  overflow-y: auto;
+  padding: var(--spazio-4);
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo), var(--shadow-3);
+}
+.finestrella h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.finestrella p {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+  /* Le spiegazioni di queste finestrelle sono lunghe tre righe e vanno lette
+     tutte: `pretty` toglie le righe orfane senza toccare l'altezza del
+     blocco. */
+  text-wrap: pretty;
+}
+
+.tasti-finestrella {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-2);
+}
+
+.finestrella.stretta {
+  width: min(420px, calc(100vw - var(--spazio-5) * 2));
+}
+/* Il riordino mostra percorsi, e un percorso accorciato è un percorso che non
+   si può controllare — che è l'unica cosa da fare in quella schermata. */
+.finestrella.larga {
+  width: min(900px, calc(100vw - var(--spazio-4) * 2));
+}
+/*
+ * La misura di mezzo: un modulo, non un elenco.
+ *
+ * `larga` esiste per i percorsi del riordino, che vanno letti interi. Una
+ * finestrella di campi non ha quel bisogno e con novecento pixel ci perde due
+ * volte: la prosa supera la misura leggibile — e i due blocchi che hanno un
+ * `max-width: 72ch` si fermano prima di tutto il resto, lasciando il margine
+ * destro sfrangiato — mentre due campi affiancati si allungano fino a non
+ * sembrare più due campi della stessa riga. A seicentottanta la colonna del
+ * testo sta dentro la sua misura da sé, e il `max-width` non taglia più niente.
+ */
+.finestrella.media {
+  width: min(680px, calc(100vw - var(--spazio-4) * 2));
+}
+
+/* L'esame di una skin appena installata (`ConfermaSkin.tsx`): un avviso per
+   riga, con la voce e la misura delle spiegazioni di `.finestrella p` — è la
+   stessa prosa, solo divisa in punti che si contano. */
+.esame-skin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  margin: 0;
+  padding-left: var(--spazio-4);
+  color: var(--color-text-2);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+/* ── elenco degli spostamenti ────────────────────────────────────────────── */
+.spostamenti {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  font-size: 13px;
+}
+.spostamenti summary {
+  cursor: pointer;
+}
+.spostamenti ul {
+  max-height: 320px;
+  overflow-y: auto;
+  margin: var(--spazio-2) 0 0;
+  padding: 0;
+  list-style: none;
+  user-select: text;
+}
+.spostamenti li {
+  display: grid;
+  grid-template-columns: 1fr 18px 1fr;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 2px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+/* Un elenco di soli percorsi (la conferma delle rimozioni): una colonna sola, a
+   capo dove serve, invece della griglia «da → a» che lo stringeva in un terzo. */
+.spostamenti li.percorso {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.spostamenti .da {
+  color: var(--color-text-3);
+}
+.spostamenti .a {
+  color: var(--color-text-1);
+}
+.spostamenti .freccia {
+  color: var(--accent);
+  text-align: center;
+}
+.spostamenti .da,
+.spostamenti .a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Da destra: la parte che distingue due percorsi è la fine, non l'inizio. */
+  direction: rtl;
+  text-align: left;
+}
+.finestrella label {
+  display: grid;
+  gap: var(--spazio-1);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.campo,
+.editor-regole input,
+.editor-regole select {
+  /* L'altezza segue la densità come le spaziature intorno: con «compatta» i
+     campi restavano alti quanto in «comoda», e una riga di filtri stretti
+     aveva in mezzo una casella che non si era stretta. Il moltiplicatore e non
+     `--spazio-5`, che vale 34 pixel per caso: è il ritmo della skin, e una
+     skin che lo porta a zero non deve far sparire le caselle. */
+  height: calc(34px * var(--densita-k));
+  padding: 0 var(--spazio-3);
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  color: var(--color-text-1);
+  font: inherit;
+  outline: none;
+  user-select: text;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.campo:focus,
+.editor-regole input:focus,
+.editor-regole select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.campo::placeholder,
+.editor-regole input::placeholder {
+  color: var(--color-text-3);
+}
+
+/*
+ * La casella dentro la pillola della ricerca non è un campo: il campo è la
+ * pillola (`.cerca`), che ha già il fondo, il bordo, l'incavo e — col fuoco —
+ * l'anello. Le regole di ogni pillola toglievano al `.campo` di dentro qualcosa
+ * e non tutto: in Esplora restavano l'incavo e l'anello del fuoco, nel filtro
+ * delle Cartelle anche il fondo e il bordo, e si vedeva un rettangolo
+ * arrotondato dentro l'altro, spostato dopo la lente. Qui si toglie tutto, una
+ * volta per le tre pillole, fuoco compreso: `.campo:focus` pesa quanto una
+ * regola di pagina e viene dopo, quindi va battuto per nome.
+ */
+.cerca .campo,
+.cerca .campo:focus {
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ── scelta di una playlist ──────────────────────────────────────────────── */
+.scelta-playlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.scelta-playlist button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 8px var(--spazio-3);
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scelta-playlist button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.scelta-playlist button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scelta-playlist .nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scelta-playlist .conteggio {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.crea-playlist {
+  display: flex;
+  gap: var(--spazio-2);
+}
+
+/* ── «Aggiungi una cartella» (`AggiungiCartella.tsx`) ─────────────────────── */
+/* Un'altezza minima: passando da una linguetta all'altra il contenuto cambia —
+   un tasto, un modulo, un elenco — e senza, la finestrella si allungherebbe e
+   si accorcerebbe sotto il puntatore, spostando le linguette che si stanno
+   percorrendo. */
+.aggiungi-cartella {
+  min-height: min(540px, calc(100vh - var(--spazio-5) * 2));
+}
+/* Sei linguette ci stanno in una riga da seicentottanta; in una finestra più
+   stretta vanno a capo invece di uscire dal bordo. */
+.sorgenti-cartella {
+  flex-wrap: wrap;
+  align-self: flex-start;
+  max-width: 100%;
+}
+.corpo-aggiungi,
+.collega-nuvola,
+.modulo-collega,
+.sfoglia-nuvola {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  min-width: 0;
+}
+.corpo-aggiungi {
+  flex: 1;
+}
+.testa-collega {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  color: var(--color-text-1);
+}
+.tasti-collega {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.attesa-collega {
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+/* `.finestrella p` dà a ogni paragrafo la voce delle spiegazioni: queste sono
+   le note sotto, e parlano più piano. */
+.finestrella .nota-collega {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+.finestrella .difetto-campo {
+  font-size: 12px;
+  color: var(--danger);
+}
+.preimpostazioni {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+}
+.preimpostazioni .bottone[data-active] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.campi-affiancati {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--spazio-3);
+}
+.conto-scelto {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.conto-scelto .nome-conto {
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.conto-scelto .bottone {
+  margin-left: auto;
+}
+.scegli-conto {
+  min-width: 0;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+}
+.torna-cartelle {
+  align-self: flex-start;
+}
+/* «Con l'app»: l'etichetta e la scelta sulla stessa riga, come il conto in
+   `.conto-scelto`. Compare solo con due app della stessa piattaforma. */
+.con-app {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+/* Il fuoco si appoggia qui soltanto mentre l'elenco arriva, per non cadere
+   sulla pagina quando la briciola premuta sparisce: non è una fermata, e un
+   anello attorno a mezzo dialogo direbbe il contrario. */
+.sfoglia-nuvola:focus-visible {
+  outline: none;
+}
+.briciole-nuvola ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--spazio-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.briciole-nuvola li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  min-width: 0;
+}
+/* Il separatore lo disegna il foglio, e senza testo alternativo: un lettore di
+   schermo che dicesse «maggiore» fra una cartella e l'altra direbbe un simbolo
+   e non un percorso. Il percorso lo dice già l'elenco ordinato. */
+.briciole-nuvola li + li::before {
+  content: '›' / '';
+  color: var(--color-text-3);
+}
+.briciola {
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--raggio-interno);
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+button.briciola {
+  cursor: pointer;
+}
+button.briciola:hover {
+  background: var(--accent-soft);
+  color: var(--color-text-1);
+}
+.briciola[aria-current] {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+.cartelle-remote {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(320px, 45vh);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.cartella-remota {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 100%;
+  padding: 8px var(--spazio-3);
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.cartella-remota:hover {
+  background: var(--accent-soft);
+}
+/* Interno, come nel menù: le righe si toccano, e un anello esterno finirebbe
+   sotto quella accanto. */
+.cartella-remota:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cartella-remota .nome {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cartella-remota > .icona {
+  flex: none;
+  color: var(--color-text-3);
+}
+.finestrella .attesa-sfoglia,
+.finestrella .vuota-sfoglia {
+  padding: var(--spazio-3) 0;
+  color: var(--color-text-3);
+}
+/* Un primario spento con `aria-disabled` — raggiungibile, per la sua ragione —
+   si disegna come uno spento con `disabled`: vedi `.bottone.primario:disabled`. */
+.bottone.primario[aria-disabled='true'] {
+  background: var(--color-surface-2);
+  border-color: var(--hairline);
+  color: var(--color-text-3);
+  cursor: default;
+  filter: none;
+}
+/* Il guscio della finestrella aperta dal primo avvio (`App.tsx`): fisso e
+   grande zero, crea lo strato senza occupare posto nell'impaginazione — il
+   genitore è `display: contents` — e senza coprire niente: a coprire è il velo
+   che sta dentro, coi suoi gesti. */
+.sopra-primo {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: var(--strato-sopraprimo);
+}
+
+/* ── quale testo è di questo brano ─────────────────────────────────────────
+   La stessa forma della scelta di una playlist qui sopra, con tre righe per
+   voce invece di una: chi sceglie un testo lo riconosce dalle prime parole, non
+   dal titolo — che per le voci di un elenco così è quasi sempre lo stesso. */
+.scelta-testo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-1);
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+}
+.scelta-testo button {
+  /* Una colonna che non si allarga oltre il riquadro: senza `minmax(0, …)` il
+     titolo su una riga sola spinge la voce di lato; senza `flex-shrink` le voci
+     si schiacciano l'una sull'altra invece di scorrere. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 8px var(--spazio-3);
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scelta-testo button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.scelta-testo button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scelta-testo .chi {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scelta-testo .dati {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/* Non `.anteprima`: quel nome è il riquadro delle skin, e si porta dietro
+   variabili e misure che qui allargavano la voce a tutta altezza. */
+.scelta-testo .anteprima-testo {
+  font-size: 12px;
+  color: var(--color-text-2);
+  white-space: pre-line;
+}
+.crea-playlist .campo {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── un tema nuovo ───────────────────────────────────────────────────────── */
+/* La finestrella ha `gap: var(--spazio-3)` fra i suoi blocchi, che è la
+   distanza giusta fra due domande e troppa fra una domanda e la sua nota. */
+.nuovo-tema .campo-con-nota {
+  display: grid;
+  gap: var(--spazio-1);
+}

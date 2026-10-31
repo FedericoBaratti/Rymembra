@@ -30,6 +30,7 @@ function azioni() {
     vaiAllArtista: segna("vaiAllArtista"),
     mostraNellaCartella: segna("mostraNellaCartella"),
     apriPagina: segna("apriPagina"),
+    apriSulWeb: segna("apriSulWeb"),
     togli: segna("togli"),
     elimina: segna("elimina"),
   };
@@ -39,6 +40,14 @@ function azioni() {
 const file = (id: number) => ({ id, fonte: null, fontePagina: null }) as unknown as Brano;
 const catalogo = (id: number, pagina: string | null = "https://esempio") =>
   ({ id, fonte: "audius", fontePagina: pagina }) as unknown as Brano;
+/** Un brano del cloud: un file, ma su un servizio e non sul disco. */
+const nuvola = (id: number, servizio = "onedrive") =>
+  ({
+    id,
+    path: `nuvola://${servizio}-abcdefgh/Musica/${id}.flac`,
+    fonte: null,
+    fontePagina: null,
+  }) as unknown as Brano;
 /** Un elenco in mano fatto di questi brani. */
 const inMano = (...brani: Brano[]) => (id: number) => brani.find((b) => b.id === id);
 
@@ -199,4 +208,34 @@ test("senza la coda concessa da chi ospita, «Dopo» e «In coda» spariscono, e
   const segna = () => undefined;
   const album = { radio: segna, dopo: segna, accoda: segna };
   assert.deepEqual(vociAlbum(album, t, true, true), [], "un menù vuoto non si apre");
+});
+
+test("un brano del cloud: «Apri su» al posto della cartella, ed «Elimina» spenta con la sua ragione", () => {
+  const { fai, fatte } = azioni();
+  // La finta di `t` scrive anche i valori, per vedere quale servizio si nomina.
+  const tv = (chiave: string, valori?: Record<string, string | number>) =>
+    valori === undefined ? chiave : `${chiave}:${Object.values(valori).join(",")}`;
+  const voci = vociBrani([7], inMano(nuvola(7, "dropbox")), fai, tv);
+  const etichette = voci.map((v) => v.etichetta);
+  assert.ok(!etichette.includes("menu.showInFolder"));
+  assert.ok(etichette.includes("menu.openOnService:Dropbox"));
+  const elimina = voci.at(-1);
+  assert.equal(elimina?.etichetta, "menu.deleteFromDisk");
+  assert.equal(elimina?.spenta, "errors.cloud.readOnly");
+  // Spenta vuol dire che premerla non fa niente.
+  elimina?.azione();
+  voci.find((v) => v.etichetta === "menu.openOnService:Dropbox")?.azione();
+  assert.deepEqual(fatte, [["apriSulWeb", 7]]);
+});
+
+test("cloud e disco insieme: «Elimina dal disco» resta accesa, e decide il nucleo", () => {
+  const { fai } = azioni();
+  const misti = vociBrani([1, 2], inMano(nuvola(1), file(2)), fai, t);
+  assert.equal(misti.at(-1)?.etichetta, "menu.deleteFromDisk");
+  assert.equal(misti.at(-1)?.spenta, undefined);
+  const tuttiNuvola = vociBrani([1, 2], inMano(nuvola(1), nuvola(2, "gdrive")), fai, t);
+  assert.equal(tuttiNuvola.at(-1)?.spenta, "errors.cloud.readOnly");
+  // Uno che non si trova: non si sa che sia nel cloud, la voce resta accesa.
+  const unoIgnoto = vociBrani([1, 3], inMano(nuvola(1)), fai, t);
+  assert.equal(unoIgnoto.at(-1)?.spenta, undefined);
 });

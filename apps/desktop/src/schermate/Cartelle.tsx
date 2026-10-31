@@ -129,6 +129,7 @@ import {
   type Selezione,
   type StatoAlbero,
 } from "../albero";
+import { eNuvola, iconaServizio, nomeRadice, nomeServizioDi, servizioDi } from "../cartelleNuvola";
 import { useDati } from "../dati";
 import { Dialogo } from "../Dialogo";
 import { brani_, durata } from "../formato";
@@ -139,6 +140,9 @@ import type { Apertura, Voce } from "../Menu";
 import { useAscolto, useRada } from "../pagine";
 import { Icona } from "../parti/Icone";
 import { conIndice } from "../segnali";
+import { gestoPermesso } from "../insieme";
+import { vociCartella } from "../menuBrani";
+import { useLettore } from "../riproduzione";
 import { useVirtuale } from "../virtuale";
 import { ElencoBrani, ElencoFinto } from "./Elenco";
 import { StatoVuoto } from "./Libreria";
@@ -308,6 +312,7 @@ export function Cartelle({
   radici,
   onMenu,
   onErrore,
+  onAggiungiCartella,
   mani,
 }: {
   /** Le cartelle sorvegliate, come le ha date l'utente. */
@@ -321,6 +326,12 @@ export function Cartelle({
   /** Apre il menù contestuale: lo disegna `App`, che lo tiene per tutti. */
   onMenu: (apertura: Apertura) => void;
   onErrore: (e: unknown) => void;
+  /**
+   * Apre «Aggiungi cartella», per lo stato vuoto: prima diceva «vai nelle
+   * impostazioni» senza un tasto. Assente nello Studio, che non aggiunge
+   * niente.
+   */
+  onAggiungiCartella?: (() => void) | undefined;
   /** Vedi [`ManiDeiBrani`]. */
   mani?: ManiDeiBrani | undefined;
 }) {
@@ -349,6 +360,23 @@ export function Cartelle({
   const [trascino, setTrascino] = useState<{ quanti: number; sopra: boolean } | null>(
     null,
   );
+  /**
+   * La coda è di questo PC: fuori da una sessione sempre, dentro solo con il
+   * diritto «Tutto». Senza, «Dopo» e «In coda» non si offrono, il tasto della
+   * striscia si spegne con la ragione e la presa verso la coda non parte —
+   * come fanno il menù dei brani (`vociBrani`) e la barra della selezione:
+   * un tasto acceso che risponde «non concesso» insegna che il lettore è
+   * rotto. Il nucleo si difende comunque da sé.
+   *
+   * Il menù e la presa lo leggono da un riferimento, per non rifarsi a ogni
+   * cambio di diritti; la striscia, che si vede, dallo stato.
+   */
+  const codaLibera = useLettore((s) => gestoPermesso(s.insieme, "coda"));
+  const codaLiberaOra = useRef(codaLibera);
+  useEffect(() => {
+    codaLiberaOra.current = codaLibera;
+  }, [codaLibera]);
+  const spentoInSessione = codaLibera ? undefined : t("together.gestures.off.title");
   /** La cartella che il pannello dei brani mostra. */
   const [cartellaScelta, setCartellaScelta] = useState<string | null>(null);
   const [conSottocartelle, setConSottocartelle] = useState(true);
@@ -831,17 +859,16 @@ export function Cartelle({
   const menuDi = useCallback(
     (riga: RigaAlbero, x: number, y: number) => {
       const gruppo = suCosa(riga);
-      const voci: Voce[] = [
-        { etichetta: t("action.play"), azione: () => riproduci(gruppo) },
+      const voci: Voce[] = vociCartella(
         {
-          etichetta: t("action.playNext"),
-          azione: () => conBrani(gruppo, ipc.codaDopo, "dopo"),
+          riproduci: () => riproduci(gruppo),
+          dopo: () => conBrani(gruppo, ipc.codaDopo, "dopo"),
+          accoda: () => conBrani(gruppo, ipc.codaAccoda, "accoda"),
         },
-        {
-          etichetta: t("action.enqueue"),
-          azione: () => conBrani(gruppo, ipc.codaAccoda, "accoda"),
-        },
-      ];
+        t,
+        // Letto al tasto destro, come in `App` per i menù dei brani.
+        !codaLiberaOra.current,
+      );
       if (mani !== undefined) {
         voci.push({
           etichetta: t("action.addToPlaylist"),
@@ -854,7 +881,21 @@ export function Cartelle({
       // nucleo rifiuta le altre, e una voce che porta a un rifiuto non si
       // mostra.
       const sola = gruppo.length === 1 ? gruppo[0] : undefined;
-      if (sola !== undefined && !anteprima) {
+      // Nel cloud la cartella sul disco non c'è: un file apre la sua pagina sul
+      // servizio, e una cartella non ha niente da mostrare. Vedi `menuBrani.ts`,
+      // che fa lo stesso nell'elenco dei brani.
+      const servizio = sola === undefined ? null : nomeServizioDi(sola.percorso);
+      if (sola !== undefined && !anteprima && servizio !== null) {
+        const brano = sola.brano;
+        if (brano !== null) {
+          voci.push({
+            etichetta: t("menu.openOnService", { servizio }),
+            azione: () => {
+              ipc.branoApriSulWeb(brano).catch(onErrore);
+            },
+          });
+        }
+      } else if (sola !== undefined && !anteprima) {
         const brano = sola.brano;
         if (brano !== null) {
           voci.push({
@@ -1208,6 +1249,9 @@ export function Cartelle({
       // nemmeno: lì trascinare vuol dire scorrere.
       if (e.button !== 0 || e.pointerType === "touch") return;
       if (e.ctrlKey || e.shiftKey || e.metaKey || e.altKey || anteprima) return;
+      // In una sessione senza la coda la presa non parte: finirebbe in un
+      // `codaAccoda` che il nucleo rifiuta.
+      if (!codaLiberaOra.current) return;
       const gruppo = suCosa(riga);
       const quanti = gruppo.reduce((n, r) => n + r.brani, 0);
       if (quanti === 0) return;
@@ -1439,6 +1483,12 @@ export function Cartelle({
         icona="i-folder"
         titolo={t("folders.empty.title")}
         testo={t("folders.empty.hint")}
+        azione={
+          onAggiungiCartella && {
+            etichetta: t("settings.roots.add"),
+            fai: onAggiungiCartella,
+          }
+        }
       />
     );
   }
@@ -1501,7 +1551,12 @@ export function Cartelle({
             <span>
               {bloccata === null
                 ? t("folders.offline", { n: spente })
-                : t("folders.blocked", { nome: bloccata })}
+                : eNuvola(bloccata)
+                  ? t("folders.cloud.blocked", {
+                      nome: nomeRadice(bloccata),
+                      servizio: nomeServizioDi(bloccata) ?? "",
+                    })
+                  : t("folders.blocked", { nome: bloccata })}
             </span>
             <button type="button" className="bottone" onClick={() => sonda(true)}>
               {t("folders.recheck")}
@@ -1528,6 +1583,8 @@ export function Cartelle({
             <button
               type="button"
               className="bottone minuto btn-ghost"
+              disabled={!codaLibera}
+              title={spentoInSessione}
               onClick={() => conBrani(scelte, ipc.codaAccoda, "accoda")}
             >
               {t("action.enqueue")}
@@ -1585,6 +1642,19 @@ export function Cartelle({
               const i = finestra.primo + k;
               const morta = spenta(riga);
               const file = riga.brano !== null;
+              /* Una radice del cloud porta l'icona del suo servizio, e il suo
+                 titolo dice per una persona dove sta — o, se il suo account non
+                 è collegato, dove si ricollega: attenuata come una radice che
+                 non risponde, ma con la strada per farla tornare. */
+              const servizioRiga = eNuvola(riga.percorso) ? servizioDi(riga.percorso) : null;
+              const titoloRiga =
+                !eNuvola(riga.percorso)
+                  ? riga.percorso
+                  : morta
+                    ? t("folders.cloud.connect", {
+                        servizio: nomeServizioDi(riga.percorso) ?? "",
+                      })
+                    : nomeRadice(riga.percorso);
               const sceltaRiga = selezione.chiavi.has(chiaveRiga(riga));
               return (
                 <div
@@ -1673,13 +1743,27 @@ export function Cartelle({
                     ) : null}
                   </span>
                   <span className="icona-nodo" aria-hidden="true">
-                    <Icona nome={file ? "i-track" : "i-folder"} dim={14} />
+                    <Icona
+                      nome={
+                        file
+                          ? "i-track"
+                          : riga.radice && servizioRiga !== null
+                            ? iconaServizio(servizioRiga)
+                            : "i-folder"
+                      }
+                      dim={14}
+                    />
                   </span>
                   {/* `dir="auto"`: un nome di cartella o di file in arabo o in
                       ebraico si legge da destra. */}
-                  <span className="nome-nodo" title={riga.percorso} dir="auto">
+                  <span className="nome-nodo" title={titoloRiga} dir="auto">
                     {riga.nome}
                   </span>
+                  {/* Il titolo non lo legge chi usa la tastiera: la ragione di
+                      una radice del cloud spenta la sente come descrizione. */}
+                  {morta && servizioRiga !== null && (
+                    <span className="solo-lettori">{titoloRiga}</span>
+                  )}
                   {file
                     ? riga.durataMs !== null &&
                       riga.durataMs > 0 && (
@@ -1712,7 +1796,11 @@ export function Cartelle({
           <>
             <div className="testa-pannello-cartella">
               <div className="titolo-pannello-cartella">
-                <h2 className="nome-pannello-cartella" title={cartellaScelta} dir="auto">
+                <h2
+                  className="nome-pannello-cartella"
+                  title={nomeRadice(cartellaScelta)}
+                  dir="auto"
+                >
                   {nomePannello}
                 </h2>
                 {idsPannello !== null && (

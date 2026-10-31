@@ -1,10 +1,10 @@
 /**
- * Le icone: cinquantotto simboli disegnati apposta, montati una volta sola.
+ * Le icone: sessantadue simboli disegnati apposta, montati una volta sola.
  *
  * # Perché uno sprite e non una libreria
  *
  * L'applicazione non ha dipendenze di componenti, di icone o di animazione, e
- * questo file è il motivo per cui può continuare a non averne: cinquantotto
+ * questo file è il motivo per cui può continuare a non averne: sessantadue
  * `<symbol>` in un `<defs>` nascosto costano pochi chilobyte e non portano
  * dietro un albero di pacchetti da aggiornare. La CSP è chiusa
  * (`default-src 'self'`), quindi un font di icone remoto non sarebbe nemmeno
@@ -71,6 +71,12 @@ export type NomeIcona =
   | "i-star-o"
   | "i-skin"
   | "i-cloud"
+  // Le cartelle dal cloud: una nuvola **senza** la freccia — quella di
+  // `i-cloud` dice «carica», ed è il backup — e un server per WebDAV, che è un
+  // indirizzo e non un'azienda. Generiche apposta: i marchi dei servizi non
+  // sono nostri da disegnare, e il nome scritto accanto basta a distinguerli.
+  | "i-nuvola"
+  | "i-server"
   | "i-import"
   | "i-scan"
   | "i-check"
@@ -273,6 +279,14 @@ export function Simboli() {
           <path d="M6.1 15.4a3.3 3.3 0 0 1-.5-6.56 4.4 4.4 0 0 1 8.34-1.3 3.5 3.5 0 0 1 .36 6.96" />
           <path d="M10 15.9V9.4" />
           <path d="m7.6 11.4 2.4-2.4 2.4 2.4" />
+        </symbol>
+        <symbol id="i-nuvola" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M5.8 15.6h8.6a3.3 3.3 0 0 0 .4-6.58A4.6 4.6 0 0 0 6 8.1a3.75 3.75 0 0 0-.2 7.5Z" />
+        </symbol>
+        <symbol id="i-server" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="3.6" y="3.8" width="12.8" height="5" rx="1.4" />
+          <rect x="3.6" y="11.2" width="12.8" height="5" rx="1.4" />
+          <path d="M6.6 6.3h.01M6.6 13.7h.01M9.6 6.3h3.8M9.6 13.7h3.8" />
         </symbol>
         <symbol id="i-import" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M10 3.6v8" />

@@ -119,10 +119,10 @@ const path = require("path");
 // I percorsi si risolvono rispetto a **questo file**, non alla cartella da cui
 // si è lanciato: la stessa ragione per cui lo fa `versione.js`.
 const REPO = path.dirname(__dirname);
-process.chdir(REPO);
 
 const SORGENTI = "apps/desktop/src";
-const FOGLIO = path.join(SORGENTI, "stile.css");
+// L'ingresso dell'app: i suoi `import "./….css"` dicono quali fogli ci sono e in che ordine.
+const INGRESSO = path.join(SORGENTI, "main.tsx");
 const REGISTRO = "core/rymembra-skin/src/parts.rs";
 // L'albero di serie dello scafale. Le parti che dichiara finiscono in classe
 // per mano di `Impaginazione.tsx`, che non sa quali siano: è markup emesso, e
@@ -224,7 +224,7 @@ const ATTESE_CLASSI = {
  * in «Cosa non sa fare», riletto dal lato del foglio.
  *
  * Se un giorno capita una voce che non si riesce a scrivere così, quella non è
- * un'attesa: è una regola morta, e la strada è toglierla da `stile.css`, non
+ * un'attesa: è una regola morta, e la strada è toglierla dal foglio, non
  * iscriverla qui. Ci sono già passate `.blocco` e `.intestazione.playlist`,
  * scritte qui per una revisione e poi tolte dal foglio, che era il punto.
  */
@@ -282,6 +282,22 @@ function sorgenti(dove) {
     else if (/\.tsx?$/.test(voce.name)) trovati.push(via);
   }
   return trovati;
+}
+
+/**
+ * I fogli dell'app, nell'ordine in cui `main.tsx` li importa — che è l'ordine
+ * della cascata. Il primo è `stile.css`: i token e il blocco generato.
+ */
+function fogliDi(ingresso) {
+  return [...ingresso.matchAll(/^import "\.\/(.+\.css)";\r?$/gm)].map((m) => path.join(SORGENTI, m[1]));
+}
+
+/** Il testo di ogni foglio, col nome con cui lo citano i messaggi. */
+function testiDeiFogli(radice = REPO) {
+  return fogliDi(fs.readFileSync(path.join(radice, INGRESSO), "utf8")).map((via) => ({
+    nome: path.relative(SORGENTI, via).replace(/\\/g, "/"), // «stile.css», «stile/lettore.css»
+    crudo: fs.readFileSync(path.join(radice, via), "utf8"),
+  }));
 }
 
 const APRE_BUCO = "$" + "{";
@@ -421,388 +437,406 @@ function partiDalloScafale(rust) {
 
 // ── il controllo ────────────────────────────────────────────────────────────
 
-const file = sorgenti(SORGENTI);
-const foglio = classiDelFoglio(fs.readFileSync(FOGLIO, "utf8"));
-const parti = partiDelRegistro(fs.readFileSync(REGISTRO, "utf8"));
-const dalloScafale = partiDalloScafale(fs.readFileSync(IMPAGINAZIONE, "utf8"));
+function main() {
+  process.chdir(REPO);
 
-/** Dove compare ogni classe: serve a dire la riga, non solo il nome. */
-const dove = new Map();
-/** Le classi viste fuori dal mock dell'anteprima. */
-const nellApp = new Set();
+  const file = sorgenti(SORGENTI);
+  const testi = testiDeiFogli();
+  const foglio = classiDelFoglio(testi.map((t) => t.crudo).join("\n"));
+  const parti = partiDelRegistro(fs.readFileSync(REGISTRO, "utf8"));
+  const dalloScafale = partiDalloScafale(fs.readFileSync(IMPAGINAZIONE, "utf8"));
 
-for (const via of file) {
-  const testo = fs.readFileSync(via, "utf8");
-  const righe = testo.split("\n");
-  for (const nome of classiDi(testo)) {
-    if (!dove.has(nome)) dove.set(nome, []);
-    const riga = righe.findIndex((r) => r.includes(nome)) + 1;
-    dove.get(nome).push(`${via.replace(/\\/g, "/")}:${riga || "?"}`);
-    if (path.resolve(via) !== path.resolve(MOCK)) nellApp.add(nome);
+  /** Dove compare ogni classe: serve a dire la riga, non solo il nome. */
+  const dove = new Map();
+  /** Le classi viste fuori dal mock dell'anteprima. */
+  const nellApp = new Set();
+
+  for (const via of file) {
+    const testo = fs.readFileSync(via, "utf8");
+    const righe = testo.split("\n");
+    for (const nome of classiDi(testo)) {
+      if (!dove.has(nome)) dove.set(nome, []);
+      const riga = righe.findIndex((r) => r.includes(nome)) + 1;
+      dove.get(nome).push(`${via.replace(/\\/g, "/")}:${riga || "?"}`);
+      if (path.resolve(via) !== path.resolve(MOCK)) nellApp.add(nome);
+    }
   }
-}
 
-/**
- * Le parti che l'applicazione emette davvero, da qualunque delle due sorgenti.
- *
- * È l'unione di quel che il markup scrive a mano e di quel che lo scafale di
- * serie dichiara in Rust. I due controlli che chiedono «l'app la disegna?» —
- * il secondo e il quinto — guardano qui e non solo il TypeScript: sono la
- * stessa domanda, e una risposta che dipende da quale dei due file l'ha
- * scritta sarebbe una risposta sbagliata la metà delle volte.
- */
-const emesse = new Set([...nellApp, ...dalloScafale]);
+  /**
+   * Le parti che l'applicazione emette davvero, da qualunque delle due sorgenti.
+   *
+   * È l'unione di quel che il markup scrive a mano e di quel che lo scafale di
+   * serie dichiara in Rust. I due controlli che chiedono «l'app la disegna?» —
+   * il secondo e il quinto — guardano qui e non solo il TypeScript: sono la
+   * stessa domanda, e una risposta che dipende da quale dei due file l'ha
+   * scritta sarebbe una risposta sbagliata la metà delle volte.
+   */
+  const emesse = new Set([...nellApp, ...dalloScafale]);
 
-let guai = 0;
+  let guai = 0;
 
-// 1. Una classe scritta che nessuno disegna, e che il registro non conosce.
-const senzaRegola = [...dove.keys()]
-  .filter((nome) => !foglio.has(nome) && !parti.has(nome))
-  .filter((nome) => !(nome in ATTESE_CLASSI))
-  .sort();
+  // 1. Una classe scritta che nessuno disegna, e che il registro non conosce.
+  const senzaRegola = [...dove.keys()]
+    .filter((nome) => !foglio.has(nome) && !parti.has(nome))
+    .filter((nome) => !(nome in ATTESE_CLASSI))
+    .sort();
 
-if (senzaRegola.length > 0) {
-  guai += senzaRegola.length;
-  console.log(`\n${senzaRegola.length} classi non hanno nessuna regola:\n`);
-  for (const nome of senzaRegola) {
-    console.log(`  .${nome}`);
-    for (const posto of dove.get(nome).slice(0, 4)) console.log(`      ${posto}`);
-  }
-  console.log(
-    "\n  Ognuna si disegna col flusso di serie. O le si dà una regola in\n" +
-      "  stile.css, o è il nome a essere sbagliato: cerca il gemello che fa la\n" +
-      "  stessa cosa in una schermata vicina e usa il suo.",
-  );
-}
-
-// 2. Una parte del registro che l'app non emette.
-const nonEmesse = [...parti]
-  .filter((nome) => !NON_PARTI.has(nome))
-  .filter((nome) => !emesse.has(nome))
-  .filter((nome) => !(nome in ATTESE))
-  .sort();
-
-if (nonEmesse.length > 0) {
-  guai += nonEmesse.length;
-  console.log(`\n${nonEmesse.length} parti del registro non le disegna nessuno:\n`);
-  for (const nome of nonEmesse) {
-    const soloNelMock = dove.has(nome);
+  if (senzaRegola.length > 0) {
+    guai += senzaRegola.length;
+    console.log(`\n${senzaRegola.length} classi non hanno nessuna regola:\n`);
+    for (const nome of senzaRegola) {
+      console.log(`  .${nome}`);
+      for (const posto of dove.get(nome).slice(0, 4)) console.log(`      ${posto}`);
+    }
     console.log(
-      `  ${nome}${soloNelMock ? "   (c'è nel mock dell'anteprima, non nell'app)" : ""}`,
+      "\n  Ognuna si disegna col flusso di serie. O le si dà una regola in\n" +
+        "  uno dei fogli (`stile.css` o `stile/*.css`), o è il nome a essere\n" +
+        "  sbagliato: cerca il gemello che fa la stessa cosa in una schermata\n" +
+        "  vicina e usa il suo.",
     );
   }
-  console.log(
-    "\n  Una skin può ridipingerle e non succede niente. O l'app le emette —\n" +
-      "  di solito accanto alla classe italiana che già c'è, oppure da\n" +
-      "  layout.rs con .parte(\"…\") se è una zona dello scafale — o vanno messe\n" +
-      "  in ATTESE, qui dentro, con il motivo scritto.",
-  );
-}
 
-// 3. Lo Studio sa dove si vede ogni parte, e non promette l'impossibile.
-//
-// `DOVE` di `studio/scena.ts` dice, per ogni parte che non sta sempre sulla
-// finestra, in che scena la tela la mostra: è quel che fa funzionare «Mostra»
-// nell'ispettore. Un nome lì che non è più una parte del registro porta la tela
-// in una scena per niente; una parte in `ATTESE` — che l'app non disegna — lì
-// sarebbe una scena che promette di mostrarla e non la mostra.
-const scene = [
-  ...fs
-    .readFileSync(SCENA, "utf8")
-    .slice(fs.readFileSync(SCENA, "utf8").indexOf("export const DOVE"))
-    .matchAll(/^\s*"?([a-z0-9-]+)"?:\s*\{\s*(?:pagina|sovrapposizioni|larghezza)/gm),
-].map((t) => t[1]);
-const doveSconosciute = scene.filter((nome) => !parti.has(nome));
-const doveInAttesa = scene.filter((nome) => nome in ATTESE);
+  // 2. Una parte del registro che l'app non emette.
+  const nonEmesse = [...parti]
+    .filter((nome) => !NON_PARTI.has(nome))
+    .filter((nome) => !emesse.has(nome))
+    .filter((nome) => !(nome in ATTESE))
+    .sort();
 
-if (doveSconosciute.length > 0 || doveInAttesa.length > 0) {
-  guai += doveSconosciute.length + doveInAttesa.length;
-  console.log(`\nLo Studio porta la tela dove non c'è niente da vedere:\n`);
-  for (const nome of doveSconosciute) {
-    console.log(`  ${nome} — sta in DOVE di studio/scena.ts e non è una parte del registro`);
-  }
-  for (const nome of doveInAttesa) {
-    console.log(`  ${nome} — sta in DOVE di studio/scena.ts, e l'app non la disegna (ATTESE)`);
-  }
-  console.log(
-    `\n  Chi ridipinge preme «Mostra» e si aspetta di vederla: il nome va` +
-      `\n  corretto, o tolto da DOVE finché l'app non la disegna.`,
-  );
-}
-
-// 4. Una regola del foglio che non veste niente.
-//
-// Il verso opposto del primo controllo, e vale la pena dire perché le fonti da
-// cui si guarda sono tre e non una. Il markup è l'ovvia. Il registro conta
-// perché una parte è un bersaglio legittimo di selettore anche prima che l'app
-// la emetta — è tutto il senso di `ATTESE` qui sopra, e contarla morta sarebbe
-// chiedere di cancellare proprio le regole che tengono in piedi la promessa
-// alle skin. I nomi di stato contano perché non sono classi di nessuno.
-const senzaMarkup = [...foglio]
-  .filter((nome) => !dove.has(nome))
-  .filter((nome) => !parti.has(nome))
-  .filter((nome) => !NON_PARTI.has(nome))
-  .filter((nome) => !(nome in ATTESE_FOGLIO))
-  .sort();
-
-if (senzaMarkup.length > 0) {
-  guai += senzaMarkup.length;
-  console.log(`\n${senzaMarkup.length} regole del foglio non vestono niente:\n`);
-  for (const nome of senzaMarkup) console.log(`  .${nome}`);
-  console.log(
-    "\n  Nessun elemento porta questi nomi, quindi queste regole non si vedono:\n" +
-      "  o sono sopravvissute alla schermata che le montava e vanno tolte da\n" +
-      "  stile.css, o il nome si compone lontano dal `className` e la voce va in\n" +
-      "  ATTESE_FOGLIO, qui dentro, col motivo scritto.",
-  );
-}
-
-// 5. Un'attesa che non è più tale: quel che aspettava è arrivato.
-const atteseScadute = [
-  ...Object.keys(ATTESE)
-    .filter((nome) => emesse.has(nome))
-    .map((nome) => `${nome} — adesso l'app la emette, togliela da ATTESE.`),
-  ...Object.keys(ATTESE_CLASSI)
-    .filter((nome) => foglio.has(nome))
-    .map((nome) => `${nome} — adesso il foglio la disegna, togliela da ATTESE_CLASSI.`),
-  // Una voce del foglio scade in due modi opposti: la regola è stata tolta, o
-  // il markup ha smesso di nascondere il nome. In tutti e due i casi la riga
-  // qui dentro racconta un albero che non c'è più.
-  ...Object.keys(ATTESE_FOGLIO)
-    .filter((nome) => !foglio.has(nome) || dove.has(nome))
-    .map((nome) =>
-      foglio.has(nome)
-        ? `${nome} — adesso il markup la scrive per intero, togliela da ATTESE_FOGLIO.`
-        : `${nome} — il foglio non la disegna più, togliela da ATTESE_FOGLIO.`,
-    ),
-];
-if (atteseScadute.length > 0) {
-  guai += atteseScadute.length;
-  console.log(`\n${atteseScadute.length} attese non servono più:\n`);
-  for (const riga of atteseScadute) console.log(`  ${riga}`);
-}
-
-// ── il foglio contro sé stesso ──────────────────────────────────────────────
-
-/*
- * Il testo del foglio senza commenti, ma con le righe al loro posto.
- *
- * I commenti si tolgono per la stessa ragione di `classiDelFoglio` — qui dentro
- * si cita il CSS per spiegarlo, e una citazione non è una dichiarazione — e si
- * sostituiscono con altrettanti ritorni a capo invece che con uno spazio: i due
- * controlli qui sotto dicono la riga, e una riga sbagliata di quattrocento manda
- * a cercare nel posto sbagliato.
- */
-const cssCrudo = fs.readFileSync(FOGLIO, "utf8");
-const cssPulito = cssCrudo.replace(/\/\*[\s\S]*?\*\//g, (pezzo) =>
-  pezzo.replace(/[^\n]/g, " "),
-);
-
-/** La riga (da 1) a cui sta un indice dentro il foglio. */
-function rigaDi(indice) {
-  return cssPulito.slice(0, indice).split("\n").length;
-}
-
-/**
- * Il selettore che apre il blocco in cui sta un indice.
- *
- * Serve al messaggio: «z-index letterale a riga 3571» fa cercare, «`.barra-selezione`
- * a riga 3571» fa capire. Si risale all'ultima graffa aperta e si prende quel che
- * la precede fino al confine del blocco prima.
- */
-function selettoreDi(indice) {
-  const prima = cssPulito.lastIndexOf("{", indice);
-  if (prima < 0) return "?";
-  const confine = Math.max(
-    cssPulito.lastIndexOf("}", prima),
-    cssPulito.lastIndexOf("{", prima - 1),
-    cssPulito.lastIndexOf(";", prima),
-  );
-  return cssPulito
-    .slice(confine + 1, prima)
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-/** Il valore di una dichiarazione che comincia a `da`, fino al `;` o alla graffa. */
-function valoreDa(da) {
-  const fine = cssPulito.slice(da).search(/[;}]/);
-  return cssPulito.slice(da, fine < 0 ? cssPulito.length : da + fine);
-}
-
-// 6. Ogni `z-index` è uno strato della scala.
-//
-// L'elenco delle eccezioni non esiste, e il suo non esistere è la regola: il
-// difetto che la scala ha chiuso era proprio la convivenza fra numeri scelti
-// altrove, quindi un'eccezione qui sarebbe la prima crepa.
-const strati = [];
-for (const trovato of cssPulito.matchAll(/(?<![-\w])z-index\s*:/g)) {
-  const da = trovato.index + trovato[0].length;
-  const valore = valoreDa(da);
-  if (/var\(\s*--strato-[a-z]+\s*\)/.test(valore)) continue;
-  strati.push(
-    `  stile.css:${rigaDi(trovato.index)}  ${selettoreDi(trovato.index)}  →  z-index:${valore}`,
-  );
-}
-
-if (strati.length > 0) {
-  guai += strati.length;
-  console.log(`\n${strati.length} z-index non vengono dalla scala degli strati:\n`);
-  for (const riga of strati) console.log(riga);
-  console.log(
-    "\n  La scala sta in apps/desktop/src/stile.css, nel primo :root dopo la riga\n" +
-      "  «fine blocco generato»: dodici token --strato-*, dal decoro alla finestra.\n" +
-      "  Un numero scritto qui non si può confrontare con gli altri undici senza\n" +
-      "  aprire il foglio, ed è così che il menù contestuale è finito dietro la\n" +
-      "  barra della selezione. Scegli il token che dice il ruolo; se nessuno\n" +
-      "  dei dodici lo dice, il posto dove aggiungerne uno è la scala, non qui.",
-  );
-}
-
-// 7. Nessuna durata sfugge a `--motion-scale`.
-//
-// Il foglio promette che azzerare la scala ferma tutto. Vale se ogni durata è un
-// `var(--transition-*)` (che la scala la porta dentro) o un `calc` che la nomina.
-// Un `var(--dur-N)` nudo conta come letterale: è lo stesso numero con un nome.
-const movimento = [];
-for (const trovato of cssPulito.matchAll(
-  /(?<![-\w])(?:transition|animation)(?:-duration|-delay)?\s*:/g,
-)) {
-  const valore = valoreDa(trovato.index + trovato[0].length);
-
-  // Si toglie quel che è già scalato: i due token di transizione, e ogni `calc`
-  // che nomina la scala — con le parentesi contate, perché dentro ce n'è un'altra.
-  let resto = valore.replace(/var\(\s*--transition-[a-z]+\s*\)/g, " ");
-  for (;;) {
-    const apre = resto.indexOf("calc(");
-    if (apre < 0) break;
-    let i = apre + 5;
-    let profondita = 1;
-    while (i < resto.length && profondita > 0) {
-      if (resto[i] === "(") profondita++;
-      else if (resto[i] === ")") profondita--;
-      i++;
+  if (nonEmesse.length > 0) {
+    guai += nonEmesse.length;
+    console.log(`\n${nonEmesse.length} parti del registro non le disegna nessuno:\n`);
+    for (const nome of nonEmesse) {
+      const soloNelMock = dove.has(nome);
+      console.log(
+        `  ${nome}${soloNelMock ? "   (c'è nel mock dell'anteprima, non nell'app)" : ""}`,
+      );
     }
-    const dentro = resto.slice(apre, i);
-    if (!dentro.includes("--motion-scale")) break;
-    resto = resto.slice(0, apre) + " " + resto.slice(i);
+    console.log(
+      "\n  Una skin può ridipingerle e non succede niente. O l'app le emette —\n" +
+        "  di solito accanto alla classe italiana che già c'è, oppure da\n" +
+        "  layout.rs con .parte(\"…\") se è una zona dello scafale — o vanno messe\n" +
+        "  in ATTESE, qui dentro, con il motivo scritto.",
+    );
   }
 
-  const letterali = [
-    ...resto.matchAll(/(?<![\w.-])\d*\.?\d+m?s(?![\w-])/g),
-    ...resto.matchAll(/var\(\s*--dur-\d+\s*\)/g),
-  ].map((t) => t[0]);
-  if (letterali.length === 0) continue;
+  // 3. Lo Studio sa dove si vede ogni parte, e non promette l'impossibile.
+  //
+  // `DOVE` di `studio/scena.ts` dice, per ogni parte che non sta sempre sulla
+  // finestra, in che scena la tela la mostra: è quel che fa funzionare «Mostra»
+  // nell'ispettore. Un nome lì che non è più una parte del registro porta la tela
+  // in una scena per niente; una parte in `ATTESE` — che l'app non disegna — lì
+  // sarebbe una scena che promette di mostrarla e non la mostra.
+  const scene = [
+    ...fs
+      .readFileSync(SCENA, "utf8")
+      .slice(fs.readFileSync(SCENA, "utf8").indexOf("export const DOVE"))
+      .matchAll(/^\s*"?([a-z0-9-]+)"?:\s*\{\s*(?:pagina|sovrapposizioni|larghezza)/gm),
+  ].map((t) => t[1]);
+  const doveSconosciute = scene.filter((nome) => !parti.has(nome));
+  const doveInAttesa = scene.filter((nome) => nome in ATTESE);
 
-  // Un'eccezione vale se il nome dell'animazione è dichiarato qui sopra **e** il
-  // blocco del movimento ridotto la nomina: la riga di `ATTESE_MOVIMENTO` dice
-  // perché, la regola dice che è stato fatto.
-  const scusata = Object.keys(ATTESE_MOVIMENTO).find((nome) =>
-    new RegExp(`(?<![\\w-])${nome}(?![\\w-])`).test(valore),
-  );
-  if (scusata) continue;
+  if (doveSconosciute.length > 0 || doveInAttesa.length > 0) {
+    guai += doveSconosciute.length + doveInAttesa.length;
+    console.log(`\nLo Studio porta la tela dove non c'è niente da vedere:\n`);
+    for (const nome of doveSconosciute) {
+      console.log(`  ${nome} — sta in DOVE di studio/scena.ts e non è una parte del registro`);
+    }
+    for (const nome of doveInAttesa) {
+      console.log(`  ${nome} — sta in DOVE di studio/scena.ts, e l'app non la disegna (ATTESE)`);
+    }
+    console.log(
+      `\n  Chi ridipinge preme «Mostra» e si aspetta di vederla: il nome va` +
+        `\n  corretto, o tolto da DOVE finché l'app non la disegna.`,
+    );
+  }
 
-  movimento.push(
-    `  stile.css:${rigaDi(trovato.index)}  ${selettoreDi(trovato.index)}  →  ${letterali.join(", ")}`,
-  );
+  // 4. Una regola del foglio che non veste niente.
+  //
+  // Il verso opposto del primo controllo, e vale la pena dire perché le fonti da
+  // cui si guarda sono tre e non una. Il markup è l'ovvia. Il registro conta
+  // perché una parte è un bersaglio legittimo di selettore anche prima che l'app
+  // la emetta — è tutto il senso di `ATTESE` qui sopra, e contarla morta sarebbe
+  // chiedere di cancellare proprio le regole che tengono in piedi la promessa
+  // alle skin. I nomi di stato contano perché non sono classi di nessuno.
+  const senzaMarkup = [...foglio]
+    .filter((nome) => !dove.has(nome))
+    .filter((nome) => !parti.has(nome))
+    .filter((nome) => !NON_PARTI.has(nome))
+    .filter((nome) => !(nome in ATTESE_FOGLIO))
+    .sort();
+
+  if (senzaMarkup.length > 0) {
+    guai += senzaMarkup.length;
+    console.log(`\n${senzaMarkup.length} regole del foglio non vestono niente:\n`);
+    for (const nome of senzaMarkup) console.log(`  .${nome}`);
+    console.log(
+      "\n  Nessun elemento porta questi nomi, quindi queste regole non si vedono:\n" +
+        "  o sono sopravvissute alla schermata che le montava e vanno tolte dal\n" +
+        "  foglio che le porta, o il nome si compone lontano dal `className` e la\n" +
+        "  voce va in ATTESE_FOGLIO, qui dentro, col motivo scritto.",
+    );
+  }
+
+  // 5. Un'attesa che non è più tale: quel che aspettava è arrivato.
+  const atteseScadute = [
+    ...Object.keys(ATTESE)
+      .filter((nome) => emesse.has(nome))
+      .map((nome) => `${nome} — adesso l'app la emette, togliela da ATTESE.`),
+    ...Object.keys(ATTESE_CLASSI)
+      .filter((nome) => foglio.has(nome))
+      .map((nome) => `${nome} — adesso il foglio la disegna, togliela da ATTESE_CLASSI.`),
+    // Una voce del foglio scade in due modi opposti: la regola è stata tolta, o
+    // il markup ha smesso di nascondere il nome. In tutti e due i casi la riga
+    // qui dentro racconta un albero che non c'è più.
+    ...Object.keys(ATTESE_FOGLIO)
+      .filter((nome) => !foglio.has(nome) || dove.has(nome))
+      .map((nome) =>
+        foglio.has(nome)
+          ? `${nome} — adesso il markup la scrive per intero, togliela da ATTESE_FOGLIO.`
+          : `${nome} — il foglio non la disegna più, togliela da ATTESE_FOGLIO.`,
+      ),
+  ];
+  if (atteseScadute.length > 0) {
+    guai += atteseScadute.length;
+    console.log(`\n${atteseScadute.length} attese non servono più:\n`);
+    for (const riga of atteseScadute) console.log(`  ${riga}`);
+  }
+
+  // ── il foglio contro sé stesso ──────────────────────────────────────────────
+
+  /*
+   * Il testo del foglio senza commenti, ma con le righe al loro posto.
+   *
+   * I commenti si tolgono per la stessa ragione di `classiDelFoglio` — qui dentro
+   * si cita il CSS per spiegarlo, e una citazione non è una dichiarazione — e si
+   * sostituiscono con altrettanti ritorni a capo invece che con uno spazio: i due
+   * controlli qui sotto dicono la riga, e una riga sbagliata di quattrocento manda
+   * a cercare nel posto sbagliato.
+   */
+  const fogliPuliti = testi.map(({ nome, crudo }) => ({
+    nome,
+    pulito: crudo.replace(/\/\*[\s\S]*?\*\//g, (pezzo) => pezzo.replace(/[^\n]/g, " ")),
+  }));
+  // L'unione dei fogli serve solo al controllo 8: un `@keyframes` vale da qualunque foglio lo dichiari.
+  const cssPulito = fogliPuliti.map((f) => f.pulito).join("\n");
+
+  /** La riga (da 1) a cui sta un indice dentro il foglio. */
+  function rigaDi(pulito, indice) {
+    return pulito.slice(0, indice).split("\n").length;
+  }
+
+  /**
+   * Il selettore che apre il blocco in cui sta un indice.
+   *
+   * Serve al messaggio: «z-index letterale a riga 3571» fa cercare, «`.barra-selezione`
+   * a riga 3571» fa capire. Si risale all'ultima graffa aperta e si prende quel che
+   * la precede fino al confine del blocco prima.
+   */
+  function selettoreDi(pulito, indice) {
+    const prima = pulito.lastIndexOf("{", indice);
+    if (prima < 0) return "?";
+    const confine = Math.max(
+      pulito.lastIndexOf("}", prima),
+      pulito.lastIndexOf("{", prima - 1),
+      pulito.lastIndexOf(";", prima),
+    );
+    return pulito
+      .slice(confine + 1, prima)
+      .trim()
+      .replace(/\s+/g, " ");
+  }
+
+  /** Il valore di una dichiarazione che comincia a `da`, fino al `;` o alla graffa. */
+  function valoreDa(pulito, da) {
+    const fine = pulito.slice(da).search(/[;}]/);
+    return pulito.slice(da, fine < 0 ? pulito.length : da + fine);
+  }
+
+  // 6. Ogni `z-index` è uno strato della scala.
+  //
+  // L'elenco delle eccezioni non esiste, e il suo non esistere è la regola: il
+  // difetto che la scala ha chiuso era proprio la convivenza fra numeri scelti
+  // altrove, quindi un'eccezione qui sarebbe la prima crepa.
+  const strati = [];
+  for (const { nome: nomeFoglio, pulito } of fogliPuliti) {
+    for (const trovato of pulito.matchAll(/(?<![-\w])z-index\s*:/g)) {
+      const da = trovato.index + trovato[0].length;
+      const valore = valoreDa(pulito, da);
+      if (/var\(\s*--strato-[a-z]+\s*\)/.test(valore)) continue;
+      strati.push(
+        `  ${nomeFoglio}:${rigaDi(pulito, trovato.index)}  ${selettoreDi(pulito, trovato.index)}  →  z-index:${valore}`,
+      );
+    }
+  }
+
+  if (strati.length > 0) {
+    guai += strati.length;
+    console.log(`\n${strati.length} z-index non vengono dalla scala degli strati:\n`);
+    for (const riga of strati) console.log(riga);
+    console.log(
+      "\n  La scala sta in apps/desktop/src/stile.css, nel primo :root dopo la riga\n" +
+        "  «fine blocco generato»: dodici token --strato-*, dal decoro alla finestra.\n" +
+        "  Un numero scritto qui non si può confrontare con gli altri undici senza\n" +
+        "  aprire il foglio, ed è così che il menù contestuale è finito dietro la\n" +
+        "  barra della selezione. Scegli il token che dice il ruolo; se nessuno\n" +
+        "  dei dodici lo dice, il posto dove aggiungerne uno è la scala, non qui.",
+    );
+  }
+
+  // 7. Nessuna durata sfugge a `--motion-scale`.
+  //
+  // Il foglio promette che azzerare la scala ferma tutto. Vale se ogni durata è un
+  // `var(--transition-*)` (che la scala la porta dentro) o un `calc` che la nomina.
+  // Un `var(--dur-N)` nudo conta come letterale: è lo stesso numero con un nome.
+  const movimento = [];
+  for (const { nome: nomeFoglio, pulito } of fogliPuliti) {
+    for (const trovato of pulito.matchAll(
+      /(?<![-\w])(?:transition|animation)(?:-duration|-delay)?\s*:/g,
+    )) {
+      const valore = valoreDa(pulito, trovato.index + trovato[0].length);
+
+      // Si toglie quel che è già scalato: i due token di transizione, e ogni `calc`
+      // che nomina la scala — con le parentesi contate, perché dentro ce n'è un'altra.
+      let resto = valore.replace(/var\(\s*--transition-[a-z]+\s*\)/g, " ");
+      for (;;) {
+        const apre = resto.indexOf("calc(");
+        if (apre < 0) break;
+        let i = apre + 5;
+        let profondita = 1;
+        while (i < resto.length && profondita > 0) {
+          if (resto[i] === "(") profondita++;
+          else if (resto[i] === ")") profondita--;
+          i++;
+        }
+        const dentro = resto.slice(apre, i);
+        if (!dentro.includes("--motion-scale")) break;
+        resto = resto.slice(0, apre) + " " + resto.slice(i);
+      }
+
+      const letterali = [
+        ...resto.matchAll(/(?<![\w.-])\d*\.?\d+m?s(?![\w-])/g),
+        ...resto.matchAll(/var\(\s*--dur-\d+\s*\)/g),
+      ].map((t) => t[0]);
+      if (letterali.length === 0) continue;
+
+      // Un'eccezione vale se il nome dell'animazione è dichiarato qui sopra **e** il
+      // blocco del movimento ridotto la nomina: la riga di `ATTESE_MOVIMENTO` dice
+      // perché, la regola dice che è stato fatto.
+      const scusata = Object.keys(ATTESE_MOVIMENTO).find((nome) =>
+        new RegExp(`(?<![\\w-])${nome}(?![\\w-])`).test(valore),
+      );
+      if (scusata) continue;
+
+      movimento.push(
+        `  ${nomeFoglio}:${rigaDi(pulito, trovato.index)}  ${selettoreDi(pulito, trovato.index)}  →  ${letterali.join(", ")}`,
+      );
+    }
+  }
+
+  if (movimento.length > 0) {
+    guai += movimento.length;
+    console.log(
+      `\n${movimento.length} durate non passano da --motion-scale:\n`,
+    );
+    for (const riga of movimento) console.log(riga);
+    console.log(
+      "\n  @media (prefers-reduced-motion) azzera --motion-scale, e quel blocco dice\n" +
+        "  di fermare tutto il foglio: è vero solo per le durate che passano da lì.\n" +
+        "  Le forme buone sono due — var(--transition-fast|med), oppure\n" +
+        "  calc(<n>ms * var(--motion-scale, 1)) quando la curva deve restare la sua.\n" +
+        "  Un'animazione che ripete all'infinito è l'unica eccezione legittima, e va\n" +
+        "  in ATTESE_MOVIMENTO qui dentro **insieme** alla sua regola di spegnimento.",
+    );
+  }
+
+  // 8. Un'eccezione del movimento che non serve più.
+  const movimentoScadute = Object.keys(ATTESE_MOVIMENTO)
+    .filter((nome) => !new RegExp(`@keyframes\\s+${nome}(?![\\w-])`).test(cssPulito))
+    .map((nome) => `  ${nome} — il foglio non la dichiara più, togliila da ATTESE_MOVIMENTO.`);
+  if (movimentoScadute.length > 0) {
+    guai += movimentoScadute.length;
+    console.log(`\n${movimentoScadute.length} eccezioni del movimento non servono più:\n`);
+    for (const riga of movimentoScadute) console.log(riga);
+  }
+
+  // 9. Chi copre tutto dichiara se prende il puntatore.
+  //
+  // `inset: 0` su un elemento `absolute` o `fixed` copre il contenitore intero. Da
+  // lì in poi ci sono due comportamenti possibili e nessun valore di serie che li
+  // distingua: il clic passa, o si ferma. Il controllo pretende che il blocco lo
+  // dica — `pointer-events`, un valore qualunque — oppure che il selettore stia in
+  // `ATTESE_PUNTATORE` con la sua riga.
+  //
+  // Si guarda il blocco e non la cascata. Leggere la cascata vorrebbe dire
+  // scrivere un motore CSS per trovare una dimenticanza, e un divieto scritto in
+  // un'altra regola sullo stesso selettore è più raro del difetto che si cerca:
+  // se capita, la voce in `ATTESE_PUNTATORE` lo dice in una riga.
+  const puntatore = [];
+  /** I selettori a copertura piena che il divieto non ce l'hanno scritto. */
+  const scoperti = new Set();
+  for (const { nome: nomeFoglio, pulito } of fogliPuliti) {
+    for (const trovato of pulito.matchAll(/(?<![-\w])inset\s*:\s*0\s*(?=[;}])/g)) {
+      const apre = pulito.lastIndexOf("{", trovato.index);
+      const chiude = pulito.indexOf("}", trovato.index);
+      if (apre < 0 || chiude < 0) continue;
+      const blocco = pulito.slice(apre + 1, chiude);
+      if (!/(?<![-\w])position\s*:\s*(?:absolute|fixed)/.test(blocco)) continue;
+      if (/(?<![-\w])pointer-events\s*:/.test(blocco)) continue;
+      const selettore = selettoreDi(pulito, trovato.index);
+      scoperti.add(selettore);
+      if (Object.hasOwn(ATTESE_PUNTATORE, selettore)) continue;
+      puntatore.push(`  ${nomeFoglio}:${rigaDi(pulito, trovato.index)}  ${selettore}`);
+    }
+  }
+
+  if (puntatore.length > 0) {
+    guai += puntatore.length;
+    console.log(
+      `\n${puntatore.length} superfic${puntatore.length === 1 ? "ie copre" : "i coprono"} tutto senza dire del puntatore:\n`,
+    );
+    for (const riga of puntatore) console.log(riga);
+    console.log(
+      "\n  Chi copre tutto decide per tutti: senza `pointer-events` dichiarato il\n" +
+        "  clic si ferma lì, e quel che sta sotto smette di rispondere senza un\n" +
+        "  errore da nessuna parte — è così che lo scrim di «In riproduzione» ha\n" +
+        "  spento un'intera schermata restando invisibile ai log. Se è decorazione\n" +
+        "  — un velo, un riflesso, una tela, un `aria-hidden` — scrivi `pointer-events: none`.\n" +
+        "  Se i clic sono davvero suoi, la voce va in ATTESE_PUNTATORE qui dentro,\n" +
+        "  con la riga che dice perché.",
+    );
+  }
+
+  // 10. Un'eccezione del puntatore che non serve più.
+  const puntatoreScadute = Object.keys(ATTESE_PUNTATORE)
+    .filter((selettore) => !scoperti.has(selettore))
+    .map(
+      (selettore) =>
+        `  ${selettore} — o non copre più tutto, o il divieto adesso ce l'ha: togliila da ATTESE_PUNTATORE.`,
+    );
+  if (puntatoreScadute.length > 0) {
+    guai += puntatoreScadute.length;
+    console.log(`\n${puntatoreScadute.length} eccezion${puntatoreScadute.length === 1 ? "e del puntatore non serve" : "i del puntatore non servono"} più:\n`);
+    for (const riga of puntatoreScadute) console.log(riga);
+  }
+
+  if (guai === 0) {
+    const attese =
+      Object.keys(ATTESE).length +
+      Object.keys(ATTESE_CLASSI).length +
+      Object.keys(ATTESE_FOGLIO).length +
+      Object.keys(ATTESE_MOVIMENTO).length +
+      Object.keys(ATTESE_PUNTATORE).length;
+    console.log(
+      `Tutto a posto: ${dove.size} classi nel markup, ${foglio.size} nomi ` +
+        `disegnati dal foglio, ${parti.size} parti nel registro, ` +
+        `${attese} attese dichiarate.`,
+    );
+  }
+
+  process.exit(guai > 0 ? 1 : 0);
 }
 
-if (movimento.length > 0) {
-  guai += movimento.length;
-  console.log(
-    `\n${movimento.length} durate non passano da --motion-scale:\n`,
-  );
-  for (const riga of movimento) console.log(riga);
-  console.log(
-    "\n  @media (prefers-reduced-motion) azzera --motion-scale, e quel blocco dice\n" +
-      "  di fermare tutto il foglio: è vero solo per le durate che passano da lì.\n" +
-      "  Le forme buone sono due — var(--transition-fast|med), oppure\n" +
-      "  calc(<n>ms * var(--motion-scale, 1)) quando la curva deve restare la sua.\n" +
-      "  Un'animazione che ripete all'infinito è l'unica eccezione legittima, e va\n" +
-      "  in ATTESE_MOVIMENTO qui dentro **insieme** alla sua regola di spegnimento.",
-  );
-}
+if (require.main === module) main();
 
-// 8. Un'eccezione del movimento che non serve più.
-const movimentoScadute = Object.keys(ATTESE_MOVIMENTO)
-  .filter((nome) => !new RegExp(`@keyframes\\s+${nome}(?![\\w-])`).test(cssPulito))
-  .map((nome) => `  ${nome} — il foglio non la dichiara più, togliila da ATTESE_MOVIMENTO.`);
-if (movimentoScadute.length > 0) {
-  guai += movimentoScadute.length;
-  console.log(`\n${movimentoScadute.length} eccezioni del movimento non servono più:\n`);
-  for (const riga of movimentoScadute) console.log(riga);
-}
-
-// 9. Chi copre tutto dichiara se prende il puntatore.
-//
-// `inset: 0` su un elemento `absolute` o `fixed` copre il contenitore intero. Da
-// lì in poi ci sono due comportamenti possibili e nessun valore di serie che li
-// distingua: il clic passa, o si ferma. Il controllo pretende che il blocco lo
-// dica — `pointer-events`, un valore qualunque — oppure che il selettore stia in
-// `ATTESE_PUNTATORE` con la sua riga.
-//
-// Si guarda il blocco e non la cascata. Leggere la cascata vorrebbe dire
-// scrivere un motore CSS per trovare una dimenticanza, e un divieto scritto in
-// un'altra regola sullo stesso selettore è più raro del difetto che si cerca:
-// se capita, la voce in `ATTESE_PUNTATORE` lo dice in una riga.
-const puntatore = [];
-/** I selettori a copertura piena che il divieto non ce l'hanno scritto. */
-const scoperti = new Set();
-for (const trovato of cssPulito.matchAll(/(?<![-\w])inset\s*:\s*0\s*(?=[;}])/g)) {
-  const apre = cssPulito.lastIndexOf("{", trovato.index);
-  const chiude = cssPulito.indexOf("}", trovato.index);
-  if (apre < 0 || chiude < 0) continue;
-  const blocco = cssPulito.slice(apre + 1, chiude);
-  if (!/(?<![-\w])position\s*:\s*(?:absolute|fixed)/.test(blocco)) continue;
-  if (/(?<![-\w])pointer-events\s*:/.test(blocco)) continue;
-  const selettore = selettoreDi(trovato.index);
-  scoperti.add(selettore);
-  if (Object.hasOwn(ATTESE_PUNTATORE, selettore)) continue;
-  puntatore.push(`  stile.css:${rigaDi(trovato.index)}  ${selettore}`);
-}
-
-if (puntatore.length > 0) {
-  guai += puntatore.length;
-  console.log(
-    `\n${puntatore.length} superfic${puntatore.length === 1 ? "ie copre" : "i coprono"} tutto senza dire del puntatore:\n`,
-  );
-  for (const riga of puntatore) console.log(riga);
-  console.log(
-    "\n  Chi copre tutto decide per tutti: senza `pointer-events` dichiarato il\n" +
-      "  clic si ferma lì, e quel che sta sotto smette di rispondere senza un\n" +
-      "  errore da nessuna parte — è così che lo scrim di «In riproduzione» ha\n" +
-      "  spento un'intera schermata restando invisibile ai log. Se è decorazione\n" +
-      "  — un velo, un riflesso, una tela, un `aria-hidden` — scrivi `pointer-events: none`.\n" +
-      "  Se i clic sono davvero suoi, la voce va in ATTESE_PUNTATORE qui dentro,\n" +
-      "  con la riga che dice perché.",
-  );
-}
-
-// 10. Un'eccezione del puntatore che non serve più.
-const puntatoreScadute = Object.keys(ATTESE_PUNTATORE)
-  .filter((selettore) => !scoperti.has(selettore))
-  .map(
-    (selettore) =>
-      `  ${selettore} — o non copre più tutto, o il divieto adesso ce l'ha: togliila da ATTESE_PUNTATORE.`,
-  );
-if (puntatoreScadute.length > 0) {
-  guai += puntatoreScadute.length;
-  console.log(`\n${puntatoreScadute.length} eccezion${puntatoreScadute.length === 1 ? "e del puntatore non serve" : "i del puntatore non servono"} più:\n`);
-  for (const riga of puntatoreScadute) console.log(riga);
-}
-
-if (guai === 0) {
-  const attese =
-    Object.keys(ATTESE).length +
-    Object.keys(ATTESE_CLASSI).length +
-    Object.keys(ATTESE_FOGLIO).length +
-    Object.keys(ATTESE_MOVIMENTO).length +
-    Object.keys(ATTESE_PUNTATORE).length;
-  console.log(
-    `Tutto a posto: ${dove.size} classi nel markup, ${foglio.size} nomi ` +
-      `disegnati dal foglio, ${parti.size} parti nel registro, ` +
-      `${attese} attese dichiarate.`,
-  );
-}
-
-process.exit(guai > 0 ? 1 : 0);
+module.exports = { fogliDi, testiDeiFogli, classiDelFoglio, classiDi };

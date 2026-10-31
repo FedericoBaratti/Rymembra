@@ -263,6 +263,12 @@ fn rifiuto(path: &str, detail: &str) -> AppError {
 /// [`SALTO_PRIMA_DELL_INIZIO`]), gli altri sistemi con `InvalidInput`. Un file
 /// fatto così resta tale finché qualcuno non lo cambia — e allora cambiano anche
 /// dimensione e data, e la memoria lo lascia riprovare.
+///
+/// Mai del file, invece, un errore di I/O che porta dentro il suo `AppError`:
+/// è il lettore dei tag del cloud che dice cos'è successo davvero — un `429`,
+/// la rete caduta a metà — passando dall'unica strada che `Read` gli lascia.
+/// Qualunque `ErrorKind` abbia, lo traduce [`crate::files::io_error`], che lo
+/// tira fuori così com'è.
 fn guasto_del_disco<'a>(
     errore: &'a (dyn std::error::Error + 'static),
 ) -> Option<&'a std::io::Error> {
@@ -274,7 +280,12 @@ fn guasto_del_disco<'a>(
                 io.kind(),
                 K::UnexpectedEof | K::InvalidInput | K::InvalidData
             ) || io.raw_os_error() == SALTO_PRIMA_DELL_INIZIO;
-            let del_file = della_struttura && !rymembra_domain::errors::rete::e_di_rete(io);
+            let con_il_suo_perche = io
+                .get_ref()
+                .is_some_and(|dentro| dentro.downcast_ref::<AppError>().is_some());
+            let del_file = della_struttura
+                && !rymembra_domain::errors::rete::e_di_rete(io)
+                && !con_il_suo_perche;
             return (!del_file).then_some(io);
         }
         anello = adesso.source();
@@ -290,6 +301,51 @@ const SALTO_PRIMA_DELL_INIZIO: Option<i32> = Some(131);
 /// Vedi la gemella per Windows: qui il caso è già un `InvalidInput`.
 #[cfg(not(windows))]
 const SALTO_PRIMA_DELL_INIZIO: Option<i32> = None;
+
+/// Perché una lettura non è riuscita: un errore da dire, o il tetto della
+/// sorgente.
+enum Inciampo {
+    /// Un errore come tutti: del file, del disco, della rete.
+    Errore(AppError),
+    /// Il lettore ha superato i byte che la sorgente concede a una lettura dei
+    /// tag. Vedi [`oltre_il_tetto`].
+    Tetto,
+}
+
+impl From<AppError> for Inciampo {
+    fn from(errore: AppError) -> Self {
+        Self::Errore(errore)
+    }
+}
+
+/// Il segnale «tetto superato» della sorgente: un errore di I/O di tipo
+/// `FileTooLarge`.
+///
+/// # Chi lo manda, e perché non è un guasto
+///
+/// Il lettore dei tag a intervalli del cloud (`rymembra-cloud`) legge a
+/// finestre piccole e conta i byte; oltre il suo tetto — otto mebibyte, cioè
+/// un file le cui proprietà stanno lontane dalla testa — risponde così invece
+/// di scaricare il brano intero. Non dice niente del file né della rete: dice
+/// «così costa troppo», e la risposta giusta è rileggere **senza le
+/// proprietà**, che sono la parte che costringe `lofty` a camminare il file. La
+/// durata allora viene dal servizio, o resta zero e la scrive il primo ascolto
+/// (`playback::ricorda_durata`).
+///
+/// Un disco non lo manda mai: per un file locale questo ramo non esiste.
+fn oltre_il_tetto(io: &std::io::Error) -> bool {
+    io.kind() == std::io::ErrorKind::FileTooLarge
+}
+
+/// L'errore di I/O di una lettura fallita, detto per quel che è: il tetto
+/// della sorgente, o un errore del disco.
+fn inciampo_di_io(path: &str, io: &std::io::Error) -> Inciampo {
+    if oltre_il_tetto(io) {
+        Inciampo::Tetto
+    } else {
+        Inciampo::Errore(crate::files::io_error(path, io))
+    }
+}
 
 /// Com'è andata la lettura che ha funzionato.
 struct Letto {
@@ -331,7 +387,7 @@ struct Letto {
 /// una rete caduta costa un'altra attesa per lo stesso esito. Se nessun
 /// tentativo riesce, l'errore è quello del primo, che è quello che racconta
 /// meglio il file.
-fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, AppError> {
+fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, Inciampo> {
     // La durata va calcolata: senza, i file a bitrate variabile la riportano
     // stimata dall'intestazione, che su un VBR lungo sbaglia di parecchi
     // secondi — e la durata finisce nell'interfaccia e nei confronti di
@@ -346,7 +402,7 @@ fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, Ap
     }
     let probe = probe
         .guess_file_type()
-        .map_err(|err| crate::files::io_error(path, &err))?;
+        .map_err(|err| inciampo_di_io(path, &err))?;
     let Some(indovinato) = probe.file_type() else {
         // Né il contenuto né l'estensione: è un formato che `lofty` non
         // conosce — il WMA, che sta fra le estensioni della libreria ma non fra
@@ -355,9 +411,8 @@ fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, Ap
         return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {
             format: Some(extension_of(path)),
         })
-        .with_cause(
-            "nessun formato riconosciuto, né dal contenuto né dall'estensione".to_owned(),
-        ));
+        .with_cause("nessun formato riconosciuto, né dal contenuto né dall'estensione".to_owned())
+        .into());
     };
     let primo = match probe.read() {
         Ok(file) => {
@@ -368,7 +423,7 @@ fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, Ap
         }
         Err(err) => {
             if let Some(io) = guasto_del_disco(&err) {
-                return Err(crate::files::io_error(path, io));
+                return Err(inciampo_di_io(path, io));
             }
             rifiuto(path, &racconta_errore(&err))
         }
@@ -388,7 +443,7 @@ fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, Ap
     for (tipo, opzioni, solo_proprieta) in tentativi {
         reader
             .seek(SeekFrom::Start(0))
-            .map_err(|err| crate::files::io_error(path, &err))?;
+            .map_err(|err| inciampo_di_io(path, &err))?;
         match Probe::new(&mut *reader)
             .options(opzioni)
             .set_file_type(tipo)
@@ -402,12 +457,48 @@ fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, Ap
             }
             Err(err) => {
                 if let Some(io) = guasto_del_disco(&err) {
-                    return Err(crate::files::io_error(path, io));
+                    return Err(inciampo_di_io(path, io));
                 }
             }
         }
     }
-    Err(primo)
+    Err(primo.into())
+}
+
+/// La seconda lettura, dopo il tetto: i tag sì, le proprietà no.
+///
+/// Con un lettore **nuovo**: il conto dei byte sta nel lettore, e quello di
+/// prima l'ha già esaurito. Una volta sola: se anche questa supera il tetto —
+/// tag più grandi di otto mebibyte, una copertina enorme in testa — è un
+/// guasto del momento (`fs.readFailed`), non un rifiuto del file, e non si
+/// ricorda: la passata dopo ci riprova.
+fn leggi_senza_proprieta<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, AppError> {
+    let opzioni = ParseOptions::new().read_properties(false);
+    let mut probe = Probe::new(&mut *reader).options(opzioni);
+    if let Some(tipo) = FileType::from_ext(extension_of(path)) {
+        probe = probe.set_file_type(tipo);
+    }
+    let probe = probe
+        .guess_file_type()
+        .map_err(|err| crate::files::io_error(path, &err))?;
+    if probe.file_type().is_none() {
+        return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {
+            format: Some(extension_of(path)),
+        })
+        .with_cause(
+            "nessun formato riconosciuto, né dal contenuto né dall'estensione".to_owned(),
+        ));
+    }
+    match probe.read() {
+        Ok(file) => Ok(Letto {
+            file,
+            solo_proprieta: false,
+        }),
+        Err(err) => match guasto_del_disco(&err) {
+            Some(io) => Err(crate::files::io_error(path, io)),
+            None => Err(rifiuto(path, &racconta_errore(&err))),
+        },
+    }
 }
 
 /// La versione di Monkey's Audio scritta in testa al file: `MAC ` e poi un
@@ -438,6 +529,20 @@ fn versione_ape<R: Read + Seek>(reader: &mut R) -> std::io::Result<Option<u16>> 
         return Ok(None);
     };
     Ok(Some(u16::from_le_bytes([basso, alto])))
+}
+
+/// [`versione_ape`], con il tetto della sorgente che vale «non si sa».
+///
+/// Se anche la lettura dell'intestazione tocca il tetto (vedi
+/// [`oltre_il_tetto`]) la versione non si sa, e decide `lofty`, che il file
+/// l'ha già letto: è la stessa risposta di un'intestazione che non si
+/// riconosce.
+fn versione_ape_nota<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Option<u16>, AppError> {
+    match versione_ape(reader) {
+        Ok(versione) => Ok(versione),
+        Err(err) if oltre_il_tetto(&err) => Ok(None),
+        Err(err) => Err(crate::files::io_error(path, &err)),
+    }
 }
 
 /// I campi del vecchio ID3v1 in coda al file: gli ultimi 128 byte, se cominciano
@@ -501,11 +606,19 @@ pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppErr
     let Letto {
         file: tagged,
         solo_proprieta,
-    } = leggi_il_file(&mut reader, path)?;
+    } = match leggi_il_file(&mut reader, path) {
+        Ok(letto) => letto,
+        Err(Inciampo::Errore(errore)) => return Err(errore),
+        // Il tetto della sorgente: si rilegge da capo senza le proprietà, con
+        // un lettore nuovo. Vedi [`oltre_il_tetto`].
+        Err(Inciampo::Tetto) => {
+            reader = files.open(path)?;
+            leggi_senza_proprieta(&mut reader, path)?
+        }
+    };
 
     if tagged.file_type() == FileType::Ape
-        && let Some(versione) =
-            versione_ape(&mut reader).map_err(|err| crate::files::io_error(path, &err))?
+        && let Some(versione) = versione_ape_nota(&mut reader, path)?
         && versione < APE_MINIMA
     {
         return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {

@@ -1,9 +1,14 @@
 //! Le prove del documento.
 
+use super::valori::effetto;
 use super::*;
-use crate::effects::Corner;
-use crate::layout::{PlayerLayout, SidebarLayout, default_shell};
-use crate::values::{Length, LengthUnit};
+use crate::effects::{Corner, ImageSize, Paint, Stop};
+use crate::layout::{LayoutNode, MAX_SHELL_NODES, PlayerLayout, SidebarLayout, default_shell};
+use crate::movimento::{Iterazioni, Ritaglio};
+use crate::parts::{Ombra, Raggio};
+use crate::stati::PartState;
+use crate::tokens::ColorValue;
+use crate::values::{FontKind, Length, LengthUnit};
 
 fn minima(extra: &str) -> String {
     format!(
@@ -50,6 +55,197 @@ fn un_token_sbagliato_riceve_un_suggerimento() {
     let detto = messaggio(&minima("").replace("color.accent", "color.accents"));
     assert!(detto.contains("color.accents"), "{detto}");
     assert!(detto.contains("«color.accent»"), "{detto}");
+}
+
+#[test]
+fn un_colore_che_richiama_un_token_non_colore_si_rifiuta() {
+    // `layout.rail` è una lunghezza: `color: var(--rail-w)` è `color: 68px`, e
+    // il testo ereditava il colore del genitore senza che nessuno lo dicesse.
+    let detto = messaggio(&minima(
+        r##", "parts": { "card": { "textColor": { "$token": "layout.rail" } } }"##,
+    ));
+    assert!(detto.contains("non è un token di colore"), "{detto}");
+    assert!(detto.contains("parts.card.textColor.$token"), "{detto}");
+    // Un colore resta un colore.
+    parse_skin_json(&minima(
+        r##", "parts": { "card": { "textColor": { "$token": "color.text.2" } } }"##,
+    ))
+    .expect("valida");
+}
+
+#[test]
+fn un_motivo_che_nella_variante_cambia_genere_sopra_un_altro_strato_si_rifiuta() {
+    // La regola della parte si scrive una volta sola: o `var(--skin-fondo)`
+    // nudo, o avvolto in un gradiente di un colore. Se il motivo è una tinta in
+    // un tema e un gradiente nell'altro, in uno dei due la pila non è CSS
+    // valido e il fondo intero sparisce senza un avviso.
+    let documento = |base: &str, variante: &str, pila: &str| {
+        minima(&format!(
+            r##", "patterns": {{ "fondo": {base} }},
+                "variant": {{ "patterns": {{ "fondo": {variante} }} }},
+                "parts": {{ "app-shell": {{ "background": {pila} }} }}"##
+        ))
+    };
+    let gradiente = r##"{ "effect": "linearGradient", "stops": [{ "color": "#000000" }, { "color": "#ffffff" }] }"##;
+    let tinta = r##"{ "effect": "solid", "color": "#f4efe6" }"##;
+    let sopra = r##"[{ "$pattern": "fondo" }, { "effect": "image", "src": "grana.webp" }]"##;
+
+    for (base, variante) in [(gradiente, tinta), (tinta, gradiente)] {
+        let detto = messaggio(&documento(base, variante, sopra));
+        assert!(
+            detto.contains("parts.app-shell.background.0.$pattern"),
+            "{detto}"
+        );
+        assert!(detto.contains("«fondo»"), "{detto}");
+    }
+
+    // In fondo alla pila una tinta e un gradiente stanno tutti e due: passa.
+    let in_fondo = r##"[{ "effect": "image", "src": "grana.webp" }, { "$pattern": "fondo" }]"##;
+    parse_skin_json(&documento(gradiente, tinta, in_fondo)).expect("valida");
+    parse_skin_json(&documento(
+        tinta,
+        gradiente,
+        r##"[{ "$pattern": "fondo" }]"##,
+    ))
+    .expect("valida");
+}
+
+#[test]
+fn un_prefab_mai_dichiarato_dice_che_manca() {
+    // Senza `layout.prefabs` l'elenco è vuoto come dentro il corpo di un
+    // prefab, e il messaggio mandava a cercare un annidamento che non c'era.
+    let scafale = r##", "layout": { "shell": { "zone": "row", "children": [
+          { "widget": "navigation" }, { "prefab": "centro" }, { "widget": "player" }] } }"##;
+    for senza in [
+        scafale.to_owned(),
+        scafale.replace("\"shell\"", "\"prefabs\": {}, \"shell\""),
+    ] {
+        let detto = messaggio(&minima(&senza));
+        assert!(detto.contains("layout.shell.children.1.prefab"), "{detto}");
+        assert!(detto.contains("prefab inesistente: «centro»"), "{detto}");
+        assert!(detto.contains("layout.prefabs"), "{detto}");
+        assert!(!detto.contains("non può contenerne un altro"), "{detto}");
+    }
+    // Dentro un prefab il divieto resta quello.
+    let annidato = minima(
+        r##", "layout": { "prefabs": {
+              "centro": { "zone": "column", "children": [{ "prefab": "altro" }, { "widget": "content" }] } } }"##,
+    );
+    assert!(messaggio(&annidato).contains("non può contenerne un altro"));
+}
+
+#[test]
+fn una_lunghezza_negativa_dove_il_css_non_la_ammette_si_rifiuta() {
+    // Il motore scarta `border-radius: -8px`, `blur(-12px)`, una sfocatura
+    // d'ombra negativa: la parte restava com'era, senza un avviso.
+    for (dove, percorso) in [
+        (r##""radius": "-8px""##, "parts.card.radius"),
+        (
+            r##""radius": { "topLeft": "-2px" }"##,
+            "parts.card.radius.topLeft",
+        ),
+        (r##""borderWidth": "-1px""##, "parts.card.borderWidth"),
+        (
+            r##""shadow": { "layers": [{ "x": "0px", "y": "2px", "blur": "-4px", "color": "#000000" }] }"##,
+            "parts.card.shadow.layers.0.blur",
+        ),
+        (
+            r##""backdrop": { "effect": "blurBehind", "radius": "-12px" }"##,
+            "parts.card.backdrop.radius",
+        ),
+        (
+            r##""filter": [{ "dropShadow": { "x": "0px", "y": "1px", "blur": "-3px", "color": "#000000" } }]"##,
+            "parts.card.filter.0.dropShadow.blur",
+        ),
+        (
+            r##""background": [{ "effect": "hairlineGrid", "color": "#ffffff", "cell": "-24px" }]"##,
+            "parts.card.background.0.cell",
+        ),
+        (
+            r##""background": [{ "effect": "dotGrid", "color": "#ffffff", "spacing": "12px", "dot": "-1px" }]"##,
+            "parts.card.background.0.dot",
+        ),
+    ] {
+        let detto = messaggio(&minima(&format!(
+            r##", "parts": {{ "card": {{ {dove} }} }}"##
+        )));
+        assert!(detto.contains(percorso), "{dove}: {detto}");
+        assert!(detto.contains("negativ"), "{dove}: {detto}");
+    }
+    // Spostamenti ed espansione dell'ombra restano liberi: le skin di serie
+    // scrivono `spread: -2px`.
+    parse_skin_json(&minima(
+        r##", "parts": { "card": { "shadow": { "layers": [
+              { "x": "-1px", "y": "-2px", "blur": "0px", "spread": "-2px", "color": "#000000" }] } } }"##,
+    ))
+    .expect("valida");
+}
+
+#[test]
+fn l_offset_dell_anello_si_misura_in_pixel() {
+    // `10rem` sono 160 pixel: il numero nudo, 10, stava sotto il 12.
+    let anello = |offset: &str| {
+        minima(&format!(
+            r##", "parts": {{ "card": {{ "focusRing": {{ "color": "#ffffff", "width": "2px", "offset": "{offset}" }} }} }}"##
+        ))
+    };
+    for troppo in ["1rem", "10rem", "-0.8rem", "13px"] {
+        let detto = messaggio(&anello(troppo));
+        assert!(detto.contains("va fra -12px e 12px"), "{troppo}: {detto}");
+    }
+    for giusto in ["0.5rem", "-12px", "12px", "0px"] {
+        parse_skin_json(&anello(giusto)).unwrap_or_else(|e| panic!("{giusto}: {e:?}"));
+    }
+}
+
+#[test]
+fn un_colore_della_tavolozza_inesistente_riceve_un_suggerimento() {
+    // `var(--skin-color-cian)` non esiste: il testo ereditava, un fondo
+    // diventava trasparente, e il contrasto saltava la coppia in silenzio.
+    let detto = messaggio(&minima(
+        r##", "palette": { "ciano": "#00f0ff" },
+            "parts": { "card": { "textColor": { "$palette": "cian" } } }"##,
+    ));
+    assert!(detto.contains("parts.card.textColor.$palette"), "{detto}");
+    assert!(detto.contains("«cian»"), "{detto}");
+    assert!(detto.contains("«ciano»"), "{detto}");
+
+    // Ovunque stia un colore: la variante, un fotogramma, un motivo.
+    for dove in [
+        r##", "variant": { "tokens": { "color.text.1": { "$palette": "blu" } } }"##,
+        r##", "motion": { "animations": { "a": { "duration": "200ms",
+               "frames": [{ "at": 0, "color": { "$palette": "blu" } }, { "at": 100, "opacity": 1 }] } } }"##,
+        r##", "patterns": { "m": { "effect": "solid", "color": { "$palette": "blu", "alpha": 0.5 } } }"##,
+    ] {
+        let detto = messaggio(&minima(&format!(
+            r##", "palette": {{ "ciano": "#00f0ff" }}{dove}"##
+        )));
+        assert!(detto.contains("«blu»"), "{dove}: {detto}");
+    }
+
+    // Un nome che c'è passa.
+    parse_skin_json(&minima(
+        r##", "palette": { "ciano": "#00f0ff" },
+            "parts": { "card": { "textColor": { "$palette": "ciano" } } }"##,
+    ))
+    .expect("valida");
+}
+
+#[test]
+fn l_accento_non_segue_la_copertina_con_una_sorgente() {
+    // Le sorgenti della copertina puntano proprio all'accento: un accento
+    // scritto come sorgente diventava `--accent: var(--accent)`, un ciclo, e il
+    // runtime non lo riscriveva mai. La strada è `capabilities.dynamicAccent`.
+    let detto =
+        messaggio(&minima("").replace("\"#8b7cf6\"", r##"{ "$source": "albumArt.vibrant" }"##));
+    assert!(detto.contains("color.accent"), "{detto}");
+    assert!(detto.contains("dynamicAccent"), "{detto}");
+    // Ogni altro token può seguirla.
+    parse_skin_json(&minima("").replace(
+        "\"color.accent\": \"#8b7cf6\"",
+        r##""color.accent": "#8b7cf6", "color.hero": { "$source": "albumArt.vibrant" }"##,
+    ))
+    .expect("valida");
 }
 
 #[test]

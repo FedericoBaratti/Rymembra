@@ -968,11 +968,22 @@ fn applica_brani(tx: &Transaction<'_>, cambi: &[TrackChange]) -> Result<usize, A
     if cambi.is_empty() {
         return Ok(0);
     }
+    // `rating_at` con il voto, o la sincronia non lo vede: [`crate::sincronia`]
+    // pubblica un voto con la **sua** data, e lo sovrascrive con uno remoto più
+    // recente di quella. Un voto ripristinato che si tenesse la data di prima —
+    // o NULL, su un PC reinstallato — perdeva contro un voto più vecchio di un
+    // altro dispositivo, o non veniva pubblicato affatto. La data è
+    // `stats_updated_at`, lo stesso orologio con cui `merge_stats` ha scelto il
+    // voto e con cui la migrazione 009 ha datato quelli esistenti; e solo se il
+    // voto cambia (nel `SET` di SQLite `rating` è ancora quello di prima), o se
+    // un voto c'è e una data no.
     let mut aggiorna = tx
         .prepare(
             "UPDATE tracks
              SET play_count = ?2, last_played_at = ?3, rating = ?4, liked = ?5,
-                 liked_at = ?6, stats_updated_at = ?7
+                 liked_at = ?6, stats_updated_at = ?7,
+                 rating_at = CASE WHEN rating <> ?4 OR (rating_at IS NULL AND ?4 > 0)
+                                  THEN ?7 ELSE rating_at END
              WHERE track_key = ?1",
         )
         .map_err(|err| db_error("statistiche ripristinate", &err))?;
@@ -1100,6 +1111,13 @@ fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<us
 ///
 /// In coda e senza togliere niente: quelle già scelte restano prime, perché
 /// sono la scelta che l'utente ha fatto su **questo** computer.
+///
+/// Le cartelle del cloud (`nuvola://…`) entrano **come sono**, ed è voluto: il
+/// conto nel percorso è un'impronta dell'account, la stessa su ogni PC che lo
+/// collega. Su un computer dove quell'account non è collegato la radice c'è e
+/// non risponde — la scansione la salta come un disco staccato, senza togliere
+/// niente — finché qualcuno non la ricollega. Lo specchio del servizio, invece,
+/// nel backup non c'è: vedi la migrazione 036.
 fn applica_cartelle(tx: &Transaction<'_>, da_aggiungere: &[RootToAdd]) -> Result<usize, AppError> {
     if da_aggiungere.is_empty() {
         return Ok(0);
@@ -1594,6 +1612,100 @@ mod prove {
     }
 
     #[test]
+    fn un_voto_ripristinato_porta_la_sua_data() {
+        // Il backup ha un voto deciso dopo quello di qui. Senza la sua data il
+        // voto ripristinato si teneva `rating_at` vecchio — o NULL su un PC
+        // reinstallato — e la sincronia lo pubblicava con quella data, o non lo
+        // pubblicava affatto: un voto più vecchio di un altro dispositivo lo
+        // riscriveva.
+        let connection = libreria();
+        statistica(
+            &connection,
+            1,
+            "rating = 2, rating_at = 5000, stats_updated_at = 5000",
+        );
+        statistica(&connection, 2, "stats_updated_at = 100");
+        let contenuto = Contenuto {
+            tracks: vec![
+                BranoSalvato {
+                    key: "art|uno|al".to_owned(),
+                    rating: 4,
+                    stats_updated_at: 9000,
+                    ..BranoSalvato::default()
+                },
+                BranoSalvato {
+                    key: "art|due|al".to_owned(),
+                    rating: 3,
+                    stats_updated_at: 8000,
+                    ..BranoSalvato::default()
+                },
+            ],
+            ..Contenuto::default()
+        };
+        let mut connection = connection;
+        let qui = stato_locale(&connection).expect("stato");
+        let piano = pianifica(&qui, &dal_salvataggio(&contenuto, &qui.tombstones));
+        applica(&mut connection, &piano).expect("applicato");
+
+        let data = |id: i64| -> (i64, Option<i64>) {
+            connection
+                .query_row(
+                    "SELECT rating, rating_at FROM tracks WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("voto")
+        };
+        assert_eq!(data(1), (4, Some(9000)));
+        assert_eq!(
+            data(2),
+            (3, Some(8000)),
+            "anche dove prima non c'era una data"
+        );
+
+        let documento =
+            crate::sincronia::contenuto(&connection, "qui", BTreeMap::new(), BTreeMap::new())
+                .expect("documento");
+        assert_eq!(
+            documento.voti.get("art|uno|al"),
+            Some(&rymembra_sync::Voto { v: 4, at: 9000 })
+        );
+    }
+
+    #[test]
+    fn una_playlist_rinominata_qui_non_torna_dal_backup_col_nome_di_prima() {
+        // Il backup su Drive ha ancora «serata», salvata prima del rinomino:
+        // senza la lapide della chiave vecchia il ripristino la rimetterebbe
+        // accanto a «Serata estate».
+        let connection = libreria();
+        let prima = crate::playlists::create(&connection, "Serata").expect("creata");
+        crate::playlists::rename(&connection, prima.id, "Serata estate").expect("rinominata");
+        let contenuto = Contenuto {
+            playlists: vec![PlaylistSalvata {
+                key: prima.key.clone(),
+                name: "Serata".to_owned(),
+                updated_at: prima.updated_at,
+                ..PlaylistSalvata::default()
+            }],
+            ..Contenuto::default()
+        };
+        let qui = stato_locale(&connection).expect("stato");
+        let dal_backup = dal_salvataggio(&contenuto, &qui.tombstones);
+        assert!(
+            dal_backup.playlists.is_empty(),
+            "il nome vecchio è sepolto: {:?}",
+            dal_backup.playlists
+        );
+        // E il salvataggio successivo porta la lapide, così anche il file su
+        // Drive smette di proporla.
+        let fuso = fondi(
+            &snapshot(&qui, BTreeMap::new(), BTreeMap::new()),
+            &contenuto,
+        );
+        assert!(fuso.playlists.iter().all(|p| p.key != prima.key));
+    }
+
+    #[test]
     fn ricreare_una_playlist_toglie_la_sua_lapide() {
         // Altrimenti il salvataggio successivo spedirebbe insieme la playlist e
         // la notizia della sua cancellazione, e l'altro dispositivo non saprebbe
@@ -1645,6 +1757,33 @@ mod prove {
             ["C:\\Musica".to_owned(), "D:\\Archivio".to_owned()],
             "la scelta di qui resta prima, e la cartella già presente non si ripete"
         );
+    }
+
+    #[test]
+    fn le_cartelle_del_cloud_viaggiano_come_sono() {
+        // Nel salvataggio, e indietro nel ripristino: nessuna risoluzione, nessun
+        // controllo sul disco — il conto è lo stesso su ogni PC.
+        let connection = libreria();
+        let nuvola = "nuvola://onedrive-abcdefgh/Musica%7CRock";
+        settings::write_json(&connection, CHIAVE_CARTELLE, &vec!["C:\\Musica", nuvola])
+            .expect("cartelle");
+        let qui = stato_locale(&connection).expect("stato");
+        assert!(qui.roots.iter().any(|r| r == nuvola));
+
+        let altro = libreria();
+        settings::write_json(&altro, CHIAVE_CARTELLE, &vec!["D:\\Altro"]).expect("cartelle");
+        let contenuto = Contenuto {
+            roots: qui.roots.clone(),
+            ..Contenuto::default()
+        };
+        let la = stato_locale(&altro).expect("stato");
+        let piano = pianifica(&la, &dal_salvataggio(&contenuto, &la.tombstones));
+        let mut altro = altro;
+        applica(&mut altro, &piano).expect("applicato");
+        let cartelle: Vec<String> = settings::read_json(&altro, CHIAVE_CARTELLE)
+            .expect("lette")
+            .unwrap_or_default();
+        assert_eq!(cartelle, ["D:\\Altro", "C:\\Musica", nuvola]);
     }
 
     #[test]
@@ -1775,6 +1914,32 @@ mod prove {
             "insieme",
         ] {
             assert!(!testo.contains(segreto), "«{segreto}» andrebbe su Drive");
+        }
+    }
+
+    #[test]
+    fn lo_specchio_del_cloud_non_va_su_drive() {
+        // Lo specchio è una cache di questo PC (migrazione 036): su un altro
+        // si rielenca, e una fotografia vecchia direbbe che ci sono file che
+        // il servizio ha tolto. Il backup ha una forma fissa, e questa prova
+        // lo tiene vero anche il giorno in cui la forma cresce.
+        let connection = libreria();
+        statistica(&connection, 1, "play_count = 3");
+        let segreti = crate::nuvola::specchio_da_non_portare(&connection);
+        let qui = stato_locale(&connection).expect("stato locale");
+        let bytes = serializza(&Salvataggio::nuovo(
+            snapshot(&qui, BTreeMap::new(), BTreeMap::new()),
+            1_700_000_000_000,
+            "prova".into(),
+        ))
+        .expect("serializzato");
+        let testo = String::from_utf8(bytes).expect("JSON");
+        assert!(testo.contains("art|uno|al"), "il backup c'è");
+        for segreto in &segreti {
+            assert!(
+                !testo.contains(segreto.as_str()),
+                "«{segreto}» andrebbe su Drive"
+            );
         }
     }
 

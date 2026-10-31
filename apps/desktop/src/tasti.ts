@@ -24,6 +24,18 @@
  * `Minus` — farebbe `Ctrl+-` e rimpicciolirebbe la finestra a chi voleva
  * scrivere un apostrofo. Il carattere ASCII si prende sempre per quel che è.
  *
+ * # E Maiusc già speso
+ *
+ * Su una tastiera italiana, tedesca o spagnola «/» è Maiusc+7, e su una
+ * francese Maiusc sul tasto dei due punti: il carattere arriva già fatto, ma
+ * con `shiftKey` vero, quindi come `Shift+/`. La `/` di serie della ricerca —
+ * quella che il giro guidato promette — non partiva per nessuno di loro.
+ * Quando Maiusc ha prodotto un segno che non è una lettera, la pressione si
+ * cerca **anche** senza `Shift`, in coda: il nome con `Shift` resta primo, e
+ * un accordo assegnato a mano vince ancora. Non per le lettere — Maiusc+F è
+ * un accordo suo, non una F — e non per lo spazio: Maiusc+Spazio diventerebbe
+ * Spazio, cioè pausa.
+ *
  * # Perché un modulo a parte
  *
  * Perché è puro, e si prova: `tastiera.ts` legge le lingue, che fuori da Vite
@@ -103,18 +115,33 @@ export function tastoDallaPosizione(e: Pressione): string | null {
 }
 
 /**
+ * Il nome senza `Shift`, quando Maiusc è servito a fare il segno e non è un
+ * modificatore: vedi «E Maiusc già speso». `null` per le lettere, lo spazio,
+ * i tasti con un nome (`ArrowUp`, `F11`) e quando Maiusc non c'era.
+ */
+export function tastoSenzaMaiusc(e: Pressione): string | null {
+  if (!e.shiftKey || e.key.length !== 1 || e.key === " ") return null;
+  if (e.key.toLowerCase() !== e.key.toUpperCase()) return null;
+  return tastoDi({ ...e, shiftKey: false });
+}
+
+/**
  * I nomi con cui cercare questa pressione fra le associazioni, in ordine.
  *
- * Prima il carattere, poi — se c'è — la posizione. Chi cerca prende il primo
- * che trova: una tastiera latina non arriva mai al secondo.
+ * Prima il carattere, poi — se c'è — la posizione, e in coda il nome senza un
+ * Maiusc già speso nel segno (`tastoSenzaMaiusc`). Chi cerca prende il primo
+ * che trova: una tastiera latina non arriva mai alla posizione, e un accordo
+ * con `Shift` assegnato a mano vince sul segno nudo.
  */
 export function nomiDi(e: Pressione): string[] {
   const dalCarattere = tastoDi(e);
   if (dalCarattere === null) return [];
+  const nomi = [dalCarattere];
   const dallaPosizione = tastoDallaPosizione(e);
-  return dallaPosizione === null || dallaPosizione === dalCarattere
-    ? [dalCarattere]
-    : [dalCarattere, dallaPosizione];
+  if (dallaPosizione !== null && dallaPosizione !== dalCarattere) nomi.push(dallaPosizione);
+  const senzaMaiusc = tastoSenzaMaiusc(e);
+  if (senzaMaiusc !== null && !nomi.includes(senzaMaiusc)) nomi.push(senzaMaiusc);
+  return nomi;
 }
 
 /**
@@ -128,4 +155,63 @@ export function eLaLettera(e: Pressione, lettera: string): boolean {
   if (e.key.toLowerCase() === lettera) return true;
   if (e.key.length === 1 && /^[\x20-\x7e]$/.test(e.key)) return false;
   return carattereDellaPosizione(e.code) === lettera;
+}
+
+/**
+ * I comandi che un tasto tenuto premuto ripete.
+ *
+ * Windows ripete il `keydown` dopo circa mezzo secondo, poi una trentina di
+ * volte al secondo, con `e.repeat` vero. Per i passi è quel che si vuole —
+ * tenere → per scorrere il brano di cinque secondi in cinque, tenere
+ * Ctrl+↑ per alzare il volume, tenere Ctrl++ per ingrandire — e per tutto il
+ * resto no: Spazio tenuto un attimo di troppo alternava pausa e ripresa
+ * finendo a caso, F11 entrava e usciva dallo schermo intero (un comando IPC
+ * per ripetizione), «m» e «f» facevano lo stesso, e Ctrl+→ tenuto saltava
+ * mezza coda. Un elenco di quelli che si ripetono e non di quelli che no: un
+ * comando nuovo parte come gesto singolo, che è il caso innocuo.
+ *
+ * I nomi sono quelli di `Comando` in `tastiera.ts`, scritti come stringhe per
+ * non far dipendere questo modulo da quello (che carica le lingue).
+ */
+const SI_RIPETONO: ReadonlySet<string> = new Set([
+  "avanti",
+  "indietro",
+  "volumeSu",
+  "volumeGiu",
+  "ingrandisci",
+  "rimpicciolisci",
+]);
+
+/** Questo comando si ripete tenendo premuto il suo tasto? */
+export function siRipete(comando: string): boolean {
+  return SI_RIPETONO.has(comando);
+}
+
+/**
+ * Di quanto si sposta la posizione nel brano con una freccia: le scorciatoie
+ * globali ← e → (`tastiera.ts`) e le frecce sul cursore della posizione
+ * (`Scrubber`). Un numero solo, perché sono lo stesso gesto.
+ */
+export const PASSO_FRECCIA_MS = 5_000;
+
+/**
+ * Dove porta una freccia premuta sul cursore della posizione, o `null` se il
+ * tasto non è una freccia.
+ *
+ * Col fuoco sul cursore le scorciatoie ← e → non valgono — le frecce restano
+ * al `range` (`vuoleIlTasto`) — e il passo nativo era lo `step` del cursore,
+ * un quarto di secondo: centoventi pressioni per trenta secondi, e chi arriva
+ * al cursore col Tab non aveva un modo pratico di muoversi nel brano. Qui le
+ * frecce saltano di [`PASSO_FRECCIA_MS`], dentro `[0, durata]`; Inizio, Fine e
+ * Pag↑/Pag↓ restano al cursore, che li sa fare da sé.
+ */
+export function passoFreccia(tasto: string, posizioneMs: number, durataMs: number): number | null {
+  const verso =
+    tasto === "ArrowRight" || tasto === "ArrowUp"
+      ? 1
+      : tasto === "ArrowLeft" || tasto === "ArrowDown"
+        ? -1
+        : 0;
+  if (verso === 0) return null;
+  return Math.min(Math.max(posizioneMs + verso * PASSO_FRECCIA_MS, 0), Math.max(durataMs, 0));
 }

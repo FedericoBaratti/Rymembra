@@ -25,11 +25,11 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, adesso_ms, con_libreria_entro};
 
-use super::coda::{scegli_da_solo, scrivi_coda};
+use super::coda::{salva_coda, scegli_da_solo, scrivi_coda};
 use super::{
     AVANZAMENTO_MINIMO_MS, BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO,
-    PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Strada, Tempo, annota_ripresa,
-    aspetta_il_seguito, brano_di, con_lettore, guasto_di, insieme, manda_stato, ospiti,
+    PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Strada, Tempo, annota_ripresa, aspetta_le_file,
+    brano_di, chiudi_ascolto, con_lettore, da_scrivere, guasto_di, insieme, manda_stato, ospiti,
     presa_spettro_se_libera, strada,
 };
 
@@ -42,16 +42,23 @@ use super::{
 ///
 /// # Perché questa funzione non apre più niente
 ///
-/// Perché viene chiamata anche **dall'osservatore**, cioè dal filo della
-/// decodifica: il ramo `Evento::Iniziato` di [`su_evento`](super::su_evento) la
-/// invoca a ogni cambio di traccia. Aprire là dentro voleva dire fermare il
-/// filo che riempie l'anello per tutta la durata dell'apertura — fino ai cinque
-/// secondi della scadenza, su una share che risponde male — contro una riserva
-/// che a 48 kHz stereo vale poco più di tre secondi. Cioè un buco udibile, a
-/// ogni cambio di traccia, proprio quando la rete è già in difficoltà.
+/// Perché viene chiamata con il **lucchetto del lettore in mano**: da ogni
+/// gesto sulla coda, e dall'osservatore degli eventi — il ramo
+/// `Evento::Iniziato` di [`su_evento`](super::su_evento), a ogni cambio di
+/// traccia — che gira sul filo «rymembra-eventi» del motore e tiene il
+/// lucchetto per tutto il suo lavoro. Aprire un file qui dentro vorrebbe dire
+/// tenerlo chiuso per tutta l'apertura — fino ai cinque secondi della scadenza,
+/// su una share che risponde male — e con lui la pausa, l'orologio e gli
+/// annunci che vengono dopo. È la regola di tutto il modulo: nessuna attesa
+/// con il lucchetto in mano.
+///
+/// La ragione di una volta non vale più, ed è bene saperlo cercando un buco nel
+/// gapless: l'osservatore girava sul filo della decodifica, e un'apertura lì
+/// toglieva campioni all'anello. Da quando gli annunci viaggiano su
+/// «rymembra-eventi» il filo della decodifica non apre niente in nessun caso.
 ///
 /// Adesso è una **spinta**: si manda un colpetto sul canale e si torna subito.
-/// Il lavoro vero lo fa il filo di [`avvia_preparatore`].
+/// Il lavoro vero lo fa il filo di [`avvia_preparatore`], a lucchetto lasciato.
 pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
     // Il successivo in canna che non è più il brano dopo esce **adesso**, non
     // quando il preparatore avrà aperto quello nuovo: fino ad allora il motore
@@ -106,9 +113,11 @@ const FILO_SPETTRO: &str = "rymembra-spettro";
 
 /// Il filo che apre il brano successivo.
 ///
-/// Esiste per una ragione sola: **togliere l'apertura di un file dal filo della
-/// decodifica**, dove stava perché l'osservatore ci gira sopra. Il perché per
-/// esteso è in [`prepara_prossimo`].
+/// Esiste per una ragione sola: **aprire il brano dopo a lucchetto lasciato**.
+/// Chi lo chiede — un gesto sulla coda, l'osservatore degli eventi che gira su
+/// «rymembra-eventi» — ha il lucchetto del lettore in mano, e aprire lì vorrebbe
+/// dire tenerlo chiuso per tutta l'apertura: vedi i tre tempi di
+/// [`prepara_prossimo_adesso`]. Il perché per esteso è in [`prepara_prossimo`].
 ///
 /// Modellato sugli altri fili di questo albero — `avvia_orologio`,
 /// `nuvola::avvia_filo`: un thread nominato, un canale, nessun runtime
@@ -153,13 +162,35 @@ pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Recei
     }
 }
 
+/// Accoda la scelta dell'autoplay, se la coda è ancora quella fotografata
+/// prima di scegliere: lo stesso corrente, nessun dopo, gli stessi brani. Dice
+/// se l'ha accodata.
+///
+/// Altrimenti chi l'ha cambiata nel frattempo ha già deciso lui cosa viene
+/// dopo, e la scelta si butta.
+fn accoda_la_scelta(
+    coda: &mut rymembra_domain::queue::Queue,
+    corrente: i64,
+    esclusi: &[i64],
+    scelta: i64,
+) -> bool {
+    if coda.current() != Some(corrente)
+        || coda.peek_next().is_some()
+        || coda.in_play_order() != esclusi
+    {
+        return false;
+    }
+    coda.enqueue(&[scelta]);
+    true
+}
+
 /// Sceglie, apre e consegna il brano successivo. Gira sul filo del preparatore.
 ///
 /// Tre tempi, e la divisione è tutto il punto: **decidere** vuole il lucchetto e
 /// dura microsecondi, **aprire** non lo vuole e può durare secondi, **consegnare**
 /// lo rivuole e dura di nuovo microsecondi. Tenerli insieme vorrebbe dire il
 /// lucchetto del lettore in mano per tutta l'apertura — e allora tanto varrebbe
-/// essere rimasti sul filo della decodifica.
+/// aprire dall'osservatore degli eventi, che il lucchetto ce l'ha già.
 ///
 /// # Quando il brano dopo è un flusso
 ///
@@ -208,12 +239,15 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         && let Some(scelta) = scegli_da_solo(app, corrente, &esclusi)
     {
         let _ = con_lettore(&stato, |lettore| {
-            if lettore.coda.current() == Some(corrente)
-                && lettore.coda.peek_next().is_none()
-                && lettore.coda.in_play_order() == esclusi
-            {
-                lettore.coda.enqueue(&[scelta.id]);
+            if accoda_la_scelta(&mut lettore.coda, corrente, &esclusi, scelta.id) {
                 lettore.motivo_prossimo = Some((scelta.id, scelta.motivo.codice()));
+                // La coda è cambiata, e lo dice come ogni altro gesto: la
+                // finestra vede coda e «perché» solo dallo stato, e senza il
+                // salvataggio la scelta non arrivava sul disco uscendo
+                // durante l'ultimo brano. In sessione l'autoplay tace, quindi
+                // agli altri PC non parte niente di nuovo.
+                salva_coda(app, lettore);
+                manda_stato(app, lettore);
             }
             Ok(())
         });
@@ -285,8 +319,11 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
     let brano = match brano_di(app, id, formato) {
         Ok(brano) => brano,
         Err(err) => {
-            // Si dice adesso, mentre il corrente suona ancora, invece di
-            // scoprirlo nel silenzio fra i due.
+            // Nel diario e basta, non nella fascia: alla fine del corrente il
+            // brano si riprova, e se non si apre ancora si salta con un avviso
+            // o ci si ferma con l'errore — vedi `riprova_o_salta`. Dirlo qui,
+            // minuti prima, lasciava in vista un guasto che il secondo
+            // tentativo aveva già risolto.
             //
             // **Senza** annotare una ripresa, al contrario di quel che si fa
             // quando la rete cade a brano avviato: qui non si è interrotto
@@ -310,7 +347,6 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
                 }
                 Ok(())
             });
-            app.emetti("riproduzione:errore", crate::errore::errore(err));
             return;
         }
     };
@@ -642,14 +678,56 @@ const ATTESA_USCENDO: Duration = Duration::from_millis(400);
 /// Con [`ATTESA_USCENDO`] e non con l'attesa dell'orologio: vedi «Perché il
 /// lucchetto ha una scadenza» su [`salva_quel_che_manca`].
 ///
-/// Prima, però, si lascia finire il filo del seguito — con la stessa scadenza:
-/// là dentro possono esserci gli ascolti chiusi un istante prima di uscire, e
-/// un ascolto finito che non arriva sul disco è una canzone che non conta.
+/// Prima, però, si lasciano finire il filo del seguito e quello delle
+/// scritture — insieme, entro la stessa scadenza: là dentro possono esserci gli
+/// ascolti chiusi un istante prima di uscire, e un ascolto finito che non
+/// arriva sul disco è una canzone che non conta. Una scadenza sola per le due
+/// file, e non una per fila, perché l'attesa all'uscita è corta apposta.
 pub fn salva_uscendo(app: &tauri::AppHandle) {
     if let Some(stato) = app.try_state::<StatoLettore>() {
-        aspetta_il_seguito(app, ATTESA_USCENDO);
+        let fine = std::time::Instant::now() + ATTESA_USCENDO;
+        chiudi_uscendo(app, &stato);
+        aspetta_le_file(app, fine);
         salva_quel_che_manca(app, &stato, ATTESA_USCENDO);
     }
+}
+
+/// L'ascolto in corso e il segno di «riprendi dov'eri», all'uscita.
+///
+/// Prima nessuno dei due: l'ascolto si chiudeva solo a un cambio di brano, e
+/// tre minuti e mezzo di una canzone di quattro, poi «Esci» — o «Aggiorna», o
+/// la fine della sessione di Windows — non contavano e non andavano a Last.fm.
+/// Il segno lo scrive l'orologio ogni cinque secondi e solo mentre suona: un
+/// cursore spostato in pausa, poi l'uscita, faceva ripartire domani dal punto
+/// di prima.
+///
+/// Le scritture vanno sul filo delle scritture, come sempre sotto questo
+/// lucchetto — dietro l'ascolto appena chiuso e un eventuale segno a zero, che
+/// così non passano davanti a questa posizione — e [`salva_uscendo`] le aspetta
+/// subito dopo. Il segno solo per una
+/// riga della libreria che la coda indica: mai una maniglia di sessione — il
+/// segno è di domani, e domani la sessione non c'è più. Ripetibile: la seconda
+/// chiamata trova l'ascolto già chiuso, e riscrive lo stesso segno.
+fn chiudi_uscendo(app: &tauri::AppHandle, stato: &StatoLettore) {
+    let segno = con_lettore(stato, |lettore| {
+        chiudi_ascolto(app, lettore);
+        let posizione = lettore.motore.posizione();
+        let corrente = lettore.coda.current();
+        Ok(posizione
+            .track_id
+            .filter(|id| ospiti::e_di_libreria(*id) && corrente == Some(*id))
+            .map(|id| (id, posizione.ms)))
+    });
+    let Ok(Some((brano, ms))) = segno else {
+        return;
+    };
+    da_scrivere(app, move |app| {
+        if let Some(stato_app) = app.try_state::<Stato>() {
+            let _ = con_libreria_entro(&stato_app, ATTESA_USCENDO, |libreria| {
+                playback::save_posizione(&libreria.connection, brano, ms)
+            });
+        }
+    });
 }
 
 /// Avvia il filo che manda la posizione alla finestra.
@@ -792,6 +870,12 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     scade_il_timer(app, &stato_lettore);
 
     let letto = con_lettore(&stato_lettore, |lettore| {
+        // Il battito dell'ascolto: questo filo è vivo e la musica va. Un buco
+        // lungo fra due battiti è un PC che dormiva, e non si conta — vedi «Il
+        // sonno» su `ListenTracker`. Da fermo il battito non fa niente.
+        if let Some(ascolto) = lettore.ascolto.as_mut() {
+            ascolto.battito(adesso_ms());
+        }
         let p = lettore.motore.posizione();
         // In sessione, fra una partenza programmata e il primo campione, il
         // motore dice ancora il punto del brano di prima: alla finestra va
@@ -1044,6 +1128,45 @@ mod prove {
     use std::time::Instant;
 
     const PASSO: Duration = Duration::from_millis(33);
+
+    /// La scelta dell'autoplay entra solo nella coda che si era fotografata,
+    /// e chi accoda lo sa: è la risposta che decide se lo stato parte.
+    #[test]
+    fn la_scelta_dell_autoplay_si_accoda_solo_sulla_coda_fotografata() {
+        let mut coda = rymembra_domain::queue::Queue::new();
+        coda.play_tracks(vec![1, 2], 1, 0);
+        let esclusi = coda.in_play_order();
+        assert!(accoda_la_scelta(&mut coda, 2, &esclusi, 9));
+        assert_eq!(coda.peek_next(), Some(9));
+        // Adesso un dopo c'è: una seconda scelta non entra, e non si dice.
+        assert!(!accoda_la_scelta(&mut coda, 2, &esclusi, 8));
+        // Il corrente è cambiato nel frattempo: chi l'ha cambiato ha deciso.
+        let mut altra = rymembra_domain::queue::Queue::new();
+        altra.play_tracks(vec![1, 3], 1, 0);
+        assert!(!accoda_la_scelta(&mut altra, 2, &esclusi, 9));
+        assert_eq!(altra.peek_next(), None);
+    }
+
+    /// Una scelta accodata senza mandare lo stato non si vede: la finestra
+    /// aggiorna coda e «perché» solo da `riproduzione:stato`, e il pannello
+    /// restava senza il brano dopo per tutto l'ultimo brano. E la coda non si
+    /// salvava: uscendo in quel momento la scelta non arrivava sul disco.
+    #[test]
+    fn l_autoplay_che_accoda_manda_lo_stato_e_salva_la_coda() {
+        let codice = include_str!("fili.rs");
+        let codice = codice.split("\n#[cfg(test)]").next().unwrap_or(codice);
+        let inizio = codice
+            .find("fn prepara_prossimo_adesso(")
+            .expect("il preparatore c'è");
+        let passo_zero = &codice[inizio..];
+        let accoda = passo_zero
+            .find("accoda_la_scelta(&mut lettore.coda")
+            .expect("il passo zero accoda passando dalla regola");
+        let dopo = &passo_zero[accoda..];
+        let ramo = &dopo[..dopo.find("Ok(())").expect("la chiusura finisce")];
+        assert!(ramo.contains("salva_coda("), "la coda non si salva: {ramo}");
+        assert!(ramo.contains("manda_stato("), "lo stato non parte: {ramo}");
+    }
 
     #[test]
     fn la_cadenza_non_deriva_col_lavoro() {

@@ -81,8 +81,13 @@ pub const LOTTO: usize = 64;
 ///
 /// Un mese, come `RITENTA_NESSUNO_MS` dell'arricchimento: un file che non si
 /// decodifica è una proprietà del file, e le proprietà dei file cambiano piano.
-/// Chi ricodifica un brano passa comunque da una scansione, che è l'altro modo
-/// in cui una riga torna in coda.
+///
+/// Un file ricodificato sotto lo stesso percorso tiene la riga di prima — la
+/// scansione riscrive la riga del brano, non la sua impronta: se era fallita
+/// si ritenta allo scadere di questo mese, se era riuscita resta fino al
+/// cambio di versione dell'estrattore (vedi la migrazione 017). Solo un
+/// percorso nuovo — un'altra estensione, un altro nome — fa una riga nuova,
+/// che entra subito in coda.
 pub const RITENTA_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Sotto quanti brani con impronta non si calcola una scala.
@@ -143,12 +148,21 @@ pub const OK: &str = "ok";
 /// l'impronta è quella del brano, non dell'immagine intera. Resta fuori solo la
 /// riga d'immagine che non dice dove il brano comincia, come in
 /// `intensita::candidato_where`.
-const fn candidato_where() -> &'static str {
-    "t.path IS NOT NULL
-     AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
-     AND (i.track_id IS NULL
-          OR i.versione <> ?1
-          OR (i.vettore IS NULL AND i.esito <> 'muto' AND i.tentato_at < ?2))"
+///
+/// Fuori anche i brani del cloud ([`crate::nuvola::FUORI_DALLA_NUVOLA`]): la
+/// regola «mentre suonano» vuole che non si scarichi mai niente apposta per
+/// misurare. Un brano del cloud si misura quando la cache ne ha una copia
+/// intera, e ci arriva per un'altra strada: [`scheda_per_id`].
+fn candidato_where() -> String {
+    format!(
+        "t.path IS NOT NULL
+         AND {}
+         AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
+         AND (i.track_id IS NULL
+              OR i.versione <> ?1
+              OR (i.vettore IS NULL AND i.esito <> 'muto' AND i.tentato_at < ?2))",
+        crate::nuvola::FUORI_DALLA_NUVOLA
+    )
 }
 
 /// Quanti brani aspettano ancora un'impronta.
@@ -272,9 +286,81 @@ pub fn misura(files: &dyn MusicFiles, scheda: &SchedaSorgente) -> Misurato {
     }
 }
 
+/// La scheda di **un** brano dato, se c'è ancora da misurarlo.
+///
+/// # A chi serve
+///
+/// Ai brani del cloud, che [`candidati`] tiene fuori: si misurano «mentre
+/// suonano», cioè quando la cache del cloud ne ha una copia intera, e non
+/// prima — scaricarli apposta per misurarli è la cosa che la regola esclude.
+/// Chi sa che una copia è completa (il desktop) chiede la scheda qui, la
+/// passa a [`misura`] con un [`MusicFiles`] che apre **quella copia** come un
+/// file locale, e scrive con [`registra`]: le stesse tre fasi di sempre, con
+/// il lucchetto preso solo nella prima e nell'ultima.
+///
+/// # Quando non c'è niente da fare
+///
+/// `None` per un brano che non c'è, che un file non l'ha (un catalogo), che è
+/// una riga d'immagine senza confini, o che un'impronta di questa versione ce
+/// l'ha già — o è muto, che non cambia. Un brano rimasto «illeggibile» si
+/// rimisura invece subito, senza aspettare il mese di [`RITENTA_MS`]: una copia
+/// intera appena arrivata è un fatto nuovo.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn scheda_per_id(
+    connection: &Connection,
+    track_id: i64,
+) -> Result<Option<SchedaSorgente>, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let scheda = connection
+        .query_row(
+            "SELECT t.path, t.duration_ms, t.replaygain_track_db,
+                    t.immagine, t.inizio_cd, t.fine_cd
+               FROM tracks t
+               LEFT JOIN track_impronta i ON i.track_id = t.id
+              WHERE t.id = ?1
+                AND t.path IS NOT NULL
+                AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
+                AND (i.track_id IS NULL
+                     OR i.versione <> ?2
+                     OR (i.vettore IS NULL AND i.esito <> 'muto'))",
+            rusqlite::params![track_id, versione()],
+            |row| {
+                // Come in [`candidati`]: una riga d'immagine con dei confini
+                // che non stanno in un CD non ha una collocazione, e si salta.
+                let percorso: String = row.get(0)?;
+                let durata_ms: i64 = row.get(1)?;
+                let replaygain_db: Option<f64> = row.get(2)?;
+                let collocazione =
+                    collocazione_su_disco(&percorso, row.get(3)?, row.get(4)?, row.get(5)?);
+                Ok(collocazione.map(|collocazione| SchedaSorgente {
+                    track_id,
+                    collocazione,
+                    durata_ms,
+                    replaygain_db,
+                    picco: None,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|err| db_error("scheda di un brano da analizzare", &err))?;
+    Ok(scheda.flatten())
+}
+
 /// Come si legge un guasto: se sotto c'è la rete, non è colpa del brano.
+///
+/// E nemmeno se sotto c'è il cloud: una copia in cache che nel frattempo se
+/// n'è andata (`cloud.notInCache`), un conto scollegato, una quota finita.
+/// Segnarlo «illeggibile» vorrebbe dire non riprovarlo per un mese per un
+/// guasto che col file non c'entra.
 fn da_errore(track_id: i64, err: &AppError) -> Misurato {
-    if err.code().kind() == ErrorCodeKind::FsNetworkUnavailable {
+    let tipo = err.code().kind();
+    if tipo == ErrorCodeKind::FsNetworkUnavailable
+        || tipo == ErrorCodeKind::NetRateLimited
+        || tipo.domain() == rymembra_domain::errors::Domain::Cloud
+    {
         return Misurato::NonRaggiungibile;
     }
     Misurato::Negata {
@@ -927,6 +1013,124 @@ mod prove {
             replaygain_db: None,
             picco: None,
         }
+    }
+
+    // ── i brani del cloud: fuori dal giro, dentro per identificativo ──────────
+
+    const NUVOLOSO: &str = "nuvola://onedrive-abcdefgh/Musica/nuvoloso.wav";
+
+    /// Un WAV di tre secondi a 1 kHz, mezzo volume: abbastanza per una misura.
+    fn wav_sonoro(percorso: &std::path::Path) {
+        let campioni: Vec<i16> = (0..24_000_u32)
+            .map(|n| {
+                let t = f64::from(n) / 8_000.0;
+                let v = (t * 1_000.0 * std::f64::consts::TAU).sin() * 16_000.0;
+                // Sta in un i16: l'ampiezza è sedicimila.
+                #[expect(clippy::cast_possible_truncation, reason = "sta in un i16")]
+                let campione = v.round() as i16;
+                campione
+            })
+            .collect();
+        let dati = campioni.len() * 2;
+        let mut out = Vec::with_capacity(dati + 44);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&u32::try_from(dati + 36).expect("piccolo").to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&8_000u32.to_le_bytes());
+        out.extend_from_slice(&16_000u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&u32::try_from(dati).expect("piccolo").to_le_bytes());
+        for campione in campioni {
+            out.extend_from_slice(&campione.to_le_bytes());
+        }
+        std::fs::write(percorso, out).expect("scrittura del wav");
+    }
+
+    /// La cache del cloud vista dall'analisi: il percorso del brano apre la
+    /// copia intera su disco, se c'è; altrimenti `cloud.notInCache`.
+    struct CopiaInCache(Option<std::path::PathBuf>);
+
+    impl MusicFiles for CopiaInCache {
+        fn walk(&self, _root: &str) -> Result<crate::files::Camminata, AppError> {
+            Ok(crate::files::Camminata {
+                file: Vec::new(),
+                completa: true,
+            })
+        }
+        fn open(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn crate::files::ReadSeek + Send + Sync>, AppError> {
+            match self.0.as_ref() {
+                Some(copia) if path == NUVOLOSO => {
+                    crate::files::LocalFiles.open(&copia.display().to_string())
+                }
+                _ => Err(AppError::new(ErrorCode::CloudNotInCache)),
+            }
+        }
+    }
+
+    fn brano_del_cloud(connection: &Connection, id: i64) {
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (?1, ?2, 'kn', 'T', 'A', 'AL', 3000, 1, 1, 0)",
+                rusqlite::params![id, NUVOLOSO],
+            )
+            .expect("inserimento del brano del cloud");
+    }
+
+    #[test]
+    fn un_brano_del_cloud_non_e_un_candidato_ma_si_misura_dalla_copia() {
+        let mut connection = libreria();
+        brano(&connection, 1, 100);
+        brano_del_cloud(&connection, 2);
+        // Il giro dei candidati non lo vede: misurarlo vorrebbe dire scaricarlo.
+        assert_eq!(quanti_mancano(&connection, 0).expect("conteggio"), 1);
+        let ids: Vec<i64> = candidati(&connection, 0, 10)
+            .expect("candidati")
+            .iter()
+            .map(|c| c.track_id)
+            .collect();
+        assert_eq!(ids, [1]);
+
+        // Per identificativo sì, e la copia in cache si apre come un file.
+        let scheda = scheda_per_id(&connection, 2)
+            .expect("lettura")
+            .expect("da misurare");
+        assert_eq!(scheda.collocazione, Collocazione::File(NUVOLOSO.to_owned()));
+
+        // La copia non c'è (più): non è colpa del brano, e non si scrive niente.
+        let senza = misura(&CopiaInCache(None), &scheda);
+        assert_eq!(senza, Misurato::NonRaggiungibile);
+        let tx = connection.transaction().expect("transazione");
+        assert_eq!(registra(&tx, &[senza], 1_000).expect("registrazione"), 0);
+        tx.commit().expect("commit");
+
+        // C'è: si apre e si legge davvero. Tre secondi sono pochi per
+        // un'impronta, ma «corto» è una risposta del file, non della rete.
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let copia = cartella.path().join("copia.wav");
+        wav_sonoro(&copia);
+        let con = misura(&CopiaInCache(Some(copia)), &scheda);
+        assert!(
+            !matches!(
+                con,
+                Misurato::NonRaggiungibile
+                    | Misurato::Negata {
+                        esito: ILLEGGIBILE,
+                        ..
+                    }
+            ),
+            "{con:?}"
+        );
+        assert!(scheda_per_id(&connection, 99).expect("lettura").is_none());
     }
 
     #[test]

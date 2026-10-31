@@ -69,7 +69,9 @@
 //! abbastanza piccolo da stare in un repository. Il ramo è scritto secondo
 //! RFC 7845 § 5.1.1, e il riordino dei suoi canali secondo la stessa tabella
 //! che usa il decodificatore Vorbis di symphonia; provata è la tabella, non un
-//! file.
+//! file. Solo la ripartizione standard dei flussi, quella di libopus: un file
+//! che ne dichiara un'altra si rifiuta come non supportato, vedi
+//! `leggi_intestazione`.
 
 use opus_pure::{MAX_PACKET_SAMPLES, OpusDecoder, OpusMSDecoder, SoftClip};
 use symphonia::core::audio::{
@@ -205,7 +207,9 @@ enum Motore {
     /// Famiglia 0: un flusso solo, mono o stereo. È quel che scrivono i
     /// codificatori per la musica normale.
     Unico(Box<OpusDecoder>),
-    /// Famiglia 1: più flussi, ricomposti secondo la mappatura dichiarata.
+    /// Famiglia 1: più flussi, ricomposti secondo la tabella standard di
+    /// libopus — l'unica che la libreria sa usare. Una mappatura dichiarata
+    /// diversa non arriva fin qui: la rifiuta [`leggi_intestazione`].
     Molti(Box<OpusMSDecoder>),
 }
 
@@ -316,13 +320,40 @@ fn leggi_intestazione(testa: &[u8]) -> Result<Intestazione> {
                     .map_err(|_| Error::Unsupported("opus: decodificatore rifiutato"))?,
             ))
         }
-        // Famiglia 1: la disposizione la ricava la libreria dalla famiglia e dal
-        // numero dei canali, che è la stessa tabella che RFC 7845 § 5.1.1
-        // impone al file di dichiarare.
-        1 => Motore::Molti(Box::new(
-            OpusMSDecoder::new(frequenza, canali, famiglia)
-                .map_err(|_| Error::Unsupported("opus: mappatura dei flussi rifiutata"))?,
-        )),
+        // Famiglia 1. RFC 7845 § 5.1.1 fissa il significato e l'ordine dei
+        // canali d'uscita — l'ordine di Vorbis — ma **non** come stanno nei
+        // flussi: quanti flussi (byte 19), quante coppie (byte 20) e quale
+        // canale di quale flusso va a ogni uscita (dal byte 21, uno per canale,
+        // 255 per un canale muto) li dichiara il file. `opus-pure` costruisce
+        // il decodificatore solo dalla tabella standard di libopus, e non ha un
+        // modo di dargliene un'altra: con una ripartizione diversa i
+        // sotto-pacchetti andrebbero ai decodificatori sbagliati — canali
+        // scambiati, o pacchetti illeggibili saltati uno dopo l'altro, cioè un
+        // brano muto senza errori.
+        //
+        // Quindi si confronta la dichiarazione con la tabella, e quel che non
+        // coincide si dichiara non supportato. È meno di quel che la norma
+        // chiede a un lettore — suonare ogni mappatura valida — ma è un
+        // rifiuto detto, invece di un suono sbagliato.
+        1 => {
+            let decodificatore = OpusMSDecoder::new(frequenza, canali, famiglia)
+                .map_err(|_| Error::Unsupported("opus: mappatura dei flussi rifiutata"))?;
+            let schema = decodificatore.layout();
+            let (Some(&flussi), Some(&coppie), Some(mappatura)) = (
+                testa.get(19),
+                testa.get(20),
+                testa.get(21..21_usize.saturating_add(canali)),
+            ) else {
+                return unsupported_error("opus: intestazione senza la tabella dei flussi");
+            };
+            if usize::from(flussi) != schema.nb_streams
+                || usize::from(coppie) != schema.nb_coupled_streams
+                || mappatura != schema.mapping.as_slice()
+            {
+                return unsupported_error("opus: mappatura dei flussi non standard");
+            }
+            Motore::Molti(Box::new(decodificatore))
+        }
         // Le altre famiglie la norma le riserva, e dice di non suonarle.
         _ => return unsupported_error("opus: famiglia di mappatura riservata"),
     };
@@ -649,5 +680,52 @@ mod prove {
                 "a {canali} canali ogni piano va a un canale solo"
             );
         }
+    }
+
+    /// Un `OpusHead` di RFC 7845 § 5.1: firma, versione, canali, pre-skip,
+    /// frequenza d'origine, guadagno, famiglia, e poi quel che la famiglia
+    /// vuole.
+    fn opus_head(canali: u8, famiglia: u8, coda: &[u8]) -> Vec<u8> {
+        let mut testa = b"OpusHead".to_vec();
+        testa.push(1);
+        testa.push(canali);
+        testa.extend_from_slice(&312u16.to_le_bytes());
+        testa.extend_from_slice(&48_000u32.to_le_bytes());
+        testa.extend_from_slice(&0i16.to_le_bytes());
+        testa.push(famiglia);
+        testa.extend_from_slice(coda);
+        testa
+    }
+
+    #[test]
+    fn una_mappatura_dei_flussi_non_standard_si_dichiara_non_supportata() {
+        // Un 5.1 di famiglia 1 con sei flussi mono invece di quattro con due
+        // coppie: la norma lo ammette, e la libreria saprebbe decodificare solo
+        // la tabella standard. Dato a lei, i sotto-pacchetti finivano ai
+        // decodificatori sbagliati: canali scambiati, o un brano muto senza
+        // errori.
+        let sei_mono = opus_head(6, 1, &[6, 0, 0, 1, 2, 3, 4, 5]);
+        assert!(matches!(
+            leggi_intestazione(&sei_mono),
+            Err(Error::Unsupported(_))
+        ));
+        // Un canale muto (255) è un'altra mappatura che la tabella non ha.
+        let muto = opus_head(6, 1, &[4, 2, 0, 4, 1, 2, 3, 255]);
+        assert!(matches!(
+            leggi_intestazione(&muto),
+            Err(Error::Unsupported(_))
+        ));
+        // Un'intestazione troncata prima della tabella non si suona alla cieca.
+        let tronca = opus_head(6, 1, &[4, 2]);
+        assert!(matches!(
+            leggi_intestazione(&tronca),
+            Err(Error::Unsupported(_))
+        ));
+
+        // Il 5.1 standard — quattro flussi, due coppie — si apre come prima.
+        let standard = opus_head(6, 1, &[4, 2, 0, 4, 1, 2, 3, 5]);
+        assert!(leggi_intestazione(&standard).is_ok());
+        // E la famiglia 0 non ha tabella da leggere.
+        assert!(leggi_intestazione(&opus_head(2, 0, &[])).is_ok());
     }
 }

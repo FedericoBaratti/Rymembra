@@ -47,6 +47,7 @@ import {
   useState,
 } from "react";
 
+import { eNuvola, nomeRadice } from "./cartelleNuvola";
 import { contiDellaCamminata, momentoDi } from "./fasiScansione";
 import { useFinestrella } from "./finestrella";
 import { numero } from "./formato";
@@ -55,6 +56,7 @@ import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
 import { useDati } from "./dati";
+import { tastoDelPrimo } from "./tastoPrimo";
 
 /**
  * Quel che segue «Sto leggendo la libreria…»: i numeri, fuori dalla regione
@@ -82,10 +84,26 @@ function aChePunto(scansione: Avanzamento): string {
 
 /** Quel che il primo avvio chiede alla finestra di fare per lui. */
 export interface PrimoProps {
-  /** Scrive le cartelle e avvia la scansione. */
-  onCartelle: (cartelle: string[]) => Promise<void>;
-  /** Apre il dialogo di sistema e restituisce la cartella scelta. */
-  onScegliCartella: () => Promise<string | null>;
+  /**
+   * Scrive le cartelle e avvia la scansione. Risponde `true` se le cartelle
+   * sono state scritte: è quel che permette a «Ascolta» di prendere il posto
+   * di «Continua» (vedi `tastoPrimo.ts`). Gli errori li segnala la finestra.
+   */
+  onCartelle: (cartelle: string[]) => Promise<boolean>;
+  /**
+   * Le cartelle già fra le sorvegliate, come le dice il nucleo. Al primo avvio
+   * sono quelle del cloud scelte con «Aggiungi un'altra cartella», che il
+   * nucleo scrive da sé.
+   */
+  scritte: readonly string[];
+  /**
+   * Apre «Aggiungi una cartella», dal disco o dal cloud.
+   *
+   * Non restituisce niente: la cartella scelta torna come quelle trascinate,
+   * in `lasciate`, ed entra nell'elenco spuntata. Una strada sola per tutte e
+   * due, invece di una per il dialogo e una per il trascinamento.
+   */
+  onScegliCartella: () => void;
   /** L'avanzamento della scansione, o `null` se non ne sta girando nessuna. */
   scansione: Avanzamento | null;
   /** Quanti brani ci sono in libreria adesso. */
@@ -99,7 +117,7 @@ export interface PrimoProps {
   esito: EsitoScansione | null;
   /**
    * Le cartelle lasciate cadere sulla finestra mentre questa schermata è
-   * aperta.
+   * aperta, e quelle scelte con «Aggiungi una cartella».
    *
    * Entrano nell'elenco, spuntate, invece di finire fra le sorvegliate da
    * sole: lì «Continua» scriveva le sole cartelle spuntate, e quella trascinata
@@ -147,6 +165,7 @@ function conAMano(
 /** La schermata di benvenuto. */
 export function Primo({
   onCartelle,
+  scritte,
   onScegliCartella,
   scansione,
   brani,
@@ -160,6 +179,8 @@ export function Primo({
   const [candidate, setCandidate] = useState<CartellaCandidata[] | null>(null);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
   const [inCorso, setInCorso] = useState(false);
+  // «Continua» è andato a buon fine: da qui in poi bastano i brani.
+  const [confermato, setConfermato] = useState(false);
   // Le cartelle indicate a mano — col dialogo o trascinate — ricordate a parte:
   // possono arrivare prima dell'elenco del sistema, e l'elenco che arriva dopo
   // le cancellava.
@@ -226,11 +247,6 @@ export function Primo({
     setScelte((prima) => new Set([...prima, ...nuovi]));
   }, []);
 
-  const aggiungi = useCallback(async () => {
-    const scelta = await onScegliCartella();
-    if (scelta !== null) aggiungiPercorsi([scelta]);
-  }, [onScegliCartella, aggiungiPercorsi]);
-
   useEffect(() => {
     aggiungiPercorsi(lasciate);
   }, [lasciate, aggiungiPercorsi]);
@@ -238,14 +254,22 @@ export function Primo({
   const continua = useCallback(() => {
     if (scelte.size === 0) return;
     setInCorso(true);
-    void onCartelle([...scelte]).finally(() => setInCorso(false));
+    void onCartelle([...scelte])
+      .then((scritto) => {
+        if (scritto) setConfermato(true);
+      })
+      .finally(() => setInCorso(false));
   }, [onCartelle, scelte]);
 
   const cercando = candidate === null;
   const scansionando = scansione !== null;
   // Appena c'è qualcosa da sentire il pulsante cambia mestiere, anche se la
-  // scansione non è finita: è la differenza fra aspettare e cominciare.
-  const puoAscoltare = brani > 0;
+  // scansione non è finita: è la differenza fra aspettare e cominciare. Ma
+  // solo con le scelte scritte: i brani di una cartella del cloud aggiunta
+  // prima di «Continua» arrivano da soli, e «Continua» deve restare finché le
+  // cartelle spuntate non sono fra le sorvegliate (`tastoPrimo.ts`).
+  const puoAscoltare =
+    tastoDelPrimo({ brani, spuntate: [...scelte], scritte, confermato }) === "ascolta";
   // Letto tutto, e non c'era niente. Si dice, e si dice perché se lo si sa: le
   // cartelle che non hanno risposto sono il caso del NAS spento.
   const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
@@ -286,8 +310,14 @@ export function Primo({
                         onChange={() => spunta(cartella.percorso)}
                         disabled={scansionando || inCorso}
                       />
-                      <span className="primo-percorso">{cartella.percorso}</span>
-                      <span className="primo-conto">{quantiBrani(cartella)}</span>
+                      <span className="primo-percorso">{nomeRadice(cartella.percorso)}</span>
+                      {/* Una cartella del cloud non si conta prima di
+                          «Continua»: contarla vorrebbe dire elencarla, che è
+                          proprio quel che «Continua» fa partire. Uno zero lì
+                          direbbe «vuota», che non è vero. */}
+                      {!eNuvola(cartella.percorso) && (
+                        <span className="primo-conto">{quantiBrani(cartella)}</span>
+                      )}
                     </label>
                     {cartella.parziale && (
                       <p className="primo-avviso">{t("primo.parziale")}</p>
@@ -324,7 +354,7 @@ export function Primo({
                   <ul className="primo-cartelle">
                     {esito.radiciSaltate.map((radice) => (
                       <li key={radice} className="primo-percorso">
-                        {radice}
+                        {nomeRadice(radice)}
                       </li>
                     ))}
                   </ul>
@@ -358,7 +388,7 @@ export function Primo({
             <button
               type="button"
               className="bottone"
-              onClick={() => void aggiungi()}
+              onClick={onScegliCartella}
               disabled={scansionando || inCorso}
             >
               {t("primo.altra")}

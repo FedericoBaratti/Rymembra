@@ -90,6 +90,15 @@ const VOCE_SUCCESSIVO: &str = "vassoio.successivo";
 /// L'identificativo della voce del brano prima.
 const VOCE_PRECEDENTE: &str = "vassoio.precedente";
 
+/// L'identificativo dell'icona.
+///
+/// Fisso, e non quello a caso che Tauri sceglierebbe da sé: è il nome con cui
+/// l'icona si toglie dalla tabella in cui Tauri ne tiene una copia (vedi
+/// [`StatoVassoio::icona`]), e con lo stesso nome un'icona ricostruita prende il
+/// posto della vecchia anche fra gli ascoltatori dei clic, invece di
+/// aggiungersi.
+const ID_ICONA: &str = "vassoio.icona";
+
 /// Il suggerimento dell'icona quando non suona niente.
 ///
 /// Il nome del programma, non tradotto: la stessa scelta di `display_name` in
@@ -182,9 +191,14 @@ pub struct StatoVassoio {
     /// L'icona viva, o `None` se non ce n'è.
     ///
     /// `TrayIcon` è contato: l'icona sparisce dall'area di notifica quando cade
-    /// l'ultima copia, e non c'è nessun «rimuovi» da chiamare. Togliere il
-    /// valore da qui è quindi tutto quel che serve per farla sparire — **quando**
-    /// toglierlo è l'altra metà, e sta su [`stacca`].
+    /// l'ultima copia. Questa però **non** è l'unica: costruendola, Tauri ne
+    /// mette un'altra nella tabella delle risorse dell'applicazione, e la tiene
+    /// fino all'uscita. Lasciar cadere soltanto questa non toglieva niente —
+    /// spenta la preferenza l'icona restava, col suo menù che funzionava, e
+    /// riaccendendola ne compariva una seconda. Per farla sparire si toglie
+    /// anche la copia di Tauri, con `remove_tray_by_id` e [`ID_ICONA`], e le
+    /// due cadono insieme sul filo principale: vedi [`riallinea`]. **Quando**
+    /// toglierla all'uscita sta su [`stacca`].
     icona: Mutex<Option<TrayIcon>>,
     /// La voce «Riproduci»/«Pausa» del menù in uso, per cambiarle etichetta.
     ///
@@ -261,6 +275,32 @@ fn esci(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Quel che fa una voce del menù dell'icona.
+#[derive(Debug, Clone, Copy)]
+enum Voce {
+    /// Riapre la finestra.
+    Mostra,
+    /// Esce davvero.
+    Esci,
+    /// Un gesto sulla musica, da eseguire altrove: vedi il preambolo.
+    Gesto(Gesto),
+}
+
+/// La voce che corrisponde a un identificativo del menù, se è del vassoio.
+///
+/// Il gestore che la chiama è **globale** — Tauri lo chiama per ogni voce di
+/// ogni menù — e un identificativo che non è dei nostri risponde `None`.
+fn voce_di(id: &str) -> Option<Voce> {
+    match id {
+        VOCE_MOSTRA => Some(Voce::Mostra),
+        VOCE_ESCI => Some(Voce::Esci),
+        VOCE_ALTERNA => Some(Voce::Gesto(Gesto::Alterna)),
+        VOCE_SUCCESSIVO => Some(Voce::Gesto(Gesto::Prossimo)),
+        VOCE_PRECEDENTE => Some(Voce::Gesto(Gesto::Precedente)),
+        _ => None,
+    }
+}
+
 /// Il menù, costruito con le etichette che sono arrivate.
 ///
 /// Restituisce anche la voce «Riproduci»/«Pausa», se c'è, perché
@@ -326,7 +366,10 @@ fn costruisci(
     menu: &Menu<tauri::Wry>,
     suggerimento: &str,
 ) -> tauri::Result<TrayIcon> {
-    let mut costruttore = TrayIconBuilder::new()
+    // Le voci del menù non si collegano qui: il gestore che Tauri accetta dal
+    // costruttore è globale, e ogni icona costruita ne aggiungeva uno. Si
+    // registra una volta sola, in [`avvia`].
+    let mut costruttore = TrayIconBuilder::with_id(ID_ICONA)
         // Quel che sta suonando, o il nome del programma: vedi [`InCorso`].
         .tooltip(suggerimento)
         .menu(menu)
@@ -334,16 +377,8 @@ fn costruisci(
         // che è quel che si vuole quasi sempre: chi cerca l'icona la cerca per
         // tornare, non per leggere due voci.
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, evento| match evento.id.as_ref() {
-            VOCE_MOSTRA => mostra(app),
-            VOCE_ESCI => esci(app),
-            // Il menù arriva sul filo della finestra: i gesti si eseguono
-            // altrove. Vedi il preambolo.
-            VOCE_ALTERNA => crate::media::premi(app, Gesto::Alterna),
-            VOCE_SUCCESSIVO => crate::media::premi(app, Gesto::Prossimo),
-            VOCE_PRECEDENTE => crate::media::premi(app, Gesto::Precedente),
-            _ => {}
-        })
+        // Questo invece è dell'icona: Tauri lo tiene per identificativo, e
+        // un'icona ricostruita con lo stesso lo sostituisce.
         .on_tray_icon_event(|icona, evento| {
             // Al rilascio e non alla pressione: è come si comporta ogni altra
             // icona dell'area di notifica, e un click che agisce sul premuto si
@@ -400,11 +435,22 @@ fn riallinea(app: &tauri::AppHandle) {
 
     let ci_vuole = deve_esserci(acceso, etichette.as_ref());
     let Some(etichette) = etichette.filter(|_| ci_vuole) else {
-        // Spenta, o etichette non ancora arrivate: via l'icona. Cade qui
-        // l'ultima copia, e l'area di notifica torna com'era.
+        // Spenta, o etichette non ancora arrivate: via l'icona. Le copie sono
+        // due — la nostra e quella che Tauri tiene nella tabella delle
+        // risorse, vedi [`StatoVassoio::icona`] — e l'icona sparisce quando
+        // cadono tutte e due.
+        //
+        // Cadono sul filo principale, e non qui: l'ultima copia che cade
+        // smonta la finestrella nascosta su cui l'icona riceve i clic, e una
+        // finestra si smonta sul filo che l'ha creata. Questa funzione gira
+        // anche sui fili dei comandi `(async)`. Se il filo principale non
+        // risponde più — l'applicazione si chiude — cadono qui, che è quel
+        // che succedeva prima.
         stato.presente.store(false, Ordering::Relaxed);
-        drop(posto.take());
+        let via = app.remove_tray_by_id(ID_ICONA);
+        let vecchia = posto.take();
         *stato.alterna.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let _ = app.run_on_main_thread(move || drop((via, vecchia)));
         return;
     };
 
@@ -480,14 +526,19 @@ fn ricorda(app: &tauri::AppHandle, attivo: bool) {
 /// Aspettarlo sarebbe l'unico modo di trasformare un'uscita in un blocco. Se
 /// non si prende, l'icona cade da sé più tardi: è quel che succedeva prima che
 /// questa funzione esistesse, e non è peggio di così.
+///
+/// La copia che Tauri tiene nella tabella delle risorse si toglie anche qui —
+/// vedi [`StatoVassoio::icona`] — e cade subito: si è già sul filo principale.
 pub fn stacca(app: &tauri::AppHandle) {
     let Some(stato) = app.try_state::<StatoVassoio>() else {
         return;
     };
     stato.presente.store(false, Ordering::Relaxed);
+    let via = app.remove_tray_by_id(ID_ICONA);
     if let Ok(mut posto) = stato.icona.try_lock() {
         drop(posto.take());
     }
+    drop(via);
 }
 
 /// Legge la preferenza dal database e la rispecchia. Chiamata all'avvio.
@@ -495,7 +546,28 @@ pub fn stacca(app: &tauri::AppHandle) {
 /// Non costruisce niente da sé: le etichette non sono ancora arrivate, e
 /// [`riallinea`] lo sa. L'icona compare quando la finestra manda i suoi due
 /// testi, che è qualche decina di millisecondi dopo.
+///
+/// # Le voci del menù si collegano qui, una volta
+///
+/// Il gestore delle voci, in Tauri, è **globale**: lo chiama ogni voce di ogni
+/// menù, e chi lo registra non lo può più togliere. Passato al costruttore
+/// dell'icona, ogni icona costruita ne aggiungeva uno — dopo un «Chiudi nel
+/// vassoio» spento e riacceso i gestori erano due, e un clic su «Successivo»
+/// saltava due brani, uno su «Pausa» metteva in pausa e faceva ripartire.
+/// Registrato qui, che gira una volta all'avvio, è uno per tutta la vita del
+/// processo e serve tutte le icone che verranno. In testa, prima della lettura
+/// della preferenza: se il database non risponde l'icona può nascere più tardi
+/// da [`secondo_piano_attiva`], e le sue voci devono funzionare lo stesso.
 pub fn avvia(app: &tauri::AppHandle) {
+    app.on_menu_event(|app, evento| match voce_di(evento.id.as_ref()) {
+        Some(Voce::Mostra) => mostra(app),
+        Some(Voce::Esci) => esci(app),
+        // Il menù arriva sul filo della finestra: i gesti si eseguono
+        // altrove. Vedi il preambolo.
+        Some(Voce::Gesto(gesto)) => crate::media::premi(app, gesto),
+        // Una voce di un altro menù: il gestore è globale.
+        None => {}
+    });
     let stato_app = app.state::<Stato>();
     let letto = con_libreria(&stato_app, |libreria| {
         rymembra_app::preferenze::secondo_piano(&libreria.connection)
@@ -764,5 +836,83 @@ mod prove {
     #[test]
     fn spenta_e_senza_etichette_non_c_e_niente_da_montare() {
         assert!(!deve_esserci(false, None));
+    }
+
+    /// Il sorgente di questo file senza le prove: le prove sul sorgente non
+    /// devono trovare le stringhe che cercano dentro sé stesse.
+    fn sorgente() -> &'static str {
+        let tutto = include_str!("vassoio.rs");
+        tutto.split("#[cfg(test)]").next().unwrap_or(tutto)
+    }
+
+    /// Il corpo di una funzione, dalla firma alla graffa che la chiude in
+    /// prima colonna.
+    fn corpo<'a>(testo: &'a str, firma: &str) -> &'a str {
+        let inizio = testo
+            .find(firma)
+            .unwrap_or_else(|| panic!("nel sorgente manca «{firma}»"));
+        let resto = &testo[inizio..];
+        let fine = resto.find("\n}\n").map_or(resto.len(), |fine| fine + 3);
+        &resto[..fine]
+    }
+
+    /// Il gestore delle voci del menù è **globale** in Tauri: passato al
+    /// costruttore dell'icona, ogni icona costruita ne aggiungeva uno a un
+    /// elenco che nessuno svuota. Dopo un «Chiudi nel vassoio» spento e
+    /// riacceso i gestori erano due, e un clic su «Successivo» saltava due
+    /// brani, uno su «Pausa» metteva in pausa e faceva ripartire. Si registra
+    /// una volta sola, all'avvio.
+    #[test]
+    fn il_gestore_delle_voci_si_registra_una_volta_sola() {
+        assert!(
+            !corpo(sorgente(), "fn costruisci(").contains("on_menu_event"),
+            "costruire un'icona non deve registrare un gestore globale"
+        );
+        assert_eq!(
+            corpo(sorgente(), "pub fn avvia(")
+                .matches("on_menu_event")
+                .count(),
+            1,
+            "il gestore si registra all'avvio, una volta"
+        );
+    }
+
+    /// Spegnere la preferenza deve togliere l'icona davvero. Tauri ne tiene
+    /// una copia sua nella tabella delle risorse, e l'icona sparisce quando
+    /// cade l'ultima copia: lasciar cadere la nostra non bastava, e
+    /// riaccendendo le icone diventavano due. Si toglie per identificativo, e
+    /// l'ultima copia cade sul filo principale, che ha creato la finestrella
+    /// nascosta dell'icona.
+    #[test]
+    fn spegnere_il_secondo_piano_toglie_l_icona_dal_registro() {
+        assert!(
+            corpo(sorgente(), "fn costruisci(").contains("TrayIconBuilder::with_id(ID_ICONA)"),
+            "l'icona deve avere un identificativo fisso per poterla togliere"
+        );
+        let riallinea = corpo(sorgente(), "fn riallinea(");
+        assert!(riallinea.contains("remove_tray_by_id(ID_ICONA)"));
+        assert!(riallinea.contains("run_on_main_thread("));
+        assert!(corpo(sorgente(), "pub fn stacca(").contains("remove_tray_by_id(ID_ICONA)"));
+    }
+
+    /// Ogni voce fa quel che dice, e le voci che non sono del vassoio — il
+    /// gestore è globale — non fanno niente.
+    #[test]
+    fn le_voci_del_menu_fanno_quel_che_dicono() {
+        assert!(matches!(voce_di(VOCE_MOSTRA), Some(Voce::Mostra)));
+        assert!(matches!(voce_di(VOCE_ESCI), Some(Voce::Esci)));
+        assert!(matches!(
+            voce_di(VOCE_ALTERNA),
+            Some(Voce::Gesto(Gesto::Alterna))
+        ));
+        assert!(matches!(
+            voce_di(VOCE_SUCCESSIVO),
+            Some(Voce::Gesto(Gesto::Prossimo))
+        ));
+        assert!(matches!(
+            voce_di(VOCE_PRECEDENTE),
+            Some(Voce::Gesto(Gesto::Precedente))
+        ));
+        assert!(voce_di("finestra.altro").is_none());
     }
 }

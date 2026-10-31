@@ -23,9 +23,11 @@
  * lo salvava come `0.5px`: una modifica che l'autore non aveva chiesto, fatta al
  * primo tocco del cursore e su un campo che sembrava solo da guardare. Ora
  * l'unità si legge dal valore e si conserva; `Unita` la cambia quando lo si
- * vuole davvero.
+ * vuole davvero. Fino alla 3.2 restavano fuori i cursori delle misure
+ * dell'ombra (sempre `px`) e del ritaglio della timeline (sempre `%`): adesso
+ * passano anche loro da `conUnita` (`valori.ts`).
  */
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import type { TipoToken, TokenRegistro } from "../ipc";
 import { Icona } from "../parti/Icone";
@@ -39,21 +41,9 @@ import {
   type Oklch,
   type Rgba,
 } from "./colore";
-import { tinta } from "./valori";
+import { conUnita, LIVELLI_OMBRA_MASSIMI, puntoDaCasella, puoAggiungere, tinta, UNITA, unitaDi } from "./valori";
+import { sorgentiPer } from "./sorgentiColore";
 import { t } from "../lingue";
-
-/** Le unità che il formato accetta per una lunghezza. Vengono da `LengthUnit`. */
-const UNITA = [
-  "px",
-  "rem",
-  "em",
-  "%",
-  "vh",
-  "vw",
-  "cqw",
-  "cqh",
-  "ch",
-] as const;
 
 /**
  * Le curve con un nome, come le scrive `EasingKeyword::as_str`.
@@ -142,23 +132,6 @@ function numeroDi(valore: unknown): number {
 }
 
 /**
- * L'unità di una lunghezza già scritta, o `null` se è un numero puro.
- *
- * Si legge dalla coda e non con una regex sull'intero: `-0.5rem` comincia con un
- * segno e contiene un punto, e ogni tentativo di riconoscere «la parte numerica»
- * in avanti finisce per rifare `parse_length` in TypeScript. Il suffisso invece
- * è chiuso — sono le nove unità di `LengthUnit` — quindi si cerca quello.
- */
-function unitaDi(valore: unknown): string | null {
-  if (typeof valore !== "string") return null;
-  const testo = valore.trim();
-  // Dalla più lunga: `cqw` prima di `w`… e soprattutto `rem` prima di `em`, che
-  // ne è un suffisso e ruberebbe ogni `rem` se venisse prima.
-  const ordinate = [...UNITA].sort((a, b) => b.length - a.length);
-  return ordinate.find((u) => testo.endsWith(u)) ?? null;
-}
-
-/**
  * Un colore, in una delle tre forme che il documento accetta.
  *
  * Cambiare modo non conserva il valore: passare da un token a un letterale
@@ -172,11 +145,19 @@ export function ValoreColore({
   tavolozza,
   escluso,
   sorgenti = [],
+  etichetta,
   onCambia,
 }: {
   valore: unknown;
   tokens: readonly TokenRegistro[];
   tavolozza: Readonly<Record<string, string>>;
+  /**
+   * Di quale campo è questo colore, per chi non vede: i controlli dentro hanno
+   * nomi fissi («In che forma», «Quale token»), e fuori da una [`Riga`] —
+   * nella pila dello sfondo, nelle fermate, nei livelli d'ombra, nei
+   * fotogrammi — niente intorno lo diceva.
+   */
+  etichetta?: string | undefined;
   /**
    * Un token che non può riferire sé stesso.
    *
@@ -188,11 +169,15 @@ export function ValoreColore({
   /**
    * Le sorgenti dinamiche — i colori della copertina — quando il posto le
    * ammette: i token di colore sì, una parte no. Vuoto, il modo non c'è.
+   * `color.accent` non le ammette mai (`sorgentiPer`): è lui la copertina.
    */
   sorgenti?: readonly string[];
   onCambia: (valore: unknown) => void;
 }) {
   const [aperto, setAperto] = useState(false);
+  // `escluso` è il token che si sta scrivendo: se è l'accento, `$source`
+  // rimanderebbe a sé stesso e il validatore lo rifiuta. Il modo non si offre.
+  const ammesse = sorgentiPer(escluso, sorgenti);
   const modo = modoDi(valore);
   const dipinto = tinta(valore, tokens, tavolozza);
   const colori = tokens.filter((t) => t.kind === "color" && t.id !== escluso);
@@ -214,7 +199,7 @@ export function ValoreColore({
         onCambia({ $palette: nomiTavolozza[0] ?? "" });
         break;
       case "sorgente":
-        onCambia({ $source: sorgenti[0] ?? "albumArt.vibrant" });
+        onCambia({ $source: ammesse[0] ?? "albumArt.vibrant" });
         break;
       case "letterale": {
         // Si parte dal colore che si vedeva, non dal nero: passare da un
@@ -227,7 +212,12 @@ export function ValoreColore({
   };
 
   return (
-    <div className="valore-colore" data-aperto={aperto || undefined}>
+    <div
+      className="valore-colore"
+      data-aperto={aperto || undefined}
+      role={etichetta === undefined ? undefined : "group"}
+      aria-label={etichetta}
+    >
       <button
         type="button"
         className="pastiglia"
@@ -249,7 +239,7 @@ export function ValoreColore({
         <option value="tavolozza" disabled={nomiTavolozza.length === 0}>
           $palette
         </option>
-        {(sorgenti.length > 0 || modo === "sorgente") && <option value="sorgente">$source</option>}
+        {(ammesse.length > 0 || modo === "sorgente") && <option value="sorgente">$source</option>}
         <option value="letterale">{t("studio.ctl.literal")}</option>
       </select>
 
@@ -290,7 +280,7 @@ export function ValoreColore({
           value={String((valore as Record<string, unknown>)["$source"] ?? "")}
           onChange={(e) => onCambia(conAlfa({ $source: e.target.value }, alfaDi(valore)))}
         >
-          {sorgenti.map((nome) => (
+          {ammesse.map((nome) => (
             <option key={nome} value={nome}>
               {nome}
             </option>
@@ -505,7 +495,7 @@ export function Cursore({
   const dichiarato = Number.isFinite(numero);
 
   return (
-    <div className="cursore">
+    <div className="cursore-studio">
       <input
         type="range"
         aria-label={etichetta}
@@ -574,7 +564,7 @@ export function ValoreLunghezza({
     onCambia(`${quanto}${quale}`);
 
   return (
-    <div className="cursore con-unita">
+    <div className="cursore-studio con-unita">
       <input
         type="range"
         aria-label={etichetta}
@@ -641,7 +631,7 @@ export function ValoreDurata({
   const ms = dichiarato && inSecondi ? numero * 1000 : numero;
 
   return (
-    <div className="cursore">
+    <div className="cursore-studio">
       <input
         type="range"
         aria-label={etichetta}
@@ -805,25 +795,15 @@ export function ValoreCurva({
       {punti !== null && forma === "bezier" && (
         <div className="quattro">
           {punti.map((p, i) => (
-            <input
+            <CasellaPunto
               // Quattro caselle senza identità propria: la posizione **è** il
               // significato — x1, y1, x2, y2 — e non cambia mai.
               key={i}
-              className="field-input"
-              type="number"
-              aria-label={t("studio.ctl.curvePoint", {
-                punto: ["x1", "y1", "x2", "y2"][i] ?? "",
-              })}
-              step={0.01}
-              // I due x stanno fra 0 e 1 per definizione; le y possono uscirne,
-              // ed è così che si ottiene un rimbalzo. Gli estremi sono quelli
-              // che `document.rs::easing` verifica: 0..1 e -5..5.
-              min={i % 2 === 0 ? 0 : -5}
-              max={i % 2 === 0 ? 1 : 5}
-              value={p}
-              onChange={(e) => {
+              indice={i}
+              valore={p}
+              onCambia={(n) => {
                 const nuovi = [...punti];
-                nuovi[i] = Number.parseFloat(e.target.value);
+                nuovi[i] = n;
                 onCambia({ kind: "cubicBezier", points: nuovi });
               }}
             />
@@ -1055,7 +1035,8 @@ export function ValoreOmbra({
                   step={1}
                   aria-label={t("studio.ctl.shadowMeasure", { campo, n: indice + 1 })}
                   value={Number.parseFloat(livello[campo] ?? "0") || 0}
-                  onChange={(e) => cambia(indice, campo, `${e.target.value}px`)}
+                  // Con l'unità che il campo aveva: vedi `conUnita`.
+                  onChange={(e) => cambia(indice, campo, conUnita(livello[campo], e.target.value))}
                 />
                 <span className="lettura">{livello[campo] ?? "—"}</span>
               </label>
@@ -1065,6 +1046,7 @@ export function ValoreOmbra({
             valore={livello.color ?? null}
             tokens={tokens}
             tavolozza={tavolozza}
+            etichetta={t("studio.ctl.shadowMeasure", { campo: "color", n: indice + 1 })}
             onCambia={(v) => cambia(indice, "color", v)}
           />
         </div>
@@ -1073,6 +1055,13 @@ export function ValoreOmbra({
         <button
           type="button"
           className="aggiungi-livello"
+          // Spento al tetto del formato: vedi `LIVELLI_OMBRA_MASSIMI`.
+          disabled={!puoAggiungere(livelli.length, LIVELLI_OMBRA_MASSIMI)}
+          title={
+            puoAggiungere(livelli.length, LIVELLI_OMBRA_MASSIMI)
+              ? undefined
+              : t("studio.ctl.maxShadowLayers", { n: LIVELLI_OMBRA_MASSIMI })
+          }
           onClick={() =>
             scriviLivelli([...livelli, { x: "0px", y: "1px", blur: "2px", color: "#00000040" }])
           }
@@ -1086,7 +1075,63 @@ export function ValoreOmbra({
   );
 }
 
-/** Una riga della tabella delle proprietà. */
+/**
+ * Una casella della `cubicBezier`, col testo che si sta scrivendo.
+ *
+ * Il testo vive qui mentre lo si scrive, e nel documento va solo un numero
+ * che il formato accetta (`puntoDaCasella`): una casella svuotata resta vuota
+ * invece di scrivere `null` e tornare a 0 sotto le dita, e la cifra battuta
+ * dopo non si accoda a quello zero. Un valore cambiato da fuori — un annullo —
+ * riscrive il testo; uscendo dalla casella torna quel che il documento dice.
+ */
+function CasellaPunto({
+  indice,
+  valore,
+  onCambia,
+}: {
+  indice: number;
+  valore: number;
+  onCambia: (n: number) => void;
+}) {
+  const [testo, setTesto] = useState(String(valore));
+  if (Number(testo) !== valore && testo.trim() !== "" && puntoDaCasella(testo, indice) !== null) {
+    // Cambiato da fuori mentre il testo diceva un altro numero valido.
+    setTesto(String(valore));
+  }
+  return (
+    <input
+      className="field-input"
+      type="number"
+      aria-label={t("studio.ctl.curvePoint", {
+        punto: ["x1", "y1", "x2", "y2"][indice] ?? "",
+      })}
+      step={0.01}
+      // I due x stanno fra 0 e 1 per definizione; le y possono uscirne, ed è
+      // così che si ottiene un rimbalzo. Gli estremi sono quelli che
+      // `document.rs::easing` verifica: 0..1 e -5..5.
+      min={indice % 2 === 0 ? 0 : -5}
+      max={indice % 2 === 0 ? 1 : 5}
+      value={testo}
+      aria-invalid={puntoDaCasella(testo, indice) === null || undefined}
+      onChange={(e) => {
+        setTesto(e.target.value);
+        const n = puntoDaCasella(e.target.value, indice);
+        if (n !== null && n !== valore) onCambia(n);
+      }}
+      onBlur={() => setTesto(String(valore))}
+    />
+  );
+}
+
+/**
+ * Una riga della tabella delle proprietà.
+ *
+ * Un gruppo che si chiama come il suo campo: i controlli dentro hanno spesso
+ * nomi generici — quelli di [`ValoreColore`] sono fissi — e un lettore di
+ * schermo leggeva, Tab dopo Tab, cinque «In che forma» uguali senza dire se
+ * erano del testo, del bordo o dell'anello. Il nome è lo stesso `<span>` che
+ * si vede, non una copia.
+ */
 export function Riga({
   che,
   children,
@@ -1094,9 +1139,12 @@ export function Riga({
   che: string;
   children: React.ReactNode;
 }) {
+  const nome = useId();
   return (
-    <div className="proprieta-riga">
-      <span className="che">{che}</span>
+    <div className="proprieta-riga" role="group" aria-labelledby={nome}>
+      <span className="che" id={nome}>
+        {che}
+      </span>
       <div className="come">{children}</div>
     </div>
   );

@@ -53,6 +53,9 @@ import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 import { Presenza } from "./presenza";
 
+/** Escape mentre si scrive: non chiude. Come `restaAperta` in `Dialogo`. */
+const restaAperta = () => undefined;
+
 /** Tutto acceso: chi preme «importa il mio account» vuole il suo account. */
 const TUTTO: ScelteAccount = {
   playlist: true,
@@ -141,7 +144,18 @@ export function Account({
    * rimetta, e riaverle vuol dire riaprire l'archivio e importarlo di nuovo.
    */
   const [chiedendo, setChiedendo] = useState(false);
-  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
+  /**
+   * Sta importando: «Importa» premuto, e il nucleo non ha ancora risposto.
+   *
+   * Distinto da `inCorso`, che vale anche mentre si apre l'archivio e si fa il
+   * piano, dove Escape resta un gesto voluto. Mentre scrive Escape, il velo e
+   * «Annulla» non chiudono: chiusa a metà, la finestrella lascerebbe
+   * un'importazione di decine di migliaia di righe senza nessuno che ne
+   * racconti l'esito, e il suo errore cadrebbe su un componente smontato. È
+   * quel che `chiudibile` fa in `Dialogo` per le altre.
+   */
+  const [scrivendo, setScrivendo] = useState(false);
+  const finestrella = useFinestrella<HTMLDivElement>(scrivendo ? restaAperta : onChiudi);
   // Il resto della finestra inerte, e il velo che chiude solo un clic nato **e**
   // finito su di lui: una selezione trascinata fuori dal pannello chiudeva
   // tutto. È quel che `Dialogo.tsx` fa per le altre.
@@ -227,6 +241,7 @@ export function Account({
    */
   const importa = async () => {
     setInCorso(true);
+    setScrivendo(true);
     setErrore(null);
     try {
       onImportato(await ipc.accountImporta(scelte));
@@ -234,6 +249,7 @@ export function Account({
     } catch (e) {
       setErrore(testoErrore(e));
       setInCorso(false);
+      setScrivendo(false);
     }
   };
 
@@ -259,7 +275,7 @@ export function Account({
           className="velo scuro modal-veil"
           onPointerDown={(e) => gesto.premuto(e.target, e.currentTarget)}
           onClick={(e) => {
-            if (gesto.clic(e.target, e.currentTarget)) onChiudi();
+            if (gesto.clic(e.target, e.currentTarget) && !scrivendo) onChiudi();
           }}
         >
           <Presenza parte="glass-modal">
@@ -300,11 +316,6 @@ export function Account({
                           }}
                         />
                       </p>
-                      {dimenticati !== null && (
-                        <p className="nota">
-                          {t("account.forgotten", { n: dimenticati })}
-                        </p>
-                      )}
                       <div className="azioni">
                         <button
                           type="button"
@@ -315,6 +326,15 @@ export function Account({
                         </button>
                       </div>
                     </section>
+                  )}
+                  {/* Fuori dalla scheda e non dentro: dimenticare toglie tutte
+                      le righe che lei conta, `ascoltiImportati` torna a zero e
+                      la scheda si smonta — con lei dentro, «Tolte N righe»
+                      restava a schermo per il tempo di un giro di IPC. */}
+                  {dimenticati !== null && (
+                    <p className="nota" role="status">
+                      {t("account.forgotten", { n: dimenticati })}
+                    </p>
                   )}
                 </>
               )}
@@ -540,9 +560,35 @@ export function Account({
                   type="button"
                   className="bottone btn-ghost"
                   onClick={onChiudi}
+                  disabled={scrivendo}
                 >
                   {anteprima ? t("common.cancel") : t("account.close")}
                 </button>
+                {/* L'archivio resta in memoria fra un'apertura e l'altra, per
+                    importarlo di nuovo con scelte diverse senza riaprire lo zip;
+                    ma un archivio di dieci anni sono centinaia di megabyte, e
+                    prima non c'era modo di restituirli senza chiudere Rymembra.
+                    Vedi `archivio_dimentica` in `account.rs`. */}
+                {anteprima && (
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    disabled={inCorso}
+                    title={t("account.release.hint")}
+                    onClick={() => {
+                      ipc
+                        .archivioDimentica()
+                        .then((s) => {
+                          setStato(s);
+                          setAnteprima(null);
+                          setPiano(null);
+                        })
+                        .catch((e: unknown) => setErrore(testoErrore(e)));
+                    }}
+                  >
+                    {t("account.release")}
+                  </button>
+                )}
                 {anteprima && (
                   <button
                     type="button"

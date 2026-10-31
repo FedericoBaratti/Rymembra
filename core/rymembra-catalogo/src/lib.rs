@@ -65,7 +65,7 @@ pub use archivio_org::ArchivioOrg;
 pub use audius::Audius;
 #[cfg(feature = "jamendo")]
 pub use jamendo::Jamendo;
-pub use prelievo::{Prelevato, Richiesta, attribuzione, preleva};
+pub use prelievo::{Prelevato, Richiesta, attribuzione, preleva, spazza_parziali};
 pub use riferimento::{Riferimento, riconosci};
 
 /// Quanto può essere lunga una frase da cercare.

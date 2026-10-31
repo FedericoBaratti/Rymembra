@@ -102,7 +102,7 @@ export function data(ms: number): string {
  * I due segnaposti che il nucleo scrive quando il tag non c'è.
  *
  * Sono costanti in `rymembra-domain/src/album.rs`, e restano italiane di
- * proposito: `library.rs` le scrive **nelle righe del database**, e di lì
+ * proposito: il modulo `library` le scrive **nelle righe del database**, e di lì
  * entrano nella chiave con cui un album si raggruppa. Tradurle là dove nascono
  * vorrebbe dire chiavi d'album diverse fra due avvii con lingue diverse, cioè
  * la stessa raccolta spezzata in due dal solo fatto di aver cambiato lingua.

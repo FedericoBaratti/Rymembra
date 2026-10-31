@@ -111,7 +111,7 @@
  *
  * I testi sono **corti apposta** e stanno in `lingue/{it,en}.json` sotto
  * `tour.step.*`. Le versioni lunghe delle stesse cose sono due e vivono
- * altrove: **`README.md` § Interface/Customization (righe 160-226)** e il
+ * altrove: **`README.md` § Interface/Customization** e il
  * viaggio del sito, **`site/testi/<lingua>.json`** (le tappe da `playlist` a
  * `tuo`, in quattro lingue). L'allineamento si tiene **a mano**, rileggendo
  * questi testi quando una
@@ -391,6 +391,15 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
    * «Indietro» che non torna da nessuna parte.
    */
   const verso = useRef(1);
+  /**
+   * I passi saltati perché il loro bersaglio non c'era.
+   *
+   * Il contatore li toglie dal conto: prima diceva «4 di 14» e poi «6 di 14»,
+   * e chi legge cercava il quinto che non aveva visto. Si sanno solo quando ci
+   * si passa, quindi il totale può scendere andando avanti — «5 di 13» —, che
+   * è il vero: tredici sono quelli che si vedranno.
+   */
+  const [saltati, setSaltati] = useState<ReadonlySet<number>>(() => new Set());
 
   // Le due chiusure arrivano scritte sul posto da `App`, che si ridisegna venti
   // volte al secondo mentre suona: tenerle fra le dipendenze dell'effetto
@@ -522,6 +531,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
           console.warn(
             `[giro] nessuna ancora per «${passo[0]}»: il passo si salta`,
           );
+        setSaltati((prima) => (prima.has(indice) ? prima : new Set(prima).add(indice)));
         vai(verso.current);
         return;
       }
@@ -585,7 +595,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
     // `radice` è il riferimento di `useFinestrella`, cioè un oggetto stabile:
     // sta fra le dipendenze perché il controllo delle dipendenze non sa che lo
     // è, e non perché possa cambiare.
-  }, [passo, vai, radice, schermo]);
+  }, [passo, indice, vai, radice, schermo]);
 
   if (passo === undefined) return null;
 
@@ -636,7 +646,10 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
           <div className="giro-testa">
             <h2 id="giro-titolo">{t(`tour.step.${passo[0]}.title`)}</h2>
             <span className="giro-passi">
-              {t("tour.progress", { n: indice + 1, totale: COPIONE.length })}
+              {t("tour.progress", {
+                n: indice + 1 - [...saltati].filter((saltato) => saltato < indice).length,
+                totale: COPIONE.length - saltati.size,
+              })}
             </span>
           </div>
           <p>{t(`tour.step.${passo[0]}.body`)}</p>

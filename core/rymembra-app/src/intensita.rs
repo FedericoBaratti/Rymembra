@@ -93,12 +93,20 @@ pub enum Misurato {
 /// file, ognuna sul suo tratto. Resta fuori solo una riga d'immagine che non
 /// dice dove il brano comincia — non la scrive la scansione — perché misurarla
 /// vorrebbe dire misurare un pezzo a caso del disco.
-const fn candidato_where() -> &'static str {
-    "t.path IS NOT NULL
-     AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
-     AND (m.track_id IS NULL
-          OR m.versione <> ?1
-          OR (m.lufs IS NULL AND m.esito <> 'muto' AND m.tentato_at < ?2))"
+///
+/// Fuori anche i brani del cloud, come in `sonora::candidato_where`: si
+/// misurano dalla copia intera in cache, con [`scheda_per_id`], e mai
+/// scaricandoli apposta.
+fn candidato_where() -> String {
+    format!(
+        "t.path IS NOT NULL
+         AND {}
+         AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
+         AND (m.track_id IS NULL
+              OR m.versione <> ?1
+              OR (m.lufs IS NULL AND m.esito <> 'muto' AND m.tentato_at < ?2))",
+        crate::nuvola::FUORI_DALLA_NUVOLA
+    )
 }
 
 /// Quanti brani aspettano ancora una misura.
@@ -133,9 +141,15 @@ pub fn quanti_mancano(connection: &Connection, adesso: i64) -> Result<i64, AppEr
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn avanzamento(connection: &Connection, adesso: i64) -> Result<(i64, i64), AppError> {
+    // Lo stesso insieme di [`candidato_where`]: i brani del cloud questa
+    // passata non li guarda, e contarli nel totale direbbe «fatto» per un
+    // lavoro che non le spetta.
     let totale: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM tracks WHERE path IS NOT NULL",
+            &format!(
+                "SELECT COUNT(*) FROM tracks t WHERE t.path IS NOT NULL AND {}",
+                crate::nuvola::FUORI_DALLA_NUVOLA
+            ),
             [],
             |row| row.get(0),
         )
@@ -228,9 +242,65 @@ pub fn misura(files: &dyn MusicFiles, scheda: &SchedaSorgente) -> Misurato {
     }
 }
 
+/// La scheda di **un** brano dato, se c'è ancora da misurarlo.
+///
+/// La gemella di [`crate::sonora::scheda_per_id`], con la stessa ragione: un
+/// brano del cloud si misura dalla copia intera in cache, quando c'è, e chi lo
+/// sa la passa a [`misura`] con un [`MusicFiles`] che apre quella copia. `None`
+/// per un brano senza file, una riga d'immagine senza confini, o una misura di
+/// questa versione già fatta (anche «muto»). Un «illeggibile» si rimisura
+/// subito: una copia intera appena arrivata è un fatto nuovo.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn scheda_per_id(
+    connection: &Connection,
+    track_id: i64,
+) -> Result<Option<SchedaSorgente>, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let scheda = connection
+        .query_row(
+            "SELECT t.path, t.duration_ms, t.immagine, t.inizio_cd, t.fine_cd
+               FROM tracks t
+               LEFT JOIN track_intensita m ON m.track_id = t.id
+              WHERE t.id = ?1
+                AND t.path IS NOT NULL
+                AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
+                AND (m.track_id IS NULL
+                     OR m.versione <> ?2
+                     OR (m.lufs IS NULL AND m.esito <> 'muto'))",
+            rusqlite::params![track_id, versione()],
+            |row| {
+                let percorso: String = row.get(0)?;
+                let durata_ms: i64 = row.get(1)?;
+                let collocazione =
+                    collocazione_su_disco(&percorso, row.get(2)?, row.get(3)?, row.get(4)?);
+                Ok(collocazione.map(|collocazione| SchedaSorgente {
+                    track_id,
+                    collocazione,
+                    durata_ms,
+                    // La misura non ne ha bisogno: si misura il file com'è.
+                    replaygain_db: None,
+                    picco: None,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|err| db_error("scheda di un brano da misurare", &err))?;
+    Ok(scheda.flatten())
+}
+
 /// Come si legge un guasto: se sotto c'è la rete, non è colpa del brano.
+///
+/// Nemmeno se sotto c'è il cloud — la copia in cache sparita
+/// (`cloud.notInCache`), un conto scollegato: vedi `sonora::da_errore`.
 fn da_errore(track_id: i64, err: &AppError) -> Misurato {
-    if err.code().kind() == ErrorCodeKind::FsNetworkUnavailable {
+    let tipo = err.code().kind();
+    if tipo == ErrorCodeKind::FsNetworkUnavailable
+        || tipo == ErrorCodeKind::NetRateLimited
+        || tipo.domain() == rymembra_domain::errors::Domain::Cloud
+    {
         return Misurato::NonRaggiungibile;
     }
     Misurato::Negata {
@@ -323,7 +393,9 @@ pub fn del_brano(connection: &Connection, track_id: i64) -> Result<Option<Intens
 /// chiave con cui la libreria costruisce gli album. Un brano senza titolo
 /// d'album non ha un album: i file sciolti di una cartella condividono la
 /// chiave, e mettere insieme la loro intensità vorrebbe dire trattare da disco
-/// una cartella di singoli.
+/// una cartella di singoli. «Senza titolo» comprende il segnaposto che la
+/// scansione scrive al posto del tag mancante: vedi
+/// [`crate::enrich::album_con_nome_sql`].
 ///
 /// Conta solo i brani già misurati: a metà della prima passata l'album è una
 /// stima fatta con quel che c'è, e migliora da sola. `None` se non ce n'è
@@ -337,16 +409,17 @@ pub fn dell_album_di(
     track_id: i64,
 ) -> Result<Option<Intensita>, AppError> {
     let mut statement = connection
-        .prepare_cached(
+        .prepare_cached(&format!(
             "SELECT m.lufs, m.picco, m.durata_ms
                FROM tracks t
                JOIN tracks s ON s.album_key = t.album_key
                JOIN track_intensita m ON m.track_id = s.id
               WHERE t.id = ?1
-                AND t.album IS NOT NULL AND TRIM(t.album) <> ''
+                AND {}
                 AND m.versione = ?2
                 AND m.lufs IS NOT NULL AND m.picco IS NOT NULL",
-        )
+            crate::enrich::album_con_nome_sql("t.album")
+        ))
         .map_err(|err| db_error("lettura dell'intensità di un album", &err))?;
     let brani = statement
         .query_map(rusqlite::params![track_id, versione()], |row| {
@@ -610,6 +683,22 @@ mod prove {
         assert_eq!(dell_album_di(&connection, 1).expect("lettura"), None);
     }
 
+    #[test]
+    fn i_file_con_l_album_segnaposto_non_fanno_un_disco() {
+        // La scansione non scrive mai un album vuoto: senza tag scrive il
+        // segnaposto, e i singoli di una cartella hanno tutti la stessa chiave.
+        let mut connection = libreria();
+        let segnaposto = rymembra_domain::album::UNKNOWN_ALBUM;
+        brano_del_disco(&connection, 1, segnaposto, "scaricati");
+        brano_del_disco(&connection, 2, segnaposto, "scaricati");
+        scrivi(
+            &mut connection,
+            &[fatta(1, -10.0, 1.0), fatta(2, -20.0, 0.5)],
+            1_000,
+        );
+        assert_eq!(dell_album_di(&connection, 1).expect("lettura"), None);
+    }
+
     // ── la misura, con un finto che non apre niente ─────────────────────────
 
     struct FilesRotti(ErrorCode);
@@ -637,6 +726,116 @@ mod prove {
             replaygain_db: None,
             picco: None,
         }
+    }
+
+    // ── i brani del cloud: fuori dal giro, dentro per identificativo ──────────
+
+    const NUVOLOSO: &str = "nuvola://onedrive-abcdefgh/Musica/nuvoloso.wav";
+
+    /// Un WAV di tre secondi a 1 kHz, mezzo volume: abbastanza per una misura.
+    fn wav_sonoro(percorso: &std::path::Path) {
+        let campioni: Vec<i16> = (0..24_000_u32)
+            .map(|n| {
+                let t = f64::from(n) / 8_000.0;
+                let v = (t * 1_000.0 * std::f64::consts::TAU).sin() * 16_000.0;
+                // Sta in un i16: l'ampiezza è sedicimila.
+                #[expect(clippy::cast_possible_truncation, reason = "sta in un i16")]
+                let campione = v.round() as i16;
+                campione
+            })
+            .collect();
+        let dati = campioni.len() * 2;
+        let mut out = Vec::with_capacity(dati + 44);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&u32::try_from(dati + 36).expect("piccolo").to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&8_000u32.to_le_bytes());
+        out.extend_from_slice(&16_000u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&u32::try_from(dati).expect("piccolo").to_le_bytes());
+        for campione in campioni {
+            out.extend_from_slice(&campione.to_le_bytes());
+        }
+        std::fs::write(percorso, out).expect("scrittura del wav");
+    }
+
+    /// La cache del cloud vista dall'analisi: il percorso del brano apre la
+    /// copia intera su disco, se c'è; altrimenti `cloud.notInCache`.
+    struct CopiaInCache(Option<std::path::PathBuf>);
+
+    impl MusicFiles for CopiaInCache {
+        fn walk(&self, _root: &str) -> Result<crate::files::Camminata, AppError> {
+            Ok(crate::files::Camminata {
+                file: Vec::new(),
+                completa: true,
+            })
+        }
+        fn open(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn crate::files::ReadSeek + Send + Sync>, AppError> {
+            match self.0.as_ref() {
+                Some(copia) if path == NUVOLOSO => {
+                    crate::files::LocalFiles.open(&copia.display().to_string())
+                }
+                _ => Err(AppError::new(ErrorCode::CloudNotInCache)),
+            }
+        }
+    }
+
+    fn brano_del_cloud(connection: &Connection, id: i64) {
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (?1, ?2, 'kn', 'T', 'A', 'AL', 3000, 1, 1, 0)",
+                rusqlite::params![id, NUVOLOSO],
+            )
+            .expect("inserimento del brano del cloud");
+    }
+
+    #[test]
+    fn un_brano_del_cloud_si_misura_dalla_copia_e_non_dal_giro() {
+        let mut connection = libreria();
+        brano(&connection, 1);
+        brano_del_cloud(&connection, 2);
+        assert_eq!(quanti_mancano(&connection, 0).expect("conteggio"), 1);
+        assert_eq!(
+            candidati(&connection, 0, 10)
+                .expect("candidati")
+                .iter()
+                .map(|c| c.track_id)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+        // L'avanzamento conta solo quel che questo giro guarda.
+        assert_eq!(avanzamento(&connection, 0).expect("avanzamento"), (0, 1));
+
+        let scheda = scheda_per_id(&connection, 2)
+            .expect("lettura")
+            .expect("da misurare");
+        assert_eq!(
+            misura(&CopiaInCache(None), &scheda),
+            Misurato::NonRaggiungibile,
+            "«non in cache» non è «illeggibile»"
+        );
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let copia = cartella.path().join("copia.wav");
+        wav_sonoro(&copia);
+        let misurato = misura(&CopiaInCache(Some(copia)), &scheda);
+        assert!(
+            matches!(misurato, Misurato::Fatta { track_id: 2, .. }),
+            "{misurato:?}"
+        );
+        assert_eq!(scrivi(&mut connection, &[misurato], 1_000), 1);
+        assert!(del_brano(&connection, 2).expect("lettura").is_some());
+        // Misurato: per quel brano non c'è più niente da fare.
+        assert!(scheda_per_id(&connection, 2).expect("lettura").is_none());
     }
 
     #[test]

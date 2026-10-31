@@ -56,6 +56,8 @@ export interface AzioniImpostazioni {
   onProfiloImportato: () => void;
   onAggiungiCartella: () => void;
   onTogliCartella: (percorso: string) => void;
+  /** Scollega un account del cloud, e con `togliCartelle` anche le sue cartelle. */
+  onScollegaConto: (conto: string, togliCartelle: boolean) => void;
   onScegliCartellaDownload: () => void;
   onScansiona: () => void;
   /** Apre la finestrella che battezza un tema nuovo. */
@@ -206,6 +208,7 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
       onErrore={onErrore}
       onAggiungiCartella={azioni.onAggiungiCartella}
       onTogliCartella={azioni.onTogliCartella}
+      onScollegaConto={azioni.onScollegaConto}
       cartelleOccupate={cartelleOccupate}
       onScegliCartellaDownload={azioni.onScegliCartellaDownload}
       onCartellaDownloadDiSerie={() => {
@@ -259,19 +262,6 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
           .then((esito) => setArricchimento(esito.stato))
           .catch(onErrore);
       }}
-      onArricchimentoRiportaNeiFile={() => {
-        // Ottimistico come sopra, e qui serve ancora di più: questo riapre
-        // in scrittura un file per ogni riga di `enrich_undo`, e su una
-        // libreria vera sono decine di secondi in cui non si vede
-        // succedere niente.
-        setArricchimento((prima) =>
-          prima ? { ...prima, inCorso: true } : prima,
-        );
-        ipc
-          .arricchimentoRiportaNeiFile()
-          .then((esito) => setArricchimento(esito.stato))
-          .catch(onErrore);
-      }}
       nuvola={nuvola}
       onNuvolaCollega={() => conNuvola(() => ipc.nuvolaCollega())}
       onNuvolaScollega={() => conNuvola(() => ipc.nuvolaScollega())}
@@ -281,9 +271,9 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
         ipc.nuvolaSalva().catch(onErrore);
       }}
       onNuvolaRipristina={azioni.onNuvolaRipristina}
-      onNuvolaCredenziali={(id, segreto) =>
-        conNuvola(() => ipc.nuvolaCredenziali(id, segreto))
-      }
+      // Lo stato intero torna dal comando: se l'app cambia davvero, il
+      // backup si scollega, e il tasto «Collega» deve ricomparire subito.
+      onNuvolaBackupApp={(scelta) => conNuvola(() => ipc.nuvolaBackupApp(scelta))}
       sincronia={sincronia}
       onSincroniaAttiva={(accesa) => conSincronia(() => ipc.sincroniaAttiva(accesa))}
       onSincroniaMagazzino={(dove, cartella) =>

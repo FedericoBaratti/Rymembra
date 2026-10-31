@@ -95,6 +95,58 @@ fn sull_host_c_e_una_sola_associazione_alla_volta() {
     }
 }
 
+#[test]
+fn un_rifiuto_dell_host_prima_del_nonce_non_conta_sul_membro() {
+    // Revisione «dusk»: l'host ha già dieci associazioni fallite nella
+    // finestra, da altri PC, e risponde all'impegno con `troppiTentativi`
+    // prima di mandare il suo nonce. Il membro contava quel rifiuto come un
+    // suo tentativo fallito, e al terzo si fermava da solo per dieci minuti,
+    // anche quando l'host si era già liberato. Come per `Occupato`: senza il
+    // nonce di chi ospita non c'è un codice, e non c'è niente da contare.
+    let (host_rete, eventi_host, indirizzo) = host(Tempi::default());
+    for _ in 0..crate::codice::IN_TUTTO {
+        let mut altro = grezzo_verso(
+            indirizzo,
+            Identita::nuova().expect("chiave"),
+            Uso::Controllo,
+        );
+        let sua = altro.identita.pubblica();
+        altro.manda(&Trasporto::Impegno {
+            impegno: Byte32(crate::codice::impegno(
+                &[1; 32],
+                &sua,
+                &host_rete.pubblica(),
+            )),
+        });
+        assert!(matches!(altro.leggi(ATTESA), Some(Trasporto::Nonce { .. })));
+        altro.manda(&Trasporto::Rivela {
+            nonce: Byte32([2; 32]),
+        });
+        assert_eq!(altro.leggi(ATTESA), chiudo("insieme.codiceRifiutato"));
+        drop(altro);
+        // La `Chiusa` sull'host parte dopo che il tentativo è contato: il
+        // prossimo non trova l'host ancora «occupato» con questo.
+        aspetta(&eventi_host, ATTESA, |e| match e {
+            Evento::Chiusa { .. } => Some(()),
+            _ => None,
+        })
+        .expect("chiusa sull'host");
+    }
+    let (membro, eventi) = vera(Tempi::default());
+    for _ in 0..crate::codice::PER_CHIAVE {
+        let id = aperta(&membro, &eventi, indirizzo);
+        membro.associa(id).expect("da chi chiede parte");
+        let chiusa = aspetta(&eventi, ATTESA, |e| match e {
+            Evento::Chiusa { id: chiusa, codice } if *chiusa == id => Some(*codice),
+            _ => None,
+        });
+        assert_eq!(chiusa, Some(Some(ErrorCodeKind::InsiemeTroppiTentativi)));
+    }
+    let id = aperta(&membro, &eventi, indirizzo);
+    let esito = membro.associa(id).map_err(|e| e.code().kind().code());
+    assert_eq!(esito, Ok(()), "il membro non si ferma da solo");
+}
+
 // ── 2. strette e posti ─────────────────────────────────────────────────────
 
 #[test]
@@ -127,6 +179,40 @@ fn le_connessioni_mute_non_rubano_le_strette() {
         "chiusa dopo {:?}",
         inizio.elapsed()
     );
+}
+
+#[test]
+fn chi_tace_dopo_il_primo_messaggio_non_tiene_il_posto_della_stretta() {
+    // Il seguito della prova B (revisione «dusk»): connessioni che mandano il
+    // primo messaggio della stretta — trentadue byte a caso sono una chiave
+    // effimera — e poi tacciono. Tenevano il loro posto fra le strette per i
+    // cinque secondi della stretta, aspettando un terzo messaggio che non
+    // arriva: due bastavano per i due posti di un indirizzo, e da due
+    // indirizzi quattro per tutti. Chi bussava dopo aspettava un posto per un
+    // secondo e se ne andava con `insieme.irraggiungibile`. Qui da un
+    // indirizzo solo, quello del membro: una `TcpStream` non sa scegliere
+    // l'indirizzo d'origine.
+    let (_host, _eventi, indirizzo) = host(Tempi::default());
+    let _zitte: Vec<TcpStream> = (0..2)
+        .map(|_| {
+            let mut presa = TcpStream::connect(indirizzo).expect("connessione");
+            let mut effimera = [0_u8; 32];
+            getrandom::fill(&mut effimera).expect("a caso");
+            let mut primo = vec![0x00, 0x20];
+            primo.extend_from_slice(&effimera);
+            std::io::Write::write_all(&mut presa, &primo).expect("primo messaggio");
+            presa
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let (membro, eventi) = vera(Tempi::default());
+    let id = membro.collega(indirizzo);
+    let esito = aspetta(&eventi, Duration::from_secs(2), |e| match e {
+        Evento::Aperta { id: a, .. } if *a == id => Some(Ok(())),
+        Evento::Chiusa { id: c, codice } if *c == id => Some(Err(*codice)),
+        _ => None,
+    });
+    assert_eq!(esito, Some(Ok(())), "l'onesto entra");
 }
 
 #[test]
@@ -358,7 +444,7 @@ fn un_json_grande_da_un_estraneo_chiude_prima_di_leggerlo() {
 #[test]
 fn chi_diventa_fidato_mentre_l_host_aspetta_puo_mandare_subito_un_messaggio_grande() {
     // I tetti si fissavano prima dell'attesa: il primo messaggio dopo
-    // l'associazione — lo `Stato`, cento kibibyte — trovava ancora i quattro
+    // l'associazione — lo `Stato`, fino a centinaia di kibibyte — trovava ancora i quattro
     // dell'estraneo, e la connessione si chiudeva con `insieme.protocollo`.
     let (host_rete, eventi, indirizzo) = host(Tempi::default());
     let identita = Identita::nuova().expect("chiave");
@@ -803,6 +889,78 @@ fn gli_ammessi_leggono_e_chi_esce_dalla_sessione_smette() {
         .pezzo(&gettone, 0, 100, None)
         .expect_err("uscito dalla sessione");
     assert_eq!(err.code().kind().code(), "insieme.gettoneScaduto");
+}
+
+#[test]
+fn offri_riapre_la_connessione_di_servizio_dopo_una_caduta() {
+    // Revisione «dusk»: la riapertura da sola della connessione di servizio
+    // (fase 2, `Rete::offri`) non aveva prove, e i suoi guasti non lasciano
+    // traccia sul membro. Anna serve un brano suo; l'host lo legge per sé.
+    let (host_rete, _eventi_host, indirizzo) = host(Tempi::default());
+    let identita = Identita::nuova().expect("chiave");
+    let testo = identita.in_testo();
+    let (anna, eventi_anna) = crate::Rete::avvia_con(
+        crate::Impostazioni {
+            identita,
+            nome: "anna".to_owned(),
+            lega: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            porta: 0,
+            adesso_ns: crate::prove_grezze::adesso_ns,
+        },
+        Tempi::default(),
+    )
+    .expect("parte");
+    let con_la_chiave_di_anna = || Identita::da_testo(&testo).expect("la stessa chiave");
+    host_rete.pari(vec![anna.pubblica()], Vec::new());
+    anna.pari(vec![host_rete.pubblica()], Vec::new());
+    let cartella = Cartella::nuova("revisione-offri");
+    let contenuto = byte_di_prova(100);
+    let gettone = Gettone([11; 16]);
+    anna.servi(gettone, cartella.file("di-anna.flac", &contenuto));
+    assert!(host_rete.inoltra(gettone, anna.pubblica()));
+    // La lettura dell'host passa dalla connessione di servizio di Anna: si
+    // riprova finché c'è, entro `entro`.
+    let legge_entro = |entro: Duration| {
+        let fine = Instant::now() + entro;
+        loop {
+            match host_rete.lettore_locale().pezzo(&gettone, 0, 100, None) {
+                Ok((byte, _)) => return byte == contenuto,
+                Err(_) if Instant::now() < fine => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) => return false,
+            }
+        }
+    };
+    let controllo = aperta(&anna, &eventi_anna, indirizzo);
+    anna.offri(indirizzo, host_rete.pubblica());
+    assert!(legge_entro(ATTESA), "la prima connessione di servizio");
+
+    // Un'altra connessione di servizio con la chiave di Anna manda via
+    // quella vera (una per chiave). Il filo di `offri` se ne accorge, e dopo
+    // un secondo si ricollega: è la sua a mandare via l'intrusa.
+    let mut intrusa = grezzo_verso(indirizzo, con_la_chiave_di_anna(), Uso::Servizio);
+    assert_eq!(
+        intrusa.leggi(ATTESA),
+        Some(Trasporto::Chiudo { codice: None }),
+        "offri si è ricollegata da sola"
+    );
+    drop(intrusa);
+    assert!(legge_entro(ATTESA), "l'host legge di nuovo");
+
+    // Senza il controllo il filo esce, e non si ricollega più.
+    anna.chiudi(controllo, None);
+    let mut seconda = grezzo_verso(indirizzo, con_la_chiave_di_anna(), Uso::Servizio);
+    assert_eq!(
+        seconda.leggi(Duration::from_secs(3)),
+        None,
+        "senza la connessione di controllo, offri non si ricollega"
+    );
+    drop(seconda);
+
+    // Col controllo di nuovo aperto, una nuova `offri` riparte: il filo di
+    // prima, uscendo, ha tolto la sua offerta.
+    aperta(&anna, &eventi_anna, indirizzo);
+    anna.offri(indirizzo, host_rete.pubblica());
+    assert!(legge_entro(ATTESA), "una nuova offri riapre la connessione");
 }
 
 #[test]

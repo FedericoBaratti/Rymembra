@@ -31,6 +31,7 @@ import type {
   FidatoInsieme,
   InsiemeNelLettore,
   ProprietarioInsieme,
+  SincroniaInsieme,
   StatoInsieme,
   VicinoInsieme,
 } from "./ipc";
@@ -444,6 +445,34 @@ export function pezziSegno(insieme: InsiemeNelLettore): Pezzo[] {
   return [...urgenti, pezzoSessione(insieme), ...resto];
 }
 
+/**
+ * La frase della regione viva della sincronia: agganciato o no, e nient'altro.
+ *
+ * Scarto e incertezza cambiano quasi a ogni secondo — il nucleo li rinfresca
+ * una volta al secondo, al decimo di millisecondo — e ridetti da una regione
+ * viva farebbero un lettore di schermo che non sta mai zitto: la regola di
+ * `InAttesa`, che annuncia l'arrivo e non il conto. Si annuncia il passaggio;
+ * i numeri restano scritti accanto, fuori dalla regione.
+ */
+export function annuncioSincronia(sincronia: Pick<SincroniaInsieme, "agganciato">): Chiave {
+  return sincronia.agganciato ? "together.sync.locked" : "together.sync.locking";
+}
+
+// ── terminare ──────────────────────────────────────────────────────────────
+
+/**
+ * «Terminare la sessione?» va chiesto: solo se c'è qualcuno da lasciare a
+ * metà brano. Chiudere una sessione dove si è da soli non toglie niente a
+ * nessuno. `persone` comprende chi ospita, come quello del nucleo.
+ *
+ * Vale per tutti i posti da cui chi ospita chiude la sessione di tutti — la
+ * fascia, il pannello, le Impostazioni e l'interruttore della funzione, che
+ * spegnendosi la chiude lo stesso: prima la chiedeva la fascia sola.
+ */
+export function chiedeConfermaPerTerminare(persone: number): boolean {
+  return persone > 1;
+}
+
 // ── i gesti in sessione ─────────────────────────────────────────────────────
 
 /**
@@ -624,8 +653,21 @@ export function nomePulito(testo: string): string {
  * per qualcuno e otto per altri, e chi lo scrive non sa a quale dei due sta
  * parlando. La porta da 1 a 65535; senza porta vale [`PORTA`], che è quella di
  * chi ospita quasi sempre. `null` quando non si legge.
+ *
+ * E, come il nucleo (`rymembra_app::insieme::indirizzo`), `null` anche per i
+ * tre indirizzi che si leggono ma non portano a nessun PC: `0.0.0.0`, il
+ * multicast da 224 a 239 e il broadcast `255.255.255.255`. Passavano, e il
+ * nucleo li rifiutava dopo il clic con l'errore di un contratto violato — «è
+ * un difetto di Rymembra» — a campo già svuotato. Il loopback invece passa:
+ * il nucleo lo accetta, e serve a chi prova due istanze sullo stesso PC.
  */
 export function leggiIndirizzo(testo: string): string | null {
+  const letto = leggiForma(testo);
+  return letto === null || nonEUnPc(letto.ottetti) ? null : letto.indirizzo;
+}
+
+/** La forma `a.b.c.d[:porta]`, senza chiedersi se porta a un PC. */
+function leggiForma(testo: string): { ottetti: number[]; indirizzo: string } | null {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?$/.exec(testo.trim());
   if (m === null) return null;
   const ottetti = m.slice(1, 5) as [string, string, string, string];
@@ -636,7 +678,20 @@ export function leggiIndirizzo(testo: string): string | null {
   const porta = m[5] === undefined ? PORTA : Number(m[5]);
   if (m[5] !== undefined && m[5].length > 1 && m[5].startsWith("0")) return null;
   if (!Number.isInteger(porta) || porta < 1 || porta > 65535) return null;
-  return `${ottetti.join(".")}:${porta}`;
+  return { ottetti: ottetti.map(Number), indirizzo: `${ottetti.join(".")}:${porta}` };
+}
+
+/**
+ * Non specificato, multicast o broadcast: le tre esclusioni di
+ * `is_unspecified`, `is_multicast` e `is_broadcast` del nucleo.
+ */
+function nonEUnPc(ottetti: readonly number[]): boolean {
+  const primo = ottetti[0] ?? 0;
+  return (
+    ottetti.every((o) => o === 0) ||
+    (primo >= 224 && primo <= 239) ||
+    ottetti.every((o) => o === 255)
+  );
 }
 
 /** Com'è andata l'aggiunta di un indirizzo all'elenco. */
@@ -647,14 +702,17 @@ export type Aggiunta =
 /**
  * Aggiunge un indirizzo all'elenco, o dice perché no.
  *
- * Tre rifiuti, ciascuno con la sua frase: non si legge, c'è già, l'elenco è
- * pieno. Il doppione si riconosce **dopo** averlo scritto nella forma del
- * nucleo — `10.0.0.5` e `10.0.0.5:47811` sono lo stesso indirizzo, e due righe
- * uguali farebbero due domande alla stessa porta a ogni giro di scoperta.
+ * Quattro rifiuti, ciascuno con la sua frase: non si legge, si legge ma non
+ * può essere l'indirizzo di un PC, c'è già, l'elenco è pieno. Il doppione si
+ * riconosce **dopo** averlo scritto nella forma del nucleo — `10.0.0.5` e
+ * `10.0.0.5:47811` sono lo stesso indirizzo, e due righe uguali farebbero due
+ * domande alla stessa porta a ogni giro di scoperta.
  */
 export function aggiungiIndirizzo(elenco: readonly string[], testo: string): Aggiunta {
-  const letto = leggiIndirizzo(testo);
-  if (letto === null) return { elenco: null, errore: "together.addresses.invalid" };
+  const forma = leggiForma(testo);
+  if (forma === null) return { elenco: null, errore: "together.addresses.invalid" };
+  if (nonEUnPc(forma.ottetti)) return { elenco: null, errore: "together.addresses.notHost" };
+  const letto = forma.indirizzo;
   if (elenco.includes(letto)) return { elenco: null, errore: "together.addresses.duplicate" };
   if (elenco.length >= MASSIMO_INDIRIZZI) {
     return { elenco: null, errore: "together.addresses.full" };

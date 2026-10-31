@@ -86,8 +86,20 @@ use crate::settings::{
 /// passata, con ogni canzone due volte.
 ///
 /// Con un nome uguale per tutti le identità coincidono, l'unione è un'operazione
-/// a vuoto, e la playlist resta di dieci. Dove i due elenchi differiscono davvero
-/// resta la parte comune e si aggiunge il resto, che è il comportamento voluto.
+/// a vuoto, e la playlist resta di dieci.
+///
+/// Il rovescio, ed è un limite dichiarato e non il comportamento voluto: due
+/// playlist con lo stesso nome ma elenchi **diversi**, battezzate ciascuna per
+/// conto suo, non si uniscono. `origine:k` di qua e `origine:k` di là sono per
+/// la fusione lo stesso elemento, e dove i brani in quella posizione
+/// differiscono [`Sequenza`] ne tiene uno solo (la coppia minore): `[x, y]` e
+/// `[z, w]` diventano due brani, non quattro. Vedi la prova
+/// `le_playlist_si_fondono_invece_di_sostituirsi` in `profilo/prove.rs`, e
+/// quella qui in fondo che fissa il caso.
+///
+/// Vale **solo per il primo battesimo** ([`Sequenza::dalla_lista`]). Ciò che si
+/// aggiunge o si sposta dopo porta il nome del dispositivo: vedi
+/// [`allinea_sequenze`].
 const ORIGINE: &str = "origine";
 
 // ── il conteggio d'ascolto ──────────────────────────────────────────────────
@@ -104,14 +116,45 @@ const ORIGINE: &str = "origine";
 /// La somma è su `track_key` e non su `id`: due file dello stesso brano sono lo
 /// stesso brano, ed è già così che `backup.rs` li tratta quando salva.
 ///
+/// # Prima della somma, lo storico che nessuno rivendica
+///
+/// Rifare la colonna come somma è giusto solo se la somma conosce **tutto**
+/// quel che la colonna dice. Il ripristino da backup, l'importazione di un
+/// account e quella dal vecchio database scrivono `play_count` e non toccano
+/// `sync_ascolti`; l'eccedenza diventa di `importazione` solo in [`allinea`],
+/// che gira con la sincronia accesa e nel profilo. Con la sincronia spenta, che
+/// è il default, il primo ascolto dopo un ripristino riscriveva 40 come 1. Per
+/// questo qui si fa, per la sola chiave del brano, la stessa attribuzione di
+/// [`allinea_ascolti`]: stessa sottrazione, stesso `max`, quindi a vuoto quando
+/// la colonna è già in pari e mai al ribasso. Costa una lettura indicizzata.
+///
 /// # Errori
 ///
-/// `db.queryFailed` se una delle due scritture fallisce.
+/// `db.queryFailed` se una delle scritture fallisce.
 pub fn conta_ascolto(
     tx: &Transaction<'_>,
     track_id: i64,
     dispositivo: &str,
 ) -> Result<(), AppError> {
+    tx.execute(
+        "INSERT INTO sync_ascolti (track_key, dispositivo, quanti)
+         SELECT chiave, ?2, eccedenza FROM (
+           SELECT t.track_key AS chiave,
+                  MAX(t.play_count) - COALESCE((
+                    SELECT SUM(a.quanti) FROM sync_ascolti a
+                     WHERE a.track_key = t.track_key AND a.dispositivo <> ?2
+                  ), 0) AS eccedenza
+             FROM tracks t
+            WHERE t.track_key = (SELECT track_key FROM tracks WHERE id = ?1)
+            GROUP BY t.track_key
+         )
+         WHERE eccedenza > 0
+         ON CONFLICT(track_key, dispositivo) DO UPDATE SET
+           quanti = max(sync_ascolti.quanti, excluded.quanti)",
+        rusqlite::params![track_id, IMPORTAZIONE],
+    )
+    .map_err(|err| db_error("storico ereditato del brano", &err))?;
+
     tx.execute(
         "INSERT INTO sync_ascolti (track_key, dispositivo, quanti)
          SELECT track_key, ?2, 1 FROM tracks WHERE id = ?1
@@ -193,20 +236,26 @@ pub fn allinea(
     let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura dell'allineamento", &err))?;
 
-    let fatto = allinea_in(&tx, adesso_ms)?;
+    let fatto = allinea_in(&tx, dispositivo, adesso_ms)?;
 
     tx.commit()
         .map_err(|err| db_error("chiusura dell'allineamento", &err))?;
-    let _ = dispositivo;
     Ok(fatto)
 }
 
 /// Le scritture di [`allinea`], dentro una transazione già aperta: la usa anche
 /// [`applica_se_ferma`].
-fn allinea_in(tx: &Transaction<'_>, adesso_ms: i64) -> Result<Allineato, AppError> {
+///
+/// `dispositivo` è il nome con cui si battezzano gli elementi che una modifica
+/// fatta qui aggiunge a una sequenza già esistente: vedi [`allinea_sequenze`].
+fn allinea_in(
+    tx: &Transaction<'_>,
+    dispositivo: &str,
+    adesso_ms: i64,
+) -> Result<Allineato, AppError> {
     let mut fatto = Allineato {
         ascolti: allinea_ascolti(tx)?,
-        sequenze: allinea_sequenze(tx, adesso_ms)?,
+        sequenze: allinea_sequenze(tx, dispositivo, adesso_ms)?,
         cartelle: 0,
     };
     fatto.cartelle = allinea_cartelle(tx, adesso_ms)?;
@@ -268,7 +317,33 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
 /// produce e quello che la tabella dice, e la si riversa con
 /// [`Sequenza::riordina`] — che tocca solo ciò che si è mosso davvero invece di
 /// rifare tutto, e quindi non lascia una lapide per brano a ogni trascinamento.
-fn allinea_sequenze(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppError> {
+///
+/// # Due nomi, per due momenti diversi
+///
+/// Il primo battesimo di una playlist usa [`ORIGINE`]; tutto ciò che si
+/// aggiunge **dopo** porta il nome di questo dispositivo. Non è un dettaglio: il
+/// numero di un elemento nuovo è il massimo più uno, uguale su due dispositivi
+/// allineati, e con lo stesso nome per tutti due aggiunte fatte in
+/// contemporanea — `d` di qua, `e` di là — nascevano entrambe `origine:3`. La
+/// fusione tratta un'identità uguale come lo stesso elemento e ne tiene uno: `e`
+/// spariva da tutti e due, in silenzio, e uno spostamento in testa contro un
+/// inserimento in testa faceva sparire il brano spostato. Col nome del
+/// dispositivo sono `portatile:3` e `fisso:3`, due elementi, e la fusione li
+/// tiene entrambi; il prezzo è che la stessa aggiunta fatta in due posti
+/// scollegati resta due volte, che è ciò che [`Sequenza`] promette per gli
+/// inserimenti concorrenti ed è meglio di una perdita.
+fn allinea_sequenze(
+    tx: &Transaction<'_>,
+    dispositivo: &str,
+    adesso_ms: i64,
+) -> Result<usize, AppError> {
+    // Un nome vuoto farebbe identità che `Identita::da_testo` non rilegge, e il
+    // brano aggiunto sparirebbe alla lettura dopo: meglio il nome comune.
+    let dispositivo = if dispositivo.trim().is_empty() {
+        ORIGINE
+    } else {
+        dispositivo
+    };
     let membri = membri_per_playlist(tx)?;
     let mut sequenze = sequenze_salvate(tx)?;
 
@@ -285,7 +360,7 @@ fn allinea_sequenze(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppEr
             if aggiornata.ordine() == atteso {
                 continue;
             }
-            aggiornata.riordina(ORIGINE, brani, adesso_ms);
+            aggiornata.riordina(dispositivo, brani, adesso_ms);
         }
         if aggiornata == sequenza {
             continue;
@@ -302,7 +377,8 @@ fn allinea_sequenze(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppEr
             continue;
         }
         let mut vuotata = sequenza.clone();
-        vuotata.riordina(ORIGINE, &[], adesso_ms);
+        // Svuotare non crea elementi, solo lapidi: il nome qui è indifferente.
+        vuotata.riordina(dispositivo, &[], adesso_ms);
         scrivi_sequenza(tx, &chiave, &vuotata)?;
         rifatte += 1;
     }
@@ -866,7 +942,14 @@ pub fn applica_se_ferma(
     let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della sincronia", &err))?;
 
-    allinea_in(&tx, adesso_ms)?;
+    // Qui l'allineamento serve solo a vedere se qualcosa si è mosso, e il nome
+    // del dispositivo non c'è (la firma è quella che la finestra chiama). Non
+    // serve: un elemento che questo allineamento creasse cambierebbe la
+    // sequenza, quindi `playlist` qui sotto non sarebbe più quella di
+    // `partenza`, e la transazione cadrebbe senza `commit` — il nome con cui
+    // l'avrebbe battezzato non arriva mai nel database. Gli elementi veri li
+    // battezza l'`allinea` della passata dopo, col nome giusto.
+    allinea_in(&tx, ORIGINE, adesso_ms)?;
     let cartelle: BTreeMap<String, Interruttore> =
         settings::read_json(&tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
     if cartelle != partenza.cartelle || playlist(&tx)? != partenza.playlist {
@@ -1152,29 +1235,63 @@ fn applica_playlist(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
     let mut dissotterra = tx
         .prepare("DELETE FROM sync_tombstones WHERE kind = 'playlist' AND key = ?1")
         .map_err(|err| db_error("playlist ricevute", &err))?;
+    let mut membri_attuali = tx
+        .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position")
+        .map_err(|err| db_error("playlist ricevute", &err))?;
+
+    // Com'è adesso, per non riscrivere quel che è già così. Il fuso contiene
+    // anche le playlist del proprio documento: senza il confronto ogni passata
+    // rifaceva l'upsert di tutte, riscriveva tutte le sequenze e svuotava e
+    // riempiva tutto `playlist_tracks` — col lucchetto della libreria preso,
+    // lo stesso del lettore — e le contava fra le «arrivate», così il
+    // resoconto non diceva mai «era già tutto allineato».
+    let locali = playlist(tx)?;
 
     let mut scritte = 0;
     for (chiave, playlist) in &fuso.playlist {
-        inserisci
-            .execute(rusqlite::params![
-                chiave,
-                playlist.nome,
-                playlist.descrizione,
-                playlist.creata_at,
-                playlist.at,
-                i64::from(playlist.smart),
-                playlist.regole,
-            ])
-            .map_err(|err| db_error("playlist ricevute", &err))?;
+        let locale = locali.get(chiave);
+        // La riga resterebbe com'è: stessi campi, e la data di creazione e
+        // quella di modifica che l'upsert terrebbe (la minima e la massima).
+        let riga_uguale = locale.is_some_and(|qui| {
+            qui.nome == playlist.nome
+                && qui.descrizione == playlist.descrizione
+                && qui.creata_at <= playlist.creata_at
+                && qui.at >= playlist.at
+                && qui.smart == playlist.smart
+                && qui.regole == playlist.regole
+        });
+        if !riga_uguale {
+            inserisci
+                .execute(rusqlite::params![
+                    chiave,
+                    playlist.nome,
+                    playlist.descrizione,
+                    playlist.creata_at,
+                    playlist.at,
+                    i64::from(playlist.smart),
+                    playlist.regole,
+                ])
+                .map_err(|err| db_error("playlist ricevute", &err))?;
+        }
+        // Sempre, anche quando la riga c'è già uguale: una playlist ricreata
+        // a mano qui (`playlists::crea_riga`) non toglie la propria lapide, e
+        // questa è la passata che lo fa.
         dissotterra
             .execute([chiave])
             .map_err(|err| db_error("playlist ricevute", &err))?;
-        scritte += 1;
 
         if playlist.smart {
+            if !riga_uguale {
+                scritte += 1;
+            }
             continue;
         }
-        scrivi_sequenza(tx, chiave, &playlist.sequenza)?;
+        // La sequenza intera, lapidi comprese, e non solo l'ordine che ne
+        // esce: elementi tolti ed elementi di brani che qui non ci sono vanno
+        // salvati lo stesso (vedi `Sequenza::elementi`).
+        if locale.is_none_or(|qui| qui.sequenza != playlist.sequenza) {
+            scrivi_sequenza(tx, chiave, &playlist.sequenza)?;
+        }
 
         let id: i64 = identifica
             .query_row([chiave], |row| row.get(0))
@@ -1197,6 +1314,21 @@ fn applica_playlist(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
                 brani.push(track_id);
             }
         }
+
+        // Uguali a quel che c'è: niente da riscrivere, e niente da contare se
+        // anche la riga è rimasta com'era.
+        let attuali: Vec<i64> = membri_attuali
+            .query_map([id], |row| row.get(0))
+            .map_err(|err| db_error("playlist ricevute", &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error("playlist ricevute", &err))?;
+        if attuali == brani {
+            if !riga_uguale {
+                scritte += 1;
+            }
+            continue;
+        }
+        scritte += 1;
 
         // Si svuota e si riscrive: `playlist_tracks` ha `PRIMARY KEY (playlist_id,
         // position)` e il vincolo si verifica a ogni istruzione, non alla COMMIT.
@@ -1223,6 +1355,11 @@ fn applica_playlist(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
 /// nell'elenco, come già fa un ripristino da backup: una cartella che non c'è
 /// costa una scansione a vuoto, mentre una cartella che manca costa una libreria
 /// che non si popola e nessuno sa perché.
+///
+/// Lo stesso, e a maggior ragione, per le cartelle del cloud (`nuvola://…`):
+/// viaggiano come sono, perché il conto nel percorso è lo stesso su ogni
+/// dispositivo che collega quell'account. Di là compaiono «da collegare»; lo
+/// specchio del servizio non viaggia — si rielenca.
 fn applica_cartelle(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError> {
     if fuso.cartelle.is_empty() {
         return Ok(0);
@@ -1547,6 +1684,38 @@ mod prove {
     }
 
     #[test]
+    fn un_conteggio_ripristinato_senza_allineamento_sopravvive_al_primo_ascolto() {
+        // Un ripristino da backup o un'importazione scrivono `play_count` e non
+        // toccano `sync_ascolti`; con la sincronia spenta, che è il default,
+        // nessun `allinea` passa prima del primo ascolto.
+        let mut connection = libreria();
+        connection
+            .execute(
+                "UPDATE tracks SET play_count = 40 WHERE track_key = 'a'",
+                [],
+            )
+            .expect("conteggio ripristinato");
+
+        let tx = connection.transaction().expect("transazione");
+        conta_ascolto(&tx, 1, "portatile").expect("ascolto");
+        tx.commit().expect("commit");
+
+        assert_eq!(conteggio(&connection, "a"), 41, "quaranta più uno, non uno");
+        let ereditati: i64 = connection
+            .query_row(
+                "SELECT quanti FROM sync_ascolti WHERE track_key = 'a' AND dispositivo = ?1",
+                [IMPORTAZIONE],
+                |row| row.get(0),
+            )
+            .expect("importazione");
+        assert_eq!(ereditati, 40);
+
+        // E l'allineamento di dopo non trova niente da aggiungere.
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        assert_eq!(conteggio(&connection, "a"), 41);
+    }
+
+    #[test]
     fn gli_ascolti_di_due_dispositivi_si_sommano_nella_libreria() {
         let mut connection = libreria();
         allinea(&mut connection, "portatile", 1_000).expect("allineamento");
@@ -1583,13 +1752,45 @@ mod prove {
         let mio = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
             .expect("contenuto");
         let fuso = fondi(&[Documento::nuovo("portatile", mio.clone(), 2_000)]);
+        // Ogni riga di `playlist_tracks` tolta si conta: una passata a vuoto non
+        // deve riscrivere niente, né contare la playlist fra le «arrivate».
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE tolte (n INTEGER);
+                 CREATE TEMP TRIGGER conta_tolte AFTER DELETE ON playlist_tracks
+                 BEGIN INSERT INTO tolte VALUES (1); END;",
+            )
+            .expect("spia");
         let cambiamenti = applica(&mut connection, &fuso, 2_000).expect("applicazione");
 
         assert_eq!(cambiamenti.playlist_tolte, 0);
+        assert_eq!(
+            cambiamenti.playlist, 0,
+            "niente è arrivato: {cambiamenti:?}"
+        );
+        assert!(cambiamenti.e_vuoto(), "{cambiamenti:?}");
+        let tolte: i64 = connection
+            .query_row("SELECT COUNT(*) FROM tolte", [], |row| row.get(0))
+            .expect("spia");
+        assert_eq!(tolte, 0, "playlist_tracks non si riscrive");
         assert_eq!(ordine(&connection, "sera"), vec!["a", "b"]);
         let dopo = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
             .expect("contenuto");
         assert_eq!(mio, dopo, "il documento è lo stesso di prima");
+
+        // E quando qualcosa arriva davvero, si conta.
+        let mut suo = mio.clone();
+        if let Some(playlist) = suo.playlist.get_mut("sera") {
+            playlist.sequenza.accoda("telefono", "c");
+            playlist.at = 2_500;
+        }
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 3_000),
+            Documento::nuovo("telefono", suo, 3_000),
+        ]);
+        let cambiamenti = applica(&mut connection, &fuso, 3_000).expect("applicazione");
+        assert_eq!(cambiamenti.playlist, 1);
+        assert_eq!(ordine(&connection, "sera"), vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -1649,6 +1850,88 @@ mod prove {
     }
 
     #[test]
+    fn due_librerie_che_aggiungono_ciascuna_un_brano_li_tengono_entrambe() {
+        // Come il caso qui sopra, ma con due dispositivi veri: tutti e due
+        // passano da `allinea`, e nessuno dei due finge l'altro con `accoda`.
+        // Con lo stesso nome per tutti, le due aggiunte nascevano `origine:1`
+        // da tutte e due le parti, e la fusione ne teneva una.
+        let mut portatile = libreria();
+        let mut fisso = libreria();
+        playlist_con(&portatile, "sera", &[1]);
+        playlist_con(&fisso, "sera", &[1]);
+        allinea(&mut portatile, "portatile", 1_000).expect("allineamento");
+        allinea(&mut fisso, "fisso", 1_000).expect("allineamento");
+
+        let passata = |portatile: &mut Connection, fisso: &mut Connection, adesso: i64| {
+            let mio = contenuto(portatile, "portatile", BTreeMap::new(), BTreeMap::new())
+                .expect("contenuto");
+            let suo =
+                contenuto(fisso, "fisso", BTreeMap::new(), BTreeMap::new()).expect("contenuto");
+            let fuso = fondi(&[
+                Documento::nuovo("portatile", mio.clone(), adesso),
+                Documento::nuovo("fisso", suo.clone(), adesso),
+            ]);
+            applica_se_ferma(portatile, &mio, &fuso, adesso)
+                .expect("applicazione")
+                .expect("ferma");
+            applica_se_ferma(fisso, &suo, &fuso, adesso)
+                .expect("applicazione")
+                .expect("ferma");
+        };
+        passata(&mut portatile, &mut fisso, 2_000);
+
+        let aggiungi = |connection: &mut Connection, brano: i64, dispositivo: &str| {
+            connection
+                .execute(
+                    "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                     SELECT id, ?1, 1 FROM playlists WHERE playlist_key = 'sera'",
+                    [brano],
+                )
+                .expect("aggiunta");
+            allinea(connection, dispositivo, 3_000).expect("allineamento");
+        };
+        aggiungi(&mut portatile, 2, "portatile");
+        aggiungi(&mut fisso, 3, "fisso");
+        passata(&mut portatile, &mut fisso, 4_000);
+
+        for (chi, connection) in [("portatile", &portatile), ("fisso", &fisso)] {
+            let finale = ordine(connection, "sera");
+            assert!(finale.contains(&"b".to_owned()), "{chi}: {finale:?}");
+            assert!(finale.contains(&"c".to_owned()), "{chi}: {finale:?}");
+            assert_eq!(finale.len(), 3, "{chi}: {finale:?}");
+        }
+        assert_eq!(ordine(&portatile, "sera"), ordine(&fisso, "sera"));
+    }
+
+    #[test]
+    fn due_playlist_omonime_mai_sincronizzate_collidono_per_posizione() {
+        // Il limite dichiarato in [`ORIGINE`], fissato qui perché il commento
+        // non possa tornare a dire «si aggiunge il resto» senza che una prova
+        // se ne accorga: `origine:k` di qua e di là sono lo stesso elemento, e
+        // per ogni posizione la fusione tiene la coppia minore.
+        let mut qui = libreria();
+        let mut la = libreria();
+        playlist_con(&qui, "corsa", &[1, 2]);
+        playlist_con(&la, "corsa", &[3, 1]);
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        allinea(&mut la, "telefono", 1_000).expect("allineamento");
+
+        let mio =
+            contenuto(&qui, "portatile", BTreeMap::new(), BTreeMap::new()).expect("contenuto");
+        let suo = contenuto(&la, "telefono", BTreeMap::new(), BTreeMap::new()).expect("contenuto");
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 2_000),
+            Documento::nuovo("telefono", suo, 2_000),
+        ]);
+        let ordine_fuso = fuso.playlist["corsa"].sequenza.ordine();
+        assert_eq!(
+            ordine_fuso,
+            vec!["a", "a"],
+            "due posizioni, due brani: «b» e «c» si perdono"
+        );
+    }
+
+    #[test]
     fn una_playlist_cancellata_altrove_se_ne_va() {
         let mut connection = libreria();
         playlist_con(&connection, "sera", &[1, 2]);
@@ -1670,6 +1953,50 @@ mod prove {
             .query_row("SELECT COUNT(*) FROM playlists", [], |row| row.get(0))
             .expect("conteggio");
         assert_eq!(quante, 0);
+    }
+
+    #[test]
+    fn una_playlist_rinominata_non_torna_col_nome_di_prima() {
+        // Il documento dell'altro dispositivo ha ancora «sera»: senza la lapide
+        // della chiave vecchia la fusione la terrebbe, e qui ricomparirebbe
+        // accanto a quella rinominata.
+        let mut connection = libreria();
+        playlist_con(&connection, "sera", &[1, 2]);
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        let suo = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+
+        let id: i64 = connection
+            .query_row(
+                "SELECT id FROM playlists WHERE playlist_key = 'sera'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("playlist");
+        let rinominata =
+            crate::playlists::rename(&connection, id, "Sera estate").expect("rinominata");
+        allinea(&mut connection, "portatile", 2_000).expect("allineamento");
+
+        let mio = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 3_000),
+            Documento::nuovo("telefono", suo, 3_000),
+        ]);
+        applica(&mut connection, &fuso, 3_000).expect("applicazione");
+
+        let chiavi: Vec<String> = {
+            let mut statement = connection
+                .prepare("SELECT playlist_key FROM playlists ORDER BY playlist_key")
+                .expect("chiavi");
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("chiavi")
+                .map(|riga| riga.expect("riga"))
+                .collect()
+        };
+        assert_eq!(chiavi, vec![rinominata.key.clone()]);
+        assert_eq!(ordine(&connection, &rinominata.key), vec!["a", "b"]);
     }
 
     #[test]
@@ -1752,6 +2079,30 @@ mod prove {
             vec!["a", "sconosciuto", "b"],
             "torna al suo posto, non in fondo"
         );
+    }
+
+    #[test]
+    fn le_cartelle_del_cloud_viaggiano_come_sono() {
+        let mut qui = libreria();
+        let nuvola = "nuvola://dropbox-abcdefgh/Musica";
+        settings::write_json(&qui, CHIAVE_CARTELLE, &vec!["C:\\Musica", nuvola]).expect("cartelle");
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        let mio =
+            contenuto(&qui, "portatile", BTreeMap::new(), BTreeMap::new()).expect("contenuto");
+        assert!(mio.cartelle.contains_key(nuvola));
+
+        let mut la = libreria();
+        allinea(&mut la, "telefono", 1_000).expect("allineamento");
+        let suo = contenuto(&la, "telefono", BTreeMap::new(), BTreeMap::new()).expect("contenuto");
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 2_000),
+            Documento::nuovo("telefono", suo, 2_000),
+        ]);
+        applica(&mut la, &fuso, 2_000).expect("applicazione");
+        let cartelle: Vec<String> = settings::read_json(&la, CHIAVE_CARTELLE)
+            .expect("cartelle")
+            .unwrap_or_default();
+        assert!(cartelle.iter().any(|c| c == nuvola), "{cartelle:?}");
     }
 
     #[test]
@@ -1919,6 +2270,26 @@ mod prove {
 
         assert!(dimentica(&connection, "telefono").expect("dimenticato"));
         assert_eq!(dispositivi(&connection).expect("dispositivi").len(), 1);
+    }
+
+    #[test]
+    fn lo_specchio_del_cloud_non_viaggia_con_la_sincronia() {
+        // Una cache di questo PC: l'altro dispositivo rielenca da sé.
+        let mut connection = libreria();
+        playlist_con(&connection, "sera", &[1, 2]);
+        let segreti = crate::nuvola::specchio_da_non_portare(&connection);
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        let mio = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let json =
+            serde_json::to_string(&Documento::nuovo("portatile", mio, 2_000)).expect("in JSON");
+        assert!(json.contains("sera"), "il documento c'è");
+        for segreto in &segreti {
+            assert!(
+                !json.contains(segreto.as_str()),
+                "«{segreto}» viaggerebbe col documento"
+            );
+        }
     }
 
     #[test]

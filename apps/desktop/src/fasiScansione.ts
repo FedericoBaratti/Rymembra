@@ -5,11 +5,11 @@
  *
  * La stessa scansione la disegnano in quattro: la pila dei toast, le
  * Impostazioni, il primo avvio e l'annuncio per chi ascolta lo schermo. Dalla
- * 3.0.2 l'avanzamento porta una fase (`ipc.ts`, `FaseScansione`), e ognuno dei
- * quattro avrebbe dovuto rifare da sé la stessa domanda — «a che punto è?» — e
- * lo stesso ripiego per il nucleo di prima, che la fase non la manda. Qui la si
- * fa una volta, senza React e senza lingue, così `node --test` la carica da sola
- * (`test/fasiScansione.test.ts`).
+ * 3.0.2 l'avanzamento porta una fase (`ipc/libreria.ts`, `FaseScansione`), e
+ * ognuno dei quattro avrebbe dovuto rifare da sé la stessa domanda — «a che
+ * punto è?» — e lo stesso ripiego per il nucleo di prima, che la fase non la
+ * manda. Qui la si fa una volta, senza React e senza lingue, così `node --test`
+ * la carica da sola (`test/fasiScansione.test.ts`).
  */
 import type { Avanzamento } from "./ipc";
 import type { Chiave, Valori } from "./lingue";

@@ -68,10 +68,13 @@ import { chiudiQuellaInCima } from "./finestrella";
 import { posizioneAdesso } from "./riproduzione";
 import { t, type Chiave } from "./lingue";
 import { modaleAperto, passaLaScorciatoia } from "./modale";
-import { nomiDi } from "./tasti";
+import { PASSO_FRECCIA_MS, nomiDi, siRipete } from "./tasti";
 
-/** Di quanto si sposta il cursore con una freccia. */
-const PASSO_MS = 5_000;
+/**
+ * Di quanto si sposta il cursore con una freccia: lo stesso numero delle
+ * frecce sul cursore della posizione (`Scrubber`), che sta in `tasti.ts`.
+ */
+const PASSO_MS = PASSO_FRECCIA_MS;
 
 /** I comandi che si possono associare a un tasto. */
 export type Comando =
@@ -79,6 +82,11 @@ export type Comando =
   | "cerca"
   | "avanti"
   | "indietro"
+  | "precedente"
+  | "prossimo"
+  | "volumeSu"
+  | "volumeGiu"
+  | "muto"
   | "inRiproduzione"
   | "schermoIntero"
   | "ingrandisci"
@@ -104,6 +112,11 @@ const CHIAVI: readonly Comando[] = [
   "cerca",
   "avanti",
   "indietro",
+  "precedente",
+  "prossimo",
+  "volumeSu",
+  "volumeGiu",
+  "muto",
   "inRiproduzione",
   "schermoIntero",
   "ingrandisci",
@@ -132,6 +145,19 @@ export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
   cerca: ["/", "Ctrl+f"],
   avanti: ["ArrowRight"],
   indietro: ["ArrowLeft"],
+  // Brano e volume con `Ctrl` e le frecce, come nei lettori più usati: le
+  // frecce nude sono già i cinque secondi, e chi le conosce cerca il resto
+  // lì accanto. Mentre si scrive non passano — `Ctrl+←` in un campo è la
+  // parola prima, e salta il brano a metà ricerca era il guaio da evitare.
+  // Arrivate nella 3.2: chi aveva già personalizzato le sue le trova di serie,
+  // come le altre arrivate dopo (vedi sotto).
+  precedente: ["Ctrl+ArrowLeft"],
+  prossimo: ["Ctrl+ArrowRight"],
+  volumeSu: ["Ctrl+ArrowUp"],
+  volumeGiu: ["Ctrl+ArrowDown"],
+  // Nuda, come «f»: è la lettera che silenzia nei lettori video, e non si
+  // preme scrivendo perché un campo di testo se la tiene.
+  muto: ["m"],
   inRiproduzione: ["f"],
   // `F11` e non altro: è il tasto che ogni programma con una finestra usa per
   // questo, e chi lo preme qui dentro non sta imparando niente di nuovo. Non
@@ -150,8 +176,12 @@ export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
   //   `e.key` è già diventato `+` **e** `shiftKey` è vero.
   //
   // Toglierne uno vuol dire una tastiera su cui la scorciatoia più famosa del
-  // mondo non fa niente, e nessuno che possa capire perché. È lo stesso
-  // motivo per cui `cerca` ne ha due.
+  // mondo non fa niente, e nessuno che possa capire perché. (`Ctrl+Shift++`
+  // oggi si cerca anche come `Ctrl++`, perché `nomiDi` prova pure il nome
+  // senza un Maiusc già speso nel segno — vedi `tasti.ts`, «E Maiusc già
+  // speso» — ma la riga resta: è quel che la scheda delle scorciatoie mostra.)
+  // È la stessa regola che fa partire la `/` di `cerca` sulle tastiere dove
+  // si scrive con Maiusc; `Ctrl+F` le resta accanto per chi non la conosce.
   ingrandisci: ["Ctrl++", "Ctrl+=", "Ctrl+Shift++"],
   // Uno solo, e qui basta davvero: `-` non vuole `Shift` su nessuna delle
   // tastiere di sopra, e quello del tastierino dà lo stesso carattere.
@@ -217,6 +247,11 @@ export function serieMutabile(): Associazioni {
     cerca: [...DI_SERIE.cerca],
     avanti: [...DI_SERIE.avanti],
     indietro: [...DI_SERIE.indietro],
+    precedente: [...DI_SERIE.precedente],
+    prossimo: [...DI_SERIE.prossimo],
+    volumeSu: [...DI_SERIE.volumeSu],
+    volumeGiu: [...DI_SERIE.volumeGiu],
+    muto: [...DI_SERIE.muto],
     inRiproduzione: [...DI_SERIE.inRiproduzione],
     schermoIntero: [...DI_SERIE.schermoIntero],
     ingrandisci: [...DI_SERIE.ingrandisci],
@@ -291,6 +326,14 @@ export type Azioni = {
   cerca: () => void;
   /** La posizione nel brano, in millisecondi assoluti. */
   vaiA: (ms: number) => void;
+  /** Il brano prima, o l'inizio di questo. */
+  precedente: () => void;
+  /** Il brano dopo. */
+  prossimo: () => void;
+  /** Il volume di un passo, su o giù: vedi `PASSO_VOLUME`. */
+  volume: (su: boolean) => void;
+  /** Silenzia, e di nuovo per ridare il suono. */
+  muto: () => void;
   /** `Escape`. Restituisce `true` se ha chiuso qualcosa. */
   chiudi: () => boolean;
   /** «In riproduzione» a tutto schermo. */
@@ -439,6 +482,21 @@ function esegui(comando: Comando, azioni: Azioni): void {
     case "indietro":
       azioni.vaiA(Math.max(posizioneAdesso() - PASSO_MS, 0));
       break;
+    case "precedente":
+      azioni.precedente();
+      break;
+    case "prossimo":
+      azioni.prossimo();
+      break;
+    case "volumeSu":
+      azioni.volume(true);
+      break;
+    case "volumeGiu":
+      azioni.volume(false);
+      break;
+    case "muto":
+      azioni.muto();
+      break;
     case "inRiproduzione":
       azioni.inRiproduzione();
       break;
@@ -559,6 +617,10 @@ export function useScorciatoie(
       // `preventDefault`: il tasto resta a chi ce l'ha, e `Ctrl+C` copia.
       if (!passaLaScorciatoia(comando, sottoUnModale(e.target))) return;
 
+      // Una freccia, anche con `Ctrl`, resta al campo in cui si scrive: lì
+      // `Ctrl+←` è la parola prima, e non il brano prima.
+      if (TASTI_CURSORE.has(e.key) && siStaScrivendo(e.target)) return;
+
       // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive, e con esso
       // i tasti funzione, che nessuna parola contiene; un tasto nudo no. Vedi il
       // preambolo. Lo stesso tasto nudo non passa neppure quando il comando col
@@ -573,6 +635,10 @@ export function useScorciatoie(
       // scorrerebbe la pagina di uno schermo, e mettere in pausa sposterebbe
       // l'elenco.
       e.preventDefault();
+      // Tenuto premuto, un interruttore scatta una volta sola: vedi `siRipete`.
+      // **Dopo** `preventDefault`, e non prima: una ripetizione scartata resta
+      // presa, o lo Spazio tenuto giù tornerebbe a scorrere la pagina.
+      if (e.repeat && !siRipete(comando)) return;
       esegui(comando, azioni);
     };
 

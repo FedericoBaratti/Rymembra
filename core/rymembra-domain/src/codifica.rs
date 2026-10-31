@@ -37,14 +37,32 @@
 //! 2. **La firma è strutturale, non statistica.** Una coppia
 //!    guida-continuazione dell'UTF-8, un carattere di controllo C1, una parola
 //!    intera fatta di sole lettere accentate: sono cose che il testo vero non
-//!    contiene, non cose che contiene di rado.
+//!    contiene, non cose che contiene di rado. Con un'eccezione, che va detta:
+//!    la coppia l'italiano la contiene, in ogni accentata seguita da `…`, `»`,
+//!    `”` o da uno spazio non separabile — «Così…», «Già»». Per questo una
+//!    rilettura in una tabella a un byte ripara una coppia solo se ne cambia la
+//!    continuazione: «Così…» → «Cosě…» cambia la lettera e lascia i puntini, e
+//!    non passa; e un candidato con un carattere d'uso privato — «Però…» in
+//!    Shift-JIS — non è mai una riparazione. Restano aperte due strade, dette:
+//!    l'UTF-8 di `PERCHÉ…` (`C9 85` → `Ʌ`), che un filtro sui caratteri del
+//!    risultato non può chiudere senza chiudere anche il rumeno («AÈ™a» →
+//!    «Așa»); e la «è» da sola prima dei puntini, `Lui è…`, che Shift-JIS e
+//!    GBK leggono come un ideogramma in una parola sua, che la penalità non
+//!    vede: fermarlo vorrebbe dire una regola sulla lingua, che scarterebbe
+//!    anche i titoli misti veri della stessa forma.
 //! 3. **Il vincitore deve battere l'originale di un margine.** A parità, o
 //!    quasi, non si tocca niente.
 //!
-//! E soprattutto: la riparazione non riscrive mai il file dell'utente. Resta un
-//! valore di libreria con la sua provenienza, che
-//! [`crate::ricostruzione::Origine::TagRiparato`] dichiara e l'interfaccia
-//! mostra accanto all'originale.
+//! E soprattutto: la riparazione non riscrive mai il file dell'utente. È
+//! pensata per restare un valore di libreria con la sua provenienza, che
+//! [`crate::ricostruzione::Origine::TagRiparato`] dichiara.
+//!
+//! **Oggi la scansione non la usa.** [`ripara`] ha un solo chiamante,
+//! [`crate::ricostruzione::ricostruisci`], e quello non ne ha in produzione: un
+//! tag `BjÃ¶rk` entra in libreria e nella chiave così com'è, e nessuna
+//! schermata mostra un originale accanto a un valore riparato. Riparazione e
+//! provenienza esistono e sono provate qui; collegarle alla scansione è un
+//! lavoro a parte.
 
 use encoding_rs::{
     BIG5, EUC_KR, Encoding, GBK, SHIFT_JIS, UTF_8, WINDOWS_1250, WINDOWS_1251, WINDOWS_1252,
@@ -364,7 +382,7 @@ fn penalita(testo: &str) -> u32 {
             punti = punti.saturating_add(20);
         }
         if precedente.is_some_and(e_guida) && e_continuazione(c) {
-            punti = punti.saturating_add(12);
+            punti = punti.saturating_add(PESO_COPPIA);
         }
         if RARI.contains(&c) {
             punti = punti.saturating_add(3);
@@ -466,7 +484,23 @@ pub fn ripara(testo: &str) -> Option<Riparazione> {
             if letto == testo || letto.trim().is_empty() {
                 continue;
             }
-            let punti = penalita(&letto);
+            // Un carattere d'uso privato non l'ha scritto nessuno: è dove
+            // Shift-JIS e Big5 mettono i loro caratteri «definiti dall'utente».
+            // «Però…» riletto in Shift-JIS dava `Per` più un U+E1BC, che per la
+            // penalità non è niente — né lettera né simbolo — e passava.
+            if letto.chars().any(|c| matches!(c, '\u{E000}'..='\u{F8FF}')) {
+                continue;
+            }
+            let mut punti = penalita(&letto);
+            // Una tabella a un byte rilegge carattere per carattere: una coppia
+            // guida-continuazione è riparata solo se cambia la continuazione.
+            // «Così…» riletto in windows-1250 dà «Cosě…»: la coppia sparisce
+            // perché è cambiata la lettera, e i puntini sono gli stessi — non
+            // era mojibake, era italiano. Quella coppia resta da pagare.
+            if codifica.is_single_byte() {
+                punti =
+                    punti.saturating_add(coppie_intatte(testo, &letto).saturating_mul(PESO_COPPIA));
+            }
             if punti.saturating_add(MARGINE) > base {
                 continue;
             }
@@ -483,6 +517,33 @@ pub fn ripara(testo: &str) -> Option<Riparazione> {
         }
     }
     migliore
+}
+
+/// Le coppie guida-continuazione dell'originale che una rilettura a un byte
+/// toglie senza toccarne la continuazione.
+///
+/// Una tabella a un byte dà un carattere per carattere, quindi le posizioni
+/// combaciano. Si contano solo le coppie che [`penalita`] non vede più nel
+/// candidato — è cambiata la lettera guida, non la continuazione —, così una
+/// coppia rimasta tale e quale non si paga due volte. Con un numero di
+/// caratteri diverso le posizioni non dicono niente, e non si conta niente.
+fn coppie_intatte(originale: &str, letto: &str) -> u32 {
+    if originale.chars().count() != letto.chars().count() {
+        return 0;
+    }
+    let mut quante = 0_u32;
+    let mut prima_originale: Option<char> = None;
+    let mut prima_letto: Option<char> = None;
+    for (da, a) in originale.chars().zip(letto.chars()) {
+        let era_coppia = prima_originale.is_some_and(e_guida) && e_continuazione(da);
+        let e_ancora_coppia = prima_letto.is_some_and(e_guida);
+        if era_coppia && da == a && !e_ancora_coppia {
+            quante = quante.saturating_add(1);
+        }
+        prima_originale = Some(da);
+        prima_letto = Some(a);
+    }
+    quante
 }
 
 // ── un file intero, dai byte ────────────────────────────────────────────────
@@ -566,13 +627,24 @@ fn punteggio(testo: &str) -> u32 {
         .saturating_add(simboli_fuori_posto(testo).saturating_mul(2))
 }
 
-/// Quanto costa, nel confronto, ogni byte che la lettura UTF-8 ha riparato.
+/// Quanto costa, nel confronto, ogni errore che la lettura UTF-8 ha riparato.
 ///
-/// Sotto il peso di una coppia guida-continuazione — che è 12 — perché un file
-/// con un byte rotto e un accento solo deve poter vincere sulla rilettura in
-/// windows-1252, che quell'accento lo spezza. Sopra lo zero perché un file che
-/// di UTF-8 non ha niente non deve arrivare qui per la porta di servizio.
+/// Un errore e non un byte: un frammento di windows-1252 lungo due byte —
+/// «é…» — è un guasto solo, come lo conta il validatore.
+///
+/// Sotto il peso di una coppia guida-continuazione — [`PESO_COPPIA`] — perché
+/// un file con un byte rotto e un accento solo deve poter vincere sulla
+/// rilettura in windows-1252, che quell'accento lo spezza. Sopra lo zero perché
+/// un file che di UTF-8 non ha niente non deve arrivare qui per la porta di
+/// servizio.
 const COSTO_RIPARAZIONE: u32 = 8;
+
+/// Quanto pesa in [`penalita`] una coppia guida-continuazione.
+///
+/// Una costante sola perché la usano due conti che devono restare d'accordo:
+/// la penalità che la mette, e [`leggi_byte`], che la toglie quando la coppia
+/// sta dentro un frammento che l'UTF-8 riparato ha letto in windows-1252.
+const PESO_COPPIA: u32 = 12;
 
 /// Il carattere che windows-1252 mette su questo byte.
 ///
@@ -606,9 +678,17 @@ fn da_cp1252(byte: u8) -> char {
 ///
 /// `None` anche quando non c'è niente da riparare: chi chiama ha già provato
 /// [`std::str::from_utf8`] e non è arrivato fin qui per caso.
-fn utf8_riparato(byte: &[u8]) -> Option<(String, u32)> {
+///
+/// Restituisce il testo, quanti errori ha riparato e quante coppie
+/// guida-continuazione stanno **dentro** i frammenti riparati. Quelle coppie
+/// sono testo windows-1252 vero — «é» seguita da «…» — e non la firma di un
+/// UTF-8 letto male: [`leggi_byte`] le toglie dal conto, altrimenti un file
+/// UTF-8 con «così»» incollato da un editor windows-1252 perdeva contro la sua
+/// rilettura in GBK.
+fn utf8_riparato(byte: &[u8]) -> Option<(String, u32, u32)> {
     let mut testo = String::with_capacity(byte.len());
     let mut riparati = 0_u32;
+    let mut coppie = 0_u32;
     let mut multibyte = 0_u32;
     let mut resto = byte;
 
@@ -629,19 +709,38 @@ fn utf8_riparato(byte: &[u8]) -> Option<(String, u32)> {
         testo.push_str(buono);
 
         let Some(errore) = guasto else { break };
+        // L'errore è lungo `error_len()` byte, e sono tutti testo: una lettera
+        // accentata di windows-1252 seguita da punteggiatura del blocco
+        // 0x80–0xBF — `perch\xe9\x85`, «perché…» — è per il validatore l'inizio
+        // di una sequenza di tre byte che si interrompe al terzo, cioè un
+        // errore lungo due. Si riparano tutti e due: riparato il primo solo, i
+        // puntini sparivano.
+        //
         // `error_len()` è `None` quando i byte finiscono a metà di una sequenza:
         // lì non c'è un errore lungo quanto dice nessuno, e si ripara il primo
         // byte e si va avanti — gli altri torneranno qui da soli.
         let quanti = errore.error_len().unwrap_or(1);
         let inizio = errore.valid_up_to();
-        testo.push(da_cp1252(*resto.get(inizio)?));
+        let frammento = resto.get(inizio..inizio.saturating_add(quanti))?;
+        let mut prima: Option<char> = None;
+        for byte in frammento {
+            let c = da_cp1252(*byte);
+            // «é…» dentro il frammento ha la forma della coppia
+            // guida-continuazione, ma qui è windows-1252 vero: si conta, perché
+            // chi confronta non la faccia pagare come mojibake.
+            if prima.is_some_and(e_guida) && e_continuazione(c) {
+                coppie = coppie.saturating_add(1);
+            }
+            testo.push(c);
+            prima = Some(c);
+        }
         riparati = riparati.saturating_add(1);
         resto = resto
             .get(inizio.saturating_add(quanti)..)
             .unwrap_or_default();
     }
 
-    (riparati > 0 && multibyte > riparati).then_some((testo, riparati))
+    (riparati > 0 && multibyte > riparati).then_some((testo, riparati, coppie))
 }
 
 /// Legge un file di testo di cui non si sa la codifica.
@@ -710,8 +809,10 @@ pub fn leggi_byte(byte: &[u8]) -> (String, &'static str) {
     // parità vince una codifica intera, che è una spiegazione più semplice di
     // «UTF-8 con dei buchi». Il nome che torna resta UTF-8, perché è quel che
     // il file è quasi per intero.
-    if let Some((riparato, riparati)) = utf8_riparato(byte) {
-        let punti = punteggio(&riparato).saturating_add(riparati.saturating_mul(COSTO_RIPARAZIONE));
+    if let Some((riparato, riparati, coppie)) = utf8_riparato(byte) {
+        let punti = punteggio(&riparato)
+            .saturating_sub(coppie.saturating_mul(PESO_COPPIA))
+            .saturating_add(riparati.saturating_mul(COSTO_RIPARAZIONE));
         if migliore
             .as_ref()
             .is_none_or(|(_, _, meglio)| punti < *meglio)
@@ -919,6 +1020,78 @@ mod prove {
         let giapponese = "[00:01.00]こんにちは、世界\n[00:02.00]ありがとう";
         let (sjis, _, _) = SHIFT_JIS.encode(giapponese);
         assert_eq!(leggi_byte(&sjis), (giapponese.to_owned(), "Shift_JIS"));
+    }
+
+    /// Un frammento di windows-1252 lungo più di un byte dentro un file UTF-8.
+    ///
+    /// Una lettera accentata seguita da punteggiatura del blocco 0x80–0xBF è,
+    /// per il validatore, l'inizio di una sequenza UTF-8 che si interrompe: un
+    /// errore lungo due byte. Riparato il primo solo, il secondo — i puntini, la
+    /// virgoletta — spariva.
+    #[test]
+    fn un_frammento_cp1252_non_perde_la_punteggiatura() {
+        let mut byte = "[00:01.00]perché è così\n[00:02.00]città già là\n"
+            .as_bytes()
+            .to_vec();
+        byte.extend_from_slice(b"[00:03.00]perch\xe9\x85 ok");
+        let (testo, codifica) = leggi_byte(&byte);
+        assert_eq!(
+            testo,
+            "[00:01.00]perché è così\n[00:02.00]città già là\n[00:03.00]perché… ok"
+        );
+        assert_eq!(codifica, "UTF-8");
+
+        let (testo, codifica) =
+            leggi_byte(b"[00:01.00]perch\xc3\xa9 \xc3\xa8 cos\xc3\xac\n[00:02.00]cos\xec\xbb fine");
+        assert_eq!(testo, "[00:01.00]perché è così\n[00:02.00]così» fine");
+        assert_eq!(codifica, "UTF-8");
+    }
+
+    /// I titoli italiani con un'accentata seguita da `…`, `»`, `”`.
+    ///
+    /// Portano la coppia guida-continuazione, quindi sono sospetti — e una
+    /// rilettura a un byte che cambiava solo la lettera accentata («ì» → «ě»)
+    /// toglieva la coppia senza pagare niente; Shift-JIS invece faceva di «ò…»
+    /// e «ù…» un carattere d'uso privato, che non paga niente lo stesso. Non
+    /// sono in [`INTATTI`] perché quella prova vuole anche `sospetto == No`, e
+    /// qui il sospetto c'è.
+    ///
+    /// Restano fuori, dichiarati, due casi. `PERCHÉ…`: lì è l'UTF-8 a rileggere
+    /// `C9 85` come `Ʌ`, e una regola che lo fermasse fermerebbe anche il
+    /// rumeno. E `Lui è…`, una «è» da sola prima dei puntini: Shift-JIS e GBK
+    /// fanno di «è…» un ideogramma solo, in una parola sua, che per la penalità
+    /// non è niente — non mescola scritture, non è un controllo né un segno
+    /// raro. Fermarlo vorrebbe dire una regola sulla lingua («un ideogramma
+    /// isolato fra parole latine»), che scarterebbe anche i titoli misti veri
+    /// di quella forma.
+    #[test]
+    fn i_titoli_italiani_con_i_puntini_non_si_toccano() {
+        for testo in [
+            "Così…",
+            "Già…",
+            "Però…",
+            "Più…",
+            "Può…",
+            "«Così»",
+            "“Città”",
+        ] {
+            assert_eq!(ripara(testo), None, "{testo} non si deve riparare");
+        }
+    }
+
+    #[test]
+    fn le_riparazioni_a_un_byte_che_cambiano_la_continuazione_restano() {
+        // Il cirillico e il polacco di una tabella a un byte letti come
+        // Latin-1: la coppia è tutta la firma che hanno, e rileggendoli la
+        // continuazione cambia.
+        let r = ripara("Êè¿â").expect("riparabile");
+        assert_eq!((r.testo.as_str(), r.codifica), ("Київ", "windows-1251"));
+        let r = ripara("gêœ").expect("riparabile");
+        assert_eq!((r.testo.as_str(), r.codifica), ("gęś", "windows-1250"));
+        // E il rumeno in UTF-8, che ha una coppia sola e un carattere di
+        // Latin Extended-B nel risultato.
+        let r = ripara("AÈ™a").expect("riparabile");
+        assert_eq!((r.testo.as_str(), r.codifica), ("Așa", "UTF-8"));
     }
 
     #[test]

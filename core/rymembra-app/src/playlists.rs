@@ -603,6 +603,23 @@ pub fn set_rules(
 /// rinomino la playlist è, per la sincronizzazione, una playlist nuova. Vedi la
 /// nota in testa al modulo.
 ///
+/// # La lapide del nome vecchio
+///
+/// Se la playlist per gli altri è una nuova, quella di prima per gli altri è
+/// **cancellata**, e una cancellazione viaggia solo con la sua lapide — vedi
+/// [`cancella`]. Senza, il documento di un altro dispositivo, che ha ancora la
+/// chiave vecchia, la rimandava indietro alla prima passata: il rinomino
+/// diventava una copia, col nome di prima, qui e là. Quindi, se la chiave
+/// cambia, la chiave vecchia riceve la stessa lapide di [`cancella`], e quella
+/// nuova perde l'eventuale lapide che aveva, come fa la sincronia quando una
+/// playlist torna (un rinomino all'indietro sopravvive comunque, perché il suo
+/// `updated_at` è più recente della lapide). Un cambio di sole maiuscole o
+/// accenti non cambia la chiave e non seppellisce niente.
+///
+/// Il primo passo è già una scrittura, così la transazione che il savepoint apre
+/// non parte in lettura: vedi la nota di [`cancella`] su `SQLITE_BUSY_SNAPSHOT`.
+/// Savepoint e non `transaction()` per la stessa ragione di [`create_smart`].
+///
 /// # Errori
 ///
 /// `library.playlistNotFound`, `library.playlistNameInvalid`,
@@ -611,20 +628,68 @@ pub fn rename(connection: &Connection, id: i64, name: &str) -> Result<PlaylistSu
     let name = name.trim();
     nome_utilizzabile(name)?;
     let key = PlaylistKey::compute(Some(name));
+    let adesso = now_ms();
+
+    let nostra = connection.is_autocommit();
+    connection
+        .execute_batch("SAVEPOINT rinomina")
+        .map_err(|err| db_error("apertura del rinomino di una playlist", &err))?;
+    let esito = rinomina_in(connection, id, name, key.as_str(), adesso).and_then(|riassunto| {
+        connection
+            .execute_batch("RELEASE rinomina")
+            .map_err(|err| db_error("chiusura del rinomino di una playlist", &err))?;
+        Ok(riassunto)
+    });
+    if esito.is_err() {
+        disfa_savepoint(connection, "rinomina", nostra);
+    }
+    esito
+}
+
+/// I passi di [`rename`], dentro il suo savepoint.
+fn rinomina_in(
+    connection: &Connection,
+    id: i64,
+    name: &str,
+    key: &str,
+    adesso: i64,
+) -> Result<PlaylistSummary, AppError> {
+    connection
+        .execute(
+            "INSERT INTO sync_tombstones (kind, key, deleted_at)
+             SELECT 'playlist', playlist_key, ?3 FROM playlists
+              WHERE id = ?1 AND playlist_key <> ?2
+             ON CONFLICT(kind, key) DO UPDATE SET deleted_at = MAX(sync_tombstones.deleted_at, excluded.deleted_at)",
+            rusqlite::params![id, key, adesso],
+        )
+        .map_err(|err| db_error("lapide del nome vecchio di una playlist", &err))?;
+
     let esito = connection.execute(
         "UPDATE playlists SET playlist_key = ?2, name = ?3, updated_at = ?4 WHERE id = ?1",
-        rusqlite::params![id, key.as_str(), name, now_ms()],
+        rusqlite::params![id, key, name, adesso],
     );
     match esito {
-        Ok(0) => Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
-            playlist_id: Some(id),
-        })),
-        Ok(_) => read_one(connection, id),
-        Err(err) if e_conflitto(&err) => Err(AppError::new(ErrorCode::LibraryPlaylistExists {
-            name: name.to_owned(),
-        })),
-        Err(err) => Err(db_error("rinomino di una playlist", &err)),
+        Ok(0) => {
+            return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
+                playlist_id: Some(id),
+            }));
+        }
+        Ok(_) => {}
+        Err(err) if e_conflitto(&err) => {
+            return Err(AppError::new(ErrorCode::LibraryPlaylistExists {
+                name: name.to_owned(),
+            }));
+        }
+        Err(err) => return Err(db_error("rinomino di una playlist", &err)),
     }
+
+    connection
+        .execute(
+            "DELETE FROM sync_tombstones WHERE kind = 'playlist' AND key = ?1",
+            [key],
+        )
+        .map_err(|err| db_error("lapide del nome nuovo di una playlist", &err))?;
+    read_one(connection, id)
 }
 
 /// Cancella una playlist, lasciando una lapide.
@@ -1521,6 +1586,46 @@ mod prove {
         assert_ne!(dopo.key, p.key);
         // Il nome vecchio torna libero: dopo un rinomino è una playlist nuova.
         create(&connection, "Prima").expect("il nome è tornato libero");
+    }
+
+    #[test]
+    fn rinominare_lascia_la_lapide_del_nome_vecchio() {
+        let lapidi = |connection: &Connection, chiave: &str| -> i64 {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_tombstones WHERE kind = 'playlist' AND key = ?1",
+                    [chiave],
+                    |row| row.get(0),
+                )
+                .expect("lapidi")
+        };
+        let connection = libreria();
+        let p = create(&connection, "Prima").expect("creata");
+        let dopo = rename(&connection, p.id, "Seconda").expect("rinominata");
+        assert_eq!(
+            lapidi(&connection, &p.key),
+            1,
+            "senza lapide la chiave vecchia torna con la sincronia"
+        );
+
+        // Solo maiuscole: la chiave non cambia, e non c'è niente da seppellire.
+        rename(&connection, p.id, "seconda").expect("stessa chiave");
+        assert_eq!(lapidi(&connection, &dopo.key), 0);
+
+        // Tornare al nome di prima toglie la lapide che quel nome aveva.
+        rename(&connection, p.id, "Prima").expect("di nuovo come prima");
+        assert_eq!(lapidi(&connection, &p.key), 0);
+        assert_eq!(lapidi(&connection, &dopo.key), 1);
+
+        // Un rinomino rifiutato non lascia niente.
+        create(&connection, "Terza").expect("creata");
+        let err = rename(&connection, p.id, "terza").expect_err("nome preso");
+        assert_eq!(err.code().kind().code(), "library.playlistExists");
+        assert_eq!(lapidi(&connection, &p.key), 0);
+        assert!(
+            connection.is_autocommit(),
+            "nessuna transazione resta aperta"
+        );
     }
 
     #[test]

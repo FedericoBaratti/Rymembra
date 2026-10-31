@@ -27,6 +27,8 @@ pub mod insieme;
 pub mod intensita;
 pub mod library;
 pub mod metadata;
+pub mod nuvola;
+pub mod nuvola_app;
 pub mod playback;
 pub mod playlists;
 pub mod preferenze;

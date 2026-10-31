@@ -16,7 +16,7 @@
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 35"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 37"],
               ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
               ["`skin/`", "Installed `.ryskin` packages and Studio drafts (`skin/bozze/`)"],
@@ -62,8 +62,8 @@
     },
     {
       id: "schema",
-      title: "The schema (version 35)",
-      src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql", "core/rymembra-app/src/db/schema/035_insieme.sql"],
+      title: "The schema (version 37)",
+      src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql", "core/rymembra-app/src/db/schema/035_insieme.sql", "core/rymembra-app/src/db/schema/036_nuvola.sql", "core/rymembra-app/src/db/schema/037_nuvola_app.sql"],
       body: [
         "Times are milliseconds since the epoch, durations milliseconds. There are no views. The central table is `tracks`; almost everything else hangs off `tracks.id` (with `ON DELETE CASCADE`) or off a stable key.",
         { h: "tracks" },
@@ -101,6 +101,8 @@
               ["`sync_tombstones`, `sync_ascolti`, `sync_dispositivi`, `sync_sequenza`, `sync_posizioni`", "Device sync state — see [Sync](#sync)"],
               ["`desiderati`", "Wanted tracks and the download queue (ex `spotify_wanted`, so two index names still say so)"],
               ["`insieme_pari`", "The PCs paired for «Listen together»: public key (`UNIQUE`, 64 lowercase hex digits by `CHECK`), name, blocked, when paired and last seen (migration 035; addresses typed by hand are the setting `insieme.indirizzi`) — see [Listen together](#together)"],
+              ["`nuvola_conti`, `nuvola_voci`, `nuvola_radici`", "The cloud accounts (service, name shown, non-secret details, change cursor; since 037 also `app` and `client`, the app it is connected with and that app's ID at consent time), the mirror of the chosen cloud folders, and the chosen folders (migration 036). A cache: never in a profile, the backup or sync — see [Cloud folders](#cloud-folders)"],
+              ["`nuvola_app`", "The apps the user registered with Google, Microsoft and Dropbox: `app` (`<platform>-<8 random characters>`, never reused), platform, name, `client_id` unique per platform; no secrets (migration 037)"],
               ["`spotify_account`, `import_reports`", "Imported account, saved import reports"],
               ["`scrobble_queue`", "Durable scrobble queue, UNIQUE `(service, played_at, artist, title)`"],
               ["`enrich_cache`, `enrich_undo`, `track_meta_arricchita`", "HTTP cache, legacy undo, fields set by enrichment"],
@@ -122,7 +124,7 @@
       title: "Migrations and the pre-migration copy",
       src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
-        "`MIGRATIONS` is an ordered list of 35 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
+        "`MIGRATIONS` is an ordered list of 37 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
         "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },
@@ -172,7 +174,7 @@
     {
       id: "settings-store",
       title: "Settings and preferences",
-      src: ["core/rymembra-app/src/settings.rs", "core/rymembra-app/src/preferenze.rs", "core/rymembra-app/src/playback.rs", "core/rymembra-app/src/profilo/mod.rs"],
+      src: ["core/rymembra-app/src/settings.rs", "core/rymembra-app/src/preferenze.rs", "core/rymembra-app/src/playback.rs", "core/rymembra-app/src/playback/impostazioni.rs", "core/rymembra-app/src/profilo/mod.rs"],
       body: [
         "All preferences are rows of the `settings` table (`key TEXT PRIMARY KEY, value TEXT`). `settings::read` returns `Ok(None)` for a missing key — the normal state of a first start; the caller decides what absence means. `read_json` / `write_json` store typed values. Preferences that once lived in the WebView's `localStorage` (theme, shortcuts, language) moved here so that backup and profile carry them.",
         "**Secrets never go in this table**: `rymembra.db` is readable by any process of the user and is copied by backups. Tokens and keys are in the OS keychain.",
@@ -181,7 +183,7 @@
             head: ["Key", "Holds", "Default when absent", "In a profile"],
             rows: [
               ["`library.roots`", "Watched folders (JSON list)", "none", "yes, remapped"],
-              ["`library.watch`", "Folder watching: `spenta` / `locali` / `tutte`", "`locali`", "no"],
+              ["`library.watch`", "Folder watching: `spenta` / `locali` / `tutte`", "`tutte`", "no"],
               ["`download.folder`", "Where downloads land", "first watched folder", "yes, remapped"],
               ["`skin.active`, `skin.activeAt`", "Chosen skin and when", "`plain`", "skin yes"],
               ["`skin.dynamicAccent`", "Accent follows the cover", "off", "yes"],

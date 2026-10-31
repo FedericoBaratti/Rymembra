@@ -46,11 +46,32 @@ pub(crate) const LETTURA_MASSIMA: u64 = 2 * 1024 * 1024;
 /// dell'archivio delle copertine con un margine largo.
 pub(crate) const COPERTINA_MASSIMA: usize = 1024 * 1024;
 
+/// Chi legge i byte di un file che non sta su questo disco.
+///
+/// `(da, quanti) → (byte, totale)`. Lo costruisce il desktop per un brano del
+/// cloud — la sorgente del servizio, dentro la cache — e qui dentro resta una
+/// funzione: questo crate non sa niente di rete né di servizi, ed è giusto
+/// così. Il controllo «è ancora lo stesso file» lo fa chi la costruisce, a ogni
+/// lettura, come [`leggi_file`] lo fa sul disco.
+pub type Lettore = Arc<dyn Fn(u64, u64) -> Result<(Vec<u8>, u64), ErrorCodeKind> + Send + Sync>;
+
+/// Un [`Lettore`], col suo `Debug`: una chiusura non sa stamparsi.
+#[derive(Clone)]
+pub(crate) struct LettoreServito(pub(crate) Lettore);
+
+impl std::fmt::Debug for LettoreServito {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LettoreServito")
+    }
+}
+
 /// Che cosa c'è dietro un gettone.
 #[derive(Debug, Clone)]
 pub(crate) enum Servito {
     /// Un file di questo PC.
     File(FileServito),
+    /// Un file che sta altrove (un brano del cloud): i byte li dà il lettore.
+    Lettore(LettoreServito),
     /// Una copertina, già in memoria.
     Copertina(Arc<[u8]>),
     /// Fase 2, sull'host: i byte li ha il membro con questa chiave.

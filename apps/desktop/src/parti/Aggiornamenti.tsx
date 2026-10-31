@@ -29,7 +29,7 @@
  * nel database, perché un avviso che riappare a ogni riavvio dopo che si è detto
  * di no è un avviso che si impara a chiudere senza leggerlo.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 
 import type { AvanzamentoAggiornamento, StatoAggiornamenti } from "../ipc";
 import { ipc, testoErrore } from "../ipc";
@@ -39,6 +39,7 @@ import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
 import { Annuncio } from "./Annuncio";
 import { Interruttore } from "./Interruttore";
+import { avanzamentoDopo } from "./avanzamentoAggiornamento";
 
 /**
  * Lo stato del controllo aggiornamenti, tenuto vivo dagli eventi.
@@ -91,12 +92,12 @@ export function AvvisoAggiornamento({
   onErrore: (e: unknown) => void;
 }) {
   const [stato, setStato] = useAggiornamenti(onErrore);
-  const [avanzamento, setAvanzamento] =
-    useState<AvanzamentoAggiornamento | null>(null);
+  // Un tentativo nuovo, o uno annullato, riparte da zero: vedi
+  // `avanzamentoDopo`.
+  const [avanzamento, segnaAvanzamento] = useReducer(avanzamentoDopo, null);
 
-  useAscolto<AvanzamentoAggiornamento>(
-    "aggiornamenti:avanzamento",
-    setAvanzamento,
+  useAscolto<AvanzamentoAggiornamento>("aggiornamenti:avanzamento", (valore) =>
+    segnaAvanzamento({ tipo: "avanzamento", valore }),
   );
 
   const disponibile = stato?.disponibile ?? null;
@@ -115,6 +116,7 @@ export function AvvisoAggiornamento({
 
   const installa = useCallback(() => {
     setTentato(true);
+    segnaAvanzamento({ tipo: "installa" });
     ipc.aggiornamentiInstalla().catch(onErrore);
   }, [onErrore]);
 
@@ -124,6 +126,7 @@ export function AvvisoAggiornamento({
    */
   const annulla = useCallback(() => {
     setTentato(false);
+    segnaAvanzamento({ tipo: "annulla" });
     ipc.aggiornamentiAnnulla().catch(onErrore);
   }, [onErrore]);
 

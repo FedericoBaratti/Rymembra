@@ -68,11 +68,15 @@
 //! - La deriva solo con **20 s** di dati: su un intervallo più corto la
 //!   pendenza la decide il rumore. Prima, lo scarto è la media pesata e la
 //!   deriva vale zero.
-//! - **Tre residui di fila oltre 10 ms** vogliono dire che l'altro orologio è
-//!   cambiato davvero — l'ospite ha riavviato il programma, e la sua base dei
-//!   tempi con lui: si butta tutto e si ricomincia
-//!   ([`Esito::Ricominciato`]). Uno o due da soli si scartano: è più probabile
-//!   un pacchetto rimasto fermo da qualche parte.
+//! - **Tre residui di fila oltre 10 ms**, o oltre l'rtt dello scambio se è
+//!   più grande, vogliono dire che l'altro orologio è cambiato davvero —
+//!   l'ospite ha riavviato il programma, e la sua base dei tempi con lui: si
+//!   butta tutto e si ricomincia ([`Esito::Ricominciato`]). Uno o due da soli
+//!   si scartano: è più probabile un pacchetto rimasto fermo da qualche parte.
+//!   L'rtt conta perché uno scambio può sbagliare fino a rtt/2 senza che
+//!   niente sia cambiato: su un Wi-Fi da 30 ms una coda tutta all'andata ne
+//!   sposta lo scarto di più di 10 ms, e non è un riavvio — quello sposta lo
+//!   scarto di secondi.
 //! - L'**incertezza** è `max(rtt_min/2, 2σ)`, con σ lo scarto quadratico
 //!   medio pesato dei residui: la prima parte è il limite che nessuna media
 //!   toglie (l'asimmetria fra andata e ritorno non si vede dagli scambi), la
@@ -181,13 +185,17 @@ pub enum Perche {
     /// L'rtt supera il tetto assoluto (100 ms di serie).
     Lento,
     /// L'rtt supera `max(2·rtt_min, rtt_min + 1 ms)`: ha fatto coda.
+    ///
+    /// Non entra nella stima, ma resta come rappresentante del suo secchio se è
+    /// il migliore che ha: se la rete è peggiorata per sempre, sono i punti che
+    /// restano quando i vecchi escono dalla finestra.
     Disturbato,
     /// Nel suo secchio c'è già uno scambio con l'rtt minore o uguale.
     Superato,
     /// È più vecchio della finestra.
     Vecchio,
-    /// Lo scarto si allontana dalla stima più della soglia, ma non è ancora il
-    /// terzo di fila.
+    /// Lo scarto si allontana dalla stima più della soglia — 10 ms, o l'rtt
+    /// dello scambio se è più grande — ma non è ancora il terzo di fila.
     Salto,
 }
 
@@ -217,7 +225,9 @@ pub struct Taratura {
     pub punti_minimi: u32,
     /// Quanti nanosecondi di dati servono per dare una deriva: 20 s.
     pub durata_deriva_ns: u64,
-    /// Un residuo oltre questo è un salto: 10 ms.
+    /// Un residuo oltre questo è un salto: 10 ms. Se l'rtt dello scambio è più
+    /// grande, la soglia è l'rtt: fin lì il residuo si spiega con l'asimmetria
+    /// della rete.
     pub salto_ns: u64,
     /// Quanti salti di fila fanno ricominciare: 3.
     pub salti_di_fila: u32,
@@ -316,7 +326,11 @@ impl Orologio {
     /// Aggiunge uno scambio e dice cosa ne è stato.
     pub fn aggiungi(&mut self, s: Scambio) -> Esito {
         let esito = self.valuta(&s);
-        self.adattamento = adatta(&self.secchi, &self.taratura);
+        // Si allarga solo se la stima c'era già: vedi [`adatta`].
+        let aveva_stima = self
+            .adattamento
+            .is_some_and(|(_, filtrati)| filtrati >= self.taratura.punti_minimi);
+        self.adattamento = adatta(&self.secchi, &self.taratura, aveva_stima);
         esito
     }
 
@@ -358,11 +372,28 @@ impl Orologio {
         if let Some(minimo) = self.secchi.iter().map(|p| p.rtt).min()
             && punto.rtt > soglia_rtt(minimo, &t)
         {
+            // Scartato dalla stima, ma tenuto come rappresentante del suo
+            // secchio se è il migliore che ha: finché i punti vecchi sono nella
+            // finestra [`adatta`] lo esclude col filtro dell'rtt, e quando la
+            // rete è peggiorata per sempre sono questi i punti che restano.
+            // Buttarli voleva dire una finestra che si vuotava dei vecchi senza
+            // riempirsi dei nuovi, e una stima che spariva. Il controllo dei
+            // salti non lo riguarda: non entra in nessuna stima finché non c'è
+            // un minimo che lo accetti.
+            let _ = self.metti_nel_secchio(punto);
             return Esito::Scartato(Perche::Disturbato);
         }
+        // La soglia del salto cresce con l'rtt dello scambio: uno scambio
+        // sbaglia fino a rtt/2 per l'asimmetria fra andata e ritorno, la stima
+        // fino a rtt_min/2 ≤ rtt/2, quindi un residuo entro l'rtt si spiega con
+        // la rete. Fissa a 10 ms, su un Wi-Fi da 30 ms tre code tutte da una
+        // parte di fila — scambi buoni, sotto la soglia dell'rtt — buttavano la
+        // storia come per un riavvio dell'ospite. Il riavvio vero sposta lo
+        // scarto di secondi, oltre il tetto di 100 ms che limita l'rtt.
         if let Some((stima, _)) = self.adattamento
             && let Some(atteso) = stima.scarto_in(punto.x)
-            && (i128::from(punto.scarto) - atteso).unsigned_abs() > u128::from(t.salto_ns)
+            && (i128::from(punto.scarto) - atteso).unsigned_abs()
+                > u128::from(t.salto_ns.max(punto.rtt))
         {
             self.salti = self.salti.saturating_add(1);
             if self.salti < t.salti_di_fila {
@@ -374,6 +405,12 @@ impl Orologio {
             return Esito::Ricominciato;
         }
         self.salti = 0;
+        self.metti_nel_secchio(punto)
+    }
+
+    /// Il punto diventa il rappresentante del suo secchio, se il secchio è
+    /// vuoto o se ha l'rtt minore di quello che c'era.
+    fn metti_nel_secchio(&mut self, punto: Punto) -> Esito {
         match self.secchi.iter().position(|p| p.secchio >= punto.secchio) {
             Some(i)
                 if self
@@ -466,13 +503,41 @@ fn copre(campioni: &[Campione], durata_ns: u64) -> bool {
 
 /// L'adattamento dei punti della finestra, in due passaggi; accanto, quanti
 /// punti hanno passato il filtro dell'rtt.
+///
+/// # Quando la soglia dell'rtt si allarga
+///
+/// Solo se `aveva_stima` — l'adattamento di prima aveva già i suoi
+/// `punti_minimi` — e adesso il filtro ne lascia passare meno, con la finestra
+/// che però ne ha abbastanza: allora la soglia sale all'rtt del
+/// `punti_minimi`-esimo migliore. È il caso della rete peggiorata per sempre: i
+/// punti vecchi, col loro minimo basso, escono dalla finestra uno per secchio,
+/// e senza questa regola la stima spariva finché non uscivano tutti. Con i
+/// pesi, quel che resta dei vecchi continua a contare quasi da solo; i nuovi
+/// tengono soltanto il conto sopra il minimo.
+///
+/// All'avvio no, ed è voluto: un orologio nuovo su una rete rumorosa, con
+/// cinque secchi ma meno di cinque vicini al minimo, darebbe una stima che di
+/// fatto si regge sul punto migliore — esattamente quel che i cinque punti
+/// esistono per evitare. Neanche dopo [`Esito::Ricominciato`]: lì i secchi sono
+/// uno, e l'adattamento successivo non ha più la stima di prima.
 #[expect(
     clippy::integer_division,
     reason = "metà dell'rtt minimo, al nanosecondo"
 )]
-fn adatta(secchi: &VecDeque<Punto>, t: &Taratura) -> Option<(Stima, u32)> {
+fn adatta(secchi: &VecDeque<Punto>, t: &Taratura, aveva_stima: bool) -> Option<(Stima, u32)> {
     let minimo = secchi.iter().map(|p| p.rtt).min()?;
-    let soglia = soglia_rtt(minimo, t);
+    let mut soglia = soglia_rtt(minimo, t);
+    let minimi = usize::try_from(t.punti_minimi).unwrap_or(usize::MAX);
+    if aveva_stima
+        && secchi.len() >= minimi
+        && secchi.iter().filter(|p| p.rtt <= soglia).count() < minimi
+    {
+        let mut rtt: Vec<u64> = secchi.iter().map(|p| p.rtt).collect();
+        rtt.sort_unstable();
+        if let Some(ultimo_dei_minimi) = minimi.checked_sub(1).and_then(|i| rtt.get(i)) {
+            soglia = soglia.max(*ultimo_dei_minimi);
+        }
+    }
     let buoni: Vec<&Punto> = secchi.iter().filter(|p| p.rtt <= soglia).collect();
     let primo = **buoni.first()?;
     let base = t.peso_base_ns.max(1) as f64;
@@ -821,6 +886,36 @@ mod prove {
     }
 
     #[test]
+    fn tre_code_asimmetriche_su_un_wifi_lento_non_sono_un_riavvio() {
+        // Il Wi-Fi carico di `un_wifi_lento_da_comunque_una_stima`: 15 ms per
+        // verso. Uno scambio con 25 ms di coda tutta all'andata ha un rtt di
+        // 55 ms — sotto la soglia di 60 — e uno scarto storto di +12,5 ms, che
+        // è il suo errore lecito (fino a rtt/2) e non un orologio cambiato.
+        // Tre così di fila oltre la soglia fissa di 10 ms buttavano la storia
+        // come per un riavvio dell'ospite, e la stima spariva.
+        let mut rete = Rete::nuova(-3_000_000.0, 0.0);
+        rete.andata = 15_000_000.0;
+        rete.ritorno = 15_000_000.0;
+        rete.coda = 1_000_000.0;
+        let mut o = Orologio::nuovo(Taratura::default());
+        rete.scambia(&mut o, 0, 40);
+        assert!(o.stima().is_some());
+        for secondo in [21, 22, 23] {
+            let mut storto = rete.scambio(secondo * SECONDO);
+            storto.t2 += 25_000_000;
+            storto.t3 += 25_000_000;
+            storto.t4 += 25_000_000;
+            let esito = o.aggiungi(storto);
+            assert_ne!(
+                esito,
+                Esito::Ricominciato,
+                "a {secondo} s una coda asimmetrica è passata per un riavvio"
+            );
+            assert!(o.stima().is_some(), "a {secondo} s la stima è sparita");
+        }
+    }
+
+    #[test]
     fn i_bordi_dell_aritmetica_non_fanno_panico() {
         let mut o = Orologio::nuovo(Taratura::default());
         let incoerente = Esito::Scartato(Perche::Incoerente);
@@ -925,5 +1020,48 @@ mod prove {
         assert_eq!(esiti.first(), Some(&Esito::Scartato(Perche::Disturbato)));
         assert!(esiti.iter().rev().take(20).any(|e| *e == Esito::Accettato));
         assert!(errore(&o, &rete, 220 * SECONDO).abs() < 100_000.0);
+    }
+
+    #[test]
+    fn quando_la_rete_peggiora_la_stima_non_sparisce() {
+        // Lo stesso peggioramento, uno scambio al secondo come fa chi segue, e
+        // la domanda è un'altra: la stima c'è **sempre**? I punti vecchi
+        // uscivano dalla finestra uno per secchio, i nuovi restavano fuori
+        // perché «disturbati» rispetto a loro, e per una quindicina di secondi
+        // chi seguiva restava senza stima — «non agganciato» senza una ragione
+        // che si veda.
+        let mut rete = Rete::nuova(9_000_000.0, 0.0);
+        let mut o = Orologio::nuovo(Taratura::default());
+        rete.scambia(&mut o, 0, 60);
+        rete.andata = 3_000_000.0;
+        rete.ritorno = 3_000_000.0;
+        for secondo in 30..260u64 {
+            let _ = o.aggiungi(rete.scambio(secondo * SECONDO));
+            assert!(
+                o.stima().is_some(),
+                "a {secondo} s, dopo il peggioramento, la stima è sparita"
+            );
+        }
+        assert!(errore(&o, &rete, 259 * SECONDO).abs() < 100_000.0);
+    }
+
+    #[test]
+    fn un_orologio_nuovo_non_allarga_la_soglia() {
+        // Il contrappeso: all'avvio la regola dei cinque punti resta quella.
+        // Un primo scambio pulito, poi la rete peggiora: sei secchi pieni, ma
+        // uno solo vicino al minimo. Allargare qui darebbe una stima che si
+        // regge su quel punto solo.
+        let mut rete = Rete::nuova(1_000_000.0, 0.0);
+        let mut o = Orologio::nuovo(Taratura::default());
+        let _ = o.aggiungi(rete.scambio(0));
+        rete.andata = 3_000_000.0;
+        rete.ritorno = 3_000_000.0;
+        for secchio in 1..6u64 {
+            assert_eq!(
+                o.aggiungi(rete.scambio(secchio * 2 * SECONDO)),
+                Esito::Scartato(Perche::Disturbato)
+            );
+        }
+        assert_eq!(o.stima(), None, "una stima retta da un punto solo");
     }
 }

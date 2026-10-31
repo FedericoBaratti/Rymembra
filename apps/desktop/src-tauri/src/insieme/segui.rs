@@ -297,6 +297,21 @@ impl Seguito {
 /// Il ciclo del filo della sincronia: un passo ogni [`PASSO`], e subito quando
 /// arriva un'ancora che cambia lo stato. Esce quando `fermo` si alza o il
 /// campanello si chiude.
+///
+/// # Un panico in un passo
+///
+/// Ogni passo è [`crate::stato::sorvegliato`] da solo, con la scrittura
+/// dell'aggancio dentro: una mossa può aprire una voce (decodificatore,
+/// apertura in rete, dispositivo audio), e lì un file storto può far cadere
+/// in panico. Prima il sorvegliato avvolgeva il ciclo intero: il panico lo
+/// prendeva, ma il filo finiva e nessuno lo rifaceva — questo PC non seguiva
+/// più niente fino all'uscita, e la finestra restava sull'ultimo aggancio
+/// misurato, magari «agganciato». Adesso dopo una caduta il regolatore
+/// riparte da capo, l'aggancio torna «non agganciato», e il passo dopo arriva
+/// dopo [`crate::stato::attesa_dopo_la_caduta`] (5 s, poi il doppio): una voce
+/// che fa cadere ogni riapertura non riempie il diario dieci volte al
+/// secondo. L'attesa è sulla sveglia: un'ancora che cambia lo stato — un
+/// altro brano dell'host — o l'uscita la interrompono, e si riprova subito.
 pub fn ciclo(
     condivisa: &Condivisa,
     motore: &dyn Motore,
@@ -304,6 +319,7 @@ pub fn ciclo(
     adesso: fn() -> u64,
 ) {
     let mut seguito = Seguito::default();
+    let mut cadute_di_fila = 0_u32;
     loop {
         if condivisa.fermo.load(Ordering::Acquire) || crate::spegnimento::in_uscita() {
             return;
@@ -320,12 +336,26 @@ pub fn ciclo(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .stima();
-        let esito = seguito.passo(adesso(), ancora, stima, motore);
-        *condivisa
-            .aggancio
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = esito.aggancio;
-        match sveglia.recv_timeout(PASSO) {
+        let fatto = crate::stato::sorvegliato("rymembra-insieme-sincronia", || {
+            let esito = seguito.passo(adesso(), ancora, stima, motore);
+            *condivisa
+                .aggancio
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = esito.aggancio;
+        });
+        let attesa = if fatto.is_some() {
+            cadute_di_fila = 0;
+            PASSO
+        } else {
+            cadute_di_fila = cadute_di_fila.saturating_add(1);
+            seguito = Seguito::default();
+            *condivisa
+                .aggancio
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Aggancio::default();
+            crate::stato::attesa_dopo_la_caduta(cadute_di_fila)
+        };
+        match sveglia.recv_timeout(attesa) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -346,9 +376,10 @@ pub fn avvia(
         .name("rymembra-insieme-sincronia".to_owned())
         .spawn(move || {
             let motore = PonteVero(app);
-            // Sorvegliato: un panico nel decodificatore sotto `applica` non
-            // deve portarsi via il processo, e la sessione lo vede come un
-            // aggancio che non arriva più.
+            // Un panico in un passo lo prende `ciclo`, passo per passo, e il
+            // filo continua (vedi «Un panico in un passo»). Questo è l'ultimo
+            // riparo, per un panico fuori da un passo: il filo finisce, ma non
+            // si porta via il processo.
             crate::stato::sorvegliato("rymembra-insieme-sincronia", || {
                 ciclo(
                     &condivisa,
@@ -368,6 +399,8 @@ pub fn avvia(
 mod prove {
     use super::*;
     use std::cell::RefCell;
+
+    use rymembra_play::sincronia::orologio::Orologio;
 
     const MS: u64 = 1_000_000;
     const F: u32 = 48_000;
@@ -587,6 +620,94 @@ mod prove {
         let esito = seguito.passo(t, Some(ancora_dell_host(t)), Some(stima()), &motore);
         assert!(!esito.aggancio.agganciato, "da capo, si rimisura");
         assert_eq!(seguito.frequenza, Some(44_100));
+    }
+
+    /// Un motore che cade in panico alla prima mossa — il decodificatore di
+    /// una voce storta, sotto `applica` — e poi obbedisce. Alla seconda mossa
+    /// guarda che aggancio la finestra vedeva, e alza `fermo`.
+    struct Fragile {
+        finto: Finto,
+        condivisa: Arc<Condivisa>,
+        mosse: std::cell::Cell<u32>,
+        passi: std::cell::Cell<u32>,
+        agganciato_dopo_la_caduta: std::cell::Cell<Option<bool>>,
+    }
+
+    impl Motore for Fragile {
+        fn da_me(&self) -> Option<DaMe> {
+            self.finto.da_me()
+        }
+        fn frequenza(&self) -> Option<u32> {
+            // Una rete sotto la prova: se le mosse non arrivano, il ciclo
+            // esce lo stesso dopo qualche passo invece di girare per sempre.
+            self.passi.set(self.passi.get() + 1);
+            if self.passi.get() > 20 {
+                self.condivisa.fermo.store(true, Ordering::Release);
+            }
+            Some(F)
+        }
+        fn applica(&self, mossa: Mossa, f: u32) -> Result<(), AppError> {
+            self.mosse.set(self.mosse.get() + 1);
+            assert!(self.mosse.get() > 1, "decodificatore rotto");
+            self.agganciato_dopo_la_caduta
+                .set(Some(self.condivisa.aggancio().agganciato));
+            self.condivisa.fermo.store(true, Ordering::Release);
+            self.finto.applica(mossa, f)
+        }
+    }
+
+    #[test]
+    fn un_panico_in_una_mossa_non_ferma_la_sincronia() {
+        const ADESSO: u64 = 1_000 * MS;
+        let condivisa = Arc::new(Condivisa::nuova());
+        // Un attimo prima si era agganciati.
+        *condivisa.aggancio.lock().unwrap() = Aggancio {
+            agganciato: true,
+            errore_ns: Some(0),
+            incertezza_ns: Some(200_000),
+        };
+        // Una stima dell'orologio subito: un punto basta.
+        *condivisa.orologio.lock().unwrap() = Orologio::nuovo(TaraturaOrologio {
+            punti_minimi: 1,
+            ..TaraturaOrologio::default()
+        });
+        let l = ADESSO - MS;
+        condivisa.scambio(Scambio {
+            t1: l,
+            t2: (l + 100_000).saturating_add_signed(SCARTO),
+            t3: (l + 200_000).saturating_add_signed(SCARTO),
+            t4: l + 300_000,
+        });
+        assert!(condivisa.orologio.lock().unwrap().stima().is_some());
+        condivisa.ancora(ancora_dell_host(ADESSO));
+        let motore = Fragile {
+            finto: Finto::default(),
+            condivisa: Arc::clone(&condivisa),
+            mosse: std::cell::Cell::new(0),
+            passi: std::cell::Cell::new(0),
+            agganciato_dopo_la_caduta: std::cell::Cell::new(None),
+        };
+        *motore.finto.adesso.borrow_mut() = ADESSO;
+        // Fermo su un'altra voce: il regolatore riapre quella dell'host al
+        // primo passo.
+        motore.finto.stato.borrow_mut().etichetta = Some(4);
+        // Un'ancora nuova arrivata nel frattempo: sveglia il filo prima
+        // dell'attesa dopo la caduta.
+        let (sveglia, orecchio) = std::sync::mpsc::channel();
+        sveglia.send(()).unwrap();
+        let uscito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ciclo(&condivisa, &motore, &orecchio, || ADESSO);
+        }));
+        assert!(
+            uscito.is_ok(),
+            "il panico è uscito dal ciclo: la sincronia è ferma per tutta la sessione"
+        );
+        assert_eq!(motore.mosse.get(), 2, "dopo la caduta si riprova");
+        assert_eq!(
+            motore.agganciato_dopo_la_caduta.get(),
+            Some(false),
+            "dopo la caduta la finestra non deve leggere «agganciato»"
+        );
     }
 
     #[test]

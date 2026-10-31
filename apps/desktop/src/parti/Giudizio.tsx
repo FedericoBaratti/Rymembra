@@ -24,6 +24,7 @@ import { Stelle } from "../Stelle";
 import { useVolumeSottoIlDito } from "../volume";
 import { idDiLibreria } from "../insieme";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
+import { numero } from "../formato";
 import { Formato } from "./Formato";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
@@ -122,6 +123,13 @@ export const Giudizio = memo(function Giudizio({
           value={volume}
           style={{ "--avanzamento": `${volume * 100}%` } as CSSProperties}
           aria-label={t("player.volume")}
+          /* La percentuale, come il cursore gemello del lettore: senza, uno
+             screen reader legge «0,72». Con la terza colonna aperta o a schermo
+             intero la barra del lettore non c'è, e questo è l'unico cursore del
+             volume. `test/cursoriVolume.test.ts` li controlla tutti e due. */
+          aria-valuetext={t("player.volume.value", {
+            percento: numero(Math.round(volume * 100)),
+          })}
           /* Muovere il volume toglie il silenziamento: chi trascina la manopola
              sta chiedendo di sentire, e lasciarla muta gli farebbe credere che
              il comando sia rotto. */

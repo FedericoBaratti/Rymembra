@@ -18,6 +18,7 @@ use rymembra_domain::queue::{Queue, QueueSnapshot, RepeatMode};
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
+use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::spegnimento::Emette as _;
@@ -108,12 +109,14 @@ pub(super) fn ricorda_coda_di_prima(
         return;
     }
     let istantanea = lettore.coda.snapshot();
-    if istantanea.tracks.is_empty() || nuovi == Some(istantanea.tracks.as_slice()) {
+    if !c_e_da_rimettere(&istantanea.tracks, nuovi) {
         return;
     }
     // La coda che il giro guidato ha messo lì e nessuno ha toccato: vedi
-    // `Lettore::coda_del_giro`.
-    if lettore.coda_del_giro.take().as_ref() == Some(&istantanea.tracks) {
+    // `Lettore::coda_del_giro`. Si consuma solo qui, dopo il primo controllo:
+    // la stessa lista riavviata non deve far dimenticare al giro la sua coda.
+    let del_giro = lettore.coda_del_giro.take();
+    if e_la_coda_del_giro(&istantanea.tracks, del_giro.as_deref()) {
         return;
     }
     let posizione = lettore.motore.posizione();
@@ -128,9 +131,7 @@ pub(super) fn ricorda_coda_di_prima(
         avviata: posizione.track_id.is_some(),
         suonava: posizione.track_id.is_some() && !posizione.in_pausa,
     });
-    // «Svuota» l'avviso lo ha sempre: è il solo gesto il cui scopo è perdere
-    // la coda, ed è anche quello che si preme per sbaglio accanto a «Mescola».
-    if nuovi.is_none() || curata || brani >= SOGLIA_DI_UNA_SESSIONE {
+    if merita_l_avviso(nuovi.is_none(), curata, brani) {
         app.emetti(
             "coda:sostituita",
             CodaSostituita {
@@ -140,6 +141,34 @@ pub(super) fn ricorda_coda_di_prima(
             },
         );
     }
+}
+
+/// C'è una coda da poter rimettere? Non se è vuota, e non se i brani nuovi
+/// sono gli stessi — la lista che suona già riavviata da un altro brano.
+/// `nuovi` è `None` per «Svuota».
+///
+/// Le regole di [`ricorda_coda_di_prima`] stanno in tre funzioni pure perché si
+/// possano provare senza un motore: sbagliate non si vedono — una coda curata
+/// che sparisce senza avviso, o un «Annulla» a ogni doppio clic — finché non
+/// costano qualcosa a qualcuno.
+fn c_e_da_rimettere(coda: &[i64], nuovi: Option<&[i64]>) -> bool {
+    !coda.is_empty() && nuovi != Some(coda)
+}
+
+/// La coda è quella che il giro guidato ha messo e nessuno ha toccato? Vedi
+/// `Lettore::coda_del_giro`.
+fn e_la_coda_del_giro(coda: &[i64], del_giro: Option<&[i64]>) -> bool {
+    del_giro == Some(coda)
+}
+
+/// La coda sostituita merita l'avviso con l'«Annulla»?
+///
+/// «Svuota» l'avviso lo ha sempre: è il solo gesto il cui scopo è perdere la
+/// coda, ed è anche quello che si preme per sbaglio accanto a «Mescola». Poi
+/// la coda costruita a mano, qualunque sia la lunghezza, e quella lunga almeno
+/// [`SOGLIA_DI_UNA_SESSIONE`]: un disco al posto di un altro no.
+fn merita_l_avviso(svuota: bool, curata: bool, brani: usize) -> bool {
+    svuota || curata || brani >= SOGLIA_DI_UNA_SESSIONE
 }
 
 /// Il brano che continua la sessione, secondo la libreria.
@@ -154,6 +183,15 @@ pub(super) fn ricorda_coda_di_prima(
 ///
 /// `esclusi` è tutto quel che è già in coda, così l'autoplay non ripropone
 /// quel che si è appena sentito.
+///
+/// La libreria si presta **un gradino alla volta** della cascata (album,
+/// contesto, artista, genere, preferito, uno qualunque), con
+/// [`crate::stato::DepositoStato`]: in una presa sola la discesa fino in fondo
+/// la teneva chiusa per tutto il tempo, e un cuore premuto nella finestra in
+/// quel momento aspettava. L'attesa di ogni presa è quella di `con_libreria`
+/// fuori dal filo della finestra — il deposito passa dalla stessa strada — e
+/// una presa lunga finisce nel diario col suo numero, come quelle della
+/// scansione.
 pub(super) fn scegli_da_solo(
     app: &tauri::AppHandle,
     corrente: i64,
@@ -162,9 +200,12 @@ pub(super) fn scegli_da_solo(
     // `try_state`: chi chiede è il filo del preparatore, che può ritrovarsi
     // vivo mentre gli stati se ne vanno.
     let stato = app.try_state::<Stato>()?;
-    con_libreria(&stato, |libreria| {
-        rymembra_app::autoplay::prossimo(&libreria.connection, corrente, esclusi, adesso_ms())
-    })
+    rymembra_app::autoplay::prossimo_con(
+        &mut crate::stato::DepositoStato::nuovo(&stato),
+        corrente,
+        esclusi,
+        adesso_ms(),
+    )
     .ok()
     .flatten()
 }
@@ -454,9 +495,18 @@ pub(super) fn gesto_di_coda(
 
 // ── i comandi della coda ────────────────────────────────────────────────────
 
+/// [`coda_accoda_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn coda_accoda(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "accoda", move |app, stato| {
+        coda_accoda_ora(app, stato, brani)
+    })
+    .await
+}
+
 /// Accoda in fondo.
-#[tauri::command(async)]
-pub fn coda_accoda(
+pub fn coda_accoda_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     brani: Vec<i64>,
@@ -486,9 +536,18 @@ pub fn coda_accoda(
     .map_err(errore)
 }
 
+/// [`coda_dopo_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn coda_dopo(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "metti dopo", move |app, stato| {
+        coda_dopo_ora(app, stato, brani)
+    })
+    .await
+}
+
 /// Mette subito dopo il brano corrente.
-#[tauri::command(async)]
-pub fn coda_dopo(
+pub fn coda_dopo_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     brani: Vec<i64>,
@@ -516,9 +575,22 @@ pub fn coda_dopo(
     .map_err(errore)
 }
 
+/// [`coda_vai_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn coda_vai(app: tauri::AppHandle, indice: usize) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "salto nella coda", move |app, stato| {
+        coda_vai_ora(app, stato, indice)
+    })
+    .await
+}
+
 /// Salta a una posizione della coda.
-#[tauri::command(async)]
-pub fn coda_vai(app: tauri::AppHandle, stato: State<'_, StatoLettore>, indice: usize) -> Esito<()> {
+pub fn coda_vai_ora(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    indice: usize,
+) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::CodaVai { indice }).map_err(errore)? {
         return Ok(());
     }
@@ -532,6 +604,16 @@ pub fn coda_vai(app: tauri::AppHandle, stato: State<'_, StatoLettore>, indice: u
         Ok(true)
     })
     .map_err(errore)
+}
+
+/// [`coda_togli_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn coda_togli(app: tauri::AppHandle, indice: usize) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "togli dalla coda", move |app, stato| {
+        coda_togli_ora(app, stato, indice)
+    })
+    .await
 }
 
 /// Toglie dalla coda.
@@ -560,8 +642,7 @@ pub fn coda_vai(app: tauri::AppHandle, stato: State<'_, StatoLettore>, indice: u
 /// partiva. E se il motore non aveva ancora niente in mano — la coda di ieri,
 /// appena riaperta — non si apre niente: si sposta la coda, come per ogni brano
 /// che non sta suonando.
-#[tauri::command(async)]
-pub fn coda_togli(
+pub fn coda_togli_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     indice: usize,
@@ -577,8 +658,14 @@ pub fn coda_togli(
         let suonava = lettore.coda.position() == Some(indice);
         let era_ultimo = indice.saturating_add(1) >= lettore.coda.len();
         let motore = lettore.motore.posizione();
+        let prima = lettore.coda.in_play_order();
+        let tenute = insieme::tenute_dal_lettore(&stato, lettore);
         lettore.coda.remove_at(indice);
         lettore.coda_curata = true;
+        // In sessione la voce tolta esce anche dal registro, se il lettore
+        // non la tiene ancora: vedi `insieme::dimentica_le_uscite`. Qui, per
+        // tutte le strade qui sotto.
+        insieme::dimentica_le_uscite(&app, &stato, lettore, &prima, tenute);
         if !suonava || motore.track_id.is_none() {
             prepara_prossimo(&app, lettore);
             salva_coda(&app, lettore);
@@ -663,10 +750,16 @@ pub(crate) fn sgombra_dalla_coda(
                 .any(|id| !brani.contains(&id))
         });
         let motore = lettore.motore.posizione();
+        let prima = lettore.coda.in_play_order();
+        let tenute = insieme::tenute_dal_lettore(stato, lettore);
         let tolti = lettore.coda.remove_tracks(brani);
         if tolti.quante == 0 {
             return Ok(None);
         }
+        // In sessione le voci tolte escono anche dal registro, se il lettore
+        // non le tiene ancora: vedi `insieme::dimentica_le_uscite`. Qui, per
+        // tutte le strade qui sotto.
+        insieme::dimentica_le_uscite(app, stato, lettore, &prima, tenute);
         // La coda resta «curata»: toglierne un brano non è sostituirla, e chi
         // l'aveva costruita a mano ha ancora diritto all'«Annulla» se qualcuno
         // gliela sostituisce dopo.
@@ -737,9 +830,14 @@ pub fn coda_svuota(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esi
     con_lettore(&stato, |lettore| {
         ricorda_coda_di_prima(&app, lettore, None);
         chiudi_ascolto(&app, lettore);
+        let prima = lettore.coda.in_play_order();
+        let tenute = insieme::tenute_dal_lettore(&stato, lettore);
         lettore.coda.clear();
         lettore.coda_curata = false;
         lettore.ferma();
+        // In sessione le voci della coda svuotata escono dal registro: vedi
+        // `insieme::dimentica_le_uscite`.
+        insieme::dimentica_le_uscite(&app, &stato, lettore, &prima, tenute);
         salva_coda(&app, lettore);
         manda_stato(&app, lettore);
         Ok(())
@@ -781,6 +879,16 @@ pub fn coda_prepara(
     .map_err(errore)
 }
 
+/// [`coda_ripristina_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn coda_ripristina(app: tauri::AppHandle, numero: u64) -> Esito<bool> {
+    super::col_lettore_in_disparte(app, "annulla della coda", move |app, stato| {
+        coda_ripristina_ora(app, stato, numero)
+    })
+    .await
+}
+
 /// Rimette la coda che l'ultimo gesto aveva sostituito: l'«Annulla» dell'avviso.
 ///
 /// Torna com'era in tutto quel che si può: i brani, l'ordine, il punto della
@@ -795,11 +903,10 @@ pub fn coda_prepara(
 /// # I tre tempi
 ///
 /// Gli stessi di [`avvia_corrente`], per la stessa ragione: il brano si apre
-/// **fuori** dal lucchetto del lettore. In più, nel terzo tempo, la puntina va
-/// dov'era e la pausa si rialza se c'era — la stessa sequenza con cui
-/// `riapertura` rimette il brano dopo un dispositivo sparito.
-#[tauri::command(async)]
-pub fn coda_ripristina(
+/// **fuori** dal lucchetto del lettore. In più, nel terzo tempo, il brano
+/// riparte dov'era, fermo se era in pausa — con la stessa consegna con cui
+/// `riapertura` rimette il brano dopo un dispositivo sparito (`consegna`).
+pub fn coda_ripristina_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     numero: u64,
@@ -829,13 +936,22 @@ pub fn coda_ripristina(
             lettore.motore.formato(),
             prima.ms,
             prima.suonava,
+            lettore.pausa_chiesta.0,
         ))))
     })
     .map_err(errore)?;
     let Some(partenza) = scelta else {
         return Ok(false);
     };
-    let Some((id, formato, ms, suonava)) = partenza else {
+    let Some((id, formato, ms, suonava, gesti_prima)) = partenza else {
+        return Ok(true);
+    };
+
+    // Una sola apertura per brano, come in `avvia_corrente`: è anche la
+    // casella che dice a [`super::vai_a`] di tenere da parte un salto chiesto
+    // mentre il file si apre. Presa da un altro per lo stesso brano: chi l'ha
+    // presa lo farà partire, e la coda è già tornata.
+    let Ok(mut aprendo) = super::Aprendo::prendi(&stato.aprendo, id) else {
         return Ok(true);
     };
 
@@ -865,20 +981,22 @@ pub fn coda_ripristina(
         if lettore.motore.formato() != formato {
             return Ok(false);
         }
-        lettore.suona(brano);
-        lettore.motore.vai_a(ms);
-        if !suonava {
-            lettore.motore.pausa();
-        }
+        // Fermo o suonando com'era, dal punto in cui era: vedi
+        // [`super::consegna`].
+        let da_ms = super::consegna(lettore, brano, !suonava, ms, gesti_prima);
+        drop(aprendo.take());
         prepara_prossimo(&app, lettore);
         salva_coda(&app, lettore);
-        manda_stato_con_posizione(&app, lettore, ms);
+        manda_stato_con_posizione(&app, lettore, da_ms);
         Ok(true)
     })
     .map_err(errore)?;
     if !consegnato {
         // La strada di tutti gli altri avvii, che col formato nuovo sa
-        // riaprire da sé: stesso brano, stesso punto, stessa pausa.
+        // riaprire da sé: stesso brano, stesso punto, stessa pausa. La
+        // casella va lasciata prima: `avvia_corrente` la vuole per lo stesso
+        // brano.
+        drop(aprendo);
         avvia_corrente(&app, &stato, !suonava, ms).map_err(errore)?;
     }
     Ok(true)
@@ -914,10 +1032,6 @@ pub fn ripeti(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()
 /// # Errori
 ///
 /// Quelli della strada del gesto; `internal.aborted` se il lettore non c'è.
-#[allow(
-    dead_code,
-    reason = "fase 2: la chiama la sessione per `Azione::Ripeti` dei membri"
-)]
 pub fn imposta_ripeti(app: &tauri::AppHandle, modo: RepeatMode) -> Result<(), AppError> {
     if let Strada::Fatto = strada(app, &Gesto::Ripeti)? {
         return Ok(());
@@ -968,12 +1082,18 @@ pub fn mescola(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<(
 /// righe vere si leggono come sempre, tutte insieme; poi si rimette l'ordine
 /// chiesto, doppioni compresi, e quel che non c'è più — una riga cancellata,
 /// una voce tolta — si salta come prima.
+///
+/// # Perché `async`
+///
+/// Perché una coda da «Riproduci tutto» sono tutte le righe della libreria:
+/// venticinquemila schede, una quindicina di megabyte di JSON, chieste di nuovo
+/// a ogni avvio e a ogni uscita dallo schermo intero, che rimonta la colonna
+/// con la mappa vuota. Da comando sincrono era tutto lavoro del filo della
+/// finestra. Adesso la lettura va sul pool bloccante con
+/// [`crate::disparte::leggi_la_libreria`], come gli altri elenchi; le maniglie
+/// si risolvono dopo, a lettura finita, perché `ospiti` non tocca la libreria.
 #[tauri::command]
-pub fn brani_per_id(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    brani: Vec<i64>,
-) -> Esito<Vec<TrackSummary>> {
+pub async fn brani_per_id(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Vec<TrackSummary>> {
     let righe: Vec<i64> = brani
         .iter()
         .copied()
@@ -981,17 +1101,19 @@ pub fn brani_per_id(
         .collect();
     // Tutte righe — fuori sessione, sempre — e la strada di sempre, intera.
     if righe.len() == brani.len() {
-        return con_libreria(&stato, |libreria| {
+        return leggi_la_libreria(app, "righe della coda", move |libreria| {
             rymembra_app::library::summaries_by_id(&libreria.connection, &brani)
         })
+        .await
         .map_err(errore);
     }
     let lette = if righe.is_empty() {
         Vec::new()
     } else {
-        con_libreria(&stato, |libreria| {
+        leggi_la_libreria(app.clone(), "righe della coda", move |libreria| {
             rymembra_app::library::summaries_by_id(&libreria.connection, &righe)
         })
+        .await
         .map_err(errore)?
     };
     let per_id: std::collections::HashMap<i64, TrackSummary> = lette
@@ -1011,6 +1133,71 @@ pub fn brani_per_id(
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    // ── la coda di prima: vedi `ricorda_coda_di_prima` ──
+
+    #[test]
+    fn svuota_ha_sempre_l_avviso() {
+        assert!(merita_l_avviso(true, false, 1));
+    }
+
+    /// Una coda costruita a mano vale qualunque sia la lunghezza: sostituita
+    /// da un doppio clic su un album, senza avviso non tornerebbe più.
+    #[test]
+    fn una_coda_curata_corta_ha_l_avviso() {
+        assert!(merita_l_avviso(false, true, 3));
+    }
+
+    /// Un disco al posto di un altro non è un avviso; una sessione lunga sì.
+    #[test]
+    fn un_album_al_posto_di_un_altro_no() {
+        assert!(!merita_l_avviso(false, false, SOGLIA_DI_UNA_SESSIONE - 1));
+        assert!(merita_l_avviso(false, false, SOGLIA_DI_UNA_SESSIONE));
+    }
+
+    /// La lista che suona già, riavviata da un altro brano, non ha perso
+    /// niente; una coda vuota non ha niente da rimettere. «Svuota» e una lista
+    /// diversa sì.
+    #[test]
+    fn la_stessa_lista_riavviata_non_si_mette_da_parte() {
+        assert!(!c_e_da_rimettere(&[1, 2], Some(&[1, 2])));
+        assert!(!c_e_da_rimettere(&[], Some(&[1, 2])));
+        assert!(!c_e_da_rimettere(&[], None));
+        assert!(c_e_da_rimettere(&[1, 2], Some(&[3])));
+        assert!(c_e_da_rimettere(&[1, 2], None));
+    }
+
+    /// La coda del giro guidato, intatta, non è una coda di qualcuno.
+    #[test]
+    fn la_coda_del_giro_intatta_non_si_mette_da_parte() {
+        assert!(e_la_coda_del_giro(&[1, 2], Some(&[1, 2])));
+        assert!(!e_la_coda_del_giro(&[1, 2, 3], Some(&[1, 2])));
+        assert!(!e_la_coda_del_giro(&[1, 2], None));
+    }
+
+    /// Le righe della coda si leggono sul pool bloccante, non sul filo della
+    /// finestra: con una coda da «Riproduci tutto» sono venticinquemila schede
+    /// e una quindicina di megabyte di JSON, chieste di nuovo a ogni avvio e a
+    /// ogni uscita dallo schermo intero. È la regola di `crate::disparte`: un
+    /// comando che legge più di una riga per chiave non è sincrono.
+    #[test]
+    fn le_righe_della_coda_non_si_leggono_sul_filo_della_finestra() {
+        let codice = include_str!("coda.rs");
+        let codice = codice.split("\n#[cfg(test)]").next().unwrap_or(codice);
+        let inizio = codice
+            .find("pub async fn brani_per_id(")
+            .expect("`brani_per_id` dev'essere un `async fn`");
+        let corpo = &codice[inizio..];
+        let corpo = &corpo[..corpo.find("\n}\n").unwrap_or(corpo.len())];
+        assert!(
+            corpo.contains("leggi_la_libreria("),
+            "le righe si leggono con `leggi_la_libreria`, sul pool bloccante"
+        );
+        assert!(
+            !corpo.contains("con_libreria("),
+            "una presa diretta della libreria girerebbe su un worker del runtime"
+        );
+    }
 
     #[test]
     fn le_latenze_lette_per_intero_non_scrivono_niente() {

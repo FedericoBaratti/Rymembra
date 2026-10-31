@@ -112,10 +112,15 @@ impl Identita {
         &self.segreta
     }
 
-    /// La chiave segreta come testo, per il portachiavi.
+    /// La chiave segreta come testo, per il portachiavi. Si azzera da sé
+    /// quando chi l'ha chiesta la lascia cadere: è una copia di questo crate,
+    /// come quella dentro `Identita` (vedi il suo `Drop`). Si passa dove serve
+    /// un `&str` come prima, per deref.
     #[must_use]
-    pub fn in_testo(&self) -> String {
-        crate::esadecimale::scrivi(&self.segreta)
+    pub fn in_testo(&self) -> zeroize::Zeroizing<String> {
+        // `scrivi` riserva la misura giusta dall'inizio: nessuna crescita che
+        // lasci per strada un pezzo del testo in una pagina liberata.
+        zeroize::Zeroizing::new(crate::esadecimale::scrivi(&self.segreta))
     }
 
     /// La metà pubblica.
@@ -125,12 +130,22 @@ impl Identita {
     }
 }
 
-/// La metà segreta non resta nella memoria del processo dopo che l'identità se
-/// n'è andata — uscendo, o quando la sessione si ferma.
+/// La copia della metà segreta tenuta da `Identita` si azzera quando
+/// l'identità se ne va — uscendo, o quando la sessione si ferma — e così il
+/// testo di [`Identita::in_testo`] quando chi l'ha chiesto lo lascia cadere.
 ///
 /// Non è una difesa da chi legge la memoria di un processo vivo: quello vede
 /// anche la chiave in uso. È l'igiene di non lasciarla in pagine liberate, che
 /// possono finire in un file di paging o in un dump di un arresto anomalo.
+///
+/// E vale solo per quelle due copie. Altre la chiave ne ha, e questo crate non
+/// le può azzerare: dentro `snow`, la curva con cui `da_segreta` calcola la
+/// pubblica e quella dello stato di ogni stretta (`canale::stringi`), che
+/// snow 0.10 lascia andare senza azzerarle; le copie sullo stack di
+/// [`Identita::nuova`] e `da_segreta`; quelle dello strato del portachiavi di
+/// Windows, e il testo letto dal portachiavi che il desktop passa a
+/// [`Identita::da_testo`]. Fino alla revisione del 30 ottobre questo commento
+/// prometteva che la metà segreta non restasse in memoria affatto.
 impl Drop for Identita {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.segreta);
@@ -239,11 +254,20 @@ mod prove {
     fn la_meta_segreta_non_si_stampa() {
         let identita = Identita::nuova().expect("il generatore risponde");
         let stampa = format!("{identita:?}");
-        assert!(!stampa.contains(&identita.in_testo()), "{stampa}");
+        assert!(!stampa.contains(identita.in_testo().as_str()), "{stampa}");
         assert!(
             !format!("{:?}", identita.pubblica()).contains(&identita.pubblica().in_testo()),
             "nemmeno la pubblica per esteso"
         );
+    }
+
+    #[test]
+    fn la_chiave_in_testo_si_azzera_da_sola() {
+        // Il testo della chiave segreta è una copia di questo crate: si azzera
+        // quando chi lo ha chiesto lo lascia cadere, come la chiave dentro
+        // `Identita`. Che sia un `Zeroizing` lo dice il tipo, qui.
+        let testo: zeroize::Zeroizing<String> = Identita::nuova().expect("chiave").in_testo();
+        assert_eq!(testo.len(), 64);
     }
 
     #[test]

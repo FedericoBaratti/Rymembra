@@ -79,7 +79,11 @@ jobs:
     steps:
       # Inchiodate a un hash come tutte le altre, e il perché sta per esteso nel
       # preambolo di `release.yml`: un'etichetta si può spostare, un hash no.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # La stessa versione degli altri workflow, e senza lasciare il token nella
+      # configurazione di git: qui git non scrive niente, e `gh` usa il suo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Lo stesso Node di `verify.yml`: il generatore è CommonJS senza
       # dipendenze, ma usa `Intl` per scrivere le date in quattro lingue.

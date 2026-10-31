@@ -136,6 +136,12 @@ pub struct Fornitori {
     pub musicbrainz: Cadenza,
     /// Il cancello del Cover Art Archive.
     pub copertine: Cadenza,
+    /// Il cancello delle copertine dirette, quelle sui CDN di iTunes e Deezer.
+    ///
+    /// Separato da [`Self::copertine`] perché sono altri host, che cadono per
+    /// altre ragioni: con un cancello solo, archive.org giù spegneva anche le
+    /// copertine dei CDN che funzionavano. Vedi `copertine::cadenza_per`.
+    pub immagini: Cadenza,
     /// Il cancello di iTunes.
     pub itunes: Cadenza,
     /// Il cancello di Deezer.
@@ -157,6 +163,7 @@ impl std::fmt::Debug for Fornitori {
         f.debug_struct("Fornitori")
             .field("musicbrainz", &self.musicbrainz)
             .field("copertine", &self.copertine)
+            .field("immagini", &self.immagini)
             .finish_non_exhaustive()
     }
 }
@@ -170,8 +177,14 @@ impl Fornitori {
             deposito,
             musicbrainz: Cadenza::nuova("musicbrainz", cadenza::RITMO_MUSICBRAINZ),
             copertine: Cadenza::nuova("coverartarchive", cadenza::RITMO_COVERART),
-            itunes: Cadenza::nuova("itunes", cadenza::RITMO_ITUNES),
-            deezer: Cadenza::nuova("deezer", cadenza::RITMO_DEEZER),
+            immagini: Cadenza::nuova("immagini", cadenza::RITMO_COVERART),
+            // Oltre il suo limite iTunes risponde `403`: vedi
+            // `Cadenza::con_rifiuto_come_limite`.
+            itunes: Cadenza::nuova("itunes", cadenza::RITMO_ITUNES).con_rifiuto_come_limite(),
+            // Deezer scrive i suoi guasti dentro un `200`: vedi
+            // `deezer::guasto_nel_corpo`.
+            deezer: Cadenza::nuova("deezer", cadenza::RITMO_DEEZER)
+                .con_vaglio(deezer::guasto_nel_corpo),
             lrclib: Cadenza::nuova("lrclib", cadenza::RITMO_LRCLIB),
             listenbrainz: Cadenza::nuova("listenbrainz-labs", cadenza::RITMO_LISTENBRAINZ),
         }
@@ -210,9 +223,10 @@ impl Fornitori {
     /// Chiede un JSON a un servizio, passando dal deposito e dalla cadenza.
     ///
     /// `Ok(None)` è la risposta «non ce l'ho» — un `404`, o un no già ricordato.
-    /// `Err` è «non si sa»: trasporto caduto, servizio in errore, interruttore
-    /// aperto. La differenza fra i due attraversa tutto il resto del sistema, e
-    /// nasce qui.
+    /// `Err` è «non si sa»: trasporto caduto, servizio in errore (anche quando
+    /// l'errore arriva dentro un `200`, vedi `Cadenza::con_vaglio`),
+    /// interruttore aperto. La differenza fra i due attraversa tutto il resto
+    /// del sistema, e nasce qui.
     fn json(
         &self,
         cadenza: &Cadenza,
@@ -245,9 +259,15 @@ impl Fornitori {
     ) -> Result<Option<Vec<u8>>, AppError> {
         if memoria == Memoria::Vale {
             match self.deposito.leggi(servizio, chiave) {
-                Some(Voce::Corpo(corpo)) => return Ok(Some(corpo)),
+                // Un corpo che il vaglio del servizio rifiuta vale come
+                // assente: è un errore ricordato prima che il vaglio ci fosse
+                // (vedi `Cadenza::con_vaglio`), e si richiede. Così le voci già
+                // scritte si risanano da sole invece di durare una settimana.
+                Some(Voce::Corpo(corpo)) if cadenza.guasto_nel_corpo(&corpo).is_none() => {
+                    return Ok(Some(corpo));
+                }
                 Some(Voce::Niente) => return Ok(None),
-                None => {}
+                Some(Voce::Corpo(_)) | None => {}
             }
         }
         match self.json_senza_memoria(cadenza, url)? {
@@ -331,13 +351,26 @@ impl Fornitori {
             // Solo quel che si può ritentare conta come guasto del servizio: un
             // `400` è una query che abbiamo scritto male noi, e aprire
             // l'interruttore nasconderebbe il nostro difetto dietro «il
-            // servizio è giù».
-            if errore.is_retryable() {
+            // servizio è giù». L'eccezione è il `403` di chi lo usa per dire
+            // «troppo veloce» (iTunes): quello è un limite, e se ne riposa.
+            if errore.is_retryable() || (risposta.stato == 403 && cadenza.rifiuto_e_limite()) {
                 cadenza.guasto();
             } else {
                 cadenza.riuscita();
             }
             return Err(errore);
+        }
+
+        // Un `200` che dentro dice «errore» (Deezer) non è una risposta: non si
+        // conta come riuscita, non si ricorda — l'`Err` esce prima che
+        // `json_con_memoria` scriva — e, se è un limite, conta come guasto.
+        if let Some(guasto) = cadenza.guasto_nel_corpo(&risposta.corpo) {
+            if guasto.is_retryable() {
+                cadenza.guasto();
+            } else {
+                cadenza.riuscita();
+            }
+            return Err(guasto);
         }
 
         cadenza.riuscita();
@@ -418,9 +451,139 @@ pub fn termine_lucene(grezzo: &str) -> String {
         .to_owned()
 }
 
+/// Quel che serve alle prove per parlare con un servitore su questa macchina.
+///
+/// Le prove non escono mai da questo computer: [`Fornitori::nuovo`] parla solo
+/// `https://`, quindi qui si costruisce con una rete in chiaro verso
+/// `127.0.0.1` ([`Rete::verso`]) e un servitore che risponde sempre la stessa
+/// cosa e conta le richieste.
+#[cfg(test)]
+pub(crate) mod prova_rete {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{Deposito, Fornitori, Rete};
+
+    impl Fornitori {
+        /// I servizi con una rete data invece di quella di serie.
+        pub(crate) fn con_rete(rete: Rete, deposito: Box<dyn Deposito>) -> Self {
+            Self {
+                rete,
+                ..Self::nuovo(deposito)
+            }
+        }
+    }
+
+    /// Un servitore che risponde a ogni richiesta con `stato` e `corpo`.
+    ///
+    /// Restituisce l'indirizzo di base, una rete che ci arriva, e il conto delle
+    /// richieste ricevute. La testa della richiesta si legge **tutta** prima di
+    /// rispondere: su Windows un socket chiuso con byte ancora da leggere manda
+    /// un RST, e il client potrebbe perdere la risposta.
+    pub(crate) fn servitore(stato: u16, corpo: &'static str) -> (String, Rete, Arc<AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let ascolto =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("una porta su questa macchina");
+        let porta = ascolto.local_addr().expect("la porta scelta").port();
+        let contate = Arc::new(AtomicUsize::new(0));
+        let conto = Arc::clone(&contate);
+        std::thread::spawn(move || {
+            for connessione in ascolto.incoming() {
+                let Ok(mut connessione) = connessione else {
+                    continue;
+                };
+                let mut testa = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !testa.ends_with(b"\r\n\r\n") {
+                    match connessione.read(&mut byte) {
+                        Ok(1) => testa.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                conto.fetch_add(1, Ordering::SeqCst);
+                let _ = connessione.write_all(
+                    format!(
+                        "HTTP/1.1 {stato} Prova\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{corpo}",
+                        corpo.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let base = format!("http://127.0.0.1:{porta}");
+        let rete = Rete::verso("prova", std::time::Duration::from_secs(5), &base)
+            .expect("un indirizzo di casa costruisce");
+        (base, rete, contate)
+    }
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
+    use crate::deposito::Senza;
+
+    /// Apple documenta per iTunes Search «circa 20 richieste al minuto»: il
+    /// ritmo non può essere più veloce.
+    #[test]
+    fn il_ritmo_di_itunes_rispetta_il_limite_dichiarato() {
+        let limite_apple = Duration::from_secs(60) / 20;
+        assert!(
+            cadenza::RITMO_ITUNES >= limite_apple,
+            "{:?} fra due richieste: più di venti al minuto",
+            cadenza::RITMO_ITUNES
+        );
+    }
+
+    /// Oltre il limite Apple risponde `403`, non `429`. Per la cadenza di
+    /// iTunes un `403` è quindi un limite di frequenza: tre di fila aprono
+    /// l'interruttore, invece di continuare a bussare a pieno ritmo.
+    #[test]
+    fn tre_rifiuti_di_itunes_aprono_l_interruttore() {
+        let (base, rete, contate) = prova_rete::servitore(403, "{}");
+        let fornitori = Fornitori::con_rete(rete, Box::new(Senza));
+        let cadenza = Cadenza::nuova("itunes", Duration::from_millis(1)).con_rifiuto_come_limite();
+        for _ in 0..cadenza::GUASTI_PER_APRIRE {
+            let errore = fornitori
+                .json_senza_memoria(&cadenza, &format!("{base}/search"))
+                .expect_err("un 403 non è una risposta");
+            assert!(
+                matches!(
+                    errore.code(),
+                    rymembra_domain::errors::ErrorCode::NetHttp { status: 403, .. }
+                ),
+                "{errore:?}"
+            );
+        }
+        assert_eq!(
+            contate.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "le tre richieste sono partite"
+        );
+        assert!(
+            cadenza.aperta(),
+            "tre 403 di fila devono aprire l'interruttore"
+        );
+        assert!(
+            fornitori.itunes.rifiuto_e_limite(),
+            "la cadenza di iTunes deve contare il 403 come limite"
+        );
+    }
+
+    /// Per tutti gli altri un `403` resta quel che era: un no che non è un
+    /// guasto del servizio, e non apre niente.
+    #[test]
+    fn per_gli_altri_un_403_non_apre_niente() {
+        let (base, rete, _) = prova_rete::servitore(403, "{}");
+        let fornitori = Fornitori::con_rete(rete, Box::new(Senza));
+        assert!(!fornitori.deezer.rifiuto_e_limite());
+        assert!(!fornitori.musicbrainz.rifiuto_e_limite());
+        let cadenza = Cadenza::nuova("deezer", Duration::from_millis(1));
+        for _ in 0..cadenza::GUASTI_PER_APRIRE {
+            let _ = fornitori.json_senza_memoria(&cadenza, &format!("{base}/search"));
+        }
+        assert!(!cadenza.aperta());
+    }
 
     #[test]
     fn un_termine_non_puo_spezzare_la_frase() {

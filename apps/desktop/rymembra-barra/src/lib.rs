@@ -14,23 +14,36 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in un modulo, [`finestra`], dentro un
-//! crate che dichiara l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della
-//! radice. Il resto di questo crate, e tutto il resto di Rymembra, resta senza.
+//! Così il codice `unsafe` sta tutto in due posti, il modulo `finestra` e una
+//! funzione di [`unita`](crate::unita_di), dentro un crate che dichiara
+//! l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della radice. Il resto
+//! di questo crate, e tutto il resto di Rymembra, resta senza.
+//!
+//! # L'altra domanda al sistema: il genere di un'unità
+//!
+//! Il secondo posto è venuto dopo, per la stessa ragione: «Elimina dal disco»
+//! deve sapere se un file sta su una chiavetta, una scheda SD, un CD o un RAM
+//! disk, dove Windows un Cestino non ce l'ha, e lo dice soltanto
+//! `GetDriveTypeW`. Nessuna dipendenza seria lo espone senza `unsafe`, e
+//! portarne dentro una per una chiamata sola costerebbe più di questa
+//! funzione: vedi [`unita_di`].
 //!
 //! # Cosa si vede da fuori
 //!
-//! Due cose: [`aggancia`], una volta, sul filo della finestra; e
-//! [`Barra::mostra`], da qualunque filo, ogni volta che lo stato del lettore
+//! Per i pulsanti, due cose: [`aggancia`], una volta, sul filo della finestra;
+//! e [`Barra::mostra`], da qualunque filo, ogni volta che lo stato del lettore
 //! cambia. Quel che succede quando si preme un pulsante lo decide chi aggancia,
-//! con la chiusura che passa: questo crate non sa niente della musica.
+//! con la chiusura che passa: questo crate non sa niente della musica. Per le
+//! unità, [`unita_di`] e il suo [`Unita`].
 
 mod aspetto;
 #[cfg(windows)]
 mod finestra;
 mod glifi;
+mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
+pub use unita::{Unita, unita_di};
 
 /// Un pulsante premuto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

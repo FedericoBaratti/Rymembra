@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — lecteur de musique gratuit pour Windows : FLAC, sans blanc, volume constant",
-    "descrizione": "Lecteur de musique gratuit et open source pour Windows : FLAC et MP3 sans blanc et au même volume, playlists Spotify, catalogues libres, écoute à plusieurs en LAN.",
+    "descrizione": "Lecteur de musique gratuit et open source pour Windows : FLAC et MP3 sans blanc et au même volume, dossiers locaux et cloud, playlists Spotify, écoute en LAN.",
     "immagine": "Rymembra, un lecteur de musique pour Windows"
   },
   "nav": {
@@ -59,7 +59,8 @@
     "punti": [
       "Les dossiers se surveillent tout seuls : copiez-y un album, il est dans la bibliothèque quelques secondes plus tard.",
       "Sur un NAS ou un lecteur réseau, un partage qui ne répond pas un instant rend les titres non vérifiés, jamais disparus.",
-      "Une analyse qui supprimerait beaucoup de titres vous les montre et demande d'abord."
+      "Une analyse qui supprimerait beaucoup de titres vous les montre et demande d'abord.",
+      "Un dossier de musique peut aussi se trouver sur OneDrive, Google Drive, Dropbox ou un serveur WebDAV comme Nextcloud, en lecture seule, via une application que vous enregistrez vous-même — le programme vous guide pas à pas ; pour OneDrive, il faut un compte Azure gratuit."
     ]
   },
   "cataloghi": {

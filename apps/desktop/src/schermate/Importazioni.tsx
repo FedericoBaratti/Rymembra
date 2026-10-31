@@ -51,7 +51,9 @@ import {
 import { Intestazione } from "../parti/Intestazione";
 import { Rapporto } from "../parti/Rapporto";
 import { nomeGenere, nomeLicenza, numero } from "../formato";
-import { t } from "../lingue";
+import { t, tSe } from "../lingue";
+import { chiaveDelGuasto, notaDi } from "../notaBrano";
+import { daRichiedere } from "../elencoDaComprare";
 import { Trans } from "../lingue/Trans";
 import { StatoVuoto } from "./Libreria";
 
@@ -153,27 +155,19 @@ export function TestaImportazioni({
   );
 }
 
-/** Cosa sta succedendo al brano in corso, in due parole. */
+/** Cosa sta succedendo al brano in corso, in due parole: vedi `notaBrano.ts`. */
 function nota(brano: BranoScarico): string {
-  switch (brano.esito) {
-    case "cerco":
-      return t("imports.track.searching");
-    case "prendo":
-      return brano.frazione === null
-        ? t("imports.track.fetching")
-        : `${Math.round(brano.frazione * 100)}%`;
-    case "fatto":
-      return t("imports.track.done");
-    case "introvabile":
-      // Due ragioni, e vanno distinte: «non l'ho trovato» e «l'ho trovato e la
-      // licenza non me lo lascia prendere» sono cose diverse per chi legge —
-      // la seconda vuol dire che da qualche parte si ascolta.
-      return brano.codice === "download.notPermitted"
-        ? t("imports.track.notAllowed")
-        : t("imports.track.nowhere");
-    default:
-      return brano.codice ?? t("imports.track.failed");
-  }
+  const n = notaDi(brano);
+  return "percento" in n ? `${n.percento}%` : t(n.chiave);
+}
+
+/**
+ * Il perché di un brano non riuscito, per intero: la frase del catalogo, che
+ * nella colonna della nota non ci starebbe e va nel suggerimento.
+ */
+function perche(brano: BranoScarico): string | undefined {
+  const chiave = chiaveDelGuasto(brano);
+  return chiave === null ? undefined : tSe(chiave, t("imports.track.failed"));
 }
 
 /**
@@ -248,7 +242,7 @@ function RigaBrano({ brano, fonte }: { brano: BranoScarico; fonte: string }) {
       ) : daUnLink && brano.esito === "prendo" ? (
         <span className="candidato">{t("imports.track.fromList")}</span>
       ) : (
-        <span className="candidato" data-livello="nota">
+        <span className="candidato" data-livello="nota" title={perche(brano)}>
           {nota(brano)}
         </span>
       )}
@@ -266,7 +260,9 @@ function RigaBrano({ brano, fonte }: { brano: BranoScarico; fonte: string }) {
               }}
             />
           </div>
-          <span className="percento">{nota(brano)}</span>
+          <span className="percento" title={perche(brano)}>
+            {nota(brano)}
+          </span>
         </>
       )}
     </div>
@@ -430,19 +426,27 @@ function Riga({
  * L'elenco si chiede **all'apertura**, non al montaggio: può essere lungo come
  * la libreria di qualcuno, e chiederlo a ogni visita della pagina per mostrarlo
  * in una sezione che di norma resta chiusa sarebbe una lettura buttata via.
+ * E si rilegge, aperta, quando il conto cambia: vedi `elencoDaComprare.ts`.
  */
 function DaComprareSezione({ quanti }: { quanti: number }) {
   const [aperta, setAperta] = useState(false);
   const [righe, setRighe] = useState<DaComprare[] | null>(null);
+  /** Il conto con cui sono state chieste le righe a schermo. */
+  const [quantiLetti, setQuantiLetti] = useState<number | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
 
+  const richiedi = daRichiedere({ aperta, letta: righe !== null, quanti, quantiLetti });
   useEffect(() => {
-    if (!aperta || righe !== null) return;
+    if (!richiedi) return;
     let annullato = false;
     ipc
       .daComprare(QUANTE_DA_COMPRARE)
       .then((r) => {
-        if (!annullato) setRighe(r);
+        if (annullato) return;
+        // Le righe vecchie restano finché non arrivano queste: niente
+        // sfarfallio a ogni brano introvabile mentre la coda gira.
+        setRighe(r);
+        setQuantiLetti(quanti);
       })
       .catch((e: unknown) => {
         if (!annullato) setErrore(testoErrore(e));
@@ -450,7 +454,7 @@ function DaComprareSezione({ quanti }: { quanti: number }) {
     return () => {
       annullato = true;
     };
-  }, [aperta, righe]);
+  }, [richiedi, quanti]);
 
   return (
     <details
@@ -539,10 +543,16 @@ function DaComprareSezione({ quanti }: { quanti: number }) {
 export function SchermataImportazioni({
   importazioni,
   onIncollaLink,
+  onApriArchivio,
 }: {
   importazioni: UsoImportazioni;
   /** Apre la finestrella in cui si incolla un link. */
   onIncollaLink: () => void;
+  /**
+   * Apre l'archivio di Spotify. Lo stato vuoto lo nominava senza offrirlo, e
+   * l'unica strada era Impostazioni › Importa da un servizio.
+   */
+  onApriArchivio: () => void;
 }) {
   const { elenco, stato, brano, errore, rientro, storia, scarta } =
     importazioni;
@@ -594,6 +604,10 @@ export function SchermataImportazioni({
             etichetta: t("imports.pasteLink"),
             fai: onIncollaLink,
             secondaria: true,
+          }}
+          altra={{
+            etichetta: t("settings.import.archive.cta"),
+            fai: onApriArchivio,
           }}
         />
       ) : (

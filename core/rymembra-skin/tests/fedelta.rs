@@ -13,7 +13,7 @@
 //!
 //! # Dove la fedeltà finisce, e perché
 //!
-//! Tre cose non sono più quelle di `global.css`, e non per svista:
+//! Quattro cose non sono più quelle di `global.css`, e non per svista:
 //!
 //! - `--color-text-3` faceva 3,47:1 sul fondo, sotto la soglia di WCAG. Era un
 //!   numero scritto a occhio in un file che nessuno poteva misurare.
@@ -123,9 +123,12 @@ const IDENTICI: &[(&str, &str)] = &[
     ("--viz-primary", "var(--accent)"),
     // Le due triple `--viz-primary-rgb` e `--viz-secondary-rgb` stavano qui, e
     // non ci stanno più: non erano soltanto lette da nessuno, erano sbagliate.
-    // Il compilatore sa derivare una tripla da un colore letterale e ripiega
-    // sull'accento per tutto il resto, quindi la tripla di un colore preso
-    // dalla tavolozza descriveva l'accento e non quel colore.
+    // Allora il compilatore sapeva derivare una tripla solo da un colore
+    // letterale e ripiegava sull'accento per tutto il resto, quindi la tripla
+    // di un colore preso dalla tavolozza descriveva l'accento e non quel
+    // colore. Dalla 3.2.0 la tripla segue il colore — la tavolozza dà la sua —
+    // ma le due triple non sono tornate: un token senza tripla nel registro
+    // non ne ha una da scrivere.
     // `--viz-secondary` stava qui a `var(--accent)`, ed era la prova che le due
     // `mix()` dello shader non facevano niente: adesso è un letterale apposta,
     // e la sua prova è che la scena ha due colori.
@@ -403,7 +406,7 @@ fn il_terzo_livello_di_testo_non_e_piu_quello_di_global_css() {
     // # Perché le superfici sono quattro e non tre
     //
     // `surface.3` era fuori, con la ragione scritta accanto a `DIETRO` in
-    // `document.rs`: è un riempimento di sopraelevazione, non un letto di testo
+    // `document/avvisi.rs`: è un riempimento di sopraelevazione, non un letto di testo
     // semantico. Per `text.3` non è vero, e si vede leggendo il foglio
     // dell'applicazione: `.tooltip-pill`, `.menu` e `.pannello-eq` dipingono
     // `--color-surface-3` e ci scrivono sopra `--color-text-3` a 11,5 px — cioè
@@ -540,9 +543,10 @@ fn nel_tema_chiaro_il_testo_e_le_semantiche_si_leggono() {
     // Perciò l'elenco resta a tre superfici per queste sei voci: a tenercelo è
     // rimasto l'accento alla luce, da solo e per scelta.
     //
-    // `sala`, l'altra skin impacchettata, passerebbe `text.3` su `surface.3` in
-    // tutti e due i temi (4,90:1 e 4,88:1) — misurato, non supposto — ma questo
-    // test guarda `plain` e solo `plain`, come tutto il file.
+    // `sala`, la skin del formato 1 conservata in `tests/oro` (non è fra quelle
+    // di serie), passerebbe `text.3` su `surface.3` in tutti e due i temi
+    // (4,90:1 e 4,88:1) — misurato, non supposto — ma questo test guarda
+    // `plain` e solo `plain`, come tutto il file.
     let skin = plain().expect("valida");
     let css = compile_skin(&skin).css;
 

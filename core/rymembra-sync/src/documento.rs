@@ -295,19 +295,33 @@ fn massimi(a: &BTreeMap<String, i64>, b: &BTreeMap<String, i64>) -> BTreeMap<Str
     unito
 }
 
-/// Unisce due inventari, tenendo l'impronta locale quando c'è.
+/// Unisce due inventari: l'unione degli identificativi, e a parità di
+/// identificativo l'impronta più grande, come stringa.
 ///
 /// Un inventario dice «ho questa skin, e i suoi byte hanno quest'impronta». Due
 /// impronte diverse per lo stesso identificativo vogliono dire che i pacchetti
-/// sono davvero due, e chi scarica se ne accorgerà; qui si tiene la propria,
-/// perché è l'unica di cui si sa che corrisponde a un file che c'è.
+/// sono davvero due, e chi scarica se ne accorgerà. Quale tenere qui non lo
+/// può decidere «la propria»: in [`crate::fusione::fondi`] questa funzione
+/// riceve l'accumulato della piega e il documento dopo, non il proprio e
+/// l'altrui, e una regola «tieni il primo» faceva vincere il documento che
+/// l'elenco della cartella metteva in testa — un risultato che cambiava con
+/// l'ordine. Il massimo è commutativo, associativo e idempotente come le
+/// altre fusioni di questo crate, ed è la stessa regola con cui [`Scelta`]
+/// rompe la parità.
 fn unisci_testi(
     a: &BTreeMap<String, String>,
     b: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
-    let mut unito = b.clone();
-    for (chiave, valore) in a {
-        unito.insert(chiave.clone(), valore.clone());
+    let mut unito = a.clone();
+    for (chiave, valore) in b {
+        unito
+            .entry(chiave.clone())
+            .and_modify(|gia| {
+                if valore > gia {
+                    gia.clone_from(valore);
+                }
+            })
+            .or_insert_with(|| valore.clone());
     }
     unito
 }

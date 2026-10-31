@@ -295,30 +295,54 @@ fn da_riaprire(stato: &StatoLettore, adesso: &[rymembra_play::Dispositivo]) -> O
         .lettore
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Ok(lettore) = guardia.as_ref() else {
+    // `dispositivo_perso` è una lettura atomica: leggerla sempre, anche quando
+    // la risposta la dà il confronto, non cambia niente.
+    let aperto = guardia.as_ref().ok().map(|lettore| {
+        (
+            lettore.motore.dispositivo(),
+            lettore.motore.dispositivo_perso(),
+        )
+    });
+    perche_riaprire(aperto, adesso, voluta.as_deref())
+}
+
+/// La regola di [`da_riaprire`], senza i lucchetti da cui vengono i dati.
+///
+/// `aperto` è `None` per il motore mai aperto, altrimenti l'uscita su cui il
+/// motore è aperto e se il motore si è perso. `voluta` è l'uscita fissata, o
+/// `None` per «quella di sistema».
+///
+/// Una funzione a sé perché l'**ordine** dei due controlli si possa provare
+/// senza un motore vero: è quell'ordine a tenere le cuffie fissate fuori dagli
+/// altoparlanti, e fino alla 3.0 era rovesciato (vedi [`da_riaprire`]).
+fn perche_riaprire(
+    aperto: Option<(&str, bool)>,
+    adesso: &[rymembra_play::Dispositivo],
+    voluta: Option<&str>,
+) -> Option<String> {
+    let Some((dispositivo, perso)) = aperto else {
         // Il motore non si è mai aperto — avvio senza scheda audio — e adesso
         // una scheda c'è. È il caso che prima costringeva a riavviare.
         return Some("il motore non si era mai aperto".to_owned());
     };
     // Prima del guasto, e non dopo: un'uscita fissata che non c'è si aspetta
     // anche — soprattutto — a motore perso.
-    let giusta = rymembra_play::dispositivi::scegli_per_riaprire(adesso, voluta.as_deref())?;
-    if lettore.motore.dispositivo_perso() {
+    let giusta = rymembra_play::dispositivi::scegli_per_riaprire(adesso, voluta)?;
+    if perso {
         // «Il motore» e non «l'uscita»: la bandiera che si legge qui la alzano
         // in due — la callback quando il dispositivo sparisce, e il filo della
         // decodifica quando cade. Nel secondo caso l'uscita funziona benissimo,
         // e scrivere nel diario che ha smesso manderebbe chi lo legge a
         // cercare un cavo che non c'entra. Quale dei due sia lo dice
         // `causa_perdita`, che finisce nella riga di `fili.rs`.
-        return Some(format!(
-            "il motore su «{}» non suona più",
-            lettore.motore.dispositivo()
-        ));
+        return Some(format!("il motore su «{dispositivo}» non suona più"));
     }
-    (giusta.id != lettore.motore.dispositivo()).then(|| {
+    // L'identità, non il nome a schermo: è con l'identità che il motore si
+    // apre, e due nomi che non coincidono con lei vorrebbero dire una
+    // riapertura a ogni passata, per sempre.
+    (giusta.id != dispositivo).then(|| {
         format!(
-            "si suonava su «{}», adesso tocca a «{}»",
-            lettore.motore.dispositivo(),
+            "si suonava su «{dispositivo}», adesso tocca a «{}»",
             giusta.id
         )
     })
@@ -393,18 +417,24 @@ fn elenco_per_finestra(
 /// cambiato nell'ultimo paio di secondi lo si vede subito invece che al
 /// prossimo giro.
 ///
-/// `(async)`: enumerare i dispositivi parla col sistema audio. Sul filo
-/// principale sarebbe la finestra ferma.
-#[tauri::command(async)]
-pub fn dispositivi_audio(stato: State<'_, StatoLettore>) -> Esito<Vec<DispositivoAudio>> {
+/// Sul pool bloccante: enumerare i dispositivi parla col sistema audio. Sul
+/// filo principale sarebbe la finestra ferma, su un worker del runtime gli
+/// altri comandi. Vedi `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn dispositivi_audio(app: tauri::AppHandle) -> Esito<Vec<DispositivoAudio>> {
+    super::col_lettore_in_disparte(app, "elenco delle uscite", |_, stato| {
+        Ok(dispositivi_audio_ora(&stato))
+    })
+    .await
+}
+
+/// Il lavoro di [`dispositivi_audio`], sincrono.
+fn dispositivi_audio_ora(stato: &StatoLettore) -> Vec<DispositivoAudio> {
     // Se il filo è morto la pungolata si perde, e va bene: l'elenco qui sotto
     // lo si legge comunque: è il filo a servire i **prossimi** cambiamenti, non
     // questa risposta.
     let _ = stato.sveglia_dispositivi.send(());
-    Ok(elenco_per_finestra(
-        &stato,
-        &rymembra_play::dispositivi::elenco(),
-    ))
+    elenco_per_finestra(stato, &rymembra_play::dispositivi::elenco())
 }
 
 /// Sceglie da quale uscita far sentire Rymembra. `None`: quella di sistema.
@@ -423,10 +453,18 @@ pub fn dispositivi_audio(stato: State<'_, StatoLettore>) -> Esito<Vec<Dispositiv
 /// riletto: se la scrittura fallisse, la copia resterebbe quella di prima
 /// invece di raccontare una preferenza che al prossimo avvio non ci sarà.
 ///
-/// `(async)`: scrive sul database e apre un dispositivo audio, due cose che si
-/// prendono il loro tempo.
-#[tauri::command(async)]
-pub fn scegli_dispositivo_audio(
+/// Sul pool bloccante: scrive sul database e apre un dispositivo audio, due
+/// cose che si prendono il loro tempo. Vedi `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn scegli_dispositivo_audio(app: tauri::AppHandle, id: Option<String>) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "scelta dell'uscita", move |app, stato| {
+        scegli_dispositivo_audio_ora(app, stato, id)
+    })
+    .await
+}
+
+/// Il lavoro di [`scegli_dispositivo_audio`], sincrono.
+fn scegli_dispositivo_audio_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     id: Option<String>,
@@ -456,4 +494,99 @@ pub fn scegli_dispositivo_audio(
         elenco_per_finestra(&stato, &rymembra_play::dispositivi::elenco()),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use rymembra_play::Dispositivo;
+
+    /// Un'uscita con un'identità diversa dal nome a schermo: così una regola
+    /// che confrontasse il nome invece dell'identità non passerebbe.
+    fn uscita(id: &str, predefinito: bool) -> Dispositivo {
+        Dispositivo {
+            id: id.to_owned(),
+            nome: format!("{id} (nome a schermo)"),
+            predefinito,
+        }
+    }
+
+    /// La promessa per cui un'uscita si fissa: le cuffie che si scaricano non
+    /// mandano la musica agli altoparlanti. A motore perso, con la fissata che
+    /// non c'è, non si riapre niente: si aspetta che torni. Fino alla 3.0 il
+    /// ramo del guasto veniva prima del confronto, e la riapertura ripiegava.
+    #[test]
+    fn un_uscita_fissata_che_non_c_e_non_si_riapre_nemmeno_a_motore_perso() {
+        let adesso = [uscita("Altoparlanti", true)];
+        assert_eq!(
+            perche_riaprire(Some(("Cuffie BT", true)), &adesso, Some("Cuffie BT")),
+            None
+        );
+        // E nemmeno a motore sano aperto altrove.
+        assert_eq!(
+            perche_riaprire(Some(("Altoparlanti", false)), &adesso, Some("Cuffie BT")),
+            None
+        );
+    }
+
+    /// La fissata che torna, col motore sul ripiego: si riapre su di lei.
+    #[test]
+    fn il_dac_fissato_che_torna_fa_riaprire() {
+        let adesso = [uscita("Altoparlanti", true), uscita("DAC", false)];
+        let perche = perche_riaprire(Some(("Altoparlanti", false)), &adesso, Some("DAC"));
+        assert!(
+            perche.as_deref().is_some_and(|p| p.contains("«DAC»")),
+            "{perche:?}"
+        );
+    }
+
+    /// La fissata che c'è, a motore perso: si riapre su di lei.
+    #[test]
+    fn la_fissata_presente_a_motore_perso_fa_riaprire() {
+        let adesso = [uscita("Altoparlanti", true), uscita("DAC", false)];
+        let perche = perche_riaprire(Some(("DAC", true)), &adesso, Some("DAC"));
+        assert!(
+            perche
+                .as_deref()
+                .is_some_and(|p| p.contains("non suona più")),
+            "{perche:?}"
+        );
+    }
+
+    /// Chi segue il sistema segue il predefinito che cambia: un flusso aperto
+    /// su un'uscita precisa non se ne accorge da solo.
+    #[test]
+    fn senza_preferenza_il_predefinito_cambiato_fa_riaprire() {
+        let adesso = [uscita("A", false), uscita("B", true)];
+        let perche = perche_riaprire(Some(("A", false)), &adesso, None);
+        assert!(
+            perche.as_deref().is_some_and(|p| p.contains("«B»")),
+            "{perche:?}"
+        );
+    }
+
+    /// Niente di cambiato, niente da fare. Se il confronto si rovesciasse, o
+    /// guardasse il nome a schermo invece dell'identità, qui risponderebbe
+    /// «riapri» a ogni passata: il brano che riparte ogni due secondi, per
+    /// sempre.
+    #[test]
+    fn senza_preferenza_e_niente_di_cambiato_non_si_riapre() {
+        let adesso = [uscita("A", true), uscita("B", false)];
+        assert_eq!(perche_riaprire(Some(("A", false)), &adesso, None), None);
+        // Lo stesso con l'uscita fissata, che è quella aperta.
+        assert_eq!(
+            perche_riaprire(Some(("B", false)), &adesso, Some("B")),
+            None
+        );
+    }
+
+    /// Il motore mai aperto — avvio senza scheda audio — si apre su quel che
+    /// c'è, anche se la fissata non c'è: un'uscita qualunque è meglio di
+    /// un'applicazione muta.
+    #[test]
+    fn a_motore_mai_aperto_si_riapre_comunque() {
+        let adesso = [uscita("A", true)];
+        assert!(perche_riaprire(None, &adesso, Some("assente")).is_some());
+        assert!(perche_riaprire(None, &adesso, None).is_some());
+    }
 }

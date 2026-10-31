@@ -68,9 +68,14 @@ pub(crate) const CHIARO_MASSIMO: usize = MASSIMO_NOISE - ETICHETTA;
 
 /// Il tetto del carico di un messaggio del trasporto: un mebibyte.
 ///
-/// Basta allo stato di una sessione di mille voci (un centinaio di kilobyte)
-/// con un margine largo, e a una copertina «piena». I byte dei brani ne usano
-/// più d'uno per lettura (vedi `servente::LETTURA_MASSIMA`).
+/// Basta allo stato di una sessione di mille voci, ma senza un margine
+/// largo: sono 0,3–0,6 MB di JSON (vedi «La compressione»; 100–120 KB
+/// compressi, ma il tetto vale anche per il JSON decompresso), e con titoli
+/// lunghi in caratteri di più byte e percorsi UNC si arriva vicino al
+/// mebibyte. Per questo il desktop tiene lo stato sotto i 900 KiB, accorciando
+/// i testi e togliendo voci (`BYTE_MASSIMI_STATO` e `nel_tetto`, in
+/// `insieme::voci`). Basta anche a una copertina «piena». I byte dei brani ne
+/// usano più d'uno per lettura (vedi `servente::LETTURA_MASSIMA`).
 pub(crate) const MASSIMO_MESSAGGIO: usize = 1024 * 1024;
 
 /// La testa: `u32` di lunghezza e `u8` di tipo.

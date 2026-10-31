@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — kostenloser Musikplayer für Windows: FLAC, lückenlos, gleiche Lautstärke",
-    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows: FLAC und MP3 lückenlos und gleich laut, Playlists aus Spotify, freie Kataloge und gemeinsames Hören im LAN.",
+    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows: FLAC und MP3 lückenlos und gleich laut, lokale und Cloud-Ordner, Playlists aus Spotify, gemeinsames Hören im LAN.",
     "immagine": "Rymembra, ein Musikplayer für Windows"
   },
   "nav": {
@@ -59,7 +59,8 @@
     "punti": [
       "Ordner überwachen sich selbst: Kopierst du ein Album hinein, ist es Sekunden später in der Bibliothek.",
       "Auf einem NAS oder Netzlaufwerk macht eine Freigabe, die kurz nicht antwortet, Titel ungeprüft, nie verschwunden.",
-      "Ein Scan, der viele Titel entfernen würde, zeigt sie dir und fragt vorher."
+      "Ein Scan, der viele Titel entfernen würde, zeigt sie dir und fragt vorher.",
+      "Ein Musikordner kann auch auf OneDrive, Google Drive, Dropbox oder einem WebDAV-Server wie Nextcloud liegen, nur lesend, über eine App, die du selbst registrierst — das Programm führt dich Schritt für Schritt; für OneDrive brauchst du ein kostenloses Azure-Konto."
     ]
   },
   "cataloghi": {

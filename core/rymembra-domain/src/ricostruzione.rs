@@ -11,14 +11,28 @@
 //! gli resta. Funziona, ed è una supposizione fatta a valle su un dato che a
 //! monte si conosceva con certezza.
 //!
-//! Registrata [`Origine`] al momento della lettura, tutto il resto smette di
-//! indovinare:
+//! Registrata [`Origine`] al momento della lettura, tutto il resto potrebbe
+//! smettere di indovinare:
 //!
-//! - l'arricchimento sa **cosa può sovrascrivere** — un valore dedotto sì, uno
-//!   scritto da una persona mai;
-//! - l'interfaccia sa **cosa mostrare come incerto**, e accanto a un testo
-//!   riparato può far vedere com'era prima;
-//! - l'utente sa **cosa correggere**, invece di cercarlo a occhio.
+//! - l'arricchimento saprebbe **cosa può sovrascrivere** — un valore dedotto
+//!   sì, uno scritto da una persona mai;
+//! - l'interfaccia saprebbe **cosa mostrare come incerto**, e accanto a un
+//!   testo riparato potrebbe far vedere com'era prima;
+//! - l'utente saprebbe **cosa correggere**, invece di cercarlo a occhio.
+//!
+//! # Quel che oggi è collegato
+//!
+//! Il condizionale è voluto. [`ricostruisci`] non ha chiamanti in produzione:
+//! la scansione non lo usa, quindi né la riparazione dei tag
+//! ([`crate::codifica::ripara`]) né gli indizi del percorso entrano in
+//! libreria da qui, e `tracks.meta_origine` la scrivono solo le correzioni
+//! manuali. Di questo modulo l'applicazione usa davvero [`Origine`] e
+//! [`Salute`]; `rymembra_app::provenienza` ha le funzioni per il resto, senza
+//! chiamanti. E
+//! nemmeno l'arricchimento legge la provenienza: [`crate::enrich::plan_write`]
+//! non la riceve, e una correzione manuale la rimette a posto chi scrive dopo
+//! di lui (`rymembra_app::incerti::riapplica_sopra_i_tag`). La ricostruzione è
+//! scritta e provata qui; collegarla alla scansione è un lavoro a parte.
 //!
 //! # La scala di prudenza
 //!
@@ -424,7 +438,7 @@ pub fn ricostruisci(
     //
     // **Solo se anche l'interprete è dedotto.** Questa è la condizione che a
     // prima vista non serve, e serve: `album_artist` ha la precedenza su
-    // `artist` in tutta la libreria — è `ARTISTA_EFFETTIVO`, in `library.rs` —
+    // `artist` in tutta la libreria — è `ARTISTA_EFFETTIVO`, in `library/aggregati.rs` —
     // quindi riempirlo dalla cartella su un file che l'interprete ce l'ha
     // **scritto nei tag** vuol dire far vincere il nome della cartella su
     // quello vero. Una libreria in `Cure/Disintegration/` con i tag a posto

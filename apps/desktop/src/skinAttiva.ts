@@ -14,7 +14,8 @@
  * tema nuovo, e il tema chiaro o scuro, che è di `aspettoFinestra.ts` e legge
  * la skin attiva da qui. L'accento della copertina sta di là per la stessa
  * ragione, e da qui riceve soltanto il segno che va rimesso
- * (`accentoDaRimettere`).
+ * (`accentoDaRimettere`), o che non va chiesto affatto: `null`, mentre la
+ * finestra indossa la bozza di «Prova sull'app».
  *
  * # L'ordine delle due letture
  *
@@ -32,6 +33,7 @@ import { ESTENSIONE_SKIN_PRECEDENTE } from "./eredita";
 import { ipc, type Skin, type VoceSkin } from "./ipc";
 import { t } from "./lingue";
 import { useStatoPresente } from "./presenza";
+import { segnoAccento } from "./segnoAccento";
 import { vinceLUltima } from "./ultima";
 
 /** Una bozza dello Studio provata sulla finestra. */
@@ -58,8 +60,10 @@ export interface SkinDellaFinestra {
   /**
    * Quante volte un'anteprima ha rimesso a schermo la skin scelta: il segno
    * per cui l'accento della copertina si ricalcola. Vedi `anteprimaSkin`.
+   * `null` mentre la finestra indossa la bozza di «Prova sull'app»: lì
+   * l'accento non si chiede. Vedi `segnoAccento.ts`.
    */
-  accentoDaRimettere: number;
+  accentoDaRimettere: number | null;
   /** Rilegge le skin installate. Vince l'ultima. */
   ricaricaSkin: () => Promise<void>;
   /** Rilegge e indossa la skin attiva: dopo un profilo applicato. */
@@ -110,6 +114,13 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
   const [prova, setProva] = useState<Prova | null>(null);
   const provaAdesso = useRef(prova);
   provaAdesso.current = prova;
+  /**
+   * La skin dell'ultima prova, come oggetto: finché è lei quella indossata
+   * l'accento della copertina non si chiede. Non si azzera mai a mano — conta
+   * l'identità con `skinAttiva`, che cambia appena a schermo arriva un'altra
+   * skin. Vedi `segnoAccento.ts` e `accentoDaRimettere`.
+   */
+  const [bozzaIndossata, setBozzaIndossata] = useState<Skin | null>(null);
 
   // La skin, appena si può. Fino a quando non arriva valgono i token che
   // `stile.css` porta sotto `:root`, che sono gli stessi della skin di serie —
@@ -271,6 +282,9 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       setProva({ ...bozza, reale: skinAttivaAdesso.current });
       applicaSkin(bozza.skin);
       setSkinAttiva(bozza.skin);
+      // Niente accento della copertina sulla bozza: il nucleo lo calcolerebbe
+      // sulla skin scelta. Torna da sé con la skin che la sostituisce.
+      setBozzaIndossata(bozza.skin);
     },
     [],
   );
@@ -345,6 +359,14 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
    * l'accento sulle superfici della skin *scelta* e a schermo c'è quella
    * provata. Un'anteprima senza accento dinamico è una risposta onesta; una con
    * l'accento sbagliato no.
+   *
+   * Vale anche per «Prova sull'app», ma lì la bozza diventa `skinAttiva` e ci
+   * resta per tutta la prova: l'effetto dell'accento ripartiva appena la prova
+   * cominciava, e poi a ogni copertina nuova, e dipingeva sulla bozza il colore
+   * calcolato per la skin scelta. Così il segno che esce di qui è `null` —
+   * l'effetto toglie l'accento e non chiede niente — finché la bozza è la skin
+   * indossata; torna un numero quando a schermo arriva un'altra skin, e
+   * l'accento con lui. Vedi `segnoAccento.ts`.
    */
   const [accentoDaRimettere, setAccentoDaRimettere] = useState(0);
 
@@ -428,7 +450,7 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       prova,
       daIndossare,
       setDaIndossare,
-      accentoDaRimettere,
+      accentoDaRimettere: segnoAccento(skinAttiva, bozzaIndossata, accentoDaRimettere),
       ricaricaSkin,
       rileggiSkin,
       scegliSkin,
@@ -447,6 +469,7 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       prova,
       daIndossare,
       setDaIndossare,
+      bozzaIndossata,
       accentoDaRimettere,
       ricaricaSkin,
       rileggiSkin,

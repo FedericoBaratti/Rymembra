@@ -21,12 +21,13 @@
  * comporre a mano, e mostrarlo senza chiederlo è quel che serve a non
  * sorprendere chi poi lo ritrova nella cartella delle skin.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Dialogo } from "./Dialogo";
 import { ipc, type VoceSkin } from "./ipc";
 import { idDa, type DatiTema } from "./studio/nuovo";
 import { t } from "./lingue";
+import { indiceDopoFreccia, unaAllaVolta } from "./temaNuovo";
 
 /** Le tre fasce di una skin, col ripiego di `Impostazioni`. */
 function bande(skin: VoceSkin): readonly string[] {
@@ -52,7 +53,11 @@ export function NuovoTema({
    * si accorge del campo.
    */
   baseIniziale?: string | null | undefined;
-  onCrea: (dati: DatiTema) => void;
+  /**
+   * Crea il tema. Restituisce la promessa perché la finestrella sappia quando
+   * ha finito: finché non ha finito «Crea» è spento (vedi `unaAllaVolta`).
+   */
+  onCrea: (dati: DatiTema) => Promise<void>;
   onChiudi: () => void;
 }) {
   // Le basi possibili: non una skin installata che non passa la validazione —
@@ -93,22 +98,45 @@ export function NuovoTema({
   // di `tastiera.ts` e le faceva consumare un livello di troppo; il fuoco sul
   // campo lo prende ora l'hook, che il primo focalizzabile lo trova da sé.
 
-  /** Le frecce girano dentro il gruppo, come nel segmentato. */
+  /**
+   * Le frecce girano dentro il gruppo, come nel segmentato: scelgono **e**
+   * spostano il fuoco.
+   *
+   * Spostava la sola scelta: il bottone nuovo prendeva `tabIndex` 0 ma il fuoco
+   * restava sul vecchio, ora non scelto, e la seconda freccia ripartiva da lì
+   * scegliendo di nuovo la stessa vicina — le skin oltre si raggiungevano solo
+   * uscendo col Tab e rientrando. Il fuoco **prima** della scelta, come in
+   * `Segmentato`: il nodo esiste già, e dopo il ridisegno lo si cercherebbe.
+   */
+  const bottoni = useRef<(HTMLButtonElement | null)[]>([]);
   const daTastiera = (e: React.KeyboardEvent, indice: number) => {
-    // È una griglia che va a capo, quindi non c'è un «sopra» che si possa dire
-    // a colpo sicuro: le quattro frecce scorrono l'elenco, avanti e indietro.
-    const passo =
-      e.key === "ArrowRight" || e.key === "ArrowDown"
-        ? 1
-        : e.key === "ArrowLeft" || e.key === "ArrowUp"
-          ? -1
-          : 0;
-    if (passo === 0) return;
+    const dove = indiceDopoFreccia(e.key, indice, skin.length);
+    if (dove === null) return;
     e.preventDefault();
-    // Il modulo con l'addizione: in JavaScript `-1 % 3` fa `-1`, non `2`.
-    const prossima = skin[(indice + passo + skin.length) % skin.length];
-    if (prossima) setBase(prossima.id);
+    const prossima = skin[dove];
+    if (!prossima) return;
+    bottoni.current[dove]?.focus();
+    setBase(prossima.id);
   };
+
+  // «Crea» una volta sola finché la creazione non ha risposto: due invii
+  // facevano due creazioni con lo stesso id, e la seconda accendeva la fascia
+  // d'errore sopra lo Studio aperto col tema appena creato.
+  const [creando, setCreando] = useState(false);
+  const onCreaOra = useRef(onCrea);
+  useEffect(() => {
+    onCreaOra.current = onCrea;
+  });
+  const [crea] = useState(() =>
+    unaAllaVolta(async (dati: DatiTema) => {
+      setCreando(true);
+      try {
+        await onCreaOra.current(dati);
+      } finally {
+        setCreando(false);
+      }
+    }),
+  );
 
   const pulito = nome.trim();
   const vuoto = pulito.length === 0;
@@ -123,7 +151,7 @@ export function NuovoTema({
       onChiudi={onChiudi}
       onInvia={() => {
         if (vuoto) return;
-        onCrea({
+        void crea({
           id,
           nome: pulito,
           autore:
@@ -196,6 +224,9 @@ export function NuovoTema({
                 aria-checked={scelta}
                 data-scelta={scelta || undefined}
                 tabIndex={scelta ? 0 : -1}
+                ref={(nodo) => {
+                  bottoni.current[indice] = nodo;
+                }}
                 onClick={() => setBase(s.id)}
                 onKeyDown={(e) => daTastiera(e, indice)}
               >
@@ -215,7 +246,7 @@ export function NuovoTema({
         <button type="button" className="bottone" onClick={onChiudi}>
           {t("common.cancel")}
         </button>
-        <button type="submit" className="bottone primario" disabled={vuoto}>
+        <button type="submit" className="bottone primario" disabled={vuoto || creando}>
           {t("newtheme.create")}
         </button>
       </div>

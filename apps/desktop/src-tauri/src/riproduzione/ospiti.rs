@@ -5,9 +5,11 @@
 //! **id > 0 è una riga della libreria di questo PC, id < 0 è una voce di
 //! sessione** (una «maniglia»). La coda, il motore e la finestra continuano a
 //! parlare di `i64`; chi deve sapere che cosa c'è dietro un id chiede a
-//! [`chi`], e nessun altro fa il confronto col segno: le due sole funzioni che
-//! lo guardano senza un registro in mano, [`e_di_libreria`] e
-//! [`riga_di_libreria`], stanno qui accanto per questo.
+//! [`chi`], e nessun altro deve fare il confronto col segno: le due sole
+//! funzioni che lo guardano senza un registro in mano, [`e_di_libreria`] e
+//! [`riga_di_libreria`], stanno qui accanto per questo. Fuori da
+//! `riproduzione` — questo modulo non si vede — le riesportano il lettore
+//! (`riga_di_libreria`) e il ponte, `riproduzione::insieme` (`e_di_libreria`).
 //!
 //! # Perché le maniglie e non gli `uid`
 //!
@@ -385,8 +387,14 @@ impl Registro {
     /// la voce non è stata tolta. Serve a chi apre fuori dai lucchetti e
     /// consegna dopo — un'apertura in rete può durare secondi, e finire in una
     /// sessione successiva dove lo stesso `uid` è un'altra voce.
+    ///
+    /// La voce di calibrazione è sempre viva: non sta nel registro, ed è la
+    /// stessa in ogni sessione (vedi [`chi_nel`]). L'eccezione sta qui e non
+    /// in chi consegna: `posiziona` non ce l'aveva, e buttava i clic appena
+    /// aperti.
     pub(super) fn ancora_viva(&self, maniglia: i64, generazione: u64) -> bool {
-        self.generazione == generazione && self.voci.contains_key(&maniglia)
+        maniglia == MANIGLIA_CALIBRAZIONE
+            || (self.generazione == generazione && self.voci.contains_key(&maniglia))
     }
 
     /// Quante voci, per il diario.
@@ -482,12 +490,31 @@ pub fn durata_ms(app: &tauri::AppHandle, id: i64) -> Option<u64> {
 }
 
 /// I byte di questa voce arrivano dalla rete — da un altro PC o da un
-/// catalogo — e non da un disco di questo PC. `None` quando la risposta la
-/// sa solo il database: una riga della libreria, o una voce che ne apre una.
+/// catalogo — e non da un disco di questo PC: un guasto lì è un flusso
+/// interrotto. `None` quando la risposta la sa solo il database: una riga
+/// della libreria, una voce che ne apre una, o una voce in rete che si suona
+/// dalla sua copia trovata qui (vedi «La copia locale» in [`apri`]). Quella
+/// copia può stare su una cartella di rete di questo PC, un NAS: se il NAS
+/// cade, il guasto è la cartella da ricollegare, non «la connessione con il
+/// catalogo».
 #[must_use]
-pub fn e_un_flusso(voce: &Voce) -> Option<bool> {
+pub fn e_un_flusso(app: &tauri::AppHandle, voce: &Voce) -> Option<bool> {
+    con_registro(app, |registro| e_un_flusso_nel(Some(&*registro), voce))
+        .unwrap_or_else(|| e_un_flusso_nel(None, voce))
+}
+
+/// Il corpo di [`e_un_flusso`], col registro in mano o senza (l'applicazione
+/// che si chiude): senza, nessuna copia è trovata.
+fn e_un_flusso_nel(registro: Option<&Registro>, voce: &Voce) -> Option<bool> {
     match voce.apertura {
         Apertura::Libreria { .. } => None,
+        Apertura::Rete { .. }
+            if registro
+                .and_then(|registro| registro.copia_trovata(voce.uid))
+                .is_some() =>
+        {
+            None
+        }
         Apertura::Rete { .. } | Apertura::Catalogo { .. } => Some(true),
     }
 }
@@ -1539,6 +1566,105 @@ mod prove {
         let generazione = registro.generazione();
         registro.togli(&[nuova]);
         assert!(!registro.ancora_viva(nuova, generazione));
+    }
+
+    /// Il segno degli id si guarda qui, e fuori da `riproduzione` passando
+    /// dal ponte (`riproduzione::insieme::e_di_libreria`): il giorno in cui
+    /// la regola cambiasse, una copia scritta a mano altrove resterebbe
+    /// indietro senza che niente se ne accorga.
+    #[test]
+    fn il_segno_degli_id_si_guarda_solo_in_ospiti() {
+        let gesti = include_str!("../insieme/gesti.rs");
+        let gesti = gesti.split("\n#[cfg(test)]").next().unwrap_or(gesti);
+        assert!(!gesti.contains("*id > 0"), "insieme/gesti.rs");
+        assert!(gesti.contains("e_di_libreria("), "insieme/gesti.rs");
+        // Il precaricamento del testo del brano dopo: la stessa domanda. In
+        // `testi.rs` il modulo delle prove sta a metà del file, e tagliare al
+        // primo `#[cfg(test)]` lascerebbe fuori proprio `precarica_prossimo`:
+        // si toglie il solo modulo.
+        let testi = senza_il_modulo_di_prove(include_str!("../testi.rs"));
+        assert!(
+            testi.contains("pub fn precarica_prossimo("),
+            "la prova guarderebbe il file sbagliato"
+        );
+        assert!(!testi.contains("*id > 0"), "testi.rs");
+        assert!(testi.contains("e_di_libreria("), "testi.rs");
+    }
+
+    /// Il sorgente senza il suo `mod prove`, dovunque stia: dall'attributo
+    /// alla prima graffa chiusa in colonna zero.
+    fn senza_il_modulo_di_prove(testo: &str) -> String {
+        let Some(inizio) = testo.find("\n#[cfg(test)]\nmod prove {") else {
+            return testo.to_owned();
+        };
+        let dopo = &testo[inizio..];
+        // `f` conta da `dopo[1..]`: la graffa chiusa sta a `f + 2`, e si
+        // riparte dall'a capo che la segue.
+        let fine = dopo
+            .get(1..)
+            .and_then(|resto| resto.find("\n}\n"))
+            .map_or(dopo.len(), |f| f + 3);
+        format!("{}{}", &testo[..inizio], &dopo[fine.min(dopo.len())..])
+    }
+
+    /// Una voce in rete suonata dalla sua copia trovata qui — anche su un
+    /// NAS — non è un flusso: se il NAS cade, il guasto è la cartella di rete
+    /// di questo PC, e la frase giusta è quella della cartella, non «la
+    /// connessione con il catalogo». Senza la copia, sì.
+    #[test]
+    fn una_voce_suonata_dalla_copia_non_e_un_flusso() {
+        let calibrazione = voce_di_calibrazione();
+        let Apertura::Rete { apri, .. } = &calibrazione.apertura else {
+            panic!("la calibrazione si apre come una voce in rete");
+        };
+        let in_rete = Voce {
+            apertura: Apertura::Rete {
+                apri: Arc::clone(apri),
+                estensione: Some("flac".to_owned()),
+                segmento: None,
+                immagine: None,
+                copia: None,
+            },
+            ..voce(3, "Dogs")
+        };
+        let mut registro = Registro::default();
+        assert_eq!(e_un_flusso_nel(Some(&registro), &in_rete), Some(true));
+        assert_eq!(e_un_flusso_nel(None, &in_rete), Some(true));
+
+        let generazione = registro.generazione();
+        registro.ricorda_copia(3, Some(40), generazione);
+        assert_eq!(
+            e_un_flusso_nel(Some(&registro), &in_rete),
+            None,
+            "dalla copia di questo PC: lo dice la sua riga, non la rete"
+        );
+        // Una copia cercata e non trovata: si suona dalla rete.
+        registro.ricorda_copia(4, None, generazione);
+        let senza_copia = Voce { uid: 4, ..in_rete };
+        assert_eq!(e_un_flusso_nel(Some(&registro), &senza_copia), Some(true));
+        // Un catalogo resta un flusso, e una riga della libreria no.
+        assert_eq!(
+            e_un_flusso_nel(Some(&registro), &voce(5, "Pigs")),
+            Some(true)
+        );
+        let di_libreria = Voce {
+            apertura: Apertura::Libreria { track_id: 40 },
+            ..voce(6, "Sheep")
+        };
+        assert_eq!(e_un_flusso_nel(Some(&registro), &di_libreria), None);
+    }
+
+    /// La voce di calibrazione non sta nel registro, ed è la stessa in ogni
+    /// sessione: alla consegna è sempre viva. Prima `posiziona` la buttava
+    /// dopo averla aperta, e chi segue restava senza i clic finché l'host non
+    /// ripartiva.
+    #[test]
+    fn la_calibrazione_resta_viva_alla_consegna() {
+        let mut registro = Registro::default();
+        assert!(registro.ancora_viva(MANIGLIA_CALIBRAZIONE, registro.generazione()));
+        let generazione = registro.generazione();
+        registro.svuota();
+        assert!(registro.ancora_viva(MANIGLIA_CALIBRAZIONE, generazione));
     }
 
     #[test]

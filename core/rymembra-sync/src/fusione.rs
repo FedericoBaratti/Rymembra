@@ -343,6 +343,34 @@ mod prove {
     }
 
     #[test]
+    fn due_pacchetti_con_lo_stesso_nome_non_dipendono_dall_ordine() {
+        // La stessa skin installata su tre dispositivi con tre pacchetti
+        // diversi. Vinceva il primo documento della piega — cioè quello che
+        // l'elenco della cartella metteva in testa — e il risultato cambiava
+        // con l'ordine, contro la proprietà che questo modulo promette.
+        let uno = documento("uno", |c| {
+            c.skin.insert("notte".to_owned(), "aaaa".to_owned());
+            c.bozze.insert("prova".to_owned(), "1111".to_owned());
+        });
+        let due = documento("due", |c| {
+            c.skin.insert("notte".to_owned(), "ffff".to_owned());
+            c.bozze.insert("prova".to_owned(), "9999".to_owned());
+        });
+        let tre = documento("tre", |c| {
+            c.skin.insert("notte".to_owned(), "cccc".to_owned());
+            c.skin.insert("giorno".to_owned(), "0000".to_owned());
+        });
+
+        let dritto = fondi(&[uno.clone(), due.clone(), tre.clone()]);
+        assert_eq!(fondi(&[due.clone(), uno.clone(), tre.clone()]), dritto);
+        assert_eq!(fondi(&[tre.clone(), due.clone(), uno.clone()]), dritto);
+        assert_eq!(fondi(&[tre, uno, due]), dritto);
+        assert_eq!(dritto.skin.get("notte").map(String::as_str), Some("ffff"));
+        assert_eq!(dritto.skin.get("giorno").map(String::as_str), Some("0000"));
+        assert_eq!(dritto.bozze.get("prova").map(String::as_str), Some("9999"));
+    }
+
+    #[test]
     fn nessun_documento_da_uno_stato_vuoto() {
         let fuso = fondi(&[]);
         assert_eq!(fuso, Fuso::default());

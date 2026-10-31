@@ -1,6 +1,6 @@
 [package]
 name = "rymembra-cloud"
-description = "Il backup di Rymembra su Google Drive: OAuth, HTTP, e la cartella privata dell'app."
+description = "Il backup di Rymembra su Google Drive, e le cartelle di musica dal cloud: OAuth, HTTP, cache."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -33,10 +33,18 @@ rymembra-skin = { path = "../rymembra-skin" }
 # un HTTP. Qui si fornisce solo il deposito — `impl Magazzino for Drive`, che è
 # cinque righe perché la forma era già quella.
 rymembra-sync = { path = "../rymembra-sync" }
+# L'impronta del conto di un account del cloud e il nome dei file della cache:
+# la stessa funzione che già dà l'impronta del contenuto, e non una seconda.
+blake3.workspace = true
 flate2.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Le risposte `multistatus` dei server WebDAV. La stessa versione che c'è già
+# nel lock (la porta `plist`), quindi niente di nuovo nel binario: si legge
+# XML con un lettore vero invece di cercare etichette a mano, che con gli
+# spazi dei nomi (`d:`, `D:`, nessuno) e le entità sbaglierebbe.
+quick-xml = "0.42"
 
 [features]
 default = ["portachiavi"]

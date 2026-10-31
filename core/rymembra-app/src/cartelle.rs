@@ -16,47 +16,44 @@
 //!
 //! # Perché un trie in memoria e non `LIKE 'radice%'`
 //!
-//! Perché quella `LIKE` è una **scansione a ogni clic di espansione**, e non
-//! per una svista di scrittura: non c'è modo di farle usare l'indice.
-//!
-//! `tracks.path` è `TEXT NOT NULL UNIQUE` (`001_baseline.sql:18`), quindi
-//! l'indice implicito `sqlite_autoindex_tracks_1` ha collazione `BINARY`.
-//! SQLite converte `colonna LIKE 'prefisso%'` in una ricerca per intervallo a
-//! due condizioni: che il prefisso non contenga metacaratteri, **e** che il
-//! confronto sia sensibile alle maiuscole — cioè o `PRAGMA case_sensitive_like`
-//! acceso, o la colonna dichiarata `COLLATE NOCASE`. Qui non vale né l'una né
-//! l'altra: il pragma è quello di serie (spento, cioè `LIKE` insensibile sugli
-//! ASCII) e la colonna è `BINARY`. `EXPLAIN QUERY PLAN` lo dice in chiaro:
+//! Non per il costo della singola domanda. Dalla 026 `tracks.path` è `TEXT
+//! UNIQUE` (nullabile, per i brani di catalogo), e dalla 030 c'è
+//! `idx_tracks_percorso_piegato ON tracks(path COLLATE NOCASE)`. Con il pragma
+//! `case_sensitive_like` di serie (spento, cioè `LIKE` insensibile alle
+//! maiuscole degli ASCII) e una colonna indicizzata `NOCASE`, SQLite converte
+//! `path LIKE 'prefisso%'` in una ricerca per intervallo su quell'indice, come
+//! converte `GLOB` sull'indice `BINARY` della chiave unica. Sul SQLite incluso
+//! (la prova `il_like_sul_percorso_usa_l_indice_piegato` lo tiene d'occhio):
 //!
 //! ```text
-//! path LIKE 'C:\Musica%'  ->  SCAN   tracks USING COVERING INDEX …
-//! path GLOB 'C:\Musica*'  ->  SEARCH tracks USING COVERING INDEX … (path>? AND path<?)
+//! path LIKE 'C:\Musica\%'  ->  SEARCH tracks USING COVERING INDEX idx_tracks_percorso_piegato (path>? AND path<?)
+//! path GLOB 'C:\Musica\*'  ->  SEARCH tracks USING COVERING INDEX sqlite_autoindex_tracks_1 (path>? AND path<?)
 //! ```
 //!
-//! **E `GLOB` non è la scappatoia**, anche se il piano lì è una ricerca vera:
-//! `GLOB` cerca per intervallo *proprio perché* confronta byte per byte, e i
-//! byte del prefisso non si conoscono. Lo stesso posto sta nel database scritto
-//! `C:\Musica` o `C:/Musica`, con qualunque combinazione di maiuscole — è
-//! precisamente la ragione per cui `paths.rs::path_key` esiste — e un prefisso
-//! che dovesse coprire tutte le grafie non è un prefisso. Farlo con `GLOB`
-//! vorrebbe dire una `OR` per ogni variante, e la prima `OR` riporta al `SCAN`.
+//! **Il problema sono i byte del prefisso**, che non si conoscono. Lo stesso
+//! posto sta nel database scritto `C:\Musica` o `C:/Musica` — è precisamente la
+//! ragione per cui `paths.rs::path_key` esiste — e il `LIKE` piega le maiuscole
+//! ma non i separatori: un prefisso che dovesse coprire tutte le grafie non è
+//! un prefisso. Farlo vorrebbe dire una `OR` per ogni variante dei separatori,
+//! a ogni livello dell'albero, **a ogni clic di espansione**, e ancora non
+//! direbbe quali sottocartelle ci sono sotto.
 //!
-//! Resta quindi la scansione: sull'indice e non sulla tabella, quindi meno
-//! cara di quanto sembri, ma pur sempre lineare nel numero di brani — **a ogni
-//! clic**. Il trie invece si costruisce con **una** lettura di tutta la tabella
-//! (`SELECT id, path, disc_number, track_number`), e da lì ogni espansione è un
-//! accesso a una mappa.
+//! Il trie invece si costruisce con **una** lettura di tutta la tabella
+//! (`SELECT id, path, disc_number, track_number`), con i percorsi passati da
+//! `path_key`, e da lì ogni espansione è un accesso a una mappa.
 //!
 //! # Perché nessuna tabella `folders` materializzata
 //!
 //! Perché sarebbe una seconda verità. Le righe di `tracks` che cambiano la
 //! forma dell'albero — un brano che nasce, uno che sparisce, uno che si sposta
-//! — si scrivono in tre punti soli, tutti in `library.rs` (`insert_track`,
-//! `update_track` col ramo «Sposta», e la cancellazione), e sono tre punti che
-//! oggi non sanno niente di cartelle. Una tabella materializzata pretenderebbe
-//! che tutti e tre restassero in passo per sempre, e il giorno in cui uno non
-//! lo fa il pannello mostra cartelle che non ci sono più — senza che niente
-//! segnali l'errore, perché una tabella non si accorge di essere vecchia.
+//! — si scrivono in più di un posto: la scansione in `library/righe.rs`
+//! (`insert_track`, `update_track` col ramo «Sposta», la cancellazione), la
+//! rimappatura delle radici del profilo (`profilo/radici.rs`), e altri ancora;
+//! nessuno di loro sa niente di cartelle. Una tabella materializzata
+//! pretenderebbe che tutti restassero in passo per sempre, e il giorno in cui
+//! uno non lo fa il pannello mostra cartelle che non ci sono più — senza che
+//! niente segnali l'errore, perché una tabella non si accorge di essere
+//! vecchia.
 //!
 //! Il trie non può desincronizzarsi: è **derivato** da `tracks` e si
 //! ricostruisce da capo in una trentina di millisecondi — 35 ms misurati in
@@ -114,6 +111,7 @@
 //! la finestra, che li disegna: dentro una cartella l'ordine di riproduzione
 //! resta quello dell'album.
 
+use rymembra_domain::nuvola;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
@@ -180,6 +178,37 @@ pub struct NodoCartella {
     /// La differenza conta: solo su una radice vera ha senso chiedersi se
     /// risponde ancora.
     pub radice: bool,
+    /// Il servizio, sui nodi di primo livello del cloud (`onedrive`,
+    /// `gdrive`…): è quel che fa disegnare la sua icona accanto al nome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servizio: Option<String>,
+}
+
+/// Il nome di un nodo come lo si legge, e il suo servizio se è una cima del
+/// cloud.
+///
+/// Un percorso del cloud ha i segmenti codificati (`Rock%7CPop` per un nome
+/// con la barra verticale: vedi `rymembra_domain::nuvola`), e un nodo di primo
+/// livello dice il percorso intero — che per il cloud sarebbe
+/// `nuvola://onedrive-k3x7q2ab/Musica`. Qui diventano «Rock|Pop» e
+/// «OneDrive · Musica»: la grafia del percorso resta l'identità del nodo, il
+/// nome è per chi guarda.
+fn per_chi_guarda(percorso: &str, nome: &str) -> (String, Option<String>) {
+    let Some(conto) = nuvola::conto_di(percorso) else {
+        return (nome.to_owned(), None);
+    };
+    if nome != percorso {
+        return (nuvola::decodifica_segmento(nome), None);
+    }
+    let servizio = nuvola::Servizio::del_conto(conto);
+    let del_servizio = servizio.map_or("", nuvola::Servizio::nome);
+    let nomi = nuvola::segmenti(percorso);
+    let testo = if nomi.is_empty() {
+        del_servizio.to_owned()
+    } else {
+        format!("{del_servizio} · {}", nomi.join(" › "))
+    };
+    (testo, servizio.map(|s| s.chiave().to_owned()))
 }
 
 /// Un file dentro una cartella: una foglia dell'albero.
@@ -310,9 +339,16 @@ impl RigaFile {
     }
 
     fn in_foglia(self) -> FileCartella {
+        // Il nome di un file del cloud, se non c'è un titolo, è un segmento
+        // codificato: si legge decodificato.
+        let nome = if nuvola::e_nuvola(&self.percorso) {
+            nuvola::decodifica_segmento(self.nome())
+        } else {
+            self.nome().to_owned()
+        };
         FileCartella {
             brano: self.id,
-            nome: self.nome().to_owned(),
+            nome,
             percorso: self.percorso,
             titolo: self.titolo,
             durata_ms: self.durata_ms,
@@ -417,13 +453,17 @@ impl Albero {
 
     /// Il nodo all'indice dato, nella forma che esce.
     fn nodo_cartella(&self, indice: usize) -> Option<NodoCartella> {
-        self.nodi.get(indice).map(|nodo| NodoCartella {
-            percorso: nodo.percorso.clone(),
-            nome: nodo.nome.clone(),
-            brani: nodo.sotto,
-            sottocartelle: u32::try_from(nodo.figli.len()).unwrap_or(u32::MAX),
-            file: nodo.diretti,
-            radice: nodo.radice,
+        self.nodi.get(indice).map(|nodo| {
+            let (nome, servizio) = per_chi_guarda(&nodo.percorso, &nodo.nome);
+            NodoCartella {
+                percorso: nodo.percorso.clone(),
+                nome,
+                brani: nodo.sotto,
+                sottocartelle: u32::try_from(nodo.figli.len()).unwrap_or(u32::MAX),
+                file: nodo.diretti,
+                radice: nodo.radice,
+                servizio,
+            }
         })
     }
 
@@ -1319,6 +1359,35 @@ mod tests {
 
     fn banco() -> Connection {
         crate::db::open_in_memory().expect("database").connection
+    }
+
+    /// Il piano di una domanda sui percorsi, riga per riga.
+    fn piano(connection: &Connection, sql: &str) -> Vec<String> {
+        let mut s = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("piano");
+        let righe = s.query_map([], |r| r.get::<_, String>(3)).expect("piano");
+        righe.collect::<Result<_, _>>().expect("righe del piano")
+    }
+
+    #[test]
+    fn il_like_sul_percorso_usa_l_indice_piegato() {
+        // Il `//!` in testa al modulo racconta perché il pannello non chiede
+        // `LIKE 'radice%'` al database: questa prova tiene quel racconto
+        // ancorato al SQLite incluso. Dalla 030 il `LIKE` su `path` è una
+        // ricerca per intervallo sull'indice piegato, e il trie resta per
+        // un'altra ragione (le grafie dei separatori). Se il piano cambia,
+        // cambia anche il commento.
+        let connection = banco();
+        let like = piano(
+            &connection,
+            r"SELECT id FROM tracks WHERE path LIKE 'C:\Musica\%'",
+        );
+        assert!(
+            like.iter()
+                .any(|r| r.starts_with("SEARCH") && r.contains("idx_tracks_percorso_piegato")),
+            "{like:?}"
+        );
     }
 
     fn riga(

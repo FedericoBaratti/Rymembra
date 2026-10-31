@@ -323,6 +323,19 @@ pub struct Manifesto {
     /// spostato di un passo.
     #[serde(default)]
     pub fuori: Vec<String>,
+    /// Le chiavi del catalogo che, quando l'archivio è stato scritto, in
+    /// questa libreria **non c'erano**.
+    ///
+    /// Serve a «Torna com'era prima»: la copia di sicurezza porta le chiavi che
+    /// c'erano, e senza questo elenco una preferenza che il profilo ha
+    /// aggiunto — la skin, l'equalizzatore su un computer nuovo — restava dopo
+    /// l'annullamento. Un elenco esplicito e non «quel che manca dalla copia»:
+    /// una copia scritta da una versione con un catalogo più corto non direbbe
+    /// niente delle chiavi venute dopo, e dimenticarle sarebbe un guasto. Senza
+    /// l'elenco (le copie di prima) non si dimentica niente. Una versione di
+    /// prima lo ignora: il manifesto non rifiuta i campi che non conosce.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assenti: Vec<String>,
 }
 
 /// Quante cose porta un archivio.
@@ -376,13 +389,49 @@ fn lettura(percorso: &Path, err: &std::io::Error) -> AppError {
 /// Non tiene niente in memoria oltre alla voce che sta scrivendo, e per le voci
 /// che vengono da un file nemmeno quella: [`Scrittore::aggiungi_file`] copia con
 /// il buffer di un `BufReader`.
+///
+/// # Su un file provvisorio, e il profilo di prima resta finché non c'è il nuovo
+///
+/// Si scrive accanto alla destinazione, in `<destinazione>.parziale`, e solo
+/// [`Scrittore::chiudi`] riuscito lo rinomina sopra. Aprire direttamente la
+/// destinazione la azzerava subito: riesportare sulla chiavetta il profilo del
+/// mese scorso, e vedersi riempire la chiavetta o staccarla a metà, voleva dire
+/// aver perso quello vecchio e avere al suo posto un archivio rotto — anzi,
+/// uno zip **chiuso** con dentro metà delle voci, perché `ZipWriter` scrive la
+/// directory centrale anche quando viene buttato. Se `chiudi` non arriva in
+/// fondo, o lo scrittore cade senza `chiudi`, il provvisorio si cancella. Il
+/// prezzo è lo spazio di tutti e due finché si scrive: su una chiavetta quasi
+/// piena un'esportazione che prima riusciva sovrascrivendo ora fallisce, ma
+/// lasciando intatto il file di prima, che è il verso giusto dell'errore. Il
+/// nome provvisorio non finisce in [`ESTENSIONE`], così le copie di sicurezza
+/// non lo scambiano per una copia.
 pub struct Scrittore {
-    zip: ZipWriter<BufWriter<std::fs::File>>,
+    /// `None` solo dopo [`Scrittore::chiudi`], o mentre `Drop` lo butta.
+    zip: Option<ZipWriter<BufWriter<std::fs::File>>>,
+    /// Dove finirà: il nome dei messaggi d'errore.
     percorso: PathBuf,
+    /// Dove si scrive intanto.
+    provvisorio: PathBuf,
+    /// Il provvisorio è diventato la destinazione: `Drop` non deve toccarlo.
+    rinominato: bool,
+}
+
+impl Drop for Scrittore {
+    fn drop(&mut self) {
+        if self.rinominato {
+            return;
+        }
+        // Prima si chiude il file — su Windows un file aperto non si cancella
+        // — e poi si toglie. Best-effort: l'errore da riportare, se c'è, è
+        // quello che ha interrotto la scrittura.
+        drop(self.zip.take());
+        let _ = std::fs::remove_file(&self.provvisorio);
+    }
 }
 
 impl Scrittore {
-    /// Apre un archivio nuovo, sovrascrivendo quel che c'era.
+    /// Apre un archivio nuovo. Quel che c'era si sostituisce solo a
+    /// [`Scrittore::chiudi`] riuscito: vedi la nota sul tipo.
     ///
     /// # Errori
     ///
@@ -391,11 +440,30 @@ impl Scrittore {
         if let Some(cartella) = destinazione.parent() {
             std::fs::create_dir_all(cartella).map_err(|err| scrittura(cartella, &err))?;
         }
+        let provvisorio = {
+            let mut nome = destinazione.as_os_str().to_owned();
+            nome.push(".parziale");
+            PathBuf::from(nome)
+        };
         let file =
-            std::fs::File::create(destinazione).map_err(|err| scrittura(destinazione, &err))?;
+            std::fs::File::create(&provvisorio).map_err(|err| scrittura(destinazione, &err))?;
         Ok(Self {
-            zip: ZipWriter::new(BufWriter::new(file)),
+            zip: Some(ZipWriter::new(BufWriter::new(file))),
             percorso: destinazione.to_owned(),
+            provvisorio,
+            rinominato: false,
+        })
+    }
+
+    /// Lo zip aperto. Manca solo dopo `chiudi`, che consuma lo scrittore:
+    /// qui non può succedere, e se succedesse è un guasto di scrittura.
+    fn zip(&mut self) -> Result<&mut ZipWriter<BufWriter<std::fs::File>>, AppError> {
+        let percorso = self.percorso.display().to_string();
+        self.zip.as_mut().ok_or_else(|| {
+            AppError::new(ErrorCode::FsWriteFailed {
+                path: percorso,
+                detail: Some("l'archivio è già chiuso".to_owned()),
+            })
         })
     }
 
@@ -415,9 +483,9 @@ impl Scrittore {
     ///
     /// `fs.writeFailed` se la scrittura fallisce.
     pub fn aggiungi_testo(&mut self, nome: &str, testo: &str) -> Result<(), AppError> {
-        self.zip
-            .start_file(nome, Self::compresso())
-            .and_then(|()| self.zip.write_all(testo.as_bytes()).map_err(Into::into))
+        let zip = self.zip()?;
+        zip.start_file(nome, Self::compresso())
+            .and_then(|()| zip.write_all(testo.as_bytes()).map_err(Into::into))
             .map_err(|err| {
                 AppError::new(ErrorCode::FsWriteFailed {
                     path: self.percorso.display().to_string(),
@@ -433,9 +501,9 @@ impl Scrittore {
     ///
     /// `fs.writeFailed` se la scrittura fallisce.
     pub fn aggiungi_byte(&mut self, nome: &str, byte: &[u8]) -> Result<(), AppError> {
-        self.zip
-            .start_file(nome, Self::intatto())
-            .and_then(|()| self.zip.write_all(byte).map_err(Into::into))
+        let zip = self.zip()?;
+        zip.start_file(nome, Self::intatto())
+            .and_then(|()| zip.write_all(byte).map_err(Into::into))
             .map_err(|err| {
                 AppError::new(ErrorCode::FsWriteFailed {
                     path: self.percorso.display().to_string(),
@@ -459,17 +527,18 @@ impl Scrittore {
         let Ok(file) = std::fs::File::open(sorgente) else {
             return Ok(false);
         };
-        self.zip.start_file(nome, Self::intatto()).map_err(|err| {
+        let percorso = self.percorso.display().to_string();
+        let zip = self.zip()?;
+        zip.start_file(nome, Self::intatto()).map_err(|err| {
             AppError::new(ErrorCode::FsWriteFailed {
-                path: self.percorso.display().to_string(),
+                path: percorso,
                 detail: Some(format!("«{nome}»")),
             })
             .with_cause(err.to_string())
         })?;
         // `copy` su un `BufReader` lavora con il suo buffer e non alloca in
         // proporzione al file: è la riga che tiene la promessa dello streaming.
-        std::io::copy(&mut BufReader::new(file), &mut self.zip)
-            .map_err(|err| scrittura(sorgente, &err))?;
+        std::io::copy(&mut BufReader::new(file), zip).map_err(|err| scrittura(sorgente, &err))?;
         Ok(true)
     }
 
@@ -478,10 +547,15 @@ impl Scrittore {
     /// # Errori
     ///
     /// `fs.writeFailed` se la chiusura o lo svuotamento del buffer falliscono.
-    pub fn chiudi(self) -> Result<u64, AppError> {
-        let percorso = self.percorso;
-        let mut buffer = self
-            .zip
+    pub fn chiudi(mut self) -> Result<u64, AppError> {
+        let percorso = self.percorso.clone();
+        let zip = self.zip.take().ok_or_else(|| {
+            AppError::new(ErrorCode::FsWriteFailed {
+                path: percorso.display().to_string(),
+                detail: Some("l'archivio è già chiuso".to_owned()),
+            })
+        })?;
+        let mut buffer = zip
             .finish()
             .map_err(|err| rifiutato(format!("l'archivio non si è chiuso: {err}")))?;
         buffer.flush().map_err(|err| scrittura(&percorso, &err))?;
@@ -494,9 +568,17 @@ impl Scrittore {
         // sistema», e la differenza fra le due la scopre chi ritrova un file
         // troncato sull'altro computer.
         file.sync_all().map_err(|err| scrittura(&percorso, &err))?;
-        file.metadata()
+        let byte = file
+            .metadata()
             .map(|meta| meta.len())
-            .map_err(|err| lettura(&percorso, &err))
+            .map_err(|err| lettura(&percorso, &err))?;
+        // Chiuso prima di rinominare: su Windows un file aperto non si sposta.
+        // `rename` sostituisce la destinazione se c'è; se non riesce, `Drop`
+        // toglie il provvisorio e il profilo di prima resta com'era.
+        drop(file);
+        std::fs::rename(&self.provvisorio, &percorso).map_err(|err| scrittura(&percorso, &err))?;
+        self.rinominato = true;
+        Ok(byte)
     }
 }
 
@@ -978,6 +1060,60 @@ mod prove {
         let altrove = dir.path().join("store").join("ab").join("altro.jpg");
         assert_eq!(lettore.estrai(&voce, &altrove), Ok(true));
         assert_eq!(std::fs::read(&altrove).expect("rilettura"), b"quella nuova");
+    }
+
+    /// Cosa c'è nella cartella, per nome.
+    fn nomi_in(cartella: &Path) -> Vec<String> {
+        let mut nomi: Vec<String> = std::fs::read_dir(cartella)
+            .expect("cartella")
+            .flatten()
+            .map(|voce| voce.file_name().to_string_lossy().into_owned())
+            .collect();
+        nomi.sort();
+        nomi
+    }
+
+    #[test]
+    fn un_esportazione_interrotta_non_tocca_il_profilo_di_prima() {
+        // Sulla chiavetta c'è il profilo del mese scorso. Riesportarlo con lo
+        // stesso nome lo azzerava subito: se a metà la chiavetta si riempie o
+        // si stacca, il profilo vecchio è perso e quello nuovo è uno zip senza
+        // directory centrale.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let profilo = dir.path().join("Rymembra.ryprofile");
+        std::fs::write(&profilo, b"il profilo di prima").expect("profilo vecchio");
+        {
+            let mut scrittore = Scrittore::crea(&profilo).expect("archivio");
+            scrittore
+                .aggiungi_testo(NOME_MANIFESTO, &manifesto_finto())
+                .expect("manifesto");
+            // E qui si interrompe: nessun `chiudi`.
+        }
+        assert_eq!(
+            std::fs::read(&profilo).expect("rilettura"),
+            b"il profilo di prima"
+        );
+        assert_eq!(
+            nomi_in(dir.path()),
+            vec!["Rymembra.ryprofile"],
+            "e nessun file a metà resta in giro"
+        );
+    }
+
+    #[test]
+    fn un_esportazione_riuscita_sostituisce_il_profilo_di_prima() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let profilo = dir.path().join("Rymembra.ryprofile");
+        std::fs::write(&profilo, b"il profilo di prima").expect("profilo vecchio");
+        let mut scrittore = Scrittore::crea(&profilo).expect("archivio");
+        scrittore
+            .aggiungi_testo(NOME_MANIFESTO, &manifesto_finto())
+            .expect("manifesto");
+        let byte = scrittore.chiudi().expect("chiusura");
+        assert_eq!(byte, std::fs::metadata(&profilo).expect("metadati").len());
+        assert!(e_un_archivio(&profilo).expect("lettura"));
+        assert!(Lettore::apri(&profilo).is_ok());
+        assert_eq!(nomi_in(dir.path()), vec!["Rymembra.ryprofile"]);
     }
 
     #[test]

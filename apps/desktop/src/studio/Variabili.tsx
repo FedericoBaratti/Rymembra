@@ -15,15 +15,18 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { ipc, type Istantanea, type TokenRegistro } from "../ipc";
+import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
+import { ipc, type Istantanea, type TokenRegistro, type VoceSkin } from "../ipc";
 import { numero } from "../formato";
 import { locale, t } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
+import { haUnPacchetto, scarto } from "./bozza";
 import { useStudio } from "./contesto";
 import { Generatore } from "./Generatore";
 import type { Selezione } from "./negozio";
 import { stessaSelezione, testo } from "./negozio";
+import { elencoBreve, usiDellaRisorsa } from "./risorse";
 import { sentieroColore, sentieroMotivo } from "./sentieri";
 import { ritrattoEffetto, tintaNel, type Livello } from "./valori";
 import { nomeGruppo } from "./vocabolario";
@@ -690,10 +693,29 @@ export function famigliaDa(file: string): string {
   );
 }
 
+/**
+ * La domanda prima di togliere un file del pacchetto: cosa lo usa, e che non
+ * si torna indietro. Vedi `risorse.ts`. Una sola, per le due strade che
+ * tolgono — il × qui e il tasto dell'ispettore del file.
+ */
+export function domandaTogliRisorsa(nome: string, usi: readonly string[], fai: () => void): Domanda {
+  const chi =
+    usi.length === 0
+      ? t("studio3.vars.files.remove.unused")
+      : t("studio3.vars.files.remove.used", { usi: elencoBreve(usi) });
+  return {
+    titolo: t("studio3.vars.files.remove.title", { nome }),
+    descrizione: `${t("studio3.vars.files.remove.what")} ${chi}`,
+    conferma: t("studio3.vars.files.remove", { nome }),
+    fai,
+  };
+}
+
 function Risorse({ ago }: { ago: string }) {
-  const { s, documento, scrivi, scriviMolti, onErrore, file: voci, rileggiFile: rileggi } = useStudio();
+  const { s, manda, documento, scrivi, onErrore, file: voci, rileggiFile: rileggi } = useStudio();
   const { scelta, scegli } = useScelta();
   const [aggiungendo, setAggiungendo] = useState(false);
+  const [domanda, setDomanda] = useState<Domanda | null>(null);
   const caratteri = oggetto(documento?.["fonts"]);
   const file = voci
     .filter((v) => v.genere === "risorsa")
@@ -733,13 +755,12 @@ function Risorse({ ago }: { ago: string }) {
     try {
       await ipc.studioRisorsaTogli(s.id, nome);
       rileggi();
-      // Chi lo dichiarava resta a puntare un file che non c'è: il validatore lo
-      // direbbe, ma una dichiarazione di carattere senza file non ha niente da
-      // correggere — si toglie con lui.
-      const orfane = Object.entries(caratteri)
-        .filter(([, v]) => oggetto(v)["src"] === nome)
-        .map(([famiglia]) => ({ togli: true, percorso: ["fonts", famiglia], valore: null }));
-      if (orfane.length > 0) scriviMolti(orfane, t("studio3.step.assetRemove", { nome }));
+      // Chi lo dichiarava resterebbe a puntare un file che non c'è, e il
+      // validatore non lo direbbe: guarda il documento, non il disco. Una
+      // dichiarazione di carattere senza file non ha niente da correggere, e
+      // si toglie con lui — da tutta la storia, senza un passo da annullare:
+      // il file non torna. Vedi `risorse.ts`.
+      manda({ tipo: "risorsaTolta", nome });
     } catch (e) {
       onErrore(e);
     }
@@ -781,12 +802,17 @@ function Risorse({ ago }: { ago: string }) {
             className="tasto-icona icon-btn"
             aria-label={t("studio3.vars.files.remove", { nome: v.nome })}
             title={t("studio3.vars.files.remove", { nome: v.nome })}
-            onClick={() => void togli(v.nome)}
+            onClick={() =>
+              setDomanda(
+                domandaTogliRisorsa(v.nome, usiDellaRisorsa(documento, v.nome), () => void togli(v.nome)),
+              )
+            }
           >
             <Icona nome="i-x" dim={11} />
           </button>
         </div>
       ))}
+      {domanda !== null && <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />}
       <button type="button" className="aggiungi-livello" disabled={aggiungendo} onClick={() => void aggiungi()}>
         <Icona nome="i-plus" dim={13} />
         <span>{aggiungendo ? t("common.loading") : t("studio3.vars.files.add")}</span>
@@ -824,6 +850,36 @@ function Istantanee() {
   const [elenco, setElenco] = useState<Istantanea[]>([]);
   const [giro, setGiro] = useState(0);
   const derivata = testo(s) !== s.originale;
+  /**
+   * Le skin di serie e installate, per sapere se «Butta la bozza» ha un
+   * pacchetto a cui tornare: `null` finché non arrivano. Vedi `bozza.ts`.
+   *
+   * Una bozza che ha cambiato id non ce l'ha — Studio aperto su Plain, id
+   * «mia» — e il nucleo la rifiuta senza toccare il disco; qui il tasto si
+   * spegne prima e dice perché. Si rilegge quando cambia l'id e quando si
+   * prende un'istantanea fuori da qui, cioè anche dopo «Salva e usa», che può
+   * aver dato all'id un pacchetto suo (quell'istantanea viene prima
+   * dell'installazione, e l'elenco può arrivare vecchio: il tasto resta spento
+   * fino alla prossima, che è il verso che non perde niente). Un elenco che
+   * non si legge non è un errore da mostrare: il tasto segue il solo testo,
+   * come prima.
+   */
+  const [elencoSkin, setElencoSkin] = useState<VoceSkin[] | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    ipc
+      .skinElenco()
+      .then((v) => {
+        if (vivo) setElencoSkin(v);
+      })
+      .catch(() => {
+        if (vivo) setElencoSkin(null);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [s.id, s.istantanee]);
+  const stato = scarto(derivata, haUnPacchetto(s.id, elencoSkin));
 
   useEffect(() => {
     let vivo = true;
@@ -836,7 +892,9 @@ function Istantanee() {
     return () => {
       vivo = false;
     };
-  }, [s.id, giro, onErrore]);
+    // `s.istantanee`: le istantanee prese fuori da qui — Ctrl+S, «Salva e
+    // usa», «Esporta», la chat in agent — devono comparire anche loro.
+  }, [s.id, giro, s.istantanee, onErrore]);
 
   const prendi = async () => {
     try {
@@ -895,8 +953,14 @@ function Istantanee() {
       <button
         type="button"
         className="pillola btn-ghost scarta-bozza"
-        disabled={!derivata}
-        title={derivata ? t("studio.pkg.drop.can") : t("studio.pkg.drop.none")}
+        disabled={stato !== "si"}
+        title={
+          stato === "si"
+            ? t("studio.pkg.drop.can")
+            : stato === "niente"
+              ? t("studio.pkg.drop.none")
+              : t("studio.pkg.drop.noPackage")
+        }
         onClick={() => void scarta()}
       >
         <Icona nome="i-x" dim={13} />

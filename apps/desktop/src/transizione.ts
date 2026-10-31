@@ -62,7 +62,7 @@ export function fermoRestando(): boolean {
  * Come scorrere, quando lo scorrimento lo fa il programma.
  *
  * `scrollTo` e `scrollIntoView` con `behavior: "smooth"` sono movimento quanto
- * una transizione, e il foglio non li ferma: la media query di `stile.css`
+ * una transizione, e il foglio non li ferma: la media query di `stile/movimento.css`
  * azzera le animazioni, non gli scorrimenti chiesti da JavaScript. Chi ha
  * chiesto meno movimento — al sistema, o nelle impostazioni, che arrivano qui
  * attraverso `--motion-scale` — vede quindi un salto invece di una scivolata.

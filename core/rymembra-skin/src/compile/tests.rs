@@ -998,6 +998,167 @@ fn il_foglio_delle_skin_vere_e_sano_in_ogni_ambito() {
     }
 }
 
+/// Le dichiarazioni di un foglio che nominano sé stesse: `--x: …var(--x)…`.
+///
+/// Una proprietà personalizzata che rimanda a sé stessa è un ciclo, e al
+/// valore calcolato non vale niente — né il suo valore né quello di serie di
+/// `stile.css`, perché la dichiarazione della skin vince la cascata.
+fn cicli(css: &str) -> Vec<String> {
+    css.lines()
+        .map(str::trim)
+        .filter_map(|riga| {
+            let (nome, valore) = riga.strip_suffix(';')?.split_once(':')?;
+            let nome = nome.trim();
+            (nome.starts_with("--") && valore.contains(&format!("var({nome})")))
+                .then(|| riga.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn nessuna_variabile_si_riferisce_a_se_stessa() {
+    // Neon e Vinile scrivono l'accento con la tavolozza: fino alla 3.2.0 di prova la sua
+    // tripla diventava `--accent-rgb: var(--accent-rgb)`, e con lei cadevano
+    // `--hero-rgb`, l'alone senza copertina e l'anello del giro guidato.
+    for (nome, testo) in documenti_veri() {
+        let skin = crate::leggi_skin(testo)
+            .unwrap_or_else(|problemi| panic!("{nome} non è valida: {problemi:?}"));
+        for ambito in ambiti(&skin.id) {
+            let css = super::compila(&skin, &ambito).css;
+            let trovati = cicli(&css);
+            assert!(trovati.is_empty(), "{nome}, {ambito:?}: {trovati:#?}");
+        }
+    }
+}
+
+#[test]
+fn la_tripla_della_tavolozza_segue_la_tavolozza() {
+    let css = compila_documento(&con(
+        r##", "palette": { "magenta": "#ff2bd6", "ciano": "#00f0ff" }"##,
+    ))
+    .css;
+    assert!(
+        css.contains("--skin-color-magenta-rgb: 255 43 214;"),
+        "{css}"
+    );
+    let css = compila_documento(&MINIMA.replace(
+        "\"tokens\": {}",
+        r##""palette": { "magenta": "#ff2bd6", "ciano": "#00f0ff" },
+                "tokens": { "color.accent": { "$palette": "ciano" },
+                            "color.hero": { "$palette": "magenta" } }"##,
+    ))
+    .css;
+    assert!(
+        css.contains("--accent-rgb: var(--skin-color-ciano-rgb);"),
+        "{css}"
+    );
+    assert!(
+        css.contains("--hero-rgb: var(--skin-color-magenta-rgb);"),
+        "{css}"
+    );
+}
+
+#[test]
+fn la_tripla_di_un_riferimento_segue_il_riferimento() {
+    // Un token senza tripla si segue fino al colore: un letterale dà la sua
+    // tripla, un colore della tavolozza la variabile della tavolozza, che la
+    // variante può ridefinire.
+    let css =
+        compila(r##"{ "color.danger": "#ff0000", "color.accent": { "$token": "color.danger" } }"##);
+    assert!(css.contains("--accent: var(--danger);"), "{css}");
+    assert!(css.contains("--accent-rgb: 255 0 0;"), "{css}");
+
+    // Una tripla che esiste si richiama, com'è sempre stato: `plain`.
+    let css =
+        compila(r##"{ "color.accent": "#8b7cf6", "color.hero": { "$token": "color.accent" } }"##);
+    assert!(css.contains("--hero-rgb: var(--accent-rgb);"), "{css}");
+
+    // Nella variante si segue prima la variante e poi la base.
+    let css = compila_documento(&MINIMA.replace(
+        "\"tokens\": {}",
+        r##""tokens": { "color.danger": "#ff0000", "color.accent": { "$token": "color.danger" } },
+            "variant": { "tokens": { "color.danger": "#00ff00" } }"##,
+    ))
+    .css;
+    let chiaro = corpo(&css, ":root[data-skin='prova'][data-theme='light']");
+    assert!(chiaro.contains("--accent-rgb: 0 255 0;"), "{css}");
+}
+
+#[test]
+fn hero_richiamato_in_un_colore_si_scrive_come_colore() {
+    // `--hero-rgb` è una tripla: `var(--hero-rgb)` dove ci va un colore non è
+    // un colore, e il fondo cadeva senza un avviso.
+    let css = compila_documento(&con(
+        r##", "parts": { "card": { "background": [{ "effect": "solid", "color": { "$token": "color.hero" } }],
+                                    "textColor": { "$token": "color.hero" } } }"##,
+    ))
+    .css;
+    assert!(css.contains("background: rgb(var(--hero-rgb));"), "{css}");
+    assert!(css.contains("color: rgb(var(--hero-rgb));"), "{css}");
+    assert!(!css.contains(": var(--hero-rgb);"), "{css}");
+}
+
+#[test]
+fn un_accento_che_rimanda_a_se_stesso_non_esce() {
+    // La validazione rifiuta `$source` sull'accento; un documento costruito a
+    // mano passa lo stesso dal compilatore, e il ciclo non deve uscire.
+    let mut skin = parse_skin_json(MINIMA).expect("valida");
+    let accento = crate::tokens::token("color.accent").expect("nel registro");
+    skin.tokens = TokenSet::new(vec![(
+        accento,
+        TokenValue::Color(ColorValue::Source {
+            source: crate::tokens::DynamicSource::Vibrant,
+            alpha: None,
+        }),
+    )]);
+    let css = compile_skin(&skin).css;
+    assert!(cicli(&css).is_empty(), "{css}");
+}
+
+/// I blocchi di un foglio: selettore e corpo.
+fn blocchi(css: &str) -> Vec<(String, String)> {
+    css.split("}\n")
+        .filter_map(|pezzo| {
+            let (selettore, corpo) = pezzo.split_once(" {\n")?;
+            Some((selettore.trim().to_owned(), corpo.to_owned()))
+        })
+        .collect()
+}
+
+#[test]
+fn l_anello_di_uno_stato_sta_sotto_il_fuoco() {
+    // Un `focusRing` scritto in `current` finiva nella regola di `current`: la
+    // riga in ascolto portava sempre un anello, anche senza fuoco, e chi
+    // naviga con la tastiera ne vedeva due senza sapere quale fosse il fuoco.
+    let json = con(r##", "parts": { "list-row": {
+              "focusRing": { "color": "#ffffff", "width": "2px" },
+              "states": {
+                "current": { "focusRing": { "color": "#ffcc00", "width": "3px" } },
+                "focus": { "focusRing": { "color": "#00ffcc", "width": "2px" } }
+              } } }"##);
+    let skin = parse_skin_json(&json).expect("valida");
+    for ambito in ambiti(&skin.id) {
+        let css = super::compila(&skin, &ambito).css;
+        for (selettore, corpo) in blocchi(&css) {
+            if corpo.contains("outline:") {
+                assert!(
+                    selettore.contains(":focus-visible"),
+                    "{ambito:?}: «{selettore}» disegna un anello senza fuoco"
+                );
+            }
+        }
+        // L'anello di `current` c'è ancora: sotto `current` **e** il fuoco.
+        assert!(css.contains("3px solid rgb(255 204 0)"), "{css}");
+    }
+    // Nell'anteprima i due stati forzati si combinano: `current` e il fuoco
+    // forzati insieme accendono l'anello, uno solo no.
+    let css = super::compila(&skin, &Ambito::anteprima(&skin.id)).css;
+    assert!(
+        css.contains("[data-forza~='current']):where(:focus-visible, [data-forza~='focus'])"),
+        "{css}"
+    );
+}
+
 #[test]
 fn il_lettore_del_foglio_non_e_di_manica_larga() {
     // Un controllo che non boccia niente non controlla niente: qui ogni

@@ -24,7 +24,7 @@
             ],
           },
         },
-        "`build.rs` generates the Tauri context, re-exports `RYMEMBRA_GOOGLE_CLIENT_ID` / `_SECRET` so `option_env!` can see them, and links the VC++ runtime statically in release builds only (static CRT broke doctests). Running the app on a copy of the data: set `RYMEMBRA_DATI` to another folder ([Data](#data)).",
+        "`build.rs` generates the Tauri context and links the VC++ runtime statically in release builds only (static CRT broke doctests). It passes no credentials: since 3.2 no OAuth client is compiled in for any service — the `RYMEMBRA_GOOGLE_CLIENT_ID` / `_SECRET` variables and `oauth.local.toml` are no longer read, and every user registers their own app ([Cloud folders](#cloud-folders)). Running the app on a copy of the data: set `RYMEMBRA_DATI` to another folder ([Data](#data)).",
       ],
       see: ["testing", "tooling", "ci"],
     },
@@ -59,7 +59,7 @@
           table: {
             head: ["Script", "Checks or does"],
             rows: [
-              ["`classi.js`", "Every class in TSX exists in `stile.css` or the skin registry; every registry part is emitted by the app; no dead CSS; every `z-index` is a layer token; every duration goes through `--motion-scale`; full-cover positioned layers declare `pointer-events`"],
+              ["`classi.js`", "Every class in TSX exists in one of the sheets (`stile.css` or `stile/*.css`) or the skin registry; every registry part is emitted by the app; no dead CSS; every `z-index` is a layer token; every duration goes through `--motion-scale`; full-cover positioned layers declare `pointer-events`"],
               ["`lingue.js`", "Every language has exactly the keys of `it.json`; plural forms per CLDR category; every error code has an `errors.<code>` sentence (`--scrivi` fills missing keys)"],
               ["`docs.js`", "This documentation — see [Writing these docs](#writing-docs)"],
               ["`sito.js`", "Builds the website into `_site/` from `site/` — the landing page in four languages from one template and `site/testi/*.json`, one page per docs chapter, the sitemap, and copies the soundtrack in `site/audio/` (“Machina” by Scott Buckley, CC BY 4.0, fetched only when played) — then checks the result: the same keys in every language, no text left unused, every internal link, `src` and `data-src` and every anchor resolves, every `ANCORE_GUIDA` anchor reaches an entry, nothing loaded from another domain (`--controlla` builds in a temporary folder; `--versione` sets the release to announce; `--installer` points at the downloaded installer, whose size and SHA-256 the download section then shows)"],

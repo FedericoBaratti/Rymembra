@@ -7,7 +7,9 @@
  * sua risposta: rileggere `avvio`, aprire la conferma del trasloco
  * (`ConfermaTrasloco.tsx`) quando arriva una gemella, dire in una riga quando
  * una cartella era già dentro un'altra. Li usano le Impostazioni, lo stato
- * vuoto «nessuna cartella» e i file trascinati sulla finestra.
+ * vuoto «nessuna cartella», i file trascinati sulla finestra e la finestrella
+ * «Aggiungi una cartella» (`AggiungiCartella.tsx`), che porta anche quelle del
+ * cloud.
  *
  * Le funzioni si rifanno a ogni disegno, come quando stavano nel corpo di
  * `App`, ma l'elenco delle cartelle non lo prendono dal disegno: lo leggono
@@ -18,6 +20,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useState, type Dispatch, type SetStateAction } from "react";
 
+import { nomeRadice, primaLocale } from "./cartelleNuvola";
 import {
   conCartelle,
   creaFila,
@@ -47,10 +50,30 @@ export interface CartelleSorvegliate {
   /** La gemella che aspetta una risposta: vedi `ConfermaTrasloco.tsx`. */
   gemella: CartellaGemella | null;
   setGemella: Dispatch<SetStateAction<CartellaGemella | null>>;
-  /** Chiede una cartella e la aggiunge alle sorvegliate. */
-  scegliCartella: () => Promise<void>;
+  /**
+   * Chiede una cartella col dialogo di sistema e la aggiunge alle sorvegliate.
+   *
+   * `true` se se n'è scelta una: «Questo PC» nella finestrella si chiude solo
+   * allora, e chi ha annullato il dialogo di sistema resta dove era — magari
+   * per scegliere una cartella del cloud.
+   */
+  scegliCartella: () => Promise<boolean>;
   /** Aggiunge dei percorsi alle sorvegliate: quelli lasciati sulla finestra. */
   aggiungiCartelle: (percorsi: readonly string[]) => Promise<void>;
+  /**
+   * Aggiunge una cartella del cloud alle sorvegliate, e torna i percorsi che
+   * sono entrati davvero.
+   *
+   * **Lancia** invece di segnalare: il guasto lo dice la finestrella che l'ha
+   * chiesto, che resta aperta con la sua scelta — chiuderla e dirlo nella
+   * fascia vorrebbe dire rifare la strada nel drive per riprovare.
+   */
+  aggiungiNuvola: (conto: string, id: string, nomi: string[]) => Promise<string[]>;
+  /**
+   * Scollega un account del cloud; con `togliCartelle` le sue cartelle escono
+   * anche dalle sorvegliate.
+   */
+  scollegaNuvola: (conto: string, togliCartelle: boolean) => Promise<void>;
   /** Quel che il nucleo ha deciso delle cartelle appena scritte, detto. */
   dopoLeCartelle: (esito: CartelleOrdinate) => void;
   /** Il «sì» della domanda sul trasloco. */
@@ -133,8 +156,63 @@ export function useCartelleSorvegliate({
         return null;
       },
     );
-    if (typeof scelta !== "string") return;
+    if (typeof scelta !== "string") return false;
     await aggiungiCartelle([scelta]);
+    return true;
+  };
+
+  /**
+   * Una cartella del cloud, nella **stessa fila** delle altre.
+   *
+   * Il nucleo la aggiunge all'elenco che ha lui, ma la finestra scrive l'elenco
+   * intero quando toglie o quando arriva un trascinamento: se uno di quei gesti
+   * partisse mentre questo è in volo, calcolerebbe dall'elenco di prima — senza
+   * la cartella del cloud — e la riscriverebbe via. In fila, e con l'archivio
+   * aggiornato dalla risposta prima di lasciare il turno, il gesto dopo parte
+   * dall'elenco che la contiene. È la regola di `elencoCartelle.ts`.
+   */
+  const aggiungiNuvola = async (conto: string, id: string, nomi: string[]) => {
+    const { esito, nuove } = await fila(async () => {
+      const prima = libreria.avvio.leggi()?.cartelle ?? [];
+      const esito = await ipc.nuvolaAggiungi(conto, id, nomi);
+      libreria.avvio.scrivi((p) => (p === null ? p : { ...p, cartelle: esito.cartelle }));
+      return { esito, nuove: esito.cartelle.filter((c) => !prima.includes(c)) };
+    });
+    // La rilettura fuori dalla fila, come in `aggiungiCartelle`; e un suo guasto
+    // non è un guasto dell'aggiunta, che è già scritta.
+    await libreria.ricarica().catch(segnalaErrore);
+    if (esito.gemelle.length > 0 || esito.assorbite.length > 0) {
+      dopoLeCartelle(esito);
+    } else {
+      const prima = nuove[0];
+      // I brani arrivano a ondate — prima le righe dall'elenco, poi i tag —
+      // e chi chiude la finestrella deve sapere che una libreria che si
+      // riempie piano è il comportamento giusto, non una scansione bloccata.
+      setNotizia(
+        prima === undefined
+          ? t("folders.add.already")
+          : t("folders.add.arriving", { nome: nomeRadice(prima) }),
+      );
+    }
+    return nuove;
+  };
+
+  /**
+   * Scollegare un conto, nella stessa fila: con le cartelle tolte, il nucleo
+   * riscrive l'elenco, e un gesto partito in mezzo lo riscriverebbe con
+   * dentro quelle appena tolte. Come per il trasloco, il comando non risponde
+   * con l'elenco, e la rilettura sta dentro la fila: è lei che porta
+   * nell'archivio l'elenco da cui deve partire il gesto dopo.
+   */
+  const scollegaNuvola = async (conto: string, togliCartelle: boolean) => {
+    try {
+      await fila(async () => {
+        await ipc.nuvolaContoScollega(conto, togliCartelle);
+        await libreria.ricarica();
+      });
+    } catch (e) {
+      segnalaErrore(e);
+    }
   };
 
   /**
@@ -156,8 +234,8 @@ export function useCartelleSorvegliate({
     if (assorbita) {
       setNotizia(
         t("folders.absorbed", {
-          cartella: assorbita.cartella,
-          dentro: assorbita.dentro,
+          cartella: nomeRadice(assorbita.cartella),
+          dentro: nomeRadice(assorbita.dentro),
         }),
       );
     }
@@ -205,7 +283,9 @@ export function useCartelleSorvegliate({
   const scegliCartellaDownload = async () => {
     try {
       const avvio = libreria.avvio.leggi();
-      const partenza = avvio?.cartellaDownload ?? avvio?.cartelle[0];
+      // La prima **del disco**: una cartella del cloud il dialogo di sistema
+      // non la sa aprire, e i download lì non ci finiscono.
+      const partenza = avvio?.cartellaDownload ?? primaLocale(avvio?.cartelle ?? []);
       const scelta = await open({
         directory: true,
         multiple: false,
@@ -234,6 +314,8 @@ export function useCartelleSorvegliate({
     setGemella,
     scegliCartella,
     aggiungiCartelle,
+    aggiungiNuvola,
+    scollegaNuvola,
     dopoLeCartelle,
     trasloca,
     scegliCartellaDownload,

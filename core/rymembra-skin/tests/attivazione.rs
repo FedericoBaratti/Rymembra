@@ -117,6 +117,91 @@ fn tre_ripetizioni_non_sono_un_lampeggio_e_quattro_si() {
     );
 }
 
+/// Dodici fotogrammi a opacità alternata, cioè undici cambi in un giro.
+fn strobo(iterazioni: u32) -> String {
+    let fotogrammi: Vec<String> = [0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90, 100]
+        .iter()
+        .enumerate()
+        .map(|(indice, at)| format!(r##"{{ "at": {at}, "opacity": {} }}"##, (indice + 1) % 2))
+        .collect();
+    col_lampo(&format!(
+        r##"{{ "duration": "300ms", "iterations": {iterazioni}, "frames": [{}] }}"##,
+        fotogrammi.join(", ")
+    ))
+}
+
+#[test]
+fn un_giro_solo_con_dieci_cambi_di_luce_non_passa() {
+    // Le ripetizioni non sono i lampi: un giro solo di trecento millisecondi
+    // ne contiene cinque, e tre giri ne contengono diciassette.
+    for volte in [1, 3] {
+        let detto = lampeggio(&strobo(volte));
+        assert_eq!(detto.path, "motion.animations.lampo.duration", "{volte}");
+        assert!(detto.message.contains("l'opacità"), "{}", detto.message);
+    }
+}
+
+#[test]
+fn pochi_lampi_che_si_fermano_passano_ancora() {
+    // Neon `accende`: cinque cambi in 420 ms, una volta sola — due lampi, che
+    // stanno sotto i tre di WCAG 2.3.1. È il caso che la regola deve lasciare.
+    valida(&col_lampo(
+        r##"{ "duration": "420ms", "easing": "linear",
+              "frames": [{ "at": 0, "opacity": 0 }, { "at": 20, "opacity": 0.9 },
+                         { "at": 30, "opacity": 0.2 }, { "at": 45, "opacity": 1 },
+                         { "at": 55, "opacity": 0.55 }, { "at": 100, "opacity": 1 }] }"##,
+    ));
+}
+
+#[test]
+fn una_curva_che_rimbalza_non_nasconde_un_lampeggio() {
+    // Due fotogrammi per metà giro, ma la curva sale fino a 1,57 e scende fino
+    // a -0,57 dentro ogni intervallo: l'opacità, tagliata fra 0 e 1, va e
+    // viene tre volte per metà.
+    let rimbalza = |curva: &str| {
+        col_lampo(&format!(
+            r##"{{ "duration": "700ms", "iterations": "infinite", "easing": {curva},
+                  "frames": [{{ "at": 0, "opacity": 0 }}, {{ "at": 50, "opacity": 1 }},
+                             {{ "at": 100, "opacity": 0 }}] }}"##
+        ))
+    };
+    let detto = lampeggio(&rimbalza(
+        r##"{ "kind": "cubicBezier", "points": [0.5, 5, 0.5, -4] }"##,
+    ));
+    assert_eq!(detto.path, "motion.animations.lampo.duration");
+    assert!(detto.message.contains("l'opacità"), "{}", detto.message);
+    // La stessa animazione con una curva che non rimbalza resta valida.
+    valida(&rimbalza(r##""linear""##));
+}
+
+#[test]
+fn una_curva_che_rimbalza_chiamata_per_nome_conta_lo_stesso() {
+    let json = r##"{
+      "format": 2,
+      "id": "prova",
+      "meta": { "name": "Prova", "author": "Rymembra", "version": "1.0.0" },
+      "tokens": {},
+      "motion": {
+        "easings": { "salto": { "kind": "cubicBezier", "points": [0.5, 5, 0.5, -4] } },
+        "animations": { "lampo": { "duration": "700ms", "iterations": "infinite", "easing": "salto",
+          "frames": [{ "at": 0, "opacity": 0 }, { "at": 50, "opacity": 1 }, { "at": 100, "opacity": 0 }] } }
+      }
+    }"##;
+    assert_eq!(lampeggio(json).path, "motion.animations.lampo.duration");
+}
+
+#[test]
+fn una_molla_su_un_ingresso_non_e_un_lampeggio() {
+    // La molla di serie supera la meta del 10% e torna: sull'opacità, tagliata
+    // a 1, non cambia niente, e un ingresso ripetuto tre volte resta tre
+    // ingressi.
+    valida(&col_lampo(
+        r##"{ "duration": "280ms", "iterations": 3,
+              "easing": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] },
+              "frames": [{ "at": 0, "opacity": 0, "scale": 0.9 }, { "at": 100, "opacity": 1, "scale": 1 }] }"##,
+    ));
+}
+
 #[test]
 fn una_salita_scritta_in_piu_fotogrammi_e_un_cambio_solo() {
     // Un secondo per salire, un salto per ricominciare: un lampo al secondo.
@@ -270,6 +355,25 @@ fn sopra_il_budget_ma_sotto_il_doppio_si_installa_e_si_chiede() {
     assert!(esame.movimento_parte.sfora());
     assert!(!esame.movimento_parte.fuori_misura());
     assert!(esame.da_confermare());
+}
+
+#[test]
+fn un_vetro_ridichiarato_negli_stati_si_installa() {
+    // Il `backdrop` di uno stato sostituisce quello di base: un vetro solo alla
+    // volta, anche se ogni stato ne cambia il raggio. Fino alla 3.2.0 di prova si
+    // sommavano, 40 contro un tetto di 20, e la skin non si installava.
+    let skin = valida(&documento(
+        "full",
+        "{}",
+        r##"{ "card": {
+              "backdrop": { "effect": "blurBehind", "radius": "12px" },
+              "states": {
+                "hover": { "backdrop": { "effect": "blurBehind", "radius": "16px" } },
+                "pressed": { "backdrop": { "effect": "blurBehind", "radius": "20px" } },
+                "selected": { "backdrop": { "effect": "blurBehind", "radius": "24px" } }
+              } } }"##,
+    ));
+    controlla_installazione(&skin).expect("si installa");
 }
 
 #[test]

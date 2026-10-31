@@ -38,7 +38,7 @@ use rymembra_net::http::{Corpo, Metodo, Richiesta};
 use rymembra_net::immagine;
 use rymembra_net::percento;
 
-use crate::Fornitori;
+use crate::{Cadenza, Fornitori};
 
 /// Quanto può essere grande un'immagine che si accetta di scaricare.
 ///
@@ -123,10 +123,11 @@ fn scarica(fornitori: &Fornitori, url: &str) -> Option<Copertina> {
     if !url.starts_with("https://") {
         return None;
     }
-    if fornitori.copertine.aperta() {
+    let cadenza = cadenza_per(fornitori, url);
+    if cadenza.aperta() {
         return None;
     }
-    fornitori.copertine.attendi();
+    cadenza.attendi();
 
     let risposta = match fornitori.rete.esegui(Richiesta {
         metodo: Metodo::Get,
@@ -136,7 +137,7 @@ fn scarica(fornitori: &Fornitori, url: &str) -> Option<Copertina> {
     }) {
         Ok(risposta) => risposta,
         Err(_) => {
-            fornitori.copertine.guasto();
+            cadenza.guasto();
             return None;
         }
     };
@@ -146,18 +147,18 @@ fn scarica(fornitori: &Fornitori, url: &str) -> Option<Copertina> {
     // guasto aprirebbe l'interruttore su una libreria fatta di dischi oscuri,
     // cioè proprio su quella che ne ha più bisogno.
     if risposta.stato == 404 {
-        fornitori.copertine.riuscita();
+        cadenza.riuscita();
         return None;
     }
     if !risposta.e_andata() {
         if fornitori.rete.stato_a_errore(&risposta, url).is_retryable() {
-            fornitori.copertine.guasto();
+            cadenza.guasto();
         } else {
-            fornitori.copertine.riuscita();
+            cadenza.riuscita();
         }
         return None;
     }
-    fornitori.copertine.riuscita();
+    cadenza.riuscita();
 
     if !immagine::plausibile(&risposta.corpo, BYTE_MASSIMI) {
         return None;
@@ -168,6 +169,32 @@ fn scarica(fornitori: &Fornitori, url: &str) -> Option<Copertina> {
         provenienza: Provenienza::CoverArtArchive,
         tipo,
     })
+}
+
+/// Il cancello di chi serve questa immagine.
+///
+/// # Perché due cancelli e non uno
+///
+/// Perché [`scarica`] serve due servizi diversi: la catena del Cover Art
+/// Archive e l'indirizzo diretto del vincitore, che sta sul CDN di iTunes
+/// (`is1-ssl.mzstatic.com`) o di Deezer (`e-cdns-images.dzcdn.net`). Con un
+/// cancello solo, archive.org giù apriva l'interruttore anche per i CDN che
+/// funzionavano: per cinque minuti ogni brano vinto da iTunes o Deezer veniva
+/// arricchito senza copertina, diventava `ok`, e nessuna passata gliela
+/// richiedeva più. E valeva il verso opposto: un CDN che sbaglia contava come
+/// guasto del Cover Art Archive.
+///
+/// Si decide sull'ospite: [`Fornitori::copertine`] per `coverartarchive.org`
+/// (i suoi rimandi verso archive.org li segue la stessa richiesta, quindi
+/// restano suoi), [`Fornitori::immagini`] per tutto il resto.
+fn cadenza_per<'a>(fornitori: &'a Fornitori, url: &str) -> &'a Cadenza {
+    let del_archivio = rymembra_net::http::ospite(url)
+        .is_some_and(|ospite| ospite.eq_ignore_ascii_case("coverartarchive.org"));
+    if del_archivio {
+        &fornitori.copertine
+    } else {
+        &fornitori.immagini
+    }
 }
 
 /// La copertina scelta per un gruppo di pubblicazione, se ne ha una.
@@ -255,6 +282,75 @@ mod prove {
             fornitori.copertine.guasto();
         }
         assert!(fornitori.copertine.aperta());
-        assert!(scarica(&fornitori, "https://esempio.invalido/a.jpg").is_none());
+        assert!(
+            scarica(
+                &fornitori,
+                "https://coverartarchive.org/release/x/front-500"
+            )
+            .is_none()
+        );
+    }
+
+    /// Il Cover Art Archive giù non spegne le copertine dei CDN di iTunes e
+    /// Deezer, che stanno su altri host e cadono per altre ragioni.
+    #[test]
+    fn l_interruttore_della_cover_art_archive_non_spegne_le_copertine_dirette() {
+        const CAA: &str = "https://coverartarchive.org/release/x/front-500";
+        const MZSTATIC: &str = "https://is1-ssl.mzstatic.com/image/thumb/a/600x600bb.jpg";
+        assert_eq!(rymembra_net::http::ospite(CAA), Some("coverartarchive.org"));
+
+        let fornitori = Fornitori::nuovo(Box::new(Senza));
+        for _ in 0..crate::cadenza::GUASTI_PER_APRIRE {
+            fornitori.copertine.guasto();
+        }
+        assert!(cadenza_per(&fornitori, CAA).aperta());
+        assert!(
+            !cadenza_per(&fornitori, MZSTATIC).aperta(),
+            "la copertina diretta passa dall'interruttore del Cover Art Archive"
+        );
+
+        // E il verso opposto: un CDN che cade non spegne il Cover Art Archive.
+        let fornitori = Fornitori::nuovo(Box::new(Senza));
+        for _ in 0..crate::cadenza::GUASTI_PER_APRIRE {
+            fornitori.immagini.guasto();
+        }
+        assert!(cadenza_per(&fornitori, MZSTATIC).aperta());
+        assert!(!cadenza_per(&fornitori, CAA).aperta());
+    }
+
+    /// Con il Cover Art Archive giù la copertina diretta si chiede lo stesso.
+    /// Il «CDN» qui è un ascoltatore su questa macchina che chiude subito ogni
+    /// connessione: la richiesta fallisce, ma il conto delle connessioni dice
+    /// che è partita.
+    #[test]
+    fn con_l_archivio_giu_la_copertina_diretta_si_chiede_lo_stesso() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let ascolto =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("una porta su questa macchina");
+        let porta = ascolto.local_addr().expect("la porta scelta").port();
+        let contate = Arc::new(AtomicUsize::new(0));
+        let conto = Arc::clone(&contate);
+        std::thread::spawn(move || {
+            for connessione in ascolto.incoming() {
+                conto.fetch_add(1, Ordering::SeqCst);
+                drop(connessione);
+            }
+        });
+
+        let fornitori = Fornitori::nuovo(Box::new(Senza));
+        for _ in 0..crate::cadenza::GUASTI_PER_APRIRE {
+            fornitori.copertine.guasto();
+        }
+        let diretto = format!("https://127.0.0.1:{porta}/a.jpg");
+        assert!(
+            scarica(&fornitori, &diretto).is_none(),
+            "il CDN finto non dà immagini"
+        );
+        assert_eq!(
+            contate.load(Ordering::SeqCst),
+            1,
+            "la copertina diretta non è stata nemmeno chiesta"
+        );
     }
 }

@@ -77,6 +77,18 @@ export const ANTICIPO = 60;
 export const RIPROVA_MS = 2_000;
 
 /**
+ * Quante pagine un intervallo chiede insieme, al più.
+ *
+ * Maiusc+clic da cima a fondo di trentamila brani sono centocinquanta pagine:
+ * chieste tutte insieme sono centocinquanta comandi che aspettano lo stesso
+ * lucchetto della libreria, e nel frattempo le pagine che l'elenco chiede per
+ * farsi vedere fanno la fila dietro di loro. Quattro alla volta tengono la
+ * libreria occupata senza farla aspettare a nessuno; quelle già in mano
+ * rispondono subito e non contano.
+ */
+const INTERVALLO_IN_PARALLELO = 4;
+
+/**
  * Le pagine che coprono le righe `[primo, ultimo)`, dentro un elenco di
  * `totale`.
  *
@@ -283,13 +295,32 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
    * Serve alla selezione con Maiusc, che può prendere un intervallo più lungo
    * di quel che è in mano. Una riga che non arriva — la generazione è cambiata
    * nel mezzo, una pagina è fallita — resta `undefined`, e chi chiama decide.
+   *
+   * Le righe si prendono da quel che `prendi` restituisce, e **non** si
+   * rileggono dalla cache alla fine: un intervallo più lungo della capienza
+   * faceva sfoltire le pagine arrivate per prime mentre arrivavano le altre, e
+   * su trentamila righe ne tornavano ottomila, a buchi — la selezione, e
+   * «Togli dalla libreria» con lei, agiva su un pezzo non contiguo. Le pagine
+   * si chiedono `INTERVALLO_IN_PARALLELO` alla volta.
    */
   async intervallo(da: number, a: number): Promise<(T | undefined)[]> {
     const pagine = pagineDaPrendere(da, a + 1, this._totale, this.misura);
-    await Promise.all(pagine.map((p) => this.prendi(p)));
+    const arrivate = new Map<number, T[] | null>();
+    let prossima = 0;
+    const lavora = async () => {
+      while (prossima < pagine.length) {
+        const p = pagine[prossima] as number;
+        prossima += 1;
+        arrivate.set(p, await this.prendi(p));
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(INTERVALLO_IN_PARALLELO, pagine.length) }, lavora),
+    );
     const righe: (T | undefined)[] = [];
     for (let i = Math.max(da, 0); i <= Math.min(a, this._totale - 1); i += 1) {
-      righe.push(this.riga(i));
+      const p = Math.floor(i / this.misura);
+      righe.push(arrivate.get(p)?.[i - p * this.misura]);
     }
     return righe;
   }

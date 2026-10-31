@@ -23,6 +23,8 @@
  * colore che invita a premere sta sul tasto che non toglie niente, ed è anche
  * quello che riceve il fuoco aprendo.
  */
+import { useState } from "react";
+
 import { Dialogo } from "./Dialogo";
 import { t } from "./lingue";
 
@@ -33,8 +35,18 @@ export interface Domanda {
   descrizione: string;
   /** Il tasto che conferma: il verbo del gesto, non «OK». */
   conferma: string;
-  /** Il gesto, quando la risposta è sì. */
-  fai: () => void;
+  /**
+   * Una scelta in più, dentro la stessa domanda: la frase della casella.
+   *
+   * Nasce per «Scollega» di un account del cloud, che può portarsi via anche
+   * le sue cartelle o lasciarle in libreria ad aspettare. Una casella e non
+   * due tasti di conferma: la domanda resta una sola — scollegare sì o no — e
+   * la parte più grave è quella che si sceglie apposta. Per questo parte
+   * **spenta**: il caso di serie è quello che non toglie niente in più.
+   */
+  casella?: string | undefined;
+  /** Il gesto, quando la risposta è sì: con la casella, se c'era. */
+  fai: (spuntata: boolean) => void;
 }
 
 export function ConfermaGesto({
@@ -44,6 +56,7 @@ export function ConfermaGesto({
   domanda: Domanda;
   onChiudi: () => void;
 }) {
+  const [spuntata, setSpuntata] = useState(false);
   return (
     <Dialogo
       titolo={domanda.titolo}
@@ -52,8 +65,26 @@ export function ConfermaGesto({
       classe="finestrella stretta glass-modal"
       onChiudi={onChiudi}
     >
+      {domanda.casella !== undefined && (
+        <label className="scelta">
+          <input
+            type="checkbox"
+            checked={spuntata}
+            onChange={(e) => setSpuntata(e.target.checked)}
+          />
+          <span>{domanda.casella}</span>
+        </label>
+      )}
       <div className="tasti-finestrella">
-        <button type="button" className="bottone primario" onClick={onChiudi}>
+        {/* Il marchio e non l'ordine: con la casella il primo focalizzabile
+            sarebbe lei, e uno Spazio battuto per riflesso spunterebbe proprio
+            la parte più grave del gesto. Vedi `fuocoIniziale` in `modale.ts`. */}
+        <button
+          type="button"
+          className="bottone primario"
+          onClick={onChiudi}
+          data-fuoco-iniziale
+        >
           {t("common.cancel")}
         </button>
         <button
@@ -61,7 +92,7 @@ export function ConfermaGesto({
           className="bottone"
           onClick={() => {
             onChiudi();
-            domanda.fai();
+            domanda.fai(spuntata);
           }}
         >
           {domanda.conferma}

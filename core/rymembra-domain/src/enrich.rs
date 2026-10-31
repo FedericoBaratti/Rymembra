@@ -241,9 +241,14 @@ pub fn titolo_da_cercare(input: &str) -> String {
 }
 
 /// Toglie la coda `- Topic`, che YouTube attacca ai canali che genera da sé.
+///
+/// Solo col trattino, dritto o lungo: senza trattino «Topic» è una parola del
+/// titolo — «Hot Topic» — e toglierla dava un titolo che il catalogo non
+/// riconosce, e che [`titolo_di_ripiego`] scambiava per un ripiego da
+/// sovrascrivere.
 fn togli_coda_topic(input: &str) -> String {
     let rifilato = input.trim_end_matches(is_js_whitespace);
-    for coda in [" - topic", " – topic", " topic"] {
+    for coda in [" - topic", " – topic"] {
         if let Some(taglio) = rifilato.len().checked_sub(coda.len())
             && rifilato
                 .get(taglio..)
@@ -1268,19 +1273,24 @@ pub fn resolve_track(brano: &LocalTrack, candidati: &[Candidate]) -> Option<Trac
 /// Da dove vengono i quattro campi su cui l'arricchimento decide.
 ///
 /// È il gemello di [`Fields`] per la provenienza: gli stessi quattro campi di
-/// testo, e per ognuno da chi era stato scritto. Serve a distinguere un titolo
-/// che il file dichiarava da uno che Rymembra ha dedotto dalla cartella — il primo
-/// è la parola del file e non si tocca, il secondo è un'ipotesi che un catalogo
-/// può correggere — e soprattutto a non riscrivere mai
+/// testo, e per ognuno da chi era stato scritto. È pensato per distinguere un
+/// titolo che il file dichiarava da uno che Rymembra ha dedotto dalla cartella —
+/// il primo è la parola del file e non si tocca, il secondo è un'ipotesi che un
+/// catalogo può correggere — e per non riscrivere mai
 /// [`Origine::Manuale`](crate::ricostruzione::Origine::Manuale), che è la parola
 /// di chi ascolta.
+///
+/// **Oggi non lo usa nessuno.** [`plan_write`] non lo riceve: su un campo
+/// corretto a mano propone il valore del catalogo come su qualunque altro, e la
+/// correzione la rimette sopra, subito dopo la scrittura,
+/// `rymembra_app::incerti::riapplica_sopra_i_tag`. È quella, e non questo tipo,
+/// la protezione dei campi manuali. Anche
+/// `rymembra_app::provenienza::Origini::per_arricchimento`, che lo costruirebbe
+/// dal JSON di `tracks.meta_origine`, non ha chiamanti.
 ///
 /// Il valore predefinito è «tutto dai tag», che è la lettura prudente: le righe
 /// scritte prima che questa provenienza esistesse non dichiarano niente, e non
 /// devono per questo diventare riscrivibili.
-///
-/// Lo costruisce `rymembra_app::provenienza::Origini::per_arricchimento` a partire
-/// dal JSON di `tracks.meta_origine`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OrigineCampi {
     /// Da dove viene il titolo.
@@ -1554,6 +1564,16 @@ mod tests {
             titolo_da_cercare("Everything (Video Games Mix)"),
             "Everything (Video Games Mix)"
         );
+    }
+
+    #[test]
+    fn un_titolo_che_finisce_con_topic_resta_intero() {
+        // «Hot Topic» è un titolo vero: la coda dei canali di YouTube ha il
+        // trattino, e senza trattino «Topic» è una parola del titolo.
+        assert_eq!(titolo_da_cercare("Hot Topic"), "Hot Topic");
+        assert!(!titolo_di_ripiego("Hot Topic", None));
+        assert_eq!(titolo_da_cercare("Radiohead - Topic"), "Radiohead");
+        assert_eq!(titolo_da_cercare("Radiohead – Topic"), "Radiohead");
     }
 
     #[test]

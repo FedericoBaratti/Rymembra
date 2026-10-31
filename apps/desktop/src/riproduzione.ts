@@ -29,6 +29,7 @@ import { ETA, FINESTRA, SALTO, creaOrologio } from "./orologio";
 import { useAscolto } from "./pagine";
 import { useDati } from "./dati";
 import { ARCHIVIO_FINESTRA } from "./posizione";
+import { eventiEFotografia } from "./ultima";
 
 /**
  * Ogni quanto la posizione interpolata arriva a React.
@@ -172,6 +173,27 @@ export function posizioneAdesso(): number {
 export function usePosizioneMs(): number {
   const { posizione } = useDati();
   return useSyncExternalStore(posizione.iscrivi, posizione.leggi, posizione.leggi);
+}
+
+/**
+ * Segue la posizione interpolata, ma si ridisegna solo ogni `passoMs`.
+ *
+ * Per chi la disegna con una grana più grossa dei 50 ms con cui si pubblica:
+ * la barra di avanzamento, che sceglie il passo con `passoDellaBarra`
+ * (`posizione.ts`, dove sta il perché e la misura). L'iscrizione è la stessa
+ * di [`usePosizioneMs`]. Cambia la fotografia, arrotondata per difetto al
+ * passo: React confronta le fotografie e salta i colpi che non la cambiano.
+ * Per difetto, così il secondo scritto cambia quando cambia quello vero e non
+ * prima. Con `passoMs` a 50 è [`usePosizioneMs`], perché la posizione pubblicata
+ * è già un multiplo di 50.
+ */
+export function usePosizioneAlPasso(passoMs: number): number {
+  const { posizione } = useDati();
+  const leggi = useCallback(
+    () => Math.floor(posizione.leggi() / passoMs) * passoMs,
+    [posizione, passoMs],
+  );
+  return useSyncExternalStore(posizione.iscrivi, leggi, leggi);
 }
 
 // ── Lo stato, fuori da React ────────────────────────────────────────────────
@@ -319,8 +341,8 @@ export function useRiproduzione(): Riproduzione {
   // nuova, e la storia di prima parlava di un'altra canzone.
   const branoPrima = useRef<number | null>(null);
 
-  // Il fotogramma in volo, o `0` quando il ciclo è spento.
-  const fotogramma = useRef(0);
+  // Il prossimo passo del ciclo in attesa, o `0` quando il ciclo è spento.
+  const prossimo = useRef(0);
 
   // Si aspettano dati che non arrivano: l'ultimo colpo d'orologio l'ha detto.
   // Il ref per l'ancoraggio di uno stato intero, che non lo porta e non deve
@@ -329,32 +351,43 @@ export function useRiproduzione(): Riproduzione {
   const attesa = useRef(false);
 
   /**
-   * Accende il ciclo dei fotogrammi, se non è già acceso.
+   * Accende il ciclo che pubblica la posizione stimata, se non è già acceso.
    *
    * # Perché si spegne invece di girare a vuoto
    *
-   * Perché un `requestAnimationFrame` che si riarma comunque sveglia il
-   * compositore sessanta volte al secondo per **tutta la vita della finestra**,
-   * anche con niente in riproduzione — cioè quasi sempre. Prima l'uscita per la
-   * pausa stava dopo il riarmo, quindi il ciclo non si fermava mai: costava una
-   * sveglia a ogni fotogramma per non fare niente.
+   * Perché un ciclo che si riarma comunque sveglia la finestra per **tutta la
+   * sua vita**, anche con niente in riproduzione — cioè quasi sempre. Prima
+   * l'uscita per la pausa stava dopo il riarmo, quindi il ciclo non si fermava
+   * mai: costava una sveglia a ogni giro per non fare niente.
+   *
+   * # Perché un timer e non `requestAnimationFrame`
+   *
+   * Si pubblica a [`PASSO_INTERPOLAZIONE`], venti volte al secondo, e un
+   * `requestAnimationFrame` gira a sessanta: due giri su tre non avevano niente
+   * da pubblicare, e ognuno chiedeva comunque un fotogramma al compositore.
+   * Misurato su `prima.exe` (30/10, musica ferma, ciclo iniettato): il solo
+   * riarmo a vuoto costava l'1,2% di un core nel renderer e lo 0,3% nel
+   * processo della GPU. Un timer al passo sveglia la finestra solo quando c'è
+   * un numero nuovo. A finestra nascosta il browser lo rallenta da sé, e i
+   * colpi del nucleo continuano ad ancorare la posizione quattro volte al
+   * secondo.
    *
    * È la stessa disciplina per cui il nucleo manda la posizione quattro volte al
    * secondo e non sessanta, e per cui questo modulo esiste (`disegno-ux.md §9`:
    * «nessun componente deve chiedere niente a quel ritmo»).
    */
   const accendi = useCallback(() => {
-    if (fotogramma.current !== 0) return;
+    if (prossimo.current !== 0) return;
     let ultima = -1;
     const passo = () => {
       const { inPausa, durataMs } = ancora.current;
       // Fermo: la posizione è quella dell'ancora, e l'ha già scritta
       // `ancoraggio`. Non ci si riarma — riaccende lei quando riparte.
       if (inPausa) {
-        fotogramma.current = 0;
+        prossimo.current = 0;
         return;
       }
-      fotogramma.current = requestAnimationFrame(passo);
+      prossimo.current = window.setTimeout(passo, PASSO_INTERPOLAZIONE);
       // Dall'orologio e non dall'ultimo colpo: `posizione + (adesso − arrivo)`
       // portava dentro il ritardo di consegna di **quel** colpo, e siccome quel
       // ritardo varia la stima scattava indietro a ogni messaggio arrivato
@@ -368,7 +401,7 @@ export function useRiproduzione(): Riproduzione {
         pubblica(quantizzata);
       }
     };
-    fotogramma.current = requestAnimationFrame(passo);
+    prossimo.current = window.setTimeout(passo, PASSO_INTERPOLAZIONE);
   }, []);
 
   /**
@@ -443,25 +476,49 @@ export function useRiproduzione(): Riproduzione {
   // Lo stato all'apertura. La coda di ieri è già stata ripresa dal nucleo in
   // `riprendi_coda`, ma la finestra non c'era: senza questa chiamata la barra
   // resterebbe vuota fino al primo comando.
+  //
+  // Chiesta nel `poi` dell'ascolto, cioè ad ascolto aperto, e non in un effetto
+  // a parte che partiva prima: un `riproduzione:stato` emesso nel mezzo — le
+  // cuffie Bluetooth che si collegano all'avvio e il motore che si riapre —
+  // non trovava nessuno ad ascoltarlo, e la fascia «non c'è audio» restava
+  // finché l'utente non faceva qualcosa. E la risposta si adotta solo se nel
+  // frattempo non è arrivato nessun evento: calcolata prima, posata sopra un
+  // evento più nuovo lo cancellerebbe. Vedi `poi` in `pagine.ts` e
+  // `eventiEFotografia` in `ultima.ts`.
+  const [conto] = useState(eventiEFotografia);
+  const vivo = useRef(true);
   useEffect(() => {
+    vivo.current = true;
+    return () => {
+      vivo.current = false;
+    };
+  }, []);
+  const fotografia = () => {
+    const valida = conto.chiedi();
     ipc
       .riproduzioneStato()
       .then((iniziale) => {
+        if (!vivo.current || !valida()) return;
         setStato(iniziale);
         accogli(iniziale);
       })
       .catch((e: unknown) => {
+        if (!vivo.current) return;
         setDisponibile(false);
         setErrore(e);
       });
-    // `accogli` è stabile quanto `ancoraggio`, da cui dipende: la dipendenza è
-    // dichiarata e non elusa.
-  }, [accogli]);
+  };
 
-  useAscolto<StatoRiproduzione>("riproduzione:stato", (carico) => {
-    setStato(carico);
-    accogli(carico);
-  });
+  useAscolto<StatoRiproduzione>(
+    "riproduzione:stato",
+    (carico) => {
+      conto.evento();
+      setStato(carico);
+      accogli(carico);
+    },
+    true,
+    fotografia,
+  );
 
   // I colpi dell'orologio non cambiano brano: il nucleo manda `riproduzione:stato`
   // quando cambia, e lì il confronto si fa. Qui `false` non è una semplificazione
@@ -516,9 +573,9 @@ export function useRiproduzione(): Riproduzione {
   // che nessuno lo fermi.
   useEffect(
     () => () => {
-      if (fotogramma.current !== 0) {
-        cancelAnimationFrame(fotogramma.current);
-        fotogramma.current = 0;
+      if (prossimo.current !== 0) {
+        window.clearTimeout(prossimo.current);
+        prossimo.current = 0;
       }
     },
     [],

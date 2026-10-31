@@ -16,9 +16,9 @@
         "Every crate that talks to the outside world — `rymembra-net`, `rymembra-meta`, `rymembra-catalogo`, `rymembra-cloud`, `rymembra-scrobble`, `rymembra-ia`, `rymembra-archivio`, `rymembra-sync`, `rymembra-insieme` — has no access to `rusqlite`. Holding the library lock during a request therefore cannot be written: the type that would be needed never crosses the crate boundary. Long jobs are split into phases that take and release the lock:",
         { code: "candidates()  →  decide()      →  apply()      →  record()\n(lock held)      (no lock,        (no lock,        (lock held,\n                  network)         disk)            one transaction)" },
         { h: "Your music files are not written" },
-        "Metadata found online, corrections, covers, lyrics, plays and ratings live in the library database (`rymembra.db`). The only writes into a music folder are: the file a download produces (tagged by `tag_scrittura::scrivi_tag`), an optional `.lrc` beside a track (`testi.accanto`, off by default), and the temporary «write tags back into the files» action that undoes what versions up to 2.3.0 wrote — see [Enrichment](#enrich).",
+        "Metadata found online, corrections, covers, lyrics, plays and ratings live in the library database (`rymembra.db`). The only writes into a music folder are: the file a download produces (tagged by `tag_scrittura::scrivi_tag`), and an optional `.lrc` beside a track (`testi.accanto`, off by default), with an `.a2.lrc` when words are timed and a one-time `.lrc.bak` / `.a2.lrc.bak` of a different file that was already there. Until 3.1 a «write tags back into the files» action also existed, to undo what versions up to 2.3.0 wrote; it was removed in 3.2.0 — see [Enrichment](#enrich).",
         { h: "The network only answers a feature you use" },
-        "There is no telemetry and no Rymembra server. Every outbound request belongs to a feature: the free catalogs, MusicBrainz and the cover archives, LRCLIB, GitHub for updates (not from a Microsoft Store copy, which the Store updates), and — only once connected — Google Drive, ListenBrainz, Last.fm or a language model. «Listen together», when switched on, talks only to other PCs on the local network: discovery datagrams, and encrypted connections to PCs that have been paired by comparing a four-digit code ([Listen together](#together)). `PRIVACY.md` lists each request and what it carries. Secrets (OAuth refresh tokens, API keys, client secrets) live in the OS keychain under the service `io.github.federicobaratti.rymembra` and are read by the core just before a request; they never travel through the window.",
+        "There is no telemetry and no Rymembra server. Every outbound request belongs to a feature: the free catalogs, MusicBrainz and the cover archives, the anonymous similarity questions to `labs.api.listenbrainz.org` (they start by themselves, with enrichment, and need no account), LRCLIB, GitHub for updates (not from a Microsoft Store copy, which the Store updates), and — only once connected — the Google Drive backup, the cloud services whose folders you add (OneDrive, Google Drive, Dropbox, a WebDAV server; [Cloud folders](#cloud-folders)), scrobbling to ListenBrainz or Last.fm, or a language model. «Listen together», when switched on, talks only to other PCs on the local network: discovery datagrams, and encrypted connections to PCs that have been paired by comparing a four-digit code ([Listen together](#together)). `PRIVACY.md` lists each request and what it carries. Secrets (OAuth refresh tokens, API keys, client secrets) live in the OS keychain under the service `io.github.federicobaratti.rymembra` and are read by the core just before a request; they never travel through the window.",
         { h: "Blocking code, no async runtime of our own" },
         "HTTP is `ureq` (blocking), not `reqwest`; background work runs on named `std::thread`s; cancellation is a `Fn() -> bool` closure or an `AtomicBool` polled between blocks; deadlines come from `rymembra_app::scadenza`. Tauri's own runtime is used only to dispatch IPC commands.",
         { h: "Failures are data, and they are visible" },
@@ -33,7 +33,7 @@
       title: "Workspace and crates",
       src: ["Cargo.toml", "core", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/rymembra-barra/Cargo.toml", "apps/desktop/package.json"],
       body: [
-        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.90\"`, version `3.1.0`) with 16 members, plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
+        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.90\"`, version `3.2.0`) with 16 members, plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
         {
           table: {
             head: ["Crate", "Role", "Internal dependencies"],
@@ -46,7 +46,7 @@
               ["`rymembra-catalogo`", "Free catalogs (Internet Archive, Audius, Jamendo behind a feature): search, resolve, licence-checked download", "domain, net"],
               ["`rymembra-archivio`", "Reads the Spotify GDPR zip into an `AccountSnapshot`", "domain"],
               ["`rymembra-sync`", "Per-device documents and the merge that makes them converge", "domain"],
-              ["`rymembra-cloud`", "Google Drive backup in the app-data folder", "app, domain, net, oauth, skin, sync"],
+              ["`rymembra-cloud`", "Google Drive backup in the app-data folder; the cloud music folders (OneDrive, Google Drive, Dropbox, WebDAV): listing, changes, streaming, the cache; the OAuth providers", "app, domain, net, oauth, skin, sync"],
               ["`rymembra-oauth`", "PKCE, loopback listener, keychain trait, token expiry", "domain"],
               ["`rymembra-scrobble`", "Last.fm and ListenBrainz protocols", "domain, net"],
               ["`rymembra-ia`", "OpenAI-compatible chat client, SSE parser, patch-block extractor", "domain, net"],
@@ -68,7 +68,7 @@
     {
       id: "runtime",
       title: "Threads, locks and the order they are taken",
-      src: ["apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/disparte.rs", "apps/desktop/src-tauri/src/riproduzione/mod.rs"],
+      src: ["apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/disparte.rs", "apps/desktop/src-tauri/src/riproduzione/mod.rs", "apps/desktop/src-tauri/src/riproduzione/seguito.rs"],
       body: [
         "Rymembra is one process: a WebView2 window and the Rust core. The `tauri-plugin-single-instance` guard brings an existing window to the front instead of starting a second process on the same database (it is skipped when `RYMEMBRA_DATI` points at another data folder).",
         { h: "The two locks" },
@@ -101,7 +101,8 @@
               ["`rymembra-uscita`", "`rymembra-play::uscita`", "Owns the stream; sleep/wake policy (1 s awake, 250 ms asleep)"],
               ["`rymembra-decodifica`", "`rymembra-play::motore`", "Decodes into the ring; idle sleep 4 ms; runs under `catch_unwind`"],
               ["`rymembra-eventi`", "`rymembra-play::motore`", "Delivers engine announcements (start, stop, error)"],
-              ["`rymembra-seguito`", "`riproduzione`", "Ordered slow work: state events, SMTC, tray, listen writes"],
+              ["`rymembra-seguito`", "`riproduzione::seguito`", "Ordered slow work: state events, SMTC, tray and taskbar buttons"],
+              ["`rymembra-scritture`", "`riproduzione::seguito`", "Ordered database writes born under the player lock: finished listens, the resume mark set to zero, the position saved on exit"],
               ["`rymembra-preparatore`", "`riproduzione::fili`", "Opens the next track for gapless; 15 ms debounce"],
               ["`rymembra-orologio`", "`riproduzione::fili`", "Every 250 ms: position event, saves, device loss, sleep timer"],
               ["`rymembra-spettro`", "`riproduzione::fili`", "33 ms while the spectrum is visible, 250 ms otherwise"],
@@ -127,9 +128,9 @@
     {
       id: "errors",
       title: "Errors: from the catalog to the window",
-      src: ["core/rymembra-domain/src/errors/catalog.rs", "core/rymembra-domain/src/errors/mod.rs", "core/rymembra-domain/src/errors/rete.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts", "apps/desktop/src/parti/Avvisi.tsx"],
+      src: ["core/rymembra-domain/src/errors/catalog.rs", "core/rymembra-domain/src/errors/mod.rs", "core/rymembra-domain/src/errors/rete.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts", "apps/desktop/src/ipc/errori.ts", "apps/desktop/src/parti/Avvisi.tsx"],
       body: [
-        "Every failure in Rymembra is one of **153 codes** declared in a single `catalogo!` macro invocation. One line per error generates `ErrorCode` (with typed parameters, `#[non_exhaustive]`), `ErrorCodeKind` (without them, with `ALL`), and the metadata: `code()` (`\"net.offline\"`), `i18n_key()` — always `concat!(\"errors.\", code)`, never written by hand —, `domain()`, `severity()`, `retry_rule()` and the `legacy_code()` of the previous app.",
+        "Every failure in Rymembra is one of **173 codes** declared in a single `catalogo!` macro invocation. One line per error generates `ErrorCode` (with typed parameters, `#[non_exhaustive]`), `ErrorCodeKind` (without them, with `ALL`), and the metadata: `code()` (`\"net.offline\"`), `i18n_key()` — always `concat!(\"errors.\", code)`, never written by hand —, `domain()`, `severity()`, `retry_rule()` and the `legacy_code()` of the previous app.",
         {
           table: {
             head: ["Domain", "Codes", "Domain", "Codes"],
@@ -140,9 +141,9 @@
               ["playback", "8", "skin", "12"],
               ["library", "11", "transfer (reserved for phone transfer)", "9"],
               ["metadata", "11", "sync", "7"],
-              ["settings", "7", "ia", "8"],
+              ["settings (with `profile.tooLarge`)", "8", "ia", "8"],
               ["ipc", "3", "internal", "5"],
-              ["insieme (Listen together)", "22", "—", "—"],
+              ["insieme (Listen together)", "22", "cloud (cloud folders and your apps)", "19"],
             ],
           },
         },
@@ -209,7 +210,7 @@
               ["`desiderati`", "wanted tracks: the download wishlist"],
               ["`procura`, `prelievo`", "the download worker, fetching the bytes"],
               ["`abbinamento`, `gradino`", "matching against the library, rung of the matching ladder"],
-              ["`nuvola`", "Google Drive backup"],
+              ["`nuvola`", "the cloud: the Google Drive backup (`nuvola`), the cloud music folders (`nuvola_musica`, `rymembra_cloud::musica`), the user's own apps (`nuvola_app`)"],
               ["`sincronia`", "device sync"],
               ["`magazzino`", "storage backend of sync (folder or Drive)"],
               ["`fusione`, `lapidi`", "merge, tombstones"],

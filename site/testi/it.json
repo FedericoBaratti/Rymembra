@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — lettore musicale gratuito per Windows: FLAC, senza pause, volume uniforme",
-    "descrizione": "Lettore musicale gratuito e open source per Windows: FLAC e MP3 senza pause e allo stesso volume, playlist da Spotify, cataloghi liberi e ascolto insieme in LAN.",
+    "descrizione": "Lettore musicale gratuito e open source per Windows: FLAC e MP3 senza pause e allo stesso volume, cartelle locali e cloud, playlist da Spotify, ascolto in LAN.",
     "immagine": "Rymembra, un lettore musicale per Windows"
   },
   "nav": {
@@ -59,7 +59,8 @@
     "punti": [
       "Le cartelle si sorvegliano da sole: copi dentro un album, e pochi secondi dopo è in libreria.",
       "Su un NAS o un'unità di rete, una condivisione che per un momento non risponde rende i brani non verificati, mai spariti.",
-      "Una scansione che toglierebbe molti brani te li mostra e chiede prima."
+      "Una scansione che toglierebbe molti brani te li mostra e chiede prima.",
+      "Una cartella di musica può stare anche su OneDrive, Google Drive, Dropbox o un server WebDAV come Nextcloud, in sola lettura, con un'app che registri tu — il programma ti guida passo passo; per OneDrive serve un account Azure gratuito."
     ]
   },
   "cataloghi": {

@@ -128,9 +128,10 @@ pub fn spegni(mano: &tauri::AppHandle) {
     // altri che la sessione finisce, chi segue esce, e il lettore torna alla
     // coda di questo PC — che è quella che `salva_uscendo` deve trovare.
     crate::insieme::ferma(mano);
-    // L'ultima posizione di un cursore mosso un attimo prima di chiudere: il
-    // filo dell'orologio, che di solito la scrive, è appena uscito per via
-    // della bandiera.
+    // L'ascolto in corso, che si chiude qui e conta, e il segno di «riprendi
+    // dov'eri» — anche di un cursore mosso in pausa un attimo prima di
+    // chiudere: il filo dell'orologio, che di solito lo scrive, lo fa solo
+    // mentre suona, ed è appena uscito per via della bandiera.
     crate::riproduzione::salva_uscendo(mano);
     // L'ultimo `PRAGMA optimize`, che SQLite chiede prima di chiudere: una
     // volta sola, e al più un quarto di secondo d'attesa.

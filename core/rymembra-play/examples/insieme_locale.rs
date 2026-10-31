@@ -88,6 +88,44 @@ const PASSO: Duration = Duration::from_millis(50);
 /// vedere B allineato prima del cambio di brano.
 const PRIMA_DELLA_FINE_MS: u64 = 8_000;
 
+/// Il ritmo dei passi dentro un giro del copione: un passo ogni [`PASSO`]
+/// dall'inizio del giro, senza che il lavoro di un passo faccia scivolare i
+/// successivi.
+struct Ritmo {
+    /// Quando è cominciato il giro: il copione conta i secondi da qui.
+    inizio: Instant,
+    /// Quanti passi sono stati fatti in questo giro.
+    passi: u32,
+}
+
+impl Ritmo {
+    const fn nuovo(adesso: Instant) -> Self {
+        Self {
+            inizio: adesso,
+            passi: 0,
+        }
+    }
+
+    /// Un giro nuovo che comincia `adesso`.
+    ///
+    /// L'inizio e il conto dei passi ripartono **insieme**. Prima il conto era
+    /// la variabile del ciclo, e non ripartiva: al secondo giro il passo
+    /// numero settemila veniva sommato all'inizio nuovo, il filo dormiva i 340
+    /// s del giro prima — niente regolatore, niente righe — e al risveglio il
+    /// copione si recitava tutto in fila. Con `--giri 6` si misurava davvero
+    /// solo il primo giro.
+    fn nuovo_giro(&mut self, adesso: Instant) {
+        self.inizio = adesso;
+        self.passi = 0;
+    }
+
+    /// Un passo è stato fatto: quando comincia il prossimo.
+    fn prossimo(&mut self) -> Instant {
+        self.passi = self.passi.saturating_add(1);
+        self.inizio + PASSO * self.passi
+    }
+}
+
 /// Un passo del copione: cosa si fa ad A, e quando.
 #[derive(Debug, Clone, Copy)]
 enum Azione {
@@ -378,9 +416,6 @@ fn lato(
         motore.dispositivo(),
         motore.ponte()
     );
-    // La sessione accesa: il flusso non va mai a riposo, ed è la condizione
-    // di `riprendi_a`.
-    motore.tieni_sveglio(true);
     let coda = file
         .iter()
         .map(|percorso| Voce {
@@ -570,14 +605,14 @@ fn main() {
     };
     a.motore.suona(primo);
     let mut regolatore = Regolatore::nuovo(Taratura::default());
-    let mut inizio = Instant::now();
+    let mut ritmo = Ritmo::nuovo(Instant::now());
     let mut copione = COPIONE.iter().peekable();
     let mut giro = 1u32;
     let mut errori: Vec<i64> = Vec::new();
     let mut ultimo_secondo = u64::MAX;
 
-    for passo in 0u32.. {
-        let secondi = inizio.elapsed().as_secs();
+    loop {
+        let secondi = ritmo.inizio.elapsed().as_secs();
         while let Some(&&(quando, azione)) = copione.peek() {
             if quando > secondi {
                 break;
@@ -589,7 +624,7 @@ fn main() {
                 // mezz'ora, e il copione dura meno di sei minuti.
                 giro += 1;
                 println!("[copione] giro {giro} di {}", argomenti.giri);
-                inizio = Instant::now();
+                ritmo.nuovo_giro(Instant::now());
                 copione = COPIONE.iter().peekable();
                 break;
             }
@@ -674,7 +709,7 @@ fn main() {
 
         // Il passo successivo all'istante giusto, non dopo un sonno fisso: il
         // lavoro del giro non deve far scivolare il ritmo delle righe.
-        let prossimo = inizio + PASSO * passo.saturating_add(1);
+        let prossimo = ritmo.prossimo();
         std::thread::sleep(prossimo.saturating_duration_since(Instant::now()));
     }
 }
@@ -700,4 +735,27 @@ fn riassunto(errori: &[i64], a: &Lato, b: &Lato) {
     );
     println!("[riassunto] A {:?}", a.motore.contatori());
     println!("[riassunto] B {:?}", b.motore.contatori());
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn dopo_un_cambio_di_giro_il_passo_dopo_e_entro_un_passo() {
+        // Alla fine di un giro — 340 s, quasi settemila passi da 50 ms — il
+        // copione riparte da capo. Il conto dei passi deve ripartire con lui:
+        // contato dall'inizio della prova e sommato all'inizio del giro nuovo,
+        // il primo passo del secondo giro dormiva 340 s, e al risveglio il
+        // copione si recitava tutto in un colpo.
+        let inizio = Instant::now();
+        let mut ritmo = Ritmo::nuovo(inizio);
+        for _ in 0..6_800 {
+            let _ = ritmo.prossimo();
+        }
+        let giro = inizio + Duration::from_secs(340);
+        ritmo.nuovo_giro(giro);
+        assert_eq!(ritmo.prossimo(), giro + PASSO);
+        assert_eq!(ritmo.prossimo(), giro + PASSO * 2);
+    }
 }

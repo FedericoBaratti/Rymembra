@@ -37,7 +37,7 @@
  * profilo dove la chiave va riscritta. Il confronto qui è solo un avviso: chi
  * decide è `Profilo::chiave_vale_per` nel nucleo.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 
 import type { FornitoreIa, ModelloIa, ProfiloIa, StatoIa } from "../ipc";
 import { ipc } from "../ipc";
@@ -45,6 +45,7 @@ import { Icona } from "./Icone";
 import { Segmentato } from "./Segmentato";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { t, tSe } from "../lingue";
+import { NIENTE_IN_VOLO, inVoloDopo, profiloSalvato, qualcosaInVolo } from "./profiliIa";
 
 /** L'indirizzo che si propone scegliendo un fornitore. */
 const DI_SERIE: Record<FornitoreIa, string> = {
@@ -151,7 +152,9 @@ export function ModelliIA({
    * casella che manca.
    */
   const [soloGratis, setSoloGratis] = useState(false);
-  const [inVolo, setInVolo] = useState(false);
+  // Che cosa è in volo, gesto per gesto: vedi `InVolo` in `profiliIa.ts`.
+  const [volo, segnaVolo] = useReducer(inVoloDopo, NIENTE_IN_VOLO);
+  const inVolo = qualcosaInVolo(volo);
   /**
    * «Eliminare il profilo?», prima di farlo: con il profilo se ne va la sua
    * chiave dal portachiavi, e una chiave non si ricostruisce. Vedi
@@ -172,11 +175,11 @@ export function ModelliIA({
    */
   const esegui = useCallback(
     (azione: () => Promise<StatoIa>) => {
-      setInVolo(true);
+      segnaVolo({ gesto: "comando", fase: "inizio" });
       azione()
         .then(setStato)
         .catch(onErrore)
-        .finally(() => setInVolo(false));
+        .finally(() => segnaVolo({ gesto: "comando", fase: "fine" }));
     },
     [onErrore],
   );
@@ -198,7 +201,7 @@ export function ModelliIA({
   /** Legge l'elenco dei modelli, che è anche la prova di connessione. */
   const prova = useCallback(
     (id: string) => {
-      setInVolo(true);
+      segnaVolo({ gesto: "prova", fase: "inizio" });
       ipc
         .iaModelli(id)
         .then((trovati: ModelloIa[]) => {
@@ -210,13 +213,13 @@ export function ModelliIA({
           );
         })
         .catch(onErrore)
-        .finally(() => setInVolo(false));
+        .finally(() => segnaVolo({ gesto: "prova", fase: "fine" }));
     },
     [onErrore, onNotizia],
   );
 
   const salva = useCallback(() => {
-    setInVolo(true);
+    segnaVolo({ gesto: "salva", fase: "inizio" });
     ipc
       .iaSalvaProfilo(
         {
@@ -247,7 +250,9 @@ export function ModelliIA({
           onNotizia(t("ia.key.forgotten", { nome: dimenticato.nome }));
           return;
         }
-        const salvato = s.profili.find((p) => p.nome === bozza.nome);
+        // Quello attivo, che il nucleo ha appena scelto: per nome non si
+        // trovava, o si trovava un omonimo. Vedi `profiloSalvato`.
+        const salvato = profiloSalvato(s);
         setBozza(vuota(bozza.fornitore));
         setModelli([]);
         onNotizia(t("ia.saved"));
@@ -260,7 +265,7 @@ export function ModelliIA({
         if (salvato !== undefined) prova(salvato.id);
       })
       .catch(onErrore)
-      .finally(() => setInVolo(false));
+      .finally(() => segnaVolo({ gesto: "salva", fase: "fine" }));
   }, [bozza, chiave, onErrore, onNotizia, prova]);
 
   const profili = stato?.profili ?? [];
@@ -460,7 +465,7 @@ export function ModelliIA({
           onClick={salva}
         >
           <Icona nome="i-ia" dim={15} />
-          {inVolo ? t("ia.saving") : t("ia.save")}
+          {volo.salva ? t("ia.saving") : t("ia.save")}
         </button>
         {bozza.id !== null && (
           <>
@@ -470,7 +475,7 @@ export function ModelliIA({
               disabled={inVolo}
               onClick={() => prova(bozza.id ?? "")}
             >
-              {inVolo ? t("ia.testing") : t("ia.test")}
+              {volo.prova ? t("ia.testing") : t("ia.test")}
             </button>
             <button
               type="button"

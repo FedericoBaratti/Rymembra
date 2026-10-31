@@ -57,15 +57,27 @@
 //! scorre a scatti mentre la pagina successiva arriva. La regola che ne esce è
 //! semplice: un comando che legge più di una riga per chiave non è sincrono.
 //!
+//! # E i comandi che aspettano un brano, un'uscita o la sessione
+//!
+//! Dalla 3.2 passano di qui anche i comandi del lettore che fanno partire un
+//! brano o aprono un'uscita — `suona`, `riprendi`, `prossimo`, i gesti della
+//! coda, «Riprova», la scelta e la riapertura dell'uscita, il primo stato —
+//! attraverso `riproduzione::col_lettore_in_disparte`: un file su una share che
+//! si sveglia vale quindici secondi, un dispositivo venti, e quattro clic su
+//! brani diversi bastavano a fermare tutti i worker. Lo stesso per i comandi
+//! di «Ascolta insieme», che aspettano il filo della sessione fino a venti
+//! secondi, e per «Tieni» dell'esplorazione, «Mostra nella cartella» e
+//! l'importazione dal vecchio database. Il lavoro sta in un nucleo sincrono,
+//! che chiamano anche i tasti multimediali e la sessione; la prova
+//! `riproduzione::prove::nessun_comando_che_apre_un_brano_gira_su_un_worker`
+//! cerca le attese lunghe nei comandi sincroni rimasti.
+//!
 //! Gli altri `#[tauri::command(async)]` restano dove sono: spostarli tutti
 //! insieme sarebbe un gesto che nessuna prova copre, e la maggior parte fa una
-//! query di microsecondi. Fra quelli che toccano ancora il disco o la rete
-//! restano `arricchimento::arricchimento_annulla`,
-//! `arricchimento::arricchimento_riporta_nei_file`, `testi::testo_candidati`,
-//! `playlist::playlist_file_piano` e `playlist::playlist_esporta`.
-//! `arricchimento_riporta_nei_file` non tiene più il lucchetto della libreria
-//! mentre riscrive i file — lo lascia fra una fase e l'altra — ma il suo corpo
-//! gira ancora su un worker del runtime.
+//! query di microsecondi. Un elenco di quelli che toccano ancora il disco o la
+//! rete qui invecchierebbe come quello dei comandi spostati — ed era già
+//! falso: la fonte è `grep 'tauri::command(async)'` con il corpo sotto gli
+//! occhi.
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 

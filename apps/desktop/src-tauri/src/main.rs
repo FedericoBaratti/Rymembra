@@ -30,6 +30,8 @@ mod manutenzione;
 mod media;
 mod metadati;
 mod nuvola;
+mod nuvola_app;
+mod nuvola_musica;
 mod playlist;
 mod procura;
 mod profilo;
@@ -209,8 +211,11 @@ fn rete_di_sicurezza(app: &tauri::AppHandle) {
 fn main() {
     // Per prima cosa, prima ancora di costruire la finestra: da qui in poi un
     // panico lascia scritto cos'era invece di far sparire il processo in
-    // silenzio. Finché `setup` non apre il diario le righe vanno su `stderr` —
-    // cioè da nessuna parte, in rilascio — ma il gancio installato tardi non
+    // silenzio. Finché `setup` non apre il diario le righe del gancio vanno nel
+    // file di riserva (`diario::RISERVA`, in `%LOCALAPPDATA%`): è il caso della
+    // WebView2 che non si crea, che in Tauri 2 succede **prima** del nostro
+    // `setup` e diventa un panico «Failed to setup app»; per quel panico il
+    // gancio mostra anche un dialogo. Il gancio installato tardi non
     // coprirebbe proprio i panici dell'avvio, che sono quelli che nessuno
     // riesce a raccontare.
     diario::installa_gancio_dei_panici();
@@ -319,6 +324,13 @@ fn main() {
             // quando la finestra mostra solo l'errore.
             stato::riga_di_avvio(&stato);
             app.manage(stato);
+            // Le cartelle dal cloud **subito dopo** la libreria: lo specchio si
+            // carica da lì, e prima di ogni scansione — anche quella del lettore
+            // che riapre la coda di ieri — chi apre un file deve già trovare il
+            // cloud. I fili dei conti partono qui, e la loro prima domanda alla
+            // rete non aspetta niente: è quel che rende una cartella appena
+            // cambiata su OneDrive visibile all'avvio.
+            nuvola_musica::avvia(app.handle());
 
             // Il lettore **dopo** la libreria: apre il dispositivo audio e
             // rilegge la coda di ieri, e per la seconda cosa il database deve
@@ -720,11 +732,26 @@ fn main() {
             nuvola::nuvola_collega,
             nuvola::nuvola_annulla,
             nuvola::nuvola_scollega,
-            nuvola::nuvola_credenziali,
+            nuvola::nuvola_backup_app,
             nuvola::nuvola_attiva,
             nuvola::nuvola_salva,
             nuvola::nuvola_piano_ripristino,
             nuvola::nuvola_ripristina,
+            nuvola_musica::nuvola_servizi,
+            nuvola_musica::nuvola_conti,
+            nuvola_musica::nuvola_conto_collega,
+            nuvola_musica::nuvola_conto_annulla,
+            nuvola_musica::nuvola_conto_scollega,
+            nuvola_musica::nuvola_cartelle,
+            nuvola_musica::nuvola_aggiungi,
+            nuvola_musica::nuvola_aggiorna,
+            nuvola_musica::nuvola_cache_stato,
+            nuvola_musica::nuvola_cache_imposta,
+            nuvola_musica::nuvola_cache_svuota,
+            nuvola_musica::brano_apri_sul_web,
+            nuvola_app::nuvola_app,
+            nuvola_app::nuvola_app_salva,
+            nuvola_app::nuvola_app_togli,
             sincronia::sincronia_stato,
             sincronia::sincronia_attiva,
             sincronia::sincronia_adesso,
@@ -751,7 +778,6 @@ fn main() {
             arricchimento::arricchimento_stato,
             arricchimento::arricchimento_attiva,
             arricchimento::arricchimento_annulla,
-            arricchimento::arricchimento_riporta_nei_file,
             scrobble::scrobble_stato,
             scrobble::scrobble_attivo,
             scrobble::scrobble_listenbrainz_collega,
@@ -789,10 +815,14 @@ fn main() {
     // tre che dicono «si chiude». È l'unico punto del programma in cui la
     // chiusura è un fatto osservabile invece che una cosa che succede.
     //
-    // Il `Result` si tratta come prima, e per lo stesso motivo: un messaggio di
-    // panico è un messaggio per chi ha scritto il codice, e chi apre
-    // l'applicazione merita di leggere cos'è andato storto invece di una
-    // traccia di stack.
+    // Il `Result` di `build` copre solo i guasti di prima del `setup` — che in
+    // Tauri 2 gira dentro `App::run`, all'evento `Ready`, dopo aver creato le
+    // finestre. Un `setup` che fallisce, compresa la WebView2 che non si crea,
+    // non arriva qui: diventa un panico «Failed to setup app», e lo scrive il
+    // gancio. In tutti e due i casi chi ha aperto Rymembra vede un dialogo
+    // (`diario::mostra_l_avvio_fallito`), e la riga resta su disco. Il dialogo
+    // è quello nativo di `rfd`, non quello di `tauri-plugin-dialog`: il ciclo
+    // degli eventi, che quello vuole, a quel punto non c'è o sta cadendo.
     match costruita {
         Ok(app) => app.run(|mano, evento| {
             // `CloseRequested` è la presa più precoce che Tauri offra: arriva
@@ -835,12 +865,19 @@ fn main() {
             spegnimento::spegni(mano);
         }),
         Err(err) => {
-            // Nel diario e non solo su `stderr`: questo è il ramo in cui la
-            // finestra non è mai comparsa, cioè l'unico caso in cui chi guarda
-            // non ha nient'altro da leggere. Se `setup` era arrivato ad aprire
-            // il diario, la riga resta sul disco; se non ci era arrivato, resta
-            // almeno in sviluppo.
-            nota!("[avvio] Rymembra non è riuscito ad avviarsi: {err}");
+            // Su disco e non solo su `stderr`: questo è un ramo in cui la
+            // finestra non è mai comparsa, e chi guarda non ha nient'altro da
+            // leggere. Il `setup` qui non è mai partito, quindi il diario è
+            // chiuso: la riga va nel file di riserva (`diario::RISERVA`). Poi
+            // il dialogo, che dice dove sta la riga e aspetta che lo si
+            // chiuda prima dell'uscita.
+            let scritta = diario::nota_di_emergenza(format_args!(
+                "[avvio] Rymembra non è riuscito ad avviarsi: {err}"
+            ));
+            diario::mostra_l_avvio_fallito(&diario::testo_dell_avvio_fallito(
+                &err.to_string(),
+                scritta.as_deref(),
+            ));
             std::process::exit(1);
         }
     }

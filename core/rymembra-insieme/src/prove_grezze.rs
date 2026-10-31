@@ -112,6 +112,7 @@ impl Grezzo {
             &identita,
             iniziatore,
             None,
+            || (),
             Instant::now() + ATTESA,
         )
         .expect("stretta");
@@ -281,6 +282,16 @@ fn si_misura_quanto_comprime_uno_stato() {
                 / f64::from(u32::try_from(json.len()).unwrap_or(1)),
         );
     }
+}
+
+#[test]
+fn uno_stato_di_mille_voci_sta_fra_mezzo_mega_e_il_tetto() {
+    // Passa già oggi: fissa l'ordine di grandezza che dicono i commenti
+    // (`MASSIMO_MESSAGGIO`, `Messaggio::Stato`). Fino alla revisione del 30
+    // ottobre dicevano «un centinaio di kilobyte» di JSON, con «un margine
+    // largo» sotto il mebibyte.
+    let json = json_app(&stato_di_prova(1000, 1)).len();
+    assert!(json > 500_000 && json < MASSIMO_MESSAGGIO, "{json} byte");
 }
 
 pub(super) fn chiudo(codice: &str) -> Option<Trasporto> {
@@ -583,6 +594,82 @@ fn l_annullo_durante_la_stretta_torna_subito() {
     let err = esito.expect_err("annullata");
     assert_eq!(err.code().kind().code(), "internal.aborted");
     assert!(ritardo < Duration::from_millis(200), "{ritardo:?}");
+}
+
+#[test]
+fn dopo_tre_annulli_il_vivaio_ha_ancora_posto() {
+    // Ogni lettura annullata butta la sua connessione, e deve rendere il suo
+    // posto nel `Vivaio`: `prendi` aspetta un posto senza scadenza, e una
+    // copertina si legge senza annullo. Un posto perso a ogni annullo la
+    // lascerebbe ferma lì finché la rete non si ferma. Lo stesso lettore per
+    // tutte: un `Vivaio` è di una coppia sola.
+    let ascolto = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("ascolto");
+    let indirizzo = ascolto.local_addr().expect("indirizzo");
+    let identita = Identita::nuova().expect("chiave");
+    let chiave = identita.pubblica();
+    let testo = identita.in_testo();
+    drop(identita);
+    let (arrivata, prendi_arrivata) = channel();
+    let host = std::thread::spawn(move || {
+        // Una connessione per lettura: le tre annullate si buttano.
+        for _ in 0..4 {
+            let Ok((presa, _)) = ascolto.accept() else {
+                return;
+            };
+            let stessa = Identita::da_testo(&testo).expect("la stessa chiave");
+            let arrivata = arrivata.clone();
+            std::thread::spawn(move || {
+                let (mut grezzo, _) =
+                    Grezzo::stringi_con(stessa, presa, false, VERSIONE, Uso::Controllo);
+                match grezzo.leggi(ATTESA) {
+                    // Ai byte non si risponde: si aspetta che il membro butti
+                    // la connessione.
+                    Some(Trasporto::Leggi { .. }) => {
+                        let _ = arrivata.send(());
+                        let _ = grezzo.leggi(ATTESA);
+                    }
+                    Some(Trasporto::Copertina { lettura, .. }) => {
+                        grezzo.manda(&Trasporto::LetturaRifiutata {
+                            lettura,
+                            codice: "insieme.gettoneScaduto".to_owned(),
+                        });
+                        let _ = grezzo.leggi(Duration::from_millis(300));
+                    }
+                    altro => panic!("inatteso: {altro:?}"),
+                }
+            });
+        }
+    });
+    let (membro, _eventi) = vera(Tempi::default());
+    let lettore = membro.lettore(indirizzo, chiave);
+    for volta in 0..3 {
+        let annullo = Arc::new(AtomicBool::new(false));
+        let per_il_filo = Arc::clone(&annullo);
+        let suo = lettore.clone();
+        let (fatto, aspetta_fatto) = channel();
+        std::thread::spawn(move || {
+            let _ = fatto.send(suo.pezzo(&Gettone([1; 16]), 0, 100, Some(&per_il_filo)));
+        });
+        prendi_arrivata
+            .recv_timeout(ATTESA)
+            .unwrap_or_else(|_| panic!("lettura {volta}: il vivaio non ha più posto"));
+        annullo.store(true, Ordering::SeqCst);
+        let err = aspetta_fatto
+            .recv_timeout(ATTESA)
+            .expect("torna")
+            .expect_err("annullata");
+        assert_eq!(err.code().kind().code(), "internal.aborted");
+    }
+    let (fatto, aspetta_fatto) = channel();
+    std::thread::spawn(move || {
+        let _ = fatto.send(lettore.copertina(&Gettone([2; 16])));
+    });
+    let err = aspetta_fatto
+        .recv_timeout(ATTESA)
+        .expect("la quarta lettura non resta ferma in `prendi`")
+        .expect_err("rifiutata");
+    assert_eq!(err.code().kind().code(), "insieme.gettoneScaduto");
+    host.join().expect("host");
 }
 
 #[test]

@@ -52,6 +52,19 @@
 //! beneficio è che non si sente mai. Fra le due, è la riproduzione che è il
 //! programma.
 //!
+//! # L'eccezione: i brani del cloud, «mentre suonano»
+//!
+//! Un brano di OneDrive (o di un altro servizio) non si scarica apposta per
+//! misurarlo: si misura la copia che l'ascolto ha già lasciato completa nella
+//! cache ([`misura_dal_cloud`]). E si misura **subito**, anche se la musica
+//! suona, con un filo solo e un brano alla volta. Non contraddice la regola
+//! qui sotto, che esiste per non contendere la testina — o la share — al brano
+//! in corso: la copia sta sul disco locale dei dati, e il brano in corso, se è
+//! del cloud, arriva dalla rete. Aspettare la pausa vorrebbe dire, in un
+//! ascolto continuo, non arrivarci mai: la cache ha un tetto, e una copia
+//! trattenuta per la misura se ne va lo stesso quando la cache supera il
+//! doppio del tetto.
+//!
 //! Il segnale arriva da [`segna_riproduzione`], che l'orologio di
 //! `riproduzione::fili` chiama quattro volte al secondo. Un `AtomicBool` e non
 //! un lucchetto sul lettore, per la ragione scritta qui sopra: chiedere al
@@ -114,9 +127,10 @@ const FILI: usize = 3;
 /// Venticinque secondi. La stessa forma della scadenza sull'apertura di un
 /// brano, e per la stessa ragione: una share morta non risponde con un errore,
 /// resta appesa. Chi scade diventa [`Misurato::NonRaggiungibile`], che ferma il
-/// lotto invece di scrivere un fallimento per riga — perché il guasto è della
-/// radice, non del file, e segnarlo su mille righe vorrebbe dire ritentarle
-/// tutte fra un mese invece che stasera.
+/// lotto — gli altri fili non prendono un brano nuovo, vedi
+/// [`misura_lotto_con`] — invece di scrivere un fallimento per riga: il guasto
+/// è della radice, non del file, e segnarlo su mille righe vorrebbe dire
+/// ritentarle tutte fra un mese invece che stasera.
 const SCADENZA_BRANO: Duration = Duration::from_secs(25);
 
 /// Il nome del filo della scadenza, per il debugger.
@@ -369,7 +383,9 @@ fn impronte(app: &AppHandle) -> Fine {
         let misurati = misura_lotto(&schede);
         // Una radice che non risponde si abbandona invece di interrogarla file
         // per file: è la lezione che la 2.1.0 ha scritto per la scansione, e
-        // qui vale identica. Quel che si è già misurato si scrive lo stesso.
+        // qui vale identica. Dentro il lotto la ferma `misura_lotto_con` al
+        // primo brano che non arriva; qui si ferma la passata. Quel che si è
+        // già misurato si scrive lo stesso.
         let fermarsi = misurati
             .iter()
             .any(|m| matches!(m, Misurato::NonRaggiungibile));
@@ -475,6 +491,171 @@ fn scrivi(app: &AppHandle, misurati: &[Misurato]) -> Result<usize, AppError> {
     })
 }
 
+// ── i brani del cloud ───────────────────────────────────────────────────────
+
+/// Una copia completa da misurare: la sua chiave nella cache.
+type DaMisurare = rymembra_cloud::musica::Chiave;
+
+/// Il canale del filo che misura le copie del cloud, avviato alla prima
+/// richiesta.
+static MISURE_DAL_CLOUD: std::sync::OnceLock<Sender<(AppHandle, DaMisurare)>> =
+    std::sync::OnceLock::new();
+
+/// Misura i brani di una copia appena completata nella cache.
+///
+/// Torna subito: la richiesta va al filo `rymembra-analisi-cloud`, che misura
+/// un brano alla volta. Vedi «L'eccezione» nel commento in testa.
+pub fn misura_dal_cloud(app: &AppHandle, chiave: DaMisurare) {
+    let posta = MISURE_DAL_CLOUD.get_or_init(|| {
+        let (posta, orecchio) = channel::<(AppHandle, DaMisurare)>();
+        let partito = std::thread::Builder::new()
+            .name("rymembra-analisi-cloud".to_owned())
+            .spawn(move || {
+                let mut operaio = Operaio::nuovo(SCADENZA_NOME);
+                while let Ok((app, chiave)) = orecchio.recv() {
+                    if crate::spegnimento::in_uscita() {
+                        return;
+                    }
+                    misura_la_copia(&app, &mut operaio, &chiave);
+                }
+            });
+        if let Err(guasto) = partito {
+            nota!("[analisi] il filo dei brani del cloud non parte: {guasto}");
+        }
+        posta
+    });
+    let _ = posta.send((app.clone(), chiave));
+}
+
+/// Le copie del cloud che l'ultima sessione ha lasciato da misurare
+/// (`Cache::da_misurare`): la chiusura è arrivata con la richiesta ancora in
+/// coda, o a metà misura, e l'avviso di completamento per loro non ripartirà.
+/// Senza questa strada la cache le tratterrebbe per sempre.
+///
+/// Vanno al filo di [`misura_dal_cloud`] dopo [`ATTESA_AVVIO`], come il resto
+/// dell'analisi: all'avvio la scansione sta ancora leggendo e la coda si sta
+/// riaprendo, e queste copie non hanno fretta — sono già sul disco dei dati, e
+/// la cache le tiene finché non sono misurate. Un filo solo, e solo se c'è
+/// qualcosa da riproporre.
+pub fn riproponi_dal_cloud(app: &AppHandle, chiavi: Vec<DaMisurare>) {
+    if chiavi.is_empty() {
+        return;
+    }
+    let mano = app.clone();
+    let partito = std::thread::Builder::new()
+        .name("rymembra-analisi-cloud-rimaste".to_owned())
+        .spawn(move || {
+            std::thread::sleep(ATTESA_AVVIO);
+            if crate::spegnimento::in_uscita() {
+                return;
+            }
+            for chiave in chiavi {
+                misura_dal_cloud(&mano, chiave);
+            }
+        });
+    if let Err(guasto) = partito {
+        nota!("[analisi] il filo delle copie del cloud rimaste non parte: {guasto}");
+    }
+}
+
+/// I brani di una copia — il file, o i brani d'immagine CD che lo usano —
+/// misurati per impronta e volume, poi la copia lasciata andare.
+fn misura_la_copia(app: &AppHandle, operaio: &mut Operaio, chiave: &DaMisurare) {
+    // Senza libreria l'applicazione si sta chiudendo: la copia resta da
+    // misurare, e la misura si rifà alla prossima sessione.
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    let percorso = crate::nuvola_musica::percorso_della_copia(app, chiave);
+    let cloud_registrato = app
+        .try_state::<crate::nuvola_musica::StatoMusicaNuvola>()
+        .is_some();
+    if copia_senza_brani(cloud_registrato, percorso.as_deref()) {
+        // Nessun brano da misurare: la copia non ha più niente da aspettare.
+        crate::nuvola_musica::copia_misurata(app, chiave);
+        return;
+    }
+    let Some(percorso) = percorso else {
+        return;
+    };
+    let brani: Vec<i64> = con_libreria(&stato, |libreria| {
+        let mut domanda = libreria
+            .connection
+            .prepare_cached("SELECT id FROM tracks WHERE path = ?1 OR immagine = ?1")
+            .map_err(|err| db_errore("brani di una copia del cloud", &err))?;
+        let righe = domanda
+            .query_map([&percorso], |riga| riga.get::<_, i64>(0))
+            .map_err(|err| db_errore("brani di una copia del cloud", &err))?;
+        righe
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_errore("brani di una copia del cloud", &err))
+    })
+    .unwrap_or_default();
+    let files = crate::nuvola_musica::archivi_per_l_analisi(app);
+    let mut misurati = 0_usize;
+    for brano in brani {
+        let schede = con_libreria(&stato, |libreria| {
+            Ok((
+                sonora::scheda_per_id(&libreria.connection, brano)?,
+                volume::scheda_per_id(&libreria.connection, brano)?,
+            ))
+        });
+        let Ok((impronta, intensita)) = schede else {
+            continue;
+        };
+        if let Some(scheda) = impronta {
+            let files = std::sync::Arc::clone(&files);
+            let misurato = operaio
+                .esegui(SCADENZA_BRANO, move || sonora::misura(&*files, &scheda))
+                .unwrap_or(Misurato::NonRaggiungibile);
+            if !matches!(misurato, Misurato::NonRaggiungibile) && scrivi(app, &[misurato]).is_ok() {
+                misurati = misurati.saturating_add(1);
+            }
+        }
+        if let Some(scheda) = intensita {
+            let files = std::sync::Arc::clone(&files);
+            let scadenza = scadenza_volume(&scheda);
+            let misurato = operaio
+                .esegui(scadenza, move || volume::misura(&*files, &scheda))
+                .unwrap_or(volume::Misurato::NonRaggiungibile);
+            if !matches!(misurato, volume::Misurato::NonRaggiungibile) {
+                let scritto = con_libreria(&stato, |libreria| {
+                    let tx = libreria
+                        .connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|err| db_errore("apertura della transazione del volume", &err))?;
+                    let quanti = volume::registra(&tx, &[misurato], adesso_ms())?;
+                    tx.commit()
+                        .map_err(|err| db_errore("chiusura della transazione del volume", &err))?;
+                    Ok(quanti)
+                });
+                if scritto.is_ok() {
+                    misurati = misurati.saturating_add(1);
+                }
+            }
+        }
+    }
+    if misurati > 0 {
+        nota!("[analisi] copia del cloud misurata: {misurati} misure");
+    }
+    // Misurata o no (un brano già misurato, un file muto), la copia non ha
+    // più niente da aspettare: torna una copia qualunque della cache.
+    crate::nuvola_musica::copia_misurata(app, chiave);
+}
+
+/// La copia non ha brani da misurare, e va lasciata andare senza misura?
+///
+/// Sì quando lo stato del cloud c'è e la voce della copia non è più nello
+/// specchio (`percorso` assente): è stata scollegata o cancellata sul servizio,
+/// e trattenerla «da misurare» la terrebbe nella cache per sempre — la cache
+/// la tiene fino al doppio del tetto, e intanto butta per prime le copie utili.
+/// No quando manca lo stato del cloud — l'applicazione si chiude, o non l'ha
+/// ancora registrato — perché allora il percorso manca per tutte, e la misura
+/// va rifatta, non persa.
+fn copia_senza_brani(cloud_registrato: bool, percorso: Option<&str>) -> bool {
+    cloud_registrato && percorso.is_none()
+}
+
 /// Rifà la scala su tutta la libreria.
 ///
 /// Senza stato la scala resta quella di prima, che è vecchia di un lotto e non
@@ -502,23 +683,49 @@ fn ritara(app: &AppHandle) -> Result<Option<usize>, AppError> {
 /// costerebbe un lucchetto in più — e questo è il modulo che sui lucchetti ha
 /// appena scritto tre paragrafi.
 fn misura_lotto(schede: &[SchedaSorgente]) -> Vec<Misurato> {
-    misura_lotto_con(schede, SCADENZA_BRANO, |scheda| {
+    misura_lotto_con(schede, SCADENZA_BRANO, si_puo_continuare, |scheda| {
         sonora::misura(&rymembra_app::files::LocalFiles, &scheda)
     })
 }
 
-/// [`misura_lotto`] con la misura e la scadenza date: la cucitura che le prove
-/// usano per far cadere un brano a comando.
+/// La musica non è ripartita e l'applicazione non sta uscendo: un lotto può
+/// passare al brano dopo.
+///
+/// Una funzione e non le due letture dentro i fili del lotto perché le prove
+/// passano la loro: [`SUONA`] è di tutto il processo, e la prova del battito la
+/// alza mentre le altre girano.
+fn si_puo_continuare() -> bool {
+    !SUONA.load(Ordering::Relaxed) && !crate::spegnimento::in_uscita()
+}
+
+/// [`misura_lotto`] con la misura, la scadenza e la domanda «si continua?»
+/// date: la cucitura che le prove usano per far cadere un brano a comando.
+///
+/// # Una radice che non risponde ferma il lotto
+///
+/// Al primo [`Misurato::NonRaggiungibile`], di qualunque filo, gli altri non
+/// prendono più un brano nuovo: quel che hanno in volo finisce, il resto del
+/// lotto non si tocca e resta candidato, come i lotti che vengono dopo. È la
+/// regola che la scansione ha imparato nella 2.1.0 (`SCADENZE_DI_FILA` in
+/// `rymembra_app::library`): senza, una share viva ma esausta — o appesa al
+/// risveglio — si faceva interrogare un brano dopo l'altro, venticinque secondi
+/// ciascuno, e ogni scadenza lasciava indietro un filo fermo dentro una `open`.
+/// Il prezzo è piccolo: in un lotto misto, i brani locali dopo il primo «non
+/// raggiungibile» slittano alla passata dopo, che la radice morta ferma
+/// comunque.
 fn misura_lotto_con(
     schede: &[SchedaSorgente],
     scadenza: Duration,
+    continua: fn() -> bool,
     misura: fn(SchedaSorgente) -> Misurato,
 ) -> Vec<Misurato> {
     if schede.is_empty() {
         return Vec::new();
     }
     let per_filo = schede.len().div_ceil(FILI).max(1);
+    let radice_morta = AtomicBool::new(false);
     std::thread::scope(|ambito| {
+        let radice_morta = &radice_morta;
         let mani: Vec<_> = schede
             .chunks(per_filo)
             .map(|pezzo| {
@@ -528,7 +735,14 @@ fn misura_lotto_con(
                     let mut operaio = Operaio::nuovo(SCADENZA_NOME);
                     pezzo
                         .iter()
-                        .map(|scheda| misura_uno(&mut operaio, scheda, scadenza, misura))
+                        .take_while(|_| !radice_morta.load(Ordering::Relaxed) && continua())
+                        .map(|scheda| {
+                            let misurato = misura_uno(&mut operaio, scheda, scadenza, misura);
+                            if matches!(misurato, Misurato::NonRaggiungibile) {
+                                radice_morta.store(true, Ordering::Relaxed);
+                            }
+                            misurato
+                        })
                         .collect::<Vec<_>>()
                 })
             })
@@ -680,13 +894,30 @@ fn intensita(app: &AppHandle) -> Fine {
 /// pochi decimi di secondo, e l'operaio distingue un brano che fa cadere il
 /// decodificatore da uno che non torna — le due cose che qui vanno trattate
 /// all'opposto. Prima di ogni brano si guarda se la musica è ripartita: i
-/// brani rimasti non si misurano, non si scrivono, e restano candidati.
+/// brani rimasti non si misurano, non si scrivono, e restano candidati. E si
+/// guarda se un altro filo ha trovato la radice morta: vedi «Una radice che non
+/// risponde ferma il lotto» su [`misura_lotto_con`], che qui vale identica.
 fn misura_intensita(schede: &[SchedaSorgente]) -> Vec<volume::Misurato> {
+    misura_intensita_con(schede, scadenza_volume, si_puo_continuare, |scheda| {
+        volume::misura(&rymembra_app::files::LocalFiles, &scheda)
+    })
+}
+
+/// [`misura_intensita`] con la scadenza, la domanda «si continua?» e la misura
+/// date: la cucitura delle prove, come [`misura_lotto_con`].
+fn misura_intensita_con(
+    schede: &[SchedaSorgente],
+    scadenza: fn(&SchedaSorgente) -> Duration,
+    continua: fn() -> bool,
+    misura: fn(SchedaSorgente) -> volume::Misurato,
+) -> Vec<volume::Misurato> {
     if schede.is_empty() {
         return Vec::new();
     }
     let per_filo = schede.len().div_ceil(FILI_INTENSITA).max(1);
+    let radice_morta = AtomicBool::new(false);
     std::thread::scope(|ambito| {
+        let radice_morta = &radice_morta;
         let mani: Vec<_> = schede
             .chunks(per_filo)
             .map(|pezzo| {
@@ -694,10 +925,15 @@ fn misura_intensita(schede: &[SchedaSorgente]) -> Vec<volume::Misurato> {
                     let mut operaio = Operaio::nuovo(INTENSITA_NOME);
                     pezzo
                         .iter()
-                        .take_while(|_| {
-                            !SUONA.load(Ordering::Relaxed) && !crate::spegnimento::in_uscita()
+                        .take_while(|_| !radice_morta.load(Ordering::Relaxed) && continua())
+                        .map(|scheda| {
+                            let misurato =
+                                misura_volume(&mut operaio, scheda, scadenza(scheda), misura);
+                            if matches!(misurato, volume::Misurato::NonRaggiungibile) {
+                                radice_morta.store(true, Ordering::Relaxed);
+                            }
+                            misurato
                         })
-                        .map(|scheda| misura_volume(&mut operaio, scheda))
                         .collect::<Vec<_>>()
                 })
             })
@@ -710,11 +946,14 @@ fn misura_intensita(schede: &[SchedaSorgente]) -> Vec<volume::Misurato> {
 }
 
 /// Un brano, con una scadenza che cresce con la sua durata.
-fn misura_volume(operaio: &mut Operaio, scheda: &SchedaSorgente) -> volume::Misurato {
+fn misura_volume(
+    operaio: &mut Operaio,
+    scheda: &SchedaSorgente,
+    scadenza: Duration,
+    misura: fn(SchedaSorgente) -> volume::Misurato,
+) -> volume::Misurato {
     let copia = scheda.clone();
-    match operaio.esegui(scadenza_volume(scheda), move || {
-        volume::misura(&rymembra_app::files::LocalFiles, &copia)
-    }) {
+    match operaio.esegui(scadenza, move || misura(copia)) {
         Ok(misurato) => misurato,
         // Il file è arrivato ed è il contenuto a essere storto: si segna, e
         // si ritenta fra un mese come ogni illeggibile.
@@ -798,13 +1037,18 @@ mod prove {
         // Quattro schede su tre fili sono due pezzi da due: [1, 2] e [3, 4].
         // Il primo del primo pezzo cade, e il secondo deve passare lo stesso.
         let schede: Vec<SchedaSorgente> = (1..=4).map(scheda).collect();
-        let misurati = misura_lotto_con(&schede, Duration::from_secs(10), |scheda| {
-            assert_ne!(scheda.track_id, 1, "il decodificatore cade su questo file");
-            Misurato::Fatta {
-                track_id: scheda.track_id,
-                vettore: vec![1.0],
-            }
-        });
+        let misurati = misura_lotto_con(
+            &schede,
+            Duration::from_secs(10),
+            || true,
+            |scheda| {
+                assert_ne!(scheda.track_id, 1, "il decodificatore cade su questo file");
+                Misurato::Fatta {
+                    track_id: scheda.track_id,
+                    vettore: vec![1.0],
+                }
+            },
+        );
 
         assert!(
             !misurati
@@ -828,6 +1072,109 @@ mod prove {
             .collect();
         assert_eq!(fatti.len(), 3, "gli altri tre si misurano: {misurati:?}");
         assert!(fatti.contains(&2), "anche quello dopo, sullo stesso filo");
+    }
+
+    /// Una radice che non risponde ferma il lotto al primo brano che scade,
+    /// invece di interrogarla file per file: è la regola che la scansione ha
+    /// imparato nella 2.1.0 (`SCADENZE_DI_FILA`), e su una share appesa valeva
+    /// ventidue brani da venticinque secondi per filo.
+    ///
+    /// Nove schede su tre fili, una misura che non torna mai entro la
+    /// scadenza: ogni filo può avere in volo al più il suo primo brano quando
+    /// il primo «non raggiungibile» arriva, quindi non più di [`FILI`].
+    #[test]
+    fn una_radice_che_non_risponde_ferma_il_lotto() {
+        let schede: Vec<SchedaSorgente> = (1..=9).map(scheda).collect();
+        let misurati = misura_lotto_con(
+            &schede,
+            Duration::from_millis(50),
+            || true,
+            |scheda| {
+                std::thread::sleep(Duration::from_millis(300));
+                Misurato::Fatta {
+                    track_id: scheda.track_id,
+                    vettore: vec![1.0],
+                }
+            },
+        );
+        let morti = misurati
+            .iter()
+            .filter(|m| matches!(m, Misurato::NonRaggiungibile))
+            .count();
+        assert!(
+            (1..=FILI).contains(&morti),
+            "la radice morta va interrogata al più una volta per filo: {morti} su {}",
+            schede.len()
+        );
+        assert_eq!(
+            misurati.len(),
+            morti,
+            "dopo il primo «non raggiungibile» non si misura più niente: {misurati:?}"
+        );
+    }
+
+    /// Lo stesso per il volume: un brano che scade ferma il lotto, invece di
+    /// lasciare ogni filo a interrogare la share brano dopo brano, ciascuno con
+    /// la sua scadenza più un ventesimo della durata.
+    #[test]
+    fn una_radice_che_non_risponde_ferma_il_lotto_del_volume() {
+        let schede: Vec<SchedaSorgente> = (1..=8).map(scheda).collect();
+        let misurati = misura_intensita_con(
+            &schede,
+            |_| Duration::from_millis(50),
+            || true,
+            |scheda| {
+                std::thread::sleep(Duration::from_millis(300));
+                volume::Misurato::Negata {
+                    track_id: scheda.track_id,
+                    esito: volume::MUTO,
+                }
+            },
+        );
+        let morti = misurati
+            .iter()
+            .filter(|m| matches!(m, volume::Misurato::NonRaggiungibile))
+            .count();
+        assert!(
+            (1..=FILI_INTENSITA).contains(&morti),
+            "la radice morta va interrogata al più una volta per filo: {morti} su {}",
+            schede.len()
+        );
+        assert_eq!(
+            misurati.len(),
+            morti,
+            "dopo il primo «non raggiungibile» non si misura più niente"
+        );
+    }
+
+    /// La musica che riparte ferma il lotto delle impronte fra un brano e
+    /// l'altro, come già quello del volume: i brani rimasti restano candidati.
+    /// Una copia della cache la cui voce non è più nello specchio — scollegata,
+    /// cancellata sul servizio — non ha brani da misurare, e si lascia andare:
+    /// trattenuta, restava «da misurare» per sempre. Non quando manca lo stato
+    /// del cloud — l'applicazione si chiude, o non l'ha ancora registrato —
+    /// perché lì la misura va rifatta, non persa.
+    #[test]
+    fn una_copia_senza_voce_si_lascia_andare_solo_a_cloud_registrato() {
+        assert!(copia_senza_brani(true, None));
+        assert!(!copia_senza_brani(false, None));
+        assert!(!copia_senza_brani(true, Some("cloud://conto/id")));
+        assert!(!copia_senza_brani(false, Some("cloud://conto/id")));
+    }
+
+    #[test]
+    fn la_musica_che_riparte_ferma_il_lotto() {
+        let schede: Vec<SchedaSorgente> = (1..=6).map(scheda).collect();
+        let misurati = misura_lotto_con(
+            &schede,
+            Duration::from_secs(10),
+            || false,
+            |scheda| Misurato::Fatta {
+                track_id: scheda.track_id,
+                vettore: vec![1.0],
+            },
+        );
+        assert!(misurati.is_empty(), "{misurati:?}");
     }
 
     /// Un lotto vuoto non fa partire nessun filo e non è un guasto.

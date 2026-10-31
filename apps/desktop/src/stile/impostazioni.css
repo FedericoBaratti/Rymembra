@@ -1,0 +1,1049 @@
+/* Le Impostazioni: indice, schede, cloud, app dell'utente, interruttori e skin.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── impostazioni ────────────────────────────────────────────────────────── */
+.impostazioni {
+  display: grid;
+  grid-template-columns: 186px minmax(0, 1fr);
+  gap: 26px;
+  align-items: start;
+}
+
+.impostazioni .indice {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.impostazioni .indice .voce {
+  font-size: 12.5px;
+  padding: 7px 10px;
+}
+
+/* L'intestazione di un gruppo dell'indice.
+
+   Piccola, spaziata e smorzata: deve dividere, non farsi leggere prima delle
+   voci. Un titolo grosso quanto le voci che introduce le farebbe sembrare
+   tredici titoli invece di quattro gruppi.
+
+   L'aria sta **sopra**, ed è quel che separa i gruppi fra loro; sulla prima si
+   toglie, perché lassù non c'è niente da cui staccarsi — c'è il campo di
+   ricerca, che ha già il suo margine. */
+.impostazioni .indice .titolo-gruppo {
+  margin-top: var(--spazio-3);
+  padding: 0 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.impostazioni .indice .filtro-impostazioni + .titolo-gruppo {
+  margin-top: 0;
+}
+
+/* Il filtro sopra l'indice.
+
+   Dentro il `nav` e non sopra la pagina: quel che filtra è l'indice, e un campo
+   piazzato in cima al corpo direbbe «cerca in questa sezione» — che è
+   esattamente il contrario di quel che fa. */
+.impostazioni .filtro-impostazioni {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-bottom: var(--spazio-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+}
+.impostazioni .filtro-impostazioni input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+/* Il campo non ha bordo suo — lo ha il guscio attorno — quindi il fuoco si
+   segna sul guscio, come fa già `.intestazione-pagina .cerca`:`focus-within` è
+   la forma giusta quando l'elemento che prende il fuoco e quello che si vede
+   sono due. */
+.impostazioni .filtro-impostazioni:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* La crocetta che i browser mettono dentro un `search` è di un altro disegno e
+   di un altro colore: si toglie, e a svuotare basta Esc — che qui esce dal
+   campo, cioè il gesto che si sta già facendo. */
+.impostazioni .filtro-impostazioni input::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* Una voce trovata porta il nome della sezione sotto: senza, «Normalizza il
+   volume» comparirebbe da sola e non si saprebbe dove si sta per andare. */
+.impostazioni .indice .voce.trovata {
+  align-items: flex-start;
+  text-align: left;
+}
+.impostazioni .indice .voce.trovata .dove {
+  display: block;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--color-text-3);
+}
+
+/*
+ * Le Impostazioni su un contenitore stretto.
+ *
+ * `@container` e non `@media`, per la ragione dell'elenco dei brani: conta lo
+ * spazio del contenuto, non la finestra. Alla misura minima (880 px logici)
+ * con l'ingrandimento al 200 % il contenuto è poco più di trecento pixel, e
+ * l'indice fisso da 186 più lo spazio fra le colonne lasciava alle schede un
+ * centinaio di pixel: linguette e percorsi uscivano di lato e la pagina
+ * scorreva in orizzontale.
+ *
+ * Sotto la soglia le schede prendono tutta la larghezza e l'indice diventa una
+ * striscia che scorre di lato, sopra di loro: messo sopra in colonna — filtro,
+ * quattro titoli di gruppo, una quindicina di voci — spingerebbe le schede di
+ * parecchie centinaia di pixel, da ripercorrere a ogni cambio di sezione. I
+ * titoli dei gruppi in una striscia non dividono niente, e si tolgono.
+ */
+@container (max-width: 640px) {
+  .impostazioni {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--spazio-3);
+  }
+  .impostazioni .indice {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .impostazioni .indice .titolo-gruppo {
+    display: none;
+  }
+  .impostazioni .indice .filtro-impostazioni {
+    flex: 0 0 180px;
+    margin-bottom: 0;
+  }
+  .impostazioni .indice .voce {
+    flex: none;
+    white-space: nowrap;
+  }
+}
+
+/* ── le scorciatoie ── */
+
+.impostazioni .cartella.scorciatoia {
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.impostazioni .cartella.scorciatoia .che-cosa {
+  min-width: 0;
+  flex: 1;
+}
+.impostazioni .cartella.scorciatoia .tasti {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Il tasto assegnato è un bottone: cliccarlo lo toglie. Che sia cliccabile lo
+   dice la crocetta, non il colore — un `kbd` colorato si legge come uno stato,
+   e questo invece è un comando. */
+.tasto-scorciatoia {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.tasto-scorciatoia:hover {
+  color: var(--color-text-1);
+  border-color: var(--accent);
+}
+.tasto-scorciatoia kbd {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+/* Un tasto conteso non si nasconde e non si disabilita: sta lì, segnato, e la
+   nota sotto dice chi se lo divide. */
+.tasto-scorciatoia[data-conteso] {
+  border-color: var(--warning, var(--hairline));
+  color: var(--warning, var(--color-text-2));
+}
+.bottone.minuto[data-inascolto] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.impostazioni .corpo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  min-width: 0;
+}
+
+.scheda.section-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  /* Un'ombra corta anche qui, e non solo il bordo: sei schede impilate contro
+     il fondo della pagina, tutte dello stesso grigio, si leggevano come un
+     unico blocco diviso da righe. Con il contatto sotto ognuna è un oggetto
+     appoggiato. */
+  box-shadow: var(--filo), var(--shadow-1);
+  padding: 13px 15px;
+}
+.scheda.section-card > header {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+/* La scheda a cui ha portato un risultato della ricerca: un contorno che si
+   accende e si spegne, perché l'occhio arrivi lì e non al titolo della pagina.
+   Un attributo e non una classe: lo mette e lo toglie `vaiAllaScheda`, e dura
+   un secondo e mezzo. Scalato come ogni altro movimento: con il movimento
+   ridotto la scheda arriva in vista senza lampo. */
+@keyframes trovata-qui {
+  0%,
+  60% {
+    /* Dentro la scheda e non fuori: lo scorrevole delle impostazioni taglia
+       quel che sporge, e un anello esterno non si vedeva affatto. */
+    box-shadow: var(--filo), var(--shadow-1), inset 0 0 0 2px var(--accent);
+  }
+}
+.scheda.section-card[data-trovata] {
+  animation: trovata-qui calc(1600ms * var(--motion-scale, 1)) ease-out;
+}
+.scheda.section-card .section-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}
+.scheda.section-card .section-heading {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.scheda.section-card .nota-testa {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+/* Il «?» dell'intestazione: apre la pagina di questa scheda nella
+   documentazione. Piccolo e muto finché non lo si cerca — la scheda non deve
+   tornare a parlare per conto suo — ma col bersaglio del dito intero. */
+.scheda.section-card .guida-scheda {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.scheda.section-card .guida-scheda::after {
+  content: "";
+  position: absolute;
+  inset: -12px;
+}
+.scheda.section-card .guida-scheda:hover,
+.scheda.section-card .guida-scheda:focus-visible {
+  color: var(--color-text-1);
+  border-color: var(--color-text-3);
+}
+
+.impostazioni .cartelle {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.impostazioni .azioni {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  flex-wrap: wrap;
+}
+/* I campi dei token e delle chiavi crescono con la scheda: alla larghezza di
+   serie di un input, una chiave di Last.fm si vede per un terzo. */
+.impostazioni .azioni .campo {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.impostazioni .oppure {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* ── le cartelle e gli account del cloud, nelle Impostazioni ─────────────── */
+.icona-cartella {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-text-3);
+}
+/* Un percorso si accorcia da sinistra, perché la parte che distingue è la
+   fine; «OneDrive · Musica › Rock» si legge da sinistra, perché la parte che
+   distingue è il servizio. */
+.cartella[data-nuvola] .percorso {
+  direction: ltr;
+}
+.conti-nuvola {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  list-style: none;
+}
+.conto-nuvola {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--spazio-3);
+  padding: var(--spazio-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+}
+.conto-nuvola[data-stato='daRicollegare'],
+.conto-nuvola[data-stato='errore'] {
+  border-color: var(--warning);
+}
+.icona-conto {
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--color-text-2);
+}
+.che-conto {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.conto-nuvola .nome-conto {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.stato-conto {
+  font-size: 12.5px;
+  color: var(--color-text-2);
+  overflow-wrap: anywhere;
+}
+.dati-conto,
+.radici-conto {
+  font-size: 12px;
+  color: var(--color-text-3);
+  overflow-wrap: anywhere;
+}
+.tasti-conto {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--spazio-1);
+}
+.tetto-cache {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2) var(--spazio-3);
+  margin: var(--spazio-3) 0;
+}
+.etichetta-tetto {
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+/* ── le app dell'utente (`AppServizio.tsx`, `LeTueApp.tsx`) ──────────────── */
+
+/* Il modulo che registra o modifica un'app. È lo stesso in tre posti — la
+   finestrella «Aggiungi una cartella», la scheda «Le tue app», il backup —, e
+   per questo le sue regole non dipendono da chi lo ospita: in una finestrella
+   `.finestrella label` direbbe già quasi tutto, nelle Impostazioni nessuno. */
+.modulo-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  min-width: 0;
+  max-width: 72ch;
+}
+.modulo-app .titolo-app {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+/* Il fuoco arriva sul titolo per farlo leggere a chi ascolta lo schermo: non è
+   una fermata, e un anello attorno a una riga di testo direbbe il contrario.
+   La stessa ragione di `.sfoglia-nuvola:focus-visible`. */
+.modulo-app .titolo-app:focus-visible {
+  outline: none;
+}
+.modulo-app label {
+  display: grid;
+  gap: var(--spazio-1);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.modulo-app .campo.mono {
+  font-family: var(--font-mono);
+}
+/* Dentro il modulo i passi stanno nella sua colonna, che ha già il suo passo. */
+.modulo-app .passi {
+  margin: 0;
+}
+.tasti-app {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+/* Sotto un campo, la riga che dice com'è fatto quel che ci va: più piano della
+   spiegazione, come `.nota-collega` nella finestrella. Quella del segreto che
+   manca no: è la ragione per cui si è aperto il modulo. */
+.modulo-app .nota-campo,
+.modulo-app .difetto-campo {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.modulo-app .nota-campo {
+  color: var(--color-text-3);
+}
+.modulo-app .nota-campo[data-manca] {
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.modulo-app .difetto-campo {
+  color: var(--danger);
+}
+/* I valori da scrivere esatti nella console, ognuno su una riga col suo
+   «Copia» accanto: un indirizzo di ritorno con una barra in più è un consenso
+   che finisce su una pagina d'errore. */
+.valori-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-1);
+  margin: var(--spazio-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.valori-app > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.valori-app code {
+  overflow-wrap: anywhere;
+}
+/* Gli appunti hanno rifiutato: la riga va a capo sotto il valore, che resta
+   selezionabile, e dice di copiarlo a mano. */
+.copia-fallita {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* La scheda «Le tue app»: una piattaforma dopo l'altra, ognuna col suo
+   titoletto, le sue righe e il tasto che ne aggiunge una. */
+.le-tue-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-4);
+}
+.le-tue-app > .nota {
+  margin: 0;
+}
+.piattaforma-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.piattaforma-app .titoletto {
+  margin: 0;
+}
+/* «per OneDrive» accanto a «Microsoft»: chi cerca OneDrive deve trovarlo, e il
+   nome di chi rilascia l'app da solo non glielo dice. */
+.per-app {
+  font-weight: 400;
+  color: var(--color-text-3);
+}
+.elenco-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* Una riga come quelle dei conti qui sopra: stessa griglia, stesso bordo, e lo
+   stesso giallo quando manca qualcosa. */
+.app-nuvola {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--spazio-3);
+  padding: var(--spazio-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+}
+.app-nuvola[data-manca] {
+  border-color: var(--warning);
+}
+/* Il modulo al posto della riga: lo stesso riquadro, col bordo dell'accento a
+   dire che è quella che si sta cambiando. */
+.app-aperta {
+  padding: var(--spazio-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+}
+.che-app {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.nome-app {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.pastiglia-app {
+  padding: 0 var(--spazio-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-2);
+}
+/* L'identificativo per intero e selezionabile: è quel che si confronta con la
+   console quando qualcosa non va. */
+.id-app code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-2);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.uso-app {
+  font-size: 12px;
+  color: var(--color-text-3);
+  overflow-wrap: anywhere;
+}
+.manca-app {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spazio-1);
+  margin-top: var(--spazio-1);
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.manca-app > .icona {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warning);
+}
+
+/* L'app del backup, in cima alla scheda: il modulo finché non c'è, poi una
+   riga che la nomina. */
+.app-del-backup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.app-del-backup > .nota,
+.app-del-backup > .avviso {
+  margin: 0;
+}
+.app-del-backup .azioni label {
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+
+/* Le due strade di un'importazione: nome e una riga di spiegazione a sinistra,
+   il tasto a destra.
+
+   Il filo fra le due e non un `gap` più largo: sono due cose che si **escludono
+   nel momento** — o si incolla un link, o si porta dentro l'account — e lo
+   spazio da solo direbbe soltanto che una viene dopo l'altra. Il primo non ha
+   il filo perché sopra c'è già il bordo della scheda. */
+.strade-import {
+  display: flex;
+  flex-direction: column;
+}
+.strade-import > .riga-opzione {
+  padding: var(--spazio-3) 0;
+}
+.strade-import > .riga-opzione + .riga-opzione {
+  border-top: 1px solid var(--hairline);
+}
+/* Il tasto non si stringe per far posto alla spiegazione: «Importa il mio
+   account…» spezzato su due righe è più alto della riga che lo contiene, e
+   quel che deve cedere è il testo, che va a capo per mestiere. */
+.strade-import > .riga-opzione > .bottone {
+  flex: none;
+}
+
+/* Un sottotitolo dentro una scheda.
+
+   Serve dove una scheda contiene due cose parallele e non due passi della
+   stessa — «ListenBrainz» e «Last.fm» nello scrobbling. L'alternativa, due
+   schede separate, direbbe che sono due argomenti diversi: non lo sono, e
+   soprattutto l'interruttore che li governa è uno solo e starebbe sopra una
+   delle due.
+
+   Più piccolo del titolo della scheda e senza maiuscoletto: è un secondo
+   livello, e due intestazioni con lo stesso peso non fanno una gerarchia. */
+.impostazioni .titoletto {
+  margin: var(--spazio-2) 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.impostazioni .titoletto:first-of-type {
+  margin-top: 0;
+}
+
+/* Un bottone che sta dentro una frase e si legge come un collegamento.
+
+   Un `<button>` e non un `<a>`: non porta da nessuna parte, fa una cosa — e un
+   collegamento senza destinazione è la trappola che manda in bianco chi naviga
+   da tastiera. Quel che si prende in prestito è solo l'aspetto. */
+.impostazioni .collegamento {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.impostazioni .collegamento:hover {
+  color: var(--color-text-1);
+}
+
+.impostazioni .nota,
+.impostazioni .esito {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+.impostazioni .nota code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-1);
+}
+
+.avanzamento-scansione {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.avanzamento-scansione .riga-avanzamento {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.avanzamento-scansione .quanti {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.avanzamento-scansione .barra {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  overflow: hidden;
+}
+.avanzamento-scansione .riempita {
+  position: relative;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(120ms * var(--motion-scale, 1)) linear;
+  overflow: hidden;
+}
+/* Il riflesso che scorre. Dice che qualcosa sta succedendo anche quando la
+   percentuale non si muove — e su una scansione la percentuale sta ferma per
+   secondi interi, perché il nucleo annuncia ogni venticinque file. */
+/* `--color-surface-0` e non un bianco scritto a mano: era l'ultimo colore
+   letterale del foglio. Il riflesso corre sopra la parte già riempita, che è
+   accento pieno — e il fondo dell'applicazione sopra l'accento è la stessa
+   regola con cui si scrive l'etichetta di un bottone primario. Nel tema chiaro
+   si inverte da sé, che è il motivo per cui un `#fff` lì era sbagliato due
+   volte. */
+.avanzamento-scansione .riflesso {
+  position: absolute;
+  inset: 0;
+  /* Non prende il puntatore: è un riflesso sopra una barra, e non ha niente da
+     prendere. Vale la regola generale di chi copre tutto — la sorveglia il
+     controllo n. 9 di `strumenti/classi.js`. */
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-surface-0) 34%, transparent),
+    transparent
+  );
+  animation: scorri 1.4s linear infinite;
+}
+@keyframes scorri {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* I profili dei modelli: una riga per profilo, con quello in uso segnato dal
+   bordo d'accento. Riusa `.che-cosa` e `.azioni` di `.riga-opzione` invece di
+   inventare due nomi nuovi — la forma è la stessa, e quel che cambia è solo che
+   qui i figli stanno in colonna quando la scheda si stringe. */
+/* La casella «solo gratis», sotto il campo del modello. */
+.filtro-modelli {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-2);
+  font-size: 12px;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+
+.elenco-profili {
+  list-style: none;
+  margin: var(--spazio-3) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.profilo-ia {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  flex-wrap: wrap;
+  padding: var(--spazio-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-1);
+}
+.profilo-ia[data-active] {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+.profilo-ia .che-cosa {
+  flex: 1;
+  min-width: 0;
+}
+.profilo-ia .etichetta {
+  font-size: 13px;
+}
+.profilo-ia .etichetta .quante {
+  margin-left: var(--spazio-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent);
+}
+/* L'indirizzo e il nome del modello vanno a capo invece di allargare la riga:
+   `openrouter.ai/api/v1` più un nome di modello sono facilmente ottanta
+   caratteri, e su una scheda stretta spingerebbero i bottoni fuori. */
+.profilo-ia .spiegazione {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-text-2);
+  overflow-wrap: anywhere;
+}
+
+.riga-opzione {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.riga-opzione .che-cosa {
+  flex: 1;
+  min-width: 0;
+}
+.riga-opzione .etichetta {
+  font-size: 13px;
+}
+.riga-opzione .spiegazione {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+
+/* La riga di un interruttore si preme tutta.
+ *
+ * Il bersaglio grande di `.riga-opzione .interruttore::before` risolveva metà
+ * del problema — quarantaquattro pixel invece di quarantatré — e lasciava
+ * l'altra metà: in una riga larga seicento, cinquecentocinquanta non facevano
+ * niente. Adesso il clic vale su tutta la riga, e questa è la sola cosa che lo
+ * dice: senza il cursore, un'area cliccabile larga come il pannello è
+ * indistinguibile da una che non lo è, e chi non prova non lo scopre mai.
+ *
+ * `[data-impedito]` e non una classe condizionale: la riga spenta è uno stato,
+ * e uno stato scritto come classe costringerebbe il `className` a diventare un
+ * template — che è esattamente ciò che `strumenti/classi.js` non sa più
+ * leggere. L'attributo lo scrive `parti/Interruttore.tsx` insieme al motivo per
+ * cui la riga è spenta, quindi la verità sta scritta una volta sola. */
+.riga-interruttore {
+  cursor: pointer;
+}
+.riga-interruttore[data-impedito] {
+  cursor: default;
+}
+
+.interruttore {
+  flex: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+/*
+ * Il bersaglio cresce, la pista no.
+ *
+ * La pista misura quaranta per ventitré pixel, in fondo a una riga larga tutto
+ * il pannello: quarantatré pixel cliccabili in un'area di seicento, e il resto
+ * della riga non fa niente. Quarantaquattro per ventotto è il minimo sotto cui
+ * un bersaglio si sbaglia.
+ *
+ * Con uno pseudo-elemento e non con il `padding`, ed è il punto: il padding
+ * allargherebbe la scatola e la pista si sposterebbe di due pixel verso sinistra
+ * e l'interruttore verso il basso — un bersaglio più grande pagato con
+ * l'allineamento di ogni riga delle Impostazioni. Lo pseudo-elemento è fuori
+ * dalla disposizione, quindi quel che si vede non si muove di un pixel e quel
+ * che si clicca cresce. È trasparente: non ha nulla da dire, solo da prendere.
+ */
+.riga-opzione .interruttore {
+  position: relative;
+}
+.riga-opzione .interruttore::before {
+  content: '';
+  position: absolute;
+  /* −2 e −2,5: quaranta più quattro fa quarantaquattro, ventitré più cinque fa
+     ventotto. */
+  inset: -2.5px -2px;
+}
+.interruttore:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.interruttore .pista {
+  display: block;
+  position: relative;
+  width: 40px;
+  height: 23px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  transition: background var(--transition-fast);
+}
+.interruttore[aria-checked="true"] .pista {
+  background: var(--accent);
+}
+.interruttore .pallina {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--color-text-3);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.interruttore[aria-checked="true"] .pallina {
+  transform: translateX(17px);
+  background: var(--color-surface-0);
+}
+
+.griglia-skin {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: var(--spazio-2);
+}
+/* Il ripiego sulla skin di serie.
+ *
+ * Giallo e non rosso: non è un guasto, è una scelta che al momento non si può
+ * rispettare — il pacchetto potrebbe tornare da solo, e la preferenza nel
+ * database è rimasta quella. Sta in cima alla scheda perché la risposta alla
+ * domanda «perché non è la mia skin?» deve stare dove si va a cercarla. */
+.nota-ripiego {
+  margin: 0 0 var(--spazio-2);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--warning-soft);
+}
+.scheda-skin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--color-surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+}
+.scheda-skin[data-active] {
+  border-color: var(--accent);
+}
+.scheda-skin .prova {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* Tre fasce di colore vere, scelte dall'autore in `meta.preview`. Prima erano
+   indovinate prendendo fondo, superficie e accento, che per una skin sobria dà
+   tre grigi quasi uguali. */
+.scheda-skin .bande {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  height: 34px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.scheda-skin .bande > span {
+  display: block;
+}
+.scheda-skin .nome-skin {
+  font-size: 13px;
+  font-weight: 550;
+}
+.scheda-skin .stato {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+.scheda-skin[data-active] .stato {
+  color: var(--accent);
+}
+.scheda-skin .descrizione {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--color-text-2);
+}
+
+.impostazioni .numeri {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: var(--spazio-3);
+  margin: 0;
+}
+/* I numeri stanno tutti sulla stessa riga di base, e ci vuole questa regola.
+   Le celle di una riga della griglia hanno già la stessa altezza; quel che
+   mancava è che il numero si appoggiasse in fondo alla sua invece di seguire
+   l'occhiello. Con «SENZA CORRISPONDENZA» che va a capo su due righe, il suo
+   zero scendeva di quindici pixel sotto gli altri due — tre `stat-number` che
+   perdono l'allineamento sono la cosa che si vede prima di leggerli. */
+.impostazioni .numeri > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+}
+.impostazioni .numeri dt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.impostazioni .numeri dd {
+  margin: 2px 0 0;
+}
+/* Una data fra i numeri: «05/10/2026, 12:25» non è un numero da leggere per
+   primo, e alla misura dei titoli non ci stava — andava a capo dopo la virgola
+   con l'ora sola sotto, più grande delle etichette di tutta la scheda. Qui è
+   piccola abbastanza da stare su una riga nelle colonne di una scheda larga, e
+   in una stretta va a capo in due righe pari, data sopra e ora sotto. Il
+   carattere resta quello dei numeri: è sempre un dato della scheda. */
+.impostazioni .numeri dd[data-quando] {
+  font-size: 14px;
+  line-height: 1.3;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+/* Il carattere da titolo anche qui: un numero grande in una scheda di
+   statistiche non è un dato in una tabella, è il titolo di quella scheda —
+   «1 421» è ciò che si legge per primo e la parola sotto lo spiega.
+   `tabular-nums` perché quei numeri crescono durante una scansione, e cifre di
+   larghezza diversa farebbero ballare la riga a ogni centinaio. */
+.stat-number {
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.percorso {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  word-break: break-all;
+  user-select: text;
+}

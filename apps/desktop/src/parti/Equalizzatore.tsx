@@ -28,8 +28,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CENTRI_EQ, LIMITE_EQ_DB, ipc, type VocePreset } from "../ipc";
 import { Icona } from "./Icone";
-import { t } from "../lingue";
+import { t, tSe } from "../lingue";
 import { useDati } from "../dati";
+import { chiaveNomePreset, chiavePreset, decibel, trovaPreset } from "../eq";
+import { numero } from "../formato";
 import { useFinestrella } from "../finestrella";
 import { Presenza } from "../presenza";
 
@@ -195,8 +197,10 @@ export function Equalizzatore({
 
   const azzera = () => applica(CENTRI_EQ.map(() => 0), acceso);
 
-  const scegliPreset = (nome: string) => {
-    const scelto = preset.find((p) => p.nome === nome);
+  // Per chiave (`s:Rock`, `u:Rock`) e non per nome: una curva salvata col nome
+  // di una di serie si sceglieva come quella di serie. Vedi `chiavePreset`.
+  const scegliPreset = (chiave: string) => {
+    const scelto = trovaPreset(preset, chiave);
     if (!scelto) return;
     applica(allunga(scelto.guadagni), true);
   };
@@ -245,7 +249,7 @@ export function Equalizzatore({
         <select
           className="eq-preset"
           aria-label={t("eq.curve")}
-          value={attuale?.nome ?? ""}
+          value={attuale === undefined ? "" : chiavePreset(attuale)}
           onChange={(e) => scegliPreset(e.target.value)}
         >
           {/* La voce vuota esiste solo finché la curva non corrisponde a
@@ -254,9 +258,13 @@ export function Equalizzatore({
           {attuale === undefined && (
             <option value="">{t("eq.curve.own")}</option>
           )}
+          {/* Le curve di serie si mostrano nella lingua di chi guarda: il nome
+              arriva dal nucleo scritto in italiano, e resta il valore stabile
+              (nella chiave); quelle dell'utente si chiamano come le ha
+              chiamate lui. */}
           {preset.map((p) => (
-            <option key={`${p.diSerie ? "s" : "u"}:${p.nome}`} value={p.nome}>
-              {p.nome}
+            <option key={chiavePreset(p)} value={chiavePreset(p)}>
+              {p.diSerie ? tSe(chiaveNomePreset(p.nome), p.nome) : p.nome}
             </option>
           ))}
         </select>
@@ -275,7 +283,7 @@ export function Equalizzatore({
           const db = curva[banda] ?? 0;
           return (
             <label key={hz} className="eq-banda">
-              {conNomi && <span className="eq-db stat-number">{db > 0 ? `+${db}` : db}</span>}
+              {conNomi && <span className="eq-db stat-number">{decibel(db, numero)}</span>}
               <input
                 type="range"
                 className="eq-cursore eq-slider"

@@ -3,11 +3,14 @@
 //! # Lo Studio non aggiunge potere
 //!
 //! Rende visibile un contratto che oggi si scopre leggendo Rust. Tutto quel che
-//! serve a un editor di skin esiste già nel crate: settantatré token con la
-//! loro descrizione, i loro estremi e il flag di obbligatorietà, quattro preset
-//! che ne scrivono blocchi coerenti, cinquantuno parti coi loro gruppi, undici
-//! effetti col costo dichiarato, un vocabolario chiuso per parte, e
-//! `nearest_parts()` per i refusi. Nessuno di questi dati usciva dal processo.
+//! serve a un editor di skin esiste già nel crate: i token con la loro
+//! descrizione, i loro estremi e il flag di obbligatorietà, i preset che ne
+//! scrivono blocchi coerenti, le parti coi loro gruppi, gli effetti col costo
+//! dichiarato, un vocabolario chiuso per parte, e `nearest_parts()` per i
+//! refusi. Nessuno di questi dati usciva dal processo. (Quanti sono non lo si
+//! scrive qui: lo dicono i registri del nucleo, e un numero ricopiato in un
+//! commento è il primo a restare indietro — qui diceva «undici effetti» quando
+//! erano già dodici.)
 //!
 //! Questo modulo non decide niente: legge il registro e chiama `parse_skin`,
 //! `check_skin`, `compile_skin`. È la stessa regola dei comandi — nessuna
@@ -28,1333 +31,22 @@
 //! sincronizzati: sono due tastiere sullo stesso documento. E il documento che
 //! esce è il file che si mette in git.
 
-use std::hash::{Hash as _, Hasher as _};
+mod registro;
+mod validazione;
+
+pub use self::registro::*;
+pub use self::validazione::*;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use rymembra_app::scrittura::scrivi_atomico;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_skin::movimento;
 use serde::Serialize;
 use tauri::State;
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::stato::{Stato, con_libreria};
-
-// ── Il registro ─────────────────────────────────────────────────────────────
-
-/// Un token, come lo mostra l'editor.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenIpc {
-    /// `color.accent`.
-    pub id: &'static str,
-    /// `--accent`.
-    pub css: &'static str,
-    /// `color`, `length`, `duration`, `easing`, `number`, `fontStack`, `shadow`.
-    pub kind: &'static str,
-    /// Il gruppo, per l'albero.
-    pub group: &'static str,
-    /// La skin di riferimento lo deve dichiarare.
-    pub required: bool,
-    /// Gli estremi ammessi, dove ci sono: sono i capi del cursore nell'editor.
-    ///
-    /// Vengono dal registro e non da una tabella qui per la stessa ragione di
-    /// `esempio`: il validatore rifiuta quel che esce da questi due numeri, e un
-    /// cursore che arrivasse altrove offrirebbe un valore che il documento poi
-    /// respinge — cioè un errore che l'interfaccia ha suggerito.
-    pub min: Option<f64>,
-    /// L'altro capo. Vedi [`Self::min`].
-    pub max: Option<f64>,
-    /// A cosa serve. È il testo che chi scrive una skin legge nell'editor.
-    pub description: &'static str,
-}
-
-/// Un preset, come lo mostra l'editor.
-///
-/// # Perché viaggia come testo e non come valori
-///
-/// Perché è testo anche all'arrivo. Lo Studio non ha un modello del documento da
-/// aggiornare: ha il JSON scritto dall'autore, e applicare un preset vuol dire
-/// innestare dei frammenti dentro quel testo con lo stesso `scriviIn` che usa un
-/// cursore. Un valore già scritto non ha bisogno che nessuno lo riscriva — e
-/// riscriverlo, come dice `document.rs` sopra `SkinDocument`, produrrebbe forme
-/// che la validazione rifiuta in ingresso.
-///
-/// Il gruppo arriva col nome che portano già le righe dei token, dalla stessa
-/// funzione: la striscia si costruisce dal gruppo del token selezionato, e due
-/// vocabolari diversi vorrebbero dire un confronto fra stringhe che oggi
-/// combaciano per caso.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PresetIpc {
-    /// `classico`. Quel che l'interfaccia rimanda indietro.
-    pub id: &'static str,
-    /// «Classico». Quel che si legge sul bottone.
-    pub nome: &'static str,
-    /// Il gruppo di token su cui agisce, nel vocabolario di [`TokenIpc::group`].
-    pub group: &'static str,
-    /// Le scritture: l'id del token, e il suo valore come frammento JSON.
-    pub valori: Vec<(&'static str, &'static str)>,
-}
-
-/// Una parte, come la mostra l'editor.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParteIpc {
-    /// Il nome, che è anche la classe CSS.
-    pub name: &'static str,
-    /// Il gruppo, per l'albero.
-    pub group: &'static str,
-    /// A cosa serve.
-    pub description: &'static str,
-    /// Ha `::before` libero per un livello, dietro al contenuto.
-    pub before: bool,
-    /// Ha `::after` libero per un livello, sopra al fondo.
-    pub after: bool,
-    /// Entra ed esce dal documento come un'unità: ammette `enter` ed `exit`.
-    pub presenza: bool,
-    /// Può volare fra due schermate: ammette `share`.
-    pub condivisa: bool,
-}
-
-/// Un effetto, col suo costo.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EffettoIpc {
-    /// `solid`, `dotGrid`, `blurBehind`, …
-    pub name: &'static str,
-    /// Quanto pesa sul budget della superficie.
-    pub cost: u32,
-    /// `background`, `clipPath` o `filter`.
-    pub target: &'static str,
-    /// L'esemplare minimo che il parser accetta, in JSON.
-    ///
-    /// È quel che «Aggiungi livello» scrive nel documento. Viene da qui e non
-    /// dall'editor perché è la **stessa** stringa da cui si ricava il costo: se
-    /// un giorno un effetto pretendesse un campo in più, l'editor scriverebbe un
-    /// livello valido senza che nessuno se ne ricordi. Un vocabolario chiuso
-    /// copiato in due lingue è un vocabolario che diverge.
-    pub esempio: &'static str,
-    /// Le manopole dell'effetto.
-    ///
-    /// Senza questa lista, «Aggiungi livello» scriveva l'esemplare e finiva lì:
-    /// si otteneva un rettangolo nero e per cambiarne il colore si scendeva nel
-    /// JSON. Cioè la vista a controlli non era una seconda tastiera sullo stesso
-    /// documento — era una tastiera con meno tasti.
-    pub params: Vec<ParametroIpc>,
-}
-
-/// Un parametro di un effetto, come lo mostra l'editor.
-///
-/// Ricalca [`OpzioneIpc`] di proposito: sono due elenchi di manopole, e il
-/// pannello che le disegna è lo stesso. La differenza è il vocabolario dei tipi
-/// — qui c'è `color` e `length`, là c'è `flag` — perché sono i tipi che i due
-/// posti usano davvero.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParametroIpc {
-    /// Come si chiama nel documento.
-    pub name: &'static str,
-    /// `color`, `length`, `angle`, `number`, `stops`, `corners`, `word`,
-    /// `point`, `asset`, `flag`.
-    pub kind: &'static str,
-    /// A cosa serve.
-    pub description: &'static str,
-    /// Le parole ammesse, per `word`. Vuoto altrimenti.
-    pub allowed: Vec<&'static str>,
-    /// L'intervallo, per `angle`, `number` e `length`.
-    pub min: Option<f64>,
-    /// L'altro capo.
-    pub max: Option<f64>,
-    /// Si può togliere: il crate ha un valore di serie per questo campo.
-    pub optional: bool,
-}
-
-/// Scorciatoia per tenere la tabella dei parametri leggibile: una riga per manopola.
-macro_rules! par {
-    ($name:literal, $kind:literal, $optional:literal, $desc:literal) => {
-        ParametroIpc {
-            name: $name,
-            kind: $kind,
-            description: $desc,
-            allowed: Vec::new(),
-            min: None,
-            max: None,
-            optional: $optional,
-        }
-    };
-    ($name:literal, $kind:literal, $optional:literal, $min:literal, $max:literal, $desc:literal) => {
-        ParametroIpc {
-            name: $name,
-            kind: $kind,
-            description: $desc,
-            allowed: Vec::new(),
-            min: Some($min),
-            max: Some($max),
-            optional: $optional,
-        }
-    };
-    ($name:literal, $kind:literal, $optional:literal, [$($parola:literal),+], $desc:literal) => {
-        ParametroIpc {
-            name: $name,
-            kind: $kind,
-            description: $desc,
-            allowed: vec![$($parola),+],
-            min: None,
-            max: None,
-            optional: $optional,
-        }
-    };
-}
-
-/// Le manopole di ogni effetto, nell'ordine in cui si mostrano.
-///
-/// È una tabella e non una derivazione perché `Effect` è un enum di varianti
-/// tipizzate, non un elenco dichiarativo: non c'è niente da cui leggerla a
-/// macchina. Sta **qui** e non nell'editor per la stessa ragione di `esempio` —
-/// accanto al codice che la deve tenere allineata alle varianti, in Rust, dove
-/// aggiungerne una senza aggiornare questa riga è visibile a chi la aggiunge.
-fn parametri(nome: &str) -> Vec<ParametroIpc> {
-    match nome {
-        "solid" => vec![par!("color", "color", false, "La tinta.")],
-        "linearGradient" => vec![
-            par!(
-                "angle",
-                "angle",
-                true,
-                -360.0,
-                360.0,
-                "Gradi. 180 va dall'alto in basso."
-            ),
-            par!("stops", "stops", false, "Le fermate, in ordine."),
-        ],
-        "radialGradient" => vec![
-            par!(
-                "shape",
-                "word",
-                true,
-                ["circle", "ellipse"],
-                "Cerchio o ellisse."
-            ),
-            par!(
-                "at",
-                "point",
-                true,
-                "Dov'è il centro, orizzontale e verticale. Senza, nel mezzo."
-            ),
-            par!(
-                "size",
-                "length",
-                true,
-                0.0,
-                400.0,
-                "Quanto è grande. Senza, fino all'angolo più lontano."
-            ),
-            par!("stops", "stops", false, "Le fermate, dal centro."),
-        ],
-        "conicGradient" => vec![
-            par!(
-                "from",
-                "angle",
-                true,
-                -360.0,
-                360.0,
-                "Da che angolo parte il giro."
-            ),
-            par!(
-                "at",
-                "point",
-                true,
-                "Dov'è il centro del giro. Senza, nel mezzo."
-            ),
-            par!("stops", "stops", false, "Le fermate, in senso orario."),
-        ],
-        "hairlineGrid" => vec![
-            par!("color", "color", false, "Il colore delle linee."),
-            par!("cell", "length", false, 1.0, 200.0, "Il lato della cella."),
-            par!(
-                "cellY",
-                "length",
-                true,
-                1.0,
-                200.0,
-                "L'altezza, se diversa dal lato."
-            ),
-            par!(
-                "thickness",
-                "length",
-                true,
-                0.0,
-                8.0,
-                "Lo spessore delle linee."
-            ),
-        ],
-        "scanlines" => vec![
-            par!("color", "color", false, "Il colore della riga."),
-            par!("line", "length", false, 0.0, 32.0, "Quanto è alta la riga."),
-            par!(
-                "gap",
-                "length",
-                false,
-                0.0,
-                64.0,
-                "Quanto la separa dalla prossima."
-            ),
-        ],
-        "stripes" => vec![
-            par!("angle", "angle", true, -360.0, 360.0, "L'inclinazione."),
-            par!("color", "color", false, "La striscia."),
-            par!("background", "color", false, "Quel che sta fra le strisce."),
-            par!(
-                "width",
-                "length",
-                false,
-                1.0,
-                96.0,
-                "La larghezza di una striscia."
-            ),
-        ],
-        "dotGrid" => vec![
-            par!("color", "color", false, "Il colore dei punti."),
-            par!(
-                "spacing",
-                "length",
-                false,
-                2.0,
-                96.0,
-                "Quanto distano fra loro."
-            ),
-            par!("dot", "length", false, 0.0, 16.0, "Quanto sono grossi."),
-        ],
-        "vignette" => vec![
-            par!(
-                "color",
-                "color",
-                false,
-                "Il colore che si chiude sui bordi."
-            ),
-            par!(
-                "start",
-                "number",
-                true,
-                0.0,
-                100.0,
-                "Da che percentuale del raggio comincia."
-            ),
-        ],
-        "chamfer" => vec![
-            par!("size", "length", false, 0.0, 64.0, "Quanto taglia."),
-            par!(
-                "corners",
-                "corners",
-                true,
-                "Quali angoli. Senza, in alto a destra e in basso a sinistra."
-            ),
-        ],
-        "blurBehind" => vec![
-            par!(
-                "radius",
-                "length",
-                false,
-                0.0,
-                64.0,
-                "Il raggio della sfocatura."
-            ),
-            par!(
-                "saturate",
-                "number",
-                true,
-                0.0,
-                400.0,
-                "Quanto satura quel che sta dietro."
-            ),
-        ],
-        "image" => vec![
-            par!(
-                "src",
-                "asset",
-                false,
-                "Un'immagine del pacchetto: png, jpg o webp."
-            ),
-            par!(
-                "size",
-                "word",
-                true,
-                ["cover", "contain", "auto"],
-                "Come riempie: tutta coperta, tutta dentro, o com'è. Anche una lunghezza, per le mattonelle."
-            ),
-            par!("repeat", "flag", true, "Si ripete a mattonelle."),
-            par!(
-                "position",
-                "point",
-                true,
-                "Dove si appoggia. Senza, nel mezzo."
-            ),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-/// Una manopola di widget, come la mostra l'editor.
-///
-/// I tre casi non si fondono in uno: `kind` dice quale controllo disegnare, e
-/// gli altri campi sono quelli che quel controllo usa. È il dividendo della
-/// disciplina «una forma di controllo per tipo del crate» — la vista nuova non
-/// ha bisogno di un controllo nuovo, riusa il segmentato, la casella e il
-/// cursore che l'ispettore ha già.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpzioneIpc {
-    /// Come si chiama nel documento.
-    pub name: &'static str,
-    /// `flag`, `word` o `count`.
-    pub kind: &'static str,
-    /// A cosa serve.
-    pub description: &'static str,
-    /// Il valore di serie, nella forma che JSON già ha.
-    pub default: crate::skin::ValoreOpzioneIpc,
-    /// Le parole ammesse. Vuoto per gli altri due tipi.
-    pub allowed: Vec<&'static str>,
-    /// L'intervallo, per un conteggio.
-    pub min: Option<u32>,
-    /// L'intervallo, per un conteggio.
-    pub max: Option<u32>,
-}
-
-/// Un widget dello scafale, come lo mostra l'editor.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WidgetIpc {
-    /// Il nome nel documento.
-    pub name: &'static str,
-    /// Il gruppo, per la tavolozza.
-    pub group: &'static str,
-    /// A cosa serve.
-    pub description: &'static str,
-    /// La classe del registro delle parti che questo widget porta.
-    pub part: Option<&'static str>,
-    /// `no`, `yes`, o il nome del gruppo di cui deve esserci almeno un membro.
-    pub essential: &'static str,
-    /// Ne esiste al massimo uno.
-    pub singleton: bool,
-    /// In quali zone ci sta: `row`, `column`, `scroll`.
-    pub fits: Vec<&'static str>,
-    /// Quanto pesa sul budget dello scafale.
-    pub cost: u32,
-    /// Le manopole.
-    pub options: Vec<OpzioneIpc>,
-}
-
-/// Il vocabolario dello scafale: le parole che una zona può usare.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VocabolarioIpc {
-    /// `row`, `column`, `scroll`.
-    pub zones: Vec<&'static str>,
-    /// `none`, `xs`, `s`, `m`, `l`, `xl`.
-    pub gaps: Vec<&'static str>,
-    /// `start`, `center`, `end`, `stretch`.
-    pub aligns: Vec<&'static str>,
-    /// `start`, `center`, `end`, `between`.
-    pub spreads: Vec<&'static str>,
-}
-
-/// Uno stato del DOM, come lo mostra l'editor.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StatoIpc {
-    /// Il nome nel documento: `hover`, `current`, `playing`.
-    pub name: &'static str,
-    /// Il selettore che lo riconosce, per una parte che prende il fuoco da sé.
-    pub selector: &'static str,
-    /// Il selettore per una parte il cui fuoco lo prende un figlio.
-    pub dentro: &'static str,
-}
-
-/// Un innesco del movimento, con quel che ammette.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InnescoIpc {
-    /// `enter`, `exit`, `share`, `inView`, `change`, o uno stato.
-    pub name: &'static str,
-    /// Ammette un ciclo infinito: solo gli stati.
-    pub ciclo: bool,
-    /// Si realizza come transizione di vista: vale sulle presenze e sulle
-    /// condivise.
-    pub vista: bool,
-    /// È uno stato del DOM.
-    pub stato: bool,
-}
-
-/// Un campo di un fotogramma, coi suoi estremi.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CampoFotogrammaIpc {
-    /// Come si chiama nel documento.
-    pub name: &'static str,
-    /// `number`, `offset` (px o %), `angle`, `length`, `color`, `shadow`, `clip`.
-    pub kind: &'static str,
-    /// Il valore di riposo: quello di un elemento che non si anima.
-    pub riposo: Option<f64>,
-    /// Gli estremi che il validatore ammette.
-    pub min: Option<f64>,
-    /// L'altro capo.
-    pub max: Option<f64>,
-}
-
-/// Un'animazione pronta, come la offre l'editor.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AnimazioneProntaIpc {
-    /// Il nome proposto nel documento.
-    pub id: &'static str,
-    /// Il nome che si legge.
-    pub nome: &'static str,
-    /// L'innesco per cui è pensata.
-    pub innesco: &'static str,
-    /// La dichiarazione, come frammento JSON.
-    pub valore: &'static str,
-}
-
-/// I campi di un fotogramma, nell'ordine del documento.
-///
-/// Una tabella qui, come quella dei parametri degli effetti, e per la stessa
-/// ragione: `AnimFrame` è una struttura tipizzata e non un elenco da leggere a
-/// macchina. Gli estremi sono quelli di `document.rs`, e un test li fa passare
-/// dal parser uno per uno: un estremo scritto qui e rifiutato là sarebbe un
-/// cursore che offre un valore che il documento respinge.
-fn campi_fotogramma() -> Vec<CampoFotogrammaIpc> {
-    let campo = |name, kind, riposo, estremi: Option<(f64, f64)>| CampoFotogrammaIpc {
-        name,
-        kind,
-        riposo,
-        min: estremi.map(|(min, _)| min),
-        max: estremi.map(|(_, max)| max),
-    };
-    vec![
-        campo("opacity", "number", Some(1.0), Some((0.0, 1.0))),
-        campo("translateX", "offset", Some(0.0), Some((-400.0, 400.0))),
-        campo("translateY", "offset", Some(0.0), Some((-400.0, 400.0))),
-        campo("scale", "number", Some(1.0), Some((0.0, 3.0))),
-        campo("scaleX", "number", Some(1.0), Some((0.0, 3.0))),
-        campo("scaleY", "number", Some(1.0), Some((0.0, 3.0))),
-        campo("rotate", "angle", Some(0.0), Some((-720.0, 720.0))),
-        campo("skewX", "angle", Some(0.0), Some((-45.0, 45.0))),
-        campo("skewY", "angle", Some(0.0), Some((-45.0, 45.0))),
-        campo("blur", "length", Some(0.0), Some((0.0, 40.0))),
-        campo("brightness", "number", Some(1.0), Some((0.0, 3.0))),
-        campo("saturate", "number", Some(1.0), Some((0.0, 3.0))),
-        campo("hueRotate", "angle", Some(0.0), Some((-360.0, 360.0))),
-        campo("backgroundColor", "color", None, None),
-        campo("color", "color", None, None),
-        campo("borderColor", "color", None, None),
-        campo("shadow", "shadow", None, None),
-        campo("clip", "clip", None, None),
-    ]
-}
-
-/// Il vocabolario completo: token, parti, effetti, widget.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegistroIpc {
-    /// I token.
-    pub tokens: Vec<TokenIpc>,
-    /// I blocchi di valori pronti, per gruppo di token.
-    pub presets: Vec<PresetIpc>,
-    /// Le parti.
-    pub parts: Vec<ParteIpc>,
-    /// Gli effetti.
-    pub effects: Vec<EffettoIpc>,
-    /// I widget che uno scafale può montare.
-    pub widgets: Vec<WidgetIpc>,
-    /// Le parole che una zona può usare.
-    pub vocabolario: VocabolarioIpc,
-    /// Il budget di costo di una singola superficie.
-    pub budget: u32,
-    /// Il budget di costo dello scafale, che è un budget diverso.
-    pub shell_budget: u32,
-    /// La versione del formato che questo binario capisce.
-    pub format: u32,
-    /// La soglia di contrasto sotto cui parte un avviso.
-    pub contrasto_minimo: f64,
-
-    // ── I tetti del movimento ───────────────────────────────────────────────
-    //
-    // Uno per uno da `rymembra_skin::movimento`, e non da una tabella scritta
-    // qui. È la stessa promessa di `TokenIpc::min`/`max`: il validatore rifiuta
-    // quel che esce da questi numeri, e un pannello che ne conoscesse di
-    // diversi offrirebbe valori che il documento poi respinge — cioè un errore
-    // che l'interfaccia ha suggerito. Finché non c'erano, lo Studio li teneva
-    // ricopiati a mano in cima a `studio/Movimento.tsx`, con scritto che la
-    // strada giusta era questa.
-    /// Quante animazioni un documento può dichiarare.
-    pub max_animazioni: usize,
-    /// Quanti fotogrammi ha un'animazione, al minimo.
-    pub min_fotogrammi: usize,
-    /// Quanti fotogrammi ha un'animazione, al massimo.
-    pub max_fotogrammi: usize,
-    /// Quanto può durare un'animazione, in millisecondi.
-    pub max_durata_ms: f64,
-    /// Quanto può attendere prima di partire, in millisecondi.
-    pub max_ritardo_ms: f64,
-    /// Quante volte può ripetersi, o «infinite» sugli stati.
-    pub max_iterazioni: u32,
-    /// Il budget del movimento di una parte, che è un terzo budget ancora.
-    pub motion_budget: u32,
-    /// Il budget del movimento della finestra intera.
-    pub window_motion_budget: u32,
-    /// Quanto costa un'animazione prima delle ripetizioni.
-    ///
-    /// È il peso di [`CostClass::Composited`](rymembra_skin::effects::CostClass),
-    /// cioè la prima metà di `animation_cost`. Viaggia perché il pannello del
-    /// movimento mostra il costo di ogni animazione mentre la si scrive, e
-    /// senza questo numero se lo dovrebbe inventare: il verdetto resta del
-    /// nucleo — l'avviso `costBudget` — ma il numero che si legge accanto alla
-    /// manopola deve venire dallo stesso posto, o i due si contraddicono.
-    pub peso_composito: u32,
-    /// I versi ammessi, come li scrive `AnimDirection::as_str`.
-    pub versi: Vec<&'static str>,
-    /// I trigger ammessi, come li scrive `AnimTrigger::as_str`.
-    pub trigger: Vec<&'static str>,
-    /// Gli stati del DOM, nell'ordine in cui il compilatore li emette.
-    pub stati: Vec<StatoIpc>,
-    /// Gli inneschi, con quel che ammettono.
-    pub inneschi: Vec<InnescoIpc>,
-    /// I campi di un fotogramma, coi loro estremi.
-    pub fotogramma: Vec<CampoFotogrammaIpc>,
-    /// Le animazioni pronte, da `preset.rs`.
-    pub animazioni_pronte: Vec<AnimazioneProntaIpc>,
-    /// Quel che un'animazione tiene prima e dopo: `both`, `forwards`, …
-    pub riempimenti: Vec<&'static str>,
-    /// Le sorgenti dinamiche di un colore: i colori che la copertina offre.
-    pub sorgenti: Vec<&'static str>,
-    /// Le chiavi che il formato accetta, per contesto: il completamento del
-    /// codice le propone, dalle stesse liste con cui il validatore rifiuta.
-    pub chiavi: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
-    /// Le parole chiuse di un campo, per nome del campo.
-    pub parole: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
-}
-
-/// Il nome stabile di un gruppo di token.
-///
-/// **Un nome stabile, non una parola da leggere.** Qui c'erano «Tipografia»,
-/// «Superfici», «Profondità»: tredici stringhe italiane che attraversavano
-/// l'IPC e finivano tali e quali sullo schermo. Con l'interfaccia in inglese
-/// lo Studio si leggeva per metà in una lingua e per metà nell'altra —
-/// un'intestazione che dice CORNICE sopra una scheda che dice «The icon-only
-/// button», che è quella frase lì tradotta.
-///
-/// La forma giusta è quella che il resto del programma usa già da sempre:
-/// `Fonte::nome` dà la chiave, `Fonte::etichetta` la parola. Di là passa la
-/// chiave — che serve anche a **confrontare**, perché la striscia dei preset
-/// si costruisce paragonando `preset.group` col gruppo del token aperto — e la
-/// parola la sceglie la finestra, con `studio.group.<chiave>`.
-const fn nome_gruppo_token(group: rymembra_skin::tokens::TokenGroup) -> &'static str {
-    use rymembra_skin::tokens::TokenGroup as G;
-    match group {
-        G::Typography => "typography",
-        G::Surface => "surface",
-        G::Text => "text",
-        G::Accent => "accent",
-        G::Status => "status",
-        G::Chrome => "chrome",
-        G::Layout => "layout",
-        G::Rhythm => "rhythm",
-        G::Geometry => "geometry",
-        G::Depth => "depth",
-        G::Elevation => "elevation",
-        G::Motion => "motion",
-        G::Canvas => "canvas",
-    }
-}
-
-const fn nome_tipo(kind: rymembra_skin::tokens::TokenKind) -> &'static str {
-    use rymembra_skin::tokens::TokenKind as K;
-    match kind {
-        K::Color => "color",
-        K::Length => "length",
-        K::Duration => "duration",
-        K::Easing => "easing",
-        K::Number => "number",
-        K::FontStack => "fontStack",
-        K::Shadow => "shadow",
-    }
-}
-
-/// Il nome stabile di un gruppo di parti.
-///
-/// Come [`nome_gruppo_token`], e per la stessa ragione: di qui passa la
-/// chiave, la parola la sceglie la finestra. Le chiavi sono le stesse che
-/// `WidgetGroup::as_str` usa dove i due vocabolari si sovrappongono — `shell`
-/// è la cornice tanto per un widget quanto per una parte — così una traduzione
-/// sola serve tutti e due.
-const fn nome_gruppo_parte(group: rymembra_skin::parts::PartGroup) -> &'static str {
-    use rymembra_skin::parts::PartGroup as G;
-    match group {
-        G::Shell => "shell",
-        G::Nav => "nav",
-        G::Page => "page",
-        G::Controls => "controls",
-        G::Lists => "lists",
-        G::Cards => "cards",
-        G::Player => "player",
-        G::Column => "column",
-        G::NowPlaying => "nowPlaying",
-        G::Overlays => "overlays",
-    }
-}
-
-/// Il vocabolario che una skin può usare.
-///
-/// Statico: si chiede una volta all'apertura dello Studio e non cambia più
-/// finché il binario è quello. È il contratto, ed è compilato dentro.
-#[tauri::command]
-#[must_use]
-pub fn studio_registro() -> RegistroIpc {
-    RegistroIpc {
-        tokens: rymembra_skin::TOKENS
-            .iter()
-            .map(|def| TokenIpc {
-                id: def.id,
-                css: def.css,
-                kind: nome_tipo(def.kind),
-                group: nome_gruppo_token(def.group),
-                required: def.required,
-                min: def.limiti.map(|(min, _)| min),
-                max: def.limiti.map(|(_, max)| max),
-                description: def.description,
-            })
-            .collect(),
-        presets: rymembra_skin::PRESETS
-            .iter()
-            .map(|def| PresetIpc {
-                id: def.id,
-                nome: def.nome,
-                group: nome_gruppo_token(def.group),
-                valori: def.valori.to_vec(),
-            })
-            .collect(),
-        parts: rymembra_skin::parts::PARTS
-            .iter()
-            .map(|def| ParteIpc {
-                name: def.name,
-                group: nome_gruppo_parte(def.group),
-                description: def.description,
-                before: def.before,
-                after: def.after,
-                presenza: def.presenza,
-                condivisa: def.condivisa,
-            })
-            .collect(),
-        effects: rymembra_skin::Effect::NAMES
-            .iter()
-            .filter_map(|nome| esempio(nome))
-            .collect(),
-        widgets: rymembra_skin::WIDGETS.iter().map(widget).collect(),
-        vocabolario: vocabolario(),
-        budget: rymembra_skin::SURFACE_COST_BUDGET,
-        shell_budget: rymembra_skin::SHELL_COST_BUDGET,
-        format: rymembra_skin::SKIN_FORMAT_VERSION,
-        contrasto_minimo: rymembra_skin::CONTRASTO_MINIMO,
-        max_animazioni: movimento::MAX_ANIMAZIONI,
-        min_fotogrammi: movimento::MIN_FOTOGRAMMI,
-        max_fotogrammi: movimento::MAX_FOTOGRAMMI,
-        max_durata_ms: movimento::MAX_DURATA_MS,
-        max_ritardo_ms: movimento::MAX_RITARDO_MS,
-        max_iterazioni: movimento::MAX_ITERAZIONI,
-        motion_budget: movimento::MOTION_COST_BUDGET,
-        window_motion_budget: movimento::WINDOW_MOTION_BUDGET,
-        peso_composito: rymembra_skin::effects::CostClass::Composited.weight(),
-        // Dagli `ALL` degli enum, come il vocabolario dello scafale poco più
-        // sotto: una parola nuova nel crate compare nell'editor senza che
-        // nessuno se ne ricordi.
-        versi: movimento::AnimDirection::ALL
-            .iter()
-            .map(|verso| verso.as_str())
-            .collect(),
-        trigger: movimento::AnimTrigger::nomi(),
-        stati: rymembra_skin::PartState::ALL
-            .iter()
-            .map(|stato| StatoIpc {
-                name: stato.as_str(),
-                selector: stato.selector(rymembra_skin::stati::Fuoco::Proprio),
-                dentro: stato.selector(rymembra_skin::stati::Fuoco::Dentro),
-            })
-            .collect(),
-        inneschi: movimento::AnimTrigger::ALL
-            .iter()
-            .map(|innesco| InnescoIpc {
-                name: innesco.as_str(),
-                ciclo: innesco.ammette_ciclo(),
-                vista: innesco.di_vista(),
-                stato: matches!(innesco, movimento::AnimTrigger::State(_)),
-            })
-            .collect(),
-        fotogramma: campi_fotogramma(),
-        animazioni_pronte: rymembra_skin::ANIMAZIONI_PRONTE
-            .iter()
-            .map(|pronta| AnimazioneProntaIpc {
-                id: pronta.id,
-                nome: pronta.nome,
-                innesco: pronta.innesco,
-                valore: pronta.valore,
-            })
-            .collect(),
-        riempimenti: movimento::Riempimento::ALL
-            .iter()
-            .map(|r| r.as_str())
-            .collect(),
-        sorgenti: rymembra_skin::tokens::DynamicSource::ALL
-            .iter()
-            .map(|s| s.as_str())
-            .collect(),
-        chiavi: rymembra_skin::chiavi_schema()
-            .into_iter()
-            .map(|(contesto, chiavi)| (contesto, chiavi.to_vec()))
-            .collect(),
-        parole: rymembra_skin::parole_schema().into_iter().collect(),
-    }
-}
-
-/// Un widget del registro, per la tavolozza dell'editor.
-fn widget(def: &'static rymembra_skin::WidgetDef) -> WidgetIpc {
-    use rymembra_skin::layout::Essential;
-
-    WidgetIpc {
-        name: def.name,
-        group: def.group.as_str(),
-        description: def.description,
-        part: def.part,
-        essential: match def.essential {
-            Essential::No => "no",
-            Essential::Yes => "yes",
-            Essential::OneOf(gruppo) => gruppo,
-        },
-        singleton: def.singleton,
-        fits: def.fits.iter().map(|k| k.as_str()).collect(),
-        cost: def.cost,
-        options: def.options.iter().map(opzione).collect(),
-    }
-}
-
-fn opzione(def: &'static rymembra_skin::layout::WidgetOption) -> OpzioneIpc {
-    use crate::skin::ValoreOpzioneIpc as V;
-    use rymembra_skin::layout::OptionKind;
-
-    let (kind, default, allowed, min, max) = match def.kind {
-        OptionKind::Flag { default } => ("flag", V::Flag(default), Vec::new(), None, None),
-        OptionKind::Word { allowed, default } => {
-            ("word", V::Word(default), allowed.to_vec(), None, None)
-        }
-        OptionKind::Count { min, max, default } => {
-            ("count", V::Count(default), Vec::new(), Some(min), Some(max))
-        }
-    };
-    OpzioneIpc {
-        name: def.name,
-        kind,
-        description: def.description,
-        default,
-        allowed,
-        min,
-        max,
-    }
-}
-
-/// Le parole che una zona può usare.
-///
-/// Vengono dai `ALL` degli enum e non da una lista scritta qui: una parola nuova
-/// nel crate compare nell'editor senza che nessuno se ne ricordi, che è la
-/// stessa promessa del registro dei token.
-fn vocabolario() -> VocabolarioIpc {
-    use rymembra_skin::layout::{Align, GapStep, Spread, ZoneKind};
-    VocabolarioIpc {
-        zones: ZoneKind::ALL.iter().map(|k| k.as_str()).collect(),
-        gaps: GapStep::ALL.iter().map(|g| g.as_str()).collect(),
-        aligns: Align::ALL.iter().map(|a| a.as_str()).collect(),
-        spreads: Spread::ALL.iter().map(|s| s.as_str()).collect(),
-    }
-}
-
-/// Il costo e la destinazione di un effetto, da un esemplare minimo.
-///
-/// Costruire l'esemplare passando dal parser invece che dal costruttore tiene
-/// una promessa: se un effetto nuovo nasce e questa tabella non lo conosce, la
-/// riga sparisce dall'elenco invece di mentire sul suo costo.
-fn esempio(nome: &str) -> Option<EffettoIpc> {
-    let minimo = match nome {
-        "solid" => r##"{"effect":"solid","color":"#000"}"##,
-        "linearGradient" => {
-            r##"{"effect":"linearGradient","stops":[{"color":"#000"},{"color":"#fff"}]}"##
-        }
-        "radialGradient" => {
-            r##"{"effect":"radialGradient","stops":[{"color":"#000"},{"color":"#fff"}]}"##
-        }
-        "conicGradient" => {
-            r##"{"effect":"conicGradient","stops":[{"color":"#000"},{"color":"#fff"}]}"##
-        }
-        "hairlineGrid" => r##"{"effect":"hairlineGrid","color":"#000","cell":"36px"}"##,
-        "scanlines" => r##"{"effect":"scanlines","color":"#000","line":"1px","gap":"3px"}"##,
-        "stripes" => r##"{"effect":"stripes","color":"#000","background":"#fff","width":"8px"}"##,
-        "dotGrid" => r##"{"effect":"dotGrid","color":"#000","spacing":"8px","dot":"1px"}"##,
-        "vignette" => r##"{"effect":"vignette","color":"#000"}"##,
-        "chamfer" => r##"{"effect":"chamfer","size":"10px"}"##,
-        "blurBehind" => r##"{"effect":"blurBehind","radius":"24px"}"##,
-        "image" => r##"{"effect":"image","src":"trama.png"}"##,
-        _ => return None,
-    };
-    // Un documento minimo che dichiara quell'effetto come motivo: è la via più
-    // corta per ottenere un `Effect` senza esporre i suoi costruttori.
-    let documento = format!(
-        r##"{{"format":2,"id":"esempio","meta":{{"name":"E","author":"A","version":"1.0.0"}},
-             "tokens":{{}},"patterns":{{"x":{minimo}}}}}"##
-    );
-    let skin = rymembra_skin::parse_skin_json(&documento).ok()?;
-    let (_, effetto) = skin.patterns.first()?;
-    Some(EffettoIpc {
-        name: effetto.name(),
-        cost: effetto.cost().weight(),
-        esempio: minimo,
-        params: parametri(effetto.name()),
-        target: match effetto.target() {
-            rymembra_skin::effects::EffectTarget::Background => "background",
-            rymembra_skin::effects::EffectTarget::ClipPath => "clipPath",
-            rymembra_skin::effects::EffectTarget::Filter => "filter",
-        },
-    })
-}
-
-// ── La validazione ──────────────────────────────────────────────────────────
-
-/// Un problema che blocca.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProblemaIpc {
-    /// Il codice del catalogo.
-    pub code: String,
-    /// Dove, in forma di percorso nel documento.
-    pub path: String,
-    /// Cosa non va, e cosa scrivere al suo posto.
-    pub message: String,
-    /// Il nome che forse si voleva scrivere, quando ce n'è uno vicino.
-    pub forse: Vec<String>,
-    /// La riga in cui è scritto, da uno.
-    ///
-    /// `None` soltanto quando nemmeno la radice del documento esiste, cioè su un
-    /// testo vuoto. Prima non c'era affatto, e la finestra la indovinava
-    /// cercando l'ultimo pezzo del percorso col primo `indexOf` che
-    /// corrispondeva: su `parts.x.background.0.stops.1.color` finiva a
-    /// sottolineare la prima riga che nominasse un colore qualunque.
-    pub riga: Option<u32>,
-    /// La colonna, da uno, in unità UTF-16 come le conta la `<textarea>`.
-    pub colonna: Option<u32>,
-}
-
-/// Un avviso, che non blocca.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AvvisoIpc {
-    /// `missingRequiredToken`, `unkeptCapability`, `unusedPattern`,
-    /// `unusedPrefab`, `unusedAnimation`, `costBudget`, `contrast`.
-    ///
-    /// L'elenco è quello di `nome_avviso`, che è un `match` esaustivo: un
-    /// genere nuovo nel nucleo non compila finché non passa di là. Qui però
-    /// resta prosa, e questa riga era rimasta indietro di due generi — vale la
-    /// pena rileggerla insieme all'unione di `Avviso["kind"]` in `ipc.ts`, che
-    /// è l'unico posto dove la stessa svista non la vede nessun compilatore.
-    pub kind: &'static str,
-    /// Dove.
-    pub path: String,
-    /// Cosa.
-    pub message: String,
-    /// La riga in cui è scritto, da uno. Come per [`ProblemaIpc`]: un avviso ha
-    /// un percorso, quindi ha un posto, e il bottone che ci porta è lo stesso.
-    pub riga: Option<u32>,
-    /// La colonna, da uno.
-    pub colonna: Option<u32>,
-}
-
-/// Una coppia di colori misurata.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContrastoIpc {
-    /// Il token davanti.
-    pub davanti: &'static str,
-    /// Il token dietro.
-    pub dietro: &'static str,
-    /// Il rapporto nel tema di base.
-    pub base: f64,
-    /// Il rapporto nella variante, se c'è.
-    pub variante: Option<f64>,
-    /// Passa la soglia in tutti i temi misurati.
-    pub passa: bool,
-}
-
-/// Quanto costa una parte, sui suoi due budget.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CostoParteIpc {
-    /// La parte.
-    pub parte: &'static str,
-    /// Motivi, livelli e filtri: il budget della superficie.
-    pub superficie: u32,
-    /// Le animazioni assegnate: il budget del movimento.
-    pub movimento: u32,
-}
-
-/// L'esito di una validazione.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidazioneIpc {
-    /// Vuoto se il documento è valido.
-    pub errori: Vec<ProblemaIpc>,
-    /// Gli avvisi. Non bloccano: una skin con un avviso è una skin che funziona.
-    pub avvisi: Vec<AvvisoIpc>,
-    /// La tabella dei contrasti, tutta, non solo le righe che non passano.
-    pub contrasti: Vec<ContrastoIpc>,
-    /// Quante volte ogni colore della tavolozza è riferito.
-    pub tavolozza: Vec<(String, usize)>,
-    /// Il foglio compilato. Vuoto quando ci sono errori.
-    pub css: String,
-    /// L'impaginazione, con lo scafale completo.
-    ///
-    /// `None` quando ci sono errori: la vista Impagina resta all'ultimo albero
-    /// valido, come l'anteprima resta all'ultimo foglio valido. Un editor che si
-    /// svuota a metà di una parentesi costringe a scrivere in fretta.
-    pub layout: Option<crate::skin::ImpaginazioneIpc>,
-    /// Il costo totale di motivi e parti.
-    pub costo: u32,
-    /// Quanti pezzi dell'app lo scafale monta, sul suo budget separato.
-    pub costo_scafale: u32,
-    /// Quanto costa il movimento, sommato su tutte le parti animate.
-    ///
-    /// Terzo numero e terzo budget. Il compilatore lo calcolava da quando le
-    /// animazioni nominate esistono e non lo leggeva nessuno: un numero
-    /// prodotto e buttato via è una promessa che il crate faceva senza
-    /// mantenerla. Il verdetto resta di `check_skin`, che il budget lo applica
-    /// **per parte**; questa è la somma, cioè il numero che sta accanto agli
-    /// altri due.
-    pub costo_movimento: u32,
-    /// Quante parti la skin ridisegna.
-    pub parti: usize,
-    /// Il costo di ogni parte ridisegnata: la superficie e il movimento.
-    pub costi: Vec<CostoParteIpc>,
-    /// Quanto movimento può essere in corso nello stesso momento, sulla
-    /// finestra intera: il numero che il budget della finestra misura.
-    pub costo_finestra: u32,
-    /// Le risorse che il documento nomina.
-    pub risorse: Vec<String>,
-    /// I token che seguono la copertina.
-    pub dinamici: Vec<String>,
-    /// Quanti millisecondi ci ha messo a compilare.
-    pub compilato_ms: u128,
-    /// L'id sotto cui il foglio è compilato: quel che la tela scrive in
-    /// `data-skin`. Vuoto quando ci sono errori, perché non c'è un foglio.
-    ///
-    /// È quello della bozza e non quello del documento — vedi
-    /// [`radice_della_bozza`] — e viaggia **col** foglio perché i due devono
-    /// dire la stessa cosa: fino alla 3.0 la tela scriveva l'id della bozza e
-    /// il foglio usava quello del documento, e un documento che cambiava `id`
-    /// lasciava la tela senza una regola che la trovasse finché la rinomina
-    /// non arrivava.
-    pub radice: String,
-}
-
-const fn nome_avviso(kind: rymembra_skin::WarningKind) -> &'static str {
-    use rymembra_skin::WarningKind as W;
-    match kind {
-        W::MissingRequiredToken => "missingRequiredToken",
-        W::UnkeptCapability => "unkeptCapability",
-        W::UnusedPattern => "unusedPattern",
-        W::UnusedPrefab => "unusedPrefab",
-        W::UnusedAnimation => "unusedAnimation",
-        W::CostBudget => "costBudget",
-        W::Contrast => "contrast",
-        W::RestingLoop => "restingLoop",
-    }
-}
-
-// ── I ricordi: le ultime risposte, per testo ────────────────────────────────
-
-/// Quante risposte si ricordano per comando.
-///
-/// Poche, e non è avarizia: il caso che le fa servire è l'annullo — Ctrl+Z,
-/// Ctrl+Y, Ctrl+Z su tre testi — e il ritorno da «Prova sull'app», che
-/// rimanda lo stesso testo di prima. Una risposta porta dentro un foglio da
-/// qualche decina di kilobyte, e sei sono già più di quanti passi si rifanno
-/// in fila.
-const QUANTI_RICORDI: usize = 6;
-
-/// Una risposta ricordata, col testo e la bozza a cui risponde.
-struct Ricordo<V> {
-    impronta: u64,
-    bozza: Option<String>,
-    testo: String,
-    valore: V,
-}
-
-/// Le ultime risposte di un comando dello Studio che non dipende da nient'altro
-/// che dal testo e dalla bozza.
-///
-/// # Perché si ricorda
-///
-/// `studio_valida` è `parse` + `check` + `compile` su tutto il documento, e
-/// girava sul filo della finestra: a ogni passo dell'annullo, a ogni ritorno
-/// dalla prova, la finestra aspettava il nucleo per un documento che aveva
-/// già visto un secondo prima. Il nucleo è deterministico — stesso testo,
-/// stessa bozza, stessa risposta — quindi la risposta si può tenere.
-///
-/// L'impronta serve a cercare in fretta; il confronto vero è sul testo intero,
-/// così due testi con la stessa impronta non si scambiano mai la risposta.
-struct Ricordi<V> {
-    voci: Mutex<Vec<Ricordo<V>>>,
-}
-
-impl<V: Clone> Ricordi<V> {
-    const fn nuovi() -> Self {
-        Self {
-            voci: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// La risposta ricordata, o quella calcolata adesso — e ricordata.
-    ///
-    /// Il calcolo sta **fuori** dal lucchetto: due validazioni diverse non si
-    /// aspettano a vicenda, e due uguali al peggio calcolano due volte.
-    fn o_calcola(&self, bozza: Option<&str>, testo: &str, calcola: impl FnOnce() -> V) -> V {
-        let impronta = {
-            let mut h = std::hash::DefaultHasher::new();
-            bozza.hash(&mut h);
-            testo.hash(&mut h);
-            h.finish()
-        };
-        let stesso = |r: &Ricordo<V>| {
-            r.impronta == impronta && r.bozza.as_deref() == bozza && r.testo == testo
-        };
-        {
-            let voci = self.voci.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(trovato) = voci.iter().find(|r| stesso(r)) {
-                return trovato.valore.clone();
-            }
-        }
-        let valore = calcola();
-        let mut voci = self.voci.lock().unwrap_or_else(PoisonError::into_inner);
-        voci.retain(|r| !stesso(r));
-        voci.insert(
-            0,
-            Ricordo {
-                impronta,
-                bozza: bozza.map(ToOwned::to_owned),
-                testo: testo.to_owned(),
-                valore: valore.clone(),
-            },
-        );
-        voci.truncate(QUANTI_RICORDI);
-        valore
-    }
-}
-
-static VALIDAZIONI: Ricordi<ValidazioneIpc> = Ricordi::nuovi();
-static PROVE: Ricordi<Result<crate::skin::SkinIpc, AppError>> = Ricordi::nuovi();
-static MIGRAZIONI: Ricordi<MigratoIpc> = Ricordi::nuovi();
-
-/// L'id sotto cui compilare la tela e la prova: quello della bozza, quando si
-/// può usare, altrimenti quello del documento.
-///
-/// Quello della bozza perché è la cartella da cui vengono le risorse, e il
-/// documento può dichiarare un `id` che la bozza non ha ancora — l'ha appena
-/// cambiato chi scrive, o è di un'altra skin e la rinomina è stata rifiutata.
-/// Compilare col documento voleva dire caratteri e immagini chiesti a una
-/// cartella che non esiste. Si usa solo se è già nell'alfabeto del foglio
-/// (lettere, cifre, trattini): il compilatore riduce l'id a quello, e un id
-/// ridotto non nominerebbe più la cartella.
-fn radice_della_bozza(bozza: Option<&str>, documento: &str) -> String {
-    bozza
-        .filter(|b| id_sicuro(b) && b.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        .unwrap_or(documento)
-        .to_owned()
-}
-
-/// Valida e compila un documento skin scritto a mano.
-///
-/// **Non fallisce mai.** Un documento non valido è il caso normale mentre lo si
-/// scrive — a metà di una parentesi il JSON non è JSON — e restituire un errore
-/// IPC costringerebbe l'editor a distinguere «il comando è andato storto» da «il
-/// documento non è ancora finito». Qui gli errori sono un campo del risultato.
-///
-/// `bozza` è la bozza aperta: il foglio si compila sotto il suo id, e le
-/// risorse vengono dalla sua cartella. Vedi [`radice_della_bozza`].
-///
-/// Gira fuori dal filo della finestra, e ricorda le ultime risposte: vedi
-/// [`Ricordi`].
-#[tauri::command(async)]
-#[must_use]
-pub fn studio_valida(sorgente: String, bozza: Option<String>) -> ValidazioneIpc {
-    VALIDAZIONI.o_calcola(bozza.as_deref(), &sorgente, || {
-        valida(&sorgente, bozza.as_deref())
-    })
-}
-
-/// Quel che fa [`studio_valida`], senza i ricordi.
-fn valida(sorgente: &str, bozza: Option<&str>) -> ValidazioneIpc {
-    let inizio = std::time::Instant::now();
-    let vuoto = ValidazioneIpc {
-        errori: Vec::new(),
-        avvisi: Vec::new(),
-        contrasti: Vec::new(),
-        tavolozza: Vec::new(),
-        css: String::new(),
-        layout: None,
-        costo: 0,
-        costo_scafale: 0,
-        costo_movimento: 0,
-        parti: 0,
-        costi: Vec::new(),
-        costo_finestra: 0,
-        risorse: Vec::new(),
-        dinamici: Vec::new(),
-        compilato_ms: 0,
-        radice: String::new(),
-    };
-
-    // Le posizioni si calcolano una volta per validazione e non una per
-    // problema: è una passata sola sul testo, e sono venti token sbagliati che
-    // chiedono la stessa mappa.
-    let dove = rymembra_skin::posizioni(sorgente);
-
-    let documento = match rymembra_skin::leggi_skin(sorgente) {
-        Ok(documento) => documento,
-        Err(problemi) => {
-            let mut errori: Vec<ProblemaIpc> =
-                problemi.iter().map(|p| problema_da(p, &dove)).collect();
-            // In ordine di riga, e non è cosmesi. I token e le parti si leggono
-            // da una mappa di `serde_json`, che li ordina per nome: un elenco
-            // così esce alfabetico, e chi lo scorre accanto al file salta su e
-            // giù per il documento a ogni riga. Chi ha scritto tre token
-            // sbagliati li corregge dall'alto in basso.
-            //
-            // Ordinamento stabile: a parità di posizione — due problemi sulla
-            // stessa riga — resta l'ordine in cui il nucleo li ha trovati.
-            errori.sort_by_key(|e| (e.riga.unwrap_or(u32::MAX), e.colonna.unwrap_or(u32::MAX)));
-            return ValidazioneIpc { errori, ..vuoto };
-        }
-    };
-
-    // Nell'ambito della tela: i selettori della finestra — la tela è un
-    // `<iframe>`, un documento suo dove `:root` è la sua radice e la skin
-    // attiva dell'app non c'è — con le risorse della bozza e gli stati che la
-    // tela può forzare (`data-forza`). Sotto l'id della bozza: vedi
-    // [`radice_della_bozza`].
-    let ambito = rymembra_skin::Ambito::tela(&radice_della_bozza(bozza, &documento.id));
-    let compilata = rymembra_skin::compile::compila(&documento, &ambito);
-    ValidazioneIpc {
-        errori: Vec::new(),
-        avvisi: rymembra_skin::check_skin(&documento)
-            .into_iter()
-            .map(|a| {
-                let punto = dove.di(&a.path);
-                AvvisoIpc {
-                    kind: nome_avviso(a.kind),
-                    path: a.path,
-                    message: a.message,
-                    riga: punto.map(|p| p.riga),
-                    colonna: punto.map(|p| p.colonna),
-                }
-            })
-            .collect::<Vec<_>>(),
-        contrasti: rymembra_skin::contrast_pairs(&documento)
-            .into_iter()
-            .map(|c| ContrastoIpc {
-                passa: c.passa(),
-                davanti: c.foreground,
-                dietro: c.background,
-                base: c.base,
-                variante: c.variante,
-            })
-            .collect(),
-        tavolozza: rymembra_skin::palette_usage(&documento),
-        css: compilata.css,
-        layout: Some(crate::skin::impaginazione(&documento)),
-        costo: compilata.cost,
-        costo_scafale: compilata.shell_cost,
-        costo_movimento: compilata.motion_cost,
-        parti: documento.parts.len(),
-        costi: documento
-            .parts
-            .iter()
-            .map(|stile| CostoParteIpc {
-                parte: stile.def.name,
-                superficie: stile.costo_superficie(),
-                movimento: stile.motion.costo(),
-            })
-            .collect(),
-        costo_finestra: documento
-            .parts
-            .iter()
-            .map(|stile| stile.motion.costo_insieme())
-            .sum(),
-        risorse: documento.assets(),
-        dinamici: compilata
-            .dynamic_tokens
-            .into_iter()
-            .map(ToOwned::to_owned)
-            .collect(),
-        compilato_ms: inizio.elapsed().as_millis(),
-        radice: ambito.id().to_owned(),
-    }
-}
-
-/// I nomi suggeriti dal nucleo, presi dal messaggio come dati.
-///
-/// Il suggerimento di `vicini()` esiste già dentro la frase — «Forse intendevi
-/// «color.accent»?» — ma una frase non è un bottone. Qui si rileggono le
-/// virgolette basse e si tiene quel che è davvero un nome del registro, così
-/// l'editor può offrirlo come correzione da premere.
-///
-/// # Perché tre registri e non solo le parti
-///
-/// Perché il filtro era `parts::part(nome).is_some()`, e i refusi sui **token**
-/// sono i più frequenti di tutti: `color.accents` per `color.accent`. Il
-/// suggerimento c'era, il bottone no, e la differenza la vedeva solo chi sapeva
-/// già cosa scrivere. `rinominaChiave` — quel che il bottone chiama — lavora sul
-/// percorso del problema, quindi non gli importa di che registro sia il nome.
-fn suggeriti(messaggio: &str) -> Vec<String> {
-    messaggio
-        .split('«')
-        .skip(1)
-        .filter_map(|pezzo| pezzo.split_once('»').map(|(dentro, _)| dentro.to_owned()))
-        .filter(|nome| {
-            rymembra_skin::parts::part(nome).is_some()
-                || rymembra_skin::tokens::token(nome).is_some()
-                || rymembra_skin::effects::Effect::NAMES.contains(&nome.as_str())
-        })
-        .collect()
-}
-
-/// Traduce un problema di validazione in qualcosa che l'editor può mostrare.
-///
-/// # Cosa faceva prima, e perché non poteva funzionare
-///
-/// Prendeva un `AppError` — cioè i venti problemi già uniti da `in_errore` con
-/// dei punti e virgola — e si riprendeva il percorso facendo `split_once(':')`
-/// sulla prosa. Ne usciva **un** problema con dentro venti frasi, un percorso
-/// che era quello del primo, e un pannello che cresceva finché non aveva mangiato
-/// l'editor. Adesso il percorso, il messaggio e il codice arrivano dai campi di
-/// [`rymembra_skin::SkinIssue`], che li ha sempre avuti.
-fn problema_da(guasto: &rymembra_skin::SkinIssue, dove: &rymembra_skin::Posizioni) -> ProblemaIpc {
-    // Il punto scritto nel problema vince su quello dedotto dal percorso: ce
-    // l'ha soltanto l'errore di sintassi, che un percorso non ce l'ha affatto.
-    let punto = guasto.punto.or_else(|| dove.di(&guasto.path));
-    ProblemaIpc {
-        code: guasto.code.kind().code().to_owned(),
-        path: guasto.path.clone(),
-        message: guasto.message.clone(),
-        forse: suggeriti(&guasto.message),
-        riga: punto.map(|p| p.riga),
-        colonna: punto.map(|p| p.colonna),
-    }
-}
 
 // ── La bozza, il pacchetto, le istantanee ───────────────────────────────────
 
@@ -1408,6 +100,23 @@ fn id_sicuro(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// L'id è uno che il formato accetta: da 2 a 48 fra minuscole, cifre e
+/// trattini, e comincia con una lettera.
+///
+/// È la regola di `rymembra_skin::document` (`identificatore`), che lì è
+/// privata: copiata qui, e legata all'originale dalla prova
+/// `l_id_dichiarato_segue_la_regola_del_formato`. Serve a [`id_dichiarato`]:
+/// con [`id_sicuro`] al suo posto, un «Notturno» scritto come un nome spostava
+/// la bozza in `bozze/Notturno` — un id che il formato poi rifiuta — e la
+/// correzione in «notturno» trovava su Windows la propria cartella e la
+/// scambiava per quella di un altro.
+fn id_del_formato(id: &str) -> bool {
+    let mut caratteri = id.bytes();
+    caratteri.next().is_some_and(|b| b.is_ascii_lowercase())
+        && caratteri.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && (2..=48).contains(&id.len())
 }
 
 fn non_trovata(id: &str) -> AppError {
@@ -1640,10 +349,14 @@ fn rifiutata(nome: &str, perche: &str) -> AppError {
 /// `.png` che non lo è si ferma qui, col suo nome, invece che all'esportazione.
 ///
 /// E così la misura: la risorsa entra solo se il pacchetto che ne verrebbe sta
-/// nei limiti della lettura (`entra_in_un_pacchetto`). Fino alla 3.0 si
-/// contavano soltanto le voci, e una bozza poteva raccogliere trenta megabyte
-/// di immagini che nessun `.ryskin` avrebbe mai contenuto — lo si scopriva
-/// esportando, cioè dopo averci lavorato sopra.
+/// nei limiti della lettura (`entra_in_un_pacchetto_con_nomi`). Fino alla 3.0
+/// si contavano soltanto le voci, e una bozza poteva raccogliere trenta
+/// megabyte di immagini che nessun `.ryskin` avrebbe mai contenuto — lo si
+/// scopriva esportando, cioè dopo averci lavorato sopra. La misura è quella
+/// coi nomi veri, compreso quello che la risorsa nuova prende davvero
+/// (`trama-2.png` se `trama.png` c'è già): la stima senza nomi sbaglia per
+/// difetto con i nomi oltre gli ottanta caratteri, e una risorsa entrava nella
+/// bozza per poi fermare l'esportazione.
 fn aggiungi_risorsa(data_dir: &Path, id: &str, percorso: &Path) -> Result<VoceFileIpc, AppError> {
     use rymembra_skin::package::limits::MAX_ENTRY_BYTES;
 
@@ -1670,15 +383,15 @@ fn aggiungi_risorsa(data_dir: &Path, id: &str, percorso: &Path) -> Result<VoceFi
         ));
     }
     let quanto = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
-    rymembra_skin::package::entra_in_un_pacchetto(
+    let libero = nome_libero(&cartella, &nome);
+    let gia = risorse_della_bozza(&cartella);
+    rymembra_skin::package::entra_in_un_pacchetto_con_nomi(
         quanto(da.sorgente.len()),
         da.preview.as_ref().map(|p| quanto(p.len())),
-        risorse_della_bozza(&cartella)
-            .iter()
-            .map(|r| quanto(r.bytes.len()))
-            .chain([byte]),
+        gia.iter()
+            .map(|r| (r.name.as_str(), quanto(r.bytes.len())))
+            .chain([(libero.as_str(), byte)]),
     )?;
-    let libero = nome_libero(&cartella, &nome);
     scrivi_atomico(&cartella.join(&libero), &bytes)?;
     Ok(VoceFileIpc {
         nome: format!("assets/{libero}"),
@@ -1843,14 +556,16 @@ pub struct SalvataggioIpc {
     pub rinomina: Option<ErroreIpc>,
 }
 
-/// L'`id` che il testo dichiara, se è un nome di cartella possibile.
+/// L'`id` che il testo dichiara, se è uno che il formato accetta.
 ///
 /// Letto dal JSON e non dal documento validato: una bozza si salva anche a
-/// metà, e un token sbagliato altrove non toglie niente al suo `id`.
+/// metà, e un token sbagliato altrove non toglie niente al suo `id`. Ma l'id
+/// stesso deve passare la regola del formato ([`id_del_formato`]): uno che la
+/// validazione rifiuta non è un posto in cui spostare la bozza.
 fn id_dichiarato(sorgente: &str) -> Option<String> {
     let valore: serde_json::Value = serde_json::from_str(sorgente).ok()?;
     let id = valore.get("id")?.as_str()?;
-    id_sicuro(id).then(|| id.to_owned())
+    id_del_formato(id).then(|| id.to_owned())
 }
 
 /// Salva la bozza, dopo averla spostata sotto l'id che il documento dichiara.
@@ -1866,6 +581,16 @@ fn id_dichiarato(sorgente: &str) -> Option<String> {
 /// con un `catch` vuoto. Adesso è un passo solo, sotto il lucchetto delle
 /// bozze, e quel che è successo torna indietro: dove sta la bozza, e perché
 /// non si è spostata se non si è spostata.
+///
+/// # Prima si scrive, poi si sposta
+///
+/// Il testo si scrive nella cartella che la finestra conosce, e solo dopo la
+/// cartella si sposta. Al contrario, una scrittura fallita dopo una rinomina
+/// riuscita (disco pieno, `skin.json` tenuto aperto) restituiva un errore con
+/// la bozza già in `bozze/seconda`: la finestra restava su «prima», il
+/// salvataggio dopo scambiava la propria cartella spostata per quella di
+/// un'altra bozza, e il testo finiva in una `bozze/prima` nuova, senza risorse
+/// né conversazione.
 fn salva_bozza(
     data_dir: &Path,
     id: &str,
@@ -1875,6 +600,10 @@ fn salva_bozza(
     if !id_sicuro(id) {
         return Err(non_trovata(id));
     }
+    let file = cartella_bozze(data_dir)
+        .join(id)
+        .join(rymembra_skin::package::MANIFEST_NAME);
+    scrivi_atomico(&file, sorgente.as_bytes())?;
     let mut dove = id.to_owned();
     let mut rinomina = None;
     if let Some(dichiarato) = id_dichiarato(sorgente).filter(|d| d != id) {
@@ -1883,10 +612,6 @@ fn salva_bozza(
             Err(rifiuto) => rinomina = Some(ErroreIpc::from(rifiuto)),
         }
     }
-    let file = cartella_bozze(data_dir)
-        .join(&dove)
-        .join(rymembra_skin::package::MANIFEST_NAME);
-    scrivi_atomico(&file, sorgente.as_bytes())?;
     Ok(SalvataggioIpc { id: dove, rinomina })
 }
 
@@ -1934,9 +659,30 @@ pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
 }
 
 /// Quel che fa [`studio_scarta`], senza lo stato di Tauri attorno.
+///
+/// # Prima di cancellare, un posto a cui tornare
+///
+/// Una bozza che porta un id senza pacchetto — il risultato normale di
+/// cambiare l'id di una skin derivata — non ha niente dietro di sé: la
+/// cartella se ne andava con le risorse e la conversazione, e poi
+/// `apri_documento` rispondeva «skin non trovata» con l'editor che mostrava
+/// ancora, già segnato come salvato, un testo che sul disco non c'era più. Si
+/// guarda quindi prima: una skin di serie, o un pacchetto che si legge — la
+/// stessa lettura di [`da_lavorare`] — e senza nessuno dei due non si tocca
+/// niente.
 fn scarta_bozza(data_dir: &Path, id: &str) -> Result<String, AppError> {
     if !id_sicuro(id) {
         return Err(non_trovata(id));
+    }
+    let pacchetto = data_dir.join("skin").join(format!("{id}.ryskin"));
+    let si_torna = rymembra_skin::di_serie(id).is_some()
+        || std::fs::read(&pacchetto)
+            .is_ok_and(|bytes| rymembra_skin::package::leggi_pacchetto_grezzo(&bytes).is_ok());
+    if !si_torna {
+        return Err(non_trovata(id).with_cause(
+            "questa bozza non ha un pacchetto a cui tornare: buttarla vorrebbe dire perderla"
+                .to_owned(),
+        ));
     }
     let cartella = cartella_bozze(data_dir).join(id);
     if cartella.exists() {
@@ -1999,69 +745,6 @@ pub fn studio_esporta(
     .map_err(errore)
 }
 
-/// Un testo portato al formato di oggi.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MigratoIpc {
-    /// Il testo da aprire.
-    pub sorgente: String,
-    /// Di quale formato era.
-    pub da: u64,
-}
-
-/// Porta un testo al formato di oggi: per chi incolla nello Studio una skin
-/// della 2.x.
-///
-/// Un testo che non è JSON torna com'era, col formato di oggi: la migrazione
-/// non è il posto in cui dire cosa non va in una parentesi — lo dice la
-/// validazione, riga per riga.
-///
-/// Fuori dal filo della finestra, e coi suoi ricordi: vedi [`Ricordi`].
-#[tauri::command(async)]
-#[must_use]
-pub fn studio_migra(sorgente: String) -> MigratoIpc {
-    MIGRAZIONI.o_calcola(None, &sorgente, || {
-        match rymembra_skin::migra_testo(&sorgente) {
-            Ok(migrato) => MigratoIpc {
-                sorgente: migrato.sorgente,
-                da: migrato.da,
-            },
-            Err(_) => MigratoIpc {
-                sorgente: sorgente.clone(),
-                da: u64::from(rymembra_skin::SKIN_FORMAT_VERSION),
-            },
-        }
-    })
-}
-
-/// Compila una bozza per la finestra vera: «Prova sull'app».
-///
-/// Selettori della finestra, risorse della bozza — e l'id della **bozza**,
-/// come la tela ([`radice_della_bozza`]): le risorse stanno nella sua
-/// cartella, e la skin che torna porta lo stesso id dei selettori, che è
-/// quel che la finestra scrive in `data-skin`. Gli errori fermano: una bozza
-/// che non si legge non si prova addosso.
-///
-/// Fuori dal filo della finestra, e coi suoi ricordi: tornare dalla prova e
-/// riprovare lo stesso testo non ricompila niente.
-#[tauri::command(async)]
-pub fn studio_compila_app(sorgente: String, bozza: String) -> Esito<crate::skin::SkinIpc> {
-    PROVE
-        .o_calcola(Some(&bozza), &sorgente, || {
-            compila_per_la_prova(&sorgente, &bozza)
-        })
-        .map_err(errore)
-}
-
-/// Quel che fa [`studio_compila_app`], senza i ricordi.
-fn compila_per_la_prova(sorgente: &str, bozza: &str) -> Result<crate::skin::SkinIpc, AppError> {
-    let documento = rymembra_skin::parse_skin_json(sorgente)?;
-    let ambito = rymembra_skin::Ambito::prova(&radice_della_bozza(Some(bozza), &documento.id));
-    let mut skin = crate::skin::skin_ipc(&documento, &ambito);
-    skin.id = ambito.id().to_owned();
-    Ok(skin)
-}
-
 /// Sposta la bozza e le sue istantanee sotto un altro identificatore.
 ///
 /// Serve quando nel documento cambia `id`: la bozza vive in una cartella col
@@ -2070,11 +753,35 @@ fn compila_per_la_prova(sorgente: &str, bozza: &str) -> Result<crate::skin::Skin
 /// il nome nuovo c'è già una bozza, una skin di serie o una skin **installata**
 /// si dice di no. L'ultima mancava fino alla 3.0: una bozza rinominata come
 /// una skin installata di un altro, alla prima «Salva e usa», ne prendeva il
-/// posto.
+/// posto. Il rifiuto di qui però ferma la rinomina, non l'installazione: il
+/// testo resta nella bozza col suo `"id"`, e a non lasciarlo installare sopra
+/// l'altra skin è `skin::installa_sorgente`, con la stessa regola.
 ///
 /// `origine` è la skin da cui lo Studio è partito: tornare al suo id non è
 /// prendere il posto di un'altra, è rimettere a posto il proprio. Senza,
 /// chi cambiava l'`id` e ci ripensava restava chiuso fuori dalla sua skin.
+///
+/// # Le istantanee di un altro
+///
+/// Anche una serie di istantanee sotto il nome nuovo è un conflitto, come per
+/// [`occupati`]: quelle di una skin buttata e disinstallata restano, e la
+/// bozza che ne prendeva il nome si ritrovava nell'elenco le istantanee di
+/// un'altra skin mentre le sue restavano indietro. Tornando all'`origine` le
+/// istantanee che ci sono sono sue, e le due serie si uniscono voce per voce.
+///
+/// # Solo le maiuscole
+///
+/// `Notturno` → `notturno` su Windows è la stessa cartella, ed `exists()`
+/// sull'arrivo risponde sì: era un falso «id già preso» sulla propria bozza.
+/// Si riconosce dalla cartella stessa, e si rinomina passando per un nome che
+/// nessun id può avere.
+///
+/// # Dopo che la cartella si è spostata
+///
+/// La bozza sta dove sta la sua cartella, e lì la deve cercare la finestra:
+/// una volta spostata, le istantanee la seguono se ci riescono, e un loro
+/// guasto non fa più tornare un errore che [`salva_bozza`] leggerebbe come
+/// «non spostata».
 fn rinomina_bozza(
     data_dir: &Path,
     da: &str,
@@ -2087,38 +794,95 @@ fn rinomina_bozza(
     if da == a {
         return Ok(());
     }
+    let partenza = cartella_bozze(data_dir).join(da);
     let arrivo = cartella_bozze(data_dir).join(a);
-    let installata =
-        origine != Some(a) && data_dir.join("skin").join(format!("{a}.ryskin")).exists();
-    if rymembra_skin::di_serie(a).is_some() || arrivo.exists() || installata {
+    if da.eq_ignore_ascii_case(a) && stessa_cartella(&partenza, &arrivo) {
+        return rinomina_le_maiuscole(data_dir, da, a);
+    }
+    let sua = origine == Some(a);
+    let installata = !sua && data_dir.join("skin").join(format!("{a}.ryskin")).exists();
+    let istantanee_altrui = !sua && cartella_istantanee(data_dir, a).exists();
+    if rymembra_skin::di_serie(a).is_some() || arrivo.exists() || installata || istantanee_altrui {
         return Err(
             AppError::new(ErrorCode::SkinIdConflict { id: a.to_owned() }).with_cause(
-                "sotto questo identificatore c'è già una skin di serie, una skin installata o \
-                 un'altra bozza"
+                "sotto questo identificatore c'è già una skin di serie, una skin installata, \
+                 un'altra bozza o le istantanee di un'altra skin"
                     .to_owned(),
             ),
         );
     }
-    let partenza = cartella_bozze(data_dir).join(da);
     if partenza.exists() {
         std::fs::create_dir_all(cartella_bozze(data_dir))
             .map_err(|err| rymembra_app::files::io_error(&arrivo.display().to_string(), &err))?;
         std::fs::rename(&partenza, &arrivo)
             .map_err(|err| rymembra_app::files::io_error(&arrivo.display().to_string(), &err))?;
     }
-    let istantanee = istantanee_di(data_dir, da);
+    sposta_istantanee(data_dir, da, a);
+    Ok(())
+}
+
+/// Le due cartelle sono la stessa sul disco: il caso di due nomi che
+/// differiscono solo per le maiuscole su un file system che non le distingue.
+fn stessa_cartella(una: &Path, altra: &Path) -> bool {
+    match (std::fs::canonicalize(una), std::fs::canonicalize(altra)) {
+        (Ok(una), Ok(altra)) => una == altra,
+        _ => false,
+    }
+}
+
+/// Porta la bozza e le sue istantanee da `da` ad `a`, che differiscono solo
+/// per le maiuscole: vedi [`rinomina_bozza`]. Il passaggio intermedio ha un
+/// punto nel nome, che [`id_sicuro`] non ammette: non può essere la cartella
+/// di nessuna bozza.
+fn rinomina_le_maiuscole(data_dir: &Path, da: &str, a: &str) -> Result<(), AppError> {
+    let bozze = cartella_bozze(data_dir);
+    let di_passaggio = bozze.join(format!("{a}.maiuscole"));
+    std::fs::rename(bozze.join(da), &di_passaggio)
+        .map_err(|err| rymembra_app::files::io_error(&di_passaggio.display().to_string(), &err))?;
+    let arrivo = bozze.join(a);
+    std::fs::rename(&di_passaggio, &arrivo)
+        .map_err(|err| rymembra_app::files::io_error(&arrivo.display().to_string(), &err))?;
+    let istantanee = cartella_istantanee(data_dir, da);
     if istantanee.exists() {
-        let nuove = cartella_istantanee(data_dir, a);
-        if let Some(sopra) = nuove.parent() {
-            std::fs::create_dir_all(sopra)
-                .map_err(|err| rymembra_app::files::io_error(&sopra.display().to_string(), &err))?;
-        }
-        if !nuove.exists() {
-            std::fs::rename(&istantanee, &nuove)
-                .map_err(|err| rymembra_app::files::io_error(&nuove.display().to_string(), &err))?;
+        let di_passaggio = istantanee.with_file_name(format!("{a}.maiuscole"));
+        if std::fs::rename(&istantanee, &di_passaggio).is_ok() {
+            drop(std::fs::rename(
+                &di_passaggio,
+                cartella_istantanee(data_dir, a),
+            ));
         }
     }
     Ok(())
+}
+
+/// Le istantanee di `da` passano ad `a`: la cartella intera se sotto `a` non
+/// ce n'è, se no voce per voce come in [`istantanee_di`]. Per quel che si
+/// riesce: un file che non si sposta resta dov'era, e la bozza resta comunque
+/// dove si è spostata.
+fn sposta_istantanee(data_dir: &Path, da: &str, a: &str) {
+    let istantanee = istantanee_di(data_dir, da);
+    if !istantanee.exists() {
+        return;
+    }
+    let nuove = cartella_istantanee(data_dir, a);
+    if !nuove.exists() {
+        if let Some(sopra) = nuove.parent() {
+            drop(std::fs::create_dir_all(sopra));
+        }
+        if std::fs::rename(&istantanee, &nuove).is_ok() {
+            return;
+        }
+    }
+    let Ok(voci) = std::fs::read_dir(&istantanee) else {
+        return;
+    };
+    if std::fs::create_dir_all(&nuove).is_err() {
+        return;
+    }
+    for voce in voci.flatten() {
+        drop(std::fs::rename(voce.path(), nuove.join(voce.file_name())));
+    }
+    drop(std::fs::remove_dir(&istantanee));
 }
 
 // ── Un tema nuovo ───────────────────────────────────────────────────────────
@@ -2182,9 +946,13 @@ fn crea_tema(
     if !id_sicuro(&id) {
         return Err(non_trovata(&id));
     }
+    // Senza badare alle maiuscole: su Windows `bozze/Notte` è la cartella di
+    // «notte», e il tema nuovo ne erediterebbe chat e risorse.
     let preso = rymembra_skin::di_serie(&id).is_some()
         || data_dir.join("skin").join(format!("{id}.ryskin")).exists()
-        || occupati(data_dir).contains(&id);
+        || occupati(data_dir)
+            .iter()
+            .any(|occupato| occupato.eq_ignore_ascii_case(&id));
     if preso {
         return Err(AppError::new(ErrorCode::SkinIdConflict { id }));
     }
@@ -2278,17 +1046,25 @@ fn scrivi_chat(data_dir: &Path, id: &str, testo: &str) -> Result<(), AppError> {
             _ => Ok(()),
         };
     }
-    let oggetto =
-        serde_json::from_str::<serde_json::Value>(testo).is_ok_and(|valore| valore.is_object());
-    if testo.len() > CHAT_MASSIMA || !oggetto {
-        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+    // Due rifiuti con due frasi: «troppo lunga» e «non è un oggetto JSON» sono
+    // due guasti diversi della finestra, e una frase sola per tutti e due
+    // mandava a cercare nel posto sbagliato. Il peso prima, così un testo
+    // enorme non si analizza nemmeno.
+    let rifiuto = |detail: String| {
+        Err(AppError::new(ErrorCode::IpcPayloadInvalid {
             channel: "studio_chat_scrivi".to_owned(),
-            detail: Some(format!(
-                "la conversazione non è un oggetto JSON entro {} MB ({} byte)",
-                CHAT_MASSIMA_MB,
-                testo.len()
-            )),
-        }));
+            detail: Some(detail),
+        }))
+    };
+    if testo.len() > CHAT_MASSIMA {
+        return rifiuto(format!(
+            "la conversazione supera i {} MB ({} byte)",
+            CHAT_MASSIMA_MB,
+            testo.len()
+        ));
+    }
+    if !serde_json::from_str::<serde_json::Value>(testo).is_ok_and(|valore| valore.is_object()) {
+        return rifiuto("la conversazione non è un oggetto JSON".to_owned());
     }
     scrivi_atomico(&file, testo.as_bytes())
 }
@@ -2400,7 +1176,7 @@ impl Causa {
     }
 }
 
-/// Quante istantanee si tengono per bozza.
+/// Quante istantanee si tengono per bozza, oltre a quella della migrazione.
 ///
 /// Oltre, la cartella di una bozza cresce senza fine e nessuno se ne accorge — e
 /// le venti più recenti sono già più di quante se ne guardino.
@@ -2412,7 +1188,8 @@ const QUANTE_ISTANTANEE: usize = 20;
 pub struct IstantaneaIpc {
     /// Millisecondi dall'epoca. È anche la sua identità.
     pub quando: u64,
-    /// `derivata`, `salvata`, `esportata`, `manuale`.
+    /// Il nome di una [`Causa`] (`Causa::nome`): `derivata`, `salvata`,
+    /// `esportata`, `manuale` o `migrata`.
     pub causa: &'static str,
     /// Quante parti ridisegnava.
     pub parti: usize,
@@ -2524,8 +1301,15 @@ fn prendi_istantanea(cartella: &Path, sorgente: &str, causa: Causa) -> Result<()
 
         scrivi_atomico(&cartella.join(nome_istantanea(&presa)), sorgente.as_bytes())?;
 
+        // Quella della migrazione non gira con le altre: è l'unica copia del
+        // testo del formato 1, e una ventina di salvataggi la spingevano fuori
+        // proprio quando ci si accorge che la migrazione ha tradito qualcosa.
+        // Se ne prende una ogni volta che un testo del formato 1 si apre (vedi
+        // `apri_documento`), cioè di norma una per skin: tenerle fuori dal
+        // conto non fa crescere la cartella senza fine.
         for vecchia in elenco_istantanee(cartella)
             .into_iter()
+            .filter(|istantanea| istantanea.causa != Causa::Migrata.nome())
             .skip(QUANTE_ISTANTANEE)
         {
             // Un file che non si cancella non è un motivo per far fallire il
@@ -2583,903 +1367,4 @@ pub fn studio_ripristina(stato: State<'_, Stato>, id: String, quando: u64) -> Es
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::skin::DI_SERIE;
-
-    #[test]
-    fn il_registro_dice_tutto_quel_che_serve_a_un_editor() {
-        let registro = studio_registro();
-        assert_eq!(registro.tokens.len(), rymembra_skin::TOKENS.len());
-        assert_eq!(registro.parts.len(), rymembra_skin::parts::PARTS.len());
-        // Gli undici effetti, ognuno col suo costo vero. Se un effetto nuovo
-        // nascesse e `esempio()` non lo conoscesse, questo test lo direbbe
-        // invece di lasciarlo sparire in silenzio dall'elenco.
-        assert_eq!(registro.effects.len(), rymembra_skin::Effect::NAMES.len());
-        let sfoca = registro
-            .effects
-            .iter()
-            .find(|e| e.name == "blurBehind")
-            .expect("blurBehind");
-        assert_eq!(
-            sfoca.cost, registro.budget,
-            "una sfocatura da sola è tutto il budget"
-        );
-
-        // L'esemplare minimo è quel che «Aggiungi livello» scrive nel documento.
-        // Se non si lasciasse riparsare, l'editor comporrebbe un livello che la
-        // validazione rifiuta un istante dopo averlo aggiunto.
-        for effetto in &registro.effects {
-            let documento = format!(
-                r##"{{"format":1,"id":"esempio","meta":{{"name":"E","author":"A","version":"1.0.0"}},
-                     "tokens":{{}},"patterns":{{"x":{}}}}}"##,
-                effetto.esempio
-            );
-            let riletto = rymembra_skin::parse_skin_json(&documento)
-                .unwrap_or_else(|err| panic!("«{}»: {err:?}", effetto.name));
-            let (_, quale) = riletto.patterns.first().expect("il motivo");
-            assert_eq!(quale.name(), effetto.name);
-        }
-    }
-
-    #[test]
-    fn la_validazione_non_fallisce_mai_su_un_documento_rotto() {
-        // A metà di una parentesi il JSON non è JSON, ed è il caso normale
-        // mentre si scrive: se questo comando tornasse un errore IPC, l'editor
-        // dovrebbe distinguere «il comando è andato storto» da «non ho ancora
-        // finito di scrivere».
-        let esito = studio_valida("{ \"format\": 1, ".to_owned(), None);
-        assert_eq!(esito.errori.len(), 1);
-        assert!(esito.css.is_empty(), "niente foglio da un documento rotto");
-    }
-
-    /// Il difetto che si vedeva peggio: un errore di sintassi arrivava come
-    /// `{ code, path: "", message: "", forse: [] }`, cioè un pannello rosso
-    /// permanente che non diceva né dove né cosa. La frase che l'editor mostrava
-    /// al suo posto veniva dal catalogo ed era scritta per il toast dell'app:
-    /// «Aprila nello Studio: i problemi vengono elencati riga per riga» —
-    /// letta da dentro lo Studio, e falsa.
-    #[test]
-    fn un_errore_di_sintassi_dice_dove_e_cosa() {
-        // Una virgola che manca fra due campi, alla riga tre.
-        let json = "{
-  \"format\": 1
-  \"id\": \"prova\"
-}";
-        let esito = studio_valida(json.to_owned(), None);
-        let solo = match esito.errori.as_slice() {
-            [solo] => solo,
-            altri => panic!("un errore di sintassi è uno solo: {altri:#?}"),
-        };
-        assert_eq!(solo.code, "skin.manifestInvalid");
-        assert_eq!(solo.riga, Some(3), "{solo:#?}");
-        assert!(solo.colonna.is_some());
-        assert!(
-            solo.message.contains("virgola"),
-            "il messaggio dice cosa manca, non «il manifest non è JSON»: {solo:#?}"
-        );
-    }
-
-    /// Venti problemi erano venti frasi dentro **un** messaggio, unite da punti
-    /// e virgola, con il percorso del primo. Il piede che conta «{n} errori»,
-    /// l'elenco che li mostra e il giro di correzione della chat sono tutti e
-    /// tre scritti per una lista: adesso ne ricevono una.
-    #[test]
-    fn ogni_problema_e_un_problema_e_porta_la_sua_riga() {
-        // Solo nel primo `tokens`: dal formato 2 ce n'è un secondo, nella
-        // variante, e lì gli stessi tre sbagli sarebbero altri tre errori.
-        let json = rymembra_skin::PLAIN_SOURCE.replacen(
-            "\"tokens\": {",
-            "\"tokens\": {
-    \"color.accents\": \"#ff0000\",
-    \"radius.cards\": \"4px\",
-    \"font.mainly\": [\"X\"],",
-            1,
-        );
-        let esito = studio_valida(json, None);
-        assert_eq!(
-            esito.errori.len(),
-            3,
-            "tre token inesistenti sono tre errori: {:#?}",
-            esito.errori
-        );
-
-        // Nell'ordine del **documento**, non in quello alfabetico in cui li
-        // consegna la mappa di `serde_json`: si correggono dall'alto in basso.
-        let percorsi: Vec<&str> = esito.errori.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(
-            percorsi,
-            [
-                "tokens.color.accents",
-                "tokens.radius.cards",
-                "tokens.font.mainly"
-            ]
-        );
-
-        // Righe vere, crescenti, e distinte: è quel che l'euristica a `indexOf`
-        // non sapeva dare — cercando `"cards"` o `"accents"` prendeva la prima
-        // occorrenza del file, che è quasi sempre un'altra riga.
-        let righe: Vec<Option<u32>> = esito.errori.iter().map(|e| e.riga).collect();
-        assert!(righe.iter().all(Option::is_some), "{righe:?}");
-        assert!(righe.windows(2).all(|due| due[0] < due[1]), "{righe:?}");
-
-        // E il suggerimento arriva come dato anche per un token, non solo per
-        // una parte: senza, il bottone che corregge non si può costruire.
-        let accento = &esito.errori[0];
-        assert!(
-            accento.forse.contains(&"color.accent".to_owned()),
-            "{accento:#?}"
-        );
-    }
-
-    /// Un avviso ha un percorso come un errore, quindi ha un posto: il bottone
-    /// che ci porta il cursore è lo stesso, e non aveva un numero da usare.
-    #[test]
-    fn anche_un_avviso_sa_su_che_riga_sta() {
-        let json = rymembra_skin::PLAIN_SOURCE.replace(
-            "\"capabilities\": {",
-            "\"patterns\": { \"mai-usato\": { \"effect\": \"vignette\", \"color\": \"#000\" } }, \"capabilities\": {",
-        );
-        let esito = studio_valida(json, None);
-        let avviso = esito
-            .avvisi
-            .iter()
-            .find(|a| a.kind == "unusedPattern")
-            .unwrap_or_else(|| panic!("{:#?}", esito.avvisi));
-        assert_eq!(avviso.path, "patterns.mai-usato");
-        assert!(avviso.riga.is_some(), "{avviso:#?}");
-    }
-
-    #[test]
-    fn un_nome_di_parte_sbagliato_arriva_col_suo_suggerimento() {
-        let json = rymembra_skin::PLAIN_SOURCE.replace(
-            "\"layout\": {",
-            "\"parts\": { \"section-cards\": { \"radius\": \"10px\" } }, \"layout\": {",
-        );
-        let esito = studio_valida(json, None);
-        let primo = esito.errori.first().expect("un errore");
-        assert!(
-            primo.forse.contains(&"section-card".to_owned()),
-            "il suggerimento di nearest_parts deve arrivare come dato, non solo \
-             dentro la frase: {primo:?}"
-        );
-    }
-
-    #[test]
-    fn la_skin_di_serie_passa_dallo_studio_senza_errori() {
-        let esito = studio_valida(rymembra_skin::PLAIN_SOURCE.to_owned(), None);
-        assert!(esito.errori.is_empty(), "{:#?}", esito.errori);
-        assert!(esito.avvisi.is_empty(), "{:#?}", esito.avvisi);
-        assert!(!esito.css.is_empty());
-        assert_eq!(esito.costo, 0);
-        // E la tabella dei contrasti è piena: è quel che lo Studio mostra a
-        // destra, e una tabella vuota vorrebbe dire che nessun colore si è
-        // lasciato risolvere.
-        assert!(esito.contrasti.len() > 10);
-        assert!(
-            esito.contrasti.iter().all(|c| c.passa),
-            "{:#?}",
-            esito.contrasti
-        );
-    }
-
-    #[test]
-    fn una_bozza_non_puo_uscire_dalla_sua_cartella() {
-        for cattivo in ["../../altrove", "..\\fuori", "c:/assoluto", ""] {
-            assert!(!id_sicuro(cattivo), "«{cattivo}» non è stato respinto");
-        }
-        assert!(id_sicuro("ruggine"));
-        assert!(id_sicuro("fork_di_plain-2"));
-    }
-
-    // ── le istantanee ───────────────────────────────────────────────────────
-
-    #[test]
-    fn il_nome_di_unistantanea_si_legge_e_si_riscrive_uguale() {
-        // Il nome del file **è** l'indice: se andata e ritorno non combaciano,
-        // un'istantanea si scrive e non si ritrova più, e il difetto si vede
-        // solo dopo — quando serve.
-        let nome = "1754121234567-salvata-34-41.json";
-        let letta = istantanea_da(nome).expect("un nome buono");
-        assert_eq!(letta.quando, 1_754_121_234_567);
-        assert_eq!(letta.causa, "salvata");
-        assert_eq!((letta.parti, letta.token), (34, 41));
-        assert_eq!(nome_istantanea(&letta), nome);
-
-        for storto in [
-            "1754121234567-salvata-34.json",       // manca un pezzo
-            "1754121234567-battezzata-34-41.json", // una causa che non esiste
-            "adesso-salvata-34-41.json",           // un istante che non è un numero
-            "1754121234567-salvata-34-41-42.json", // un pezzo di troppo
-            "1754121234567-salvata-34-41.txt",     // non è un manifest
-        ] {
-            assert!(istantanea_da(storto).is_none(), "«{storto}» è passato");
-        }
-    }
-
-    #[test]
-    fn unistantanea_si_prende_si_rilegge_e_si_ripristina_identica() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        prendi_istantanea(dir.path(), rymembra_skin::PLAIN_SOURCE, Causa::Salvata).expect("presa");
-
-        let elenco = elenco_istantanee(dir.path());
-        assert_eq!(elenco.len(), 1);
-        let sola = elenco.first().expect("una");
-        assert_eq!(sola.causa, "salvata");
-        // I conteggi sono quelli del documento, presi al momento della scrittura.
-        assert_eq!(sola.token, {
-            let documento =
-                rymembra_skin::parse_skin_json(rymembra_skin::PLAIN_SOURCE).expect("plain");
-            documento.tokens.iter().count()
-        });
-
-        assert_eq!(
-            ripristina_istantanea(dir.path(), sola.quando).expect("ripristinata"),
-            rymembra_skin::PLAIN_SOURCE,
-            "il file è il manifest e basta: si copia fuori e si apre"
-        );
-    }
-
-    #[test]
-    fn una_bozza_a_meta_si_puo_comunque_fotografare() {
-        // Una bozza si salva anche quando non è valida — è un lavoro in corso —
-        // e allora anche la sua istantanea deve poter esistere. I conteggi non
-        // si sanno, e l'elenco dice zero invece di rifiutare la fotografia.
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        prendi_istantanea(dir.path(), "{ \"format\": 1, ", Causa::Manuale).expect("presa");
-        let sola = elenco_istantanee(dir.path()).first().copied().expect("una");
-        assert_eq!((sola.parti, sola.token), (0, 0));
-    }
-
-    #[test]
-    fn oltre_il_ventesimo_giro_la_piu_vecchia_sparisce() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        for _ in 0..(QUANTE_ISTANTANEE + 5) {
-            prendi_istantanea(dir.path(), rymembra_skin::PLAIN_SOURCE, Causa::Manuale)
-                .expect("presa");
-        }
-        let elenco = elenco_istantanee(dir.path());
-        assert_eq!(
-            elenco.len(),
-            QUANTE_ISTANTANEE,
-            "la potatura non ha tagliato"
-        );
-        // E quelle rimaste sono le **ultime**, in ordine dalla più recente.
-        assert!(
-            elenco.windows(2).all(|coppia| {
-                coppia.first().is_some_and(|prima| {
-                    coppia.get(1).is_some_and(|dopo| prima.quando > dopo.quando)
-                })
-            }),
-            "l'ordine non è dalla più recente: {elenco:#?}"
-        );
-    }
-
-    #[test]
-    fn due_istantanee_nello_stesso_istante_non_si_sovrascrivono() {
-        // «Salva e usa» ed «Esporta» possono capitare a un battito di distanza,
-        // e due file con lo stesso nome vorrebbero dire perderne una in
-        // silenzio.
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        prendi_istantanea(dir.path(), rymembra_skin::PLAIN_SOURCE, Causa::Salvata).expect("una");
-        prendi_istantanea(dir.path(), rymembra_skin::PLAIN_SOURCE, Causa::Salvata).expect("due");
-        assert_eq!(elenco_istantanee(dir.path()).len(), 2);
-    }
-
-    #[test]
-    fn le_istantanee_di_una_bozza_che_non_ne_ha_sono_nessuna() {
-        // Nessuna cartella non è un guasto: è il caso di ogni bozza prima della
-        // prima prova, ed è quel che la colonna sinistra chiede all'apertura.
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        assert!(elenco_istantanee(&dir.path().join("mai-esistita")).is_empty());
-    }
-
-    // ── il pacchetto ────────────────────────────────────────────────────────
-
-    #[test]
-    fn lalbero_del_pacchetto_dice_quel_che_lesportazione_scriverebbe() {
-        // La skin di serie non ha risorse: una voce sola, il manifest. Se un
-        // giorno l'albero mostrasse un file che `write_skin_package` non
-        // riscrive, direbbe una bugia a chi poi prova a esportare.
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let da = da_lavorare(dir.path(), DI_SERIE).expect("la skin di serie");
-        assert_eq!(da.sorgente, rymembra_skin::PLAIN_SOURCE);
-        assert!(da.preview.is_none());
-        assert!(da.assets.is_empty());
-    }
-
-    #[test]
-    fn ogni_skin_di_serie_si_apre_e_si_deriva() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        for (id, testo) in rymembra_skin::DI_SERIE {
-            let da = da_lavorare(dir.path(), id).expect("una skin di serie");
-            assert_eq!(da.sorgente, *testo, "{id}");
-        }
-        assert!(da_lavorare(dir.path(), "non-esiste").is_err());
-    }
-
-    #[test]
-    fn una_bozza_vince_sul_pacchetto_ma_le_risorse_restano_quelle() {
-        // È l'invariante che tiene insieme l'albero e l'esportazione: il
-        // manifest può venire da una bozza, le risorse no — una bozza è un
-        // `skin.json` e basta.
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let bozza = cartella_bozze(dir.path()).join("plain");
-        std::fs::create_dir_all(&bozza).expect("cartella");
-        let modificata =
-            rymembra_skin::PLAIN_SOURCE.replace("\"name\": \"Plain\"", "\"name\": \"Mia\"");
-        std::fs::write(bozza.join("skin.json"), &modificata).expect("scritta");
-
-        let da = da_lavorare(dir.path(), DI_SERIE).expect("la bozza");
-        assert_eq!(da.sorgente, modificata, "la bozza deve vincere sul binario");
-    }
-
-    #[test]
-    fn ogni_effetto_porta_le_sue_manopole() {
-        // La tabella dei parametri è scritta a mano perché `Effect` è un enum di
-        // varianti tipizzate e non c'è niente da cui leggerla a macchina. Questo
-        // test è il prezzo di quella scelta: un effetto nuovo senza la sua riga
-        // arriverebbe all'editor come un livello che si aggiunge e non si può
-        // aprire, che è il difetto da cui `params` è nato.
-        let registro = studio_registro();
-        assert_eq!(
-            registro.effects.len(),
-            rymembra_skin::effects::Effect::NAMES.len()
-        );
-        for effetto in &registro.effects {
-            assert!(
-                !effetto.params.is_empty(),
-                "«{}» non dichiara nessuna manopola",
-                effetto.name
-            );
-        }
-    }
-
-    #[test]
-    fn le_manopole_dichiarate_esistono_davvero_nell_esemplare() {
-        // Un parametro obbligatorio deve comparire nell'esemplare minimo: se non
-        // ci fosse, l'editor mostrerebbe un controllo vuoto per un campo che il
-        // parser pretende, e il primo salvataggio fallirebbe.
-        for effetto in studio_registro().effects {
-            let esempio: serde_json::Value =
-                serde_json::from_str(effetto.esempio).expect("l'esemplare è JSON");
-            for parametro in effetto.params.iter().filter(|p| !p.optional) {
-                assert!(
-                    esempio.get(parametro.name).is_some(),
-                    "«{}» dichiara «{}» obbligatorio e non lo scrive nell'esemplare",
-                    effetto.name,
-                    parametro.name
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn buttata_la_bozza_torna_a_parlare_il_pacchetto() {
-        // Il comando vive dietro `con_libreria` e qui non si può chiamare, ma
-        // quel che deve garantire sì: tolta la cartella della bozza,
-        // `da_lavorare` — la stessa funzione che decide all'apertura — deve
-        // tornare a leggere il pacchetto. Senza questo, «butta la bozza»
-        // lascerebbe l'editor su un documento che non sta più da nessuna parte.
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let bozza = cartella_bozze(dir.path()).join(DI_SERIE);
-        std::fs::create_dir_all(&bozza).expect("cartella");
-        let modificata =
-            rymembra_skin::PLAIN_SOURCE.replace("\"name\": \"Plain\"", "\"name\": \"Mia\"");
-        std::fs::write(bozza.join("skin.json"), &modificata).expect("scritta");
-        assert_eq!(
-            da_lavorare(dir.path(), DI_SERIE)
-                .expect("la bozza")
-                .sorgente,
-            modificata
-        );
-
-        std::fs::remove_dir_all(&bozza).expect("buttata");
-        assert_eq!(
-            da_lavorare(dir.path(), DI_SERIE)
-                .expect("il pacchetto")
-                .sorgente,
-            rymembra_skin::PLAIN_SOURCE
-        );
-    }
-
-    #[test]
-    fn la_conversazione_sta_con_la_bozza_e_ne_segue_la_sorte() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        assert_eq!(leggi_chat(dir.path(), "mia").expect("letta"), None);
-
-        scrivi_chat(dir.path(), "mia", r#"{"versione":1,"battute":[]}"#).expect("scritta");
-        assert_eq!(
-            leggi_chat(dir.path(), "mia").expect("letta").as_deref(),
-            Some(r#"{"versione":1,"battute":[]}"#)
-        );
-
-        // Una rinomina la porta con sé.
-        rinomina_bozza(dir.path(), "mia", "nuova", None).expect("rinominata");
-        assert_eq!(leggi_chat(dir.path(), "mia").expect("letta"), None);
-        assert!(leggi_chat(dir.path(), "nuova").expect("letta").is_some());
-
-        // Vuota, si toglie; due volte non è un guasto.
-        scrivi_chat(dir.path(), "nuova", "").expect("tolta");
-        scrivi_chat(dir.path(), "nuova", "").expect("già tolta");
-        assert_eq!(leggi_chat(dir.path(), "nuova").expect("letta"), None);
-    }
-
-    #[test]
-    fn una_conversazione_storta_non_si_scrive() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        for cattiva in ["non json", "[1,2]", "\"testo\""] {
-            assert!(
-                scrivi_chat(dir.path(), "mia", cattiva).is_err(),
-                "«{cattiva}»"
-            );
-        }
-        let enorme = format!(r#"{{"x":"{}"}}"#, "a".repeat(CHAT_MASSIMA));
-        assert!(scrivi_chat(dir.path(), "mia", &enorme).is_err());
-        for cattivo in ["../fuori", ""] {
-            assert!(scrivi_chat(dir.path(), cattivo, "{}").is_err());
-            assert!(leggi_chat(dir.path(), cattivo).is_err());
-        }
-    }
-
-    #[test]
-    fn un_id_storto_non_raggiunge_ne_il_pacchetto_ne_le_istantanee() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        for cattivo in ["../../altrove", "..\\fuori", "c:/assoluto", ""] {
-            assert!(
-                da_lavorare(dir.path(), cattivo).is_err(),
-                "«{cattivo}» ha raggiunto un pacchetto"
-            );
-        }
-    }
-
-    // ── il registro del movimento ───────────────────────────────────────────
-
-    /// Un documento di prova con un'animazione dal fotogramma dato.
-    fn con_fotogramma(campo: &str, valore: &str) -> String {
-        rymembra_skin::PLAIN_SOURCE.replacen(
-            "\"motion\": {",
-            &format!(
-                "\"motion\": {{ \"animations\": {{ \"prova\": {{ \"duration\": \"200ms\", \
-                 \"frames\": [{{ \"at\": 0, \"{campo}\": {valore} }}, {{ \"at\": 100, \"opacity\": 1 }}] }} }},"
-            ),
-            1,
-        )
-    }
-
-    #[test]
-    fn gli_estremi_dei_fotogrammi_sono_quelli_del_parser() {
-        let registro = studio_registro();
-        assert_eq!(registro.stati.len(), rymembra_skin::PartState::ALL.len());
-        assert!(
-            registro
-                .inneschi
-                .iter()
-                .any(|i| i.name == "hover" && i.ciclo && i.stato)
-        );
-        assert!(
-            registro
-                .inneschi
-                .iter()
-                .any(|i| i.name == "exit" && i.vista && !i.ciclo)
-        );
-        assert!(!registro.animazioni_pronte.is_empty());
-        // Lo schema arriva intero: il completamento del codice ci conta.
-        assert!(registro.chiavi["aspetto"].contains(&"focusRing"));
-        assert!(registro.chiavi["documento"].contains(&"variant"));
-        assert!(registro.parole["easing"].contains(&"ease-out"));
-        assert!(registro.parole["borderStyle"].contains(&"dashed"));
-        assert!(!registro.sorgenti.is_empty());
-        for campo in &registro.fotogramma {
-            let (Some(min), Some(max)) = (campo.min, campo.max) else {
-                continue;
-            };
-            let scrivi = |n: f64| match campo.kind {
-                "length" => format!("\"{n}px\""),
-                _ => n.to_string(),
-            };
-            for dentro in [min, max] {
-                let testo = con_fotogramma(campo.name, &scrivi(dentro));
-                assert!(
-                    rymembra_skin::parse_skin_json(&testo).is_ok(),
-                    "«{}» = {dentro} dovrebbe passare: {:?}",
-                    campo.name,
-                    rymembra_skin::parse_skin_json(&testo).err()
-                );
-            }
-            let fuori = con_fotogramma(campo.name, &scrivi(max + 1.0));
-            assert!(
-                rymembra_skin::parse_skin_json(&fuori).is_err(),
-                "«{}» = {} dovrebbe essere rifiutato",
-                campo.name,
-                max + 1.0
-            );
-        }
-    }
-
-    #[test]
-    fn la_validazione_scrive_per_la_tela_e_dice_i_costi() {
-        let esito = studio_valida(
-            rymembra_skin::di_serie("vinile")
-                .expect("vinile")
-                .to_owned(),
-            None,
-        );
-        assert!(esito.errori.is_empty(), "{:?}", esito.errori);
-        assert!(esito.css.contains(":root[data-skin='vinile'] ."));
-        assert!(esito.css.contains("[data-forza~='hover']"));
-        let colonna = esito
-            .costi
-            .iter()
-            .find(|c| c.parte == "column-art")
-            .expect("column-art");
-        assert!(colonna.movimento > 0);
-        assert!(esito.costo_finestra > 0);
-    }
-
-    // ── le risorse della bozza ──────────────────────────────────────────────
-
-    #[test]
-    fn il_nome_di_una_risorsa_si_mette_in_regola() {
-        assert_eq!(
-            nome_risorsa(Path::new("C:/x/Titoli Grassetto.WOFF2")),
-            "titoli-grassetto.woff2"
-        );
-        assert_eq!(nome_risorsa(Path::new("/x/foto.JPEG")), "foto.jpg");
-        assert_eq!(nome_risorsa(Path::new("/x/__.png")), "risorsa.png");
-    }
-
-    #[test]
-    fn una_risorsa_si_aggiunge_si_rinomina_se_occupato_e_si_rifiuta_se_mente() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let fuori = tempfile::tempdir().expect("cartella dei file");
-        let buono = fuori.path().join("Trama.png");
-        std::fs::write(&buono, b"\x89PNG\r\n\x1a\n resto").expect("scritto");
-        let voce = aggiungi_risorsa(dir.path(), DI_SERIE, &buono).expect("aggiunta");
-        assert_eq!(voce.nome, "assets/trama.png");
-        let seconda = aggiungi_risorsa(dir.path(), DI_SERIE, &buono).expect("aggiunta");
-        assert_eq!(seconda.nome, "assets/trama-2.png");
-
-        let bugiardo = fuori.path().join("finta.png");
-        std::fs::write(&bugiardo, b"GIF89a").expect("scritto");
-        assert!(aggiungi_risorsa(dir.path(), DI_SERIE, &bugiardo).is_err());
-
-        let da = da_lavorare(dir.path(), DI_SERIE).expect("la bozza");
-        let nomi: Vec<&str> = da.assets.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(nomi, ["trama-2.png", "trama.png"]);
-    }
-
-    #[test]
-    fn le_risorse_del_pacchetto_passano_nella_bozza_all_apertura() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let sorgente = rymembra_skin::PLAIN_SOURCE
-            .replace("\"id\": \"plain\"", "\"id\": \"nocturne\"")
-            .replacen(
-                "\"id\": \"nocturne\",",
-                "\"id\": \"nocturne\", \"fonts\": { \"Prova\": { \"src\": \"prova.woff2\" } },",
-                1,
-            );
-        let bytes = rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
-            source: &sorgente,
-            preview: None,
-            assets: &[rymembra_skin::package::SkinAsset {
-                name: "prova.woff2".to_owned(),
-                mime: "font/woff2",
-                bytes: b"wOF2 finto".to_vec(),
-            }],
-        })
-        .expect("impacchettata");
-        let skin = dir.path().join("skin");
-        std::fs::create_dir_all(&skin).expect("cartella");
-        std::fs::write(skin.join("nocturne.ryskin"), bytes).expect("installata");
-
-        apri_documento(dir.path(), "nocturne", true).expect("aperta");
-        assert!(
-            cartella_risorse(dir.path(), "nocturne")
-                .join("prova.woff2")
-                .is_file()
-        );
-        // E «Salva e usa» ha di nuovo il carattere da impacchettare.
-        let (_, assets) = corredo_della_bozza(dir.path(), "nocturne").expect("corredo");
-        assert_eq!(assets.len(), 1);
-    }
-
-    // ── le istantanee fuori dalla bozza ─────────────────────────────────────
-
-    #[test]
-    fn scartare_la_bozza_non_porta_via_le_istantanee() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        prendi_istantanea(
-            &istantanee_di(dir.path(), DI_SERIE),
-            rymembra_skin::PLAIN_SOURCE,
-            Causa::Manuale,
-        )
-        .expect("presa");
-        let bozza = cartella_bozze(dir.path()).join(DI_SERIE);
-        std::fs::create_dir_all(&bozza).expect("bozza");
-        std::fs::write(bozza.join("skin.json"), rymembra_skin::PLAIN_SOURCE).expect("scritta");
-        std::fs::remove_dir_all(&bozza).expect("scartata");
-        assert_eq!(
-            elenco_istantanee(&istantanee_di(dir.path(), DI_SERIE)).len(),
-            1
-        );
-    }
-
-    #[test]
-    fn le_istantanee_della_2x_traslocano_fuori_dalla_bozza() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let vecchia = cartella_bozze(dir.path()).join(DI_SERIE).join("istantanee");
-        prendi_istantanea(&vecchia, rymembra_skin::PLAIN_SOURCE, Causa::Salvata).expect("presa");
-        let elenco = elenco_istantanee(&istantanee_di(dir.path(), DI_SERIE));
-        assert_eq!(elenco.len(), 1);
-        assert!(!vecchia.exists());
-    }
-
-    #[test]
-    fn una_skin_del_formato_1_si_apre_migrata_e_ricorda_com_era() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let v1 = include_str!("../../../../core/rymembra-skin/tests/oro/scafalatura.v1.json");
-        let id = rymembra_skin::parse_skin_json(v1).expect("si legge").id;
-        let bozza = cartella_bozze(dir.path()).join(&id);
-        std::fs::create_dir_all(&bozza).expect("bozza");
-        std::fs::write(bozza.join("skin.json"), v1).expect("scritta");
-
-        let aperta = apri_documento(dir.path(), &id, true).expect("aperta");
-        assert!(aperta.contains("\"format\": 2"));
-        let istantanee = elenco_istantanee(&istantanee_di(dir.path(), &id));
-        assert_eq!(istantanee.first().map(|i| i.causa), Some("migrata"));
-        // La seconda apertura trova la bozza già migrata: niente istantanea nuova.
-        apri_documento(dir.path(), &id, true).expect("riaperta");
-        assert_eq!(elenco_istantanee(&istantanee_di(dir.path(), &id)).len(), 1);
-    }
-
-    #[test]
-    fn rinominare_la_bozza_porta_con_se_le_istantanee() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let bozza = cartella_bozze(dir.path()).join("vecchio");
-        std::fs::create_dir_all(&bozza).expect("bozza");
-        std::fs::write(bozza.join("skin.json"), "{}").expect("scritta");
-        prendi_istantanea(&istantanee_di(dir.path(), "vecchio"), "{}", Causa::Manuale)
-            .expect("presa");
-
-        rinomina_bozza(dir.path(), "vecchio", "nuovo", None).expect("rinominata");
-        assert!(
-            cartella_bozze(dir.path())
-                .join("nuovo")
-                .join("skin.json")
-                .is_file()
-        );
-        assert_eq!(
-            elenco_istantanee(&istantanee_di(dir.path(), "nuovo")).len(),
-            1
-        );
-        // Sopra una skin di serie non si scrive.
-        assert!(rinomina_bozza(dir.path(), "nuovo", "plain", None).is_err());
-    }
-
-    // ── WP31: lo Studio che non perde lavoro ────────────────────────────────
-
-    /// Il manifest di serie con un altro id.
-    fn con_id(id: &str) -> String {
-        rymembra_skin::PLAIN_SOURCE.replace("\"id\": \"plain\"", &format!("\"id\": \"{id}\""))
-    }
-
-    /// Il manifest di serie con un altro id e un carattere del pacchetto.
-    fn con_carattere(id: &str) -> String {
-        con_id(id).replacen(
-            &format!("\"id\": \"{id}\","),
-            &format!(
-                "\"id\": \"{id}\", \"fonts\": {{ \"Prova\": {{ \"src\": \"prova.woff2\" }} }},"
-            ),
-            1,
-        )
-    }
-
-    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n resto";
-    const WOFF2: &[u8] = b"wOF2 finto con la firma giusta";
-
-    fn installa_qui(dir: &Path, sorgente: &str, assets: &[rymembra_skin::package::SkinAsset]) {
-        let bytes = rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
-            source: sorgente,
-            preview: Some(PNG),
-            assets,
-        })
-        .expect("impacchettata");
-        crate::skin::installa(dir, &bytes).expect("installata");
-    }
-
-    fn carattere() -> rymembra_skin::package::SkinAsset {
-        rymembra_skin::package::SkinAsset {
-            name: "prova.woff2".to_owned(),
-            mime: "font/woff2",
-            bytes: WOFF2.to_vec(),
-        }
-    }
-
-    #[test]
-    fn la_tela_si_compila_sotto_l_id_della_bozza() {
-        // Il documento dice «nuovo-nome», la bozza sta ancora in «vecchio»:
-        // i selettori e gli indirizzi delle risorse seguono la cartella.
-        let sorgente = con_carattere("nuovo-nome");
-        let esito = studio_valida(sorgente.clone(), Some("vecchio".to_owned()));
-        assert!(esito.errori.is_empty(), "{:?}", esito.errori);
-        assert_eq!(esito.radice, "vecchio");
-        assert!(esito.css.contains(":root[data-skin='vecchio']"));
-        assert!(
-            esito.css.contains("/bozza/vecchio/prova.woff2"),
-            "{}",
-            esito.css
-        );
-        assert!(!esito.css.contains("data-skin='nuovo-nome'"));
-
-        // Un id che il foglio non sa scrivere così com'è ricade sul documento.
-        let ricaduta = studio_valida(sorgente.clone(), Some("con_trattino".to_owned()));
-        assert_eq!(ricaduta.radice, "nuovo-nome");
-
-        // La stessa domanda ha la stessa risposta, dai ricordi: anche i
-        // millisecondi sono quelli della prima volta.
-        let ancora = studio_valida(sorgente, Some("vecchio".to_owned()));
-        assert_eq!(ancora.css, esito.css);
-        assert_eq!(ancora.compilato_ms, esito.compilato_ms);
-    }
-
-    #[test]
-    fn la_prova_sull_app_porta_l_id_della_bozza() {
-        let skin = compila_per_la_prova(&con_id("altro"), "mia").expect("compilata");
-        assert_eq!(skin.id, "mia");
-        assert!(skin.css.contains(":root[data-skin='mia']"));
-        assert!(compila_per_la_prova("{ rotto", "mia").is_err());
-    }
-
-    #[test]
-    fn salvare_segue_l_id_del_documento_e_non_prende_quello_di_un_altro() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let manifest = |id: &str| cartella_bozze(dir.path()).join(id).join("skin.json");
-
-        let primo = salva_bozza(dir.path(), "prima", &con_id("prima"), None).expect("salvata");
-        assert_eq!(primo.id, "prima");
-        assert!(primo.rinomina.is_none());
-
-        // Il documento cambia id: la bozza lo segue, in un passo solo.
-        let seconda = con_id("seconda");
-        let esito = salva_bozza(dir.path(), "prima", &seconda, None).expect("salvata");
-        assert_eq!(esito.id, "seconda");
-        assert_eq!(
-            std::fs::read_to_string(manifest("seconda")).expect("letta"),
-            seconda
-        );
-        assert!(!cartella_bozze(dir.path()).join("prima").exists());
-
-        // L'id di una skin installata di un altro: il testo si salva dov'era,
-        // e il rifiuto torna indietro col suo codice invece di sparire.
-        installa_qui(dir.path(), &con_id("altrui"), &[]);
-        let rubata = con_id("altrui");
-        let esito = salva_bozza(dir.path(), "seconda", &rubata, None).expect("salvata");
-        assert_eq!(esito.id, "seconda");
-        assert_eq!(
-            esito.rinomina.as_ref().map(|e| e.code.as_str()),
-            Some("skin.idConflict")
-        );
-        assert_eq!(
-            std::fs::read_to_string(manifest("seconda")).expect("letta"),
-            rubata
-        );
-        assert!(!cartella_bozze(dir.path()).join("altrui").exists());
-
-        // Ma tornare all'id da cui lo Studio è partito si può.
-        let esito = salva_bozza(dir.path(), "seconda", &rubata, Some("altrui")).expect("salvata");
-        assert_eq!(esito.id, "altrui");
-        assert!(esito.rinomina.is_none());
-
-        // Un testo a metà si salva lo stesso, senza rinomine.
-        let esito = salva_bozza(dir.path(), "altrui", "{ \"id\": ", None).expect("salvata");
-        assert_eq!(esito.id, "altrui");
-    }
-
-    #[test]
-    fn una_skin_installata_che_non_passa_piu_si_apre_nello_studio() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let rotta = con_id("vecchia").replacen(
-            "\"tokens\": {",
-            "\"tokens\": { \"color.accents\": \"#ff0000\",",
-            1,
-        );
-        let cartella = dir.path().join("skin");
-        std::fs::create_dir_all(&cartella).expect("cartella");
-        std::fs::write(
-            cartella.join("vecchia.ryskin"),
-            crate::skin::zip_a_mano(&[("skin.json", rotta.as_bytes()), ("assets/trama.png", PNG)]),
-        )
-        .expect("scritta");
-        assert_eq!(
-            apri_documento(dir.path(), "vecchia", true).expect("aperta"),
-            rotta
-        );
-        assert!(
-            cartella_risorse(dir.path(), "vecchia")
-                .join("trama.png")
-                .is_file()
-        );
-        // E la validazione dice dove.
-        assert!(
-            !studio_valida(rotta, Some("vecchia".to_owned()))
-                .errori
-                .is_empty()
-        );
-
-        // Un archivio che non si apre, con una bozza accanto: si apre la bozza.
-        std::fs::write(cartella.join("guasta.ryskin"), b"non sono uno zip").expect("scritto");
-        let bozza = cartella_bozze(dir.path()).join("guasta");
-        std::fs::create_dir_all(&bozza).expect("bozza");
-        std::fs::write(bozza.join("skin.json"), con_id("guasta")).expect("scritta");
-        assert_eq!(
-            da_lavorare(dir.path(), "guasta")
-                .expect("la bozza")
-                .sorgente,
-            con_id("guasta")
-        );
-        // Senza la bozza il guasto si dice, invece di passare per un'assenza.
-        std::fs::write(cartella.join("sola.ryskin"), b"non sono uno zip").expect("scritto");
-        let guasto = da_lavorare(dir.path(), "sola").err().expect("un guasto");
-        assert_eq!(guasto.code().kind().code(), "skin.packageCorrupt");
-    }
-
-    #[test]
-    fn un_tema_nuovo_porta_le_risorse_della_base_e_non_eredita_bozze_orfane() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        installa_qui(dir.path(), &con_carattere("base"), &[carattere()]);
-
-        let figlia = con_carattere("figlia");
-        let voce = crea_tema(dir.path(), "base", &figlia).expect("creato");
-        assert_eq!(voce.id, "figlia");
-        let letto = rymembra_skin::read_skin_package(
-            &std::fs::read(dir.path().join("skin").join("figlia.ryskin")).expect("installato"),
-        )
-        .expect("si rilegge");
-        assert_eq!(letto.assets.len(), 1, "il carattere della base");
-        assert_eq!(
-            letto.preview.as_deref(),
-            Some(PNG),
-            "la miniatura della base"
-        );
-        assert_eq!(
-            std::fs::read_to_string(cartella_bozze(dir.path()).join("figlia").join("skin.json"))
-                .expect("la bozza"),
-            figlia
-        );
-
-        // Una bozza rimasta da una skin che non c'è più: il suo id è preso.
-        std::fs::create_dir_all(cartella_bozze(dir.path()).join("orfana")).expect("orfana");
-        let err = crea_tema(dir.path(), "base", &con_carattere("orfana")).expect_err("rifiutato");
-        assert_eq!(err.code().kind().code(), "skin.idConflict");
-        assert!(!dir.path().join("skin").join("orfana.ryskin").exists());
-        let presi = occupati(dir.path());
-        assert!(presi.contains(&"orfana".to_owned()) && presi.contains(&"figlia".to_owned()));
-        // E quello di una skin installata, o di serie, pure.
-        assert!(crea_tema(dir.path(), "base", &con_carattere("base")).is_err());
-        assert!(crea_tema(dir.path(), "base", rymembra_skin::PLAIN_SOURCE).is_err());
-    }
-
-    #[test]
-    fn scartare_la_bozza_di_una_skin_del_formato_1_non_aggiunge_istantanee() {
-        let dir = tempfile::tempdir().expect("cartella temporanea");
-        let v1 = include_str!("../../../../core/rymembra-skin/tests/oro/scafalatura.v1.json");
-        let bytes = rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
-            source: v1,
-            preview: None,
-            assets: &[],
-        })
-        .expect("impacchettata");
-        crate::skin::installa(dir.path(), &bytes).expect("installata");
-        let aperta = apri_documento(dir.path(), "scafalatura", true).expect("aperta");
-        let serie = || elenco_istantanee(&istantanee_di(dir.path(), "scafalatura")).len();
-        assert_eq!(serie(), 1, "la fotografia del testo del formato 1");
-        let riaperta = scarta_bozza(dir.path(), "scafalatura").expect("scartata");
-        assert_eq!(riaperta, aperta);
-        assert_eq!(
-            serie(),
-            1,
-            "lo scarto non fotografa di nuovo lo stesso testo"
-        );
-    }
-}
+mod tests;

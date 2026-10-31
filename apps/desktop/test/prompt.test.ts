@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import { LINGUAGGIO_PATCH_PRECEDENTE } from "../src/eredita";
 import type { MessaggioIa, Problema } from "../src/ipc";
@@ -7,6 +8,7 @@ import {
   BLOCCO,
   LINGUAGGIO_PATCH,
   NON_APPLICATA,
+  SOGLIA_STORIA,
   conTagNuovo,
   correzione,
   documentoLeggero,
@@ -307,4 +309,45 @@ test("al modello si chiede solo il tag di adesso", () => {
   assert.ok(correzione([], [], false).includes("`" + LINGUAGGIO_PATCH + "`"));
   assert.ok(NON_APPLICATA.includes(LINGUAGGIO_PATCH));
   assert.ok(!NON_APPLICATA.includes(LINGUAGGIO_PATCH_PRECEDENTE));
+});
+
+test("pertinenti: una chiave vuota in parts non blocca la finestra", () => {
+  // Il caso si prova in un processo a parte: un ciclo infinito sincrono
+  // fermerebbe anche il `timeout` di node:test, e con lui tutta la suite.
+  const modulo = new URL("../src/studio/prompt.ts", import.meta.url).href;
+  const codice = `
+    const { pertinenti } = await import(${JSON.stringify(modulo)});
+    const documento = { id: "Mia", parts: { "": {}, card: {} }, motion: { animations: { "": {} } } };
+    const problemi = [{ code: "skin.manifestInvalid", path: "id", message: "x", forse: [], riga: 1, colonna: 1 }];
+    const esito = pertinenti(documento, { selezione: null, stato: null, tema: "base" }, "make it red", problemi);
+    process.stdout.write(JSON.stringify({ parti: [...esito.parti], animazioni: [...esito.animazioni] }));
+  `;
+  const risolvi = new URL("./risolvi.mjs", import.meta.url).href;
+  const corsa = spawnSync(process.execPath, ["--import", risolvi, "--input-type=module", "-e", codice], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.equal(corsa.signal, null, "pertinenti non è tornata: ciclo infinito su un nome vuoto");
+  assert.equal(corsa.status, 0, corsa.stderr);
+  assert.deepEqual(JSON.parse(corsa.stdout), { parti: [], animazioni: [] });
+});
+
+test("storia leggera: il riassunto non spezza una coppia di surrogati", () => {
+  // Un surrogato solo diventa una sequenza di escape che serde_json rifiuta:
+  // ia_conversa fallirebbe a ogni domanda di quella conversazione.
+  const emoji = "\u{1F3A8}";
+  const lunga = "x".repeat(SOGLIA_STORIA);
+  const conversazione = [
+    { ruolo: "user" as const, testo: "q".repeat(499) + emoji + "q" },
+    { ruolo: "assistant" as const, testo: "a".repeat(299) + emoji + "b".repeat(50) },
+    { ruolo: "user" as const, testo: lunga },
+    { ruolo: "assistant" as const, testo: "ok" },
+    { ruolo: "user" as const, testo: "ancora" },
+    { ruolo: "assistant" as const, testo: "ok" },
+  ];
+  const uscita = storiaLeggera(conversazione);
+  // Riassunta davvero: le prime due sono state accorciate.
+  assert.ok(uscita[0]!.testo.endsWith("…"));
+  assert.ok(uscita[1]!.testo.endsWith("…"));
+  for (const m of uscita) assert.ok(m.testo.isWellFormed(), JSON.stringify(m.testo.slice(-4)));
 });

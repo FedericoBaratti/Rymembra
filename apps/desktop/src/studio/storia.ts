@@ -172,3 +172,38 @@ export function cosaAnnulla(storia: Storia): string | null {
 export function cosaRipete(storia: Storia): string | null {
   return storia.futuro[0]?.etichetta ?? null;
 }
+
+/**
+ * La stessa storia con ogni testo passato per `trasforma`: passato, presente
+ * e futuro.
+ *
+ * Per i cambiamenti che non sono un gesto da annullare ma un fatto che vale
+ * per ogni versione — un file tolto dal pacchetto non torna con Ctrl+Z, e le
+ * dichiarazioni che lo usavano non devono tornare nemmeno loro (`risorse.ts`).
+ * Un passo che dopo la trasformazione è uguale a quello prima non cambia più
+ * niente, e si toglie: un annullo che non annulla niente direbbe una cosa
+ * falsa. Le etichette restano quelle di chi ha fatto i passi.
+ */
+export function riscritta(storia: Storia, trasforma: (testo: string) => string): Storia {
+  const passi = [...storia.passato, storia.presente, ...storia.futuro].map((p) => ({
+    testo: trasforma(p.testo),
+    etichetta: p.etichetta,
+  }));
+  const qui = storia.passato.length;
+  const tenuti: Passo[] = [];
+  let presente = 0;
+  passi.forEach((p, i) => {
+    const prima = tenuti[tenuti.length - 1];
+    if (prima === undefined || prima.testo !== p.testo) tenuti.push(p);
+    if (i === qui) presente = tenuti.length - 1;
+  });
+  return {
+    passato: tenuti.slice(0, presente),
+    presente: tenuti[presente] ?? storia.presente,
+    futuro: tenuti.slice(presente + 1),
+    // Il prossimo tocco apre un passo nuovo, come dopo un annullo.
+    gruppo: null,
+    ultimoTocco: 0,
+    inizioRaffica: 0,
+  };
+}

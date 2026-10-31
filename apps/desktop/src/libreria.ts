@@ -60,10 +60,35 @@ export interface Avvisi {
   /** Una lettura è fallita, ed era ancora quella buona. */
   onErrore: (e: unknown) => void;
   /**
-   * `avvio` si è letto: il guasto mostrato, se c'era, non vale più. È quel
-   * che `ricarica` faceva in `App` con `setErrore(null)`.
+   * `avvio` si è letto. Con `tutto` la rilettura viene da un gesto
+   * (`ricarica`): un tentativo nuovo riuscito rende vecchio il guasto a
+   * schermo, qualunque fosse. Senza, viene da un evento (`rileggi`), e vale
+   * soltanto contro il guasto che la libreria stessa ha messo: vedi
+   * `dopoLaLettura`.
    */
-  onLetta: () => void;
+  onLetta: (tutto: boolean) => void;
+}
+
+/**
+ * Il guasto a schermo dopo una lettura riuscita di `avvio`.
+ *
+ * Prima ogni lettura riuscita lo toglieva, qualunque fosse — «il guasto
+ * mostrato, se c'era, non vale più» — e non era vero per un guasto che con
+ * `avvio` non c'entra. Una scansione a mano che cade a metà manda
+ * `cartelle:cambiate` **e poi** l'errore: l'evento fa rileggere `avvio`
+ * cinquanta millesimi dopo, la lettura riesce, e la fascia rossa spariva
+ * prima che qualcuno la leggesse. Lo stesso per una skin non installata o una
+ * playlist non rinominata quando la sorveglianza cambiava la libreria.
+ *
+ * Quindi: la rilettura di un gesto (`tutto`) toglie qualunque guasto, perché
+ * un tentativo nuovo riuscito rende vecchio quello di prima — una seconda
+ * «Scansiona» riuscita deve togliere la fascia della prima. Quella di un
+ * evento toglie solo il guasto che la libreria stessa ha messo
+ * (`dellaLibreria`, per identità): un `avvio` che non rispondeva e adesso sì.
+ */
+export function dopoLaLettura<G>(ora: G | null, dellaLibreria: G | null, tutto: boolean): G | null {
+  if (tutto) return null;
+  return ora !== null && ora === dellaLibreria ? null : ora;
 }
 
 /** La libreria della finestra. */
@@ -76,8 +101,17 @@ export interface Libreria {
   scansione: Archivio<Avanzamento | null>;
   /** Com'è andata l'ultima scansione chiesta da questa finestra. */
   esito: Archivio<EsitoScansione | null>;
-  /** Rilegge `avvio`. Vince l'ultima. */
+  /**
+   * Rilegge `avvio` dopo un gesto. Vince l'ultima. Riuscita, toglie il guasto
+   * a schermo, qualunque fosse: vedi `dopoLaLettura`.
+   */
   ricarica: () => Promise<void>;
+  /**
+   * Rilegge `avvio` perché un evento dice che la libreria è cambiata. Vince
+   * l'ultima, insieme a `ricarica`. Riuscita, toglie soltanto il guasto che la
+   * libreria stessa aveva messo: vedi `dopoLaLettura`.
+   */
+  rileggi: () => Promise<void>;
   /** Rilegge le playlist. Vince l'ultima. */
   ricaricaPlaylist: () => Promise<void>;
 }
@@ -88,29 +122,32 @@ export function creaLibreria(domande: Domande, avvisi: Avvisi): Libreria {
   const playlist = creaArchivio<Playlist[]>([]);
   const turnoAvvio = vinceLUltima();
   const turnoPlaylist = vinceLUltima();
+  /*
+   * Vince l'ultima (`ultima.ts`): si rilegge in risposta agli eventi — una
+   * scansione finita, dei brani scaricati — e a mano dopo ogni gesto sulle
+   * cartelle, e due richieste ravvicinate possono tornare nell'ordine
+   * sbagliato. La risposta, o l'errore, di una richiesta superata si butta:
+   * scriverla rimetterebbe a schermo la libreria di un istante prima. Un turno
+   * solo per le due strade, `ricarica` e `rileggi`: sono la stessa lettura.
+   */
+  const leggiAvvio = async (tutto: boolean) => {
+    const mio = turnoAvvio();
+    try {
+      const arrivato = await domande.avvio();
+      if (!mio()) return;
+      avvio.scrivi(arrivato);
+      avvisi.onLetta(tutto);
+    } catch (e) {
+      if (mio()) avvisi.onErrore(e);
+    }
+  };
   return {
     avvio,
     playlist,
     scansione: creaArchivio<Avanzamento | null>(null),
     esito: creaArchivio<EsitoScansione | null>(null),
-    /*
-     * Vince l'ultima (`ultima.ts`): si rilegge in risposta agli eventi — una
-     * scansione finita, dei brani scaricati — e a mano dopo ogni gesto sulle
-     * cartelle, e due richieste ravvicinate possono tornare nell'ordine
-     * sbagliato. La risposta, o l'errore, di una richiesta superata si butta:
-     * scriverla rimetterebbe a schermo la libreria di un istante prima.
-     */
-    ricarica: async () => {
-      const mio = turnoAvvio();
-      try {
-        const arrivato = await domande.avvio();
-        if (!mio()) return;
-        avvio.scrivi(arrivato);
-        avvisi.onLetta();
-      } catch (e) {
-        if (mio()) avvisi.onErrore(e);
-      }
-    },
+    ricarica: () => leggiAvvio(true),
+    rileggi: () => leggiAvvio(false),
     /*
      * Vince l'ultima anche qui: la chiamano gli eventi della libreria e i
      * gesti sulle playlist, e due risposte possono incrociarsi — una playlist

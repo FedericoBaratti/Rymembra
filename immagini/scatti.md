@@ -1,8 +1,15 @@
 # Screenshot da rifare con musica libera
 
-Le immagini di adesso mostrano una libreria vera, con copertine commerciali. Le nuove
-devono mostrare solo musica che si può condividere, e una versione per lingua
-dell'app.
+**A che punto è (3.2.0).** Le immagini di adesso vengono già da una libreria
+inventata — 88 brani, 16 album, 10 artisti con nomi, copertine e suono inventati
+(vedi il README) — ma sono un set solo, con l'app in italiano (lo Studio in
+inglese), e il sito le mostra uguali in tutte le lingue. Resta da fare la seconda
+metà di questo foglio: gli scatti in inglese, e la ricerca per lingua
+(`immagini/it/`) nel generatore del sito, che oggi copia solo le immagini in cima
+a `immagini/`. Le lingue ES, PT e PL citate qui sotto non esistono ancora.
+
+Il resto del foglio è il piano com'era: le nuove immagini devono mostrare solo
+musica che si può condividere, e una versione per lingua dell'app.
 
 ## Preparare una libreria a parte
 

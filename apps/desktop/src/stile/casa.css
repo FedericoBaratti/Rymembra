@@ -1,0 +1,671 @@
+/* La Home, il giro guidato, il profilo e le sue due barre ritrovate.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── La Home ────────────────────────────────────────────────────────────────
+ *
+ * Ripiani impilati, non un elenco. È la differenza fra le quattro destinazioni
+ * della libreria — che sono elenchi alfabetici, e si scorrono — e la porta
+ * d'ingresso, che risponde a «cosa stavo ascoltando» e quindi non si scorre
+ * affatto: dodici brani per ripiano, e il ripiano finisce lì.
+ */
+.casa {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  align-content: start;
+}
+
+.casa-ripiano {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.casa-titolo {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-1);
+}
+
+/* Le stesse misure della griglia degli artisti: due schermate diverse che
+   mostrano riquadri della stessa natura devono allinearsi, o la finestra
+   sembra fatta da due persone che non si sono parlate. */
+.casa-schede {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 18px 14px;
+  align-content: start;
+}
+
+.scheda-brano {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.scheda-brano .copertina {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-card);
+  /* L'opacità resta nell'elenco: è la dissolvenza d'arrivo di `.foto`, che
+     questa regola, più pesante, altrimenti cancellerebbe. */
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast),
+    opacity var(--transition-med);
+}
+
+/* Il sorvolo alza la copertina, non la cinge: un anello d'accento di 2 px a 2
+   px di stacco è il segno del fuoco (`:focus-visible`), e con il fuoco su una
+   scheda e il puntatore fermo su un'altra chi usa il tabulatore vedeva due
+   anelli e non sapeva dov'era. Lo stesso rimedio delle schede album e dei
+   mosaici degli artisti. */
+.scheda-brano:hover .copertina {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-3);
+}
+
+/* Il titolo e l'artista su una riga sola ciascuno: un riquadro che cresce in
+   altezza perché un brano ha un titolo lungo sfalsa tutta la fila accanto. */
+.scheda-brano .titolo,
+.scheda-brano .artista,
+.casa-riprendi .titolo,
+.casa-riprendi .artista {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.scheda-brano .titolo {
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.scheda-brano .artista {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* «Riprendi dov'eri» è una riga larga e non un riquadro, e la differenza è il
+   punto: è l'unica cosa della Home che si preme quasi sempre, e un riquadro
+   fra dodici riquadri sarebbe indistinguibile dagli altri undici. */
+.casa-riprendi {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 14px 10px 10px;
+  border: 1px solid var(--color-surface-3);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-1);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.casa-riprendi:hover {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+
+.casa-riprendi .copertina {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: var(--radius-card);
+}
+
+.casa-riprendi .che-cosa {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.casa-riprendi .titolo {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.casa-riprendi .artista {
+  font-size: 12.5px;
+  color: var(--color-text-3);
+}
+
+/* Il punto in cui si era rimasti, in cifre tabulari: è un tempo, e i tempi si
+   leggono in colonna anche quando la colonna è una sola. */
+.casa-riprendi .lettura {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+  flex: none;
+}
+
+.casa-riprendi .segno {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+
+/* I segnaposto della Home.
+ *
+ * Le stesse misure dei ripiani veri, per la ragione detta per esteso accanto a
+ * `GrigliaFinta` in App.tsx: un segnaposto largo o alto diversamente dal
+ * contenuto fa saltare la pagina proprio quando i dati arrivano, cioè produce
+ * il difetto che i segnaposto esistono per togliere. Quindi qui non c'è nessuna
+ * misura nuova — solo il titolo, che da `h2` diventa una barra, e i due
+ * riquadri che smettono di comportarsi da bottone.
+ */
+.casa-titolo.finta {
+  width: 148px;
+  height: 13px;
+  border-radius: 99px;
+}
+
+.casa-riprendi.finta,
+.scheda-brano.finta {
+  cursor: default;
+}
+
+/* Sette e non sei: il testo vero ha una discendente sotto la linea di base, una
+   barra da undici pixel no. Vale per tutte e due le forme, come per
+   `.scheda.finta`. */
+.casa-riprendi.finta .che-cosa,
+.scheda-brano.finta {
+  gap: 7px;
+}
+/* Il ripiano del lunedì.
+ *
+ * L'unica cosa della Home che cambia da sola, e l'unica che ha diritto a un
+ * accento. Gli altri quattro ripiani sono contenuto e si somigliano apposta;
+ * questo è un annuncio, e un annuncio che pesa come tutto il resto non è un
+ * annuncio.
+ *
+ * L'accento è una riga sopra e un po' d'aria — non uno sfondo colorato: una
+ * skin può decidere che il proprio accento sia rosso acceso, e un blocco di
+ * quel colore in cima alla schermata d'apertura sarebbe il primo posto in cui
+ * la finestra smette di essere di chi l'ha vestita.
+ */
+.casa-ripiano.settimana {
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Il titolo del lunedì porta l'annuncio accanto, sulla stessa riga: sotto
+   sarebbe un sottotitolo, cioè una cosa da leggere, e questo è una cosa da
+   vedere con la coda dell'occhio. */
+.casa-ripiano.settimana .casa-titolo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.casa-titolo .annuncio {
+  font-size: 12.5px;
+  font-weight: 450;
+  color: var(--accent);
+}
+
+/* Le raccolte sono più larghe dei brani: dentro ce n'è venti, e un riquadro
+   della misura di un brano solo direbbe che è un brano solo. */
+.casa-raccolte {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 18px 14px;
+  align-content: start;
+}
+
+.scheda-raccolta {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.scheda-raccolta .copertina {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-card);
+  /* L'opacità resta nell'elenco: è la dissolvenza d'arrivo di `.foto`, che
+     questa regola, più pesante, altrimenti cancellerebbe. */
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast),
+    opacity var(--transition-med);
+}
+
+/* Come per `.scheda-brano`: il sorvolo alza, l'anello resta del fuoco. */
+.scheda-raccolta:hover .copertina {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-3);
+}
+
+.scheda-raccolta .titolo,
+.scheda-raccolta .sotto {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.scheda-raccolta .titolo {
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.scheda-raccolta .sotto {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* Il pallino di «non l'hai ancora aperta»: sopra la copertina e non accanto al
+   titolo, perché la copertina è la cosa che si guarda. Sparisce da solo appena
+   la raccolta parte — non c'è niente da chiudere. */
+.scheda-raccolta .pallino {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--color-surface-0);
+}
+/* Il perché di un brano accodato da solo.
+ *
+ * Sotto artista e album, in piccolo e in accento: è una nota a margine, non una
+ * riga di contenuto. Sta dentro il bottone «salta» perché appartiene a quel
+ * brano — spostarla fuori la farebbe scivolare a fine riga, dove sembrerebbe
+ * una proprietà della coda invece che di quella traccia.
+ *
+ * Una riga sola, a differenza delle altre due: quelle sono il nome del brano e
+ * vanno lette intere, questa è un commento — e un commento che va a capo
+ * pesa nella riga quanto il titolo. */
+.riga-coda .perche,
+.riga-coda .di-chi {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+/*
+ * ── il giro guidato ───────────────────────────────────────────────────────
+ *
+ * Tre elementi, e una sola regola che li tiene onesti: **mai un velo senza
+ * buco**. Un giro che oscura la finestra senza dire su cosa è una finestra
+ * spenta, e chi la trova così non sta imparando niente — sta cercando come si
+ * chiude.
+ *
+ * Quella regola qui non è sorvegliata da un controllo: è vera **per
+ * costruzione**, e il modo in cui lo è vale la riga che ci vuole a spiegarlo.
+ * `.giro-velo` non dipinge niente. Tutto l'oscuramento è la `box-shadow` del
+ * buco, cioè un'ombra di novemilanovecentonovantanove pixel che parte dai
+ * bordi del riflettore e va in tutte le direzioni. Finché una misura non c'è,
+ * `Giro.tsx` non monta il buco — e senza buco non c'è ombra, quindi non c'è
+ * oscuramento. Lo schermo resta com'era, il velo prende comunque i clic perché
+ * quello è il suo mestiere, e il fotogramma in cui il riflettore si sta ancora
+ * cercando non è distinguibile da nessun altro. Se invece a dipingere fosse il
+ * velo, quello stesso fotogramma sarebbe una finestra nera senza spiegazione,
+ * e servirebbe un controllo a impedirlo.
+ */
+
+/* Il velo: uno strato, e i clic. Nient'altro — vedi sopra.
+
+   `aria-hidden` sta nel TSX e non qui perché è semantica e non aspetto: quel
+   che c'è da leggere sta nel fumetto, che è il dialogo vero. */
+.giro-velo {
+  position: fixed;
+  inset: 0;
+  z-index: var(--strato-giro);
+}
+
+/* Il riflettore.
+
+   `absolute` dentro un genitore `fixed`, quindi in coordinate di finestra: sono
+   le stesse che dà `getBoundingClientRect`, ed è per questo che `Giro.tsx` può
+   scrivere `top`/`left`/`width`/`height`/`border-radius` in linea senza
+   convertire niente. Quei cinque non si dichiarano qui: arrivano tutti dalla
+   misura, e un valore di riposo nel foglio sarebbe un riflettore su un punto
+   che nessuno ha misurato.
+
+   L'anello d'accento non è decorazione. Su una skin chiara l'ombra a 0,72 alza
+   il contrasto di poco — il fondo attorno era già chiaro — e il bersaglio si
+   distingue appena; il contorno lo chiude e dice «è questo», anche a chi guarda
+   di sfuggita. `outline` e non `border`: un bordo entrerebbe nel calcolo della
+   scatola e sposterebbe il buco di due pixel rispetto alla cosa che indica. */
+.giro-buco {
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 0 9999px rgb(var(--surface-0-rgb) / 0.72);
+  outline: 2px solid rgb(var(--accent-rgb) / 0.9);
+  outline-offset: 2px;
+  /* Il riflettore **scivola** da un passo all'altro invece di saltare, e non è
+     un vezzo: fra due passi il bersaglio può stare ai due angoli opposti della
+     finestra, e un salto secco lascia chi guarda a cercare dove è finito. Lo
+     scivolamento è la frase «adesso guarda là».
+
+     `calc(… * var(--motion-scale, 1))` e non `var(--transition-med)` perché la
+     curva deve restare questa — expo, cioè parte in fretta e si posa — e perché
+     la scala del movimento è obbligatoria: con `prefers-reduced-motion` il
+     riflettore si mette dove deve stare senza attraversare la finestra, che è
+     esattamente il movimento che quella preferenza chiede di non fare. */
+  transition-property: top, left, width, height, border-radius;
+  transition-duration: calc(220ms * var(--motion-scale, 1));
+  transition-timing-function: var(--ease-out-expo);
+}
+
+/* Il fumetto: una scheda che si posa accanto al buco.
+
+   **Niente `transform` e niente `translate`**, ed è la cosa più facile da
+   sbagliare di tutto il blocco. `Giro.tsx` calcola l'angolo alto-sinistro
+   definitivo — ha già misurato il fumetto, e sceglie il lato del buco dove ci
+   sta — e lo scrive in `top`/`left`. Una traslazione di centratura, di quelle
+   che si mettono per riflesso su qualunque cosa `fixed`, sposterebbe il fumetto
+   di mezza sé stesso a ogni passo: sempre fuori posto, e sempre di una quantità
+   diversa perché il testo dei dieci passi non è lungo uguale.
+
+   `top: 50%; left: 50%` sono il riposo per il fotogramma prima della prima
+   misura, quando in linea non c'è ancora niente. Deliberatamente **non**
+   centrati — centrare vorrebbe dire la traslazione che non si può avere — e va
+   bene così: è un punto approssimativo, mai un punto sbagliato, e dura un
+   fotogramma. */
+.giro-fumetto {
+  position: fixed;
+  z-index: var(--strato-giro);
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  /* La misura leggibile, meno i due distacchi dai bordi che `Giro.tsx` usa
+     quando deve incastrarlo in una finestra stretta. */
+  max-width: min(380px, calc(100vw - 24px));
+  padding: var(--spazio-4);
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo), var(--shadow-3);
+  /* Segue il riflettore con lo stesso passo: i due si muovono insieme o il
+     fumetto sembra rincorrerlo. */
+  transition-property: top, left;
+  transition-duration: calc(220ms * var(--motion-scale, 1));
+  transition-timing-function: var(--ease-out-expo);
+}
+.giro-fumetto h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.giro-fumetto p {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+  /* Le dieci spiegazioni sono lunghe tre righe e vanno lette tutte: come nelle
+     finestrelle, `pretty` toglie le righe orfane senza cambiare l'altezza — e
+     qui l'altezza conta il doppio, perché è quella che decide da che lato del
+     buco il fumetto ci sta. */
+  text-wrap: pretty;
+}
+
+/* Il titolo a sinistra, il contatore a destra, sulla stessa linea di base: due
+   testi di corpo diverso allineati in alto o in mezzo si vedono che non sono
+   allineati, allineati alla base sembrano una riga sola. */
+.giro-testa {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spazio-3);
+}
+/* «3 / 10»: piccolo, e a cifre di larghezza fissa. Senza `tabular-nums` il
+   passaggio da «9 / 10» a «10 / 10» allarga il contatore e sposta il titolo
+   accanto, cioè fa ballare la testata a ogni passo — sempre di poco, sempre di
+   una quantità diversa, e sempre visibile perché è l'unica cosa che si muove. */
+.giro-passi {
+  flex: none;
+  color: var(--color-text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* La riga in fondo. «Salta il giro» è primo nel DOM — chi vuole uscire lo trova
+   col primo Tab — e ultimo per importanza, quindi va all'estremo opposto degli
+   altri due: `margin-inline-end: auto` sul primo figlio spinge tutto il resto a
+   destra senza che nessuno dei tre debba sapere quanti sono. */
+.giro-tasti {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-1);
+}
+.giro-tasti > :first-child {
+  margin-inline-end: auto;
+}
+
+/*
+ * ── il profilo: quel che porta, e le radici da ritrovare ──────────────────
+ */
+
+/* L'elenco dei conteggi — «142 ascolti», «1.842 copertine» — sotto il titoletto
+   di una scheda d'anteprima. Righe compatte: sono numeri, non prosa, e il ritmo
+   di `.nota` fra una riga e l'altra le farebbe sembrare paragrafi.
+
+   Le colonne si fanno da sole, senza una soglia scritta: `auto-fit` con un
+   minimo di 220 pixel dà due colonne quando il pannello è largo — e quattordici
+   conteggi in due colonne sono metà altezza — e una sola quando non ci stanno.
+   Una soglia scritta qui sarebbe la larghezza della **finestra**, che non è
+   quella del pannello: fra le due c'è la barra di navigazione, che si apre e si
+   chiude. */
+.riepilogo-profilo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 2px var(--spazio-3);
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  list-style: none;
+}
+/* La singola riga. Il numero sta **dentro** la frase tradotta — «{n} ascolti» —
+   e non davanti in una colonna sua: per questo niente `::before` e niente
+   griglia a due colonne. In inglese il numero è nello stesso posto, ma in una
+   lingua che mette il conteggio in fondo una colonna fissa lo lascerebbe
+   vuota. */
+.voce-riepilogo {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+
+/* Un modificatore, non una classe a sé: si scrive sempre accanto a `.nota`
+   (`<p className="nota avviso-profilo">`), e cambia solo la tinta.
+
+   Il colore d'avviso e **non** quello d'errore, e la differenza è la cosa che
+   questa regola esiste per dire. I tre usi sono un profilo che pesa più di
+   mezzo gigabyte, un profilo che viene da un'altra libreria, e l'annullamento
+   che rimette solo la configurazione: tre cose vere da sapere prima di premere,
+   nessuna delle quali è andata storta. In rosso direbbero «è successo qualcosa
+   di male», e chi le legge smetterebbe di leggere gli errori veri. */
+/* La via d'uscita sotto l'avviso: una casella in riga col suo testo, come
+   `.finestrella label.scelta`, che qui non vale perché la scheda non è una
+   finestrella. */
+.unisci-comunque {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spazio-2);
+  margin-block: var(--spazio-2);
+  font-size: 13px;
+  color: var(--color-text-1);
+  cursor: pointer;
+}
+.unisci-comunque input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.avviso-profilo {
+  border-left-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--color-text-1);
+}
+
+/* Le radici che di qua non esistono, una per riga. */
+.rimappature {
+  display: grid;
+  gap: var(--spazio-2);
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  list-style: none;
+}
+/* Una riga: il prefisso vecchio, quanti brani ci stanno sotto, e dove metterlo
+   adesso. In linea finché ci stanno, **a capo** quando no — e il campo di testo
+   è quel che va a capo, prendendosi tutta la riga.
+
+   Il capoverso lo decide il campo e non una soglia: `flex-wrap` sul genitore
+   più una base di quattordici rem sul campo vuol dire «se non restano quattordici
+   rem, vai sotto», e sotto è solo, quindi cresce fino al bordo. Una soglia
+   scritta avrebbe dovuto indovinare quanto è lungo un percorso, che è la sola
+   cosa qui dentro che non si può sapere. */
+.rimappatura {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.rimappatura .campo {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+/* Il prefisso vecchio, in `<code>`. Si accorcia lui: un percorso di rete lungo
+   duecento caratteri, lasciato crescere, spingerebbe il campo fuori dalla riga
+   — e il campo è la sola cosa qui che si usa. Le ellissi non nascondono niente
+   di necessario, perché la fine di un percorso è la parte che si riconosce e
+   `breve()` l'ha già tenuta. */
+.rimappatura-da {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+/* Il conteggio non si tronca mai: è corto, ed è il numero che dice se vale la
+   pena rimappare quella radice o lasciarla stare. */
+.rimappatura-brani {
+  flex: 0 0 auto;
+  color: var(--color-text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * ── due cose vecchie che il profilo ha portato alla luce ──────────────────
+ */
+
+/*
+ * La barra d'avanzamento che non si vedeva.
+ *
+ * `Ripristino.tsx` disegna `<div class="avanzamento"><div style="width:…%">`
+ * da sempre, e nel foglio `.avanzamento` esisteva **solo** dentro
+ * `.lettura-link`, dove per giunta vuol dire un'altra cosa: là è l'involucro di
+ * una barra, qui è la pista. Cioè il ripristino da Drive ha sempre disegnato
+ * due `div` senza altezza e senza fondo — una barra invisibile che avanza. Non
+ * si era mai visto perché `strumenti/classi.js` cerca il **nome** della classe
+ * in un selettore qualunque, e `.lettura-link .avanzamento` lo contiene: il
+ * controllo diceva vero, e aveva ragione secondo quel che sa guardare.
+ *
+ * `Profilo.tsx` ha copiato quelle sei righe da `Ripristino.tsx`, che è come si
+ * scopre una cosa del genere: il secondo posto in cui non funziona.
+ *
+ * Il figlio diretto e non `.finestrella .avanzamento`: `.lettura-link` sta
+ * **dentro** una finestrella (`Importa.tsx`), quindi la forma discendente lo
+ * prenderebbe e gli darebbe otto pixel d'altezza e un fondo, cioè romperebbe
+ * l'unico dei tre che oggi funziona. Le due che vanno vestite sono figlie
+ * dirette — della finestrella nel ripristino, della scheda nelle impostazioni —
+ * e il `>` è quel che distingue.
+ */
+.finestrella > .avanzamento,
+.scheda > .avanzamento {
+  height: 8px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  overflow: hidden;
+}
+.finestrella > .avanzamento > div,
+.scheda > .avanzamento > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(160ms * var(--motion-scale, 1)) linear;
+}
+/* La riga «14 / 200» sotto la barra: è la stessa notizia detta in cifre, per chi
+   vuole sapere quanto manca e non solo quanto è fatto. */
+.finestrella > .conteggio,
+.scheda > .conteggio {
+  color: var(--color-text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * La scheda d'anteprima quando non ha un'anteprima.
+ *
+ * `.scheda-anteprima` nasce a due colonne — l'immagine a sinistra, il testo a
+ * destra — e i due usi vecchi (l'account e l'importazione da un link) hanno
+ * esattamente quella forma: al più un `<img>`, e poi un solo `.che-cosa` che
+ * raccoglie tutto il resto. Il profilo la usa come **riquadro**: un titoletto,
+ * un elenco di conteggi, due o tre note, senza nessuna immagine. Quattro figli
+ * diretti dentro `auto 1fr` non fanno un riquadro — fanno una griglia a due
+ * colonne in cui il titolo e la seconda nota stanno a sinistra e l'elenco a
+ * destra, incolonnati con niente.
+ *
+ * Si riconosce dal titoletto, che è quel che la differenzia davvero: una scheda
+ * d'anteprima ha una copertina e un titolo dentro, un riquadro ha
+ * un'intestazione sopra. `:has(> .titoletto)` dice esattamente questo, e non
+ * può toccare i due usi vecchi, che un titoletto non ce l'hanno. */
+.scheda-anteprima:has(> .titoletto) {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: var(--spazio-2);
+  padding: var(--spazio-3);
+}

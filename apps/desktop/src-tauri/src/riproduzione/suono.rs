@@ -72,8 +72,11 @@ pub struct VocePreset {
 /// brano o del disco, e cambiare l'uno non deve rimettere di serie l'altro.
 fn normalizzazione_da_nome(nome: &str, modo: ModoLivello) -> Normalizzazione {
     let (attivo, bersaglio_db) = match nome {
-        // Spento conserva il bersaglio invece di azzerarlo: chi rispegne e
-        // riaccende ritrova il livello che aveva scelto, non quello di serie.
+        // Spento scrive il bersaglio di serie, e non zero: sul disco resta un
+        // bersaglio valido, e se qualcosa riaccendesse la normalizzazione senza
+        // passare dal selettore il livello non salterebbe a 0 dB. Il livello
+        // scelto prima **non** si conserva: la finestra riaccende sempre con un
+        // nome, e il nome il bersaglio lo riscrive.
         "spento" => (false, playback::BERSAGLIO_PREDEFINITO_DB),
         "basso" => (true, playback::BERSAGLIO_BASSO_DB),
         "alto" => (true, playback::BERSAGLIO_ALTO_DB),

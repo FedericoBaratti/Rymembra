@@ -656,8 +656,10 @@ impl Read for FlussoHttp {
             return Ok(0);
         }
         // Oltre la fine dichiarata non si chiede niente: una richiesta con un
-        // `Range` che comincia dopo l'ultimo byte è un 416, cioè un errore al
-        // posto della fine naturale di un brano.
+        // `Range` che comincia dopo l'ultimo byte è un 416. `Rete::intervallo`
+        // lo riconosce come la fine — è così che la scopre un flusso senza
+        // lunghezza dichiarata — ma con la lunghezza in mano è una richiesta
+        // per niente.
         if self.totale.is_some_and(|t| self.posizione >= t) {
             return Ok(0);
         }

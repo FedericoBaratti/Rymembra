@@ -276,14 +276,22 @@ pub fn scrivi_skin(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, AppE
 /// «più recente» qui vorrebbe dire «salvato più tardi su un altro computer», che
 /// non dice niente su quale dei due valga di più.
 ///
-/// Il manifest si valida prima di scriverlo: una bozza illeggibile farebbe
-/// fallire l'apertura dello Studio, e da lì non c'è modo di rimediare se non
-/// andando a cancellare un file a mano.
+/// La bozza si ripristina **com'è**, come lo Studio l'aveva salvata: anche
+/// una che non passa la validazione. Lo Studio salva il lavoro in corso così
+/// com'è, e lo apre così com'è — la validazione gli dice dove sta l'errore —,
+/// e una bozza non diventa una skin installata senza passare dall'esportazione,
+/// che valida. Fino alla 3.2.0 di prova si validava qui, e una bozza salvata a metà di
+/// una modifica non tornava mai dal backup: il lavoro c'era, su Drive, e
+/// restava lì.
+///
+/// Si controlla solo che sia testo: un manifest che non è UTF-8 lo Studio non
+/// lo legge, e ripiegherebbe in silenzio sul pacchetto installato, quindi
+/// scriverlo non riporterebbe niente.
 ///
 /// # Errori
 ///
-/// `skin.notFound` se l'identificatore non va; i codici di validazione se il
-/// manifest non è valido; `fs.writeFailed` se la scrittura fallisce.
+/// `skin.notFound` se l'identificatore non va; `skin.manifestInvalid` se il
+/// manifest non è testo UTF-8; `fs.writeFailed` se la scrittura fallisce.
 pub fn scrivi_bozza(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, AppError> {
     if !id_sicuro(id) {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
@@ -301,13 +309,12 @@ pub fn scrivi_bozza(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, App
         return Ok(false);
     }
 
-    let sorgente = std::str::from_utf8(bytes).map_err(|err| {
+    std::str::from_utf8(bytes).map_err(|err| {
         AppError::new(ErrorCode::SkinManifestInvalid {
             detail: Some("la bozza non è testo".to_owned()),
         })
         .with_cause(err.to_string())
     })?;
-    rymembra_skin::parse_skin_json(sorgente)?;
 
     scrivi(&file, bytes)?;
     Ok(true)
@@ -572,12 +579,29 @@ mod prove {
     }
 
     #[test]
-    fn una_bozza_illeggibile_non_si_scrive() {
-        // Una bozza rotta farebbe fallire l'apertura dello Studio, e da lì non
-        // c'è modo di rimediare senza andare a cancellare un file a mano.
+    fn una_bozza_non_valida_si_ripristina_com_era() {
+        // Lo Studio salva anche le bozze che non passano la validazione — una
+        // virgola di troppo mentre si scrive — e il backup le carica così:
+        // rifiutarle al ripristino perdeva proprio il lavoro in corso.
         let dir = tempfile::tempdir().expect("cartella temporanea");
-        assert!(scrivi_bozza(dir.path(), "rotta", b"{non json").is_err());
-        assert!(!dir.path().join("skin").join("bozze").join("rotta").exists());
+        let a_meta: &[u8] = b"{ \"a meta\": ";
+        assert_eq!(scrivi_bozza(dir.path(), "in-corso", a_meta), Ok(true));
+        assert_eq!(
+            leggi_bozza(dir.path(), "in-corso").expect("scritta"),
+            a_meta,
+            "gli stessi byte, come lo Studio li aveva salvati"
+        );
+
+        // Un manifest che non è testo no: lo Studio non lo aprirebbe, e
+        // ripiegherebbe in silenzio sul pacchetto installato.
+        assert!(scrivi_bozza(dir.path(), "non-testo", &[0xFF, 0xFE]).is_err());
+        assert!(
+            !dir.path()
+                .join("skin")
+                .join("bozze")
+                .join("non-testo")
+                .exists()
+        );
     }
 
     #[test]

@@ -661,6 +661,15 @@ impl Rete {
         chiave(&self.dentro.servente).metti(gettone, Servito::File(file));
     }
 
+    /// Lascia leggere sotto un gettone un file che non sta su questo disco: i
+    /// byte li dà `lettore` (un brano del cloud, per chi ospita).
+    pub fn servi_lettore(&self, gettone: Gettone, lettore: crate::servente::Lettore) {
+        chiave(&self.dentro.servente).metti(
+            gettone,
+            Servito::Lettore(crate::servente::LettoreServito(lettore)),
+        );
+    }
+
     /// Lascia leggere una copertina, già in memoria, sotto un gettone.
     ///
     /// Oltre un mebibyte non si serve: chi la legge la rifiuterebbe, e il

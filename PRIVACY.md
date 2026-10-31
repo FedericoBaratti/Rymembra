@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 26 October 2026.
+Last updated: 30 October 2026.
 
 **Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Rymembra server. There is no account to create. There is
@@ -26,12 +26,22 @@ Everything Rymembra knows about you:
 - **The cover art**, in a file cache next to the database.
 - **Your skins and Skin Studio drafts**, in the `skin` folder beside it —
   including, from 3.0, the conversations with the Studio's chat (§ 2-quater).
-- **The secrets** — the Google Drive tokens, the scrobbling credentials, the
-  API keys of any language model you configure and, from 3.1, the key that
-  identifies this PC to the others in «Listen together» — in the **operating
-  system's keychain**, not in a file. On Windows that's Credential Manager.
+- **The secrets** — the Google Drive tokens, the client secret of the Google
+  app you registered, the scrobbling credentials, the API keys of any language
+  model you configure and, from 3.1, the key that identifies this PC to the
+  others in «Listen together» — in the **operating system's keychain**, not in
+  a file. On Windows that's Credential Manager.
 - **The PCs you paired** for «Listen together», if any: their public key and
   the name they had, in the same database (§ 4-ter).
+- **The cloud accounts you connected** for music folders, if any: the name
+  shown, the list of the chosen folders' files, and the cursor of each
+  service's change feed, in the same database; their tokens and passwords in
+  the keychain; the tracks you played, up to the cache's ceiling, in the local
+  application data folder (§ 4-quater).
+- **The apps you registered** with Microsoft, Google and Dropbox, if any, so
+  that Rymembra can reach your OneDrive, your Drive and your Dropbox: the name
+  you gave each one and its ID, in the same database (an app's ID is not a
+  secret); a Google app's client secret in the keychain (§ 4-quater).
 
 If you come from the previous version, the first time Rymembra starts it
 transfers that version's data automatically: the library, the settings, the
@@ -41,8 +51,9 @@ previous version but never its data. All of this happens on your computer; no
 request is made for it.
 
 None of this leaves your computer, except for the backup if you turn it on
-yourself (§ 4), and what a listening session shares with the PCs you paired —
-on your own network, and only if you start or join one (§ 4-ter).
+yourself (§ 4), what a listening session shares with the PCs you paired — on
+your own network, and only if you start or join one (§ 4-ter) — and the
+requests to the cloud services whose folders you add (§ 4-quater).
 
 ---
 
@@ -62,10 +73,13 @@ the program refuses before opening any connection. That isn't generic caution,
 it's the rule that keeps Rymembra inside the terms of the people who give it the
 music.
 
-Rymembra always identifies itself with the same `User-Agent`:
-`Rymembra/0.1 (+https://github.com/federicobaratti/rymembra)`. It doesn't disguise
-itself as a browser and it can't: the constructor that allowed that was removed
-along with the code that needed it.
+Rymembra identifies itself with the same `User-Agent` in every request of its
+HTTP client — every web request in this document but the update check, which
+on purpose carries none naming Rymembra (§ 6):
+`Rymembra/<version> (+https://github.com/federicobaratti/rymembra)`, where
+`<version>` is the program's, e.g. `Rymembra/3.2.0`, the same for every copy
+of that version. It doesn't disguise itself as a browser and it can't: the
+constructor that allowed that was removed along with the code that needed it.
 
 ---
 
@@ -121,10 +135,13 @@ no session. And as with the others, it switches off — Settings › Folders ›
 Lyrics. Switched off, what remains are the lyrics you already have in your
 files.
 
-**No downloaded lyric goes up** in the Google Drive backup: what comes from the
-catalog can be downloaded again, and re-uploading it elsewhere would be
-redistributing it for no technical reason. Only the `.lrc` files you wrote
-yourself and the offset corrections go up.
+**No lyric goes up** to the Google Drive backup, nor into sync: not the ones
+downloaded from the catalog, which can be downloaded again and would be
+redistributed for no technical reason, and not the ones you synced or wrote
+yourself, nor your offset corrections. Yours stay in the library and, if you
+chose so, in an `.lrc` next to the file. To take them to another computer
+there is the profile archive (§ 4-bis), which you export yourself, where you
+choose.
 
 ### When you're the one sending something
 
@@ -302,12 +319,17 @@ This starts **only if you connect it**, and it sends exactly what a scrobble is.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `ws.audioscrobbler.com`, `www.last.fm` | If you connect Last.fm | Artist, title, album and the instant you finished listening |
-| `api.listenbrainz.org` | If you connect ListenBrainz | As above |
+| `ws.audioscrobbler.com`, `www.last.fm` | If you connect Last.fm | Artist, title, album, album artist, track number, duration and the MusicBrainz recording identifier when the library knows them, and the instant you **started** listening. While a track plays, a «now playing» with the same fields and no time |
+| `api.listenbrainz.org` | If you connect ListenBrainz | Artist, title, album, track number, duration, the MusicBrainz identifier when known, the instant you started listening, and the name and version of the program. A «playing now» while a track plays, without the time |
 
-Only listens that got at least halfway through the track count. The queue of
-what's still to be sent lives on your disk, and there's a button that empties it
-without sending it.
+A listen counts when you have heard half the track or four minutes of it,
+whichever comes first, and never for a track shorter than thirty seconds. The
+time heard is measured while the music actually plays: a pause does not count,
+and from 3.2 neither does a computer asleep with a track open. A track you
+quit in the middle counts too, if you had heard enough of it. The queue of
+what's still to be sent lives on your disk, it is sent when Rymembra starts and
+whenever a new listen joins it, and there's a button that empties it without
+sending it.
 
 **Your Last.fm application key lives in the operating system's keychain**, next
 to the secret that goes with it. Up to 2.3.0 it sat in the settings table
@@ -325,25 +347,28 @@ profile leaves it out either way.
 
 ## 4. The Google Drive backup
 
-This starts **only if you connect it**, and it isn't on by default.
+This starts **only if you connect it**, and it isn't on by default. It goes
+through a Google app **you** register in the Google Cloud Console — Rymembra
+has none of its own — and the consent you give is to that app (§ 4-quater,
+«The app registrations»).
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Rymembra's window |
+| `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Rymembra's window, with your app's ID |
 | `oauth2.googleapis.com` | On connecting and on renewals | The token exchange |
 | `www.googleapis.com` | On every backup | The backup document |
 
 The backup contains your **library**: tracks, playlists, ratings, history. Not
 the audio files. It ends up in the application-reserved folder of **your**
-Drive, where no other program sees it. The backup files that the previous
+Drive, which belongs to your app: no other program sees it. The backup files that the previous
 version left there are recognised and renamed in place the next time it runs, so
 nothing is uploaded twice, and a file is removed only when an identical copy
 under the new name is kept; the rename is one more request to Google Drive, of
 the same kind as the backup itself.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
-account deletes it; what has already been uploaded stays on your Drive until you
-delete it yourself.
+account deletes it, and leaves your app registered; what has already been
+uploaded stays on your Drive until you delete it yourself.
 
 The alternative that touches no network exists: syncing to a shared folder.
 
@@ -381,6 +406,10 @@ What is **not** inside, and cannot be:
   pairing is a fact about two machines, and an archive restored on a third one
   must not make it trust PCs it has never met (§ 4-ter). The same goes for the
   Drive backup and for synchronization: neither carries them.
+- **The cloud accounts you connected and the apps you registered** for them
+  (§ 4-quater). The cloud folders you chose are among the watched folders and
+  do travel; on the other PC they wait until you connect their account there.
+  Neither the backup nor synchronization carries accounts or apps either.
 - **Similarity data and the weekly picks**, which are derived and are
   recomputed from whatever library they land in.
 
@@ -489,6 +518,73 @@ long the session's own thread was busy.
 
 ---
 
+## 4-quater. Folders in the cloud
+
+This starts **only if you add a folder from a service**. Nothing is sent to a
+service you have not connected.
+
+| Host | When | What reaches it |
+| --- | --- | --- |
+| `login.microsoftonline.com` | Connecting OneDrive, and on token renewals | The consent opens in the **system browser**; then the token exchange |
+| `graph.microsoft.com` | Browsing, listing, every change check (about once a minute), every track you play | The requests for your files' names, sizes and dates, and for the bytes of the tracks |
+| OneDrive's download servers (`*.1drv.com`, `*.sharepoint.com`…) | Every track you play, or whose tags are read | Range requests on the pre-authenticated address Graph gives for that file |
+| `accounts.google.com`, `oauth2.googleapis.com` | Connecting Google Drive, and on renewals | As for the backup, with the `drive.readonly` scope |
+| `www.googleapis.com` | Browsing, listing, change checks, tracks | As for OneDrive |
+| `www.dropbox.com`, `api.dropboxapi.com` | Connecting Dropbox, renewals, browsing, listing, temporary links | As for OneDrive |
+| `notify.dropboxapi.com` | Waiting for changes | Only the change cursor: no token |
+| Dropbox's content servers (`*.dl.dropboxusercontent.com`) | Every track you play, or whose tags are read | Range requests on a four-hour temporary link |
+| The WebDAV server you typed | Connecting, browsing, listing, change checks, tracks | Your user name and app password, in every request, over `https` only |
+
+What these requests carry is the folder you chose, its file names, sizes and
+dates, and the byte ranges of the tracks being read. **Nothing about your
+library, your plays or your ratings goes to any service.** The scope is
+read-only everywhere: Rymembra never writes, moves or deletes a file on a
+service.
+
+The tracks' tags are read from the service in the background, a few hundred
+kilobytes per track, from the beginning and the end of each file. That is the
+one piece of traffic you did not start by pressing play, and it happens once
+per file (again only if the file changes).
+
+**Secrets.** The refresh token of each account, the WebDAV password and the
+client secret of a Google app live in the operating system's keychain, never in
+the database. (A secret you typed for the backup in 3.1 stays under the entry
+3.1 used until you type it again; then it moves to the app's own entry and the
+old one is removed.) Disconnecting an account deletes its token or password,
+together with its listing and its cached tracks.
+
+**The cache.** The tracks you play are kept on the disk, in the local
+application data folder (not the roaming one), up to a ceiling you choose
+(200 MB by default). They are plain copies of your own files. The cache can be
+switched off and emptied in *Settings → Folders and scanning*. When a copy is
+complete, Rymembra measures its loudness and its fingerprint from it, on this
+computer; a complete copy still waiting to be measured is kept until it is, so
+for a while the cache can grow up to twice the ceiling. A track larger than
+twice the ceiling (a whole CD image, a long hi-res file) is not cached at all:
+it is streamed directly every time.
+
+**The app registrations.** OneDrive, Google Drive and Dropbox — and the Drive
+backup of § 4 — are reached through apps that **you** register: at Microsoft
+Entra, in the Google Cloud Console and in Dropbox's App Console, under your
+own developer account. Rymembra has no app of its own for any of them, and
+nothing of the kind is compiled into it. You type each app's ID in *Settings →
+Folders and scanning → Your apps*: the IDs stay in the local database, because
+an app's ID is not a secret — it is in the address of every consent screen.
+The one secret, a Google app's client secret, stays in the keychain. When you
+connect, Microsoft, Google and Dropbox see that **your** app asked, for your
+account; the registration itself — its name, its return addresses, its
+permissions — lives in your account on their side. Rymembra's author sees
+nothing: not your app, not its ID, not your consent.
+
+The buttons that open a platform's console (`entra.microsoft.com`,
+`console.cloud.google.com`, `www.dropbox.com/developers`) open it in the
+**system browser**, and only when you press them; Rymembra itself sends
+nothing there.
+
+**MEGA** is not part of this version, and Rymembra makes no request to it.
+
+---
+
 ## 5. The shops, when you press the button
 
 In the «To buy» list there are three buttons — Bandcamp, Qobuz, Discogs — that
@@ -504,8 +600,12 @@ there on is between you, them and their own policies.
 
 ## 6. The update check
 
-This is **the only request Rymembra makes without your having asked for it**, and
-that's why it gets its own section instead of a line at the bottom of a list.
+This is **the request that goes out by itself even with an empty library and
+nothing connected**, and that's why it gets its own section instead of a line at
+the bottom of a list. It is not the only one that starts without a click —
+metadata enrichment does too, on by default (§ 2), and so do the services you
+connected yourself — but it is the one every copy installed from the installer
+makes. § 7 lists them all.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
@@ -514,8 +614,8 @@ that's why it gets its own section instead of a line at the bottom of a list.
 
 **One check at every start, but not one per click.** Until 2.4 the startup check
 was skipped when the last successful one was less than half an hour old, which
-meant that whoever reopened Rymembra after twenty minutes never got the check
-`TODO.md` asked for. From 3.0 the threshold is five minutes: it is there for a
+meant that whoever reopened Rymembra after twenty minutes never got a check at
+all. From 3.0 the threshold is five minutes: it is there for a
 shortcut double-clicked or a start that crashes and repeats, so that opening and
 closing Rymembra ten times in a minute still makes one request, not ten. Pressing
 «Check now» is the exception, and deliberately so — a button you pressed has to
@@ -574,13 +674,18 @@ them per PC.
 
 ## 7. What *doesn't* happen, and is worth saying
 
-- **No request at startup, except the one in § 6 — and «Listen together»'s, if you switched it on.** Opening Rymembra sends nothing
-  to anyone for the first forty-five seconds, and after that sends a GET to a
-  public file — or not even that, if it already did less than half an hour ago.
-  There's no other ping, and nothing goes out on closing. The one exception is
-  yours to choose: with «Listen together» switched on, looking for hosts on
-  your own network starts with the program, and closing tells the PCs of a
-  session that you left (§ 4-ter).
+- **Little at startup, and all of it listed here.** Ten seconds after the
+  window is ready comes the update check of § 6, a GET to a public file — or
+  not even that, if the last one is less than five minutes old. Ninety seconds
+  in, metadata enrichment (§ 2), on by default, looks at the library and asks
+  MusicBrainz and the cover services only about what is missing; it can be
+  switched off, and then it asks nothing. If you connected Last.fm or
+  ListenBrainz, the listens left in the queue are sent (§ 3). The services you
+  connected yourself — the cloud folders (§ 4-quater), the Drive backup (§ 4) —
+  go on talking to their own servers, and with «Listen together» switched on,
+  looking for hosts on your own network starts with the program (§ 4-ter).
+  There's no other ping, and nothing goes out on closing, except telling the
+  PCs of a «Listen together» session that you left.
 - **Nothing in the clear leaves for the internet.** The HTTP client refuses
   `http://` by construction, with exactly one exception: a language model
   running on your own machine (§ 2-quater). Ollama and LM Studio have no
@@ -601,12 +706,17 @@ them per PC.
   the 40-byte discovery datagrams and the 34-byte answers of a host, which
   carry no name and nothing about you.
 - **No external domain in the window.** The content policy (`tauri.conf.json`)
-  admits only `'self'` and `data:`. The preview cover art arrives as `data:`
-  URIs already downloaded by the core: the page never talks to a catalog
-  directly, and cannot.
+  names no source outside this computer: besides `'self'` and `data:`, only
+  Rymembra's own local protocols — `rymembra-cover:` for the cover art cache,
+  `rymembra-skin:` for a skin's images and fonts, `ipc:` for the commands —
+  each also written as `http://<name>.localhost`, which is how WebView2 sees
+  the same local source. The preview cover art arrives as `data:` URIs already
+  downloaded by the core: the page never talks to a catalog directly, and
+  cannot.
 - **No cookies, no local storage** holding personal data.
 - **No writing outside the folders you pointed at**, apart from the
-  application's data folder.
+  application's data folder and its local counterpart in `%LOCALAPPDATA%`
+  (§ 8).
 
 ---
 
@@ -624,20 +734,32 @@ What Rymembra writes, and where:
   writes the tags and the cover art into those, because it is the one that
   created them: a file that arrived a minute ago with no artist and no title
   is not "your file" in the sense this section is about.
-- **The lyrics files it saves next to a track** — `name.lrc` and, when you
-  time the words, `name.a2.lrc`. These are *new* files, written beside the
-  track; the track itself is not opened. From 2.3.2, when one of them is
-  already there and Rymembra is about to replace it with something different,
-  the version that was there is kept once as `name.lrc.bak` (or
-  `name.a2.lrc.bak`) instead of being overwritten.
-- **The playlists you export**, `.m3u` and `.pls`, where you ask for them.
+- **The lyrics files it saves next to a track**, only if you switch on «Also
+  write synced lyrics to an .lrc next to the track» in *Settings › Folders and
+  scanning › Lyrics* (from 3.0 it is off by default, and the lyrics you sync
+  stay in the library) — `name.lrc` and, when you time the words,
+  `name.a2.lrc`. These are *new* files, written beside the track; the track
+  itself is not opened. From 2.3.2, when one of them is already there and
+  Rymembra is about to replace it with something different, the version that
+  was there is kept once as `name.lrc.bak` (or `name.a2.lrc.bak`) instead of
+  being overwritten.
+- **The playlists you export**, `.m3u`, `.m3u8`, `.pls` and `.xspf`, where you
+  ask for them.
 - **The profile archive** (`.ryprofile`), where you ask for it.
+- **The skin packages you export** from the Skin Studio (`.ryskin`), where you
+  ask for them.
+- **This PC's synchronization file**, `dispositivi\rymembra-<device>.v1.json.gz`,
+  in the shared folder you chose for syncing, if you chose one (§ 4).
 - **The application's data folder** —
   `%APPDATA%\io.github.federicobaratti.rymembra` — which holds the library
   database, the cover art cache, the installed skins and the log described
   below. On the first start after an upgrade, Rymembra also renames the data
   folder of the previous version into this one (and the files inside to the
   new names), without overwriting or deleting anything.
+- **Its local counterpart** — `%LOCALAPPDATA%\io.github.federicobaratti.rymembra`,
+  which does not roam with your Windows profile — where Rymembra keeps the
+  cache of the cloud tracks you played (`nuvola-cache`, § 4-quater) and, after
+  a start that failed, `avvio.log` (see «The log» below).
 
 Nothing on that list leaves your computer, and nothing on it is a file you
 already had.
@@ -645,14 +767,19 @@ already had.
 ### The one thing that reaches a file you already had — from 2.3.2
 
 A track's context menu ends with **«Delete from disk»**, and it does what it
-says: the file goes to the **Recycle Bin**, and the library row goes with it.
+says: the file goes to the **Recycle Bin**, and the library row goes with it —
+except where Windows has no Recycle Bin: a network share or a drive letter
+mapped onto one, a removable drive (a USB stick, an SD card, a CD) or a RAM
+disk, and a file whose location Rymembra could not determine. There the file
+is deleted **permanently**, and only after a confirmation that says so.
 It is the only thing in Rymembra that reaches a music file you already had, so
 the conditions on it are the ones you would want. It never runs by itself and
 is never part of a scan, an enrichment pass or any other background work; it
-asks first, with «Cancel» as the primary button; it goes to the Recycle Bin
-rather than being deleted, so the operating system still holds your copy; and
-when a file will not go, the row stays, because a library that claims a file
-is gone while it is still on disk is worse than one that claims too much.
+asks first, with «Cancel» as the primary button; everywhere else it goes to
+the Recycle Bin rather than being deleted, so the operating system still holds
+your copy; and when a file will not go, the row stays, because a library that
+claims a file is gone while it is still on disk is worse than one that claims
+too much.
 
 Its neighbour in that menu, **«Remove from library»**, does not touch the disk
 at all: it takes the row out and leaves the file exactly where it is.
@@ -671,16 +798,15 @@ undone by a re-scan.
 
 Interoperability does not need that button. Everything another program needs to
 read is already produced as a **new file** rather than as a change to yours:
-`.m3u` and `.pls` playlists, `.lrc` and `.a2.lrc` lyrics, and the profile
-archive.
+`.m3u`, `.m3u8`, `.pls` and `.xspf` playlists, `.lrc` and `.a2.lrc` lyrics
+when you switch them on, and the profile archive.
 
-**One exception, and it is on its way out.** Versions up to 2.3.0 *did* rewrite
-your tags during enrichment, and kept a copy of what was there before. So that
-you can still undo those old writes, *Settings → Metadata* offers a button
-whose label says it writes into the files. It is the only thing in Rymembra that
-opens your music for writing, it only appears while there is something left to
-undo, it never runs by itself, and it will be removed in a future release once
-those records are gone.
+**The one exception is gone.** Versions up to 2.3.0 *did* rewrite your tags
+during enrichment, and kept a copy of what was there before. Until 3.1, a
+button in *Settings → Metadata* could write those old tags back into the files;
+it was promised for a single release in 2.3.1 and was removed in 3.2.0. The
+copies stay in the database, where nothing reads them, and nothing in Rymembra
+opens the music files you already had for writing.
 
 ### The log
 
@@ -715,6 +841,17 @@ in *Settings → Updates*. What to do with it afterwards is up to you.
 
 The files rotate when they reach two megabytes, and three are kept: the oldest
 is deleted. Deleting them all by hand breaks nothing.
+
+**When Rymembra fails before the log opens** — WebView2 missing or broken, a
+data folder that cannot be found — there is nowhere to write those lines yet,
+so one more file can appear, *outside* the data folder:
+`%LOCALAPPDATA%\io.github.federicobaratti.rymembra\avvio.log` (or the
+temporary folder, if Windows does not say where `%LOCALAPPDATA%` is). Only the
+lines of that failed start go into it — the crash and its cause — under the
+same rules as the log: no track, no path of your music, your account name
+replaced by `%APPDATA%`, `%LOCALAPPDATA%` and `%USERPROFILE%`. It starts over
+when it passes 256 kilobytes, it is not sent anywhere either, and deleting it
+breaks nothing.
 
 ---
 

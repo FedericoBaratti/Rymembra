@@ -62,7 +62,6 @@ use rymembra_app::cartelle::{
     brani_diretti_dal_database, brani_sotto_dal_database, file_della_cartella, filtra,
     sotto_una_radice,
 };
-use rymembra_app::files::MusicFiles as _;
 use rymembra_app::settings::{self, CHIAVE_CARTELLE};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::paths::PathRules;
@@ -554,15 +553,17 @@ fn cartella_da_mostrare(connessione: &Connection, percorso: &str) -> Result<Path
 /// un errore: è un `false` nel suo posto dell'elenco, che è lungo e ordinato
 /// come quello ricevuto.
 #[tauri::command]
-pub async fn cartelle_radici_vive(radici: Vec<String>) -> Esito<Vec<bool>> {
+pub async fn cartelle_radici_vive(app: tauri::AppHandle, radici: Vec<String>) -> Esito<Vec<bool>> {
+    // Il disco e il cloud: una cartella di OneDrive è viva se il suo conto è
+    // collegato su questo PC e lo specchio la conosce — senza chiederlo alla
+    // rete, come una share non si sveglia per disegnare un albero.
+    let files = crate::nuvola_musica::archivi(&app);
     in_disparte("radici vive", move || {
         std::thread::scope(|ambito| {
+            let files = &files;
             let fili: Vec<_> = radici
                 .iter()
-                .map(|radice| {
-                    ambito
-                        .spawn(move || rymembra_app::files::LocalFiles.radice_raggiungibile(radice))
-                })
+                .map(|radice| ambito.spawn(move || files.radice_raggiungibile(radice)))
                 .collect();
             fili.into_iter()
                 // Un filo caduto vale «non risponde»: è la stessa risposta
@@ -577,6 +578,8 @@ pub async fn cartelle_radici_vive(radici: Vec<String>) -> Esito<Vec<bool>> {
 
 #[cfg(test)]
 mod tests {
+    use rymembra_app::files::MusicFiles as _;
+
     use super::*;
 
     use std::sync::mpsc;
