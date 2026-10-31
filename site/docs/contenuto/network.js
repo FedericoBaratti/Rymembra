@@ -7,7 +7,7 @@
     {
       id: "http",
       title: "The HTTP client",
-      src: ["core/rymembra-net/src/http.rs", "core/rymembra-net/src/immagine.rs", "core/rymembra-net/src/lib.rs"],
+      src: ["core/rymembra-net/src/http.rs", "core/rymembra-net/src/http/richieste.rs", "core/rymembra-net/src/immagine.rs", "core/rymembra-net/src/lib.rs"],
       body: [
         "`rymembra_net::Rete` wraps a `ureq` 3 agent (cheap to clone; clones share the connection pool). It sees only the error catalog — never the database — which is what makes «a lock held during a request» impossible to write.",
         {
@@ -82,20 +82,20 @@
     {
       id: "oauth",
       title: "OAuth and the keychain",
-      src: ["core/rymembra-oauth/src/lib.rs", "core/rymembra-oauth/src/pkce.rs", "core/rymembra-oauth/src/loopback.rs", "core/rymembra-oauth/src/portachiavi.rs", "core/rymembra-oauth/src/scadenza.rs", "core/rymembra-cloud/src/oauth.rs"],
+      src: ["core/rymembra-oauth/src/lib.rs", "core/rymembra-oauth/src/pkce.rs", "core/rymembra-oauth/src/loopback.rs", "core/rymembra-oauth/src/portachiavi.rs", "core/rymembra-oauth/src/scadenza.rs", "core/rymembra-cloud/src/oauth.rs", "core/rymembra-cloud/src/portachiavi.rs"],
       body: [
-        "`rymembra-oauth` holds the parts of OAuth 2.0 that are the same for every provider, and no HTTP; provider details (endpoints, scopes, form fields) stay with the provider's crate (`rymembra-cloud` for Google).",
+        "`rymembra-oauth` holds the parts of OAuth 2.0 that are the same for every provider, and no HTTP; provider details (endpoints, scopes, form fields) stay with the provider's crate. In `rymembra-cloud`, `oauth.rs` keeps them as a table, `Fornitore`, with four rows: Google for the backup (`drive.appdata`), Google for the Drive folders (`drive.readonly`), Microsoft (`/consumers`: personal accounts) and Dropbox. The client ID is never in the binary: it comes from the user's own app ([Cloud folders](#cloud-folders)).",
         {
           ul: [
             "**PKCE** (RFC 7636): verifier = base64url of 32 random bytes (43 characters), challenge S256; plus a random `state`.",
-            "**Loopback** (`Attesa`): binds `127.0.0.1:0` — a port chosen by the OS, never fixed (guessable) and never `0.0.0.0` (the LAN). Non-blocking accept polled every 100 ms; request line ≤ 8 KiB, ≤ 64 headers; a wrong `state` gets a 400 and the wait continues; cancellable; replies with a small localized page. Consent always happens in the **system browser**: a webview able to draw `accounts.google.com` would be a phishing surface.",
+            "**Loopback** (`Attesa`): `Attesa::apri` binds `127.0.0.1:0` — a port chosen by the OS, not guessable, and never `0.0.0.0` (the LAN); Google's «Desktop app» clients accept any loopback port. `Attesa::apri_con` serves the two providers that do not follow those rules: Microsoft registers `http://localhost`, so the redirect names `localhost` (`Ospite::Localhost`) with an OS-chosen port, which Entra ignores for `localhost`; Dropbox compares the whole address, so the redirect is `http://127.0.0.1` on the first free one of `PORTE_DROPBOX` = 53682, 53683, 53684, the three addresses the user registers. The socket is always on `127.0.0.1`. Non-blocking accept polled every 100 ms; request line ≤ 8 KiB, ≤ 64 headers; a wrong `state` gets a 400 and the wait continues; cancellable; replies with a small localized page. Consent always happens in the **system browser**: a webview able to draw `accounts.google.com` would be a phishing surface.",
             "**Keychain** (`Portachiavi` trait): `DiSistema` uses `keyring` (Windows Credential Manager) under the service `io.github.federicobaratti.rymembra`; `InMemoria` for tests; `Guasto` when the keychain is unreachable. It **never falls back** to `settings`. Entries written by the previous version under its own service name are read as a fallback: the first read copies the value under the current name and, only if that succeeded, removes the old entry; disconnecting removes both, so a forgotten account does not come back.",
             "**Expiry**: tokens are refreshed `ANTICIPO` = 60 s before they expire.",
           ],
         },
-        "Never written into an error (and therefore never into the log): the code verifier, authorization codes, access and refresh tokens. Keys stored in the keychain include `google.refresh_token`, `google.client_secret`, `lastfm.api_key`, `lastfm.segreto`, `lastfm.sessione`, `listenbrainz.token`, the per-profile language-model keys, and `insieme.chiave.<device id>`, the private key with which this PC identifies itself to the PCs it is paired with.",
+        "Never written into an error (and therefore never into the log): the code verifier, authorization codes, access and refresh tokens. Keys stored in the keychain include `google.refresh_token` (the backup), `nuvola.<account>.refresh` and `nuvola.<account>.password` (cloud accounts, WebDAV), `nuvola.app.<app>.segreto` (the client secret of a Google app the user registered; `google.client_secret` is the 3.1 entry, still read for the app migration 037 carried over until the secret is typed again), `lastfm.api_key`, `lastfm.segreto`, `lastfm.sessione`, `listenbrainz.token`, the per-profile language-model keys, and `insieme.chiave.<device id>`, the private key with which this PC identifies itself to the PCs it is paired with.",
       ],
-      see: ["cloud", "scrobbling", "models"],
+      see: ["cloud", "cloud-folders", "scrobbling", "models"],
     },
   ],
 });

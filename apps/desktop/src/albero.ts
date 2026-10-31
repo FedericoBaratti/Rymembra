@@ -184,8 +184,14 @@ export function chiaveRiga(riga: RigaAlbero): string {
  *
  * `Intl.Collator` con `numeric` e non un confronto scritto a mano: è lo stesso
  * ordine di Esplora risorse — «2» prima di «10», «brano» accanto a «Brano» — e
- * la lingua dell'interfaccia decide dove stanno le lettere accentate, che è
- * una cosa che un confronto per codice sbaglierebbe. Uno solo, costruito una
+ * una lingua decide dove stanno le lettere accentate, che è una cosa che un
+ * confronto per codice sbaglierebbe. Quale lingua: quella **del sistema**, e
+ * non quella scelta nell'app. Il primo argomento è `undefined`, cioè la lingua
+ * predefinita del motore (WebView2, che segue Windows); `lingue` scrive solo
+ * `lang` sul documento, e quello non cambia la lingua predefinita di `Intl`.
+ * Un'interfaccia in inglese su un Windows svedese ordina quindi i file da
+ * svedese — come Esplora risorse sullo stesso PC. `alfabeto.ts`, che invece
+ * passa la lingua dell'app, lo dice dall'altra parte. Uno solo, costruito una
  * volta: crearne uno a confronto costerebbe più dell'ordinamento intero.
  */
 const COLLAZIONE = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -674,8 +680,9 @@ export function fratelliDi(righe: readonly RigaAlbero[], da: number): string[] {
  * quarta torna alla prima. Senza, si resterebbe fermi sulla prima per sempre.
  *
  * Il confronto è insensibile alle maiuscole con `localeCompare`, e non con un
- * `toLowerCase` per parte: la lingua dell'interfaccia decide come si piega una
- * lettera, e in turco la I maiuscola non diventa la i che ci si aspetta.
+ * `toLowerCase` per parte: una lingua decide come si piega una lettera, e in
+ * turco la I maiuscola non diventa la i che ci si aspetta. Anche qui la lingua
+ * è quella del sistema (`undefined`), come per `COLLAZIONE` qui sopra.
  */
 export function saltaA(
   righe: readonly RigaAlbero[],

@@ -94,16 +94,106 @@ pub fn metadati_conferma(stato: State<'_, Stato>, id: i64) -> Esito<()> {
 ///
 /// Restituisce quanti brani aspettano la rilettura.
 ///
-/// `(async)`: un `UPDATE` su ogni riga della libreria, che su centomila brani non
-/// è una cosa da fare sul filo della finestra.
+/// In disparte: un `UPDATE` su ogni riga della libreria, che su centomila brani
+/// non è una cosa da fare sul filo della finestra — e prima il turno.
+///
+/// # Il turno della scansione
+///
+/// Il segno si mette col turno di manutenzione in mano. Senza, una scansione
+/// automatica a metà dei suoi lotti riscriveva la data vera sopra il segno di
+/// ogni riga che salvava dopo, e quei brani saltavano in silenzio la
+/// rilettura promessa.
 ///
 /// # Errori
 ///
+/// `library.scanBusy` se una scansione tiene il turno oltre l'attesa;
 /// `db.queryFailed`.
-#[tauri::command(async)]
-pub fn metadati_rileggi_tutti(stato: State<'_, Stato>) -> Esito<usize> {
-    con_libreria(&stato, |libreria| {
-        rymembra_app::library::rileggi_tutti_i_tag(&libreria.connection)
+#[tauri::command]
+pub async fn metadati_rileggi_tutti(app: tauri::AppHandle) -> Esito<usize> {
+    crate::disparte::in_disparte("rilettura dei tag", move || {
+        let stato = crate::comandi::libreria_di(&app, "rilettura dei tag")?;
+        rileggi_tutti_col_turno(&stato, ATTESA_DEL_TURNO)
     })
+    .await
+    .and_then(|esito| esito)
     .map_err(errore)
+}
+
+/// Quanto «Rileggi tutti i tag» aspetta che la scansione in corso lasci il
+/// turno: come il trasloco.
+const ATTESA_DEL_TURNO: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Il corpo di [`metadati_rileggi_tutti`]: il turno, il segno, la riga nel
+/// diario. La scansione che segue si scrive «a mano» come ogni altra: la riga
+/// qui sopra è ciò che dice perché legge tutto.
+fn rileggi_tutti_col_turno(
+    stato: &Stato,
+    entro: std::time::Duration,
+) -> Result<usize, rymembra_domain::errors::AppError> {
+    let _turno = crate::comandi::aspetta_il_turno_di_manutenzione(
+        stato,
+        entro,
+        "la rilettura dei tag aspetta che la scansione in corso finisca",
+    )?;
+    let segnati = con_libreria(stato, |libreria| {
+        rymembra_app::library::rileggi_tutti_i_tag(&libreria.connection)
+    })?;
+    crate::nota!("[scansione] rilettura dei tag chiesta: {segnati} brani segnati");
+    Ok(segnati)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// I brani con la data di modifica segnata per la rilettura.
+    fn segnati(stato: &Stato) -> i64 {
+        let guardia = stato.libreria.lock().expect("lucchetto");
+        guardia
+            .as_ref()
+            .expect("libreria aperta")
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE date_modified = -1",
+                [],
+                |riga| riga.get(0),
+            )
+            .expect("conto")
+    }
+
+    #[test]
+    fn la_rilettura_senza_turno_non_segna_niente() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        {
+            let guardia = stato.libreria.lock().expect("lucchetto");
+            guardia
+                .as_ref()
+                .expect("libreria aperta")
+                .connection
+                .execute(
+                    "INSERT INTO tracks
+                         (id, path, track_key, title, artist, album, duration_ms,
+                          file_size, date_added, date_modified)
+                     VALUES (1, 'D:/Musica/a.flac', 'k', 'T', 'A', 'Al', 1000, 9, 0, 5)",
+                    [],
+                )
+                .expect("un brano");
+        }
+
+        // Una scansione ha il turno: la rilettura aspetta, poi rinuncia, e non
+        // segna niente — un segno messo adesso lo riscriverebbe lei.
+        let turno = stato.turno_di_manutenzione().expect("il turno");
+        let rifiuto = rileggi_tutti_col_turno(&stato, std::time::Duration::from_millis(200))
+            .expect_err("occupato");
+        assert_eq!(rifiuto.code().kind().code(), "library.scanBusy");
+        assert_eq!(segnati(&stato), 0);
+
+        drop(turno);
+        assert_eq!(
+            rileggi_tutti_col_turno(&stato, std::time::Duration::from_millis(200)).expect("libero"),
+            1
+        );
+        assert_eq!(segnati(&stato), 1);
+    }
 }

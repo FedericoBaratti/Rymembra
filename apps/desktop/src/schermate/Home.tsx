@@ -445,6 +445,7 @@ export function Home({
   onMenu,
   onApriAlbum,
   onMenuAlbum,
+  onAggiungiCartella,
 }: {
   casa: Casa | null;
   /** Le raccolte di questa settimana. Vuoto finché non arrivano. */
@@ -461,6 +462,8 @@ export function Home({
   onMenu: (e: React.MouseEvent, brano: Brano) => void;
   onApriAlbum: (album: Album) => void;
   onMenuAlbum: (e: React.MouseEvent, album: Album) => void;
+  /** Apre «Aggiungi cartella», per lo stato vuoto. */
+  onAggiungiCartella: () => void;
 }) {
   const ora = useQuelCheSuona();
   if (casa === null) return <CasaFinta />;
@@ -482,6 +485,7 @@ export function Home({
         icona="i-home"
         titolo={t("home.empty.title")}
         testo={t("home.empty.hint")}
+        azione={{ etichetta: t("settings.roots.add"), fai: onAggiungiCartella }}
       />
     );
   }

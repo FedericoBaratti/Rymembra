@@ -1,0 +1,1664 @@
+/* La terza colonna, «In riproduzione», lo spettro, il testo che scorre e
+   l'editor a battute.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── la terza colonna ─────────────────────────────────────────────────────── */
+.colonna {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  padding: 14px 16px 0;
+  background: var(--color-surface-1);
+  border-left: 1px solid var(--hairline);
+  overflow: hidden;
+}
+
+/* Lo strato ambientale: la tinta della copertina, e **solo** qui. Alto 340
+   pixel, cioè il primo terzo della colonna, al venti per cento: sta dietro la
+   copertina, quindi dietro un'immagine, e non sotto una riga di testo. */
+.colonna .ambiente {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 340px;
+  /* Ingrandita di un terzo, la copertina sfocata uscirebbe da questi
+     trecentoquaranta pixel e finirebbe dietro la coda. */
+  overflow: hidden;
+  background: radial-gradient(
+    120% 100% at 50% 0%,
+    rgb(var(--hero-rgb) / 0.2),
+    transparent 70%
+  );
+  pointer-events: none;
+}
+.colonna > *:not(.ambiente) {
+  position: relative;
+}
+
+.colonna .testa {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  /* L'angolo in alto a destra è dei tre comandi della finestra: i due tasti di
+     questa testata si fermano prima. Vedi «la barra del titolo», in `stile.css`. */
+  padding-right: calc(var(--controlli-w) + var(--spazio-2));
+}
+.colonna .testa .occhiello {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.colonna .apri-grande {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-panel);
+}
+.colonna .column-art {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-2);
+  object-fit: cover;
+  box-shadow: var(--shadow-3);
+  display: block;
+}
+.colonna .apri-grande:focus-visible .column-art {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.colonna .chi {
+  min-width: 0;
+}
+.colonna .titolo {
+  /* Lo stesso carattere del titolo a schermo intero, e per la stessa ragione:
+     è lo stesso `np-title`, in un'altra misura. Che cambiasse faccia aprendo e
+     chiudendo lo schermo intero era l'unico posto in cui la stessa parte si
+     disegnava in due modi. */
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  /* Due righe qui come a schermo intero: la colonna è larga trecentoquindici
+     pixel, e su una riga sola quasi ogni titolo di remix finisce nei puntini. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  user-select: text;
+}
+.colonna .meta {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.colonna .cursore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.colonna .tempo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  /* Larghezza fissa: senza, il passaggio da «0:59» a «1:00» allargherebbe la
+     colonna e farebbe saltare il cursore di qualche pixel una volta al minuto. */
+  width: 38px;
+  flex: none;
+}
+.colonna .tempo:last-child {
+  text-align: right;
+}
+
+.colonna .trasporto {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spazio-2);
+}
+.colonna .trasporto .grande {
+  width: 48px;
+  height: 48px;
+  background: var(--accent);
+  color: var(--color-surface-0);
+  box-shadow: var(--glow-accent);
+}
+.colonna .trasporto .grande:hover {
+  filter: brightness(1.08);
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+
+/* `flex-wrap` perché la fascia ha un quarto figlio che deve stare da solo:
+   `.formato`, i dati tecnici del file. La regola che lo manda a capo sta con
+   lui, più sotto, accanto all'altra fascia che lo ospita. */
+.colonna .giudizio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding-bottom: var(--spazio-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.colonna .giudizio .volume {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  min-width: 0;
+}
+.colonna .giudizio .volume .scorrimento {
+  flex: 1;
+  min-width: 0;
+}
+
+.colonna .niente-in-ascolto {
+  flex: 1;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: var(--spazio-2);
+  text-align: center;
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+.colonna .niente-in-ascolto p {
+  margin: 0;
+  max-width: 30ch;
+}
+.colonna .niente-in-ascolto .sotto {
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.coda-in-colonna {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  flex: 1;
+  min-height: 0;
+  padding-bottom: var(--spazio-3);
+}
+.coda-in-colonna .testa-coda {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.coda-in-colonna .testa-coda .segmentato {
+  flex: 1;
+  min-width: 0;
+}
+.coda-in-colonna .righe-coda {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── In riproduzione, a schermo quasi intero ──────────────────────────────────
+ *
+ * Copre il contenuto ma **non** la navigazione: sta dentro il posto della
+ * pagina, non sopra lo scafale. Coprire tutto costringerebbe a chiudere per cambiare vista,
+ * e a quel punto guardare la copertina e navigare diventano due gesti che si
+ * annullano a vicenda.
+ *
+ * La pagina sotto resta montata, e non è un dettaglio di implementazione:
+ * smontarla perderebbe la posizione di scorrimento, e chiudere riporterebbe in
+ * cima a un elenco che si stava guardando a metà.
+ */
+.in-riproduzione {
+  position: absolute;
+  inset: 0;
+  z-index: var(--strato-contenuto);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface-0);
+  /* Il contenitore della soglia dei due pannelli: vedi «un pannello solo»,
+     accanto alle colonne del testo. `inline-size` basta — la soglia è una
+     larghezza — e non disturba `.centro`, che resta il contenitore più vicino
+     per le misure della copertina e del titolo. */
+  container: riproduzione / inline-size;
+}
+
+/* Due strati e non uno. L'ambiente prende il colore dalla copertina; lo scrim
+   è neutro, e sopra lo scrim sta il testo. Se fosse una versione scura della
+   tinta, con una copertina gialla il titolo si leggerebbe su giallo scuro —
+   che è ancora giallo.
+
+   Nessuno dei due prende il puntatore. Sono `aria-hidden` e grandi quanto la
+   schermata: un divieto dimenticato qui non si vede, si sente — smette di
+   rispondere tutto quel che c'è sotto. */
+.in-riproduzione .ambiente {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 60% at 22% 18%, rgb(var(--hero-rgb) / 0.45), transparent 70%),
+    radial-gradient(70% 70% at 82% 78%, rgb(var(--hero-rgb) / 0.28), transparent 72%);
+}
+/* `np-scrim` e non `velo`. Un velo, in questo foglio, è una superficie che
+   prende il clic per chiudere qualcosa, ed è per quello che sta su
+   `--strato-velo`. Questo non chiude niente — è il nero verticale che rende
+   leggibile il titolo — e portare quel nome gli faceva ereditare quello strato:
+   si dipingeva sopra la testata e il corpo, che sono `position: relative` e
+   nient'altro, e si mangiava ogni clic della schermata. Il nome che resta è
+   quello del registro delle skin, come per `.tooltip-pill` qui sotto. */
+.in-riproduzione .np-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgb(var(--surface-0-rgb) / 0.42),
+    rgb(var(--surface-0-rgb) / 0.8)
+  );
+}
+
+.in-riproduzione .testa,
+.in-riproduzione .corpo {
+  position: relative;
+}
+/* Lo spettro caduto (`RecintoErrori` in `Recinto.tsx`, stretto): la fascia
+   prende il posto della scena, e come la testata deve stare sopra l'ambiente e
+   lo scrim — che sono posizionati, e un blocco che non lo è finirebbe sotto di
+   loro, con «Riprova» coperto dal fondo sfocato. Il margine è quello della
+   testata, così la fascia si allinea al titolo. */
+.in-riproduzione > .avviso {
+  position: relative;
+  margin: var(--spazio-3) 32px 0;
+}
+
+/* Le notizie a schermo intero: la loro casa in cima alla pagina è coperta da
+   questa schermata. Galleggiano sotto la testata, dove non coprono «Chiudi»
+   né i tre interruttori, e non spostano il corpo quando arrivano. Il
+   contenitore non prende il puntatore — è largo quanto la schermata — e le
+   notizie sì. */
+.in-riproduzione .avvisi-np {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  z-index: var(--strato-toast);
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100% - 64px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.in-riproduzione .avvisi-np > * {
+  pointer-events: auto;
+  box-shadow: var(--shadow-player);
+}
+
+.in-riproduzione .testa {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  /* A destra i trentadue pixel di sempre **più** l'angolo dei comandi della
+     finestra: qui la testata arriva al bordo, e il tasto «Chiudi · Esc» finiva
+     sotto di loro. Vedi «la barra del titolo», in `stile.css`. */
+  padding: 18px calc(var(--controlli-w) + 32px) 10px 32px;
+}
+.in-riproduzione .chi-suona {
+  flex: 1;
+  min-width: 0;
+}
+.in-riproduzione .occhiello {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.in-riproduzione .disco {
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.in-riproduzione .comandi {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+}
+
+/*
+ * Il suggerimento al passaggio. `tooltip-pill` è una parte del registro delle
+ * skin, e la regola resta perché chi ridipinge abbia una superficie da
+ * ridipingere: la pastiglia sa già dove mettersi e come stare zitta.
+ *
+ * # Chi la scopre
+ *
+ * `.con-ragione`, qui sotto: il guscio che si mette attorno a un comando spento
+ * perché la pastiglia abbia un riferimento da cui pendere e un gesto che la
+ * alzi. C'era, è sparito quando i comandi spenti hanno smesso di aver bisogno di
+ * una ragione a parte, ed è tornato con le linguette spente del pannello dei
+ * comandi, che la ragione ce l'hanno di nuovo — la regola era arrivata **prima**
+ * del markup che la usa, e adesso il markup c'è: `parti/Segmentato.tsx` avvolge
+ * ogni linguetta `aria-disabled` nel guscio e ci appende la pastiglia.
+ *
+ * Le due regole che la portano a 1 stanno accanto alla pastiglia e non al
+ * guscio, apposta: chi legge `opacity: 0` deve trovare nella stessa schermata
+ * chi la accende, altrimenti quello zero si legge come «disattivata» invece che
+ * come «in attesa di un gesto».
+ *
+ * Con quel markup la voce `tooltip-pill` è uscita da `ATTESE` di
+ * `strumenti/classi.js`: la parte adesso si vede nell'applicazione, e non solo
+ * nell'anteprima dello Studio.
+ *
+ * `:focus-within` accanto a `:hover`, e non è simmetria per bellezza: un comando
+ * spento che spiega perché è spento solo a chi ha il mouse non spiega niente a
+ * chi naviga col tabulatore, cioè proprio a chi non può provare a premerlo per
+ * scoprirlo.
+ */
+.tooltip-pill {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--strato-pastiglia);
+  width: max-content;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-3);
+  background-image: var(--luce);
+  box-shadow: var(--filo), var(--shadow-2);
+  color: var(--color-text-2);
+  font-size: 11.5px;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+
+/* Il guscio. `inline-flex` perché sta in linea dov'era il comando che avvolge e
+   non deve occupare la riga; `relative` perché la pastiglia è `absolute` e senza
+   questo si aggancerebbe al primo antenato posizionato, che può essere il
+   pannello intero — e una pastiglia ancorata al pannello finisce lontana dal
+   comando che spiega. */
+.con-ragione {
+  position: relative;
+  display: inline-flex;
+}
+.con-ragione:hover .tooltip-pill,
+.con-ragione:focus-within .tooltip-pill {
+  opacity: 1;
+}
+
+.in-riproduzione .comandi .tasto:disabled {
+  color: var(--color-text-3);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.in-riproduzione .corpo {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spazio-5);
+  padding: 0 32px 28px;
+  overflow: hidden;
+}
+.in-riproduzione .corpo[data-con-coda] {
+  grid-template-columns: minmax(0, 1fr) 316px;
+}
+
+.in-riproduzione .centro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Uno in cima e uno in fondo, e in mezzo il vuoto. Sono due figli — il
+     sommario e i comandi — quindi `space-between` è tutto quel che serve a
+     mandarli ai due bordi, e il vuoto che resta in mezzo è dove si vede la
+     scena dello spettro. Quando la scena è spenta quel vuoto non lo guarda
+     nessuno, e se lo riprende il sommario: vedi `margin-block` lì sotto. */
+  justify-content: space-between;
+  gap: var(--spazio-3);
+  min-height: 0;
+  text-align: center;
+  /* Un contenitore suo, e serve al titolo. Il `cq` più vicino era la zona del
+     contenuto, larga settecento pixel anche quando questa colonna ne è larga
+     trecentoquaranta perché la coda è aperta: il titolo si misurava su uno
+     spazio che non era il suo.
+
+     `size` e non `inline-size`: serve anche l'altezza, e serve alla copertina.
+     Vedi `.np-art`. Si può fare perché questa colonna è una cella di griglia
+     tirata dai due lati — la sua misura viene dal genitore, non dal contenuto —
+     che è esattamente la condizione che un contenitore di dimensione richiede. */
+  container-type: size;
+}
+
+/*
+ * Il sommario: la copertina e, accanto o sotto, di chi è.
+ *
+ * Di suo sta **al centro**, in colonna, con la copertina grande. È lo stato di
+ * quando la schermata si apre — lo spettro parte spento — e in quel momento non
+ * c'è nient'altro da guardare: una copertina piccola in un angolo, con tutto lo
+ * schermo vuoto intorno, sarebbe spazio tenuto libero per niente.
+ *
+ * `margin-block: auto` e non `justify-content: center` sul centro: i figli sono
+ * due e i comandi devono restare in fondo. I margini automatici si prendono lo
+ * spazio che avanza **attorno a questo elemento soltanto**, quindi il sommario
+ * finisce in mezzo alla fascia che gli resta senza spostare di un pixel la riga
+ * dei comandi. Con `justify-content` si sposterebbero tutti e due.
+ */
+.in-riproduzione .sommario-np {
+  align-self: center;
+  display: flex;
+  /* In colonna, e allineati al centro. Con lo spettro acceso la direzione
+     diventa `row` e `align-items` da orizzontale si fa verticale: è lo stesso
+     centro, ed è quel che serve in tutti e due i versi. */
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-3);
+  max-width: 100%;
+  margin-block: auto;
+  text-align: center;
+}
+/*
+ * Con lo spettro acceso si ritira in alto a sinistra.
+ *
+ * La copertina grande in mezzo allo schermo costa la fascia centrale, che è
+ * proprio quella in cui la scena si legge meglio. Adesso in mezzo c'è una
+ * seconda cosa da guardare, e una sola delle due può stare lì: il sommario dice
+ * chi suona in un angolo, e lo schermo resta alla musica.
+ */
+.in-riproduzione .centro[data-spettro] .sommario-np {
+  align-self: flex-start;
+  flex-direction: row;
+  margin-block: 0;
+  text-align: left;
+}
+/* `min-width: 0` e non è pignoleria: senza, un titolo lungo allarga la riga
+   invece di andare a capo, e la copertina si stringe per fargli posto — è il
+   `flex-shrink` di serie che agisce sull'elemento sbagliato. */
+.in-riproduzione .sommario-np .chi {
+  min-width: 0;
+}
+/* Cursore, trasporto e giudizio sono una cosa sola — i comandi — e in un
+   contenitore si appoggiano al bordo di sotto con una riga invece di tre. */
+.in-riproduzione .comandi-np {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-3);
+  width: 100%;
+}
+/* Con lo spettro acceso i comandi stanno **sopra le barre** e non su un fondo:
+   il pannello quasi opaco che ci stava sotto è stato tolto, perché chiudeva la
+   scena in una scatola proprio dove la scena è tutto quel che si guarda. Quel
+   che quel fondo teneva leggibile — i due tempi ai lati del cursore e le stelle
+   non accese — se lo tiene da sé, con un'ombra portata sul testo e sui segni:
+   costa un'ombra e non un rettangolo, e sopra una tela che si ridisegna a ogni
+   fotogramma resta comunque più economica di un `backdrop-filter`. */
+.in-riproduzione .centro[data-spettro] .comandi-np {
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.55);
+}
+.in-riproduzione .centro[data-spettro] .comandi-np svg {
+  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.55));
+}
+/*
+ * I due tempi si portano dietro il loro fondo, e sono gli unici.
+ *
+ * L'ombra che la regola qui sopra mette su tutti i comandi regge un testo
+ * **chiaro** su un fondo scuro: è il caso del tema scuro, ed è il caso per cui
+ * fu scritta. Col tema chiaro il testo è scuro, l'ombra è scura, e le barre
+ * dietro restano scure lo stesso — la scena ha il suo orizzonte scuro proprio
+ * all'altezza del cursore, comunque sia dipinta. Posizione e durata sparivano:
+ * i due numeri che dicono a che punto si è, illeggibili nella schermata che
+ * esiste per guardare quel punto.
+ *
+ * Un colore fisso chiaro non è la risposta, perché la scena la dipinge la
+ * copertina e domani lì dietro può esserci qualunque cosa. Una pastiglia sì:
+ * qualunque cosa ci sia dietro, il contrasto è quello del tema. Due rettangoli
+ * arrotondati non sono il pannello che chiudeva la scena in una scatola — quel
+ * pannello copriva tutta la fascia dei comandi, questi coprono otto caratteri.
+ *
+ * `content-box` tiene la larghezza fissa dove stava: i quarantadue pixel sono
+ * lì perché «0:59» che diventa «1:00» non sposti il cursore di qualche pixel
+ * una volta al minuto, e col `border-box` di serie il padding se li sarebbe
+ * mangiati da dentro, riportando il salto.
+ */
+.in-riproduzione .centro[data-spettro] .cursore .tempo {
+  box-sizing: content-box;
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-surface-0) 70%, transparent);
+  color: var(--color-text-1);
+  text-shadow: none;
+}
+/*
+ * Su una colonna stretta i comandi salgono di una linguetta.
+ *
+ * Il selettore delle barre sta appoggiato in basso a sinistra della schermata e
+ * la riga del giudizio sta in fondo al centro: su una colonna larga sono lontani,
+ * ma sotto gli ottocentosessanta pixel — cioè con la coda aperta su una finestra
+ * normale — arrivano alla stessa altezza e si sovrappongono. Ventisei pixel di
+ * linguetta più il respiro sono tutto quel che serve, e sopra c'è il vuoto della
+ * scena: nessuno si accorge che i comandi sono un filo più su.
+ */
+@container (max-width: 860px) {
+  .in-riproduzione .comandi-np {
+    padding-bottom: 34px;
+  }
+}
+
+/*
+ * La copertina, e la sua misura.
+ *
+ * La misura sta qui e non su un contenitore: il quadro che stava attorno teneva
+ * insieme due strati — la copertina e, sotto, sé stessa sfocata a farle da
+ * riflesso — e con un solo strato è un elemento in meno che dice la stessa cosa.
+ *
+ * Il riflesso non c'è più. Era la stessa immagine spostata in giù, sfocata e
+ * mascherata sulla metà bassa: l'idea era il disco appoggiato al tavolo lucido,
+ * il risultato era una macchia del colore della copertina proprio dove comincia
+ * il titolo — e dietro c'è già quella stessa immagine sfocata a tutto schermo,
+ * cioè due sfocature della stessa cosa a due misure, una addosso all'altra.
+ *
+ * `cqh` e non `vh`, ed è la differenza fra un titolo che si legge e uno tagliato
+ * a metà. `vh` è la finestra intera; questa colonna ne è una fetta — sotto
+ * l'intestazione della pagina, sotto la testa della schermata, dentro il
+ * padding — e una copertina misurata sulla finestra, su una finestra bassa, si
+ * mangia lo spazio del titolo: che ha `overflow: hidden` per il clamp a due
+ * righe, e si taglierebbe sulla seconda. `cqh` misura lo spazio che c'è davvero.
+ *
+ * Niente `display: block`: il genitore è un flex e i figli li blocchifica da sé,
+ * e scriverlo qui vinceva per specificità sul `display: grid` di `.vuota` —
+ * cioè, senza copertina, la nota finiva nell'angolo in alto a sinistra del
+ * quadrato invece che in mezzo.
+ *
+ * # Perché anche `cqw`, e non solo `cqh`
+ *
+ * Con `flex: none` e una misura che dipende dalla sola altezza, la copertina non
+ * si stringe mai: su una finestra alta e stretta con la coda aperta questa
+ * colonna ne è larga duecentoventi e il quadrato ne chiedeva trecentosessanta,
+ * che `.corpo { overflow: hidden }` tagliava — cioè la copertina si perdeva
+ * proprio nel caso in cui era l'unica cosa da guardare. Il `min()` ha tre
+ * termini perché i vincoli sono tre: il tetto voluto, l'altezza disponibile e la
+ * larghezza disponibile; il novantasei per cento lascia il respiro che il
+ * centoperento toglierebbe.
+ */
+.in-riproduzione .np-art {
+  width: min(360px, 40cqh, 96cqw);
+  aspect-ratio: 1;
+  flex: none;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-2);
+  object-fit: cover;
+  box-shadow: var(--shadow-3);
+}
+/* Nell'angolo si fa piccola: sta accanto al titolo, in una riga alta quanto
+   lui, e quel che perde in grandezza lo guadagna la scena dietro. */
+.in-riproduzione .centro[data-spettro] .np-art {
+  width: min(168px, 26cqh);
+}
+/*
+ * Il titolo, su due righe e di misura fluida.
+ *
+ * Prima era trentotto punti fissi su una riga sola, e con la coda aperta il
+ * centro è largo poco più di trecento pixel: «Solar Sailer - Remixed by Pretty
+ * Lights» si leggeva «Solar Sailer - …». La parte tolta era esattamente quella
+ * che distingue una versione dall'altra, cioè la ragione per cui quel brano ha
+ * un titolo così lungo.
+ *
+ * Due righe e non tre: alla terza il titolo comincia a spingere il cursore e il
+ * trasporto fuori dallo schermo, e i comandi contano più del terzo capoverso di
+ * un titolo.
+ *
+ * La misura è scesa da `8cqw` a `5.2cqw` perché il titolo non ha sempre tutta
+ * la colonna: con lo spettro acceso divide la riga con la copertina, e con
+ * quella di prima traboccava invece di andare a capo. Al centro va a capo sotto
+ * la copertina e lo spazio ci sarebbe, ma su una colonna larga il clamp è già al
+ * suo massimo in tutti e due i casi: una misura sola li serve entrambi, e non
+ * c'è una seconda regola da tenere allineata alla prima.
+ */
+.in-riproduzione .np-title {
+  margin: 0;
+  max-width: 100%;
+  /* Una parola sola più larga della colonna — «Kryptonite» a trecento pixel —
+     va a capo dentro la parola invece di sparire oltre il bordo: il clamp taglia
+     le righe, non la larghezza. */
+  overflow-wrap: anywhere;
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: clamp(20px, 5.2cqw, 34px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.032em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-wrap: balance;
+  user-select: text;
+}
+.in-riproduzione .np-meta {
+  font-size: 14.5px;
+  color: var(--color-text-2);
+}
+.in-riproduzione .cursore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: min(560px, 100%);
+}
+.in-riproduzione .tempo {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+  width: 42px;
+  flex: none;
+}
+.in-riproduzione .tempo:last-child {
+  text-align: right;
+}
+.in-riproduzione .trasporto {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.in-riproduzione .trasporto .tasto {
+  width: 38px;
+  height: 38px;
+}
+.in-riproduzione .trasporto .grande {
+  width: 60px;
+  height: 60px;
+  background: var(--accent);
+  color: var(--color-surface-0);
+  box-shadow: var(--glow-accent);
+}
+.in-riproduzione .trasporto .grande:hover {
+  filter: brightness(1.08);
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+.in-riproduzione .giudizio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.in-riproduzione .giudizio .volume {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  width: 120px;
+}
+.in-riproduzione .giudizio .volume .scorrimento {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── i dati tecnici del file ──────────────────────────────────────────────────
+ *
+ * «FLAC · 44,1 kHz · Stereo · 1058 kbps», ultimo figlio di `.giudizio`. Una
+ * regola sola perché il componente è uno solo: `parti/Giudizio.tsx` è la fascia
+ * che la colonna e lo schermo intero condividono già, e questa riga sta lì
+ * dentro — vederla scritta due volte vorrebbe dire che le due fasce hanno
+ * ricominciato a divergere.
+ *
+ * `flex: 0 0 100%` la manda a capo da sola invece di farla stare in fila con
+ * cuore, stelle e volume. Non è gusto: la fascia è una riga flex, e un quarto
+ * elemento in fila si prenderebbe lo spazio del cursore del volume, che è
+ * l'unico dei quattro che si trascina.
+ *
+ * `min-width: 0` e l'ellissi non sono cosmetici. `.colonna .giudizio` sta in
+ * una colonna larga **348 px fissi** — è `core/rymembra-skin/src/layout.rs`, non
+ * una percentuale — e il contenuto minimo di una riga di testo senza `min-width:
+ * 0` è la riga intera: spingerebbe fuori la coda invece di accorciarsi. Con
+ * un'edizione dal nome lungo il bitrate finisce sotto i puntini, e il markup
+ * porta apposta un `title` con la riga intera.
+ *
+ * Il colore è quello di `.np-meta`, il vicino di peso: è testo secondario, e
+ * un secondo livello di grigio in una fascia che ne ha già uno farebbe tre
+ * gerarchie dove ce ne sono due. Il corpo è un gradino sotto — dodici pixel,
+ * gli stessi dei due tempi ai lati della barra, che sono l'altro dato tecnico
+ * presente in tutte e due le fasce — perché questa riga è la meno importante
+ * delle quattro e alla misura di `.np-meta` sembrerebbe dire qualcosa sul brano
+ * invece che sul file.
+ */
+.formato {
+  flex: 0 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+/* ── quante barre ─────────────────────────────────────────────────────────────
+ *
+ * Il selettore della risoluzione della scena, appoggiato all'angolo in basso a
+ * sinistra della schermata. Stava sopra la striscia a dieci barre, che non c'è
+ * più: adesso c'è una cosa sola che descrive il suono, e sta dietro a tutto.
+ *
+ * Smorzato e non nascosto. È un comando che si usa una volta e poi si guarda
+ * quel che ha fatto, quindi non deve chiedere attenzione — ma nasconderlo del
+ * tutto vorrebbe dire che chi non sa che c'è non lo trova mai. Si accende al
+ * passaggio **e al fuoco da tastiera**, come i suggerimenti qui sopra: un
+ * comando raggiungibile solo col mouse è un comando che una parte delle persone
+ * non usa.
+ */
+.dettaglio-spettro {
+  position: absolute;
+  left: 32px;
+  bottom: 24px;
+  opacity: 0.55;
+  transition: opacity var(--transition-fast);
+}
+.dettaglio-spettro:hover,
+.dettaglio-spettro:focus-within {
+  opacity: 1;
+}
+/* Tre classi e non due, e serve: `.segmentato.minuto .linguetta` fissa la sua
+   misura, e con un selettore più leggero questa la perderebbe. */
+.dettaglio-spettro .segmentato .linguetta {
+  /* Numeri, quindi in mono e tabellari: «1024» e «8» devono stare nella stessa
+     pista senza che la linguetta accanto si sposti quando cambia la scelta. */
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* ── la scena dello spettro ───────────────────────────────────────────────────
+ *
+ * La tela sta fra lo scrim e il contenuto, e le tre cose sono in quest'ordine
+ * nel DOM: l'ambiente e lo scrim prima, la scena, poi testa e corpo — che sono
+ * posizionati, quindi si disegnano sopra senza bisogno di un `z-index` che poi
+ * qualcuno dovrebbe tenere allineato agli altri quattro di questo file.
+ *
+ * Sopra lo scrim e non sotto: sotto sarebbe schiacciata dal nero verticale che
+ * rende leggibile il titolo — quel nero arriva all'ottanta per cento in basso,
+ * cioè esattamente dove stanno le barre.
+ *
+ * La sfumatura è ciò che tiene leggibile il testo: la scena si spegne salendo, e
+ * dove c'è il sommario ne resta un terzo. Si apre più in alto di prima — al
+ * sedici per cento invece che al trentaquattro — perché il sommario si è
+ * spostato in un angolo e la fascia centrale, che era coperta dalla copertina e
+ * dalle dieci barre, adesso è tutta della scena.
+ *
+ * Non è più una `mask-image` qui: la fa lo shader della scena
+ * (`spettro3d/shader.ts`, `FRAMMENTO`), con gli stessi tre stop. Il commento
+ * che stava qui diceva che sul compositore costava meno, e misurato non era
+ * vero: una tela che cambia a ogni fotogramma con una maschera sopra è una
+ * passata in più su tutto lo schermo a ogni fotogramma, cinque punti di GPU su
+ * quarantotto sul portatile del banco di misura — per un'alfa che nel frammento
+ * si moltiplica gratis.
+ */
+.in-riproduzione .scena-spettro {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Decorazione: il clic passa attraverso e arriva a quel che c'è sotto. Senza,
+     una tela grande quanto lo schermo si mangerebbe ogni clic della schermata. */
+  pointer-events: none;
+}
+
+.coda-np {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  min-height: 0;
+  padding: var(--spazio-3);
+  background: rgb(var(--surface-0-rgb) / 0.45);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo);
+}
+.coda-np > header {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.coda-np > header .occhiello {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.coda-np .righe-coda {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.coda-np .come-si-riordina {
+  margin: 0;
+  padding-top: var(--spazio-2);
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.coda-np kbd,
+.in-riproduzione kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* ── il testo che scorre ─────────────────────────────────────────────────── */
+/* Le due parti che una skin può ridipingere sono `lyrics-screen` — il pannello —
+   e `lyric-line` — la riga, accesa e no. Sono dichiarate in
+   `rymembra-skin::parts` da prima che il testo esistesse: il posto era deciso, e
+   questo è quel che ci è arrivato dentro.
+
+   Da qui in giù vale una disciplina di peso, e conviene dirla una volta sola.
+   Tutto quel che dà **aspetto** a una riga sta su `.lyric-line` nuda, cioè
+   (0,1,0), esattamente quanto il selettore che il compilatore delle skin emette;
+   quel che dà aspetto alla riga accesa sta su `.lyric-line[data-attiva]`, cioè
+   (0,2,0), quanto `[data-active], .is-active`. Il foglio della skin si appende in
+   fondo a `<head>` — `applicaSkin`, in `aspetto.ts` — quindi a parità di peso vince
+   lui, che è la condizione perché una skin possa ridipingere davvero.
+
+   Le regole scoperchiate con `.testo-np …` sono solo quelle d'impianto: dove sta
+   una cosa, quanto è alta, se il puntatore cambia forma. Nessuna di quelle
+   proprietà è ridipingibile da una skin, quindi lì il peso in più non toglie
+   voce a nessuno. */
+
+.testo-np {
+  /* Per la pilloletta «torna al brano», che si appoggia in fondo al pannello
+     senza entrare in colonna con il testo. `relative` e non `contain` o
+     `transform`: quelli renderebbero questo elemento il blocco contenitore
+     anche di `Sincronizza`, che disegna un velo in posizione fissa e lo vuole
+     grande quanto la finestra. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  min-height: 0;
+  padding: var(--spazio-3);
+  /* Opaco, e non è una scelta estetica.
+     Era 0.45, cioè un velo, ed è la stessa ricetta di `.coda-np`: sopra una
+     copertina sfocata funziona. Sopra la scena dello spettro no — quella è una
+     tela che ridisegna sessanta volte al secondo delle barre chiare, e la
+     sfumatura della scena (nel suo shader) le spegne **in alto**, cioè le lascia piene
+     esattamente nella metà bassa del pannello, che è dov'è quasi tutto il
+     testo. Misurato sullo screenshot: una riga non accesa cadeva a 4.4:1 nella
+     parte buona e sotto il 3:1 sopra le barre. Non ci sono due modi di leggere
+     un testo: o si legge, o il pannello non serve a niente.
+
+     La strada dell'altra scuola sarebbe `backdrop-filter`. Non ce n'è uno in
+     tutto questo foglio, e la ragione per non cominciare da qui è che sopra una
+     tela che si ridisegna a ogni fotogramma costa al compositore una rilettura
+     per fotogramma: si pagherebbe l'effetto proprio nel momento in cui la
+     macchina sta già disegnando trentamila barre. */
+  background: rgb(var(--surface-0-rgb) / 0.82);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo);
+}
+.testo-np > header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+}
+.testo-np > header .occhiello {
+  flex: 1;
+  min-width: 0;
+}
+/* Da dove viene il testo: piccolo, e non nascosto. È la prima domanda di chi
+   vede una riga che non torna, e una risposta che si legge senza cliccare
+   niente costa dieci pixel. Si accorcia invece di spingere: in una colonna
+   stretta «From the .lrc file next to the track» è più lungo di tutto il resto
+   dell'intestazione messo insieme, e senza `min-width: 0` spingerebbe fuori il
+   bottone che serve a raddrizzare il testo di cui sta dichiarando la fonte. */
+.testo-np .fonte-testo {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  color: var(--color-text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.testo-np .righe-testo {
+  /* Così è lei l'`offsetParent` delle righe, e `offsetTop` misura già da qui.
+     Senza, l'antenato posizionato più vicino sarebbe `.corpo` e l'inseguimento
+     scorrerebbe di quanto è alta l'intestazione della schermata. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  /* Quattro per cento, e il numero non è estetico: è quel che serve perché la
+     riga accesa non sbordi.
+
+     La riga accesa è `scale(1.04)` con l'origine a sinistra, quindi cresce
+     **verso destra** di un venticinquesimo della propria larghezza. Con un
+     padding di `p` per lato la riga è larga `W - 2p`, e cresce di
+     `0.04 (W - 2p)`: perché quella crescita stia dentro il padding basta
+     `p >= 0.04 W / 1.08`, cioè `0.037 W`. Il quattro per cento lo copre a
+     qualunque larghezza del pannello, che è la ragione per cui è una
+     percentuale e non dei pixel: la colonna adesso è fluida.
+
+     Misurato prima di metterlo: la riga accesa sbordava di tredici pixel. */
+  padding-inline: 4%;
+  overflow-y: auto;
+  /* La cintura, dopo le bretelle di qui sopra. Va detto che qui `clip` **non**
+     resta `clip`: la specifica dice che accanto a un asse che scorre diventa
+     `hidden`, e `hidden` è ancora una scatola scorrevole — non con la rotella,
+     ma con `scrollIntoView` o col fuoco. Da sola questa riga non bastava, e non
+     è lei che risolve: è il padding qui sopra, che toglie l'eccedenza invece di
+     nasconderla. Questa resta per quel che potrebbe sbordare domani. */
+  overflow-x: clip;
+  scrollbar-width: none;
+  /* Le righe si dissolvono ai bordi invece di essere tranciate dall'angolo
+     tondo del pannello. È lo stesso gesto della sfumatura della scena dello
+     spettro, che però sta nel suo shader e non qui. La
+     sfumatura di sotto è più lunga di quella di sopra perché di sotto entra
+     quel che deve ancora arrivare: una riga che entra sfumando si comincia a
+     leggere mentre entra, una che esce non la rilegge nessuno. */
+  mask-image: linear-gradient(
+    180deg,
+    transparent 0,
+    rgb(0 0 0 / 1) 7%,
+    rgb(0 0 0 / 1) 86%,
+    transparent 100%
+  );
+}
+.testo-np .righe-testo::-webkit-scrollbar {
+  display: none;
+}
+/* Il fuoco sta dentro: la regola generale lo mette a due pixel **fuori**
+   dall'elemento, e qui fuori c'è la maschera, che lo mangerebbe proprio sui due
+   bordi dove serve vederlo. */
+.testo-np .righe-testo:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--raggio-interno);
+}
+
+/* Il respiro sopra e sotto: è quel che permette alla prima riga di salire
+   all'ancora e all'ultima di scendere.
+
+   Era `padding-block: 40%`, e il commento accanto diceva «metà pannello». Non lo
+   era: una percentuale nel padding si risolve **sulla larghezza** del
+   contenitore, in tutte e quattro le direzioni, e su una colonna da
+   trecentosessanta pixel faceva centotrenta pixel invece di seicento. Cioè la
+   prima riga non poteva arrivare all'ancora — lo scorrimento era già a zero — e
+   per il primo minuto di ogni canzone il pannello restava fermo in cima con la
+   riga accesa fra le prime tre.
+
+   Su un figlio la stessa percentuale si risolve sull'**altezza**, che è quel che
+   serviva. I due numeri sommano a cento così che l'ancora al 42% valga identica
+   alla prima riga e all'ultima.
+
+   Appesi a `data-scorre` perché li vuole solo un testo che insegue: mezzo
+   pannello di vuoto sopra un testo senza tempi, o sopra «nessun testo per questo
+   brano», sarebbe un pannello che sembra vuoto. */
+.testo-np .righe-testo[data-scorre]::before,
+.testo-np .righe-testo[data-scorre]::after {
+  content: "";
+  display: block;
+}
+.testo-np .righe-testo[data-scorre]::before {
+  height: 42%;
+}
+.testo-np .righe-testo[data-scorre]::after {
+  height: 58%;
+}
+
+.lyric-line {
+  /* Un bottone che non sembra un bottone. Il gesto c'è — ci si clicca sopra per
+     saltare a quel punto del brano — e l'aspetto resta quello di una riga di
+     testo, perché duecento bottoni disegnati come bottoni sarebbero duecento
+     bottoni e nessun testo. Quel che li rivela è il passaggio del puntatore e il
+     fuoco, cioè i due momenti in cui qualcuno sta per usarli. */
+  appearance: none;
+  display: block;
+  width: 100%;
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: start;
+  font-family: inherit;
+  font-size: 19px;
+  line-height: 1.32;
+  font-weight: 600;
+  color: var(--color-text-2);
+  /* Più spazio **fra** due righe che dentro una riga andata a capo: sono i due
+     numeri qui sopra, il margine e l'interlinea, e messi così una frase spezzata
+     in due si legge come una frase e non come due. Con il margine stretto di
+     prima erano indistinguibili. */
+  /* Se una riga va a capo comunque, che non ci lasci una parola sola in fondo. */
+  text-wrap: pretty;
+  /* Le righe non ancora cantate stanno indietro; quella accesa viene avanti.
+     La transizione è sul colore e sulla scala, non sull'opacità: un testo che
+     sfuma dentro e fuori a ogni riga fa lampeggiare tutta la colonna. */
+  transition:
+    color var(--transition-med),
+    transform var(--transition-med);
+  transform-origin: left center;
+}
+/* Il puntatore cambia forma solo dove c'è davvero un tempo a cui saltare: sulle
+   righe sincronizzate, che sono `<button>`. Una pausa è un `<p>` e il testo
+   senza tempi anche, e nessuno dei due porta da nessuna parte.
+   `cursor` non è fra le proprietà che una skin ridipinge, quindi il selettore
+   può pesare quanto gli serve. */
+.testo-np .righe-testo button.lyric-line {
+  cursor: pointer;
+}
+/* Al passaggio la riga si schiarisce, e basta: (0,2,0) come lo stato che le
+   skin compilano, così una skin che ridipinge il passaggio vince ancora. Sta
+   **prima** di `[data-attiva]` di proposito — a parità di peso conta l'ordine, e
+   la riga accesa deve restare accesa anche sotto il puntatore. */
+.lyric-line:hover {
+  color: var(--color-text-1);
+}
+/* Quel che è già passato resta leggibile ma si fa da parte: serve a ritrovare
+   il filo dopo una distrazione, ed è la ragione per cui non sparisce.
+   «Leggibile» vuol dire sopra 4,5:1, e un tempo non lo era: `--color-text-3`
+   con `opacity: 0.7` sul fondo del pannello cadeva a 2,8–3,3:1 (sotto il 3:1
+   sopra le barre, cioè il difetto che il pannello stesso dice di non volere).
+   Senza opacità `text-3` fa 5–5,7:1 nei due temi di serie, e la prova
+   «le righe del testo già cantate restano sopra 4,5:1» in `test/stile.test.ts`
+   lo ricalcola dai token. Il prezzo: nel tema chiaro `text-3` e `text-2` (le
+   righe a venire) sono quasi lo stesso grigio, e a separare passato e futuro
+   resta soprattutto la riga accesa in mezzo. Un segno che non tolga contrasto
+   va cercato nel token, non qui. */
+.lyric-line[data-passata] {
+  color: var(--color-text-3);
+}
+.lyric-line[data-attiva] {
+  color: var(--color-text-1);
+  transform: scale(1.04);
+  opacity: 1;
+}
+
+/* ── il fronte ────────────────────────────────────────────────────────────
+   L'illuminazione che attraversa la riga accesa, e che le dà la sensazione del
+   karaoke senza inventare nessun tempo che l'LRC non abbia.
+
+   # Perché sta su un elemento inline e non sulla riga
+
+   Perché una riga che va a capo resta **un blocco solo**, largo uno, e un
+   gradiente orizzontale su un blocco cade con lo stesso taglio su tutte le sue
+   righe visive nello stesso momento. Su
+
+       Guardo nel retrovisore, dietro me si sta
+       scuencendo l'autostrada
+
+   a un quarto del percorso si accendevano «Guardo nel» **e** «scuencendo»: due
+   pezzi staccati, e la riga di sotto che si illuminava in parallelo a quella di
+   sopra invece che dopo di lei. Su due versi su tre — che è quel che capita in
+   una colonna stretta — il fronte diceva la cosa sbagliata.
+
+   Su un elemento **inline** che va a capo vale invece
+   `box-decoration-break: slice`: il fondo si dipinge come se i frammenti
+   fossero uno in fila all'altro, e solo dopo si affetta riga per riga. Cioè
+   esattamente l'ordine che serve — il fronte finisce la prima riga visiva e poi
+   comincia la seconda. È il valore di partenza, ed è scritto lo stesso, con il
+   prefisso per WebKit: qui non è una preferenza estetica ma il meccanismo, e un
+   `clone` scritto altrove lo romperebbe in un modo che nessuno ricondurrebbe a
+   questa riga.
+
+   # Il resto
+
+   `--avanzamento` va da 0 a 1 e la scrive il componente sul contenitore, fuori
+   da React: è una variabile per tutto il pannello e non una per riga perché ce
+   n'è **una** accesa per volta, e mille custom properties aggiornate venti
+   volte al secondo sarebbero mille ricalcoli per muovere un bordo.
+
+   Il colore trasparente resta sulla **riga**, qui sotto, e non su questo
+   elemento: così una skin che dipinge `.lyric-line[data-active]` con un colore
+   suo vince su di lui, lo eredita di qui, e il fronte si spegne da sé. Se il
+   trasparente stesse qui, la skin scriverebbe un colore che non si vedrebbe.
+
+   `var(--accent, var(--color-text-1))` e non `var(--accent)` nudo, e il ripiego
+   annidato è la cicatrice di un difetto vero: qui c'era scritto
+   `--color-accent`, che in questo foglio non esiste — il token si chiama
+   `--accent` — e una variabile che non esiste rende invalida **tutta** la
+   dichiarazione. `background-image` tornava a `none`, e insieme al
+   `color: transparent` voleva dire che la riga accesa era perfettamente
+   invisibile: si accendeva e spariva, e le uniche righe che si vedevano erano
+   quelle non ancora cantate. Il nome adesso è giusto; il ripiego resta perché
+   questo è l'unico punto del foglio in cui una variabile mancante non vuol dire
+   «senza accento» ma «senza testo», e un difetto che cancella quel che si sta
+   leggendo non deve poter tornare per una rinomina.
+
+   Il ripiego per chi non ha `background-clip: text` è il colore pieno della
+   riga, che è già scritto: la riga resta accesa, solo senza il fronte. */
+.lyric-line[data-attiva] .lyric-fill {
+  background-image: linear-gradient(
+    90deg,
+    var(--accent, var(--color-text-1)) calc(var(--avanzamento, 0) * 100%),
+    var(--color-text-1) calc(var(--avanzamento, 0) * 100%)
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-box-decoration-break: slice;
+  box-decoration-break: slice;
+}
+@supports (background-clip: text) {
+  .lyric-line[data-attiva] {
+    color: transparent;
+  }
+}
+
+/* La riga secondaria: la traduzione, o la pronuncia, che il file mette allo
+   stesso tempo della riga. Sotto, più piccola e un gradino di grigio più in là,
+   perché quel che si canta è sopra. Il colore è scritto e non ereditato, e non è
+   pignoleria: la riga accesa è `color: transparent` per far vedere il fronte, e
+   una secondaria che lo ereditasse sparirebbe proprio quando è accesa. Il
+   fronte non la attraversa — non ha tempi suoi. `pre-line` perché le secondarie
+   possono essere due, una per riga. */
+.lyric-secondaria {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72em;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: pre-line;
+  color: var(--color-text-3);
+}
+.lyric-line[data-attiva] .lyric-secondaria {
+  color: var(--color-text-2);
+}
+/* ── la parola ────────────────────────────────────────────────────────────
+   Quando l'LRC porta anche i tempi delle parole — l'esteso `.a2.lrc` — il
+   fronte lascia l'involucro e passa alle parole. Il meccanismo è identico,
+   cambia solo dove `--avanzamento` si scrive: sul pannello quando la riga è una
+   sola cosa, su ogni parola quando la riga sa di essere fatta di parole.
+
+   Qui l'andata a capo non è mai stata un problema, e per la stessa ragione per
+   cui adesso non lo è più nemmeno di là: una parola è già un elemento
+   inline con il **suo** gradiente, quindi l'ordine sulla pagina è già quello
+   giusto qualunque cosa faccia la riga.
+
+   La differenza si vede: un fronte a velocità costante scivola via mentre la
+   voce tiene una nota e si accalca su una sillaba veloce; qui si ferma dove si
+   ferma la voce, perché è la voce che quei numeri descrivono. */
+
+/* Il colore torna pieno sulla riga a parole, e serve a quel che sta **fra** le
+   parole: un elemento per parola vuol dire che gli spazi possono cadere fuori,
+   e uno spazio che eredita `color: transparent` non si vede — il che, in una
+   riga di testo, vuol dire parole attaccate.
+
+   Il fronte lungo non c'è da spegnere: da quando vive su `lyric-fill`, e
+   `lyric-fill` su una riga a parole non viene nemmeno costruita. Prima qui
+   c'era anche un `background-image: none`, ed era la toppa a quel problema. */
+.lyric-line[data-parole][data-attiva] {
+  color: var(--color-text-1);
+}
+.lyric-line[data-attiva] .lyric-word {
+  background-image: linear-gradient(
+    90deg,
+    var(--accent, var(--color-text-1)) calc(var(--avanzamento, 0) * 100%),
+    var(--color-text-1) calc(var(--avanzamento, 0) * 100%)
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+}
+@supports (background-clip: text) {
+  .lyric-line[data-attiva] .lyric-word {
+    color: transparent;
+  }
+}
+/* Una parola resta una parola: niente `display` che la stacchi dalle altre,
+   così l'andata a capo cade dove cadrebbe in un testo normale e una riga lunga
+   non si spezza in colonne di elementi. */
+.lyric-word {
+  white-space: pre-wrap;
+}
+
+/* ── lo stacco ────────────────────────────────────────────────────────────
+   Tre puntini che si riempiono, al posto del niente.
+
+   Un LRC ha tempi anche dove non ci sono parole: l'introduzione, e le righe
+   vuote fra due strofe. Lì la riga accesa non ha niente da illuminare, e il
+   pannello sta fermo con tutto spento — cioè sembra rotto esattamente quando
+   sta funzionando.
+
+   Il taglio in tre lo fa il foglio e non il componente: `--avanzamento` è
+   **uno**, quello della riga accesa, ed è già scritto sul contenitore venti
+   volte al secondo. Ogni puntino ne prende il suo terzo con una moltiplicazione
+   e una sottrazione, e i due `clamp()` fanno il resto — sotto zero è spento,
+   sopra uno è pieno. Tre `calc()` invece di tre scritture per fotogramma.
+
+   Niente `transition`: il valore cambia già venti volte al secondo, e
+   un'animazione sopra a quel ritmo non farebbe che inseguirlo in ritardo. */
+.lyric-breath {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42em;
+  /* Alta quanto una riga: lo stacco prende il posto della riga vuota, e la riga
+     vuota nell'LRC è larga quanto una riga. Comparendo non deve far sobbalzare
+     la strofa che sta sotto. */
+  height: 1em;
+  vertical-align: middle;
+}
+.lyric-breath > span {
+  width: 0.4em;
+  height: 0.4em;
+  border-radius: 50%;
+  /* Il colore della riga, non un colore suo: una skin che ridipinge
+     `lyric-line` ridipinge anche i puntini senza sapere che esistono. */
+  background: currentColor;
+  opacity: clamp(0.22, var(--quota, 0), 1);
+  transform: scale(clamp(0.6, calc(0.6 + var(--quota, 0) * 0.5), 1.1));
+}
+.lyric-breath > span:nth-child(1) {
+  --quota: calc(var(--avanzamento, 0) * 3);
+}
+.lyric-breath > span:nth-child(2) {
+  --quota: calc(var(--avanzamento, 0) * 3 - 1);
+}
+.lyric-breath > span:nth-child(3) {
+  --quota: calc(var(--avanzamento, 0) * 3 - 2);
+}
+/* Il fronte si spegne sulla riga dello stacco per la stessa ragione per cui si
+   spegne su quella a parole: i puntini si colorano da `currentColor`, e un
+   `color: transparent` li cancellerebbe insieme al testo che non c'è. */
+.lyric-line[data-stacco][data-attiva] {
+  background-image: none;
+  color: var(--color-text-1);
+}
+
+/* Chi ha chiesto meno movimento non lo riceve: la riga si accende e basta. */
+@media (prefers-reduced-motion: reduce) {
+  .lyric-line {
+    transition: none;
+  }
+  .lyric-line[data-attiva] {
+    transform: none;
+  }
+}
+
+/* Il testo senza tempi. Nessuna riga accesa — non si sa quale sarebbe — e
+   l'etichetta lo dice invece di lasciarlo intuire da un testo che sta fermo.
+   Il peso di (0,3,0) qui è voluto due volte: tiene il colore fermo anche sotto
+   il puntatore, che su un testo dove non c'è niente da cliccare sarebbe una
+   promessa falsa. */
+.testo-np .testo-piatto .lyric-line {
+  margin-bottom: var(--spazio-2);
+  font-weight: 500;
+  font-size: 17px;
+  color: var(--color-text-2);
+  cursor: default;
+}
+.testo-np .testo-piatto > .occhiello {
+  display: block;
+  margin-bottom: var(--spazio-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.testo-np .niente-testo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-1);
+  padding: var(--spazio-4) 0;
+  text-align: center;
+  color: var(--color-text-3);
+}
+.testo-np .niente-testo p {
+  margin: 0;
+  font-weight: 600;
+  color: var(--color-text-2);
+}
+.testo-np .niente-testo span {
+  font-size: 12px;
+}
+/*
+ * I due bottoni che restano quando il testo non c'è, o c'è senza tempi.
+ *
+ * Stanno in due posti — dentro `.niente-testo` e dentro `.testo-piatto` — e
+ * l'allineamento cambia con il posto, perché è il posto a dire dov'è il
+ * margine: sotto la colonna centrata stanno in mezzo, sotto il blocco a
+ * bandiera stanno a sinistra, attaccati alla frase che li ha chiesti.
+ * Centrarli sempre li staccherebbe da metà delle volte in cui compaiono.
+ *
+ * `flex-wrap` perché la terza colonna si stringe fino a 348 pixel e i due
+ * bottoni non hanno un ordine di importanza: vanno a capo insieme.
+ */
+.testo-np .scelte-testo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+  margin-top: var(--spazio-2);
+}
+.testo-np .niente-testo .scelte-testo {
+  justify-content: center;
+}
+.testo-np .testo-piatto .scelte-testo {
+  justify-content: flex-start;
+}
+
+/* La striscia della correzione, che c'è **sempre** che ci siano righe.
+   Diceva «compare solo quando i tempi non tornano con la durata del file», e
+   non è più vero: uno sfasamento costante su un testo dichiarato buono esiste
+   eccome, e finché la striscia compariva solo sui testi sospetti quel caso era
+   irraggiungibile. Ciò che dipende dall'aderenza è soltanto la frase del perché
+   e la classe `discreta` qui sotto, che la fa da parte quando non c'è niente
+   da segnalare. */
+.testo-np .scarto-testo {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  padding: var(--spazio-2);
+  background: rgb(var(--surface-0-rgb) / 0.5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+}
+.testo-np .scarto-testo .perche {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--color-text-3);
+}
+.testo-np .scarto-testo .quanto {
+  min-width: 62px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
+  color: var(--color-text-2);
+}
+
+/* Quando non c'è niente da segnalare, la striscia si fa da parte.
+ *
+ * La striscia adesso c'è **sempre** che ci siano righe con un tempo, ed è
+ * giusto: uno sfasamento costante su un testo che il controllo di durata chiama
+ * «buono» esiste — un `.lrc` battuto su un'altra edizione, un master con mezzo
+ * secondo di silenzio in testa — e prima quei due bottoni erano irraggiungibili
+ * proprio nel caso più comune. Ma un comando che c'è sempre, a piena voce,
+ * compete con le righe cantate, che sono la cosa per cui questo pannello è
+ * aperto. Quindi a riposo si spegne e al passaggio si riaccende: il gesto la
+ * trova, l'occhio no.
+ *
+ * `:focus-within` accanto a `:hover` per la stessa ragione di `.con-ragione`:
+ * un comando che si mostra solo a chi ha il mouse è un comando che chi naviga
+ * col tabulatore non incontra mai — e la sua fermata di tabulazione c'è
+ * comunque, quindi senza questa riga arriverebbe il fuoco su qualcosa di
+ * invisibile.
+ *
+ * Via il fondo e il bordo: senza la frase del perché restano due bottoncini e
+ * un numero, e un riquadro a tutta larghezza attorno a tre cose piccole è una
+ * scatola in cerca di un contenuto. Il `padding` scende a metà per lo stesso
+ * motivo — quel che teneva distante il testo dai bordi non ha più né testo né
+ * bordi da tenere distanti.
+ *
+ * `justify-content: flex-end` perché a spingere i bottoni a destra era
+ * `.perche`, con il suo `flex: 1`: tolta la frase, senza questa riga i tre
+ * elementi si accatastano a sinistra e la striscia sembra rotta invece che
+ * discreta. */
+.testo-np .scarto-testo.discreta {
+  justify-content: flex-end;
+  padding: var(--spazio-1);
+  background: none;
+  border-color: transparent;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.testo-np .scarto-testo.discreta:hover,
+.testo-np .scarto-testo.discreta:focus-within {
+  opacity: 1;
+}
+
+/* ── la pausa dello scorrimento ───────────────────────────────────────────
+   Quando hai scorso a mano, il pannello smette di inseguire la riga accesa per
+   qualche secondo. Prima quella pausa non si vedeva: chi tornava a guardare
+   trovava un testo fermo e non aveva modo di sapere se era fermo di proposito o
+   rotto. Dirlo costa una pilloletta, e in cambio la pausa può durare il doppio
+   senza lasciare perso nessuno — vedi `PAUSA_SCORRIMENTO`.
+
+   Appoggiata sopra il pannello e non in colonna con lui: comparendo in flusso
+   sposterebbe di venti pixel tutto il testo, cioè userebbe il movimento per
+   annunciare che qualcosa **non** si sta muovendo. */
+.testo-np .torna-al-brano {
+  position: absolute;
+  bottom: var(--spazio-3);
+  left: 50%;
+  z-index: var(--strato-aderente);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transform: translateX(-50%);
+  background: rgb(var(--surface-0-rgb) / 0.92);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--filo), var(--shadow-2);
+}
+
+/* Le tre combinazioni di colonne. La coda sta sempre in fondo a destra perché
+   è l'ultima nel DOM, e il testo prima: si legge da sinistra, e quel che si
+   guarda mentre suona viene prima di quel che verrà dopo.
+
+   La colonna del testo è fluida, e le altre due no. La ragione è che le altre
+   due contengono cose di misura decisa — una copertina, delle righe di coda —
+   mentre questa contiene righe che vanno a capo: a trecentosessanta pixel fissi
+   una riga di testo cantato ne teneva trentaquattro caratteri, cioè quasi tutte
+   andavano a capo, mentre al centro dello schermo restavano milleottocento
+   pixel di scena quasi vuota. Il `clamp` prende quel che c'è: su un pannello
+   largo il testo respira, su una finestra piccola torna esattamente com'era. */
+.in-riproduzione .corpo[data-con-testo] {
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 26vw, 460px);
+}
+.in-riproduzione .corpo[data-con-testo][data-con-coda] {
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 26vw, 460px) 316px;
+}
+
+/* Un pannello solo.
+   Sotto questa larghezza della schermata testo e coda si alternano, e la
+   decisione la prende `InRiproduzione.tsx` leggendo `--un-pannello-solo`: il
+   numero sta qui perché dipende da misure di questo foglio. Il conto: il testo
+   al suo minimo (340), la coda (316), due spazi di `--spazio-5` (68), il padding
+   del corpo (64), e un centro che non scenda sotto i 380 — la larghezza del
+   trasporto grande più il respiro, e quella a cui un titolo di due parole sta
+   ancora su due righe. Fa 1168; alla misura di serie della finestra, con la
+   navigazione aperta, la schermata ne ha 1040. */
+@container riproduzione (max-width: 1168px) {
+  .in-riproduzione .corpo {
+    --un-pannello-solo: 1;
+  }
+}
+
+/* ── l'editor a battute ──────────────────────────────────────────────────── */
+/* Tre momenti in una modale sola, e in ognuno la tastiera vuol dire una cosa
+   diversa: nel primo Spazio è uno spazio, nel secondo è una battuta. Lo stile
+   segue quella separazione — l'elenco delle battute non assomiglia a un campo
+   di testo, così non si prova a scriverci dentro. */
+
+.sincronizza {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  /* Un tetto invece di un'altezza: con quattro righe la finestra è piccola,
+     con sessanta arriva al bordo e scorre dentro l'elenco. */
+  max-height: min(80vh, 720px);
+}
+
+/* Un altro brano in corso: le battute sono ferme. Il bordo dell'accento e non
+   il rosso di un errore — non si è rotto niente, la canzone è solo finita. */
+.sincronizza .altrove {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--raggio-minuto);
+  background: rgb(var(--surface-0-rgb) / 0.6);
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+
+.sincronizza .righe-da-battere {
+  width: 100%;
+  min-height: 220px;
+  padding: var(--spazio-2);
+  background: rgb(var(--surface-0-rgb) / 0.5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+  color: var(--color-text-1);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.sincronizza .elenco-battute {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  counter-reset: riga;
+}
+.sincronizza .elenco-battute li {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 4px var(--spazio-2);
+  border-radius: var(--raggio-minuto);
+  color: var(--color-text-3);
+}
+/* Quella su cui si sta per battere: è l'unica informazione che serve mentre la
+   canzone suona, quindi è l'unica che si vede da lontano. */
+.sincronizza .elenco-battute li[data-attesa] {
+  background: rgb(var(--surface-0-rgb) / 0.6);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+.sincronizza .elenco-battute li[data-fatta] {
+  color: var(--color-text-2);
+}
+.sincronizza .elenco-battute .quando {
+  min-width: 56px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-3);
+  text-align: right;
+}
+.sincronizza .elenco-battute li[data-fatta] .quando {
+  color: var(--accent);
+}
+.sincronizza .elenco-battute .cosa {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nella revisione i ritocchi compaiono solo sulla riga sotto il puntatore:
+   quattro pulsanti per riga su sessanta righe sarebbero duecentoquaranta
+   bersagli visibili insieme, cioè nessun bersaglio.
+
+   `:is(.rivedi, .parole)` e non un secondo blocco copiato: la revisione delle
+   parole è lo stesso elenco con le parole al posto dei versi — stesse due
+   colonne, stessi `data-attesa` e `data-fatta` — e lì il conto dei bersagli è
+   peggiore, non migliore, perché le parole sono cinque volte le righe. Due
+   copie divergerebbero alla prima modifica, e quella che si dimentica è sempre
+   la seconda. */
+.sincronizza .elenco-battute:is(.rivedi, .parole) .ritocco {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.sincronizza .elenco-battute:is(.rivedi, .parole) li:hover .ritocco,
+.sincronizza .elenco-battute:is(.rivedi, .parole) li:focus-within .ritocco {
+  opacity: 1;
+}
+.sincronizza .elenco-battute:is(.rivedi, .parole) li:hover {
+  background: rgb(var(--surface-0-rgb) / 0.5);
+}
+/*
+ * Dove finisce un verso e comincia l'altro.
+ *
+ * Le parole stanno in fila, una per riga: senza un segno, un ritornello è una
+ * colonna indistinta di parole uguali e chi batte perde il posto. `data-capo`
+ * — un attributo e non una classe, perché lo porta la prima parola di ogni
+ * verso e non un elemento a sé — è l'unica cosa che lo dice. Un filo e un po'
+ * d'aria, non un titolo: quel che si conta mentre la canzone suona sono le
+ * parole, non i versi.
+ */
+.sincronizza .elenco-battute.parole li[data-capo] {
+  margin-top: var(--spazio-1);
+  padding-top: var(--spazio-1);
+  border-top: 1px solid var(--hairline);
+}
+/* Tranne la prima, che non separa due versi: separerebbe l'elenco da quel che
+   sta sopra, cioè direbbe una cosa che non è vera. */
+.sincronizza .elenco-battute.parole li[data-capo]:first-child {
+  margin-top: 0;
+  padding-top: 4px;
+  border-top: none;
+}
+/* Chi naviga da tastiera non ha un puntatore: i ritocchi restano raggiungibili
+   perché `:focus-within` li mostra, e finché non lo sono occupano comunque il
+   loro spazio — così la riga non si allarga sotto il dito. */
+@media (prefers-reduced-motion: reduce) {
+  .sincronizza .elenco-battute:is(.rivedi, .parole) .ritocco {
+    transition: none;
+  }
+}
+
+/* Il quarto momento: è fatto, e c'è un'offerta. Volutamente stretto e senza
+   niente da leggere in fretta — è l'unico punto dell'app in cui qualcosa esce
+   verso un servizio pubblico, e la fretta qui non aiuta nessuno. */
+.sincronizza .dono {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+}
+.sincronizza .dono .fatto {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  margin: 0;
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+.sincronizza .dono .fatto svg {
+  color: var(--accent);
+}
+/* Quel che esce, elencato. Il riquadro serve a separarlo dalla prosa che lo
+   circonda: è un contenuto, non una spiegazione. */
+.sincronizza .dono .cosa-va {
+  margin: 0;
+  padding: var(--spazio-2) var(--spazio-3);
+  background: rgb(var(--surface-0-rgb) / 0.5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+  color: var(--color-text-2);
+  font-size: 12px;
+  list-style: none;
+}
+.sincronizza .dono .cosa-va li + li {
+  margin-top: 4px;
+  color: var(--color-text-3);
+}

@@ -26,7 +26,9 @@
 //! 2. **Niente `..` e niente `:` nei nomi.** Il primo perché un dialogo
 //!    restituisce percorsi già risolti; il secondo perché su NTFS
 //!    `brano.exe:note.m3u8` non è un nome strano, è il flusso `note.m3u8` di un
-//!    file `brano.exe` — che viene creato, vuoto, col nome che si vuole.
+//!    file `brano.exe` — che viene creato, vuoto, col nome che si vuole. E
+//!    niente nomi di dispositivo DOS (`CON`, `NUL`, `COM1`…), che su Windows 10
+//!    sono il dispositivo in qualunque cartella: vedi `nome_di_un_dispositivo`.
 //! 3. **L'estensione del formato**, senza badare alle maiuscole: `SERATA.M3U8`
 //!    è una playlist come `serata.m3u8`. Qualunque altra si rifiuta con
 //!    `fs.extensionRefused`.
@@ -208,10 +210,48 @@ pub(crate) fn forma_ammessa(percorso: &str) -> Result<PathBuf, AppError> {
             Component::Normal(nome) if nome.to_string_lossy().contains(':') => {
                 return rifiuta("un nome contiene «:», cioè un flusso NTFS");
             }
+            Component::Normal(nome) if nome_di_un_dispositivo(&nome.to_string_lossy()) => {
+                return rifiuta("un nome è riservato a un dispositivo (CON, NUL, COM1…)");
+            }
             Component::RootDir | Component::CurDir | Component::Normal(_) => {}
         }
     }
     Ok(path)
+}
+
+/// Un nome che Windows legge come un dispositivo DOS e non come un file.
+///
+/// `\\.\COM1` è già fuori per il prefisso (regola 1), ma `C:\Musica\COM1.m3u8`
+/// no: per la normalizzazione di Win32, su Windows 10, `CON`, `PRN`, `AUX`,
+/// `NUL`, `COM0`…`COM9`, `LPT0`…`LPT9` (anche con le cifre in apice) e
+/// `CONIN$`/`CONOUT$` sono il dispositivo **in qualunque cartella e con
+/// qualunque estensione**. Una playlist esportata lì va alla porta seriale o
+/// alla stampante, oppure su `NUL`, e la finestra risponde «fatto» senza che
+/// esista un file. Conta il nome fino al primo punto, senza gli spazi e i
+/// punti in coda che Windows toglie, e senza badare alle maiuscole. Anche nella
+/// forma verbatim, dove il nome sarebbe un file vero: un dialogo non lo
+/// propone, e un file chiamato così poi non lo apre quasi nessun programma.
+fn nome_di_un_dispositivo(nome: &str) -> bool {
+    let radice = nome
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches([' ', '.'])
+        .to_ascii_lowercase();
+    let con_numero = |prefisso: &str| {
+        radice.strip_prefix(prefisso).is_some_and(|resto| {
+            let mut cifre = resto.chars();
+            matches!(
+                (cifre.next(), cifre.next()),
+                (Some('0'..='9' | '¹' | '²' | '³'), None)
+            )
+        })
+    };
+    matches!(
+        radice.as_str(),
+        "con" | "prn" | "aux" | "nul" | "conin$" | "conout$"
+    ) || con_numero("com")
+        || con_numero("lpt")
 }
 
 #[cfg(test)]
@@ -375,11 +415,38 @@ mod tests {
             r"C:\Musica\..\Windows\serata.m3u8",
             r"C:\Musica\brano.exe:note.m3u8",
             "",
+            // I nomi dei dispositivi DOS, che su Windows 10 sono il
+            // dispositivo in qualunque cartella e con qualunque estensione.
+            r"C:\Musica\COM1.m3u8",
+            r"C:\Musica\nul.m3u8",
+            r"C:\Musica\Lpt1.pls",
+            r"C:\Musica\aux .m3u8",
+            r"C:\Musica\PRN.serata.m3u8",
+            r"C:\Musica\conin$.m3u8",
+            r"C:\Musica\COM¹.m3u8",
+            r"\\?\C:\Musica\con.m3u8",
+            r"C:\NUL\serata.m3u8",
         ] {
             assert_eq!(
                 codice(file_da_scrivere(percorso, ESTENSIONI_PLAYLIST)),
                 invalido,
                 "{percorso:?} doveva essere rifiutato"
+            );
+        }
+        assert_eq!(
+            codice(file_da_scrivere(r"C:\p\CON.ryprofile", ESTENSIONI_PROFILO)),
+            invalido
+        );
+        // Un nome che comincia come un dispositivo e non lo è passa.
+        for buono in [
+            r"C:\Musica\COM10.m3u8",
+            r"C:\Musica\console.m3u8",
+            r"C:\Musica\nulla.m3u8",
+            r"C:\Musica\auxiliary.pls",
+        ] {
+            assert!(
+                file_da_scrivere(buono, ESTENSIONI_PLAYLIST).is_ok(),
+                "{buono:?} è stato rifiutato"
             );
         }
     }

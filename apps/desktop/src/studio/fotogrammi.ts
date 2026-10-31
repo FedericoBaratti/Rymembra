@@ -250,3 +250,39 @@ export function risolutoriDi(
     },
   };
 }
+
+/**
+ * Il gesto di un rombo trascinato: per ogni posizione, se va scritta.
+ *
+ * Si confronta con l'**ultima scritta**, non con quella di partenza. Il
+ * gestore del puntatore vede i fotogrammi del `pointerdown`, e fino alla 3.2
+ * confrontava con loro: riportato al punto di partenza, il rombo trovava
+ * «uguale» e saltava la scrittura, e restava a 41 — o dov'era passato per
+ * ultimo — con la testina ferma lì.
+ */
+export function gestoRombo(partenza: number): (at: number) => boolean {
+  let ultima = partenza;
+  return (at) => {
+    if (at === ultima) return false;
+    ultima = at;
+    return true;
+  };
+}
+
+/**
+ * Come parte il provino dell'ispettore di un'animazione.
+ *
+ * `ridotto` è «Riduci movimento», di Rymembra o del sistema; `chiesto` vuol
+ * dire che questa partenza l'ha chiesta il tasto ▶, e non una modifica del
+ * documento. La Web Animations API non legge `--motion-scale`, che è l'unico
+ * interruttore di `stile.css`: fino alla 3.2 il provino partiva da solo a ogni
+ * modifica e, con `iterations: "infinite"`, pulsava senza fine anche per chi
+ * aveva chiesto di non muoversi. Adesso con la preferenza ridotta resta fermo
+ * sull'ultimo fotogramma, e il tasto lo fa suonare una volta sola. La tela fa
+ * la sua parte da sé (`Tela.tsx`); il provino della timeline non parte mai da
+ * solo — lo guida la testina — e non ne ha bisogno.
+ */
+export function avvioProvino(ridotto: boolean, chiesto: boolean): "suona" | "unaVolta" | "fermo" {
+  if (!ridotto) return "suona";
+  return chiesto ? "unaVolta" : "fermo";
+}

@@ -379,6 +379,22 @@ fn e_poi_il_pannello(app: &AppHandle, richiesta: Richiesta) -> Esito<StatoInsiem
     Ok(vetrina(app))
 }
 
+/// Un comando della sessione, sul pool bloccante.
+///
+/// Quasi tutti aspettano la risposta del filo della sessione, fino ai venti
+/// secondi di `ATTESA_COMANDO`: un `#[tauri::command(async)]` su una `fn`
+/// sincrona lo farebbe su un worker del runtime, uno per processore e prestati
+/// a **tutti** i comandi asincroni — pochi clic con una sessione lenta
+/// fermavano la libreria e la ricerca. Il pool bloccante esiste per questo:
+/// vedi [`crate::disparte`].
+async fn in_sessione<T: Send + 'static>(
+    lavoro: impl FnOnce() -> Esito<T> + Send + 'static,
+) -> Esito<T> {
+    crate::disparte::in_disparte("insieme", lavoro)
+        .await
+        .map_err(errore)?
+}
+
 /// Il pannello, adesso.
 #[tauri::command]
 pub fn insieme_stato(stato: State<'_, StatoInsieme>) -> Esito<StatoInsiemeIpc> {
@@ -391,39 +407,39 @@ pub fn insieme_stato(stato: State<'_, StatoInsieme>) -> Esito<StatoInsiemeIpc> {
 }
 
 /// Accende o spegne «Ascolta insieme».
-#[tauri::command(async)]
-pub fn insieme_attiva(app: AppHandle, attivo: bool) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Attiva(attivo))
+#[tauri::command]
+pub async fn insieme_attiva(app: AppHandle, attivo: bool) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Attiva(attivo))).await
 }
 
 /// Cambia il nome di questo PC.
-#[tauri::command(async)]
-pub fn insieme_nome(app: AppHandle, nome: String) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Nome(nome))
+#[tauri::command]
+pub async fn insieme_nome(app: AppHandle, nome: String) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Nome(nome))).await
 }
 
 /// Il dialogo sul firewall è stato visto.
-#[tauri::command(async)]
-pub fn insieme_firewall_visto(app: AppHandle) -> Esito<()> {
-    chiedi(&app, Richiesta::FirewallVisto).map_err(errore)
+#[tauri::command]
+pub async fn insieme_firewall_visto(app: AppHandle) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::FirewallVisto).map_err(errore)).await
 }
 
 /// Comincia a ospitare una sessione.
-#[tauri::command(async)]
-pub fn insieme_ospita(app: AppHandle) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Ospita)
+#[tauri::command]
+pub async fn insieme_ospita(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Ospita)).await
 }
 
 /// Chi ospita: termina la sessione per tutti.
-#[tauri::command(async)]
-pub fn insieme_termina(app: AppHandle) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Termina)
+#[tauri::command]
+pub async fn insieme_termina(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Termina)).await
 }
 
 /// Chi segue: esce dalla sessione.
-#[tauri::command(async)]
-pub fn insieme_esci(app: AppHandle) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Esci)
+#[tauri::command]
+pub async fn insieme_esci(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Esci)).await
 }
 
 /// Un giro di scoperta adesso: il pannello si è appena aperto. Non aspetta:
@@ -437,103 +453,117 @@ pub fn insieme_cerca(app: AppHandle) -> Esito<()> {
 }
 
 /// Comincia l'associazione con un PC visto in rete.
-#[tauri::command(async)]
-pub fn insieme_associa(app: AppHandle, vicino: String) -> Esito<()> {
-    chiedi(&app, Richiesta::Associa(vicino)).map_err(errore)
+#[tauri::command]
+pub async fn insieme_associa(app: AppHandle, vicino: String) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Associa(vicino)).map_err(errore)).await
 }
 
 /// La risposta al codice di quattro cifre.
-#[tauri::command(async)]
-pub fn insieme_codice(app: AppHandle, associazione: u64, uguale: bool) -> Esito<()> {
-    chiedi(
-        &app,
-        Richiesta::Codice {
-            associazione,
-            uguale,
-        },
-    )
-    .map_err(errore)
+#[tauri::command]
+pub async fn insieme_codice(app: AppHandle, associazione: u64, uguale: bool) -> Esito<()> {
+    in_sessione(move || {
+        chiedi(
+            &app,
+            Richiesta::Codice {
+                associazione,
+                uguale,
+            },
+        )
+        .map_err(errore)
+    })
+    .await
 }
 
 /// Chi ospita: invita un PC associato e collegato, con quel che potrà fare.
-#[tauri::command(async)]
-pub fn insieme_invita(app: AppHandle, pari: i64, diritti: Diritti) -> Esito<()> {
-    chiedi(&app, Richiesta::Invita { pari, diritti }).map_err(errore)
+#[tauri::command]
+pub async fn insieme_invita(app: AppHandle, pari: i64, diritti: Diritti) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Invita { pari, diritti }).map_err(errore)).await
 }
 
 /// La risposta a un invito.
-#[tauri::command(async)]
-pub fn insieme_rispondi(app: AppHandle, invito: u64, accetta: bool) -> Esito<()> {
-    chiedi(&app, Richiesta::Rispondi { invito, accetta }).map_err(errore)
+#[tauri::command]
+pub async fn insieme_rispondi(app: AppHandle, invito: u64, accetta: bool) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Rispondi { invito, accetta }).map_err(errore)).await
 }
 
 /// Chiede a un PC associato che ospita di entrare nella sua sessione.
-#[tauri::command(async)]
-pub fn insieme_chiedi(app: AppHandle, pari: i64) -> Esito<()> {
-    chiedi(&app, Richiesta::Chiedi(pari)).map_err(errore)
+#[tauri::command]
+pub async fn insieme_chiedi(app: AppHandle, pari: i64) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Chiedi(pari)).map_err(errore)).await
 }
 
 /// Chi ospita: la risposta a una richiesta d'ingresso, con quel che potrà
 /// fare chi entra. Per un no, `diritti` non conta.
-#[tauri::command(async)]
-pub fn insieme_ammetti(
+#[tauri::command]
+pub async fn insieme_ammetti(
     app: AppHandle,
     richiesta: u64,
     accetta: bool,
     diritti: Diritti,
 ) -> Esito<()> {
-    chiedi(
-        &app,
-        Richiesta::Ammetti {
-            richiesta,
-            accetta,
-            diritti,
-        },
-    )
-    .map_err(errore)
+    in_sessione(move || {
+        chiedi(
+            &app,
+            Richiesta::Ammetti {
+                richiesta,
+                accetta,
+                diritti,
+            },
+        )
+        .map_err(errore)
+    })
+    .await
 }
 
 /// Chi ospita: toglie un membro dalla sessione.
-#[tauri::command(async)]
-pub fn insieme_allontana(app: AppHandle, membro: u32) -> Esito<()> {
-    chiedi(&app, Richiesta::Allontana(membro)).map_err(errore)
+#[tauri::command]
+pub async fn insieme_allontana(app: AppHandle, membro: u32) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Allontana(membro)).map_err(errore)).await
 }
 
 /// Chi ospita: cambia che cosa può fare un membro.
-#[tauri::command(async)]
-pub fn insieme_concedi(app: AppHandle, membro: u32, diritti: Diritti) -> Esito<()> {
-    chiedi(&app, Richiesta::Concedi { membro, diritti }).map_err(errore)
+#[tauri::command]
+pub async fn insieme_concedi(app: AppHandle, membro: u32, diritti: Diritti) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Concedi { membro, diritti }).map_err(errore)).await
 }
 
 /// Rinomina un PC associato, per questo PC.
-#[tauri::command(async)]
-pub fn insieme_pari_rinomina(app: AppHandle, id: i64, nome: String) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Rinomina { id, nome })
+#[tauri::command]
+pub async fn insieme_pari_rinomina(
+    app: AppHandle,
+    id: i64,
+    nome: String,
+) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Rinomina { id, nome })).await
 }
 
 /// Dimentica un PC associato: la prossima volta si riassocia.
-#[tauri::command(async)]
-pub fn insieme_pari_dimentica(app: AppHandle, id: i64) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Dimentica(id))
+#[tauri::command]
+pub async fn insieme_pari_dimentica(app: AppHandle, id: i64) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Dimentica(id))).await
 }
 
 /// Blocca o sblocca un PC associato.
-#[tauri::command(async)]
-pub fn insieme_pari_blocca(app: AppHandle, id: i64, bloccato: bool) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Blocca { id, bloccato })
+#[tauri::command]
+pub async fn insieme_pari_blocca(
+    app: AppHandle,
+    id: i64,
+    bloccato: bool,
+) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Blocca { id, bloccato })).await
 }
 
 /// Gli indirizzi scritti a mano, `ip:porta`.
-#[tauri::command(async)]
-pub fn insieme_indirizzi(app: AppHandle, indirizzi: Vec<String>) -> Esito<StatoInsiemeIpc> {
-    e_poi_il_pannello(&app, Richiesta::Indirizzi(indirizzi))
+#[tauri::command]
+pub async fn insieme_indirizzi(app: AppHandle, indirizzi: Vec<String>) -> Esito<StatoInsiemeIpc> {
+    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Indirizzi(indirizzi))).await
 }
 
 /// Accende o spegne la voce di calibrazione: clic identici su tutti i PC della
 /// sessione, nel percorso di sincronia normale.
-#[tauri::command(async)]
-pub fn insieme_calibra(app: AppHandle, attiva: bool) -> Esito<()> {
-    chiedi(&app, Richiesta::Calibra(attiva)).map_err(errore)
+#[tauri::command]
+pub async fn insieme_calibra(app: AppHandle, attiva: bool) -> Esito<()> {
+    in_sessione(move || chiedi(&app, Richiesta::Calibra(attiva)).map_err(errore)).await
 }
 
 #[cfg(test)]

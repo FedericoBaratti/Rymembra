@@ -1,6 +1,6 @@
 # Rymembra terms of use
 
-Last updated: 26 October 2026.
+Last updated: 30 October 2026.
 
 Rymembra is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
@@ -19,8 +19,8 @@ Rymembra's code is MIT: do what you like with it.
 The music you download through Rymembra is **not covered by that license**. Every
 track comes from a catalog, and carries with it the conditions that catalog
 and that artist put on it. Rymembra records each track's license next to the track
-itself, and shows it in the queue, precisely so this distinction doesn't get
-lost.
+itself, and shows it on the «Now playing» screen and in «Explore», precisely so
+this distinction doesn't get lost.
 
 The normal case is simple: what you download you can listen to, keep, put on
 your phone, burn to a CD for yourself. The conditions below are about
@@ -97,7 +97,8 @@ them, and none of the three is «we have them under license»:
 2. **LRCLIB**, a public and free catalog fed by the people who use it. It has
    an open API, made for music players: Rymembra queries it the way a browser
    queries a site, with no keys, no page scraping and no circumventing anything.
-3. **What you sync yourself**, which stays a file on your disk.
+3. **What you sync yourself**, kept in Rymembra's library (and, if you ask, in
+   an `.lrc` beside the track).
 
 The part usually left unsaid, and said here: LRCLIB **is not a distributor with
 sub-publishing contracts**. It's a database built by the community. Rymembra
@@ -129,8 +130,9 @@ for it to happen without your having decided it.
 
 What goes to LRCLIB goes there under LRCLIB's license, not Rymembra's: the
 catalog hosts it and answers for what it hosts. Rymembra keeps no copy, doesn't
-resell it and doesn't put it back into circulation elsewhere. Your `.lrc` stays
-on your disk, identical, whether you press that button or not.
+resell it and doesn't put it back into circulation elsewhere. Your lyric stays
+in your library — and an `.lrc` you have stays on your disk, identical —
+whether you press that button or not.
 
 ---
 
@@ -174,9 +176,19 @@ domains — precisely so nothing else can be slipped in.
 
 ## 5. Your library is yours
 
-Rymembra works on files that sit on your disk and on an SQLite database that sits
-in your data folder. There's no server, there's no account, there's nothing I
-can switch off.
+Rymembra works on files that sit on your disk — or, from 3.2, in a cloud
+folder of yours that you chose to add — and on an SQLite database that sits in
+your data folder. There's no Rymembra server, there's no Rymembra account,
+there's nothing I can switch off. A cloud folder is read with your own account
+at that service, under that service's terms, and Rymembra only ever reads it.
+
+For OneDrive, Google Drive and Dropbox — and for the Google Drive backup —
+there is one more thing that is yours: the app through which Rymembra reaches
+the service. Rymembra ships none of its own. You register it with Microsoft,
+Google or Dropbox under your own developer account, you operate it, and you do
+so under that platform's developer terms, which are between you and the
+platform. I don't see that app, its ID or its quota, and I can't switch it
+off.
 
 **Rymembra does not modify your music files.** It opens them to read — to scan
 them, to decode them, to measure them — and never to write. Up to 2.3.0 that
@@ -186,17 +198,20 @@ your files, and a reorganizer moved them into `Artist/Album` folders. From
 database beside your own corrections, where a re-scan cannot silently undo it.
 
 What it does write is a short list, and `PRIVACY.md` § 8 carries all of it: the
-files Rymembra downloaded itself, the `.lrc` it saves beside a track, the
-playlists and the profile archive you ask it to export, and its own data
-folder. Nothing on that list is a file you already had. When you upgrade from
-the previous version, the installer removes it and Rymembra carries its data into
-that folder on first start; your library comes with you and nothing is
-overwritten.
+files Rymembra downloaded itself, the `.lrc` it saves beside a track if you
+switch that on, the playlists, skins and profile archive you ask it to export,
+and its own data folders. Nothing on that list is a file you already had.
+When you upgrade from the previous version, the installer removes it and
+Rymembra carries its data into its data folder on first start; your library
+comes with you and nothing is overwritten.
 
 One entry does reach a file you already had, and only when you press it: from
 2.3.2 a track's menu offers **«Delete from disk»**, which sends the file to the
-Recycle Bin and takes the library row with it. It asks first and never runs by
-itself, and **«Remove from library»** beside it leaves the disk alone entirely.
+Recycle Bin and takes the library row with it — except on a network share, a
+removable drive (a USB stick, an SD card) or wherever else Windows has no
+Recycle Bin, or when Rymembra cannot tell where the file is: there the file is
+deleted permanently, and only after a confirmation that says so. It asks first and never runs by itself, and
+**«Remove from library»** beside it leaves the disk alone entirely.
 
 A backup of what you care about remains a good idea all the same — that goes
 for any program that reads your disk, this one included.

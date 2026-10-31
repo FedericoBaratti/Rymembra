@@ -34,6 +34,15 @@ pub const DURATA_MINIMA_MS: u64 = 30_000;
 /// Ascoltato per tanto, conta comunque, qualunque sia la durata.
 pub const SOGLIA_ASSOLUTA_MS: u64 = 4 * 60 * 1_000;
 
+/// Oltre questo silenzio fra due [`ListenTracker::battito`], il tempo nel mezzo
+/// non è stato ascoltato.
+///
+/// Chi batte lo fa quattro volte al secondo; dieci secondi senza un battito
+/// non sono un filo in ritardo, sono un PC che dormiva — o un processo fermo —
+/// mentre l'orologio da parete andava avanti. Vedi «Il sonno» su
+/// [`ListenTracker`].
+pub const SALTO_MASSIMO_MS: u64 = 10_000;
+
 /// Questo ascolto conta come ascolto?
 ///
 /// ```
@@ -84,6 +93,18 @@ pub struct Listen {
 /// Non guarda l'orologio: ogni metodo riceve l'istante. È la regola di questo
 /// crate, e qui ha un vantaggio concreto — un ascolto lungo mezz'ora si prova in
 /// microsecondi, passando i numeri che servono.
+///
+/// # Il sonno
+///
+/// La misura è a orologio da parete, e l'orologio da parete corre anche col
+/// coperchio chiuso: cinque secondi di brano, un'ora di sospensione, e alla
+/// ripresa l'ascolto valeva un'ora — un brano contato, e uno scrobble, per una
+/// canzone appena cominciata. Chi suona può allora battere
+/// ([`ListenTracker::battito`]) mentre suona: un silenzio fra due battiti più
+/// lungo di [`SALTO_MASSIMO_MS`] non si conta. Un ascolto che non riceve
+/// battiti — il filo che batte non è partito, o non c'è — si misura come
+/// prima: senza battiti non si sa niente del sonno, e contare zero sarebbe
+/// peggio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListenTracker {
     track_id: i64,
@@ -92,6 +113,8 @@ pub struct ListenTracker {
     accumulated_ms: u64,
     /// Da quando sta suonando, se sta suonando.
     playing_since: Option<i64>,
+    /// L'ultimo battito da quando sta suonando: vedi «Il sonno».
+    battuto: Option<i64>,
 }
 
 impl ListenTracker {
@@ -104,6 +127,7 @@ impl ListenTracker {
             started_at: now_ms,
             accumulated_ms: 0,
             playing_since: Some(now_ms),
+            battuto: None,
         }
     }
 
@@ -119,9 +143,9 @@ impl ListenTracker {
     /// trova `playing_since` già vuoto e non fa niente. Serve, perché il motore
     /// può segnalare una pausa che l'interfaccia ha già segnalato.
     pub fn pause(&mut self, now_ms: i64) {
-        if let Some(da) = self.playing_since.take() {
-            self.accumulated_ms = self.accumulated_ms.saturating_add(trascorsi(da, now_ms));
-        }
+        self.accumulated_ms = self.accumulated_ms.saturating_add(self.suonati(now_ms));
+        self.playing_since = None;
+        self.battuto = None;
     }
 
     /// Riprende la misura.
@@ -131,12 +155,42 @@ impl ListenTracker {
         }
     }
 
+    /// Il filo che suona è vivo, e la musica sta andando: vedi «Il sonno».
+    ///
+    /// Un battito dopo un silenzio più lungo di [`SALTO_MASSIMO_MS`] chiude il
+    /// tratto suonato al battito di prima e ne apre uno nuovo adesso: il buco
+    /// nel mezzo non si conta. Da fermo non fa niente.
+    pub fn battito(&mut self, now_ms: i64) {
+        let Some(da) = self.playing_since else {
+            return;
+        };
+        if let Some(prima) = self.battuto
+            && trascorsi(prima, now_ms) > SALTO_MASSIMO_MS
+        {
+            self.accumulated_ms = self.accumulated_ms.saturating_add(trascorsi(da, prima));
+            self.playing_since = Some(now_ms);
+        }
+        self.battuto = Some(now_ms);
+    }
+
     /// Quanto è stato suonato finora.
     #[must_use]
     pub fn listened_ms(&self, now_ms: i64) -> u64 {
-        match self.playing_since {
-            Some(da) => self.accumulated_ms.saturating_add(trascorsi(da, now_ms)),
-            None => self.accumulated_ms,
+        self.accumulated_ms.saturating_add(self.suonati(now_ms))
+    }
+
+    /// Il tratto che sta suonando adesso, fino a `now_ms`; zero da fermo.
+    ///
+    /// Se dall'ultimo battito è passato più di [`SALTO_MASSIMO_MS`], il tratto
+    /// finisce a quel battito: il resto è il buco di un sonno, che chi ferma o
+    /// chiude l'ascolto al risveglio non deve contare.
+    fn suonati(&self, now_ms: i64) -> u64 {
+        let Some(da) = self.playing_since else {
+            return 0;
+        };
+        match self.battuto {
+            Some(prima) if trascorsi(prima, now_ms) > SALTO_MASSIMO_MS => trascorsi(da, prima),
+            _ => trascorsi(da, now_ms),
         }
     }
 
@@ -168,6 +222,57 @@ mod prove {
     use super::*;
 
     const TRE_MINUTI: u64 = 180_000;
+
+    /// Cinque secondi di brano, un'ora col coperchio chiuso, e la pausa al
+    /// risveglio: valgono cinque secondi, non un'ora.
+    #[test]
+    fn una_sospensione_non_gonfia_l_ascolto() {
+        let mut ascolto = ListenTracker::begin(1, TRE_MINUTI, 0);
+        for istante in (250..=5_000).step_by(250) {
+            ascolto.battito(istante);
+        }
+        let risveglio = 5_000 + 3_600_000;
+        // Il primo a saperlo può essere la pausa (le cuffie perse nel sonno)...
+        let mut fermato = ascolto;
+        fermato.pause(risveglio);
+        assert_eq!(fermato.listened_ms(risveglio), 5_000);
+        // ...o il primo battito dopo il risveglio, e poi si continua.
+        ascolto.battito(risveglio);
+        ascolto.battito(risveglio + 250);
+        let chiuso = ascolto.finish(risveglio + 10_000);
+        assert_eq!(chiuso.listened_ms, 15_000);
+        assert!(!chiuso.counts);
+    }
+
+    /// Senza battiti la misura è quella di sempre: chi non batte non sa niente
+    /// del sonno, e contare zero sarebbe peggio.
+    #[test]
+    fn senza_battiti_conta_l_orologio_come_prima() {
+        let ascolto = ListenTracker::begin(1, TRE_MINUTI, 0);
+        assert_eq!(ascolto.finish(120_000).listened_ms, 120_000);
+    }
+
+    /// Un battito in ritardo, ma sotto il salto massimo, non perde niente.
+    #[test]
+    fn un_battito_lento_conta_tutto() {
+        let salto = i64::try_from(SALTO_MASSIMO_MS).expect("dieci secondi");
+        let mut ascolto = ListenTracker::begin(1, TRE_MINUTI, 0);
+        ascolto.battito(1_000);
+        ascolto.battito(1_000 + salto);
+        assert_eq!(ascolto.listened_ms(1_000 + salto), 11_000);
+    }
+
+    /// La pausa azzera i battiti: un brano in pausa per ore, poi ripreso, non
+    /// scambia la pausa per un sonno da togliere né la conta.
+    #[test]
+    fn una_pausa_lunga_non_e_un_sonno() {
+        let mut ascolto = ListenTracker::begin(1, TRE_MINUTI, 0);
+        ascolto.battito(250);
+        ascolto.pause(1_000);
+        ascolto.resume(7_200_000);
+        ascolto.battito(7_200_250);
+        assert_eq!(ascolto.listened_ms(7_201_000), 2_000);
+    }
 
     #[test]
     fn un_brano_saltato_non_conta() {

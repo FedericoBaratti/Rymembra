@@ -20,6 +20,11 @@
  * faceva ridisegnare tutti, elenco dei brani compreso. Letta qui, il suo
  * cambiamento arriva a un componente solo.
  *
+ * E nemmeno questo si ridisegna venti volte al secondo: solo quando il
+ * riempimento si sposta di un pixel o cambia il secondo scritto. La barra
+ * misura quanto è larga, e il passo lo sceglie `passoDellaBarra`
+ * (`posizione.ts`), dove stanno il perché e la misura.
+ *
  * # Il salto che dura, e perché lo si dice
  *
  * Su un brano di catalogo spostarsi non è gratis. Misurato su un mp3 da venti
@@ -35,12 +40,22 @@
  * non deve restare è il silenzio: finché il motore non è arrivato, il cursore
  * lo dice.
  */
-import { memo, useEffect, useState, type CSSProperties } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 
+import { useDati } from "../dati";
 import { durata } from "../formato";
 import { gestoPermesso } from "../insieme";
 import { ipc, type StatoRiproduzione } from "../ipc";
-import { usePosizioneMs } from "../riproduzione";
+import { passoDellaBarra } from "../posizione";
+import { usePosizioneAlPasso } from "../riproduzione";
+import { passoFreccia } from "../tasti";
 import { t, useLingua } from "../lingue";
 
 /**
@@ -105,7 +120,22 @@ export const Scrubber = memo(function Scrubber({
   // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
   // l'iscrizione i testi resterebbero quelli del primo disegno.
   useLingua();
-  const posizioneMs = usePosizioneMs();
+  // Quanto è larga la barra, in pixel del dispositivo: la grana a cui ha senso
+  // ridisegnarla. Zero finché non è disegnata, e allora vale il passo fitto.
+  const barra = useRef<HTMLInputElement>(null);
+  const [pixel, setPixel] = useState(0);
+  useLayoutEffect(() => {
+    const elemento = barra.current;
+    if (elemento === null) return;
+    const misura = () =>
+      setPixel(elemento.getBoundingClientRect().width * window.devicePixelRatio);
+    misura();
+    const osserva = new ResizeObserver(misura);
+    osserva.observe(elemento);
+    return () => osserva.disconnect();
+  }, []);
+  const { posizione } = useDati();
+  const posizioneMs = usePosizioneAlPasso(passoDellaBarra(stato.durataMs, pixel));
   const [trascinato, setTrascinato] = useState<number | null>(null);
   /**
    * Il punto a cui si è chiesto di andare, finché il motore non ci arriva.
@@ -257,6 +287,7 @@ export const Scrubber = memo(function Scrubber({
     <div className="cursore player-progress" data-giro="trasporto">
       {conTempi && <span className="tempo">{durata(dove)}</span>}
       <input
+        ref={barra}
         type="range"
         className="scorrimento range-accent"
         min={0}
@@ -282,6 +313,22 @@ export const Scrubber = memo(function Scrubber({
         disabled={durataMs === 0 || !saltoLibero}
         title={saltoLibero ? undefined : t("together.gestures.off.title")}
         onChange={(e) => setTrascinato(Number(e.target.value))}
+        /* Le frecce saltano di cinque secondi, come le scorciatoie ← e → che
+           col fuoco qui non valgono: il passo nativo era lo `step`, un quarto
+           di secondo. Si sposta il punto «sotto il dito» e il salto parte al
+           rilascio, come per il trascinamento — tenendo premuto parte un salto
+           solo. Con un modificatore il tasto non è nostro: Ctrl+→ è il brano
+           dopo. Inizio, Fine e Pag↑/Pag↓ restano al cursore. */
+        onKeyDown={(e) => {
+          if (e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+          // Dalla posizione di adesso e non da `dove`: quella disegnata va
+          // al passo della barra, e può essere indietro fino a un secondo.
+          const da = trascinato ?? cercando?.bersaglio ?? posizione.leggi();
+          const prossima = passoFreccia(e.key, da, durataMs);
+          if (prossima === null) return;
+          e.preventDefault();
+          setTrascinato(prossima);
+        }}
         onPointerUp={() => void rilascia()}
         onKeyUp={() => void rilascia()}
         onBlur={() => void rilascia()}

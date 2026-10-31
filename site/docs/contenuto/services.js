@@ -7,9 +7,9 @@
     {
       id: "cloud",
       title: "Backup on Google Drive",
-      src: ["core/rymembra-cloud/src/servizio.rs", "core/rymembra-cloud/src/drive.rs", "core/rymembra-cloud/src/oauth.rs", "core/rymembra-cloud/src/pacchetti.rs", "core/rymembra-app/src/backup.rs", "core/rymembra-domain/src/restore.rs", "apps/desktop/src-tauri/src/nuvola.rs", "apps/desktop/src-tauri/build.rs"],
+      src: ["core/rymembra-cloud/src/servizio.rs", "core/rymembra-cloud/src/drive.rs", "core/rymembra-cloud/src/oauth.rs", "core/rymembra-cloud/src/pacchetti.rs", "core/rymembra-app/src/backup.rs", "core/rymembra-domain/src/restore.rs", "apps/desktop/src-tauri/src/nuvola.rs", "apps/desktop/src-tauri/src/nuvola_app.rs", "core/rymembra-app/src/nuvola_app.rs"],
       body: [
-        "The backup stores what a scan cannot rebuild — statistics, playlists, tombstones, watched roots, skins and Studio drafts — in Drive's **app-data folder** (`drive.appdata` scope): invisible in Drive, readable only by this OAuth client. Audio files and covers are not uploaded.",
+        "The backup stores what a scan cannot rebuild — statistics, playlists, tombstones, watched roots, skins and Studio drafts — in Drive's **app-data folder** (`drive.appdata` scope): invisible in Drive, readable only by the user's Google app that wrote it. Audio files and covers are not uploaded.",
         {
           table: {
             head: ["File in appDataFolder", "Contents"],
@@ -33,9 +33,9 @@
         "**The local database is never written by a backup pass.** Restoring is explicit: `nuvola_piano_ripristino` downloads, parses (`interpreta`: bad records dropped, a newer format refused) and shows `rymembra_domain::restore::plan_restore` — stats merged with `merge_stats`, missing tracks only listed, playlists replaced only if the backup's is strictly newer, roots unioned, skins/drafts added only if missing; `nuvola_ripristina` re-plans and applies it in one transaction.",
         { h: "Schedule and credentials" },
         "Thread `rymembra-nuvola`: first pass 30 s after start, then every 15 min, and 2 min after a burst of changes (any command that changes the library calls `nuvola::se_riuscito`). Drive calls have a 120 s deadline. `nuvola.attivo` switches it.",
-        "The Google consent runs in the system browser with PKCE and a loopback redirect, 3 min to complete ([OAuth](#oauth)). A desktop program cannot keep an OAuth secret, so **release builds ship without a Google client**: Settings asks for your own «Desktop app» client id and secret (`nuvola_credenziali`; the secret goes to the keychain). Builds made with `RYMEMBRA_GOOGLE_CLIENT_ID` / `RYMEMBRA_GOOGLE_CLIENT_SECRET` in the environment embed them via `option_env!` (`build.rs` re-exports them).",
+        "The Google consent runs in the system browser with PKCE and a loopback redirect, 3 min to complete ([OAuth](#oauth)). A desktop program cannot keep an OAuth secret, so **no Google client is compiled in**, nor any other since 3.2: the backup uses a Google app the user registers in «Your apps» ([Cloud folders](#cloud-folders)) — by default the same app as the Google Drive folders, with a consent of its own — bound by the setting `nuvola.app`. `nuvola_backup_app` chooses it (it replaced `nuvola_credenziali`); without one the backup is «not configured» and Drive sync answers `cloud.clientMissing`. Choosing another app disconnects the backup, because the app-data folder belongs to the app that wrote it: with another app the earlier backups and the other devices' sync documents may not be visible. Disconnecting (`nuvola_scollega`) revokes the token and leaves the app registered. The backup has no consent-time client to compare: a client typed in 3.1, carried over by migration 037 as `google-ereditata`, keeps the refresh token it had.",
       ],
-      see: ["sync", "profile", "oauth"],
+      see: ["sync", "profile", "oauth", "cloud-folders"],
     },
     {
       id: "sync",
@@ -85,7 +85,7 @@
             ],
           },
         },
-        "The durable `scrobble_queue` (unique on service, time, artist, title) survives restarts; a failed item counts attempts up to `MASSIMI_TENTATIVI` = 10 (a non-retryable rejection jumps to the cap and shows as «stuck»). Thread `rymembra-scrobble` wakes on demand or every 300 s; a ListenBrainz batch rejected with 400 is bisected down to the bad entry. «Now playing» is sent on its own short-lived thread and never queued. With `scrobble.attivo` off the queue stops filling, so turning it back on does not send three days of plays at once. Tokens, keys, secrets and the session live in the keychain; Last.fm's API key moved there from `settings` in 2.3.1.",
+        "The durable `scrobble_queue` (unique on service, time, artist, title) survives restarts; a failure that says nothing about the listens (network down, service unavailable, authentication) stops the pass without consuming anything, and the queue is retried later; a rejection of the listens themselves is final for the rejected rows, which show as «stuck». A batch rejected that way is split in halves, for both services, down to the entries actually refused. Thread `rymembra-scrobble` runs once at startup, then wakes on demand or every 300 s. «Now playing» is sent on its own short-lived thread and never queued. With `scrobble.attivo` off the queue stops filling, so turning it back on does not send three days of plays at once. Tokens, keys, secrets and the session live in the keychain; Last.fm's API key moved there from `settings` in 2.3.1.",
       ],
       see: ["listens", "oauth"],
     },
@@ -137,7 +137,7 @@
         "Only on explicit request (`aggiornamenti_installa`; a double click is guarded). The download runs on `rymembra-aggiornamento` with progress events every 200 ms; it is cancelled after 60 s without a byte (`net.timeout`) or by `aggiornamenti_annulla`. The plugin verifies the **minisign** signature against the key compiled into the executable, and since 3.0 `requireSignedVersion` also requires the signature to be bound to the version the manifest announces. Playback is paused, the NSIS installer runs in passive mode, and `on_before_exit` runs the normal shutdown sequence ([Startup](#startup)) before the process exits. A build compiled without signing keys refuses to download.",
         "The NSIS installer also takes care of the previous version (`installer/precedente.nsh`, hooked in through `bundle.windows.nsis.installerHooks`): before copying anything it silently uninstalls it, leaving its data folder alone — the data are picked up at the first start ([Data](#data)). If the previous version is still running, the passive/silent installer waits a few seconds for it to close and a graphical one asks the user to close it; if it stays open the installer goes on and leaves the old version installed.",
         { h: "Logs and documents" },
-        "The same Settings card opens the log folder (`diario_apri`; see [Logs](#logs)) and, through `apri_documento`, a closed list of public documents in the system browser — repository, issues, licence, third-party notices, privacy, terms, donations — never in the webview.",
+        "The same Settings card opens the log folder (`diario_apri`; see [Logs](#logs)) and, through `apri_documento`, a closed list of public pages in the system browser — repository, issues, licence, third-party notices, privacy, terms, donations, and the three developer consoles where the user registers their apps (`console-microsoft`, `console-google`, `console-dropbox`; see [Cloud folders](#cloud-folders)) — never in the webview.",
       ],
       see: ["signing", "logs", "concepts"],
     },

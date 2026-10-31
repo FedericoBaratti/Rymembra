@@ -41,6 +41,7 @@ import { Trans } from "./lingue/Trans";
 import { dataOra, numero } from "./formato";
 import { useAscolto } from "./pagine";
 import { Presenza } from "./presenza";
+import { notiziaDelRipristino } from "./esitoRipristino";
 
 /** Come si legge una fase dell'avanzamento. */
 function fasi(): Record<AvanzamentoNuvola["cosa"], string> {
@@ -91,9 +92,18 @@ function quando(ms: number): string {
 export function Ripristino({
   onChiudi,
   onFatto,
+  onErrore,
+  onNotizia,
 }: {
   onChiudi: () => void;
   onFatto: () => void;
+  /**
+   * L'errore di un ripristino finito dopo che la finestrella è stata chiusa.
+   * Vedi `aperta`.
+   */
+  onErrore: (e: unknown) => void;
+  /** Il rapporto di un ripristino finito a finestrella chiusa, in una frase. */
+  onNotizia: (testo: string) => void;
 }) {
   const [piano, setPiano] = useState<PianoRipristino | null>(null);
   const [esito, setEsito] = useState<EsitoRipristino | null>(null);
@@ -108,7 +118,37 @@ export function Ripristino({
   useVeloInerte(velo);
   const [gesto] = useState(nuovoVelo);
 
-  useAscolto<AvanzamentoNuvola>("nuvola:avanzamento", setAvanzamento);
+  /**
+   * La finestrella è ancora montata.
+   *
+   * Durante il ripristino Escape la chiude ancora, ed è voluto: un download da
+   * Drive che s'impianta non deve chiudere dentro nessuno finché il nucleo non
+   * risponde. Ma il ripristino continua di là, e la sua risposta cadeva su un
+   * componente smontato: il rapporto e l'errore non arrivavano a nessuno.
+   * Chiusa, l'esito va alla finestra — l'errore nella fascia, il rapporto in
+   * una notizia (`esitoRipristino.ts`).
+   */
+  const aperta = useRef(true);
+  useEffect(() => {
+    aperta.current = true;
+    return () => {
+      aperta.current = false;
+    };
+  }, []);
+  /**
+   * «Ripristina» è stato premuto e il nucleo non ha risposto.
+   *
+   * `nuvola:avanzamento` lo manda anche la passata di backup, con le stesse
+   * fasi (metadati, skin, bozze): con il piano già a schermo una passata
+   * partita da sola faceva vedere «metadati 1/3» prima di «Ripristina», e la
+   * barra restava piena. Durante il ripristino il turno è suo
+   * (`nuvola_ripristina` lo prende), quindi un backup in parallelo non c'è e
+   * questo filtro basta a separare le due fonti.
+   */
+  const eseguendo = useRef(false);
+  useAscolto<AvanzamentoNuvola>("nuvola:avanzamento", (p) => {
+    if (eseguendo.current) setAvanzamento(p);
+  });
 
   useEffect(() => {
     let annullato = false;
@@ -129,14 +169,25 @@ export function Ripristino({
   }, []);
 
   const esegui = async () => {
+    eseguendo.current = true;
     setInCorso(true);
     setErrore(null);
     try {
-      setEsito(await ipc.nuvolaRipristina());
+      const fatto = await ipc.nuvolaRipristina();
+      setEsito(fatto);
       onFatto();
+      if (!aperta.current) {
+        onNotizia(
+          notiziaDelRipristino(fatto)
+            .map(({ chiave, n }) => (n === undefined ? t(chiave) : t(chiave, { n })))
+            .join(" "),
+        );
+      }
     } catch (e) {
-      setErrore(testoErrore(e));
+      if (aperta.current) setErrore(testoErrore(e));
+      else onErrore(e);
     } finally {
+      eseguendo.current = false;
       setInCorso(false);
       setAvanzamento(null);
     }

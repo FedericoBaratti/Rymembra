@@ -184,11 +184,30 @@ struct Pezzo {
 /// regole di un insieme, altrimenti «negli ultimi 7 giorni» e «non negli ultimi
 /// 7 giorni» valutate a cavallo di un millisecondo potrebbero essere vere
 /// insieme, o false insieme.
-fn traduci(regola: &Regola, adesso_ms: i64) -> Option<Pezzo> {
+///
+/// `in_compagnia` dice che la regola sta in un `AND` con altre: allora le due
+/// forme a `OR` su un numero — «vuoto» e «non negli ultimi N giorni» — si
+/// scrivono con il più unario davanti alla colonna (`+t.last_played_at`), che
+/// non cambia nessun valore e toglie a quel termine l'uso dell'indice. Senza,
+/// SQLite sceglie un `MULTI-INDEX OR` su `idx_tracks_last_played` e
+/// `idx_tracks_piu_ascoltati`: su una libreria quasi tutta mai ascoltata
+/// raccoglie quasi tutti i brani per indirizzo e poi li rilegge uno per uno per
+/// valutare l'altra condizione, quattro o cinque volte una lettura intera
+/// (misurato: il piano esce così sul SQLite incluso, 3.53.2; vedi la prova
+/// `una_regola_di_data_con_un_altra_non_passa_dall_or_degli_indici`). Da sola
+/// invece la regola resta com'è: lì l'indice è la strada buona (il ripiano
+/// «Trascurati» della Home).
+fn traduci(regola: &Regola, adesso_ms: i64, in_compagnia: bool) -> Option<Pezzo> {
     if !regola.valida() {
         return None;
     }
     let col = colonna(regola.campo);
+    // La colonna nelle forme a `OR` su un numero: vedi `in_compagnia`.
+    let col_or = if in_compagnia {
+        format!("+{col}")
+    } else {
+        col.to_owned()
+    };
     let genere = regola.campo.genere();
 
     // I due operatori che non guardano il valore. `Vuoto` copre sia `NULL` sia
@@ -200,7 +219,7 @@ fn traduci(regola: &Regola, adesso_ms: i64) -> Option<Pezzo> {
         Operatore::Vuoto => {
             let sql = match genere {
                 GenereCampo::Testo => format!("({col} IS NULL OR TRIM({col}) = '')"),
-                _ => format!("({col} IS NULL OR {col} = 0)"),
+                _ => format!("({col_or} IS NULL OR {col_or} = 0)"),
             };
             return Some(Pezzo {
                 sql,
@@ -270,7 +289,7 @@ fn traduci(regola: &Regola, adesso_ms: i64) -> Option<Pezzo> {
                 // «non negli ultimi N giorni» **include** chi non l'ha mai
                 // sentito: è esattamente la playlist che chi scrive questa
                 // regola sta cercando — le canzoni dimenticate.
-                format!("({col} IS NULL OR {col} = 0 OR {col} < ?)")
+                format!("({col_or} IS NULL OR {col_or} = 0 OR {col_or} < ?)")
             };
             Some(Pezzo {
                 sql,
@@ -391,13 +410,24 @@ const fn ordine(ordinamento: Ordinamento) -> &'static str {
 /// stringa prodotta è l'unico modo di dimostrare che nessun valore ci è finito
 /// dentro.
 pub(crate) fn query(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>) {
+    let tradotte = |in_compagnia: bool| -> Vec<Pezzo> {
+        insieme
+            .regole
+            .iter()
+            .filter_map(|regola| traduci(regola, adesso_ms, in_compagnia))
+            .collect()
+    };
+    let mut pezzi = tradotte(false);
+    // Contate quelle che si traducono davvero: una regola storta si salta, e
+    // non fa compagnia a nessuno.
+    if insieme.combinazione == Combinazione::Tutte && pezzi.len() > 1 {
+        pezzi = tradotte(true);
+    }
     let mut condizioni: Vec<String> = Vec::new();
     let mut parametri: Vec<SqlValue> = Vec::new();
-    for regola in &insieme.regole {
-        if let Some(pezzo) = traduci(regola, adesso_ms) {
-            condizioni.push(pezzo.sql);
-            parametri.extend(pezzo.parametri);
-        }
+    for pezzo in pezzi {
+        condizioni.push(pezzo.sql);
+        parametri.extend(pezzo.parametri);
     }
 
     let dove = if condizioni.is_empty() {
@@ -954,6 +984,125 @@ mod prove {
         )
         .expect("brano");
         c.last_insert_rowid()
+    }
+
+    /// Una libreria vera da duemila brani quasi tutti mai ascoltati, con le
+    /// statistiche del pianificatore: la forma di chi ha appena cominciato.
+    fn libreria_quasi_mai_ascoltata() -> Connection {
+        let c = libreria_vera();
+        let generi = ["rock", "jazz", "pop", "classica", "elettronica"];
+        for n in 0..2_000_i64 {
+            let ascoltato = n % 20 == 0;
+            c.execute(
+                "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms,
+                                     date_added, date_modified, file_size, genre,
+                                     play_count, last_played_at)
+                 VALUES (?1, ?2, ?3, ?4, 'Al', 200000, 1, 1, 1000000, ?5, ?6, ?7)",
+                rusqlite::params![
+                    format!(r"C:\m\{n}.mp3"),
+                    format!("a{}|t{n}", n % 97),
+                    format!("t{n}"),
+                    format!("a{}", n % 97),
+                    generi.get(usize::try_from(n).unwrap_or(0) % generi.len()),
+                    i64::from(ascoltato) * (1 + n % 7),
+                    ascoltato.then_some(1_000_000 + n * 1_000),
+                ],
+            )
+            .expect("brano");
+        }
+        c.execute_batch("ANALYZE").expect("statistiche");
+        c
+    }
+
+    /// Il piano di un insieme, con i suoi parametri legati.
+    fn piano(c: &Connection, insieme: &Insieme) -> Vec<String> {
+        assicura_piegatura(c).expect("piegatura");
+        let (sql, parametri) = query(insieme, 10_000_000_000);
+        let mut s = c
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("piano");
+        let righe = s
+            .query_map(rusqlite::params_from_iter(parametri.iter()), |r| {
+                r.get::<_, String>(3)
+            })
+            .expect("piano");
+        righe.collect::<Result<_, _>>().expect("righe del piano")
+    }
+
+    #[test]
+    fn una_regola_di_data_con_un_altra_non_passa_dall_or_degli_indici() {
+        let c = libreria_quasi_mai_ascoltata();
+        let versione: String = c
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .expect("versione");
+        let dimenticati = |altra: Regola| {
+            let mut insieme = insieme(vec![
+                altra,
+                regola(
+                    Campo::UltimoAscolto,
+                    Operatore::NonNegliUltimi,
+                    Valore::Numero(30),
+                ),
+            ]);
+            insieme.ordinamento = Ordinamento::MenoAscoltati;
+            insieme
+        };
+        let casi = [
+            (
+                "genere contiene + non negli ultimi 30",
+                dimenticati(regola(
+                    Campo::Genere,
+                    Operatore::Contiene,
+                    Valore::Testo("rock".to_owned()),
+                )),
+            ),
+            (
+                "genere uguale + non negli ultimi 30",
+                dimenticati(regola(
+                    Campo::Genere,
+                    Operatore::Uguale,
+                    Valore::Testo("rock".to_owned()),
+                )),
+            ),
+            (
+                "preferito + mai ascoltato",
+                insieme(vec![
+                    regola(Campo::Preferito, Operatore::Uguale, Valore::Numero(1)),
+                    regola(Campo::UltimoAscolto, Operatore::Vuoto, Valore::Nessuno),
+                ]),
+            ),
+        ];
+        for (nome, insieme) in &casi {
+            let piano = piano(&c, insieme);
+            eprintln!("SQLite {versione} — {nome}: {piano:?}");
+            assert!(
+                !piano.iter().any(|riga| riga.contains("MULTI-INDEX OR")),
+                "{nome}: {piano:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn una_regola_di_data_da_sola_resta_sull_indice() {
+        // Il ripiano «Trascurati» della Home: la regola da sola. Lì l'indice è
+        // la strada buona, e il più unario non ci va.
+        let c = libreria_quasi_mai_ascoltata();
+        let mut sola = insieme(vec![regola(
+            Campo::UltimoAscolto,
+            Operatore::NonNegliUltimi,
+            Valore::Numero(30),
+        )]);
+        // Come la chiede la Home.
+        sola.ordinamento = Ordinamento::Casuale;
+        let (sql, _) = query(&sola, 10_000_000_000);
+        assert!(!sql.contains("+t.last_played_at"), "{sql}");
+        let piano = piano(&c, &sola);
+        assert!(
+            piano
+                .iter()
+                .any(|riga| riga.contains("idx_tracks_last_played")),
+            "{piano:?}"
+        );
     }
 
     fn artista_contiene(testo: &str) -> Insieme {

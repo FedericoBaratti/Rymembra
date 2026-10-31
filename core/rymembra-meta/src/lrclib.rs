@@ -32,6 +32,8 @@
 //! sbagliarlo produce scarti di tre ordini di grandezza — cioè nessuna
 //! corrispondenza, mai, senza nessun messaggio d'errore.
 
+use std::time::{Duration, Instant};
+
 use rymembra_domain::abbinamento::{primo_artista, senza_decorazioni};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::testo::{Candidato, Cercato};
@@ -678,13 +680,34 @@ fn un_giro(
 
 // ── restituire ──────────────────────────────────────────────────────────────
 
-/// Quanti tentativi al massimo per la prova di lavoro.
+/// Quante volte la media si concede alla prova di lavoro.
 ///
-/// Il bersaglio di LRCLIB è `000000FF…`: servono in media una manciata di
-/// milioni di hash, cioè qualche secondo. Cinquanta milioni sono un tetto largo
-/// dieci volte, e servono a non lasciare un filo a girare per sempre se un
-/// giorno il bersaglio si stringesse.
-const TENTATIVI_MASSIMI: u64 = 50_000_000;
+/// Il bersaglio di serie di LRCLIB è `000000FF00…`: un'impronta ci sta sotto
+/// con probabilità 255/2³², cioè servono in media 2³²/255 ≈ 16,8 milioni di
+/// tentativi — qualche secondo. Quando nei dieci minuti prima le pubblicazioni
+/// sono state tante, il server lo stringe in proporzione, e la media sale.
+///
+/// Il tetto quindi non è un numero fisso: si ricava dal bersaglio che arriva
+/// ([`tetto_per`]), venti volte la media. Con venti volte, arrendersi su una
+/// sfida buona ha probabilità e⁻²⁰, cioè mai. Il tetto fisso di prima
+/// (cinquanta milioni) era tre volte la media e non dieci come diceva questo
+/// commento: una pubblicazione su venti falliva dopo una decina di secondi di
+/// calcolo, per una sfida che con qualche secondo in più si sarebbe chiusa.
+const VOLTE_LA_MEDIA: f64 = 20.0;
+
+/// Quanto può durare al massimo la prova di lavoro.
+///
+/// Tre minuti. Il tetto in tentativi segue il bersaglio, e un bersaglio
+/// assurdo — mille volte più stretto, o tutto zeri tranne l'ultimo byte —
+/// darebbe un tetto da ore: questo è quel che impedisce a un filo di restare a
+/// girare per sempre se un giorno il bersaglio si stringesse.
+const TEMPO_MASSIMO: Duration = Duration::from_secs(180);
+
+/// Ogni quanti tentativi si guarda l'orologio.
+///
+/// Leggere l'orologio a ogni giro costerebbe quanto una parte dell'impronta
+/// stessa; ogni 65 536 vuol dire una lettura ogni qualche millesimo di secondo.
+const OGNI_QUANTI: u64 = 1 << 16;
 
 /// Un testo da restituire al catalogo.
 #[derive(Debug, Clone, Copy)]
@@ -828,8 +851,9 @@ fn sfida(fornitori: &Fornitori) -> Result<(String, String), AppError> {
 /// confronto fra due numeri a 256 bit scritti in ordine di rete, e in Rust è
 /// esattamente l'ordinamento naturale di due `[u8; 32]`.
 ///
-/// `None` se il bersaglio non è trentadue byte in esadecimale, o se
-/// [`TENTATIVI_MASSIMI`] non bastano.
+/// `None` se il bersaglio non è trentadue byte in esadecimale, se è tutto zeri
+/// (nessuna impronta ci sta sotto), o se non si chiude entro il tetto di
+/// [`tetto_per`] o entro [`TEMPO_MASSIMO`].
 ///
 /// # Perché è pura
 ///
@@ -840,18 +864,93 @@ fn sfida(fornitori: &Fornitori) -> Result<(String, String), AppError> {
 #[must_use]
 pub fn risolvi(prefisso: &str, bersaglio_hex: &str) -> Option<String> {
     let bersaglio = da_esadecimale(bersaglio_hex)?;
+    cerca_nonce(prefisso, &bersaglio, tetto_per(&bersaglio), TEMPO_MASSIMO)
+        .map(|nonce| nonce.to_string())
+}
+
+/// Il ciclo di [`risolvi`], con il tetto e il tempo come parametri.
+///
+/// Fuori da `risolvi` perché il limite di tempo si possa provare in qualche
+/// millesimo di secondo invece che in tre minuti.
+///
+/// # Quel che costa un tentativo
+///
+/// Il prefisso si dà all'impronta **una volta sola**, e a ogni giro si clona lo
+/// stato già nutrito; il nonce si scrive in decimale su un buffer riusato invece
+/// che con un `to_string()` che alloca. Sono decine di milioni di giri: è circa
+/// la metà del lavoro per tentativo.
+fn cerca_nonce(
+    prefisso: &str,
+    bersaglio: &[u8; 32],
+    tetto: u64,
+    scadenza: Duration,
+) -> Option<u64> {
+    // Sotto zero non ci sta niente: girare fino alla scadenza vorrebbe dire
+    // tre minuti di calcolo per una risposta già nota.
+    if bersaglio.iter().all(|byte| *byte == 0) {
+        return None;
+    }
+    let nutrita = Sha256::new_with_prefix(prefisso.as_bytes());
+    let partenza = Instant::now();
+    let mut cifre = [0_u8; 20];
     let mut nonce = 0_u64;
-    while nonce < TENTATIVI_MASSIMI {
-        let mut impronta = Sha256::new();
-        impronta.update(prefisso.as_bytes());
-        impronta.update(nonce.to_string().as_bytes());
-        let uscita: [u8; 32] = impronta.finalize().into();
-        if uscita < bersaglio {
-            return Some(nonce.to_string());
+    while nonce < tetto {
+        if nonce > 0 && nonce.is_multiple_of(OGNI_QUANTI) && partenza.elapsed() >= scadenza {
+            return None;
+        }
+        let uscita: [u8; 32] = nutrita
+            .clone()
+            .chain_update(in_decimale(nonce, &mut cifre))
+            .finalize()
+            .into();
+        if uscita < *bersaglio {
+            return Some(nonce);
         }
         nonce = nonce.saturating_add(1);
     }
     None
+}
+
+/// Quanti tentativi si concedono a questo bersaglio: [`VOLTE_LA_MEDIA`] volte
+/// quelli attesi.
+///
+/// Un'impronta vince con probabilità `bersaglio / 2²⁵⁶`, quindi i tentativi
+/// attesi sono `2²⁵⁶ / bersaglio`. Il conto si fa in virgola mobile: 2²⁵⁶ sta
+/// in un `f64` (circa 1,2·10⁷⁷), e di un tetto non serve l'ultima cifra.
+fn tetto_per(bersaglio: &[u8; 32]) -> u64 {
+    let valore = bersaglio
+        .iter()
+        .fold(0.0_f64, |somma, byte| somma * 256.0 + f64::from(*byte));
+    if valore <= 0.0 {
+        return 0;
+    }
+    let tetto = (2.0_f64.powi(256) / valore * VOLTE_LA_MEDIA).ceil();
+    // `as` da virgola mobile a intero satura: un bersaglio minuscolo dà
+    // `u64::MAX`, e a quel punto a fermare il ciclo è [`TEMPO_MASSIMO`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "il valore è positivo e la conversione satura: oltre u64::MAX resta u64::MAX"
+    )]
+    let tetto = tetto as u64;
+    tetto
+}
+
+/// Le cifre decimali di `n`, scritte in fondo a `cifre`.
+///
+/// Sono gli stessi byte di `n.to_string()`, senza allocare: venti posti
+/// bastano per qualunque `u64`.
+fn in_decimale(mut n: u64, cifre: &mut [u8; 20]) -> &[u8] {
+    let mut inizio = cifre.len();
+    for posto in cifre.iter_mut().rev() {
+        *posto = b'0'.saturating_add(u8::try_from(n % 10).unwrap_or(0));
+        inizio = inizio.saturating_sub(1);
+        n = n.div_euclid(10);
+        if n == 0 {
+            break;
+        }
+    }
+    cifre.get(inizio..).unwrap_or_default()
 }
 
 /// Trentadue byte da una stringa esadecimale, o niente.
@@ -975,12 +1074,77 @@ mod prove {
         );
     }
 
+    /// Il bersaglio vero di LRCLIB, `000000FF00…`, vince con probabilità
+    /// 255/2³²: servono in media 2³²/255 ≈ 16,8 milioni di tentativi. Il tetto
+    /// deve stare venti volte sopra, così arrendersi su una sfida buona ha
+    /// probabilità e⁻²⁰. Lo stesso per il bersaglio dimezzato che il server dà
+    /// quando le pubblicazioni recenti sono tante.
+    #[test]
+    fn il_tetto_regge_il_bersaglio_vero_di_lrclib() {
+        let attesi_base: u64 = 16_843_009; // 2³² / 255, per eccesso
+        let base = da_esadecimale(&("000000FF".to_owned() + &"00".repeat(28))).expect("bersaglio");
+        assert!(
+            tetto_per(&base) >= 20 * attesi_base,
+            "tetto {} per {} attesi",
+            tetto_per(&base),
+            attesi_base
+        );
+        let dimezzato =
+            da_esadecimale(&("0000007F80".to_owned() + &"00".repeat(27))).expect("bersaglio");
+        assert!(
+            tetto_per(&dimezzato) >= 20 * 2 * attesi_base,
+            "tetto {} per {} attesi",
+            tetto_per(&dimezzato),
+            2 * attesi_base
+        );
+    }
+
+    /// Le cifre scritte sul buffer sono quelle di `to_string()`: un nonce
+    /// scritto diverso da come lo manda il gettone è una prova che il catalogo
+    /// rifiuta.
+    #[test]
+    fn il_nonce_si_scrive_come_to_string() {
+        let mut cifre = [0_u8; 20];
+        for n in [0, 9, 10, 99, 100, 12_345, 16_843_009, u64::MAX] {
+            assert_eq!(in_decimale(n, &mut cifre), n.to_string().as_bytes(), "{n}");
+        }
+    }
+
+    /// Un bersaglio quasi impossibile — vince una impronta su 2²⁵⁶ — con un
+    /// tetto in tentativi enorme: a fermare il ciclo è il tempo.
+    #[test]
+    fn un_bersaglio_assurdo_si_ferma_al_tempo_massimo() {
+        let mut quasi_zero = [0_u8; 32];
+        if let Some(ultimo) = quasi_zero.last_mut() {
+            *ultimo = 1;
+        }
+        assert_eq!(tetto_per(&quasi_zero), u64::MAX, "il tetto satura");
+        let partenza = Instant::now();
+        assert_eq!(
+            cerca_nonce("prova", &quasi_zero, u64::MAX, Duration::from_millis(50)),
+            None
+        );
+        assert!(
+            partenza.elapsed() < Duration::from_secs(5),
+            "ha girato {:?}",
+            partenza.elapsed()
+        );
+        // Tutto zero: non si comincia nemmeno.
+        assert_eq!(tetto_per(&[0_u8; 32]), 0);
+        assert_eq!(
+            cerca_nonce("prova", &[0_u8; 32], u64::MAX, Duration::from_secs(60)),
+            None
+        );
+    }
+
     #[test]
     fn un_bersaglio_impossibile_non_gira_per_sempre() {
-        // Tutto zero: nessuna impronta ci sta sotto, e la ricerca deve
-        // arrendersi invece di occupare un filo all'infinito. Con il tetto vero
-        // ci metterebbe minuti, quindi qui si prova la strada dell'esadecimale
-        // storto, che è l'altro modo in cui questa funzione dice di no.
+        // Tutto zero: nessuna impronta ci sta sotto, e la ricerca si arrende
+        // subito invece di occupare un filo. Il bersaglio quasi impossibile,
+        // che si ferma al tempo, sta in `un_bersaglio_assurdo_si_ferma_al_tempo_massimo`;
+        // qui anche la strada dell'esadecimale storto, che è l'altro modo in
+        // cui questa funzione dice di no.
+        assert_eq!(risolvi("prova", &"00".repeat(32)), None);
         assert_eq!(risolvi("prova", "non esadecimale"), None);
         assert_eq!(risolvi("prova", ""), None);
         assert_eq!(risolvi("prova", "00"), None);

@@ -60,6 +60,7 @@ import {
 import { accorpa } from "./accorpa";
 import { Account } from "./Account";
 import { AggiungiAPlaylist, fraseDellAggiunta } from "./AggiungiAPlaylist";
+import { AggiungiCartella } from "./AggiungiCartella";
 import { ugualiInSuperficie, useArchivio } from "./archivio";
 import { useArtisti } from "./artisti";
 import { useAspetto } from "./aspettoFinestra";
@@ -79,7 +80,7 @@ import { ConfermaSkin } from "./ConfermaSkin";
 import { ConfermaTrasloco } from "./ConfermaTrasloco";
 import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
-import { brani_, durata, nomeArtista, titoloAlbum } from "./formato";
+import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import { Fornitori } from "./Fornitori";
 import {
   Giro,
@@ -105,13 +106,15 @@ import {
   type Artista,
   type Brano,
   type Cancellazione,
+  type EsitoScansione,
   type Ordine,
   type RimozioniDaConfermare,
   type Playlist,
   type VistaBrani,
 } from "./ipc";
-import { conteggiDi, creaLibreria } from "./libreria";
-import { t } from "./lingue";
+import { conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
+import { nomeDiFile } from "./nomeDiFile";
+import { t, tSe } from "./lingue";
 import { Trans } from "./lingue/Trans";
 import { Menu, type Apertura } from "./Menu";
 import {
@@ -129,6 +132,7 @@ import { AnnuncioScansione } from "./parti/AnnuncioScansione";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
+import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
 import { ConImportazioni } from "./parti/Importazioni";
@@ -238,6 +242,42 @@ const NESSUNA_SCELTA: ReadonlySet<number> = new Set();
  */
 const ACCORPA_RICARICHE_MS = 50;
 
+/**
+ * Di quanto si muove il volume con la tastiera: un ventesimo della corsa.
+ *
+ * Venti pressioni da muto a pieno: abbastanza fine da trovare il punto, e
+ * abbastanza grosso da non dover tenere giù il tasto. La curva percettiva sta
+ * nel nucleo, quindi i passi si sentono uguali anche se i numeri non lo sono.
+ */
+const PASSO_VOLUME = 0.05;
+
+/**
+ * Com'è andata una scansione, in una riga per la fascia.
+ *
+ * Le stesse frasi della scheda in Impostazioni › Cartelle e scansione, che
+ * resta il posto dei dettagli — i percorsi delle cartelle mute, i file
+ * illeggibili —: qui i numeri, e le due cose che non devono passare
+ * inosservate, una cartella che non ha risposto e le rimozioni trattenute.
+ */
+function riassuntoScansione(esito: EsitoScansione): string {
+  const parti = [
+    t("settings.scan.result", {
+      inseriti: esito.inseriti,
+      aggiornati: esito.aggiornati,
+      spostati: esito.spostati,
+      tolti: esito.tolti,
+      secondi: numero(esito.durataMs / 1000, 1),
+    }),
+  ];
+  if (esito.annullata) parti.push(t("settings.scan.stopped.strong"));
+  if (esito.radiciSaltate.length > 0) {
+    parti.push(t("settings.scan.skipped.strong", { n: esito.radiciSaltate.length }));
+  }
+  if (esito.rimozioniRinviate > 0) {
+    parti.push(t("settings.scan.held.strong", { n: esito.rimozioniRinviate }));
+  }
+  return parti.join(" · ");
+}
 
 export function App() {
   const [errore, setErrore] = useStatoPresente<Guasto | null>(null);
@@ -252,13 +292,27 @@ export function App() {
    * scansione vuole sapere soltanto **se** ce n'è una (`scansionando`), e il
    * suo avanzamento lo leggono i componenti che lo disegnano (`ConScansione`).
    */
+  /**
+   * Il guasto che la libreria stessa ha messo nella fascia, per identità: una
+   * rilettura nata da un evento toglie questo e nessun altro. Vedi
+   * `dopoLaLettura` in `libreria.ts`.
+   */
+  const guastoLibreria = useRef<Guasto | null>(null);
   const [libreria] = useState(() =>
     creaLibreria(
       { avvio: () => ipc.avvio(), playlistElenco: () => ipc.playlistElenco() },
-      { onErrore: segnalaErrore, onLetta: () => setErrore(null) },
+      {
+        onErrore: (e) => {
+          const guasto = guastoDa(e);
+          guastoLibreria.current = guasto;
+          setErrore(guasto);
+        },
+        onLetta: (tutto) =>
+          setErrore((ora) => dopoLaLettura(ora, guastoLibreria.current, tutto)),
+      },
     ),
   );
-  const { ricarica, ricaricaPlaylist } = libreria;
+  const { ricarica, rileggi, ricaricaPlaylist } = libreria;
   const avvio = useArchivio(libreria.avvio);
   const playlist = useArchivio(libreria.playlist);
   const esito = useArchivio(libreria.esito);
@@ -446,10 +500,16 @@ export function App() {
    */
   const conBrano = useArchivio(riproduzione.archivio, (s) => s.brano !== null);
 
-  /** `avvio` all'apertura: conteggi, cartelle, preferenze. Vedi `libreria.ts`. */
+  /**
+   * `avvio` all'apertura: conteggi, cartelle, preferenze. Vedi `libreria.ts`.
+   *
+   * Con `rileggi` e non con `ricarica`: non è un gesto, e un guasto arrivato
+   * prima della risposta — un ascolto che non si apre, la skin che non si
+   * legge — non deve sparire perché `avvio` è riuscito. Vedi `dopoLaLettura`.
+   */
   useEffect(() => {
-    void ricarica();
-  }, [ricarica]);
+    void rileggi();
+  }, [rileggi]);
 
   /**
    * La skin indossata, quelle installate, l'anteprima e la prova dello Studio:
@@ -756,7 +816,11 @@ export function App() {
   const ricaricaDalNucleo = useRef(() => {});
   useEffect(() => {
     ricaricaDalNucleo.current = () => {
-      void ricarica();
+      // `rileggi` e non `ricarica`: la rilettura nata da un evento toglie solo
+      // il guasto messo dalla libreria. Una scansione a mano fallita manda
+      // `cartelle:cambiate` e poi l'errore, e con `ricarica` la sua fascia
+      // spariva cinquanta millesimi dopo. Vedi `dopoLaLettura`.
+      void rileggi();
       caricaVista();
     };
   });
@@ -795,6 +859,26 @@ export function App() {
    * libreria non è riletta, e quella rilettura `scansiona` la deve aspettare.
    */
   useAscolto("cartelle:cambiate", () => ricaricaAccorpata.chiama());
+
+  /*
+   * Un brano saltato perché non si apriva: lo dice la fascia, con il titolo e
+   * il motivo. Il nucleo riprova il brano dopo quando arriva il suo turno, e se
+   * non si apre per colpa sua passa oltre (`riprova_o_salta` in
+   * `riproduzione/mod.rs`): senza questo avviso la coda scorrerebbe via in
+   * silenzio. Il motivo è la frase del catalogo per il codice, che è la stessa
+   * della fascia d'errore; un errore di prima, ormai superato, si toglie.
+   */
+  useAscolto<{ id: number; titolo: string | null; codice: string }>(
+    "riproduzione:saltato",
+    ({ titolo, codice }) => {
+      riproduzione.scartaErrore();
+      const che = titolo
+        ? t("playback.skipped", { titolo })
+        : t("playback.skipped.unknown");
+      const perche = tSe(`errors.${codice}`, "");
+      setNotizia(perche === "" ? che : `${che} ${perche}`);
+    },
+  );
 
   /*
    * I brani dell'album aperto.
@@ -1161,14 +1245,24 @@ export function App() {
    * domanda in più alla Home da qualunque pagina. Così l'identità resta una, e
    * chiama sempre l'ultima.
    */
-  const primoConferma = useStabile(async (cartelle: string[]) => {
+  const primoConferma = useStabile(async (cartelle: string[]): Promise<boolean> => {
+    // Il `true` dice a `Primo` che le cartelle sono scritte, ed è quel che gli
+    // permette di mostrare «Ascolta» (`tastoPrimo.ts`): se la scrittura
+    // fallisce «Continua» deve restare, anche se intanto una cartella del
+    // cloud ha portato dei brani.
     try {
       await ipc.impostaCartelle(cartelle);
+    } catch (e) {
+      segnalaErrore(e);
+      return false;
+    }
+    try {
       await ricarica();
       await scansiona();
     } catch (e) {
       segnalaErrore(e);
     }
+    return true;
   });
 
   /** Il dialogo di sistema, per chi la musica la tiene altrove. */
@@ -1214,11 +1308,25 @@ export function App() {
     setGemella,
     scegliCartella,
     aggiungiCartelle,
+    aggiungiNuvola,
+    scollegaNuvola,
     trasloca,
     scegliCartellaDownload,
     togliCartella,
     occupate: cartelleOccupate,
   } = useCartelleSorvegliate({ libreria, setNotizia, segnalaErrore });
+
+  /**
+   * La finestrella «Aggiungi una cartella» aperta, e per chi.
+   *
+   * `"primo"` quando la apre il primo avvio: lì una cartella scelta non entra
+   * fra le sorvegliate da sola, ma nell'elenco spuntato della schermata — come
+   * quelle trascinate — e la scrive «Continua». Una del cloud invece il nucleo
+   * la scrive subito (`nuvolaAggiungi` non sa solo «risolvere»), e nell'elenco
+   * entra spuntata lo stesso: «Continua» la riscrive con le altre, e chi la
+   * toglie dall'elenco la toglie davvero.
+   */
+  const [aggiunta, setAggiunta] = useState<"finestra" | "primo" | null>(null);
 
   /**
    * Sceglie un file di playlist da importare.
@@ -1248,14 +1356,17 @@ export function App() {
    * Scrive una playlist in un file.
    *
    * Il formato lo decide l'estensione che l'utente scrive nel dialogo, e il
-   * nome proposto è quello della playlist: `defaultPath` con l'estensione
+   * nome proposto è quello della playlist, ripulito di quel che Windows non
+   * accetta in un nome di file (`nomeDiFile`): `defaultPath` con l'estensione
    * dentro è ciò che fa comparire «Serata.m3u8» già scritto, invece di un campo
    * vuoto in cui va indovinata anche l'estensione.
    */
   const esportaPlaylist = async (p: Playlist) => {
     try {
       const scelta = await save({
-        defaultPath: `${p.name}.m3u8`,
+        // Il nome ripulito, non quello della playlist: «AC/DC» diventava la
+        // cartella «AC» e il file «DC.m3u8». Vedi `nomeDiFile`.
+        defaultPath: `${nomeDiFile(p.name)}.m3u8`,
         filters: [
           { name: "M3U", extensions: ["m3u8", "m3u"] },
           { name: "PLS", extensions: ["pls"] },
@@ -1263,10 +1374,22 @@ export function App() {
         ],
       });
       if (typeof scelta !== "string") return;
-      const quanti = await ipc.playlistEsporta(p.id, scelta);
-      // Una chiave sola: `.one` la sceglie il motore delle lingue, col
-      // numero vero (non già formattato, o la forma non si sceglierebbe).
-      setNotizia(t("playlist.exported", { n: quanti, dove: scelta }));
+      const fatta = await ipc.playlistEsporta(p.id, scelta);
+      // I brani del cloud e dei cataloghi non entrano nel file (un altro
+      // lettore non saprebbe aprirli): se ce n'erano si dice quanti, o una
+      // playlist tutta del cloud uscirebbe come un file pieno. Il numero che
+      // sceglie la forma (`.one`, `.uno`) è `n`, il numero vero e non già
+      // formattato; i brani scritti, nella frase con due numeri, arrivano già
+      // detti da `brani_`, come in `delete.done.back`.
+      setNotizia(
+        fatta.lasciatiFuori > 0
+          ? t("playlist.exported.leftOut", {
+              brani: brani_(fatta.scritti),
+              dove: scelta,
+              n: fatta.lasciatiFuori,
+            })
+          : t("playlist.exported", { n: fatta.scritti, dove: scelta }),
+      );
     } catch (e) {
       segnalaErrore(e);
     }
@@ -1311,6 +1434,10 @@ export function App() {
       const risultato = await ipc.scansiona();
       libreria.esito.scrivi(risultato);
       setRimozioniInAttesa(risultato.daConfermare);
+      // Com'è andata, ovunque si sia: prima lo diceva solo Impostazioni ›
+      // Cartelle e scansione, e una scansione partita dallo stato vuoto finiva
+      // in silenzio — anche quando una cartella del NAS non aveva risposto.
+      setNotizia(riassuntoScansione(risultato));
       await ricarica();
       await caricaVista();
     } catch (e) {
@@ -1485,6 +1612,9 @@ export function App() {
         }),
         mostraNellaCartella: (id) => {
           ipc.branoMostraNellaCartella(id).catch(segnalaErrore);
+        },
+        apriSulWeb: (id) => {
+          ipc.branoApriSulWeb(id).catch(segnalaErrore);
         },
         apriPagina: (id) => {
           ipc.branoApriPagina(id).catch(segnalaErrore);
@@ -1951,6 +2081,23 @@ export function App() {
       vaiA: (ms) => {
         ipc.vaiA(ms).catch(segnalaErrore);
       },
+      precedente: () => {
+        ipc.precedente().catch(segnalaErrore);
+      },
+      prossimo: () => {
+        ipc.prossimo().catch(segnalaErrore);
+      },
+      // Letto al tasto, come la durata: un passo da dove il volume è adesso, e
+      // il silenziamento si toglie, come quando si trascina il cursore.
+      volume: (su) => {
+        const { volume } = riproduzione.archivio.leggi();
+        const dopo = Math.min(1, Math.max(0, volume + (su ? PASSO_VOLUME : -PASSO_VOLUME)));
+        ipc.volume(dopo, false).catch(segnalaErrore);
+      },
+      muto: () => {
+        const { volume, muto } = riproduzione.archivio.leggi();
+        ipc.volume(volume, !muto).catch(segnalaErrore);
+      },
       inRiproduzione: () => {
         if (conBrano) setGrande((prima) => !prima);
       },
@@ -2110,10 +2257,12 @@ export function App() {
   /**
    * Il guasto in fascia si può riprovare.
    *
-   * Solo quello che viene dal lettore: `errore` è già una stringa — di lui non
-   * resta il codice, e senza codice non si sa se riprovare ha senso — mentre
-   * `riproduzione.errore` arriva intero dal nucleo. È anche l'unico dei due che
-   * abbia un gesto da offrire: la cartella di rete che sparisce a metà brano.
+   * Solo quello che viene dal lettore. `errore` è un `Guasto` e porta il
+   * codice (la fascia lo usa per `azioneDelGuasto`), ma non `retryable`, che
+   * `guastoDa` non conserva: di lui non si sa se riprovare ha senso, mentre
+   * `riproduzione.errore` arriva intero dal nucleo e `eRitentabile` lo legge.
+   * Ed è l'unico dei due che abbia un gesto da offrire, `riprovaCorrente`, che
+   * riguarda il brano corrente: la cartella di rete che sparisce a metà brano.
    */
   const ritentabile = errore === null && eRitentabile(riproduzione.errore);
 
@@ -2135,8 +2284,13 @@ export function App() {
    * scansioni in volo — perché l'oggetto resti lo stesso e il `memo` di là
    * serva a qualcosa.
    */
-  const aggiungiCartella = useStabile(() => void scegliCartella());
+  // La finestrella, e non più il dialogo di sistema: da lì «Questo PC» lo apre
+  // comunque, accanto ai servizi del cloud.
+  const aggiungiCartella = useStabile(() => setAggiunta("finestra"));
   const togliCartellaStabile = useStabile((c: string) => void togliCartella(c));
+  const scollegaContoStabile = useStabile(
+    (conto: string, togli: boolean) => void scollegaNuvola(conto, togli),
+  );
   const cartellaDownload = useStabile(() => void scegliCartellaDownload());
   const scansionaStabile = useStabile(() => void scansiona());
   const importaDatabase = useStabile(() => void scegliDatabase());
@@ -2146,6 +2300,7 @@ export function App() {
       onProfiloImportato: dopoProfilo,
       onAggiungiCartella: aggiungiCartella,
       onTogliCartella: togliCartellaStabile,
+      onScollegaConto: scollegaContoStabile,
       onScegliCartellaDownload: cartellaDownload,
       onScansiona: scansionaStabile,
       onCreaTema: () => {
@@ -2168,6 +2323,7 @@ export function App() {
       dopoProfilo,
       aggiungiCartella,
       togliCartellaStabile,
+      scollegaContoStabile,
       cartellaDownload,
       scansionaStabile,
       importaDatabase,
@@ -2557,6 +2713,7 @@ export function App() {
             <SchermataImportazioni
               importazioni={importazioni}
               onIncollaLink={() => setImportandoLink(true)}
+              onApriArchivio={() => setImportandoAccount(true)}
             />
           )}
         </ConImportazioni>
@@ -2612,7 +2769,10 @@ export function App() {
           icona="i-folder"
           titolo={t("empty.noFolders.title")}
           testo={t("empty.noFolders.body")}
-          azione={{ etichetta: t("empty.noFolders.cta"), fai: () => void scegliCartella() }}
+          azione={{
+            etichetta: t("empty.noFolders.cta"),
+            fai: () => setAggiunta("finestra"),
+          }}
         />
       );
     }
@@ -2773,6 +2933,7 @@ export function App() {
         <Home
           casa={casa}
           settimana={settimana}
+          onAggiungiCartella={aggiungiCartella}
           onSuona={(elenco, indice) => void suonaDa(elenco, indice).catch(segnalaErrore)}
           onApriRaccolta={(raccolta) => {
             void (async () => {
@@ -2828,6 +2989,7 @@ export function App() {
           radici={avvio.cartelle}
           onMenu={setMenu}
           onErrore={segnalaErrore}
+          onAggiungiCartella={aggiungiCartella}
           /* Il pannello dei brani della cartella è l'elenco di sempre, e si
              comporta come gli altri: stesso menù, stessi cuori e stelle, la
              stessa finestrella delle playlist. */
@@ -2996,6 +3158,55 @@ export function App() {
     setErrore(null);
     riproduzione.scartaErrore();
   };
+  /**
+   * Il gesto che porta alla soluzione del guasto in fascia, quando la frase ne
+   * nomina una.
+   *
+   * Le frasi del catalogo dicono «ricollega l'account nelle Impostazioni», «fai
+   * una scansione», e la fascia offriva soltanto «Riprova», e solo per i guasti
+   * ritentabili: la strada toccava cercarla a chi leggeva. Il codice non porta
+   * parametri — non dice **quale** conto —, quindi il gesto porta alla scheda
+   * dei conti, dove ognuno ha il suo «Ricollega…»; l'avviso dei conti
+   * (`AvvisoConti`) invece il conto lo sa, e lo nomina.
+   */
+  const azioneDelGuasto = (
+    codice: string | null,
+  ): { etichetta: string; onClick: () => void } | undefined => {
+    switch (codice) {
+      case "cloud.authExpired":
+      case "cloud.notConnected":
+        return {
+          etichetta: t("errors.action.cloudAccounts"),
+          onClick: () => {
+            chiudiErrore();
+            vaiA("impostazioni");
+            setSezione("cartelle");
+          },
+        };
+      // Un file che non si apre arriva come `playback.sourceUnavailable`: la
+      // scansione ritrova un file spostato, toglie quello sparito, e dice
+      // quale cartella non ha risposto.
+      case "fs.notFound":
+      case "playback.sourceUnavailable":
+        return {
+          etichetta: t("settings.roots.scan"),
+          onClick: () => {
+            chiudiErrore();
+            void scansiona();
+          },
+        };
+      case "fs.networkUnavailable":
+        return {
+          etichetta: t("errors.action.folders"),
+          onClick: () => {
+            chiudiErrore();
+            vaiA("cartelle");
+          },
+        };
+      default:
+        return undefined;
+    }
+  };
   const notizieDiFascia = (
     <Fascia
       notizia={notizia}
@@ -3010,6 +3221,7 @@ export function App() {
             }
           : undefined
       }
+      azione={azioneDelGuasto(guasto?.codice ?? null)}
       onChiudiErrore={chiudiErrore}
     />
   );
@@ -3084,7 +3296,8 @@ export function App() {
             {(scansione) => (
               <Primo
                 onCartelle={primoConferma}
-                onScegliCartella={primoScegli}
+                scritte={avvio?.cartelle ?? []}
+                onScegliCartella={() => setAggiunta("primo")}
                 scansione={scansione}
                 brani={numeri?.tracks ?? 0}
                 esito={esito}
@@ -3096,6 +3309,37 @@ export function App() {
             )}
           </ConScansione>
         )}
+        {/* Dal primo avvio la finestrella sta in un guscio che la alza sopra di
+            lui: `.primo` copre la finestra a uno strato più alto del velo delle
+            finestrelle, e senza il guscio si aprirebbe dietro. Fuori dal
+            primo avvio il guscio non c'è, e la finestrella resta sotto i toast
+            come tutte le altre. */}
+        {aggiunta !== null &&
+          (aggiunta === "primo" ? (
+            <div className="sopra-primo">
+              <AggiungiCartella
+                onQuestoPC={async () => {
+                  const scelta = await primoScegli();
+                  if (scelta === null) return false;
+                  setLasciateAlPrimo((prima) => [...new Set([...prima, scelta])]);
+                  return true;
+                }}
+                onUsa={async (conto, id, nomi) => {
+                  const nuove = await aggiungiNuvola(conto, id, nomi);
+                  setLasciateAlPrimo((prima) => [...new Set([...prima, ...nuove])]);
+                }}
+                onChiudi={() => setAggiunta(null)}
+              />
+            </div>
+          ) : (
+            <AggiungiCartella
+              onQuestoPC={scegliCartella}
+              onUsa={async (conto, id, nomi) => {
+                await aggiungiNuvola(conto, id, nomi);
+              }}
+              onChiudi={() => setAggiunta(null)}
+            />
+          ))}
         <Impaginazione
           albero={skinAttiva?.layout.shell ?? null}
           contesto={contesto}
@@ -3156,6 +3400,10 @@ export function App() {
                         setSezione("dati");
                       }}
                     />
+                    {/* Subito dopo: un conto cloud da ricollegare è l'altro
+                        guasto che dura finché qualcuno non fa qualcosa. Vedi
+                        `parti/AvvisoConti.tsx`. */}
+                    <AvvisoConti onNotizia={setNotizia} />
                     {/* Qui e non solo nella terza colonna: la colonna si può
                         chiudere, e il lettore flottante sparisce quando non c'è un
                         brano — cioè proprio nei due casi in cui il dispositivo
@@ -3439,7 +3687,7 @@ export function App() {
               setCreandoTema(false);
               setBaseTema(null);
             }}
-            onCrea={(dati) => void creaTema(dati)}
+            onCrea={creaTema}
           />
         )}
 
@@ -3459,6 +3707,10 @@ export function App() {
               void ricaricaSkin();
               rileggiSkin();
             }}
+            // Per un ripristino che finisce dopo che la finestrella è stata
+            // chiusa con Escape: l'esito arriva qui invece che a nessuno.
+            onErrore={segnalaErrore}
+            onNotizia={setNotizia}
           />
         )}
 
@@ -3474,11 +3726,22 @@ export function App() {
           {(scansione) => (
             <>
               <AnnuncioScansione scansione={scansione} />
+              {/* Nascosto solo in Impostazioni › Cartelle e scansione, che ha
+                  la sua barra: prima spariva in tutte le Impostazioni, e chi
+                  apriva «Aspetto» a scansione in corso non la vedeva da
+                  nessuna parte. */}
               <PilaToast
-                scansione={vista !== "impostazioni" ? scansione : null}
+                scansione={
+                  vista !== "impostazioni" || sezione !== "cartelle" ? scansione : null
+                }
                 onApriScansione={() => {
                   vaiA("impostazioni");
                   setSezione("cartelle");
+                }}
+                onAnnullaScansione={() => {
+                  // Come «Annulla» nelle Impostazioni: la barra resta finché il
+                  // nucleo non risponde, alla fine del lotto in corso.
+                  ipc.annullaScansione().catch(segnalaErrore);
                 }}
               >
                 {/* La coda segue chi se ne va, per la ragione scritta sopra — e a

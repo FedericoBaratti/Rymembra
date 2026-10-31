@@ -1,0 +1,1102 @@
+/* Il lettore, l'equalizzatore e il pannello della coda. Fra il titolo della coda e
+   `.pannello-coda` sta la chat dello Studio, dov'era: spostarla cambierebbe la
+   cascata. Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` conta. */
+
+/* ── il lettore ──────────────────────────────────────────────────────────── */
+/*
+ * Galleggiante, perché è la forma che la skin dichiara (`"player": "floating"`
+ * in `plain.json`). Le misure vengono dai token — `--player-h`, `--player-gap`,
+ * `--shadow-player` — e non da numeri scritti qui: sono esattamente i tre valori
+ * che una skin deve poter cambiare, ed erano già nel registro prima che questa
+ * barra esistesse.
+ */
+.lettore {
+  position: fixed;
+  /* Comincia **dopo** la navigazione, non dal bordo della finestra: a sinistra
+     c'è la barra, e in fondo alla barra c'è «Impostazioni». */
+  left: calc(var(--nav-w) + var(--player-gap));
+  right: var(--player-gap);
+  bottom: var(--player-gap);
+  height: var(--player-h);
+  display: grid;
+  /* I minimi erano tre pavimenti scritti a occhio — 180, 320, 140 — che fanno
+     640, più i due `gap` da 22 e i due `padding` da 22: settecentoventotto. La
+     finestra non scende sotto 880 (`minWidth` in `tauri.conf.json`), e con la
+     navigazione aperta a 240 alla barra ne restano 612. La griglia traboccava di
+     centosedici pixel, e quel che usciva era l'ultima colonna: muto e cursore
+     del volume oltre il bordo destro.
+
+     `min-content` al posto dei tre numeri, e non è una resa: il pavimento che
+     conta è quello del contenuto, ed è l'unico che non può essere sbagliato. Una
+     colonna non scende sotto quel che ci sta dentro — la miniatura, la fila dei
+     tasti di trasporto, i quattro bottoni del suono — e sopra quel pavimento le
+     tre frazioni si dividono lo spazio esattamente come prima, quindi su una
+     finestra larga la barra non cambia di un pixel e il trasporto resta al
+     centro. Quel che cambia è che a 612 pixel sta dentro invece di uscire. */
+  grid-template-columns:
+    minmax(min-content, 1fr)
+    minmax(min-content, 2fr)
+    minmax(min-content, 1fr);
+  align-items: center;
+  gap: var(--spazio-4);
+  padding: 0 var(--spazio-4);
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  /* Niente `--filo` qui: `shadow.player` porta già il suo bordo alto interno,
+     ed è un token — cioè una cosa che la skin ha deciso. Aggiungerne un secondo
+     lo raddoppierebbe. */
+  box-shadow: var(--shadow-player);
+  /* Un contenitore per sé, perché quel che si ritira deve dipendere dalla
+     larghezza che **la barra** ha davvero e non da quella della finestra: fra le
+     due c'è la navigazione, che si apre e si chiude di 172 pixel senza che la
+     finestra cambi misura. Un `@media` si accorgerebbe della seconda e non della
+     prima, che è lo stesso errore per cui `.elenco` usa `@container`.
+
+     `inline-size` e non `size`: l'altezza viene da `--player-h`, non dal
+     contenuto. Il contenimento di disposizione che porta con sé non cambia nulla
+     qui — la barra è già un contesto d'impilamento (`position: fixed`), e
+     `inline-size` non contiene il **disegno**, quindi il pannello
+     dell'equalizzatore continua a uscirle da sopra. */
+  container: lettore / inline-size;
+}
+
+/* Sotto i settecentosessanta pixel di barra si ritira il cursore del volume, e
+   resta il tasto muto. Fra le cose che stanno in questa riga è la sola che si
+   può togliere senza togliere un comando: muto continua a funzionare, e il
+   livello lo si ritrova appena la barra ha spazio. Troncare il titolo del brano
+   o nascondere un tasto di trasporto sarebbe peggio di tutti e due.
+
+   Settecentosessanta non è un numero tondo preso a caso: è la soglia che separa
+   i due casi della finestra più piccola. A `minWidth: 880` con la navigazione
+   aperta la barra è larga 880 − 240 − 28 = 612, e con la navigazione richiusa
+   880 − 68 − 28 = 784. Cioè il cursore si ritira quando la barra laterale è
+   aperta su una finestra stretta, e torna richiudendola — che è il gesto che chi
+   ha poco spazio fa già per altri motivi, e l'unica via di ritorno che ci sia:
+   il volume non ha né scorciatoia da tastiera né rotella sull'icona. */
+@container lettore (max-width: 760px) {
+  .lettore .suono .scorrimento {
+    display: none;
+  }
+}
+
+/* La seconda tappa, che prima non serviva e adesso sì.
+ *
+ * Finché lo spazio lo toglieva solo la finestra, sotto la barra c'era un
+ * pavimento: `minWidth: 880` più la navigazione aperta dà 612 pixel di barra, e
+ * 612 è sopra la soglia qui sotto. Nessuna finestra ha mai potuto disegnare una
+ * barra più stretta di così, quindi una tappa sola bastava. L'ingrandimento
+ * toglie quel pavimento: a 1,25 la stessa finestra di 880 disegna in 704 pixel
+ * CSS, e alla barra ne restano 704 − 240 − 28 = 436. A 1,5 sono 347. Il
+ * `minWidth` non protegge più niente, perché non è più lui a decidere quanti
+ * pixel CSS ci sono.
+ *
+ * Il pavimento vero della griglia si conta, e sono tutti minimi di contenuto:
+ * `.ora` non scende sotto miniatura più cuore (52 + 32 e i due `gap`, ≈ 116),
+ * `.comandi` non scende sotto la fila del trasporto (quattro tasti da 32, il
+ * grande da 40 e quattro `gap`, ≈ 200), `.suono` — già ritirato il cursore del
+ * volume — non scende sotto i suoi quattro tasti (≈ 152). Con i due `gap` da 22
+ * e i due `padding` da 22 fa **≈ 556**, ed è lì che il gruppo del suono comincia
+ * a uscire dal bordo destro. Cinquecentosessanta è quel numero con quattro pixel
+ * di margine: la tappa scatta appena **prima** che la griglia trabocchi, non
+ * dopo.
+ *
+ * **Cosa si ritira, e perché proprio quello.** Il criterio è già scritto sulla
+ * tappa dei 760 e vale ancora: si può togliere un comando solo se la cosa che
+ * fa resta raggiungibile. Dei quattro tasti del suono, tre non lo passano — il
+ * tasto della colonna è l'unica via per riaprire la terza colonna, quello della
+ * coda è l'unica via per riaprire la coda (il giro guidato lo dice a parole:
+ * «da chiusa la coda si riapre dal tasto nella barra del lettore»), e muto è
+ * quel che è rimasto quando il cursore se n'è andato. L'equalizzatore invece ha
+ * una seconda casa **completa**: la scheda «Equalizzatore» in Impostazioni è lo
+ * stesso controllo con più spazio — `[data-taglia="pagina"]` è quella — e la
+ * ricerca delle impostazioni ci porta scrivendo «bassi» o «curva». Ritirarlo
+ * qui non toglie l'equalizzatore a nessuno: toglie la scorciatoia, che è
+ * esattamente quel che ha fatto la tappa dei 760 al cursore del volume.
+ *
+ * Si ritira il guscio `.con-pannello` e non il solo tasto, perché il pannello
+ * appeso gli sta dentro: uno aperto a barra larga e poi stretta sparisce
+ * insieme al suo tasto, e torna com'era appena c'è di nuovo posto. È lo stesso
+ * comportamento del cursore del volume, e per la stessa ragione — quel che si
+ * ritira non si perde. */
+@container lettore (max-width: 560px) {
+  .lettore .suono .con-pannello {
+    display: none;
+  }
+}
+
+.lettore .ora {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  min-width: 0;
+}
+.lettore .ora .miniatura {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-3);
+  object-fit: cover;
+  flex: none;
+}
+/* `min-width: 0` su un figlio di flex non è superstizione: senza, la larghezza
+   minima è quella del contenuto, il titolo lungo non si accorcia e spinge i
+   comandi fuori dalla barra invece di andare in ellissi.
+
+   Non basta però alla **griglia** della barra: la sua prima colonna non scende
+   sotto il `min-content` di `.ora`, e il `min-content` di una riga che non va a
+   capo è la riga intera — un artista lungo («Needle · Songs Your Mother Never
+   Sang You») allargava la colonna e spingeva fuori dal bordo destro
+   equalizzatore e volume, a una finestra di 900 pixel. `contain: inline-size`
+   toglie a titolo e autore la loro misura intrinseca, e `flex: 1` dà loro lo
+   spazio che la colonna ha davvero: i puntini fanno il resto. */
+.lettore .chi {
+  flex: 1;
+  min-width: 0;
+  contain: inline-size;
+}
+.lettore .chi .nome,
+.lettore .chi .autore {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lettore .chi .nome {
+  font-weight: 550;
+  user-select: text;
+}
+.lettore .chi .autore {
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.lettore .comandi {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-1);
+  min-width: 0;
+}
+
+.lettore .tasti {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+
+.tasto {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.tasto:hover:not(:disabled) {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+.tasto[aria-pressed="true"] {
+  color: var(--accent);
+}
+.tasto.grande {
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  /* Come per `.bottone.primario`: il testo sopra l'accento è il fondo
+     dell'applicazione, così una skin chiara non deve dichiarare un token in
+     più per avere un triangolo leggibile. */
+  color: var(--color-surface-0);
+  font-size: 16px;
+}
+.tasto.grande:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--color-surface-0);
+  filter: brightness(1.08);
+}
+/* Un tasto spento si vede spento, e al passaggio non si accende. Fino alla
+   3.1.0 lo era solo a schermo intero (`.in-riproduzione .comandi`), perché
+   altrove un tasto del trasporto o della coda non si spegneva mai; adesso lo
+   spegne una sessione — il casuale per tutti, il trasporto e la coda per chi
+   segue senza averli avuti da chi ospita — e un tasto che sembra acceso e non
+   risponde insegna che il lettore è rotto. Il perché è nel `title`. */
+.tasto:disabled {
+  color: var(--color-text-3);
+  opacity: 0.55;
+  cursor: default;
+}
+.tasto.grande:disabled {
+  color: var(--color-surface-0);
+}
+/* Il «1» di «ripeti questo brano»: un esponente, non un'icona diversa — il
+   gesto è lo stesso e cambiarne il disegno costringerebbe a riconoscerne due. */
+.tasto .modo {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.lettore .cursore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 100%;
+}
+.lettore .tempo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  /* Larghezza fissa: senza, il passaggio da «0:59» a «1:00» allargherebbe
+     l'etichetta di un carattere e farebbe sobbalzare la barra ogni minuto. */
+  width: 40px;
+  text-align: center;
+  flex: none;
+}
+
+/* La riga dei dati tecnici sotto il cursore. `flex: none` e non il `0 0 100%`
+   di `.formato`: là il genitore è una riga, qui è una colonna, e una base del
+   cento per cento in colonna vorrebbe dire alta quanto la barra. Un gradino
+   sotto la colonna, perché la barra è alta 92 pixel e ci stanno già il
+   trasporto e il cursore. */
+.lettore .lettore-formato {
+  flex: none;
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--color-text-3);
+  text-align: center;
+  /* La riga dei dati del file non decide quanto è larga la colonna del
+     trasporto: senza, «FLAC · 44,1 kHz · 24-bit · Stereo · 1058 kbps» teneva
+     la colonna larga quanto lei, e su una barra stretta a pagare era il titolo
+     del brano, ridotto a cinque lettere. Come per la riga della sessione, più
+     sotto: nessuna misura sua, tutta la larghezza della colonna, i puntini. */
+  contain: inline-size;
+  align-self: stretch;
+}
+
+.lettore .suono {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  justify-content: flex-end;
+}
+.lettore .suono .scorrimento {
+  max-width: 110px;
+}
+
+/*
+ * Il cursore, come `input[type=range]`.
+ *
+ * Un elemento nativo e non un `div` con dei gestori: si muove con le frecce, ha
+ * un ruolo che uno screen reader conosce e un valore che annuncia da solo. Le
+ * stesse cose su un `div` sarebbero cinquanta righe di tastiera da mantenere.
+ */
+.scorrimento {
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+.scorrimento::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 99px;
+  /* Il riempimento è un gradiente a scalino su `--avanzamento`, che React
+     riscrive come proprietà custom: una sola dichiarazione da invalidare invece
+     di ricomporre la regola a ogni fotogramma. */
+  background: linear-gradient(
+    90deg,
+    var(--accent) var(--avanzamento, 0%),
+    var(--scrubber-rest) var(--avanzamento, 0%)
+  );
+  /* Il solco: quattro pixel di pista senza profondità sono una riga disegnata,
+     con l'incavo sono un binario in cui la parte suonata si è riempita. */
+  box-shadow: inset 0 1px 1px var(--incavo);
+}
+.scorrimento::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--color-text-1);
+  box-shadow: 0 0 calc(var(--scrubber-glow) * 1px) var(--accent-glow);
+  /* Compare al sorvolo: mentre si ascolta la barra è un'informazione, non un
+     comando, e una pallina ferma in mezzo la fa sembrare da toccare. */
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.scorrimento:hover::-webkit-slider-thumb,
+.scorrimento:focus-visible::-webkit-slider-thumb {
+  opacity: 1;
+}
+.scorrimento:disabled {
+  cursor: default;
+}
+.scorrimento:disabled::-webkit-slider-thumb {
+  opacity: 0;
+}
+
+/* ── l'equalizzatore ─────────────────────────────────────────────────────── */
+/*
+ * Due taglie, un blocco solo di regole: `--eq-h` è l'unica cosa che cambia
+ * davvero fra il pannello della barra e la scheda in Impostazioni, e tenerla in
+ * una proprietà custom evita di riscrivere la griglia due volte.
+ */
+.equalizzatore {
+  --eq-h: 96px;
+  /* Le due misure del cursore verticale. Stanno qui e non a numero dentro le
+     regole perché una dipende dall'altra: vedi «I quattro pixel di scarto». */
+  --eq-binario: 4px;
+  --eq-pallina: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+}
+.equalizzatore[data-taglia="pagina"] {
+  --eq-h: 140px;
+}
+/* Spento resta visibile e leggibile: nascondere la curva impedirebbe di
+   prepararla prima di accendere, che è quel che si fa quando si confronta. */
+.equalizzatore[data-spento] .eq-bande {
+  opacity: 0.5;
+}
+
+.eq-testa {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.eq-preset {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.eq-preset:focus {
+  border-color: var(--accent);
+}
+
+/* L'elenco delle lingue, quando sono troppe per le linguette.
+   Stesso vestito del preset dell'equalizzatore: è lo stesso oggetto — un elenco
+   corto di scelte che non merita una finestrella — e dargliene uno suo
+   vorrebbe dire due controlli quasi uguali che le skin dovrebbero vestire due
+   volte. */
+.scegli-lingua {
+  min-width: 180px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.scegli-lingua:focus {
+  border-color: var(--accent);
+}
+
+.eq-bande {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--spazio-1);
+}
+.eq-banda {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.eq-hz,
+.eq-db {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eq-db {
+  color: var(--color-text-2);
+}
+
+/*
+ * Il cursore verticale.
+ *
+ * `writing-mode` e non `appearance: slider-vertical`: la seconda è la vecchia
+ * proprietà proprietaria, tolta da Chromium a favore della prima. `direction:
+ * rtl` è ciò che mette il minimo in basso — senza, i decibel crescerebbero
+ * verso il pavimento.
+ *
+ * # I quattro pixel di scarto della pallina
+ *
+ * In verticale gli assi logici si scambiano: l'asse **in linea** è quello
+ * lungo il binario, quello di **blocco** è orizzontale. La pallina scorre
+ * quindi nell'asse in linea, e nell'altro il motore la appoggia al **bordo**
+ * del binario invece che al suo centro — una pallina da dodici su un binario
+ * da quattro finisce così due terzi fuori, tutta dalla stessa parte.
+ *
+ * Si vedeva: le dieci palline stavano quattro pixel a destra dei numeri della
+ * loro colonna, mentre il binario, l'input e le etichette erano tutti centrati
+ * — cioè l'unica cosa storta era quella che si guarda per prima.
+ *
+ * I due margini negativi lo dicono a mano, in coordinate **fisiche** perché
+ * `margin-inline` sarebbe l'asse in cui il binario è lungo, e valgono metà
+ * della differenza fra le due misure. Le misure stanno in due variabili apposta
+ * per questo: scritte a numero, cambiarne una qui sotto rimetterebbe la pallina
+ * fuori asse senza che niente lo dica.
+ */
+.eq-cursore {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+  height: var(--eq-h);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+.eq-cursore::-webkit-slider-runnable-track {
+  width: var(--eq-binario);
+  border-radius: 99px;
+  /* Il segno dello zero disegnato dentro il fondo del binario: una banda ferma
+     si riconosce perché la pallina sta sulla riga, e ritrovare il centro non
+     richiede di leggere un numero. */
+  background: linear-gradient(
+    to top,
+    var(--scrubber-rest) calc(50% - 1px),
+    var(--accent) calc(50% - 1px),
+    var(--accent) calc(50% + 1px),
+    var(--scrubber-rest) calc(50% + 1px)
+  );
+}
+.eq-cursore::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--eq-pallina);
+  height: var(--eq-pallina);
+  /* Metà della differenza, per parte: vedi il commento qui sopra. */
+  margin-left: calc((var(--eq-binario) - var(--eq-pallina)) / 2);
+  margin-right: calc((var(--eq-binario) - var(--eq-pallina)) / 2);
+  border-radius: 50%;
+  background: var(--color-text-1);
+  box-shadow: 0 0 calc(var(--scrubber-glow) * 1px) var(--accent-glow);
+}
+/* Al contrario dello scrubber, qui la pallina resta sempre visibile: là era
+   un'informazione da leggere, qui è la manopola da afferrare. */
+.eq-cursore:focus-visible {
+  outline: none;
+}
+.eq-cursore:focus-visible::-webkit-slider-thumb {
+  background: var(--accent);
+}
+
+.eq-salva {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.eq-salva .campo {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.eq-mie {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.eq-mie li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px var(--spazio-2);
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  font-size: 12px;
+}
+
+/* Il pannello che si apre dalla barra. Ancorato al tasto e non alla finestra:
+   così resta attaccato all'icona anche quando la barra cambia larghezza. */
+.con-pannello {
+  position: relative;
+  display: flex;
+  z-index: var(--strato-pannello);
+}
+.con-pannello .tasto[data-acceso] {
+  color: var(--accent);
+}
+.pannello-eq {
+  position: absolute;
+  bottom: calc(100% + var(--spazio-3));
+  /* A destra del tasto sborderebbe: il tasto sta già in fondo alla barra. */
+  right: -8px;
+  width: 380px;
+  max-width: calc(100vw - var(--spazio-4) * 2);
+  padding: var(--spazio-3);
+  background: var(--color-surface-3);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--filo), var(--shadow-3);
+}
+
+/* ── il pannello della coda ──────────────────────────────────────────────── */
+/* Fissato come il lettore e allineato ai suoi margini: si apre sopra il
+   contenuto invece di restringerlo, così l'elenco che si stava guardando non
+   si riflow-a sotto le dita mentre si trascina un brano nella coda. */
+/*
+ * ── Studio · la chat ────────────────────────────────────────────────────────
+ *
+ * Un cassetto a destra, nella sua colonna della griglia dello Studio 3
+ * (`.studio3[data-chat]`): il resto si **restringe** invece di essere coperto,
+ * perché accanto c'è la tela — cioè esattamente la cosa che si sta giudicando —
+ * e coprirla a metà renderebbe inutile la risposta che ci si legge dentro.
+ */
+.chat-studio {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-surface-1);
+}
+
+.testa-chat {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.testa-chat strong {
+  font-size: 12.5px;
+}
+
+.nota-chat {
+  margin: 0;
+  padding: 6px var(--spazio-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  border-bottom: 1px solid var(--hairline);
+  overflow-wrap: anywhere;
+}
+
+/* La conversazione è l'unica parte che scorre: la testata resta, e il campo in
+   cui si scrive resta — un campo che scappa in fondo alla pagina mentre la
+   risposta arriva è il modo di far perdere il segno a chi stava scrivendo. */
+.chat-conversazione {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spazio-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+
+.chat-messaggio {
+  padding: var(--spazio-2) var(--spazio-3);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+  /* Il testo di un modello arriva con i suoi a capo e i suoi blocchi di codice:
+     `pre-wrap` li tiene senza costringere a un renderer di markdown. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Quel che si è scritto sta a destra e in accento tenue: è la convenzione di
+   ogni chat, e senza di essa una conversazione lunga diventa un muro unico. */
+.chat-messaggio.mio {
+  align-self: flex-end;
+  max-width: 88%;
+  background: color-mix(in srgb, var(--accent) 18%, var(--color-surface-2));
+}
+
+/* Il ragionamento di un modello che pensa prima di rispondere.
+
+   Sta dentro la battuta e non accanto perché è la stessa voce: quel che cambia
+   è il peso, non chi parla. Chiuso di suo — un ragionamento è lungo dieci volte
+   la risposta che giustifica, e aprire il pannello su un muro di testo che
+   nessuno ha chiesto renderebbe illeggibile la conversazione. Mentre arriva,
+   invece, è aperto e mostra solo la coda: lì serve come prova che il modello
+   sta ancora scrivendo, ed è l'unica cosa che si abbia da guardare finché la
+   prima parola della risposta non arriva. */
+.chat-pensiero {
+  margin: 0 0 var(--spazio-2);
+  padding: var(--spazio-1) var(--spazio-2);
+  border-left: 2px solid var(--hairline);
+  color: var(--color-text-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-pensiero summary {
+  cursor: pointer;
+  color: var(--color-text-2);
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  list-style: none;
+}
+.chat-pensiero summary::marker,
+.chat-pensiero summary::-webkit-details-marker {
+  display: none;
+}
+.chat-pensiero summary::before {
+  content: "› ";
+}
+.chat-pensiero[open] summary::before {
+  content: "⌄ ";
+}
+.chat-pensiero.vivo {
+  margin-bottom: var(--spazio-1);
+  max-height: 7.5em;
+  overflow: hidden;
+  /* La coda è la parte che conta: il testo cresce verso il basso e il bordo
+     alto sfuma, così quel che si legge è sempre l'ultima riga scritta. */
+  mask-image: linear-gradient(to bottom, transparent, #000 2.5em);
+}
+.chat-pensiero.vivo strong {
+  display: block;
+  color: var(--color-text-2);
+  font-weight: 500;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+}
+
+.chat-vuota {
+  margin: 0;
+  padding: var(--spazio-3);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+
+.chat-proposta {
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-0);
+  padding: var(--spazio-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.chat-proposta .riassunto {
+  font-size: 11.5px;
+  color: var(--color-text-2);
+}
+/* Il confronto è alto al massimo un terzo del pannello: una proposta da
+   quaranta righe non deve spingere fuori vista i due bottoni con cui la si
+   accetta o la si rifiuta. */
+.chat-proposta .differenze {
+  margin: 0;
+  max-height: 30vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre;
+}
+.chat-proposta .differenze code {
+  font: inherit;
+}
+.chat-proposta .scartate {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warning);
+}
+
+.chat-scrivi {
+  padding: var(--spazio-3);
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.chat-scrivi textarea {
+  resize: vertical;
+  min-height: 56px;
+  font-family: inherit;
+}
+/* Durante un turno il campo è `readOnly` con `aria-disabled`, non `disabled`:
+   un campo spento perde il fuoco, e quel che si scriveva finiva alle
+   scorciatoie dello Studio (vedi `Chat.tsx`). Ma deve sembrare occupato: senza
+   questa regola si presentava uguale a un campo in cui si può scrivere, e i
+   tasti premuti non facevano niente. */
+.chat-scrivi textarea[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+.chat-scrivi .giro {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  align-self: center;
+}
+
+.testa-chat .spinta,
+.chat-contesto .spinta {
+  flex: 1;
+}
+.chat-proposta .azioni,
+.chat-scrivi .azioni {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+
+/* Quel che è partito con la domanda: la cosa scelta nello Studio e la
+   fotografia della tela. Sopra il testo, piccoli: sono il contesto della
+   domanda, non la domanda. */
+.chat-segni {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-1);
+  margin-bottom: var(--spazio-1);
+  white-space: normal;
+}
+.chat-scelta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: var(--color-surface-1);
+  color: var(--color-text-2);
+  font-size: 10.5px;
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-foto {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top left;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+/* Il blocco di modifiche dentro una risposta: chiuso, perché quel che ha
+   cambiato si legge sotto per percorso. */
+.chat-blocco {
+  margin: var(--spazio-1) 0;
+  font-size: 11px;
+  white-space: normal;
+}
+.chat-blocco summary {
+  cursor: pointer;
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+}
+.chat-blocco pre {
+  margin: var(--spazio-1) 0 0;
+  max-height: 24vh;
+  overflow: auto;
+  padding: var(--spazio-2);
+  border-radius: 6px;
+  background: var(--color-surface-0);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.chat-applicato {
+  margin-top: var(--spazio-2);
+  padding-top: var(--spazio-2);
+  border-top: 1px solid var(--hairline);
+  white-space: normal;
+}
+.chat-applicato .riassunto {
+  margin-bottom: var(--spazio-1);
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+
+/* Un valore per riga: il percorso, che porta alla cosa, e poi prima → dopo.
+   Alto al massimo un terzo del pannello, come il confronto per riga. */
+.chat-cambi {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 30vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: normal;
+}
+.chat-cambi li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+.chat-cambi li + li {
+  border-top: 1px solid var(--hairline);
+}
+.chat-cambi button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  text-decoration: underline dotted var(--color-text-3);
+  text-underline-offset: 2px;
+}
+.chat-cambi button:hover {
+  color: var(--accent);
+}
+.chat-cambi button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+.chat-cambi code {
+  font: inherit;
+}
+.chat-cambi del {
+  color: var(--danger);
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+.chat-cambi ins {
+  color: var(--success);
+  text-decoration: none;
+}
+.chat-cambi del + ins::before {
+  content: "→ ";
+  color: var(--color-text-3);
+}
+.chat-proposta .chat-cambi {
+  max-height: 34vh;
+}
+
+.chat-gettoni {
+  margin-top: var(--spazio-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+  white-space: normal;
+}
+
+.chat-contesto {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  min-width: 0;
+}
+/* La fotografia della tela, accesa o spenta: un interruttore piccolo che dice
+   anche cosa accende. */
+.chat-vede {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 2px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+.chat-vede:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+}
+.chat-vede[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.chat-vede:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pannello-coda {
+  position: fixed;
+  /* Sotto la fascia dei tre bottoni, non a `--player-gap` dal bordo: è l'unico
+     pannello flottante che arriva all'angolo in alto a destra, e lassù ci sono
+     i comandi della finestra. Il suo tasto di chiusura finiva sotto di loro. */
+  top: var(--barra-titolo-h);
+  right: var(--player-gap);
+  bottom: var(--player-clearance);
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo), var(--shadow-3);
+  overflow: hidden;
+}
+
+.pannello-coda > header {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.pannello-coda > header h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.pannello-coda > header .conteggio {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.vuota-coda {
+  margin: 0;
+  padding: var(--spazio-4);
+  color: var(--color-text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.righe-coda {
+  margin: 0;
+  padding: var(--spazio-2);
+  list-style: none;
+  overflow-y: auto;
+}
+
+.riga-coda {
+  display: grid;
+  grid-template-columns: 18px 1fr 44px 28px;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 4px var(--spazio-2);
+  border-radius: var(--radius-card);
+  cursor: grab;
+}
+/* La presa dice che la riga si trascina. Prima non c'era niente che lo dicesse
+   se non il cursore, e il cursore lo si scopre solo dopo aver già provato. */
+.riga-coda .presa {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.riga-coda:hover .presa,
+.riga-coda:focus-within .presa {
+  opacity: 1;
+}
+.riga-coda:hover {
+  background: var(--color-surface-3);
+}
+.riga-coda[aria-current="true"] .nome {
+  color: var(--accent);
+  font-weight: 600;
+}
+/* Dove cadrebbe la riga trascinata. La stessa regola di `.riga` in un elenco,
+   e per la stessa ragione: `outline` invece di `border` perché un bordo
+   cambierebbe l'altezza e farebbe saltare la coda di due pixel a ogni riga
+   sorvolata. */
+.riga-coda[data-sopra] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.riga-coda .salta {
+  display: block;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.riga-coda .salta:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+/* Il nome intero, a capo quante volte serve: nella terza colonna un titolo ha
+   meno di duecento pixel, e i puntini nascondevano proprio la parte che
+   distingue due versioni dello stesso brano. `anywhere` e non `break-word`
+   perché anche una parola sola più larga della colonna deve andare a capo, e
+   senza alzare il minimo della traccia: la × resterebbe fuori dalla riga. La
+   coda regge righe di altezza diversa (`altezzeDiverse` in `virtuale.ts`). */
+.riga-coda .nome,
+.riga-coda .autore {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.riga-coda .autore {
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.riga-coda .durata {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  text-align: right;
+}
+.riga-coda .tasto {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+}

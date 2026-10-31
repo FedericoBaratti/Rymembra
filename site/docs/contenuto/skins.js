@@ -7,7 +7,7 @@
     {
       id: "skin",
       title: "The skin document (format 2)",
-      src: ["core/rymembra-skin/src/lib.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/tokens.rs", "core/rymembra-skin/src/parts.rs", "core/rymembra-skin/src/stati.rs", "core/rymembra-skin/src/values.rs", "core/rymembra-skin/src/effects.rs", "core/rymembra-skin/src/vicini.rs", "core/rymembra-skin/skins/plain.json", "apps/desktop/src-tauri/src/skin.rs"],
+      src: ["core/rymembra-skin/src/lib.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/document/valori.rs", "core/rymembra-skin/src/document/parti.rs", "core/rymembra-skin/src/document/blocchi.rs", "core/rymembra-skin/src/document/avvisi.rs", "core/rymembra-skin/src/tokens.rs", "core/rymembra-skin/src/parts.rs", "core/rymembra-skin/src/stati.rs", "core/rymembra-skin/src/values.rs", "core/rymembra-skin/src/effects.rs", "core/rymembra-skin/src/vicini.rs", "core/rymembra-skin/skins/plain.json", "apps/desktop/src-tauri/src/skin.rs"],
       body: [
         "**A skin is data, not CSS.** Colours enter as channels, lengths as number + unit, curves as four numbers; the compiler is the only author of CSS, so `url()` beacons, `@import` and attribute-exfiltrating selectors have no channel to travel through. The guarantee holds only if every field is typed, which is why even harmless things like `calc()` and CSS colour names are refused.",
         { h: "Shape" },
@@ -64,7 +64,7 @@
     {
       id: "motion",
       title: "Motion, the flash rule and reduced motion",
-      src: ["core/rymembra-skin/src/movimento.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/compile.rs", "core/rymembra-skin/tests/attivazione.rs", "core/rymembra-app/src/preferenze.rs", "apps/desktop/src/aspetto.ts", "apps/desktop/src/presenza.tsx"],
+      src: ["core/rymembra-skin/src/movimento.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/document/parti.rs", "core/rymembra-skin/src/document/blocchi.rs", "core/rymembra-skin/src/document/lampeggio.rs", "core/rymembra-skin/src/document/avvisi.rs", "core/rymembra-skin/src/compile.rs", "core/rymembra-skin/tests/attivazione.rs", "core/rymembra-app/src/preferenze.rs", "apps/desktop/src/aspetto.ts", "apps/desktop/src/presenza.tsx"],
       body: [
         "Animations are declared once in `motion.animations` (≤ `MAX_ANIMAZIONI` = 64; 2–12 keyframes, the first at 0; duration ≤ 10 s, delay ≤ 5 s, iterations ≤ 16 or `infinite`) and bound by parts to **triggers**: the 10 states plus 5 moments — enter, exit, share (flying between screens), in-view, change. The principle: a skin animates **states of the DOM, not events of the application**; an infinite loop is allowed only on a state (a record spinning while `playing`, which pauses rather than restarts). Keyframes move, scale, rotate, skew, blur, recolour and clip. Staggers are capped at 400 ms over 12 items.",
         { h: "Always stoppable" },
@@ -104,7 +104,7 @@
     {
       id: "theme",
       title: "Theme and variant",
-      src: ["apps/desktop/src/tema.ts", "apps/desktop/src/aspettoFinestra.ts", "core/rymembra-app/src/preferenze.rs", "core/rymembra-skin/src/document.rs"],
+      src: ["apps/desktop/src/tema.ts", "apps/desktop/src/aspettoFinestra.ts", "core/rymembra-app/src/preferenze.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/document/blocchi.rs"],
       body: [
         "`ui.theme` is `scuro`, `chiaro` or `sistema`. A skin declares its base `scheme` and may provide a `variant` for the other one. `temaMostrato(tema, skin)` resolves what is shown: the wanted scheme (`sistema` follows `prefers-color-scheme` and changes live) if it equals the skin's base or the skin has a variant, otherwise the base. `applicaTema` writes `data-theme=\"light|dark\"` on `<html>`, which the compiled variant rules select; Settings disables the choice a skin cannot honour and says which variant is missing.",
         "The theme moved from `localStorage` into `settings` so backup and profile carry it; the old `rymembra.tema` key is read once as a fallback.",

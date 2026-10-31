@@ -30,10 +30,13 @@
  */
 import { save } from "@tauri-apps/plugin-dialog";
 import { Activity, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
-import { ipc, type OperazioneIa, type Registro, type Skin } from "../ipc";
+import { ipc, testoErrore, type OperazioneIa, type Registro, type Skin } from "../ipc";
 import { t } from "../lingue";
+import { Avviso } from "../parti/Avvisi";
 import { Icona } from "../parti/Icone";
+import { haAnnulloProprio, prendeITasti, type Bersaglio } from "./annullo";
 import { BarraStudio } from "./BarraStudio";
 import { Centro } from "./Centro";
 import { Chat } from "./Chat";
@@ -49,6 +52,7 @@ import { Livelli } from "./Livelli";
 import { creaMittente, type Mittente } from "./mittente";
 import { daSalvare, iniziale, riduci, testo, type SchedaSinistra } from "./negozio";
 import { applicaOperazioni, leggi, scriviIn, togliDa } from "./patch";
+import { daFotografare, poiSeSalvato } from "./salvataggio";
 import { Schede } from "./Schede";
 import { usePacchetto } from "./usaPacchetto";
 import { Variabili } from "./Variabili";
@@ -56,14 +60,14 @@ import { Variabili } from "./Variabili";
 /** Quanto aspetta il salvataggio della bozza dopo l'ultima modifica. */
 const RESPIRO_SALVATAGGIO = 800;
 
-/** Il testo è un campo in cui si scrive: lì i tasti sono del campo. */
-function siScrive(dove: EventTarget | null): boolean {
-  return (
-    dove instanceof HTMLInputElement ||
-    dove instanceof HTMLTextAreaElement ||
-    dove instanceof HTMLSelectElement ||
-    (dove instanceof HTMLElement && dove.isContentEditable)
-  );
+/** Il bersaglio di un tasto, per le due regole di `annullo.ts`. */
+function bersaglio(dove: EventTarget | null): Bersaglio | null {
+  if (!(dove instanceof HTMLElement)) return null;
+  return {
+    tag: dove.tagName,
+    tipo: dove instanceof HTMLInputElement ? dove.type : null,
+    modificabile: dove.isContentEditable,
+  };
 }
 
 export function Studio({
@@ -106,6 +110,15 @@ export function Studio({
   // Una volta sola anche il registro: è statico, e tornando visibile da
   // «Prova sull'app» gli effetti ripartono — chiederlo di nuovo era un giro
   // nel nucleo per una risposta che non può essere cambiata.
+  //
+  // Se uno dei due non arriva, lo Studio non ha niente da mostrare: fino alla
+  // 3.2 restava su «Caricamento…» per sempre, senza tasti, sopra una finestra
+  // `inert` e con le scorciatoie dell'app spente — l'unica via era chiudere
+  // Rymembra. Il guasto resta qui, e la schermata d'attesa diventa una
+  // schermata d'errore con «Riprova» (`tentativo` rilancia le due richieste)
+  // e «Chiudi lo Studio».
+  const [guastoApertura, setGuastoApertura] = useState<{ errore: unknown } | null>(null);
+  const [tentativo, setTentativo] = useState(0);
   const registroChiesto = useRef(false);
   useEffect(() => {
     if (registroChiesto.current) return;
@@ -114,11 +127,13 @@ export function Studio({
       .studioRegistro()
       .then(setRegistro)
       .catch((e: unknown) => {
-        // Si riprova alla prossima volta che lo Studio torna visibile.
+        // Si riprova alla prossima volta che lo Studio torna visibile, o a
+        // «Riprova».
         registroChiesto.current = false;
+        setGuastoApertura({ errore: e });
         onErrore(e);
       });
-  }, [onErrore]);
+  }, [onErrore, tentativo]);
 
   // Una volta sola: lo Studio vive sotto `<Activity>`, e tornando visibile
   // dopo «Prova sull'app» gli effetti ripartono. Rileggere il documento lì
@@ -131,11 +146,14 @@ export function Studio({
       .then((letto) => {
         if (vivo && !attuale.current.caricato) manda({ tipo: "apri", testo: letto });
       })
-      .catch(onErrore);
+      .catch((e: unknown) => {
+        if (vivo) setGuastoApertura({ errore: e });
+        onErrore(e);
+      });
     return () => {
       vivo = false;
     };
-  }, [id, onErrore]);
+  }, [id, onErrore, tentativo]);
 
   // ── la validazione: l'ultimo vince ─────────────────────────────────────
   //
@@ -225,7 +243,7 @@ export function Studio({
    * Studio che non c'era più, col lavoro dentro.
    */
   const esci = useCallback(() => {
-    salva().then(onEsci, onErrore);
+    void poiSeSalvato(salva, onEsci, onErrore);
   }, [salva, onEsci, onErrore]);
 
   // ── le scritture ────────────────────────────────────────────────────────
@@ -269,11 +287,36 @@ export function Studio({
   // ── le azioni della barra ───────────────────────────────────────────────
   // Tutte con `idBozza` e non con l'id del negozio: vengono dopo un
   // salvataggio che può aver spostato la bozza. Vedi `idBozza`.
+  /** Il testo dell'ultima istantanea «manuale» presa in questa sessione. */
+  const ultimaManuale = useRef<string | null>(null);
   const istantanea = useCallback(
-    (causa: "manuale" | "salvata" | "esportata") =>
-      ipc.studioIstantanea(idBozza.current, testo(attuale.current), causa),
+    async (causa: "manuale" | "salvata" | "esportata") => {
+      const quale = testo(attuale.current);
+      await ipc.studioIstantanea(idBozza.current, quale, causa);
+      if (causa === "manuale") ultimaManuale.current = quale;
+      // L'elenco del pannello «Istantanee» si rilegge: vedi `fotografata`.
+      manda({ tipo: "fotografata" });
+    },
     [],
   );
+  /**
+   * L'istantanea di Ctrl+S e della chat in agent: solo se il testo non è
+   * quello dell'ultima manuale. Vedi `daFotografare`.
+   */
+  const istantaneaManuale = useCallback(async () => {
+    const quale = testo(attuale.current);
+    if (!daFotografare(quale, ultimaManuale.current)) return;
+    // Segnata prima dell'attesa: due Ctrl+S ravvicinati non ne prendono due
+    // uguali. Se non riesce, la prossima ci riprova.
+    const prima = ultimaManuale.current;
+    ultimaManuale.current = quale;
+    try {
+      await istantanea("manuale");
+    } catch (e) {
+      ultimaManuale.current = prima;
+      throw e;
+    }
+  }, [istantanea]);
 
   const salvaEUsa = useCallback(async () => {
     const ora = attuale.current;
@@ -324,10 +367,14 @@ export function Studio({
       const ora = attuale.current;
       const mod = e.ctrlKey || e.metaKey;
       const tasto = e.key.toLowerCase();
-      // Dentro un campo il campo ha il suo annullo: quel che si sta scrivendo
-      // lì — un nome, un messaggio alla chat — non è il documento. L'editor
-      // di codice passa il suo Ctrl+Z allo Studio da sé (`codice.ts`).
-      if (mod && !e.altKey && !siScrive(e.target)) {
+      const dove = bersaglio(e.target);
+      // Dentro un campo di testo il campo ha il suo annullo: quel che si sta
+      // scrivendo lì — un nome, un messaggio alla chat — non è il documento.
+      // Un cursore, una casella o un elenco invece un annullo non ce l'hanno,
+      // e il fuoco ci resta dopo il gesto: lì Ctrl+Z è dello Studio. Vedi
+      // `annullo.ts`. L'editor di codice passa il suo Ctrl+Z allo Studio da
+      // sé (`codice.ts`).
+      if (mod && !e.altKey && !haAnnulloProprio(dove)) {
         if (tasto === "z" && !e.shiftKey) {
           e.preventDefault();
           manda({ tipo: "annulla" });
@@ -342,17 +389,21 @@ export function Studio({
       if (mod && tasto === "s") {
         e.preventDefault();
         void salva()
-          .then(() => istantanea("manuale"))
+          .then(istantaneaManuale)
           .catch(onErrore);
         return;
       }
       if (mod && tasto === "k") {
         e.preventDefault();
-        manda({ tipo: "imposta", campi: { sinistra: "livelli" } });
-        document.querySelector<HTMLInputElement>(".studio3 .cerca-livelli input")?.focus();
+        // Disegnato subito: questo è un ascoltatore nativo, e React
+        // disegnerebbe il cambio di colonna dopo. Partendo da Variabili il
+        // campo dei Livelli era ancora dentro un `<Activity mode="hidden">`,
+        // cioè `display: none`, e il fuoco non ci andava.
+        flushSync(() => manda({ tipo: "imposta", campi: { sinistra: "livelli" } }));
+        document.querySelector<HTMLInputElement>(".studio3 .livelli-studio .cerca-livelli input")?.focus();
         return;
       }
-      if (mod || e.altKey || siScrive(e.target)) return;
+      if (mod || e.altKey || prendeITasti(dove)) return;
       if (e.key === "Escape") {
         manda({ tipo: "scegli", selezione: null });
         return;
@@ -377,7 +428,7 @@ export function Studio({
     };
     window.addEventListener("keydown", ascolta);
     return () => window.removeEventListener("keydown", ascolta);
-  }, [salva, istantanea, onErrore]);
+  }, [salva, istantaneaManuale, onErrore]);
 
   const documento = useMemo(() => leggi(adesso), [adesso]);
   const parti = useMemo(
@@ -399,6 +450,37 @@ export function Studio({
   );
 
   if (azioni === null || !s.caricato) {
+    if (guastoApertura !== null) {
+      // Niente da salvare — il documento non c'è, o non si può toccare senza
+      // registro — ma «Chiudi» passa da `esci` lo stesso: è la strada che non
+      // perde niente anche nel caso che qui non si vede.
+      return (
+        <div className="studio3 caricando">
+          <Avviso
+            livello="blocco"
+            azione={
+              <>
+                <button
+                  type="button"
+                  className="bottone primario btn-accent"
+                  onClick={() => {
+                    setGuastoApertura(null);
+                    setTentativo((n) => n + 1);
+                  }}
+                >
+                  {t("common.retry")}
+                </button>
+                <button type="button" className="bottone" onClick={esci}>
+                  {t("crash.studio.close")}
+                </button>
+              </>
+            }
+          >
+            <strong>{t("studio3.open.failed")}</strong> {testoErrore(guastoApertura.errore)}
+          </Avviso>
+        </div>
+      );
+    }
     return (
       <div className="studio3 caricando" role="status">
         <Icona nome="i-skin" dim={22} />
@@ -448,10 +530,13 @@ export function Studio({
               <Chat
                 sorgente={adesso}
                 onSorgente={(nuovo) => scriviTesto(nuovo, t("studio3.step.chat"), "chat")}
-                onIstantanea={() => void istantanea("manuale").catch(onErrore)}
+                onIstantanea={() => void istantaneaManuale().catch(onErrore)}
                 onErrore={onErrore}
                 onChiudi={() => manda({ tipo: "imposta", campi: { chat: false } })}
-                onVaiAImpostazioni={onModelli}
+                // Anche questa strada smonta lo Studio: la stessa regola di
+                // «Esci», o quel che il respiro del salvataggio non aveva
+                // ancora scritto andrebbe perso.
+                onVaiAImpostazioni={() => void poiSeSalvato(salva, onModelli, onErrore)}
               />
             </div>
           )}

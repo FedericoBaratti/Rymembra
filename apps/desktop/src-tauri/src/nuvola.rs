@@ -21,30 +21,26 @@
 //! riceve mai una `rusqlite::Connection`, quindi il codice che terrebbe il
 //! lucchetto durante una richiesta di rete non si può nemmeno scrivere.
 //!
-//! # Il segreto del client
+//! # Il client
 //!
-//! `option_env!` e non `env!`: una copia del repo senza credenziali deve
-//! **compilare**, e limitarsi a dire che il backup non è configurato. Altrimenti
-//! clonare il progetto e lanciare `cargo test` diventa impossibile per chiunque
-//! non abbia un progetto Google.
-//!
-//! Le due costanti stanno **qui** e non in `rymembra-cloud` perché `option_env!`
-//! legge l'ambiente del crate che si sta compilando. È anche la stratificazione
-//! giusta: `rymembra-cloud` riceve delle `Credenziali` e resta provabile.
+//! Dalla 3.2 è un'app dell'utente (`nuvola_app`), legata al backup con
+//! `nuvola.app`: di serie la stessa delle cartelle di Drive. Nel binario non
+//! c'è nessun client — `option_env!` e il ripiego compilato non esistono più —
+//! e un backup senza app dice di non essere configurato.
 //!
 //! Da scrivere perché nessuno «indurisca» la cosa sbagliata: **un client secret
-//! dentro un binario desktop non è un segreto**. `strings` lo trova, e la
-//! documentazione di Google per le installed app lo dice. Quel che protegge lo
-//! scambio è PKCE. L'esposizione vera è che un terzo consumi la quota del
-//! progetto; le mitigazioni sono strutturali e stanno nello scope.
+//! di un'app desktop non è un segreto**. La documentazione di Google per le
+//! installed app lo dice, e quel che protegge lo scambio è PKCE. Sta nel
+//! portachiavi lo stesso, perché è dell'utente e non di Rymembra.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
 use rymembra_app::backup::{self, StatoLocale};
+use rymembra_app::nuvola_app;
 use rymembra_app::settings;
 use rymembra_cloud::drive::{self, Drive};
 use rymembra_cloud::http::Rete;
@@ -63,14 +59,6 @@ use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
-// ── le credenziali compilate dentro ─────────────────────────────────────────
-
-/// L'identificativo del client OAuth, se chi ha compilato l'ha fornito.
-const CLIENT_ID_COMPILATO: Option<&str> = option_env!("RYMEMBRA_GOOGLE_CLIENT_ID");
-
-/// Il segreto del client OAuth. Vedi la nota in testa al modulo.
-const CLIENT_SECRET_COMPILATO: Option<&str> = option_env!("RYMEMBRA_GOOGLE_CLIENT_SECRET");
-
 // ── le chiavi in `settings` ─────────────────────────────────────────────────
 //
 // Nessuna di queste è un segreto: il token di aggiornamento sta nel portachiavi
@@ -78,8 +66,6 @@ const CLIENT_SECRET_COMPILATO: Option<&str> = option_env!("RYMEMBRA_GOOGLE_CLIEN
 
 /// Il backup automatico è acceso.
 const CHIAVE_ATTIVO: &str = "nuvola.attivo";
-/// L'identificativo del client, quando l'utente l'ha scritto a mano.
-const CHIAVE_CLIENT_ID: &str = "nuvola.client_id";
 /// L'email dell'account collegato, per mostrarla nelle Impostazioni.
 const CHIAVE_EMAIL: &str = "nuvola.email";
 /// L'identificativo su Drive del file dei metadati.
@@ -176,6 +162,15 @@ pub struct StatoNuvola {
     /// niente.
     token: Mutex<Option<Token>>,
 
+    /// Quante volte la cache del token è stata svuotata da [`dimentica_token`].
+    ///
+    /// Si cambia e si legge **sotto il lucchetto di `token`**. Un rinfresco
+    /// legge l'epoca quando trova la cache vuota, va in rete senza lucchetto,
+    /// e rimette il token in cache solo se l'epoca è ancora quella
+    /// ([`ricorda_token_se`]): un «Scollega» o un cambio di segreto arrivati
+    /// mentre aspettava Google non si fanno scavalcare da un token di prima.
+    epoca_token: AtomicU64,
+
     /// Qualcuno ha premuto «Annulla» mentre si aspetta il consenso.
     ///
     /// Un bit accanto al turno e non dentro: chi lo alza è un comando che deve
@@ -196,6 +191,7 @@ impl StatoNuvola {
                 in_corso: AtomicBool::new(false),
                 ultimo_errore: Mutex::new(None),
                 token: Mutex::new(None),
+                epoca_token: AtomicU64::new(0),
                 annulla_collegamento: AtomicBool::new(false),
             },
             orecchio,
@@ -230,8 +226,11 @@ fn occupato() -> AppError {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatoNuvolaIpc {
-    /// Ci sono delle credenziali del client: compilate dentro o scritte a mano.
+    /// Il backup ha un'app Google. Se le manca il segreto lo dice
+    /// `nuvola_app` (`segretoSalvato`), e collegando `cloud.appSecretMissing`.
     pub configurato: bool,
+    /// Quale app, se ne ha una.
+    pub app: Option<String>,
     /// C'è un account collegato.
     pub collegato: bool,
     /// Il backup automatico è acceso.
@@ -420,7 +419,7 @@ fn collega(app: &AppHandle) -> Esito<StatoNuvolaIpc> {
         // Chi guarda deve vedere subito «Aspetto il consenso…» e il tasto per
         // annullare, non dopo che il browser si è aperto.
         riferisci(app);
-        let credenziali = con_libreria(&stato, |libreria| credenziali(&libreria.connection))?;
+        let credenziali = credenziali(&stato)?;
         let rete = Rete::nuova("google", oauth::SCADENZA);
         let fermare = || {
             nuvola.annulla_collegamento.load(Ordering::Acquire) || crate::spegnimento::in_uscita()
@@ -500,21 +499,19 @@ fn concludi(
     adesso
 }
 
-/// Scollega l'account, e dimentica la coppia di credenziali scritta a mano.
+/// Scollega l'account.
 ///
 /// Revoca presso Google — **best-effort**: chi si scollega deve vedersi
 /// scollegato anche senza rete — e pulisce comunque il portachiavi. Non tocca
 /// niente su Drive: i file restano, e il giorno in cui l'utente si ricollega
 /// sono ancora lì. Toglierli sarebbe una cancellazione che nessuno ha chiesto.
 ///
-/// # La coppia, tutta e due
+/// # L'app resta
 ///
-/// Fino alla 2.4.0 si cancellava il segreto e restava l'identificativo in
-/// `settings`: mezza coppia, che da sola non vale niente e che al collegamento
-/// successivo si accoppiava col segreto compilato dentro — cioè con il client
-/// di un altro progetto, e un `invalid_client` che nessuno capiva. Adesso
-/// scollegarsi toglie identificativo e segreto insieme, e restano quelli
-/// compilati dentro, se ci sono.
+/// Fino alla 3.1 scollegarsi cancellava anche il client scritto a mano. Dalla
+/// 3.2 il client è un'app dell'utente, che di serie serve anche le cartelle di
+/// Drive: toglierla qui le spegnerebbe in silenzio. Le app si tolgono da «Le
+/// tue app».
 ///
 /// In disparte: la revoca va in rete. Vedi [`nuvola_collega`].
 #[tauri::command]
@@ -523,11 +520,8 @@ pub async fn nuvola_scollega(app: AppHandle) -> Esito<StatoNuvolaIpc> {
         let (stato, nuvola) = stati(&app).map_err(errore)?;
         let esito = (|| {
             let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
-            dimentica_l_account(&stato, &nuvola)?;
-            con_libreria(&stato, |libreria| {
-                settings::forget(&libreria.connection, CHIAVE_CLIENT_ID).map(|_| ())
-            })?;
-            DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)
+            revoca_se_non_toglie_niente(&stato)?;
+            dimentica_l_account(&stato, &nuvola)
         })();
         concludi(&app, &stato, &nuvola, esito)
     })
@@ -535,16 +529,65 @@ pub async fn nuvola_scollega(app: AppHandle) -> Esito<StatoNuvolaIpc> {
     .map_err(errore)?
 }
 
-/// Dimentica l'account collegato: revoca, portachiavi, `settings`, cache.
+/// Revoca il consenso del backup presso Google, se la revoca non toglie
+/// l'accesso a nessun altro.
 ///
-/// Non tocca la coppia di credenziali del client: è il pezzo comune fra
-/// [`nuvola_scollega`], che poi dimentica anche quella, e [`nuvola_credenziali`],
-/// che ne scrive una nuova.
-fn dimentica_l_account(stato: &Stato, nuvola: &StatoNuvola) -> Result<(), AppError> {
-    if let Some(refresh) = DiSistema.leggi(portachiavi::GOOGLE_REFRESH_TOKEN)? {
+/// # Perché non sempre
+///
+/// Google revoca il consenso **dell'app** per quell'account, non un token
+/// solo: tutti i refresh token che quell'app ha avuto da quell'account se ne
+/// vanno insieme. E di serie l'app del backup è anche quella delle cartelle di
+/// Drive (`nuvola_app::predefinita`): fino alla 3.2.0 di prova, scollegare il
+/// backup spegneva in silenzio le cartelle di musica, che a ogni giro
+/// rispondevano «consenso scaduto». Se un conto di Drive usa la stessa app,
+/// il backup si scollega lo stesso — portachiavi e impostazioni — ma il
+/// consenso resta, e lo si dice nel diario.
+fn revoca_se_non_toglie_niente(stato: &Stato) -> Result<(), AppError> {
+    let Some(refresh) = DiSistema.leggi(portachiavi::GOOGLE_REFRESH_TOKEN)? else {
+        return Ok(());
+    };
+    let (del_backup, conti) = con_libreria(stato, |l| {
+        Ok((
+            nuvola_app::app_del_backup(&l.connection)?,
+            rymembra_app::nuvola::conti(&l.connection)?,
+        ))
+    })?;
+    if revoca_permessa(del_backup.as_ref(), &conti) {
         let rete = Rete::nuova("google", oauth::SCADENZA);
         drop(oauth::revoca(&rete, &refresh));
+    } else {
+        nota!(
+            "[nuvola] scollegamento del backup: niente revoca presso Google, la stessa app serve le cartelle di Drive"
+        );
     }
+    Ok(())
+}
+
+/// Si può revocare il consenso del backup: c'è la sua app, e nessun conto di
+/// Google Drive la usa — legato a lei, o col suo stesso identificativo.
+fn revoca_permessa(
+    del_backup: Option<&nuvola_app::AppSalvata>,
+    conti: &[rymembra_app::nuvola::ContoSalvato],
+) -> bool {
+    let Some(app) = del_backup else {
+        return false;
+    };
+    !conti.iter().any(|conto| {
+        conto.servizio == rymembra_domain::nuvola::Servizio::GoogleDrive
+            && (conto.app.as_deref() == Some(app.app.as_str())
+                || conto.client.as_deref() == Some(app.client_id.as_str()))
+    })
+}
+
+/// Dimentica l'account collegato: portachiavi, `settings`, cache.
+///
+/// Non tocca l'app, e non revoca niente presso Google: è il pezzo comune fra
+/// [`nuvola_scollega`], [`nuvola_backup_app`] e `nuvola_app`, quando l'app del
+/// backup cambia identificativo o se ne va. La revoca la fa solo «Scollega»
+/// (vedi [`revoca_se_non_toglie_niente`]): cambiare app non deve togliere il
+/// consenso, perché rimettere l'identificativo di prima (A → B → A) riporta i
+/// conti di Drive come erano.
+pub(crate) fn dimentica_l_account(stato: &Stato, nuvola: &StatoNuvola) -> Result<(), AppError> {
     DiSistema.cancella(portachiavi::GOOGLE_REFRESH_TOKEN)?;
     dimentica_token(nuvola);
 
@@ -567,67 +610,76 @@ fn dimentica_l_account(stato: &Stato, nuvola: &StatoNuvola) -> Result<(), AppErr
     Ok(())
 }
 
-/// Sostituisce le credenziali del client con quelle scritte dall'utente.
+/// Sceglie l'app Google del backup (`None`: nessuna).
 ///
-/// Serve a chi vuole usare il **proprio** progetto Google invece di quello di
-/// Rymembra: la quota è di chi la paga. Un identificativo vuoto rimette quelle
-/// compilate dentro.
-///
-/// # Cambiare client vuol dire scollegarsi
+/// # Cambiare app vuol dire scollegarsi
 ///
 /// Un token di aggiornamento appartiene al client che l'ha ottenuto: con un
 /// altro client Google risponde `unauthorized_client`, a ogni passata, per
-/// sempre. Fino alla 2.4.0 cambiare le credenziali lasciava l'account
-/// «collegato» con un token che non poteva più funzionare. Adesso, se la coppia
-/// che vale cambia davvero, l'account si scollega — come farebbe
-/// [`nuvola_scollega`] — e la finestra mostra di nuovo «Collega». Riscrivere la
-/// stessa coppia non scollega niente.
+/// sempre. Se l'app che vale cambia davvero — un'altra app, o la stessa con un
+/// altro identificativo — l'account si scollega come farebbe
+/// [`nuvola_scollega`], e la finestra mostra di nuovo «Collega». Riscegliere
+/// la stessa non scollega niente.
 ///
-/// In disparte: scollegarsi va in rete, e il portachiavi di Windows non è
-/// sempre istantaneo.
+/// La cartella dell'app su Drive (`drive.appdata`) è di quell'app: con
+/// un'altra i backup di prima possono non vedersi più, e la finestra lo dice
+/// prima di chiedere.
+///
+/// In disparte: scollegarsi va in rete.
 #[tauri::command]
-pub async fn nuvola_credenziali(
-    app: AppHandle,
-    client_id: String,
-    client_secret: String,
-) -> Esito<StatoNuvolaIpc> {
-    in_disparte("credenziali di Google", move || {
+pub async fn nuvola_backup_app(app: AppHandle, scelta: Option<String>) -> Esito<StatoNuvolaIpc> {
+    in_disparte("app del backup", move || {
         let (stato, nuvola) = stati(&app).map_err(errore)?;
         let esito = (|| {
             let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
-            let prima = con_libreria(
-                &stato,
-                |libreria| Ok(credenziali(&libreria.connection).ok()),
-            )?;
-            let id = client_id.trim();
-            // Il segreto nel portachiavi e l'identificativo in `settings`: il
-            // primo è trattato come un segreto anche se non lo è del tutto, il
-            // secondo non lo è mai stato.
-            if id.is_empty() {
-                con_libreria(&stato, |libreria| {
-                    settings::forget(&libreria.connection, CHIAVE_CLIENT_ID).map(|_| ())
-                })?;
-                DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)?;
-            } else {
-                con_libreria(&stato, |libreria| {
-                    settings::write(&libreria.connection, CHIAVE_CLIENT_ID, id)
-                })?;
-                DiSistema.scrivi(portachiavi::GOOGLE_CLIENT_SECRET, client_secret.trim())?;
-            }
-            let dopo = con_libreria(
-                &stato,
-                |libreria| Ok(credenziali(&libreria.connection).ok()),
-            )?;
-            if prima != dopo {
+            let identita = |stato: &Stato| -> Result<Option<(String, String)>, AppError> {
+                Ok(
+                    con_libreria(stato, |l| nuvola_app::app_del_backup(&l.connection))?
+                        .map(|app| (app.app, app.client_id)),
+                )
+            };
+            let prima = identita(&stato)?;
+            con_libreria(&stato, |l| {
+                nuvola_app::lega_il_backup(&l.connection, scelta.as_deref())
+            })?;
+            if identita(&stato)? != prima {
                 dimentica_l_account(&stato, &nuvola)?;
             }
             dimentica_token(&nuvola);
             Ok(())
         })();
-        concludi(&app, &stato, &nuvola, esito)
+        let riuscito = esito.is_ok();
+        let fatto = concludi(&app, &stato, &nuvola, esito);
+        // Le app e quale fa da predefinita per Google: è cambiato anche quello.
+        if riuscito {
+            crate::nuvola_app::emetti(&app);
+        }
+        fatto
     })
     .await
     .map_err(errore)?
+}
+
+/// Fa `lavoro` col backup fermo — il suo turno preso — e poi lo dice alla
+/// finestra.
+///
+/// Per `nuvola_app`, quando un'app Google cambia: una passata in corso tiene
+/// in mano le credenziali di prima, e le userebbe.
+///
+/// # Errori
+///
+/// `sync.busy` se il backup sta lavorando; quelli di `lavoro`.
+pub(crate) fn con_il_backup_fermo<T>(
+    app: &AppHandle,
+    lavoro: impl FnOnce(&Stato, &StatoNuvola) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let (stato, nuvola) = stati(app)?;
+    let esito = {
+        let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
+        lavoro(&stato, &nuvola)
+    };
+    riferisci(app);
+    esito
 }
 
 /// Accende o spegne il backup automatico.
@@ -936,16 +988,20 @@ fn riferisci(app: &AppHandle) {
 /// separate a `con_libreria` sarebbero tre prese e tre rilasci, e fra l'una e
 /// l'altra la libreria potrebbe cambiare — producendo uno stato letto a metà da
 /// prima di una scansione e a metà da dopo.
+///
+/// Le credenziali vengono dopo, fuori dal lucchetto: il segreto sta nel
+/// portachiavi, che non sempre risponde subito.
 fn leggi_per_passata(
     stato: &Stato,
 ) -> Result<(std::path::PathBuf, StatoLocale, Credenziali), AppError> {
-    con_libreria(stato, |libreria| {
+    let (dati, locale, app) = con_libreria(stato, |libreria| {
         Ok((
             libreria.data_dir.clone(),
             backup::stato_locale(&libreria.connection)?,
-            credenziali(&libreria.connection)?,
+            nuvola_app::app_del_backup(&libreria.connection)?,
         ))
-    })
+    })?;
+    Ok((dati, locale, credenziali_di(app)?))
 }
 
 /// Un client di Drive con un access token valido.
@@ -988,30 +1044,60 @@ fn con_drive<T>(
 }
 
 /// Un access token valido, dalla cache o da Google.
+///
+/// # Un rinfresco che arriva dopo «Scollega»
+///
+/// Il rinfresco va in rete senza lucchetto, e nel frattempo qualcuno può
+/// svuotare la cache: «Scollega», o un segreto cambiato. Rimettere in cache il
+/// token arrivato dopo voleva dire un'ora di passate di sincronia sul Drive
+/// dell'account appena scollegato, o col client di prima. Per questo l'epoca si
+/// legge insieme alla cache vuota, e il token rientra solo se è ancora quella;
+/// se non lo è e il refresh token non c'è più, si risponde come senza account.
 fn accesso(nuvola: &StatoNuvola, credenziali: &Credenziali) -> Result<String, AppError> {
-    {
-        let cache = nuvola
-            .token
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(token) = cache.as_ref()
-            && oauth::ancora_valido(token.scade_ms)
-        {
-            return Ok(token.access_token.clone());
-        }
-    }
+    let epoca = match token_in_cache(nuvola) {
+        Ok(access) => return Ok(access),
+        Err(epoca) => epoca,
+    };
 
-    let Some(refresh) = DiSistema.leggi(portachiavi::GOOGLE_REFRESH_TOKEN)? else {
-        return Err(AppError::new(ErrorCode::SettingsSecretUnavailable {
+    let senza_account = || {
+        AppError::new(ErrorCode::SettingsSecretUnavailable {
             key: portachiavi::GOOGLE_REFRESH_TOKEN.to_owned(),
         })
-        .with_cause("nessun account collegato"));
+        .with_cause("nessun account collegato")
+    };
+    let Some(refresh) = DiSistema.leggi(portachiavi::GOOGLE_REFRESH_TOKEN)? else {
+        return Err(senza_account());
     };
     let rete = Rete::nuova("google", oauth::SCADENZA);
     let token = oauth::rinfresca(&rete, credenziali, &refresh)?;
     let access = token.access_token.clone();
-    ricorda_token(nuvola, token);
+    if !ricorda_token_se(nuvola, token, epoca)
+        && DiSistema
+            .leggi(portachiavi::GOOGLE_REFRESH_TOKEN)?
+            .is_none()
+    {
+        // Scollegato mentre si aspettava Google: il token non entra in cache
+        // e non si usa.
+        return Err(senza_account());
+    }
+    // L'epoca è cambiata ma l'account c'è ancora (un segreto nuovo): il token
+    // serve a questa richiesta e basta, la prossima rinfresca da capo.
     Ok(access)
+}
+
+/// L'access token in cache se vale ancora, altrimenti l'epoca della cache,
+/// letta sotto lo stesso lucchetto: vedi [`ricorda_token_se`].
+fn token_in_cache(nuvola: &StatoNuvola) -> Result<String, u64> {
+    let cache = nuvola
+        .token
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(token) = cache.as_ref()
+        && oauth::ancora_valido(token.scade_ms)
+    {
+        return Ok(token.access_token.clone());
+    }
+    Err(nuvola.epoca_token.load(Ordering::Acquire))
 }
 
 /// Un access token valido per chi non è il backup.
@@ -1039,17 +1125,6 @@ pub(crate) fn accesso_condiviso(
     accesso(&nuvola, credenziali)
 }
 
-/// Le credenziali del client, per chi non è il backup.
-///
-/// # Errori
-///
-/// `settings.secretUnavailable` se il client Google non è configurato.
-pub(crate) fn credenziali_condivise(
-    connection: &rusqlite::Connection,
-) -> Result<Credenziali, AppError> {
-    credenziali(connection)
-}
-
 /// Mette in cache l'access token appena ottenuto.
 fn ricorda_token(nuvola: &StatoNuvola, token: Token) {
     let mut cache = nuvola
@@ -1059,17 +1134,37 @@ fn ricorda_token(nuvola: &StatoNuvola, token: Token) {
     *cache = Some(token);
 }
 
+/// Mette in cache il token di un rinfresco, se dal momento in cui la cache si
+/// è trovata vuota (`epoca`, da [`token_in_cache`]) nessuno l'ha svuotata.
+///
+/// `false` se l'epoca è cambiata: il token è rimasto fuori.
+fn ricorda_token_se(nuvola: &StatoNuvola, token: Token, epoca: u64) -> bool {
+    let mut cache = nuvola
+        .token
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if nuvola.epoca_token.load(Ordering::Acquire) != epoca {
+        return false;
+    }
+    *cache = Some(token);
+    true
+}
+
 /// Butta via l'access token in cache.
 ///
 /// Si chiama quando cambiano le credenziali o si scollega l'account: un token
 /// emesso per il client precedente continuerebbe a funzionare fino alla
 /// scadenza, e nascondere per un'ora il fatto che le credenziali nuove non
 /// vanno è il modo di far cercare il guasto nel posto sbagliato.
-fn dimentica_token(nuvola: &StatoNuvola) {
+///
+/// Cambia anche l'epoca, sotto lo stesso lucchetto: un rinfresco partito prima
+/// non rimette il suo token (vedi [`accesso`]).
+pub(crate) fn dimentica_token(nuvola: &StatoNuvola) {
     let mut cache = nuvola
         .token
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    nuvola.epoca_token.fetch_add(1, Ordering::AcqRel);
     *cache = None;
 }
 
@@ -1082,38 +1177,38 @@ fn scorda_errore(nuvola: &StatoNuvola) {
     *ultimo = None;
 }
 
-/// Le credenziali del client: quelle dell'utente, o quelle compilate dentro.
+/// Le credenziali dell'app del backup (e della sincronia su Drive).
+///
+/// Il database sotto il lucchetto, il portachiavi fuori: da non chiamare
+/// dentro `con_libreria`.
 ///
 /// # Errori
 ///
-/// `settings.secretUnavailable` se non ce ne sono né di un tipo né dell'altro —
-/// il caso di chi ha clonato il repo e compilato senza le variabili d'ambiente.
-/// Non è un guasto da nascondere: senza credenziali il backup non può partire, e
-/// dirlo è tutto ciò che si può fare.
-fn credenziali(connection: &rusqlite::Connection) -> Result<Credenziali, AppError> {
-    let client_id = settings::read(connection, CHIAVE_CLIENT_ID)?
-        .filter(|id| !id.trim().is_empty())
-        .or_else(|| CLIENT_ID_COMPILATO.map(ToOwned::to_owned));
-    let client_secret = DiSistema
-        .leggi(portachiavi::GOOGLE_CLIENT_SECRET)?
-        .filter(|segreto| !segreto.trim().is_empty())
-        .or_else(|| CLIENT_SECRET_COMPILATO.map(ToOwned::to_owned));
-
-    match (client_id, client_secret) {
-        (Some(client_id), Some(client_secret)) => Ok(Credenziali {
-            client_id,
-            client_secret,
-        }),
-        _ => Err(AppError::new(ErrorCode::SettingsSecretUnavailable {
-            key: CHIAVE_CLIENT_ID.to_owned(),
-        })
-        .with_cause("il client Google non è configurato")),
-    }
+/// `cloud.clientMissing` se il backup non ha un'app — il caso di chi non l'ha
+/// ancora registrata: senza, il backup non può partire, e dirlo è tutto ciò che
+/// si può fare —, `cloud.appSecretMissing` se all'app manca il segreto,
+/// `settings.secretUnavailable` se il portachiavi non risponde.
+pub(crate) fn credenziali(stato: &Stato) -> Result<Credenziali, AppError> {
+    let app = con_libreria(stato, |libreria| {
+        nuvola_app::app_del_backup(&libreria.connection)
+    })?;
+    credenziali_di(app)
 }
 
-/// Ci sono delle credenziali utilizzabili?
-fn configurato(connection: &rusqlite::Connection) -> bool {
-    credenziali(connection).is_ok()
+/// Le credenziali di un'app del backup già letta.
+fn credenziali_di(app: Option<nuvola_app::AppSalvata>) -> Result<Credenziali, AppError> {
+    let Some(app) = app else {
+        return Err(AppError::new(ErrorCode::CloudClientMissing {
+            servizio: oauth::GOOGLE.nome.to_owned(),
+        })
+        .with_cause("il backup non ha un'app Google"));
+    };
+    crate::nuvola_app::credenziali_dell_app(&app)
+}
+
+/// Il backup ha un'app?
+fn configurato(connection: &rusqlite::Connection) -> Result<Option<String>, AppError> {
+    Ok(nuvola_app::app_del_backup(connection)?.map(|app| app.app))
 }
 
 /// Il backup automatico è acceso?
@@ -1155,8 +1250,10 @@ fn stato_ipc(stato: &Stato, nuvola: &StatoNuvola) -> Result<StatoNuvolaIpc, AppE
         .clone();
 
     con_libreria(stato, |libreria| {
+        let app = configurato(&libreria.connection)?;
         Ok(StatoNuvolaIpc {
-            configurato: configurato(&libreria.connection),
+            configurato: app.is_some(),
+            app,
             collegato,
             attivo: attivo(&libreria.connection)?,
             email: settings::read(&libreria.connection, CHIAVE_EMAIL)?
@@ -1341,6 +1438,104 @@ fn pezzi(chiave: &str) -> (String, String, String) {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    use rymembra_app::nuvola::ContoSalvato;
+    use rymembra_app::nuvola_app::AppSalvata;
+    use rymembra_domain::nuvola::Servizio;
+    use rymembra_domain::nuvola_app::Piattaforma;
+
+    fn app_del_backup() -> AppSalvata {
+        AppSalvata {
+            app: "google-aaaaaaaa".to_owned(),
+            piattaforma: Piattaforma::Google,
+            nome: "Google".to_owned(),
+            client_id: "1-a.apps.googleusercontent.com".to_owned(),
+            creata_ms: 1,
+        }
+    }
+
+    fn conto(servizio: Servizio, app: Option<&str>, client: Option<&str>) -> ContoSalvato {
+        ContoSalvato {
+            conto: format!("{}-abcdefgh", servizio.chiave()),
+            servizio,
+            nome: "mario".to_owned(),
+            dettagli: None,
+            cursore: None,
+            ultimo_ms: None,
+            app: app.map(str::to_owned),
+            client: client.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn la_revoca_risparmia_i_conti_di_drive_della_stessa_app() {
+        let app = app_del_backup();
+        // Legato all'app del backup.
+        let legato = conto(Servizio::GoogleDrive, Some("google-aaaaaaaa"), None);
+        assert!(!revoca_permessa(Some(&app), &[legato]));
+        // L'app è stata tolta e rimessa: un altro nome, lo stesso client.
+        let stesso_client = conto(
+            Servizio::GoogleDrive,
+            Some("google-bbbbbbbb"),
+            Some("1-a.apps.googleusercontent.com"),
+        );
+        assert!(!revoca_permessa(Some(&app), &[stesso_client]));
+    }
+
+    #[test]
+    fn la_revoca_si_fa_se_nessun_conto_usa_quel_client() {
+        let app = app_del_backup();
+        assert!(revoca_permessa(Some(&app), &[]));
+        let onedrive = conto(Servizio::OneDrive, Some("google-aaaaaaaa"), None);
+        let altra = conto(
+            Servizio::GoogleDrive,
+            Some("google-cccccccc"),
+            Some("2-b.apps.googleusercontent.com"),
+        );
+        assert!(revoca_permessa(Some(&app), &[onedrive, altra]));
+    }
+
+    fn token_di_prova(access: &str) -> Token {
+        Token {
+            access_token: access.to_owned(),
+            refresh_token: None,
+            scade_ms: adesso_ms() + 3_600_000,
+            email: None,
+        }
+    }
+
+    #[test]
+    fn un_rinfresco_arrivato_dopo_dimentica_token_non_torna_in_cache() {
+        let (nuvola, _orecchio) = StatoNuvola::nuovo();
+        // Il rinfresco trova la cache vuota e legge l'epoca; mentre aspetta
+        // Google, «Scollega» svuota la cache.
+        let epoca = token_in_cache(&nuvola).expect_err("cache vuota");
+        dimentica_token(&nuvola);
+        assert!(!ricorda_token_se(&nuvola, token_di_prova("vecchio"), epoca));
+        assert!(
+            token_in_cache(&nuvola).is_err(),
+            "il token di prima di «Scollega» non è in cache"
+        );
+    }
+
+    #[test]
+    fn un_rinfresco_senza_nessuno_in_mezzo_va_in_cache() {
+        let (nuvola, _orecchio) = StatoNuvola::nuovo();
+        let epoca = token_in_cache(&nuvola).expect_err("cache vuota");
+        assert!(ricorda_token_se(&nuvola, token_di_prova("buono"), epoca));
+        assert_eq!(token_in_cache(&nuvola), Ok("buono".to_owned()));
+        // Dopo un 401 (`con_drive`) la cache si svuota e il rinfresco dopo
+        // legge l'epoca nuova: il suo token entra.
+        dimentica_token(&nuvola);
+        let epoca = token_in_cache(&nuvola).expect_err("svuotata");
+        assert!(ricorda_token_se(&nuvola, token_di_prova("nuovo"), epoca));
+        assert_eq!(token_in_cache(&nuvola), Ok("nuovo".to_owned()));
+    }
+
+    #[test]
+    fn senza_app_del_backup_non_si_revoca() {
+        assert!(!revoca_permessa(None, &[]));
+    }
 
     #[test]
     fn una_chiave_si_divide_in_tre_pezzi() {

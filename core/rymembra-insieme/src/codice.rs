@@ -23,8 +23,11 @@
 //! Una su diecimila a tentativo vuol dire che diecimila tentativi bastano.
 //! [`Tentativi`] ne lascia tre per chiave ogni dieci minuti, e dieci in tutto
 //! (un terzo nel mezzo può cambiare chiave a ogni tentativo, il tetto totale
-//! no): a quel ritmo ne servirebbero mesi, con una persona che ogni volta
-//! guarda due schermi e dice di no.
+//! no): a quel ritmo, uno al minuto, servirebbe circa una settimana di
+//! tentativi ininterrotti (diecimila minuti; uno su due ci riesce già in
+//! circa cinque giorni), ciascuno con una persona che guarda due schermi e
+//! dice di no. Il freno vero è lei; i tetti fanno sì che non basti un
+//! pomeriggio. Fino alla revisione del 30 ottobre qui c'era scritto «mesi».
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -133,7 +136,10 @@ pub(crate) enum Rifiuto {
 /// Adesso un tentativo conta da quando comincia — l'impegno mandato o
 /// ricevuto — e si toglie dal conto solo se riesce. Uno interrotto per
 /// qualunque ragione resta lì come fallito, senza che nessuno debba
-/// ricordarsi di contarlo.
+/// ricordarsi di contarlo: tranne, dal lato di chi chiede, quello finito
+/// prima del nonce di chi ospita — un `Occupato`, o la connessione chiusa
+/// per qualunque perché — che esce come se non fosse mai cominciato (vedi
+/// [`Tentativi::annulla`]).
 ///
 /// Solo in memoria: riavviare Rymembra azzera il conto, ma riavviarlo è un
 /// gesto della persona davanti allo schermo, non di chi sta nel mezzo.
@@ -210,13 +216,16 @@ impl Tentativi {
         }
     }
 
-    /// Il tentativo `numero` non è mai cominciato davvero: chi ospita ha
-    /// risposto che è occupato (`Trasporto::Occupato`) prima di vedere un
-    /// nonce. Esce dal conto come uno riuscito.
+    /// Il tentativo `numero` non è mai cominciato davvero: dal lato di chi
+    /// chiede, è finito prima di vedere il nonce di chi ospita — un
+    /// «occupato» (`Trasporto::Occupato`), o la connessione chiusa, per
+    /// esempio dal `troppiTentativi` di un host al suo tetto per colpa di
+    /// altri PC. Esce dal conto come uno riuscito.
     ///
     /// Non apre un buco nel conto: senza il nonce di chi ospita non c'è un
     /// codice, e chi chiede non ha rivelato il suo — a un terzo nel mezzo che
-    /// risponde «occupato» non resta niente da provare.
+    /// risponde «occupato», o chiude, resta al più l'impegno, cioè un hash, e
+    /// niente da provare.
     pub(crate) fn annulla(&mut self, numero: u64) {
         self.finito(numero, true);
     }
@@ -375,6 +384,19 @@ mod prove {
             tentativi
                 .prenota(&ChiavePubblica([50; 32]), zero, false)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn diecimila_tentativi_al_ritmo_dei_tetti_sono_circa_una_settimana() {
+        // Il numero che dice il `//!` del modulo: chi cambia i tetti deve
+        // cambiare anche quello.
+        let finestra_in_minuti = FINESTRA.as_secs().div_euclid(60);
+        let minuti =
+            (10_000 * finestra_in_minuti).div_euclid(u64::try_from(IN_TUTTO).expect("sta"));
+        assert!(
+            minuti > 6 * 24 * 60 && minuti < 8 * 24 * 60,
+            "{minuti} minuti"
         );
     }
 

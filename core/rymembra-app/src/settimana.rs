@@ -51,7 +51,8 @@ use std::collections::HashMap;
 use rusqlite::{Connection, Transaction};
 use rymembra_domain::errors::AppError;
 use rymembra_domain::settimana::{
-    GIORNO_MS, OBLIO_MINIMO_GIORNI, Punto, SETTIMANA_MS, Trascurato, raccogli, ripescaggio,
+    ASCOLTI_PIENI, GIORNO_MS, OBLIO_MINIMO_GIORNI, OBLIO_PIENO_GIORNI, PESO_CUORE, Punto,
+    SETTIMANA_MS, Trascurato, raccogli, ripescaggio,
 };
 use rymembra_play::impronta::RAGGRUPPAMENTO;
 
@@ -90,10 +91,10 @@ pub const SETTIMANE_TENUTE: i64 = 4;
 
 /// Quanti candidati al ripescaggio si leggono prima di ordinarli.
 ///
-/// È la forma di casa: si recupera con SQL — i più fermi, che l'indice su
-/// `last_played_at` serve già — e si riordina in memoria col punteggio, che
-/// nessun `ORDER BY` sa esprimere. Duemila righe sono qualche centinaio di
-/// microsecondi di aritmetica.
+/// Si recupera con SQL — i duemila col punteggio più alto, scritto nell'`ORDER
+/// BY` con le costanti del dominio — e si riordina in memoria con
+/// [`ripescaggio`], che resta l'unica a decidere. Duemila righe sono qualche
+/// centinaio di microsecondi di aritmetica.
 pub const CANDIDATI: usize = 2_000;
 
 /// Quante impronte al massimo entrano nel raggruppamento.
@@ -204,6 +205,9 @@ pub fn aggiorna(
 
 /// Le raccolte di un lunedì, coi loro brani.
 ///
+/// Il lunedì si confronta per settimana, non per istante: vedi
+/// [`STESSA_SETTIMANA_MS`].
+///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
@@ -212,12 +216,12 @@ pub fn della_settimana(connection: &Connection, lunedi: i64) -> Result<Vec<Racco
         .prepare(
             "SELECT id, genere, ordine, etichetta, etichetta_tipo, aperta_at
              FROM settimana_raccolta
-             WHERE lunedi = ?1
+             WHERE lunedi BETWEEN ?1 - ?2 AND ?1 + ?2
              ORDER BY genere DESC, ordine",
         )
         .map_err(|err| db_error("lettura delle raccolte della settimana", &err))?;
     let righe = statement
-        .query_map([lunedi], |row| {
+        .query_map([lunedi, STESSA_SETTIMANA_MS], |row| {
             Ok(Raccolta {
                 id: row.get(0)?,
                 genere: row.get(1)?,
@@ -298,23 +302,39 @@ pub fn apri(connection: &Connection, raccolta: i64, adesso: i64) -> Result<(), A
 /// che è precisamente il caso in cui costa di più rifarlo.
 const CHIAVE_ULTIMO: &str = "settimana.ultimo_lunedi";
 
+/// Di quanto due lunedì possono differire ed essere la stessa settimana.
+///
+/// # Perché un lunedì non si confronta all'istante
+///
+/// Il lunedì arriva dalla finestra calcolato con lo scostamento di **adesso**
+/// ([`rymembra_domain::settimana::lunedi`]): la domenica del cambio dell'ora lo
+/// stesso lunedì cade un'ora prima o dopo di com'era stato scritto (a Roma,
+/// il 18 ottobre 2026 alle 22:00 universali il lunedì, alle 23:00 la domenica
+/// dopo). Confrontato all'istante, era una settimana nuova: si rigenerava di
+/// domenica e la Home perdeva la serie vera. Mezza giornata tiene dentro ogni
+/// cambio d'ora del mondo e resta lontanissima dai sette giorni che separano
+/// due lunedì veri.
+const STESSA_SETTIMANA_MS: i64 = 12 * 60 * 60 * 1000;
+
 /// Se il lunedì è già stato generato.
 ///
 /// Le righe si contano lo stesso, e non per ridondanza: i database generati
 /// prima che questa chiave esistesse hanno le raccolte e non hanno la chiave, e
 /// senza il conteggio se le rifarebbero tutte una volta. Costa una `COUNT` su
 /// un indice, una volta per apertura della Home.
+///
+/// Il confronto è per settimana, non per istante: vedi [`STESSA_SETTIMANA_MS`].
 fn gia_generate(connection: &Connection, lunedi: i64) -> Result<bool, AppError> {
     if crate::settings::read(connection, CHIAVE_ULTIMO)?
         .and_then(|v| v.parse::<i64>().ok())
-        .is_some_and(|ultimo| ultimo == lunedi)
+        .is_some_and(|ultimo| ultimo.abs_diff(lunedi) < STESSA_SETTIMANA_MS.unsigned_abs())
     {
         return Ok(true);
     }
     let quante: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM settimana_raccolta WHERE lunedi = ?1",
-            [lunedi],
+            "SELECT COUNT(*) FROM settimana_raccolta WHERE lunedi BETWEEN ?1 - ?2 AND ?1 + ?2",
+            [lunedi, STESSA_SETTIMANA_MS],
             |row| row.get(0),
         )
         .map_err(|err| db_error("conteggio delle raccolte della settimana", &err))?;
@@ -322,16 +342,20 @@ fn gia_generate(connection: &Connection, lunedi: i64) -> Result<bool, AppError> 
 }
 
 /// I brani già usciti da un certo lunedì in poi.
+///
+/// Con [`STESSA_SETTIMANA_MS`] di margine sotto: la serie di sette giorni fa
+/// può essere stata scritta con l'altro scostamento, un'ora prima del lunedì
+/// che si chiede.
 fn della_scorsa(tx: &Transaction<'_>, da: i64) -> Result<Vec<i64>, AppError> {
     let mut statement = tx
         .prepare(
             "SELECT b.track_id FROM settimana_brano b
              JOIN settimana_raccolta r ON r.id = b.raccolta_id
-             WHERE r.lunedi >= ?1",
+             WHERE r.lunedi >= ?1 - ?2",
         )
         .map_err(|err| db_error("lettura delle raccolte passate", &err))?;
     let righe = statement
-        .query_map([da], |row| row.get::<_, i64>(0))
+        .query_map([da, STESSA_SETTIMANA_MS], |row| row.get::<_, i64>(0))
         .map_err(|err| db_error("lettura delle raccolte passate", &err))?;
     let mut fuori = Vec::new();
     for riga in righe {
@@ -346,11 +370,18 @@ fn ripescati(
     lunedi: i64,
     visti: &[i64],
 ) -> Result<Option<Vec<i64>>, AppError> {
-    // Il taglio in SQL è la sola parte della domanda che un indice sa servire:
-    // «fermi da almeno due mesi», dal più fermo. Il punteggio — che pesa
-    // l'affetto contro l'oblio — non è un `ORDER BY`, e si applica dopo.
-    // Sessanta giorni, che è una costante scritta a mano in virgola mobile
-    // perché il dominio la usa per dividere. Qui serve come intero, e il
+    // Il taglio in SQL prende i candidati col **punteggio** del dominio —
+    // affetto per oblio, con le sue costanti passate come parametri — e non
+    // i più fermi: i brani amati hanno per natura l'ultimo ascolto più
+    // recente, e con «i duemila più fermi» una cronologia piena di ascolti
+    // singoli di anni fa li lasciava fuori tutti. L'espressione è la stessa
+    // di `rymembra_domain::settimana::ripescaggio` (affetto saturato a uno,
+    // oblio fra i due mesi e l'anno); il riordino fine resta quello del
+    // dominio, qui sotto, e decide comunque lui. Costa una lettura dei brani
+    // ascoltati, una volta a settimana.
+    //
+    // La soglia dei sessanta giorni è una costante in virgola mobile perché il
+    // dominio la usa per dividere. Qui serve come intero, e il
     // troncamento è esattamente ciò che si vuole: la soglia SQL taglia un po'
     // più larga della curva dell'oblio, e un candidato in più che poi prende
     // punteggio zero è preferibile a un candidato in meno che non si vede.
@@ -364,13 +395,25 @@ fn ripescati(
         .prepare(
             "SELECT id, play_count, last_played_at, liked FROM tracks
              WHERE play_count > 0 AND last_played_at IS NOT NULL AND last_played_at < ?1
-             ORDER BY last_played_at ASC
+             ORDER BY
+               MIN(1.0, MIN(play_count, ?4) / ?4 + (COALESCE(liked, 0) <> 0) * ?5)
+               * MIN(1.0, MAX(0.0, ((?3 - last_played_at) / 86400000.0 - ?6) / (?7 - ?6)))
+               DESC,
+               id
              LIMIT ?2",
         )
         .map_err(|err| db_error("candidati al ripescaggio", &err))?;
     let righe = statement
         .query_map(
-            rusqlite::params![soglia, i64::try_from(CANDIDATI).unwrap_or(i64::MAX)],
+            rusqlite::params![
+                soglia,
+                i64::try_from(CANDIDATI).unwrap_or(i64::MAX),
+                lunedi,
+                f64::from(ASCOLTI_PIENI),
+                f64::from(PESO_CUORE),
+                f64::from(OBLIO_MINIMO_GIORNI),
+                f64::from(OBLIO_PIENO_GIORNI),
+            ],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -463,7 +506,12 @@ fn battezza(
         if let Some(genere) = genere.filter(|testo| !testo.trim().is_empty()) {
             *generi.entry(genere).or_insert(0) += 1;
         }
-        if !artista.trim().is_empty() {
+        // Il segnaposto che la scansione scrive per i file senza tag artista
+        // non è un nome: la Home direbbe «Intorno a Artista sconosciuto». Non
+        // si conta, e un gruppo fatto in maggioranza di quelli resta senza
+        // nome, che è il caso previsto.
+        let rifilato = artista.trim();
+        if !rifilato.is_empty() && rifilato != rymembra_domain::album::UNKNOWN_ARTIST {
             *artisti.entry(artista).or_insert(0) += 1;
         }
     }
@@ -871,6 +919,27 @@ mod prove {
         assert_eq!(nome, Some(("Art".to_owned(), "artista")));
     }
 
+    /// L'artista segnaposto non è un nome.
+    ///
+    /// La scansione scrive «Artista sconosciuto» per i file senza tag artista:
+    /// un gruppo fatto in maggioranza di quelli si chiamava «Intorno a Artista
+    /// sconosciuto» (e «Around Artista sconosciuto» in inglese).
+    #[test]
+    fn l_artista_segnaposto_non_battezza_un_gruppo() {
+        let mut connection = libreria();
+        brani_di(
+            &connection,
+            1,
+            12,
+            rymembra_domain::album::UNKNOWN_ARTIST,
+            "",
+        );
+        brani_di(&connection, 13, 8, "Art", "");
+        let tx = connection.transaction().expect("transazione");
+        let nome = battezza(&tx, &(1..=20).collect::<Vec<_>>()).expect("nome");
+        assert_eq!(nome, None);
+    }
+
     /// Senza maggioranza, il gruppo resta senza nome.
     ///
     /// Nessun nome è preferibile a un nome che descrive due brani su dieci.
@@ -884,6 +953,122 @@ mod prove {
         let tx = connection.transaction().expect("transazione");
         let nome = battezza(&tx, &(1..=10).collect::<Vec<_>>()).expect("nome");
         assert_eq!(nome, None);
+    }
+
+    /// Il taglio prima del punteggio guarda l'affetto, non solo l'età.
+    ///
+    /// Duemilacento brani sentiti una volta due anni fa e venti sentiti venti
+    /// volte e fermi da duecento giorni: i secondi valgono quasi il triplo, e
+    /// prima non entravano nemmeno fra i candidati, perché il taglio in SQL
+    /// prendeva i duemila più fermi.
+    #[test]
+    fn ripescati_guarda_l_affetto_non_solo_l_eta() {
+        let mut connection = libreria();
+        {
+            let tx = connection.transaction().expect("transazione");
+            brani_di(&tx, 1, 2_100, "Uno", "Rock");
+            brani_di(&tx, 5_001, 20, "Amato", "Rock");
+            tx.execute(
+                "UPDATE tracks SET play_count = 1, last_played_at = ?1 WHERE id <= 2100",
+                [LUNEDI - 700 * GIORNO_MS],
+            )
+            .expect("ascolti singoli");
+            tx.execute(
+                "UPDATE tracks SET play_count = 20, last_played_at = ?1 WHERE id > 5000",
+                [LUNEDI - 200 * GIORNO_MS],
+            )
+            .expect("ascolti amati");
+            tx.commit().expect("commit");
+        }
+        genera_a(&mut connection, LUNEDI);
+        let ripescati: Vec<i64> = della_settimana(&connection, LUNEDI)
+            .expect("lettura")
+            .into_iter()
+            .find(|r| r.genere == RIPESCATI)
+            .map(|r| r.brani)
+            .unwrap_or_default();
+        let mut attesi: Vec<i64> = (5_001..=5_020).collect();
+        let mut trovati = ripescati.clone();
+        trovati.sort_unstable();
+        attesi.sort_unstable();
+        assert_eq!(trovati, attesi, "{ripescati:?}");
+    }
+
+    /// Il cambio dell'ora non fa una settimana nuova.
+    ///
+    /// La finestra passa lo scostamento di **adesso**: a Roma, lunedì 19
+    /// ottobre 2026 vale +120 e il lunedì è il 18 alle 22:00 universali;
+    /// domenica 25 dopo le tre vale +60, e lo stesso lunedì diventa il 18 alle
+    /// 23:00. Confrontato all'istante, la domenica si generava una seconda
+    /// serie. E a fine marzo, nel verso opposto.
+    #[test]
+    fn un_ora_di_cambio_d_ora_non_e_una_settimana_nuova() {
+        for (lunedi_adesso, prima, domenica_adesso, dopo) in [
+            // 19/10/2026 10:00 a Roma (+120), poi 25/10/2026 12:00 (+60).
+            (1_792_396_800_000_i64, 120, 1_792_926_000_000_i64, 60),
+            // 23/03/2026 10:00 a Roma (+60), poi 29/03/2026 12:00 (+120).
+            (1_774_256_400_000, 60, 1_774_778_400_000, 120),
+        ] {
+            let mut connection = libreria();
+            brani_di(&connection, 1, 12, "Art", "Rock");
+            connection
+                .execute(
+                    "UPDATE tracks SET play_count = 5, last_played_at = ?1",
+                    [lunedi_adesso - 400 * GIORNO_MS],
+                )
+                .expect("ascolti");
+            let lunedi_di_lunedi = lunedi(lunedi_adesso, prima);
+            let lunedi_di_domenica = lunedi(domenica_adesso, dopo);
+            assert_ne!(lunedi_di_lunedi, lunedi_di_domenica, "il caso della prova");
+
+            let generate =
+                aggiorna(&mut connection, lunedi_di_lunedi, lunedi_adesso).expect("lunedì");
+            assert_eq!(generate.len(), 1);
+            let rilette =
+                aggiorna(&mut connection, lunedi_di_domenica, domenica_adesso).expect("domenica");
+            let quante: i64 = connection
+                .query_row("SELECT COUNT(*) FROM settimana_raccolta", [], |r| r.get(0))
+                .expect("conteggio");
+            assert_eq!(quante, 1, "la domenica ha generato un'altra serie");
+            assert_eq!(rilette, generate, "la domenica legge la serie del lunedì");
+        }
+    }
+
+    /// La settimana dopo un cambio d'ora non ripete quella prima.
+    ///
+    /// Il lunedì dopo il cambio è scritto con l'altro scostamento: «i brani
+    /// della settimana scorsa» devono comprendere la serie scritta un'ora
+    /// prima o dopo il lunedì esatto di sette giorni fa.
+    #[test]
+    fn dopo_il_cambio_d_ora_la_settimana_scorsa_resta_esclusa() {
+        let mut connection = libreria();
+        brani_di(&connection, 1, 40, "Art", "Rock");
+        // 19/10/2026 a Roma (+120), e il lunedì dopo (+60).
+        let primo_adesso = 1_792_396_800_000_i64;
+        let secondo_adesso = primo_adesso + SETTIMANA_MS;
+        connection
+            .execute(
+                "UPDATE tracks SET play_count = 5, last_played_at = ?1",
+                [primo_adesso - 400 * GIORNO_MS],
+            )
+            .expect("ascolti");
+        let primo = lunedi(primo_adesso, 120);
+        let secondo = lunedi(secondo_adesso, 60);
+        assert_eq!(
+            secondo - primo,
+            SETTIMANA_MS + 60 * 60 * 1000,
+            "il caso della prova"
+        );
+        aggiorna(&mut connection, primo, primo_adesso).expect("primo");
+        aggiorna(&mut connection, secondo, secondo_adesso).expect("secondo");
+        let prima = usciti(&connection, primo);
+        let dopo = usciti(&connection, secondo);
+        assert_eq!(prima.len(), QUANTI);
+        assert_eq!(dopo.len(), QUANTI);
+        assert!(
+            prima.iter().all(|id| !dopo.contains(id)),
+            "la settimana nuova ripete quella vecchia"
+        );
     }
 
     /// Il lunedì che si calcola è quello a cui si scrive.

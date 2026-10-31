@@ -36,9 +36,26 @@
 //!   niente, e chi tace non arriva mai alla parte che costa;
 //! - con i posti pieni si aspetta un posto per [`ATTESA_POSTO`] invece di
 //!   buttare subito la connessione: le strette oneste durano millisecondi;
-//! - due posti al più dallo stesso indirizzo: chi manda il primo messaggio e
-//!   poi tace occupa i suoi due, non quelli degli altri.
+//! - due posti al più dallo stesso indirizzo;
+//! - il posto si tiene solo per il lavoro sulla curva che chi bussa può far
+//!   fare gratis — leggere il primo messaggio, scrivere il secondo — e si
+//!   lascia **prima** di aspettare il terzo dalla rete (vedi «Il posto fra le
+//!   strette» in `canale::stringi`). Chi manda il primo messaggio e poi tace
+//!   non tiene nessun posto mentre tace.
+//!
+//! Fino alla revisione del 30 ottobre il posto si teneva per tutta la stretta,
+//! saluto compreso: chi mandava il primo messaggio e poi taceva lo teneva per
+//! i cinque secondi della stretta, e siccome [`STRETTE`] è il doppio di
+//! [`STRETTE_PER_INDIRIZZO`], da due indirizzi quattro connessioni così li
+//! tenevano tutti — e riaperte appena chiuse, quasi nessun membro entrava.
+//!
+//! Leggere il terzo messaggio fuori dal posto non è un regalo a chi attacca:
+//! uno vero gli costa sulla curva almeno quel che costa a chi ospita (per
+//! scriverlo deve aver letto il secondo), e uno falso si ferma alla
+//! decifratura della chiave statica, prima di ogni moltiplicazione.
 
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher as _;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -89,9 +106,41 @@ const RESPIRO_ASCOLTO: std::time::Duration = std::time::Duration::from_millis(10
 /// Quante porte si provano prima della porta zero.
 const PORTE: u16 = 10;
 
-/// Quante volte si prova la porta zero: la TCP la sceglie il sistema, e la
-/// UDP con lo stesso numero può essere occupata per caso.
+/// Quante volte si prova la porta zero: una delle due prese la fa scegliere
+/// al sistema, e l'altra con lo stesso numero può essere occupata.
+///
+/// # Perché una volta la sceglie la TCP e una volta la UDP
+///
+/// Perché «occupata» non è per caso. Windows dà le porte effimere in fila, e
+/// su un PC con Hyper-V, WSL o Docker esclude dalla UDP dei blocchi interi
+/// che alla TCP lascia: su quello delle prove 49667–50859 (`netsh interface
+/// ipv4 show excludedportrange udp`). Quando la fila TCP passava di lì, otto
+/// tentativi «TCP, poi la UDP con lo stesso numero» fallivano tutti uno dopo
+/// l'altro, e l'host non ospitava. Fatta scegliere alla UDP, la porta è per
+/// costruzione una che la UDP ammette. Le due strade si alternano perché ogni
+/// protocollo ha le sue esclusioni, e nessuna delle due le schiva tutte.
+///
+/// Non basta nemmeno alternare. Lo stesso PC esclude dalla TCP 54551–55685, e
+/// quando la fila UDP è lì mentre quella TCP è nel blocco escluso alla UDP
+/// falliscono tutte e due le strade, a ogni giro (visto nelle prove). Le file
+/// avanzano di un numero alla volta, e restano nel blocco per mille tentativi.
+/// Per questo, finiti questi, si prova a caso: vedi [`TENTATIVI_A_CASO`].
 const TENTATIVI_ZERO: usize = 8;
+
+/// Quante porte a caso fra le effimere si provano quando le file del sistema
+/// non hanno dato una coppia.
+///
+/// I blocchi esclusi coprono qualche migliaio delle 16 384 effimere: una
+/// porta a caso è buona per tutte e due quasi sempre, e trentadue di fila
+/// cattive non capitano. Il caso viene da `RandomState`, che il sistema semina
+/// a ogni avvio: niente dipendenze per estrarre un numero.
+const TENTATIVI_A_CASO: u64 = 32;
+
+/// La prima delle porte effimere, su Windows come per la IANA.
+const PRIMA_EFFIMERA: u16 = 49_152;
+
+/// Quante sono le porte effimere da [`PRIMA_EFFIMERA`] in su.
+const EFFIMERE: u64 = 16_384;
 
 /// Lega TCP e UDP sulla stessa porta. Vedi «La porta».
 ///
@@ -116,11 +165,23 @@ pub(crate) fn lega(
             return Ok((tcp, udp, porta));
         }
     }
-    for _ in 0..TENTATIVI_ZERO {
-        let Ok(tcp) = TcpListener::bind((indirizzo, 0)) else {
+    for tentativo in 0..TENTATIVI_ZERO {
+        // Vedi «Perché una volta la sceglie la TCP e una volta la UDP».
+        if let Some(coppia) = coppia_qualunque(indirizzo, !tentativo.is_multiple_of(2)) {
+            return Ok(coppia);
+        }
+    }
+    // Le file del sistema sono dentro un blocco escluso: vedi
+    // [`TENTATIVI_A_CASO`].
+    let caso = RandomState::new();
+    for tentativo in 0..TENTATIVI_A_CASO {
+        let Ok(scarto) = u16::try_from(caso.hash_one(tentativo) % EFFIMERE) else {
             continue;
         };
-        let Ok(porta) = tcp.local_addr().map(|a| a.port()) else {
+        let Some(porta) = PRIMA_EFFIMERA.checked_add(scarto) else {
+            continue;
+        };
+        let Ok(tcp) = TcpListener::bind((indirizzo, porta)) else {
             continue;
         };
         if let Ok(udp) = UdpSocket::bind((indirizzo, porta)) {
@@ -130,6 +191,22 @@ pub(crate) fn lega(
     Err(AppError::new(ErrorCode::InsiemePortaOccupata {
         porta: prima,
     }))
+}
+
+/// TCP e UDP su una porta scelta dal sistema: la sceglie la UDP se `udp_prima`,
+/// la TCP altrimenti, e l'altra prova lo stesso numero.
+fn coppia_qualunque(indirizzo: IpAddr, udp_prima: bool) -> Option<(TcpListener, UdpSocket, u16)> {
+    if udp_prima {
+        let udp = UdpSocket::bind((indirizzo, 0)).ok()?;
+        let porta = udp.local_addr().ok()?.port();
+        let tcp = TcpListener::bind((indirizzo, porta)).ok()?;
+        Some((tcp, udp, porta))
+    } else {
+        let tcp = TcpListener::bind((indirizzo, 0)).ok()?;
+        let porta = tcp.local_addr().ok()?.port();
+        let udp = UdpSocket::bind((indirizzo, porta)).ok()?;
+        Some((tcp, udp, porta))
+    }
 }
 
 /// Il ciclo d'accettazione, finché l'ascolto è quello di questa generazione.
@@ -172,9 +249,14 @@ fn entra(rete: &Arc<Condiviso>, mut presa: TcpStream, da: SocketAddr, generazion
         let Some(stretta) = Stretta::aspetta(&rete, da.ip(), ATTESA_POSTO) else {
             return;
         };
-        let pronto = prepara(&rete, presa, da, Verso::Entrante { generazione, primo });
-        drop(stretta);
-        if let Ok(pronto) = pronto {
+        // Il posto fra le strette lo lascia la stretta stessa, appena scritto
+        // il secondo messaggio: vedi «Le strette, e chi non parla».
+        let verso = Verso::Entrante {
+            generazione,
+            primo,
+            stretta: Some(stretta),
+        };
+        if let Ok(pronto) = prepara(&rete, presa, da, verso) {
             vivi(&rete, pronto);
         }
         drop(posto);
@@ -216,10 +298,19 @@ impl Drop for Posto {
     }
 }
 
-/// Una stretta in corso: un posto, per indirizzo.
-struct Stretta {
+/// Una stretta in corso: un posto, per indirizzo. Lo tiene la stretta solo
+/// finché lavora sulla curva: vedi «Le strette, e chi non parla».
+pub(crate) struct Stretta {
     rete: Arc<Condiviso>,
     ip: IpAddr,
+}
+
+impl std::fmt::Debug for Stretta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Senza l'indirizzo, come `Collegamento`: una stampa di prova finisce
+        // prima o poi in un diario.
+        f.debug_struct("Stretta").finish_non_exhaustive()
+    }
 }
 
 impl Stretta {
@@ -288,6 +379,34 @@ mod prove {
         assert_ne!(presa, porta);
         assert_eq!(tcp.local_addr().expect("tcp").port(), presa);
         assert_eq!(udp.local_addr().expect("udp").port(), presa);
+    }
+
+    #[test]
+    fn la_porta_zero_trova_una_coppia_anche_con_le_udp_prese_dove_la_tcp_sceglie() {
+        // Windows dà le porte TCP effimere in fila. Su un PC con Hyper-V o
+        // WinNAT la UDP ne esclude dei blocchi interi (su quello delle prove,
+        // 49667–50859, `netsh interface ipv4 show excludedportrange udp`): quando
+        // la fila TCP ci passa, ogni «TCP, poi la UDP con lo stesso numero»
+        // fallisce, uno dopo l'altro; e la TCP ha i suoi blocchi, dove può
+        // stare intanto la fila UDP. Qui le due esclusioni si imitano
+        // prendendo le porte che ciascuna fila darebbe dopo all'altra.
+        let locale = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let sonda_tcp = TcpListener::bind((locale, 0)).expect("tcp");
+        let sonda_udp = UdpSocket::bind((locale, 0)).expect("udp");
+        let da_tcp = sonda_tcp.local_addr().expect("indirizzo").port();
+        let da_udp = sonda_udp.local_addr().expect("indirizzo").port();
+        drop((sonda_tcp, sonda_udp));
+        let dopo = |da: u16| (1..=64_u16).filter_map(move |scarto| da.checked_add(scarto));
+        let udp_prese: Vec<UdpSocket> = dopo(da_tcp)
+            .filter_map(|porta| UdpSocket::bind((locale, porta)).ok())
+            .collect();
+        let tcp_prese: Vec<TcpListener> = dopo(da_udp)
+            .filter_map(|porta| TcpListener::bind((locale, porta)).ok())
+            .collect();
+        let (tcp, udp, porta) = lega(locale, 0).expect("una coppia c'è sempre");
+        assert_eq!(tcp.local_addr().expect("tcp").port(), porta);
+        assert_eq!(udp.local_addr().expect("udp").port(), porta);
+        drop((udp_prese, tcp_prese));
     }
 
     #[test]

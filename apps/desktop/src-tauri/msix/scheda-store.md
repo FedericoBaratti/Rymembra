@@ -200,9 +200,9 @@ Third-party components have their own licenses, listed in THIRD-PARTY-NOTICES.md
 ```
 No sign-in or test account is needed: the app opens straight to the library screen. Its core function is playing audio files from disk. To test: Settings > Folders and scanning, add any folder with music files, then play a track.
 
-Network use is limited to services the user chooses to use: archive.org and audius.co (Explore, import by link), musicbrainz.org and coverartarchive.org (metadata, covers), lrclib.net (lyrics). There is no Rymembra server and no telemetry; every request is listed in the privacy policy.
+Network use is limited to services the user chooses to use: archive.org and audius.co (Explore, import by link), musicbrainz.org and coverartarchive.org (metadata, covers), lrclib.net (lyrics), and the cloud services whose folders the user adds. There is no Rymembra server and no telemetry; every request is listed in the privacy policy.
 
-Optional features that need the user's own accounts or credentials show as "not configured" and cannot be exercised by a tester: Google Drive backup (the user's own Google OAuth client), Last.fm/ListenBrainz scrobbling, and AI-assisted skin editing (the user's own model or provider).
+Optional features that need the user's own accounts or credentials show as "not configured" and cannot be exercised by a tester: Google Drive backup and cloud music folders (the user's own account, plus an app the user registers with Google, Microsoft or Dropbox; none is built in), Last.fm/ListenBrainz scrobbling, and AI-assisted skin editing (the user's own model or provider).
 
 Music sources: Rymembra does not download from YouTube and does not scrape Spotify (it reads the personal-data ZIP that Spotify gives the user on request). Tracks are fetched from Internet Archive and Audius only when the track's own license allows it, and the license is stored with the track (see TERMS.md).
 

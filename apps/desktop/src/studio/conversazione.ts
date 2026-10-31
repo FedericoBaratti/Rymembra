@@ -13,6 +13,7 @@
  */
 import type { MessaggioIa } from "../ipc";
 import type { Cambio } from "./differenze";
+import { accorciato } from "./taglio";
 
 export const VERSIONE_CHAT = 1;
 
@@ -125,11 +126,17 @@ export const CONVERSAZIONE_VUOTA: Conversazione = {
   messaggi: [],
 };
 
-/** Un valore in una riga, tagliato. */
+/**
+ * Un valore in una riga, tagliato.
+ *
+ * Senza spezzare una coppia di surrogati (`taglio.ts`): un'emoji a cavallo
+ * del taglio lasciava nel file un surrogato solo, e il nucleo rifiutava
+ * `chat.json` a ogni salvataggio da lì in poi.
+ */
 function inRiga(valore: unknown): string | null {
   if (valore === undefined) return null;
   const testo = JSON.stringify(valore) ?? "null";
-  return testo.length <= VALORE_IN_VISTA ? testo : `${testo.slice(0, VALORE_IN_VISTA - 1)}…`;
+  return testo.length <= VALORE_IN_VISTA ? testo : accorciato(testo, VALORE_IN_VISTA - 1);
 }
 
 /** I cambi di una risposta, pronti da mostrare e da salvare. */
@@ -178,8 +185,9 @@ export function serializza(c: Conversazione): string {
       // Quel che resta è una battuta sola più grande del tetto: si taglia il
       // suo testo invece di consegnare al nucleo un file che rifiuterebbe a
       // ogni salvataggio. Un quarto del tetto per ognuno dei due testi, in
-      // caratteri: anche a quattro byte l'uno ci stanno.
-      const taglia = (t: string) => (t.length <= PESO_MASSIMO / 16 ? t : `${t.slice(0, PESO_MASSIMO / 16)}…`);
+      // caratteri: anche a quattro byte l'uno ci stanno. Il taglio non spezza
+      // una coppia di surrogati, per la stessa ragione (`taglio.ts`).
+      const taglia = (t: string) => accorciato(t, PESO_MASSIMO / 16);
       battute = battute.map((b) => {
         const corta: Battuta = { ...b, testo: taglia(b.testo) };
         delete corta.pensiero;
@@ -260,4 +268,76 @@ export function leggiSalvata(testo: string | null): Conversazione {
     battute,
     messaggi,
   };
+}
+
+/**
+ * Quanti giri può fare la modalità agent.
+ *
+ * Quattro. Sotto, un modello che sbaglia un nome al primo giro non fa in tempo
+ * a correggersi; sopra, un modello che non ci arriva brucia gettoni e minuti
+ * ripetendo la stessa cosa — e su un servizio a pagamento quei giri si pagano.
+ */
+export const GIRI_MASSIMI = 4;
+
+/** Com'è finito un giro dell'agent, per decidere se aprirne un altro. */
+export interface FineGiro {
+  /** Il ciclo è ancora vivo: nessuno ha premuto «Ferma». */
+  ciclo: boolean;
+  giro: number;
+  /** Errori (o ragioni di scarto) da rimandare al modello. */
+  restano: number;
+  tagliato: boolean;
+  impuntato: boolean;
+}
+
+/**
+ * Si apre un altro giro, a pagamento.
+ *
+ * `ciclo` prima di tutto. Fino alla 3.2 «Ferma» azzerava il giro e basta, col
+ * commento che diceva che bastava: ma un turno già chiuso — «Ferma» un attimo
+ * dopo l'ultimo gettone — arriva come «finito», e con il giro a zero la
+ * condizione `giro >= GIRI_MASSIMI` era falsa: ripartiva un ciclo intero. Lo
+ * stesso passando ad «agent» mentre arrivava una risposta in «proposta». Il
+ * ciclo adesso è una bandiera sua (`Chat.tsx`, `cicloAgent`), alzata solo da
+ * una domanda fatta in agent e abbassata da «Ferma», da un guasto e da ogni
+ * uscita.
+ */
+export function apreUnAltroGiro(f: FineGiro): boolean {
+  return f.ciclo && f.restano > 0 && !f.tagliato && !f.impuntato && f.giro < GIRI_MASSIMI;
+}
+
+/**
+ * La conversazione dopo una domanda che non è partita, o che è caduta prima
+ * della risposta.
+ *
+ * `manda` la aggiunge prima di invocare il servizio — è lì che deve stare se
+ * tutto va bene — e fino alla 3.2 un guasto ce la lasciava: un server locale
+ * non ancora avviato, e la domanda dopo partiva come [system, user, user].
+ * Alcuni modelli (i modelli di Gemma, certi Mistral) rifiutano due «user» di
+ * fila, e da lì ogni domanda della conversazione falliva; gli altri
+ * eseguivano anche quella vecchia. La risposta si aggiunge solo a turno
+ * finito, quindi a un guasto l'ultimo messaggio è sempre quella domanda.
+ */
+export function senzaDomandaFallita(messaggi: readonly MessaggioChat[]): MessaggioChat[] {
+  return messaggi[messaggi.length - 1]?.ruolo === "user" ? messaggi.slice(0, -1) : [...messaggi];
+}
+
+/** Le misure di scorrimento di un pannello. */
+export interface Scorrimento {
+  scrollTop: number;
+  clientHeight: number;
+  scrollHeight: number;
+}
+
+/**
+ * Il pannello è in fondo, o quasi: quel che arriva lo deve seguire.
+ *
+ * Fino alla 3.2 la chat tornava in fondo a ogni pezzo della risposta — fino
+ * a venti volte al secondo — e chi risaliva per rileggere la proposta o i
+ * cambi di prima veniva riportato giù finché il turno non finiva. Adesso
+ * segue solo chi era già in fondo (`Chat.tsx`, che lo misura a ogni
+ * scorrimento).
+ */
+export function vicinoAlFondo(m: Scorrimento, soglia = 48): boolean {
+  return m.scrollHeight - (m.scrollTop + m.clientHeight) <= soglia;
 }

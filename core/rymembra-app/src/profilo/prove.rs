@@ -365,6 +365,34 @@ fn i_pc_associati_e_le_chiavi_di_insieme_restano_qui() {
 }
 
 #[test]
+fn lo_specchio_del_cloud_resta_qui() {
+    // Lo specchio è una cache (migrazione 036): la biblioteca porta solo le
+    // tabelle che nomina, e questa prova lo tiene vero voce per voce
+    // dell'archivio, anche quella che domani qualcuno aggiungerà.
+    let mut c = libreria();
+    brano(&c, 1, r"D:\M\a.flac", "artista|titolo|album");
+    let segreti = crate::nuvola::specchio_da_non_portare(&c);
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let archivio = esporta(&mut c, dir.path(), "qui", &identita_fissa);
+    let file = std::fs::File::open(&archivio).expect("archivio");
+    let mut zip = zip::ZipArchive::new(file).expect("zip");
+    for posto in 0..zip.len() {
+        let mut voce = zip.by_index(posto).expect("voce");
+        let nome = voce.name().to_owned();
+        let mut byte = Vec::new();
+        std::io::Read::read_to_end(&mut voce, &mut byte).expect("scompattata");
+        // Il documento di sincronia viaggia compresso: si guarda decodificato.
+        let testo = String::from_utf8_lossy(&byte).into_owned();
+        non_contiene(&nome, &testo, &segreti);
+    }
+    let letto = leggi(&archivio).expect("lettura");
+    non_contiene("preferenze", &in_json(&letto.preferenze), &segreti);
+    non_contiene("biblioteca", &in_json(&letto.biblioteca), &segreti);
+    let sincronia = letto.sincronia.as_ref().expect("il documento di sincronia");
+    non_contiene("sincronia", &in_json(sincronia), &segreti);
+}
+
+#[test]
 fn un_profilo_scritto_a_mano_non_accende_insieme() {
     // Il guasto da tenere chiuso: un profilo passato di mano in mano che,
     // importato, apre una porta in ascolto su un PC che non l'ha chiesto e lo
@@ -651,6 +679,48 @@ fn importare_un_profilo_non_perde_gli_ascolti_di_qui() {
 }
 
 #[test]
+fn un_profilo_porta_anche_gli_ascolti_degli_altri_dispositivi() {
+    // Il portatile sincronizzato da un anno col telefono: dei cinque ascolti,
+    // due sono suoi e tre del telefono. Il documento di sincronia porta solo
+    // quelli di chi esporta, la cronologia solo le righe suonate qui: sul
+    // computer nuovo i tre del telefono sparivano, in silenzio.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\a.flac", "k");
+    la.execute_batch(
+        "INSERT INTO sync_ascolti (track_key, dispositivo, quanti)
+         VALUES ('k', 'la', 2), ('k', 'telefono', 3);
+         UPDATE tracks SET play_count = 5 WHERE id = 1;",
+    )
+    .expect("ascolti");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "k");
+    for _ in 0..2 {
+        importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+        let (conteggio, del_telefono): (i64, i64) = qui
+            .query_row(
+                "SELECT t.play_count, a.quanti FROM tracks t
+                   JOIN sync_ascolti a ON a.track_key = t.track_key AND a.dispositivo = 'telefono'
+                  WHERE t.id = 1",
+                [],
+                |riga| Ok((riga.get(0)?, riga.get(1)?)),
+            )
+            .expect("conteggio");
+        assert_eq!(
+            conteggio, 5,
+            "due di là più tre del telefono, anche rifacendo"
+        );
+        assert_eq!(
+            del_telefono, 3,
+            "e restano del telefono, non dell'importazione"
+        );
+    }
+}
+
+#[test]
 fn le_playlist_si_fondono_invece_di_sostituirsi() {
     // Il verso che conta: importare un profilo **aggiunge** le playlist che
     // porta e non tocca quelle di qui. Una implementazione ingenua
@@ -827,6 +897,139 @@ fn un_brano_corretto_ritrova_tutto_su_un_computer_nuovo() {
         )
         .expect("il testo");
     assert!(testo.is_some());
+}
+
+/// Una libreria con un brano dei tag «Artista|Titolo|Album» corretto a mano in
+/// `titolo`, alla data `set_at`.
+fn libreria_corretta(titolo: &str, set_at: i64) -> Connection {
+    let dei_tag = "artista|titolo|album";
+    let corretta = format!("artista|{}|album", titolo.to_lowercase());
+    let campi = serde_json::to_string(&crate::provenienza::Correzioni {
+        titolo: Some(titolo.to_owned()),
+        ..crate::provenienza::Correzioni::default()
+    })
+    .expect("correzione");
+    let c = libreria();
+    brano(&c, 1, r"D:\M\01.flac", &corretta);
+    c.execute(
+        "UPDATE tracks SET title = ?1, content_key = ?2 WHERE id = 1",
+        rusqlite::params![titolo, dei_tag],
+    )
+    .expect("il brano corretto");
+    c.execute(
+        "INSERT INTO track_overrides (track_id, campi, set_at) VALUES (1, ?1, ?2)",
+        rusqlite::params![campi, set_at],
+    )
+    .expect("la correzione");
+    c
+}
+
+fn titolo_e_correzione(c: &Connection) -> (String, String, i64) {
+    c.query_row(
+        "SELECT t.title, o.campi, o.set_at
+           FROM tracks t JOIN track_overrides o ON o.track_id = t.id
+          WHERE t.id = 1",
+        [],
+        |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+    )
+    .expect("rilettura")
+}
+
+#[test]
+fn una_correzione_piu_vecchia_del_profilo_non_sostituisce_quella_di_qui() {
+    // La regola del `//!` di `biblioteca`: vince la correzione più recente.
+    // Reimportare il profilo di un mese fa non deve riportare indietro quel che
+    // si è corretto nel frattempo — la clausola `WHERE excluded.set_at >`
+    // dell'upsert è quel che lo impedisce, e nessuna prova la guardava.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_corretta("Vecchio", 600);
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria_corretta("Nuovo", 900);
+    let prima = titolo_e_correzione(&qui);
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(piano.portati.correzioni, 0, "{piano:?}");
+    assert_eq!(titolo_e_correzione(&qui), prima);
+    assert_eq!(prima.0, "Nuovo");
+}
+
+#[test]
+fn una_correzione_piu_recente_del_profilo_vince() {
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_corretta("Nuovo", 900);
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria_corretta("Vecchio", 600);
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(piano.portati.correzioni, 1, "{piano:?}");
+    let (titolo, _, set_at) = titolo_e_correzione(&qui);
+    assert_eq!((titolo.as_str(), set_at), ("Nuovo", 900));
+}
+
+#[test]
+fn una_copertina_del_profilo_riempie_solo_i_buchi() {
+    // L'altra regola del `//!`: una copertina che c'è resta quella che c'è.
+    // Senza `AND cover_art_hash IS NULL` il profilo sostituirebbe le copertine
+    // scelte qui.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let la_sua = "b".repeat(64);
+    let la_mia = "a".repeat(64);
+    let copertina = |c: &Connection, hash: &str| {
+        c.execute(
+            "INSERT INTO cover_art (hash, mime_type, source, created_at)
+             VALUES (?1, 'image/jpeg', 'tag', 0)",
+            [hash],
+        )
+        .expect("copertina");
+    };
+
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\01.flac", "artista|uno|album");
+    brano(&la, 2, r"D:\M\02.flac", "artista|due|album");
+    copertina(&la, &la_sua);
+    la.execute("UPDATE tracks SET cover_art_hash = ?1", [&la_sua])
+        .expect("copertine di là");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+    // E un ascolto da una fonte che questa versione non conosce: ricade su
+    // `local` invece di far fallire tutta la transazione sul `CHECK`.
+    letto.biblioteca.cronologia.push(biblioteca::Ascoltato {
+        chiave: "artista|due|album".to_owned(),
+        quando_ms: 1_000,
+        ms: 200_000,
+        fonte: "youtube".to_owned(),
+    });
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\01.flac", "artista|uno|album");
+    brano(&qui, 2, r"E:\M\02.flac", "artista|due|album");
+    copertina(&qui, &la_mia);
+    qui.execute(
+        "UPDATE tracks SET cover_art_hash = ?1 WHERE id = 1",
+        [&la_mia],
+    )
+    .expect("la copertina di qui");
+
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(piano.portati.copertine, 1, "{piano:?}");
+    let copertine: Vec<Option<String>> = qui
+        .prepare("SELECT cover_art_hash FROM tracks ORDER BY id")
+        .expect("interrogazione")
+        .query_map([], |riga| riga.get(0))
+        .expect("lettura")
+        .collect::<Result<_, _>>()
+        .expect("lettura");
+    assert_eq!(copertine, vec![Some(la_mia), Some(la_sua)]);
+    let fonte: String = qui
+        .query_row(
+            "SELECT source FROM play_history WHERE played_at = 1000",
+            [],
+            |riga| riga.get(0),
+        )
+        .expect("l'ascolto è entrato");
+    assert_eq!(fonte, "local");
 }
 
 #[test]
@@ -1049,6 +1252,176 @@ fn un_brano_che_non_c_e_nella_nuova_radice_non_si_riscrive() {
     );
 }
 
+/// Un profilo v1 scritto a mano, con le voci date.
+fn profilo_v1(voci: &[(&str, &str)]) -> Letto {
+    let documento = SuDisco {
+        rymembra: FIRMA.to_owned(),
+        versione: VERSIONE_V1,
+        creato_ms: 1,
+        voci: voci
+            .iter()
+            .map(|(chiave, valore)| ((*chiave).to_owned(), (*valore).to_owned()))
+            .collect(),
+    };
+    leggi_v1(
+        &serde_json::to_string(&documento).expect("json"),
+        Path::new("a-mano.json"),
+    )
+    .expect("lettura")
+}
+
+/// Un elenco di percorsi come lo scrive `library.roots`.
+fn elenco(percorsi: &[&str]) -> String {
+    serde_json::to_string(percorsi).expect("json")
+}
+
+#[test]
+fn il_piano_non_sonda_le_condivisioni_che_questo_pc_non_conosce() {
+    // Toccare `\\host\share` vuol dire, su Windows, aprire una sessione SMB e
+    // presentare le credenziali di chi importa all'host scritto nel file —
+    // prima di qualunque «sì». Un percorso di rete che questo computer non
+    // conosce già non si sonda: vale «da rimappare».
+    let mut qui = libreria();
+    settings::write(&qui, "library.roots", &elenco(&[r"D:\Musica"])).expect("scrittura");
+    let letto = profilo_v1(&[
+        (
+            "library.roots",
+            &elenco(&[
+                r"\\192.0.2.1\m",
+                "//192.0.2.1/m",
+                r"\\?\UNC\192.0.2.1\m",
+                r"\\192.0.2.1@SSL\DavWWWRoot\m",
+                r"E:\Musica",
+            ]),
+        ),
+        ("download.folder", r"\\192.0.2.1\scaricati"),
+    ]);
+
+    let chiesti = std::cell::RefCell::new(Vec::<String>::new());
+    let registra = |percorso: &str| {
+        chiesti.borrow_mut().push(percorso.to_owned());
+        false
+    };
+    let proposto = piano(&mut qui, &letto, &ambiente(&registra)).expect("piano");
+
+    let chiesti = chiesti.into_inner();
+    assert!(
+        chiesti
+            .iter()
+            .all(|p| !p.starts_with(r"\\") && !p.starts_with("//")),
+        "nessuna condivisione sconosciuta si tocca: {chiesti:?}"
+    );
+    assert!(chiesti.iter().any(|p| p == r"E:\Musica"), "{chiesti:?}");
+    assert!(
+        proposto
+            .rimappature
+            .iter()
+            .any(|r| r.da == r"\\192.0.2.1\m"),
+        "la radice di rete si propone comunque da rimappare: {:?}",
+        proposto.rimappature
+    );
+}
+
+#[test]
+fn una_condivisione_gia_nota_si_sonda() {
+    // Se questo computer usa già quella condivisione, chiedere se c'è non
+    // presenta le credenziali a nessuno di nuovo.
+    let mut qui = libreria();
+    settings::write(&qui, "library.roots", &elenco(&[r"\\nas\musica"])).expect("scrittura");
+    let letto = profilo_v1(&[("library.roots", &elenco(&[r"\\NAS\musica\Rock"]))]);
+
+    let chiesti = std::cell::RefCell::new(Vec::<String>::new());
+    let registra = |percorso: &str| {
+        chiesti.borrow_mut().push(percorso.to_owned());
+        true
+    };
+    let proposto = piano(&mut qui, &letto, &ambiente(&registra)).expect("piano");
+    assert!(
+        chiesti.borrow().iter().any(|p| p == r"\\NAS\musica\Rock"),
+        "{:?}",
+        chiesti.borrow()
+    );
+    assert!(proposto.rimappature.is_empty());
+}
+
+#[test]
+fn un_profilo_v1_non_toglie_le_cartelle_di_qui() {
+    // Un v1 non ha documento di sincronia, e il ramo che unisce le cartelle
+    // non girava: `library.roots` del file sostituiva l'elenco di qui, e la
+    // sincronia propagava la rimozione agli altri dispositivi.
+    let mut qui = libreria();
+    settings::write(&qui, "library.roots", &elenco(&["C:/Musica"])).expect("scrittura");
+    let letto = profilo_v1(&[("library.roots", &elenco(&["D:/Sua", "c:\\musica\\"]))]);
+
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(
+        settings::read(&qui, "library.roots"),
+        Ok(Some(elenco(&["C:/Musica", "D:/Sua"]))),
+        "si aggiunge, e la stessa cartella scritta in un altro modo non si ripete"
+    );
+    assert_eq!(piano.cambi.len(), 1, "{:?}", piano.cambi);
+
+    // Rifatto, non cambia più niente.
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert!(piano.cambi.is_empty(), "{:?}", piano.cambi);
+}
+
+#[test]
+fn il_profilo_di_un_altra_libreria_non_tocca_le_cartelle_di_qui() {
+    // Il profilo di un amico, per tema ed equalizzatore: le sue cartelle sono
+    // percorsi di un'altra macchina, e unirle le farebbe propagare dalla
+    // sincronia agli altri dispositivi come cartelle accese adesso.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut sua = libreria();
+    settings::write(&sua, "library.roots", &elenco(&["D:/Sua"])).expect("scrittura");
+    settings::write(&sua, "player.volume", "0.9").expect("scrittura");
+    let archivio = esporta(&mut sua, dir.path(), "sua", &identita_altrui);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    identita(&qui, &identita_fissa).expect("identità");
+    settings::write(&qui, "library.roots", &elenco(&["C:/Musica"])).expect("scrittura");
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert!(piano.identita_diversa);
+    assert_eq!(
+        settings::read(&qui, "library.roots"),
+        Ok(Some(elenco(&["C:/Musica"])))
+    );
+    assert_eq!(
+        settings::read(&qui, "player.volume"),
+        Ok(Some("0.9".to_owned())),
+        "le preferenze passano lo stesso"
+    );
+    assert!(piano.cambi.iter().all(|c| c.chiave != "library.roots"));
+}
+
+#[test]
+fn le_sonde_del_piano_hanno_un_tetto() {
+    // Il numero delle radici lo decide il file, e ogni sonda di un'unità di
+    // rete che non risponde costa secondi sotto il lucchetto della libreria.
+    let mut qui = libreria();
+    let radici: Vec<String> = (0..60).map(|n| format!(r"Z:\Musica\{n}")).collect();
+    let radici: Vec<&str> = radici.iter().map(String::as_str).collect();
+    let letto = profilo_v1(&[("library.roots", &elenco(&radici))]);
+
+    let chiesti = std::cell::RefCell::new(Vec::<String>::new());
+    let registra = |percorso: &str| {
+        chiesti.borrow_mut().push(percorso.to_owned());
+        false
+    };
+    let proposto = piano(&mut qui, &letto, &ambiente(&registra)).expect("piano");
+    assert!(
+        chiesti.borrow().len() <= super::MAX_SONDE,
+        "{} sonde",
+        chiesti.borrow().len()
+    );
+    assert_eq!(
+        proposto.rimappature.len(),
+        60,
+        "quelle oltre il tetto restano da rimappare, non spariscono"
+    );
+}
+
 // ── la copia di sicurezza ───────────────────────────────────────────────────
 
 #[test]
@@ -1101,6 +1474,220 @@ fn la_copia_di_sicurezza_si_scrive_prima() {
         settings::read(&qui, "skin.active"),
         Ok(Some("mia".to_owned()))
     );
+}
+
+#[test]
+fn annullare_toglie_le_preferenze_che_prima_non_c_erano() {
+    // Su un computer nuovo skin, equalizzatore e tema non sono mai stati
+    // scelti: in `settings` non ci sono. La copia di sicurezza non li porta, e
+    // «Torna com'era prima» scorreva solo le chiavi della copia — quelle del
+    // profilo restavano, e la finestra diceva di averle rimesse.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let dati = dir.path().join("dati");
+    let mut qui = libreria();
+    settings::write(&qui, "player.volume", "0.5").expect("scrittura");
+    settings::write(&qui, "library.roots", &elenco(&["C:/Musica"])).expect("scrittura");
+    let store = CoverStore::open(dati.join("copertine")).expect("store");
+    let raccolto = raccogli(
+        &mut qui,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        1,
+        &identita_fissa,
+    )
+    .expect("raccolta");
+    let copia = copia_di_sicurezza(&dati, 1);
+    scrivi(
+        &raccolto,
+        &Sorgenti {
+            copertine: &store,
+            skin: BTreeMap::new(),
+            bozze: BTreeMap::new(),
+        },
+        &copia,
+        &|_| {},
+    )
+    .expect("copia");
+
+    let mut altro = libreria();
+    settings::write(&altro, "skin.active", "sua").expect("scrittura");
+    settings::write(&altro, "player.eq", "[1,2,3]").expect("scrittura");
+    settings::write(&altro, "player.volume", "0.9").expect("scrittura");
+    settings::write(&altro, "library.roots", &elenco(&["D:/Sua"])).expect("scrittura");
+    let archivio = esporta(&mut altro, dir.path(), "altro", &identita_fissa);
+    importa(
+        &mut qui,
+        &leggi(&archivio).expect("lettura"),
+        &ambiente(&c_e_tutto),
+    )
+    .expect("importazione");
+    assert_eq!(
+        settings::read(&qui, "skin.active"),
+        Ok(Some("sua".to_owned()))
+    );
+
+    let piano = annulla(&mut qui, &copia, &ambiente(&c_e_tutto)).expect("annullamento");
+    assert_eq!(settings::read(&qui, "skin.active"), Ok(None));
+    assert_eq!(settings::read(&qui, "player.eq"), Ok(None));
+    assert_eq!(
+        settings::read(&qui, "player.volume"),
+        Ok(Some("0.5".to_owned()))
+    );
+    // Le cartelle che il profilo aveva aggiunto se ne vanno: l'annullamento
+    // rimette l'elenco della copia com'è, non lo unisce.
+    assert_eq!(
+        settings::read(&qui, "library.roots"),
+        Ok(Some(elenco(&["C:/Musica"])))
+    );
+    assert!(
+        piano.cambi.iter().any(|c| c.chiave == "skin.active"),
+        "e la chiave tolta si conta fra i cambi: {:?}",
+        piano.cambi
+    );
+}
+
+#[test]
+fn una_copia_senza_l_elenco_delle_assenti_non_dimentica_niente() {
+    // Una copia scritta da una versione di prima non dice quali chiavi
+    // mancavano, e il suo catalogo poteva essere più corto: nel dubbio non si
+    // toglie niente.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let copia = dir.path().join("prima.json");
+    std::fs::write(
+        &copia,
+        r#"{"rymembra":"rymembra.profilo","versione":1,"creato_ms":1,"voci":{"player.volume":"0.5"}}"#,
+    )
+    .expect("copia");
+    let mut qui = libreria();
+    settings::write(&qui, "skin.active", "sua").expect("scrittura");
+    annulla(&mut qui, &copia, &ambiente(&c_e_tutto)).expect("annullamento");
+    assert_eq!(
+        settings::read(&qui, "skin.active"),
+        Ok(Some("sua".to_owned()))
+    );
+}
+
+/// Una raccolta vuota, da gonfiare a mano oltre i limiti della lettura.
+fn raccolto_vuoto() -> Raccolto {
+    let mut c = libreria();
+    raccogli(
+        &mut c,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        1,
+        &identita_fissa,
+    )
+    .expect("raccolta")
+}
+
+/// Cento e una migliaia di copertine: con le miniature, più voci di quante la
+/// lettura ne ammetta.
+fn troppe_copertine(raccolto: &mut Raccolto) {
+    for n in 0..=archivio::limiti::MAX_VOCI.div_euclid(2) {
+        raccolto.biblioteca.copertine.insert(
+            format!("brano-{n}"),
+            biblioteca::Copertina {
+                hash: format!("{n:064x}"),
+                mime_type: "image/jpeg".to_owned(),
+                width: None,
+                height: None,
+                byte_size: None,
+                source: "tag".to_owned(),
+                created_at: 0,
+            },
+        );
+    }
+}
+
+#[test]
+fn l_esportazione_rifiuta_un_profilo_che_la_lettura_rifiuterebbe() {
+    // `indice` rifiuta l'archivio intero oltre `MAX_VOCI` voci o con una voce
+    // oltre `MAX_VOCE`; l'esportazione scriveva lo stesso, diceva «fatto», e
+    // sul computer nuovo il profilo non si apriva. Adesso si ferma prima di
+    // scrivere, e il profilo di prima sulla chiavetta resta com'era.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let store = CoverStore::open(dir.path().join("store")).expect("store");
+    let sorgenti = Sorgenti {
+        copertine: &store,
+        skin: BTreeMap::new(),
+        bozze: BTreeMap::new(),
+    };
+    let destinazione = dir.path().join("Rymembra.ryprofile");
+    std::fs::write(&destinazione, b"il profilo di prima").expect("profilo vecchio");
+
+    let mut troppe = raccolto_vuoto();
+    troppe_copertine(&mut troppe);
+    let err = scrivi(&troppe, &sorgenti, &destinazione, &|_| {}).expect_err("troppe voci");
+    assert_eq!(err.code().kind().code(), "profile.tooLarge");
+    // Quando a sforare è il numero delle voci, `voce` è vuota e il limite
+    // conta voci.
+    assert!(matches!(
+        err.code(),
+        ErrorCode::ProfileTooLarge { voce, limite, .. }
+            if voce.is_empty()
+                && *limite == u64::try_from(archivio::limiti::MAX_VOCI).expect("limite")
+    ));
+
+    let mut enorme = raccolto_vuoto();
+    let limite = usize::try_from(archivio::limiti::MAX_VOCE).expect("limite");
+    enorme.biblioteca.testi.insert(
+        "k".to_owned(),
+        biblioteca::Testo {
+            plain: Some("a".repeat(limite + 1)),
+            synced: None,
+            source: "mano".to_owned(),
+            lrclib_id: None,
+            offset_ms: 0,
+            instrumental: false,
+            duration_ms: None,
+            updated_at: 0,
+        },
+    );
+    let err = scrivi(&enorme, &sorgenti, &destinazione, &|_| {}).expect_err("voce enorme");
+    assert_eq!(err.code().kind().code(), "profile.tooLarge");
+    assert!(matches!(
+        err.code(),
+        ErrorCode::ProfileTooLarge { voce, byte, limite }
+            if voce == archivio::NOME_BIBLIOTECA
+                && *byte > archivio::limiti::MAX_VOCE
+                && *limite == archivio::limiti::MAX_VOCE
+    ));
+
+    assert_eq!(
+        std::fs::read(&destinazione).expect("rilettura"),
+        b"il profilo di prima"
+    );
+    assert!(
+        !dir.path().join("Rymembra.ryprofile.parziale").exists(),
+        "si ferma prima di aprire qualunque file"
+    );
+}
+
+#[test]
+fn la_copia_di_sicurezza_si_scrive_anche_oltre_i_limiti() {
+    // La decisione: il controllo vale per l'esportazione chiesta da chi usa il
+    // programma, non per la copia di sicurezza. Senza copia l'importazione non
+    // parte, e chi ha una libreria oltre il limite non potrebbe più importare
+    // nemmeno un profilo di sole preferenze.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let store = CoverStore::open(dir.path().join("store")).expect("store");
+    let mut troppe = raccolto_vuoto();
+    troppe_copertine(&mut troppe);
+    let copia = copia_di_sicurezza(dir.path(), 1);
+    scrivi(
+        &troppe,
+        &Sorgenti {
+            copertine: &store,
+            skin: BTreeMap::new(),
+            bozze: BTreeMap::new(),
+        },
+        &copia,
+        &|_| {},
+    )
+    .expect("la copia si scrive");
+    assert!(copia.exists());
 }
 
 #[test]

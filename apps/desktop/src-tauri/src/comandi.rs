@@ -151,19 +151,7 @@ pub async fn imposta_cartelle(
     let mano = app.clone();
     let esito = in_disparte("cartelle sorvegliate", move || {
         let stato = libreria_di(&mano, "cartelle sorvegliate")?;
-        let prima = con_libreria(&stato, |libreria| leggi_cartelle(&libreria.connection))?;
-        let nomi = nomi_veri(&prima, &cartelle);
-        let ordinate = rymembra_app::profilo::radici::ordina_cartelle(&prima, &cartelle, &|c| {
-            nomi.get(c).cloned().flatten()
-        });
-        con_libreria(&stato, |libreria| {
-            rymembra_app::settings::write_json(
-                &libreria.connection,
-                CHIAVE_CARTELLE,
-                &ordinate.cartelle,
-            )
-        })?;
-        Ok(ordinate)
+        scrivi_cartelle(&stato, &cartelle)
     })
     .await
     .map_err(errore)?
@@ -176,12 +164,52 @@ pub async fn imposta_cartelle(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+/// Scrive l'elenco delle cartelle sorvegliate con le regole di sempre:
+/// annidate raccolte nella madre, gemelle trattenute per il trasloco.
+///
+/// Lo usano [`imposta_cartelle`] e l'aggiunta di una cartella del cloud
+/// (`nuvola_musica::nuvola_aggiungi`): una sola strada per scrivere l'elenco,
+/// così una cartella di OneDrive dentro un'altra già scelta si raccoglie come
+/// una del disco. La sorveglianza non la avvisa: lo fa chi chiama, quando ha
+/// finito anche il resto.
+///
+/// # Errori
+///
+/// `db.*` se la lettura o la scrittura falliscono.
+pub(crate) fn scrivi_cartelle(
+    stato: &Stato,
+    cartelle: &[String],
+) -> Result<rymembra_app::profilo::radici::CartelleOrdinate, AppError> {
+    let prima = con_libreria(stato, |libreria| leggi_cartelle(&libreria.connection))?;
+    let nomi = nomi_veri(&prima, cartelle);
+    let ordinate = rymembra_app::profilo::radici::ordina_cartelle(&prima, cartelle, &|c| {
+        nomi.get(c).cloned().flatten()
+    });
+    con_libreria(stato, |libreria| {
+        rymembra_app::settings::write_json(
+            &libreria.connection,
+            CHIAVE_CARTELLE,
+            &ordinate.cartelle,
+        )
+    })?;
+    Ok(ordinate)
+}
+
+/// Le cartelle sorvegliate, come stanno in `settings`.
+///
+/// # Errori
+///
+/// `db.*` se la lettura fallisce.
+pub(crate) fn cartelle_sorvegliate(stato: &Stato) -> Result<Vec<String>, AppError> {
+    con_libreria(stato, |libreria| leggi_cartelle(&libreria.connection))
+}
+
 /// La libreria, o l'errore di chi arriva mentre la finestra si chiude.
 ///
 /// `try_state` e non `state`, come in `cancellazione`: questi corpi girano sul
 /// pool bloccante, e possono ritrovarsi vivi quando gli stati gestiti sono già
 /// stati lasciati cadere.
-fn libreria_di<'a>(
+pub(crate) fn libreria_di<'a>(
     app: &'a tauri::AppHandle,
     cosa: &'static str,
 ) -> Result<State<'a, Stato>, AppError> {
@@ -274,6 +302,68 @@ pub async fn cartelle_trasloca(
 /// scansione: quella la si lascia finire, e il trasloco si chiede dopo.
 const ATTESA_DEL_TURNO_DI_TRASLOCO: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Il turno di manutenzione, aspettato al più `entro`: chi lo chiede tocca le
+/// righe dei brani, e una scansione che scrive a lotti nel frattempo
+/// riscriverebbe sopra quel che ha appena fatto.
+///
+/// Si aspetta un poco invece di rinunciare subito: il turno lo prende anche la
+/// pulizia delle copertine, una decina di secondi dopo ogni scansione.
+///
+/// # Errori
+///
+/// `library.scanBusy`, con `perche` come causa, se il turno non si libera in
+/// tempo o l'applicazione si chiude.
+pub(crate) fn aspetta_il_turno_di_manutenzione<'a>(
+    stato: &'a Stato,
+    entro: std::time::Duration,
+    perche: &str,
+) -> Result<crate::stato::Turno<'a>, AppError> {
+    let scadenza = std::time::Instant::now() + entro;
+    loop {
+        if let Some(turno) = stato.turno_di_manutenzione() {
+            return Ok(turno);
+        }
+        if crate::spegnimento::in_uscita() || std::time::Instant::now() >= scadenza {
+            return Err(AppError::new(ErrorCode::LibraryScanBusy).with_cause(perche.to_owned()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Le cartelle sorvegliate e quella dei download, dopo un trasloco: dentro la
+/// transazione di chi trasloca i brani.
+///
+/// Lo usa anche il filo di un conto del cloud, quando la cartella scelta è
+/// stata rinominata sul servizio (`nuvola_musica`).
+///
+/// # Errori
+///
+/// Quelli del database.
+pub(crate) fn riscrivi_le_cartelle(
+    tx: &rusqlite::Connection,
+    rimappature: &[rymembra_app::profilo::Rimappatura],
+) -> Result<(), AppError> {
+    use rymembra_app::profilo::radici;
+    let cartelle = leggi_cartelle(tx)?;
+    let rimappate: Vec<String> = cartelle
+        .iter()
+        .map(|c| radici::rimappa_percorso(c, rimappature))
+        .collect();
+    // Rimesse in ordine con le regole di sempre: la cartella traslocata può
+    // essere finita dentro un'altra, o sopra un doppione.
+    let ordinate = radici::ordina_cartelle(&rimappate, &rimappate, &|_| None);
+    rymembra_app::settings::write_json(tx, CHIAVE_CARTELLE, &ordinate.cartelle)?;
+
+    let chiave_download = rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD;
+    if let Some(scarichi) = rymembra_app::settings::read(tx, chiave_download)? {
+        let spostata = radici::rimappa_percorso(&scarichi, rimappature);
+        if spostata != scarichi {
+            rymembra_app::settings::write(tx, chiave_download, &spostata)?;
+        }
+    }
+    Ok(())
+}
+
 /// Il corpo di [`cartelle_trasloca`], sul filo che l'ha presa in disparte.
 fn trasloca_ora(
     app: &tauri::AppHandle,
@@ -297,17 +387,11 @@ fn trasloca_ora(
     // scansione, e un trasloco rifiutato per quella sarebbe una domanda da
     // rifare per niente. Si gira in disparte, quindi l'attesa non ferma
     // nessuno; oltre la scadenza c'è davvero una scansione, e lo si dice.
-    let scadenza = std::time::Instant::now() + ATTESA_DEL_TURNO_DI_TRASLOCO;
-    let _turno = loop {
-        if let Some(turno) = stato.turno_di_manutenzione() {
-            break turno;
-        }
-        if crate::spegnimento::in_uscita() || std::time::Instant::now() >= scadenza {
-            return Err(AppError::new(ErrorCode::LibraryScanBusy)
-                .with_cause("il trasloco aspetta che la scansione in corso finisca"));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+    let _turno = aspetta_il_turno_di_manutenzione(
+        &stato,
+        ATTESA_DEL_TURNO_DI_TRASLOCO,
+        "il trasloco aspetta che la scansione in corso finisca",
+    )?;
     let rimappature = [rymembra_app::profilo::Rimappatura {
         da: da.to_owned(),
         a: a.to_owned(),
@@ -345,24 +429,7 @@ fn trasloca_ora(
             )));
         }
 
-        let cartelle = leggi_cartelle(&tx)?;
-        let rimappate: Vec<String> = cartelle
-            .iter()
-            .map(|c| radici::rimappa_percorso(c, &rimappature))
-            .collect();
-        // Rimesse in ordine con le regole di sempre: la cartella traslocata
-        // può essere finita dentro un'altra, o sopra un doppione.
-        let ordinate = radici::ordina_cartelle(&rimappate, &rimappate, &|_| None);
-        rymembra_app::settings::write_json(&tx, CHIAVE_CARTELLE, &ordinate.cartelle)?;
-
-        let chiave_download = rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD;
-        if let Some(scarichi) = rymembra_app::settings::read(&tx, chiave_download)? {
-            let spostata = radici::rimappa_percorso(&scarichi, &rimappature);
-            if spostata != scarichi {
-                rymembra_app::settings::write(&tx, chiave_download, &spostata)?;
-            }
-        }
-
+        riscrivi_le_cartelle(&tx, &rimappature)?;
         tx.commit().map_err(fallita)?;
         Ok(fatto)
     })
@@ -981,7 +1048,8 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     // nessuno ha premuto «Annulla».
     let fermati = || fermare.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = Scan {
-        files: std::sync::Arc::new(rymembra_app::files::LocalFiles),
+        // Il disco e il cloud: le radici di OneDrive camminano sullo specchio.
+        files: crate::nuvola_musica::archivi(app),
         covers: copertine,
         roots: &roots,
         // Qui le cartelle guardate sono quelle sorvegliate.
@@ -1062,6 +1130,7 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
         }
     };
     racconta_scansione("a mano", &report);
+    crate::nuvola_musica::rimetti_in_fila(app, &roots, report.rimasti);
     // I numeri in una presa a parte, dopo: il deposito è appena stato
     // restituito, e chiederli da dentro la scansione vorrebbe dire tenerlo per
     // una `COUNT(*)` che con la scrittura non c'entra niente.
@@ -1573,21 +1642,40 @@ pub fn preferito(
 /// identificativo il percorso lo legge il nucleo da `tracks`, e quel che si può
 /// mostrare è soltanto un file che la libreria conosce già.
 ///
-/// `(async)`: su una cartella di rete il gestore file può metterci secondi a
-/// rispondere, e non sul filo della finestra.
+/// Sul pool bloccante ([`in_disparte`]): su una cartella di rete il gestore
+/// file può metterci secondi a rispondere — su una share spenta, il timeout di
+/// Windows — e non sul filo della finestra, né su un worker del runtime, che
+/// è prestato a tutti i comandi asincroni: due o tre clic con il NAS spento li
+/// fermavano tutti.
 ///
 /// # Errori
 ///
 /// `library.trackNotFound` se il brano non c'è più; `fs.notFound` se il file
 /// non c'è o il gestore file rifiuta di aprirsi.
-#[tauri::command(async)]
-pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+#[tauri::command]
+pub async fn brano_mostra_nella_cartella(app: tauri::AppHandle, id: i64) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("mostra nella cartella", move || {
+        mostra_nella_cartella(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`brano_mostra_nella_cartella`], sul pool bloccante.
+fn mostra_nella_cartella(app: &tauri::AppHandle, id: i64) -> Esito<()> {
+    let stato = crate::importa::gestito::<Stato>(app, "mostra nella cartella").map_err(errore)?;
     let percorso = con_libreria(&stato, |libreria| {
         file_da_mostrare(&libreria.connection, id)
     })
     .map_err(errore)?;
+    // Un brano del cloud non sta in nessuna cartella di questo PC: la finestra
+    // al suo posto offre «Apri su OneDrive» (`brano_apri_sul_web`), e il
+    // comando lo rifiuta lo stesso, perché una porta non si fida di chi bussa.
+    if rymembra_domain::nuvola::e_nuvola(&percorso) {
+        return Err(errore(AppError::new(ErrorCode::CloudReadOnly)));
+    }
     tauri_plugin_opener::reveal_item_in_dir(&percorso).map_err(|err| {
         errore(
             AppError::new(ErrorCode::FsNotFound {
@@ -1610,7 +1698,10 @@ pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()
 ///
 /// `library.trackNotFound` se il brano non c'è più;
 /// `playback.sourceUnavailable` se è di catalogo; `db.*` se la lettura fallisce.
-fn file_da_mostrare(connection: &rusqlite::Connection, id: i64) -> Result<String, AppError> {
+pub(crate) fn file_da_mostrare(
+    connection: &rusqlite::Connection,
+    id: i64,
+) -> Result<String, AppError> {
     use rusqlite::OptionalExtension as _;
     let brano = rymembra_app::library::read_summary(connection, id)?
         .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
@@ -1737,35 +1828,49 @@ pub fn valutazione(
 
 /// Cosa porterebbe l'importazione dal vecchio database.
 ///
-/// `(async)`: apre e legge un intero database dal disco, e la regola dei
+/// Sul pool bloccante ([`in_disparte`]): apre e legge un intero database dal
+/// disco — scelto dall'utente, e può stare su una share — e la regola dei
 /// comandi che toccano il filesystem vale anche per lui.
-#[tauri::command(async)]
-pub fn piano_importazione(
-    stato: State<'_, Stato>,
+#[tauri::command]
+pub async fn piano_importazione(
+    app: tauri::AppHandle,
     percorso: String,
 ) -> Esito<import_legacy::ImportReport> {
-    importa_interno(&stato, &percorso, false)
+    in_disparte("piano d'importazione", move || {
+        importa_interno(&app, &percorso, false)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Importa dal vecchio database.
 ///
-/// `(async)` per la stessa ragione di [`piano_importazione`].
-#[tauri::command(async)]
-pub fn importa(
+/// Sul pool bloccante per la stessa ragione di [`piano_importazione`].
+#[tauri::command]
+pub async fn importa(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     percorso: String,
 ) -> Esito<import_legacy::ImportReport> {
-    crate::nuvola::se_riuscito(&app, importa_interno(&stato, &percorso, true))
+    in_disparte("importazione", move || {
+        crate::nuvola::se_riuscito(&app, importa_interno(&app, &percorso, true))
+    })
+    .await
+    .map_err(errore)?
 }
 
+/// Il corpo di [`piano_importazione`] e di [`importa`], sul pool bloccante.
+///
+/// Il database vecchio si apre **prima** di prendere la libreria, e non
+/// dentro: aprirlo su una share lenta con il lucchetto in mano fermava ogni
+/// comando che lo chiede, anche quelli che di worker liberi ne trovavano.
 fn importa_interno(
-    stato: &State<'_, Stato>,
+    app: &tauri::AppHandle,
     percorso: &str,
     esegui: bool,
 ) -> Esito<import_legacy::ImportReport> {
-    con_libreria(stato, |libreria| {
-        let legacy = import_legacy::open_legacy(std::path::Path::new(percorso))?;
+    let stato = crate::importa::gestito::<Stato>(app, "importazione").map_err(errore)?;
+    let legacy = import_legacy::open_legacy(std::path::Path::new(percorso)).map_err(errore)?;
+    con_libreria(&stato, |libreria| {
         if esegui {
             import_legacy::import(&legacy, &mut libreria.connection)
         } else {
@@ -1814,9 +1919,9 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
 /// stessa regola di [`cartelle_ui`], scritta per esteso là sopra.
 ///
 /// La finestra la chiede una volta e la passa ad `applicaMovimento`, che
-/// scrive `data-motion-utente` sulla radice: il rimedio è già in `stile.css`,
-/// accanto a quello di `prefers-reduced-motion`, e non se ne scrive un
-/// secondo.
+/// scrive `data-motion-utente` sulla radice: il rimedio è già in
+/// `stile/movimento.css`, accanto a quello di `prefers-reduced-motion`, e non
+/// se ne scrive un secondo.
 #[tauri::command]
 pub fn movimento_ridotto(stato: State<'_, Stato>) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
@@ -2002,14 +2107,11 @@ pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
             None => 0,
         };
 
-        let recenti = list_tracks(connection, TrackOrder::RecentlyPlayed, 0, RIPIANO)?
-            .into_iter()
-            // I mai ascoltati stanno in fondo a quell'ordinamento: qui non ci
-            // devono proprio essere, o il ripiano «ascoltati di recente» di una
-            // libreria appena scansionata si riempirebbe di brani che nessuno
-            // ha mai sentito.
-            .filter(|brano| brano.play_count > 0)
-            .collect();
+        // Solo gli ascoltati, con una data, i dodici più recenti: la domanda
+        // passa dall'indice delle date invece di ordinare tutta la libreria a
+        // ogni cambio di brano con la Home aperta. Vedi
+        // `rymembra_app::library::ascoltati_di_recente`.
+        let recenti = rymembra_app::library::ascoltati_di_recente(connection, RIPIANO)?;
 
         let aggiunti = recently_added_albums(connection, RIPIANO)?;
 
@@ -2172,6 +2274,11 @@ enum Documento {
     /// stessa cautela e un nome diverso, sarebbe stata la stessa serratura
     /// montata due volte.
     Donazioni,
+    /// La console dove l'utente registra la sua app per una piattaforma
+    /// (dalla 3.2). Stessa ragione di `Donazioni`: un indirizzo che la finestra
+    /// ha il permesso di far aprire, e quale lo dice `rymembra-cloud`, che con
+    /// quella piattaforma parla.
+    Console(rymembra_domain::nuvola_app::Piattaforma),
 }
 
 impl Documento {
@@ -2185,7 +2292,10 @@ impl Documento {
             "privacy" => Some(Self::Privacy),
             "condizioni" => Some(Self::Condizioni),
             "donazioni" => Some(Self::Donazioni),
-            _ => None,
+            _ => grezzo
+                .strip_prefix("console-")
+                .and_then(rymembra_domain::nuvola_app::Piattaforma::da_chiave)
+                .map(Self::Console),
         }
     }
 
@@ -2218,6 +2328,9 @@ impl Documento {
                     || radice.to_owned(),
                     |(host, proprietario)| format!("{host}/sponsors/{proprietario}"),
                 ),
+            Self::Console(piattaforma) => rymembra_cloud::oauth::registrazione(piattaforma)
+                .console
+                .to_owned(),
         }
     }
 }
@@ -2284,6 +2397,7 @@ const ANCORE_GUIDA: &[&str] = &[
     "zoom",
     "motion",
     "cloud",
+    "cloud-folders",
     "sync",
     "together",
     "legacy",
@@ -2368,6 +2482,9 @@ mod prove {
         "privacy",
         "condizioni",
         "donazioni",
+        "console-google",
+        "console-microsoft",
+        "console-dropbox",
     ];
 
     /// La prova che avrebbe visto il difetto che c'era qui.
@@ -2394,6 +2511,9 @@ mod prove {
     fn un_nome_inventato_non_apre_niente() {
         assert!(Documento::da_nome("qualunque-cosa").is_none());
         assert!(Documento::da_nome("").is_none());
+        assert!(Documento::da_nome("console-").is_none());
+        assert!(Documento::da_nome("console-mega").is_none());
+        assert!(Documento::da_nome("console-https://altrove").is_none());
     }
 
     /// Ogni ancora ha un indirizzo vero, sul sito e con l'ancora in fondo.

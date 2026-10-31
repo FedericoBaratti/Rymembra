@@ -9,6 +9,7 @@ import {
   tastoDi,
   type Pressione,
 } from "../src/tasti";
+import * as tasti from "../src/tasti";
 
 /** Una pressione come la scrive il motore, con i modificatori spenti di serie. */
 function premi(key: string, code?: string, mod: Partial<Pressione> = {}): Pressione {
@@ -64,4 +65,60 @@ test("la lettera di una scorciatoia fissa, su qualunque tastiera", () => {
   // AZERTY: la A sta dove l'americana ha la Q, e vale la A.
   assert.equal(eLaLettera(premi("a", "KeyQ", { ctrlKey: true }), "a"), true);
   assert.equal(eLaLettera(premi("q", "KeyA", { ctrlKey: true }), "a"), false);
+});
+
+test("il / di una tastiera italiana si riconosce anche senza Maiusc", () => {
+  // Su IT, DE e ES «/» è Maiusc+7, su FR Maiusc sul tasto dei due punti: il
+  // carattere arriva già fatto, e Maiusc è stato «speso» per farlo.
+  assert.deepEqual(nomiDi(premi("/", "Digit7", { shiftKey: true })), ["Shift+/", "/"]);
+  assert.deepEqual(nomiDi(premi("/", "Period", { shiftKey: true })), ["Shift+/", "/"]);
+  // Le lettere no: Maiusc+F resta un accordo suo.
+  assert.deepEqual(nomiDi(premi("F", "KeyF", { shiftKey: true })), ["Shift+f"]);
+  // E lo spazio nemmeno: Maiusc+Spazio non diventa `alterna`.
+  assert.deepEqual(nomiDi(premi(" ", "Space", { shiftKey: true })), ["Shift+Space"]);
+  // Con Ctrl il nome senza Maiusc tiene il Ctrl.
+  assert.deepEqual(nomiDi(premi("+", "BracketRight", { ctrlKey: true, shiftKey: true })), [
+    "Ctrl+Shift++",
+    "Ctrl++",
+  ]);
+});
+
+test("gli interruttori non si ripetono tenendo premuto", () => {
+  // Windows ripete il `keydown` dopo mezzo secondo, poi trenta volte al
+  // secondo: Spazio tenuto un po' di più alternava pausa e ripresa a caso, F11
+  // entrava e usciva dallo schermo intero.
+  const { siRipete } = tasti;
+  assert.equal(typeof siRipete, "function");
+  for (const interruttore of [
+    "alterna",
+    "schermoIntero",
+    "muto",
+    "inRiproduzione",
+    "importazioni",
+    "incollaLink",
+    "cerca",
+    "precedente",
+    "prossimo",
+    "zoomNormale",
+  ]) {
+    assert.equal(siRipete(interruttore), false, interruttore);
+  }
+  // Dove la ripetizione è voluta: i cinque secondi, il volume, lo zoom.
+  for (const passo of ["avanti", "indietro", "volumeSu", "volumeGiu", "ingrandisci", "rimpicciolisci"]) {
+    assert.equal(siRipete(passo), true, passo);
+  }
+});
+
+test("le frecce sul cursore della posizione saltano di cinque secondi, come le scorciatoie", () => {
+  const { passoFreccia, PASSO_FRECCIA_MS } = tasti;
+  assert.equal(typeof passoFreccia, "function");
+  assert.equal(PASSO_FRECCIA_MS, 5_000);
+  assert.equal(passoFreccia("ArrowRight", 10_000, 200_000), 15_000);
+  assert.equal(passoFreccia("ArrowUp", 10_000, 200_000), 15_000);
+  assert.equal(passoFreccia("ArrowLeft", 10_000, 200_000), 5_000);
+  assert.equal(passoFreccia("ArrowDown", 3_000, 200_000), 0);
+  assert.equal(passoFreccia("ArrowRight", 198_000, 200_000), 200_000);
+  // Inizio, Fine e Pag↑/Pag↓ restano al cursore, che li sa fare da sé.
+  assert.equal(passoFreccia("Home", 10_000, 200_000), null);
+  assert.equal(passoFreccia("PageUp", 10_000, 200_000), null);
 });

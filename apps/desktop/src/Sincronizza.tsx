@@ -59,6 +59,8 @@ import { Icona } from "./parti/Icone";
 import { posizioneAdesso } from "./riproduzione";
 import { Presenza } from "./presenza";
 import { comeScorrere } from "./transizione";
+import { ConfermaGesto } from "./ConfermaGesto";
+import { chiusuraLibera, gestoDelTasto, type Momento } from "./tastiSincronizza";
 
 /** Di quanto si torna indietro quando si riparte da una riga. */
 const RINCORSA_MS = 2000;
@@ -67,8 +69,6 @@ const RINCORSA_MS = 2000;
 const PASSO_FINE = 10;
 const PASSO_GROSSO = 100;
 
-/** In quale dei cinque momenti si è. */
-type Momento = "righe" | "battute" | "rivedi" | "parole" | "dono";
 
 /**
  * Le parole di una riga, con lo spazio che le segue attaccato a ciascuna.
@@ -157,7 +157,19 @@ export function Sincronizza({
   // La riga su cui si sta battendo, per tenerla in vista senza ridisegnare
   // l'elenco a ogni fotogramma.
   const corrente = useRef<HTMLLIElement | null>(null);
-  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
+  /**
+   * «Buttare le battute?» è aperta.
+   *
+   * Escape e «Annulla» in revisione smontavano l'editor con tutte le battute e
+   * i ritocchi dentro, senza chiedere: il velo era stato spento apposta, Escape
+   * no. Con almeno una battuta, prima si chiede (`chiusuraLibera`).
+   */
+  const [chiedeChiusura, setChiedeChiusura] = useState(false);
+  const chiudiOChiedi = () => {
+    if (chiusuraLibera(momento, tempi, tempiParola)) onChiudi();
+    else setChiedeChiusura(true);
+  };
+  const finestrella = useFinestrella<HTMLDivElement>(chiudiOChiedi);
   // Il resto della finestra inerte finché si sincronizza: un lettore di schermo
   // non deve poter uscire nella pagina dietro. Il velo qui non chiude.
   const velo = useRef<HTMLDivElement>(null);
@@ -345,7 +357,12 @@ export function Sincronizza({
      di tempi e lo aggancia a dove il suono comincia davvero. Le parole sono
      tempi come gli altri — anzi sono il caso per cui gli attacchi esistono —
      quindi si manda lo stesso comando, e non ce n'è un secondo. */
+  // Un raddrizzamento alla volta: la tastiera lo rispetta già
+  // (`gestoDelTasto`), questo è per qualunque altra strada ci arrivi.
+  const raddrizzando = useRef(false);
   const finisci = useCallback(() => {
+    if (raddrizzando.current) return;
+    raddrizzando.current = true;
     const perParole = siBattonoParole;
     setRaddrizzo(true);
     ipc
@@ -372,7 +389,10 @@ export function Sincronizza({
             );
           })
           .catch(onErrore)
-          .finally(() => setRaddrizzo(false));
+          .finally(() => {
+            raddrizzando.current = false;
+            setRaddrizzo(false);
+          });
       });
   }, [siBattonoParole, brano.id, tempi, tempiParola, posti, onErrore]);
 
@@ -385,30 +405,27 @@ export function Sincronizza({
 
   useEffect(() => {
     if (momento !== "battute" && momento !== "parole") return;
+    // Con «Buttare le battute?» aperta la tastiera è sua: questo ascoltatore,
+    // in cattura, prenderebbe Spazio e Invio prima dei suoi tasti — e Invio
+    // lancerebbe il raddrizzamento sotto la domanda.
+    if (chiedeChiusura) return;
     // In cattura, e fermato: le scorciatoie globali ascoltano anche loro su
     // `window`, e si erano iscritte prima. Senza, ogni battuta di Spazio segnava
     // la riga **e** metteva in pausa il brano che si stava battendo — cioè la
     // battuta dopo cadeva su una musica ferma.
     const alTasto = (evento: KeyboardEvent) => {
-      const prendi = () => {
-        evento.preventDefault();
-        evento.stopPropagation();
-      };
-      if (evento.key === " ") {
-        prendi();
-        batti();
-      } else if (evento.key === "Backspace") {
-        prendi();
-        rifai();
-      } else if (evento.key === "Enter" && tutteBattute) {
-        prendi();
-        finisci();
-      }
+      const gesto = gestoDelTasto(evento.key, { raddrizzo, tutteBattute });
+      if (gesto === null) return;
+      evento.preventDefault();
+      evento.stopPropagation();
+      if (gesto === "batti") batti();
+      else if (gesto === "rifai") rifai();
+      else if (gesto === "finisci") finisci();
     };
     window.addEventListener("keydown", alTasto, { capture: true });
     return () =>
       window.removeEventListener("keydown", alTasto, { capture: true });
-  }, [momento, batti, rifai, finisci, tutteBattute]);
+  }, [momento, batti, rifai, finisci, tutteBattute, raddrizzo, chiedeChiusura]);
 
   // ── il momento della revisione ────────────────────────────────────────────
 
@@ -552,430 +569,447 @@ export function Sincronizza({
   }, [brano.id, onErrore]);
 
   return (
-    <Presenza parte="modal-veil">
-      <div ref={velo} className="velo scuro modal-veil">
-        <Presenza parte="glass-modal">
-          <div
-            ref={finestrella}
-            className="finestrella larga sincronizza glass-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("sync.aria")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2>{t("sync.aria")}</h2>
-            <div className="percorso">
-              {brano.title} · {nomeArtista(brano.artist)}
-            </div>
-
-            {/* Suona un altro brano: le battute sono ferme, e si dice qui e non
-                con un tasto che smette di rispondere. Il ritorno riparte da dove
-                serve in quel momento — la rincorsa dell'ultima battuta, l'inizio
-                del verso delle parole — e nella revisione, dove si ascolta riga per
-                riga, dall'inizio. */}
-            {altrove && momento !== "righe" && momento !== "dono" && (
-              <div className="altrove" role="status">
-                <span>{t("sync.elsewhere")}</span>
-                <button
-                  type="button"
-                  className="bottone minuto btn-ghost"
-                  onClick={() =>
-                    momento === "parole"
-                      ? suonaDaQui()
-                      : suonaDa(momento === "battute" ? ripresa : 0).catch(onErrore)
-                  }
-                >
-                  <Icona nome="i-play" dim={12} />
-                  {t("sync.elsewhere.back")}
-                </button>
+    <>
+      <Presenza parte="modal-veil">
+        <div ref={velo} className="velo scuro modal-veil">
+          <Presenza parte="glass-modal">
+            <div
+              ref={finestrella}
+              className="finestrella larga sincronizza glass-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label={t("sync.aria")}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2>{t("sync.aria")}</h2>
+              <div className="percorso">
+                {brano.title} · {nomeArtista(brano.artist)}
               </div>
-            )}
 
-            {momento === "righe" && (
-              <>
-                <p className="nota">{t("sync.lines.help")}</p>
-                <textarea
-                  className="righe-da-battere"
-                  value={grezzo}
-                  rows={14}
-                  spellCheck={false}
-                  onChange={(e) => setGrezzo(e.target.value)}
-                  aria-label={t("sync.lines.aria")}
-                />
-                <div className="azioni">
-                  <button type="button" className="bottone btn-ghost" onClick={onChiudi}>
-                    {t("common.cancel")}
-                  </button>
+              {/* Suona un altro brano: le battute sono ferme, e si dice qui e non
+                  con un tasto che smette di rispondere. Il ritorno riparte da dove
+                  serve in quel momento — la rincorsa dell'ultima battuta, l'inizio
+                  del verso delle parole — e nella revisione, dove si ascolta riga per
+                  riga, dall'inizio. */}
+              {altrove && momento !== "righe" && momento !== "dono" && (
+                <div className="altrove" role="status">
+                  <span>{t("sync.elsewhere")}</span>
                   <button
                     type="button"
-                    className="bottone primario btn-accent"
-                    disabled={grezzo.trim() === ""}
-                    onClick={cominciaABattere}
-                  >
-                    {t("sync.lines.start")}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {momento === "battute" && (
-              <>
-                <p className="nota">
-                  {tutteBattute ? t("sync.tap.done") : t("sync.tap.help")}
-                </p>
-                <ol className="elenco-battute">
-                  {righe.map((riga, i) => (
-                    <li
-                      key={`${i}-${riga}`}
-                      ref={i === indice ? corrente : undefined}
-                      /* La riga che aspetta la battuta si dice, non solo si
-                         dipinge: `data-attesa` la colora e a chi ascolta lo
-                         schermo non arriva. `aria-current` perché è la stessa
-                         informazione che `.riga` usa per il brano in corso. */
-                      aria-current={i === indice ? "true" : undefined}
-                      data-attesa={i === indice || undefined}
-                      data-fatta={i < indice || undefined}
-                    >
-                      <span className="quando">
-                        {i < indice ? durata(tempi[i] ?? 0) : "—"}
-                      </span>
-                      <span className="cosa">{riga === "" ? " " : riga}</span>
-                    </li>
-                  ))}
-                </ol>
-                <div className="azioni">
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
+                    className="bottone minuto btn-ghost"
                     onClick={() =>
-                      (altrove ? suonaDa(ripresa) : ipc.alterna()).catch(onErrore)
+                      momento === "parole"
+                        ? suonaDaQui()
+                        : suonaDa(momento === "battute" ? ripresa : 0).catch(onErrore)
                     }
                   >
-                    <Icona nome="i-play" dim={15} />
-                    {t("sync.tap.play")}
-                  </button>
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    disabled={indice === 0}
-                    onClick={rifai}
-                  >
-                    {t("sync.tap.undo")}
-                    <kbd className="scorciatoia">⌫</kbd>
-                  </button>
-                  <button
-                    type="button"
-                    className="bottone primario btn-accent"
-                    disabled={!tutteBattute || raddrizzo}
-                    onClick={finisci}
-                  >
-                    {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
+                    <Icona nome="i-play" dim={12} />
+                    {t("sync.elsewhere.back")}
                   </button>
                 </div>
-                <p className="nota">{t("sync.tap.key")}</p>
-              </>
-            )}
+              )}
 
-            {momento === "rivedi" && (
-              <>
-                <p className="nota">{t("sync.review.help")}</p>
-                <ol className="elenco-battute rivedi">
-                  {righe.map((riga, i) => (
-                    <li key={`${i}-${riga}`}>
-                      <span className="quando">{durata(tempi[i] ?? 0)}</span>
-                      <span className="cosa">{riga === "" ? " " : riga}</span>
-                      <span className="ritocco">
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.earlier")}
-                          onClick={() => sposta(i, -PASSO_GROSSO)}
-                        >
-                          −{PASSO_GROSSO}
-                        </button>
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.earlier.fine")}
-                          onClick={() => sposta(i, -PASSO_FINE)}
-                        >
-                          −{PASSO_FINE}
-                        </button>
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.later.fine")}
-                          onClick={() => sposta(i, PASSO_FINE)}
-                        >
-                          +{PASSO_FINE}
-                        </button>
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.later")}
-                          onClick={() => sposta(i, PASSO_GROSSO)}
-                        >
-                          +{PASSO_GROSSO}
-                        </button>
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.hear")}
-                          /* Il titolo resta per il mouse; il nome porta il numero
-                             della riga, perché un elenco di trenta bottoni che si
-                             chiamano tutti «Senti da qui» non dice da dove. */
-                          aria-label={t("sync.review.hearLine", {
-                            riga: String(i + 1),
-                          })}
-                          onClick={() =>
-                            suonaDa((tempi[i] ?? 0) - 1000).catch(onErrore)
-                          }
-                        >
-                          <Icona nome="i-play" dim={12} />
-                        </button>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-                <div className="azioni">
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={() => {
-                      setIndice(0);
-                      setTempi([]);
-                      // Anche qui: i tempi delle parole si appoggiano a quelli dei
-                      // versi, e i versi stanno per cambiare tutti.
-                      setTempiParola([]);
-                      setIndiceParola(0);
-                      setMomento("battute");
-                    }}
-                  >
-                    {t("sync.review.again")}
-                  </button>
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={onChiudi}
-                  >
-                    {t("common.cancel")}
-                  </button>
-                  {/* Il quarto momento è una porta, non un passaggio obbligato:
-                      sta **prima** del primario, che resta «Salva». Chi non lo
-                      apre ha finito, e il testo che salva è completo. Se nessuna
-                      riga ha due parole il tasto non c'è affatto — un tasto
-                      perennemente spento è una promessa che non si mantiene. */}
-                  {posti.length > 0 && (
+              {momento === "righe" && (
+                <>
+                  <p className="nota">{t("sync.lines.help")}</p>
+                  <textarea
+                    className="righe-da-battere"
+                    value={grezzo}
+                    rows={14}
+                    spellCheck={false}
+                    onChange={(e) => setGrezzo(e.target.value)}
+                    aria-label={t("sync.lines.aria")}
+                  />
+                  <div className="azioni">
+                    <button type="button" className="bottone btn-ghost" onClick={onChiudi}>
+                      {t("common.cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone primario btn-accent"
+                      disabled={grezzo.trim() === ""}
+                      onClick={cominciaABattere}
+                    >
+                      {t("sync.lines.start")}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {momento === "battute" && (
+                <>
+                  <p className="nota">
+                    {tutteBattute ? t("sync.tap.done") : t("sync.tap.help")}
+                  </p>
+                  <ol className="elenco-battute">
+                    {righe.map((riga, i) => (
+                      <li
+                        key={`${i}-${riga}`}
+                        ref={i === indice ? corrente : undefined}
+                        /* La riga che aspetta la battuta si dice, non solo si
+                           dipinge: `data-attesa` la colora e a chi ascolta lo
+                           schermo non arriva. `aria-current` perché è la stessa
+                           informazione che `.riga` usa per il brano in corso. */
+                        aria-current={i === indice ? "true" : undefined}
+                        data-attesa={i === indice || undefined}
+                        data-fatta={i < indice || undefined}
+                      >
+                        <span className="quando">
+                          {i < indice ? durata(tempi[i] ?? 0) : "—"}
+                        </span>
+                        <span className="cosa">{riga === "" ? " " : riga}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="azioni">
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      onClick={cominciaLeParole}
+                      onClick={() =>
+                        (altrove ? suonaDa(ripresa) : ipc.alterna()).catch(onErrore)
+                      }
                     >
-                      {t("sync.words.start")}
+                      <Icona nome="i-play" dim={15} />
+                      {t("sync.tap.play")}
                     </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      disabled={indice === 0}
+                      onClick={rifai}
+                    >
+                      {t("sync.tap.undo")}
+                      <kbd className="scorciatoia">⌫</kbd>
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone primario btn-accent"
+                      disabled={!tutteBattute || raddrizzo}
+                      onClick={finisci}
+                    >
+                      {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
+                    </button>
+                  </div>
+                  <p className="nota">{t("sync.tap.key")}</p>
+                </>
+              )}
+
+              {momento === "rivedi" && (
+                <>
+                  <p className="nota">{t("sync.review.help")}</p>
+                  <ol className="elenco-battute rivedi">
+                    {righe.map((riga, i) => (
+                      <li key={`${i}-${riga}`}>
+                        <span className="quando">{durata(tempi[i] ?? 0)}</span>
+                        <span className="cosa">{riga === "" ? " " : riga}</span>
+                        <span className="ritocco">
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.earlier")}
+                            onClick={() => sposta(i, -PASSO_GROSSO)}
+                          >
+                            −{PASSO_GROSSO}
+                          </button>
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.earlier.fine")}
+                            onClick={() => sposta(i, -PASSO_FINE)}
+                          >
+                            −{PASSO_FINE}
+                          </button>
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.later.fine")}
+                            onClick={() => sposta(i, PASSO_FINE)}
+                          >
+                            +{PASSO_FINE}
+                          </button>
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.later")}
+                            onClick={() => sposta(i, PASSO_GROSSO)}
+                          >
+                            +{PASSO_GROSSO}
+                          </button>
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.hear")}
+                            /* Il titolo resta per il mouse; il nome porta il numero
+                               della riga, perché un elenco di trenta bottoni che si
+                               chiamano tutti «Senti da qui» non dice da dove. */
+                            aria-label={t("sync.review.hearLine", {
+                              riga: String(i + 1),
+                            })}
+                            onClick={() =>
+                              suonaDa((tempi[i] ?? 0) - 1000).catch(onErrore)
+                            }
+                          >
+                            <Icona nome="i-play" dim={12} />
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="azioni">
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      onClick={() => {
+                        setIndice(0);
+                        setTempi([]);
+                        // Anche qui: i tempi delle parole si appoggiano a quelli dei
+                        // versi, e i versi stanno per cambiare tutti.
+                        setTempiParola([]);
+                        setIndiceParola(0);
+                        setMomento("battute");
+                      }}
+                    >
+                      {t("sync.review.again")}
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      onClick={chiudiOChiedi}
+                    >
+                      {t("common.cancel")}
+                    </button>
+                    {/* Il quarto momento è una porta, non un passaggio obbligato:
+                        sta **prima** del primario, che resta «Salva». Chi non lo
+                        apre ha finito, e il testo che salva è completo. Se nessuna
+                        riga ha due parole il tasto non c'è affatto — un tasto
+                        perennemente spento è una promessa che non si mantiene. */}
+                    {posti.length > 0 && (
+                      <button
+                        type="button"
+                        className="bottone btn-ghost"
+                        onClick={cominciaLeParole}
+                      >
+                        {t("sync.words.start")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="bottone primario btn-accent"
+                      disabled={salvando}
+                      onClick={salva}
+                    >
+                      {salvando ? t("sync.review.saving") : t("sync.review.save")}
+                    </button>
+                  </div>
+                  {righeConParole > 0 && (
+                    <p className="nota">
+                      {accanto
+                        ? t("sync.words.attached", { n: righeConParole })
+                        : t("sync.words.attachedRymembra", { n: righeConParole })}
+                    </p>
                   )}
-                  <button
-                    type="button"
-                    className="bottone primario btn-accent"
-                    disabled={salvando}
-                    onClick={salva}
-                  >
-                    {salvando ? t("sync.review.saving") : t("sync.review.save")}
-                  </button>
-                </div>
-                {righeConParole > 0 && (
+                  {/* Dove finisce, detto prima di premere: un file accanto alla
+                      musica lo leggono anche gli altri lettori, e chi non lo vuole
+                      deve poterlo sapere adesso e non dopo. */}
                   <p className="nota">
                     {accanto
-                      ? t("sync.words.attached", { n: righeConParole })
-                      : t("sync.words.attachedRymembra", { n: righeConParole })}
+                      ? t("sync.review.where")
+                      : t("sync.review.whereRymembra")}
                   </p>
-                )}
-                {/* Dove finisce, detto prima di premere: un file accanto alla
-                    musica lo leggono anche gli altri lettori, e chi non lo vuole
-                    deve poterlo sapere adesso e non dopo. */}
-                <p className="nota">
-                  {accanto
-                    ? t("sync.review.where")
-                    : t("sync.review.whereRymembra")}
-                </p>
-              </>
-            )}
+                </>
+              )}
 
-            {momento === "parole" && (
-              <>
-                <p className="nota">
-                  {tutteBattute ? t("sync.words.done") : t("sync.words.help")}
-                </p>
-                {/* Lo stesso elenco delle battute, con le parole al posto dei
-                    versi: `data-attesa`, `data-fatta` e le due colonne vengono da
-                    lì. `data-capo` marca la prima parola di ogni verso, ed è
-                    l'unica cosa che dice dove finisce una riga e comincia
-                    l'altra — le parole sono in fila, e senza quel segno un
-                    ritornello sarebbe una colonna indistinta. */}
-                <ol className="elenco-battute parole">
-                  {posti.map((posto, quale) => (
-                    <li
-                      key={`${posto.riga}-${posto.dove}`}
-                      ref={quale === indiceParola ? corrente : undefined}
-                      aria-current={quale === indiceParola ? "true" : undefined}
-                      data-attesa={quale === indiceParola || undefined}
-                      data-fatta={quale < indiceParola || undefined}
-                      data-capo={posto.dove === 0 || undefined}
-                    >
-                      <span className="quando">
-                        {quale < indiceParola ? durata(tempiParola[quale] ?? 0) : "—"}
-                      </span>
-                      <span className="cosa">{posto.testo}</span>
-                      <span className="ritocco">
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.earlier.fine")}
-                          disabled={quale >= indiceParola}
-                          onClick={() => spostaParola(quale, -PASSO_FINE)}
-                        >
-                          −{PASSO_FINE}
-                        </button>
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          title={t("sync.review.later.fine")}
-                          disabled={quale >= indiceParola}
-                          onClick={() => spostaParola(quale, PASSO_FINE)}
-                        >
-                          +{PASSO_FINE}
-                        </button>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-                <div className="azioni">
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={() => setMomento("rivedi")}
-                  >
-                    {t("sync.words.back")}
-                  </button>
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={suonaDaQui}
-                  >
-                    <Icona nome="i-play" dim={15} />
-                    {t("sync.words.play")}
-                  </button>
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    disabled={indiceParola === 0}
-                    onClick={rifai}
-                  >
-                    {t("sync.tap.undo")}
-                    <kbd className="scorciatoia">⌫</kbd>
-                  </button>
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    disabled={!tutteBattute || raddrizzo}
-                    onClick={finisci}
-                  >
-                    {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
-                  </button>
-                  {/* Salvare si può in qualunque momento, e non è una svista: quel
-                      che è battuto per intero si scrive, il resto resta
-                      sincronizzato al verso. Un passo facoltativo che tiene in
-                      ostaggio il salvataggio finché non è finito non è
-                      facoltativo. */}
-                  <button
-                    type="button"
-                    className="bottone primario btn-accent"
-                    disabled={salvando}
-                    onClick={salva}
-                  >
-                    {salvando ? t("sync.review.saving") : t("sync.review.save")}
-                  </button>
-                </div>
-                <p className="nota">{t("sync.words.key")}</p>
-                <p className="nota">
-                  {accanto
-                    ? t("sync.words.where")
-                    : t("sync.words.whereRymembra")}
-                </p>
-              </>
-            )}
-
-            {momento === "dono" && (
-              <div className="dono">
-                <p className="fatto">
-                  <Icona nome="i-check" dim={16} />
-                  {!accanto
-                    ? t("sync.done.savedRymembra")
-                    : nonNelFile === null
-                      ? t("sync.done.saved")
-                      : t("sync.done.savedInLibrary")}
-                </p>
-                {nonNelFile !== null && <p className="nota">{nonNelFile}</p>}
-
-                {/* Senza rete verso il catalogo non c'è offerta: si dice che è
-                    fatto e si chiude, senza far intravedere una porta chiusa. */}
-                {reteAccesa && !donato && (
-                  <>
-                    <p className="nota">{t("sync.done.offer")}</p>
-                    {/* Cosa esce di qui, per esteso e prima di premere: il titolo
-                        che il catalogo userà per ritrovarlo, e le righe con i loro
-                        tempi. Non c'è niente d'altro nell'invio — nessun percorso,
-                        nessun identificativo, niente sul dispositivo.
-
-                        Artista e album restano **grezzi**, e qui è giusto così:
-                        `nomeArtista` e `titoloAlbum` traducono le sentinelle del
-                        nucleo per chi guarda, ma quel che parte per LRCLIB è il
-                        valore in tabella — `testi::da_restituire` legge `tracks` e
-                        manda `brano.artist` come sta. Tradurli in questo elenco
-                        vorrebbe dire scrivere «Unknown artist» accanto a una
-                        richiesta che porta «Artista sconosciuto»: l'unico posto
-                        dell'interfaccia che promette di dire i byte esatti
-                        diventerebbe l'unico che non li dice. */}
-                    <ul className="cosa-va">
-                      <li>
-                        {brano.title} · {brano.artist}
-                        {brano.album ? ` · ${brano.album}` : ""}
+              {momento === "parole" && (
+                <>
+                  <p className="nota">
+                    {tutteBattute ? t("sync.words.done") : t("sync.words.help")}
+                  </p>
+                  {/* Lo stesso elenco delle battute, con le parole al posto dei
+                      versi: `data-attesa`, `data-fatta` e le due colonne vengono da
+                      lì. `data-capo` marca la prima parola di ogni verso, ed è
+                      l'unica cosa che dice dove finisce una riga e comincia
+                      l'altra — le parole sono in fila, e senza quel segno un
+                      ritornello sarebbe una colonna indistinta. */}
+                  <ol className="elenco-battute parole">
+                    {posti.map((posto, quale) => (
+                      <li
+                        key={`${posto.riga}-${posto.dove}`}
+                        ref={quale === indiceParola ? corrente : undefined}
+                        aria-current={quale === indiceParola ? "true" : undefined}
+                        data-attesa={quale === indiceParola || undefined}
+                        data-fatta={quale < indiceParola || undefined}
+                        data-capo={posto.dove === 0 || undefined}
+                      >
+                        <span className="quando">
+                          {quale < indiceParola ? durata(tempiParola[quale] ?? 0) : "—"}
+                        </span>
+                        <span className="cosa">{posto.testo}</span>
+                        <span className="ritocco">
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.earlier.fine")}
+                            disabled={quale >= indiceParola}
+                            onClick={() => spostaParola(quale, -PASSO_FINE)}
+                          >
+                            −{PASSO_FINE}
+                          </button>
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            title={t("sync.review.later.fine")}
+                            disabled={quale >= indiceParola}
+                            onClick={() => spostaParola(quale, PASSO_FINE)}
+                          >
+                            +{PASSO_FINE}
+                          </button>
+                        </span>
                       </li>
-                      <li>{t("sync.done.lines", { n: righe.length })}</li>
-                    </ul>
-                    <p className="nota">{t("sync.done.slow")}</p>
-                  </>
-                )}
-
-                {donato && <p className="nota">{t("sync.done.thanks")}</p>}
-
-                <div className="azioni">
-                  {reteAccesa && !donato && (
+                    ))}
+                  </ol>
+                  <div className="azioni">
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={donando}
-                      onClick={dona}
+                      onClick={() => setMomento("rivedi")}
                     >
-                      {donando ? t("sync.done.giving") : t("sync.done.give")}
+                      {t("sync.words.back")}
                     </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      onClick={suonaDaQui}
+                    >
+                      <Icona nome="i-play" dim={15} />
+                      {t("sync.words.play")}
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      disabled={indiceParola === 0}
+                      onClick={rifai}
+                    >
+                      {t("sync.tap.undo")}
+                      <kbd className="scorciatoia">⌫</kbd>
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      disabled={!tutteBattute || raddrizzo}
+                      onClick={finisci}
+                    >
+                      {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
+                    </button>
+                    {/* Salvare si può in qualunque momento, e non è una svista: quel
+                        che è battuto per intero si scrive, il resto resta
+                        sincronizzato al verso. Un passo facoltativo che tiene in
+                        ostaggio il salvataggio finché non è finito non è
+                        facoltativo. */}
+                    <button
+                      type="button"
+                      className="bottone primario btn-accent"
+                      disabled={salvando}
+                      onClick={salva}
+                    >
+                      {salvando ? t("sync.review.saving") : t("sync.review.save")}
+                    </button>
+                  </div>
+                  <p className="nota">{t("sync.words.key")}</p>
+                  <p className="nota">
+                    {accanto
+                      ? t("sync.words.where")
+                      : t("sync.words.whereRymembra")}
+                  </p>
+                </>
+              )}
+
+              {momento === "dono" && (
+                <div className="dono">
+                  <p className="fatto">
+                    <Icona nome="i-check" dim={16} />
+                    {!accanto
+                      ? t("sync.done.savedRymembra")
+                      : nonNelFile === null
+                        ? t("sync.done.saved")
+                        : t("sync.done.savedInLibrary")}
+                  </p>
+                  {nonNelFile !== null && <p className="nota">{nonNelFile}</p>}
+
+                  {/* Senza rete verso il catalogo non c'è offerta: si dice che è
+                      fatto e si chiude, senza far intravedere una porta chiusa. */}
+                  {reteAccesa && !donato && (
+                    <>
+                      <p className="nota">{t("sync.done.offer")}</p>
+                      {/* Cosa esce di qui, per esteso e prima di premere: il titolo
+                          che il catalogo userà per ritrovarlo, e le righe con i loro
+                          tempi. Non c'è niente d'altro nell'invio — nessun percorso,
+                          nessun identificativo, niente sul dispositivo.
+
+                          Artista e album restano **grezzi**, e qui è giusto così:
+                          `nomeArtista` e `titoloAlbum` traducono le sentinelle del
+                          nucleo per chi guarda, ma quel che parte per LRCLIB è il
+                          valore in tabella — `testi::da_restituire` legge `tracks` e
+                          manda `brano.artist` come sta. Tradurli in questo elenco
+                          vorrebbe dire scrivere «Unknown artist» accanto a una
+                          richiesta che porta «Artista sconosciuto»: l'unico posto
+                          dell'interfaccia che promette di dire i byte esatti
+                          diventerebbe l'unico che non li dice. */}
+                      <ul className="cosa-va">
+                        <li>
+                          {brano.title} · {brano.artist}
+                          {brano.album ? ` · ${brano.album}` : ""}
+                        </li>
+                        <li>{t("sync.done.lines", { n: righe.length })}</li>
+                      </ul>
+                      <p className="nota">{t("sync.done.slow")}</p>
+                    </>
                   )}
-                  {/* Chiudere è il pulsante primario, anche qui. Chi arriva a
-                      questa schermata ha già ottenuto quel che voleva; il dono è la
-                      strada in più, non quella diritta. */}
-                  <button
-                    type="button"
-                    className="bottone primario btn-accent"
-                    onClick={onChiudi}
-                  >
-                    {t("common.close")}
-                  </button>
+
+                  {donato && <p className="nota">{t("sync.done.thanks")}</p>}
+
+                  <div className="azioni">
+                    {reteAccesa && !donato && (
+                      <button
+                        type="button"
+                        className="bottone btn-ghost"
+                        disabled={donando}
+                        onClick={dona}
+                      >
+                        {donando ? t("sync.done.giving") : t("sync.done.give")}
+                      </button>
+                    )}
+                    {/* Chiudere è il pulsante primario, anche qui. Chi arriva a
+                        questa schermata ha già ottenuto quel che voleva; il dono è la
+                        strada in più, non quella diritta. */}
+                    <button
+                      type="button"
+                      className="bottone primario btn-accent"
+                      onClick={onChiudi}
+                    >
+                      {t("common.close")}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        </Presenza>
-      </div>
-    </Presenza>
+              )}
+            </div>
+          </Presenza>
+        </div>
+      </Presenza>
+      {/* Accanto al velo e non dentro la finestrella, come in `Account`: è un
+          velo sopra un altro, e `useVeloInerte` rende inerte quello di sotto
+          finché la domanda è aperta. Escape qui chiude la domanda, non l'editor:
+          l'ascoltatore della domanda lo ferma sulla sua radice. */}
+      {chiedeChiusura && (
+        <ConfermaGesto
+          domanda={{
+            titolo: t("sync.discard.title"),
+            descrizione: t("sync.discard.body"),
+            conferma: t("sync.discard.ok"),
+            fai: () => onChiudi(),
+          }}
+          onChiudi={() => setChiedeChiusura(false)}
+        />
+      )}
+    </>
   );
 }

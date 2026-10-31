@@ -73,9 +73,26 @@ pub(crate) fn e_un_impronta(value: &str) -> bool {
 }
 
 fn risposta(status: u16, tipo: &str, corpo: Vec<u8>) -> http::Response<Vec<u8>> {
-    // Il contenuto è indirizzato dall'impronta: gli stessi byte daranno
-    // sempre lo stesso indirizzo, quindi non c'è niente da rivalidare.
-    risposta_con(status, tipo, corpo, "public, max-age=31536000, immutable")
+    risposta_con(status, tipo, corpo, cache_per(status))
+}
+
+/// L'intestazione di cache di una risposta del protocollo.
+///
+/// Un'immagine è indirizzata dall'impronta: gli stessi byte daranno sempre lo
+/// stesso indirizzo, quindi non c'è niente da rivalidare. Un errore invece no:
+/// il 503 di una libreria non ancora aperta o il 404 di una lettura caduta (la
+/// cartella dati su una share che sparisce per qualche secondo) sono guasti
+/// passeggeri, e la finestra l'indirizzo di una copertina non lo cambia mai.
+/// Con «immutable» WebView2 li terrebbe per un anno, e quell'album resterebbe
+/// senza copertina anche col file di nuovo leggibile: è lo stesso «non c'è»
+/// ricordato che le copertine di sessione evitano con `no-store` (vedi
+/// [`servi`]).
+fn cache_per(status: u16) -> &'static str {
+    if status == 200 {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-store"
+    }
 }
 
 fn risposta_con(
@@ -251,6 +268,26 @@ mod tests {
             assert!(!e_una_chiave_di_sessione(falsa), "{falsa}");
         }
         assert!(!e_un_impronta("insieme-1"));
+    }
+
+    #[test]
+    fn gli_errori_del_protocollo_non_vanno_in_cache() {
+        let cache = |r: &http::Response<Vec<u8>>| {
+            r.headers()
+                .get(http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let buona = risposta(200, "image/jpeg", vec![1, 2, 3]);
+        assert!(cache(&buona).contains("immutable"), "{}", cache(&buona));
+        // Un guasto passeggero (la libreria non ancora aperta, la cartella dati
+        // su una share caduta) non deve restare per un anno: la finestra non
+        // cambia mai l'indirizzo di una copertina.
+        for status in [400, 404, 503] {
+            let guasto = risposta(status, "text/plain", Vec::new());
+            assert_eq!(cache(&guasto), "no-store", "stato {status}");
+        }
     }
 
     #[test]

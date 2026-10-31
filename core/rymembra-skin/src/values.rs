@@ -64,8 +64,11 @@ impl Rgba {
 /// ieri.
 pub(crate) fn number(value: f64, decimali: usize) -> String {
     if !value.is_finite() {
-        // Un valore non finito non arriva mai qui da un documento validato. Se
-        // ci arriva è un guasto nostro, e zero è l'unica risposta che non
+        // Un valore non finito non dovrebbe arrivare qui da un documento
+        // validato: fino alla 3.2.0 di prova ci arrivava, da un `rgba(…, nan)` che
+        // `parse_rgb_function` lasciava passare, e adesso non più. Se ci
+        // arriva è un guasto nostro — un documento costruito a mano, o un
+        // lettore nuovo che non filtra — e zero è l'unica risposta che non
         // produce CSS non valido.
         return "0".to_owned();
     }
@@ -152,14 +155,19 @@ fn parse_rgb_function(text: &str) -> Option<Rgba> {
         [r, g, b] | [r, g, b, _] => (r, g, b),
         _ => return None,
     };
+    // Solo numeri finiti. `str::parse::<f64>` legge anche `nan`, `inf` e
+    // `infinity`, che il CSS non ha: fino alla 3.2.0 di prova `rgba(255, 255, 255, nan)`
+    // passava la validazione, `NaN.clamp(0, 1)` restava NaN e il testo usciva
+    // con opacità zero — invisibile, e con un contrasto che non diceva perché.
+    let numero = |campo: &str| campo.parse::<f64>().ok().filter(|v| v.is_finite());
     let a = match campi.as_slice() {
-        [_, _, _, a] => a.parse::<f64>().ok()?.clamp(0.0, 1.0),
+        [_, _, _, a] => numero(a)?.clamp(0.0, 1.0),
         _ => 1.0,
     };
     Some(Rgba {
-        r: channel(r.parse::<f64>().ok()?),
-        g: channel(g.parse::<f64>().ok()?),
-        b: channel(b.parse::<f64>().ok()?),
+        r: channel(numero(r)?),
+        g: channel(numero(g)?),
+        b: channel(numero(b)?),
         a,
     })
 }
@@ -658,6 +666,15 @@ mod tests {
             "rgb(1,2)",
             "rgb(1,2,3,4,5)",
             "rgb(50%,0,0)",
+            // `str::parse::<f64>` legge anche questi, e il CSS no: un'opacità
+            // NaN usciva come `/ 0`, cioè un testo invisibile.
+            "rgb(1 2 3 / nan)",
+            "rgba(255, 255, 255, nan)",
+            "rgba(1, 2, 3, NaN)",
+            "rgb(nan, 0, 0)",
+            "rgb(inf 0 0)",
+            "rgb(0, infinity, 0)",
+            "rgba(0, 0, 0, -inf)",
             "",
         ] {
             assert_eq!(parse_color(scritto), None, "accettato: {scritto}");

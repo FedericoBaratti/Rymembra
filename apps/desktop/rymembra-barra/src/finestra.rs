@@ -1,4 +1,5 @@
-//! La parte che parla con Windows: l'unico modulo di Rymembra con `unsafe`.
+//! La parte che parla con Windows: il modulo di Rymembra con quasi tutto
+//! l'`unsafe` (l'altra chiamata è `GetDriveTypeW`, in `unita.rs`).
 //!
 //! # Come funziona
 //!
@@ -299,6 +300,18 @@ impl Contesto {
     }
 }
 
+/// Quanti byte ha la maschera monocromatica di un'icona quadrata di `lato`
+/// pixel: un bit per pixel, e ogni riga allineata a due byte (una `WORD`).
+///
+/// È la precondizione dell'`unsafe { CreateIcon }` in [`Icona::nuova`]:
+/// Windows legge `lato` righe da `ceil(lato/16)·2` byte, e una maschera più
+/// corta — righe allineate al byte, `ceil(lato/8)·lato` — gli farebbe leggere
+/// oltre la fine del buffer. Fuori dal blocco, e con una prova, perché è
+/// proprio la riga che una «semplificazione» toccherebbe.
+const fn byte_della_maschera(lato: usize) -> usize {
+    lato.div_ceil(16) * 2 * lato
+}
+
 /// Un'icona nostra, distrutta quando cade.
 struct Icona(HICON);
 
@@ -311,10 +324,10 @@ impl Icona {
         if bgra.len() != righe.checked_mul(righe)?.checked_mul(4)? {
             return None;
         }
-        // La maschera: un bit per pixel, righe allineate a due byte, tutta a
-        // zero. Con un colore a 32 bit Windows guarda l'alfa e non la
-        // maschera, ma la maschera deve esserci.
-        let maschera = vec![0u8; righe.div_ceil(16) * 2 * righe];
+        // La maschera: tutta a zero. Con un colore a 32 bit Windows guarda
+        // l'alfa e non la maschera, ma la maschera deve esserci, e della
+        // misura giusta: vedi `byte_della_maschera`.
+        let maschera = vec![0u8; byte_della_maschera(righe)];
         // SAFETY: i due buffer vivono per tutta la chiamata e hanno le misure
         // che `CreateIcon` ricava da lato, piani e bit per pixel: `lato²·4`
         // byte il colore (controllato qui sopra), una riga allineata a 16 bit
@@ -569,4 +582,47 @@ fn barra_chiara() -> bool {
 /// Da intero a `HWND`.
 const fn hwnd_di(numero: isize) -> HWND {
     HWND(numero as *mut c_void)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn la_maschera_ha_righe_allineate_a_due_byte() {
+        // Le misure che `CreateIcon` legge: `ceil(lato/16)·2` byte per riga.
+        // Con righe allineate al byte un'icona da 20 px (125 %) avrebbe 60 byte
+        // invece di 80, e Windows ne leggerebbe venti oltre il buffer.
+        assert_eq!(byte_della_maschera(16), 32);
+        assert_eq!(byte_della_maschera(17), 68);
+        assert_eq!(byte_della_maschera(20), 80);
+        assert_eq!(byte_della_maschera(24), 96);
+        assert_eq!(byte_della_maschera(32), 128);
+    }
+
+    #[test]
+    fn le_parole_di_wparam_si_separano() {
+        assert_eq!(parole(WPARAM(0x0001_0002)), (1, 2));
+        assert_eq!(
+            parole(WPARAM(
+                (usize::try_from(THBN_CLICKED).unwrap_or(0) << 16) | 2
+            )),
+            (THBN_CLICKED, 2)
+        );
+        // I bit oltre i trentadue, su 64 bit, non arrivano nelle due parole.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(parole(WPARAM(0xFFFF_FFFF_0003_0004)), (3, 4));
+    }
+
+    #[test]
+    fn le_icone_nascono_alle_misure_vere_e_non_a_quelle_storte() {
+        for lato in [16_u32, 20, 24, 28, 32, 40, 48] {
+            let pixel = glifi::disegna(glifi::Glifo::Riproduci, lato, SU_SCURO);
+            assert!(Icona::nuova(&pixel, lato).is_some(), "lato {lato}");
+            assert!(
+                Icona::nuova(pixel.get(4..).unwrap_or_default(), lato).is_none(),
+                "un buffer di misura sbagliata è passato al lato {lato}"
+            );
+        }
+    }
 }

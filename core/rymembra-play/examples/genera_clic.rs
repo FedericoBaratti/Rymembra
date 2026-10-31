@@ -282,8 +282,18 @@ fn istanti_dei_chirp(durata: f64) -> Vec<f64> {
 }
 
 /// Microsecondi in secondi.
+///
+/// Passava da un `u32`, e oltre i 71 min 35 s di microsecondi restituiva
+/// l'infinito: le raffiche di una traccia più lunga si fermavano lì, in
+/// silenzio. La conversione diretta è esatta fino a 2^53 µs — quasi tre secoli
+/// — e sotto 2^32 dà gli stessi bit di prima, quindi i file già generati
+/// restano riproducibili.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "esatta sotto 2^53 µs, cioè per ogni durata che un WAV può contenere"
+)]
 fn microsecondi(us: u64) -> f64 {
-    u32::try_from(us).map_or(f64::INFINITY, |v| f64::from(v) / 1e6)
+    us as f64 / 1e6
 }
 
 /// Una fila di eventi, letta con il tempo che va solo avanti.
@@ -447,4 +457,34 @@ fn a_16_bit(v: f64) -> (i16, bool) {
     let scalato = (v * 32767.0).round();
     let tagliato = scalato.clamp(-32768.0, 32767.0);
     (tagliato as i16, tagliato != scalato)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn le_raffiche_arrivano_fino_in_fondo() {
+        // Novanta minuti: oltre i 71 min 35 s i microsecondi non stanno più in
+        // un `u32`, e la conversione restituiva l'infinito — il ciclo si
+        // fermava, e gli ultimi diciotto minuti del file restavano senza
+        // raffiche, senza un avviso.
+        let durata = 90.0 * 60.0;
+        let ultima = istanti_delle_raffiche(durata).last().copied();
+        assert!(
+            ultima.is_some_and(|t| t > 5_390.0),
+            "l'ultima raffica cade a {ultima:?} s su {durata} s"
+        );
+    }
+
+    #[test]
+    fn sotto_i_settantun_minuti_gli_istanti_sono_quelli_di_prima() {
+        // A e B devono avere gli stessi istanti, e due esecuzioni gli stessi
+        // byte: sotto 2^32 µs la conversione nuova è identica al bit a quella
+        // di prima.
+        for us in [0u64, 1, 500_000, 1_234_567, 4_294_967_295] {
+            let prima = u32::try_from(us).map_or(f64::INFINITY, |v| f64::from(v) / 1e6);
+            assert_eq!(microsecondi(us).to_bits(), prima.to_bits(), "{us} µs");
+        }
+    }
 }

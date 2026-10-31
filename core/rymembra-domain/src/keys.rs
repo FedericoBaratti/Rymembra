@@ -151,9 +151,13 @@ const ARTICOLI: &[&str] = &[
 
 /// Il nome sotto cui ordinare, senza l'articolo iniziale.
 ///
-/// «The Cure» finisce sotto C, «I Cani» sotto C, «Los Lobos» sotto L. Il
-/// confronto avviene sul risultato di [`normalize_key`], quindi maiuscole,
-/// diacritici e punteggiatura sono già fuori dai piedi.
+/// «The Cure» finisce sotto C, «I Cani» sotto C, «Los Lobos» sotto L.
+/// L'articolo si cerca sul nome vero, senza distinguere le maiuscole e con gli
+/// apostrofi tipografici già unificati su quello dritto — `L’Arc~en~Ciel` come
+/// `L'Arc~en~Ciel`, che Picard e MusicBrainz scrivono volentieri col primo —; il
+/// resto passa poi da [`normalize_key`], che toglie diacritici e punteggiatura.
+/// Sul risultato di `normalize_key` non si potrebbe: l'apostrofo lì è già
+/// sparito (vedi `ARTICOLI`).
 ///
 /// # Perché sta nel dominio
 ///
@@ -170,6 +174,7 @@ const ARTICOLI: &[&str] = &[
 /// assert_eq!(sort_name("The Cure"), "cure");
 /// assert_eq!(sort_name("Los Lobos"), "lobos");
 /// assert_eq!(sort_name("L'Arc~en~Ciel"), "arcenciel");
+/// assert_eq!(sort_name("L’Arc~en~Ciel"), "arcenciel");
 /// assert_eq!(sort_name("The The"), "the");
 /// // Un nome che è solo un articolo resta sé stesso, e finisce sotto la sua
 /// // lettera invece che in cima a tutto con una chiave vuota.
@@ -179,7 +184,16 @@ const ARTICOLI: &[&str] = &[
 /// ```
 #[must_use]
 pub fn sort_name(name: &str) -> String {
-    let pulito = name.trim();
+    // Gli apostrofi tipografici diventano quello dritto **prima** di cercare
+    // l'articolo: `L’` (tre byte) non combacerebbe mai con `l'`, e il nome
+    // finirebbe sotto L mentre la stessa grafia dritta va sotto la sua lettera.
+    // È la stessa unificazione che `normalize_key` fa dopo, con lo stesso elenco.
+    let unificato: String = name
+        .trim()
+        .chars()
+        .map(|c| if SINGLE_QUOTES.contains(&c) { '\'' } else { c })
+        .collect();
+    let pulito = unificato.as_str();
     for articolo in ARTICOLI {
         // Gli articoli sono tutti ASCII, quindi tagliare per byte taglia anche
         // per carattere; e `get` restituisce `None` se il taglio cadesse dentro
@@ -700,5 +714,17 @@ mod tests {
             PlaylistKey::compute(Some("rock 'n' roll"))
         );
         assert_eq!(PlaylistKey::compute(None).as_str(), "");
+    }
+
+    #[test]
+    fn l_apostrofo_tipografico_toglie_l_articolo() {
+        // Picard e MusicBrainz scrivono volentieri `’`: le due grafie dello
+        // stesso nome devono finire sotto la stessa lettera.
+        assert_eq!(sort_name("L\u{2019}Arc~en~Ciel"), "arcenciel");
+        assert_eq!(
+            sort_name("L\u{2019}Impératrice"),
+            sort_name("L'Impératrice")
+        );
+        assert_eq!(sort_name("L'Impératrice"), "imperatrice");
     }
 }

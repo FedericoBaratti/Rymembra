@@ -33,6 +33,7 @@ import { data, dataOra, durata, nomeArtista, numero } from "../formato";
 import { ipc, type StatoRiproduzione, type VoceCronologia } from "../ipc";
 import { locale, t } from "../lingue";
 import { Icona } from "./Icone";
+import { fasciaQuando } from "./quandoCronologia";
 import { useDati } from "../dati";
 
 /** Quante righe per volta. Una schermata piena più un po' di margine. */
@@ -41,28 +42,35 @@ const PAGINA = 50;
 /**
  * Quando, in una forma che si legge di sfuggita.
  *
- * Il giorno e non l'ora esatta oltre la settimana: chi guarda la cronologia di
- * un anno fa non cerca «alle 14:32», cerca «a marzo». Sotto l'ora invece
- * l'orario è l'unica cosa che distingue due ascolti dello stesso pomeriggio.
+ * Quale forma lo decide `fasciaQuando`, per giorni di calendario: con le
+ * finestre mobili di prima un ascolto di ieri pomeriggio si leggeva come un
+ * orario di oggi, e uno di venerdì scorso come «ven» di oggi. Qui si scrive
+ * nella lingua di chi guarda.
  */
 function quando(ms: number): string {
-  const passati = Date.now() - ms;
-  if (passati < 0) return data(ms);
-  if (passati < 60_000) return t("history.now");
-  if (passati < 3_600_000)
-    return t("history.minutesAgo", { n: Math.round(passati / 60_000) });
-  if (passati < 86_400_000)
-    return new Date(ms).toLocaleTimeString(locale(), {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  if (passati < 7 * 86_400_000)
-    return new Date(ms).toLocaleDateString(locale(), { weekday: "short" });
-  return new Date(ms).toLocaleDateString(locale(), {
-    day: "numeric",
-    month: "short",
-    ...(passati > 300 * 86_400_000 ? { year: "2-digit" } : {}),
-  });
+  const fascia = fasciaQuando(ms, Date.now());
+  const ora = () =>
+    new Date(ms).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
+  switch (fascia.tipo) {
+    case "futuro":
+      return data(ms);
+    case "ora":
+      return t("history.now");
+    case "minuti":
+      return t("history.minutesAgo", { n: fascia.minuti });
+    case "oggi":
+      return ora();
+    case "ieri":
+      return t("history.yesterday", { ora: ora() });
+    case "settimana":
+      return new Date(ms).toLocaleDateString(locale(), { weekday: "short" });
+    case "data":
+      return new Date(ms).toLocaleDateString(locale(), {
+        day: "numeric",
+        month: "short",
+        ...(fascia.anno ? { year: "2-digit" } : {}),
+      });
+  }
 }
 
 export function Cronologia({

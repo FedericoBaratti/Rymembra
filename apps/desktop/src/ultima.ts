@@ -48,3 +48,41 @@ export function vinceLUltima(): () => () => boolean {
     return () => mio === ultimo;
   };
 }
+
+/**
+ * Una fotografia e gli eventi: la fotografia si adotta solo se nel frattempo
+ * non è arrivato nessun evento.
+ *
+ * È la stessa regola per chi segue uno stato che il nucleo manda a ogni
+ * cambiamento e ne chiede anche una fotografia all'apertura (`poi` in
+ * `useAscolto`, `pagine.ts`): la fotografia si chiede quando l'ascolto è
+ * aperto, ma la sua risposta — calcolata prima — può arrivare **dopo** un
+ * evento più nuovo, e posata sopra di lui rimetterebbe a schermo il passato
+ * fino al cambiamento dopo. L'evento è sempre più fresco della fotografia
+ * chiesta prima di lui, o uguale. È lo schema di `Insieme.tsx`
+ * (`eventiArrivati`), in una forma che si prova da sola.
+ *
+ * ```ts
+ * const conto = eventiEFotografia();
+ * // nel gestore dell'evento:   conto.evento();
+ * // nel `poi` di `useAscolto`: const valida = conto.chiedi();
+ * //                            ipc.stato().then((s) => { if (valida()) adotta(s); });
+ * ```
+ */
+export function eventiEFotografia(): {
+  /** È arrivato un evento. */
+  evento: () => void;
+  /** Si chiede la fotografia: la funzione restituita dice se vale ancora. */
+  chiedi: () => () => boolean;
+} {
+  let eventi = 0;
+  return {
+    evento: () => {
+      eventi += 1;
+    },
+    chiedi: () => {
+      const prima = eventi;
+      return () => eventi === prima;
+    },
+  };
+}

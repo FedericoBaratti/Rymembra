@@ -52,12 +52,13 @@
  * piccolo — dieci barre d'ottava — quel che la scena dice in grande, e copriva
  * la fascia in cui la scena si legge meglio.
  *
- * # Quel che è spento, e resta visibile
+ * # Il bottone «testo»
  *
- * Il bottone «testo» c'è, spento, e dice perché nel suggerimento: il nucleo non
- * legge ancora i testi, e una schermata vuota che si apre sarebbe peggio di un
- * bottone spento che spiega. Toglierlo del tutto nasconderebbe che il posto per
- * lui c'è ed è deciso.
+ * È acceso e apre il pannello del testo (`parti/Testo.tsx`). È stato spento,
+ * con la sua ragione nel suggerimento, finché il nucleo non leggeva i testi:
+ * il posto era deciso da prima, e adesso ci è arrivato dentro quel che
+ * doveva. Manca soltanto mentre suona una voce di «Ascolta insieme», che un id
+ * di libreria non ce l'ha: vedi `conTesto` e il commento accanto al tasto.
  *
  * # Testo e coda, quando non ci stanno tutti e due
  *

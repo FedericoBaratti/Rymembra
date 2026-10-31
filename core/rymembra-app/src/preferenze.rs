@@ -173,7 +173,8 @@ pub const ZOOM_NEUTRO: f64 = 1.0;
 ///
 /// **In su** si chiede «non ci vedo», e il soffitto è morbido:
 /// l'impaginazione si stringe, il cursore del volume si ritira da sé
-/// (`@container lettore (max-width: 760px)` in `stile.css`), e più su ancora
+/// (`@container lettore (max-width: 760px)` in
+/// `apps/desktop/src/stile/lettore.css`), e più su ancora
 /// la barra del lettore trabocca dai propri minimi di contenuto. Sono difetti
 /// che si vedono, e che `Ctrl+0` annulla in un tasto. Per questo in su i
 /// gradini sono cinque.

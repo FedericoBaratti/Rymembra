@@ -42,7 +42,9 @@
 //! quel gesto sta nella finestra, non in questa tabella.
 
 use rusqlite::Connection;
+use rymembra_domain::album::UNKNOWN_ALBUM;
 use rymembra_domain::errors::AppError;
+use rymembra_domain::indizi::e_segnaposto;
 use rymembra_domain::scrobble::{Ascolto, Servizio};
 
 use crate::library::{db_error, now_ms};
@@ -194,7 +196,7 @@ pub fn ascolto_di(
                 Ok(Ascolto {
                     artista: riga.get::<_, String>(0)?,
                     titolo: riga.get::<_, String>(1)?,
-                    album: vuoto_e_niente(riga.get::<_, Option<String>>(2)?),
+                    album: album_utile(riga.get::<_, Option<String>>(2)?),
                     artista_album: vuoto_e_niente(riga.get::<_, Option<String>>(3)?),
                     durata_ms: riga
                         .get::<_, Option<i64>>(4)?
@@ -218,11 +220,24 @@ pub fn ascolto_di(
 
 /// Una stringa vuota è un campo assente, non un campo vuoto.
 ///
-/// `tracks.album` è `NOT NULL` e vale `""` quando il tag non c'è. Mandare un
-/// `release_name` vuoto vorrebbe dire dichiarare al servizio che l'album si
-/// chiama così.
+/// Vale per `album_artist` e per l'identificativo MusicBrainz, che nella riga
+/// possono essere vuoti o `NULL`: mandarli vuoti vorrebbe dire dichiarare al
+/// servizio un valore che non c'è. L'album ha una regola sua, più stretta:
+/// vedi [`album_utile`].
 fn vuoto_e_niente(valore: Option<String>) -> Option<String> {
     valore.filter(|t| !t.trim().is_empty())
+}
+
+/// L'album da dire al servizio, o niente.
+///
+/// `tracks.album` non è mai vuoto: quando il tag manca la scansione ci scrive
+/// [`UNKNOWN_ALBUM`], «Album sconosciuto». Mandarlo come `release_name`
+/// dichiarerebbe al servizio che il disco si chiama così, e lo stesso vale per
+/// ogni altro segnaposto dei taggatori («Unknown Album», «Untitled»…), che
+/// [`e_segnaposto`] riconosce già per l'artista. Assente è la verità.
+fn album_utile(valore: Option<String>) -> Option<String> {
+    vuoto_e_niente(valore)
+        .filter(|album| album.trim() != UNKNOWN_ALBUM && !e_segnaposto(Some(album)))
 }
 
 /// Accoda tutta la cronologia già registrata.
@@ -278,6 +293,18 @@ pub fn accoda_cronologia(
 /// ricevere, e perché una coda che parte dai nuovi lascia i vecchi in fondo per
 /// sempre.
 ///
+/// # Le regole di adesso valgono anche per le righe di prima
+///
+/// [`accoda`] lascia fuori quel che [`Ascolto::valido`] rifiuta — un artista
+/// segnaposto compreso — e [`ascolto_di`] non dice un album segnaposto. Ma in
+/// coda ci sono anche righe entrate prima di queste regole, e quelle di
+/// [`accoda_cronologia`], che versa la cronologia in blocco senza passare da
+/// `valido`. Qui, all'uscita, valgono le stesse regole: un album segnaposto
+/// parte come assente, e una riga che nessun servizio accetterebbe esce dalla
+/// coda invece di essere mandata e rifiutata a ogni giro. Un lotto che di righe
+/// buone non ne ha si rilegge dopo averle tolte, e non torna vuoto finché ce
+/// ne sono: chi svuota la coda si ferma al primo lotto vuoto.
+///
 /// # Errori
 ///
 /// `db.queryFailed`.
@@ -286,6 +313,26 @@ pub fn da_mandare(
     servizio: Servizio,
     quanti: usize,
 ) -> Result<Vec<Voce>, AppError> {
+    loop {
+        let (voci, da_togliere) = lotto_da_mandare(connection, servizio, quanti)?;
+        for id in &da_togliere {
+            connection
+                .execute("DELETE FROM scrobble_queue WHERE id = ?1", [id])
+                .map_err(|err| db_error("una riga della coda che i servizi rifiutano", &err))?;
+        }
+        if !voci.is_empty() || da_togliere.is_empty() {
+            return Ok(voci);
+        }
+    }
+}
+
+/// Un lotto della coda: le voci da mandare, e le righe da togliere perché
+/// nessun servizio le accetterebbe. Vedi [`da_mandare`].
+fn lotto_da_mandare(
+    connection: &Connection,
+    servizio: Servizio,
+    quanti: usize,
+) -> Result<(Vec<Voce>, Vec<i64>), AppError> {
     let limite = i64::try_from(quanti).unwrap_or(i64::MAX);
     let mut istruzione = connection
         .prepare(
@@ -325,10 +372,18 @@ pub fn da_mandare(
         .map_err(|err| db_error("lettura della coda scrobble", &err))?;
 
     let mut voci = Vec::new();
+    let mut da_togliere = Vec::new();
     for riga in righe {
-        voci.push(riga.map_err(|err| db_error("lettura di una riga della coda scrobble", &err))?);
+        let mut voce =
+            riga.map_err(|err| db_error("lettura di una riga della coda scrobble", &err))?;
+        voce.ascolto.album = album_utile(voce.ascolto.album.take());
+        if voce.ascolto.valido() {
+            voci.push(voce);
+        } else {
+            da_togliere.push(voce.id);
+        }
     }
-    Ok(voci)
+    Ok((voci, da_togliere))
 }
 
 /// Toglie dalla coda quel che è arrivato.
@@ -614,6 +669,67 @@ mod prove {
         );
         assert_eq!(a.durata_ms, None, "durata zero vuol dire sconosciuta");
         assert!(!a.valido(), "senza artista non è mandabile");
+    }
+
+    #[test]
+    fn un_album_segnaposto_non_si_manda_come_album() {
+        // `tracks.album` vale «Album sconosciuto» quando il tag manca, non "":
+        // mandarlo come `release_name` direbbe al servizio che il disco si
+        // chiama così. Lo stesso per ogni altro segnaposto dei taggatori.
+        let c = libreria();
+        c.execute_batch(&format!(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                 file_size, date_added, date_modified)
+             VALUES (3, 'C:/m/c.mp3', 'k3', 'Canzone', 'Tale', '{}', 200000, 100, 0, 0),
+                    (4, 'C:/m/d.mp3', 'k4', 'Canzone', 'Tale', 'Unknown Album', 200000, 100, 0, 0);",
+            rymembra_domain::album::UNKNOWN_ALBUM
+        ))
+        .expect("brani senza album");
+        for id in [3, 4] {
+            let a = ascolto_di(&c, id, 0)
+                .expect("lettura")
+                .expect("il brano c'è");
+            assert_eq!(a.album, None, "brano {id}");
+            assert!(a.valido());
+        }
+        // Un album vero resta.
+        let a = ascolto_di(&c, 1, 0)
+            .expect("lettura")
+            .expect("il brano c'è");
+        assert_eq!(a.album.as_deref(), Some("Odio pieno"));
+    }
+
+    #[test]
+    fn la_coda_non_manda_le_righe_che_i_servizi_rifiuterebbero() {
+        // Righe entrate prima della regola nuova, o dalla cronologia in blocco
+        // che non passa da `valido`: l'artista segnaposto non parte, e
+        // l'album segnaposto parte come assente.
+        let c = libreria();
+        c.execute_batch(&format!(
+            "INSERT INTO scrobble_queue
+               (service, played_at, artist, title, album, queued_at)
+             VALUES ('listenbrainz', 1000, '{}', 'Traccia 01', NULL, 0),
+                    ('listenbrainz', 2000, 'Tale', 'Canzone', '{}', 0),
+                    ('listenbrainz', 3000, 'Unknown Artist', 'Altra', NULL, 0);",
+            rymembra_domain::album::UNKNOWN_ARTIST,
+            rymembra_domain::album::UNKNOWN_ALBUM
+        ))
+        .expect("coda");
+        // Un lotto da uno che comincia con una riga da buttare non torna vuoto:
+        // chi svuota la coda si fermerebbe lì, con righe buone ancora dietro.
+        let voci = da_mandare(&c, Servizio::ListenBrainz, 1).expect("coda");
+        assert_eq!(voci.len(), 1, "{voci:?}");
+        assert_eq!(voci[0].ascolto.artista, "Tale");
+        assert_eq!(voci[0].ascolto.album, None);
+        assert_eq!(conteggi(&c, None).expect("conteggi").in_attesa, 2);
+
+        let voci = da_mandare(&c, Servizio::ListenBrainz, 10).expect("coda");
+        assert_eq!(voci.len(), 1, "{voci:?}");
+        assert_eq!(
+            conteggi(&c, None).expect("conteggi").in_attesa,
+            1,
+            "le righe che nessun servizio accetterebbe escono dalla coda"
+        );
     }
 
     #[test]

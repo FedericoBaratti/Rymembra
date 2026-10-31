@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { curvaCss, durataMs, versoAnimazione, versoKeyframe } from "../src/studio/fotogrammi";
+import { avvioProvino, curvaCss, durataMs, gestoRombo, versoAnimazione, versoKeyframe } from "../src/studio/fotogrammi";
 
 const RISOLVI = {
   colore: (v: unknown) => (typeof v === "string" ? v : null),
@@ -58,4 +58,21 @@ test("durate e curve", () => {
   assert.equal(durataMs("1.5s"), 1500);
   assert.equal(curvaCss({ kind: "steps", count: 4, position: "start" }, RISOLVI), "steps(4, start)");
   assert.equal(curvaCss("ease-out", RISOLVI), "ease-out");
+});
+
+test("un rombo riportato al punto di partenza ci torna davvero", () => {
+  // Il confronto era col fotogramma del pointerdown: tornando a 40 la
+  // scrittura si saltava, e il rombo restava all'ultima posizione scritta.
+  const scrivere = gestoRombo(40);
+  const scritte = [50, 45, 45, 40].filter((at) => scrivere(at));
+  assert.deepEqual(scritte, [50, 45, 40]);
+});
+
+test("con «Riduci movimento» il provino non parte da solo, e al tasto suona una volta", () => {
+  // La Web Animations API non legge --motion-scale: il provino pulsava senza
+  // fine anche per chi aveva chiesto di non muoversi.
+  assert.equal(avvioProvino(true, false), "fermo");
+  assert.equal(avvioProvino(true, true), "unaVolta");
+  assert.equal(avvioProvino(false, false), "suona");
+  assert.equal(avvioProvino(false, true), "suona");
 });

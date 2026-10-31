@@ -12,6 +12,7 @@
 //! La finestra riceve i percorsi già divisi per quel che se ne fa, e decide solo
 //! dove portare chi guarda.
 
+use rymembra_app::import_playlist::{self, Dischi};
 use rymembra_domain::eredita;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::paths::{PathRules, extension_of, is_supported_audio_path};
@@ -117,10 +118,11 @@ pub async fn smista_trascinati(app: AppHandle, percorsi: Vec<String>) -> Esito<T
 /// Il corpo di [`smista_trascinati`], in disparte.
 ///
 /// Un file audio diventa il suo brano; un `.cue` diventa i brani del suo
-/// disco, in ordine di traccia (`rymembra_app::import_playlist::brani_del_foglio`).
+/// disco, in ordine di traccia (`import_playlist::indice_dei_fogli`).
 /// Così anche l'immagine CD, il file grande che il `.cue` taglia: in libreria
 /// non è una riga, e chi la lascia cadere vuole il disco, come chi lascia
-/// cadere il foglio (`rymembra_app::import_playlist::brani_dell_immagine`).
+/// cadere il foglio (`import_playlist::indice_delle_immagini`). Vedi
+/// [`brani_dei_trascinati`].
 /// Quel che la libreria non conosce — anche un `.cue` di cui non ha nessun
 /// brano — conta fra i `fuori_libreria`, e la finestra suggerisce di aggiungere
 /// la cartella.
@@ -130,42 +132,25 @@ fn smista_e_cerca(stato: &Stato, percorsi: Vec<String>) -> Result<Trascinati, Ap
     if da_cercare.is_empty() {
         return Ok(smistati);
     }
-    let e_un_foglio = |percorso: &str| extension_of(percorso) == ESTENSIONE_FOGLIO;
     let trovati = con_libreria(stato, |libreria| {
         let audio: Vec<String> = da_cercare
             .iter()
             .filter(|percorso| !e_un_foglio(percorso))
             .cloned()
             .collect();
-        let mut per_percorso = rymembra_app::library::ids_by_path(
+        let per_percorso = rymembra_app::library::ids_by_path(
             &libreria.connection,
             &audio,
             PathRules::for_current_platform(),
         )?
         .into_iter();
-        // Nell'ordine in cui sono arrivati, fogli e file mescolati: è
-        // l'ordine in cui finiscono in coda.
-        let mut trovati: Vec<Vec<i64>> = Vec::with_capacity(da_cercare.len());
-        for percorso in &da_cercare {
-            if e_un_foglio(percorso) {
-                trovati.push(rymembra_app::import_playlist::brani_del_foglio(
-                    &libreria.connection,
-                    percorso,
-                )?);
-            } else if let Some(id) = per_percorso.next().flatten() {
-                trovati.push(vec![id]);
-            } else {
-                // Prima la riga col suo percorso, poi l'immagine: se la
-                // vecchia riga del disco intero c'è ancora, è quella che la
-                // libreria mostra, e risponde lei. Il ripiego legge tutti i
-                // brani d'immagine, ma solo per i file che non hanno una riga.
-                trovati.push(rymembra_app::import_playlist::brani_dell_immagine(
-                    &libreria.connection,
-                    percorso,
-                )?);
-            }
-        }
-        Ok(trovati)
+        let connessione = &libreria.connection;
+        brani_dei_trascinati(
+            &da_cercare,
+            per_percorso,
+            || import_playlist::indice_dei_fogli(connessione),
+            || import_playlist::indice_delle_immagini(connessione),
+        )
     })?;
     for brani in trovati {
         if brani.is_empty() {
@@ -175,6 +160,64 @@ fn smista_e_cerca(stato: &Stato, percorsi: Vec<String>) -> Result<Trascinati, Ap
         }
     }
     Ok(smistati)
+}
+
+/// Il percorso è un foglio `.cue`.
+fn e_un_foglio(percorso: &str) -> bool {
+    extension_of(percorso) == ESTENSIONE_FOGLIO
+}
+
+/// I brani di ogni percorso da cercare, nell'ordine in cui sono arrivati —
+/// fogli e file mescolati: è l'ordine in cui finiscono in coda. Vuoto per
+/// quel che la libreria non conosce.
+///
+/// `per_percorso` dà, per ogni file che non è un foglio, la sua riga se ce
+/// l'ha. Un foglio diventa i brani del suo disco; un file senza riga si cerca
+/// fra le immagini CD — prima la riga col suo percorso, poi l'immagine: se la
+/// vecchia riga del disco intero c'è ancora, è quella che la libreria mostra,
+/// e risponde lei.
+///
+/// # Gli indici, una volta per gesto
+///
+/// Gli indici dei dischi d'immagine (`fogli`, `immagini`) leggono **tutti** i
+/// brani d'immagine della libreria. Si costruiscono al più una volta per
+/// gesto, e solo se servono: prima se ne costruiva uno per file, e chi
+/// trascinava quattrocento file dalla cartella dei download — fuori libreria,
+/// cioè proprio quelli senza riga — rileggeva la tabella quattrocento volte
+/// col lucchetto della libreria in mano. La ricerca non consuma l'indice: lo
+/// stesso disco trascinato due volte risponde due volte. Separata dal comando
+/// per contare, nelle prove, quante volte si costruiscono.
+fn brani_dei_trascinati(
+    da_cercare: &[String],
+    mut per_percorso: impl Iterator<Item = Option<i64>>,
+    mut fogli: impl FnMut() -> Result<Dischi, AppError>,
+    mut immagini: impl FnMut() -> Result<Dischi, AppError>,
+) -> Result<Vec<Vec<i64>>, AppError> {
+    let mut indice_dei_fogli: Option<Dischi> = None;
+    let mut indice_delle_immagini: Option<Dischi> = None;
+    let mut trovati: Vec<Vec<i64>> = Vec::with_capacity(da_cercare.len());
+    for percorso in da_cercare {
+        if e_un_foglio(percorso) {
+            trovati.push(pigro(&mut indice_dei_fogli, &mut fogli)?.brani(percorso));
+        } else if let Some(id) = per_percorso.next().flatten() {
+            trovati.push(vec![id]);
+        } else {
+            trovati.push(pigro(&mut indice_delle_immagini, &mut immagini)?.brani(percorso));
+        }
+    }
+    Ok(trovati)
+}
+
+/// L'indice nel suo posto, costruito alla prima richiesta.
+fn pigro<'a>(
+    posto: &'a mut Option<Dischi>,
+    costruisci: &mut impl FnMut() -> Result<Dischi, AppError>,
+) -> Result<&'a Dischi, AppError> {
+    let dischi = match posto.take() {
+        Some(dischi) => dischi,
+        None => costruisci()?,
+    };
+    Ok(posto.insert(dischi))
 }
 
 #[cfg(test)]
@@ -342,6 +385,92 @@ mod prove {
             smistati.fuori_libreria, 1,
             "solo il file che la libreria non conosce"
         );
+    }
+
+    /// Quaranta file che la libreria non conosce, la stessa immagine CD due
+    /// volte in due grafie e tre fogli: gli indici dei dischi si leggono una
+    /// volta per gesto, non una per file — prima erano quarantadue e tre
+    /// letture di tutti i brani d'immagine, col lucchetto della libreria in
+    /// mano — e i brani e i fuori libreria restano quelli di sempre.
+    #[test]
+    fn gli_indici_dei_dischi_si_leggono_una_volta_per_gesto() {
+        let libreria = rymembra_app::db::open_in_memory()
+            .expect("libreria")
+            .connection;
+        libreria
+            .execute_batch(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                     file_size, date_added, date_modified,
+                                     immagine, inizio_cd, fine_cd)
+                 VALUES (21, 'C:\\M\\Disco\\Album.cue|02', 'k21', 'Due', 'A', 'D', 1000,
+                         9, 0, 0, 'C:\\M\\Disco\\Album.flac', 7500, NULL),
+                        (20, 'C:\\M\\Disco\\Album.cue|01', 'k20', 'Uno', 'A', 'D', 1000,
+                         9, 0, 0, 'C:\\M\\Disco\\Album.flac', 0, 7500);",
+            )
+            .expect("un disco d'immagine");
+        let mut da_cercare: Vec<String> = (0..40)
+            .map(|n| format!(r"C:\Scaricati\{n:02} - Brano.mp3"))
+            .collect();
+        da_cercare.insert(3, r"C:\M\Disco\Album.flac".to_owned());
+        da_cercare.insert(10, "C:/M/Disco/Album.flac".to_owned());
+        da_cercare.push(r"C:\M\Disco\Album.cue".to_owned());
+        da_cercare.push(r"C:\Altrove\Ignoto.cue".to_owned());
+        da_cercare.push("C:/M/Disco/Album.cue".to_owned());
+        let file = da_cercare.iter().filter(|p| !e_un_foglio(p)).count();
+
+        let (mut fogli, mut immagini) = (0, 0);
+        let trovati = brani_dei_trascinati(
+            &da_cercare,
+            std::iter::repeat_n(None, file),
+            || {
+                fogli += 1;
+                import_playlist::indice_dei_fogli(&libreria)
+            },
+            || {
+                immagini += 1;
+                import_playlist::indice_delle_immagini(&libreria)
+            },
+        )
+        .expect("trovati");
+        assert_eq!(
+            (fogli, immagini),
+            (1, 1),
+            "un indice per gesto, non uno per file"
+        );
+        assert_eq!(trovati.len(), da_cercare.len());
+        assert_eq!(trovati[3], vec![20, 21]);
+        assert_eq!(
+            trovati[10],
+            vec![20, 21],
+            "la seconda volta, anche scritta così"
+        );
+        assert_eq!(trovati[42], vec![20, 21]);
+        assert!(trovati[43].is_empty(), "un foglio senza brani");
+        assert_eq!(trovati[44], vec![20, 21]);
+        assert_eq!(
+            trovati.iter().filter(|brani| brani.is_empty()).count(),
+            41,
+            "fuori libreria: i quaranta file e il foglio senza brani"
+        );
+
+        // Tutti con la loro riga: nessun indice si costruisce.
+        let (mut fogli, mut immagini) = (0, 0);
+        let solo_file = tutti(&[r"C:\M\a.flac", r"C:\M\b.flac"]);
+        let trovati = brani_dei_trascinati(
+            &solo_file,
+            [Some(1), Some(2)].into_iter(),
+            || {
+                fogli += 1;
+                import_playlist::indice_dei_fogli(&libreria)
+            },
+            || {
+                immagini += 1;
+                import_playlist::indice_delle_immagini(&libreria)
+            },
+        )
+        .expect("trovati");
+        assert_eq!((fogli, immagini), (0, 0));
+        assert_eq!(trovati, vec![vec![1], vec![2]]);
     }
 
     #[test]

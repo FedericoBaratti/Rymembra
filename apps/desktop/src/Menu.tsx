@@ -6,7 +6,7 @@
  * tasti da guardare mille volte per usarli una. Da qui passerà anche «aggiungi
  * a playlist», che è la stessa forma di comando.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useDati } from "./dati";
 import { Presenza } from "./presenza";
 
@@ -22,6 +22,17 @@ const MARGINE = 8;
 export interface Voce {
   etichetta: string;
   azione: () => void;
+  /**
+   * Spenta, con la sua ragione: la voce c'è, si raggiunge con le frecce, e
+   * premuta non fa niente.
+   *
+   * `aria-disabled` e non `disabled`, come in `Segmentato`: un bottone
+   * `disabled` non prende il fuoco, e la ragione — l'unica cosa che chi arriva
+   * su una voce spenta vuole sapere — non la sentirebbe mai chi naviga da
+   * tastiera. Serve a «Elimina dal disco» su un brano del cloud: sparire
+   * lascerebbe chi la cerca a chiedersi dove sia finita.
+   */
+  spenta?: string | undefined;
 }
 
 /** Dove si è aperto e su cosa. */
@@ -39,6 +50,7 @@ export function Menu({
   onChiudi: () => void;
 }) {
   const { misura, anteprima } = useDati();
+  const idMenu = useId();
   const menu = useRef<HTMLDivElement>(null);
   const chiAveva = useRef<HTMLElement | null>(null);
   /** Il menù si è chiuso col Tab: il fuoco è già andato avanti da sé. */
@@ -227,20 +239,41 @@ export function Menu({
               : { left: posto.left, top: posto.top }
           }
         >
-          {apertura.voci.map((voce) => (
-            <button
-              key={voce.etichetta}
-              type="button"
-              className="menu-item"
-              role="menuitem"
-              onClick={() => {
-                voce.azione();
-                onChiudi();
-              }}
-            >
-              {voce.etichetta}
-            </button>
-          ))}
+          {apertura.voci.map((voce, indice) =>
+            voce.spenta === undefined ? (
+              <button
+                key={voce.etichetta}
+                type="button"
+                className="menu-item"
+                role="menuitem"
+                onClick={() => {
+                  voce.azione();
+                  onChiudi();
+                }}
+              >
+                {voce.etichetta}
+              </button>
+            ) : (
+              /* Il nome dall'etichetta e la ragione come descrizione: dentro il
+                 nome, un lettore di schermo la leggerebbe come parte della voce
+                 a ogni passaggio di freccia. Il `title` è per il puntatore. */
+              <button
+                key={voce.etichetta}
+                type="button"
+                className="menu-item"
+                role="menuitem"
+                aria-disabled="true"
+                aria-label={voce.etichetta}
+                aria-describedby={`${idMenu}-${indice}`}
+                title={voce.spenta}
+              >
+                {voce.etichetta}
+                <span id={`${idMenu}-${indice}`} className="solo-lettori">
+                  {voce.spenta}
+                </span>
+              </button>
+            ),
+          )}
         </div>
       </Presenza>
     </>

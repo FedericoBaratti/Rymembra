@@ -23,14 +23,15 @@
  * # Dove un Cestino non c'è
  *
  * Prima di mostrare il tasto, per «Elimina dal disco» si chiede al nucleo
- * quanti dei brani scelti hanno il file su un'unità di rete (`brani_su_rete`):
- * lì il Cestino non esiste, e Windows cancellerebbe per sempre dicendo di
- * averli messi nel Cestino. Se ce n'è anche uno solo la finestrella lo dice con
- * il numero, e il tasto dice «per sempre»: è quella conferma — e solo quella —
- * che il nucleo accetta per cancellarli. Finché la risposta non c'è il tasto
- * resta spento: confermare senza averla letta vorrebbe dire confermare
- * un'altra frase. Se la domanda fallisce si conta tutto come di rete, che fa
- * chiedere di più e non di meno.
+ * quanti dei brani scelti hanno il file dove un Cestino non c'è
+ * (`brani_su_rete`, che a dispetto del nome conta anche le unità rimovibili —
+ * chiavette, schede SD —, i CD e i RAM disk): lì Windows cancellerebbe per
+ * sempre dicendo di averli messi nel Cestino. Se ce n'è anche uno solo la
+ * finestrella lo dice con il numero, e il tasto dice «per sempre»: è quella
+ * conferma — e solo quella — che il nucleo accetta per cancellarli. Finché la
+ * risposta non c'è il tasto resta spento: confermare senza averla letta
+ * vorrebbe dire confermare un'altra frase. Se la domanda fallisce si conta
+ * tutto come senza Cestino, che fa chiedere di più e non di meno.
  *
  * Il numero è di brani, non di file, perché si confronta con `quanti` per
  * decidere se dire «gli altri vanno nel Cestino»: i dodici brani di
@@ -97,8 +98,8 @@ export function ConfermaEliminazione({
   return (
     <Dialogo
       titolo={titolo}
-      // Tutti su un'unità di rete: del Cestino non si parla, e nemmeno di «gli
-      // altri», che non ci sono.
+      // Tutti dove il Cestino non c'è (rete o unità rimovibile): del Cestino
+      // non si parla, e nemmeno di «gli altri», che non ci sono.
       descrizione={
         !dalDisco
           ? t("delete.library.body")

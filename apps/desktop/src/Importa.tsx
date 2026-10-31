@@ -18,7 +18,7 @@
  * due schermate. Ha un passo in più davanti, il link, e per il resto il piano
  * dice le stesse cose: quanti brani ci sono già e quali no.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 
 import {
   eErroreIpc,
@@ -35,6 +35,7 @@ import { nomeSorgente } from "./parti/Importazioni";
 import { fiduciaDi, nomeFonte, PastigliaGradino, Tacche } from "./parti/Incertezza";
 import { nomeGenere, numero } from "./formato";
 import { LetturaLink, useLetturaLink } from "./parti/LetturaLink";
+import { erroriDopo, fuocoSulPrimario, NESSUN_ERRORE } from "./statoImportaLink";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 
@@ -79,6 +80,14 @@ export function Importa({
   const [fatto, setFatto] = useState<EsitoImportazione | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(true);
+  /**
+   * Sta scrivendo. Distinto da `inCorso`, che vale anche mentre si legge il
+   * piano, dove Escape resta un gesto voluto: chiusa a metà della scrittura,
+   * la finestrella lascerebbe l'importazione senza nessuno che ne racconti
+   * l'esito — il rapporto o l'errore cadrebbero su un componente smontato.
+   * Così Escape, il velo e «Annulla» aspettano la risposta.
+   */
+  const [scrivendo, setScrivendo] = useState(false);
 
   // L'anteprima parte da sola: aprire questa schermata è già la richiesta di
   // vedere cosa c'è, e un secondo clic per ottenerlo sarebbe un passaggio a
@@ -104,6 +113,7 @@ export function Importa({
 
   const esegui = async () => {
     setInCorso(true);
+    setScrivendo(true);
     setErrore(null);
     try {
       setFatto(await ipc.importa(percorso));
@@ -112,6 +122,7 @@ export function Importa({
       setErrore(testoErrore(e));
     } finally {
       setInCorso(false);
+      setScrivendo(false);
     }
   };
 
@@ -126,6 +137,7 @@ export function Importa({
       etichetta={t("legacy.aria")}
       classe="finestrella glass-modal"
       onChiudi={onChiudi}
+      chiudibile={!scrivendo}
     >
       <div className="percorso">{percorso}</div>
 
@@ -200,7 +212,7 @@ export function Importa({
       )}
 
       <div className="tasti-finestrella">
-        <button type="button" className="bottone" onClick={onChiudi}>
+        <button type="button" className="bottone" onClick={onChiudi} disabled={scrivendo}>
           {fatto ? t("common.close") : t("common.cancel")}
         </button>
         {!fatto && (
@@ -227,13 +239,13 @@ export function Importa({
  * somiglia lo vede prima di incollare, invece di scoprirlo dal messaggio di una
  * lettura fallita.
  *
- * Sono tre e non uno perché sono tre posti diversi, e la differenza non è
- * cosmetica: dall'Internet Archive si può tenere una copia, da Jamendo no —
- * i loro termini vietano esplicitamente la cache e l'accesso offline.
+ * Sono due, i cataloghi di questa build. Il terzo, Jamendo, è spento finché
+ * i suoi termini non sono chiariti (vedi il README, «Known limits»): il suo
+ * esempio restava qui, e chi incollava un link di Jamendo riceveva un errore
+ * per un indirizzo che la finestrella stessa gli aveva suggerito.
  */
 const ESEMPI: readonly string[] = [
   "https://archive.org/details/…",
-  "https://www.jamendo.com/track/…",
   "https://audius.co/…",
 ];
 
@@ -371,8 +383,19 @@ export function ImportaLink({
   const [anteprima, setAnteprima] = useState<AnteprimaImport | null>(null);
   const [piano, setPiano] = useState<EsitoImport | null>(null);
   const [creaPlaylist, setCreaPlaylist] = useState(true);
-  const [errore, setErrore] = useState<unknown>(null);
+  // Due errori, uno per fonte: quello dei gesti e quello del piano, che si
+  // rifà da sé. Il perché sta in `statoImportaLink.ts`.
+  const [errori, segnaErrore] = useReducer(erroriDopo, NESSUN_ERRORE);
   const [inCorso, setInCorso] = useState(false);
+  /**
+   * Sta scrivendo: «Importa» è stato premuto e il nucleo non ha risposto.
+   *
+   * Distinto da `inCorso`, che vale anche mentre si legge il link e si fa il
+   * piano, dove Escape resta un gesto voluto. Mentre scrive no: chiusa a metà,
+   * la finestrella lascerebbe un'importazione senza nessuno che ne racconti
+   * l'esito, e un errore cadrebbe su un componente che non c'è più.
+   */
+  const [scrivendo, setScrivendo] = useState(false);
   /**
    * La rete è in mezzo, adesso.
    *
@@ -394,15 +417,28 @@ export function ImportaLink({
    * naviga con la tastiera dovrebbe ritabulare per raggiungere «Importa», che
    * è a due centimetri dai suoi occhi.
    *
+   * Non nel disegno in cui arriva l'anteprima, però: lì il piano non c'è
+   * ancora, «Importa» è spento e `focus()` su un tasto spento non fa niente.
+   * Il fuoco ci va quando il tasto si accende, una volta per anteprima: vedi
+   * `fuocoSulPrimario`.
+   *
    * Alla chiusura torna dov'era — anche questo da `Dialogo`, che prima di
    * questa finestrella lo faceva per tutte le altre e non per lei. Conta di
    * più adesso che prima: con `Ctrl+l` questa finestrella si apre da qualunque
    * pagina, e chi l'ha aperta da un elenco vuole ritrovarsi nell'elenco.
    */
   const primario = useRef<HTMLButtonElement>(null);
+  const servita = useRef<AnteprimaImport | null>(null);
+  // Ha risposto solo il terzo livello: di questo contenuto si sanno il titolo e
+  // la copertina, e i brani sono zero. Importare adesso creerebbe una playlist
+  // vuota e nient'altro — cioè assomiglierebbe a un successo.
+  const degradato = anteprima?.sorgente === "oembed";
+  const primarioAcceso = !inCorso && piano !== null && !degradato;
   useEffect(() => {
-    if (anteprima !== null) primario.current?.focus();
-  }, [anteprima]);
+    if (!fuocoSulPrimario({ anteprima, servita: servita.current, acceso: primarioAcceso })) return;
+    servita.current = anteprima;
+    primario.current?.focus();
+  }, [anteprima, primarioAcceso]);
 
   /**
    * Legge il link.
@@ -417,7 +453,7 @@ export function ImportaLink({
     if (!url.trim() || inCorso) return;
     setInCorso(true);
     setLeggendo(true);
-    setErrore(null);
+    segnaErrore({ tipo: "letturaPartita" });
     setPiano(null);
     try {
       const a = await ipc.importAnteprima(url.trim(), forza);
@@ -426,7 +462,7 @@ export function ImportaLink({
       // e chi la vuole lo stesso può accenderla.
       setCreaPlaylist(a.genere !== "brano");
     } catch (e) {
-      setErrore(e);
+      segnaErrore({ tipo: "letturaFallita", errore: e });
     } finally {
       setInCorso(false);
       setLeggendo(false);
@@ -443,10 +479,15 @@ export function ImportaLink({
     ipc
       .importPiano(url.trim(), creaPlaylist)
       .then((p) => {
-        if (!annullato) setPiano(p);
+        if (annullato) return;
+        setPiano(p);
+        // Il piano di adesso è riuscito: il rifiuto di quello di prima non
+        // descrive più niente (era il blocco «playlist automatica» che restava
+        // sotto la casella spenta).
+        segnaErrore({ tipo: "pianoArrivato" });
       })
       .catch((e: unknown) => {
-        if (!annullato) setErrore(e);
+        if (!annullato) segnaErrore({ tipo: "pianoFallito", errore: e });
       })
       .finally(() => {
         if (!annullato) setInCorso(false);
@@ -465,17 +506,20 @@ export function ImportaLink({
    * `onImportato` prima di `onChiudi`: è la consegna dell'importazione a chi la
    * seguirà — l'elenco in Impostazioni — e farla dopo la chiusura vorrebbe dire
    * consegnarla da un componente che non c'è più. Su errore non si chiude
-   * niente: il messaggio va letto dove si è premuto.
+   * niente: il messaggio va letto dove si è premuto. Per lo stesso motivo,
+   * mentre scrive, Escape, il velo e «Annulla» non chiudono (`scrivendo`).
    */
   const esegui = async () => {
     setInCorso(true);
-    setErrore(null);
+    setScrivendo(true);
+    segnaErrore({ tipo: "esecuzionePartita" });
     try {
       onImportato(await ipc.importEsegui(url.trim(), creaPlaylist));
       onChiudi();
     } catch (e) {
-      setErrore(e);
+      segnaErrore({ tipo: "esecuzioneFallita", errore: e });
       setInCorso(false);
+      setScrivendo(false);
     }
   };
 
@@ -489,10 +533,6 @@ export function ImportaLink({
       : Math.max(rapporto.missing, rapporto.missingTracks.length) -
         Math.min(rapporto.missingTracks.length, MANCANTI_A_SCHERMO);
   const monco = anteprima?.troncato ?? null;
-  // Ha risposto solo il terzo livello: di questo contenuto si sanno il titolo e
-  // la copertina, e i brani sono zero. Importare adesso creerebbe una playlist
-  // vuota e nient'altro — cioè assomiglierebbe a un successo.
-  const degradato = anteprima?.sorgente === "oembed";
   /**
    * Il nucleo ha rifiutato perché la playlist di destinazione è automatica.
    *
@@ -507,7 +547,9 @@ export function ImportaLink({
    * promette una cosa che si disfa da sola.
    */
   const playlistAutomatica =
-    eErroreIpc(errore) && errore.code === "library.playlistIsSmart";
+    eErroreIpc(errori.piano) && errori.piano.code === "library.playlistIsSmart";
+  /** Quel che va in cima: il guasto di un gesto, o quello del piano se non è il rifiuto qui sopra. */
+  const errore = errori.azione ?? (playlistAutomatica ? null : errori.piano);
 
   /** Rilegge il link saltando la cella. Vedi `guarda`. */
   const riprova = (
@@ -529,6 +571,7 @@ export function ImportaLink({
       etichetta={t("link.aria")}
       classe="finestrella glass-modal"
       onChiudi={onChiudi}
+      chiudibile={!scrivendo}
     >
       {!anteprima && (
         <>
@@ -644,7 +687,7 @@ export function ImportaLink({
           alla casella che lo causa, più in basso. Un blocco in cima che parla
           di una casella a mezzo schermo di distanza è un blocco che si legge
           senza capire a cosa si riferisca. */}
-      {errore !== null && !playlistAutomatica && (
+      {errore !== null && (
         <AvvisoErrore
           errore={errore}
           {...(url.trim() !== ""
@@ -654,7 +697,7 @@ export function ImportaLink({
       )}
       {/* Anche con un'anteprima in mano, quando è quella magra: è proprio il
           caso in cui sapere *dove* si è fermata la lettura serve a qualcosa. */}
-      {(errore !== null || degradato) && <Diagnosi />}
+      {(errori.azione !== null || errori.piano !== null || degradato) && <Diagnosi />}
       {/* Era `<p>Lettura in corso…</p>`, e per una playlist da trecento brani
           erano duecento richieste dietro una frase che non cambiava mai: chi
           aspettava non poteva distinguere una lettura lunga da una impiantata,
@@ -729,7 +772,7 @@ export function ImportaLink({
                 </button>
               }
             >
-              {testoErrore(errore)}
+              {testoErrore(errori.piano)}
             </Avviso>
           )}
         </>
@@ -875,7 +918,7 @@ export function ImportaLink({
       )}
 
       <div className="tasti-finestrella">
-        <button type="button" className="bottone" onClick={onChiudi}>
+        <button type="button" className="bottone" onClick={onChiudi} disabled={scrivendo}>
           {t("common.cancel")}
         </button>
         {anteprima ? (

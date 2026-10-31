@@ -29,7 +29,7 @@
         { h: "The thread" },
         "`rymembra-arricchimento`: first pass after 90 s, then every 30 min, and after scans/downloads once a 2 min burst is over. It never takes the player lock and holds the library lock only per group. `enrich.auto` (default on) switches it; events `arricchimento:stato`, `:avanzamento`, `:esito` report progress and the counts applied / held back / without match.",
         { h: "Forgetting and the legacy exit" },
-        "`arricchimento_annulla` → `enrich::dimentica`: re-reads tags from the untouched files, clears what enrichment set, sets status `undone`, re-applies manual corrections, and switches `enrich.auto` off so the next pass does not redo it. `arricchimento_riporta_nei_file` is the only code in Rymembra that still writes tags into files: it restores, from `enrich_undo`, the tags that versions up to 2.3.0 overwrote. It is a temporary exit that the CHANGELOG says will be removed.",
+        "`arricchimento_annulla` → `enrich::dimentica`: re-reads tags from the untouched files, clears what enrichment set, sets status `undone`, re-applies manual corrections, and switches `enrich.auto` off so the next pass does not redo it. `arricchimento_riporta_nei_file`, which restored into the files the tags that versions up to 2.3.0 had overwritten (from `enrich_undo`), was removed in 3.2.0: it was promised for one release in 2.3.1, and it was the last code in Rymembra that wrote into the user's files. The `enrich_undo` rows stay in the database, read and written by nobody.",
       ],
       see: ["corrections", "rate-limits", "albums"],
     },
@@ -55,7 +55,7 @@
     {
       id: "lyrics",
       title: "Lyrics",
-      src: ["core/rymembra-domain/src/testo.rs", "core/rymembra-app/src/testi.rs", "apps/desktop/src-tauri/src/testi.rs", "core/rymembra-meta/src/lrclib.rs", "apps/desktop/src/parti/Testo.tsx", "apps/desktop/src/parti/SceltaTesto.tsx"],
+      src: ["core/rymembra-domain/src/testo.rs", "core/rymembra-app/src/testi.rs", "core/rymembra-app/src/testi/disco.rs", "core/rymembra-app/src/testi/catalogo.rs", "apps/desktop/src-tauri/src/testi.rs", "core/rymembra-meta/src/lrclib.rs", "apps/desktop/src/parti/Testo.tsx", "apps/desktop/src/parti/SceltaTesto.tsx"],
       body: [
         "One LRC parser exists, `rymembra_domain::testo`; the window receives already-parsed lines (`TestoIpc`: lines with ms, optional per-word times, secondary lines such as translations, or a plain text, or «instrumental») and never sees raw LRC.",
         { h: "The source chain" },

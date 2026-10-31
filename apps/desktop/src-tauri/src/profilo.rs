@@ -177,7 +177,9 @@ fn pacchetti(data_dir: &Path) -> Pacchetti {
 /// `.ryprofile` — si controlla prima di tutto il resto, perché non costa niente
 /// e non tocca il disco: vedi [`crate::destinazioni`];
 /// `internal.aborted` se la libreria non c'è più; `db.queryFailed` se la
-/// raccolta fallisce; `fs.writeFailed` se l'archivio non si scrive.
+/// raccolta fallisce; `profile.tooLarge` se il profilo supera i limiti che la
+/// lettura ammette (ci si ferma prima di aprire il file); `fs.writeFailed` se
+/// l'archivio non si scrive.
 #[tauri::command(async)]
 pub async fn profilo_esporta(app: AppHandle, percorso: String) -> Esito<Esportazione> {
     let file =
@@ -404,9 +406,12 @@ fn applica_ora(
             avanza(app, "copertine", passo);
         })?;
         // I pacchetti passano dalle guardie di `rymembra_cloud::pacchetti`, che
-        // sono le stesse dell'installazione a mano: identificatore sicuro,
-        // archivio validato, e **non si sovrascrive mai** quel che c'è. Un
-        // archivio arrivato su una chiavetta non è più fidato di uno scaricato.
+        // sono le stesse dell'installazione a mano: identificatore sicuro, e
+        // **non si sovrascrive mai** quel che c'è. Un archivio arrivato su una
+        // chiavetta non è più fidato di uno scaricato. Una skin si valida per
+        // intero (`scrivi_skin`); una bozza dello Studio no: `scrivi_bozza`
+        // controlla solo che il manifesto sia testo UTF-8 e la rimette com'era,
+        // anche a metà, perché è un lavoro in corso e lo Studio sa riaprirla.
         profilo::per_ogni_pacchetto(Path::new(percorso), |id, bozza, byte| {
             let scritto = if bozza {
                 rymembra_cloud::pacchetti::scrivi_bozza(&data_dir, id, byte)
@@ -441,12 +446,52 @@ fn applica_ora(
         &|percorsi| volumi::esistenze(percorsi, volumi::SCADENZA_RISOLUZIONE),
     );
 
-    // Le risposte, e il conto di quelle che non si sono sapute. Il nucleo del
-    // profilo le riceve come «no» — la sua domanda ha due risposte — e le
-    // conterebbe fra gli irrintracciabili: qui si contano a parte, e dopo le si
-    // tolgono da lì.
-    let non_verificati = Cell::new(0_usize);
+    // ── fase 3: sotto lucchetto, una transazione sola. ─────────────────────
     let gia_chiesti = RefCell::new(HashMap::new());
+    let altri = |percorso: &str| esiste_entro(percorso, &gia_chiesti);
+    let (piano, brani_non_verificati) = con_le_verifiche(&verifiche, &altri, |esiste| {
+        con_libreria(&stato, |libreria| {
+            let ambiente = Ambiente {
+                esiste,
+                adesso_ms: adesso_ms(),
+                dispositivo: &dispositivo,
+                rimappature,
+                copertine: Some(&store),
+                unisci_comunque,
+            };
+            if conferma {
+                profilo::importa(&mut libreria.connection, &letto, &ambiente)
+            } else {
+                profilo::piano(&mut libreria.connection, &letto, &ambiente)
+            }
+        })
+    })?;
+    Ok(PianoProfilo {
+        piano,
+        brani_non_verificati,
+        stima: verifiche.stima(),
+    })
+}
+
+/// Il piano (o l'importazione) con le risposte delle verifiche, e il conto dei
+/// brani che non si sono potuti verificare.
+///
+/// Il nucleo del profilo fa una domanda a due risposte (`Ambiente::esiste`):
+/// «non si sa» gli arriva come «no», e lui lo conta fra gli irrintracciabili.
+/// Qui si contano a parte, e dopo si tolgono da lì. Il conto torna finché il
+/// nucleo chiede **una volta per brano** (oggi `radici::applica_verificati`):
+/// se chiedesse due volte, i non verificati raddoppierebbero e la sottrazione
+/// azzererebbe gli irrintracciabili veri senza errori. La prova
+/// `i_brani_non_verificati_si_contano_a_parte` lo fissa.
+///
+/// Un percorso che le verifiche non conoscono non è un brano (una radice del
+/// profilo, la cartella dei download): sono pochi, e li chiede `altri`.
+fn con_le_verifiche(
+    verifiche: &radici::Verifiche,
+    altri: &dyn Fn(&str) -> bool,
+    fai: impl FnOnce(&dyn Fn(&str) -> bool) -> Result<Piano, AppError>,
+) -> Result<(Piano, usize), AppError> {
+    let non_verificati = Cell::new(0_usize);
     let esiste = |percorso: &str| match verifiche.esito(percorso) {
         Some(Esistenza::Presente) => true,
         Some(Esistenza::Assente) => false,
@@ -454,36 +499,14 @@ fn applica_ora(
             non_verificati.set(non_verificati.get().saturating_add(1));
             false
         }
-        // Non è un brano: una radice del profilo, la cartella dei download.
-        // Sono poche, e si chiedono qui con la loro scadenza.
-        None => esiste_entro(percorso, &gia_chiesti),
+        None => altri(percorso),
     };
-
-    // ── fase 3: sotto lucchetto, una transazione sola. ─────────────────────
-    let mut piano = con_libreria(&stato, |libreria| {
-        let ambiente = Ambiente {
-            esiste: &esiste,
-            adesso_ms: adesso_ms(),
-            dispositivo: &dispositivo,
-            rimappature,
-            copertine: Some(&store),
-            unisci_comunque,
-        };
-        if conferma {
-            profilo::importa(&mut libreria.connection, &letto, &ambiente)
-        } else {
-            profilo::piano(&mut libreria.connection, &letto, &ambiente)
-        }
-    })?;
+    let mut piano = fai(&esiste)?;
     let brani_non_verificati = non_verificati.get();
     piano.brani_irrintracciabili = piano
         .brani_irrintracciabili
         .saturating_sub(brani_non_verificati);
-    Ok(PianoProfilo {
-        piano,
-        brani_non_verificati,
-        stima: verifiche.stima(),
-    })
+    Ok((piano, brani_non_verificati))
 }
 
 /// Scrive la copia di sicurezza di com'è questo computer adesso, e ruota.
@@ -548,4 +571,88 @@ fn esiste_entro(percorso: &str, gia_chiesti: &RefCell<HashMap<String, bool>>) ->
         .borrow_mut()
         .insert(percorso.to_owned(), risposta);
     risposta
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// Una libreria con tre brani sotto `D:\Vecchia`.
+    fn libreria_con_tre_brani() -> rusqlite::Connection {
+        let c = rymembra_app::db::open_in_memory()
+            .expect("database")
+            .connection;
+        for (id, nome) in [(1, "presente"), (2, "assente"), (3, "ignoto")] {
+            c.execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?3, 'Titolo', 'Artista', 'Album', 200000, 1000, 0, 0)",
+                rusqlite::params![id, format!(r"D:\Vecchia\{nome}.mp3"), format!("k{id}")],
+            )
+            .expect("brano");
+        }
+        c
+    }
+
+    /// Un profilo senza libreria: solo la rimappatura di chi importa conta.
+    fn profilo_vuoto(dir: &Path) -> profilo::Letto {
+        let percorso = dir.join("profilo.json");
+        let json = serde_json::json!({
+            "rymembra": profilo::FIRMA,
+            "versione": 1,
+            "creato_ms": 1,
+            "voci": {},
+        });
+        std::fs::write(&percorso, json.to_string()).expect("scrittura");
+        profilo::leggi(&percorso).expect("lettura")
+    }
+
+    #[test]
+    fn i_brani_non_verificati_si_contano_a_parte() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let letto = profilo_vuoto(dir.path());
+        let mut c = libreria_con_tre_brani();
+        let rimappature = [Rimappatura {
+            da: r"D:\Vecchia".to_owned(),
+            a: r"E:\Nuova".to_owned(),
+            brani: 3,
+        }];
+        let candidati = radici::candidati(&c, &rimappature).expect("candidati");
+        // Una risposta per brano: c'è, non c'è, non si sa.
+        let verifiche = radici::verifica(candidati, None, &|percorsi| {
+            percorsi
+                .iter()
+                .map(|percorso| {
+                    if percorso.ends_with("presente.mp3") {
+                        Esistenza::Presente
+                    } else if percorso.ends_with("assente.mp3") {
+                        Esistenza::Assente
+                    } else {
+                        Esistenza::Ignota
+                    }
+                })
+                .collect()
+        });
+        let (piano, non_verificati) = con_le_verifiche(&verifiche, &|_| false, |esiste| {
+            profilo::piano(
+                &mut c,
+                &letto,
+                &Ambiente {
+                    esiste,
+                    adesso_ms: 1,
+                    dispositivo: "PC",
+                    rimappature: &rimappature,
+                    copertine: None,
+                    unisci_comunque: false,
+                },
+            )
+        })
+        .expect("piano");
+        assert_eq!(piano.percorsi_riscritti, 1, "{piano:?}");
+        assert_eq!(non_verificati, 1, "{piano:?}");
+        assert_eq!(
+            piano.brani_irrintracciabili, 1,
+            "solo quello che non c'è davvero: {piano:?}"
+        );
+    }
 }

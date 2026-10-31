@@ -46,6 +46,14 @@ pub enum Domain {
     Insieme,
     /// Sincronizzazione con Drive.
     Sync,
+    /// Le cartelle della libreria che stanno su un servizio cloud.
+    ///
+    /// Non `Sync`, benché Google Drive stia in tutti e due: là si parla del
+    /// backup e della sincronia fra dispositivi, qui della musica letta da
+    /// OneDrive, Drive, Dropbox, MEGA o WebDAV, e i rimedi — «ricollega
+    /// OneDrive», «la quota di trasferimento di MEGA torna fra un'ora» — sono
+    /// altri. Le frasi di `Sync` nominano Google e la sezione Backup.
+    Cloud,
     /// Impostazioni e segreti.
     Settings,
     /// I modelli di linguaggio.
@@ -816,6 +824,71 @@ catalogo! {
     /// credenziali adesso scollega.
     SyncClientUnauthorized = "sync.clientUnauthorized", Sync, Warning, Never, None;
 
+    // ── cloud ───────────────────────────────────────────────────────────────
+    /// La cartella è di un account che su questo PC non è collegato.
+    ///
+    /// Il caso normale di una cartella arrivata con la sincronia o col backup:
+    /// le righe ci sono, ma i byte stanno dietro un consenso che questo PC non
+    /// ha dato. Si collega l'account e si ritrova tutto.
+    CloudNotConnected = "cloud.notConnected", Cloud, Info, Never, None, { servizio: String };
+    /// Il servizio non accetta più il consenso dato: revocato, scaduto, o
+    /// cambiata la password.
+    CloudAuthExpired = "cloud.authExpired", Cloud, Warning, Never, None, { servizio: String };
+    /// Chi era nel browser ha detto di no, o ha chiuso la pagina.
+    CloudConsentDenied = "cloud.consentDenied", Cloud, Info, Never, None;
+    /// Per quel servizio non c'è un'app dell'utente: va registrata presso la
+    /// piattaforma e il suo identificativo scritto in Rymembra. Vale anche per
+    /// un conto la cui app è stata tolta.
+    CloudClientMissing = "cloud.clientMissing", Cloud, Info, Never, None, { servizio: String };
+    /// La piattaforma non accetta l'app: l'identificativo non esiste, il
+    /// segreto non è il suo, o l'app non è registrata come serve (piattaforma
+    /// desktop, account personali, permessi). `invalid_client` e, durante il
+    /// consenso, `unauthorized_client`. Si correggono i dati dell'app;
+    /// ricollegare non serve finché non è a posto.
+    CloudAppRejected = "cloud.appRejected", Cloud, Warning, Never, None, { servizio: String };
+    /// Il conto era stato collegato con un'app che nel frattempo ha cambiato
+    /// identificativo: il suo consenso appartiene all'app di prima. Si
+    /// ricollega, e cartelle e brani restano dove sono.
+    CloudAppChanged = "cloud.appChanged", Cloud, Info, Never, None, { servizio: String };
+    /// L'identificativo dell'app scritto a mano non ha la forma che la
+    /// piattaforma gli dà (o il nome dell'app è vuoto o troppo lungo).
+    CloudAppIdInvalid = "cloud.appIdInvalid", Cloud, Info, Never, None;
+    /// Un'app con lo stesso identificativo c'è già.
+    CloudAppDuplicate = "cloud.appDuplicate", Cloud, Info, Never, None;
+    /// All'app Google manca il segreto, che il suo client «App desktop»
+    /// chiede. Il caso di chi, fino alla 3.1, aveva scritto l'identificativo e
+    /// lasciato vuoto il segreto: l'app c'è, e va completata.
+    CloudAppSecretMissing = "cloud.appSecretMissing", Cloud, Info, Never, None;
+    /// Un gesto che su un brano del cloud non si può fare: Rymembra ha solo il
+    /// permesso di leggere.
+    CloudReadOnly = "cloud.readOnly", Cloud, Info, Never, None;
+    /// Il file non c'è più sul servizio.
+    CloudNotFound = "cloud.notFound", Cloud, Warning, Never, None;
+    /// Il servizio ha finito la quota di trasferimento dell'account (MEGA lo
+    /// fa a ore). Non si ritenta da soli: passa col tempo, non con un secondo
+    /// tentativo.
+    CloudQuotaExceeded = "cloud.quotaExceeded", Cloud, Warning, Never, None, { servizio: String, riprova_fra_ms: Option<u64> };
+    /// Email, utente o password non accettati (MEGA, WebDAV).
+    CloudWrongCredentials = "cloud.wrongCredentials", Cloud, Warning, Never, None;
+    /// L'account MEGA ha la verifica in due passaggi: serve il codice.
+    CloudTwoFactorRequired = "cloud.twoFactorRequired", Cloud, Info, Never, None;
+    /// Il link della cartella MEGA non è un link, o la chiave non apre la
+    /// cartella.
+    CloudLinkInvalid = "cloud.linkInvalid", Cloud, Warning, Never, None;
+    /// Il server non sa servire un pezzo di file (`Range`): senza, ogni salto
+    /// sarebbe il brano intero da capo.
+    CloudRangeUnsupported = "cloud.rangeUnsupported", Cloud, Warning, Never, None;
+    /// Un server WebDAV in `http://`: la password viaggerebbe in chiaro.
+    CloudInsecureServer = "cloud.insecureServer", Cloud, Warning, Never, None;
+    /// Un indirizzo WebDAV con utente e password dentro
+    /// (`https://utente:password@server/…`): tenuto, la password finirebbe in
+    /// chiaro nel database e nel diario. Utente e password vanno nei campi.
+    CloudCredentialsInAddress = "cloud.credentialsInAddress", Cloud, Warning, Never, None;
+    /// Il brano del cloud non ha una copia completa in cache, e l'analisi non
+    /// scarica niente apposta. Non è un guasto del file: si misura dopo un
+    /// ascolto.
+    CloudNotInCache = "cloud.notInCache", Cloud, Info, Never, None;
+
     // ── settings ────────────────────────────────────────────────────────────
     /// Le impostazioni salvate sono illeggibili.
     SettingsCorrupt = "settings.corrupt", Settings, Error, Never, None, { quarantined_as: Option<String> };
@@ -850,6 +923,18 @@ catalogo! {
     /// lo stesso rifiuto per sempre, quindi non si rimanda — si dice quale e
     /// perché.
     SettingsScrobbleRejected = "settings.scrobbleRejected", Settings, Warning, Never, None, { service: String, detail: Option<String> };
+    /// Il profilo da esportare supera i limiti che la sua lettura ammette: su un
+    /// altro computer nessuna versione lo saprebbe riaprire.
+    ///
+    /// Un codice suo e non `fs.writeFailed`: il disco non c'entra, e la frase
+    /// di quello («controlla lo spazio libero e i permessi») manderebbe a
+    /// cercare il guasto nel posto sbagliato. Non si scrive niente, e il profilo
+    /// di prima resta com'è. `voce` è la voce dell'archivio troppo grande, con i
+    /// suoi `byte` e il `limite`; quando a sforare è il **numero** delle voci,
+    /// `voce` è vuota e `byte`/`limite` contano voci, non byte. Il dettaglio per
+    /// esteso sta nella causa. Mai ritentabile: lo stesso profilo dà lo stesso
+    /// rifiuto.
+    ProfileTooLarge = "profile.tooLarge", Settings, Warning, Never, None, { voce: String, byte: u64, limite: u64 };
 
     // ── ia ──────────────────────────────────────────────────────────────────
     /// Nessun modello configurato.
@@ -1032,6 +1117,23 @@ mod prove {
         assert!(!senza.is_retryable());
         assert_eq!(senza.kind().domain(), Domain::Fs);
         assert_eq!(senza.i18n_key(), "errors.fs.noRecycleBin");
+    }
+
+    #[test]
+    fn un_profilo_troppo_grande_ha_il_suo_codice() {
+        // Un profilo che la lettura rifiuterebbe (troppe voci, o una voce oltre
+        // il tetto) non è un disco pieno: `fs.writeFailed` diceva «controlla lo
+        // spazio libero e i permessi», cioè il rimedio sbagliato. Ritentare dà
+        // lo stesso rifiuto, e la frase è la sua.
+        let troppo = ErrorCode::ProfileTooLarge {
+            voce: "biblioteca.json".to_owned(),
+            byte: 300 * 1024 * 1024,
+            limite: 256 * 1024 * 1024,
+        };
+        assert!(!troppo.is_retryable());
+        assert_eq!(troppo.kind().severity(), Severity::Warning);
+        assert_eq!(troppo.kind().code(), "profile.tooLarge");
+        assert_eq!(troppo.i18n_key(), "errors.profile.tooLarge");
     }
 
     #[test]

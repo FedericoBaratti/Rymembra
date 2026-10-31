@@ -27,15 +27,20 @@
 
 use lofty::config::WriteOptions;
 use lofty::file::TaggedFileExt;
-use lofty::id3::v2::Id3v2Tag;
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::{Accessor, ItemKey, TagExt};
 use lofty::probe::Probe;
+use lofty::tag::Tag;
 use lofty::tag::items::Timestamp;
-use lofty::tag::{ItemValue, Tag, TagItem, TagType};
 use rymembra_domain::BranoEsterno;
-use rymembra_domain::enrich::Fields;
 use rymembra_domain::errors::{AppError, ErrorCode};
+// Quel che serve soltanto a `scrivi_campi`, che dalla 3.2 vive per le prove.
+#[cfg(test)]
+use lofty::id3::v2::Id3v2Tag;
+#[cfg(test)]
+use lofty::tag::{ItemValue, TagItem, TagType};
+#[cfg(test)]
+use rymembra_domain::enrich::Fields;
 
 use crate::metadata::racconta_errore;
 
@@ -57,6 +62,7 @@ const COPERTINA_MASSIMA: usize = 8 * 1024 * 1024;
 ///
 /// # Errori
 ///
+/// `cloud.readOnly` per un file del cloud, senza toccarlo;
 /// `metadata.tagWriteFailed` se il file non si apre, non si interpreta o non si
 /// riscrive.
 pub fn scrivi_tag(
@@ -65,6 +71,9 @@ pub fn scrivi_tag(
     posizione: u32,
     copertina: Option<&[u8]>,
 ) -> Result<(), AppError> {
+    // Prima di aprire niente: un file del cloud è di sola lettura. Vedi
+    // `scrittura::sola_lettura`.
+    crate::scrittura::sola_lettura(percorso)?;
     let fallito = |dettaglio: String| {
         AppError::new(ErrorCode::MetadataTagWriteFailed {
             path: Some(percorso.display().to_string()),
@@ -161,20 +170,24 @@ pub fn scrivi_tag(
 /// deve scriverla ce l'ha ancora: è [`scrivi_tag`], che lavora sui file appena
 /// scaricati — file che non sono dell'utente, li ha appena creati Rymembra.
 ///
-/// # Nessun chiamante, oggi
+/// # Solo per le prove, dalla 3.2
 ///
-/// Va detto perché non sembri una svista: dalla 2.3.1 nessuna passata chiama
-/// questa funzione. Resta perché è il gemello esatto di [`ripristina_campi`],
-/// che la via di ritorno per i file già riscritti usa ancora, e perché sono le
-/// sue prove a tenere onesta l'asimmetria fra le due — un `None` che qui non
-/// tocca niente e là svuota. Il giorno in cui anche quella via sparisce, le due
-/// spariscono insieme.
+/// Dalla 2.3.1 nessuna passata la chiama, e il suo gemello `ripristina_campi`
+/// se n'è andato nella 3.2 con l'ultima via che riscriveva i file dell'utente
+/// («Riscrivi i tag nei file»). Resta per le prove: scrive i tag di partenza
+/// dei file finti su cui l'arricchimento lavora, e quelle prove sono la prova
+/// che una passata non tocca più il file.
 ///
 /// # Errori
 ///
+/// `cloud.readOnly` per un file del cloud, senza toccarlo;
 /// `metadata.tagWriteFailed` se il file non si apre, non si interpreta o non si
 /// riscrive.
+#[cfg(test)]
 pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), AppError> {
+    // Prima di aprire niente: un file del cloud è di sola lettura. Vedi
+    // `scrittura::sola_lettura`.
+    crate::scrittura::sola_lettura(percorso)?;
     let fallito = |dettaglio: String| {
         AppError::new(ErrorCode::MetadataTagWriteFailed {
             path: Some(percorso.display().to_string()),
@@ -241,8 +254,7 @@ pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), Ap
         }
     }
 
-    // Con una riserva, come [`ripristina_campi`]: il file è dell'utente. Vedi
-    // [`con_una_riserva`].
+    // Con una riserva: il file è dell'utente. Vedi [`con_una_riserva`].
     con_una_riserva(percorso, &fallito, |vero| {
         salva(vero, tipo, tag, campi).map_err(|err| fallito(racconta_errore(&err)))
     })
@@ -278,6 +290,7 @@ pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), Ap
 /// La rilettura invece li ricompone entrambi, saltando gli stessi controlli. È
 /// l'asimmetria fra le due direzioni ad averlo nascosto: il codice scriveva un
 /// campo che nessuno rileggeva, e nessuna delle due metà sembrava sbagliata.
+#[cfg(test)]
 fn salva(
     percorso: &std::path::Path,
     tipo: TagType,
@@ -307,113 +320,6 @@ fn salva(
     id3.save_to_path(percorso, WriteOptions::default())
 }
 
-/// Riporta un file ai tag che aveva prima dell'arricchimento.
-///
-/// # La differenza con [`scrivi_campi`], ed è l'unica che conta
-///
-/// Qui un `None` **svuota**. È il contrario esatto dell'altra funzione, e va
-/// così perché fanno due lavori opposti: [`scrivi_campi`] aggiunge quel che ha
-/// scoperto senza toccare il resto, questa deve riportare il file a uno stato
-/// preciso — e se prima dell'arricchimento il genere non c'era, riportarcelo
-/// vuol dire toglierlo.
-///
-/// Senza questa asimmetria un annullamento lascerebbe indietro proprio i campi
-/// che l'arricchimento aveva **aggiunto**, cioè quelli su cui è più facile che
-/// abbia sbagliato: un genere inventato e tre identificativi MusicBrainz di un
-/// disco che non è quello.
-///
-/// Gli identificativi si tolgono sempre. Non stanno in una fotografia perché
-/// non possono esserci stati: un brano che ne portava uno nei tag non è mai
-/// entrato fra i candidati.
-///
-/// # Mai senza riserva
-///
-/// Il tag si riscrive sul posto, come sempre, ma con una copia del brano
-/// accanto che lo rimette com'era se la scrittura fallisce o cade: vedi
-/// [`con_una_riserva`]. Un errore a metà lascia il brano com'era, non troncato.
-///
-/// # Errori
-///
-/// `metadata.tagWriteFailed` se il file non si apre, non si interpreta o non si
-/// riscrive — e se è di sola lettura, che è l'utente che dice di non toccarlo.
-/// `fs.writeFailed` col percorso della riserva se il brano non si è potuto
-/// rimettere com'era: vedi [`crate::scrittura::riserva_rimasta`].
-pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Result<(), AppError> {
-    let fallito = |dettaglio: String| {
-        AppError::new(ErrorCode::MetadataTagWriteFailed {
-            path: Some(percorso.display().to_string()),
-            detail: Some(dettaglio),
-        })
-    };
-
-    let mut file = Probe::open(percorso)
-        .map_err(|err| fallito(racconta_errore(&err)))?
-        .read()
-        .map_err(|err| fallito(racconta_errore(&err)))?;
-
-    let tipo = file
-        .primary_tag()
-        .map_or_else(|| file.file_type().primary_tag_type(), |tag| tag.tag_type());
-    let mut tag = file.remove(tipo).unwrap_or_else(|| Tag::new(tipo));
-
-    match pulito(originali.title.as_deref()) {
-        Some(titolo) => tag.set_title(titolo),
-        None => tag.remove_title(),
-    }
-    match pulito(originali.artist.as_deref()) {
-        Some(artista) => tag.set_artist(artista),
-        None => tag.remove_artist(),
-    }
-    match pulito(originali.album.as_deref()) {
-        Some(album) => tag.set_album(album),
-        None => tag.remove_album(),
-    }
-    match pulito(originali.album_artist.as_deref()) {
-        Some(interprete) => {
-            tag.insert_text(ItemKey::AlbumArtist, interprete);
-        }
-        None => tag.remove_key(ItemKey::AlbumArtist),
-    }
-    match pulito(originali.genre.as_deref()) {
-        Some(genere) => tag.set_genre(genere),
-        None => tag.remove_genre(),
-    }
-    match originali
-        .year
-        .filter(|a| *a > 0)
-        .and_then(|a| u16::try_from(a).ok())
-    {
-        Some(anno) => tag.set_date(Timestamp {
-            year: anno,
-            ..Timestamp::default()
-        }),
-        None => {
-            tag.remove_key(ItemKey::RecordingDate);
-            tag.remove_key(ItemKey::Year);
-        }
-    }
-    match originali.track_number.filter(|n| *n > 0) {
-        Some(numero) => tag.set_track(numero),
-        None => tag.remove_track(),
-    }
-    match originali.disc_number.filter(|d| *d > 0) {
-        Some(disco) => tag.set_disk(disco),
-        None => tag.remove_disk(),
-    }
-    for chiave in [
-        ItemKey::MusicBrainzRecordingId,
-        ItemKey::MusicBrainzReleaseId,
-        ItemKey::MusicBrainzReleaseGroupId,
-    ] {
-        tag.remove_key(chiave);
-    }
-
-    con_una_riserva(percorso, &fallito, |vero| {
-        tag.save_to_path(vero, WriteOptions::default())
-            .map_err(|err| fallito(racconta_errore(&err)))
-    })
-}
-
 /// Riscrive i tag di un file dell'utente sul posto, con una copia di riserva
 /// accanto che lo rimette com'era se la scrittura non arriva in fondo.
 ///
@@ -441,6 +347,7 @@ pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Resul
 /// dentro. Salvo uno: se nemmeno il ripristino è riuscito, l'errore resta
 /// quello della riserva, col suo percorso, perché chi chiama possa contarlo a
 /// parte — vedi [`crate::scrittura::riserva_rimasta`].
+#[cfg(test)]
 fn con_una_riserva(
     percorso: &std::path::Path,
     fallito: &dyn Fn(String) -> AppError,
@@ -510,6 +417,19 @@ mod prove {
     use super::*;
     use crate::files::LocalFiles;
     use crate::metadata::read_tags;
+
+    #[test]
+    fn i_tag_di_un_file_del_cloud_non_si_riscrivono() {
+        // Prima di aprire niente: le correzioni restano nel database.
+        let percorso = std::path::Path::new("nuvola://onedrive-abcdefgh/Musica/01.flac");
+        let solo_lettura = |esito: Result<(), AppError>| {
+            esito.is_err_and(|errore| {
+                errore.code().kind() == rymembra_domain::errors::ErrorCodeKind::CloudReadOnly
+            })
+        };
+        assert!(solo_lettura(scrivi_tag(percorso, &brano(), 1, None)));
+        assert!(solo_lettura(scrivi_campi(percorso, &Fields::default())));
+    }
 
     /// Un brano di Spotify completo di tutto.
     fn brano() -> BranoEsterno {
@@ -750,58 +670,6 @@ mod prove {
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.title.as_deref(), Some("Poetica"));
         assert_eq!(letti.album.as_deref(), Some("Possibili scenari"));
-    }
-
-    /// Il ritorno dei tag passa da una riserva: il risultato è lo stesso di una
-    /// scrittura sul posto, e accanto al brano non resta niente.
-    #[test]
-    fn ripristinare_i_campi_non_lascia_avanzi() {
-        let (cartella, percorso) = file_di_prova();
-        scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
-        ripristina_campi(
-            &percorso,
-            &Fields {
-                title: Some("Titolo di prima".to_owned()),
-                ..Fields::default()
-            },
-        )
-        .expect("ritorno");
-
-        let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
-        assert_eq!(letti.title.as_deref(), Some("Titolo di prima"));
-        assert_eq!(letti.album, None, "un `None` qui svuota");
-        let nomi: Vec<_> = std::fs::read_dir(cartella.path())
-            .expect("cartella")
-            .filter_map(|voce| Some(voce.ok()?.file_name()))
-            .collect();
-        assert_eq!(nomi, ["brano.mp3"], "nessun temporaneo accanto al brano");
-    }
-
-    /// Un brano di sola lettura non si riscrive, e resta byte per byte com'era.
-    #[test]
-    fn un_brano_di_sola_lettura_non_si_riscrive() {
-        let (_cartella, percorso) = file_di_prova();
-        scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
-        let prima = std::fs::read(&percorso).expect("letto");
-        let mut permessi = std::fs::metadata(&percorso)
-            .expect("permessi")
-            .permissions();
-        permessi.set_readonly(true);
-        std::fs::set_permissions(&percorso, permessi.clone()).expect("sola lettura");
-
-        let esito = ripristina_campi(&percorso, &Fields::default());
-        assert_eq!(
-            esito.map_err(|e| e.code().kind().code().to_owned()),
-            Err("metadata.tagWriteFailed".to_owned())
-        );
-        assert_eq!(std::fs::read(&percorso).expect("letto"), prima);
-
-        #[expect(
-            clippy::permissions_set_readonly_false,
-            reason = "si toglie la sola lettura messa dalla prova, perché la cartella temporanea si possa cancellare"
-        )]
-        permessi.set_readonly(false);
-        let _ = std::fs::set_permissions(&percorso, permessi);
     }
 
     #[test]

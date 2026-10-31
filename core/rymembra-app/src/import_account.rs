@@ -42,7 +42,7 @@
 //! con un'altra conferma, e confonderle vorrebbe dire che chi importa il proprio
 //! account per curiosità si ritrova la libreria potata.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, Transaction};
 use rymembra_domain::abbinamento::{Gradino, PianoAbbinamento};
@@ -55,8 +55,8 @@ use rymembra_domain::spotify_account::{
 };
 
 use crate::import_esterno::{
-    MissingTrack, RapportoImport, Sorgente, Truncation, leggi_libreria, prepara_playlist,
-    riempi_playlist, scrivi_desiderati, scrivi_identificativi,
+    MissingTrack, RapportoImport, Sorgente, Truncation, leggi_libreria,
+    prepara_playlist_escludendo, riempi_playlist, scrivi_desiderati, scrivi_identificativi,
 };
 use crate::library::{db_error, now_ms, rebuild_aggregates};
 
@@ -251,11 +251,21 @@ fn run(
 
     let mut scritti_album = 0_usize;
 
+    let ordinali = ordinali_degli_omonimi(&snapshot.playlist);
+    let mut gia_scritte: HashSet<i64> = HashSet::new();
     for voce in &piano.playlist {
         let Some(playlist) = snapshot.playlist.get(voce.indice) else {
             continue;
         };
-        match scrivi_playlist(&tx, playlist, &voce.piano, snapshot.provenienza.nome()) {
+        let ordinale = ordinali.get(voce.indice).copied().unwrap_or(1);
+        match scrivi_playlist(
+            &tx,
+            playlist,
+            ordinale,
+            &voce.piano,
+            snapshot.provenienza.nome(),
+            &mut gia_scritte,
+        ) {
             Ok(fatto) => {
                 scritti_album = scritti_album.saturating_add(fatto.spotify_album_ids_written);
                 rapporto.playlists.push(fatto);
@@ -383,16 +393,46 @@ fn e_rifiuto(err: &AppError) -> bool {
 ///
 /// Dall'API l'identificativo c'è. Dall'archivio no — `Playlist1.json` non lo
 /// contiene — e allora se ne fabbrica uno dalla chiave del nome: stabile fra due
-/// letture dello stesso archivio, che è la sola proprietà che serve, e distinto
-/// per playlist, che è la sola che conta.
-fn identita_playlist(playlist: &PlaylistSpotify) -> String {
+/// letture dello stesso archivio, che è la sola proprietà che serve.
+///
+/// La chiave del nome da sola però **non** è distinta per playlist: Spotify
+/// ammette due playlist con lo stesso nome, e le due avrebbero avuto lo stesso
+/// identificativo. Per questo la seconda omonima dell'archivio diventa
+/// `…:chill#2`, la terza `…:chill#3` — `ordinale` è la posizione fra le
+/// omonime, vedi [`ordinali_degli_omonimi`]. La prima resta senza suffisso,
+/// com'era: i desiderati già scritti da un'importazione di prima la ritrovano.
+fn identita_playlist(playlist: &PlaylistSpotify, ordinale: usize) -> String {
     match &playlist.spotify_id {
         Some(id) => id.clone(),
+        None if ordinale > 1 => format!(
+            "rymembra:archivio:playlist:{}#{ordinale}",
+            PlaylistKey::compute(Some(&playlist.nome))
+        ),
         None => format!(
             "rymembra:archivio:playlist:{}",
             PlaylistKey::compute(Some(&playlist.nome))
         ),
     }
+}
+
+/// Per ogni playlist dell'istantanea, la sua posizione fra quelle senza
+/// identificativo con la stessa chiave del nome: 1 la prima, 2 la seconda… Una
+/// playlist con l'identificativo vale 1, perché non ne ha bisogno.
+fn ordinali_degli_omonimi(playlist: &[PlaylistSpotify]) -> Vec<usize> {
+    let mut viste: HashMap<String, usize> = HashMap::new();
+    playlist
+        .iter()
+        .map(|p| {
+            if p.spotify_id.is_some() {
+                return 1;
+            }
+            let quante = viste
+                .entry(PlaylistKey::compute(Some(&p.nome)).into_string())
+                .or_insert(0);
+            *quante += 1;
+            *quante
+        })
+        .collect()
 }
 
 /// Lo stesso, per un album salvato.
@@ -407,14 +447,20 @@ fn identita_album(album: &AlbumSpotify) -> String {
 }
 
 /// Crea o sostituisce la playlist, la riempie, e scrive il resto.
+///
+/// `gia_scritte` sono le playlist che questa esecuzione ha già riempito: una
+/// seconda playlist con lo stesso nome non le adotta, vedi
+/// [`prepara_playlist_escludendo`]. Riuscita, la playlist entra nell'elenco.
 fn scrivi_playlist(
     tx: &Transaction<'_>,
     playlist: &PlaylistSpotify,
+    ordinale: usize,
     piano: &PianoAbbinamento,
     provenienza: &str,
+    gia_scritte: &mut HashSet<i64>,
 ) -> Result<RapportoImport, AppError> {
-    let identita = identita_playlist(playlist);
-    let (id, creata, sostituita) = prepara_playlist(
+    let identita = identita_playlist(playlist, ordinale);
+    let (id, creata, sostituita) = prepara_playlist_escludendo(
         tx,
         &playlist.nome,
         playlist
@@ -422,7 +468,9 @@ fn scrivi_playlist(
             .as_deref()
             .map(|id| (Fonte::ArchivioSpotify, id)),
         playlist.troncatura(),
+        gia_scritte,
     )?;
+    gia_scritte.insert(id);
     let voci = riempi_playlist(
         tx,
         id,
@@ -627,6 +675,24 @@ fn lega_artisti(
 /// `idx_play_history_brano_quando` costa una ricerca; sull'indice che c'era prima
 /// costava una scansione di tutti gli ascolti di quel brano, moltiplicata per le
 /// decine di migliaia di righe di un archivio.
+///
+/// # Lo stesso ascolto dai due archivi
+///
+/// L'archivio arriva in due zip a settimane di distanza, e tutti e due portano
+/// la cronologia: quello dei dati dell'account con la fine **al minuto**
+/// («2023-01-01 12:00», i secondi valgono zero), quello della cronologia estesa
+/// al secondo. Lo stesso ascolto ha quindi un `played_at` diverso di qualche
+/// decina di secondi, e il solo confronto al millisecondo lo contava due volte:
+/// un anno di ascolti sovrapposto finiva doppio in `play_count`, che
+/// [`dimentica_importati`] per scelta non riabbassa. Per questo si riconosce
+/// anche un ascolto di Spotify dello stesso brano, con gli stessi millisecondi
+/// ascoltati e la fine entro un minuto, **quando una delle due fini è al
+/// minuto** — cioè viene dall'archivio breve, comunque Spotify arrotondi. Sulla
+/// sola finestra due ascolti veri di un brano breve, uno dietro l'altro, si
+/// sarebbero fusi; con la condizione del minuto succede solo se uno dei due
+/// finisce proprio allo scoccare del minuto. L'intervallo su `played_at` (a
+/// parità di `ms_played` la differenza delle fini è quella degli inizi) tiene la
+/// ricerca sull'indice invece di scorrere tutti gli ascolti del brano.
 fn scrivi_cronologia(
     tx: &Transaction<'_>,
     ascolti: &[rymembra_domain::spotify_account::AscoltoAbbinato],
@@ -637,6 +703,13 @@ fn scrivi_cronologia(
              SELECT ?1, ?2, ?3, 'spotify'
               WHERE NOT EXISTS (
                 SELECT 1 FROM play_history WHERE track_id = ?1 AND played_at = ?2
+              )
+                AND NOT EXISTS (
+                SELECT 1 FROM play_history
+                 WHERE track_id = ?1
+                   AND played_at > ?2 - 60000 AND played_at < ?2 + 60000
+                   AND ms_played = ?3 AND source = 'spotify'
+                   AND ((?2 + ?3) % 60000 = 0 OR (played_at + ms_played) % 60000 = 0)
               )",
         )
         .map_err(|err| db_error("scrittura della cronologia importata", &err))?;
@@ -1051,6 +1124,185 @@ mod prove {
             conta(&db, "SELECT play_count FROM tracks WHERE title = 'Song 2'"),
             2,
             "il massimo, non la somma"
+        );
+    }
+
+    /// Uno snapshot di sola cronologia, come lo porta uno dei due archivi.
+    fn sola_cronologia(ascolti: Vec<AscoltoSpotify>) -> AccountSnapshot {
+        AccountSnapshot {
+            cronologia: ascolti,
+            ..AccountSnapshot::vuoto(Provenienza::Archivio)
+        }
+    }
+
+    fn ascolto(quando: &str, ms: u64, album: Option<&str>) -> AscoltoSpotify {
+        let Some(finito_ms) = rymembra_domain::tempo::istante_ms(quando) else {
+            panic!("istante di prova illeggibile: {quando}");
+        };
+        AscoltoSpotify {
+            finito_ms,
+            ms_ascoltati: ms,
+            brano: BranoEsterno {
+                album: album.map(str::to_owned),
+                ..sp("Blur", "Song 2", "Blur", 180_000)
+            },
+        }
+    }
+
+    #[test]
+    fn archivio_breve_poi_esteso_non_raddoppia() {
+        // Lo zip «Account data» data la fine al minuto e senza album; quello
+        // della cronologia estesa al secondo. Lo stesso ascolto arriva così con
+        // un `played_at` diverso di qualche decina di secondi, e la guardia al
+        // millisecondo lo contava due volte.
+        for (primo, secondo) in [
+            (
+                ascolto("2023-01-01 12:00", 197_000, None),
+                ascolto("2023-01-01T12:00:37Z", 197_000, Some("Blur")),
+            ),
+            // E nell'ordine opposto; e con la fine arrotondata invece che troncata.
+            (
+                ascolto("2023-01-01T12:00:37Z", 197_000, Some("Blur")),
+                ascolto("2023-01-01 12:01", 197_000, None),
+            ),
+        ] {
+            let mut db = database();
+            libreria_di_prova(&db);
+            let Ok(_) = import(&mut db, &sola_cronologia(vec![primo]), &Scelte::default()) else {
+                panic!("la prima importazione deve riuscire");
+            };
+            let Ok(dopo) = import(&mut db, &sola_cronologia(vec![secondo]), &Scelte::default())
+            else {
+                panic!("la seconda importazione deve riuscire");
+            };
+            assert_eq!(dopo.history_rows, 0, "è lo stesso ascolto");
+            assert_eq!(conta(&db, "SELECT COUNT(*) FROM play_history"), 1);
+            assert_eq!(
+                conta(&db, "SELECT play_count FROM tracks WHERE title = 'Song 2'"),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn due_ascolti_brevi_di_fila_dalla_cronologia_estesa_restano_due() {
+        // Il confronto entro il minuto vale solo quando una delle due fini è
+        // al minuto, cioè viene dall'archivio breve: due ascolti veri di un
+        // brano di quaranta secondi, datati al secondo e uno dietro l'altro,
+        // restano due.
+        let mut db = database();
+        libreria_di_prova(&db);
+        aggiungi(&db, "Blur", "Intro", "Blur", 40_000);
+        let intro = |quando: &str| AscoltoSpotify {
+            brano: sp("Blur", "Intro", "Blur", 40_000),
+            ..ascolto(quando, 38_000, Some("Blur"))
+        };
+        let snapshot = sola_cronologia(vec![
+            intro("2023-01-01T12:00:10Z"),
+            intro("2023-01-01T12:00:50Z"),
+        ]);
+        let Ok(fatto) = import(&mut db, &snapshot, &Scelte::default()) else {
+            panic!("l'importazione deve riuscire");
+        };
+        assert_eq!(fatto.history_rows, 2);
+        assert_eq!(conta(&db, "SELECT COUNT(*) FROM play_history"), 2);
+    }
+
+    #[test]
+    fn due_playlist_omonime_non_si_cancellano_a_vicenda() {
+        // Spotify ammette due playlist con lo stesso nome. La seconda trovava per
+        // chiave la riga appena scritta dalla prima, la svuotava e ci metteva i
+        // suoi brani: una playlist sola, e un rapporto che diceva «creata» con
+        // voci che non c'erano più.
+        for (id_a, id_b) in [(None, None), (Some("A"), Some("B"))] {
+            let chill = |id: Option<&str>, brani: Vec<BranoEsterno>| PlaylistSpotify {
+                nome: "Chill".to_owned(),
+                spotify_id: id.map(str::to_owned),
+                brani,
+                ..PlaylistSpotify::default()
+            };
+            let snapshot = AccountSnapshot {
+                playlist: vec![
+                    chill(
+                        id_a,
+                        vec![
+                            sp("Blur", "Song 2", "Blur", 180_000),
+                            sp("Nessuno", "Mai Sentita", "Ignoto", 200_000),
+                        ],
+                    ),
+                    chill(
+                        id_b,
+                        vec![
+                            sp("Gorillaz", "Feel Good Inc", "Demon Days", 222_000),
+                            sp("Altro", "Assente", "Ignoto", 200_000),
+                        ],
+                    ),
+                ],
+                ..AccountSnapshot::vuoto(Provenienza::Archivio)
+            };
+            let mut db = database();
+            libreria_di_prova(&db);
+
+            for giro in 0..2 {
+                let Ok(rapporto) = import(&mut db, &snapshot, &Scelte::default()) else {
+                    panic!("l'importazione deve riuscire");
+                };
+                assert_eq!(rapporto.playlists.len(), 1, "giro {giro}: {rapporto:?}");
+                assert_eq!(rapporto.rejected_playlists.len(), 1, "giro {giro}");
+                assert_eq!(
+                    rapporto.rejected_playlists[0].code, "library.playlistExists",
+                    "giro {giro}"
+                );
+                assert_eq!(rapporto.playlists[0].playlist_entries, 1, "giro {giro}");
+                assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 1);
+                assert_eq!(
+                    conta(
+                        &db,
+                        "SELECT COUNT(*) FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+                          WHERE t.title = 'Song 2'"
+                    ),
+                    1,
+                    "giro {giro}: le voci della prima non le cancella la seconda"
+                );
+                assert_eq!(
+                    conta(
+                        &db,
+                        "SELECT COUNT(*) FROM desiderati WHERE title = 'Assente'"
+                    ),
+                    0,
+                    "giro {giro}: quella rifiutata non scrive desiderati"
+                );
+                assert_eq!(conta(&db, "SELECT COUNT(*) FROM desiderati"), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn le_omonime_dall_archivio_hanno_identificativi_distinti() {
+        let senza_id = |nome: &str| PlaylistSpotify {
+            nome: nome.to_owned(),
+            ..PlaylistSpotify::default()
+        };
+        let elenco = vec![
+            senza_id("Chill"),
+            senza_id("Corsa"),
+            senza_id("chill"),
+            senza_id("Chill"),
+        ];
+        let identita: Vec<String> = ordinali_degli_omonimi(&elenco)
+            .into_iter()
+            .zip(&elenco)
+            .map(|(ordinale, playlist)| identita_playlist(playlist, ordinale))
+            .collect();
+        assert_eq!(
+            identita,
+            vec![
+                "rymembra:archivio:playlist:chill",
+                "rymembra:archivio:playlist:corsa",
+                "rymembra:archivio:playlist:chill#2",
+                "rymembra:archivio:playlist:chill#3",
+            ],
+            "la prima resta com'era, perché i desiderati già scritti la ritrovino"
         );
     }
 

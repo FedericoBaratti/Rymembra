@@ -28,6 +28,8 @@
 //! playlist di duecento brani con un refuso alla riga novanta è una playlist di
 //! centonovantanove brani, non un errore.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 /// I formati che sappiamo leggere e scrivere.
@@ -121,15 +123,18 @@ pub struct PlaylistLetta {
 
 /// Legge dei byte come playlist.
 ///
-/// Toglie il BOM e interpreta come UTF-8 sostituendo quel che non lo è: un
-/// M3U scritto vent'anni fa in una pagina di codice locale è pieno di byte che
-/// UTF-8 non ammette, e rifiutarlo vorrebbe dire rifiutare esattamente i file
-/// che questo modulo esiste per leggere. Un carattere sbagliato in un titolo si
-/// vede e si corregge; un file che non si apre no.
+/// La codifica la decide [`crate::codifica::leggi_byte`]: il BOM quando c'è
+/// (UTF-8, UTF-16 nei due versi), l'UTF-8 quando i byte lo sono — `.m3u8` e
+/// XSPF arrivano tali e quali —, e altrimenti la pagina di codice che li legge
+/// senza sostituzioni. Un M3U scritto vent'anni fa da Winamp o da foobar2000 su
+/// un Windows italiano è in windows-1252, e i suoi percorsi accentati sono
+/// proprio quelli con cui si ritrovano i brani: letti come UTF-8 con le
+/// sostituzioni, `Città` diventava `Citt�`, e il brano finiva fra i mancanti
+/// pur essendo in libreria. Non fallisce mai: un file che non si apre è
+/// peggio di un carattere sbagliato.
 #[must_use]
 pub fn leggi(byte: &[u8], formato: FormatoPlaylist) -> PlaylistLetta {
-    let senza_bom = byte.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(byte);
-    let testo = String::from_utf8_lossy(senza_bom);
+    let (testo, _) = crate::codifica::leggi_byte(byte);
     leggi_testo(&testo, formato)
 }
 
@@ -267,11 +272,40 @@ fn scrivi_m3u(voci: &[VocePlaylist]) -> String {
             // aprire i file.
             _ => String::new(),
         };
-        let _ = writeln!(fuori, "#EXTINF:{secondi},{etichetta}");
-        fuori.push_str(&voce.percorso);
+        let _ = writeln!(fuori, "#EXTINF:{secondi},{}", una_riga(&etichetta));
+        fuori.push_str(&una_riga(&voce.percorso));
         fuori.push('\n');
     }
     fuori
+}
+
+/// Il testo su una riga sola: ogni sequenza di caratteri di controllo diventa
+/// uno spazio.
+///
+/// M3U e PLS sono formati a righe, e un a capo dentro un valore ne spezza la
+/// grammatica: la seconda metà di un titolo multiriga — un tag Vorbis o ID3
+/// con «Sinfonia n. 5\nI. Allegro», che arriva intatto fin qui — diventava un
+/// percorso in M3U e una riga illeggibile in PLS. Si applica anche al
+/// percorso, per prudenza: su Windows un nome di file non può contenere
+/// caratteri di controllo, altrove sì.
+fn una_riga(testo: &str) -> Cow<'_, str> {
+    if !testo.chars().any(char::is_control) {
+        return Cow::Borrowed(testo);
+    }
+    let mut fuori = String::with_capacity(testo.len());
+    let mut in_controllo = false;
+    for c in testo.chars() {
+        if c.is_control() {
+            if !in_controllo {
+                fuori.push(' ');
+            }
+            in_controllo = true;
+        } else {
+            fuori.push(c);
+            in_controllo = false;
+        }
+    }
+    Cow::Owned(fuori)
 }
 
 // ── PLS ─────────────────────────────────────────────────────────────────────
@@ -282,16 +316,16 @@ fn leggi_pls(testo: &str) -> PlaylistLetta {
     // `1..=NumberOfEntries` si fermano al buco. Si raccoglie per numero e si
     // ordina alla fine.
     let mut per_numero: Vec<(u32, VocePlaylist)> = Vec::new();
+    // Numero → posto in `per_numero`. Cercarlo scorrendo l'elenco costava una
+    // passata per ogni riga, cioè voci² su una playlist intera esportata in PLS.
+    let mut posti: HashMap<u32, usize> = HashMap::new();
     let mut letta = PlaylistLetta::default();
 
-    let trova = |elenco: &mut Vec<(u32, VocePlaylist)>, numero: u32| -> usize {
-        match elenco.iter().position(|(n, _)| *n == numero) {
-            Some(posto) => posto,
-            None => {
-                elenco.push((numero, VocePlaylist::default()));
-                elenco.len().saturating_sub(1)
-            }
-        }
+    let mut trova = |elenco: &mut Vec<(u32, VocePlaylist)>, numero: u32| -> usize {
+        *posti.entry(numero).or_insert_with(|| {
+            elenco.push((numero, VocePlaylist::default()));
+            elenco.len().saturating_sub(1)
+        })
     };
 
     for riga in testo.lines() {
@@ -360,13 +394,13 @@ fn scrivi_pls(voci: &[VocePlaylist]) -> String {
     let mut fuori = String::from("[playlist]\n");
     for (indice, voce) in voci.iter().enumerate() {
         let numero = indice.saturating_add(1);
-        let _ = writeln!(fuori, "File{numero}={}", voce.percorso);
+        let _ = writeln!(fuori, "File{numero}={}", una_riga(&voce.percorso));
         if let Some(titolo) = &voce.titolo {
             let etichetta = match &voce.artista {
                 Some(artista) => format!("{artista} - {titolo}"),
                 None => titolo.clone(),
             };
-            let _ = writeln!(fuori, "Title{numero}={etichetta}");
+            let _ = writeln!(fuori, "Title{numero}={}", una_riga(&etichetta));
         }
         let secondi = secondi_di(voce.durata_ms);
         let _ = writeln!(fuori, "Length{numero}={secondi}");
@@ -398,10 +432,18 @@ fn scrivi_pls(voci: &[VocePlaylist]) -> String {
 fn leggi_xspf(testo: &str) -> PlaylistLetta {
     let mut letta = PlaylistLetta::default();
 
+    // I tag si cercano senza distinguere le maiuscole, su una copia minuscola
+    // fatta **una volta**. Rifarla a ogni brano su tutto il resto del file
+    // costava brani × dimensione: un XSPF da ventimila brani, l'esportazione di
+    // una libreria intera, impiegava minuti. `to_ascii_lowercase` non cambia la
+    // lunghezza di niente, e gli aghi sono ASCII: un indice trovato sulla
+    // copia è un confine di carattere anche su `testo`.
+    let minuscolo = testo.to_ascii_lowercase();
+
     // Il titolo della playlist è il primo `<title>` **fuori** da `<trackList>`:
     // dentro, `<title>` è il titolo di un brano. Cercarlo prima della lista è
     // sufficiente e non richiede di ricostruire l'annidamento.
-    let fine_intestazione = trova_senza_cassa(testo, "<tracklist").unwrap_or(testo.len());
+    let fine_intestazione = minuscolo.find("<tracklist").unwrap_or(testo.len());
     if let Some(intestazione) = testo.get(..fine_intestazione)
         && let Some(titolo) = contenuto_tag(intestazione, "title")
         && !titolo.is_empty()
@@ -410,14 +452,14 @@ fn leggi_xspf(testo: &str) -> PlaylistLetta {
     }
 
     let mut da = fine_intestazione;
-    while let Some(inizio) = testo
+    while let Some(inizio) = minuscolo
         .get(da..)
         .and_then(|resto| trova_apertura(resto, "track"))
     {
         let inizio = da.saturating_add(inizio);
-        let Some(fine) = testo
+        let Some(fine) = minuscolo
             .get(inizio..)
-            .and_then(|resto| trova_senza_cassa(resto, "</track>"))
+            .and_then(|resto| resto.find("</track>"))
         else {
             // Un `<track>` che non si chiude: è la fine utile del file.
             letta.illeggibili += 1;
@@ -452,8 +494,11 @@ fn leggi_xspf(testo: &str) -> PlaylistLetta {
 /// il ciclo ripartiva dopo. Nessuna prova di grammatica l'avrebbe visto — il
 /// file era corretto e il risultato era «un brano in meno», sempre lo stesso.
 /// Il nome deve finire dove finisce: `>`, uno spazio, o `/` di un tag vuoto.
-fn trova_apertura(pagliaio: &str, tag: &str) -> Option<usize> {
-    let minuscolo = pagliaio.to_ascii_lowercase();
+///
+/// `minuscolo` deve essere **già** in minuscolo, e `tag` pure: la copia la fa
+/// una volta sola chi chiama (vedi [`leggi_xspf`]), perché farla qui dentro
+/// voleva dire rifarla a ogni brano su tutto il resto del file.
+fn trova_apertura(minuscolo: &str, tag: &str) -> Option<usize> {
     let ago = format!("<{tag}");
     let mut da = 0usize;
     while let Some(trovato) = minuscolo.get(da..).and_then(|resto| resto.find(&ago)) {
@@ -467,15 +512,6 @@ fn trova_apertura(pagliaio: &str, tag: &str) -> Option<usize> {
         }
     }
     None
-}
-
-/// Cerca un ago in un pagliaio ignorando maiuscole e minuscole.
-///
-/// Restituisce un indice di **byte** valido su `pagliaio`, perché è così che si
-/// affetta una `&str`. L'ago è sempre ASCII qui dentro, quindi la conversione
-/// in minuscolo non sposta nessun confine di carattere.
-fn trova_senza_cassa(pagliaio: &str, ago: &str) -> Option<usize> {
-    pagliaio.to_ascii_lowercase().find(ago)
 }
 
 /// Il testo dentro il primo `<tag>…</tag>`, con le entità sciolte.
@@ -739,13 +775,13 @@ mod prove {
 
     #[test]
     fn i_byte_che_non_sono_utf8_non_fermano_la_lettura() {
-        // Un M3U scritto in una pagina di codice locale. I titoli avranno un
-        // carattere sbagliato; i percorsi ASCII no, ed è quel che serve per
-        // ritrovare i brani.
+        // Un M3U scritto in una pagina di codice locale: si legge in quella, e
+        // i titoli restano giusti come i percorsi.
         let byte = b"#EXTINF:100,Bj\xF6rk - J\xF3ga\nmusica/joga.mp3\n";
         let letta = leggi(byte, FormatoPlaylist::M3u);
         assert_eq!(letta.voci.len(), 1);
-        assert!(letta.voci[0].artista.is_some());
+        assert_eq!(letta.voci[0].artista.as_deref(), Some("Björk"));
+        assert_eq!(letta.voci[0].titolo.as_deref(), Some("Jóga"));
     }
 
     #[test]
@@ -796,6 +832,99 @@ mod prove {
                 formato.nome()
             );
         }
+    }
+
+    #[test]
+    fn un_m3u_in_windows_1252_tiene_gli_accenti_nel_percorso() {
+        // Il `.m3u` di Winamp o di foobar2000 su un Windows italiano: i
+        // percorsi accentati sono quelli con cui si ritrovano i brani.
+        let letta = leggi(b"C:\\Musica\\Citt\xE0\\a.mp3\n", FormatoPlaylist::M3u);
+        assert_eq!(letta.voci.len(), 1);
+        assert_eq!(letta.voci[0].percorso, "C:\\Musica\\Città\\a.mp3");
+
+        // Lo stesso testo in UTF-16LE col suo BOM.
+        let mut utf16: Vec<u8> = vec![0xFF, 0xFE];
+        for unita in "C:\\Musica\\Città\\a.mp3\n".encode_utf16() {
+            utf16.extend_from_slice(&unita.to_le_bytes());
+        }
+        let letta = leggi(&utf16, FormatoPlaylist::M3u);
+        assert_eq!(letta.voci.len(), 1);
+        assert_eq!(letta.voci[0].percorso, "C:\\Musica\\Città\\a.mp3");
+    }
+
+    #[test]
+    fn un_xspf_grande_si_legge_in_tempo_lineare() {
+        // L'esportazione di una libreria intera. Ogni `<track>` ricopiava in
+        // minuscolo tutto il resto del file: brani × dimensione.
+        const BRANI: usize = 20_000;
+        let mut testo = String::from("<playlist><trackList>\n");
+        for numero in 0..BRANI {
+            let _ = writeln!(
+                testo,
+                "<track><location>C:/Musica/brano {numero}.mp3</location><title>Brano {numero}</title></track>"
+            );
+        }
+        testo.push_str("</trackList></playlist>\n");
+        let inizio = std::time::Instant::now();
+        let letta = leggi_testo(&testo, FormatoPlaylist::Xspf);
+        let xspf = inizio.elapsed();
+        assert_eq!(letta.voci.len(), BRANI);
+
+        // Lo stesso per un PLS, dove ogni riga cercava la sua voce dall'inizio.
+        let mut testo = String::from("[playlist]\n");
+        for numero in 1..=BRANI {
+            let _ = writeln!(testo, "File{numero}=brano {numero}.mp3");
+            let _ = writeln!(testo, "Title{numero}=Brano {numero}");
+            let _ = writeln!(testo, "Length{numero}=200");
+        }
+        let inizio = std::time::Instant::now();
+        let letta = leggi_testo(&testo, FormatoPlaylist::Pls);
+        let pls = inizio.elapsed();
+        assert_eq!(letta.voci.len(), BRANI);
+
+        // Prima della correzione, in debug: XSPF 108 s, PLS 3 s. Dopo: meno di
+        // un decimo di secondo l'uno. Il tetto è largo apposta, per una
+        // macchina lenta o carica; quel che prova è l'ordine di grandezza.
+        let tetto = std::time::Duration::from_secs(3);
+        assert!(xspf < tetto, "XSPF da {BRANI} brani letto in {xspf:?}");
+        assert!(pls < tetto, "PLS da {BRANI} brani letto in {pls:?}");
+    }
+
+    #[test]
+    fn un_a_capo_nel_titolo_non_crea_voci() {
+        // Un tag multiriga arriva intatto fin qui: scritto così com'è, la sua
+        // seconda riga diventava un percorso in M3U e un guasto in PLS.
+        let voci = vec![VocePlaylist {
+            percorso: "x.mp3".to_owned(),
+            titolo: Some("Sinfonia n. 5\nI. Allegro".to_owned()),
+            artista: Some("Qualcuno\r\nE l'orchestra".to_owned()),
+            durata_ms: Some(300_000),
+        }];
+        for formato in [FormatoPlaylist::M3u, FormatoPlaylist::Pls] {
+            let scritta = scrivi("n", &voci, formato);
+            let riletta = leggi_testo(&scritta, formato);
+            assert_eq!(riletta.voci.len(), 1, "{}: {scritta}", formato.nome());
+            assert_eq!(riletta.illeggibili, 0, "{}: {scritta}", formato.nome());
+            assert_eq!(riletta.voci[0].percorso, "x.mp3", "{}", formato.nome());
+            assert_eq!(
+                riletta.voci[0].durata_ms,
+                Some(300_000),
+                "{}",
+                formato.nome()
+            );
+        }
+        let riletta = leggi_testo(
+            &scrivi("n", &voci, FormatoPlaylist::M3u),
+            FormatoPlaylist::M3u,
+        );
+        assert_eq!(
+            riletta.voci[0].titolo.as_deref(),
+            Some("Sinfonia n. 5 I. Allegro")
+        );
+        assert_eq!(
+            riletta.voci[0].artista.as_deref(),
+            Some("Qualcuno E l'orchestra")
+        );
     }
 
     #[test]

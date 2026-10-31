@@ -246,7 +246,8 @@ impl LastFm {
     /// # Errori
     ///
     /// `settings.scrobbleAuthRejected` (sessione revocata: l'utente ha tolto
-    /// l'accesso dalla propria pagina), `settings.scrobbleRejected` (firma o
+    /// l'accesso dalla propria pagina; oppure la chiave dell'app sospesa o non
+    /// più valida), `settings.scrobbleRejected` (firma o
     /// parametri sbagliati), o un errore di rete ritentabile.
     ///
     /// Gli ascolti **ignorati** non sono un errore: tornano dentro [`Esito`].
@@ -343,7 +344,17 @@ impl LastFm {
             // 4 autenticazione fallita, 9 sessione non valida, 14 token non
             // autorizzato, 15 token scaduto. Tutti e quattro vogliono che
             // l'utente rifaccia il consenso: ritentarli è tempo perso.
-            4 | 9 | 14 | 15 => {
+            //
+            // E 10 chiave non valida, 26 chiave sospesa: la chiave è quella
+            // dell'app che l'utente ha registrato, e Last.fm l'ha sospesa o
+            // l'account API non c'è più. Serve una chiave nuova, non un
+            // ascolto diverso. Prima cadevano fra i rifiuti: il blocco si
+            // divideva fino al singolo ascolto, 99 richieste ogni 50,
+            // e l'intera coda finiva abbandonata per un guasto delle
+            // credenziali. Con questo codice la passata si ferma al primo
+            // blocco senza consumare tentativi, come per una sessione revocata.
+            // Quale dei due fosse, e le parole di Last.fm, le dice la causa.
+            4 | 9 | 10 | 14 | 15 | 26 => {
                 AppError::new(ErrorCode::SettingsScrobbleAuthRejected { service: servizio })
                     .with_cause(format!("{codice}: {messaggio}"))
             }
@@ -370,9 +381,9 @@ impl LastFm {
                 retry_after_ms: None,
             })
             .with_cause(format!("{codice}: {messaggio}")),
-            // Tutto il resto — parametri mancanti (6), firma sbagliata (13),
-            // chiave sospesa (26) — è colpa di come è stata composta la
-            // richiesta, e riproporla identica dà lo stesso esito. È la regola
+            // Tutto il resto — parametri mancanti (6), firma sbagliata (13) —
+            // è colpa di come è stata composta la richiesta, e riproporla
+            // identica dà lo stesso esito. È la regola
             // della loro pagina sullo scrobbling: «all other error codes
             // indicate the scrobble request was incorrectly formed».
             _ => self.rifiuto(Some(format!("{codice}: {messaggio}"))),
@@ -762,6 +773,34 @@ mod prove {
                 .is_none(),
             "un documento senza `error` non è un guasto"
         );
+    }
+
+    /// La chiave dell'app sospesa (26) o non valida (10, l'account API
+    /// cancellato) rifiuta ogni ascolto allo stesso modo: sono credenziali, non
+    /// un difetto degli ascolti. Come per una sessione revocata, la passata si
+    /// deve fermare senza dividere il blocco e senza consumare tentativi — che
+    /// è quel che `non_e_degli_ascolti`, in `src-tauri/src/scrobble.rs`, fa per
+    /// `settings.scrobbleAuthRejected` e non per `settings.scrobbleRejected`.
+    #[test]
+    fn una_chiave_sospesa_o_non_valida_non_brucia_gli_ascolti() {
+        let client = LastFm::nuovo("k", "s");
+        for codice in [10, 26] {
+            let guasto = client
+                .guasto_dichiarato(&serde_json::json!({ "error": codice, "message": "x" }))
+                .expect("un codice d'errore produce sempre un guasto");
+            assert_eq!(
+                guasto.code().kind().code(),
+                "settings.scrobbleAuthRejected",
+                "codice {codice}"
+            );
+            assert!(!guasto.is_retryable(), "codice {codice}");
+            assert!(
+                guasto
+                    .cause()
+                    .is_some_and(|c| c.starts_with(&format!("{codice}:"))),
+                "la causa dice quale dei due era"
+            );
+        }
     }
 
     #[test]

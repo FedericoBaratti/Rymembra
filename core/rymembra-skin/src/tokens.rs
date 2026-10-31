@@ -201,7 +201,7 @@ pub static TOKENS: &[TokenDef] = &[
 
     // ── Accento ─────────────────────────────────────────────────────────────
     token!("color.accent", "--accent", Color, Accent, true, Some("--accent-rgb"),
-        "Accento primario. Può seguire la copertina in riproduzione."),
+        "Accento primario. Segue la copertina in riproduzione con capabilities.dynamicAccent, non con $source."),
     token!("color.accent.soft", "--accent-soft", Color, Accent, false, None,
         "Accento a bassa opacità: sfondi di stato attivo."),
     token!("color.accent.glow", "--accent-glow", Color, Accent, false, None,
@@ -469,9 +469,13 @@ pub fn required_tokens() -> Vec<&'static TokenDef> {
 ///
 /// Il compilatore in modo anteprima colma quindi ogni token non dichiarato:
 /// quelli della skin di riferimento li prende da lei, questi undici da qui. Il
-/// testo è CSS perché è quel che `stile.css` scrive, e una prova in
-/// `apps/desktop` lo confronta riga per riga con il foglio: due copie dello
-/// stesso numero che nessuno confronta sono due numeri.
+/// testo è CSS perché è quel che `stile.css` scrive, fuori dal blocco generato
+/// (`--ritmo-*`, `--profondita-*`, `--raggio-fattore-*`), e la prova che lo
+/// confronta riga per riga con il foglio sta in `apps/desktop`, dove il foglio
+/// si legge: `i_difetti_del_motore_sono_quelli_di_stile_css` in
+/// `src-tauri/src/skin.rs`. Due copie dello stesso numero che nessuno
+/// confronta sono due numeri — e fino alla 3.2.0 di prova questo commento citava una
+/// prova che non esisteva.
 #[rustfmt::skip]
 pub static DIFETTI_DEL_MOTORE: &[(&str, &str)] = &[
     ("space.1", "4px"),
@@ -494,7 +498,9 @@ pub static DIFETTI_DEL_MOTORE: &[(&str, &str)] = &[
 /// Sostituisce il flag `supportsDynamicAccent`, che nel vecchio albero era un
 /// booleano sull'oggetto della skin e accendeva o spegneva il meccanismo in
 /// blocco. Con una sorgente per token si può dire **quale** token segue la
-/// copertina.
+/// copertina — tranne l'accento, che è dove la copertina arriva: lui la segue
+/// con `capabilities.dynamicAccent`, e la validazione rifiuta una sorgente
+/// scritta su di lui (vedi [`DynamicSource::variabili`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DynamicSource {
     /// La tinta più viva della copertina.
@@ -531,6 +537,24 @@ impl DynamicSource {
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|s| s.as_str() == raw)
+    }
+
+    /// Le due variabili con cui la copertina arriva nel foglio: il colore e la
+    /// sua tripla.
+    ///
+    /// Oggi il runtime estrae **una** tinta dalla copertina e la scrive in
+    /// `--accent`, quindi tutte e quattro le sorgenti puntano lì. Il `match`
+    /// rende la cosa una decisione dichiarata invece di un ramo ripetuto, e sta
+    /// qui perché la usano in due: il compilatore, che scrive il rimando, e la
+    /// validazione, che rifiuta la sorgente sul token che **è** quelle
+    /// variabili — l'accento che rimanda a sé stesso.
+    #[must_use]
+    pub const fn variabili(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Vibrant | Self::Muted | Self::DarkVibrant | Self::LightVibrant => {
+                ("--accent", "--accent-rgb")
+            }
+        }
     }
 }
 

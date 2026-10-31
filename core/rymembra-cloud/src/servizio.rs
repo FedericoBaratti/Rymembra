@@ -678,26 +678,29 @@ fn salva_la_libreria<M: Magazzino + ?Sized>(
 ///
 /// Un backup fatto prima del cambio di nome al programma ha i file sotto i nomi
 /// di allora, e si ripristina lo stesso: metadati, skin e bozze si riconoscono
-/// da entrambi i nomi, e se ci sono tutti e due vince quello di adesso.
+/// da entrambi i nomi, e se ci sono tutti e due vince quello di adesso — se si
+/// legge. Il file dei metadati si sceglie come dice [`libreria_da_ripristinare`]:
+/// una copia illeggibile non nasconde quella buona, e due doppioni non si
+/// perdono a vicenda.
+///
+/// `None` anche quando lassù ci sono solo copie illeggibili: per chi
+/// ripristina è come se non ci fossero, ed è la verità. Restano dove sono,
+/// col loro nome: le mette da parte la prossima passata di backup.
 ///
 /// # Errori
 ///
-/// `net.*`; `sync.remoteCorrupt` se il file lassù non si legge, dopo averlo
-/// messo da parte con un nome che dice cos'era.
+/// `net.*`; quelli di `backup::interpreta` per un file scritto da un Rymembra
+/// più nuovo, che non è una copia illeggibile e non si salta.
 pub fn scarica_salvataggio<M: Magazzino + ?Sized>(
     drive: &M,
 ) -> Result<Option<DaRipristinare>, AppError> {
     // Il ripristino non scrive niente su Drive, nemmeno una rinomina: vede i
     // file di prima attraverso il nome canonico, e li lascia com'erano.
-    let remoti = per_nome(drive.elenca()?);
-    let Some(file) = remoti.get(NOME_LIBRERIA) else {
+    let elenco = drive.elenca()?;
+    let Some(salvataggio) = libreria_da_ripristinare(drive, &elenco)? else {
         return Ok(None);
     };
-    let Some(salvataggio) = leggi_remoto(drive, file)? else {
-        // Era corrotto ed è stato messo da parte: per chi ripristina è come se
-        // non ci fosse, ed è la verità.
-        return Ok(None);
-    };
+    let remoti = per_nome(elenco);
 
     let mut skin = BTreeMap::new();
     let mut bozze = BTreeMap::new();
@@ -716,6 +719,59 @@ pub fn scarica_salvataggio<M: Magazzino + ?Sized>(
         skin,
         bozze,
     }))
+}
+
+/// Il file dei metadati da ripristinare, fra le copie che lassù ci sono.
+///
+/// Prima le copie col nome di adesso, poi quelle col nome di prima: vince il
+/// primo nome che ha **almeno una copia leggibile**. Fino alla 3.2.0 di prova si
+/// leggeva una copia sola, quella che `per_nome` sceglieva: se era illeggibile
+/// il ripristino diceva «nessun backup» e la rinominava, e al secondo clic
+/// ripristinava quella di prima — due esiti per lo stesso gesto.
+///
+/// Le copie leggibili con lo stesso nome sono doppioni (due dispositivi al
+/// primo salvataggio nello stesso istante): si fondono, come fa
+/// [`salva_la_libreria`], e data e dispositivo vengono dalla più recente.
+/// Prima se ne leggeva una e le playlist, i voti e gli ascolti dell'altra si
+/// perdevano finché una passata non le fondeva. Il nome di adesso e quello di
+/// prima invece non si fondono: se ci sono tutti e due vince quello di adesso.
+///
+/// Si legge e basta: niente rinomine (vedi [`leggi_e_basta`]).
+///
+/// # Errori
+///
+/// `net.*`; quelli di `backup::interpreta` per una versione più nuova.
+fn libreria_da_ripristinare<M: Magazzino + ?Sized>(
+    drive: &M,
+    elenco: &[FileRemoto],
+) -> Result<Option<Salvataggio>, AppError> {
+    for nome in [NOME_LIBRERIA, eredita::NOME_LIBRERIA_DRIVE] {
+        let mut letto: Option<Salvataggio> = None;
+        for copia in elenco.iter().filter(|file| file.nome == nome) {
+            let Some(loro) = leggi_e_basta(drive, copia)? else {
+                continue;
+            };
+            letto = Some(match letto {
+                None => loro,
+                Some(gia) => {
+                    let (piu_recente, altra) = if loro.generated_at > gia.generated_at {
+                        (loro, gia)
+                    } else {
+                        (gia, loro)
+                    };
+                    let content = backup::fondi(&piu_recente.content, &altra.content);
+                    Salvataggio {
+                        content,
+                        ..piu_recente
+                    }
+                }
+            });
+        }
+        if letto.is_some() {
+            return Ok(letto);
+        }
+    }
+    Ok(None)
 }
 
 /// Scarica e scrive le skin e le bozze che il piano propone.
@@ -873,20 +929,36 @@ fn leggi_remoto<M: Magazzino + ?Sized>(
     drive: &M,
     file: &FileRemoto,
 ) -> Result<Option<Salvataggio>, AppError> {
+    let letto = leggi_e_basta(drive, file)?;
+    if letto.is_none() {
+        // Il rinomino è best-effort: se anche fallisse, la cosa importante è
+        // non aver sovrascritto in silenzio.
+        let messo_da_parte = format!("{NOME_LIBRERIA}.corrotto-{}", adesso_grezzo());
+        drop(drive.rinomina(&file.id, &messo_da_parte));
+    }
+    Ok(letto)
+}
+
+/// Scarica e interpreta il file dei metadati, senza toccarlo: `None` quando è
+/// illeggibile. È la lettura del ripristino, che su Drive non scrive niente;
+/// [`leggi_remoto`] ci aggiunge la messa da parte, per la passata.
+///
+/// # Errori
+///
+/// `net.*`; quelli di `backup::interpreta` per una versione più nuova, che
+/// non è una corruzione: vedi sotto.
+fn leggi_e_basta<M: Magazzino + ?Sized>(
+    drive: &M,
+    file: &FileRemoto,
+) -> Result<Option<Salvataggio>, AppError> {
     let byte = drive.leggi(&file.id)?;
     let esito = decomprimi(&byte).and_then(|aperto| backup::interpreta(&aperto));
     match esito {
         Ok(salvataggio) => Ok(Some(salvataggio)),
-        Err(err) if e_corrotto(&err) => {
-            // Il rinomino è best-effort: se anche fallisse, la cosa importante è
-            // non aver sovrascritto in silenzio.
-            let messo_da_parte = format!("{NOME_LIBRERIA}.corrotto-{}", adesso_grezzo());
-            drop(drive.rinomina(&file.id, &messo_da_parte));
-            Ok(None)
-        }
+        Err(err) if e_corrotto(&err) => Ok(None),
         // Una versione più nuova non è una corruzione, e **non** si mette da
         // parte: sovrascrivere il backup di un Rymembra più recente sarebbe
-        // l'unico modo in cui questa funzione può perdere dati per davvero.
+        // l'unico modo in cui la passata può perdere dati per davvero.
         Err(err) => Err(err),
     }
 }
@@ -1905,6 +1977,64 @@ mod prove {
             da.skin.get("notte").map(|voce| voce.id.as_str()),
             Some("s-n")
         );
+    }
+
+    #[test]
+    fn il_ripristino_non_si_ferma_a_una_copia_corrotta() {
+        // Il file di adesso illeggibile, quello di prima buono: il ripristino
+        // usa quello buono, al primo tentativo, e non rinomina niente.
+        let finto = Finto::con(vec![
+            (file_di("n", NOME_LIBRERIA, "y"), b"non e gzip".to_vec()),
+            (
+                file_di("v", eredita::NOME_LIBRERIA_DRIVE, "x"),
+                di_un_altro(r"D:\Prima"),
+            ),
+        ]);
+        let da = scarica_salvataggio(&finto)
+            .expect("si legge")
+            .expect("il backup buono c'è");
+        assert_eq!(da.contenuto.roots, [r"D:\Prima"]);
+        assert!(
+            finto.operazioni().is_empty(),
+            "il ripristino non scrive niente su Drive: {:?}",
+            finto.operazioni()
+        );
+        let mut nomi = vec![
+            eredita::NOME_LIBRERIA_DRIVE.to_owned(),
+            NOME_LIBRERIA.to_owned(),
+        ];
+        nomi.sort();
+        assert_eq!(
+            finto.nomi(),
+            nomi,
+            "la copia illeggibile resta col suo nome"
+        );
+
+        // Nessuna copia leggibile: non c'è un backup da ripristinare.
+        let rotto = Finto::con(vec![(
+            file_di("n", NOME_LIBRERIA, "y"),
+            b"non e gzip".to_vec(),
+        )]);
+        assert!(scarica_salvataggio(&rotto).expect("si legge").is_none());
+        assert!(rotto.operazioni().is_empty());
+    }
+
+    #[test]
+    fn il_ripristino_fonde_i_doppioni() {
+        // Due dispositivi al primo salvataggio nello stesso istante: due copie
+        // col nome di adesso, tutte e due buone. La passata dopo le fonde; il
+        // ripristino, intanto, non deve perderne una.
+        let finto = Finto::con(vec![
+            (copia("a", "x"), di_un_altro(r"D:\A")),
+            (copia("b", "y"), di_un_altro(r"E:\B")),
+        ]);
+        let da = scarica_salvataggio(&finto)
+            .expect("si legge")
+            .expect("il backup c'è");
+        let mut cartelle = da.contenuto.roots.clone();
+        cartelle.sort();
+        assert_eq!(cartelle, [r"D:\A", r"E:\B"]);
+        assert!(finto.operazioni().is_empty());
     }
 
     #[test]

@@ -97,7 +97,9 @@ impl Posizioni {
 /// serve contro un testo a metà — quel che c'è nell'editor fra una battuta e
 /// l'altra — in cui una virgoletta aperta fa leggere il resto del file come una
 /// stringa sola e poi ripartire storto. Meglio una mappa incompleta di un ciclo
-/// che tiene occupata la finestra.
+/// che tiene occupata la finestra — ed è [`Lettore::lista`] a mantenere la
+/// promessa: quando il tetto scatta, la lista smette invece di ripassare sulla
+/// voce che non si legge più.
 const TETTO: u32 = 20_000;
 
 /// Quanto può essere profondo l'annidamento prima che ci si fermi.
@@ -284,13 +286,30 @@ impl<'a> Lettore<'a> {
     }
 
     /// Le voci di una lista: il percorso è la posizione, contando da zero.
+    ///
+    /// # Ogni giro deve avanzare
+    ///
+    /// [`Self::salta`] si ferma, senza consumarli, sui segni che appartengono a
+    /// chi sta intorno — `,`, `}`, `]` — e [`Self::valore`] non legge niente
+    /// quando il [`TETTO`] è finito. Una voce che non ha consumato nemmeno un
+    /// byte lascia la lista sullo stesso byte di prima, e il giro dopo è
+    /// identico a questo: fino alla 3.2.0 di prova bastava una `]` cancellata nell'editor
+    /// (`[{…}` seguito dalla `}` dell'oggetto), o un documento con più di
+    /// ventimila voci in una lista, per tenere un filo al cento per cento fino
+    /// alla chiusura dell'app — e la validazione dello Studio appesa con lui.
+    /// Quindi: una `}` chiude l'oggetto che contiene la lista e la si lascia a
+    /// lui, e una voce che non avanza chiude la lista.
     fn lista(&mut self, percorso: &str, profondita: usize) {
         self.avanti(); // la quadra
         let mut indice = 0_usize;
         loop {
+            if self.restanti == 0 {
+                return;
+            }
             self.respira();
             match self.guarda() {
-                None => return,
+                // La graffa è dell'oggetto intorno: testo a metà di una battuta.
+                None | Some(b'}') => return,
                 Some(b']') => {
                     self.avanti();
                     return;
@@ -307,7 +326,11 @@ impl<'a> Lettore<'a> {
             } else {
                 format!("{percorso}.{indice}")
             };
+            let prima = self.i;
             self.valore(&dentro, punto, profondita + 1);
+            if self.i == prima {
+                return;
+            }
             indice += 1;
         }
     }
@@ -482,6 +505,57 @@ mod prove {
         let sorgente = "[".repeat(10_000);
         // Quel che conta è che torni.
         assert!(posizioni(&sorgente).quante() <= PROFONDITA + 1);
+    }
+
+    /// `posizioni` in un filo a parte, con due secondi per tornare: un ciclo
+    /// che non finisce diventa una prova rossa invece di una prova appesa.
+    fn torna_in_tempo(sorgente: String) -> Option<Posizioni> {
+        let (manda, ricevi) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = manda.send(posizioni(&sorgente));
+        });
+        ricevi.recv_timeout(std::time::Duration::from_secs(2)).ok()
+    }
+
+    /// Il testo che c'è nell'editor dopo aver cancellato la `]` che chiude un
+    /// elenco: la `}` che segue chiude l'oggetto intorno, e la lista non la
+    /// deve prendere per una sua voce. Fino alla 3.2.0 di prova la prendeva, senza
+    /// consumarla, e ripartiva sullo stesso byte per sempre: la validazione
+    /// dello Studio restava appesa e con lei tela, errori e costi.
+    #[test]
+    fn una_graffa_dentro_una_lista_aperta_non_blocca() {
+        assert!(torna_in_tempo("[}".to_owned()).is_some(), "«[}}» non torna");
+        assert!(
+            torna_in_tempo("{\"a\":[{}\n}}".to_owned()).is_some(),
+            "una lista aperta chiusa da una graffa non torna"
+        );
+        let sorgente = "{\"parts\":{\"card\":{\"background\":[{\"effect\":\"solid\",\
+                        \"color\":\"#000\"}\n}}}"
+            .to_owned();
+        let trovate = torna_in_tempo(sorgente).expect("torna");
+        assert_eq!(
+            trovate.di("parts.card.background.0.color"),
+            Some(Punto {
+                riga: 1,
+                colonna: 51
+            }),
+            "quel che sta prima del guasto resta al suo posto"
+        );
+    }
+
+    /// Un documento ben formato con più voci di lista che [`TETTO`]: il tetto
+    /// scatta su una voce che nessuno consuma, e la lista deve smettere invece
+    /// di guardarla per sempre.
+    #[test]
+    fn oltre_il_tetto_si_torna() {
+        let sorgente = format!("{{\"a\":[{}]}}", vec!["0"; 25_000].join(","));
+        let trovate = torna_in_tempo(sorgente).expect("torna");
+        assert!(
+            trovate.quante() <= TETTO as usize,
+            "{} voci",
+            trovate.quante()
+        );
+        assert!(trovate.di("a.0").is_some());
     }
 
     /// Il collaudo vero: ogni percorso segnato sulla skin di riferimento cade su

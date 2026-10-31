@@ -30,7 +30,7 @@
  * pubblica è, per certe Creative Commons e per i termini di Audius, una
  * condizione d'uso — non un ringraziamento.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Icona } from "../parti/Icone";
 import { Avviso } from "../parti/Avvisi";
@@ -45,6 +45,7 @@ import { durata, nomeLicenza } from "../formato";
 import { conIndice } from "../segnali";
 import { useDati } from "../dati";
 import { StatoVuoto } from "./Libreria";
+import { provenienzaDi } from "../provenienzaEsplora";
 
 /**
  * Che cosa dire dopo un «aggiungi tutti».
@@ -160,6 +161,8 @@ export function Esplora({
 }) {
   const letture = useDati().ipc;
   const { frase, fase, tuttiInCorso } = stato;
+  /** La radice degli id dei titoli di riga, per `aria-describedby`. */
+  const idRighe = useId();
   const setFrase = useCallback(
     (testo: string) => onStato((prima) => ({ ...prima, frase: testo })),
     [onStato],
@@ -363,7 +366,8 @@ export function Esplora({
     async (riga: RisultatoEsplora) => {
       segna(riga.url, true);
       try {
-        const scritta = await ipc.esploraTieni(riga.url, frase.trim());
+        // La frase dei risultati a schermo, non la casella: vedi `provenienzaDi`.
+        const scritta = await ipc.esploraTieni(riga.url, provenienzaDi(fase, frase));
         onNotizia(t(scritta ? "explore.keep.done" : "explore.keep.gia"));
       } catch (e) {
         onErrore(e);
@@ -371,7 +375,7 @@ export function Esplora({
         segna(riga.url, false);
       }
     },
-    [segna, frase, onNotizia, onErrore],
+    [segna, fase, frase, onNotizia, onErrore],
   );
 
   /**
@@ -386,7 +390,7 @@ export function Esplora({
     async (riga: RisultatoEsplora) => {
       segna(riga.url, true);
       try {
-        const scritta = await ipc.esploraNellaLista(riga.url, frase.trim());
+        const scritta = await ipc.esploraNellaLista(riga.url, provenienzaDi(fase, frase));
         onNotizia(t(scritta ? "explore.wanted.done" : "explore.wanted.gia"));
       } catch (e) {
         onErrore(e);
@@ -394,7 +398,7 @@ export function Esplora({
         segna(riga.url, false);
       }
     },
-    [segna, frase, onNotizia, onErrore],
+    [segna, fase, frase, onNotizia, onErrore],
   );
 
   const aggiungiTutti = useCallback(async () => {
@@ -569,13 +573,18 @@ export function Esplora({
               // aggiunta, e l'ultima risposta a tornare deciderebbe la riga.
               const occupata = tuttiInCorso || inCorso.has(riga.url);
               const siPuoAscoltare = riga.disponibilita !== "soloAcquisto";
+              // Il titolo descrive ogni tasto della riga (`aria-describedby`):
+              // su cinquanta risultati i tasti si chiamano tutti «Ascolta», «In
+              // coda», «Tieni», e chi naviga per pulsanti deve sentire di quale
+              // brano sono. È la regola di `Importazioni.tsx` per i negozi.
+              const idTitolo = `${idRighe}-${indice}`;
               return (
                 <li
                   key={riga.url}
                   className="list-row explore-row"
                   style={conIndice(indice)}
                 >
-                  <span className="titolo">
+                  <span className="titolo" id={idTitolo}>
                     {riga.autore !== null && riga.autore !== ""
                       ? `${riga.autore} — `
                       : ""}
@@ -646,6 +655,7 @@ export function Esplora({
                     {riga.pagina !== null && (
                       <button
                         type="button"
+                        aria-describedby={idTitolo}
                         className="bottone minuto btn-ghost"
                         title={t("explore.page")}
                         aria-label={t("explore.page")}
@@ -672,6 +682,7 @@ export function Esplora({
                     {!siPuoAscoltare && (
                       <button
                         type="button"
+                        aria-describedby={idTitolo}
                         className="bottone minuto btn-ghost"
                         disabled={occupata}
                         onClick={() => void nellaLista(riga)}
@@ -682,6 +693,7 @@ export function Esplora({
                     {siPuoAscoltare && (
                       <button
                         type="button"
+                        aria-describedby={idTitolo}
                         className="bottone minuto btn-ghost"
                         disabled={occupata}
                         title={t("explore.play")}
@@ -698,6 +710,7 @@ export function Esplora({
                     {siPuoAscoltare && (
                       <button
                         type="button"
+                        aria-describedby={idTitolo}
                         className="bottone minuto btn-ghost"
                         disabled={occupata}
                         title={t("action.enqueue")}
@@ -713,6 +726,7 @@ export function Esplora({
                     {riga.disponibilita === "scaricabile" && (
                       <button
                         type="button"
+                        aria-describedby={idTitolo}
                         className="bottone minuto btn-ghost"
                         disabled={occupata}
                         title={t("explore.keep.hint")}
@@ -725,6 +739,7 @@ export function Esplora({
                       (riga.inLibreria ? (
                         <button
                           type="button"
+                          aria-describedby={idTitolo}
                           className="bottone minuto btn-ghost"
                           disabled={occupata}
                           onClick={() => void togli(riga)}
@@ -734,6 +749,7 @@ export function Esplora({
                       ) : (
                         <button
                           type="button"
+                          aria-describedby={idTitolo}
                           className="bottone minuto btn-ghost"
                           disabled={occupata}
                           onClick={() => void aggiungi(riga)}

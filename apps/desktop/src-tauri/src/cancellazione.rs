@@ -35,6 +35,13 @@
 //! di aver toccato la coda o un file. Un file di cui non si è saputo dove sta
 //! vale come uno di rete: la promessa del Cestino non si fa a vuoto.
 //!
+//! Lo stesso vale per le unità **rimovibili** — chiavette, schede SD — e per
+//! CD e RAM disk: sono locali per `canonicalize`, ma Windows lì un Cestino non
+//! ce l'ha, e la shell cancellava per sempre mentre la conferma prometteva il
+//! Cestino e la fine diceva «Nel Cestino: N». Il genere dell'unità lo chiede
+//! [`rymembra_barra::unita_di`], solo per i file che `volumi` dice locali: vedi
+//! [`con_un_cestino`].
+//!
 //! # L'ordine, in [`brani_elimina`]
 //!
 //! Prima si sgombera la coda **fermando il motore**, poi si cestina, poi si
@@ -64,6 +71,7 @@ use std::path::Path;
 use rymembra_app::library::{self, Cancellazione};
 use rymembra_app::settings::{self, CHIAVE_CARTELLE};
 use rymembra_app::volumi::{self, Collocazione};
+use rymembra_barra::Unita;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::paths::{PathRules, path_key};
 use tauri::Manager as _;
@@ -257,6 +265,13 @@ fn da_togliere(
             });
             continue;
         };
+        // Un brano del cloud non si elimina da qui: Rymembra ha solo il
+        // permesso di leggerlo, e il file sta sul servizio. Si rifiuta il gesto
+        // intero, come per una voce di sessione, invece di farne metà: chi ha
+        // scelto insieme brani del disco e del cloud lo rifà senza questi.
+        if rymembra_domain::nuvola::e_nuvola(&percorso) {
+            return Err(AppError::new(ErrorCode::CloudReadOnly));
+        }
         let immagine: Option<String> = immagine_di
             .query_row([brano.id], |riga| riga.get(0))
             .optional()
@@ -378,7 +393,9 @@ fn immagini_per_chiave(
 /// mostrarsi: zero vuol dire la frase di sempre, più di zero vuol dire
 /// «questi N brani saranno cancellati per sempre». I file di cui non si è
 /// saputo dove stanno si contano insieme a quelli di rete, per la stessa
-/// ragione per cui [`brani_elimina`] li tratta così: vedi il `//!`.
+/// ragione per cui [`brani_elimina`] li tratta così: vedi il `//!`. E con
+/// loro quelli su un'unità rimovibile, un CD o un RAM disk: il nome del
+/// comando è rimasto quello di quando la rete era l'unico caso.
 ///
 /// Brani e non file, perché la finestrella mette questo numero accanto a
 /// quanti brani si sono scelti, e da lì decide se dire «gli altri vanno nel
@@ -412,17 +429,14 @@ pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
             .iter()
             .flat_map(|voce| voce.file.iter().cloned())
             .collect();
-        let collocazioni = volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE);
+        let cestini = cestini(&percorsi);
         // Come in `brani_elimina`: chi non ha una risposta vale come di rete.
-        let dove = |percorso: &str| {
+        Ok(brani_senza_cestino(&piano, &brani, |percorso| {
             percorsi
                 .iter()
                 .position(|p| p == percorso)
-                .and_then(|i| collocazioni.get(i).copied())
-                .unwrap_or(Collocazione::Ignota)
-        };
-        Ok(brani_senza_cestino(&piano, &brani, |percorso| {
-            dove(percorso).ha_un_cestino()
+                .and_then(|i| cestini.get(i).copied())
+                .unwrap_or(false)
         }))
     })
     .await
@@ -457,6 +471,46 @@ fn brani_senza_cestino(
         .filter(|voce| voce.file.iter().any(|percorso| !ha_un_cestino(percorso)))
         .map(|voce| voce.brani.iter().filter(|id| scelti.contains(id)).count())
         .sum()
+}
+
+/// Il Cestino di Windows può prendere un file che sta in `collocazione`, su
+/// un'unità del genere `unita`?
+///
+/// Solo sul locale — vedi [`Collocazione::ha_un_cestino`] — e non su
+/// un'unità rimovibile, un CD o un RAM disk, dove Windows un Cestino non ce
+/// l'ha: lì la shell cancella per sempre come su una share. Un genere che non
+/// si sa (`None`, [`Unita::Sconosciuta`]) lascia la risposta della
+/// collocazione: chiederlo è un di più per le unità che si dichiarano, non
+/// una seconda ragione per dubitare di un disco locale. Un disco USB che si
+/// dichiara fisso il Cestino ce l'ha davvero, e resta così.
+///
+/// Pura, con il genere dato da fuori: la domanda vera la fa
+/// [`rymembra_barra::unita_di`], e una prova non ha una chiavetta.
+fn con_un_cestino(collocazione: Collocazione, unita: Option<Unita>) -> bool {
+    collocazione.ha_un_cestino()
+        && !matches!(unita, Some(Unita::Rimovibile | Unita::Cd | Unita::RamDisk))
+}
+
+/// Per ogni percorso, nello stesso ordine, se il Cestino lo può prendere.
+///
+/// La collocazione la dice [`volumi::collocazioni`], con la sua scadenza; il
+/// genere dell'unità si chiede solo per quel che è risultato locale, così
+/// nessuna lettera di rete viene toccata un'altra volta. Chi non ha una
+/// risposta vale come senza Cestino: vedi il `//!`.
+fn cestini(percorsi: &[String]) -> Vec<bool> {
+    let collocazioni = volumi::collocazioni(percorsi, volumi::SCADENZA_RISOLUZIONE);
+    percorsi
+        .iter()
+        .enumerate()
+        .map(|(i, percorso)| {
+            let collocazione = collocazioni.get(i).copied().unwrap_or(Collocazione::Ignota);
+            let unita = collocazione
+                .ha_un_cestino()
+                .then(|| rymembra_barra::unita_di(Path::new(percorso)))
+                .flatten();
+            con_un_cestino(collocazione, unita)
+        })
+        .collect()
 }
 
 /// Cancella un file **per sempre**, dove un Cestino non c'è.
@@ -536,21 +590,21 @@ pub async fn brani_elimina(
             .iter()
             .flat_map(|voce| voce.file.iter().cloned())
             .collect();
-        let collocazioni = volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE);
-        let dove = |percorso: &str| {
+        let cestini = cestini(&percorsi);
+        let ha_un_cestino = |percorso: &str| {
             percorsi
                 .iter()
                 .position(|p| p == percorso)
-                .and_then(|i| collocazioni.get(i).copied())
-                .unwrap_or(Collocazione::Ignota)
+                .and_then(|i| cestini.get(i).copied())
+                .unwrap_or(false)
         };
-        if !definitivi && let Some(primo) = percorsi.iter().find(|p| !dove(p).ha_un_cestino()) {
+        if !definitivi && let Some(primo) = percorsi.iter().find(|p| !ha_un_cestino(p)) {
             return Err(AppError::new(ErrorCode::FsNoRecycleBin {
                 path: primo.clone(),
             })
             .with_cause(
-                "il file sta su un'unità di rete, o non si è saputo dove sta, e la \
-                 cancellazione definitiva non è stata confermata",
+                "il file sta su un'unità di rete o rimovibile, o non si è saputo dove \
+                 sta, e la cancellazione definitiva non è stata confermata",
             ));
         }
 
@@ -580,7 +634,7 @@ pub async fn brani_elimina(
                 // Dove il Cestino c'è, il Cestino; dove non c'è — ed è stato
                 // confermato, o non si sarebbe arrivati qui — `remove_file`,
                 // senza passare dalla shell e dal suo dialogo senza finestra.
-                let fatto = if dove(percorso).ha_un_cestino() {
+                let fatto = if ha_un_cestino(percorso) {
                     trash::delete(percorso).map_err(|err| nel_cestino(percorso, &err))
                 } else {
                     per_sempre(percorso)
@@ -709,7 +763,32 @@ fn nel_cestino(percorso: &str, err: &trash::Error) -> AppError {
         }
         _ => generico(),
     };
-    AppError::new(codice).with_cause(err.to_string())
+    AppError::new(codice).with_cause(causa_senza_percorsi(err))
+}
+
+/// La causa di un guasto del Cestino, per il diario: senza percorsi.
+///
+/// La causa finisce nel diario (`errore::errore`), e il `Display` del crate è
+/// il suo `Debug` — con dentro, per `CanonicalizePath` e `CouldNotAccess`, la
+/// cartella dell'album. Qui resta il nome della variante e, per un guasto del
+/// sistema, il numero e la frase di Windows, che percorsi non ne portano.
+fn causa_senza_percorsi(err: &trash::Error) -> String {
+    match err {
+        trash::Error::Os { code, description } => format!("Os {code}: {description}"),
+        trash::Error::Unknown { description } => format!("Unknown: {description}"),
+        trash::Error::TargetedRoot => "TargetedRoot".to_owned(),
+        trash::Error::CouldNotAccess { .. } => "CouldNotAccess".to_owned(),
+        trash::Error::CanonicalizePath { .. } => "CanonicalizePath".to_owned(),
+        trash::Error::ConvertOsString { .. } => "ConvertOsString".to_owned(),
+        trash::Error::RestoreCollision { .. } => "RestoreCollision".to_owned(),
+        trash::Error::RestoreTwins { .. } => "RestoreTwins".to_owned(),
+        // Le varianti che il crate ha solo su altre piattaforme.
+        #[allow(
+            unreachable_patterns,
+            reason = "`FileSystem` esiste solo su freedesktop"
+        )]
+        _ => "altro".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -752,6 +831,42 @@ mod prove {
     /// Lo stesso numero, nell'involucro in cui Windows lo consegna davvero.
     fn hresult(win32: u32) -> trash::Error {
         os(i32::from_ne_bytes((0x8007_0000_u32 | win32).to_ne_bytes()))
+    }
+
+    #[test]
+    fn la_causa_del_cestino_non_porta_il_percorso() {
+        // La causa finisce nel diario (`errore::errore`), e il `Display` del
+        // crate è il suo `Debug`: con dentro la cartella dell'album.
+        for err in [
+            trash::Error::CanonicalizePath {
+                original: r"C:\M\Guccini\Radici".into(),
+            },
+            trash::Error::CouldNotAccess {
+                target: r"C:\M\Guccini\Radici\01.flac".to_owned(),
+            },
+        ] {
+            let causa = nel_cestino(r"C:\M\Guccini\Radici\01.flac", &err)
+                .cause()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(!causa.contains("Guccini"), "{causa}");
+            assert!(!causa.is_empty());
+        }
+        // Di un guasto del sistema restano il numero e la frase di Windows.
+        let causa = nel_cestino(
+            r"C:\M\a.mp3",
+            &trash::Error::Os {
+                code: 5,
+                description: "Accesso negato.".to_owned(),
+            },
+        )
+        .cause()
+        .unwrap_or_default()
+        .to_owned();
+        assert!(
+            causa.contains('5') && causa.contains("Accesso negato."),
+            "{causa}"
+        );
     }
 
     #[test]
@@ -1054,5 +1169,64 @@ mod prove_delle_immagini {
         let tutti = [1, 2, 3, 4, 5];
         let piano = da_togliere(connection, &tutti, true).expect("tutti");
         assert_eq!(super::brani_senza_cestino(&piano, &tutti, ha_un_cestino), 4);
+    }
+}
+
+#[cfg(test)]
+mod prove_delle_unita {
+    use super::{Collocazione, DaTogliere, Unita, brani_senza_cestino, con_un_cestino};
+
+    #[test]
+    fn una_chiavetta_un_cd_e_un_ram_disk_non_hanno_cestino() {
+        // Il caso vero: la musica su una chiavetta, `E:\Musica`. Per
+        // `canonicalize` è un disco locale come `C:`, e la conferma prometteva
+        // il Cestino che Windows lì non ha.
+        for senza in [Unita::Rimovibile, Unita::Cd, Unita::RamDisk] {
+            assert!(
+                !con_un_cestino(Collocazione::Locale, Some(senza)),
+                "{senza:?}"
+            );
+        }
+        // Un disco fisso — compresi i dischi USB che si dichiarano tali — e un
+        // percorso di cui il genere non si sa restano quel che erano.
+        assert!(con_un_cestino(Collocazione::Locale, Some(Unita::Fissa)));
+        assert!(con_un_cestino(
+            Collocazione::Locale,
+            Some(Unita::Sconosciuta)
+        ));
+        assert!(con_un_cestino(Collocazione::Locale, None));
+        // E quel che non è locale non lo diventa per il genere dell'unità.
+        assert!(!con_un_cestino(Collocazione::DiRete, Some(Unita::Fissa)));
+        assert!(!con_un_cestino(Collocazione::Ignota, None));
+    }
+
+    #[test]
+    fn la_conferma_conta_i_brani_della_chiavetta() {
+        let piano = [
+            DaTogliere {
+                file: vec![r"E:\Musica\a.flac".to_owned()],
+                brani: vec![1],
+            },
+            DaTogliere {
+                file: vec![r"E:\Musica\b.flac".to_owned()],
+                brani: vec![2],
+            },
+            DaTogliere {
+                file: vec![r"C:\Musica\c.flac".to_owned()],
+                brani: vec![3],
+            },
+        ];
+        // Tutti e tre «locali» per `volumi`; E: è una chiavetta.
+        let unita = |percorso: &str| {
+            if percorso.starts_with(r"E:\") {
+                Unita::Rimovibile
+            } else {
+                Unita::Fissa
+            }
+        };
+        let conto = brani_senza_cestino(&piano, &[1, 2, 3], |percorso| {
+            con_un_cestino(Collocazione::Locale, Some(unita(percorso)))
+        });
+        assert_eq!(conto, 2);
     }
 }

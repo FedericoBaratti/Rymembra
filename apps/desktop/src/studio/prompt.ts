@@ -49,6 +49,7 @@ import { LINGUAGGIO_PATCH_PRECEDENTE } from "../eredita";
 import type { MessaggioIa, Problema, Registro, Validazione } from "../ipc";
 import type { MessaggioChat } from "./conversazione";
 import type { Selezione, Tema } from "./negozio";
+import { accorciato } from "./taglio";
 
 /** Quanti caratteri vale un gettone, per la stima che si mostra. */
 const CARATTERI_PER_GETTONE = 4;
@@ -388,8 +389,16 @@ export interface Pertinenti {
   scafale: boolean;
 }
 
-/** `nome` compare in `testo` come parola intera — i nomi hanno trattini. */
+/**
+ * `nome` compare in `testo` come parola intera — i nomi hanno trattini.
+ *
+ * Un nome vuoto non nomina niente, e va escluso prima del ciclo: con `""`
+ * `indexOf` risponde sempre (arrivato in fondo ridà la lunghezza), e il `for`
+ * non finiva più. Una chiave `""` in `parts` — scritta nel codice o da una
+ * patch del modello — congelava la finestra mentre si scriveva nella chat.
+ */
 function nomina(testo: string, nome: string): boolean {
+  if (nome === "") return false;
   const i = testo.indexOf(nome);
   if (i < 0) return false;
   const confine = /[a-z0-9.-]/i;
@@ -435,8 +444,9 @@ export function pertinenti(
   const nomiAnimazioni = eOggetto(tutteAnimazioni) ? Object.keys(tutteAnimazioni) : [];
 
   const sorgenti = [richiesta, ...problemi.map((p) => p.path.split(".").join(" "))].join("\n");
-  for (const nome of nomiParti) if (nomina(sorgenti, nome)) parti.add(nome);
-  for (const nome of nomiAnimazioni) if (nomina(sorgenti, nome)) animazioni.add(nome);
+  // Una chiave vuota non è un nome che una domanda possa fare: vedi `nomina`.
+  for (const nome of nomiParti) if (nome !== "" && nomina(sorgenti, nome)) parti.add(nome);
+  for (const nome of nomiAnimazioni) if (nome !== "" && nomina(sorgenti, nome)) animazioni.add(nome);
 
   // Le animazioni che le parti scelte usano: chi cambia l'entrata di una
   // scheda deve vedere l'animazione che la scheda chiama.
@@ -663,9 +673,13 @@ export function conTagNuovo(testo: string): string {
   return testo.replaceAll("```" + LINGUAGGIO_PATCH_PRECEDENTE, "```" + LINGUAGGIO_PATCH);
 }
 
-/** Il testo accorciato a `quanti` caratteri, con un segno che lo dice. */
+/**
+ * Il testo accorciato a `quanti` caratteri, con un segno che lo dice.
+ *
+ * Senza spezzare una coppia di surrogati: vedi `taglio.ts`.
+ */
 function accorcia(testo: string, quanti: number): string {
-  return testo.length <= quanti ? testo : `${testo.slice(0, quanti)}…`;
+  return accorciato(testo, quanti);
 }
 
 /** La riga che segue una proposta che non è stata applicata. */
@@ -722,9 +736,9 @@ export function storiaLeggera(
       : { ruolo: m.ruolo, testo };
   });
   const peso = senzaVecchieImmagini.reduce((somma, m) => somma + m.testo.length, 0);
-  if (peso <= soglia) return senzaVecchieImmagini;
+  if (peso <= soglia) return alternati(senzaVecchieImmagini);
   const confine = conversazione.length - BATTUTE_INTERE;
-  return senzaVecchieImmagini.map((m, i) => {
+  const riassunti = senzaVecchieImmagini.map((m, i) => {
     if (i >= confine) return m;
     if (m.ruolo === "assistant") {
       const originale = conversazione[i]?.testo ?? m.testo;
@@ -738,6 +752,35 @@ export function storiaLeggera(
     }
     return { ruolo: m.ruolo, testo: accorcia(m.testo, 500) };
   });
+  return alternati(riassunti);
+}
+
+/**
+ * I messaggi con i ruoli che si alternano: due dello stesso ruolo di fila
+ * diventano uno, i testi separati da una riga vuota.
+ *
+ * Una domanda caduta per un guasto non resta più nella conversazione
+ * (`senzaDomandaFallita`), ma le chat salvate prima della 3.2 possono averne:
+ * certi modelli rifiutano due «user» di fila, e da lì ogni domanda di quella
+ * conversazione falliva. Le immagini, se ci sono, restano quelle del secondo:
+ * stanno solo sull'ultimo messaggio.
+ */
+function alternati(messaggi: readonly MessaggioIa[]): MessaggioIa[] {
+  const fuori: MessaggioIa[] = [];
+  for (const m of messaggi) {
+    const prima = fuori[fuori.length - 1];
+    if (prima === undefined || prima.ruolo !== m.ruolo) {
+      fuori.push(m);
+      continue;
+    }
+    const unito: MessaggioIa = { ruolo: m.ruolo, testo: `${prima.testo}
+
+${m.testo}` };
+    const immagini = m.immagini ?? prima.immagini;
+    if (immagini !== undefined) unito.immagini = immagini;
+    fuori[fuori.length - 1] = unito;
+  }
+  return fuori;
 }
 
 /**

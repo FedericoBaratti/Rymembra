@@ -29,11 +29,13 @@
 //! - il quasi nero e il quasi bianco, che sono il fondo e le luci;
 //! - i grigi, che una tonalità ce l'hanno solo per arrotondamento.
 //!
-//! Vince la sacca più popolosa pesata per quanto è satura — così un cielo
-//! azzurro slavato che occupa metà copertina non batte il rosso acceso del
-//! soggetto —, e la tinta è la media **circolare** di quella sacca. Circolare
-//! perché 359° e 1° distano due gradi, e una media aritmetica direbbe 180: il
-//! ciano esatto complementare del rosso che stiamo misurando.
+//! Vince la finestra di tre sacche vicine (trenta gradi) più popolosa pesata
+//! per quanto è satura — così un cielo azzurro slavato che occupa metà
+//! copertina non batte il rosso acceso del soggetto, e una sfumatura che
+//! attraversa i confini fissi delle sacche non si spezza in tre minoranze —, e
+//! la tinta è la media **circolare** di quella finestra. Circolare perché 359°
+//! e 1° distano due gradi, e una media aritmetica direbbe 180: il ciano esatto
+//! complementare del rosso che stiamo misurando.
 //!
 //! Una copertina in bianco e nero non ha una tinta, e la risposta è `None`.
 //! Inventargliene una vorrebbe dire dipingere l'interfaccia con il rumore di
@@ -206,9 +208,29 @@ pub fn dominante(immagine: &image::RgbImage) -> Option<[u8; 3]> {
     // saturazioni. Scritto così invece che come prodotto di due medie perché è
     // lo stesso numero senza una divisione in mezzo, e perché rende ovvio che
     // una sacca larga e slavata e una stretta e accesa possono pareggiare.
-    let migliore = sacche
-        .iter()
-        .filter(|sacca| sacca.quanti > 0)
+    //
+    // E si contano **finestre** di tre sacche vicine (trenta gradi, sul giro),
+    // non sacche sole: i confini delle sacche sono fissi, e una sfumatura che
+    // ne attraversa due o tre — un tramonto fra 0° e 30° — si spezzava in tre
+    // minoranze e perdeva contro una tinta compatta più piccola. La finestra
+    // vincente si unisce in una sacca sola, e la tinta è la media circolare
+    // dei suoi pixel.
+    let finestra = |centro: usize| -> Sacca {
+        let mut unita = Sacca::default();
+        for passo in [SACCHE - 1, 0, 1] {
+            if let Some(sacca) = sacche.get((centro + passo) % SACCHE) {
+                unita.quanti = unita.quanti.saturating_add(sacca.quanti);
+                unita.seno += sacca.seno;
+                unita.coseno += sacca.coseno;
+                unita.saturazione += sacca.saturazione;
+                unita.valore += sacca.valore;
+            }
+        }
+        unita
+    };
+    let migliore = (0..SACCHE)
+        .filter(|centro| sacche.get(*centro).is_some_and(|sacca| sacca.quanti > 0))
+        .map(finestra)
         .max_by(|uno, due| uno.saturazione.total_cmp(&due.saturazione))?;
 
     let quanti = f64::from(migliore.quanti);
@@ -325,6 +347,29 @@ mod tests {
         assert!(
             scarto(gradi, 0.0) < 15.0,
             "doveva restare sul rosso, è finita a {gradi}°"
+        );
+    }
+
+    #[test]
+    fn una_sfumatura_su_tre_sacche_batte_una_minoranza_compatta() {
+        // Settanta per cento di una sfumatura rosso-arancio fra 0° e 30° —
+        // tre sacche da circa un quarto l'una — contro trenta per cento di blu
+        // in una sacca sola: il disco è rosso, e la tinta deve dirlo.
+        let mut buffer = image::RgbImage::new(100, 100);
+        for (x, _y, pixel) in buffer.enumerate_pixels_mut() {
+            let gradi = match x {
+                0..=22 => 5.0,
+                23..=45 => 15.0,
+                46..=69 => 25.0,
+                _ => 220.0,
+            };
+            *pixel = image::Rgb(da_hsv(gradi, 0.8, 0.8));
+        }
+        let trovata = dominante(&buffer).expect("una tinta c'è");
+        let gradi = tonalita(trovata);
+        assert!(
+            scarto(gradi, 15.0) < 20.0,
+            "doveva restare sulla sfumatura rossa, è finita a {gradi}°"
         );
     }
 

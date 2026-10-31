@@ -23,7 +23,7 @@
         },
         "Window: 1280×820 (min 880×560), no decorations (the title bar is drawn by the page; drag, minimize, maximize, full screen and close are app commands, so `core:window` permissions are not granted), `backgroundColor` = `plain`'s, created hidden.",
         { h: "Shutdown" },
-        "`App::run` observes `CloseRequested`, `ExitRequested` and `Exit`; with «close to tray» on, a close only hides. `spegnimento::spegni` (also run by the updater's `on_before_exit`) is idempotent: raise the static exit flag, stop a scan, stop the folder watchers, save the queue/volume/EQ/position (≤ 400 ms lock wait), the last `PRAGMA optimize` (≤ 250 ms), detach SMTC, remove the tray icon. The flag exists because events posted after `tao`'s event loop is destroyed made it panic (`cannot move state from Destroyed`): every emit goes through `Emette::emetti`, which is silent once exiting, and every background loop checks the flag first.",
+        "`App::run` observes `CloseRequested`, `ExitRequested` and `Exit`; with «close to tray» on, a close only hides. `spegnimento::spegni` (also run by the updater's `on_before_exit`) is idempotent: raise the static exit flag, stop a scan, stop the folder watchers, end a «Listen together» session (`insieme::ferma`: the player goes back to this PC's queue), close the listen in progress and save the queue/volume/EQ/position (`riproduzione::salva_uscendo`: ≤ 400 ms for the ordered write threads to drain, then ≤ 400 ms per lock wait), the last `PRAGMA optimize` (≤ 250 ms), detach SMTC, remove the tray icon. The flag exists because events posted after `tao`'s event loop is destroyed made it panic (`cannot move state from Destroyed`): every emit goes through `Emette::emetti`, which is silent once exiting, and every background loop checks the flag first.",
       ],
       see: ["runtime", "ipc", "background", "logs"],
     },
@@ -32,7 +32,7 @@
       title: "IPC: commands, events, URI schemes",
       src: ["apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts"],
       body: [
-        "**283 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
+        "**297 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
         {
           table: {
             head: ["Area", "Commands", "Area", "Commands"],
@@ -47,10 +47,11 @@
               ["Spotify archive", "6", "Folders panel", "6"],
               ["Updates", "6", "Diagnostics", "6"],
               ["Metadata review", "5", "Profile", "4"],
-              ["Enrichment", "4", "Tray", "3"],
+              ["Enrichment", "3", "Tray", "3"],
               ["Deletion", "3", "Zoom", "3"],
               ["Watched folders", "2", "Tour", "2"],
               ["Drag and drop", "1", "Views", "1"],
+              ["Cloud folders (`nuvola_musica.rs`)", "12", "Your apps (`nuvola_app.rs`)", "3"],
               ["Listen together (`insieme/mod.rs`)", "21", "—", "—"],
             ],
           },

@@ -209,15 +209,89 @@ pub fn prossimo(
     esclusi: &[i64],
     adesso_ms: i64,
 ) -> Result<Option<Scelta>, AppError> {
+    cascata(&mut Tenuta(connection), corrente, esclusi, adesso_ms)
+}
+
+/// Come [`prossimo`], ma il database lo presta un [`library::Deposito`] un
+/// gradino alla volta.
+///
+/// # Perché
+///
+/// Sul desktop il deposito è il lucchetto della libreria, e la cascata gira sul
+/// filo che prepara il brano dopo. In una presa sola, i gradini che scendono
+/// fino in fondo — artista, genere, preferito, uno qualunque, ognuno una
+/// domanda al motore delle regole — tenevano chiusa la libreria per tutta la
+/// discesa, e un cuore o una stellina premuti nella finestra in quel momento
+/// aspettavano. Un gradino per presa, e il gesto si infila fra due.
+///
+/// Fra un gradino e l'altro la libreria può cambiare: il brano corrente può
+/// sparire, ed è già un caso previsto da ogni gradino (vedi [`prossimo`]).
+///
+/// # Errori
+///
+/// Gli stessi di [`prossimo`], più quelli del deposito.
+pub fn prossimo_con<D: library::Deposito>(
+    deposito: &mut D,
+    corrente: i64,
+    esclusi: &[i64],
+    adesso_ms: i64,
+) -> Result<Option<Scelta>, AppError> {
+    cascata(&mut DaDeposito(deposito), corrente, esclusi, adesso_ms)
+}
+
+/// Chi presta la connessione alla cascata, per un gradino.
+trait Presta {
+    fn presta<T>(
+        &mut self,
+        gradino: impl FnOnce(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError>;
+}
+
+/// Una connessione già in mano: ogni gradino la usa com'è.
+struct Tenuta<'a>(&'a Connection);
+
+impl Presta for Tenuta<'_> {
+    fn presta<T>(
+        &mut self,
+        gradino: impl FnOnce(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        gradino(self.0)
+    }
+}
+
+/// Un deposito: ogni gradino è una presa.
+struct DaDeposito<'a, D>(&'a mut D);
+
+impl<D: library::Deposito> Presta for DaDeposito<'_, D> {
+    fn presta<T>(
+        &mut self,
+        gradino: impl FnOnce(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        self.0.con_connessione(|connection| gradino(connection))
+    }
+}
+
+/// La cascata di [`prossimo`], un gradino per prestito.
+fn cascata(
+    presta: &mut impl Presta,
+    corrente: i64,
+    esclusi: &[i64],
+    adesso_ms: i64,
+) -> Result<Option<Scelta>, AppError> {
     crate::playback::riga_della_libreria(corrente)?;
-    let brano = library::read_summary(connection, corrente)?;
 
     // Il primo gradino non lo tocca nessuno: un disco è un disco, e nessuna
     // affinità ha titolo per spezzarlo a metà. Il contesto si legge **dopo**,
     // così chi sta ascoltando un album non paga nemmeno le tre letture.
-    if let Some(brano) = brano.as_ref()
-        && let Some(id) = resto_dell_album(connection, brano, esclusi)?
-    {
+    let (brano, del_disco) = presta.presta(|connection| {
+        let brano = library::read_summary(connection, corrente)?;
+        let del_disco = match brano.as_ref() {
+            Some(brano) => resto_dell_album(connection, brano, esclusi)?,
+            None => None,
+        };
+        Ok((brano, del_disco))
+    })?;
+    if let Some(id) = del_disco {
         return Ok(Some(Scelta {
             id,
             motivo: Motivo::Album,
@@ -227,22 +301,28 @@ pub fn prossimo(
     // Una lettura sola per tutti e quattro i passi che riordinano. `None`
     // finché la passata di analisi non ha prodotto una scala: da lì in giù il
     // modulo si comporta esattamente come prima.
-    let contesto = Contesto::leggi(connection, corrente)?;
+    let contesto = presta.presta(|connection| Contesto::leggi(connection, corrente))?;
     let contesto = contesto.as_ref();
 
     if let Some(brano) = brano.as_ref() {
-        if let Some(scelta) = stesso_artista(connection, brano, esclusi, adesso_ms, contesto)? {
+        if let Some(scelta) = presta
+            .presta(|connection| stesso_artista(connection, brano, esclusi, adesso_ms, contesto))?
+        {
             return Ok(Some(scelta));
         }
-        if let Some(scelta) = stesso_genere(connection, corrente, esclusi, adesso_ms, contesto)? {
+        if let Some(scelta) = presta.presta(|connection| {
+            stesso_genere(connection, corrente, esclusi, adesso_ms, contesto)
+        })? {
             return Ok(Some(scelta));
         }
     }
 
-    if let Some(scelta) = un_preferito_mai_sentito(connection, esclusi, adesso_ms, contesto)? {
+    if let Some(scelta) = presta
+        .presta(|connection| un_preferito_mai_sentito(connection, esclusi, adesso_ms, contesto))?
+    {
         return Ok(Some(scelta));
     }
-    uno_qualunque(connection, esclusi, adesso_ms, contesto)
+    presta.presta(|connection| uno_qualunque(connection, esclusi, adesso_ms, contesto))
 }
 
 /// Quanti brani semina una radio.
@@ -269,15 +349,17 @@ pub const TETTO_ARTISTA: usize = 3;
 /// [`prossimo`] continua una **sessione**: il primo gradino è il resto del
 /// disco, perché chi ha messo su un album vuole sentire l'album. Una radio non
 /// continua niente — è un gesto esplicito, «portami dove porta questo» — quindi
-/// il disco non ha nessuna precedenza, e il bacino è la libreria intera.
+/// il disco non ha nessuna precedenza, e il bacino è fatto apposta: i vicini
+/// del seme, una parte del suo artista e del suo genere, e qualche migliaio di
+/// brani a caso dalla libreria intera. Vedi [`bacino_della_radio`].
 ///
 /// # Il pavimento
 ///
 /// Senza una scala — prima che l'analisi abbia coperto la libreria, o su una
 /// libreria troppo piccola — non c'è niente su cui riordinare, e quel che resta
-/// è il bacino nell'ordine in cui il motore delle regole l'ha dato: un
-/// mescolamento. È una radio peggiore e non è una radio rotta, ed è la stessa
-/// disciplina di [`prossimo`].
+/// è il bacino nell'ordine in cui è arrivato: un mescolamento. È una radio
+/// peggiore e non è una radio rotta, ed è la stessa disciplina di
+/// [`prossimo`].
 ///
 /// Il seme non è nel risultato: chi chiama lo mette davanti, perché è il brano
 /// che sta già suonando.
@@ -301,13 +383,7 @@ pub fn radio(
     if quanti == 0 {
         return Ok(Vec::new());
     }
-    let insieme = Insieme {
-        combinazione: Combinazione::Tutte,
-        regole: Vec::new(),
-        limite: Some(CANDIDATI),
-        ordinamento: Ordinamento::Casuale,
-    };
-    let trovati = smart::brani(connection, &insieme, adesso_ms)?;
+    let trovati = bacino_della_radio(connection, seme)?;
     let ammessi: Vec<&TrackSummary> = trovati.iter().filter(|b| b.id != seme).collect();
     if ammessi.is_empty() {
         return Ok(Vec::new());
@@ -318,7 +394,7 @@ pub fn radio(
         let voti = punteggi(connection, &ammessi, &contesto, adesso_ms)?;
         // Stabile di proposito: a pari punteggio — e senza punteggio, che è il
         // caso di chi non è ancora stato analizzato — resta l'ordine casuale che
-        // il motore delle regole ha già dato. Cioè il pavimento riemerge dove
+        // il bacino ha già dato. Cioè il pavimento riemerge dove
         // l'affinità non sa dire niente, brano per brano invece che in blocco.
         let quanto = |i: &usize| {
             voti.get(*i)
@@ -359,6 +435,70 @@ pub fn radio(
         }
     }
     Ok(fuori)
+}
+
+/// Quanti brani presi a caso riempiono il bacino di una radio.
+///
+/// Duemila: «qualche migliaio» di candidati, che il riordino legge per chiave
+/// — un'impronta e una cronologia ciascuno — in qualche millisecondo. La radio
+/// è un gesto esplicito, non gira sul filo che prepara il brano dopo, e può
+/// permettersi dieci volte i [`CANDIDATI`] di un passo della cascata.
+const BACINO_RADIO: i64 = 2_000;
+
+/// Quanti brani dello stesso artista, e quanti dello stesso genere, entrano
+/// nel bacino per diritto, presi a caso fra i loro.
+const BACINO_PER_AFFINITA: i64 = 500;
+
+/// Il bacino da cui una radio sceglie, mescolato.
+///
+/// # Perché non basta un campione a caso
+///
+/// Il riordino può mettere davanti solo quel che c'è. Con duecento brani presi
+/// a caso dalla libreria intera, su ventimila brani i vicini veri del seme ci
+/// entravano uno su cento, e la radio era quasi un mescolamento. Il bacino
+/// quindi contiene **per costruzione** i candidati buoni: tutti i vicini del
+/// seme secondo gli ascolti altrui (al più venti, vedi
+/// [`crate::vicinanza::VICINI_TENUTI`]), una parte dei brani dello stesso
+/// artista e dello stesso genere, e un riempimento casuale da tutta la
+/// libreria — che resta, perché la somiglianza sonora sta anche dove né i tag
+/// né gli altri ascoltatori guardano. Il tetto per artista resta a valle, in
+/// [`radio`].
+///
+/// L'ordine è casuale: senza una scala, o a pari punteggio, la radio resta un
+/// mescolamento, come è sempre stata.
+fn bacino_della_radio(connection: &Connection, seme: i64) -> Result<Vec<TrackSummary>, AppError> {
+    let sql = format!(
+        "SELECT {} FROM tracks t
+          WHERE t.id <> ?1 AND t.id IN (
+            SELECT vicino_id FROM brano_vicino WHERE track_id = ?1
+            UNION
+            SELECT id FROM (
+              SELECT a.id FROM tracks s JOIN tracks a ON a.artist = s.artist
+               WHERE s.id = ?1
+               ORDER BY RANDOM() LIMIT ?2)
+            UNION
+            SELECT id FROM (
+              SELECT g.id FROM tracks s JOIN tracks g ON g.genre = s.genre
+               WHERE s.id = ?1 AND TRIM(s.genre) <> ''
+               ORDER BY RANDOM() LIMIT ?2)
+            UNION
+            SELECT id FROM (SELECT id FROM tracks ORDER BY RANDOM() LIMIT ?3)
+          )
+          ORDER BY RANDOM()",
+        library::COLONNE_BRANO
+    );
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| library::db_error("bacino della radio", &err))?;
+    let righe = statement
+        .query_map(
+            rusqlite::params![seme, BACINO_PER_AFFINITA, BACINO_RADIO],
+            library::track_from_row,
+        )
+        .map_err(|err| library::db_error("bacino della radio", &err))?;
+    righe
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| library::db_error("bacino della radio", &err))
 }
 
 /// Il brano dopo, nello stesso album.
@@ -975,6 +1115,51 @@ mod prove {
         assert_eq!(scelto, Some(5), "non ha trovato l'unico brano rimasto");
     }
 
+    /// Un deposito che conta quante volte presta la connessione.
+    struct Contato {
+        connection: Connection,
+        prese: usize,
+    }
+
+    impl library::Deposito for Contato {
+        fn con_connessione<T, F>(&mut self, azione: F) -> Result<T, AppError>
+        where
+            F: FnOnce(&mut Connection) -> Result<T, AppError>,
+        {
+            self.prese += 1;
+            azione(&mut self.connection)
+        }
+    }
+
+    /// La cascata prende la libreria un gradino alla volta.
+    ///
+    /// Sul desktop il deposito è il lucchetto della libreria, e la cascata
+    /// gira sul filo che prepara il brano dopo: tenuta tutta in una presa,
+    /// un cuore o una stellina premuti nella finestra aspettavano tutti i
+    /// gradini. Un gradino per presa, e il gesto si infila fra due.
+    #[test]
+    fn la_cascata_presta_la_libreria_un_gradino_alla_volta() {
+        let mut deposito = Contato {
+            connection: libreria(),
+            prese: 0,
+        };
+        // Il 4 è solo nel suo disco e il resto dell'artista è in coda: si
+        // scende fino all'ultimo gradino, che trova il 5.
+        let scelta = prossimo_con(&mut deposito, 4, &[1, 2, 3, 4], 0).expect("scelta");
+        assert_eq!(scelta.map(|s| s.id), Some(5));
+        assert_eq!(scelta.map(|s| s.motivo), Some(Motivo::Caso));
+        // Album, contesto, artista, genere, preferito, uno qualunque.
+        assert_eq!(deposito.prese, 6);
+        // Il primo gradino che risponde chiude la cascata: una presa sola.
+        let mut deposito = Contato {
+            connection: libreria(),
+            prese: 0,
+        };
+        let scelta = prossimo_con(&mut deposito, 1, &[1], 0).expect("scelta");
+        assert_eq!(scelta.map(|s| s.id), Some(2));
+        assert_eq!(deposito.prese, 1);
+    }
+
     /// Con tutto già in coda non c'è niente da proporre, e non è un errore.
     #[test]
     fn quando_non_resta_niente_lo_dice_invece_di_fallire() {
@@ -1267,6 +1452,74 @@ mod prove {
         let coda = radio(&connection, 1, 4, 0).expect("radio");
         assert_eq!(coda.len(), 4);
         assert!(coda.iter().all(|id| *id != 1));
+    }
+
+    /// I vicini del seme entrano nel bacino della radio, e la radio li porta.
+    ///
+    /// Prima il bacino erano duecento brani presi a caso dalla libreria intera,
+    /// e solo dopo si riordinava: su cinquemila brani i vicini veri del seme ci
+    /// entravano uno su venticinque, e la radio era quasi un mescolamento.
+    #[test]
+    fn il_bacino_della_radio_contiene_i_vicini_del_seme() {
+        let mut connection = crate::db::open_in_memory().expect("database").connection;
+        let tx = connection.transaction().expect("transazione");
+        for id in 1..=5_000_i64 {
+            tx.execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     genre, duration_ms, file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?3, 'T', ?4, 'D', ?5, ?6, 1000, 1, 1, 1)",
+                rusqlite::params![
+                    id,
+                    format!("g{id}.mp3"),
+                    format!("kg{id}"),
+                    format!("Art{}", id % 400),
+                    format!("art{}|d", id % 400),
+                    ["Rock", "Jazz", "Pop", "Folk"].get(usize::try_from(id % 4).unwrap_or(0)),
+                ],
+            )
+            .expect("brano");
+        }
+        let vicini = [4_001_i64, 4_102, 4_203, 4_304, 4_405];
+        for vicino in vicini {
+            tx.execute(
+                "INSERT INTO brano_vicino (track_id, vicino_id, punteggio, fonte, raccolto_at)
+                 VALUES (1, ?1, 1.0, 'lb-registrazione', 1)",
+                [vicino],
+            )
+            .expect("vicino");
+        }
+        // Una scala, perché la radio riordini: impronte a un pugno di brani
+        // che non sono né il seme né i suoi vicini.
+        let misurati: Vec<sonora::Misurato> = (0..(sonora::MINIMO_BRANI as i64))
+            .map(|i| sonora::Misurato::Fatta {
+                track_id: 100 + i,
+                vettore: (0..rymembra_play::impronta::DIMENSIONI)
+                    .map(|d| i as f32 + d as f32 * 0.01)
+                    .collect(),
+            })
+            .collect();
+        sonora::registra(&tx, &misurati, 1_000).expect("impronte");
+        sonora::ritara(&tx, 1_000).expect("taratura");
+        tx.commit().expect("commit");
+
+        let bacino = bacino_della_radio(&connection, 1).expect("bacino");
+        assert!(
+            bacino.iter().all(|brano| brano.id != 1),
+            "il seme nel bacino"
+        );
+        for vicino in vicini {
+            assert!(
+                bacino.iter().any(|brano| brano.id == vicino),
+                "il vicino {vicino} non è nel bacino"
+            );
+        }
+        let coda = radio(&connection, 1, 30, 0).expect("radio");
+        for vicino in vicini {
+            assert!(
+                coda.contains(&vicino),
+                "il vicino {vicino} non è nella radio: {coda:?}"
+            );
+        }
     }
 
     /// Una libreria di un brano solo non ha una radio, e non è un errore.

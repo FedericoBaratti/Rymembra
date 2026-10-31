@@ -287,6 +287,18 @@ pub struct StatoAggiornamenti {
     /// `pronto` si chiama a ogni ridisegno completo — una skin cambiata, un
     /// ricaricamento in sviluppo — e il controllo d'avvio è uno.
     pronto_detto: AtomicBool,
+
+    /// Quante volte l'interruttore è stato spento.
+    ///
+    /// Un controllo la legge prima di partire e la riconfronta prima di
+    /// depositare quel che ha trovato. Senza, una risposta arrivata dopo lo
+    /// spegnimento — la richiesta può restare in volo fino a
+    /// [`SCADENZA_RICHIESTA`] — rimetteva l'avviso «disponibile la x.y» a
+    /// interruttore spento, contro quel che [`aggiornamenti_attivo`] promette.
+    /// Un contatore e non la rilettura dell'interruttore, perché vale anche
+    /// per «Controlla adesso» seguito dallo spegnimento, che l'interruttore
+    /// non lo guarda.
+    generazione: AtomicU64,
 }
 
 impl StatoAggiornamenti {
@@ -303,6 +315,7 @@ impl StatoAggiornamenti {
                 ultimo_errore: Mutex::new(None),
                 annulla: AtomicBool::new(false),
                 pronto_detto: AtomicBool::new(false),
+                generazione: AtomicU64::new(0),
             },
             orecchio,
         )
@@ -425,7 +438,7 @@ pub fn aggiornamenti_attivo(
     if attivo {
         let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
     } else {
-        deposita(&aggiornamenti, None);
+        butta(&aggiornamenti.trovato, &aggiornamenti.generazione);
         azzera_errore(&aggiornamenti);
     }
     // Anche a chi non ha chiesto: vedi `riferisci`.
@@ -774,6 +787,13 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     if !configurato(app) {
         return Giro::Saltato;
     }
+    let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
+        return Giro::Saltato;
+    };
+    // Prima di guardare l'interruttore: uno spegnimento che arriva dopo
+    // questa riga, anche a richiesta in volo, si vede al momento di
+    // depositare. Vedi `StatoAggiornamenti::generazione`.
+    let partenza = aggiornamenti.generazione.load(Ordering::Acquire);
     let acceso = a_mano
         || app
             .try_state::<Stato>()
@@ -782,9 +802,6 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     if !acceso {
         return Giro::Saltato;
     }
-    let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
-        return Giro::Saltato;
-    };
     // Se un controllo è già in corso — l'utente ha premuto «controlla adesso»
     // proprio mentre scadeva la mezz'ora — questo giro salta e basta.
     //
@@ -812,7 +829,14 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     match esito {
         Ok(trovato) => {
             let versione = trovato.as_ref().map(|nuovo| nuovo.version.clone());
-            deposita(&aggiornamenti, trovato);
+            // Spento intanto: il controllo è fatto (l'ora si scrive), ma quel
+            // che ha trovato non si mostra e non si ricorda.
+            let vale = deposita_se_vale(
+                &aggiornamenti.trovato,
+                &aggiornamenti.generazione,
+                partenza,
+                trovato,
+            );
             azzera_errore(&aggiornamenti);
             if let Some(stato) = app.try_state::<Stato>() {
                 let _ = con_libreria(&stato, |libreria| {
@@ -822,6 +846,7 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
                         &adesso_ms().to_string(),
                     )?;
                     match &versione {
+                        _ if !vale => Ok(()),
                         Some(versione) => {
                             settings::write(&libreria.connection, CHIAVE_TROVATA, versione)
                         }
@@ -1207,13 +1232,41 @@ fn configurato(app: &AppHandle) -> bool {
             .is_some_and(|chiave| !chiave.trim().is_empty())
 }
 
-/// Mette via l'aggiornamento trovato, o lo toglie.
-fn deposita(aggiornamenti: &StatoAggiornamenti, trovato: Option<Update>) {
-    let mut posto = aggiornamenti
-        .trovato
+/// Mette via quel che un controllo ha trovato, ma solo se l'interruttore non
+/// è stato spento mentre la richiesta era in volo. `false` se lo è stato, e
+/// allora non tocca niente.
+///
+/// `partenza` è la [`StatoAggiornamenti::generazione`] letta prima di partire.
+/// Il confronto e la scrittura stanno sotto lo stesso lucchetto con cui
+/// [`butta`] cambia la generazione: fra i due non passa niente.
+///
+/// Generica, e con i pezzi passati da fuori, perché un `Update` vero non si
+/// costruisce in una prova.
+fn deposita_se_vale<T>(
+    posto: &Mutex<Option<T>>,
+    generazione: &AtomicU64,
+    partenza: u64,
+    trovato: Option<T>,
+) -> bool {
+    let mut posto = posto
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if generazione.load(Ordering::Acquire) != partenza {
+        return false;
+    }
     *posto = trovato;
+    true
+}
+
+/// Butta l'aggiornamento trovato perché l'interruttore si è spento: cambia la
+/// generazione, così un controllo ancora in volo non lo rimette (vedi
+/// [`deposita_se_vale`]).
+fn butta<T>(posto: &Mutex<Option<T>>, generazione: &AtomicU64) {
+    let mut posto = posto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    generazione.fetch_add(1, Ordering::AcqRel);
+    *posto = None;
 }
 
 /// Dimentica l'ultimo guasto.
@@ -1327,6 +1380,23 @@ fn stato_ipc(
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    #[test]
+    fn un_controllo_finito_a_interruttore_spento_non_riaccende_l_avviso() {
+        // Il caso vero: la richiesta è in volo, l'utente spegne l'interruttore
+        // (che butta l'aggiornamento trovato), poi la risposta arriva con una
+        // versione nuova.
+        let posto: Mutex<Option<u32>> = Mutex::new(None);
+        let generazione = AtomicU64::new(0);
+        let partenza = generazione.load(Ordering::Acquire);
+        butta(&posto, &generazione);
+        assert!(!deposita_se_vale(&posto, &generazione, partenza, Some(1)));
+        assert_eq!(*posto.lock().expect("posto"), None, "l'avviso è ricomparso");
+        // Un controllo partito dopo lo spegnimento — «Controlla adesso» — deposita.
+        let partenza = generazione.load(Ordering::Acquire);
+        assert!(deposita_se_vale(&posto, &generazione, partenza, Some(2)));
+        assert_eq!(*posto.lock().expect("posto"), Some(2));
+    }
 
     /// Un database vero, migrato, in memoria: la fixture di `rymembra-app`.
     fn libreria() -> rusqlite::Connection {

@@ -570,7 +570,22 @@ test("un indirizzo senza porta prende quella di serie", () => {
   assert.equal(leggiIndirizzo("192.168.1.20"), `192.168.1.20:${PORTA}`);
   assert.equal(leggiIndirizzo(" 10.0.0.5:47812 "), "10.0.0.5:47812");
   assert.equal(leggiIndirizzo("127.0.0.1:1"), "127.0.0.1:1");
-  assert.equal(leggiIndirizzo("0.0.0.0:65535"), "0.0.0.0:65535");
+  assert.equal(leggiIndirizzo("223.255.255.255:65535"), "223.255.255.255:65535");
+});
+
+test("un indirizzo che non porta a nessun PC si rifiuta, come nel nucleo", () => {
+  // Il gemello del nucleo (`rymembra_app::insieme::indirizzo`) rifiuta il non
+  // specificato, il multicast e il broadcast: qui passavano, e il clic finiva
+  // in un «è un difetto di Rymembra» col campo già svuotato.
+  for (const speciale of [
+    "0.0.0.0",
+    "0.0.0.0:65535",
+    "224.0.0.251:47811",
+    "239.255.255.250",
+    "255.255.255.255",
+  ]) {
+    assert.equal(leggiIndirizzo(speciale), null, speciale);
+  }
 });
 
 test("un indirizzo che non si legge si rifiuta", () => {

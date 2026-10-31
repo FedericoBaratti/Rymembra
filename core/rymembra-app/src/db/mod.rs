@@ -2084,6 +2084,395 @@ mod tests {
         assert_eq!(user_version(&tornata).expect("versione"), 34);
     }
 
+    #[test]
+    fn la_trentasei_aggiunge_lo_specchio_e_non_tocca_il_resto() {
+        // Una libreria alla 35 con dentro le cose che si perderebbero, poi la
+        // 36 per la strada vera: le tre tabelle ci sono, e il resto è com'era.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 35);
+        libreria_da_perdere(&connection);
+        let prima = schema(&connection);
+
+        let applicate = migrate(&connection).expect("la 36");
+        assert_eq!(
+            u32::try_from(applicate).expect("il conto delle migrazioni sta in un u32"),
+            LATEST_VERSION - 35
+        );
+        for tabella in [
+            "tracks",
+            "playlist_tracks",
+            "play_history",
+            "track_overrides",
+        ] {
+            assert_eq!(quante(&connection, tabella), 1, "{tabella}");
+        }
+        let dopo = schema(&connection);
+        assert!(
+            prima.iter().all(|riga| dopo.contains(riga)),
+            "la 36 ha toccato qualcosa che c'era già"
+        );
+        // Una cache: nessuna chiave esterna, in nessuno dei due versi, così
+        // buttarla non tocca una riga di libreria.
+        for tabella in ["nuvola_conti", "nuvola_voci", "nuvola_radici"] {
+            assert_eq!(quante(&connection, tabella), 0, "{tabella}");
+            assert_eq!(
+                quante(
+                    &connection,
+                    &format!("pragma_foreign_key_list('{tabella}')")
+                ),
+                0,
+                "{tabella}"
+            );
+        }
+    }
+
+    #[test]
+    fn i_vincoli_della_trentasei_tengono() {
+        let db = open_in_memory().expect("apertura");
+        let c = &db.connection;
+        let voce = |id: &str, cartella: i64| {
+            c.execute(
+                "INSERT INTO nuvola_voci (conto, id, genitore, nome, segmento, cartella,
+                                          dimensione, modificato_ms)
+                 VALUES ('onedrive-abcdefgh', ?1, NULL, 'a.flac', 'a.flac', ?2, 1, 1)",
+                rusqlite::params![id, cartella],
+            )
+        };
+        voce("1", 0).expect("una voce");
+        assert!(voce("1", 0).is_err(), "(conto, id) è una voce sola");
+        assert!(voce("2", 2).is_err(), "cartella è 0 o 1");
+        let radice = |percorso: &str, completa: i64| {
+            c.execute(
+                "INSERT INTO nuvola_radici (percorso, conto, cima, completa)
+                 VALUES (?1, 'onedrive-abcdefgh', 'X', ?2)",
+                rusqlite::params![percorso, completa],
+            )
+        };
+        radice("nuvola://onedrive-abcdefgh/Musica", 1).expect("una radice");
+        assert!(radice("nuvola://onedrive-abcdefgh/Musica", 0).is_err());
+        assert!(radice("nuvola://onedrive-abcdefgh/Altro", 3).is_err());
+        // L'indice dei figli è quello che risponde a «i figli di questa
+        // cartella».
+        let piano: String = c
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM nuvola_voci
+                  WHERE conto = 'onedrive-abcdefgh' AND genitore = 'X'",
+                [],
+                |r| r.get(3),
+            )
+            .expect("piano");
+        assert!(piano.contains("idx_nuvola_voci_genitore"), "{piano}");
+    }
+
+    #[test]
+    fn togliere_la_trentasei_a_mano_riporta_lo_schema_della_trentacinque() {
+        // Il ritorno indietro scritto in testa alla 036, parola per parola: se
+        // un giorno la 036 crescesse di un indice e il commento no, questa
+        // prova lo direbbe.
+        let alla_35 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_35, 35);
+
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 36);
+        tornata
+            .execute_batch(
+                "INSERT INTO nuvola_conti (conto, servizio, nome)
+                 VALUES ('onedrive-abcdefgh', 'onedrive', 'x@y');
+                 INSERT INTO nuvola_voci (conto, id, nome, segmento, cartella, dimensione,
+                                          modificato_ms)
+                 VALUES ('onedrive-abcdefgh', '1', 'a.flac', 'a.flac', 0, 1, 1);",
+            )
+            .expect("uno specchio");
+        tornata
+            .execute_batch(
+                "DROP INDEX idx_nuvola_voci_genitore; DROP TABLE nuvola_voci;
+                 DROP TABLE nuvola_radici; DROP TABLE nuvola_conti; PRAGMA user_version = 35;",
+            )
+            .expect("ritorno a mano");
+
+        assert_eq!(schema(&tornata), schema(&alla_35));
+        assert_eq!(user_version(&tornata).expect("versione"), 35);
+    }
+
+    #[test]
+    fn la_trentasette_porta_il_client_del_backup_in_un_app() {
+        // Una libreria alla 36 di chi aveva scritto il client del suo progetto
+        // Google nelle Impostazioni del backup, e una cartella di Drive e una
+        // di OneDrive collegate.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 36);
+        libreria_da_perdere(&connection);
+        connection
+            .execute_batch(
+                "INSERT INTO settings (key, value) VALUES
+                   ('nuvola.client_id', ' 111-aaa.apps.googleusercontent.com '),
+                   ('nuvola.microsoft.client_id', 'compilato-a-mano'),
+                   ('nuvola.dropbox.app_key', 'compilata-a-mano'),
+                   ('nuvola.attivo', '1');
+                 INSERT INTO nuvola_conti (conto, servizio, nome)
+                 VALUES ('gdrive-aaaaaaaa', 'gdrive', 'a@b'),
+                        ('onedrive-aaaaaaaa', 'onedrive', 'a@b');",
+            )
+            .expect("la libreria di prima");
+        let prima = schema(&connection);
+
+        migrate(&connection).expect("la 37");
+
+        let app: (String, String, String, String) = connection
+            .query_row(
+                "SELECT app, piattaforma, nome, client_id FROM nuvola_app",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("un'app sola");
+        assert_eq!(
+            app,
+            (
+                "google-ereditata".to_owned(),
+                "google".to_owned(),
+                "Google".to_owned(),
+                "111-aaa.apps.googleusercontent.com".to_owned()
+            )
+        );
+        let valore = |chiave: &str| -> Option<String> {
+            connection
+                .query_row("SELECT value FROM settings WHERE key = ?1", [chiave], |r| {
+                    r.get(0)
+                })
+                .ok()
+        };
+        assert_eq!(valore("nuvola.app").as_deref(), Some("google-ereditata"));
+        assert_eq!(
+            valore("nuvola.attivo").as_deref(),
+            Some("1"),
+            "il resto resta"
+        );
+        for vecchia in [
+            "nuvola.client_id",
+            "nuvola.microsoft.client_id",
+            "nuvola.dropbox.app_key",
+        ] {
+            assert_eq!(valore(vecchia), None, "{vecchia}");
+        }
+        let legame = |conto: &str| -> (Option<String>, Option<String>) {
+            connection
+                .query_row(
+                    "SELECT app, client FROM nuvola_conti WHERE conto = ?1",
+                    [conto],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("il conto")
+        };
+        assert_eq!(
+            legame("gdrive-aaaaaaaa"),
+            (
+                Some("google-ereditata".to_owned()),
+                Some("111-aaa.apps.googleusercontent.com".to_owned())
+            ),
+            "Drive era collegato col client del backup"
+        );
+        assert_eq!(
+            legame("onedrive-aaaaaaaa"),
+            (None, None),
+            "OneDrive aveva un'app compilata, che non c'è più"
+        );
+        // Le righe di libreria restano, e quel che c'era resta com'era (tranne
+        // `nuvola_conti`, che ha due colonne in più).
+        for tabella in [
+            "tracks",
+            "playlist_tracks",
+            "play_history",
+            "track_overrides",
+        ] {
+            assert_eq!(quante(&connection, tabella), 1, "{tabella}");
+        }
+        let dopo = schema(&connection);
+        assert!(
+            prima
+                .iter()
+                .filter(|riga| !riga.contains("nuvola_conti"))
+                .all(|riga| dopo.contains(riga)),
+            "la 37 ha toccato qualcosa che c'era già"
+        );
+        assert_eq!(
+            quante(&connection, "pragma_foreign_key_list('nuvola_app')"),
+            0
+        );
+    }
+
+    #[test]
+    fn la_trentasette_senza_client_non_crea_niente() {
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 36);
+        connection
+            .execute_batch(
+                "INSERT INTO settings (key, value) VALUES ('nuvola.client_id', '   ');
+                 INSERT INTO nuvola_conti (conto, servizio, nome)
+                 VALUES ('gdrive-aaaaaaaa', 'gdrive', 'a@b');",
+            )
+            .expect("un client vuoto");
+        migrate(&connection).expect("la 37");
+        assert_eq!(quante(&connection, "nuvola_app"), 0);
+        assert_eq!(
+            quante(&connection, "settings WHERE key LIKE 'nuvola.%'"),
+            0,
+            "né l'app del backup né la chiave vuota"
+        );
+        let app: Option<String> = connection
+            .query_row("SELECT app FROM nuvola_conti", [], |r| r.get(0))
+            .expect("il conto");
+        assert_eq!(app, None);
+    }
+
+    #[test]
+    fn i_vincoli_della_trentasette_tengono() {
+        let db = open_in_memory().expect("apertura");
+        let c = &db.connection;
+        let app = |app: &str, piattaforma: &str, client: &str| {
+            c.execute(
+                "INSERT INTO nuvola_app (app, piattaforma, nome, client_id, creata_ms)
+                 VALUES (?1, ?2, 'Nome', ?3, 1)",
+                rusqlite::params![app, piattaforma, client],
+            )
+        };
+        app("google-aaaaaaaa", "google", "x").expect("un'app");
+        assert!(
+            app("google-aaaaaaaa", "google", "y").is_err(),
+            "l'app è una"
+        );
+        assert!(
+            app("google-bbbbbbbb", "google", "x").is_err(),
+            "lo stesso client due volte"
+        );
+        app("dropbox-aaaaaaaa", "dropbox", "x").expect("lo stesso testo su un'altra piattaforma");
+        assert!(
+            app("mega-aaaaaaaa", "mega", "z").is_err(),
+            "piattaforma sconosciuta"
+        );
+        assert!(
+            app("google-cccccccc", "google", "  ").is_err(),
+            "client vuoto"
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO nuvola_app (app, piattaforma, nome, client_id, creata_ms)
+                 VALUES ('google-dddddddd', 'google', ' ', 'w', 1)",
+                [],
+            )
+            .is_err(),
+            "nome vuoto"
+        );
+    }
+
+    #[test]
+    fn togliere_la_trentasette_a_mano_riporta_la_trentasei() {
+        // Il ritorno indietro scritto in testa alla 037, parola per parola.
+        // `DROP COLUMN` riscrive il testo di `CREATE TABLE nuvola_conti` a modo
+        // suo: quella tabella si confronta colonna per colonna, il resto riga
+        // per riga.
+        let alla_36 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_36, 36);
+
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 36);
+        tornata
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('nuvola.client_id', '1-a.apps.googleusercontent.com')",
+                [],
+            )
+            .expect("il client di prima");
+        migrate(&tornata).expect("la 37");
+        // `migrate` porta all'ultima: prima si toglie quel che è venuto dopo
+        // la 037, col ritorno indietro scritto in testa a ciascuna.
+        tornata
+            .execute_batch("DROP INDEX idx_brano_vicino_vicino; PRAGMA user_version = 37;")
+            .expect("ritorno a mano dalla 38");
+        tornata
+            .execute_batch(
+                "INSERT OR REPLACE INTO settings (key, value)
+                   SELECT 'nuvola.client_id', client_id FROM nuvola_app
+                    WHERE app = (SELECT value FROM settings WHERE key = 'nuvola.app')
+                      AND piattaforma = 'google';
+                 DELETE FROM settings WHERE key = 'nuvola.app';
+                 ALTER TABLE nuvola_conti DROP COLUMN client;
+                 ALTER TABLE nuvola_conti DROP COLUMN app;
+                 DROP TABLE nuvola_app; PRAGMA user_version = 36;",
+            )
+            .expect("ritorno a mano");
+
+        let senza_conti = |c: &Connection| -> Vec<String> {
+            schema(c)
+                .into_iter()
+                .filter(|riga| !riga.starts_with("table nuvola_conti "))
+                .collect()
+        };
+        assert_eq!(senza_conti(&tornata), senza_conti(&alla_36));
+        let colonne = |c: &Connection| {
+            colonna(
+                c,
+                "SELECT name || ' ' || type || ' ' || \"notnull\" || ' ' || pk
+                   FROM pragma_table_info('nuvola_conti') ORDER BY cid",
+            )
+        };
+        assert_eq!(colonne(&tornata), colonne(&alla_36));
+        assert_eq!(user_version(&tornata).expect("versione"), 36);
+        let client: String = tornata
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'nuvola.client_id'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("il client torna dove la 3.1 lo cerca");
+        assert_eq!(client, "1-a.apps.googleusercontent.com");
+    }
+
+    #[test]
+    fn la_cascata_dei_vicini_ha_un_indice() {
+        // Ogni brano tolto cerca in `brano_vicino` le righe che lo nominano
+        // come vicino, per la `ON DELETE CASCADE`: senza un indice che
+        // cominci con `vicino_id` è una lettura intera della tabella per ogni
+        // brano, con il lucchetto della libreria in mano.
+        let db = open_in_memory().expect("database");
+        let piano: Vec<String> = {
+            let mut query = db
+                .connection
+                .prepare("EXPLAIN QUERY PLAN SELECT 1 FROM brano_vicino WHERE vicino_id = ?1")
+                .expect("piano");
+            query
+                .query_map([7_i64], |riga| riga.get::<_, String>(3))
+                .expect("lettura")
+                .collect::<Result<_, _>>()
+                .expect("righe del piano")
+        };
+        assert!(
+            piano
+                .iter()
+                .any(|riga| riga.contains("USING INDEX idx_brano_vicino_vicino")
+                    || riga.contains("USING COVERING INDEX idx_brano_vicino_vicino")),
+            "{piano:?}"
+        );
+        assert!(
+            !piano.iter().any(|riga| riga.starts_with("SCAN")),
+            "{piano:?}"
+        );
+    }
+
+    #[test]
+    fn togliere_la_trentotto_a_mano_riporta_la_trentasette() {
+        // Il ritorno indietro scritto in testa alla 038, parola per parola.
+        let alla_37 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_37, 37);
+
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 38);
+        tornata
+            .execute_batch("DROP INDEX idx_brano_vicino_vicino; PRAGMA user_version = 37;")
+            .expect("ritorno a mano");
+
+        assert_eq!(schema(&tornata), schema(&alla_37));
+        assert_eq!(user_version(&tornata).expect("versione"), 37);
+    }
+
     /// La colonna di testo di una query, riga per riga, nell'ordine chiesto.
     fn colonna(connection: &Connection, sql: &str) -> Vec<String> {
         let mut query = connection

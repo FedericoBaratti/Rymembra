@@ -82,6 +82,7 @@ use tauri::Manager as _;
 
 use crate::nota;
 use crate::riproduzione::{StatoLettore, StatoRiproduzione};
+use crate::spegnimento::Emette as _;
 use crate::stato::Stato;
 
 /// Di quanto si sposta un `Seek` senza durata.
@@ -135,8 +136,9 @@ pub struct StatoMedia {
     /// degli eventi, sul filo del sistema operativo, e serve a non far uscire
     /// dal brano un gesto che voleva restarci. «Avanti di cinque secondi» a
     /// tre secondi dalla fine chiedeva un salto oltre l'ultimo campione, e un
-    /// salto oltre la fine è la fine: il gesto diventava «brano successivo»
-    /// senza che nessuno l'avesse chiesto.
+    /// salto oltre la fine — o **sulla** fine — è la fine: il gesto diventava
+    /// «brano successivo» senza che nessuno l'avesse chiesto. Per questo il
+    /// tetto dei salti relativi sta un margine prima: vedi [`avanti_entro`].
     ///
     /// `0` vuol dire **non si sa** — niente è ancora partito — e non «lungo
     /// zero»: con un tetto a zero ogni salto in avanti tornerebbe all'inizio,
@@ -594,19 +596,25 @@ fn esegui(app: &tauri::AppHandle, gesto: Gesto) {
         return;
     };
     let esito = match gesto {
-        Gesto::Riprendi => crate::riproduzione::riprendi(app.clone(), lettore),
+        Gesto::Riprendi => crate::riproduzione::riprendi_ora(app.clone(), lettore),
         Gesto::Pausa => crate::riproduzione::pausa(app.clone(), lettore),
-        Gesto::Alterna => crate::riproduzione::alterna(app.clone(), lettore),
-        Gesto::Prossimo => crate::riproduzione::prossimo(app.clone(), lettore),
-        Gesto::Precedente => crate::riproduzione::precedente(app.clone(), lettore),
+        Gesto::Alterna => crate::riproduzione::alterna_ora(app.clone(), lettore),
+        Gesto::Prossimo => crate::riproduzione::prossimo_ora(app.clone(), lettore),
+        Gesto::Precedente => crate::riproduzione::precedente_ora(app.clone(), lettore),
         Gesto::VaiA(ms) => crate::riproduzione::vai_a(app.clone(), lettore, ms),
     };
     if let Err(err) = esito {
         nota!(
             "[media] {} causa={}",
             err.code,
-            err.cause.unwrap_or_default()
+            err.cause.as_deref().unwrap_or_default()
         );
+        // Anche alla finestra, come quando il gesto parte da lì: un «prossimo»
+        // dal vassoio su un file sparito fermava tutto, e il perché finiva
+        // solo nel diario. Chi ha premuto un tasto multimediale, una voce del
+        // vassoio o un pulsante della miniatura non ha un comando a cui
+        // l'errore risalga: la fascia è l'unico posto in cui leggerlo.
+        app.emetti("riproduzione:errore", err);
     }
 }
 
@@ -634,8 +642,16 @@ fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
         MediaControlEvent::SetPosition(MediaPosition(dove)) => {
             Gesto::VaiA(dentro_il_brano(app, ms_di(dove)))
         }
-        MediaControlEvent::Seek(verso) => Gesto::VaiA(salto(app, verso, PASSO_SALTO_MS)),
-        MediaControlEvent::SeekBy(verso, quanto) => Gesto::VaiA(salto(app, verso, ms_di(quanto))),
+        // Un «avanti» già dentro l'ultimo tratto del brano non salta: vedi
+        // [`avanti_entro`].
+        MediaControlEvent::Seek(verso) => match salto(app, verso, PASSO_SALTO_MS) {
+            Some(ms) => Gesto::VaiA(ms),
+            None => return,
+        },
+        MediaControlEvent::SeekBy(verso, quanto) => match salto(app, verso, ms_di(quanto)) {
+            Some(ms) => Gesto::VaiA(ms),
+            None => return,
+        },
         // Il volume del sistema non è il volume del lettore, e `OpenUri`
         // chiederebbe di suonare qualcosa che non è in libreria. `Raise` e
         // `Quit` sono gesti della finestra che la scheda non deve avere: da
@@ -648,20 +664,24 @@ fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
     premi(app, gesto);
 }
 
-/// Dove finisce un salto relativo, senza uscire dal brano.
+/// Dove finisce un salto relativo, senza uscire dal brano. `None`: nessun
+/// salto da fare.
 ///
 /// I due versi non sono simmetrici, e non è una svista: indietro il fondo è lo
-/// zero, e `saturating_sub` ce lo tiene da sé. Avanti il fondo è la durata, che
-/// `saturating_add` non conosce — protegge dal trabocco di un `u64`, cioè da un
-/// brano lungo cinquecento milioni di anni, non dalla fine di questo.
-fn salto(app: &tauri::AppHandle, verso: SeekDirection, quanto_ms: u64) -> u64 {
-    let adesso = app
-        .state::<StatoMedia>()
-        .posizione_ms
-        .load(Ordering::Relaxed);
+/// zero, e `saturating_sub` ce lo tiene da sé. Avanti il fondo è la fine del
+/// brano, che `saturating_add` non conosce — protegge dal trabocco di un `u64`,
+/// cioè da un brano lungo cinquecento milioni di anni, non dalla fine di questo
+/// — e la tiene [`avanti_entro`], con un margine: un «avanti di cinque
+/// secondi» premuto a tre secondi dalla fine non è una richiesta di cambiare
+/// canzone.
+fn salto(app: &tauri::AppHandle, verso: SeekDirection, quanto_ms: u64) -> Option<u64> {
+    let media = app.state::<StatoMedia>();
+    let adesso = media.posizione_ms.load(Ordering::Relaxed);
     match verso {
-        SeekDirection::Forward => dentro_il_brano(app, adesso.saturating_add(quanto_ms)),
-        SeekDirection::Backward => adesso.saturating_sub(quanto_ms),
+        SeekDirection::Forward => {
+            avanti_entro(adesso, quanto_ms, media.durata_ms.load(Ordering::Relaxed))
+        }
+        SeekDirection::Backward => Some(adesso.saturating_sub(quanto_ms)),
     }
 }
 
@@ -670,11 +690,13 @@ fn salto(app: &tauri::AppHandle, verso: SeekDirection, quanto_ms: u64) -> u64 {
 /// # Perché un tetto anche qui
 ///
 /// Il tetto vero sta nel decodificatore e vale per tutti; questo sta prima, e
-/// serve a non **chiedergli** una cosa diversa da quella che il gesto voleva
-/// dire. Le due strade che passano di qui sono le uniche che mandano numeri
-/// composti da chi non guarda la finestra — il sistema operativo, un tasto
-/// delle cuffie, un'auto — e un «avanti di cinque secondi» premuto a tre
-/// secondi dalla fine non è una richiesta di cambiare canzone.
+/// serve a non chiedergli un numero che sta fuori dalla barra del brano: una
+/// posizione assoluta mandata dal sistema operativo — la barra trascinata nel
+/// riquadro del volume, un'auto collegata in Bluetooth — può parlare di una
+/// durata vecchia, quella del brano di prima. Non trattiene nel brano: una
+/// posizione sulla fine è la fine, e il brano dopo parte — che è quel che
+/// chiede chi trascina la barra fino in fondo. A trattenere i salti relativi è
+/// [`avanti_entro`], con il suo margine.
 ///
 /// Con durata sconosciuta non si limita niente: `0` significa che nessun brano
 /// è ancora partito, e trattarlo come una lunghezza vera manderebbe ogni salto
@@ -691,6 +713,34 @@ fn dentro_il_brano(app: &tauri::AppHandle, ms: u64) -> u64 {
 /// è la stessa di prima, spostata di un livello.
 fn entro_la_durata(ms: u64, durata: u64) -> u64 {
     if durata == 0 { ms } else { ms.min(durata) }
+}
+
+/// Quanto prima della fine si ferma un «avanti» del sistema.
+///
+/// Un salto sulla fine è la fine: il decodificatore lo ferma poco prima
+/// dell'ultimo fotogramma (`rymembra_play`, `MARGINE_FINE_MS` del
+/// decodificatore: centoventi millisecondi), e da lì il brano finisce e la coda
+/// avanza. Un secondo e mezzo lascia sentire che si è arrivati in fondo — e
+/// basta un altro «avanti», o il brano che finisce da sé, per passare oltre.
+const MARGINE_FINE_MS: u64 = 1_500;
+
+/// Dove finisce un «avanti» di `quanto` da `adesso`, in un brano lungo
+/// `durata`: mai oltre [`MARGINE_FINE_MS`] dalla fine, e mai indietro.
+///
+/// `None` vuol dire **nessun salto**: si è già dentro l'ultimo tratto, e un
+/// salto sul punto in cui si è già non è gratis — azzera il decodificatore e,
+/// su una condivisione, rilegge. Con la durata sconosciuta (`0`, vedi
+/// [`StatoMedia::durata_ms`]) non si limita niente.
+fn avanti_entro(adesso: u64, quanto: u64, durata: u64) -> Option<u64> {
+    let voluto = adesso.saturating_add(quanto);
+    if durata == 0 {
+        return Some(voluto);
+    }
+    let tetto = durata.saturating_sub(MARGINE_FINE_MS);
+    if adesso >= tetto {
+        return None;
+    }
+    Some(voluto.min(tetto))
 }
 
 /// I millisecondi di una durata, senza traboccare.
@@ -779,14 +829,32 @@ mod prove {
 
     #[test]
     fn un_salto_oltre_la_fine_si_ferma_alla_fine() {
-        // Il difetto che il tetto toglie: «avanti di cinque secondi» premuto a
-        // tre secondi dalla fine chiedeva un salto oltre l'ultimo campione, e
-        // un salto oltre la fine è la fine — cioè il brano successivo, che
-        // nessuno aveva chiesto.
+        // Una posizione assoluta del sistema non chiede al motore un numero
+        // fuori dalla barra: si ferma alla fine. Non trattiene nel brano — una
+        // posizione sulla fine è la fine, e il brano dopo parte — e per gli
+        // «avanti» relativi il margine lo mette `avanti_entro`.
         assert_eq!(entro_la_durata(200_000, 187_000), 187_000);
         assert_eq!(entro_la_durata(187_000, 187_000), 187_000);
         // Dentro al brano non si tocca niente.
         assert_eq!(entro_la_durata(12_500, 187_000), 12_500);
+    }
+
+    /// «Avanti» vicino alla fine resta nel brano: atterra prima dell'ultimo
+    /// tratto, mai sulla fine — che è il brano dopo — e mai indietro.
+    #[test]
+    fn un_avanti_vicino_alla_fine_resta_nel_brano() {
+        let dove = avanti_entro(184_000, 5_000, 187_000).expect("c'è spazio per saltare");
+        assert!(
+            (184_000..=187_000 - MARGINE_FINE_MS).contains(&dove),
+            "il salto è finito sulla fine del brano, o indietro: {dove}"
+        );
+        // Già dentro il margine: nessun salto, che azzererebbe il
+        // decodificatore per tornare dov'era.
+        assert_eq!(avanti_entro(186_500, 5_000, 187_000), None);
+        // Lontano dalla fine non cambia niente.
+        assert_eq!(avanti_entro(12_000, 5_000, 187_000), Some(17_000));
+        // Con la durata sconosciuta non si limita niente.
+        assert_eq!(avanti_entro(93_000, 5_000, 0), Some(98_000));
     }
 
     #[test]

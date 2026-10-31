@@ -47,7 +47,6 @@ use crate::spegnimento::Emette as _;
 use rymembra_app::settings;
 use rymembra_app::sincronia::{self, Cambiamenti, Dispositivo};
 use rymembra_cloud::http::Rete;
-use rymembra_cloud::oauth::Credenziali;
 use rymembra_cloud::pacchetti;
 use rymembra_cloud::portachiavi::{self, DiSistema, Portachiavi as _};
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -356,6 +355,24 @@ fn stati(app: &AppHandle) -> Result<(State<'_, Stato>, State<'_, StatoSincronia>
     }
 }
 
+/// Scrive il deposito scelto, e la cartella se ce n'è una già controllata.
+fn scrivi_il_magazzino(
+    conn: &rusqlite::Connection,
+    dove: &str,
+    cartella: Option<&std::path::Path>,
+) -> Result<(), AppError> {
+    if let Some(cartella) = cartella {
+        settings::write(conn, CHIAVE_CARTELLA, &cartella.to_string_lossy())?;
+    }
+    settings::write(conn, CHIAVE_DOVE, dove)
+}
+
+/// Il deposito è una cartella, e la cartella non è stata ancora scelta: la
+/// sincronia non è pronta, e una passata non ha dove andare.
+fn cartella_mancante(dove: &str, cartella: Option<&str>) -> bool {
+    dove != "drive" && cartella.is_none_or(|percorso| percorso.trim().is_empty())
+}
+
 /// Il corpo di [`sincronia_magazzino`], in disparte.
 fn scegli_il_magazzino(
     stato: &Stato,
@@ -372,28 +389,32 @@ fn scegli_il_magazzino(
                 }));
             }
         };
-        if dove == "cartella" {
-            // Si crea adesso e non alla prima passata: un percorso sbagliato deve
-            // dirlo mentre l'utente è ancora davanti alla finestra che glielo ha
-            // chiesto, non fra cinque minuti dentro un filo di sottofondo.
-            //
-            // E si crea **al più l'ultimo gradino**. Il percorso si scrive a
-            // mano in un campo di testo, e fino alla 2.4 era un
-            // `create_dir_all`: un errore di battitura diventava un albero di
-            // cartelle su un disco a caso. Le regole stanno in
-            // `crate::destinazioni`, accanto a quelle dei file che la finestra
-            // chiede di scrivere.
-            let percorso = crate::destinazioni::cartella_da_usare(cartella.unwrap_or(""))?;
-            con_libreria(stato, |libreria| {
-                settings::write(
-                    &libreria.connection,
-                    CHIAVE_CARTELLA,
-                    &percorso.to_string_lossy(),
-                )
-            })?;
-        }
+        // La cartella si crea adesso e non alla prima passata: un percorso
+        // sbagliato deve dirlo mentre l'utente è ancora davanti alla finestra
+        // che glielo ha chiesto, non fra cinque minuti dentro un filo di
+        // sottofondo.
+        //
+        // E si crea **al più l'ultimo gradino**. Il percorso si scrive a mano
+        // in un campo di testo, e fino alla 2.4 era un `create_dir_all`: un
+        // errore di battitura diventava un albero di cartelle su un disco a
+        // caso. Le regole stanno in `crate::destinazioni`, accanto a quelle
+        // dei file che la finestra chiede di scrivere.
+        //
+        // Ma solo se c'è. Scegliere «Cartella» senza averne ancora scritta una
+        // è il primo passo, ed è quel che fa comparire il campo dove
+        // scriverla: fino alla 3.2.0 di prova un percorso vuoto era un errore,
+        // il deposito restava «Drive», e il campo non compariva mai.
+        let percorso = match cartella
+            .map(str::trim)
+            .filter(|scritta| !scritta.is_empty())
+        {
+            Some(scritta) if dove == "cartella" => {
+                Some(crate::destinazioni::cartella_da_usare(scritta)?)
+            }
+            _ => None,
+        };
         con_libreria(stato, |libreria| {
-            settings::write(&libreria.connection, CHIAVE_DOVE, dove)
+            scrivi_il_magazzino(&libreria.connection, dove, percorso.as_deref())
         })
     })()?;
 
@@ -422,6 +443,7 @@ pub async fn sincronia_adesso(app: AppHandle) -> Esito<Resoconto> {
             return Err(AppError::new(ErrorCode::SyncBusy));
         }
         let esito = passata_vera(&app);
+        butta_il_token_se_rifiutato(&app, &esito);
         ricorda(&app, &esito);
         riferisci(&app);
         esito
@@ -588,15 +610,28 @@ fn scorda_l_errore(sincronia: &StatoSincronia) {
 }
 
 /// Una passata automatica. Non fallisce mai rumorosamente.
+///
+/// Con la cartella non ancora scelta non parte nemmeno: non c'è un guasto da
+/// ricordare, solo un passo che l'utente non ha ancora fatto — la finestra lo
+/// dice già, con «pronta» spento.
 fn passata(app: &AppHandle) {
     let acceso = app
         .try_state::<Stato>()
-        .and_then(|stato| con_libreria(&stato, |libreria| attiva(&libreria.connection)).ok())
+        .and_then(|stato| {
+            con_libreria(&stato, |libreria| {
+                let dove = settings::read(&libreria.connection, CHIAVE_DOVE)?
+                    .unwrap_or_else(|| "cartella".to_owned());
+                let cartella = settings::read(&libreria.connection, CHIAVE_CARTELLA)?;
+                Ok(attiva(&libreria.connection)? && !cartella_mancante(&dove, cartella.as_deref()))
+            })
+            .ok()
+        })
         .unwrap_or(false);
     if !acceso {
         return;
     }
     let esito = passata_vera(app);
+    butta_il_token_se_rifiutato(app, &esito);
     ricorda(app, &esito);
     if let Err(err) = &esito {
         nota!(
@@ -606,6 +641,29 @@ fn passata(app: &AppHandle) {
         );
     }
     riferisci(app);
+}
+
+/// La passata è caduta su un token rifiutato: un `401`, che solo il deposito
+/// su Drive sa dare (una cartella risponde coi codici del disco). Il primo
+/// gesto della passata è l'elenco dei documenti, quindi un token che non vale
+/// più arriva qui come errore della passata intera, non fra i suoi guasti.
+fn token_rifiutato(esito: &Result<Resoconto, AppError>) -> bool {
+    matches!(esito, Err(err) if rymembra_cloud::drive::e_scaduto(err))
+}
+
+/// Drive ha rifiutato il token ([`token_rifiutato`]): in cache non vale più
+/// (revocato da un'altra parte, scaduto prima del previsto). Il backup passa
+/// da `nuvola::con_drive`, che lo butta e ne chiede uno nuovo; la sincronia
+/// no, e senza questa chiamata il token rifiutato restava nella cache comune
+/// fino alla sua scadenza — un'ora di passate fallite allo stesso modo, anche
+/// premendo «Sincronizza adesso». Si butta qui, dopo ogni passata, automatica
+/// o chiesta, e la passata dopo ne chiede uno nuovo.
+fn butta_il_token_se_rifiutato(app: &AppHandle, esito: &Result<Resoconto, AppError>) {
+    if token_rifiutato(esito)
+        && let Some(nuvola) = app.try_state::<crate::nuvola::StatoNuvola>()
+    {
+        crate::nuvola::dimentica_token(&nuvola);
+    }
 }
 
 /// Il corpo della passata, con le tre finestre di lucchetto.
@@ -622,13 +680,12 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
     let adesso = adesso_ms();
 
     // ── finestra 1: allineare e leggere. ───────────────────────────────────
-    let (io, dove, cartella, credenziali) = con_libreria(&stato, |libreria| {
+    let (io, dove, cartella) = con_libreria(&stato, |libreria| {
         Ok((
             crate::nuvola::dispositivo(&libreria.connection)?,
             settings::read(&libreria.connection, CHIAVE_DOVE)?
                 .unwrap_or_else(|| "cartella".to_owned()),
             settings::read(&libreria.connection, CHIAVE_CARTELLA)?,
-            crate::nuvola::credenziali_condivise(&libreria.connection).ok(),
         ))
     })?;
 
@@ -648,7 +705,7 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
     })?;
 
     // ── senza nessun lucchetto: da qui in poi si legge il deposito. ─────────
-    let deposito = magazzino(app, &dove, cartella.as_deref(), credenziali.as_ref())?;
+    let deposito = magazzino(app, &stato, &dove, cartella.as_deref())?;
     // La memoria si prende **in copia**, e il lucchetto si lascia sulla riga
     // dopo. Quel che segue è rete — due minuti su Drive, senza limite su un
     // deposito che sta in una cartella di rete — e per tutto quel tempo il
@@ -738,18 +795,20 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
 }
 
 /// Il deposito scelto, pronto all'uso.
+///
+/// Le credenziali di Drive sono quelle dell'app del backup, lette qui, fuori
+/// dal lucchetto: il segreto sta nel portachiavi. Senza app l'errore dice che
+/// manca l'app (`cloud.clientMissing`), non che il consenso è scaduto.
 fn magazzino(
     app: &AppHandle,
+    stato: &Stato,
     dove: &str,
     cartella: Option<&str>,
-    credenziali: Option<&Credenziali>,
 ) -> Result<Box<dyn Magazzino>, AppError> {
     match dove {
         "drive" => {
-            let Some(credenziali) = credenziali else {
-                return Err(AppError::new(ErrorCode::SyncAuthExpired));
-            };
-            let access = crate::nuvola::accesso_condiviso(app, credenziali)?;
+            let credenziali = crate::nuvola::credenziali(stato)?;
+            let access = crate::nuvola::accesso_condiviso(app, &credenziali)?;
             Ok(Box::new(rymembra_cloud::Drive::nuovo(
                 Rete::nuova("drive", SCADENZA_DRIVE),
                 &access,
@@ -842,7 +901,7 @@ fn stato_ipc(stato: &Stato, sincronia: &StatoSincronia) -> Result<StatoSincronia
         let cartella = settings::read(&libreria.connection, CHIAVE_CARTELLA)?;
         let pronta = match dove.as_str() {
             "drive" => collegato,
-            _ => cartella.as_deref().is_some_and(|p| !p.trim().is_empty()),
+            _ => !cartella_mancante(&dove, cartella.as_deref()),
         };
         Ok(StatoSincroniaIpc {
             attiva: attiva(&libreria.connection)?,
@@ -885,6 +944,92 @@ mod prove {
         rymembra_app::db::open_in_memory()
             .expect("un database in memoria si apre sempre")
             .connection
+    }
+
+    /// Un `401` di Drive butta il token della cache comune; gli altri guasti
+    /// no. E la passata automatica lo fa davvero, prima di ricordare l'esito.
+    #[test]
+    fn un_token_rifiutato_da_drive_si_butta() {
+        let http = |status| {
+            Err(AppError::new(ErrorCode::NetHttp {
+                status,
+                url: Some("https://www.googleapis.com/drive/v3/files".to_owned()),
+            }))
+        };
+        assert!(token_rifiutato(&http(401)));
+        assert!(!token_rifiutato(&http(403)));
+        assert!(!token_rifiutato(&http(500)));
+        assert!(!token_rifiutato(&Err(AppError::new(ErrorCode::SyncBusy))));
+        assert!(!token_rifiutato(&Ok(Resoconto {
+            quando_ms: 0,
+            letti: 0,
+            saltati: 0,
+            scritto: false,
+            guasti: 0,
+            cambiamenti: sincronia::Cambiamenti::default(),
+        })));
+
+        let sorgente = include_str!("sincronia.rs");
+        let corpo = |firma: &str| {
+            sorgente
+                .split(firma)
+                .nth(1)
+                .and_then(|resto| resto.split("\n}\n").next())
+                .unwrap_or_default()
+        };
+        let butta = corpo("fn butta_il_token_se_rifiutato(");
+        assert!(
+            butta.contains("token_rifiutato(esito)")
+                && butta.contains("crate::nuvola::dimentica_token("),
+            "il token rifiutato non si butta"
+        );
+        // Le due strade di una passata: quella automatica e «Sincronizza
+        // adesso», che chiama `passata_vera` da sé.
+        for firma in [
+            "fn passata(app: &AppHandle) {",
+            "pub async fn sincronia_adesso(",
+        ] {
+            let passata = corpo(firma);
+            let buttato = passata.find("butta_il_token_se_rifiutato(");
+            let ricordato = passata.find("ricorda(");
+            assert!(
+                buttato.is_some() && buttato < ricordato,
+                "{firma}: la passata non butta il token rifiutato"
+            );
+        }
+    }
+
+    #[test]
+    fn una_cartella_vuota_non_e_un_deposito_pronto() {
+        assert!(cartella_mancante("cartella", None));
+        assert!(cartella_mancante("cartella", Some("   ")));
+        assert!(!cartella_mancante("cartella", Some(r"D:\Sincronia")));
+        // Drive non ha una cartella da scegliere.
+        assert!(!cartella_mancante("drive", None));
+    }
+
+    #[test]
+    fn scegliere_la_cartella_senza_percorso_salva_solo_dove() {
+        // «Cartella» scelto prima di averne scritta una: fino alla 3.2.0 di
+        // prova era un errore, il deposito restava «Drive» e il campo per
+        // scriverla non compariva mai.
+        let connection = libreria();
+        scrivi_il_magazzino(&connection, "drive", None).expect("drive");
+        scrivi_il_magazzino(&connection, "cartella", None).expect("cartella");
+        let dove = settings::read(&connection, CHIAVE_DOVE).expect("lettura");
+        let cartella = settings::read(&connection, CHIAVE_CARTELLA).expect("lettura");
+        assert_eq!(dove.as_deref(), Some("cartella"));
+        assert_eq!(cartella, None);
+        assert!(cartella_mancante("cartella", cartella.as_deref()));
+
+        let scelta = std::path::Path::new(r"D:\Sincronia");
+        scrivi_il_magazzino(&connection, "cartella", Some(scelta)).expect("con la cartella");
+        assert_eq!(
+            settings::read(&connection, CHIAVE_CARTELLA)
+                .expect("lettura")
+                .as_deref(),
+            Some(r"D:\Sincronia")
+        );
     }
 
     #[test]

@@ -329,6 +329,14 @@ pub use archivio::FIRMA;
 /// La versione del formato v1: un JSON, che si legge ancora e non si scrive più.
 const VERSIONE_V1: u32 = 1;
 
+/// Quante cartelle diverse il piano di un profilo chiede al disco, al massimo.
+///
+/// Il numero delle radici lo decide il file, non chi lo importa, e una sonda
+/// verso un'unità di rete che non risponde costa secondi sotto il lucchetto
+/// della libreria. Oltre il tetto i percorsi valgono «da verificare» come
+/// quelli di rete sconosciuti: si propongono da rimappare, non spariscono.
+const MAX_SONDE: usize = 16;
+
 /// La chiave sotto cui sta l'identità di questa libreria.
 ///
 /// Non sta in [`CATALOGO`] e non ci deve stare: è la cosa che distingue questa
@@ -352,6 +360,7 @@ const FUORI: &[&str] = &[
     "l'affinità, le impronte sonore e la settimana (derivati ricalcolabili)",
     "l'arricchimento in database (ri-derivabile da una passata)",
     "«Ascolta insieme»: i PC associati, il nome di questo PC e gli indirizzi (fatti di questa macchina)",
+    "le cartelle dal cloud: gli account collegati, le app registrate presso Google, Microsoft e Dropbox, e lo specchio dei servizi (fatti di questa macchina; le cartelle scelte viaggiano)",
 ];
 
 /// Il file v1, come sta sul disco.
@@ -418,6 +427,9 @@ pub struct Raccolto {
     pub preferenze: SuDisco,
     /// Quali chiavi presenti nel database sono rimaste qui.
     pub lasciate: Vec<String>,
+    /// Le chiavi del catalogo che in questa libreria non ci sono: vanno nel
+    /// manifesto, vedi [`archivio::Manifesto::assenti`].
+    pub assenti: Vec<String>,
     /// Il documento di sincronia, già serializzato e compresso.
     ///
     /// Byte per byte quello che `rymembra_sync::documento::serializza`
@@ -462,7 +474,8 @@ pub fn raccogli(
     let documento = rymembra_sync::Documento::nuovo(dispositivo, contenuto, adesso_ms);
     let sincronia = rymembra_sync::documento::serializza(&documento)?;
 
-    let biblioteca = biblioteca::raccogli(connection)?;
+    let mut biblioteca = biblioteca::raccogli(connection)?;
+    biblioteca.ascolti_altrui = biblioteca::ascolti_altrui(connection, dispositivo)?;
 
     let mut voci = BTreeMap::new();
     for (chiave, _) in CATALOGO {
@@ -471,6 +484,12 @@ pub fn raccogli(
         }
     }
     let lasciate = lasciate(connection, &voci)?;
+    let assenti = CATALOGO
+        .iter()
+        .map(|(chiave, _)| *chiave)
+        .filter(|chiave| !voci.contains_key(*chiave))
+        .map(str::to_owned)
+        .collect();
 
     Ok(Raccolto {
         preferenze: SuDisco {
@@ -480,6 +499,7 @@ pub fn raccogli(
             voci,
         },
         lasciate,
+        assenti,
         sincronia,
         biblioteca,
         identita,
@@ -570,8 +590,10 @@ pub struct Passo {
 ///
 /// # Errori
 ///
-/// `fs.writeFailed` se la scrittura fallisce; `internal.unexpected` se la
-/// serializzazione dei due documenti fallisce.
+/// `profile.tooLarge` se il profilo supera i limiti che la lettura ammette,
+/// prima di aprire il file (mai per la copia di sicurezza: vedi
+/// [`controlla_limiti`]); `fs.writeFailed` se la scrittura fallisce;
+/// `internal.unexpected` se la serializzazione dei due documenti fallisce.
 pub fn scrivi(
     raccolto: &Raccolto,
     sorgenti: &Sorgenti<'_>,
@@ -606,25 +628,38 @@ pub fn scrivi(
             bozze: sorgenti.bozze.len(),
         },
         fuori: FUORI.iter().map(|riga| (*riga).to_owned()).collect(),
+        assenti: raccolto.assenti.clone(),
     };
+
+    // Le quattro voci che stanno in memoria si preparano **prima** di aprire
+    // il file: servono al controllo dei limiti qui sotto.
+    let testo_manifesto = testo_json(&manifesto)?;
+    let testo_preferenze = testo_json(&raccolto.preferenze)?;
+    let nome_sincronia = archivio::nome_sincronia(&raccolto.dispositivo);
+    let testo_biblioteca = biblioteca::serializza(&raccolto.biblioteca)?;
+
+    if !e_copia_di_sicurezza(destinazione) {
+        controlla_limiti(
+            destinazione,
+            &[
+                (archivio::NOME_MANIFESTO, testo_manifesto.len()),
+                (archivio::NOME_PREFERENZE, testo_preferenze.len()),
+                (nome_sincronia.as_str(), raccolto.sincronia.len()),
+                (archivio::NOME_BIBLIOTECA, testo_biblioteca.len()),
+            ],
+            impronte.len(),
+            sorgenti,
+        )?;
+    }
 
     let mut scrittore = archivio::Scrittore::crea(destinazione)?;
 
-    scrittore.aggiungi_testo(archivio::NOME_MANIFESTO, &testo_json(&manifesto)?)?;
+    scrittore.aggiungi_testo(archivio::NOME_MANIFESTO, &testo_manifesto)?;
     annota(&mut fatti);
-    scrittore.aggiungi_testo(
-        archivio::NOME_PREFERENZE,
-        &testo_json(&raccolto.preferenze)?,
-    )?;
+    scrittore.aggiungi_testo(archivio::NOME_PREFERENZE, &testo_preferenze)?;
     annota(&mut fatti);
-    scrittore.aggiungi_byte(
-        &archivio::nome_sincronia(&raccolto.dispositivo),
-        &raccolto.sincronia,
-    )?;
-    scrittore.aggiungi_testo(
-        archivio::NOME_BIBLIOTECA,
-        &biblioteca::serializza(&raccolto.biblioteca)?,
-    )?;
+    scrittore.aggiungi_byte(&nome_sincronia, &raccolto.sincronia)?;
+    scrittore.aggiungi_testo(archivio::NOME_BIBLIOTECA, &testo_biblioteca)?;
     annota(&mut fatti);
 
     let mut copertine = 0;
@@ -676,6 +711,95 @@ pub fn scrivi(
         byte,
         pesante: byte > archivio::limiti::AVVISO,
     })
+}
+
+/// L'esportazione rispetta i limiti che la lettura impone?
+///
+/// [`archivio::Lettore::apri`] rifiuta l'archivio **intero** se le voci sono più
+/// di [`archivio::limiti::MAX_VOCI`] o se una voce dichiara più di
+/// [`archivio::limiti::MAX_VOCE`]; la scrittura non guardava né l'uno né
+/// l'altro. Una libreria grande — anni di cronologia importata, tutti i testi,
+/// centomila copertine — produceva un profilo che diceva «fatto» e che sul
+/// computer nuovo nessuna versione sapeva riaprire. Qui ci si ferma prima di
+/// aprire il file, e il profilo di prima, se c'era, resta com'è.
+///
+/// Le voci si contano per eccesso: ogni copertina con la sua miniatura, ogni
+/// pacchetto, anche se al momento di scriverli qualche file mancasse. Le
+/// copertine non si misurano una per una: lo store le salva già ridotte (vedi
+/// `covers::MAX_LATO`), molto sotto il tetto. Pacchetti e bozze sì, che sono
+/// pochi.
+///
+/// **Non** per la copia di sicurezza: è la decisione presa per questo difetto.
+/// Senza copia l'importazione non parte, e un controllo lì toglierebbe a chi ha
+/// una libreria oltre il limite anche l'importazione di un profilo di sole
+/// preferenze, che oggi riesce. Vedi [`e_copia_di_sicurezza`].
+///
+/// # Errori
+///
+/// `profile.tooLarge` con la voce troppo grande, i suoi byte e il limite
+/// (o, per troppe voci, la voce vuota e i due conteggi); la causa ripete il
+/// tutto per esteso con la destinazione. Non `fs.writeFailed`: il disco non
+/// c'entra, e la sua frase manderebbe a cercare spazio libero e permessi.
+fn controlla_limiti(
+    destinazione: &Path,
+    in_memoria: &[(&str, usize)],
+    copertine: usize,
+    sorgenti: &Sorgenti<'_>,
+) -> Result<(), AppError> {
+    let oltre = |voce: &str, quanto: u64, limite: u64, dettaglio: String| {
+        AppError::new(ErrorCode::ProfileTooLarge {
+            voce: voce.to_owned(),
+            byte: quanto,
+            limite,
+        })
+        .with_cause(format!("{}: {dettaglio}", destinazione.display()))
+    };
+    let voci = in_memoria
+        .len()
+        .saturating_add(copertine.saturating_mul(2))
+        .saturating_add(sorgenti.skin.len())
+        .saturating_add(sorgenti.bozze.len());
+    if voci > archivio::limiti::MAX_VOCI {
+        return Err(oltre(
+            "",
+            u64::try_from(voci).unwrap_or(u64::MAX),
+            u64::try_from(archivio::limiti::MAX_VOCI).unwrap_or(u64::MAX),
+            format!(
+                "sarebbero {voci} voci, oltre il limite di {}",
+                archivio::limiti::MAX_VOCI
+            ),
+        ));
+    }
+    for (nome, byte) in in_memoria {
+        let byte = u64::try_from(*byte).unwrap_or(u64::MAX);
+        if byte > archivio::limiti::MAX_VOCE {
+            return Err(oltre(
+                nome,
+                byte,
+                archivio::limiti::MAX_VOCE,
+                format!(
+                    "«{nome}» sarebbe di {byte} byte, oltre il limite di {}",
+                    archivio::limiti::MAX_VOCE
+                ),
+            ));
+        }
+    }
+    for percorso in sorgenti.skin.values().chain(sorgenti.bozze.values()) {
+        let byte = std::fs::metadata(percorso).map_or(0, |meta| meta.len());
+        if byte > archivio::limiti::MAX_VOCE {
+            return Err(oltre(
+                &percorso.display().to_string(),
+                byte,
+                archivio::limiti::MAX_VOCE,
+                format!(
+                    "«{}» è di {byte} byte, oltre il limite di {}",
+                    percorso.display(),
+                    archivio::limiti::MAX_VOCE
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Un documento come testo indentato.
@@ -838,6 +962,7 @@ fn leggi_v1(json: &str, percorso: &Path) -> Result<Letto, AppError> {
                 ..archivio::Contiene::default()
             },
             fuori: Vec::new(),
+            assenti: Vec::new(),
         },
         preferenze: documento,
         sincronia: None,
@@ -1026,7 +1151,7 @@ pub fn piano(
     letto: &Letto,
     ambiente: &Ambiente<'_>,
 ) -> Result<Piano, AppError> {
-    esegui(connection, letto, ambiente, false)
+    esegui(connection, letto, ambiente, Modo::Piano)
 }
 
 /// Applica il profilo, e restituisce lo stesso piano di [`piano`].
@@ -1039,16 +1164,38 @@ pub fn importa(
     letto: &Letto,
     ambiente: &Ambiente<'_>,
 ) -> Result<Piano, AppError> {
-    esegui(connection, letto, ambiente, true)
+    esegui(connection, letto, ambiente, Modo::Importa)
 }
 
-/// Il corpo di [`piano`] e [`importa`]: la stessa cosa, e una delle due la butta.
+/// Chi chiama [`esegui`], e quindi come si trattano le preferenze.
+#[derive(Debug, Clone, Copy)]
+enum Modo<'a> {
+    /// Il piano: si esegue, e si butta.
+    Piano,
+    /// L'importazione di un profilo: un dono, che aggiunge.
+    Importa,
+    /// «Torna com'era prima» da una copia di sicurezza: le preferenze della
+    /// copia si rimettono **come sono** — `library.roots` compresa, che non si
+    /// unisce — e le chiavi che la copia dice assenti si tolgono.
+    Annulla {
+        /// Vedi [`archivio::Manifesto::assenti`].
+        assenti: &'a [String],
+    },
+}
+
+/// Il corpo di [`piano`], [`importa`] e [`annulla`]: la stessa cosa, e il
+/// piano la butta.
 fn esegui(
     connection: &mut Connection,
     letto: &Letto,
     ambiente: &Ambiente<'_>,
-    conferma: bool,
+    modo: Modo<'_>,
 ) -> Result<Piano, AppError> {
+    let conferma = !matches!(modo, Modo::Piano);
+    let (annullamento, da_dimenticare) = match modo {
+        Modo::Annulla { assenti } => (true, assenti),
+        Modo::Piano | Modo::Importa => (false, &[][..]),
+    };
     // Fuori dalla transazione, e per una ragione tecnica prima che di
     // disciplina: `allinea` apre la propria. Vedi il `//!` sul perché sta anche
     // nel piano invece che solo nell'esecuzione.
@@ -1071,6 +1218,39 @@ fn esegui(
         ..Piano::default()
     };
 
+    // ── quali percorsi **del file** si possono chiedere al disco ──
+    //
+    // Un profilo arriva da fuori, e chi lo apre non ha ancora detto sì a niente:
+    // il piano parte appena il file è scelto. Chiedere al disco se esiste
+    // `\\host\share` vuol dire, su Windows, aprire una sessione SMB (o WebDAV,
+    // con `@SSL`) verso l'host scritto nel file e presentargli le credenziali di
+    // chi importa. Quindi del file si sondano solo i percorsi su un'unità con
+    // lettera e quelli di rete di un host che questo computer usa già — letto
+    // **prima** che le preferenze del profilo si scrivano — e al massimo
+    // [`MAX_SONDE`] cartelle. Gli altri valgono «non trovati»: si propongono da
+    // rimappare e si dicono fra i mancanti, e la scansione li toccherà solo se
+    // chi importa li tiene. Vale nel piano e nell'esecuzione, perché il piano
+    // resti l'esecuzione annullata. Le destinazioni delle rimappature no: le
+    // ha scritte chi importa, e `radici::applica_in` le sonda come prima.
+    let host_noti = host_di_questo_pc(&tx)?;
+    let sondate = std::cell::RefCell::new(BTreeMap::<String, bool>::new());
+    let esiste_dal_file = |percorso: &str| -> bool {
+        let sondabile = su_un_unita(percorso)
+            || host_di_rete(percorso).is_some_and(|host| host_noti.contains(&host));
+        if !sondabile {
+            return false;
+        }
+        if let Some(&gia) = sondate.borrow().get(percorso) {
+            return gia;
+        }
+        if sondate.borrow().len() >= MAX_SONDE {
+            return false;
+        }
+        let c_e = (ambiente.esiste)(percorso);
+        sondate.borrow_mut().insert(percorso.to_owned(), c_e);
+        c_e
+    };
+
     // ── le rimappature, prima di tutto: cambiano i valori che si scrivono ──
     let radici_del_profilo = letto
         .preferenze
@@ -1078,7 +1258,7 @@ fn esegui(
         .get("library.roots")
         .map(|valore| percorsi_di(valore))
         .unwrap_or_default();
-    piano.rimappature = radici::proposte(&tx, &radici_del_profilo, ambiente.esiste)?;
+    piano.rimappature = radici::proposte(&tx, &radici_del_profilo, &esiste_dal_file)?;
 
     let riscritti = radici::applica_in(&tx, ambiente.rimappature, ambiente.esiste)?;
     piano.percorsi_riscritti = riscritti.percorsi;
@@ -1097,15 +1277,37 @@ fn esegui(
             valore.clone()
         };
         let prima = settings::read(&tx, chiave)?;
+        // Le cartelle sorvegliate si **aggiungono**, non si sostituiscono: un
+        // profilo è un dono, e un elenco che sostituisce toglieva le cartelle
+        // di qui — la sincronia poi propagava la rimozione agli altri
+        // dispositivi. Il ramo della libreria le unisce già dalla mappa della
+        // sincronia, ma non gira per un v1 (non ha documento) né per un'altra
+        // libreria. Di un'altra libreria — un profilo per tema ed
+        // equalizzatore — le cartelle non si scrivono affatto: sono percorsi di
+        // un'altra macchina, e uniti qui la sincronia li accenderebbe su tutti
+        // i dispositivi. L'annullamento invece rimette l'elenco della copia
+        // com'è: deve poter togliere quel che il profilo ha aggiunto.
+        let (valore, nuovi) = if chiave == settings::CHIAVE_CARTELLE && !annullamento {
+            if identita_diversa && !ambiente.unisci_comunque {
+                continue;
+            }
+            unisci_radici(prima.as_deref(), &valore)
+        } else {
+            let tutti = percorsi_di(&valore);
+            (valore, tutti)
+        };
         if prima.as_ref() == Some(&valore) {
             piano.invariate += 1;
             continue;
         }
         if *genere == Genere::Percorso {
+            // Una cartella del cloud non «manca»: il disco non la conosce, e
+            // non è lui a doverla trovare. Vedi `radici`.
             piano.percorsi_mancanti.extend(
-                percorsi_di(&valore)
+                nuovi
                     .into_iter()
-                    .filter(|p| !(ambiente.esiste)(p)),
+                    .filter(|p| rymembra_domain::nuvola::Radice::da(p).locale().is_some())
+                    .filter(|p| !esiste_dal_file(p)),
             );
         }
         settings::write(&tx, chiave, &valore)?;
@@ -1114,6 +1316,32 @@ fn esegui(
             genere: *genere,
             prima,
             dopo: valore,
+        });
+    }
+
+    // ── le preferenze che prima non c'erano: solo nell'annullamento ──
+    //
+    // La copia porta le chiavi che c'erano; quelle che il profilo ha aggiunto
+    // su una libreria che non le aveva si tolgono qui, o «com'era prima»
+    // lascerebbe skin, equalizzatore e tema del profilo. Solo chiavi del
+    // catalogo, e solo se la copia non le porta.
+    for chiave in da_dimenticare {
+        let Some((_, genere)) = CATALOGO.iter().find(|(nome, _)| nome == chiave) else {
+            continue;
+        };
+        if letto.preferenze.voci.contains_key(chiave) {
+            continue;
+        }
+        let Some(prima) = settings::read(&tx, chiave)? else {
+            continue;
+        };
+        settings::forget(&tx, chiave)?;
+        piano.cambi.push(Cambio {
+            chiave: chiave.clone(),
+            genere: *genere,
+            prima: Some(prima),
+            // Vuoto: la chiave non c'è più, e torna il valore di serie.
+            dopo: String::new(),
         });
     }
 
@@ -1161,7 +1389,23 @@ fn esegui(
                 )?,
                 ambiente.adesso_ms,
             );
-            let fuso = rymembra_sync::fondi(&[mio, suo]);
+            let mut fuso = rymembra_sync::fondi(&[mio, suo]);
+            // Gli ascolti degli altri dispositivi di là entrano nello stesso
+            // contatore, sotto il loro nome e per massimo (`segna`): li scrive
+            // `applica_in` con gli altri, e li conta una volta sola fra i brani
+            // il cui conteggio cambia. Mai sotto `importazione`: vedi
+            // [`biblioteca::Biblioteca::ascolti_altrui`].
+            for (chiave, per_dispositivo) in &letto.biblioteca.ascolti_altrui {
+                for (chi, quanti) in per_dispositivo {
+                    if chi.is_empty() || chi == rymembra_sync::contatore::IMPORTAZIONE {
+                        continue;
+                    }
+                    fuso.ascolti
+                        .entry(chiave.clone())
+                        .or_insert_with(rymembra_sync::Contatore::nuovo)
+                        .segna(chi, *quanti);
+                }
+            }
             let cambiamenti = crate::sincronia::applica_in(&tx, &fuso, ambiente.adesso_ms)?;
             piano.portati.ascolti = cambiamenti.ascolti;
             piano.portati.voti = cambiamenti.voti;
@@ -1237,6 +1481,73 @@ fn esegui(
             .map_err(|err| db_error("abbandono della transazione del profilo", &err))?;
     }
     Ok(piano)
+}
+
+/// L'elenco di qui più le cartelle del profilo che qui non ci sono già.
+///
+/// Restituisce il valore da scrivere e le cartelle aggiunte. Il confronto è per
+/// `path_key`, come la scansione: `c:\musica\` e `C:/Musica` sono la stessa
+/// cartella e non si ripetono. Un valore di qui illeggibile vale vuoto, e
+/// allora vince l'elenco del profilo, che è quel che succedeva prima.
+fn unisci_radici(prima: Option<&str>, del_profilo: &str) -> (String, Vec<String>) {
+    let regole = rymembra_domain::paths::PathRules::for_current_platform();
+    let mut elenco: Vec<String> = prima
+        .and_then(|valore| serde_json::from_str::<Vec<String>>(valore).ok())
+        .unwrap_or_default();
+    let mut viste: std::collections::BTreeSet<String> = elenco
+        .iter()
+        .map(|p| rymembra_domain::paths::path_key(p, regole))
+        .collect();
+    let mut nuovi = Vec::new();
+    for percorso in percorsi_di(del_profilo) {
+        if viste.insert(rymembra_domain::paths::path_key(&percorso, regole)) {
+            elenco.push(percorso.clone());
+            nuovi.push(percorso);
+        }
+    }
+    let valore = serde_json::to_string(&elenco).unwrap_or_else(|_| del_profilo.to_owned());
+    (valore, nuovi)
+}
+
+/// Il percorso sta su un'unità con lettera: `X:\…`, `X:/…`, `X:` o `\\?\X:\…`.
+///
+/// Un elenco di forme **ammesse** e non di forme vietate: `\\host\share`,
+/// `//host/share`, `\\?\UNC\…`, `\\.\…` e qualunque grafia che verrà restano
+/// fuori senza doverle conoscere. Lessicale, senza chiedere niente al disco.
+fn su_un_unita(percorso: &str) -> bool {
+    let percorso = percorso.trim();
+    let percorso = percorso.strip_prefix(r"\\?\").unwrap_or(percorso);
+    let byte = percorso.as_bytes();
+    byte.first().is_some_and(u8::is_ascii_alphabetic)
+        && byte.get(1) == Some(&b':')
+        && byte.get(2).is_none_or(|c| *c == b'\\' || *c == b'/')
+}
+
+/// L'host di un percorso di rete `\\host\share` o `//host/share`, minuscolo e
+/// con l'eventuale `@SSL@porta`; `None` per tutto il resto, percorsi di
+/// dispositivo (`\\?\`, `\\.\`) compresi.
+fn host_di_rete(percorso: &str) -> Option<String> {
+    let percorso = percorso.trim();
+    let resto = percorso
+        .strip_prefix(r"\\")
+        .or_else(|| percorso.strip_prefix("//"))?;
+    let host = resto.split(['\\', '/']).next()?;
+    if host.is_empty() || host == "?" || host == "." {
+        return None;
+    }
+    Some(host.to_lowercase())
+}
+
+/// Gli host di rete che questo computer usa già: quelli delle sue cartelle
+/// sorvegliate e della cartella dei download.
+fn host_di_questo_pc(connection: &Connection) -> Result<Vec<String>, AppError> {
+    let mut host = Vec::new();
+    for chiave in ["library.roots", "download.folder"] {
+        if let Some(valore) = settings::read(connection, chiave)? {
+            host.extend(percorsi_di(&valore).iter().filter_map(|p| host_di_rete(p)));
+        }
+    }
+    Ok(host)
 }
 
 /// I percorsi dentro un valore.
@@ -1364,6 +1675,29 @@ pub fn copia_di_sicurezza(data_dir: &Path, adesso_ms: i64) -> PathBuf {
         .join(format!("prima-{adesso_ms}.{}", archivio::ESTENSIONE))
 }
 
+/// Il nome di un file è quello di una copia di sicurezza: `prima-….ryprofile`.
+///
+/// Un posto solo per la regola che [`copia_di_sicurezza`] scrive e che
+/// [`ruota_le_copie`], [`ultima_copia`] e [`scrivi`] rileggono.
+fn nome_di_copia(nome: &str) -> bool {
+    nome.starts_with("prima-") && nome.ends_with(archivio::ESTENSIONE)
+}
+
+/// La destinazione è una copia di sicurezza: un nome di copia dentro la
+/// cartella delle copie. Chi la scrive è solo l'importazione, prima di
+/// toccare niente; vedi [`controlla_limiti`] sul perché conta saperlo.
+fn e_copia_di_sicurezza(destinazione: &Path) -> bool {
+    let nella_cartella = destinazione
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|cartella| cartella == CARTELLA_COPIE);
+    let col_nome = destinazione
+        .file_name()
+        .and_then(|nome| nome.to_str())
+        .is_some_and(nome_di_copia);
+    nella_cartella && col_nome
+}
+
 /// Tiene le [`COPIE_TENUTE`] più recenti e butta le altre.
 ///
 /// Restituisce quante ne ha tolte. Un file che non si cancella non è un guasto
@@ -1381,9 +1715,7 @@ pub fn ruota_le_copie(data_dir: &Path) -> usize {
             percorso
                 .file_name()
                 .and_then(|nome| nome.to_str())
-                .is_some_and(|nome| {
-                    nome.starts_with("prima-") && nome.ends_with(archivio::ESTENSIONE)
-                })
+                .is_some_and(nome_di_copia)
         })
         .collect();
     // Per nome e non per data di modifica: il nome porta il millisecondo in cui
@@ -1412,9 +1744,7 @@ pub fn ultima_copia(data_dir: &Path) -> Option<PathBuf> {
             percorso
                 .file_name()
                 .and_then(|nome| nome.to_str())
-                .is_some_and(|nome| {
-                    nome.starts_with("prima-") && nome.ends_with(archivio::ESTENSIONE)
-                })
+                .is_some_and(nome_di_copia)
         })
         .collect();
     copie.sort();
@@ -1429,6 +1759,12 @@ pub fn ultima_copia(data_dir: &Path) -> Option<PathBuf> {
 /// quali righe c'erano prima, cioè conservare un giornale grande quanto
 /// l'importazione. Non lo si conserva, e chi preme «annulla» deve leggere che
 /// torna indietro la configurazione e non la storia.
+///
+/// La configurazione **intera**, però: le preferenze della copia tornano come
+/// erano — l'elenco delle cartelle compreso, che qui si sostituisce e non si
+/// unisce — e quelle che il profilo aveva aggiunto dove prima non c'era niente
+/// si tolgono, se la copia dice quali mancavano. Vedi
+/// [`archivio::Manifesto::assenti`].
 ///
 /// # Errori
 ///
@@ -1445,7 +1781,16 @@ pub fn annulla(
     letto.sincronia = None;
     letto.biblioteca = biblioteca::Biblioteca::default();
     letto.copertine = Vec::new();
-    importa(connection, &letto, ambiente)
+    // E le chiavi che la copia dice assenti si tolgono: vedi
+    // [`archivio::Manifesto::assenti`]. Una copia di prima non le dice, e
+    // allora non si toglie niente.
+    let assenti = std::mem::take(&mut letto.manifesto.assenti);
+    esegui(
+        connection,
+        &letto,
+        ambiente,
+        Modo::Annulla { assenti: &assenti },
+    )
 }
 
 #[cfg(test)]

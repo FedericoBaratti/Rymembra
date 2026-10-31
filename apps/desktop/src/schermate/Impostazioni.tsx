@@ -20,6 +20,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type CSSProperties,
@@ -32,6 +33,7 @@ import type {
   AvanzamentoNuvola,
   AvanzamentoVolume,
   Avvio,
+  ContoNuvola,
   EsitoArricchimento,
   EsitoScansione,
   ModoLivello,
@@ -40,6 +42,7 @@ import type {
   StatoArricchimento,
   Resoconto,
   SaluteDatabase,
+  StatoCacheNuvola,
   StatoManutenzione,
   StatoNuvola,
   StatoSincronia,
@@ -52,6 +55,17 @@ import {
   ipc,
   testoErrore,
 } from "../ipc";
+import { RicollegaConto } from "../AggiungiCartella";
+import {
+  NOMI_SERVIZI,
+  eNuvola,
+  iconaServizio,
+  nomeRadice,
+  primaLocale,
+  servizioDi,
+  soloLocali,
+} from "../cartelleNuvola";
+import { useContiNuvolaDellaFinestra } from "../contiNuvola";
 import { contiDellaCamminata, momentoDi } from "../fasiScansione";
 import { dataOra, dataOraBreve, durata, numero, ore } from "../formato";
 import { DISPONIBILI, t, tSe, type Chiave } from "../lingue";
@@ -62,7 +76,9 @@ import { Icona, type NomeIcona } from "../parti/Icone";
 import { gestoPermesso } from "../insieme";
 import { SchedaInsieme } from "../parti/Insieme";
 import { useLettore } from "../riproduzione";
+import { DURATE_SPEGNIMENTO, sceltaIniziale } from "../sceltaSpegnimento";
 import { Interruttore } from "../parti/Interruttore";
+import { AppDelBackup, LeTueApp } from "../parti/LeTueApp";
 import { ModelliIA } from "../parti/ModelliIA";
 import type { UsoImportazioni } from "../parti/Importazioni";
 import type { Vista } from "../parti/Navigazione";
@@ -76,6 +92,7 @@ import type { Associazioni } from "../tastiera";
 import type { MovimentoUtente } from "../aspetto";
 import type { Tema } from "../tema";
 import { Trans } from "../lingue/Trans";
+import { comeScorrere } from "../transizione";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { nomeFonte } from "../parti/Incertezza";
 
@@ -201,6 +218,33 @@ function sezioni(): readonly (readonly [Sezione, string, NomeIcona])[] {
 }
 
 /**
+ * Porta in vista la scheda intitolata `titolo`, e la evidenzia un attimo.
+ *
+ * Al fotogramma dopo, perché la sezione appena scelta si disegna adesso: la
+ * scheda non c'è ancora nel momento del clic. La si trova dal titolo e non da
+ * un attributo suo, perché il titolo è proprio quel che l'indice conosce — la
+ * chiave di `voci` — e una scheda nuova non deve ricordarsi di nient'altro.
+ * Senza scivolata quando chi ascolta ha chiesto meno movimento: vedi
+ * `comeScorrere`. Il lampo della scheda è un'animazione del foglio, e la
+ * ferma `--motion-scale` come tutte le altre.
+ */
+function vaiAllaScheda(titolo: string): void {
+  window.requestAnimationFrame(() => {
+    const intestazione = Array.from(
+      document.querySelectorAll<HTMLElement>(".scheda.section-card .section-heading"),
+    ).find((h) => h.textContent?.trim() === titolo);
+    const scheda = intestazione?.closest<HTMLElement>(".scheda");
+    if (!scheda) return;
+    scheda.scrollIntoView({ block: "start", behavior: comeScorrere("smooth") });
+    delete scheda.dataset.trovata;
+    // Rileggere una misura riavvia l'animazione anche sulla stessa scheda.
+    void scheda.offsetWidth;
+    scheda.dataset.trovata = "";
+    window.setTimeout(() => delete scheda.dataset.trovata, 1_600);
+  });
+}
+
+/**
  * Cosa c'è dentro le sezioni, per poterlo cercare.
  *
  * # Perché un indice scritto a mano e non il testo della pagina
@@ -227,9 +271,20 @@ function voci(): readonly {
   sezione: Sezione;
   titolo: string;
   sinonimi: readonly string[];
+  scheda: Chiave;
 }[] {
-  const v = (sezione: Sezione, nome: string) => ({
+  /*
+   * `scheda` è la chiave del titolo della scheda in cui la voce sta davvero: un
+   * risultato apre la sezione **e** porta lì (vedi `vaiAllaScheda`). Due voci
+   * puntavano alla sezione sbagliata — l'arricchimento indicizzato sotto
+   * «Riproduzione» e disegnato in «Cartelle», l'accento sotto «Aspetto» e
+   * disegnato nella scheda della riproduzione — e chi cliccava arrivava in una
+   * pagina dove quel che cercava non c'era. Una prova in `test/` controlla che
+   * ogni scheda nominata qui stia nella sezione della sua voce.
+   */
+  const v = (sezione: Sezione, nome: string, scheda: Chiave) => ({
     sezione,
+    scheda,
     // `tSe` e non `t` con un cast: la chiave si compone qui, e una voce
     // aggiunta all'elenco senza la sua riga nel file di lingua mostrava la
     // chiave nuda nell'indice. Il nome della voce si legge, la chiave no.
@@ -237,69 +292,85 @@ function voci(): readonly {
     sinonimi: tSe(`settings.entry.${nome}.syn`, "").split(","),
   });
   return [
-    v("cartelle", "roots"),
-    v("cartelle", "scan"),
-    v("cartelle", "downloads"),
-    v("aspetto", "language"),
-    v("aspetto", "theme"),
-    v("aspetto", "skin"),
-    v("aspetto", "accent"),
+    v("cartelle", "roots", "settings.roots.title"),
+    // Nessuno cerca «account cloud» sapendo che si chiama così: si cerca il
+    // nome del servizio — «onedrive», «dropbox», «nextcloud» — e i sinonimi
+    // sono quello. La cache ha la sua voce perché la si cerca il giorno in cui
+    // il disco è pieno, e «cartelle» non è la parola che viene in mente.
+    v("cartelle", "cloudAccounts", "settings.cloudAccounts.title"),
+    // Nessuno cerca «le tue app»: si cerca quel che c'è scritto nella console
+    // da cui si arriva — «client id», «app key», «entra», «azure» —, o la
+    // parola che il fornitore ha appena rifiutato. I sinonimi sono quelli.
+    v("cartelle", "cloudApps", "settings.cloudApps.title"),
+    v("cartelle", "cloudCache", "settings.cloudCache.title"),
+    v("cartelle", "scan", "settings.roots.title"),
+    v("cartelle", "downloads", "settings.downloads.title"),
+    // Accanto alle cartelle, dove le due schede sono disegnate: sono quel che
+    // succede ai brani **dopo** che la scansione li ha trovati.
+    v("cartelle", "enrich", "settings.enrich.title"),
+    // I testi si cercano come «testi», «lrc», «karaoke», e prima l'indice non
+    // li conosceva: «Nessun risultato» per una scheda che c'era, mentre
+    // quattro messaggi mandavano a cercarla nelle Impostazioni.
+    v("cartelle", "lyrics", "settings.lyrics.title"),
+    v("aspetto", "language", "settings.language.title"),
+    v("aspetto", "theme", "settings.theme.title"),
+    v("aspetto", "skin", "settings.skin.title"),
     // Nessuno cerca «onboarding»: si cerca «giro», «tour», «guida», «aiuto».
-    v("aspetto", "tour"),
-    v("riproduzione", "output"),
-    v("riproduzione", "eq"),
-    v("riproduzione", "replaygain"),
-    v("riproduzione", "sleep"),
-    v("riproduzione", "autoplay"),
-    v("riproduzione", "crossfade"),
-    v("riproduzione", "spectrum"),
+    v("aspetto", "tour", "settings.tour.title"),
+    v("riproduzione", "output", "settings.output.title"),
+    v("riproduzione", "eq", "settings.eq.title"),
+    v("riproduzione", "replaygain", "settings.playback.title"),
+    v("riproduzione", "sleep", "settings.sleep.title"),
+    v("riproduzione", "autoplay", "settings.playback.title"),
+    v("riproduzione", "crossfade", "settings.crossfade.title"),
+    v("riproduzione", "spectrum", "settings.spectrum.title"),
     // Nessuno cerca «dati tecnici»: si cerca «bitrate», «flac», «kbps», o «khz»
     // — cioè quel che c'è scritto nella riga, non come l'abbiamo intitolata.
     // I sinonimi qui sono la voce più del titolo.
-    v("riproduzione", "fileFormat"),
-    v("riproduzione", "enrich"),
-    v("movimento", "motion"),
-    v("movimento", "shortcuts"),
+    v("riproduzione", "fileFormat", "settings.playback.title"),
+    v("riproduzione", "accent", "settings.playback.title"),
+    v("movimento", "motion", "settings.motion.title"),
+    v("movimento", "shortcuts", "settings.shortcuts.title"),
     // Nessuno cerca «zoom» sapendo che si chiama così: si cerca «più
     // grande», «testo piccolo», o il nome del tasto. E la si cerca proprio
     // quando non si riesce a leggere, cioè nel momento in cui trovarla conta
     // di più: una scheda che l'indice non conosce sarebbe raggiungibile solo
     // dalle scorciatoie, che è esattamente quel che può mancare.
-    v("movimento", "zoom"),
-    v("nuvola", "drive"),
-    v("sincronia", "sync"),
-    v("sincronia", "devices"),
+    v("movimento", "zoom", "settings.zoom.title"),
+    v("nuvola", "drive", "settings.cloud.title"),
+    v("sincronia", "sync", "settings.sync.title"),
+    v("sincronia", "devices", "settings.sync.title"),
     // Nessuno cerca «ascolta insieme» sapendo che si chiama così: si cerca
     // «lan», «sessione», «jam», «firewall», o la parola «insieme». E chi cerca
     // «firewall» lo fa dopo aver risposto di fretta alla richiesta di Windows,
     // cioè proprio quando trovare la scheda conta.
-    v("sincronia", "together"),
-    v("legacy", "legacy"),
-    v("esterno", "link"),
-    v("esterno", "account"),
+    v("sincronia", "together", "settings.together.title"),
+    v("legacy", "legacy", "settings.legacy.title"),
+    v("esterno", "link", "settings.import.title"),
+    v("esterno", "account", "settings.import.title"),
     // La pagina non è una sezione delle impostazioni, ma è quel che si cerca
     // scrivendo «coda»: la voce ci porta, il rimando dentro la scheda la apre.
-    v("esterno", "importQueue"),
-    v("scrobbling", "scrobbling"),
-    v("modelli", "models"),
+    v("esterno", "importQueue", "settings.import.title"),
+    v("scrobbling", "scrobbling", "settings.scrobbling.title"),
+    v("modelli", "models", "settings.models.title"),
     // «Chiave API» è una voce sua e non un sinonimo: chi la cerca non sta
     // cercando un modello — sta cercando dove si incolla il segreto, e una riga
     // intitolata «Modelli IA» non gli dice che è lì dentro.
-    v("modelli", "apikey"),
+    v("modelli", "apikey", "settings.models.title"),
     // Nessuno cerca «secondo piano»: si cerca «chiudi», «x», «tray», o
     // «continua a suonare». I sinonimi qui sono la voce, più del titolo.
-    v("chiusura", "background"),
-    v("dati", "numbers"),
-    v("dati", "profile"),
+    v("chiusura", "background", "settings.background.title"),
+    v("dati", "numbers", "settings.data.title"),
+    v("dati", "profile", "settings.profile.title"),
     // Nessuno cerca «manutenzione»: si cerca «spazio», «cache», o «pulisci» —
     // di solito il giorno in cui il disco è pieno.
-    v("dati", "covers"),
-    v("aggiornamenti", "update"),
+    v("dati", "covers", "settings.maintenance.title"),
+    v("aggiornamenti", "update", "settings.update.title"),
     // «Versione» è una voce sua e non un sinonimo di «aggiornamenti»: chi la
     // cerca quasi sempre non vuole aggiornare niente — vuole sapere quale
     // numero scrivere in una segnalazione — e trovare una riga intitolata
     // «Aggiornamenti» non gli dice che il numero è lì dentro.
-    v("aggiornamenti", "version"),
+    v("aggiornamenti", "version", "settings.update.title"),
   ];
 }
 
@@ -360,7 +431,7 @@ function riassunto(r: Resoconto): string {
   conta(r.cambiamenti.playlist, "playlists");
   // `playlist_tolte` e non `playlistTolte`: il `rename_all` del Rust sta sul
   // `Resoconto` esterno e non scende nel tipo annidato — vedi la nota in
-  // `ipc.ts`. Prima di questa release qui arrivava sempre `undefined`.
+  // `ipc/servizi.ts`. Prima di questa release qui arrivava sempre `undefined`.
   conta(r.cambiamenti.playlist_tolte, "playlistsGone");
   conta(r.cambiamenti.cartelle, "folders");
   if (pezzi.length === 0) {
@@ -494,22 +565,33 @@ function RileggiTag({
   onErrore: (e: unknown) => void;
 }) {
   const [segnati, setSegnati] = useState<number | null>(null);
+  const [domanda, setDomanda] = useState<Domanda | null>(null);
   return (
     <>
       <div className="azioni">
+        {/* Con una domanda prima: rileggere ogni file di una libreria sul NAS
+            dura minuti, e un clic sbagliato su un tasto accanto a «Scansiona»
+            li faceva partire senza dirlo. */}
         <button
           type="button"
           className="bottone btn-ghost"
           disabled={occupato}
-          onClick={() => {
-            ipc
-              .metadatiRileggiTutti()
-              .then((quanti) => {
-                setSegnati(quanti);
-                onScansiona();
-              })
-              .catch(onErrore);
-          }}
+          onClick={() =>
+            setDomanda({
+              titolo: t("settings.roots.reread.confirm.title"),
+              descrizione: t("settings.roots.reread.confirm.body"),
+              conferma: t("settings.roots.reread"),
+              fai: () => {
+                ipc
+                  .metadatiRileggiTutti()
+                  .then((quanti) => {
+                    setSegnati(quanti);
+                    onScansiona();
+                  })
+                  .catch(onErrore);
+              },
+            })
+          }
         >
           <Icona nome="i-scan" dim={15} />
           {t("settings.roots.reread")}
@@ -520,6 +602,9 @@ function RileggiTag({
           </span>
         )}
       </div>
+      {domanda !== null && (
+        <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />
+      )}
     </>
   );
 }
@@ -674,8 +759,16 @@ function SorveglianzaCartelle({
  * Lo stesso vale per l'avanzamento: arriva per evento, e l'evento lo ascolta
  * lei. Passarlo da `App` vorrebbe dire ridisegnare l'intera schermata delle
  * Impostazioni una volta per brano guardato.
+ *
+ * # Perché le scritture dicono quando falliscono
+ *
+ * La scheda è pessimistica, come `SchedaChiusura`: lo stato arriva dalla
+ * risposta e non dal clic. Allora una scelta che non arriva al database — un
+ * `db.locked`, un comando che rifiuta — va detta (`onErrore`): in silenzio
+ * l'interruttore restava dov'era e sembrava rotto. Resta silenziosa solo la
+ * lettura dei numeri, per la ragione scritta lì.
  */
-function SchedaTesti() {
+function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
   const [stato, setStato] = useState<StatoTesti | null>(null);
 
   /**
@@ -750,7 +843,7 @@ function SchedaTesti() {
           ipc
             .testiRete(attivo)
             .then(setStato)
-            .catch(() => {});
+            .catch(onErrore);
         }}
       />
 
@@ -764,7 +857,7 @@ function SchedaTesti() {
           ipc
             .testiAccanto(attivo)
             .then(setStato)
-            .catch(() => {});
+            .catch(onErrore);
         }}
       />
 
@@ -820,7 +913,7 @@ function SchedaTesti() {
               .then((letto) => {
                 if (letto) setStato(letto);
               })
-              .catch(() => {});
+              .catch(onErrore);
           }}
         >
           <Icona nome={stato?.inCorso ? "i-x" : "i-scan"} dim={15} />
@@ -1057,8 +1150,14 @@ function SchedaDissolvenza({
   );
 }
 
-/** Le durate fra cui si sceglie, in minuti. */
-const DURATE_SPEGNIMENTO = [15, 30, 60] as const;
+/**
+ * L'ultima linguetta scelta in questa finestra, per il rientro nella scheda.
+ *
+ * Fuori dal componente come `nonOraInSessione` in `Aggiornamenti`: la scheda si
+ * smonta a ogni cambio di sezione, e il ricordo deve sopravviverle. Lo legge
+ * `sceltaIniziale`, che lo usa solo se torna coi minuti che il nucleo dice.
+ */
+let ultimaSceltaSpegnimento: string | null = null;
 
 /**
  * Il timer di spegnimento.
@@ -1075,6 +1174,11 @@ const DURATE_SPEGNIMENTO = [15, 30, 60] as const;
  * si legge sotto in lettere. Le due cose si riallineano da sole quando il
  * nucleo dice che il timer non c'è più — perché è scaduto, o perché l'ha
  * spento qualcun altro.
+ *
+ * Al montaggio, però, la scelta parte dal nucleo e non da «spento»: la scheda
+ * si smonta a ogni cambio di sezione, e rientrando si vedeva «Spento» acceso
+ * sopra «Mancano 27:12». `sceltaIniziale` la ricava una volta sola, quindi lo
+ * scivolamento da «30» a «15» non torna.
  */
 function SchedaSpegnimento({
   spegnimentoMs,
@@ -1083,7 +1187,9 @@ function SchedaSpegnimento({
   spegnimentoMs: number | null;
   onSpegnimento: (minuti: number) => void;
 }) {
-  const [scelta, setScelta] = useState<string>("spento");
+  const [scelta, setScelta] = useState<string>(() =>
+    sceltaIniziale(spegnimentoMs, ultimaSceltaSpegnimento),
+  );
   // In una sessione di «Ascolta insieme» il timer non c'è: fermerebbe la
   // musica a tutti, e il nucleo lo annulla all'ingresso e lo rifiuta dopo.
   // Le linguette si spengono con la ragione accanto, nello stile delle altre
@@ -1114,6 +1220,7 @@ function SchedaSpegnimento({
         scelta={scelta}
         onScegli={(chiave) => {
           setScelta(chiave);
+          ultimaSceltaSpegnimento = chiave;
           if (chiave === "spento") onSpegnimento(0);
           else if (chiave === "brano") onSpegnimento(FINE_DEL_BRANO);
           else onSpegnimento(Number(chiave));
@@ -1369,6 +1476,264 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
   );
 }
 
+/** Come sta un conto del cloud, in una riga. */
+function fraseConto(conto: ContoNuvola): string {
+  const guasto = conto.errore === null ? "" : ` ${testoErrore(conto.errore)}`;
+  switch (conto.stato) {
+    case "collegato":
+      return t("settings.cloudAccounts.state.ok");
+    case "elenco":
+      // Il numero mentre cresce: su un drive grande la prima lettura dura un
+      // minuto, e un «sto leggendo» fermo per un minuto sembra un blocco.
+      return conto.vociElencate === null
+        ? t("settings.cloudAccounts.state.listing")
+        : t("settings.cloudAccounts.state.listingN", { n: conto.vociElencate });
+    case "daRicollegare":
+      return `${t("settings.cloudAccounts.state.reconnect")}${guasto}`;
+    case "errore":
+      return `${t("settings.cloudAccounts.state.error")}${guasto}`;
+  }
+}
+
+/** Un conto del cloud, col nome del servizio davanti: «OneDrive · mario@outlook.com». */
+function nomeConto(conto: ContoNuvola): string {
+  return `${NOMI_SERVIZI[conto.servizio]} · ${conto.nome}`;
+}
+
+/**
+ * Gli account del cloud: chi è collegato, come sta, e i gesti su ciascuno.
+ *
+ * # Accanto alle cartelle, e non nella sezione del backup
+ *
+ * Perché sono la provenienza di cartelle sorvegliate, e chi viene a cercarli
+ * viene da lì: una radice attenuata nel pannello «Cartelle» dice «collega
+ * OneDrive nelle Impostazioni», e le frasi d'errore del nucleo
+ * (`errors.cloud.*`) dicono «Cartelle e scansione». Il backup su Drive è un'altra
+ * cosa — una copia della libreria, non della musica — e mischiarli farebbe
+ * credere che scollegare l'uno spenga l'altro.
+ *
+ * # Perché si legge da sé
+ *
+ * I conti cambiano mentre si guarda — un elenco che finisce, un token
+ * revocato — e li tiene `FornitoreContiNuvola`, che ascolta `nuvola:conti` per
+ * tutta la finestra. Farli scendere da `App` per prop vorrebbe dire
+ * ridisegnare la schermata intera a ogni voce elencata.
+ */
+function SchedaContiNuvola({
+  onAggiorna,
+  onRicollega,
+  onScollega,
+}: {
+  onAggiorna: (conto: ContoNuvola) => void;
+  onRicollega: (conto: ContoNuvola) => void;
+  onScollega: (conto: ContoNuvola) => void;
+}) {
+  const { conti, guasto, ricarica } = useContiNuvolaDellaFinestra();
+  const idBase = useId();
+
+  return (
+    <Scheda icona="i-nuvola" titolo={t("settings.cloudAccounts.title")} guida="cloud-folders">
+      {conti === null && guasto !== null && (
+        <div className="errore">
+          <span>{testoErrore(guasto)}</span>
+          <button type="button" className="bottone minuto" onClick={ricarica}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
+      {conti !== null && conti.length === 0 && (
+        <p className="niente empty-state">{t("settings.cloudAccounts.empty")}</p>
+      )}
+      {conti !== null && conti.length > 0 && (
+        <ul className="conti-nuvola">
+          {conti.map((conto, indice) => {
+            const idNome = `${idBase}-${indice}`;
+            return (
+              <li className="conto-nuvola" key={conto.conto} data-stato={conto.stato}>
+                <span className="icona-conto" aria-hidden="true">
+                  <Icona nome={iconaServizio(conto.servizio)} dim={18} />
+                </span>
+                <div className="che-conto">
+                  <div className="nome-conto" id={idNome}>
+                    {nomeConto(conto)}
+                  </div>
+                  <div className="stato-conto">{fraseConto(conto)}</div>
+                  <div className="dati-conto">
+                    {t("settings.cloudAccounts.folders", { n: conto.radici.length })}
+                    {" · "}
+                    {t("settings.cloudAccounts.last", { quando: quando(conto.ultimoMs) })}
+                  </div>
+                  {conto.radici.length > 0 && (
+                    <div className="radici-conto">
+                      {conto.radici
+                        .map((radice) =>
+                          radice.persa
+                            ? t("settings.cloudAccounts.folderLost", { nome: radice.nome })
+                            : radice.nome,
+                        )
+                        .join(" · ")}
+                    </div>
+                  )}
+                </div>
+                {/* I tasti dicono di chi sono con `aria-describedby`: tre
+                    «Scollega» di fila, sentiti senza vederli, sono tre tasti
+                    uguali. */}
+                <div className="tasti-conto">
+                  {conto.stato === "daRicollegare" ? (
+                    <button
+                      type="button"
+                      className="bottone minuto primario btn-accent"
+                      aria-describedby={idNome}
+                      onClick={() => onRicollega(conto)}
+                    >
+                      {t("settings.cloudAccounts.reconnect")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      aria-describedby={idNome}
+                      disabled={conto.stato === "elenco"}
+                      onClick={() => onAggiorna(conto)}
+                    >
+                      {t("settings.cloudAccounts.refresh")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="bottone minuto btn-ghost"
+                    aria-describedby={idNome}
+                    onClick={() => onScollega(conto)}
+                  >
+                    {t("settings.cloudAccounts.disconnect")}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Scheda>
+  );
+}
+
+/** I tetti che la cache del cloud offre, in MB: quelli del contratto col nucleo. */
+const TETTI_CACHE_MB = [200, 500, 1000, 2000, 5000, 10000] as const;
+
+/**
+ * Un tetto, a schermo: «200 MB», «1 GB».
+ *
+ * In gigabyte decimali, come li offre il nucleo (1000 MB e non 1024): sono
+ * cifre tonde da scegliere, non misure, e «0,98 GB» sotto una linguetta che
+ * dice «1 GB» non aiuterebbe nessuno.
+ */
+function etichettaTetto(mb: number): string {
+  return mb >= 1000
+    ? t("settings.maintenance.gb", { n: numero(mb / 1000) })
+    : t("settings.maintenance.mb", { n: numero(mb) });
+}
+
+/**
+ * La cache dei brani del cloud: accesa o no, quanto spazio, quanto ne usa.
+ *
+ * Si gestisce da sé come `SchedaManutenzione`, per la stessa ragione: nessun
+ * altro guarda questi numeri. La frase in testa dice le due cose che
+ * spegnerla costa — i riascolti che ripartono dalla rete, e il volume dei
+ * brani del cloud che resta quello dei tag — perché sono due conseguenze che
+ * non si vedono subito, e chi la spegne per risparmiare spazio deve saperle
+ * prima.
+ *
+ * «Svuota» senza domanda: quel che toglie è una copia, e torna al prossimo
+ * ascolto.
+ */
+function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
+  const [stato, setStato] = useState<StatoCacheNuvola | null>(null);
+  const [guasto, setGuasto] = useState<unknown>(null);
+  const [svuotando, setSvuotando] = useState(false);
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .nuvolaCacheStato()
+      .then((letto) => {
+        if (!annullato) setStato(letto);
+      })
+      .catch((e: unknown) => {
+        // Una riga nella scheda e non la fascia: vedi `SchedaManutenzione`.
+        if (!annullato) setGuasto(e);
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
+
+  // Si riempie mentre si ascolta: chi guarda la scheda vede il numero salire.
+  useAscolto<StatoCacheNuvola>("nuvola:cache", setStato);
+
+  // Niente aggiornamento anticipato: l'interruttore e la linguetta si spostano
+  // quando il nucleo ha scritto, come `SchedaChiusura`.
+  const imposta = (attiva: boolean, tettoMb: number) => {
+    ipc.nuvolaCacheImposta(attiva, tettoMb).then(setStato).catch(onErrore);
+  };
+
+  const svuota = () => {
+    setSvuotando(true);
+    ipc
+      .nuvolaCacheSvuota()
+      .then(setStato)
+      .catch(onErrore)
+      .finally(() => setSvuotando(false));
+  };
+
+  return (
+    <Scheda icona="i-nuvola" titolo={t("settings.cloudCache.title")} guida="cloud-folders">
+      {guasto !== null && <p className="errore">{testoErrore(guasto)}</p>}
+      <p className="nota">{t("settings.cloudCache.body")}</p>
+      {stato !== null && (
+        <>
+          <Interruttore
+            etichetta={t("settings.cloudCache.toggle")}
+            acceso={stato.attiva}
+            onCambia={(attiva) => imposta(attiva, stato.tettoMb)}
+          />
+          <div className="tetto-cache">
+            {/* Per chi guarda: il gruppo ha già il suo nome per chi ascolta. */}
+            <span className="etichetta-tetto" aria-hidden="true">
+              {t("settings.cloudCache.limit")}
+            </span>
+            <Segmentato
+              etichetta={t("settings.cloudCache.limit")}
+              scelta={String(stato.tettoMb)}
+              onScegli={(chiave) => imposta(stato.attiva, Number(chiave))}
+              voci={TETTI_CACHE_MB.map((mb) => ({
+                chiave: String(mb),
+                etichetta: etichettaTetto(mb),
+                spenta: stato.attiva ? undefined : t("settings.cloudCache.limitOff"),
+              }))}
+            />
+          </div>
+          <p className="esito">
+            {t("settings.cloudCache.used", {
+              usati: peso(stato.usatiByte),
+              tetto: etichettaTetto(stato.tettoMb),
+            })}
+          </p>
+          <div className="azioni">
+            <button
+              type="button"
+              className="bottone btn-ghost"
+              disabled={svuotando || stato.usatiByte === 0}
+              onClick={svuota}
+            >
+              {svuotando ? t("settings.cloudCache.clearing") : t("settings.cloudCache.clear")}
+            </button>
+          </div>
+        </>
+      )}
+    </Scheda>
+  );
+}
+
 export function Impostazioni({
   sezione,
   onSezione,
@@ -1408,6 +1773,7 @@ export function Impostazioni({
   onNotizia,
   onAggiungiCartella,
   onTogliCartella,
+  onScollegaConto,
   cartelleOccupate = false,
   onScegliCartellaDownload,
   onCartellaDownloadDiSerie,
@@ -1430,14 +1796,13 @@ export function Impostazioni({
   esitoArricchimento,
   onArricchimentoAttiva,
   onArricchimentoAnnulla,
-  onArricchimentoRiportaNeiFile,
   nuvola,
   onNuvolaCollega,
   onNuvolaScollega,
   onNuvolaAttiva,
   onNuvolaSalva,
   onNuvolaRipristina,
-  onNuvolaCredenziali,
+  onNuvolaBackupApp,
   sincronia,
   onSincroniaAttiva,
   onSincroniaAdesso,
@@ -1537,8 +1902,15 @@ export function Impostazioni({
   onErrore: (e: unknown) => void;
   /** Una cosa andata bene da dire: non è un errore e non va sul canale rosso. */
   onNotizia: (testo: string) => void;
+  /** Apre «Aggiungi una cartella»: dal disco o dal cloud. */
   onAggiungiCartella: () => void;
   onTogliCartella: (percorso: string) => void;
+  /**
+   * Scollega un account del cloud; con `togliCartelle` le sue cartelle escono
+   * dalle sorvegliate. Passa dalla fila delle cartelle: vedi
+   * `cartelleSorvegliate.ts`.
+   */
+  onScollegaConto: (conto: string, togliCartelle: boolean) => void;
   /**
    * Un gesto sulle cartelle sorvegliate è in corso: «Aggiungi» e le × si
    * spengono finché non torna. Vedi `cartelleSorvegliate.ts`.
@@ -1608,16 +1980,6 @@ export function Impostazioni({
   onArricchimentoAttiva: (attivo: boolean) => void;
   /** Dimentica quel che l'arricchimento ha dedotto, e spegne l'automatico. */
   onArricchimentoAnnulla: () => void;
-  /**
-   * Riscrive nei file i tag di prima, per quel che le versioni passate hanno
-   * già toccato.
-   *
-   * Una prop a parte e non un parametro della precedente: sono due gesti
-   * diversi — uno svuota una tabella, l'altro riapre in scrittura migliaia di
-   * file dell'utente — e un booleano che sceglie fra i due sarebbe la firma
-   * che poi nessuno ricorda in che verso va.
-   */
-  onArricchimentoRiportaNeiFile: () => void;
   /** Lo stato del backup, o `null` finché non è stato chiesto. */
   nuvola: StatoNuvola | null;
   onNuvolaCollega: () => void;
@@ -1626,7 +1988,12 @@ export function Impostazioni({
   onNuvolaSalva: () => void;
   /** Apre la finestrella del ripristino. */
   onNuvolaRipristina: () => void;
-  onNuvolaCredenziali: (clientId: string, clientSecret: string) => void;
+  /**
+   * Sceglie l'app Google del backup (`null`: nessuna). Se l'app che vale
+   * cambia, l'account del backup si scollega: la conferma la chiede la
+   * schermata, prima.
+   */
+  onNuvolaBackupApp: (scelta: string | null) => void;
   /** Lo stato della sincronia, o `null` finché non è stato chiesto. */
   sincronia: StatoSincronia | null;
   onSincroniaAttiva: (accesa: boolean) => void;
@@ -1638,12 +2005,14 @@ export function Impostazioni({
   onSincroniaAccoppia: (id: string, nome: string | null) => void;
   onSincroniaDimentica: (id: string) => void;
 }) {
-  const [clientId, setClientId] = useState("");
   /**
    * La domanda aperta prima di un gesto che toglie qualcosa: una cartella
-   * sorvegliata, una skin, l'account di Drive. Vedi `ConfermaGesto.tsx`.
+   * sorvegliata, una skin, l'account di Drive, un'app del cloud. Vedi
+   * `ConfermaGesto.tsx`.
    */
   const [domanda, setDomanda] = useState<Domanda | null>(null);
+  /** L'account del cloud che si sta ricollegando: vedi `RicollegaConto`. */
+  const [ricollega, setRicollega] = useState<ContoNuvola | null>(null);
   /**
    * Il percorso che si sta scrivendo, prima di confermarlo.
    *
@@ -1657,25 +2026,34 @@ export function Impostazioni({
   );
   /** I nomi che si stanno scrivendo per i dispositivi, prima di confermarli. */
   const [nomi, setNomi] = useState<Record<string, string>>({});
-  const [clientSecret, setClientSecret] = useState("");
-  /**
-   * I passi per fabbricarsi le credenziali sono aperti.
-   *
-   * Chiusi all'apertura e non aperti: sono sei passi da fare **una volta**, su
-   * un sito che non è questo, e chi ha già le sue credenziali in mano tornerà
-   * qui per incollarle — non per rileggere come si ottengono.
-   */
-  const [guidaDrive, setGuidaDrive] = useState(false);
   /** Il filtro sopra l'indice. Tredici sezioni sono oltre il punto in cui si scorre. */
   const [filtro, setFiltro] = useState("");
   const trovate = cerca(filtro);
+  /**
+   * Apre una voce trovata: la sezione, il filtro vuoto e la scheda, che scorre
+   * in vista e lampeggia. Una funzione sola per il clic e per Invio: il ramo
+   * di Invio faceva le prime due cose e non la terza, e portava in cima alla
+   * sezione senza dire dove guardare.
+   */
+  const apriVoce = (v: (typeof trovate)[number]) => {
+    onSezione(v.sezione);
+    // Il filtro si svuota: lasciarlo pieno vorrebbe dire tornare in una
+    // pagina il cui indice non mostra più dove si è.
+    setFiltro("");
+    vaiAllaScheda(t(v.scheda));
+  };
   const attiva = skin.find((s) => s.attiva);
   const avanzaNuvola = useAvanzamentoNuvola(nuvola?.inCorso ?? false);
   /** Quanti brani restano da scaricare: il numero dietro la porta del rimando. */
   const inCoda = importazioni.stato?.conteggi.attesa ?? 0;
-  /** Dove i brani finiscono davvero: la scelta, o la prima sorvegliata. */
+  /**
+   * Dove i brani finiscono davvero: la scelta, o la prima sorvegliata **del
+   * disco** — in una cartella del cloud Rymembra non scrive.
+   */
   const cartellaScarichi =
-    avvio?.cartellaDownload ?? avvio?.cartelle[0] ?? null;
+    avvio?.cartellaDownload ?? primaLocale(avvio?.cartelle ?? []) ?? null;
+  /** Le sorvegliate del disco: le sole che possono ricevere i download. */
+  const locali = soloLocali(avvio?.cartelle ?? []);
   /**
    * La cartella scelta non sta sotto nessuna di quelle sorvegliate.
    *
@@ -1690,7 +2068,7 @@ export function Impostazioni({
     const normale = (p: string) =>
       p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const scelta = normale(cartellaScarichi);
-    return !(avvio?.cartelle ?? []).some((c) => {
+    return !locali.some((c) => {
       const radice = normale(c);
       return scelta === radice || scelta.startsWith(`${radice}/`);
     });
@@ -1717,10 +2095,7 @@ export function Impostazioni({
                  cliccarla. */
               onKeyDown={(e) => {
                 const prima = trovate[0];
-                if (e.key === "Enter" && prima) {
-                  onSezione(prima.sezione);
-                  setFiltro("");
-                }
+                if (e.key === "Enter" && prima) apriVoce(prima);
               }}
             />
           </div>
@@ -1757,12 +2132,7 @@ export function Impostazioni({
                   key={`${v.sezione}/${v.titolo}`}
                   type="button"
                   className="voce nav-pill trovata"
-                  onClick={() => {
-                    onSezione(v.sezione);
-                    // Il filtro si svuota: lasciarlo pieno vorrebbe dire tornare
-                    // in una pagina il cui indice non mostra più dove si è.
-                    setFiltro("");
-                  }}
+                  onClick={() => apriVoce(v)}
                 >
                   <Icona nome={dove?.[2] ?? "i-search"} dim={16} />
                   <span>
@@ -1785,25 +2155,37 @@ export function Impostazioni({
               {avvio && avvio.cartelle.length > 0 ? (
                 <ul className="cartelle">
                   {avvio.cartelle.map((c) => (
-                    <li className="cartella" key={c}>
+                    <li className="cartella" key={c} data-nuvola={eNuvola(c) || undefined}>
                       {/* `unicode-bidi: plaintext` accanto a `direction: rtl` sta
                           nel foglio: senza, un percorso UNC che comincia con due
-                          barre rovesciate si disegnava con quelle in fondo. */}
-                      <span className="percorso" title={c}>
-                        {c}
+                          barre rovesciate si disegnava con quelle in fondo.
+                          Una cartella del cloud si scrive come la si riconosce —
+                          «OneDrive · Musica › Rock», con la sua icona — e non
+                          col percorso `nuvola://`, che non dice niente a chi
+                          ascolta musica. */}
+                      {eNuvola(c) && (
+                        <span className="icona-cartella" aria-hidden="true">
+                          <Icona nome={iconaServizio(servizioDi(c))} dim={14} />
+                        </span>
+                      )}
+                      <span className="percorso" title={nomeRadice(c)}>
+                        {nomeRadice(c)}
                       </span>
                       <button
                         type="button"
                         className="tasto icon-btn"
-                        aria-label={t("settings.roots.forget", { percorso: c })}
+                        aria-label={t("settings.roots.forget", { percorso: nomeRadice(c) })}
                         title={t("settings.roots.forget.title")}
                         disabled={cartelleOccupate}
                         onClick={() =>
                           setDomanda({
                             titolo: t("settings.roots.forget.confirm.title"),
-                            descrizione: t("settings.roots.forget.confirm.body", {
-                              percorso: c,
-                            }),
+                            descrizione: t(
+                              eNuvola(c)
+                                ? "settings.roots.forget.confirm.cloud"
+                                : "settings.roots.forget.confirm.body",
+                              { percorso: nomeRadice(c) },
+                            ),
                             conferma: t("settings.roots.forget.confirm.ok"),
                             fai: () => onTogliCartella(c),
                           })
@@ -1918,7 +2300,7 @@ export function Impostazioni({
                         })}
                       </strong>
                       {t("settings.scan.skipped.rest")}{" "}
-                      {esito.radiciSaltate.join(" · ")}
+                      {esito.radiciSaltate.map(nomeRadice).join(" · ")}
                     </>
                   )}
                   {/* Le sottocartelle che non si sono lasciate leggere: i brani
@@ -1955,6 +2337,50 @@ export function Impostazioni({
             </Scheda>
           )}
 
+          {/* Subito dopo le cartelle, e non in una sezione loro: sono la
+              provenienza di una parte delle cartelle qui sopra, e le frasi
+              d'errore del nucleo mandano qui («Cartelle e scansione»). */}
+          {sezione === "cartelle" && (
+            <SchedaContiNuvola
+              onAggiorna={(conto) => {
+                ipc.nuvolaAggiorna(conto.conto).catch(onErrore);
+              }}
+              onRicollega={setRicollega}
+              onScollega={(conto) =>
+                setDomanda({
+                  titolo: t("settings.cloudAccounts.disconnect.confirm.title", {
+                    nome: nomeConto(conto),
+                  }),
+                  descrizione: t("settings.cloudAccounts.disconnect.confirm.body", {
+                    servizio: NOMI_SERVIZI[conto.servizio],
+                  }),
+                  conferma: t("settings.cloudAccounts.disconnect.confirm.ok"),
+                  // La casella solo se c'è qualcosa da togliere: su un account
+                  // senza cartelle sarebbe una scelta senza effetto.
+                  casella:
+                    conto.radici.length > 0
+                      ? t("settings.cloudAccounts.disconnect.confirm.folders", {
+                          n: conto.radici.length,
+                        })
+                      : undefined,
+                  fai: (togli) => onScollegaConto(conto.conto, togli),
+                })
+              }
+            />
+          )}
+          {/* Le app subito sotto gli account che le usano: è lì che si arriva
+              quando un account non si ricollega perché l'app non va. */}
+          {sezione === "cartelle" && (
+            <Scheda
+              icona="i-nuvola"
+              titolo={t("settings.cloudApps.title")}
+              guida="cloud-folders"
+            >
+              <LeTueApp onChiedi={setDomanda} />
+            </Scheda>
+          )}
+          {sezione === "cartelle" && <SchedaCacheNuvola onErrore={onErrore} />}
+
           {sezione === "cartelle" && (
             <Scheda
               icona="i-import"
@@ -1967,7 +2393,7 @@ export function Impostazioni({
               }
             >
 
-              {(avvio?.cartelle.length ?? 0) === 0 ? (
+              {locali.length === 0 ? (
                 <p className="niente empty-state">
                   {t("settings.downloads.needRoot")}
                 </p>
@@ -2129,59 +2555,14 @@ export function Impostazioni({
                       : t("settings.enrich.undo")}
                 </button>
 
-                {/* Compare solo se c'è davvero qualcosa da riportare, e non
-                    compare spento: un pulsante disabilitato dice «un giorno
-                    potrai», e qui quel giorno non arriva mai — `neiFile` conta
-                    le righe di `enrich_undo`, che dalla 2.3.1 nessuno scrive
-                    più e che possono solo calare. Su una libreria nata da
-                    questa versione in poi questo bottone non deve esistere
-                    affatto. */}
-                {arricchimento !== null && arricchimento.neiFile > 0 && (
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    disabled={arricchimento.inCorso}
-                    onClick={onArricchimentoRiportaNeiFile}
-                  >
-                    <Icona nome="i-import" dim={15} />
-                    {arricchimento.inCorso
-                      ? t("settings.enrich.passRunning")
-                      : t("settings.enrich.toFiles.count", {
-                          n: arricchimento.neiFile,
-                        })}
-                  </button>
-                )}
               </div>
-
-              {/* Il salto che va spiegato, e che senza questa nota si legge come
-                  un guasto: su una libreria che viene dalla 2.3.0 «Dimentica»
-                  mostra **zero** finché non gira una passata nuova. È corretto —
-                  quei brani hanno una riga in `enrich_undo` e non nella tabella
-                  nuova, e i loro tag stanno dentro i file, non in una tabella di
-                  Rymembra — ma nessuno può indovinarlo guardando un contatore a
-                  zero accanto a una libreria che l'arricchimento ha
-                  evidentemente toccato. La condizione è la stessa del bottone
-                  qui sopra, ed è quella giusta: la nota c'è esattamente finché
-                  esiste il caso che spiega, e sparisce da sé il giorno in cui la
-                  tabella vecchia si svuota. */}
-              {arricchimento !== null && arricchimento.neiFile > 0 && (
-                <p className="nota">
-                  <Trans
-                    k="settings.enrich.legacy.note"
-                    n={{ n: arricchimento.neiFile }}
-                    v={{
-                      riporta: <strong>{t("settings.enrich.toFiles")}</strong>,
-                    }}
-                  />
-                </p>
-              )}
             </Scheda>
           )}
 
           {/* Dopo l'arricchimento, e per la stessa ragione per cui
               l'arricchimento sta qui: sono tutt'e due quel che succede ai brani
               **dopo** che la scansione li ha trovati. */}
-          {sezione === "cartelle" && <SchedaTesti />}
+          {sezione === "cartelle" && <SchedaTesti onErrore={onErrore} />}
 
           {sezione === "aspetto" && (
             <>
@@ -2613,14 +2994,19 @@ export function Impostazioni({
                 <div className="errore">{testoErrore(nuvola.errore)}</div>
               )}
 
-              {/* Due frasi e non una: «non configurato» da solo sembrava un
-                  guasto, e non lo è — è una scelta di come Rymembra viene
-                  distribuito. La prima dice cosa vuol dire, la seconda cosa si
-                  può fare, compresa la strada che non chiede nessun account. */}
-              {nuvola && !nuvola.configurato && (
-                <>
-                  <p className="nota">{t("settings.cloud.noCreds")}</p>
-                </>
+              {/* Senza un'app il backup non parte, quindi l'app viene prima di
+                  tutto il resto: il modulo che la registra, o la scelta fra
+                  quelle che ci sono; con l'app al suo posto, una riga che la
+                  nomina. Sempre qui, nello stesso posto: il modulo che si
+                  salva diventa quella riga senza smontarsi, e il fuoco non
+                  cade a metà strada. */}
+              {nuvola && (
+                <AppDelBackup
+                  nuvola={nuvola}
+                  onScegli={onNuvolaBackupApp}
+                  onChiedi={setDomanda}
+                  onGestisci={() => onSezione("cartelle")}
+                />
               )}
 
               <Interruttore
@@ -2745,134 +3131,6 @@ export function Impostazioni({
                 )}
               </div>
 
-              {/* In chiaro, e non più dietro un `<details>` intitolato «Usa il
-                  tuo progetto Google».
-                  Quel titolo prometteva un lusso — «solo se vuoi che la quota sia
-                  la tua» — mentre queste due caselle sono l'unica cosa che fa
-                  esistere il backup: senza, la scheda qui sopra dichiara che non
-                  può partire. Quel che tiene in piedi una funzione non si mette
-                  dietro una freccetta. */}
-              <div className="credenziali-drive">
-                <h3 className="titoletto">{t("settings.creds.title")}</h3>
-
-                <div className="azioni">
-                  <input
-                    type="text"
-                    className="campo mono field-input"
-                    aria-label={t("settings.creds.id")}
-                    placeholder={t("settings.creds.id.placeholder")}
-                    value={clientId}
-                    onChange={(e) => setClientId(e.target.value)}
-                  />
-                  <input
-                    type="password"
-                    className="campo mono field-input"
-                    aria-label={t("settings.creds.secret")}
-                    placeholder={t("settings.creds.secret.placeholder")}
-                    value={clientSecret}
-                    onChange={(e) => setClientSecret(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={() => onNuvolaCredenziali(clientId, clientSecret)}
-                  >
-                    {t("settings.creds.use")}
-                  </button>
-                </div>
-                {/* Detto come quel che è — un modo di **togliere** — e non come
-                    un ripiego su credenziali che in questa copia non esistono. */}
-
-                {/* Il tasto e non un `<details>`: sono sei passi da fare una
-                    volta sola, e chi torna qui torna per incollare. */}
-                <div className="azioni">
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    aria-expanded={guidaDrive}
-                    onClick={() => setGuidaDrive((prima) => !prima)}
-                  >
-                    <Icona nome={guidaDrive ? "i-chev-d" : "i-list"} dim={15} />
-                    {guidaDrive
-                      ? t("settings.creds.hide")
-                      : t("settings.creds.show")}
-                  </button>
-                </div>
-
-                {guidaDrive && (
-                  <>
-                    {/* Numerati, come i tre passi del Client ID di Spotify in
-                        `Account.tsx`, e per la stessa ragione: sono cose da fare
-                        **in ordine** su un sito che non è questo, e chi torna dal
-                        browser deve ritrovare il punto in cui era. */}
-                    <ol className="passi">
-                      <li>
-                        <Trans
-                          k="settings.creds.step1"
-                          v={{ console: <code>console.cloud.google.com</code> }}
-                        />
-                      </li>
-                      <li>
-                        <Trans
-                          k="settings.creds.step2"
-                          v={{
-                            dove: (
-                              <strong>{t("settings.creds.step2.where")}</strong>
-                            ),
-                            api: <strong>{t("settings.creds.step2.api")}</strong>,
-                          }}
-                        />
-                      </li>
-                      <li>
-                        <Trans
-                          k="settings.creds.step3"
-                          v={{
-                            dove: (
-                              <strong>{t("settings.creds.step3.where")}</strong>
-                            ),
-                            tipo: (
-                              <strong>{t("settings.creds.step3.type")}</strong>
-                            ),
-                            pubblica: (
-                              <strong>{t("settings.creds.step3.publish")}</strong>
-                            ),
-                          }}
-                        />
-                      </li>
-                      <li>
-                        <Trans
-                          k="settings.creds.step4"
-                          v={{ scope: <code>.../auth/drive.appdata</code> }}
-                        />
-                      </li>
-                      <li>
-                        <Trans
-                          k="settings.creds.step5"
-                          v={{
-                            dove: (
-                              <strong>{t("settings.creds.step5.where")}</strong>
-                            ),
-                            tipo: (
-                              <strong>{t("settings.creds.step5.type")}</strong>
-                            ),
-                          }}
-                        />
-                      </li>
-                      <li>
-                        <Trans
-                          k="settings.creds.step6"
-                          v={{
-                            id: <strong>{t("settings.creds.step6.id")}</strong>,
-                            secret: (
-                              <strong>{t("settings.creds.step6.secret")}</strong>
-                            ),
-                          }}
-                        />
-                      </li>
-                    </ol>
-                  </>
-                )}
-              </div>
             </Scheda>
           )}
 
@@ -2891,8 +3149,14 @@ export function Impostazioni({
                 etichetta={t("settings.sync.toggle")}
                 acceso={sincronia?.attiva ?? false}
                 onCambia={onSincroniaAttiva}
+                /* Spegnerla si può sempre: solo accenderla vuole un deposito
+                   pronto. Passando a «Cartella» con la sincronia accesa, il
+                   deposito non è pronto finché la cartella non c'è — e un
+                   interruttore impedito anche da spegnere la teneva accesa. */
                 impedito={
-                  sincronia?.pronta ? undefined : t("settings.sync.needStore")
+                  sincronia?.pronta || sincronia?.attiva
+                    ? undefined
+                    : t("settings.sync.needStore")
                 }
               />
 
@@ -2932,6 +3196,7 @@ export function Impostazioni({
                     <button
                       type="button"
                       className="bottone btn-ghost"
+                      disabled={(cartellaSincronia ?? sincronia?.cartella ?? "").trim() === ""}
                       onClick={() => {
                         onSincroniaMagazzino(
                           "cartella",
@@ -3279,6 +3544,20 @@ export function Impostazioni({
       </div>
       {domanda !== null && (
         <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />
+      )}
+      {ricollega !== null && (
+        <RicollegaConto
+          conto={ricollega}
+          onChiudi={() => setRicollega(null)}
+          onFatto={(tornato) =>
+            onNotizia(
+              t("folders.add.connected", {
+                servizio: NOMI_SERVIZI[tornato.servizio],
+                nome: tornato.nome,
+              }),
+            )
+          }
+        />
       )}
     </ErroreGuida.Provider>
   );

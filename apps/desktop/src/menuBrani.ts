@@ -13,13 +13,19 @@
  * una funzione `t`. Così questo modulo non tocca né il nucleo né le lingue, e
  * `node --test` lo carica senza niente intorno.
  */
+import { eNuvola, nomeServizioDi } from "./cartelleNuvola";
 import { idDiLibreria } from "./insieme";
 import type { Brano, Playlist } from "./ipc";
-import type { Chiave } from "./lingue";
+import type { Chiave, Valori } from "./lingue";
 import type { Voce } from "./Menu";
 
-/** Una chiave tradotta: `t` di `lingue`, o una finta nelle prove. */
-export type Traduci = (chiave: Chiave) => string;
+/**
+ * Una chiave tradotta: `t` di `lingue`, o una finta nelle prove.
+ *
+ * I valori servono a una voce sola, «Apri su OneDrive»: il nome del servizio
+ * è un nome proprio e non si traduce, ma la frase intorno sì.
+ */
+export type Traduci = (chiave: Chiave, valori?: Valori) => string;
 
 /** Quel che si può fare con dei brani dal menù. */
 export interface AzioniBrani {
@@ -31,6 +37,8 @@ export interface AzioniBrani {
   vaiAllArtista: (brano: number) => void;
   mostraNellaCartella: (brano: number) => void;
   apriPagina: (brano: number) => void;
+  /** La pagina del file sul suo servizio: «Mostra nella cartella» di un brano del cloud. */
+  apriSulWeb: (brano: number) => void;
   togli: (brani: number[]) => void;
   elimina: (brani: number[]) => void;
 }
@@ -85,6 +93,13 @@ export function vociBrani(
   const primo = brani.length === 1 ? brani[0] : undefined;
   const conRadio = primo !== undefined && !inSessione;
   /*
+   * Il brano solo sta nel cloud: allora «Mostra nella cartella» non c'è — sul
+   * disco una cartella non ce l'ha — e al suo posto c'è la pagina del file sul
+   * servizio, che è la risposta alla stessa domanda («dov'è questo?»).
+   */
+  const delPrimo = primo === undefined ? undefined : inMano(primo);
+  const servizioDelPrimo = eNuvola(delPrimo?.path) ? nomeServizioDi(delPrimo?.path) : null;
+  /*
    * Le tre voci che su un brano solo mancavano: portarsi al suo disco, al
    * suo artista, e al suo file. Il menù aveva «radio», «dopo», «in coda» e
    * «a una playlist» — cioè tutto quel che si fa **con** il brano e niente
@@ -107,14 +122,21 @@ export function vociBrani(
           // pannello che mostra un'altra lista — lascia la voce dov'è:
           // è quel che si faceva prima di distinguere i due casi, e il
           // comando si difende comunque da sé.
-          ...(inMano(primo)?.fonte == null
+          ...(servizioDelPrimo !== null
             ? [
                 {
-                  etichetta: t("menu.showInFolder"),
-                  azione: () => fai.mostraNellaCartella(primo),
+                  etichetta: t("menu.openOnService", { servizio: servizioDelPrimo }),
+                  azione: () => fai.apriSulWeb(primo),
                 },
               ]
-            : []),
+            : delPrimo?.fonte == null
+              ? [
+                  {
+                    etichetta: t("menu.showInFolder"),
+                    azione: () => fai.mostraNellaCartella(primo),
+                  },
+                ]
+              : []),
           // E il contrario: la pagina pubblica esiste solo per un brano che
           // viene da un catalogo. È il gesto che «Mostra nella cartella»
           // è per un file — «fammi vedere da dove viene» — e per certe
@@ -144,6 +166,20 @@ export function vociBrani(
       const brano = inMano(id);
       return brano !== undefined && brano.fonte != null;
     });
+  /*
+   * E se stanno tutti nel cloud la voce c'è, ma spenta, con la sua ragione:
+   * Rymembra su quei servizi ha solo il permesso di leggere. Spenta e non
+   * tolta, al contrario dello streaming: un brano del cloud è un file vero, e
+   * chi cerca «Elimina dal disco» deve sapere perché qui non si può e dove si
+   * fa. Con un brano solo del disco in mezzo resta accesa, con la regola di
+   * sopra: è il nucleo che tratta quelli del cloud (`cloud.readOnly`).
+   */
+  const soloNuvola =
+    brani.length > 0 &&
+    brani.every((id) => {
+      const brano = inMano(id);
+      return brano !== undefined && eNuvola(brano.path);
+    });
   return [
     ...(conRadio ? [{ etichetta: t("action.radio"), azione: () => fai.radio(primo) }] : []),
     ...(senzaCoda
@@ -172,7 +208,15 @@ export function vociBrani(
     { etichetta: t("menu.removeFromLibrary"), azione: () => fai.togli(brani) },
     ...(soloStreaming
       ? []
-      : [{ etichetta: t("menu.deleteFromDisk"), azione: () => fai.elimina(brani) }]),
+      : soloNuvola
+        ? [
+            {
+              etichetta: t("menu.deleteFromDisk"),
+              azione: () => undefined,
+              spenta: t("errors.cloud.readOnly"),
+            },
+          ]
+        : [{ etichetta: t("menu.deleteFromDisk"), azione: () => fai.elimina(brani) }]),
   ];
 }
 
@@ -201,6 +245,35 @@ export function vociAlbum(
     // quella che chi apre un album sente per prima, quindi è quella di
     // cui sta chiedendo «portami dove porta questo».
     ...(inSessione ? [] : [{ etichetta: t("action.radio"), azione: fai.radio }]),
+    ...(senzaCoda
+      ? []
+      : [
+          { etichetta: t("action.playNext"), azione: fai.dopo },
+          { etichetta: t("action.enqueue"), azione: fai.accoda },
+        ]),
+  ];
+}
+
+/** Le prime tre voci del menù di una riga del pannello Cartelle. */
+export interface AzioniCartella {
+  riproduci: () => void;
+  dopo: () => void;
+  accoda: () => void;
+}
+
+/**
+ * Le voci di coda del menù di una riga del pannello Cartelle: «Riproduci»,
+ * «Dopo», «In coda». Il resto del menù (playlist, «Mostra nella cartella») lo
+ * aggiunge il pannello, che sa dove sta la riga.
+ *
+ * `senzaCoda` toglie «Dopo» e «In coda», come in [`vociBrani`]: in una
+ * sessione dove chi ospita non ha dato la coda a questo PC il pannello le
+ * offriva lo stesso, e premerle portava la fascia rossa del rifiuto del
+ * nucleo.
+ */
+export function vociCartella(fai: AzioniCartella, t: Traduci, senzaCoda = false): Voce[] {
+  return [
+    { etichetta: t("action.play"), azione: fai.riproduci },
     ...(senzaCoda
       ? []
       : [

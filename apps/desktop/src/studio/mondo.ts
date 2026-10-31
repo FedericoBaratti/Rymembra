@@ -335,6 +335,9 @@ const LETTURE: LettureDati = {
   cartelleBrani: () => subito(BRANI.slice(0, 8).map((b) => b.id)),
   impostaCartelleUi: () => subito(undefined),
   esploraCerca: () => subito(ESITO_ESPLORA),
+  // Già cercato e niente da chiedere: il pannello del testo, nell'anteprima,
+  // non va in rete e non legge la libreria vera.
+  testoBrano: () => subito({ ...testoFinto(), daChiedere: false, cercato: true }),
   testoCerca: () => subito(testoFinto()),
   testoCercaDiNuovo: () => subito(testoFinto()),
   testiPannello: () => subito(undefined),

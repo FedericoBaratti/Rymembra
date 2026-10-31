@@ -6,6 +6,11 @@
 //! computer si formatta è finita. Questo crate lo mette al sicuro nella cartella
 //! privata dell'applicazione su Drive, e lo riporta indietro quando serve.
 //!
+//! Dalla 3.2.0 fa anche il contrario: **legge** le cartelle di musica che
+//! l'utente tiene su un servizio cloud — elenchi, cambiamenti, i byte dei brani
+//! e la loro cache su disco. Sta in [`musica`], e condivide con il backup solo
+//! quel che è davvero uguale: OAuth, il client HTTP, il portachiavi.
+//!
 //! # La regola di dipendenza
 //!
 //! ```text
@@ -40,6 +45,9 @@
 //! per cui non si ripiega mai in silenzio.
 
 pub mod drive;
+#[cfg(test)]
+mod finto;
+pub mod musica;
 pub mod oauth;
 pub mod pacchetti;
 pub mod portachiavi;

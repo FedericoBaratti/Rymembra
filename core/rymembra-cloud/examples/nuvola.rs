@@ -26,11 +26,17 @@
 //!
 //! Le credenziali si leggono dall'ambiente **a ogni avvio**, non compilate
 //! dentro: qui si sta provando, e provare vuol dire cambiarle senza ricostruire
-//! niente. Nell'applicazione vera arrivano da `build.rs`.
+//! niente. Nemmeno nell'applicazione vera c'è niente di compilato: dalla 3.2.0
+//! ogni app è dell'utente, registrata nella card «Le tue app» (Impostazioni ›
+//! Cartelle e scansione), e la build non legge più queste variabili.
 //!
 //! Il token di aggiornamento finisce nel portachiavi di sistema, nella stessa
 //! voce che userà l'applicazione. È voluto: dopo un `collega` da qui, Rymembra
-//! trova l'account già collegato.
+//! trova l'account già collegato — **purché** qui si usino lo stesso client ID
+//! e lo stesso segreto dell'app Google registrata in «Le tue app». Il token è
+//! legato al client che l'ha emesso: con un'altra app il rinfresco
+//! dell'applicazione risponde `unauthorized_client`
+//! (`sync.clientUnauthorized`), e il token lasciato da qui non le serve.
 
 // Questi esempi sono strumenti diagnostici, eseguiti a mano da chi sviluppa.
 // Qui un guasto DEVE fermare tutto rumorosamente: un esempio che prosegue su un
@@ -348,7 +354,7 @@ fn credenziali() -> Credenziali {
     };
     Credenziali {
         client_id: leggi("RYMEMBRA_GOOGLE_CLIENT_ID"),
-        client_secret: leggi("RYMEMBRA_GOOGLE_CLIENT_SECRET"),
+        client_secret: Some(leggi("RYMEMBRA_GOOGLE_CLIENT_SECRET")),
     }
 }
 

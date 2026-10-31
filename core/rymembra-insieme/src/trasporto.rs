@@ -188,7 +188,7 @@ pub(crate) enum Trasporto {
 ///
 /// La stessa forma di [`Trasporto::App`] sul filo: `Rete::manda` riceve un
 /// riferimento, e uno stato di sessione di mille voci clonato solo per
-/// serializzarlo sarebbe un centinaio di kilobyte copiati quattro volte al
+/// serializzarlo sarebbe centinaia di kilobyte copiati quattro volte al
 /// secondo.
 #[derive(Serialize)]
 #[serde(tag = "tipo", rename = "app")]

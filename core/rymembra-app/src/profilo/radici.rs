@@ -70,11 +70,28 @@
 //! accanto a quello vecchio. [`ordina_cartelle`] se ne accorge e propone il
 //! trasloco — che è una rimappatura, e passa da [`applica_verificati`] — invece
 //! di aggiungere il doppione.
+//!
+//! # Le cartelle del cloud viaggiano come sono
+//!
+//! Una radice `nuvola://onedrive-…/Musica` non ha una lettera di unità da
+//! cambiare: il conto è un'impronta dell'account, la stessa su ogni PC che lo
+//! collega (vedi [`rymembra_domain::nuvola`]). Non si propone di rimapparla, non
+//! si rimappa fra il disco e il cloud né fra due conti, e il disco non le si
+//! chiede — non saprebbe rispondere, e la sua risposta («non c'è») sarebbe una
+//! bugia. Su un PC dove il conto non è collegato la radice resta com'è, «da
+//! collegare».
+//!
+//! Una sola eccezione, dentro **lo stesso conto**: la cartella scelta che
+//! l'utente rinomina o sposta sul servizio. Su OneDrive e Google Drive la sua
+//! cima ha un identificativo che non cambia, lo specchio sa dove è finita, e
+//! il filo del conto la trasloca come un disco che ha cambiato lettera —
+//! verificando i file nello specchio invece che sul disco.
 
 use std::collections::HashMap;
 
 use rusqlite::{Connection, Transaction};
 use rymembra_domain::errors::AppError;
+use rymembra_domain::nuvola::{Radice, conto_di, e_nuvola};
 use rymembra_domain::paths::{PathRules, is_under, path_key};
 use serde::{Deserialize, Serialize};
 
@@ -154,6 +171,14 @@ pub fn riscrivi(percorso: &str, da: &str, a: &str) -> Option<String> {
     if a.is_empty() || !is_under(percorso, da, regole()) {
         return None;
     }
+    // Né dal cloud né verso il cloud, se non dentro lo stesso conto: vedi il
+    // `//!`. Una rimappatura così la scrive solo un profilo fatto a mano, e
+    // porterebbe i brani di un disco sotto un conto (o il contrario) senza
+    // che nessun file si sia mosso.
+    let stesso_conto = conto_di(da).is_some() && conto_di(da) == conto_di(a);
+    if (e_nuvola(da) || e_nuvola(a)) && !stesso_conto {
+        return None;
+    }
     // Il resto si prende dall'**originale** e non dalla chiave: la chiave ha
     // già unificato le barre e piegato le maiuscole, e ricostruire un percorso
     // da lì darebbe un `d:/musica/...` minuscolo con le barre al contrario da
@@ -186,7 +211,9 @@ pub fn proposte(
     let mut proposte = Vec::new();
     for radice in radici {
         let radice = radice.trim();
-        if radice.is_empty() || esiste(radice) {
+        // Una radice del cloud non si propone: vedi il `//!`. Prima di
+        // `esiste`, che per lei chiederebbe al disco.
+        if radice.is_empty() || Radice::da(radice).locale().is_none() || esiste(radice) {
             continue;
         }
         proposte.push(Rimappatura {
@@ -708,6 +735,13 @@ pub struct CartelleOrdinate {
 /// La madre prende il posto della prima figlia che assorbe: l'ordine conta,
 /// perché la prima cartella dell'elenco è quella dove finiscono i download se
 /// nessuno ne ha scelta un'altra.
+///
+/// # Le cartelle del cloud
+///
+/// Valgono le stesse regole, e non serve un ramo: il nome vero di una cartella
+/// del cloud è lei stessa ([`crate::volumi::risolvi_tutti`] la restituisce com'è),
+/// quindi fra due cartelle dello stesso conto decidono doppioni e annidate per
+/// grafia, e fra una del cloud e una del disco non c'è niente da decidere.
 #[must_use]
 pub fn ordina_cartelle(
     prima: &[String],
@@ -842,6 +876,128 @@ mod prove {
             riscrivi(r"D:\Musica\a.flac", "D:\\Musica\\", r"E:\M"),
             Some(r"E:\M\a.flac".to_owned())
         );
+    }
+
+    #[test]
+    fn una_cartella_del_cloud_si_trasloca_dentro_il_suo_conto() {
+        // La cartella scelta rinominata su OneDrive: il filo del conto la
+        // trasloca, e i brani tengono la loro riga — ascolti e voti.
+        let nuvola = "nuvola://onedrive-abcdefgh/Musica";
+        let nuova = "nuvola://onedrive-abcdefgh/Music";
+        assert_eq!(
+            riscrivi(&format!("{nuvola}/Rock/a.flac"), nuvola, nuova),
+            Some(format!("{nuova}/Rock/a.flac"))
+        );
+        let mut connection = crate::db::open_in_memory().expect("database").connection;
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES (7, '{nuvola}/Rock/a.flac', 'k7', 'A', 'B', 'C', 1, 1, 1),
+                        (8, '{nuvola}/Rock/b.flac', 'k8', 'A', 'B', 'C', 1, 1, 1);"
+            ))
+            .expect("righe");
+        let rimappature = [Rimappatura {
+            da: nuvola.to_owned(),
+            a: nuova.to_owned(),
+            brani: 0,
+        }];
+        // La verifica viene dallo specchio: `b.flac` sotto il nome nuovo non
+        // c'è, e la sua riga resta com'era.
+        let presente = format!("{nuova}/Rock/a.flac");
+        let tx = connection.transaction().expect("transazione");
+        let fatto = applica_verificati(&tx, &rimappature, &|percorso| {
+            if percorso == presente {
+                Esistenza::Presente
+            } else {
+                Esistenza::Assente
+            }
+        })
+        .expect("trasloco");
+        tx.commit().expect("commit");
+        assert_eq!((fatto.percorsi, fatto.irrintracciabili), (1, 1));
+        let percorso = |id: i64| -> String {
+            connection
+                .query_row("SELECT path FROM tracks WHERE id = ?1", [id], |r| r.get(0))
+                .expect("riga")
+        };
+        assert_eq!(percorso(7), presente, "la stessa riga, al nome nuovo");
+        assert_eq!(percorso(8), format!("{nuvola}/Rock/b.flac"));
+    }
+
+    #[test]
+    fn le_cartelle_del_cloud_non_si_rimappano() {
+        let connection = crate::db::open_in_memory().expect("database").connection;
+        let nuvola = "nuvola://onedrive-abcdefgh/Musica";
+        // Non si propone, e il disco non le si chiede nemmeno.
+        let chieste = std::cell::RefCell::new(Vec::new());
+        let esiste = |p: &str| {
+            chieste.borrow_mut().push(p.to_owned());
+            false
+        };
+        let proposte = proposte(
+            &connection,
+            &[nuvola.to_owned(), r"D:\Musica".to_owned()],
+            &esiste,
+        )
+        .expect("proposte");
+        assert_eq!(
+            proposte.iter().map(|r| r.da.as_str()).collect::<Vec<_>>(),
+            [r"D:\Musica"]
+        );
+        assert_eq!(chieste.into_inner(), [r"D:\Musica"]);
+        // Né da lei né verso di lei.
+        assert_eq!(riscrivi(&format!("{nuvola}/a.flac"), nuvola, r"E:\M"), None);
+        assert_eq!(riscrivi(r"D:\Musica\a.flac", r"D:\Musica", nuvola), None);
+        // Fra due conti nemmeno.
+        assert_eq!(
+            riscrivi(
+                &format!("{nuvola}/a.flac"),
+                nuvola,
+                "nuvola://onedrive-zzzzzzzz/Musica"
+            ),
+            None
+        );
+        let rimappature = [Rimappatura {
+            da: r"D:\".to_owned(),
+            a: r"E:\".to_owned(),
+            brani: 0,
+        }];
+        assert_eq!(
+            rimappa_valore(&format!(r#"["{nuvola}","D:\\M"]"#), &rimappature),
+            format!(r#"["{nuvola}","E:\\M"]"#)
+        );
+    }
+
+    #[test]
+    fn le_cartelle_del_cloud_si_ordinano_per_grafia() {
+        // Il nome vero di una cartella del cloud è lei stessa: lo stesso conto
+        // annidato si assorbe, un conto e un disco non si toccano.
+        let come_sono = |p: &str| Some(p.to_owned());
+        let prima = vec![
+            r"D:\Musica".to_owned(),
+            "nuvola://onedrive-abcdefgh/Musica".to_owned(),
+        ];
+        let mut chieste = prima.clone();
+        chieste.push("nuvola://onedrive-abcdefgh/Musica/Rock".to_owned());
+        chieste.push("nuvola://dropbox-abcdefgh/Musica".to_owned());
+        let esito = ordina_cartelle(&prima, &chieste, &come_sono);
+        assert_eq!(
+            esito.cartelle,
+            [
+                r"D:\Musica",
+                "nuvola://onedrive-abcdefgh/Musica",
+                "nuvola://dropbox-abcdefgh/Musica"
+            ]
+        );
+        assert_eq!(
+            esito.assorbite,
+            [Assorbita {
+                cartella: "nuvola://onedrive-abcdefgh/Musica/Rock".to_owned(),
+                dentro: "nuvola://onedrive-abcdefgh/Musica".to_owned(),
+            }]
+        );
+        assert!(esito.gemelle.is_empty());
     }
 
     #[test]

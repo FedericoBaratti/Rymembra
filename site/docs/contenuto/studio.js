@@ -7,7 +7,7 @@
     {
       id: "studio",
       title: "How the Studio works",
-      src: ["apps/desktop/src/studio/Guscio.tsx", "apps/desktop/src/studio/negozio.ts", "apps/desktop/src/studio/patch.ts", "apps/desktop/src/studio/storia.ts", "apps/desktop/src/studio/mittente.ts", "apps/desktop/src/studio/codice.ts", "apps/desktop/src/studio/riferimenti.ts", "apps/desktop/src-tauri/src/studio.rs"],
+      src: ["apps/desktop/src/studio/Guscio.tsx", "apps/desktop/src/studio/negozio.ts", "apps/desktop/src/studio/patch.ts", "apps/desktop/src/studio/storia.ts", "apps/desktop/src/studio/mittente.ts", "apps/desktop/src/studio/codice.ts", "apps/desktop/src/studio/riferimenti.ts", "apps/desktop/src-tauri/src/studio.rs", "apps/desktop/src-tauri/src/studio/registro.rs", "apps/desktop/src-tauri/src/studio/validazione.rs"],
       body: [
         "Three rules from `Guscio.tsx`: you cannot write what the format refuses (every control has the shape of a core type; the only free-form place is the code editor, where the parser answers); the preview **is** the application; cost is visible while you spend it. The Studio is a lazily loaded chunk (`lazy(() => import(\"./studio/Guscio\"))`), mounted under `<Activity>`.",
         { h: "Text is the source of truth" },

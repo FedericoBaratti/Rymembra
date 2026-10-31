@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { daSalvare, iniziale, inValidazione, riduci, testo } from "../src/studio/negozio";
+import { daSalvare, iniziale, inValidazione, riduci, scafaleScrivibile, testo } from "../src/studio/negozio";
 import type { Validazione } from "../src/ipc";
 
 const esito = (errori: number) =>
@@ -60,4 +60,28 @@ test("«vai alla riga» si mostra una volta, e una richiesta nuova non si perde"
   assert.equal(s.riga?.riga, 9, "la richiesta nuova resta");
   s = riduci(s, { tipo: "rigaMostrata", volta: s.riga?.volta ?? -1 });
   assert.equal(s.riga, null, "mostrata, si dimentica");
+});
+
+test("lo scafale non si riscrive finché l'albero che si vede è di un testo vecchio", () => {
+  // Due gesti rapidi partivano dallo stesso albero vecchio: il secondo
+  // riscriveva layout.shell intero e disfaceva il primo.
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "a" });
+  s = riduci(s, { tipo: "validato", testo: "a", esito: esito(0) });
+  assert.ok(scafaleScrivibile(s));
+  s = riduci(s, { tipo: "scrivi", testo: "b", etichetta: "b", gruppo: "g", adesso: 1 });
+  assert.ok(!scafaleScrivibile(s), "la validazione di «b» è ancora in volo");
+  s = riduci(s, { tipo: "validato", testo: "b", esito: esito(0) });
+  assert.ok(scafaleScrivibile(s));
+  s = riduci(s, { tipo: "scrivi", testo: "c", etichetta: "c", gruppo: "g", adesso: 2 });
+  s = riduci(s, { tipo: "validato", testo: "c", esito: esito(1) });
+  assert.ok(!scafaleScrivibile(s), "con errori l'albero è quello dell'ultima versione buona");
+});
+
+test("un'istantanea presa fuori dal pannello fa crescere il contatore che il pannello guarda", () => {
+  // L'elenco delle istantanee si rileggeva solo coi tasti del pannello: un
+  // Ctrl+S, «Salva e usa», «Esporta» o la chat non lo aggiornavano.
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "a" });
+  const prima = s.istantanee;
+  s = riduci(s, { tipo: "fotografata" });
+  assert.equal(s.istantanee, prima + 1);
 });

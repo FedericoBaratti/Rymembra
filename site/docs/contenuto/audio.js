@@ -7,7 +7,7 @@
     {
       id: "engine",
       title: "Engine structure",
-      src: ["core/rymembra-play/src/lib.rs", "core/rymembra-play/src/motore.rs", "core/rymembra-play/src/uscita.rs"],
+      src: ["core/rymembra-play/src/lib.rs", "core/rymembra-play/src/motore.rs", "core/rymembra-play/src/motore/maniglia.rs", "core/rymembra-play/src/motore/comandi.rs", "core/rymembra-play/src/motore/anello.rs", "core/rymembra-play/src/motore/racconto.rs", "core/rymembra-play/src/uscita.rs"],
       body: [
         "`rymembra-play` knows nothing about libraries or paths: it receives a `Sorgente` (bytes behind a `Read + Seek`, an extension, a duration, a level) and makes it audible. Dependencies: symphonia 0.6.1 (mp3, flac, isomp4/aac/alac, ogg/vorbis, wav/pcm, aiff, mkv, caf), `opus-pure` 0.2.1, cpal 0.18.2, rubato 0.16, ebur128 0.1.10, rtrb 0.3.",
         { h: "Three roles" },
@@ -83,7 +83,7 @@
     {
       id: "crossfade",
       title: "Gapless and crossfade",
-      src: ["core/rymembra-play/src/motore.rs", "core/rymembra-play/src/lib.rs", "core/rymembra-play/src/decodifica/ricampionatore.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs"],
+      src: ["core/rymembra-play/src/motore.rs", "core/rymembra-play/src/motore/comandi.rs", "core/rymembra-play/src/motore/anello.rs", "core/rymembra-play/src/lib.rs", "core/rymembra-play/src/decodifica/ricampionatore.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs"],
       body: [
         "Both rely on having the next track **already open**: the desktop thread `rymembra-preparatore` opens it while the current one plays (15 ms debounce) and hands it over with `Motore::prepara`, only if the queue's next item and the output format are unchanged.",
         { h: "Gapless" },
@@ -105,7 +105,7 @@
     {
       id: "playback",
       title: "Loudness levelling, volume and the format line",
-      src: ["core/rymembra-play/src/lib.rs", "core/rymembra-play/src/intensita.rs", "core/rymembra-app/src/playback.rs", "core/rymembra-app/src/intensita.rs", "apps/desktop/src-tauri/src/riproduzione/suono.rs", "apps/desktop/src/parti/Formato.tsx"],
+      src: ["core/rymembra-play/src/lib.rs", "core/rymembra-play/src/intensita.rs", "core/rymembra-app/src/playback.rs", "core/rymembra-app/src/playback/sorgente.rs", "core/rymembra-app/src/playback/impostazioni.rs", "core/rymembra-app/src/intensita.rs", "apps/desktop/src-tauri/src/riproduzione/suono.rs", "apps/desktop/src/parti/Formato.tsx"],
       body: [
         "Every track carries a `Livello { guadagno_db, picco }`: the dB needed to reach a −18 LUFS reference, and the linear true peak. The gain comes from the ReplayGain tag when present, otherwise from Rymembra's own EBU R128 measurement in `track_intensita`; the peak only from the measurement.",
         { h: "Targets and modes" },
@@ -157,7 +157,7 @@
     {
       id: "spectrum",
       title: "Spectrum: analysis and the 3D scene",
-      src: ["core/rymembra-play/src/spettro.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs", "apps/desktop/src/parti/Spettro3D.tsx", "apps/desktop/src/parti/orologioSpettro.ts", "apps/desktop/src/parti/SchedaSpettro.tsx", "apps/desktop/src/parti/DettaglioSpettro.tsx"],
+      src: ["core/rymembra-play/src/spettro.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs", "apps/desktop/src/parti/Spettro3D.tsx", "apps/desktop/src/parti/spettro3d/costi.ts", "apps/desktop/src/parti/spettro3d/shader.ts", "apps/desktop/src/parti/spettro3d/risorse.ts", "apps/desktop/src/parti/orologioSpettro.ts", "apps/desktop/src/parti/SchedaSpettro.tsx", "apps/desktop/src/parti/DettaglioSpettro.tsx"],
       body: [
         "The callback averages channels into the spectrum ring **only while someone is looking** (`Condiviso::spettro`); the ring holds 32,768 samples and drops when full rather than waiting. `Spettro` (behind a mutex on the `Motore`, never touched by the callback) runs a hand-written radix-2 FFT over a 4,096-sample Hann window (≈ 11.7 Hz per bin at 48 kHz), floor −70 dB. A stream that stops is silence: when no sample has arrived for `SECCO` (100 ms — a pause, an underrun), a read writes the zeros that would have played into the window, at most one window per read, so the bands fall to zero instead of repeating the last frame for the whole pause. Switching the tap off empties the ring **and** the window (`Spettro::svuota`).",
         "Two reductions: octave bands (smoothing rise 0.55, fall 0.12) and fine log-spaced bands from 20 Hz to 20 kHz at a chosen resolution (`RISOLUZIONI` = 8, 16, 32, 64, 128, 256, 512, 1024; default 64), normalized to 64 bands so bar height does not depend on resolution, interpolated below bin width. The desktop thread `rymembra-spettro` sends `riproduzione:spettro` (`{ fini: u8[] }`) every 33 ms while visible, polling at 250 ms otherwise. It sleeps to absolute deadlines (`attesa_fino`: the work sits inside the step; more than 16 ms late it restarts from now rather than catching up in a burst) and never waits for the player lock: it keeps the last `PresaSpettro` and renews it with a `try_lock`.",

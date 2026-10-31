@@ -896,11 +896,45 @@ pub fn skin_installa_sorgente(
 }
 
 /// Quel che fa [`skin_installa_sorgente`], senza lo stato di Tauri attorno.
+///
+/// # La skin di un altro
+///
+/// Con una bozza, il documento non può prendere il posto di una skin
+/// installata che porta un id diverso da quello della bozza. È la regola di
+/// `studio::rinomina_bozza`, ripetuta qui perché il rifiuto della rinomina
+/// non bastava: il testo restava in `bozze/mia` con `"id": "altrui"`, valido,
+/// e «Salva e usa» (o «Tienila» dopo la prova) lo installava sotto l'id che
+/// dichiarava — sopra il pacchetto dell'altra skin, coi suoi caratteri e la
+/// sua miniatura, senza ritorno. Una bozza che porta già quell'id è invece la
+/// skin stessa che si aggiorna, ed è il secondo «Salva e usa» di ogni skin.
+///
+/// Il confronto non bada alle maiuscole: su Windows `bozze/Mia` e `bozze/mia`
+/// sono la stessa cartella, e le versioni di prima lasciavano nascere bozze
+/// col nome maiuscolo per una skin che il formato vuole minuscola.
+///
+/// Qui e non in [`installa`], che è anche la strada di `skin_installa`: chi
+/// sceglie a mano un `.ryskin` con l'id di una skin che ha già vuole
+/// aggiornarla.
 fn installa_sorgente(
     data_dir: &Path,
     sorgente: &str,
     bozza: Option<&str>,
 ) -> Result<VoceSkin, AppError> {
+    if let Some(bozza) = bozza {
+        let id = rymembra_skin::parse_skin_json(sorgente)?.id;
+        let di_un_altro = !bozza.eq_ignore_ascii_case(&id)
+            && id_sicuro(&id)
+            && cartella_skin(data_dir)
+                .join(format!("{id}.ryskin"))
+                .exists();
+        if di_un_altro {
+            return Err(
+                AppError::new(ErrorCode::SkinIdConflict { id }).with_cause(format!(
+                    "la bozza «{bozza}» dichiara l'id di una skin installata che non è la sua"
+                )),
+            );
+        }
+    }
     // La miniatura e le risorse vengono dalla bozza che lo Studio ha
     // aperto: prima si impacchettava il solo manifest, e una skin col suo
     // carattere installata da qui perdeva il carattere e la miniatura.
@@ -1058,8 +1092,9 @@ pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<b
 ///
 /// # Errori
 ///
-/// Solo quelli del database e della lettura della skin. Una copertina che non
-/// si decodifica non è un errore: è un disco senza tinta.
+/// Solo quelli del database: una skin scelta che non si legge ripiega su
+/// quella di serie, come la finestra (vedi `documento_per_accento`). Una
+/// copertina che non si decodifica non è un errore: è un disco senza tinta.
 ///
 /// # L'impronta si controlla
 ///
@@ -1118,13 +1153,13 @@ pub fn accento_copertina(
     let Some([r, g, b]) = copertine.tinta(&impronta) else {
         return Ok(None);
     };
-    // La skin si rilegge a ogni brano invece di tenerla in memoria: è un file
-    // da qualche kilobyte, e tenerne una copia vorrebbe dire tenerla allineata
-    // a `skin_scegli` — cioè aggiungere uno stato che può divergere per
-    // risparmiare un microsecondo ogni canzone. Adesso che la lettura non è più
-    // sotto il lucchetto, quel microsecondo lo paga solo chi chiama.
-    let sorgente = sorgente(&data_dir, &skin).map_err(errore)?;
-    let documento = rymembra_skin::parse_skin_json(&sorgente).map_err(errore)?;
+    // La skin si rilegge a ogni brano invece di tenerla in memoria: tenerne una
+    // copia vorrebbe dire tenerla allineata a `skin_scegli` — cioè aggiungere
+    // uno stato che può divergere. Si legge però il solo manifest, non le
+    // risorse: il pacchetto intero da disco resta, l'inflate di ogni carattere
+    // e ogni immagine no. Fuori dal lucchetto, quindi lo paga solo chi chiama.
+    // E con il ripiego di `compila_o_ripiega`: vedi `documento_per_accento`.
+    let documento = documento_per_accento(&data_dir, &skin).map_err(errore)?;
 
     let tinta = rymembra_skin::values::Rgba { r, g, b, a: 1.0 };
     Ok(
@@ -1135,6 +1170,61 @@ pub fn accento_copertina(
                 .collect()
         }),
     )
+}
+
+/// Il documento su cui calcolare l'accento: quello della skin scelta, o quello
+/// di serie se la scelta non si legge.
+///
+/// # Il solo manifest
+///
+/// Si legge con [`rymembra_skin::package::leggi_manifesto`], come
+/// [`elenco`]: le stesse guardie su indice e manifest, senza decomprimere i
+/// caratteri e le immagini, che all'accento non servono. Con [`sorgente`] —
+/// la lettura completa di [`compila`] — ogni cambio di brano decomprimeva e
+/// controllava l'intero pacchetto, fino a 60 MB, per buttare tutto tranne il
+/// testo; e il commento accanto diceva «un file da qualche kilobyte».
+///
+/// # Il ripiego
+///
+/// Se la skin scelta non si legge, la finestra indossa quella di serie
+/// ([`compila_o_ripiega`]): l'accento si calcola su quella. Prima tornava un
+/// errore che la finestra ingoiava, e in ripiego l'accento non seguiva più
+/// nessuna copertina, senza un messaggio.
+///
+/// Resta un caso che i due non vedono uguale, e va detto: un pacchetto col
+/// manifest sano e una risorsa guasta (i byte di un `.png` che non sono un
+/// PNG) non si compila, quindi la finestra indossa quella di serie, mentre qui
+/// il manifest si legge e l'accento segue i colori della skin scelta. Decidere
+/// anche questo vorrebbe dire rifare la lettura completa a ogni brano — il
+/// costo che questa funzione toglie — per un pacchetto che `skin_elenco`
+/// mostra comunque come rotto.
+fn documento_per_accento(
+    data_dir: &Path,
+    scelta: &str,
+) -> Result<rymembra_skin::SkinDocument, AppError> {
+    let della_scelta = || -> Result<rymembra_skin::SkinDocument, AppError> {
+        if let Some(testo) = rymembra_skin::di_serie(scelta) {
+            return rymembra_skin::parse_skin_json(testo);
+        }
+        if !id_sicuro(scelta) {
+            return Err(AppError::new(ErrorCode::SkinNotFound {
+                id: scelta.to_owned(),
+            }));
+        }
+        let percorso = cartella_skin(data_dir).join(format!("{scelta}.ryskin"));
+        let bytes = std::fs::read(&percorso).map_err(|_| {
+            AppError::new(ErrorCode::SkinNotFound {
+                id: scelta.to_owned(),
+            })
+        })?;
+        let manifesto = rymembra_skin::package::leggi_manifesto(&bytes)?;
+        let documento = rymembra_skin::parse_skin_json(&manifesto.source)?;
+        rymembra_skin::package::risorse_presenti(&documento, &manifesto.risorse)?;
+        Ok(documento)
+    };
+    della_scelta().or_else(|_| {
+        rymembra_skin::parse_skin_json(rymembra_skin::di_serie(DI_SERIE).unwrap_or_default())
+    })
 }
 
 // ── Le risorse: caratteri e immagini ───────────────────────────────────────
@@ -1814,6 +1904,119 @@ mod tests {
         assert_eq!(voce.anteprima.len(), 3);
         assert_eq!(voce.scheme, "dark");
         assert!(voce.variante);
+    }
+
+    #[test]
+    fn l_accento_non_dipende_dalle_risorse() {
+        // Per l'accento serve il manifest: un pacchetto con un carattere o
+        // un'immagine non si decomprime tutto a ogni brano.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        std::fs::write(
+            cartella.join("trama.ryskin"),
+            zip_a_mano(&[
+                ("skin.json", sorgente_con_id("trama").as_bytes()),
+                ("assets/x.png", b"non sono un png"),
+            ]),
+        )
+        .expect("scritta");
+        let documento = documento_per_accento(dir.path(), "trama").expect("il manifest");
+        assert_eq!(documento.id, "trama");
+    }
+
+    #[test]
+    fn ripiego_anche_per_l_accento() {
+        // La skin scelta non c'è più: la finestra indossa quella di serie, e
+        // l'accento la segue invece di sparire a ogni brano.
+        let documento = documento_per_accento(vuota(), "sparita").expect("quella di serie");
+        assert_eq!(documento.id, DI_SERIE);
+        let rotta = tempfile::tempdir().expect("cartella temporanea");
+        let cartella = rotta.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        std::fs::write(cartella.join("guasta.ryskin"), b"non sono uno zip").expect("scritta");
+        let documento = documento_per_accento(rotta.path(), "guasta").expect("quella di serie");
+        assert_eq!(documento.id, DI_SERIE);
+    }
+
+    /// I token che il motore scrive in `stile.css` per conto suo e non con
+    /// la skin, che non si trovano nel foglio come `--nome: valore;`.
+    fn difetti_mancanti(stile: &str) -> Vec<String> {
+        rymembra_skin::tokens::DIFETTI_DEL_MOTORE
+            .iter()
+            .filter_map(|(id, valore)| {
+                let css = rymembra_skin::tokens::token(id).map_or("?", |def| def.css);
+                let riga = format!("{css}: {valore};");
+                (!stile.contains(&riga)).then_some(riga)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn i_difetti_del_motore_sono_quelli_di_stile_css() {
+        // Due copie degli stessi numeri, e apposta: `stile.css` li scrive sotto
+        // `:root` per la finestra vera, dove un token che la skin non dichiara
+        // ricade lì; il compilatore in modo anteprima li prende da
+        // `DIFETTI_DEL_MOTORE`, perché l'anteprima dello Studio sta dentro la
+        // finestra e altrimenti erediterebbe i valori della skin indossata. Il
+        // foglio non si legge dal nucleo, quindi il confronto sta qui.
+        assert_eq!(difetti_mancanti(STILE), Vec::<String>::new());
+        // E la prova sa fallire: un numero cambiato nel foglio si vede.
+        let cambiato = STILE.replacen("--ritmo-1: 4px;", "--ritmo-1: 5px;", 1);
+        assert_eq!(difetti_mancanti(&cambiato), ["--ritmo-1: 4px;"]);
+    }
+
+    #[test]
+    fn salva_e_usa_non_sovrascrive_la_skin_installata_di_un_altro() {
+        // Il caso vero: la bozza «mia» dichiara l'id di una skin installata che
+        // non è sua. La rinomina l'ha già rifiutata (`studio::rinomina_bozza`),
+        // il testo è rimasto in `bozze/mia` con `"id": "altrui"`, e «Salva e
+        // usa» resta acceso perché il documento è valido.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let altrui = sorgente_con_id("altrui").replacen(
+            "\"id\": \"altrui\",",
+            "\"id\": \"altrui\", \"fonts\": { \"Prova\": { \"src\": \"prova.woff2\" } },",
+            1,
+        );
+        let installata =
+            rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
+                source: &altrui,
+                preview: None,
+                assets: &[rymembra_skin::package::SkinAsset {
+                    name: "prova.woff2".to_owned(),
+                    mime: "font/woff2",
+                    bytes: b"wOF2 finto con la firma giusta".to_vec(),
+                }],
+            })
+            .expect("impacchettata");
+        installa(dir.path(), &installata).expect("installata");
+        let file = dir.path().join("skin").join("altrui.ryskin");
+        let prima = std::fs::read(&file).expect("letta");
+
+        let bozza = dir.path().join("skin").join("bozze").join("mia");
+        std::fs::create_dir_all(&bozza).expect("bozza");
+        std::fs::write(bozza.join("skin.json"), sorgente_con_id("altrui")).expect("scritta");
+
+        let err = installa_sorgente(dir.path(), &sorgente_con_id("altrui"), Some("mia"))
+            .expect_err("la skin di un altro non si sovrascrive");
+        assert_eq!(err.code().kind().code(), "skin.idConflict");
+        assert_eq!(
+            std::fs::read(&file).expect("letta"),
+            prima,
+            "il pacchetto dell'altra skin è cambiato"
+        );
+
+        // La propria skin, invece, si riscrive a ogni «Salva e usa».
+        installa_sorgente(dir.path(), &sorgente_con_id("mia"), Some("mia")).expect("la prima");
+        installa_sorgente(dir.path(), &sorgente_con_id("mia"), Some("mia")).expect("la seconda");
+        // Anche da una bozza rimasta in una cartella con le maiuscole, che le
+        // versioni di prima lasciavano nascere: su Windows è la stessa cartella.
+        let maiuscola = dir.path().join("skin").join("bozze").join("Mia");
+        std::fs::create_dir_all(&maiuscola).expect("bozza");
+        std::fs::write(maiuscola.join("skin.json"), sorgente_con_id("mia")).expect("scritta");
+        installa_sorgente(dir.path(), &sorgente_con_id("mia"), Some("Mia")).expect("la terza");
+        // E senza bozza non c'è niente da confrontare: la strada di prima.
+        installa_sorgente(dir.path(), &sorgente_con_id("mia"), None).expect("senza bozza");
     }
 
     #[test]

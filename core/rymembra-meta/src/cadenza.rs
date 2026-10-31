@@ -35,6 +35,14 @@
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use rymembra_domain::errors::AppError;
+
+/// Come un servizio dichiara un guasto dentro una risposta riuscita.
+///
+/// Riceve il corpo di una risposta `2xx` e restituisce il guasto che ci trova
+/// scritto, o `None` se è una risposta vera. Vedi [`Cadenza::con_vaglio`].
+pub type Vaglio = fn(&[u8]) -> Option<AppError>;
+
 /// Quanti guasti di fila aprono l'interruttore.
 ///
 /// Tre e non uno: un guasto isolato capita — un pacchetto perso, un nodo che si
@@ -53,11 +61,30 @@ pub const RAFFREDDAMENTO: Duration = Duration::from_secs(5 * 60);
 /// sono lo stesso che il vecchio albero si prendeva, e per la stessa ragione.
 pub const RITMO_MUSICBRAINZ: Duration = Duration::from_millis(1100);
 
-/// Il ritmo del Cover Art Archive.
+/// Il ritmo del Cover Art Archive, e quello delle copertine dirette sui CDN di
+/// iTunes e Deezer (che hanno un cancello loro, con lo stesso passo).
 pub const RITMO_COVERART: Duration = Duration::from_millis(250);
 
-/// Il ritmo di iTunes Search, che tollera una ventina di richieste al minuto.
-pub const RITMO_ITUNES: Duration = Duration::from_millis(350);
+/// Il ritmo di iTunes Search.
+///
+/// Tre secondi e cento millisecondi. Apple documenta per questa API «circa 20
+/// richieste al minuto», cioè una ogni tre secondi; i cento millisecondi di
+/// margine sono quelli di [`RITMO_MUSICBRAINZ`], per la stessa ragione — si
+/// misura da quando la richiesta parte, e il tempo di volo resta scoperto.
+///
+/// Il valore di prima, 350 millisecondi, ne consentiva fino a 171 al minuto:
+/// otto volte il limite. Oltre il limite Apple risponde `403`, e ogni `403` è
+/// un parere in meno — con lui il genere, che dà solo iTunes, e una copertina
+/// diretta. Vedi anche [`Cadenza::con_rifiuto_come_limite`].
+///
+/// # Quel che costa
+///
+/// Il percorso per brano (`Fornitori::candidati`: MusicBrainz, poi iTunes, poi
+/// Deezer) chiede a iTunes una volta per brano, quindi adesso il passo lo detta
+/// iTunes e non più MusicBrainz: circa tre volte più lento. Mille brani senza
+/// album sono una cinquantina di minuti invece di una ventina. È il prezzo del
+/// limite dichiarato, e si paga in sottofondo.
+pub const RITMO_ITUNES: Duration = Duration::from_millis(3100);
 
 /// Il ritmo di Deezer.
 pub const RITMO_DEEZER: Duration = Duration::from_millis(220);
@@ -115,6 +142,12 @@ pub struct Cadenza {
     nome: &'static str,
     /// Quanto passa fra l'inizio di una richiesta e quello della successiva.
     intervallo: Duration,
+    /// Un `403` di questo servizio vuol dire «troppo veloce». Vedi
+    /// [`Cadenza::con_rifiuto_come_limite`].
+    rifiuto_e_limite: bool,
+    /// Come questo servizio scrive un guasto dentro un `200`, se lo fa. Vedi
+    /// [`Cadenza::con_vaglio`].
+    vaglio: Option<Vaglio>,
     stato: Mutex<Stato>,
 }
 
@@ -125,12 +158,65 @@ impl Cadenza {
         Self {
             nome,
             intervallo,
+            rifiuto_e_limite: false,
+            vaglio: None,
             stato: Mutex::new(Stato {
                 prossima: Instant::now(),
                 guasti: 0,
                 riapre: None,
             }),
         }
+    }
+
+    /// La stessa cadenza, per un servizio che segnala il limite con un `403`.
+    ///
+    /// # Perché serve
+    ///
+    /// Di serie un `403` non è un guasto del servizio: è un no, come un `400`, e
+    /// contarlo aprirebbe l'interruttore per un difetto nostro. Ma iTunes
+    /// Search, oltre il suo limite di frequenza, risponde proprio `403` e non
+    /// `429`: senza questa bandiera ogni rifiuto chiamava
+    /// [`Cadenza::riuscita`], l'interruttore non si apriva mai, e si
+    /// continuava a bussare a pieno ritmo. Con la bandiera tre `403` di fila
+    /// sono tre guasti, e il servizio riposa per [`RAFFREDDAMENTO`]: nel
+    /// frattempo è «una fonte in meno», e il consenso fra MusicBrainz e Deezer
+    /// resta possibile.
+    #[must_use]
+    pub fn con_rifiuto_come_limite(mut self) -> Self {
+        self.rifiuto_e_limite = true;
+        self
+    }
+
+    /// Se un `403` di questo servizio è un limite di frequenza.
+    #[must_use]
+    pub const fn rifiuto_e_limite(&self) -> bool {
+        self.rifiuto_e_limite
+    }
+
+    /// La stessa cadenza, per un servizio che dichiara i suoi guasti dentro
+    /// una risposta `200` (Deezer).
+    ///
+    /// # Perché sta qui
+    ///
+    /// Per la stessa ragione di [`Self::con_rifiuto_come_limite`]: è il modo in
+    /// cui **quel** servizio dice di essere in difficoltà, e chi lo interroga
+    /// deve leggerlo prima di contare la risposta come riuscita e prima di
+    /// ricordarla. Stando nella cadenza vale per ogni richiesta a quel
+    /// servizio, con il deposito o senza, e non si può dimenticare in un punto
+    /// solo. Chi lo applica è `Fornitori::json_senza_memoria` (alla risposta)
+    /// e `Fornitori::json_con_memoria` (a quel che il deposito ricordava).
+    #[must_use]
+    pub fn con_vaglio(mut self, vaglio: Vaglio) -> Self {
+        self.vaglio = Some(vaglio);
+        self
+    }
+
+    /// Il guasto che il corpo di una risposta riuscita dichiara, secondo il
+    /// vaglio di questo servizio. `None` per una risposta vera, e sempre per
+    /// un servizio senza vaglio.
+    #[must_use]
+    pub fn guasto_nel_corpo(&self, corpo: &[u8]) -> Option<AppError> {
+        self.vaglio.and_then(|vaglio| vaglio(corpo))
     }
 
     /// Come si chiama il servizio.
@@ -200,7 +286,8 @@ impl Cadenza {
     /// Si chiama per i guasti di **trasporto** e per i `5xx`, non per un `404`:
     /// «non ce l'ho» è una risposta, e contarla come un guasto spegnerebbe
     /// l'interruttore sul servizio che sta funzionando meglio di tutti — quello
-    /// che risponde subito di no.
+    /// che risponde subito di no. E per un `403`, ma solo sulle cadenze
+    /// [`Cadenza::con_rifiuto_come_limite`].
     pub fn guasto(&self) {
         let mut stato = self.stato();
         stato.guasti = stato.guasti.saturating_add(1);

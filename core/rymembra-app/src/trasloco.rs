@@ -391,7 +391,11 @@ fn e_cartella_vera(percorso: &Path) -> bool {
     fs::symlink_metadata(percorso).is_ok_and(|dati| dati.is_dir())
 }
 
-/// La cartella non ha niente dentro (o non si riesce a dire che ha qualcosa).
+/// La cartella non ha niente dentro.
+///
+/// Se non si lascia leggere — o il suo elenco si interrompe alla prima voce —
+/// **non** è vuota: nel dubbio si suppone che contenga qualcosa, e il trasloco
+/// non sovrascrive. È la regola «mai sovrascrivere» del modulo, vista da qui.
 fn e_vuota(cartella: &Path) -> bool {
     fs::read_dir(cartella).is_ok_and(|mut voci| voci.next().is_none())
 }
@@ -1126,6 +1130,19 @@ mod prove {
 
     fn os(testo: &str) -> Option<OsString> {
         Some(OsString::from(testo))
+    }
+
+    #[test]
+    fn una_cartella_che_non_si_legge_non_e_vuota() {
+        // Fissa il comportamento prudente che il commento di `e_vuota`
+        // descriveva al contrario: nel dubbio, piena.
+        let base = tempfile::tempdir().expect("cartella");
+        let vuota = base.path().join("vuota");
+        fs::create_dir(&vuota).expect("cartella vuota");
+        assert!(e_vuota(&vuota));
+        assert!(!e_vuota(&base.path().join("non-c-e")));
+        fs::write(vuota.join("x"), b"x").expect("un file");
+        assert!(!e_vuota(&vuota));
     }
 
     #[test]

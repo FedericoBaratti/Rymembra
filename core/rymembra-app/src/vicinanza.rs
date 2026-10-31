@@ -23,19 +23,23 @@
 //! proporti, ha il tuo. Un vicino che non possiedi non è una raccomandazione, è
 //! una vetrina — e una coda che propone brani che non puoi sentire è la cosa
 //! peggiore che questo modulo potrebbe fare. L'effetto collaterale è che la
-//! tabella resta piccola per costruzione: non può avere più righe di quanti
-//! brani hai.
+//! tabella resta piccola per costruzione: al più [`VICINI_TENUTI`] righe per
+//! brano, le due fonti insieme.
 //!
 //! # Le due fonti, e perché la seconda ha un tetto più basso
 //!
 //! * `lb-registrazione` — i vicini di **questo** brano. Precisa, e richiede che
-//!   l'arricchimento gli abbia già trovato un `mb_recording_id`.
+//!   l'arricchimento gli abbia già trovato un `mb_recording_id`. Viene prima.
 //! * `lb-artista` — i brani degli artisti vicini al **suo** artista. È il
-//!   ripiego per la metà di libreria che un identificativo di registrazione non
-//!   ce l'ha, ed è per costruzione più larga: dice «questo genere di gente»,
-//!   non «questa canzone». Per questo entra con [`SCONTO_ARTISTA`] addosso: fra
-//!   un vicino di registrazione e uno d'artista con lo stesso numero, il primo
-//!   sa qualcosa che il secondo sta indovinando.
+//!   ripiego: riempie i posti che la registrazione lascia vuoti — tutti, per la
+//!   metà di libreria che un identificativo di registrazione non ce l'ha, o i
+//!   cui vicini di registrazione non sono in casa — ed è per costruzione più
+//!   larga: dice «questo genere di gente», non «questa canzone». Per questo
+//!   entra con [`SCONTO_ARTISTA`] addosso: fra un vicino di registrazione e uno
+//!   d'artista con lo stesso numero, il primo sa qualcosa che il secondo sta
+//!   indovinando. E ogni artista vicino porta al più [`TETTO_PER_ARTISTA`] dei
+//!   suoi brani, i più ascoltati: tutti, su una libreria vera, voleva dire
+//!   centinaia di righe per brano.
 //!
 //! # Le finestre di lucchetto
 //!
@@ -63,7 +67,7 @@ use crate::library;
 /// occupato il filo dei metadati mentre l'utente aspetta una copertina.
 pub const LOTTO: usize = 4 * MBID_PER_RICHIESTA;
 
-/// Quanti vicini si tengono per brano.
+/// Quanti vicini si tengono per brano, le due fonti insieme.
 ///
 /// Venti. Oltre non serve: il riordino della coda guarda i primi candidati che
 /// il motore delle regole gli passa, e un vicino in ventunesima posizione non
@@ -265,27 +269,35 @@ pub fn registra(tx: &Transaction<'_>, trovati: &[Trovato], adesso: i64) -> Resul
         // nuova sostituisce la precedente, non ci si somma. Senza, un vicino
         // che ListenBrainz ha smesso di considerare tale resterebbe in tabella
         // per sempre, perché un `INSERT OR REPLACE` non cancella quel che non
-        // ricompare.
+        // ricompare. È anche quel che rende [`VICINI_TENUTI`] un tetto per
+        // brano e non per passata.
         tx.execute(
             "DELETE FROM brano_vicino WHERE track_id = ?1",
             [trovato.track_id],
         )
         .map_err(|err| library::db_error("pulizia dei vicini di un brano", &err))?;
 
-        scritte = scritte.saturating_add(scrivi_fonte(
+        // La registrazione prima, l'artista nei posti che lascia: vedi le due
+        // fonti in testa al modulo.
+        let da_registrazione = scrivi_fonte(
             tx,
             trovato.track_id,
             &trovato.vicini,
             "lb-registrazione",
             adesso,
-        )?);
-        scritte = scritte.saturating_add(scrivi_fonte(
+            VICINI_TENUTI,
+        )?;
+        let da_artista = scrivi_fonte(
             tx,
             trovato.track_id,
             &trovato.artisti,
             "lb-artista",
             adesso,
-        )?);
+            VICINI_TENUTI.saturating_sub(da_registrazione),
+        )?;
+        scritte = scritte
+            .saturating_add(da_registrazione)
+            .saturating_add(da_artista);
 
         // Si segna **sempre**, anche a zero vicini: è tutta la ragione per cui
         // `brano_vicino_stato` è una tabella a parte. Senza questa riga, un
@@ -307,37 +319,60 @@ pub fn registra(tx: &Transaction<'_>, trovati: &[Trovato], adesso: i64) -> Resul
     Ok(scritte)
 }
 
+/// Quanti brani porta, al più, un artista vicino.
+///
+/// Tre: i suoi più ascoltati. Un artista vicino dice «questo genere di gente»,
+/// e tre brani bastano a dirlo; tutti i suoi brani in libreria voleva dire, su
+/// una libreria vera, centinaia di righe per brano e milioni in tutto — la
+/// tabella che ogni brano tolto doveva poi scorrere per la cascata.
+pub const TETTO_PER_ARTISTA: usize = 3;
+
 /// Le righe di una fonte sola, risolte da identificativo a brano di casa.
 ///
 /// La risoluzione avviene **dentro** l'inserimento, con una sottoquery, e non
 /// leggendo prima gli identificativi in una mappa: sono al più venti righe per
 /// brano e SQLite ha già l'indice giusto: portarle fuori e rimetterle dentro
 /// costerebbe più della query che si vuole evitare.
+///
+/// `posti` è quante righe può ancora scrivere per questo brano: i vicini si
+/// prendono nell'ordine in cui arrivano, dal più forte, finché ce n'è.
 fn scrivi_fonte(
     tx: &Transaction<'_>,
     track_id: i64,
     vicini: &[(String, f64)],
     fonte: &str,
     adesso: i64,
+    posti: usize,
 ) -> Result<usize, AppError> {
-    if vicini.is_empty() {
+    if vicini.is_empty() || posti == 0 {
         return Ok(0);
     }
     let sql = match fonte {
-        // Un vicino d'artista è un artista: i suoi brani in libreria sono tutti
-        // vicini, e sono quelli che si scrivono.
+        // Un vicino d'artista è un artista: si scrivono i suoi brani più
+        // ascoltati, al più [`TETTO_PER_ARTISTA`] e mai più dei posti rimasti
+        // (`?6`). La `SELECT` interna e il `WHERE true` non sono pignoleria:
+        // un `INSERT … SELECT` con `ON CONFLICT` ha bisogno di una `WHERE`
+        // perché SQLite non legga `ON` come la condizione di una giunzione.
         "lb-artista" => {
             "INSERT INTO brano_vicino (track_id, vicino_id, punteggio, fonte, raccolto_at)
-             SELECT ?1, t.id, ?3, ?4, ?5 FROM tracks t
-             JOIN artists a ON a.name = t.artist
-             WHERE a.mb_artist_id = ?2 AND t.id <> ?1
+             SELECT ?1, scelti.id, ?3, ?4, ?5 FROM (
+               SELECT t.id FROM tracks t
+               JOIN artists a ON a.name = t.artist
+               WHERE a.mb_artist_id = ?2 AND t.id <> ?1
+               ORDER BY t.play_count DESC, t.id
+               LIMIT ?6
+             ) scelti WHERE true
              ON CONFLICT(track_id, vicino_id, fonte)
                DO UPDATE SET punteggio = MAX(punteggio, ?3), raccolto_at = ?5"
         }
         _ => {
             "INSERT INTO brano_vicino (track_id, vicino_id, punteggio, fonte, raccolto_at)
-             SELECT ?1, t.id, ?3, ?4, ?5 FROM tracks t
-             WHERE t.mb_recording_id = ?2 AND t.id <> ?1
+             SELECT ?1, scelti.id, ?3, ?4, ?5 FROM (
+               SELECT t.id FROM tracks t
+               WHERE t.mb_recording_id = ?2 AND t.id <> ?1
+               ORDER BY t.id
+               LIMIT ?6
+             ) scelti WHERE true
              ON CONFLICT(track_id, vicino_id, fonte)
                DO UPDATE SET punteggio = MAX(punteggio, ?3), raccolto_at = ?5"
         }
@@ -347,6 +382,15 @@ fn scrivi_fonte(
         .map_err(|err| library::db_error("inserimento di un vicino", &err))?;
     let mut scritte = 0_usize;
     for (mbid, punteggio) in vicini {
+        let rimasti = posti.saturating_sub(scritte);
+        if rimasti == 0 {
+            break;
+        }
+        let tetto = if fonte == "lb-artista" {
+            rimasti.min(TETTO_PER_ARTISTA)
+        } else {
+            rimasti
+        };
         // Il `CHECK (punteggio BETWEEN 0 AND 1)` dello schema è una rete, non un
         // filtro: un punteggio fuori scala qui vorrebbe dire che il servizio ha
         // cambiato normalizzazione, e serrarlo è preferibile a far fallire una
@@ -354,7 +398,14 @@ fn scrivi_fonte(
         let punteggio = punteggio.clamp(0.0, 1.0);
         scritte = scritte.saturating_add(
             statement
-                .execute(rusqlite::params![track_id, mbid, punteggio, fonte, adesso])
+                .execute(rusqlite::params![
+                    track_id,
+                    mbid,
+                    punteggio,
+                    fonte,
+                    adesso,
+                    i64::try_from(tetto).unwrap_or(i64::MAX)
+                ])
                 .map_err(|err| library::db_error("inserimento di un vicino", &err))?,
         );
     }
@@ -454,6 +505,107 @@ mod prove {
             conto.get(&1),
             Some(&2),
             "non ha preso tutti i brani dell'artista"
+        );
+    }
+
+    /// Aggiunge un artista con il suo identificativo e `quanti` brani suoi.
+    fn artista_con_brani(connection: &Connection, numero: i64, quanti: i64) -> String {
+        let mbid = format!("dddddddd-0000-0000-0000-{numero:012}");
+        let nome = format!("Vicino {numero}");
+        connection
+            .execute(
+                "INSERT INTO artists (name, mb_artist_id) VALUES (?1, ?2)",
+                rusqlite::params![nome, mbid],
+            )
+            .expect("artista");
+        for n in 0..quanti {
+            let id = 1_000 * numero + n;
+            connection
+                .execute(
+                    "INSERT INTO tracks
+                         (id, path, track_key, title, artist, album, album_key,
+                          duration_ms, file_size, date_added, date_modified, play_count)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'X', 'x', 1000, 1, 1, 1, ?6)",
+                    rusqlite::params![
+                        id,
+                        format!("{id}.mp3"),
+                        format!("k{id}"),
+                        format!("T{id}"),
+                        nome,
+                        n % 5
+                    ],
+                )
+                .expect("brano");
+        }
+        mbid
+    }
+
+    /// Un artista vicino con cento brani in libreria non ne porta cento.
+    ///
+    /// Prima ogni brano dell'artista vicino diventava una riga, per ognuno dei
+    /// venti artisti tenuti e per ogni brano dello stesso artista: su una
+    /// libreria vera milioni di righe, contro i venti per brano che
+    /// [`VICINI_TENUTI`] dichiara.
+    #[test]
+    fn un_artista_vicino_non_porta_piu_del_tetto() {
+        let mut connection = libreria();
+        let altro = artista_con_brani(&connection, 7, 100);
+        let tx = connection.transaction().expect("transazione");
+        registra(
+            &tx,
+            &[Trovato {
+                track_id: 1,
+                vicini: Vec::new(),
+                artisti: vec![(altro, 0.7)],
+            }],
+            1_000,
+        )
+        .expect("registrazione");
+        tx.commit().expect("commit");
+        let conto = quanti_vicini(&connection).expect("conteggio");
+        assert!(
+            conto.get(&1).copied().unwrap_or(0) <= VICINI_TENUTI,
+            "{conto:?}"
+        );
+    }
+
+    /// Le due fonti insieme non passano il tetto per brano, e la registrazione
+    /// viene prima: l'artista riempie i posti che lascia.
+    #[test]
+    fn le_due_fonti_insieme_stanno_nel_tetto() {
+        let mut connection = libreria();
+        let artisti: Vec<(String, f64)> = (10..20)
+            .map(|numero| (artista_con_brani(&connection, numero, 10), 0.5))
+            .collect();
+        let tx = connection.transaction().expect("transazione");
+        registra(
+            &tx,
+            &[Trovato {
+                track_id: 1,
+                vicini: vec![
+                    ("bbbbbbbb-0000-0000-0000-000000000002".to_owned(), 1.0),
+                    ("bbbbbbbb-0000-0000-0000-000000000003".to_owned(), 0.9),
+                ],
+                artisti,
+            }],
+            1_000,
+        )
+        .expect("registrazione");
+        tx.commit().expect("commit");
+        let per_fonte = |fonte: &str| -> usize {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM brano_vicino WHERE track_id = 1 AND fonte = ?1",
+                    [fonte],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|n| usize::try_from(n).unwrap_or(0))
+                .expect("conteggio")
+        };
+        assert_eq!(per_fonte("lb-registrazione"), 2);
+        assert_eq!(
+            per_fonte("lb-registrazione") + per_fonte("lb-artista"),
+            VICINI_TENUTI
         );
     }
 

@@ -104,6 +104,39 @@ const PAUSA_FRA_I_TENTATIVI: Duration = Duration::from_millis(15);
 /// `pid` e lo stesso numero di contatore: allora si passa al numero dopo.
 const TENTATIVI_DI_NOME: u32 = 8;
 
+/// Un file del cloud non si scrive: `cloud.readOnly`, **prima** di toccare
+/// qualunque cosa.
+///
+/// # Perché qui, e non in chi chiama
+///
+/// Perché Rymembra chiede ai servizi il solo permesso di lettura
+/// (`Files.Read`, `drive.readonly`, `files.content.read`), e un percorso
+/// `nuvola://…` passato a `std::fs` non è un file del servizio: è un nome che
+/// Windows prenderebbe per una cartella relativa `nuvola:` — e su un disco
+/// qualunque `create_dir_all` la creerebbe pure. Chi scrive file passa da qui
+/// (le due scritture di questo modulo, e quelle dei tag in
+/// [`crate::tag_scrittura`]): una guardia in fondo alla strada vale per tutte
+/// le strade, anche quelle di domani.
+///
+/// La correzione che l'utente voleva scrivere nel file resta nel database
+/// (`track_overrides`), dove vale come sempre.
+///
+/// # Errori
+///
+/// `cloud.readOnly` se il percorso è del cloud.
+pub fn sola_lettura(percorso: &Path) -> Result<(), AppError> {
+    if percorso
+        .to_str()
+        .is_some_and(rymembra_domain::nuvola::e_nuvola)
+    {
+        return Err(AppError::new(ErrorCode::CloudReadOnly).with_cause(format!(
+            "{}: Rymembra ha solo il permesso di lettura",
+            percorso.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Scrive `byte` in `percorso` in modo che nessuno possa leggerne metà.
 ///
 /// Crea le cartelle che mancano. Se `percorso` esiste già viene **sostituito**,
@@ -114,13 +147,15 @@ const TENTATIVI_DI_NOME: u32 = 8;
 ///
 /// # Errori
 ///
-/// Quelli di [`io_error`], col percorso **vero** e non quello del temporaneo
+/// `cloud.readOnly` per un percorso del cloud (vedi [`sola_lettura`]); poi
+/// quelli di [`io_error`], col percorso **vero** e non quello del temporaneo
 /// quando è il rinomina a fallire: è il file che l'utente riconosce, e il nome
 /// temporaneo non esiste più quando legge il messaggio. Una scrittura che
 /// fallisce prima del rinomina porta il percorso del temporaneo, perché è lì
 /// che il disco ha detto di no — ed è la differenza fra «disco pieno» su una
 /// cartella e su un'altra.
 pub fn scrivi_atomico(percorso: &Path, byte: &[u8]) -> Result<(), AppError> {
+    sola_lettura(percorso)?;
     if let Some(cartella) = percorso.parent()
         && !cartella.as_os_str().is_empty()
     {
@@ -227,7 +262,8 @@ pub fn riserva_rimasta(err: &AppError) -> bool {
 ///
 /// # Errori
 ///
-/// Quelli di [`io_error`] se la riserva non si fa; quelli di `modifica` se la
+/// `cloud.readOnly` per un percorso del cloud (vedi [`sola_lettura`]);
+/// quelli di [`io_error`] se la riserva non si fa; quelli di `modifica` se la
 /// modifica fallisce e l'originale è stato rimesso com'era; `fs.writeFailed`
 /// col percorso della riserva e [`RISERVA_RIMASTA`] nel dettaglio se il
 /// ripristino non è riuscito.
@@ -235,6 +271,7 @@ pub fn modifica_con_riserva(
     percorso: &Path,
     modifica: impl FnOnce(&Path) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
+    sola_lettura(percorso)?;
     let (riserva, prenotato) = apri_temporaneo(percorso)?;
     drop(prenotato);
     // Da qui la guardia: finché la riserva non è intera, cadere vuol dire
@@ -571,6 +608,33 @@ mod prove {
             .collect();
         nomi.sort();
         nomi
+    }
+
+    #[test]
+    fn un_file_del_cloud_non_si_scrive_e_non_si_tocca_niente() {
+        // Un percorso `nuvola://…` passato a `std::fs` sarebbe una cartella
+        // relativa `nuvola:` nella cartella di lavoro: la guardia viene prima
+        // di `create_dir_all`, prima del temporaneo, prima della modifica.
+        let percorso = Path::new("nuvola://onedrive-abcdefgh/Musica/copertina.jpg");
+        let errore = scrivi_atomico(percorso, b"x").expect_err("sola lettura");
+        assert_eq!(
+            errore.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::CloudReadOnly
+        );
+        let chiamata = std::cell::Cell::new(false);
+        let errore = modifica_con_riserva(percorso, |_| {
+            chiamata.set(true);
+            Ok(())
+        })
+        .expect_err("sola lettura");
+        assert_eq!(
+            errore.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::CloudReadOnly
+        );
+        assert!(!chiamata.get(), "la modifica non è nemmeno partita");
+        assert!(!Path::new("nuvola:").exists(), "niente cartelle inventate");
+        // Un percorso del disco passa.
+        assert!(sola_lettura(Path::new("C:/Musica/a.flac")).is_ok());
     }
 
     #[test]

@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.1.0"
+version = "3.2.0"
 edition = "2024"
 # Era 1.85, che è il minimo dell'edizione 2024. L'ha alzata prima `opus-pure`,
 # il decodificatore Opus di `rymembra-play`, che ne dichiara 1.88; poi `tauri
@@ -77,9 +77,18 @@ serde_json = "1"
 # installata a mano, e che fa sparire una radice ritirata con gli
 # aggiornamenti di Windows invece che con la release successiva di Rymembra. La
 # feature porta solo l'interruttore: accenderlo è di `rymembra_net::http`, dove
-# si costruisce l'agente. Nel `Cargo.lock` non entra niente di nuovo:
-# `rustls-platform-verifier` c'era già, lo usa il `reqwest` dell'updater.
-ureq = { version = "3.4", features = ["platform-verifier"] }
+# si costruisce l'agente. Per questa nel `Cargo.lock` non entra niente di
+# nuovo: `rustls-platform-verifier` c'era già, lo usa il `reqwest` dell'updater.
+#
+# `win-system-proxy`: il proxy lo dice Windows (Impostazioni → Proxy, cioè
+# `ProxyEnable`/`ProxyServer`/`ProxyOverride` del registro), come per Edge e per
+# il `reqwest` dell'updater. Senza, `ureq` legge solo `HTTPS_PROXY` e compagnia
+# dall'ambiente, e su un portatile d'ufficio senza uscita diretta tutta la rete
+# di Rymembra cadeva mentre l'aggiornamento funzionava. Porta `winreg` 0.56 nel
+# `Cargo.lock`, accanto alla 0.55 che c'era già: un doppione di versione, che
+# `cargo deny` segnala soltanto. La regola `<local>` che `ureq` scarta, e i
+# limiti che restano, stanno in `rymembra_net::http`.
+ureq = { version = "3.4", features = ["platform-verifier", "win-system-proxy"] }
 flate2 = "1"
 # L'impronta del contenuto. Sta qui e non più nel solo `rymembra-app` da quando la
 # calcolano in due: il backup, per sapere se quei byte sono già lassù, e la
@@ -107,9 +116,12 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # COM con la barra e mettersi in mezzo ai messaggi della finestra, e nessuna
 # dipendenza seria lo fa al posto nostro — come invece fanno `souvlaki` e
 # `trash`. Quel crate non eredita questa tabella: ne ha una sua, uguale tranne
-# `unsafe_code = "deny"`, e l'`unsafe` sta in un solo modulo, `finestra.rs`,
-# con ogni blocco che dice perché è corretto. Qui sotto non cambia niente, e
-# per tutti gli altri crate resta `forbid`.
+# `unsafe_code = "deny"`, e l'`unsafe` sta in due posti dichiarati, il modulo
+# `finestra.rs` e la funzione di `unita.rs` che chiede a Windows il genere di
+# un'unità (`GetDriveTypeW`: una chiavetta o un CD non hanno il Cestino, e
+# «Elimina dal disco» lo deve sapere), con ogni blocco che dice perché è
+# corretto. Qui sotto non cambia niente, e per tutti gli altri crate resta
+# `forbid`.
 unsafe_code = "forbid"
 missing_docs = "warn"
 

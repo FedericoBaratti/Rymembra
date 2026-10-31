@@ -5,18 +5,21 @@ Format [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions
 
 ## How versioning works here
 
-One number for the whole monorepo: the root and the six workspaces always
-declare the same version, and `npm run check:version` fails `verify` if they
-don't. It changes with `npm run version:set -- <version>`, never by hand.
+One number for the whole monorepo. It is written in four files — the root
+`Cargo.toml`, which the sixteen workspace members inherit, `apps/desktop/package.json`,
+`apps/desktop/src-tauri/tauri.conf.json` and `Cargo.lock` — and `npm run
+check:version` fails `verify` if they don't agree. It changes with `npm run
+version:set -- <version>`, never by hand.
 
-Why one number instead of six: the version ends up in three places the user sees
-— the installer's name, `app.getVersion()` in the startup log, and the `version`
-the phone reads from `/health` to decide whether the protocol is compatible —
-and those three places read it from different `package.json` files. Six
-independent numbers are six chances to diverge; in the old tree's `release/`
-folder there are still `Rymembra Setup 0.9.13.7.26.2.exe` and `0.9.14.7.26.2.exe`
-sitting next to `0.9.14.7.26.3.exe`, which is this problem in the form of
-artifacts.
+Why one number instead of four: the version ends up in places the user sees —
+the installer's name, the version in the startup log and in *Settings →
+Updates*, the release the update check compares with — and those places read it
+from different files. Independent numbers are chances to diverge; in the old
+tree's `release/` folder there are still `Rymembra Setup 0.9.13.7.26.2.exe` and
+`0.9.14.7.26.2.exe` sitting next to `0.9.14.7.26.3.exe`, which is this problem
+in the form of artifacts. (That tree also had a phone app, which read the
+version to decide whether the protocol was compatible; it has not been
+rewritten yet.)
 
 What increments what:
 
@@ -85,6 +88,620 @@ everything else, which is most of what happens here.
 Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
+
+## [3.2.0] — 2026-10-27
+
+**Folders in the cloud.** A music folder can now live on OneDrive, Google
+Drive, Dropbox or any WebDAV server (Nextcloud, ownCloud, pCloud, Koofr,
+kDrive…) and sit in the library next to the folders on the disk: same lists,
+same albums, same plays and ratings, same «Folders» panel. Nothing is synced to
+the disk first. The tracks appear while the service is still listing them, and
+they are streamed when you play them. OneDrive, Google Drive and Dropbox are
+reached through an app **you** register with Microsoft, Google and Dropbox,
+and Rymembra walks you through it: no app is built into Rymembra, for any
+service, the Drive backup included. It is a minor and not a patch because a
+library with cloud folders, synced to a 3.1.x, shows those folders there as
+unreachable: the copy that stays behind has to keep up. It also migrates the
+schema, which by the 2.3.1 rule is said in its own section (see Database).
+
+After the date in the heading, and still as 3.2.0, the whole code was read
+again and what that review found was fixed in place: see «Fixed — the
+whole-code review», and the third migration under Database. A 3.2.0 built
+before the review has the same number, and refuses a library the later one
+has opened.
+
+### New — folders in the cloud
+
+- **One place to add a folder.** «Add folder…» opens a single dialog for every
+  source: «This PC» as before, then each service. A service you have not
+  connected yet explains what will happen and connects with one button; if
+  you have not registered an app for it yet, the dialog shows the steps first
+  (see the next section). OneDrive, Google Drive and Dropbox connect in the
+  system browser, and Rymembra asks only to **read** your files. WebDAV takes
+  an address, a user and an app password. Then you browse the service's
+  folders as you would on the disk and pick one. Several accounts per service
+  are fine.
+- **Instant, in the order you notice it.**
+  - The folder is in the library as soon as the service has said where it is,
+    and the first tracks follow the first page of the listing. A large folder
+    keeps arriving while you are already listening.
+  - Tags are read afterwards, in the background, a few hundred kilobytes per
+    track, and the rows fill in. On OneDrive (personal) title, artist, album
+    and duration are there from the first second, because the listing carries
+    them.
+  - A track starts after its first 256 KB; seeking costs one request.
+  - A change on the service reaches the library by itself: within seconds on
+    Dropbox, which can wait for changes, and within a minute on OneDrive and
+    Google Drive. On WebDAV, Nextcloud and ownCloud announce a change in the
+    folder's tag, which triggers a new listing; other servers are listed again
+    every 30 minutes.
+- **The scan takes turns.** Reading the tags of twenty thousand tracks on a
+  service takes a while, so it happens in rounds of 200 files. Between rounds,
+  the scans of the folders on the disk get their turn. A service that asks
+  Rymembra to slow down is obeyed: the round ends early, and nothing is given
+  up.
+- **A cache of what you listen to.** The tracks you play stay on the disk up to
+  a ceiling (200 MB by default, from 200 MB to 10 GB in *Settings → Folders
+  and scanning*). The oldest go first, and a replay starts from the disk. It
+  can be switched off, and emptied. It is never used for the free catalogs,
+  whose terms forbid it.
+- **Loudness and similarity without downloading the library.** Rymembra
+  measures a cloud track (EBU R128, and the fingerprint behind «Similar
+  tracks») from the complete copy that listening left in the cache, right
+  after the track ends. It never downloads a track just to measure it. With the
+  cache off, cloud tracks use the ReplayGain/R128 tags they carry.
+- **Read-only, and it says so.** A cloud track cannot be deleted from Rymembra,
+  its tags are not written back, and a `.lrc` is never written next to it.
+  Corrections stay in the library, as they always have. «Show in folder» becomes
+  «Open on OneDrive» (or Drive, Dropbox, Nextcloud) in the browser. M3U exports
+  skip cloud tracks, as they skip catalog tracks.
+- **Listen together** works with the host's cloud tracks: the host reads them
+  and serves them to the other PCs, checking at every read that the file has
+  not changed on the service.
+- **Disconnecting** removes the account's secrets, its listing and its cached
+  tracks. Its folders stay in the library, dimmed, ready for when you connect
+  it again — then they are listed again by themselves — unless you also choose
+  to remove them. A folder that arrived with sync from another PC appears the
+  same way; after you connect the account here, choose it again in «Add
+  folder» (see Known limits).
+- **A chosen folder renamed or moved on the service.** On OneDrive and Google
+  Drive the library follows it within a minute: its tracks take the new path
+  and keep their plays, ratings and playlists, as when a disk changes letter.
+  On Dropbox and WebDAV a renamed folder is a new folder: the old one stays in
+  the library, dimmed, with its tracks, and says «moved or removed on the
+  service: choose it again». The same for a chosen folder deleted on the
+  service. In no case does the empty path left behind count as an empty
+  folder: nothing is removed from the library because a folder is no longer
+  where it was chosen.
+- **Accounts, cache and your apps** each have a card in *Settings → Folders
+  and scanning*. The «Folders» panel shows a cloud folder with its service's
+  name.
+
+### New — your own app at each service
+
+A desktop program cannot keep a secret: whatever is compiled into it, `strings`
+finds in half a second. One app shared by every user would put all of them on
+the same quota — which anybody could use up by copying its ID out of the
+executable — and behind the same publisher, which means the same review: Google
+asks for a security assessment before an app can read Drive (`drive.readonly`)
+for the public, Dropbox for its approval beyond fifty users, Microsoft for a
+verified publisher before a work or school directory accepts the consent. With
+an app of your own the quota is yours, you give the consent to yourself, and
+nobody can switch it off for everybody else.
+
+- **Nothing is compiled in.** Rymembra carries no client ID for any service.
+  The build no longer reads `RYMEMBRA_GOOGLE_CLIENT_ID` and
+  `RYMEMBRA_GOOGLE_CLIENT_SECRET` from the environment, nor an
+  `oauth.local.toml` (nor the Microsoft and Dropbox counterparts that existed
+  for a while during this release's development), and
+  `oauth.local.toml.esempio` is gone. The installers published here never
+  carried a client; now a build of your own cannot either. `.gitignore` still
+  lists `oauth.local.toml`, so one left over from before is not committed by
+  mistake.
+- **You register the app, and Rymembra shows you how.** The new card «Your
+  apps», in *Settings → Folders and scanning*, keeps the apps you registered:
+  at Microsoft Entra for OneDrive, in the Dropbox App Console for Dropbox, in
+  the Google Cloud Console for the Drive backup and the Google Drive folders.
+  For each platform it lists the steps, with the exact return addresses and
+  permissions to type, and a button that opens the console in the browser.
+  Those addresses and permissions are read from the same constants Rymembra
+  uses when it talks to the provider, so the screen cannot say one port while
+  the code uses another. The «Add folder» dialog and the backup's section lead
+  to the same steps when an app is missing. Then you paste the app's ID — and,
+  for Google, its client secret — and Rymembra checks its shape before saving
+  it: a GUID for Microsoft, lowercase letters and digits for a Dropbox app key,
+  an ID ending in `.apps.googleusercontent.com` for Google. A client secret
+  pasted with its quotes around it is refused, instead of failing later at
+  the consent.
+- **One Google app for both, unless you want two.** By default the same Google
+  app serves the backup and the Drive folders, with two separate consents
+  (`drive.appdata` for the backup, `drive.readonly` for the music). You can
+  register more Google apps and choose which one the backup uses, and which
+  one an account connects with. Google revokes an app's consent as a whole,
+  not one token: so disconnecting the backup revokes nothing while a Drive
+  account uses the same app (the diary says so), and changing the backup's app
+  never revokes.
+- **Changing an app's ID asks first.** The accounts connected through it gave
+  their consent to the old ID, so they show «reconnect»; their folders and
+  tracks stay in the library, with their plays and ratings. Putting the old ID
+  back brings those accounts back by themselves. Changing only a Google app's
+  secret reopens them with the new one, without a reconnection. If the app is
+  the backup's, the backup disconnects and asks to be connected again. Removing
+  an app leaves its accounts to be reconnected with another one, and their
+  folders in place.
+- **The backup's private folder on Drive belongs to the app that wrote it.**
+  With another Google app the earlier backups may not be visible, nor the
+  other PCs in sync through Drive: choosing another app for the backup says
+  so before it happens. Use the same app on every PC.
+- **Disconnecting the backup no longer deletes the Google client** you typed:
+  the app stays in «Your apps», for the next connection and for the Drive
+  folders.
+- **Coming from 3.1.** If you had typed your Google project's client in the
+  backup's settings, migration 037 turns it into the app «Google», already
+  bound to the backup: nothing to type again, nothing to reconnect. Its secret
+  stays where 3.1 kept it in the keychain until you type it again. A project
+  set up for the backup alone has only the `drive.appdata` scope on its consent
+  screen: before adding a Drive folder with it, add `drive.readonly` as the
+  steps say.
+
+### How the services are reached
+
+- **OneDrive** through Microsoft Graph, with your app registered in Microsoft
+  Entra as a public client: platform «Mobile and desktop applications»,
+  return address `http://localhost`, public client flows allowed, and the
+  delegated permissions `Files.Read`, `User.Read` and `offline_access`. There
+  is no secret, and PKCE protects the exchange. Rymembra signs in through
+  Microsoft's endpoint for personal accounts, so the app must accept personal
+  Microsoft accounts; OneDrive for Business is a known limit.
+- **Dropbox** through its v2 API, with your app from the App Console («Scoped
+  access», «Full Dropbox»), also a public client with PKCE. Dropbox compares
+  the return address port included, so the app lists exactly
+  `http://127.0.0.1:53682`, `http://127.0.0.1:53683` and
+  `http://127.0.0.1:53684`, and its permissions (`files.metadata.read`,
+  `files.content.read`, `account_info.read`) must be submitted **before** the
+  first connection: changing them later means connecting again. Tracks are
+  read through Dropbox's four-hour temporary links, renewed by themselves.
+- **Google Drive** with your Google app — by default the backup's — and a
+  **separate** consent with the `drive.readonly` scope. Disconnecting the music
+  does not touch the backup, whose scope stays what it was. Besides «My
+  Drive», the folders other people share with the account are in the picker
+  under **«Shared with me»** (shortcuts to them too, from «My Drive»), and their
+  tracks live under `nuvola://gdrive-…/Shared with me/…`. Shared drives are a
+  known limit.
+- **WebDAV** over `https` only. The password would travel in every request, and
+  a NAS at home is better added as a network folder, which Rymembra already
+  watches.
+- **MEGA** is not in 3.2.0: the program knows its name and the dialog has its
+  tab, but there is no MEGA client. It will come with a MEGA app key of your
+  own, like the other services, once MEGA's terms for applications are
+  cleared. In the dialog MEGA says «coming».
+
+### Changed
+
+- The client that talks to the network can send `PROPFIND` (WebDAV), and can
+  read a byte range with headers of its own.
+- The OAuth code serves three providers instead of one. A provider that rotates
+  its refresh token (Microsoft) has the new one saved. The Google backup's
+  consent address is identical to 3.1.0, and a test compares it character by
+  character.
+- The backup's settings no longer ask for a client ID and secret of their own:
+  they choose one of your Google apps. Disconnecting the backup leaves that app
+  where it is.
+- Sync through Drive without a Google app answers `cloud.clientMissing` («no
+  app for this service: register one») instead of `sync.authExpired`: what is
+  missing is the app, not the account's consent.
+- New error codes for the apps: `cloud.appRejected` (the provider refuses the
+  app: wrong ID or secret, not registered as a desktop or public client,
+  personal accounts not allowed, permissions missing), `cloud.appChanged` (the
+  account's consent belongs to the app's previous ID: reconnect),
+  `cloud.appIdInvalid` (the ID, name or secret does not have the right shape),
+  `cloud.appDuplicate` (that app is already registered) and
+  `cloud.appSecretMissing` (a Google app without its client secret).
+  `cloud.clientMissing` now means that no app is registered for the service.
+- **A next track that will not open is tried again, then skipped.** Until now
+  the track after the current one was opened once, minutes ahead, and if that
+  failed the queue stopped on it for good — even when the NAS had woken up or
+  the network was back by the time the current track ended. Now it is opened
+  again when its turn comes; if it still will not open because of the file
+  itself (gone, unreadable, not a format Rymembra reads) the queue moves on,
+  and a notice names the track that was skipped and why. If what is missing is
+  the whole source — a network folder that does not answer, a cloud account
+  disconnected or with its consent expired — nothing is skipped: the queue
+  stops there as before, with the error and «Retry». At most three tracks are
+  skipped in a row. In «Listen together» the host skips with the scheduled
+  start, so the others stay in time; a member never skips by itself.
+- **Errors lead to their fix.** The banner offers the gesture its sentence
+  names: «Open cloud accounts» for a cloud consent that expired or an account
+  not connected, «Scan» for a file that is gone, «Open Folders» for a network
+  folder that does not answer. A cloud account that needs reconnecting is
+  announced at the top of every page, by name, with its «Reconnect…».
+- **Scanning says how it went.** At the end of a scan you start — from an
+  empty library or from the settings — a notice gives the numbers, and says
+  when a folder did not answer or removals were held back; before, only
+  *Settings → Folders and scanning* did. The scans that folders run by
+  themselves still end quietly, as before. The scan's progress
+  stays visible in the rest of the settings, and has «Cancel» next to «Open».
+  «Reread all tags» asks before starting: on a library on a NAS it is minutes.
+- **Five new keyboard shortcuts**: next and previous track (`Ctrl+→`,
+  `Ctrl+←`), volume up and down (`Ctrl+↑`, `Ctrl+↓`) and mute (`M`). The
+  arrows stay with a text field while you type in it. Shortcuts you had
+  already customized keep theirs, and get these as defaults.
+- **The settings search takes you to the card**, scrolls it into view and
+  highlights it for a moment. «Tag enrichment» and «Accent that follows the
+  cover» opened a section they are not in; lyrics could not be found at all.
+  Sentences that sent you to «Settings › Listen together» or «the Backup
+  section» now name the real path.
+- **Empty pages have a button.** Folders and Home offer «Add a folder…»
+  instead of «go to the settings»; Imports offers «Open my archive…» next to
+  «Paste a link», and no longer names an «Import my account» button that does
+  not exist.
+- **The «?» on the settings cards says what it opens**: the technical
+  documentation, in English. It used to say «guide».
+- **The Spotify archive can be closed.** It stays in memory between one
+  opening of the dialog and the next, to import it again without reopening the
+  zip; «Close the archive» gives back the memory — hundreds of megabytes for a
+  long history — without restarting Rymembra.
+- Reconnecting a WebDAV account starts with the user name filled in.
+- The guided tour counts only the steps it shows: it no longer jumps from «4 of
+  14» to «6 of 14» when a step has nothing to point at. Its sidebar step names
+  Explore too.
+- The link dialog no longer suggests a Jamendo address: Jamendo is switched
+  off in this build.
+- **An artist's page shows every album the artist plays on.** The page asked
+  for albums by the album's artist, while the list of artists counted them by
+  each track's: a compilation gave «N albums» over an empty grid. Now both use
+  the same key, so a compilation is on the page of every performer on it.
+- **Untagged tracks are not scrobbled.** A track without an artist tag went to
+  Last.fm and ListenBrainz as «Unknown artist». Now a placeholder artist
+  («Unknown artist», «Various Artists», «VA», «Track 01»…) is not sent, a
+  placeholder album is sent as none, and such rows already queued are dropped.
+- **iTunes is asked at most once every 3.1 seconds**, inside Apple's limit,
+  and three 403s in a row pause it as a request to slow down. Enrichment
+  through iTunes is about three times slower, in the background.
+- **Asking first.** «End the session» asks for confirmation from the panel,
+  from Settings and from the «Listen together» switch too, not only from the
+  banner, whenever someone else is in the session. The lyrics sync editor asks
+  before Esc or «Cancel» throws your taps away. In the Studio, «Remove» on a
+  file of the package asks first and lists what uses it.
+- **Smart playlist rules take a duration in minutes and seconds** («5:30»),
+  no longer in milliseconds.
+- **The built-in skin's light theme has a darker accent**, `rgb(96 74 206)`,
+  so accent text on its tint passes 4.5:1; lyric lines already sung are no
+  longer faded.
+- **Rymembra follows the proxy set in Windows**, as the update check already
+  did; names without a dot (a NAS) and this computer go direct. A setup
+  script (PAC) or automatic detection (WPAD) is not read. README › Known
+  limits has the details.
+- **USB sticks, SD cards, CDs and RAM disks have no Recycle Bin**, and «Delete
+  from disk» now knows it: as on a network share, the confirmation says their
+  tracks will be deleted for good.
+- **A start that fails says so.** When the window could not be created —
+  usually a damaged WebView2 — Rymembra closed without a word. Now a dialog
+  says why and what to try, and the line goes to the diary or, before it is
+  open, to `avvio.log` (PRIVACY.md, «The log»).
+- **The window redraws the progress bar only when it moves.** While a track
+  played it was redrawn many times a second, and each redraw is a frame the
+  WebView composes in full: that, not the animation loop or the blurred tint,
+  was most of the WebView's work while playing. Now the bar is redrawn when
+  it moves by at least a pixel, or when the second it shows changes.
+  Measured while a track plays, median of five runs: Rymembra and its WebView
+  together went from 17 % of one core to 2 %.
+- **The largest source files are split into modules**, `library.rs`,
+  `motore.rs`, `stile.css` and `ipc.ts` among them. Pure moves: the same code,
+  the same tests by name and number.
+
+### Removed
+
+- **«Write the tags back into the files»** (*Settings → Metadata*). It wrote
+  back into your files the tags that enrichment had overwritten up to 2.3.0, and
+  2.3.1 promised to keep it for one release; it stayed for eight. It was the
+  last thing in Rymembra that opened your music for writing, and when a track's
+  row was gone it wrote into whatever file now sat at the old path. The copies
+  it read stay in the database (`enrich_undo`), where nothing reads them; your
+  files stay as 2.3.0 left them. The command `arricchimento_riporta_nei_file`
+  is gone with it.
+
+### Fixed
+
+- **Sync, «Where»: «Folder» before a folder is typed.** Switching from «Drive»
+  to «Folder» without a folder saved answered «invalid path» (`fs.pathInvalid`)
+  and stayed on «Drive», so the field where the folder is typed never
+  appeared. Now the choice is saved, the field appears, and sync waits for the
+  folder. The sync switch can always be turned off, even while the store is
+  not ready, and «Use» is off while the field is empty.
+- **The consent's local server.** A connection reset by another program before
+  Rymembra accepted it (an antivirus probing ports, a browser's spare
+  connection) ended the consent with «offline» while you were still on the
+  provider's page: now only that connection is dropped. A client sending its
+  request a byte at a time could hold the wait past its three minutes and past
+  «Cancel»: each request now has five seconds in all.
+- **«Reread all tags» waits for the scan in progress** before marking the
+  tracks, up to fifteen seconds, and otherwise says a scan is running. Before,
+  an automatic scan halfway through its batches wrote the real date over the
+  mark of every track it saved afterwards, and those tracks silently skipped
+  the reread. The diary now records the request and how many tracks it marked
+  (`[scansione] rilettura dei tag chiesta`), so the long scan that follows no
+  longer looks like an ordinary «Scan».
+- **Reopening a track in the middle is one command.** «Undo» of a replaced
+  queue, «Retry» after a network drop and the resume after a device came back
+  still did «play, then seek (then pause)», and between the first and the
+  others a few milliseconds of the track's beginning could be heard — the
+  click 3.1.0 had removed from every other start. They also ignored a pause
+  pressed while the file was opening, and when hosting a session started
+  without the scheduled start. Now all four take the same path.
+- **«Previous» right after a track change goes back.** Pressed while the new
+  track was still opening — a NAS, a cloud folder — it read the position of
+  the old track, decided «restart» and rewound the wrong one; then the new
+  track started from the top. Seen twice in 200 gestures in the 3.1 tests.
+- **A listen is counted when you quit.** Three and a half minutes of a
+  four-minute track, then «Quit», «Update» or Windows shutting down: the
+  listen was lost, and was not scrobbled. Now it is closed and counted on the
+  way out, and the «resume where you were» mark is written too — also after
+  moving the cursor while paused, which used to resume from the old point.
+- **A sleeping computer no longer counts as listening.** Five seconds of a
+  track, the lid closed for an hour, and on waking the track counted as heard
+  for an hour. The time heard now leaves out any gap of more than ten seconds
+  in which the player was not running.
+- **Errors from the media keys, the tray and the taskbar buttons are shown.**
+  «Next» from the tray onto a file that is gone stopped the music and said why
+  only in the diary.
+- **A scrobble lost to an unreadable keychain** is now written in the diary;
+  before, it vanished without a trace.
+- **«Listen together» and the diary.** A trusted PC that is switched off is
+  still tried again every minute, as designed, but the diary writes its first
+  failure, a change of error, and its return («reachable again after N
+  attempts») — no longer one line per attempt, which over a night was
+  hundreds.
+- **«Listen together» lets go of Bluetooth headphones again.** 3.0.2 made a
+  pause free multipoint headphones within two seconds, so a video started on
+  the phone plays in them. In a session the audio stream never rested, paused
+  or not, with nothing loaded or not, so the headphones stayed with the PC for
+  as long as the session lasted — host and members alike. The stream used to
+  stay up because the scheduled start that keeps everyone together could not
+  start from a resting stream; it now wakes the stream first, and the host
+  wakes it before choosing the instant, so a resume still starts together. In
+  a session the stream now rests as it does outside one: one second into a
+  pause on Bluetooth, thirty seconds on other outputs. The price is the one
+  already paid outside a session: after a pause the headphones may take a
+  moment to come back and the first instant can be lost, an HDMI or optical
+  receiver paused for more than thirty seconds misses the start, and a paused
+  session no longer keeps the PC awake — if the host's PC goes to sleep, the
+  session ends.
+
+### Fixed — the whole-code review
+
+Each finding of the review was checked against the code by a second reader:
+283 distinct defects, one of them critical. Most could not be seen from
+outside — a comment that said the wrong thing, a rule with no test — and are
+not listed; these are the ones you could have met. The three left as they
+are, and why, are in Known limits.
+
+- **Plays and playlists.** The critical one: the first track played after a
+  restore from Drive or a profile import rewrote its play count from the tally
+  sync keeps per device, which knew nothing of the restore — forty plays
+  became one. A renamed playlist came back under its old name through sync or
+  the backup. Two PCs adding to one playlist while apart lost a track; now both
+  stay, and the price is that the same track added on both stays twice.
+- **Imports, profile and backup.** Spotify history imported from the account
+  data and then from the extended history was counted twice; two playlists
+  with the same name in one account became one, and now the second is refused
+  and the report says so. A profile carries the plays from your other synced
+  devices, adds watched folders instead of replacing them, and is refused if
+  too large to open again (`profile.tooLarge`); exporting over an old one no
+  longer destroys it when the write stops. A restored rating keeps its date,
+  and one corrupt copy of the backup no longer reads as «no backup».
+- **Library, scan and folders.** With a whole drive watched, the scan walked
+  Windows' Recycle Bin and `System Volume Information`, and the tracks you had
+  deleted came back; those folders are skipped now, and the tracks leave at the
+  next full scan. A failed scan could leave albums and artists wrong for good.
+  «Start a radio» looks at the track's real neighbours, not only at two
+  hundred tracks picked at random, and «Rescued» at the loved tracks you
+  forgot. An exported
+  playlist says how many tracks it left out, and playlists with `..\` lines or
+  in a Windows code page find their tracks.
+- **Audio engine and output.** A slow source no longer stops the engine from
+  running commands and moving the position; the soft limiter catches what
+  normalization and a crossfade raise; «Retry» after a failed seek resumes at
+  the right point; a DAC set to 705.6 or 768 kHz resamples instead of failing
+  every track as a damaged file. After the tray icon was rebuilt, «Next» in
+  its menu skipped two tracks and «Pause» did nothing. The new track's title
+  and media card no longer wait for the last listen to be written, and
+  clicking through tracks on a sleeping NAS no longer holds up every other
+  command.
+- **Listen together.** A member's addition to a full session queue was lost in
+  silence while the host saw the red banner; a PC blocked while the library was
+  busy stayed trusted; a crash in one step of the sync stopped it for the
+  session, still showing «In sync». On slow Wi-Fi the clock no longer restarts
+  as if the host had, and whoever has a request pending hears that the session
+  ended, not that the host went silent.
+- **Skins and the Studio.** The Studio's validation hung forever on `[}`.
+  «Save and use» overwrote another installed skin with the same id; now it
+  refuses. Ctrl+Z did nothing after moving a slider, twenty Ctrl+S pushed out
+  every useful snapshot, and «Throw the draft away» deleted a draft with
+  nothing to go back to. «Stop» in the chat no longer waits for a local
+  model's first word. The anti-flash rule skipped animations repeating three
+  times or less, and the accent of Neon and Vinyl pointed at itself.
+- **Cloud folders.** «Disconnect» now removes the account's cached tracks, as
+  PRIVACY.md said; a file larger than twice the cache ceiling stays out of it;
+  a refresh token refused for good is no longer asked for at every read.
+- **Catalogs, enrichment, lyrics and scrobbling.** A suspended Last.fm app key
+  spent ninety-nine requests every fifty listens, and «throw them away» under
+  one service threw away the other's stopped listens too. A download folder
+  out of reach made each track download three times. Deezer's errors were
+  cached as «no match», enrichment came back to tracks you had told it to
+  forget, and lyrics lost the words before a line's first timed word.
+- **Interface and accessibility.** The default `/` search shortcut works on
+  Italian, German, French and Spanish keyboards. An error banner no longer
+  vanishes on an unrelated reload, the sleep timer's tab no longer says «Off»
+  while it runs, and Escape no longer closes Restore, Accounts or Import while
+  they write. In Windows' high contrast the progress bar, the volume and the
+  equalizer can be seen again, and the 3D spectrum comes back after losing its
+  WebGL context.
+- **Network.** A stream with no declared length ends as a track ends, not with
+  a network error, and turning off the update check during a check no longer
+  brings its notice back.
+- **Documents.** README, PRIVACY, TERMS and SECURITY say what the code does:
+  network folders are watched by default, «Delete from disk» deletes for good
+  on network and removable drives, no lyric goes up to Drive, and the cloud
+  cache can reach twice its ceiling while a copy waits to be measured.
+
+### Known limits
+
+- **OneDrive needs a Microsoft Entra tenant to register the app.** A personal
+  Microsoft account alone can no longer register apps outside a directory. In
+  practice that means a free Azure account (Microsoft usually asks for a card
+  to verify it, without charging it) or a work or school account whose
+  administrator allows registering apps. The OneDrive you then connect is your
+  personal one.
+- **Google shows its «unverified app» screen** for your own app: «Google hasn't
+  verified this app». You go on with «Advanced», then «Go to … (unsafe)»: it is
+  your app. Verification is not needed for personal use (an unverified app is
+  capped at 100 users). An app left in «Testing» gives consents that expire
+  after seven days: publish it («In production»).
+- If the return address is not registered, or the ID does not exist, Microsoft
+  and Dropbox show the error **in the browser** and never come back to
+  Rymembra: the window keeps waiting until «Cancel», or three minutes.
+- OneDrive for Business and Google shared drives are not supported.
+- On Google Drive a shortcut inside a chosen folder is not followed: add the
+  folder it points to on its own. A file whose owner turned off downloading for
+  viewers is listed, but cannot be played.
+- A `.lrc` next to a cloud track is not read. Lyrics come from the library and
+  from LRCLIB as for any track without one.
+- The same OneDrive added both through its sync client (a folder on disk) and
+  as a cloud folder appears twice.
+- A cloud folder that arrived with sync, a profile or a restore is not listed
+  by itself when you connect its account on this PC — the listing of what is
+  in it does not travel. Choose it again in «Add folder» (it may say the
+  folder is already there: choosing it registers it all the same).
+- On WebDAV the change signal is the tag of the account's top folder: on a
+  Nextcloud where anything changes often (photos uploaded from a phone), the
+  chosen folders are listed again more often than they need.
+- On Google Drive a folder moved into a chosen folder from elsewhere in the
+  Drive appears empty: Drive reports the folder that moved, not what it
+  contains. Its files arrive when they change, or with the next full listing.
+- Google Drive allows two files with the same name side by side; in the
+  library the second gets a short suffix. Which one gets it depends on the
+  order Drive lists them, and after disconnecting and reconnecting the account
+  it can swap — plays and ratings then follow the other file.
+- A cloud track that fails halfway (the account's consent revoked, the file
+  deleted) first shows the network's «stream interrupted»; the real reason
+  appears with «Retry».
+- MEGA is not in 3.2.0 (see above).
+- A long track quit halfway counts as a listen if you had heard enough of it,
+  and resumed the next day and played to the end it can count again.
+- A track of a CD image that ends up empty (a `.cue` pointing past the end of
+  a truncated image) stops the queue instead of being skipped.
+- Tracks the enrichment left alone, and corrections by hand, have no screen of
+  their own yet: the review that the code already has is coming in a later
+  release. The texts no longer promise it.
+- A copy from the Microsoft Store and one from the installer on the same PC
+  read the same library, and have not been tried side by side: keep one per PC.
+- Pause from the media keys, the tray or the taskbar still waits behind a slow
+  «Next»: pressed while the next track opens on a NAS that is waking up, it
+  takes effect once that track has opened. Letting it jump the line would
+  break the order of the gestures, a pause and a play pressed in a row.
+- On a 30 Hz screen the 3D spectrum's «Automatic» quality drops to its lowest
+  step without having lost a frame: there, choose the quality by hand.
+- A CD image stored as one MP3 with its `.cue` in a cloud folder plays with
+  estimated track boundaries — exact at a constant bitrate, off by up to
+  seconds at a variable one — because an exact seek would read the file again
+  from the start over the network.
+
+### Security
+
+- **No client is compiled in**, for any service: there is no shared ID or
+  secret to read out of the executable, and nobody else's quota to spend.
+- **New secrets**, all in Windows Credential Manager and never in the database:
+  the refresh token of each connected account (`nuvola.<account>.refresh`), the
+  WebDAV password (`nuvola.<account>.password`) and the client secret of each
+  Google app you register (`nuvola.app.<app>.segreto`). The secret typed in 3.1
+  stays under its old entry, `google.client_secret`, until you type it again in
+  3.2; then it moves to the app's entry and the old one is removed.
+- **App IDs are in the database** (`nuvola_app`), because they are not secrets:
+  an app's ID is in the address of every consent screen it opens. Neither the
+  apps nor the connected accounts travel in a profile, in the Drive backup or
+  in sync; the cloud folders you chose do, as watched folders, and on another
+  PC stay dimmed until their account is connected there and the folder is
+  chosen again.
+- **The cache holds plain copies** of the cloud tracks you played, in the local,
+  non-roaming application data folder. They are your own files, but a decrypted
+  copy is still a copy: the cache can be switched off and emptied.
+- Temporary links and pre-authenticated download addresses never reach the
+  log: errors name the service's endpoint instead.
+- **Previewing someone else's profile no longer reaches the shares it names.**
+  The preview looked up the `\\host\share` folders written in the file before
+  any confirmation, and Windows offers your sign-in (NTLM) to such a host. Now
+  only drive letters, and shares this PC already uses, are looked up.
+- **The diary no longer writes your music folders' paths**, artist and album
+  names included, as PRIVACY.md promised: a folder is written as
+  `cartella 1 [1a2b3c4d]`, its number among the watched folders, how deep it
+  lies and a short fingerprint that changes every session.
+- **A WebDAV address with `user:password@` in it is refused**
+  (`cloud.credentialsInAddress`): the password ended up in the account's name,
+  in the database and in the diary. An account saved that way no longer opens:
+  remove it and add it again with the address alone.
+- **On the local network** a hostile device can no longer take all of a
+  member's connection slots with fake hosts, nor hold the host's handshake
+  slots with connections that go silent.
+
+### Database
+
+Three migrations, schema 35 → 38. The first and the third are additive; the second also moves one setting into its new table and deletes three.
+
+- `036_nuvola` — three tables: `nuvola_conti` (connected accounts: service, name
+  shown, non-secret details, change cursor), `nuvola_voci` (the folders and the
+  audio, `.cue` and `.lrc` files under the chosen cloud folders, with the name
+  assigned to each in the path) and `nuvola_radici` (the chosen folders, and
+  whether their first listing finished). It is a cache: it never travels, not
+  in a profile, not in the Drive backup, not in sync. Nothing else changes.
+- `037_nuvola_app` — the apps you register. A table, `nuvola_app`: one row per
+  app, with its platform (`google`, `microsoft` or `dropbox`), the name you
+  gave it and its client ID, unique per platform, and no secret. Two columns in
+  `nuvola_conti`: `app`, the app an account is connected with, and `client`,
+  the ID that app had when the account gave its consent — when the two IDs
+  differ the account has to reconnect, and that is all «changing an app's ID»
+  does to it. The migration moves the backup's Google client from the setting
+  `nuvola.client_id` into the app `google-ereditata`, named «Google», binds
+  the backup (the new setting `nuvola.app`) and any Google Drive account to it,
+  and deletes `nuvola.client_id` together with `nuvola.microsoft.client_id`
+  and `nuvola.dropbox.app_key`, which no screen ever wrote. The client secret
+  is not moved: it stays in the keychain entry where 3.1 keeps it.
+- `038_vicini_indice` — one index, `idx_brano_vicino_vicino` on
+  `brano_vicino(vicino_id)`, from the review above. Removing a track also
+  deletes the rows that name it as another track's neighbour, and without the
+  index SQLite read the whole table for each track removed, holding the
+  library. No data changes.
+
+As with every migration, the library is copied first, named after the schema
+it holds: coming from 3.1.0 the copy is `rymembra.db.schema-035.bak`, from a
+database already at schema 36 it is `rymembra.db.schema-036.bak`, at 37 —
+opened by a 3.2.0 built before the review — `rymembra.db.schema-037.bak`.
+3.1.0 opens none of schemas 36 to 38, and that earlier 3.2.0, with the same
+number, does not open 38 (`db.versionAhead`). Going back means putting that
+copy in place of `rymembra.db`, or doing it by hand in three steps. First
+38 → 37, which loses nothing: `DROP INDEX idx_brano_vicino_vicino; PRAGMA
+user_version = 37;`. Then 37 → 36, the SQL at the top of
+`037_nuvola_app.sql`:
+
+```sql
+INSERT OR REPLACE INTO settings (key, value)
+  SELECT 'nuvola.client_id', client_id FROM nuvola_app
+   WHERE app = (SELECT value FROM settings WHERE key = 'nuvola.app')
+     AND piattaforma = 'google';
+DELETE FROM settings WHERE key = 'nuvola.app';
+ALTER TABLE nuvola_conti DROP COLUMN client;
+ALTER TABLE nuvola_conti DROP COLUMN app;
+DROP TABLE nuvola_app; PRAGMA user_version = 36;
+```
+
+which gives the backup's Google client back to the setting 3.1 reads and loses
+the other apps. Then 36 → 35: `DROP INDEX idx_nuvola_voci_genitore; DROP TABLE
+nuvola_voci; DROP TABLE nuvola_radici; DROP TABLE nuvola_conti; PRAGMA
+user_version = 35;`, which loses only the listings, rebuilt at the next
+connection. Rows of cloud tracks already in the library would then be tracks of
+folders that 3.1.0 cannot reach: kept, not played. If you typed the Google
+client secret again in 3.2, it has moved to the app's own keychain entry, and
+3.1 needs it typed again in the backup's settings.
 
 ## [3.1.0] — 2026-10-26
 

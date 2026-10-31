@@ -658,7 +658,9 @@ impl PartStyle {
         }
     }
 
-    /// Tutti gli effetti che questa parte disegna, per i colori e il costo.
+    /// Tutti gli effetti che questa parte disegna, base e stati insieme, per i
+    /// colori e le risorse. Il costo non si fa su questa somma: vedi
+    /// [`Self::costo_superficie`].
     #[must_use]
     pub fn effects(&self) -> Vec<Effect> {
         let mut tutti = Vec::new();
@@ -667,8 +669,9 @@ impl PartStyle {
             if let Some(clip) = aspetto.clip.as_ref() {
                 tutti.push(clip.effect().clone());
             }
-            // Il filtro dietro **deve** entrare nel conto, ed è la ragione per
-            // cui il budget esiste: un `blurBehind` costa dieci da solo.
+            // Il filtro dietro è un effetto che si disegna come gli sfondi, e
+            // il più caro: un `blurBehind` costa dieci da solo, ed è la ragione
+            // per cui il budget esiste.
             if let Some(dietro) = aspetto.backdrop.as_ref() {
                 tutti.push(dietro.effect().clone());
             }
@@ -688,15 +691,35 @@ impl PartStyle {
     /// è una superficie che si disegna davvero, e il `blurBehind` messo solo
     /// al passaggio del mouse costa quanto quello messo sempre, nel momento in
     /// cui si vede.
+    ///
+    /// Entrano però **al posto** della base, non accanto: il compilatore
+    /// scrive per ogni stato `background`, `clip-path`, `filter` e
+    /// `backdrop-filter` come dichiarazioni intere, che in CSS sostituiscono
+    /// quelle di base, e in ogni istante per ogni proprietà vince una regola
+    /// sola — anche con più stati accesi insieme. Quindi, proprietà per
+    /// proprietà, conta il più caro fra base e stati, e i costi delle
+    /// proprietà si sommano fra loro e con i livelli `::before` e `::after`.
+    /// Fino alla 3.2.0 di prova base e stati si sommavano: una pila da 4 ridichiarata in
+    /// cinque stati per cambiarne la tinta faceva 24, e la skin non si
+    /// installava, con un solo fondo dipinto alla volta.
     #[must_use]
     pub fn costo_superficie(&self) -> u32 {
-        let filtri: u32 = self
-            .appearances()
-            .iter()
-            .flat_map(|a| a.filter.iter())
-            .map(|f| f.costo().weight())
+        let aspetti = self.appearances();
+        let piu_caro = |costo: &dyn Fn(&PartAppearance) -> u32| {
+            aspetti.iter().map(|a| costo(a)).max().unwrap_or(0)
+        };
+        let peso = |effetto: &Effect| effetto.cost().weight();
+        let fondo = piu_caro(&|a| a.background.iter().map(|p| peso(p.effect())).sum::<u32>());
+        let ritaglio = piu_caro(&|a| a.clip.as_ref().map_or(0, |p| peso(p.effect())));
+        let dietro = piu_caro(&|a| a.backdrop.as_ref().map_or(0, |p| peso(p.effect())));
+        let filtri = piu_caro(&|a| a.filter.iter().map(|f| f.costo().weight()).sum::<u32>());
+        let livelli: u32 = [self.before.as_ref(), self.after.as_ref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|livello| livello.background.iter())
+            .map(|p| peso(p.effect()))
             .sum();
-        crate::effects::stack_cost(&self.effects()) + filtri
+        fondo + ritaglio + dietro + filtri + livelli
     }
 
     /// Quanto costa il movimento di questa parte.
@@ -745,6 +768,65 @@ impl PartStyle {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// `card` con l'aspetto di base e gli stati dati, letta come la legge l'app.
+    fn scheda(base: &str, stati: &[(&str, &str)]) -> PartStyle {
+        let stati: Vec<String> = stati
+            .iter()
+            .map(|(stato, aspetto)| format!(r##""{stato}": {aspetto}"##))
+            .collect();
+        let json = format!(
+            r##"{{
+              "format": 2,
+              "id": "prova",
+              "meta": {{ "name": "Prova", "author": "Rymembra", "version": "1.0.0" }},
+              "tokens": {{}},
+              "parts": {{ "card": {{ {base}, "states": {{ {} }} }} }}
+            }}"##,
+            stati.join(", ")
+        );
+        let skin = crate::leggi_skin(&json).unwrap_or_else(|p| panic!("{p:#?}"));
+        skin.parts
+            .into_iter()
+            .find(|p| p.def.name == "card")
+            .unwrap_or_else(|| panic!("card"))
+    }
+
+    #[test]
+    fn uno_stato_che_ridichiara_lo_sfondo_non_raddoppia_il_costo() {
+        // In CSS lo sfondo di uno stato **sostituisce** quello di base: per
+        // cambiare la tinta al passaggio del mouse si riscrive la pila intera,
+        // e in ogni istante se ne dipinge una sola. Fino alla 3.2.0 di prova base e stati
+        // si sommavano: cinque stati con la stessa pila da 4 facevano 24, oltre
+        // il doppio del budget, e la skin non si installava.
+        let pila = r##"[{ "effect": "solid", "color": "#101014" },
+                        { "effect": "hairlineGrid", "color": "#ffffff", "cell": "24px" }]"##;
+        let aspetto = format!(r##"{{ "background": {pila} }}"##);
+        let stati: Vec<(&str, &str)> = ["hover", "pressed", "selected", "current", "focus"]
+            .iter()
+            .map(|s| (*s, aspetto.as_str()))
+            .collect();
+        let card = scheda(&format!(r##""background": {pila}"##), &stati);
+        assert_eq!(card.costo_superficie(), 4);
+
+        // Il vetro dietro: uno solo alla volta, anche con raggi diversi.
+        let vetro = |raggio: u32| {
+            format!(r##"{{ "backdrop": {{ "effect": "blurBehind", "radius": "{raggio}px" }} }}"##)
+        };
+        let (hover, pressed) = (vetro(16), vetro(20));
+        let card = scheda(
+            r##""backdrop": { "effect": "blurBehind", "radius": "12px" }"##,
+            &[("hover", &hover), ("pressed", &pressed)],
+        );
+        assert_eq!(card.costo_superficie(), 10);
+
+        // Uno stato che aggiunge resta contato: il più caro decide.
+        let card = scheda(
+            r##""background": [{ "effect": "solid", "color": "#101014" }]"##,
+            &[("hover", &aspetto)],
+        );
+        assert_eq!(card.costo_superficie(), 4);
+    }
 
     #[test]
     fn il_registro_non_ha_doppioni() {

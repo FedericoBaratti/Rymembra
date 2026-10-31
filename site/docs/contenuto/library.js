@@ -1,13 +1,13 @@
-/* Capitolo 3 — la libreria: scansione, identità, tag, album, sorveglianza, NAS, Cartelle, rimozioni, copertine, ricerca, playlist. */
+/* Capitolo 3 — la libreria: scansione, identità, tag, album, sorveglianza, NAS, cartelle nel cloud e app dell'utente, Cartelle, rimozioni, copertine, ricerca, playlist. */
 (window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "library",
   title: "The library",
-  lead: "How files become rows: the scan and its plan, track identity, tags, albums, watched folders, network shares, the Folders tree, removal, covers, search and playlists.",
+  lead: "How files become rows: the scan and its plan, track identity, tags, albums, watched folders, network shares, folders in the cloud and the apps behind them, the Folders tree, removal, covers, search and playlists.",
   entries: [
     {
       id: "roots",
       title: "Watched folders and the scan",
-      src: ["core/rymembra-app/src/library.rs", "core/rymembra-domain/src/scan_plan.rs", "core/rymembra-domain/src/paths.rs", "core/rymembra-app/src/files.rs", "apps/desktop/src-tauri/src/comandi.rs", "core/rymembra-app/src/primo.rs"],
+      src: ["core/rymembra-app/src/library.rs", "core/rymembra-app/src/library/righe.rs", "core/rymembra-app/src/library/aggregati.rs", "core/rymembra-app/src/library/camminata.rs", "core/rymembra-app/src/library/scansione.rs", "core/rymembra-app/src/library/immagini.rs", "core/rymembra-domain/src/scan_plan.rs", "core/rymembra-domain/src/paths.rs", "core/rymembra-app/src/files.rs", "apps/desktop/src-tauri/src/comandi.rs", "core/rymembra-app/src/primo.rs"],
       body: [
         "The library is an **index of the disk**, not the data: a scan compares the watched folders (`library.roots`) with the `tracks` table and reconciles them. The decision is a pure function, `rymembra_domain::scan_plan::plan_scan`; `rymembra_app::library::Scan::run_su` executes it.",
         { h: "The plan" },
@@ -55,7 +55,7 @@
         { h: "First run" },
         "`primo::esamina` counts music files (up to `TETTO` = 2,000) in the OS-declared music folders so the first-run screen can propose them already ticked.",
       ],
-      see: ["identity", "albums", "watching", "network-shares", "removal"],
+      see: ["identity", "albums", "watching", "network-shares", "cloud-folders", "removal"],
     },
     {
       id: "identity",
@@ -87,7 +87,7 @@
     {
       id: "tags",
       title: "Reading tags",
-      src: ["core/rymembra-app/src/metadata.rs", "core/rymembra-app/src/library.rs", "core/rymembra-domain/src/codifica.rs", "core/rymembra-domain/src/indizi.rs", "core/rymembra-domain/src/ricostruzione.rs", "core/rymembra-app/src/incerti.rs"],
+      src: ["core/rymembra-app/src/metadata.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/library/righe.rs", "core/rymembra-domain/src/codifica.rs", "core/rymembra-domain/src/indizi.rs", "core/rymembra-domain/src/ricostruzione.rs", "core/rymembra-app/src/incerti.rs"],
       body: [
         "`metadata::read_tags` uses `lofty` (one library for all formats) with `read_properties(true)`, so VBR durations are computed rather than estimated from the header. It reads the primary tag (falling back to the first: an MP3 with both ID3v2 and ID3v1 must not get 30-character titles), NFC-normalizes and trims every string, and extracts: title, artist, album, album artist, year (recording date, falling back to `Year`), track and disc numbers, genre, comment, unsynced lyrics, BPM, initial key, ReplayGain track/album gain, MusicBrainz recording / release-group / release ids, duration, sample rate, channels, codec and the embedded cover.",
         "Bitrate: `audio_bitrate` is trusted only from `BITRATE_MINIMO_KBPS` = 32 up; below it falls back to `overall_bitrate` (file size over duration). MP4 files often declare 0–15 kbps in `esds`, and the file-format line would otherwise say «4 kbps». Migration 027 forced a re-read of rows stored with a bitrate under 32.",
@@ -101,7 +101,7 @@
     {
       id: "albums",
       title: "Albums and artists",
-      src: ["core/rymembra-domain/src/album.rs", "core/rymembra-app/src/library.rs", "core/rymembra-domain/tests/parita_album.rs", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql"],
+      src: ["core/rymembra-domain/src/album.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/library/aggregati.rs", "core/rymembra-domain/tests/parita_album.rs", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql"],
       body: [
         "Album identity is **not** the text `(album, album_artist)` — that splits one release into several cards at every inconsistency. `album_group_key(album, path)` = normalized title with edition suffixes stripped + the normalized containing folder, the way Jellyfin, Plex and Navidrome treat local libraries.",
         {
@@ -114,14 +114,14 @@
         "`build_album_groups` runs a union-find over base keys: groups sharing a MusicBrainz release group, a MusicBrainz release or a Spotify album id are merged. **Identifiers merge, never split**, so partial tagging is harmless. The canonical key is `mbrg:<id>`, `mbr:<id>` or `sp:<id>` when an identifier is shared, otherwise the smallest base key; `remap` rewrites `tracks.album_key` accordingly.",
         "Per album: title and artist are the most frequent value (ties: shortest, then alphabetical; the artist is the effective artist `album_artist` or `artist`, which drops guest credits); genre is the dominant one; year the maximum; the cover is chosen by source (tag > provider/Spotify > Cover Art Archive), then by how many tracks use it, then pixel area.",
         { h: "Incremental rebuild" },
-        "`albums` is fully derived; `artists` rows are upserted and pruned, never truncated, so biography and image survive. Writers record `Toccati` — album keys and effective artists **before and after** each change — and `ricostruisci_aggregati` rebuilds only the closure of those keys (including groups that share an identifier). It falls back to a full rebuild above `TETTO_PER_CHIAVI` = 2,000 keys, when `libreria_stato.aggregati` differs from `VERSIONE_AGGREGATI` = 1, or on request. Migration 030 added a `path COLLATE NOCASE` index and an expression index on the effective artist for these queries.",
+        "`albums` is fully derived; `artists` rows are upserted and pruned, never truncated, so biography and image survive. Writers record `Toccati` — album keys and effective artists **before and after** each change — and `ricostruisci_aggregati` rebuilds only the closure of those keys (including groups that share an identifier). It falls back to a full rebuild above `TETTO_PER_CHIAVI` = 2,000 keys, when `libreria_stato.aggregati` differs from `VERSIONE_AGGREGATI` = 2, or on request. Migration 030 added a `path COLLATE NOCASE` index and an expression index on the effective artist for these queries.",
       ],
       see: ["identity", "schema"],
     },
     {
       id: "watching",
       title: "Folders that watch themselves",
-      src: ["apps/desktop/src-tauri/src/sorveglia.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/volumi.rs"],
+      src: ["apps/desktop/src-tauri/src/sorveglia.rs", "apps/desktop/src-tauri/src/sorveglia/accorpamento.rs", "apps/desktop/src-tauri/src/sorveglia/pianificatore.rs", "apps/desktop/src-tauri/src/sorveglia/filo.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/library/camminata.rs", "core/rymembra-app/src/library/scansione.rs", "core/rymembra-app/src/volumi.rs"],
       body: [
         "`sorveglia.rs` keeps the library current without pressing «Scan». The mode is `library.watch`: `spenta` (off), `locali` (local disks only) or `tutte` (default since 3.0.2: also network shares).",
         {
@@ -158,7 +158,103 @@
         { h: "The data folder on a share" },
         "If the data folder itself is on a share, SQLite's WAL cannot work and the journal falls back to `TRUNCATE` — see [Data](#data). The database quick check is skipped in that mode.",
       ],
-      see: ["watching", "data", "removal"],
+      see: ["watching", "data", "removal", "cloud-folders"],
+    },
+    {
+      id: "cloud-folders",
+      title: "Folders in the cloud, and your own apps",
+      src: ["core/rymembra-cloud/src/musica/mod.rs", "core/rymembra-cloud/src/musica/cache.rs", "core/rymembra-app/src/nuvola.rs", "apps/desktop/src-tauri/src/nuvola_musica.rs", "core/rymembra-domain/src/nuvola_app.rs", "core/rymembra-app/src/nuvola_app.rs", "apps/desktop/src-tauri/src/nuvola_app.rs", "core/rymembra-cloud/src/oauth.rs", "core/rymembra-app/src/db/schema/036_nuvola.sql", "core/rymembra-app/src/db/schema/037_nuvola_app.sql"],
+      body: [
+        "Since 3.2 a watched folder can live on **OneDrive** (personal), **Google Drive** («My Drive», and the folders shared with you under «Shared with me»), **Dropbox** or a **WebDAV** server over `https` (Nextcloud, ownCloud, pCloud, Koofr…). It joins `library.roots` like a folder on the disk, under a path `nuvola://<account>/…`, and its tracks share lists, albums, plays and ratings with the rest. Nothing is synced to the disk first, and nothing is ever written on the service: the scopes are read-only. Deleting a cloud track, writing its tags or showing it in a folder is refused with `cloud.readOnly` (the window offers «Open on OneDrive» and the like instead), and a `.lrc` is never written beside it: the lyrics stay in the library.",
+        {
+          ul: [
+            "**The services** are one trait, `Deposito` (`rymembra_cloud::musica`): who the account is, its folders, a folder's listing, the changes since a cursor, a file's bytes. It never sees the database.",
+            "**The mirror** (`rymembra_app::nuvola`, tables `nuvola_conti`, `nuvola_voci`, `nuvola_radici` of migration 036) knows what is in the chosen folders without asking the network, so at startup the cloud library is already there and the network only answers «what changed». The scan walks the mirror instead of the disk.",
+            "**One thread per account** (`nuvola_musica.rs`) lists, follows the changes and asks the watcher to look again at the folders touched. A chosen folder becomes a root as soon as the service has said where it is; the first page of the listing reaches the library at once, the next ones at most every `RITMO_SCANSIONI` = 2 s. Tags are read afterwards from the beginning and the end of each file, in the background.",
+            "**One top per account.** In the mirror only the top of the drive has no parent, and its path is the bare `nuvola://<account>`. A folder shared with a Google account comes without a visible parent — it lives in the owner's drive — so the Drive service hangs it, in the listing and in the changes alike, under a folder of its own, `~condivisi`, named «Shared with me» (`rymembra_domain::nuvola::e_virtuale`): a virtual folder can be opened in the picker but not chosen. Shortcuts open in the picker as the folder they point to; inside a chosen folder they are not followed, since every item in the mirror has a single parent.",
+            "**Changes**: Dropbox waits for them (long poll) and arrives within seconds; OneDrive (delta) and Google Drive (changes) are asked every `OGNI` = 45 s; on WebDAV, Nextcloud and ownCloud change a folder's tag when anything inside changes, which triggers a new listing, and other servers are listed again every 30 min. An expired cursor is a `410` whatever the service calls it, and leads to a full listing compared with the mirror — never to emptying it and filling it again.",
+            "**Playing** streams the track; it starts after its first 256 KB. The tracks played stay in a **cache** in the local, non-roaming data folder up to a ceiling (`nuvola.cache.tetto_mb`: 200 MB by default, 200 MB to 10 GB; `nuvola.cache.attiva` switches it), oldest out first. Loudness and fingerprints are measured from a complete cached copy: the analysis never downloads a track just to measure it (`cloud.notInCache`).",
+            "**Secrets** — each account's refresh token (`nuvola.<account>.refresh`) and the WebDAV password (`nuvola.<account>.password`) — are in the keychain ([OAuth](#oauth)). Disconnecting removes them, the listing and the cached tracks; the folders stay in the library, dimmed, until the account is connected again.",
+          ],
+        },
+        { h: "Why every user registers their own app" },
+        "OneDrive, Google Drive and Dropbox, and the Drive backup ([Backup](#cloud)), are reached through an OAuth app that **the user** registers — with Microsoft Entra, in the Google Cloud Console, in the Dropbox App Console — and whose ID they type into Rymembra. Since 3.2 no client ID is compiled in, for any service. A desktop program cannot keep a secret: whatever is in the binary, `strings` finds. One app shared by everyone would put every user on one quota, which anyone could use up by copying its ID, and behind one publisher, which means one review: Google wants a security assessment for `drive.readonly`, Dropbox an approval beyond fifty users, Microsoft a verified publisher before a work or school tenant accepts the consent. With their own app the quota is the user's, the consent is given to oneself, and nobody can switch it off for everyone else. MEGA is not in 3.2.0; when it comes it will use the user's own MEGA app key.",
+        "Registering takes a few minutes, and the window walks through it: «Your apps» in *Settings → Folders and scanning*, the «Add folder» dialog when a service has no app yet, and the backup's section. The return addresses and permissions it shows come from `rymembra_cloud::oauth::registrazione`, built from the same constants the code uses to talk to the provider — the steps cannot say one port while the code listens on another. A button opens the platform's console in the system browser (`apri_documento`: `console-microsoft`, `console-google`, `console-dropbox`).",
+        {
+          table: {
+            head: ["Platform", "Return addresses to register, exactly", "Permissions", "What to copy into Rymembra"],
+            rows: [
+              ["Microsoft Entra (OneDrive)", "`http://localhost` (no port), platform «Mobile and desktop applications»", "Microsoft Graph, delegated: `Files.Read`, `User.Read`, `offline_access`", "«Application (client) ID» — a GUID"],
+              ["Dropbox App Console", "`http://127.0.0.1:53682`, `http://127.0.0.1:53683`, `http://127.0.0.1:53684` (no trailing slash)", "`files.metadata.read`, `files.content.read`, `account_info.read`", "«App key» (not the App secret)"],
+              ["Google Cloud Console (backup and Drive folders)", "none: a «Desktop app» client accepts any loopback port", "`https://www.googleapis.com/auth/drive.appdata` (backup), `https://www.googleapis.com/auth/drive.readonly` (music)", "Client ID and client secret"],
+            ],
+          },
+        },
+        { h: "Microsoft Entra, for OneDrive" },
+        {
+          ol: [
+            "A personal Microsoft account alone can no longer register apps outside a directory: it needs a tenant. In practice that is a free Azure account (Microsoft usually asks for a card to verify it, without charging it), or a work or school account whose administrator allows users to register apps.",
+            "In the Microsoft Entra admin center (`entra.microsoft.com`), open App registrations and create a new registration. For the supported account types choose personal Microsoft accounts only, or accounts in any organizational directory and personal Microsoft accounts: Rymembra signs in through `/consumers`, so only personal OneDrive is used (OneDrive for Business is not supported).",
+            "Add the platform «Mobile and desktop applications» with the redirect URI `http://localhost` — no port: for `localhost` Entra ignores it, and Rymembra picks a free one each time. Not `http://127.0.0.1`, which the portal does not accept over `http`.",
+            "Under Authentication, set «Allow public client flows» to Yes.",
+            "Under API permissions, add Microsoft Graph delegated permissions `Files.Read`, `User.Read` and `offline_access`.",
+            "Copy the «Application (client) ID» from the overview — not the «Directory (tenant) ID» nor the «Object ID», which are GUIDs too and cannot be told apart by their shape.",
+          ],
+        },
+        { h: "Dropbox" },
+        {
+          ol: [
+            "In the App Console (`www.dropbox.com/developers/apps`), create an app with «Scoped access» and «Full Dropbox».",
+            "In the Permissions tab tick `files.metadata.read`, `files.content.read` and `account_info.read`, and press Submit **before** connecting: changing the permissions later means connecting the account again.",
+            "In the Settings tab, under OAuth 2, add the three redirect URIs exactly as above, without a trailing slash, and set «Allow public clients (Implicit Grant & PKCE)» to Allow.",
+            "Copy the «App key», not the App secret. An app in development status links the account of whoever created it, which is all personal use needs.",
+          ],
+        },
+        { h: "Google, for the backup and the Drive folders" },
+        {
+          ol: [
+            "In the Google Cloud Console (`console.cloud.google.com`), create or choose a project and enable the «Google Drive API».",
+            "In Google Auth Platform, set up the consent screen with the audience External, and under Data access add both scopes: `drive.appdata` for the backup and `drive.readonly` for the music folders — by default one app serves both. A project set up in 3.1 for the backup alone lacks `drive.readonly`: add it before adding a Drive folder.",
+            "Publish the app («In production»). In «Testing» the consents expire after seven days. An unverified app in production shows «Google hasn't verified this app»; it is the user's own app, so go on through «Advanced» and «Go to … (unsafe)». `drive.readonly` is a restricted scope, and verification is not needed for personal use (an unverified app is capped at 100 users).",
+            "Under Clients, create a client of type «Desktop app» and copy its client ID and client secret. The ID must end in `.apps.googleusercontent.com`.",
+            "Use **the same app on every PC**. The backup's private folder on Drive belongs to the app that wrote it, and with another Google app the earlier backups — and the other devices in sync through Drive — may not be visible. Whether Google draws that line at the OAuth client or at the whole project has not been verified here: the same client ID and secret everywhere is the safe choice.",
+          ],
+        },
+        {
+          note: "If the return address is not registered, or the ID does not exist, Microsoft and Dropbox show the error **in the browser** and never come back to Rymembra: the window waits until «Cancel», or three minutes.",
+        },
+        { h: "«Your apps»" },
+        {
+          ul: [
+            "**The register** is the table `nuvola_app` (migration 037): `app` is `<platform>-<8 random characters>` and is never reused, because it names the keychain entry of the app's secret, `nuvola.app.<app>.segreto`; `(platform, client_id)` is unique; there are no secrets in it — an app's ID is in the address of every consent it opens. `rymembra_domain::nuvola_app::difetto_id` checks the shape before saving: a GUID (`8-4-4-4-12` hex) for Microsoft, `[a-z0-9]` 8 to 32 characters for Dropbox, an ID ending in `.apps.googleusercontent.com` for Google; trimmed, no inner spaces, at most 200 characters. Only Google apps have a secret; a name is 1 to 60 characters.",
+            "**The default app** of a platform is the one used when nobody chooses: for Microsoft and Dropbox the first registered; for Google the backup's, if the backup has one, otherwise the first registered. A new Google app registered while the backup has none becomes the backup's. Several apps per platform are allowed: a separate Google app for the backup and for the music, for example. `nuvola_conto_collega({ servizio, appId, modulo })` takes the app to ask the consent with (`null` = the default).",
+            "**Changing an app's ID** asks for confirmation. Each account remembers the ID its consent was given to (`nuvola_conti.client`); when it differs from the app's current ID the account is «to reconnect» (`cloud.appChanged`), and putting the old ID back (A → B → A) brings it back by itself. Folders and tracks are never touched. If the app is the backup's, the backup disconnects and has to be connected again. Changing only a Google app's secret reopens the accounts with the new one. A save does not wait: with a connection in progress, or a backup pass for a Google app, it answers `sync.busy` («try again shortly»).",
+            "**Removing an app** leaves its accounts unbound and «to reconnect» (`cloud.clientMissing`) and their folders in place; a backup that used it goes back to «not configured»; the secret is deleted. Disconnecting the backup, instead, no longer removes its app.",
+            "**From 3.1**: migration 037 turns the client typed in the backup's settings (`nuvola.client_id`) into the app `google-ereditata`, named «Google», bound to the backup (`nuvola.app`) and to any Google Drive account; it deletes `nuvola.client_id`, `nuvola.microsoft.client_id` and `nuvola.dropbox.app_key`. Its secret is read from the 3.1 keychain entry, `google.client_secret`, until it is typed again — then it moves to the app's entry — so nothing moves at startup and a 3.1 put back in place still finds it. Going back is the copy `rymembra.db.schema-035.bak` (or `-036`), or the SQL in the header of `037_nuvola_app.sql` ([Migrations](#migrations)).",
+            "**Nothing travels**: neither apps nor accounts go into a profile, the Drive backup or sync. The chosen cloud folders do, as watched folders, and on another PC wait (`cloud.notConnected`) until their account is connected there — with an app registered on that PC.",
+          ],
+        },
+        { h: "Errors" },
+        {
+          table: {
+            head: ["Code", "Means", "What to do"],
+            rows: [
+              ["`cloud.clientMissing`", "No app is registered for this service, or the account's app was removed", "Register one in «Your apps»"],
+              ["`cloud.appRejected`", "The provider refuses the app (`invalid_client`, or `unauthorized_client` during consent): wrong ID or secret, not a desktop or public client, personal accounts not allowed, permissions missing", "Fix the app in the console; reconnecting does not help until then"],
+              ["`cloud.appChanged`", "The account's consent belongs to the app's previous ID", "Reconnect the account; folders and tracks stay"],
+              ["`cloud.appIdInvalid`", "The ID, the name or the secret does not have the shape that platform gives it", "Copy the right field (see the steps)"],
+              ["`cloud.appDuplicate`", "An app with this ID is already registered for this platform", "Use the existing one"],
+              ["`cloud.appSecretMissing`", "A Google app without its client secret — e.g. one typed in 3.1 with the secret left empty", "Type the secret in «Your apps»"],
+              ["`cloud.authExpired`, `cloud.consentDenied`", "The service no longer accepts the consent (revoked, expired, password changed); or the consent was refused in the browser", "Reconnect"],
+              ["`cloud.notConnected`", "The folder belongs to an account not connected on this PC (it arrived with sync or a profile)", "Connect the account, then choose the folder again in «Add folder»"],
+              ["`cloud.readOnly`, `cloud.notFound`, `cloud.notInCache`", "A gesture that would write; a file gone from the service; analysis waiting for a complete cached copy", "—"],
+              ["`cloud.wrongCredentials`, `cloud.insecureServer`, `cloud.rangeUnsupported`", "WebDAV: user or password refused; an `http://` address; a server that cannot serve byte ranges", "Fix the server details"],
+              ["`cloud.credentialsInAddress`", "WebDAV: the address carries a user name and password (`https://user:password@server/…`), which would be kept in clear text with it", "Remove them from the address and type them in the User name and App password fields"],
+            ],
+          },
+        },
+      ],
+      see: ["roots", "watching", "network-shares", "oauth", "cloud", "http-streams"],
     },
     {
       id: "folders-view",
@@ -175,7 +271,7 @@
     {
       id: "removal",
       title: "Removing and deleting tracks",
-      src: ["apps/desktop/src-tauri/src/cancellazione.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/db/schema/023_correzioni_orfane.sql", "core/rymembra-app/src/db/schema/028_statistiche_orfane.sql", "apps/desktop/src/ConfermaEliminazione.tsx"],
+      src: ["apps/desktop/src-tauri/src/cancellazione.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/library/righe.rs", "core/rymembra-app/src/db/schema/023_correzioni_orfane.sql", "core/rymembra-app/src/db/schema/028_statistiche_orfane.sql", "apps/desktop/src/ConfermaEliminazione.tsx"],
       body: [
         "Two commands for two questions. `brani_togli` removes rows only — the file stays, and if it is still under a watched root the next scan brings it back (the result says how many will return). `brani_elimina` sends files to the Recycle Bin (`trash` crate) and removes the rows of the files that actually got there.",
         "On a network location there is no Recycle Bin, and Windows' `IFileOperation` with «undo» silently deletes for good while reporting success. So `brani_su_rete` first classifies each file with `volumi`; the confirmation dialog says which files will be **deleted permanently**, and only with that confirmation are they removed with `remove_file`. Without it the core refuses with `fs.noRecycleBin` before touching anything. Order of operations: clear the tracks from the queue and stop the engine (an open file cannot be trashed on Windows), trash, then write the database.",
@@ -212,7 +308,7 @@
     {
       id: "search",
       title: "Search",
-      src: ["core/rymembra-app/src/library.rs", "core/rymembra-app/src/db/schema/001_baseline.sql", "apps/desktop/src/ricerca.ts"],
+      src: ["core/rymembra-app/src/library.rs", "core/rymembra-app/src/library/interrogazioni.rs", "core/rymembra-app/src/db/schema/001_baseline.sql", "apps/desktop/src/ricerca.ts"],
       body: [
         "Search uses the FTS5 table `tracks_fts` (title, artist, album, album artist, genre; tokenizer `unicode61 remove_diacritics 2`), kept current by triggers. `fts_query` turns each typed word into a quoted prefix term — `\"bjor\"*` — so FTS operators (`AND`, `NEAR`, `-`, parentheses) in names like «AC/DC» are literal, and results appear while typing. Results are ordered by `bm25`. `search` is paged (offset, limit) and `search_count` returns the total, which the sparse list in the window needs before fetching rows ([Lists](#lists)).",
         "FTS5 availability is probed at open; without it search is unavailable and Settings says so.",

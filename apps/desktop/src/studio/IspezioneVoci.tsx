@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 
+import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { ipc, type NodoScafale } from "../ipc";
 import { numero } from "../formato";
 import { t, tSe } from "../lingue";
@@ -20,6 +21,7 @@ import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { conNodo, nodoA, type Via } from "./albero";
 import { useScriviAlbero } from "./AlberoScafale";
+import { idDelFormato } from "./bozza";
 import { useStudio } from "./contesto";
 import {
   ColoreLetterale,
@@ -29,7 +31,8 @@ import {
   Riga,
   ValoreCurva,
 } from "./controlli";
-import { risolutoriDi, versoAnimazione } from "./fotogrammi";
+import { avvioProvino, risolutoriDi, versoAnimazione } from "./fotogrammi";
+import { scafaleScrivibile } from "./negozio";
 import { scrivi as stampa, valoreIn } from "./patch";
 import { Manopole } from "./Pila";
 import {
@@ -41,11 +44,13 @@ import {
   rinomina,
   type Genere,
 } from "./riferimenti";
+import { problemaNomeFamiglia, usiDellaRisorsa } from "./risorse";
 import { sentieroColore, sentieroMotivo, sentieroToken } from "./sentieri";
 import { caratteriDi, immaginiDi, nomeRisorsa } from "./usaPacchetto";
 import { useVai } from "./vai";
-import { MiniCurva, quantoPesa } from "./Variabili";
-import type { Livello } from "./valori";
+import { sorgentiPer } from "./sorgentiColore";
+import { domandaTogliRisorsa, MiniCurva, quantoPesa } from "./Variabili";
+import { CURSORE_PESO_VARIABILE, type Livello } from "./valori";
 import { descrizioneOpzione, descrizionePreset, descrizioneToken, descrizioneWidget, nomeGruppo } from "./vocabolario";
 
 const oggetto = (v: unknown): Record<string, unknown> =>
@@ -276,7 +281,8 @@ export function IspezioneToken({ id }: { id: string }) {
             token={def}
             tokens={registro.tokens}
             tavolozza={tavolozza}
-            sorgenti={def.kind === "color" ? registro.sorgenti : []}
+            // L'accento non segue la copertina con `$source`: vedi `sorgentiPer`.
+            sorgenti={def.kind === "color" ? sorgentiPer(id, registro.sorgenti) : []}
             curveSkin={curve}
             onCambia={scriviValore}
           />
@@ -522,7 +528,7 @@ function DurataLunga({
   const n = typeof valore === "string" ? Number.parseFloat(valore) * (/ms\s*$/.test(valore) ? 1 : 1000) : Number.NaN;
   const dichiarata = Number.isFinite(n);
   return (
-    <div className="cursore">
+    <div className="cursore-studio">
       <input
         type="range"
         min={0}
@@ -553,6 +559,8 @@ export function Provino({ nome, animazione }: { nome: string; animazione: Record
   const { s, registro, documento } = useStudio();
   const riquadro = useRef<HTMLDivElement>(null);
   const [giro, setGiro] = useState(0);
+  /** Il giro già suonato: una partenza con lo stesso giro non l'ha chiesta ▶. */
+  const giroVisto = useRef(0);
   const firma = JSON.stringify(animazione);
   useEffect(() => {
     const nodo = riquadro.current;
@@ -561,9 +569,19 @@ export function Provino({ nome, animazione }: { nome: string; animazione: Record
       animazione,
       risolutoriDi(documento, s.tema === "variante", registro.tokens),
     );
+    // «Riduci movimento», di Rymembra o del sistema: vedi `avvioProvino`.
+    const ridotto =
+      document.documentElement.dataset.motionUtente === "ridotto" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const avvio = avvioProvino(ridotto, giro !== giroVisto.current);
+    giroVisto.current = giro;
     let corsa: Animation | null = null;
     try {
-      corsa = nodo.animate(fotogrammi, opzioni);
+      corsa = nodo.animate(
+        fotogrammi,
+        avvio === "suona" ? opzioni : { ...opzioni, iterations: 1, fill: "forwards" },
+      );
+      if (avvio === "fermo") corsa.finish();
     } catch {
       // Un fotogramma che il motore non legge — un colore a metà mentre lo si
       // scrive — non ferma l'ispettore: il provino resta fermo.
@@ -771,28 +789,25 @@ function useCarattere(id: string, nome: string | null): string | null {
 }
 
 export function IspezioneRisorsa({ nome }: { nome: string }) {
-  const { s, manda, documento, file, rileggiFile, onErrore, scriviMolti } = useStudio();
+  const { s, manda, documento, file, rileggiFile, onErrore } = useStudio();
   const voce = file.find((v) => nomeRisorsa(v) === nome);
   const carattere = nome.endsWith(".woff2");
   const famiglia = useCarattere(s.id, carattere ? nome : null);
-  const usi = documento === null ? [] : (() => {
-    const fuori: string[] = [];
-    for (const [f, d] of Object.entries(oggetto(documento["fonts"]))) {
-      if (oggetto(d)["src"] === nome) fuori.push(`fonts.${f}`);
-    }
-    const cerca = (v: unknown, via: string[]) => {
-      if (Array.isArray(v)) v.forEach((x, i) => cerca(x, [...via, String(i)]));
-      else if (v !== null && typeof v === "object") {
-        const d = v as Record<string, unknown>;
-        if (d["effect"] === "image" && d["src"] === nome) fuori.push(via.join("."));
-        else for (const [k, x] of Object.entries(d)) cerca(x, [...via, k]);
-      }
-    };
-    cerca(documento["parts"], ["parts"]);
-    cerca(documento["patterns"], ["patterns"]);
-    cerca(documento["variant"], ["variant"]);
-    return fuori;
-  })();
+  const usi = usiDellaRisorsa(documento, nome);
+  const [domanda, setDomanda] = useState<Domanda | null>(null);
+  // Il file sparisce dal disco e non torna: si chiede prima (vedi
+  // `domandaTogliRisorsa`), e le dichiarazioni dei caratteri si tolgono da
+  // tutta la storia, senza un passo da annullare (`risorse.ts`).
+  const togli = () => {
+    ipc
+      .studioRisorsaTogli(s.id, nome)
+      .then(() => {
+        rileggiFile();
+        manda({ tipo: "risorsaTolta", nome });
+        manda({ tipo: "scegli", selezione: null });
+      })
+      .catch(onErrore);
+  };
 
   return (
     <div className="ispezione-voce">
@@ -812,23 +827,12 @@ export function IspezioneRisorsa({ nome }: { nome: string }) {
       <button
         type="button"
         className="pillola btn-ghost scarta-bozza"
-        onClick={() => {
-          ipc
-            .studioRisorsaTogli(s.id, nome)
-            .then(() => {
-              rileggiFile();
-              const orfane = Object.entries(oggetto(documento?.["fonts"]))
-                .filter(([, d]) => oggetto(d)["src"] === nome)
-                .map(([f]) => ({ togli: true, percorso: ["fonts", f], valore: null }));
-              if (orfane.length > 0) scriviMolti(orfane, t("studio3.step.assetRemove", { nome }));
-              manda({ tipo: "scegli", selezione: null });
-            })
-            .catch(onErrore);
-        }}
+        onClick={() => setDomanda(domandaTogliRisorsa(nome, usi, togli))}
       >
         <Icona nome="i-x" dim={13} />
         {t("studio3.vars.files.remove", { nome })}
       </button>
+      {domanda !== null && <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />}
     </div>
   );
 }
@@ -862,10 +866,11 @@ export function IspezioneCarattere({ nome }: { nome: string }) {
     );
   };
 
+  // Un nome che non si può usare si dice accanto al campo, come in `Rinomina`.
+  const problema = problemaNomeFamiglia(scritto, nome, Object.keys(oggetto(documento?.["fonts"])));
   const rinomina = () => {
     const nuovo = scritto.trim();
-    if (documento === null || nuovo === "" || nuovo === nome || !/^[A-Za-z0-9 _-]+$/.test(nuovo)) return;
-    if (Object.keys(oggetto(documento["fonts"])).includes(nuovo)) return;
+    if (documento === null || nuovo === nome || problema !== null) return;
     // La famiglia è richiamata per nome dalle pile di caratteri: si rinomina
     // con loro, nella base e nella variante.
     const copia = JSON.parse(JSON.stringify(documento)) as Record<string, unknown>;
@@ -891,17 +896,27 @@ export function IspezioneCarattere({ nome }: { nome: string }) {
         </p>
       </section>
       <Riga che={t("studio3.rename")}>
-        <input
-          className="field-input"
-          type="text"
-          aria-label={t("studio3.rename")}
-          value={scritto}
-          onChange={(e) => setScritto(e.target.value)}
-          onBlur={rinomina}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") rinomina();
-          }}
-        />
+        <div className="rinomina">
+          <input
+            className="field-input"
+            type="text"
+            spellCheck={false}
+            aria-label={t("studio3.rename")}
+            aria-invalid={problema !== null || undefined}
+            value={scritto}
+            onChange={(e) => setScritto(e.target.value)}
+            onBlur={rinomina}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") rinomina();
+              if (e.key === "Escape") setScritto(nome);
+            }}
+          />
+          {problema !== null && (
+            <span className="errore-codice">
+              {problema === "preso" ? t("studio3.rename.taken") : t("studio3.font.rename.alphabet")}
+            </span>
+          )}
+        </div>
       </Riga>
       <section className="gruppo-ispezione">
         <Riga che={t("studio3.font.file")}>
@@ -937,17 +952,17 @@ export function IspezioneCarattere({ nome }: { nome: string }) {
               <>
                 <Cursore
                   valore={(peso as unknown[])[0]}
-                  min={1}
-                  max={1000}
-                  passo={50}
+                  min={CURSORE_PESO_VARIABILE.min}
+                  max={CURSORE_PESO_VARIABILE.max}
+                  passo={CURSORE_PESO_VARIABILE.passo}
                   etichetta={t("studio3.font.weight.min")}
                   onCambia={(v) => v !== null && campo("weight", [v, (peso as unknown[])[1]])}
                 />
                 <Cursore
                   valore={(peso as unknown[])[1]}
-                  min={1}
-                  max={1000}
-                  passo={50}
+                  min={CURSORE_PESO_VARIABILE.min}
+                  max={CURSORE_PESO_VARIABILE.max}
+                  passo={CURSORE_PESO_VARIABILE.passo}
                   etichetta={t("studio3.font.weight.max")}
                   onCambia={(v) => v !== null && campo("weight", [(peso as unknown[])[0], v])}
                 />
@@ -1044,6 +1059,14 @@ export function IspezioneNodo({ via }: { via: Via }) {
       conNodo(albero, via, { ...nodo, [campo]: valore }),
       t("studio3.step.node", { nome: nodo.name, campo: String(campo) }),
     );
+  // Le scelte discrete — segmentati, elenchi, caselle — hanno la guardia muta
+  // dello scafale (`scafaleScrivibile`): due scelte rapide su campi diversi
+  // partirebbero tutte e due dall'albero di prima della validazione, e la
+  // seconda disferebbe la prima. I cursori no: trascinati scrivono di continuo
+  // lo stesso campo, e con la guardia perderebbero l'ultima posizione.
+  const scegli = (campo: keyof NodoScafale, valore: unknown) => {
+    if (scafaleScrivibile(s)) cambia(campo, valore);
+  };
   const zona = nodo.kind === "zone";
   const parole = (scelta: string, voci: readonly string[], campo: keyof NodoScafale, etichetta: string) => (
     <Riga che={etichetta}>
@@ -1051,7 +1074,7 @@ export function IspezioneNodo({ via }: { via: Via }) {
         etichetta={etichetta}
         classe="minuto denso"
         scelta={scelta}
-        onScegli={(v) => cambia(campo, v)}
+        onScegli={(v) => scegli(campo, v)}
         voci={voci.map((v) => ({ chiave: v, etichetta: v }))}
       />
     </Riga>
@@ -1076,7 +1099,7 @@ export function IspezioneNodo({ via }: { via: Via }) {
               etichetta={t("studio3.shell.size")}
               classe="minuto denso"
               scelta={nodo.size === "hug" || nodo.size === "fill" ? nodo.size : "fissa"}
-              onScegli={(v) => cambia("size", v === "fissa" ? "240px" : v)}
+              onScegli={(v) => scegli("size", v === "fissa" ? "240px" : v)}
               voci={[
                 { chiave: "hug", etichetta: "Hug" },
                 { chiave: "fill", etichetta: "Fill" },
@@ -1107,7 +1130,7 @@ export function IspezioneNodo({ via }: { via: Via }) {
                 className="field-input"
                 aria-label={t("studio3.shell.part")}
                 value={nodo.part ?? ""}
-                onChange={(e) => cambia("part", e.target.value === "" ? null : e.target.value)}
+                onChange={(e) => scegli("part", e.target.value === "" ? null : e.target.value)}
               >
                 <option value="">{t("studio3.shell.part.none")}</option>
                 {registro.parts.map((p) => (
@@ -1123,11 +1146,12 @@ export function IspezioneNodo({ via }: { via: Via }) {
           def.options.map((o) => {
             const valore = nodo.options[o.name] ?? o.default;
             const scriviOpzione = (v: boolean | string | number) => cambia("options", { ...nodo.options, [o.name]: v });
+            const scegliOpzione = (v: boolean | string | number) => scegli("options", { ...nodo.options, [o.name]: v });
             const descrizione = descrizioneOpzione(nodo.name, o.name, o.description);
             if (o.kind === "flag") {
               return (
                 <label key={o.name} className="spunta" title={descrizione}>
-                  <input type="checkbox" checked={valore === true} onChange={(e) => scriviOpzione(e.target.checked)} />
+                  <input type="checkbox" checked={valore === true} onChange={(e) => scegliOpzione(e.target.checked)} />
                   <span>{o.name}</span>
                 </label>
               );
@@ -1139,7 +1163,7 @@ export function IspezioneNodo({ via }: { via: Via }) {
                     etichetta={descrizione}
                     classe="minuto denso"
                     scelta={String(valore)}
-                    onScegli={scriviOpzione}
+                    onScegli={scegliOpzione}
                     voci={o.allowed.map((a) => ({ chiave: a, etichetta: a }))}
                   />
                 </Riga>
@@ -1173,7 +1197,10 @@ export function IspezioneDocumento() {
   const anteprima = Array.isArray(meta["preview"]) ? (meta["preview"] as unknown[]).map(String) : [];
   const [id, setId] = useState(String(documento?.["id"] ?? s.id));
   useEffect(() => setId(String(documento?.["id"] ?? s.id)), [documento, s.id]);
-  const idValido = /^[A-Za-z0-9_-]{1,64}$/.test(id);
+  // La regola del formato, non quella più larga delle cartelle: un id che il
+  // formato rifiuta non arriva nel documento, e quindi non sposta la bozza.
+  // Vedi `bozza.ts`.
+  const idValido = idDelFormato(id);
 
   return (
     <div className="ispezione-voce">
@@ -1204,6 +1231,9 @@ export function IspezioneDocumento() {
                 if (idValido && id !== documento?.["id"]) scrivi(["id"], id, t("studio3.step.meta", { campo: t("studio3.doc.id") }));
               }}
             />
+            {/* Il perché, accanto al campo rosso: prima lo diceva la
+                validazione, quando l'id sbagliato era già nel documento. */}
+            {!idValido && <span className="errore-codice">{t("studio3.doc.idRule")}</span>}
             <span className="nota-ispezione">{t("studio3.doc.idHint")}</span>
           </div>
         </Riga>

@@ -24,6 +24,12 @@
 //! `127.0.0.1` e **mai** `0.0.0.0`: la seconda forma aprirebbe la porta a tutta
 //! la rete locale per i tre minuti dell'operazione.
 //!
+//! Con le cartelle dal cloud i fornitori sono diventati quattro, e due non
+//! stanno a queste regole: Microsoft registra `http://localhost`, Dropbox
+//! confronta anche la porta. Per loro c'è [`Attesa::apri_con`], che cambia la
+//! parola dell'indirizzo ([`Ospite`]) e sa provare delle porte fisse; il socket
+//! resta su `127.0.0.1`, e [`Attesa::apri`] resta com'era.
+//!
 //! # Cosa non finisce mai in un errore
 //!
 //! Il codice di autorizzazione. Gli [`AppError`] di questo crate arrivano fino
@@ -31,7 +37,7 @@
 //! chiaro in un log è un codice che qualcuno può ancora scambiare per un token.
 //! Nessuna funzione di questo modulo lo mette in un messaggio.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
@@ -61,6 +67,34 @@ const RIGA_MASSIMA: u64 = 8 * 1024;
 /// stessa ragione di [`RIGA_MASSIMA`]: chi bussa non è per forza un browser.
 const INTESTAZIONI_MASSIME: usize = 64;
 
+/// Quanto può durare, al più, la lettura di una richiesta.
+///
+/// Per connessione, non per riga: la scadenza di ogni singola lettura non
+/// basta, perché un client che manda un byte ogni quattro secondi non la fa
+/// mai scattare, e con sessantacinque righe da otto KiB teneva fermo il
+/// ciclo dell'attesa — e con lui «Annulla» e la scadenza dei tre minuti —
+/// per tutto il tempo che voleva. Un browser manda la sua richiesta in un
+/// colpo solo.
+const LETTURA_MASSIMA: Duration = Duration::from_secs(5);
+
+/// Un `accept` fallito per colpa di **quella** connessione e non del
+/// servitore: si scarta lei, e si continua ad aspettare.
+///
+/// Su Windows una connessione in coda che il client chiude prima che la si
+/// accetti — un antivirus che sonda le porte, una connessione di riserva del
+/// browser — torna da `accept` come `WSAECONNRESET`. Fino alla 3.2.0 di prova
+/// chiudeva il consenso con «rete assente» mentre l'utente stava ancora
+/// leggendo la schermata di Google.
+fn passeggero(tipo: std::io::ErrorKind) -> bool {
+    matches!(
+        tipo,
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::TimedOut
+    )
+}
+
 /// Il servitore in ascolto, prima che il browser risponda.
 ///
 /// Si apre **prima** di costruire l'indirizzo di autorizzazione, perché la porta
@@ -71,6 +105,45 @@ pub struct Attesa {
     listener: TcpListener,
     porta: u16,
     servizio: Servizio,
+    /// Come si nomina questa macchina nell'indirizzo di ritorno. Il socket sta
+    /// sempre su `127.0.0.1`: cambia solo la parola che il fornitore confronta
+    /// con quella registrata. Vedi [`Ospite`].
+    ospite: Ospite,
+}
+
+/// Come l'indirizzo di ritorno nomina questa macchina.
+///
+/// # Perché due forme
+///
+/// Perché i fornitori non sono d'accordo, e nessuna delle due va bene a tutti.
+/// Google e Spotify vogliono `127.0.0.1` (Spotify vieta `localhost`: è un nome,
+/// e un nome lo si può risolvere altrove). Microsoft fa il contrario: in una
+/// registrazione «per dispositivi mobili e desktop» si scrive `http://localhost`,
+/// e solo per `localhost` Entra ignora la porta al momento del consenso — cioè
+/// lascia scegliere la porta al sistema come qui si è sempre fatto.
+///
+/// Il socket non cambia: si apre su `127.0.0.1` anche quando l'indirizzo dice
+/// `localhost`. Un browser che risolve `localhost` prima in `::1` trova la
+/// porta chiusa e ripiega su `127.0.0.1`; aprire anche `[::1]` vorrebbe dire
+/// due socket da sorvegliare per un caso che il ripiego copre già.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ospite {
+    /// `http://127.0.0.1:<porta>`: la forma di sempre.
+    Loopback,
+    /// `http://localhost:<porta>`: la forma che Microsoft registra.
+    Localhost,
+}
+
+impl Ospite {
+    /// La parola nell'indirizzo: è anche quella che l'utente registra nella
+    /// console del fornitore, e per questo si legge da fuori.
+    #[must_use]
+    pub const fn nome(self) -> &'static str {
+        match self {
+            Self::Loopback => "127.0.0.1",
+            Self::Localhost => "localhost",
+        }
+    }
 }
 
 /// Quel che il browser ha riportato indietro.
@@ -104,11 +177,52 @@ impl Attesa {
     /// qualcuno c'è un firewall che vieta anche il loopback, ed è più utile
     /// dirlo che far sembrare l'operazione partita.
     pub fn apri(servizio: Servizio) -> Result<Self, AppError> {
-        let indirizzo = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-        let listener = TcpListener::bind(indirizzo).map_err(|err| {
-            AppError::new(ErrorCode::NetOffline { url: None })
-                .with_cause(format!("apertura del servitore locale: {err}"))
-        })?;
+        Self::apri_con(servizio, Ospite::Loopback, &[])
+    }
+
+    /// Come [`Self::apri`], con l'ospite dell'indirizzo di ritorno e,
+    /// se servono, delle porte fisse.
+    ///
+    /// # Le porte fisse, e perché sono un ripiego
+    ///
+    /// Dropbox confronta l'indirizzo di ritorno **per intero**, porta
+    /// compresa, con quelli registrati nella console dell'app: una porta scelta
+    /// dal sistema non sarebbe mai fra quelle. Allora se ne registrano poche, e
+    /// qui si provano nell'ordine dato: la prima libera vince, e una occupata
+    /// da un altro programma si salta invece di fallire.
+    ///
+    /// È meno della porta casuale (vedi il `//!`): una porta fissa si può
+    /// indovinare. Quel che resta a proteggere è lo `state`, che scarta le
+    /// risposte che non sono nostre, e soprattutto PKCE: il codice raccolto da
+    /// chi si fosse messo in ascolto prima di noi, senza il `code_verifier`
+    /// rimasto in questo processo, non si scambia con niente.
+    ///
+    /// `porte` vuoto vuol dire «la sceglie il sistema», come [`Self::apri`].
+    ///
+    /// # Errori
+    ///
+    /// `net.offline` se non si apre il socket, e — con le porte fisse — se
+    /// sono occupate tutte: la causa lo dice, perché la cosa da fare è chiudere
+    /// il programma che le tiene.
+    pub fn apri_con(servizio: Servizio, ospite: Ospite, porte: &[u16]) -> Result<Self, AppError> {
+        let listener = if porte.is_empty() {
+            let indirizzo = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+            TcpListener::bind(indirizzo).map_err(|err| {
+                AppError::new(ErrorCode::NetOffline { url: None })
+                    .with_cause(format!("apertura del servitore locale: {err}"))
+            })?
+        } else {
+            porte
+                .iter()
+                .find_map(|porta| {
+                    TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, *porta))).ok()
+                })
+                .ok_or_else(|| {
+                    AppError::new(ErrorCode::NetOffline { url: None }).with_cause(format!(
+                        "le porte del ritorno dal consenso sono tutte occupate: {porte:?}"
+                    ))
+                })?
+        };
         let porta = listener
             .local_addr()
             .map_err(|err| {
@@ -124,6 +238,7 @@ impl Attesa {
             listener,
             porta,
             servizio,
+            ospite,
         })
     }
 
@@ -140,7 +255,7 @@ impl Attesa {
     /// errore che si scopre solo dopo che l'utente ha già dato il consenso.
     #[must_use]
     pub fn redirect_uri(&self) -> String {
-        format!("http://127.0.0.1:{}", self.porta)
+        format!("http://{}:{}", self.ospite.nome(), self.porta)
     }
 
     /// Aspetta la risposta del browser, per non più di `entro`.
@@ -204,7 +319,9 @@ impl Attesa {
             }
             let flusso = match self.listener.accept() {
                 Ok((flusso, _)) => flusso,
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock || passeggero(err.kind()) =>
+                {
                     std::thread::sleep(RESPIRO);
                     continue;
                 }
@@ -213,7 +330,8 @@ impl Attesa {
                         .with_cause(format!("connessione locale rifiutata: {err}")));
                 }
             };
-            match serve(flusso, state, self.servizio) {
+            let fine = (Instant::now() + LETTURA_MASSIMA).min(scadenza);
+            match serve(flusso, state, self.servizio, fine) {
                 Esito::Finita(esito) => return esito,
                 Esito::NonEraLei => {}
             }
@@ -258,14 +376,39 @@ impl Lingua {
     }
 }
 
-/// Legge una richiesta, risponde, e dice se era quella giusta.
-fn serve(flusso: TcpStream, state: &str, servizio: Servizio) -> Esito {
-    // Una scadenza sul socket accettato: un client che apre la connessione e
-    // non manda niente non deve poter tenere fermo tutto il collegamento.
-    let _ = flusso.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = flusso.set_nonblocking(false);
+/// Una lettura che finisce entro `fine`: ogni `read` aspetta al più il tempo
+/// che resta, e dopo risponde `TimedOut`. Vedi [`LETTURA_MASSIMA`].
+struct Entro<'a> {
+    flusso: &'a TcpStream,
+    fine: Instant,
+}
 
-    let mut lettore = BufReader::new(&flusso);
+impl Read for Entro<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let resta = self.fine.saturating_duration_since(Instant::now());
+        // Zero non è una scadenza per `set_read_timeout`: è un errore.
+        if resta.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.flusso.set_read_timeout(Some(resta))?;
+        let mut flusso = self.flusso;
+        flusso.read(buf)
+    }
+}
+
+/// Legge una richiesta entro `fine`, risponde, e dice se era quella giusta.
+fn serve(flusso: TcpStream, state: &str, servizio: Servizio, fine: Instant) -> Esito {
+    // Una scadenza per tutta la richiesta: un client che apre la connessione e
+    // non manda niente, o la manda a gocce, non deve poter tenere fermo il
+    // collegamento. Anche la risposta ha la sua: un client che non legge non
+    // deve tenerlo fermo dall'altra parte.
+    let _ = flusso.set_nonblocking(false);
+    let _ = flusso.set_write_timeout(Some(Duration::from_secs(2)));
+
+    let mut lettore = BufReader::new(Entro {
+        flusso: &flusso,
+        fine,
+    });
     let mut riga = String::new();
     if (&mut lettore)
         .take(RIGA_MASSIMA)
@@ -535,6 +678,84 @@ mod prove {
     }
 
     #[test]
+    fn un_guasto_di_una_connessione_sola_non_chiude_l_attesa() {
+        use std::io::ErrorKind;
+        for tipo in [
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::Interrupted,
+            ErrorKind::TimedOut,
+        ] {
+            assert!(passeggero(tipo), "{tipo:?}");
+        }
+        for tipo in [ErrorKind::PermissionDenied, ErrorKind::Other] {
+            assert!(!passeggero(tipo), "{tipo:?}");
+        }
+    }
+
+    /// Un client che manda la sua richiesta un byte alla volta, e non finisce
+    /// mai nemmeno la prima riga.
+    fn a_gocce(porta: u16, finche: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let Ok(mut flusso) = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, porta)) else {
+            return;
+        };
+        for byte in b"GET /?code=lento&state=".iter().cycle() {
+            if finche.load(std::sync::atomic::Ordering::Acquire)
+                || flusso.write_all(std::slice::from_ref(byte)).is_err()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[test]
+    fn un_client_che_manda_a_gocce_non_tiene_ferma_l_attesa() {
+        let ascolto = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("porta");
+        let porta = ascolto.local_addr().expect("indirizzo").port();
+        let basta = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let filo = {
+            let basta = std::sync::Arc::clone(&basta);
+            std::thread::spawn(move || a_gocce(porta, basta))
+        };
+        let (flusso, _) = ascolto.accept().expect("connessione");
+        let partito = Instant::now();
+        let esito = serve(flusso, "s", PROVA, partito + Duration::from_millis(300));
+        assert!(matches!(esito, Esito::NonEraLei));
+        assert!(
+            partito.elapsed() < Duration::from_secs(1),
+            "la lettura finisce col suo termine: {:?}",
+            partito.elapsed()
+        );
+        basta.store(true, std::sync::atomic::Ordering::Release);
+        filo.join().expect("filo");
+    }
+
+    #[test]
+    fn l_annullamento_arriva_anche_con_un_client_lento() {
+        let attesa = Attesa::apri(PROVA).expect("apertura");
+        let porta = attesa.porta();
+        let basta = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let filo = {
+            let basta = std::sync::Arc::clone(&basta);
+            std::thread::spawn(move || a_gocce(porta, basta))
+        };
+        let partito = Instant::now();
+        let annullato = || partito.elapsed() >= Duration::from_millis(200);
+        let err = attesa
+            .aspetta("s", Duration::from_secs(60), &annullato)
+            .expect_err("annullato");
+        assert_eq!(err.code().kind().code(), "internal.aborted");
+        assert!(
+            partito.elapsed() < LETTURA_MASSIMA + Duration::from_secs(1),
+            "l'annullamento non aspetta il client: {:?}",
+            partito.elapsed()
+        );
+        basta.store(true, std::sync::atomic::Ordering::Release);
+        filo.join().expect("filo");
+    }
+
+    #[test]
     fn un_codice_giusto_si_raccoglie_e_si_decodifica() {
         // Il `%2F` non è un dettaglio: i codici di Google contengono barre, e
         // passarli senza decodificarli dà un `invalid_grant` che sembra un token
@@ -743,6 +964,61 @@ mod prove {
         // Mai `localhost`: Spotify lo vieta apertamente, perché è un nome e un
         // nome lo si può risolvere altrove.
         assert!(!attesa.redirect_uri().contains("localhost"));
+    }
+
+    #[test]
+    fn microsoft_riceve_localhost_ma_il_socket_resta_su_loopback() {
+        let attesa = Attesa::apri_con(PROVA, Ospite::Localhost, &[]).expect("apertura");
+        let porta = attesa.porta();
+        assert_eq!(attesa.redirect_uri(), format!("http://localhost:{porta}"));
+        // Il browser arriva su 127.0.0.1 (è lì che `localhost` ripiega): il
+        // socket è quello di sempre, e il codice si raccoglie come sempre.
+        let filo = std::thread::spawn(move || bussa(porta, "/?code=x&state=s"));
+        let risposta = attesa
+            .aspetta("s", Duration::from_secs(10), &|| false)
+            .expect("codice");
+        assert_eq!(risposta.code, "x");
+        filo.join().expect("filo");
+    }
+
+    /// Una porta libera adesso, scelta dal sistema e subito lasciata.
+    ///
+    /// Non le porte vere di Dropbox: potrebbero essere prese su questa
+    /// macchina, o da un'altra prova che gira accanto.
+    fn porta_libera() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .and_then(|ascolto| ascolto.local_addr())
+            .map(|indirizzo| indirizzo.port())
+            .expect("una porta")
+    }
+
+    #[test]
+    fn le_porte_fisse_si_provano_nell_ordine_e_l_occupata_si_salta() {
+        let occupata = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("una porta");
+        let presa = occupata.local_addr().expect("indirizzo").port();
+        let libera = porta_libera();
+
+        let attesa =
+            Attesa::apri_con(PROVA, Ospite::Loopback, &[presa, libera]).expect("una delle due");
+        assert_eq!(attesa.porta(), libera, "la prima era presa da un altro");
+        assert_eq!(attesa.redirect_uri(), format!("http://127.0.0.1:{libera}"));
+        drop(attesa);
+
+        let prima = porta_libera();
+        let attesa = Attesa::apri_con(PROVA, Ospite::Loopback, &[prima, libera]).expect("libere");
+        assert_eq!(attesa.porta(), prima, "libere tutte e due: vince la prima");
+    }
+
+    #[test]
+    fn porte_fisse_tutte_occupate_si_dice() {
+        let occupata = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("una porta");
+        let presa = occupata.local_addr().expect("indirizzo").port();
+        let err = Attesa::apri_con(PROVA, Ospite::Loopback, &[presa]).expect_err("occupata");
+        assert_eq!(err.code().kind().code(), "net.offline");
+        assert!(
+            err.cause().is_some_and(|c| c.contains(&presa.to_string())),
+            "la causa nomina le porte, perché è lì che si guarda: {err}"
+        );
     }
 
     #[test]

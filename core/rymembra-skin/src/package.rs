@@ -565,13 +565,25 @@ pub fn risorse_presenti(document: &SkinDocument, nomi: &[String]) -> Result<(), 
     nominate_presenti(document, nomi.iter().map(String::as_str))
 }
 
-/// Quanto occupa nell'archivio una voce oltre al suo contenuto.
+/// Quanto occupa nell'archivio una voce oltre al suo contenuto, quando il nome
+/// non si conosce.
 ///
 /// L'intestazione locale (30 byte), quella dell'indice (46), e il nome scritto
-/// in tutte e due: il nome più lungo che il formato ammette sta sotto gli
-/// ottanta caratteri. È una stima per eccesso, ed è quel che serve a una
-/// domanda che si fa **prima** di scrivere.
+/// in tutte e due, contato a ottanta caratteri. **Non** è un tetto del
+/// formato: la lettura non limita la lunghezza di un nome, e lo Studio lo
+/// ricava dal nome del file senza tagliarlo. Fino alla 3.2.0 di prova questo commento
+/// diceva il contrario, e una bozza con nomi di 250 caratteri vicina ai 20 MB
+/// passava la domanda e si fermava all'esportazione. Chi ha i nomi chiede a
+/// [`entra_in_un_pacchetto_con_nomi`], che conta [`cornice`].
 const CORNICE_VOCE: u64 = 30 + 46 + 2 * 80;
+
+/// Quanto occupa nell'archivio una voce oltre al suo contenuto: le due
+/// intestazioni, locale (30 byte) e dell'indice (46), e il nome intero scritto
+/// in tutte e due.
+fn cornice(nome: &str) -> u64 {
+    let lunghezza = u64::try_from(nome.len()).unwrap_or(u64::MAX);
+    lunghezza.saturating_mul(2).saturating_add(30 + 46)
+}
 
 /// La coda dell'archivio: il record di fine dell'indice.
 const CODA_ARCHIVIO: u64 = 22;
@@ -586,6 +598,10 @@ const CODA_ARCHIVIO: u64 = 22;
 /// dell'archivio, non quello del decompresso; il manifest si conta intero, che
 /// è il caso peggiore.
 ///
+/// Senza i nomi la cornice di ogni voce è una stima ([`CORNICE_VOCE`]), che
+/// sbaglia per difetto con nomi oltre gli ottanta caratteri: chi li ha usi
+/// [`entra_in_un_pacchetto_con_nomi`].
+///
 /// # Errori
 ///
 /// `skin.tooLarge` per una voce, il totale o l'archivio oltre il loro tetto,
@@ -594,6 +610,41 @@ pub fn entra_in_un_pacchetto(
     manifest: u64,
     preview: Option<u64>,
     risorse: impl IntoIterator<Item = u64>,
+) -> Result<(), AppError> {
+    misura_del_pacchetto(
+        (manifest, CORNICE_VOCE),
+        preview.map(|byte| (byte, CORNICE_VOCE)),
+        risorse.into_iter().map(|byte| (byte, CORNICE_VOCE)),
+    )
+}
+
+/// Come [`entra_in_un_pacchetto`], con i nomi delle risorse: la misura esatta.
+///
+/// `risorse` sono coppie (nome dentro `assets/`, senza prefisso; byte), come
+/// [`SkinAsset::name`] e la lunghezza di [`SkinAsset::bytes`].
+///
+/// # Errori
+///
+/// Gli stessi di [`entra_in_un_pacchetto`].
+pub fn entra_in_un_pacchetto_con_nomi<'a>(
+    manifest: u64,
+    preview: Option<u64>,
+    risorse: impl IntoIterator<Item = (&'a str, u64)>,
+) -> Result<(), AppError> {
+    misura_del_pacchetto(
+        (manifest, cornice(MANIFEST_NAME)),
+        preview.map(|byte| (byte, cornice(PREVIEW_NAME))),
+        risorse
+            .into_iter()
+            .map(|(nome, byte)| (byte, cornice(&format!("{PREFISSO_RISORSE}{nome}")))),
+    )
+}
+
+/// Il conto comune: ogni voce con i suoi byte e la sua cornice.
+fn misura_del_pacchetto(
+    (manifest, cornice_manifest): (u64, u64),
+    preview: Option<(u64, u64)>,
+    risorse: impl Iterator<Item = (u64, u64)>,
 ) -> Result<(), AppError> {
     let troppo = |bytes: u64, limit_bytes: u64| {
         Err(AppError::new(ErrorCode::SkinTooLarge {
@@ -608,14 +659,14 @@ pub fn entra_in_un_pacchetto(
     let mut totale = manifest;
     let mut archivio = CODA_ARCHIVIO
         .saturating_add(manifest)
-        .saturating_add(CORNICE_VOCE);
-    for voce in preview.into_iter().chain(risorse) {
+        .saturating_add(cornice_manifest);
+    for (voce, cornice) in preview.into_iter().chain(risorse) {
         if voce > limits::MAX_ENTRY_BYTES {
             return troppo(voce, limits::MAX_ENTRY_BYTES);
         }
         voci = voci.saturating_add(1);
         totale = totale.saturating_add(voce);
-        archivio = archivio.saturating_add(voce).saturating_add(CORNICE_VOCE);
+        archivio = archivio.saturating_add(voce).saturating_add(cornice);
     }
     if voci > limits::MAX_ENTRIES {
         return Err(rifiutata(
@@ -695,10 +746,13 @@ pub fn write_skin_package(input: &WritePackageInput<'_>) -> Result<Vec<u8>, AppE
     // scoprirlo all'importazione sull'altro dispositivo.
     let document = parse_skin_json(input.source)?;
     nominate_presenti(&document, input.assets.iter().map(|a| a.name.as_str()))?;
-    entra_in_un_pacchetto(
+    entra_in_un_pacchetto_con_nomi(
         input.source.len() as u64,
         input.preview.map(|p| p.len() as u64),
-        input.assets.iter().map(|a| a.bytes.len() as u64),
+        input
+            .assets
+            .iter()
+            .map(|a| (a.name.as_str(), a.bytes.len() as u64)),
     )?;
     // Due risorse con lo stesso nome sono due voci con lo stesso nome: la
     // lettura ne terrebbe una a caso, e lo scrittore dello zip si ferma a metà
@@ -1164,5 +1218,30 @@ mod tests {
             4 * 1024 * 1024,
         ];
         assert!(entra_in_un_pacchetto(10, None, venti).is_err());
+    }
+
+    #[test]
+    fn un_nome_di_risorsa_lungo_non_sfugge_alla_stima() {
+        // Il formato non pone un tetto alla lunghezza di un nome, e lo Studio
+        // lo ricava dal nome del file senza tagliarlo. Sessantatré risorse con
+        // un nome di 254 caratteri: la stima con nomi sotto gli ottanta le
+        // lascia passare, l'archivio vero sfora di una ventina di KB.
+        let lungo = format!("{}.png", "a".repeat(250));
+        let quante = limits::MAX_ENTRIES - 1;
+        let ciascuna: u64 = 332_500;
+        let lunghi: Vec<(&str, u64)> = (0..quante).map(|_| (lungo.as_str(), ciascuna)).collect();
+        assert!(
+            entra_in_un_pacchetto(1_000, None, lunghi.iter().map(|(_, b)| *b)).is_ok(),
+            "la stima di prima"
+        );
+        let err = entra_in_un_pacchetto_con_nomi(1_000, None, lunghi.iter().copied())
+            .expect_err("con i nomi veri sfora");
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::SkinTooLarge
+        );
+        // Gli stessi byte con nomi corti stanno nell'archivio.
+        let corti: Vec<(&str, u64)> = (0..quante).map(|_| ("a.png", ciascuna)).collect();
+        assert!(entra_in_un_pacchetto_con_nomi(1_000, None, corti).is_ok());
     }
 }

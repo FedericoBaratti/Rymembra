@@ -21,7 +21,7 @@
 //! dopo: quali brani non ha, e se la playlist che sta per importare ne
 //! sostituirà una che esiste già.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction};
 use rymembra_domain::abbinamento::{Gradino, LibraryTrack, plan_abbinamento};
@@ -507,6 +507,30 @@ pub(crate) fn prepara_playlist(
     sorgente: Option<(Fonte, &str)>,
     troncatura: Option<(u32, u32)>,
 ) -> Result<(i64, bool, bool), AppError> {
+    prepara_playlist_escludendo(tx, titolo, sorgente, troncatura, &HashSet::new())
+}
+
+/// [`prepara_playlist`], ma senza mai adottare una delle playlist `gia_scritte`.
+///
+/// # Perché
+///
+/// Un'importazione che scrive **più** playlist nella stessa transazione — un
+/// account intero — può incontrare due playlist con lo stesso nome: Spotify le
+/// ammette. La seconda ritrovava per chiave la riga appena creata dalla prima,
+/// e «sostituire» voleva dire cancellarle le voci e metterci le proprie: una
+/// playlist sola, e un rapporto che diceva «creata» con voci che non c'erano
+/// più. Una riga già scritta in questa esecuzione non si adotta: si rifiuta con
+/// `library.playlistExists`, che chi chiama tratta già come rifiuto (la
+/// playlist finisce fra quelle rifiutate con il suo codice). Niente
+/// «Chill (2)»: reimportare darebbe una scia di nomi nuovi, e il rifiuto invece
+/// è lo stesso a ogni passata. Il controllo sta **prima** dello svuotamento.
+pub(crate) fn prepara_playlist_escludendo(
+    tx: &Transaction<'_>,
+    titolo: &str,
+    sorgente: Option<(Fonte, &str)>,
+    troncatura: Option<(u32, u32)>,
+    gia_scritte: &HashSet<i64>,
+) -> Result<(i64, bool, bool), AppError> {
     // Il titolo che arriva da fuori si **tronca** al tetto dei nomi invece di
     // farsi rifiutare: vedi `playlists::nome_da_importare`. Da qui in giù è
     // l'unico titolo che esiste — la chiave, il rinomino, la riga nuova — così
@@ -551,6 +575,14 @@ pub(crate) fn prepara_playlist(
         .or_else(|| chiave_intera.as_ref().and_then(per_chiave));
 
     match esistente {
+        Some((id, _)) if gia_scritte.contains(&id) => Err(AppError::new(
+            ErrorCode::LibraryPlaylistExists {
+                name: titolo.to_owned(),
+            },
+        )
+        .with_cause(
+            "un'altra playlist con lo stesso nome è appena stata scritta da questa importazione",
+        )),
         Some((_, true)) => Err(AppError::new(ErrorCode::LibraryPlaylistIsSmart {
             playlist_id: esistente.map(|(id, _)| id),
         })),

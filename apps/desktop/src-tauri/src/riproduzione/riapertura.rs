@@ -66,14 +66,34 @@ fn si_puo_rimettere_la_puntina(track_id: i64) -> bool {
     let mut guardia = ULTIMA_RIPRESA
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((brano, allora)) = *guardia
+    let (si_puo, ultima) = decidi_ripresa(*guardia, track_id, caduti);
+    *guardia = ultima;
+    si_puo
+}
+
+/// La regola di [`si_puo_rimettere_la_puntina`], senza la casella e senza il
+/// contatore da cui vengono i numeri: la risposta, e quel che la casella deve
+/// tenere dopo.
+///
+/// Due cose che sbagliate non si vedono finché non fanno danno, ed è per
+/// questo che sta a sé e ha le sue prove. Il confronto è **stretto**: lo stesso
+/// brano ripreso due volte senza che nessun filo sia caduto in mezzo — due
+/// stacchi del Bluetooth nella stessa canzone — si riprende ancora. E
+/// l'annotazione si scrive **solo** quando si riprende: annotata anche al
+/// rifiuto, il confronto dopo vedrebbe sempre lo stesso numero e direbbe di sì,
+/// e il ciclo del file che fa cadere il decodificatore tornerebbe.
+fn decidi_ripresa(
+    ultima: Option<(i64, u32)>,
+    track_id: i64,
+    caduti: u32,
+) -> (bool, Option<(i64, u32)>) {
+    if let Some((brano, allora)) = ultima
         && brano == track_id
         && caduti > allora
     {
-        return false;
+        return (false, ultima);
     }
-    *guardia = Some((track_id, caduti));
-    true
+    (true, Some((track_id, caduti)))
 }
 
 /// Il brano il cui ascolto deve **continuare** al prossimo annuncio d'inizio.
@@ -215,10 +235,11 @@ pub(super) fn ferma_l_ascolto_se_perso(stato: &StatoLettore) {
 /// bloccarsi, e non si può fare dal filo che segnala il guasto — quello è un
 /// `StreamError` che arriva da dentro `cpal`.
 ///
-/// `(async)`: aprire un dispositivo audio parla con il sistema e può prendersi
-/// il suo tempo. Sul filo principale sarebbe la finestra ferma.
-#[tauri::command(async)]
-pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+/// Fuori dal filo della finestra: aprire un dispositivo audio parla con il
+/// sistema e può prendersi il suo tempo. Sul filo principale sarebbe la
+/// finestra ferma, su un worker del runtime gli altri comandi: il comando
+/// [`riapri_audio`] lo manda sul pool bloccante.
+pub fn riapri_audio_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     // A mano si riparte come si stava: se la musica andava, riprende; se era
     // in pausa, resta ferma. La stessa regola dell'automatico — l'ha decisa
     // `annota_ripresa`, non chi chiama. A differenza dell'automatico, a mano si
@@ -264,6 +285,20 @@ pub(super) enum Riaperta {
     Rimessa,
     /// Il motore è nuovo, e non c'era niente da rimettere al suo posto.
     Vuota,
+}
+
+/// [`riapri_audio_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn riapri_audio(app: tauri::AppHandle) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "riapertura dell'audio", riapri_audio_ora).await
+}
+
+/// [`riprova_corrente_ora`], sul pool bloccante: vedi
+/// `super::col_lettore_in_disparte`.
+#[tauri::command]
+pub async fn riprova_corrente(app: tauri::AppHandle) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "riprova", riprova_corrente_ora).await
 }
 
 /// Il lavoro vero di [`riapri_audio`], senza il comando intorno.
@@ -387,8 +422,8 @@ fn riapri_davvero(
     // E si apre **prima di chiedere il lucchetto del lettore**, non dopo.
     // Aprire un dispositivo audio parla con il sistema e può prendersi
     // secondi: con quel lucchetto già in mano, pausa, volume e «prossimo»
-    // resterebbero tutti in coda dietro la riapertura. `(async)` toglie di
-    // mezzo il filo principale, non il lucchetto.
+    // resterebbero tutti in coda dietro la riapertura. Il pool bloccante del
+    // comando toglie di mezzo il filo principale, non il lucchetto.
     let motore = apri_con_un_secondo_tentativo(app, voluta.as_deref())?;
     // Il formato si legge **prima** che il motore entri nel lettore: subito
     // dopo è dietro il lucchetto, e serve a [`riprendi_dov_era`] che gira
@@ -448,44 +483,14 @@ fn riapri_davvero(
 
     match guardia.as_mut() {
         Ok(lettore) => {
-            // Il sorvegliante voleva l'uscita fissata, e `cpal` ha aperto
-            // un'altra cosa: la scheda è sparita fra il controllo di
-            // `da_riaprire` e l'apertura, e `costruisci` ha ripiegato sul
-            // predefinito. Per un gesto a mano va bene; per il sorvegliante no —
-            // è proprio il salto agli altoparlanti che l'attesa esiste per
-            // evitare. Il motore nuovo nasce in pausa e non ha suonato niente:
-            // lasciarlo cadere qui non si sente. Il sorvegliante insiste una
-            // volta, e alla passata dopo `da_riaprire` vede che la fissata non
-            // c'è e aspetta.
-            if modo == Modo::Automatica
-                && let Some(fissata) = voluta.as_deref()
-                && fissata != motore.dispositivo()
-            {
-                let causa = format!(
-                    "l'uscita fissata «{fissata}» non c'è più, e si aspetta che torni invece di \
-                     suonare su «{}»",
-                    motore.dispositivo()
-                );
-                drop(guardia);
-                drop(motore);
-                return Err(AppError::new(ErrorCode::PlaybackDeviceLost).with_cause(causa));
-            }
-            // Lo stesso per chi segue il sistema: senza una preferenza si apre
-            // il predefinito, e se nell'istante dell'apertura nessuna uscita
-            // era marcata tale — le cuffie appena sparite, Windows che non ha
-            // ancora scelto chi le sostituisce — l'apertura ha preso la prima
-            // dell'elenco. Il diario vero la mostrava: «AMD Streaming Audio
-            // Device» a 16 kHz, un'uscita virtuale che nessuno ascolta, e due
-            // secondi dopo una seconda riapertura verso il predefinito vero. Il
-            // salto lo faceva il nostro ripiego, non Windows; qui lo si lascia
-            // cadere, e il sorvegliante riprova quando il sistema ha deciso.
-            // Vedi `rymembra_play::dispositivi::scegli_per_riaprire`.
-            if modo == Modo::Automatica && voluta.is_none() && !motore.era_predefinito() {
-                let causa = format!(
-                    "nessuna uscita era il predefinito di sistema: si aspetta che Windows ne \
-                     scelga uno invece di suonare su «{}»",
-                    motore.dispositivo()
-                );
+            // Il motore nuovo nasce in pausa e non ha suonato niente:
+            // lasciarlo cadere qui non si sente. Vedi [`rifiuto_automatico`].
+            if let Some(causa) = rifiuto_automatico(
+                modo,
+                voluta.as_deref(),
+                motore.dispositivo(),
+                motore.era_predefinito(),
+            ) {
                 drop(guardia);
                 drop(motore);
                 return Err(AppError::new(ErrorCode::PlaybackDeviceLost).with_cause(causa));
@@ -674,6 +679,57 @@ fn riapri_davvero(
 /// o il primo tocco del cursore.
 const ATTESA_LATENZE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Il motore appena aperto dal sorvegliante va lasciato cadere? `Some` con la
+/// causa da scrivere nell'errore, `None` se va bene così.
+///
+/// È la seconda rete che tiene le cuffie fissate fuori dagli altoparlanti — la
+/// prima è `uscite::perche_riaprire` — e vale per la sola riapertura
+/// automatica: un gesto a mano («Riapri», play, un'uscita scelta) ha chiesto di
+/// sentire adesso, da dove si può. Una funzione a sé perché si possa provare
+/// senza un motore vero: `aperta` è l'uscita su cui il motore nuovo si è
+/// aperto, `era_predefinito` se in quell'istante era quella di sistema.
+///
+/// Due casi:
+///
+/// - **la fissata non è quella aperta.** Il sorvegliante voleva l'uscita
+///   fissata, e `cpal` ha aperto un'altra cosa: la scheda è sparita fra il
+///   controllo di `da_riaprire` e l'apertura, e `costruisci` ha ripiegato sul
+///   predefinito. Per un gesto a mano va bene; per il sorvegliante no — è
+///   proprio il salto agli altoparlanti che l'attesa esiste per evitare. Il
+///   sorvegliante insiste una volta, e alla passata dopo `da_riaprire` vede che
+///   la fissata non c'è e aspetta.
+/// - **nessuna preferenza, e l'aperta non era il predefinito.** Lo stesso per
+///   chi segue il sistema: senza una preferenza si apre il predefinito, e se
+///   nell'istante dell'apertura nessuna uscita era marcata tale — le cuffie
+///   appena sparite, Windows che non ha ancora scelto chi le sostituisce —
+///   l'apertura ha preso la prima dell'elenco. Il diario vero la mostrava:
+///   «AMD Streaming Audio Device» a 16 kHz, un'uscita virtuale che nessuno
+///   ascolta, e due secondi dopo una seconda riapertura verso il predefinito
+///   vero. Il salto lo faceva il nostro ripiego, non Windows; qui lo si lascia
+///   cadere, e il sorvegliante riprova quando il sistema ha deciso. Vedi
+///   `rymembra_play::dispositivi::scegli_per_riaprire`.
+fn rifiuto_automatico(
+    modo: Modo,
+    voluta: Option<&str>,
+    aperta: &str,
+    era_predefinito: bool,
+) -> Option<String> {
+    if modo != Modo::Automatica {
+        return None;
+    }
+    match voluta {
+        Some(fissata) if fissata != aperta => Some(format!(
+            "l'uscita fissata «{fissata}» non c'è più, e si aspetta che torni invece di suonare \
+             su «{aperta}»"
+        )),
+        None if !era_predefinito => Some(format!(
+            "nessuna uscita era il predefinito di sistema: si aspetta che Windows ne scelga uno \
+             invece di suonare su «{aperta}»"
+        )),
+        _ => None,
+    }
+}
+
 /// La latenza globale e quelle per uscita, lette per la riapertura.
 ///
 /// `None` se la libreria non c'è, non risponde, o resta occupata oltre
@@ -845,6 +901,11 @@ fn riprendi_dov_era(
         return false;
     }
 
+    // Il numero dell'ultima pausa o ripresa chiesta, prima di aprire: vedi
+    // [`super::consegna`].
+    let Ok(gesti_prima) = con_lettore(stato, |lettore| Ok(lettore.pausa_chiesta.0)) else {
+        return false;
+    };
     let brano = match brano_di(app, ripresa.track_id, formato) {
         Ok(brano) => brano,
         Err(err) => {
@@ -864,8 +925,11 @@ fn riprendi_dov_era(
         if lettore.coda.current() != Some(ripresa.track_id) {
             return Ok(false);
         }
-        lettore.suona(brano);
-        lettore.motore.vai_a(ripresa.ms);
+        // Fermo o suonando, dal punto annotato, in un comando solo: vedi
+        // [`super::consegna`]. Il ramo fermo serve a chi era in pausa — o a
+        // chi ha aspettato le cuffie troppo a lungo: per lui partire vorrebbe
+        // dire una musica che non aveva chiesto.
+        let da_ms = super::consegna(lettore, brano, !riparte, ripresa.ms, gesti_prima);
         // L'annuncio d'inizio che il motore nuovo manderà per questo brano è
         // la ripresa dell'ascolto di prima, non un ascolto nuovo. Scritto qui,
         // col lucchetto del lettore in mano: l'annuncio ha bisogno dello
@@ -873,20 +937,11 @@ fn riprendi_dov_era(
         *ASCOLTO_DA_CONTINUARE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ripresa.track_id);
-        // La pausa **dopo** `suona`, non prima: `suona` abbassa il bit da sé
-        // (vedi `Motore::pausa` per l'ordine), quindi non rialzarlo qui vuol
-        // dire ripartire — ed è il ramo normale, da quando la riapertura è
-        // automatica. Il ramo fermo serve a chi era in pausa — o a chi ha
-        // aspettato le cuffie troppo a lungo: per lui `suona` avrebbe appena
-        // acceso una musica che non aveva chiesto.
-        if !riparte {
-            lettore.motore.pausa();
-        }
         prepara_prossimo(app, lettore);
         // Con la posizione richiesta e non con quella del motore: il salto lo
         // fa il filo della decodifica, e fino ad allora `posizione()` direbbe
         // zero. Stessa ragione di [`riprova_corrente`].
-        manda_stato_con_posizione(app, lettore, ripresa.ms);
+        manda_stato_con_posizione(app, lettore, da_ms);
         Ok(true)
     });
     let Ok(rimessa) = esito else {
@@ -962,10 +1017,11 @@ fn riprendi_dov_era(
 /// [`riapri_audio`], e nient'altro: il brano lo rimette il regolatore, che
 /// riapre da sé la voce di chi ospita quando qui non suona niente.
 ///
-/// `(async)`: riapre un file che può stare su una cartella di rete, e quella è
-/// esattamente l'attesa da cui la finestra va tenuta fuori.
-#[tauri::command(async)]
-pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+/// Fuori dal filo della finestra: riapre un file che può stare su una cartella
+/// di rete, e quella è esattamente l'attesa da cui la finestra — e i worker
+/// del runtime — vanno tenuti fuori. Il comando [`riprova_corrente`] lo manda
+/// sul pool bloccante.
+pub fn riprova_corrente_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     let annotato = *stato
         .ripresa
         .lock()
@@ -973,12 +1029,13 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
 
     // Il formato dell'uscita si legge sotto lucchetto e il lucchetto si lascia
     // subito: sono due interi da una struttura `Copy`, non un'apertura di file.
-    let (formato, perso, con_brano, segue) = con_lettore(&stato, |lettore| {
+    let (formato, perso, con_brano, segue, gesti_prima) = con_lettore(&stato, |lettore| {
         Ok((
             lettore.motore.formato(),
             lettore.motore.dispositivo_perso(),
             lettore.motore.posizione().track_id.is_some(),
             super::insieme::segue(lettore),
+            lettore.pausa_chiesta.0,
         ))
     })
     .map_err(errore)?;
@@ -994,7 +1051,7 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
                 Ok(())
             };
         }
-        _ if perso || !con_brano => return super::riprendi(app, stato),
+        _ if perso || !con_brano => return super::riprendi_ora(app, stato),
         _ => {
             return con_lettore(&stato, |lettore| {
                 prepara_prossimo(&app, lettore);
@@ -1009,7 +1066,7 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
     // di poterci mettere dei secondi, ed è la ragione per cui esiste questo
     // comando. Una sola apertura per brano, come in `avvia_corrente`: tre
     // colpi su «Riprova» mentre il NAS si sveglia sono un'attesa, non tre.
-    let Ok(aprendo) = super::Aprendo::prendi(&stato.aprendo, ripresa.track_id) else {
+    let Ok(mut aprendo) = super::Aprendo::prendi(&stato.aprendo, ripresa.track_id) else {
         return Ok(());
     };
     let brano = match brano_di(&app, ripresa.track_id, formato) {
@@ -1034,13 +1091,17 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
         if lettore.motore.formato() != formato {
             return Ok(false);
         }
-        lettore.suona(brano);
-        lettore.motore.vai_a(ripresa.ms);
+        // Suonando, dal punto annotato: vedi [`super::consegna`]. La casella
+        // si libera qui, sotto il lucchetto, come in `avvia_corrente`: tenuta
+        // fino in fondo alla funzione, un salto chiesto in quell'istante
+        // finiva su una puntina che nessuno raccoglieva più.
+        let da_ms = super::consegna(lettore, brano, false, ripresa.ms, gesti_prima);
+        drop(aprendo.take());
         prepara_prossimo(&app, lettore);
         // Con la posizione richiesta e non con quella del motore: il salto lo
         // fa il filo della decodifica, e fino ad allora `posizione()`
         // direbbe zero. Stessa ragione di [`vai_a`].
-        manda_stato_con_posizione(&app, lettore, ripresa.ms);
+        manda_stato_con_posizione(&app, lettore, da_ms);
         Ok(true)
     })
     .map_err(errore)?;
@@ -1099,5 +1160,88 @@ mod prove {
         assert!(Riaprendo::prendi(&bandiera).is_none());
         drop(prima);
         assert!(!bandiera.load(Ordering::Acquire));
+    }
+
+    // ── la puntina nel solco: vedi `decidi_ripresa` ──
+
+    /// La prima ripresa si fa, e si annota.
+    #[test]
+    fn la_prima_ripresa_si_fa() {
+        assert_eq!(decidi_ripresa(None, 7, 0), (true, Some((7, 0))));
+    }
+
+    /// Due stacchi del Bluetooth nello stesso brano, senza fili caduti in
+    /// mezzo: la seconda ripresa si fa ancora. Con un confronto largo (`>=`)
+    /// la posizione si buttava e la musica non ripartiva.
+    #[test]
+    fn lo_stesso_brano_senza_cadute_si_riprende_ancora() {
+        assert_eq!(decidi_ripresa(Some((7, 2)), 7, 2), (true, Some((7, 2))));
+    }
+
+    /// Il brano su cui l'ultimo tentativo ha fatto cadere il filo non si
+    /// rimette nel solco, e l'annotazione resta quella di prima: annotata al
+    /// rifiuto, il confronto dopo vedrebbe lo stesso numero e direbbe di sì —
+    /// il motore ricostruito ogni due secondi, per sempre.
+    #[test]
+    fn un_brano_che_ha_fatto_cadere_il_filo_non_si_rimette_nel_solco() {
+        assert_eq!(decidi_ripresa(Some((7, 2)), 7, 3), (false, Some((7, 2))));
+        // E non si rimette nemmeno al giro dopo: la casella non si è spostata,
+        // e il motore ricostruito un'altra volta riceve lo stesso no.
+        let (_, dopo) = decidi_ripresa(Some((7, 2)), 7, 3);
+        assert!(!decidi_ripresa(dopo, 7, 3).0);
+    }
+
+    /// Un altro brano non paga per quello che ha fatto cadere il filo.
+    #[test]
+    fn un_altro_brano_si_riprende_anche_dopo_una_caduta() {
+        assert_eq!(decidi_ripresa(Some((7, 2)), 8, 3), (true, Some((8, 3))));
+    }
+
+    // ── il motore che il sorvegliante lascia cadere: vedi `rifiuto_automatico` ──
+
+    /// Il sorvegliante voleva le cuffie fissate e `cpal` ha aperto gli
+    /// altoparlanti: il motore nuovo si lascia cadere.
+    #[test]
+    fn la_fissata_che_non_e_quella_aperta_si_rifiuta() {
+        let causa = rifiuto_automatico(Modo::Automatica, Some("Cuffie BT"), "Altoparlanti", true);
+        assert!(
+            causa
+                .as_deref()
+                .is_some_and(|c| c.contains("«Cuffie BT»") && c.contains("«Altoparlanti»")),
+            "{causa:?}"
+        );
+    }
+
+    /// La fissata aperta davvero va bene.
+    #[test]
+    fn la_fissata_aperta_va_bene() {
+        assert_eq!(
+            rifiuto_automatico(Modo::Automatica, Some("DAC"), "DAC", false),
+            None
+        );
+    }
+
+    /// Chi segue il sistema: un'uscita che non era il predefinito è il nostro
+    /// ripiego, non la scelta di Windows. Il predefinito vero va bene.
+    #[test]
+    fn senza_preferenza_solo_il_predefinito_va_bene() {
+        assert!(rifiuto_automatico(Modo::Automatica, None, "AMD Streaming", false).is_some());
+        assert_eq!(
+            rifiuto_automatico(Modo::Automatica, None, "Altoparlanti", true),
+            None
+        );
+    }
+
+    /// Un gesto a mano ha chiesto di sentire adesso, da dove si può: niente
+    /// si rifiuta.
+    #[test]
+    fn un_gesto_a_mano_non_si_rifiuta_mai() {
+        for modo in [Modo::AMano, Modo::Suona, Modo::SoloDispositivo] {
+            assert_eq!(
+                rifiuto_automatico(modo, Some("Cuffie BT"), "Altoparlanti", true),
+                None
+            );
+            assert_eq!(rifiuto_automatico(modo, None, "AMD Streaming", false), None);
+        }
     }
 }

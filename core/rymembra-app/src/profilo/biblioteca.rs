@@ -235,6 +235,21 @@ pub struct Biblioteca {
     /// Le copertine, per brano.
     #[serde(default)]
     pub copertine: BTreeMap<String, Copertina>,
+    /// Gli ascolti degli **altri** dispositivi sincronizzati: brano →
+    /// dispositivo → quanti.
+    ///
+    /// Il documento di sincronia del profilo porta i conteggi di chi esporta e
+    /// lo storico ereditato (`importazione`), e la cronologia solo le righe
+    /// suonate qui. Un portatile sincronizzato col telefono ha in
+    /// `sync_ascolti` anche le righe del telefono, e senza questo campo sul
+    /// computer nuovo sparivano. Si scrivono sotto il **loro** dispositivo, per
+    /// massimo, e mai sotto `importazione`: quella si fonde per massimo come uno
+    /// pseudo-dispositivo, e quando il computer nuovo incontrerà il telefono in
+    /// sincronia lo stesso numero sarebbe contato due volte. Facoltativo nei
+    /// due versi: un profilo di prima non l'ha, e una versione di prima lo
+    /// ignora.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ascolti_altrui: BTreeMap<String, BTreeMap<String, i64>>,
 }
 
 impl Biblioteca {
@@ -294,7 +309,49 @@ pub fn raccogli(connection: &Connection) -> Result<Biblioteca, AppError> {
         testi: testi(connection)?,
         desiderati: desiderati(connection)?,
         copertine: copertine(connection)?,
+        ascolti_altrui: BTreeMap::new(),
     })
+}
+
+/// Gli ascolti degli altri dispositivi: tutti tranne `dispositivo` e
+/// `importazione`, che viaggiano nel documento di sincronia. Vedi
+/// [`Biblioteca::ascolti_altrui`].
+///
+/// A parte da [`raccogli`] perché è l'unica lettura che deve sapere chi
+/// esporta; la chiama [`crate::profilo::raccogli`], nella stessa finestra.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la lettura fallisce.
+pub fn ascolti_altrui(
+    connection: &Connection,
+    dispositivo: &str,
+) -> Result<BTreeMap<String, BTreeMap<String, i64>>, AppError> {
+    let mut istruzione = connection
+        .prepare(
+            "SELECT track_key, dispositivo, quanti FROM sync_ascolti
+              WHERE dispositivo <> ?1 AND dispositivo <> ?2 AND quanti > 0",
+        )
+        .map_err(|err| db_error("ascolti degli altri dispositivi", &err))?;
+    let righe = istruzione
+        .query_map(
+            [dispositivo, rymembra_sync::contatore::IMPORTAZIONE],
+            |riga| {
+                Ok((
+                    riga.get::<_, String>(0)?,
+                    riga.get::<_, String>(1)?,
+                    riga.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(|err| db_error("ascolti degli altri dispositivi", &err))?;
+    let mut mappa: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+    for riga in righe {
+        let (chiave, chi, quanti) =
+            riga.map_err(|err| db_error("ascolti degli altri dispositivi", &err))?;
+        mappa.entry(chiave).or_default().insert(chi, quanti);
+    }
+    Ok(mappa)
 }
 
 /// La cronologia, sulla chiave del brano invece che sul suo identificativo.

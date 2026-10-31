@@ -20,7 +20,8 @@
  *
  * # L'ordine degli effetti
  *
- * `FornitoreImportazioni` e `FornitoreNuvola` registrano le loro letture e i
+ * `FornitoreImportazioni`, `FornitoreNuvola` e `FornitoreContiNuvola` (i conti
+ * delle cartelle dal cloud) registrano le loro letture e i
  * loro ascolti quando si montano, cioè **prima** degli effetti di `App`, che
  * li contiene: stavano a metà del corpo di `App`. Nessuno degli effetti di
  * `App` fa scattare un evento di quei fili, e le loro domande al nucleo sono
@@ -29,6 +30,7 @@
 import { useMemo, type ReactNode } from "react";
 
 import { useArchivio } from "./archivio";
+import { FornitoreContiNuvola } from "./contiNuvola";
 import { LibreriaDellaFinestra, type Libreria } from "./libreria";
 import { FornitoreNuvola } from "./nuvola";
 import { FornitoreImportazioni } from "./parti/Importazioni";
@@ -67,7 +69,9 @@ export function Fornitori({
           <LettoreDellaFinestra value={lettore}>
             <LibreriaDellaFinestra value={libreria}>
               <FornitoreImportazioni>
-                <FornitoreNuvola segnalaErrore={segnalaErrore}>{children}</FornitoreNuvola>
+                <FornitoreNuvola segnalaErrore={segnalaErrore}>
+                  <FornitoreContiNuvola>{children}</FornitoreContiNuvola>
+                </FornitoreNuvola>
               </FornitoreImportazioni>
             </LibreriaDellaFinestra>
           </LettoreDellaFinestra>

@@ -42,7 +42,7 @@ pub mod portachiavi;
 pub mod scadenza;
 
 pub use base64::{base64url, da_base64url};
-pub use loopback::Attesa;
+pub use loopback::{Attesa, Ospite};
 pub use pkce::{Pkce, identificativo, stato};
 pub use portachiavi::Portachiavi;
 pub use scadenza::{adesso_ms, ancora_valido};

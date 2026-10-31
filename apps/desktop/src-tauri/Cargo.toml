@@ -69,6 +69,11 @@ rymembra-ia = { path = "../../../core/rymembra-ia" }
 # «Ascolta insieme»: la rete fra due o più Rymembra della stessa LAN. Il
 # trasporto non sa niente del lettore; il desktop lo collega al motore.
 rymembra-insieme = { path = "../../../core/rymembra-insieme" }
+# Il testo della chiave segreta di «Ascolta insieme», letto dal portachiavi
+# (`insieme::fiducia::identita`), si azzera quando cade, come quello che
+# `Identita::in_testo` già restituisce. Nessun pacchetto nuovo nel `Cargo.lock`:
+# è lo stesso `zeroize` che porta `rymembra-insieme`, con le stesse opzioni.
+zeroize = "1"
 rymembra-skin = { path = "../../../core/rymembra-skin" }
 # I cataloghi liberi: l'unico posto dell'albero che va a prendere dei byte
 # musicali, e lo fa solo dove prenderli è espressamente permesso. Nessun
@@ -93,6 +98,14 @@ serde_json.workspace = true
 # `Cargo.lock`, si accende quel che c'era spento.
 tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.8"
+# Il dialogo di un avvio fallito (`diario::mostra_l_avvio_fallito`). Quello di
+# `tauri-plugin-dialog` passa dal ciclo degli eventi, che in quel momento non è
+# mai nato (un `build` fallito) o sta cadendo (il panico «Failed to setup app»,
+# la WebView2 che non si crea); `rfd` mostra il suo bloccante senza. Nessun
+# pacchetto nuovo nel `Cargo.lock`: è lo stesso `rfd` che porta il plugin, con
+# le stesse opzioni (senza le predefinite, che su Linux porterebbero `ashpd`),
+# e nessun `unsafe` nostro.
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 # La schermata di consenso di Google si apre nel browser di **sistema**, mai
 # nella webview: una finestra dell'app che sa disegnare `accounts.google.com` è
 # una superficie di phishing, e allargare il CSP per sempre per un'operazione da
@@ -168,10 +181,13 @@ souvlaki = { version = "0.8", default-features = false }
 # Un crate nostro e non una dipendenza, contro la regola che vale per
 # `souvlaki` e `trash`: non c'è una dipendenza seria che lo faccia. L'unico
 # plugin per Tauri è alla 0.1.0 con un commit, e perde lo stato dei pulsanti
-# quando la barra li ricrea. Così l'`unsafe` che serve sta in un modulo solo di
-# quel crate, con l'eccezione dichiarata nel `Cargo.toml` della radice; vedi
-# `rymembra-barra/src/lib.rs`. Nel `Cargo.lock` non entra nessun pacchetto
-# esterno: usa il `windows` 0.62 che c'era già.
+# quando la barra li ricrea. Così l'`unsafe` che serve sta in due posti
+# dichiarati di quel crate — il modulo `finestra.rs` dei pulsanti, e la
+# funzione di `unita.rs` che chiede a Windows il genere di un'unità
+# (`GetDriveTypeW`: «Elimina dal disco» deve sapere che una chiavetta o un CD
+# il Cestino non ce l'hanno) — con l'eccezione dichiarata nel `Cargo.toml`
+# della radice; vedi `rymembra-barra/src/lib.rs`. Nel `Cargo.lock` non entra
+# nessun pacchetto esterno: usa il `windows` 0.62 che c'era già.
 rymembra-barra = { path = "../rymembra-barra" }
 # Il Cestino del sistema operativo: su Windows la stessa `IFileOperation` che
 # usa Esplora risorse, quindi un file eliminato da Rymembra si ritrova dove chi lo

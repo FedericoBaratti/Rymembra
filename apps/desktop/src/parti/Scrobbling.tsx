@@ -205,8 +205,10 @@ export function Scrobbling({
           </dl>
           <Coda
             collegamento={lb}
-            onRiprova={() => esegui(ipc.scrobbleRiprova)}
-            onDimentica={() => esegui(ipc.scrobbleDimentica)}
+            onRiprova={() => esegui(() => ipc.scrobbleRiprova("listenbrainz"))}
+            onDimentica={() =>
+              esegui(() => ipc.scrobbleDimentica("listenbrainz"))
+            }
           />
           <div className="azioni">
             <button
@@ -299,8 +301,8 @@ export function Scrobbling({
           </dl>
           <Coda
             collegamento={lfm}
-            onRiprova={() => esegui(ipc.scrobbleRiprova)}
-            onDimentica={() => esegui(ipc.scrobbleDimentica)}
+            onRiprova={() => esegui(() => ipc.scrobbleRiprova("lastfm"))}
+            onDimentica={() => esegui(() => ipc.scrobbleDimentica("lastfm"))}
           />
           <div className="azioni">
             <button

@@ -487,7 +487,8 @@ pub struct Espansione {
 /// Le immagini si cercano fra i `trovati` della stessa cartella del `.cue`, con la cartella confrontata con `path_key(rules)`.
 /// Un'immagine reclamata da due fogli va a quello che ha già dei brani in
 /// libreria — `con_brani` sono le chiavi (`path_key(rules)`) dei `.cue` che ne
-/// hanno — e a parità al primo in ordine di percorso del `.cue`.
+/// hanno —, a parità a quello concorde (vedi sotto), e poi al primo in ordine di
+/// percorso del `.cue`.
 ///
 /// # Perché proprio quella dimensione e quella data
 ///
@@ -518,14 +519,33 @@ pub struct Espansione {
 /// gli ruba l'immagine: se gliela rubasse cambierebbero tutti i percorsi
 /// virtuali del disco, e con i titoli diversi fra i due fogli gli spostamenti
 /// non si riconoscerebbero, cioè ascolti, voti e playlist del disco persi.
-/// L'ordine di percorso decide solo fra fogli che di brani non ne hanno, o che
-/// ne hanno tutti e due.
+/// Fra fogli che di brani non ne hanno, o che ne hanno tutti e due, decide
+/// prima la concordanza (sotto) e poi l'ordine di percorso.
 ///
 /// E chi perde non si arrende subito: se il nome che la prima regola di
 /// [`trova_immagine`] sceglie è già preso, prova quello della regola dopo. È
 /// il foglio di `CD2` copiato da quello di `CD1` senza correggere il `FILE`:
 /// il `FILE` porta a `CD1.flac`, che è dell'altro, ma il suo nome porta a
 /// `CD2.flac`, che è il suo.
+///
+/// # Il foglio che si contraddice
+///
+/// Ripiegare sulla regola dopo basta solo se il foglio copiato sceglie **dopo**
+/// quello giusto. Nel verso opposto — è il foglio di `CD1` a essere copiato da
+/// quello di `CD2`, e `CD1.cue` si ordina prima — il copiato prendeva
+/// `CD2.flac` per primo, e il foglio giusto restava senza immagine: i brani del
+/// disco 1 tagliavano l'audio del disco 2, e il disco 2 non esisteva.
+///
+/// Per questo, a parità di brani in libreria, scelgono prima i fogli
+/// concordi (`concorde`): quelli il cui `FILE` e il cui nome non portano a due
+/// immagini diverse. Il foglio che si contraddice sceglie dopo, e trova la sua
+/// immagine col nome.
+///
+/// Un limite, detto: `con_brani` resta in testa a tutto, quindi una libreria
+/// già scansionata con l'abbinamento sbagliato non si ripara da sola — il
+/// foglio copiato ha i brani, e chi ha i brani non perde l'immagine. Lo
+/// ripara chi corregge il `FILE` del foglio: da lì il foglio è concorde, tiene
+/// i suoi brani e prende l'immagine giusta.
 ///
 /// Un file vero che sembra virtuale può esistere solo dove `|` è ammesso nei
 /// nomi: tenerlo vorrebbe dire due righe con lo stesso percorso, una delle
@@ -554,13 +574,15 @@ pub fn espandi_immagini(
         }
     }
 
-    // Prima chi ha già i brani in libreria, poi in ordine di percorso: è
-    // l'ordine in cui i fogli scelgono, e chi sceglie prima vince.
+    // Prima chi ha già i brani in libreria, poi i fogli concordi, poi in ordine
+    // di percorso: è l'ordine in cui i fogli scelgono, e chi sceglie prima
+    // vince. Vedi «Il foglio che si contraddice» nella doc qui sopra.
     let mut fogli = fogli;
     fogli.sort_by_cached_key(|trovato| {
         let chiave = path_key(&trovato.cue.path, rules);
         (
             !con_brani.contains(&chiave),
+            !concorde(trovato, &per_cartella, &trovati, rules),
             chiave,
             trovato.cue.path.clone(),
         )
@@ -646,6 +668,37 @@ pub fn espandi_immagini(
     Espansione {
         trovati: uscita,
         abbinamenti,
+    }
+}
+
+/// Il foglio dice la stessa cosa col suo `FILE` e col suo nome?
+///
+/// Discorde è solo il foglio in cui la prima fra le regole 1 e 2 che trova
+/// qualcosa e la regola 3 trovano **due** immagini diverse: è il segno del
+/// foglio copiato da un gemello senza correggere il `FILE`. Tutti gli altri sono
+/// concordi, compresi quelli in cui una delle due parti tace — un `.cue` che
+/// non si chiama come nessuna immagine, o un `FILE` passato per una codifica
+/// diversa da quella del nome sul disco (`Klavierstьcke`), che l'immagine la
+/// trova col solo nome: lì non c'è niente che contraddica, e mandarli in coda
+/// li farebbe perdere contro un foglio che si contraddice davvero.
+fn concorde(
+    trovato: &FoglioTrovato,
+    per_cartella: &HashMap<String, Vec<usize>>,
+    trovati: &[DiscoveredFile],
+    rules: PathRules,
+) -> bool {
+    let Some(indici) = per_cartella.get(&path_key(cartella(&trovato.cue.path), rules)) else {
+        return true;
+    };
+    let nomi: Vec<&str> = indici
+        .iter()
+        .filter_map(|&indice| Some(base_name(&trovati.get(indice)?.path)))
+        .collect();
+    let [esatto, radice_file, radice_cue] =
+        per_regola(base_name(&trovato.cue.path), &trovato.foglio, &nomi);
+    match (esatto.or(radice_file), radice_cue) {
+        (Some(dal_file), Some(dal_nome)) => dal_file == dal_nome,
+        _ => true,
     }
 }
 
@@ -1336,6 +1389,68 @@ mod tests {
             percorsi(&gemelli).contains(&r"C:\M\B\Album.flac"),
             "{:?}",
             percorsi(&gemelli)
+        );
+    }
+
+    #[test]
+    fn un_foglio_copiato_che_si_ordina_prima_non_ruba_l_immagine_del_gemello() {
+        // Il verso opposto di `chi_perde_l_immagine_prova_la_regola_dopo`: qui
+        // il foglio copiato senza correggere il FILE è quello di CD1, che si
+        // ordina prima. Il FILE lo porta a `CD2.flac`, il suo nome a
+        // `CD1.flac`; il foglio di CD2 porta a `CD2.flac` comunque lo si legga.
+        let espansione = espandi_immagini(
+            vec![
+                file(r"C:\M\A\CD1.flac", 200_000_000, 1),
+                file(r"C:\M\A\CD2.flac", 200_000_000, 1),
+            ],
+            vec![
+                trovato(r"C:\M\A\CD1.cue", 1, foglio_di("CD2.flac")),
+                trovato(r"C:\M\A\CD2.cue", 1, foglio_di("CD2.flac")),
+            ],
+            &HashSet::new(),
+            WIN,
+        );
+        let coppie: Vec<(&str, &str)> = espansione
+            .abbinamenti
+            .iter()
+            .map(|a| (a.cue.path.as_str(), a.immagine.path.as_str()))
+            .collect();
+        assert_eq!(
+            coppie,
+            vec![
+                (r"C:\M\A\CD1.cue", r"C:\M\A\CD1.flac"),
+                (r"C:\M\A\CD2.cue", r"C:\M\A\CD2.flac"),
+            ]
+        );
+        assert_eq!(espansione.trovati.len(), 4);
+
+        // Un foglio che trova l'immagine **solo** col suo nome — il FILE e il
+        // nome sul disco passati per due codifiche diverse — non è discorde: le
+        // prime due regole non dicono niente, e non c'è niente che contraddica
+        // la terza. Non deve finire in coda dietro a chi gli ruberebbe il disco.
+        let solo_col_nome = espandi_immagini(
+            vec![
+                file(r"C:\M\B\A.flac", 200_000_000, 1),
+                file(r"C:\M\B\Z.flac", 200_000_000, 1),
+            ],
+            vec![
+                trovato(r"C:\M\B\A.cue", 1, foglio_di("Z.flac")),
+                trovato(r"C:\M\B\Z.cue", 1, foglio_di("Klavierstьcke.wav")),
+            ],
+            &HashSet::new(),
+            WIN,
+        );
+        let coppie: Vec<(&str, &str)> = solo_col_nome
+            .abbinamenti
+            .iter()
+            .map(|a| (a.cue.path.as_str(), a.immagine.path.as_str()))
+            .collect();
+        assert_eq!(
+            coppie,
+            vec![
+                (r"C:\M\B\A.cue", r"C:\M\B\A.flac"),
+                (r"C:\M\B\Z.cue", r"C:\M\B\Z.flac"),
+            ]
         );
     }
 }

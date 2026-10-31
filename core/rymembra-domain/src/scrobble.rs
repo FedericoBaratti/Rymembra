@@ -141,9 +141,21 @@ impl Ascolto {
     /// ListenBrainz e un «ignorato, codice 1» da Last.fm, cioè una riga che
     /// resta in coda a ritentare per sempre oppure sparisce senza dire niente.
     /// Meglio non farla entrare: un file senza tag esiste, in ogni libreria.
+    ///
+    /// E in libreria l'artista di un file senza tag non è vuoto: è
+    /// [`UNKNOWN_ARTIST`](crate::album::UNKNOWN_ARTIST), o l'«Unknown Artist»
+    /// che ci ha scritto il programma di rip. Per i servizi sarebbe un artista
+    /// vero, con un profilo pubblico pieno di nomi di file; quindi un artista
+    /// [segnaposto](crate::indizi::e_segnaposto) vale quanto uno vuoto. Anche
+    /// «Various Artists», «VA», «none»: nessuno è l'artista di un brano.
+    ///
+    /// Il titolo invece non si guarda con la stessa lente: «Untitled» è il
+    /// titolo di brani veri.
     #[must_use]
     pub fn valido(&self) -> bool {
-        !self.artista.trim().is_empty() && !self.titolo.trim().is_empty()
+        !self.artista.trim().is_empty()
+            && !self.titolo.trim().is_empty()
+            && !crate::indizi::e_segnaposto(Some(&self.artista))
     }
 }
 
@@ -178,5 +190,18 @@ mod prove {
         a.artista = "Colle der Fomento".to_owned();
         a.titolo = String::new();
         assert!(!a.valido());
+    }
+
+    #[test]
+    fn un_artista_segnaposto_non_e_mandabile() {
+        // Un file senza tag entra in libreria con l'artista segnaposto: non è
+        // vuoto, ma non è nessuno, e sul profilo pubblico diventerebbe un
+        // artista «Artista sconosciuto».
+        assert!(
+            !Ascolto::nuovo(crate::album::UNKNOWN_ARTIST, "01 - Traccia", 1_700_000_000).valido()
+        );
+        assert!(!Ascolto::nuovo("Unknown Artist", "x", 0).valido());
+        // Il titolo invece non si guarda: «Untitled» è il titolo di brani veri.
+        assert!(Ascolto::nuovo("Interpol", "Untitled", 0).valido());
     }
 }

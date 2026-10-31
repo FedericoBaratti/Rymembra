@@ -101,6 +101,7 @@ use std::time::{Duration, Instant};
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use serde::Serialize;
 
+use crate::ascolto::Stretta;
 use crate::canale::{self, Cifratore, Decifratore, Guasto};
 use crate::codice::{self, Rifiuto};
 use crate::condiviso::{Condiviso, nome_valido};
@@ -256,7 +257,9 @@ enum Annunci {
 /// Ogni stato in corso porta il numero della sua prenotazione fra i
 /// tentativi (`codice::Tentativi`): finisce con la riuscita, che la toglie
 /// dal conto, o con la chiusura della connessione, che la lascia lì come
-/// fallita.
+/// fallita — tranne in [`Associazione::Impegnata`], prima del nonce di chi
+/// ospita, dove la chiusura la toglie senza contarla (vedi
+/// `Collegamento::chiudi`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Associazione {
     /// Nessuna in corso.
@@ -498,14 +501,28 @@ impl Collegamento {
         // un'associazione fallita, qualunque sia il perché: un no, una
         // rivelazione falsa, una scadenza, un cavo staccato. La sua
         // prenotazione resta fra i tentativi; qui si dice solo che è finita.
-        let prenotazione = {
+        //
+        // Tranne una, dal lato di chi chiede, chiusa prima del nonce di chi
+        // ospita (`Impegnata`): un codice non c'è mai stato, e si toglie dal
+        // conto come per `Occupato` — vedi `Tentativi::annulla`. Fino alla
+        // revisione del 30 ottobre contava anche lei: un host al tetto dei
+        // tentativi per colpa di altri PC rifiuta l'impegno con
+        // `troppiTentativi` prima del nonce, e al terzo rifiuto il membro si
+        // fermava da solo per dieci minuti.
+        let (prenotazione, prima_del_nonce) = {
             let mut associazione = chiave(&self.associazione);
             let prenotazione = associazione.prenotazione();
+            let prima_del_nonce = matches!(*associazione, Associazione::Impegnata { .. });
             *associazione = Associazione::Nessuna;
-            prenotazione
+            (prenotazione, prima_del_nonce)
         };
         if let Some(numero) = prenotazione {
-            chiave(&rete.tentativi).finito(numero, false);
+            let mut tentativi = chiave(&rete.tentativi);
+            if prima_del_nonce {
+                tentativi.annulla(numero);
+            } else {
+                tentativi.finito(numero, false);
+            }
         }
         let mut annunci = chiave(&self.annunci);
         // La `Chiusa` si deve a chi ha avuto l'`Aperta`, e sempre a una
@@ -619,6 +636,11 @@ pub(crate) enum Verso {
         generazione: u64,
         /// Il primo messaggio della stretta.
         primo: Vec<u8>,
+        /// Il posto fra le strette preso dall'ascolto. Lo lascia la stretta,
+        /// appena scritto il secondo messaggio e prima di aspettare il terzo:
+        /// vedi «Le strette, e chi non parla» in `ascolto`. `None` una volta
+        /// passato alla stretta.
+        stretta: Option<Stretta>,
     },
     /// Aperta da questo PC.
     Uscente {
@@ -718,7 +740,7 @@ pub(crate) fn prepara(
     rete: &Arc<Condiviso>,
     mut presa: TcpStream,
     indirizzo: SocketAddr,
-    verso: Verso,
+    mut verso: Verso,
 ) -> Result<Pronto, Option<ErrorCodeKind>> {
     let in_entrata = matches!(verso, Verso::Entrante { .. });
     // Dal lato di chi apre, una stretta che non va a buon fine vuol dire che
@@ -737,12 +759,21 @@ pub(crate) fn prepara(
     };
     let _ = presa.set_nodelay(true);
     let scadenza = Instant::now() + rete.tempi.stretta;
-    let primo = match &verso {
-        Verso::Entrante { primo, .. } => Some(primo.as_slice()),
-        Verso::Uscente { .. } => None,
+    let (primo, stretta) = match &mut verso {
+        Verso::Entrante { primo, stretta, .. } => (Some(primo.as_slice()), stretta.take()),
+        Verso::Uscente { .. } => (None, None),
     };
-    let canale = canale::stringi(&mut presa, &rete.identita, !in_entrata, primo, scadenza)
-        .map_err(guasto)?;
+    // Il posto fra le strette se ne va appena finito il lavoro sulla curva, e
+    // non a stretta finita: vedi «Le strette, e chi non parla» in `ascolto`.
+    let canale = canale::stringi(
+        &mut presa,
+        &rete.identita,
+        !in_entrata,
+        primo,
+        move || drop(stretta),
+        scadenza,
+    )
+    .map_err(guasto)?;
     let (pari, hash) = (canale.pari, canale.hash);
     let (mut cifratore, mut decifratore) = canale.dividi();
     // Il saluto è piccolo per tutti: i tetti di un estraneo valgono qui per
@@ -1324,9 +1355,15 @@ pub(crate) fn leggi_gettone(
                 Err(codice) => Risposta::Rifiutata(codice),
             }
         }
+        (Servito::Lettore(lettore), Chiesto::Byte { da, quanti }) => {
+            match (lettore.0)(da, quanti.min(crate::servente::LETTURA_MASSIMA)) {
+                Ok((byte, totale)) => Risposta::Byte { totale, byte },
+                Err(codice) => Risposta::Rifiutata(codice),
+            }
+        }
         // Un gettone di un file non dà diritto a una copertina: non sono la
         // stessa cosa, e chi chiede così sta sbagliando richiesta.
-        (Servito::File(_), Chiesto::Copertina) => {
+        (Servito::File(_) | Servito::Lettore(_), Chiesto::Copertina) => {
             Risposta::Rifiutata(ErrorCodeKind::InsiemeProtocollo)
         }
         (Servito::Copertina(byte), chiesto) => leggi_copertina(&byte, chiesto),

@@ -471,7 +471,8 @@ fn dal_nome(radice: &str) -> DalNome {
 ///
 /// Quando nessuna radice contiene il percorso — un file guardato fuori da una
 /// scansione, o un elenco di radici vuoto — si prende comunque la catena di
-/// cartelle, tolta la lettera di unità: è meno sicuro, e per questo
+/// cartelle, tolti la lettera di unità e il prefisso di una condivisione o di
+/// un percorso esteso (`\\nas\musica`, `\\?\UNC\…`): è meno sicuro, e per questo
 /// [`segmento_utile`] resta il filtro che decide cosa vale come nome.
 fn segmenti_sotto_radice<'a>(
     percorso: &'a str,
@@ -498,11 +499,40 @@ fn segmenti_sotto_radice<'a>(
 
     match quante {
         Some(quante) => segmenti.into_iter().skip(quante).collect(),
-        // Una lettera di unità (`C:`) o un host UNC non è il nome di nessuno.
+        // Una lettera di unità (`C:`) o un host UNC non è il nome di nessuno:
+        // si saltano i pezzi del prefisso, e poi la lettera.
         None => segmenti
             .into_iter()
+            .skip(pezzi_del_prefisso(percorso))
             .skip_while(|s| s.ends_with(':'))
             .collect(),
+    }
+}
+
+/// Quanti segmenti in testa al percorso sono il prefisso di una condivisione o
+/// di un percorso esteso, e non cartelle.
+///
+/// Si guarda il percorso **grezzo**, prima di spezzarlo: dopo, `\\nas` e `\nas`
+/// sono lo stesso segmento, e una condivisione non si distingue più da una
+/// cartella in cima al disco.
+///
+/// - `\\host\share\…` e `//host/share/…`: host e condivisione, due;
+/// - `\\?\C:\…` e `\\.\C:\…`: il `?` (o il `.`), uno — la lettera la salta poi
+///   la regola dei due punti;
+/// - `\\?\UNC\host\share\…`: `?`, `UNC`, host e condivisione, quattro.
+fn pezzi_del_prefisso(percorso: &str) -> usize {
+    let mut caratteri = percorso.chars();
+    let separatore = |c: Option<char>| matches!(c, Some('/' | '\\'));
+    if !(separatore(caratteri.next()) && separatore(caratteri.next())) {
+        return 0;
+    }
+    let mut segmenti = percorso.split(['/', '\\']).filter(|p| !p.is_empty());
+    match segmenti.next() {
+        Some("?" | ".") => match segmenti.next() {
+            Some(unc) if unc.eq_ignore_ascii_case("UNC") => 4,
+            _ => 1,
+        },
+        _ => 2,
     }
 }
 
@@ -627,7 +657,16 @@ const NOMI_COPERTINA: [&str; 6] = ["cover", "folder", "front", "album", "albumar
 ///
 /// `None` quando non è un'immagine, o quando il nome dice che è **un'altra**
 /// immagine: `back`, `booklet`, `inlay`, `disc`, `cd1` sono le scansioni del
-/// resto della confezione, e nessuna di quelle è la copertina.
+/// resto della confezione, e nessuna di quelle è la copertina. Tre forme:
+///
+/// - il nome **comincia** con una parola di `ESCLUSE` (`back`, `booklet-01`);
+/// - la prima parola è il disco — `cd`, `disc`, `disk`, da soli o numerati:
+///   `cd1`, `disc 2` — e dopo non viene una parola di copertina: `CD Cover` e
+///   `cd_front` sono la copertina, `cd1` è la serigrafia;
+/// - una parola di copertina è seguita **esattamente** da `back`, `retro`,
+///   `inlay`, `booklet` o `inside`: `Cover Back`, `front-back`. Solo subito
+///   dopo, e solo la parola intera: «AC-DC - Back in Black» è un nome
+///   qualunque, non una retrocopertina.
 ///
 /// Un'immagine con un nome qualunque vale zero: si prende solo se in quella
 /// cartella non c'è di meglio. È il caso della cartella che contiene una sola
@@ -639,6 +678,12 @@ const NOMI_COPERTINA: [&str; 6] = ["cover", "folder", "front", "album", "albumar
 /// assert!(rango_copertina("D:/M/A/B/folder.png") > rango_copertina("D:/M/A/B/scan.jpg"));
 /// assert_eq!(rango_copertina("D:/M/A/B/back.jpg"), None);
 /// assert_eq!(rango_copertina("D:/M/A/B/note.txt"), None);
+/// assert_eq!(rango_copertina("D:/M/A/B/disc.jpg"), None);
+/// assert_eq!(rango_copertina("D:/M/A/B/cd1.jpg"), None);
+/// assert_eq!(rango_copertina("D:/M/A/B/Cover Back.jpg"), None);
+/// assert_eq!(rango_copertina("D:/M/A/B/Cover Front.jpg"), Some(6));
+/// assert!(rango_copertina("D:/M/A/B/CD Cover.jpg").is_some());
+/// assert_eq!(rango_copertina("D:/M/A/B/AC-DC - Back in Black.jpg"), Some(0));
 /// ```
 #[must_use]
 pub fn rango_copertina(percorso: &str) -> Option<u8> {
@@ -648,6 +693,13 @@ pub fn rango_copertina(percorso: &str) -> Option<u8> {
     let radice = fold_text(file_stem(percorso));
     let nudo = radice.trim_matches(|c: char| !c.is_alphanumeric());
     if ESCLUSE.iter().any(|escluso| nudo.starts_with(escluso)) {
+        return None;
+    }
+    let parole: Vec<&str> = nudo
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|parola| !parola.is_empty())
+        .collect();
+    if e_il_disco(&parole) || e_un_retro_di_copertina(&parole) {
         return None;
     }
     let posto = NOMI_COPERTINA
@@ -666,6 +718,47 @@ pub fn rango_copertina(percorso: &str) -> Option<u8> {
 const ESCLUSE: [&str; 8] = [
     "back", "retro", "booklet", "libretto", "inlay", "inside", "matrix", "obi",
 ];
+
+/// Le parole che, dette subito dopo una parola di copertina, ne fanno un'altra
+/// parte della confezione: `Cover Back`, `front-inlay`.
+///
+/// Confronto esatto e non per prefisso: qui la parola sta in mezzo a un nome,
+/// e un prefisso prenderebbe «Backstage» o «Retrospective».
+const RETRO_DI_COPERTINA: [&str; 5] = ["back", "retro", "inlay", "booklet", "inside"];
+
+/// La prima parola dice che l'immagine è il disco: `cd`, `disc`, `disk`, da
+/// soli o con il numero attaccato (`cd1`) o staccato (`disc 2`).
+///
+/// Ma non quando subito dopo — numero a parte — viene una parola di copertina:
+/// `CD Cover` e `cd_front` sono la copertina del disco, non la sua serigrafia.
+/// Le parole sono già piegate in minuscolo.
+fn e_il_disco(parole: &[&str]) -> bool {
+    let Some(prima) = parole.first() else {
+        return false;
+    };
+    let e_disco = ["cd", "disc", "disk"].iter().any(|disco| {
+        prima
+            .strip_prefix(disco)
+            .is_some_and(|numero| numero.bytes().all(|b| b.is_ascii_digit()))
+    });
+    if !e_disco {
+        return false;
+    }
+    let dopo = parole
+        .iter()
+        .skip(1)
+        .find(|parola| !parola.bytes().all(|b| b.is_ascii_digit()));
+    !dopo.is_some_and(|parola| NOMI_COPERTINA.contains(parola))
+}
+
+/// Una parola di copertina seguita da una di [`RETRO_DI_COPERTINA`]:
+/// `Cover Back`, `cover_back`, `front-back`.
+fn e_un_retro_di_copertina(parole: &[&str]) -> bool {
+    parole.windows(2).any(|due| {
+        matches!(due, [copertina, retro]
+            if NOMI_COPERTINA.contains(copertina) && RETRO_DI_COPERTINA.contains(retro))
+    })
+}
 
 #[cfg(test)]
 mod prove {
@@ -846,5 +939,58 @@ mod prove {
         // …e quel che dice *quale* registrazione è resta.
         let i = indizi("D:/Musica/A/B/Song (Live at Wembley).mp3");
         assert_eq!(i.titolo.as_deref(), Some("Song (Live at Wembley)"));
+    }
+
+    #[test]
+    fn le_altre_parti_della_confezione_non_sono_copertine() {
+        for nome in [
+            "disc",
+            "cd1",
+            "disc 2",
+            "CD",
+            "Disk1",
+            "Cover Back",
+            "cover_back",
+            "front-back",
+            "Folder Inlay",
+        ] {
+            assert_eq!(
+                rango_copertina(&format!("D:/M/A/B/{nome}.jpg")),
+                None,
+                "{nome}"
+            );
+        }
+        assert_eq!(rango_copertina("D:/M/A/B/Cover Front.jpg"), Some(6));
+        // Il disco che nomina la copertina è la copertina.
+        assert!(rango_copertina("D:/M/A/B/CD Cover.jpg").is_some());
+        assert!(rango_copertina("D:/M/A/B/cd_front.jpg").is_some());
+        // «Back» dentro un titolo non è una retrocopertina.
+        assert_eq!(
+            rango_copertina("D:/M/A/B/AC-DC - Back in Black.jpg"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn senza_radici_l_host_unc_non_e_un_nome() {
+        for percorso in [
+            r"\\nas\share\01 - X.flac",
+            "//nas/share/01 - X.flac",
+            r"\\?\UNC\nas\share\01 - X.flac",
+            r"\\?\C:\01 - X.flac",
+        ] {
+            let i = dal_percorso(percorso, &[], REGOLE);
+            assert_eq!(i.artista, None, "{percorso}");
+            assert_eq!(i.album, None, "{percorso}");
+        }
+        for percorso in [
+            r"\\nas\share\Pink Floyd\The Wall\03 - Hey You.flac",
+            r"\\?\UNC\nas\share\Pink Floyd\The Wall\03 - Hey You.flac",
+            r"\\?\C:\Pink Floyd\The Wall\03 - Hey You.flac",
+        ] {
+            let i = dal_percorso(percorso, &[], REGOLE);
+            assert_eq!(i.artista.as_deref(), Some("Pink Floyd"), "{percorso}");
+            assert_eq!(i.album.as_deref(), Some("The Wall"), "{percorso}");
+        }
     }
 }

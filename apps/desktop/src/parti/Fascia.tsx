@@ -19,6 +19,7 @@ export function Fascia({
   messaggio,
   dettaglio,
   onRiprova,
+  azione,
   onChiudiErrore,
 }: {
   notizia: string | null;
@@ -29,6 +30,8 @@ export function Fascia({
   dettaglio?: string | null | undefined;
   /** Solo quando riprovare ha senso: senza, il tasto non c'è. */
   onRiprova?: (() => void) | undefined;
+  /** Il gesto che porta alla soluzione: vedi `azioneDelGuasto` in `App.tsx`. */
+  azione?: { etichetta: string; onClick: () => void } | undefined;
   onChiudiErrore: () => void;
 }) {
   return (
@@ -81,6 +84,18 @@ export function Fascia({
                 onClick={onRiprova}
               >
                 {t("common.retry")}
+              </button>
+            )}
+            {/* Il posto dove si rimedia, quando la frase lo nomina: «ricollega
+                l'account», «fai una scansione». Prima la fascia lo diceva e
+                basta, e la strada toccava cercarla a chi leggeva. */}
+            {azione && (
+              <button
+                type="button"
+                className="bottone minuto btn-ghost"
+                onClick={azione.onClick}
+              >
+                {azione.etichetta}
               </button>
             )}
             <button

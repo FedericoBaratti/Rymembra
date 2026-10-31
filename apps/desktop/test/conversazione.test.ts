@@ -5,6 +5,10 @@ import { LINGUAGGIO_PATCH_PRECEDENTE } from "../src/eredita";
 import { LINGUAGGIO_PATCH, NON_APPLICATA, haBloccoDiModifiche, storiaLeggera } from "../src/studio/prompt";
 import {
   CAMBI_IN_VISTA,
+  GIRI_MASSIMI,
+  apreUnAltroGiro,
+  senzaDomandaFallita,
+  vicinoAlFondo,
   CONVERSAZIONE_VUOTA,
   PESO_MASSIMO,
   byteUtf8,
@@ -12,6 +16,7 @@ import {
   mostraCambi,
   serializza,
   type Conversazione,
+  type MessaggioChat,
 } from "../src/studio/conversazione";
 
 test("una conversazione vuota non scrive niente", () => {
@@ -221,4 +226,73 @@ test("l'esito di una proposta di prima si salva e si rilegge anche dopo un giro"
   const dopo = leggiSalvata(serializza(leggiSalvata(serializza(c))));
   assert.equal(dopo.messaggi[1]?.applicata, false);
   assert.ok(haBloccoDiModifiche(dopo.messaggi[1]?.testo ?? ""));
+});
+
+test("un cambio tagliato a metà emoji resta testo ben formato", () => {
+  // Un surrogato solo nel file fa rifiutare chat.json a serde_json: ogni
+  // salvataggio della conversazione fallirebbe da lì in poi.
+  const { cambi } = mostraCambi([{ percorso: "meta.description", prima: undefined, dopo: "x".repeat(157) + "\u{1F3A8}" }]);
+  const dopo = cambi[0]!.dopo!;
+  assert.ok(dopo.endsWith("…"));
+  assert.ok(dopo.isWellFormed(), JSON.stringify(dopo.slice(-3)));
+});
+
+test("serializza: il taglio di una battuta enorme non spezza una coppia di surrogati", () => {
+  const testo = "x".repeat(PESO_MASSIMO / 16 - 1) + "\u{1F3A8}".repeat(PESO_MASSIMO / 4);
+  const c: Conversazione = {
+    modalita: "agent",
+    vede: false,
+    battute: [{ mio: false, testo }],
+    messaggi: [{ ruolo: "assistant", testo }],
+  };
+  const scritto = serializza(c);
+  // Un parser rigoroso non trova escape di surrogati soli.
+  assert.ok(!/\ud[89ab][0-9a-f]{2}(?!\ud[c-f])/i.test(scritto));
+  const letto = JSON.parse(scritto) as { battute: { testo: string }[]; messaggi: { testo: string }[] };
+  assert.ok(letto.battute[0]!.testo.isWellFormed());
+  assert.ok(letto.messaggi[0]!.testo.isWellFormed());
+});
+
+test("dopo «Ferma» il ciclo dell'agent non apre un altro giro", () => {
+  // «Ferma» un attimo dopo l'ultimo gettone: il turno chiude «finito», il giro
+  // è già a zero, e 0 >= 4 è falso — partiva un altro giro a pagamento.
+  assert.equal(apreUnAltroGiro({ ciclo: false, giro: 0, restano: 1, tagliato: false, impuntato: false }), false);
+  assert.equal(apreUnAltroGiro({ ciclo: true, giro: 1, restano: 1, tagliato: false, impuntato: false }), true);
+  assert.equal(apreUnAltroGiro({ ciclo: true, giro: GIRI_MASSIMI, restano: 1, tagliato: false, impuntato: false }), false);
+  assert.equal(apreUnAltroGiro({ ciclo: true, giro: 1, restano: 0, tagliato: false, impuntato: false }), false);
+  assert.equal(apreUnAltroGiro({ ciclo: true, giro: 1, restano: 1, tagliato: true, impuntato: false }), false);
+  assert.equal(apreUnAltroGiro({ ciclo: true, giro: 1, restano: 1, tagliato: false, impuntato: true }), false);
+});
+
+test("una domanda che non è partita non resta nella conversazione", () => {
+  // Server spento: il messaggio restava, e la domanda dopo partiva come
+  // [system, user, user] — alcuni modelli la rifiutano, per sempre.
+  const prima: MessaggioChat[] = [
+    { ruolo: "user", testo: "scurisci" },
+    { ruolo: "assistant", testo: "fatto" },
+  ];
+  assert.deepEqual(senzaDomandaFallita([...prima, { ruolo: "user", testo: "e il bordo blu" }]), prima);
+  // Una risposta in fondo non è una domanda fallita: si lascia.
+  assert.deepEqual(senzaDomandaFallita(prima), prima);
+});
+
+test("storia leggera: due messaggi dello stesso ruolo di fila partono come uno", () => {
+  // Le conversazioni salvate prima della correzione possono averne: i ruoli
+  // devono alternarsi.
+  assert.deepEqual(
+    storiaLeggera([
+      { ruolo: "user", testo: "fai il fondo più scuro" },
+      { ruolo: "user", testo: "e il bordo blu" },
+    ]),
+    [{ ruolo: "user", testo: "fai il fondo più scuro\n\ne il bordo blu" }],
+  );
+});
+
+test("la chat segue quel che arriva solo se si era in fondo", () => {
+  // Riportava in fondo a ogni pezzo, più volte al secondo: chi risaliva per
+  // rileggere non poteva.
+  assert.equal(vicinoAlFondo({ scrollTop: 700, clientHeight: 300, scrollHeight: 1000 }), true);
+  assert.equal(vicinoAlFondo({ scrollTop: 680, clientHeight: 300, scrollHeight: 1000 }), true, "a pochi pixel");
+  assert.equal(vicinoAlFondo({ scrollTop: 400, clientHeight: 300, scrollHeight: 1000 }), false);
+  assert.equal(vicinoAlFondo({ scrollTop: 0, clientHeight: 300, scrollHeight: 200 }), true, "niente da scorrere");
 });

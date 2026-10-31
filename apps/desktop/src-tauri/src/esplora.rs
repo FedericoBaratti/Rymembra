@@ -423,15 +423,23 @@ pub fn esplora_nella_lista(
 /// dell'ultima ricerca; `download.notPermitted` se la licenza di quel brano non
 /// permette di tenerne una copia; `net.*` se la scheda dell'item non si
 /// rilegge; `db.*` se la scrittura fallisce.
-#[tauri::command(async)]
-pub fn esplora_tieni(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
-    url: String,
-    frase: String,
-) -> Esito<bool> {
-    let ascoltato = candidato_di(&esplora, &url).map_err(errore)?;
+///
+/// Un `async fn` sul pool bloccante, come [`esplora_cerca`]: la scheda
+/// dell'item si rilegge dall'Archive, e su una rete lenta un
+/// `#[tauri::command(async)]` sincrono teneva fermo un worker del runtime —
+/// uno per processore, prestati a tutti i comandi asincroni.
+#[tauri::command]
+pub async fn esplora_tieni(app: AppHandle, url: String, frase: String) -> Esito<bool> {
+    in_disparte("tieni dall'esplorazione", move || tieni(&app, &url, &frase))
+        .await
+        .map_err(errore)?
+}
+
+/// Il corpo di [`esplora_tieni`], sul pool bloccante.
+fn tieni(app: &AppHandle, url: &str, frase: &str) -> Esito<bool> {
+    let stato = gestito::<Stato>(app, "tieni dall'esplorazione").map_err(errore)?;
+    let esplora = gestito::<StatoEsplora>(app, "tieni dall'esplorazione").map_err(errore)?;
+    let ascoltato = candidato_di(&esplora, url).map_err(errore)?;
     let candidato = if ascoltato.si_puo_tenere() {
         esplora.cataloghi.per_tenere(&ascoltato).map_err(errore)?
     } else {
@@ -441,7 +449,7 @@ pub fn esplora_tieni(
         rymembra_app::catalogo::da_tenere(
             &mut libreria.connection,
             std::slice::from_ref(&candidato),
-            &frase,
+            frase,
         )
     })
     .map_err(errore)?;
@@ -452,7 +460,7 @@ pub fn esplora_tieni(
     if scritte == 0 && candidato.disponibilita != Disponibilita::Scaricabile {
         return Err(errore(rymembra_app::catalogo::non_si_tiene()));
     }
-    crate::nuvola::se_riuscito(&app, Ok(scritte > 0))
+    crate::nuvola::se_riuscito(app, Ok(scritte > 0))
 }
 
 /// Quel che «aggiungi tutti» ha prodotto.

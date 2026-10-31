@@ -33,6 +33,8 @@
 //! `dbg!` per capire perché una richiesta non parte, e da lì finirebbe in un
 //! diario che l'utente allega a una segnalazione.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -53,9 +55,35 @@ const SERVIZIO: &str = "ia";
 /// da trenta miliardi di parametri su una macchina senza scheda video scrive
 /// più lento di quanto si legga, e una scadenza stretta taglierebbe la risposta
 /// a metà frase proprio nei casi in cui è costata di più. Quel che protegge
-/// davvero da un servizio fermo è l'annullamento, che risponde entro un blocco;
-/// questa è la rete sotto, per il caso in cui nessuno stia guardando.
+/// davvero da un servizio fermo è l'annullamento, che risponde entro un
+/// [`RESPIRO`] anche quando il servizio non ha ancora mandato niente (vedi
+/// [`Cliente::conversa`]); questa è la rete sotto, per il caso in cui nessuno
+/// stia guardando, e il tempo massimo per cui una richiesta abbandonata resta
+/// aperta.
 const SCADENZA_LUNGA: Duration = Duration::from_secs(600);
+
+/// Ogni quanto, mentre il servizio tace, si guarda se qualcuno ha premuto
+/// «Ferma».
+///
+/// Un decimo di secondo: sotto la soglia in cui un bottone sembra non aver
+/// risposto, e abbastanza raro da non costare niente a un filo che aspetta.
+const RESPIRO: Duration = Duration::from_millis(100);
+
+/// Quanti blocchi possono aspettare nel canale fra il filo della richiesta e
+/// chi li legge.
+///
+/// Un canale con un fondo, e non senza: se chi legge rallenta, il filo smette
+/// di leggere dalla rete invece di accumulare in memoria. Trentadue blocchi
+/// sono molto più di quanto un modello scriva fra due respiri.
+const BLOCCHI_IN_VOLO: usize = 32;
+
+/// Quel che il filo della richiesta passa a [`Cliente::conversa`].
+enum Arrivo {
+    /// Un blocco di byte, così come è arrivato dalla rete.
+    Blocco(Vec<u8>),
+    /// Il flusso è finito, con il suo esito.
+    Fine(Result<(), AppError>),
+}
 
 /// Quanto si aspetta per l'elenco dei modelli.
 ///
@@ -276,15 +304,31 @@ impl Cliente {
     ///
     /// # L'annullamento è una domanda
     ///
-    /// Come in tutto il resto dell'albero: una chiusura interrogata fra un
-    /// blocco e l'altro. Un annullamento non è un guasto e non esce come
-    /// `Err`: esce come [`Motivo::Fermato`], perché chi ha premuto «Ferma» sa
-    /// già cos'è successo e non ha bisogno di leggerlo in rosso.
+    /// Come in tutto il resto dell'albero: una chiusura interrogata spesso. Un
+    /// annullamento non è un guasto e non esce come `Err`: esce come
+    /// [`Motivo::Fermato`], perché chi ha premuto «Ferma» sa già cos'è successo
+    /// e non ha bisogno di leggerlo in rosso.
+    ///
+    /// «Spesso» vuol dire anche mentre il servizio **tace**. La richiesta parte
+    /// da un filo suo ([`Self::avvia_flusso`]) che passa i blocchi su un canale,
+    /// e qui si aspetta a respiri di [`RESPIRO`], guardando la chiusura a ogni
+    /// respiro. Prima la si guardava solo fra un blocco e l'altro, e un servizio
+    /// che non manda il primo byte — un modello locale che si carica, un prompt
+    /// lungo valutato su CPU, un server bloccato — teneva la chat occupata fino
+    /// al primo byte o ai dieci minuti di [`SCADENZA_LUNGA`]: «Ferma» non
+    /// fermava niente, e una domanda nuova riceveva `ia.busy`.
+    ///
+    /// Un limite da sapere: la richiesta abbandonata resta aperta finché il
+    /// servizio non manda il primo byte (o finché non scade), e poi il filo
+    /// smette da sé. Un server locale con un posto solo — Ollama, col
+    /// parallelismo di serie — continua intanto a lavorare su quella, e la
+    /// domanda dopo gli aspetta dietro: «Ferma» libera la chat, non il modello.
     ///
     /// # Errori
     ///
     /// `ia.unauthorized`, `ia.modelUnknown`, `ia.localServerDown`,
-    /// `ia.noAnswer`, `ia.badResponse`, e i `net.*` di sempre.
+    /// `ia.noAnswer`, `ia.badResponse`, i `net.*` di sempre, e
+    /// `internal.unexpected` se il filo della richiesta non parte.
     pub fn conversa(
         &self,
         messaggi: &[Messaggio],
@@ -293,8 +337,6 @@ impl Cliente {
     ) -> Result<Fine, AppError> {
         let url = self.profilo.punto("/chat/completions");
         let intestazioni = self.intestazioni();
-        let riferimenti: Vec<(&str, &str)> =
-            intestazioni.iter().map(|(n, v)| (*n, v.as_str())).collect();
         let mut richiesta = json!({
             "model": self.profilo.modello,
             "messages": messaggi
@@ -337,56 +379,84 @@ impl Cliente {
         // vera questo `Vec` resta di zero byte.
         let mut crudo: Vec<u8> = Vec::new();
 
-        let esito = self.rete.flusso(
-            &url,
-            &riferimenti,
-            Corpo::Byte {
-                tipo: "application/json",
-                dati: &corpo,
-            },
-            annullato,
-            &mut |blocco: &[u8]| {
-                if !visto_qualcosa && crudo.len() < CRUDO_MASSIMO {
-                    crudo.extend_from_slice(blocco);
+        let mut mangia = |blocco: &[u8]| -> Result<(), AppError> {
+            if !visto_qualcosa && crudo.len() < CRUDO_MASSIMO {
+                crudo.extend_from_slice(blocco);
+            }
+            for evento in sse.mangia(blocco) {
+                // Anche un `[DONE]` senza contenuto conta: una risposta
+                // vuota è una risposta, e trattarla come «non era un
+                // flusso» direbbe che il servizio è rotto quando ha solo
+                // taciuto.
+                visto_qualcosa = true;
+                let Evento::Dati(carico) = evento else {
+                    continue;
+                };
+                // Un evento che non si capisce si salta: il flusso continua,
+                // e un servizio che infila una riga di suo non deve poter
+                // buttare via la risposta che sta arrivando.
+                let Ok(documento) = serde_json::from_str::<Value>(&carico) else {
+                    continue;
+                };
+                // Un `error` dentro un flusso già iniziato: OpenRouter lo fa
+                // quando il modello a valle cade a metà generazione.
+                if let Some(guasto) = documento.get("error") {
+                    return Err(self.dal_documento(guasto));
                 }
-                for evento in sse.mangia(blocco) {
-                    // Anche un `[DONE]` senza contenuto conta: una risposta
-                    // vuota è una risposta, e trattarla come «non era un
-                    // flusso» direbbe che il servizio è rotto quando ha solo
-                    // taciuto.
-                    visto_qualcosa = true;
-                    let Evento::Dati(carico) = evento else {
-                        continue;
-                    };
-                    // Un evento che non si capisce si salta: il flusso continua,
-                    // e un servizio che infila una riga di suo non deve poter
-                    // buttare via la risposta che sta arrivando.
-                    let Ok(documento) = serde_json::from_str::<Value>(&carico) else {
-                        continue;
-                    };
-                    // Un `error` dentro un flusso già iniziato: OpenRouter lo fa
-                    // quando il modello a valle cade a metà generazione.
-                    if let Some(guasto) = documento.get("error") {
-                        return Err(self.dal_documento(guasto));
+                leggi_evento(&documento, &mut fine, pezzo);
+            }
+            Ok(())
+        };
+
+        // Il flusso gira su un filo suo, e qui si aspetta a respiri brevi: vedi
+        // «L'annullamento è una domanda» sopra. Il ciclo esce con l'esito del
+        // flusso, o con `None` se chi guarda ha smesso di volerlo.
+        let (manda, ricevi) = mpsc::sync_channel(BLOCCHI_IN_VOLO);
+        let smesso = Arc::new(AtomicBool::new(false));
+        self.avvia_flusso(url, intestazioni, corpo, manda, Arc::clone(&smesso))?;
+        let esito = loop {
+            if annullato() {
+                break None;
+            }
+            match ricevi.recv_timeout(RESPIRO) {
+                Ok(Arrivo::Blocco(blocco)) => {
+                    if let Err(err) = mangia(&blocco) {
+                        break Some(Err(err));
                     }
-                    leggi_evento(&documento, &mut fine, pezzo);
                 }
-                Ok(())
-            },
-        );
+                Ok(Arrivo::Fine(esito)) => break Some(esito),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Some(Err(AppError::new(ErrorCode::InternalUnexpected {
+                        detail: Some("il filo del flusso è finito senza dire come".to_owned()),
+                    })));
+                }
+            }
+        };
+        // Il filo, se c'è ancora, smette al primo blocco che arriva: la bandiera
+        // glielo dice fra un blocco e l'altro, e il canale chiuso — `ricevi`
+        // cade all'uscita di qui — fa fallire la consegna di quel che resta.
+        smesso.store(true, Ordering::Relaxed);
 
         match esito {
-            Ok(()) => {}
-            // L'annullamento arriva come `internal.aborted`, e va riconosciuto
-            // **prima** di tradurre: chi ha premuto «Ferma» non ha causato un
-            // guasto, e la risposta a metà che ha già letto resta valida.
-            Err(err) if matches!(err.code(), ErrorCode::InternalAborted { .. }) => {
+            Some(Ok(())) => {}
+            // L'annullamento: chi ha premuto «Ferma» non ha causato un guasto,
+            // e la risposta a metà che ha già letto resta valida. Dal flusso
+            // arriverebbe come `internal.aborted`, che va riconosciuto
+            // **prima** di tradurre.
+            None => {
                 return Ok(Fine {
                     motivo: Motivo::Fermato,
                     ..fine
                 });
             }
-            Err(err) => return Err(self.traduci(err)),
+            Some(Err(err)) if matches!(err.code(), ErrorCode::InternalAborted { .. }) => {
+                return Ok(Fine {
+                    motivo: Motivo::Fermato,
+                    ..fine
+                });
+            }
+            Some(Err(err)) => return Err(self.traduci(err)),
         }
 
         if !visto_qualcosa {
@@ -434,6 +504,67 @@ impl Cliente {
             fine.motivo = Motivo::Troncato;
         }
         Ok(fine)
+    }
+
+    /// Fa partire la richiesta di [`Self::conversa`] su un filo suo.
+    ///
+    /// # Perché un filo staccato, e cosa si porta dietro
+    ///
+    /// Staccato e non dentro uno `std::thread::scope`: lo scope aspetterebbe la
+    /// fine del filo prima di restituire, e si tornerebbe a un «Ferma» che
+    /// aspetta il servizio. Quindi il filo **possiede** tutto quel che usa — un
+    /// clone della rete (costa un `Arc`), l'indirizzo, le intestazioni con la
+    /// chiave, il corpo — e la chiusura di annullamento non è quella di chi
+    /// chiama, che non è `Send`: è `smesso`, che chi chiama alza quando smette
+    /// di aspettare. La chiave non esce dal filo e non finisce in nessun
+    /// `Debug`: [`Arrivo`] porta solo byte e l'esito.
+    ///
+    /// Il filo finisce da sé: al primo blocco dopo che `smesso` è alto, o al
+    /// primo invio su un canale che nessuno legge più, o alla scadenza della
+    /// rete.
+    ///
+    /// # Errori
+    ///
+    /// `internal.unexpected` se il sistema non concede il filo.
+    fn avvia_flusso(
+        &self,
+        url: String,
+        intestazioni: Vec<(&'static str, String)>,
+        corpo: Vec<u8>,
+        manda: mpsc::SyncSender<Arrivo>,
+        smesso: Arc<AtomicBool>,
+    ) -> Result<(), AppError> {
+        let rete = self.rete.clone();
+        std::thread::Builder::new()
+            .name("rymembra-ia-flusso".to_owned())
+            .spawn(move || {
+                let riferimenti: Vec<(&str, &str)> =
+                    intestazioni.iter().map(|(n, v)| (*n, v.as_str())).collect();
+                let esito = rete.flusso(
+                    &url,
+                    &riferimenti,
+                    Corpo::Byte {
+                        tipo: "application/json",
+                        dati: &corpo,
+                    },
+                    &|| smesso.load(Ordering::Relaxed),
+                    &mut |blocco: &[u8]| {
+                        manda.send(Arrivo::Blocco(blocco.to_vec())).map_err(|_| {
+                            AppError::new(ErrorCode::InternalAborted {
+                                what: Some("flusso".to_owned()),
+                            })
+                        })
+                    },
+                );
+                // Se nessuno ascolta più, l'esito non serve a nessuno.
+                let _ = manda.send(Arrivo::Fine(esito));
+            })
+            .map(|_| ())
+            .map_err(|err| {
+                AppError::new(ErrorCode::InternalUnexpected {
+                    detail: Some(format!("il filo della richiesta non parte: {err}")),
+                })
+            })
     }
 
     /// Le intestazioni di questa richiesta, chiave compresa.
@@ -1324,6 +1455,143 @@ mod prove {
         let frase = tradotto.message().unwrap_or_default();
         assert!(frase.contains("nuovo.esempio/v1/models"), "{frase}");
         assert!(!frase.contains("firma"), "la query non si mostra: {frase}");
+    }
+
+    /// Un servitore su questa macchina che accetta una connessione, legge la
+    /// richiesta **intera** — testa e corpo — e poi fa quel che `poi` dice.
+    ///
+    /// La richiesta si legge tutta prima di rispondere: su Windows un socket
+    /// chiuso con byte ancora da leggere manda un RST, e il client perderebbe la
+    /// risposta.
+    fn servitore(poi: impl FnOnce(&mut std::net::TcpStream) + Send + 'static) -> u16 {
+        use std::io::Read as _;
+        let ascolto =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("una porta su questa macchina");
+        let porta = ascolto.local_addr().expect("la porta scelta").port();
+        std::thread::spawn(move || {
+            let Ok((mut connessione, _)) = ascolto.accept() else {
+                return;
+            };
+            let mut testa = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !testa.ends_with(b"\r\n\r\n") {
+                match connessione.read(&mut byte) {
+                    Ok(1) => testa.push(byte[0]),
+                    _ => return,
+                }
+            }
+            let lunghezza = String::from_utf8_lossy(&testa)
+                .lines()
+                .find_map(|riga| {
+                    let (nome, valore) = riga.split_once(':')?;
+                    nome.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| valore.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let mut corpo = vec![0_u8; lunghezza];
+            if connessione.read_exact(&mut corpo).is_err() {
+                return;
+            }
+            poi(&mut connessione);
+        });
+        porta
+    }
+
+    /// Il servizio che non manda un byte — un modello che si carica, un prompt
+    /// lungo valutato su CPU, un server bloccato — si ferma entro un respiro da
+    /// quando si preme «Ferma», e non al primo byte o ai dieci minuti della
+    /// scadenza.
+    #[test]
+    fn un_servizio_muto_si_ferma_subito() {
+        let porta = servitore(|_| std::thread::sleep(Duration::from_secs(30)));
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let (esito_tx, esito_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let partenza = std::time::Instant::now();
+            let annullato = || partenza.elapsed() >= Duration::from_millis(200);
+            let esito = cliente.conversa(&[Messaggio::utente("ciao")], &annullato, &mut |_, _| {});
+            let _ = esito_tx.send(esito);
+        });
+        let esito = esito_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("«Ferma» deve rispondere senza aspettare il servizio");
+        let fine = esito.expect("un annullamento non è un guasto");
+        assert_eq!(fine.motivo, Motivo::Fermato);
+    }
+
+    /// La risposta che arriva a pezzi passa ancora tutta, nell'ordine, e il
+    /// motivo della fine è quello che il servizio ha dichiarato.
+    #[test]
+    fn una_risposta_in_flusso_arriva_intera() {
+        let porta = servitore(|connessione| {
+            use std::io::Write as _;
+            let _ = connessione.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            for evento in [
+                r#"{"choices":[{"delta":{"reasoning":"penso"}}]}"#,
+                r#"{"choices":[{"delta":{"content":"Ciao"}}]}"#,
+                r#"{"choices":[{"delta":{"content":" mondo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#,
+                "[DONE]",
+            ] {
+                let _ = connessione.write_all(format!("data: {evento}\n\n").as_bytes());
+                let _ = connessione.flush();
+            }
+        });
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let mut risposta = String::new();
+        let mut pensiero = String::new();
+        let fine = cliente
+            .conversa(
+                &[Messaggio::utente("ciao")],
+                &|| false,
+                &mut |voce, testo| match voce {
+                    Voce::Risposta => risposta.push_str(testo),
+                    Voce::Pensiero => pensiero.push_str(testo),
+                },
+            )
+            .expect("una risposta ben formata");
+        assert_eq!(risposta, "Ciao mondo");
+        assert_eq!(pensiero, "penso");
+        assert_eq!(fine.motivo, Motivo::Finito);
+        assert_eq!((fine.gettoni_in, fine.gettoni_out), (Some(3), Some(2)));
+    }
+
+    /// Un `error` dentro un flusso già cominciato resta un errore, con le
+    /// parole del servizio.
+    #[test]
+    fn un_errore_dentro_il_flusso_resta_un_errore() {
+        let porta = servitore(|connessione| {
+            use std::io::Write as _;
+            let _ = connessione.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+                  data: {\"choices\":[{\"delta\":{\"content\":\"Ci\"}}]}\n\n\
+                  data: {\"error\":{\"message\":\"il modello a valle e caduto\"}}\n\n",
+            );
+        });
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let guasto = cliente
+            .conversa(&[Messaggio::utente("ciao")], &|| false, &mut |_, _| {})
+            .expect_err("un errore dichiarato non è una risposta");
+        assert_eq!(guasto.code().kind().code(), "ia.badResponse");
+        assert!(
+            guasto.cause().is_some_and(|c| c.contains("a valle")),
+            "{guasto:?}"
+        );
     }
 
     /// Il limite di frequenza non ha un codice suo, e non deve prenderselo.

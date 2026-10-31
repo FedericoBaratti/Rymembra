@@ -70,8 +70,12 @@ pub use rete::{
     CampioneOrologio, Evento, FileServito, IdConnessione, Impostazioni, LettoreRemoto, Rete,
 };
 pub use scoperta::{IndirizziDiQui, indirizzi_di_qui};
+pub use servente::Lettore;
 pub use tempi::Tempi;
 
 /// La porta di chi ospita, TCP e UDP. Se è occupata si provano le nove dopo,
-/// poi una qualunque: la scoperta dice a chi cerca quale.
+/// poi una qualunque. La risposta alla scoperta dice la porta, ma la domanda
+/// in broadcast va solo a queste dieci: su una porta qualunque l'host si
+/// raggiunge solo scrivendo `ip:porta` a mano (vedi [`indirizzi_di_qui`] e
+/// «Quando la scoperta non basta» in `scoperta`).
 pub const PORTA: u16 = 47811;

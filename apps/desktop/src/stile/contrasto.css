@@ -1,0 +1,237 @@
+/* Il contrasto elevato di Windows: il blocco forced-colors globale.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/*
+ * ── il contrasto elevato di Windows ───────────────────────────────────────────
+ *
+ * In `forced-colors: active` il sistema non suggerisce una tavolozza: la impone.
+ * Il motore riscrive `color`, `background-color`, `border-color` e
+ * `outline-color` coi colori di sistema e azzera le ombre. Quel che resta è
+ * leggibile per definizione — e in questo foglio è anche **piatto**, perché
+ * tutto il linguaggio dell'elevazione è fatto esattamente delle cose che
+ * spariscono: quattro superfici che si distinguono di cinque unità di grigio, il
+ * filo chiaro sul bordo alto (`--filo`) e la sfumatura di luce (`--luce`).
+ * Quattro pannelli impilati diventano un rettangolo, e in diecimila righe non
+ * c'era una riga che se ne accorgesse.
+ *
+ * # Le tre contromosse, in ordine di quanto pesano
+ *
+ * **`--hairline` diventa una linea vera.** È il token con cui questo foglio
+ * separa le cose — centoquattordici regole lo leggono — e al sette per cento
+ * d'opacità separa per differenza di luminanza, cioè per quel che il contrasto
+ * elevato toglie. `CanvasText` lo rende una linea piena: centoquattordici bordi
+ * compaiono insieme senza toccare una sola di quelle regole.
+ *
+ * **La luce si spegne: `--luce`, `--filo`, `--incavo`.** Sono i tre pezzi del
+ * modello di luce — la sfumatura dall'alto, il filo chiaro sullo spigolo, l'ombra
+ * interna di un campo affondato — e sono decorazione, non informazione. Il motore
+ * ne farebbe cose diverse a seconda di quel che sa forzare: una sfumatura
+ * appiattita su un colore di sistema, o un gradiente tolto del tutto. Nessuna
+ * delle due è quella che serve, e dichiararle qui rende il risultato lo stesso
+ * ovunque. `--filo` non diventa `none` ma un'ombra nulla, perché sta in liste
+ * (`box-shadow: var(--filo), var(--shadow-2)`) dove un `none` in mezzo
+ * invaliderebbe la dichiarazione intera.
+ *
+ * **Il fuoco passa a `Highlight`.** `var(--accent)` è il colore della skin, e il
+ * motore lo riscrive col colore del testo: l'anello resterebbe visibile ma
+ * identico a un bordo. `Highlight` è il colore che il sistema riserva a «questo è
+ * scelto», e chi usa il contrasto elevato lo riconosce prima di leggerlo.
+ * L'esclusione della radice delle finestrelle si ripete qui: il perché sta dove
+ * l'anello è dichiarato la prima volta.
+ *
+ * # Poi gli stati, che sono informazione e non veste
+ *
+ * La riga che suona, la linguetta scelta, l'interruttore acceso, la barra a
+ * metà: tutti e quattro dicono quel che dicono con un fondo tinto, e due fondi
+ * tinti in contrasto elevato sono lo stesso fondo. Una barra di avanzamento
+ * diventa perfino bugiarda — pista e riempimento dello stesso colore si leggono
+ * come «finito». Ognuno torna con un segno che il sistema non può appiattire: un
+ * anello, un bordo, `Highlight`.
+ *
+ * # L'unica eccezione
+ *
+ * `forced-color-adjust: none` sta sulla sola tela dello spettro, e si giustifica
+ * da sé: lì i colori **sono** il contenuto. Uno spettro ridipinto col bianco e
+ * il nero di sistema non è uno spettro ad alto contrasto, è un rettangolo. È
+ * anche l'unico posto del foglio in cui un'immagine la generiamo noi invece di
+ * caricarla da un file, cioè l'unico che il motore ridipingerebbe.
+ */
+@media (forced-colors: active) {
+  :root {
+    --hairline: CanvasText;
+    --luce: none;
+    --filo: 0 0 0 0 transparent;
+    --incavo: transparent;
+  }
+
+  /* Il fuoco, col colore che il sistema riserva alla scelta. */
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  /* La stessa esclusione di sopra, per la stessa ragione. */
+  .finestrella[role='dialog']:focus-visible,
+  .finestrella[role='alertdialog']:focus-visible,
+  .primo[role='dialog']:focus-visible,
+  .in-riproduzione:focus-visible {
+    outline: none;
+  }
+  /* I comandi senza cursore di testo — i menu a tendina dell'editor delle
+     regole e dello Studio, i cursori dell'equalizzatore — che fuori di qui
+     tolgono l'anello con un selettore più pesante di `:focus-visible` (0,1,1
+     o 0,2,0) e segnano il fuoco con un bordo d'accento, un'ombra o la pallina
+     colorata: tre cose che il contrasto elevato appiattisce. Senza questa
+     regola il fuoco su un `select` non si vede affatto. `:is()` pesa quanto il
+     suo argomento più forte, quindi (0,2,1) li batte tutti. */
+  :is(
+      .editor-regole input,
+      .editor-regole select,
+      .eq-cursore,
+      .proprieta-riga input,
+      .proprieta-riga select,
+      .manopole-livello input,
+      .manopole-livello select,
+      .scala-passi input,
+      .scala-passi select
+    ):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  /* Il brano in riproduzione, nell'elenco e nella coda. `outline` rientrato e non
+     un bordo: un bordo cambierebbe l'altezza della riga, e l'altezza della riga
+     è quella che la finestra virtuale misura. */
+  .riga[aria-current='true'],
+  .riga-coda[aria-current='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  /* La destinazione aperta nella navigazione e la linguetta scelta di un
+     segmentato: il fondo appena più chiaro con cui si distinguono è la prima
+     cosa che il contrasto elevato appiattisce. */
+  .voce[data-active],
+  .segmentato .linguetta[data-active] {
+    background: Highlight;
+    color: HighlightText;
+  }
+  /* I due numerini dentro quelle due: hanno un colore proprio, che il motore
+     forzerebbe a `CanvasText` — cioè al colore del **fondo** della finestra,
+     sopra `Highlight`. Si tirano dietro al loro genitore. */
+  .voce[data-active] .conteggio,
+  .segmentato .linguetta[data-active] .quante {
+    color: HighlightText;
+  }
+
+  /* L'interruttore. La pista prende un bordo perché vuota non si vedrebbe, e
+     accesa prende `Highlight`: acceso e spento restano due cose diverse anche
+     senza la tinta d'accento. */
+  .interruttore .pista {
+    border: 1px solid CanvasText;
+  }
+  .interruttore[aria-checked='true'] .pista {
+    background: Highlight;
+  }
+  .interruttore .pallina {
+    background: CanvasText;
+  }
+  .interruttore[aria-checked='true'] .pallina {
+    background: HighlightText;
+  }
+
+  /* Le sette barre di avanzamento: la pista si vede perché ha un bordo, il
+     riempimento perché è `Highlight`. Senza, la barra dice sempre «finito».
+     L'ultima è quella del ripristino e del profilo, che fino alla 2.3.1 non
+     aveva una regola nemmeno fuori di qui. */
+  .toast-progress,
+  .avanzamento-scansione .barra,
+  .importazione .barra,
+  .importazione-brano .barra,
+  .riepilogo-coda .barra,
+  .lettura-link .barra,
+  .finestrella > .avanzamento,
+  .scheda > .avanzamento {
+    border: 1px solid CanvasText;
+  }
+  .toast-progress > span,
+  .avanzamento-scansione .riempita,
+  .importazione .riempimento,
+  .importazione-brano .riempimento,
+  .riepilogo-coda .riempimento,
+  .lettura-link .riempimento,
+  .finestrella > .avanzamento > div,
+  .scheda > .avanzamento > div {
+    background: Highlight;
+  }
+
+  /* I cursori: la barra di posizione, il volume, la dissolvenza e la latenza
+     (`.scorrimento`), e le dieci bande dell'equalizzatore. La loro pista è
+     **solo** un gradiente, cioè quel che il motore toglie del tutto, e l'input
+     non ha bordo: senza queste regole la barra di posizione spariva e restavano
+     i due tempi. `forced-color-adjust: none` sul solo pseudo-elemento, con soli
+     colori di sistema, come per la scena dello spettro: lì il gradiente è
+     l'informazione («fin qui»), e il motore non lo saprebbe ridipingere. */
+  .scorrimento::-webkit-slider-runnable-track {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+    background: linear-gradient(
+      90deg,
+      Highlight var(--avanzamento, 0%),
+      Canvas var(--avanzamento, 0%)
+    );
+    box-shadow: none;
+  }
+  /* La pallina dello scrubber si vede sempre: fuori di qui compare al sorvolo
+     perché il riempimento basta a dire dove si è, ma un sorvolo che accende una
+     pallina del colore del fondo non accende niente. Spenta resta spenta: la
+     regola di `:disabled`, fuori, pesa (0,2,1) e vince ancora. */
+  .scorrimento::-webkit-slider-thumb {
+    forced-color-adjust: none;
+    background: CanvasText;
+    box-shadow: none;
+    opacity: 1;
+  }
+  .eq-cursore::-webkit-slider-runnable-track {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+    background: linear-gradient(
+      to top,
+      Canvas calc(50% - 1px),
+      Highlight calc(50% - 1px),
+      Highlight calc(50% + 1px),
+      Canvas calc(50% + 1px)
+    );
+  }
+  .eq-cursore::-webkit-slider-thumb {
+    forced-color-adjust: none;
+    background: CanvasText;
+    box-shadow: none;
+  }
+  /* La banda col fuoco: fuori di qui è la pallina d'accento, qui `Highlight`,
+     oltre all'anello qui sopra. */
+  .eq-cursore:focus-visible::-webkit-slider-thumb {
+    background: Highlight;
+  }
+
+  /* Il riflettore del giro guidato. L'oscuramento è una `box-shadow`, e le
+     ombre qui dentro il motore le azzera: resta l'anello sul bersaglio, che il
+     motore ricolora e che è la metà che conta — «guarda questo». Il buio
+     attorno era l'altra metà, e perderlo non toglie niente a chi ha chiesto più
+     contrasto: era un effetto, e questa modalità gli effetti li toglie apposta.
+     Non c'è quindi una regola da scrivere, e vale la pena dirlo qui invece di
+     lasciar credere che sia una dimenticanza. */
+
+  /* La cartella che non risponde. L'opacità il motore non la appiattisce, e
+     proprio per questo qui è dannosa: smorzerebbe un testo a chi ha chiesto più
+     contrasto, senza aggiungere niente. Torna piena, e a dire che la radice è
+     spenta resta il corsivo del nome — insieme alla striscia «Ricontrolla», che
+     è dove sta il comando. */
+  .nodo-spento {
+    opacity: 1;
+  }
+
+  /* Lo spettro: qui i colori sono il contenuto. */
+  .scena-spettro {
+    forced-color-adjust: none;
+  }
+}

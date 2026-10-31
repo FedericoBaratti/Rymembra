@@ -324,7 +324,16 @@ impl<'a> Motore<'a> {
         let fuso = fusione::fondi(&tutti);
 
         passata.impronta = documento::impronta(mio)?;
-        if self.memoria.mia_impronta.as_deref() != Some(passata.impronta.as_str()) {
+        // Si scrive se il contenuto è cambiato, **o se il proprio documento
+        // lassù non c'è più**: qualcuno ha pulito la cartella, o è finito nel
+        // cestino di Drive. L'impronta ricordata dice com'era l'ultima volta che
+        // lo si è scritto, non che sia ancora lì; guardando solo quella, il
+        // documento tornava al primo ascolto, e fino ad allora chi entrava nella
+        // cartella non vedeva niente di questo dispositivo. Senza un file
+        // proprio anche `esistente` è `None`: si crea, e un doppione non nasce.
+        if proprio.is_none()
+            || self.memoria.mia_impronta.as_deref() != Some(passata.impronta.as_str())
+        {
             // Se c'è solo il file col nome di prima, si scrive su di lui: dove il
             // magazzino ammette due file con lo stesso nome (Drive) lo rinomina
             // aggiornandolo, senza lasciare un doppione.
@@ -591,6 +600,35 @@ mod prove {
             .expect("dopo");
         assert_eq!(dopo.fuso.ascolti_di("a"), 0);
         assert_eq!(dopo.fuso.dispositivi, vec!["resto".to_owned()]);
+    }
+
+    #[test]
+    fn un_proprio_documento_sparito_si_riscrive() {
+        // Qualcuno ha pulito la cartella, o il documento è finito nel cestino
+        // di Drive. Il contenuto non è cambiato e l'impronta ricordata è quella
+        // di sempre: guardando solo quella, il documento non tornava finché
+        // qui non si toccava qualcosa, e chi entrava nella cartella non vedeva
+        // voti, playlist e ascolti di questo dispositivo.
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = Cartella::nuova(dove.path().join("dispositivi"));
+        let mut memoria_motore = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "uno", &mut memoria_motore);
+        let mio = con_voto("a", Voto { v: 4, at: 10 });
+
+        motore.passata(&mio, 1_000, &niente).expect("prima");
+        magazzino
+            .cancella(&documento::nome_file("uno"))
+            .expect("cancella");
+        let seconda = motore.passata(&mio, 2_000, &niente).expect("seconda");
+        assert!(
+            seconda.passata.scritto,
+            "il proprio documento manca: va riscritto anche se il contenuto è lo stesso"
+        );
+        assert_eq!(
+            nomi(&magazzino),
+            vec![documento::nome_file("uno")],
+            "di nuovo nella cartella, e una volta sola"
+        );
     }
 
     #[test]

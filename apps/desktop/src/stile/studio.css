@@ -1,0 +1,881 @@
+/* Lo Skin Studio: la cornice e i controlli di base che lo Studio 3 usa ancora.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── lo Skin Studio: i pezzi di base ─────────────────────────────────────────
+ *
+ * Quel che resta dello Studio 2.x dopo la ricostruzione: la cornice che lo
+ * mette sopra l'app, e le regole dei controlli che lo Studio 3 usa ancora così
+ * com'erano — il colore, il cursore, la curva, l'ombra, la pila dei livelli,
+ * le manopole degli effetti, la chat. Il resto dello Studio sta in
+ * `stile/studio3.css`, «Skin Studio 3».
+ */
+/* ── lo Skin Studio ──────────────────────────────────────────────────────── */
+/*
+ * Quattro righe, e ognuna assegnata per nome.
+ *
+ * Erano tre, e i figli si posavano da soli. Funzionava finché i figli erano
+ * tre — testata, vista, piede — e la fascia `.testo-rotto` entra e esce: cioè
+ * appena il JSON si rompe, che è a ogni parentesi aperta. Con
+ * l'auto-posizionamento la fascia prendeva la riga `minmax(0, 1fr)` e si
+ * stirava a tutta l'altezza in ambra piena, la vista scivolava nella riga da
+ * 34 px, e il piede finiva in una riga implicita fuori dal contenitore alto
+ * `100%`. Lo Studio diventava una banda gialla con sotto un francobollo di
+ * editor, e tornava normale quando si rimetteva la virgola.
+ *
+ * `grid-row` esplicito su tutti e quattro è quel che lo impedisce, e non
+ * dipende da quanti figli ci sono in questo momento: la riga 2 senza niente
+ * dentro è alta zero.
+ */
+/* L'applicazione, attorno a tutto quel che disegna: non è una scatola, serve
+   solo a renderla `inert` quando lo Studio la copre. */
+.finestra-app {
+  display: contents;
+}
+/* Lo Studio sopra l'applicazione, e non al suo posto: l'app resta montata sotto
+   — la riproduzione continua, e «Prova sull'app» ha una finestra vera su cui
+   provare. Prende i clic perché è lui la finestra, finché è aperto. */
+.strato-studio {
+  position: fixed;
+  inset: 0;
+  z-index: var(--strato-studio);
+  pointer-events: auto;
+}
+/* Le notizie e gli errori della finestra mentre lo Studio la copre: in basso,
+   sopra la tela, dove si sta guardando. Il fondo è pieno perché sotto c'è la
+   tela, e una fascia trasparente su un'anteprima colorata non si legge. */
+.avvisi-studio {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  translate: -50% 0;
+  width: min(560px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  z-index: var(--strato-toast);
+  pointer-events: none;
+}
+.avvisi-studio > * {
+  margin-bottom: 0;
+  pointer-events: auto;
+  box-shadow: var(--shadow-3);
+}
+.avvisi-studio > .errore {
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)) var(--color-surface-1);
+}
+/*
+ * Quattro numeri, non tre.
+ *
+ * Gli errori dicono se si esporta; «fuori budget» e «sotto 4,5:1» dicono cosa si
+ * sta per esportare. Erano già calcolati e si vedevano solo entrando in un'altra
+ * vista, che è il posto sbagliato per una cosa che riguarda tutto il documento.
+ */
+.voce-piede {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.voce-piede[data-esito='bene'] {
+  color: var(--success);
+}
+.voce-piede[data-esito='attenzione'] {
+  color: var(--warning);
+}
+.voce-piede[data-esito='male'] {
+  color: var(--danger);
+}
+/* La fessura è il bersaglio, e la riga no: rilasciare su una **zona** avrebbe
+   due letture — dentro, o prima? — e una fessura ne ha una sola. Alta sei
+   pixel a riposo, e si accende solo quando il rilascio è legale: l'interfaccia
+   non offre l'errore. */
+.fessura {
+  height: 6px;
+  margin: 1px 0;
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+.fessura[data-attiva] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* Quella sotto il puntatore, e non `:hover`: il gesto è quello di
+   `riordino.ts`, che non passa dal trascinamento del browser e sceglie la
+   fessura da sé — anche mentre l'elenco scorre da solo sul bordo, dove il
+   puntatore sta fermo e il `:hover` resta indietro. */
+.fessura[data-attiva][data-mirata] {
+  background: var(--accent);
+}
+.tavolozza-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.gruppo-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gruppo-widget .titolo-gruppo {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+  padding: 4px 8px 2px;
+}
+.un-widget {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  font-size: 11.5px;
+  cursor: grab;
+}
+.un-widget code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.un-widget:hover {
+  color: var(--color-text-1);
+}
+/* Spento con la ragione nel suggerimento: spento e muto insegnerebbe soltanto
+   che l'editor a volte non risponde. */
+.un-widget[data-spento] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.azioni-nodo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+}
+/* Il sottoalbero viene da un prefab: modificarlo qui muove tutti gli usi, e
+   dirlo prima vale più che scoprirlo dopo. */
+.da-prefab {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+/*
+ * L'etichettina in mono maiuscoletto: è la stessa in tutto lo Studio, e si
+ * chiama così invece che `h4` perché non è un titolo di sezione — è una
+ * didascalia che dice di cosa parla la riga sotto.
+ */
+.titolino {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.chip-livello {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--color-surface-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-2);
+}
+/* ── lo sfondo, a livelli ─────────────────────────────────────────────────── */
+/*
+ * Una pila, e si vede che è una pila: i livelli stanno uno sopra l'altro come
+ * stanno nel documento, dal più basso. Un elenco che non lo mostrasse
+ * costringerebbe a ricordarsi in che verso si legge.
+ */
+.livelli .testa-sezione {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  margin-bottom: 7px;
+}
+.livelli .testa-sezione .da-dove {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.pila {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.livello {
+  display: grid;
+  grid-template-columns: 14px 14px minmax(0, 1fr) auto 18px;
+  gap: 7px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--color-surface-2);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: grab;
+}
+.livello[data-preso] {
+  border-color: var(--accent);
+  opacity: 0.6;
+}
+/* Dove il livello preso andrebbe a finire. Come per le righe della coda: si
+   lasciava andare e si scopriva dopo. */
+.livello[data-sopra] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.livello .maniglia {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}
+.livello .ritratto {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+}
+.livello .quale {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-1);
+}
+.peso {
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+.livello .via {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.livello .via:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+.aggiungi-livello {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px dashed var(--hairline);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.aggiungi-livello:hover {
+  border-color: var(--accent);
+}
+.aggiungi-livello .quanti {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--color-text-3);
+}
+.elenco-effetti {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 5px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+.un-effetto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.un-effetto:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+.un-effetto code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Senza, l'ellissi non compare mai: un `<code>` va a capo di serie, e il
+     troncamento non ha nessuna riga da troncare. */
+  white-space: nowrap;
+}
+.proprieta-riga {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  gap: var(--spazio-2);
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--color-text-2);
+}
+.proprieta-riga .come {
+  min-width: 0;
+}
+.proprieta-riga input,
+.proprieta-riga select {
+  height: 26px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+  min-width: 0;
+}
+.proprieta-riga input:focus,
+.proprieta-riga select:focus {
+  border-color: var(--accent);
+}
+/*
+ * Il colore in tre modi, e il modo si dichiara.
+ *
+ * Un campo solo dovrebbe indovinare se «#c96a2e» è un letterale o il nome di un
+ * colore in tavolozza. Dichiararlo costa un selettore e toglie l'ambiguità.
+ */
+.valore-colore {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.valore-colore .pastiglia {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+}
+/* Un valore non dichiarato non si finge nero: il nero si scambia per una scelta. */
+.valore-colore .pastiglia[data-vuota] {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-surface-3) 0 3px,
+    transparent 3px 6px
+  );
+}
+.valore-colore .modo {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.valore-colore input[type='color'] {
+  padding: 2px;
+  cursor: pointer;
+}
+/* I cursori dello Studio (`controlli.tsx`, `IspezioneVoci.tsx`, `Pila.tsx`).
+   `.cursore-studio` e non `.cursore`: `.cursore` è il contenitore della barra di
+   posizione (`parti/Scrubber.tsx`), e con il nome condiviso
+   `.cursore input[type='range']` (0,2,1) batteva `.scorrimento` (0,1,0) e la
+   lasciava alta 4 px, cioè cliccabile solo sulla riga disegnata; uno Scrubber
+   montato da solo da una skin prendeva anche la griglia a tre colonne. */
+.cursore-studio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px 20px;
+  gap: 6px;
+  align-items: center;
+}
+/* Con l'unità la lettura si stringe: il numero e la sua unità restano
+   affiancati, e l'elenco chiuso è quel che impedisce di scriverne una che il
+   formato non conosce. */
+.cursore-studio.con-unita {
+  grid-template-columns: minmax(0, 1fr) 30px 52px 20px;
+}
+.cursore-studio .unita {
+  height: 22px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.cursore-studio input[type='range'] {
+  height: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cursore-studio .lettura {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  text-align: right;
+}
+.cursore-studio .sgancia {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.cursore-studio .sgancia:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+/*
+ * La curva, disegnata.
+ *
+ * `cubic-bezier(0.16, 1, 0.3, 1)` non dice niente a nessuno. La stessa curva su
+ * quaranta pixel, con la diagonale dietro come riferimento, si legge a colpo
+ * d'occhio: sopra la diagonale accelera, sotto frena.
+ */
+.valore-curva {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.valore-curva .traccia {
+  width: 26px;
+  height: 26px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 2px;
+}
+.valore-curva .traccia .diagonale {
+  fill: none;
+  stroke: var(--color-text-3);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  opacity: 0.5;
+}
+.valore-curva .traccia .curva {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.valore-curva .quattro {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.valore-curva .quattro input {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+/*
+ * La curva a scatti: quanti passi, e dove salta.
+ *
+ * Occupa la riga sotto l'anteprima come `.quattro`, e per la stessa ragione —
+ * i campi di una curva stanno sotto il suo ritratto, non accanto. Si chiama
+ * `scala-passi` e non `passi` perché `.passi` è già la lista numerata di
+ * `.archivio-spotify` e `.credenziali`, con il selettore nudo: due significati
+ * su un nome solo qui vorrebbe dire una lista ordinata che diventa una griglia
+ * di due campi in fondo a una pagina che non c'entra niente.
+ */
+.scala-passi {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.scala-passi input,
+.scala-passi select {
+  height: 24px;
+  min-width: 0;
+  padding: 0 6px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  outline: none;
+}
+.scala-passi input:focus,
+.scala-passi select:focus {
+  border-color: var(--accent);
+}
+/* La pila dei caratteri: l'ordine è il significato, quindi il posto si numera. */
+.pila-caratteri {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pila-caratteri .una-famiglia {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 20px;
+  gap: 6px;
+  align-items: center;
+}
+.pila-caratteri .posto {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+  text-align: center;
+}
+.pila-caratteri .via {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.pila-caratteri .via:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+/* L'ombra a livelli: un riquadro per livello, perché un livello è una cosa. */
+.valore-ombra {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.valore-ombra .un-livello-ombra {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+}
+.valore-ombra .testa-livello-ombra {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.valore-ombra .misure-ombra {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.valore-ombra .misura-ombra {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.valore-ombra .misura-ombra span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.valore-ombra .misura-ombra input {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.valore-ombra .via {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+/*
+ * Le manopole di un livello.
+ *
+ * Il pannello si apre **sotto** la riga e non in un pannello a parte: si sta
+ * guardando una pila, e mandare altrove per cambiare un colore vorrebbe dire
+ * perdere di vista l'ordine, che è metà di quel che una pila dice.
+ */
+.livello-con-manopole {
+  display: flex;
+  flex-direction: column;
+}
+.livello[data-aperto] {
+  border-color: var(--accent);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.livello .quale.apri {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.livello .quale.apri:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.livello .quale.da-motivo {
+  color: var(--accent);
+}
+.manopole-livello {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px;
+  background: var(--color-surface-1);
+  border: 1px solid var(--accent);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+.manopole-livello .una-manopola {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+}
+.manopole-livello .nome-manopola {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.manopole-livello input,
+.manopole-livello select {
+  height: 24px;
+  padding: 0 7px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 10.5px;
+  outline: none;
+  min-width: 0;
+}
+.manopole-livello input:focus,
+.manopole-livello select:focus {
+  border-color: var(--accent);
+}
+/* Le fermate di un gradiente: colore e posizione, in ordine di percorso. */
+.fermate {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fermate .una-fermata {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px 20px;
+  gap: 5px;
+  align-items: center;
+}
+.fermate .dove {
+  text-align: center;
+  font-family: var(--font-mono);
+}
+.fermate .via {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.fermate .via:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+/* La sfocatura porta il suo costo accanto: è la più cara che ci sia. */
+.proprieta-riga .sfoca-dietro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+/*
+ * Il patto del token e la striscia dei preset: la stessa scatola.
+ *
+ * Sono due riquadri diversi per contenuto e uguali per rango — due blocchi
+ * secondari sotto i controlli, che si leggono dopo e non prima — e dare al
+ * secondo una scatola sua vorrebbe dire un secondo padding, un secondo gap e un
+ * secondo posto in cui accorgersi che i due non sono più allineati.
+ */
+.preset-token {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px;
+}
+.preset-token .nota {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--color-text-3);
+}
+/* I bottoni si staccano dalla didascalia: `.azioni-nodo` porta il proprio gap
+   fra l'uno e l'altro e non quello dalla riga di sopra, e senza questo la
+   striscia sembra appesa al titolino invece che una riga sua. */
+.preset-token .azioni-nodo {
+  margin-top: 1px;
+}
+.scarta-bozza {
+  justify-content: center;
+  width: 100%;
+  margin-bottom: var(--spazio-2);
+  color: var(--danger);
+}
+.scarta-bozza:disabled {
+  opacity: 0.35;
+  color: var(--color-text-3);
+  cursor: default;
+}
+/* ── disinstallare una skin ───────────────────────────────────────────────── */
+.azioni-skin {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.azioni-skin > .bottone:first-child {
+  flex: 1;
+}
+/* Spento finché non si passa sopra la scheda: togliere una skin è raro, e un
+   bottone rosso su ogni scheda peserebbe quanto quello che si usa sempre. */
+.azioni-skin .via-skin {
+  flex: none;
+  padding: 0 8px;
+  opacity: 0;
+  color: var(--danger);
+}
+.scheda-skin:hover .azioni-skin .via-skin,
+.azioni-skin .via-skin:focus-visible {
+  opacity: 1;
+}
+.proprieta-riga .ritaglio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+/* Quattro caselle disposte come stanno sulla superficie: `bottomRight` non si
+   traduce, si guarda. */
+.angoli {
+  display: grid;
+  grid-template-columns: 12px 12px;
+  grid-template-rows: 12px 12px;
+  gap: 2px;
+}
+.angolo {
+  border: 0;
+  border-radius: 2px;
+  background: var(--color-surface-3);
+  cursor: pointer;
+  padding: 0;
+}
+.angolo[data-active] {
+  background: var(--accent);
+}
+.angolo:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.istantanea {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.istantanea:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+}
+.istantanea .quale {
+  font-size: 11.5px;
+}
+.istantanea .quanto {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.differenze .d-piu {
+  background: var(--success-soft);
+}
+.differenze .d-meno {
+  background: var(--danger-soft);
+}
+.differenze .segno {
+  display: inline-block;
+  width: 12px;
+  color: var(--color-text-3);
+}
+.avviso {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr);
+  gap: 9px;
+  padding: 6px 9px;
+  background: var(--color-surface-2);
+  border-radius: 10px;
+}
+.avviso .cosa {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-2);
+}
+.riga-contrasto {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 40px 40px;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  background: var(--color-surface-2);
+  border-radius: 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.riga-contrasto .rapporto {
+  text-align: right;
+}
+.mancanti {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.quattro {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}

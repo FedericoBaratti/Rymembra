@@ -104,7 +104,8 @@ impl Scala {
     /// `None` sotto [`MINIMO_BRANI`], e `None` se due impronte hanno lunghezza
     /// diversa: mescolare due tracciati di descrittori darebbe una media che non
     /// descrive né l'uno né l'altro, ed è un guasto da far vedere subito invece
-    /// che una distanza plausibile e sbagliata.
+    /// che una distanza plausibile e sbagliata. `None` anche se un descrittore
+    /// non è finito: un `NaN` in un'impronta butta la misura intera.
     ///
     /// # L'accumulo è di Welford
     ///
@@ -142,7 +143,10 @@ impl Scala {
                 if !x.is_finite() {
                     // Un descrittore non finito è un difetto dell'estrattore, e
                     // qui contaminerebbe la media di tutta la libreria: si
-                    // butta il brano, non la scala.
+                    // butta la misura intera, non il brano solo. Saltarlo qui
+                    // lascerebbe `brani` già contato e metà delle medie già
+                    // spostate; chi chiama filtra prima (`sonora::da_byte`
+                    // scarta i vettori non finiti), e questo è il fermo.
                     return None;
                 }
                 let scarto = x - *media;

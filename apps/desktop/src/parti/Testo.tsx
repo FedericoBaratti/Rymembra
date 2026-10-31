@@ -78,6 +78,7 @@ import { statoSuono, useQuelCheSuona } from "../segnali";
 import { useDati } from "../dati";
 import { t, tSe } from "../lingue";
 import { Icona } from "./Icone";
+import { faseLettura } from "./ramoTesto";
 import { SceltaTesto } from "./SceltaTesto";
 
 /**
@@ -295,6 +296,13 @@ export function Testo({
   // guasto e si riprova. Confonderle era il difetto — il pannello diceva
   // «Nessun testo per questo brano» anche quando il wifi era staccato.
   const [guasto, setGuasto] = useState(false);
+  // La lettura del testo dal disco e dal database: in corso, o fallita. Due
+  // stati a parte da `cercando` e `guasto`, che sono del catalogo: senza, il
+  // pannello restava vuoto per tutta la lettura — decine di secondi su una
+  // condivisione lenta — e per sempre dopo una lettura fallita. Vedi
+  // `faseLettura`.
+  const [leggendo, setLeggendo] = useState(true);
+  const [illeggibile, setIlleggibile] = useState(false);
   /* L'editor e l'elenco delle voci del catalogo (`SceltaTesto`), aperti a
      mano — e aperti **su un brano**, che si tengono.
 
@@ -387,15 +395,20 @@ export function Testo({
   // Il testo si chiede a ogni cambio di brano. `annullato` è il guardiano
   // solito: chi cambia brano tre volte in due secondi ha tre richieste in volo,
   // e senza questo l'ultima a rispondere vincerebbe invece dell'ultima chiesta.
+  // Dalle letture del contesto e non dall'IPC: nell'anteprima dello Studio il
+  // brano è finto, e la libreria vera non c'entra (`dati.tsx`).
   useEffect(() => {
     let annullato = false;
     setTesto(null);
     setCercando(false);
     setGuasto(false);
-    ipc
+    setLeggendo(true);
+    setIlleggibile(false);
+    letture
       .testoBrano(brano.id)
       .then((trovato) => {
         if (annullato) return;
+        setLeggendo(false);
         setTesto(trovato);
         // Quel che si ha non scorre, e non si è ancora chiesto a nessuno: è
         // l'unico caso in cui si va in rete, ed è la ragione per cui il
@@ -411,14 +424,19 @@ export function Testo({
       })
       // Qui ci arriva solo `testoBrano`, che legge il disco e il database:
       // `chiedi` i propri guasti se li tiene, perché sono l'unico caso in cui
-      // c'è qualcosa da riprovare. Un database che non risponde no.
+      // c'è qualcosa da riprovare. Un database che non risponde no: il guasto
+      // va alla fascia, e il pannello dice soltanto che il testo non si è
+      // potuto leggere, senza «Riprova».
       .catch((e: unknown) => {
-        if (!annullato) onErrore(e);
+        if (annullato) return;
+        setLeggendo(false);
+        setIlleggibile(true);
+        onErrore(e);
       });
     return () => {
       annullato = true;
     };
-  }, [brano.id, onErrore, chiedi]);
+  }, [brano.id, onErrore, chiedi, letture]);
 
   // Un brano nuovo è un elenco nuovo: la riga da cui si arriva non esiste più,
   // e senza questo il primo inseguimento del brano nuovo si crederebbe vicino
@@ -618,6 +636,9 @@ export function Testo({
   const daCuiPartire =
     testo?.piatto ?? righe.map((riga) => riga.testo).join("\n");
   const apriEditor = () => setEditor({ brano, iniziale: daCuiPartire });
+
+  // Che cosa dire finché il testo non c'è: vedi `faseLettura`.
+  const fase = faseLettura({ testo, leggendo, illeggibile });
 
   // Il testo che si ha è del catalogo, e la scelta può scartarlo.
   const rifiutabile =
@@ -944,7 +965,12 @@ export function Testo({
           if (TASTI_CHE_SCORRONO.has(e.key)) hoScorrutoIo();
         }}
       >
-        {testo === null ? null : testo.strumentale ? (
+        {fase === "leggo" || fase === "illeggibile" ? (
+          <div className="niente-testo">
+            <Icona nome="i-text" dim={20} />
+            <p>{fase === "leggo" ? t("np.lyrics.searching") : t("np.lyrics.unreadable")}</p>
+          </div>
+        ) : testo === null ? null : testo.strumentale ? (
           <div className="niente-testo">
             <Icona nome="i-eq" dim={20} />
             <p>{t("np.lyrics.instrumental")}</p>

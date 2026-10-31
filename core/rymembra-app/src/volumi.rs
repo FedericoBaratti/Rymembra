@@ -138,12 +138,33 @@ pub fn da_canonico(canonico: &Path) -> Collocazione {
 
 /// La collocazione che si legge dalla sola forma, senza toccare il disco.
 ///
-/// `Some` soltanto per un UNC, che è di rete qualunque cosa ne dica il disco.
+/// `Some` per un UNC, che è di rete qualunque cosa ne dica il disco, e per un
+/// percorso del cloud (`nuvola://…`), che il disco non conosce affatto. Il
+/// secondo vale «di rete» per le stesse due decisioni: niente Cestino — un
+/// brano del servizio non si cancella da qui — e niente sorveglianza col
+/// `notify`. Chiederlo al sistema sarebbe peggio che inutile: `nuvola:` non è
+/// una lettera di unità, il percorso risulterebbe relativo, e la cartella di
+/// lavoro di Rymembra — che sta sul disco locale — lo farebbe sembrare locale.
+///
 /// Tutto il resto — una lettera, un percorso relativo — va chiesto al sistema,
 /// perché la forma non basta a dirlo.
 #[must_use]
 pub fn dalla_forma(percorso: &Path) -> Option<Collocazione> {
-    percorso_di_rete(percorso).then_some(Collocazione::DiRete)
+    let del_cloud = percorso
+        .to_str()
+        .is_some_and(rymembra_domain::nuvola::e_nuvola);
+    (del_cloud || percorso_di_rete(percorso)).then_some(Collocazione::DiRete)
+}
+
+/// Il nome vero di un percorso del cloud: lui stesso.
+///
+/// `canonicalize` su `nuvola://…` chiederebbe a Windows di una cartella
+/// relativa `nuvola:` nella cartella di lavoro, e risponderebbe «non c'è» — o
+/// peggio, se qualcuno l'avesse creata. Il nome di una cartella del cloud è già
+/// quello vero: il conto è un'impronta dell'account, e i segmenti vengono dallo
+/// specchio.
+fn del_cloud(percorso: &str) -> Option<String> {
+    rymembra_domain::nuvola::e_nuvola(percorso).then(|| percorso.to_owned())
 }
 
 /// Le cartelle a cui chiedere, in ordine: quella che contiene il file, e poi la
@@ -279,6 +300,9 @@ pub fn collocazioni(percorsi: &[String], scadenza: Duration) -> Vec<Collocazione
 /// rifiuta, o se la scadenza passa.
 #[must_use]
 pub fn risolvi(percorso: &str, scadenza: Duration) -> Option<String> {
+    if let Some(com_e) = del_cloud(percorso) {
+        return Some(com_e);
+    }
     let posseduto = percorso_lungo(Path::new(percorso));
     crate::scadenza::con_scadenza("volumi-risolvi", scadenza, move || {
         std::fs::canonicalize(&posseduto).ok()
@@ -288,15 +312,23 @@ pub fn risolvi(percorso: &str, scadenza: Duration) -> Option<String> {
 }
 
 /// [`risolvi`] per molti percorsi insieme, nello stesso ordine.
+///
+/// Le cartelle del cloud tornano come sono, senza chiedere niente al disco:
+/// vedi [`del_cloud`].
 #[must_use]
 pub fn risolvi_tutti(percorsi: &[String], scadenza: Duration) -> Vec<Option<String>> {
     in_parallelo(
         percorsi.to_vec(),
         scadenza,
         |percorso: &String| -> Option<String> {
-            std::fs::canonicalize(percorso_lungo(Path::new(percorso)))
-                .ok()
-                .map(|canonico| senza_verbatim(&canonico.to_string_lossy()))
+            match rymembra_domain::nuvola::Radice::da(percorso) {
+                rymembra_domain::nuvola::Radice::Nuvola { .. } => del_cloud(percorso),
+                rymembra_domain::nuvola::Radice::Locale(locale) => {
+                    std::fs::canonicalize(percorso_lungo(Path::new(locale)))
+                        .ok()
+                        .map(|canonico| senza_verbatim(&canonico.to_string_lossy()))
+                }
+            }
         },
     )
     .into_iter()
@@ -311,8 +343,15 @@ pub fn risolvi_tutti(percorsi: &[String], scadenza: Duration) -> Vec<Option<Stri
 /// `ERROR_BAD_NETPATH` e `ERROR_BAD_NET_NAME` — la share che non c'è — come
 /// `NotFound`, e senza quel controllo una share spenta direbbe «file mancante»
 /// per ogni brano che contiene.
+///
+/// Un percorso del cloud è [`Esistenza::Ignota`], senza toccare il disco: se
+/// c'è lo sa lo specchio del servizio, non il filesystem, e il «non c'è» che il
+/// filesystem darebbe farebbe proporre di rimappare una cartella che c'è.
 #[must_use]
 pub fn esistenza(percorso: &str) -> Esistenza {
+    if rymembra_domain::nuvola::e_nuvola(percorso) {
+        return Esistenza::Ignota;
+    }
     match std::fs::metadata(percorso_lungo(Path::new(percorso))) {
         Ok(_) => Esistenza::Presente,
         Err(err)
@@ -629,5 +668,34 @@ mod prove {
     fn un_elenco_vuoto_non_assume_nessuno() {
         assert!(esistenze(Vec::new(), SCADENZA_RISOLUZIONE).is_empty());
         assert!(collocazioni(&[], SCADENZA_RISOLUZIONE).is_empty());
+    }
+
+    #[test]
+    fn le_cartelle_del_cloud_tornano_come_sono_senza_chiedere_al_disco() {
+        // Il nome vero di una cartella del cloud è lei stessa, accanto a una
+        // del disco che invece si risolve come sempre.
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let nuvola = "nuvola://onedrive-abcdefgh/Musica";
+        let locale = cartella.path().display().to_string();
+        let risolte = risolvi_tutti(&[nuvola.to_owned(), locale.clone()], SCADENZA_RISOLUZIONE);
+        assert_eq!(risolte.first().cloned().flatten().as_deref(), Some(nuvola));
+        assert!(risolte.get(1).cloned().flatten().is_some(), "il disco sì");
+        assert_eq!(
+            risolvi(nuvola, SCADENZA_RISOLUZIONE).as_deref(),
+            Some(nuvola)
+        );
+        // «Non si sa» e non «non c'è»: non si propone di rimapparla.
+        assert_eq!(esistenza(nuvola), Esistenza::Ignota);
+        assert_eq!(
+            esistenze(vec![nuvola.to_owned()], SCADENZA_RISOLUZIONE),
+            [Esistenza::Ignota]
+        );
+        // E non è un disco di questo computer: niente Cestino.
+        assert_eq!(dalla_forma(Path::new(nuvola)), Some(Collocazione::DiRete));
+        assert_eq!(
+            collocazioni(&[format!("{nuvola}/a.flac")], SCADENZA_RISOLUZIONE),
+            [Collocazione::DiRete]
+        );
+        assert!(!collocazione(nuvola, SCADENZA_RISOLUZIONE).ha_un_cestino());
     }
 }

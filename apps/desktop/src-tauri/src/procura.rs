@@ -640,6 +640,16 @@ fn passata(app: &AppHandle) {
         return;
     };
     let temporanea = cartella_temporanea(app);
+    // I `.parziale` lasciati da un prelievo interrotto a metà (il processo
+    // chiuso a forza, il computer spento): nessuno li sceglierà più, e senza
+    // questa riga restano nella cartella dati per sempre. Qui e non altrove
+    // perché è l'unico momento in cui nessun prelievo è in corso: la passata è
+    // una sola (`Posto`), e i suoi prelievi cominciano più sotto. Vedi
+    // `rymembra_catalogo::spazza_parziali`.
+    let spazzati = rymembra_catalogo::spazza_parziali(&temporanea);
+    if spazzati > 0 {
+        nota!("[procura] tolti {spazzati} file a metà lasciati da prelievi interrotti");
+    }
     let alternative = con_libreria(&stato, |libreria| {
         Ok(alternative_ammesse(&libreria.connection))
     })
@@ -1159,7 +1169,12 @@ fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
         let cartelle: Vec<String> =
             settings::read_json(&libreria.connection, settings::CHIAVE_CARTELLE)?
                 .unwrap_or_default();
-        Ok(cartelle.into_iter().next().map(PathBuf::from))
+        // La prima cartella **del disco**: un brano scaricato non può finire
+        // su OneDrive, dove Rymembra legge e non scrive.
+        Ok(cartelle
+            .into_iter()
+            .find(|cartella| !rymembra_domain::nuvola::e_nuvola(cartella))
+            .map(PathBuf::from))
     })
     .ok()
     .flatten()
@@ -1302,7 +1317,7 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
     // basta lei.
     let fermati = || stato.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = rymembra_app::library::Scan {
-        files: Arc::new(rymembra_app::files::LocalFiles),
+        files: crate::nuvola_musica::archivi(app),
         covers: copertine,
         roots: &roots,
         // La guardia per radice vale per le cartelle sorvegliate, non per la

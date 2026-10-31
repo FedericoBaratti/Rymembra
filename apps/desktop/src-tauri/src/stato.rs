@@ -259,10 +259,13 @@ impl Stato {
     /// Qualcuno tiene il turno delle scansioni, adesso.
     ///
     /// Solo una lettura, per chi deve **non** cominciare qualcosa durante una
-    /// scansione senza però prenderne il turno: il sondaggio delle cartelle di
-    /// rete di `crate::sorveglia`, che non scrive niente e che, prendendo il
-    /// turno anche per un istante, farebbe rispondere «occupato» a una
-    /// «Scansiona» premuta in quell'istante.
+    /// scansione — o farsi da parte fra un lotto e l'altro — senza però
+    /// prenderne il turno: l'analisi (`crate::analisi`) e l'arricchimento
+    /// (`crate::arricchimento`), che prendendo il turno anche per un istante
+    /// farebbero rispondere «occupato» a una «Scansiona» premuta in
+    /// quell'istante. `crate::procura` la legge solo per dire nel diario che la
+    /// sua scansione aspetta il turno. La sorveglianza (`crate::sorveglia`)
+    /// non la legge: il turno lo prende, prima di decidere che cosa guardare.
     pub fn scansione_in_corso(&self) -> bool {
         self.scansione_in_corso.load(Ordering::Acquire)
     }
@@ -508,8 +511,11 @@ pub fn aspetta_la_raffica<T>(
 
 /// La salute di un filo di sottofondo, come la si legge da fuori.
 ///
-/// Quel che serve a rispondere a «il backup gira?» senza aprire il diario:
-/// quanti giri ha fatto, quante volte è caduto, quando e perché l'ultima.
+/// Quel che serve a rispondere a «il backup gira?»: quanti giri ha fatto,
+/// quante volte è caduto, quando e perché l'ultima. Oggi nessuna schermata la
+/// mostra: la legge chi chiama il comando [`fili_salute`] — uno strumento di
+/// diagnosi, come lo descrive la documentazione del sito — e per chi usa
+/// l'applicazione la traccia di un filo che cade resta il diario.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaluteFilo {
@@ -548,7 +554,12 @@ pub fn salute_dei_fili() -> Vec<SaluteFilo> {
     salute().values().cloned().collect()
 }
 
-/// La salute dei fili di sottofondo, per la finestra.
+/// La salute dei fili di sottofondo, per chi la chiede.
+///
+/// Registrato come comando ma senza un chiamante nella finestra, e non è una
+/// svista da togliere: è lo strumento di diagnosi che la documentazione del
+/// sito cita. Nessuna schermata lo mostra, quindi un filo che cade in panico a
+/// ogni giro si vede nel diario e qui, non nella finestra.
 ///
 /// Istantaneo: legge un registro in memoria, non tocca né disco né rete.
 #[tauri::command]

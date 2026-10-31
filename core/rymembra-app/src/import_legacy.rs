@@ -345,8 +345,13 @@ fn run(
     {
         let mut statement = tx
             .prepare_cached(
+                // `rating_at` con il voto, con lo stesso orologio con cui
+                // `merge_stats` l'ha scelto: vedi `backup::applica_brani`.
                 "UPDATE tracks SET play_count = ?2, last_played_at = ?3, rating = ?4,
-                                   liked = ?5, liked_at = ?6, stats_updated_at = ?7
+                                   liked = ?5, liked_at = ?6, stats_updated_at = ?7,
+                                   rating_at = CASE WHEN rating <> ?4
+                                                      OR (rating_at IS NULL AND ?4 > 0)
+                                                    THEN ?7 ELSE rating_at END
                  WHERE id = ?1",
             )
             .map_err(|err| db_error("scrittura delle statistiche", &err))?;
@@ -836,6 +841,26 @@ mod tests {
             .expect("riga");
         assert_eq!(ascolti, 20, "il conteggio più alto sopravvive");
         assert_eq!(voto, 5);
+    }
+
+    #[test]
+    fn un_voto_importato_porta_la_sua_data() {
+        // Come nel ripristino da backup: senza `rating_at` la sincronia non
+        // pubblica il voto, e qualunque voto remoto lo sovrascrive.
+        let legacy = vecchio();
+        aggiungi_vecchio(&legacy, 1, "x", "T", "A", "Al", 5);
+        legacy
+            .execute("UPDATE tracks SET rating = 4, stats_updated_at = 7000", [])
+            .expect("voto vecchio");
+        let mut db = nuovo(&[("p", "T", "A", "Al")]);
+
+        import(&legacy, &mut db).expect("importazione");
+        let (voto, quando): (i64, Option<i64>) = db
+            .query_row("SELECT rating, rating_at FROM tracks", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("riga");
+        assert_eq!((voto, quando), (4, Some(7000)));
     }
 
     #[test]

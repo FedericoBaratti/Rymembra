@@ -81,7 +81,7 @@ const SOGLIA_DB: f32 = 0.05;
 
 /// Quanti canali teniamo in memoria.
 ///
-/// Otto, che è lo stesso caso peggiore con cui `motore.rs` dimensiona l'anello.
+/// Otto, che è lo stesso caso peggiore con cui `motore/maniglia.rs` dimensiona l'anello.
 /// Non è un limite del dispositivo: è la misura di un array che deve stare
 /// dentro una chiusura senza allocare.
 const CANALI_MAX: usize = 8;

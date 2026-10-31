@@ -95,6 +95,36 @@ const QUANTI: u32 = 3;
 /// La cartella del diario, dentro quella dei dati.
 const CARTELLA: &str = "diario";
 
+/// Il file di riserva: dove va una riga dell'avvio quando il diario non c'è.
+///
+/// # Perché un secondo file
+///
+/// Il diario si apre dentro il `setup`, e in Tauri 2 il `setup` gira dopo che
+/// le finestre di `tauri.conf.json` sono state create. Un guasto prima — la
+/// WebView2 assente o rotta, la cartella dei dati che non si risolve — diventa
+/// un panico a diario chiuso: il gancio non aveva dove scrivere, `stderr` in
+/// rilascio non esiste, e il processo spariva senza una riga. È proprio il
+/// caso per cui il diario esiste («quando Rymembra non parte»).
+///
+/// Il file sta in `%LOCALAPPDATA%\<identificatore>\`, accanto alla cartella
+/// della WebView2, e **non** nella cartella dei dati: quella non si deve
+/// creare prima del trasloco dalla versione di prima, che vale solo se la
+/// cartella nuova non c'è ancora. Ci arrivano soltanto le righe del gancio dei
+/// panici a diario chiuso e quella di un avvio fallito ([`nota_di_emergenza`]),
+/// mai le righe normali: una sessione che il diario non l'ha potuto aprire
+/// lo farebbe crescere senza rotazione.
+const RISERVA: &str = "avvio.log";
+
+/// Oltre questa misura il file di riserva ricomincia da capo: deve tenere
+/// l'ultimo avvio fallito, non la storia di tutti.
+const TETTO_RISERVA: u64 = 256 * 1024;
+
+/// L'identificatore dell'applicazione, quello di `tauri.conf.json`: il nome
+/// della cartella in `%LOCALAPPDATA%`. Scritto qui perché il file di riserva
+/// serve proprio quando l'applicazione non è nata; la prova
+/// `l_identificatore_della_riserva_e_quello_di_tauri_conf` lo tiene allineato.
+const IDENTIFICATORE: &str = "io.github.federicobaratti.rymembra";
+
 /// Il diario aperto: dove sta, su cosa si scrive, e quanto è lungo.
 ///
 /// `scritti` si tiene qui invece di chiedere la lunghezza al sistema a ogni
@@ -215,7 +245,7 @@ pub fn nota(argomenti: std::fmt::Arguments<'_>) {
 /// che chi chiama ha già preso. `true` se il file ha passato il tetto e va
 /// ruotato — cosa che tocca a chi chiama, **dopo** aver lasciato la guardia.
 ///
-/// Una funzione a parte perché le strade per arrivarci sono due: [`nota`], che
+/// Una funzione a parte perché le strade per arrivarci sono due: [`nota()`], che
 /// il lucchetto lo aspetta, e [`nota_dal_gancio`], che non può.
 fn scrivi_la_riga(guardia: &mut Option<Aperto>, argomenti: std::fmt::Arguments<'_>) -> bool {
     let Some(aperto) = guardia.as_mut() else {
@@ -304,8 +334,20 @@ fn senza_utente<'a>(riga: &'a str, cartelle: &[(String, &str)]) -> Cow<'a, str> 
 /// Il file corrente si chiude **prima** di rinominarlo: su Windows un file
 /// aperto non si rinomina, e una rotazione che fallisce a metà lascerebbe un
 /// diario che non cresce più.
+///
+/// # Il tetto si ricontrolla col lucchetto in mano
+///
+/// [`nota()`] scrive, lascia il lucchetto, e solo dopo chiama questa: in mezzo
+/// un altro filo può scrivere la sua riga, trovare anche lui il contatore
+/// oltre il tetto, e chiamarla a sua volta. Senza ricontrollare, la seconda
+/// chiamata trovava il diario appena riaperto e ruotava di nuovo: il file
+/// pieno passava da `.1` a `.2` al posto di quello di prima, e in `.1` restava
+/// un file di poche righe — due megabyte di storia persi.
 fn ruota() {
     let mut guardia = preso();
+    if guardia.as_ref().is_none_or(|aperto| aperto.scritti < TETTO) {
+        return;
+    }
     let Some(aperto) = guardia.take() else {
         return;
     };
@@ -313,7 +355,11 @@ fn ruota() {
     drop(aperto.file);
 
     // Dal più vecchio al più giovane: al contrario, ogni rinomina
-    // sovrascriverebbe il file che sta per essere spostato a sua volta.
+    // sovrascriverebbe il file che sta per essere spostato a sua volta. Quel
+    // che è invecchiato oltre l'ultimo file se ne va qui, senza un passo a
+    // parte: `fs::rename` su Windows sostituisce la destinazione, e il
+    // `.2` di prima è proprio la destinazione dell'ultima rinomina. Un `.3`
+    // non nasce mai.
     for indice in (1..QUANTI).rev() {
         let da = if indice == 1 {
             cartella.join(NOME)
@@ -322,10 +368,6 @@ fn ruota() {
         };
         let _ = fs::rename(da, cartella.join(format!("rymembra.{indice}.log")));
     }
-    // Quel che è invecchiato oltre l'ultimo file se ne va. `remove_file` su
-    // qualcosa che non c'è non è un guasto: alla prima rotazione della vita di
-    // un'installazione quel file non esiste ancora.
-    let _ = fs::remove_file(cartella.join(format!("rymembra.{QUANTI}.log")));
 
     *guardia = apri_il_file(cartella);
 }
@@ -388,9 +430,16 @@ macro_rules! nota {
 /// gancio, e se non scrive lui non scrive nessuno.
 ///
 /// Va installato per primo in `main`, prima ancora di costruire la finestra.
-/// Finché il diario non è aperto le righe finiscono su `stderr` e basta — cioè
-/// da nessuna parte, in rilascio — ma dal momento in cui `setup` chiama
-/// [`apri`] in poi, cioè per tutta la vita utile del processo, restano.
+/// Finché il diario non è aperto le righe finiscono nel file di riserva
+/// ([`RISERVA`]) — è il caso della WebView2 che non si crea, prima del
+/// `setup` — e dal momento in cui `setup` chiama [`apri`] in poi, cioè per
+/// tutta la vita utile del processo, nel diario.
+///
+/// Il panico di un avvio fallito ([`e_l_avvio_fallito`]) mostra anche un
+/// dialogo ([`mostra_l_avvio_fallito`]): la finestra non è comparsa e non
+/// comparirà, e senza il processo spariva senza dire niente a chi l'aveva
+/// aperto. Il dialogo viene **dopo** la riga su disco, che resta anche se lui
+/// non si mostrasse.
 pub fn installa_gancio_dei_panici() {
     // Il gancio di serie non si perde: continua a stampare quel che stampava,
     // che in sviluppo è la cosa che si sta guardando.
@@ -407,9 +456,92 @@ pub fn installa_gancio_dei_panici() {
             .name()
             .unwrap_or("senza nome")
             .to_owned();
-        nota_dal_gancio(format_args!("[PANICO] filo={filo} a {dove}: {info}"));
+        let scritta = nota_dal_gancio(format_args!("[PANICO] filo={filo} a {dove}: {info}"));
         precedente(info);
+        // Il testo del panico: una `String` per un `panic!` con argomenti,
+        // come quello di Tauri, uno `&str` per un testo fisso. Non
+        // `payload_as_str`, che chiede Rust 1.91 (il crate dice 1.90).
+        let carico = info.payload();
+        let messaggio = carico
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| carico.downcast_ref::<&str>().copied());
+        if e_l_avvio_fallito(messaggio, &filo) {
+            mostra_l_avvio_fallito(&testo_dell_avvio_fallito(
+                messaggio.unwrap_or_default(),
+                scritta.as_deref(),
+            ));
+        }
     }));
+}
+
+/// È il panico di un avvio fallito?
+///
+/// In Tauri 2 il `setup` gira dentro `App::run`, all'evento `Ready`, dopo aver
+/// creato le finestre di `tauri.conf.json`; se fallisce — la WebView2 assente o
+/// rotta, la cartella dei dati che non si risolve, un `?` nel nostro `setup` —
+/// Tauri lo trasforma in `panic!("Failed to setup app: …")`, sul filo
+/// principale. Solo lui merita il dialogo: un panico in un filo di sottofondo
+/// lo racconta il diario, e l'applicazione va avanti.
+fn e_l_avvio_fallito(messaggio: Option<&str>, filo: &str) -> bool {
+    filo == "main" && messaggio.is_some_and(|testo| testo.starts_with("Failed to setup app"))
+}
+
+/// Il testo del dialogo di un avvio fallito: che cosa è successo, il rimedio
+/// più probabile, dove sta la riga per chi deve capire, e il motivo.
+///
+/// Bilingue, italiano poi inglese separati da una riga vuota, come il dialogo
+/// del trasloco (`rymembra_app::trasloco::messaggio_di_rifiuto`): la finestra e
+/// le sue traduzioni non ci sono. Il motivo — il testo dell'errore di Tauri, in
+/// inglese — sta una volta sola, in fondo, ridotto a una riga
+/// ([`una_riga_sola`]). Il posto della riga passa da [`senza_utente`]:
+/// `%LOCALAPPDATA%\…` si incolla così com'è nella barra di Esplora risorse.
+#[must_use]
+pub fn testo_dell_avvio_fallito(motivo: &str, scritta: Option<&Path>) -> String {
+    let dove = scritta.map(|percorso| {
+        senza_utente(&percorso.display().to_string(), cartelle_dell_utente()).into_owned()
+    });
+    let (dove_it, dove_en) = dove.map_or_else(
+        || (String::new(), String::new()),
+        |dove| {
+            (
+                format!(" Il motivo è scritto anche in {dove}."),
+                format!(" The reason is also written in {dove}."),
+            )
+        },
+    );
+    format!(
+        "Rymembra non è riuscito ad avviarsi. Spesso la causa è Microsoft Edge WebView2 Runtime, \
+         mancante o danneggiato: reinstallalo (o reinstalla Rymembra) e riprova.{dove_it}\n\n\
+         Rymembra could not start. Often the cause is a missing or damaged Microsoft Edge \
+         WebView2 Runtime: reinstall it (or reinstall Rymembra) and try again.{dove_en}\n\n{}",
+        una_riga_sola(motivo)
+    )
+}
+
+/// Il dialogo di un avvio fallito, nativo e bloccante: torna quando lo si
+/// chiude.
+///
+/// `rfd` e non `tauri-plugin-dialog`, perché quello passa dal ciclo degli
+/// eventi, che qui non è mai nato (un `build` fallito) o sta cadendo (il
+/// panico del `setup`). Una volta sola per processo.
+pub fn mostra_l_avvio_fallito(testo: &str) {
+    static MOSTRATO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if MOSTRATO.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    // Nelle prove mai: un dialogo bloccante fermerebbe la prova per sempre.
+    #[cfg(not(test))]
+    {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Rymembra")
+            .set_description(testo)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    #[cfg(test)]
+    let _ = testo;
 }
 
 /// Quante volte il gancio dei panici chiede il lucchetto del diario prima di
@@ -423,10 +555,10 @@ const PAUSA_DAL_GANCIO: std::time::Duration = std::time::Duration::from_millis(1
 /// Scrive una riga dal gancio dei panici, senza mai aspettare il lucchetto del
 /// diario più di un attimo.
 ///
-/// # Perché non [`nota`]
+/// # Perché non [`nota()`]
 ///
 /// Perché il panico può arrivare **mentre questo stesso filo tiene il
-/// lucchetto**: dentro [`nota`], con la guardia presa — un formattatore di terzi
+/// lucchetto**: dentro [`nota()`], con la guardia presa — un formattatore di terzi
 /// fra gli argomenti, una scrittura che cade. Il gancio gira prima dello
 /// svolgimento, quando la guardia non è ancora stata lasciata, e un `Mutex` di
 /// `std` non è rientrante: `nota` lì dentro aspettava se stesso, per sempre. E
@@ -443,7 +575,12 @@ const PAUSA_DAL_GANCIO: std::time::Duration = std::time::Duration::from_millis(1
 ///
 /// Nessuna rotazione da qui, nemmeno a diario pieno: [`ruota`] riprende il
 /// lucchetto aspettandolo. La fa la prossima riga normale.
-fn nota_dal_gancio(argomenti: std::fmt::Arguments<'_>) {
+///
+/// Restituisce dove è andata la riga — la cartella del diario o il file di
+/// riserva — per il dialogo di un avvio fallito, che lo dice: lo si legge qui,
+/// con la guardia già in mano, perché il gancio non deve chiedere il lucchetto
+/// una seconda volta. `None` se la riga non è andata su disco.
+fn nota_dal_gancio(argomenti: std::fmt::Arguments<'_>) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     eprintln!("{argomenti}");
 
@@ -456,8 +593,14 @@ fn nota_dal_gancio(argomenti: std::fmt::Arguments<'_>) {
                 continue;
             }
         };
+        // A diario chiuso — il panico dell'avvio, prima che il `setup` lo
+        // apra — la riga va nel file di riserva: vedi [`RISERVA`].
+        if guardia.is_none() {
+            drop(guardia);
+            return scrivi_di_riserva(argomenti);
+        }
         let _ = scrivi_la_riga(&mut guardia, argomenti);
-        return;
+        return guardia.as_ref().map(|aperto| aperto.cartella.clone());
     }
     // In sviluppo la riga è già su `stderr`, qui sopra. `writeln!` e non
     // `eprintln!`: questo è un gancio dei panici, e un `eprintln!` che non
@@ -467,6 +610,78 @@ fn nota_dal_gancio(argomenti: std::fmt::Arguments<'_>) {
     {
         let _ = writeln!(std::io::stderr(), "{argomenti}");
     }
+    None
+}
+
+/// Una riga che deve restare anche se il diario non si è aperto: quella di un
+/// avvio fallito.
+///
+/// A diario aperto va nel diario come ogni altra riga; a diario chiuso nel
+/// file di riserva ([`RISERVA`]). Non è la strada delle righe normali: vedi
+/// là perché. Restituisce dove è andata, come [`nota_dal_gancio`], per il
+/// dialogo che la nomina.
+pub fn nota_di_emergenza(argomenti: std::fmt::Arguments<'_>) -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    eprintln!("{argomenti}");
+
+    let mut guardia = preso();
+    if guardia.is_none() {
+        drop(guardia);
+        return scrivi_di_riserva(argomenti);
+    }
+    let pieno = scrivi_la_riga(&mut guardia, argomenti);
+    let cartella = guardia.as_ref().map(|aperto| aperto.cartella.clone());
+    drop(guardia);
+    if pieno {
+        ruota();
+    }
+    cartella
+}
+
+/// Scrive una riga nel file di riserva, con l'istante davanti e senza il nome
+/// dell'utente, come nel diario. Ogni errore si ignora, come nel diario.
+/// Restituisce il file, se la riga c'è entrata.
+fn scrivi_di_riserva(argomenti: std::fmt::Arguments<'_>) -> Option<PathBuf> {
+    let cartella = cartella_di_riserva()?;
+    fs::create_dir_all(&cartella).ok()?;
+    let percorso = cartella.join(RISERVA);
+    let pieno = fs::metadata(&percorso).is_ok_and(|m| m.len() >= TETTO_RISERVA);
+    let mut opzioni = OpenOptions::new();
+    if pieno {
+        opzioni.create(true).write(true).truncate(true);
+    } else {
+        opzioni.create(true).append(true);
+    }
+    let mut file = opzioni.open(&percorso).ok()?;
+    let riga = format!("{} {argomenti}\n", istante_iso(adesso_ms()));
+    let riga = senza_utente(&riga, cartelle_dell_utente());
+    file.write_all(riga.as_bytes()).ok()?;
+    let _ = file.flush();
+    Some(percorso)
+}
+
+/// Dove sta il file di riserva: `%LOCALAPPDATA%\<identificatore>`, o la
+/// cartella temporanea se quella variabile manca.
+#[cfg(not(test))]
+fn cartella_di_riserva() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|cartella| cartella.is_absolute())
+        .unwrap_or_else(std::env::temp_dir);
+    Some(base.join(IDENTIFICATORE))
+}
+
+/// Nelle prove la cartella la dà la prova, e di serie non c'è: nessuna prova
+/// deve scrivere nel `%LOCALAPPDATA%` vero.
+#[cfg(test)]
+static RISERVA_DI_PROVA: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[cfg(test)]
+fn cartella_di_riserva() -> Option<PathBuf> {
+    RISERVA_DI_PROVA
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 /// Apre la cartella del diario nel gestore file del sistema.
@@ -641,6 +856,120 @@ mod prove {
     }
 
     #[test]
+    fn un_avvio_fallito_lascia_una_riga_anche_senza_diario() {
+        // Il caso vero: la WebView2 non si crea, il `setup` non arriva ad aprire
+        // il diario, e il processo se ne va. La riga del ramo d'errore e quella
+        // del gancio dei panici devono restare su disco.
+        let _turno = IL_TURNO.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok(riserva) = tempfile::tempdir() else {
+            return;
+        };
+        *RISERVA_DI_PROVA
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(riserva.path().to_path_buf());
+        *preso() = None;
+        nota_di_emergenza(format_args!(
+            "[avvio] Rymembra non è riuscito ad avviarsi: x"
+        ));
+        nota_dal_gancio(format_args!(
+            "[PANICO] filo=main a qui: Failed to setup app: y"
+        ));
+        *RISERVA_DI_PROVA
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        let testo = fs::read_to_string(riserva.path().join(RISERVA)).unwrap_or_default();
+        assert!(
+            testo.contains("[avvio] Rymembra non è riuscito ad avviarsi: x"),
+            "la riga dell'avvio fallito non è da nessuna parte: {testo:?}"
+        );
+        assert!(
+            testo.contains("Failed to setup app: y"),
+            "la riga del panico a diario chiuso non è da nessuna parte: {testo:?}"
+        );
+        // Le righe normali, a diario chiuso, non ci vanno.
+        nota!("[prova] una riga normale");
+        let testo = fs::read_to_string(riserva.path().join(RISERVA)).unwrap_or_default();
+        assert!(!testo.contains("una riga normale"));
+    }
+
+    /// Il dialogo è solo per il panico che Tauri solleva quando il `setup`
+    /// fallisce, sul filo principale: un panico di un filo di sottofondo lo
+    /// racconta il diario, e l'applicazione va avanti.
+    #[test]
+    fn l_avvio_fallito_si_riconosce_solo_dal_suo_panico() {
+        let setup = "Failed to setup app: error encountered during setup hook: WebView2";
+        assert!(e_l_avvio_fallito(Some(setup), "main"));
+        assert!(!e_l_avvio_fallito(Some(setup), "rymembra-analisi"));
+        assert!(!e_l_avvio_fallito(Some("index out of bounds"), "main"));
+        assert!(!e_l_avvio_fallito(None, "main"));
+    }
+
+    /// Il testo del dialogo: in italiano e poi in inglese, ognuno col rimedio e
+    /// col posto della riga, e il motivo una volta, in fondo e su una riga.
+    #[test]
+    fn il_dialogo_dell_avvio_fallito_dice_rimedio_e_posto_in_due_lingue() {
+        let riserva = Path::new(r"C:\Prova\io.github.federicobaratti.rymembra\avvio.log");
+        let testo = testo_dell_avvio_fallito(
+            "Failed to setup app: WebView2 non trovata\n   at qualcosa di lungo",
+            Some(riserva),
+        );
+        let parti: Vec<&str> = testo.split("\n\n").collect();
+        assert_eq!(parti.len(), 3, "italiano, inglese, motivo: {testo}");
+        assert!(parti[0].starts_with("Rymembra non è riuscito ad avviarsi"));
+        assert!(parti[1].starts_with("Rymembra could not start"));
+        for parte in &parti[..2] {
+            assert!(parte.contains("WebView2"), "{parte}");
+            assert!(parte.contains(&riserva.display().to_string()), "{parte}");
+        }
+        assert_eq!(parti[2], "Failed to setup app: WebView2 non trovata");
+        // Senza riga su disco non si promette un posto che non c'è.
+        let senza = testo_dell_avvio_fallito("Failed to setup app: x", None);
+        assert!(!senza.contains("scritto anche in"), "{senza}");
+        assert!(!senza.contains("also written in"), "{senza}");
+    }
+
+    /// Il gancio dei panici e il ramo d'errore di `build` mostrano il dialogo,
+    /// **dopo** aver scritto la riga.
+    #[test]
+    fn il_gancio_e_il_ramo_d_errore_mostrano_il_dialogo() {
+        let diario = include_str!("diario.rs");
+        let gancio = diario
+            .split("pub fn installa_gancio_dei_panici() {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let riga = gancio.find("nota_dal_gancio(");
+        let dialogo = gancio.find("mostra_l_avvio_fallito(");
+        assert!(
+            riga.is_some() && dialogo > riga,
+            "il gancio non mostra il dialogo"
+        );
+        assert!(gancio.contains("e_l_avvio_fallito("));
+
+        let main = include_str!("main.rs");
+        let ramo = main
+            .split("Err(err) => {")
+            .nth(1)
+            .and_then(|resto| resto.split("std::process::exit(1);").next())
+            .unwrap_or_default();
+        let riga = ramo.find("diario::nota_di_emergenza(");
+        let dialogo = ramo.find("diario::mostra_l_avvio_fallito(");
+        assert!(
+            riga.is_some() && dialogo > riga,
+            "il ramo d'errore non mostra il dialogo"
+        );
+    }
+
+    #[test]
+    fn l_identificatore_della_riserva_e_quello_di_tauri_conf() {
+        let configurazione = include_str!("../tauri.conf.json");
+        assert!(
+            configurazione.contains(&format!("\"identifier\": \"{IDENTIFICATORE}\"")),
+            "l'identificatore di `tauri.conf.json` non è più «{IDENTIFICATORE}»"
+        );
+    }
+
+    #[test]
     fn il_diario_chiuso_non_fa_cadere_niente() {
         // Il caso vero: `apri` è fallita — cartella non scrivibile — e i sette
         // fili di sottofondo continuano a scrivere per tutta la sessione.
@@ -674,6 +1003,25 @@ mod prove {
             assert!(
                 cartella().is_some(),
                 "dopo la rotazione il diario è rimasto chiuso"
+            );
+        });
+    }
+
+    #[test]
+    fn due_rotazioni_di_fila_ne_fanno_una() {
+        // Il caso vero: due fili passano il tetto insieme, e tutti e due
+        // chiamano `ruota`. La seconda trovava il diario appena riaperto e
+        // ruotava di nuovo: il file pieno finiva in `.2` al posto di quello
+        // di prima, e in `.1` restava un file quasi vuoto.
+        in_una_cartella(|radice| {
+            let dove = radice.join(CARTELLA);
+            riempi_fino_al_tetto();
+            nota!("[prova] la riga che fa traboccare");
+            ruota();
+            let primo = fs::read_to_string(dove.join("rymembra.1.log")).unwrap_or_default();
+            assert!(
+                primo.contains("traboccare"),
+                "il file pieno non è più il primo: la seconda rotazione l'ha spinto oltre"
             );
         });
     }

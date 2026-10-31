@@ -1,0 +1,28 @@
+-- L'indice che manca a `brano_vicino` dal lato del vicino.
+--
+-- # Perché
+--
+-- `brano_vicino` (017) ha due chiavi esterne verso `tracks`, tutte e due
+-- `ON DELETE CASCADE`: `track_id` e `vicino_id`. Le chiavi esterne sono accese su
+-- ogni connessione, quindi ogni brano tolto — una scansione che trova un file
+-- sparito, «Togli dalla libreria», una cartella tolta dalle sorvegliate — cerca
+-- in `brano_vicino` anche le righe che lo nominano come **vicino**. Dal lato di
+-- `track_id` c'è la chiave primaria; dal lato di `vicino_id` non c'era niente, e
+-- SQLite leggeva la tabella intera per ogni brano tolto: mille brani tolti, mille
+-- letture intere, con il lucchetto della libreria in mano. È la stessa ragione
+-- di `idx_play_history_track` e di `idx_settimana_brano_track` (018).
+--
+-- Il commento della 017 («È l'unica direzione in cui si legge») resta vero per le
+-- letture dell'app: questa è la lettura che fa SQLite per la cascata.
+--
+-- # Tornare indietro
+--
+-- Un indice e basta: nessun dato cambia. Una versione che si ferma a una
+-- migrazione di prima — la 3.1.0 alla 035, una build che si ferma alla 037 —
+-- rifiuta un database alla 038 con `db.versionAhead`; la strada è rimettere al
+-- posto di `rymembra.db` la copia che l'apertura fa da sé prima di migrare
+-- (`rymembra.db.schema-037.bak`, o la `-035` di prima della 3.2). A mano, per
+-- tornare alla 037:
+--   `DROP INDEX idx_brano_vicino_vicino; PRAGMA user_version = 37;`
+
+CREATE INDEX idx_brano_vicino_vicino ON brano_vicino(vicino_id);

@@ -11,6 +11,7 @@
 
 use rymembra_app::playback::{Collocazione, SchedaSorgente};
 use rymembra_catalogo::Cataloghi;
+use rymembra_cloud::musica::ArchivioNuvola;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::esterno::Fonte;
 use rymembra_domain::indirizzo::estensione_da_url;
@@ -330,7 +331,7 @@ fn nome_pubblico(ospite: &str) -> bool {
 /// Perché il tratto è di `rymembra-play` e il tipo è di `rymembra-net`, e nessuno
 /// dei due è di qui: la regola dell'orfano vieta di scrivere quell'`impl` in un
 /// terzo crate. È la stessa ragione per cui `rymembra-app` ne ha uno suo
-/// (`playback::Adattatore`) per i file, e la stessa forma.
+/// (`playback::sorgente::Adattatore`) per i file, e la stessa forma.
 ///
 /// Non è però solo una formalità del compilatore. Questo modulo è **l'unico
 /// posto dell'albero che conosce tutti e due i lati**: `rymembra-app` non vede la
@@ -492,6 +493,63 @@ pub(super) fn apri_da_pari(
             None,
         ))
     })
+}
+
+/// Apre un brano del cloud: i byte del servizio, dentro la cache, come un
+/// flusso.
+///
+/// La stessa forma di [`apri_da_pari`] e dei cataloghi — `FlussoHttp` sopra una
+/// sorgente — ma la sorgente è quella dell'[`ArchivioNuvola`], che sa
+/// rinfrescare un token scaduto e chiedere di nuovo un indirizzo firmato senza
+/// che il motore se ne accorga, e che lascia nella cache quel che arriva. Un
+/// `FlussoDiRete`, cioè `remoto()`: i salti sono «Coarse», un'andata sola in
+/// rete invece di una corsa dall'inizio.
+///
+/// Il brano d'immagine CD porta il suo pezzo (`sorgente_con`), come sul disco.
+///
+/// # Errori
+///
+/// `cloud.notConnected` se il conto non è collegato su questo PC (o il cloud
+/// non c'è), quelli del servizio, e quelli della lettura tradotti come per un
+/// flusso interrotto.
+pub(super) fn apri_da_nuvola(
+    archivio: Option<&ArchivioNuvola>,
+    scheda: &SchedaSorgente,
+    percorso: &str,
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
+    let sorgente = sorgente_dal_cloud(archivio, scheda, percorso)?;
+    rymembra_play::BranoAperto::apri(sorgente, formato).map_err(super::interruzione_di_flusso)
+}
+
+/// La sorgente intera di un brano del cloud, per chi lo decodifica tutto: la
+/// riproduzione e gli attacchi dei testi.
+///
+/// Non il lettore dei tag, che ha un tetto di byte pensato per le teste e le
+/// code: un brano decodificato per intero lo supererebbe a metà.
+///
+/// # Errori
+///
+/// `cloud.notConnected` se il conto non è collegato (o il cloud non c'è), e
+/// quelli del servizio.
+pub(crate) fn sorgente_dal_cloud(
+    archivio: Option<&ArchivioNuvola>,
+    scheda: &SchedaSorgente,
+    percorso: &str,
+) -> Result<rymembra_play::Sorgente, AppError> {
+    let archivio = archivio.ok_or_else(|| {
+        AppError::new(ErrorCode::CloudNotConnected {
+            servizio: rymembra_domain::nuvola::conto_di(percorso)
+                .and_then(rymembra_domain::nuvola::Servizio::del_conto)
+                .map_or_else(String::new, |s| s.nome().to_owned()),
+        })
+    })?;
+    let (sorgente, _) = archivio.apri_brano(percorso)?;
+    let flusso = FlussoHttp::da(sorgente)?;
+    Ok(rymembra_app::playback::sorgente_con(
+        scheda,
+        Box::new(FlussoDiRete(flusso)),
+    ))
 }
 
 /// Apre un brano di catalogo per una voce di sessione: la stessa strada di un

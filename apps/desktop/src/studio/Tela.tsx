@@ -592,7 +592,11 @@ const Mondo = memo(function Mondo({
       />
       <ControlliFinestra ingrandita={false} />
       {sopra.has("notifica") && (
-        <PilaToast scansione={{ fatti: 412, totale: 1464 }} onApriScansione={niente} />
+        <PilaToast
+          scansione={{ fatti: 412, totale: 1464 }}
+          onApriScansione={niente}
+          onAnnullaScansione={niente}
+        />
       )}
       {sopra.has("menu") && (
         <Menu
@@ -625,7 +629,8 @@ const Mondo = memo(function Mondo({
       {sopra.has("giro") && <GiroFermo />}
       {sopra.has("primo") && (
         <Primo
-          onCartelle={() => Promise.resolve()}
+          onCartelle={() => Promise.resolve(false)}
+          scritte={[]}
           onScegliCartella={() => Promise.resolve(null)}
           scansione={null}
           brani={0}
@@ -692,6 +697,7 @@ function pagina(
             onMenu={niente}
             onApriAlbum={niente}
             onMenuAlbum={niente}
+            onAggiungiCartella={niente}
           />
         ),
       };

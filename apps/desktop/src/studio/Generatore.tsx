@@ -10,26 +10,28 @@
  */
 import { useState } from "react";
 
-import { ipc, type VoceTavolozza } from "../ipc";
+import { ipc } from "../ipc";
 import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { useStudio } from "./contesto";
-import { sentieroToken } from "./sentieri";
+import { operazioniTavolozza, propostaPer, type PropostaTavolozza } from "./tavolozza";
 
 export function Generatore() {
   const { s, documento, scriviMolti, onErrore } = useStudio();
   const [tinta, setTinta] = useState("#8b7cf6");
-  const [proposta, setProposta] = useState<VoceTavolozza[] | null>(null);
-  const [daCopertina, setDaCopertina] = useState(false);
+  const [chiesta, setChiesta] = useState<PropostaTavolozza | null>(null);
   const scuraDiBase = documento?.["scheme"] !== "light";
   // Il tema che si sta guardando è quello che si genera: la variante di una
   // skin scura è chiara, e viceversa.
   const scura = s.tema === "base" ? scuraDiBase : !scuraDiBase;
+  // Solo se è del tema che si guarda: vedi `tavolozza.ts`.
+  const proposta = propostaPer(chiesta, s.tema, scura);
 
   const genera = async (da: { colore: string } | { copertina: string }) => {
+    const tema = s.tema;
     try {
-      setProposta(await ipc.studioTavolozzaDa(da, scura));
-      setDaCopertina("copertina" in da);
+      const voci = await ipc.studioTavolozzaDa(da, scura);
+      setChiesta({ voci, tema, scura, daCopertina: "copertina" in da });
     } catch (e) {
       onErrore(e);
     }
@@ -52,10 +54,10 @@ export function Generatore() {
   const applica = () => {
     if (proposta === null) return;
     scriviMolti(
-      proposta.map((v) => ({ togli: false, percorso: sentieroToken(v.token, s.tema), valore: v.valore })),
-      t("studio3.step.generated", { tema: scura ? t("studio3.bar.dark") : t("studio3.bar.light") }),
+      operazioniTavolozza(proposta),
+      t("studio3.step.generated", { tema: proposta.scura ? t("studio3.bar.dark") : t("studio3.bar.light") }),
     );
-    setProposta(null);
+    setChiesta(null);
   };
 
   return (
@@ -82,7 +84,7 @@ export function Generatore() {
       {proposta !== null && (
         <>
           <div className="proposta-generatore" role="list" aria-label={t("studio3.gen.preview")}>
-            {proposta.map((v) => (
+            {proposta.voci.map((v) => (
               <span
                 key={v.token}
                 role="listitem"
@@ -93,13 +95,13 @@ export function Generatore() {
             ))}
           </div>
           <p className="nota-variabili">
-            {daCopertina ? t("studio3.gen.noteCover") : t("studio3.gen.note")}
+            {proposta.daCopertina ? t("studio3.gen.noteCover") : t("studio3.gen.note")}
           </p>
           <div className="azioni-variabili">
             <button type="button" className="bottone minuto primario" onClick={applica}>
-              {t("studio3.gen.apply", { n: proposta.length })}
+              {t("studio3.gen.apply", { n: proposta.voci.length })}
             </button>
-            <button type="button" className="bottone minuto" onClick={() => setProposta(null)}>
+            <button type="button" className="bottone minuto" onClick={() => setChiesta(null)}>
               {t("common.cancel")}
             </button>
           </div>

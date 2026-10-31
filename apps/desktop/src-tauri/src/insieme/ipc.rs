@@ -1,9 +1,9 @@
 //! Le forme che la finestra riceve da «Ascolta insieme».
 //!
-//! Gemelle, campo per campo, dei tipi di `src/ipc.ts`: chi cambia una delle
-//! due cambia l'altra nello stesso momento. Sono tutte fotografie: la finestra
-//! non tiene uno stato suo della sessione, ridisegna quel che arriva con
-//! l'evento `insieme:stato`.
+//! Gemelle, campo per campo, dei tipi di `src/ipc/servizi.ts`: chi cambia una
+//! delle due cambia l'altra nello stesso momento. Sono tutte fotografie: la
+//! finestra non tiene uno stato suo della sessione, ridisegna quel che arriva
+//! con l'evento `insieme:stato`.
 //!
 //! # Cosa non c'è
 //!

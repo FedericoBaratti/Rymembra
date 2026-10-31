@@ -10,8 +10,9 @@
  *
  * È il motivo per cui lo sfondo sembra muoversi a tempo: non è un'animazione *a
  * tempo di musica*, è la musica di qualche secondo fa che se ne va all'indietro.
- * E la camera che oscilla lo fa con l'energia delle bande basse, cioè con la
- * grancassa — ferma la musica, si ferma anche lei.
+ * E la camera che oscilla lo fa con l'energia delle bande più basse — l'ottavo
+ * basso, da 20 a circa 47 Hz: il sub-basso, il fondo della grancassa e del
+ * basso — ferma la musica, si ferma anche lei.
  *
  * # Trenta secondi, e come ci stanno
  *
@@ -181,6 +182,13 @@
  * di far girare la ventola durante una pausa. **Nascosto** è la finestra
  * minimizzata o in secondo piano. **Perso** è il contesto che se ne va.
  *
+ * Le decisioni stanno in `riposoSpettro.ts`, puro e provato: questa tela esegue
+ * i passi che le restituisce. Lì anche le due cose che mancavano: la finestra
+ * nascosta tenuta a parte dallo stato — un contesto perso a finestra giù la
+ * cancellava, e al ritorno la presa restava chiusa con la musica che suonava —
+ * e il contesto che non torna, che dopo `ATTESA_RITORNO_MS` chiude la presa e
+ * lo dice nel recinto della scena invece di lasciare un vuoto muto.
+ *
  * Il riarmo del `requestAnimationFrame` sta **dopo** tutte le uscite anticipate,
  * e non prima come stava: prima il ciclo non si fermava mai — l'uscita per il
  * silenzio c'era, ma il fotogramma successivo era già chiesto, quindi costava
@@ -246,8 +254,20 @@
  * texture, il seguipulsazioni, la lettura dei token — è la stessa strada, riga
  * per riga.
  *
- * Serve allo Studio, dove si dipinge una skin e non c'è nessun audio da
- * guardare. E la ragione per cui la sorgente si scambia invece di scrivere una
+ * È pensata per lo Studio, dove si dipinge una skin e non c'è nessun audio da
+ * guardare — ma **oggi nessuno la monta**. L'unico che monta questa tela è
+ * `InRiproduzione`, senza `sorgente`, cioè con il motore; e sulla tela dello
+ * Studio, che pure disegna `InRiproduzione`, il mondo finto risponde
+ * `spettroVisibile: false` (`studio/mondo.ts`), quindi la scena lì non compare
+ * e i token `canvas.viz.*` si ritoccano senza vederne l'effetto. Il ramo
+ * sintetico qui sotto — `filaFinta`, il battito, l'`IntersectionObserver`,
+ * `FERMO_MS` — è pronto e non esercitato: per accenderlo, il mondo dello
+ * Studio deve rispondere `spettroVisibile` vero sulla pagina dello schermo e
+ * `InRiproduzione` deve passare `sorgente="finto"` solo lì, o la tela dello
+ * Studio aprirebbe la presa vera del motore. Quel che segue descrive come
+ * funziona quando lo si monta.
+ *
+ * La ragione per cui la sorgente si scambia invece di scrivere una
  * seconda tela è che una seconda tela mostrerebbe una skin che non è quella che
  * si sta dipingendo: basterebbe una uniform scritta di là in un altro ordine.
  * Essendo funzione del solo numero dell'evento, due autori su due macchine alla
@@ -260,267 +280,18 @@
  * gentilezza, è l'unica cosa fra lo Studio lasciato aperto dietro un'altra
  * finestra e una scheda video occupata per sempre.
  */
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ipc, type BandeSpettro, type QualitaSpettro } from "../ipc";
+import { t } from "../lingue";
 import { useAscolto } from "../pagine";
+import { passoTempo, posaCamera } from "./cameraSpettro";
 import { OrologioSpettro } from "./orologioSpettro";
-
-/** Ogni quanto arriva una fila, in millisecondi. È `PASSO_SPETTRO` del nucleo. */
-const PASSO_MS = 33;
-
-/** Quanto passato tiene la scena. */
-const MEMORIA_MS = 30_000;
-
-/** Lo stesso, in eventi: è l'unità in cui la cascata conta. */
-const MEMORIA_EVENTI = Math.round(MEMORIA_MS / PASSO_MS);
-
-/**
- * Il tetto di scatole per fotogramma.
- *
- * Trentaduemila, che a quattro facce e sedici vertici l'una fanno mezzo milione
- * di vertici — tre volte quel che disegnava la scena da un secondo di memoria, su
- * uno shader che fa un `texelFetch` e qualche moltiplicazione. È il numero che
- * decide quante file per piano ci stanno, **non** quanti secondi si vedono: i
- * secondi sono trenta comunque, ed è la cascata a pagarne il conto.
- */
-const SCATOLE = 32_768;
-
-/** Quanti piani al massimo. È la misura di `cursori[]` nello shader. */
-const PIANI_MAX = 8;
-
-/** Per quanti piani si disegna il riflesso. */
-const PIANI_RIFLESSI = 3;
-
-/**
- * Quel che un livello di qualità decide, e quel che non decide.
- *
- * # La linea, e perché è esattamente qui
- *
- * Una skin dice **come la scena appare**; la qualità dice **quanto questa
- * macchina è disposta a spenderci**. Le manopole qui sotto sono, una per una,
- * quelle che il registro dei token si è rifiutato di esporre: la densità di
- * pixel, quanto è fine la cascata, e se il riflesso vale il suo disegno. Sono
- * costi, non gusti — il conto lo paga chi guarda, non chi ha scritto la skin — e
- * per questo nessuna di loro tocca una variabile `canvas.viz.*`. Un livello di
- * qualità che cambiasse un colore sarebbe una seconda skin nascosta in
- * Impostazioni.
- *
- * # Perché `perPiano` e non `piani`
- *
- * Perché la cascata deve continuare a coprire mezzo minuto. Togliere piani costa
- * memoria in modo brutale — la copertura è `perPiano·(2^piani−1)`, quindi
- * scendere da sette piani a quattro porta trentatré secondi a quattro — mentre
- * dimezzare le file per piano toglie **metà delle scatole** e la copertura resta
- * dov'era, perché `struttura()` si riprende il piano che avanza. A 64 barre sono
- * 56 file che diventano 32, con 33,7 secondi al posto di 33,5: il dettaglio
- * davanti passa da 264 a 132 millesimi, che è esattamente il baratto che la
- * scena fa già da sola sopra le 256 barre.
- *
- * # Perché è l'unica cosa qui che ricostruisce qualcosa
- *
- * `texStorage2D` è storage immutabile: cambiare quante file ha la cascata vuol
- * dire una texture nuova. È il motivo per cui **solo** un passaggio esplicito da
- * o verso «bassa» la rifà, e per cui il controllore automatico non ha `perPiano`
- * fra le cose che tocca — una qualità che si regola da sé ricostruendo risorse
- * grafiche mentre qualcuno guarda è peggio del problema che risolve.
- */
-interface Tetti {
-  /**
-   * Il tetto della densità di pixel.
-   *
-   * Su uno schermo a densità tripla, disegnare a densità piena vorrebbe dire
-   * nove volte i pixel di una tela logica per uno sfondo. Uno e mezzo è dove la
-   * scalettatura sparisce e la ventola non parte, ed è da dove parte
-   * l'automatica; «alta» arriva a due, perché su uno schermo denso la differenza
-   * si vede sui bordi obliqui delle scatole; «bassa» sta a uno, che è il punto
-   * in cui i pixel da riempire tornano a essere quelli della tela.
-   */
-  densita: number;
-  /** Quante file tiene al massimo il piano zero: vedi la prosa qui sopra. */
-  perPiano: number;
-  /** Il riflesso si può disegnare — se poi si disegni lo dice la skin. */
-  riflesso: boolean;
-  /** Il controllore automatico gira, e riscrive i due campi qui sopra. */
-  automatico: boolean;
-}
-
-/** La densità di «alta»: il doppio della tela logica, e non oltre. */
-const DENSITA_ALTA = 2;
-
-/** Quella da cui parte l'automatica, ed è il comportamento di sempre. */
-const DENSITA_AUTO = 1.5;
-
-/** Quella di «bassa»: un pixel disegnato per un pixel di tela. */
-const DENSITA_BASSA = 1;
-
-/**
- * La scala su cui si muove l'automatica, dal più caro al più economico.
- *
- * Quattro gradini e non un controllore continuo: la densità della tela non è una
- * quantità che si regola di un filo — ogni cambio ridimensiona il buffer di
- * disegno, e farlo per un decimo di millesimo di guadagno vorrebbe dire una
- * riallocazione sulla scheda al secondo. Tre densità e poi il riflesso, che è
- * l'ultima cosa da spegnere perché è la sola che si vede sparire.
- *
- * L'ordine non è arbitrario: la densità si taglia per prima perché è quadratica
- * nei pixel — da 1,5 a 1 sono il 56 % dei frammenti in meno e la scena resta la
- * stessa scena — mentre il riflesso è metà delle chiamate di disegno ma anche
- * l'unica riga che qualcuno noterebbe mancare.
- */
-const SCALA_AUTO: readonly { densita: number; riflesso: boolean }[] = [
-  { densita: DENSITA_AUTO, riflesso: true },
-  { densita: 1.25, riflesso: true },
-  { densita: DENSITA_BASSA, riflesso: true },
-  { densita: DENSITA_BASSA, riflesso: false },
-];
-
-/** I tre livelli, come li legge questa tela. */
-const TETTI: Record<QualitaSpettro, Tetti> = {
-  // Densità e riflesso di «auto» sono il primo gradino di `SCALA_AUTO`, e
-  // servono soltanto finché il controllore non ha misurato niente.
-  auto: { densita: DENSITA_AUTO, perPiano: 8, riflesso: true, automatico: true },
-  alta: { densita: DENSITA_ALTA, perPiano: 8, riflesso: true, automatico: false },
-  bassa: {
-    densita: DENSITA_BASSA,
-    perPiano: 4,
-    riflesso: false,
-    automatico: false,
-  },
-};
-
-/**
- * Quanto dura una finestra di misura dell'automatica, in millisecondi.
- *
- * Due secondi sono centoventi fotogrammi a sessanta hertz: abbastanza perché un
- * novantacinquesimo percentile voglia dire qualcosa, e abbastanza pochi perché
- * chi apre una finestra pesante accanto non aspetti mezzo minuto prima di vedere
- * la scena farsi da parte.
- */
-const FINESTRA_MS = 2000;
-
-/**
- * Quanti ritardi ci stanno in una finestra.
- *
- * Cinquecentododici coprono due secondi fino a 256 hertz. Oltre, la finestra si
- * chiude prima per pienezza invece che per tempo, e va bene così: su uno schermo
- * tanto veloce due secondi di campioni sono molti più del necessario, e il
- * percentile di cinquecento numeri è già fermo.
- */
-const RITARDI_MAX = 512;
-
-/**
- * Sopra questo, la scena non tiene il passo.
- *
- * Ventiquattro millesimi, cioè quarantadue fotogrammi al secondo. Il numero non
- * è scelto sul frame rate ma sul **fotogramma saltato**: il ritardo fra due
- * `requestAnimationFrame` non è il tempo che la scena ci mette, è quello che ci
- * mette lo schermo, arrotondato in su al prossimo aggiornamento. Su un pannello
- * a sessanta hertz un fotogramma saltato vale 33,3 millesimi e uno tenuto 16,7,
- * e ventiquattro sta in mezzo: sopra, il cinque per cento peggiore ne ha saltato
- * almeno uno.
- *
- * È un **percentile** e non una media, perché quel che si vede come scatto è la
- * coda: una media a 18 con un fotogramma su venti a 40 descrive una scena fluida
- * che non lo è.
- */
-const SOFFRE_MS = 24;
-
-/**
- * Sotto questo, ne avanza.
- *
- * Venti millesimi, e si misura sul **novantanovesimo** percentile e non sul
- * novantacinquesimo. La differenza fra i due numeri non è una sfumatura: è
- * l'unico posto in cui questo controllore ha un'isteresi vera.
- *
- * Il ritardo fra due `requestAnimationFrame` non è una quantità continua — è un
- * multiplo del periodo dello schermo. A sessanta hertz vale 16,7 o 33,3 e niente
- * in mezzo, quindi due soglie in millesimi non lasciano nessuna banda morta:
- * qualunque coppia di numeri fra 16,7 e 33,3 divide le finestre in due, e il
- * controllore si muove a ogni finestra. Cambiando **percentile** invece che
- * soglia la banda morta ricompare, e si misura in fotogrammi saltati: si scende
- * quando ne salta più del cinque per cento, si risale quando ne salta meno
- * dell'uno, e fra l'uno e il cinque non si fa niente.
- *
- * Non dieci millesimi, che sarebbe stato il numero ovvio: a sessanta hertz una
- * scena perfettamente fluida misura 16,7 e **non un decimo di meno**, quindi una
- * soglia di risalita a dieci sarebbe irraggiungibile su metà dei computer che
- * esistono — l'automatica scenderebbe una volta e non tornerebbe mai su, che è
- * il contrario esatto di quel che la scheda in Impostazioni promette.
- */
-const AGIO_MS = 20;
-
-/**
- * Quanto un gradino deve durare prima che se ne possa fare un altro.
- *
- * Cinque secondi. È la seconda metà dell'isteresi, e serve a un caso che la sola
- * banda morta non prende: un carico che va e viene con un periodo di pochi
- * secondi — un'altra finestra che si apre, una scansione che parte — porterebbe
- * il percentile sopra e sotto le due soglie a ogni finestra, e la scena
- * cambierebbe densità due volte al secondo sotto gli occhi di qualcuno.
- */
-const DIMORA_MS = 5000;
-
-/**
- * E quanto può arrivare a durare, raddoppiando a ogni inversione.
- *
- * Un minuto. La banda morta e i cinque secondi non prendono un caso solo: un
- * carico che sta esattamente a cavallo delle due soglie, dove ogni gradino
- * sposta il percentile dall'altra parte e il successivo lo riporta indietro. Lì
- * l'unica cosa che ferma il pendolo è farlo rallentare: dieci secondi, poi
- * venti, poi quaranta, e in un minuto il controllore si è posato. Oltre non
- * serve andare — un minuto di attesa è già «non si muove più».
- */
-const DIMORA_MAX = 60_000;
-
-/**
- * Quante finestre buone di fila servono per **risalire**.
- *
- * Due, contro una sola per scendere, e l'asimmetria è voluta: scendere è urgente
- * — c'è qualcuno che sta guardando una scena a scatti adesso — mentre risalire è
- * un lusso, e prenderselo un attimo dopo non costa niente a nessuno. Con la
- * dimora, una discesa e la risalita successiva distano almeno nove secondi.
- */
-const RISALITE = 2;
-
-/**
- * Quanto si butta via dopo una discontinuità, in millisecondi.
- *
- * Un secondo. Il primo fotogramma dopo un risveglio, dopo un ridimensionamento o
- * dopo un contesto ritrovato non dice quanto costa la scena: dice che c'era una
- * texture da caricare, un buffer da riallocare, una cache di shader da
- * riscaldare. Misurarli vorrebbe dire scendere di un gradino ogni volta che si
- * tira il bordo della finestra.
- */
-const ASSESTAMENTO_MS = 1000;
-
-/**
- * Il percentile di una finestra di ritardi, ordinandola sul posto.
- *
- * Metodo del rango più vicino: il p-esimo percentile di `n` numeri è il
- * `ceil(p·n)`-esimo più piccolo. Nessuna interpolazione, perché quel che si
- * chiede a questo numero è «quanto è lungo un fotogramma lento», e la media fra
- * due campioni vicini non è un fotogramma che sia mai esistito.
- *
- * Ordina **dentro** il vettore che riceve e non in una copia: il chiamante
- * azzera il conteggio subito dopo, quindi l'ordine d'arrivo non serve più a
- * nessuno, e una `Float32Array` nuova ogni due secondi sarebbe un'allocazione
- * ogni due secondi in un file che di allocazioni per fotogramma ne ha zero.
- */
-function percentile(
-  ritardi: Float32Array,
-  quanti: number,
-  quota: number,
-): number {
-  if (quanti <= 0) return 0;
-  // `sort` senza comparatore su una `Float32Array` ordina per valore e non per
-  // stringa: è la differenza fra questa e un `Array`, ed è il motivo per cui non
-  // serve passargli una funzione che allocherebbe una chiusura.
-  const fetta = ritardi.subarray(0, quanti).sort();
-  const posto = Math.min(quanti - 1, Math.max(0, Math.ceil(quota * quanti) - 1));
-  return fetta[posto] ?? 0;
-}
+import * as macchina from "./riposoSpettro";
+import { AGIO_MS, ASSESTAMENTO_MS, DIMORA_MAX, DIMORA_MS, FINESTRA_MS, PASSO_MS, percentile, RISALITE, RITARDI_MAX, SCALA_AUTO, SOFFRE_MS, TETTI, type Tetti } from "./spettro3d/costi";
+import { CAPIENZA, creaRisoluzione, creaStabili, distruggiRisoluzione, distruggiStabili, esce, nuovaCoda, rileggi, spingi, type Coda, type RisorseRisoluzione, type RisorseStabili } from "./spettro3d/risorse";
+import { camera, MAI, SERIE } from "./spettro3d/shader";
 
 /**
  * Il fruscio della quantizzazione, sul byte che arriva dal filo.
@@ -531,788 +302,6 @@ function percentile(
  * l'esatto contrario di quel che quel token promette.
  */
 const FRUSCIO = 4;
-
-/**
- * Com'è fatta la cascata, per quante barre ci sono in larghezza.
- *
- * Il costo è il prodotto delle due, e il numero di secondi non è negoziabile:
- * quel che si stringe quando le barre crescono è **quante file per piano**, cioè
- * quanto è fine il dettaglio davanti. A 1024 barre sono quattro file per piano —
- * 132 millesimi a dettaglio pieno — e otto piani per arrivare comunque in fondo
- * ai trenta secondi.
- *
- * `tetto` è la stessa leva, tirata dall'altra parte: è quel che «bassa» abbassa
- * a quattro per stringere la cascata su una macchina che non ce la fa, senza
- * toccare i trenta secondi. Il numero di piani non è un parametro e non lo
- * diventerà — è **calcolato** perché la copertura resti quella, e da qui si
- * vede: con `perPiano` dimezzato il logaritmo restituisce un piano in più, e la
- * copertura passa da 1016 eventi a 1020. Metà delle scatole, la stessa memoria.
- */
-function struttura(
-  barre: number,
-  tetto: number,
-): {
-  perPiano: number;
-  piani: number;
-  file: number;
-  copertura: number;
-} {
-  const perPiano = Math.max(
-    4,
-    Math.min(tetto, Math.floor(SCATOLE / (barre * PIANI_MAX))),
-  );
-  const piani = Math.max(
-    1,
-    Math.min(PIANI_MAX, Math.round(Math.log2(MEMORIA_EVENTI / perPiano + 1))),
-  );
-  return {
-    perPiano,
-    piani,
-    file: perPiano * piani,
-    copertura: perPiano * ((1 << piani) - 1),
-  };
-}
-
-/**
- * I numeri della skin che non finiscono in una uniform.
- *
- * Sono quelli che servono a **questo** codice: la camera, il filtro delle barre,
- * il fondo scala, la dissolvenza d'apertura, e i due che decidono se si disegna
- * il riflesso e se ci si muove affatto. Tutti gli altri token vanno dritti in
- * una uniform e non si rileggono più, quindi non hanno bisogno di stare qui.
- *
- * Un record a forma fissa e non un vettore indicizzato: i nomi li controlla il
- * compilatore, e un token aggiunto nel posto sbagliato non diventa
- * silenziosamente un altro.
- */
-interface Manopole {
-  /** L'apertura dell'obiettivo, in gradi. */
-  lente: number;
-  /** L'altezza dell'occhio, in unità di mondo. */
-  occhio: number;
-  /** Quanto gira la camera. */
-  oscillazione: number;
-  /** Quanto il colpo la spinge. */
-  pulsazione: number;
-  /** La costante di tempo della salita di una barra, in millisecondi. */
-  salita: number;
-  /** Quella della discesa. */
-  discesa: number;
-  /** Il fondo scala, in decibel. Non sotto −70: là non c'è informazione. */
-  fondo: number;
-  /** La forza del riflesso: sotto una soglia, il suo disegno si salta. */
-  riflesso: number;
-  /** Quanto dura la dissolvenza d'apertura, in millisecondi. */
-  dissolvenza: number;
-  /** La scala del movimento della skin: a zero, la stanza sta ferma. */
-  moto: number;
-}
-
-/**
- * I valori di serie, che sono anche il ripiego.
- *
- * Servono a due cose: a partire prima di aver letto qualunque cosa, e a
- * rispondere al gestore dell'evento nell'istante in cui il contesto è perso e le
- * risorse non ci sono. Sono gli stessi numeri del registro delle skin, e
- * ripeterli qui è il prezzo di non dover leggere il foglio di stile per sapere
- * come smorzare una barra.
- */
-const SERIE: Manopole = {
-  lente: 52,
-  occhio: 0.72,
-  oscillazione: 1,
-  pulsazione: 1,
-  salita: 41,
-  discesa: 258,
-  fondo: -70,
-  riflesso: 0.22,
-  dissolvenza: 450,
-  moto: 1,
-};
-
-/** Una copia fresca dei valori di serie. */
-function nuoveManopole(): Manopole {
-  return { ...SERIE };
-}
-
-/** Una voce del registro dei token, come la legge questo file. */
-type Voce =
-  | {
-      /** Il nome della variabile CSS. */
-      css: string;
-      colore: true;
-      /** Che colore vale se la skin non l'ha dichiarata. */
-      ripiego: string;
-    }
-  | {
-      css: string;
-      colore: false;
-      /** I limiti del registro, ripetuti qui come rete. */
-      min: number;
-      max: number;
-      /** Quanto vale se non c'è, o se c'è e non è un numero. */
-      base: number;
-    };
-
-/**
- * I token che dipingono la scena, e i due prestiti dal resto del registro.
- *
- * L'ordine di questo elenco è l'ordine dei due vettori paralleli che tengono il
- * valore grezzo di ciascuno: è per questo che il confronto costa una stringa per
- * token invece di una firma sola, ed è il motivo per cui trascinare un cursore
- * nello Studio costa **una** pipetta e non diciotto.
- *
- * I limiti sono ripetuti qui e non importati: il registro li valida quando una
- * skin si carica, ma queste variabili sono raggiungibili anche da un foglio
- * scritto a mano che il validatore non ha mai visto, e una profondità negativa
- * dividerebbe per zero dentro lo shader.
- *
- * `--dur-3` e `--motion-scale` non sono token del blocco `canvas.viz`: sono la
- * durata media delle transizioni e la scala del movimento, cioè due cose che
- * l'app già rispetta ovunque tranne che qui. `transizione.ts:56-63` considera la
- * seconda vincolante; una skin `motion: none` fermava tutto e non fermava
- * l'oscillazione di questa stanza.
- */
-const TOKEN: readonly Voce[] = [
-  // I tre colori. Il ripiego è il valore della skin di serie: quando manca la
-  // variabile manca il foglio, non la skin, e dipingere di nero sarebbe la
-  // stessa scena nera che tutto questo file cerca di non avere.
-  { css: "--viz-primary", colore: true, ripiego: "#8b7cf6" },
-  { css: "--viz-secondary", colore: true, ripiego: "#1d1b3a" },
-  { css: "--viz-tip", colore: true, ripiego: "#e8e2ff" },
-  { css: "--viz-glow", colore: false, min: 0, max: 100, base: 20 },
-  { css: "--viz-width", colore: false, min: 1, max: 12, base: 4.6 },
-  { css: "--viz-depth", colore: false, min: 1, max: 16, base: 5.2 },
-  { css: "--viz-height", colore: false, min: 0, max: 3, base: 0.62 },
-  { css: "--viz-fill", colore: false, min: 0.1, max: 1, base: 0.7 },
-  { css: "--viz-lens", colore: false, min: 24, max: 90, base: 52 },
-  { css: "--viz-eye", colore: false, min: 0, max: 2, base: 0.72 },
-  { css: "--viz-haze", colore: false, min: 0, max: 0.9, base: 0.55 },
-  { css: "--viz-reflection", colore: false, min: 0, max: 1, base: 0.22 },
-  { css: "--viz-ambient", colore: false, min: 0, max: 1, base: 0.42 },
-  { css: "--viz-sway", colore: false, min: 0, max: 2, base: 1 },
-  { css: "--viz-beat", colore: false, min: 0, max: 2, base: 1 },
-  { css: "--viz-attack", colore: false, min: 0, max: 400, base: 41 },
-  { css: "--viz-release", colore: false, min: 20, max: 2000, base: 258 },
-  { css: "--viz-floor", colore: false, min: -70, max: -24, base: -70 },
-  { css: "--dur-3", colore: false, min: 0, max: 4000, base: 450 },
-  { css: "--motion-scale", colore: false, min: 0, max: 4, base: 1 },
-];
-
-/**
- * Il valore grezzo che nessuna dichiarazione può avere.
- *
- * Serve a distinguere «non l'ho ancora letto» da «l'ho letto e non c'era», che
- * sono due cose diverse: la stringa vuota è il secondo, ed è un valore legittimo
- * — `--motion-scale` non è dichiarata nel foglio di serie. Partendo da vuoto, un
- * token assente non sarebbe mai stato applicato, la sua uniform sarebbe rimasta
- * a zero, e una profondità zero è una divisione per zero dentro lo shader, cioè
- * una scena nera.
- *
- * Uno spazio, perché quel che si confronta è già passato da `trim()`: uno spazio
- * è l'unica stringa che di là non può uscire.
- */
-const MAI = " ";
-
-/**
- * Un colore CSS qualunque, in tre numeri fra zero e uno.
- *
- * Passa da una canvas di un pixel e non da un'espressione regolare: un token può
- * essere `#abc`, `rgb(… / .35)`, `oklch(…)` o il nome di un colore, e l'unica
- * cosa che sa leggerli tutti è il parser del browser. Costa un `getImageData` su
- * un pixel, e si paga solo quando quel token è cambiato davvero.
- *
- * Scrive in un vettore prestato invece di restituirne uno: tre numeri allocati
- * per ogni cambio di skin non sono niente, tre numeri allocati per ogni
- * fotogramma erano il difetto di prima.
- */
-function tinta(
-  pennello: CanvasRenderingContext2D,
-  colore: string,
-  fuori: Float32Array,
-): void {
-  pennello.clearRect(0, 0, 1, 1);
-  // Due assegnazioni: `fillStyle` ignora in silenzio un colore che non sa
-  // leggere, e senza il nero davanti si finirebbe a dipingere con quel che
-  // c'era prima invece di accorgersene.
-  pennello.fillStyle = "#000";
-  pennello.fillStyle = colore;
-  pennello.fillRect(0, 0, 1, 1);
-  const dati = pennello.getImageData(0, 0, 1, 1).data;
-  fuori[0] = (dati[0] ?? 0) / 255;
-  fuori[1] = (dati[1] ?? 0) / 255;
-  fuori[2] = (dati[2] ?? 0) / 255;
-}
-
-const VERTICE = `#version 300 es
-precision highp float;
-
-in vec3 posizione;
-in vec3 normale;
-
-uniform mat4 camera;
-uniform sampler2D altezze;
-uniform int colonne;
-uniform int perPiano;
-uniform int piani;
-uniform int cursori[8];
-uniform int fase;
-uniform float frazione;
-uniform float prof;
-uniform float larghezza;
-uniform float spessore;
-uniform float mezzaTela;
-uniform float alta;
-uniform float specchio;
-uniform float foschia;
-uniform float ambiente;
-uniform float riflesso;
-
-out float vLivello;
-out float vSu;
-out float vLuce;
-out float vAlfa;
-out float vDettaglio;
-
-// Dove sta un'età, in profondità. L'età è in eventi e non in secondi, perché è
-// in eventi che la cascata conta.
-//
-// Il logaritmo non è una curva scelta a occhio: il piano ℓ finisce all'età
-// perPiano·(2^(ℓ+1)−1), dove 1 + età/perPiano fa esattamente 2^(ℓ+1) — quindi
-// log2 vale ℓ+1, e ogni piano si prende la stessa fetta di profondità mentre il
-// tempo che porta raddoppia. Le file escono spaziate uguali senza che nessuno le
-// abbia sistemate, e l'ultima arriva esattamente a -prof.
-float zDi(float eta) {
-  return -prof * log2(1.0 + eta / float(perPiano)) / float(piani);
-}
-
-// L'età del fronte di una fila, in eventi.
-//
-// Il progresso per piano è ciò che tiene lo scorrimento continuo: quando un
-// piano chiude una fila il contenuto arretra di un posto **e** il progresso
-// torna a zero, e le due cose si annullano.
-//
-// Sta in una funzione, e non dentro main, perché la serve anche la fila dietro:
-// è da lì che ognuna prende il proprio fondo. Risponde anche per la fila che
-// non esiste, quella dopo l'ultima — è il piano dopo l'ultimo, e la sua età cade
-// appena oltre -prof, cioè esattamente dove la scena deve finire. Niente
-// apostrofi inversi in questo commento, né in nessun altro qui dentro: lo
-// shader è una stringa a modello, e uno solo la chiuderebbe a metà.
-float etaDi(int fila) {
-  int piano = fila / perPiano;
-  int dentro = fila - piano * perPiano;
-  int passo = 1 << piano;
-  return float(perPiano * (passo - 1) + dentro * passo + fase % passo) + frazione;
-}
-
-void main() {
-  int colonna = gl_InstanceID % colonne;
-  int fila = gl_InstanceID / colonne;
-
-  int piano = fila / perPiano;
-  int dentro = fila - piano * perPiano;
-  // Nella texture le righe non scorrono: scorre il cursore del piano, e qui si
-  // torna indietro di «dentro» partendo da lui.
-  int riga = piano * perPiano + (cursori[piano] - dentro + perPiano) % perPiano;
-  float livello = texelFetch(altezze, ivec2(colonna, riga), 0).r;
-
-  // La fila davanti non compare: cresce da quella dietro. Nasce con l'altezza
-  // che aveva la precedente — cioè indistinguibile da un allungamento del
-  // terreno — e nei trentatré millesimi prima della prossima diventa la sua.
-  // Prima appariva già alta, trenta volte al secondo: quello era lo scatto.
-  if (fila == 0) {
-    int dietro = (cursori[0] - 1 + perPiano) % perPiano;
-    float precedente = texelFetch(altezze, ivec2(colonna, dietro), 0).r;
-    livello = mix(precedente, livello, smoothstep(0.0, 1.0, frazione));
-  }
-
-  // Il fondo di una fila è il fronte di quella dietro, e non la fine della
-  // propria fetta di tempo. Le due cose non coincidono, ed era il difetto: alla
-  // giunzione fra un piano e il successivo la fetta subito dopo l'ultima fila
-  // sta ancora nell'accumulatore di quello di sopra, quindi si apriva un buco —
-  // largo fino a sette decimi di fila — che si chiudeva e si riapriva a ogni
-  // evento. Sei giunzioni, ognuna al suo ritmo, la più vicina a quindici volte
-  // al secondo: era quello a far sembrare la scena guasta.
-  //
-  // Prendendo il fondo da chi sta dietro, le file **piastrellano** per
-  // costruzione: nessun buco e nessuna compenetrazione, a ogni fase. Quel che
-  // resta della differenza se lo prende l'ultima fila di ogni piano, che si
-  // allunga e si accorcia — un elastico dove la scena è già un riassunto,
-  // invece di un lampo dove si guarda.
-  //
-  // È la stessa espressione da tutte e due le parti, quindi i due bordi sono lo
-  // stesso numero fino all'ultimo bit: si toccano, e non c'è la fessura che una
-  // giunzione calcolata due volte in due modi lascerebbe.
-  float zFronte = zDi(etaDi(fila));
-  float zFondo = zDi(etaDi(fila + 1));
-
-  // Un fondo visibile anche a zero: una griglia che sparisce del tutto lascia un
-  // rettangolo vuoto che sembra un guasto, e la riga di base dice «c'è, e adesso
-  // è a zero». Non è un token: è una garanzia, e una garanzia con una manopola
-  // sopra è una garanzia che qualcuno può togliere.
-  float altezza = max(livello * alta, 0.004);
-
-  float passoX = larghezza / float(colonne);
-  float x = (float(colonna) + 0.5) * passoX - larghezza * 0.5;
-
-  // La fessura fra due barre, in pixel, e quanto se ne lascia vedere.
-  //
-  // Una fessura più stretta di un pixel non si può disegnare: la scheda la
-  // campiona a caso, una volta sì e una no, e con la camera che oscilla il
-  // caso cambia a ogni fotogramma. A 512 barre su uno schermo da 1920 erano
-  // fessure da 0,85 pixel davanti e da 0,2 in fondo — un codice a barre che
-  // sfarfallava su tutta la scena, ed era la grana che si vedeva. Quindi la
-  // fessura resta com'è dove si vede (sopra un pixel e mezzo), si chiude dove
-  // non si vede (sotto mezzo pixel), e sfuma in mezzo: le barre restano barre
-  // dove sono abbastanza larghe da esserlo, e diventano un terreno continuo
-  // dove non lo sono.
-  //
-  // Il conto si fa sul **centro** della scatola, con valori che sono gli stessi
-  // per tutti i suoi vertici: calcolato vertice per vertice, la faccia davanti
-  // e quella dietro avrebbero due larghezze diverse, cioè una scatola storta e
-  // una crepa fra una fila e l'altra. Quanti pixel fa un'unità di mondo è la
-  // derivata della proiezione lungo x — camera[0][0] — divisa per la
-  // profondità del centro e riportata sulla mezza tela.
-  float wCentro = (camera * vec4(x, 0.0, (zFronte + zFondo) * 0.5, 1.0)).w;
-  float passoPx = passoX * camera[0][0] * mezzaTela / max(wCentro, 0.001);
-  float fessuraPx = passoPx * (1.0 - spessore);
-  float pieno = mix(1.0, spessore, smoothstep(0.75, 1.5, fessuraPx));
-  // E quanto la barra è ancora leggibile come una scatola, per la luce qui
-  // sotto: piena sopra i quattro pixel, al minimo sotto il pixel e mezzo.
-  float dettaglio = smoothstep(1.5, 4.0, passoPx);
-  vDettaglio = dettaglio;
-
-  vec3 locale = posizione;
-  locale.x *= passoX * pieno;
-  // Esatta, senza il filo di sovrapposizione che c'era prima. Quel quattro per
-  // cento serviva a nascondere il buco alla giunzione — ne copriva un ventesimo,
-  // e in cambio faceva compenetrare **tutte** le file vicine. Due file alla
-  // stessa altezza hanno la cima sullo stesso piano, e nella fascia in cui si
-  // compenetravano erano due quadrati complanari a contendersi gli stessi pixel:
-  // il buffer di profondità non ha un vincitore da dichiarare, e ne usciva un
-  // pulviscolo che si rimescolava a ogni fotogramma. Succedeva ovunque il suono
-  // fosse fermo, cioè su tutto il fondo a riposo, dove i livelli sono lo stesso
-  // byte fila dopo fila.
-  locale.z *= zFronte - zFondo;
-  locale.y *= altezza;
-  vec3 mondo = vec3(
-    x + locale.x,
-    locale.y * specchio,
-    (zFronte + zFondo) * 0.5 + locale.z
-  );
-
-  // La luce: una direzionale da sopra-davanti più un ambiente. Nel vertice e non
-  // nel frammento perché le facce sono piatte — la normale è la stessa su tutta
-  // la faccia, e interpolarla darebbe lo stesso numero pixel per pixel.
-  //
-  // Il complemento e non una seconda costante: così la faccia perfettamente
-  // illuminata resta esattamente 1 qualunque sia l'ambiente, e alzare la luce
-  // diffusa schiarisce le ombre invece di bruciare le luci.
-  vec3 luce = normalize(vec3(-0.35, 0.85, 0.4));
-  vec3 n = vec3(normale.x, normale.y * specchio, normale.z);
-  vLuce = ambiente + (1.0 - ambiente) * max(dot(n, luce), 0.0);
-  // La luce di una barra troppo stretta per essere una scatola.
-  //
-  // Una barra larga due pixel è un pixel di cima, chiaro, e un pixel di
-  // fianco, scuro; cento barre di altezze diverse una accanto all'altra sono
-  // una scacchiera di puntini che con la camera che oscilla si rimescola a ogni
-  // fotogramma. Era la grana del fondo della scena a 512 barre, e non era
-  // aliasing di bordo — più campioni non l'avrebbero tolta — ma contrasto
-  // alla scala del pixel. Dove una barra è più stretta di quattro pixel, la
-  // luce delle sue facce si avvicina alla media di quelle che si vedono (cima
-  // e fronte, sei decimi della diretta più l'ambiente), fino a tenerne meno di
-  // metà del contrasto sotto il pixel e mezzo. È la prospettiva aerea che la
-  // foschia già applica all'alfa, applicata al contrasto: il rilievo resta
-  // nell'altezza e nel colore che sale col livello, sparisce il puntinato.
-  // Davanti, e con poche barre, vDettaglio vale uno e la luce è quella di
-  // sempre.
-  float lucemedia = ambiente + (1.0 - ambiente) * 0.6;
-  vLuce = mix(lucemedia, vLuce, mix(0.45, 1.0, dettaglio));
-
-  // Quanto è lontana la fila, da zero a uno — e si misura in profondità, non in
-  // file: le file sono spaziate uguali per costruzione, e quel che deve
-  // spegnersi è il fondo della stanza. È il modo in cui la scena si fonde con lo
-  // sfondo invece di finire con un muro all'orizzonte.
-  //
-  // Comincia poco oltre metà stanza, e non a otto decimi come prima. Le file
-  // sono spaziate uguali nel mondo, non sullo schermo: da lontananza 0,5 in poi
-  // la prospettiva le schiaccia sotto i tre pixel, e oltre 0,8 sotto il pixel e
-  // mezzo. Erano venti file alte un pixel, opache, che arretravano — un reticolo
-  // che striscia, ed è la seconda metà di quel che stancava gli occhi.
-  //
-  // Non si perde la memoria: si perde la pretesa di leggerla riga per riga. A
-  // 0,7 di lontananza siamo già a sette secondi fa e l'alfa è ancora due terzi, a
-  // 0,9 sono venti secondi e resta una foschia. È la prospettiva aerea, cioè il
-  // modo in cui il lontano si vede davvero — e dove comincia lo decide la skin
-  // con canvas.viz.haze, che è la manopola da girare se la stanza sembra troppo
-  // corta o troppo densa.
-  float lontananza = -mondo.z / prof;
-  vAlfa = 1.0 - smoothstep(foschia, 0.98, lontananza);
-  // Il riflesso è un accenno, non una copia: sopra il pavimento c'è la scena,
-  // sotto la sua idea. E non è un'alfa piatta: sfuma salendo, cioè allontanandosi
-  // dal pavimento, che è come si comporta un riflesso vero. Con l'alfa piatta
-  // sembrava una seconda scena appesa sotto la prima; così sembra un pavimento
-  // bagnato. Costa una moltiplicazione nel vertice.
-  //
-  // Il profilo 0,30 → 0,05 è l'alfa **finale**, quella che si vede con il
-  // riflesso di serie: non è un fattore da moltiplicare una seconda volta per il
-  // token. Per questo si divide per 0,22, che è il valore di serie di
-  // canvas.viz.reflection — lo stesso numero che sta in SERIE.riflesso qui sopra
-  // e nel registro delle skin, e l'unico contro cui questo profilo abbia senso
-  // di essere normalizzato. Così a 0,22 il conto torna 0,30 al pavimento e 0,05
-  // in cima, il token scala tutto linearmente com'è il suo mestiere, e a zero il
-  // riflesso sparisce del tutto esattamente come prima.
-  //
-  // Senza quella divisione i due si moltiplicavano: di serie l'alfa usciva 0,066
-  // al pavimento e 0,011 in cima, contro il 0,22 piatto della 2.2.x — tre volte
-  // e mezzo più pallida, cioè un riflesso che a occhio non c'è più. Erano due
-  // decisioni giuste prese separatamente, «il token sostituisce la costante» e
-  // «l'alfa sfuma», che composte a caso davano una terza cosa che nessuno aveva
-  // scelto.
-  //
-  // Il taglio a uno non è una cintura di sicurezza: 0,30/0,22 fa 1,36, quindi
-  // con il token al suo massimo il fattore passa l'unità per davvero. E vAlfa
-  // non è un'alfa qualunque — il frammento la moltiplica per il velo e scrive il
-  // colore **premoltiplicato**, dove un'alfa sopra uno vuol dire un colore che
-  // vale più di se stesso, cioè una banda bruciata nella parte bassa del
-  // riflesso. Si taglia qui e non di là perché qui è l'unico posto in cui vAlfa
-  // può salire sopra uno: la foschia la lascia dentro [0,1] e il velo può solo
-  // abbassarla, e un min nel vertice si paga una volta per vertice invece che
-  // una per pixel.
-  if (specchio < 0.0) {
-    vAlfa = min(vAlfa * riflesso * mix(0.30, 0.05, posizione.y) / 0.22, 1.0);
-  }
-
-  vLivello = livello;
-  vSu = posizione.y;
-  gl_Position = camera * vec4(mondo, 1.0);
-}`;
-
-const FRAMMENTO = `#version 300 es
-precision mediump float;
-
-in float vLivello;
-in float vSu;
-in float vLuce;
-in float vAlfa;
-in float vDettaglio;
-
-uniform vec3 primario;
-uniform vec3 secondario;
-uniform vec3 alone;
-uniform float velo;
-uniform float cresta;
-uniform float altezzaTela;
-
-out vec4 fuori;
-
-void main() {
-  // Il colore dice l'altezza: in basso il secondario, in cima il primario. Sono
-  // due token della skin, e nient'altro nell'app li legge — l'equalizzatore ha i
-  // suoi, che è quel che permette a questa scena di avere una tavolozza sua
-  // senza tirarsi dietro le dieci barre di un'altra parte.
-  vec3 colore = mix(secondario, primario, clamp(vLivello * 1.3, 0.0, 1.0));
-  // La cima si accende con il colore della cresta: è il bagliore che una
-  // sfocatura avrebbe dato, pagato zero.
-  // La cresta si spegne insieme al dettaglio: sulla cima di una barra larga
-  // due pixel è un puntino chiaro in più nella scacchiera (vedi vDettaglio
-  // nel vertice).
-  colore = mix(colore, alone, smoothstep(0.72, 1.0, vSu) * cresta * vDettaglio);
-  colore *= vLuce;
-
-  // La sfumatura verticale che tiene leggibile il testo sopra la scena: zero
-  // in cima, un terzo al sedici per cento dell'altezza, piena dal quarantadue
-  // in giù. Era una mask-image sulla tela, e costava al compositore una
-  // passata in più su tutto lo schermo a ogni fotogramma — misurata, cinque
-  // punti di GPU su quarantotto — per moltiplicare un'alfa che qui si
-  // moltiplica gratis. Gli stop sono gli stessi, ed è la stessa retta a tratti
-  // che il CSS interpolava. gl_FragCoord parte dal basso, la sfumatura
-  // dall'alto: da qui il complemento.
-  float dallAlto = 1.0 - gl_FragCoord.y / altezzaTela;
-  float sfumatura = dallAlto < 0.16
-    ? 0.35 * dallAlto / 0.16
-    : min(1.0, 0.35 + 0.65 * (dallAlto - 0.16) / 0.26);
-  float alfa = vAlfa * velo * clamp(sfumatura, 0.0, 1.0);
-  // Niente discard. La riga che stava qui era: if (alfa <= 0.004) discard;
-  //
-  // Con la miscelazione spenta e il colore premoltiplicato, un frammento sotto
-  // quell'alfa scrive un vec4 quasi nullo, cioè esattamente quel che il
-  // compositore avrebbe messo lì senza di lui: il risultato composito è lo
-  // stesso. Quel che cambia è che adesso scrive anche la profondità, e che la
-  // scheda può tornare a scartare i frammenti coperti prima di eseguire questo
-  // shader.
-  //
-  // Un discard, ovunque sia scritto, disabilita quel test per l'intera chiamata
-  // di disegno: la scheda non può più sapere in anticipo se un frammento
-  // sopravvivrà. Su quarantacinquemila istanze con molta sovrapposizione — la
-  // scena è una griglia vista di taglio, quindi la sovrapposizione è quasi
-  // tutto — è il guadagno più grosso che questo shader avesse da dare.
-  //
-  // È un cambio di comportamento vero e non una pulizia, ed è per questo che è
-  // arrivato come un passo separato: quei frammenti adesso occupano il buffer
-  // di profondità, quindi nella fascia più lontana — dove l'alfa sta sotto lo
-  // zero virgola quattro per cento — il primo nasconde quelli dietro invece di
-  // lasciarli trasparire. Sono tutti sotto l'un per cento di opacità, cioè
-  // sotto un livello del canale a otto bit.
-  // Premoltiplicato: la tela è trasparente e il compositore del browser la posa
-  // sopra la tinta della copertina. Scrivere il colore pieno con un'alfa bassa
-  // darebbe un alone chiaro attorno a ogni barra.
-  fuori = vec4(colore * alfa, alfa);
-}`;
-
-/** Compila uno shader, o restituisce `null` dicendo alla console perché no. */
-function compila(gl: WebGL2RenderingContext, tipo: number, sorgente: string) {
-  const shader = gl.createShader(tipo);
-  if (!shader) return null;
-  gl.shaderSource(shader, sorgente);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    console.error("spettro 3D:", gl.getShaderInfoLog(shader));
-    gl.deleteShader(shader);
-    return null;
-  }
-  return shader;
-}
-
-/**
- * La scatola unitaria: x e z in `[-0.5, 0.5]`, y in `[0, 1]`.
- *
- * Quattro facce e non sei. Quella di sotto poggia sul pavimento e non si vede né
- * dalla scena né dal riflesso. Quella di dietro nemmeno: la camera sta sempre a
- * `z > 0` e le file a `z ≤ 0`, quindi è già buttata dal culling — e trentamila
- * quadrati che il culling butta restano trentamila quadrati da trasformare.
- */
-function scatola(): { vertici: Float32Array; indici: Uint16Array } {
-  // Ogni faccia: la sua normale e i quattro angoli, in senso antiorario visti da
-  // fuori — è il verso che dice alla scheda quale lato buttare via.
-  const facce: [number[], number[]][] = [
-    [
-      [0, 0, 1],
-      [-0.5, 0, 0.5, 0.5, 0, 0.5, 0.5, 1, 0.5, -0.5, 1, 0.5],
-    ],
-    [
-      [1, 0, 0],
-      [0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 1, -0.5, 0.5, 1, 0.5],
-    ],
-    [
-      [-1, 0, 0],
-      [-0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 1, 0.5, -0.5, 1, -0.5],
-    ],
-    [
-      [0, 1, 0],
-      [-0.5, 1, 0.5, 0.5, 1, 0.5, 0.5, 1, -0.5, -0.5, 1, -0.5],
-    ],
-  ];
-  const vertici: number[] = [];
-  const indici: number[] = [];
-  facce.forEach(([normale, punti], faccia) => {
-    for (let i = 0; i < 4; i += 1) {
-      vertici.push(
-        punti[i * 3] ?? 0,
-        punti[i * 3 + 1] ?? 0,
-        punti[i * 3 + 2] ?? 0,
-        normale[0] ?? 0,
-        normale[1] ?? 0,
-        normale[2] ?? 0,
-      );
-    }
-    const base = faccia * 4;
-    indici.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  });
-  return {
-    vertici: new Float32Array(vertici),
-    indici: new Uint16Array(indici),
-  };
-}
-
-/**
- * Proiezione per vista, già moltiplicate, dentro una matrice prestata.
- *
- * Una matrice sola e non due: è l'unica cosa che lo shader deve sapere della
- * camera, e farne il prodotto qui costa sedici moltiplicazioni al fotogramma
- * invece di trentamila.
- *
- * Prestata e non restituita: allocare una `Float32Array(16)` sessanta volte al
- * secondo sono sessanta occasioni al secondo perché il raccoglitore fermi il filo
- * che disegna. Per la stessa ragione l'occhio e la mira arrivano come sei
- * scalari invece che come due vettori, e il verso della vista non è più un array
- * di tre elementi ma tre variabili.
- *
- * `lente` è l'apertura in gradi, cioè `canvas.viz.lens`: era 52 scritto dentro
- * la formula.
- */
-function camera(
-  fuori: Float32Array,
-  aspetto: number,
-  lente: number,
-  ox: number,
-  oy: number,
-  oz: number,
-  mx: number,
-  my: number,
-  mz: number,
-): void {
-  const vicino = 0.1;
-  const lontano = 24;
-  const f = 1 / Math.tan((lente * Math.PI) / 180 / 2);
-
-  // La vista, cioè una base ortonormale attorno alla direzione dello sguardo.
-  const vx = ox - mx;
-  const vy = oy - my;
-  const vz = oz - mz;
-  const lunghezza = Math.hypot(vx, vy, vz) || 1;
-  const zx = vx / lunghezza;
-  const zy = vy / lunghezza;
-  const zz = vz / lunghezza;
-  // L'asse x è l'alto del mondo per lo z della vista, cioè `(0,1,0) × z`. Sta
-  // scritto per esteso perché due delle tre componenti sono zero e un prodotto
-  // vettoriale generico le moltiplicherebbe lo stesso.
-  const orizzontale = Math.hypot(zz, zx) || 1;
-  const xx = zz / orizzontale;
-  const xy = 0;
-  const xz = -zx / orizzontale;
-  const yx = zy * xz - zz * xy;
-  const yy = zz * xx - zx * xz;
-  const yz = zx * xy - zy * xx;
-
-  const tx = -(xx * ox + xy * oy + xz * oz);
-  const ty = -(yx * ox + yy * oy + yz * oz);
-  const tz = -(zx * ox + zy * oy + zz * oz);
-
-  // Il prodotto proiezione × vista, scritto per colonne come lo vuole WebGL. La
-  // proiezione ha solo quattro valori diversi da zero, e una moltiplicazione
-  // generica fra matrici farebbe sessantaquattro prodotti per ottenere questi
-  // sedici numeri.
-  const a = f / aspetto;
-  const c = (lontano + vicino) / (vicino - lontano);
-  const d = (2 * lontano * vicino) / (vicino - lontano);
-  fuori[0] = a * xx;
-  fuori[1] = f * yx;
-  fuori[2] = c * zx;
-  fuori[3] = -zx;
-  fuori[4] = a * xy;
-  fuori[5] = f * yy;
-  fuori[6] = c * zy;
-  fuori[7] = -zy;
-  fuori[8] = a * xz;
-  fuori[9] = f * yz;
-  fuori[10] = c * zz;
-  fuori[11] = -zz;
-  fuori[12] = a * tx;
-  fuori[13] = f * ty;
-  fuori[14] = c * tz + d;
-  fuori[15] = -tz;
-}
-
-/** Dove sta ogni uniform, cercata una volta sola per programma. */
-interface Uniformi {
-  camera: WebGLUniformLocation | null;
-  cursori: WebGLUniformLocation | null;
-  fase: WebGLUniformLocation | null;
-  frazione: WebGLUniformLocation | null;
-  specchio: WebGLUniformLocation | null;
-  colonne: WebGLUniformLocation | null;
-  perPiano: WebGLUniformLocation | null;
-  piani: WebGLUniformLocation | null;
-  prof: WebGLUniformLocation | null;
-  larghezza: WebGLUniformLocation | null;
-  spessore: WebGLUniformLocation | null;
-  /** Mezza larghezza della tela, in pixel: serve alle fessure. */
-  mezzaTela: WebGLUniformLocation | null;
-  alta: WebGLUniformLocation | null;
-  foschia: WebGLUniformLocation | null;
-  ambiente: WebGLUniformLocation | null;
-  riflesso: WebGLUniformLocation | null;
-  primario: WebGLUniformLocation | null;
-  secondario: WebGLUniformLocation | null;
-  alone: WebGLUniformLocation | null;
-  velo: WebGLUniformLocation | null;
-  /** L'altezza della tela, in pixel: serve alla sfumatura verticale. */
-  altezzaTela: WebGLUniformLocation | null;
-  cresta: WebGLUniformLocation | null;
-}
-
-/**
- * Quel che non dipende da quante barre ci sono.
- *
- * Il contesto, il programma con i suoi due shader, la geometria della scatola, e
- * la macchina che legge i token. Nasce al montaggio, muore allo smontaggio, e
- * l'unica altra cosa che la rifà è un contesto perso e ritrovato.
- *
- * Sta separata dal resto perché prima non lo era: un cambio di risoluzione
- * rifaceva tutto, cioè ricompilava due shader e rilinkava un programma per
- * cambiare la larghezza di una texture. E soprattutto perché senza questa
- * separazione non esisteva un modo di ricostruire il contesto senza rimontare il
- * componente.
- */
-interface RisorseStabili {
-  gl: WebGL2RenderingContext;
-  programma: WebGLProgram;
-  vertice: WebGLShader;
-  frammento: WebGLShader;
-  vao: WebGLVertexArrayObject;
-  buffer: WebGLBuffer;
-  elementi: WebGLBuffer;
-  /** Quanti indici ha la scatola: è il conto della `drawElementsInstanced`. */
-  indici: number;
-  uniformi: Uniformi;
-  /** Il pennello di un pixel con cui si leggono i colori: vedi `tinta`. */
-  pennello: CanvasRenderingContext2D | null;
-  /**
-   * Lo stile della tela, **vivo**.
-   *
-   * `getComputedStyle` torna una dichiarazione legata all'elemento, non una
-   * fotografia: rileggerla basta perché una skin nuova arrivi qui senza
-   * rimontare niente. È quel che rende possibile lo Studio.
-   */
-  stile: CSSStyleDeclaration;
-  /** La matrice della camera, riscritta e mai riallocata. */
-  matrice: Float32Array;
-  /** Tre numeri per la pipetta, riscritti e mai riallocati. */
-  colore: Float32Array;
-  /** L'ultimo valore grezzo di ogni token, nell'ordine di `TOKEN`. */
-  grezzi: string[];
-  manopole: Manopole;
-  /** C'è da rileggere i token. */
-  sporco: boolean;
-}
-
-/**
- * Quel che dipende da quante barre ci sono.
- *
- * La texture, gli anelli della cascata, i cursori e la fase. La texture si rifà
- * perché `texStorage2D` è **storage immutabile**: la sua larghezza è decisa alla
- * nascita e non si cambia. Tutto il resto — programma, shader, VAO, i due
- * buffer — sopravvive, perché di `barre` non sa niente.
- *
- * Gli anelli stanno in memoria normale e non nella texture, e non è una copia
- * per comodità: è l'unico modo di sapere **cosa cade dal fondo** di un piano
- * senza rileggere la texture dalla scheda. Il fatto che sopravvivano a un
- * contesto perso è un regalo di quella scelta.
- *
- * L'altra cosa che la fa rifare è il passaggio da o verso la qualità «bassa»,
- * che cambia quante file ha ogni piano — ed è l'unica cosa che un livello di
- * qualità ricostruisce, contro la densità — che è un ridimensionamento della
- * tela — e il riflesso, che è un `if` nel ciclo. Per questo `perPiano` sta qui
- * dentro: senza, un cambio di tetto a
- * numero di barre invariato riuserebbe gli anelli della forma sbagliata.
- */
-interface RisorseRisoluzione {
-  barre: number;
-  perPiano: number;
-  piani: number;
-  file: number;
-  /** Quanti eventi di silenzio prima che la scena sia vuota davvero. */
-  copertura: number;
-  texture: WebGLTexture | null;
-  anelli: Uint8Array[];
-  parziali: Uint8Array[];
-  cursori: Int32Array;
-  conta: Int32Array;
-  /** Gli eventi da quando i piani erano tutti allineati. */
-  fase: number;
-  istanzeRiflesso: number;
-}
 
 /**
  * Quanti eventi impiega la gobba a passare su tutte le bande.
@@ -1467,469 +456,18 @@ function filaFinta(fuori: Uint8Array, n: number): void {
   }
 }
 
-/** Apre il contesto e costruisce tutto quel che non dipende dalle barre. */
-function creaStabili(canvas: HTMLCanvasElement): RisorseStabili | null {
-  const gl = canvas.getContext("webgl2", {
-    alpha: true,
-    antialias: true,
-    depth: true,
-    // Su un portatile con due schede, questa scena non è il motivo per
-    // svegliare quella grossa.
-    powerPreference: "low-power",
-    premultipliedAlpha: true,
-  });
-  if (!gl) return null;
-
-  const programma = gl.createProgram();
-  const vertice = compila(gl, gl.VERTEX_SHADER, VERTICE);
-  const frammento = compila(gl, gl.FRAGMENT_SHADER, FRAMMENTO);
-  if (!programma || !vertice || !frammento) return null;
-  gl.attachShader(programma, vertice);
-  gl.attachShader(programma, frammento);
-  gl.linkProgram(programma);
-  if (!gl.getProgramParameter(programma, gl.LINK_STATUS)) {
-    console.error("spettro 3D:", gl.getProgramInfoLog(programma));
-    return null;
-  }
-  gl.useProgram(programma);
-
-  const { vertici, indici } = scatola();
-  const vao = gl.createVertexArray();
-  const buffer = gl.createBuffer();
-  const elementi = gl.createBuffer();
-  if (!vao || !buffer || !elementi) return null;
-  gl.bindVertexArray(vao);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, vertici, gl.STATIC_DRAW);
-  const posizione = gl.getAttribLocation(programma, "posizione");
-  const normale = gl.getAttribLocation(programma, "normale");
-  gl.enableVertexAttribArray(posizione);
-  gl.vertexAttribPointer(posizione, 3, gl.FLOAT, false, 24, 0);
-  gl.enableVertexAttribArray(normale);
-  gl.vertexAttribPointer(normale, 3, gl.FLOAT, false, 24, 12);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elementi);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indici, gl.STATIC_DRAW);
-
-  const dove = (nome: string) => gl.getUniformLocation(programma, nome);
-  const uniformi: Uniformi = {
-    camera: dove("camera"),
-    cursori: dove("cursori"),
-    fase: dove("fase"),
-    frazione: dove("frazione"),
-    specchio: dove("specchio"),
-    colonne: dove("colonne"),
-    perPiano: dove("perPiano"),
-    piani: dove("piani"),
-    prof: dove("prof"),
-    larghezza: dove("larghezza"),
-    spessore: dove("spessore"),
-    mezzaTela: dove("mezzaTela"),
-    alta: dove("alta"),
-    foschia: dove("foschia"),
-    ambiente: dove("ambiente"),
-    riflesso: dove("riflesso"),
-    primario: dove("primario"),
-    secondario: dove("secondario"),
-    alone: dove("alone"),
-    velo: dove("velo"),
-    altezzaTela: dove("altezzaTela"),
-    cresta: dove("cresta"),
-  };
-  // L'unica uniform davvero una-tantum rimasta: la texture sta nell'unità zero,
-  // e non c'è una seconda unità. Tutte le altre o dipendono dalla risoluzione,
-  // o sono un token, e scriverle una volta sola era il difetto per cui una skin
-  // non poteva cambiare la geometria della stanza.
-  gl.uniform1i(dove("altezze"), 0);
-
-  // Nessuna miscelazione, e non è una dimenticanza: la profondità basta a dire
-  // chi sta davanti, e le barre non sono trasparenti fra loro. L'alfa che esce
-  // dal frammento serve al **compositore del browser**, che posa la tela sopra
-  // la tinta della copertina. Accendere la miscelazione avrebbe voluto dire
-  // ordinare trentamila scatole dal fondo a ogni fotogramma, che è precisamente
-  // il lavoro che una scheda video fa da sola con il buffer di profondità.
-  gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.CULL_FACE);
-  gl.frontFace(gl.CCW);
-  gl.clearColor(0, 0, 0, 0);
-
-  const pipetta = document.createElement("canvas");
-  pipetta.width = 1;
-  pipetta.height = 1;
-
-  return {
-    gl,
-    programma,
-    vertice,
-    frammento,
-    vao,
-    buffer,
-    elementi,
-    indici: indici.length,
-    uniformi,
-    pennello: pipetta.getContext("2d", { willReadFrequently: true }),
-    stile: getComputedStyle(canvas),
-    matrice: new Float32Array(16),
-    colore: new Float32Array(3),
-    grezzi: TOKEN.map(() => MAI),
-    manopole: nuoveManopole(),
-    sporco: true,
-  };
-}
-
-/** Butta via il contesto e tutto quel che ci sta dentro. */
-function distruggiStabili(s: RisorseStabili): void {
-  const { gl } = s;
-  gl.deleteBuffer(s.buffer);
-  gl.deleteBuffer(s.elementi);
-  gl.deleteVertexArray(s.vao);
-  gl.deleteProgram(s.programma);
-  gl.deleteShader(s.vertice);
-  gl.deleteShader(s.frammento);
-}
-
-/**
- * La texture e la cascata, per un dato numero di barre.
- *
- * Con `vecchia` alla stessa risoluzione la memoria si **riprende**: gli anelli,
- * i cursori, i contatori e la fase restano quelli, e la texture nuova si
- * ricarica da lì. È la strada del contesto ritrovato, ed è il motivo per cui un
- * riavvio del driver non cancella mezzo minuto di musica.
- */
-function creaRisoluzione(
-  s: RisorseStabili,
-  barre: number,
-  tetto: number,
-  vecchia: RisorseRisoluzione | null,
-): RisorseRisoluzione | null {
-  const { gl, uniformi: u } = s;
-  const { perPiano, piani, file, copertura } = struttura(barre, tetto);
-
-  // La forma degli anelli è `barre · perPiano` per piano: bastasse il numero di
-  // barre, un passaggio a «bassa» riuserebbe anelli lunghi il doppio del giusto
-  // e la cascata leggerebbe file che non esistono.
-  const riusa =
-    vecchia !== null && vecchia.barre === barre && vecchia.perPiano === perPiano;
-  const anelli: Uint8Array[] = riusa && vecchia ? vecchia.anelli : [];
-  const parziali: Uint8Array[] = riusa && vecchia ? vecchia.parziali : [];
-  if (!riusa) {
-    // Per piano: una copia dell'anello, un accumulatore e un contatore. Sono
-    // `barre · perPiano · piani` byte, cinquanta chilobyte nel caso peggiore.
-    for (let p = 0; p < piani; p += 1) {
-      anelli.push(new Uint8Array(barre * perPiano));
-      parziali.push(new Uint8Array(barre));
-    }
-  }
-
-  // Un byte per banda, com'è arrivato dal filo: fra l'evento e la texture non
-  // c'è nessuna conversione. Il piano ℓ occupa le righe da ℓ·perPiano, quindi
-  // la cascata intera sta nella stessa texture che servirebbe a una fila per
-  // evento — la memoria non cresce con i secondi, cresce con le file disegnate.
-  const texture = gl.createTexture();
-  if (!texture) return null;
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, barre, file);
-  // Un caricamento per piano, dall'anello che gli corrisponde: la riga di un
-  // piano nella texture è `piano · perPiano + cursore`, e nell'anello è
-  // `cursore · barre`, quindi i due sono lo stesso vettore nello stesso ordine.
-  // Su una texture appena nata gli anelli sono zeri, e questo è l'azzeramento;
-  // su una ritrovata sono mezzo minuto di musica, e questo è il ripristino.
-  for (let p = 0; p < piani; p += 1) {
-    const anello = anelli[p];
-    if (!anello) continue;
-    gl.texSubImage2D(
-      gl.TEXTURE_2D,
-      0,
-      0,
-      p * perPiano,
-      barre,
-      perPiano,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      anello,
-    );
-  }
-  // `NEAREST` perché il vertice legge con `texelFetch`: nessun filtro entra in
-  // gioco, e chiederne uno lineare vorrebbe dire un'estensione in più da
-  // sperare che ci sia.
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-  gl.uniform1i(u.colonne, barre);
-  gl.uniform1i(u.perPiano, perPiano);
-  gl.uniform1i(u.piani, piani);
-
-  return {
-    barre,
-    perPiano,
-    piani,
-    file,
-    copertura,
-    texture,
-    anelli,
-    parziali,
-    cursori: riusa && vecchia ? vecchia.cursori : new Int32Array(PIANI_MAX),
-    conta: riusa && vecchia ? vecchia.conta : new Int32Array(PIANI_MAX),
-    fase: riusa && vecchia ? vecchia.fase : 0,
-    // Il riflesso solo per i primi piani: più in fondo, a un'alfa che è una
-    // frazione di quella della scena, non si vede. Basta un `instanceCount` più
-    // piccolo, perché `fila = id / colonne` mette già le file vicine per prime.
-    istanzeRiflesso: barre * Math.min(file, perPiano * PIANI_RIFLESSI),
-  };
-}
-
-/** Butta la texture. Gli anelli no: quelli sono la memoria. */
-function distruggiRisoluzione(
-  s: RisorseStabili | null,
-  r: RisorseRisoluzione | null,
-): void {
-  if (!s || !r || !r.texture) return;
-  s.gl.deleteTexture(r.texture);
-  r.texture = null;
-}
-
-/**
- * Mette una fila in cima a un piano, e manda su quella che cade dal fondo.
- *
- * Della texture si scrive **una riga sola**: quella nuova. Le altre restano
- * dov'erano, e la fila che avanza è il cursore che cambia.
- *
- * Funzioni di modulo e non chiusure: da quando il contesto arriva come
- * parametro, non c'è più niente da restringere e la ricorsione mutua con
- * `accumula` si scrive nel verso naturale. Con `s` a `null` — contesto perso — la
- * cascata continua lo stesso e salta solo il caricamento: è così che mezzo minuto
- * di passato attraversa un riavvio del driver.
- */
-function spingi(
-  s: RisorseStabili | null,
-  r: RisorseRisoluzione,
-  piano: number,
-  fila: Uint8Array,
-): void {
-  const anello = r.anelli[piano];
-  if (!anello) return;
-  const cursore = ((r.cursori[piano] ?? 0) + 1) % r.perPiano;
-  const base = cursore * r.barre;
-  // Prima di sovrascriverlo: quel che sta in questo posto è la fila che esce
-  // dalla finestra del piano, e il piano di sopra la sta aspettando. Dopo
-  // l'ultimo piano invece si perde, ed è giusto — è passato più vecchio
-  // della memoria.
-  if (piano + 1 < r.piani) {
-    accumula(s, r, piano + 1, anello.subarray(base, base + r.barre));
-  }
-  anello.set(fila, base);
-  r.cursori[piano] = cursore;
-  if (!s || !r.texture) return;
-  s.gl.texSubImage2D(
-    s.gl.TEXTURE_2D,
-    0,
-    0,
-    piano * r.perPiano + cursore,
-    r.barre,
-    1,
-    s.gl.RED,
-    s.gl.UNSIGNED_BYTE,
-    fila,
-  );
-}
-
-/**
- * Il massimo di due file del piano di sotto diventa una fila di questo.
- *
- * Il massimo e non la media: due file riassunte devono dire «qui c'è stato un
- * colpo», e la media di un colpo e di un silenzio è un mezzo colpo che non è mai
- * suonato.
- */
-function accumula(
-  s: RisorseStabili | null,
-  r: RisorseRisoluzione,
-  piano: number,
-  fila: Uint8Array,
-): void {
-  const parziale = r.parziali[piano];
-  if (!parziale) return;
-  for (let i = 0; i < r.barre; i += 1) {
-    const valore = fila[i] ?? 0;
-    if (valore > (parziale[i] ?? 0)) parziale[i] = valore;
-  }
-  r.conta[piano] = (r.conta[piano] ?? 0) + 1;
-  if ((r.conta[piano] ?? 0) >= 2) {
-    spingi(s, r, piano, parziale);
-    parziale.fill(0);
-    r.conta[piano] = 0;
-  }
-}
-
-/** Manda un token appena cambiato dove deve andare. */
-function applica(
-  s: RisorseStabili,
-  voce: Voce,
-  grezzo: string,
-  barre: number,
-): void {
-  const { gl, uniformi: u, manopole: m } = s;
-  if (voce.colore) {
-    if (!s.pennello) return;
-    tinta(s.pennello, grezzo || voce.ripiego, s.colore);
-    if (voce.css === "--viz-primary") gl.uniform3fv(u.primario, s.colore);
-    else if (voce.css === "--viz-secondary") gl.uniform3fv(u.secondario, s.colore);
-    else gl.uniform3fv(u.alone, s.colore);
-    return;
-  }
-  // `parseFloat` e non `Number`: `--dur-3` è «450ms», e un'unità è quel che una
-  // durata CSS ha il diritto di avere. Un valore illeggibile vale la base, che è
-  // la stessa regola con cui `read_json` tratta una preferenza malformata.
-  const letto = Number.parseFloat(grezzo);
-  const v = Number.isFinite(letto)
-    ? Math.min(voce.max, Math.max(voce.min, letto))
-    : voce.base;
-  switch (voce.css) {
-    case "--viz-width":
-      gl.uniform1f(u.larghezza, v);
-      break;
-    case "--viz-depth":
-      gl.uniform1f(u.prof, v);
-      break;
-    case "--viz-height":
-      gl.uniform1f(u.alta, v);
-      break;
-    case "--viz-fill":
-      // Più barre, più piene: sotto le 256 la fessura fra una e l'altra è quel
-      // che le rende barre, sopra sarebbe più larga della barra stessa. Il
-      // token dice quanto una barra riempie la sua fetta, e questa correzione
-      // resta perché è una regola di leggibilità, non un gusto — ma adesso è
-      // scritta come una correzione dichiarata invece che come due numeri in un
-      // ternario.
-      gl.uniform1f(u.spessore, barre > 256 ? Math.min(1, v + 0.18) : v);
-      break;
-    case "--viz-haze":
-      gl.uniform1f(u.foschia, v);
-      break;
-    case "--viz-ambient":
-      gl.uniform1f(u.ambiente, v);
-      break;
-    case "--viz-glow":
-      // Il token è una percentuale: quanta cresta si vede sulla cima. Non è
-      // confrontabile con lo 0,55 che stava qui prima, perché quello mescolava
-      // l'accento con se stesso — era il 55 % di niente. Adesso la cresta è un
-      // colore suo, e un quinto di un colore diverso si vede più di metà dello
-      // stesso.
-      gl.uniform1f(u.cresta, v / 100);
-      break;
-    case "--viz-reflection":
-      gl.uniform1f(u.riflesso, v);
-      m.riflesso = v;
-      break;
-    case "--viz-lens":
-      m.lente = v;
-      break;
-    case "--viz-eye":
-      m.occhio = v;
-      break;
-    case "--viz-sway":
-      m.oscillazione = v;
-      break;
-    case "--viz-beat":
-      m.pulsazione = v;
-      break;
-    case "--viz-attack":
-      m.salita = v;
-      break;
-    case "--viz-release":
-      m.discesa = v;
-      break;
-    case "--viz-floor":
-      m.fondo = v;
-      break;
-    case "--dur-3":
-      m.dissolvenza = v;
-      break;
-    case "--motion-scale":
-      m.moto = v;
-      break;
-    default:
-      break;
-  }
-}
-
-/**
- * Rilegge i token che sono cambiati, e solo quelli.
- *
- * Venti `getPropertyValue` quando il flag è alto, zero quando non lo è; e di
- * quei venti, solo quelli il cui testo è cambiato pagano una conversione — una
- * pipetta per un colore, un `parseFloat` e una uniform per un numero.
- */
-function rileggi(s: RisorseStabili, barre: number): void {
-  for (let i = 0; i < TOKEN.length; i += 1) {
-    const voce = TOKEN[i];
-    if (!voce) continue;
-    const grezzo = s.stile.getPropertyValue(voce.css).trim();
-    if (grezzo === s.grezzi[i]) continue;
-    s.grezzi[i] = grezzo;
-    applica(s, voce, grezzo, barre);
-  }
-}
-
-/**
- * Quante file la coda tiene al più.
- *
- * Sedici: l'orologio ne scarta oltre il suo tetto — dodici più il margine — e
- * quel che resta è la rete per un ciclo che non gira affatto mentre gli eventi
- * arrivano, cioè una finestra coperta che il browser smette di ridisegnare.
- */
-const CAPIENZA = 16;
-
-/**
- * Le file arrivate che aspettano il loro momento.
- *
- * Un anello di file preallocate, larghe quanto le barre: nessuna allocazione
- * per evento, per la ragione che questo file ripete ovunque. Accanto a ogni
- * fila, il suo colpo — l'energia dei bassi — perché la camera deve spingersi
- * quando la fila **entra**, non quando arriva: altrimenti precederebbe la fila
- * davanti di tutta la profondità della coda.
- */
-interface Coda {
-  file: Uint8Array[];
-  bassi: Float32Array;
-  /** Il posto della più vecchia. */
-  testa: number;
-  lunghezza: number;
-  /**
-   * L'orologio la sta svuotando: il ciclo gira, e il moto non è ridotto.
-   *
-   * Spenta, le file non ci entrano: vanno dritte nella cascata. È lo stato di
-   * quando la scena dorme, è nascosta o ha perso il contesto — e in tutti e tre
-   * i casi chi la spegne prima la **versa**, così niente resta indietro e
-   * niente arriva fuori ordine.
-   */
-  attiva: boolean;
-}
-
-/** Una coda vuota e spenta, per file larghe `barre`. */
-function nuovaCoda(barre: number): Coda {
-  return {
-    file: Array.from({ length: CAPIENZA }, () => new Uint8Array(barre)),
-    bassi: new Float32Array(CAPIENZA),
-    testa: 0,
-    lunghezza: 0,
-    attiva: false,
-  };
-}
-
-/** Toglie la fila più vecchia e la dà a `entra`. */
-function esce(c: Coda, entra: (fila: Uint8Array, bassi: number) => void): void {
-  if (c.lunghezza <= 0) return;
-  const posto = c.testa;
-  const fila = c.file[posto];
-  c.testa = (posto + 1) % CAPIENZA;
-  c.lunghezza -= 1;
-  if (fila) entra(fila, c.bassi[posto] ?? 0);
-}
-
 /** In che stato è la scena. */
-type Stato = "vivo" | "assopito" | "nascosto" | "perso";
+type Stato = macchina.StatoScena;
+
+/**
+ * Quanto si aspetta il ritorno di un contesto perso, a finestra visibile, prima
+ * di darlo per perduto: vedi «Il contesto che non torna» in `riposoSpettro.ts`.
+ *
+ * Il ripristino arriva di norma in mezzo secondo; cinque secondi sono un
+ * margine largo per un driver che si riavvia, e abbastanza corti perché una
+ * scena che non torna non tenga aperta la presa nel motore per niente.
+ */
+const ATTESA_RITORNO_MS = 5000;
 
 export function Spettro3D({
   barre,
@@ -1954,9 +492,10 @@ export function Spettro3D({
    *
    * Di serie `"auto"`, che è anche il valore di serie della preferenza: chi
    * monta questa tela senza dire niente ottiene quel che ottiene chi non ha mai
-   * scelto. Serve a chi la monta per guardare la skin e non per ascoltare — lo
-   * Studio — dove il livello di qualità di **questo** computer non c'entra
-   * niente con quel che si sta dipingendo.
+   * scelto. Servirebbe a chi la monta per guardare la skin e non per
+   * ascoltare — lo Studio, che oggi non la monta: vedi «La scena finta» in
+   * testa — dove il livello di qualità di **questo** computer non c'entra
+   * niente con quel che si sta dipingendo. Oggi nessuno la passa.
    */
   qualita?: QualitaSpettro | undefined;
   /**
@@ -1966,9 +505,10 @@ export function Spettro3D({
    * generatore deterministico che scrive nello stesso posto: la presa **non** si
    * apre, l'ascolto dell'evento non si registra, e tutto quel che viene dopo —
    * smorzamento, cascata, texture, seguipulsazioni, lettura dei token — è la
-   * stessa identica strada. È il modo in cui lo Studio mostra una scena viva
-   * dove non c'è nessun audio, senza che esista una seconda scena da tenere
-   * allineata a questa.
+   * stessa identica strada. È pensata per lo Studio, per mostrare una scena
+   * viva dove non c'è nessun audio senza che esista una seconda scena da tenere
+   * allineata a questa; ma oggi nessuno passa `"finto"`: vedi «La scena finta»
+   * in testa.
    */
   sorgente?: "motore" | "finto" | undefined;
   onErrore: (e: unknown) => void;
@@ -1977,6 +517,17 @@ export function Spettro3D({
   const stabili = useRef<RisorseStabili | null>(null);
   const risoluzione = useRef<RisorseRisoluzione | null>(null);
   const stato = useRef<Stato>("vivo");
+  /**
+   * La finestra non si vede, qualunque sia lo stato: vedi «La finestra
+   * nascosta è un fatto a parte dallo stato» in `riposoSpettro.ts`.
+   */
+  const nascosta = useRef(false);
+  /**
+   * Lancia un guasto dentro il disegno, perché lo prenda il recinto che sta
+   * intorno alla scena (`RecintoErrori` in `InRiproduzione`) e metta «Riprova»
+   * al posto della tela. Serve al contesto che non torna.
+   */
+  const [, lanciaGuasto] = useState<null>(null);
   /** Il risveglio, che lo monta l'effetto di montaggio: vedi `sveglia`. */
   const sveglia = useRef<() => void>(() => {});
   /** L'ultima fila, in byte, quando entra nella cascata senza passare dalla coda. */
@@ -2226,10 +777,14 @@ export function Spettro3D({
       if (!r || r.barre !== fini.length) return;
 
       // Le prime bande sono i bassi, e i bassi sono il tempo. Un ottavo delle
-      // barre, qualunque sia il loro numero: con 64 sono le otto sotto i 100 Hz,
-      // con 1024 sono le prime centoventotto — la stessa fascia di frequenze, non
-      // lo stesso numero di barre. Si calcola qui, dove i livelli ci sono, ma
-      // spinge la camera solo quando la fila **entra**: vedi `entra`.
+      // barre, qualunque sia il loro numero: con 64 sono le prime otto, con 1024
+      // le prime centoventotto — la stessa fascia di frequenze, non lo stesso
+      // numero di barre. Quale fascia: le bande del nucleo sono logaritmiche
+      // uguali fra 20 Hz e 20 kHz (`rymembra_play::spettro`, `bordi_di`), quindi
+      // l'ottavo basso finisce a 20·1000^(1/8), circa 47 Hz. È il sub-basso, non
+      // «sotto i 100 Hz» come stava scritto: una cassa che sta fra 60 e 90 Hz,
+      // con poco sotto, spinge la camera poco. Si calcola qui, dove i livelli ci
+      // sono, ma spinge la camera solo quando la fila **entra**: vedi `entra`.
       const quante = Math.max(1, fini.length >> 3);
       let bassi = 0;
       for (let i = 0; i < quante; i += 1) bassi += smorzati[i] ?? 0;
@@ -2284,6 +839,7 @@ export function Spettro3D({
     // del componente — e un montaggio ripetuto lo troverebbe fermo su dove era
     // arrivato il precedente.
     stato.current = "vivo";
+    nascosta.current = false;
 
     // La misura vive qui e non nelle risorse: è una proprietà del posto in cui
     // la tela sta, non del contesto, e deve sopravvivere a un contesto perso.
@@ -2336,6 +892,15 @@ export function Spettro3D({
 
     let fotogramma = 0;
     let nato = performance.now();
+    /**
+     * Il tempo della scena, in millisecondi: la somma dei passi dei fotogrammi
+     * **disegnati**. Muove l'oscillazione della camera, che contata da `nato`
+     * correva anche mentre la scena dormiva e al risveglio saltava. `nato`
+     * resta alla sola dissolvenza. Vedi `posaCamera`.
+     */
+    let tempoScena = 0;
+    /** Il ritorno del contesto che si aspetta: vedi `ATTESA_RITORNO_MS`. */
+    let attesaRitorno = 0;
     /** Quando è stato disegnato il fotogramma di prima, per l'inseguitore. */
     let precedente = 0;
     /**
@@ -2396,8 +961,10 @@ export function Spettro3D({
      * riparte. Se il ciclo gira già, esce alla seconda riga.
      *
      * **Non** tocca il rubinetto, e la simmetria è voluta: chi lo chiude lo
-     * riapre. Sono due sole coppie — `addormenta` in pausa contro la ripresa
-     * della riproduzione, `nascondi` contro `mostra` — e chiuderle qui dentro
+     * riapre. Sono due coppie — `addormenta` in pausa contro la ripresa della
+     * riproduzione, `nascondi` contro `mostra` — più il contesto ritrovato,
+     * che la riapre a finestra visibile, e quello che non torna, che la chiude
+     * (`riposoSpettro.ts`); e chiuderle qui dentro
      * vorrebbe dire aprirlo a ogni ingresso, cioè due giri di IPC e due
      * lucchetti sul lettore per ogni tacca di un bordo trascinato mentre la
      * musica è ferma.
@@ -2438,21 +1005,48 @@ export function Spettro3D({
       if (fermo.current) rubinetto(false);
     };
 
-    const nascondi = () => {
-      if (stato.current === "perso" || stato.current === "nascosto") return;
-      stato.current = "nascosto";
-      versa();
-      cancelAnimationFrame(fotogramma);
-      fotogramma = 0;
-      rubinetto(false);
+    /**
+     * Esegue un passo della macchina del riposo (`riposoSpettro.ts`): lo stato,
+     * il ciclo da fermare, la presa, il risveglio, il guasto. Nell'ordine di
+     * sempre: prima lo stato, poi il ciclo, poi la presa, poi il risveglio.
+     */
+    const esegui = (passo: macchina.Passo) => {
+      stato.current = passo.stato;
+      nascosta.current = passo.nascosta;
+      if (passo.ferma) {
+        versa();
+        cancelAnimationFrame(fotogramma);
+        fotogramma = 0;
+      }
+      if (passo.attesa !== null) {
+        // L'attesa del ritorno di un contesto perso, a finestra visibile:
+        // vedi `ATTESA_RITORNO_MS`. Riarmarla la fa ripartire da capo.
+        window.clearTimeout(attesaRitorno);
+        attesaRitorno = 0;
+        if (passo.attesa === "arma") {
+          attesaRitorno = window.setTimeout(() => {
+            attesaRitorno = 0;
+            if (stato.current === "perso") esegui(macchina.scaduto(riposoOra()));
+          }, ATTESA_RITORNO_MS);
+        }
+      }
+      if (passo.rubinetto !== null) rubinetto(passo.rubinetto);
+      if (passo.risveglia) risveglia();
+      if (passo.guasto) {
+        const guasto = new Error(t("spectrum.lost"));
+        lanciaGuasto(() => {
+          throw guasto;
+        });
+      }
     };
+    const riposoOra = (): macchina.Riposo => ({
+      stato: stato.current,
+      nascosta: nascosta.current,
+    });
 
-    const mostra = () => {
-      if (stato.current !== "nascosto") return;
-      stato.current = "assopito";
-      rubinetto(true);
-      risveglia();
-    };
+    const nascondi = () => esegui(macchina.nascondi(riposoOra()));
+
+    const mostra = () => esegui(macchina.mostra(riposoOra()));
     // Le stesse due, per la sorgente sintetica: quando smette di produrre file
     // deve poter fermare anche il disegno, o resterebbe un ciclo che ridisegna
     // sessanta volte al secondo un'immagine che non cambia più. Sono
@@ -2589,12 +1183,18 @@ export function Spettro3D({
       const r = risoluzione.current;
       if (!risorse || !r || !r.texture) return;
       if (stato.current !== "vivo") return;
-      if (silenzio.current > r.copertura) {
-        addormenta();
+      // Il silenzio non salta più il disegno: addormentandosi la scena disegna
+      // l'ultimo fotogramma e non riarma. Vedi `passoCiclo`.
+      const giro = macchina.passoCiclo({
+        silenzio: silenzio.current,
+        copertura: r.copertura,
+        misuraValida: larghezzaPx >= 2 && altezzaPx >= 2,
+      });
+      if (!giro.disegna) {
+        if (giro.addormenta) addormenta();
         return;
       }
-      if (larghezzaPx < 2 || altezzaPx < 2) return;
-      fotogramma = requestAnimationFrame(disegna);
+      if (giro.riarma) fotogramma = requestAnimationFrame(disegna);
 
       const { gl, uniformi: u, manopole: m } = risorse;
       if (risorse.sporco) {
@@ -2637,14 +1237,14 @@ export function Spettro3D({
       // a velocità diverse su due schermi diversi. Il primo fotogramma non ha un
       // prima, e un risveglio lascia un buco lungo quanto vuole: da lì il
       // minimo e il tetto.
-      const dt = precedente > 0 ? Math.min(adesso - precedente, 100) : 16.7;
+      const dt = passoTempo(adesso, precedente);
       precedente = adesso;
+      tempoScena += dt;
       // L'attacco più svelto del rilascio, come per le barre: il colpo deve
       // arrivare, e poi andarsene con calma.
       const inerzia = colpo.current > seguito ? 120 : 450;
       seguito += (colpo.current - seguito) * (1 - Math.exp(-dt / inerzia));
 
-      const tempo = (adesso - nato) / 1000;
       // L'oscillazione: lentissima, e la sua ampiezza cresce col colpo. Meno di
       // quando la memoria era un secondo — un quinto invece di mezzo radiante —
       // perché quel che deve portare il movimento è il girare lento, e il colpo
@@ -2656,11 +1256,10 @@ export function Spettro3D({
       // la musica. Una skin può volere una stanza ferma che pulsa, o una che
       // gira ignorando la grancassa. A uno e uno la formula è identica a prima,
       // numero per numero.
-      const oscilla = ridotto
-        ? 0
-        : Math.sin(tempo * 0.21) *
-          (0.16 * m.oscillazione + seguito * 0.22 * m.pulsazione);
-      const avvicina = ridotto ? 0 : seguito * 0.06 * m.pulsazione;
+      //
+      // Sul tempo **della scena** (`tempoScena`), e con il moto ridotto ferma
+      // del tutto, occhio compreso: vedi `posaCamera`.
+      const posa = posaCamera(ridotto, seguito, tempoScena / 1000, m);
       // L'occhio un po' più in alto di quando la memoria era un secondo: con
       // mezzo minuto di terreno davanti, uno sguardo raso terra lo nasconderebbe
       // tutto dietro la prima cresta. Non tanto da diventare una mappa vista
@@ -2671,12 +1270,12 @@ export function Spettro3D({
         risorse.matrice,
         larghezzaPx / altezzaPx,
         m.lente,
-        Math.sin(oscilla) * 1.5,
-        m.occhio + seguito * 0.03 * m.pulsazione,
-        1.45 - avvicina,
-        Math.sin(oscilla) * 0.4,
-        0.02,
-        -2.2,
+        posa.occhioX,
+        posa.occhioY,
+        posa.occhioZ,
+        posa.bersaglioX,
+        posa.bersaglioY,
+        posa.bersaglioZ,
       );
       gl.uniformMatrix4fv(u.camera, false, risorse.matrice);
       gl.uniform1f(u.mezzaTela, larghezzaPx * 0.5);
@@ -2743,6 +1342,8 @@ export function Spettro3D({
       // buffer della misura nuova. Qui il cambio si vede dal prossimo, che è
       // quando la scheda ha davvero il buffer nuovo.
       if (tetti.current.automatico) regola(adesso, dt);
+      // Dopo l'ultimo fotogramma, e non al posto suo: vedi `passoCiclo`.
+      if (giro.addormenta) addormenta();
     };
 
     // ── La misura, fuori dal ciclo ──────────────────────────────────────────
@@ -2766,8 +1367,8 @@ export function Spettro3D({
       // senza questa riga, dopo un `Ctrl++` a 1,5 il riquadro cresce ma il
       // buffer resta calcolato sulla densità di prima, e la scena continua a
       // disegnarsi a risoluzione più bassa finché il componente non si rimonta.
-      // `onScaleChanged` non copre il caso: quello è il fattore del **monitor**
-      // e non si muove quando a cambiare è lo zoom della finestra.
+      // Il caso opposto — la densità che cambia senza che la misura in pixel
+      // CSS si muova — lo prende l'ascolto della risoluzione, più sotto.
       //
       // Il posto è questo perché lo zoom cambia sempre anche la misura in pixel
       // CSS della tela — è la definizione dello zoom — quindi l'osservatore
@@ -2780,6 +1381,33 @@ export function Spettro3D({
       sveglia.current();
     });
     osserva.observe(canvas);
+
+    // La densità che cambia **senza** che la tela cambi misura in pixel CSS:
+    // la finestra che passa su un monitor con un'altra scala, la scala di
+    // Windows cambiata. Lì l'osservatore di sopra di norma non scatta — il
+    // rettangolo che Windows suggerisce conserva la misura logica.
+    //
+    // Si ascolta `devicePixelRatio` stesso, e non `onScaleChanged` di Tauri,
+    // che stava qui: quello porta il fattore del **monitor**, senza lo zoom
+    // della finestra, e scritto nella densità dava con lo zoom al 125% su un
+    // monitor al 100% una tela all'80% dei pixel, ingrandita dal compositore.
+    // `matchMedia` sulla risoluzione di adesso scatta quando il rapporto è già
+    // aggiornato, e si riarma ogni volta sul valore nuovo: è l'idioma per
+    // ascoltare `devicePixelRatio`, che un evento suo non ce l'ha.
+    let mediaDensita: MediaQueryList | null = null;
+    const cambiaDensita = () => {
+      densitaSistema = window.devicePixelRatio || 1;
+      scala = Math.min(densitaSistema, tettoDensita);
+      applicaMisura(false);
+      sveglia.current();
+      ascoltaDensita();
+    };
+    const ascoltaDensita = () => {
+      mediaDensita?.removeEventListener("change", cambiaDensita);
+      mediaDensita = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      mediaDensita.addEventListener("change", cambiaDensita);
+    };
+    ascoltaDensita();
 
     // ── I token, per invalidazione ──────────────────────────────────────────
     const sporca = () => {
@@ -2863,7 +1491,7 @@ export function Spettro3D({
     // ad area nulla, che `isMinimized` conferma prima che se ne tragga una
     // conclusione. I permessi sono questi due e nient'altro, in
     // `capabilities/default.json`: `core:event:allow-listen` (con `unlisten`)
-    // per i due ascoltatori, `core:window:allow-is-minimized` per la domanda.
+    // per l'ascoltatore, `core:window:allow-is-minimized` per la domanda.
     // Una chiamata nuova a `finestra.*` vuole la sua voce là, o viene rifiutata.
     registra(
       finestra.onResized(({ payload }) => {
@@ -2883,16 +1511,8 @@ export function Spettro3D({
         }
       }),
     );
-    // Il monitor cambia densità, o la finestra passa su un altro monitor: il
-    // tetto si riapplica e la tela si rimisura senza toccare il layout.
-    registra(
-      finestra.onScaleChanged(({ payload }) => {
-        densitaSistema = payload.scaleFactor || 1;
-        scala = Math.min(densitaSistema, tettoDensita);
-        applicaMisura(false);
-        sveglia.current();
-      }),
-    );
+    // Il monitor che cambia densità non si ascolta più da qui: vedi
+    // `ascoltaDensita`, accanto all'osservatore della misura.
 
     // ── Perso e ritrovato ───────────────────────────────────────────────────
     //
@@ -2902,7 +1522,10 @@ export function Spettro3D({
     // c'è più vuol dire chiamare una scheda che non risponde.
     const perduto = (e: Event) => {
       e.preventDefault();
-      stato.current = "perso";
+      // Se non torna in tempo si chiude la presa e si dice: vedi
+      // `ATTESA_RITORNO_MS`. L'attesa la arma la macchina, e solo a finestra
+      // visibile; un'altra perdita prima del ritorno la fa ripartire.
+      esegui(macchina.perso(riposoOra()));
       cancelAnimationFrame(fotogramma);
       fotogramma = 0;
       stabili.current = null;
@@ -2917,15 +1540,24 @@ export function Spettro3D({
     // ricarica dagli anelli — che sono sopravvissuti perché stanno in memoria
     // normale. Mezzo minuto di musica attraversa un riavvio del driver.
     const ritrovato = () => {
+      // L'attesa la toglie il passo della macchina, qui sotto; ma se le risorse
+      // non si ricreano si passa da `scaduto`, e l'attesa va tolta anche lì.
+      window.clearTimeout(attesaRitorno);
+      attesaRitorno = 0;
       const vecchia = risoluzione.current;
       const nuove = creaStabili(canvas);
       if (!nuove) {
+        // Tornato e non ricreato: come se non fosse tornato. La presa si
+        // chiude e il recinto lo dice, invece di un vuoto muto.
         console.error("spettro 3D: il contesto non è tornato");
+        esegui(macchina.scaduto(riposoOra()));
         return;
       }
       stabili.current = nuove;
-      stato.current = "assopito";
       nato = performance.now();
+      // La fase dell'oscillazione riparte con la dissolvenza, come prima
+      // ripartiva con `nato`: dietro il velo il salto non si vede.
+      tempoScena = 0;
       precedente = 0;
       // Con `vecchia` alla stessa risoluzione la memoria si riprende; se nel
       // frattempo qualcuno ha cambiato il numero di barre, gli anelli si rifanno
@@ -2938,7 +1570,9 @@ export function Spettro3D({
         vecchia,
       );
       applicaMisura(true);
-      risveglia();
+      // Dove tornare lo decide la macchina: «nascosto» se la finestra è giù,
+      // altrimenti «assopito», la presa riaperta e il risveglio.
+      esegui(macchina.ritrovato(riposoOra()));
     };
     canvas.addEventListener("webglcontextlost", perduto);
     canvas.addEventListener("webglcontextrestored", ritrovato);
@@ -2951,6 +1585,8 @@ export function Spettro3D({
       cambiaTetti.current = () => {};
       cancelAnimationFrame(fotogramma);
       window.clearInterval(rete);
+      window.clearTimeout(attesaRitorno);
+      mediaDensita?.removeEventListener("change", cambiaDensita);
       media.removeEventListener("change", cambiaMoto);
       osserva.disconnect();
       radice.disconnect();
@@ -3060,7 +1696,7 @@ export function Spettro3D({
     // A finestra nascosta no: là comanda `mostra`, e riaprire la presa per una
     // scena che nessuno sta guardando è esattamente il costo che la macchina del
     // riposo esiste per non pagare.
-    if (inPausa || !disponibile.current || stato.current === "nascosto") return;
+    if (inPausa || !disponibile.current || nascosta.current) return;
     rubinetto(true);
     sveglia.current();
   }, [inPausa, rubinetto]);

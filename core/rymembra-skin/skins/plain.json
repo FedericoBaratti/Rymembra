@@ -127,9 +127,9 @@
       "color.text.2": "rgba(16, 16, 22, 0.68)",
       "color.text.3": "rgba(16, 16, 22, 0.64)",
 
-      "color.accent": "#6752d6",
-      "color.accent.soft": "rgba(103, 82, 214, 0.14)",
-      "color.accent.glow": "rgba(103, 82, 214, 0.28)",
+      "color.accent": "#604ace",
+      "color.accent.soft": "rgba(96, 74, 206, 0.14)",
+      "color.accent.glow": "rgba(96, 74, 206, 0.28)",
 
       "color.danger": "#c41f26",
       "color.danger.soft": "rgba(196, 31, 38, 0.12)",

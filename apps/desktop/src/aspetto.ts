@@ -112,7 +112,7 @@ export type MovimentoUtente = "sistema" | "ridotto";
  * # Perché un attributo e non una variabile
  *
  * Perché il rimedio è già scritto e legge un attributo. Il blocco
- * `@media (prefers-reduced-motion: reduce)` di `stile.css` azzera
+ * `@media (prefers-reduced-motion: reduce)` di `stile/movimento.css` azzera
  * `--motion-scale` su `:root, [data-motion]` e spegne a mano l'unica animazione
  * infinita che una scala a zero non fermerebbe. La preferenza dell'utente vuole
  * **esattamente quelle regole**, senza la media query: un secondo selettore

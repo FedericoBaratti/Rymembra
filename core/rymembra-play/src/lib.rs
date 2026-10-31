@@ -249,7 +249,7 @@ pub(crate) struct Condiviso {
     //
     // Le caselle qui sotto a riposo valgono zero, e a zero la callback fa
     // esattamente quel che faceva prima che esistessero: la prova
-    // `il_percorso_inattivo_e_identico_al_bit` in `uscita.rs` lo tiene vero.
+    // `il_percorso_inattivo_e_identico_al_bit` in `uscita/prove.rs` lo tiene vero.
     /// Quante volte l'anello è stato svuotato.
     ///
     /// Cresce in `Contesto::scarta_in_volo`, **dopo** che i fotogrammi sono
@@ -266,6 +266,28 @@ pub(crate) struct Condiviso {
     /// differenza con [`Condiviso::fotogrammi`] è la riserva — quanto si può
     /// saltare in avanti senza aspettare il decodificatore.
     pub spinti: AtomicU64,
+    /// Fino a quale fotogramma di questa epoca l'anello porta campioni alzati,
+    /// che la callback deve passare per [`limita`]. Zero: nessuno.
+    ///
+    /// # Perché un numero e non una bandiera
+    ///
+    /// Dalla 3.0 la correzione ReplayGain sta nei campioni, e non più nel
+    /// guadagno che la callback legge: guardando solo quello, la callback non
+    /// vedeva mai niente sopra l'unità — il volume è al più uno — e un brano
+    /// alzato senza picco noto, o la somma di una dissolvenza, arrivava alla
+    /// conversione e ci veniva tagliato di netto. Chi alza è il filo della
+    /// decodifica, e lo sa blocco per blocco; ma l'anello sta secondi dietro
+    /// di lui, quindi una bandiera abbassata quando spinge campioni non alzati
+    /// toglierebbe la piega a quelli alzati ancora in viaggio.
+    ///
+    /// Il filo la porta a `spinti` dopo ogni blocco alzato — una correzione
+    /// sopra l'unità, la coda del brano prima con la sua, una sovrapposizione
+    /// in corso — e la azzera con l'epoca, in `Contesto::scarta_in_volo`,
+    /// insieme a [`Condiviso::fotogrammi`]. La callback piega i blocchi che
+    /// cominciano prima di quel fotogramma: il limitatore resta in fondo alla
+    /// catena, dopo il volume, che è dove la piega dipende solo da quel che
+    /// esce davvero.
+    pub piega_fino: AtomicU64,
     /// L'istante in cui far ripartire la musica, in nanosecondi di
     /// [`crate::tempo`], già al netto della latenza dichiarata. Zero: nessuno.
     ///
@@ -284,15 +306,6 @@ pub(crate) struct Condiviso {
     /// Di quante parti per milione accelerare (positivo) o rallentare
     /// (negativo) il consumo dell'anello. Vedi `uscita::Andamento::accumulo`.
     pub deriva_ppm: AtomicI32,
-    /// Una sessione d'ascolto insieme è aperta: il flusso non va mai a riposo.
-    ///
-    /// Il riposo costa la ripresa — qualche decina di millisecondi per
-    /// rimettere in moto il dispositivo — e una ripresa programmata a un istante
-    /// preciso non può pagarli. Vedi `uscita::Sonno::passo`.
-    pub sessione: AtomicBool,
-    /// Il flusso è a riposo: lo scrive il filo dell'uscita quando lo ferma e
-    /// quando lo rimette in moto. Nasce vero, perché il flusso nasce fermo.
-    pub dorme: AtomicBool,
     /// Quante volte il dispositivo ha detto di essere rimasto senza campioni.
     ///
     /// Non è una perdita — vedi `uscita::codice_errore` — ma per chi misura
@@ -321,13 +334,12 @@ impl Condiviso {
             in_lettura: std::sync::Mutex::new(None),
             epoca: AtomicU32::new(0),
             spinti: AtomicU64::new(0),
+            piega_fino: AtomicU64::new(0),
             avvio_ns: AtomicU64::new(0),
             gradino: AtomicI64::new(0),
             in_correzione: AtomicBool::new(false),
             gradini_fatti: AtomicU64::new(0),
             deriva_ppm: AtomicI32::new(0),
-            sessione: AtomicBool::new(false),
-            dorme: AtomicBool::new(true),
             xrun: AtomicU64::new(0),
             ancora: ancora::Sigillo::default(),
         })
@@ -405,7 +417,10 @@ pub struct Livello {
     /// È il picco **vero** della misura — quello fra un campione e l'altro, che
     /// è dove una conversione analogica satura davvero — e per un brano non
     /// ancora misurato non c'è: allora il guadagno si applica senza tetto, come
-    /// prima della 3.0, e a tenere a bada l'eccesso resta [`limita`].
+    /// prima della 3.0, e a tenere a bada l'eccesso resta [`limita`], nella
+    /// callback. Perché ci arrivi, il filo della decodifica segna i blocchi che
+    /// ha alzato in `Condiviso::piega_fino`: il guadagno che la callback legge
+    /// è solo il volume, e da solo non supera mai l'unità.
     pub picco: Option<f32>,
 }
 

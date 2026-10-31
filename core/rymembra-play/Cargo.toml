@@ -149,3 +149,16 @@ md-5 = "0.10"
 
 [lints]
 workspace = true
+
+# Due esempi hanno delle prove loro, sui conti che fanno da sé: senza
+# `test = true` `cargo test` li compilerebbe e basta, e le prove non
+# girerebbero mai. Si eseguono solo le `#[test]`: il `main` — che apre i
+# dispositivi o scrive un file — resta fuori. Gli altri esempi restano quel che
+# erano, trovati da soli.
+[[example]]
+name = "insieme_locale"
+test = true
+
+[[example]]
+name = "genera_clic"
+test = true

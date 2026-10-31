@@ -18,11 +18,17 @@
 //! è una proprietà dell'albero invece di un divieto imposto su di esso.
 //!
 //! **Non esce dallo schermo: è aritmetica, e decidibile *perché* il vocabolario
-//! è chiuso.** Ogni misura è un numero che si può sommare prima di disegnare:
-//! [`TrackSize::Fixed`] accetta solo `px` e `rem` — niente `%`, `vw`, `cqw`,
-//! che al momento di validare non esistono ancora — ogni contenitore ha
-//! esattamente un figlio [`TrackSize::Fill`] che assorbe il resto, e la somma
-//! dei fissi fratelli è confrontata con [`SHELL_FIXED_BUDGET`].
+//! è chiuso.** Ogni misura fissa è un numero che si può sommare prima di
+//! disegnare: [`TrackSize::Fixed`] accetta solo `px` e `rem` — niente `%`,
+//! `vw`, `cqw`, che al momento di validare non esistono ancora — ogni
+//! contenitore ha esattamente un figlio [`TrackSize::Fill`] che assorbe il
+//! resto, e la somma dei fissi fratelli è confrontata con il budget del suo
+//! asse: [`SHELL_FIXED_BUDGET`] in larghezza, [`SHELL_FIXED_BUDGET_COLONNA`] in
+//! altezza. È una garanzia sui fissi e sulla barra laterale, la sola misura
+//! `hug` che si conosce prima di disegnare: un `hug` che cresce col suo
+//! contenuto — un'intestazione, un `now-playing` — non entra nel conto, e il
+//! `fill` lo paga. Fino alla 3.2.0 di prova questa nota diceva «è aritmetica» senza
+//! riserve, e le colonne si misuravano col budget della larghezza.
 //!
 //! # Flex e non grid, deliberatamente
 //!
@@ -129,12 +135,34 @@ pub const MAX_SHELL_NODES: usize = 64;
 /// dell'app sono montati insieme. L'albero di serie costa 3.
 pub const SHELL_COST_BUDGET: u32 = 24;
 
-/// La somma massima delle misure fisse fra fratelli, in pixel.
+/// La somma massima delle misure fisse fra fratelli di una riga, in pixel.
 ///
 /// Scelto contro il minimo di finestra di 880px perché al `Fill` restino almeno
 /// 240px, che è la larghezza sotto la quale un elenco di brani smette di essere
-/// un elenco di brani.
+/// un elenco di brani. Vale per le righe, che si dividono la **larghezza**; le
+/// colonne hanno il loro, [`SHELL_FIXED_BUDGET_COLONNA`].
 pub const SHELL_FIXED_BUDGET: f64 = 640.0;
+
+/// La somma massima delle misure fisse fra fratelli di una colonna, in pixel.
+///
+/// Lo stesso ragionamento di [`SHELL_FIXED_BUDGET`], contro l'altezza minima
+/// della finestra (`minHeight: 560` in `tauri.conf.json`) invece che contro la
+/// larghezza: al `Fill` restano 240px. Fino alla 3.2.0 di prova le colonne usavano il
+/// budget delle righe, e 640px di fissi in una finestra alta 560 lasciavano la
+/// riga con navigazione e pagina a zero, coi fissi che sbordavano di 80px. La
+/// barra del titolo non conta: i tre bottoni stanno sopra l'angolo e i vicini
+/// cedono di lato, non in altezza (vedi `--barra-titolo-h` in `stile.css`).
+pub const SHELL_FIXED_BUDGET_COLONNA: f64 = 320.0;
+
+/// Quanto è larga la barra laterale chiusa e aperta, in pixel.
+///
+/// Sono `--rail-w` e `--rail-w-expanded` di `stile.css` — i token
+/// `layout.rail` e `layout.railExpanded` — e servono a una cosa sola: contare
+/// la barra fra i fissi di una riga, dove sta nel flusso a `hug`. Una skin può
+/// cambiarli, e la validazione dello scafale non vede i token: si contano i
+/// valori di serie, che è quel che la barra prende quando nessuno li tocca.
+const BARRA_CHIUSA: f64 = 68.0;
+const BARRA_APERTA: f64 = 240.0;
 
 /// La misura fissa più piccola che ha senso, in pixel.
 pub const FIXED_MIN: f64 = 24.0;
@@ -1223,19 +1251,51 @@ fn zona(
 
     // La somma dei fissi. Si può fare **perché** il vocabolario è chiuso: ogni
     // misura fissa è px o rem, cioè un numero che esiste già adesso.
+    //
+    // Il budget è quello dell'asse su cui la zona divide lo spazio: larghezza
+    // per una riga, altezza per una colonna. In una riga conta anche la barra
+    // laterale montata a `hug`, che nel flusso prende la sua larghezza di
+    // sicuro. Gli altri `hug` no: la loro misura dipende dal contenuto e non la
+    // si sa prima di disegnare, e i tre che galleggiano — `player`, `queue`,
+    // `selection-bar` — e `ambient` non occupano il flusso.
+    let riga = corrente.kind.is_row();
     let somma: f64 = corrente
         .children
         .iter()
         .filter_map(|figlio| figlio.size().in_px())
         .sum();
-    if somma > SHELL_FIXED_BUDGET {
+    let barra: f64 = if riga {
+        corrente
+            .children
+            .iter()
+            .filter_map(larghezza_della_barra)
+            .sum()
+    } else {
+        0.0
+    };
+    let budget = if riga {
+        SHELL_FIXED_BUDGET
+    } else {
+        SHELL_FIXED_BUDGET_COLONNA
+    };
+    if somma + barra > budget {
+        let piu_la_barra = if barra > 0.0 {
+            format!(", più {}px della barra laterale,", num(barra))
+        } else {
+            String::new()
+        };
+        let asse = if riga {
+            "in larghezza"
+        } else {
+            "in altezza, contro i 560px della finestra più bassa"
+        };
         miei.push(guasto(
             path,
             format!(
-                "le misure fisse di questa zona sommano {}px sul budget di {}px: \
-                 al «fill» resterebbe meno di quanto serve a un elenco di brani",
+                "le misure fisse di questa zona sommano {}px{piu_la_barra} sul budget di {}px \
+                 {asse}: al «fill» resterebbe meno di quanto serve a un elenco di brani",
                 num(somma),
-                num(SHELL_FIXED_BUDGET)
+                num(budget)
             ),
         ));
     }
@@ -1266,6 +1326,21 @@ fn zona(
             );
         }
     }
+}
+
+/// La larghezza che la barra laterale prende in una riga quando è montata a
+/// `hug`, o `None` per ogni altro figlio. Vedi [`BARRA_CHIUSA`].
+fn larghezza_della_barra(figlio: &LayoutNode) -> Option<f64> {
+    let LayoutNode::Widget(istanza) = figlio else {
+        return None;
+    };
+    if istanza.def.name != "navigation" || istanza.size != TrackSize::Hug {
+        return None;
+    }
+    Some(match istanza.option("wide") {
+        Some(OptionValue::Flag(true)) => BARRA_APERTA,
+        _ => BARRA_CHIUSA,
+    })
 }
 
 fn misura(size: TrackSize, path: &str, problemi: &mut Vec<ShellIssue>) {
@@ -1717,6 +1792,56 @@ mod tests {
         let detto = messaggi(&radice);
         assert!(detto.contains("800px"), "{detto}");
         assert!(detto.contains("640px"), "{detto}");
+    }
+
+    /// Un widget montato con una misura fissa.
+    fn fisso(nome: &str, px: f64) -> LayoutNode {
+        LayoutNode::Widget(WidgetInstance {
+            size: TrackSize::Fixed(Length::px(px)),
+            ..WidgetInstance::nuovo(atteso(nome))
+        })
+    }
+
+    #[test]
+    fn una_colonna_di_fissi_non_supera_l_altezza_minima() {
+        // 640px di fissi in colonna stavano nel budget pensato per la
+        // larghezza, ma la finestra è alta 560 al minimo: la riga con
+        // navigazione e pagina scendeva a zero.
+        let riga = LayoutZone::nuova(ZoneKind::Row, TrackSize::Fill).con(vec![
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("navigation"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("content"))),
+        ]);
+        let radice = LayoutZone::nuova(ZoneKind::Column, TrackSize::Fill).con(vec![
+            LayoutNode::Zone(riga),
+            fisso("cover-large", 480.0),
+            fisso("rating", 160.0),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("player"))),
+        ]);
+        let detto = messaggi(&radice);
+        assert!(detto.contains("640px"), "{detto}");
+        assert!(detto.contains("320px"), "{detto}");
+    }
+
+    #[test]
+    fn la_barra_laterale_conta_nella_riga() {
+        // Barra aperta 240 + colonna 348 + copertina 292 = 880, cioè tutta la
+        // finestra più stretta: al contenuto non restava niente.
+        let radice = LayoutZone::nuova(ZoneKind::Row, TrackSize::Fill).con(vec![
+            LayoutNode::Widget(
+                WidgetInstance::nuovo(atteso("navigation")).con("wide", OptionValue::Flag(true)),
+            ),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("content"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("column"))),
+            fisso("cover-large", 292.0),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("player"))),
+        ]);
+        let detto = messaggi(&radice);
+        assert!(detto.contains("640px"), "{detto}");
+        assert!(detto.contains("240px"), "{detto}");
+        // Chiusa è larga 68: 708, ancora troppo.
+        let mut chiusa = radice.clone();
+        chiusa.children[0] = LayoutNode::Widget(WidgetInstance::nuovo(atteso("navigation")));
+        assert!(messaggi(&chiusa).contains("68px"), "{}", messaggi(&chiusa));
     }
 
     #[test]

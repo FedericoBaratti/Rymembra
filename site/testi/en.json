@@ -1,7 +1,7 @@
 {
   "meta": {
     "titolo": "Rymembra — free music player for Windows: FLAC, gapless, even loudness",
-    "descrizione": "Free, open-source music player for Windows: gapless FLAC and MP3 at even loudness, playlists from Spotify, free catalogs, and listening together on your LAN.",
+    "descrizione": "Free, open-source music player for Windows: gapless FLAC and MP3 at even loudness, local and cloud folders, Spotify playlists, free catalogs, LAN listening.",
     "immagine": "Rymembra, a music player for Windows"
   },
   "nav": {
@@ -59,7 +59,8 @@
     "punti": [
       "Folders watch themselves: copy an album in, and seconds later it's in the library.",
       "On a NAS or a mapped drive, a share that doesn't answer for a moment makes tracks unverified, never gone.",
-      "A scan that would remove many tracks shows them to you and asks first."
+      "A scan that would remove many tracks shows them to you and asks first.",
+      "A music folder can also live on OneDrive, Google Drive, Dropbox or a WebDAV server like Nextcloud, read-only, through an app you register yourself — the program walks you through it; OneDrive needs a free Azure account."
     ]
   },
   "cataloghi": {

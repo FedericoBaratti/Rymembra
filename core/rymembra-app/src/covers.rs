@@ -359,7 +359,22 @@ impl CoverStore {
 
         if let Ok(meta) = std::fs::metadata(&full) {
             // Già presente: si legge la dimensione senza decodificare. È il
-            // caso normale di una riscansione, e deve costare quanto uno `stat`.
+            // caso normale di una riscansione, e deve costare quanto uno `stat`
+            // — due, con quello della miniatura.
+            //
+            // La miniatura si guarda anche lei: l'ordine di scrittura qui sotto
+            // tiene «piena ⇒ miniatura», ma un programma di pulizia che toglie
+            // i `*.t.jpg`, o una cancellazione riuscita a metà, la rompono, e
+            // da lì la copertina sarebbe un segnaposto negli elenchi per
+            // sempre: questo ramo era l'unico che poteva rifarla, e non la
+            // guardava. Si rifà dall'originale, come la prima volta; succede
+            // di rado, e allora si paga una decodifica.
+            let miniatura = self.thumbnail_path_for(&hash);
+            if !miniatura.exists() {
+                let piena = fit(&decodifica(original, &hash)?, MAX_LATO);
+                let byte = encode_jpeg(&fit(&piena, MAX_LATO_MINIATURA), QUALITA_MINIATURA, &hash)?;
+                scrivi_atomico(&miniatura, &byte)?;
+            }
             let (width, height) = imagesize::blob_size(original)
                 .map(|s| {
                     (
@@ -406,10 +421,11 @@ impl CoverStore {
         // [`crate::scrittura`].
         //
         // La miniatura **prima** della piena, ed è l'ordine che conta: il ramo
-        // «già presente» guarda soltanto la piena, quindi una piena scritta e
-        // una miniatura persa a metà sarebbero una copertina che nelle griglie
-        // non compare mai più. Al contrario, una miniatura senza la piena si
-        // riscrive da sé alla prossima scansione di quel file.
+        // «già presente» decide guardando la piena, quindi una piena scritta e
+        // una miniatura persa a metà sarebbero una copertina senza miniatura
+        // finché quel ramo non la rifà (costa una decodifica). Al contrario,
+        // una miniatura senza la piena si riscrive da sé alla prossima
+        // scansione di quel file.
         scrivi_atomico(&self.thumbnail_path_for(&hash), &bytes_miniatura)?;
         scrivi_atomico(&full, &bytes_piena)?;
 
@@ -455,15 +471,22 @@ impl CoverStore {
     /// condivisione, una cartella diventata di sola lettura — resta dov'è e
     /// semplicemente non si conta: la sua riga è già andata, e
     /// [`CoverStore::spazza_avanzi`] lo ritroverà alla pulizia dopo.
+    ///
+    /// La piena per prima, e se resta, restano anche media e miniatura: è
+    /// l'invariante «piena ⇒ miniatura» su cui conta il ramo «già presente» di
+    /// [`CoverStore::store`], se la stessa copertina torna in libreria prima
+    /// della pulizia dopo.
     #[must_use]
     pub fn togli_tutte(&self, hashes: &[String]) -> Liberato {
         let mut liberato = Liberato::default();
         for hash in hashes {
-            for percorso in [
-                self.path_for(hash),
-                self.percorso_media(hash),
-                self.thumbnail_path_for(hash),
-            ] {
+            let piena = self.path_for(hash);
+            let tolta = togli_file(&piena);
+            if tolta.is_none() && piena.exists() {
+                continue;
+            }
+            liberato.aggiungi(tolta);
+            for percorso in [self.percorso_media(hash), self.thumbnail_path_for(hash)] {
                 liberato.aggiungi(togli_file(&percorso));
             }
         }
@@ -1402,6 +1425,55 @@ mod tests {
         let assente = "ab".repeat(32);
         assert_eq!(store.media(&assente).expect("nessun guasto"), None);
         assert!(!store.percorso_media(&assente).exists());
+    }
+
+    #[test]
+    fn una_miniatura_persa_si_rifa_alla_riscansione() {
+        // Il ramo «già presente» guardava solo la piena: una miniatura persa
+        // (un programma di pulizia, una cancellazione riuscita a metà) non si
+        // rifaceva più, e la copertina restava un segnaposto negli elenchi.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let originale = png(300, 300);
+        let prima = store.store(&originale, CoverSource::Tag).expect("prima");
+        std::fs::remove_file(store.thumbnail_path_for(&prima.hash)).expect("via la miniatura");
+
+        let seconda = store.store(&originale, CoverSource::Tag).expect("seconda");
+        assert!(seconda.already_present);
+        assert!(
+            store.thumbnail_path_for(&seconda.hash).exists(),
+            "la miniatura non è tornata"
+        );
+        assert!(store.tinta(&seconda.hash).is_some(), "e la tinta con lei");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn una_piena_che_non_si_lascia_togliere_tiene_la_sua_miniatura() {
+        // Aperta da un altro processo senza condivisione — un antivirus, un
+        // indicizzatore — la piena resta: la miniatura deve restare con lei,
+        // o «piena ⇒ miniatura» si rompe e la copertina che torna in uso non
+        // ha più la sua miniatura.
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let salvata = store
+            .store(&png(300, 300), CoverSource::Tag)
+            .expect("salvataggio");
+        let tenuta = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(store.path_for(&salvata.hash))
+            .expect("aperta senza condivisione");
+
+        let tolti = store.togli_tutte(std::slice::from_ref(&salvata.hash));
+        assert!(store.path_for(&salvata.hash).exists(), "la piena è rimasta");
+        assert!(
+            store.thumbnail_path_for(&salvata.hash).exists(),
+            "la miniatura se n'è andata senza la piena"
+        );
+        assert_eq!(tolti.file, 0);
+        drop(tenuta);
     }
 
     #[test]

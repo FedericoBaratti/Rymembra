@@ -253,6 +253,28 @@ pub const MIGRATIONS: &[Migration] = &[
         // Una tabella nuova e sola, senza chiavi esterne: non tocca niente.
         ricostruisce: false,
     },
+    Migration {
+        version: 36,
+        name: "nuvola",
+        sql: include_str!("schema/036_nuvola.sql"),
+        // Tre tabelle nuove, una cache, senza chiavi esterne: non tocca niente.
+        ricostruisce: false,
+    },
+    Migration {
+        version: 37,
+        name: "nuvola-app",
+        sql: include_str!("schema/037_nuvola_app.sql"),
+        // Una tabella nuova e due `ADD COLUMN` su `nuvola_conti`, che SQLite
+        // aggiunge senza ricostruire; nessuna chiave esterna.
+        ricostruisce: false,
+    },
+    Migration {
+        version: 38,
+        name: "vicini-indice",
+        sql: include_str!("schema/038_vicini_indice.sql"),
+        // Un indice nuovo e basta: nessuna tabella si rifà.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

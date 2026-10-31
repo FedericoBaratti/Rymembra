@@ -53,6 +53,8 @@ import type { Chiave } from "../lingue";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
 import { dataOra, numero } from "../formato";
+import { vinceLUltima } from "../ultima";
+import { pesoInMegabyte } from "./pesoProfilo";
 
 /** Come si legge una data del profilo. */
 function quandoScritto(ms: number): string {
@@ -60,17 +62,19 @@ function quandoScritto(ms: number): string {
 }
 
 /**
- * Il peso di un file, in megabyte.
+ * Il peso di un file, in megabyte: la frase.
  *
  * Non in `formato.ts` perché è l'unico posto dell'interfaccia in cui un numero
  * di byte si mostra a qualcuno, e una funzione condivisa con un solo chiamante
  * è una funzione che si va a cercare per niente. Megabyte fissi e non l'unità
- * più adatta: un profilo sta fra i cinque e i cinquecento, e un'unità che
+ * più adatta: un profilo pieno sta fra i cinque e i cinquecento, e un'unità che
  * cambia da sola renderebbe due esportazioni non confrontabili a colpo
- * d'occhio.
+ * d'occhio. Uno appena installato invece pesa qualche decina di kB, e
+ * l'arrotondamento al mega gli faceva dire «0 MB»: vedi `pesoInMegabyte`.
  */
-function inMegabyte(byte: number): number {
-  return Math.round(byte / (1024 * 1024));
+function pesoDelFile(byte: number): string {
+  const mb = pesoInMegabyte(byte);
+  return mb === null ? t("profile.weighs.less") : t("profile.weighs", { peso: mb });
 }
 
 /** Un valore, accorciato quanto basta a stare su una riga. */
@@ -131,6 +135,8 @@ export function Profilo({
    * conferma che non c'è più, e scriverlo rimetterebbe in piedi il pannello.
    */
   const giro = useRef(0);
+  /** Il turno di ogni piano chiesto: vedi `ripiana`. */
+  const turnoPiano = useRef(vinceLUltima());
   /** L'ultima esportazione, per dire cosa ha portato e quanto pesa. */
   const [uscito, setUscito] = useState<EsportazioneProfilo | null>(null);
   /** Le destinazioni scelte per le radici che di qua non esistono. */
@@ -210,6 +216,14 @@ export function Profilo({
   ) => {
     if (!daApplicare) return;
     const mio = giro.current;
+    // Il giro dice se nel frattempo si è applicato o lasciato stare; il turno
+    // dice se nel frattempo è partito un altro piano. Senza il secondo, due
+    // rimappature in fila — una destinazione lenta da campionare sulla rete,
+    // poi quella giusta — tornavano in ordine qualunque, e vinceva l'ultima ad
+    // arrivare: a schermo i numeri della destinazione sbagliata, mentre
+    // «Applica» portava quella giusta. Vince l'ultima chiesta (`ultima.ts`), e
+    // l'attesa si spegne quando torna lei, non la prima che torna.
+    const ultimo = turnoPiano.current();
     const conto = (async () => {
       try {
         setRipianificando(true);
@@ -218,13 +232,13 @@ export function Profilo({
           prossime,
           unisciComunque,
         );
-        if (mio === giro.current) {
+        if (mio === giro.current && ultimo()) {
           setDaApplicare({ percorso: daApplicare.percorso, piano });
         }
       } catch (e) {
-        onErrore(e);
+        if (ultimo()) onErrore(e);
       } finally {
-        setRipianificando(false);
+        if (ultimo()) setRipianificando(false);
       }
     })();
     pianoInVolo.current = conto;
@@ -356,7 +370,7 @@ export function Profilo({
             ))}
           </ul>
           <p className="nota">
-            {t("profile.weighs", { peso: inMegabyte(uscito.byte) })}
+            {pesoDelFile(uscito.byte)}
           </p>
           {uscito.pesante && (
             <p className="nota avviso-profilo">{t("profile.heavy")}</p>

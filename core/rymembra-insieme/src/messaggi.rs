@@ -182,7 +182,8 @@ pub enum Messaggio {
     /// Tutto quel che serve per specchiare la sessione. Host → membri.
     ///
     /// Intero ogni volta e non a differenze: mille voci sono un centinaio di
-    /// kilobyte, cambiano a gesti e non a colpi d'orologio, e uno stato
+    /// kilobyte compressi sul filo (0,3–0,6 MB di JSON: vedi «La compressione»
+    /// in `cornice`), cambiano a gesti e non a colpi d'orologio, e uno stato
     /// intero non si può applicare male perché se ne è perso uno prima.
     Stato(StatoSessione),
     /// «Questo punto si sente a quest'istante», sull'orologio dell'host.

@@ -77,6 +77,7 @@ music.*
 | Source | Content | Local copy |
 | --- | --- | --- |
 | **Local files** | The main library. Scanning of the folders you point at. | Already yours |
+| **Cloud folders** | Your own folders on OneDrive, Google Drive, Dropbox (through an app you register at each, guided step by step in the program) or a WebDAV server (Nextcloud, ownCloud, pCloud, Koofr…), read-only | Only what you play, in a capped cache |
 | **Internet Archive** | Live Music Archive (over 250,000 concerts by artists who authorized the recording), netlabels, public domain | Yes, when the item's license allows it |
 | **Audius** | Tracks published by artists under an open license | Yes, when the artist has enabled downloading **and** the license allows it |
 | **Spotify GDPR archive** | Playlists, saved tracks and albums, followed artists, complete listening history | Metadata, not audio |
@@ -99,7 +100,8 @@ writing it to disk. See [Known limits](#known-limits-and-planned-work).
 
 The same sources in the program, under *Settings → Services → Import from a
 service* («Servizi → Importa da un servizio»). The «?» in the corner of the card
-opens the guide to the section, closed in the picture. What the rows do:
+opens the technical documentation of the section (in English), closed in the
+picture. What the rows do:
 
 - **«Da un link»** (*From a link*) takes a track, an album or a collection from
   archive.org or audius.co, with no account and no API key. Rymembra reads what
@@ -183,8 +185,9 @@ a longer listening history than the public API offers.
   manual and automatic playlists, ratings, favorites and listening history. A
   track can leave it too: «Remove from library» takes the row out and leaves
   the file where it is, «Delete from disk» sends the file to the Recycle Bin —
-  or, on a network share, where there is no Recycle Bin, asks you to confirm a
-  permanent deletion — and both ask first. A correction you made by hand
+  or, on a network share or a removable drive (a USB stick, an SD card), where
+  there is no Recycle Bin, asks you to confirm a permanent deletion — and both
+  ask first. A correction you made by hand
   survives its track disappearing and coming back, and so do its plays,
   rating, heart and playlist places, for ninety days.
 - **Music on a NAS or a mapped drive.** A folder the share would not list for
@@ -197,10 +200,10 @@ a longer listening history than the public API offers.
   reliable enough, nothing is written at all. What it works out is annotated in
   a table of its own, so a correction you made by hand always wins over it and
   forgetting the whole thing is one button — see
-  [`PRIVACY.md`](PRIVACY.md) § 8. Tags an older version already wrote into your
-  files are left alone rather than reverted on your behalf; the way back is a
-  separate button of its own, labelled with the fact that it writes into the
-  files, and it is kept for one release and then removed.
+  [`PRIVACY.md`](PRIVACY.md) § 8. Tags an older version (2.3.0 or earlier)
+  already wrote into your files are left alone: the button that could write
+  the old ones back was kept for a while after 2.3.1 and removed in 3.2.0, so
+  nothing in Rymembra opens the music files you already had for writing.
 - **Folders the way foobar2000 shows them**: a tree read out of the library
   instead of the disk — so it opens instantly and never touches a network
   share — with files as leaves in natural order, a panel with the tracks of
@@ -211,8 +214,11 @@ a longer listening history than the public API offers.
   renamed or deleted there enters or leaves the library a few seconds later,
   without a scan: only the folders that changed are looked at again, and a
   change that would remove too many tracks at once removes nothing. Network
-  shares, where Windows does not always tell, can be checked every five
-  minutes instead (off by default: it keeps a NAS awake).
+  shares are watched too, by default: where the share sends notifications
+  they are used, plus a realignment at startup, on waking, when the network
+  comes back and every 30 minutes; where it cannot, a realignment every five
+  minutes. It can be limited to the folders on this computer, or switched
+  off, in Settings → Folders and scanning (a NAS that must sleep wants that).
 - **Explore**: a free-text search across the Internet Archive and Audius, from
   which a track can be listened to without ever being written to disk. A track
   kept this way lives in the library like any other — it is searchable, it sits
@@ -222,10 +228,13 @@ a longer listening history than the public API offers.
   side are public archives that host the project for free.
 - **Synced lyrics** from LRCLIB, with no key and no account, and a way to time
   them yourself when nobody has: you tap once per line, and then — optionally —
-  once per word, which writes an `.a2.lrc` beside the ordinary `.lrc` that
-  every other player can still read. A constant drift is corrected with two
-  buttons that are **always** reachable, not only when the fit is judged poor:
-  a text that sits inside the right duration can still be half a second early.
+  once per word. Rymembra keeps what you timed in its library; switch on «Also
+  write synced lyrics to an .lrc next to the track» (Settings › Folders and
+  scanning › Lyrics) to also get an `.lrc` beside the track — and, with the
+  words, an `.a2.lrc` next to it — that every other player can read. A
+  constant drift is corrected with two buttons that are **always** reachable,
+  not only when the fit is judged poor: a text that sits inside the right
+  duration can still be half a second early.
   When the catalogue holds more than one answer, «Other lyrics» lists them all
   with their first lines, and what you choose stays chosen — «none of these»
   included, which is remembered rather than asked again.
@@ -241,9 +250,26 @@ a longer listening history than the public API offers.
   built-in visual editor (the Studio) and a packaged distribution format.
   Inside the Studio, a side chat can ask a language model to make the change
   for you — a model running on your own machine (Ollama, or LM Studio's local
-  server, the one the Bionic app sits on) or a remote one through OpenRouter.
+  server, the one the Bionic app sits on), a remote one through OpenRouter, or
+  any OpenAI-compatible address of your own.
   It is off until you configure a provider, and what it sends is documented in
   [`PRIVACY.md`](PRIVACY.md) § 2-quater.
+- **Folders in the cloud.** A music folder on OneDrive, Google Drive, Dropbox
+  or a WebDAV server (Nextcloud, ownCloud, pCloud, Koofr, kDrive) joins the
+  library next to the folders on the disk, from the same «Add folder» dialog.
+  The tracks appear while the service is still listing them, play as a stream
+  from the first 256 KB, and changes on the service arrive by themselves —
+  within seconds on Dropbox, a minute on OneDrive and Drive. Tags are read in
+  the background without downloading whole files; what you play stays in a
+  capped cache (200 MB by default) for instant replays, and its loudness is
+  measured from there. Read-only everywhere: nothing on the service is ever
+  written, moved or deleted. OneDrive, Google Drive and Dropbox are reached
+  through an app **you** register with Microsoft, Google and Dropbox —
+  Rymembra has none built in — and the program walks you through it, with the
+  exact addresses and permissions to type (*Settings → Folders and scanning →
+  Your apps*, or straight from the «Add folder» dialog). MEGA is not in 3.2.0:
+  it will come, with a MEGA app key of your own, once MEGA's terms are
+  cleared. Details of every request in [`PRIVACY.md`](PRIVACY.md) § 4-quater.
 - **Backup and synchronization** to Google Drive or to a shared folder, plus a
   **profile** you can carry by hand: a `.ryprofile` archive with the settings,
   the library, the listening history, the lyrics, your corrections, the covers
@@ -254,21 +280,23 @@ a longer listening history than the public API offers.
   still read, and no longer written. Profiles and skin packages written by the
   previous version can still be imported.
 
-  **Google Drive needs a Google project of your own, and the installer
-  published here ships without one — on purpose.** A desktop program cannot
-  keep an OAuth client secret: anything compiled into the executable can be
-  read out of it, and a shared client would put every user's backups on one
-  quota that anybody could exhaust. So *Settings → Backup* says «not
-  configured» and explains how to turn it on: create an OAuth client of the
-  «Desktop app» type in the Google Cloud Console and paste its ID and secret.
-  The folder Rymembra writes to is its private application folder, visible only
-  to that client. If you would rather not, synchronizing through a shared
+  **Google Drive needs a Google project of your own, and Rymembra has none
+  built in — on purpose.** A desktop program cannot keep an OAuth client
+  secret: anything compiled into the executable can be read out of it, and a
+  shared client would put every user's backups on one quota that anybody
+  could exhaust. So *Settings → Backup to Drive* says «not configured» and walks
+  you through it, step by step: in the Google Cloud Console, enable the Google
+  Drive API, add **both** scopes to the consent screen — `drive.appdata` for
+  the backup and `drive.readonly` for the Drive music folders, since one app
+  serves both — publish it, and create an OAuth client of the «Desktop app»
+  type; then paste its ID and secret into Rymembra. The folder Rymembra writes
+  to is its private application folder, visible only to that app: use the same
+  app on every PC. If you would rather not, synchronizing through a shared
   folder (Syncthing, OneDrive, Dropbox) needs no account, and an exported
-  profile keeps a copy of everything. Builds made with
-  `RYMEMBRA_GOOGLE_CLIENT_ID` and `RYMEMBRA_GOOGLE_CLIENT_SECRET` in the
-  environment carry their own client and skip this step. Backup and sync files
-  that the previous version left in that folder are recognised and renamed in
-  place at the next pass, without uploading them again.
+  profile keeps a copy of everything. A client you typed in 3.1 is carried over
+  by itself. Backup and sync files that the previous version left in that
+  folder are recognised and renamed in place at the next pass, without
+  uploading them again.
 - **Listen together** on your own network. One PC hosts, colleagues or
   family with Rymembra on the same network follow, and everybody hears the same
   track at the same moment — close enough for two sets of speakers in one room
@@ -459,12 +487,19 @@ database, and never passes through the window.
 
 ## Installation
 
-The Windows installer is available among the assets of the [latest
-release](https://github.com/FedericoBaratti/Rymembra/releases/latest): an NSIS
-executable.
+Two ways, the same program:
 
-**Windows SmartScreen warning.** The executable is not signed with a code
-signing certificate, so SmartScreen blocks it on first launch. To proceed: «More
+- **the installer**, among the assets of the [latest
+  release](https://github.com/FedericoBaratti/Rymembra/releases/latest): an NSIS
+  executable, which updates itself;
+- **the [Microsoft Store](https://apps.microsoft.com/detail/9NW2F2PW2B91)**,
+  signed by Microsoft and updated by the Store. Keep one of the two per PC: they
+  can read the same library, and side by side they have not been tried — see
+  [`PRIVACY.md`](PRIVACY.md) § 6.
+
+**Windows SmartScreen warning.** The installer is not signed with a code
+signing certificate, so SmartScreen blocks it on first launch (the Store copy
+is not affected). To proceed: «More
 info» → «Run anyway». The reasons for the missing signature are given in [Known
 limits](#known-limits-and-planned-work).
 
@@ -514,7 +549,7 @@ kept — so going back means putting it in place of `rymembra.db`.
 ```bash
 # Everything CI checks, in one go: versions, translations, CSS classes, the
 # interface's build and tests, the release tools' tests, formatting, clippy
-# and about 3,100 Rust tests — all runnable with no network connection
+# and about 3,400 Rust tests — all runnable with no network connection
 cd apps/desktop && npm run verify
 ```
 
@@ -594,7 +629,9 @@ core/
   rymembra-archivio   reading the Spotify GDPR archive
   rymembra-skin       the skin format and its compiler
   rymembra-oauth      PKCE and the system keychain
-  rymembra-cloud      Google Drive
+  rymembra-cloud      Google Drive backup; the cloud folders (OneDrive,
+                      Google Drive, Dropbox, WebDAV): listing, changes,
+                      streaming, the cache
   rymembra-sync       synchronization between devices
   rymembra-scrobble   Last.fm and ListenBrainz
   rymembra-ia         an OpenAI-compatible client for language models,
@@ -637,10 +674,14 @@ clause, which binds the listener too.
 ## Privacy
 
 Rymembra collects no telemetry, requires no account and talks to no servers other
-than the ones the user explicitly queries: the music catalogs, MusicBrainz,
-Google Drive, the scrobbling service, and the language model configured for the
-Skin Studio — the last three only if you connect them, and the last one possibly
-not a server at all, since Ollama and LM Studio run on your own machine.
+than these: GitHub, to check for updates, and MusicBrainz, Cover Art Archive,
+iTunes, Deezer and ListenBrainz, for metadata, cover art and similarity — both
+on by default, and both can be switched off; LRCLIB for lyrics, only while the
+lyrics panel is open or when you fill the library; the music catalogs, when you
+search or import; and, only if you connect them, Google Drive, the cloud
+services whose folders you add, the scrobbling service and the language model
+configured for the Skin Studio — the last one possibly not a server at all,
+since Ollama and LM Studio run on your own machine.
 «Listen together», if you switch it on, talks only to other Rymembra on your
 own network, encrypted, and shares music only with the PCs you paired.
 
@@ -694,6 +735,33 @@ constraint is stated explicitly in the terms of use.
   host. On a very slow or congested link (around 5 Mbit/s with tens of
   milliseconds of jitter) a member may take a while to estimate the host's
   clock before it starts.
+- **Cloud folders.** Each service is reached through an app you register
+  yourself, and two of the registrations have a catch. Microsoft no longer lets
+  a personal account register an app outside a directory: OneDrive needs a
+  Microsoft Entra tenant, which in practice means a free Azure account
+  (Microsoft usually asks for a card to verify it) or a work or school account
+  whose administrator allows registering apps. Google shows «Google hasn't
+  verified this app» for your own app — you go on through «Advanced», since it
+  is yours — and an app left in «Testing» makes the connection expire every
+  seven days, so publish it. OneDrive for Business and Google shared drives are
+  not supported (folders shared with your Google account are, under «Shared
+  with me»); a shortcut inside a chosen Drive folder is not followed; a `.lrc`
+  next to a cloud track is not read; MEGA is not in 3.2.0. A CD image stored
+  as one MP3 with its `.cue` in a cloud folder plays with estimated track
+  boundaries: exact at a constant bitrate, off by up to seconds at a variable
+  one, because an exact seek would re-read the file from the start over the
+  network.
+- **Proxies.** Rymembra follows the proxy set in Windows Settings
+  (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
+  NAS, a computer at home — and this computer itself always go direct. It does
+  not read a setup script (PAC) or automatic detection (WPAD): with only
+  those, it connects directly. `ProxyServer` is read only in the `host:port`
+  form, and one written per protocol (`http=…;https=…`) goes direct too. The
+  `HTTPS_PROXY`-style environment variables win over the Windows setting, and
+  a proxy changed while Rymembra is open is picked up only by what starts
+  afterwards: restart Rymembra to be sure every request uses it. (The update
+  check goes through a client of its own, which reads the Windows setting by
+  itself.)
 - **macOS and Linux.** The installer's only target is NSIS: the supported
   platform is therefore Windows.
 - **Mobile application.** Present in the previous version of the project, not

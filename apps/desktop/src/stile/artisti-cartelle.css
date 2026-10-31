@@ -1,0 +1,552 @@
+/* La barra della selezione, gli artisti, il pannello Cartelle e le notifiche.
+   Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
+
+/* ── la barra della selezione ────────────────────────────────────────────── */
+/* Stessa geometria del lettore, e prende il suo posto: `--player-h` e
+   `--player-gap` vengono dai token, quindi una skin che alza il lettore alza
+   anche questa e le due non si scollano. */
+.barra-selezione {
+  position: fixed;
+  left: calc(var(--nav-w) + var(--player-gap));
+  right: var(--player-gap);
+  bottom: var(--player-gap);
+  z-index: var(--strato-barra);
+  display: flex;
+  align-items: center;
+  /* Va a capo per righe intere invece di comprimere i tasti: con la terza
+     colonna aperta lo spazio è 668 pixel e i sei comandi ne vogliono
+     settecento, e le due uscite alternative erano peggio di questa — schiacciare
+     le etichette le taglia a metà parola, lasciarle traboccare rimette la barra
+     sotto la colonna, che è il difetto appena tolto. */
+  flex-wrap: wrap;
+  gap: var(--spazio-1) var(--spazio-2);
+  min-height: 56px;
+  padding: var(--spazio-2) var(--spazio-3);
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-player);
+}
+/*
+ * Con la terza colonna aperta si ferma prima, come la notifica.
+ *
+ * Il lettore non ha bisogno di questa riga perché con la colonna aperta non si
+ * vede affatto; la barra della selezione sì — una selezione si fa anche mentre
+ * si guarda cosa sta suonando — e senza, i suoi ultimi trecentocinquanta pixel
+ * finivano sotto la colonna, «Chiudi» compreso.
+ */
+[data-scafale][data-colonna] .barra-selezione {
+  right: calc(var(--colonna-w) + var(--player-gap));
+}
+/* I comandi non vanno a capo: sono etichette di due parole, e spezzate su due
+   righe in una barra alta cinquantasei pixel escono da sopra e da sotto. È lo
+   spaziatore a cedere per primo — è lì per questo — e quando ha ceduto tutto,
+   la barra si stringe fin dove serve invece di riscrivere i suoi tasti. */
+.barra-selezione .bottone {
+  flex: none;
+  white-space: nowrap;
+}
+
+.barra-selezione .quanti {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  /* Il conteggio sale mentre si tiene premuto Maiusc: senza cifre di larghezza
+     fissa, i bottoni accanto slittano a ogni riga scelta. */
+  font-variant-numeric: tabular-nums;
+}
+.barra-selezione .separatore {
+  width: 1px;
+  height: 20px;
+  background: var(--hairline);
+}
+.barra-selezione .spinta {
+  flex: 1;
+}
+
+/* La riga scelta. `data-scelta` e non `:checked`: una riga non è un controllo,
+   e lo stato serve identico a chi guarda (`aria-selected`) e alle skin. */
+.riga[data-scelta] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ── artisti ─────────────────────────────────────────────────────────────── */
+.artisti {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  gap: var(--spazio-3);
+}
+
+.griglia-artisti {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px 14px;
+  align-content: start;
+}
+
+.scheda-artista {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
+ * Il ritratto: un mosaico due per due delle copertine dei suoi dischi.
+ *
+ * Non è un segnaposto. Nessuna immagine d'artista esisterà mai — non c'è rete —
+ * e queste sono immagini vere, che per di più dicono qualcosa: si riconosce un
+ * artista dai suoi album prima che dalla sua faccia. Chi ne ha uno solo lo vede
+ * a tutto riquadro, che è il caso giusto e non un ripiego.
+ */
+.mosaico {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+  aspect-ratio: 1;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--color-surface-2);
+  box-shadow: var(--shadow-2);
+}
+.mosaico[data-quante="1"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+/* Con due o tre copertine la prima prende tutta la colonna di sinistra: tre
+   tasselli in una griglia due per due lascerebbero un quarto vuoto, e un buco
+   in un mosaico si legge come un'immagine che non ha caricato. */
+.mosaico[data-quante="2"] {
+  grid-template-rows: 1fr;
+}
+.mosaico[data-quante="3"] > :first-child {
+  grid-row: span 2;
+}
+.mosaico .tassello {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: var(--color-surface-2);
+}
+.mosaico .senza,
+.mosaico .tassello.vuota {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+  background: var(--color-surface-2);
+}
+.mosaico .senza {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+/* Lo stesso difetto delle schede album, e lo stesso rimedio — vedi «La scheda di
+   un album si solleva», in `stile/movimento.css`. Il sorvolo disegnava un contorno
+   d'accento a due pixel con due di stacco, cioè **esattamente** l'anello del
+   fuoco della regola globale: due stati diversi con lo stesso segno, e chi
+   naviga col tabulatore non poteva distinguere dove era arrivato da dove stava il
+   puntatore. Il puntatore alza il mosaico e ne approfondisce l'ombra — la
+   risposta di un oggetto — e l'anello d'accento torna a significare una cosa
+   sola. */
+.scheda-artista .mosaico {
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.scheda-artista:hover .mosaico {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-3);
+}
+.scheda-artista .nome {
+  font-size: 13.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scheda-artista .quanti {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+
+/* L'indice alfabetico, al posto della paginazione: si salta alla R, non a
+   pagina sette. Le lettere vuote restano visibili e spente — un indice a buchi
+   dice quanto è grande la libreria, uno che mostra solo le lettere piene sembra
+   completo e fa cercare la Q che non c'è. */
+.indice-alfabetico {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.indice-alfabetico .lettera {
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 18px;
+  height: 15px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.indice-alfabetico .lettera:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.indice-alfabetico .lettera:disabled {
+  color: var(--color-text-3);
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── il pannello Cartelle ─────────────────────────────────────────────────────
+ *
+ * Un albero virtualizzato, e da lì viene il vincolo che governa tutto il resto:
+ * **nessuna `gap` fra le righe**. Le righe non disegnate sono due `.paglia`
+ * alte `sopra × altezza` e `sotto × altezza`, cioè un prodotto in cui uno
+ * spazio fra le righe non entra: bastano quei pochi pixel per riga saltata
+ * perché in fondo a tremila cartelle l'albero sia sfasato di uno schermo. La
+ * distanza, dove serve, la fa il `padding` della riga — che nel prodotto ci
+ * sta, perché è dentro l'altezza che la finestra misura.
+ *
+ * Due riquadri che scorrono ciascuno per sé, come in foobar2000: l'albero a
+ * sinistra e i brani della cartella a destra. Alti quanto la pagina — `height:
+ * 100%` del contenuto, che è un elemento flessibile e quindi ha un'altezza
+ * definita — perché un riquadro che si allunga col contenuto farebbe scorrere
+ * la pagina intera, e l'albero e l'elenco scapperebbero via insieme. Sotto i
+ * 760 pixel di contenuto i due riquadri si impilano, a metà altezza ciascuno:
+ * `@container` e non `@media`, per la ragione dell'elenco dei brani — conta lo
+ * spazio del contenuto, non quello della finestra.
+ */
+.vista-cartelle {
+  display: grid;
+  grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr);
+  gap: var(--spazio-4);
+  height: 100%;
+  min-height: 320px;
+}
+@container (max-width: 760px) {
+  .vista-cartelle {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+.colonna-albero,
+.pannello-cartella {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  min-width: 0;
+  min-height: 0;
+}
+/* Il contenitore delle colonne dell'elenco dei brani: quante colonne mostrare
+   lo decide la larghezza del riquadro, non quella del contenuto intero. */
+.pannello-cartella {
+  container-type: inline-size;
+}
+.scorre-albero,
+.scorre-pannello {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.albero-cartelle {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Il filtro: la stessa pillola della ricerca, larga quanto la colonna. */
+.filtro-cartelle .cerca {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: calc(32px * var(--densita-k));
+  padding: 0 12px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  box-shadow: inset 0 1px 2px var(--incavo);
+  color: var(--color-text-3);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.filtro-cartelle .cerca:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  color: var(--color-text-2);
+}
+.filtro-cartelle .campo {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Le righe di servizio sopra l'albero: il filtro che non trova o trova troppo,
+   la presa in corso. Piccole e smorzate: dicono, non chiedono. */
+.nota-cartelle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+/* La selezione: quante, e i tre gesti che si fanno su di lei. Il resto sta nel
+   menù contestuale, come nell'elenco dei brani. */
+.scelta-cartelle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.scelta-cartelle .conteggio-nodo {
+  margin-inline-end: auto;
+}
+
+/* La testa del pannello dei brani: il nome della cartella e il suo conteggio a
+   sinistra, l'interruttore e «Riproduci» a destra; a capo quando non ci stanno. */
+.testa-pannello-cartella {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spazio-2) var(--spazio-3);
+}
+.titolo-pannello-cartella {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  min-width: 0;
+}
+.nome-pannello-cartella {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+}
+.comandi-pannello-cartella {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.interruttore-sottocartelle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.vuoto-pannello-cartella {
+  margin: var(--spazio-4) 0;
+  font-size: 13px;
+  color: var(--color-text-3);
+}
+/*
+ * La riga: il triangolo, il nome che si allunga, il conteggio in fondo.
+ *
+ * `min-height` e non `height`, come `.riga`: la finestra virtuale rimisura la
+ * prima riga disegnata con un `ResizeObserver`, quindi la riga può crescere con
+ * la densità o col ritmo della skin senza che nessuno riscriva un numero.
+ *
+ * Il rientro arriva da `--livello-nodo`, che la riga scrive in linea — 1 per le
+ * radici. Quanto valga un livello lo dice il foglio e non il TypeScript, perché
+ * è ritmo, e il ritmo è della skin. La dichiarazione sta **dopo** `padding`:
+ * nell'ordine inverso sarebbe la scorciatoia a scavalcarla, e il rientro non si
+ * vedrebbe.
+ */
+.nodo-cartella {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  min-height: 30px;
+  padding: 3px var(--spazio-2);
+  padding-inline-start: calc(
+    var(--spazio-3) + (var(--livello-nodo) - 1) * var(--spazio-4)
+  );
+  border-radius: var(--raggio-minuto);
+  cursor: default;
+}
+.nodo-cartella:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+}
+/* Il cursore delle frecce: la stessa forma della riga scelta nell'elenco dei
+   brani, perché resta acceso anche quando il fuoco se ne va dall'albero. Il
+   fuoco da tastiera non ha bisogno di niente qui: l'anello globale di
+   `:focus-visible` lo disegna già, ed è la regola che esiste apposta per non
+   riscriverlo ottanta volte. */
+.nodo-cartella[data-fuoco] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* Larga anche da vuota. Le foglie il triangolo non lo disegnano, e senza questa
+   misura il loro nome si allineerebbe più a sinistra di quello dei fratelli che
+   ce l'hanno: il rientro direbbe un livello che non è il loro. */
+.freccia-nodo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+/* Su una radice il nome è il percorso intero: qui il troncamento è la regola e
+   non il caso limite, e il percorso per esteso resta nel `title`. */
+.nome-nodo {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+/* Lo stesso peso del conteggio della barra di navigazione: è lo stesso numero
+   detto nello stesso modo, e due mono di misura diversa per la stessa cosa si
+   leggono come due cose diverse. */
+.conteggio-nodo {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/*
+ * La radice che non risponde.
+ *
+ * L'opacità dice «spenta» a chi guarda, e da sola non basta: `forced-colors`
+ * impone i colori ma non tocca l'opacità, quindi in contrasto elevato un testo
+ * smorzato è solo un testo meno leggibile — cioè il difetto al posto del segno,
+ * proprio per chi ha chiesto più contrasto. Il corsivo porta la stessa notizia
+ * senza toglierne, e là sotto l'opacità torna piena e resta lui.
+ */
+.nodo-spento {
+  opacity: 0.55;
+}
+.nodo-spento .nome-nodo {
+  font-style: italic;
+}
+/* L'icona fra il triangolo e il nome: cartella o brano. È quel che distingue
+   una foglia da una cartella chiusa senza doverla aprire. */
+.icona-nodo {
+  flex: none;
+  display: inline-flex;
+  color: var(--color-text-3);
+}
+/* Una foglia: il titolo un passo più quieto del nome delle cartelle, che sono
+   la struttura su cui l'occhio corre. */
+.nodo-file .nome-nodo {
+  color: var(--color-text-2);
+}
+/* La selezione, che non è il cursore: un fondo d'accento pieno, senza la
+   barretta del cursore. Le due cose si sommano sulla riga che è tutte e due. */
+.nodo-cartella[aria-selected='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+/* Sotto un filtro, le cartelle trovate si distinguono dagli antenati che
+   stanno lì solo per portarci. */
+.nodo-cartella[data-trovato] .nome-nodo {
+  font-weight: 600;
+}
+@media (forced-colors: active) {
+  /* Il fondo qui il motore lo impone: la selezione la dice un contorno. */
+  .nodo-cartella[aria-selected='true'] {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}
+
+/*
+ * La coda, mentre le si porta qualcosa dall'albero.
+ *
+ * La coda non sa niente del gesto: lo sa la radice del documento, che porta
+ * `data-verso-coda` finché la presa è in corso — vuoto, e `mira` quando il
+ * puntatore è sopra. Il tratteggio dice dove si può lasciare, il pieno dice
+ * che lasciando adesso ci si arriva.
+ */
+:root[data-verso-coda] .coda-in-colonna,
+:root[data-verso-coda] .pannello-coda {
+  outline: 2px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: -4px;
+}
+:root[data-verso-coda='mira'] .coda-in-colonna,
+:root[data-verso-coda='mira'] .pannello-coda {
+  outline-style: solid;
+  outline-color: var(--accent);
+}
+
+/* ── notifiche ───────────────────────────────────────────────────────────── */
+/* La pila porta la posizione, i toast portano l'aspetto.
+   Un toast solo poteva essere `fixed` da sé; due allo stesso angolo si
+   coprivano. La pila cresce verso l'alto — l'ultimo arrivato resta in basso,
+   dove l'occhio era — e non intercetta il puntatore dove non c'è niente. */
+.pila-toast {
+  position: fixed;
+  right: var(--player-gap);
+  bottom: calc(var(--player-clearance) + var(--player-gap));
+  z-index: var(--strato-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spazio-2);
+  pointer-events: none;
+}
+[data-scafale][data-colonna] .pila-toast {
+  right: calc(var(--colonna-w) + var(--player-gap));
+  bottom: var(--player-gap);
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 320px;
+  padding: 10px 12px;
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--filo), var(--shadow-3);
+  font-size: 12.5px;
+}
+.toast .dentro {
+  flex: 1;
+  min-width: 0;
+}
+/* Nel toast la causa tecnica sta qui, in carattere a spaziatura fissa: si copia,
+   per la stessa ragione di `.errore`. */
+.toast .cosa {
+  user-select: text;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-2);
+  margin-bottom: 5px;
+}
+.toast-progress {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  overflow: hidden;
+}
+.toast-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(120ms * var(--motion-scale, 1)) linear;
+}

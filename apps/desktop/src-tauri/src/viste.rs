@@ -35,7 +35,7 @@ use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
-/// Quale elenco di brani si sta guardando: `VistaBrani` in `ipc.ts`.
+/// Quale elenco di brani si sta guardando: `VistaBrani` in `ipc/libreria.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "tipo", rename_all = "camelCase")]
 pub enum VistaBrani {

@@ -37,6 +37,7 @@ export type LettureDati = Pick<
   | "cartelleBrani"
   | "impostaCartelleUi"
   | "esploraCerca"
+  | "testoBrano"
   | "testoCerca"
   | "testoCercaDiNuovo"
   | "testiPannello"

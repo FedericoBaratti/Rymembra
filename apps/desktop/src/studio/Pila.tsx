@@ -30,11 +30,15 @@ import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { Cursore, ValoreColore, ValoreLunghezza } from "./controlli";
 import {
+  FERMATE_MASSIME,
+  angoliDopo,
+  angoliTagliati,
   coloreCosto,
   costoDi,
   type Livello,
   type Motivi,
   nomeEffetto,
+  puoAggiungere,
   ritrattoEffetto,
 } from "./valori";
 import { t } from "../lingue";
@@ -103,6 +107,7 @@ export function Manopole({
                 valore={valore ?? null}
                 tokens={tokens}
                 tavolozza={tavolozza}
+                etichetta={p.name}
                 onCambia={(v) => scrivi(p.name, v)}
               />
             )}
@@ -150,8 +155,11 @@ export function Manopole({
                 aria-label={t("studio.part.corners")}
               >
                 {ANGOLI.map((angolo) => {
-                  const quali = Array.isArray(valore) ? valore.map(String) : [];
-                  const acceso = quali.includes(angolo);
+                  // Senza `corners` il formato ne taglia due, non nessuno e
+                  // non tutti: i tasti mostrano quelli veri. Vedi
+                  // `angoliTagliati` e `angoliDopo` in `valori.ts`.
+                  const acceso = angoliTagliati(valore).includes(angolo);
+                  const nuovi = angoliDopo(valore, angolo);
                   return (
                     <button
                       key={angolo}
@@ -160,13 +168,9 @@ export function Manopole({
                       aria-label={angolo}
                       aria-pressed={acceso}
                       data-active={acceso || undefined}
+                      disabled={nuovi === null}
                       onClick={() => {
-                        const nuovi = acceso
-                          ? quali.filter((a) => a !== angolo)
-                          : [...quali, angolo];
-                        // Nessun angolo dichiarato vuol dire **tutti**: una
-                        // lista vuota il formato la legge al contrario.
-                        scrivi(p.name, nuovi.length === 0 ? null : nuovi);
+                        if (nuovi !== null) scrivi(p.name, nuovi);
                       }}
                     />
                   );
@@ -260,7 +264,7 @@ function Punto({
   return (
     <div className="punto-manopola">
       {(["x", "y"] as const).map((asse, i) => (
-        <label key={asse} className="cursore">
+        <label key={asse} className="cursore-studio">
           <span className="asse">{asse}</span>
           <input
             type="range"
@@ -319,6 +323,7 @@ function Fermate({
             valore={fermata.color ?? null}
             tokens={tokens}
             tavolozza={tavolozza}
+            etichetta={t("studio.layers.stopColor", { n: indice + 1 })}
             onCambia={(v) =>
               onCambia(
                 fermate.map((f, i) => (i === indice ? { ...f, color: v } : f)),
@@ -361,6 +366,14 @@ function Fermate({
       <button
         type="button"
         className="aggiungi-livello"
+        // Come il tasto che toglie, spento al tetto del formato: vedi
+        // `FERMATE_MASSIME`.
+        disabled={!puoAggiungere(fermate.length, FERMATE_MASSIME)}
+        title={
+          puoAggiungere(fermate.length, FERMATE_MASSIME)
+            ? undefined
+            : t("studio.layers.maxStops", { n: FERMATE_MASSIME })
+        }
         onClick={() => onCambia([...fermate, { color: "#000000" }])}
       >
         <Icona nome="i-plus" dim={12} />
@@ -419,7 +432,7 @@ export function Livelli({
       setAperto(livelli.length);
     } catch {
       // L'esemplare viene dal nucleo e non da qui: se non è JSON, il posto dove
-      // aggiustarlo è `esempio()` in `studio.rs`, non un ripiego inventato ora.
+      // aggiustarlo è `esempio()` in `studio/registro.rs`, non un ripiego inventato ora.
     }
     setApertoElenco(false);
   };
@@ -487,6 +500,22 @@ export function Livelli({
                 data-sopra={(sopra === indice && preso !== indice) || undefined}
                 data-aperto={apertoQui || undefined}
                 onPointerDown={(e) => presa(e, indice)}
+                // Alt+↑↓ sposta il livello, come nella coda e nello scafale
+                // (`riordino.ts`): l'ordine cambia il risultato, e fino alla
+                // 3.2 da tastiera lo si cambiava solo togliendo e rimettendo
+                // i livelli. Il fuoco segue il livello: la chiave è
+                // l'indice, quindi la riga di partenza mostrerebbe l'altro.
+                onKeyDown={(e) => {
+                  if (!(e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown"))) return;
+                  e.preventDefault();
+                  const arrivo = indice + (e.key === "ArrowUp" ? -1 : 1);
+                  if (arrivo < 0 || arrivo >= livelli.length) return;
+                  sposta(indice, arrivo);
+                  setAperto(aperto === indice ? arrivo : aperto === arrivo ? indice : aperto);
+                  e.currentTarget.parentElement?.parentElement
+                    ?.querySelector<HTMLElement>(`[data-riordino="${arrivo}"] .via`)
+                    ?.focus();
+                }}
               >
                 <span className="maniglia" aria-hidden="true">
                   <Icona nome="i-grip" dim={12} />
@@ -518,6 +547,7 @@ export function Livelli({
                   <button
                     type="button"
                     className="quale apri"
+                    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                     aria-expanded={apertoQui}
                     disabled={definizione === undefined}
                     onClick={() => setAperto(apertoQui ? null : indice)}

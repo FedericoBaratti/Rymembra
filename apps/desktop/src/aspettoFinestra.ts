@@ -9,7 +9,8 @@
  * l'effetto dell'accento ha un vettore di dipendenze che è il cuore della
  * cosa. Era vero, e resta vero: quel vettore è qui intero, scritto una volta
  * sola, e quel che arriva da fuori lo riceve come argomento — `avvio`, la skin
- * indossata, l'archivio del lettore, il segno dell'anteprima revocata.
+ * indossata, l'archivio del lettore, il segno dell'anteprima revocata (che è
+ * `null` durante «Prova sull'app»).
  * Quattro valori e due funzioni, non la stessa riga scritta due volte.
  *
  * La copertina di quel che suona l'hook la segue da sé, dall'archivio
@@ -54,8 +55,12 @@ export interface IngressiAspetto {
   skinAttiva: Skin | null;
   /** Lo stato del lettore: la copertina di quel che suona si legge di lì. */
   lettore: ArchivioLettore;
-  /** Il segno che un'anteprima di skin è stata revocata: vedi `skinAttiva.ts`. */
-  accentoDaRimettere: number;
+  /**
+   * Il segno che un'anteprima di skin è stata revocata: vedi `skinAttiva.ts`.
+   * `null` mentre la finestra indossa la bozza di «Prova sull'app»: l'accento
+   * della copertina non si chiede. Vedi `segnoAccento.ts`.
+   */
+  accentoDaRimettere: number | null;
   segnalaErrore: (e: unknown) => void;
   /** Rilegge `avvio`: le scorciatoie si mostrano quando il database le ha prese. */
   ricarica: () => Promise<void>;
@@ -148,10 +153,10 @@ export function useAspetto({
    * La lingua in uso.
    *
    * Non è uno stato di questo hook: vive nel modulo `lingue`, perché i testi
-   * servono anche fuori da React — `formato.ts` e `ipc.ts` ne chiamano le
-   * funzioni senza essere componenti. Qui ci si **iscrive** e basta, e
-   * l'iscrizione — che è di `App`, perché è `App` a chiamare questo hook — è
-   * quel che ridisegna l'albero quando la lingua cambia.
+   * servono anche fuori da React — `formato.ts` e i file di `ipc/` ne
+   * chiamano le funzioni senza essere componenti. Qui ci si **iscrive** e
+   * basta, e l'iscrizione — che è di `App`, perché è `App` a chiamare questo
+   * hook — è quel che ridisegna l'albero quando la lingua cambia.
    */
   const lingua = useLingua();
   /** La lingua è già stata decisa in questa sessione. Come il tema. */
@@ -431,7 +436,7 @@ export function useAspetto({
   /**
    * L'accento segue la copertina del disco che sta suonando.
    *
-   * Tre righe qui e nessuna decisione: il colore lo estrae `rymembra-app` dalla
+   * Nessuna decisione sul colore qui: il colore lo estrae `rymembra-app` dalla
    * miniatura, e se sia leggibile lo decide `rymembra-skin` in OKLCH, dove vive
    * `contrast_ratio`. La finestra scrive quel che le viene detto — è la stessa
    * regola per cui il foglio della skin arriva già compilato.
@@ -440,6 +445,11 @@ export function useAspetto({
    * copertina in bianco e nero, una skin che dichiara di non volerlo, o una
    * tonalità che a nessuna chiarezza regge 4,5:1 contro le superfici. In tutti
    * e quattro i casi vince l'accento che la skin ha scritto.
+   *
+   * Una cosa sola la decide la finestra, e non è il colore ma se chiederlo:
+   * mentre indossa la bozza di «Prova sull'app» non lo chiede affatto, perché
+   * il nucleo lo calcolerebbe sulla skin scelta e non su quella a schermo.
+   * Vedi `segnoAccento.ts`.
    */
   const [accentoDinamico, setAccentoDinamico] = useState(false);
   useEffect(() => {
@@ -467,6 +477,15 @@ export function useAspetto({
   );
 
   useEffect(() => {
+    // La finestra indossa la bozza di «Prova sull'app»: il nucleo taglierebbe
+    // l'accento su capacità e superfici della skin scelta, cioè di un'altra.
+    // Niente accento, e nessuna domanda nemmeno a ogni brano; il segno torna
+    // un numero quando la bozza lascia lo schermo, e l'effetto riparte da sé.
+    // È la regola dell'anteprima: vedi `accentoDaRimettere` in `skinAttiva.ts`.
+    if (accentoDaRimettere === null) {
+      applicaAccento(null);
+      return;
+    }
     // Il brano può cambiare mentre la risposta è in volo — succede saltando
     // avanti in fretta — e la risposta di prima dipingerebbe la finestra col
     // colore del disco sbagliato. Due guardie: `attuale` per le dipendenze

@@ -34,7 +34,7 @@ half an hour.
 Rymembra is a local application with no account and no Rymembra server. There's no network
 surface listening — with **two** exceptions, and they're worth naming — and
 there is no other user's data to expose. The things that really matter are
-five, and they're the ones that can get code executed or carry off something
+six, and they're the ones that can get code executed or carry off something
 that isn't ours.
 
 **The update chain.** It's the only part of Rymembra that downloads an executable
@@ -48,11 +48,28 @@ and, before copying the new files, silently uninstalls the previous version of t
 program (never its data); a way to make that step remove or run something it
 shouldn't is a report too.
 
-**The OAuth return port.** Google's consent screen opens in the system browser
-and comes back to `127.0.0.1`, on a port open for the length of one
-authorization (`rymembra-oauth::loopback`). It listens for a few seconds and
-only on this machine: if you can get it to accept a code that came from
-someone else, or keep it open beyond that, it's a problem.
+**The OAuth return port.** The consent screens of Google, Microsoft (from 3.2,
+for OneDrive) and Dropbox (from 3.2) open in the system browser and come back
+to this machine, on a port open for the length of one authorization
+(`rymembra-oauth::loopback`): one chosen by the system for Google and
+Microsoft, one of three fixed ports (53682–53684) for Dropbox, which compares
+them. From 3.2 the apps behind those screens are the user's own, and each user
+registers the return addresses in them, exactly: `http://localhost` at
+Microsoft, which then accepts any port; `http://127.0.0.1:53682`,
+`http://127.0.0.1:53683` and `http://127.0.0.1:53684` at Dropbox; none at
+Google, whose «Desktop app» clients accept any loopback port. Whatever the
+address says, the socket listens only on `127.0.0.1`, and with PKCE: if you
+can get it to accept a code that came from someone else, or keep it open
+beyond that, it's a problem.
+
+**Cloud folders (from 3.2).** A cloud folder is read with the account's token
+or, for WebDAV, with a password sent in every request — over `https` only, and
+an `http://` address is refused before anything is sent. Temporary links and
+pre-authenticated download addresses are permissions in their own right: they
+must not reach the log, the database or an error shown in the window. A way to
+make Rymembra send a token — or a Google app's client secret — to a host that
+is not the service's own (for example by following a `nextLink` or a
+redirect), or to read outside the folder the user chose, is a problem.
 
 **«Listen together», while a PC hosts.** From 3.1 a PC that **hosts** a
 listening session listens on the local network, on TCP and UDP port 47811 (or
@@ -99,9 +116,18 @@ something from writing outside its own folder or filling the disk. A path that
 escapes the install folder, a zip that explodes, a manifest that sends the
 compiler into recursion: all problems.
 
-**Secrets at rest.** OAuth tokens, and from 3.1 the private key that
-identifies the PC to the others in «Listen together», live in the system
-keychain (`rymembra-oauth::portachiavi`), not in the database. If they end up anywhere else
+**Secrets at rest.** OAuth tokens, from 3.1 the private key that identifies
+the PC to the others in «Listen together», and from 3.2 the refresh tokens of
+the cloud accounts, the WebDAV passwords and the client secret of each Google
+app the user registers (`nuvola.app.<app>.segreto`; one typed in 3.1 stays at
+`google.client_secret` until it is typed again), live in the system keychain
+(`rymembra-oauth::portachiavi`), not in the database. The IDs of the user's
+apps are in the database (`nuvola_app`), and are not secrets: an app's ID is
+in the address of every consent screen it opens. Nothing is compiled into the
+executable: from 3.2 Rymembra has no OAuth client of its own for any service,
+so there is no shared ID or secret to read out of it. The cache of cloud
+tracks holds plain copies of files the user played; it is local, capped, and
+can be emptied. If a secret ends up anywhere else
 — in a log, in the database, in a temporary file — that's a problem, and it
 stays one even if it's «only» in the clear on the user's own disk. The entries
 saved by the previous version are moved to the current ones the first time they

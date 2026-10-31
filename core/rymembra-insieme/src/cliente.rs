@@ -451,3 +451,89 @@ pub(crate) fn qui(
     }
     Ok(risposta)
 }
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// La finestra intera: `M`.
+    const M: u64 = LETTURA_MASSIMA;
+
+    /// I byte di una risposta, tutti uguali a `segno`.
+    fn byte(quanti: u64, segno: u8) -> Vec<u8> {
+        vec![segno; usize::try_from(quanti).expect("sta")]
+    }
+
+    #[test]
+    fn a_finestre_spezza_e_ricompone_nell_ordine() {
+        let mut chiamate = Vec::new();
+        let (letti, totale) = a_finestre(7, 2 * M + 5, |da, quanti| {
+            chiamate.push((da, quanti));
+            let segno = u8::try_from(chiamate.len()).expect("sta");
+            Ok(Risposta::Byte {
+                totale: 99 * M,
+                byte: byte(quanti, segno),
+            })
+        })
+        .expect("tre finestre");
+        assert_eq!(chiamate, [(7, M), (7 + M, M), (7 + 2 * M, 5)]);
+        assert_eq!(totale, 99 * M);
+        assert_eq!(u64::try_from(letti.len()).expect("sta"), 2 * M + 5);
+        // Le tre finestre una dopo l'altra, nell'ordine in cui sono arrivate.
+        let m = usize::try_from(M).expect("sta");
+        assert_eq!(letti.first(), Some(&1));
+        assert_eq!(letti.get(m - 1), Some(&1));
+        assert_eq!(letti.get(m), Some(&2));
+        assert_eq!(letti.get(2 * m), Some(&3));
+        assert_eq!(letti.last(), Some(&3));
+    }
+
+    #[test]
+    fn una_risposta_corta_e_la_fine_del_file() {
+        let mut chiamate = Vec::new();
+        let (letti, totale) = a_finestre(0, 3 * M, |da, quanti| {
+            chiamate.push((da, quanti));
+            let quanti = if da == 0 { quanti } else { 10 };
+            Ok(Risposta::Byte {
+                totale: M + 10,
+                byte: byte(quanti, 1),
+            })
+        })
+        .expect("fine del file");
+        assert_eq!(chiamate, [(0, M), (M, M)], "niente terza finestra");
+        assert_eq!(u64::try_from(letti.len()).expect("sta"), M + 10);
+        assert_eq!(totale, M + 10);
+    }
+
+    #[test]
+    fn piu_byte_del_chiesto_e_un_errore_di_protocollo() {
+        // L'unica guardia del membro contro un host che manda più del
+        // chiesto: `comincia` controlla un `Pezzo` solo contro
+        // `LETTURA_MASSIMA`, non contro la richiesta. Senza, i byte in più
+        // finirebbero al decodificatore come se fossero a quell'offset.
+        let err = a_finestre(0, 100, |_, quanti| {
+            Ok(Risposta::Byte {
+                totale: 1_000,
+                byte: byte(quanti + 1, 1),
+            })
+        })
+        .expect_err("uno di troppo");
+        assert_eq!(err.code().kind().code(), "insieme.protocollo");
+    }
+
+    #[test]
+    fn un_rifiuto_a_meta_vale_il_suo_codice() {
+        let err = a_finestre(0, 2 * M, |da, quanti| {
+            if da == 0 {
+                Ok(Risposta::Byte {
+                    totale: 2 * M,
+                    byte: byte(quanti, 1),
+                })
+            } else {
+                Ok(Risposta::Rifiutata(ErrorCodeKind::InsiemeFileCambiato))
+            }
+        })
+        .expect_err("rifiutata");
+        assert_eq!(err.code().kind().code(), "insieme.fileCambiato");
+    }
+}

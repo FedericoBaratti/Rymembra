@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::nuvola::{TagNoti, e_nuvola};
 use rymembra_domain::scan_plan::DiscoveredFile;
 
 /// Ciò che serve a un lettore di metadati: leggere e riposizionarsi.
@@ -248,6 +249,162 @@ pub trait MusicFiles: Send + Sync {
     /// permette a lettura dei tag e riproduzione di passare dallo stesso tratto
     /// invece che da due.
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError>;
+
+    /// Come si legge da questa radice: quanti file insieme, per quanto, e in
+    /// che ordine.
+    ///
+    /// Il valore di serie è [`Limiti::DISCO`], cioè le costanti che la
+    /// scansione ha sempre usato. Le radici del cloud ne hanno altri: vedi
+    /// [`Limiti`].
+    fn limiti(&self, root: &str) -> Limiti {
+        let _ = root;
+        Limiti::DISCO
+    }
+
+    /// Quel che la sorgente sa già dei tag di un file, senza leggerlo.
+    ///
+    /// Sul disco niente: per sapere i tag di un file lo si apre. Su OneDrive
+    /// personale l'elenco porta titolo, artista, album e durata (la faccetta
+    /// `audio` di Graph), e la prima passata li usa per le righe che entrano
+    /// in libreria prima della lettura vera.
+    fn tag_noti(&self, path: &str) -> Option<TagNoti> {
+        let _ = path;
+        None
+    }
+}
+
+/// Come la scansione legge i file di una radice.
+///
+/// # Perché li decide la sorgente
+///
+/// Perché sono la forma del mezzo, non della scansione. Sul disco e sulla
+/// share una lettura costa millisecondi e un file che non risponde in
+/// venticinque secondi è un disco che se n'è andato; su un servizio cloud una
+/// lettura costa una o due richieste HTTPS, un `429` chiede di aspettare
+/// trenta secondi, e la stessa scadenza abbandonerebbe la radice al primo
+/// rallentamento. Chi sa da dove arrivano i byte sa anche quanto aspettarli.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limiti {
+    /// Quante letture insieme.
+    pub in_volo: usize,
+    /// Quanto si aspetta un file prima di dichiararlo perso.
+    pub per_file: std::time::Duration,
+    /// Quanti file perduti per scadenza, di fila, abbandonano la radice.
+    pub scadenze_di_fila: usize,
+    /// Quante righe per transazione.
+    pub lotto: usize,
+    /// Si legge un file alla volta finché uno non ha risposto: la prudenza di
+    /// una share appena svegliata, che non serve a un servizio sempre acceso.
+    pub prima_uno_alla_volta: bool,
+    /// I file nuovi entrano in libreria **subito**, dai dati dell'elenco, e i
+    /// loro tag si leggono dopo (le due passate di una radice del cloud).
+    pub prima_le_righe: bool,
+    /// Quanti file si leggono, al più, in una scansione: oltre, la scansione
+    /// finisce e dice quanti ne restano, e chi l'ha chiesta la rimette in fila
+    /// dietro alle altre. `None`: tutti.
+    pub letture_per_giro: Option<usize>,
+}
+
+impl Limiti {
+    /// Il disco e la rete di casa: le costanti di sempre.
+    pub const DISCO: Self = Self {
+        in_volo: 4,
+        per_file: std::time::Duration::from_secs(25),
+        scadenze_di_fila: 3,
+        lotto: 500,
+        prima_uno_alla_volta: true,
+        prima_le_righe: false,
+        letture_per_giro: None,
+    };
+}
+
+/// Le sorgenti dei file, scelte percorso per percorso.
+///
+/// Il disco per i percorsi di sempre, il cloud per quelli che cominciano con
+/// [`rymembra_domain::nuvola::SCHEMA`]. Chi lo riceve — la scansione, la
+/// riproduzione, l'analisi — non deve sapere quale delle due sta parlando: è
+/// la stessa ragione per cui [`MusicFiles`] esiste.
+///
+/// `nuvola` è `None` dove il cloud non c'è (le prove, una build senza): un
+/// percorso del cloud allora non si apre, e la sua radice non è raggiungibile
+/// — che per la scansione vuol dire «non giudicare niente», cioè tenere le
+/// righe come sono.
+pub struct Archivi {
+    /// Il disco.
+    pub locali: LocalFiles,
+    /// Il cloud, se c'è.
+    pub nuvola: Option<std::sync::Arc<dyn MusicFiles>>,
+}
+
+impl Archivi {
+    /// Solo il disco.
+    #[must_use]
+    pub const fn solo_disco() -> Self {
+        Self {
+            locali: LocalFiles,
+            nuvola: None,
+        }
+    }
+
+    /// Chi risponde per questo percorso: `None` per un percorso del cloud
+    /// senza cloud.
+    fn per(&self, percorso: &str) -> Option<&dyn MusicFiles> {
+        if e_nuvola(percorso) {
+            self.nuvola.as_deref()
+        } else {
+            Some(&self.locali)
+        }
+    }
+
+    /// L'errore di un percorso del cloud quando il cloud non c'è.
+    fn senza_nuvola(percorso: &str) -> AppError {
+        AppError::new(ErrorCode::CloudNotConnected {
+            servizio: rymembra_domain::nuvola::conto_di(percorso)
+                .and_then(rymembra_domain::nuvola::Servizio::del_conto)
+                .map_or_else(String::new, |s| s.nome().to_owned()),
+        })
+    }
+}
+
+impl MusicFiles for Archivi {
+    fn walk(&self, root: &str) -> Result<Camminata, AppError> {
+        match self.per(root) {
+            Some(sorgente) => sorgente.walk(root),
+            None => Err(Self::senza_nuvola(root)),
+        }
+    }
+
+    fn walk_a_rate(
+        &self,
+        root: &str,
+        su_voce: &mut dyn FnMut(Voce) -> ControlFlow<()>,
+    ) -> Result<bool, AppError> {
+        match self.per(root) {
+            Some(sorgente) => sorgente.walk_a_rate(root, su_voce),
+            None => Err(Self::senza_nuvola(root)),
+        }
+    }
+
+    fn radice_raggiungibile(&self, root: &str) -> bool {
+        self.per(root)
+            .is_some_and(|sorgente| sorgente.radice_raggiungibile(root))
+    }
+
+    fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
+        match self.per(path) {
+            Some(sorgente) => sorgente.open(path),
+            None => Err(Self::senza_nuvola(path)),
+        }
+    }
+
+    fn limiti(&self, root: &str) -> Limiti {
+        self.per(root)
+            .map_or(Limiti::DISCO, |sorgente| sorgente.limiti(root))
+    }
+
+    fn tag_noti(&self, path: &str) -> Option<TagNoti> {
+        self.per(path).and_then(|sorgente| sorgente.tag_noti(path))
+    }
 }
 
 /// Traduce un errore di I/O nel catalogo, distinguendo i casi che cambiano cosa
@@ -259,6 +416,18 @@ pub trait MusicFiles: Send + Sync {
 /// vecchio albero li appiattiva entrambi in un avviso nel log.
 pub fn io_error(path: &str, err: &std::io::Error) -> AppError {
     use std::io::ErrorKind as K;
+    // Prima ancora della rete: un errore che porta dentro il suo `AppError`.
+    // È il modo in cui una sorgente che non è un disco — il lettore dei tag
+    // del cloud, che deve passare da `Read` — dice **che cosa** è successo: un
+    // `429`, una quota finita, un conto da ricollegare. Tradotto dal solo
+    // `ErrorKind` diventerebbe un generico «il file non si legge», e a valle
+    // un rifiuto del file per un guasto del servizio.
+    if let Some(vero) = err
+        .get_ref()
+        .and_then(|dentro| dentro.downcast_ref::<AppError>())
+    {
+        return vero.clone();
+    }
     // Prima di tutto il resto: i guasti di rete arrivano da Windows come codici
     // grezzi che `ErrorKind` non sa nominare — diventerebbero un generico
     // `fs.readFailed`, cioè «questo file non si legge», quando la verità è «la
@@ -882,7 +1051,12 @@ fn elenca_cartella(
             continue;
         };
         if tipo.is_dir() {
-            sotto.push(percorso);
+            // Le cartelle di Windows non si visitano: vedi
+            // [`e_cartella_di_sistema`]. Non sono rami persi — non le si è
+            // perse, le si è lasciate — e quindi non abbassano `completa`.
+            if !cartella_di_windows(&voce) {
+                sotto.push(percorso);
+            }
             continue;
         }
         // Link, giunzioni, dispositivi: non si seguono e non si contano.
@@ -910,6 +1084,55 @@ fn elenca_cartella(
         manda.send(ramo_perso()).ok()?;
     }
     Some(sotto)
+}
+
+/// Le cartelle che ogni volume NTFS ha in cima e che sono di Windows, non
+/// dell'utente.
+const CARTELLE_DI_SISTEMA: [&str; 2] = ["$RECYCLE.BIN", "System Volume Information"];
+
+/// Il nome è quello di una cartella di sistema di un volume? Senza maiuscole.
+///
+/// # Perché si saltano
+///
+/// Contano per chi sorveglia un'unità intera (`D:\`), caso previsto dai
+/// volumi. Il Cestino tiene i file eliminati **con la loro estensione**
+/// (`$RECYCLE.BIN\<SID>\$R4K2J9Q.flac`): camminarlo farebbe tornare in
+/// libreria il brano appena eliminato da Rymembra, con ascolti, voto e
+/// playlist restituiti dai trigger della `content_key`. `System Volume
+/// Information` è negata all'utente: camminarla darebbe un ramo perso a ogni
+/// scansione, cioè un falso allarme che nessuno può sistemare.
+///
+/// `pub(crate)` per [`crate::library::cartelle_da_riguardare`]: un avviso
+/// della sorveglianza dal Cestino farebbe altrimenti una scansione con radice
+/// il Cestino stesso, e una radice si cammina per quel che è.
+pub(crate) fn e_cartella_di_sistema(nome: &str) -> bool {
+    CARTELLE_DI_SISTEMA
+        .iter()
+        .any(|sistema| nome.eq_ignore_ascii_case(sistema))
+}
+
+/// Una sottocartella da non visitare: per nome ([`e_cartella_di_sistema`]) o,
+/// su Windows, perché è nascosta **e** di sistema insieme.
+///
+/// Mai il solo «di sistema», né il solo «sola lettura»: Windows li mette sulle
+/// cartelle personalizzate con `desktop.ini` (un'icona, la copertina
+/// dell'album), che sono cartelle di musica vere. Gli attributi vengono
+/// dall'elenco, come dimensione e data: nessun giro di disco in più.
+fn cartella_di_windows(voce: &std::fs::DirEntry) -> bool {
+    if voce.file_name().to_str().is_some_and(e_cartella_di_sistema) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const NASCOSTA: u32 = 0x2;
+        const DI_SISTEMA: u32 = 0x4;
+        if let Ok(metadati) = voce.metadata() {
+            let attributi = metadati.file_attributes();
+            return attributi & NASCOSTA != 0 && attributi & DI_SISTEMA != 0;
+        }
+    }
+    false
 }
 
 /// Consegna i file raccolti in ordine di nome, e svuota il mucchio.
@@ -968,9 +1191,17 @@ const BUFFER_LETTURA: usize = 64 * 1024;
 /// cambiato ogni file e una riscansione da centomila brani rileggerebbe tutti i
 /// metadati invece di nessuno.
 ///
-/// Un orologio che non si legge dà 0: un file «modificato all'epoca zero» verrà
-/// riletto a ogni scansione, che è lento ma corretto — il contrario, dargli
-/// l'ora attuale, lo farebbe sembrare aggiornato per sempre.
+/// Una data illeggibile o anteriore al 1970 vale 0, e resta stabile: il piano
+/// confronta `0 == 0`, quindi il file **non** si rilegge finché non cambiano la
+/// sua dimensione o la sua data. È la scelta giusta fra le due sbagliate —
+/// dargli l'ora attuale lo farebbe rileggere a ogni scansione — ma ha un
+/// prezzo da sapere: per questi file la sentinella `date_modified = 0` della
+/// migrazione 027 («da rileggere») non forza niente, e un taggatore che
+/// conserva data e dimensione cambia i tag senza che la scansione se ne
+/// accorga. Le date negative non si usano apposta: `-1` è la sentinella di
+/// «Rileggi tutti i tag» («una data che nessun file ha», vedi `known_tracks`),
+/// e lo stesso numero lo confronta «Ascolta insieme» fra due PC, che devono
+/// dirlo nella stessa forma.
 ///
 /// `pub(crate)` per il descrittore di «Ascolta insieme» (`insieme::descrittore`),
 /// che deve dire la data **nella stessa forma** in cui la scansione l'ha scritta:
@@ -990,6 +1221,35 @@ pub(crate) fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    #[test]
+    fn un_errore_di_io_con_dentro_il_suo_perche_si_dice_per_quel_che_e() {
+        // Il lettore del cloud passa da `Read`, e l'unico modo che ha di dire
+        // «429» è metterlo dentro l'errore di I/O: qualunque `ErrorKind`
+        // abbia, esce l'`AppError` che porta.
+        for tipo in [
+            std::io::ErrorKind::Other,
+            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::NotFound,
+        ] {
+            let vero = AppError::new(ErrorCode::NetRateLimited {
+                service: Some("OneDrive".to_owned()),
+                retry_after_ms: Some(1_000),
+            });
+            let io = std::io::Error::new(tipo, vero.clone());
+            assert_eq!(
+                io_error("nuvola://onedrive-abcdefgh/a.flac", &io),
+                vero,
+                "{tipo:?}"
+            );
+        }
+        // Un errore qualunque resta tradotto dal suo genere, come prima.
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "non c'è");
+        assert_eq!(
+            io_error("C:/a.flac", &io).code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::FsNotFound
+        );
+    }
 
     #[test]
     fn la_camminata_trova_i_file_annidati_e_non_filtra() {
@@ -1324,6 +1584,88 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn il_cestino_di_windows_e_le_cartelle_di_sistema_non_si_camminano() {
+        // Un'unità intera sorvegliata: il Cestino tiene i brani eliminati con
+        // la loro estensione, e `System Volume Information` è negata
+        // all'utente — camminarle vorrebbe dire far tornare in libreria un
+        // brano appena eliminato, e un ramo perso a ogni scansione.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let radice = dir.path().join("radice");
+        for relativo in [
+            r"$RECYCLE.BIN\S-1-5-21-1\$RABC123.mp3",
+            r"$Recycle.Bin\S-1-5-21-2\$RDEF456.mp3",
+            r"System Volume Information\x.mp3",
+            r"Album\a.mp3",
+        ] {
+            let percorso = radice.join(relativo);
+            std::fs::create_dir_all(percorso.parent().expect("genitore")).expect("cartelle");
+            std::fs::write(&percorso, b"x").expect("file");
+        }
+        let (raccolta, completa) = raccogli(&radice.to_string_lossy());
+        assert_eq!(
+            raccolta.file,
+            [radice.join(r"Album\a.mp3").to_string_lossy().into_owned()]
+        );
+        assert!(raccolta.rami.is_empty(), "{:?}", raccolta.rami);
+        assert!(completa);
+
+        // La radice invece si cammina per quel che è, anche se si chiama così:
+        // l'ha scelta l'utente.
+        let (dentro, _) = raccogli(&radice.join("System Volume Information").to_string_lossy());
+        assert_eq!(dentro.file.len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn una_cartella_nascosta_e_di_sistema_non_si_cammina() {
+        // Le cartelle che Windows marca nascoste **e** di sistema sono sue
+        // (il Cestino di un altro nome, `Config.Msi`, …). Il solo «di sistema»
+        // invece no: lo mette sulle cartelle personalizzate con `desktop.ini`,
+        // cioè anche su cartelle di dischi veri, che devono restare in libreria.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let radice = dir.path().join("radice");
+        for relativo in [r"Sua\a.mp3", r"Personalizzata\b.mp3", r"Nascosta\c.mp3"] {
+            let percorso = radice.join(relativo);
+            std::fs::create_dir_all(percorso.parent().expect("genitore")).expect("cartelle");
+            std::fs::write(&percorso, b"x").expect("file");
+        }
+        let attrib = |argomenti: &[&str], cartella: &Path| {
+            std::process::Command::new("attrib")
+                .args(argomenti)
+                .arg(cartella)
+                .output()
+                .is_ok_and(|esito| esito.status.success())
+        };
+        if !attrib(&["+h", "+s"], &radice.join("Sua"))
+            || !attrib(&["+s"], &radice.join("Personalizzata"))
+            || !attrib(&["+h"], &radice.join("Nascosta"))
+        {
+            eprintln!("attrib non riuscito: prova saltata");
+            return;
+        }
+        let (raccolta, completa) = raccogli(&radice.to_string_lossy());
+        let mut file = raccolta.file;
+        file.sort();
+        assert_eq!(
+            file,
+            [
+                radice
+                    .join(r"Nascosta\c.mp3")
+                    .to_string_lossy()
+                    .into_owned(),
+                radice
+                    .join(r"Personalizzata\b.mp3")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        );
+        assert!(completa);
+        // Pulizia: `attrib -s -h`, se no il TempDir non si toglie.
+        let _ = attrib(&["-h", "-s"], &radice.join("Sua"));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn una_giunzione_non_si_segue() {
         // Le giunzioni sono il collegamento di Windows che si crea senza
         // privilegi, e quindi quello che si trova davvero sui dischi. Una verso
@@ -1473,7 +1815,7 @@ mod tests {
     #[test]
     fn la_sonda_delle_radici_distingue_quel_che_ce_da_quel_che_non_ce() {
         // La sonda vera, non quella dei doppi: tutte le prove sulle radici morte
-        // in `library.rs` girano su `FintoDisco`, che sovrascrive
+        // in `library/tests.rs` girano su `FintoDisco`, che sovrascrive
         // `radice_raggiungibile` — quindi l'implementazione che poi gira in
         // produzione, con il filo e la scadenza, non era esercitata da niente.
         //

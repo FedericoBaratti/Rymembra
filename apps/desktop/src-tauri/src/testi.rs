@@ -687,16 +687,21 @@ pub struct CandidatiIpc {
 ///
 /// `library.trackNotFound`, l'errore di rete, `db.queryFailed`.
 ///
-/// `(async)`: sono fino a tre richieste al catalogo.
-#[tauri::command(async)]
-pub fn testo_candidati(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    id: i64,
-) -> Esito<CandidatiIpc> {
+/// In disparte, sul pool bloccante, come [`testo_cerca`]: sono fino a tre
+/// richieste al catalogo, e un `(async)` le consumava su un *worker* del
+/// runtime. Vedi [`crate::disparte`].
+#[tauri::command]
+pub async fn testo_candidati(app: AppHandle, id: i64) -> Esito<CandidatiIpc> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("candidati di un testo", move || candidati_adesso(&app, id))
+        .await
+        .map_err(errore)?
+}
+
+/// Il corpo di [`testo_candidati`], sul pool bloccante.
+fn candidati_adesso(app: &AppHandle, id: i64) -> Esito<CandidatiIpc> {
+    let (stato, testi) = stati(app, "candidati di un testo").map_err(errore)?;
     let (brano, rete) = con_libreria(&stato, |libreria| {
         Ok((
             testi::brano(&libreria.connection, id)?,
@@ -710,7 +715,7 @@ pub fn testo_candidati(
             voci: Vec::new(),
         });
     }
-    let fornitori = servizi(&app, &testi).map_err(errore)?;
+    let fornitori = servizi(app, &testi).map_err(errore)?;
     let voci = testi::candidati_in_rete(&fornitori, &brano).map_err(errore)?;
     let fuori = voci.iter().map(CandidatoIpc::from).collect();
     *testi
@@ -735,16 +740,23 @@ pub fn testo_candidati(
 ///
 /// `library.trackNotFound`; `internal.aborted` se la voce non è fra i candidati;
 /// l'errore di rete se va richiesta e il catalogo non risponde; `db.queryFailed`.
-#[tauri::command(async)]
-pub fn testo_scegli(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    id: i64,
-    candidato: i64,
-) -> Esito<TestoIpc> {
+///
+/// In disparte: può tornare al catalogo, e alla fine rilegge il testo dal disco
+/// accanto al brano (vedi [`testo_di`]), che può stare su una share.
+#[tauri::command]
+pub async fn testo_scegli(app: AppHandle, id: i64, candidato: i64) -> Esito<TestoIpc> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("scelta di un testo", move || {
+        scegli_adesso(&app, id, candidato)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_scegli`], sul pool bloccante.
+fn scegli_adesso(app: &AppHandle, id: i64, candidato: i64) -> Esito<TestoIpc> {
+    let (stato, testi) = stati(app, "scelta di un testo").map_err(errore)?;
     let brano =
         con_libreria(&stato, |libreria| testi::brano(&libreria.connection, id)).map_err(errore)?;
     let dall_elenco = |voci: &[rymembra_meta::lrclib::Voce]| {
@@ -762,7 +774,7 @@ pub fn testo_scegli(
     let voce = match ricordata {
         Some(voce) => voce,
         None => {
-            let fornitori = servizi(&app, &testi).map_err(errore)?;
+            let fornitori = servizi(app, &testi).map_err(errore)?;
             let voci = testi::candidati_in_rete(&fornitori, &brano).map_err(errore)?;
             dall_elenco(&voci).ok_or_else(|| {
                 errore(
@@ -789,10 +801,21 @@ pub fn testo_scegli(
 /// # Errori
 ///
 /// `library.trackNotFound`, `db.queryFailed`.
-#[tauri::command(async)]
-pub fn testo_rifiuta(stato: State<'_, Stato>, id: i64) -> Esito<TestoIpc> {
+///
+/// In disparte: dopo lo scarto rilegge il testo che resta, cioè il disco
+/// accanto al brano (vedi [`testo_di`]).
+#[tauri::command]
+pub async fn testo_rifiuta(app: AppHandle, id: i64) -> Esito<TestoIpc> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("rifiuto di un testo", move || rifiuta_adesso(&app, id))
+        .await
+        .map_err(errore)?
+}
+
+/// Il corpo di [`testo_rifiuta`], sul pool bloccante.
+fn rifiuta_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
+    let stato = gestito::<Stato>(app, "rifiuto di un testo").map_err(errore)?;
     let brano = con_libreria(&stato, |libreria| {
         let brano = testi::brano(&libreria.connection, id)?;
         testi::rifiuta(&libreria.connection, &brano.track_key)?;
@@ -1197,6 +1220,52 @@ mod prove {
         GUASTI_DI_FILA, ParolaSalvata, Reazione, RigaSalvata, Sequenza, componi, gemello_esteso,
     };
 
+    /// Nessun comando `(async)` legge il disco accanto al brano, decodifica il
+    /// brano o chiede al catalogo.
+    ///
+    /// Un `#[tauri::command(async)]` su una `fn` sincrona gira su un *worker*
+    /// del runtime, che sono tanti quanti i processori e servono a **tutti** i
+    /// comandi asincroni: tre pannelli su una share che non risponde li
+    /// tenevano fermi fino alla scadenza SMB. Chi aspetta il disco o la rete va
+    /// in disparte, come [`super::testo_brano`] e [`super::testo_cerca`]. Gli
+    /// aghi si compongono con `concat!` perché questa prova, che sta nello
+    /// stesso file, non trovi sé stessa.
+    #[test]
+    fn chi_legge_il_disco_non_sta_sul_runtime() {
+        const ATTESE: [&str; 3] = [
+            concat!("testo", "_di("),
+            concat!("attacchi", "("),
+            concat!("candidati_in", "_rete("),
+        ];
+        let sorgente = include_str!("testi.rs");
+        let mut comandi = 0;
+        let mut sbagliati = Vec::new();
+        for (dove, _) in sorgente.match_indices(concat!("\n#[tauri::", "command")) {
+            comandi += 1;
+            let resto = &sorgente[dove + 1..];
+            let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+            if !firma.starts_with(concat!("#[tauri::", "command(async)]")) {
+                continue;
+            }
+            let nome: String = firma
+                .find("fn ")
+                .map(|i| &firma[i + 3..])
+                .unwrap_or_default()
+                .chars()
+                .take_while(|c| *c == '_' || c.is_alphanumeric())
+                .collect();
+            let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+            if let Some(attesa) = ATTESE.iter().find(|a| corpo.contains(**a)) {
+                sbagliati.push(format!("{nome} ({attesa})"));
+            }
+        }
+        assert!(comandi > 0, "la ricerca non ha trovato nessun comando");
+        assert!(
+            sbagliati.is_empty(),
+            "comandi (async) che aspettano disco o rete: {sbagliati:#?}"
+        );
+    }
+
     #[test]
     fn cinque_guasti_di_fila_fermano_la_passata_uno_no() {
         let mut sequenza = Sequenza::default();
@@ -1436,7 +1505,9 @@ mod prove {
 /// Questa funzione torna subito, e il lavoro comincia altrove — è la stessa
 /// forma di `crate::scrobble::sta_suonando`, chiamata due righe più su.
 pub fn precarica_prossimo(app: &AppHandle, prossimo: Option<i64>) {
-    let Some(id) = prossimo.filter(|id| *id > 0) else {
+    // Solo una riga della libreria ha un testo da chiedere: una voce di
+    // sessione no. La regola del segno sta in `riproduzione::ospiti`.
+    let Some(id) = prossimo.filter(|id| crate::riproduzione::insieme::e_di_libreria(*id)) else {
         return;
     };
     let Some(testi) = app.try_state::<StatoTesti>() else {
@@ -1550,10 +1621,12 @@ fn segnala(app: &AppHandle, err: &AppError) {
 /// i tempi raddrizzati — e la regola che li produce sta in
 /// `rymembra_domain::testo::aggancia`, che è pura e provata senza aprire un file.
 ///
-/// Decodifica il brano per intero: uno o due secondi su quattro minuti. Per
-/// questo è `(async)`: un comando normale gira sul **filo principale** della
-/// finestra — è la regola annotata in `nuvola`, e vale qui come per
-/// `scansiona` — e due secondi lì sopra sono due secondi di editor congelato.
+/// Decodifica il brano per intero: uno o due secondi su quattro minuti, e più
+/// su una share lenta o dal cloud. Un comando normale gira sul **filo
+/// principale** della finestra — è la regola annotata in `nuvola`, e vale qui
+/// come per `scansiona` — e due secondi lì sopra sono due secondi di editor
+/// congelato. E non basta `(async)`, che lo manderebbe su un *worker* del
+/// runtime: va in disparte, sul pool bloccante, come [`testo_brano`].
 ///
 /// # Errori
 ///
@@ -1561,10 +1634,20 @@ fn segnala(app: &AppHandle, err: &AppError) {
 /// `playback.formatUnsupported` per un formato che il motore non sa leggere.
 /// Un brano di cui non si trova nessun attacco **non** è un errore: le battute
 /// tornano com'erano, ed è quel che `aggancia` fa senza candidati.
-#[tauri::command(async)]
-pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Esito<Vec<u32>> {
+#[tauri::command]
+pub async fn testo_aggancia(app: AppHandle, id: i64, battute: Vec<u32>) -> Esito<Vec<u32>> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("aggancio di un testo", move || {
+        aggancia_adesso(&app, id, &battute)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_aggancia`], sul pool bloccante.
+fn aggancia_adesso(app: &AppHandle, id: i64, battute: &[u32]) -> Esito<Vec<u32>> {
+    let stato = gestito::<Stato>(app, "aggancio di un testo").map_err(errore)?;
     // Sotto lucchetto ci va **solo** la riga di database. L'apertura del file no:
     // su una condivisione di rete morta dura quaranta secondi, e tenerci dentro
     // il lucchetto della libreria vorrebbe dire fermare la scansione,
@@ -1575,11 +1658,26 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
         rymembra_app::playback::scheda_sorgente(&libreria.connection, id)
     })
     .map_err(errore)?;
-    let sorgente =
-        rymembra_app::playback::sorgente_da_scheda(&rymembra_app::files::LocalFiles, &scheda)
-            .map_err(errore)?;
+    // Un brano del cloud si decodifica per intero dalla sua sorgente, come in
+    // riproduzione: il lettore dei tag non è fatto per leggere tutto.
+    let del_cloud = scheda
+        .collocazione
+        .file_audio()
+        .filter(|file| rymembra_domain::nuvola::e_nuvola(file))
+        .map(str::to_owned);
+    let sorgente = match del_cloud {
+        Some(file) => crate::riproduzione::sorgente_dal_cloud(
+            crate::nuvola_musica::archivio(app).as_deref(),
+            &scheda,
+            &file,
+        ),
+        None => {
+            rymembra_app::playback::sorgente_da_scheda(&rymembra_app::files::LocalFiles, &scheda)
+        }
+    }
+    .map_err(errore)?;
     let attacchi = rymembra_play::attacchi::attacchi(sorgente).map_err(errore)?;
-    Ok(rymembra_domain::testo::aggancia(&battute, &attacchi))
+    Ok(rymembra_domain::testo::aggancia(battute, &attacchi))
 }
 
 /// Salva un testo sincronizzato a mano.
@@ -1651,18 +1749,26 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 /// tempi non esistono più. Dall'editor arrivano solo le parole — `iniziale`, in
 /// `Testo.tsx` — e i tempi si ribattono tutti.
 ///
-/// `(async)`: può scrivere un `.lrc` accanto al file musicale, che può stare su
-/// una cartella di rete. Stessa ragione di [`testo_brano`], e qui è una
-/// scrittura: costa di più di una lettura anche quando la rete c'è.
-#[tauri::command(async)]
-pub fn testo_salva(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    id: i64,
-    righe: Vec<RigaSalvata>,
-) -> Esito<SalvatoIpc> {
+/// In disparte, sul pool bloccante: rilegge il testo di prima dal disco
+/// accanto al brano e può scrivere un `.lrc` lì accanto, che può stare su una
+/// cartella di rete. È la stessa ragione di [`testo_brano`] e lo stesso
+/// rimedio: un `(async)` non basta, perché manderebbe il corpo su un *worker*
+/// del runtime, e qui c'è anche una scrittura, che costa di più di una lettura
+/// anche quando la rete c'è.
+#[tauri::command]
+pub async fn testo_salva(app: AppHandle, id: i64, righe: Vec<RigaSalvata>) -> Esito<SalvatoIpc> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("salvataggio di un testo", move || {
+        salva_adesso(&app, id, righe)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_salva`], sul pool bloccante.
+fn salva_adesso(app: &AppHandle, id: i64, righe: Vec<RigaSalvata>) -> Esito<SalvatoIpc> {
+    let stato = gestito::<Stato>(app, "salvataggio di un testo").map_err(errore)?;
     // ── le traduzioni del testo di prima, che l'editor non porta ────────────
     // Vedi «Le traduzioni restano» su `componi`. Con i due tempi di `testo_di`,
     // perché il testo di prima può stare in un sidecar su una share; e senza
@@ -1728,7 +1834,7 @@ pub fn testo_salva(
             })
         })
         .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    crate::nuvola::se_riuscito(app, esito)
 }
 
 /// Com'è andato un salvataggio fatto a mano.
@@ -1857,7 +1963,7 @@ pub struct RigaSalvata {
 /// due file stanno accanto allo stesso brano, hanno gli stessi tempi di riga, e
 /// chi non sa cosa sia il primo trova il secondo.
 ///
-/// Quale dei due rilegge Rymembra lo decide `rymembra_app::testi::CODE`, che guarda
+/// Quale dei due rilegge Rymembra lo decide `rymembra_app::testi::disco::CODE`, che guarda
 /// `a2.lrc` per primo: il più ricco vince, e il gemello resta lì per gli altri.
 struct Gemelli {
     /// Il `.lrc` di sempre: i tempi delle righe e basta.
@@ -1970,7 +2076,7 @@ fn componi(righe: Vec<RigaSalvata>, prima: &[Riga]) -> Gemelli {
 ///
 /// # Perché toglierlo è metà del lavoro
 ///
-/// Perché `rymembra_app::testi::CODE` guarda `a2.lrc` **prima** di `lrc`. Un
+/// Perché `rymembra_app::testi::disco::CODE` guarda `a2.lrc` **prima** di `lrc`. Un
 /// esteso rimasto lì da una sincronizzazione di ieri scavalcherebbe il `.lrc`
 /// scritto oggi: si salverebbe, non si vedrebbe cambiare niente, e la ragione
 /// sarebbe un file che nessuno ha pensato di guardare. Chi rifà i tempi senza

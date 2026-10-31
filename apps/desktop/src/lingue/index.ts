@@ -31,7 +31,7 @@
  *
  * Come per la posizione di riproduzione (`riproduzione.ts`): di lingua ce n'è
  * una per finestra, e i testi servono anche **fuori** da React — dentro
- * `formato.ts`, dentro `ipc.ts`, dentro tabelle costruite in cima a un modulo.
+ * `formato.ts`, dentro `ipc/`, dentro tabelle costruite in cima a un modulo.
  * Un contesto li renderebbe raggiungibili solo da un componente, e obbligherebbe
  * a far scendere `t` per prop attraverso settanta file: `Impostazioni` ne
  * riceve già sessantuno.
