@@ -347,6 +347,11 @@ pub struct VoceSkin {
     pub nome: String,
     /// Chi l'ha fatta.
     pub autore: String,
+    /// La versione dichiarata nel manifest, o vuota se non si legge.
+    ///
+    /// Serve alla domanda che precede una sostituzione: due skin con lo stesso
+    /// nome si distinguono solo così. Vedi [`SostituzioneIpc`].
+    pub versione: String,
     /// A cosa somiglia.
     pub descrizione: Option<String>,
     /// È quella compilata dentro l'applicazione: non si può disinstallare.
@@ -382,6 +387,10 @@ pub struct VoceSkin {
     /// nemmeno resta fuori: lì non c'è un testo da aggiustare.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guasto: Option<String>,
+    /// La skin che un'installazione ha sostituito, tenuta da parte: da qui la
+    /// si rimette. Assente se non ce n'è. Vedi [`installa_file`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sostituita: Option<SostituitaIpc>,
 }
 
 impl VoceSkin {
@@ -394,11 +403,13 @@ impl VoceSkin {
             id: documento.id,
             nome: documento.meta.name,
             autore: documento.meta.author,
+            versione: documento.meta.version,
             descrizione: documento.meta.description,
             di_serie,
             attiva,
             esame: None,
             guasto: None,
+            sostituita: None,
         }
     }
 
@@ -418,6 +429,7 @@ impl VoceSkin {
         Self {
             nome: meta("name").unwrap_or_else(|| id.clone()),
             autore: meta("author").unwrap_or_default(),
+            versione: meta("version").unwrap_or_default(),
             descrizione: None,
             anteprima: Vec::new(),
             scheme: rymembra_skin::Scheme::Dark.as_str(),
@@ -426,9 +438,88 @@ impl VoceSkin {
             attiva,
             esame: None,
             guasto: Some(guasto.code().kind().code().to_owned()),
+            sostituita: None,
             id,
         }
     }
+}
+
+/// Una skin come la si riconosce in una domanda: il nome, la versione e chi
+/// l'ha fatta. Due skin con lo stesso id si distinguono solo così.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VersioneIpc {
+    /// Il nome mostrato.
+    pub nome: String,
+    /// La versione, o vuota se il manifest non la dice.
+    pub versione: String,
+    /// Chi l'ha fatta, o vuoto.
+    pub autore: String,
+}
+
+impl VersioneIpc {
+    /// Quella di un pacchetto, letta dal solo manifest e senza validarlo: la
+    /// skin installata può non passare più la validazione, e resta comunque
+    /// quella che si sta per sostituire. Senza un manifest che si legga, l'id.
+    fn del_pacchetto(id: &str, bytes: &[u8]) -> Self {
+        let grezzo: Option<serde_json::Value> = rymembra_skin::package::leggi_manifesto(bytes)
+            .ok()
+            .and_then(|manifesto| serde_json::from_str(&manifesto.source).ok());
+        let meta = |campo: &str| {
+            grezzo
+                .as_ref()
+                .and_then(|v| v.get("meta")?.get(campo)?.as_str().map(ToOwned::to_owned))
+        };
+        Self {
+            nome: meta("name").unwrap_or_else(|| id.to_owned()),
+            versione: meta("version").unwrap_or_default(),
+            autore: meta("author").unwrap_or_default(),
+        }
+    }
+
+    fn della_voce(voce: &VoceSkin) -> Self {
+        Self {
+            nome: voce.nome.clone(),
+            versione: voce.versione.clone(),
+            autore: voce.autore.clone(),
+        }
+    }
+}
+
+/// La copia della skin che un'installazione ha sostituito.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SostituitaIpc {
+    /// Com'era.
+    #[serde(flatten)]
+    pub skin: VersioneIpc,
+    /// Il file della copia: reinstallarlo (`skin_installa` con `sostituisci`)
+    /// la rimette al suo posto, e tiene da parte quella di adesso.
+    pub percorso: String,
+}
+
+/// Una sostituzione da confermare: la skin installata con questo id, e quella
+/// che prenderebbe il suo posto.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SostituzioneIpc {
+    /// L'id che le due hanno in comune.
+    pub id: String,
+    /// Quella installata adesso.
+    pub presente: VersioneIpc,
+    /// Quella che arriva.
+    pub nuova: VersioneIpc,
+}
+
+/// Quel che risponde l'installazione di un file `.ryskin`.
+///
+/// Delle due, una: o la skin è installata, o c'è già una skin diversa con lo
+/// stesso id e prima di sostituirla si chiede — e allora non è stato scritto
+/// niente. Vedi [`installa_file`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallazioneIpc {
+    /// La skin installata, con il suo esame.
+    pub installata: Option<VoceSkin>,
+    /// La skin che l'installazione sostituirebbe.
+    pub da_sostituire: Option<SostituzioneIpc>,
 }
 
 /// Un costo e il budget su cui si misura.
@@ -792,6 +883,10 @@ fn elenco(data_dir: &Path, scelta: &str) -> Result<Vec<VoceSkin>, AppError> {
         })
         .collect();
     installate.sort_by(|a, b| a.nome.cmp(&b.nome));
+    // La copia dell'ultima sostituita, per rimetterla: vedi `installa_file`.
+    for voce in &mut installate {
+        voce.sostituita = sostituita_di(data_dir, &voce.id);
+    }
     voci.append(&mut installate);
     Ok(voci)
 }
@@ -823,6 +918,13 @@ fn elenco(data_dir: &Path, scelta: &str) -> Result<Vec<VoceSkin>, AppError> {
 /// archivio troncato a metà dall'uscita era una finestra che ripiegava sulla
 /// skin di serie senza sapere perché.
 pub(crate) fn installa(data_dir: &Path, bytes: &[u8]) -> Result<VoceSkin, AppError> {
+    let documento = da_installare(bytes)?;
+    posa(data_dir, documento, bytes)
+}
+
+/// Il documento di un pacchetto che si può installare: le guardie, l'id e i
+/// budget. Non scrive niente.
+fn da_installare(bytes: &[u8]) -> Result<rymembra_skin::SkinDocument, AppError> {
     let pacchetto = rymembra_skin::read_skin_package(bytes)?;
     let documento = pacchetto.document;
     if di_serie(&documento.id) || !id_sicuro(&documento.id) {
@@ -835,14 +937,119 @@ pub(crate) fn installa(data_dir: &Path, bytes: &[u8]) -> Result<VoceSkin, AppErr
         ));
     }
     rymembra_skin::document::controlla_installazione(&documento)?;
+    Ok(documento)
+}
+
+/// Scrive il pacchetto al posto suo, e risponde con la voce e il suo esame.
+fn posa(
+    data_dir: &Path,
+    documento: rymembra_skin::SkinDocument,
+    bytes: &[u8],
+) -> Result<VoceSkin, AppError> {
     let esame = EsameIpc::from(rymembra_skin::document::esamina(&documento));
     let dir = cartella_skin(data_dir);
     std::fs::create_dir_all(&dir)
         .map_err(|err| rymembra_app::files::io_error(&dir.display().to_string(), &err))?;
     rymembra_app::scrittura::scrivi_atomico(&dir.join(format!("{}.ryskin", documento.id)), bytes)?;
+    let sostituita = sostituita_di(data_dir, &documento.id);
     Ok(VoceSkin {
         esame: Some(esame),
+        sostituita,
         ..VoceSkin::di(documento, false, false)
+    })
+}
+
+/// Dove sta la copia dell'ultima skin sostituita, una per id.
+///
+/// Dentro la cartella delle skin e non accanto ai pacchetti: l'elenco, il
+/// backup e il profilo leggono solo i `.ryskin` della cartella, quindi la
+/// copia non diventa una seconda skin con lo stesso id, non va su Drive e non
+/// entra in un `.ryprofile`. È di questo computer, come un cestino.
+fn cartella_sostituite(data_dir: &Path) -> PathBuf {
+    cartella_skin(data_dir).join("sostituite")
+}
+
+/// La copia tenuta da parte per questo id, se c'è.
+fn sostituita_di(data_dir: &Path, id: &str) -> Option<SostituitaIpc> {
+    let file = cartella_sostituite(data_dir).join(format!("{id}.ryskin"));
+    let bytes = leggi_al_piu(
+        std::fs::File::open(&file).ok()?,
+        &file.display().to_string(),
+    )
+    .ok()?;
+    Some(SostituitaIpc {
+        skin: VersioneIpc::del_pacchetto(id, &bytes),
+        percorso: file.display().to_string(),
+    })
+}
+
+/// Installa un pacchetto scelto dall'utente: dal selettore, o trascinato sulla
+/// finestra.
+///
+/// # Una skin con lo stesso id non si sostituisce senza chiedere
+///
+/// Fino alla 3.2 il pacchetto prendeva il posto di quello installato con lo
+/// stesso id, in silenzio, e il backup portava la sostituzione su Drive: la
+/// skin fatta nello Studio, coi suoi caratteri e la sua miniatura, se ne
+/// andava per un `notte-1.0.0.ryskin` di qualcun altro trascinato sulla
+/// finestra. Adesso, se c'è già una skin **diversa** con quell'id:
+///
+/// - senza `sostituisci` non si scrive niente, e la risposta porta le due —
+///   nome, versione, autore — perché la finestra chieda;
+/// - con `sostituisci` quella di prima va in [`cartella_sostituite`], e da lì
+///   si rimette reinstallandola: le due si scambiano il posto.
+///
+/// Lo stesso pacchetto un'altra volta non è una sostituzione, e non chiede.
+/// Le skin di serie non si sostituiscono mai: le ferma [`da_installare`].
+///
+/// [`installa`] resta la strada dello Studio, dove la bozza che porta già
+/// quell'id è la skin stessa che si aggiorna (vedi [`installa_sorgente`]).
+fn installa_file(
+    data_dir: &Path,
+    bytes: &[u8],
+    sostituisci: bool,
+) -> Result<InstallazioneIpc, AppError> {
+    let documento = da_installare(bytes)?;
+    let file = cartella_skin(data_dir).join(format!("{}.ryskin", documento.id));
+    let presente = match std::fs::File::open(&file) {
+        Ok(aperto) => Some(leggi_al_piu(aperto, &file.display().to_string())?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(rymembra_app::files::io_error(
+                &file.display().to_string(),
+                &err,
+            ));
+        }
+    };
+    let Some(presente) = presente.filter(|prima| prima.as_slice() != bytes) else {
+        return Ok(InstallazioneIpc {
+            installata: Some(posa(data_dir, documento, bytes)?),
+            da_sostituire: None,
+        });
+    };
+    if !sostituisci {
+        let nuova = VoceSkin::di(documento, false, false);
+        return Ok(InstallazioneIpc {
+            installata: None,
+            da_sostituire: Some(SostituzioneIpc {
+                presente: VersioneIpc::del_pacchetto(&nuova.id, &presente),
+                nuova: VersioneIpc::della_voce(&nuova),
+                id: nuova.id,
+            }),
+        });
+    }
+    // La copia prima del pacchetto nuovo: se la scrittura della copia non
+    // riesce, quella di prima resta dov'era.
+    let riserva = cartella_sostituite(data_dir);
+    std::fs::create_dir_all(&riserva)
+        .map_err(|err| rymembra_app::files::io_error(&riserva.display().to_string(), &err))?;
+    rymembra_app::scrittura::scrivi_atomico(
+        &riserva.join(format!("{}.ryskin", documento.id)),
+        &presente,
+    )?;
+    Ok(InstallazioneIpc {
+        installata: Some(posa(data_dir, documento, bytes)?),
+        da_sostituire: None,
     })
 }
 
@@ -852,7 +1059,8 @@ pub fn skin_installa(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
     percorso: String,
-) -> Esito<VoceSkin> {
+    sostituisci: Option<bool>,
+) -> Esito<InstallazioneIpc> {
     // Senza il lucchetto della libreria: installare è leggere un file e
     // scriverne un altro, e il database non c'entra.
     let esito = crate::studio::cartella_dati(&stato)
@@ -871,7 +1079,7 @@ pub fn skin_installa(
                 return Err(troppo_grande(bytes));
             }
             let bytes = leggi_al_piu(file, &percorso)?;
-            installa(&dati, &bytes)
+            installa_file(&dati, &bytes, sostituisci.unwrap_or(false))
         })
         .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
@@ -1914,6 +2122,103 @@ mod tests {
         let pacchetto = pacchetto(&sorgente_con_id("nocturne"));
         let letto = leggi_al_piu(pacchetto.as_slice(), "nocturne.ryskin").expect("letto");
         assert_eq!(letto, pacchetto);
+    }
+
+    /// Una miniatura: la firma e l'intestazione di una PNG del lato dato.
+    fn miniatura(lato: u8) -> Vec<u8> {
+        let mut png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&[0, 0, 0, lato, 0, 0, 0, lato, 8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        png
+    }
+
+    /// `notte`, col nome, la versione e la miniatura dati.
+    fn notte(nome: &str, versione: &str, lato: u8) -> Vec<u8> {
+        let mut documento: serde_json::Value =
+            serde_json::from_str(&sorgente_con_id("notte")).expect("la skin di serie");
+        documento["meta"]["name"] = nome.into();
+        documento["meta"]["version"] = versione.into();
+        let sorgente = serde_json::to_string_pretty(&documento).expect("riscritta");
+        let png = miniatura(lato);
+        rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
+            source: &sorgente,
+            preview: Some(&png),
+            assets: &[],
+        })
+        .expect("impacchettata")
+    }
+
+    #[test]
+    fn una_skin_con_lo_stesso_id_non_ne_sostituisce_un_altra_senza_dirlo() {
+        // La skin `notte` fatta nello Studio, con la sua miniatura; poi un
+        // `notte-1.0.0.ryskin` di qualcun altro trascinato sulla finestra.
+        // Fino alla 3.2 il secondo prendeva il posto del primo in silenzio, e
+        // il backup portava la sostituzione su Drive.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let file = dir.path().join("skin").join("notte.ryskin");
+        let mia = notte("La mia notte", "2.1.0", 1);
+        let altrui = notte("Notte", "1.0.0", 2);
+        let prima = installa_file(dir.path(), &mia, false).expect("installata");
+        assert!(prima.installata.is_some() && prima.da_sostituire.is_none());
+
+        // Senza conferma non si scrive niente, e la domanda dice chi è chi.
+        let domanda = installa_file(dir.path(), &altrui, false).expect("risposta");
+        assert!(domanda.installata.is_none(), "{domanda:?}");
+        assert_eq!(
+            domanda.da_sostituire,
+            Some(SostituzioneIpc {
+                id: "notte".to_owned(),
+                presente: VersioneIpc {
+                    nome: "La mia notte".to_owned(),
+                    versione: "2.1.0".to_owned(),
+                    autore: "Rymembra".to_owned(),
+                },
+                nuova: VersioneIpc {
+                    nome: "Notte".to_owned(),
+                    versione: "1.0.0".to_owned(),
+                    autore: "Rymembra".to_owned(),
+                },
+            })
+        );
+        assert_eq!(std::fs::read(&file).expect("letta"), mia);
+
+        // Lo stesso pacchetto un'altra volta non sostituisce niente, e non chiede.
+        let uguale = installa_file(dir.path(), &mia, false).expect("installata");
+        assert!(uguale.installata.is_some() && uguale.da_sostituire.is_none());
+
+        // Con la conferma si sostituisce, e quella di prima resta da parte.
+        let fatta = installa_file(dir.path(), &altrui, true).expect("sostituita");
+        let voce = fatta.installata.expect("installata");
+        assert_eq!(std::fs::read(&file).expect("letta"), altrui);
+        let copia = voce.sostituita.clone().expect("la copia");
+        assert_eq!(copia.skin.nome, "La mia notte");
+        assert_eq!(copia.skin.versione, "2.1.0");
+        assert_eq!(std::fs::read(&copia.percorso).expect("la copia"), mia);
+        // L'elenco la sa, e il backup non la vede: non è una skin installata.
+        let elencata = elenco(dir.path(), "notte").expect("elenco");
+        let notte = elencata
+            .iter()
+            .find(|v| v.id == "notte")
+            .expect("in elenco");
+        assert_eq!(notte.sostituita, Some(copia.clone()));
+        assert_eq!(notte.versione, "1.0.0");
+        assert_eq!(
+            rymembra_cloud::pacchetti::elenca_skin(dir.path())
+                .keys()
+                .collect::<Vec<_>>(),
+            ["notte"]
+        );
+
+        // Rimetterla è reinstallare la copia: le due si scambiano il posto.
+        let copiata = std::fs::read(&copia.percorso).expect("la copia");
+        let tornata = installa_file(dir.path(), &copiata, true).expect("rimessa");
+        assert!(tornata.installata.is_some());
+        assert_eq!(std::fs::read(&file).expect("letta"), mia);
+        assert_eq!(std::fs::read(&copia.percorso).expect("la copia"), altrui);
+
+        // E una skin di serie resta fuori, come prima.
+        let serie = installa_file(dir.path(), &pacchetto(rymembra_skin::PLAIN_SOURCE), true);
+        assert!(serie.is_err());
     }
 
     #[test]

@@ -30,11 +30,37 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { applicaSkin } from "./aspetto";
 import { ESTENSIONE_SKIN_PRECEDENTE } from "./eredita";
-import { ipc, type Skin, type VoceSkin } from "./ipc";
+import {
+  ipc,
+  type InstallazioneSkin,
+  type Skin,
+  type SostituzioneSkin,
+  type VersioneSkin,
+  type VoceSkin,
+} from "./ipc";
 import { t } from "./lingue";
 import { useStatoPresente } from "./presenza";
 import { segnoAccento } from "./segnoAccento";
 import { vinceLUltima } from "./ultima";
+
+/**
+ * Un file `.ryskin` con l'id di una skin installata e diversa: la domanda
+ * aperta, e il file da reinstallare se la risposta è sì.
+ */
+export interface DaSostituire {
+  percorso: string;
+  domanda: SostituzioneSkin;
+}
+
+/**
+ * Una sostituzione appena fatta: chi ha preso il posto di chi, e il file da cui
+ * rimettere quella di prima. È la notizia con «Rimettila».
+ */
+export interface Sostituita {
+  nuova: VersioneSkin;
+  vecchia: VersioneSkin;
+  percorso: string;
+}
 
 /** Una bozza dello Studio provata sulla finestra. */
 export interface Prova {
@@ -76,8 +102,29 @@ export interface SkinDellaFinestra {
   disinstallaSkin: (id: string) => Promise<void>;
   /** Chiede un file `.ryskin` e lo installa. */
   installaSkin: () => Promise<void>;
+  /**
+   * Installa un file `.ryskin` già scelto — trascinato sulla finestra, o dal
+   * selettore — chiedendo prima di sostituire una skin con lo stesso id.
+   */
+  installaDaFile: (percorso: string) => Promise<void>;
   /** Una skin appena installata da un file: indossata subito, o prima guardata. */
   dopoInstallazione: (installata: VoceSkin) => Promise<void>;
+  /** La sostituzione che aspetta una risposta: vedi `ConfermaSostituzione`. */
+  daSostituire: DaSostituire | null;
+  /** «Sostituisci»: il file si reinstalla, e quella di prima va da parte. */
+  confermaSostituzione: () => Promise<void>;
+  /** «Annulla»: non si scrive niente. */
+  annullaSostituzione: () => void;
+  /** La sostituzione appena fatta, per la notizia con «Rimettila». */
+  sostituita: Sostituita | null;
+  /** Chiude la notizia della sostituzione. */
+  chiudiSostituita: () => void;
+  /**
+   * Rimette la skin che un'installazione aveva sostituito: la copia tenuta da
+   * parte (`VoceSkin.sostituita.percorso`) si reinstalla, e quella di adesso va
+   * da parte al suo posto.
+   */
+  rimettiSostituita: (percorso: string) => Promise<void>;
   /** «Prova sull'app». */
   iniziaProva: (bozza: { skin: Skin; sorgente: string; id: string }) => void;
   /** Torna dalla prova alla skin di prima. */
@@ -427,6 +474,95 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
     [ricaricaSkin, scegliSkin, setDaIndossare],
   );
 
+  /**
+   * Un file con l'id di una skin installata e diversa: la domanda aperta.
+   *
+   * # Perché si chiede
+   *
+   * Fino alla 3.2 il file prendeva il posto della skin installata in silenzio,
+   * e il backup portava la sostituzione su Drive: la skin fatta nello Studio,
+   * con i suoi caratteri e la sua miniatura, se ne andava per un file di
+   * qualcun altro trascinato sulla finestra. Adesso il nucleo non scrive niente
+   * e risponde con le due — nome, versione, autore — e la risposta arriva da
+   * qui (`ConfermaSostituzione` in `ConfermaSkin.tsx`). Con il sì, quella di
+   * prima resta da parte e si rimette con `rimettiSostituita`.
+   */
+  const [daSostituire, setDaSostituire] = useStatoPresente<DaSostituire | null>(null);
+  /** La sostituzione appena fatta: la notizia con «Rimettila». */
+  const [sostituita, setSostituita] = useStatoPresente<Sostituita | null>(null);
+
+  /**
+   * Quel che risponde un'installazione da file: la skin installata prosegue
+   * come sempre, una sostituzione da chiedere apre la domanda.
+   */
+  const dopoRisposta = useCallback(
+    async (percorso: string, risposta: InstallazioneSkin) => {
+      if (risposta.daSostituire !== null) {
+        setDaSostituire({ percorso, domanda: risposta.daSostituire });
+        return;
+      }
+      if (risposta.installata !== null) await dopoInstallazione(risposta.installata);
+    },
+    [dopoInstallazione, setDaSostituire],
+  );
+
+  /**
+   * Il trascinamento e il selettore passano tutti e due di qui: una regola sola
+   * per la domanda, e nessuna strada che la salti.
+   */
+  const installaDaFile = useCallback(
+    async (percorso: string) => {
+      try {
+        await dopoRisposta(percorso, await ipc.skinInstalla(percorso));
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    },
+    [dopoRisposta, segnalaErrore],
+  );
+
+  const confermaSostituzione = useCallback(async () => {
+    const quale = daSostituire;
+    if (quale === null) return;
+    setDaSostituire(null);
+    try {
+      const risposta = await ipc.skinInstalla(quale.percorso, true);
+      const installata = risposta.installata;
+      if (installata === null) return;
+      if (installata.sostituita !== undefined) {
+        setSostituita({
+          nuova: quale.domanda.nuova,
+          vecchia: quale.domanda.presente,
+          percorso: installata.sostituita.percorso,
+        });
+      }
+      await dopoInstallazione(installata);
+    } catch (e) {
+      segnalaErrore(e);
+    }
+  }, [daSostituire, dopoInstallazione, segnalaErrore, setDaSostituire, setSostituita]);
+
+  const annullaSostituzione = useCallback(() => setDaSostituire(null), [setDaSostituire]);
+  const chiudiSostituita = useCallback(() => setSostituita(null), [setSostituita]);
+
+  /**
+   * La copia tenuta da parte torna al suo posto. È un'installazione con il sì
+   * già dato: chi preme «Rimettila» ha già risposto, e il nucleo tiene da
+   * parte quella di adesso, così il gesto si può rifare al contrario.
+   */
+  const rimettiSostituita = useCallback(
+    async (percorso: string) => {
+      setSostituita(null);
+      try {
+        const risposta = await ipc.skinInstalla(percorso, true);
+        if (risposta.installata !== null) await dopoInstallazione(risposta.installata);
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    },
+    [dopoInstallazione, segnalaErrore, setSostituita],
+  );
+
   const installaSkin = useCallback(async () => {
     try {
       const scelta = await open({
@@ -437,11 +573,11 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
         filters: [{ name: t("file.skin"), extensions: ["ryskin", ESTENSIONE_SKIN_PRECEDENTE] }],
       });
       if (typeof scelta !== "string") return;
-      await dopoInstallazione(await ipc.skinInstalla(scelta));
+      await installaDaFile(scelta);
     } catch (e) {
       segnalaErrore(e);
     }
-  }, [dopoInstallazione, segnalaErrore]);
+  }, [installaDaFile, segnalaErrore]);
 
   return useMemo(
     () => ({
@@ -457,7 +593,14 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       anteprimaSkin,
       disinstallaSkin,
       installaSkin,
+      installaDaFile,
       dopoInstallazione,
+      daSostituire,
+      confermaSostituzione,
+      annullaSostituzione,
+      sostituita,
+      chiudiSostituita,
+      rimettiSostituita,
       iniziaProva,
       finisciProva,
       tieniProva,
@@ -477,7 +620,14 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       anteprimaSkin,
       disinstallaSkin,
       installaSkin,
+      installaDaFile,
       dopoInstallazione,
+      daSostituire,
+      confermaSostituzione,
+      annullaSostituzione,
+      sostituita,
+      chiudiSostituita,
+      rimettiSostituita,
       iniziaProva,
       finisciProva,
       tieniProva,

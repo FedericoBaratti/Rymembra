@@ -363,6 +363,26 @@
   text-wrap: pretty;
 }
 
+/* Le due skin con lo stesso id, prima di sostituirne una
+   (`ConfermaSostituzione` in `ConfermaSkin.tsx`): l'etichetta a sinistra, nome,
+   versione e autore a destra. Due righe che si confrontano a colpo d'occhio,
+   come le impronte dei dispositivi. */
+.sostituzione-skin {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--spazio-1) var(--spazio-3);
+  margin: 0;
+  font-size: 13px;
+}
+.sostituzione-skin dt {
+  color: var(--color-text-3);
+}
+.sostituzione-skin dd {
+  margin: 0;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+
 /* ── elenco degli spostamenti ────────────────────────────────────────────── */
 .spostamenti {
   border: 1px solid var(--hairline);

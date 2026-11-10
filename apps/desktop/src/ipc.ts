@@ -26,7 +26,7 @@ import type {
 } from "./ipc/lontano";
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
-import type { Causa, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
+import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
 import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
 
 export * from "./ipc/errori";
@@ -358,8 +358,11 @@ export const ipc = {
   // scelta vive in `settings`, e la finestra non deve ricordarsela.
   skin: (id?: string) => invoke<Skin>("skin", { id: id ?? null }),
   skinElenco: () => invoke<VoceSkin[]>("skin_elenco"),
-  skinInstalla: (percorso: string) =>
-    invoke<VoceSkin>("skin_installa", { percorso }),
+  // Senza `sostituisci`, un file con l'id di una skin installata e diversa non
+  // scrive niente e risponde `daSostituire`: la finestra chiede, e richiama
+  // con `true`. La skin di prima resta da parte (`VoceSkin.sostituita`).
+  skinInstalla: (percorso: string, sostituisci = false) =>
+    invoke<InstallazioneSkin>("skin_installa", { percorso, sostituisci }),
   // Installa un manifest senza passare da un file sul disco: è quel che serve
   // a un tema fatto qui dentro, che altrimenti dovrebbe uscire come `.ryskin`
   // e rientrare dalla stessa finestra di dialogo per essere usato.
