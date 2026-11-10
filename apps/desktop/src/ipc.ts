@@ -23,7 +23,7 @@ import type {
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { Causa, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
 import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
@@ -122,15 +122,18 @@ export const ipc = {
   braniTogli: (brani: number[]) =>
     invoke<Cancellazione>("brani_togli", { brani }),
   // `definitivi` è la conferma che la finestra ha chiesto quando qualche file
-  // sta su un'unità di rete, dove un Cestino non c'è: senza, il nucleo rifiuta
-  // quei file con `fs.noRecycleBin` prima di toccare qualunque cosa.
-  braniElimina: (brani: number[], definitivi = false) =>
+  // sta dove un Cestino non c'è: l'elenco di quei file, tale e quale a come
+  // `braniSuRete` l'ha dato. Il nucleo cancella per sempre solo quelli, e se
+  // all'esecuzione un altro file risulta senza Cestino rifiuta tutto con
+  // `fs.noRecycleBin` prima di toccare qualunque cosa.
+  braniElimina: (brani: number[], definitivi: string[] = []) =>
     invoke<number>("brani_elimina", { brani, definitivi }),
   // Quanti di questi brani spariscono per sempre, perché il loro file sta dove
-  // un Cestino non c'è: la conferma lo chiede prima di mostrarsi. Rifiuta con
-  // `library.imageTrackPartialDelete` i brani di un'immagine CD scelti a metà.
+  // un Cestino non c'è, e quali file: la conferma lo chiede prima di mostrarsi.
+  // Rifiuta con `library.imageTrackPartialDelete` i brani di un'immagine CD
+  // scelti a metà.
   braniSuRete: (brani: number[]) =>
-    invoke<number>("brani_su_rete", { brani }),
+    invoke<SenzaCestino>("brani_su_rete", { brani }),
   // Le cartelle musicali del sistema che contengono davvero qualcosa. Elenco
   // vuoto anche quando la ricerca è scaduta: per la finestra i due casi si
   // disegnano uguali — non c'è niente da proporre — e distinguerli vorrebbe

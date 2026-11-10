@@ -101,6 +101,7 @@ import {
 } from "./ImpostazioniFinestra";
 import { gestoPermesso, idDiLibreria } from "./insieme";
 import {
+  eErroreIpc,
   eRitentabile,
   guastoDa,
   ipc,
@@ -510,10 +511,14 @@ export function App() {
    * `dalDisco` sceglie fra i due comandi e fra i due testi della conferma: sono
    * due gesti diversi — «non lo voglio in elenco» e «non lo voglio più» — e la
    * differenza va letta prima di premere, non scoperta dopo.
+   *
+   * `cambiata` quando la si riapre perché il nucleo ha rifiutato la conferma di
+   * prima: vedi `elimina`.
    */
   const [daEliminare, setDaEliminare] = useStatoPresente<{
     brani: number[];
     dalDisco: boolean;
+    cambiata?: boolean;
   } | null>(null);
   const [creandoPlaylist, setCreandoPlaylist] = useStatoPresente(false);
   /** La finestrella del ripristino è aperta. */
@@ -2118,9 +2123,17 @@ export function App() {
    * dentro l'identificativo di un brano cancellato vorrebbe dire una barra che
    * dice «4 brani» sopra un elenco che ne mostra tre, e i comandi di quella
    * barra andrebbero a chiedere al nucleo una riga che non c'è.
+   *
+   * # La conferma che non vale più
+   *
+   * `definitivi` sono i file che la conferma ha mostrato come da cancellare
+   * per sempre. Se all'esecuzione un altro file risulta senza Cestino, il
+   * nucleo rifiuta con `fs.noRecycleBin` prima di toccare qualunque cosa: qui
+   * non è un guasto da mostrare in fascia ma una domanda da rifare, e la
+   * conferma si riapre — con `cambiata`, e con la risposta di adesso.
    */
   const elimina = useCallback(
-    async (brani: number[], dalDisco: boolean, definitivi = false) => {
+    async (brani: number[], dalDisco: boolean, definitivi: string[] = []) => {
       const via = new Set(brani);
       const senza = (elenco: Brano[]) => elenco.filter((b) => !via.has(b.id));
       // L'album aperto resta senza niente? Si guarda **prima** di togliere:
@@ -2142,7 +2155,7 @@ export function App() {
           // non ce n'è stato uno.
           if (MOBILE && quanti === 0 && brani.length > 0) throw RIPENSATO;
           setNotizia(
-            definitivi
+            definitivi.length > 0
               ? t("delete.done.forever", { brani: brani_(quanti) })
               : t("delete.done.disk", { brani: brani_(quanti) }),
           );
@@ -2178,7 +2191,13 @@ export function App() {
         // `caricaVista` li sfiorano.
         await ricarica();
       } catch (e) {
-        if (e !== RIPENSATO) segnalaErrore(e);
+        // Vedi «La conferma che non vale più»: non si è mosso niente, e la
+        // domanda si rifà invece di diventare un errore.
+        // Un elenco nuovo e non lo stesso: la conferma rifà la domanda a ogni
+        // elenco che riceve, anche se non ha fatto in tempo a chiudersi.
+        const daRichiedere = dalDisco && eErroreIpc(e) && e.code === "fs.noRecycleBin";
+        if (daRichiedere) setDaEliminare({ brani: [...brani], dalDisco: true, cambiata: true });
+        else if (e !== RIPENSATO) segnalaErrore(e);
         await caricaVista();
         // `caricaVista` rifà gli elenchi impaginati, non questi due: hanno
         // effetti loro, legati all'album e alla playlist aperti, che un errore
@@ -4288,6 +4307,7 @@ export function App() {
           <ConfermaEliminazione
             brani={daEliminare.brani}
             dalDisco={daEliminare.dalDisco}
+            cambiata={daEliminare.cambiata}
             onChiudi={() => setDaEliminare(null)}
             onConferma={(definitivi) => {
               const cosa = daEliminare;

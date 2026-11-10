@@ -29,11 +29,13 @@
 //!
 //! Adesso si chiede prima dove sta ogni file ([`rymembra_app::volumi`], che
 //! riconosce anche le lettere mappate), la finestra lo dice nella conferma —
-//! «questi N brani saranno cancellati per sempre» — e solo con quella
-//! conferma in mano i file di rete si tolgono con `remove_file`, senza passare
-//! dalla shell. Senza conferma il nucleo rifiuta con `fs.noRecycleBin`, prima
-//! di aver toccato la coda o un file. Un file di cui non si è saputo dove sta
-//! vale come uno di rete: la promessa del Cestino non si fa a vuoto.
+//! «questi N brani saranno cancellati per sempre», con l'elenco dei file — e
+//! solo i file di quell'elenco, che la conferma riporta indietro, si tolgono
+//! con `remove_file`, senza passare dalla shell. Un file senza Cestino che
+//! l'elenco non nomina fa rifiutare tutto con `fs.noRecycleBin`, prima di aver
+//! toccato la coda o un file, e la finestra rifà la domanda: vedi [`destini`].
+//! Un file di cui non si è saputo dove sta vale come uno di rete: la promessa
+//! del Cestino non si fa a vuoto.
 //!
 //! Lo stesso vale per le unità **rimovibili** — chiavette, schede SD — e per
 //! CD e RAM disk: sono locali per `canonicalize`, ma Windows lì un Cestino non
@@ -389,14 +391,29 @@ fn immagini_per_chiave(
     Ok(indice)
 }
 
+/// Quel che «Elimina dal disco» cancellerebbe per sempre: quanti brani, e quali
+/// file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenzaCestino {
+    /// Quanti dei brani scelti se ne vanno per sempre: vedi
+    /// [`brani_senza_cestino`].
+    pub brani: usize,
+    /// I file che si cancellano per sempre, nell'ordine in cui si tolgono.
+    /// La finestra li mostra, e li rimanda tali e quali a [`brani_elimina`]
+    /// come conferma: è la sola lista che lui accetta di cancellare senza
+    /// Cestino.
+    pub file: Vec<String>,
+}
+
 /// Quanti di questi brani se ne vanno per sempre, perché il loro file sta dove
-/// un Cestino non c'è.
+/// un Cestino non c'è, e quali sono quei file.
 ///
 /// È la domanda che la conferma di «Elimina dal disco» fa **prima** di
-/// mostrarsi: zero vuol dire la frase di sempre, più di zero vuol dire
-/// «questi N brani saranno cancellati per sempre». I file di cui non si è
-/// saputo dove stanno si contano insieme a quelli di rete, per la stessa
-/// ragione per cui [`brani_elimina`] li tratta così: vedi il `//!`. E con
+/// mostrarsi: nessuno vuol dire la frase di sempre, qualcuno vuol dire
+/// «questi N brani saranno cancellati per sempre», con l'elenco. I file di
+/// cui non si è saputo dove stanno si contano insieme a quelli di rete, per la
+/// stessa ragione per cui [`brani_elimina`] li tratta così: vedi il `//!`. E con
 /// loro quelli su un'unità rimovibile, un CD o un RAM disk: il nome del
 /// comando è rimasto quello di quando la rete era l'unico caso.
 ///
@@ -419,7 +436,7 @@ fn immagini_per_chiave(
 /// un sì che [`brani_elimina`] rifiuterebbe. `internal.aborted` se lo stato non
 /// c'è più, `db.*` se la lettura fallisce.
 #[tauri::command]
-pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usize> {
+pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<SenzaCestino> {
     // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
     // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
     crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
@@ -434,7 +451,7 @@ pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
             .collect();
         let cestini = cestini(&percorsi);
         // Come in `brani_elimina`: chi non ha una risposta vale come di rete.
-        Ok(brani_senza_cestino(&piano, &brani, |percorso| {
+        Ok(senza_cestino(&piano, &brani, |percorso| {
             percorsi
                 .iter()
                 .position(|p| p == percorso)
@@ -445,6 +462,26 @@ pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
     .await
     .map_err(errore)?
     .map_err(errore)
+}
+
+/// [`SenzaCestino`] per questo piano: il conto dei brani scelti, e i file.
+///
+/// Pura come [`brani_senza_cestino`], e per la stessa ragione.
+fn senza_cestino(
+    piano: &[DaTogliere],
+    scelti: &[i64],
+    ha_un_cestino: impl Fn(&str) -> bool,
+) -> SenzaCestino {
+    let file = piano
+        .iter()
+        .flat_map(|voce| voce.file.iter())
+        .filter(|percorso| !ha_un_cestino(percorso))
+        .cloned()
+        .collect();
+    SenzaCestino {
+        brani: brani_senza_cestino(piano, scelti, ha_un_cestino),
+        file,
+    }
 }
 
 /// Quanti dei brani `scelti` se ne vanno insieme a un file che non può andare
@@ -608,13 +645,68 @@ fn per_sempre(percorso: &str) -> Result<(), AppError> {
     }
 }
 
+/// Dove va ogni file, nello stesso ordine di `percorsi`: `true` nel Cestino,
+/// `false` per sempre.
+///
+/// `cestini` è la risposta di [`cestini`] **adesso**, all'esecuzione;
+/// `confermati` i file che la finestra ha mostrato come da cancellare per
+/// sempre, e che chi guardava ha accettato di perdere. Un file senza Cestino
+/// va per sempre solo se sta fra quelli: la conferma vale per i file che ha
+/// nominato, non per «tutto quel che risulterà senza Cestino». La domanda si
+/// rifà qui, e fra la conferma e adesso la risposta può cambiare — una share
+/// lenta lascia senza risposta, cioè senza Cestino, la cartella locale che le
+/// sta in coda dietro — e un file promesso al Cestino non si cancella per
+/// sempre in virtù di un sì dato per un altro.
+///
+/// Il contrario va bene così com'è: un file confermato che adesso il Cestino
+/// ce l'ha va nel Cestino, che è di più di quel che si era accettato.
+///
+/// Il confronto è sulla stringa esatta, come la finestra l'ha ricevuta da
+/// [`brani_su_rete`]: due grafie dello stesso file non combaciano, e il peggio
+/// che ne viene è una domanda in più.
+///
+/// Pura apposta, con `cestini` dato da fuori: la prova è sulla risposta che
+/// cambia, e una prova non ha un NAS che si addormenta.
+///
+/// # Errori
+///
+/// `fs.noRecycleBin` per il primo file senza Cestino che la conferma non
+/// nomina: chi chiama non ha ancora toccato niente, e la finestra rifà la
+/// domanda.
+fn destini(
+    percorsi: &[String],
+    cestini: &[bool],
+    confermati: &[String],
+) -> Result<Vec<bool>, AppError> {
+    let confermati: std::collections::HashSet<&str> =
+        confermati.iter().map(String::as_str).collect();
+    let mut destini = Vec::with_capacity(percorsi.len());
+    for (i, percorso) in percorsi.iter().enumerate() {
+        let nel_cestino = cestini.get(i).copied().unwrap_or(false);
+        if !nel_cestino && !confermati.contains(percorso.as_str()) {
+            return Err(AppError::new(ErrorCode::FsNoRecycleBin {
+                path: percorso.clone(),
+            })
+            .with_cause(
+                "il file sta su un'unità di rete o rimovibile, o non si è saputo dove \
+                 sta, e la sua cancellazione definitiva non è fra quelle confermate",
+            ));
+        }
+        destini.push(nel_cestino);
+    }
+    Ok(destini)
+}
+
 /// Manda i file nel Cestino — o, dove un Cestino non c'è e lo si è confermato,
 /// li cancella per sempre — e toglie dalla libreria quelli che se ne sono
 /// andati.
 ///
-/// `definitivi` è la conferma della finestra: «sì, anche quelli che non possono
-/// andare nel Cestino». Assente vale no, ed è la forma che hanno le chiamate
-/// scritte prima che esistesse.
+/// `definitivi` è la conferma della finestra: l'elenco dei file che
+/// [`brani_su_rete`] le ha detto senza Cestino, così come li ha mostrati. Solo
+/// quelli si cancellano per sempre: vedi [`destini`]. Assente vale nessuno.
+/// Sono percorsi che arrivano dalla finestra, ma non si apre niente con loro:
+/// si confrontano soltanto con quelli che il nucleo legge dalla libreria, e un
+/// percorso che lì non c'è non porta da nessuna parte.
 ///
 /// # Dove gira
 ///
@@ -629,10 +721,10 @@ fn per_sempre(percorso: &str) -> Result<(), AppError> {
 /// un'immagine CD di cui non sono scelti tutti: vedi [`da_togliere`]. Anche
 /// lì non si è toccato niente.
 /// `fs.noRecycleBin` se qualche file sta dove un Cestino non c'è e `definitivi`
-/// non è stato detto: in quel caso non si è toccato niente, né la coda né un
-/// file. `fs.trashFailed` — o uno dei `fs.*` più precisi, quando Windows dice
-/// un numero che si sa leggere — se il Cestino rifiuta un file; `fs.*` se la
-/// cancellazione definitiva fallisce. Lì ci si ferma, dopo aver tolto dalla
+/// non lo nomina: in quel caso non si è toccato niente, né la coda né un file,
+/// e la finestra rifà la domanda. `fs.trashFailed` — o uno dei `fs.*` più
+/// precisi, quando Windows dice un numero che si sa leggere — se il Cestino
+/// rifiuta un file; `fs.*` se la cancellazione definitiva fallisce. Lì ci si ferma, dopo aver tolto dalla
 /// libreria quelli già andati: una riga che resta per un file che non c'è più è
 /// un brano che non suona, una riga tolta per un file che c'è ancora è un brano
 /// che nessuno ritrova. `internal.aborted` se lo stato non c'è più, `db.*` se
@@ -641,13 +733,13 @@ fn per_sempre(percorso: &str) -> Result<(), AppError> {
 pub async fn brani_elimina(
     app: tauri::AppHandle,
     brani: Vec<i64>,
-    definitivi: Option<bool>,
+    definitivi: Option<Vec<String>>,
 ) -> Esito<usize> {
     // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
     // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
     crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
     let mano = app.clone();
-    let definitivi = definitivi.unwrap_or(false);
+    let definitivi = definitivi.unwrap_or_default();
     let esito = in_disparte("eliminazione di brani dal disco", move || {
         let stato = stato_di(&mano, "eliminazione di brani")?;
         // Il piano per primo, e con lui il rifiuto di un'immagine CD scelta a
@@ -661,28 +753,22 @@ pub async fn brani_elimina(
         }
 
         // Dove sta ogni file, chiesto **prima** di fermare il motore: se la
-        // risposta è un rifiuto, chi ascoltava deve continuare ad ascoltare.
+        // risposta è un rifiuto, chi ascoltava deve continuare ad ascoltare. E
+        // chiesto di nuovo, non preso dalla conferma: quel che conta è dove
+        // sta adesso, e la conferma dice solo che cosa si è accettato di
+        // perdere.
         let percorsi: Vec<String> = condannati
             .iter()
             .flat_map(|voce| voce.file.iter().cloned())
             .collect();
-        let cestini = cestini(&percorsi);
+        let destini = destini(&percorsi, &cestini(&percorsi), &definitivi)?;
         let ha_un_cestino = |percorso: &str| {
             percorsi
                 .iter()
                 .position(|p| p == percorso)
-                .and_then(|i| cestini.get(i).copied())
+                .and_then(|i| destini.get(i).copied())
                 .unwrap_or(false)
         };
-        if !definitivi && let Some(primo) = percorsi.iter().find(|p| !ha_un_cestino(p)) {
-            return Err(AppError::new(ErrorCode::FsNoRecycleBin {
-                path: primo.clone(),
-            })
-            .with_cause(
-                "il file sta su un'unità di rete o rimovibile, o non si è saputo dove \
-                 sta, e la cancellazione definitiva non è stata confermata",
-            ));
-        }
 
         // Sul telefono il Cestino è una richiesta sola, per tutti i file, con il
         // dialogo del sistema — e si chiede **prima** di fermare il motore: un
@@ -1287,6 +1373,131 @@ mod prove_delle_immagini {
         let tutti = [1, 2, 3, 4, 5];
         let piano = da_togliere(connection, &tutti, true).expect("tutti");
         assert_eq!(super::brani_senza_cestino(&piano, &tutti, ha_un_cestino), 4);
+    }
+}
+
+#[cfg(test)]
+mod prove_della_conferma {
+    use super::{DaTogliere, ErrorCode, SenzaCestino, destini, senza_cestino};
+
+    /// Un brano su `C:` e uno sulla lettera mappata di un NAS.
+    fn piano() -> Vec<DaTogliere> {
+        vec![
+            DaTogliere {
+                file: vec![r"C:\M\a.flac".to_owned()],
+                brani: vec![1],
+            },
+            DaTogliere {
+                file: vec![r"Z:\M\b.flac".to_owned()],
+                brani: vec![2],
+            },
+        ]
+    }
+
+    fn percorsi() -> Vec<String> {
+        vec![r"C:\M\a.flac".to_owned(), r"Z:\M\b.flac".to_owned()]
+    }
+
+    /// La conferma che la finestra rimanda: l'elenco che la domanda le ha dato.
+    fn conferma(alla_domanda: [bool; 2]) -> Vec<String> {
+        let percorsi = percorsi();
+        senza_cestino(&piano(), &[1, 2], |percorso| {
+            percorsi
+                .iter()
+                .position(|p| p == percorso)
+                .and_then(|i| alla_domanda.get(i).copied())
+                .unwrap_or(false)
+        })
+        .file
+    }
+
+    #[test]
+    fn una_conferma_definitiva_non_vale_per_un_file_che_aveva_il_cestino() {
+        // Il difetto: alla domanda il file di `C:` aveva il Cestino e quello
+        // del NAS no, e la finestra ha confermato «per sempre» per il NAS.
+        // All'esecuzione la domanda si rifà, e otto cartelle del NAS appese
+        // davanti a quella di `C:` la lasciano senza risposta: `Ignota`, cioè
+        // senza Cestino. Il sì dato per il NAS valeva anche per lei, e il file
+        // locale se ne andava per sempre.
+        let percorsi = percorsi();
+        let conferma = conferma([true, false]);
+        assert_eq!(conferma, [r"Z:\M\b.flac"]);
+        let all_esecuzione = [false, false];
+
+        let rifiuto =
+            destini(&percorsi, &all_esecuzione, &conferma).expect_err("non si tocca niente");
+        assert!(
+            matches!(rifiuto.code(), ErrorCode::FsNoRecycleBin { path } if path == r"C:\M\a.flac"),
+            "il rifiuto nomina il file locale: {:?}",
+            rifiuto.code()
+        );
+        // E la causa, che va nel diario, non porta percorsi.
+        assert!(
+            rifiuto
+                .cause()
+                .is_some_and(|causa| !causa.contains("a.flac")),
+            "{:?}",
+            rifiuto.cause()
+        );
+    }
+
+    #[test]
+    fn la_conferma_vale_esattamente_per_i_file_che_nomina() {
+        let percorsi = percorsi();
+        let conferma = conferma([true, false]);
+        // Niente è cambiato: il locale nel Cestino, il NAS per sempre.
+        assert_eq!(
+            destini(&percorsi, &[true, false], &conferma).expect("confermato"),
+            [true, false]
+        );
+        // Il file confermato adesso il Cestino ce l'ha: ci va, che è di più di
+        // quel che si era accettato.
+        assert_eq!(
+            destini(&percorsi, &[true, true], &conferma).expect("meglio"),
+            [true, true]
+        );
+        // Senza conferma, un file senza Cestino fa rifiutare tutto, come prima.
+        assert!(destini(&percorsi, &[true, false], &[]).is_err());
+        // Una conferma per un file che non c'entra non vale per nessuno.
+        assert!(destini(&percorsi, &[true, false], &[r"Z:\M\altro.flac".to_owned()]).is_err());
+        // E tutto col Cestino non chiede niente.
+        assert_eq!(
+            destini(&percorsi, &[true, true], &[]).expect("tutti nel Cestino"),
+            [true, true]
+        );
+    }
+
+    #[test]
+    fn la_domanda_dice_i_brani_e_nomina_i_file() {
+        // I tre file di un disco d'immagine sul NAS, e un file locale: tre
+        // brani per sempre, due file da elencare, il locale fuori.
+        let piano = [
+            DaTogliere {
+                file: vec![r"C:\M\a.flac".to_owned()],
+                brani: vec![1],
+            },
+            DaTogliere {
+                file: vec![r"Z:\D\Album.ape".to_owned(), r"Z:\D\Album.cue".to_owned()],
+                brani: vec![2, 3, 4],
+            },
+        ];
+        let risposta = senza_cestino(&piano, &[1, 2, 3, 4], |percorso| {
+            !percorso.starts_with(r"Z:\")
+        });
+        assert_eq!(
+            risposta,
+            SenzaCestino {
+                brani: 3,
+                file: vec![r"Z:\D\Album.ape".to_owned(), r"Z:\D\Album.cue".to_owned()],
+            }
+        );
+        assert_eq!(
+            senza_cestino(&piano, &[1, 2, 3, 4], |_| true),
+            SenzaCestino {
+                brani: 0,
+                file: Vec::new(),
+            }
+        );
     }
 }
 
