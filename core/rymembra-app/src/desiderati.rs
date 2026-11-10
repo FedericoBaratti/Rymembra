@@ -151,6 +151,12 @@ const COLONNE: &str = "id, title, artist, album, album_artist, duration_ms, isrc
 /// perché l'ha scaricato un'altra importazione. Riscaricarlo vuol dire un
 /// secondo file identico accanto al primo.
 ///
+/// «C'è già» vuol dire **un file** (`t.path IS NOT NULL`), non una riga di
+/// `tracks` qualunque. Un brano ascoltato da Esplora entra in libreria come
+/// riferimento di catalogo, con la stessa chiave che avrà la riga di «Tieni una
+/// copia»: contandolo come presente, quella riga non veniva mai presa, e
+/// [`riconcilia`] la chiudeva come `fatto` senza nessun file sul disco.
+///
 /// **Una riga sola per brano.** L'identità di una riga è `(track_key,
 /// source_id)`: lo stesso brano in due playlist sono **due** righe. Senza questa
 /// clausola verrebbero scaricate tutte e due, e siccome
@@ -160,7 +166,8 @@ const COLONNE: &str = "id, title, artist, album, album_artist, duration_ms, isrc
 /// prende la più vecchia; [`segna_fatto`] chiude le altre.
 const SOLO_DA_PRENDERE: &str = "
     w.download_state = ?1 AND w.download_attempts < ?2
-    AND NOT EXISTS (SELECT 1 FROM tracks AS t WHERE t.track_key = w.track_key)
+    AND NOT EXISTS (SELECT 1 FROM tracks AS t
+                     WHERE t.track_key = w.track_key AND t.path IS NOT NULL)
     AND w.id = (
         SELECT MIN(g.id) FROM desiderati AS g
          WHERE g.track_key = w.track_key
@@ -608,12 +615,17 @@ pub fn riconcilia(
     // Senza `format!`, a differenza della query qui sopra: questa non interpola
     // nessuna costante, e un `format!` che non formatta niente fa credere a chi
     // legge che da qualche parte ci sia un pezzo di SQL costruito a mano.
+    //
+    // Un **file** con la stessa chiave chiude la riga, un riferimento di
+    // catalogo no: per la stessa ragione scritta in [`SOLO_DA_PRENDERE`], una
+    // riga di «Tieni una copia» si chiudeva come `fatto` senza file.
     const SQL_RIGHE: &str = "UPDATE desiderati
             SET download_state = ?2, download_error = NULL, updated_at = ?3
           WHERE download_state = ?4
             AND (?1 IS NULL OR source_id = ?1)
             AND EXISTS (SELECT 1 FROM tracks AS t
-                         WHERE t.track_key = desiderati.track_key)";
+                         WHERE t.track_key = desiderati.track_key
+                           AND t.path IS NOT NULL)";
     let righe_chiuse = connection
         .execute(
             SQL_RIGHE,
@@ -984,6 +996,46 @@ mod prove {
             .query_map([playlist_id], |r| Ok((r.get(0)?, r.get(1)?)))
             .expect("query valida");
         righe.filter_map(Result::ok).collect()
+    }
+
+    #[test]
+    fn tenere_un_brano_gia_aggiunto_lo_mette_in_coda() {
+        // «Ascolta» in Esplora mette in libreria un riferimento — una riga di
+        // `tracks` senza file, con la stessa chiave che avrà la riga di «Tieni
+        // una copia». Il riferimento non è il file chiesto: la riga deve
+        // restare in coda, e nessuna riconciliazione deve chiuderla.
+        let mut connection = crate::db::open_in_memory()
+            .expect("apertura in memoria")
+            .connection;
+        let candidato = rymembra_domain::scelta::Candidato {
+            url: "/v1/tracks/aB3/download".to_owned(),
+            titolo: "Una canzone".to_owned(),
+            autore: Some("Un'artista".to_owned()),
+            durata_sec: Some(200),
+            fonte: Fonte::Audius,
+            licenza: Licenza::CreativeCommons("by".to_owned()),
+            disponibilita: Disponibilita::Scaricabile,
+            pagina: Some("https://audius.co/artista/una-canzone".to_owned()),
+            ..rymembra_domain::scelta::Candidato::default()
+        };
+        crate::catalogo::aggiungi(&mut connection, std::slice::from_ref(&candidato))
+            .expect("il riferimento entra");
+        let scritte =
+            crate::catalogo::da_tenere(&mut connection, std::slice::from_ref(&candidato), "x")
+                .expect("la riga si scrive");
+        assert_eq!(scritte, 1);
+
+        assert_eq!(
+            leggi_da_scaricare(&connection, 10)
+                .expect("lettura della coda")
+                .len(),
+            1,
+            "un riferimento non è il file: la riga va presa"
+        );
+        assert_eq!(conta_in_attesa(&connection).expect("conteggio"), 1);
+        let esito = riconcilia(&connection, None).expect("riconciliazione");
+        assert_eq!(esito.righe_chiuse, 0, "chiusa come «fatto» senza un file");
+        assert_eq!(conteggi(&connection).expect("conteggi").attesa, 1);
     }
 
     #[test]
