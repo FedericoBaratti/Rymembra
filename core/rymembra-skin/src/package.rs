@@ -378,6 +378,121 @@ pub struct PacchettoGrezzo {
     pub assets: Vec<SkinAsset>,
 }
 
+/// La firma di un record dell'indice centrale: uno per voce.
+const FIRMA_VOCE_INDICE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+/// La firma del record di coda, quello che dice quante voci ha l'indice.
+const FIRMA_CODA: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+/// La firma del localizzatore dell'indice esteso (zip64), venti byte prima
+/// della coda.
+const FIRMA_LOCATORE_ESTESO: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
+
+/// Quante voci dice l'archivio, letto **prima** di aprirlo.
+///
+/// # Perché prima
+///
+/// `ZipArchive::new` legge il record di coda, riserva un posto per ogni voce
+/// che dichiara e costruisce una voce per ogni record dell'indice, con il nome
+/// copiato in una mappa: il tetto di [`limits::MAX_ENTRIES`] in [`preflight`]
+/// arrivava a lavoro fatto. Un `.ryskin` da 20 MB fatto solo di record
+/// dell'indice ne porta centinaia di migliaia, cioè un centinaio di megabyte
+/// presi per un file che l'utente ha solo trascinato sulla finestra.
+///
+/// # Tre domande, e perché queste
+///
+/// Il lettore cerca il record di coda **all'indietro su tutto il file** e, se
+/// l'indice di una coda non si legge, ripiega su quella prima. Le domande
+/// guardano quindi quel che il lettore potrebbe usare, non soltanto l'ultima
+/// coda:
+///
+/// 1. i record dell'indice **contati nel file**: il lettore ne materializza al
+///    più quanti ne trova, uno dopo l'altro, ognuno con la sua firma. Oltre il
+///    tetto, il pacchetto non sta nel formato qualunque cosa dica la coda;
+/// 2. l'indice esteso (zip64), in qualunque coda: porta il conto in un record a
+///    parte, con un tetto che è la lunghezza del file, e una skin — sessantaquattro
+///    voci in venti megabyte — non ha motivo di usarlo;
+/// 3. il conto dichiarato dall'ultima coda, quella che il lettore prova per
+///    prima e che in un pacchetto vero è l'unica: è il numero che il rifiuto
+///    può dire a chi lo riceve.
+fn controlla_la_coda(archive: &[u8]) -> Result<(), AppError> {
+    let troppe = |voci: usize| {
+        rifiutata(
+            "(archivio)",
+            format!(
+                "il pacchetto dichiara {voci} voci, oltre il limite di {}",
+                limits::MAX_ENTRIES
+            ),
+        )
+    };
+
+    let record = archive
+        .windows(FIRMA_VOCE_INDICE.len())
+        .filter(|finestra| *finestra == FIRMA_VOCE_INDICE)
+        .count();
+    if record > limits::MAX_ENTRIES {
+        return Err(troppe(record));
+    }
+
+    let u16_a = |da: usize| {
+        let byte = archive.get(da..da.checked_add(2)?)?;
+        Some(u16::from_le_bytes(byte.try_into().ok()?))
+    };
+    let u32_a = |da: usize| {
+        let byte = archive.get(da..da.checked_add(4)?)?;
+        Some(u32::from_le_bytes(byte.try_into().ok()?))
+    };
+    let mut ultima = true;
+    let code = archive
+        .windows(FIRMA_CODA.len())
+        .enumerate()
+        .rev()
+        .filter(|(_, finestra)| *finestra == FIRMA_CODA)
+        .map(|(posto, _)| posto);
+    for posto in code {
+        // I campi del record di coda, ai loro scarti.
+        let campi = (
+            u16_a(posto.saturating_add(8)),
+            u16_a(posto.saturating_add(10)),
+            u32_a(posto.saturating_add(12)),
+            u32_a(posto.saturating_add(16)),
+            u16_a(posto.saturating_add(20)),
+        );
+        let (Some(su_disco), Some(in_tutto), Some(misura), Some(inizio), Some(commento)) = campi
+        else {
+            continue;
+        };
+        // Una coda il cui commento esce dal file il lettore la scarta: qui
+        // si scarta allo stesso modo, così un caso di firme dentro i dati non
+        // ferma un pacchetto sano.
+        let fine = posto
+            .saturating_add(22)
+            .saturating_add(usize::from(commento));
+        if fine > archive.len() {
+            continue;
+        }
+        let estesa = su_disco == u16::MAX
+            || in_tutto == u16::MAX
+            || misura == u32::MAX
+            || inizio == u32::MAX;
+        let locatore = posto
+            .checked_sub(20)
+            .and_then(|da| archive.get(da..da.saturating_add(4)));
+        if estesa && locatore == Some(&FIRMA_LOCATORE_ESTESO[..]) {
+            return Err(rifiutata(
+                "(archivio)",
+                "il pacchetto usa l'indice esteso (zip64), che una skin non ha motivo di usare",
+            ));
+        }
+        if ultima {
+            ultima = false;
+            let dichiarate = usize::from(su_disco.max(in_tutto));
+            if dichiarate > limits::MAX_ENTRIES {
+                return Err(troppe(dichiarate));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Un archivio aperto, e le voci che i controlli sull'indice hanno ammesso.
 type Aperto<'a> = (ZipArchive<Cursor<&'a [u8]>>, Vec<Ammessa>);
 
@@ -390,6 +505,9 @@ fn apri_archivio(archive: &[u8]) -> Result<Aperto<'_>, AppError> {
             limit_bytes: limits::MAX_ARCHIVE_BYTES,
         }));
     }
+
+    // Le voci, prima che il lettore le materializzi: vedi `controlla_la_coda`.
+    controlla_la_coda(archive)?;
 
     // Un archivio illeggibile è corrotto, non malevolo: sono due messaggi
     // diversi e chi lo riceve deve poterli distinguere — uno si riscarica,
@@ -986,6 +1104,80 @@ mod tests {
         let err = read_skin_package(&dati).expect_err("accettato");
         let messaggio = format!("{:?}", err.code());
         assert!(messaggio.contains("limite totale"), "{messaggio}");
+    }
+
+    /// Un archivio che non è un archivio, chiuso da un record di coda che
+    /// dichiara `voci` voci e un indice di `misura` byte che comincia a `inizio`.
+    ///
+    /// È il pezzo che `ZipArchive::new` legge per primo: da lì decide quante
+    /// voci materializzare, prima che qualunque tetto nostro abbia parlato.
+    fn coda(corpo: &[u8], voci: u16, misura: u32, inizio: u32) -> Vec<u8> {
+        let mut fuori = corpo.to_vec();
+        fuori.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+        fuori.extend_from_slice(&0_u16.to_le_bytes()); // questo disco
+        fuori.extend_from_slice(&0_u16.to_le_bytes()); // il disco dell'indice
+        fuori.extend_from_slice(&voci.to_le_bytes()); // voci su questo disco
+        fuori.extend_from_slice(&voci.to_le_bytes()); // voci in tutto
+        fuori.extend_from_slice(&misura.to_le_bytes());
+        fuori.extend_from_slice(&inizio.to_le_bytes());
+        fuori.extend_from_slice(&0_u16.to_le_bytes()); // commento
+        fuori
+    }
+
+    #[test]
+    fn un_indice_da_sessantamila_voci_si_ferma_prima_di_aprirlo() {
+        // Prima di aprire l'archivio, non dopo: `ZipArchive::new` costruisce
+        // una voce per ogni record dell'indice, e il tetto di sessantaquattro
+        // arrivava a lavoro fatto. Qui il corpo non è nemmeno un archivio —
+        // aperto, sarebbe «corrotto» — e il rifiuto deve dire il numero.
+        let corpo = vec![0_u8; 4096];
+        for voci in [65, 60_000] {
+            let dati = coda(&corpo, voci, 46 * u32::from(voci), 0);
+            for err in [
+                read_skin_package(&dati).expect_err("accettato"),
+                leggi_manifesto(&dati).expect_err("accettato"),
+            ] {
+                assert_eq!(
+                    err.code().kind(),
+                    rymembra_domain::errors::ErrorCodeKind::SkinAssetRejected,
+                    "{voci}: {:?}",
+                    err.code()
+                );
+                assert!(format!("{:?}", err.code()).contains(&voci.to_string()));
+            }
+        }
+
+        // L'indice esteso (zip64) porta il conto in un record a parte, con un
+        // tetto che è la lunghezza del file: un pacchetto di skin non ne ha
+        // bisogno, e non si apre.
+        let mut esteso = vec![0_u8; 64];
+        esteso.extend_from_slice(&[0x50, 0x4b, 0x06, 0x07]);
+        esteso.extend_from_slice(&[0_u8; 16]);
+        let dati = coda(&esteso, u16::MAX, u32::MAX, u32::MAX);
+        let err = read_skin_package(&dati).expect_err("accettato");
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::SkinAssetRejected,
+            "{:?}",
+            err.code()
+        );
+
+        // E i record dell'indice contati nel file, qualunque cosa dichiari la
+        // coda: sessantacinque firme di record bastano a dire che il pacchetto
+        // non sta nel formato.
+        let mut tanti = Vec::new();
+        for _ in 0..=limits::MAX_ENTRIES {
+            tanti.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+            tanti.extend_from_slice(&[0_u8; 42]);
+        }
+        let dati = coda(&tanti, 0, 0, 0);
+        let err = read_skin_package(&dati).expect_err("accettato");
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::SkinAssetRejected,
+            "{:?}",
+            err.code()
+        );
     }
 
     #[test]
