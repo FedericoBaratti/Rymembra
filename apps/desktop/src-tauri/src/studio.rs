@@ -376,6 +376,9 @@ fn aggiungi_risorsa(data_dir: &Path, id: &str, percorso: &Path) -> Result<VoceFi
     }
     let bytes = std::fs::read(percorso)
         .map_err(|err| rymembra_app::files::io_error(&percorso.display().to_string(), &err))?;
+    // Un'immagine oltre il tetto dei pixel lo dice con la sua misura: la frase
+    // qui sotto parlerebbe di tipi, e manderebbe a cercare nel posto sbagliato.
+    rymembra_skin::package::misura_ammessa(&nome, &bytes)?;
     if rymembra_skin::riconosci_risorsa(&nome, &bytes).is_none() {
         return Err(rifiutata(
             &nome,

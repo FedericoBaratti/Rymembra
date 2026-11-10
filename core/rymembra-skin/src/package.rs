@@ -63,6 +63,17 @@ pub mod limits {
     /// non può essere bassa. 200× non ostacola nessun contenuto legittimo e
     /// taglia le bombe, che stanno negli ordini di 1.000× e oltre.
     pub const MAX_COMPRESSION_RATIO: f64 = 200.0;
+    /// Il lato del quadrato che fa da tetto alle immagini: vedi
+    /// [`MAX_IMAGE_PIXELS`].
+    pub const MAX_IMAGE_SIDE: u64 = 4096;
+    /// Quanti pixel può dichiarare un'immagine: 4096 × 4096, sedici milioni.
+    ///
+    /// I tetti in byte non bastano per un'immagine. Una PNG di un colore solo
+    /// comprime mille volte dentro di sé, e nello zip va intatta: quattro
+    /// megabyte possono dichiarare 30000×30000, cioè 3,6 GB che il motore deve
+    /// chiedere per decodificarla. Sedici milioni di pixel sono uno schermo 5K
+    /// con margine — un fondo vero ci sta — e 64 MB decodificati al più.
+    pub const MAX_IMAGE_PIXELS: u64 = MAX_IMAGE_SIDE * MAX_IMAGE_SIDE;
 }
 
 /// Un'estensione ammessa per una risorsa, col suo tipo e la sua firma.
@@ -71,6 +82,9 @@ struct TipoRisorsa {
     estensione: &'static str,
     mime: &'static str,
     firma: &'static [u8],
+    /// È un'immagine: il motore la decodifica in pixel, e i pixel hanno un
+    /// tetto ([`limits::MAX_IMAGE_PIXELS`]).
+    immagine: bool,
 }
 
 /// Le risorse ammesse.
@@ -83,26 +97,175 @@ static TIPI: &[TipoRisorsa] = &[
         estensione: "png",
         mime: "image/png",
         firma: &[0x89, 0x50, 0x4e, 0x47],
+        immagine: true,
     },
     TipoRisorsa {
         estensione: "jpg",
         mime: "image/jpeg",
         firma: &[0xff, 0xd8, 0xff],
+        immagine: true,
     },
     TipoRisorsa {
         estensione: "webp",
         mime: "image/webp",
         firma: &[0x52, 0x49, 0x46, 0x46],
+        immagine: true,
     },
     TipoRisorsa {
         estensione: "woff2",
         mime: "font/woff2",
         firma: &[0x77, 0x4f, 0x46, 0x32],
+        immagine: false,
     },
 ];
 
 fn tipo(estensione: &str) -> Option<&'static TipoRisorsa> {
     TIPI.iter().find(|t| t.estensione == estensione)
+}
+
+/// Due, tre o quattro byte da uno scarto, nell'ordine dato.
+fn be16(byte: &[u8], da: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(
+        byte.get(da..da.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn be32(byte: &[u8], da: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        byte.get(da..da.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn le16(byte: &[u8], da: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        byte.get(da..da.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn le24(byte: &[u8], da: usize) -> Option<u32> {
+    let tre = byte.get(da..da.checked_add(3)?)?;
+    let mut quattro = [0_u8; 4];
+    quattro.get_mut(..3)?.copy_from_slice(tre);
+    Some(u32::from_le_bytes(quattro))
+}
+
+fn le32(byte: &[u8], da: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        byte.get(da..da.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+/// La PNG: l'intestazione `IHDR` dev'essere il primo blocco, subito dopo la
+/// firma, e le misure sono i suoi primi otto byte.
+fn dimensioni_png(byte: &[u8]) -> Option<(u32, u32)> {
+    if byte.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    Some((be32(byte, 16)?, be32(byte, 20)?))
+}
+
+/// Il JPEG: i segmenti si saltano per lunghezza fino al primo SOFn, che porta
+/// altezza e larghezza. Un'immagine che comincia i dati (SOS) o finisce (EOI)
+/// prima di averle dette non ha una misura.
+fn dimensioni_jpeg(byte: &[u8]) -> Option<(u32, u32)> {
+    let mut qui: usize = 2;
+    loop {
+        // Fra un segmento e l'altro il decodificatore salta quel che non è un
+        // marcatore, e i byte di riempimento: qui allo stesso modo.
+        while *byte.get(qui)? != 0xff {
+            qui = qui.checked_add(1)?;
+        }
+        while *byte.get(qui)? == 0xff {
+            qui = qui.checked_add(1)?;
+        }
+        let marcatore = *byte.get(qui)?;
+        qui = qui.checked_add(1)?;
+        match marcatore {
+            // Senza lunghezza: l'inizio, i riavvii, il marcatore temporaneo.
+            0xd8 | 0x01 | 0xd0..=0xd7 => continue,
+            0xd9 | 0xda => return None,
+            _ => {}
+        }
+        let lunghezza = usize::from(be16(byte, qui)?);
+        if lunghezza < 2 {
+            return None;
+        }
+        // I SOFn: tutti i `0xc0..=0xcf` meno DHT (c4), JPG (c8) e DAC (cc).
+        if matches!(marcatore, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
+            let altezza = be16(byte, qui.checked_add(3)?)?;
+            let larghezza = be16(byte, qui.checked_add(5)?)?;
+            return Some((u32::from(larghezza), u32::from(altezza)));
+        }
+        qui = qui.checked_add(lunghezza)?;
+    }
+}
+
+/// La WebP, nelle sue tre forme: `VP8 ` (con perdita), `VP8L` (senza) e
+/// `VP8X` (estesa, con la tela dichiarata: animazioni e trasparenza).
+fn dimensioni_webp(byte: &[u8]) -> Option<(u32, u32)> {
+    if byte.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    match byte.get(12..16)? {
+        b"VP8 " => {
+            // Tre byte di intestazione del fotogramma, il codice d'inizio, e
+            // le misure in quattordici bit.
+            if byte.get(23..26)? != [0x9d, 0x01, 0x2a] {
+                return None;
+            }
+            let larghezza = le16(byte, 26)? & 0x3fff;
+            let altezza = le16(byte, 28)? & 0x3fff;
+            Some((u32::from(larghezza), u32::from(altezza)))
+        }
+        b"VP8L" => {
+            if *byte.get(20)? != 0x2f {
+                return None;
+            }
+            let bit = le32(byte, 21)?;
+            Some(((bit & 0x3fff) + 1, ((bit >> 14) & 0x3fff) + 1))
+        }
+        b"VP8X" => Some((le24(byte, 24)? + 1, le24(byte, 27)? + 1)),
+        _ => None,
+    }
+}
+
+/// Un'immagine sta nel tetto dei pixel? Si legge l'intestazione, senza
+/// decodificare: è la misura che il motore userebbe per chiedere la memoria.
+///
+/// Un'immagine che non dice quanto è grande non si apre, e non per
+/// pignoleria: il motore la decodificherebbe a una misura che nessuno ha
+/// controllato. Quel che non è un'immagine — un carattere — passa.
+///
+/// L'errore porta il nome e la misura nel messaggio: è l'unico campo che
+/// arriva a schermo, e «un file è stato rifiutato» senza dire quale né perché
+/// manda a cercare nel posto sbagliato.
+fn nei_pixel(nome: &str, tipo: &TipoRisorsa, byte: &[u8]) -> Result<(), AppError> {
+    if !tipo.immagine {
+        return Ok(());
+    }
+    let misura = match tipo.estensione {
+        "png" => dimensioni_png(byte),
+        "jpg" => dimensioni_jpeg(byte),
+        "webp" => dimensioni_webp(byte),
+        _ => None,
+    };
+    let motivo = match misura.filter(|&(larghezza, altezza)| larghezza > 0 && altezza > 0) {
+        None => "l'intestazione dell'immagine non dice quanto è grande".to_owned(),
+        Some((larghezza, altezza))
+            if u64::from(larghezza).saturating_mul(u64::from(altezza))
+                > limits::MAX_IMAGE_PIXELS =>
+        {
+            format!(
+                "un'immagine di {larghezza}×{altezza} pixel, oltre il limite di {lato}×{lato}",
+                lato = limits::MAX_IMAGE_SIDE
+            )
+        }
+        Some(_) => return Ok(()),
+    };
+    let detto = format!("«{nome}»: {motivo}");
+    Err(rifiutata(nome, motivo)
+        .with_message(detto.clone())
+        .with_cause(detto))
 }
 
 /// Che cos'è una voce dell'archivio.
@@ -165,11 +328,38 @@ pub fn tipo_risorsa(nome: &str) -> Option<&'static str> {
 /// per chi legge una risorsa che non sta in un archivio: la bozza dello Studio
 /// tiene le sue in una cartella, e un file rinominato lì dentro non è più
 /// fidato di uno arrivato zippato.
+///
+/// Un'immagine oltre il tetto dei pixel, o che non dice la sua misura, è
+/// `None` come una col tipo mentito: vedi [`limits::MAX_IMAGE_PIXELS`]. Chi
+/// deve dire perché chiede a [`misura_ammessa`].
 #[must_use]
 pub fn riconosci_risorsa(nome: &str, bytes: &[u8]) -> Option<&'static str> {
     match classifica(&format!("{PREFISSO_RISORSE}{nome}"))? {
-        Voce::Risorsa(tipo) if comincia_con(bytes, tipo.firma) => Some(tipo.mime),
+        Voce::Risorsa(tipo)
+            if comincia_con(bytes, tipo.firma) && nei_pixel(nome, tipo, bytes).is_ok() =>
+        {
+            Some(tipo.mime)
+        }
         Voce::Risorsa(_) | Voce::Manifest | Voce::Miniatura => None,
+    }
+}
+
+/// La misura di un'immagine sta nel tetto? L'errore che lo dice, col nome e
+/// i pixel, per chi aggiunge una risorsa e deve sapere perché non entra.
+///
+/// `Ok` per quel che non è un'immagine riconosciuta — un nome che il formato
+/// non ammette, dei byte che non dicono il tipo dell'estensione, un carattere —
+/// perché quei casi li dice [`riconosci_risorsa`], con le sue parole.
+///
+/// # Errori
+///
+/// `skin.assetRejected`, con il nome e la misura nel messaggio.
+pub fn misura_ammessa(nome: &str, bytes: &[u8]) -> Result<(), AppError> {
+    match classifica(&format!("{PREFISSO_RISORSE}{nome}")) {
+        Some(Voce::Risorsa(tipo)) if comincia_con(bytes, tipo.firma) => {
+            nei_pixel(nome, tipo, bytes)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -573,10 +763,12 @@ pub fn leggi_pacchetto_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppErro
                 source = Some(manifest_da(bytes)?);
             }
             Voce::Miniatura => {
-                let png = tipo("png").map_or(&[][..], |t| t.firma);
-                if !comincia_con(&bytes, png) {
+                let Some(png) = tipo("png").filter(|t| comincia_con(&bytes, t.firma)) else {
                     return Err(rifiutata(PREVIEW_NAME, "la miniatura non è un PNG"));
-                }
+                };
+                // La miniatura la disegna l'elenco delle skin: è un'immagine
+                // come le altre, e una bomba lì fa cadere le Impostazioni.
+                nei_pixel(PREVIEW_NAME, png, &bytes)?;
                 preview = Some(bytes);
             }
             Voce::Risorsa(tipo) => {
@@ -591,6 +783,7 @@ pub fn leggi_pacchetto_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppErro
                         ),
                     ));
                 }
+                nei_pixel(&ammessa.nome, tipo, &bytes)?;
                 assets.push(SkinAsset {
                     name: ammessa
                         .nome
@@ -963,7 +1156,134 @@ mod tests {
       "tokens": { "color.accent": "#8b7cf6" }
     }"##;
 
-    const PNG: &[u8] = &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    /// Una PNG da un pixel: la firma e l'intestazione, che è quel che la
+    /// lettura guarda. I dati non servono — nessuno qui la decodifica.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // firma
+        0, 0, 0, 13, b'I', b'H', b'D', b'R', // il primo blocco
+        0, 0, 0, 1, 0, 0, 0, 1, // larghezza, altezza
+        8, 6, 0, 0, 0, 0, 0, 0, 0, // profondità, colore, …, CRC
+    ];
+
+    /// Una PNG con l'intestazione che dice queste misure.
+    fn png(larghezza: u32, altezza: u32) -> Vec<u8> {
+        let mut fuori = PNG.to_vec();
+        fuori.splice(
+            16..24,
+            [larghezza.to_be_bytes(), altezza.to_be_bytes()].concat(),
+        );
+        fuori
+    }
+
+    /// Un JPEG con un segmento APP0 prima della misura, come li scrivono le
+    /// fotocamere e gli editor.
+    fn jpeg(larghezza: u16, altezza: u16) -> Vec<u8> {
+        let mut fuori = vec![0xff, 0xd8];
+        fuori.extend_from_slice(&[0xff, 0xe0, 0, 16]);
+        fuori.extend_from_slice(b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0");
+        fuori.extend_from_slice(&[0xff, 0xc2, 0, 17, 8]);
+        fuori.extend_from_slice(&altezza.to_be_bytes());
+        fuori.extend_from_slice(&larghezza.to_be_bytes());
+        fuori.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        fuori.extend_from_slice(&[0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0]);
+        fuori
+    }
+
+    /// Una WebP nelle sue tre forme: con perdita, senza, ed estesa.
+    fn webp(forma: &[u8; 4], larghezza: u32, altezza: u32) -> Vec<u8> {
+        let mut dati: Vec<u8> = Vec::new();
+        match forma {
+            b"VP8 " => {
+                dati.extend_from_slice(&[0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a]);
+                for lato in [larghezza, altezza] {
+                    let lato = u16::try_from(lato).expect("quattordici bit");
+                    dati.extend_from_slice(&lato.to_le_bytes());
+                }
+            }
+            b"VP8L" => {
+                dati.push(0x2f);
+                let bit = (larghezza - 1) | ((altezza - 1) << 14);
+                dati.extend_from_slice(&bit.to_le_bytes());
+            }
+            _ => {
+                dati.extend_from_slice(&[0x10, 0, 0, 0]);
+                dati.extend_from_slice(&(larghezza - 1).to_le_bytes()[..3]);
+                dati.extend_from_slice(&(altezza - 1).to_le_bytes()[..3]);
+            }
+        }
+        let mut fuori = b"RIFF".to_vec();
+        let misura = u32::try_from(dati.len() + 12).expect("piccola");
+        fuori.extend_from_slice(&misura.to_le_bytes());
+        fuori.extend_from_slice(b"WEBP");
+        fuori.extend_from_slice(forma);
+        let blocco = u32::try_from(dati.len()).expect("piccolo");
+        fuori.extend_from_slice(&blocco.to_le_bytes());
+        fuori.extend_from_slice(&dati);
+        fuori
+    }
+
+    #[test]
+    fn un_immagine_da_trentamila_pixel_per_lato_si_ferma() {
+        // Quattro megabyte di PNG di un colore solo possono dichiarare
+        // 30000×30000: compressi dentro la PNG, lasciati intatti nello zip,
+        // passano ogni tetto in byte e chiedono al motore 3,6 GB per
+        // decodificarli. La misura si legge nell'intestazione, senza decodificare.
+        let grandi: [(&str, Vec<u8>); 5] = [
+            ("sfondo.png", png(30_000, 30_000)),
+            ("foto.jpg", jpeg(30_000, 30_000)),
+            ("perdita.webp", webp(b"VP8 ", 16_000, 16_000)),
+            ("intatta.webp", webp(b"VP8L", 16_000, 16_000)),
+            ("estesa.webp", webp(b"VP8X", 30_000, 30_000)),
+        ];
+        for (nome, byte) in &grandi {
+            let voce = format!("assets/{nome}");
+            let dati = archivio(&[(MANIFEST_NAME, MANIFEST.as_bytes()), (&voce, byte)]);
+            let err = read_skin_package(&dati).expect_err(&format!("accettata: {nome}"));
+            assert_eq!(
+                err.code().kind(),
+                rymembra_domain::errors::ErrorCodeKind::SkinAssetRejected,
+                "{nome}: {:?}",
+                err.code()
+            );
+            // Un errore che si legge: il nome, la misura e il tetto, nel
+            // messaggio che arriva a schermo.
+            let messaggio = err.message().unwrap_or_default();
+            assert!(messaggio.contains(nome), "{messaggio}");
+            assert!(messaggio.contains("4096×4096"), "{messaggio}");
+            // E fuori da un archivio: le risorse della bozza dello Studio.
+            assert_eq!(riconosci_risorsa(nome, byte), None, "{nome}");
+        }
+
+        // La miniatura è una PNG come le altre.
+        let dati = archivio(&[
+            (MANIFEST_NAME, MANIFEST.as_bytes()),
+            (PREVIEW_NAME, &png(20_000, 20_000)),
+        ]);
+        assert!(read_skin_package(&dati).is_err());
+
+        // Un'immagine che non dice quanto è grande non si apre: è la
+        // misura che il motore userebbe, e chi non la scrive non è un'immagine.
+        let muta = archivio(&[
+            (MANIFEST_NAME, MANIFEST.as_bytes()),
+            ("assets/muta.png", &PNG[..8]),
+        ]);
+        assert!(read_skin_package(&muta).is_err());
+
+        // Le misure vere passano, fino al tetto compreso.
+        let giuste: [(&str, Vec<u8>); 5] = [
+            ("sfondo.png", png(4096, 4096)),
+            ("foto.jpg", jpeg(3840, 2160)),
+            ("perdita.webp", webp(b"VP8 ", 1920, 1080)),
+            ("intatta.webp", webp(b"VP8L", 512, 512)),
+            ("estesa.webp", webp(b"VP8X", 2560, 1440)),
+        ];
+        for (nome, byte) in &giuste {
+            let voce = format!("assets/{nome}");
+            let dati = archivio(&[(MANIFEST_NAME, MANIFEST.as_bytes()), (&voce, byte)]);
+            read_skin_package(&dati).unwrap_or_else(|err| panic!("{nome}: {err:?}"));
+            assert!(riconosci_risorsa(nome, byte).is_some(), "{nome}");
+        }
+    }
 
     /// Un archivio costruito a mano, per poter mettere dentro quel che il nostro
     /// scrittore non produrrebbe mai.
@@ -1241,10 +1561,7 @@ mod tests {
             riconosci_risorsa("titoli.woff2", b"wOF2..."),
             Some("font/woff2")
         );
-        assert_eq!(
-            riconosci_risorsa("trama.png", b"\x89PNG..."),
-            Some("image/png")
-        );
+        assert_eq!(riconosci_risorsa("trama.png", PNG), Some("image/png"));
         // Il nome dice una cosa, i byte un'altra.
         assert_eq!(riconosci_risorsa("trama.png", b"GIF89a"), None);
         // Il nome non è ammesso, qualunque cosa ci sia dentro.
