@@ -92,9 +92,16 @@
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="${usesCleartextTraffic}"
         tools:targetApi="31">
+        <!-- `taskAffinity` vuota: il compito di Rymembra non ha un'affinità a
+             cui un'altra app possa agganciarsi dichiarando la stessa
+             (StrandHogg, Android 8–10), e prendere il posto della schermata
+             di Rymembra quando la si riapre. Android ritrova lo stesso il
+             compito di un'attività `singleTask` dal nome dell'attività, non
+             dall'affinità: lanciatore, notifiche, link e Recenti tornano lì. -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
+            android:taskAffinity=""
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
             android:exported="true">
