@@ -37,6 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rymembra_domain::errors::AppError;
 
 use crate::documento::{self, Contenuto, Documento};
+use crate::dominio;
 use crate::fusione::{self, Fuso};
 use crate::magazzino::{FileRemoto, Magazzino};
 
@@ -313,7 +314,16 @@ impl<'a> Motore<'a> {
                 .as_ref()
                 .is_none_or(|elenco| elenco.contains(&documento.device));
             if fidato {
-                tutti.push(documento.clone());
+                // Dentro il dominio, a ogni passata e sulla copia: la memoria
+                // tiene il documento com'è arrivato, così quel che oggi è
+                // rinviato perché sta nel futuro entra da sé quando è ora,
+                // senza aspettare che l'altro riscriva il file. Il proprio
+                // documento no: è la libreria di qui, e il database ne ha già
+                // controllato i valori. Vedi `dominio`.
+                let mut sano = documento.clone();
+                sano.content =
+                    dominio::nel_dominio(sano.content, adesso_ms, dominio::Futuro::Rinvia);
+                tutti.push(sano);
             } else if !documento.device.is_empty() {
                 passata.ignoti.push(documento.device.clone());
             }
@@ -669,6 +679,67 @@ mod prove {
         magazzino
             .scrivi(&nome_di_prima(dispositivo), None, TIPO, &byte, "x")
             .expect("scrive");
+    }
+
+    /// Un giorno, in millisecondi: più del margine con cui si accetta un
+    /// orologio avanti.
+    const UN_GIORNO: i64 = 24 * 60 * 60 * 1000;
+
+    #[test]
+    fn quel_che_esce_dal_dominio_non_entra_nella_fusione() {
+        // Un documento scritto a mano nella cartella condivisa: un voto da sei
+        // stelle, che il `CHECK` di `tracks.rating` rifiuta e che faceva fallire
+        // ogni passata; un conteggio presso `i64::MAX`, che fa traboccare la
+        // `SUM` della libreria; un cuore e una lapide dal futuro, che vincevano
+        // per sempre su ogni decisione presa qui.
+        let adesso = 1_700_000_000_000;
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = Cartella::nuova(dove.path().join("dispositivi"));
+        let mut storto = Contenuto::default();
+        storto.voti.insert("sei".to_owned(), Voto { v: 6, at: 10 });
+        storto.voti.insert("tre".to_owned(), Voto { v: 3, at: 10 });
+        storto.ascolti.insert("tanti".to_owned(), i64::MAX - 1);
+        storto.ereditati.insert("tanti".to_owned(), i64::MAX - 1);
+        storto.ascolti.insert("pochi".to_owned(), 4);
+        storto.preferiti.insert(
+            "domani".to_owned(),
+            crate::registro::Interruttore {
+                on: true,
+                at: adesso + UN_GIORNO,
+            },
+        );
+        storto
+            .lapidi
+            .playlist
+            .insert("preferite".to_owned(), i64::MAX);
+        let byte =
+            documento::serializza(&Documento::nuovo("altro", storto, adesso)).expect("serializza");
+        magazzino
+            .scrivi(&documento::nome_file("altro"), None, TIPO, &byte, "x")
+            .expect("scrive");
+
+        let mut memoria = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "io", &mut memoria);
+        let esito = motore
+            .passata(&Contenuto::default(), adesso, &niente)
+            .expect("passata");
+
+        assert_eq!(esito.fuso.voti.get("sei"), None, "sei stelle non esistono");
+        assert_eq!(esito.fuso.voti.get("tre").map(|v| v.v), Some(3));
+        assert_eq!(esito.fuso.ascolti_di("tanti"), 0, "fuori scala");
+        assert_eq!(esito.fuso.ascolti_di("pochi"), 4);
+        assert!(!esito.fuso.preferiti.contains_key("domani"), "rinviato");
+        assert!(
+            esito.fuso.lapidi.playlist.is_empty(),
+            "una lapide dal futuro"
+        );
+
+        // Quando il suo momento arriva il cuore entra, e il documento è lo
+        // stesso di prima: rinviato, non perso.
+        let esito = motore
+            .passata(&Contenuto::default(), adesso + 2 * UN_GIORNO, &niente)
+            .expect("passata");
+        assert!(esito.fuso.preferiti.get("domani").is_some_and(|c| c.on));
     }
 
     fn nomi(magazzino: &Cartella) -> Vec<String> {

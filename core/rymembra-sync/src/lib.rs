@@ -62,6 +62,7 @@
 
 pub mod contatore;
 pub mod documento;
+pub mod dominio;
 pub mod fusione;
 pub mod magazzino;
 pub mod motore;

@@ -130,11 +130,73 @@ pub struct Elemento {
 }
 
 /// L'ordine di una playlist.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// Si scrive come la mappa dei suoi elementi; si rilegge passando da
+/// [`Sequenza::dagli_elementi`], come quella che dorme nel database, e quindi
+/// dallo stesso filtro dei numeri impossibili.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(transparent)]
 pub struct Sequenza {
     /// Gli elementi, presenti e tolti, in ordine di identità.
     elementi: BTreeMap<Identita, Elemento>,
+}
+
+impl<'de> serde::Deserialize<'de> for Sequenza {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let elementi = BTreeMap::<Identita, Elemento>::deserialize(deserializer)?;
+        Ok(Self::dagli_elementi(elementi))
+    }
+}
+
+/// Toglie gli elementi il cui numero nessuna sequenza vera può avere.
+///
+/// # Perché il conto degli elementi, e non un tetto fisso
+///
+/// Un numero nasce come «il massimo più uno» ([`Sequenza::prossimo`]) e
+/// nessun elemento se ne va mai — i tolti restano come lapidi — quindi in una
+/// sequenza nata da queste operazioni ogni numero è **minore del conto degli
+/// elementi**. Aggiungere ne mette uno pari al vecchio massimo più uno, cioè al
+/// più al vecchio conto; fondere unisce due insiemi che lo rispettano già. Un
+/// elemento con `n = u64::MAX` arrivato in un documento rompe la regola, e da
+/// lì `prossimo` saturava: ogni inserimento riusava la stessa identità e
+/// mangiava il precedente.
+///
+/// Un tetto fisso avrebbe un bordo: un elemento messo proprio lì farebbe
+/// nascere qui numeri oltre il tetto, che la lettura dopo butterebbe e la
+/// passata dopo ricreerebbe, per sempre. Il conto invece cresce con la
+/// sequenza, e un documento da 64 MiB non porta più di qualche milione di
+/// elementi: abbastanza lontano da `u64::MAX` da non saturare mai.
+///
+/// # Perché non basta un giro
+///
+/// Togliere elementi abbassa il conto, e un secondo giro potrebbe toglierne
+/// altri: una sequenza che cambia a ogni rilettura verrebbe riscritta a ogni
+/// passata. Si tiene invece, in un colpo, il più grande insieme che rispetta la
+/// regola da sé — `c` elementi tutti con numero minore di `c` — che è anche
+/// quello a cui i giri ripetuti arriverebbero. Su una sequenza vera è tutta la
+/// sequenza, e non si tocca niente.
+fn senza_numeri_impossibili(
+    mut elementi: BTreeMap<Identita, Elemento>,
+) -> BTreeMap<Identita, Elemento> {
+    let mut numeri: Vec<u64> = elementi.keys().map(|identita| identita.n).collect();
+    numeri.sort_unstable();
+    // Il più grande `c` per cui esattamente `c` numeri stanno sotto `c`: il
+    // `c`-esimo più piccolo è sotto `c`, e il successivo no.
+    let mut quanti = numeri.len();
+    while quanti > 0 {
+        let limite = u64::try_from(quanti).unwrap_or(u64::MAX);
+        let dentro = numeri.get(quanti - 1).is_some_and(|n| *n < limite);
+        let fuori = numeri.get(quanti).is_none_or(|n| *n >= limite);
+        if dentro && fuori {
+            break;
+        }
+        quanti -= 1;
+    }
+    if quanti < numeri.len() {
+        let limite = u64::try_from(quanti).unwrap_or(u64::MAX);
+        elementi.retain(|identita, _| identita.n < limite);
+    }
+    elementi
 }
 
 impl Sequenza {
@@ -413,10 +475,25 @@ impl Sequenza {
     /// L'inverso esatto di [`Sequenza::elementi`]: quel che esce da una passa da
     /// qui e torna identico, ed è la proprietà che rende il database un posto
     /// dove la sequenza può dormire fra due passate.
+    ///
+    /// Tranne gli elementi con un numero che nessuna sequenza vera può avere:
+    /// vedi [`senza_numeri_impossibili`]. Su una sequenza nata da queste
+    /// operazioni non ce n'è nessuno, e il giro resta esatto.
     #[must_use]
     pub fn dagli_elementi(elementi: impl IntoIterator<Item = (Identita, Elemento)>) -> Self {
         Self {
-            elementi: elementi.into_iter().collect(),
+            elementi: senza_numeri_impossibili(elementi.into_iter().collect()),
+        }
+    }
+
+    /// Porta ad `adesso` le date di rimozione che stanno nel futuro.
+    ///
+    /// Per [`crate::dominio::nel_dominio`] con [`crate::dominio::Futuro::Taglia`].
+    pub(crate) fn taglia_i_tolti(&mut self, adesso_ms: i64) {
+        for elemento in self.elementi.values_mut() {
+            if let Some(quando) = elemento.tolto.as_mut() {
+                *quando = (*quando).min(adesso_ms);
+            }
         }
     }
 }
@@ -588,6 +665,94 @@ mod prove {
         assert_eq!(
             uno.fondi(&due).fondi(&tre).ordine(),
             uno.fondi(&due.fondi(&tre)).ordine()
+        );
+    }
+
+    /// Gli elementi di una sequenza, da passare a `dagli_elementi`.
+    fn elementi_di(sequenza: &Sequenza) -> Vec<(Identita, Elemento)> {
+        sequenza
+            .elementi()
+            .map(|(identita, elemento)| (identita.clone(), elemento.clone()))
+            .collect()
+    }
+
+    fn fantasma(dispositivo: &str, n: u64) -> (Identita, Elemento) {
+        (
+            Identita::nuova(dispositivo, n),
+            Elemento {
+                dopo: None,
+                brano: "fantasma".to_owned(),
+                tolto: None,
+            },
+        )
+    }
+
+    #[test]
+    fn un_numero_estremo_non_blocca_gli_inserimenti() {
+        // Un documento porta un elemento col numero più grande che un `u64`
+        // sappia dire. `prossimo` saturava lì, e da allora ogni inserimento
+        // riusava la stessa identità: il secondo brano mangiava il primo.
+        let mut elementi = elementi_di(&Sequenza::dalla_lista("uno", &lista(&["a", "b"])));
+        elementi.push(fantasma("altro", u64::MAX));
+        let mut sequenza = Sequenza::dagli_elementi(elementi);
+
+        sequenza.accoda("qui", "c");
+        sequenza.accoda("qui", "d");
+
+        assert_eq!(sequenza.ordine(), vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn un_numero_estremo_si_scarta_anche_leggendo_un_documento() {
+        let mut elementi = elementi_di(&Sequenza::dalla_lista("uno", &lista(&["a"])));
+        elementi.push(fantasma("altro", u64::MAX));
+        let mut testo = serde_json::Map::new();
+        for (identita, elemento) in elementi {
+            testo.insert(
+                identita.testo(),
+                serde_json::to_value(elemento).expect("elemento"),
+            );
+        }
+        let letta: Sequenza =
+            serde_json::from_value(serde_json::Value::Object(testo)).expect("si legge");
+        assert_eq!(letta.quanti(), 1, "{letta:?}");
+        assert_eq!(letta.ordine(), vec!["a"]);
+    }
+
+    #[test]
+    fn una_sequenza_vera_non_perde_niente_e_fa_il_giro_identica() {
+        // Il filtro non deve mai toccare una sequenza nata da queste
+        // operazioni: aggiunte concorrenti, tolti, riordini e fusioni. E una
+        // volta filtrata, una sequenza storta resta quella: rileggerla non
+        // toglie altro, o ogni passata la riscriverebbe.
+        let base = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let mut uno = base.clone();
+        uno.accoda("uno", "d");
+        uno.togli(0, 5);
+        uno.riordina("uno", &lista(&["d", "b", "c"]), 6);
+        let mut due = base;
+        due.inserisci("due", 1, "e");
+        due.accoda("due", "f");
+        let fusa = uno.fondi(&due);
+
+        let mut storti = elementi_di(&Sequenza::dalla_lista("uno", &lista(&["a", "b"])));
+        for n in [3, 4, 100, 101, u64::MAX] {
+            storti.push(fantasma("altro", n));
+        }
+        let storta = Sequenza::dagli_elementi(storti);
+
+        for sequenza in [fusa.clone(), storta] {
+            let di_nuovo = Sequenza::dagli_elementi(elementi_di(&sequenza));
+            assert_eq!(di_nuovo, sequenza, "dagli elementi");
+            let riletta: Sequenza =
+                serde_json::from_value(serde_json::to_value(&sequenza).expect("scrive"))
+                    .expect("rilegge");
+            assert_eq!(riletta, sequenza, "dal documento");
+        }
+        assert_eq!(
+            Sequenza::dagli_elementi(elementi_di(&fusa)).quanti(),
+            fusa.quanti(),
+            "niente di vero si scarta"
         );
     }
 

@@ -2350,4 +2350,115 @@ mod prove {
         assert!(impostazioni.attivo);
         assert_eq!(impostazioni.indirizzi, ["10.20.30.40:47812"]);
     }
+
+    // ── i valori fuori dominio, dalla cartella alla libreria ──
+
+    /// Una passata vera: il documento di «telefono» scritto in una cartella
+    /// come la scriverebbe chiunque possa scriverci, il motore che lo legge, e
+    /// la libreria che applica il fuso.
+    fn passata_con(
+        connection: &mut Connection,
+        suo: Contenuto,
+        adesso_ms: i64,
+    ) -> Result<Cambiamenti, AppError> {
+        use rymembra_sync::Magazzino as _;
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = rymembra_sync::Cartella::nuova(dove.path().join("dispositivi"));
+        let byte =
+            rymembra_sync::documento::serializza(&Documento::nuovo("telefono", suo, adesso_ms))
+                .expect("serializza");
+        magazzino
+            .scrivi(
+                &rymembra_sync::documento::nome_file("telefono"),
+                None,
+                "application/gzip",
+                &byte,
+                "x",
+            )
+            .expect("scrive");
+
+        allinea(connection, "portatile", adesso_ms).expect("allineamento");
+        let mio = contenuto(connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let mut memoria = rymembra_sync::Memoria::nuova();
+        let esito = rymembra_sync::Motore::nuovo(&magazzino, "portatile", &mut memoria)
+            .passata(&mio, adesso_ms, &|_| {})
+            .expect("passata");
+        applica(connection, &esito.fuso, adesso_ms)
+    }
+
+    #[test]
+    fn un_voto_fuori_scala_non_ferma_la_passata() {
+        // Sei stelle violano il `CHECK` di `tracks.rating`: la transazione
+        // intera cadeva, a ogni passata, finché il file restava nella cartella.
+        let mut connection = libreria();
+        let mut suo = Contenuto::default();
+        suo.voti.insert("a".to_owned(), Voto { v: 6, at: 1_500 });
+        suo.voti.insert("b".to_owned(), Voto { v: 4, at: 1_500 });
+
+        passata_con(&mut connection, suo, 2_000).expect("la passata si applica");
+        let voti: Vec<i64> = connection
+            .prepare("SELECT rating FROM tracks ORDER BY id")
+            .expect("voti")
+            .query_map([], |row| row.get(0))
+            .expect("voti")
+            .collect::<Result<_, _>>()
+            .expect("voti");
+        assert_eq!(voti, vec![0, 4, 0], "il voto vero arriva, quello storto no");
+    }
+
+    #[test]
+    fn un_conteggio_enorme_non_fa_traboccare_la_somma() {
+        // `SUM` di SQLite su interi dà «integer overflow» invece di saturare:
+        // un conteggio presso `i64::MAX` accanto a un ascolto di qui faceva
+        // fallire ogni passata, e poi ogni ascolto di quel brano.
+        let mut connection = libreria();
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        let tx = connection.transaction().expect("transazione");
+        conta_ascolto(&tx, 1, "portatile").expect("ascolto");
+        tx.commit().expect("commit");
+        let mut suo = Contenuto::default();
+        suo.ascolti.insert("a".to_owned(), i64::MAX);
+        suo.ascolti.insert("b".to_owned(), 3);
+
+        passata_con(&mut connection, suo, 2_000).expect("la passata si applica");
+        assert_eq!(conteggio(&connection, "a"), 1);
+        assert_eq!(conteggio(&connection, "b"), 3);
+        let tx = connection.transaction().expect("transazione");
+        conta_ascolto(&tx, 1, "portatile").expect("e il brano si ascolta ancora");
+        tx.commit().expect("commit");
+        assert_eq!(conteggio(&connection, "a"), 2);
+    }
+
+    #[test]
+    fn un_cuore_dal_futuro_non_congela_quello_di_qui() {
+        // Un cuore tolto «fra dieci anni» vinceva su ogni decisione presa qui
+        // fino ad allora, e la copia che gli altri ripubblicano lo rimetteva.
+        let mut connection = libreria();
+        connection
+            .execute(
+                "UPDATE tracks SET liked = 1, liked_at = 1000 WHERE track_key = 'a'",
+                [],
+            )
+            .expect("cuore di qui");
+        let dieci_anni = 10 * 365 * 24 * 60 * 60 * 1000_i64;
+        let mut suo = Contenuto::default();
+        suo.preferiti.insert(
+            "a".to_owned(),
+            Interruttore {
+                on: false,
+                at: 2_000 + dieci_anni,
+            },
+        );
+
+        passata_con(&mut connection, suo, 2_000).expect("la passata si applica");
+        let (cuore, quando): (i64, i64) = connection
+            .query_row(
+                "SELECT liked, liked_at FROM tracks WHERE track_key = 'a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("cuore");
+        assert_eq!((cuore, quando), (1, 1_000), "il cuore di qui resta");
+    }
 }

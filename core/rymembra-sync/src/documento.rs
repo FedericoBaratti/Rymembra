@@ -34,6 +34,12 @@
 //! Una versione **maggiore** invece è un rifiuto netto, perché è l'unico caso in
 //! cui leggere male porterebbe a scrivere sopra il lavoro di un Rymembra più
 //! nuovo — cioè la sola perdita di dati vera che questo modulo può causare.
+//!
+//! I record leggibili ma **fuori dominio** — sei stelle, un conteggio presso
+//! `i64::MAX`, una data fra dieci anni — non si scartano qui ma in
+//! [`crate::dominio::nel_dominio`], che chi fonde chiama con il proprio
+//! «adesso»: il futuro dipende da quando lo si guarda, e un documento letto una
+//! volta resta in memoria per molte passate.
 
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
