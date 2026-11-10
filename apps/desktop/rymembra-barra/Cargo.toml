@@ -16,8 +16,9 @@ publish = false
 #
 # La 0.62 è quella che l'albero aveva già — la usano `tauri` e `trash` — e il
 # `Cargo.lock` non guadagna nessun pacchetto: si accendono soltanto le parti
-# dell'API che servono qui. `Win32_Storage_FileSystem` è per `GetDriveTypeW`
-# (vedi `src/unita.rs`), e anche quella non porta pacchetti nuovi.
+# dell'API che servono qui. `Win32_Storage_FileSystem` è per `GetDriveTypeW` e
+# `GetVolumePathNameW` (vedi `src/unita.rs`), e anche quella non porta
+# pacchetti nuovi.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",

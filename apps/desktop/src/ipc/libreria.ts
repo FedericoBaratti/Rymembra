@@ -131,6 +131,20 @@ export interface Cancellazione {
   torneranno: number;
 }
 
+/**
+ * Quel che «Elimina dal disco» cancellerebbe per sempre, perché dove sta un
+ * Cestino non c'è.
+ *
+ * `brani` è il numero da mettere accanto a quanti se ne sono scelti; `file`
+ * è l'elenco esatto da mostrare, ed è anche la conferma: torna al nucleo così
+ * com'è, e il nucleo cancella per sempre solo quei file. Uno che all'esecuzione
+ * risulta senza Cestino e non c'è fa rifiutare tutto, prima di toccare niente.
+ */
+export interface SenzaCestino {
+  brani: number;
+  file: string[];
+}
+
 /** Una cartella tolta dall'elenco perché ci sta già dentro un'altra. */
 export interface CartellaAssorbita {
   cartella: string;

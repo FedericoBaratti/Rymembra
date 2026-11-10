@@ -211,15 +211,74 @@ fn da_interrogare(percorso: &Path) -> Vec<PathBuf> {
 /// La collocazione chiesta al disco, **senza scadenza**: chi la chiama la tiene
 /// su un filo che si può abbandonare.
 fn chiedi_al_disco(percorso: &Path) -> Collocazione {
+    chiedi_al_disco_con(percorso, nome_vero).0
+}
+
+/// [`std::fs::canonicalize`] su un `&Path`: la funzione della libreria è
+/// generica, e un `fn` per tutti i `&Path` va scritto.
+fn nome_vero(cartella: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(cartella)
+}
+
+/// [`chiedi_al_disco`], con il risolutore dato da fuori, e chi ha risposto: la
+/// cartella interrogata — quella del file, o la radice della sua unità se la
+/// cartella non c'è più — con il suo nome vero. `None` quando a rispondere è
+/// stata la forma, o nessuno.
+///
+/// Il risolutore è un parametro per le prove: una giunzione verso una
+/// chiavetta non si costruisce in una cartella temporanea, e quel che conta qui
+/// è che cosa si fa del nome che il sistema restituisce.
+fn chiedi_al_disco_con(
+    percorso: &Path,
+    risolvi: fn(&Path) -> std::io::Result<PathBuf>,
+) -> (Collocazione, Option<(PathBuf, PathBuf)>) {
     if let Some(dalla_forma) = dalla_forma(percorso) {
-        return dalla_forma;
+        return (dalla_forma, None);
     }
     for cartella in da_interrogare(percorso) {
-        if let Ok(canonico) = std::fs::canonicalize(&cartella) {
-            return da_canonico(&canonico);
+        if let Ok(canonico) = risolvi(&cartella) {
+            return (da_canonico(&canonico), Some((cartella, canonico)));
         }
     }
-    Collocazione::Ignota
+    (Collocazione::Ignota, None)
+}
+
+/// La collocazione di una cartella e, se è locale, il genere del volume su cui
+/// sta davvero.
+///
+/// Il genere si chiede sul nome **vero**, quello che il sistema ha appena dato,
+/// e non sul percorso com'è scritto in libreria: `C:\Musica\Chiavetta` può
+/// essere una giunzione verso `E:\`, o la cartella in cui è montata una scheda
+/// SD, e la lettera scritta — `C:` — direbbe «disco fisso» di una chiavetta. Il
+/// nome vero porta la lettera vera, o il punto di montaggio vero, e chi
+/// risponde sul genere parte da lì.
+///
+/// Se della cartella non si è avuto il nome vero e ha risposto soltanto la
+/// radice dell'unità, si chiede sulla cartella com'è scritta: il nome vero
+/// della radice direbbe solo la lettera, mentre dal percorso scritto il volume
+/// montato in una cartella si trova ancora. Ed è un percorso che si sa locale,
+/// perché locale è la sua radice.
+///
+/// Per quel che non è locale il genere non si chiede: una share non ha un
+/// Cestino qualunque cosa ne dica, e chiederlo vorrebbe dire toccarla ancora.
+fn dove_e_genere<G>(
+    cartella: &Path,
+    risolvi: fn(&Path) -> std::io::Result<PathBuf>,
+    genere: fn(&Path) -> G,
+) -> (Collocazione, Option<G>) {
+    // Si chiede per la cartella come se fosse un file al suo interno: così
+    // `chiedi_al_disco_con` interroga proprio lei, e dopo la radice della sua
+    // unità.
+    let (collocazione, risposta) = chiedi_al_disco_con(&cartella.join("_"), risolvi);
+    let genere = match (collocazione, risposta) {
+        (Collocazione::Locale, Some((interrogata, canonico))) => Some(if interrogata == cartella {
+            genere(&canonico)
+        } else {
+            genere(cartella)
+        }),
+        _ => None,
+    };
+    (collocazione, genere)
 }
 
 /// Dove sta un percorso solo, con la scadenza addosso.
@@ -246,6 +305,37 @@ pub fn collocazione(percorso: &str, scadenza: Duration) -> Collocazione {
 /// vedi [`in_parallelo`].
 #[must_use]
 pub fn collocazioni(percorsi: &[String], scadenza: Duration) -> Vec<Collocazione> {
+    collocazioni_e_generi(percorsi, scadenza, |_| ())
+        .into_iter()
+        .map(|(collocazione, _)| collocazione)
+        .collect()
+}
+
+/// Una cartella da risolvere, con la domanda sul genere che la segue sul filo.
+type Lavoro<G> = (PathBuf, fn(&Path) -> G);
+
+/// [`collocazioni`], e per ogni percorso locale anche il genere del volume che
+/// lo contiene, chiesto da `genere` sul nome vero della sua cartella: vedi
+/// [`dove_e_genere`].
+///
+/// `genere` gira **sullo stesso filo** della risoluzione, dentro la stessa
+/// scadenza: chiedere il genere di un volume può voler dire guardarne il disco,
+/// e un disco che non risponde deve diventare un «non si sa» come la sua
+/// cartella, non un'attesa per chi chiama. Un percorso che non ha risposto in
+/// tempo è [`Collocazione::Ignota`] senza genere.
+///
+/// Un `fn` e non una chiusura per la stessa ragione di [`in_parallelo`]: i fili
+/// che una share morta lascia appesi sopravvivono a chi li ha chiesti, e non
+/// devono portarsi dietro niente di suo.
+#[must_use]
+pub fn collocazioni_e_generi<G>(
+    percorsi: &[String],
+    scadenza: Duration,
+    genere: fn(&Path) -> G,
+) -> Vec<(Collocazione, Option<G>)>
+where
+    G: Clone + Send + 'static,
+{
     // La cartella di ciascuno, o `None` se la forma ha già risposto.
     let chiavi: Vec<Option<PathBuf>> = percorsi
         .iter()
@@ -269,24 +359,30 @@ pub fn collocazioni(percorsi: &[String], scadenza: Duration) -> Vec<Collocazione
             distinte.push(chiave.clone());
         }
     }
-    // Si chiede per la cartella come se fosse un file al suo interno: così
-    // `chiedi_al_disco` interroga proprio lei, e dopo la radice della sua unità.
-    let risposte = in_parallelo(distinte.clone(), scadenza, |cartella: &PathBuf| {
-        chiedi_al_disco(&cartella.join("_"))
+    // Il genere viaggia con la sua cartella: `in_parallelo` vuole un `fn`, e un
+    // `fn` non cattura niente.
+    let lavori: Vec<Lavoro<G>> = distinte
+        .iter()
+        .map(|cartella| (cartella.clone(), genere))
+        .collect();
+    let risposte = in_parallelo(lavori, scadenza, |(cartella, genere)| {
+        dove_e_genere(cartella, nome_vero, *genere)
     });
 
     chiavi
         .iter()
         .map(|chiave| match chiave {
-            None => Collocazione::DiRete,
+            None => (Collocazione::DiRete, None),
             // Una cartella che non ha risposto in tempo è «non si sa», che è
             // anche la risposta prudente per il caso — impossibile — di una
             // chiave che non sta fra le distinte.
             Some(cartella) => distinte
                 .iter()
                 .position(|d| d == cartella)
-                .and_then(|i| risposte.get(i).copied().flatten())
-                .unwrap_or(Collocazione::Ignota),
+                // Venti file della stessa cartella hanno la stessa risposta:
+                // si copia, non si prende.
+                .and_then(|i| risposte.get(i).cloned().flatten())
+                .unwrap_or((Collocazione::Ignota, None)),
         })
         .collect()
 }
@@ -662,6 +758,89 @@ mod prove {
         }
         // Il filo appeso finisce da sé e trova il canale chiuso.
         std::thread::sleep(Duration::from_millis(700));
+    }
+
+    /// Un sistema finto: `C:\M\Chiavetta` è una giunzione verso una chiavetta,
+    /// `E:\M`; `C:\M\Locale` è una cartella vera di `C:`; `C:\M\Sparita` non c'è
+    /// più, e risponde la radice. `Z:\` è una lettera mappata su un NAS.
+    #[cfg(windows)]
+    fn risolutore_finto(cartella: &Path) -> std::io::Result<PathBuf> {
+        let nome = cartella.to_string_lossy();
+        match nome.as_ref() {
+            r"C:\M\Chiavetta" => Ok(PathBuf::from(r"\\?\E:\M")),
+            r"C:\M\Locale" => Ok(PathBuf::from(r"\\?\C:\M\Locale")),
+            r"C:\" => Ok(PathBuf::from(r"\\?\C:\")),
+            r"Z:\Musica" => Ok(PathBuf::from(r"\\?\UNC\nas\musica\Musica")),
+            _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        }
+    }
+
+    /// Il genere finto: dice soltanto su che cosa gli è stata fatta la domanda.
+    #[cfg(windows)]
+    fn chiesto_su(percorso: &Path) -> String {
+        percorso.to_string_lossy().into_owned()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn il_genere_si_chiede_sul_percorso_risolto() {
+        // Il difetto: il genere si chiedeva sul percorso scritto in libreria,
+        // `C:\M\Chiavetta\…`, cioè su `C:` — un disco fisso — mentre il file sta
+        // su una chiavetta, dove il Cestino non c'è.
+        assert_eq!(
+            dove_e_genere(Path::new(r"C:\M\Chiavetta"), risolutore_finto, chiesto_su),
+            (Collocazione::Locale, Some(r"\\?\E:\M".to_owned()))
+        );
+        // Una cartella vera si chiede su sé stessa, col suo nome vero.
+        assert_eq!(
+            dove_e_genere(Path::new(r"C:\M\Locale"), risolutore_finto, chiesto_su),
+            (Collocazione::Locale, Some(r"\\?\C:\M\Locale".to_owned()))
+        );
+        // Una cartella che non si è risolta: ha risposto la radice, ma il suo
+        // nome vero direbbe solo la lettera. Si chiede sulla cartella com'è
+        // scritta, da cui un volume montato lì dentro si trova ancora.
+        assert_eq!(
+            dove_e_genere(Path::new(r"C:\M\Sparita"), risolutore_finto, chiesto_su),
+            (Collocazione::Locale, Some(r"C:\M\Sparita".to_owned()))
+        );
+        // Di rete, o non si sa: il genere non si chiede affatto.
+        assert_eq!(
+            dove_e_genere(Path::new(r"Z:\Musica"), risolutore_finto, chiesto_su),
+            (Collocazione::DiRete, None)
+        );
+        assert_eq!(
+            dove_e_genere(Path::new(r"Q:\Musica"), risolutore_finto, chiesto_su),
+            (Collocazione::Ignota, None)
+        );
+        assert_eq!(
+            dove_e_genere(Path::new(r"\\nas\musica"), risolutore_finto, chiesto_su),
+            (Collocazione::DiRete, None)
+        );
+    }
+
+    #[test]
+    fn il_genere_arriva_a_ogni_file_della_stessa_cartella() {
+        // Si risolve una volta per cartella, ma la risposta è di tutti i suoi
+        // file: venti brani di un album, venti generi.
+        fn genere(_: &Path) -> u8 {
+            7
+        }
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let percorsi: Vec<String> = ["a.flac", "b.flac", "c.flac"]
+            .iter()
+            .map(|nome| cartella.path().join(nome).to_string_lossy().into_owned())
+            .collect();
+        let dove = collocazioni_e_generi(&percorsi, SCADENZA_RISOLUZIONE, genere);
+        assert_eq!(dove, vec![(Collocazione::Locale, Some(7)); 3]);
+        // Una share si riconosce dalla forma, e il genere non si chiede.
+        assert_eq!(
+            collocazioni_e_generi(
+                &[r"\\server-che-non-esiste\m\a.flac".to_owned()],
+                SCADENZA_RISOLUZIONE,
+                genere
+            ),
+            vec![(Collocazione::DiRete, None)]
+        );
     }
 
     #[test]

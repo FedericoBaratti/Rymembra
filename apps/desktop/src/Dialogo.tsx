@@ -61,6 +61,7 @@ export function Dialogo({
   veloChiude,
   occupato,
   onInvia,
+  consenso,
   children,
 }: {
   /** Il titolo: l'`<h2>` in cima, e il nome del dialogo. */
@@ -103,6 +104,15 @@ export function Dialogo({
   occupato?: boolean | undefined;
   /** Se c'è, la finestrella è un `<form>`, e Invio la manda qui. */
   onInvia?: (() => void) | undefined;
+  /**
+   * È un dialogo di consenso: chiede un sì a un gesto che non si disfa.
+   *
+   * Diventa l'attributo `data-consenso` sulla radice, ed è la convenzione con
+   * cui le skin lo riconoscono e lo lasciano stare — carattere di sistema,
+   * niente livelli né immagini loro: una skin non deve poter ridisegnare la
+   * domanda a cui si risponde.
+   */
+  consenso?: boolean | undefined;
   children: ReactNode;
 }) {
   const idTitolo = useId();
@@ -129,6 +139,7 @@ export function Dialogo({
       : { "aria-label": etichetta };
   const descritta =
     descrizione !== undefined ? { "aria-describedby": idDescrizione } : {};
+  const diConsenso = consenso === true ? { "data-consenso": "" } : {};
 
   return (
     <Presenza parte="modal-veil">
@@ -150,6 +161,7 @@ export function Dialogo({
               aria-busy={occupato}
               {...nome}
               {...descritta}
+              {...diConsenso}
               // Il clic resta qui, come prima del velo nuovo: chi sta sopra —
               // la pagina di Cartelle, per la sua conferma — non deve vedere i
               // clic sui tasti della finestrella.
@@ -166,6 +178,7 @@ export function Dialogo({
               aria-busy={occupato}
               {...nome}
               {...descritta}
+              {...diConsenso}
               onClick={(e) => e.stopPropagation()}
               onSubmit={(e) => {
                 e.preventDefault();
