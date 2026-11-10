@@ -759,9 +759,7 @@ emulator — and every confirmed finding fixed with a test that failed first.
   lock**: list and search requests read from a read-only database connection
   of their own, so a long write on the serving device (a scan, the analysis)
   does not make them time out; the serving device logs any request it could
-  not serve because the library was busy. A different, older symptom remains
-  (see Known limits): right after a scan on the serving device, «Browse» can
-  still answer «not reachable» for a few minutes.
+  not serve because the library was busy.
 - **`PRIVACY.md` lists what the code really sends.** The review compared every
   network request in the code with it: the Cover Art Archive redirect to
   `archive.org` and the image hosts of iTunes and Deezer, what MusicBrainz

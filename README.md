@@ -819,9 +819,7 @@ constraint is stated explicitly in the terms of use.
   member, so through a relay — or from a phone on mobile data — a session of
   several members can stall, and over a jittery link the members stay in
   step less tightly than at home (clock samples are kept up to a 400 ms round
-  trip instead of 100 ms). Right after a scan on the device that owns the
-  library, «Browse» from another device can answer «not reachable» for a few
-  minutes before it starts working; the cause is still being looked for.
+  trip instead of 100 ms).
 - **Proxies.** Rymembra follows the proxy set in Windows Settings
   (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
   NAS, a computer at home — and this computer itself always go direct. It does
