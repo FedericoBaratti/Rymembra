@@ -1620,9 +1620,13 @@ mod prove {
     /// testa a ogni passata, e misurato mai.
     #[test]
     fn una_misura_scaduta_smette_di_leggere() {
+        // Un secondo: la misura si ferma da sé a nove decimi, e l'operaio
+        // smette di aspettare al secondo. Il decimo in mezzo è il margine che
+        // separa «lento» da «non raggiungibile»; con meno, su una macchina
+        // carica, la prova misurerebbe lo scheduler.
         let misurati = misura_intensita_con(
             &[scheda(1)],
-            |_| Duration::from_millis(100),
+            |_| Duration::from_secs(1),
             || true,
             |scheda, continua| legge_a_lungo(scheda, continua, &BLOCCHI_SCADUTA),
             &RadiciMorte::default(),
