@@ -2508,3 +2508,42 @@ fn una_radice_di_rete_del_profilo_entra_solo_se_il_piano_la_mostra() {
         chiesti.borrow()
     );
 }
+
+// ── un'estrazione fallita non lascia avanzi nello store ─────────────────────
+
+#[test]
+fn una_copertina_rotta_nell_archivio_non_lascia_avanzi_nello_store() {
+    // Reperto 12-1 del fuzzing: il CRC di una copertina si guarda solo quando
+    // la si apre, quindi il file passa `leggi` e il piano; all'estrazione il
+    // provvisorio `<impronta>.parziale` restava nello store, per sempre.
+    use std::io::Write as _;
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let hash = "ab".repeat(32);
+    let manifesto = r#"{"rymembra":"rymembra.profilo","versione":2,"creatoMs":0,"identita":"","dispositivo":"","applicazione":"","abbinamento":"track_key","contiene":{"preferenze":0,"sincronia":false,"biblioteca":false,"copertine":1,"skin":0,"bozze":0}}"#;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let intatto =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("manifesto.json", intatto).expect("voce");
+    zip.write_all(manifesto.as_bytes()).expect("byte");
+    zip.start_file(archivio::nome_copertina(&hash, false), intatto)
+        .expect("voce");
+    zip.write_all(b"\xff\xd8\xff\xe0COPERTINA-PROVA")
+        .expect("byte");
+    let mut byte = zip.finish().expect("chiusura").into_inner();
+    // Un byte del contenuto cambiato: il CRC della voce non torna più.
+    let dove = byte
+        .windows(15)
+        .position(|w| w == b"COPERTINA-PROVA")
+        .expect("contenuto");
+    byte[dove] ^= 0x20;
+    let file = dir.path().join("rotto.ryprofile");
+    std::fs::write(&file, &byte).expect("archivio");
+
+    assert!(leggi(&file).is_ok());
+    let store = CoverStore::open(dir.path().join("copertine")).expect("store");
+    assert!(estrai_copertine(&file, &store, &|_| {}).is_err());
+    let rimasti: Vec<std::ffi::OsString> = std::fs::read_dir(store.radice().join("ab"))
+        .map(|voci| voci.flatten().map(|v| v.file_name()).collect())
+        .unwrap_or_default();
+    assert!(rimasti.is_empty(), "avanzi nello store: {rimasti:?}");
+}

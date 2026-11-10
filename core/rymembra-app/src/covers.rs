@@ -577,7 +577,8 @@ impl CoverStore {
     /// Due generi di avanzi, e nient'altro:
     ///
     /// - i temporanei di una scrittura interrotta (vedi
-    ///   [`crate::scrittura::e_temporaneo`]);
+    ///   [`crate::scrittura::e_temporaneo`]), e i provvisori di un'estrazione
+    ///   da profilo interrotta (`<impronta>.parziale`);
     /// - le copertine e le miniature la cui impronta **non ha una riga** in
     ///   `cover_art` (`registrate` è l'elenco delle impronte che ce l'hanno).
     ///   Nascono quando una scansione annullata ha salvato le immagini dei file
@@ -612,6 +613,7 @@ impl CoverStore {
                 continue;
             }
             let avanzo = e_temporaneo(&percorso)
+                || provvisorio_di_estrazione(&percorso)
                 || impronta_del_file(&percorso).is_some_and(|hash| !registrate.contains(hash));
             if avanzo {
                 liberato.aggiungi(togli_file(&percorso));
@@ -708,11 +710,31 @@ fn impronta_del_file(percorso: &Path) -> Option<&str> {
         .strip_suffix(".t.jpg")
         .or_else(|| nome.strip_suffix(".m.jpg"))
         .or_else(|| nome.strip_suffix(".jpg"))?;
-    let esadecimale = hash.len() == 64
+    e_di_blake3(hash).then_some(hash)
+}
+
+/// Il provvisorio con cui l'estrazione di un profilo scrive una copertina
+/// prima di rinominarla (`profilo::archivio::Lettore::estrai`):
+/// `<impronta>.parziale` o `<impronta>.t.parziale`. Un'estrazione fallita lo
+/// toglie da sé; questo è per quella interrotta dalla morte del processo, che
+/// lo lasciava nello store per sempre.
+fn provvisorio_di_estrazione(percorso: &Path) -> bool {
+    percorso
+        .file_name()
+        .and_then(|nome| nome.to_str())
+        .and_then(|nome| {
+            nome.strip_suffix(".t.parziale")
+                .or_else(|| nome.strip_suffix(".parziale"))
+        })
+        .is_some_and(e_di_blake3)
+}
+
+/// Un'impronta come la scrive lo store: blake3, 64 cifre esadecimali minuscole.
+fn e_di_blake3(hash: &str) -> bool {
+    hash.len() == 64
         && hash
             .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    esadecimale.then_some(hash)
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Le colonne che nominano un'impronta di `cover_art`, come `(tabella,
@@ -1432,6 +1454,35 @@ mod tests {
         assert!(!store.path_for(&h[1]).exists());
         assert!(!store.thumbnail_path_for(&h[1]).exists());
         assert!(store.path_for(&h[0]).exists(), "quella registrata resta");
+        assert!(estraneo.exists(), "quel che non si riconosce non si tocca");
+    }
+
+    #[test]
+    fn il_provvisorio_di_un_estrazione_interrotta_si_spazza_da_vecchio() {
+        // L'estrazione di un profilo scrive `<impronta>.parziale` (e
+        // `<impronta>.t.parziale`) e lo rinomina alla fine: se il processo
+        // muore a metà, resta. Prima nessuna pulizia lo riconosceva.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let hash = "ab".repeat(32);
+        let cartella = dir.path().join("ab");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        let piena = cartella.join(format!("{hash}.parziale"));
+        let miniatura = cartella.join(format!("{hash}.t.parziale"));
+        let estraneo = cartella.join("non-un-impronta.parziale");
+        for file in [&piena, &miniatura, &estraneo] {
+            std::fs::write(file, b"a meta").expect("file");
+        }
+
+        let niente = store.spazza_avanzi(&HashSet::new(), Duration::from_secs(3600));
+        assert_eq!(
+            niente,
+            Liberato::default(),
+            "da giovane può essere in corso"
+        );
+        let spazzati = store.spazza_avanzi(&HashSet::new(), Duration::ZERO);
+        assert_eq!(spazzati.file, 2);
+        assert!(!piena.exists() && !miniatura.exists());
         assert!(estraneo.exists(), "quel che non si riconosce non si tocca");
     }
 
