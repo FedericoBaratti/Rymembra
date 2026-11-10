@@ -28,11 +28,13 @@
 //! Sopra la licenza c'è un terzo veto, che la licenza non conosce: i brani
 //! **con cancello**. Audius permette di chiudere lo streaming o lo scarico
 //! dietro un seguito, un acquisto o il possesso di un gettone
-//! (`is_stream_gated`, `is_download_gated`). Un brano col cancello sullo
-//! streaming non entra nemmeno nell'elenco — non lo si potrebbe sentire — e uno
-//! col cancello sullo scarico scende a solo ascolto qualunque cosa dica la sua
-//! licenza. Il permesso di un catalogo non è la somma delle sue licenze: è
-//! l'intersezione di tutti i suoi no.
+//! (`is_stream_gated`, `is_download_gated`, con le loro `…_conditions`). Un
+//! brano col cancello sullo streaming non entra nemmeno nell'elenco — non lo
+//! si potrebbe sentire — e uno col cancello sullo scarico scende a solo ascolto
+//! qualunque cosa dica la sua licenza. Il permesso di un catalogo non è la
+//! somma delle sue licenze: è l'intersezione di tutti i suoi no, e un no che la
+//! risposta non dice — un cancello assente, scritto in una forma che non si
+//! capisce — conta come detto.
 //!
 //! # Il nodo, e perché si sceglie una volta sola
 //!
@@ -555,8 +557,54 @@ fn testo(valore: &Value, campo: &str) -> Option<String> {
 }
 
 /// Un booleano, che vale `false` quando manca.
+///
+/// Solo per quel che **non** concede niente — la spunta di verifica di un
+/// autore. I permessi passano da [`esattamente`], e i cancelli da
+/// [`cancello_chiuso`].
 fn vero(valore: &Value, campo: &str) -> bool {
     valore.get(campo).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Il campo c'è, ed è esattamente il booleano `atteso`.
+///
+/// Un `"true"` scritto come testo, un numero, un campo assente: niente di
+/// questo è la risposta attesa, e chi decide un permesso deve poterlo
+/// distinguere da un sì.
+fn esattamente(valore: &Value, campo: &str, atteso: bool) -> bool {
+    valore.get(campo).and_then(Value::as_bool) == Some(atteso)
+}
+
+/// Un cancello di Audius che può essere chiuso: la bandiera `is_<…>_gated` o
+/// le condizioni `<…>_conditions`.
+///
+/// Chiuso è tutto ciò che non dice «aperto» per esteso: la bandiera deve essere
+/// `false` scritto, e le condizioni assenti o `null`. Un oggetto, anche vuoto,
+/// è una condizione; una bandiera che manca è una domanda senza risposta.
+/// Vedi [`disponibilita_da`] per perché si sbaglia da questa parte.
+fn cancello_chiuso(traccia: &Value, bandiera: &str, condizioni: &str) -> bool {
+    let condizioni_assenti = traccia.get(condizioni).is_none_or(Value::is_null);
+    !(esattamente(traccia, bandiera, false) && condizioni_assenti)
+}
+
+/// Il cancello sullo streaming è dichiarato chiuso.
+///
+/// Il gemello largo di [`cancello_chiuso`], per una domanda diversa: qui non
+/// si decide se tenere, ma se il brano entra nell'elenco di quel che si
+/// ascolta. Un campo **assente** lascia entrare — le risposte più vecchie non
+/// lo portano, e farle sparire vorrebbe dire svuotare il catalogo — mentre un
+/// valore che non sia `false`, una condizione o un accesso negato dal catalogo
+/// tengono fuori. Per tenerne una copia vale comunque la regola stretta.
+fn streaming_chiuso(traccia: &Value) -> bool {
+    let bandiera = traccia
+        .get("is_stream_gated")
+        .is_some_and(|v| v.as_bool() != Some(false));
+    let condizioni = traccia
+        .get("stream_conditions")
+        .is_some_and(|v| !v.is_null());
+    let accesso = traccia
+        .get("access")
+        .is_some_and(|a| a.get("stream").and_then(Value::as_bool) != Some(true));
+    bandiera || condizioni || accesso
 }
 
 /// La copertina, nella misura più grande che il catalogo dichiara.
@@ -628,9 +676,29 @@ fn licenza_da(traccia: &Value) -> Licenza {
 /// diventa scaricabile perché la sua licenza è una CC BY. La licenza dice cosa
 /// l'autore consente in astratto; il cancello dice cosa il catalogo consegna a
 /// noi, adesso.
+///
+/// # Si chiude in sicurezza
+///
+/// Fino alla 3.2 il divieto si deduceva dalla presenza di un `true`: un
+/// `is_download_gated` assente, scritto come testo o accompagnato da una
+/// `download_conditions` valeva «nessun cancello», e un brano col seguito
+/// obbligatorio diventava scaricabile. Adesso il permesso vuole **ogni no
+/// detto**: l'interruttore acceso, i due cancelli a `false` scritti — chi ha
+/// il cancello sullo streaming ce l'ha anche sullo scarico — nessuna
+/// condizione, e l'accesso che il catalogo calcola, quando lo manda, aperto.
+/// Lo schema attuale dell'API porta sempre i due cancelli e l'accesso, quindi
+/// un dato che manca è una risposta che non si capisce, e su quella non si
+/// scrive niente sul disco.
 fn disponibilita_da(traccia: &Value, licenza: &Licenza) -> Disponibilita {
-    let scaricabile = (vero(traccia, "is_downloadable") || vero(traccia, "downloadable"))
-        && !vero(traccia, "is_download_gated");
+    let interruttore =
+        esattamente(traccia, "is_downloadable", true) || esattamente(traccia, "downloadable", true);
+    let accesso = traccia
+        .get("access")
+        .is_none_or(|a| a.get("download").and_then(Value::as_bool) == Some(true));
+    let scaricabile = interruttore
+        && !cancello_chiuso(traccia, "is_download_gated", "download_conditions")
+        && !cancello_chiuso(traccia, "is_stream_gated", "stream_conditions")
+        && accesso;
     Disponibilita::decidi(Fonte::Audius, licenza, scaricabile)
 }
 
@@ -647,7 +715,7 @@ fn disponibilita_da(traccia: &Value, licenza: &Licenza) -> Disponibilita {
 fn candidato_da(traccia: &Value, atteso: Option<&str>) -> Option<Candidato> {
     let titolo = testo(traccia, "title")?;
     let id = testo(traccia, "id")?;
-    if vero(traccia, "is_stream_gated") {
+    if streaming_chiuso(traccia) {
         return None;
     }
     // `is_streamable` manca sulle risposte più vecchie: assente vale «sì», o
@@ -846,10 +914,10 @@ mod prove {
         // di no, e vince il catalogo. È l'intersezione dei no, non la somma dei
         // sì.
         let aperto = traccia(
-            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true}"#,
+            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":false,"is_stream_gated":false}"#,
         );
         let chiuso = traccia(
-            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":true}"#,
+            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":true,"is_stream_gated":false}"#,
         );
         assert_eq!(
             disponibilita_da(&aperto, &licenza_da(&aperto)),
@@ -858,6 +926,61 @@ mod prove {
         assert_eq!(
             disponibilita_da(&chiuso, &licenza_da(&chiuso)),
             Disponibilita::SoloAscolto
+        );
+    }
+
+    #[test]
+    fn un_cancello_che_manca_o_non_si_capisce_chiude_lo_scarico() {
+        // Il permesso si concede solo quando ogni no è stato guardato e
+        // detto: interruttore acceso, i due cancelli a `false` scritti, nessuna
+        // condizione, e l'accesso che il catalogo calcola — se c'è — aperto.
+        let base = r#""title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true"#;
+        let aperto = r#""is_download_gated":false,"is_stream_gated":false"#;
+        for (resto, perche) in [
+            ("", "cancelli assenti"),
+            (
+                r#","is_download_gated":false"#,
+                "cancello sullo streaming assente",
+            ),
+            (
+                r#","is_stream_gated":false"#,
+                "cancello sullo scarico assente",
+            ),
+            (
+                r#","is_download_gated":"false","is_stream_gated":false"#,
+                "un falso scritto come testo",
+            ),
+            (
+                &format!(r#",{aperto},"download_conditions":{{"follow_user_id":1}}"#),
+                "una condizione di scarico",
+            ),
+            (
+                &format!(r#",{aperto},"download_conditions":{{}}"#),
+                "una condizione vuota",
+            ),
+            (
+                &format!(r#",{aperto},"stream_conditions":{{"usdc_purchase":{{}}}}"#),
+                "una condizione sullo streaming",
+            ),
+            (
+                &format!(r#",{aperto},"access":{{"stream":true,"download":false}}"#),
+                "l'accesso calcolato dal catalogo",
+            ),
+        ] {
+            let t = traccia(&format!("{{{base}{resto}}}"));
+            assert_eq!(
+                disponibilita_da(&t, &licenza_da(&t)),
+                Disponibilita::SoloAscolto,
+                "con {perche}"
+            );
+        }
+        // Tutto detto, tutto aperto: si tiene.
+        let t = traccia(&format!(
+            r#"{{{base},{aperto},"download_conditions":null,"access":{{"stream":true,"download":true}}}}"#
+        ));
+        assert_eq!(
+            disponibilita_da(&t, &licenza_da(&t)),
+            Disponibilita::Scaricabile
         );
     }
 
@@ -871,6 +994,15 @@ mod prove {
         let muto = traccia(r#"{"title":"t","id":"a1","is_streamable":false}"#);
         assert!(candidato_da(&muto, None).is_none());
 
+        // Un cancello scritto in un'altra forma resta un cancello.
+        for altro in [
+            r#"{"title":"t","id":"a1","is_stream_gated":"true"}"#,
+            r#"{"title":"t","id":"a1","stream_conditions":{"follow_user_id":1}}"#,
+            r#"{"title":"t","id":"a1","access":{"stream":false,"download":false}}"#,
+        ] {
+            assert!(candidato_da(&traccia(altro), None).is_none(), "su {altro}");
+        }
+
         // Ma un campo assente non deve far sparire il catalogo intero.
         let vecchio = traccia(r#"{"title":"t","id":"a1"}"#);
         assert!(candidato_da(&vecchio, None).is_some());
@@ -879,7 +1011,7 @@ mod prove {
     #[test]
     fn chi_non_puo_tenere_niente_chiede_lo_streaming_e_non_lo_scarico() {
         let libero = traccia(
-            r#"{"title":"t","id":"aB3","license":"Attribution CC BY","is_downloadable":true}"#,
+            r#"{"title":"t","id":"aB3","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":false,"is_stream_gated":false}"#,
         );
         let riservato = traccia(r#"{"title":"t","id":"aB3","license":"All rights reserved"}"#);
         let libero = candidato_da(&libero, None).unwrap_or_default();
@@ -906,7 +1038,7 @@ mod prove {
         // `..Default::default()` — quindi l'estensione viaggia dentro
         // l'indirizzo, che invece sopravvive.
         let wav = traccia(
-            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"orig_filename":"la mia canzone.wav"}"#,
+            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":false,"is_stream_gated":false,"orig_filename":"la mia canzone.wav"}"#,
         );
         let candidato = candidato_da(&wav, None).unwrap_or_default();
         assert!(
