@@ -78,16 +78,14 @@ fn cartella_bozze(data_dir: &Path) -> PathBuf {
 /// un file **scaricato**: la stessa regola dell'installazione a mano, applicata
 /// nel punto in cui la sorgente è ancora meno controllabile.
 ///
-/// Volutamente identica a `skin::id_sicuro` nell'applicazione. Sarebbe un
-/// candidato a stare nel dominio; finché non ci sta, una copia di sei righe con
-/// questa nota costa meno di una dipendenza fra la finestra e la nuvola.
+/// La regola è quella di [`rymembra_domain::paths::id_di_file`], la stessa
+/// dell'installazione a mano, dello Studio e dei profili: anche i nomi che
+/// Windows riserva ai dispositivi (`con`, `nul`…) si rifiutano. Era una copia
+/// di sei righe «volutamente identica», ed è rimasta indietro quando la regola
+/// ha imparato quei nomi: per questo ora delega.
 #[must_use]
 pub fn id_sicuro(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    rymembra_domain::paths::id_di_file(id)
 }
 
 /// Le skin installate, con l'impronta del loro archivio.
@@ -393,6 +391,17 @@ mod prove {
             assets: &[],
         })
         .expect("pacchetto")
+    }
+
+    #[test]
+    fn un_identificatore_che_e_un_dispositivo_di_windows_si_rifiuta() {
+        // Una skin `con` scaricata da Drive non si scrive su Windows 10, e
+        // l'installazione a mano la rifiuta già: la nuvola non può essere la
+        // porta di servizio.
+        assert!(!id_sicuro("con"));
+        assert!(!id_sicuro("NUL"));
+        assert!(!id_sicuro("lpt0"));
+        assert!(id_sicuro("console"));
     }
 
     #[test]

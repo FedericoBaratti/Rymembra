@@ -69,7 +69,11 @@ pub fn segmento_sicuro(grezzo: &str) -> String {
     // `CON`.
     if riservato_da_windows(&pulito) {
         let fine = pulito.find('.').unwrap_or(pulito.len());
-        let lunghezza = pulito.get(..fine).unwrap_or(&pulito).trim_end_matches(' ').len();
+        let lunghezza = pulito
+            .get(..fine)
+            .unwrap_or(&pulito)
+            .trim_end_matches(' ')
+            .len();
         pulito.insert(lunghezza, '_');
     }
     pulito
