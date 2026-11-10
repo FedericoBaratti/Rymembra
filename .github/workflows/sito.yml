@@ -33,18 +33,25 @@
 # sitemap) e si carica quella. Se un controllo del generatore fallisce, non si
 # pubblica niente.
 #
+# Due lavori, come nel modello di Pages: `costruisci` esegue il generatore e
+# carica `_site/` come artefatto; `pubblica` lo mette online. Il permesso di
+# pubblicare (`pages: write`, e `id-token: write` per il caricamento firmato)
+# lo ha solo il secondo, che non esegue niente del repository: `sito.js` e chi
+# legge le release girano senza.
+#
 # # Il deploy da un tag
 #
 # L'evento `release` gira sul ref del tag (`refs/tags/v…`), e l'ambiente
 # `github-pages` per difetto accetta solo il ramo principale: in *Settings →
-# Environments → github-pages* va aggiunta la regola per i tag `v*`, o questo
-# lavoro si ferma con «Tag … is not allowed to deploy to github-pages».
+# Environments → github-pages* va aggiunta la regola per i tag `v*`, o il
+# lavoro `pubblica` si ferma con «Tag … is not allowed to deploy to
+# github-pages».
 #
 # # Prima che funzioni
 #
 # In *Settings → Pages* del repository, «Source» va messo su **GitHub Actions**.
-# Senza, questo lavoro fallisce all'ultimo passo con un messaggio che parla di
-# permessi e non di configurazione.
+# Senza, il lavoro `pubblica` fallisce con un messaggio che parla di permessi e
+# non di configurazione.
 
 name: sito
 
@@ -53,12 +60,10 @@ on:
     types: [published]
   workflow_dispatch:
 
-# Le due che Pages vuole, e nient'altro: `contents: read` per leggere l'albero,
-# `pages` e `id-token` per il caricamento firmato.
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+# Niente per nessuno, e ogni lavoro chiede il suo, come in `release.yml`: in
+# cima, `pages: write` e `id-token: write` li avrebbe anche il lavoro che
+# esegue il generatore.
+permissions: {}
 
 # Una pubblicazione alla volta, e senza annullare quella in corso: interrompere
 # un caricamento a metà lascerebbe il sito nello stato di nessuno dei due.
@@ -67,14 +72,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  pubblica:
+  costruisci:
     runs-on: ubuntu-latest
-    # Dieci per costruire e caricare, e altri dieci al massimo per aspettare
-    # che la pagina servita sia quella nuova: vedi l'ultimo passo.
-    timeout-minutes: 20
-    environment:
-      name: github-pages
-      url: ${{ steps.pubblicazione.outputs.page_url }}
+    timeout-minutes: 10
+    # Leggere l'albero e le release, e basta.
+    permissions:
+      contents: read
+    outputs:
+      impronta: ${{ steps.impronta.outputs.impronta }}
 
     steps:
       # Inchiodate a un hash come tutte le altre, e il perché sta per esteso nel
@@ -122,7 +127,12 @@ jobs:
           TAG: ${{ steps.versione.outputs.tag }}
         run: node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer"
 
-      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      # L'impronta della pagina appena costruita, per l'ultimo passo di
+      # `pubblica`: là `_site/` non c'è, c'è solo l'artefatto caricato qui
+      # sotto, che è questa stessa cartella.
+      - name: L'impronta della pagina
+        id: impronta
+        run: echo "impronta=$(sha256sum _site/index.html | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Si carica `_site/` e basta. Non la radice: là dentro ci sono il
       # sorgente, il changelog e i documenti, e Pages li servirebbe tutti a
@@ -133,6 +143,28 @@ jobs:
         with:
           path: _site
 
+  pubblica:
+    needs: costruisci
+    runs-on: ubuntu-latest
+    # Il caricamento, e dieci minuti al massimo per aspettare che la pagina
+    # servita sia quella nuova: vedi l'ultimo passo.
+    timeout-minutes: 15
+    # Le due che Pages vuole, e nient'altro: `pages` per creare il deploy,
+    # `id-token` per il caricamento firmato. Nessun checkout: qui non gira
+    # niente del repository, solo le azioni di Pages e `curl`.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pubblicazione.outputs.page_url }}
+
+    steps:
+      # Qui e non in `costruisci`: chiede a GitHub la configurazione di Pages,
+      # e il permesso per farlo ce l'ha questo lavoro.
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      # L'artefatto `github-pages` che `costruisci` ha caricato.
       - id: pubblicazione
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
@@ -143,17 +175,26 @@ jobs:
       # offerto la 3.0.2 per ore, e nessuno lo sapeva.
       #
       # Si confronta quindi la pagina servita, byte per byte, con
-      # `_site/index.html` appena costruito: così si vede anche una correzione
-      # fra due release che non arriva online, che con lo stesso numero di
-      # versione un confronto sul numero non vedrebbe. Senza `--compressed`,
-      # perché Pages serve il file così com'è solo a chi non chiede gzip. Per
-      # dieci minuti al massimo, quanto la cache davanti a Pages tiene una
-      # pagina (`max-age=600`).
+      # `_site/index.html` appena costruito (la sua impronta arriva da
+      # `costruisci`): così si vede anche una correzione fra due release che
+      # non arriva online, che con lo stesso numero di versione un confronto
+      # sul numero non vedrebbe. Senza `--compressed`, perché Pages serve il
+      # file così com'è solo a chi non chiede gzip. Per dieci minuti al
+      # massimo, quanto la cache davanti a Pages tiene una pagina
+      # (`max-age=600`).
       - name: Online c'è questa build
         env:
           URL: ${{ steps.pubblicazione.outputs.page_url }}
+          ATTESA: ${{ needs.costruisci.outputs.impronta }}
         run: |
-          attesa=$(sha256sum _site/index.html | cut -d' ' -f1)
+          # Un'impronta vuota o storta non è uguale a niente: il passo
+          # aspetterebbe dieci minuti per poi dare la colpa a Pages. Si dice
+          # subito che cosa manca.
+          if ! [[ "$ATTESA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::L'impronta di _site/index.html non è arrivata da «costruisci»."
+            exit 1
+          fi
+          attesa="$ATTESA"
           for _ in $(seq 1 40); do
             servita=$(curl -fsS "$URL" | sha256sum | cut -d' ' -f1) || servita=""
             if [ "$servita" = "$attesa" ]; then
