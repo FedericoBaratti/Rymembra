@@ -38,12 +38,28 @@
 #
 #   tag → verifica → costruisci → firma → pubblica
 #
-# La chiave di firma dell'updater sta nei segreti del repository come
-# `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. La privata
-# non è recuperabile e non è sostituibile: gli eseguibili già installati si
-# fidano solo di quella, e perderla vuol dire che nessuno di loro si aggiornerà
-# mai più — andrebbero tutti reinstallati a mano. Una copia fuori da questo
-# computer e fuori da GitHub.
+# La chiave di firma dell'updater sta nei segreti dell'**ambiente `release`**
+# come `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Non
+# in quelli del repository: quelli li legge ogni workflow di ogni ramo, anche
+# uno aggiunto apposta per stamparli da chiunque possa fare push (o da un token
+# rubato con lo scope `workflow`), e con la chiave e la password si firma un
+# aggiornamento per ogni copia installata. La privata non è recuperabile e non
+# è sostituibile: gli eseguibili già installati si fidano solo di quella, e
+# perderla vuol dire che nessuno di loro si aggiornerà mai più — andrebbero
+# tutti reinstallati a mano. Una copia fuori da questo computer e fuori da
+# GitHub.
+#
+# # L'ambiente `release`, prima che funzioni
+#
+# In *Settings → Environments → release*: «Deployment branches and tags» su
+# *Selected*, con la sola regola di **tag** `v*`; un revisore obbligatorio; i
+# due segreti lì, e **tolti** da *Settings → Secrets → Actions → Repository
+# secrets* (finché ci sono anche lì, l'ambiente non protegge niente). Il lavoro
+# `firma` si ferma ad aspettare l'approvazione: è voluto, è un secondo gesto
+# umano prima che la chiave esca dal suo cassetto. Una corsa lanciata a mano
+# va lanciata **dal tag** («Use workflow from» → *Tags*), non da un ramo: un
+# ramo l'ambiente lo rifiuta, e il lavoro `tag` lo dice subito invece che dopo
+# un'ora di compilazione.
 #
 # Fino alla 2.4 la chiave stava nell'ambiente di `tauri build`: cioè accanto
 # agli script di compilazione di quattrocento crate e ai pacchetti npm, ognuno
@@ -64,7 +80,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Il tag da rilasciare, per esempio v3.0.0"
+        description: "Il tag da rilasciare, per esempio v3.0.0: lo stesso scelto in «Use workflow from» → Tags"
         required: true
 
 # Niente per nessuno, e ogni lavoro chiede il suo: un `contents: write` in cima
@@ -93,9 +109,14 @@ jobs:
       tag: ${{ steps.versione.outputs.tag }}
 
     steps:
-      # Il tag calcolato **prima** di guardare qualunque file: su
-      # `workflow_dispatch` `github.ref` è il ramo da cui si è lanciato, e un
-      # checkout senza `ref` costruirebbe `main` sotto il nome del tag.
+      # Il tag guardato **prima** di qualunque file. A mano (`workflow_dispatch`)
+      # la corsa deve partire dal tag stesso, e il campo `tag` deve dire lo
+      # stesso tag: da un ramo il lavoro `firma` verrebbe rifiutato
+      # dall'ambiente `release`, che accetta solo i tag `v*`, ma dopo un'ora di
+      # compilazione; e un workflow preso da un ramo è un workflow che chiunque
+      # possa fare push ha potuto riscrivere. Prima dell'ambiente si lanciava
+      # da `main` col tag nel campo, ed è il motivo per cui il checkout qui
+      # sotto nomina il tag invece di fidarsi di `github.ref`.
       #
       # # Perché il tag passa dall'ambiente e non da `${{ }}`
       #
@@ -112,9 +133,18 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           TAG_INPUT: ${{ inputs.tag }}
         run: |
-          if [ "$REF_TYPE" = "tag" ]; then tag="$REF_NAME"; else tag="$TAG_INPUT"; fi
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::Lanciata dal ramo «$REF_NAME»: va lanciata dal tag («Use workflow from» → Tags → il tag da rilasciare). L'ambiente «release» accetta solo i tag v*."
+            exit 1
+          fi
+          tag="$REF_NAME"
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "«$tag» non ha la forma di un tag di versione (v1.2.3)"
+            exit 1
+          fi
+          # Il campo non si stampa: è testo libero, e il tag è già a schermo.
+          if [ -n "$TAG_INPUT" ] && [ "$TAG_INPUT" != "$tag" ]; then
+            echo "::error::Lanciata dal tag $tag, ma il campo «tag» ne dice un altro: devono coincidere."
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -236,6 +266,11 @@ jobs:
     needs: [tag, costruisci]
     runs-on: windows-latest
     timeout-minutes: 15
+    # L'unico lavoro che vede la chiave, ed è per questo che è l'unico che
+    # nomina l'ambiente: i due segreti stanno lì e non fra quelli del
+    # repository, e l'ambiente li consegna solo a una corsa partita da un tag
+    # `v*` che una persona ha approvato. Come si configura: nel preambolo.
+    environment: release
     permissions:
       contents: read
 
@@ -343,8 +378,8 @@ jobs:
           files: uscita/*
           draft: true
           fail_on_unmatched_files: true
-          # Il tag calcolato sopra e non `github.ref`: su `workflow_dispatch` il
-          # ref è il ramo, e la release si chiamerebbe «main».
+          # Il tag validato dal lavoro `tag` e non `github.ref`: è quello di cui
+          # si sono guardate la forma e la versione.
           tag_name: ${{ needs.tag.outputs.tag }}
           body: |
             ## Rymembra ${{ needs.tag.outputs.tag }}
