@@ -15,31 +15,11 @@
 //! rete e un disco.
 
 use crate::esterno::BranoEsterno;
+use crate::paths::riservato_da_windows;
 use crate::text::collapse_whitespace;
 
 /// I caratteri che nessun filesystem che ci interessa accetta in un nome.
 const VIETATI: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-
-/// I nomi che Windows riserva ai dispositivi, a qualunque estensione.
-///
-/// Una cartella chiamata `CON` non si può creare, e il guasto arriva come un
-/// errore di permessi che manda a cercare nel posto sbagliato. Un artista
-/// chiamato `AUX` o un album `NUL` sono rari ma esistono.
-///
-/// Stavano in `organize`, che scriveva cartelle a partire dai tag; con il
-/// ritiro del riordino l'unico posto che costruisce ancora un percorso dai
-/// metadati è questo, e la costante lo ha seguito.
-///
-/// L'elenco è quello di Microsoft («Naming Files, Paths, and Namespaces») per
-/// intero: anche lo zero e gli apici `¹ ² ³` dopo `COM` e `LPT`, che il
-/// sistema tratta come le cifre, e le due console `CONIN$` e `CONOUT$`. Un
-/// artista chiamato «LPT0» faceva scaricare il brano intero e poi fallire la
-/// cartella al deposito, tre volte di fila perché `fs.writeFailed` si ritenta.
-const NOMI_RISERVATI: [&str; 32] = [
-    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
-    "com8", "com9", "com¹", "com²", "com³", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6",
-    "lpt7", "lpt8", "lpt9", "lpt¹", "lpt²", "lpt³", "conin$", "conout$",
-];
 
 /// Quanti caratteri al massimo può essere lungo un segmento di percorso.
 ///
@@ -77,16 +57,19 @@ pub fn segmento_sicuro(grezzo: &str) -> String {
     }
     // Un nome riservato da Windows (`CON`, `AUX`…) si disinnesca con un
     // suffisso, non cancellandolo: cancellarlo lascerebbe un nome vuoto, e il
-    // ripiego «Senza titolo» qui sopra ha già consumato quel caso.
+    // ripiego «Senza titolo» qui sopra ha già consumato quel caso. Una
+    // cartella chiamata `CON` non si può creare, e il guasto arriva come un
+    // errore di permessi che manda a cercare nel posto sbagliato: un artista
+    // chiamato `AUX` o un album `NUL` sono rari ma esistono. L'elenco è quello
+    // di `paths`, lo stesso delle skin e dei profili.
     //
-    // La radice è quel che sta prima del primo punto **senza gli spazi in
-    // coda**, perché Windows li toglie: «con .mp3» è il dispositivo `CON`. E il
-    // segno va attaccato alla radice e non in fondo al nome, perché per Windows
-    // conta quel che precede il punto: «con.mp3_» resterebbe `CON`.
-    let fine = pulito.find('.').unwrap_or(pulito.len());
-    let radice = pulito.get(..fine).unwrap_or(&pulito).trim_end_matches(' ');
-    let lunghezza = radice.len();
-    if NOMI_RISERVATI.contains(&radice.to_lowercase().as_str()) {
+    // Il segno va attaccato alla radice — quel che sta prima del primo punto,
+    // senza gli spazi in coda che Windows toglie — e non in fondo al nome,
+    // perché per Windows conta quel che precede il punto: «con.mp3_» resterebbe
+    // `CON`.
+    if riservato_da_windows(&pulito) {
+        let fine = pulito.find('.').unwrap_or(pulito.len());
+        let lunghezza = pulito.get(..fine).unwrap_or(&pulito).trim_end_matches(' ').len();
         pulito.insert(lunghezza, '_');
     }
     pulito

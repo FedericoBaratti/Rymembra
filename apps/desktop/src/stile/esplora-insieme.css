@@ -504,9 +504,14 @@
 /* Le quattro cifre. Grandi e con le cifre a larghezza fissa: si confrontano
    con quelle dell'altro schermo da un metro di distanza, e «48 21» deve stare
    nello stesso punto su tutti e due. Selezionabili, perché qualcuno lo
-   detterà al telefono. */
+   detterà al telefono.
+
+   Il carattere non si sceglie qui: il codice sta dentro un consenso, e lo fissa
+   quello di sistema `finestrelle.css` («i consensi, fuori dalle skin»). Era
+   `var(--font-dot)`, cioè il carattere che una skin porta nel pacchetto: uno
+   che disegna tutte le cifre con lo stesso glifo fa leggere uguali due codici
+   diversi. */
 .codice-insieme {
-  font-family: var(--font-dot), var(--font-sans);
   font-size: 40px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

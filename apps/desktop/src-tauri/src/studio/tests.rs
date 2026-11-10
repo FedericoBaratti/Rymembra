@@ -181,7 +181,17 @@ fn la_skin_di_serie_passa_dallo_studio_senza_errori() {
 
 #[test]
 fn una_bozza_non_puo_uscire_dalla_sua_cartella() {
-    for cattivo in ["../../altrove", "..\\fuori", "c:/assoluto", ""] {
+    // I dispositivi di Windows compresi: `bozze/con/` su Windows 10 non è una
+    // cartella.
+    for cattivo in [
+        "../../altrove",
+        "..\\fuori",
+        "c:/assoluto",
+        "",
+        "con",
+        "NUL",
+        "com1",
+    ] {
         assert!(!id_sicuro(cattivo), "«{cattivo}» non è stato respinto");
     }
     assert!(id_sicuro("ruggine"));
@@ -548,7 +558,7 @@ fn una_risorsa_si_aggiunge_si_rinomina_se_occupato_e_si_rifiuta_se_mente() {
     let dir = tempfile::tempdir().expect("cartella temporanea");
     let fuori = tempfile::tempdir().expect("cartella dei file");
     let buono = fuori.path().join("Trama.png");
-    std::fs::write(&buono, b"\x89PNG\r\n\x1a\n resto").expect("scritto");
+    std::fs::write(&buono, PNG).expect("scritto");
     let voce = aggiungi_risorsa(dir.path(), DI_SERIE, &buono).expect("aggiunta");
     assert_eq!(voce.nome, "assets/trama.png");
     let seconda = aggiungi_risorsa(dir.path(), DI_SERIE, &buono).expect("aggiunta");
@@ -557,6 +567,22 @@ fn una_risorsa_si_aggiunge_si_rinomina_se_occupato_e_si_rifiuta_se_mente() {
     let bugiardo = fuori.path().join("finta.png");
     std::fs::write(&bugiardo, b"GIF89a").expect("scritto");
     assert!(aggiungi_risorsa(dir.path(), DI_SERIE, &bugiardo).is_err());
+
+    // Un'immagine oltre il tetto dei pixel non entra nella bozza, e lo dice
+    // con la sua misura: 30000×30000 in un'intestazione da trenta byte.
+    let enorme = fuori.path().join("enorme.png");
+    let mut byte = PNG.to_vec();
+    byte.splice(
+        16..24,
+        [30_000_u32.to_be_bytes(), 30_000_u32.to_be_bytes()].concat(),
+    );
+    std::fs::write(&enorme, &byte).expect("scritto");
+    let err = aggiungi_risorsa(dir.path(), DI_SERIE, &enorme).expect_err("respinta");
+    assert!(
+        err.message()
+            .is_some_and(|m| m.contains("30000×30000") && m.contains("4096×4096")),
+        "{err:?}"
+    );
 
     let da = da_lavorare(dir.path(), DI_SERIE).expect("la bozza");
     let nomi: Vec<&str> = da.assets.iter().map(|a| a.name.as_str()).collect();
@@ -686,7 +712,12 @@ fn con_carattere(id: &str) -> String {
     )
 }
 
-const PNG: &[u8] = b"\x89PNG\r\n\x1a\n resto";
+/// Una PNG da un pixel: la firma e l'intestazione, che è quel che il
+/// pacchetto guarda — la misura sta nel tetto dei pixel.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0, 0,
+    1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0, 0, 0, 0,
+];
 const WOFF2: &[u8] = b"wOF2 finto con la firma giusta";
 
 fn installa_qui(dir: &Path, sorgente: &str, assets: &[rymembra_skin::package::SkinAsset]) {
@@ -882,7 +913,7 @@ fn l_id_dichiarato_segue_la_regola_del_formato() {
     let troppo = "a".repeat(49);
     for candidato in [
         "a", "ab", "Ab", "a_b", "1ab", "-ab", "a-b", "notturno", "Notturno", "n0tte", &lungo,
-        &troppo,
+        &troppo, "con", "nul", "com1", "console",
     ] {
         assert_eq!(
             id_del_formato(candidato),

@@ -27,10 +27,26 @@ fn anteprima(json: &str) -> CompiledSkin {
     compile_skin_anteprima(&parse_skin_json(json).expect("valida"))
 }
 
-/// Il corpo del primo blocco che si apre così, o una stringa vuota.
+/// Un selettore come lo scrive il compilatore, con le guardie dei consensi al
+/// loro posto: `<G>` sul soggetto di una parte, `<L>` prima di un livello, `<V>`
+/// prima di una transizione di vista. Le prove le scrivono così per dire
+/// **dove** stanno, senza ripetere ogni volta il testo per intero.
+fn guardie(selettore: &str) -> String {
+    selettore
+        .replace("<G>", FUORI_DAL_CONSENSO)
+        .replace("<L>", LIVELLO_FUORI_DAL_CONSENSO)
+        .replace("<V>", VISTA_FUORI_DAL_CONSENSO)
+}
+
+/// Il corpo del primo blocco che si apre così (con le [`guardie`]).
+///
+/// Un blocco che non c'è ferma la prova, invece di restituire un corpo vuoto:
+/// un'asserzione al negativo — «non contiene `z-index`» — passerebbe sempre su
+/// un selettore che il compilatore non scrive più.
 fn corpo(css: &str, apertura: &str) -> String {
+    let apertura = guardie(apertura);
     let Some(inizio) = css.find(&format!("{apertura} {{\n")) else {
-        return String::new();
+        panic!("nessun blocco «{apertura}» nel foglio:\n{css}");
     };
     let dopo = css.get(inizio..).unwrap_or_default();
     let fine = dopo.find("\n}").unwrap_or(dopo.len());
@@ -136,7 +152,7 @@ fn gli_stati_non_scavalcano_i_componenti() {
     ))
     .css;
     assert!(
-        css.contains(":root[data-skin='prova'] .list-row:where([aria-current]:not([aria-current=\"false\"]), [data-active], .is-active) {"),
+        css.contains(&guardie(":root[data-skin='prova'] .list-row<G>:where([aria-current]:not([aria-current=\"false\"]), [data-active], .is-active) {")),
         "{css}"
     );
 }
@@ -149,13 +165,15 @@ fn l_anello_del_fuoco_sta_sotto_il_fuoco_e_segue_l_involucro() {
         }"##))
     .css;
     assert!(
-        css.contains(":root[data-skin='prova'] .btn-accent:where(:focus-visible) {"),
+        css.contains(&guardie(
+            ":root[data-skin='prova'] .btn-accent<G>:where(:focus-visible) {"
+        )),
         "{css}"
     );
     assert!(
-        css.contains(
-            ":root[data-skin='prova'] .search-field:where(:focus-visible, :has(:focus-visible)) {"
-        ),
+        css.contains(&guardie(
+            ":root[data-skin='prova'] .search-field<G>:where(:focus-visible, :has(:focus-visible)) {"
+        )),
         "{css}"
     );
     assert!(
@@ -171,7 +189,7 @@ fn i_livelli_non_li_puo_spostare_la_skin_e_seguono_gli_angoli() {
             "after": { "background": [{ "effect": "solid", "color": "#fff" }] }
         } }"##))
     .css;
-    let prima = corpo(&css, ":root[data-skin='prova'] .section-card::before");
+    let prima = corpo(&css, ":root[data-skin='prova'] .section-card<G><L>::before");
     for attesa in [
         "position: absolute;",
         "inset: 0;",
@@ -182,7 +200,17 @@ fn i_livelli_non_li_puo_spostare_la_skin_e_seguono_gli_angoli() {
         assert!(prima.contains(attesa), "{attesa}: {prima}");
     }
     assert!(css.contains("isolation: isolate;"), "{css}");
-    assert!(!corpo(&css, ":root[data-skin='prova'] .section-card::after").contains("z-index"));
+    assert!(
+        !corpo(&css, ":root[data-skin='prova'] .section-card<G><L>::after").contains("z-index")
+    );
+    // Il livello si misura sulla parte che lo porta: l'ospite è il suo blocco
+    // contenitore. A specificità zero, così dove il motore posiziona già la
+    // parte vince il motore. Vedi 06-2 in `compila_parte`.
+    let ospite = corpo(&css, ":where(:root[data-skin='prova'] .section-card<G>)");
+    assert!(ospite.ends_with(") {\n  position: relative;"), "{ospite}");
+    // Una parte senza livelli resta com'era.
+    let senza = compila_documento(&con(r##", "parts": { "card": { "radius": "4px" } }"##)).css;
+    assert!(!senza.contains("position: relative"), "{senza}");
 }
 
 #[test]
@@ -265,13 +293,16 @@ fn ogni_regola_che_tocca_animation_scrive_la_lista_intera() {
     // regola dello stato deve ripetere il giro, o lo spegnerebbe.
     let css =
         animata(r##"{ "column-art": { "motion": { "playing": "gira", "hover": "sbuca" } } }"##).css;
-    let base = corpo(&css, ":root[data-skin='prova'] .column-art");
+    let base = corpo(&css, ":root[data-skin='prova'] .column-art<G>");
     assert!(base.contains("skin-prova-anim-gira"), "{base}");
     assert!(
         base.contains("animation-play-state: var(--skin-suona, paused);"),
         "{base}"
     );
-    let passaggio = corpo(&css, ":root[data-skin='prova'] .column-art:where(:hover)");
+    let passaggio = corpo(
+        &css,
+        ":root[data-skin='prova'] .column-art<G>:where(:hover)",
+    );
     assert!(passaggio.contains("skin-prova-anim-gira"), "{passaggio}");
     assert!(passaggio.contains("skin-prova-anim-sbuca"), "{passaggio}");
     assert!(
@@ -282,7 +313,7 @@ fn ogni_regola_che_tocca_animation_scrive_la_lista_intera() {
     assert!(
         corpo(
             &css,
-            ":root[data-skin='prova'] .column-art:where([data-playing])"
+            ":root[data-skin='prova'] .column-art<G>:where([data-playing])"
         )
         .contains("--skin-suona: running;"),
         "{css}"
@@ -300,21 +331,21 @@ fn ogni_parte_animata_ha_le_sue_regole_d_arresto() {
     .css;
     for parte in ["column-art", "section-card"] {
         assert!(
-            css.contains(&format!(
-                "@media (prefers-reduced-motion: reduce) {{\n:root[data-skin='prova'] .{parte} {{\n  animation: none !important;"
-            )),
+            css.contains(&guardie(&format!(
+                "@media (prefers-reduced-motion: reduce) {{\n:root[data-skin='prova'] .{parte}<G> {{\n  animation: none !important;"
+            ))),
             "{parte}: {css}"
         );
         assert!(
-            css.contains(&format!(
-                ":root[data-skin='prova'][data-motion-utente='ridotto'] .{parte} {{\n  animation: none !important;"
-            )),
+            css.contains(&guardie(&format!(
+                ":root[data-skin='prova'][data-motion-utente='ridotto'] .{parte}<G> {{\n  animation: none !important;"
+            ))),
             "{parte}"
         );
         assert!(
-            css.contains(&format!(
-                ":root[data-skin='prova'][data-motion='none'] .{parte} {{\n  animation: none !important;"
-            )),
+            css.contains(&guardie(&format!(
+                ":root[data-skin='prova'][data-motion='none'] .{parte}<G> {{\n  animation: none !important;"
+            ))),
             "{parte}"
         );
     }
@@ -335,12 +366,12 @@ fn una_riga_riciclata_non_rientra_mentre_si_scorre() {
         animata(r##"{ "list-row": { "motion": { "enter": "sale", "hover": "sbuca" } } }"##).css;
     let scorsa = corpo(
         &css,
-        ":root[data-skin='prova'] :where([data-scorso]) .list-row",
+        ":root[data-skin='prova'] :where([data-scorso]) .list-row<G>",
     );
     assert!(scorsa.contains("animation: none;"), "{css}");
     let scorsa_sopra = corpo(
         &css,
-        ":root[data-skin='prova'] :where([data-scorso]) .list-row:where(:hover)",
+        ":root[data-skin='prova'] :where([data-scorso]) .list-row<G>:where(:hover)",
     );
     assert!(
         scorsa_sopra.contains("skin-prova-anim-sbuca"),
@@ -355,7 +386,7 @@ fn una_riga_riciclata_non_rientra_mentre_si_scorre() {
 #[test]
 fn lo_scorrimento_usa_la_linea_della_vista() {
     let css = animata(r##"{ "card": { "motion": { "inView": "sale" } } }"##).css;
-    let base = corpo(&css, ":root[data-skin='prova'] .card");
+    let base = corpo(&css, ":root[data-skin='prova'] .card<G>");
     assert!(base.contains("skin-prova-anim-sale auto"), "{base}");
     assert!(base.contains("animation-timeline: view();"), "{base}");
     assert!(
@@ -378,7 +409,7 @@ fn il_cambio_alterna_due_gemelli() {
     assert!(
         corpo(
             &css,
-            ":root[data-skin='prova'] .column-art:where([data-cambio='a'])"
+            ":root[data-skin='prova'] .column-art<G>:where([data-cambio='a'])"
         )
         .contains("skin-prova-anim-sbuca-a"),
         "{css}"
@@ -392,8 +423,9 @@ fn il_cambio_non_riparte_alla_fine_di_un_passaggio() {
     // rimetterlo all'uscita lo faceva ripartire.
     let css =
         animata(r##"{ "column-art": { "motion": { "change": "sale", "hover": "sbuca" } } }"##).css;
-    let selettore = ":root[data-skin='prova'] .column-art:where([data-cambio='a']):where(:hover)";
-    let insieme = corpo(&css, selettore);
+    let selettore =
+        guardie(":root[data-skin='prova'] .column-art<G>:where([data-cambio='a']):where(:hover)");
+    let insieme = corpo(&css, &selettore);
     let cambio = insieme.find("skin-prova-anim-sale-a");
     let passaggio = insieme.find("skin-prova-anim-sbuca ");
     assert!(
@@ -402,14 +434,16 @@ fn il_cambio_non_riparte_alla_fine_di_un_passaggio() {
     );
     // E vince: viene dopo la regola dello stato, a pari specificità.
     let dove_stato = css
-        .find(":root[data-skin='prova'] .column-art:where(:hover) {")
+        .find(&guardie(
+            ":root[data-skin='prova'] .column-art<G>:where(:hover) {",
+        ))
         .expect("la regola dello stato");
-    let dove_insieme = css.find(selettore).expect("la regola d'insieme");
+    let dove_insieme = css.find(&selettore).expect("la regola d'insieme");
     assert!(dove_stato < dove_insieme, "{css}");
     // La regola del cambio da sola mette il gemello allo stesso posto.
     let solo = corpo(
         &css,
-        ":root[data-skin='prova'] .column-art:where([data-cambio='a'])",
+        ":root[data-skin='prova'] .column-art<G>:where([data-cambio='a'])",
     );
     assert!(
         solo.contains("animation: skin-prova-anim-sale-a "),
@@ -422,10 +456,12 @@ fn la_pausa_del_ciclo_non_si_eredita() {
     // Il ciclo «finché suona» parte fermo per dichiarazione della parte
     // stessa, non per assenza: un genitore che suona non lo accende.
     let css = animata(r##"{ "column-art": { "motion": { "playing": "gira" } } }"##).css;
-    let base = corpo(&css, ":root[data-skin='prova'] .column-art");
+    let base = corpo(&css, ":root[data-skin='prova'] .column-art<G>");
     assert!(base.contains("--skin-suona: paused;"), "{base}");
     let suona = css
-        .find(":root[data-skin='prova'] .column-art:where([data-playing]) {")
+        .find(&guardie(
+            ":root[data-skin='prova'] .column-art<G>:where([data-playing]) {",
+        ))
         .expect("lo stato che suona");
     let dichiarata = css.find("--skin-suona: paused;").expect("la pausa");
     assert!(dichiarata < suona, "la pausa prima, lo stato dopo: {css}");
@@ -442,21 +478,27 @@ fn le_presenze_escono_come_transizioni_di_vista_con_una_classe_per_innesco() {
     );
     let css = &compilata.css;
     assert!(
-        css.contains(":root[data-skin='prova']::view-transition-new(.vt-menu-pop-enter) {"),
+        css.contains(&guardie(
+            ":root[data-skin='prova']<V>::view-transition-new(.vt-menu-pop-enter) {"
+        )),
         "{css}"
     );
     assert!(
-        css.contains(":root[data-skin='prova']::view-transition-old(.vt-menu-pop-exit) {"),
+        css.contains(&guardie(
+            ":root[data-skin='prova']<V>::view-transition-old(.vt-menu-pop-exit) {"
+        )),
         "{css}"
     );
     assert!(
-        css.contains(":root[data-skin='prova']::view-transition-group(.vt-card-cover-share) {"),
+        css.contains(&guardie(
+            ":root[data-skin='prova']<V>::view-transition-group(.vt-card-cover-share) {"
+        )),
         "{css}"
     );
     // L'entrata della presenza non è nella regola base: è una transizione.
-    assert!(!corpo(css, ":root[data-skin='prova'] .menu-pop").contains("animation:"));
+    assert!(!corpo(css, ":root[data-skin='prova'] .menu-pop<G>").contains("animation:"));
     // E spegne l'entrata di serie del motore.
-    assert!(corpo(css, ":root[data-skin='prova'] .menu-pop").contains("transition: none;"));
+    assert!(corpo(css, ":root[data-skin='prova'] .menu-pop<G>").contains("transition: none;"));
     let menu = compilata
         .presenze
         .iter()
@@ -478,7 +520,7 @@ fn la_rotta_passa_dalla_scala_e_dalla_classe_della_pagina() {
     ))
     .css;
     assert!(
-        css.contains(":root[data-skin='prova']::view-transition-old(.vt-page-content-exit) {\n  animation: skin-prova-out calc(320ms * var(--motion-scale, 1)) var(--ease-out-expo) both;"),
+        css.contains(&guardie(":root[data-skin='prova']<V>::view-transition-old(.vt-page-content-exit) {\n  animation: skin-prova-out calc(320ms * var(--motion-scale, 1)) var(--ease-out-expo) both;")),
         "{css}"
     );
     assert!(!css.contains("(root)"), "{css}");
@@ -569,7 +611,7 @@ fn nessuna_durata_esce_da_qui_fuori_da_var_motion_scale() {
 fn l_anteprima_parte_dal_riquadro_e_non_dalla_radice() {
     let css = anteprima(&con(r##", "parts": { "card": { "radius": "4px" } }"##)).css;
     assert!(
-        css.contains(".anteprima[data-skin='prova'] .card {"),
+        css.contains(&guardie(".anteprima[data-skin='prova'] .card<G> {")),
         "{css}"
     );
     assert!(!css.contains(":root[data-skin='prova'] .card"), "{css}");
@@ -601,9 +643,9 @@ fn nell_anteprima_gli_stati_si_possono_forzare() {
     ))
     .css;
     assert!(
-        css.contains(
-            ".anteprima[data-skin='prova'] .btn-accent:where(:hover, [data-forza~='hover']) {"
-        ),
+        css.contains(&guardie(
+            ".anteprima[data-skin='prova'] .btn-accent<G>:where(:hover, [data-forza~='hover']) {"
+        )),
         "{css}"
     );
 }
@@ -631,9 +673,9 @@ fn nell_anteprima_i_nomi_globali_hanno_un_suffisso_e_le_viste_non_ci_sono() {
     assert!(compilata.presenze.is_empty());
     // Le regole d'arresto si compongono dall'ambito.
     assert!(
-        compilata.css.contains(
-            ":root[data-motion-utente='ridotto'] .anteprima[data-skin='prova'] .menu-pop {"
-        ),
+        compilata.css.contains(&guardie(
+            ":root[data-motion-utente='ridotto'] .anteprima[data-skin='prova'] .menu-pop<G> {"
+        )),
         "{}",
         compilata.css
     );
@@ -673,7 +715,9 @@ fn la_variante_ridipinge_tavolozza_motivi_e_parti() {
         "{variante}"
     );
     assert!(
-        css.contains(":root[data-skin='prova'][data-theme='light'] .card {\n  border-radius: 2px;"),
+        css.contains(&guardie(
+            ":root[data-skin='prova'][data-theme='light'] .card<G> {\n  border-radius: 2px;"
+        )),
         "{css}"
     );
 }
@@ -1415,5 +1459,198 @@ fn un_documento_costruito_a_mano_non_esce_comunque_dai_suoi_nomi() {
         if let Err(guasto) = foglio_sano(&css) {
             panic!("{ambito:?}: {guasto}\n{css}");
         }
+    }
+}
+
+// ── I consensi ──────────────────────────────────────────────────────────────
+
+/// Una skin ostile verso i dialoghi di consenso: tutto quel che il formato le
+/// concede per ridisegnarne uno. Un carattere del pacchetto su ogni pila, un
+/// livello con un'immagine sopra e sotto la finestrella, un fondo d'immagine
+/// sul velo, sui bottoni e sulla notizia, e un'animazione che capovolge la
+/// fotografia dell'entrata per dieci secondi, sedici volte. (Rovesciarla a
+/// specchio no: `scaleX` non scende sotto zero.)
+const OSTILE: &str = r##"{
+  "format": 2,
+  "id": "ostile",
+  "meta": { "name": "Ostile", "author": "x", "version": "1.0.0" },
+  "fonts": { "Falsa": { "src": "falsa.woff2" } },
+  "tokens": { "font.sans": ["Falsa"], "font.display": ["Falsa"], "font.mono": ["Falsa"] },
+  "patterns": { "finto": { "effect": "image", "src": "finto.png", "size": "cover" } },
+  "motion": { "intensity": "full", "animations": {
+    "specchio": { "duration": "10000ms", "iterations": 16, "frames": [
+      { "at": 0, "rotate": 180 }, { "at": 100, "rotate": 180 } ] } } },
+  "parts": {
+    "glass-modal": {
+      "background": [{ "effect": "image", "src": "finto.png", "size": "cover" }],
+      "font": "display",
+      "filter": [{ "blur": "1px" }],
+      "before": { "background": [{ "$pattern": "finto" }] },
+      "after": { "background": [{ "effect": "image", "src": "finto.png", "size": "cover" }] },
+      "motion": { "enter": "specchio", "exit": "specchio", "hover": "specchio" }
+    },
+    "modal-veil": {
+      "background": [{ "$pattern": "finto" }],
+      "motion": { "enter": "specchio" }
+    },
+    "btn-accent": { "font": "display", "background": [{ "$pattern": "finto" }] },
+    "btn-ghost": { "font": "mono" },
+    "toast-card": { "after": { "background": [{ "$pattern": "finto" }] } },
+    "list-row": {
+      "after": { "background": [{ "$pattern": "finto" }] },
+      "motion": { "enter": "specchio", "hover": "specchio" }
+    },
+    "page-content": { "motion": { "enter": "specchio", "exit": "specchio" } }
+  }
+}"##;
+
+/// Le regole di un foglio emesso: il preludio e le dichiarazioni. Quelle dentro
+/// un `@media` ci sono come le altre; `@font-face` e i fotogrammi dei
+/// `@keyframes` no, perché non si applicano a un elemento.
+fn regole(css: &str) -> Vec<(String, Vec<(String, String)>)> {
+    let mut fuori = Vec::new();
+    let mut pila: Vec<String> = Vec::new();
+    let mut attesa = String::new();
+    let mut dichiarazioni: Vec<(String, String)> = Vec::new();
+    for riga in css.lines().skip(1) {
+        let riga = riga.trim();
+        if riga == "}" {
+            let chiuso = pila.pop().unwrap_or_default();
+            let in_fotogrammi = pila.iter().any(|p| p.starts_with("@keyframes"));
+            if !chiuso.starts_with('@') && !in_fotogrammi && !dichiarazioni.is_empty() {
+                fuori.push((chiuso, std::mem::take(&mut dichiarazioni)));
+            }
+            dichiarazioni.clear();
+        } else if riga.ends_with('{') {
+            // Un preludio, anche su più righe: le liste delle regole d'arresto
+            // vanno a capo dopo ogni virgola.
+            attesa.push_str(riga.trim_end_matches('{'));
+            pila.push(attesa.trim().to_owned());
+            attesa.clear();
+            dichiarazioni.clear();
+        } else if riga.ends_with(',') {
+            attesa.push_str(riga);
+            attesa.push(' ');
+        } else if let Some((nome, valore)) = riga.strip_suffix(';').and_then(|d| d.split_once(':'))
+        {
+            dichiarazioni.push((nome.trim().to_owned(), valore.trim().to_owned()));
+        }
+    }
+    fuori
+}
+
+/// Divide una lista di selettori alle virgole che non stanno fra parentesi:
+/// gli stati forzabili ne mettono dentro `:where()`.
+fn uno_per_uno(lista: &str) -> Vec<String> {
+    let mut fuori = Vec::new();
+    let mut profondita = 0_i32;
+    let mut corrente = String::new();
+    for c in lista.chars() {
+        match c {
+            '(' => profondita += 1,
+            ')' => profondita -= 1,
+            ',' if profondita == 0 => {
+                fuori.push(corrente.trim().to_owned());
+                corrente.clear();
+                continue;
+            }
+            _ => {}
+        }
+        corrente.push(c);
+    }
+    fuori.push(corrente.trim().to_owned());
+    fuori
+}
+
+/// L'ultimo composto di un selettore, quello del soggetto: quel che segue
+/// l'ultimo spazio fuori dalle parentesi.
+fn soggetto(selettore: &str) -> &str {
+    let mut profondita = 0_i32;
+    let mut inizio = 0;
+    for (posto, c) in selettore.char_indices() {
+        match c {
+            '(' => profondita += 1,
+            ')' => profondita -= 1,
+            ' ' if profondita == 0 => inizio = posto + 1,
+            _ => {}
+        }
+    }
+    &selettore[inizio..]
+}
+
+/// Le proprietà dello scafale: dove stanno i pezzi, non come si disegnano.
+const DELLO_SCAFALE: &[&str] = &[
+    "display",
+    "flex-direction",
+    "align-items",
+    "justify-content",
+    "gap",
+    "overflow-y",
+    "overflow-x",
+    "container-type",
+    "min-width",
+    "min-height",
+    "flex",
+    "width",
+    "height",
+];
+
+#[test]
+fn una_skin_non_raggiunge_un_dialogo_di_consenso() {
+    // Dentro `[data-consenso]` la skin non applica livelli, immagini,
+    // pseudo-elementi né caratteri suoi; i colori sì, perché arrivano coi
+    // token. Qui la regola si guarda sul foglio emesso, regola per regola, in
+    // tutti e quattro gli ambiti.
+    let skin = crate::leggi_skin(OSTILE).expect("valida");
+    for ambito in ambiti(&skin.id) {
+        let css = super::compila(&skin, &ambito).css;
+        // Un `@layer` della skin potrebbe gareggiare con lo strato
+        // `consenso` del foglio del motore, che vince solo perché è l'unico.
+        assert!(!css.contains("@layer"), "{ambito:?}: un @layer nel foglio");
+        let mut parti = 0;
+        for (lista, dichiarazioni) in regole(&css) {
+            // Le variabili e `color-scheme` sono i token: i colori della skin,
+            // che restano. I caratteri passano di lì, e li ferma il foglio del
+            // motore (`finestrelle.css`, «i consensi, fuori dalle skin»).
+            let solo_token = dichiarazioni
+                .iter()
+                .all(|(nome, _)| nome.starts_with("--") || nome == "color-scheme");
+            if solo_token {
+                continue;
+            }
+            for selettore in uno_per_uno(&lista) {
+                if selettore.contains("::view-transition") {
+                    assert!(
+                        selettore.contains(&format!("{VISTA_FUORI_DAL_CONSENSO}::view-transition")),
+                        "{ambito:?}: una transizione di vista che tocca un consenso: {selettore}"
+                    );
+                    continue;
+                }
+                if soggetto(&selettore).starts_with("[data-nodo=") {
+                    for (nome, _) in &dichiarazioni {
+                        assert!(
+                            DELLO_SCAFALE.contains(&nome.as_str()),
+                            "{ambito:?}: lo scafale dipinge ({nome}): {selettore}"
+                        );
+                    }
+                    continue;
+                }
+                parti += 1;
+                assert!(
+                    soggetto(&selettore).contains(FUORI_DAL_CONSENSO),
+                    "{ambito:?}: una regola raggiunge un consenso: {selettore}\n{dichiarazioni:?}"
+                );
+                if selettore.ends_with("::before") || selettore.ends_with("::after") {
+                    assert!(
+                        soggetto(&selettore).contains(LIVELLO_FUORI_DAL_CONSENSO),
+                        "{ambito:?}: un livello sopra un consenso: {selettore}"
+                    );
+                }
+            }
+        }
+        assert!(
+            parti > 20,
+            "{ambito:?}: le regole delle parti non si sono viste"
+        );
     }
 }

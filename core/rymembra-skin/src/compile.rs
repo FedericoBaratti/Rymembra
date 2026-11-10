@@ -73,6 +73,30 @@
 //! scrive, in **ogni** regola che tocca `animation`, la lista completa di quel
 //! che deve girare in quella condizione. Un'animazione che resta nella lista
 //! allo stesso posto il motore la riconosce e la lascia andare avanti.
+//!
+//! # I consensi
+//!
+//! Un dialogo che chiede un sì — collegare un dispositivo, il codice di
+//! «Ascolta insieme», un invito, togliere file dal disco — porta
+//! `data-consenso` sulla radice, e lì una skin non ridisegna niente: né
+//! livelli, né immagini, né pseudo-elementi suoi, né caratteri. Fino alla 3.2
+//! un `::after` della finestrella con un'immagine del pacchetto si dipingeva
+//! **sopra** i bottoni veri, e poteva mostrare «Rifiuta» dove stava
+//! «Consenti»; un carattere del pacchetto poteva scrivere quattro cifre diverse
+//! con lo stesso glifo.
+//!
+//! Il compilatore lo garantisce per costruzione, con tre guardie a
+//! specificità zero: ogni regola di una parte non vale dentro un consenso né
+//! sul velo che lo ospita ([`FUORI_DAL_CONSENSO`]); i livelli di una parte che
+//! **contiene** un consenso si spengono ([`LIVELLO_FUORI_DAL_CONSENSO`]); le
+//! transizioni di vista tacciono finché un consenso è a schermo
+//! ([`VISTA_FUORI_DAL_CONSENSO`]). Restano i token sulla radice, cioè i colori:
+//! il dialogo resta della skin di chi lo guarda. I caratteri arrivano anche
+//! loro coi token, e li ferma il foglio del motore (`finestrelle.css`), con
+//! una regola in un `@layer` che nessun foglio emesso di qui può battere,
+//! perché qui non se ne scrive mai uno. La prova
+//! `una_skin_non_raggiunge_un_dialogo_di_consenso` guarda il foglio emesso
+//! regola per regola.
 
 use std::fmt::Write as _;
 use std::sync::OnceLock;
@@ -131,6 +155,33 @@ pub struct CompiledSkin {
     /// Le parti che entrano, escono o volano con una transizione di vista.
     pub presenze: Vec<Presenza>,
 }
+
+/// La guardia dei consensi, sul soggetto di **ogni** regola di una parte.
+///
+/// Un dialogo che chiede un sì porta `data-consenso` sulla radice (vedi il
+/// `//!`, «I consensi»): la regola non vale per la radice, per quel che ci sta
+/// dentro, e per il velo che la ospita — l'elemento di cui è figlia — perché un
+/// filtro o un ritaglio sul velo si stende anche sul dialogo. Dentro `:where()`,
+/// cioè a specificità zero: la guardia toglie, non pesa nella cascata.
+const FUORI_DAL_CONSENSO: &str =
+    ":where(:not([data-consenso], [data-consenso] *, :has(> [data-consenso])))";
+/// La guardia dei livelli: una parte che **contiene** un consenso non ci
+/// disegna sopra.
+///
+/// Un `::after` posizionato si dipinge sopra il contenuto non posizionato del
+/// suo ospite, discendenti compresi: la finestrella del pannello di «Ascolta
+/// insieme» che contiene le richieste d'ingresso, o la pagina che contiene un
+/// invito. Finché un consenso sta lì dentro, i livelli di chi lo contiene si
+/// spengono.
+const LIVELLO_FUORI_DAL_CONSENSO: &str = ":where(:not(:has([data-consenso])))";
+/// La guardia delle transizioni di vista: tacciono finché un consenso è a
+/// schermo.
+///
+/// Gli pseudo-elementi di una transizione stanno sulla radice del documento e
+/// dipingono la **fotografia** del dialogo, sopra tutto: un'entrata della skin
+/// la può capovolgere per dieci secondi, sedici volte. Senza la regola della
+/// skin resta la dissolvenza di serie del motore.
+const VISTA_FUORI_DAL_CONSENSO: &str = ":where(:not(:has([data-consenso])))";
 
 /// Il prefisso dei motivi. Evita collisioni fra skin e col registro dei token.
 const PREFISSO_MOTIVO: &str = "--skin-";
@@ -1555,7 +1606,9 @@ fn liste<'a>(stile: &'a PartStyle, ambito: &Ambito) -> Liste<'a> {
 /// radice del tema: la base, o la variante.
 fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento: bool) -> String {
     let nome = stile.def.name;
-    let base = format!("{radice} .{nome}");
+    // Ogni regola della parte parte da qui, quindi porta la guardia dei
+    // consensi: vedi `FUORI_DAL_CONSENSO`.
+    let base = format!("{radice} .{nome}{FUORI_DAL_CONSENSO}");
     let mut dichiarazioni = compila_aspetto(&stile.appearance, ambito);
     if stile.before.is_some() {
         dichiarazioni.push(dichiara("isolation", "isolate"));
@@ -1593,11 +1646,25 @@ fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento
     }
     let mut css = blocco(&base, &dichiarazioni);
 
+    // Un livello si misura sulla parte che lo porta. `inset: 0` vale sul primo
+    // antenato posizionato, e un ospite lasciato `static` dal motore — la
+    // finestrella sul computer, la notizia — dava al livello il velo o la
+    // pagina intera da coprire. A specificità zero: dove il motore posiziona
+    // già la parte (`fixed`, `absolute`, `sticky`) vince lui, e dove non la
+    // posiziona questa regola ne fa il blocco contenitore. Una skin non sposta
+    // niente: `relative` senza scarti lascia ogni cosa dov'era.
+    if stile.before.is_some() || stile.after.is_some() {
+        css.push_str(&blocco(
+            &format!(":where({base})"),
+            &[dichiara("position", "relative")],
+        ));
+    }
+
     for (livello, prima) in [(stile.before.as_ref(), true), (stile.after.as_ref(), false)] {
         if let Some(livello) = livello {
             let pseudo = if prima { "::before" } else { "::after" };
             css.push_str(&blocco(
-                &format!("{base}{pseudo}"),
+                &format!("{base}{LIVELLO_FUORI_DAL_CONSENSO}{pseudo}"),
                 &compila_livello(livello, prima, ambito),
             ));
         }
@@ -1719,7 +1786,7 @@ fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento
     // specificità, quindi vincono solo dove il contenitore è stato scorso.
     if con_movimento && stile.def.riciclata && liste.base.iter().any(|v| v.entrata) {
         let senza: Vec<Voce<'_>> = liste.base.iter().filter(|v| !v.entrata).cloned().collect();
-        let scorso = format!("{radice} :where([data-scorso]) .{nome}");
+        let scorso = format!("{radice} :where([data-scorso]) .{nome}{FUORI_DAL_CONSENSO}");
         css.push_str(&blocco(&scorso, &dichiara_lista(&senza)));
         for (stato, voce) in &liste.stati {
             let mut lista = senza.clone();
@@ -1742,18 +1809,30 @@ fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento
 /// motore, e una skin non può ometterlo.
 fn regole_di_arresto(ambito: &Ambito, nome: &str) -> String {
     let ferma = [dichiara("animation", "none !important")];
+    // Con la guardia anche qui, benché tolga e basta: dentro un consenso le
+    // animazioni della parte non ci sono, e così ogni regola di una parte la
+    // porta, senza eccezioni da ricordare.
     let mut css = String::new();
     let _ = write!(
         css,
         "@media (prefers-reduced-motion: reduce) {{\n{}}}\n",
-        blocco(&format!("{} .{nome}", ambito.radice()), &ferma)
+        blocco(
+            &format!("{} .{nome}{FUORI_DAL_CONSENSO}", ambito.radice()),
+            &ferma
+        )
     );
     css.push_str(&blocco(
-        &format!("{} .{nome}", ambito.radice_ferma_utente()),
+        &format!(
+            "{} .{nome}{FUORI_DAL_CONSENSO}",
+            ambito.radice_ferma_utente()
+        ),
         &ferma,
     ));
     css.push_str(&blocco(
-        &format!("{} .{nome}", ambito.radice_ferma_intensita()),
+        &format!(
+            "{} .{nome}{FUORI_DAL_CONSENSO}",
+            ambito.radice_ferma_intensita()
+        ),
         &ferma,
     ));
     css
@@ -1789,7 +1868,10 @@ fn compila_viste(ambito: &Ambito, skin: &SkinDocument) -> (String, Vec<Presenza>
         ("out", AnimTrigger::Exit, "view-transition-old", "to"),
         ("in", AnimTrigger::Enter, "view-transition-new", "from"),
     ] {
-        let selettore = format!("{radice}::{pseudo}(.vt-page-content-{})", trigger.as_str());
+        let selettore = format!(
+            "{radice}{VISTA_FUORI_DAL_CONSENSO}::{pseudo}(.vt-page-content-{})",
+            trigger.as_str()
+        );
         if let Some(propria) = contenuto.and_then(|p| p.motion.get(trigger)) {
             regole.push((
                 selettore,
@@ -1855,7 +1937,7 @@ fn compila_viste(ambito: &Ambito, skin: &SkinDocument) -> (String, Vec<Presenza>
                 continue;
             };
             let selettore = format!(
-                "{radice}::{pseudo}(.vt-{}-{})",
+                "{radice}{VISTA_FUORI_DAL_CONSENSO}::{pseudo}(.vt-{}-{})",
                 stile.def.name,
                 trigger.as_str()
             );

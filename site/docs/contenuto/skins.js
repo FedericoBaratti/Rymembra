@@ -52,7 +52,8 @@
         {
           ul: [
             "Tokens become `--skin-*` custom properties; the variant is emitted under `[data-theme='<opposite scheme>']`, mobile overrides under `[data-mobile]`. Derived values (e.g. `--accent-rgb` triples, `--shell-left`, `--player-clearance`) are computed by the compiler, not authored.",
-            "Each part compiles to rules on its class; states map to DOM state (`:hover`, `[aria-current]`, `[aria-selected]`, `[aria-pressed]`, `:disabled`, `[data-playing]`…), with `:where()` so later rules win by order.",
+            "Each part compiles to rules on its class; states map to DOM state (`:hover`, `[aria-current]`, `[aria-selected]`, `[aria-pressed]`, `:disabled`, `[data-playing]`…), with `:where()` so later rules win by order. A part with a `before`/`after` layer also gets `position: relative` at zero specificity, so the layer covers its own host (the engine's `fixed`/`absolute`/`sticky` still wins).",
+            "**Consent dialogs are out of reach.** A dialog that asks for a yes (device linking, the «Listen together» code, invites and join requests, deleting files, replacing a skin) carries `data-consenso` on its root. Every part rule carries a zero-specificity guard so it does not apply to that root, its descendants or the veil that hosts it (`FUORI_DAL_CONSENSO`); layers of a part that contains a consent element are switched off; view-transition rules are silent while one is on screen. Only the root tokens — the colours — still apply. Fonts arrive through tokens, so the engine's sheet pins them to `system-ui` inside `[data-consenso]` with an `!important` rule in `@layer consenso`, which no skin sheet can beat because the compiler never emits `@layer`. `una_skin_non_raggiunge_un_dialogo_di_consenso` checks the emitted CSS rule by rule.",
             "**Only names reach the CSS** — id, version, palette, pattern, easing, animation, font and asset names — and each passes `nel_suo_alfabeto` at the point of insertion. The header comment carries only id and version (the name used to be there and allowed a `*/` injection). The only `url()` points to `http://rymembra-skin.localhost` (`ORIGINE_RISORSE`). Keyframes are named `skin-<id>-anim-<name>`, fonts `skin-<id>-<family>`.",
             "Effects have a cost class — cheap 1, paint 3, composited 4, GPU 10 — and each surface has `SURFACE_COST_BUDGET` = 10 (exactly one `backdrop-filter`). Cost, target property, name and compilation are four exhaustive `match`es: an effect without a cost does not compile.",
           ],
@@ -126,7 +127,7 @@
       title: "Packages, installation and the skin protocol",
       src: ["core/rymembra-skin/src/package.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/src/ConfermaSkin.tsx", "core/rymembra-cloud/src/pacchetti.rs"],
       body: [
-        "A `.ryskin` is a zip with a **closed list** of entry names: `skin.json` (required), `preview.png`, and `assets/<name>.<ext>` one level deep with a constrained file name. Types are recognised by magic bytes — PNG, JPEG, WebP, WOFF2; no SVG. All limits are checked from the zip index **before** decompressing:",
+        "A `.ryskin` is a zip with a **closed list** of entry names: `skin.json` (required), `preview.png`, and `assets/<name>.<ext>` one level deep with a constrained file name that is not a Windows device name (`con`, `nul`, `com1`… — `rymembra_domain::paths::riservato_da_windows`, the same rule as skin ids). Types are recognised by magic bytes — PNG, JPEG, WebP, WOFF2; no SVG. The number of entries is read from the file **before** the zip index is opened (central-directory records counted, zip64 refused), and all other limits from the zip index **before** decompressing:",
         {
           table: {
             head: ["Limit", "Value"],
@@ -137,10 +138,12 @@
               ["`MAX_MANIFEST_BYTES`", "512 KiB"],
               ["`MAX_ENTRIES`", "64"],
               ["`MAX_COMPRESSION_RATIO`", "200"],
+              ["`MAX_IMAGE_PIXELS` (from the image header, not decoded)", "4096 × 4096"],
             ],
           },
         },
-        "Writing deflates the manifest and stores assets uncompressed. Installing (`skin_installa`, also by dropping a file on the window) validates, runs the exam (refuse above 2× budget; ask when `daConfermare`), and copies the package to `<data>/skin/<id>.ryskin`; built-in skins cannot be uninstalled.",
+        "Images (assets and the preview) must declare their size in the header — PNG `IHDR`, JPEG `SOFn`, WebP `VP8`/`VP8L`/`VP8X` — and stay within `MAX_IMAGE_PIXELS`; the error names the file and its size. The same check applies to Studio draft assets (`riconosci_risorsa`, `misura_ammessa`).",
+        "Writing deflates the manifest and stores assets uncompressed. Installing (`skin_installa`, also by dropping a file on the window) reads at most the archive limit plus one byte, validates, runs the exam (refuse above 2× budget; ask when `daConfermare`), and copies the package to `<data>/skin/<id>.ryskin`; built-in skins cannot be uninstalled or replaced. If a **different** skin with the same id is installed, nothing is written: the answer carries both (name, version, author) and the window asks (`ConfermaSostituzione`). On yes, the previous package is kept in `<data>/skin/sostituite/<id>.ryskin` (one per id, never backed up nor exported) and listed as `VoceSkin.sostituita`; reinstalling it swaps the two back («Put it back»). The Studio's «Save and use» still updates its own skin without asking.",
         "Fonts and images are served by the custom scheme `rymembra-skin`: `http://rymembra-skin.localhost/<id>/<name>` from an installed package, `…/bozza/<id>/<name>` from a Studio draft. The handler re-checks the id alphabet, the closed name list and the type from the bytes; no path is ever composed from unchecked input.",
       ],
       see: ["skin", "security"],

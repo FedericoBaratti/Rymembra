@@ -600,6 +600,39 @@ impl Cliente {
     /// «l'elenco è cambiato, usa questo slug» restava scritto in un `cause` che
     /// va nel diario.
     fn traduci(&self, err: AppError) -> AppError {
+        // Due volte, e non per scrupolo: `tradotto` accorcia la frase del
+        // servizio, e una chiave che cade sul taglio non si riconosce più per
+        // intero. Ripulire prima vuol dire tagliare un testo che non la porta.
+        self.senza_segreti(self.tradotto(self.senza_segreti(err)))
+    }
+
+    /// Un errore con il messaggio e la causa ripuliti dai segreti.
+    ///
+    /// # Perché qui, e su tutti e due i campi
+    ///
+    /// Le parole che un servizio scrive arrivano in `message`, che va a schermo,
+    /// e in `cause`, che va nel diario — e il diario l'utente lo allega alle
+    /// segnalazioni. Un proxy compatibile con OpenAI che risponde 401 con
+    /// «Invalid API key: sk-or-v1-…» ci metteva la chiave, intera o mascherata
+    /// a metà. Questo oggetto è l'unico che la conosce, quindi è il posto in cui
+    /// toglierla: ogni errore che esce dalla rete passa da [`Self::traduci`] o
+    /// da [`Self::forma_sbagliata`], e tutti e due passano di qui.
+    fn senza_segreti(&self, err: AppError) -> AppError {
+        let pulisci = |testo: &str| senza_segreti(testo, self.chiave.as_deref());
+        let messaggio = err.message().map(pulisci);
+        let causa = err.cause().map(pulisci);
+        let mut pulito = err;
+        if let Some(messaggio) = messaggio {
+            pulito = pulito.with_message(messaggio);
+        }
+        if let Some(causa) = causa {
+            pulito = pulito.with_cause(causa);
+        }
+        pulito
+    }
+
+    /// Quel che fa [`Self::traduci`], prima di togliere i segreti.
+    fn tradotto(&self, err: AppError) -> AppError {
         let causa = err.cause().unwrap_or_default().to_owned();
         let detto = messaggio_del_servizio(&causa);
         // Il ripiego sul corpo grezzo tiene in piedi i servizi che non
@@ -669,8 +702,13 @@ impl Cliente {
     /// per spiegare cosa non andava si ferma dentro un campo che nessuno legge,
     /// e nel diario resta `causa=—`: cioè il guasto perfettamente registrato e
     /// perfettamente muto.
+    ///
+    /// I segreti si tolgono **prima** di accorciare: una chiave tagliata a metà
+    /// dal tetto resterebbe una mezza chiave, e la regola che la riconosce non
+    /// la riconoscerebbe più.
     fn forma_sbagliata(&self, dettaglio: &str) -> AppError {
-        let corto = accorcia(dettaglio, DETTAGLIO_MASSIMO);
+        let pulito = senza_segreti(dettaglio, self.chiave.as_deref());
+        let corto = accorcia(&pulito, DETTAGLIO_MASSIMO);
         AppError::new(ErrorCode::IaBadResponse {
             detail: Some(corto.clone()),
         })
@@ -790,6 +828,120 @@ fn messaggio_del_servizio(causa: &str) -> Option<String> {
     }?;
     let pulita = frase.trim();
     (!pulita.is_empty()).then(|| accorcia(pulita, DETTAGLIO_MASSIMO))
+}
+
+/// Al posto di un segreto tolto da un testo.
+const SEGRETO: &str = "‹chiave›";
+
+/// Sotto questa lunghezza una «chiave» non si cerca nel testo per esteso.
+///
+/// Una chiave vera è lunga decine di caratteri. Un server locale ne accetta una
+/// qualunque, anche di una lettera, e cercare dappertutto la lettera «k»
+/// renderebbe illeggibile la frase senza proteggere niente.
+const CHIAVE_MINIMA: usize = 8;
+
+/// Un testo arrivato dal servizio, senza la chiave in uso e senza le forme in
+/// cui una chiave si riconosce: `sk-…` e `Bearer …`.
+///
+/// Le due forme valgono anche quando non sono la chiave di questo profilo: un
+/// proxy che ripete l'intestazione che ha ricevuto, o la chiave di un altro
+/// conto, è un segreto lo stesso, e nel diario non ha niente da fare.
+fn senza_segreti(testo: &str, chiave: Option<&str>) -> String {
+    let senza_la_chiave = match chiave.filter(|k| k.chars().count() >= CHIAVE_MINIMA) {
+        Some(chiave) => senza_la_coda(&testo.replace(chiave, SEGRETO), chiave),
+        None => testo.to_owned(),
+    };
+    let di_una_chiave = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let di_un_gettone = |c: char| c.is_ascii_alphanumeric() || "-._~+/=".contains(c);
+    let senza_sk = togli_dopo(&senza_la_chiave, "sk-", 8, false, di_una_chiave);
+    togli_dopo(&senza_sk, "bearer ", 1, true, di_un_gettone)
+}
+
+/// Quanti caratteri dell'inizio di una chiave, rimasti prima di un taglio,
+/// bastano per toglierli. Meno di così sono lettere qualunque.
+const CODA_MINIMA: usize = 4;
+
+/// Toglie l'inizio della chiave lasciato prima di un taglio.
+///
+/// # Perché
+///
+/// La rete accorcia il corpo di una risposta d'errore a cinquecento caratteri
+/// prima che arrivi qui (`stato_a_errore`), e una chiave che cade sul taglio
+/// arriva già a metà: «Invalid key: gsk_Q7w2Ee9Rr4…». Per intero non c'è più,
+/// e la metà rimasta è quasi tutta la chiave per chi la cerca. Un taglio è
+/// sempre in coda, ed è segnato dai puntini (`…`): lì si guarda se il testo
+/// finisce con un pezzo iniziale della chiave, e si toglie il più lungo.
+fn senza_la_coda(testo: &str, chiave: &str) -> String {
+    // Gli inizi della chiave, dal più lungo: lo scarto in byte dove finiscono.
+    let inizi: Vec<usize> = chiave
+        .char_indices()
+        .map(|(posto, _)| posto)
+        .chain(std::iter::once(chiave.len()))
+        .skip(CODA_MINIMA)
+        .collect();
+    let mut tagli: Vec<usize> = testo.match_indices('…').map(|(posto, _)| posto).collect();
+    tagli.push(testo.len());
+    let mut fuori = testo.to_owned();
+    // Da destra, così gli scarti dei tagli a sinistra restano validi.
+    for taglio in tagli.into_iter().rev() {
+        let prima = fuori.get(..taglio).unwrap_or_default();
+        let Some(lungo) = inizi.iter().rev().copied().find(|&fine| {
+            chiave
+                .get(..fine)
+                .is_some_and(|pezzo| prima.ends_with(pezzo))
+        }) else {
+            continue;
+        };
+        fuori.replace_range(taglio.saturating_sub(lungo)..taglio, SEGRETO);
+    }
+    fuori
+}
+
+/// Toglie quel che segue `prefisso` (cercato senza badare alle maiuscole),
+/// quando ne segue almeno `minimo` caratteri `ammesso`.
+///
+/// Il prefisso conta solo dove comincia una parola: «task-…» non è una chiave.
+/// `tieni` lascia il prefisso davanti al segnaposto — «Bearer ‹chiave›» dice
+/// ancora che cosa c'era.
+fn togli_dopo(
+    testo: &str,
+    prefisso: &str,
+    minimo: usize,
+    tieni: bool,
+    ammesso: impl Fn(char) -> bool,
+) -> String {
+    // Le minuscole ASCII non cambiano la lunghezza in byte di niente: gli scarti
+    // trovati qui valgono anche nel testo vero.
+    let basso = testo.to_ascii_lowercase();
+    let mut fuori = String::with_capacity(testo.len());
+    let mut copiato = 0;
+    let mut da = 0;
+    while let Some(trovato) = basso.get(da..).and_then(|resto| resto.find(prefisso)) {
+        let inizio = da.saturating_add(trovato);
+        let dopo = inizio.saturating_add(prefisso.len());
+        let a_inizio_di_parola = testo
+            .get(..inizio)
+            .and_then(|prima| prima.chars().next_back())
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let lungo: usize = testo
+            .get(dopo..)
+            .unwrap_or_default()
+            .chars()
+            .take_while(|c| ammesso(*c))
+            .map(char::len_utf8)
+            .sum();
+        da = dopo;
+        if !a_inizio_di_parola || lungo < minimo {
+            continue;
+        }
+        let fino = if tieni { dopo } else { inizio };
+        fuori.push_str(testo.get(copiato..fino).unwrap_or_default());
+        fuori.push_str(SEGRETO);
+        copiato = dopo.saturating_add(lungo);
+        da = copiato;
+    }
+    fuori.push_str(testo.get(copiato..).unwrap_or_default());
+    fuori
 }
 
 /// Se questa frase parla di un modello sbagliato invece che di altro.
@@ -1196,6 +1348,94 @@ mod prove {
     /// tutte e due il fornitore aveva scritto la frase che diceva cosa fare, e
     /// in tutte e due quella frase si fermava dentro `cause` — cioè nel diario,
     /// dove la legge chi sviluppa, e non a schermo, dove serviva.
+    #[test]
+    fn la_chiave_non_esce_in_un_errore() {
+        // Un proxy compatibile con OpenAI che ripete la chiave nella frase
+        // d'errore — succede, a volte mascherata solo in parte. La frase va a
+        // schermo e la causa nel diario, che l'utente allega a una segnalazione.
+        let chiave = "sk-or-v1-0123456789abcdef0123456789abcdef";
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::OpenRouter, "https://openrouter.ai/api/v1"),
+            Some(chiave.to_owned()),
+        )
+        .unwrap();
+        // E le forme comuni, anche quando non sono la chiave di questo profilo.
+        let altra = "sk-proj-ZZZZyyyyXXXXwwww1234";
+        let portatore = "Bearer abc.def-ghi_jkl";
+        let corpo = format!(
+            r#"{{"error":{{"message":"Invalid API key: {chiave} (Authorization: {portatore}, also {altra})","code":401}}}}"#
+        );
+        let http = |status: u16, causa: &str| {
+            AppError::new(ErrorCode::NetHttp { status, url: None }).with_cause(causa.to_owned())
+        };
+        let guasti = [
+            cliente.traduci(http(401, &corpo)),
+            cliente.traduci(http(500, &corpo)),
+            cliente.traduci(http(404, &format!("model not found for key {chiave}"))),
+            cliente.dal_documento(&json!({ "message": format!("bad key {chiave}") })),
+            cliente.forma_sbagliata(&format!("la risposta non era un flusso: {corpo}")),
+        ];
+        for err in &guasti {
+            let tutto = format!("{err:?} {:?} {:?}", err.message(), err.cause());
+            for segreto in [chiave, "0123456789abcdef", altra, "abc.def-ghi_jkl"] {
+                assert!(!tutto.contains(segreto), "«{segreto}» in {tutto}");
+            }
+        }
+        // La frase resta, senza il segreto: è quella che dice cosa fare.
+        assert!(
+            guasti[0]
+                .message()
+                .is_some_and(|m| m.contains("Invalid API key: ‹chiave›")),
+            "{:?}",
+            guasti[0]
+        );
+        // Quel che somiglia a una chiave solo a metà parola resta com'è, e una
+        // «chiave» di una lettera — un server locale ne accetta una qualunque —
+        // non si cerca dentro le parole.
+        let frase = "task-force-1234567890: API key expired";
+        assert_eq!(senza_segreti(frase, Some("k")), frase);
+    }
+
+    #[test]
+    fn una_chiave_tagliata_a_meta_non_esce_lo_stesso() {
+        // Una chiave che non comincia per `sk-` — `gsk_…`, `AIza…`, quella che
+        // accetta un server locale — e una frase lunga abbastanza da farla
+        // cadere su un taglio. Due tagli: quello del messaggio qui dentro
+        // (`DETTAGLIO_MASSIMO`) e quello della rete, che arriva già fatto.
+        let chiave = "gsk_Q7w2Ee9Rr4Tt6Yy8Uu1Ii3Oo5Pp0AaSsDdFf";
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Personalizzato, "https://proxy.esempio.it/v1"),
+            Some(chiave.to_owned()),
+        )
+        .unwrap();
+        let http = |causa: String| {
+            AppError::new(ErrorCode::NetHttp {
+                status: 401,
+                url: None,
+            })
+            .with_cause(causa)
+        };
+        // La chiave a cavallo del trecentesimo carattere della frase.
+        let prima = "x".repeat(DETTAGLIO_MASSIMO - 30);
+        let corpo = format!(r#"{{"error":{{"message":"{prima} {chiave} fine"}}}}"#);
+        // E la rete che ha già tagliato a metà della chiave: i primi
+        // cinquecento caratteri del corpo, e i puntini.
+        let lungo = format!(
+            r#"{{"error":{{"message":"{} {chiave} fine"}}}}"#,
+            "y".repeat(470)
+        );
+        let tagliato = format!("{}…", lungo.chars().take(500).collect::<String>());
+        for err in [
+            cliente.traduci(http(corpo)),
+            cliente.traduci(http(tagliato)),
+        ] {
+            let tutto = format!("{err:?} {:?} {:?}", err.message(), err.cause());
+            // Nemmeno la metà: i primi sedici caratteri di una chiave sono
+            // già quasi tutta la chiave per chi la cerca.
+            assert!(!tutto.contains(&chiave[..16]), "{tutto}");
+        }
+    }
+
     #[test]
     fn quel_che_openrouter_ha_scritto_arriva_a_schermo() {
         let cliente = Cliente::nuovo(

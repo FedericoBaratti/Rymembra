@@ -27,9 +27,11 @@
 import { useState } from "react";
 
 import { Dialogo } from "./Dialogo";
-import type { EsameSkin, MisuraSkin } from "./ipc";
+import type { EsameSkin, MisuraSkin, SostituzioneSkin, VersioneSkin } from "./ipc";
 import { t } from "./lingue";
 import { unaVolta } from "./modale";
+import { Icona } from "./parti/Icone";
+import type { Sostituita } from "./skinAttiva";
 
 export function ConfermaSkin({
   nome,
@@ -90,6 +92,9 @@ export function ConfermaSkin({
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
       onChiudi={chiudi}
+      // Un consenso: la si legge com'è anche se la skin indossata adesso è
+      // proprio quella che non si legge. Vedi `consenso` in `Dialogo.tsx`.
+      consenso
     >
       <ul className="esame-skin">
         {righe.map((riga) => (
@@ -106,5 +111,131 @@ export function ConfermaSkin({
         </button>
       </div>
     </Dialogo>
+  );
+}
+
+/** Nome, versione e autore, in una riga: quel che distingue due skin con lo stesso id. */
+function Versione({ skin }: { skin: VersioneSkin }) {
+  return (
+    <>
+      <strong>{skin.nome}</strong>
+      {skin.versione !== "" && <> · {t("skin.replace.version", { versione: skin.versione })}</>}
+      {skin.autore !== "" && <> · {t("skin.replace.by", { autore: skin.autore })}</>}
+    </>
+  );
+}
+
+/**
+ * «Sostituire “Notte”?» — un file `.ryskin` con l'id di una skin installata.
+ *
+ * # Perché si chiede
+ *
+ * Fino alla 3.2 il file prendeva il posto della skin installata in silenzio, e
+ * il backup portava la sostituzione su Drive: la skin fatta nello Studio, coi
+ * suoi caratteri e la sua miniatura, se ne andava per il file di un altro che
+ * portava lo stesso id. Il nucleo adesso non scrive niente e risponde con le
+ * due (`skin.rs::installa_file`), e qui le si mettono una sotto l'altra: due
+ * skin che si chiamano uguale si distinguono per versione e autore.
+ *
+ * Come le altre conferme di un gesto che toglie qualcosa, il primario e il
+ * fuoco stanno su «Annulla». Quel che si toglie qui però torna: la skin di
+ * prima resta da parte, e la notizia che segue (`AvvisoSostituita`) la rimette
+ * con un tasto.
+ *
+ * È un consenso (`consenso` di `Dialogo`): la skin indossata non ridisegna la
+ * domanda che decide se sostituire un'altra skin.
+ */
+export function ConfermaSostituzione({
+  domanda,
+  onSostituisci,
+  onChiudi,
+}: {
+  domanda: SostituzioneSkin;
+  onSostituisci: () => void;
+  onChiudi: () => void;
+}) {
+  // Una risposta sola, come in `ConfermaSkin`.
+  const [prima] = useState(unaVolta);
+  const chiudi = () => {
+    if (prima()) onChiudi();
+  };
+  const sostituisci = () => {
+    if (prima()) onSostituisci();
+  };
+  return (
+    <Dialogo
+      titolo={t("skin.replace.title", { nome: domanda.presente.nome })}
+      descrizione={t("skin.replace.body")}
+      ruolo="alertdialog"
+      classe="finestrella stretta glass-modal"
+      onChiudi={chiudi}
+      consenso
+    >
+      <dl className="sostituzione-skin">
+        <dt>{t("skin.replace.current")}</dt>
+        <dd>
+          <Versione skin={domanda.presente} />
+        </dd>
+        <dt>{t("skin.replace.incoming")}</dt>
+        <dd>
+          <Versione skin={domanda.nuova} />
+        </dd>
+      </dl>
+      <div className="tasti-finestrella">
+        <button
+          type="button"
+          className="bottone primario"
+          onClick={chiudi}
+          data-fuoco-iniziale
+        >
+          {t("common.cancel")}
+        </button>
+        <button type="button" className="bottone" onClick={sostituisci}>
+          {t("skin.replace.confirm")}
+        </button>
+      </div>
+    </Dialogo>
+  );
+}
+
+/**
+ * «“Notte” ha preso il posto di “La mia notte”, che resta da parte — Rimettila».
+ *
+ * La stessa forma dell'«Annulla» di una playlist eliminata in `App.tsx`, classi
+ * comprese: è lo stesso gesto, rimettere quel che un clic ha appena tolto. Non
+ * ha scadenza, perché la copia resta da parte finché un'altra sostituzione
+ * della stessa skin non ne prende il posto.
+ */
+export function AvvisoSostituita({
+  sostituita,
+  onRimetti,
+  onChiudi,
+}: {
+  sostituita: Sostituita;
+  onRimetti: () => void;
+  onChiudi: () => void;
+}) {
+  const nomi = { nuova: sostituita.nuova.nome, vecchia: sostituita.vecchia.nome };
+  return (
+    <div className="notizia toast-card">
+      <Icona nome="i-check" dim={16} />
+      <span>{t("skin.replace.done", nomi)}</span>
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        aria-label={t("skin.replace.undo.aria", nomi)}
+        onClick={onRimetti}
+      >
+        {t("skin.replace.undo")}
+      </button>
+      <button
+        type="button"
+        className="tasto icon-btn"
+        aria-label={t("common.close")}
+        onClick={onChiudi}
+      >
+        <Icona nome="i-x" dim={14} />
+      </button>
+    </div>
   );
 }

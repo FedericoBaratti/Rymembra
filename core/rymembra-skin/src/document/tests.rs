@@ -34,6 +34,24 @@ fn messaggio(json: &str) -> String {
 }
 
 #[test]
+fn un_id_che_e_un_dispositivo_di_windows_non_passa() {
+    // L'id diventa `skin/<id>.ryskin` e `skin/bozze/<id>/`: su Windows 10
+    // `con`, `nul` e compagni sono il dispositivo e non un file, con o senza
+    // estensione, e l'installazione fallisce con un errore di I/O che non dice
+    // niente. È una regola del formato, quindi vale su ogni sistema.
+    for dispositivo in ["con", "nul", "aux", "prn", "com1", "com0", "lpt9", "lpt0"] {
+        let json = minima("").replace("\"id\": \"prova\"", &format!("\"id\": \"{dispositivo}\""));
+        let detto = messaggio(&json);
+        assert!(detto.contains("Windows"), "«{dispositivo}»: {detto}");
+    }
+    // Quel che comincia come un dispositivo e non lo è, passa.
+    for nome in ["console", "nulla", "com10", "auxilio", "lpt-1"] {
+        let json = minima("").replace("\"id\": \"prova\"", &format!("\"id\": \"{nome}\""));
+        assert!(parse_skin_json(&json).is_ok(), "«{nome}»");
+    }
+}
+
+#[test]
 fn una_skin_minima_passa() {
     let skin = parse_skin_json(&minima("")).expect("valida");
     assert_eq!(skin.id, "prova");

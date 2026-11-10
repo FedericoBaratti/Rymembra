@@ -22,7 +22,14 @@
 //! - la tripla di un accento preso dalla tavolozza è la tripla di quel colore
 //!   della tavolozza. Prima era `--accent-rgb: var(--accent-rgb)`, un ciclo che
 //!   al valore calcolato non valeva niente: anche qui l'aspetto cambia perché
-//!   prima la tripla non c'era (3.2.0, z14-skin-a-01).
+//!   prima la tripla non c'era (3.2.0, z14-skin-a-01);
+//! - le regole delle parti e delle transizioni di vista portano le guardie dei
+//!   consensi, a specificità zero: fuori da un dialogo di consenso l'aspetto è
+//!   lo stesso, e qui si tolgono dal foglio di oggi prima del confronto
+//!   (`compile.rs`, «I consensi», 06-1);
+//! - una parte con un livello è il blocco contenitore del livello:
+//!   `position: relative` a specificità zero, che perde dove il motore la
+//!   posiziona già (06-2).
 
 use std::collections::BTreeSet;
 
@@ -235,8 +242,26 @@ fn cambia_classe(regola: &str, da: &str, a: &str) -> Option<String> {
     trovata.then_some(fuori)
 }
 
+/// Il foglio di oggi senza le guardie dei consensi: il testo esatto che il
+/// compilatore aggiunge (vedi il `//!`). Fuori da un consenso non cambiano
+/// niente, e l'oro è di prima che esistessero.
+fn senza_guardie(css: &str) -> String {
+    css.replace(
+        ":where(:not([data-consenso], [data-consenso] *, :has(> [data-consenso])))",
+        "",
+    )
+    .replace(":where(:not(:has([data-consenso])))", "")
+}
+
 fn ammessa(terna: &Terna, prima: &BTreeSet<Terna>) -> bool {
     if terna.valore == "none !important" && terna.proprieta == "animation" {
+        return true;
+    }
+    // Il blocco contenitore di un livello, a specificità zero (06-2).
+    if terna.proprieta == "position"
+        && terna.valore == "relative"
+        && terna.regola.starts_with(":where(")
+    {
         return true;
     }
     if terna.proprieta == "border-radius"
@@ -263,7 +288,7 @@ fn la_migrazione_non_cambia_l_aspetto() {
     for (id, sorgente, oro) in ORO {
         let skin = parse_skin_json(sorgente)
             .unwrap_or_else(|err| panic!("«{id}» non si legge più: {err}"));
-        let oggi = compile_skin(&skin).css;
+        let oggi = senza_guardie(&compile_skin(&skin).css);
 
         let (prima, ordine_prima) = terne(oro);
         let accenti: Vec<(String, String)> = prima

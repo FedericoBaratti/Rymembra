@@ -137,6 +137,8 @@ export interface VoceSkin {
   id: string;
   nome: string;
   autore: string;
+  /** La versione del manifest, o vuota se non la dice. */
+  versione: string;
   descrizione: string | null;
   /** Compilata dentro l'applicazione: non si disinstalla. */
   diSerie: boolean;
@@ -159,6 +161,42 @@ export interface VoceSkin {
    * le altre.
    */
   guasto?: string;
+  /**
+   * La skin che un'installazione ha sostituito, tenuta da parte su questo
+   * computer: `skinInstalla(percorso, true)` la rimette, e tiene da parte
+   * quella di adesso. Assente se non ce n'è.
+   */
+  sostituita?: SostituitaSkin;
+}
+
+/** Una skin come la si riconosce in una domanda. */
+export interface VersioneSkin {
+  nome: string;
+  /** Vuota se il manifest non la dice. */
+  versione: string;
+  /** Vuoto se il manifest non lo dice. */
+  autore: string;
+}
+
+/** La copia della skin sostituita, e il file da cui la si rimette. */
+export interface SostituitaSkin extends VersioneSkin {
+  percorso: string;
+}
+
+/** Due skin con lo stesso id: quella installata, e quella del file. */
+export interface SostituzioneSkin {
+  id: string;
+  presente: VersioneSkin;
+  nuova: VersioneSkin;
+}
+
+/**
+ * La risposta di `skinInstalla`: o la skin installata, o la sostituzione da
+ * chiedere — e allora il nucleo non ha scritto niente.
+ */
+export interface InstallazioneSkin {
+  installata: VoceSkin | null;
+  daSostituire: SostituzioneSkin | null;
 }
 
 /** Un costo, e il budget su cui il nucleo lo misura. */

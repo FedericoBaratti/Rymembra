@@ -79,7 +79,7 @@ import {
 } from "./collegati";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
-import { ConfermaSkin } from "./ConfermaSkin";
+import { AvvisoSostituita, ConfermaSkin, ConfermaSostituzione } from "./ConfermaSkin";
 import { ConfermaTrasloco } from "./ConfermaTrasloco";
 import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
@@ -2524,10 +2524,9 @@ export function App() {
         // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
         // e il corpo rispondono a due domande diverse.
         apriSezione("aspetto", true);
-        ipc
-          .skinInstalla(piano.percorso)
-          .then(skinFinestra.dopoInstallazione)
-          .catch(segnalaErrore);
+        // La stessa strada del selettore: una skin con lo stesso id di una
+        // installata non si sostituisce senza chiedere. Vedi `installaDaFile`.
+        void skinFinestra.installaDaFile(piano.percorso);
         return;
       }
       if (piano.tipo === "playlist") {
@@ -4009,6 +4008,20 @@ export function App() {
     </div>
   );
 
+  /*
+   * «“Notte” ha preso il posto di “La mia notte” — Rimettila»: dopo una skin
+   * sostituita da un file. Negli stessi due posti dell'«Annulla» della
+   * playlist, e per la stessa ragione. Vedi `AvvisoSostituita`.
+   */
+  const sostituitaOra = skinFinestra.sostituita;
+  const avvisoSostituita = sostituitaOra !== null && (
+    <AvvisoSostituita
+      sostituita={sostituitaOra}
+      onRimetti={() => void skinFinestra.rimettiSostituita(sostituitaOra.percorso)}
+      onChiudi={skinFinestra.chiudiSostituita}
+    />
+  );
+
   /**
    * Le notizie sopra «In riproduzione»: vedi `avvisi` in `InRiproduzione`.
    * Una costante sola per le due forme della schermata, che non sono mai
@@ -4026,6 +4039,7 @@ export function App() {
       <InvitiInsieme onErrore={segnalaErrore} />
       <AvvisiInsieme onErrore={segnalaErrore} />
       {avvisoCancellata}
+      {avvisoSostituita}
       {notizieDiFascia}
     </>
   );
@@ -4185,6 +4199,8 @@ export function App() {
                       <InvitiInsieme onErrore={segnalaErrore} />
                       {/* «Playlist eliminata — Annulla», gemello del primo. */}
                       {avvisoCancellata}
+                      {/* «Skin sostituita — Rimettila», gemello dei due. */}
+                      {avvisoSostituita}
                     </div>
                     {/* «Ascolta insieme»: l'ultimo avviso, e la sessione in
                         corso col suo «Esci», che vale tutta la sessione. Si
@@ -4399,6 +4415,16 @@ export function App() {
               setDaIndossare(null);
               void scegliSkin(quale.id);
             }}
+          />
+        )}
+
+        {skinFinestra.daSostituire !== null && (
+          <ConfermaSostituzione
+            // Un altro file, un'altra domanda.
+            key={skinFinestra.daSostituire.percorso}
+            domanda={skinFinestra.daSostituire.domanda}
+            onChiudi={skinFinestra.annullaSostituzione}
+            onSostituisci={() => void skinFinestra.confermaSostituzione()}
           />
         )}
 

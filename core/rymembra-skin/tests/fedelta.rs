@@ -620,9 +620,12 @@ fn le_transizioni_di_rotta_sono_quelle_scritte_a_mano() {
     // funzione invece della durata. Ora la scala passa di qui, dov'è la causa.
     // Nel formato 2 la rotta si anima sulla presenza della pagina e non
     // sull'istantanea della radice: `<ViewTransition>` mette la classe.
+    // La radice porta la guardia dei consensi: finché un dialogo di consenso è
+    // a schermo, la transizione della skin tace (`compile.rs`, «I consensi»).
     for (verso, innesco) in [("old", "exit"), ("new", "enter")] {
         let regola = format!(
-            ":root[data-skin='plain']::view-transition-{verso}(.vt-page-content-{innesco})"
+            ":root[data-skin='plain']:where(:not(:has([data-consenso])))\
+             ::view-transition-{verso}(.vt-page-content-{innesco})"
         );
         let scritto = valore(&css, &regola, "animation").unwrap_or_else(|| panic!("{regola}"));
         assert!(
