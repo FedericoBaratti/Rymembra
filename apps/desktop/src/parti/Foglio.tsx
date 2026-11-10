@@ -10,7 +10,7 @@
  *
  * # Come si chiude
  *
- * In quattro modi, e tutti e quattro scivolano giù invece di sparire:
+ * In cinque modi, e tutti e cinque scivolano giù invece di sparire:
  *
  * - toccando il velo sopra;
  * - con Indietro (`useSuIndietro`): la scala di `App` chiude prima lo schermo
@@ -19,7 +19,9 @@
  * - scegliendo una voce: la voce fa il suo mestiere subito, e il foglio scende;
  * - trascinandolo giù dalla maniglia o dalla testata. Solo da lì, e non dalle
  *   voci: il corpo del foglio scorre quando le voci sono tante, e un dito che
- *   scende sulle voci sta scorrendo, non chiudendo.
+ *   scende sulle voci sta scorrendo, non chiudendo;
+ * - quando si apre una finestrella: il foglio le starebbe sopra, e lei ha una
+ *   domanda da fare (`quandoSiApreUnModale` in `modale.ts`).
  *
  * Lo smontaggio aspetta la fine della discesa (`dopoLaTransizione`), che col
  * movimento spento è subito.
@@ -39,6 +41,7 @@ import { useDito } from "../dito";
 import { dopoLaTransizione } from "../foglio";
 import { elastico, esitoTrascinamento } from "../gesti";
 import { useSuIndietro } from "../indietro";
+import { quandoSiApreUnModale } from "../modale";
 import { vibra } from "../vibra";
 
 /** Chiude il foglio dall'interno, scivolando: lo usano le voci. */
@@ -77,6 +80,12 @@ export function Foglio({
 
   const chiudi = useCallback(() => setChiudendo(true), []);
   useSuIndietro(chiudi);
+
+  // Una finestrella che si apre da sola mentre il foglio è su — una richiesta
+  // di collegamento, un link da un altro dispositivo — starebbe sotto di lui,
+  // e Indietro la chiuderebbe senza che si sia vista: il foglio scende e la
+  // lascia vedere. Vedi `quandoSiApreUnModale` in `modale.ts`.
+  useEffect(() => quandoSiApreUnModale(chiudi), [chiudi]);
 
   // La discesa è cominciata: si smonta quando è finita.
   useEffect(() => {

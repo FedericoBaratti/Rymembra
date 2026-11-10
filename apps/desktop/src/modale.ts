@@ -30,6 +30,9 @@
  */
 let aperti = 0;
 
+/** Chi vuole sapere quando un modale si apre: vedi `quandoSiApreUnModale`. */
+const allApertura = new Set<() => void>();
+
 /**
  * Dichiara un modale aperto, e restituisce la funzione che lo chiude.
  *
@@ -38,6 +41,8 @@ let aperti = 0;
  */
 export function apriModale(): () => void {
   aperti += 1;
+  // Una copia: chi sente l'apertura può smettere di seguire proprio adesso.
+  for (const ascolta of [...allApertura]) ascolta();
   let chiuso = false;
   return () => {
     if (chiuso) return;
@@ -49,6 +54,32 @@ export function apriModale(): () => void {
 /** C'è almeno un modale aperto? */
 export function modaleAperto(): boolean {
   return aperti > 0;
+}
+
+/**
+ * Chiama `ascolta` a ogni modale che si apre, finché non si chiama la
+ * funzione restituita.
+ *
+ * # Per il menù del telefono
+ *
+ * Sul telefono il menù è un foglio (`parti/Foglio.tsx`) che sta un gradino
+ * sopra le finestrelle (`--strato-menu` sopra `--strato-velo`), e tutti e due
+ * stanno in fondo allo schermo. Una finestrella che arriva da sola con un menù
+ * aperto — «X vuole collegarsi», un link da un altro dispositivo — si
+ * disegnava sotto il menù e lo rendeva inerte: il menù si vedeva ma non
+ * rispondeva, e l'unico gesto vivo era Indietro, che chiude prima la
+ * finestrella in cima (`tastiera.ts`). Cioè la rifiutava, senza che fosse
+ * mai stata vista. Il menù è la cosa di passaggio: quando si apre una
+ * finestrella scende lui, e la lascia vedere.
+ *
+ * Solo le aperture, e non le chiusure: a chi segue interessa che qualcosa si
+ * sia messo davanti, non quanti ce ne siano.
+ */
+export function quandoSiApreUnModale(ascolta: () => void): () => void {
+  allApertura.add(ascolta);
+  return () => {
+    allApertura.delete(ascolta);
+  };
 }
 
 // ── le scorciatoie sotto un modale ─────────────────────────────────────────
