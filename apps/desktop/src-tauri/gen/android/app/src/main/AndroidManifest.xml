@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- La rete: i cataloghi, Drive, lo scrobbling, i modelli di linguaggio. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- «Ascolta insieme»: l'indirizzo sulla Wi-Fi, e i pacchetti mandati a tutta
+         la rete con cui un Rymembra trova gli altri (vedi `Rete.kt`). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Il lucchetto del Wi-Fi (`Rete.wifi`): durante una sessione «Ascolta
+         insieme» e mentre arriva un brano da un altro dispositivo. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Da Android 17 la rete di casa è chiusa alle app che non hanno questo
+         permesso («Dispositivi nelle vicinanze»): senza, il telefono non trova
+         nessuno e nessuno trova lui. Si chiede quando si accende «Ascolta
+         insieme» (vedi `Permessi.kt`). Prima di Android 17 non esiste, e la
+         riga non chiede niente. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+    <!-- La musica a schermo spento: il servizio in primo piano con la notifica
+         del lettore (vedi `ServizioMusica.kt`). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- «Scarica qui» dei dispositivi collegati, che finisce anche a schermo
+         spento (vedi `ScaricoInCorso.kt`). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- La libreria. Il permesso «musica e audio» basta ai brani e alle
+         copertine dentro i tag; «Accesso a tutti i file» serve alle copertine,
+         ai `.lrc` e ai `.cue` accanto, ai tag da riscrivere e ai file da
+         eliminare (vedi `Permessi.kt`). Niente «foto e video»: per un lettore
+         sarebbe una domanda sospetta, e quel che darebbe lo dà già l'accesso a
+         tutti i file. Rymembra si distribuisce fuori dal Play Store, che quel
+         permesso a un lettore non lo concederebbe. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!-- Gli aggiornamenti: l'APK nuovo, scaricato dalle release di GitHub, si
+         consegna all'installatore di Android, che chiede conferma (vedi
+         `Installatore.kt`). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- «Collega un dispositivo»: la fotocamera legge il QR mostrato dal PC
+         (vedi `ScansioneQr.kt`). Si chiede al primo «Scansiona»; senza, resta
+         il link da incollare. Non è obbligatoria: un telefono senza fotocamera
+         installa Rymembra lo stesso. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+
+    <!-- Niente backup di Android: la libreria si salva con il backup di
+         Rymembra, che sa cosa porta e dove (PRIVACY.md), e i segreti cifrati
+         con il Keystore su un altro telefono non si aprirebbero comunque. -->
+    <application
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.rymembra_desktop"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/estrazione"
+        android:requestLegacyExternalStorage="true"
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
+        tools:targetApi="31">
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:label="@string/main_activity_title"
+            android:name=".MainActivity"
+            android:exported="true">
+            <!-- Solo il lanciatore del telefono. Quello di Android TV
+                 (`LEANBACK_LAUNCHER`, dal modello di Tauri) prometteva un'app
+                 da televisore che non c'è: l'interfaccia è fatta per le dita,
+                 e col telecomando non si raggiunge quasi niente. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- L'assistente, fuori dall'auto: «metti i Queen su Rymembra». La
+                 ricerca la fa Rust, come quella che arriva dall'auto (vedi
+                 `MainActivity.cercaDaIntento`). -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- Il QR di «Collega un dispositivo», letto con la fotocamera del
+                 sistema: il link apre Rymembra, che chiede se collegarsi (vedi
+                 `MainActivity.collegaDaIntento`). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="rymembra" android:host="collega" />
+            </intent-filter>
+        </activity>
+        <!-- Lo scanner del QR di «Collega un dispositivo»: la fotocamera solo
+             qui, e solo finché è aperto (vedi `ScansioneQr`). -->
+        <activity
+            android:name=".ScansioneQr"
+            android:exported="false"
+            android:theme="@style/Theme.rymembra_desktop"
+            android:screenOrientation="portrait"
+            tools:ignore="LockedOrientationActivity" />
+
+        <service
+            android:name=".ServizioMusica"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true">
+            <!-- La prima è quella di Media3; la seconda è come Android Auto, e
+                 la scheda di ripresa del sistema, trovano un lettore da
+                 sfogliare (vedi `ServizioMusica` e `Biblioteca`). -->
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <!-- Mentre si aspetta nel browser il consenso di un servizio da
+             collegare: tiene vivo il processo che ascolta il ritorno (vedi
+             `ConsensoInAttesa`). Al più tre minuti, e nessun permesso in più. -->
+        <service
+            android:name=".ConsensoInAttesa"
+            android:foregroundServiceType="shortService"
+            android:exported="false" />
+
+        <!-- Mentre «Scarica qui» copia i brani di un altro dispositivo: senza,
+             il processo in secondo piano si congela a metà album (vedi
+             `ScaricoInCorso`). Si ferma da sé alla fine della coda. -->
+        <service
+            android:name=".ScaricoInCorso"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!-- Le copertine per l'auto e la schermata di blocco, che stanno in un
+             altro processo e un file privato non lo aprono. Esportato e senza
+             permesso perché a chiederle è il sistema; serve solo i file della
+             cartella delle copertine, in sola lettura (vedi `Copertine`). -->
+        <provider
+            android:name=".Copertine"
+            android:authorities="${applicationId}.copertine"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+        <!-- Android Auto: Rymembra è un lettore musicale. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <provider
+          android:name="androidx.core.content.FileProvider"
+          android:authorities="${applicationId}.fileprovider"
+          android:exported="false"
+          android:grantUriPermissions="true">
+          <meta-data
+            android:name="android.support.FILE_PROVIDER_PATHS"
+            android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

@@ -34,11 +34,21 @@
  * messi. Senza `npm ci` fatto prima, i pacchetti si elencano lo stesso e
  * finiscono fra quelli «senza testo»: è il segnale di andarlo a fare.
  *
- * Uso:
- *   node strumenti/licenze.js [piattaforma]
+ * # Le piattaforme
  *
- * La piattaforma vale `x86_64-pc-windows-msvc` se non si dice altro: è il solo
- * bersaglio che l'installer produce oggi.
+ * Di serie l'unione dei grafi dei due bersagli che escono: l'installer per
+ * Windows (`x86_64-pc-windows-msvc`) e l'APK per i telefoni
+ * (`aarch64-linux-android`, che ha le stesse dipendenze dell'emulatore
+ * `x86_64`). Un file per due binari, perché i due elenchi sono quasi uguali e
+ * uno che ne attribuisce uno solo lascia scoperto l'altro.
+ *
+ * Le librerie Kotlin e Java che Gradle mette nell'APK — AndroidX, CameraX,
+ * Media3, ZXing — e le icone delle schede di Android Auto non passano da
+ * `cargo` né da `npm`: le dice un paragrafo scritto qui sotto, da aggiornare
+ * quando cambia `gen/android/app/build.gradle.kts`.
+ *
+ * Uso:
+ *   node strumenti/licenze.js [piattaforma…]
  */
 const { execFileSync } = require("child_process");
 const crypto = require("crypto");
@@ -48,7 +58,10 @@ const path = require("path");
 // Come in `versione.js`: i percorsi valgono rispetto a questo file.
 process.chdir(path.dirname(__dirname));
 
-const PIATTAFORMA = process.argv[2] || "x86_64-pc-windows-msvc";
+const PIATTAFORME =
+  process.argv.length > 2
+    ? process.argv.slice(2)
+    : ["x86_64-pc-windows-msvc", "aarch64-linux-android"];
 const USCITA = "THIRD-PARTY-NOTICES.md";
 
 /** I nomi con cui un crate chiama il proprio testo di licenza. */
@@ -66,7 +79,8 @@ const MASSIMO = 32 * 1024;
 /** Dove sta l'interfaccia, e il suo lockfile. */
 const INTERFACCIA = path.join("apps", "desktop");
 
-function metadata() {
+/** `cargo metadata` per una piattaforma. */
+function metadataPer(piattaforma) {
   const grezzo = execFileSync(
     "cargo",
     [
@@ -74,12 +88,24 @@ function metadata() {
       "--format-version",
       "1",
       "--filter-platform",
-      PIATTAFORMA,
+      piattaforma,
       "--all-features",
     ],
     { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
   );
   return JSON.parse(grezzo);
+}
+
+/** L'unione dei pacchetti di tutte le piattaforme, ciascuno una volta. */
+function metadata() {
+  const pacchetti = new Map();
+  const membri = new Set();
+  for (const piattaforma of PIATTAFORME) {
+    const m = metadataPer(piattaforma);
+    for (const id of m.workspace_members) membri.add(id);
+    for (const p of m.packages) pacchetti.set(p.id, p);
+  }
+  return { workspace_members: [...membri], packages: [...pacchetti.values()] };
 }
 
 /** I testi di licenza che un crate porta con sé, dal suo `Cargo.toml`. */
@@ -200,7 +226,7 @@ function main() {
   righe.push("```");
   righe.push("");
   righe.push(
-    `The Rust list covers the whole dependency graph for \`${PIATTAFORMA}\`,`,
+    `The Rust list covers the whole dependency graph for ${PIATTAFORME.map((p) => `\`${p}\``).join(" and ")},`,
     "including what is needed only to build or to test. It is more than what",
     "ends up in the binary, and that is deliberate: over-attributing costs",
     "nobody anything, under-attributing is the only thing you pay for.",
@@ -260,6 +286,30 @@ function main() {
     "between 2017 and 2023, and the Via LA licensing program bills on the",
     "**sale** of encoders and decoders: Rymembra is free and sells nothing. There",
     "is therefore nothing to pay and nothing to ask for.",
+  );
+  righe.push("");
+  righe.push("## The Android app");
+  righe.push("");
+  righe.push(
+    "The APK also carries Kotlin and Java libraries that Gradle adds and that",
+    "this list does not read: **AndroidX** (`webkit`, `appcompat`,",
+    "`activity-ktx`, `lifecycle-process`), **CameraX** (`camera-camera2`,",
+    "`camera-lifecycle`, `camera-view`: the QR scanner that links a device),",
+    "**Media3** (`media3-session` and `media3-common`: the player service, its",
+    "notification and Android Auto), **ZXing** (`core`: reading the QR code),",
+    "**Material Components for Android** and the **Kotlin standard library**.",
+    "All of them are under **Apache-2.0**, whose text is below; their sources",
+    "are at <https://android.googlesource.com/platform/frameworks/support>,",
+    "<https://github.com/androidx/media>, <https://github.com/zxing/zxing>,",
+    "<https://github.com/material-components/material-components-android> and",
+    "<https://github.com/JetBrains/kotlin>.",
+  );
+  righe.push("");
+  righe.push(
+    "The six icons of the Android Auto tabs (`res/drawable/auto_*.xml`) are",
+    "drawn from Google's **Material Icons** — `history`, `queue_music`,",
+    "`album`, `person`, `favorite`, `play_circle` — under **Apache-2.0**:",
+    "<https://github.com/google/material-design-icons>.",
   );
   righe.push("");
   righe.push("---");

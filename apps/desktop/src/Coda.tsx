@@ -26,7 +26,7 @@ import type { KeyboardEvent } from "react";
 
 import { durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import { useFuoco } from "./fuoco";
-import { gestoPermesso, proprietarioDellaRiga, righeDaChiedere } from "./insieme";
+import { gestoPermesso, idDiLibreria, proprietarioDellaRiga, righeDaChiedere } from "./insieme";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
 import { useProprietari } from "./parti/Insieme";
@@ -36,6 +36,7 @@ import { useVirtuale } from "./virtuale";
 import { conIndice, statoSuono } from "./segnali";
 import { useDati } from "./dati";
 import { Presenza } from "./presenza";
+import { MOBILE } from "./piattaforma";
 
 /**
  * Le righe della coda, per identificativo.
@@ -156,12 +157,20 @@ export function RigheCoda({
   righe,
   onErrore,
   compatta,
+  onMenu,
 }: {
   stato: StatoRiproduzione;
   righe: Map<number, Brano>;
   onErrore: (e: unknown) => void;
   /** Nella terza colonna: niente durata, la larghezza non c'è. */
   compatta?: boolean | undefined;
+  /**
+   * Sul telefono: il menù della riga, dal ⋮ che prende il posto della × e dal
+   * tocco lungo. «Togli dalla coda» sta lì dentro. Solo sulle righe della
+   * libreria: una voce di «Ascolta insieme» o un brano sparito non hanno un
+   * menù, e tengono la loro ×.
+   */
+  onMenu?: ((e: React.MouseEvent, indice: number, brano: Brano) => void) | undefined;
 }) {
   const [trascinato, setTrascinato] = useState<number | null>(null);
   /**
@@ -380,6 +389,23 @@ export function RigheCoda({
             onDoubleClick={() => {
               if (codaLibera) comanda(ipc.codaVai(indice));
             }}
+            // Sul telefono un tocco sulla riga, come il doppio clic qui sopra:
+            // il tasto «salta» c'è, ma è piccolo, e la riga intera è il
+            // bersaglio che un dito cerca.
+            onClick={
+              MOBILE
+                ? (e) => {
+                    if (codaLibera && !(e.target as Element).closest("button")) {
+                      comanda(ipc.codaVai(indice));
+                    }
+                  }
+                : undefined
+            }
+            onContextMenu={
+              MOBILE && onMenu !== undefined && brano !== undefined && idDiLibreria(id)
+                ? (e) => onMenu(e, indice, brano)
+                : undefined
+            }
           >
             <span className="presa" aria-hidden="true">
               <Icona nome={inAscolto ? "i-play" : "i-grip"} dim={13} />
@@ -423,27 +449,39 @@ export function RigheCoda({
                 {brano ? durata(brano.durationMs) : "—"}
               </span>
             )}
-            <button
-              type="button"
-              className="tasto icon-btn"
-              /* Col titolo dentro, come fa la × dell'elenco. «Togli dalla coda»
-                 era la stessa frase su tutte le righe: chi guarda sa quale × ha
-                 sotto il dito, chi ascolta sentiva cinquanta volte la stessa
-                 cosa senza sapere quale brano stava per perdere. Il brano non più
-                 in libreria si nomina come si nomina nella riga — non c'è altro
-                 nome da dargli. */
-              aria-label={t("queue.remove.aria", {
-                titolo: brano ? brano.title : t("queue.goneTrack"),
-              })}
-              /* Il `title` resta la frase corta: al passaggio del mouse il titolo
-                 del brano è già scritto accanto, a due centimetri dal puntatore. */
-              title={codaLibera ? t("queue.remove") : t("together.gestures.off.title")}
-              tabIndex={-1}
-              disabled={!codaLibera}
-              onClick={() => comanda(ipc.codaTogli(indice))}
-            >
-              <Icona nome="i-x" dim={14} />
-            </button>
+            {MOBILE && onMenu !== undefined && brano !== undefined && idDiLibreria(id) ? (
+              <button
+                type="button"
+                className="tasto-altro"
+                aria-label={t("row.more.aria", { titolo: brano.title })}
+                tabIndex={-1}
+                onClick={(e) => onMenu(e, indice, brano)}
+              >
+                <Icona nome="i-dots-v" dim={20} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tasto icon-btn"
+                /* Col titolo dentro, come fa la × dell'elenco. «Togli dalla coda»
+                   era la stessa frase su tutte le righe: chi guarda sa quale × ha
+                   sotto il dito, chi ascolta sentiva cinquanta volte la stessa
+                   cosa senza sapere quale brano stava per perdere. Il brano non più
+                   in libreria si nomina come si nomina nella riga — non c'è altro
+                   nome da dargli. */
+                aria-label={t("queue.remove.aria", {
+                  titolo: brano ? brano.title : t("queue.goneTrack"),
+                })}
+                /* Il `title` resta la frase corta: al passaggio del mouse il titolo
+                   del brano è già scritto accanto, a due centimetri dal puntatore. */
+                title={codaLibera ? t("queue.remove") : t("together.gestures.off.title")}
+                tabIndex={-1}
+                disabled={!codaLibera}
+                onClick={() => comanda(ipc.codaTogli(indice))}
+              >
+                <Icona nome="i-x" dim={14} />
+              </button>
+            )}
           </li>
         );
       })}

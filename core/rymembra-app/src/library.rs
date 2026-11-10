@@ -134,6 +134,7 @@ use crate::scadenza::Mancato;
 
 mod aggregati;
 mod camminata;
+pub mod condivisa;
 mod immagini;
 mod interrogazioni;
 mod righe;

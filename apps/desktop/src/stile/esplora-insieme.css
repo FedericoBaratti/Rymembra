@@ -554,3 +554,345 @@
   contain: inline-size;
   align-self: stretch;
 }
+
+/* ── il collegamento via internet ────────────────────────────────────────── */
+
+/* Il QR della scheda «Dispositivi»: bianco e nero sempre, anche col tema
+   scuro — un QR in negativo non lo legge metà dei telefoni — e con il suo
+   margine bianco dentro il disegno (`viewBox` in `Dispositivi.tsx`). Quadrato,
+   e mai più piccolo di quanto una fotocamera inquadri da mezzo metro. */
+.qr-collega {
+  display: block;
+  width: min(240px, 100%);
+  aspect-ratio: 1;
+  border-radius: 10px;
+}
+.collega-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--spazio-2);
+}
+/* Sotto il nome del dispositivo, un gradino più in basso: telefono o
+   computer, e se risponde. */
+.stato-dispositivo {
+  font-size: 11.5px;
+  color: var(--color-text-3);
+}
+.riga-insieme[data-online] .stato-dispositivo {
+  color: var(--accent);
+}
+
+/* «Sfoglia <dispositivo>»: la pagina e la barra con le schede e la casella.
+   La casella cerca nella libreria dell'altro, e sta qui e non
+   nell'intestazione per la stessa ragione di quella di Esplora. Il resto della
+   pagina si veste con le parti della libreria — i ripiani della Home, le
+   schede, il mosaico degli artisti, la testata dei dischi — e qui sta solo
+   quel che è suo. */
+.sfoglia {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+}
+.barra-sfoglia {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.barra-sfoglia .campo {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.sfoglia .azioni {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+
+/* Una scheda o un livello aperto: le sue parti una sotto l'altra, con lo
+   stesso passo della pagina. */
+.piano-sfoglia {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+}
+
+/* La testata di un ripiano di «In evidenza»: il titolo della Home, e accanto
+   «Mostra tutti», piccolo, verso l'elenco intero. */
+.testa-ripiano {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spazio-2);
+}
+.tutti-ripiano {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.tutti-ripiano:hover {
+  text-decoration: underline;
+}
+
+/* Le righe dei brani dell'altro: la copertina (dentro un disco il numero),
+   titolo e artista impilati, la durata, il ⋮. Più semplici di quelle della
+   libreria, che hanno stelle, cuore e colonne: qui non si vota niente, e il
+   cuore del proprietario è un segno, non un tasto. */
+.righe-lontane {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.riga-lontana {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  min-height: 52px;
+  padding: 4px var(--spazio-2);
+  border-radius: var(--raggio-minuto);
+}
+.riga-lontana:hover {
+  background: var(--color-surface-1);
+}
+/* La copertina è il tasto che suona: al sorvolo il ▶ ci sta sopra, su un velo
+   scuro che lo fa leggere su qualunque copertina. Dentro un disco il numero
+   lascia il posto al ▶, come l'indice della libreria. */
+.avvia-lontana {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.avvia-lontana .miniatura {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--color-surface-2);
+  object-fit: cover;
+}
+.numero-lontana {
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.via-lontana {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.45);
+  color: #fff;
+  opacity: 0;
+  /* Un velo: il clic è della copertina, che è il tasto. */
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.avvia-lontana[data-numero] .via-lontana {
+  background: transparent;
+  color: var(--accent);
+}
+.riga-lontana:hover .via-lontana,
+.avvia-lontana:focus-visible .via-lontana {
+  opacity: 1;
+}
+.riga-lontana:hover .avvia-lontana[data-numero] .numero-lontana,
+.avvia-lontana[data-numero]:focus-visible .numero-lontana {
+  opacity: 0;
+}
+.testi-lontana {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.nome-lontana,
+.sotto-lontana {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nome-lontana {
+  color: var(--color-text-1);
+  font-size: 13.5px;
+  font-weight: 550;
+}
+.sotto-lontana {
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+.cuore-lontana {
+  display: inline-flex;
+  flex: none;
+  color: var(--accent);
+}
+.durata-lontana {
+  flex: none;
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.altro-lontana {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.altro-lontana:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+}
+
+/* La testata di un disco o di un artista aperto, sul computer.
+
+   Lì un disco della libreria ha la sua pagina, con l'intestazione accanto alla
+   copertina (`Intestazione`), e `TestataDettaglio` è del solo telefono
+   (`telefono-pagine.css`). In «Sfoglia» il disco si apre dentro la pagina:
+   la testata è la stessa del telefono, messa di fianco — la copertina a
+   sinistra, il resto accanto, e dietro la tinta sfocata della copertina. La
+   copertina sta fuori dal flusso: alta più del testo, in una griglia
+   allargherebbe le righe del titolo e dei tasti. */
+:root[data-forma="computer"] .sfoglia .testata-dettaglio {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--spazio-1);
+  min-height: calc(160px + 2 * var(--spazio-4));
+  padding: var(--spazio-4) var(--spazio-4) var(--spazio-4) calc(160px + 2 * var(--spazio-4));
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-1);
+}
+:root[data-forma="computer"] .sfoglia .sfondo-dettaglio {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* Sopra la tinta per ordine, come sul telefono: posizionati e dopo di lei. */
+:root[data-forma="computer"] .sfoglia .testata-dettaglio > :not(.sfondo-dettaglio, .arte-dettaglio) {
+  position: relative;
+}
+:root[data-forma="computer"] .sfoglia .tinta-dettaglio {
+  position: absolute;
+  inset: -20%;
+  width: 140%;
+  height: 140%;
+  object-fit: cover;
+  filter: blur(48px) saturate(1.3);
+  opacity: 0.35;
+}
+:root[data-forma="computer"] .sfoglia .arte-dettaglio {
+  position: absolute;
+  top: 50%;
+  left: var(--spazio-4);
+  width: 160px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-3);
+  transform: translateY(-50%);
+}
+:root[data-forma="computer"] .sfoglia .testata-dettaglio[data-rotonda] .arte-dettaglio {
+  border-radius: 50%;
+}
+:root[data-forma="computer"] .sfoglia .copertina-dettaglio,
+:root[data-forma="computer"] .sfoglia .tassello-dettaglio {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  background: var(--color-surface-2);
+  object-fit: cover;
+}
+:root[data-forma="computer"] .sfoglia .mosaico-dettaglio {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  height: 100%;
+}
+:root[data-forma="computer"] .sfoglia .occhiello-dettaglio {
+  color: var(--color-text-2);
+  font: 600 10px/1.3 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+:root[data-forma="computer"] .sfoglia .titolo-dettaglio {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+:root[data-forma="computer"] .sfoglia .sotto-dettaglio {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+:root[data-forma="computer"] .sfoglia .tasti-dettaglio {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-2);
+}
+:root[data-forma="computer"] .sfoglia .riproduci-dettaglio,
+:root[data-forma="computer"] .sfoglia .casuale-dettaglio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 99px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+:root[data-forma="computer"] .sfoglia .riproduci-dettaglio {
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+:root[data-forma="computer"] .sfoglia .casuale-dettaglio {
+  border-color: var(--hairline);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+}
+:root[data-forma="computer"] .sfoglia .riproduci-dettaglio:disabled,
+:root[data-forma="computer"] .sfoglia .casuale-dettaglio:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

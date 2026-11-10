@@ -129,6 +129,8 @@ pub struct VicinoIpc {
     pub pari: Option<i64>,
     /// È bloccato: si vede, ma non ci si collega.
     pub bloccato: bool,
+    /// Si raggiunge dal collegamento via internet, non dalla rete di casa.
+    pub via_internet: bool,
 }
 
 /// Un PC associato.

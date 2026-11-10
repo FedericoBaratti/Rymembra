@@ -1,10 +1,10 @@
 /**
- * Le icone: sessantadue simboli disegnati apposta, montati una volta sola.
+ * Le icone: settantaquattro simboli disegnati apposta, montati una volta sola.
  *
  * # Perché uno sprite e non una libreria
  *
  * L'applicazione non ha dipendenze di componenti, di icone o di animazione, e
- * questo file è il motivo per cui può continuare a non averne: sessantadue
+ * questo file è il motivo per cui può continuare a non averne: settantaquattro
  * `<symbol>` in un `<defs>` nascosto costano pochi chilobyte e non portano
  * dietro un albero di pacchetti da aggiornare. La CSP è chiusa
  * (`default-src 'self'`), quindi un font di icone remoto non sarebbe nemmeno
@@ -110,7 +110,34 @@ export type NomeIcona =
   // persone, che qui dentro vorrebbero dire «artista»: quel che conta di una
   // sessione è che lo stesso suono arriva da più parti, e le onde dicono
   // proprio quello.
-  | "i-insieme";
+  | "i-insieme"
+  // Quelli del telefono. I tre puntini in verticale sono il «di più» di una
+  // riga su Android, dove quelli in orizzontale (`i-dots`) dicono «altro» in
+  // una barra; la libreria è una fila di dischi e un disco che pende, perché
+  // `i-album` è già il disco solo; la selezione è un cerchio, vuoto o con il
+  // segno, al posto della copertina della riga scelta.
+  | "i-dots-v"
+  | "i-libreria"
+  | "i-select"
+  | "i-select-o"
+  | "i-trash"
+  // Le due voci dei menu che non avevano un glifo: la radio (un apparecchio
+  // con l'antenna, non le onde di «Ascolta insieme») e «Riproduci dopo» (la
+  // coda col triangolo in cima: entra davanti agli altri).
+  | "i-radio"
+  | "i-dopo"
+  // I dispositivi collegati via internet: il telefono e il computer, per la
+  // barra laterale e la pagina «Sfoglia». Due sagome e non un'icona sola,
+  // perché quel che si cerca nell'elenco è proprio «il telefono» o «il PC».
+  | "i-telefono"
+  | "i-computer"
+  // «Collega un dispositivo»: il QR che si inquadra, non la freccia che gira
+  // di `i-scan`, che dice «rileggi». E le sezioni delle Impostazioni che
+  // avevano tutte la nuvola del backup: la sincronia (due frecce che si
+  // rincorrono) e i dispositivi (un computer e un telefono accanto).
+  | "i-qr"
+  | "i-sync"
+  | "i-dispositivi";
 
 /** Le proprietà comuni ai simboli col tratto. */
 const TRATTO = {
@@ -238,6 +265,62 @@ export function Simboli() {
           <circle cx="5" cy="10" r="1.35" />
           <circle cx="10" cy="10" r="1.35" />
           <circle cx="15" cy="10" r="1.35" />
+        </symbol>
+        <symbol id="i-dots-v" viewBox="0 0 20 20" {...PIENO}>
+          <circle cx="10" cy="5" r="1.45" />
+          <circle cx="10" cy="10" r="1.45" />
+          <circle cx="10" cy="15" r="1.45" />
+        </symbol>
+        <symbol id="i-libreria" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M4.4 4.2v11.6M8 4.2v11.6" />
+          <path d="m11.4 4.9 3.9 10.9" />
+        </symbol>
+        <symbol id="i-select" viewBox="0 0 20 20" {...TRATTO}>
+          <circle cx="10" cy="10" r="7" fill="currentColor" stroke="none" />
+          <path d="m6.8 10.2 2.2 2.2 4.3-4.6" stroke="var(--color-surface-0)" strokeWidth={1.9} />
+        </symbol>
+        <symbol id="i-select-o" viewBox="0 0 20 20" {...TRATTO}>
+          <circle cx="10" cy="10" r="6.6" />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M4.2 6h11.6M8.2 6V4.4h3.6V6" />
+          <path d="m5.6 6 .8 9.6h7.2l.8-9.6" />
+          <path d="M8.6 9v4M11.4 9v4" />
+        </symbol>
+        <symbol id="i-radio" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="3" y="7.4" width="14" height="9" rx="2" />
+          <circle cx="7.6" cy="11.9" r="1.9" />
+          <path d="M11.6 10.6h2.8M11.6 13.2h2.8M6 7.4l7.4-3.8" />
+        </symbol>
+        <symbol id="i-dopo" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="m4 3.8 4 2.4-4 2.4Z" />
+          <path d="M11 6.2h5M4 11.2h12M4 15.2h8" />
+        </symbol>
+        <symbol id="i-telefono" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="5.6" y="2.8" width="8.8" height="14.4" rx="1.8" />
+          <path d="M8.8 14.6h2.4" />
+        </symbol>
+        <symbol id="i-computer" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="3" y="4" width="14" height="9.4" rx="1.3" />
+          <path d="M7.4 16.4h5.2M10 13.4v3" />
+        </symbol>
+        <symbol id="i-qr" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="3.4" y="3.4" width="5" height="5" rx="1" />
+          <rect x="11.6" y="3.4" width="5" height="5" rx="1" />
+          <rect x="3.4" y="11.6" width="5" height="5" rx="1" />
+          <path d="M11.6 11.6h2.2v2.2M16.6 11.6v.01M11.6 16.6h.01M13.8 16.6h2.8v-2.8" />
+        </symbol>
+        <symbol id="i-sync" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M15.4 8.4A5.7 5.7 0 0 0 5.2 6.4" />
+          <path d="M4.8 3.6v3.2H8" />
+          <path d="M4.6 11.6a5.7 5.7 0 0 0 10.2 2" />
+          <path d="M15.2 16.4v-3.2H12" />
+        </symbol>
+        <symbol id="i-dispositivi" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="2.4" y="4.2" width="9.8" height="7.4" rx="1.2" />
+          <path d="M5.4 15h3.8M7.3 11.6V15" />
+          <rect x="13.4" y="6" width="4.4" height="9" rx="1.1" />
+          <path d="M15.2 13.2h.8" />
         </symbol>
         <symbol id="i-grip" viewBox="0 0 20 20" {...PIENO}>
           <circle cx="7.6" cy="5.4" r="1.25" />

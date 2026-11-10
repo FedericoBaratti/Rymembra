@@ -1,0 +1,48 @@
+[package]
+name = "rymembra-android"
+description = "Il ponte verso Android: Keystore, sessione multimediale, permessi, cartelle. L'altro posto di Rymembra che parla col sistema operativo a mano."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# Come tutti gli altri crate del workspace: è un pezzo dell'applicazione, non
+# una libreria per altri. Vedi la riga gemella in `src-tauri/Cargo.toml`.
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+# Solo su Android. Altrove il crate compila lo stesso e risponde «non sono su
+# Android» a ogni domanda: vedi `src/lib.rs`. È il gemello di
+# `rymembra-barra`, che fa lo stesso con Windows.
+#
+# Le stesse versioni che l'albero aveva già: `jni` 0.21 lo usa `tao` per
+# l'attività, `ndk-context` lo inizializza `tao` stesso e lo legge `cpal` per
+# l'uscita audio. Il `Cargo.lock` non guadagna nessun pacchetto.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# La tabella di `rymembra-barra`, e per la stessa ragione: la radice vieta
+# `unsafe` con `forbid`, e qui serve in un posto solo — il modulo `src/jvm.rs`,
+# che trasforma i due puntatori che `tao` ha consegnato a `ndk-context` (la
+# macchina virtuale Java e il contesto dell'applicazione) in oggetti di `jni`.
+# Tutto il resto del crate, comprese le chiamate a Kotlin, passa dall'API sicura
+# di `jni`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+integer_division = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+undocumented_unsafe_blocks = "deny"

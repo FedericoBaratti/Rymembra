@@ -54,6 +54,7 @@ mod errori;
 mod esadecimale;
 pub mod identita;
 pub mod messaggi;
+pub mod presa;
 #[cfg(test)]
 mod prove_grezze;
 #[cfg(test)]
@@ -66,6 +67,7 @@ mod trasporto;
 
 pub use identita::{ChiavePubblica, Identita, Impronta};
 pub use messaggi::{Gettone, Messaggio};
+pub use presa::{Dove, Origine, Presa, Strada};
 pub use rete::{
     CampioneOrologio, Evento, FileServito, IdConnessione, Impostazioni, LettoreRemoto, Rete,
 };

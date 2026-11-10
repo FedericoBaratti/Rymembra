@@ -239,6 +239,43 @@ pub fn righe_di_libreria(ids: &[i64]) -> Result<(), AppError> {
 /// a scendere da `-1` e non ci arriverà mai.
 pub(super) const MANIGLIA_CALIBRAZIONE: i64 = i64::MIN;
 
+/// Il primo `uid` di una voce lontana: vedi [`Lontana`].
+///
+/// Gli `uid` di sessione partono da uno e crescono di uno a voce: a 2⁶² non
+/// ci arriva nessuna sessione. Un `uid` lontano non va mai in rete — una voce
+/// lontana non entra in una sessione — ma è l'etichetta delle ancore del motore
+/// come ogni altro, e uno spazio a parte toglie la domanda di chi ne incontri
+/// uno uguale a quello di una voce di sessione.
+const PRIMO_UID_LONTANO: u64 = 1 << 62;
+
+/// L'`uid` è di una voce lontana.
+const fn e_uid_lontano(uid: u64) -> bool {
+    uid >= PRIMO_UID_LONTANO && uid != UID_CALIBRAZIONE
+}
+
+/// Un brano di un altro dispositivo collegato via internet («Sfoglia»),
+/// messo in coda da qui.
+///
+/// Sta nel registro accanto alle voci di sessione, ma **non è** una voce di
+/// sessione: la fine di una sessione ([`Registro::svuota`]) non la tocca, non
+/// ha una copia locale da cercare e non entra mai in una sessione (i comandi
+/// che la metterebbero in coda durante una sessione si rifiutano). La sua
+/// maniglia viene dallo stesso contatore delle altre, quindi non si confonde
+/// con nessuna; lo stesso brano dello stesso dispositivo tiene la stessa
+/// maniglia, così rimetterlo in coda non fa crescere il registro.
+struct Lontana {
+    /// La voce, con l'apertura sulla rete.
+    voce: Arc<Voce>,
+    /// La chiave del dispositivo a cui appartiene.
+    dispositivo: String,
+    /// L'id del brano nella libreria di quel dispositivo.
+    brano: i64,
+    /// Come la si riapre al prossimo avvio: la scrive chi la crea
+    /// (`lontano::sfoglia`), e qui non la si guarda. Vedi
+    /// `playback::CHIAVE_CODA_LONTANA`.
+    descrittore: serde_json::Value,
+}
+
 /// Le voci della sessione di questo PC. Vedi «Il registro» nel `//!`.
 #[derive(Default)]
 pub(crate) struct Registro {
@@ -266,12 +303,99 @@ pub(crate) struct Registro {
     /// e un ascolto contato alla riga sbagliata. L'esito si scrive solo se la
     /// generazione è ancora quella in cui la ricerca è partita.
     generazione: u64,
+    /// Le voci lontane, per maniglia: vedi [`Lontana`].
+    lontane: HashMap<i64, Lontana>,
+    /// (dispositivo, brano) → maniglia di una voce lontana.
+    per_lontana: HashMap<(String, i64), i64>,
+    /// L'ultimo `uid` dato a una voce lontana, da [`PRIMO_UID_LONTANO`] in
+    /// su. Non riparte mai: le voci lontane attraversano le sessioni.
+    ultimo_lontano: u64,
 }
 
 impl Registro {
-    /// La voce dietro una maniglia.
+    /// La voce dietro una maniglia: di sessione o lontana.
     pub(super) fn voce(&self, maniglia: i64) -> Option<Arc<Voce>> {
-        self.voci.get(&maniglia).cloned()
+        self.voci.get(&maniglia).cloned().or_else(|| {
+            self.lontane
+                .get(&maniglia)
+                .map(|lontana| Arc::clone(&lontana.voce))
+        })
+    }
+
+    /// Una maniglia nuova, a scendere, e mai fino a `MANIGLIA_CALIBRAZIONE`:
+    /// ci vorrebbe una voce al nanosecondo per tre secoli, ma un tetto scritto
+    /// costa una riga e toglie la domanda.
+    fn prossima_maniglia(&mut self) -> i64 {
+        self.ultima = self
+            .ultima
+            .saturating_sub(1)
+            .max(MANIGLIA_CALIBRAZIONE.saturating_add(1));
+        self.ultima
+    }
+
+    /// Registra il brano `brano` del dispositivo `dispositivo` come voce
+    /// lontana, o aggiorna quella che c'era: lo stesso brano tiene la stessa
+    /// maniglia e lo stesso `uid`. `crea` riceve l'`uid` e fa la voce.
+    pub(super) fn registra_lontana(
+        &mut self,
+        dispositivo: &str,
+        brano: i64,
+        descrittore: serde_json::Value,
+        crea: impl FnOnce(u64) -> Voce,
+    ) -> i64 {
+        let chiave = (dispositivo.to_owned(), brano);
+        let esistente = self.per_lontana.get(&chiave).and_then(|maniglia| {
+            self.lontane
+                .get(maniglia)
+                .map(|lontana| (*maniglia, lontana.voce.uid))
+        });
+        let (maniglia, uid) = match esistente {
+            Some(esistente) => esistente,
+            None => {
+                let maniglia = self.prossima_maniglia();
+                self.ultimo_lontano = self
+                    .ultimo_lontano
+                    .max(PRIMO_UID_LONTANO.saturating_sub(1))
+                    .saturating_add(1)
+                    .min(UID_CALIBRAZIONE.saturating_sub(1));
+                self.per_lontana.insert(chiave, maniglia);
+                (maniglia, self.ultimo_lontano)
+            }
+        };
+        let mut voce = crea(uid);
+        voce.uid = uid;
+        self.lontane.insert(
+            maniglia,
+            Lontana {
+                voce: Arc::new(voce),
+                dispositivo: dispositivo.to_owned(),
+                brano,
+                descrittore,
+            },
+        );
+        maniglia
+    }
+
+    /// Il descrittore di una voce lontana, per conservarla.
+    pub(super) fn descrittore_lontana(&self, maniglia: i64) -> Option<serde_json::Value> {
+        self.lontane
+            .get(&maniglia)
+            .map(|lontana| lontana.descrittore.clone())
+    }
+
+    /// Il dispositivo e il brano dietro una maniglia lontana.
+    pub(super) fn lontana(&self, maniglia: i64) -> Option<(String, i64)> {
+        self.lontane
+            .get(&maniglia)
+            .map(|lontana| (lontana.dispositivo.clone(), lontana.brano))
+    }
+
+    /// Dimentica le voci lontane di un dispositivo: è stato scollegato, e i
+    /// suoi brani non si aprono più. Le maniglie diventano [`Chi::Sparita`].
+    pub(super) fn togli_lontane(&mut self, dispositivo: &str) {
+        self.lontane
+            .retain(|_, lontana| lontana.dispositivo != dispositivo);
+        self.per_lontana.retain(|(di, _), _| di != dispositivo);
     }
 
     /// La maniglia di un `uid`, se la voce è registrata.
@@ -294,15 +418,9 @@ impl Registro {
         let maniglia = match self.per_uid.get(&voce.uid) {
             Some(&maniglia) => maniglia,
             None => {
-                // A scendere, e mai fino a `MANIGLIA_CALIBRAZIONE`: ci vorrebbe
-                // una voce al nanosecondo per tre secoli, ma un tetto scritto
-                // costa una riga e toglie la domanda.
-                self.ultima = self
-                    .ultima
-                    .saturating_sub(1)
-                    .max(MANIGLIA_CALIBRAZIONE.saturating_add(1));
-                self.per_uid.insert(voce.uid, self.ultima);
-                self.ultima
+                let maniglia = self.prossima_maniglia();
+                self.per_uid.insert(voce.uid, maniglia);
+                maniglia
             }
         };
         self.voci.insert(maniglia, Arc::new(voce));
@@ -334,8 +452,9 @@ impl Registro {
             .collect()
     }
 
-    /// La sessione è finita: ogni maniglia diventa [`Chi::Sparita`]. Il
-    /// contatore delle maniglie resta dov'era, quello degli `uid` riparte.
+    /// La sessione è finita: ogni maniglia di sessione diventa
+    /// [`Chi::Sparita`]. Il contatore delle maniglie resta dov'era, quello
+    /// degli `uid` riparte. Le voci lontane restano: non sono della sessione.
     pub(super) fn svuota(&mut self) {
         self.per_uid.clear();
         self.voci.clear();
@@ -359,7 +478,14 @@ impl Registro {
 
     /// Fase 3: la copia locale già cercata per questo `uid`. Fuori `None` se
     /// non la si è ancora cercata; dentro, la riga trovata o `None`.
+    ///
+    /// Mai per un `uid` lontano: una voce lontana non ha copia, e un esito
+    /// scritto per una voce di sessione con lo stesso numero non deve farla
+    /// suonare da un file di qui.
     pub(super) fn copia(&self, uid: u64) -> Option<Option<i64>> {
+        if e_uid_lontano(uid) {
+            return Some(None);
+        }
         self.copie.get(&uid).copied()
     }
 
@@ -372,7 +498,7 @@ impl Registro {
     /// sessione è ancora quella della `generazione` in cui la ricerca è
     /// partita. Vedi [`Registro::generazione`].
     pub(super) fn ricorda_copia(&mut self, uid: u64, riga: Option<i64>, generazione: u64) {
-        if generazione == self.generazione {
+        if generazione == self.generazione && !e_uid_lontano(uid) {
             self.copie.insert(uid, riga);
         }
     }
@@ -392,12 +518,16 @@ impl Registro {
     /// stessa in ogni sessione (vedi [`chi_nel`]). L'eccezione sta qui e non
     /// in chi consegna: `posiziona` non ce l'aveva, e buttava i clic appena
     /// aperti.
+    ///
+    /// Una voce lontana è viva finché è nel registro: non appartiene a una
+    /// sessione, e la fine di una sessione non la cambia.
     pub(super) fn ancora_viva(&self, maniglia: i64, generazione: u64) -> bool {
         maniglia == MANIGLIA_CALIBRAZIONE
+            || self.lontane.contains_key(&maniglia)
             || (self.generazione == generazione && self.voci.contains_key(&maniglia))
     }
 
-    /// Quante voci, per il diario.
+    /// Quante voci di sessione, per il diario.
     pub(super) fn quante(&self) -> usize {
         self.voci.len()
     }
@@ -558,6 +688,53 @@ pub fn scheda(maniglia: i64, voce: &Voce) -> TrackSummary {
 #[must_use]
 pub fn maniglie_di_righe(app: &tauri::AppHandle, righe: &[i64]) -> Vec<i64> {
     con_registro(app, |registro| registro.maniglie_di_righe(righe)).unwrap_or_default()
+}
+
+// ── le voci lontane ─────────────────────────────────────────────────────────
+
+/// Registra un brano di un altro dispositivo («Sfoglia») e ne restituisce la
+/// maniglia. `None` se il lettore non c'è più. Vedi [`Lontana`].
+pub fn registra_lontana(
+    app: &tauri::AppHandle,
+    dispositivo: &str,
+    brano: i64,
+    descrittore: serde_json::Value,
+    crea: impl FnOnce(u64) -> Voce,
+) -> Option<i64> {
+    con_registro(app, |registro| {
+        registro.registra_lontana(dispositivo, brano, descrittore, crea)
+    })
+}
+
+/// Come riaprire la voce lontana `id` al prossimo avvio; `None` per ogni
+/// altro id. Vedi `coda::scrivi_coda`.
+#[must_use]
+pub fn descrittore_lontana(app: &tauri::AppHandle, id: i64) -> Option<serde_json::Value> {
+    if e_di_libreria(id) || id == MANIGLIA_CALIBRAZIONE {
+        return None;
+    }
+    con_registro(app, |registro| registro.descrittore_lontana(id)).flatten()
+}
+
+/// Il dispositivo e il brano dietro una maniglia lontana; `None` per ogni
+/// altro id.
+#[must_use]
+pub fn lontana(app: &tauri::AppHandle, id: i64) -> Option<(String, i64)> {
+    if e_di_libreria(id) || id == MANIGLIA_CALIBRAZIONE {
+        return None;
+    }
+    con_registro(app, |registro| registro.lontana(id)).flatten()
+}
+
+/// L'id è una voce lontana.
+#[must_use]
+pub fn e_lontana(app: &tauri::AppHandle, id: i64) -> bool {
+    lontana(app, id).is_some()
+}
+
+/// Dimentica le voci lontane di un dispositivo scollegato.
+pub fn togli_lontane(app: &tauri::AppHandle, dispositivo: &str) {
+    con_registro(app, |registro| registro.togli_lontane(dispositivo));
 }
 
 // ── aprire ──────────────────────────────────────────────────────────────────

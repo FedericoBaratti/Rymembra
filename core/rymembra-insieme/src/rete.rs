@@ -41,7 +41,7 @@
 //! d'uscita e la revoca dei dati in coda in `collegamento`, l'eco della
 //! scoperta in `scoperta`.
 
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -58,6 +58,7 @@ use crate::cornice::{self, MASSIMO_MESSAGGIO};
 use crate::errori::{chiave, errore, inatteso};
 use crate::identita::{ChiavePubblica, Identita, Impronta};
 use crate::messaggi::{Gettone, Messaggio};
+use crate::presa::{Dove, Presa, Strada};
 use crate::scoperta;
 use crate::servente::{COPERTINA_MASSIMA, Chiesto, Risposta, Servito};
 use crate::tempi::Tempi;
@@ -143,8 +144,11 @@ pub enum Evento {
         ospita: bool,
         /// L'ha aperta l'altro (siamo noi a ospitare).
         in_entrata: bool,
-        /// L'indirizzo dell'altro capo.
-        indirizzo: SocketAddr,
+        /// Dove sta l'altro capo: l'indirizzo in casa, la chiave del
+        /// collegamento via internet fuori. Per una connessione aperta da
+        /// questo PC è dove riaprirne una di lettura o di servizio; per una
+        /// TCP in entrata è la porta d'uscita dell'altro, che non ascolta.
+        dove: Dove,
     },
     /// Un messaggio da una connessione di controllo, già passato da
     /// [`Messaggio::valida`]. Mai da una chiave non fidata.
@@ -479,13 +483,28 @@ impl Rete {
         }
     }
 
+    /// Chi apre i flussi verso i dispositivi del collegamento via internet:
+    /// senza, un [`Dove::Lontano`] non si raggiunge. Si cambia quando il
+    /// collegamento si accende o si spegne.
+    pub fn strada(&self, strada: Option<Arc<dyn Strada>>) {
+        self.dentro.imposta_strada(strada);
+    }
+
+    /// Una presa arrivata dal collegamento via internet, per «Ascolta
+    /// insieme»: entra come una connessione TCP accettata — stretta Noise,
+    /// saluto, tetti — se questo PC ospita; altrimenti si chiude. `dove` è il
+    /// dispositivo da cui arriva.
+    pub fn accogli(&self, presa: Box<dyn Presa>, dove: Dove) {
+        crate::ascolto::accogli_presa(&self.dentro, presa, dove);
+    }
+
     /// Apre una connessione di controllo verso chi ospita. Non blocca: l'esito
     /// arriva come [`Evento::Aperta`] o [`Evento::Chiusa`] con lo stesso id.
     ///
     /// Per gli host trovati dalla scoperta c'è [`Rete::collega_atteso`], che
     /// controlla anche che dall'altra parte ci sia chi ha detto di esserci.
     pub fn collega(&self, indirizzo: SocketAddr) -> IdConnessione {
-        self.apri_controllo(indirizzo, None)
+        self.apri_controllo(Dove::Lan(indirizzo), None)
     }
 
     /// Come [`Rete::collega`], verso un host trovato dalla scoperta: dopo la
@@ -499,12 +518,16 @@ impl Rete {
     /// stretta dimostra la chiave, e una chiave che non ha quell'impronta è
     /// un altro PC. `irraggiungibile` e non `nonAssociato`: per chi cercava
     /// quell'host, quell'host a quell'indirizzo non c'è.
-    pub fn collega_atteso(&self, indirizzo: SocketAddr, impronta: Impronta) -> IdConnessione {
-        self.apri_controllo(indirizzo, Some(Atteso::Impronta(impronta)))
+    ///
+    /// `dove` può essere anche un dispositivo del collegamento via internet
+    /// ([`Dove::Lontano`]): la connessione passa allora dalla [`Strada`] (vedi
+    /// [`Rete::strada`]), coi tempi larghi, e il canale Noise resta sopra.
+    pub fn collega_atteso(&self, dove: Dove, impronta: Impronta) -> IdConnessione {
+        self.apri_controllo(dove, Some(Atteso::Impronta(impronta)))
     }
 
     /// Il corpo di [`Rete::collega`] e [`Rete::collega_atteso`].
-    fn apri_controllo(&self, indirizzo: SocketAddr, atteso: Option<Atteso>) -> IdConnessione {
+    fn apri_controllo(&self, dove: Dove, atteso: Option<Atteso>) -> IdConnessione {
         let rete = &self.dentro;
         let id = rete.nuovo_id();
         if rete.fermo() {
@@ -518,9 +541,10 @@ impl Rete {
                 uso: Uso::Controllo,
                 atteso,
             };
-            let esito = TcpStream::connect_timeout(&indirizzo, rete.tempi.collegamento)
-                .map_err(|_| Some(ErrorCodeKind::InsiemeIrraggiungibile))
-                .and_then(|presa| prepara(&rete, presa, indirizzo, verso));
+            let esito = rete
+                .apri(&dove)
+                .ok_or(Some(ErrorCodeKind::InsiemeIrraggiungibile))
+                .and_then(|presa| prepara(&rete, presa, dove, verso));
             match esito {
                 Ok(pronto) => vivi(&rete, pronto),
                 Err(codice) => {
@@ -697,7 +721,7 @@ impl Rete {
     /// Chi legge i byte da chi ospita (lato membro). Apre le connessioni di
     /// lettura quando servono, al più due, e le riusa.
     #[must_use]
-    pub fn lettore(&self, ospite: SocketAddr, pari: ChiavePubblica) -> LettoreRemoto {
+    pub fn lettore(&self, ospite: Dove, pari: ChiavePubblica) -> LettoreRemoto {
         LettoreRemoto {
             dentro: Arc::new(Fonte::Remota(Vivaio::nuovo(
                 Arc::clone(&self.dentro),
@@ -727,7 +751,7 @@ impl Rete {
     /// Vive quanto la connessione di controllo verso lo stesso host: se cade
     /// mentre quella c'è ancora, si riapre da sola, con un'attesa che cresce
     /// da uno a trenta secondi. Chiamarla di nuovo non ne apre un'altra.
-    pub fn offri(&self, ospite: SocketAddr, pari: ChiavePubblica) {
+    pub fn offri(&self, ospite: Dove, pari: ChiavePubblica) {
         let rete = &self.dentro;
         if rete.fermo() || !chiave(&rete.offerte).insert(pari) {
             return;
@@ -740,9 +764,9 @@ impl Rete {
                     uso: Uso::Servizio,
                     atteso: Some(Atteso::Chiave(pari)),
                 };
-                let pronto = TcpStream::connect_timeout(&ospite, rete.tempi.collegamento)
-                    .ok()
-                    .and_then(|presa| prepara(&rete, presa, ospite, verso).ok());
+                let pronto = rete
+                    .apri(&ospite)
+                    .and_then(|presa| prepara(&rete, presa, ospite.clone(), verso).ok());
                 if let Some(pronto) = pronto {
                     vivi(&rete, pronto);
                     pausa = Duration::from_secs(1);

@@ -6,9 +6,11 @@
 //!   cambia con l'email né col nome), e il nome da mostrare viene da `/me`.
 //! - **Le cartelle del selettore**: i figli di una cartella, a pagine, tenendo
 //!   solo quelli con la faccetta `folder`.
-//! - **L'elenco**: una visita per livelli dei figli, a pagine da duecento. Il
-//!   delta su una cartella esiste solo per gli account personali e andrà
-//!   misurato su un account vero; i figli funzionano ovunque e bastano.
+//! - **L'elenco**: una visita per livelli dei figli, a pagine da duecento,
+//!   con [`INSIEME`] cartelle chieste insieme: in una libreria di mille
+//!   cartelle il costo vero sono le andate e ritorno, non i byte. Il delta su
+//!   una cartella esiste solo per gli account personali e andrà misurato su
+//!   un account vero; i figli funzionano ovunque e bastano.
 //! - **I cambiamenti**: il delta sulla cima del drive. Il primo cursore si
 //!   prende con `token=latest` (il `deltaLink`, che è un indirizzo intero);
 //!   poi si seguono i `nextLink` fino al `deltaLink` nuovo. Il delta
@@ -16,7 +18,11 @@
 //!   scelte ci pensa lo specchio, che conosce gli antenati.
 //! - **I byte**: `/items/{id}/content` risponde `302` verso un indirizzo che
 //!   porta il permesso dentro di sé. Si ricorda quello, e le finestre si
-//!   chiedono lì senza token. Vedi [`DaOneDrive`].
+//!   chiedono lì senza token. Vedi [`DaOneDrive`]. L'elenco chiede anche
+//!   `@microsoft.graph.downloadUrl`, lo stesso indirizzo firmato: la lettura
+//!   dei tag che segue l'elenco parte da lì, senza il `302` di `/content` per
+//!   ogni file. Vale un'ora circa e non si scrive da nessuna parte; scaduto,
+//!   si torna a `/content` come per ogni firma scaduta.
 //!
 //! # La faccetta `audio`
 //!
@@ -34,10 +40,10 @@
 //! L'indirizzo firmato del `302` invece non riceve niente di segreto: porta il
 //! suo permesso, e lo sceglie Graph su una connessione già autenticata.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::nuvola::{Cambio, Servizio, TagNoti, VoceRemota, interessa};
@@ -78,8 +84,19 @@ const PER_PAGINA: u32 = 200;
 ///
 /// Espliciti: la risposta intera di Graph per un file sono una trentina di
 /// campi, e in un elenco da ventimila file la differenza si paga in banda.
-const CAMPI_ELENCO: &str =
-    "id,name,folder,file,size,lastModifiedDateTime,parentReference,eTag,cTag,audio,deleted";
+const CAMPI_ELENCO: &str = "id,name,folder,file,size,lastModifiedDateTime,parentReference,eTag,\
+     cTag,audio,deleted,@microsoft.graph.downloadUrl";
+
+/// Quante cartelle si chiedono insieme durante l'elenco, come per WebDAV.
+const INSIEME: usize = 4;
+
+/// Per quanto si crede a un indirizzo firmato arrivato con l'elenco: Graph
+/// non lo dice, e di solito vale un'ora.
+const VALIDITA_FIRMATO: Duration = Duration::from_secs(45 * 60);
+
+/// Quanti indirizzi firmati dell'elenco si tengono, al più: in una libreria
+/// enorme quelli in fondo si richiedono a `/content`, e la memoria resta poca.
+const TETTO_FIRMATI: usize = 20_000;
 
 /// I campi di una voce sola, per gli antenati: `root` per riconoscere la cima.
 const CAMPI_VOCE: &str =
@@ -230,6 +247,47 @@ pub struct OneDrive {
     /// I pezzi dei brani: nessuna scadenza complessiva (vedi
     /// `Rete::per_flusso`), rimandi sorvegliati.
     flusso: Rete,
+    /// Gli indirizzi firmati arrivati con l'elenco: vedi il `//!`.
+    firmati: Firmati,
+}
+
+/// Gli indirizzi firmati dell'elenco, per id. Solo in memoria, e mai in un
+/// diario: sono permessi.
+#[derive(Default)]
+struct Firmati(Mutex<HashMap<String, (String, Instant)>>);
+
+impl std::fmt::Debug for Firmati {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Firmati(…)")
+    }
+}
+
+impl Firmati {
+    fn metti(&self, id: &str, url: &str) {
+        // Le prove parlano in chiaro con un Graph finto su questa macchina.
+        if !url.starts_with("https://") && !cfg!(test) {
+            return;
+        }
+        let mut firmati = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if firmati.len() >= TETTO_FIRMATI {
+            firmati.retain(|_, (_, quando)| quando.elapsed() < VALIDITA_FIRMATO);
+            if firmati.len() >= TETTO_FIRMATI {
+                return;
+            }
+        }
+        firmati.insert(id.to_owned(), (url.to_owned(), Instant::now()));
+    }
+
+    /// L'indirizzo di `id`, se c'è e non è vecchio. Si dà una volta sola:
+    /// dopo lo ricorda la sorgente.
+    fn prendi(&self, id: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id)
+            .filter(|(_, quando)| quando.elapsed() < VALIDITA_FIRMATO)
+            .map(|(url, _)| url)
+    }
 }
 
 impl OneDrive {
@@ -246,6 +304,7 @@ impl OneDrive {
                 quanti: RIMANDI_PEZZO,
                 cancello: Cancello::nuovo(|bersaglio| bersaglio.starts_with("https://")),
             }),
+            firmati: Firmati::default(),
         }
     }
 
@@ -259,7 +318,33 @@ impl OneDrive {
                 accesso,
             },
             flusso: rete,
+            firmati: Firmati::default(),
         }
+    }
+
+    /// Tutti i figli di una cartella, pagina dopo pagina. Gli indirizzi
+    /// firmati dei file restano in [`Firmati`].
+    fn tutti_i_figli(&self, cartella: &str) -> Result<Vec<VoceRemota>, AppError> {
+        let mut voci = Vec::new();
+        let mut url = Some(self.figli(Some(cartella), CAMPI_ELENCO));
+        while let Some(indirizzo) = url.take() {
+            let corpo = self.graph.json(&indirizzo)?;
+            for item in valori(&corpo)? {
+                let Some(voce) = voce(item) else {
+                    continue;
+                };
+                if !voce.cartella
+                    && let Some(firmato) = item
+                        .get("@microsoft.graph.downloadUrl")
+                        .and_then(Value::as_str)
+                {
+                    self.firmati.metti(&voce.id, firmato);
+                }
+                voci.push(voce);
+            }
+            url = dopo(&corpo);
+        }
+        Ok(voci)
     }
 
     /// I figli di una cartella (la cima se `None`), coi campi dati.
@@ -373,33 +458,44 @@ impl Deposito for OneDrive {
         // La catena va nella prima pagina, prima di qualunque figlio: lo
         // specchio compone i percorsi risalendo i genitori.
         let mut in_testa = self.antenati(cima)?;
-        let mut coda = VecDeque::from([cima.to_owned()]);
+        let mut livello = vec![cima.to_owned()];
         // Contro un giro di cartelle (non dovrebbe esistere): una cartella si
         // visita una volta sola.
         let mut viste: HashSet<String> = HashSet::from([cima.to_owned()]);
-        while let Some(cartella) = coda.pop_front() {
-            let mut url = Some(self.figli(Some(&cartella), CAMPI_ELENCO));
-            while let Some(indirizzo) = url.take() {
-                let corpo = self.graph.json(&indirizzo)?;
-                let mut voci = std::mem::take(&mut in_testa);
-                for item in valori(&corpo)? {
-                    let Some(voce) = voce(item) else {
-                        continue;
-                    };
-                    if voce.cartella {
-                        if viste.insert(voce.id.clone()) {
-                            coda.push_back(voce.id.clone());
+        while !livello.is_empty() {
+            let mut prossimo = Vec::new();
+            for gruppo in livello.chunks(INSIEME) {
+                let risultati: Vec<Result<Vec<VoceRemota>, AppError>> =
+                    std::thread::scope(|ambito| {
+                        let fili: Vec<_> = gruppo
+                            .iter()
+                            .map(|cartella| ambito.spawn(move || self.tutti_i_figli(cartella)))
+                            .collect();
+                        fili.into_iter()
+                            .map(|filo| {
+                                filo.join()
+                                    .unwrap_or_else(|_| Err(forma("un filo dell'elenco è caduto")))
+                            })
+                            .collect()
+                    });
+                for risultato in risultati {
+                    let mut voci = std::mem::take(&mut in_testa);
+                    for voce in risultato? {
+                        if voce.cartella {
+                            if viste.insert(voce.id.clone()) {
+                                prossimo.push(voce.id.clone());
+                            }
+                            voci.push(voce);
+                        } else if interessa(&voce.nome) {
+                            voci.push(voce);
                         }
-                        voci.push(voce);
-                    } else if interessa(&voce.nome) {
-                        voci.push(voce);
+                    }
+                    if pagina(voci).is_break() {
+                        return Ok(false);
                     }
                 }
-                if pagina(voci).is_break() {
-                    return Ok(false);
-                }
-                url = dopo(&corpo);
             }
+            livello = prossimo;
         }
         Ok(true)
     }
@@ -452,7 +548,10 @@ impl Deposito for OneDrive {
             ),
             graph: self.graph.clone(),
             flusso: self.flusso.clone(),
-            bersaglio: Mutex::new(None),
+            // L'indirizzo firmato dell'elenco, se è ancora fresco: è quello
+            // che il `302` di `/content` darebbe. Scaduto, `tenta` torna a
+            // chiederlo a Graph, come per ogni firma scaduta.
+            bersaglio: Mutex::new(self.firmati.prendi(&voce.id).map(Bersaglio::Firmato)),
         }))
     }
 

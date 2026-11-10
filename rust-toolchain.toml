@@ -1,6 +1,8 @@
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
-# Solo Windows: l'app per telefono non è ancora stata riscritta (README,
-# «Known limits»). Quando lo sarà, i suoi target si aggiungono qui.
-targets = ["x86_64-pc-windows-msvc"]
+# Windows, e Android a 64 bit: `aarch64` per i telefoni, `x86_64` per
+# l'emulatore. Niente 32 bit (`armv7`, `i686`): i telefoni che li chiedono
+# ancora non hanno l'Android 8 (API 26) che serve ad AAudio, cioè all'uscita
+# audio di `rymembra-play`.
+targets = ["x86_64-pc-windows-msvc", "aarch64-linux-android", "x86_64-linux-android"]

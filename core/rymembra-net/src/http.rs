@@ -26,12 +26,13 @@
 //! La conseguenza pratica è che un 401 e un 400 non si ritentano mai — la
 //! risposta a «non sei autorizzato» non cambia perché la si richiede più forte —
 //! mentre un 429 e un 503 sì. Il tempo che il servizio ha chiesto
-//! (`Retry-After`) lo aspetta soltanto il 429: [`Rete::stato_a_errore`] lo mette
-//! solo in `net.rateLimited`. Un 503 diventa `net.http`, che di attese non ne
-//! porta, e si ritenta con l'attesa che raddoppia da un secondo anche quando il
-//! servizio aveva chiesto di più. Portarlo anche lì vorrebbe dire un campo nuovo
-//! in `net.http`, che attraversa l'IPC, e la stessa regola nelle pause del
-//! caricamento di Drive.
+//! (`Retry-After`) si aspetta in tutti e due i casi: [`Rete::stato_a_errore`]
+//! lo mette in `net.rateLimited` per un 429 e in `net.unavailable` per un 503
+//! che lo dice. Un 503 muto resta `net.http`, e si ritenta con l'attesa che
+//! raddoppia da un secondo. Fino alla 3.2 anche il 503 col suo `Retry-After`
+//! diventava `net.http`, e il tempo chiesto andava perso: portarlo lì avrebbe
+//! voluto dire un campo nuovo in `net.http`, che attraversa l'IPC, e un codice
+//! a parte costa meno.
 //!
 //! # Di chi ci si fida, e dove si va quando qualcuno dice «vai là»
 //!
@@ -83,6 +84,8 @@ use std::time::Duration;
 use rymembra_domain::errors::{AppError, ErrorCode};
 
 mod richieste;
+
+pub use richieste::{DiFila, Traduttore};
 
 /// Quanto si aspetta al massimo fra due tentativi.
 ///
@@ -317,10 +320,24 @@ const fn e_un_rimando(stato: u16) -> bool {
 /// radice del workspace: senza, `ureq` va in panico alla prima stretta di mano.
 /// La prova `la_verifica_e_quella_del_sistema_e_non_va_in_panico` esiste per
 /// accorgersene prima di un utente.
+///
+/// # Su Android, l'elenco di Mozilla
+///
+/// Lì `rustls-platform-verifier` non basta dichiararlo: chiede di essere
+/// inizializzato con la macchina virtuale Java e il contesto dell'attività, e
+/// un componente suo nella build di Gradle. Senza, la prima stretta di mano va
+/// in panico. Il motivo per cui qui lo si vuole — il proxy aziendale che apre il
+/// TLS con una radice installata a mano — su un telefono è raro, e Android
+/// stesso non concede alle applicazioni le radici installate dall'utente se
+/// l'applicazione non lo dichiara. L'elenco compilato dentro (`webpki-roots`,
+/// già portato da `ureq`) dà quindi la stessa risposta del sistema per i server
+/// a cui Rymembra parla, senza niente da inizializzare.
 fn tls() -> ureq::tls::TlsConfig {
-    ureq::tls::TlsConfig::builder()
-        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-        .build()
+    #[cfg(not(target_os = "android"))]
+    let radici = ureq::tls::RootCerts::PlatformVerifier;
+    #[cfg(target_os = "android")]
+    let radici = ureq::tls::RootCerts::WebPki;
+    ureq::tls::TlsConfig::builder().root_certs(radici).build()
 }
 
 /// Quel che tutti i client hanno in comune, prima delle scadenze.
@@ -509,6 +526,9 @@ pub struct Rete {
     /// l'agente, con [`Rete::con_tetto_corpo`], e la riserva di connessioni
     /// resta quella. Vedi [`TETTO_CORPO_DI_SERIE`].
     tetto_corpo: u64,
+    /// Se `Authorization` e `Cookie` seguono i rimandi che restano sulla
+    /// stessa origine: vedi [`Rete::con_permesso_in_casa`]. Di serie no.
+    permesso_in_casa: bool,
 }
 
 /// Come Rymembra si presenta, sempre, a chiunque.
@@ -588,6 +608,7 @@ impl Rete {
             chiaro_locale: false,
             rimandi: Rimandi::Liberi(RIMANDI_DI_SERIE),
             tetto_corpo: TETTO_CORPO_DI_SERIE,
+            permesso_in_casa: false,
         }
     }
 
@@ -623,6 +644,23 @@ impl Rete {
     pub fn con_tetto_corpo(&self, byte: u64) -> Self {
         let mut copia = self.clone();
         copia.tetto_corpo = byte;
+        copia
+    }
+
+    /// Una copia di questo client in cui `Authorization` e `Cookie` seguono
+    /// i rimandi **finché restano sulla stessa origine** (schema, ospite e
+    /// porta di chi li ha ricevuti), con [`Rimandi::Sorvegliati`].
+    ///
+    /// Di serie il permesso resta al primo salto, qualunque sia il bersaglio:
+    /// è la regola giusta per chi riceve un indirizzo firmato (Drive, Graph),
+    /// che il permesso non lo vuole. Un server WebDAV invece può rimandare un
+    /// file a un altro suo percorso, e lì senza la password risponde `401`.
+    /// Al primo salto fuori dall'origine il permesso resta indietro, e non
+    /// torna nemmeno se un salto dopo rientra.
+    #[must_use]
+    pub fn con_permesso_in_casa(&self) -> Self {
+        let mut copia = self.clone();
+        copia.permesso_in_casa = true;
         copia
     }
 
@@ -690,6 +728,7 @@ impl Rete {
             // `/download/…` risponde col nodo che lo tiene.
             rimandi: Rimandi::Liberi(RIMANDI_DI_SERIE),
             tetto_corpo: TETTO_CORPO_DI_SERIE,
+            permesso_in_casa: false,
         }
     }
 
@@ -732,6 +771,7 @@ impl Rete {
             chiaro_locale: false,
             rimandi: Rimandi::Nessuno,
             tetto_corpo: TETTO_CORPO_DI_SERIE,
+            permesso_in_casa: false,
         }
     }
 
@@ -812,6 +852,7 @@ impl Rete {
             // `con_rimandi` non può alzarlo: vedi lì.
             rimandi: Rimandi::Nessuno,
             tetto_corpo: TETTO_CORPO_DI_SERIE,
+            permesso_in_casa: false,
         })
     }
 }

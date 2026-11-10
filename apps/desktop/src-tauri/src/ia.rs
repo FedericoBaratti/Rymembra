@@ -846,6 +846,9 @@ fn trova(stato: &Stato, id: Option<&str>) -> Result<Profilo, AppError> {
 
 /// Un client per questo profilo, con la chiave presa un istante prima.
 fn cliente(profilo: &Profilo) -> Result<Cliente, AppError> {
+    // Un modello su un altro PC di casa, dal telefono: da Android 17 serve un
+    // permesso, e lo chiede chi ha appena premuto. Vedi `telefono::per_il_server`.
+    crate::telefono::per_il_server(&profilo.url_base, true)?;
     let chiave = if profilo.con_chiave {
         portachiavi().leggi(&profilo.voce_portachiavi())?
     } else {

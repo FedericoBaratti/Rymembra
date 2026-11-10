@@ -1,0 +1,461 @@
+/* Il telefono.
+ *
+ * Tutto qui dentro vale solo con `data-forma="telefono"` sulla radice, che
+ * `main.tsx` mette quando la pagina è costruita per Android (`piattaforma.ts`):
+ * sul computer questo foglio non tocca un pixel. Sta per ultimo fra gli import
+ * di `main.tsx` perché vince sugli altri a parità di selettore.
+ *
+ * Quel che cambia, in breve:
+ *
+ * - lo scafale è una colonna (`scafaleTelefono.ts`): testata, contenuto,
+ *   lettore, schede — e lo si allarga fino ai bordi dello schermo,
+ *   rispettando le barre di sistema (`--riquadro-*`, da `riquadri.ts`), perché
+ *   da Android 15 l'app disegna anche sotto di loro;
+ * - la navigazione è una barra di quattro schede (`parti/BarraSchede.tsx`) e la
+ *   testata di ogni pagina una barra compatta (`parti/BarraAlta.tsx`): le loro
+ *   forme stanno in `telefono-pagine.css`;
+ * - il lettore è una scheda nel flusso, sopra le schede: la sua forma sta in
+ *   `telefono-lettore.css`;
+ * - con la tastiera aperta le schede e il lettore se ne vanno, e la pagina
+ *   arriva fin sopra la tastiera (`data-tastiera`, da `riquadri.ts`);
+ * - i bersagli sono grandi abbastanza per un dito (48 pixel, la misura di
+ *   Android), e quel che sul computer compare al passaggio del mouse qui c'è
+ *   sempre, perché un dito non passa sopra niente.
+ *
+ * I colori, le forme e i caratteri restano quelli della skin: qui si scrivono
+ * misure e disposizioni, mai un colore che non sia un token.
+ */
+
+:root[data-forma="telefono"] {
+  /* La barra laterale non c'è: chi galleggia sopra il contenuto parte dal
+     bordo. */
+  --nav-w: 0px;
+  --rail-w: 0px;
+  --shell-left: 0px;
+  /* La barra del titolo nemmeno: in cima c'è quella di stato di Android. */
+  --barra-titolo-h: var(--riquadro-alto, env(safe-area-inset-top, 0px));
+  --player-gap: 8px;
+  --player-h: 64px;
+  /* Il lettore è nel flusso, quindi il contenuto non deve fargli posto. */
+  --player-clearance: var(--spazio-4);
+  /* La misura di Android per un bersaglio da toccare. */
+  --dito: 48px;
+  /* Le schede in basso, senza la barra dei gesti che sta sotto di loro. */
+  --barra-nav-h: 68px;
+  /* La barra in cima alle pagine, e quella grande delle prime pagine. */
+  --barra-alta-h: 56px;
+  /* Gli angoli dei fogli che salgono dal basso: più tondi di un pannello, perché
+     un foglio tocca il bordo dello schermo solo con i due di sotto. */
+  --raggio-foglio: 28px;
+  /* Le righe degli elenchi: due righe di testo e una copertina da 48. */
+  --riga-h: 64px;
+  /* La barra della selezione, nel posto del mini lettore: una fila per quanti
+     e «tutti», una per i comandi (`BarraSelezioneTelefono.tsx`). */
+  --selezione-h: 108px;
+  /* Il movimento dei fogli: lento abbastanza da far vedere da dove arrivano, e
+     con la scala del movimento come tutti (`--motion-scale`). */
+  --transition-foglio: calc(var(--dur-3) * var(--motion-scale, 1)) var(--ease-out-expo);
+}
+
+:root[data-forma="telefono"] body {
+  /* Un tocco lungo apre il menu della riga (`contextmenu`, che la WebView di
+     Android manda da sé): senza queste due righe aprirebbe anche la lente e la
+     selezione del testo, sopra il menu. */
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  font-size: 15px;
+}
+
+/* ── lo scafale ──────────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] [data-scafale] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+  /* In basso niente: le schede si allungano loro fin sotto la barra dei gesti
+     (`telefono-pagine.css`), così il loro fondo arriva al bordo dello schermo
+     invece di lasciare una striscia della pagina sotto di sé. */
+  padding: var(--riquadro-alto, env(safe-area-inset-top, 0px)) var(--riquadro-destra, env(safe-area-inset-right, 0px))
+    0 var(--riquadro-sinistra, env(safe-area-inset-left, 0px));
+}
+
+/* Con la tastiera aperta le schede e il lettore non ci sono (qui sotto), e chi
+   lascia posto alla tastiera è la pagina: `--riquadro-basso` è già l'altezza
+   della tastiera. */
+:root[data-forma="telefono"][data-tastiera] [data-scafale] {
+  padding-bottom: var(--riquadro-basso, 0px);
+}
+:root[data-forma="telefono"][data-tastiera] .posto-player,
+:root[data-forma="telefono"][data-tastiera] .posto-phone-nav,
+:root[data-forma="telefono"][data-tastiera] .posto-selection-bar {
+  display: none;
+}
+
+:root[data-forma="telefono"] .posto-page-header,
+:root[data-forma="telefono"] .posto-selection-bar,
+:root[data-forma="telefono"] .posto-player,
+:root[data-forma="telefono"] .posto-phone-nav {
+  flex: 0 0 auto;
+}
+
+:root[data-forma="telefono"] .posto-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  container-type: inline-size;
+}
+
+:root[data-forma="telefono"] .posto-ambient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ── la tastiera che non c'è ─────────────────────────────────────────────── */
+
+/* Il suggerimento della scorciatoia `/`: sul telefono non c'è una tastiera da
+   cui premerla. */
+:root[data-forma="telefono"] .scorciatoia,
+:root[data-forma="telefono"] kbd {
+  display: none;
+}
+
+/* ── il dito ─────────────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .tasto.icon-btn {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+/* Le righe degli elenchi non si selezionano tenendole premute: il tocco lungo
+   è il menu della riga. Il titolo compreso, che sul computer si seleziona per
+   copiarlo (`libreria.css`, `.riga .nome`) e qui, tenuto premuto, apriva il
+   menu e insieme le maniglie di selezione su una parola. */
+:root[data-forma="telefono"] .riga,
+:root[data-forma="telefono"] .riga .nome {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Le notifiche sopra le schede e sopra il lettore, non sotto di loro: la pila
+   del computer sta a trenta pixel dal fondo della finestra, che qui è la barra
+   dei gesti. Con la tastiera aperta schede e lettore non ci sono, e la pila
+   scende a toccare la tastiera. */
+:root[data-forma="telefono"] .pila-toast {
+  left: var(--spazio-3);
+  right: var(--spazio-3);
+  bottom: calc(var(--riquadro-basso, 0px) + var(--barra-nav-h) + var(--spazio-2));
+  align-items: stretch;
+}
+:root[data-forma="telefono"]:has(.posto-player) .pila-toast {
+  bottom: calc(var(--riquadro-basso, 0px) + var(--barra-nav-h) + var(--player-h) + var(--spazio-3));
+}
+:root[data-forma="telefono"]:has(.posto-selection-bar) .pila-toast {
+  bottom: calc(var(--riquadro-basso, 0px) + var(--barra-nav-h) + var(--selezione-h) + var(--spazio-3));
+}
+:root[data-forma="telefono"][data-tastiera] .pila-toast {
+  bottom: calc(var(--riquadro-basso, 0px) + var(--spazio-2));
+}
+:root[data-forma="telefono"] .pila-toast .toast {
+  width: auto;
+}
+
+/* Le barre di scorrimento: sul telefono si scorre col dito, e la sua barra la
+   disegna il sistema solo mentre si scorre. Quella del computer, sempre
+   visibile, ruberebbe una striscia di schermo per niente. */
+:root[data-forma="telefono"] * {
+  scrollbar-width: none;
+}
+:root[data-forma="telefono"] .posto-content .dentro {
+  scrollbar-gutter: auto;
+}
+
+/* Le barre di scorrimento della WebView di Android rispondono a questa forma
+   e non a `scrollbar-width`. */
+:root[data-forma="telefono"] ::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* I testi per chi ascolta lo schermo (`.solo-lettori`): fuori dalla vista, ma
+   senza `top` e `left` stavano dove li metteva il flusso, e quelli figli della
+   finestra finivano un pixel sotto il fondo dello schermo. Il documento
+   scorreva di quel pixel, e al primo trascinamento del dito Android disegnava
+   la sua barra di scorrimento grigia lungo tutto il bordo destro. */
+:root[data-forma="telefono"] .solo-lettori {
+  top: 0;
+  left: 0;
+}
+
+/* «oppure trascinala qui»: sul telefono non c'è una finestra su cui lasciar
+   cadere una cartella. */
+:root[data-forma="telefono"] .oppure {
+  display: none;
+}
+
+/* «Trascina per riordinare · + dalla tastiera»: col dito la coda scorre e non
+   si trascina (`riordino.ts` lascia il tocco allo scorrimento), e la tastiera
+   non c'è. */
+:root[data-forma="telefono"] .come-si-riordina {
+  display: none;
+}
+
+/* ── il dito, ancora ─────────────────────────────────────────────────────── */
+
+/* Il bersaglio cresce, quel che si vede no: lo stesso pseudo-elemento
+   trasparente che le Impostazioni usano per l'interruttore
+   (`impostazioni.css`, «Il bersaglio cresce, la pista no»), qui misurato per un
+   dito invece che per un puntatore. Fuori dalla disposizione, quindi nessuna
+   riga si sposta di un pixel. */
+:root[data-forma="telefono"] .interruttore,
+:root[data-forma="telefono"] .cuore,
+:root[data-forma="telefono"] .linguetta,
+:root[data-forma="telefono"] .bottone.minuto,
+:root[data-forma="telefono"] .tasto-testo {
+  position: relative;
+}
+/* I bottoni piccoli — «Rinomina», «Copia», «Riprova» — si leggono e si toccano
+   come bottoni: ventisette pixel per dodici di testo erano la misura di un
+   puntatore, e accanto ai bottoni normali sembravano etichette. */
+:root[data-forma="telefono"] .bottone.minuto {
+  min-height: 34px;
+  padding-inline: 12px;
+  font-size: 13px;
+}
+
+/* La prima apertura: i tasti alti un dito. «Lo farò dopo» resta il meno
+   importante, ma per com'è disegnato — un tasto di testo, senza la pillola —
+   e non per la misura: piccolo accanto a «Consenti l'accesso», era il tasto
+   che il pollice manca. */
+:root[data-forma="telefono"] .primo .bottone {
+  min-height: var(--dito);
+  padding-inline: 18px;
+  font-size: 15px;
+}
+:root[data-forma="telefono"] .primo .bottone.minuto {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 14px;
+}
+
+:root[data-forma="telefono"] .interruttore::before {
+  content: "";
+  position: absolute;
+  inset: -11px -6px;
+}
+:root[data-forma="telefono"] .cuore::after {
+  content: "";
+  position: absolute;
+  inset: -9px -8px;
+}
+/* Le linguette stanno fianco a fianco: si allargano solo in altezza, o una
+   prenderebbe il tocco della vicina. */
+:root[data-forma="telefono"] .linguetta::after,
+:root[data-forma="telefono"] .bottone.minuto::after,
+:root[data-forma="telefono"] .tasto-testo::after {
+  content: "";
+  position: absolute;
+  inset: -8px 0;
+}
+/* Le stelle del voto: cinque bersagli da quindici pixel attaccati, dove il dito
+   ne prende due alla volta. Qui crescono davvero, non con uno pseudo-elemento,
+   perché uno pseudo-elemento più largo della stella coprirebbe la vicina. Nelle
+   righe degli elenchi sul telefono non ci sono (`libreria.css`, sotto i 560
+   pixel): restano quelle di «In riproduzione». */
+:root[data-forma="telefono"] .stelle {
+  gap: 0;
+}
+:root[data-forma="telefono"] .stella {
+  width: 30px;
+  height: 40px;
+}
+
+/* ── gli artisti ─────────────────────────────────────────────────────────── */
+
+/* Due per riga, come gli album: con la colonna minima del computer (180 px) su
+   uno schermo da 412 ne stava uno solo, grande quanto lo schermo. */
+:root[data-forma="telefono"] .griglia-artisti {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 12px;
+}
+/* «2 album · 5 brani» sotto il nome, come «Aurora Boreale · 3 brani» sotto un
+   album: lo stesso carattere e lo stesso colore. Il monospazio piccolo del
+   computer, accanto alle schede degli album con la riga in tondo, faceva di
+   due griglie uguali due disegni diversi. */
+:root[data-forma="telefono"] .scheda-artista .quanti {
+  color: var(--color-text-2);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+/* L'indice alfabetico, toccabile: diciotto per quindici pixel sono una lettera
+   da puntatore. Ventisei lettere da ventidue pixel stanno in seicento, cioè
+   in qualunque telefono in verticale. */
+:root[data-forma="telefono"] .artisti {
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: var(--spazio-2);
+}
+:root[data-forma="telefono"] .indice-alfabetico .lettera {
+  width: 28px;
+  /* Ventidue pixel quando c'è posto, meno quando no: fra la barra di stato, la
+     testata con le pillole, il mini lettore, le schede e la barra dei gesti
+     restano meno di seicento pixel, e ventisei lettere da ventidue uscivano di
+     sotto — la Z non c'era. */
+  height: clamp(14px, calc((100dvh - 400px) / 27), 22px);
+  font-size: 11px;
+}
+
+/* ── Aggiungi una cartella ───────────────────────────────────────────────── */
+
+/* Le sei sorgenti in una griglia di tre per due, larga quanto il foglio: in
+   una riga sola non ci stanno, e lasciate andare a capo dentro la pista a
+   pillola del segmentato facevano due file storte, la seconda più corta, con
+   linguette da ventisette pixel. Le linguette restano spente come sono
+   (`aria-disabled`, MEGA su Android): spente si leggono, e la ragione si tocca. */
+:root[data-forma="telefono"] .aggiungi-cartella .sorgenti-cartella {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-self: stretch;
+  border-radius: 18px;
+}
+:root[data-forma="telefono"] .aggiungi-cartella .sorgenti-cartella .linguetta {
+  justify-content: center;
+  min-width: 0;
+  min-height: 38px;
+  padding-inline: 6px;
+  border-radius: 16px;
+  font-size: 13.5px;
+}
+:root[data-forma="telefono"] .aggiungi-cartella .sorgenti-cartella .con-ragione {
+  display: grid;
+  min-width: 0;
+}
+/* «Scegli una cartella…» alto quanto «Annulla» sotto di lui. */
+:root[data-forma="telefono"] .aggiungi-cartella .bottone:not(.minuto) {
+  min-height: var(--dito);
+  padding-inline: 18px;
+  font-size: 15px;
+}
+
+/* ── le Impostazioni ─────────────────────────────────────────────────────── */
+
+/* Mentre si cerca, il campo prende tutta la riga e i risultati vanno sotto,
+   a capo: nella striscia che scorre di lato restavano schiacciati accanto al
+   campo, e il secondo si leggeva a metà. Senza ricerca la striscia resta
+   quella di `impostazioni.css`, che non spinge in basso le schede. */
+:root[data-forma="telefono"] .impostazioni .indice:has(.voce.trovata) {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+:root[data-forma="telefono"] .impostazioni .indice:has(.voce.trovata) .filtro-impostazioni {
+  flex: 1 0 100%;
+}
+:root[data-forma="telefono"] .impostazioni .indice .voce {
+  min-height: 40px;
+}
+/* Il campo ha la forma degli altri campi di ricerca del telefono — quello di
+   Cerca, il filtro delle Cartelle: una pillola piena, senza bordo — e non
+   quella del filtro del computer, un rettangolo bordato che qui era il solo
+   così. */
+:root[data-forma="telefono"] .impostazioni .filtro-impostazioni {
+  min-height: 40px;
+  gap: 10px;
+  padding-inline: 16px 12px;
+  border-color: transparent;
+  border-radius: 99px;
+}
+/* Il campo prende tutta l'altezza del guscio: un dito che cade sopra o sotto
+   le lettere, dentro il bordo che si vede, deve aprire la tastiera. */
+:root[data-forma="telefono"] .impostazioni .filtro-impostazioni {
+  padding-block: 0;
+}
+/* Sedici pixel: sotto, la WebView ingrandisce la pagina quando lo si tocca. */
+:root[data-forma="telefono"] .impostazioni .filtro-impostazioni input {
+  align-self: stretch;
+  font-size: 16px;
+}
+:root[data-forma="telefono"] .impostazioni .filtro-impostazioni:focus-within {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Le schede di una sezione, senza l'icona nel titolo. Sul computer, accanto
+   all'indice, dice di che sezione è la scheda; qui la sezione è una pagina
+   sola col suo nome nella barra, e la stessa icona ripetuta su ogni scheda —
+   un ▶ davanti a «Uscita audio» e a «Timer di spegnimento», una goccia davanti
+   a «Lingua» — si leggeva come un tasto. */
+:root[data-forma="telefono"] .impostazioni .scheda > header > .section-icon {
+  display: none;
+}
+
+/* Le cartelle sorvegliate: sul telefono si scrivono col nome che dà loro il
+   telefono («Memoria interna › Music», vedi `percorsoAndroid`), non col
+   percorso, e un nome si legge nel carattere del testo, non in quello dei
+   percorsi da copiare. Da sinistra, come le cartelle del cloud. */
+:root[data-forma="telefono"] .impostazioni .cartella .percorso {
+  direction: ltr;
+  color: var(--color-text-1);
+  font-family: var(--font-sans);
+  font-size: 15px;
+}
+
+/* I titoletti dentro una scheda («Latenza d'uscita»): la classe è quella dei
+   gruppi della barra laterale, col suo rientro di dodici pixel, che qui li
+   staccava dal bordo di tutto il resto della scheda. */
+:root[data-forma="telefono"] .impostazioni .scheda .titolo-gruppo {
+  padding-inline: 0;
+}
+
+/* I segmentati delle schede. La pista la allarga la scheda fino al bordo, e le
+   linguette restavano strette a sinistra con mezza pista vuota accanto: qui se
+   la spartiscono, ognuna con la sua larghezza più la sua parte di quel che
+   avanza, così nessuna si taglia. Il respiro di lato scende a otto pixel: con
+   dodici «Fine del brano», la quinta del timer, usciva dalla pista. */
+:root[data-forma="telefono"] .impostazioni .corpo .segmentato .linguetta,
+:root[data-forma="telefono"] .impostazioni .corpo .segmentato .con-ragione {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+:root[data-forma="telefono"] .impostazioni .corpo .segmentato .linguetta {
+  justify-content: center;
+  min-height: 36px;
+  padding-inline: 8px;
+}
+:root[data-forma="telefono"] .impostazioni .corpo .segmentato .con-ragione {
+  display: flex;
+}
+
+/* ── le playlist intelligenti ────────────────────────────────────────────── */
+
+/* Una condizione su due righe: il campo e l'operatore sopra, accanto alla
+   crocetta, e il valore sotto, largo. Quattro colonne in trecento pixel
+   troncavano l'operatore a «conta…», che è proprio la parola da leggere. Un
+   operatore senza valore («è vuoto») non lascia la sua lineetta da sola sulla
+   seconda riga. */
+:root[data-forma="telefono"] .regola {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px;
+  grid-template-areas:
+    'campo operatore togli'
+    'valore valore valore';
+}
+:root[data-forma="telefono"] .regola > :nth-child(1) {
+  grid-area: campo;
+}
+:root[data-forma="telefono"] .regola > :nth-child(2) {
+  grid-area: operatore;
+}
+:root[data-forma="telefono"] .regola > :nth-child(3) {
+  grid-area: valore;
+}
+:root[data-forma="telefono"] .regola > :last-child {
+  grid-area: togli;
+}
+:root[data-forma="telefono"] .regola > .senza-valore {
+  display: none;
+}
+:root[data-forma="telefono"] .regole {
+  gap: var(--spazio-3);
+}

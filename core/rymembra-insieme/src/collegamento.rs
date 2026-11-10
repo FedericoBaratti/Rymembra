@@ -92,7 +92,7 @@
 //! chiusura potrebbe arrivare al desktop un istante dopo la sua `Chiusa`.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
+use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, Weak};
@@ -109,10 +109,12 @@ use crate::cornice::{MASSIMO_MESSAGGIO, Tipo};
 use crate::errori::{chiave, da_testo, errore};
 use crate::identita::{ChiavePubblica, Impronta};
 use crate::messaggi::{Gettone, Messaggio, VERSIONE};
+use crate::presa::{Dove, Origine, Presa};
 use crate::rete::{CampioneOrologio, Evento, IdConnessione};
 use crate::servente::{
     COPERTINA_MASSIMA, Chiesto, LETTURA_MASSIMA, Risposta, Servito, leggi_copertina, leggi_file,
 };
+use crate::tempi::Tempi;
 use crate::trasporto::{Byte32, Trasporto, Uso};
 
 /// Quante voci aspettano chi scrive, al più.
@@ -339,9 +341,13 @@ pub(crate) struct Collegamento {
     pub(crate) in_entrata: bool,
     /// La chiave dell'altro capo.
     pub(crate) pari: ChiavePubblica,
-    /// L'indirizzo dell'altro capo, per i tetti. Non finisce mai in un
-    /// errore né in una stampa.
-    pub(crate) ip: IpAddr,
+    /// Da dove viene l'altro capo, per i tetti: l'indirizzo, o la chiave del
+    /// collegamento via internet. Non finisce mai in un errore né in una
+    /// stampa.
+    pub(crate) origine: Origine,
+    /// I tempi di questa connessione: quelli di casa, o quelli più larghi via
+    /// internet (`Tempi::via_internet`). Gli stessi ai due capi.
+    pub(crate) tempi: Tempi,
     /// Quando si è aperta: un estraneo ha un tempo di vita, e fra due
     /// connessioni di lettura ugualmente ferme lascia il posto la più vecchia
     /// (vedi `Condiviso::registra_entrante`).
@@ -361,7 +367,7 @@ pub(crate) struct Collegamento {
     /// Suona quando chi scrive ne ha mandati.
     posto_libero: Condvar,
     /// Una maniglia del socket, per tagliarlo.
-    presa: TcpStream,
+    presa: Box<dyn Presa>,
     /// Il perché della chiusura; `None` finché è aperta.
     chiusura: Mutex<Option<Chiusura>>,
     /// Chi legge è uscito.
@@ -657,8 +663,8 @@ pub(crate) enum Verso {
 pub(crate) struct Pronto {
     /// La connessione, già registrata.
     pub(crate) collegamento: Arc<Collegamento>,
-    lettura: TcpStream,
-    scrittura: TcpStream,
+    lettura: Box<dyn Presa>,
+    scrittura: Box<dyn Presa>,
     decifratore: Decifratore,
     cifratore: Cifratore,
     coda: Receiver<Uscita>,
@@ -680,7 +686,7 @@ enum PrimaParola {
 
 /// Legge il primo messaggio dopo la stretta.
 fn prima_parola(
-    presa: &mut TcpStream,
+    presa: &mut dyn Presa,
     decifratore: &mut Decifratore,
     scadenza: Instant,
 ) -> Result<PrimaParola, Guasto> {
@@ -710,7 +716,7 @@ fn prima_parola(
 /// Manda un messaggio subito, prima che esista chi scrive: il saluto, o il
 /// rifiuto che prende il suo posto.
 fn manda_subito(
-    presa: &mut TcpStream,
+    presa: &mut dyn Presa,
     cifratore: &mut Cifratore,
     parola: &Trasporto,
     scadenza: Instant,
@@ -738,8 +744,8 @@ fn manda_subito(
 /// aprisse.
 pub(crate) fn prepara(
     rete: &Arc<Condiviso>,
-    mut presa: TcpStream,
-    indirizzo: SocketAddr,
+    mut presa: Box<dyn Presa>,
+    dove: Dove,
     mut verso: Verso,
 ) -> Result<Pronto, Option<ErrorCodeKind>> {
     let in_entrata = matches!(verso, Verso::Entrante { .. });
@@ -758,7 +764,9 @@ pub(crate) fn prepara(
         })
     };
     let _ = presa.set_nodelay(true);
-    let scadenza = Instant::now() + rete.tempi.stretta;
+    let origine = presa.origine();
+    let tempi = rete.tempi_per(origine);
+    let scadenza = Instant::now() + tempi.stretta;
     let (primo, stretta) = match &mut verso {
         Verso::Entrante { primo, stretta, .. } => (Some(primo.as_slice()), stretta.take()),
         Verso::Uscente { .. } => (None, None),
@@ -830,6 +838,15 @@ pub(crate) fn prepara(
     if !nome_valido(&saluto.nome) {
         return Err(Some(ErrorCodeKind::InsiemeProtocollo));
     }
+    // Un uso nuovo con la stessa versione: chi bussa è più nuovo di noi, e
+    // il perché giusto è lo stesso di una versione diversa — aggiornare.
+    if in_entrata && saluto.uso == Uso::Sconosciuto {
+        let chiudo = Trasporto::Chiudo {
+            codice: Some(ErrorCodeKind::InsiemeVersione.code().to_owned()),
+        };
+        let _ = manda_subito(&mut presa, &mut cifratore, &chiudo, scadenza);
+        return Err(Some(ErrorCodeKind::InsiemeVersione));
+    }
     let uso = if in_entrata { saluto.uso } else { uso_mio };
 
     let scrittura = presa.try_clone().map_err(|_| Some(caduta))?;
@@ -844,7 +861,8 @@ pub(crate) fn prepara(
         uso,
         in_entrata,
         pari,
-        ip: indirizzo.ip(),
+        origine,
+        tempi,
         aperta: Instant::now(),
         hash,
         rete: Arc::downgrade(rete),
@@ -915,7 +933,7 @@ pub(crate) fn prepara(
                 nome: saluto.nome,
                 ospita: saluto.ospita,
                 in_entrata,
-                indirizzo,
+                dove,
             },
         );
     }
@@ -1013,7 +1031,7 @@ fn tetti(rete: &Condiviso, collegamento: &Collegamento) -> (usize, usize, usize)
 fn leggi_finche(
     rete: &Arc<Condiviso>,
     collegamento: &Arc<Collegamento>,
-    mut presa: TcpStream,
+    mut presa: Box<dyn Presa>,
     mut decifratore: Decifratore,
 ) {
     let mut in_arrivo: Option<InArrivo> = None;
@@ -1025,7 +1043,7 @@ fn leggi_finche(
     loop {
         let (tipo, carico, arrivo) = match decifratore.prossimo_coi_tetti(
             &mut presa,
-            rete.tempi.silenzio,
+            collegamento.tempi.silenzio,
             rete.adesso_ns,
             &tetti_adesso,
         ) {
@@ -1427,7 +1445,7 @@ fn inoltra(
                 return Risposta::Rifiutata(ErrorCodeKind::InsiemeConnessioneCaduta);
             }
             Err(RecvTimeoutError::Timeout) => {
-                if !ancora() || inizio.elapsed() > rete.tempi.inoltro {
+                if !ancora() || inizio.elapsed() > servizio.tempi.inoltro {
                     // La risposta, se arriva dopo, trova il posto vuoto e si
                     // butta: vedi `consegna`.
                     chiave(&servizio.attese).remove(&lettura);
@@ -1521,11 +1539,11 @@ fn consegna(collegamento: &Collegamento, lettura: u32, risposta: Risposta) {
 fn scrivi_finche(
     rete: &Condiviso,
     collegamento: &Collegamento,
-    mut presa: TcpStream,
+    mut presa: Box<dyn Presa>,
     mut cifratore: Cifratore,
     coda: &Receiver<Uscita>,
 ) {
-    let tempi = rete.tempi;
+    let tempi = collegamento.tempi;
     // La scadenza di ogni scrittura: chi non legge per un silenzio intero non
     // c'è più. Vedi «Le scadenze» in `canale`: scaduta, si chiude.
     let _ = presa.set_write_timeout(Some(tempi.silenzio));
@@ -1669,7 +1687,7 @@ fn cifra_voce(
 fn congeda(
     rete: &Condiviso,
     collegamento: &Collegamento,
-    presa: &mut TcpStream,
+    presa: &mut dyn Presa,
     cifratore: &mut Cifratore,
     coda: &Receiver<Uscita>,
     chiusura: Chiusura,
@@ -1694,7 +1712,7 @@ fn congeda(
     // Si aspetta che l'altro capo chiuda la sua metà, cioè che chi legge
     // esca: chiudere il socket prima, con dati non letti, manderebbe un reset
     // che può cancellare il `Chiudo` appena scritto.
-    let fine = Instant::now() + rete.tempi.congedo;
+    let fine = Instant::now() + collegamento.tempi.congedo;
     while !collegamento.lettore_finito.load(Ordering::SeqCst) && Instant::now() < fine {
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -1720,7 +1738,7 @@ fn congeda(
 ///   il codice dagli schermi mentre due persone lo stanno confrontando.
 fn scadenze(rete: &Condiviso, collegamento: &Collegamento) {
     let dal = chiave(&collegamento.associazione).dal();
-    if dal.is_some_and(|dal| dal.elapsed() > rete.tempi.associazione) {
+    if dal.is_some_and(|dal| dal.elapsed() > collegamento.tempi.associazione) {
         collegamento.chiudi(
             Some(ErrorCodeKind::InsiemeAssociazioneScaduta),
             Modo::Cortese,
@@ -1729,7 +1747,7 @@ fn scadenze(rete: &Condiviso, collegamento: &Collegamento) {
     }
     if dal.is_none()
         && collegamento.in_entrata
-        && collegamento.aperta.elapsed() > rete.tempi.vita_estraneo
+        && collegamento.aperta.elapsed() > collegamento.tempi.vita_estraneo
         && !rete.fidato(&collegamento.pari)
     {
         collegamento.chiudi(Some(ErrorCodeKind::InsiemeEstraneoScaduto), Modo::Cortese);

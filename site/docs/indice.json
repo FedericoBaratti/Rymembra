@@ -8,6 +8,7 @@
   "sources.js",
   "network.js",
   "together.js",
+  "devices.js",
   "services.js",
   "skins.js",
   "studio.js",

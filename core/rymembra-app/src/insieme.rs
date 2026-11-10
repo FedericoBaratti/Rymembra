@@ -310,7 +310,7 @@ fn indirizzo(grezzo: &str) -> Option<String> {
 ///
 /// Il taglio è prima dello spazio che non ci starebbe: un nome tagliato non
 /// finisce mai con uno spazio.
-fn ripulisci_nome(grezzo: &str) -> String {
+pub fn ripulisci_nome(grezzo: &str) -> String {
     let mut pulito = String::new();
     let mut quanti = 0_usize;
     let mut spazio_in_sospeso = false;
@@ -474,10 +474,79 @@ pub fn blocca(connection: &Connection, id: i64, bloccato: bool) -> Result<(), Ap
 ///
 /// Quelli del database.
 pub fn dimentica(connection: &Connection, id: i64) -> Result<(), AppError> {
+    // L'indirizzo per primo: dopo, la chiave per trovarlo non c'è più. Un
+    // indirizzo rimasto da solo non farebbe danni — si legge solo accanto a un
+    // PC fidato — ma non deve restare.
+    connection
+        .execute(
+            "DELETE FROM insieme_indirizzi
+              WHERE chiave = (SELECT chiave FROM insieme_pari WHERE id = ?1)",
+            [id],
+        )
+        .map_err(|err| db_error("indirizzo di un PC da dimenticare", &err))?;
     connection
         .execute("DELETE FROM insieme_pari WHERE id = ?1", [id])
         .map(|_| ())
         .map_err(|err| db_error("PC associato da dimenticare", &err))
+}
+
+/// Quanti indirizzi ricordati al più: quanti host si tengono collegati.
+pub const MASSIMI_INDIRIZZI_RICORDATI: usize = 16;
+
+/// Ricorda l'indirizzo a cui un PC associato ha appena risposto, `ip:porta`:
+/// la scoperta gli manderà anche lì la sua domanda (vedi la 040). Solo per un
+/// PC che c'è fra gli associati, e solo un indirizzo che si legge come tale:
+/// altrimenti non si scrive niente, e non è un errore.
+///
+/// # Errori
+///
+/// `insieme.protocollo` per una chiave storta, poi quelli del database.
+pub fn ricorda_indirizzo(
+    connection: &Connection,
+    chiave: &str,
+    indirizzo: &str,
+    adesso_ms: i64,
+) -> Result<(), AppError> {
+    let chiave = chiave_valida(chiave)?;
+    let Ok(indirizzo) = indirizzo.parse::<std::net::SocketAddr>() else {
+        return Ok(());
+    };
+    connection
+        .execute(
+            "INSERT INTO insieme_indirizzi (chiave, indirizzo, visto_ms)
+             SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM insieme_pari WHERE chiave = ?1)
+             ON CONFLICT(chiave) DO UPDATE SET
+               indirizzo = excluded.indirizzo,
+               visto_ms = excluded.visto_ms",
+            rusqlite::params![chiave, indirizzo.to_string(), adesso_ms],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("indirizzo di un PC associato", &err))
+}
+
+/// Gli indirizzi ricordati dei PC associati e non bloccati, i più recenti
+/// prima, al più [`MASSIMI_INDIRIZZI_RICORDATI`], con la chiave di ciascuno.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn indirizzi_ricordati(connection: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("indirizzi dei PC associati", &err);
+    let mut istruzione = connection
+        .prepare(
+            "SELECT i.chiave, i.indirizzo
+               FROM insieme_indirizzi i
+               JOIN insieme_pari p ON p.chiave = i.chiave
+              WHERE p.bloccato = 0
+              ORDER BY i.visto_ms DESC
+              LIMIT ?1",
+        )
+        .map_err(guasto)?;
+    let limite = i64::try_from(MASSIMI_INDIRIZZI_RICORDATI).unwrap_or(i64::MAX);
+    let righe = istruzione
+        .query_map([limite], |riga| Ok((riga.get(0)?, riga.get(1)?)))
+        .map_err(guasto)?;
+    righe.collect::<Result<Vec<_>, _>>().map_err(guasto)
 }
 
 /// Segna che un PC associato si è visto adesso.
@@ -1248,6 +1317,38 @@ mod prove {
             pari(&c).expect("elenco").first().map(|p| p.nome.clone()),
             Some("Cucina".to_owned())
         );
+    }
+
+    #[test]
+    fn un_indirizzo_si_ricorda_solo_per_un_pc_associato_e_si_dimentica_con_lui() {
+        let c = libreria();
+        // Un estraneo non lascia tracce, e un indirizzo che non si legge
+        // nemmeno.
+        ricorda_indirizzo(&c, CHIAVE, "10.0.0.5:47811", 1).expect("niente da scrivere");
+        assert!(indirizzi_ricordati(&c).expect("letti").is_empty());
+
+        let id = associa(&c, CHIAVE, "Ufficio", 1).expect("associato");
+        ricorda_indirizzo(&c, CHIAVE, "non un indirizzo", 2).expect("niente da scrivere");
+        assert!(indirizzi_ricordati(&c).expect("letti").is_empty());
+
+        ricorda_indirizzo(&c, &CHIAVE.to_uppercase(), "10.0.0.5:47811", 3).expect("scritto");
+        ricorda_indirizzo(&c, CHIAVE, "10.0.0.9:47812", 4).expect("aggiornato");
+        assert_eq!(
+            indirizzi_ricordati(&c).expect("letti"),
+            vec![(CHIAVE.to_owned(), "10.0.0.9:47812".to_owned())]
+        );
+
+        // Un PC bloccato non si cerca.
+        blocca(&c, id, true).expect("bloccato");
+        assert!(indirizzi_ricordati(&c).expect("letti").is_empty());
+        blocca(&c, id, false).expect("sbloccato");
+        assert_eq!(indirizzi_ricordati(&c).expect("letti").len(), 1);
+
+        dimentica(&c, id).expect("dimenticato");
+        let rimasti: i64 = c
+            .query_row("SELECT count(*) FROM insieme_indirizzi", [], |r| r.get(0))
+            .expect("conto");
+        assert_eq!(rimasti, 0, "l'indirizzo se ne va col PC");
     }
 
     #[test]

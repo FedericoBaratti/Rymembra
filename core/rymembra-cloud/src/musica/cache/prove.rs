@@ -60,6 +60,14 @@ fn chiave(id: &str, versione: &str) -> Chiave {
     }
 }
 
+/// Aspetta che il filo della cache finisca quel che ha in coda: salvataggi e
+/// ricomposizioni.
+fn aspetta(cache: &Cache) {
+    let (risposta, arrivo) = mpsc::sync_channel(1);
+    cache.dentro.manda(Lavoro::Segnale(risposta));
+    arrivo.recv().unwrap();
+}
+
 /// I file della cartella con queste estensioni.
 fn file_con(cartella: &Path, estensioni: &[&str]) -> Vec<String> {
     let mut nomi: Vec<String> = std::fs::read_dir(cartella)
@@ -337,6 +345,8 @@ fn un_brano_oltre_il_doppio_del_tetto_non_entra_in_cache() {
         cache.copia_completa(&b).is_some(),
         "l'altro non è stato buttato"
     );
+    // L'indice di B lo salva il filo.
+    aspetta(&cache);
     assert_eq!(
         file_con(cartella.path(), &[DATI, INDICE]).len(),
         2,
@@ -357,6 +367,8 @@ fn una_copia_arrivata_a_pezzi_sparsi_si_ricompone_in_ordine() {
     con.pezzo(0, 65_536).unwrap();
     assert!(cache.copia_completa(&a).is_none(), "ancora a metà");
     con.pezzo(65_536, 300_000).unwrap();
+    // La ricompone il filo della cache, non chi ha scritto l'ultimo pezzo.
+    aspetta(&cache);
     let copia = cache.copia_completa(&a).expect("completa");
     assert_eq!(
         std::fs::read(&copia).unwrap(),
@@ -380,7 +392,7 @@ fn una_copia_arrivata_di_fila_non_si_ricompone() {
     let (sorgente, _) = finta(&brano, true);
     let a = chiave("A", "v1");
     let con = cache.con(Some(a.clone()), sorgente);
-    let segmenti = || cache.blocca().copie[&a.nome()].segmenti.clone();
+    let segmenti = || cache.dentro.blocca().copie[&a.nome()].segmenti.clone();
 
     con.pezzo(0, 1000).unwrap();
     con.pezzo(1000, 1000).unwrap();
@@ -565,6 +577,7 @@ fn togliere_un_conto_toglie_solo_le_sue_copie() {
         format!("{}.{INDICE}", b1.nome()),
     ];
     di_b.sort();
+    aspetta(&cache);
     assert_eq!(file_con(cartella.path(), &[DATI, INDICE]), di_b);
 
     drop(cache);
@@ -663,22 +676,230 @@ fn un_flusso_dalla_cache_suona_due_volte_e_la_seconda_senza_rete() {
 
 #[test]
 fn i_buchi_sono_quel_che_i_segmenti_non_coprono() {
-    let segmenti = [
-        Segmento {
-            da: 10,
-            fino: 20,
-            pos: 0,
-        },
-        Segmento {
-            da: 30,
-            fino: 40,
-            pos: 10,
-        },
-    ];
-    assert_eq!(buchi(&segmenti, 0, 50), vec![(0, 10), (20, 30), (40, 50)]);
-    assert_eq!(buchi(&segmenti, 12, 18), vec![]);
-    assert_eq!(buchi(&segmenti, 15, 35), vec![(20, 30)]);
+    let presi = [(10, 20), (30, 40)];
+    assert_eq!(buchi(&presi, 0, 50), vec![(0, 10), (20, 30), (40, 50)]);
+    assert_eq!(buchi(&presi, 12, 18), vec![]);
+    assert_eq!(buchi(&presi, 15, 35), vec![(20, 30)]);
     assert_eq!(buchi(&[], 5, 9), vec![(5, 9)]);
+    // Segmenti e prenotazioni insieme possono sovrapporsi nell'elenco.
+    assert_eq!(buchi(&[(10, 20), (15, 25)], 0, 30), vec![(0, 10), (25, 30)]);
+}
+
+#[test]
+fn chi_chiede_byte_che_un_altro_sta_scrivendo_non_li_riscrive() {
+    let cartella = tempfile::tempdir().unwrap();
+    let cache = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    let brano = contenuto(10_000, 3);
+    let a = chiave("A", "v1");
+    let nome = a.nome();
+    let pezzo = |da: usize, fino: usize| Pezzo {
+        byte: brano[da..fino].to_vec(),
+        totale: Some(10_000),
+        url_finale: None,
+    };
+    // Il primo prenota [1000, 3000) e non ha ancora scritto.
+    let primo = cache
+        .dentro
+        .prenota(&a, &nome, 0, 1000, &pezzo(1000, 3000))
+        .unwrap();
+    // Il secondo arriva con [0, 4000): gli restano solo i due lati.
+    let secondo = cache
+        .dentro
+        .prenota(&a, &nome, 0, 0, &pezzo(0, 4000))
+        .unwrap();
+    let lati: Vec<(u64, u64)> = secondo.iter().map(|s| (s.da, s.fino)).collect();
+    assert_eq!(lati, vec![(0, 1000), (3000, 4000)]);
+    // Nessuno legge un posto prenotato e vuoto.
+    assert!(matches!(
+        cache.dentro.dal_disco(&nome, 1000, 100),
+        DalDisco::Manca(_)
+    ));
+    let dati = percorso(cartella.path(), &nome, DATI);
+    // Il secondo finisce per primo.
+    scrivi_fuori(&dati, 0, &pezzo(0, 4000), &secondo).unwrap();
+    cache.dentro.registra(&nome, &secondo, true);
+    scrivi_fuori(&dati, 1000, &pezzo(1000, 3000), &primo).unwrap();
+    cache.dentro.registra(&nome, &primo, true);
+    assert_eq!(cache.stato().0, 4000, "ogni byte una volta sola");
+    let (sorgente, richieste) = finta(&brano, true);
+    let con = cache.con(Some(a), sorgente);
+    let mut letti = Vec::new();
+    while letti.len() < 4000 {
+        let da = u64::try_from(letti.len()).unwrap();
+        letti.extend(con.pezzo(da, 4000 - da).unwrap().byte);
+    }
+    assert_eq!(letti, brano[..4000]);
+    assert!(richieste.lock().unwrap().is_empty(), "tutto dal disco");
+}
+
+#[test]
+fn una_copia_tolta_mentre_si_legge_se_ne_va_dopo_la_lettura() {
+    let cartella = tempfile::tempdir().unwrap();
+    let cache = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    let brano = contenuto(2000, 4);
+    let a = chiave_del_conto("onedrive-aaaaaaaa", "A1");
+    let (sorgente, _) = finta(&brano, true);
+    cache.con(Some(a.clone()), sorgente).pezzo(0, 1000).unwrap();
+    let nome = a.nome();
+    aspetta(&cache);
+    // Una lettura cominciata e non finita: la copia è in uso.
+    let DalDisco::Leggi { tratti, .. } = cache.dentro.dal_disco(&nome, 0, 500) else {
+        panic!("dal disco");
+    };
+    std::thread::scope(|filo| {
+        // «Scollega», da un altro filo: segna la copia e aspetta la lettura.
+        let scollega = filo.spawn(|| cache.togli_conto("onedrive-aaaaaaaa"));
+        while !cache.dentro.blocca().copie[&nome].tolta {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(cache.stato().0, 0, "tolta: per il tetto non c'è più");
+        assert!(cache.copia_completa(&a).is_none());
+        assert_eq!(
+            file_con(cartella.path(), &[DATI]).len(),
+            1,
+            "ma i byte restano finché la lettura non finisce"
+        );
+        let dati = percorso(cartella.path(), &nome, DATI);
+        assert_eq!(leggi_tratti(&dati, &tratti).unwrap(), brano[..500]);
+        assert!(!scollega.is_finished(), "«Scollega» aspetta la lettura");
+        cache.dentro.letto(&nome, true);
+        assert_eq!(scollega.join().unwrap(), 1);
+    });
+    assert!(
+        file_con(cartella.path(), &[DATI, INDICE]).is_empty(),
+        "quando «Scollega» torna, i file non ci sono più"
+    );
+    assert_eq!(cache.dentro.blocca().usati, 0);
+    assert_eq!(cache.dentro.blocca().in_uscita, 0);
+}
+
+#[test]
+fn l_indice_non_si_riscrive_a_ogni_pezzo() {
+    let cartella = tempfile::tempdir().unwrap();
+    let cache = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    let brano = contenuto(6 * 1024 * 1024, 2);
+    let (sorgente, _) = finta(&brano, true);
+    let a = chiave("A", "v1");
+    let indice = vec![format!("{}.{INDICE}", a.nome())];
+    let con = cache.con(Some(a.clone()), sorgente);
+    con.pezzo(0, 1000).unwrap();
+    con.pezzo(5000, 1000).unwrap();
+    aspetta(&cache);
+    assert!(
+        file_con(cartella.path(), &[INDICE]).is_empty(),
+        "due pezzi piccoli: l'indice aspetta"
+    );
+    drop(con);
+    aspetta(&cache);
+    assert_eq!(
+        file_con(cartella.path(), &[INDICE]),
+        indice,
+        "il flusso si è chiuso: l'indice c'è"
+    );
+
+    let (sorgente, _) = finta(&brano, true);
+    let b = chiave("B", "v1");
+    let con = cache.con(Some(b.clone()), sorgente);
+    con.pezzo(0, 5 * 1024 * 1024).unwrap();
+    aspetta(&cache);
+    let mut entrambi = vec![indice[0].clone(), format!("{}.{INDICE}", b.nome())];
+    entrambi.sort();
+    assert_eq!(
+        file_con(cartella.path(), &[INDICE]),
+        entrambi,
+        "oltre i quattro megabyte l'indice si salva anche col flusso aperto"
+    );
+}
+
+#[test]
+fn una_copia_coperta_e_non_ricomposta_si_ricompone_alla_riapertura() {
+    // Come dopo una chiusura fra l'ultimo pezzo e la ricomposizione: un
+    // indice di pezzi in fila che coprono tutto il brano.
+    let cartella = tempfile::tempdir().unwrap();
+    let brano = contenuto(1000, 6);
+    let a = chiave("A", "v1");
+    let nome = a.nome();
+    let mut in_fila = brano[500..].to_vec();
+    in_fila.extend_from_slice(&brano[..500]);
+    std::fs::write(percorso(cartella.path(), &nome, DATI), &in_fila).unwrap();
+    let indice = Indice {
+        conto: a.conto.clone(),
+        id: a.id.clone(),
+        versione: a.versione.clone(),
+        totale: Some(1000),
+        segmenti: vec![
+            Segmento {
+                da: 0,
+                fino: 500,
+                pos: 500,
+            },
+            Segmento {
+                da: 500,
+                fino: 1000,
+                pos: 0,
+            },
+        ],
+        usato_ms: 0,
+        da_misurare: false,
+    };
+    scrivi_indice(cartella.path(), &nome, &indice).unwrap();
+
+    let cache = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    aspetta(&cache);
+    let copia = cache.copia_completa(&a).expect("ricomposta all'apertura");
+    assert_eq!(std::fs::read(copia).unwrap(), brano);
+    assert_eq!(cache.da_misurare(), vec![a]);
+    assert_eq!(cache.stato().0, 1000);
+}
+
+#[test]
+fn due_lettori_e_una_ricomposizione_non_si_pestano_i_piedi() {
+    const LUNGO: usize = 3_000_000;
+    let cartella = tempfile::tempdir().unwrap();
+    let cache = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    let completati = Arc::new(AtomicUsize::new(0));
+    let contatore = Arc::clone(&completati);
+    cache.al_completamento(move |_| {
+        contatore.fetch_add(1, Ordering::SeqCst);
+    });
+    let brano = contenuto(LUNGO, 8);
+    let a = chiave("A", "v1");
+    {
+        // In fila e fuori ordine: la coda, poi la testa. Il resto lo
+        // scrivono i due lettori, e chi chiude l'ultimo buco fa partire la
+        // ricomposizione mentre l'altro legge ancora.
+        let (sorgente, _) = finta(&brano, true);
+        let con = cache.con(Some(a.clone()), sorgente);
+        con.pezzo(2_900_000, 100_000).unwrap();
+        con.pezzo(0, 700_000).unwrap();
+    }
+    std::thread::scope(|filo| {
+        for lettore in 0..2_usize {
+            let (cache, brano, a) = (&cache, &brano, &a);
+            filo.spawn(move || {
+                let (sorgente, _) = finta(brano, true);
+                let con = cache.con(Some(a.clone()), sorgente);
+                for giro in 0..3_usize {
+                    let mut da = (lettore * 37_000 + giro * 11_000) % 200_000;
+                    while da < LUNGO {
+                        let pezzo = con.pezzo(u64::try_from(da).unwrap(), 96 * 1024).unwrap();
+                        assert_eq!(pezzo.totale, Some(u64::try_from(LUNGO).unwrap()));
+                        assert!(!pezzo.byte.is_empty());
+                        let fine = da + pezzo.byte.len();
+                        assert!(pezzo.byte == brano[da..fine], "byte giusti da {da}");
+                        da = fine;
+                    }
+                }
+            });
+        }
+    });
+    aspetta(&cache);
+    let copia = cache.copia_completa(&a).expect("ricomposta");
+    assert!(std::fs::read(copia).unwrap() == brano, "in ordine");
+    assert_eq!(cache.stato().0, u64::try_from(LUNGO).unwrap());
+    assert_eq!(completati.load(Ordering::SeqCst), 1, "un avviso solo");
+    let segmenti = cache.dentro.blocca().copie[&a.nome()].segmenti.clone();
+    assert_eq!(segmenti.len(), 1);
 }
 
 #[test]

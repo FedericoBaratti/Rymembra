@@ -1309,3 +1309,101 @@ fn i_confini_d_immagine_si_leggono_solo_se_stanno_in_un_cd() {
         })
     );
 }
+
+// ── la coda con i brani degli altri dispositivi ─────────────────────────────
+
+fn lontana(n: i64) -> VoceSalvata {
+    VoceSalvata::Lontana(serde_json::json!({ "brano": n }))
+}
+
+/// La coda intera torna com'era, e solo accanto alla coda di righe che le
+/// corrisponde.
+#[test]
+fn la_coda_intera_torna_solo_se_la_sua_parte_di_righe_e_quella_scritta() {
+    let c = db();
+    // Righe 1 e 2, due brani lontani in mezzo; si suona il secondo lontano.
+    let intera = CodaIntera {
+        voci: vec![
+            VoceSalvata::Riga(1),
+            lontana(10),
+            VoceSalvata::Riga(2),
+            lontana(11),
+        ],
+        order: vec![0, 1, 2, 3],
+        order_pos: Some(3),
+        shuffle: false,
+        repeat: "all".to_owned(),
+    };
+    let righe = intera.righe();
+    assert_eq!(righe.tracks, vec![1, 2]);
+    assert_eq!(righe.order, vec![0, 1]);
+    // Dopo il lontano suonato non resta niente: l'ultima riga prima.
+    assert_eq!(righe.order_pos, Some(1));
+    assert_eq!(righe.repeat, RepeatMode::All);
+
+    save_queue(&c, &righe).expect("righe");
+    save_queue_remote(&c, Some(&intera)).expect("intera");
+    let letta = load_queue(&c).expect("righe lette");
+    assert_eq!(
+        load_queue_remote(&c, &letta).expect("letta"),
+        Some(intera.clone())
+    );
+
+    // Una coda di righe diversa — scritta dopo, da chi non sa dei brani
+    // lontani — rende vecchia quella intera.
+    let altra = QueueSnapshot {
+        tracks: vec![2, 1],
+        order: vec![0, 1],
+        order_pos: Some(0),
+        shuffle: false,
+        repeat: RepeatMode::Off,
+    };
+    save_queue(&c, &altra).expect("altra");
+    assert_eq!(load_queue_remote(&c, &altra).expect("letta"), None);
+
+    // Senza brani lontani la chiave si toglie.
+    save_queue_remote(&c, None).expect("tolta");
+    assert_eq!(load_queue_remote(&c, &righe).expect("letta"), None);
+    // E una chiave illeggibile vale «non c'è».
+    crate::settings::write(&c, CHIAVE_CODA_LONTANA, "{").expect("scritta");
+    assert_eq!(load_queue_remote(&c, &righe).expect("letta"), None);
+}
+
+/// Dalla coda del lettore alla coda intera: le maniglie che non si sanno
+/// descrivere restano fuori, e la posizione va sulla voce che veniva dopo.
+#[test]
+fn la_coda_intera_si_fa_dalla_coda_del_lettore() {
+    let coda = QueueSnapshot {
+        tracks: vec![1, -5, -6, 2],
+        order: vec![3, 1, 2, 0],
+        order_pos: Some(2),
+        shuffle: true,
+        repeat: RepeatMode::One,
+    };
+    let intera = CodaIntera::da(&coda, |id| match id {
+        id if id > 0 => Some(VoceSalvata::Riga(id)),
+        -5 => Some(lontana(5)),
+        _ => None,
+    });
+    assert_eq!(
+        intera.voci,
+        vec![VoceSalvata::Riga(1), lontana(5), VoceSalvata::Riga(2)]
+    );
+    // L'ordine era 2 · -5 · [-6] · 1, e -6 era la posizione: va sulla riga 1,
+    // che veniva dopo.
+    assert_eq!(intera.order, vec![2, 1, 0]);
+    assert_eq!(intera.order_pos, Some(2));
+    assert!(intera.shuffle);
+    assert_eq!(intera.repeat, "one");
+
+    // E all'avvio, con i brani lontani riaperti come maniglie nuove (uno non
+    // si riapre più: il dispositivo è stato dimenticato).
+    let (tracks, order, order_pos) = intera.tenendo(|voce| match voce {
+        VoceSalvata::Riga(id) => Some(*id),
+        VoceSalvata::Lontana(_) => None,
+    });
+    let riaperta = intera.snapshot(tracks, order, order_pos);
+    assert_eq!(riaperta.tracks, vec![1, 2]);
+    assert_eq!(riaperta.order, vec![1, 0]);
+    assert_eq!(riaperta.order_pos, Some(1));
+}

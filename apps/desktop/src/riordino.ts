@@ -74,7 +74,7 @@ function elencoDi(riga: HTMLElement): HTMLElement | null {
 }
 
 /** Il primo antenato che scorre davvero in verticale, o `null`. */
-function scorrevoleDi(nodo: HTMLElement | null): HTMLElement | null {
+export function scorrevoleDi(nodo: HTMLElement | null): HTMLElement | null {
   for (let qui = nodo; qui !== null; qui = qui.parentElement) {
     const { overflowY } = getComputedStyle(qui);
     if (

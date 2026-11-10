@@ -55,6 +55,40 @@ pub struct Tempi {
     pub congedo: Duration,
 }
 
+impl Tempi {
+    /// I tempi delle connessioni via internet (il collegamento di
+    /// `rymembra-lontano`): più larghi dove la strada pesa — un primo contatto
+    /// che passa dal relay prima di bucare il NAT, un telefono sui dati
+    /// mobili che risponde a strappi. Il battito resta quello: due capi della
+    /// stessa connessione usano gli stessi tempi, perché tutti e due sanno che
+    /// è via internet.
+    ///
+    /// | | in casa | via internet |
+    /// |---|---|---|
+    /// | collegamento | 3 s | 15 s |
+    /// | stretta e saluto | 5 s | 10 s |
+    /// | silenzio | 15 s | 30 s |
+    /// | inoltro | 10 s | 20 s |
+    /// | congedo | 250 ms | 1 s |
+    ///
+    /// Sui tempi accorciati delle prove ([`crate::Rete::avvia_con`]) restano
+    /// quelli: una prova via internet non deve aspettare trenta secondi veri.
+    #[must_use]
+    pub fn via_internet(self) -> Self {
+        if self != Self::default() {
+            return self;
+        }
+        Self {
+            silenzio: Duration::from_secs(30),
+            stretta: Duration::from_secs(10),
+            collegamento: Duration::from_secs(15),
+            inoltro: Duration::from_secs(20),
+            congedo: Duration::from_secs(1),
+            ..self
+        }
+    }
+}
+
 impl Default for Tempi {
     fn default() -> Self {
         Self {
@@ -70,5 +104,29 @@ impl Default for Tempi {
             vita_estraneo: Duration::from_secs(120),
             congedo: Duration::from_millis(250),
         }
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn via_internet_si_allarga_e_il_battito_resta() {
+        let casa = Tempi::default();
+        let fuori = casa.via_internet();
+        assert_eq!(fuori.battito, casa.battito);
+        assert!(fuori.silenzio > casa.silenzio);
+        assert!(fuori.collegamento > casa.collegamento);
+        assert!(
+            fuori.battito < fuori.silenzio,
+            "un battito arriva prima del silenzio"
+        );
+        // I tempi accorciati delle prove restano quelli.
+        let prove = Tempi {
+            silenzio: Duration::from_millis(300),
+            ..Tempi::default()
+        };
+        assert_eq!(prove.via_internet(), prove);
     }
 }

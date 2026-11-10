@@ -267,7 +267,23 @@ pub(super) enum Posta {
     },
     /// Rimettere la rete com'era all'avvio: un aggiornamento non riuscito
     /// dopo che [`super::ferma`] l'aveva spenta.
+    #[cfg_attr(
+        mobile,
+        allow(dead_code, reason = "la manda solo l'updater del computer")
+    )]
     Riaccendi,
+    /// I PC fidati sono cambiati fuori da qui — un dispositivo collegato col
+    /// QR, che porta con sé la sua chiave di «Ascolta insieme»: si rileggono,
+    /// e la rete li riconosce senza il codice.
+    Fidati,
+    /// Un flusso di «Ascolta insieme» arrivato dal collegamento via internet:
+    /// alla rete, che lo accoglie se ospita.
+    Accogli {
+        /// Il flusso.
+        presa: Box<dyn rymembra_insieme::Presa>,
+        /// Il dispositivo da cui arriva.
+        dove: rymembra_insieme::Dove,
+    },
     /// Fase 2, chi segue: gesti già tradotti, da mandare all'host.
     Gesti(Vec<Azione>),
     /// Fase 2, chi segue: brani della sua libreria da aggiungere.
@@ -373,6 +389,8 @@ impl Posta {
             Self::UscitaCambiata => "uscita cambiata",
             Self::Eseguito { .. } => "esito di un gesto",
             Self::Riaccendi => "riaccendi",
+            Self::Fidati => "fidati",
+            Self::Accogli { .. } => "accogli",
             Self::Gesti(_) => "gesti",
             Self::Aggiungi { .. } => "aggiungi",
             Self::Preparate { .. } => "voci preparate",
@@ -499,12 +517,26 @@ fn nome_effettivo(impostazioni: &rymembra_app::insieme::Impostazioni) -> String 
         .nome
         .clone()
         .or_else(|| {
-            std::env::var("COMPUTERNAME")
-                .ok()
+            nome_del_dispositivo()
                 .map(|n| voci::testo(&n, MASSIMO_NOME))
                 .filter(|n| !n.is_empty())
         })
         .unwrap_or_else(|| "Rymembra".to_owned())
+}
+
+/// Come si chiama questo dispositivo per il sistema: il nome del computer, o
+/// sul telefono il «Nome del dispositivo» delle impostazioni di Android. Senza,
+/// due telefoni si presentavano tutti e due come «Rymembra», e chi riceveva
+/// «Rymembra chiede di entrare» non sapeva chi fosse.
+pub(crate) fn nome_del_dispositivo() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        rymembra_android::sistema::nome_del_telefono().ok()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        std::env::var("COMPUTERNAME").ok()
+    }
 }
 
 /// La rete accesa, e la chiave di questo PC.
@@ -517,7 +549,7 @@ struct Accesa {
 struct Seguendo {
     host: IdConnessione,
     /// Dove sta l'host e chi è: per la connessione di servizio (fase 2).
-    indirizzo: SocketAddr,
+    indirizzo: rymembra_insieme::Dove,
     chiave: ChiavePubblica,
     condivisa: Arc<Condivisa>,
     sveglia: Sender<()>,
@@ -613,7 +645,11 @@ struct Filo {
     accendi_dopo_la_lettura: bool,
     vicinato: Vicinato,
     /// Indirizzo e chiave dell'altro capo, per connessione.
-    capi: HashMap<IdConnessione, (SocketAddr, ChiavePubblica)>,
+    capi: HashMap<IdConnessione, (rymembra_insieme::Dove, ChiavePubblica)>,
+    /// L'ultimo indirizzo a cui ha risposto ciascun PC fidato, per chiave in
+    /// testo: la scoperta ci manda la sua domanda come a uno scritto a mano
+    /// (la 040). Si rilegge con i fidati, si scrive alla connessione aperta.
+    ricordati: HashMap<String, SocketAddr>,
     prossima_scoperta: u64,
     prossimo_collegamento: u64,
     /// L'errore del comando che si sta servendo, se un effetto ne ha dato uno.
@@ -755,6 +791,7 @@ pub(super) fn avvia(
                 accendi_dopo_la_lettura: false,
                 vicinato: Vicinato::default(),
                 capi: HashMap::new(),
+                ricordati: HashMap::new(),
                 prossima_scoperta: 0,
                 prossimo_collegamento: 0,
                 errore: None,
@@ -1001,6 +1038,13 @@ impl Filo {
                     );
                 }
             }
+            Posta::Fidati => self.ricarica_fidati(),
+            Posta::Accogli { presa, dove } => match &self.rete {
+                Some(accesa) => accesa.rete.accogli(presa, dove),
+                None => {
+                    let _ = presa.shutdown(std::net::Shutdown::Both);
+                }
+            },
             Posta::Riaccendi => {
                 self.ricarica_impostazioni();
                 if self.impostazioni.attivo
@@ -1442,9 +1486,31 @@ impl Filo {
     }
 
     fn ruolo(&self, ruolo: Ruolo) {
-        self.comune
+        let prima = self
+            .comune
             .ruolo
-            .store(ruolo_in_byte(ruolo), Ordering::Release);
+            .swap(ruolo_in_byte(ruolo), Ordering::AcqRel);
+        // Ospitare si dice ai dispositivi collegati via internet subito: è da
+        // lì che lo sanno, e aspettare il giro del collegamento li farebbe
+        // arrivare mezzo minuto dopo.
+        if matches!(ruolo, Ruolo::Host) != matches!(ruolo_dal_byte(prima), Ruolo::Host) {
+            crate::lontano::presenza_cambiata(&self.app);
+        }
+        // Sul telefono, dentro una sessione il Wi-Fi non si addormenta: a
+        // schermo spento salterebbe l'orologio, e l'audio dell'host arriverebbe
+        // a strappi. Solo ai passaggi fra dentro e fuori, e da questo filo,
+        // che è l'unico a scrivere il ruolo: le chiamate non si scavalcano.
+        #[cfg(target_os = "android")]
+        {
+            let dentro = !matches!(ruolo, Ruolo::Fuori);
+            if dentro != !matches!(ruolo_dal_byte(prima), Ruolo::Fuori)
+                && let Err(err) = rymembra_android::sistema::wifi("insieme", dentro)
+            {
+                nota!("[insieme] il lucchetto del Wi-Fi non si cambia: {err}");
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = prima;
     }
 
     fn avvisa(&self, chiave: &str, nome: Option<String>) {
@@ -1532,6 +1598,16 @@ impl Filo {
                 self.fidati_da_rileggere = Some(ora().saturating_add(RILEGGI_DOPO_MS));
             }
         }
+        // Gli indirizzi ricordati con i fidati: un PC dimenticato o bloccato
+        // non si cerca più. Con la libreria occupata restano quelli di prima.
+        if let Ok(letti) =
+            self.in_libreria(ATTESA_LIBRERIA, rymembra_app::insieme::indirizzi_ricordati)
+        {
+            self.ricordati = letti
+                .into_iter()
+                .filter_map(|(chiave, indirizzo)| Some((chiave, indirizzo.parse().ok()?)))
+                .collect();
+        }
         if let Some(accesa) = &self.rete {
             let (fidate, bloccate) = self.fidati.per_la_rete();
             accesa.rete.pari(fidate, bloccate);
@@ -1612,15 +1688,20 @@ impl Filo {
             }
             Richiesta::Invita { pari, diritti } => {
                 self.fidato_attivo(pari)?;
+                self.dati_per(self.conn_del_fidato(pari, true))?;
                 self.nutri(Evento::Comando(Comando::Invita { pari, diritti }));
                 Ok(())
             }
             Richiesta::Rispondi { invito, accetta } => {
+                if accetta {
+                    self.dati_per(self.conn_dell_invito(invito))?;
+                }
                 self.nutri(Evento::Comando(Comando::Rispondi { invito, accetta }));
                 Ok(())
             }
             Richiesta::Chiedi(pari) => {
                 self.fidato_attivo(pari)?;
+                self.dati_per(self.conn_del_fidato(pari, false))?;
                 self.nutri(Evento::Comando(Comando::Chiedi { pari }));
                 Ok(())
             }
@@ -1629,6 +1710,9 @@ impl Filo {
                 accetta,
                 diritti,
             } => {
+                if accetta {
+                    self.dati_per(self.conn_della_richiesta(richiesta))?;
+                }
                 self.nutri(Evento::Comando(Comando::Ammetti {
                     richiesta,
                     accetta,
@@ -1768,6 +1852,54 @@ impl Filo {
         match self.fidati.per_id(pari) {
             Some(p) if !p.bloccato => Ok(()),
             _ => Err(AppError::new(ErrorCode::InsiemeNonAssociato)),
+        }
+    }
+
+    /// La connessione con il fidato `pari` su cui passerebbe la sessione: la
+    /// stessa che sceglie la macchina delle fasi — quella in entrata per chi
+    /// ospita e invita (`Comando::Invita`), quella verso un host per chi
+    /// chiede di entrare (`Comando::Chiedi`).
+    fn conn_del_fidato(&self, pari: i64, in_entrata: bool) -> Option<IdConnessione> {
+        self.s
+            .connessioni
+            .iter()
+            .find(|(_, c)| c.pari == Some(pari) && c.in_entrata == in_entrata)
+            .map(|(id, _)| *id)
+    }
+
+    /// «Solo Wi-Fi» per una sessione che passerebbe dal collegamento via
+    /// internet: entrare, accettare un invito, invitare, ammettere. Su una
+    /// connessione in casa non si chiede niente; su una via internet, sui dati
+    /// mobili, serve lo stesso sì dei brani di «Sfoglia»
+    /// (`lontano.reteAConsumo`, che la finestra chiede).
+    fn dati_per(&self, conn: Option<IdConnessione>) -> Result<(), AppError> {
+        let via_internet = conn
+            .and_then(|id| self.capi.get(&id))
+            .is_some_and(|(dove, _)| dove.e_lontano());
+        if via_internet {
+            crate::lontano::insieme::dati_permessi(&self.app)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Da quale connessione è arrivato l'invito `numero`, ancora in attesa.
+    fn conn_dell_invito(&self, numero: u64) -> Option<IdConnessione> {
+        match &self.s.fase {
+            Fase::Libera { inviti } => inviti.iter().find(|i| i.numero == numero).map(|i| i.da),
+            _ => None,
+        }
+    }
+
+    /// Da quale connessione è arrivata la richiesta `numero`, ancora in attesa.
+    fn conn_della_richiesta(&self, numero: u64) -> Option<IdConnessione> {
+        match &self.s.fase {
+            Fase::Ospita(ospitata) => ospitata
+                .richieste
+                .iter()
+                .find(|r| r.numero == numero)
+                .map(|r| r.da),
+            _ => None,
         }
     }
 
@@ -2268,6 +2400,7 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
                 nome: v.nome.clone(),
                 pari: fidato.map(|f| f.id),
                 bloccato: fidato.is_some_and(|f| f.bloccato),
+                via_internet: v.indirizzo.e_lontano(),
             }
         })
         .collect();

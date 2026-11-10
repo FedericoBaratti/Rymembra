@@ -100,6 +100,13 @@ pub trait Deposito: Send + Sync {
     /// niente.
     fn spegni(&self) {}
 
+    /// Interrompe l'attesa dei cambiamenti in corso, se il servizio ne fa una
+    /// (vedi l'`attesa` di [`Self::cambiamenti`]): chi aspetta torna subito,
+    /// senza cambiamenti, e il giro dopo riprende da lì. Serve a una radice
+    /// nuova e ad «Aggiorna ora», che altrimenti aspetterebbero la fine del
+    /// long-poll. Chi risponde subito non ha niente da interrompere.
+    fn sveglia(&self) {}
+
     /// Chi è l'account collegato.
     ///
     /// # Errori

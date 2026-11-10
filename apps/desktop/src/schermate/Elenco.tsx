@@ -23,6 +23,19 @@ import { conIndice, statoSuono } from "../segnali";
 import { Stelle } from "../Stelle";
 import { eLaLettera } from "../tasti";
 import { useVirtuale } from "../virtuale";
+import { MOBILE } from "../piattaforma";
+
+/** Quel che dentro una riga ha un mestiere suo, e un tocco non deve scavalcare. */
+const TASTI_DELLA_RIGA = "button, input, a, [role='slider'], [role='radio']";
+
+/**
+ * Per quanto un clic dopo un tocco lungo è ancora quel tocco.
+ *
+ * Il tocco lungo sul telefono sceglie la riga (`contextmenu`), e alcune
+ * WebView, staccato il dito, mandano anche il `click`: senza questa finestra
+ * la riga appena scelta si toglierebbe subito, o partirebbe la canzone.
+ */
+const DOPO_LA_TENUTA_MS = 400;
 
 /**
  * Una riga dell'elenco: una `row` di una `grid`, non un `div` qualunque.
@@ -86,6 +99,8 @@ const RigaBrano = memo(function RigaBrano({
   onRiordina,
   onPresaPuntatore,
   sopra,
+  inSelezione = false,
+  onAlterna,
 }: {
   brano: Brano;
   indice: number;
@@ -154,6 +169,20 @@ const RigaBrano = memo(function RigaBrano({
     | undefined;
   /** Il rilascio cadrebbe **su questa riga**: disegna il segno. */
   sopra?: boolean | undefined;
+  /**
+   * Sul telefono: c'è una selezione aperta, e un tocco sceglie invece di
+   * suonare. Vedi `onAlterna`.
+   */
+  inSelezione?: boolean | undefined;
+  /**
+   * Sul telefono: aggiunge o toglie questa riga dalla selezione.
+   *
+   * Lo passa solo il telefono, dove la selezione non ha né Ctrl né Maiusc: si
+   * apre con un tocco lungo, e finché è aperta ogni tocco sceglie o toglie una
+   * riga. È la convenzione delle app di Android (la galleria, i messaggi), e
+   * il menù, che sul computer è il tasto destro, sta nel tasto ⋮ della riga.
+   */
+  onAlterna?: ((indice: number) => void) | undefined;
 }) {
   /*
    * L'unico `memo` dell'applicazione è anche l'unico posto che deve iscriversi
@@ -191,6 +220,8 @@ const RigaBrano = memo(function RigaBrano({
     onSpostaFuoco(indice + passo);
   };
 
+  // Quando è arrivato l'ultimo tocco lungo: vedi `DOPO_LA_TENUTA_MS`.
+  const tenuta = useRef(0);
   const suono = statoSuono(attivo, inPausa);
   return (
     <div
@@ -221,6 +252,7 @@ const RigaBrano = memo(function RigaBrano({
       data-active={attivo || undefined}
       data-scelta={selezionato || undefined}
       data-sopra={sopra || undefined}
+      data-in-selezione={(MOBILE && inSelezione) || undefined}
       /* Col puntatore e non col trascinamento HTML5, che su Windows non
          rilascia mai: vedi `riordino.ts`. L'attributo è anche il modo in cui
          il gesto riconosce la riga d'arrivo. */
@@ -236,8 +268,36 @@ const RigaBrano = memo(function RigaBrano({
       /* Doppio clic oltre al tasto: è il gesto che chi arriva da un altro
          lettore prova per primo, e non costa niente averlo. */
       onDoubleClick={() => suonabile && onSuona(indice)}
-      onClick={(e) => onSeleziona(e, indice)}
-      onContextMenu={(e) => onMenu(e, [brano.id])}
+      onClick={(e) => {
+        // Sul telefono un tocco suona: il doppio tocco è lo zoom, e una riga
+        // che al primo tocco si seleziona soltanto sembra una riga rotta. Il
+        // comando della riga, il ⋮, resta suo. Con una selezione aperta il
+        // tocco sceglie, come in ogni elenco di Android.
+        if (MOBILE) {
+          if (performance.now() - tenuta.current < DOPO_LA_TENUTA_MS) return;
+          if ((e.target as Element).closest(TASTI_DELLA_RIGA)) return;
+          if (inSelezione && onAlterna !== undefined) {
+            onAlterna(indice);
+            return;
+          }
+          if (suonabile) {
+            onSuona(indice);
+            return;
+          }
+        }
+        onSeleziona(e, indice);
+      }}
+      onContextMenu={(e) => {
+        // Il tocco lungo del telefono sceglie la riga, e vibra: lo fa
+        // l'ascoltatore di `vibra.ts`, che sente ogni `contextmenu` preso.
+        if (MOBILE && onAlterna !== undefined) {
+          e.preventDefault();
+          tenuta.current = performance.now();
+          onAlterna(indice);
+          return;
+        }
+        onMenu(e, [brano.id]);
+      }}
     >
       {/* La cella attorno al comando, non sul comando: vedi la nota del
           componente. */}
@@ -280,6 +340,14 @@ const RigaBrano = memo(function RigaBrano({
           /* L'album è scritto due celle più in là: vedi `Copertina`. */
           accanto
         />
+        {/* Sul telefono, con la selezione aperta, il cerchio della scelta
+            sopra la miniatura: dice che il tocco adesso sceglie, e chi è
+            scelto. Decorazione: lo stato lo dice già `aria-selected`. */}
+        {MOBILE && inSelezione && (
+          <span className="spunta-riga" aria-hidden="true">
+            <Icona nome={selezionato ? "i-select" : "i-select-o"} dim={24} />
+          </span>
+        )}
       </div>
       {/* Titolo e artista impilati in una cella sola, l'album nella sua: sono
           due informazioni di peso diverso, e dare all'artista una colonna larga
@@ -349,6 +417,22 @@ const RigaBrano = memo(function RigaBrano({
           </button>
         </div>
       )}
+      {/* Il menù della riga, sul telefono: il tasto destro di qui. Una cella
+          in più, e una in più anche nell'intestazione (`TestaElenco`), perché
+          le colonne tornino. */}
+      {MOBILE && (
+        <div role="gridcell" className="cella-comando">
+          <button
+            type="button"
+            className="tasto-altro"
+            tabIndex={-1}
+            aria-label={t("row.more.aria", { titolo: brano.title })}
+            onClick={(e) => onMenu(e, [brano.id])}
+          >
+            <Icona nome="i-dots-v" dim={20} />
+          </button>
+        </div>
+      )}
     </div>
   );
 });
@@ -413,6 +497,8 @@ function TestaElenco({
       </span>
       <span role={cella} />
       {conTogli && <span role={cella} />}
+      {/* La colonna del ⋮: vedi `RigaBrano`. */}
+      {MOBILE && <span role={cella} />}
     </div>
   );
 }
@@ -575,6 +661,8 @@ const RigaScheletro = memo(function RigaScheletro({
       <div role="gridcell" className="riga-finta skeleton" />
       <span role="gridcell" />
       {conTogli && <span role="gridcell" />}
+      {/* Il posto del ⋮ del telefono, come nelle righe vere. */}
+      {MOBILE && <span role="gridcell" className="altro-finto" />}
     </div>
   );
 });
@@ -666,6 +754,7 @@ export function ElencoBrani({
   onLascia,
   mirata,
   trascinata,
+  inSelezione,
 }: {
   /** Le righe, quando l'elenco è tutto in mano. Vedi «Piena o rada». */
   righe?: readonly Brano[] | undefined;
@@ -725,6 +814,11 @@ export function ElencoBrani({
   mirata?: number | null | undefined;
   /** Quale riga si sta trascinando. */
   trascinata?: number | null | undefined;
+  /**
+   * Sul telefono: c'è una selezione aperta, e il tocco sulle righe sceglie.
+   * Vedi `onAlterna` in `RigaBrano`.
+   */
+  inSelezione?: boolean | undefined;
 }) {
   const elenco = useRef<HTMLDivElement>(null);
   // Ridisegna questo elenco — e non chi lo possiede — a ogni pagina che arriva.
@@ -844,6 +938,8 @@ export function ElencoBrani({
         onRiordina={onRiordina}
         onPresaPuntatore={presaPuntatore}
         sopra={mirata === i && trascinata !== i}
+        inSelezione={inSelezione}
+        onAlterna={MOBILE ? onAlternaSelezione : undefined}
       />
     );
   };

@@ -258,7 +258,8 @@ export function Scrobbling({
       )}
 
       {lb?.collegato && (
-        <details className="non-ritrovati">
+        // Grigio, non giallo: è una cosa in più da fare, non un avviso.
+        <details className="diagnosi-servizio">
           <summary>{t("scrobble.backlog")}</summary>
           <p>{t("scrobble.backlog.p1")}</p>
           <div className="azioni">
@@ -357,7 +358,9 @@ export function Scrobbling({
               title={lfm?.configurato ? undefined : t("scrobble.lfm.needCreds")}
               onClick={() => esegui(ipc.scrobbleLastfmCollega)}
             >
-              <Icona nome="i-list" dim={15} />
+              {/* Apre il browser: la freccia che esce, come ogni altro tasto
+                  che lo fa. */}
+              <Icona nome="i-external" dim={15} />
               {t("scrobble.lfm.authorize")}
             </button>
             {(stato?.attesaLastfm ?? false) && (

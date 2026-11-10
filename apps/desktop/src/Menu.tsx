@@ -7,7 +7,12 @@
  * a playlist», che è la stessa forma di comando.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Copertina } from "./Copertina";
 import { useDati } from "./dati";
+import { t } from "./lingue";
+import { Foglio, useChiudiFoglio } from "./parti/Foglio";
+import { Icona, type NomeIcona } from "./parti/Icone";
+import { MOBILE } from "./piattaforma";
 import { Presenza } from "./presenza";
 
 /**
@@ -33,6 +38,26 @@ export interface Voce {
    * lascerebbe chi la cerca a chiedersi dove sia finita.
    */
   spenta?: string | undefined;
+  /**
+   * L'icona accanto all'etichetta. La disegna solo il foglio del telefono:
+   * nel menu del computer, fitto e accanto al puntatore, sarebbe una colonna in
+   * più da attraversare con l'occhio; nel foglio, alto un dito per voce, è il
+   * modo di trovare la voce senza leggerle tutte.
+   */
+  icona?: NomeIcona | undefined;
+  /**
+   * La scelta di adesso, in un menu che sceglie fra alternative (l'ordine dei
+   * brani): sul foglio si segna col segno di spunta.
+   */
+  scelta?: boolean | undefined;
+}
+
+/** Su cosa si agisce: la testata del foglio del telefono. */
+export interface TestataMenu {
+  titolo: string;
+  sottotitolo?: string | undefined;
+  /** La copertina; `null` per un brano senza, `undefined` per niente immagine. */
+  copertina?: string | null | undefined;
 }
 
 /** Dove si è aperto e su cosa. */
@@ -40,9 +65,103 @@ export interface Apertura {
   x: number;
   y: number;
   voci: Voce[];
+  /**
+   * Su cosa si sta agendo, per il foglio del telefono: lì il menu sale dal
+   * basso, lontano dalla riga premuta, e senza questa riga non direbbe di
+   * quale brano sono le voci. Il menu del computer non la disegna: nasce
+   * accanto alla cosa cliccata, che è già lì da vedere.
+   */
+  testata?: TestataMenu | undefined;
 }
 
-export function Menu({
+/**
+ * Il menu: un foglio dal basso sul telefono, un menu a comparsa sul computer.
+ *
+ * Due componenti e non un componente con due rami: gli hook dell'uno — la
+ * misura accanto al puntatore, le frecce della tastiera — non servono
+ * all'altro, e un `if` in mezzo a degli hook è una regola di React rotta.
+ */
+export function Menu(prop: { apertura: Apertura; onChiudi: () => void }) {
+  return MOBILE ? <MenuFoglio {...prop} /> : <MenuPopup {...prop} />;
+}
+
+/** Una voce del foglio: scegliendola fa il suo mestiere, e il foglio scende. */
+function VoceFoglio({ voce, idSpenta }: { voce: Voce; idSpenta: string }) {
+  const chiudi = useChiudiFoglio();
+  const spenta = voce.spenta !== undefined;
+  return (
+    <button
+      type="button"
+      className="voce-foglio"
+      role={voce.scelta === undefined ? "menuitem" : "menuitemradio"}
+      aria-checked={voce.scelta}
+      aria-disabled={spenta || undefined}
+      aria-describedby={spenta ? idSpenta : undefined}
+      onClick={() => {
+        if (spenta) return;
+        voce.azione();
+        chiudi();
+      }}
+    >
+      <span className="icona-voce-foglio" aria-hidden="true">
+        {voce.icona !== undefined && <Icona nome={voce.icona} dim={22} />}
+      </span>
+      <span className="testi-voce-foglio">
+        <span className="etichetta-voce-foglio">{voce.etichetta}</span>
+        {/* La ragione per cui è spenta sta sotto, scritta: sul telefono non c'è
+            un puntatore da tenere sopra la voce per leggerla in un `title`. */}
+        {spenta && (
+          <span id={idSpenta} className="ragione-voce-foglio">
+            {voce.spenta}
+          </span>
+        )}
+      </span>
+      {voce.scelta === true && (
+        <span className="scelta-voce-foglio" aria-hidden="true">
+          <Icona nome="i-check" dim={20} />
+        </span>
+      )}
+    </button>
+  );
+}
+
+function MenuFoglio({ apertura, onChiudi }: { apertura: Apertura; onChiudi: () => void }) {
+  const id = useId();
+  const testata = apertura.testata;
+  return (
+    <Foglio
+      etichetta={testata?.titolo ?? t("menu.aria")}
+      onChiudi={onChiudi}
+      testata={
+        testata !== undefined && (
+          <div className="testata-foglio">
+            {testata.copertina !== undefined && (
+              <Copertina hash={testata.copertina} titolo={testata.titolo} classe="copertina-foglio" />
+            )}
+            <div className="titoli-foglio">
+              <span className="titolo-foglio" dir="auto">
+                {testata.titolo}
+              </span>
+              {testata.sottotitolo !== undefined && (
+                <span className="sotto-foglio" dir="auto">
+                  {testata.sottotitolo}
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      }
+    >
+      <div className="voci-foglio" role="menu">
+        {apertura.voci.map((voce, indice) => (
+          <VoceFoglio key={voce.etichetta} voce={voce} idSpenta={`${id}-${indice}`} />
+        ))}
+      </div>
+    </Foglio>
+  );
+}
+
+function MenuPopup({
   apertura,
   onChiudi,
 }: {

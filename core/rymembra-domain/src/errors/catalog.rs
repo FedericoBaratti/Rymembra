@@ -44,6 +44,15 @@ pub enum Domain {
     /// frasi che rimediano — «controlla il firewall del PC che ospita», «chiedi
     /// a chi ospita di invitarti di nuovo» — non hanno niente in comune.
     Insieme,
+    /// Il collegamento via internet fra i propri dispositivi
+    /// (`rymembra-lontano`): associazione col QR, «Sfoglia», i brani
+    /// dell'altro.
+    ///
+    /// Non `Insieme`, benché i due si parlino: là si ascolta la stessa
+    /// musica in una sessione, qui un dispositivo legge la libreria di un
+    /// altro, e i rimedi — «apri Rymembra sul telefono», «rifai il QR» — sono
+    /// altri.
+    Lontano,
     /// Sincronizzazione con Drive.
     Sync,
     /// Le cartelle della libreria che stanno su un servizio cloud.
@@ -219,10 +228,23 @@ catalogo! {
     NetHttp = "net.http", Net, Warning, HttpStatus, None, { status: u16, url: Option<String> };
     /// Il servizio ha chiesto di rallentare.
     NetRateLimited = "net.rateLimited", Net, Warning, Always, None, { service: Option<String>, retry_after_ms: Option<u64> };
+    /// Il servizio è momentaneamente giù (`503`) e ha detto quando riprovare
+    /// (`Retry-After`). Un `503` che non lo dice resta [`ErrorCode::NetHttp`]:
+    /// questo esiste perché quel tempo arrivi a chi ritenta, come per
+    /// [`ErrorCode::NetRateLimited`], senza un campo in più in `net.http`.
+    NetUnavailable = "net.unavailable", Net, Warning, Always, None, { service: Option<String>, retry_after_ms: Option<u64> };
     /// La risposta non ha la forma attesa.
     NetBadSchema = "net.badSchema", Net, Error, Never, None, { service: Option<String>, detail: Option<String> };
     /// Interruttore aperto: il servizio ha fallito troppe volte di seguito.
     NetCircuitOpen = "net.circuitOpen", Net, Warning, Always, None, { service: String, retry_after_ms: Option<u64> };
+    /// Android non lascia vedere la rete di casa: da Android 17 serve il
+    /// permesso «Dispositivi nelle vicinanze», e non è stato concesso.
+    ///
+    /// Lo dice il telefono a sé stesso, prima di parlare con un indirizzo
+    /// della rete di casa — «Ascolta insieme», un server WebDAV, un modello di
+    /// linguaggio su un altro PC. Senza, i pacchetti si fermerebbero nel
+    /// sistema senza un errore che dica perché.
+    NetLocalNetwork = "net.localNetwork", Net, Warning, Never, None;
 
     // ── db ──────────────────────────────────────────────────────────────────
     // `Fatal`: senza database l'app non ha una libreria. Non deve però impedire
@@ -788,6 +810,38 @@ catalogo! {
     /// sa solo il diario di chi l'ha mandato.
     InsiemeProtocollo = "insieme.protocollo", Insieme, Warning, Never, None;
 
+    // ── lontano ─────────────────────────────────────────────────────────────
+    //
+    // Come quelli di `insieme`, attraversano la rete: in un rifiuto viaggia il
+    // codice e nient'altro, e chi lo riceve lo dice nella propria lingua.
+    /// L'altro dispositivo non risponde: spento, Rymembra chiuso, o nessuna
+    /// strada fra i due (nemmeno il relay).
+    LontanoIrraggiungibile = "lontano.irraggiungibile", Lontano, Warning, Always, None;
+    /// Quel dispositivo non è fra quelli collegati, o non lo è più.
+    LontanoNonAssociato = "lontano.nonAssociato", Lontano, Warning, Never, None;
+    /// Il QR, o il link, non vale più: scaduto, già usato, o sostituito da
+    /// uno nuovo.
+    LontanoGettoneScaduto = "lontano.gettoneScaduto", Lontano, Info, Never, None;
+    /// Il testo incollato, o il QR letto, non è un link di collegamento di
+    /// Rymembra (o è di una versione che questa non sa leggere).
+    LontanoLinkNonValido = "lontano.linkNonValido", Lontano, Info, Never, None;
+    /// Sull'altro dispositivo hanno detto di no.
+    LontanoRifiutato = "lontano.rifiutato", Lontano, Info, Never, None;
+    /// Il brano è cambiato sull'altro dispositivo mentre lo si leggeva.
+    LontanoFileCambiato = "lontano.fileCambiato", Lontano, Warning, Never, None;
+    /// Si è sui dati mobili, e «Solo Wi-Fi» dice di aspettare.
+    LontanoReteAConsumo = "lontano.reteAConsumo", Lontano, Info, Never, None;
+    /// Il collegamento via internet è spento su questo dispositivo.
+    LontanoSpento = "lontano.spento", Lontano, Info, Never, None;
+    /// L'altro ha risposto qualcosa che non si capisce: un'altra versione, o
+    /// un messaggio rotto.
+    LontanoProtocollo = "lontano.protocollo", Lontano, Warning, Never, None;
+    /// La chiave di questo dispositivo non si legge o non si scrive nel
+    /// portachiavi. `Error` per la stessa ragione di `insieme.identitaPersa`:
+    /// una chiave nuova al suo posto scollegherebbe in silenzio ogni
+    /// dispositivo. Non viaggia: è un fatto di questa macchina.
+    LontanoIdentitaPersa = "lontano.identitaPersa", Lontano, Error, Never, None;
+
     // ── sync ────────────────────────────────────────────────────────────────
     /// L'autorizzazione Google è scaduta.
     SyncAuthExpired = "sync.authExpired", Sync, Warning, Never, None;
@@ -868,6 +922,10 @@ catalogo! {
     /// fa a ore). Non si ritenta da soli: passa col tempo, non con un secondo
     /// tentativo.
     CloudQuotaExceeded = "cloud.quotaExceeded", Cloud, Warning, Never, None, { servizio: String, riprova_fra_ms: Option<u64> };
+    /// Il servizio non lascia scaricare questo file: su Drive chi l'ha
+    /// condiviso ha tolto lo scaricamento, o il file è bloccato
+    /// (`cannotDownloadFile`). Non passa riprovando, né ricollegando.
+    CloudDownloadForbidden = "cloud.downloadForbidden", Cloud, Warning, Never, None, { servizio: String };
     /// Email, utente o password non accettati (MEGA, WebDAV).
     CloudWrongCredentials = "cloud.wrongCredentials", Cloud, Warning, Never, None;
     /// L'account MEGA ha la verifica in due passaggi: serve il codice.

@@ -2030,6 +2030,63 @@ mod tests {
         );
     }
 
+    /// Il ritorno indietro a mano scritto in testa alla 039.
+    const RITORNO_DALLA_39: &str = "DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti;                                     DROP TABLE dispositivi; PRAGMA user_version = 38;";
+
+    /// Il ritorno indietro a mano scritto in testa alla 040.
+    const RITORNO_DALLA_40: &str = "DROP TABLE insieme_indirizzi; PRAGMA user_version = 39;";
+
+    #[test]
+    fn togliere_la_quaranta_a_mano_riporta_la_trentanove() {
+        let alla_39 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_39, 39);
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 40);
+        let chiave = "ab".repeat(32);
+        tornata
+            .execute(
+                "INSERT INTO insieme_pari (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                [&chiave],
+            )
+            .expect("un PC");
+        tornata
+            .execute(
+                "INSERT INTO insieme_indirizzi (chiave, indirizzo, visto_ms)
+                 VALUES (?1, '10.0.0.5:47811', 1)",
+                [&chiave],
+            )
+            .expect("un indirizzo");
+        tornata
+            .execute_batch(RITORNO_DALLA_40)
+            .expect("ritorno a mano");
+        assert_eq!(schema(&tornata), schema(&alla_39));
+        assert_eq!(user_version(&tornata).expect("versione"), 39);
+        assert_eq!(quante(&tornata, "insieme_pari"), 1, "i PC restano");
+    }
+
+    #[test]
+    fn togliere_la_trentanove_a_mano_riporta_la_trentotto() {
+        let alla_38 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_38, 38);
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 39);
+        tornata
+            .execute(
+                "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                ["ab".repeat(32)],
+            )
+            .expect("un dispositivo");
+        tornata
+            .execute_batch(RITORNO_DALLA_39)
+            .expect("ritorno a mano");
+        assert_eq!(schema(&tornata), schema(&alla_38));
+        assert_eq!(user_version(&tornata).expect("versione"), 38);
+        assert_eq!(
+            quante(&tornata, "pragma_foreign_key_list('dispositivi_ascolti')"),
+            0
+        );
+    }
+
     #[test]
     fn i_vincoli_della_trentacinque_tengono() {
         let db = open_in_memory().expect("apertura");
@@ -2384,6 +2441,12 @@ mod tests {
         migrate(&tornata).expect("la 37");
         // `migrate` porta all'ultima: prima si toglie quel che è venuto dopo
         // la 037, col ritorno indietro scritto in testa a ciascuna.
+        tornata
+            .execute_batch(RITORNO_DALLA_40)
+            .expect("ritorno a mano dalla 40");
+        tornata
+            .execute_batch(RITORNO_DALLA_39)
+            .expect("ritorno a mano dalla 39");
         tornata
             .execute_batch("DROP INDEX idx_brano_vicino_vicino; PRAGMA user_version = 37;")
             .expect("ritorno a mano dalla 38");

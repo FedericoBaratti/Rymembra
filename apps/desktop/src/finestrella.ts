@@ -255,6 +255,19 @@ export function chiudiQuellaInCima(): boolean {
 }
 
 /**
+ * Chiude la finestrella in cima, dovunque sia il fuoco: il tasto Indietro del
+ * telefono (`indietro.ts`). Un dito non porta il fuoco da nessuna parte, e
+ * Indietro è rivolto sempre a quel che si vede in cima. `true` se c'era
+ * qualcosa da chiudere.
+ */
+export function chiudiLaPiuAlta(): boolean {
+  const cima = aperte[aperte.length - 1];
+  if (cima === undefined) return false;
+  cima.chiudi.current();
+  return true;
+}
+
+/**
  * Il comportamento comune delle finestrelle.
  *
  * Restituisce **solo** il riferimento da appendere alla radice della

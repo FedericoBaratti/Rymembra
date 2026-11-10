@@ -69,7 +69,7 @@ fn il_diario_della_rete_non_ha_indirizzi_ne_nomi_ne_codici() {
             nome: "PC di Marco".to_owned(),
             ospita: true,
             in_entrata: false,
-            indirizzo,
+            dove: rymembra_insieme::Dove::Lan(indirizzo),
         },
         rymembra_insieme::Evento::Aperta {
             id: IdConnessione(5),
@@ -77,7 +77,7 @@ fn il_diario_della_rete_non_ha_indirizzi_ne_nomi_ne_codici() {
             nome: "Portatile di Luca".to_owned(),
             ospita: false,
             in_entrata: true,
-            indirizzo,
+            dove: rymembra_insieme::Dove::Lan(indirizzo),
         },
         rymembra_insieme::Evento::Codice {
             id: IdConnessione(5),

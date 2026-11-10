@@ -481,7 +481,7 @@ pub fn cerca_dove_comprare(negozio: String, cosa: String) -> Esito<()> {
         }
     }
 
-    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|err| {
+    crate::browser::apri(&url).map_err(|err| {
         errore(
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("apertura del browser".to_owned()),
@@ -1139,7 +1139,7 @@ fn codice_e_causa(guasto: &AppError) -> String {
 /// produrrebbe file che nessuna scansione trova mai, cioè un prelievo riuscito
 /// che non si vede comparire — indistinguibile, da fuori, da uno fallito. Meglio
 /// non partire e dirlo.
-fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
     // `try_state` e non `state`: `state` panica se lo stato non c'è, e questa
     // funzione la chiama il filo della coda, che gira anche mentre la finestra
     // si chiude e gli stati gestiti vengono lasciati cadere. Nessuno stato vuol
@@ -1374,6 +1374,20 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
             crate::cartelle::cambiate(app);
         }
     }
+}
+
+/// La scansione della cartella dei download per chi ci ha scritto fuori dalla
+/// coda: «Scarica qui» dei dispositivi collegati (`lontano::scarico`). La
+/// stessa di [`scansione_automatica`], senza il ritorno nelle playlist, che è
+/// dei soli brani desiderati.
+pub(crate) fn scansiona_i_download(app: &AppHandle) {
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    if crate::spegnimento::in_uscita() {
+        return;
+    }
+    scansione_automatica(app, &stato);
 }
 
 /// Quel che si fa quando la coda ha finito di scaricare.

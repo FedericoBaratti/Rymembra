@@ -239,3 +239,54 @@ test("cloud e disco insieme: «Elimina dal disco» resta accesa, e decide il nuc
   const unoIgnoto = vociBrani([1, 3], inMano(nuvola(1)), fai, t);
   assert.equal(unoIgnoto.at(-1)?.spenta, undefined);
 });
+
+test("sul foglio del telefono ogni voce ha la sua icona", () => {
+  // Il foglio le disegna in colonna accanto alle etichette: una voce senza
+  // lascerebbe un buco nella colonna, e la si leggerebbe come spenta.
+  const { fai } = azioni();
+  const nulla = () => undefined;
+  const tutte = [
+    ...vociBrani([7], inMano(file(7)), fai, t),
+    ...vociBrani([7], inMano(catalogo(7)), fai, t),
+    ...vociBrani([7], inMano(nuvola(7)), fai, t),
+    // Le due voci che solo il telefono passa: il cuore e «Togli da questa
+    // playlist».
+    ...vociBrani(
+      [7],
+      inMano(file(7)),
+      { ...fai, preferito: nulla, togliDallaPlaylist: nulla, togliDallaCoda: nulla },
+      t,
+    ),
+    ...vociAlbum({ radio: nulla, dopo: nulla, accoda: nulla }, t),
+    ...vociArtista({ apri: nulla, cercaPerNome: nulla }, t),
+    ...vociPlaylist({ isSmart: false } as Playlist, { suona: nulla, rinomina: nulla, regole: nulla, cancella: nulla, esporta: nulla }, t),
+    ...vociPlaylist({ isSmart: true } as Playlist, { suona: nulla, rinomina: nulla, regole: nulla, cancella: nulla, esporta: nulla }, t),
+  ];
+  assert.deepEqual(
+    tutte.filter((v) => v.icona === undefined).map((v) => v.etichetta),
+    [],
+  );
+});
+
+test("il cuore e «togli dalla playlist» compaiono solo se chi apre il menù li passa", () => {
+  const { fai } = azioni();
+  const nulla = () => undefined;
+  const senza = vociBrani([7], inMano(file(7)), fai, t).map((v) => v.etichetta);
+  assert.ok(!senza.includes(t("track.like")));
+  assert.ok(!senza.includes(t("menu.removeFromPlaylist")));
+  const preferito = { ...file(7), liked: true };
+  const con = vociBrani(
+    [7],
+    inMano(preferito),
+    { ...fai, preferito: nulla, togliDallaPlaylist: nulla },
+    t,
+  ).map((v) => v.etichetta);
+  // Già preferito: la voce dice «Togli dai preferiti».
+  assert.ok(con.includes(t("track.unlike")));
+  assert.ok(con.includes(t("menu.removeFromPlaylist")));
+  // Su una selezione il cuore non c'è: non si sa di quale dei brani si parla.
+  const due = vociBrani([7, 8], inMano(file(7)), { ...fai, preferito: nulla }, t).map(
+    (v) => v.etichetta,
+  );
+  assert.ok(!due.includes(t("track.like")) && !due.includes(t("track.unlike")));
+});

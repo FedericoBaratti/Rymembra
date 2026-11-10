@@ -68,11 +68,13 @@ import { memo, useEffect, useState } from "react";
  */
 const LARGHEZZA_NAV_LARGA = 1000;
 
+import { useArchivio } from "../archivio";
 import { useDati } from "../dati";
 import { numero } from "../formato";
 import type { Playlist } from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
 import { t, useLingua } from "../lingue";
+import { archivioLontano, eTelefono, sfogliabili } from "../lontano";
 
 /** Dove si può andare. */
 export type Vista =
@@ -95,7 +97,25 @@ export type Vista =
   // Una destinazione senza voce nella barra: per quasi tutto il tempo non c'è
   // niente da vedere, e una voce che non risponde è una voce che si impara a
   // saltare. Ci si arriva dal toast, dalle impostazioni e dalla tastiera.
-  | "importazioni";
+  | "importazioni"
+  // Tre destinazioni che ha soltanto il telefono, e che il computer non mette
+  // mai: le schede in basso sono Home, Libreria, Cerca e Altro
+  // (`schedeTelefono.ts`), e tre di quelle pagine sul computer non esistono.
+  // Sono viste e non uno stato a parte perché la pagina la decide una funzione
+  // sola, `paginaCorrente`, e due fonti per la stessa domanda sono quel che
+  // `pagina.ts` esiste per evitare.
+  //
+  // - `playlist`: la pillola Playlist della Libreria, l'elenco delle playlist
+  //   — che sul computer sta nella barra laterale;
+  // - `cerca`: la scheda Cerca col campo ancora vuoto;
+  // - `altro`: la pagina Altro, con quel che non sta nelle altre tre.
+  | "playlist"
+  | "cerca"
+  | "altro"
+  // «Sfoglia <dispositivo>»: la musica di un altro dispositivo collegato via
+  // internet (`schermate/Dispositivo.tsx`). Quale dispositivo lo tiene `App`,
+  // come l'album aperto: la vista dice soltanto che si guarda fuori di qui.
+  | "dispositivo";
 
 /**
  * Le destinazioni della libreria, nell'ordine in cui si guardano.
@@ -142,6 +162,8 @@ export const Navigazione = memo(function Navigazione({
   onNuovaSmart,
   onImportaFile,
   onDona,
+  dispositivoAperto = null,
+  onDispositivo,
 }: {
   vista: Vista;
   playlistAperta: number | null;
@@ -168,6 +190,10 @@ export const Navigazione = memo(function Navigazione({
   onImportaFile: () => void;
   /** Apre la pagina delle donazioni nel browser di sistema. */
   onDona: () => void;
+  /** Il dispositivo che si sta sfogliando, se la vista è `dispositivo`. */
+  dispositivoAperto?: string | null | undefined;
+  /** Apre «Sfoglia» di un dispositivo collegato. */
+  onDispositivo?: ((chiave: string) => void) | undefined;
 }) {
   // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
   // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
@@ -343,6 +369,14 @@ export const Navigazione = memo(function Navigazione({
         )}
       </div>
 
+      {!inFondo && onDispositivo !== undefined && (
+        <GruppoDispositivi
+          aperto={vista === "dispositivo" ? dispositivoAperto : null}
+          stretta={stretta}
+          onApri={onDispositivo}
+        />
+      )}
+
       {/* Lo spaziatore spinge Impostazioni in fondo. Non è una svista di
           allineamento: è la posizione in cui la si cerca. */}
       <div className="spinta" hidden={inFondo} />
@@ -379,3 +413,51 @@ export const Navigazione = memo(function Navigazione({
     </nav>
   );
 });
+
+/**
+ * I dispositivi collegati via internet che rispondono adesso: uno per voce,
+ * e la voce apre «Sfoglia». Senza dispositivi online il gruppo non c'è: una
+ * voce che non porta da nessuna parte è una voce che si impara a saltare, e il
+ * posto dove collegarne uno sta nelle Impostazioni.
+ *
+ * Legge l'archivio da sé (`lontano.ts`) e non da una prop: la barra è sotto
+ * `memo`, e un dispositivo che va e viene non deve ridisegnarla tutta.
+ */
+function GruppoDispositivi({
+  aperto,
+  stretta,
+  onApri,
+}: {
+  aperto: string | null | undefined;
+  stretta: boolean;
+  onApri: (chiave: string) => void;
+}) {
+  const dispositivi = sfogliabili(useArchivio(archivioLontano));
+  if (dispositivi.length === 0) return null;
+  return (
+    <div className="gruppo">
+      <div className="titolo-gruppo nav-section-title">
+        <span>{t("nav.devices")}</span>
+      </div>
+      {dispositivi.map((d) => {
+        const qui = aperto === d.chiave;
+        return (
+          <button
+            key={d.chiave}
+            type="button"
+            className="voce nav-pill"
+            aria-current={qui ? "page" : undefined}
+            data-active={qui || undefined}
+            title={stretta ? d.nome : t("nav.devices.browse", { nome: d.nome })}
+            onClick={() => onApri(d.chiave)}
+          >
+            <Icona nome={eTelefono(d.piattaforma) ? "i-telefono" : "i-computer"} dim={19} />
+            <span className="etichetta" dir="auto">
+              {d.nome}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}

@@ -6,7 +6,11 @@ node_modules/
 # capacità dichiarate. Versionarli significherebbe avere due sorgenti di verità
 # per la stessa cosa, e la seconda si accorge di essere vecchia solo quando
 # qualcuno legge un errore che non capisce.
-apps/desktop/src-tauri/gen/
+#
+# Solo gli schemi, però: `gen/android` è il progetto Gradle dell'app Android —
+# il manifest, l'attività, il codice Kotlin — e si versiona. Il generato là
+# dentro lo escludono i suoi `.gitignore`.
+apps/desktop/src-tauri/gen/schemas/
 out/
 dist/
 dist-mobile/

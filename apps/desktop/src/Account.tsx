@@ -30,7 +30,7 @@
  * comprare», che è la risposta onesta e non un guasto.
  */
 import { useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "./dialoghi";
 
 import {
   ipc,

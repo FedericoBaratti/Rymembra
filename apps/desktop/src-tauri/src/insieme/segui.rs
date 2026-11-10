@@ -112,13 +112,39 @@ pub struct Condivisa {
     pub uscita_cambiata: AtomicBool,
 }
 
+/// Il tetto dell'andata e ritorno di uno scambio d'orologio con un host
+/// raggiunto via internet: 400 ms. Quello di casa (100 ms) scarterebbe quasi
+/// tutto quel che passa da un relay o da una rete mobile, e lo stimatore non
+/// darebbe mai uno scarto. Il filtro sul minimo resta: i campioni migliori
+/// pesano di più, e un rtt alto allarga la soglia dei salti
+/// (`Taratura::salto_ns`).
+const RTT_TETTO_INTERNET_NS: u64 = 400_000_000;
+
 impl Condivisa {
-    /// Tutto vuoto: nessuna ancora, nessuna stima.
+    /// Tutto vuoto: nessuna ancora, nessuna stima. Per le prove: il filo la
+    /// crea con [`Condivisa::nuova_per`], che sa da che strada arriva l'host.
+    #[cfg(test)]
     #[must_use]
     pub fn nuova() -> Self {
+        Self::nuova_per(false)
+    }
+
+    /// Come [`Condivisa::nuova`], per un host raggiunto via internet
+    /// (`lontano`): l'orologio accetta scambi più lenti, vedi
+    /// [`RTT_TETTO_INTERNET_NS`].
+    #[must_use]
+    pub fn nuova_per(lontano: bool) -> Self {
+        let taratura = if lontano {
+            TaraturaOrologio {
+                rtt_tetto_ns: RTT_TETTO_INTERNET_NS,
+                ..TaraturaOrologio::default()
+            }
+        } else {
+            TaraturaOrologio::default()
+        };
         Self {
             ancora: Mutex::new(None),
-            orologio: Mutex::new(Orologio::nuovo(TaraturaOrologio::default())),
+            orologio: Mutex::new(Orologio::nuovo(taratura)),
             aggancio: Mutex::new(Aggancio::default()),
             fermo: AtomicBool::new(false),
             uscita_cambiata: AtomicBool::new(false),

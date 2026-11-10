@@ -28,7 +28,7 @@
  * 3. Il costo si vede mentre lo si spende: ogni parte porta il suo, e la
  *    finestra il totale.
  */
-import { save } from "@tauri-apps/plugin-dialog";
+import { salvaCon } from "../dialoghi";
 import { Activity, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
@@ -59,6 +59,7 @@ import { Variabili } from "./Variabili";
 
 /** Quanto aspetta il salvataggio della bozza dopo l'ultima modifica. */
 const RESPIRO_SALVATAGGIO = 800;
+
 
 /** Il bersaglio di un tasto, per le due regole di `annullo.ts`. */
 function bersaglio(dove: EventTarget | null): Bersaglio | null {
@@ -333,13 +334,17 @@ export function Studio({
   const esporta = useCallback(async () => {
     const ora = attuale.current;
     try {
-      const dove = await save({
-        defaultPath: `${idBozza.current}.ryskin`,
-        filters: [{ name: "Rymembra skin", extensions: ["ryskin"] }],
-      });
-      if (dove === null) return;
-      await istantanea("esportata");
-      await ipc.studioEsporta(idBozza.current, testo(ora), dove);
+      await salvaCon(
+        {
+          defaultPath: `${idBozza.current}.ryskin`,
+          filters: [{ name: "Rymembra skin", extensions: ["ryskin"] }],
+          tipo: "application/zip",
+        },
+        async (dove) => {
+          await istantanea("esportata");
+          await ipc.studioEsporta(idBozza.current, testo(ora), dove);
+        },
+      );
     } catch (e) {
       onErrore(e);
     }
@@ -492,7 +497,11 @@ export function Studio({
   return (
     <ContestoAzioniStudio value={azioni}>
       <ContestoStatoStudio value={statoDelloStudio}>
-        <div className="studio3" data-dock={s.dock !== null || undefined} data-chat={s.chat || undefined}>
+        <div
+          className="studio3"
+          data-dock={s.dock !== null || undefined}
+          data-chat={s.chat || undefined}
+        >
           <BarraStudio
             onEsci={esci}
             onSalvaEUsa={() => void salvaEUsa()}

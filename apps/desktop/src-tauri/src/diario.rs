@@ -185,9 +185,27 @@ pub fn apri(cartella_dati: &Path) {
     // un diario che arriva da qualcun altro non si sa a quale codice appartenga
     // — e la prima domanda davanti a un guasto è sempre «quale versione».
     nota!(
-        "[diario] Rymembra {} — sessione aperta",
-        env!("CARGO_PKG_VERSION")
+        "[diario] Rymembra {} — sessione aperta{}",
+        env!("CARGO_PKG_VERSION"),
+        sistema_operativo()
     );
+}
+
+/// Su che telefono, per la prima riga: «Android 17 (API 37), A059P». Sul
+/// telefono è la seconda domanda davanti a un guasto, dopo la versione — da
+/// Android 17 la rete di casa vuole un permesso che prima non esisteva — e il
+/// diario arriva dal telefono di qualcun altro. Sul computer niente.
+fn sistema_operativo() -> String {
+    #[cfg(target_os = "android")]
+    {
+        rymembra_android::sistema::versione()
+            .map(|v| format!(" — Android {} (API {}), {}", v.android, v.api, v.modello))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        String::new()
+    }
 }
 
 /// Apre `NOME` dentro `cartella`, in coda, e conta quel che c'era già.
@@ -531,7 +549,11 @@ pub fn mostra_l_avvio_fallito(testo: &str) {
         return;
     }
     // Nelle prove mai: un dialogo bloccante fermerebbe la prova per sempre.
-    #[cfg(not(test))]
+    //
+    // E su Android nemmeno: `rfd` lì non esiste, e un dialogo nativo fuori dal
+    // ciclo degli eventi vorrebbe un'attività che a questo punto non c'è. La
+    // traccia resta il file di riserva, come per chi non legge mai i dialoghi.
+    #[cfg(all(not(test), desktop))]
     {
         let _ = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
@@ -540,7 +562,7 @@ pub fn mostra_l_avvio_fallito(testo: &str) {
             .set_buttons(rfd::MessageButtons::Ok)
             .show();
     }
-    #[cfg(test)]
+    #[cfg(any(test, mobile))]
     let _ = testo;
 }
 
@@ -712,6 +734,9 @@ pub fn diario_apri() -> Esito<()> {
             ),
         ));
     };
+    #[cfg(target_os = "android")]
+    return condividi_sul_telefono(&dove);
+    #[cfg(not(target_os = "android"))]
     tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| {
         errore(
             AppError::new(ErrorCode::InternalAborted {
@@ -720,6 +745,29 @@ pub fn diario_apri() -> Esito<()> {
             .with_cause(err.to_string()),
         )
     })
+}
+
+/// [`diario_apri`] sul telefono: una cartella non c'è nessuno che la apra —
+/// i dati dell'app sono privati, e il gestore file di Android lì non entra —
+/// quindi il diario si **condivide**: posta, messaggi, «Salva in File». Una
+/// copia nella cache, perché è la cartella che il `FileProvider` sa mostrare
+/// alle altre app; il diario vero resta dov'è.
+#[cfg(target_os = "android")]
+fn condividi_sul_telefono(dove: &Path) -> Esito<()> {
+    let guasto = |causa: String| {
+        errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("condivisione del diario".to_owned()),
+            })
+            .with_cause(causa),
+        )
+    };
+    let cache =
+        rymembra_android::sistema::cartella_cache().map_err(|err| guasto(err.to_string()))?;
+    let copia = cache.join("rymembra-diario.txt");
+    fs::copy(dove.join(NOME), &copia).map_err(|err| guasto(err.to_string()))?;
+    rymembra_android::sistema::condividi(&copia, "text/plain", "Rymembra")
+        .map_err(|err| guasto(err.to_string()))
 }
 
 /// Quanto si tiene di un messaggio arrivato dalla finestra.
@@ -946,7 +994,9 @@ mod prove {
         );
         assert!(gancio.contains("e_l_avvio_fallito("));
 
-        let main = include_str!("main.rs");
+        // In `lib.rs` e non più in `main.rs`: il ramo sta in `run`, che è da
+        // dove entrano sia l'eseguibile di Windows sia Android.
+        let main = include_str!("lib.rs");
         let ramo = main
             .split("Err(err) => {")
             .nth(1)

@@ -2,7 +2,8 @@
 //! modulo», nei commenti di qui, vuol dire in testa a `http.rs`.
 
 use super::richieste::{
-    dns_fallito, leggi_fino_a, quanto_ha_chiesto, secondi_in_ms, senza_rete, totale_da,
+    dns_fallito, leggi_fino_a, quanto_aspettare, quanto_ha_chiesto, secondi_in_ms, senza_rete,
+    stessa_origine, totale_da,
 };
 use super::*;
 
@@ -192,6 +193,21 @@ fn gli_stati_diventano_i_codici_giusti() {
 
     let guasto = rete.stato_a_errore(&risposta(503, None), "https://x");
     assert!(guasto.is_retryable(), "un servizio giù torna su");
+    assert_eq!(guasto.code().kind().code(), "net.http");
+
+    // Un 503 che dice quando tornare porta quel tempo a chi ritenta.
+    let giu = rete.stato_a_errore(&risposta(503, Some(7000)), "https://x");
+    assert_eq!(giu.code().kind().code(), "net.unavailable");
+    assert!(giu.is_retryable());
+    assert_eq!(
+        quanto_aspettare(&giu, Duration::from_secs(1)),
+        Duration::from_secs(7)
+    );
+    assert_eq!(
+        quanto_aspettare(&guasto, Duration::from_secs(1)),
+        Duration::from_secs(1),
+        "senza Retry-After l'attesa resta la nostra"
+    );
 
     // Il corpo arriva nella causa: è lì che Google dice *quale* cosa è
     // andata storta.
@@ -1424,4 +1440,50 @@ fn un_flusso_senza_lunghezza_finisce_sul_416_e_non_su_un_guasto() {
 fn un_proxy_per_protocollo_non_si_legge_e_si_va_diretti() {
     assert!(ureq::Proxy::new("http://http=proxy:80;https=proxy:443").is_err());
     assert!(ureq::Proxy::new("http://proxy.ufficio:8080").is_ok());
+}
+
+#[test]
+fn con_il_permesso_in_casa_un_rimando_sullo_stesso_server_lo_porta() {
+    // Il caso di WebDAV: un file rimandato a un altro percorso dello stesso
+    // server, che senza la password risponde 401.
+    let servitore = Servitore::avvia(risponde_con_un_salto);
+    let rete = servitore
+        .cliente(Rimandi::Sorvegliati {
+            quanti: 3,
+            cancello: Cancello::nuovo(|_| true),
+        })
+        .con_permesso_in_casa();
+    let pezzo = rete
+        .intervallo_con(
+            &format!("{}/uno", servitore.base),
+            0,
+            4,
+            &|| true,
+            &[("Authorization", "Basic segreto")],
+        )
+        .expect("il salto è ammesso");
+    assert_eq!(pezzo.byte, b"ciao");
+    let richieste = servitore.richieste();
+    assert_eq!(richieste.len(), 2);
+    assert!(
+        richieste[1].contains("Basic segreto"),
+        "stessa origine: il permesso segue. {}",
+        richieste[1]
+    );
+}
+
+#[test]
+fn l_origine_e_schema_ospite_e_porta() {
+    assert!(stessa_origine(
+        "https://cloud.esempio.it/remote.php/dav/a",
+        "https://CLOUD.esempio.it/altro?x=1"
+    ));
+    assert!(!stessa_origine(
+        "https://cloud.esempio.it/a",
+        "https://cdn.esempio.it/a"
+    ));
+    assert!(!stessa_origine("https://x.it/a", "http://x.it/a"));
+    assert!(!stessa_origine("https://x.it/a", "https://x.it:8443/a"));
+    assert!(stessa_origine("https://u@x.it/a", "https://x.it/b"));
+    assert!(!stessa_origine("non un indirizzo", "non un indirizzo"));
 }

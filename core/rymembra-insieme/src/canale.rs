@@ -43,8 +43,7 @@
 //! una connessione quindi lo dice all'altro capo (`Chiudo`, poi la metà in
 //! scrittura), e l'altro, chiudendo a sua volta, sveglia il nostro filo.
 
-use std::io::{ErrorKind, Read as _, Write as _};
-use std::net::TcpStream;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,6 +51,7 @@ use snow::{Builder, StatelessTransportState};
 
 use crate::cornice::{self, ETICHETTA, MASSIMO_NOISE, Ricompositore, Tipo};
 use crate::identita::{ChiavePubblica, Identita};
+use crate::presa::Presa;
 
 /// Lo schema Noise. Uno solo, scritto qui: è il nome che finisce nell'hash
 /// della stretta, quindi due PC con due schemi diversi non si capiscono.
@@ -145,7 +145,7 @@ pub(crate) const PRIMO_MASSIMO: usize = 1024;
 /// # Errori
 ///
 /// Vedi [`Guasto`]; [`Guasto::Protocollo`] oltre [`PRIMO_MASSIMO`].
-pub(crate) fn primo_messaggio(presa: &mut TcpStream, scadenza: Instant) -> Result<Vec<u8>, Guasto> {
+pub(crate) fn primo_messaggio(presa: &mut dyn Presa, scadenza: Instant) -> Result<Vec<u8>, Guasto> {
     let mut testa = [0_u8; 2];
     leggi_esatto(presa, &mut testa, scadenza)?;
     let lunghezza = usize::from(u16::from_be_bytes(testa));
@@ -175,7 +175,7 @@ pub(crate) fn primo_messaggio(presa: &mut TcpStream, scadenza: Instant) -> Resul
 /// risponde in tempo; [`Guasto::Protocollo`] se manda qualcosa che non è una
 /// stretta Noise di questo schema.
 pub(crate) fn stringi(
-    presa: &mut TcpStream,
+    presa: &mut dyn Presa,
     identita: &Identita,
     iniziatore: bool,
     primo: Option<&[u8]>,
@@ -308,7 +308,7 @@ impl Cifratore {
     /// # Errori
     ///
     /// Quelli del socket.
-    pub(crate) fn manda(&mut self, presa: &mut TcpStream) -> Result<(), Guasto> {
+    pub(crate) fn manda(&mut self, presa: &mut dyn Presa) -> Result<(), Guasto> {
         let esito = presa.write_all(&self.uscita);
         self.uscita.clear();
         if self.uscita.capacity() > BUFFER_TENUTO {
@@ -371,7 +371,7 @@ impl Decifratore {
     /// Vedi [`Guasto`].
     pub(crate) fn prossimo_coi_tetti(
         &mut self,
-        presa: &mut TcpStream,
+        presa: &mut dyn Presa,
         silenzio: Duration,
         adesso_ns: fn() -> u64,
         tetti: &dyn Fn() -> (usize, usize, usize),
@@ -393,7 +393,7 @@ impl Decifratore {
     #[cfg(test)]
     pub(crate) fn prossimo(
         &mut self,
-        presa: &mut TcpStream,
+        presa: &mut dyn Presa,
         silenzio: Duration,
         adesso_ns: fn() -> u64,
     ) -> Result<(Tipo, Vec<u8>, u64), Guasto> {
@@ -404,7 +404,7 @@ impl Decifratore {
     /// prove: il messaggio come è arrivato.
     fn prossimo_dentro(
         &mut self,
-        presa: &mut TcpStream,
+        presa: &mut dyn Presa,
         silenzio: Duration,
         adesso_ns: fn() -> u64,
         tetti: Option<&dyn Fn() -> (usize, usize, usize)>,
@@ -431,7 +431,7 @@ impl Decifratore {
     /// Vedi [`Guasto`].
     pub(crate) fn prossimo_entro(
         &mut self,
-        presa: &mut TcpStream,
+        presa: &mut dyn Presa,
         scadenza: Instant,
     ) -> Result<(Tipo, Vec<u8>), Guasto> {
         loop {
@@ -474,7 +474,7 @@ impl Decifratore {
 
 /// Scrive un messaggio Noise con la sua lunghezza davanti, entro `scadenza`.
 fn scrivi_cornice(
-    presa: &mut TcpStream,
+    presa: &mut dyn Presa,
     messaggio: &[u8],
     scadenza: Instant,
 ) -> Result<(), Guasto> {
@@ -494,7 +494,7 @@ fn scrivi_cornice(
 /// Legge un messaggio Noise in `buffer` (lungo [`MASSIMO_NOISE`]), entro
 /// `scadenza`. Restituisce quanti byte.
 fn leggi_cornice(
-    presa: &mut TcpStream,
+    presa: &mut dyn Presa,
     buffer: &mut [u8],
     scadenza: Instant,
 ) -> Result<usize, Guasto> {
@@ -514,7 +514,7 @@ fn leggi_cornice(
 /// La scadenza del socket si rimette prima di ogni `read` col tempo che
 /// resta: così è una scadenza per tutta la cornice, e non per ogni pezzo che
 /// il TCP consegna.
-fn leggi_esatto(presa: &mut TcpStream, buffer: &mut [u8], scadenza: Instant) -> Result<(), Guasto> {
+fn leggi_esatto(presa: &mut dyn Presa, buffer: &mut [u8], scadenza: Instant) -> Result<(), Guasto> {
     let mut fatti = 0;
     while fatti < buffer.len() {
         let resta = scadenza.saturating_duration_since(Instant::now());
@@ -536,7 +536,7 @@ fn leggi_esatto(presa: &mut TcpStream, buffer: &mut [u8], scadenza: Instant) -> 
 #[cfg(test)]
 pub(crate) mod prove {
     use super::*;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
 
     /// Due capi di una connessione su `127.0.0.1`, stretta fatta.
     pub(crate) fn coppia() -> ((TcpStream, Canale), (TcpStream, Canale)) {

@@ -1,0 +1,644 @@
+//! «Scarica qui»: i brani di un altro dispositivo copiati in questa libreria.
+//!
+//! # Come
+//!
+//! Un filo solo, un file alla volta, a finestre da [`MASSIMO_PEZZO`] (2 MiB):
+//! quel che l'altro concede per domanda. Il file si scrive accanto a dove
+//! starà, come `<nome>.<ext>.part`, e si rinomina solo intero e scritto su
+//! disco: la scansione non vede mai un brano a metà, perché `.part` non è
+//! un'estensione che legge.
+//!
+//! # Dove
+//!
+//! Nella cartella dei download, la stessa dei brani di catalogo
+//! (`procura::cartella_download`): `<Artista>/<Album>/<NN - Titolo>.<ext>`, coi
+//! nomi ripuliti come lì ([`segmento_sicuro`]). Un file che c'è già con la
+//! stessa dimensione è lo stesso brano, e si salta; uno diverso con lo stesso
+//! nome resta dov'è, e il nuovo prende ` (2)`.
+//!
+//! Alla fine della coda si scansiona la cartella dei download, come dopo un
+//! prelievo di catalogo: i brani entrano in libreria, e da lì sono di questo
+//! dispositivo — i suoi ascolti, le sue playlist.
+//!
+//! # Cosa non scende
+//!
+//! I brani di un'immagine CD (un `.cue` con un file solo): scaricarli vorrebbe
+//! dire tagliare il file, o portare l'immagine intera per un brano. In questa
+//! versione si saltano, e la finestra spegne il tasto dicendo perché.
+//!
+//! # La rete
+//!
+//! Come lo streaming: «Solo Wi-Fi» vale (`dati_permessi`, guardato a ogni
+//! file, perché il Wi-Fi può andarsene a metà coda), e finché scende qualcosa
+//! il nodo del telefono non va a dormire (`InVolo`).
+
+use std::collections::VecDeque;
+use std::fs::{self, File};
+use std::io::{ErrorKind, Write as _};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use rymembra_app::library::condivisa::BranoRemoto;
+use rymembra_domain::destinazione::segmento_sicuro;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_lontano::protocollo::MASSIMO_PEZZO;
+use serde::Serialize;
+use tauri::AppHandle;
+
+use super::filo::prendi;
+use super::sfoglia::{InVolo, Pezzi, ViaNodo, dati_permessi, estensione_buona};
+use super::{comune, in_disparte};
+use crate::errore::Esito;
+use crate::nota;
+use crate::spegnimento::Emette as _;
+
+/// Quanti brani al più in una richiesta: un album intero, o una ricerca.
+const MASSIMI_PER_VOLTA: usize = 5000;
+
+/// Quante varianti ` (2)`, ` (3)`… si provano prima di arrendersi.
+const MASSIME_VARIANTI: u32 = 20;
+
+/// A che punto è «Scarica qui», per la finestra (`lontano:scarico`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatoScaricoIpc {
+    /// Il brano che sta scendendo; `None` a coda ferma.
+    pub titolo: Option<String>,
+    /// I byte del brano in corso, e quanti sono in tutto.
+    pub byte: u64,
+    pub totale: u64,
+    /// I brani che aspettano dopo quello in corso.
+    pub in_coda: usize,
+    /// Da quando la coda è ripartita: scritti, saltati (c'erano già, o sono di
+    /// un'immagine CD), non riusciti.
+    pub fatti: u32,
+    pub saltati: u32,
+    pub falliti: u32,
+    /// Il codice dell'ultimo guasto, per la finestra.
+    pub errore: Option<String>,
+}
+
+impl StatoScaricoIpc {
+    const FERMO: Self = Self {
+        titolo: None,
+        byte: 0,
+        totale: 0,
+        in_coda: 0,
+        fatti: 0,
+        saltati: 0,
+        falliti: 0,
+        errore: None,
+    };
+}
+
+/// Un brano da scaricare, e da chi.
+struct Lavoro {
+    dispositivo: String,
+    brano: BranoRemoto,
+}
+
+/// La coda, e il filo che la svuota.
+struct Coda {
+    lavori: VecDeque<Lavoro>,
+    /// Il filo gira.
+    filo: bool,
+    /// Cresce a ogni «Annulla»: il brano in corso lo confronta fra una finestra
+    /// e l'altra, e si ferma.
+    giro: u64,
+    stato: StatoScaricoIpc,
+}
+
+static CODA: Mutex<Coda> = Mutex::new(Coda {
+    lavori: VecDeque::new(),
+    filo: false,
+    giro: 0,
+    stato: StatoScaricoIpc::FERMO,
+});
+
+/// Com'è finito un brano.
+#[derive(Debug, PartialEq, Eq)]
+enum Fatto {
+    Scritto(PathBuf),
+    /// C'era già, con la stessa dimensione.
+    Uguale,
+}
+
+/// Il nome da dare al file: libero, o già occupato dallo stesso brano.
+#[derive(Debug, PartialEq, Eq)]
+enum Posto {
+    Libero(PathBuf),
+    Uguale,
+}
+
+fn annuncia(app: &AppHandle) {
+    let stato = prendi(&CODA).stato.clone();
+    app.emetti("lontano:scarico", stato);
+}
+
+/// Il guasto di un'operazione sul disco, nella forma del catalogo.
+fn guasto_io(percorso: &Path, err: &std::io::Error) -> AppError {
+    let path = percorso.to_string_lossy().into_owned();
+    match err.kind() {
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded => {
+            AppError::new(ErrorCode::FsDiskFull { path: Some(path) })
+        }
+        ErrorKind::PermissionDenied => AppError::new(ErrorCode::FsPermissionDenied { path }),
+        _ => AppError::new(ErrorCode::FsWriteFailed {
+            path,
+            detail: Some(err.to_string()),
+        }),
+    }
+}
+
+/// La cartella e il nome base di un brano, relativi alla cartella dei download.
+fn dove_va(brano: &BranoRemoto) -> (PathBuf, String) {
+    let artista = if brano.artist.trim().is_empty() {
+        "Sconosciuto"
+    } else {
+        brano.artist.as_str()
+    };
+    // Senza album è un singolo: la stessa regola dei brani di catalogo.
+    let album = if brano.album.trim().is_empty() {
+        "Singoli"
+    } else {
+        brano.album.as_str()
+    };
+    let nome = match brano.track_number.filter(|n| *n > 0) {
+        Some(numero) => format!("{numero:02} - {}", brano.title),
+        None => brano.title.clone(),
+    };
+    (
+        PathBuf::from(segmento_sicuro(artista)).join(segmento_sicuro(album)),
+        segmento_sicuro(&nome),
+    )
+}
+
+/// Il primo nome libero in `cartella`, o `Uguale` se lo stesso brano — stesso
+/// nome, stessa dimensione — c'è già.
+fn posto_libero(cartella: &Path, base: &str, estensione: &str, dimensione: u64) -> Posto {
+    for variante in 1..=MASSIME_VARIANTI {
+        let nome = if variante == 1 {
+            format!("{base}.{estensione}")
+        } else {
+            format!("{base} ({variante}).{estensione}")
+        };
+        let percorso = cartella.join(nome);
+        match fs::metadata(&percorso) {
+            Ok(dati) if dati.is_file() && dati.len() == dimensione => return Posto::Uguale,
+            Ok(_) => {}
+            Err(_) => return Posto::Libero(percorso),
+        }
+    }
+    // Venti file diversi con lo stesso nome: il ventunesimo sovrascriverebbe
+    // qualcosa. Si dice «c'è già», che è il meno sbagliato.
+    Posto::Uguale
+}
+
+/// La coda è stata annullata dopo che il brano `giro` è partito.
+fn annullato(giro: u64) -> bool {
+    prendi(&CODA).giro != giro || crate::spegnimento::in_uscita()
+}
+
+fn interrotto() -> AppError {
+    AppError::new(ErrorCode::InternalAborted {
+        what: Some("scaricamento annullato".to_owned()),
+    })
+}
+
+/// Copia i byte di un brano in `parte`, a finestre, e lo scrive su disco.
+/// `avanza` riceve i byte scritti e il totale.
+///
+/// La dimensione e la versione sono quelle della prima risposta, non quelle
+/// dell'elenco: il database dell'altro può essere indietro rispetto al disco
+/// (vedi `sfoglia::DaLontano::versione`). Da lì in poi non devono cambiare.
+fn copia(
+    pezzi: &impl Pezzi,
+    brano: &BranoRemoto,
+    parte: &Path,
+    giro: u64,
+    avanza: &mut dyn FnMut(u64, u64),
+) -> Result<(), AppError> {
+    let mut file = File::create(parte).map_err(|err| guasto_io(parte, &err))?;
+    let mut fissati: Option<(u64, String)> = None;
+    let mut da = 0_u64;
+    loop {
+        if fissati.as_ref().is_some_and(|(totale, _)| da >= *totale) {
+            break;
+        }
+        if annullato(giro) {
+            return Err(interrotto());
+        }
+        let quanti = fissati
+            .as_ref()
+            .map_or(MASSIMO_PEZZO, |(totale, _)| totale.saturating_sub(da))
+            .min(MASSIMO_PEZZO);
+        let (byte, dimensione, versione) = pezzi.pezzo(brano.id, da, quanti)?;
+        // Un file cambiato sotto la copia darebbe un brano fatto di due: si
+        // ferma, come lo streaming.
+        match &fissati {
+            Some((totale, prima)) if *totale != dimensione || *prima != versione => {
+                return Err(AppError::new(ErrorCode::LontanoFileCambiato));
+            }
+            Some(_) => {}
+            None => fissati = Some((dimensione, versione)),
+        }
+        if da >= dimensione {
+            break;
+        }
+        if byte.is_empty() {
+            return Err(AppError::new(ErrorCode::LontanoProtocollo)
+                .with_cause("una lettura prima della fine non ha portato byte"));
+        }
+        let quanti = usize::try_from(quanti)
+            .unwrap_or(usize::MAX)
+            .min(byte.len());
+        let utili = byte.get(..quanti).unwrap_or(&byte);
+        file.write_all(utili)
+            .map_err(|err| guasto_io(parte, &err))?;
+        da = da.saturating_add(u64::try_from(utili.len()).unwrap_or(0));
+        avanza(da, dimensione);
+    }
+    file.sync_all().map_err(|err| guasto_io(parte, &err))
+}
+
+/// Scarica un brano: dal posto libero al file rinominato.
+fn scarica_uno(app: &AppHandle, lavoro: &Lavoro, giro: u64) -> Result<Fatto, AppError> {
+    let brano = &lavoro.brano;
+    if brano.segmento.is_some() {
+        return Ok(Fatto::Uguale);
+    }
+    let comune = comune(app)?;
+    if !comune.associato(&lavoro.dispositivo) {
+        return Err(AppError::new(ErrorCode::LontanoNonAssociato));
+    }
+    dati_permessi(&comune)?;
+    let cartella = crate::procura::cartella_download(app).ok_or_else(|| {
+        AppError::new(ErrorCode::FsNotFound {
+            path: "cartella di scaricamento".to_owned(),
+        })
+    })?;
+    let estensione = estensione_buona(&brano.estensione).ok_or_else(|| {
+        AppError::new(ErrorCode::LontanoProtocollo).with_cause("un brano senza un'estensione buona")
+    })?;
+    let (relativa, base) = dove_va(brano);
+    let cartella = cartella.join(relativa);
+    let totale = u64::try_from(brano.dimensione).unwrap_or(0);
+    let finale = match posto_libero(&cartella, &base, &estensione, totale) {
+        Posto::Uguale => return Ok(Fatto::Uguale),
+        Posto::Libero(percorso) => percorso,
+    };
+    fs::create_dir_all(&cartella).map_err(|err| guasto_io(&cartella, &err))?;
+    let mut parte = finale.clone().into_os_string();
+    parte.push(".part");
+    let parte = PathBuf::from(parte);
+
+    let _in_volo = InVolo::nuovo(Arc::clone(&comune));
+    let pezzi = ViaNodo {
+        comune,
+        chiave: lavoro.dispositivo.clone(),
+    };
+    let mut ultimo = 0_u64;
+    let mut avanza = |byte: u64, totale: u64| {
+        {
+            let mut coda = prendi(&CODA);
+            coda.stato.byte = byte;
+            coda.stato.totale = totale;
+        }
+        // Ogni finestra è 2 MiB: abbastanza di rado per un evento ciascuna.
+        if byte != ultimo {
+            ultimo = byte;
+            annuncia(app);
+        }
+    };
+    if let Err(err) = copia(&pezzi, brano, &parte, giro, &mut avanza) {
+        let _ = fs::remove_file(&parte);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&parte, &finale) {
+        let _ = fs::remove_file(&parte);
+        return Err(guasto_io(&finale, &err));
+    }
+    Ok(Fatto::Scritto(finale))
+}
+
+/// Sul telefono, la notifica del servizio in primo piano che tiene vivo il
+/// processo finché la coda non è vuota (`ScaricoInCorso`): il brano `numero`
+/// di `di`, o spenta.
+#[cfg(target_os = "android")]
+fn notifica(acceso: bool, numero: u32, di: u32, titolo: &str) {
+    if let Err(err) = rymembra_android::sistema::scarico(acceso, numero, di, titolo) {
+        nota!("[lontano] la notifica dello scaricamento non si cambia: {err}");
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+const fn notifica(_: bool, _: u32, _: u32, _: &str) {}
+
+/// Il filo: svuota la coda, poi scansiona quel che è arrivato.
+fn gira(app: &AppHandle) {
+    let mut scritti = 0_u32;
+    loop {
+        let (lavoro, giro, numero, di) = {
+            let mut coda = prendi(&CODA);
+            let Some(lavoro) = coda.lavori.pop_front() else {
+                coda.filo = false;
+                coda.stato.titolo = None;
+                coda.stato.byte = 0;
+                coda.stato.totale = 0;
+                coda.stato.in_coda = 0;
+                break;
+            };
+            coda.stato.in_coda = coda.lavori.len();
+            coda.stato.titolo = Some(lavoro.brano.title.clone());
+            coda.stato.byte = 0;
+            coda.stato.totale = u64::try_from(lavoro.brano.dimensione).unwrap_or(0);
+            let giro = coda.giro;
+            let numero = coda
+                .stato
+                .fatti
+                .saturating_add(coda.stato.saltati)
+                .saturating_add(coda.stato.falliti)
+                .saturating_add(1);
+            let di = numero.saturating_add(u32::try_from(coda.lavori.len()).unwrap_or(u32::MAX));
+            (lavoro, giro, numero, di)
+        };
+        notifica(true, numero, di, &lavoro.brano.title);
+        annuncia(app);
+        let esito = scarica_uno(app, &lavoro, giro);
+        let mut coda = prendi(&CODA);
+        match esito {
+            Ok(Fatto::Scritto(_)) => {
+                coda.stato.fatti = coda.stato.fatti.saturating_add(1);
+                scritti = scritti.saturating_add(1);
+            }
+            Ok(Fatto::Uguale) => coda.stato.saltati = coda.stato.saltati.saturating_add(1),
+            // Annullato: non è un guasto, e il resto della coda è già vuoto.
+            Err(_) if coda.giro != giro => {}
+            Err(err) => {
+                let codice = err.code().kind().code();
+                nota!("[lontano] un brano non è sceso codice={codice}");
+                coda.stato.falliti = coda.stato.falliti.saturating_add(1);
+                coda.stato.errore = Some(codice.to_owned());
+            }
+        }
+        drop(coda);
+        if crate::spegnimento::in_uscita() {
+            prendi(&CODA).lavori.clear();
+        }
+    }
+    notifica(false, 0, 0, "");
+    annuncia(app);
+    if scritti > 0 && !crate::spegnimento::in_uscita() {
+        nota!("[lontano] scesi {scritti} brani: si scansiona la cartella dei download");
+        crate::procura::scansiona_i_download(app);
+    }
+}
+
+/// Mette in coda i brani di `chiave`, e fa partire il filo se è fermo.
+fn accoda(
+    app: &AppHandle,
+    chiave: &str,
+    brani: Vec<BranoRemoto>,
+) -> Result<StatoScaricoIpc, AppError> {
+    if brani.len() > MASSIMI_PER_VOLTA {
+        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "lontano".to_owned(),
+            detail: Some(format!("al più {MASSIMI_PER_VOLTA} brani per volta")),
+        }));
+    }
+    let comune = comune(app)?;
+    if !comune.associato(chiave) {
+        return Err(AppError::new(ErrorCode::LontanoNonAssociato));
+    }
+    if comune.nodo().is_none() {
+        return Err(AppError::new(ErrorCode::LontanoSpento));
+    }
+    dati_permessi(&comune)?;
+    if crate::procura::cartella_download(app).is_none() {
+        return Err(AppError::new(ErrorCode::FsNotFound {
+            path: "cartella di scaricamento".to_owned(),
+        }));
+    }
+
+    let mut coda = prendi(&CODA);
+    let parte = !coda.filo;
+    if parte {
+        // Una coda nuova: i conti ricominciano.
+        coda.stato = StatoScaricoIpc::FERMO;
+    }
+    for brano in brani {
+        if brano.segmento.is_some() {
+            coda.stato.saltati = coda.stato.saltati.saturating_add(1);
+            continue;
+        }
+        coda.lavori.push_back(Lavoro {
+            dispositivo: chiave.to_owned(),
+            brano,
+        });
+    }
+    coda.stato.in_coda = coda.lavori.len();
+    let parte = parte && !coda.lavori.is_empty();
+    if parte {
+        coda.filo = true;
+    }
+    let stato = coda.stato.clone();
+    drop(coda);
+
+    if parte {
+        let per_il_filo = app.clone();
+        let partito = std::thread::Builder::new()
+            .name("rymembra-lontano-scarico".to_owned())
+            .spawn(move || gira(&per_il_filo));
+        if let Err(err) = partito {
+            let mut coda = prendi(&CODA);
+            coda.filo = false;
+            coda.lavori.clear();
+            coda.stato.in_coda = 0;
+            return Err(AppError::new(ErrorCode::InternalUnexpected {
+                detail: Some("il filo dello scaricamento non parte".to_owned()),
+            })
+            .with_cause(err.to_string()));
+        }
+    }
+    annuncia(app);
+    Ok(stato)
+}
+
+/// «Scarica qui»: i brani nella cartella dei download di questo dispositivo.
+///
+/// # Errori
+///
+/// `lontano.nonAssociato`, `lontano.spento`, `lontano.reteAConsumo`,
+/// `fs.notFound` senza una cartella dove scrivere, `ipc.payloadInvalid` per
+/// una lista troppo lunga. I guasti dei singoli brani arrivano con
+/// `lontano:scarico`.
+#[tauri::command]
+pub async fn lontano_scarica(
+    app: AppHandle,
+    chiave: String,
+    brani: Vec<BranoRemoto>,
+) -> Esito<StatoScaricoIpc> {
+    in_disparte(move || accoda(&app, &chiave, brani)).await
+}
+
+/// Svuota la coda e ferma il brano in corso, il cui `.part` si cancella.
+#[tauri::command]
+pub fn lontano_scarico_annulla(app: AppHandle) -> Esito<StatoScaricoIpc> {
+    let stato = {
+        let mut coda = prendi(&CODA);
+        coda.lavori.clear();
+        coda.giro = coda.giro.wrapping_add(1);
+        coda.stato.in_coda = 0;
+        coda.stato.clone()
+    };
+    annuncia(&app);
+    Ok(stato)
+}
+
+/// A che punto è, adesso: per la finestra che si apre a coda avviata.
+#[tauri::command]
+pub fn lontano_scarico_stato() -> Esito<StatoScaricoIpc> {
+    Ok(prendi(&CODA).stato.clone())
+}
+
+#[cfg(test)]
+mod prove {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn brano(titolo: &str) -> BranoRemoto {
+        BranoRemoto {
+            id: 7,
+            title: titolo.to_owned(),
+            artist: "AC/DC".to_owned(),
+            album: "Back in Black".to_owned(),
+            album_key: None,
+            track_number: Some(3),
+            disc_number: None,
+            duration_ms: 1_000,
+            year: None,
+            cover_art_hash: None,
+            play_count: 0,
+            liked: false,
+            rating: 0,
+            estensione: "flac".to_owned(),
+            dimensione: 10,
+            versione: "v1".to_owned(),
+            segmento: None,
+        }
+    }
+
+    #[test]
+    fn il_brano_va_sotto_artista_e_album_coi_nomi_ripuliti() {
+        let (cartella, base) = dove_va(&brano("Shoot to Thrill"));
+        assert_eq!(cartella, PathBuf::from("AC DC").join("Back in Black"));
+        assert_eq!(base, "03 - Shoot to Thrill");
+
+        let mut senza = brano("Solo");
+        senza.album = String::new();
+        senza.artist = " ".to_owned();
+        senza.track_number = None;
+        let (cartella, base) = dove_va(&senza);
+        assert_eq!(cartella, PathBuf::from("Sconosciuto").join("Singoli"));
+        assert_eq!(base, "Solo");
+    }
+
+    #[test]
+    fn lo_stesso_brano_si_salta_e_un_altro_prende_una_variante() {
+        let cartella = tempfile::tempdir().unwrap();
+        assert_eq!(
+            posto_libero(cartella.path(), "01 - X", "flac", 10),
+            Posto::Libero(cartella.path().join("01 - X.flac"))
+        );
+        fs::write(cartella.path().join("01 - X.flac"), [0_u8; 10]).unwrap();
+        assert_eq!(
+            posto_libero(cartella.path(), "01 - X", "flac", 10),
+            Posto::Uguale
+        );
+        assert_eq!(
+            posto_libero(cartella.path(), "01 - X", "flac", 11),
+            Posto::Libero(cartella.path().join("01 - X (2).flac"))
+        );
+    }
+
+    /// Un file in memoria, servito a pezzi come farebbe l'altro. Dopo
+    /// `cambia_dopo` domande la sua versione cambia: riscritto a metà copia.
+    #[derive(Debug)]
+    struct InMemoria {
+        byte: Vec<u8>,
+        versione: String,
+        domande: AtomicUsize,
+        cambia_dopo: Option<usize>,
+    }
+
+    impl Pezzi for InMemoria {
+        fn pezzo(
+            &self,
+            _brano: i64,
+            da: u64,
+            quanti: u64,
+        ) -> Result<(Vec<u8>, u64, String), AppError> {
+            let fatte = self.domande.fetch_add(1, Ordering::Relaxed);
+            let da = usize::try_from(da).unwrap();
+            let fino = (da + usize::try_from(quanti).unwrap()).min(self.byte.len());
+            let versione = if self.cambia_dopo.is_some_and(|n| fatte >= n) {
+                format!("{}-riscritto", self.versione)
+            } else {
+                self.versione.clone()
+            };
+            Ok((
+                self.byte[da..fino].to_vec(),
+                u64::try_from(self.byte.len()).unwrap(),
+                versione,
+            ))
+        }
+    }
+
+    #[test]
+    fn la_copia_scrive_tutti_i_byte() {
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.part");
+        let byte: Vec<u8> = (0..=255).cycle().take(5 * 1024 * 1024 + 3).collect();
+        // L'elenco è vecchio — un'altra dimensione, un'altra versione — e
+        // conta il disco.
+        let b = brano("X");
+        let pezzi = InMemoria {
+            byte: byte.clone(),
+            versione: "v7".to_owned(),
+            domande: AtomicUsize::new(0),
+            cambia_dopo: None,
+        };
+        let giro = prendi(&CODA).giro;
+        let mut visti = Vec::new();
+        copia(&pezzi, &b, &parte, giro, &mut |n, totale| {
+            visti.push(n);
+            assert_eq!(totale, u64::try_from(byte.len()).unwrap());
+        })
+        .unwrap();
+        assert_eq!(fs::read(&parte).unwrap(), byte);
+        // Tre finestre da 2 MiB per cinque mebibyte e tre byte.
+        assert_eq!(pezzi.domande.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            visti.last().copied(),
+            Some(u64::try_from(byte.len()).unwrap())
+        );
+    }
+
+    #[test]
+    fn un_file_cambiato_ferma_la_copia() {
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.part");
+        let b = brano("X");
+        let pezzi = InMemoria {
+            byte: vec![1; 5 * 1024 * 1024],
+            versione: "v2".to_owned(),
+            domande: AtomicUsize::new(0),
+            cambia_dopo: Some(1),
+        };
+        let giro = prendi(&CODA).giro;
+        let err = copia(&pezzi, &b, &parte, giro, &mut |_, _| {}).unwrap_err();
+        assert_eq!(err.code().kind().code(), "lontano.fileCambiato");
+        assert_eq!(pezzi.domande.load(Ordering::Relaxed), 2);
+    }
+}

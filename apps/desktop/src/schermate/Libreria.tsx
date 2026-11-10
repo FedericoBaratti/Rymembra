@@ -11,6 +11,7 @@
 import { useContext, useEffect, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 
+import { ConAltro } from "../parti/ConAltro";
 import { Copertina } from "../Copertina";
 import { brani_, nomeArtista, numero, titoloAlbum } from "../formato";
 import { useFuoco } from "../fuoco";
@@ -19,6 +20,7 @@ import { t } from "../lingue";
 import type { VistaLibreria } from "../pagina";
 import { useVersione } from "../pagine";
 import { Icona, type NomeIcona } from "../parti/Icone";
+import { MOBILE } from "../piattaforma";
 import { COPERTINA_IN_VOLO, Presenza, Volo } from "../presenza";
 import type { SorgenteRada } from "../rada";
 import { conIndice, suonoAlbum, useQuelCheSuona } from "../segnali";
@@ -144,7 +146,8 @@ export function GrigliaAlbum({
   /** La riga sotto il titolo: chi suona, o l'anno. */
   sotto: "artista" | "anno";
   onApri: (album: Album) => void;
-  onMenu: (e: React.MouseEvent, chiave: string) => void;
+  /** Il disco intero come terzo argomento: la testata del foglio del telefono. */
+  onMenu: (e: React.MouseEvent, chiave: string, album?: Album) => void;
   /** Lo scorrevole: senza, la griglia si disegna per intero. */
   scorrevole?: RefObject<HTMLDivElement | null> | undefined;
   /** Lo scorrimento si ricorda: solo sotto un `<Activity>`. */
@@ -202,51 +205,60 @@ export function GrigliaAlbum({
       continue;
     }
     schede.push(
-      <button
+      <ConAltro
         key={chiave}
-        type="button"
-        className="scheda card"
-        {...suonoAlbum(ora, a.albumKey)}
-        style={conIndice(i)}
-        data-indice={i}
-        tabIndex={i === fermata ? 0 : -1}
-        onFocus={() => fuoco.segna(i)}
-        onClick={() => onApri(a)}
-        onContextMenu={(e) => onMenu(e, a.albumKey)}
+        etichetta={t("row.more.aria", { titolo: titoloAlbum(a.title) })}
+        onMenu={(e) => onMenu(e, a.albumKey, a)}
       >
-        <Presenza
-          parte="card-cover"
-          nome={a.albumKey === inVolo ? COPERTINA_IN_VOLO : undefined}
-          compagna="hero-art"
+        <button
+          type="button"
+          className="scheda card"
+          {...suonoAlbum(ora, a.albumKey)}
+          style={conIndice(i)}
+          data-indice={i}
+          tabIndex={i === fermata ? 0 : -1}
+          onFocus={() => fuoco.segna(i)}
+          onClick={() => onApri(a)}
+          onContextMenu={(e) => onMenu(e, a.albumKey, a)}
         >
-          <Copertina
-            hash={a.coverArtHash}
-            titolo={titoloAlbum(a.title)}
-            classe="copertina card-cover"
-            misura="scheda"
-            larghezza={finestra.larghezzaColonna}
-            /* Il titolo è scritto sotto: un `alt` lo farebbe leggere due volte. */
-            accanto
-          />
-        </Presenza>
-        {/* `dir="auto"` su titolo e artista: un nome arabo o ebraico si legge
-            da destra, e la direzione la decide il nome, non la pagina. */}
-        <div className="titolo card-title" title={titoloAlbum(a.title)} dir="auto">
-          {titoloAlbum(a.title)}
-        </div>
-        {sotto === "artista" ? (
-          <div className="sotto card-subtitle" title={nomeArtista(a.artist)}>
-            <bdi>{nomeArtista(a.artist)}</bdi>
-            {a.totalTracks > 1 ? ` · ${numero(a.totalTracks)}` : ""}
+          <Presenza
+            parte="card-cover"
+            nome={a.albumKey === inVolo ? COPERTINA_IN_VOLO : undefined}
+            compagna="hero-art"
+          >
+            <Copertina
+              hash={a.coverArtHash}
+              titolo={titoloAlbum(a.title)}
+              classe="copertina card-cover"
+              misura="scheda"
+              larghezza={finestra.larghezzaColonna}
+              /* Il titolo è scritto sotto: un `alt` lo farebbe leggere due volte. */
+              accanto
+            />
+          </Presenza>
+          {/* `dir="auto"` su titolo e artista: un nome arabo o ebraico si legge
+              da destra, e la direzione la decide il nome, non la pagina. */}
+          <div className="titolo card-title" title={titoloAlbum(a.title)} dir="auto">
+            {titoloAlbum(a.title)}
           </div>
-        ) : (
-          <div className="sotto card-subtitle">
-            {a.year ?? ""}
-            {a.year && a.totalTracks > 1 ? " · " : ""}
-            {a.totalTracks > 1 ? brani_(a.totalTracks) : ""}
-          </div>
-        )}
-      </button>,
+          {sotto === "artista" ? (
+            <div className="sotto card-subtitle" title={nomeArtista(a.artist)}>
+              <bdi>{nomeArtista(a.artist)}</bdi>
+              {/* Sul telefono con la parola: «Aurora Boreale · 3», da solo
+                  sotto una copertina, non diceva tre cosa. */}
+              {a.totalTracks > 1
+                ? ` · ${MOBILE ? brani_(a.totalTracks) : numero(a.totalTracks)}`
+                : ""}
+            </div>
+          ) : (
+            <div className="sotto card-subtitle">
+              {a.year ?? ""}
+              {a.year && a.totalTracks > 1 ? " · " : ""}
+              {a.totalTracks > 1 ? brani_(a.totalTracks) : ""}
+            </div>
+          )}
+        </button>
+      </ConAltro>,
     );
   }
 
@@ -337,12 +349,18 @@ export function testaLibreria({
   vista,
   numeri,
   cartelle,
+  playlist = 0,
   ordinamento,
 }: {
   vista: VistaLibreria;
   numeri: Avvio["numeri"] | undefined;
   /** Quante cartelle si sorvegliano. */
   cartelle: number;
+  /**
+   * Quante playlist ci sono: le conta solo la pillola Playlist del telefono,
+   * l'unica pagina che ne è l'elenco.
+   */
+  playlist?: number | undefined;
   /** Solo sui Brani, l'unica vista che si ordina. */
   ordinamento?: { etichetta: string; onApri: (e: React.MouseEvent) => void } | undefined;
 }) {
@@ -355,6 +373,7 @@ export function testaLibreria({
     // punto potrebbe non essere ancora stato costruito.
     cartelle: [t("nav.folders"), t("page.folders.sub", { n: cartelle })],
     preferiti: [t("nav.favorites"), t("page.library.liked", { n: numeri?.liked ?? 0 })],
+    playlist: [t("playlist.group"), t("page.library.playlists", { n: playlist })],
   };
   const [titolo, sotto] = titoli[vista];
   return {

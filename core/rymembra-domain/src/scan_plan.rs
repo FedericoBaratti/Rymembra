@@ -21,7 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::cue::brano_d_immagine;
 use crate::paths::{
-    MIN_TRACK_BYTES, PathRules, is_in_trash, is_supported_audio_path, is_under, path_key,
+    MIN_TRACK_BYTES, PathRules, base_name, is_in_trash, is_supported_audio_path, is_under,
+    path_key, tenuto_da_parte_da_android,
 };
 
 /// Un file trovato dalla camminata sul disco.
@@ -236,6 +237,20 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
 
     for file in input.found {
         let key = path_key(&file.path, rules);
+
+        // Un file che Android tiene da parte — nel suo Cestino, o ancora in
+        // scrittura — si salta **senza** contarlo fra i visti. Gli altri
+        // scartati restano visti perché la loro riga non deve sparire per un
+        // file a metà; qui invece una riga con quel nome non dovrebbe esistere:
+        // è il brano eliminato che la sorveglianza aveva rimesso in elenco
+        // prima che `tenuto_da_parte_da_android` ci fosse, e così se ne va.
+        if tenuto_da_parte_da_android(base_name(&file.path)) {
+            plan.skipped.push(SkippedFile {
+                file: file.clone(),
+                reason: SkipReason::NonAudio,
+            });
+            continue;
+        }
 
         if !seen.insert(key.clone()) {
             plan.skipped.push(SkippedFile {
@@ -512,6 +527,39 @@ mod tests {
         );
         assert_eq!(fermo.unchanged, 1);
         assert!(fermo.to_update.is_empty());
+    }
+
+    #[test]
+    fn la_riga_di_un_file_nel_cestino_di_android_se_ne_va() {
+        // Il brano eliminato sul telefono: `MediaStore` lo rinomina accanto a
+        // sé, e una versione di prima lo aveva rimesso in libreria con quel
+        // nome. Il file c'è ancora, ma la riga deve sparire, e nessuna nuova
+        // entra al suo posto.
+        let nel_cestino = "/storage/emulated/0/Music/A/.trashed-1796321480-01 I.mp3";
+        let p = plan(
+            &["/storage/emulated/0/Music"],
+            vec![
+                file(nel_cestino, 5_000_000, 1000),
+                file("/storage/emulated/0/Music/A/02 II.mp3", 5_000_000, 1000),
+            ],
+            vec![
+                track(1, nel_cestino, 1000),
+                track(2, "/storage/emulated/0/Music/A/02 II.mp3", 1000),
+            ],
+        );
+        assert_eq!(p.unchanged, 1);
+        assert!(p.to_insert.is_empty());
+        assert_eq!(
+            p.to_remove
+                .iter()
+                .map(|r| (r.track.id, r.reason))
+                .collect::<Vec<_>>(),
+            vec![(1, RemoveReason::Disappeared)]
+        );
+        assert_eq!(
+            p.skipped.iter().map(|s| s.reason).collect::<Vec<_>>(),
+            vec![SkipReason::NonAudio]
+        );
     }
 
     #[test]

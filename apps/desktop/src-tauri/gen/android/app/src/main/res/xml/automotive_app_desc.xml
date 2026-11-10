@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android Auto: Rymembra si presenta come lettore musicale. L'albero da
+     sfogliare lo dà `ServizioMusica` (vedi `Biblioteca.kt`). -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

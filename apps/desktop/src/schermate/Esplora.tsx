@@ -46,6 +46,7 @@ import { conIndice } from "../segnali";
 import { useDati } from "../dati";
 import { StatoVuoto } from "./Libreria";
 import { provenienzaDi } from "../provenienzaEsplora";
+import { MOBILE } from "../piattaforma";
 
 /**
  * Che cosa dire dopo un «aggiungi tutti».
@@ -196,8 +197,10 @@ export function Esplora({
    */
   const { anteprima } = useDati();
   useEffect(() => {
-    // Non sulla tela dello Studio, dove il fuoco è dello Studio.
-    if (!anteprima) campo.current?.focus();
+    // Non sulla tela dello Studio, dove il fuoco è dello Studio. E non sul
+    // telefono, dove il fuoco in una casella è la tastiera che copre mezzo
+    // schermo: chi entra a guardare i cataloghi non ha ancora deciso di scrivere.
+    if (!anteprima && !MOBILE) campo.current?.focus();
   }, [anteprima]);
 
   const segna = useCallback((url: string, attivo: boolean) => {

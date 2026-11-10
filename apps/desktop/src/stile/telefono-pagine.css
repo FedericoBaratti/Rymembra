@@ -1,0 +1,1455 @@
+/* Il telefono: le schede, le barre in cima e le pagine che ha solo lui.
+ *
+ * Come `telefono.css`, ogni regola vale con `data-forma="telefono"` sulla
+ * radice e sul computer non tocca niente (`test/telefono.test.ts` lo
+ * controlla). Le classi qui sotto non sono parti del registro delle skin: una
+ * skin dà al telefono i colori e i caratteri — tutto quel che c'è scritto qui è
+ * un token — e non le forme, che sono di questo foglio.
+ *
+ * La misura di partenza è il dito: quarantotto pixel per ogni cosa che si
+ * tocca, come vuole Android, e mai due bersagli attaccati.
+ */
+
+/* ── le schede in basso ──────────────────────────────────────────────────── */
+
+/* Il fondo arriva fin sotto la barra dei gesti, e le schede stanno sopra di
+   lei: `[data-scafale]` sul telefono non lascia spazio in basso apposta. */
+:root[data-forma="telefono"] .barra-schede {
+  display: flex;
+  align-items: stretch;
+  padding: 0 var(--spazio-2) var(--riquadro-basso, env(safe-area-inset-bottom, 0px));
+  background: var(--color-surface-1);
+  border-top: 1px solid var(--hairline);
+}
+
+:root[data-forma="telefono"] .scheda-telefono {
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--barra-nav-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-2);
+  font: 500 12px/1.2 var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* La pillola dietro l'icona: si vede col pollice sopra l'etichetta. */
+:root[data-forma="telefono"] .pillola-scheda {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 32px;
+  border-radius: 16px;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .scheda-telefono[data-accesa] {
+  color: var(--color-text-1);
+  font-weight: 650;
+}
+
+:root[data-forma="telefono"] .scheda-telefono[data-accesa] .pillola-scheda {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+:root[data-forma="telefono"] .scheda-telefono:active .pillola-scheda {
+  background: var(--color-surface-2);
+}
+
+/* Un'importazione che scarica: un punto sull'angolo dell'icona di Altro. */
+:root[data-forma="telefono"] .punto-scheda {
+  position: absolute;
+  top: 3px;
+  right: 15px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--color-surface-1);
+}
+
+:root[data-forma="telefono"] .etichetta-scheda {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── la barra in cima alle pagine ────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .barra-alta {
+  display: flex;
+  flex-direction: column;
+  padding: var(--spazio-1) var(--spazio-1) var(--spazio-2);
+}
+
+:root[data-forma="telefono"] .riga-barra {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  min-height: var(--barra-alta-h);
+}
+
+:root[data-forma="telefono"] .barra-alta[data-grande] .riga-barra {
+  min-height: 68px;
+}
+
+:root[data-forma="telefono"] .titoli-barra {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* Allineato al bordo del contenuto (`--content-x`, sedici pixel sul
+     telefono); accanto alla freccia gli basta il respiro della freccia. */
+  padding-inline-start: 12px;
+}
+
+:root[data-forma="telefono"] .tasto-barra + .titoli-barra {
+  padding-inline-start: 0;
+}
+
+:root[data-forma="telefono"] .titolo-barra {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font: 600 19px/1.25 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Il titolo grande delle prime pagine: il carattere da titolo della skin, come
+   le intestazioni del computer (`navigazione.css`). */
+:root[data-forma="telefono"] .barra-alta[data-grande] .titolo-barra {
+  /* Su due righe, e non tagliato a una: «Riprendi da dove avevi lasciato»
+     troncato a metà è una frase rotta, non un titolo corto. */
+  display: -webkit-box;
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.12;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  text-wrap: balance;
+}
+
+:root[data-forma="telefono"] .occhiello-barra {
+  margin-bottom: 2px;
+  color: var(--color-text-3);
+  font: 600 10.5px/1.2 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+:root[data-forma="telefono"] .sotto-barra {
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-forma="telefono"] .azioni-barra {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+:root[data-forma="telefono"] .tasto-barra {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: var(--dito);
+  height: var(--dito);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-1);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .tasto-barra:active,
+:root[data-forma="telefono"] .tasto-barra[aria-pressed="true"] {
+  background: var(--color-surface-2);
+}
+
+/* ── le pillole della Libreria ───────────────────────────────────────────── */
+
+/* Scorrono di lato fino al bordo dello schermo: tagliate dal bordo, si capisce
+   che ce ne sono altre; tagliate da un margine, sembrerebbero finite. La prima
+   parte dal bordo del contenuto (`--content-x`), sotto la prima lettera del
+   titolo: col margine largo della skin partiva sei pixel più in là. */
+:root[data-forma="telefono"] .pillole-libreria {
+  display: flex;
+  gap: var(--spazio-2);
+  margin: 0 calc(-1 * var(--spazio-1));
+  padding: var(--spazio-1) var(--content-x);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: var(--content-x);
+}
+
+:root[data-forma="telefono"] .pillola-libreria {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  background: var(--color-surface-1);
+  color: var(--color-text-2);
+  font: 500 14px/1 var(--font-sans);
+  white-space: nowrap;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .pillola-libreria[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+/* Il bersaglio cresce in altezza, la pillola no: trentasei pixel si vedono
+   bene, quarantotto si toccano bene. */
+:root[data-forma="telefono"] .pillola-libreria {
+  position: relative;
+}
+:root[data-forma="telefono"] .pillola-libreria::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+/* ── Cerca ───────────────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .campo-cerca {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  height: 52px;
+  /* Al bordo del contenuto, come il titolo sopra: la barra ha già il suo
+     respiro di lato (`--spazio-1`). */
+  margin: var(--spazio-1) calc(var(--content-x) - var(--spazio-1)) var(--spazio-2);
+  padding: 0 var(--spazio-1) 0 16px;
+  border-radius: 26px;
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  transition: box-shadow var(--transition-fast);
+}
+
+/* `hidden` da solo non basta: `display: flex` qui sopra lo vincerebbe. */
+:root[data-forma="telefono"] .campo-cerca[hidden] {
+  display: none;
+}
+
+:root[data-forma="telefono"] .campo-cerca:focus-within {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+:root[data-forma="telefono"] .campo-barra {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-text-1);
+  /* Sedici pixel: sotto, alcune tastiere ingrandiscono la pagina al fuoco. */
+  font: 400 16px/1 var(--font-sans);
+}
+
+:root[data-forma="telefono"] .campo-barra::placeholder {
+  color: var(--color-text-3);
+}
+
+/* La crocetta del browser: c'è la nostra, più grande e dello stesso colore. */
+:root[data-forma="telefono"] .campo-barra::-webkit-search-cancel-button {
+  display: none;
+}
+
+:root[data-forma="telefono"] .svuota-cerca {
+  width: 44px;
+  height: 44px;
+  color: var(--color-text-2);
+}
+
+:root[data-forma="telefono"] .sotto-cerca {
+  margin: calc(-1 * var(--spazio-1)) var(--spazio-4) var(--spazio-2);
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+
+/* Il segmento a tutta larghezza, con due bersagli da dito. */
+:root[data-forma="telefono"] .barra-cerca .segmento-cerca {
+  display: flex;
+  margin: 0 calc(var(--content-x) - var(--spazio-1)) var(--spazio-1);
+}
+
+:root[data-forma="telefono"] .barra-cerca .segmento-cerca .linguetta {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: 40px;
+  font-size: 14px;
+}
+
+/* ── Altro ───────────────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .altro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-4);
+  padding: var(--spazio-1) 0 var(--spazio-5);
+}
+
+:root[data-forma="telefono"] .gruppo-altro {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Gli stessi titoli dei gruppi delle Impostazioni, qui sotto: stesso
+   carattere, stesso colore, stesso rientro. */
+:root[data-forma="telefono"] .titolo-gruppo-altro {
+  margin: 0 var(--spazio-1) var(--spazio-2);
+  color: var(--color-text-2);
+  font: 600 11px/1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+:root[data-forma="telefono"] .righe-altro {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-1);
+}
+
+:root[data-forma="telefono"] .riga-altro {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 68px;
+  padding: 10px 12px 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  text-align: start;
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .riga-altro + .riga-altro {
+  border-top: 1px solid var(--hairline);
+}
+
+:root[data-forma="telefono"] .riga-altro:active {
+  background: var(--color-surface-2);
+}
+
+:root[data-forma="telefono"] .tessera-altro {
+  flex: 0 0 40px;
+  display: grid;
+  place-items: center;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+:root[data-forma="telefono"] .testi-altro {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root[data-forma="telefono"] .nome-altro {
+  font: 500 16px/1.25 var(--font-sans);
+}
+
+:root[data-forma="telefono"] .sotto-altro {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+:root[data-forma="telefono"] .freccia-altro {
+  flex: 0 0 auto;
+  display: grid;
+  color: var(--color-text-3);
+}
+
+/* ── le playlist ─────────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .elenco-playlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  padding-top: var(--spazio-1);
+}
+
+:root[data-forma="telefono"] .nuove-playlist {
+  display: flex;
+  gap: var(--spazio-2);
+}
+
+:root[data-forma="telefono"] .nuova-playlist {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px var(--spazio-2) 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-1);
+  color: var(--color-text-1);
+  font: 500 13px/1.2 var(--font-sans);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .nuova-playlist .icona {
+  color: var(--accent);
+}
+
+:root[data-forma="telefono"] .nuova-playlist:active {
+  background: var(--color-surface-2);
+}
+
+:root[data-forma="telefono"] .righe-playlist {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:root[data-forma="telefono"] .riga-playlist {
+  display: flex;
+  align-items: center;
+  min-height: var(--riga-h);
+}
+
+:root[data-forma="telefono"] .apri-playlist {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: var(--spazio-2) 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  text-align: start;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+:root[data-forma="telefono"] .tessera-playlist {
+  flex: 0 0 48px;
+  display: grid;
+  place-items: center;
+  height: 48px;
+  border-radius: 10px;
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+}
+
+:root[data-forma="telefono"] .testi-playlist {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root[data-forma="telefono"] .nome-playlist {
+  overflow: hidden;
+  font: 500 16px/1.25 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-forma="telefono"] .sotto-playlist {
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Il tasto ⋮ di una riga: quarantaquattro pixel, l'ultimo a destra, col
+   bordo del contenuto a metà della sua aria. */
+:root[data-forma="telefono"] .tasto-altro {
+  flex: 0 0 44px;
+  display: grid;
+  place-items: center;
+  height: 44px;
+  margin-inline-end: -10px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-2);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .tasto-altro:active {
+  background: var(--color-surface-2);
+}
+
+/* ── gli elenchi dei brani ───────────────────────────────────────────────── */
+
+/* Una riga è copertina, titolo con l'artista sotto, e ⋮. Il resto delle
+   colonne del computer, cioè il numero, l'album, le stelle, la durata, il cuore
+   e la × della playlist, qui non ha posto: in quattrocento pixel ogni colonna
+   in più è un pezzo di titolo in meno. Il cuore e la × stanno nel menù del ⋮
+   (`menuBrani.ts`), le stelle a schermo intero.
+
+   L'altezza è una sola per tutte, `--riga-h`: la finestra virtuale misura la
+   prima riga e con quella mette le altre (vedi `.riga` in `libreria.css`). */
+/* L'elenco esce di dodici pixel per lato nel margine del contenuto, e le righe
+   rientrano di altrettanto: la copertina sta sotto la prima lettera del titolo
+   della pagina, come le copertine delle schede, e la tinta della riga che suona
+   arriva quasi al bordo dello schermo. Prima l'elenco stava dentro il margine e
+   le righe rientravano ancora: le copertine partivano quattordici pixel più in
+   là di tutto il resto. */
+:root[data-forma="telefono"] .elenco {
+  --colonne-riga: 48px minmax(0, 1fr) 44px;
+  margin-inline: -12px;
+}
+
+:root[data-forma="telefono"] .elenco .riga {
+  gap: 14px;
+  box-sizing: border-box;
+  min-height: var(--riga-h);
+  padding: var(--spazio-2) var(--spazio-2) var(--spazio-2) 12px;
+  border-radius: var(--radius-card);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .elenco .riga .indice,
+:root[data-forma="telefono"] .elenco .riga .disco,
+:root[data-forma="telefono"] .elenco .riga .stelle,
+:root[data-forma="telefono"] .elenco .riga .durata,
+:root[data-forma="telefono"] .elenco .riga .cuore,
+:root[data-forma="telefono"] .elenco .riga .cella-comando > .tasto {
+  display: none;
+}
+
+/* Sul telefono `:hover` resta acceso sull'ultima riga toccata, finché non se
+   ne tocca un'altra: la riga sembrava scelta. Il segno del tocco è `:active`,
+   finché il dito è giù. La riga che suona e quella scelta tengono la loro
+   tinta. */
+:root[data-forma="telefono"] .elenco .riga:hover {
+  background: transparent;
+}
+
+:root[data-forma="telefono"] .elenco .riga[aria-current="true"],
+:root[data-forma="telefono"] .elenco .riga[aria-current="true"]:hover {
+  background: var(--accent-soft);
+}
+
+:root[data-forma="telefono"] .elenco .riga[data-scelta],
+:root[data-forma="telefono"] .elenco .riga[data-scelta]:hover {
+  background: var(--accent-soft);
+}
+
+:root[data-forma="telefono"] .elenco .riga:active {
+  background: color-mix(in srgb, var(--color-text-1) 8%, transparent);
+}
+
+/* La miniatura è una scatola vera, e non `contents` come le altre celle: sopra
+   di lei, nella stessa casella, c'è il cerchio della scelta. */
+:root[data-forma="telefono"] .elenco .riga .cella-miniatura {
+  display: grid;
+  width: 48px;
+  height: 48px;
+}
+
+:root[data-forma="telefono"] .elenco .riga .cella-miniatura > * {
+  grid-area: 1 / 1;
+}
+
+:root[data-forma="telefono"] .elenco .riga .miniatura {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  transition: opacity var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .elenco .riga .miniatura.vuota {
+  font-size: 18px;
+}
+
+:root[data-forma="telefono"] .elenco .riga .nome {
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+:root[data-forma="telefono"] .elenco .riga .autore {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+:root[data-forma="telefono"] .elenco .riga .tasto-altro {
+  width: 44px;
+}
+
+/* Mentre si sceglie: la miniatura si spegne, e sopra c'è il cerchio. Il ⋮
+   resta al suo posto ma non si vede: un tocco lì sceglie, come altrove sulla
+   riga, e il menù dei scelti sta nella barra di sotto. */
+:root[data-forma="telefono"] .elenco .riga[data-in-selezione] .miniatura {
+  opacity: 0.35;
+}
+
+:root[data-forma="telefono"] .elenco .riga[data-in-selezione] .tasto-altro {
+  visibility: hidden;
+}
+
+:root[data-forma="telefono"] .spunta-riga {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-2);
+  pointer-events: none;
+}
+
+:root[data-forma="telefono"] .riga[data-scelta] .spunta-riga {
+  color: var(--accent);
+}
+
+@starting-style {
+  :root[data-forma="telefono"] .spunta-riga {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+:root[data-forma="telefono"] .spunta-riga {
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+/* Il segnaposto ha la stessa griglia: la miniatura, le due barre, e il posto
+   del ⋮. Le sue altre celle sono vuote o barre, e qui non ci sono. */
+:root[data-forma="telefono"] .elenco .riga.finta > span:not(.altro-finto),
+:root[data-forma="telefono"] .elenco .riga.finta > .disco,
+:root[data-forma="telefono"] .elenco .riga.finta > .riga-finta {
+  display: none;
+}
+
+:root[data-forma="telefono"] .elenco .riga.finta > .miniatura {
+  width: 48px;
+  height: 48px;
+}
+
+:root[data-forma="telefono"] .elenco .riga.finta > .altro-finto {
+  width: 44px;
+}
+
+/* L'intestazione delle colonne non si vede: «#», «Titolo», «Durata» sopra
+   colonne che non ci sono. Resta per chi ascolta lo schermo, che è il suo
+   lettore vero (vedi `TestaElenco`). */
+:root[data-forma="telefono"] .elenco .testa-elenco {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── la selezione ────────────────────────────────────────────────────────── */
+
+/* La barra della selezione: una scheda in due file nel posto del mini lettore,
+   con la stessa forma. Sopra quanti, la × e «tutti»; sotto i cinque comandi.
+   Tutto in basso, e la ragione sta in `BarraSelezioneTelefono.tsx`. */
+:root[data-forma="telefono"] .barra-selezione-telefono {
+  display: flex;
+  flex-direction: column;
+  height: var(--selezione-h);
+  margin: 0 var(--player-gap) var(--player-gap);
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--accent) 12%, var(--color-surface-2));
+  box-shadow: var(--shadow-2);
+  transition:
+    transform var(--transition-foglio),
+    opacity var(--transition-foglio);
+}
+
+@starting-style {
+  :root[data-forma="telefono"] .barra-selezione-telefono {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+
+:root[data-forma="telefono"] .testa-selezione {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  height: 44px;
+  padding: 0 var(--spazio-1);
+  border-bottom: 1px solid var(--hairline);
+}
+
+:root[data-forma="telefono"] .chiudi-selezione {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-1);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .quanti-selezione {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font: 600 15px/1.2 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* «Seleziona tutto», a parole: un'icona sola non direbbe se sceglie o toglie. */
+:root[data-forma="telefono"] .tutti-selezione {
+  min-height: 44px;
+  padding: 0 var(--spazio-3);
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--accent);
+  font: 600 14px/1 var(--font-sans);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .chiudi-selezione:active,
+:root[data-forma="telefono"] .tutti-selezione:active {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+}
+
+:root[data-forma="telefono"] .azioni-selezione {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+:root[data-forma="telefono"] .azione-selezione {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .azione-selezione:active {
+  background: color-mix(in oklab, var(--color-text-1) 10%, transparent);
+}
+
+:root[data-forma="telefono"] .azione-selezione:disabled {
+  color: var(--color-text-3);
+}
+
+:root[data-forma="telefono"] .etichetta-azione {
+  max-width: 100%;
+  overflow: hidden;
+  font: 500 11px/1.2 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── il ⋮ delle schede ───────────────────────────────────────────────────── */
+
+/* L'involucro della scheda e del suo ⋮ (`parti/ConAltro.tsx`): prende il posto
+   della scheda nella griglia, e la scheda dentro lo riempie. */
+:root[data-forma="telefono"] .scheda-guscio {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+:root[data-forma="telefono"] .scheda-guscio > :first-child {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Il testo sotto la copertina si ferma prima del ⋮, che sta sul suo angolo. */
+:root[data-forma="telefono"] .scheda-guscio .card-title,
+:root[data-forma="telefono"] .scheda-guscio .card-subtitle,
+:root[data-forma="telefono"] .scheda-guscio .scheda-artista .nome,
+:root[data-forma="telefono"] .scheda-guscio .scheda-artista .quanti {
+  padding-inline-end: 28px;
+}
+
+:root[data-forma="telefono"] .altro-scheda {
+  position: absolute;
+  right: -10px;
+  bottom: -6px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-2);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .altro-scheda:active {
+  background: var(--color-surface-2);
+}
+
+/* ── la testata dei dischi, degli artisti e delle playlist ───────────────── */
+
+/* `TestataDettaglio`: la copertina, il nome, due tasti larghi. Dentro la
+   pagina e non nella barra, così scorre via con lei. */
+:root[data-forma="telefono"] .testata-dettaglio {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-1);
+  /* Da bordo a bordo dello schermo: il contenuto ha il suo margine
+     (`--content-x`), e la tinta dietro deve arrivare oltre. */
+  margin: 0 calc(var(--content-x) * -1) var(--spazio-3);
+  padding: var(--spazio-3) calc(var(--content-x) + var(--spazio-2)) var(--spazio-2);
+  text-align: center;
+}
+
+/* La copertina sfocata dietro, che sfuma nel fondo della pagina. */
+:root[data-forma="telefono"] .sfondo-dettaglio {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(180deg, black 0%, black 40%, transparent 100%);
+}
+
+:root[data-forma="telefono"] .tinta-dettaglio {
+  position: absolute;
+  inset: -20%;
+  width: 140%;
+  height: 140%;
+  object-fit: cover;
+  filter: blur(48px) saturate(1.3);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+:root[data-forma="telefono"] .testata-dettaglio > :not(.sfondo-dettaglio) {
+  position: relative;
+}
+
+:root[data-forma="telefono"] .arte-dettaglio {
+  width: min(62vw, 240px);
+  aspect-ratio: 1;
+  margin-bottom: var(--spazio-3);
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-3);
+}
+
+:root[data-forma="telefono"] .testata-dettaglio[data-rotonda] .arte-dettaglio {
+  border-radius: 50%;
+}
+
+:root[data-forma="telefono"] .arte-dettaglio .copertina-dettaglio {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--color-surface-2);
+  object-fit: cover;
+}
+
+:root[data-forma="telefono"] .arte-dettaglio .copertina-dettaglio.vuota {
+  font-size: 56px;
+}
+
+:root[data-forma="telefono"] .mosaico-dettaglio {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  height: 100%;
+}
+
+:root[data-forma="telefono"] .mosaico-dettaglio .tassello-dettaglio {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  background: var(--color-surface-2);
+  object-fit: cover;
+}
+
+:root[data-forma="telefono"] .occhiello-dettaglio {
+  color: var(--color-text-2);
+  font: 600 10px/1.3 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+:root[data-forma="telefono"] .titolo-dettaglio {
+  display: -webkit-box;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font: 700 26px/1.15 var(--font-dot);
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+:root[data-forma="telefono"] .sotto-dettaglio {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+:root[data-forma="telefono"] .tasti-dettaglio {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spazio-2);
+  width: 100%;
+  margin-top: var(--spazio-3);
+}
+
+:root[data-forma="telefono"] .riproduci-dettaglio,
+:root[data-forma="telefono"] .casuale-dettaglio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spazio-2);
+  min-height: var(--dito);
+  padding: 0 var(--spazio-3);
+  border: 1px solid transparent;
+  border-radius: 99px;
+  font: 600 15px/1 var(--font-sans);
+  transition:
+    background-color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .riproduci-dettaglio {
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+
+:root[data-forma="telefono"] .casuale-dettaglio {
+  border-color: var(--hairline);
+  background: var(--color-surface-1);
+  color: var(--color-text-1);
+}
+
+:root[data-forma="telefono"] .riproduci-dettaglio:active,
+:root[data-forma="telefono"] .casuale-dettaglio:active {
+  transform: scale(0.97);
+}
+
+:root[data-forma="telefono"] .riproduci-dettaglio:disabled,
+:root[data-forma="telefono"] .casuale-dettaglio:disabled {
+  opacity: 0.5;
+}
+
+/* ── il titolo che si ritira ─────────────────────────────────────────────── */
+
+/* La barra di un disco mostra il suo titolo solo quando quello grande della
+   testata (`TestataDettaglio`) è uscito di sotto di lei. Una timeline di
+   vista sul titolo grande, pubblicata a tutto lo scafale con `timeline-scope`
+   perché la barra non sta dentro la pagina che scorre ma sopra: l'animazione
+   la guida lo scorrimento, e nessun ascoltatore di `scroll` ridisegna niente.
+
+   Dentro `@supports`: dove la WebView non conosce le timeline, il titolo resta
+   nella barra sempre, com'era. */
+@supports (animation-timeline: view()) {
+  /* Anche la timeline dello scorrimento della pagina (`--pagina`, sotto): le
+     due nello stesso `timeline-scope`, perché una seconda dichiarazione
+     toglierebbe la prima. */
+  :root[data-forma="telefono"] [data-scafale] {
+    timeline-scope: --titolo-dettaglio, --pagina;
+  }
+
+  :root[data-forma="telefono"] .titolo-dettaglio {
+    view-timeline-name: --titolo-dettaglio;
+  }
+
+  :root[data-forma="telefono"] .barra-alta[data-ritirato] .titoli-barra {
+    animation-name: titolo-barra-compare;
+    animation-fill-mode: both;
+    animation-timing-function: linear;
+    animation-timeline: --titolo-dettaglio;
+    animation-range: exit 0% exit 100%;
+  }
+}
+
+/* ── il filo sotto la barra ──────────────────────────────────────────────── */
+
+/* Quando la pagina scorre, sotto la barra in cima compare un filo: la pagina
+   le passa sotto, e senza il filo il primo titolo veniva tagliato di netto a
+   metà, come se finisse lì. A pagina in cima il filo non c'è, e la barra è
+   tutt'uno con lei. Lo guida lo scorrimento (`scroll-timeline`, pubblicata
+   allo scafale qui sopra), come il titolo che si ritira: nessun ascoltatore.
+   Nelle pagine con la testata sotto la barra vale il fondo che arriva
+   (`barra-alta-piena`, più sotto), che il filo lo porta con sé. */
+@supports (animation-timeline: view()) {
+  :root[data-forma="telefono"] .posto-content .dentro {
+    scroll-timeline: --pagina block;
+  }
+
+  :root[data-forma="telefono"] .barra-alta {
+    animation-name: barra-alta-staccata;
+    animation-fill-mode: both;
+    animation-timing-function: linear;
+    animation-timeline: --pagina;
+    animation-range: 0px 24px;
+  }
+}
+
+@keyframes barra-alta-staccata {
+  from {
+    box-shadow: 0 1px 0 transparent;
+  }
+  to {
+    box-shadow: 0 1px 0 var(--hairline);
+  }
+}
+
+@keyframes titolo-barra-compare {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── la testata sotto la barra ───────────────────────────────────────────── */
+
+/* Un disco, un artista, una playlist: la tinta della copertina sale fin sotto
+   la barra di stato, e la barra in cima galleggia trasparente sopra di lei.
+   Prima la barra stava sopra la pagina col fondo della pagina, e la tinta
+   cominciava sotto di lei con uno stacco dritto, da bordo a bordo.
+
+   La barra esce dal flusso e il contenuto parte dal bordo dello schermo; la
+   testata si tiene sotto di lei col suo `padding`. Il fondo della barra arriva
+   con lo scorrimento, sulla stessa timeline del titolo che si ritira (sopra):
+   pieno quando il titolo grande le è passato sotto. Quindi tutto dentro
+   `@supports`: senza timeline la barra resterebbe trasparente sopra le righe
+   che scorrono, e lì vale la disposizione di prima.
+
+   Non quando in cima alla pagina c'è un avviso (`.aderenti-pagina`, che si
+   attacca al bordo di sopra di quel che scorre): finirebbe sotto la barra. */
+@supports (animation-timeline: view()) {
+  /* Quanto la barra copre dall'alto: la barra di stato, e la barra stessa
+     (il suo respiro sopra e sotto, e la sua riga). */
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) {
+    --sopra-testata: calc(
+      var(--riquadro-alto, env(safe-area-inset-top, 0px)) + var(--spazio-1) + var(--barra-alta-h) +
+        var(--spazio-2)
+    );
+    position: relative;
+    padding-top: 0;
+  }
+
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) > .posto-page-header {
+    position: absolute;
+    top: 0;
+    right: var(--riquadro-destra, 0px);
+    left: var(--riquadro-sinistra, 0px);
+    z-index: var(--strato-barra);
+  }
+
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) .barra-alta {
+    padding-top: calc(var(--riquadro-alto, env(safe-area-inset-top, 0px)) + var(--spazio-1));
+    animation-name: barra-alta-piena;
+    animation-fill-mode: both;
+    animation-timing-function: linear;
+    animation-timeline: --titolo-dettaglio;
+    animation-range: exit 0% exit 100%;
+  }
+
+  /* I due tasti, sopra la copertina che scorre, su un cerchio della
+     superficie: chiara o scura che sia la copertina, la freccia si legge. Il
+     cerchio è di quaranta pixel dentro il bersaglio da quarantotto, che resta
+     quello: tutto il bersaglio tondo sembrava un bottone pesante, attaccato al
+     bordo dello schermo. */
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) .barra-alta .tasto-barra {
+    padding: 4px;
+    background: color-mix(in srgb, var(--color-surface-0) 38%, transparent);
+    background-clip: content-box;
+  }
+
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) .barra-alta .tasto-barra:active {
+    background: var(--color-surface-2);
+  }
+
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) .posto-content .testata-dettaglio {
+    padding-top: calc(var(--sopra-testata) + var(--spazio-2));
+  }
+
+  /* Il titolo «esce» quando passa sotto il bordo di sotto della barra, non
+     sotto quello dello schermo: da lì lo copre lei. */
+  :root[data-forma="telefono"] [data-scafale]:has(> .posto-page-header .barra-alta[data-ritirato]):has(> .posto-content .testata-dettaglio):not(:has(.aderenti-pagina > :not(.solo-lettori))) .titolo-dettaglio {
+    view-timeline-inset: var(--sopra-testata) 0px;
+  }
+}
+
+@keyframes barra-alta-piena {
+  from {
+    background-color: transparent;
+    box-shadow: 0 1px 0 transparent;
+  }
+  to {
+    background-color: var(--color-surface-0);
+    box-shadow: 0 1px 0 var(--hairline);
+  }
+}
+
+/* ── le Impostazioni a due livelli ───────────────────────────────────────── */
+
+/* L'elenco delle sezioni, o la sezione sola: mai tutte e due. Vedi
+   `inSezione` in `Impostazioni.tsx`. */
+:root[data-forma="telefono"] .impostazioni[data-livelli]:not([data-in-sezione]) > .corpo,
+:root[data-forma="telefono"] .impostazioni[data-livelli][data-in-sezione] > .indice {
+  display: none;
+}
+
+/* L'elenco: righe da un dito raggruppate in schede, come la pagina Altro, al
+   posto della striscia di pillole che scorreva di lato. Dopo il prefisso
+   abbastanza classi da vincere sulla parte `nav-pill` di una skin. */
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  overflow: visible;
+  padding-bottom: var(--spazio-4);
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .filtro-impostazioni {
+  flex: none;
+  min-height: var(--dito);
+  margin-bottom: var(--spazio-1);
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .titolo-gruppo {
+  display: block;
+  margin: var(--spazio-4) var(--spazio-1) var(--spazio-2);
+  /* Il rientro del computer no: qui il titolo sta allineato a quelli di Altro. */
+  padding: 0;
+  color: var(--color-text-2);
+  font: 600 11px/1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  min-height: 56px;
+  padding: 0 var(--spazio-2) 0 var(--spazio-3);
+  border: 0;
+  border-radius: 0;
+  background: var(--color-surface-1);
+  color: var(--color-text-1);
+  font: 400 16px/1.3 var(--font-sans);
+  text-align: start;
+  white-space: normal;
+}
+
+/* Nessuna voce «accesa» nell'elenco: si è davanti a tutte, non dentro una. */
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce[aria-current="true"] {
+  background: var(--color-surface-1);
+  color: var(--color-text-1);
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce:active {
+  background: var(--color-surface-2);
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce + .voce {
+  border-top: 1px solid var(--hairline);
+}
+
+/* Gli angoli della scheda di ogni gruppo: tondi sopra la prima voce dopo un
+   titolo, sotto l'ultima prima del titolo dopo (o della fine). */
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .titolo-gruppo + .voce {
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce:has(+ .titolo-gruppo),
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce:last-child {
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 16px;
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce > svg {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce > span:not(.freccia-voce) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+:root[data-forma="telefono"] .freccia-voce {
+  display: grid;
+  flex: 0 0 auto;
+  color: var(--color-text-3);
+}
+
+/* I risultati della ricerca, nello stesso elenco: ognuno una riga sua. */
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce.trovata {
+  border-radius: 16px;
+}
+
+:root[data-forma="telefono"] .impostazioni[data-livelli] > .indice .voce.trovata + .voce.trovata {
+  margin-top: var(--spazio-1);
+  border-top: 0;
+}
+
+/* ── la Home ─────────────────────────────────────────────────────────────── */
+
+/* I ripiani diventano caroselli: una fila che scorre di lato, con le schede
+   che si fermano al bordo, come in ogni app di musica sul telefono. Sul
+   computer erano griglie che andavano a capo, e in trecentosessanta pixel
+   una griglia di due colonne di copertine enormi faceva della Home una
+   pagina lunga cinque schermate, con «Aggiunti di recente» sotto il primo
+   scorrimento. In fila, ogni ripiano è alto una scheda, e la Home si legge
+   tutta.
+
+   La fila arriva fino ai bordi dello schermo (il margine del contenuto lo
+   riprende il `padding`), e la terza scheda si vede a metà: dice che di lato
+   c'è altro. Dopo il prefisso tre classi, per vincere sulla parte
+   `track-grid` di una skin. */
+:root[data-forma="telefono"] .casa {
+  gap: var(--spazio-5);
+  /* Un respiro sotto il titolo grande della barra: «Riprendi» ci stava
+     attaccato. */
+  padding-top: var(--spazio-3);
+}
+
+:root[data-forma="telefono"] .casa .casa-titolo {
+  font: 700 20px/1.2 var(--font-dot);
+  letter-spacing: -0.01em;
+}
+
+:root[data-forma="telefono"] .casa .casa-schede,
+:root[data-forma="telefono"] .casa .casa-raccolte {
+  display: grid;
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 40%;
+  gap: 14px;
+  margin-inline: calc(var(--content-x) * -1);
+  padding: 0 var(--content-x) var(--spazio-1);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: var(--content-x);
+  scroll-snap-type: x mandatory;
+}
+
+/* Le raccolte sono più larghe dei brani, come sul computer. */
+:root[data-forma="telefono"] .casa .casa-raccolte {
+  grid-auto-columns: 62%;
+}
+
+:root[data-forma="telefono"] .casa .casa-schede > *,
+:root[data-forma="telefono"] .casa .casa-raccolte > * {
+  scroll-snap-align: start;
+}
+
+/* ── le cartelle ─────────────────────────────────────────────────────────── */
+
+/* L'albero sopra e i brani della cartella sotto, ciascuno col suo
+   scorrimento, come sul computer stretto (`artisti-cartelle.css`). Lì però
+   sono a metà altezza ciascuno, e sul telefono, con una cartella sola
+   sorvegliata, mezzo schermo restava vuoto sotto una riga e l'elenco dei
+   brani se ne prendeva un terzo. Qui l'albero è alto quel che gli serve, fino a
+   due quinti, e il resto è dei brani. */
+:root[data-forma="telefono"] .vista-cartelle {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: fit-content(40%) minmax(0, 1fr);
+  gap: var(--spazio-3);
+}
+
+/* ── Esplora ─────────────────────────────────────────────────────────────── */
+
+/* Il campo e i tasti alti un dito, come il campo di Cerca qui sopra: erano
+   quelli del computer, da trenta pixel. Il campo a 16 pixel anche perché sotto
+   i 16 la WebView ingrandisce la pagina quando lo si tocca. Dopo il prefisso
+   abbastanza classi da vincere sulle parti `explore-bar` e `search-field`. */
+:root[data-forma="telefono"] .esplora .esplora-barra {
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-2);
+}
+
+:root[data-forma="telefono"] .esplora .esplora-barra .cerca {
+  min-height: var(--dito);
+  border-radius: 99px;
+}
+
+:root[data-forma="telefono"] .esplora .esplora-barra .campo {
+  font-size: 16px;
+}
+
+:root[data-forma="telefono"] .esplora .esplora-barra .bottone {
+  min-height: var(--dito);
+  padding-inline: var(--spazio-3);
+  border-radius: 99px;
+  font-size: 15px;
+}
+
+/* ── «Sfoglia» ───────────────────────────────────────────────────────────── */
+
+/* Le quattro schede larghe quanto lo schermo e alte quasi un dito, e sotto la
+   casella alta un dito, a 16 pixel come quella di Esplora: sotto i 16 la
+   WebView ingrandisce la pagina quando la si tocca. */
+:root[data-forma="telefono"] .barra-sfoglia {
+  margin-top: var(--spazio-2);
+}
+
+:root[data-forma="telefono"] .barra-sfoglia .segmentato {
+  display: flex;
+  width: 100%;
+}
+
+:root[data-forma="telefono"] .barra-sfoglia .segmentato .linguetta {
+  flex: 1;
+  justify-content: center;
+  min-height: 40px;
+  padding-inline: 4px;
+  font-size: 13.5px;
+}
+
+:root[data-forma="telefono"] .barra-sfoglia .campo {
+  flex-basis: 100%;
+  min-height: var(--dito);
+  padding-inline: var(--spazio-4);
+  border-radius: 99px;
+  font-size: 16px;
+}
+
+/* «Mostra tutti» e l'ordine dei brani, da toccare e non da puntare. */
+:root[data-forma="telefono"] .tutti-ripiano {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+:root[data-forma="telefono"] .sfoglia .pillola {
+  min-height: 40px;
+  padding-inline: var(--spazio-3);
+  font-size: 14px;
+}
+
+/* Le righe: più alte, la copertina più grande, il ⋮ largo un dito. Qui suona
+   il tocco sulla riga intera, e il ▶ sulla copertina non serve. `:hover`
+   resta acceso sull'ultima riga toccata (vedi le righe della libreria, sopra):
+   il segno del tocco è `:active`, e il numero di un disco resta il numero. */
+:root[data-forma="telefono"] .riga-lontana {
+  min-height: 60px;
+  padding-inline: 0;
+}
+
+:root[data-forma="telefono"] .riga-lontana:hover {
+  background: transparent;
+}
+
+:root[data-forma="telefono"] .riga-lontana:active {
+  background: color-mix(in srgb, var(--color-text-1) 8%, transparent);
+}
+
+:root[data-forma="telefono"] .avvia-lontana {
+  width: 48px;
+  height: 48px;
+}
+
+:root[data-forma="telefono"] .via-lontana {
+  display: none;
+}
+
+:root[data-forma="telefono"] .riga-lontana:hover .avvia-lontana[data-numero] .numero-lontana {
+  opacity: 1;
+}
+
+:root[data-forma="telefono"] .nome-lontana {
+  font-size: 15px;
+}
+
+:root[data-forma="telefono"] .sotto-lontana {
+  font-size: 13px;
+}
+
+:root[data-forma="telefono"] .altro-lontana {
+  width: 40px;
+  height: 44px;
+  margin-inline-end: calc(var(--spazio-2) * -1);
+}
+
+:root[data-forma="telefono"] .altro-lontana:hover {
+  background: transparent;
+}
+
+/* Sotto «Riproduci» e «Casuale» di un disco aperto, i suoi due tasti piccoli:
+   al centro, come il resto della testata. */
+:root[data-forma="telefono"] .testata-dettaglio .azioni {
+  justify-content: center;
+  margin-top: var(--spazio-2);
+}

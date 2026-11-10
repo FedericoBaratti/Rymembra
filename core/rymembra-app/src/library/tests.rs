@@ -6493,3 +6493,130 @@ fn la_camminata_si_racconta_e_i_tempi_si_contano() {
             .all(|a| matches!(a, Avanzamento::Lettura { .. }))
     );
 }
+
+#[test]
+fn agli_altri_dispositivi_si_mostrano_solo_i_file() {
+    // Il collegamento via internet condivide la musica che è un file in una
+    // cartella sorvegliata: non quella del cloud, non quella di catalogo. E
+    // senza percorsi.
+    let mut lib = Libreria::nuova();
+    lib.brano(
+        "Air/Moon Safari/01.wav",
+        "La femme d'argent",
+        "Air",
+        "Moon Safari",
+    );
+    lib.brano("Air/Moon Safari/02.wav", "Sexy Boy", "Air", "Moon Safari");
+    lib.brano("Cure/Wish/01.wav", "Open", "The Cure", "Wish");
+    lib.scansiona();
+    crate::settings::write_json(
+        &lib.connection,
+        crate::settings::CHIAVE_CARTELLE,
+        &vec![lib.root()],
+    )
+    .expect("radici");
+    let sexy = lib.id_del_titolo("Sexy Boy");
+    let open = lib.id_del_titolo("Open");
+    lib.connection
+        .execute(
+            "UPDATE tracks SET path = 'nuvola://onedrive-abcdefgh/Musica/02.wav' WHERE id = ?1",
+            [sexy],
+        )
+        .expect("nel cloud");
+    lib.connection
+        .execute(
+            "UPDATE tracks SET path = NULL, source_service = 'jamendo',
+                    fonte_url = 'https://example.org/1', licenza = 'cc-by',
+                    disponibilita = 'disponibile', file_size = NULL, date_modified = NULL
+             WHERE id = ?1",
+            [open],
+        )
+        .expect("di catalogo");
+
+    let brani = condivisa::brani(&lib.connection, TrackOrder::Title, 0, 50).expect("brani");
+    let titoli: Vec<&str> = brani.iter().map(|b| b.title.as_str()).collect();
+    assert_eq!(titoli, ["La femme d'argent"]);
+    let brano = &brani[0];
+    assert_eq!(brano.estensione, "wav");
+    assert!(brano.dimensione > 0);
+    assert!(brano.segmento.is_none());
+    let json = serde_json::to_string(brano).expect("json");
+    assert!(!json.contains("musica"), "nessun percorso: {json}");
+    let json = serde_json::to_string(&condivisa::album(&lib.connection, 0, 50).expect("album"))
+        .expect("json");
+    assert!(!json.contains("musica"), "nessun percorso: {json}");
+
+    let album = condivisa::album(&lib.connection, 0, 50).expect("album");
+    assert_eq!(album.len(), 1, "Wish ha solo un brano di catalogo");
+    assert_eq!(album[0].album_key.len(), 32, "un'impronta, non la chiave");
+    assert_eq!(brano.album_key.as_ref(), Some(&album[0].album_key));
+    assert!(
+        condivisa::brani_album(&lib.connection, "0".repeat(32).as_str())
+            .expect("nessuno")
+            .is_empty()
+    );
+    let chiave = album[0].album_key.clone();
+    assert_eq!(
+        condivisa::brani_album(&lib.connection, &chiave)
+            .expect("del disco")
+            .len(),
+        1
+    );
+    let artisti = condivisa::artisti(&lib.connection, 0, 50).expect("artisti");
+    let nomi: Vec<&str> = artisti.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(nomi, ["Air"]);
+    assert_eq!(artisti[0].tracks, 1);
+    assert_eq!(
+        condivisa::album_artista(&lib.connection, "Air", 50)
+            .expect("di Air")
+            .len(),
+        1
+    );
+    assert!(
+        condivisa::album_artista(&lib.connection, "The Cure", 50)
+            .expect("dei Cure")
+            .is_empty()
+    );
+    assert_eq!(
+        condivisa::cerca_conteggio(&lib.connection, "sexy").expect("conto"),
+        0
+    );
+    assert_eq!(
+        condivisa::cerca(&lib.connection, "femme", 0, 10)
+            .expect("cerca")
+            .len(),
+        1
+    );
+
+    let file = condivisa::file_del_brano(&lib.connection, brano.id)
+        .expect("lettura")
+        .expect("condiviso");
+    assert!(std::path::Path::new(&file.percorso).is_file());
+    assert_eq!(
+        condivisa::versione(file.dimensione, file.modificato_ms),
+        brano.versione
+    );
+    assert!(
+        condivisa::file_del_brano(&lib.connection, sexy)
+            .expect("lettura")
+            .is_none()
+    );
+    assert!(
+        condivisa::file_del_brano(&lib.connection, open)
+            .expect("lettura")
+            .is_none()
+    );
+
+    // Una cartella tolta smette di essere condivisa subito.
+    crate::settings::write_json(
+        &lib.connection,
+        crate::settings::CHIAVE_CARTELLE,
+        &Vec::<String>::new(),
+    )
+    .expect("nessuna radice");
+    assert!(
+        condivisa::file_del_brano(&lib.connection, brano.id)
+            .expect("lettura")
+            .is_none()
+    );
+}

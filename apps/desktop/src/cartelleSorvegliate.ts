@@ -17,7 +17,7 @@
  * riscrivono aspettano in fila il loro turno. Il perché sta in
  * `elencoCartelle.ts`. Chi le passa sotto `memo` le avvolge in `useStabile`.
  */
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "./dialoghi";
 import { useState, type Dispatch, type SetStateAction } from "react";
 
 import { nomeRadice, primaLocale } from "./cartelleNuvola";

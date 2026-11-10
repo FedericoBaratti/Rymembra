@@ -1,0 +1,53 @@
+<resources>
+    <!-- Android Auto, e la notifica del lettore. Le stesse parole della
+         finestra (`src/lingue/it.json`): «Ascoltati di recente», «Preferiti». -->
+    <string name="auto_recenti">Recenti</string>
+    <string name="auto_playlist">Playlist</string>
+    <string name="auto_album">Album</string>
+    <string name="auto_artisti">Artisti</string>
+    <string name="auto_preferiti">Preferiti</string>
+    <string name="auto_gruppo_ascoltati">Ascoltati di recente</string>
+    <string name="auto_gruppo_aggiunti">Aggiunti di recente</string>
+    <string name="auto_suona_tutto">Suona tutto</string>
+    <plurals name="auto_n_brani">
+        <item quantity="one">%d brano</item>
+        <item quantity="other">%d brani</item>
+    </plurals>
+    <plurals name="auto_n_album">
+        <item quantity="one">%d album</item>
+        <item quantity="other">%d album</item>
+    </plurals>
+    <plurals name="auto_n_artisti">
+        <item quantity="one">%d artista</item>
+        <item quantity="other">%d artisti</item>
+    </plurals>
+    <string name="auto_piace">Aggiungi ai preferiti</string>
+    <string name="auto_non_piace">Togli dai preferiti</string>
+    <string name="auto_mescola">Riproduzione casuale</string>
+    <string name="auto_mescola_spento">Spegni la riproduzione casuale</string>
+    <string name="auto_ripeti_spento">Ripetizione spenta</string>
+    <string name="auto_ripeti_tutto">Ripeti tutta la coda</string>
+    <string name="auto_ripeti_uno">Ripeti questo brano</string>
+    <string name="auto_apri">Apri Rymembra sul telefono una volta, e qui trovi la tua libreria.</string>
+    <string name="auto_apri_azione">Apri Rymembra</string>
+    <string name="auto_niente">Niente di simile nella tua libreria.</string>
+    <string name="auto_non_riesco">Rymembra adesso non riesce a suonarlo.</string>
+
+    <string name="uscita_altoparlante">Altoparlante del telefono</string>
+    <string name="uscita_auricolare">Auricolare del telefono</string>
+    <string name="uscita_cuffie">Cuffie con il filo</string>
+    <string name="uscita_bluetooth">Dispositivo Bluetooth</string>
+    <string name="uscita_altra">Uscita audio</string>
+
+    <string name="consenso_canale">Collegamento di un servizio</string>
+    <string name="consenso_titolo">Aspetto il tuo consenso</string>
+    <string name="consenso_testo">Consenti l\'accesso nel browser, poi torna a Rymembra.</string>
+
+    <string name="scarico_canale">Scaricamenti dai tuoi dispositivi</string>
+    <string name="scarico_titolo">Rymembra sta scaricando</string>
+    <string name="scarico_testo">%1$d di %2$d · %3$s</string>
+
+    <string name="qr_istruzioni">Inquadra il QR mostrato da Rymembra sul computer.</string>
+    <string name="qr_torcia">Torcia</string>
+    <string name="qr_annulla">Annulla</string>
+</resources>

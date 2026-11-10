@@ -251,10 +251,83 @@ pub(super) fn scrivi_coda(
     let Some(istantanea) = istantanea else {
         return Some(Ok(()));
     };
+    // I brani di un altro dispositivo non sono righe: la coda di righe va
+    // dove è sempre andata, e quella intera accanto, per ritrovarli al
+    // prossimo avvio. Vedi `playback::CHIAVE_CODA_LONTANA`.
+    let intera = coda_intera(app, &istantanea);
+    let righe = intera
+        .as_ref()
+        .map_or_else(|| solo_righe(istantanea), playback::CodaIntera::righe);
     let stato_app = app.try_state::<Stato>()?;
     crate::stato::con_libreria_entro(&stato_app, entro, |libreria| {
-        playback::save_queue(&libreria.connection, &istantanea)
+        playback::save_queue(&libreria.connection, &righe)?;
+        playback::save_queue_remote(&libreria.connection, intera.as_ref())
     })
+}
+
+/// La coda intera da scrivere accanto a quella di righe, se ci sono brani di
+/// un altro dispositivo che si sanno descrivere; `None` se non ce ne sono.
+fn coda_intera(app: &tauri::AppHandle, coda: &QueueSnapshot) -> Option<playback::CodaIntera> {
+    if coda
+        .tracks
+        .iter()
+        .all(|id| super::ospiti::e_di_libreria(*id))
+    {
+        return None;
+    }
+    let intera = playback::CodaIntera::da(coda, |id| {
+        if super::ospiti::e_di_libreria(id) {
+            Some(playback::VoceSalvata::Riga(id))
+        } else {
+            super::ospiti::descrittore_lontana(app, id).map(playback::VoceSalvata::Lontana)
+        }
+    });
+    intera
+        .voci
+        .iter()
+        .any(|voce| matches!(voce, playback::VoceSalvata::Lontana(_)))
+        .then_some(intera)
+}
+
+/// La coda intera riaperta: i brani di un altro dispositivo tornano voci
+/// lontane, con maniglie nuove. Quelli di un dispositivo che non è più
+/// collegato (`associati`), o che non si sanno più leggere, restano fuori.
+fn riapri_la_coda_intera(
+    app: &tauri::AppHandle,
+    intera: &playback::CodaIntera,
+    associati: &std::collections::HashSet<String>,
+) -> QueueSnapshot {
+    let (tracks, order, order_pos) = intera.tenendo(|voce| match voce {
+        playback::VoceSalvata::Riga(id) => Some(*id),
+        playback::VoceSalvata::Lontana(descrittore) => {
+            crate::lontano::voce_salvata(app, descrittore, associati)
+        }
+    });
+    intera.snapshot(tracks, order, order_pos)
+}
+
+/// La coda da scrivere, senza le voci che non sono righe della libreria: i
+/// brani di un altro dispositivo messi in coda da «Sfoglia». Sono maniglie, che
+/// al prossimo avvio non vorranno dire niente, e `save_queue` rifiuterebbe
+/// l'intera coda per una sola di loro. Fuori sessione sono le sole voci che ci
+/// possono essere.
+///
+/// La permutazione si rinumera, e la posizione va sul primo brano rimasto da
+/// lì in avanti — quello che sarebbe suonato dopo — o, se dopo non resta
+/// niente, sull'ultimo rimasto prima.
+fn solo_righe(istantanea: QueueSnapshot) -> QueueSnapshot {
+    if istantanea
+        .tracks
+        .iter()
+        .all(|id| super::ospiti::e_di_libreria(*id))
+    {
+        return istantanea;
+    }
+    // Le stesse regole della coda intera: `playback::CodaIntera::tenendo`.
+    playback::CodaIntera::da(&istantanea, |id| {
+        super::ospiti::e_di_libreria(id).then_some(playback::VoceSalvata::Riga(id))
+    })
+    .righe()
 }
 
 /// Riprende la coda conservata, senza far partire niente.
@@ -329,8 +402,25 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
             let c = &libreria.connection;
             let latenze = playback::load_latenze_per_uscita(c).unwrap_or_default();
             let guasto_latenze = riga_delle_latenze(&latenze);
+            let righe = playback::load_queue(c);
+            // La coda intera, coi brani degli altri dispositivi, e chi di loro
+            // è ancora collegato: le voci si riaprono dopo, a libreria lasciata.
+            let intera = righe
+                .as_ref()
+                .ok()
+                .and_then(|righe| playback::load_queue_remote(c, righe).ok().flatten());
+            let associati: std::collections::HashSet<String> = if intera.is_some() {
+                rymembra_app::dispositivi::tutti(c)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|d| !d.revocato)
+                    .map(|d| d.chiave)
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
             Ok((
-                playback::load_queue(c).map(Queue::restore),
+                (righe, intera, associati),
                 Salvato {
                     coda: None,
                     volume: playback::load_volume(c).unwrap_or_default(),
@@ -349,7 +439,7 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
     });
     let (coda, mut salvato, guasto_latenze) = letto.unwrap_or_else(|err| {
         (
-            Err(err),
+            (Err(err), None, std::collections::HashSet::new()),
             Salvato {
                 coda: None,
                 volume: playback::Volume::default(),
@@ -368,6 +458,12 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
     if let Some(riga) = guasto_latenze {
         nota!("{riga}");
     }
+    let coda = match coda {
+        (Ok(_), Some(intera), associati) => Ok(Queue::restore(riapri_la_coda_intera(
+            app, &intera, &associati,
+        ))),
+        (righe, _, _) => righe.map(Queue::restore),
+    };
     match coda {
         Ok(coda) => salvato.coda = Some(coda),
         Err(err) => nota!(
@@ -1130,6 +1226,47 @@ pub async fn brani_per_id(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Vec<T
         .collect())
 }
 
+/// [`brani_per_id`] per un filo che può aspettare: le righe di un tratto di
+/// coda, al loro posto, con le voci di sessione risolte dalla loro scheda.
+/// `None` dove la riga non c'è più: il posto resta, perché è il posto nella
+/// coda che l'auto rimanda indietro per saltarci.
+///
+/// Lo usa la coda che l'auto mostra, che si compone su un filo suo e non sul
+/// pool dei comandi: una cinquantina di righe, non venticinquemila.
+///
+/// # Errori
+///
+/// Quelli della libreria.
+#[cfg(mobile)]
+pub fn righe_della_coda(
+    app: &tauri::AppHandle,
+    brani: &[i64],
+) -> Result<Vec<Option<TrackSummary>>, rymembra_domain::AppError> {
+    let righe: Vec<i64> = brani
+        .iter()
+        .copied()
+        .filter(|id| ospiti::e_di_libreria(*id))
+        .collect();
+    let lette = match app.try_state::<crate::stato::Stato>() {
+        Some(stato) if !righe.is_empty() => crate::stato::con_libreria(&stato, |libreria| {
+            rymembra_app::library::summaries_by_id(&libreria.connection, &righe)
+        })?,
+        _ => Vec::new(),
+    };
+    let per_id: std::collections::HashMap<i64, TrackSummary> = lette
+        .into_iter()
+        .map(|scheda| (scheda.id, scheda))
+        .collect();
+    Ok(brani
+        .iter()
+        .map(|&id| match ospiti::chi(app, id) {
+            ospiti::Chi::Libreria(riga) => per_id.get(&riga).cloned(),
+            ospiti::Chi::Voce(voce) => Some(ospiti::scheda(id, &voce)),
+            ospiti::Chi::Sparita => None,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -1139,6 +1276,59 @@ mod prove {
     #[test]
     fn svuota_ha_sempre_l_avviso() {
         assert!(merita_l_avviso(true, false, 1));
+    }
+
+    // ── la coda scritta senza le voci lontane: vedi `solo_righe` ──
+
+    fn istantanea(tracks: &[i64], order: &[usize], pos: Option<usize>) -> QueueSnapshot {
+        QueueSnapshot {
+            tracks: tracks.to_vec(),
+            order: order.to_vec(),
+            order_pos: pos,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+        }
+    }
+
+    /// Una coda di sole righe resta com'è.
+    #[test]
+    fn solo_righe_lascia_una_coda_di_righe() {
+        let prima = istantanea(&[3, 1, 2], &[2, 0, 1], Some(1));
+        assert_eq!(solo_righe(prima.clone()), prima);
+    }
+
+    /// Le maniglie escono, la permutazione si rinumera, e la posizione resta
+    /// sul brano che sarebbe suonato.
+    #[test]
+    fn solo_righe_toglie_le_maniglie_e_rinumera() {
+        // Brani: 10, -4, 20, -5, 30; ordine: 4, 1, 0, 3, 2; si è sul passo 2
+        // (il brano 10).
+        let dopo = solo_righe(istantanea(&[10, -4, 20, -5, 30], &[4, 1, 0, 3, 2], Some(2)));
+        assert_eq!(dopo.tracks, vec![10, 20, 30]);
+        // 30 (era 4 → 2), 10 (0 → 0), 20 (2 → 1).
+        assert_eq!(dopo.order, vec![2, 0, 1]);
+        assert_eq!(dopo.order_pos, Some(1));
+    }
+
+    /// Sulla voce lontana, la posizione va sul primo brano rimasto dopo; se
+    /// dopo non c'è niente, sull'ultimo rimasto prima; se non resta niente, da
+    /// nessuna parte.
+    #[test]
+    fn solo_righe_sposta_la_posizione_da_una_maniglia() {
+        let dopo = solo_righe(istantanea(&[10, -4, 20], &[0, 1, 2], Some(1)));
+        assert_eq!(dopo.order_pos, Some(1));
+        assert_eq!(dopo.tracks.get(1), Some(&20));
+
+        let dopo = solo_righe(istantanea(&[10, 20, -4], &[0, 1, 2], Some(2)));
+        assert_eq!(dopo.order_pos, Some(1));
+
+        let dopo = solo_righe(istantanea(&[-3, -4], &[0, 1], Some(0)));
+        assert!(dopo.tracks.is_empty());
+        assert!(dopo.order.is_empty());
+        assert_eq!(dopo.order_pos, None);
+
+        let dopo = solo_righe(istantanea(&[10, -4], &[0, 1], None));
+        assert_eq!(dopo.order_pos, None);
     }
 
     /// Una coda costruita a mano vale qualunque sia la lunghezza: sostituita

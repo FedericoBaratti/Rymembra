@@ -989,9 +989,8 @@ fn costruisci(
     // Chiesto qui, al `Device` che si sta aprendo, perché dopo non lo si può
     // più chiedere a nessuno: vedi [`Aperta`]. Un dispositivo che non sa
     // descriversi vale come non Bluetooth, che è il comportamento di prima.
-    let bluetooth = dispositivo
-        .description()
-        .is_ok_and(|d| d.interface_type() == cpal::InterfaceType::Bluetooth);
+    // Su Android lo dice Android: vedi `dispositivi::e_bluetooth`.
+    let bluetooth = crate::dispositivi::e_bluetooth(&dispositivo);
 
     let voce = Voce {
         lettore: anelli.campioni,

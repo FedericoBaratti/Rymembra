@@ -42,6 +42,7 @@ import { useSyncExternalStore } from "react";
 
 import it from "./it.json";
 import { formaPlurale } from "./plurali";
+import { MOBILE } from "../piattaforma";
 
 /** Un dizionario, come sta sul disco: chiave piatta → testo. */
 export type Dizionario = Record<string, string>;
@@ -260,6 +261,32 @@ function cercaPer(chiave: string, n: number): string | null {
  * vuole il plurale passa il numero, e la formattazione la fa [`riempi`].
  */
 function testoDi(chiave: string, valori: Valori | undefined): string | null {
+  if (MOBILE) {
+    const delTelefono = testoDiChiave(`${chiave}${SUL_TELEFONO}`, valori);
+    if (delTelefono !== null) return delTelefono;
+  }
+  return testoDiChiave(chiave, valori);
+}
+
+/**
+ * La variante di una frase per il telefono: `chiave.telefono`, se c'è.
+ *
+ * # Perché qui e non nei componenti
+ *
+ * Perché le frasi che sul telefono direbbero una cosa falsa — «questo PC»,
+ * «Gestione credenziali di Windows», «un'unità di rete» — stanno sparse in
+ * decine di schermate, e una scelta `MOBILE ? a : b` in ognuna sarebbe una
+ * scelta da ricordarsi in ognuna. Così la variante si scrive solo nei file
+ * delle lingue, accanto alla frase che corregge, e vale ovunque quella frase
+ * si disegni. Senza variante si disegna la frase di sempre: la maggior parte
+ * delle frasi è vera su tutti e due.
+ *
+ * Il plurale vale anche per lei: `brani.telefono.uno` come `brani.uno`.
+ */
+const SUL_TELEFONO = ".telefono";
+
+/** [`testoDi`] per una chiave sola, senza la variante del telefono. */
+function testoDiChiave(chiave: string, valori: Valori | undefined): string | null {
   const n = valori?.["n"];
   return typeof n === "number" ? cercaPer(chiave, n) : cerca(chiave);
 }

@@ -44,7 +44,9 @@
  * scrivono una dozzina di stati di questo componente: tirati fuori, si
  * porterebbero dietro tutti i loro argomenti.
  */
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, salvaCon } from "./dialoghi";
+import { MOBILE } from "./piattaforma";
+import { SCAFALE_TELEFONO } from "./scafaleTelefono";
 import {
   Activity,
   lazy,
@@ -73,6 +75,7 @@ import {
   ConScansione,
   ElencoBraniCollegato,
   InRiproduzioneCollegata,
+  InRiproduzioneTelefonoCollegata,
 } from "./collegati";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
@@ -125,7 +128,7 @@ import {
   type AzioniBrani,
 } from "./menuBrani";
 import { NuovoTema } from "./NuovoTema";
-import { chiaveDiPagina, paginaCorrente } from "./pagina";
+import { chiaveDiPagina, paginaCorrente, type VistaLibreria } from "./pagina";
 import { sportelloAscolti, useAscolto, useRada } from "./pagine";
 import { Annuncio } from "./parti/Annuncio";
 import { AnnuncioScansione } from "./parti/AnnuncioScansione";
@@ -136,8 +139,14 @@ import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
 import { ConImportazioni } from "./parti/Importazioni";
-import { AvvisiInsieme, InsiemeInApp, InvitiInsieme } from "./parti/Insieme";
+import { AvvisiInsieme, InsiemeInApp, InvitiInsieme, apriFinestra } from "./parti/Insieme";
+import { LontanoInApp } from "./parti/Dispositivi";
 import { Intestazione } from "./parti/Intestazione";
+import { BarraAlta, TastoBarra } from "./parti/BarraAlta";
+import { TestataDettaglio } from "./parti/TestataDettaglio";
+import { mescolato } from "./mescolato";
+import { BarraCerca } from "./parti/BarraCerca";
+import { PilloleLibreria } from "./parti/PilloleLibreria";
 import type { Vista } from "./parti/Navigazione";
 import { PilaToast } from "./parti/PilaToast";
 import { ToastImportazioni } from "./parti/ToastImportazioni";
@@ -153,12 +162,16 @@ import {
 import { Primo } from "./Primo";
 import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
 import { RecintoErrori } from "./Recinto";
+import { indietro } from "./indietro";
 import { Regole } from "./Regole";
 import { useRicerca } from "./ricerca";
 import { Ripristino } from "./Ripristino";
 import { useRiproduzione } from "./riproduzione";
 import { useAvanzamentoScansione } from "./scansione";
+import { Altro } from "./schermate/Altro";
+import { Dispositivo, sottotitoloDispositivo, useDispositivo } from "./schermate/Dispositivo";
 import { Artisti } from "./schermate/Artisti";
+import { ElencoPlaylist } from "./schermate/ElencoPlaylist";
 import { CartelleFinte } from "./schermate/Cartelle";
 import { ElencoFinto, GrigliaFinta } from "./schermate/Elenco";
 import {
@@ -171,8 +184,16 @@ import {
   SchermataImportazioni,
   TestaImportazioni,
 } from "./schermate/Importazioni";
-import type { Sezione } from "./schermate/Impostazioni";
+import { etichettaSezione, type Sezione } from "./schermate/Impostazioni";
 import { GrigliaAlbum, StatoVuoto, testaLibreria } from "./schermate/Libreria";
+import {
+  eDellaLibreria,
+  passoIndietroTelefono,
+  radiceDellaScheda,
+  schedaDi,
+  type SchedaTelefono,
+  type SegmentoCerca,
+} from "./schedeTelefono";
 import { chiaveDellaSelezione } from "./selezione";
 import { useSelezione } from "./selezioneVista";
 import { useSkinAttiva } from "./skinAttiva";
@@ -183,7 +204,7 @@ import { sorgenteNuova, type DatiTema } from "./studio/nuovo";
 import { campoRicerca, useScorciatoie } from "./tastiera";
 import { useTerzaColonna } from "./terzaColonna";
 import { useTrascinati } from "./trascinamento";
-import { cambiandoVista } from "./transizione";
+import { cambiandoVista, comeScorrere } from "./transizione";
 
 /**
  * Lo Studio, caricato quando si apre.
@@ -192,8 +213,19 @@ import { cambiandoVista } from "./transizione";
  * i controlli di ogni proprietà — e chi ascolta musica non la apre quasi mai:
  * tenerla nel pacchetto principale voleva dire leggerla a ogni avvio. Da file
  * locale arriva in un attimo, e nel frattempo si vede lo Studio che carica.
+ *
+ * Sul telefono non c'è proprio, nemmeno come pacchetto da caricare. Disegnare
+ * una skin vuol dire una tela, un ispettore, un editor di codice e una chat
+ * accanto: in quattrocento pixel erano tre pannelli da alternare con le
+ * linguette, e ognuno era troppo stretto per il suo mestiere. Una skin fatta sul
+ * computer arriva sul telefono col profilo, o si installa dal file. `null` e non
+ * un `lazy` mai chiamato: un `import()` scritto resta un pezzo del pacchetto
+ * anche se nessuno lo apre, e questo con l'editor dentro pesa più di mezzo
+ * megabyte nell'APK.
  */
-const Studio = lazy(() => import("./studio/Guscio").then((m) => ({ default: m.Studio })));
+const Studio = MOBILE
+  ? null
+  : lazy(() => import("./studio/Guscio").then((m) => ({ default: m.Studio })));
 
 /**
  * Come si legge un ordinamento, e in che ordine si sceglie.
@@ -225,6 +257,13 @@ function ordinamenti(): readonly (readonly [Ordine, string])[] {
  */
 const VISTE_TENUTE = ["brani", "preferiti", "album", "artisti"] as const;
 type VistaTenuta = (typeof VISTE_TENUTE)[number];
+
+/**
+ * «Ci ho ripensato»: il «no» al dialogo del Cestino di Android. Lo si lancia
+ * dentro `elimina` per fare la strada del rimedio — le righe tolte in anticipo
+ * tornano — senza la fascia d'errore, che un ripensamento non è.
+ */
+const RIPENSATO = Symbol("ripensato");
 
 /** Nessun brano: un elenco vuoto con un'identità sola, per le dipendenze. */
 const NESSUN_BRANO: Brano[] = [];
@@ -376,6 +415,13 @@ export function App() {
   /** L'album la cui copertina vola verso la sua pagina: vedi `presenza.tsx`. */
   const [inVolo, setInVolo] = useState<string | null>(null);
   const [artistaAperto, setArtistaAperto] = useState<Artista | null>(null);
+  /**
+   * Il dispositivo collegato che si sfoglia, per la vista `dispositivo`: la
+   * sua chiave. Resta anche fuori dalla vista, come l'album aperto: tornandoci
+   * dalla barra laterale si riapre quello che si è scelto lì.
+   */
+  const [dispositivoAperto, setDispositivoAperto] = useState<string | null>(null);
+  const dispositivoSfogliato = useDispositivo(dispositivoAperto);
   const [braniAperto, setBraniAperto] = useState<Brano[]>([]);
   const [ordine, setOrdine] = useState<Ordine>("scaffale");
   /**
@@ -633,6 +679,42 @@ export function App() {
     album: aperto,
     artista: artistaAperto,
   });
+
+  /*
+   * ── le schede del telefono ─────────────────────────────────────────────────
+   *
+   * La scheda accesa si ricava dalla pagina, non si tiene: vedi
+   * `schedeTelefono.ts`. Quel che si tiene è la **memoria** delle schede, perché
+   * tornarci vuol dire ritrovarle com'erano: l'ultima pillola della Libreria,
+   * l'ultimo segmento di Cerca e l'ultima frase cercata. Tre riferimenti scritti
+   * durante il disegno e non tre stati: si leggono solo al tocco su una scheda,
+   * e cambiarli non deve ridisegnare niente.
+   *
+   * Sul computer ci sono anche loro e non servono a nessuno: un `if (MOBILE)`
+   * attorno a degli hook non si può scrivere, e tre riferimenti costano meno
+   * della regola che si romperebbe.
+   */
+  const scheda = schedaDi(pagina, vista);
+  const pillola = useRef<VistaLibreria>("playlist");
+  if (eDellaLibreria(vista)) pillola.current = vista;
+  const segmentoCerca = useRef<SegmentoCerca>("cerca");
+  if (vista === "cerca" || vista === "esplora") segmentoCerca.current = vista;
+  // Si ricorda finché la si svuota a mano o con Indietro: cambiare scheda la
+  // toglie dal campo (`vaiA`), e tornando su Cerca la si ritrova lì.
+  const ultimaRicerca = useRef("");
+  if (MOBILE && cercando) ultimaRicerca.current = query;
+  /**
+   * Le Impostazioni del telefono hanno due livelli: l'elenco delle sezioni, e
+   * una sezione. Falso vuol dire l'elenco. Sul computer non si legge: le
+   * sezioni stanno accanto alla scheda, sempre tutte e due in vista.
+   */
+  const [dentroLaSezione, setDentroLaSezione] = useState(false);
+  /**
+   * La sezione aperta è stata aperta da fuori (`apriSezione` con `daFuori`):
+   * Indietro torna da dove si veniva, senza passare dall'elenco delle sezioni.
+   * Vedi `passoIndietroTelefono`.
+   */
+  const sezioneDaFuori = useRef(false);
 
   /**
    * Gli elenchi di brani della libreria: una lista rada ciascuno.
@@ -935,6 +1017,15 @@ export function App() {
       setVista(dove);
     });
   }, []);
+
+  /** Apre «Sfoglia» di un dispositivo collegato: vedi `schermate/Dispositivo.tsx`. */
+  const apriDispositivo = useCallback(
+    (chiave: string) => {
+      setDispositivoAperto(chiave);
+      vaiA("dispositivo");
+    },
+    [vaiA],
+  );
 
   /*
    * ── il giro guidato ────────────────────────────────────────────────────────
@@ -1363,18 +1454,25 @@ export function App() {
    */
   const esportaPlaylist = async (p: Playlist) => {
     try {
-      const scelta = await save({
-        // Il nome ripulito, non quello della playlist: «AC/DC» diventava la
-        // cartella «AC» e il file «DC.m3u8». Vedi `nomeDiFile`.
-        defaultPath: `${nomeDiFile(p.name)}.m3u8`,
-        filters: [
-          { name: "M3U", extensions: ["m3u8", "m3u"] },
-          { name: "PLS", extensions: ["pls"] },
-          { name: "XSPF", extensions: ["xspf"] },
-        ],
-      });
-      if (typeof scelta !== "string") return;
-      const fatta = await ipc.playlistEsporta(p.id, scelta);
+      // Sul telefono il formato resta quello del nome proposto: il selettore
+      // di Android lascia cambiare il nome, ma il file lo scrive il nucleo
+      // prima, con l'estensione di qui. Vedi `dialoghi.ts`.
+      const salvata = await salvaCon(
+        {
+          // Il nome ripulito, non quello della playlist: «AC/DC» diventava la
+          // cartella «AC» e il file «DC.m3u8». Vedi `nomeDiFile`.
+          defaultPath: `${nomeDiFile(p.name)}.m3u8`,
+          filters: [
+            { name: "M3U", extensions: ["m3u8", "m3u"] },
+            { name: "PLS", extensions: ["pls"] },
+            { name: "XSPF", extensions: ["xspf"] },
+          ],
+          tipo: "audio/x-mpegurl",
+        },
+        (percorso) => ipc.playlistEsporta(p.id, percorso),
+      );
+      if (salvata === null) return;
+      const { esito: fatta, dove: scelta } = salvata;
       // I brani del cloud e dei cataloghi non entrano nel file (un altro
       // lettore non saprebbe aprirli): se ce n'erano si dice quanti, o una
       // playlist tutta del cloud uscirebbe come un file pieno. Il numero che
@@ -1486,6 +1584,41 @@ export function App() {
     [segnalaErrore],
   );
 
+  /**
+   * «Riproduci» e «Casuale» delle testate del telefono (`TestataDettaglio`):
+   * l'elenco dal primo, o una sua copia mescolata. Vedi `mescolato.ts` sul
+   * perché non è il casuale del lettore.
+   */
+  const suonaElenco = useCallback(
+    (elenco: Brano[], casuale: boolean) => {
+      if (elenco.length === 0) return;
+      suonaDa(casuale ? mescolato(elenco) : elenco, 0).catch(segnalaErrore);
+    },
+    [suonaDa, segnalaErrore],
+  );
+
+  /**
+   * Tutti i brani di un artista, per la sua testata sul telefono.
+   *
+   * Un comando che li dia in una volta non c'è: ci sono i suoi dischi
+   * (`albumArtista`, lo stesso elenco della griglia sotto) e i brani di
+   * ciascuno. I dischi in ordine, i brani nell'ordine del disco: «Riproduci» su
+   * un artista è la sua discografia dall'inizio.
+   */
+  const suonaArtista = useCallback(
+    async (nome: string, casuale: boolean) => {
+      try {
+        const dischi = await ipc.albumArtista(nome, 0, 1000);
+        const tracce = (await Promise.all(dischi.map((d) => ipc.braniAlbum(d.albumKey)))).flat();
+        if (tracce.length === 0) return;
+        await suonaDa(casuale ? mescolato(tracce) : tracce, 0);
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    },
+    [suonaDa, segnalaErrore],
+  );
+
   /** Le playlist all'apertura. Vince l'ultima, come `ricarica`: vedi `libreria.ts`. */
   useEffect(() => {
     void ricaricaPlaylist();
@@ -1532,9 +1665,33 @@ export function App() {
    * Quali voci, e quando, lo dice `vociBrani` in `menuBrani.ts`; qui c'è quel
    * che ciascuna fa, che tocca la coda, le finestrelle e la pagina.
    */
+  /**
+   * Il cuore per la voce del menù: `cambiaPreferito` è scritto più giù, e il
+   * menù lo usa al clic, quando c'è già.
+   */
+  const preferitoDalMenu = useRef<(brano: Brano) => Promise<void>>(async () => {});
   const apriMenu = useCallback(
-    (e: React.MouseEvent, elenco: number[]) => {
+    (
+      e: React.MouseEvent,
+      elenco: number[],
+      /**
+       * Il brano su cui si è aperto, quando chi apre lo ha in mano e l'elenco
+       * della vista no: la Home, la coda, «In riproduzione». Serve alla testata
+       * del foglio del telefono, e a non offrire voci per un brano che
+       * l'elenco della vista non conosce.
+       */
+      conosciuto?: Brano,
+      /**
+       * Le voci che solo chi apre sa offrire: «Togli da questa playlist», che
+       * vuole la posizione della riga. Vedi `menuRigaPlaylist`.
+       */
+      piu?: Pick<AzioniBrani, "togliDallaPlaylist" | "togliDallaCoda">,
+    ) => {
       e.preventDefault();
+      const inMano = (id: number) =>
+        conosciuto !== undefined && conosciuto.id === id
+          ? conosciuto
+          : elencoCorrenteRef.current.cerca((b) => b.id === id);
       // Il brano si legge al momento del gesto: l'elenco che ha aperto il menù
       // ha solo i numeri.
       const conBrano =
@@ -1567,6 +1724,9 @@ export function App() {
         },
         aggiungiAPlaylist: (brani) => setDaAggiungere(brani),
         vaiAlDisco: conBrano(async (brano) => {
+          // Sul telefono «In riproduzione» copre la pagina, schede comprese:
+          // il disco aperto sotto non si vedrebbe. Si scende, e lo si trova.
+          if (MOBILE) setGrande(false);
           const chiave = brano.albumKey;
           // Un brano senza disco — un flusso, un file sparso — ha la voce
           // come tutti: il menù si apre prima di leggere il brano. Il
@@ -1591,6 +1751,7 @@ export function App() {
           });
         }),
         vaiAllArtista: conBrano(async (brano) => {
+          if (MOBILE) setGrande(false);
           const tutti = artisti.length > 0 ? artisti : await ipc.artisti();
           const piegato = brano.artist.toLocaleLowerCase();
           const suo =
@@ -1621,13 +1782,34 @@ export function App() {
         },
         togli: (brani) => setDaEliminare({ brani, dalDisco: false }),
         elimina: (brani) => setDaEliminare({ brani, dalDisco: true }),
+        // Sul telefono la riga non ha il cuore: sta qui. Il brano si rilegge,
+        // come per il disco e l'artista, perché il valore da invertire è
+        // quello di adesso e non quello dell'elenco che ha aperto il menù.
+        preferito: MOBILE
+          ? conBrano((brano) => preferitoDalMenu.current(brano))
+          : undefined,
+        togliDallaPlaylist: piu?.togliDallaPlaylist,
+        togliDallaCoda: piu?.togliDallaCoda,
       };
+      // Su cosa si agisce, per la testata del foglio del telefono: il brano,
+      // se è uno solo e lo si ha in mano, o quanti sono.
+      const uno = elenco.length === 1 && elenco[0] !== undefined ? inMano(elenco[0]) : undefined;
       setMenu({
         x: e.clientX,
         y: e.clientY,
+        testata:
+          uno !== undefined
+            ? {
+                titolo: uno.title,
+                sottotitolo: `${nomeArtista(uno.artist)} · ${titoloAlbum(uno.album)}`,
+                copertina: uno.coverArtHash,
+              }
+            : elenco.length > 1
+              ? { titolo: brani_(elenco.length) }
+              : undefined,
         voci: vociBrani(
           elenco,
-          (id) => elencoCorrenteRef.current.cerca((b) => b.id === id),
+          inMano,
           fai,
           t,
           // Letto al momento del tasto destro, senza iscriversi: `App` non deve
@@ -1679,14 +1861,29 @@ export function App() {
         },
         t,
       );
-      setMenu({ x: e.clientX, y: e.clientY, voci });
+      setMenu({
+        x: e.clientX,
+        y: e.clientY,
+        voci,
+        testata: {
+          titolo: p.name,
+          sottotitolo: p.isSmart
+            ? `${t("page.playlist.smart")} · ${brani_(p.tracks)}`
+            : brani_(p.tracks),
+        },
+      });
     },
     [ricaricaPlaylist, segnalaErrore],
   );
 
   /** Il menù di una scheda album: i brani si chiedono al momento del comando. */
   const menuAlbum = useCallback(
-    (e: React.MouseEvent, chiave: string) => {
+    (
+      e: React.MouseEvent,
+      chiave: string,
+      /** Il disco, quando chi apre lo ha in mano: la testata del foglio. */
+      album?: Album,
+    ) => {
       e.preventDefault();
       const conBrani = (comando: (ids: number[]) => Promise<void>) => () => {
         ipc
@@ -1710,7 +1907,19 @@ export function App() {
       // In una sessione dove la coda non è concessa a questo PC, con un disco
       // non resta niente da fare: nessun menù, invece di una scatola vuota.
       if (voci.length === 0) return;
-      setMenu({ x: e.clientX, y: e.clientY, voci });
+      setMenu({
+        x: e.clientX,
+        y: e.clientY,
+        voci,
+        testata:
+          album === undefined
+            ? undefined
+            : {
+                titolo: titoloAlbum(album.title),
+                sottotitolo: nomeArtista(album.artist),
+                copertina: album.coverArtHash,
+              },
+      });
     },
     [segnalaErrore, riproduzione.archivio],
   );
@@ -1721,12 +1930,14 @@ export function App() {
     setMenu({
       x: riquadro.left,
       y: riquadro.bottom + 4,
+      testata: { titolo: t("sort.heading") },
       voci: ordinamenti().map(([chiave, etichetta]) => ({
         etichetta,
         azione: () => setOrdine(chiave),
+        scelta: chiave === ordine,
       })),
     });
-  }, []);
+  }, [ordine]);
 
   /**
    * Cambia la valutazione, ottimisticamente come il preferito.
@@ -1802,6 +2013,7 @@ export function App() {
     },
     [caricaVista, aggiornaBrani, riproduzione.ritoccaBrano],
   );
+  preferitoDalMenu.current = cambiaPreferito;
 
   /**
    * La lista rada della pagina che si guarda, quando è un elenco della libreria
@@ -1871,7 +2083,10 @@ export function App() {
     pieni: braniPieni,
     vistaBrani: vistaBraniCorrente,
     chiave: chiaveDellaSelezione(pagina, vistaTenuta, ordine, query),
-    tenuta: vistaTenuta !== null,
+    // Sul telefono la selezione finisce cambiando vista, come in ogni app di
+    // Android: tenerla da parte e ritrovarla tornando lì vorrebbe dire una
+    // barra di selezione che ricompare da sola, su righe scelte un'ora prima.
+    tenuta: vistaTenuta !== null && !MOBILE,
     idDellaVista: ipc.vistaBraniId,
     onErrore: segnalaErrore,
   });
@@ -1921,6 +2136,11 @@ export function App() {
       try {
         if (dalDisco) {
           const quanti = await ipc.braniElimina(brani, definitivi);
+          // Sul telefono il Cestino chiede conferma con un dialogo di Android, e
+          // un «no» lì torna come zero brani: non si è mosso niente, e le righe
+          // tolte qui sopra in anticipo devono tornare — senza un errore, perché
+          // non ce n'è stato uno.
+          if (MOBILE && quanti === 0 && brani.length > 0) throw RIPENSATO;
           setNotizia(
             definitivi
               ? t("delete.done.forever", { brani: brani_(quanti) })
@@ -1958,7 +2178,7 @@ export function App() {
         // `caricaVista` li sfiorano.
         await ricarica();
       } catch (e) {
-        segnalaErrore(e);
+        if (e !== RIPENSATO) segnalaErrore(e);
         await caricaVista();
         // `caricaVista` rifà gli elenchi impaginati, non questi due: hanno
         // effetti loro, legati all'album e alla playlist aperti, che un errore
@@ -2048,11 +2268,50 @@ export function App() {
    * renderebbe la selezione multipla utile solo dalla barra.
    */
   const menuSuSelezione = useCallback(
-    (e: React.MouseEvent, elenco: number[]) => {
+    (
+      e: React.MouseEvent,
+      elenco: number[],
+      conosciuto?: Brano,
+      piu?: Pick<AzioniBrani, "togliDallaPlaylist">,
+    ) => {
       const dentro = elenco.some((id) => selezione.has(id));
-      apriMenu(e, dentro && selezionati.length > 0 ? selezionati : elenco);
+      apriMenu(e, dentro && selezionati.length > 0 ? selezionati : elenco, conosciuto, piu);
     },
     [apriMenu, selezione, selezionati],
+  );
+
+  /**
+   * Il menù di una riga di una playlist a mano, sul telefono: quello di
+   * sempre, più «Togli da questa playlist».
+   *
+   * Sul computer la riga ha la sua ×; sul telefono la riga è copertina,
+   * titolo e ⋮, e la × sta qui. Vuole la **posizione** e non il brano —
+   * lo stesso brano può stare due volte nella stessa playlist — e la
+   * posizione la dice la riga stessa, `data-indice`, da cui viene il gesto.
+   * Su una selezione di più righe la voce non c'è: le posizioni si
+   * sposterebbero a ogni riga tolta, e il nucleo le toglie una per volta.
+   */
+  const menuRigaPlaylist = useCallback(
+    (e: React.MouseEvent, elenco: number[]) => {
+      const riga = (e.target as Element).closest<HTMLElement>("[data-indice]");
+      const indice = riga === null ? Number.NaN : Number(riga.dataset["indice"]);
+      const suPiuRighe = elenco.some((id) => selezione.has(id)) && selezionati.length > 1;
+      menuSuSelezione(
+        e,
+        elenco,
+        undefined,
+        Number.isInteger(indice) && !suPiuRighe
+          ? { togliDallaPlaylist: () => togliDallaPlaylist(indice) }
+          : undefined,
+      );
+    },
+    [menuSuSelezione, selezione, selezionati.length, togliDallaPlaylist],
+  );
+
+  /** Il ⋮ della barra della selezione, sul telefono: il menù di tutti i scelti. */
+  const menuDellaSelezione = useCallback(
+    (e: React.MouseEvent) => apriMenu(e, selezionati),
+    [apriMenu, selezionati],
   );
 
   /** Le scorciatoie. La mappa completa sta in `tastiera.ts`. */
@@ -2140,19 +2399,58 @@ export function App() {
         }
         if (query.length > 0) {
           setQuery("");
+          // Sul telefono Indietro sulla ricerca è «non la voglio più»: tornando
+          // su Cerca il campo è vuoto, e non la frase che si è appena tolta.
+          ultimaRicerca.current = "";
           return true;
         }
+        // Sul telefono un disco o un artista aperto da un risultato stanno
+        // sopra la ricerca, e chiudendoli si torna ai risultati, come si
+        // risale una pila: `vaiAlDisco` ha svuotato il campo per mostrarli, e
+        // la frase la ricorda `ultimaRicerca`.
+        const tornaAllaRicerca = () => {
+          if (MOBILE && vista === "cerca" && ultimaRicerca.current !== "") {
+            setQuery(ultimaRicerca.current);
+          }
+        };
         // Un livello per pressione, nell'ordine in cui ci si è entrati. Prima
         // erano una riga sola che azzerava tutti e due, e da un album aperto
         // dentro un artista Escape saltava la pagina dell'artista — cioè
         // riportava due passi indietro chi ne aveva chiesto uno.
         if (aperto) {
           setAperto(null);
+          if (artistaAperto === null) tornaAllaRicerca();
           return true;
         }
         if (artistaAperto) {
           setArtistaAperto(null);
+          tornaAllaRicerca();
           return true;
+        }
+        // Sul telefono Indietro continua dove il computer si ferma: la
+        // playlist aperta, la sezione delle Impostazioni, e la risalita fra le
+        // schede fino alla Home. Vedi `passoIndietroTelefono`.
+        if (MOBILE) {
+          const passo = passoIndietroTelefono({
+            vista,
+            playlistAperta: playlistAperta !== null,
+            dentroLaSezione,
+            sezioneDaFuori: sezioneDaFuori.current,
+          });
+          if (passo === "playlist") {
+            cambiandoVista(() => setPlaylistAperta(null));
+            return true;
+          }
+          if (passo === "sezioni") {
+            setDentroLaSezione(false);
+            // L'elenco dall'inizio: lo scorrimento era quello della sezione.
+            contenuto.current?.scrollTo({ top: 0 });
+            return true;
+          }
+          if (passo !== null) {
+            vaiA(passo.vai);
+            return true;
+          }
         }
         return false;
       },
@@ -2188,8 +2486,7 @@ export function App() {
         // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
         // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
         // e il corpo rispondono a due domande diverse.
-        vaiA("impostazioni");
-        setSezione("aspetto");
+        apriSezione("aspetto", true);
         ipc
           .skinInstalla(piano.percorso)
           .then(skinFinestra.dopoInstallazione)
@@ -2220,8 +2517,7 @@ export function App() {
         return;
       }
       if (cartelle?.dove === "sorvegliate" && avvio) {
-        vaiA("impostazioni");
-        setSezione("cartelle");
+        apriSezione("cartelle", true);
         // Dalla fila delle cartelle e non da `avvio`: un trascinamento mentre si
         // toglie una cartella partiva dall'elenco di prima e la rimetteva. Vedi
         // `elencoCartelle.ts`.
@@ -2303,19 +2599,27 @@ export function App() {
       onScollegaConto: scollegaContoStabile,
       onScegliCartellaDownload: cartellaDownload,
       onScansiona: scansionaStabile,
+      // Sul telefono i tre tasti non ci sono (lo Studio non c'è: vedi
+      // `Studio`); queste guardie sono la seconda cintura, perché una via
+      // nuova verso lo Studio non riapra una finestra che non ha niente dietro.
       onCreaTema: () => {
+        if (MOBILE) return;
         setBaseTema(null);
         setCreandoTema(true);
       },
       onDeriva: (id) => {
+        if (MOBILE) return;
         setBaseTema(id);
         setCreandoTema(true);
       },
-      onApriStudio: setStudioAperto,
+      onApriStudio: (id) => {
+        if (!MOBILE) setStudioAperto(id);
+      },
       onImporta: importaDatabase,
       onImportaLink: () => setImportandoLink(true),
       onImportaAccount: () => setImportandoAccount(true),
       onVista: vaiA,
+      onSfogliaDispositivo: apriDispositivo,
       onNuvolaRipristina: () => setRipristinando(true),
     }),
     [
@@ -2356,13 +2660,70 @@ export function App() {
         // impostazioni. Si atterra sui Brani perché è la vista che una
         // playlist somiglia di più, ed è quella che si ritrova chiudendola.
         if (vista === "impostazioni" || vista === "importazioni") {
-          setVista("brani");
+          setVista(MOBILE ? "playlist" : "brani");
+        }
+        // Sul telefono le pagine da cui uscire sono anche Altro ed Esplora, e
+        // si atterra sulla pillola Playlist: è da lì che le playlist si
+        // aprono, ed è lì che si torna chiudendola.
+        if (MOBILE && (vista === "altro" || vista === "esplora" || vista === "cerca")) {
+          setVista("playlist");
         }
         setPlaylistAperta(p);
       });
     },
     [vista],
   );
+
+  /**
+   * Il tocco su una scheda del telefono.
+   *
+   * Su un'altra scheda: ci si va, e la si ritrova com'era — la Libreria
+   * sull'ultima pillola, Cerca sull'ultimo segmento e sull'ultima frase. Sulla
+   * scheda in cui si è già: se sopra c'è aperto qualcosa si torna alla sua
+   * prima pagina, se si è già lì si torna in cima. È il gesto di ogni app con
+   * le schede in basso, e la mano lo prova prima di cercare una freccia.
+   */
+  /**
+   * Apre una sezione delle Impostazioni: dall'indice, o da fuori — un avviso,
+   * un tasto della pagina Altro, la notifica della scansione.
+   *
+   * Sul telefono ci **entra**: le Impostazioni hanno due livelli (vedi
+   * `inSezione` in `Impostazioni`), e chi tocca «Apri i dati» vuole la
+   * sezione, non l'elenco delle sezioni da cui cercarla. Si torna in cima, per
+   * non entrare a metà della sezione allo scorrimento dell'elenco di prima.
+   */
+  const apriSezione = useStabile((quale: Sezione, daFuori: boolean) => {
+    sezioneDaFuori.current = daFuori;
+    if (daFuori) vaiA("impostazioni");
+    setSezione(quale);
+    if (!MOBILE) return;
+    setDentroLaSezione(true);
+    contenuto.current?.scrollTo({ top: 0 });
+  });
+  const scegliSezione = useCallback((quale: Sezione) => apriSezione(quale, false), [apriSezione]);
+
+  const scegliScheda = useStabile((dove: SchedaTelefono) => {
+    const radice = radiceDellaScheda(dove, pillola.current, segmentoCerca.current);
+    const allaRadice =
+      vista === radice &&
+      aperto === null &&
+      artistaAperto === null &&
+      playlistAperta === null &&
+      !cercando;
+    if (dove === scheda && allaRadice) {
+      contenuto.current?.scrollTo({ top: 0, behavior: comeScorrere("smooth") });
+      return;
+    }
+    // Sulla scheda Cerca già con i risultati: il campo, per cambiare frase.
+    if (dove === "cerca" && pagina.tipo === "ricerca") {
+      document.querySelector<HTMLInputElement>("[data-cerca]")?.focus();
+      return;
+    }
+    vaiA(radice);
+    if (radice === "cerca" && ultimaRicerca.current !== "") {
+      setQuery(ultimaRicerca.current);
+    }
+  });
   const nuovaPlaylist = useCallback(() => setCreandoPlaylist(true), [setCreandoPlaylist]);
   const nuovaSmart = useCallback(() => setRegoleAperte({ playlist: null }), [setRegoleAperte]);
   const importaFile = useStabile(() => void scegliFilePlaylist());
@@ -2372,6 +2733,26 @@ export function App() {
     ipc.apriDocumento("donazioni").catch(segnalaErrore);
   }, [segnalaErrore]);
   const apriGrande = useCallback(() => setGrande(true), []);
+  const chiudiGrande = useCallback(() => setGrande(false), []);
+  /**
+   * Il ⋮ di una riga della coda, sul telefono: il menù del brano, più «Togli
+   * dalla coda», che è quel che la × della riga faceva. La posizione viene
+   * dalla riga: lo stesso brano può stare in coda due volte.
+   */
+  const menuDellaCoda = useCallback(
+    (e: React.MouseEvent, indice: number, brano: Brano) =>
+      apriMenu(e, [brano.id], brano, {
+        togliDallaCoda: () => {
+          ipc.codaTogli(indice).catch(segnalaErrore);
+        },
+      }),
+    [apriMenu, segnalaErrore],
+  );
+  /** Il ⋮ di «In riproduzione» sul telefono: il menu del brano che suona. */
+  const menuDelBranoGrande = useCallback(
+    (e: React.MouseEvent, brano: Brano) => apriMenu(e, [brano.id], brano),
+    [apriMenu],
+  );
   // Il cuore e le stelle dei widget: `cambiaPreferito` e `cambiaVoto` cambiano
   // identità con la vista (passano da `caricaVista`), e il lettore non deve
   // ridisegnarsi per essere passati da Album a Brani.
@@ -2443,6 +2824,11 @@ export function App() {
       onSelezionePlaylist: selezionePlaylist,
       onSelezioneTuttiOAnnulla: selezioneTuttiOAnnulla,
       onSelezioneChiudi: annullaSelezione,
+      onSelezioneMenu: menuDellaSelezione,
+      scheda,
+      onScheda: scegliScheda,
+      dispositivoAperto,
+      onDispositivo: apriDispositivo,
     }),
     [
       vista,
@@ -2476,8 +2862,172 @@ export function App() {
       selezionePlaylist,
       selezioneTuttiOAnnulla,
       annullaSelezione,
+      menuDellaSelezione,
+      scheda,
+      scegliScheda,
+      dispositivoAperto,
+      apriDispositivo,
     ],
   );
+
+  /**
+   * La testata del telefono: una barra, e non l'intestazione del computer.
+   *
+   * Vedi `parti/BarraAlta.tsx` per la forma. Le prime pagine delle quattro
+   * schede hanno il titolo grande; le pagine dentro — un disco, un artista,
+   * una playlist, le Impostazioni — la freccia e il titolo piccolo. La freccia
+   * fa quel che fa il tasto Indietro del telefono, cioè la stessa scala
+   * (`indietro.ts`): due modi di dire «torna» che tornassero in due posti
+   * diversi sarebbero due cose da imparare.
+   *
+   * La ricerca sta solo nella scheda Cerca, e per le tre pagine di Cerca la
+   * testata è sempre `BarraCerca`, diretta: vedi la sua nota sul fuoco.
+   */
+  const testaTelefono = () => {
+    const torna = () => void indietro();
+    const cerca = (
+      <TastoBarra
+        icona="i-search"
+        etichetta={t("nav.search")}
+        onClick={() => scegliScheda("cerca")}
+      />
+    );
+    switch (pagina.tipo) {
+      case "ricerca":
+      case "cerca":
+      case "esplora":
+        return (
+          <BarraCerca
+            query={query}
+            onQuery={(testo) => {
+              // Svuotato a mano: tornando su Cerca il campo resta vuoto.
+              if (testo === "") ultimaRicerca.current = "";
+              setQuery(testo);
+            }}
+            segmento={pagina.tipo === "esplora" ? "esplora" : "cerca"}
+            onSegmento={(segmento) => {
+              vaiA(segmento);
+              if (segmento === "cerca" && ultimaRicerca.current !== "") {
+                setQuery(ultimaRicerca.current);
+              }
+            }}
+            sottotitolo={
+              pagina.tipo !== "ricerca"
+                ? undefined
+                : contandoRisultati || risultatiAdesso === null
+                  ? t("common.loading")
+                  : t("page.search.results", { n: risultatiAdesso })
+            }
+          />
+        );
+      case "home":
+        return (
+          <BarraAlta grande occhiello={t("home.eyebrow")} titolo={t("home.title")} azioni={cerca} />
+        );
+      case "libreria":
+        return (
+          <BarraAlta
+            grande
+            titolo={t("nav.library")}
+            azioni={
+              <>
+                {pagina.vista === "brani" && (
+                  <TastoBarra
+                    icona="i-sort"
+                    etichetta={t("header.sort", { nome: etichettaOrdine })}
+                    onClick={menuOrdine}
+                  />
+                )}
+                {cerca}
+              </>
+            }
+            sotto={<PilloleLibreria vista={pagina.vista} onVista={vaiA} />}
+          />
+        );
+      case "altro":
+        return <BarraAlta grande titolo={t("nav.more")} />;
+      case "dispositivo":
+        return (
+          <BarraAlta
+            indietro={torna}
+            occhiello={t("devices.browse.eyebrow")}
+            titolo={dispositivoSfogliato?.nome ?? t("nav.devices")}
+            sottotitolo={sottotitoloDispositivo(dispositivoSfogliato)}
+          />
+        );
+      case "impostazioni":
+        // Dentro una sezione la barra dice quale, e la freccia torna
+        // all'elenco (`passoIndietroTelefono`, «sezioni»).
+        return (
+          <BarraAlta
+            indietro={torna}
+            titolo={dentroLaSezione ? etichettaSezione(sezione) : t("page.settings.title")}
+          />
+        );
+      case "importazioni":
+        return (
+          <BarraAlta
+            indietro={torna}
+            titolo={t("imports.title")}
+            azioni={
+              <TastoBarra
+                icona="i-external"
+                etichetta={t("imports.pasteLink")}
+                onClick={() => setImportandoLink(true)}
+              />
+            }
+          />
+        );
+      case "playlist":
+        return (
+          <BarraAlta
+            indietro={torna}
+            ritirato={braniPlaylist.length > 0}
+            titolo={pagina.playlist.name}
+            sottotitolo={`${brani_(pagina.playlist.tracks)}${
+              pagina.playlist.durationMs > 0 ? ` · ${durata(pagina.playlist.durationMs)}` : ""
+            }`}
+            azioni={
+              <TastoBarra
+                icona="i-dots-v"
+                etichetta={t("row.more", { titolo: pagina.playlist.name })}
+                onClick={(e) => menuPlaylist(e, pagina.playlist)}
+              />
+            }
+          />
+        );
+      case "album":
+        return (
+          <BarraAlta
+            indietro={torna}
+            ritirato
+            titolo={titoloAlbum(pagina.album.title)}
+            sottotitolo={`${nomeArtista(pagina.album.artist)}${
+              pagina.album.year ? ` · ${pagina.album.year}` : ""
+            }`}
+            azioni={
+              <TastoBarra
+                icona="i-dots-v"
+                etichetta={t("row.more", { titolo: titoloAlbum(pagina.album.title) })}
+                onClick={(e) => menuAlbum(e, pagina.album.albumKey, pagina.album)}
+              />
+            }
+          />
+        );
+      case "artista":
+        return (
+          <BarraAlta
+            indietro={torna}
+            ritirato
+            titolo={nomeArtista(pagina.artista.name)}
+            sottotitolo={t("page.artist.sub", {
+              brani: brani_(pagina.artista.tracks),
+              album: t("artists.albums", { n: pagina.artista.albums }),
+            })}
+          />
+        );
+    }
+  };
 
   /**
    * L'intestazione, che cambia con quel che si sta guardando.
@@ -2493,6 +3043,7 @@ export function App() {
    * (`testaHome`, `testaLibreria`).
    */
   const testa = () => {
+    if (MOBILE) return testaTelefono();
     if (pagina.tipo === "importazioni") {
       return (
         <ConImportazioni>
@@ -2510,6 +3061,17 @@ export function App() {
         <Intestazione
           titolo={t("page.settings.title")}
           sottotitolo={t("page.settings.sub")}
+        />
+      );
+    }
+    // Senza `query`: la casella dell'intestazione cerca in **questa** libreria,
+    // e la pagina ha la sua, che cerca in quella dell'altro.
+    if (pagina.tipo === "dispositivo") {
+      return (
+        <Intestazione
+          occhiello={t("devices.browse.eyebrow")}
+          titolo={dispositivoSfogliato?.nome ?? t("nav.devices")}
+          sottotitolo={sottotitoloDispositivo(dispositivoSfogliato)}
         />
       );
     }
@@ -2667,6 +3229,9 @@ export function App() {
     if (pagina.tipo === "home") {
       return <Intestazione {...testaHome()} query={query} onQuery={setQuery} />;
     }
+    // Le due pagine del solo telefono: sul computer non ci si arriva, e la
+    // testata del telefono le ha già prese sopra.
+    if (pagina.tipo === "altro" || pagina.tipo === "cerca") return null;
     return (
       <Intestazione
         {...testaLibreria({
@@ -2752,13 +3317,72 @@ export function App() {
       return (
         <ImpostazioniDellaFinestra
           sezione={sezione}
-          onSezione={setSezione}
+          onSezione={scegliSezione}
+          inSezione={MOBILE ? dentroLaSezione : undefined}
           onNotizia={setNotizia}
           onErrore={segnalaErrore}
           aspetto={aspetto}
           skin={skinFinestra}
           azioni={azioniImpostazioni}
           cartelleOccupate={cartelleOccupate}
+        />
+      );
+    }
+
+    // La libreria di un altro dispositivo: c'è anche con questa vuota.
+    if (pagina.tipo === "dispositivo") {
+      if (dispositivoAperto === null) {
+        return (
+          <StatoVuoto
+            icona="i-server"
+            titolo={t("devices.browse.gone")}
+            testo={t("devices.browse.gone.sub")}
+            azione={{
+              etichetta: t("devices.browse.settings"),
+              fai: () => apriSezione("dispositivi", true),
+            }}
+          />
+        );
+      }
+      return (
+        <Dispositivo
+          key={dispositivoAperto}
+          chiave={dispositivoAperto}
+          onErrore={segnalaErrore}
+          onImpostazioni={() => apriSezione("dispositivi", true)}
+          onMenu={setMenu}
+        />
+      );
+    }
+
+    // Le due pagine del solo telefono che non guardano la libreria: ci sono
+    // anche con la libreria vuota, come le Impostazioni.
+    if (pagina.tipo === "altro") {
+      return (
+        <Altro
+          onInsieme={apriFinestra}
+          onImportazioni={() => vaiA("importazioni")}
+          onIncollaLink={() => setImportandoLink(true)}
+          onCartelle={() => {
+            apriSezione("cartelle", true);
+          }}
+          onImpostazioni={() => {
+            vaiA("impostazioni");
+            setDentroLaSezione(false);
+            sezioneDaFuori.current = false;
+          }}
+          onDona={dona}
+          onDispositivo={apriDispositivo}
+          onCollega={() => apriSezione("dispositivi", true)}
+        />
+      );
+    }
+    if (pagina.tipo === "cerca") {
+      return (
+        <StatoVuoto
+          icona="i-search"
+          titolo={t("search.landing.title")}
+          testo={t("search.landing.body")}
         />
       );
     }
@@ -2814,6 +3438,7 @@ export function App() {
             onMenu={menuSuSelezione}
             onSeleziona={seleziona}
             onAlternaSelezione={alternaSelezione}
+            inSelezione={MOBILE && selezionati.length > 0}
             onSelezionaTutto={selezionaTutto}
           />
         </>
@@ -2845,6 +3470,23 @@ export function App() {
     if (pagina.tipo === "playlist") {
       return (
         <>
+          {MOBILE && (
+            <TestataDettaglio
+              occhiello={
+                pagina.playlist.isSmart ? t("page.playlist.smart") : t("page.playlist")
+              }
+              titolo={pagina.playlist.name}
+              sottotitolo={`${brani_(pagina.playlist.tracks)}${
+                pagina.playlist.durationMs > 0 ? ` · ${durata(pagina.playlist.durationMs)}` : ""
+              }`}
+              // Le prime copertine diverse dei suoi brani: una playlist una
+              // copertina sua non ce l'ha.
+              copertine={[...new Set(braniPlaylist.map((b) => b.coverArtHash))].slice(0, 4)}
+              spento={braniPlaylist.length === 0 || !riproduzione.disponibile}
+              onRiproduci={() => suonaElenco(braniPlaylist, false)}
+              onCasuale={() => suonaElenco(braniPlaylist, true)}
+            />
+          )}
           {pagina.playlist.isSmart && (
             <p className="nota">
               <Trans
@@ -2862,9 +3504,10 @@ export function App() {
             onSuona={suonaQui}
             onPreferito={cambiaPreferito}
             onVoto={cambiaVoto}
-            onMenu={menuSuSelezione}
+            onMenu={MOBILE && !pagina.playlist.isSmart ? menuRigaPlaylist : menuSuSelezione}
             onSeleziona={seleziona}
             onAlternaSelezione={alternaSelezione}
+            inSelezione={MOBILE && selezionati.length > 0}
             onSelezionaTutto={selezionaTutto}
             /* Lo stesso brano può stare due volte in una playlist: la chiave
                porta anche la posizione, o React accoppierebbe le due righe. */
@@ -2891,23 +3534,39 @@ export function App() {
 
     if (pagina.tipo === "album") {
       return (
-        <ElencoBraniCollegato
-          key="album-aperto"
-          righe={braniAperto}
-          scorrevole={contenuto}
-          suonabile={riproduzione.disponibile}
-          selezione={selezione}
-          onSuona={suonaQui}
-          onPreferito={cambiaPreferito}
-          onVoto={cambiaVoto}
-          onMenu={menuSuSelezione}
-          onSeleziona={seleziona}
-          onAlternaSelezione={alternaSelezione}
-          onSelezionaTutto={selezionaTutto}
-          /* L'unico posto in cui `#` è il numero del disco: qui la colonna dice
-             dove sta il pezzo sulla custodia. */
-          numeroTraccia
-        />
+        <>
+          {MOBILE && (
+            <TestataDettaglio
+              occhiello={t("page.album")}
+              titolo={titoloAlbum(pagina.album.title)}
+              sottotitolo={`${nomeArtista(pagina.album.artist)}${
+                pagina.album.year ? ` · ${pagina.album.year}` : ""
+              } · ${brani_(pagina.album.totalTracks)}`}
+              copertine={[pagina.album.coverArtHash]}
+              spento={braniAperto.length === 0 || !riproduzione.disponibile}
+              onRiproduci={() => suonaElenco(braniAperto, false)}
+              onCasuale={() => suonaElenco(braniAperto, true)}
+            />
+          )}
+          <ElencoBraniCollegato
+            key="album-aperto"
+            righe={braniAperto}
+            scorrevole={contenuto}
+            suonabile={riproduzione.disponibile}
+            selezione={selezione}
+            onSuona={suonaQui}
+            onPreferito={cambiaPreferito}
+            onVoto={cambiaVoto}
+            onMenu={menuSuSelezione}
+            onSeleziona={seleziona}
+            onAlternaSelezione={alternaSelezione}
+            inSelezione={MOBILE && selezionati.length > 0}
+            onSelezionaTutto={selezionaTutto}
+            /* L'unico posto in cui `#` è il numero del disco: qui la colonna dice
+               dove sta il pezzo sulla custodia. */
+            numeroTraccia
+          />
+        </>
       );
     }
 
@@ -2917,14 +3576,31 @@ export function App() {
       // qui la pagina già scaricata, ed era il motivo per cui un artista oltre il
       // quattrocentesimo album dava una griglia vuota.
       return (
-        <GrigliaAlbum
-          key={`artista:${pagina.artista.name}`}
-          rada={radaAlbumArtista}
-          sotto="anno"
-          onApri={apriAlbum}
-          onMenu={menuAlbum}
-          scorrevole={contenuto}
-        />
+        <>
+          {MOBILE && (
+            <TestataDettaglio
+              occhiello={t("page.artist")}
+              titolo={nomeArtista(pagina.artista.name)}
+              sottotitolo={t("page.artist.sub", {
+                brani: brani_(pagina.artista.tracks),
+                album: t("artists.albums", { n: pagina.artista.albums }),
+              })}
+              copertine={pagina.artista.covers}
+              rotonda
+              spento={pagina.artista.tracks === 0 || !riproduzione.disponibile}
+              onRiproduci={() => void suonaArtista(pagina.artista.name, false)}
+              onCasuale={() => void suonaArtista(pagina.artista.name, true)}
+            />
+          )}
+          <GrigliaAlbum
+            key={`artista:${pagina.artista.name}`}
+            rada={radaAlbumArtista}
+            sotto="anno"
+            onApri={apriAlbum}
+            onMenu={menuAlbum}
+            scorrevole={contenuto}
+          />
+        </>
       );
     }
 
@@ -2970,9 +3646,9 @@ export function App() {
             // motore ha le mani vuote.
             ipc.riprendi().catch(segnalaErrore);
           }}
-          onMenu={(e, brano) => menuSuSelezione(e, [brano.id])}
+          onMenu={(e, brano) => menuSuSelezione(e, [brano.id], brano)}
           onApriAlbum={apriAlbum}
-          onMenuAlbum={(e, album) => menuAlbum(e, album.albumKey)}
+          onMenuAlbum={(e, album) => menuAlbum(e, album.albumKey, album)}
         />
       );
     }
@@ -2980,6 +3656,21 @@ export function App() {
     // Le Cartelle non sono una lista rada e non restano montate: l'albero se lo
     // chiede da sé, un livello alla volta, e uno scheletro di righe di brani
     // sopra un albero sarebbe l'attesa di qualcos'altro.
+    // La pillola Playlist del telefono: l'elenco che sul computer sta nella
+    // barra laterale.
+    if (pagina.tipo === "libreria" && pagina.vista === "playlist") {
+      return (
+        <ElencoPlaylist
+          playlist={playlist}
+          onApri={apriPlaylist}
+          onMenu={menuPlaylist}
+          onNuova={nuovaPlaylist}
+          onNuovaSmart={nuovaSmart}
+          onImportaFile={importaFile}
+        />
+      );
+    }
+
     if (vista === "cartelle") {
       // Senza `avvio` le radici non si sanno: un elenco vuoto qui farebbe dire
       // alla pagina «nessuna cartella», che non è vero. Vedi `CartelleFinte`.
@@ -3049,6 +3740,7 @@ export function App() {
             onMenu={menuSuSelezione}
             onSeleziona={seleziona}
             onAlternaSelezione={alternaSelezione}
+            inSelezione={MOBILE && selezionati.length > 0}
             onSelezionaTutto={selezionaTutto}
           />
         );
@@ -3095,6 +3787,10 @@ export function App() {
               setMenu({
                 x: e.clientX,
                 y: e.clientY,
+                testata: {
+                  titolo: nomeArtista(a.name),
+                  sottotitolo: t("artists.albums", { n: a.albums }),
+                },
                 voci: vociArtista(
                   { apri: () => apriArtista(a), cercaPerNome: () => setQuery(a.name) },
                   t,
@@ -3179,8 +3875,7 @@ export function App() {
           etichetta: t("errors.action.cloudAccounts"),
           onClick: () => {
             chiudiErrore();
-            vaiA("impostazioni");
-            setSezione("cartelle");
+            apriSezione("cartelle", true);
           },
         };
       // Un file che non si apre arriva come `playback.sourceUnavailable`: la
@@ -3275,6 +3970,27 @@ export function App() {
     </div>
   );
 
+  /**
+   * Le notizie sopra «In riproduzione»: vedi `avvisi` in `InRiproduzione`.
+   * Una costante sola per le due forme della schermata, che non sono mai
+   * montate insieme.
+   */
+  const avvisiGrande = (
+    <>
+      {/* Una seconda copia, montata solo qui: quella nella pagina è sotto,
+          `inert`. Vede gli avvisi che nascono a schermo intero; quelli di
+          prima erano già a schermo. */}
+      <AvvisoCoda onErrore={segnalaErrore} />
+      {/* Gli inviti e la sessione, per la stessa ragione: chi ascolta a
+          schermo intero è proprio chi può ricevere un invito senza guardare
+          altro. Qui senza contenitore aderente: la pila sta già ferma da sé. */}
+      <InvitiInsieme onErrore={segnalaErrore} />
+      <AvvisiInsieme onErrore={segnalaErrore} />
+      {avvisoCancellata}
+      {notizieDiFascia}
+    </>
+  );
+
   return (
     <Fornitori
       presenze={presenze}
@@ -3341,8 +4057,11 @@ export function App() {
             />
           ))}
         <Impaginazione
-          albero={skinAttiva?.layout.shell ?? null}
+          // Sul telefono lo scafale è uno solo, per tutte le skin: vedi
+          // `scafaleTelefono.ts`.
+          albero={MOBILE ? SCAFALE_TELEFONO : (skinAttiva?.layout.shell ?? null)}
           contesto={contesto}
+          inerte={MOBILE && grande && conBrano}
           slot={{
             // La testata cambia con la pagina, e con la pagina si anima: la
             // stessa rotta, un gruppo suo.
@@ -3352,7 +4071,11 @@ export function App() {
                 {/* A schermo intero la pagina resta montata sotto: smontarla farebbe
                     perdere la posizione di scorrimento dell'elenco, e chiudere
                     riporterebbe in cima a una libreria che si stava guardando a metà. */}
-                {grande && conBrano ? (
+                {/* Sul telefono no: là è un foglio sopra lo scafale, montato
+                    più sotto accanto a `Impaginazione`. Qui dentro il
+                    contenuto ha `overflow: hidden` e `container-type`, che
+                    taglierebbero un elemento `fixed` alla sua scatola. */}
+                {!MOBILE && grande && conBrano ? (
                   <RecintoErrori
                     dove="in riproduzione"
                     uscita={{ etichetta: t("common.close"), fai: () => setGrande(false) }}
@@ -3362,22 +4085,7 @@ export function App() {
                       onPreferito={cambiaPreferito}
                       onVoto={cambiaVoto}
                       onErrore={segnalaErrore}
-                      avvisi={
-                        <>
-                          {/* Una seconda copia, montata solo qui: quella nella
-                              pagina è sotto, `inert`. Vede gli avvisi che nascono a
-                              schermo intero; quelli di prima erano già a schermo. */}
-                          <AvvisoCoda onErrore={segnalaErrore} />
-                          {/* Gli inviti e la sessione, per la stessa ragione:
-                              chi ascolta a schermo intero è proprio chi può
-                              ricevere un invito senza guardare altro. Qui senza
-                              contenitore aderente: la pila sta già ferma da sé. */}
-                          <InvitiInsieme onErrore={segnalaErrore} />
-                          <AvvisiInsieme onErrore={segnalaErrore} />
-                          {avvisoCancellata}
-                          {notizieDiFascia}
-                        </>
-                      }
+                      avvisi={avvisiGrande}
                     />
                   </RecintoErrori>
                 ) : null}
@@ -3396,8 +4104,7 @@ export function App() {
                         non se ne va: vedi `AvvisoDatabase` in `parti/Avvisi.tsx`. */}
                     <AvvisoDatabase
                       onVaiAiDati={() => {
-                        vaiA("impostazioni");
-                        setSezione("dati");
+                        apriSezione("dati", true);
                       }}
                     />
                     {/* Subito dopo: un conto cloud da ricollegare è l'altro
@@ -3455,6 +4162,25 @@ export function App() {
             ),
           }}
         />
+        {/* «In riproduzione» del telefono: dopo lo scafale e fuori da lui,
+            perché copre tutto, schede comprese, e prima delle finestrelle e
+            del menu, che gli si aprono sopra. Vedi `InRiproduzioneTelefono`. */}
+        {MOBILE && grande && conBrano && (
+          <RecintoErrori
+            dove="in riproduzione"
+            uscita={{ etichetta: t("common.close"), fai: () => setGrande(false) }}
+          >
+            <InRiproduzioneTelefonoCollegata
+              onChiudi={chiudiGrande}
+              onPreferito={cambiaPreferito}
+              onVoto={cambiaVoto}
+              onMenu={menuDelBranoGrande}
+              onMenuCoda={menuDellaCoda}
+              onErrore={segnalaErrore}
+              avvisi={avvisiGrande}
+            />
+          </RecintoErrori>
+        )}
 
         {/* Una volta sola, fuori dalle due copie della pagina: gli ascolti di
             `insieme:stato` e `insieme:avviso`, e le finestrelle che ne nascono
@@ -3463,6 +4189,12 @@ export function App() {
             Il guasto della fascia gli arriva per disegnarlo anche dentro il
             pannello, che copre la fascia: vedi `VistaInsieme.guasto`. */}
         <InsiemeInApp onErrore={segnalaErrore} guasto={guasto} onChiudiGuasto={chiudiErrore} />
+
+        {/* Una volta sola, come quella sopra: l'ascolto di `lontano:stato` e
+            `lontano:link`, e le tre finestrelle del collegamento via internet
+            — chi chiede di collegarsi, il link aperto da fuori, i dati mobili.
+            Vedi `parti/Dispositivi.tsx`. */}
+        <LontanoInApp onErrore={segnalaErrore} onNotizia={setNotizia} />
 
         {filePlaylist !== null && (
           <ImportaPlaylist
@@ -3679,7 +4411,7 @@ export function App() {
           />
         )}
 
-        {creandoTema && (
+        {!MOBILE && creandoTema && (
           <NuovoTema
             skin={skin}
             baseIniziale={baseTema}
@@ -3735,8 +4467,7 @@ export function App() {
                   vista !== "impostazioni" || sezione !== "cartelle" ? scansione : null
                 }
                 onApriScansione={() => {
-                  vaiA("impostazioni");
-                  setSezione("cartelle");
+                  apriSezione("cartelle", true);
                 }}
                 onAnnullaScansione={() => {
                   // Come «Annulla» nelle Impostazioni: la barra resta finché il
@@ -3771,7 +4502,10 @@ export function App() {
             disegnarsi sopra di lui a parità di strato — il menù contestuale, i
             toast. Lo strato vero lo dà il foglio, che è dove la scala vive; qui
             si dice soltanto che viene per ultimo. */}
-        {giroAperto && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
+        {/* Non sul telefono: i suoi quattordici passi raccontano la finestra
+            del computer — la barra laterale, la terza colonna, le scorciatoie —
+            e sul telefono indicherebbero posti che non ci sono. */}
+        {giroAperto && !MOBILE && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
       </div>
 
       {/* Le notizie della fascia e «Playlist eliminata — Annulla», a chi
@@ -3795,7 +4529,7 @@ export function App() {
           libreria accanto a un editor di skin darebbe due navigazioni che non
           c'entrano. Sotto `<Activity>`: quando si prova la bozza sull'app lo
           Studio si nasconde senza perdere niente di quel che ha in mano. */}
-      {studioAperto !== null && (
+      {Studio !== null && studioAperto !== null && (
         <Activity mode={studioInProva ? "hidden" : "visible"}>
           <div className="strato-studio">
             {/* Il recinto attorno al caricamento, non solo allo Studio: un
@@ -3846,7 +4580,7 @@ export function App() {
           </div>
         </Activity>
       )}
-      {prova !== null && (
+      {!MOBILE && prova !== null && (
         <PillolaProva
           nome={prova.skin.id}
           onTorna={skinFinestra.finisciProva}

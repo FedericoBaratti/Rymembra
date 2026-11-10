@@ -1005,6 +1005,10 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
 /// arrivano — vedeva come scorrimento irregolare. Adesso dorme fino a una
 /// scadenza assoluta che avanza di un passo per giro (vedi [`attesa_fino`]), e
 /// il lavoro del giro sta dentro il passo invece di aggiungersi.
+#[cfg_attr(
+    mobile,
+    allow(dead_code, reason = "sul telefono lo spettro non c'è: vedi `lib.rs`")
+)]
 pub fn avvia_spettro(app: tauri::AppHandle) {
     let avviato = std::thread::Builder::new()
         .name(FILO_SPETTRO.to_owned())

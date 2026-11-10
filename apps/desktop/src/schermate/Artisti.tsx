@@ -42,6 +42,7 @@ import { useMemo, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 
 import { ALTRO, LETTERE, indiceAlfabetico } from "../alfabeto";
+import { ConAltro } from "../parti/ConAltro";
 import { Copertina } from "../Copertina";
 import type { Artista } from "../ipc";
 import { Icona } from "../parti/Icone";
@@ -127,52 +128,57 @@ export function Artisti({
     const quante = Math.min(a.covers.length, 4);
     const tassello = colonna === null ? null : quante > 2 ? colonna / 2 : colonna;
     schede.push(
-      <button
+      <ConAltro
         key={a.name}
-        type="button"
-        className="scheda-artista artist-card"
-        style={conIndice(i)}
-        data-indice={i}
-        tabIndex={i === fermata ? 0 : -1}
-        onFocus={() => fuoco.segna(i)}
-        onClick={() => onApri(a)}
-        onContextMenu={(e) => onMenu(e, a)}
+        etichetta={t("row.more.aria", { titolo: nomeArtista(a.name) })}
+        onMenu={(e) => onMenu(e, a)}
       >
-        <span
-          className="mosaico artist-mosaic"
-          data-quante={quante}
-          aria-hidden="true"
+        <button
+          type="button"
+          className="scheda-artista artist-card"
+          style={conIndice(i)}
+          data-indice={i}
+          tabIndex={i === fermata ? 0 : -1}
+          onFocus={() => fuoco.segna(i)}
+          onClick={() => onApri(a)}
+          onContextMenu={(e) => onMenu(e, a)}
         >
-          {a.covers.length === 0 ? (
-            <span className="senza">
-              <Icona nome="i-artist" dim={22} />
-            </span>
-          ) : (
-            a.covers.map((hash) => (
-              <Copertina
-                key={hash}
-                hash={hash}
-                titolo={nomeArtista(a.name)}
-                classe="tassello"
-                misura="scheda"
-                larghezza={tassello}
-                accanto
-              />
-            ))
-          )}
-        </span>
-        {/* `dir="auto"`: un nome in arabo o in ebraico si legge da destra, e
-            la direzione la decide il nome, non la pagina. */}
-        <span className="nome" title={nomeArtista(a.name)} dir="auto">
-          {nomeArtista(a.name)}
-        </span>
-        <span className="quanti">
-          {t("artists.counts", {
-            album: t("artists.albums", { n: a.albums }),
-            brani: brani_(a.tracks),
-          })}
-        </span>
-      </button>,
+          <span
+            className="mosaico artist-mosaic"
+            data-quante={quante}
+            aria-hidden="true"
+          >
+            {a.covers.length === 0 ? (
+              <span className="senza">
+                <Icona nome="i-artist" dim={22} />
+              </span>
+            ) : (
+              a.covers.map((hash) => (
+                <Copertina
+                  key={hash}
+                  hash={hash}
+                  titolo={nomeArtista(a.name)}
+                  classe="tassello"
+                  misura="scheda"
+                  larghezza={tassello}
+                  accanto
+                />
+              ))
+            )}
+          </span>
+          {/* `dir="auto"`: un nome in arabo o in ebraico si legge da destra, e
+              la direzione la decide il nome, non la pagina. */}
+          <span className="nome" title={nomeArtista(a.name)} dir="auto">
+            {nomeArtista(a.name)}
+          </span>
+          <span className="quanti">
+            {t("artists.counts", {
+              album: t("artists.albums", { n: a.albums }),
+              brani: brani_(a.tracks),
+            })}
+          </span>
+        </button>
+      </ConAltro>,
     );
   }
 

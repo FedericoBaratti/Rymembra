@@ -392,6 +392,203 @@ pub fn load_queue(connection: &Connection) -> Result<QueueSnapshot, AppError> {
     })
 }
 
+// ── la coda con i brani degli altri dispositivi ─────────────────────────────
+
+/// La chiave con cui sta la coda **intera**, quando ha anche brani di un altro
+/// dispositivo collegato via internet («Sfoglia»).
+///
+/// # Perché accanto a [`CHIAVE_CODA`] e non al suo posto
+///
+/// Perché [`CHIAVE_CODA`] resta quella che è: solo righe della libreria, letta
+/// da chi non sa niente dei dispositivi — la Home, «Riprendi», un Rymembra più
+/// vecchio — e scritta da [`save_queue`], che rifiuta le maniglie. Questa la
+/// legge chi sa ritrovare i brani degli altri, e vale solo se la sua parte di
+/// righe è la coda di [`CHIAVE_CODA`] ([`CodaIntera::righe`]): una chiave
+/// rimasta indietro — scritta da un'altra versione, o prima di un guasto —
+/// si ignora invece di riportare una coda che non era più quella.
+///
+/// Come `player.queue`, non va nei profili né nei backup: parla di questa
+/// libreria e dei dispositivi collegati a questa macchina.
+pub const CHIAVE_CODA_LONTANA: &str = "player.queue.remote";
+
+/// Una voce della coda intera: una riga della libreria, o un brano di un altro
+/// dispositivo, descritto da chi sa riaprirlo (`lontano::sfoglia`). Qui il
+/// descrittore è opaco.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VoceSalvata {
+    /// Una riga della libreria.
+    Riga(i64),
+    /// Un brano di un altro dispositivo.
+    Lontana(serde_json::Value),
+}
+
+/// La coda intera: vedi [`CHIAVE_CODA_LONTANA`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodaIntera {
+    /// Le voci, nell'ordine della coda.
+    pub voci: Vec<VoceSalvata>,
+    /// La permutazione.
+    pub order: Vec<usize>,
+    /// La posizione dentro la permutazione.
+    pub order_pos: Option<usize>,
+    /// Lo shuffle era acceso.
+    pub shuffle: bool,
+    /// Come si ripeteva: `off`, `one`, `all`.
+    pub repeat: String,
+}
+
+impl CodaIntera {
+    /// Quel che la coda intera tiene, con `tieni` che sceglie le voci.
+    ///
+    /// La permutazione si rinumera, e la posizione va sulla prima voce tenuta
+    /// da lì in avanti — quella che sarebbe suonata dopo — o, se dopo non
+    /// resta niente, sull'ultima tenuta prima. Le regole sono quelle di chi
+    /// toglie le voci lontane prima di scrivere [`CHIAVE_CODA`].
+    #[must_use]
+    pub fn tenendo<T>(
+        &self,
+        mut tieni: impl FnMut(&VoceSalvata) -> Option<T>,
+    ) -> (Vec<T>, Vec<usize>, Option<usize>) {
+        let mut nuovo_indice = Vec::with_capacity(self.voci.len());
+        let mut tenute = Vec::with_capacity(self.voci.len());
+        for voce in &self.voci {
+            match tieni(voce) {
+                Some(tenuta) => {
+                    nuovo_indice.push(Some(tenute.len()));
+                    tenute.push(tenuta);
+                }
+                None => nuovo_indice.push(None),
+            }
+        }
+        let mut order = Vec::with_capacity(tenute.len());
+        let mut da_li: Option<usize> = None;
+        let mut prima: Option<usize> = None;
+        for (passo, indice) in self.order.iter().enumerate() {
+            let Some(nuovo) = nuovo_indice.get(*indice).copied().flatten() else {
+                continue;
+            };
+            if let Some(pos) = self.order_pos {
+                if passo >= pos {
+                    da_li = da_li.or(Some(order.len()));
+                } else {
+                    prima = Some(order.len());
+                }
+            }
+            order.push(nuovo);
+        }
+        let order_pos = self.order_pos.and(da_li.or(prima));
+        (tenute, order, order_pos)
+    }
+
+    /// La parte di righe, come la scrive [`save_queue`].
+    #[must_use]
+    pub fn righe(&self) -> QueueSnapshot {
+        let (tracks, order, order_pos) = self.tenendo(|voce| match voce {
+            VoceSalvata::Riga(id) => Some(*id),
+            VoceSalvata::Lontana(_) => None,
+        });
+        QueueSnapshot {
+            tracks,
+            order,
+            order_pos,
+            shuffle: self.shuffle,
+            repeat: ripetizione_da_nome(&self.repeat),
+        }
+    }
+
+    /// La coda con questi id al posto delle voci, già scelti da
+    /// [`CodaIntera::tenendo`].
+    #[must_use]
+    pub fn snapshot(
+        &self,
+        tracks: Vec<i64>,
+        order: Vec<usize>,
+        order_pos: Option<usize>,
+    ) -> QueueSnapshot {
+        QueueSnapshot {
+            tracks,
+            order,
+            order_pos,
+            shuffle: self.shuffle,
+            repeat: ripetizione_da_nome(&self.repeat),
+        }
+    }
+
+    /// La coda intera di una coda del lettore, con `voce` che dice cos'è ogni
+    /// id. Un id che non si sa descrivere si lascia fuori, con le regole di
+    /// [`CodaIntera::tenendo`].
+    #[must_use]
+    pub fn da(coda: &QueueSnapshot, mut voce: impl FnMut(i64) -> Option<VoceSalvata>) -> Self {
+        let tutta = Self {
+            voci: coda
+                .tracks
+                .iter()
+                .map(|id| VoceSalvata::Riga(*id))
+                .collect(),
+            order: coda.order.clone(),
+            order_pos: coda.order_pos,
+            shuffle: coda.shuffle,
+            repeat: nome_ripetizione(coda.repeat).to_owned(),
+        };
+        let (voci, order, order_pos) = tutta.tenendo(|salvata| match salvata {
+            VoceSalvata::Riga(id) => voce(*id),
+            VoceSalvata::Lontana(_) => None,
+        });
+        Self {
+            voci,
+            order,
+            order_pos,
+            ..tutta
+        }
+    }
+}
+
+/// Scrive la coda intera, o la toglie (`None`: la coda non ha brani di altri
+/// dispositivi). Vedi [`CHIAVE_CODA_LONTANA`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_queue_remote(
+    connection: &Connection,
+    coda: Option<&CodaIntera>,
+) -> Result<(), AppError> {
+    match coda {
+        Some(coda) => {
+            let json = serde_json::to_string(coda).unwrap_or_else(|_| "{}".to_owned());
+            crate::settings::write(connection, CHIAVE_CODA_LONTANA, &json)
+        }
+        None => crate::settings::forget(connection, CHIAVE_CODA_LONTANA).map(|_| ()),
+    }
+}
+
+/// La coda intera, se c'è e se la sua parte di righe è `righe` — la coda di
+/// [`CHIAVE_CODA`] appena letta. Illeggibile, o rimasta indietro, vale «non
+/// c'è»: resta la coda di sole righe.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn load_queue_remote(
+    connection: &Connection,
+    righe: &QueueSnapshot,
+) -> Result<Option<CodaIntera>, AppError> {
+    let Some(json) = crate::settings::read(connection, CHIAVE_CODA_LONTANA)? else {
+        return Ok(None);
+    };
+    let Ok(intera) = serde_json::from_str::<CodaIntera>(&json) else {
+        return Ok(None);
+    };
+    let sue = intera.righe();
+    let coincide = sue.tracks == righe.tracks
+        && sue.order == righe.order
+        && sue.order_pos == righe.order_pos
+        && intera.voci.len() == intera.order.len();
+    Ok(coincide.then_some(intera))
+}
+
 // ── dov'eri rimasto ─────────────────────────────────────────────────────────
 
 /// A che punto del brano corrente si era arrivati.

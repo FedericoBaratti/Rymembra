@@ -139,6 +139,7 @@ import { t, useLingua } from "../lingue";
 import type { Apertura, Voce } from "../Menu";
 import { useAscolto, useRada } from "../pagine";
 import { Icona } from "../parti/Icone";
+import { ANDROID, MOBILE } from "../piattaforma";
 import { conIndice } from "../segnali";
 import { gestoPermesso } from "../insieme";
 import { vociCartella } from "../menuBrani";
@@ -146,6 +147,16 @@ import { useLettore } from "../riproduzione";
 import { useVirtuale } from "../virtuale";
 import { ElencoBrani, ElencoFinto } from "./Elenco";
 import { StatoVuoto } from "./Libreria";
+
+/**
+ * Il nome di una radice del telefono per una persona («Memoria interna ›
+ * Music»), al posto del percorso del sistema che il nucleo mette in `nome`:
+ * vedi `percorsoAndroid`. `undefined` per tutte le altre righe, che tengono il
+ * loro.
+ */
+function nomeDellaRiga(riga: { radice: boolean; percorso: string }): string | undefined {
+  return ANDROID && riga.radice && !eNuvola(riga.percorso) ? nomeRadice(riga.percorso) : undefined;
+}
 
 /**
  * Per quanto si crede alla sonda delle radici prima di rifarla.
@@ -895,7 +906,9 @@ export function Cartelle({
             },
           });
         }
-      } else if (sola !== undefined && !anteprima) {
+      } else if (sola !== undefined && !anteprima && !MOBILE) {
+        // Sul telefono non c'è un gestore file da aprire su una cartella:
+        // vedi «Mostra nella cartella» in `menuBrani.ts`.
         const brano = sola.brano;
         if (brano !== null) {
           voci.push({
@@ -1507,10 +1520,15 @@ export function Cartelle({
           ? t("folders.filter.truncated", { n: filtro.corrispondenze })
           : null;
   /** Il nome della cartella del pannello: come la scrive la sua riga. */
+  const rigaScelta =
+    cartellaScelta === null
+      ? undefined
+      : righe.find((riga) => chiave(riga.percorso) === chiave(cartellaScelta));
   const nomePannello =
     cartellaScelta === null
       ? ""
-      : (righe.find((riga) => chiave(riga.percorso) === chiave(cartellaScelta))?.nome ??
+      : ((rigaScelta === undefined ? undefined : nomeDellaRiga(rigaScelta)) ??
+        rigaScelta?.nome ??
         cartellaScelta.split(/[\\/]/).filter((parte) => parte.length > 0).pop() ??
         cartellaScelta);
 
@@ -1757,7 +1775,10 @@ export function Cartelle({
                   {/* `dir="auto"`: un nome di cartella o di file in arabo o in
                       ebraico si legge da destra. */}
                   <span className="nome-nodo" title={titoloRiga} dir="auto">
-                    {riga.nome}
+                    {/* Una radice del telefono col suo nome per una persona
+                        («Memoria interna › Music»), non col percorso del
+                        sistema: vedi `percorsoAndroid`. */}
+                    {nomeDellaRiga(riga) ?? riga.nome}
                   </span>
                   {/* Il titolo non lo legge chi usa la tastiera: la ragione di
                       una radice del cloud spenta la sente come descrizione. */}

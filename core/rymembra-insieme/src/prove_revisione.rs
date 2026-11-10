@@ -17,7 +17,7 @@ use crate::prove_grezze::{ATTESA, Grezzo, aspetta, chiudo, host, json_app, stato
 use crate::rete::IdConnessione;
 use crate::servente::prove::{Cartella, byte_di_prova};
 use crate::trasporto::{Byte32, Trasporto, Uso};
-use crate::{Evento, Identita, Tempi};
+use crate::{Dove, Evento, Identita, Tempi};
 
 /// Un capo grezzo che si collega a un host vero, con la chiave e l'uso dati.
 fn grezzo_verso(indirizzo: SocketAddr, identita: Identita, uso: Uso) -> Grezzo {
@@ -282,7 +282,7 @@ fn inoltra_non_ruba_il_gettone_di_un_file_dell_host() {
     host_rete.pari(vec![membro.pubblica(), ladro], Vec::new());
     ammetti(&host_rete, &[membro.pubblica()]);
     let (byte, _) = membro
-        .lettore(indirizzo, host_rete.pubblica())
+        .lettore(Dove::Lan(indirizzo), host_rete.pubblica())
         .pezzo(&gettone, 0, 1_000, None)
         .expect("il file dell'host, non i byte del ladro");
     assert_eq!(byte, contenuto);
@@ -753,7 +753,7 @@ fn un_fidato_che_non_e_nella_sessione_non_legge() {
     host_rete.servi(gettone, cartella.file("a.flac", &byte_di_prova(100)));
     host_rete.pari(vec![membro.pubblica()], Vec::new());
     let err = membro
-        .lettore(indirizzo, host_rete.pubblica())
+        .lettore(Dove::Lan(indirizzo), host_rete.pubblica())
         .pezzo(&gettone, 0, 10, None)
         .expect_err("fidato ma fuori dalla sessione");
     assert_eq!(err.code().kind().code(), "insieme.gettoneScaduto");
@@ -769,7 +769,7 @@ fn le_stampe_di_prova_non_mostrano_nomi_indirizzi_titoli_e_codici() {
         nome: "PC di Anna".to_owned(),
         ospita: true,
         in_entrata: false,
-        indirizzo: "192.168.1.20:47811".parse().expect("indirizzo"),
+        dove: Dove::Lan("192.168.1.20:47811".parse().expect("indirizzo")),
     };
     let stampa = format!("{aperta:?}");
     assert!(
@@ -850,7 +850,7 @@ fn un_estraneo_che_non_si_associa_non_resta_per_sempre_e_un_fidato_si() {
 fn collega_atteso_chiude_se_la_chiave_non_ha_l_impronta_annunciata() {
     let (host_rete, _eventi, indirizzo) = host(Tempi::default());
     let (membro, eventi) = vera(Tempi::default());
-    let giusta = membro.collega_atteso(indirizzo, host_rete.pubblica().impronta());
+    let giusta = membro.collega_atteso(Dove::Lan(indirizzo), host_rete.pubblica().impronta());
     let esito = aspetta(&eventi, ATTESA, |e| match e {
         Evento::Aperta { id, .. } if *id == giusta => Some(Ok(())),
         Evento::Chiusa { id, codice } if *id == giusta => Some(Err(*codice)),
@@ -859,7 +859,7 @@ fn collega_atteso_chiude_se_la_chiave_non_ha_l_impronta_annunciata() {
     assert_eq!(esito, Some(Ok(())));
     // Una risposta alla scoperta falsa: l'impronta di un altro.
     let altra = Identita::nuova().expect("chiave").pubblica().impronta();
-    let sbagliata = membro.collega_atteso(indirizzo, altra);
+    let sbagliata = membro.collega_atteso(Dove::Lan(indirizzo), altra);
     let esito = aspetta(&eventi, ATTESA, |e| match e {
         Evento::Aperta { id, .. } if *id == sbagliata => Some(Ok(())),
         Evento::Chiusa { id, codice } if *id == sbagliata => Some(Err(*codice)),
@@ -881,7 +881,7 @@ fn gli_ammessi_leggono_e_chi_esce_dalla_sessione_smette() {
     host_rete.servi(gettone, cartella.file("a.flac", &contenuto));
     host_rete.pari(vec![membro.pubblica()], Vec::new());
     host_rete.ammessi(vec![membro.pubblica()]);
-    let lettore = membro.lettore(indirizzo, host_rete.pubblica());
+    let lettore = membro.lettore(Dove::Lan(indirizzo), host_rete.pubblica());
     let (byte, _) = lettore.pezzo(&gettone, 0, 100, None).expect("ammesso");
     assert_eq!(byte, contenuto);
     host_rete.ammessi(Vec::new());
@@ -931,7 +931,7 @@ fn offri_riapre_la_connessione_di_servizio_dopo_una_caduta() {
         }
     };
     let controllo = aperta(&anna, &eventi_anna, indirizzo);
-    anna.offri(indirizzo, host_rete.pubblica());
+    anna.offri(Dove::Lan(indirizzo), host_rete.pubblica());
     assert!(legge_entro(ATTESA), "la prima connessione di servizio");
 
     // Un'altra connessione di servizio con la chiave di Anna manda via
@@ -959,7 +959,7 @@ fn offri_riapre_la_connessione_di_servizio_dopo_una_caduta() {
     // Col controllo di nuovo aperto, una nuova `offri` riparte: il filo di
     // prima, uscendo, ha tolto la sua offerta.
     aperta(&anna, &eventi_anna, indirizzo);
-    anna.offri(indirizzo, host_rete.pubblica());
+    anna.offri(Dove::Lan(indirizzo), host_rete.pubblica());
     assert!(legge_entro(ATTESA), "una nuova offri riapre la connessione");
 }
 

@@ -613,7 +613,7 @@ pub fn esplora_apri_pagina(esplora: State<'_, StatoEsplora>, url: String) -> Esi
             ),
         ));
     }
-    tauri_plugin_opener::open_url(&pagina, None::<&str>).map_err(|err| {
+    crate::browser::apri(&pagina).map_err(|err| {
         errore(
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("apertura del browser".to_owned()),

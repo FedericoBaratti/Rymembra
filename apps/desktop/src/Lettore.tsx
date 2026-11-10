@@ -112,7 +112,10 @@ export const Lettore = memo(function Lettore({
   };
 
   return (
-    <footer className="lettore player-shell" {...statoSuono(true, stato.inPausa)}>
+    <footer
+      className="lettore player-shell"
+      {...statoSuono(true, stato.inPausa)}
+    >
       {/* Il titolo della voce di calibrazione nella lingua di chi guarda:
           vedi `branoDaMostrare`. Fuori dalla calibrazione è lo stesso brano,
           con la stessa identità, e `Ora` sotto `memo` non si ridisegna. */}

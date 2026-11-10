@@ -1,0 +1,276 @@
+/* Il telefono: i fogli che salgono dal basso.
+ *
+ * Due famiglie, la stessa forma. I menu sono `Foglio` (`parti/Foglio.tsx`):
+ * markup suo, trascinabile dalla maniglia. Le finestrelle sono quelle del
+ * computer (`Dialogo.tsx`), che qui cambiano solo posto e angoli: stanno in
+ * fondo allo schermo, larghe quanto lui, coi tasti a tutta larghezza. Non si
+ * trascinano — una finestrella è spesso un modulo, e un pollice che scende per
+ * scorrerlo non deve buttare via quel che si è scritto — e si chiudono col
+ * velo, con Indietro o coi loro tasti.
+ *
+ * Come gli altri fogli del telefono, ogni regola comincia col prefisso della
+ * forma (`test/telefono.test.ts`), e ogni colore è un token.
+ */
+
+/* ── il foglio ───────────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .foglio-velo {
+  background: rgb(var(--surface-0-rgb) / 0.6);
+  transition: opacity var(--transition-foglio);
+}
+
+:root[data-forma="telefono"] .foglio-velo[data-chiudendo] {
+  opacity: 0;
+  /* Mentre scende non prende più niente: il tocco dopo è già per la pagina. */
+  pointer-events: none;
+}
+
+:root[data-forma="telefono"] .foglio {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--strato-menu);
+  display: flex;
+  flex-direction: column;
+  max-height: min(86dvh, 720px);
+  padding-bottom: var(--riquadro-basso, env(safe-area-inset-bottom, 0px));
+  border: 1px solid var(--hairline);
+  border-bottom: 0;
+  border-radius: var(--raggio-foglio) var(--raggio-foglio) 0 0;
+  background: var(--color-surface-1);
+  box-shadow: var(--shadow-3);
+  transform: translateY(var(--trascina-y, 0px));
+  transition: transform var(--transition-foglio);
+}
+
+/* Col dito sopra il foglio segue il dito, senza ritardo. */
+:root[data-forma="telefono"] .foglio[data-trascinando] {
+  transition: none;
+}
+
+:root[data-forma="telefono"] .foglio[data-chiudendo] {
+  transform: translateY(100%);
+  pointer-events: none;
+}
+
+@starting-style {
+  :root[data-forma="telefono"] .foglio {
+    transform: translateY(100%);
+  }
+  :root[data-forma="telefono"] .foglio-velo {
+    opacity: 0;
+  }
+}
+
+/* La maniglia e la testata: è da qui che il foglio si trascina, quindi il
+   dito qui è tutto suo (`dito.ts`, «touch-action»). */
+:root[data-forma="telefono"] .presa-foglio {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding-top: 10px;
+  touch-action: none;
+}
+
+:root[data-forma="telefono"] .maniglia-foglio {
+  align-self: center;
+  width: 36px;
+  height: 4px;
+  margin-bottom: var(--spazio-2);
+  border-radius: 2px;
+  background: var(--color-text-3);
+  opacity: 0.55;
+}
+
+:root[data-forma="telefono"] .testata-foglio {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: var(--spazio-1) 20px 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+:root[data-forma="telefono"] .testata-foglio .copertina-foglio {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+:root[data-forma="telefono"] .titoli-foglio {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root[data-forma="telefono"] .titolo-foglio {
+  overflow: hidden;
+  color: var(--color-text-1);
+  font: 600 16px/1.3 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-forma="telefono"] .sotto-foglio {
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Il corpo scorre da sé quando le voci sono tante, e lo scorrimento non passa
+   alla pagina sotto quando arriva in fondo. */
+:root[data-forma="telefono"] .corpo-foglio {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: var(--spazio-2) 0 var(--spazio-3);
+}
+
+/* ── le voci del menu ────────────────────────────────────────────────────── */
+
+:root[data-forma="telefono"] .voci-foglio {
+  display: flex;
+  flex-direction: column;
+}
+
+:root[data-forma="telefono"] .voce-foglio {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  min-height: 56px;
+  padding: var(--spazio-2) 20px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  font: 400 16px/1.3 var(--font-sans);
+  text-align: start;
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .voce-foglio:active {
+  background: var(--color-surface-2);
+}
+
+:root[data-forma="telefono"] .voce-foglio[aria-disabled="true"] {
+  color: var(--color-text-3);
+}
+
+:root[data-forma="telefono"] .icona-voce-foglio {
+  flex: 0 0 24px;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-2);
+}
+
+:root[data-forma="telefono"] .testi-voce-foglio {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Il nome di una playlist può essere una parola sola lunga quanto lo schermo:
+   va a capo dove capita invece di uscire dal foglio. */
+:root[data-forma="telefono"] .etichetta-voce-foglio {
+  overflow-wrap: anywhere;
+}
+
+:root[data-forma="telefono"] .ragione-voce-foglio {
+  color: var(--color-text-3);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+:root[data-forma="telefono"] .scelta-voce-foglio {
+  flex: 0 0 auto;
+  display: grid;
+  color: var(--accent);
+}
+
+/* ── le finestrelle, come fogli ──────────────────────────────────────────── */
+
+/* Il velo le porta in fondo invece che al centro. */
+:root[data-forma="telefono"] .velo.scuro {
+  place-items: end stretch;
+}
+
+/* Tre classi dopo il prefisso, e non per scrupolo: `glass-modal` è una parte
+   del registro, e la regola compilata di una skin (`:root[data-skin] .parte`)
+   a pari specificità vincerebbe, rimettendo la finestrella al centro coi suoi
+   angoli tutti tondi. */
+:root[data-forma="telefono"] .velo.scuro > .finestrella {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  max-height: 92dvh;
+  padding: 30px 20px calc(var(--riquadro-basso, 0px) + 20px);
+  border-bottom: 0;
+  border-radius: var(--raggio-foglio) var(--raggio-foglio) 0 0;
+  transition:
+    opacity var(--transition-foglio),
+    transform var(--transition-foglio);
+}
+
+/* La maniglia disegnata: dice «questo è un foglio», anche se non si trascina. */
+:root[data-forma="telefono"] .velo.scuro > .finestrella::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: calc(50% - 18px);
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-text-3);
+  opacity: 0.55;
+}
+
+@starting-style {
+  :root[data-forma="telefono"] .velo.scuro > .finestrella {
+    opacity: 1;
+    transform: translateY(100%);
+  }
+}
+
+:root[data-forma="telefono"] .velo.scuro > .finestrella h2 {
+  font-size: 20px;
+}
+
+:root[data-forma="telefono"] .velo.scuro > .finestrella p {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* I tasti a tutta larghezza, uno sopra l'altro, con «Annulla» in fondo e
+   l'azione sopra. Nel markup «Annulla» viene sempre per primo, com'è giusto
+   sul computer dove l'azione sta a destra, e `column-reverse` lo porta giù:
+   così sta sempre nello stesso posto, sotto il pollice, come nei fogli
+   d'azione del sistema. Chi conferma qualcosa che non si disfa deve alzare il
+   dito, e chi ci ripensa lo trova dove l'ha lasciato l'ultima volta. */
+:root[data-forma="telefono"] .velo.scuro > .finestrella .tasti-finestrella {
+  flex-direction: column-reverse;
+  align-items: stretch;
+  gap: var(--spazio-2);
+}
+
+:root[data-forma="telefono"] .velo.scuro > .finestrella .tasti-finestrella > button {
+  justify-content: center;
+  min-height: var(--dito);
+  font-size: 15px;
+}
+
+/* I campi dentro le finestrelle, a misura di dito e di tastiera. */
+:root[data-forma="telefono"] .velo.scuro > .finestrella input:not([type="checkbox"], [type="radio"], [type="range"]) {
+  min-height: var(--dito);
+  font-size: 16px;
+}

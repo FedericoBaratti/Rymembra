@@ -140,11 +140,11 @@ fn non_raggiungibile(chiave: &str, causa: &dyn std::fmt::Display) -> AppError {
 ///
 /// È il mattone di [`DiSistema`], che ne usa due (quello di adesso e quello di
 /// prima) e li compone con [`ConRipiego`]. Da solo non ripiega su niente.
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 #[derive(Debug, Clone, Copy)]
 struct Servizio(&'static str);
 
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 impl Portachiavi for Servizio {
     fn leggi(&self, chiave: &str) -> Result<Option<String>, AppError> {
         let voce =
@@ -186,7 +186,7 @@ impl Portachiavi for Servizio {
 ///
 /// Non sa nulla di turni né di sospensioni: chi lo monta decide se il posto di
 /// prima c'è (vedi [`Accesso`]), e a lui spetta solo la regola.
-#[cfg(any(feature = "portachiavi", test))]
+#[cfg(any(all(feature = "portachiavi", not(target_os = "android")), test))]
 struct ConRipiego<'a> {
     /// Dove stanno le voci di adesso, e dove si scrive.
     nuovo: &'a dyn Portachiavi,
@@ -196,7 +196,7 @@ struct ConRipiego<'a> {
     vecchio: Option<&'a dyn Portachiavi>,
 }
 
-#[cfg(any(feature = "portachiavi", test))]
+#[cfg(any(all(feature = "portachiavi", not(target_os = "android")), test))]
 impl Portachiavi for ConRipiego<'_> {
     fn leggi(&self, chiave: &str) -> Result<Option<String>, AppError> {
         if let Some(valore) = self.nuovo.leggi(chiave)? {
@@ -255,7 +255,7 @@ impl Portachiavi for ConRipiego<'_> {
 /// esiste» — devono potersi provare con un'istanza di prova, senza toccare
 /// quella del processo né il Credential Manager. [`DiSistema`] ne usa una sola,
 /// [`ACCESSO`].
-#[cfg(any(feature = "portachiavi", test))]
+#[cfg(any(all(feature = "portachiavi", not(target_os = "android")), test))]
 struct Accesso {
     /// Lo tiene chi sta facendo una operazione sul portachiavi, dal primo
     /// all'ultimo passo. Non protegge dati: protegge la **sequenza**, che è
@@ -266,7 +266,7 @@ struct Accesso {
     travaso_sospeso: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(any(feature = "portachiavi", test))]
+#[cfg(any(all(feature = "portachiavi", not(target_os = "android")), test))]
 impl Accesso {
     /// Un accesso con il travaso acceso e nessuno dentro.
     const fn nuovo() -> Self {
@@ -321,16 +321,16 @@ impl Accesso {
 }
 
 /// Il servizio di adesso, per [`DiSistema`].
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 static SERVIZIO_NUOVO: Servizio = Servizio(SERVIZIO);
 
 /// Il servizio di prima, per [`DiSistema`]: serve solo a ritrovare le voci
 /// vecchie.
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 static SERVIZIO_PRECEDENTE: Servizio = Servizio(rymembra_domain::eredita::IDENTIFICATORE);
 
 /// Il turno e l'interruttore di tutto il processo, per [`DiSistema`].
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 static ACCESSO: Accesso = Accesso::nuovo();
 
 /// Smette di toccare le voci della versione di prima, per il resto del processo.
@@ -349,8 +349,11 @@ static ACCESSO: Accesso = Accesso::nuovo();
 /// può chiamare da qualunque filo, ma una chiamata che arrivi a operazioni già
 /// iniziate le aspetta: conviene farla prima che parta chiunque usi il
 /// portachiavi.
+///
+/// Su Android non c'è una versione di prima da cui travasare, e non fa niente.
 #[cfg(feature = "portachiavi")]
 pub fn sospendi_il_travaso() {
+    #[cfg(not(target_os = "android"))]
     ACCESSO.sospendi();
 }
 
@@ -358,6 +361,14 @@ pub fn sospendi_il_travaso() {
 ///
 /// Su Windows è il Credential Manager, raggiunto da `keyring` attraverso
 /// `windows-sys`: nessun demone da avviare, nessuna catena di compilazione C.
+///
+/// Su Android è il Keystore, che da qui non si raggiunge: sta dietro JNI, e
+/// questo crate non sa niente di Java. Lo installa chi ce l'ha, all'avvio, con
+/// [`installa_di_sistema`]; fino ad allora ogni operazione risponde
+/// `settings.secretUnavailable`. **Non** ripiega su `keyring`, che su Android
+/// non ha un portachiavi e terrebbe i segreti in memoria: un account che si
+/// scollega da sé a ogni riavvio, senza un errore che lo dica, è il
+/// declassamento silenzioso che il preambolo del modulo vieta.
 ///
 /// Scrive sempre sotto [`SERVIZIO`]. In lettura ripiega sul servizio della
 /// versione di prima e ne porta le voci in quello nuovo: vedi «Le voci della
@@ -368,7 +379,7 @@ pub fn sospendi_il_travaso() {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiSistema;
 
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 impl DiSistema {
     /// Una operazione sui due servizi, sotto il turno di tutto il processo.
     fn con_ripiego<T>(operazione: impl FnOnce(&ConRipiego<'_>) -> T) -> T {
@@ -376,7 +387,7 @@ impl DiSistema {
     }
 }
 
-#[cfg(feature = "portachiavi")]
+#[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 impl Portachiavi for DiSistema {
     fn leggi(&self, chiave: &str) -> Result<Option<String>, AppError> {
         Self::con_ripiego(|servizi| servizi.leggi(chiave))
@@ -388,6 +399,45 @@ impl Portachiavi for DiSistema {
 
     fn cancella(&self, chiave: &str) -> Result<(), AppError> {
         Self::con_ripiego(|servizi| servizi.cancella(chiave))
+    }
+}
+
+/// Il portachiavi che [`DiSistema`] usa su Android, una volta installato.
+#[cfg(all(feature = "portachiavi", target_os = "android"))]
+static INSTALLATO: std::sync::OnceLock<&'static dyn Portachiavi> = std::sync::OnceLock::new();
+
+/// Installa il portachiavi del sistema operativo, su Android.
+///
+/// Una volta per processo, all'avvio, prima che parta chiunque usi i segreti:
+/// le chiamate dopo la prima non cambiano niente.
+#[cfg(all(feature = "portachiavi", target_os = "android"))]
+pub fn installa_di_sistema(portachiavi: &'static dyn Portachiavi) {
+    let _ = INSTALLATO.set(portachiavi);
+}
+
+#[cfg(all(feature = "portachiavi", target_os = "android"))]
+impl DiSistema {
+    /// Il portachiavi installato, o l'errore che dice che non c'è.
+    fn installato(chiave: &str) -> Result<&'static dyn Portachiavi, AppError> {
+        INSTALLATO
+            .get()
+            .copied()
+            .ok_or_else(|| non_raggiungibile(chiave, &"nessun portachiavi installato"))
+    }
+}
+
+#[cfg(all(feature = "portachiavi", target_os = "android"))]
+impl Portachiavi for DiSistema {
+    fn leggi(&self, chiave: &str) -> Result<Option<String>, AppError> {
+        Self::installato(chiave)?.leggi(chiave)
+    }
+
+    fn scrivi(&self, chiave: &str, valore: &str) -> Result<(), AppError> {
+        Self::installato(chiave)?.scrivi(chiave, valore)
+    }
+
+    fn cancella(&self, chiave: &str) -> Result<(), AppError> {
+        Self::installato(chiave)?.cancella(chiave)
     }
 }
 

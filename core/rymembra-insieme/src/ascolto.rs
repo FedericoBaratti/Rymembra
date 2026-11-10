@@ -69,6 +69,7 @@ use crate::condiviso::Condiviso;
 #[cfg(doc)]
 use crate::condiviso::RESPIRO;
 use crate::errori::chiave;
+use crate::presa::{Dove, Origine, Presa};
 
 /// Quante connessioni in entrata, al più.
 pub(crate) const CONNESSIONI: usize = 48;
@@ -233,20 +234,46 @@ pub(crate) fn accogli(rete: &Arc<Condiviso>, ascolto: &TcpListener, generazione:
 /// Una connessione appena accettata: il tetto delle connessioni, poi un filo
 /// che aspetta il primo messaggio, prende un posto fra le strette e fa il
 /// resto. Vedi «Le strette, e chi non parla».
-fn entra(rete: &Arc<Condiviso>, mut presa: TcpStream, da: SocketAddr, generazione: u64) {
+fn entra(rete: &Arc<Condiviso>, presa: TcpStream, da: SocketAddr, generazione: u64) {
     // Su Windows il socket accettato eredita il non bloccante dall'ascolto.
     if presa.set_nonblocking(false).is_err() {
         return;
     }
-    let Some(posto) = Posto::prendi(rete, da.ip()) else {
+    entra_presa(rete, Box::new(presa), Dove::Lan(da), generazione);
+}
+
+/// Una presa che arriva dal collegamento via internet (`Rete::accogli`):
+/// la stessa strada di una TCP accettata, coi tetti per la sua chiave e i
+/// tempi larghi. Solo mentre si ospita.
+pub(crate) fn accogli_presa(rete: &Arc<Condiviso>, presa: Box<dyn Presa>, dove: Dove) {
+    if chiave(&rete.ospitata).is_none() {
+        let _ = presa.shutdown(std::net::Shutdown::Both);
+        return;
+    }
+    let generazione = rete.generazione.load(Ordering::SeqCst);
+    entra_presa(rete, presa, dove, generazione);
+}
+
+/// Il tetto delle connessioni, poi un filo che aspetta il primo messaggio,
+/// prende un posto fra le strette e fa il resto.
+fn entra_presa(rete: &Arc<Condiviso>, mut presa: Box<dyn Presa>, dove: Dove, generazione: u64) {
+    let origine = presa.origine();
+    let Some(posto) = Posto::prendi(rete, origine) else {
+        let _ = presa.shutdown(std::net::Shutdown::Both);
         return;
     };
+    // Via internet il primo messaggio può passare dal relay: gli si dà il
+    // tempo della stretta di quella strada, non il secondo di casa.
+    let primo_entro = if origine.e_lontana() {
+        rete.tempi_lontani.stretta
+    } else {
+        PRIMO_MESSAGGIO
+    };
     let _ = rete.filo("entra", move |rete| {
-        let Ok(primo) = canale::primo_messaggio(&mut presa, Instant::now() + PRIMO_MESSAGGIO)
-        else {
+        let Ok(primo) = canale::primo_messaggio(&mut presa, Instant::now() + primo_entro) else {
             return;
         };
-        let Some(stretta) = Stretta::aspetta(&rete, da.ip(), ATTESA_POSTO) else {
+        let Some(stretta) = Stretta::aspetta(&rete, origine, ATTESA_POSTO) else {
             return;
         };
         // Il posto fra le strette lo lascia la stretta stessa, appena scritto
@@ -256,7 +283,7 @@ fn entra(rete: &Arc<Condiviso>, mut presa: TcpStream, da: SocketAddr, generazion
             primo,
             stretta: Some(stretta),
         };
-        if let Ok(pronto) = prepara(&rete, presa, da, verso) {
+        if let Ok(pronto) = prepara(&rete, presa, dove, verso) {
             vivi(&rete, pronto);
         }
         drop(posto);
@@ -266,16 +293,17 @@ fn entra(rete: &Arc<Condiviso>, mut presa: TcpStream, da: SocketAddr, generazion
 /// Un posto fra le connessioni in entrata, finché la connessione vive.
 struct Posto {
     rete: Arc<Condiviso>,
-    ip: IpAddr,
+    ip: Origine,
 }
 
 impl Posto {
-    /// Un posto, se i tetti lo lasciano.
-    fn prendi(rete: &Arc<Condiviso>, ip: IpAddr) -> Option<Self> {
+    /// Un posto, se i tetti lo lasciano. Il tetto per indirizzo vale per
+    /// origine: per chiave, fuori casa (vedi `presa`).
+    fn prendi(rete: &Arc<Condiviso>, ip: Origine) -> Option<Self> {
         let mut posti = chiave(&rete.posti);
         let totale: usize = posti.values().sum();
         let suoi = posti.get(&ip).copied().unwrap_or(0);
-        if totale >= CONNESSIONI || (!ip.is_loopback() && suoi >= PER_INDIRIZZO) {
+        if totale >= CONNESSIONI || (!ip.e_locale() && suoi >= PER_INDIRIZZO) {
             return None;
         }
         posti.insert(ip, suoi.saturating_add(1));
@@ -302,7 +330,7 @@ impl Drop for Posto {
 /// finché lavora sulla curva: vedi «Le strette, e chi non parla».
 pub(crate) struct Stretta {
     rete: Arc<Condiviso>,
-    ip: IpAddr,
+    ip: Origine,
 }
 
 impl std::fmt::Debug for Stretta {
@@ -315,7 +343,7 @@ impl std::fmt::Debug for Stretta {
 
 impl Stretta {
     /// Un posto fra le strette, aspettandolo al più `entro`.
-    fn aspetta(rete: &Arc<Condiviso>, ip: IpAddr, entro: Duration) -> Option<Self> {
+    fn aspetta(rete: &Arc<Condiviso>, ip: Origine, entro: Duration) -> Option<Self> {
         let fine = Instant::now() + entro;
         let mut strette = chiave(&rete.strette);
         loop {

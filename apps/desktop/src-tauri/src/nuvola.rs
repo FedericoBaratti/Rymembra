@@ -424,12 +424,12 @@ fn collega(app: &AppHandle) -> Esito<StatoNuvolaIpc> {
         let fermare = || {
             nuvola.annulla_collegamento.load(Ordering::Acquire) || crate::spegnimento::in_uscita()
         };
-
+        let consenso = crate::browser::in_attesa_del_consenso();
         let token = oauth::collega(
             &rete,
             &credenziali,
             |url| {
-                tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| {
+                crate::browser::apri(url).map_err(|err| {
                     AppError::new(ErrorCode::InternalAborted {
                         what: Some("apertura del browser".to_owned()),
                     })
@@ -438,6 +438,9 @@ fn collega(app: &AppHandle) -> Esito<StatoNuvolaIpc> {
             },
             &fermare,
         );
+        // Il browser ha risposto, o non risponderà più: il telefono non
+        // deve più tenere acceso niente per lui.
+        drop(consenso);
         let token = match token {
             // Annullato da chi guarda: non è un guasto, e la finestra non deve
             // mostrarlo come tale.

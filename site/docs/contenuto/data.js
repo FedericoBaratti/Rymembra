@@ -7,7 +7,7 @@
     {
       id: "data",
       title: "The data folder and the database connection",
-      src: ["core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/trasloco.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/msix/LEGGIMI.md"],
+      src: ["core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/trasloco.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/msix/LEGGIMI.md"],
       body: [
         "Everything Rymembra keeps lives in the application data folder, `%APPDATA%\\io.github.federicobaratti.rymembra` on Windows (asked to Tauri, never composed by hand). The environment variable `RYMEMBRA_DATI` replaces it at startup — the way to try an import or a migration on a copy without touching the real library; it also disables the single-instance guard.",
         "**A copy from the Microsoft Store** asks for the same folder, and Windows (1903 and later) redirects by itself the files it **creates** there to the package's private folder under `%LOCALAPPDATA%\\Packages\\`, which uninstalling the package removes. Files that already exist are used where they are: on a PC where the installer copy has already made a library, the Store copy would open that `rymembra.db` while its new `-wal` and `-shm` went to the private folder. That has not been tried, which is why the site says to keep one copy per PC; keychain entries are not virtualized, so connected accounts are the same for both.",
@@ -101,6 +101,8 @@
               ["`sync_tombstones`, `sync_ascolti`, `sync_dispositivi`, `sync_sequenza`, `sync_posizioni`", "Device sync state — see [Sync](#sync)"],
               ["`desiderati`", "Wanted tracks and the download queue (ex `spotify_wanted`, so two index names still say so)"],
               ["`insieme_pari`", "The PCs paired for «Listen together»: public key (`UNIQUE`, 64 lowercase hex digits by `CHECK`), name, blocked, when paired and last seen (migration 035; addresses typed by hand are the setting `insieme.indirizzi`) — see [Listen together](#together)"],
+              ["`insieme_indirizzi`", "The last `ip:port` at which each paired PC answered, by key; discovery asks there too, like a typed address (migration 040)"],
+              ["`dispositivi`, `dispositivi_ascolti`, `dispositivi_ricevuti`", "The devices linked over the internet (public key, name, platform, sync id, «Listen together» key, last addresses, revoked), the listens of their tracks waiting to be sent to them, and the keys of the listens already counted here (migration 039) — see [Your devices over the internet](#devices)"],
               ["`nuvola_conti`, `nuvola_voci`, `nuvola_radici`", "The cloud accounts (service, name shown, non-secret details, change cursor; since 037 also `app` and `client`, the app it is connected with and that app's ID at consent time), the mirror of the chosen cloud folders, and the chosen folders (migration 036). A cache: never in a profile, the backup or sync — see [Cloud folders](#cloud-folders)"],
               ["`nuvola_app`", "The apps the user registered with Google, Microsoft and Dropbox: `app` (`<platform>-<8 random characters>`, never reused), platform, name, `client_id` unique per platform; no secrets (migration 037)"],
               ["`spotify_account`, `import_reports`", "Imported account, saved import reports"],
@@ -196,7 +198,7 @@
               ["`player.spectrum.bands`, `player.spectrum.visible`, `player.fileFormat.visible`", "Display choices", "—", "yes"],
               ["`player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`", "Facts about this machine's hardware (the last one: latency per output device)", "system default / auto / 0 / none", "no"],
               ["`insieme.attivo`, `insieme.nome`, `insieme.indirizzi`, `insieme.firewall_spiegato`", "Listen together: on/off, this PC's name, hand-typed addresses, firewall dialog seen", "off / computer name / none / no", "no"],
-              ["`player.queue`, `player.position`", "The saved queue and resume point", "—", "no (row ids)"],
+              ["`player.queue`, `player.queue.remote`, `player.position`", "The saved queue (and, next to it, the whole queue with other devices' tracks) and resume point", "—", "no (row ids)"],
               ["`enrich.auto`, `testi.rete`, `aggiornamenti.attivo`, `scrobble.attivo`, `nuvola.attivo`", "Feature switches", "per feature", "yes"],
               ["`testi.accanto`, `sincronia.attiva`", "Write `.lrc` beside tracks, device sync", "off", "no"],
               ["`catalogo.alternative`", "Accept live/alternative recordings when downloading", "on", "no"],
@@ -230,7 +232,7 @@
         },
         "JSON entries are deflated; already-compressed entries are stored. Reading and writing stream one entry at a time — no archive is ever held in memory. Limits (`archivio::limiti`), checked from the zip index: archive 2 GiB, 200,000 entries, 64 MiB per entry, 4 GiB total uncompressed, compression ratio ≤ 200; above 500 MB the export warns.",
         { h: "What travels" },
-        "Preferences use an **inclusion** list, `CATALOGO`: a new key travels only once someone adds it, so a machine-specific key such as `nuvola.dispositivo` can never leak by default. Left out on purpose: the queue (row ids), `player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`, the `insieme.*` keys and the `insieme_pari` table, `ui.zoom`, the Folders tree state, the Last.fm API key, and all derived data (affinity, fingerprints, loudness, weekly, `enrich_undo`, `track_meta_arricchita`).",
+        "Preferences use an **inclusion** list, `CATALOGO`: a new key travels only once someone adds it, so a machine-specific key such as `nuvola.dispositivo` can never leak by default. Left out on purpose: the queue (row ids), `player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`, the `insieme.*` keys and the `insieme_pari` and `insieme_indirizzi` tables, the linked devices (`dispositivi*`), `ui.zoom`, the Folders tree state, the Last.fm API key, and all derived data (affinity, fingerprints, loudness, weekly, `enrich_undo`, `track_meta_arricchita`).",
         { h: "Import" },
         "`profilo_piano` and `profilo_importa` run the **same** code (`esegui`): the plan is the import inside a transaction that is rolled back. Steps:",
         {

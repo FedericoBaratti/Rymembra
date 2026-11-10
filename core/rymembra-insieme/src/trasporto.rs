@@ -22,6 +22,13 @@ pub(crate) enum Uso {
     /// Fase 2: il membro la apre verso l'host, e l'host ci chiede i byte dei
     /// gettoni che quel membro serve.
     Servizio,
+    /// Un uso che questa versione non conosce: di un Rymembra più nuovo. Senza
+    /// questa voce il saluto intero non si leggeva, e la connessione chiudeva
+    /// con `insieme.protocollo`, che dice «qualcosa non va» a chi deve solo
+    /// aggiornare. Con lei il saluto si legge, e chi accoglie chiude con
+    /// `insieme.versione` (`collegamento::prepara`). Non si manda mai.
+    #[serde(other)]
+    Sconosciuto,
 }
 
 /// Trentadue byte, in esadecimale sul filo: nonce e impegni.

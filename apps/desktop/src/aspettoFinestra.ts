@@ -36,6 +36,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { applicaAccento, applicaMovimento, type MovimentoUtente } from "./aspetto";
 import { ipc, type Avvio, type Skin } from "./ipc";
+import { MOBILE } from "./piattaforma";
 import { applicaLingua, scegli, t, useLingua } from "./lingue";
 import type { ArchivioLettore } from "./riproduzione";
 import { leggiAssociazioni, scriviAssociazioni, type Associazioni } from "./tastiera";
@@ -188,6 +189,10 @@ export function useAspetto({
   const [chiaro, setChiaro] = useState(false);
 
   useEffect(() => {
+    // Sul telefono, finché la skin non arriva, resta il tema del primo disegno
+    // (`temaDiPartenza`, scritto da `main.tsx`): la base di serie, scura,
+    // sarebbe un lampo scuro sui segnaposto di chi tiene il chiaro.
+    if (MOBILE && skinAttiva === null) return;
     setChiaro(applicaTema(tema, skinAttiva));
   }, [tema, skinAttiva]);
 

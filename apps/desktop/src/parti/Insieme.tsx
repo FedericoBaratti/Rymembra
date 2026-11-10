@@ -71,7 +71,6 @@ import {
   invitiAncoraAperti,
   mappaProprietari,
   nomePulito,
-  ordinaFidati,
   ospitanti,
   pezziSegno,
   pezzoSessione,
@@ -93,6 +92,7 @@ import {
 } from "../ipc";
 import { t, tSe, useLingua, type Chiave } from "../lingue";
 import { Trans } from "../lingue/Trans";
+import { gestoLontano } from "../lontano";
 import { useAscolto } from "../pagine";
 import { Presenza, useSpecchioPresente } from "../presenza";
 import { useLettore } from "../riproduzione";
@@ -311,7 +311,7 @@ function dimenticaLivello(dove: "richieste" | "inviti", id: number): void {
  * evento è arrivato nel frattempo. Vedi «Le risposte dei comandi e gli
  * eventi» in testa.
  */
-function comanda(azione: Promise<StatoInsieme>, onErrore: (e: unknown) => void): void {
+export function comanda(azione: Promise<StatoInsieme>, onErrore: (e: unknown) => void): void {
   void comandaPoi(azione, onErrore);
 }
 
@@ -409,9 +409,12 @@ function ospitaComunque(onErrore: (e: unknown) => void): void {
   comanda(ipc.insiemeOspita(), onErrore);
 }
 
-/** Chiede a un associato che ospita di entrare nella sua sessione. */
+/**
+ * Chiede a un associato che ospita di entrare nella sua sessione. Via
+ * internet, sui dati mobili, «Solo Wi-Fi» chiede prima (`gestoLontano`).
+ */
 function chiediDiEntrare(pari: number, onErrore: (e: unknown) => void): void {
-  ipc.insiemeChiedi(pari).catch(onErrore);
+  void gestoLontano(() => ipc.insiemeChiedi(pari), onErrore);
 }
 
 /** Quanto vale un invito mandato: lo stesso minuto del nucleo. */
@@ -433,7 +436,6 @@ const DURATA_INVITO = 60_000;
  * sceglie ogni volta.
  */
 function invita(pari: number, diritti: DirittiInsieme, onErrore: (e: unknown) => void): void {
-  const scade = Date.now() + DURATA_INVITO;
   const togli = (quando: number | null) =>
     ARCHIVIO.scrivi((prima) => {
       if (!prima.invitati.has(pari)) return prima;
@@ -442,13 +444,21 @@ function invita(pari: number, diritti: DirittiInsieme, onErrore: (e: unknown) =>
       dopo.delete(pari);
       return { ...prima, invitati: dopo };
     });
-  ARCHIVIO.scrivi((prima) => ({ ...prima, invitati: new Map(prima.invitati).set(pari, scade) }));
-  window.setTimeout(() => togli(scade), DURATA_INVITO);
   dimenticaLivello("inviti", pari);
-  ipc.insiemeInvita(pari, diritti).catch((e: unknown) => {
-    togli(null);
-    onErrore(e);
-  });
+  // Via internet, sui dati mobili, «Solo Wi-Fi» chiede prima (`gestoLontano`):
+  // il minuto parte a ogni tentativo, e un invito messo da parte per la
+  // domanda non lascia il tasto spento.
+  void gestoLontano(async () => {
+    const scade = Date.now() + DURATA_INVITO;
+    ARCHIVIO.scrivi((prima) => ({ ...prima, invitati: new Map(prima.invitati).set(pari, scade) }));
+    window.setTimeout(() => togli(scade), DURATA_INVITO);
+    try {
+      await ipc.insiemeInvita(pari, diritti);
+    } catch (e) {
+      togli(null);
+      throw e;
+    }
+  }, onErrore);
 }
 
 /**
@@ -549,7 +559,7 @@ function risposto(quale: "inviti" | "richieste", id: number): void {
 }
 
 /** Lo stato del nucleo, per chi disegna. */
-function useStatoInsieme(): StatoInsieme | null {
+export function useStatoInsieme(): StatoInsieme | null {
   return useArchivio(ARCHIVIO, (v) => v.stato);
 }
 
@@ -1064,10 +1074,14 @@ function InAttesa({
     const livello = () => ARCHIVIO.leggi().livelli.richieste.get(voce.id) ?? DIRITTI_DI_PARTENZA;
     const accetta = () => {
       risposto(invito ? "inviti" : "richieste", voce.id);
-      (invito
-        ? ipc.insiemeRispondi(voce.id, true)
-        : ipc.insiemeAmmetti(voce.id, true, livello())
-      ).catch(onErrore);
+      // Via internet, sui dati mobili, «Solo Wi-Fi» chiede prima.
+      void gestoLontano(
+        () =>
+          invito
+            ? ipc.insiemeRispondi(voce.id, true)
+            : ipc.insiemeAmmetti(voce.id, true, livello()),
+        onErrore,
+      );
     };
     const rifiuta = () => {
       risposto(invito ? "inviti" : "richieste", voce.id);
@@ -1766,6 +1780,7 @@ function Vicini({ stato, onErrore }: { stato: StatoInsieme; onErrore: (e: unknow
                     title={t("together.nearby.fingerprint", { impronta: vicino.impronta })}
                   >
                     {vicino.impronta}
+                    {vicino.viaInternet ? ` · ${t("together.nearby.internet")}` : ""}
                   </span>
                 </span>
                 {vicino.bloccato ? (
@@ -2205,7 +2220,7 @@ function Calibrazione({
 // ── la scheda delle Impostazioni ───────────────────────────────────────────
 
 /** Lo stato di un PC associato, in due parole. */
-function statoDelFidato(fidato: FidatoInsieme): string {
+export function statoDelFidato(fidato: FidatoInsieme): string {
   if (fidato.bloccato) return t("settings.together.trusted.blocked");
   if (fidato.inSessione) return t("settings.together.trusted.inSession");
   if (fidato.ospita) return t("settings.together.trusted.hosting");
@@ -2236,12 +2251,18 @@ function statoDelFidato(fidato: FidatoInsieme): string {
  * dimenticare sono righe del database di questo PC, e chi spegne tutto per
  * fare ordine deve poterlo fare.
  */
-export function SchedaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) {
+export function SchedaInsieme({
+  onErrore,
+  onDispositivi,
+}: {
+  onErrore: (e: unknown) => void;
+  /** Porta alla sezione «Dispositivi», dove stanno i PC associati. */
+  onDispositivi: () => void;
+}) {
   const stato = useStatoInsieme();
   // `null` vuol dire «non toccato»: il campo mostra il nome del nucleo, e una
   // risposta che lo cambia — un altro posto che lo rinomina — si vede subito.
   const [nome, setNome] = useState<string | null>(null);
-  const [nomi, setNomi] = useState<Record<number, string>>({});
   const [nuovo, setNuovo] = useState("");
   const [guastoIndirizzo, setGuastoIndirizzo] = useState<Chiave | null>(null);
   const idNome = useId();
@@ -2263,13 +2284,6 @@ export function SchedaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) 
     if (nome === null) return;
     comanda(ipc.insiemeNome(nomePulito(nome)), onErrore);
     setNome(null);
-  };
-
-  const rinomina = (fidato: FidatoInsieme) => {
-    const scritto = nomi[fidato.id];
-    if (scritto === undefined) return;
-    comanda(ipc.insiemePariRinomina(fidato.id, nomePulito(scritto)), onErrore);
-    setNomi(({ [fidato.id]: _tolto, ...resto }) => resto);
   };
 
   const aggiungi = () => {
@@ -2391,71 +2405,22 @@ export function SchedaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) 
         </div>
       )}
 
+      {/* I PC associati — rinominare, bloccare, dimenticare — stanno
+          nell'elenco unico della sezione «Dispositivi», con i dispositivi
+          collegati via internet e quelli della sincronia: qui il rimando. */}
       <h3 className="titoletto">{t("settings.together.trusted")}</h3>
-      {stato.fidati.length === 0 ? (
-        <p className="nota">{t("settings.together.trusted.none")}</p>
-      ) : (
-        <ul className="cartelle">
-          {ordinaFidati(stato.fidati).map((fidato) => {
-            const scritto = nomi[fidato.id];
-            return (
-              <li key={fidato.id} className="azioni">
-                <input
-                  type="text"
-                  className="campo field-input"
-                  aria-label={t("settings.together.trusted.name", { nome: fidato.nome })}
-                  maxLength={MASSIMO_NOME}
-                  value={scritto ?? fidato.nome}
-                  onChange={(e) => setNomi({ ...nomi, [fidato.id]: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") rinomina(fidato);
-                  }}
-                />
-                <span
-                  className="percorso"
-                  title={t("together.nearby.fingerprint", { impronta: fidato.impronta })}
-                >
-                  {fidato.impronta} · {statoDelFidato(fidato)}
-                </span>
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  disabled={
-                    scritto === undefined ||
-                    nomePulito(scritto) === "" ||
-                    nomePulito(scritto) === fidato.nome
-                  }
-                  onClick={() => rinomina(fidato)}
-                >
-                  {t("settings.together.trusted.rename")}
-                </button>
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  aria-pressed={fidato.bloccato}
-                  onClick={() =>
-                    comanda(ipc.insiemePariBlocca(fidato.id, !fidato.bloccato), onErrore)
-                  }
-                >
-                  {fidato.bloccato
-                    ? t("settings.together.trusted.unblock")
-                    : t("settings.together.trusted.block")}
-                </button>
-                {/* Senza domanda, come «Dimentica» dei dispositivi della
-                    sincronia qui sopra: si rimedia riassociando, con il
-                    codice, e non si perde niente che non torni. */}
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  onClick={() => comanda(ipc.insiemePariDimentica(fidato.id), onErrore)}
-                >
-                  {t("settings.together.trusted.forget")}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      <div className="azioni">
+        <p className="nota">
+          {stato.fidati.length === 0
+            ? t("settings.together.trusted.none")
+            : t("settings.together.trusted.moved", { n: stato.fidati.length })}
+        </p>
+        {stato.fidati.length > 0 && (
+          <button type="button" className="bottone btn-ghost" onClick={onDispositivi}>
+            {t("settings.devices.open")}
+          </button>
+        )}
+      </div>
 
       <h3 className="titoletto" id={idIndirizzi}>
         {t("settings.together.addresses")}

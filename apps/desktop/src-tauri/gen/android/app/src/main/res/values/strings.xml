@@ -1,0 +1,64 @@
+<resources>
+    <!-- Il nome non si traduce: è lo stesso in ogni lingua. -->
+    <string name="app_name" translatable="false">"Rymembra"</string>
+    <string name="main_activity_title" translatable="false">"Rymembra"</string>
+
+    <!-- Android Auto, e la notifica del lettore. Le stesse parole della
+         finestra (`src/lingue/en.json`): «Recently played», «Favorites». -->
+    <string name="auto_recenti">Recent</string>
+    <string name="auto_playlist">Playlists</string>
+    <string name="auto_album">Albums</string>
+    <string name="auto_artisti">Artists</string>
+    <string name="auto_preferiti">Favorites</string>
+    <string name="auto_gruppo_ascoltati">Recently played</string>
+    <string name="auto_gruppo_aggiunti">Recently added</string>
+    <string name="auto_suona_tutto">Play all</string>
+    <plurals name="auto_n_brani">
+        <item quantity="one">%d track</item>
+        <item quantity="other">%d tracks</item>
+    </plurals>
+    <plurals name="auto_n_album">
+        <item quantity="one">%d album</item>
+        <item quantity="other">%d albums</item>
+    </plurals>
+    <plurals name="auto_n_artisti">
+        <item quantity="one">%d artist</item>
+        <item quantity="other">%d artists</item>
+    </plurals>
+    <string name="auto_piace">Add to favorites</string>
+    <string name="auto_non_piace">Remove from favorites</string>
+    <string name="auto_mescola">Shuffle</string>
+    <string name="auto_mescola_spento">Turn shuffle off</string>
+    <string name="auto_ripeti_spento">Repeat off</string>
+    <string name="auto_ripeti_tutto">Repeat the whole queue</string>
+    <string name="auto_ripeti_uno">Repeat this track</string>
+    <string name="auto_apri">Open Rymembra on your phone once, and your library will be here.</string>
+    <string name="auto_apri_azione">Open Rymembra</string>
+    <string name="auto_niente">Nothing like that in your library.</string>
+    <string name="auto_non_riesco">Rymembra can\'t play that right now.</string>
+
+    <!-- Dove suona la musica: Impostazioni → Uscita audio, e l'avviso «il suono
+         si è spostato». Le uscite col nome loro (le cuffie) lo tengono. -->
+    <string name="uscita_altoparlante">Phone speaker</string>
+    <string name="uscita_auricolare">Phone earpiece</string>
+    <string name="uscita_cuffie">Wired headphones</string>
+    <string name="uscita_bluetooth">Bluetooth device</string>
+    <string name="uscita_altra">Audio output</string>
+
+    <!-- La notifica mentre si aspetta il consenso nel browser (vedi
+         `ConsensoInAttesa`). -->
+    <string name="consenso_canale">Connecting a service</string>
+    <string name="consenso_titolo">Waiting for your consent</string>
+    <string name="consenso_testo">Allow access in the browser, then come back to Rymembra.</string>
+
+    <!-- La notifica mentre «Scarica qui» copia i brani di un altro dispositivo
+         (vedi `ScaricoInCorso`). -->
+    <string name="scarico_canale">Downloads from your devices</string>
+    <string name="scarico_titolo">Rymembra is downloading</string>
+    <string name="scarico_testo">%1$d of %2$d · %3$s</string>
+
+    <!-- Lo scanner del QR di «Collega un dispositivo» (vedi `ScansioneQr`). -->
+    <string name="qr_istruzioni">Point the camera at the QR code shown by Rymembra on your computer.</string>
+    <string name="qr_torcia">Flashlight</string>
+    <string name="qr_annulla">Cancel</string>
+</resources>

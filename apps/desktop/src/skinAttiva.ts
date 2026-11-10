@@ -25,7 +25,7 @@
  * subito dopo; sono due domande indipendenti al nucleo, e l'ordine in cui
  * partono non decide niente di quel che si vede.
  */
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "./dialoghi";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { applicaSkin } from "./aspetto";

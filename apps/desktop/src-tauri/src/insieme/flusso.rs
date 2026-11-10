@@ -464,7 +464,7 @@ mod misura {
                 modificato_ms,
             },
         );
-        let lettore = membro.lettore(indirizzo, chiave_host);
+        let lettore = membro.lettore(rymembra_insieme::Dove::Lan(indirizzo), chiave_host);
         // Il primo giro scalda le connessioni di lettura; poi tre punti.
         let _ = apri_e_cerca(&lettore, gettone, 1_000);
         // La banda del trasporto da sola: il file intero a blocchi.
@@ -596,13 +596,13 @@ mod tre_capi {
         // ospita inoltra il gettone a lui.
         let gettone = Gettone::nuovo().unwrap();
         marco.servi(gettone, FileServito::da_percorso(&percorso).unwrap());
-        marco.offri(indirizzo, chiave_host);
+        marco.offri(rymembra_insieme::Dove::Lan(indirizzo), chiave_host);
         assert!(host.inoltra(gettone, chiave_marco));
         // Lo stesso gettone a un altro membro: no, è già di Marco.
         assert!(!host.inoltra(gettone, chiave_luca));
 
         // Luca legge: la connessione di servizio può metterci un attimo.
-        let lettore = luca.lettore(indirizzo, chiave_host);
+        let lettore = luca.lettore(rymembra_insieme::Dove::Lan(indirizzo), chiave_host);
         let fine = Instant::now() + Duration::from_secs(10);
         loop {
             match lettore.pezzo(&gettone, 0, 16, None) {
@@ -634,7 +634,7 @@ mod tre_capi {
         // Tolto il gettone, la lettura finisce col perché.
         host.revoca(&gettone);
         let err = luca
-            .lettore(indirizzo, chiave_host)
+            .lettore(rymembra_insieme::Dove::Lan(indirizzo), chiave_host)
             .pezzo(&gettone, 0, 16, None)
             .unwrap_err();
         assert_eq!(err.code().kind().code(), "insieme.gettoneScaduto");

@@ -23,6 +23,7 @@ import { useLettore } from "./riproduzione";
 import { Cartelle, type ManiDeiBrani } from "./schermate/Cartelle";
 import { ElencoBrani } from "./schermate/Elenco";
 import { InRiproduzione } from "./schermate/InRiproduzione";
+import { InRiproduzioneTelefono } from "./schermate/InRiproduzioneTelefono";
 import { useQuelCheSuona } from "./segnali";
 
 /** «In riproduzione» a schermo intero, con lo stato del motore dall'archivio. */
@@ -30,6 +31,13 @@ export function InRiproduzioneCollegata(
   props: Omit<ComponentProps<typeof InRiproduzione>, "stato">,
 ) {
   return <InRiproduzione {...props} stato={useLettore()} />;
+}
+
+/** Lo stesso, nella forma del telefono: vedi `InRiproduzioneTelefono`. */
+export function InRiproduzioneTelefonoCollegata(
+  props: Omit<ComponentProps<typeof InRiproduzioneTelefono>, "stato">,
+) {
+  return <InRiproduzioneTelefono {...props} stato={useLettore()} />;
 }
 
 /** L'avviso dell'uscita audio, con lo stato del motore dall'archivio. */

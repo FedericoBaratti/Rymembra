@@ -31,10 +31,16 @@
 
 use std::sync::{Mutex, PoisonError};
 
-use rymembra_barra::{Aspetto, Barra, Etichette, Tasto};
+#[cfg(desktop)]
+use rymembra_barra::Etichette;
+#[cfg(windows)]
+use rymembra_barra::Tasto;
+use rymembra_barra::{Aspetto, Barra};
 use tauri::Manager as _;
 
+#[cfg(windows)]
 use crate::media::Gesto;
+#[cfg(windows)]
 use crate::nota;
 use crate::riproduzione::StatoRiproduzione;
 
@@ -66,14 +72,24 @@ impl StatoBarra {
 /// Sul filo della finestra, per forza: è il filo a cui Windows recapita i clic,
 /// e l'unico da cui la finestra si lascia agganciare. Da `setup` ci si è già,
 /// ma passare da `run_on_main_thread` non dipende da chi chiama.
+///
+/// Fuori da Windows non c'è una barra delle applicazioni a cui agganciarsi: lo
+/// stato resta senza pulsanti, e [`riflette`] continua a ricordare l'aspetto
+/// senza mostrarlo a nessuno, come quando Windows li rifiuta.
 pub fn avvia(app: &tauri::AppHandle) {
-    let mano = app.clone();
-    if let Err(err) = app.run_on_main_thread(move || aggancia(&mano)) {
-        nota!("[barra] il filo della finestra non risponde: {err}");
+    #[cfg(windows)]
+    {
+        let mano = app.clone();
+        if let Err(err) = app.run_on_main_thread(move || aggancia(&mano)) {
+            nota!("[barra] il filo della finestra non risponde: {err}");
+        }
     }
+    #[cfg(not(windows))]
+    let _ = app;
 }
 
 /// Il lavoro di [`avvia`], sul filo della finestra.
+#[cfg(windows)]
 fn aggancia(app: &tauri::AppHandle) {
     let Some(finestra) = app.get_webview_window("main") else {
         nota!("[barra] nessuna finestra: niente pulsanti nell'anteprima");
@@ -138,6 +154,7 @@ pub(crate) fn riflette(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
 ///
 /// La chiama `vassoio_lingua`, con le stesse etichette delle voci della musica
 /// nel menù del vassoio.
+#[cfg(desktop)]
 pub(crate) fn etichette(app: &tauri::AppHandle, etichette: Etichette) {
     cambia(app, |aspetto| aspetto.etichette = etichette);
 }

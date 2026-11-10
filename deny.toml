@@ -4,15 +4,21 @@
 #
 #   cargo deny check
 #
-# # Perché solo Windows
+# # Perché Windows e Android, e non gli altri
 #
-# Perché è l'unico bersaglio che l'installer produce, come dice il preambolo di
-# `verify.yml`. Senza questa riga `cargo deny` guarderebbe anche le dipendenze
-# di Linux e macOS che `tauri` e `cpal` si portano dietro — licenze e avvisi di
-# codice che in Rymembra non entra — e una CI che fallisce per un crate di ALSA
-# è una CI che si impara a ignorare.
+# Perché sono i due bersagli che si distribuiscono: l'installer per Windows e
+# l'APK per i telefoni a 64 bit (`rust-toolchain.toml`). Fino all'APK c'era solo
+# Windows, e le dipendenze che entrano soltanto nel telefono — `jni`,
+# `ndk-context`, il ponte verso Kotlin, le radici di Mozilla — passavano senza
+# che nessuno ne leggesse licenze e avvisi. Linux e macOS restano fuori: senza
+# questa riga `cargo deny` guarderebbe anche le dipendenze che `tauri` e `cpal`
+# si portano dietro per loro — codice che in Rymembra non entra — e una CI che
+# fallisce per un crate di ALSA è una CI che si impara a ignorare.
+#
+# L'emulatore (`x86_64-linux-android`) non ha una riga sua: è lo stesso albero
+# del telefono, e nessuno lo distribuisce.
 [graph]
-targets = ["x86_64-pc-windows-msvc"]
+targets = ["x86_64-pc-windows-msvc", "aarch64-linux-android"]
 all-features = false
 
 # Gli avvisi di sicurezza di RustSec. Un avviso aperto ferma la CI: lo si

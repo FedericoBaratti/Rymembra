@@ -37,6 +37,7 @@ import {
 } from "../ipc";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
+import { MOBILE } from "../piattaforma";
 
 /** Il valore del gruppo di scelte che vuol dire «quella di sistema». */
 const SISTEMA = "";
@@ -113,6 +114,14 @@ export function SchedaUscita({
     <>
       {elenco.length === 0 ? (
         <p className="nota">{t("settings.output.none")}</p>
+      ) : MOBILE ? (
+        /* Sul telefono l'uscita la sceglie Android, e Rymembra la segue: il
+           nucleo manda una riga sola, quella dove Android suona adesso (vedi
+           `rymembra_play::dispositivi`, «Su Android si segue Android»). Un
+           pulsante qui sarebbe una scelta che non sceglie niente. */
+        <p className="nota">
+          {t("settings.output.android", { nome: elenco[0]?.nome ?? "" })}
+        </p>
       ) : (
         <ul className="uscite">
           <li>

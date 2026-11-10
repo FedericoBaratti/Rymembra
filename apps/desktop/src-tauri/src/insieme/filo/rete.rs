@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_insieme::messaggi::{MASSIMO_NOME, Messaggio};
-use rymembra_insieme::{ChiavePubblica, IdConnessione, Impostazioni, Rete};
+use rymembra_insieme::{ChiavePubblica, Dove, IdConnessione, Impostazioni, Rete};
 use rymembra_play::sincronia::orologio::Scambio;
 
 use super::{
@@ -77,7 +77,28 @@ impl Filo {
         }
         let (fidate, bloccate) = self.fidati.per_la_rete();
         rete.pari(fidate, bloccate);
+        // Fuori casa: i dispositivi associati col QR si raggiungono dal
+        // collegamento via internet (`lontano::insieme`).
+        rete.strada(Some(crate::lontano::insieme::strada(&self.app)));
         self.rete = Some(Accesa { rete, mia });
+        // Su Android i pacchetti mandati a tutta la Wi-Fi — quelli della
+        // scoperta — arrivano solo con il lucchetto del multicast preso: senza,
+        // il telefono li scarta per risparmiare batteria, e gli altri Rymembra
+        // non si vedono. Si tiene finché la rete è accesa.
+        #[cfg(target_os = "android")]
+        if let Err(err) = rymembra_android::sistema::multicast(true) {
+            nota!("[insieme] il lucchetto del multicast non si prende: {err}");
+        }
+        // E da Android 17 la rete di casa, che senza il permesso si ferma nel
+        // sistema in silenzio. Qui non lo si chiede — la rete si accende anche
+        // all'avvio, senza nessuno davanti — ma lo si dice: la domanda la fa
+        // il gesto (`crate::telefono::rete_locale_o_chiedila`).
+        if !crate::telefono::rete_locale_concessa() {
+            nota!(
+                "[insieme] Android non concede la rete di casa: manca «Dispositivi nelle vicinanze»"
+            );
+            self.avvisa(ErrorCodeKind::NetLocalNetwork.i18n_key(), None);
+        }
         nota!(
             "[insieme] rete accesa, {} fidati{}",
             self.fidati.elenco().len(),
@@ -96,6 +117,10 @@ impl Filo {
     pub(super) fn ferma_la_rete(&mut self) {
         if let Some(accesa) = self.rete.take() {
             accesa.rete.ferma();
+            #[cfg(target_os = "android")]
+            if let Err(err) = rymembra_android::sistema::multicast(false) {
+                nota!("[insieme] il lucchetto del multicast non si lascia: {err}");
+            }
             let tutti = accesa.rete.aspetta_fili(ATTESA_RETE);
             nota!(
                 "[insieme] rete spenta{}",
@@ -156,14 +181,14 @@ impl Filo {
             DallaRete::Trovato {
                 indirizzo,
                 impronta,
-            } => self.vicinato.trovato(indirizzo, impronta, ora()),
+            } => self.vicinato.trovato(Dove::Lan(indirizzo), impronta, ora()),
             DallaRete::Aperta {
                 id,
                 pari,
                 nome,
                 ospita,
                 in_entrata,
-                indirizzo,
+                dove,
             } => {
                 // Due istanze con la stessa identità non si parlano: sarebbe
                 // un PC che si associa con sé stesso.
@@ -174,7 +199,7 @@ impl Filo {
                     return;
                 }
                 let dichiarato = voci::testo(&nome, MASSIMO_NOME);
-                self.capi.insert(id, (indirizzo, pari));
+                self.capi.insert(id, (dove.clone(), pari));
                 if !in_entrata {
                     let taciute = self.vicinato.aperta(id, &dichiarato);
                     if taciute > 0 {
@@ -195,6 +220,29 @@ impl Filo {
                     let _ = self.in_libreria(ATTESA_LIBRERIA_BREVE, |c| {
                         rymembra_app::insieme::visto(c, p.id, adesso_ms())
                     });
+                }
+                // L'indirizzo di un host fidato che ha risposto: la prossima
+                // volta lo si cerca anche lì, dove il broadcast non arriva. Solo
+                // per le connessioni aperte da qui — l'indirizzo di chi bussa è
+                // la sua porta d'uscita, che non ascolta — e solo se è cambiato.
+                if !in_entrata
+                    && fidato.is_some()
+                    && let Dove::Lan(indirizzo) = dove
+                {
+                    let chiave = pari.in_testo();
+                    if self.ricordati.get(&chiave) != Some(&indirizzo) {
+                        let scritto = self.in_libreria(ATTESA_LIBRERIA_BREVE, |c| {
+                            rymembra_app::insieme::ricorda_indirizzo(
+                                c,
+                                &chiave,
+                                &indirizzo.to_string(),
+                                adesso_ms(),
+                            )
+                        });
+                        if scritto.is_ok() {
+                            self.ricordati.insert(chiave, indirizzo);
+                        }
+                    }
                 }
                 self.nutri(Evento::Aperta {
                     id,
@@ -308,12 +356,27 @@ impl Filo {
     pub(super) fn cerca(&mut self, adesso: u64) {
         self.prossima_scoperta = adesso.saturating_add(OGNI_SCOPERTA_MS);
         self.vicinato.pulisci(adesso, &self.fidati);
-        let a_mano: Vec<SocketAddr> = self
+        // I dispositivi collegati via internet che ospitano: vicini anche
+        // loro, raggiungibili da lì, se la scoperta non li vede in casa.
+        for (chiave, chiave_insieme) in crate::lontano::insieme::ospitano(&self.app) {
+            if let Some(pubblica) = ChiavePubblica::da_testo(&chiave_insieme) {
+                self.vicinato
+                    .trovato_lontano(&chiave, pubblica.impronta(), adesso);
+            }
+        }
+        // Gli scritti a mano, e gli ultimi indirizzi dei PC fidati: una domanda
+        // a ciascuno, oltre al broadcast. Vedi la 040.
+        let mut a_mano: Vec<SocketAddr> = self
             .impostazioni
             .indirizzi
             .iter()
             .filter_map(|i| i.parse().ok())
             .collect();
+        for indirizzo in self.ricordati.values() {
+            if !a_mano.contains(indirizzo) {
+                a_mano.push(*indirizzo);
+            }
+        }
         if let Some(accesa) = &self.rete {
             accesa.rete.cerca(&a_mano);
         }

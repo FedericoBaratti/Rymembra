@@ -18,6 +18,7 @@ import { idDiLibreria } from "./insieme";
 import type { Brano, Playlist } from "./ipc";
 import type { Chiave, Valori } from "./lingue";
 import type { Voce } from "./Menu";
+import { MOBILE } from "./piattaforma";
 
 /**
  * Una chiave tradotta: `t` di `lingue`, o una finta nelle prove.
@@ -41,6 +42,31 @@ export interface AzioniBrani {
   apriSulWeb: (brano: number) => void;
   togli: (brani: number[]) => void;
   elimina: (brani: number[]) => void;
+  /**
+   * Il cuore, come voce: solo dove la riga non lo mostra.
+   *
+   * Sul telefono la riga è copertina, titolo e ⋮, e il cuore che sul computer
+   * sta in colonna non ha posto: senza questa voce, mettere un brano fra i
+   * preferiti da un elenco sarebbe un gesto che c'è solo a schermo intero.
+   * Assente — il computer — la voce non c'è, e il menù resta quello di sempre.
+   */
+  preferito?: ((brano: number) => void) | undefined;
+  /**
+   * Toglie dalla playlist aperta la riga su cui si è aperto il menù.
+   *
+   * La riga e non il brano: in una playlist lo stesso brano può stare due
+   * volte, e chi lo apre lo sa. Per questo c'è solo quando il menù è di una
+   * riga — non su una selezione — e chi la passa conosce già la posizione.
+   * Sul computer non c'è: la riga ha la sua ×.
+   */
+  togliDallaPlaylist?: (() => void) | undefined;
+  /**
+   * Toglie dalla coda la riga su cui si è aperto il menù: il menù di una riga
+   * della coda, sul telefono, dove la × della riga lascia il posto al ⋮. Come
+   * per la playlist, la riga e non il brano: lo stesso brano può stare in coda
+   * due volte.
+   */
+  togliDallaCoda?: (() => void) | undefined;
 }
 
 /**
@@ -110,8 +136,8 @@ export function vociBrani(
     primo === undefined
       ? []
       : [
-          { etichetta: t("menu.goToAlbum"), azione: () => fai.vaiAlDisco(primo) },
-          { etichetta: t("menu.goToArtist"), azione: () => fai.vaiAllArtista(primo) },
+          { etichetta: t("menu.goToAlbum"), icona: "i-album" as const, azione: () => fai.vaiAlDisco(primo) },
+          { etichetta: t("menu.goToArtist"), icona: "i-artist" as const, azione: () => fai.vaiAllArtista(primo) },
           // «Mostra nella cartella» solo su un file. Un brano di catalogo
           // in nessuna cartella sta, e la voce che lo promettesse
           // risponderebbe con un errore a un clic perfettamente
@@ -125,14 +151,16 @@ export function vociBrani(
           ...(servizioDelPrimo !== null
             ? [
                 {
-                  etichetta: t("menu.openOnService", { servizio: servizioDelPrimo }),
+                  etichetta: t("menu.openOnService", { servizio: servizioDelPrimo }), icona: "i-external" as const,
                   azione: () => fai.apriSulWeb(primo),
                 },
               ]
-            : delPrimo?.fonte == null
+            : // Sul telefono una cartella da mostrare non c'è: il gestore file di
+              // Android non si apre su un file scelto da un'altra app.
+              delPrimo?.fonte == null && !MOBILE
               ? [
                   {
-                    etichetta: t("menu.showInFolder"),
+                    etichetta: t("menu.showInFolder"), icona: "i-folder" as const,
                     azione: () => fai.mostraNellaCartella(primo),
                   },
                 ]
@@ -143,7 +171,7 @@ export function vociBrani(
           // licenze non è una curiosità ma una condizione d'uso, per cui
           // qui c'è e in «In riproduzione» c'è scritta per esteso.
           ...(inMano(primo)?.fontePagina != null
-            ? [{ etichetta: t("track.openPage"), azione: () => fai.apriPagina(primo) }]
+            ? [{ etichetta: t("track.openPage"), icona: "i-external" as const, azione: () => fai.apriPagina(primo) }]
             : []),
         ];
   /*
@@ -181,15 +209,54 @@ export function vociBrani(
       return brano !== undefined && eNuvola(brano.path);
     });
   return [
-    ...(conRadio ? [{ etichetta: t("action.radio"), azione: () => fai.radio(primo) }] : []),
+    ...(conRadio ? [{ etichetta: t("action.radio"), icona: "i-radio" as const, azione: () => fai.radio(primo) }] : []),
     ...(senzaCoda
       ? []
       : [
-          { etichetta: t("action.playNext"), azione: () => fai.dopo(brani) },
-          { etichetta: t("action.enqueue"), azione: () => fai.accoda(brani) },
+          { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: () => fai.dopo(brani) },
+          { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: () => fai.accoda(brani) },
         ]),
-    { etichetta: t("action.addToPlaylist"), azione: () => fai.aggiungiAPlaylist(brani) },
+    { etichetta: t("action.addToPlaylist"), icona: "i-plus" as const, azione: () => fai.aggiungiAPlaylist(brani) },
+    ...(primo !== undefined && fai.preferito !== undefined
+      ? [
+          // L'etichetta dice che cosa succederà, come il cuore: chi lo ha già
+          // fra i preferiti legge «Togli». Un brano che non si trova
+          // nell'elenco si dà per non preferito, che è la scommessa che non fa
+          // danni: il cuore si accende, e lo si spegne col gesto di prima.
+          inMano(primo)?.liked === true
+            ? {
+                etichetta: t("track.unlike"),
+                icona: "i-heart-f" as const,
+                azione: () => fai.preferito?.(primo),
+              }
+            : {
+                etichetta: t("track.like"),
+                icona: "i-heart" as const,
+                azione: () => fai.preferito?.(primo),
+              },
+        ]
+      : []),
+    // Prima dei «da qui»: in un menù aperto dalla coda è la cosa che si
+    // cerca, ed è quella che la × faceva. Non c'è dove la coda non è libera.
+    ...(fai.togliDallaCoda !== undefined && !senzaCoda
+      ? [
+          {
+            etichetta: t("queue.remove"),
+            icona: "i-x" as const,
+            azione: () => fai.togliDallaCoda?.(),
+          },
+        ]
+      : []),
     ...daUnBrano,
+    ...(fai.togliDallaPlaylist !== undefined
+      ? [
+          {
+            etichetta: t("menu.removeFromPlaylist"),
+            icona: "i-list" as const,
+            azione: () => fai.togliDallaPlaylist?.(),
+          },
+        ]
+      : []),
     /*
      * Le due distruttive, in fondo e in quest'ordine.
      *
@@ -205,18 +272,18 @@ export function vociBrani(
      * c'è annulla da offrire. Dove un annulla c'è, come per la coda
      * sostituita, si offre quello e non si chiede niente.
      */
-    { etichetta: t("menu.removeFromLibrary"), azione: () => fai.togli(brani) },
+    { etichetta: t("menu.removeFromLibrary"), icona: "i-x" as const, azione: () => fai.togli(brani) },
     ...(soloStreaming
       ? []
       : soloNuvola
         ? [
             {
-              etichetta: t("menu.deleteFromDisk"),
+              etichetta: t("menu.deleteFromDisk"), icona: "i-trash" as const,
               azione: () => undefined,
               spenta: t("errors.cloud.readOnly"),
             },
           ]
-        : [{ etichetta: t("menu.deleteFromDisk"), azione: () => fai.elimina(brani) }]),
+        : [{ etichetta: t("menu.deleteFromDisk"), icona: "i-trash" as const, azione: () => fai.elimina(brani) }]),
   ];
 }
 
@@ -244,12 +311,12 @@ export function vociAlbum(
     // Il seme è la **prima traccia** e non un brano a caso del disco: è
     // quella che chi apre un album sente per prima, quindi è quella di
     // cui sta chiedendo «portami dove porta questo».
-    ...(inSessione ? [] : [{ etichetta: t("action.radio"), azione: fai.radio }]),
+    ...(inSessione ? [] : [{ etichetta: t("action.radio"), icona: "i-radio" as const, azione: fai.radio }]),
     ...(senzaCoda
       ? []
       : [
-          { etichetta: t("action.playNext"), azione: fai.dopo },
-          { etichetta: t("action.enqueue"), azione: fai.accoda },
+          { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: fai.dopo },
+          { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: fai.accoda },
         ]),
   ];
 }
@@ -273,12 +340,12 @@ export interface AzioniCartella {
  */
 export function vociCartella(fai: AzioniCartella, t: Traduci, senzaCoda = false): Voce[] {
   return [
-    { etichetta: t("action.play"), azione: fai.riproduci },
+    { etichetta: t("action.play"), icona: "i-play" as const, azione: fai.riproduci },
     ...(senzaCoda
       ? []
       : [
-          { etichetta: t("action.playNext"), azione: fai.dopo },
-          { etichetta: t("action.enqueue"), azione: fai.accoda },
+          { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: fai.dopo },
+          { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: fai.accoda },
         ]),
   ];
 }
@@ -295,23 +362,23 @@ export interface AzioniPlaylist {
 /** Le voci del menù di una playlist nella barra di navigazione. */
 export function vociPlaylist(p: Playlist, fai: AzioniPlaylist, t: Traduci): Voce[] {
   return [
-    { etichetta: t("action.play"), azione: fai.suona },
+    { etichetta: t("action.play"), icona: "i-play" as const, azione: fai.suona },
     // Una playlist automatica non si rinomina: la chiave è il nome, e
     // cambiarlo ne farebbe una nuova che le regole del vecchio database non
     // conoscono più. Si cambiano le sue regole.
     p.isSmart
-      ? { etichetta: t("menu.editRules"), azione: fai.regole }
-      : { etichetta: t("menu.rename"), azione: fai.rinomina },
+      ? { etichetta: t("menu.editRules"), icona: "i-settings" as const, azione: fai.regole }
+      : { etichetta: t("menu.rename"), icona: "i-text" as const, azione: fai.rinomina },
     // Senza domanda, e con un «Annulla» dopo: la cancellazione è già
     // scritta quando l'avviso compare, e il nucleo tiene quel che serve a
     // rimetterla com'era — vedi `playlists::Cancellata`. Una domanda a ogni
     // eliminazione insegnerebbe a rispondere «sì» senza leggere.
-    { etichetta: t("common.delete"), azione: fai.cancella },
+    { etichetta: t("common.delete"), icona: "i-trash" as const, azione: fai.cancella },
     // L'esportazione vale per tutte e due: una playlist intelligente si
     // esporta con i brani che ha **adesso**, che è quel che un M3U può
     // rappresentare — le regole non attraversano il formato, e portarle via
     // fingendo di sì sarebbe peggio che non esportarla.
-    { etichetta: t("menu.exportFile"), azione: fai.esporta },
+    { etichetta: t("menu.exportFile"), icona: "i-external" as const, azione: fai.esporta },
   ];
 }
 
@@ -321,7 +388,7 @@ export function vociArtista(
   t: Traduci,
 ): Voce[] {
   return [
-    { etichetta: t("menu.open"), azione: fai.apri },
-    { etichetta: t("menu.searchName"), azione: fai.cercaPerNome },
+    { etichetta: t("menu.open"), icona: "i-chev-r" as const, azione: fai.apri },
+    { etichetta: t("menu.searchName"), icona: "i-search" as const, azione: fai.cercaPerNome },
   ];
 }

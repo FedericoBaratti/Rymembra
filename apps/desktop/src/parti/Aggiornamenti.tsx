@@ -358,7 +358,10 @@ export function Aggiornamenti({
         </div>
         <div>
           <dt>{t("settings.update.last")}</dt>
-          <dd className="stat-number">
+          {/* Una data fra i numeri: la misura piccola di `numeri dd[data-quando]`
+              (`impostazioni.css`), come l'ultima passata della sincronia. Grande
+              andava a capo dopo la virgola, con l'ora da sola sotto. */}
+          <dd className="stat-number" data-quando="">
             {stato?.ultimoMs != null
               ? dataOra(stato.ultimoMs)
               : t("settings.when.never")}
@@ -387,6 +390,7 @@ export function Aggiornamenti({
           className="bottone btn-ghost"
           onClick={apriDiario}
         >
+          {/* Sul telefono si condivide: vedi `settings.diary.open.telefono`. */}
           {t("settings.diary.open")}
         </button>
       </div>

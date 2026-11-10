@@ -417,6 +417,8 @@ export interface VicinoInsieme {
   /** L'id fra i PC associati, se lo è. */
   pari: number | null;
   bloccato: boolean;
+  /** Si raggiunge dal collegamento via internet, non dalla rete di casa. */
+  viaInternet: boolean;
 }
 
 /** Un PC associato. */
@@ -1149,4 +1151,20 @@ export interface EsitoPulizia {
   /** Byte liberati. */
   byte: number;
   stato: StatoManutenzione;
+}
+
+/**
+ * Che cosa Rymembra può leggere sul telefono (`telefono::PermessiIpc`). Fuori
+ * da Android i comandi che lo restituiscono rispondono con un errore, e la
+ * finestra non li chiama.
+ */
+export interface PermessiTelefono {
+  /** «Accesso a tutti i file»: i brani, i `.lrc` e i `.cue` accanto, i tag. */
+  tuttiIFile: boolean;
+  /** I file audio. */
+  audio: boolean;
+  /** Le immagini, per le copertine accanto ai brani. */
+  immagini: boolean;
+  /** Le notifiche: senza, la notifica del lettore non si vede. */
+  notifiche: boolean;
 }

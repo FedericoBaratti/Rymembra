@@ -236,6 +236,13 @@ const ATTESE_FOGLIO = {
   "posto-queue": "Come `posto-content`: il posto `queue` dello scafale.",
   "posto-selection-bar":
     "Come `posto-content`: il posto `selection-bar` dello scafale.",
+  // Quattro posti che nell'albero di una skin ci sono di rado o mai, e che lo
+  // scafale del telefono (`scafaleTelefono.ts`) mette sempre: il foglio del
+  // telefono li misura per nome.
+  "posto-ambient": "Come `posto-content`: il posto `ambient`, nello scafale del telefono.",
+  "posto-page-header": "Come `posto-content`: il posto `page-header`, nello scafale del telefono.",
+  "posto-phone-nav":
+    "Come `posto-content`: il posto `phone-nav`, che esiste solo nello scafale del telefono.",
 };
 
 /*

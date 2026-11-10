@@ -22,9 +22,18 @@
 //! qualcosa cambia (o finché scade l'attesa), e solo allora si chiede che cosa.
 //! È ciò che rende un file copiato su Dropbox visibile in libreria in pochi
 //! secondi senza una richiesta ogni pochi secondi.
+//!
+//! Il long-poll gira su un filo d'appoggio, e il filo del conto aspetta la
+//! sua risposta su un campanello che anche una sveglia fa suonare: una
+//! radice nuova, «Aggiorna ora» o uno scollegamento non aspettano più la fine
+//! dell'attesa (con lo scarto che Dropbox aggiunge, fino a un paio di
+//! minuti). La domanda già partita non si butta: il giro dopo, con lo stesso
+//! cursore, riprende ad aspettare quella. Lo stesso vale per il `backoff` che
+//! Dropbox a volte chiede: un'attesa prima del long-poll dopo, che una
+//! sveglia interrompe.
 
 use std::ops::ControlFlow;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -67,6 +76,13 @@ const ATTESA_MASSIMA: u64 = 120;
 /// Il margine oltre l'attesa: Dropbox aggiunge fino a novanta secondi a caso
 /// all'attesa chiesta, per non svegliare tutti insieme.
 const MARGINE_ATTESA: Duration = Duration::from_secs(100);
+
+/// Quanto il filo del conto aspetta al più la risposta del long-poll: più
+/// della scadenza della sua rete, che di solito arriva prima con un errore
+/// che dice cosa è successo. Questa è solo la rete di sicurezza.
+const ATTESA_DEL_FILO: Duration = Duration::from_secs(ATTESA_MASSIMA)
+    .saturating_add(MARGINE_ATTESA)
+    .saturating_add(Duration::from_secs(30));
 
 /// Per quanto si crede a un collegamento temporaneo: tre ore e mezza delle
 /// quattro che Dropbox gli dà, così non scade a metà di un brano.
@@ -153,6 +169,60 @@ pub struct Dropbox {
     notifiche_base: String,
     /// I pezzi dei brani, dal collegamento temporaneo.
     flusso: Rete,
+    /// Il long-poll in volo e il campanello: vedi il `//!`.
+    attesa: Arc<Attesa>,
+}
+
+/// L'attesa dei cambiamenti, che una sveglia interrompe.
+#[derive(Debug, Default)]
+struct Attesa {
+    stato: Mutex<InAttesa>,
+    /// Suona quando il long-poll risponde e quando arriva una sveglia.
+    campanello: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct InAttesa {
+    /// Il long-poll partito e non ancora consegnato.
+    volo: Option<Volo>,
+    /// Quanti long-poll sono partiti: chi risponde tardi riconosce il suo.
+    partiti: u64,
+    /// Una sveglia arrivata e non ancora vista da chi aspetta.
+    sveglia: bool,
+    /// Dropbox ha chiesto (`backoff`) di non richiamare il long-poll prima.
+    non_prima_di: Option<Instant>,
+}
+
+/// Un long-poll su un filo d'appoggio.
+#[derive(Debug)]
+struct Volo {
+    numero: u64,
+    cursore: String,
+    risposta: Option<Result<Value, AppError>>,
+}
+
+impl Attesa {
+    fn blocca(&self) -> MutexGuard<'_, InAttesa> {
+        self.stato.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Chi aspetta torna subito, senza cambiamenti.
+    fn sveglia(&self) {
+        self.blocca().sveglia = true;
+        self.campanello.notify_all();
+    }
+
+    /// Aspetta il campanello, al più `quanto`.
+    fn aspetta<'a>(
+        &self,
+        stato: MutexGuard<'a, InAttesa>,
+        quanto: Duration,
+    ) -> MutexGuard<'a, InAttesa> {
+        match self.campanello.wait_timeout(stato, quanto) {
+            Ok((stato, _)) => stato,
+            Err(avvelenato) => avvelenato.into_inner().0,
+        }
+    }
 }
 
 impl Dropbox {
@@ -175,6 +245,7 @@ impl Dropbox {
                 quanti: 2,
                 cancello: Cancello::nuovo(|bersaglio| bersaglio.starts_with("https://")),
             }),
+            attesa: Arc::default(),
         }
     }
 
@@ -190,6 +261,100 @@ impl Dropbox {
             notifiche: rete.clone(),
             notifiche_base: format!("{base}/notify/2"),
             flusso: rete,
+            attesa: Arc::default(),
+        }
+    }
+
+    /// La risposta del long-poll per `cursore`, aspettata sul campanello.
+    /// `Ok(None)` se è arrivata prima una sveglia: il long-poll resta in volo,
+    /// e la prossima chiamata con lo stesso cursore aspetta ancora quello.
+    fn aspetta_i_cambiamenti(
+        &self,
+        cursore: &str,
+        secondi: u64,
+    ) -> Result<Option<Value>, AppError> {
+        let mut stato = self.attesa.blocca();
+        // Prima il `backoff` che Dropbox ha chiesto l'ultima volta.
+        while let Some(quando) = stato.non_prima_di {
+            if std::mem::take(&mut stato.sveglia) {
+                return Ok(None);
+            }
+            let resta = quando.saturating_duration_since(Instant::now());
+            if resta.is_zero() {
+                stato.non_prima_di = None;
+                break;
+            }
+            stato = self.attesa.aspetta(stato, resta);
+        }
+        if !stato
+            .volo
+            .as_ref()
+            .is_some_and(|volo| volo.cursore == cursore)
+        {
+            stato.partiti = stato.partiti.wrapping_add(1);
+            let numero = stato.partiti;
+            stato.volo = Some(Volo {
+                numero,
+                cursore: cursore.to_owned(),
+                risposta: None,
+            });
+            self.parti(&mut stato, numero, cursore, secondi);
+        }
+        let scadenza = Instant::now() + ATTESA_DEL_FILO;
+        loop {
+            if stato
+                .volo
+                .as_ref()
+                .is_some_and(|volo| volo.risposta.is_some())
+            {
+                return stato.volo.take().and_then(|volo| volo.risposta).transpose();
+            }
+            if std::mem::take(&mut stato.sveglia) {
+                return Ok(None);
+            }
+            let resta = scadenza.saturating_duration_since(Instant::now());
+            if resta.is_zero() {
+                // Il filo d'appoggio non ha risposto nemmeno dopo la scadenza
+                // della sua rete: lo si lascia, e il giro dopo ne parte uno.
+                stato.volo = None;
+                return Err(AppError::new(ErrorCode::NetTimeout {
+                    url: Some(format!(
+                        "{}/files/list_folder/longpoll",
+                        self.notifiche_base
+                    )),
+                    timeout_ms: u64::try_from(ATTESA_DEL_FILO.as_millis()).ok(),
+                }));
+            }
+            stato = self.attesa.aspetta(stato, resta);
+        }
+    }
+
+    /// Fa partire il long-poll `numero` su un filo d'appoggio, che consegna
+    /// la risposta nel [`Volo`] e suona il campanello.
+    fn parti(&self, stato: &mut InAttesa, numero: u64, cursore: &str, secondi: u64) {
+        let api = self.api.clone();
+        let rete = self.notifiche.clone();
+        let url = format!("{}/files/list_folder/longpoll", self.notifiche_base);
+        let attesa = Arc::clone(&self.attesa);
+        let cursore = cursore.to_owned();
+        let partito = std::thread::Builder::new()
+            .name("rymembra-dropbox-attesa".to_owned())
+            .spawn(move || {
+                let risposta = long_poll(&api, &rete, &url, &cursore, secondi);
+                let mut stato = attesa.blocca();
+                if let Some(volo) = stato.volo.as_mut().filter(|volo| volo.numero == numero) {
+                    volo.risposta = Some(risposta);
+                }
+                drop(stato);
+                attesa.campanello.notify_all();
+            });
+        if partito.is_err()
+            && let Some(volo) = stato.volo.as_mut()
+        {
+            volo.risposta = Some(Err(AppError::new(ErrorCode::InternalAborted {
+                what: Some("attesa dei cambiamenti di Dropbox".to_owned()),
+            })
+            .with_cause("il filo d'appoggio non è partito")));
         }
     }
 
@@ -221,6 +386,32 @@ impl Dropbox {
                 .rpc("files/list_folder/continue", &json!({ "cursor": cursore }))?;
         }
     }
+}
+
+/// Il long-poll vero e proprio, dal filo d'appoggio.
+fn long_poll(
+    api: &Api,
+    rete: &Rete,
+    url: &str,
+    cursore: &str,
+    secondi: u64,
+) -> Result<Value, AppError> {
+    let argomenti =
+        serde_json::to_vec(&json!({ "cursor": cursore, "timeout": secondi })).unwrap_or_default();
+    let risposta = rete.esegui(Richiesta {
+        metodo: Metodo::Post,
+        url,
+        intestazioni: &[],
+        corpo: Corpo::Byte {
+            tipo: "application/json",
+            dati: &argomenti,
+        },
+    })?;
+    if !risposta.e_andata() {
+        return Err(api.errore(&risposta, url));
+    }
+    serde_json::from_slice(&risposta.corpo)
+        .map_err(|err| forma(&format!("la risposta non è JSON: {err}")))
 }
 
 /// Il percorso Dropbox di un identificativo: la cima è `""`.
@@ -318,6 +509,12 @@ impl Deposito for Dropbox {
 
     fn spegni(&self) {
         self.api.accesso.spegni();
+        // Un conto scollegato non aspetta la fine del long-poll per saperlo.
+        self.attesa.sveglia();
+    }
+
+    fn sveglia(&self) {
+        self.attesa.sveglia();
     }
 
     fn chi(&self) -> Result<Identita, AppError> {
@@ -411,33 +608,23 @@ impl Deposito for Dropbox {
         Ok(completo)
     }
 
-    /// Prima si aspetta (`longpoll`, senza token), poi si chiede cosa è
-    /// cambiato. Un `backoff` di Dropbox si rispetta qui, sul filo del conto.
+    /// Prima si aspetta (`longpoll`, senza token, su un filo d'appoggio), poi
+    /// si chiede cosa è cambiato. Una sveglia interrompe l'attesa: vedi il
+    /// `//!`. Il `backoff` di Dropbox vale per il long-poll dopo, e lo
+    /// aspetta la prossima chiamata.
     fn cambiamenti(
         &self,
         cursore: &str,
         attesa: Duration,
     ) -> Result<(Vec<Cambio>, String), AppError> {
         let secondi = attesa.as_secs().clamp(ATTESA_MINIMA, ATTESA_MASSIMA);
-        let url = format!("{}/files/list_folder/longpoll", self.notifiche_base);
-        let argomenti = serde_json::to_vec(&json!({ "cursor": cursore, "timeout": secondi }))
-            .unwrap_or_default();
-        let risposta = self.notifiche.esegui(Richiesta {
-            metodo: Metodo::Post,
-            url: &url,
-            intestazioni: &[],
-            corpo: Corpo::Byte {
-                tipo: "application/json",
-                dati: &argomenti,
-            },
-        })?;
-        if !risposta.e_andata() {
-            return Err(self.api.errore(&risposta, &url));
-        }
-        let attesa: Value = serde_json::from_slice(&risposta.corpo)
-            .map_err(|err| forma(&format!("la risposta non è JSON: {err}")))?;
+        let Some(attesa) = self.aspetta_i_cambiamenti(cursore, secondi)? else {
+            // Svegliati: per ora niente, e il giro dopo riprende da qui.
+            return Ok((Vec::new(), cursore.to_owned()));
+        };
         if let Some(pausa) = attesa.get("backoff").and_then(Value::as_u64) {
-            std::thread::sleep(Duration::from_secs(pausa.min(ATTESA_MASSIMA)));
+            self.attesa.blocca().non_prima_di =
+                Some(Instant::now() + Duration::from_secs(pausa.min(ATTESA_MASSIMA)));
         }
         if !attesa
             .get("changes")

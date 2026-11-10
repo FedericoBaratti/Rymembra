@@ -7,7 +7,7 @@
     {
       id: "startup",
       title: "Startup and shutdown",
-      src: ["apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/spegnimento.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/tauri.conf.json"],
+      src: ["apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/src/spegnimento.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/tauri.conf.json"],
       body: [
         "Before anything else `main` installs the panic hook that writes panics to the log. Plugins: single-instance (skipped when `RYMEMBRA_DATI` is set), dialog, opener (with `open_js_links_on_click(false)`: no injected script opens `target=_blank` links behind the core's back), updater (no permission for the page).",
         { h: "Setup order" },
@@ -30,7 +30,7 @@
     {
       id: "ipc",
       title: "IPC: commands, events, URI schemes",
-      src: ["apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts"],
+      src: ["apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts"],
       body: [
         "**297 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
         {
@@ -85,7 +85,7 @@
     {
       id: "background",
       title: "Closing to the tray",
-      src: ["apps/desktop/src-tauri/src/vassoio.rs", "apps/desktop/src-tauri/src/main.rs", "core/rymembra-app/src/preferenze.rs"],
+      src: ["apps/desktop/src-tauri/src/vassoio.rs", "apps/desktop/src-tauri/src/lib.rs", "core/rymembra-app/src/preferenze.rs"],
       body: [
         "With `ui.closeToTray` on (default off), the close button **hides** the window instead of exiting: playback continues, because music never lived in the page — it is all in `rymembra-play`'s threads; the page has no `<audio>`. Minimize is unchanged. `on_window_event(CloseRequested)` prevents the close and hides; `App::run` then skips the shutdown sequence for that close.",
         "The tray icon is the way back, so `vassoio::nasconde` hides only if the icon **actually exists** — if the system refused it, or the menu labels have not arrived yet, the X closes as usual. Labels come from the window (`vassoio_lingua`) so they are translated with everything else. The menu has show, play/pause, next, previous and exit; the tooltip shows the current track (≤ 100 characters). «Exit» raises the exit flag before calling `exit`, so the close is not prevented. A second launch of Rymembra brings this window back (`vassoio::mostra`) instead of starting a second process.",

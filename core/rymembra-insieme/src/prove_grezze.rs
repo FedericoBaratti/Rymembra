@@ -24,7 +24,7 @@ use crate::messaggi::{
     VERSIONE, VoceSulFilo,
 };
 use crate::trasporto::{Byte32, Trasporto, Uso};
-use crate::{Evento, Impostazioni, Rete, Tempi};
+use crate::{Dove, Evento, Impostazioni, Rete, Tempi};
 
 pub(super) fn adesso_ns() -> u64 {
     static BASE: OnceLock<Instant> = OnceLock::new();
@@ -340,6 +340,24 @@ fn la_rivelazione_falsa_chiude_con_codice_rifiutato() {
 }
 
 #[test]
+fn un_uso_sconosciuto_si_chiude_con_versione() {
+    // Un PC più nuovo, della stessa versione, apre una connessione per un uso
+    // che questo non conosce: il saluto si legge, e il perché è «aggiorna».
+    let (_rete, eventi, indirizzo) = host(Tempi::default());
+    let presa = TcpStream::connect(indirizzo).expect("connessione");
+    let (_grezzo, risposta) = Grezzo::stringi(presa, true, VERSIONE, Uso::Sconosciuto);
+    assert_eq!(risposta, chiudo("insieme.versione"));
+    assert!(
+        aspetta(&eventi, Duration::from_millis(300), |e| match e {
+            Evento::Aperta { .. } => Some(()),
+            _ => None,
+        })
+        .is_none(),
+        "l'host non annuncia una connessione che non si è aperta"
+    );
+}
+
+#[test]
 fn una_versione_diversa_si_chiude_con_versione_dai_due_lati() {
     // Un PC più nuovo bussa a un host di questa versione.
     let (_rete, eventi, indirizzo) = host(Tempi::default());
@@ -469,7 +487,7 @@ fn l_annullo_durante_l_attesa_torna_subito_e_butta_la_connessione() {
         let _ = fatto.send(fine);
     });
     let (membro, _eventi) = vera(Tempi::default());
-    let lettore = membro.lettore(indirizzo, chiave);
+    let lettore = membro.lettore(Dove::Lan(indirizzo), chiave);
     let annullo = Arc::new(AtomicBool::new(false));
     let per_il_filo = Arc::clone(&annullo);
     let lettura = std::thread::spawn(move || {
@@ -509,7 +527,7 @@ fn una_risposta_che_annuncia_troppi_byte_chiude_la_connessione() {
     });
     let (membro, _eventi) = vera(Tempi::default());
     let err = membro
-        .lettore(indirizzo, chiave)
+        .lettore(Dove::Lan(indirizzo), chiave)
         .pezzo(&Gettone([1; 16]), 0, 100, None)
         .expect_err("protocollo");
     // La lettura caduta si richiede una volta su una connessione nuova (vedi
@@ -561,7 +579,7 @@ fn una_lettura_su_una_connessione_nuova_che_cade_si_richiede_una_volta() {
     });
     let (membro, _eventi) = vera(Tempi::default());
     let letto = membro
-        .lettore(indirizzo, chiave)
+        .lettore(Dove::Lan(indirizzo), chiave)
         .pezzo(&Gettone([1; 16]), 0, 3, None)
         .expect("richiesta su una connessione nuova");
     assert_eq!(letto, (vec![1, 2, 3], 3));
@@ -576,7 +594,10 @@ fn l_annullo_durante_la_stretta_torna_subito() {
     let ascolto = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("ascolto");
     let indirizzo = ascolto.local_addr().expect("indirizzo");
     let (membro, _eventi) = vera(Tempi::default());
-    let lettore = membro.lettore(indirizzo, Identita::nuova().expect("chiave").pubblica());
+    let lettore = membro.lettore(
+        Dove::Lan(indirizzo),
+        Identita::nuova().expect("chiave").pubblica(),
+    );
     let annullo = Arc::new(AtomicBool::new(false));
     let per_il_filo = Arc::clone(&annullo);
     let lettura = std::thread::spawn(move || {
@@ -641,7 +662,7 @@ fn dopo_tre_annulli_il_vivaio_ha_ancora_posto() {
         }
     });
     let (membro, _eventi) = vera(Tempi::default());
-    let lettore = membro.lettore(indirizzo, chiave);
+    let lettore = membro.lettore(Dove::Lan(indirizzo), chiave);
     for volta in 0..3 {
         let annullo = Arc::new(AtomicBool::new(false));
         let per_il_filo = Arc::clone(&annullo);
@@ -741,7 +762,7 @@ fn una_revoca_durante_una_lettura_inoltrata_la_fa_finire_con_gettone_scaduto() {
         let _ = grezzo.leggi(Duration::from_millis(500));
     });
 
-    let lettore = membro.lettore(indirizzo, host_rete.pubblica());
+    let lettore = membro.lettore(Dove::Lan(indirizzo), host_rete.pubblica());
     let lettura = std::thread::spawn(move || {
         // La connessione di servizio del grezzo si registra in un filo
         // dell'host: si riprova finché c'è.

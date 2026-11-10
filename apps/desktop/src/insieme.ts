@@ -260,6 +260,7 @@ export function ospitanti(stato: StatoInsieme): VicinoInsieme[] {
       nome: f.nome,
       pari: f.id,
       bloccato: f.bloccato,
+      viaInternet: false,
     }));
   return ordinaVicini([...vivi, ...daiFidati]);
 }

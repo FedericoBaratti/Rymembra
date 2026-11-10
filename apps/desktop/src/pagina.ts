@@ -25,11 +25,23 @@
 import type { Album, Artista, Playlist } from "./ipc";
 import type { Vista } from "./parti/Navigazione";
 
-/** Le pagine di servizio: non cercano in libreria e non aprono niente. */
-export type PaginaDiServizio = "esplora" | "importazioni" | "impostazioni";
+/**
+ * Le pagine di servizio: non cercano in libreria e non aprono niente.
+ *
+ * `altro` è del telefono (`schedeTelefono.ts`), ed è di servizio come le
+ * Impostazioni: un elenco di porte, non un posto in cui si cerca.
+ */
+export type PaginaDiServizio =
+  | "esplora"
+  | "importazioni"
+  | "impostazioni"
+  | "altro"
+  // La musica di un altro dispositivo: non cerca in questa libreria — ha la sua
+  // casella — e quel che apre lo apre dentro di sé.
+  | "dispositivo";
 
 /** Le viste della libreria, quando niente è aperto sopra di loro. */
-export type VistaLibreria = Exclude<Vista, PaginaDiServizio | "home">;
+export type VistaLibreria = Exclude<Vista, PaginaDiServizio | "home" | "cerca">;
 
 // Le tre di servizio una per una e non `{ tipo: PaginaDiServizio }`: così
 // ogni confronto su `tipo` ne toglie una, e dopo le tre resta la libreria.
@@ -37,11 +49,18 @@ export type Pagina =
   | { tipo: "esplora" }
   | { tipo: "importazioni" }
   | { tipo: "impostazioni" }
+  | { tipo: "altro" }
+  | { tipo: "dispositivo" }
   | { tipo: "ricerca" }
   | { tipo: "playlist"; playlist: Playlist }
   | { tipo: "album"; album: Album }
   | { tipo: "artista"; artista: Artista }
   | { tipo: "home" }
+  // La scheda Cerca del telefono col campo vuoto. Sotto la ricerca, perché
+  // appena si scrive la pagina è quella dei risultati; e sotto l'album e
+  // l'artista, perché un disco aperto da un risultato sta sopra la scheda da cui
+  // lo si è aperto, e chiudendolo si torna lì.
+  | { tipo: "cerca" }
   | { tipo: "libreria"; vista: VistaLibreria };
 
 /** Quel che decide la pagina. */
@@ -55,7 +74,13 @@ export interface StatoPagina {
 }
 
 function diServizio(vista: Vista): vista is PaginaDiServizio {
-  return vista === "esplora" || vista === "importazioni" || vista === "impostazioni";
+  return (
+    vista === "esplora" ||
+    vista === "importazioni" ||
+    vista === "impostazioni" ||
+    vista === "altro" ||
+    vista === "dispositivo"
+  );
 }
 
 /** La pagina che si sta guardando. Aggiungendo un caso, va aggiunto qui. */
@@ -66,6 +91,7 @@ export function paginaCorrente(stato: StatoPagina): Pagina {
   if (stato.album !== null) return { tipo: "album", album: stato.album };
   if (stato.artista !== null) return { tipo: "artista", artista: stato.artista };
   if (stato.vista === "home") return { tipo: "home" };
+  if (stato.vista === "cerca") return { tipo: "cerca" };
   return { tipo: "libreria", vista: stato.vista };
 }
 

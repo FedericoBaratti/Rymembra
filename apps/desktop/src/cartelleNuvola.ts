@@ -154,10 +154,50 @@ export function segmentiDi(percorso: string): string[] {
  * brutto, ma vero, e meglio di un `nuvola://`.
  */
 export function nomeRadice(percorso: string): string {
-  if (!eNuvola(percorso)) return percorso;
+  if (!eNuvola(percorso)) {
+    return nomiDellaMemoria === null ? percorso : percorsoAndroid(percorso, nomiDellaMemoria());
+  }
   const servizio = nomeServizioDi(percorso) ?? contoDi(percorso) ?? percorso;
   const cartelle = segmentiDi(percorso);
   return cartelle.length === 0 ? servizio : `${servizio}${PUNTO}${cartelle.join(FRECCIA)}`;
+}
+
+/**
+ * I nomi della memoria del telefono nella lingua in uso, se si è su Android:
+ * li dà `main.tsx` con [`leggiLaMemoriaCome`]. Una funzione e non due parole,
+ * perché la lingua si cambia mentre l'app è aperta; e non un import delle
+ * lingue, perché questo modulo resta senza dipendenze (le prove lo leggono
+ * con Node, che i file JSON delle lingue non li carica).
+ */
+let nomiDellaMemoria: (() => { interna: string; scheda: string }) | null = null;
+
+/** Da qui le radici del telefono si scrivono con [`percorsoAndroid`]. */
+export function leggiLaMemoriaCome(nomi: () => { interna: string; scheda: string }): void {
+  nomiDellaMemoria = nomi;
+}
+
+/**
+ * Una cartella della memoria di Android, scritta per una persona.
+ *
+ * `/storage/emulated/0/Music` non lo riconosce nessuno: sul telefono quella è
+ * «Memoria interna › Music», e una cartella della scheda
+ * (`/storage/1A2B-3C4D/Music`) è «Scheda SD › Music». La parte che distingue
+ * due cartelle — dove stanno, e il loro nome — resta: si toglie solo il gergo
+ * del sistema. Un percorso fuori da `/storage` resta com'è.
+ */
+export function percorsoAndroid(
+  percorso: string,
+  nomi: { interna: string; scheda: string },
+): string {
+  const trovato = /^\/storage\/([^/]+)((?:\/[^/]*)*)$/.exec(percorso);
+  if (trovato === null) return percorso;
+  const [, volume = "", dopo = ""] = trovato;
+  let resto = dopo.split("/").filter((s) => s.length > 0);
+  // La memoria interna è `emulated/<utente>` (e `self/primary`, il suo alias).
+  const interna = volume === "emulated" || volume === "self";
+  if (interna) resto = resto.slice(1);
+  const dove = interna ? nomi.interna : nomi.scheda;
+  return resto.length === 0 ? dove : `${dove}${FRECCIA}${resto.join(FRECCIA)}`;
 }
 
 /**

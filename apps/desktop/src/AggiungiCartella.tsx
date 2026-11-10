@@ -116,6 +116,7 @@ import {
   type Linguetta,
   type StatoOfferta,
 } from "./selettoreNuvola";
+import { MOBILE } from "./piattaforma";
 
 /** Da dove viene la cartella: questo PC, o una linguetta di servizio. */
 type Sorgente = "pc" | Scheda;
@@ -1389,7 +1390,8 @@ export function AggiungiCartella({
                   {cercaPC ? t("folders.add.pc.choosing") : t("folders.add.pc.choose")}
                 </button>
               </div>
-              <p className="nota-collega">{t("folders.add.pc.drop")}</p>
+              {/* Sul telefono non c'è una finestra su cui trascinare. */}
+              {!MOBILE && <p className="nota-collega">{t("folders.add.pc.drop")}</p>}
             </div>
           ) : (
             corpoServizio()

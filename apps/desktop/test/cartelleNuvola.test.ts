@@ -7,6 +7,7 @@ import {
   eNuvola,
   iconaServizio,
   nomeRadice,
+  percorsoAndroid,
   nomeServizioDi,
   primaLocale,
   schedaDi,
@@ -90,4 +91,17 @@ test("le icone sono generiche, e MEGA col link sta sotto MEGA", () => {
   assert.equal(iconaServizio(null), "i-folder");
   assert.equal(schedaDi("megalink"), "mega");
   assert.equal(schedaDi("dropbox"), "dropbox");
+});
+
+test("percorsoAndroid: la memoria del telefono si scrive per una persona", () => {
+  const nomi = { interna: "Memoria interna", scheda: "Scheda SD" };
+  assert.equal(percorsoAndroid("/storage/emulated/0/Music", nomi), "Memoria interna › Music");
+  assert.equal(percorsoAndroid("/storage/emulated/0", nomi), "Memoria interna");
+  assert.equal(percorsoAndroid("/storage/emulated/10/Music/Rock", nomi), "Memoria interna › Music › Rock");
+  assert.equal(percorsoAndroid("/storage/self/primary/Music/", nomi), "Memoria interna › Music");
+  assert.equal(percorsoAndroid("/storage/1A2B-3C4D/Music", nomi), "Scheda SD › Music");
+  assert.equal(percorsoAndroid("/storage/1A2B-3C4D", nomi), "Scheda SD");
+  // Fuori da `/storage`: com'è.
+  assert.equal(percorsoAndroid("/sdcard/Music", nomi), "/sdcard/Music");
+  assert.equal(percorsoAndroid("D:\Musica", nomi), "D:\Musica");
 });

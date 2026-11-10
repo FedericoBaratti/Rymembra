@@ -48,6 +48,7 @@ const vicino = (campi: Partial<VicinoInsieme> = {}): VicinoInsieme => ({
   nome: "PC",
   pari: null,
   bloccato: false,
+  viaInternet: false,
   ...campi,
 });
 

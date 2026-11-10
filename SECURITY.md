@@ -109,6 +109,42 @@ datagram or a message that crashes the host or makes it allocate without
 bound, or a way to make it answer someone else's address faster than those
 limits: all problems.
 
+**Your devices over the internet.** With *Reachable from the internet* on, a
+device runs an iroh endpoint (QUIC, TLS 1.3, ed25519 keys) that anyone on the
+internet can reach through its relay or its public address
+(`rymembra-lontano`, and `PRIVACY.md` § 4-quinquies for what travels). With the
+feature off nothing listens. What is supposed to hold:
+
+- QUIC chooses the protocol in the handshake (ALPN), and each has its own gate.
+  `rymembra/lontano/1` serves only keys written in `dispositivi` and not
+  revoked: any other key is closed before it can send a byte of a request.
+  `rymembra/insieme/1`, which carries «Listen together» away from home, has
+  the same gate, and above it every rule of «Listen together» above still
+  applies — the Noise handshake must prove the paired «Listen together» key,
+  and the per-address limits count by device key instead.
+  `rymembra/associa/1` is closed whenever no QR code is on screen;
+- linking needs the QR code's random 16-byte token, valid for ten minutes and
+  **once**, compared in constant time; five wrong tokens end the code, a new
+  code ends the previous one, and attempts from anyone are capped at ten a
+  minute. A right token is not enough: the device showing the code asks its
+  user, naming the other, and only a «yes» links;
+- a linked device can list only tracks in local and network folders and read
+  only the file of such a track, by its id, while it is still under a watched
+  folder; the size and date are checked around every read. No path ever
+  crosses the connection, in either direction;
+- every frame is size-checked before anything is allocated (1 MiB), inflating
+  one stops at 8 MiB, a read asks for at most 2 MiB, a list for at most 500
+  entries, and a device has at most 8 requests served at a time;
+- the device's secret key lives in the system keychain
+  (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
+  of «Listen together» exchanged when linking is used only to recognise that
+  device in a session.
+
+Reaching a library — or a «Listen together» session — with a key that is not
+linked, linking without the user's «yes» or with a used or expired token,
+reading a file outside the shared folders, a frame that crashes a device or
+makes it allocate without bound: all problems.
+
 **Untrusted input.** A `.ryskin` skin is a zip archive somebody sends you, and
 so is the Spotify GDPR export. `rymembra-skin::package` has explicit ceilings —
 on the manifest, on the files, on the paths — and they exist to stop unpacking
@@ -117,7 +153,8 @@ escapes the install folder, a zip that explodes, a manifest that sends the
 compiler into recursion: all problems.
 
 **Secrets at rest.** OAuth tokens, from 3.1 the private key that identifies
-the PC to the others in «Listen together», and from 3.2 the refresh tokens of
+the PC to the others in «Listen together», the private key of the device link,
+and from 3.2 the refresh tokens of
 the cloud accounts, the WebDAV passwords and the client secret of each Google
 app the user registers (`nuvola.app.<app>.segreto`; one typed in 3.1 stays at
 `google.client_secret` until it is typed again), live in the system keychain

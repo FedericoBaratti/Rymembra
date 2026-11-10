@@ -30,7 +30,7 @@ impl Filo {
     // ── chi segue ───────────────────────────────────────────────────────────
 
     pub(super) fn entra_come_membro(&mut self, host: IdConnessione) {
-        let Some((indirizzo, chiave)) = self.capi.get(&host).copied() else {
+        let Some((indirizzo, chiave)) = self.capi.get(&host).cloned() else {
             self.nutri(Evento::LettoreRifiuta);
             return;
         };
@@ -60,12 +60,12 @@ impl Filo {
         let Some(lettore) = self
             .rete
             .as_ref()
-            .map(|a| a.rete.lettore(indirizzo, chiave))
+            .map(|a| a.rete.lettore(indirizzo.clone(), chiave))
         else {
             self.nutri(Evento::LettoreRifiuta);
             return;
         };
-        let condivisa = Arc::new(Condivisa::nuova());
+        let condivisa = Arc::new(Condivisa::nuova_per(indirizzo.e_lontano()));
         let (sveglia, orecchio) = channel();
         let filo = match segui::avvia(self.app.clone(), Arc::clone(&condivisa), orecchio) {
             Ok(filo) => filo,
@@ -301,7 +301,7 @@ impl Filo {
         // chiederà i byte di questi gettoni per chi li ascolta.
         let offri = !seguendo.offerta;
         seguendo.offerta = true;
-        let (indirizzo, chiave) = (seguendo.indirizzo, seguendo.chiave);
+        let (indirizzo, chiave) = (seguendo.indirizzo.clone(), seguendo.chiave);
         self.esegui_servizi(servizi, true);
         if offri && let Some(accesa) = &self.rete {
             accesa.rete.offri(indirizzo, chiave);

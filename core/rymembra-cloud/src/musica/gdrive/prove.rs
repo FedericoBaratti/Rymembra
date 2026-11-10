@@ -561,3 +561,52 @@ fn nei_cambiamenti_solo_la_cima_resta_senza_madre() {
         "la cima si chiede una volta, non a ogni giro"
     );
 }
+
+#[test]
+fn i_403_dello_scaricamento_dicono_il_perche() {
+    // Drive dice nel corpo perché non dà i byte: lo stato da solo direbbe
+    // «vietato» in tutti i casi, e la quota finita si ritenterebbe invano.
+    let finto = Finto::avvia(|vista: &Vista, _: &str| {
+        let ragione = if vista
+            .percorso
+            .starts_with("/drive/v3/files/quota?alt=media")
+        {
+            "downloadQuotaExceeded"
+        } else if vista
+            .percorso
+            .starts_with("/drive/v3/files/chiuso?alt=media")
+        {
+            "cannotDownloadFile"
+        } else {
+            return json(404, &json!({}));
+        };
+        json(
+            403,
+            &json!({"error": {"code": 403, "message": "no", "errors": [{"reason": ragione}]}}),
+        )
+    });
+    let drive = collegato(&finto);
+    let errore = |id: &str| {
+        drive
+            .sorgente(&voce(&file(id, "01.flac", "R", "audio/flac"), None).expect("voce"))
+            .expect("sorgente")
+            .pezzo(0, 10)
+            .expect_err("vietato")
+    };
+    let quota = errore("quota");
+    assert_eq!(
+        quota.code().kind(),
+        rymembra_domain::errors::ErrorCodeKind::CloudQuotaExceeded
+    );
+    assert!(!quota.is_retryable());
+    let chiuso = errore("chiuso");
+    assert_eq!(
+        chiuso.code().kind(),
+        rymembra_domain::errors::ErrorCodeKind::CloudDownloadForbidden
+    );
+    assert_eq!(
+        finto.viste_a("/drive/v3/files/quota").len(),
+        1,
+        "una quota finita non si ritenta"
+    );
+}

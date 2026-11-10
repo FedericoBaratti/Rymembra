@@ -187,13 +187,18 @@ impl Rete {
 
         let mut dove = url.to_owned();
         let mut salti: u32 = 0;
+        // Tutti i salti fin qui sono rimasti sull'origine di `url`: vedi
+        // [`Rete::con_permesso_in_casa`].
+        let mut in_casa = true;
         loop {
+            in_casa = in_casa && stessa_origine(url, &dove);
             // Al primo giro le intestazioni di chi chiama, dal secondo quelle
             // che un rimando può portare con sé: vedi sopra.
             let portabili: Vec<(&str, &str)> = intestazioni
                 .iter()
                 .filter(|(nome, _)| {
                     salti == 0
+                        || (self.permesso_in_casa && in_casa)
                         || !(nome.eq_ignore_ascii_case("authorization")
                             || nome.eq_ignore_ascii_case("cookie"))
                 })
@@ -694,8 +699,76 @@ impl Rete {
                 err.is_retryable() && !matches!(err.code(), ErrorCode::DownloadBadResponse)
             },
             Some(std::time::Instant::now() + BILANCIO_INTERVALLO),
-            || self.intervallo_una_volta(url, da, quanti, avanti, intestazioni),
+            || self.intervallo_una_volta(url, da, quanti, avanti, intestazioni, None),
         )
+    }
+
+    /// Come [`Self::intervallo_con`], ma lo stato di errore lo traduce chi
+    /// chiama, col principio del corpo nella [`Risposta`].
+    ///
+    /// # Perché esiste
+    ///
+    /// Per Google Drive, che dice nel corpo di un `403` *perché* non dà i
+    /// byte: la quota di scaricamento del file finita
+    /// (`downloadQuotaExceeded`), un file che non si lascia scaricare
+    /// (`cannotDownloadFile`), il limite di frequenza. Lo stato da solo dice
+    /// «vietato» in tutti e tre i casi, e il primo si ritenterebbe invano.
+    /// Il corpo si legge solo qui, e con un tetto: chi risponde male può
+    /// rispondere anche lungo.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::intervallo_finche`], con gli stati di errore tradotti
+    /// da `traduci`.
+    pub fn intervallo_tradotto(
+        &self,
+        url: &str,
+        da: u64,
+        quanti: u64,
+        avanti: &dyn Fn() -> bool,
+        intestazioni: &[(&str, &str)],
+        traduci: Traduttore<'_>,
+    ) -> Result<Pezzo, AppError> {
+        self.ripeti(
+            TENTATIVI_INTERVALLO,
+            avanti,
+            &|err: &AppError| {
+                err.is_retryable() && !matches!(err.code(), ErrorCode::DownloadBadResponse)
+            },
+            Some(std::time::Instant::now() + BILANCIO_INTERVALLO),
+            || self.intervallo_una_volta(url, da, quanti, avanti, intestazioni, Some(traduci)),
+        )
+    }
+
+    /// Un `GET` intero, da leggere di fila con [`DiFila::pezzo`].
+    ///
+    /// # Perché esiste
+    ///
+    /// Per un server che **ignora** `Range` (risponde `200` col file intero a
+    /// una domanda da metà file): con [`Self::intervallo_con`] ogni salto è
+    /// `download.badResponse`, cioè un brano che non si ascolta affatto. Di
+    /// fila si ascolta: chi suona chiede le finestre una dopo l'altra, e la
+    /// stessa risposta le serve tutte senza ripartire dall'inizio. Solo un
+    /// salto indietro costa una risposta nuova, letta da capo fino al punto.
+    ///
+    /// Segue i rimandi come la politica di questo client, e le intestazioni
+    /// viaggiano come per [`Self::intervallo_con`].
+    ///
+    /// # Errori
+    ///
+    /// `net.*` per i guasti di trasporto e per uno stato fuori dal 2xx.
+    pub fn di_fila(&self, url: &str, intestazioni: &[(&str, &str)]) -> Result<DiFila, AppError> {
+        let (risposta, _) = self.prendi(url, intestazioni)?;
+        let stato = risposta.status().as_u16();
+        if !(200..300).contains(&stato) {
+            return Err(self.stato_a_errore(&senza_corpo(&risposta, stato, url), url));
+        }
+        let totale = totale_da(risposta.headers(), stato == 206);
+        Ok(DiFila {
+            lettore: Box::new(risposta.into_body().into_reader()),
+            letti: 0,
+            totale,
+        })
     }
 
     /// Dove rimanda un `GET`, **senza andarci**.
@@ -768,7 +841,7 @@ impl Rete {
     }
 
     /// Una richiesta di intervallo, senza tentativi: il corpo di
-    /// [`Self::intervallo_con`].
+    /// [`Self::intervallo_con`] e di [`Self::intervallo_tradotto`].
     fn intervallo_una_volta(
         &self,
         url: &str,
@@ -776,6 +849,7 @@ impl Rete {
         quanti: u64,
         avanti: &dyn Fn() -> bool,
         intestazioni: &[(&str, &str)],
+        traduci: Option<Traduttore<'_>>,
     ) -> Result<Pezzo, AppError> {
         let fino = da.saturating_add(quanti.max(1)).saturating_sub(1);
         let intervallo = format!("bytes={da}-{fino}");
@@ -815,7 +889,17 @@ impl Rete {
             }
         }
         if !(200..300).contains(&stato) {
-            return Err(self.stato_a_errore(&senza_corpo(&risposta, stato, url), url));
+            let mut guasto = senza_corpo(&risposta, stato, url);
+            let Some(traduci) = traduci else {
+                return Err(self.stato_a_errore(&guasto, url));
+            };
+            guasto.corpo = risposta
+                .body_mut()
+                .with_config()
+                .limit(64 * 1024)
+                .read_to_vec()
+                .unwrap_or_default();
+            return Err(traduci(&guasto, url));
         }
 
         // `206 Partial Content` è la risposta che si è chiesta. Un `200` vuol
@@ -912,6 +996,12 @@ impl Rete {
     pub fn stato_a_errore(&self, risposta: &Risposta, url: &str) -> AppError {
         let errore = match risposta.stato {
             429 => AppError::new(ErrorCode::NetRateLimited {
+                service: Some(self.servizio.to_owned()),
+                retry_after_ms: risposta.riprova_fra_ms,
+            }),
+            // Un `503` che dice quando tornare: il tempo deve arrivare a
+            // `quanto_aspettare`, e `net.http` non lo porta.
+            503 if risposta.riprova_fra_ms.is_some() => AppError::new(ErrorCode::NetUnavailable {
                 service: Some(self.servizio.to_owned()),
                 retry_after_ms: risposta.riprova_fra_ms,
             }),
@@ -1064,6 +1154,96 @@ fn dormi_finche(quanto: Duration, avanti: &dyn Fn() -> bool) -> bool {
     }
 }
 
+/// Chi traduce lo stato di errore di un intervallo, col principio del corpo:
+/// vedi [`Rete::intervallo_tradotto`].
+pub type Traduttore<'a> = &'a dyn Fn(&Risposta, &str) -> AppError;
+
+/// Un file letto di fila dall'inizio, per un server che ignora `Range`:
+/// vedi [`Rete::di_fila`].
+pub struct DiFila {
+    lettore: Box<dyn std::io::Read + Send>,
+    /// Quanti byte del file sono già passati di qui.
+    letti: u64,
+    totale: Option<u64>,
+}
+
+impl std::fmt::Debug for DiFila {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiFila")
+            .field("letti", &self.letti)
+            .field("totale", &self.totale)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DiFila {
+    /// Quanti byte del file sono già passati: un pezzo che comincia prima
+    /// vuole una risposta nuova.
+    #[must_use]
+    pub const fn letti(&self) -> u64 {
+        self.letti
+    }
+
+    /// La lunghezza del file, se il server l'ha detta.
+    #[must_use]
+    pub const fn totale(&self) -> Option<u64> {
+        self.totale
+    }
+
+    /// I byte da `da`, al più `quanti`. Quel che sta fra il punto di adesso e
+    /// `da` si legge e si butta. Meno byte del chiesto, o nessuno, vuol dire
+    /// la fine del file.
+    ///
+    /// # Errori
+    ///
+    /// `download.badResponse` per un `da` già passato (serve una risposta
+    /// nuova), `download.network` se la lettura cade, `internal.aborted` se
+    /// `avanti` dice di no.
+    pub fn pezzo(
+        &mut self,
+        da: u64,
+        quanti: u64,
+        avanti: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, AppError> {
+        if da < self.letti {
+            return Err(
+                AppError::new(ErrorCode::DownloadBadResponse).with_cause(format!(
+                    "di fila si va solo avanti: {da} è prima di {}",
+                    self.letti
+                )),
+            );
+        }
+        let mut blocco = vec![0_u8; BLOCCO_PRELIEVO];
+        while self.letti < da {
+            if !avanti() {
+                return Err(AppError::new(ErrorCode::InternalAborted {
+                    what: Some("lettura di fila".to_owned()),
+                }));
+            }
+            let resta = usize::try_from(da - self.letti)
+                .unwrap_or(usize::MAX)
+                .min(blocco.len());
+            let Some(dove) = blocco.get_mut(..resta) else {
+                break;
+            };
+            match self.lettore.read(dove) {
+                Ok(0) => return Ok(Vec::new()),
+                Ok(n) => self.letti = self.letti.saturating_add(u64::try_from(n).unwrap_or(0)),
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(err) => {
+                    return Err(AppError::new(ErrorCode::DownloadNetwork)
+                        .with_cause(format!("lettura di fila interrotta: {err}")));
+                }
+            }
+        }
+        let byte = leggi_fino_a(&mut self.lettore, quanti, avanti)?;
+        self.letti = self
+            .letti
+            .saturating_add(u64::try_from(byte.len()).unwrap_or(0));
+        Ok(byte)
+    }
+}
+
 /// Un'intestazione di risposta come testo, se c'è e si legge.
 fn intestazione(intestazioni: &ureq::http::HeaderMap, nome: &str) -> Option<String> {
     intestazioni
@@ -1076,18 +1256,22 @@ fn intestazione(intestazioni: &ureq::http::HeaderMap, nome: &str) -> Option<Stri
 ///
 /// Il tempo che il servizio ha chiesto vince sul nostro, perché è l'unico dei
 /// due che sa quando smetterà di dire di no. Il nostro serve quando non l'ha
-/// detto — e quando l'ha detto con uno stato che il suo codice non porta: lo
-/// portano solo `net.rateLimited` (un 429) e `net.circuitOpen`, non il
-/// `net.http` di un 503. Vedi la nota in testa al modulo.
+/// detto. Lo portano `net.rateLimited` (un 429), `net.unavailable` (un 503
+/// col suo `Retry-After`) e `net.circuitOpen`. Vedi la nota in testa al
+/// modulo.
 ///
 /// A sé, e non dentro [`Rete::ritenta`], perché è la sola parte di `ritenta`
 /// che decide un numero: tutto il resto lì è chiamare l'operazione e dormire.
 /// Estratta, la si mette alla prova con un errore costruito a mano — senza una
 /// richiesta vera e senza aspettare davvero i secondi che risponde.
 #[must_use]
-fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duration {
+pub(super) fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duration {
     let chiesto = match err.code() {
         ErrorCode::NetRateLimited {
+            retry_after_ms: Some(ms),
+            ..
+        }
+        | ErrorCode::NetUnavailable {
             retry_after_ms: Some(ms),
             ..
         }
@@ -1207,6 +1391,21 @@ fn senza_corpo(risposta: &ureq::http::Response<ureq::Body>, stato: u16, url: &st
         url_finale: url.to_owned(),
         intervallo: intestazione(risposta.headers(), "range"),
     }
+}
+
+/// Due indirizzi con la stessa origine: schema, ospite e porta, senza
+/// badare alle maiuscole. Una porta scritta e una sottintesa contano come
+/// diverse: nel dubbio, il permesso resta indietro.
+pub(super) fn stessa_origine(uno: &str, altro: &str) -> bool {
+    fn origine(url: &str) -> Option<String> {
+        let (schema, resto) = url.split_once("://")?;
+        let fine = resto.find(['/', '?', '#']).unwrap_or(resto.len());
+        let autorita = resto.get(..fine)?;
+        // Senza l'utente: `https://x@y` è `y`, come in `ospite`.
+        let senza_utente = autorita.rsplit('@').next()?;
+        Some(format!("{schema}://{senza_utente}").to_ascii_lowercase())
+    }
+    matches!((origine(uno), origine(altro)), (Some(a), Some(b)) if a == b)
 }
 
 /// Il rifiuto di un rimando.

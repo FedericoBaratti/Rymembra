@@ -144,10 +144,34 @@ pub fn is_in_trash(path: &str) -> bool {
 }
 
 /// L'estensione è fra quelle che consideriamo musica?
+///
+/// E il file non è uno che Android tiene da parte: vedi
+/// [`tenuto_da_parte_da_android`].
 #[must_use]
 pub fn is_supported_audio_path(path: &str) -> bool {
+    if tenuto_da_parte_da_android(base_name(path)) {
+        return false;
+    }
     let ext = extension_of(path);
     SUPPORTED_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// Un nome che `MediaStore` dà a un file che tiene da parte, nella sua stessa
+/// cartella: `.trashed-<scadenza>-<nome>` è nel Cestino di Android,
+/// `.pending-<scadenza>-<nome>` è ancora in scrittura.
+///
+/// # Perché conta
+///
+/// Perché il Cestino di Android non è una cartella, come quello di Windows
+/// (`$RECYCLE.BIN`, che la camminata salta): è un nome nuovo accanto a quello
+/// di prima. Un brano eliminato da Rymembra sul telefono spariva dalla libreria
+/// e un istante dopo la sorveglianza delle cartelle vedeva comparire
+/// `.trashed-1796321480-01 Ghiaccio I.mp3` — un MP3 nuovo — e lo rimetteva in
+/// elenco, con lo stesso titolo. Vale anche sul computer: una cartella del
+/// telefono sincronizzata sul PC si porta dietro i suoi file nel Cestino.
+#[must_use]
+pub fn tenuto_da_parte_da_android(nome: &str) -> bool {
+    nome.starts_with(".trashed-") || nome.starts_with(".pending-")
 }
 
 /// La forma canonica per l'APPARTENENZA A UN INSIEME. Mai per leggere un file.
@@ -223,6 +247,26 @@ mod tests {
     const NIX: PathRules = PathRules {
         case_insensitive: false,
     };
+
+    #[test]
+    fn i_file_nel_cestino_di_android_non_sono_musica() {
+        // Il brano appena eliminato dal telefono: `MediaStore` lo rinomina
+        // nella sua cartella, e la sorveglianza lo vede comparire.
+        assert!(!is_supported_audio_path(
+            "/storage/emulated/0/Music/Aurora Boreale/Ghiaccio/.trashed-1796321480-01 Ghiaccio I.mp3"
+        ));
+        assert!(!is_supported_audio_path(
+            "/storage/emulated/0/Download/.pending-1796321480-nuovo.flac"
+        ));
+        // Un nome che comincia con un punto, e basta, resta musica: non è una
+        // regola sui file nascosti.
+        assert!(is_supported_audio_path(
+            "/storage/emulated/0/Music/.intro.mp3"
+        ));
+        assert!(is_supported_audio_path(
+            "/storage/emulated/0/Music/trashed-01.mp3"
+        ));
+    }
 
     #[test]
     fn oga_e_musica_come_ogg() {

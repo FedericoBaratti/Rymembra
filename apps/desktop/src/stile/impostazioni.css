@@ -1027,6 +1027,12 @@
   letter-spacing: 0;
   text-wrap: balance;
 }
+/* Un nome di dispositivo, o il suo identificativo: si spezza dove serve, non
+   solo agli spazi — un identificativo di dieci lettere senza spazi usciva
+   dalla sua colonna. */
+.impostazioni .numeri dd[data-nome] {
+  overflow-wrap: anywhere;
+}
 /* Il carattere da titolo anche qui: un numero grande in una scheda di
    statistiche non è un dato in una tabella, è il titolo di quella scheda —
    «1 421» è ciò che si legge per primo e la parola sotto lo spiega.

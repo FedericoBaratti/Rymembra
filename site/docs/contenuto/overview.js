@@ -68,7 +68,7 @@
     {
       id: "runtime",
       title: "Threads, locks and the order they are taken",
-      src: ["apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/disparte.rs", "apps/desktop/src-tauri/src/riproduzione/mod.rs", "apps/desktop/src-tauri/src/riproduzione/seguito.rs"],
+      src: ["apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/src/disparte.rs", "apps/desktop/src-tauri/src/riproduzione/mod.rs", "apps/desktop/src-tauri/src/riproduzione/seguito.rs"],
       body: [
         "Rymembra is one process: a WebView2 window and the Rust core. The `tauri-plugin-single-instance` guard brings an existing window to the front instead of starting a second process on the same database (it is skipped when `RYMEMBRA_DATI` points at another data folder).",
         { h: "The two locks" },

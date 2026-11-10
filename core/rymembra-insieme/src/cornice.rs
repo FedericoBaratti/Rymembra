@@ -105,9 +105,12 @@ impl Tipo {
 
     /// Dal numero sul filo; `None` per un tipo che questo PC non conosce.
     ///
-    /// Non è un «sconosciuto, si ignora» come per i messaggi JSON: un tipo di
-    /// cornice nuovo cambierebbe il modo di leggere i byte che seguono, e
-    /// leggerli a caso sarebbe peggio che chiudere.
+    /// Un tipo sconosciuto si **salta**, come un messaggio JSON sconosciuto si
+    /// ignora: la testa dice quanti byte porta, quindi dove comincia il
+    /// messaggio dopo si sa lo stesso (`Ricompositore::aggiungi`). Chiudere,
+    /// come si faceva, voleva dire che un tipo di cornice nuovo — un Rymembra
+    /// più recente che manda qualcosa in un modo nuovo — rompeva la sessione
+    /// a tutti i PC più vecchi.
     const fn da_numero(numero: u8) -> Option<Self> {
         match numero {
             1 => Some(Self::Json),
@@ -266,6 +269,9 @@ pub(crate) fn spezza(tipo: Tipo, carico: &[u8]) -> Result<Vec<Vec<u8>>, Storta> 
 pub(crate) struct Ricompositore {
     /// Il messaggio a metà: tipo, lunghezza annunciata, byte arrivati.
     in_corso: Option<(Tipo, usize, Vec<u8>)>,
+    /// I byte che restano di un messaggio di tipo sconosciuto: si contano e
+    /// si buttano, senza tenerli.
+    da_saltare: usize,
     /// Il tetto dei messaggi JSON che si accettano: [`MASSIMO_MESSAGGIO`], o
     /// meno.
     tetto_json: usize,
@@ -281,6 +287,7 @@ impl Default for Ricompositore {
     fn default() -> Self {
         Self {
             in_corso: None,
+            da_saltare: 0,
             tetto_json: MASSIMO_MESSAGGIO,
             tetto_byte: MASSIMO_MESSAGGIO,
             tetto_compresso: MASSIMO_MESSAGGIO,
@@ -317,7 +324,7 @@ impl Ricompositore {
     /// Il prossimo pezzo comincia un messaggio nuovo, con la sua testa: è il
     /// momento di decidere i tetti. Vedi `Decifratore::prossimo_coi_tetti`.
     pub(crate) const fn fra_due_messaggi(&self) -> bool {
-        self.in_corso.is_none()
+        self.in_corso.is_none() && self.da_saltare == 0
     }
 
     /// Aggiunge il chiaro di un messaggio Noise. Restituisce il messaggio se
@@ -325,17 +332,41 @@ impl Ricompositore {
     ///
     /// # Errori
     ///
-    /// Una testa monca, un tipo sconosciuto, una lunghezza oltre il tetto, un
-    /// pezzo che sborda o uno vuoto a metà messaggio. Ognuno chiude la
-    /// connessione con `insieme.protocollo`: dopo un errore di cornice non si
-    /// sa più dove comincia il messaggio dopo.
+    /// Una testa monca, una lunghezza oltre il tetto, un pezzo che sborda o
+    /// uno vuoto a metà messaggio. Ognuno chiude la connessione con
+    /// `insieme.protocollo`: dopo un errore di cornice non si sa più dove
+    /// comincia il messaggio dopo. Un tipo sconosciuto invece no: si salta
+    /// (vedi [`Tipo::da_numero`]), sotto il tetto dei JSON.
     pub(crate) fn aggiungi(&mut self, chiaro: &[u8]) -> Result<Option<(Tipo, Vec<u8>)>, Storta> {
+        if self.da_saltare > 0 {
+            if chiaro.is_empty() {
+                return Err(Storta("vuoto"));
+            }
+            if chiaro.len() > self.da_saltare {
+                return Err(Storta("eccedenza"));
+            }
+            self.da_saltare -= chiaro.len();
+            return Ok(None);
+        }
         let Some((tipo, attesi, mut carico)) = self.in_corso.take() else {
             let (testa, resto) = chiaro.split_first_chunk::<TESTA>().ok_or(Storta("testa"))?;
             let [a, b, c, d, numero] = *testa;
             let attesi = usize::try_from(u32::from_be_bytes([a, b, c, d]))
                 .map_err(|_| Storta("lunghezza"))?;
-            let tipo = Tipo::da_numero(numero).ok_or(Storta("tipo"))?;
+            let Some(tipo) = Tipo::da_numero(numero) else {
+                // Il tetto più stretto che c'è: da un estraneo, quattro
+                // kibibyte, come un JSON; saltarli non costa memoria, ma un
+                // tipo nuovo non deve aprire una strada più larga di quelle
+                // che si conoscono.
+                if attesi > self.tetto_json {
+                    return Err(Storta("lunghezza"));
+                }
+                if resto.len() > attesi {
+                    return Err(Storta("eccedenza"));
+                }
+                self.da_saltare = attesi - resto.len();
+                return Ok(None);
+            };
             let tetto = match tipo {
                 Tipo::Json => self.tetto_json,
                 Tipo::Byte => self.tetto_byte,
@@ -572,16 +603,46 @@ mod prove {
     }
 
     #[test]
+    fn un_tipo_sconosciuto_si_salta_e_il_messaggio_dopo_arriva() {
+        let mut ricompositore = Ricompositore::default();
+        // Tipo 9, cinque byte annunciati: due nella testa, tre dopo.
+        assert_eq!(ricompositore.aggiungi(&[0, 0, 0, 5, 9, 1, 2]), Ok(None));
+        assert!(!ricompositore.fra_due_messaggi(), "mancano tre byte");
+        assert_eq!(ricompositore.aggiungi(&[3, 4, 5]), Ok(None));
+        assert!(ricompositore.fra_due_messaggi());
+        // E il messaggio dopo arriva intero.
+        let pezzi = spezza(Tipo::Json, b"{}").expect("sta nel tetto");
+        assert_eq!(
+            ricompositore.aggiungi(pezzi.first().expect("uno")),
+            Ok(Some((Tipo::Json, b"{}".to_vec())))
+        );
+    }
+
+    #[test]
+    fn un_tipo_sconosciuto_sta_sotto_il_tetto_dei_json() {
+        let mut ricompositore = Ricompositore::default();
+        ricompositore.imposta_tetti(4, MASSIMO_MESSAGGIO, MASSIMO_MESSAGGIO);
+        assert_eq!(
+            ricompositore.aggiungi(&[0, 0, 0, 5, 9, 1]),
+            Err(Storta("lunghezza"))
+        );
+        // Più byte di quelli annunciati, mentre si salta.
+        let mut ricompositore = Ricompositore::default();
+        assert_eq!(ricompositore.aggiungi(&[0, 0, 0, 2, 9, 1]), Ok(None));
+        assert_eq!(ricompositore.aggiungi(&[2, 3]), Err(Storta("eccedenza")));
+    }
+
+    #[test]
     fn le_cornici_storte_si_riconoscono() {
         // Testa monca.
         assert_eq!(
             Ricompositore::default().aggiungi(&[0, 0, 0]),
             Err(Storta("testa"))
         );
-        // Tipo che non esiste.
+        // Un tipo che non esiste si salta: non è più una cornice storta.
         assert_eq!(
             Ricompositore::default().aggiungi(&[0, 0, 0, 1, 9, 0]),
-            Err(Storta("tipo"))
+            Ok(None)
         );
         // Più byte di quelli annunciati, nel primo pezzo.
         assert_eq!(

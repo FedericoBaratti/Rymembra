@@ -296,10 +296,14 @@ fn spento_non_chiede_piu_niente() {
 }
 
 #[test]
-fn il_brano_si_legge_a_pezzi_e_un_server_senza_range_si_dice() {
+fn il_brano_si_legge_a_pezzi_e_un_server_senza_range_si_legge_di_fila() {
     let finto = Finto::avvia(|vista: &Vista, _: &str| match vista.percorso.as_str() {
         "/remote.php/dav/files/mario/a.flac" => pezzo_di(vista, 40),
-        "/remote.php/dav/files/mario/senza.flac" => risposta(200, "audio/flac", &[b'x'; 40]),
+        "/remote.php/dav/files/mario/senza.flac" => risposta(
+            200,
+            "audio/flac",
+            &(0..40).map(byte_finto).collect::<Vec<_>>(),
+        ),
         _ => risposta(404, "text/plain", b""),
     });
     let server = server(&finto);
@@ -319,14 +323,31 @@ fn il_brano_si_legge_a_pezzi_e_un_server_senza_range_si_dice() {
         .pezzo(3, 4)
         .expect("pezzo");
     assert_eq!(pezzo.byte, (3..7).map(byte_finto).collect::<Vec<_>>());
-    let errore = server
-        .sorgente(&voce("senza.flac"))
-        .expect("sorgente")
-        .pezzo(10, 4)
-        .expect_err("senza range");
+
+    // Il server ignora `Range`: il brano si ascolta lo stesso, di fila.
+    let senza = server.sorgente(&voce("senza.flac")).expect("sorgente");
+    let byte = |da: u64, fino: u64| (da..fino).map(byte_finto).collect::<Vec<_>>();
+    let pezzo = senza.pezzo(10, 4).expect("di fila");
+    assert_eq!(pezzo.byte, byte(10, 14));
+    assert_eq!(pezzo.totale, Some(40));
+    let domande = || {
+        finto
+            .viste_a("/remote.php/dav/files/mario/senza.flac")
+            .len()
+    };
+    // La domanda col `Range` ignorato, poi quella di fila.
+    assert_eq!(domande(), 2);
+    assert_eq!(senza.pezzo(14, 6).expect("avanti").byte, byte(14, 20));
     assert_eq!(
-        errore.code().kind(),
-        rymembra_domain::errors::ErrorCodeKind::CloudRangeUnsupported
+        senza.pezzo(30, 4).expect("un salto avanti").byte,
+        byte(30, 34)
+    );
+    assert_eq!(domande(), 2, "avanti si legge dalla stessa risposta");
+    assert_eq!(senza.pezzo(2, 3).expect("indietro").byte, byte(2, 5));
+    assert_eq!(domande(), 3, "un salto indietro la riapre");
+    assert!(
+        senza.pezzo(40, 4).expect("in fondo").byte.is_empty(),
+        "dopo la fine, niente"
     );
 }
 

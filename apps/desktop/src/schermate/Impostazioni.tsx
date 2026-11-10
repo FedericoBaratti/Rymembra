@@ -75,6 +75,7 @@ import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { gestoPermesso } from "../insieme";
 import { SchedaInsieme } from "../parti/Insieme";
+import { SchedaDispositivi } from "../parti/Dispositivi";
 import { useLettore } from "../riproduzione";
 import { DURATE_SPEGNIMENTO, sceltaIniziale } from "../sceltaSpegnimento";
 import { Interruttore } from "../parti/Interruttore";
@@ -95,8 +96,9 @@ import { Trans } from "../lingue/Trans";
 import { comeScorrere } from "../transizione";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { nomeFonte } from "../parti/Incertezza";
+import { MOBILE } from "../piattaforma";
 
-/** Le tredici sezioni, nell'ordine in cui si visitano la prima volta. */
+/** Le quattordici sezioni, nell'ordine in cui si visitano la prima volta. */
 export type Sezione =
   | "cartelle"
   | "aspetto"
@@ -106,6 +108,7 @@ export type Sezione =
   | "movimento"
   | "nuvola"
   | "sincronia"
+  | "dispositivi"
   | "scrobbling"
   | "esterno"
   | "legacy"
@@ -169,23 +172,31 @@ function gruppi(): readonly (readonly [
       [
         ["cartelle", t("settings.section.cartelle"), "i-folder"],
         ["aspetto", t("settings.section.aspetto"), "i-skin"],
-        ["modelli", t("settings.section.modelli"), "i-ia"],
-        ["chiusura", t("settings.section.chiusura"), "i-x"],
+        // I modelli servono solo alla chat dello Studio delle skin, che sul
+        // telefono non c'è: una sezione per configurare una cosa che non si
+        // può usare sarebbe una promessa che l'app non mantiene.
+        ...(MOBILE ? [] : ([["modelli", t("settings.section.modelli"), "i-ia"]] as const)),
+        // Sul telefono non c'è una X da intercettare: l'app si lascia con i
+        // gesti del sistema, e la musica continua sempre. Vedi `mobile/vassoio.rs`.
+        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-x"]] as const)),
       ],
     ],
     [
       t("settings.group.ascolto"),
       [
         ["riproduzione", t("settings.section.riproduzione"), "i-play"],
-        ["movimento", t("settings.section.movimento"), "i-eq"],
+        ["movimento", t("settings.section.movimento"), "i-eye"],
       ],
     ],
     [
       t("settings.group.servizi"),
       [
         ["nuvola", t("settings.section.nuvola"), "i-cloud"],
-        ["sincronia", t("settings.section.sincronia"), "i-cloud"],
-        ["scrobbling", t("settings.section.scrobbling"), "i-cloud"],
+        ["sincronia", t("settings.section.sincronia"), "i-sync"],
+        // Accanto alla sincronia: è l'altra strada fra i propri dispositivi,
+        // e la domanda della sezione è la stessa — cosa esce, e verso chi.
+        ["dispositivi", t("settings.section.dispositivi"), "i-dispositivi"],
+        ["scrobbling", t("settings.section.scrobbling"), "i-eq"],
         ["esterno", t("settings.section.esterno"), "i-list"],
         ["legacy", t("settings.section.legacy"), "i-import"],
       ],
@@ -193,13 +204,13 @@ function gruppi(): readonly (readonly [
     [
       t("settings.group.programma"),
       [
-        ["dati", t("settings.section.dati"), "i-album"],
+        ["dati", t("settings.section.dati"), "i-layers"],
         // Per ultima, e non perché avanzasse: è l'unica sezione che parla di
         // qualcosa che il programma fa **senza** che nessuno gliel'abbia
         // chiesto, e chi la cerca la cerca apposta. Metterla in alto vorrebbe
         // dire darle il posto di «Cartelle», che è invece la prima cosa che
         // serve a chiunque.
-        ["aggiornamenti", t("settings.section.aggiornamenti"), "i-cloud"],
+        ["aggiornamenti", t("settings.section.aggiornamenti"), "i-scan"],
       ],
     ],
   ];
@@ -215,6 +226,16 @@ function gruppi(): readonly (readonly [
  */
 function sezioni(): readonly (readonly [Sezione, string, NomeIcona])[] {
   return gruppi().flatMap(([, dentro]) => dentro);
+}
+
+/**
+ * Il nome di una sezione, com'è scritto nell'indice.
+ *
+ * Per la barra del telefono, che dentro una sezione dice in quale si è: lo
+ * stesso nome dell'indice, e non una seconda copia da tenere allineata.
+ */
+export function etichettaSezione(sezione: Sezione): string {
+  return sezioni().find(([chiave]) => chiave === sezione)?.[1] ?? t("page.settings.title");
 }
 
 /**
@@ -323,28 +344,35 @@ function voci(): readonly {
     v("riproduzione", "sleep", "settings.sleep.title"),
     v("riproduzione", "autoplay", "settings.playback.title"),
     v("riproduzione", "crossfade", "settings.crossfade.title"),
-    v("riproduzione", "spectrum", "settings.spectrum.title"),
+    // Lo spettro sul telefono non c'è: vedi `CON_SPETTRO` in `InRiproduzione`.
+    ...(MOBILE ? [] : [v("riproduzione", "spectrum", "settings.spectrum.title")]),
     // Nessuno cerca «dati tecnici»: si cerca «bitrate», «flac», «kbps», o «khz»
     // — cioè quel che c'è scritto nella riga, non come l'abbiamo intitolata.
     // I sinonimi qui sono la voce più del titolo.
     v("riproduzione", "fileFormat", "settings.playback.title"),
     v("riproduzione", "accent", "settings.playback.title"),
     v("movimento", "motion", "settings.motion.title"),
-    v("movimento", "shortcuts", "settings.shortcuts.title"),
+    // Le scorciatoie e lo zoom sono della tastiera e della finestra: sul
+    // telefono non ci sono né l'una né l'altra.
+    ...(MOBILE ? [] : [v("movimento", "shortcuts", "settings.shortcuts.title")]),
     // Nessuno cerca «zoom» sapendo che si chiama così: si cerca «più
     // grande», «testo piccolo», o il nome del tasto. E la si cerca proprio
     // quando non si riesce a leggere, cioè nel momento in cui trovarla conta
     // di più: una scheda che l'indice non conosce sarebbe raggiungibile solo
     // dalle scorciatoie, che è esattamente quel che può mancare.
-    v("movimento", "zoom", "settings.zoom.title"),
+    ...(MOBILE ? [] : [v("movimento", "zoom", "settings.zoom.title")]),
     v("nuvola", "drive", "settings.cloud.title"),
     v("sincronia", "sync", "settings.sync.title"),
-    v("sincronia", "devices", "settings.sync.title"),
+    // I dispositivi della sincronia stanno nell'elenco unico: vedi la scheda.
+    v("dispositivi", "devices", "settings.devices.title"),
     // Nessuno cerca «ascolta insieme» sapendo che si chiama così: si cerca
     // «lan», «sessione», «jam», «firewall», o la parola «insieme». E chi cerca
     // «firewall» lo fa dopo aver risposto di fretta alla richiesta di Windows,
     // cioè proprio quando trovare la scheda conta.
     v("sincronia", "together", "settings.together.title"),
+    // Nessuno cerca «collegamento via internet»: si cerca «qr», «fuori casa»,
+    // «telefono», «remoto», o il nome del PC che si vuole raggiungere.
+    v("dispositivi", "internet", "settings.devices.title"),
     v("legacy", "legacy", "settings.legacy.title"),
     v("esterno", "link", "settings.import.title"),
     v("esterno", "account", "settings.import.title"),
@@ -352,14 +380,14 @@ function voci(): readonly {
     // scrivendo «coda»: la voce ci porta, il rimando dentro la scheda la apre.
     v("esterno", "importQueue", "settings.import.title"),
     v("scrobbling", "scrobbling", "settings.scrobbling.title"),
-    v("modelli", "models", "settings.models.title"),
+    ...(MOBILE ? [] : [v("modelli", "models", "settings.models.title")]),
     // «Chiave API» è una voce sua e non un sinonimo: chi la cerca non sta
     // cercando un modello — sta cercando dove si incolla il segreto, e una riga
     // intitolata «Modelli IA» non gli dice che è lì dentro.
-    v("modelli", "apikey", "settings.models.title"),
+    ...(MOBILE ? [] : [v("modelli", "apikey", "settings.models.title")]),
     // Nessuno cerca «secondo piano»: si cerca «chiudi», «x», «tray», o
     // «continua a suonare». I sinonimi qui sono la voce, più del titolo.
-    v("chiusura", "background", "settings.background.title"),
+    ...(MOBILE ? [] : [v("chiusura", "background", "settings.background.title")]),
     v("dati", "numbers", "settings.data.title"),
     v("dati", "profile", "settings.profile.title"),
     // Nessuno cerca «manutenzione»: si cerca «spazio», «cache», o «pulisci» —
@@ -694,21 +722,25 @@ function SorveglianzaCartelle({
         acceso={modo !== "spenta"}
         onCambia={(acceso) => scegli(acceso ? "tutte" : "spenta")}
       />
-      <Interruttore
-        etichetta={t("settings.roots.watch.network")}
-        acceso={modo === "tutte"}
-        onCambia={(acceso) => scegli(acceso ? "tutte" : "locali")}
-        impedito={
-          modo === "spenta" ? t("settings.roots.watch.network.off") : undefined
-        }
-      />
+      {/* Sul telefono cartelle di rete non ce ne sono: la memoria del telefono e
+          la scheda SD sono locali, e Android non monta condivisioni. */}
+      {!MOBILE && (
+        <Interruttore
+          etichetta={t("settings.roots.watch.network")}
+          acceso={modo === "tutte"}
+          onCambia={(acceso) => scegli(acceso ? "tutte" : "locali")}
+          impedito={
+            modo === "spenta" ? t("settings.roots.watch.network.off") : undefined
+          }
+        />
+      )}
       {/* Come si guarda: è cambiato con la 3.0.2, e «tieni d'occhio» da solo
           non dice che sul NAS gli avvisi possono mancare, né cosa li
           sostituisce. */}
       {modo !== "spenta" && (
         <p className="nota">
           {t("settings.roots.watch.how")}
-          {modo === "tutte" && ` ${t("settings.roots.watch.network.how")}`}
+          {modo === "tutte" && !MOBILE && ` ${t("settings.roots.watch.network.how")}`}
         </p>
       )}
       {modo !== "spenta" && (quadro?.cartelle.length ?? 0) > 0 && (
@@ -1775,6 +1807,7 @@ export function Impostazioni({
   onTogliCartella,
   onScollegaConto,
   cartelleOccupate = false,
+  inSezione,
   onScegliCartellaDownload,
   onCartellaDownloadDiSerie,
   onScansiona,
@@ -1790,6 +1823,7 @@ export function Impostazioni({
   onImportaLink,
   onImportaAccount,
   onVista,
+  onSfogliaDispositivo,
   importazioni,
   arricchimento,
   avanzaArricchimento,
@@ -1916,6 +1950,17 @@ export function Impostazioni({
    * spengono finché non torna. Vedi `cartelleSorvegliate.ts`.
    */
   cartelleOccupate?: boolean | undefined;
+  /**
+   * Sul telefono: dentro una sezione, o davanti all'elenco delle sezioni.
+   *
+   * Sul computer l'indice sta a sinistra e la sezione accanto, sempre. Sul
+   * telefono le due cose in trecentosessanta pixel non stanno: l'indice era una
+   * striscia di pillole che scorreva di lato, e metà delle sezioni non si
+   * vedeva. Qui sono due livelli, come le Impostazioni di Android: l'elenco, e
+   * toccata una voce la sezione sola, con la freccia per tornare. Assente — il
+   * computer — vale come sempre.
+   */
+  inSezione?: boolean | undefined;
   /** Apre il dialogo che sceglie dove finiscono i brani scaricati. */
   onScegliCartellaDownload: () => void;
   /** Rimette il valore di serie: la prima cartella sorvegliata. */
@@ -1962,6 +2007,8 @@ export function Impostazioni({
    * qui — e la prossima uscita non aggiunge una prop.
    */
   onVista: (v: Vista) => void;
+  /** Apre «Sfoglia» di un dispositivo collegato via internet. */
+  onSfogliaDispositivo: (chiave: string) => void;
   /**
    * Le importazioni da un servizio esterno e la coda che le scarica.
    *
@@ -2024,8 +2071,6 @@ export function Impostazioni({
   const [cartellaSincronia, setCartellaSincronia] = useState<string | null>(
     null,
   );
-  /** I nomi che si stanno scrivendo per i dispositivi, prima di confermarli. */
-  const [nomi, setNomi] = useState<Record<string, string>>({});
   /** Il filtro sopra l'indice. Tredici sezioni sono oltre il punto in cui si scorre. */
   const [filtro, setFiltro] = useState("");
   const trovate = cerca(filtro);
@@ -2080,7 +2125,11 @@ export function Impostazioni({
 
   return (
     <ErroreGuida.Provider value={onErrore}>
-      <div className="impostazioni">
+      <div
+        className="impostazioni"
+        data-livelli={inSezione !== undefined || undefined}
+        data-in-sezione={inSezione || undefined}
+      >
         <nav className="indice settings-nav" aria-label={t("settings.index.aria")}>
           <div className="filtro-impostazioni">
             <Icona nome="i-search" dim={14} />
@@ -2118,6 +2167,13 @@ export function Impostazioni({
                   >
                     <Icona nome={icona} dim={16} />
                     <span>{etichetta}</span>
+                    {/* Sul telefono la voce porta a una pagina: la freccia lo
+                        dice, come in ogni elenco di impostazioni di Android. */}
+                    {inSezione !== undefined && (
+                      <span className="freccia-voce" aria-hidden="true">
+                        <Icona nome="i-chev-r" dim={18} />
+                      </span>
+                    )}
                   </button>
                 ))}
               </Fragment>
@@ -2669,7 +2725,12 @@ export function Impostazioni({
                         {/* Una skin installata che non passa più la validazione
                             non si indossa e non si prova al passaggio: la scheda
                             porta nello Studio, che è dove si aggiusta. Fino alla
-                            3.0 spariva dall'elenco senza dire niente. */}
+                            3.0 spariva dall'elenco senza dire niente.
+
+                            Sul telefono lo Studio non c'è, e la scheda rotta
+                            resta una scheda che dice cosa non va: spenta, con la
+                            ragione sotto, e la X per toglierla. Si aggiusta sul
+                            computer, e torna col profilo. */}
                         <button
                           type="button"
                           className="prova"
@@ -2678,7 +2739,11 @@ export function Impostazioni({
                               ? t("settings.skin.openBroken", { nome: s.nome })
                               : t("settings.skin.use", { nome: s.nome })
                           }
-                          onClick={() => (rotta ? onApriStudio(s.id) : onScegliSkin(s.id))}
+                          aria-disabled={(MOBILE && rotta) || undefined}
+                          onClick={() => {
+                            if (!rotta) onScegliSkin(s.id);
+                            else if (!MOBILE) onApriStudio(s.id);
+                          }}
                         >
                           <span className="bande" aria-hidden="true">
                             {bande.map((colore, i) => (
@@ -2721,21 +2786,26 @@ export function Impostazioni({
                             «Crea tema» sapeva già fare, raggiungibile solo
                             dall'altro bottone. */}
                         <div className="azioni-skin">
-                          <button
-                            type="button"
-                            className="bottone minuto btn-ghost"
-                            onClick={() =>
-                              s.diSerie ? onDeriva(s.id) : onApriStudio(s.id)
-                            }
-                          >
-                            <Icona
-                              nome={s.diSerie ? "i-plus" : "i-text"}
-                              dim={13}
-                            />
-                            {s.diSerie
-                              ? t("settings.skin.derive")
-                              : t("settings.skin.openStudio")}
-                          </button>
+                          {/* Tutti e due portano nello Studio, che sul telefono
+                              non c'è: una skin si sceglie, si installa e si
+                              toglie, ma si fa sul computer. */}
+                          {!MOBILE && (
+                            <button
+                              type="button"
+                              className="bottone minuto btn-ghost"
+                              onClick={() =>
+                                s.diSerie ? onDeriva(s.id) : onApriStudio(s.id)
+                              }
+                            >
+                              <Icona
+                                nome={s.diSerie ? "i-plus" : "i-text"}
+                                dim={13}
+                              />
+                              {s.diSerie
+                                ? t("settings.skin.derive")
+                                : t("settings.skin.openStudio")}
+                            </button>
+                          )}
                           {/* Le skin si disinstallano. `diSerie` porta scritto
                               «non si può disinstallare», il che dice che le altre
                               sì — e il comando non c'era: una skin installata per
@@ -2784,14 +2854,17 @@ export function Impostazioni({
                       questa scheda, installarne uno fatto da altri è il caso
                       raro. Il pulsante per-scheda qui sopra apre lo Studio su una
                       skin che c'è già; questo ne fa una che non c'è. */}
-                  <button
-                    type="button"
-                    className="bottone primario btn-accent"
-                    onClick={onCreaTema}
-                  >
-                    <Icona nome="i-plus" dim={15} />
-                    {t("settings.skin.create")}
-                  </button>
+                  {/* Sul telefono no: «Crea tema» apre lo Studio. */}
+                  {!MOBILE && (
+                    <button
+                      type="button"
+                      className="bottone primario btn-accent"
+                      onClick={onCreaTema}
+                    >
+                      <Icona nome="i-plus" dim={15} />
+                      {t("settings.skin.create")}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="bottone btn-ghost"
@@ -2900,13 +2973,17 @@ export function Impostazioni({
                   sezione. «Aspetto» è dove vive il look — che per la linea di
                   questa scheda è esattamente la metà che non è
                   un'impostazione, ma un blocco di token dello Studio. */}
-              <Scheda icona="i-eq" titolo={t("settings.spectrum.title")} guida="spectrum">
-                <SchedaSpettro onErrore={onErrore} />
-              </Scheda>
+              {/* Sul telefono lo spettro non c'è: vedi `CON_SPETTRO` in
+                  `InRiproduzione`. */}
+              {!MOBILE && (
+                <Scheda icona="i-eq" titolo={t("settings.spectrum.title")} guida="spectrum">
+                  <SchedaSpettro onErrore={onErrore} />
+                </Scheda>
+              )}
             </>
           )}
 
-          {sezione === "movimento" && (
+          {sezione === "movimento" && !MOBILE && (
             <Scheda
               icona="i-eq"
               titolo={t("settings.shortcuts.title")}
@@ -2922,7 +2999,7 @@ export function Impostazioni({
               che io ci arrivi». Sta sotto le scorciatoie perché è la scheda che
               le spiega: quelle tre righe lì sopra dicono i tasti, questi tre
               bottoni fanno la stessa cosa per chi i tasti li ha tolti. */}
-          {sezione === "movimento" && (
+          {sezione === "movimento" && !MOBILE && (
             <Scheda
               icona="i-expand"
               titolo={t("settings.zoom.title")}
@@ -2964,7 +3041,11 @@ export function Impostazioni({
                 <Trans
                   k="settings.motion.p1"
                   v={{
-                    livello: <strong>{movimento}</strong>,
+                    // Il livello della skin è una parola del suo formato
+                    // (`none`, `essential`, `full`, `maximum`): si legge
+                    // tradotto, e una parola che il formato aggiungerà dopo
+                    // si legge com'è invece di sparire.
+                    livello: <strong>{tSe(`settings.motion.level.${movimento}`, movimento)}</strong>,
                   }}
                 />
               </p>
@@ -3218,7 +3299,10 @@ export function Impostazioni({
               <dl className="numeri">
                 <div>
                   <dt>{t("settings.sync.thisDevice")}</dt>
-                  <dd className="stat-number">
+                  {/* Un nome, o in mancanza l'identificativo: parole, non un
+                      numero da titolo. Grande, l'identificativo andava a capo
+                      dopo il trattino iniziale. */}
+                  <dd className="stat-number" data-quando="" data-nome="">
                     {sincronia?.dispositivi.find((d) => d.sonoIo)?.nome ??
                       sincronia?.io ??
                       "—"}
@@ -3256,75 +3340,25 @@ export function Impostazioni({
                 </button>
               </div>
 
-              {(sincronia?.dispositivi.length ?? 0) > 0 && (
-                <details className="non-ritrovati">
-                  <summary>
-                    {t("settings.sync.devices", {
-                      n: sincronia?.dispositivi.length ?? 0,
+              {/* I dispositivi della sincronia stanno nell'elenco unico della
+                  sezione «Dispositivi», con i collegati via internet e i PC di
+                  «Ascolta insieme»: qui un rimando, perché ogni gesto abbia un
+                  posto solo. */}
+              {(sincronia?.dispositivi.filter((d) => !d.sonoIo).length ?? 0) > 0 && (
+                <div className="azioni">
+                  <p className="nota">
+                    {t("settings.sync.devices.moved", {
+                      n: sincronia?.dispositivi.filter((d) => !d.sonoIo).length ?? 0,
                     })}
-                  </summary>
-                  <ul className="cartelle">
-                    {(sincronia?.dispositivi ?? []).map((dispositivo) => (
-                      <li key={dispositivo.id} className="azioni">
-                        {dispositivo.sonoIo ? (
-                          <span className="percorso">
-                            {t("settings.sync.thisComputer", {
-                              nome: dispositivo.nome ?? dispositivo.id,
-                            })}
-                          </span>
-                        ) : (
-                          <input
-                            type="text"
-                            className="campo field-input"
-                            aria-label={t("settings.sync.deviceName", {
-                              id: dispositivo.id,
-                            })}
-                            /* Il campo è la sola cosa che serve, e non una
-                               finestrella: `window.prompt` in una webview è un
-                               modale che il sistema può decidere di non mostrare,
-                               e un pulsante che a volte non fa niente è peggio di
-                               un campo brutto. */
-                            placeholder={dispositivo.id}
-                            value={nomi[dispositivo.id] ?? dispositivo.nome ?? ""}
-                            onChange={(e) =>
-                              setNomi({
-                                ...nomi,
-                                [dispositivo.id]: e.target.value,
-                              })
-                            }
-                          />
-                        )}
-                        {!dispositivo.sonoIo && (
-                          <>
-                            <button
-                              type="button"
-                              className="bottone btn-ghost"
-                              onClick={() =>
-                                onSincroniaAccoppia(
-                                  dispositivo.id,
-                                  nomi[dispositivo.id] ??
-                                    dispositivo.nome ??
-                                    null,
-                                )
-                              }
-                            >
-                              {dispositivo.fidato
-                                ? t("settings.sync.rename")
-                                : t("settings.sync.accept")}
-                            </button>
-                            <button
-                              type="button"
-                              className="bottone btn-ghost"
-                              onClick={() => onSincroniaDimentica(dispositivo.id)}
-                            >
-                              {t("settings.sync.forget")}
-                            </button>
-                          </>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
+                  </p>
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    onClick={() => onSezione("dispositivi")}
+                  >
+                    {t("settings.devices.open")}
+                  </button>
+                </div>
               )}
             </Scheda>
           )}
@@ -3334,7 +3368,24 @@ export function Impostazioni({
               PC della stessa rete, e solo quelli associati con un codice. */}
           {sezione === "sincronia" && (
             <Scheda icona="i-insieme" titolo={t("settings.together.title")} guida="together">
-              <SchedaInsieme onErrore={onErrore} />
+              <SchedaInsieme
+                onErrore={onErrore}
+                onDispositivi={() => onSezione("dispositivi")}
+              />
+            </Scheda>
+          )}
+          {/* Il collegamento via internet: il QR, i dispositivi collegati, e da
+              lì «Sfoglia». Vedi `parti/Dispositivi.tsx`. */}
+          {sezione === "dispositivi" && (
+            <Scheda icona="i-server" titolo={t("settings.devices.title")} guida="devices">
+              <SchedaDispositivi
+                onErrore={onErrore}
+                onNotizia={onNotizia}
+                onSfoglia={onSfogliaDispositivo}
+                sincronia={sincronia}
+                onSincroniaAccoppia={onSincroniaAccoppia}
+                onSincroniaDimentica={onSincroniaDimentica}
+              />
             </Scheda>
           )}
           {sezione === "legacy" && (
@@ -3470,7 +3521,8 @@ export function Impostazioni({
               <Scrobbling onErrore={onErrore} onNotizia={onNotizia} />
             </Scheda>
           )}
-          {sezione === "modelli" && (
+          {/* Vedi `gruppi()`: sul telefono la sezione non c'è. */}
+          {sezione === "modelli" && !MOBILE && (
             <Scheda
               icona="i-ia"
               titolo={t("settings.models.title")}

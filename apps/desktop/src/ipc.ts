@@ -14,16 +14,26 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ErroreIpc } from "./ipc/errori";
+import type {
+  BranoRemoto,
+  DatiMobili,
+  InvitoLontano,
+  OrdineRemoto,
+  Scansione,
+  StatoLontano,
+  ScaricoLontano,
+} from "./ipc/lontano";
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { Causa, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
 export * from "./ipc/importazioni";
 export * from "./ipc/skin";
 export * from "./ipc/servizi";
+export * from "./ipc/lontano";
 
 export const ipc = {
   // La finestra nasce nascosta: il fondo che il sistema operativo dipinge
@@ -1305,4 +1315,105 @@ export const ipc = {
   // quindi nello stesso annullo.
   iaOperazioni: (testo: string) =>
     invoke<OperazioniIa>("ia_operazioni", { testo }),
+
+  // ── solo sul telefono ──────────────────────────────────────────────────────
+  // Fuori da Android rispondono `internal.aborted`: chi li chiama guarda prima
+  // `ANDROID` in `piattaforma.ts`. I selettori passano da `dialoghi.ts`.
+  telefonoPermessi: () => invoke<PermessiTelefono>("telefono_permessi"),
+  // Il dialogo di sistema per audio, immagini e notifiche; torna con lo stato
+  // dopo la risposta.
+  telefonoChiediPermessi: () => invoke<PermessiTelefono>("telefono_chiedi_permessi"),
+  // Apre la pagina delle impostazioni: il permesso si rilegge al ritorno.
+  telefonoChiediTuttiIFile: () => invoke<void>("telefono_chiedi_tutti_i_file"),
+  telefonoCartellaMusica: () => invoke<string>("telefono_cartella_musica"),
+  telefonoScegliCartella: () => invoke<string | null>("telefono_scegli_cartella"),
+  // Una **copia** nella cache dell'app: il nucleo legge file, non URI.
+  telefonoApriDocumento: (tipi: string[]) =>
+    invoke<string | null>("telefono_apri_documento", { tipi }),
+  telefonoFileTemporaneo: (nome: string) =>
+    invoke<string>("telefono_file_temporaneo", { nome }),
+  telefonoSalvaDocumento: (nome: string, tipo: string, sorgente: string) =>
+    invoke<boolean>("telefono_salva_documento", { nome, tipo, sorgente }),
+  telefonoSecondoPiano: () => invoke<void>("telefono_secondo_piano"),
+  // Le barre di sistema e la tastiera, in pixel CSS: vedi `riquadri.ts`.
+  telefonoRiquadri: () =>
+    invoke<{
+      alto: number;
+      destra: number;
+      basso: number;
+      sinistra: number;
+      /** La tastiera aperta, già contata in `basso`; zero se è chiusa. */
+      tastiera: number;
+    }>("telefono_riquadri"),
+  // La vibrazione del sistema per un gesto: vedi `vibra.ts`.
+  telefonoVibra: (tipo: "tenuta" | "scatto" | "conferma") =>
+    invoke<void>("telefono_vibra", { tipo }),
+  // Le icone delle barre di sistema sul fondo dell'app: vedi `barreDiSistema.ts`.
+  telefonoBarre: (chiaro: boolean) => invoke<void>("telefono_barre", { chiaro }),
+  // Lo scanner del QR di «Collega un dispositivo»: chiede la fotocamera, se
+  // serve. Il link letto lo controlla `lontanoCollega`.
+  telefonoScansionaQr: () => invoke<Scansione>("telefono_scansiona_qr"),
+
+  // ── il collegamento via internet ──────────────────────────────────────────
+  // Il pannello arriva anche con l'evento `lontano:stato` a ogni cambiamento;
+  // i comandi che lo cambiano rispondono con lui. Vedi `lontano.ts`.
+  lontanoStato: () => invoke<StatoLontano>("lontano_stato"),
+  lontanoAttiva: (attivo: boolean) => invoke<StatoLontano>("lontano_attiva", { attivo }),
+  // `null` torna ai relay pubblici di n0.
+  lontanoRelay: (relay: string | null) => invoke<StatoLontano>("lontano_relay", { relay }),
+  lontanoDatiMobili: (scelta: DatiMobili) =>
+    invoke<StatoLontano>("lontano_dati_mobili", { scelta }),
+  // Un QR nuovo: quello di prima non vale più. Accende il collegamento se è
+  // spento.
+  lontanoQrCrea: () => invoke<InvitoLontano>("lontano_qr_crea"),
+  lontanoQrAnnulla: () => invoke<StatoLontano>("lontano_qr_annulla"),
+  // Aspetta che dall'altra parte dicano di sì: fino a un paio di minuti.
+  lontanoCollega: (link: string) => invoke<StatoLontano>("lontano_collega", { link }),
+  // Smette di aspettare la conferma dell'altro: `lontanoCollega` torna con
+  // `internal.aborted`, che la finestra non dice come un errore.
+  lontanoCollegaAnnulla: () => invoke<void>("lontano_collega_annulla"),
+  // I dispositivi che non rispondevano si riprovano adesso. Non aspetta.
+  lontanoCercaOra: () => invoke<void>("lontano_cerca_ora"),
+  lontanoRispondi: (id: number, accetta: boolean) =>
+    invoke<void>("lontano_rispondi", { id, accetta }),
+  lontanoRinomina: (chiave: string, nome: string) =>
+    invoke<StatoLontano>("lontano_rinomina", { chiave, nome }),
+  lontanoDimentica: (chiave: string) => invoke<StatoLontano>("lontano_dimentica", { chiave }),
+  // Il link aperto da fuori (il QR letto con la fotocamera del sistema) e non
+  // ancora preso: una volta sola.
+  lontanoLinkInAttesa: () => invoke<string | null>("lontano_link_in_attesa"),
+
+  // ── «Sfoglia <dispositivo>» ───────────────────────────────────────────────
+  // Gli elenchi dell'altro, nella forma di quelli di qui. Le copertine hanno
+  // già la chiave del protocollo (`lontano-…`): `Copertina` le disegna come
+  // le altre.
+  lontanoAlbum: (chiave: string, da: number, quanti: number) =>
+    invoke<Album[]>("lontano_album", { chiave, da, quanti }),
+  lontanoAlbumArtista: (chiave: string, artista: string) =>
+    invoke<Album[]>("lontano_album_artista", { chiave, artista }),
+  lontanoArtisti: (chiave: string, da: number, quanti: number) =>
+    invoke<Artista[]>("lontano_artisti", { chiave, da, quanti }),
+  lontanoBrani: (chiave: string, ordine: OrdineRemoto, da: number, quanti: number) =>
+    invoke<BranoRemoto[]>("lontano_brani", { chiave, ordine, da, quanti }),
+  lontanoBraniAlbum: (chiave: string, album: string) =>
+    invoke<BranoRemoto[]>("lontano_brani_album", { chiave, album }),
+  lontanoCerca: (chiave: string, testo: string, da: number, quanti: number) =>
+    invoke<BranoRemoto[]>("lontano_cerca", { chiave, testo, da, quanti }),
+  lontanoCercaConteggio: (chiave: string, testo: string) =>
+    invoke<number>("lontano_cerca_conteggio", { chiave, testo }),
+  // I gesti: le schede tornano indietro intere, il nucleo non tiene elenchi.
+  // Sui dati mobili con «Chiedi» rispondono `lontano.reteAConsumo`, e la
+  // finestra chiede (`lontano.ts`).
+  lontanoSuona: (chiave: string, brani: BranoRemoto[], indice: number) =>
+    invoke<void>("lontano_suona", { chiave, brani, indice }),
+  lontanoAccoda: (chiave: string, brani: BranoRemoto[]) =>
+    invoke<void>("lontano_accoda", { chiave, brani }),
+  lontanoDopo: (chiave: string, brani: BranoRemoto[]) =>
+    invoke<void>("lontano_dopo", { chiave, brani }),
+  // «Scarica qui»: in coda nella cartella dei download, a un brano per volta.
+  // L'avanzamento arriva con `lontano:scarico`.
+  lontanoScarica: (chiave: string, brani: BranoRemoto[]) =>
+    invoke<ScaricoLontano>("lontano_scarica", { chiave, brani }),
+  lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
+  lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
 };

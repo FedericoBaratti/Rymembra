@@ -22,8 +22,10 @@ members = [
     "core/rymembra-scrobble",
     "core/rymembra-ia",
     "core/rymembra-insieme",
+    "core/rymembra-lontano",
     "apps/desktop/src-tauri",
     "apps/desktop/rymembra-barra",
+    "apps/desktop/rymembra-android",
 ]
 
 [workspace.package]
@@ -36,8 +38,9 @@ edition = "2024"
 # o non dice niente a nessuno. Conta anche per `cargo update`: il risolutore
 # `3` scritto qui sopra preferisce le versioni che stanno sotto questo numero, e
 # uno più basso del vero terrebbe indietro in silenzio proprio i crate che lo
-# hanno alzato.
-rust-version = "1.90"
+# hanno alzato. Poi `iroh 1.0`, il collegamento fra i dispositivi di
+# `rymembra-lontano`, che ne dichiara 1.91.
+rust-version = "1.91"
 license = "MIT"
 authors = ["Federico Baratti"]
 # La grafia è quella vera del repository, maiuscole comprese. GitHub

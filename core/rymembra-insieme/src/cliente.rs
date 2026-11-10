@@ -32,7 +32,6 @@
 //! lettura. Non si richiede dopo un silenzio intero senza risposta: un host
 //! che non risponde da quindici secondi non risponderà nei quindici dopo.
 
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
@@ -47,6 +46,7 @@ use crate::condiviso::Condiviso;
 use crate::errori::{annullata, chiave, errore};
 use crate::identita::ChiavePubblica;
 use crate::messaggi::Gettone;
+use crate::presa::Dove;
 use crate::servente::{Chiesto, LETTURA_MASSIMA, Risposta};
 use crate::trasporto::{Trasporto, Uso};
 
@@ -61,7 +61,7 @@ fn annullato(annullo: Option<&AtomicBool>) -> bool {
 /// Le connessioni di lettura verso un host.
 pub(crate) struct Vivaio {
     rete: Arc<Condiviso>,
-    ospite: SocketAddr,
+    ospite: Dove,
     pari: ChiavePubblica,
     stato: Mutex<StatoVivaio>,
     cambiato: Condvar,
@@ -96,7 +96,7 @@ enum Andata {
 
 impl Vivaio {
     /// Un vivaio vuoto: nessuna connessione finché non serve.
-    pub(crate) fn nuovo(rete: Arc<Condiviso>, ospite: SocketAddr, pari: ChiavePubblica) -> Self {
+    pub(crate) fn nuovo(rete: Arc<Condiviso>, ospite: Dove, pari: ChiavePubblica) -> Self {
         Self {
             rete,
             ospite,
@@ -191,7 +191,7 @@ impl Vivaio {
     fn apri(&self, annullo: Option<&AtomicBool>) -> Result<Arc<Collegamento>, AppError> {
         let recapito = Arc::new(Recapito::default());
         let per_il_filo = Arc::clone(&recapito);
-        let (ospite, pari) = (self.ospite, self.pari);
+        let (ospite, pari) = (self.ospite.clone(), self.pari);
         let partito = self.rete.filo("apre", move |rete| {
             per_il_filo.consegna(apri_qui(&rete, ospite, pari));
         });
@@ -356,17 +356,18 @@ impl Recapito {
 /// e il filo che legge.
 fn apri_qui(
     rete: &Arc<Condiviso>,
-    ospite: SocketAddr,
+    ospite: Dove,
     pari: ChiavePubblica,
 ) -> Result<Arc<Collegamento>, AppError> {
-    let presa = std::net::TcpStream::connect_timeout(&ospite, rete.tempi.collegamento)
-        .map_err(|_| errore(ErrorCodeKind::InsiemeIrraggiungibile))?;
+    let presa = rete
+        .apri(&ospite)
+        .ok_or_else(|| errore(ErrorCodeKind::InsiemeIrraggiungibile))?;
     let verso = Verso::Uscente {
         id: rete.nuovo_id(),
         uso: Uso::Lettura,
         atteso: Some(Atteso::Chiave(pari)),
     };
-    let pronto = prepara(rete, presa, ospite, verso)
+    let pronto = prepara(rete, presa, ospite.clone(), verso)
         .map_err(|codice| errore(codice.unwrap_or(ErrorCodeKind::InsiemeConnessioneCaduta)))?;
     let collegamento = Arc::clone(&pronto.collegamento);
     if !rete.filo("legge", move |rete| vivi(&rete, pronto)) {

@@ -26,11 +26,10 @@
 //! estranei, che hanno un tetto loro: vedi [`Vicinato::da_collegare`].
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
 
 use rymembra_app::insieme::Pari;
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
-use rymembra_insieme::{ChiavePubblica, IdConnessione, Identita, Impronta};
+use rymembra_insieme::{ChiavePubblica, Dove, IdConnessione, Identita, Impronta};
 use rymembra_oauth::portachiavi::Portachiavi;
 
 /// Al più tante connessioni di controllo in uscita.
@@ -178,8 +177,9 @@ impl Fidati {
 /// Un PC che ospita, visto in rete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Vicino {
-    /// Dove collegarsi.
-    pub indirizzo: SocketAddr,
+    /// Dove collegarsi: un indirizzo in casa, o un dispositivo del
+    /// collegamento via internet.
+    pub indirizzo: Dove,
     /// L'ultima volta che la scoperta l'ha visto, ms monotoni. `None` per un
     /// fidato che si ricorda ma che non si è visto in questo giro.
     pub visto: Option<u64>,
@@ -196,10 +196,10 @@ pub struct Vicino {
     /// L'indirizzo della connessione in corso, com'era quando la si è
     /// aperta: se nel frattempo il vicino è stato visto altrove, la caduta di
     /// quella vecchia non conta.
-    pub tentato: Option<SocketAddr>,
+    pub tentato: Option<Dove>,
     /// L'ultimo indirizzo su cui una connessione si è davvero aperta: la
     /// stretta ha dimostrato che lì c'è la chiave. Vedi [`Vicinato::chiusa`].
-    pub verificato: Option<SocketAddr>,
+    pub verificato: Option<Dove>,
     /// Il codice dell'ultima caduta scritta nel diario. Vedi
     /// [`Vicinato::chiusa`].
     pub codice_detto: Option<ErrorCodeKind>,
@@ -220,13 +220,27 @@ pub struct Vicinato {
 struct ImprontaOrdinata([u8; 8]);
 
 impl Vicinato {
+    /// Il collegamento via internet dice che quel dispositivo ospita: un
+    /// vicino raggiungibile da lì. Uno che la scoperta vede in casa resta in
+    /// casa — la strada diretta è più corta, e l'orologio la preferisce — e
+    /// passa a quella via internet solo quando la scoperta lo perde.
+    pub fn trovato_lontano(&mut self, chiave: &str, impronta: Impronta, adesso: u64) {
+        if let Some(vicino) = self.vicini.get(&ImprontaOrdinata(impronta.0))
+            && matches!(vicino.indirizzo, Dove::Lan(_))
+            && (vicino.visto.is_some() || vicino.conn.is_some())
+        {
+            return;
+        }
+        self.trovato(Dove::Lontano(chiave.to_owned()), impronta, adesso);
+    }
+
     /// La scoperta l'ha visto a quell'indirizzo.
-    pub fn trovato(&mut self, indirizzo: SocketAddr, impronta: Impronta, adesso: u64) {
+    pub fn trovato(&mut self, indirizzo: Dove, impronta: Impronta, adesso: u64) {
         let vicino = self
             .vicini
             .entry(ImprontaOrdinata(impronta.0))
             .or_insert(Vicino {
-                indirizzo,
+                indirizzo: indirizzo.clone(),
                 visto: None,
                 conn: None,
                 aperta: false,
@@ -270,7 +284,7 @@ impl Vicinato {
         adesso: u64,
         mia: Impronta,
         fidati: &Fidati,
-    ) -> Vec<(Impronta, SocketAddr)> {
+    ) -> Vec<(Impronta, Dove)> {
         let fidato = |impronta: &ImprontaOrdinata| fidati.per_impronta(&Impronta(impronta.0));
         let (mut fidati_collegati, mut estranei_collegati) = (0_usize, 0_usize);
         for (impronta, v) in &self.vicini {
@@ -302,7 +316,7 @@ impl Vicinato {
             .into_iter()
             .chain(degli_estranei.into_iter().take(posti_estranei))
             .take(posti)
-            .map(|(impronta, v)| (Impronta(impronta.0), v.indirizzo))
+            .map(|(impronta, v)| (Impronta(impronta.0), v.indirizzo.clone()))
             .collect()
     }
 
@@ -312,7 +326,7 @@ impl Vicinato {
         if let Some(v) = self.vicini.get_mut(&chiave) {
             v.conn = Some(conn);
             v.aperta = false;
-            v.tentato = Some(v.indirizzo);
+            v.tentato = Some(v.indirizzo.clone());
             self.per_conn.insert(conn, chiave);
         }
     }
@@ -332,7 +346,7 @@ impl Vicinato {
         };
         v.aperta = true;
         v.cadute = 0;
-        v.verificato = v.tentato;
+        v.verificato = v.tentato.clone();
         v.nome = Some(nome.to_owned());
         v.codice_detto = None;
         std::mem::take(&mut v.taciute)
@@ -378,7 +392,10 @@ impl Vicinato {
         // caduta non dice niente del vicino, si prova subito quello nuovo.
         // Prima toccava aspettare l'attesa crescente, e chi aveva appena
         // corretto l'indirizzo non vedeva succedere niente.
-        if tentato.is_some_and(|tentato| tentato != v.indirizzo) {
+        if tentato
+            .as_ref()
+            .is_some_and(|tentato| *tentato != v.indirizzo)
+        {
             v.non_prima = adesso;
             return da_dire;
         }
@@ -389,7 +406,7 @@ impl Vicinato {
         // vera bastava a far riprovare solo indirizzi falsi. Se poi non si
         // apre nemmeno il verificato, l'attesa cresce come sempre.
         if !era_aperta
-            && let (Some(tentato), Some(verificato)) = (tentato, v.verificato)
+            && let (Some(tentato), Some(verificato)) = (tentato, v.verificato.clone())
             && tentato != verificato
         {
             v.indirizzo = verificato;
@@ -637,8 +654,8 @@ mod prove {
         assert_eq!(fidati.per_la_rete(), (vec![anna], vec![]));
     }
 
-    fn addr(porta: u16) -> SocketAddr {
-        SocketAddr::from(([127, 0, 0, 1], porta))
+    fn addr(porta: u16) -> Dove {
+        Dove::Lan(std::net::SocketAddr::from(([127, 0, 0, 1], porta)))
     }
 
     #[test]

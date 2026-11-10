@@ -273,6 +273,16 @@ impl CoverStore {
         Ok(Self { root })
     }
 
+    /// La cartella dello store.
+    ///
+    /// Serve a chi deve dire **dove dentro** lo store sta una copertina: su
+    /// Android le copertine le serve all'auto un `ContentProvider`, che accetta
+    /// solo percorsi relativi a questa cartella e non esce mai da lì.
+    #[must_use]
+    pub fn radice(&self) -> &std::path::Path {
+        &self.root
+    }
+
     /// Il percorso della copertina piena.
     ///
     /// I file sono divisi in sottocartelle per i primi due caratteri

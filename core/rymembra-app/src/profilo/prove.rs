@@ -278,6 +278,12 @@ fn niente_di_insieme_viaggia_nel_profilo() {
             !chiave.starts_with("insieme."),
             "«{chiave}» è di «Ascolta insieme» e non deve viaggiare"
         );
+        // Né quelle del collegamento via internet: accenderebbero una porta
+        // verso internet su un computer che non l'ha chiesto.
+        assert!(
+            !chiave.starts_with("lontano."),
+            "«{chiave}» è del collegamento via internet e non deve viaggiare"
+        );
     }
 }
 

@@ -89,6 +89,516 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
+## [Unreleased]
+
+**Rymembra on Android.** The same application, from the same code: the
+fourteen core crates build for `aarch64-linux-android` and
+`x86_64-linux-android` unchanged, and the window becomes an Android activity.
+The number will be decided when it ships; nothing outside Rymembra has to keep
+up with a phone that did not exist before.
+
+### New — the phone
+
+- **An interface of its own.** On a phone the shell is a column — a top bar,
+  the page, a mini player, four tabs — and the shapes, sizes and motion are
+  the phone's; the colours and fonts are still the active skin's, and the
+  accent still comes from the cover. Skins can be chosen, installed and
+  removed; their layout tree is for windows of 880 pixels and up, and on a
+  phone it is replaced by `scafaleTelefono.ts`.
+  - **Four tabs: Home, Library, Search, More.** Library is one page with
+    pills — Playlists, Albums, Artists, Tracks, Folders, Favourites — and
+    remembers the last one. Search has two segments, «In library» and
+    «Explore», and keeps what was typed. More is a page, not a drawer:
+    Listen together, Imports, Paste a link, Folders, Settings, Donate.
+    Tapping the current tab again goes back to its first page, or to the top.
+  - **Back** closes what is open one level at a time — a sheet, a panel,
+    the selection, a playlist, a Settings section — then climbs the tabs to
+    Home, and from Home sends the app to the background.
+  - **Sheets from the bottom.** Every menu is a sheet with what it acts on
+    at the top (cover, title, artist) and a row per action, with an icon;
+    a disabled action says why on a second line. It closes by dragging it
+    down, tapping outside, Back, or choosing. The confirmation dialogs open
+    from the bottom too, with full-width buttons and «Cancel» always last.
+  - **The mini player** is a card above the tabs: cover, title, play/pause
+    and next, and a thin progress line. Tap it or swipe it up for «Now
+    playing»; swipe it sideways for the next or previous track.
+  - **«Now playing»** is a full-screen sheet over everything, tabs included,
+    tinted by the cover. The cover swipes sideways to change track; the
+    sheet closes by dragging it down or with Back. Queue and lyrics open in
+    place of the cover, one at a time, and the ⋮ at the top is the track's
+    menu. Its own component (`InRiproduzioneTelefono.tsx`): the computer's
+    screen is unchanged.
+  - **Rows and selection.** A track row is cover, title and ⋮. A tap plays;
+    a long press starts a multiple selection, with a vibration, and from then
+    on taps choose. The selection's commands — play, next, queue, playlist,
+    and ⋮ for the rest — sit at the bottom in place of the mini player, with
+    the count, «Select all» and ×, so the page above does not move under
+    the finger. Album, artist and Home cards have a ⋮ too, and a long press
+    opens their menu. The like and «Remove from this playlist», which on the
+    computer are columns of the row, are entries of the menu.
+  - **Album, artist and playlist pages** open with a large cover (a mosaic
+    for artists and playlists), the name and two wide buttons, Play and
+    Shuffle — shuffle plays a shuffled copy, without turning on the player's
+    shuffle. The name moves into the top bar as it scrolls away, driven by a
+    scroll timeline, not a scroll listener.
+  - **Settings** have two levels: the grouped list of sections, then one
+    section, with its name in the top bar.
+  - **The Home** shelves are carousels that scroll sideways.
+  - **The keyboard**: with it open the tabs and the mini player step aside
+    and the page reaches the keyboard (`data-tastiera`, from the window
+    insets).
+- **No spectrum and no Skin Studio on Android.** The 3D spectrum is a WebGL
+  scene half a screen tall, and on a phone it would cover the cover and drain
+  a battery for something glanced at: its button, its settings card and the
+  core's spectrum thread are gone from the Android build (the commands stay
+  registered, and return at once). The Skin Studio, with its 640 KB editor,
+  is not in the APK: on a phone it was a window of a window, and a skin is
+  drawn for the computer's layout anyway. «AI models», used only by the
+  Studio's chat, go with it.
+- **Music with the screen off.** A Media3 `MediaSessionService` keeps the app
+  in the foreground while it plays, with the player's notification, the lock
+  screen controls and the headset buttons. The music is still played by
+  `rymembra-play` through AAudio; the service only reflects it, and turns its
+  buttons into the same gestures as the keyboard keys and the tray menu
+  (`media::premi`). A call or another app pauses and resumes it; unplugging
+  the headphones pauses it. Swiping Rymembra away from the recent apps closes
+  the screen, not the player: the music goes on, and opening the app again —
+  from its icon or the notification — gives the new activity a new window on
+  the same state (`telefono::riapri_la_finestra`).
+- **Permissions at first start.** Before looking for music the first run asks
+  for access: «Music and audio» with Android's dialog, then «All files
+  access» in Android's settings, which the lyrics, the `.cue` files, the
+  covers next to the tracks, tag fixes and deletions need. Rymembra goes on
+  with the first alone if that is all you grant, and does not ask for
+  «Photos and videos». Then it proposes the phone's `Music` folder and the
+  one on each SD card.
+- **Secrets in the Android Keystore.** `DiSistema` on Android uses an AES-GCM
+  key that never leaves the Keystore. It never falls back to `keyring`, which
+  on Android has no keychain and would have kept tokens in memory, silently.
+- **Files and folders through Android's pickers**, which give `content://`
+  addresses: a chosen folder becomes its real path, a document to open is
+  copied into the app's cache, a document to save is written there by the
+  core and copied where you chose (`dialoghi.ts`, `telefono.rs`).
+- **«Listen together» on Wi-Fi** holds Android's multicast lock while the
+  function is on: without it many phones drop the discovery packets.
+- **Android Auto.** The player service is a Media3 `MediaLibraryService`, so
+  the car browses the library itself: four tabs with icons — Recent,
+  Playlists, Albums, Artists — then grids of albums and artists with their
+  covers, split by initial letter past 150 entries, and a «Play all» first
+  in every album, artist, playlist and in Favorites. A track chosen inside
+  an album plays the album from that track. The car shows the queue and jumps
+  in it, and has like, shuffle and repeat next to the transport buttons; a
+  search typed or spoken in the car («play Ghiaccio by Aurora Boreale») finds
+  artists, albums and tracks, and says so when it finds nothing. Kotlin builds
+  the root and the tabs (`Biblioteca.kt`); everything below comes from the core
+  (`src-tauri/src/auto.rs`) through a request queue on the bridge, so the car
+  sees the same library, the same names and the same order as the app. The
+  covers go to the car through a read-only content provider (`Copertine.kt`):
+  Android Auto cannot read a file in the app's private storage.
+- **Deleting goes to Android's trash**, `MediaStore.createTrashRequest`, after
+  Android's own confirmation: the Files app restores the file for 30 days. A
+  «no» to that confirmation is not an error, and the tracks stay. A file
+  Android's media index does not know, or a phone with Android 10 or older,
+  has no trash, and the deletion is permanent after the confirmation that
+  says so — the same rule as a network share on Windows.
+- **Updates on the phone.** *Settings → Updates* checks the project's latest
+  GitHub release, every six hours while the app is alive, and announces it
+  only if it carries an APK for the phone's architecture. «Update» downloads
+  it into the cache, with its progress, and hands it to Android's installer,
+  which asks for confirmation — and the first time for permission to install
+  apps. Android verifies the signature itself: an APK signed with another
+  key does not install over Rymembra. The pure part — which release, which
+  APK — is in `rilasci.rs`, with its tests.
+- **«Share the log»** replaces «Open the log folder», which a phone has no
+  window for: it shares a copy of the log through Android's share sheet.
+- **Texts for a phone.** 87 sentences that spoke of «this PC», Windows, the
+  mouse or the keyboard have a phone version, in English and Italian:
+  `t()` picks `<key>.telefono` when it exists and the app runs on a phone.
+  What a phone cannot do is not offered: network folders, «Show in folder»,
+  «drop it on the window», the reorder hint for the keyboard.
+- **The Skin Studio on a phone** shows one panel at a time — Parts, Canvas,
+  Inspector — chosen from tabs under its bar, and a part picked from the
+  layers or on the canvas opens the inspector. The bar wraps onto three rows
+  instead of overflowing the screen.
+- **Touch targets**: switches, hearts, tabs, small buttons, the rating stars
+  and the A–Z index of the artists grow to a finger's size; the artists grid
+  has two columns; Explore no longer opens the keyboard by itself.
+
+### Fixed — the phone
+
+- **Music came out of the earpiece, and Bluetooth headphones got nothing.** On
+  Android cpal's default output is an empty `Device` — an AAudio stream that
+  doesn't say where, so Android routes it — and it is not in the device list.
+  No row was marked default, the opening fell back to the first one, and on a
+  real phone that is the call earpiece («A059P (Earpiece)», mono, in the log
+  that reported it); a stream pinned with `setDeviceId` stays there. On
+  Android the list is now one row, the empty device, named after where
+  Android plays right now (`AudioManager`, `Uscita.kt`): connecting
+  headphones changes the name, and the device watcher reopens the stream as
+  it does on Windows when the default changes. Settings › Playback says that
+  the output follows Android instead of offering a choice that chooses
+  nothing, and an output picked by an earlier build is ignored.
+- **«Listen together» found nobody, and nobody found the phone**, on
+  Android 17: an app that targets Android 17 sees the home network only with
+  «Nearby devices» (`ACCESS_LOCAL_NETWORK`), and without it the packets stop
+  in the system with no error. Rymembra now asks for it when you turn the
+  function on, host, pair or join, and says so (`net.localNetwork`) when it
+  is denied. The same permission is asked before connecting a WebDAV server
+  or a language model on a private address; a WebDAV server reopened at
+  startup, with nobody to ask, says the permission is missing instead of
+  failing as if the server were down. Tried between two emulators: hosting, discovery by typed
+  address, pairing, joining and playback streamed from the host, in sync.
+- **The phone called itself «Rymembra»** to the other devices: it now uses
+  Android's «Device name», or the model. With two phones, «Rymembra asks to
+  join» did not say who.
+- **«Listen together» could be found only at the bottom of Settings** on the
+  phone: the player's button is in the desktop's player bar. It is now in
+  the «More» drawer.
+- The first line of the phone's log says which Android and which phone, and
+  a window error says where it happened, not only its message.
+- **A track deleted on the phone came back.** Android's trash is not a
+  folder: `MediaStore` renames the file to `.trashed-<expiry>-<name>` next to
+  where it was, and the folder watcher saw a new MP3 and put it back in the
+  library, with the same title. Files named `.trashed-…` and `.pending-…` are
+  no longer music (`paths::tenuto_da_parte_da_android`), and a row that an
+  earlier build had created for one goes away at the next scan instead of
+  staying because its file is still on disk (`scan_plan`).
+- **No link opened on the phone**, and with them no service could be
+  connected: the project's pages, donations, «Report a problem», a track's
+  page on its catalog, and the consent page of Google Drive, OneDrive,
+  Dropbox and Last.fm. `tauri-plugin-opener` opens a URL by launching a
+  program, which Android does not allow an app to do (`Permission denied`).
+  Every URL now goes through `browser::apri`, which on Android hands it to
+  the bridge, and Kotlin opens it with an `Intent` (`Browser.kt`, `https`
+  and `http` only). Tried on the emulator: with Rymembra behind the browser
+  for twenty seconds, the local server of the consent still answers.
+- **A long press on a track selected a word of its title** along with opening
+  the menu: the title allows selection on the computer, for copying it.
+- **«Show in folder»** in the Folders menu is not offered on the phone, where
+  there is no file manager to open on a folder.
+- **A smart playlist's condition** wraps onto two rows: four columns in a
+  phone's width cut the operator to «conta…».
+- **The clock and the battery were black on black** with Rymembra dark on a
+  light phone (and white on white the other way round): Android picks the
+  colour of the system bars' icons from the phone's theme. The page now tells
+  Android which theme it shows (`barreDiSistema.ts`, bridge `sistema.barre`),
+  and an activity reborn after a swipe from the recents keeps it. The first
+  frame no longer flashes the dark base under a light theme: until the skin
+  arrives the page uses the theme it showed last time (`temaDiPartenza`).
+- **An album, an artist, a playlist**: the cover's tint now reaches under the
+  status bar, and the top bar floats over it — two round buttons that read on
+  any cover — and fills in only when the big title slides under it, driven by
+  the scroll (`animation-timeline`). It used to start under a solid bar with a
+  straight cut from edge to edge. Every other top bar gets a hairline once the
+  page scrolls under it.
+- **Alignment**: track lists, the Library's pills and the Search field start
+  at the page's edge, under the title's first letter — the covers were
+  fourteen pixels further in than everything else. The queue in «Now
+  playing» lost an empty column (the drag grip, which a finger never sees),
+  and its titles sit under «Queued».
+- **Settings on the phone**: no more of the section's icon repeated on every
+  card (a ▶ before «Audio output» read as a button); segmented controls share
+  the whole track instead of huddling on the left, and the sleep timer's
+  «End of track» no longer spills out; the search field is a pill like the
+  other ones; «Output latency» and the group titles line up with the rest; a
+  date or a device name among the numbers no longer wraps in the headline
+  size. The sections also have icons of their own — sync, devices, scrobbling,
+  data and updates all had the backup's cloud (on the computer too).
+- **Folders on the phone** are «Internal storage › Music» and «SD card ›
+  Music», not `/storage/emulated/0/Music` (`percorsoAndroid`).
+- **Back from a Settings section opened from «More»** («Link a device»,
+  «Music folders») went to the list of sections, which nobody had seen: it
+  goes back to «More».
+- The Artists' alphabet fits the screen (the Z was under the player), and the
+  page no longer scrolls by one pixel — enough for Android to draw its grey
+  scrollbar down the whole right edge at the first drag.
+- **Words left untranslated**: the skin's motion level («full») and the
+  descriptions of Vinile and Neon in English; «Listen together» in «More» no
+  longer says «on the same network», now that linked devices listen together
+  over the internet.
+- «Relay» and «Send the history you already have too» are grey like any
+  advanced panel, not yellow like a warning (on the computer too).
+- Touch sizes: the first run's «I will do it later» is a full-height text
+  button instead of a 27-pixel pill; small buttons are 34 pixels; the six
+  sources of «Add a folder» are a three-by-two grid instead of two crooked
+  rows. Album cards say «3 tracks», not «· 3», and artist cards use the same
+  type as album cards.
+
+### New — your devices over the internet
+
+- **Your PC's music on the phone, away from home — and the other way round.**
+  *Settings › Devices* has «Reachable from the internet» (off by default) and
+  «Link a device»: the PC shows a QR code, the phone scans it from Rymembra
+  (More › Link a device) or with its own camera, the PC asks «“Nothing Phone”
+  wants to link» — Refuse first, with the focus — and from then on the two find
+  each other on their own, at home or not. Two PCs link with «Copy link» and
+  «Paste link». There is no Rymembra server: a new crate, `rymembra-lontano`,
+  runs an **iroh** endpoint (QUIC between ed25519 keys, encrypted end to end)
+  behind a blocking façade, with its own two-thread runtime — the one corner of
+  Rymembra that is asynchronous, and the `Cargo.toml` says why.
+  - **Linking, step by step.** The QR disappears from the PC as soon as it
+    stops being valid — used, refused, burned by five wrong codes or past its
+    ten minutes — and «New QR code» makes another. While the phone waits for
+    the PC's answer, «Stop waiting» cancels it, and the question on the PC
+    disappears with it. The PC says «“Nothing Phone 2a” is linked» too, not
+    only the phone.
+  - **Finding each other** goes through n0's DNS (pkarr), the BitTorrent
+    mainline DHT and, at home, mDNS; the addresses last seen are kept as a
+    first hint. iroh tries the direct path first (hole punching, UPnP/NAT-PMP/
+    PCP) and falls back to a relay — n0's public ones, or your own
+    (`iroh-relay`), in *Settings › Devices › Relay*. A device reached through
+    the relay says «via relay» under its name, and the diary notes when the
+    path changes (direct or relay, with the round trip — never an address).
+  - **A device that drops for a moment stays.** A connection that falls and
+    comes back — Wi-Fi to 5G, two devices calling each other at once — keeps
+    the device in view for eight seconds instead of emptying its Browse page.
+    One that does not answer is tried again as soon as its page, or the
+    Devices page, is opened («Try again now»): a PC switched on after a night
+    off is found at once, not after the node's longest pause. Many requests at
+    once to a device without a connection open one, not one each.
+  - **«Browse <device>»** — in the sidebar under «Devices» for the devices
+    that answer, and on the phone in More › Your devices — opens the other
+    library, looking like this one. «Highlights» comes first, like the Home:
+    the other device's most played tracks and the albums added to it lately,
+    each shelf with «Show all». Then Albums, Artists (with their cover
+    mosaic), Tracks in the library's four orders, and a search of its own, in
+    pages of 200 with «Show more». An album or an artist opens with the big
+    header of an album page: cover, «Play», «Shuffle». A row is cover, title,
+    artist and duration — a tap plays it — and its menu (the ⋮, or a right
+    click) has Play next, Add to queue, Go to album and «Download here»;
+    album and artist cards have one too. Tracks are streamed in 256 KiB blocks
+    and never cached; the owner's plays and likes are shown, read-only. Only
+    tracks in local and network folders are shared. Going back from an album
+    or an artist, or to a tab already opened, returns to the list as it was,
+    with its pages and where it was scrolled. Covers of a device that does not
+    answer are not waited for.
+  - **The file's version comes from its first block**, not from the owner's
+    database, which can be behind its disk — after «Re-read all tags», or with
+    a file retagged outside Rymembra since the last scan — and would have made
+    every read fail as «the file changed». A file that really changes while it
+    plays or downloads still stops there, never stitched to the old one.
+  - **Tracks of another device stay in the queue after a restart** — the
+    phone's process ends often. The queue of library rows is saved as always,
+    and the whole queue next to it (`player.queue.remote`, not in profiles or
+    backups); at start the remote tracks come back if their device is still
+    linked, and the position moves as it does when they are dropped.
+  - **«Download here»** copies tracks — one, or a whole album — into this
+    device's download folder as `<Artist>/<Album>/<NN - Title>.<ext>`, one at a
+    time, written as `.part` and renamed when complete; a file already there
+    with the same size is skipped, and the download folder is scanned at the
+    end. A strip on the Browse page shows the progress, with «Cancel». On the
+    phone a notification — «Rymembra is downloading · 3 of 12 · title» — keeps
+    it going with the screen off (a `dataSync` foreground service, stopped at
+    the end of the queue).
+  - **Listens count on the owner.** A remote track played here is recorded in
+    a queue and sent when the owner answers; the owner records it as its own
+    play and scrobbles it. Nothing is counted on the device that played.
+  - **«Wi-Fi only».** On a metered network the phone asks once before playing
+    or downloading another device's tracks — Ask (the default), Yes, Wi-Fi
+    only, in *Settings › Devices*. Lists and presence always pass.
+  - **The phone** is reachable while Rymembra is on screen or playing, and its
+    connection goes to sleep two minutes after neither is true. The QR scanner
+    is an activity of its own (CameraX and ZXing core, no Play Services), and a
+    `rymembra://collega/…` link opened from the system camera or a message
+    opens Rymembra on the «Link this device?» question. A change of network —
+    Wi-Fi to 5G — is passed on at once, so the connection finds a new path
+    instead of waiting for the old one to time out.
+  - **Forget** removes a device here and tells it; it then shows as unlinked
+    there.
+- **The Wi-Fi stays awake on the phone** during a «Listen together» session
+  and while a track of another device plays or downloads (Android's Wi-Fi
+  lock: low latency on screen, high performance with the screen off where
+  Android still honours it).
+- **A «Devices» section in Settings**, next to sync, with the switch, the QR
+  code and **one list of all your devices**: the ones linked over the
+  internet, the PCs paired for «Listen together» and the devices in sync,
+  merged where they are the same device (a phone linked with the QR shows
+  «Listen together · sync» under its name). Rename, Forget, Block, Accept and
+  Browse are there; the «Listen together» and sync cards point to it instead
+  of keeping their own lists.
+
+### Changed — Listen together
+
+- **Linking two devices with the QR pairs them for «Listen together» too**,
+  without the four-digit code: each tells the other its «Listen together» key
+  inside the encrypted link, and a PC that had been blocked is unblocked —
+  linking it again is the proof you want it.
+- **Listen together away from home**, between devices linked with the QR. A
+  linked device that hosts a session tells so in its presence, and shows in
+  the panel with «via internet» under its name; joining, inviting, asking to
+  enter and the member's own tracks work as at home. A device that the home
+  discovery also sees stays on the home network.
+  - `rymembra-insieme` no longer knows only TCP: a `Presa` trait (a byte
+    stream with deadlines, implemented for `TcpStream`) carries everything,
+    `Dove` (`Lan(ip:port)` or `Lontano(key)`) replaces the socket address,
+    and a `Strada` opens the internet ones. Over the link each of them is one
+    QUIC connection on the `rymembra/insieme/1` protocol, with the usual Noise
+    handshake inside, against the «Listen together» key that the QR exchanged.
+  - A device that starts or stops hosting tells the linked ones at once, and
+    they look for it at once: it shows within seconds, not half a minute.
+  - Internet connections get wider timings — connect 15 s, handshake 10 s,
+    silence 30 s, forwarded reads 20 s — and the heartbeat stays the same, so
+    an older peer is not cut off. The per-address caps of a host count by
+    device key, so two members behind the same relay or carrier NAT do not
+    share one.
+  - A member's clock estimate keeps samples up to a 400 ms round trip, instead
+    of 100 ms at home; the filter on the fastest samples is unchanged.
+  - «Wi-Fi only» covers it: on mobile data, joining, accepting an invite,
+    inviting or admitting someone over the internet asks first, as «Browse»
+    does.
+- **A paired host is found where the broadcast does not reach.** The last
+  address at which it answered is remembered (migration 040) and asked
+  directly at every discovery round, like an address typed by hand: guest
+  Wi-Fi with client isolation, two subnets, a host that had to take a port
+  outside 47811–47820. Whoever answers there must still prove the paired key.
+- **Forward compatible.** A connection opened for a use this version does
+  not know is closed with `insieme.versione` («update Rymembra») instead of
+  `insieme.protocollo`, and a frame of an unknown type is skipped — its length
+  is in the header — instead of closing the connection: a newer Rymembra can
+  add one without breaking the session for the older ones.
+
+### Changed — for both
+
+- The app crate is a library (`rymembra_lib`, with `run()`); `rymembra.exe`
+  is a one-line binary that calls it.
+- Desktop-only dependencies — the tray, the updater, single instance, SMTC,
+  the Recycle Bin, the native error dialog, the Credential Manager — moved to
+  a `[target]` table, and the modules that use them have an Android
+  counterpart in `src/mobile/` with the same commands. `media.rs` became
+  `media/`: the shared gestures in `mod.rs`, SMTC in `smtc.rs`, the Media3
+  session in `android.rs`.
+- A new crate, `apps/desktop/rymembra-android`, is the bridge to Kotlin: one
+  JNI method, `Ponte.chiama(command, arguments)` with JSON in and out, and
+  the only `unsafe` in `jvm.rs`, under the same declared exception as
+  `rymembra-barra`.
+- On Android the TLS roots are the Mozilla list compiled in (`webpki-roots`):
+  `rustls-platform-verifier` there needs JNI and a Gradle component.
+- `apps/desktop/src-tauri/gen/android` is versioned now; only `gen/schemas`
+  is ignored.
+
+### Changed — folders in the cloud
+
+- **The track cache no longer makes one track wait for another.** One lock
+  held the whole cache, disk included: a two-megabyte window being written on
+  a slow disk stopped the next track being prepared, «Listen together»
+  streaming and the analysis. The lock now keeps only the bookkeeping; bytes
+  are read and written outside it. A writer *reserves* the holes it fills,
+  so two readers asking for the same bytes do not write them twice; a
+  segment enters the index only once its bytes are on disk; a copy in use is
+  marked and goes away with its last user.
+- The cache index is written every 4 MiB, when a copy completes, when its
+  stream closes and when the cache closes — not after every window — and
+  `sync_data`, the index and the reassembly of out-of-order copies run on
+  the cache's own thread («rymembra-cache»), not on the one that plays. A
+  copy that was complete but not yet reassembled when the app closed is
+  reassembled at the next start.
+- «Clear cache» and «Disconnect» wait, up to two seconds, for a copy being
+  read at that moment: when they return, its files are gone.
+- **Dropbox notices a new folder, «Refresh now» and a disconnection at
+  once.** The long-poll runs on a helper thread, and the account's thread
+  waits on a bell that a wake-up rings too; before, it waited for the
+  long-poll to end, up to about two minutes. The request already sent is not
+  thrown away: the next round with the same cursor waits for it. A
+  `backoff` from Dropbox no longer sleeps the account's thread: it delays
+  the next long-poll, and a wake-up interrupts it.
+- **Google Drive says why a track will not download.** A `403` on the bytes
+  now reads its reason: the file's download quota (`downloadQuotaExceeded`)
+  is `cloud.quotaExceeded`, not retried; a file whose sharer turned
+  downloading off, or that Drive blocked (`cannotDownloadFile`), is the new
+  `cloud.downloadForbidden`. Both were a bare `net.http 403` before.
+- **A `503` with `Retry-After` is waited for as asked.** It becomes the new
+  `net.unavailable`, which carries the wait, and every retry — the network
+  layer's and the account thread's pause — honours it, instead of doubling
+  from one second. A `503` without the header stays `net.http`.
+- **WebDAV follows redirects** for a track's bytes: up to five, `https`
+  only. The password follows a redirect only while it stays on the same
+  server (scheme, host and port: `Rete::con_permesso_in_casa`); a CDN with a
+  signed address gets nothing. A `PROPFIND` still does not follow redirects —
+  an item's identity is its path — and the error says where the server
+  wanted to go.
+- **A WebDAV server that ignores `Range` is played anyway**, read in order
+  (`Rete::di_fila`): one response serves the windows one after the other,
+  and only a jump back reopens it. It was `cloud.rangeUnsupported`, a track
+  that did not play.
+- **OneDrive lists four folders at a time**, level by level, like WebDAV:
+  in a library of a thousand folders the cost is the round trips. The
+  listing also asks for `@microsoft.graph.downloadUrl`, the signed address
+  that `/content` redirects to: the tag reading that follows the listing
+  starts from there, one `302` fewer per file. It is kept in memory only,
+  for 45 minutes at most, and an expired one goes back to `/content`.
+- **The phone keeps listening while you consent in the browser.** Connecting
+  OneDrive, Dropbox or Google Drive sends you to the browser, and the answer
+  comes back to an address on the phone; with Rymembra behind the browser,
+  Android under memory pressure (or a stricter manufacturer) can freeze it,
+  and the browser then finds nobody. A short foreground service
+  (`ConsensoInAttesa`, `shortService` from Android 14, at most three minutes
+  like the wait itself) runs from before the browser opens until the answer,
+  «Cancel» or the timeout, with the notification «Waiting for your consent».
+
+### Fixed — folders in the cloud
+
+- **A reassembly interrupted at the wrong moment could serve the wrong
+  bytes.** The in-order copy was renamed over the old file and the index
+  written after: a crash in between left the index of the out-of-order
+  pieces on top of the in-order file, and after a restart the cache served
+  bytes from one point of the track in place of another. The old index is
+  now deleted first; a crash in between leaves a file no index names, which
+  the next start throws away.
+
+### Changed — building
+
+- **The CI builds Android.** A new `android` job runs clippy for
+  `aarch64-linux-android`, `tauri android build --apk --debug` and the Gradle
+  lint; `deny.toml` checks the Android dependency graph too (`jni` and
+  `ndk-context` were outside it).
+- `rust-version` is 1.91, the minimum of `iroh` 1.0 (see the device link).
+- **Rymembra no longer offers itself to Android TV.** The manifest declared
+  the TV launcher, but the interface is made for a finger and cannot be used
+  with a remote; the Gradle lint is clean of errors.
+
+### Security
+
+- **Linking a device needs its QR code and a «yes».** The code's random
+  16-byte token is valid for ten minutes and once, compared in constant time;
+  five wrong tokens end the code, and attempts are capped at ten a minute. The
+  device showing the code asks its user before anything is linked. The
+  `rymembra/associa/1` protocol is closed whenever no code is on screen, and
+  `rymembra/lontano/1` turns away any key that is not linked before it can ask
+  anything. So does `rymembra/insieme/1`, and over it «Listen together» still
+  proves its own key in the Noise handshake, checked against the paired PCs as
+  at home: two locks, each with its own key.
+- **What a linked device can read**: the lists of tracks in local and network
+  folders, and the file of such a track by its id, while it is still under a
+  watched folder — size and date checked around every read. No path crosses
+  the connection. Frames are capped at 1 MiB (8 MiB inflated), reads at 2 MiB,
+  lists at 500 entries, and requests at 8 at a time per device.
+- **The device's key** is in the system keychain (`lontano.chiave.<device>`;
+  the Android Keystore on the phone), never in the database, and an existing
+  one is never overwritten. The log names no key, address or device.
+
+### Database
+
+Two migrations, schema 38 → 40, both additive.
+
+- `039_dispositivi` — three tables, none of which travels in a profile, in the
+  Drive backup or in sync: `dispositivi` (each linked device: its public key,
+  name, platform, sync id, «Listen together» key, last addresses, when it was
+  linked and last seen, and whether it was revoked), `dispositivi_ascolti`
+  (listens of other devices' tracks made here, waiting to be sent to their
+  owner, with a key that makes a repeat harmless) and `dispositivi_ricevuti`
+  (the keys of the listens already counted here). Going back: drop the three
+  tables and set `user_version` to 38; the links are lost (made again with a
+  QR code) and so are the listens not yet sent.
+- `040_insieme_indirizzi` — one table, `insieme_indirizzi`: the last
+  `ip:port` at which each paired «Listen together» PC answered, by its key.
+  It does not travel either. Going back: drop the table and set
+  `user_version` to 39; the addresses come back at the next connection.
+
+### Known limits
+
+See README, «Known limits and planned work» → Android, and → «Your devices
+over the internet».
+
 ## [3.2.0] — 2026-10-27
 
 **Folders in the cloud.** A music folder can now live on OneDrive, Google

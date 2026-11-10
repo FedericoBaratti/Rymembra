@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use rymembra_insieme::messaggi::{Diritti, Messaggio};
 use rymembra_insieme::{
-    ChiavePubblica, Evento, FileServito, Gettone, IdConnessione, Identita, Impostazioni, Rete,
-    Tempi,
+    ChiavePubblica, Dove, Evento, FileServito, Gettone, IdConnessione, Identita, Impostazioni,
+    Rete, Tempi,
 };
 
 /// La base dei tempi di processo, come `rymembra_play::tempo`: una sola per
@@ -210,13 +210,13 @@ fn la_stretta_e_il_saluto_aprono_la_connessione_sui_due_capi() {
             nome,
             ospita,
             in_entrata,
-            indirizzo: dove,
+            dove,
         } if *aperta == id => {
             assert_eq!(*pari, chiave_host);
             assert_eq!(nome, "PC di Anna");
             assert!(*ospita, "l'host dichiara di ospitare");
             assert!(!*in_entrata);
-            assert_eq!(*dove, indirizzo);
+            assert_eq!(*dove, Dove::Lan(indirizzo));
             Some(())
         }
         _ => None,
@@ -676,7 +676,7 @@ fn le_letture_danno_l_intervallo_esatto_la_fine_e_i_rifiuti_giusti() {
     let file = cartella.file("brano.flac", &contenuto);
     let gettone = Gettone::nuovo().expect("gettone");
     host.rete.servi(gettone, file.clone());
-    let lettore = membro.rete.lettore(indirizzo, host.chiave());
+    let lettore = membro.rete.lettore(Dove::Lan(indirizzo), host.chiave());
 
     let (byte, totale) = lettore
         .pezzo(&gettone, 1_000, 5_000, None)
@@ -724,7 +724,7 @@ fn una_lettura_oltre_i_due_mega_si_fa_a_finestre() {
     let gettone = Gettone::nuovo().expect("gettone");
     host.rete
         .servi(gettone, cartella.file("lungo.flac", &contenuto));
-    let lettore = membro.rete.lettore(indirizzo, host.chiave());
+    let lettore = membro.rete.lettore(Dove::Lan(indirizzo), host.chiave());
     let quanti = u64::try_from(contenuto.len()).expect("sta");
     let (byte, totale) = lettore
         .pezzo(&gettone, 0, quanti + 10, None)
@@ -746,7 +746,7 @@ fn le_copertine_arrivano_intere() {
     let copertina: Arc<[u8]> = Arc::from(byte_di_prova(200_000));
     let gettone = Gettone::nuovo().expect("gettone");
     host.rete.servi_copertina(gettone, Arc::clone(&copertina));
-    let lettore = membro.rete.lettore(indirizzo, host.chiave());
+    let lettore = membro.rete.lettore(Dove::Lan(indirizzo), host.chiave());
     assert_eq!(lettore.copertina(&gettone).expect("arriva"), &*copertina);
 }
 
@@ -764,14 +764,14 @@ fn chi_non_e_fidato_o_e_bloccato_non_legge() {
 
     let err = estraneo
         .rete
-        .lettore(indirizzo, host.chiave())
+        .lettore(Dove::Lan(indirizzo), host.chiave())
         .pezzo(&gettone, 0, 10, None)
         .expect_err("non fidato");
     assert_eq!(codice_di(&err), "insieme.nonAssociato");
 
     let err = bloccato
         .rete
-        .lettore(indirizzo, host.chiave())
+        .lettore(Dove::Lan(indirizzo), host.chiave())
         .pezzo(&gettone, 0, 10, None)
         .expect_err("bloccato");
     // L'host chiude subito dopo la stretta, senza dire perché: per chi è
@@ -781,7 +781,7 @@ fn chi_non_e_fidato_o_e_bloccato_non_legge() {
     // E una chiave sbagliata dall'altra parte: non è l'host che si cercava.
     let err = estraneo
         .rete
-        .lettore(indirizzo, estraneo.chiave())
+        .lettore(Dove::Lan(indirizzo), estraneo.chiave())
         .pezzo(&gettone, 0, 10, None)
         .expect_err("chiave sbagliata");
     assert_eq!(codice_di(&err), "insieme.irraggiungibile");
@@ -794,7 +794,7 @@ fn una_lettura_gia_annullata_torna_subito() {
     host.fidati(&[&membro]);
     host.ammetti(&[&membro]);
     let indirizzo = host.ospita();
-    let lettore = membro.rete.lettore(indirizzo, host.chiave());
+    let lettore = membro.rete.lettore(Dove::Lan(indirizzo), host.chiave());
     let annullo = AtomicBool::new(true);
     let inizio = Instant::now();
     let err = lettore
@@ -818,7 +818,7 @@ fn si_misura_quanto_costa_una_lettura_su_127_0_0_1() {
     let gettone = Gettone::nuovo().expect("gettone");
     host.rete
         .servi(gettone, cartella.file("misura.flac", &contenuto));
-    let lettore = membro.rete.lettore(indirizzo, host.chiave());
+    let lettore = membro.rete.lettore(Dove::Lan(indirizzo), host.chiave());
 
     let inizio = Instant::now();
     lettore.pezzo(&gettone, 0, 256 * 1024, None).expect("prima");
@@ -1108,7 +1108,7 @@ fn tre_capi_un_membro_legge_il_brano_dell_altro_attraverso_l_host() {
     let gettone_copertina = Gettone::nuovo().expect("gettone");
     anna.rete
         .servi_copertina(gettone_copertina, Arc::clone(&copertina));
-    anna.rete.offri(indirizzo, host.chiave());
+    anna.rete.offri(Dove::Lan(indirizzo), host.chiave());
     // L'host sa di chi sono quei byte.
     host.rete.inoltra(gettone, anna.chiave());
     host.rete.inoltra(gettone_copertina, anna.chiave());
@@ -1116,7 +1116,7 @@ fn tre_capi_un_membro_legge_il_brano_dell_altro_attraverso_l_host() {
     // Bruno legge dall'host come da chiunque: non sa che i byte sono di Anna.
     // La connessione di servizio si apre in un filo: si riprova finché non
     // c'è, entro l'attesa.
-    let lettore = bruno.rete.lettore(indirizzo, host.chiave());
+    let lettore = bruno.rete.lettore(Dove::Lan(indirizzo), host.chiave());
     let fine = Instant::now() + ATTESA;
     let quanti = u64::try_from(contenuto.len()).expect("sta");
     let (byte, totale) = loop {
@@ -1186,7 +1186,7 @@ fn ferma_fa_uscire_tutti_i_fili_anche_a_meta_di_tutto() {
     let gettone = Gettone::nuovo().expect("gettone");
     host.rete
         .servi(gettone, cartella.file("a.flac", &byte_di_prova(1_000)));
-    let lettore = membro.rete.lettore(indirizzo, host.chiave());
+    let lettore = membro.rete.lettore(Dove::Lan(indirizzo), host.chiave());
     lettore.pezzo(&gettone, 0, 10, None).expect("si legge");
     assert!(host.rete.fili_in_vita() > 0 && membro.rete.fili_in_vita() > 0);
 

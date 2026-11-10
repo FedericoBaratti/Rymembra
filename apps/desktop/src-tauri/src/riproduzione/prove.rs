@@ -578,7 +578,7 @@ fn fino_alla_parentesi(inizio: &str) -> &str {
 /// la libreria senza limite (`completa(.., None)`), il filo della sessione
 /// (i venti di `ATTESA_COMANDO`), la scheda di un item dell'Archive, il
 /// gestore file su una share, un database scelto dall'utente.
-const ATTESE_LUNGHE: [&str; 12] = [
+const ATTESE_LUNGHE: [&str; 14] = [
     "gesto_di_coda(",
     "avvia_corrente(",
     "riprendi_ora(",
@@ -591,14 +591,19 @@ const ATTESE_LUNGHE: [&str; 12] = [
     "per_tenere(",
     "reveal_item_in_dir(",
     "importa_interno(",
+    "nel_nodo(",
+    "rileggi_e_aspetta(",
 ];
 
 /// I sorgenti fuori dal lettore con comandi della stessa specie: la
 /// sessione, l'esplorazione dei cataloghi, i comandi generali.
-const ALTRI_SORGENTI: [(&str, &str); 3] = [
+const ALTRI_SORGENTI: [(&str, &str); 6] = [
     ("insieme/mod.rs", include_str!("../insieme/mod.rs")),
     ("esplora.rs", include_str!("../esplora.rs")),
     ("comandi.rs", include_str!("../comandi.rs")),
+    ("lontano/mod.rs", include_str!("../lontano/mod.rs")),
+    ("lontano/sfoglia.rs", include_str!("../lontano/sfoglia.rs")),
+    ("lontano/scarico.rs", include_str!("../lontano/scarico.rs")),
 ];
 
 /// Nessun comando sincrono aspetta secondi.

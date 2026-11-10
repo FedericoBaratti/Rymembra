@@ -27,6 +27,16 @@ publish = false
 name = "rymembra"
 path = "src/main.rs"
 
+# L'applicazione vera è una libreria: Android non ha un `main`, carica una
+# libreria condivisa (`cdylib`) dentro un processo che ha avviato lui, e Tauri
+# entra da `rymembra_lib::run`. `staticlib` è la forma che chiede iOS, `rlib`
+# quella che usa il binario qui sopra. Il nome non è `rymembra` perché su
+# Windows una libreria e un binario con lo stesso nome si contendono gli stessi
+# file `.pdb` e `.lib` in `target/`.
+[lib]
+name = "rymembra_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }
 
@@ -49,11 +59,12 @@ rymembra-net = { path = "../../../core/rymembra-net" }
 # impossibile tenere preso il lucchetto della libreria mentre si scompatta uno
 # zip da trecento megabyte.
 rymembra-archivio = { path = "../../../core/rymembra-archivio" }
-# Il portachiavi di sistema, con la feature accesa: dove i segreti stanno lo
-# decide chi ha un sistema operativo sotto, cioe` questo crate. I crate del
-# nucleo lo dichiarano `default-features = false` proprio per non decidere al
-# posto suo.
-rymembra-oauth = { path = "../../../core/rymembra-oauth", features = ["portachiavi"] }
+# Il portachiavi di sistema: dove i segreti stanno lo decide chi ha un sistema
+# operativo sotto, cioe` questo crate. I crate del nucleo lo dichiarano
+# `default-features = false` proprio per non decidere al posto suo. La feature
+# `portachiavi` (il Credential Manager, via `keyring`) si accende solo sul
+# computer, nella tabella in fondo: su Android i segreti vanno nel Keystore.
+rymembra-oauth = { path = "../../../core/rymembra-oauth" }
 # Solo per costruire i `Fornitori` che il filo dell'arricchimento tiene vivi fra
 # una passata e l'altra: dentro ci sono la riserva di connessioni e — quel che
 # conta — lo stato degli interruttori, che rinascendo a ogni passata non
@@ -69,6 +80,10 @@ rymembra-ia = { path = "../../../core/rymembra-ia" }
 # «Ascolta insieme»: la rete fra due o più Rymembra della stessa LAN. Il
 # trasporto non sa niente del lettore; il desktop lo collega al motore.
 rymembra-insieme = { path = "../../../core/rymembra-insieme" }
+# Il collegamento via internet fra i dispositivi di una persona (iroh). È il
+# solo crate asincrono dell'albero, e lo tiene per sé: il suo `Nodo` aspetta,
+# e da qui lo si chiama come tutto il resto — vedi `src/lontano/mod.rs`.
+rymembra-lontano = { path = "../../../core/rymembra-lontano" }
 # Il testo della chiave segreta di «Ascolta insieme», letto dal portachiavi
 # (`insieme::fiducia::identita`), si azzera quando cade, come quello che
 # `Identita::in_testo` già restituisce. Nessun pacchetto nuovo nel `Cargo.lock`:
@@ -91,13 +106,67 @@ serde_json.workspace = true
 # arbitrari dietro una lista di cartelle permesse — più superficie, per una cosa
 # che non ci serve.
 #
-# Con `tray-icon`: l'icona nell'area di notifica è il modo di tornare da una
-# finestra nascosta, e senza un modo di tornare «chiudi senza spegnere» sarebbe
-# un programma che si perde. La feature accende `tray-icon` e `muda`, che erano
-# **già** nel grafo delle dipendenze di `tauri` — non entra niente di nuovo nel
-# `Cargo.lock`, si accende quel che c'era spento.
-tauri = { version = "2.12", features = ["tray-icon"] }
+# Con `tray-icon`, ma solo sul computer (nella tabella in fondo): l'icona
+# nell'area di notifica è il modo di tornare da una finestra nascosta, e senza
+# un modo di tornare «chiudi senza spegnere» sarebbe un programma che si perde.
+# La feature accende `tray-icon` e `muda`, che erano **già** nel grafo delle
+# dipendenze di `tauri` — non entra niente di nuovo nel `Cargo.lock`, si accende
+# quel che c'era spento. Su Android il vassoio non esiste, e il modo di tornare
+# è la notifica del lettore.
+tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
+# La schermata di consenso di Google si apre nel browser di **sistema**, mai
+# nella webview: una finestra dell'app che sa disegnare `accounts.google.com` è
+# una superficie di phishing, e allargare il CSP per sempre per un'operazione da
+# cinque minuti l'anno non si fa.
+tauri-plugin-opener = "2.6"
+# I tre pulsanti sotto l'anteprima nella barra delle applicazioni — precedente,
+# riproduci o pausa, successivo — come in foobar2000. Le SMTC qui sopra danno
+# la scheda nel riquadro del volume, non questi.
+#
+# Un crate nostro e non una dipendenza, contro la regola che vale per
+# `souvlaki` e `trash`: non c'è una dipendenza seria che lo faccia. L'unico
+# plugin per Tauri è alla 0.1.0 con un commit, e perde lo stato dei pulsanti
+# quando la barra li ricrea. Così l'`unsafe` che serve sta in due posti
+# dichiarati di quel crate — il modulo `finestra.rs` dei pulsanti, e la
+# funzione di `unita.rs` che chiede a Windows il genere di un'unità
+# (`GetDriveTypeW`: «Elimina dal disco» deve sapere che una chiavetta o un CD
+# il Cestino non ce l'hanno) — con l'eccezione dichiarata nel `Cargo.toml`
+# della radice; vedi `rymembra-barra/src/lib.rs`. Nel `Cargo.lock` non entra
+# nessun pacchetto esterno: usa il `windows` 0.62 che c'era già.
+rymembra-barra = { path = "../rymembra-barra" }
+# Le cartelle sorvegliate: sapere che un file è comparso, cambiato o sparito
+# sotto una cartella della libreria senza che nessuno prema «Scansiona». Su
+# Windows è `ReadDirectoryChangesW`, la stessa notifica che tiene aggiornato
+# Esplora risorse: un filo del sistema che dorme finché non succede qualcosa.
+#
+# Una dipendenza e non quattro chiamate a mano per la ragione già scritta per
+# `souvlaki` e `trash`: `ReadDirectoryChangesW` con i suoi buffer sovrapposti è
+# `unsafe` per definizione, e la radice del workspace lo vieta con `forbid`.
+#
+# La 8.x e non la 9: la 9 è ancora candidata. `default-features = false` toglie
+# `macos_fsevent`, che porta il backend di macOS e non serve a nessuno qui; il
+# canale è quello della libreria standard (niente `crossbeam-channel`), e
+# l'accorpamento degli eventi lo fa `crate::sorveglia`, in poche righe provate,
+# invece di `notify-debouncer-full` — che porterebbe una cache dei nomi di
+# file per riconoscere le rinomine, quando a noi basta sapere **in quale
+# cartella** è successo qualcosa.
+notify = { version = "8.2", default-features = false }
+
+# ── solo sul computer ───────────────────────────────────────────────────────
+# Quel che su Android non esiste, o non compila: il vassoio (la feature
+# `tray-icon` di `tauri`), l'updater, l'istanza unica, le SMTC, il Cestino, il
+# dialogo di emergenza e il Credential Manager. Il cfg è scritto per esteso
+# perché qui `desktop` — quello che `tauri-build` accende per il codice — non
+# esiste ancora: Cargo legge questo file prima di eseguire `build.rs`. Il
+# codice che le usa sta dietro `#[cfg(desktop)]`, o ha la sua controparte in
+# `src/mobile/`: vedi `lib.rs`.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Le stesse due voci di [dependencies], con le feature che servono solo qui:
+# Cargo le unisce, e su Android `tauri` resta senza vassoio e `rymembra-oauth`
+# senza `keyring`, che sul telefono non ha un portachiavi da usare.
+tauri = { version = "2.12", features = ["tray-icon"] }
+rymembra-oauth = { path = "../../../core/rymembra-oauth", features = ["portachiavi"] }
 # Il dialogo di un avvio fallito (`diario::mostra_l_avvio_fallito`). Quello di
 # `tauri-plugin-dialog` passa dal ciclo degli eventi, che in quel momento non è
 # mai nato (un `build` fallito) o sta cadendo (il panico «Failed to setup app»,
@@ -106,11 +175,6 @@ tauri-plugin-dialog = "2.8"
 # le stesse opzioni (senza le predefinite, che su Linux porterebbero `ashpd`),
 # e nessun `unsafe` nostro.
 rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
-# La schermata di consenso di Google si apre nel browser di **sistema**, mai
-# nella webview: una finestra dell'app che sa disegnare `accounts.google.com` è
-# una superficie di phishing, e allargare il CSP per sempre per un'operazione da
-# cinque minuti l'anno non si fa.
-tauri-plugin-opener = "2.6"
 # L'aggiornamento automatico. L'obiezione ovvia — «porta dentro `reqwest` e
 # `tokio`, e la radice del workspace spiega per bene perché Rymembra usa `ureq`» —
 # vale a metà, e va detto quale metà. `tokio` no: `tauri 2.12` ne dipende già
@@ -174,21 +238,6 @@ tauri-plugin-single-instance = "2.5"
 # suonando. Un tasto registrato come scorciatoia globale lo ruberebbe invece a
 # tutte le altre, per sempre, anche a lettore fermo.
 souvlaki = { version = "0.8", default-features = false }
-# I tre pulsanti sotto l'anteprima nella barra delle applicazioni — precedente,
-# riproduci o pausa, successivo — come in foobar2000. Le SMTC qui sopra danno
-# la scheda nel riquadro del volume, non questi.
-#
-# Un crate nostro e non una dipendenza, contro la regola che vale per
-# `souvlaki` e `trash`: non c'è una dipendenza seria che lo faccia. L'unico
-# plugin per Tauri è alla 0.1.0 con un commit, e perde lo stato dei pulsanti
-# quando la barra li ricrea. Così l'`unsafe` che serve sta in due posti
-# dichiarati di quel crate — il modulo `finestra.rs` dei pulsanti, e la
-# funzione di `unita.rs` che chiede a Windows il genere di un'unità
-# (`GetDriveTypeW`: «Elimina dal disco» deve sapere che una chiavetta o un CD
-# il Cestino non ce l'hanno) — con l'eccezione dichiarata nel `Cargo.toml`
-# della radice; vedi `rymembra-barra/src/lib.rs`. Nel `Cargo.lock` non entra
-# nessun pacchetto esterno: usa il `windows` 0.62 che c'era già.
-rymembra-barra = { path = "../rymembra-barra" }
 # Il Cestino del sistema operativo: su Windows la stessa `IFileOperation` che
 # usa Esplora risorse, quindi un file eliminato da Rymembra si ritrova dove chi lo
 # cerca andrebbe a cercarlo, con «Ripristina» accanto.
@@ -222,23 +271,16 @@ rymembra-barra = { path = "../rymembra-barra" }
 trash = { version = "5", default-features = false, features = [
     "coinit_apartmentthreaded",
 ] }
-# Le cartelle sorvegliate: sapere che un file è comparso, cambiato o sparito
-# sotto una cartella della libreria senza che nessuno prema «Scansiona». Su
-# Windows è `ReadDirectoryChangesW`, la stessa notifica che tiene aggiornato
-# Esplora risorse: un filo del sistema che dorme finché non succede qualcosa.
-#
-# Una dipendenza e non quattro chiamate a mano per la ragione già scritta per
-# `souvlaki` e `trash`: `ReadDirectoryChangesW` con i suoi buffer sovrapposti è
-# `unsafe` per definizione, e la radice del workspace lo vieta con `forbid`.
-#
-# La 8.x e non la 9: la 9 è ancora candidata. `default-features = false` toglie
-# `macos_fsevent`, che porta il backend di macOS e non serve a nessuno qui; il
-# canale è quello della libreria standard (niente `crossbeam-channel`), e
-# l'accorpamento degli eventi lo fa `crate::sorveglia`, in poche righe provate,
-# invece di `notify-debouncer-full` — che porterebbe una cache dei nomi di
-# file per riconoscere le rinomine, quando a noi basta sapere **in quale
-# cartella** è successo qualcosa.
-notify = { version = "8.2", default-features = false }
+
+# ── solo su Android ─────────────────────────────────────────────────────────
+# Il ponte verso Kotlin: il Keystore al posto del Credential Manager, la
+# sessione multimediale al posto delle SMTC, il selettore di documenti al posto
+# del dialogo delle cartelle. Un crate nostro, gemello di `rymembra-barra` e per
+# la stessa ragione: due righe `unsafe`, dichiarate là. Nel `Cargo.lock` non
+# entra nessun pacchetto esterno: `jni` e `ndk-context` li portavano già `tao`
+# e `cpal`.
+[target.'cfg(target_os = "android")'.dependencies]
+rymembra-android = { path = "../rymembra-android" }
 
 [features]
 # L'interruttore di Jamendo, da qui. Inoltra quello di `rymembra-catalogo`, dove

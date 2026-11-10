@@ -57,6 +57,31 @@ export interface TemiSkin {
 const CHIAVE = "rymembra.tema";
 
 /**
+ * Il tema **mostrato** l'ultima volta: non la scelta, che sta nel database, ma
+ * il suo risultato con la skin di allora.
+ *
+ * Serve solo al telefono, e solo al primo disegno. Sul computer la finestra
+ * non si mostra finché skin e tema non sono sul documento; sul telefono la
+ * pagina si vede da subito, coi segnaposto, e senza un tema la base è scura:
+ * chi tiene Rymembra chiara vedeva a ogni apertura una Home scura che dopo un
+ * attimo diventava chiara. Non è una preferenza — nessun backup la deve
+ * portare via — e se manca, o la memoria del browser non risponde, vale il
+ * tema del telefono.
+ */
+const CHIAVE_MOSTRATO = "rymembra.tema.mostrato";
+
+/** Il tema del primo disegno sul telefono: vedi [`CHIAVE_MOSTRATO`]. */
+export function temaDiPartenza(): Schema {
+  try {
+    const letto = window.localStorage.getItem(CHIAVE_MOSTRATO);
+    if (letto === "light" || letto === "dark") return letto;
+  } catch {
+    // La memoria del browser può mancare: vale il telefono.
+  }
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+/**
  * La scelta rimasta da prima dell'aggiornamento, se c'è.
  *
  * `null` quando non c'è niente da recuperare — che è il caso di chiunque apra
@@ -111,6 +136,11 @@ export function temaMostrato(tema: Tema, skin: TemiSkin | null): Schema {
 export function applicaTema(tema: Tema, skin: TemiSkin | null): boolean {
   const mostrato = temaMostrato(tema, skin);
   document.documentElement.dataset.theme = mostrato;
+  try {
+    window.localStorage.setItem(CHIAVE_MOSTRATO, mostrato);
+  } catch {
+    // Solo il primo disegno della prossima volta: vedi `CHIAVE_MOSTRATO`.
+  }
   return mostrato === "light";
 }
 

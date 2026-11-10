@@ -1,0 +1,679 @@
+//! I dispositivi collegati via internet, nella libreria: chi sono, e gli
+//! ascolti dei loro brani da contare da loro. Vedi la migrazione 039.
+//!
+//! La rete non sta qui: questo crate non dipende da `rymembra-lontano`. Qui
+//! ci sono solo le chiavi **pubbliche** degli altri; quella segreta di questo
+//! dispositivo sta nel portachiavi.
+//!
+//! Come per «Ascolta insieme», un errore di questo modulo non porta un nome,
+//! un indirizzo o una chiave: finisce nel diario.
+
+use rusqlite::{Connection, OptionalExtension as _};
+use rymembra_domain::errors::{AppError, ErrorCode};
+
+use crate::library::db_error;
+
+/// Quanti indirizzi di un dispositivo si ricordano.
+pub const MASSIMO_INDIRIZZI: usize = 8;
+
+/// Quanto si ricordano le chiavi degli ascolti già contati: un invio ripetuto
+/// arriva entro pochi giorni, non dopo mesi.
+pub const MEMORIA_RICEVUTI_MS: i64 = 30 * 24 * 3600 * 1000;
+
+/// Un dispositivo collegato.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispositivo {
+    /// La riga.
+    pub id: i64,
+    /// La chiave pubblica, 64 cifre esadecimali.
+    pub chiave: String,
+    /// Il nome con cui lo si mostra.
+    pub nome: String,
+    /// `windows`, `android`.
+    pub piattaforma: String,
+    /// L'identificativo che ha nella sincronia, se l'ha detto.
+    pub dispositivo: String,
+    /// La sua chiave di «Ascolta insieme», se l'ha data.
+    pub chiave_insieme: Option<String>,
+    /// Gli ultimi indirizzi visti, `ip:porta`.
+    pub indirizzi: Vec<String>,
+    /// Quando ci si è associati.
+    pub associato_ms: i64,
+    /// L'ultima volta che ha risposto.
+    pub visto_ms: Option<i64>,
+    /// Non ci si fida più: dimenticato dall'altra parte.
+    pub revocato: bool,
+}
+
+/// Quel che si sa di un dispositivo appena associato.
+#[derive(Debug, Clone, Copy)]
+pub struct Nuovo<'a> {
+    /// La chiave pubblica.
+    pub chiave: &'a str,
+    /// Il nome che ha dichiarato.
+    pub nome: &'a str,
+    /// La piattaforma che ha dichiarato.
+    pub piattaforma: &'a str,
+    /// L'identificativo nella sincronia.
+    pub dispositivo: &'a str,
+    /// La chiave di «Ascolta insieme».
+    pub chiave_insieme: Option<&'a str>,
+    /// Gli indirizzi da cui si è presentato.
+    pub indirizzi: &'a [String],
+}
+
+/// Un ascolto da contare dall'altra parte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AscoltoLontano {
+    /// Il brano, con l'id della libreria dell'altro.
+    pub brano: i64,
+    /// Quando è cominciato.
+    pub quando_ms: i64,
+    /// Quanto si è ascoltato.
+    pub ascoltato_ms: i64,
+    /// La chiave che lo rende innocuo se arriva due volte.
+    pub chiave: String,
+}
+
+// ── le impostazioni ─────────────────────────────────────────────────────────
+//
+// Come le `insieme.*`, sono fatti di **questa** macchina: il profilo e il
+// backup portano solo le chiavi che elencano, e `lontano.*` non c'è. Un
+// profilo portato su un altro computer non deve accendere da solo una porta
+// verso internet.
+
+/// L'interruttore «Raggiungibile da internet».
+pub const CHIAVE_ATTIVO: &str = "lontano.attivo";
+
+/// Il relay proprio, se ce n'è uno; assente, quelli pubblici di n0.
+pub const CHIAVE_RELAY: &str = "lontano.relay";
+
+/// I brani degli altri dispositivi sui dati mobili: vedi [`DatiMobili`].
+pub const CHIAVE_DATI_MOBILI: &str = "lontano.dati_mobili";
+
+/// Il relay più lungo che si accetta: un indirizzo, non un testo.
+pub const MASSIMO_RELAY: usize = 300;
+
+/// Che fare dei brani di un altro dispositivo quando si è sui dati mobili
+/// («Solo Wi-Fi»). Vale per l'ascolto, gli scaricamenti e le sessioni via
+/// internet; la presenza e gli elenchi passano sempre, perché pesano poco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DatiMobili {
+    /// Lo si chiede, una volta: la risposta diventa [`DatiMobili::Si`] o
+    /// [`DatiMobili::No`].
+    #[default]
+    Chiedi,
+    /// Si usano.
+    Si,
+    /// Si aspetta il Wi-Fi.
+    No,
+}
+
+/// Le impostazioni del collegamento via internet.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Impostazioni {
+    /// «Raggiungibile da internet». Spento di serie.
+    pub attivo: bool,
+    /// Il relay proprio (`https://…`), se ce n'è uno.
+    pub relay: Option<String>,
+    /// «Solo Wi-Fi».
+    pub dati_mobili: DatiMobili,
+}
+
+/// Le impostazioni. Un valore illeggibile vale quello di serie: è
+/// un'impostazione, non un dato da difendere.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn impostazioni(connection: &Connection) -> Result<Impostazioni, AppError> {
+    let attivo = crate::settings::read_json::<bool>(connection, CHIAVE_ATTIVO)
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    let relay = crate::settings::read(connection, CHIAVE_RELAY)?
+        .and_then(|grezzo| relay_valido(&grezzo).ok());
+    let dati_mobili = crate::settings::read_json::<DatiMobili>(connection, CHIAVE_DATI_MOBILI)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    Ok(Impostazioni {
+        attivo,
+        relay,
+        dati_mobili,
+    })
+}
+
+/// Accende o spegne «Raggiungibile da internet».
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn attiva(connection: &Connection, attivo: bool) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_ATTIVO, &attivo)
+}
+
+/// Il relay proprio, o `None` per tornare a quelli di n0.
+///
+/// # Errori
+///
+/// `net.badSchema` per un indirizzo che non è `https://` o è troppo lungo;
+/// quelli del database.
+pub fn scegli_relay(connection: &Connection, relay: Option<&str>) -> Result<(), AppError> {
+    match relay.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(grezzo) => {
+            let buono = relay_valido(grezzo)?;
+            crate::settings::write(connection, CHIAVE_RELAY, &buono)
+        }
+        None => crate::settings::forget(connection, CHIAVE_RELAY).map(|_| ()),
+    }
+}
+
+/// La scelta sui dati mobili.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn scegli_dati_mobili(connection: &Connection, scelta: DatiMobili) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_DATI_MOBILI, &scelta)
+}
+
+/// Un relay è un indirizzo `https://` con un host, senza spazi. Il resto lo
+/// controlla iroh quando lo usa.
+fn relay_valido(grezzo: &str) -> Result<String, AppError> {
+    let relay = grezzo.trim();
+    let host = relay
+        .strip_prefix("https://")
+        .map(|resto| resto.split(['/', '?', '#']).next().unwrap_or(""))
+        .unwrap_or("");
+    if host.is_empty()
+        || relay.len() > MASSIMO_RELAY
+        || relay.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(AppError::new(ErrorCode::NetBadSchema {
+            service: Some("lontano".to_owned()),
+            detail: Some("il relay dev'essere un indirizzo https://".to_owned()),
+        }));
+    }
+    Ok(relay.to_owned())
+}
+
+// ── i dispositivi ───────────────────────────────────────────────────────────
+
+/// Tutti i dispositivi collegati, i più recenti prima.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn tutti(connection: &Connection) -> Result<Vec<Dispositivo>, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("elenco dei dispositivi", &err);
+    let mut istruzione = connection
+        .prepare(&format!(
+            "SELECT {CAMPI} FROM dispositivi ORDER BY associato_ms DESC, id DESC"
+        ))
+        .map_err(guasto)?;
+    let righe = istruzione.query_map([], riga).map_err(guasto)?;
+    righe.collect::<Result<Vec<_>, _>>().map_err(guasto)
+}
+
+/// Un dispositivo, dalla sua chiave.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn uno(connection: &Connection, chiave: &str) -> Result<Option<Dispositivo>, AppError> {
+    connection
+        .query_row(
+            &format!("SELECT {CAMPI} FROM dispositivi WHERE chiave = ?1"),
+            [chiave.trim().to_ascii_lowercase()],
+            riga,
+        )
+        .optional()
+        .map_err(|err| db_error("un dispositivo", &err))
+}
+
+/// È un dispositivo collegato e di cui ci si fida?
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn associato(connection: &Connection, chiave: &str) -> Result<bool, AppError> {
+    Ok(uno(connection, chiave)?.is_some_and(|d| !d.revocato))
+}
+
+/// Ricorda un dispositivo appena associato. Se c'era già, lo aggiorna e torna
+/// fidato: riassociarsi col QR è la prova che lo si vuole.
+///
+/// # Errori
+///
+/// `lontano.protocollo` per una chiave che non è di 64 cifre esadecimali.
+/// Poi quelli del database.
+pub fn associa(connection: &Connection, nuovo: Nuovo<'_>, adesso_ms: i64) -> Result<i64, AppError> {
+    let chiave = chiave_valida(nuovo.chiave)?;
+    let mut nome = crate::insieme::ripulisci_nome(nuovo.nome);
+    if nome.is_empty() {
+        nome = chiave.chars().take(8).collect();
+    }
+    let piattaforma: String = nuovo
+        .piattaforma
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(16)
+        .collect();
+    let dispositivo: String = nuovo
+        .dispositivo
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(64)
+        .collect();
+    let chiave_insieme = nuovo
+        .chiave_insieme
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit()));
+    connection
+        .query_row(
+            "INSERT INTO dispositivi
+               (chiave, nome, piattaforma, dispositivo, chiave_insieme, indirizzi,
+                associato_ms, visto_ms, revocato)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0)
+             ON CONFLICT(chiave) DO UPDATE SET
+               nome = excluded.nome,
+               piattaforma = excluded.piattaforma,
+               dispositivo = excluded.dispositivo,
+               chiave_insieme = excluded.chiave_insieme,
+               indirizzi = excluded.indirizzi,
+               associato_ms = excluded.associato_ms,
+               visto_ms = excluded.visto_ms,
+               revocato = 0
+             RETURNING id",
+            rusqlite::params![
+                chiave,
+                nome,
+                piattaforma,
+                dispositivo,
+                chiave_insieme,
+                indirizzi_in_json(nuovo.indirizzi),
+                adesso_ms
+            ],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error("associazione di un dispositivo", &err))
+}
+
+/// Rinomina un dispositivo.
+///
+/// # Errori
+///
+/// `ipc.payloadInvalid` per un nome vuoto; `lontano.nonAssociato` se il
+/// dispositivo non c'è. Poi quelli del database.
+pub fn rinomina(connection: &Connection, chiave: &str, nome: &str) -> Result<(), AppError> {
+    let nome = crate::insieme::ripulisci_nome(nome);
+    if nome.is_empty() {
+        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "lontano_rinomina".to_owned(),
+            detail: Some("il nome è vuoto".to_owned()),
+        }));
+    }
+    let toccate = connection
+        .execute(
+            "UPDATE dispositivi SET nome = ?2 WHERE chiave = ?1",
+            rusqlite::params![chiave.trim().to_ascii_lowercase(), nome],
+        )
+        .map_err(|err| db_error("nome di un dispositivo", &err))?;
+    c_era(toccate)
+}
+
+/// Non ci si fida più del dispositivo (ha chiesto di essere dimenticato), ma
+/// la riga resta, perché lo si veda e lo si possa togliere.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn revoca(connection: &Connection, chiave: &str) -> Result<(), AppError> {
+    connection
+        .execute(
+            "UPDATE dispositivi SET revocato = 1 WHERE chiave = ?1",
+            [chiave.trim().to_ascii_lowercase()],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("revoca di un dispositivo", &err))
+}
+
+/// Dimentica un dispositivo, e gli ascolti che aspettavano di arrivargli.
+/// Dimenticare due volte è dimenticare una volta.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn dimentica(connection: &Connection, chiave: &str) -> Result<(), AppError> {
+    let chiave = chiave.trim().to_ascii_lowercase();
+    connection
+        .execute("DELETE FROM dispositivi WHERE chiave = ?1", [&chiave])
+        .and_then(|_| {
+            connection.execute(
+                "DELETE FROM dispositivi_ascolti WHERE dispositivo = ?1",
+                [&chiave],
+            )
+        })
+        .map(|_| ())
+        .map_err(|err| db_error("dispositivo da dimenticare", &err))
+}
+
+/// Il dispositivo ha risposto adesso, da questi indirizzi (vuoti: quelli di
+/// prima restano).
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn visto(
+    connection: &Connection,
+    chiave: &str,
+    adesso_ms: i64,
+    indirizzi: &[String],
+) -> Result<(), AppError> {
+    let chiave = chiave.trim().to_ascii_lowercase();
+    let esito = if indirizzi.is_empty() {
+        connection.execute(
+            "UPDATE dispositivi SET visto_ms = ?2 WHERE chiave = ?1",
+            rusqlite::params![chiave, adesso_ms],
+        )
+    } else {
+        connection.execute(
+            "UPDATE dispositivi SET visto_ms = ?2, indirizzi = ?3 WHERE chiave = ?1",
+            rusqlite::params![chiave, adesso_ms, indirizzi_in_json(indirizzi)],
+        )
+    };
+    esito
+        .map(|_| ())
+        .map_err(|err| db_error("dispositivo visto", &err))
+}
+
+/// Un ascolto fatto qui di un brano di `dispositivo`, da mandargli. Lo stesso
+/// due volte (la stessa `chiave`) è uno solo.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ricorda_ascolto(
+    connection: &Connection,
+    dispositivo: &str,
+    ascolto: &AscoltoLontano,
+) -> Result<(), AppError> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO dispositivi_ascolti
+               (dispositivo, brano, quando_ms, ascoltato_ms, chiave, inviato)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            rusqlite::params![
+                dispositivo.trim().to_ascii_lowercase(),
+                ascolto.brano,
+                ascolto.quando_ms,
+                ascolto.ascoltato_ms,
+                ascolto.chiave
+            ],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("ascolto di un brano di un altro dispositivo", &err))
+}
+
+/// Gli ascolti che `dispositivo` non ha ancora ricevuto, dal più vecchio.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ascolti_da_mandare(
+    connection: &Connection,
+    dispositivo: &str,
+) -> Result<Vec<AscoltoLontano>, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("ascolti da mandare", &err);
+    let mut istruzione = connection
+        .prepare(
+            "SELECT brano, quando_ms, ascoltato_ms, chiave FROM dispositivi_ascolti
+              WHERE dispositivo = ?1 AND inviato = 0
+              ORDER BY quando_ms, id",
+        )
+        .map_err(guasto)?;
+    let righe = istruzione
+        .query_map([dispositivo.trim().to_ascii_lowercase()], |r| {
+            Ok(AscoltoLontano {
+                brano: r.get(0)?,
+                quando_ms: r.get(1)?,
+                ascoltato_ms: r.get(2)?,
+                chiave: r.get(3)?,
+            })
+        })
+        .map_err(guasto)?;
+    righe.collect::<Result<Vec<_>, _>>().map_err(guasto)
+}
+
+/// L'ascolto è arrivato: si toglie.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ascolto_arrivato(connection: &Connection, chiave: &str) -> Result<(), AppError> {
+    connection
+        .execute(
+            "DELETE FROM dispositivi_ascolti WHERE chiave = ?1",
+            [chiave],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("ascolto arrivato", &err))
+}
+
+/// Dall'altra parte: questo ascolto è nuovo? `true` la prima volta, e da lì
+/// la chiave si ricorda per [`MEMORIA_RICEVUTI_MS`].
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ascolto_nuovo(
+    connection: &Connection,
+    chiave: &str,
+    adesso_ms: i64,
+) -> Result<bool, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("ascolto ricevuto", &err);
+    connection
+        .execute(
+            "DELETE FROM dispositivi_ricevuti WHERE ricevuto_ms < ?1",
+            [adesso_ms.saturating_sub(MEMORIA_RICEVUTI_MS)],
+        )
+        .map_err(guasto)?;
+    let inseriti = connection
+        .execute(
+            "INSERT OR IGNORE INTO dispositivi_ricevuti (chiave, ricevuto_ms) VALUES (?1, ?2)",
+            rusqlite::params![chiave, adesso_ms],
+        )
+        .map_err(guasto)?;
+    Ok(inseriti > 0)
+}
+
+/// Un ascolto ricevuto che non si è potuto contare: la sua chiave non lo
+/// deve dire contato, o il prossimo invio lo scarterebbe.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ascolto_da_ricontare(connection: &Connection, chiave: &str) -> Result<(), AppError> {
+    connection
+        .execute(
+            "DELETE FROM dispositivi_ricevuti WHERE chiave = ?1",
+            [chiave],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("ascolto da ricontare", &err))
+}
+
+const CAMPI: &str = "id, chiave, nome, piattaforma, dispositivo, chiave_insieme, indirizzi, \
+                     associato_ms, visto_ms, revocato";
+
+fn riga(r: &rusqlite::Row<'_>) -> rusqlite::Result<Dispositivo> {
+    let indirizzi: String = r.get(6)?;
+    Ok(Dispositivo {
+        id: r.get(0)?,
+        chiave: r.get(1)?,
+        nome: r.get(2)?,
+        piattaforma: r.get(3)?,
+        dispositivo: r.get(4)?,
+        chiave_insieme: r.get(5)?,
+        indirizzi: serde_json::from_str(&indirizzi).unwrap_or_default(),
+        associato_ms: r.get(7)?,
+        visto_ms: r.get(8)?,
+        revocato: r.get::<_, i64>(9)? != 0,
+    })
+}
+
+fn indirizzi_in_json(indirizzi: &[String]) -> String {
+    let tenuti: Vec<&String> = indirizzi
+        .iter()
+        .filter(|a| a.parse::<std::net::SocketAddr>().is_ok())
+        .take(MASSIMO_INDIRIZZI)
+        .collect();
+    serde_json::to_string(&tenuti).unwrap_or_else(|_| "[]".to_owned())
+}
+
+fn chiave_valida(chiave: &str) -> Result<String, AppError> {
+    let chiave = chiave.trim().to_ascii_lowercase();
+    if chiave.len() == 64 && chiave.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(chiave);
+    }
+    Err(
+        AppError::new(ErrorCode::LontanoProtocollo).with_cause(format!(
+            "chiave pubblica di {} caratteri, non 64 cifre esadecimali",
+            chiave.chars().count()
+        )),
+    )
+}
+
+fn c_era(toccate: usize) -> Result<(), AppError> {
+    if toccate > 0 {
+        Ok(())
+    } else {
+        Err(AppError::new(ErrorCode::LontanoNonAssociato))
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use crate::db::open_in_memory;
+
+    const INSIEME: &str = "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB";
+
+    fn nuovo<'a>(chiave: &'a str, indirizzi: &'a [String]) -> Nuovo<'a> {
+        Nuovo {
+            chiave,
+            nome: " Nothing\u{202E} Phone 2a ",
+            piattaforma: "android",
+            dispositivo: "d-123",
+            chiave_insieme: Some(INSIEME),
+            indirizzi,
+        }
+    }
+
+    #[test]
+    fn le_impostazioni_hanno_un_valore_di_serie_e_il_relay_si_controlla() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        assert_eq!(impostazioni(c).unwrap(), Impostazioni::default());
+        attiva(c, true).unwrap();
+        scegli_dati_mobili(c, DatiMobili::No).unwrap();
+        scegli_relay(c, Some(" https://relay.example.org/ ")).unwrap();
+        let lette = impostazioni(c).unwrap();
+        assert!(lette.attivo);
+        assert_eq!(lette.dati_mobili, DatiMobili::No);
+        assert_eq!(lette.relay.as_deref(), Some("https://relay.example.org/"));
+        for cattivo in [
+            "http://relay.example.org",
+            "https://",
+            "https:// spazio",
+            "relay",
+        ] {
+            assert!(scegli_relay(c, Some(cattivo)).is_err(), "{cattivo}");
+        }
+        assert_eq!(
+            impostazioni(c).unwrap().relay,
+            lette.relay,
+            "un no non tocca quello di prima"
+        );
+        scegli_relay(c, Some("  ")).unwrap();
+        assert_eq!(impostazioni(c).unwrap().relay, None, "vuoto torna a n0");
+        crate::settings::write(c, CHIAVE_DATI_MOBILI, "forse").unwrap();
+        crate::settings::write(c, CHIAVE_ATTIVO, "{").unwrap();
+        let rotte = impostazioni(c).unwrap();
+        assert_eq!(rotte.dati_mobili, DatiMobili::Chiedi);
+        assert!(!rotte.attivo);
+    }
+
+    #[test]
+    fn un_dispositivo_si_associa_si_rinomina_si_revoca_e_si_dimentica() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let chiave = "0f".repeat(32);
+        let indirizzi = vec!["192.168.1.5:4000".to_owned(), "non un indirizzo".to_owned()];
+        let id = associa(c, nuovo(&chiave, &indirizzi), 1000).unwrap();
+        let letto = uno(c, &chiave.to_ascii_uppercase()).unwrap().unwrap();
+        assert_eq!(letto.id, id);
+        assert_eq!(
+            letto.nome, "Nothing Phone 2a",
+            "ripulito come gli altri nomi"
+        );
+        assert_eq!(
+            letto.chiave_insieme.as_deref(),
+            Some("ab".repeat(32).as_str())
+        );
+        assert_eq!(letto.indirizzi, vec!["192.168.1.5:4000".to_owned()]);
+        assert_eq!(letto.visto_ms, Some(1000));
+        assert!(associato(c, &chiave).unwrap());
+
+        rinomina(c, &chiave, "Telefono").unwrap();
+        assert!(rinomina(c, &chiave, "   ").is_err());
+        assert!(rinomina(c, &"aa".repeat(32), "x").is_err());
+
+        visto(c, &chiave, 2000, &[]).unwrap();
+        let letto = uno(c, &chiave).unwrap().unwrap();
+        assert_eq!(
+            (letto.nome.as_str(), letto.visto_ms),
+            ("Telefono", Some(2000))
+        );
+        assert_eq!(letto.indirizzi.len(), 1, "visto senza indirizzi: restano");
+
+        revoca(c, &chiave).unwrap();
+        assert!(!associato(c, &chiave).unwrap());
+        // Riassociarsi col QR lo rende di nuovo fidato, con la stessa riga.
+        assert_eq!(associa(c, nuovo(&chiave, &[]), 3000).unwrap(), id);
+        assert!(associato(c, &chiave).unwrap());
+
+        dimentica(c, &chiave).unwrap();
+        dimentica(c, &chiave).unwrap();
+        assert!(tutti(c).unwrap().is_empty());
+        assert!(associa(c, nuovo("corta", &[]), 1).is_err());
+    }
+
+    #[test]
+    fn un_ascolto_si_manda_una_volta_e_si_conta_una_volta() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let pc = "1a".repeat(32);
+        let ascolto = AscoltoLontano {
+            brano: 42,
+            quando_ms: 10,
+            ascoltato_ms: 200_000,
+            chiave: "k1".to_owned(),
+        };
+        ricorda_ascolto(c, &pc, &ascolto).unwrap();
+        ricorda_ascolto(c, &pc, &ascolto).unwrap();
+        assert_eq!(ascolti_da_mandare(c, &pc).unwrap(), vec![ascolto.clone()]);
+        ascolto_arrivato(c, "k1").unwrap();
+        assert!(ascolti_da_mandare(c, &pc).unwrap().is_empty());
+
+        // Dall'altra parte.
+        assert!(ascolto_nuovo(c, "k1", 1_000).unwrap());
+        assert!(!ascolto_nuovo(c, "k1", 2_000).unwrap(), "già contato");
+        assert!(
+            ascolto_nuovo(c, "k1", 1_000 + MEMORIA_RICEVUTI_MS + 1).unwrap(),
+            "dopo un mese la chiave si dimentica"
+        );
+    }
+}

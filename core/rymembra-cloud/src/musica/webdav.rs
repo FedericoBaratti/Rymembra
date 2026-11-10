@@ -24,9 +24,25 @@
 //! alla cima: il cursore è l'`ETag` della cima, e quando cambia si rielenca
 //! tutto e lo specchio confronta. Un server che gli `ETag` delle cartelle non
 //! li propaga si rielenca comunque ogni [`RIPASSO`].
+//!
+//! # I rimandi, e i server che ignorano `Range`
+//!
+//! I byte di un brano seguono fino a [`RIMANDI`] rimandi, solo in `https`. La
+//! password li segue finché restano sullo stesso server: un file rimandato a
+//! un altro percorso della stessa origine senza la password risponderebbe
+//! `401`, mentre a un'altra origine (un CDN, con un indirizzo firmato) non
+//! deve arrivare. Un `PROPFIND` invece non segue rimandi: gli identificativi
+//! sono i percorsi, e una cima che rimanda altrove va scritta com'è
+//! davvero, cosa che l'errore dice.
+//!
+//! Un server che ignora `Range` (risponde `200` col file intero a una domanda
+//! da metà file) si legge **di fila**: la stessa risposta serve le finestre
+//! una dopo l'altra, e solo un salto indietro la riapre da capo. Fino alla
+//! 3.2 era `cloud.rangeUnsupported`, cioè un brano che non si ascoltava.
 
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use quick_xml::events::Event;
@@ -34,7 +50,9 @@ use quick_xml::reader::Reader;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::nuvola::{Cambio, Servizio, VoceRemota, interessa};
 use rymembra_net::flusso::Sorgente;
-use rymembra_net::http::{Corpo, Metodo, Pezzo, Rete, Richiesta, Rimandi, Risposta, percento};
+use rymembra_net::http::{
+    Cancello, Corpo, DiFila, Metodo, Pezzo, Rete, Richiesta, Rimandi, Risposta, percento,
+};
 
 use super::{Deposito, Identita, errore_cursore_scaduto, ripasso_periodico};
 
@@ -45,6 +63,9 @@ const TENTATIVI: u32 = 3;
 
 /// Quante cartelle si chiedono insieme durante l'elenco.
 const INSIEME: usize = 4;
+
+/// Quanti rimandi segue la lettura di un brano.
+const RIMANDI: u32 = 5;
 
 /// Ogni quanto si rielenca tutto anche senza segni di cambiamento: per i
 /// server che non propagano gli `ETag` delle cartelle.
@@ -70,6 +91,9 @@ struct Risorsa {
 pub struct WebDav {
     rete: Rete,
     flusso: Rete,
+    /// La lettura di fila, per un server che ignora `Range`: le attese di un
+    /// prelievo, perché una risposta sola serve tutto il brano.
+    di_fila: Rete,
     /// `https://cloud.esempio.it`.
     origine: String,
     /// Il percorso della cima, decodificato e senza barra finale.
@@ -96,9 +120,18 @@ impl WebDav {
         if !origine.starts_with("https://") && !cfg!(test) {
             return Err(AppError::new(ErrorCode::CloudInsecureServer));
         }
+        let rimandi = || Rimandi::Sorvegliati {
+            quanti: RIMANDI,
+            cancello: Cancello::nuovo(|bersaglio| bersaglio.starts_with("https://")),
+        };
         Ok(Self {
             rete: Rete::nuova(CHIAVE, SCADENZA_DOMANDE).con_rimandi(Rimandi::Nessuno),
-            flusso: Rete::per_flusso(CHIAVE).con_rimandi(Rimandi::Nessuno),
+            flusso: Rete::per_flusso(CHIAVE)
+                .con_rimandi(rimandi())
+                .con_permesso_in_casa(),
+            di_fila: Rete::per_prelievo(CHIAVE)
+                .con_rimandi(rimandi())
+                .con_permesso_in_casa(),
             origine,
             base,
             utente: utente.to_owned(),
@@ -114,7 +147,8 @@ impl WebDav {
     fn per_prova(rete: Rete, indirizzo: &str, utente: &str, password: &str) -> Self {
         let mut io = Self::nuovo(indirizzo, utente, password).expect("indirizzo di prova");
         io.rete = rete.clone();
-        io.flusso = rete;
+        io.flusso = rete.clone();
+        io.di_fila = rete;
         io
     }
 
@@ -383,8 +417,11 @@ impl Deposito for WebDav {
         url.pop();
         Ok(Box::new(DaWebDav {
             flusso: self.flusso.clone(),
+            rete_di_fila: self.di_fila.clone(),
             url,
             autorizzazione: self.autorizzazione.clone(),
+            senza_intervalli: AtomicBool::new(false),
+            di_fila: Mutex::new(None),
         }))
     }
 
@@ -415,12 +452,58 @@ impl Deposito for WebDav {
     }
 }
 
-/// I byte di un file WebDAV: `GET` con `Range` e la password.
+/// I byte di un file WebDAV: `GET` con `Range` e la password, o di fila per
+/// un server che `Range` lo ignora (vedi il `//!`).
 #[derive(Debug)]
 pub struct DaWebDav {
     flusso: Rete,
+    rete_di_fila: Rete,
     url: String,
     autorizzazione: String,
+    /// Il server ha risposto `200` a una domanda da metà file: da qui in poi
+    /// questo brano si legge di fila.
+    senza_intervalli: AtomicBool,
+    /// La risposta letta di fila, aperta fra un pezzo e l'altro.
+    di_fila: Mutex<Option<DiFila>>,
+}
+
+impl DaWebDav {
+    /// I byte da `da` dalla risposta di fila: la stessa finché si va avanti,
+    /// una nuova per un salto indietro o dopo una lettura caduta (una sola
+    /// volta: la seconda caduta si dice).
+    fn di_fila(&self, da: u64, quanti: u64, avanti: &dyn Fn() -> bool) -> Result<Pezzo, AppError> {
+        let mut aperta = self.di_fila.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut ancora = true;
+        loop {
+            let lettura = match aperta.take() {
+                Some(lettura) if lettura.letti() <= da => lettura,
+                _ => self
+                    .rete_di_fila
+                    .di_fila(&self.url, &[("authorization", &self.autorizzazione)])?,
+            };
+            let lettura = aperta.insert(lettura);
+            match lettura.pezzo(da, quanti, avanti) {
+                Ok(byte) => {
+                    return Ok(Pezzo {
+                        byte,
+                        totale: lettura.totale(),
+                        url_finale: None,
+                    });
+                }
+                // Chi non aspetta più se ne va: la risposta resta buona, e sa
+                // fin dove è arrivata.
+                Err(err) if matches!(err.code(), ErrorCode::InternalAborted { .. }) => {
+                    return Err(err);
+                }
+                Err(err) => {
+                    *aperta = None;
+                    if !std::mem::take(&mut ancora) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Sorgente for DaWebDav {
@@ -434,27 +517,29 @@ impl Sorgente for DaWebDav {
         quanti: u64,
         avanti: &dyn Fn() -> bool,
     ) -> Result<Pezzo, AppError> {
-        self.flusso
-            .intervallo_con(
+        let tradotto = |err: AppError| match err.code() {
+            ErrorCode::NetHttp { status: 401, .. } => AppError::new(ErrorCode::CloudAuthExpired {
+                servizio: Servizio::WebDav.nome().to_owned(),
+            }),
+            _ => err,
+        };
+        if !self.senza_intervalli.load(Ordering::Acquire) {
+            match self.flusso.intervallo_con(
                 &self.url,
                 da,
                 quanti,
                 avanti,
                 &[("authorization", &self.autorizzazione)],
-            )
-            .map_err(|err| match err.code() {
-                // Un `200` a una richiesta da metà file: il server non sa
-                // servire un pezzo, e ogni salto sarebbe il file da capo.
-                ErrorCode::DownloadBadResponse if da > 0 => {
-                    AppError::new(ErrorCode::CloudRangeUnsupported)
+            ) {
+                // Un `200` a una richiesta da metà file: il server ignora
+                // `Range`, e il brano si legge di fila da qui in poi.
+                Err(err) if da > 0 && matches!(err.code(), ErrorCode::DownloadBadResponse) => {
+                    self.senza_intervalli.store(true, Ordering::Release);
                 }
-                ErrorCode::NetHttp { status: 401, .. } => {
-                    AppError::new(ErrorCode::CloudAuthExpired {
-                        servizio: Servizio::WebDav.nome().to_owned(),
-                    })
-                }
-                _ => err,
-            })
+                esito => return esito.map_err(tradotto),
+            }
+        }
+        self.di_fila(da, quanti, avanti).map_err(tradotto)
     }
 }
 

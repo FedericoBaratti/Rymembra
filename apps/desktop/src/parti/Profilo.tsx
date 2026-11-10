@@ -37,7 +37,7 @@
  * che invece voleva può dirlo.
  */
 import { useRef, useState } from "react";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, salvaCon } from "../dialoghi";
 
 import type {
   AvanzamentoProfilo,
@@ -163,15 +163,20 @@ export function Profilo({
 
   const esporta = async () => {
     try {
-      const scelta = await save({
-        defaultPath: "rymembra-profilo.ryprofile",
-        filters: [{ name: t("profile.file"), extensions: ["ryprofile"] }],
-      });
-      if (typeof scelta !== "string") return;
-      setInVolo(true);
-      const esito = await ipc.profiloEsporta(scelta);
+      const salvato = await salvaCon(
+        {
+          defaultPath: "rymembra-profilo.ryprofile",
+          filters: [{ name: t("profile.file"), extensions: ["ryprofile"] }],
+        },
+        (percorso) => {
+          setInVolo(true);
+          return ipc.profiloEsporta(percorso);
+        },
+      );
+      if (salvato === null) return;
+      const { esito, dove } = salvato;
       setUscito(esito);
-      onNotizia(t("profile.exported", { n: esito.voci, dove: scelta }));
+      onNotizia(t("profile.exported", { n: esito.voci, dove }));
     } catch (e) {
       onErrore(e);
     } finally {

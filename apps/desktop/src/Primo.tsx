@@ -57,6 +57,7 @@ import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
 import { useDati } from "./dati";
 import { tastoDelPrimo } from "./tastoPrimo";
+import { AccessoTelefono, useAccessoTelefono } from "./parti/AccessoTelefono";
 
 /**
  * Quel che segue «Sto leggendo la libreria…»: i numeri, fuori dalla regione
@@ -203,11 +204,15 @@ export function Primo({
    * Invio battuto per caso non deve fare nessuna delle due cose.
    */
   const finestrella = useFinestrella<HTMLDivElement>(onSalta);
+  // Sul telefono si cerca solo dopo il permesso: prima, le cartelle della
+  // musica risultano vuote. Altrove `pronto` è vero da subito.
+  const accesso = useAccessoTelefono();
 
   // Si guarda una volta sola, all'apertura. La ricerca ha una scadenza dalla
   // parte del nucleo: se una cartella sincronizzata non risponde, torna un
   // elenco vuoto invece di lasciare questa schermata a girare per sempre.
   useEffect(() => {
+    if (!accesso.pronto) return;
     let vivo = true;
     void letture
       .cartelleCandidate()
@@ -226,7 +231,7 @@ export function Primo({
     return () => {
       vivo = false;
     };
-  }, [letture]);
+  }, [letture, accesso.pronto]);
 
   const spunta = useCallback((percorso: string) => {
     setScelte((prima) => {
@@ -273,6 +278,27 @@ export function Primo({
   // Letto tutto, e non c'era niente. Si dice, e si dice perché se lo si sa: le
   // cartelle che non hanno risposto sono il caso del NAS spento.
   const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
+
+  if (!accesso.pronto) {
+    return (
+      <Presenza parte="first-run">
+        <div
+          ref={finestrella}
+          className="primo first-run"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="primo-titolo"
+          data-fuoco-iniziale
+        >
+          <div className="primo-scheda first-run-card">
+            <p className="occhiello">{t("primo.eyebrow")}</p>
+            <h1 id="primo-titolo">{t("primo.title")}</h1>
+            <AccessoTelefono accesso={accesso} onSalta={onSalta} />
+          </div>
+        </div>
+      </Presenza>
+    );
+  }
 
   return (
     <Presenza parte="first-run">

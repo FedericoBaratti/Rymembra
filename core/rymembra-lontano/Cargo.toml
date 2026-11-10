@@ -1,0 +1,60 @@
+[package]
+name = "rymembra-lontano"
+description = "Il collegamento fra i propri dispositivi via internet, senza un server di Rymembra: associazione col QR, presenza, la libreria dell'altro e i suoi brani."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Vedi `rymembra-oauth`: nessuno di questi crate va su crates.io.
+publish = false
+
+[dependencies]
+rymembra-domain = { path = "../rymembra-domain" }
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+# La compressione delle intestazioni grandi (una pagina di cinquecento brani):
+# deflate grezzo, come le cornici di «Ascolta insieme». C'era già nell'albero.
+flate2.workspace = true
+# Il trasporto: QUIC fra due chiavi ed25519, con l'attraversamento del NAT
+# (hole punching, UPnP/NAT-PMP/PCP col `portmapper`) e, quando non riesce, un
+# relay che vede solo byte cifrati.
+#
+# Perché una dipendenza così grande, in un'applicazione che di serie non ne
+# vuole: scriverlo a mano vorrebbe dire STUN, una consegna affidabile e
+# cifrata sopra UDP, la scoperta degli indirizzi e un relay. È esattamente ciò
+# che iroh è, stabile dalla 1.0 (giugno 2026), MIT/Apache, e quasi tutto il
+# resto della sua pila (tokio, rustls, ring, reqwest) c'era già nell'albero.
+#
+# **L'asincrono resta chiuso qui.** Tutto Rymembra è bloccante, e lo resta:
+# questo crate ha un runtime suo, a due fili, e fuori mostra solo funzioni che
+# aspettano (`Nodo`, `FlussoBloccante`). Nessun altro crate vede un `Future`.
+#
+# Senza le feature di serie: niente metriche (nessuno le legge) e niente
+# percorso veloce di Apple (non è un bersaglio). `tls-ring` come il resto
+# dell'app; i certificati dei relay su Windows li verifica l'archivio di
+# sistema (`platform-verifier`, qui sotto), su Android le radici di Mozilla
+# compilate dentro, come per ogni altra richiesta del telefono.
+iroh = { version = "1.4", default-features = false, features = ["tls-ring", "portmapper"] }
+# Trovare l'indirizzo di un dispositivo dalla sua chiave senza nessun server:
+# la DHT di BitTorrent. Accanto al DNS di n0 (dns.iroh.link), che iroh usa di
+# serie: se uno dei due manca, l'altro basta.
+iroh-mainline-address-lookup = "0.6"
+# In casa, senza internet: mDNS sulla rete locale. Sul telefono solo col
+# permesso «Dispositivi nelle vicinanze».
+iroh-mdns-address-lookup = "0.6"
+# Il runtime di iroh, privato di questo crate: vedi sopra.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "sync", "macros", "io-util"] }
+# Il QR del collegamento: solo la matrice dei moduli, che la finestra disegna
+# da sé come `<svg>`. Senza le feature di serie, che porterebbero `image`.
+qrcode = { version = "0.14", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+iroh = { version = "1.4", default-features = false, features = ["platform-verifier"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+
+[lints]
+workspace = true

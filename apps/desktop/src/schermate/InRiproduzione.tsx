@@ -114,6 +114,23 @@ import { useDati } from "../dati";
 import { branoDaMostrare, gestoPermesso, idDiLibreria } from "../insieme";
 import { RecintoErrori } from "../Recinto";
 import { vinceLUltima } from "../ultima";
+import { MOBILE } from "../piattaforma";
+
+/**
+ * C'è lo spettro?
+ *
+ * Non sul telefono. La scena è un campo di barre in WebGL alto mezzo schermo,
+ * pensato per una finestra larga accanto alla copertina: su un telefono in
+ * verticale si mangerebbe la copertina, e scalderebbe la scheda grafica di un
+ * apparecchio che va a batteria per una cosa che si guarda di sfuggita. Il
+ * nucleo, sul telefono, non apre nemmeno la presa sul suono
+ * (`riproduzione/mod.rs`, `spettro`).
+ *
+ * Una costante e non solo il tasto nascosto: la preferenza viaggia nel
+ * profilo, e un profilo portato dal computer con lo spettro acceso lo
+ * accenderebbe qui senza che nessun tasto lo possa spegnere.
+ */
+const CON_SPETTRO = !MOBILE;
 
 export function InRiproduzione({
   stato,
@@ -179,6 +196,7 @@ export function InRiproduzione({
   const spettroInVolo = useRef(false);
   const [spettroOccupato, setSpettroOccupato] = useState(false);
   useEffect(() => {
+    if (!CON_SPETTRO) return;
     const mio = turnoSpettro();
     letture
       .spettroVisibile()
@@ -192,6 +210,7 @@ export function InRiproduzione({
   // all'apertura: è una lettura da una tabella di chiavi, non da mezza libreria.
   const [barre, setBarre] = useState(64);
   useEffect(() => {
+    if (!CON_SPETTRO) return;
     letture.spettroBande().then(setBarre).catch(onErrore);
   }, [onErrore, letture]);
   // Quanto la scena può costare a questa macchina. Stessa forma degli altri due:
@@ -206,6 +225,7 @@ export function InRiproduzione({
   // la scena rinasce comunque.
   const [qualitaSpettro, setQualitaSpettro] = useState<QualitaSpettro>("auto");
   useEffect(() => {
+    if (!CON_SPETTRO) return;
     letture.spettroQualita().then(setQualitaSpettro).catch(onErrore);
   }, [onErrore, letture]);
   const scegliBarre = (quante: number) => {
@@ -338,7 +358,7 @@ export function InRiproduzione({
           metà di un disegno non deve portarsi via la copertina e i comandi.
           Al posto della scena resta la fascia con «Riprova», e il resto della
           schermata in piedi. */}
-      {spettroVisibile && (
+      {CON_SPETTRO && spettroVisibile && (
         <RecintoErrori dove="spettro" stretto>
           <Spettro3D
             barre={barre}
@@ -383,47 +403,49 @@ export function InRiproduzione({
               bande: `rymembra-play::spettro` le prende dai campioni che escono
               davvero. La regola non è cambiata — quel che si disegna viene dal
               suono — è cambiato che adesso il suono si può guardare. */}
-          <button
-            type="button"
-            className="tasto icon-btn"
-            aria-pressed={spettroVisibile}
-            aria-busy={spettroOccupato}
-            aria-label={t("np.spectrum.toggle")}
-            onClick={() => {
-              // Si scrive e si dipinge dalla risposta, non dal click: la
-              // preferenza sta nel database, e l'unico modo di non mentire su
-              // quel che ci sarà alla prossima apertura è mostrare quel che ci
-              // è finito davvero.
-              if (spettroInVolo.current) return;
-              spettroInVolo.current = true;
-              setSpettroOccupato(true);
-              const mio = turnoSpettro();
-              ipc
-                .spettroVisibileScegli(!spettroVisibile)
-                .then((visibile) => {
-                  if (mio()) setSpettroVisibile(visibile);
-                })
-                .catch((e: unknown) => {
-                  onErrore(e);
-                  // Il clic ha preso il turno anche alla lettura d'apertura,
-                  // che non scriverà più: si rilegge la preferenza vera,
-                  // invece di restare sul valore di serie.
-                  if (!mio()) return;
-                  letture
-                    .spettroVisibile()
-                    .then((visibile) => {
-                      if (mio()) setSpettroVisibile(visibile);
-                    })
-                    .catch(() => {});
-                })
-                .finally(() => {
-                  spettroInVolo.current = false;
-                  setSpettroOccupato(false);
-                });
-            }}
-          >
-            <Icona nome="i-eq" dim={16} titolo={t("np.spectrum")} />
-          </button>
+          {CON_SPETTRO && (
+            <button
+              type="button"
+              className="tasto icon-btn"
+              aria-pressed={spettroVisibile}
+              aria-busy={spettroOccupato}
+              aria-label={t("np.spectrum.toggle")}
+              onClick={() => {
+                // Si scrive e si dipinge dalla risposta, non dal click: la
+                // preferenza sta nel database, e l'unico modo di non mentire su
+                // quel che ci sarà alla prossima apertura è mostrare quel che ci
+                // è finito davvero.
+                if (spettroInVolo.current) return;
+                spettroInVolo.current = true;
+                setSpettroOccupato(true);
+                const mio = turnoSpettro();
+                ipc
+                  .spettroVisibileScegli(!spettroVisibile)
+                  .then((visibile) => {
+                    if (mio()) setSpettroVisibile(visibile);
+                  })
+                  .catch((e: unknown) => {
+                    onErrore(e);
+                    // Il clic ha preso il turno anche alla lettura d'apertura,
+                    // che non scriverà più: si rilegge la preferenza vera,
+                    // invece di restare sul valore di serie.
+                    if (!mio()) return;
+                    letture
+                      .spettroVisibile()
+                      .then((visibile) => {
+                        if (mio()) setSpettroVisibile(visibile);
+                      })
+                      .catch(() => {});
+                  })
+                  .finally(() => {
+                    spettroInVolo.current = false;
+                    setSpettroOccupato(false);
+                  });
+              }}
+            >
+              <Icona nome="i-eq" dim={16} titolo={t("np.spectrum")} />
+            </button>
+          )}
           <button
             type="button"
             className="tasto icon-btn"
@@ -558,7 +580,7 @@ export function InRiproduzione({
           posizionati senza `z-index` decide l'ordine nel DOM, quindi stare qui
           basta a stare sopra tutto — senza aggiungere un quinto `z-index` da
           tenere allineato agli altri quattro. */}
-      {spettroVisibile && (
+      {CON_SPETTRO && spettroVisibile && (
         <DettaglioSpettro barre={barre} onBarre={scegliBarre} />
       )}
     </section>

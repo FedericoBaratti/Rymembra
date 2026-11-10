@@ -275,6 +275,20 @@ pub const MIGRATIONS: &[Migration] = &[
         // Un indice nuovo e basta: nessuna tabella si rifà.
         ricostruisce: false,
     },
+    Migration {
+        version: 39,
+        name: "dispositivi",
+        sql: include_str!("schema/039_dispositivi.sql"),
+        // Tre tabelle nuove, senza chiavi esterne: non tocca niente.
+        ricostruisce: false,
+    },
+    Migration {
+        version: 40,
+        name: "insieme-indirizzi",
+        sql: include_str!("schema/040_insieme_indirizzi.sql"),
+        // Una tabella nuova, senza chiavi esterne: non tocca niente.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

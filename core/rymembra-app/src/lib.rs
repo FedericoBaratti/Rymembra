@@ -16,6 +16,7 @@ pub mod catalogo;
 pub mod covers;
 pub mod db;
 pub mod desiderati;
+pub mod dispositivi;
 pub mod enrich;
 pub mod files;
 pub mod import_account;

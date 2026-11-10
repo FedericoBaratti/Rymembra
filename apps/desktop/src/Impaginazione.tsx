@@ -79,14 +79,19 @@ import type {
   ValoreOpzione,
 } from "./ipc";
 import { BarraSelezione } from "./parti/BarraSelezione";
+import { BarraSelezioneTelefono } from "./parti/BarraSelezioneTelefono";
 import { Colonna } from "./parti/Colonna";
 import { Giudizio } from "./parti/Giudizio";
 import { Navigazione, type Vista } from "./parti/Navigazione";
+import { BarraSchede } from "./parti/BarraSchede";
+import type { SchedaTelefono } from "./schedeTelefono";
+import { MOBILE } from "./piattaforma";
 import { Ora } from "./parti/Ora";
 import { statoSuono } from "./segnali";
 import { Scrubber } from "./parti/Scrubber";
 import { Trasporto, type TagliaTrasporto } from "./parti/Trasporto";
 import { Lettore } from "./Lettore";
+import { MiniLettore } from "./parti/MiniLettore";
 import { titoloAlbum } from "./formato";
 import { LettoreDellaFinestra } from "./riproduzione";
 
@@ -102,6 +107,9 @@ import { LettoreDellaFinestra } from "./riproduzione";
  * foglie dall'archivio (vedi «Lo stato del motore non passa dal contesto» in
  * testa). Quello dello Studio è `ContestoWidget`, che lo porta.
  */
+/** Il tocco su una scheda quando nessuno lo ascolta: lo Studio, i test. */
+const niente = () => {};
+
 export interface ContestoScafale {
   /** Lo stato della riproduzione, solo se finto: vedi `ContestoWidget`. */
   stato?: StatoRiproduzione | undefined;
@@ -143,6 +151,13 @@ export interface ContestoScafale {
   onImportaFile: () => void;
   /** Apre la pagina delle donazioni nel browser di sistema. */
   onDona: () => void;
+  /**
+   * Il dispositivo collegato che si sfoglia, e il gesto che ne apre uno: per
+   * il gruppo «Dispositivi» della barra laterale. Facoltativi: lo Studio non
+   * ha dispositivi, e senza il gesto il gruppo non si disegna.
+   */
+  dispositivoAperto?: string | null | undefined;
+  onDispositivo?: ((chiave: string) => void) | undefined;
   onColonna: (aperta: boolean) => void;
   onCoda: (aperta: boolean) => void;
   onGrande: () => void;
@@ -155,6 +170,15 @@ export interface ContestoScafale {
   onSelezionePlaylist: () => void;
   onSelezioneTuttiOAnnulla: () => void;
   onSelezioneChiudi: () => void;
+  /** Sul telefono: il ⋮ della barra della selezione, il menù dei scelti. */
+  onSelezioneMenu?: ((e: React.MouseEvent) => void) | undefined;
+  /**
+   * La scheda accesa del telefono, e il tocco su una scheda: vedi
+   * `schedeTelefono.ts`. Facoltativi perché il computer e lo Studio non hanno
+   * schede, e la barra che le disegna c'è solo nello scafale del telefono.
+   */
+  scheda?: SchedaTelefono | undefined;
+  onScheda?: ((scheda: SchedaTelefono) => void) | undefined;
 }
 
 /**
@@ -279,6 +303,8 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onNuovaSmart={ctx.onNuovaSmart}
         onImportaFile={ctx.onImportaFile}
         onDona={ctx.onDona}
+        dispositivoAperto={ctx.dispositivoAperto}
+        onDispositivo={ctx.onDispositivo}
       />
     ),
   },
@@ -303,6 +329,13 @@ const WIDGET: Record<string, ComponenteWidget> = {
     ),
   },
 
+  // Solo nello scafale del telefono (`scafaleTelefono.ts`): il nucleo non lo
+  // conosce, e una skin non lo può scrivere. Le quattro schede in basso.
+  "phone-nav": {
+    rende: ({ ctx }) => (
+      <BarraSchede scheda={ctx.scheda ?? "home"} onScheda={ctx.onScheda ?? niente} />
+    ),
+  },
   "page-header": {
     // Via a schermo intero, per la stessa ragione degli altri quattro qui
     // sotto: quella schermata **è** la pagina, e un'intestazione che nomina
@@ -321,22 +354,30 @@ const WIDGET: Record<string, ComponenteWidget> = {
     // La barra della selezione prende il posto del lettore: è la stessa domanda
     // — «cosa sto per fare adesso» — in due momenti diversi, e chi ha appena
     // scelto quaranta brani non sta cercando il tasto pausa.
+    //
+    // Sul telefono il lettore è un altro, `MiniLettore`: una scheda, non una
+    // barra (vedi lì). E resta montato anche sotto «In riproduzione», che sul
+    // telefono è un foglio sopra la pagina e non la pagina: quando il foglio
+    // scende si rivede la scheda dov'era, invece di vederla nascere.
     visibile: (ctx, conBrano) =>
       !ctx.colonnaAperta &&
-      !ctx.grande &&
+      (MOBILE || !ctx.grande) &&
       ctx.selezionati.length === 0 &&
       conBrano,
     conStato: true,
-    rende: ({ ctx }, stato, mani) => (
-      <Lettore
-        stato={stato}
-        codaAperta={ctx.codaAperta}
-        onCoda={mani.alternaCoda}
-        onPreferito={ctx.onPreferito}
-        onErrore={ctx.onErrore}
-        onColonna={mani.apriColonna}
-      />
-    ),
+    rende: ({ ctx }, stato, mani) =>
+      MOBILE ? (
+        <MiniLettore stato={stato} onApri={ctx.onGrande} onErrore={ctx.onErrore} />
+      ) : (
+        <Lettore
+          stato={stato}
+          codaAperta={ctx.codaAperta}
+          onCoda={mani.alternaCoda}
+          onPreferito={ctx.onPreferito}
+          onErrore={ctx.onErrore}
+          onColonna={mani.apriColonna}
+        />
+      ),
   },
 
   column: {
@@ -398,18 +439,32 @@ const WIDGET: Record<string, ComponenteWidget> = {
     // contro 3) e resterebbe sospesa sopra una copertina, a offrire comandi
     // sulle righe che quella copertina sta coprendo.
     visibile: (ctx) => ctx.selezionati.length > 0 && !ctx.grande,
-    rende: ({ ctx }) => (
-      <BarraSelezione
-        quanti={ctx.selezionati.length}
-        tuttiSelezionati={ctx.tuttiSelezionati}
-        onRiproduci={ctx.onSelezioneRiproduci}
-        onDopo={ctx.onSelezioneDopo}
-        onAccoda={ctx.onSelezioneAccoda}
-        onPlaylist={ctx.onSelezionePlaylist}
-        onTuttiOAnnulla={ctx.onSelezioneTuttiOAnnulla}
-        onChiudi={ctx.onSelezioneChiudi}
-      />
-    ),
+    // Sul telefono è un'altra: vedi `BarraSelezioneTelefono`.
+    rende: ({ ctx }) =>
+      MOBILE ? (
+        <BarraSelezioneTelefono
+          quanti={ctx.selezionati.length}
+          tuttiSelezionati={ctx.tuttiSelezionati}
+          onTuttiOAnnulla={ctx.onSelezioneTuttiOAnnulla}
+          onChiudi={ctx.onSelezioneChiudi}
+          onRiproduci={ctx.onSelezioneRiproduci}
+          onDopo={ctx.onSelezioneDopo}
+          onAccoda={ctx.onSelezioneAccoda}
+          onPlaylist={ctx.onSelezionePlaylist}
+          onAltro={ctx.onSelezioneMenu ?? niente}
+        />
+      ) : (
+        <BarraSelezione
+          quanti={ctx.selezionati.length}
+          tuttiSelezionati={ctx.tuttiSelezionati}
+          onRiproduci={ctx.onSelezioneRiproduci}
+          onDopo={ctx.onSelezioneDopo}
+          onAccoda={ctx.onSelezioneAccoda}
+          onPlaylist={ctx.onSelezionePlaylist}
+          onTuttiOAnnulla={ctx.onSelezioneTuttiOAnnulla}
+          onChiudi={ctx.onSelezioneChiudi}
+        />
+      ),
   },
 
   "now-playing": {
@@ -604,10 +659,18 @@ export function Impaginazione({
   albero,
   slot,
   contesto,
+  inerte = false,
 }: {
   albero: NodoScafale | null;
   slot: SlotScafale;
   contesto: ContestoScafale;
+  /**
+   * Coperto da qualcosa che non sta dentro lo scafale: sul telefono, «In
+   * riproduzione», che è un foglio sopra tutto, schede comprese. `inert` su
+   * tutto e non solo sul contenuto, perché lì sotto ci sono anche le schede e
+   * il mini lettore, e un Tab non deve finirci.
+   */
+  inerte?: boolean;
 }) {
   const conBrano = useConBrano(contesto);
   if (!albero) return null;
@@ -616,6 +679,7 @@ export function Impaginazione({
       className={classi(albero)}
       data-nodo={albero.at}
       data-scafale=""
+      inert={inerte || undefined}
       /* Due attributi sulla radice, e non uno stato in più: sono derivati dagli
          **stessi** predicati di visibilità che decidono se i widget rendono,
          quindi non possono contraddirli. Servono a chi galleggia `fixed` sopra

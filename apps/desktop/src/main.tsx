@@ -3,10 +3,13 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
 import { ipc } from "./ipc";
-import { applicaLingua, scegli } from "./lingue";
+import { leggiLaMemoriaCome } from "./cartelleNuvola";
+import { applicaLingua, scegli, t } from "./lingue";
 import { RecintoErrori } from "./Recinto";
 import { BarraTitolo } from "./parti/BarraTitolo";
+import { ANDROID, MOBILE } from "./piattaforma";
 import { Simboli } from "./parti/Icone";
+import { temaDiPartenza } from "./tema";
 import "./stile.css";
 import "./stile/navigazione.css";
 import "./stile/libreria.css";
@@ -22,6 +25,19 @@ import "./stile/importazioni.css";
 import "./stile/casa.css";
 import "./stile/contrasto.css";
 import "./stile/esplora-insieme.css";
+// Per ultimi: valgono solo con `data-forma="telefono"`, e lì devono vincere.
+import "./stile/telefono.css";
+import "./stile/telefono-pagine.css";
+import "./stile/telefono-fogli.css";
+import "./stile/telefono-lettore.css";
+// Il tasto Indietro di Android: si aggancia a `window` da sé. Vedi lì.
+import "./indietro";
+// Le barre di sistema del telefono, come variabili CSS. Vedi lì.
+import "./riquadri";
+// La vibrazione del tocco lungo, per tutta l'app. Vedi lì.
+import "./vibra";
+// Le icone delle barre di sistema del telefono sul tema dell'app. Vedi lì.
+import "./barreDiSistema";
 
 /*
  * La lingua **prima** del primo disegno, e non in un effetto.
@@ -60,8 +76,29 @@ applicaLingua(scegli(null, navigator.language));
  * che c'era.
  */
 window.addEventListener("error", (evento) => {
-  ipc.diarioAnnota("finestra", evento.message);
+  ipc.diarioAnnota("finestra", conDove(evento));
 });
+
+/**
+ * Il messaggio, e dove è successo: le prime righe della pila, o almeno file,
+ * riga e colonna. Il messaggio da solo — «Cannot read properties of undefined
+ * (reading 'length')», arrivato così da un diario vero — non dice quale dei
+ * cento `.length` dell'interfaccia fosse, e senza il punto un guasto che non
+ * si ripete non si trova. Il nucleo taglia a una riga sola, e le righe della
+ * pila si legano con « ← » perché ci stiano.
+ */
+function conDove(evento: ErrorEvent): string {
+  const pila = evento.error instanceof Error ? evento.error.stack : undefined;
+  const righe = pila
+    ?.split("\n")
+    .map((riga) => riga.trim())
+    .filter((riga) => riga.startsWith("at "))
+    .slice(0, 4);
+  if (righe && righe.length > 0) return `${evento.message} ${righe.join(" ← ")}`;
+  return evento.filename
+    ? `${evento.message} (${evento.filename}:${evento.lineno}:${evento.colno})`
+    : evento.message;
+}
 window.addEventListener("unhandledrejection", (evento) => {
   // `reason` è quel che è stato passato a `reject`, e può essere qualunque
   // cosa: un `Error`, un `ErroreIpc` del nucleo, una stringa, `undefined`.
@@ -69,6 +106,23 @@ window.addEventListener("unhandledrejection", (evento) => {
   // nucleo taglia a una riga sola prima di scrivere.
   ipc.diarioAnnota("promessa", String(evento.reason));
 });
+
+// La forma prima del primo disegno, come la lingua: una pagina disegnata da
+// computer e poi rifatta da telefono sarebbe un fotogramma con la barra
+// laterale su uno schermo da 400 pixel. Vedi `stile/telefono.css`.
+document.documentElement.dataset["forma"] = MOBILE ? "telefono" : "computer";
+// E sul telefono il tema, per la stessa ragione: la pagina si vede prima che
+// arrivi la skin. Vedi `temaDiPartenza` in `tema.ts`.
+if (MOBILE) document.documentElement.dataset["theme"] = temaDiPartenza();
+
+// Le cartelle del telefono con i nomi che il telefono dà loro («Memoria
+// interna › Music»), non col percorso del sistema. Vedi `percorsoAndroid`.
+if (ANDROID) {
+  leggiLaMemoriaCome(() => ({
+    interna: t("folders.android.internal"),
+    scheda: t("folders.android.card"),
+  }));
+}
 
 const radice = document.getElementById("radice");
 if (radice) {
@@ -96,8 +150,11 @@ if (radice) {
        * simmetria coi simboli: una finestra che perde il tasto di chiusura
        * entrando in una schermata — quella d'errore del recinto qui sopra, lo
        * Studio che copre tutto — sarebbe un guasto. Qui valgono per tutte.
+       *
+       * Sul telefono non ci sono: la finestra è lo schermo, e la si lascia con
+       * i gesti del sistema. Vedi `piattaforma.ts`.
        */}
-      <BarraTitolo />
+      {!MOBILE && <BarraTitolo />}
     </StrictMode>,
   );
 }

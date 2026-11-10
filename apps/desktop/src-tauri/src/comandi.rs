@@ -1774,7 +1774,7 @@ pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
             ),
         ));
     }
-    tauri_plugin_opener::open_url(&pagina, None::<&str>).map_err(|err| {
+    crate::browser::apri(&pagina).map_err(|err| {
         errore(
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("apertura del browser".to_owned()),
@@ -2358,7 +2358,7 @@ pub fn apri_documento(quale: String) -> Esito<()> {
         ));
     };
     let indirizzo = documento.indirizzo();
-    tauri_plugin_opener::open_url(&indirizzo, None::<&str>).map_err(|err| {
+    crate::browser::apri(&indirizzo).map_err(|err| {
         errore(
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("apertura del browser".to_owned()),
@@ -2400,6 +2400,7 @@ const ANCORE_GUIDA: &[&str] = &[
     "cloud-folders",
     "sync",
     "together",
+    "devices",
     "legacy",
     "import",
     "scrobbling",
@@ -2459,7 +2460,7 @@ pub fn apri_guida(ancora: String) -> Esito<()> {
             .with_cause(format!("«{ancora}» non è una pagina della guida")),
         ));
     };
-    tauri_plugin_opener::open_url(&indirizzo, None::<&str>).map_err(|err| {
+    crate::browser::apri(&indirizzo).map_err(|err| {
         errore(
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("apertura del browser".to_owned()),
@@ -2636,6 +2637,7 @@ pub struct CartellaCandidata {
 /// Non si aggiunge la cartella dei download: contiene musica per qualcuno e
 /// tutto il resto per tutti, e una radice sorvegliata sbagliata si paga a ogni
 /// scansione successiva.
+#[cfg(not(target_os = "android"))]
 fn percorsi_musicali(app: &tauri::AppHandle) -> Vec<String> {
     let mut fuori = Vec::new();
     let percorsi = app.path();
@@ -2655,6 +2657,31 @@ fn percorsi_musicali(app: &tauri::AppHandle) -> Vec<String> {
     // alfabeticamente lo butterebbe via.
     let mut visti = std::collections::HashSet::new();
     fuori.retain(|percorso| visti.insert(percorso.clone()));
+    fuori
+}
+
+/// Dove un telefono tiene la musica: la cartella «Music» della memoria
+/// condivisa, e quella di ogni scheda SD.
+///
+/// Non `audio_dir` di Tauri: su Android è la cartella privata dell'app
+/// (`Android/data/…/files/Music`), che nessuno riempie. Le schede stanno sotto
+/// `/storage/<volume>`, accanto a `emulated` (la memoria interna, già detta da
+/// `cartella_musica`) e `self` (un collegamento a lei).
+#[cfg(target_os = "android")]
+fn percorsi_musicali(_app: &tauri::AppHandle) -> Vec<String> {
+    let mut fuori = Vec::new();
+    match rymembra_android::sistema::cartella_musica() {
+        Ok(musica) => fuori.push(musica.to_string_lossy().into_owned()),
+        Err(err) => nota!("[primo] la cartella della musica non si trova: {err}"),
+    }
+    if let Ok(volumi) = std::fs::read_dir("/storage") {
+        for volume in volumi.flatten() {
+            let nome = volume.file_name();
+            if nome != "emulated" && nome != "self" {
+                fuori.push(volume.path().join("Music").to_string_lossy().into_owned());
+            }
+        }
+    }
     fuori
 }
 

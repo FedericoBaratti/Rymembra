@@ -97,7 +97,7 @@ pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
 }
 
 /// Un album come lo mostra una griglia.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumSummary {
     /// La chiave canonica.
@@ -916,7 +916,7 @@ pub(super) fn sql_degli_album_di_un_artista() -> String {
 ///
 /// Quattro perché il mosaico ne mostra quattro. Chi ne ha uno solo ottiene una
 /// copertina sola a tutto riquadro, che è il caso giusto e non un ripiego.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistSummary {
     /// Il nome come sta nei tag.

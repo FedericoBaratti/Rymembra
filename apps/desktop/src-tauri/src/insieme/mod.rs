@@ -55,6 +55,7 @@ use tauri::{AppHandle, Manager as _, State};
 use crate::errore::{Esito, errore};
 use filo::{Comune, Posta, Richiesta};
 
+pub(crate) use filo::nome_del_dispositivo;
 pub use ipc::{
     AssociazioneIpc, AvvisoIpc, FaseIpc, FidatoIpc, InsiemeNelLettore, InvitoIpc, PersonaIpc,
     ProprietarioIpc, RichiestaIpc, SessioneIpc, SincroniaIpc, StatoInsiemeIpc, VicinoIpc,
@@ -125,9 +126,46 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<()>) {
     filo::avvia(app.clone(), comune, posta, cassetta, orecchio);
 }
 
+/// Un flusso di «Ascolta insieme» arrivato dal collegamento via internet,
+/// da `da`: la rete lo accoglie come una connessione in entrata, se ospita.
+/// Senza la rete accesa si chiude. Non aspetta.
+pub fn accogli_lontano(app: &AppHandle, da: &str, presa: Box<dyn rymembra_insieme::Presa>) {
+    let Some(stato) = app.try_state::<StatoInsieme>() else {
+        let _ = presa.shutdown(std::net::Shutdown::Both);
+        return;
+    };
+    if let Err(rifiutata) = stato.posta.send(Posta::Accogli {
+        presa,
+        dove: rymembra_insieme::Dove::Lontano(da.to_owned()),
+    }) && let Posta::Accogli { presa, .. } = rifiutata.0
+    {
+        let _ = presa.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// I PC fidati sono cambiati nella libreria fuori da questo modulo: il
+/// collegamento via internet ha scritto in `insieme_pari` la chiave di un
+/// dispositivo associato col QR (`lontano::ospite`). Il filo li rilegge. Non
+/// aspetta.
+pub fn fidati_cambiati(app: &AppHandle) {
+    if let Some(stato) = app.try_state::<StatoInsieme>() {
+        let _ = stato.posta.send(Posta::Fidati);
+    }
+}
+
+/// I dispositivi collegati via internet che ospitano una sessione sono
+/// cambiati (`lontano::insieme::ospitano`): la scoperta li guarda subito. Non
+/// aspetta.
+pub fn vicini_cambiati(app: &AppHandle) {
+    if let Some(stato) = app.try_state::<StatoInsieme>() {
+        let _ = stato.posta.send(Posta::Cerca);
+    }
+}
+
 /// Rimette la rete com'era all'avvio, se l'interruttore è acceso: si chiama
 /// quando un aggiornamento non è riuscito dopo che [`ferma`] l'aveva spenta, e
 /// l'applicazione resta viva. Non aspetta.
+#[cfg(desktop)]
 pub fn riaccendi(app: &AppHandle) {
     if let Some(stato) = app.try_state::<StatoInsieme>() {
         let _ = stato.posta.send(Posta::Riaccendi);
@@ -154,6 +192,17 @@ pub fn ferma(app: &AppHandle) {
         return;
     }
     let _ = attesa.recv_timeout(ATTESA_FERMA);
+}
+
+/// La chiave pubblica di «Ascolta insieme» di questo dispositivo, in testo:
+/// la riceve chi si collega col QR (`lontano`), che se ne fida per le
+/// sessioni senza il codice a quattro cifre. `None` se il portachiavi non la
+/// dà: il collegamento vale lo stesso, e le sessioni chiederanno il codice.
+#[must_use]
+pub fn chiave_pubblica(dispositivo: &str) -> Option<String> {
+    fiducia::identita(&rymembra_oauth::portachiavi::DiSistema, dispositivo)
+        .ok()
+        .map(|identita| identita.pubblica().in_testo())
 }
 
 /// Il ruolo di questo PC, senza lucchetti.
@@ -395,6 +444,13 @@ async fn in_sessione<T: Send + 'static>(
         .map_err(errore)?
 }
 
+/// La rete di casa prima del gesto che ne ha bisogno: su Android 17 la si
+/// chiede adesso, se manca. Altrove passa sempre. Vedi
+/// `crate::telefono::rete_locale_o_chiedila`.
+fn con_la_rete_di_casa() -> Esito<()> {
+    crate::telefono::rete_locale_o_chiedila().map_err(errore)
+}
+
 /// Il pannello, adesso.
 #[tauri::command]
 pub fn insieme_stato(stato: State<'_, StatoInsieme>) -> Esito<StatoInsiemeIpc> {
@@ -409,7 +465,16 @@ pub fn insieme_stato(stato: State<'_, StatoInsieme>) -> Esito<StatoInsiemeIpc> {
 /// Accende o spegne «Ascolta insieme».
 #[tauri::command]
 pub async fn insieme_attiva(app: AppHandle, attivo: bool) -> Esito<StatoInsiemeIpc> {
-    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Attiva(attivo))).await
+    in_sessione(move || {
+        if attivo {
+            con_la_rete_di_casa()?;
+        }
+        let pannello = e_poi_il_pannello(&app, Richiesta::Attiva(attivo))?;
+        // I dispositivi collegati via internet lo sanno adesso.
+        crate::lontano::presenza_cambiata(&app);
+        Ok(pannello)
+    })
+    .await
 }
 
 /// Cambia il nome di questo PC.
@@ -427,7 +492,11 @@ pub async fn insieme_firewall_visto(app: AppHandle) -> Esito<()> {
 /// Comincia a ospitare una sessione.
 #[tauri::command]
 pub async fn insieme_ospita(app: AppHandle) -> Esito<StatoInsiemeIpc> {
-    in_sessione(move || e_poi_il_pannello(&app, Richiesta::Ospita)).await
+    in_sessione(move || {
+        con_la_rete_di_casa()?;
+        e_poi_il_pannello(&app, Richiesta::Ospita)
+    })
+    .await
 }
 
 /// Chi ospita: termina la sessione per tutti.
@@ -455,7 +524,11 @@ pub fn insieme_cerca(app: AppHandle) -> Esito<()> {
 /// Comincia l'associazione con un PC visto in rete.
 #[tauri::command]
 pub async fn insieme_associa(app: AppHandle, vicino: String) -> Esito<()> {
-    in_sessione(move || chiedi(&app, Richiesta::Associa(vicino)).map_err(errore)).await
+    in_sessione(move || {
+        con_la_rete_di_casa()?;
+        chiedi(&app, Richiesta::Associa(vicino)).map_err(errore)
+    })
+    .await
 }
 
 /// La risposta al codice di quattro cifre.
@@ -483,13 +556,23 @@ pub async fn insieme_invita(app: AppHandle, pari: i64, diritti: Diritti) -> Esit
 /// La risposta a un invito.
 #[tauri::command]
 pub async fn insieme_rispondi(app: AppHandle, invito: u64, accetta: bool) -> Esito<()> {
-    in_sessione(move || chiedi(&app, Richiesta::Rispondi { invito, accetta }).map_err(errore)).await
+    in_sessione(move || {
+        if accetta {
+            con_la_rete_di_casa()?;
+        }
+        chiedi(&app, Richiesta::Rispondi { invito, accetta }).map_err(errore)
+    })
+    .await
 }
 
 /// Chiede a un PC associato che ospita di entrare nella sua sessione.
 #[tauri::command]
 pub async fn insieme_chiedi(app: AppHandle, pari: i64) -> Esito<()> {
-    in_sessione(move || chiedi(&app, Richiesta::Chiedi(pari)).map_err(errore)).await
+    in_sessione(move || {
+        con_la_rete_di_casa()?;
+        chiedi(&app, Richiesta::Chiedi(pari)).map_err(errore)
+    })
+    .await
 }
 
 /// Chi ospita: la risposta a una richiesta d'ingresso, con quel che potrà

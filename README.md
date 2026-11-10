@@ -1,11 +1,11 @@
 # Rymembra
 
-A music player for Windows, written in Rust. It plays the audio files on your
+A music player for Windows and Android, written in Rust. It plays the audio files on your
 disk and joins your local library up with the freely accessible music catalogs.
 
-> **Project status:** under development. It builds and runs on Windows. The
-> executable is not digitally signed, and the macOS, Linux and mobile versions
-> do not exist. See [Known limits and planned
+> **Project status:** under development. It builds and runs on Windows, and
+> on Android 8 or later (64-bit). The Windows executable is not digitally
+> signed, and the macOS, Linux and iOS versions do not exist. See [Known limits and planned
 > work](#known-limits-and-planned-work).
 
 ## Contents
@@ -307,10 +307,20 @@ a longer listening history than the public API offers.
   the queue and add their own tracks; volume, equalizer, output and latency
   stay each person's own. The
   first time two PCs meet, both screens show the same four-digit code; after
-  that everything travels encrypted, and only between PCs you paired. Off by
-  default; what it sends is documented in [`PRIVACY.md`](PRIVACY.md) § 4-ter,
-  and the firewall question Windows asks the hosting PC is explained before it
-  appears.
+  that everything travels encrypted, and only between PCs you paired. Devices
+  linked with a QR code (below) are paired already, and can listen together
+  away from home too: a linked device that hosts shows up as «via internet».
+  Off by default; what it sends is documented in [`PRIVACY.md`](PRIVACY.md)
+  § 4-ter, and the firewall question Windows asks the hosting PC is explained
+  before it appears.
+- **Your music away from home.** Show a QR code on the PC, scan it with the
+  phone, and the two find each other on their own — on the same Wi-Fi or across
+  the internet, directly or through a relay that sees only encrypted bytes,
+  with no Rymembra server. «Browse <device>» opens the other library — albums,
+  artists, tracks, search — to play its tracks here, streamed, or to download
+  them («Download here»); a listen counts on the device that owns the track,
+  which scrobbles it. On mobile data the phone asks first. Off by default; what
+  it sends is in [`PRIVACY.md`](PRIVACY.md) § 4-quinquies.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Automatic updates**: a check for releases on GitHub at every start, ten
   seconds after the window is ready, then every thirty minutes; without a
@@ -639,6 +649,9 @@ core/
   rymembra-insieme    «Listen together»: discovery, the Noise channel,
                       pairing, reading tracks across the LAN; it knows
                       nothing about the player
+  rymembra-lontano    your devices over the internet: the QR link, the
+                      protocol, an iroh (QUIC) endpoint behind a blocking
+                      façade; it knows nothing about the library
 apps/desktop          the interface: Tauri 2 + React 19
 ```
 
@@ -684,6 +697,13 @@ configured for the Skin Studio — the last one possibly not a server at all,
 since Ollama and LM Studio run on your own machine.
 «Listen together», if you switch it on, talks only to other Rymembra on your
 own network, encrypted, and shares music only with the PCs you paired.
+Linking your devices over the internet, if you switch it on, is the one
+feature that reaches beyond your network and your accounts: your devices find
+each other through n0's public DNS and the BitTorrent DHT, and talk directly
+or through a public relay (n0's, or one you run) that sees only encrypted
+bytes; they share music only with the devices you linked with a QR code. A
+«Listen together» session between two linked devices away from home travels
+inside that same link, encrypted twice.
 
 [`PRIVACY.md`](PRIVACY.md) lists every single network request the program can
 make and the data each one transmits.
@@ -751,6 +771,20 @@ constraint is stated explicitly in the terms of use.
   boundaries: exact at a constant bitrate, off by up to seconds at a variable
   one, because an exact seek would re-read the file from the start over the
   network.
+- **Your devices over the internet.** It needs no server of Rymembra's, and
+  so it leans on public ones: n0's relays and DNS are free, rate-limited and
+  without guarantees, and when both devices sit behind a carrier's NAT — two
+  phones on mobile data, often — every byte goes through a relay, slower than
+  a direct path. A phone is reachable only while Rymembra is on screen or
+  playing, and for two minutes after. Only tracks in local and network
+  folders are shared, not cloud folders or catalog tracks; a track of a CD
+  image (one file with its `.cue`) plays but is not downloaded. Seeking in a
+  remote track is approximate, as in any streamed track. «Listen together»
+  away from home is as good as the path: the host sends each track to each
+  member, so through a relay — or from a phone on mobile data — a session of
+  several members can stall, and over a jittery link the members stay in
+  step less tightly than at home (clock samples are kept up to a 400 ms round
+  trip instead of 100 ms).
 - **Proxies.** Rymembra follows the proxy set in Windows Settings
   (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
   NAS, a computer at home — and this computer itself always go direct. It does
@@ -764,8 +798,55 @@ constraint is stated explicitly in the terms of use.
   itself.)
 - **macOS and Linux.** The installer's only target is NSIS: the supported
   platform is therefore Windows.
-- **Mobile application.** Present in the previous version of the project, not
-  yet rewritten.
+- **Android.** The same application, built from the same code: the core is
+  shared, and the window becomes an interface of its own — four tabs (Home,
+  Library, Search, More), a mini player, menus as sheets from the bottom,
+  «Now playing» full screen, a long press for multiple selection. The
+  colours and fonts are the active skin's. What only a computer has is not
+  there: the tray icon, the taskbar buttons, the window zoom, the keyboard
+  shortcuts, the 3D spectrum and the Skin Studio (skins can still be chosen,
+  installed and removed, not edited). Specific limits:
+  - **Builds** need the Android SDK and NDK and, on Windows, *Developer Mode*
+    (the Tauri CLI links the native library into the Gradle project with a
+    symbolic link). Without it, let `tauri android build` compile the library
+    and stop at the link, copy `target/<triple>/debug/librymembra_lib.so`
+    into `gen/android/app/src/main/jniLibs/<abi>/`, and run
+    `gradlew assemble<Arch>Debug -x rustBuild<Arch>Debug`. Only 64-bit
+    devices (`arm64-v8a`) and the `x86_64` emulator are built: AAudio, the
+    audio output, needs Android 8.
+  - **Updates** are checked on GitHub as on the computer, and the APK for the
+    phone's architecture is downloaded by Rymembra; installing it is up to
+    Android, which asks the person using the phone to confirm every time — and,
+    the first time, to allow Rymembra to install apps. It is never silent.
+  - **Deleting a track from disk** sends it to Android's trash, from which the
+    Files app restores it for 30 days, after Android's own confirmation. That
+    trash exists from Android 11 and only for files Android's media index
+    knows: on Android 8–10, and for a `.cue` or a file in a folder with
+    `.nomedia`, deleting is permanent, and the confirmation says so.
+  - **Android Auto** shows Rymembra's library — recent, playlists, albums and
+    artists, with covers, the queue, search, like, shuffle and repeat. Two
+    limits come from Android, not from Rymembra. An app installed outside the
+    Play Store appears in the car only after *Android Auto → developer
+    settings → Unknown sources* is switched on. And Android does not let an
+    app open itself from the background: if Rymembra is not running at all,
+    the car says «Open Rymembra on your phone» with a button that opens it,
+    and the library appears as soon as it has started once.
+  - **Connecting a service** (Google Drive, OneDrive, Dropbox, Last.fm)
+    opens its consent page in the phone's browser, which comes back to
+    Rymembra through a local address while Rymembra waits behind it. If
+    Android closes Rymembra in the meantime — little memory, a long detour
+    through other apps — the consent is lost and has to be started again.
+  - **Listen together** needs, from Android 17, the «Nearby devices»
+    permission: without it Android keeps the home network away from the app.
+    Rymembra asks for it when the function is turned on. The audio output is
+    always the one Android chooses — speaker, cable, Bluetooth — and changes
+    from Android's own output picker, not from Rymembra's settings.
+  - **The TLS roots** are the Mozilla list compiled into the app
+    (`webpki-roots`) and not the system's: a certificate installed by hand on
+    the phone is not trusted.
+  - **Signing**: a release APK needs a keystore of your own (see
+    `apps/desktop/src-tauri/gen/android/keystore.properties`, not versioned).
+    Losing it means the next APK cannot be installed over the previous one.
 
 Two questions require a written clarification before publication: whether
 **donations** constitute commercial use for the purposes of Jamendo's terms

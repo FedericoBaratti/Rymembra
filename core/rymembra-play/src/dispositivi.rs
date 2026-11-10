@@ -60,8 +60,85 @@
 //! con in più un secondo modo di arrivarci; e il flusso qui si apre su un
 //! dispositivo preciso, che è l'unico modo in cui «ho fissato il DAC» e «seguo
 //! il sistema» si possono comportare in modo diverso.
+//!
+//! # Su Android si segue Android, e basta
+//!
+//! Su Android il predefinito di cpal è un `Device` **vuoto** — «nessun
+//! dispositivo», cioè un flusso AAudio aperto senza dire dove, che Android
+//! manda dove manda la musica — e nell'enumerazione non c'è. Le regole di qui
+//! sopra non lo trovavano mai, nessuna riga risultava predefinita, e
+//! [`scegli`] prendeva la prima dell'elenco: su un telefono vero è
+//! l'**auricolare** delle chiamate. Il diario lo mostrava, «uscita=A059P
+//! (Earpiece) canali=1», e un flusso fissato su un dispositivo con
+//! `setDeviceId` resta lì: le cuffie Bluetooth collegate non ricevevano niente.
+//!
+//! Così su Android l'elenco ha **una** riga, il dispositivo vuoto, segnata come
+//! predefinita. Scegliere un'uscita a mano lì non esiste: lo fa Android, dal
+//! suo selettore, e la musica va dove l'ha mandata lui.
+//!
+//! Il nome di quella riga è dove Android sta suonando adesso — «WH-CH720N»,
+//! «Altoparlante del telefono» — come lo dice `AudioManager`, che sta in Kotlin
+//! e arriva qui da [`installa_l_uscita_di_android`]. Ed è anche l'identità, a
+//! proposito: quando le cuffie si collegano il nome cambia, e il sorvegliante
+//! dell'applicazione riapre il flusso come fa quando su Windows cambia il
+//! predefinito. AAudio di solito lo stacca da sé, e allora la riapertura arriva
+//! dalla callback d'errore; il nome è la seconda strada, per i telefoni che
+//! non lo fanno. Lo stesso nome tiene separata la latenza delle cuffie
+//! Bluetooth da quella dell'altoparlante, che con «Ascolta insieme» contano.
 
-use cpal::traits::{DeviceTrait as _, HostTrait as _};
+#[cfg(not(target_os = "android"))]
+use cpal::traits::DeviceTrait as _;
+use cpal::traits::HostTrait as _;
+
+/// Dove Android manda la musica adesso. Vedi «Su Android si segue Android».
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UscitaDiAndroid {
+    /// Come si chiama: il nome delle cuffie, «Altoparlante del telefono».
+    pub nome: String,
+    /// È Bluetooth: in pausa il flusso si libera prima, come sul computer.
+    pub bluetooth: bool,
+}
+
+/// Chi lo sa chiedere ad Android, una volta installato.
+#[cfg(target_os = "android")]
+static USCITA_DI_ANDROID: std::sync::OnceLock<fn() -> Option<UscitaDiAndroid>> =
+    std::sync::OnceLock::new();
+
+/// Installa chi sa dire dove Android manda la musica.
+///
+/// Una volta per processo, all'avvio, prima che il motore si apra: la risposta
+/// sta in Kotlin, e questo crate il ponte non lo conosce. Le chiamate dopo la
+/// prima non cambiano niente. Senza, l'uscita si chiama «Android» e il resto
+/// funziona lo stesso: si suona dove dice Android, e la riapertura arriva solo
+/// dalla callback d'errore.
+#[cfg(target_os = "android")]
+pub fn installa_l_uscita_di_android(chiedi: fn() -> Option<UscitaDiAndroid>) {
+    let _ = USCITA_DI_ANDROID.set(chiedi);
+}
+
+#[cfg(target_os = "android")]
+fn uscita_di_android() -> Option<UscitaDiAndroid> {
+    USCITA_DI_ANDROID.get().and_then(|chiedi| chiedi())
+}
+
+/// L'uscita aperta è Bluetooth? La chiede l'apertura, al `Device` che apre.
+///
+/// Fuori da Android lo dice `cpal`, che su Windows legge chi ha enumerato il
+/// dispositivo (`BTHENUM`). Su Android il `Device` è quello vuoto e non sa
+/// niente: lo dice Android.
+#[cfg(target_os = "android")]
+pub(crate) fn e_bluetooth(_dispositivo: &cpal::Device) -> bool {
+    uscita_di_android().is_some_and(|uscita| uscita.bluetooth)
+}
+
+/// Vedi la versione per Android.
+#[cfg(not(target_os = "android"))]
+pub(crate) fn e_bluetooth(dispositivo: &cpal::Device) -> bool {
+    dispositivo
+        .description()
+        .is_ok_and(|d| d.interface_type() == cpal::InterfaceType::Bluetooth)
+}
 
 /// Un'uscita audio, come la vede cpal in questo istante.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +194,27 @@ pub fn elenco() -> Vec<Dispositivo> {
 /// bandiera sola resta l'invariante — [`scegli`] prende il primo predefinito
 /// che trova, e chi sorveglia si fida che ce ne sia uno solo per decidere se
 /// vale la pena riaprire.
+///
+/// Su Android è un'altra storia, e una riga sola: vedi «Su Android si segue
+/// Android», in testa al modulo.
+#[cfg(target_os = "android")]
+pub(crate) fn con_i_device() -> Vec<(Dispositivo, cpal::Device)> {
+    let Some(device) = cpal::default_host().default_output_device() else {
+        return Vec::new();
+    };
+    let nome = uscita_di_android().map_or_else(|| "Android".to_owned(), |uscita| uscita.nome);
+    vec![(
+        Dispositivo {
+            id: nome.clone(),
+            nome,
+            predefinito: true,
+        },
+        device,
+    )]
+}
+
+/// Vedi la versione per Android, e la documentazione qui sopra.
+#[cfg(not(target_os = "android"))]
 pub(crate) fn con_i_device() -> Vec<(Dispositivo, cpal::Device)> {
     let host = cpal::default_host();
     let di_sistema = host.default_output_device();

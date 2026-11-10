@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "Rymembra",
+        "backgroundColor": "#09090d",
+        "dragDropEnabled": false,
+        "visible": true
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "android": {
+      "minSdkVersion": 26
+    }
+  }
+}

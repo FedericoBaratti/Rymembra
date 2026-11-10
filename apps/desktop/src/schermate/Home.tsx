@@ -48,6 +48,7 @@
  */
 import { useContext } from "react";
 
+import { ConAltro } from "../parti/ConAltro";
 import { Copertina } from "../Copertina";
 import { artistaNoto, brani_, durata, nomeArtista, titoloAlbum } from "../formato";
 import type { Album, Brano, Casa, Raccolta } from "../ipc";
@@ -93,28 +94,33 @@ function Scheda({
   onMenu: (e: React.MouseEvent, brano: Brano) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="scheda-brano track-card"
-      {...suonoBrano(useQuelCheSuona(), brano.id)}
-      style={conIndice(indice)}
-      onClick={onSuona}
-      onContextMenu={(e) => onMenu(e, brano)}
-      title={`${brano.title} — ${nomeArtista(brano.artist)}`}
+    <ConAltro
+      etichetta={t("row.more.aria", { titolo: brano.title })}
+      onMenu={(e) => onMenu(e, brano)}
     >
-      <Copertina
-        hash={brano.coverArtHash}
-        titolo={titoloAlbum(brano.album)}
-        classe="copertina card-cover"
-        accanto
-      />
-      <span className="titolo card-title" dir="auto">
-        {brano.title}
-      </span>
-      <span className="artista card-subtitle" dir="auto">
-        {nomeArtista(brano.artist)}
-      </span>
-    </button>
+      <button
+        type="button"
+        className="scheda-brano track-card"
+        {...suonoBrano(useQuelCheSuona(), brano.id)}
+        style={conIndice(indice)}
+        onClick={onSuona}
+        onContextMenu={(e) => onMenu(e, brano)}
+        title={`${brano.title} — ${nomeArtista(brano.artist)}`}
+      >
+        <Copertina
+          hash={brano.coverArtHash}
+          titolo={titoloAlbum(brano.album)}
+          classe="copertina card-cover"
+          accanto
+        />
+        <span className="titolo card-title" dir="auto">
+          {brano.title}
+        </span>
+        <span className="artista card-subtitle" dir="auto">
+          {nomeArtista(brano.artist)}
+        </span>
+      </button>
+    </ConAltro>
   );
 }
 
@@ -187,36 +193,41 @@ function SchedaAlbum({
   const titolo = titoloAlbum(album.title);
   const inVolo = useContext(Volo);
   return (
-    <button
-      type="button"
-      className="scheda card"
-      {...suonoAlbum(useQuelCheSuona(), album.albumKey)}
-      style={conIndice(indice)}
-      onClick={() => onApri(album)}
-      onContextMenu={(e) => onMenu(e, album)}
-      title={`${titolo} — ${nomeArtista(album.artist)}`}
+    <ConAltro
+      etichetta={t("row.more.aria", { titolo })}
+      onMenu={(e) => onMenu(e, album)}
     >
-      <Presenza
-        parte="card-cover"
-        nome={album.albumKey === inVolo ? COPERTINA_IN_VOLO : undefined}
-        compagna="hero-art"
+      <button
+        type="button"
+        className="scheda card"
+        {...suonoAlbum(useQuelCheSuona(), album.albumKey)}
+        style={conIndice(indice)}
+        onClick={() => onApri(album)}
+        onContextMenu={(e) => onMenu(e, album)}
+        title={`${titolo} — ${nomeArtista(album.artist)}`}
       >
-        <Copertina
-          hash={album.coverArtHash}
-          titolo={titolo}
-          classe="copertina card-cover"
-          accanto
-        />
-      </Presenza>
-      <div className="titolo card-title" dir="auto">
-        {titolo}
-      </div>
-      <div className="sotto card-subtitle">
-        {album.year ?? ""}
-        {album.year && album.totalTracks > 1 ? " · " : ""}
-        {album.totalTracks > 1 ? brani_(album.totalTracks) : ""}
-      </div>
-    </button>
+        <Presenza
+          parte="card-cover"
+          nome={album.albumKey === inVolo ? COPERTINA_IN_VOLO : undefined}
+          compagna="hero-art"
+        >
+          <Copertina
+            hash={album.coverArtHash}
+            titolo={titolo}
+            classe="copertina card-cover"
+            accanto
+          />
+        </Presenza>
+        <div className="titolo card-title" dir="auto">
+          {titolo}
+        </div>
+        <div className="sotto card-subtitle">
+          {album.year ?? ""}
+          {album.year && album.totalTracks > 1 ? " · " : ""}
+          {album.totalTracks > 1 ? brani_(album.totalTracks) : ""}
+        </div>
+      </button>
+    </ConAltro>
   );
 }
 

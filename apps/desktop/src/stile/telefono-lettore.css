@@ -1,0 +1,595 @@
+/* Il telefono: il mini lettore e «In riproduzione».
+ *
+ * Il secondo è il foglio a tutto schermo di `InRiproduzioneTelefono.tsx`, e
+ * le sue regole stanno in fondo. Il primo è una scheda sopra le schede (`parti/MiniLettore.tsx`), staccata dai bordi di
+ * otto pixel e con gli angoli tondi: sta **sopra** la pagina, e si deve vedere
+ * che è una cosa che si prende — col dito si trascina in su e di lato — e non
+ * una striscia della pagina.
+ *
+ * Il fondo è la superficie della skin con un filo dell'accento, che sul
+ * telefono viene dalla copertina: la scheda cambia appena tinta a ogni disco,
+ * ed è il solo segno, fuori dallo schermo intero, che il colore della pagina
+ * è quello di quel che suona.
+ *
+ * Come gli altri fogli del telefono, ogni regola comincia col prefisso della
+ * forma (`test/telefono.test.ts`), e ogni colore è un token.
+ */
+
+:root[data-forma="telefono"] .mini-lettore {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--dito) var(--dito);
+  align-items: center;
+  height: var(--player-h);
+  margin: 0 var(--player-gap) var(--player-gap);
+  padding: 0 var(--spazio-1) 0 var(--spazio-2);
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--accent) 12%, var(--color-surface-2));
+  box-shadow: var(--shadow-2);
+  /* Il dito qui è tutto della scheda: un trascinamento in su apre, uno di lato
+     cambia brano, e nessuno dei due deve scorrere la pagina sotto. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  /* Dove la porta il dito (`MiniLettore.tsx` scrive le tre variabili), e
+     da dove torna quando lo lascia: con la molla del foglio, che col movimento
+     spento è uno scatto. */
+  transform: translate(var(--spinta-x, 0px), var(--spinta-y, 0px));
+  opacity: var(--spinta-o, 1);
+  transition:
+    transform var(--transition-foglio),
+    opacity var(--transition-foglio),
+    background-color var(--transition-med);
+}
+
+/* Col dito sopra la scheda segue il dito, senza ritardo. */
+:root[data-forma="telefono"] .mini-lettore[data-trascinando] {
+  transition: none;
+}
+
+/* La parte che apre: copertina e titoli, un tasto solo e largo quanto resta. */
+:root[data-forma="telefono"] .apri-mini {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+
+:root[data-forma="telefono"] .apri-mini .copertina-mini {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--color-surface-3);
+  object-fit: cover;
+}
+
+:root[data-forma="telefono"] .apri-mini .copertina-mini.vuota {
+  font-size: 18px;
+}
+
+:root[data-forma="telefono"] .testi-mini {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root[data-forma="telefono"] .titolo-mini,
+:root[data-forma="telefono"] .sotto-mini {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-forma="telefono"] .titolo-mini {
+  color: var(--color-text-1);
+  font: 600 14px/1.3 var(--font-sans);
+}
+
+:root[data-forma="telefono"] .sotto-mini {
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+/* I due tasti: un dito di lato, il cerchio che si accende al tocco. */
+:root[data-forma="telefono"] .tasto-mini {
+  display: grid;
+  place-items: center;
+  width: var(--dito);
+  height: var(--dito);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-1);
+  transition: background-color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .tasto-mini:active {
+  background: var(--color-surface-3);
+}
+
+/* In «Ascolta insieme», quando i tasti sono di chi conduce. */
+:root[data-forma="telefono"] .tasto-mini:disabled {
+  color: var(--color-text-3);
+}
+
+/* L'avanzamento: un filo sul bordo di sotto, dentro gli angoli. */
+:root[data-forma="telefono"] .linea-mini {
+  position: absolute;
+  right: 14px;
+  bottom: 0;
+  left: 14px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--hairline);
+  pointer-events: none;
+}
+
+:root[data-forma="telefono"] .riempimento-mini {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: 0 50%;
+}
+
+/* ── «In riproduzione», il foglio a tutto schermo ────────────────────────── */
+
+/* Sopra tutto lo scafale, schede comprese, e sotto i menu, le finestrelle e le
+   notifiche, che gli si aprono sopra: lo strato delle barre che galleggiano.
+   Il dito qui è tutto del foglio (`InRiproduzioneTelefono.tsx`): trascinato
+   giù, scende. I pannelli che scorrono sono scatole di scorrimento loro, e il
+   `touch-action` di qui non arriva dentro di loro. */
+:root[data-forma="telefono"] .foglio-np {
+  position: fixed;
+  inset: 0;
+  z-index: var(--strato-barra);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: var(--riquadro-alto, env(safe-area-inset-top, 0px))
+    calc(var(--riquadro-destra, 0px) + 24px)
+    calc(var(--riquadro-basso, env(safe-area-inset-bottom, 0px)) + var(--spazio-2))
+    calc(var(--riquadro-sinistra, 0px) + 24px);
+  overflow: hidden;
+  background: var(--color-surface-0);
+  color: var(--color-text-1);
+  outline: none;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transform: translateY(var(--trascina-y, 0px));
+  transition: transform var(--transition-foglio);
+}
+
+:root[data-forma="telefono"] .foglio-np[data-trascinando] {
+  transition: none;
+}
+
+:root[data-forma="telefono"] .foglio-np[data-chiudendo] {
+  transform: translateY(100%);
+  pointer-events: none;
+}
+
+@starting-style {
+  :root[data-forma="telefono"] .foglio-np {
+    transform: translateY(100%);
+  }
+}
+
+/* Tutto quel che sta sopra il fondo è posizionato, così il fondo, l'unico
+   assoluto, gli resta dietro per ordine del documento: niente uno strato in
+   più da tenere allineato agli altri. */
+:root[data-forma="telefono"] .foglio-np > :not(.sfondo-np) {
+  position: relative;
+}
+
+/* Il fondo: la copertina sfocata, e sopra un velo della superficie, più fitto
+   in basso dove stanno i comandi. Il velo è neutro e la tinta si vede intorno:
+   la stessa ragione di `np-scrim` sul computer. */
+:root[data-forma="telefono"] .sfondo-np {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+:root[data-forma="telefono"] .tinta-np {
+  position: absolute;
+  inset: -20%;
+  width: 140%;
+  height: 140%;
+  object-fit: cover;
+  filter: blur(56px) saturate(1.4);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+:root[data-forma="telefono"] .sfondo-np::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgb(var(--surface-0-rgb) / 0.3) 0%,
+    rgb(var(--surface-0-rgb) / 0.5) 45%,
+    rgb(var(--surface-0-rgb) / 0.88) 100%
+  );
+  pointer-events: none;
+}
+
+/* La testata: la freccia che chiude, chi suona, il menu. I due tasti escono
+   di mezzo dito dal margine, così le icone stanno sulla stessa verticale del
+   testo sotto. */
+:root[data-forma="telefono"] .testa-np {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: var(--dito) minmax(0, 1fr) var(--dito);
+  align-items: center;
+  height: var(--barra-alta-h);
+  margin: 0 -12px;
+}
+
+:root[data-forma="telefono"] .titoli-testa-np {
+  grid-column: 2;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+
+:root[data-forma="telefono"] .occhiello-np {
+  color: var(--color-text-2);
+  font: 600 10px/1.3 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+:root[data-forma="telefono"] .album-testa-np {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font: 600 13px/1.3 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Un tasto rotondo da un dito: la freccia, il menu, il cuore, i pannelli. */
+:root[data-forma="telefono"] .tasto-np {
+  display: grid;
+  place-items: center;
+  width: var(--dito);
+  height: var(--dito);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-1);
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+:root[data-forma="telefono"] .tasto-np:active {
+  background: color-mix(in oklab, var(--color-text-1) 12%, transparent);
+}
+
+:root[data-forma="telefono"] .tasto-np[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* Il menu sta sempre nella terza colonna, anche quando la seconda è l'unica
+   altra cosa nella riga. */
+:root[data-forma="telefono"] .testa-np > .titoli-testa-np + .tasto-np {
+  grid-column: 3;
+}
+
+:root[data-forma="telefono"] .avvisi-foglio-np {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+
+/* Il palco: tutto lo spazio che resta. Contenitore di misura, perché la
+   copertina sia un quadrato grande quanto il lato più corto del palco: in
+   verticale la larghezza, su un telefono basso l'altezza. */
+:root[data-forma="telefono"] .palco-np {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spazio-3) 0;
+  container-type: size;
+}
+
+/* Con un pannello aperto il palco lo tiene tutto, fino al bordo di sopra. */
+:root[data-forma="telefono"] .foglio-np[data-pannello] .palco-np {
+  align-items: stretch;
+  padding-top: var(--spazio-1);
+}
+
+/* La copertina, e il dito che la sfoglia. */
+:root[data-forma="telefono"] .copertina-np {
+  width: min(100cqw, 100cqh);
+  aspect-ratio: 1;
+  touch-action: none;
+}
+
+:root[data-forma="telefono"] .faccia-np {
+  width: 100%;
+  height: 100%;
+  transform: translateX(var(--sposta-x, 0px));
+  transition:
+    transform var(--transition-foglio),
+    opacity var(--transition-foglio);
+}
+
+:root[data-forma="telefono"] .copertina-np[data-trascinando] > .faccia-np {
+  transition: none;
+}
+
+/* Spinta via: esce dal lato verso cui la si è spinta, e ci resta finché non
+   arriva la copertina nuova (o torna: vedi `RITORNO_MS`). */
+:root[data-forma="telefono"] .copertina-np[data-esce="prossimo"] > .faccia-np {
+  transform: translateX(-130%);
+  opacity: 0;
+}
+
+:root[data-forma="telefono"] .copertina-np[data-esce="precedente"] > .faccia-np {
+  transform: translateX(130%);
+  opacity: 0;
+}
+
+/* La nuova entra dal lato opposto; un brano cambiato da sé, in dissolvenza. */
+@starting-style {
+  :root[data-forma="telefono"] .faccia-np[data-entra="prossimo"] {
+    transform: translateX(45%);
+    opacity: 0;
+  }
+  :root[data-forma="telefono"] .faccia-np[data-entra="precedente"] {
+    transform: translateX(-45%);
+    opacity: 0;
+  }
+  :root[data-forma="telefono"] .faccia-np[data-entra="cambio"] {
+    transform: scale(0.94);
+    opacity: 0;
+  }
+}
+
+:root[data-forma="telefono"] .faccia-np .arte-np {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  box-shadow: var(--shadow-3);
+  object-fit: cover;
+}
+
+:root[data-forma="telefono"] .faccia-np .arte-np.vuota {
+  font-size: 64px;
+}
+
+/* I pannelli prendono il palco intero, al posto della copertina. */
+:root[data-forma="telefono"] .pannello-np {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+:root[data-forma="telefono"] .foglio-np .pannello-np > .testo-np {
+  flex: 1 1 auto;
+}
+
+/* Chi suona, e il cuore accanto. */
+:root[data-forma="telefono"] .info-np {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--dito);
+  align-items: center;
+  gap: var(--spazio-2);
+  margin-right: -12px;
+}
+
+:root[data-forma="telefono"] .chi-np {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root[data-forma="telefono"] .titolo-np {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font: 700 22px/1.2 var(--font-dot);
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+:root[data-forma="telefono"] .artista-np {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Il cursore: la pista a tutta larghezza, i due tempi sotto, ai lati. La
+   pallina c'è sempre: sul computer compare al sorvolo, e un dito non sorvola.
+   Dopo il prefisso tre classi, per vincere sulla parte `player-progress` di
+   una skin. */
+:root[data-forma="telefono"] .foglio-np .cursore-np .cursore {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "pista pista pista"
+    "da stato a";
+  align-items: center;
+  row-gap: 2px;
+  margin-top: var(--spazio-3);
+}
+
+:root[data-forma="telefono"] .foglio-np .cursore-np .scorrimento {
+  grid-area: pista;
+  width: 100%;
+  height: 32px;
+}
+
+:root[data-forma="telefono"] .foglio-np .cursore-np .scorrimento::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  opacity: 1;
+}
+
+:root[data-forma="telefono"] .foglio-np .cursore-np .tempo {
+  color: var(--color-text-2);
+  font: 500 12px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+:root[data-forma="telefono"] .foglio-np .cursore-np .tempo:first-child {
+  grid-area: da;
+}
+
+:root[data-forma="telefono"] .foglio-np .cursore-np .scorrimento + .tempo {
+  grid-area: a;
+  justify-self: end;
+}
+
+:root[data-forma="telefono"] .foglio-np .cursore-np .tempo.cercando {
+  grid-area: stato;
+  justify-self: center;
+}
+
+/* Il trasporto: cinque tasti in fila, il play al centro e più grande. */
+:root[data-forma="telefono"] .foglio-np .trasporto-telefono {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--spazio-2) -12px 0;
+}
+
+:root[data-forma="telefono"] .foglio-np .trasporto-telefono .tasto {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--dito);
+  height: var(--dito);
+  padding: 0;
+  color: var(--color-text-1);
+}
+
+:root[data-forma="telefono"] .foglio-np .trasporto-telefono .tasto[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+:root[data-forma="telefono"] .foglio-np .trasporto-telefono .tasto.grande {
+  width: 72px;
+  height: 72px;
+  background: var(--accent);
+  color: var(--color-surface-0);
+  box-shadow: var(--shadow-2);
+}
+
+:root[data-forma="telefono"] .foglio-np .trasporto-telefono .tasto .modo {
+  top: 9px;
+  right: 8px;
+  font-size: 10px;
+}
+
+/* In fondo: la coda, le stelle, il testo. */
+:root[data-forma="telefono"] .piede-np {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--spazio-2) -12px 0;
+}
+
+/* Le stelle, a misura di dito e di occhio. Nelle righe del computer le cinque
+   vuote restano quasi invisibili finché il puntatore non ci passa
+   (`libreria.css`), perché su ogni riga sarebbero rumore: qui sono una sola
+   fila, e un dito non passa sopra niente, quindi si vedono sempre, solo più
+   tenui di quelle date. */
+:root[data-forma="telefono"] .piede-np .stelle .stella {
+  width: 36px;
+  height: var(--dito);
+}
+
+:root[data-forma="telefono"] .piede-np .stelle .stella svg {
+  width: 22px;
+  height: 22px;
+}
+
+:root[data-forma="telefono"] .piede-np .stelle .stella[aria-pressed="false"] {
+  opacity: 0.45;
+}
+
+:root[data-forma="telefono"] .linguetta-np[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+}
+
+/* Le righe della coda nel foglio: il titolo con l'artista, e il ⋮ (la × resta
+   solo sulle righe che un menù non ce l'hanno: vedi `RigheCoda`). Righe alte
+   un dito, e tutte uguali: la coda è una finestra virtuale, e misura la prima
+   riga per mettere le altre.
+
+   Senza la presa: sul computer compare al passaggio del puntatore, e col dito
+   non si trascina (`riordino.ts` lascia il tocco allo scorrimento). Qui non si
+   vedeva mai, e il suo posto era una colonna vuota davanti a ogni titolo. Le
+   righe arrivano al bordo del pannello, e il titolo sta sotto «In coda». */
+:root[data-forma="telefono"] .foglio-np .righe-coda {
+  margin-inline: calc(-1 * var(--spazio-2));
+  padding-inline: 0;
+}
+
+:root[data-forma="telefono"] .foglio-np .riga-coda {
+  grid-template-columns: minmax(0, 1fr) 44px;
+  min-height: 56px;
+  padding: 4px 0 4px var(--spazio-2);
+}
+
+:root[data-forma="telefono"] .foglio-np .riga-coda .presa {
+  display: none;
+}
+
+:root[data-forma="telefono"] .foglio-np .riga-coda .nome {
+  font-size: 15px;
+}
+
+:root[data-forma="telefono"] .foglio-np .riga-coda .autore {
+  font-size: 13px;
+}
+
+:root[data-forma="telefono"] .foglio-np .riga-coda .tasto-altro {
+  width: 44px;
+  margin: 0;
+}

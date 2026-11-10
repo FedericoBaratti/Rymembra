@@ -135,6 +135,7 @@ use self::seguito::{
 };
 use self::suono::nome_normalizzazione;
 
+pub(crate) use self::ospiti::{registra_lontana, togli_lontane};
 pub(crate) use self::ospiti::{riga_di_libreria, righe_di_libreria};
 pub(crate) use self::seguito::in_ordine;
 
@@ -1231,6 +1232,14 @@ pub(crate) fn aspetta_le_file(app: &tauri::AppHandle, fine: std::time::Instant) 
 /// spettro — il nucleo può normalizzare, e la finestra deve vedere il valore
 /// vero.
 fn uscita_scelta(app: &tauri::AppHandle) -> Option<String> {
+    // Su Android l'uscita la sceglie Android, e la musica la segue: vedi
+    // `rymembra_play::dispositivi`, «Su Android si segue Android». Una
+    // preferenza scritta prima di quella regola — il nome di una riga che oggi
+    // non c'è più — terrebbe ferma la riapertura ad aspettare un'uscita che non
+    // tornerà mai.
+    if cfg!(target_os = "android") {
+        return None;
+    }
     let stato = app.try_state::<Stato>()?;
     con_libreria(&stato, |libreria| {
         rymembra_app::playback::load_uscita(&libreria.connection)
@@ -1427,6 +1436,18 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
     };
     let ascolto = tracker.finish(adesso_ms());
     if !ascolto.counts {
+        return;
+    }
+    // L'ascolto di una voce lontana va a chi possiede il brano: qui si mette
+    // in fila, e lo manda il filo del collegamento quando quel dispositivo
+    // risponde. La maniglia si risolve adesso, finché il registro la sa (il
+    // suo lucchetto è una foglia: prenderlo col lettore in mano è ammesso).
+    if !ospiti::e_di_libreria(ascolto.track_id) {
+        if let Some((dispositivo, brano)) = ospiti::lontana(app, ascolto.track_id) {
+            da_scrivere(app, move |app| {
+                crate::lontano::ascoltato_qui(app, &dispositivo, brano, &ascolto);
+            });
+        }
         return;
     }
     da_scrivere(app, move |app| scrivi_ascolto(app, &ascolto));
@@ -2001,10 +2022,17 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
     // ogni voce. Vedi `ospiti::da_contare`.
     let conta = ospiti::da_contare(app, track_id);
 
+    // Quel che si misura: la riga da contare, o la maniglia di una voce
+    // lontana — un brano di un altro dispositivo, che non si conta qui ma si
+    // misura qui, e a ascolto finito si manda a chi lo possiede (vedi
+    // `scrivi_ascolto`). Lo scrobble, quello sì, resta solo per `conta`: lo fa
+    // il proprietario.
+    let misura = conta.or_else(|| ospiti::e_lontana(app, track_id).then_some(track_id));
+
     // Il brano rimesso nel solco dopo che il dispositivo è tornato: l'ascolto è
     // quello di prima, fermo, e riparte da dove si era fermato invece di
     // chiudersi. Vedi `riapertura::e_la_ripresa_dell_ascolto`.
-    let continua = riapertura::e_la_ripresa_dell_ascolto(lettore, track_id, conta);
+    let continua = riapertura::e_la_ripresa_dell_ascolto(lettore, track_id, misura);
 
     // Il brano precedente è finito **adesso**, non prima: con il gapless fra
     // i due non c'è un istante di silenzio, e questo è l'unico momento in cui
@@ -2059,7 +2087,7 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
         {
             ascolto.resume(adesso_ms());
         }
-    } else if let Some(riga) = conta {
+    } else if let Some(riga) = misura {
         let durata = if posizione.track_id == Some(track_id) && posizione.durata_ms > 0 {
             posizione.durata_ms
         } else {
@@ -2567,8 +2595,18 @@ pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -
 /// nell'anello dalla callback audio, questo ferma l'evento. Spegnendoli si
 /// smette di pagare in tutti e due i posti, ed è la ragione per cui il comando
 /// esiste invece di lasciare lo spettro sempre acceso.
+///
+/// Sul telefono non accende niente: lo spettro non c'è, e il filo che manda
+/// le bande non parte nemmeno (`lib.rs`). Il comando resta registrato, come gli
+/// altri sei, perché l'interfaccia è la stessa su tutte e due le piattaforme;
+/// ma una presa sul suono aperta da qui — da un profilo vecchio, da una via
+/// dimenticata — farebbe lavorare la callback audio per un anello che nessuno
+/// legge.
 #[tauri::command]
 pub fn spettro(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
+    if cfg!(mobile) {
+        return Ok(());
+    }
     stato
         .spettro
         .store(attivo, std::sync::atomic::Ordering::Relaxed);
@@ -3514,6 +3552,15 @@ pub fn pausa(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()>
 /// Chi ospita non riprende subito ma fra un quarto di secondo, e lo annuncia
 /// con l'ancora: così gli altri ripartono nello stesso istante invece di
 /// rincorrerlo. Vedi `insieme::riprendi`.
+/// C'è un brano da riprendere: la coda non è vuota.
+///
+/// Per chi deve scegliere fra «riprendi» e «suona qualcosa» senza avere la
+/// finestra davanti: l'auto, quando le si chiede «metti un po' di musica».
+#[cfg(mobile)]
+pub fn c_e_un_brano(stato: &StatoLettore) -> bool {
+    con_lettore(stato, |lettore| Ok(lettore.coda.current().is_some())).unwrap_or(false)
+}
+
 pub fn riprendi_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Riprendi).map_err(errore)? {
         return Ok(());

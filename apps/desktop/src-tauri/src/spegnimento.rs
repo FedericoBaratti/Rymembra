@@ -128,6 +128,9 @@ pub fn spegni(mano: &tauri::AppHandle) {
     // altri che la sessione finisce, chi segue esce, e il lettore torna alla
     // coda di questo PC — che è quella che `salva_uscendo` deve trovare.
     crate::insieme::ferma(mano);
+    // Il collegamento via internet subito dopo: gli altri dispositivi vedono
+    // la connessione chiudersi, invece di aspettare il silenzio.
+    crate::lontano::ferma(mano);
     // L'ascolto in corso, che si chiude qui e conta, e il segno di «riprendi
     // dov'eri» — anche di un cursore mosso in pausa un attimo prima di
     // chiudere: il filo dell'orologio, che di solito lo scrive, lo fa solo

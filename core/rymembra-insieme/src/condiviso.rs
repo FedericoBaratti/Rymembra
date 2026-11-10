@@ -21,7 +21,7 @@
 //! ([`Condiviso::connessioni_dove`]).
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
@@ -34,6 +34,7 @@ use crate::collegamento::Collegamento;
 use crate::errori::chiave;
 use crate::identita::{ChiavePubblica, Identita};
 use crate::messaggi::MASSIMO_NOME;
+use crate::presa::{Dove, Origine, Presa, Strada};
 use crate::rete::{Evento, IdConnessione};
 use crate::scoperta::Cercatore;
 use crate::servente::Servente;
@@ -115,10 +116,14 @@ pub(crate) struct Condiviso {
     pub(crate) cercatore: Mutex<Option<Arc<Cercatore>>>,
     /// Le associazioni fallite.
     pub(crate) tentativi: Mutex<Tentativi>,
-    /// Le connessioni in entrata, per indirizzo: i tetti dell'ascolto.
-    pub(crate) posti: Mutex<HashMap<IpAddr, usize>>,
-    /// Le strette in entrata in corso, per indirizzo. Vedi `ascolto`.
-    pub(crate) strette: Mutex<HashMap<IpAddr, usize>>,
+    /// Le connessioni in entrata, per origine: i tetti dell'ascolto.
+    pub(crate) posti: Mutex<HashMap<Origine, usize>>,
+    /// Le strette in entrata in corso, per origine. Vedi `ascolto`.
+    pub(crate) strette: Mutex<HashMap<Origine, usize>>,
+    /// Chi apre i flussi del collegamento via internet: vedi `Rete::strada`.
+    strada: Mutex<Option<Arc<dyn Strada>>>,
+    /// I tempi delle connessioni via internet: vedi [`Tempi::via_internet`].
+    pub(crate) tempi_lontani: Tempi,
     /// Suona quando una stretta finisce e libera un posto.
     pub(crate) strette_libere: Condvar,
     /// Le chiavi che possono leggere i gettoni di questo PC: i membri della
@@ -171,10 +176,43 @@ impl Condiviso {
             tentativi: Mutex::new(Tentativi::default()),
             posti: Mutex::new(HashMap::new()),
             strette: Mutex::new(HashMap::new()),
+            strada: Mutex::new(None),
+            tempi_lontani: tempi.via_internet(),
             strette_libere: Condvar::new(),
             ammessi: Mutex::new(HashSet::new()),
             offerte: Mutex::new(HashSet::new()),
             fili: AtomicUsize::new(0),
+        }
+    }
+
+    /// I tempi di una connessione che viene da lì.
+    pub(crate) fn tempi_per(&self, origine: Origine) -> Tempi {
+        if origine.e_lontana() {
+            self.tempi_lontani
+        } else {
+            self.tempi
+        }
+    }
+
+    /// Cambia chi apre i flussi del collegamento via internet.
+    pub(crate) fn imposta_strada(&self, strada: Option<Arc<dyn Strada>>) {
+        *chiave(&self.strada) = strada;
+    }
+
+    /// Una presa verso `dove`: una connessione TCP in casa, un flusso del
+    /// collegamento via internet fuori. `None` se non si raggiunge, o se fuori
+    /// non c'è una strada.
+    pub(crate) fn apri(&self, dove: &Dove) -> Option<Box<dyn Presa>> {
+        match dove {
+            Dove::Lan(indirizzo) => TcpStream::connect_timeout(indirizzo, self.tempi.collegamento)
+                .ok()
+                .map(|presa| Box::new(presa) as Box<dyn Presa>),
+            Dove::Lontano(chiave_lontana) => {
+                let strada = chiave(&self.strada).clone()?;
+                strada
+                    .apri(chiave_lontana, self.tempi_lontani.collegamento)
+                    .ok()
+            }
         }
     }
 
@@ -358,7 +396,8 @@ impl Condiviso {
         if self.fidato(&nuova.pari) {
             let tetto = match nuova.uso {
                 Uso::Lettura => LETTURE_PER_CHIAVE,
-                Uso::Servizio => 1,
+                // Uno sconosciuto non arriva fin qui: `prepara` lo chiude.
+                Uso::Servizio | Uso::Sconosciuto => 1,
                 // Il controllo resta coi tetti dell'ascolto: un membro ne ha una.
                 Uso::Controllo => usize::MAX,
             };
@@ -379,8 +418,8 @@ impl Condiviso {
                 .filter(stesse)
                 .filter(|c| !self.fidato(&c.pari))
                 .collect();
-            if !nuova.ip.is_loopback()
-                && let Some(vecchia) = estranei.iter().find(|c| c.ip == nuova.ip)
+            if !nuova.origine.e_locale()
+                && let Some(vecchia) = estranei.iter().find(|c| c.origine == nuova.origine)
             {
                 if vecchia.associando() {
                     return Err(Some(ErrorCodeKind::InsiemeIrraggiungibile));

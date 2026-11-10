@@ -1,9 +1,11 @@
 # Quel che deve passare prima di unire qualcosa — e prima di ogni release.
 #
-# Gira su Windows e basta, ed è deliberato: è l'unico bersaglio che l'installer
-# produce oggi, e una matrice che compila su Linux darebbe la sensazione di
-# coprire una piattaforma che nessuno spedisce. Quando `bundle.targets`
-# crescerà, questa matrice crescerà con lui — non prima.
+# Gira su Windows, ed è deliberato: è il bersaglio dell'installer, e una matrice
+# che compila su Linux darebbe la sensazione di coprire una piattaforma che
+# nessuno spedisce. L'altra cosa che si spedisce è l'APK per i telefoni, e ha il
+# suo lavoro, `android`, più sotto: su Linux perché è lì che l'immagine di GitHub
+# ha già l'SDK e l'NDK, e perché il Rust che compila è quello del telefono, non
+# quello di Linux.
 
 # Le azioni sono inchiodate a un hash, e il perché sta per esteso nel preambolo
 # di `release.yml`: un'etichetta come `@v4` si può spostare, un hash no. Qui non
@@ -155,6 +157,83 @@ jobs:
             exit 1
           fi
 
+  # Il telefono. Fino a qui la CI non compilava mai il codice che esiste solo su
+  # Android — `telefono.rs`, i rami `cfg(target_os = "android")`, il ponte
+  # `rymembra-android` con il suo `unsafe` — né il Kotlin: si scopriva rotto la
+  # prima volta che qualcuno costruiva un APK, settimane dopo il cambio che
+  # l'aveva rotto. Prima clippy sul bersaglio del telefono, che costa poco e
+  # dice dove; poi l'APK vero, con la CLI di Tauri come lo si costruisce a mano
+  # (README, «Android»), e il lint di Android sul progetto Gradle — che senza
+  # la CLI non si può nemmeno aprire: `tauri.settings.gradle`, le classi
+  # generate di wry e `tauri.properties` li scrive lei, e non stanno nel
+  # repository.
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      # Lo stesso Rust del lavoro `verifica`: vedi lì perché è inchiodato.
+      RUSTUP_TOOLCHAIN: "1.97.1"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Rust
+        run: |
+          rustup toolchain install ${{ env.RUSTUP_TOOLCHAIN }} --profile minimal --component clippy
+          rustup target add aarch64-linux-android --toolchain ${{ env.RUSTUP_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: android
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # L'NDK e il JDK 17 sono già sull'immagine: `ANDROID_NDK_LATEST_HOME` e
+      # `JAVA_HOME_17_X64` sono le sue variabili. Il compilatore C dell'NDK
+      # serve a SQLite e a `ring`, che hanno sorgenti C da compilare per il
+      # telefono; il linker al `.so` dell'app. L'API 26 è quella di
+      # `minSdkVersion` (`tauri.android.conf.json`).
+      - name: L'NDK
+        run: |
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME"
+            echo "JAVA_HOME=$JAVA_HOME_17_X64"
+            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android26-clang"
+            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android26-clang++"
+            echo "AR_aarch64_linux_android=$bin/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android26-clang"
+          } >> "$GITHUB_ENV"
+
+      # `generate_context!` legge la finestra costruita: senza `dist` l'app non
+      # compila, nemmeno per clippy.
+      - name: La finestra
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build:web
+
+      - name: Clippy, sul telefono
+        run: cargo clippy -p rymembra-desktop -p rymembra-android --target aarch64-linux-android --locked
+
+      # In debug: un APK di rilascio vuole la chiave di chi pubblica
+      # (`keystore.properties`), che qui non c'è e non deve esserci. Quel che si
+      # verifica è che tutto compili e si impacchetti, non quanto pesa.
+      - name: L'APK
+        working-directory: apps/desktop
+        run: npx tauri android build --apk --target aarch64 --debug --ci
+
+      - name: Il lint di Android
+        working-directory: apps/desktop/src-tauri/gen/android
+        run: ./gradlew :app:lintArm64Debug -x rustBuildArm64Debug --no-daemon
+
   # Le dipendenze, guardate da fuori: licenze, avvisi di sicurezza, crate ritirati,
   # sorgenti. Un lavoro suo perché fallisce per ragioni che non stanno nel
   # codice di questo repository — un avviso pubblicato stanotte su un crate che
@@ -170,8 +249,8 @@ jobs:
           persist-credentials: false
 
       # Su Linux perché l'azione è un contenitore, e i contenitori su Windows
-      # non girano; il bersaglio che guarda è Windows lo stesso, perché lo dice
-      # `deny.toml` (`[graph] targets`).
+      # non girano; i bersagli che guarda sono Windows e il telefono lo stesso,
+      # perché lo dice `deny.toml` (`[graph] targets`).
       - name: cargo deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:

@@ -12,7 +12,7 @@
  * variante, i campioni mostrano i suoi valori, e una voce che la variante non
  * sovrascrive si legge attenuata — è ereditata dalla base.
  */
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../dialoghi";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";

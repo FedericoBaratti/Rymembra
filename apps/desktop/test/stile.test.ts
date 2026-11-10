@@ -189,7 +189,8 @@ test("le regole dello Studio non raggiungono il cursore del lettore", () => {
   // `parti/Scrubber.tsx` avvolge la barra di posizione in `.cursore`: una
   // regola scritta per i cursori dello Studio con quel nome nudo le dava 4 px
   // di altezza e la griglia a tre colonne del pannello.
-  const ancore = [".lettore", ".colonna", ".in-riproduzione", ".player-progress"];
+  // `.foglio-np` è «In riproduzione» sul telefono (`InRiproduzioneTelefono`).
+  const ancore = [".lettore", ".colonna", ".in-riproduzione", ".foglio-np", ".player-progress"];
   const sconfinate: string[] = [];
   for (const { selettori } of regole(FOGLIO)) {
     for (const s of selettori) {

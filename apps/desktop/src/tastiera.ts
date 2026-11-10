@@ -64,7 +64,8 @@
  */
 import { useEffect, useRef } from "react";
 
-import { chiudiQuellaInCima } from "./finestrella";
+import { chiudiLaPiuAlta, chiudiQuellaInCima } from "./finestrella";
+import { impostaScala } from "./indietro";
 import { posizioneAdesso } from "./riproduzione";
 import { t, type Chiave } from "./lingue";
 import { modaleAperto, passaLaScorciatoia } from "./modale";
@@ -549,6 +550,39 @@ export function useScorciatoie(
     }
     return di;
   })();
+
+  // Il tasto Indietro del telefono scende la stessa scala di Escape (vedi
+  // `indietro.ts`), con due differenze che vengono dal dito: la finestrella in
+  // cima si chiude dovunque sia il fuoco, e un campo in cui si scrive si lascia
+  // senza fermarsi lì — la tastiera del telefono, Indietro la chiude già il
+  // sistema, prima che arrivi qui.
+  useEffect(() => {
+    impostaScala(
+      () => {
+        if (!accese.current) return false;
+        const attivo = document.activeElement;
+        // Il campo si lascia, e la scala **continua**. Con la tastiera aperta
+        // Indietro se lo prende lei per chiudersi, e alla pagina non arriva
+        // niente: se arriva, la tastiera è già giù, e chi lo preme vuole
+        // tornare indietro — non lasciare un campo che non vede più attivo.
+        // Fermarsi qui voleva dire due Indietro per chiudere una finestrella
+        // dopo averci scritto dentro.
+        if (siStaScrivendo(attivo) && attivo instanceof HTMLElement) {
+          attivo.blur();
+        }
+        // La finestrella in cima, se c'è. «In riproduzione» conta come
+        // modale ma non è una finestrella: la chiude il primo gradino della
+        // scala, qui sotto.
+        return modaleAperto() && chiudiLaPiuAlta();
+      },
+      () => accese.current && ultime.current.chiudi(),
+    );
+    return () =>
+      impostaScala(
+        () => false,
+        () => false,
+      );
+  }, []);
 
   useEffect(() => {
     const ascolta = (e: KeyboardEvent) => {

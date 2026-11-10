@@ -138,6 +138,11 @@ impl StatoMusicaNuvola {
         {
             let _ = sveglia.send(());
         }
+        // Il filo può essere fermo nel long-poll di Dropbox, che da solo
+        // torna anche dopo un paio di minuti: lo si interrompe.
+        if let Some(deposito) = self.deposito(conto) {
+            deposito.sveglia();
+        }
     }
 
     fn deposito(&self, conto: &str) -> Option<Arc<dyn Deposito>> {
@@ -466,7 +471,11 @@ fn riapri_webdav(
             .map(str::to_owned)
             .ok_or_else(|| manca("l'indirizzo"))
     };
-    let server = WebDav::nuovo(&campo("indirizzo")?, &campo("utente")?, &password)?;
+    let indirizzo = campo("indirizzo")?;
+    // Si riapre da sé, anche all'avvio: senza nessuno a cui chiedere il
+    // permesso della rete di casa, si dice che manca.
+    crate::telefono::per_il_server(&indirizzo, false)?;
+    let server = WebDav::nuovo(&indirizzo, &campo("utente")?, &password)?;
     Ok(Arc::new(server))
 }
 
@@ -707,6 +716,14 @@ fn pausa_dopo(guasto: &AppError, di_fila: u32) -> Duration {
     }
     if let ErrorCode::NetRateLimited {
         retry_after_ms: Some(ms),
+        ..
+    }
+    | ErrorCode::NetUnavailable {
+        retry_after_ms: Some(ms),
+        ..
+    }
+    | ErrorCode::CloudQuotaExceeded {
+        riprova_fra_ms: Some(ms),
         ..
     } = guasto.code()
     {
@@ -1685,12 +1702,13 @@ fn collega_col_browser(
     let credenziali = crate::nuvola_app::credenziali_dell_app(&scelta)?;
     let rete = Rete::nuova(servizio.chiave(), oauth::SCADENZA);
     let fermare = || nuvola.annulla.load(Ordering::Acquire) || crate::spegnimento::in_uscita();
+    let consenso = crate::browser::in_attesa_del_consenso();
     let token = oauth::collega_presso(
         &rete,
         &fornitore,
         &credenziali,
         |url| {
-            tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| {
+            crate::browser::apri(url).map_err(|err| {
                 AppError::new(ErrorCode::InternalAborted {
                     what: Some("apertura del browser".to_owned()),
                 })
@@ -1699,6 +1717,7 @@ fn collega_col_browser(
         },
         &fermare,
     )?;
+    drop(consenso);
     // Prima di toccare il deposito di prima: un consenso senza refresh token
     // funzionerebbe un'ora, e un conto che andava non deve spegnersi per lui.
     if token.refresh_token.is_none() {
@@ -1757,6 +1776,9 @@ fn collega_webdav(modulo: ModuloCollega) -> Result<Collegato, AppError> {
     if indirizzo.trim().is_empty() || utente.trim().is_empty() || password.is_empty() {
         return Err(AppError::new(ErrorCode::CloudWrongCredentials));
     }
+    // Un NAS di casa, dal telefono: da Android 17 serve un permesso, e lo
+    // chiede chi sta collegando. Vedi `telefono::per_il_server`.
+    crate::telefono::per_il_server(&indirizzo, true)?;
     let server = WebDav::nuovo(&indirizzo, utente.trim(), &password)?;
     let chi = server.chi()?;
     let conto = conto_di(Servizio::WebDav, &chi.id_stabile);
@@ -2121,7 +2143,7 @@ pub async fn brano_apri_sul_web(app: AppHandle, id: i64) -> Esito<()> {
             None => None,
         }
         .ok_or_else(|| AppError::new(ErrorCode::CloudNotFound))?;
-        tauri_plugin_opener::open_url(indirizzo, None::<&str>).map_err(|err| {
+        crate::browser::apri(&indirizzo).map_err(|err| {
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("apertura del browser".to_owned()),
             })

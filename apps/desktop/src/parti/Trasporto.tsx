@@ -37,7 +37,7 @@ function ripetizione(): Record<StatoRiproduzione["ripeti"], string> {
 }
 
 /** Dove sta il trasporto, e quindi quanto è grande. */
-export type TagliaTrasporto = "barra" | "colonna" | "grande";
+export type TagliaTrasporto = "barra" | "colonna" | "grande" | "telefono";
 
 /**
  * Le tre configurazioni, per esteso.
@@ -68,6 +68,17 @@ const MISURE = {
     icona: 18,
     play: 24,
     classe: "trasporto np-transport",
+    titoli: false,
+    scorciatoia: false,
+  },
+  // «In riproduzione» sul telefono (`InRiproduzioneTelefono.tsx`): tasti da un
+  // dito, e un nome di contenitore suo. Non `np-transport`, che è una parte del
+  // registro: la regola compilata di una skin, a pari specificità, rimetterebbe
+  // le misure del computer. Niente suggerimenti: un dito non sorvola.
+  telefono: {
+    icona: 24,
+    play: 32,
+    classe: "trasporto-telefono",
     titoli: false,
     scorciatoia: false,
   },

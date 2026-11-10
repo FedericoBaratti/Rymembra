@@ -406,6 +406,13 @@ impl Turno<'_> {
     /// controllo darebbe un `None` che il chiamante potrebbe solo ignorare — cioè
     /// un ramo morto e un bit mai più abbassato, che è esattamente il guasto che
     /// questa funzione esiste per chiudere.
+    #[cfg_attr(
+        mobile,
+        allow(
+            dead_code,
+            reason = "fuori dalle prove la usa solo l'updater del computer"
+        )
+    )]
     pub fn adotta(bandiera: &AtomicBool) -> Turno<'_> {
         Turno(bandiera)
     }

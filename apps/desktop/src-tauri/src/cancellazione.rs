@@ -498,6 +498,11 @@ fn con_un_cestino(collocazione: Collocazione, unita: Option<Unita>) -> bool {
 /// nessuna lettera di rete viene toccata un'altra volta. Chi non ha una
 /// risposta vale come senza Cestino: vedi il `//!`.
 fn cestini(percorsi: &[String]) -> Vec<bool> {
+    // Su Android il Cestino è quello di `MediaStore`, e chi lo conosce file per
+    // file è Kotlin: vedi [`cestini_del_telefono`].
+    if cfg!(mobile) {
+        return cestini_del_telefono(percorsi);
+    }
     let collocazioni = volumi::collocazioni(percorsi, volumi::SCADENZA_RISOLUZIONE);
     percorsi
         .iter()
@@ -511,6 +516,65 @@ fn cestini(percorsi: &[String]) -> Vec<bool> {
             con_un_cestino(collocazione, unita)
         })
         .collect()
+}
+
+/// [`cestini`] sul telefono: il Cestino di `MediaStore`, che c'è da Android 11
+/// e solo per i file che l'indice dei file multimediali conosce.
+///
+/// Un ponte che non risponde vale come nessun Cestino — la conferma della
+/// cancellazione definitiva lo dirà — come una share di rete che non risponde:
+/// la promessa del Cestino non si fa a vuoto.
+#[cfg(target_os = "android")]
+fn cestini_del_telefono(percorsi: &[String]) -> Vec<bool> {
+    match rymembra_android::sistema::cestinabili(percorsi) {
+        Ok(risposta) if risposta.len() == percorsi.len() => risposta,
+        Ok(risposta) => {
+            nota!(
+                "[cestino] {} risposte per {} file: nessun Cestino",
+                risposta.len(),
+                percorsi.len()
+            );
+            vec![false; percorsi.len()]
+        }
+        Err(err) => {
+            nota!("[cestino] il Cestino del sistema non risponde: {err}");
+            vec![false; percorsi.len()]
+        }
+    }
+}
+
+/// Fuori da Android, che è il solo telefono: nessun Cestino.
+#[cfg(not(target_os = "android"))]
+fn cestini_del_telefono(percorsi: &[String]) -> Vec<bool> {
+    vec![false; percorsi.len()]
+}
+
+/// Manda nel Cestino del telefono tutti i file insieme, con il dialogo del
+/// sistema. `Ok(false)` se chi guarda ha detto di no: non si è mosso niente.
+///
+/// # Errori
+///
+/// `fs.trashFailed` se il Cestino rifiuta, o se il ponte non risponde.
+#[cfg(target_os = "android")]
+fn cestina_sul_telefono(percorsi: &[String]) -> Result<bool, AppError> {
+    rymembra_android::sistema::cestina(percorsi).map_err(|err| {
+        AppError::new(ErrorCode::FsTrashFailed {
+            path: percorsi.first().cloned().unwrap_or_default(),
+            detail: None,
+        })
+        .with_cause(format!("il Cestino del sistema: {err}"))
+    })
+}
+
+/// Fuori da Android non si arriva mai qui: [`cestini_del_telefono`] dice che
+/// nessun file ha un Cestino.
+#[cfg(not(target_os = "android"))]
+fn cestina_sul_telefono(percorsi: &[String]) -> Result<bool, AppError> {
+    Err(AppError::new(ErrorCode::FsTrashFailed {
+        path: percorsi.first().cloned().unwrap_or_default(),
+        detail: None,
+    })
+    .with_cause("nessun Cestino del telefono su questa piattaforma"))
 }
 
 /// Cancella un file **per sempre**, dove un Cestino non c'è.
@@ -608,6 +672,22 @@ pub async fn brani_elimina(
             ));
         }
 
+        // Sul telefono il Cestino è una richiesta sola, per tutti i file, con il
+        // dialogo del sistema — e si chiede **prima** di fermare il motore: un
+        // «no» lascia tutto com'era, musica compresa. L'ordine di Windows qui
+        // non serve: su Android un file aperto si sposta lo stesso, e il Cestino
+        // di `MediaStore` lo sposta soltanto (`.trashed-…`, nella sua cartella).
+        if cfg!(mobile) {
+            let nel_cestino: Vec<String> = percorsi
+                .iter()
+                .filter(|percorso| ha_un_cestino(percorso))
+                .cloned()
+                .collect();
+            if !nel_cestino.is_empty() && !cestina_sul_telefono(&nel_cestino)? {
+                return Ok(0);
+            }
+        }
+
         // Il motore lascia andare i file che ha in mano — il corrente e quello
         // in canna — prima che il Cestino provi a prenderli. Per un brano
         // d'immagine il file in mano è l'immagine, e i brani da sgomberare
@@ -635,7 +715,7 @@ pub async fn brani_elimina(
                 // confermato, o non si sarebbe arrivati qui — `remove_file`,
                 // senza passare dalla shell e dal suo dialogo senza finestra.
                 let fatto = if ha_un_cestino(percorso) {
-                    trash::delete(percorso).map_err(|err| nel_cestino(percorso, &err))
+                    nel_cestino_di_sistema(percorso)
                 } else {
                     per_sempre(percorso)
                 };
@@ -674,6 +754,29 @@ pub async fn brani_elimina(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+/// Manda un file nel Cestino del sistema operativo.
+///
+/// Sul computer è la stessa `IFileOperation` di Esplora risorse, via `trash`.
+#[cfg(desktop)]
+fn nel_cestino_di_sistema(percorso: &str) -> Result<(), AppError> {
+    trash::delete(percorso).map_err(|err| nel_cestino(percorso, &err))
+}
+
+/// Sul telefono i file nel Cestino ci sono già andati tutti insieme, prima del
+/// giro (vedi [`brani_elimina`]): qui si controlla soltanto che il file non sia
+/// più dov'era. Se c'è ancora, il Cestino non l'ha preso, e la sua riga resta.
+#[cfg(mobile)]
+fn nel_cestino_di_sistema(percorso: &str) -> Result<(), AppError> {
+    if !Path::new(percorso).exists() {
+        return Ok(());
+    }
+    Err(AppError::new(ErrorCode::FsTrashFailed {
+        path: percorso.to_owned(),
+        detail: None,
+    })
+    .with_cause("il Cestino del sistema ha risposto di sì, ma il file è ancora al suo posto"))
+}
+
 /// Il codice di sistema dentro un `trash::Error::Os`, sbucciato.
 ///
 /// Su Windows quel numero non è un codice Win32: è l'`HRESULT` che COM ha dato
@@ -687,6 +790,7 @@ pub async fn brani_elimina(
 ///
 /// Sulle altre piattaforme il crate ci mette `errno`, che involucro non ne ha:
 /// se i bit alti non sono quelli, il numero torna com'era.
+#[cfg(desktop)]
 fn codice_di_sistema(code: i32) -> i32 {
     /// `FACILITY_WIN32`, dove `HRESULT_FROM_WIN32` la scrive.
     const INVOLUCRO: u32 = 0x8007_0000;
@@ -720,6 +824,7 @@ fn codice_di_sistema(code: i32) -> i32 {
 /// nomina tutte e due le cause invece di sceglierne una: quella distinzione da
 /// qui non si può fare. I cinque numeri restano lo stesso, perché costano cinque
 /// righe e la shell non promette di passare sempre di lì.
+#[cfg(desktop)]
 fn nel_cestino(percorso: &str, err: &trash::Error) -> AppError {
     /// `ERROR_FILE_NOT_FOUND`
     const NON_TROVATO: i32 = 2;
@@ -772,6 +877,7 @@ fn nel_cestino(percorso: &str, err: &trash::Error) -> AppError {
 /// il suo `Debug` — con dentro, per `CanonicalizePath` e `CouldNotAccess`, la
 /// cartella dell'album. Qui resta il nome della variante e, per un guasto del
 /// sistema, il numero e la frase di Windows, che percorsi non ne portano.
+#[cfg(desktop)]
 fn causa_senza_percorsi(err: &trash::Error) -> String {
     match err {
         trash::Error::Os { code, description } => format!("Os {code}: {description}"),
@@ -809,7 +915,7 @@ mod prove_per_sempre {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, desktop))]
 mod prove {
     use super::nel_cestino;
 

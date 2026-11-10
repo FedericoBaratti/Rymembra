@@ -314,3 +314,80 @@ fn la_madre_di_un_percorso() {
     assert_eq!(percorso_di(CIMA), "");
     assert_eq!(percorso_di("/musica"), "/musica");
 }
+
+#[test]
+fn una_sveglia_interrompe_il_long_poll_senza_farne_partire_un_altro() {
+    // Un long-poll lento, come quello vero che dura minuti: una radice nuova
+    // o «Aggiorna ora» non devono aspettarne la fine.
+    let finto = Finto::avvia(|vista: &Vista, _: &str| match vista.percorso.as_str() {
+        "/notify/2/files/list_folder/longpoll" => {
+            std::thread::sleep(Duration::from_millis(1500));
+            json(200, &json!({"changes": false}))
+        }
+        _ => json(404, &json!({})),
+    });
+    let dropbox = collegato(&finto);
+    std::thread::scope(|filo| {
+        filo.spawn(|| {
+            std::thread::sleep(Duration::from_millis(150));
+            dropbox.sveglia();
+        });
+        let partito = Instant::now();
+        let (cambi, cursore) = dropbox
+            .cambiamenti("c", Duration::from_secs(30))
+            .expect("svegliato");
+        assert!(
+            partito.elapsed() < Duration::from_millis(1200),
+            "la sveglia non ha aspettato il long-poll: {:?}",
+            partito.elapsed()
+        );
+        assert!(cambi.is_empty());
+        assert_eq!(cursore, "c");
+    });
+    // Il giro dopo, con lo stesso cursore, aspetta la domanda già partita.
+    let (cambi, _) = dropbox
+        .cambiamenti("c", Duration::from_secs(30))
+        .expect("la risposta di prima");
+    assert!(cambi.is_empty());
+    assert_eq!(
+        finto.viste_a("/notify/2/files/list_folder/longpoll").len(),
+        1,
+        "un long-poll solo"
+    );
+}
+
+#[test]
+fn il_backoff_vale_per_il_long_poll_dopo_e_una_sveglia_lo_interrompe() {
+    let finto = Finto::avvia(|vista: &Vista, _: &str| match vista.percorso.as_str() {
+        "/notify/2/files/list_folder/longpoll" => {
+            json(200, &json!({"changes": false, "backoff": 60}))
+        }
+        _ => json(404, &json!({})),
+    });
+    let dropbox = collegato(&finto);
+    let partito = Instant::now();
+    dropbox
+        .cambiamenti("c", Duration::from_secs(30))
+        .expect("il primo");
+    assert!(
+        partito.elapsed() < Duration::from_secs(5),
+        "il backoff non si dorme sul filo del conto"
+    );
+    std::thread::scope(|filo| {
+        filo.spawn(|| {
+            std::thread::sleep(Duration::from_millis(150));
+            dropbox.sveglia();
+        });
+        let partito = Instant::now();
+        let (cambi, _) = dropbox
+            .cambiamenti("c", Duration::from_secs(30))
+            .expect("svegliato durante il backoff");
+        assert!(cambi.is_empty());
+        assert!(partito.elapsed() < Duration::from_secs(5));
+    });
+    assert_eq!(
+        finto.viste_a("/notify/2/files/list_folder/longpoll").len(),
+        1,
+        "durante il backoff nessun long-poll nuovo"
+    );
+}

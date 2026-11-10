@@ -36,9 +36,27 @@
 //! con la chiusura che passa: questo crate non sa niente della musica. Per le
 //! unità, [`unita_di`] e il suo [`Unita`].
 
+// Fuori da Windows i pulsanti non si disegnano, e quel che serve a disegnarli
+// — gli identificativi, i suggerimenti, i glifi — non lo legge nessuno. Resta
+// compilato lo stesso, e non dietro `cfg(windows)`: le sue prove sono pure, e
+// girano anche dove la barra non c'è.
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "lo legge soltanto `finestra`, che c'è solo su Windows"
+    )
+)]
 mod aspetto;
 #[cfg(windows)]
 mod finestra;
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "lo legge soltanto `finestra`, che c'è solo su Windows"
+    )
+)]
 mod glifi;
 mod unita;
 

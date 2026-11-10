@@ -729,3 +729,59 @@ fn una_voce_senza_id_non_e_una_voce() {
     assert_eq!(senza_data.versione, None);
     assert_eq!(senza_data.genitore, None);
 }
+
+#[test]
+fn l_indirizzo_firmato_dell_elenco_salta_il_rimando_di_content() {
+    let finto = Finto::avvia(|vista: &Vista, base: &str| {
+        match vista.percorso.split('?').next().unwrap_or_default() {
+            "/v1.0/me/drive/items/K" => {
+                json(200, &serde_json::json!({"id": "K", "name": "", "root": {}}))
+            }
+            "/v1.0/me/drive/items/K/children" => json(
+                200,
+                &serde_json::json!({"value": [
+                    {"id": "F1", "name": "01.flac", "file": {}, "size": 50,
+                     "parentReference": {"id": "K"}, "cTag": "c1",
+                     "@microsoft.graph.downloadUrl": format!("{base}/firmato/F1")}
+                ]}),
+            ),
+            "/firmato/F1" => pezzo_di(vista, 50),
+            _ => errore_graph(404, "itemNotFound"),
+        }
+    });
+    let onedrive = collegato(&finto);
+    let mut voci = Vec::new();
+    onedrive
+        .elenca("K", &mut |pagina| {
+            voci.extend(pagina);
+            ControlFlow::Continue(())
+        })
+        .expect("elenco");
+    let figli = finto.viste_a("/v1.0/me/drive/items/K/children");
+    assert!(
+        figli[0].percorso.contains("@microsoft.graph.downloadUrl"),
+        "{}",
+        figli[0].percorso
+    );
+    let f1 = voci.iter().find(|v| v.id == "F1").expect("F1");
+    let pezzo = onedrive
+        .sorgente(f1)
+        .expect("sorgente")
+        .pezzo(5, 5)
+        .expect("pezzo");
+    assert_eq!(pezzo.byte, (5..10).map(byte_finto).collect::<Vec<_>>());
+    assert!(
+        finto.viste_a("/v1.0/me/drive/items/F1/content").is_empty(),
+        "niente rimando: l'indirizzo arrivava già con l'elenco"
+    );
+    assert!(
+        finto
+            .viste_a("/firmato/F1")
+            .iter()
+            .all(|v| v.intestazione("authorization").is_none()),
+        "l'indirizzo firmato non vuole il token"
+    );
+    // Si dà una volta sola: una sorgente nuova lo richiede a `/content`.
+    let _ = onedrive.sorgente(f1).expect("sorgente").pezzo(0, 5);
+    assert_eq!(finto.viste_a("/v1.0/me/drive/items/F1/content").len(), 1);
+}

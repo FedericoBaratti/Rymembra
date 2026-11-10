@@ -165,6 +165,22 @@ pub fn servi(
         return;
     }
 
+    if crate::lontano::e_una_copertina(&impronta) {
+        // Da un altro dispositivo collegato: la rete, quindi il pool
+        // bloccante, mai il filo della finestra. Le tre misure sono la media
+        // dell'altro. Un'immagine trovata è per impronta, quindi per sempre;
+        // un «non c'è» o un guasto no — l'altro può essere solo spento.
+        let app = ctx.app_handle().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            match crate::lontano::copertina(&app, &impronta) {
+                Ok(Some(byte)) => responder.respond(risposta(200, "image/jpeg", byte)),
+                Ok(None) => responder.respond(risposta(404, "text/plain", Vec::new())),
+                Err(_) => responder.respond(risposta(503, "text/plain", Vec::new())),
+            }
+        });
+        return;
+    }
+
     if !e_un_impronta(&impronta) {
         responder.respond(risposta(400, "text/plain", b"impronta non valida".to_vec()));
         return;
@@ -268,6 +284,11 @@ mod tests {
             assert!(!e_una_chiave_di_sessione(falsa), "{falsa}");
         }
         assert!(!e_un_impronta("insieme-1"));
+        // Le copertine degli altri dispositivi hanno la loro porta, e il
+        // controllo dell'impronta non le lascerebbe passare.
+        let lontana = format!("lontano-{}-0123456789abcdef", "a".repeat(64));
+        assert!(crate::lontano::e_una_copertina(&lontana));
+        assert!(!e_un_impronta(&lontana));
     }
 
     #[test]

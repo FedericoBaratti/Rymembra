@@ -159,6 +159,20 @@ impl Api {
                 })
                 .with_cause(causa)
             }
+            // La quota di scaricamento: Drive la conta per file, su una
+            // giornata, e per un brano condiviso da molti finisce davvero.
+            // Torna col tempo, non riprovando subito.
+            (403, "downloadQuotaExceeded") => AppError::new(ErrorCode::CloudQuotaExceeded {
+                servizio: Servizio::GoogleDrive.nome().to_owned(),
+                riprova_fra_ms: risposta.riprova_fra_ms,
+            })
+            .with_cause(causa),
+            // Chi ha condiviso il file ha tolto lo scaricamento, o Drive l'ha
+            // bloccato: non passa né riprovando né ricollegando.
+            (403, "cannotDownloadFile") => AppError::new(ErrorCode::CloudDownloadForbidden {
+                servizio: Servizio::GoogleDrive.nome().to_owned(),
+            })
+            .with_cause(causa),
             (401, _) => AppError::new(ErrorCode::CloudAuthExpired {
                 servizio: Servizio::GoogleDrive.nome().to_owned(),
             })
@@ -740,23 +754,36 @@ impl Sorgente for DaDrive {
         quanti: u64,
         avanti: &dyn Fn() -> bool,
     ) -> Result<Pezzo, AppError> {
+        // Un `403` passa da `Api::errore`, che legge il perché nel corpo: la
+        // quota di scaricamento, un file che non si lascia scaricare, il
+        // limite di frequenza. Il resto come ogni intervallo: un `401` resta
+        // `net.http`, ed è quello che qui sotto fa rinfrescare il permesso.
+        let traduci = |risposta: &Risposta, url: &str| {
+            if risposta.stato == 403 {
+                self.api.errore(risposta, url)
+            } else {
+                self.flusso.stato_a_errore(risposta, url)
+            }
+        };
         let permesso = self.api.accesso.permesso()?;
-        let esito = self.flusso.intervallo_con(
+        let esito = self.flusso.intervallo_tradotto(
             &self.url,
             da,
             quanti,
             avanti,
             &[("authorization", &permesso.intestazione())],
+            &traduci,
         );
         let esito = match esito {
             Err(err) if matches!(err.code(), ErrorCode::NetHttp { status: 401, .. }) => {
                 let nuovo = self.api.accesso.rifiutato(&permesso)?;
-                self.flusso.intervallo_con(
+                self.flusso.intervallo_tradotto(
                     &self.url,
                     da,
                     quanti,
                     avanti,
                     &[("authorization", &nuovo.intestazione())],
+                    &traduci,
                 )
             }
             altro => altro,

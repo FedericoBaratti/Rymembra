@@ -365,7 +365,7 @@ fn consenso_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppErr
     let client = client_lastfm(stato)?;
     let token = client.chiedi_token()?;
     let url = client.url_consenso(&token);
-    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|err| {
+    crate::browser::apri(&url).map_err(|err| {
         AppError::new(ErrorCode::InternalAborted {
             what: Some("apertura del browser".to_owned()),
         })
