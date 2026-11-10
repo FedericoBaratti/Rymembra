@@ -1578,6 +1578,24 @@ mod prove {
         );
     }
 
+    /// E il motivo lo scrive [`rifiuta`], che è la strada di ogni rifiuto
+    /// all'avvio — il trasloco e la cartella relativa — **prima** del dialogo,
+    /// che si chiude con l'uscita.
+    #[test]
+    fn ogni_rifiuto_all_avvio_lascia_il_motivo_prima_del_dialogo() {
+        let corpo = include_str!("lib.rs")
+            .split("fn rifiuta(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let riga = corpo.find("annota_il_rifiuto(");
+        let dialogo = corpo.find(".dialog()");
+        assert!(
+            riga.is_some() && riga < dialogo,
+            "il rifiuto si mostra senza lasciare il motivo su disco"
+        );
+    }
+
     /// Le due variabili dei dati si leggono dall'ambiente in un posto solo,
     /// [`variabili_dei_dati`]: chi altro deve sapere se la cartella è stata
     /// scelta a mano lo riceve da lì. Due letture con due regole avevano dato
