@@ -102,7 +102,8 @@ struct Risorsa {
 }
 
 /// Un server WebDAV. Vedi il `//!`.
-#[derive(Debug)]
+///
+/// Il `Debug` è scritto a mano: vedi sotto.
 pub struct WebDav {
     rete: Rete,
     flusso: Rete,
@@ -124,6 +125,22 @@ pub struct WebDav {
     /// [`Deposito::tetto_raggiunto`]. Lo si alza e basta: l'elenco della
     /// prima pagina di «Aggiungi» non lo deve spegnere a chi lo aspetta.
     oltre_il_tetto: AtomicBool,
+}
+
+/// Scritto a mano: `autorizzazione` è la password, appena in base64, e un
+/// `{:?}` del deposito — o di una [`Sorgente`] che lo porta, fino a un
+/// `FlussoHttp` — finirebbe in un diario. Come `Drive`, `Accesso` e gli altri
+/// contenitori di segreti.
+impl std::fmt::Debug for WebDav {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebDav")
+            .field("origine", &self.origine)
+            .field("base", &self.base)
+            .field("utente", &self.utente)
+            .field("autorizzazione", &"Basic …")
+            .field("spento", &self.spento)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WebDav {
@@ -502,8 +519,8 @@ impl Deposito for WebDav {
 }
 
 /// I byte di un file WebDAV: `GET` con `Range` e la password, o di fila per
-/// un server che `Range` lo ignora (vedi il `//!`).
-#[derive(Debug)]
+/// un server che `Range` lo ignora (vedi il `//!`). Il `Debug` è scritto a
+/// mano, come quello di [`WebDav`].
 pub struct DaWebDav {
     flusso: Rete,
     rete_di_fila: Rete,
@@ -514,6 +531,17 @@ pub struct DaWebDav {
     senza_intervalli: AtomicBool,
     /// La risposta letta di fila, aperta fra un pezzo e l'altro.
     di_fila: Mutex<Option<DiFila>>,
+}
+
+/// Senza nemmeno l'indirizzo, che è il percorso del brano: nomi di cartelle
+/// e di file nel diario non ne vanno.
+impl std::fmt::Debug for DaWebDav {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaWebDav")
+            .field("autorizzazione", &"Basic …")
+            .field("senza_intervalli", &self.senza_intervalli)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DaWebDav {

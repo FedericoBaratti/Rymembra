@@ -282,6 +282,36 @@ fn un_anello_che_allunga_il_percorso_si_ferma_al_tetto() {
 }
 
 #[test]
+fn la_password_non_compare_nel_debug() {
+    // Il `Debug` del deposito e di una sua sorgente arriva in un diario con
+    // un `{:?}` qualunque: la password (in chiaro o nell'intestazione
+    // `Basic`) non deve esserci. Prima era un `derive`.
+    let server = WebDav::nuovo("https://cloud.it/dav", "mario", "pw-segreta").expect("indirizzo");
+    let basic = base64(b"mario:pw-segreta");
+    let voce = VoceRemota {
+        id: "/dav/01.flac".to_owned(),
+        genitore: Some("/dav".to_owned()),
+        nome: "01.flac".to_owned(),
+        cartella: false,
+        dimensione: 1,
+        modificato_ms: 0,
+        versione: None,
+        tag: None,
+    };
+    let sorgente = server.sorgente(&voce).expect("sorgente");
+    for testo in [format!("{server:?}"), format!("{sorgente:?}")] {
+        assert!(
+            !testo.contains(&basic) && !testo.contains("pw-segreta"),
+            "{testo}"
+        );
+    }
+    assert!(
+        format!("{server:?}").contains("cloud.it"),
+        "il resto si vede"
+    );
+}
+
+#[test]
 fn una_password_sbagliata_si_dice() {
     let finto = Finto::avvia(|_: &Vista, _: &str| risposta(401, "text/plain", b""));
     let errore = server(&finto).chi().expect_err("rifiutato");
