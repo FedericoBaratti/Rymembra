@@ -228,6 +228,69 @@ struct Letto {
     pari_insieme: HashMap<String, i64>,
 }
 
+/// La lettura di un giro.
+fn leggi(c: &rusqlite::Connection) -> Result<Letto, AppError> {
+    let insieme = rymembra_app::insieme::impostazioni(c)?;
+    Ok(Letto {
+        impostazioni: dispositivi::impostazioni(c)?,
+        dispositivi: dispositivi::tutti(c)?,
+        nome: insieme
+            .nome
+            .or_else(crate::insieme::nome_del_dispositivo)
+            .unwrap_or_else(|| "Rymembra".to_owned()),
+        insieme_acceso: insieme.attivo,
+        pari_insieme: rymembra_app::insieme::pari(c)?
+            .into_iter()
+            .map(|p| (p.chiave, p.id))
+            .collect(),
+    })
+}
+
+/// Tiene la lettura appena fatta e, se è riuscita, rifà da lei il cancello.
+/// `true` se è riuscita.
+///
+/// Con la libreria occupata (una scansione, «Rileggi tutti i tag») si tiene
+/// l'ultima lettura per il resto — accendere, spegnere, il nome — ma il
+/// cancello non si tocca: resta con le modifiche puntuali che
+/// [`Comune::ammetti`] ha fatto nel frattempo, e lo stesso vale per chi il
+/// nodo segue (`Nodo::pari`, solo dopo una lettura riuscita). Fino al reperto
+/// 02-8 lo si rifaceva dalla lettura vecchia: un dispositivo appena
+/// dimenticato tornava dentro, e il nodo lo tornava a seguire, fino alla
+/// lettura riuscita dopo; uno appena collegato restava fuori.
+fn tieni_la_lettura(
+    comune: &Comune,
+    letto: &mut Option<Letto>,
+    lettura: Result<Letto, AppError>,
+) -> bool {
+    match lettura {
+        Ok(nuova) => {
+            {
+                let mut associati = comune
+                    .associati
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                *associati = nuova
+                    .dispositivi
+                    .iter()
+                    .filter(|d| !d.revocato)
+                    .map(|d| d.chiave.clone())
+                    .collect();
+            }
+            *letto = Some(nuova);
+            true
+        }
+        Err(err) => {
+            if letto.is_none() {
+                nota!(
+                    "[lontano] la libreria non si legge codice={}: si riprova",
+                    err.code().kind().code()
+                );
+            }
+            false
+        }
+    }
+}
+
 struct Filo {
     app: AppHandle,
     comune: Arc<Comune>,
@@ -361,49 +424,11 @@ impl Filo {
 
     /// Rilegge, accende o spegne, e pubblica. `subito`: vedi [`Posta::Rileggi`].
     fn riconcilia(&mut self, subito: bool) {
-        match in_libreria(&self.app, ATTESA_LIBRERIA, |c| {
-            let insieme = rymembra_app::insieme::impostazioni(c)?;
-            Ok(Letto {
-                impostazioni: dispositivi::impostazioni(c)?,
-                dispositivi: dispositivi::tutti(c)?,
-                nome: insieme
-                    .nome
-                    .or_else(crate::insieme::nome_del_dispositivo)
-                    .unwrap_or_else(|| "Rymembra".to_owned()),
-                insieme_acceso: insieme.attivo,
-                pari_insieme: rymembra_app::insieme::pari(c)?
-                    .into_iter()
-                    .map(|p| (p.chiave, p.id))
-                    .collect(),
-            })
-        }) {
-            Ok(letto) => self.letto = Some(letto),
-            Err(err) => {
-                // Con la libreria occupata si tiene quel che si sapeva.
-                if self.letto.is_none() {
-                    nota!(
-                        "[lontano] la libreria non si legge codice={}: si riprova",
-                        err.code().kind().code()
-                    );
-                }
-            }
-        }
+        let lettura = in_libreria(&self.app, ATTESA_LIBRERIA, leggi);
+        let riuscita = tieni_la_lettura(&self.comune, &mut self.letto, lettura);
         let Some(letto) = &self.letto else {
             return;
         };
-        {
-            let mut associati = self
-                .comune
-                .associati
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
-            *associati = letto
-                .dispositivi
-                .iter()
-                .filter(|d| !d.revocato)
-                .map(|d| d.chiave.clone())
-                .collect();
-        }
         let attivo = letto.impostazioni.attivo;
         let relay = letto.impostazioni.relay.clone();
         let voluto = attivo && self.in_uso();
@@ -446,17 +471,21 @@ impl Filo {
             self.spegni();
         }
         if let (Some(nodo), Some(letto)) = (self.comune.nodo(), &self.letto) {
-            nodo.pari(
-                letto
-                    .dispositivi
-                    .iter()
-                    .filter(|d| !d.revocato)
-                    .map(|d| PariNoto {
-                        chiave: d.chiave.clone(),
-                        indirizzi: d.indirizzi.iter().filter_map(|a| a.parse().ok()).collect(),
-                    })
-                    .collect(),
-            );
+            // Chi seguire, solo da una lettura riuscita: vedi
+            // `tieni_la_lettura`.
+            if riuscita {
+                nodo.pari(
+                    letto
+                        .dispositivi
+                        .iter()
+                        .filter(|d| !d.revocato)
+                        .map(|d| PariNoto {
+                            chiave: d.chiave.clone(),
+                            indirizzi: d.indirizzi.iter().filter_map(|a| a.parse().ok()).collect(),
+                        })
+                        .collect(),
+                );
+            }
             nodo.presenza(self.presenza());
         }
         self.togli_il_qr_finito();
@@ -747,5 +776,73 @@ impl Filo {
         }
         self.vie.clone_from(&vie);
         vie
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// Una chiave di dispositivo finta: 64 cifre esadecimali.
+    fn chiave_finta(cifra: char) -> String {
+        std::iter::repeat_n(cifra, 64).collect()
+    }
+
+    fn collega(c: &rusqlite::Connection, chiave: &str) {
+        dispositivi::associa(
+            c,
+            dispositivi::Nuovo {
+                chiave,
+                nome: "Telefono",
+                piattaforma: "android",
+                dispositivo: "telefono-di-prova",
+                chiave_insieme: None,
+                indirizzi: &[],
+            },
+            0,
+        )
+        .unwrap();
+    }
+
+    fn occupata() -> Result<Letto, AppError> {
+        Err(AppError::new(ErrorCode::DbLocked).with_cause("una scansione tiene la libreria"))
+    }
+
+    #[test]
+    fn con_la_libreria_occupata_il_cancello_resta_com_e() {
+        // Reperto 02-8: con la rilettura che non prendeva la libreria, il
+        // cancello si rifaceva dalla lettura di prima. Un dispositivo appena
+        // dimenticato tornava dentro (e `pari()` lo tornava a seguire) fino
+        // alla lettura riuscita dopo; uno appena collegato restava fuori.
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let perso = chiave_finta('a');
+        collega(c, &perso);
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Comune::nuovo(posta);
+        let mut letto = None;
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c)));
+        assert!(comune.associato(&perso));
+
+        // «Dimentica»: fuori subito, e la riga se ne va.
+        comune.ammetti(&perso, false);
+        dispositivi::dimentica(c, &perso).unwrap();
+        assert!(!tieni_la_lettura(&comune, &mut letto, occupata()));
+        assert!(
+            !comune.associato(&perso),
+            "il dispositivo dimenticato resta fuori"
+        );
+
+        // Un collegamento appena fatto: dentro subito, e ci resta.
+        let nuovo = chiave_finta('b');
+        collega(c, &nuovo);
+        comune.ammetti(&nuovo, true);
+        assert!(!tieni_la_lettura(&comune, &mut letto, occupata()));
+        assert!(comune.associato(&nuovo), "il nuovo non resta fuori");
+
+        // La lettura che riesce dice com'è la libreria.
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c)));
+        assert!(!comune.associato(&perso));
+        assert!(comune.associato(&nuovo));
     }
 }
