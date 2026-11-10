@@ -28,6 +28,7 @@ import {
   linkDa,
   ordinaDispositivi,
   qrScaduto,
+  qrSoloInVista,
   percentualeScarico,
   percorsoQr,
   NON_AUDIO,
@@ -258,6 +259,57 @@ test("un QR scaduto non si mostra, uno valido sì", () => {
   assert.equal(qrScaduto(1_000, 999), false);
   assert.equal(qrScaduto(1_000, 1_000), true);
   assert.equal(qrScaduto(1_000, 5_000), true);
+});
+
+const UN_QR = { link: "rymembra://collega/x", lato: 1, moduli: "1", scadeMs: 0 };
+
+test("il QR si annulla quando la scheda che lo mostra se ne va", async () => {
+  // Reperto 02-12: la scheda si smontava (un'altra sezione, le Impostazioni
+  // chiuse) e il QR restava valido nel nucleo per i suoi dieci minuti, con
+  // `rymembra/associa/1` aperto e nessun QR a schermo.
+  const annullati: number[] = [];
+  const annulla = async () => {
+    annullati.push(1);
+    return stato({ invito: null });
+  };
+  archivioLontano.scrivi(stato({ invito: UN_QR }));
+  const qr = qrSoloInVista(annulla);
+  qr.monta();
+  qr.smonta();
+  assert.equal(annullati.length, 1, "smontata col QR in vista: si annulla");
+  await Promise.resolve();
+  assert.equal(archivioLontano.leggi()?.invito, null, "e il pannello lo sa subito");
+
+  // Senza un QR in vista, smontare non chiede niente al nucleo.
+  archivioLontano.scrivi(stato({ invito: null }));
+  const senza = qrSoloInVista(annulla);
+  senza.monta();
+  senza.smonta();
+  assert.equal(annullati.length, 1);
+  archivioLontano.scrivi(null);
+});
+
+test("un QR chiesto prima e arrivato a scheda chiusa non resta valido", async () => {
+  const annullati: number[] = [];
+  const qr = qrSoloInVista(async () => {
+    annullati.push(1);
+    return stato();
+  });
+  qr.monta();
+  // In vista quando arriva: resta.
+  assert.equal(await qr.crea(async () => UN_QR), UN_QR);
+  assert.equal(annullati.length, 0);
+  // Arriva dopo che la scheda se n'è andata: nessuno lo vede, e si annulla.
+  let arriva: (invito: typeof UN_QR) => void = () => undefined;
+  const inVolo = qr.crea(() => new Promise<typeof UN_QR>((fatto) => (arriva = fatto)));
+  qr.smonta();
+  arriva(UN_QR);
+  await inVolo;
+  assert.equal(annullati.length, 1);
+  // Un'altra volta in vista (StrictMode rimonta): torna a valere.
+  qr.monta();
+  await qr.crea(async () => UN_QR);
+  assert.equal(annullati.length, 1);
 });
 
 test("un collegamento annullato da qui non è un errore da dire", () => {

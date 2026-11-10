@@ -36,9 +36,11 @@
 //!   quella che usa per chiedere.
 //! - Al più [`DOMANDE_INSIEME`] domande servite insieme per dispositivo, su
 //!   tutte le sue connessioni.
-//! - [`ALPN_ASSOCIA`]: chiuso se non c'è un QR attivo; al più
-//!   [`TENTATIVI_AL_MINUTO`]; il gettone vale [`VALIDITA_INVITO`], una volta
-//!   sola, e dopo [`MASSIMI_FALLIMENTI`] gettoni sbagliati il QR non vale più.
+//! - [`ALPN_ASSOCIA`]: chiuso se non c'è un QR attivo, senza contare il
+//!   tentativo; con un QR, al più [`TENTATIVI_AL_MINUTO`]; il gettone vale
+//!   [`VALIDITA_INVITO`], una volta sola, e dopo [`MASSIMI_FALLIMENTI`]
+//!   gettoni sbagliati il QR non vale più. Il QR lo toglie chi lo mostra
+//!   quando non è più a schermo ([`Nodo::annulla_invito`]).
 //!   Il gettone si confronta a tempo costante. Un gettone giusto non basta:
 //!   decide chi mostra il QR ([`Ospite::conferma`]).
 
@@ -76,7 +78,7 @@ pub const VALIDITA_INVITO: Duration = Duration::from_secs(10 * 60);
 /// Gettoni sbagliati prima che il QR non valga più.
 pub const MASSIMI_FALLIMENTI: u32 = 5;
 
-/// Tentativi di associazione al minuto, da chiunque.
+/// Tentativi di associazione al minuto, da chiunque, mentre c'è un QR.
 pub const TENTATIVI_AL_MINUTO: usize = 10;
 
 /// Quanto si aspetta chi decide, sul dispositivo che mostra il QR: come il
@@ -1362,7 +1364,12 @@ struct Associazione(Arc<Condiviso>);
 impl ProtocolHandler for Associazione {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let condiviso = &self.0;
-        if !condiviso.tentativo_ammesso() || !condiviso.invito_attivo() {
+        // Prima il QR, poi il tetto: senza un QR a schermo si chiude senza
+        // contare. Contati prima, chi conosce la chiave di questo nodo (in
+        // casa la annuncia mDNS) consumava i tentativi del minuto quando non
+        // c'era niente da indovinare, e il QR vero, mostrato subito dopo, si
+        // diceva scaduto a chi lo leggeva davvero (reperto 02-12).
+        if !condiviso.invito_attivo() || !condiviso.tentativo_ammesso() {
             conn.close(VarInt::from_u32(1), CHIUSA_SENZA_INVITO);
             return Ok(());
         }

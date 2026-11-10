@@ -51,6 +51,7 @@ import {
   linkDa,
   percorsoQr,
   qrScaduto,
+  qrSoloInVista,
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
@@ -756,12 +757,19 @@ export function SchedaDispositivi({
   const [domanda, setDomanda] = useState<Domanda | null>(null);
   const scadenza = useScadenzaQr(stato?.invito?.scadeMs ?? null);
   const idIncolla = useId();
+  // Il QR vale finché questa scheda lo mostra: vedi `qrSoloInVista`.
+  const [qr] = useState(() => qrSoloInVista(ipc.lontanoQrAnnulla));
 
   // Aperta la pagina, chi non rispondeva si riprova adesso: un PC appena
   // acceso non deve aspettare la pausa lunga del nodo.
   useEffect(() => {
     ipc.lontanoCercaOra().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    qr.monta();
+    return qr.smonta;
+  }, [qr]);
 
   if (stato === null) return <p className="nota">{t("common.loading")}</p>;
 
@@ -799,14 +807,14 @@ export function SchedaDispositivi({
   /** «Mostra il QR»: col collegamento spento, prima il sì per accenderlo. */
   const mostraQr = () => {
     if (serveAccendere(stato)) setAccendiPerQr(true);
-    else fai(() => ipc.lontanoQrCrea());
+    else fai(() => qr.crea(ipc.lontanoQrCrea));
   };
 
   const accendiEMostraQr = () => {
     setAccendiPerQr(false);
     fai(async () => {
       archivioLontano.scrivi(await ipc.lontanoAttiva(true));
-      return ipc.lontanoQrCrea();
+      return qr.crea(ipc.lontanoQrCrea);
     });
   };
 
