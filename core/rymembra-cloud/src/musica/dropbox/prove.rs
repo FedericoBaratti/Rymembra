@@ -297,6 +297,44 @@ fn il_brano_si_legge_dal_collegamento_e_un_collegamento_scaduto_si_rinnova_una_v
 }
 
 #[test]
+fn un_collegamento_che_non_risponde_non_finisce_nell_errore() {
+    // Il collegamento temporaneo vale quattro ore ed è un permesso: chi lo
+    // legge in un diario ascolta il brano. Prima la pulizia dell'errore lo
+    // toglieva solo da `net.http`, e un `net.offline` o un `net.timeout` lo
+    // portavano nel campo `url`.
+    let morta = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|ascolto| ascolto.local_addr())
+        .map(|indirizzo| indirizzo.port())
+        .expect("una porta presa e lasciata");
+    let finto = Finto::avvia(move |vista: &Vista, _: &str| {
+        if vista.percorso == "/2/files/get_temporary_link" {
+            json(
+                200,
+                &json!({
+                    "link": format!("http://127.0.0.1:{morta}/link/permesso-a-tempo"),
+                    "metadata": {}
+                }),
+            )
+        } else {
+            json(404, &json!({}))
+        }
+    });
+    let sorgente = collegato(&finto)
+        .sorgente(&voce(&file("/a.flac", "a.flac", 100)).expect("voce"))
+        .expect("sorgente");
+    let errore = sorgente.pezzo(0, 5).expect_err("nessuno risponde");
+    let testo = format!("{errore:?} {errore}");
+    assert!(!testo.contains("permesso-a-tempo"), "{testo}");
+    assert!(
+        matches!(
+            errore.code(),
+            ErrorCode::NetOffline { url: None } | ErrorCode::NetTimeout { url: None, .. }
+        ),
+        "{errore:?}"
+    );
+}
+
+#[test]
 fn l_indirizzo_web_e_la_cartella_madre() {
     let finto = Finto::avvia(|_: &Vista, _: &str| json(404, &json!({})));
     let dropbox = collegato(&finto);

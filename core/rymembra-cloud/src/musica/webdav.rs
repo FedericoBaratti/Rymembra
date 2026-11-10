@@ -40,6 +40,7 @@
 //! una dopo l'altra, e solo un salto indietro la riapre da capo. Fino alla
 //! 3.2 era `cloud.rangeUnsupported`, cioè un brano che non si ascoltava.
 
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -67,6 +68,20 @@ const INSIEME: usize = 4;
 /// Quanti rimandi segue la lettura di un brano.
 const RIMANDI: u32 = 5;
 
+/// Quanti livelli di cartelle si elencano, la cartella scelta compresa: le
+/// cartelle del livello dopo entrano nello specchio, vuote.
+///
+/// Gli identificativi sono i percorsi, e un collegamento simbolico a un
+/// antenato (Nextcloud con un'archiviazione esterna, `rclone serve webdav
+/// -L`, Apache con `FollowSymLinks`) dà a ogni giro dell'anello un percorso
+/// nuovo: il registro delle visitate non lo vede, il tetto sì. Trentadue: una
+/// libreria sta in cinque o sei livelli (genere, artista, album, disco), un
+/// archivio per anni e collane non arriva a venti, e ogni livello in più di un
+/// anello è una copia intera dell'albero nello specchio. Il sessantaquattro di
+/// OneDrive e Drive è un tetto alla risalita degli antenati, che non copia
+/// niente.
+pub const PROFONDITA_ELENCO: usize = 32;
+
 /// Ogni quanto si rielenca tutto anche senza segni di cambiamento: per i
 /// server che non propagano gli `ETag` delle cartelle.
 const RIPASSO: Duration = Duration::from_secs(30 * 60);
@@ -87,7 +102,8 @@ struct Risorsa {
 }
 
 /// Un server WebDAV. Vedi il `//!`.
-#[derive(Debug)]
+///
+/// Il `Debug` è scritto a mano: vedi sotto.
 pub struct WebDav {
     rete: Rete,
     flusso: Rete,
@@ -105,6 +121,26 @@ pub struct WebDav {
     /// server grande dura minuti, e senza questo continuava a riempire lo
     /// specchio di un conto che non c'era più.
     spento: AtomicBool,
+    /// Un elenco si è fermato a [`PROFONDITA_ELENCO`]: lo consuma
+    /// [`Deposito::tetto_raggiunto`]. Lo si alza e basta: l'elenco della
+    /// prima pagina di «Aggiungi» non lo deve spegnere a chi lo aspetta.
+    oltre_il_tetto: AtomicBool,
+}
+
+/// Scritto a mano: `autorizzazione` è la password, appena in base64, e un
+/// `{:?}` del deposito — o di una [`Sorgente`] che lo porta, fino a un
+/// `FlussoHttp` — finirebbe in un diario. Come `Drive`, `Accesso` e gli altri
+/// contenitori di segreti.
+impl std::fmt::Debug for WebDav {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebDav")
+            .field("origine", &self.origine)
+            .field("base", &self.base)
+            .field("utente", &self.utente)
+            .field("autorizzazione", &"Basic …")
+            .field("spento", &self.spento)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WebDav {
@@ -140,6 +176,7 @@ impl WebDav {
                 base64(format!("{utente}:{password}").as_bytes())
             ),
             spento: AtomicBool::new(false),
+            oltre_il_tetto: AtomicBool::new(false),
         })
     }
 
@@ -210,12 +247,13 @@ impl WebDav {
         }
     }
 
-    /// Le voci figlie di una cartella (la cartella stessa esclusa).
+    /// Le voci figlie di una cartella: solo i figli diretti (vedi
+    /// [`figlio_diretto`]).
     fn figli(&self, cartella: &str) -> Result<Vec<VoceRemota>, AppError> {
         let risorse = self.propfind(cartella, "1")?;
         Ok(risorse
             .into_iter()
-            .filter(|r| r.percorso != cartella)
+            .filter(|r| figlio_diretto(cartella, &r.percorso))
             .filter_map(|r| self.voce(r))
             .collect())
     }
@@ -339,6 +377,17 @@ impl Deposito for WebDav {
         ))
     }
 
+    /// Per livelli, come OneDrive, con tre confini: solo i figli diretti
+    /// della cartella chiesta ([`figlio_diretto`]), ogni cartella una volta
+    /// sola, e non più di [`PROFONDITA_ELENCO`] livelli.
+    ///
+    /// Senza, un server che fra i figli di `/Musica` metteva `/`, o un anello
+    /// di collegamenti simbolici, faceva girare l'elenco per sempre: la radice
+    /// non diventava mai completa, lo specchio e il database crescevano senza
+    /// fine e i cambiamenti del conto non arrivavano più.
+    ///
+    /// Al tetto l'elenco è **completo** fin lì: un `false` lascerebbe la
+    /// radice da rielencare a ogni giro, cioè lo stesso guasto, a rate.
     fn elenca(
         &self,
         cima: &str,
@@ -351,7 +400,14 @@ impl Deposito for WebDav {
         };
         let mut in_testa = self.catena(cima);
         let mut livello = vec![cima.to_owned()];
+        let mut visitate: HashSet<String> = HashSet::from([cima.to_owned()]);
+        let mut profondita = 0_usize;
         while !livello.is_empty() {
+            if profondita >= PROFONDITA_ELENCO {
+                self.oltre_il_tetto.store(true, Ordering::Release);
+                break;
+            }
+            profondita += 1;
             let mut prossimo = Vec::new();
             for gruppo in livello.chunks(INSIEME) {
                 let risultati: Vec<Result<Vec<VoceRemota>, AppError>> =
@@ -371,8 +427,12 @@ impl Deposito for WebDav {
                     let mut voci = std::mem::take(&mut in_testa);
                     for voce in risultato? {
                         if voce.cartella {
-                            prossimo.push(voce.id.clone());
-                            voci.push(voce);
+                            // La stessa cartella nominata due volte: una
+                            // voce e una visita.
+                            if visitate.insert(voce.id.clone()) {
+                                prossimo.push(voce.id.clone());
+                                voci.push(voce);
+                            }
                         } else if interessa(&voce.nome) {
                             voci.push(voce);
                         }
@@ -385,6 +445,12 @@ impl Deposito for WebDav {
             livello = prossimo;
         }
         Ok(true)
+    }
+
+    fn tetto_raggiunto(&self) -> Option<usize> {
+        self.oltre_il_tetto
+            .swap(false, Ordering::AcqRel)
+            .then_some(PROFONDITA_ELENCO)
     }
 
     /// L'`ETag` della cima uguale, e il ripasso non ancora scaduto: niente da
@@ -453,8 +519,8 @@ impl Deposito for WebDav {
 }
 
 /// I byte di un file WebDAV: `GET` con `Range` e la password, o di fila per
-/// un server che `Range` lo ignora (vedi il `//!`).
-#[derive(Debug)]
+/// un server che `Range` lo ignora (vedi il `//!`). Il `Debug` è scritto a
+/// mano, come quello di [`WebDav`].
 pub struct DaWebDav {
     flusso: Rete,
     rete_di_fila: Rete,
@@ -465,6 +531,17 @@ pub struct DaWebDav {
     senza_intervalli: AtomicBool,
     /// La risposta letta di fila, aperta fra un pezzo e l'altro.
     di_fila: Mutex<Option<DiFila>>,
+}
+
+/// Senza nemmeno l'indirizzo, che è il percorso del brano: nomi di cartelle
+/// e di file nel diario non ne vanno.
+impl std::fmt::Debug for DaWebDav {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaWebDav")
+            .field("autorizzazione", &"Basic …")
+            .field("senza_intervalli", &self.senza_intervalli)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DaWebDav {
@@ -546,6 +623,22 @@ impl Sorgente for DaWebDav {
 /// Un percorso e un segmento: `/` + `Musica` è `/Musica`, non `//Musica`.
 fn unisci(madre: &str, segmento: &str) -> String {
     format!("{}/{segmento}", madre.trim_end_matches('/'))
+}
+
+/// `percorso` è un figlio diretto di `cartella`: la cartella, una barra e un
+/// segmento che non è vuoto, `.` o `..`.
+///
+/// Sul percorso già decodificato ([`percorso_di_href`]), quindi anche un
+/// `%2E%2E` o un `%2F` codificati: un `..` (o una barra doppia, che lascia
+/// una barra nel resto) non è un figlio, e nemmeno la cartella stessa, un
+/// antenato o una cartella accanto. Un `href` così, tenuto, rimetteva
+/// l'elenco su una cartella già vista; e comunque nello specchio sarebbe un
+/// orfano, perché il suo genitore non è la cartella chiesta.
+fn figlio_diretto(cartella: &str, percorso: &str) -> bool {
+    let dentro = format!("{}/", cartella.trim_end_matches('/'));
+    percorso
+        .strip_prefix(&dentro)
+        .is_some_and(|nome| !nome.is_empty() && !nome.contains('/') && nome != "." && nome != "..")
 }
 
 /// Origine e percorso della cima, da un indirizzo.

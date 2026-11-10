@@ -687,10 +687,16 @@ fn scarica(
         quanti: RIMANDI_DELL_APK,
         cancello: Cancello::nuovo(rimando_di_github),
     });
+    // Un tetto ai byte, perché l'unico limite era la scadenza del prelievo, e
+    // un corpo senza fine riempiva la cache del telefono fin lì. Mezzo
+    // gibibyte: molte volte un APK, e se un giorno non bastasse l'errore lo
+    // dice («supera il tetto di 512 MB»).
+    let tetto_apk: u64 = 512 * 1024 * 1024;
     let esito = rete.preleva(
         &trovato.indirizzo,
         &[],
         &mut file,
+        tetto_apk,
         &annullato,
         &mut avanzamento,
     );

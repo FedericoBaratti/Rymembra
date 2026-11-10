@@ -279,7 +279,11 @@ fn risolvi(
 /// sarebbe assurdo.
 fn porta_dentro(rete: &Rete, url: &str) -> Option<String> {
     let mut byte = Vec::new();
-    rete.preleva(url, &[], &mut byte, &|| false, &mut |_, _| {})
+    // Il tetto nel prelievo, non solo dopo: un corpo senza fine si ferma al
+    // primo blocco oltre gli otto mebibyte, invece di riempire la memoria
+    // fino alla scadenza per poi essere buttato.
+    let tetto = u64::try_from(COPERTINA_MASSIMA).unwrap_or(u64::MAX);
+    rete.preleva(url, &[], &mut byte, tetto, &|| false, &mut |_, _| {})
         .ok()?;
     rymembra_net::immagine::data_uri(&byte, COPERTINA_MASSIMA)
 }

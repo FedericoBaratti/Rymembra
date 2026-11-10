@@ -500,7 +500,9 @@ impl Drive {
         let mut inviati = 0_usize;
         let mut guasti = 0_u32;
         loop {
-            let esito = self.manda_pezzo(&sessione, tipo, dati, inviati);
+            let esito = self
+                .manda_pezzo(&sessione, tipo, dati, inviati)
+                .map_err(|err| self.senza_sessione(err, &sessione));
             let guasto = match esito {
                 Ok(Passo::Finito(file)) => return Ok(file),
                 Ok(Passo::Ricevuti(fin_qui)) if fin_qui > inviati => {
@@ -530,7 +532,10 @@ impl Drive {
             std::thread::sleep(self.pausa_dopo(guasti, &guasto));
             // Dove è arrivato davvero: il pezzo caduto può essere arrivato
             // tutto, in parte o per niente, e solo Drive lo sa.
-            match self.a_che_punto(&sessione, totale) {
+            match self
+                .a_che_punto(&sessione, totale)
+                .map_err(|err| self.senza_sessione(err, &sessione))
+            {
                 Ok(Passo::Finito(file)) => return Ok(file),
                 Ok(Passo::Ricevuti(fin_qui)) => inviati = fin_qui.min(totale),
                 // Anche la domanda è caduta: si riprova il pezzo da dove si
@@ -539,6 +544,41 @@ impl Drive {
                 Err(err) => return Err(err),
             }
         }
+    }
+
+    /// Un errore del caricamento ripartibile senza l'indirizzo della
+    /// sessione: è un permesso di scrittura a tempo (`upload_id` nella query),
+    /// e chi lo legge in un diario ci scrive. Al suo posto l'indirizzo dei
+    /// caricamenti, nei campi del codice e nelle frasi. Come `senza_firma` di
+    /// OneDrive per gli indirizzi firmati.
+    fn senza_sessione(&self, err: AppError, sessione: &str) -> AppError {
+        let al_posto = self.caricamento.as_str();
+        let pulisci = |testo: &str| testo.replace(sessione, al_posto);
+        let nominato = |url: &Option<String>| url.as_ref().map(|_| al_posto.to_owned());
+        let codice = match err.code() {
+            ErrorCode::NetHttp { status, url } => ErrorCode::NetHttp {
+                status: *status,
+                url: nominato(url),
+            },
+            ErrorCode::NetTimeout { url, timeout_ms } => ErrorCode::NetTimeout {
+                url: nominato(url),
+                timeout_ms: *timeout_ms,
+            },
+            ErrorCode::NetOffline { url } => ErrorCode::NetOffline { url: nominato(url) },
+            ErrorCode::NetBadSchema { service, detail } => ErrorCode::NetBadSchema {
+                service: service.clone(),
+                detail: detail.as_deref().map(pulisci),
+            },
+            altro => altro.clone(),
+        };
+        let mut pulito = AppError::new(codice);
+        if let Some(causa) = err.cause() {
+            pulito = pulito.with_cause(pulisci(causa));
+        }
+        if let Some(messaggio) = err.message() {
+            pulito = pulito.with_message(pulisci(messaggio));
+        }
+        pulito
     }
 
     /// Un pezzo di un caricamento ripartibile, da `da` in poi.
@@ -1299,6 +1339,43 @@ mod prove {
             ],
             "dopo il guasto si chiede dove si è, e si riprende dal pezzo caduto, non da capo"
         );
+    }
+
+    /// L'indirizzo della sessione di un caricamento ripartibile è un permesso
+    /// di scrittura a tempo (`upload_id`): chi lo legge in un diario ci scrive.
+    /// Non finisce in un errore, né nel campo `url` né nella frase, qualunque
+    /// sia la risposta che non va.
+    #[test]
+    fn la_sessione_di_caricamento_non_finisce_negli_errori() {
+        for (stato, corpo) in [
+            ("200 OK", &b"non json"[..]),
+            ("400 Bad Request", &b"{}"[..]),
+        ] {
+            let finto = Finto::avvia(move |vista| {
+                if vista.percorso.contains("uploadType=resumable") {
+                    let sessione = format!(
+                        "http://{}/sessione?upload_id=SESSIONE-SEGRETA",
+                        vista.intestazione("host").unwrap_or_default()
+                    );
+                    return risposta("200 OK", &[("Location", &sessione)], b"");
+                }
+                risposta(stato, &[("Content-Type", "application/json")], corpo)
+            });
+            let dati = vec![1_u8; 20];
+            let errore = finto
+                .drive()
+                .carica(
+                    "rymembra-skin-x.ryskin",
+                    None,
+                    "application/zip",
+                    &dati,
+                    "impronta",
+                )
+                .expect_err(stato);
+            let testo = format!("{errore:?} {errore}");
+            assert!(!testo.contains("SESSIONE-SEGRETA"), "{stato}: {testo}");
+            assert!(!testo.contains("upload_id"), "{stato}: {testo}");
+        }
     }
 
     /// Portare un file dal nome di prima a quello di adesso non rimanda niente:

@@ -8,7 +8,9 @@
 //! [`Specchio::e_completa`], [`Specchio::dimentica_radice`], [`lega_conto`])
 //! sono aggiunte. Dalla 3.2, con le app dell'utente (migrazione 037),
 //! [`ContoSalvato`] porta anche `app` e `client`: annunciato, e il desktop che
-//! lo costruisce è aggiornato insieme.
+//! lo costruisce è aggiornato insieme. Con «solo le cartelle scelte» (vedi
+//! sotto) si aggiungono [`Specchio::pota`], [`Specchio::annuncia_radice`],
+//! [`Specchio::ritira_radice`] e il campo [`Toccate::da_elencare`].
 //!
 //! # Perché uno specchio
 //!
@@ -27,11 +29,29 @@
 //! È una cache, e come tale resta fuori dal profilo e dal backup: si ricostruisce
 //! con un elenco.
 //!
+//! # Solo le cartelle scelte
+//!
+//! Lo specchio di un conto tiene le cartelle scelte (le radici), quel che sta
+//! loro sotto e la catena degli antenati che compone i percorsi; nient'altro.
+//! Il flusso dei cambiamenti di OneDrive, Drive e Dropbox racconta tutto il
+//! drive: [`Specchio::applica`] tiene quel che serve e lascia il resto, e
+//! [`Specchio::pota`] toglie a ogni giro del filo del conto quel che non serve
+//! più — una radice tolta dalla libreria, o quel che le versioni fino alla
+//! 3.2.0 di prova salvavano da tutto il drive, senza una migrazione. Il
+//! confine è per identificativo, non per percorso: una radice spostata sul
+//! servizio ha il contenuto fuori dal percorso salvato finché il trasloco non
+//! la segue, e non per questo lo perde.
+//!
+//! Il rovescio: una cartella che entra in una radice da fuori arriva dal
+//! flusso da sola, senza quel che contiene. Si elenca ([`Toccate::da_elencare`]).
+//!
 //! # Mai togliere su prove parziali
 //!
 //! Vedi [`rymembra_domain::nuvola::da_togliere`]: una voce esce dallo specchio
-//! solo per una cancellazione detta dal servizio o per un elenco completo che
-//! non la contiene. [`Specchio::metti`] non toglie mai niente.
+//! solo per una cancellazione detta dal servizio, per un elenco completo che
+//! non la contiene, o perché non sta sotto nessuna cartella scelta (vedi
+//! sopra) — che è una domanda sullo specchio, non sul servizio.
+//! [`Specchio::metti`] non toglie mai niente.
 //!
 //! # Il percorso di una voce
 //!
@@ -68,7 +88,8 @@ use rusqlite::Connection;
 
 use rymembra_domain::errors::AppError;
 use rymembra_domain::nuvola::{
-    Cambio, Servizio, TagNoti, VoceRemota, componi, da_togliere, interessa, segmento_libero,
+    Cambio, Servizio, TagNoti, VoceRemota, componi, da_togliere, e_virtuale, interessa,
+    segmento_libero,
 };
 use rymembra_domain::paths::{PathRules, is_under, path_key};
 
@@ -146,6 +167,19 @@ pub struct Toccate {
     pub messe: Vec<(String, VoceRemota, String)>,
     /// Le voci da togliere da `nuvola_voci`: `(conto, id)`.
     pub tolte: Vec<(String, String)>,
+    /// Le cartelle (identificativi) che chi chiama deve elencare, con
+    /// [`Specchio::metti`] e senza [`Specchio::chiudi_elenco`]. Le riempie
+    /// solo [`Specchio::applica`]:
+    ///
+    /// - una cartella che i cambiamenti hanno portato dentro una radice, da
+    ///   fuori o nuova: il flusso di OneDrive e di Drive per uno spostamento
+    ///   consegna la cartella e basta, non quel che contiene, e fuori dalle
+    ///   radici lo specchio non tiene niente. Solo le più in alto: elencarne
+    ///   una elenca anche quelle che contiene;
+    /// - la cima di una radice che i cambiamenti hanno lasciato senza catena,
+    ///   spostata sotto una cartella che lo specchio non conosce: il suo
+    ///   elenco comincia con gli antenati, e il trasloco sa dove portarla.
+    pub da_elencare: BTreeSet<String>,
 }
 
 /// Una voce dello specchio, col posto che le si è dato.
@@ -188,6 +222,10 @@ pub struct Specchio {
     indice: HashMap<String, (String, String)>,
     /// Le radici scelte, per `path_key(percorso)`.
     radici: BTreeMap<String, RadiceSalvata>,
+    /// `(conto, cima)` delle radici che si stanno scegliendo: la loro catena
+    /// è già nello specchio, la radice non ancora. [`Specchio::pota`] le
+    /// tratta come radici. Vedi [`Specchio::annuncia_radice`].
+    nascenti: BTreeSet<(String, String)>,
 }
 
 /// Le regole con cui si confrontano i percorsi.
@@ -288,6 +326,51 @@ impl DelConto {
             }
         }
         fuori
+    }
+
+    /// `id` sta sotto una delle cartelle di `sopra` (lei esclusa), risalendo
+    /// i genitori che lo specchio conosce.
+    ///
+    /// Al più un passo per voce: un anello di genitori non fa girare niente.
+    fn sotto(&self, id: &str, sopra: &HashSet<String>) -> bool {
+        let mut adesso = self.voci.get(id).and_then(|n| n.voce.genitore.as_deref());
+        for _ in 0..=self.voci.len() {
+            let Some(madre) = adesso else {
+                return false;
+            };
+            if sopra.contains(madre) {
+                return true;
+            }
+            adesso = self
+                .voci
+                .get(madre)
+                .and_then(|n| n.voce.genitore.as_deref());
+        }
+        false
+    }
+
+    /// Quel che serve alle radici di queste `cime`: le cime, quel che sta loro
+    /// sotto, e i loro antenati, che compongono i percorsi.
+    fn da_tenere(&self, cime: &HashSet<String>) -> HashSet<String> {
+        let mut tenute: HashSet<String> = HashSet::new();
+        for cima in cime {
+            tenute.insert(cima.clone());
+            tenute.extend(self.discendenti(cima));
+        }
+        for cima in cime {
+            let mut adesso = self.voci.get(cima).and_then(|n| n.voce.genitore.as_deref());
+            // Una catena già tenuta da un'altra cima, o un anello: basta.
+            while let Some(madre) = adesso {
+                if !tenute.insert(madre.to_owned()) {
+                    break;
+                }
+                adesso = self
+                    .voci
+                    .get(madre)
+                    .and_then(|n| n.voce.genitore.as_deref());
+            }
+        }
+        tenute
     }
 }
 
@@ -501,13 +584,67 @@ impl Specchio {
     /// tutte le voci e poi tutte le cancellazioni — deve dire lo stesso: alla
     /// fine si tiene da `messe` solo quel che in memoria c'è, e da `tolte`
     /// solo quel che non c'è più.
+    ///
+    /// # Solo le cartelle scelte
+    ///
+    /// Il flusso racconta tutto il drive, e alla fine quel che non serve alle
+    /// radici se ne va ([`Specchio::pota`]): dopo tutti i cambiamenti e non a
+    /// uno a uno, perché un file può arrivare prima della cartella che lo
+    /// porta dentro una radice. Una cartella entrata in una radice va
+    /// elencata: vedi [`Toccate::da_elencare`].
     pub fn applica(&mut self, conto: &str, cambi: Vec<Cambio>) -> Toccate {
         let mut toccate = Toccate::default();
+        let cime = self.cime(conto);
+        // Prima dei cambiamenti: quali cartelle stavano già sotto una radice,
+        // e quali cime avevano un percorso.
+        let prima: HashMap<String, bool> = cambi
+            .iter()
+            .filter_map(|cambio| match cambio {
+                Cambio::Voce(voce) if voce.cartella => Some(voce.id.clone()),
+                _ => None,
+            })
+            .map(|id| {
+                let dentro = self
+                    .conti
+                    .get(conto)
+                    .is_some_and(|del_conto| del_conto.sotto(&id, &cime));
+                (id, dentro)
+            })
+            .collect();
+        let con_la_catena: Vec<String> = cime
+            .iter()
+            .filter(|cima| self.percorso(conto, cima).is_some())
+            .cloned()
+            .collect();
         for cambio in cambi {
             match cambio {
                 Cambio::Voce(voce) => self.metti_una(conto, voce, true, &mut toccate),
                 Cambio::Tolta { id } => self.togli_albero(conto, &id, &mut toccate),
             }
+        }
+        self.pota_con(conto, &cime, &mut toccate);
+        if let Some(del_conto) = self.conti.get(conto) {
+            // Una cartella virtuale (`~condivisi` di Drive) il servizio non la
+            // conosce, e non si elenca: si elencano quelle che contiene.
+            let entrate: HashSet<String> = prima
+                .iter()
+                .filter(|(id, dentro)| !**dentro && !e_virtuale(id) && del_conto.sotto(id, &cime))
+                .map(|(id, _)| id.clone())
+                .collect();
+            toccate.da_elencare.extend(
+                entrate
+                    .iter()
+                    .filter(|id| !del_conto.sotto(id, &entrate))
+                    .cloned(),
+            );
+            toccate
+                .da_elencare
+                .extend(con_la_catena.into_iter().filter(|cima| {
+                    del_conto
+                        .voci
+                        .get(cima)
+                        .is_some_and(|n| n.percorso.is_none())
+                }));
         }
         let c_e = |id: &str| {
             self.conti
@@ -663,8 +800,94 @@ impl Specchio {
     ///
     /// Una radice con lo stesso percorso prende il posto di quella che c'era.
     pub fn aggiungi_radice(&mut self, radice: RadiceSalvata) {
+        self.nascenti
+            .remove(&(radice.conto.clone(), radice.cima.clone()));
         self.radici
             .insert(path_key(&radice.percorso, regole()), radice);
+    }
+
+    /// Toglie dallo specchio di un conto quel che non serve alle sue radici:
+    /// tutto tranne le cime, quel che sta loro sotto e i loro antenati (vedi
+    /// «Solo le cartelle scelte» in testa al modulo).
+    ///
+    /// Le voci tolte vanno in [`Toccate::tolte`] e basta: fuori dalle radici
+    /// la libreria non ha niente da riguardare. È la pulizia di quel che le
+    /// versioni di prima salvavano dai cambiamenti di tutto il drive, e delle
+    /// voci di una radice tolta dalla libreria: la fa il filo del conto a ogni
+    /// giro, senza migrazioni.
+    pub fn pota(&mut self, conto: &str) -> Toccate {
+        let mut toccate = Toccate::default();
+        let cime = self.cime(conto);
+        self.pota_con(conto, &cime, &mut toccate);
+        toccate
+    }
+
+    /// Annuncia la cima di una radice che si sta scegliendo.
+    ///
+    /// «Aggiungi» mette la catena della cartella nello specchio prima di
+    /// registrare la radice — prima va scritta fra le cartelle sorvegliate, o
+    /// il filo del conto la dimenticherebbe appena nata —, e una
+    /// [`Specchio::pota`] che cadesse in mezzo la toglierebbe. Annunciata, la
+    /// cima vale come una radice finché non arriva [`Specchio::aggiungi_radice`]
+    /// o [`Specchio::ritira_radice`]. Si annuncia nello stesso lucchetto della
+    /// [`Specchio::metti`] della catena.
+    pub fn annuncia_radice(&mut self, conto: &str, cima: &str) {
+        self.nascenti.insert((conto.to_owned(), cima.to_owned()));
+    }
+
+    /// Ritira l'annuncio di una radice che non è nata: l'aggiunta è caduta a
+    /// metà. Quel che aveva messo nello specchio se ne va alla prossima
+    /// [`Specchio::pota`].
+    pub fn ritira_radice(&mut self, conto: &str, cima: &str) {
+        self.nascenti.remove(&(conto.to_owned(), cima.to_owned()));
+    }
+
+    /// Le cime delle radici di un conto, e quelle annunciate.
+    fn cime(&self, conto: &str) -> HashSet<String> {
+        self.radici
+            .values()
+            .filter(|radice| radice.conto == conto)
+            .map(|radice| radice.cima.clone())
+            .chain(
+                self.nascenti
+                    .iter()
+                    .filter(|(di, _)| di == conto)
+                    .map(|(_, cima)| cima.clone()),
+            )
+            .collect()
+    }
+
+    /// [`Specchio::pota`], con le cime già raccolte.
+    fn pota_con(&mut self, conto: &str, cime: &HashSet<String>, toccate: &mut Toccate) {
+        let Self { conti, indice, .. } = self;
+        let Some(del_conto) = conti.get_mut(conto) else {
+            return;
+        };
+        let tenute = del_conto.da_tenere(cime);
+        let mut via: Vec<String> = del_conto
+            .voci
+            .keys()
+            .filter(|id| !tenute.contains(*id))
+            .cloned()
+            .collect();
+        via.sort();
+        for id in via {
+            del_conto.scartate.remove(&id);
+            let Some(nodo) = del_conto.voci.remove(&id) else {
+                continue;
+            };
+            del_conto.lascia_il_posto(&id, nodo.voce.genitore.as_ref(), &nodo.segmento);
+            if let Some(percorso) = nodo.percorso.as_deref() {
+                let chiave = path_key(percorso, regole());
+                if indice
+                    .get(&chiave)
+                    .is_some_and(|(di, chi)| di == conto && *chi == id)
+                {
+                    indice.remove(&chiave);
+                }
+            }
+            toccate.tolte.push((conto.to_owned(), id));
+        }
     }
 
     /// Dimentica una radice tolta dalla libreria. Le voci restano: possono
@@ -695,6 +918,7 @@ impl Specchio {
             toccate.tolte = ids.into_iter().map(|id| (conto.to_owned(), id)).collect();
         }
         self.indice.retain(|_, (di, _)| di != conto);
+        self.nascenti.retain(|(di, _)| di != conto);
         if tieni_radici {
             self.riapri_radici(conto);
         } else {
@@ -1500,14 +1724,18 @@ mod prove {
         // cartella condivisa come una seconda cima: col percorso del conto, e
         // coi figli in concorrenza con quelli della cima vera. Quando arriva
         // al suo posto, sotto la cartella virtuale, tutto si rimette in fila.
+        // Scelto il drive intero: la cartella condivisa ci sta sotto.
         let mut specchio = Specchio::default();
         specchio.metti(CONTO, albero());
-        specchio.applica(
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh", "R"));
+        // Com'erano rimasti nello specchio: fuori da ogni radice, oggi la
+        // potatura dei cambiamenti non li terrebbe.
+        specchio.metti(
             CONTO,
             vec![
-                Cambio::Voce(cartella("S", None, "Musica di Marco")),
-                Cambio::Voce(cartella("SM", Some("S"), "Musica")),
-                Cambio::Voce(file("3", "SM", "03.flac")),
+                cartella("S", None, "Musica di Marco"),
+                cartella("SM", Some("S"), "Musica"),
+                file("3", "SM", "03.flac"),
             ],
         );
         specchio.applica(
@@ -1552,6 +1780,7 @@ mod prove {
     fn i_nomi_doppi_prendono_una_sigla_e_il_primo_tiene_il_suo() {
         let mut specchio = Specchio::default();
         specchio.metti(CONTO, albero());
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
         specchio.metti(
             CONTO,
             vec![
@@ -1668,6 +1897,7 @@ mod prove {
     fn un_cambio_verso_un_nome_che_non_interessa_e_una_rimozione() {
         let mut specchio = Specchio::default();
         specchio.metti(CONTO, albero());
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
         let toccate = specchio.applica(
             CONTO,
             vec![
@@ -1690,6 +1920,7 @@ mod prove {
         let mut voci = albero();
         voci.push(cartella("J", Some("M"), "Jazz"));
         specchio.metti(CONTO, voci);
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
         let rock = "nuvola://onedrive-abcdefgh/Musica/Rock";
         let jazz = "nuvola://onedrive-abcdefgh/Musica/Jazz";
 
@@ -1852,6 +2083,7 @@ mod prove {
     fn una_cartella_cancellata_si_porta_via_quel_che_contiene() {
         let mut specchio = Specchio::default();
         specchio.metti(CONTO, albero());
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
         let toccate = specchio.applica(CONTO, vec![Cambio::Tolta { id: "K".to_owned() }]);
         let mut tolte: Vec<&str> = toccate.tolte.iter().map(|(_, id)| id.as_str()).collect();
         tolte.sort_unstable();
@@ -1944,12 +2176,12 @@ mod prove {
         voci.push(con_tag);
         let prima = specchio.metti(CONTO, voci);
         Specchio::salva(&connection, &prima).expect("salvato");
-        let tolte = specchio.applica(CONTO, vec![Cambio::Tolta { id: "2".to_owned() }]);
-        Specchio::salva(&connection, &tolte).expect("salvato");
         let mut la_radice = radice("nuvola://onedrive-abcdefgh/Musica", "M");
         la_radice.completa = true;
         specchio.aggiungi_radice(la_radice.clone());
         salva_radice(&connection, &la_radice).expect("radice");
+        let tolte = specchio.applica(CONTO, vec![Cambio::Tolta { id: "2".to_owned() }]);
+        Specchio::salva(&connection, &tolte).expect("salvato");
 
         let ricaricato = Specchio::carica(&connection).expect("caricato");
         assert_eq!(fotografia(&ricaricato), fotografia(&specchio));
@@ -1980,11 +2212,12 @@ mod prove {
         );
     }
 
-    /// L'albero salvato, i cambiamenti applicati e salvati, e lo specchio
-    /// ricaricato dal database.
+    /// L'albero salvato con la radice `Musica`, i cambiamenti applicati e
+    /// salvati, e lo specchio ricaricato dal database.
     fn dopo_i_cambiamenti(cambi: Vec<Cambio>) -> (Specchio, Specchio) {
         let connection = crate::db::open_in_memory().expect("database").connection;
         let mut specchio = Specchio::default();
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
         let prima = specchio.metti(CONTO, albero());
         Specchio::salva(&connection, &prima).expect("salvato");
         let toccate = specchio.applica(CONTO, cambi);
@@ -2260,6 +2493,240 @@ mod prove {
         assert_eq!(ricaricato.radici(CONTO), attesa);
         assert!(fotografia(&ricaricato).is_empty());
         assert!(conti(&connection).expect("conti").is_empty());
+    }
+
+    /// Gli identificativi di `nuvola_voci`, in ordine.
+    fn ids_nel_database(connection: &Connection) -> Vec<String> {
+        let mut statement = connection
+            .prepare("SELECT id FROM nuvola_voci ORDER BY id")
+            .expect("query");
+        statement
+            .query_map([], |r| r.get(0))
+            .expect("righe")
+            .collect::<Result<_, _>>()
+            .expect("ids")
+    }
+
+    fn ids_tolti(toccate: &Toccate) -> Vec<&str> {
+        let mut tolte: Vec<&str> = toccate.tolte.iter().map(|(_, id)| id.as_str()).collect();
+        tolte.sort_unstable();
+        tolte
+    }
+
+    #[test]
+    fn un_cambio_fuori_dalle_radici_non_entra_nel_database() {
+        // Scelta solo `Musica`: il flusso dei cambiamenti racconta tutto il
+        // drive, e una cartella nuova accanto — con una nota vocale dentro —
+        // non è delle cartelle scelte. Prima finiva in `nuvola_voci` col suo
+        // nome, e non ne usciva più.
+        let connection = crate::db::open_in_memory().expect("database").connection;
+        let mut specchio = Specchio::default();
+        Specchio::salva(&connection, &specchio.metti(CONTO, albero())).expect("salvato");
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
+        let toccate = specchio.applica(
+            CONTO,
+            vec![
+                Cambio::Voce(cartella("X", Some("R"), "Clienti")),
+                Cambio::Voce(file("x1", "X", "riunione.m4a")),
+                // Sotto la radice, invece, sì.
+                Cambio::Voce(file("6", "K", "06 Nuovo.flac")),
+            ],
+        );
+        let messe: Vec<&str> = toccate
+            .messe
+            .iter()
+            .map(|(_, voce, _)| voce.id.as_str())
+            .collect();
+        assert_eq!(messe, ["6"]);
+        assert!(toccate.da_elencare.is_empty(), "{toccate:?}");
+        Specchio::salva(&connection, &toccate).expect("salvato");
+        assert_eq!(
+            ids_nel_database(&connection),
+            ["1", "2", "6", "K", "M", "R"]
+        );
+        assert_eq!(specchio.percorso(CONTO, "x1"), None);
+        assert!(
+            specchio
+                .voce("nuvola://onedrive-abcdefgh/Clienti")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn le_voci_gia_salvate_fuori_dalle_radici_si_tolgono_alla_prossima_passata() {
+        // Un database scritto prima della correzione: dentro ci sono anche
+        // le cartelle e i file cambiati fuori dalle radici. Niente
+        // migrazione: li toglie la potatura del filo del conto, e la catena
+        // che porta alla radice resta.
+        let connection = crate::db::open_in_memory().expect("database").connection;
+        let mut voci = albero();
+        voci.push(cartella("X", Some("R"), "Clienti"));
+        voci.push(file("x1", "X", "riunione.m4a"));
+        voci.push(file("x2", "R", "nota.m4a"));
+        Specchio::salva(&connection, &Specchio::default().metti(CONTO, voci)).expect("salvato");
+        let mut la_radice = radice("nuvola://onedrive-abcdefgh/Musica", "M");
+        la_radice.completa = true;
+        salva_radice(&connection, &la_radice).expect("radice");
+
+        let mut specchio = Specchio::carica(&connection).expect("caricato");
+        let toccate = specchio.pota(CONTO);
+        assert_eq!(ids_tolti(&toccate), ["X", "x1", "x2"]);
+        assert!(toccate.messe.is_empty() && toccate.cartelle.is_empty());
+        Specchio::salva(&connection, &toccate).expect("salvato");
+        assert_eq!(ids_nel_database(&connection), ["1", "2", "K", "M", "R"]);
+        assert!(
+            specchio
+                .voce("nuvola://onedrive-abcdefgh/Clienti")
+                .is_none()
+        );
+        assert!(specchio.e_completa("nuvola://onedrive-abcdefgh/Musica/Rock"));
+        assert_eq!(
+            specchio.percorso(CONTO, "1").as_deref(),
+            Some("nuvola://onedrive-abcdefgh/Musica/Rock/01 Intro.flac")
+        );
+        assert_eq!(specchio.pota(CONTO), Toccate::default(), "una volta basta");
+        // E un conto senza radici non tiene niente.
+        specchio.dimentica_radice("nuvola://onedrive-abcdefgh/Musica");
+        assert_eq!(ids_tolti(&specchio.pota(CONTO)), ["1", "2", "K", "M", "R"]);
+    }
+
+    #[test]
+    fn una_cartella_spostata_dentro_una_radice_si_chiede_di_elencarla() {
+        // Graph e Drive, per una cartella spostata dentro `Musica` da fuori,
+        // consegnano la cartella e basta: i brani che contiene non sono
+        // cambiati. Lo specchio non li ha mai visti, e la cartella restava
+        // vuota fino a un rielenco completo.
+        let mut specchio = con_la_radice_musica();
+        let toccate = specchio.applica(
+            CONTO,
+            vec![Cambio::Voce(cartella("X", Some("M"), "Nuovo album"))],
+        );
+        assert_eq!(toccate.da_elencare.iter().collect::<Vec<_>>(), ["X"]);
+        assert_eq!(
+            specchio.percorso(CONTO, "X").as_deref(),
+            Some("nuvola://onedrive-abcdefgh/Musica/Nuovo album")
+        );
+        // Due livelli entrati insieme: basta elencare quello in alto.
+        let toccate = specchio.applica(
+            CONTO,
+            vec![
+                Cambio::Voce(cartella("Z", Some("Y"), "CD1")),
+                Cambio::Voce(cartella("Y", Some("M"), "Doppio")),
+            ],
+        );
+        assert_eq!(toccate.da_elencare.iter().collect::<Vec<_>>(), ["Y"]);
+        // Una cartella che stava già sotto la radice e cambia nome o posto
+        // no: quel che contiene, lo specchio lo sa già.
+        let toccate = specchio.applica(
+            CONTO,
+            vec![
+                Cambio::Voce(cartella("K", Some("M"), "Rock 70")),
+                Cambio::Voce(cartella("X", Some("K"), "Nuovo album")),
+            ],
+        );
+        assert!(toccate.da_elencare.is_empty(), "{toccate:?}");
+        // E una che esce dalle radici esce dallo specchio, con quel che
+        // contiene.
+        let toccate = specchio.applica(
+            CONTO,
+            vec![Cambio::Voce(cartella("K", Some("R"), "Rock 70"))],
+        );
+        assert!(toccate.da_elencare.is_empty(), "{toccate:?}");
+        assert_eq!(ids_tolti(&toccate), ["1", "2", "K", "X"]);
+        assert_eq!(specchio.percorso(CONTO, "1"), None);
+    }
+
+    #[test]
+    fn una_cartella_condivisa_nuova_si_elenca_lei_e_non_la_cartella_virtuale() {
+        // Scelto il drive intero di Google: una cartella appena condivisa
+        // arriva dai cambiamenti sotto `~condivisi`, che arriva con lei. La
+        // cartella virtuale non si elenca (Drive non la conosce, e il suo
+        // elenco è un errore): si elenca la cartella condivisa.
+        let mut specchio = Specchio::default();
+        specchio.metti(CONTO, albero());
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh", "R"));
+        let toccate = specchio.applica(
+            CONTO,
+            vec![
+                Cambio::Voce(cartella("~condivisi", Some("R"), "Shared with me")),
+                Cambio::Voce(cartella("S", Some("~condivisi"), "Musica di Marco")),
+            ],
+        );
+        assert_eq!(toccate.da_elencare.iter().collect::<Vec<_>>(), ["S"]);
+    }
+
+    #[test]
+    fn una_radice_spostata_sotto_una_cartella_sconosciuta_si_chiede_di_elencarla() {
+        // La cartella scelta va dentro una cartella che lo specchio non
+        // conosce (fuori dalle radici non tiene niente): senza la catena non
+        // ha un percorso, e il trasloco non saprebbe dove portarla. Il suo
+        // elenco comincia con gli antenati, e la catena torna.
+        let mut specchio = con_la_radice_musica();
+        let toccate = specchio.applica(
+            CONTO,
+            vec![Cambio::Voce(cartella("M", Some("A"), "Musica"))],
+        );
+        assert_eq!(toccate.da_elencare.iter().collect::<Vec<_>>(), ["M"]);
+        assert!(
+            ids_tolti(&toccate).iter().all(|id| *id == "R"),
+            "{toccate:?}"
+        );
+        assert_eq!(specchio.percorso(CONTO, "M"), None);
+        // Quel che contiene resta: lo spostamento non l'ha toccato.
+        assert!(
+            specchio
+                .conti
+                .get(CONTO)
+                .is_some_and(|c| c.voci.contains_key("K") && c.voci.contains_key("1"))
+        );
+        specchio.metti(
+            CONTO,
+            vec![
+                cartella("R", None, ""),
+                cartella("A", Some("R"), "Archivio"),
+                cartella("M", Some("A"), "Musica"),
+            ],
+        );
+        assert_eq!(
+            specchio
+                .radici_traslocate(CONTO)
+                .first()
+                .map(|(_, ora)| ora.as_str()),
+            Some("nuvola://onedrive-abcdefgh/Archivio/Musica")
+        );
+    }
+
+    #[test]
+    fn una_radice_che_sta_per_nascere_non_si_pota() {
+        // «Aggiungi» mette la catena nello specchio prima di registrare la
+        // radice (deve prima scriverla fra le cartelle sorvegliate): una
+        // potatura del filo del conto in quel momento non la deve togliere.
+        let mut specchio = Specchio::default();
+        specchio.annuncia_radice(CONTO, "M");
+        specchio.metti(
+            CONTO,
+            vec![
+                cartella("R", None, ""),
+                cartella("M", Some("R"), "Musica"),
+                cartella("K", Some("M"), "Rock"),
+            ],
+        );
+        assert!(specchio.pota(CONTO).tolte.is_empty());
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh/Musica", "M"));
+        assert!(specchio.pota(CONTO).tolte.is_empty());
+        // Un'aggiunta caduta a metà ritira l'annuncio, e quel che aveva
+        // messo se ne va alla potatura dopo.
+        specchio.annuncia_radice(CONTO, "J");
+        specchio.metti(
+            CONTO,
+            vec![
+                cartella("J", Some("R"), "Jazz"),
+                file("5", "J", "Blue.flac"),
+            ],
+        );
+        assert!(specchio.pota(CONTO).tolte.is_empty());
+        specchio.ritira_radice(CONTO, "J");
+        assert_eq!(ids_tolti(&specchio.pota(CONTO)), ["5", "J"]);
     }
 
     #[test]

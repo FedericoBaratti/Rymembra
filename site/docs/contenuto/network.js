@@ -15,7 +15,7 @@
             "**Status is not an error**: `http_status_as_error(false)` keeps 4xx/5xx bodies, because the body is the information (`invalid_grant` vs `invalid_client` from Google). `stato_a_errore` translates when the caller wants the default mapping (`net.http { status }`, `net.rateLimited`, …).",
             "**TLS** uses the operating system's trust store (`rustls-platform-verifier`), so a corporate proxy with a root installed in Windows works, and revoked roots go away with Windows updates. `https_only` everywhere.",
             "**User-Agent**: `Rymembra/<version> (+https://github.com/federicobaratti/rymembra)` — MusicBrainz policy asks for a contact. The update check is the exception and sends no Rymembra user agent ([Updates](#update)).",
-            "**Body cap**: `TETTO_CORPO_DI_SERIE` = 10 MiB unless a client raises it (`con_tetto_corpo`). Images are recognised by magic bytes (`immagine::tipo`), never by `Content-Type`.",
+            "**Body cap**: `TETTO_CORPO_DI_SERIE` = 10 MiB unless a client raises it (`con_tetto_corpo`). `preleva` takes its own cap from the caller — 4 GiB for a catalogue track, 512 MiB for the Android update, 8 MiB for a cover read into memory — refuses a declared `Content-Length` above it before reading, and stops at the first block that would cross it, before writing it (`net.badSchema`, «la risposta supera il tetto di N MB»). Images are recognised by magic bytes (`immagine::tipo`), never by `Content-Type`.",
           ],
         },
         {

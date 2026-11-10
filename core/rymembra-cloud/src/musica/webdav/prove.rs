@@ -140,6 +140,177 @@ fn l_elenco_parte_dalla_catena_e_visita_le_cartelle() {
     assert_eq!(brano.versione.as_deref(), Some("f"));
 }
 
+/// Le pagine che una prova dell'elenco accetta prima di dire basta: con un
+/// elenco che non finisce, la prova fallisce invece di girare per sempre.
+const PAGINE_AL_PIU: usize = 200;
+
+/// L'elenco di `cima`, fermato dopo [`PAGINE_AL_PIU`] pagine: le voci, le
+/// pagine e quel che `elenca` ha risposto.
+fn elenco_con_un_freno(server: &WebDav, cima: &str) -> (Vec<VoceRemota>, usize, bool) {
+    let mut voci = Vec::new();
+    let mut pagine = 0;
+    let completo = server
+        .elenca(cima, &mut |pagina| {
+            voci.extend(pagina);
+            pagine += 1;
+            if pagine >= PAGINE_AL_PIU {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .expect("elenco");
+    (voci, pagine, completo)
+}
+
+#[test]
+fn un_href_antenato_non_fa_girare_l_elenco_per_sempre() {
+    // Un server che, fra i figli di `Musica`, mette la cima del server, un
+    // `..`, una cartella accanto e la stessa sottocartella due volte; e fra i
+    // figli di `Musica/a` di nuovo `Musica`. Prima l'elenco riprendeva da `/`
+    // e da `Musica` a ogni giro, e non finiva più.
+    let finto = Finto::avvia(|vista: &Vista, _: &str| match vista.percorso.as_str() {
+        "/remote.php/dav/files/mario/Musica/" => multi(&multistatus(&[
+            ("/remote.php/dav/files/mario/Musica/", true, 0, "m"),
+            ("/remote.php/dav/files/mario/Musica/a/", true, 0, "a"),
+            ("/remote.php/dav/files/mario/Musica/a/", true, 0, "a"),
+            ("/remote.php/dav/files/mario/Musica//a/", true, 0, "a"),
+            ("/", true, 0, "r"),
+            ("/remote.php/dav/files/mario/Musica/../", true, 0, "p"),
+            ("/remote.php/dav/files/mario/Musica/%2E%2E/", true, 0, "p"),
+            ("/remote.php/dav/files/mario/Altro/", true, 0, "x"),
+            ("/remote.php/dav/files/mario/Musica/01.flac", false, 10, "f"),
+        ])),
+        "/remote.php/dav/files/mario/Musica/a/" => multi(&multistatus(&[
+            ("/remote.php/dav/files/mario/Musica/a/", true, 0, "a"),
+            ("/remote.php/dav/files/mario/Musica/", true, 0, "m"),
+            (
+                "/remote.php/dav/files/mario/Musica/a/02.flac",
+                false,
+                10,
+                "g",
+            ),
+        ])),
+        _ => multi(&multistatus(&[
+            ("/", true, 0, "r"),
+            ("/remote.php/dav/files/mario/Musica/", true, 0, "m"),
+        ])),
+    });
+    let server = server(&finto);
+    let (voci, pagine, completo) =
+        elenco_con_un_freno(&server, "/remote.php/dav/files/mario/Musica");
+    assert!(
+        completo,
+        "l'elenco arriva in fondo da sé, non perché la prova lo ferma: {pagine} pagine"
+    );
+    let chieste: Vec<String> = finto.viste().into_iter().map(|v| v.percorso).collect();
+    assert_eq!(
+        chieste,
+        [
+            "/remote.php/dav/files/mario/Musica/",
+            "/remote.php/dav/files/mario/Musica/a/"
+        ],
+        "solo la cartella scelta e quel che le sta sotto, una volta ciascuna"
+    );
+    let mut ids: Vec<&str> = voci
+        .iter()
+        .filter(|v| v.genitore.as_deref() == Some("/remote.php/dav/files/mario/Musica"))
+        .map(|v| v.id.as_str())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            "/remote.php/dav/files/mario/Musica/01.flac",
+            "/remote.php/dav/files/mario/Musica/a"
+        ]
+    );
+    assert!(
+        voci.iter()
+            .all(|v| v.id != "/" && v.nome != ".." && !v.id.contains("Altro")),
+        "{voci:?}"
+    );
+    assert_eq!(
+        server.tetto_raggiunto(),
+        None,
+        "un albero finito non tocca il tetto"
+    );
+}
+
+#[test]
+fn un_anello_che_allunga_il_percorso_si_ferma_al_tetto() {
+    // Un collegamento simbolico a un antenato (`rclone serve webdav -L`,
+    // Apache con `FollowSymLinks`): ogni cartella contiene `giro`, che la
+    // ripete. Ogni percorso è nuovo, e il registro delle visitate non basta:
+    // ci vuole il tetto di profondità.
+    let finto = Finto::avvia(|vista: &Vista, _: &str| {
+        let cartella = vista.percorso.as_str();
+        let giro = format!("{cartella}giro/");
+        let brano = format!("{cartella}01.flac");
+        multi(&multistatus(&[
+            (cartella, true, 0, "c"),
+            (giro.as_str(), true, 0, "g"),
+            (brano.as_str(), false, 10, "f"),
+        ]))
+    });
+    let server = server(&finto);
+    let (voci, pagine, completo) =
+        elenco_con_un_freno(&server, "/remote.php/dav/files/mario/Musica");
+    assert!(
+        completo,
+        "al tetto l'elenco si chiude da sé, e la radice non resta da rielencare a ogni giro: \
+         {pagine} pagine"
+    );
+    assert_eq!(finto.viste().len(), PROFONDITA_ELENCO);
+    assert_eq!(pagine, PROFONDITA_ELENCO);
+    let in_fondo = voci
+        .iter()
+        .filter(|v| v.cartella)
+        .map(|v| v.id.matches("/giro").count())
+        .max();
+    assert_eq!(
+        in_fondo,
+        Some(PROFONDITA_ELENCO),
+        "le cartelle dell'ultimo livello ci sono, vuote"
+    );
+    assert_eq!(
+        server.tetto_raggiunto(),
+        Some(PROFONDITA_ELENCO),
+        "il tetto si dice, a chi scrive il diario"
+    );
+    assert_eq!(server.tetto_raggiunto(), None, "e si dice una volta");
+}
+
+#[test]
+fn la_password_non_compare_nel_debug() {
+    // Il `Debug` del deposito e di una sua sorgente arriva in un diario con
+    // un `{:?}` qualunque: la password (in chiaro o nell'intestazione
+    // `Basic`) non deve esserci. Prima era un `derive`.
+    let server = WebDav::nuovo("https://cloud.it/dav", "mario", "pw-segreta").expect("indirizzo");
+    let basic = base64(b"mario:pw-segreta");
+    let voce = VoceRemota {
+        id: "/dav/01.flac".to_owned(),
+        genitore: Some("/dav".to_owned()),
+        nome: "01.flac".to_owned(),
+        cartella: false,
+        dimensione: 1,
+        modificato_ms: 0,
+        versione: None,
+        tag: None,
+    };
+    let sorgente = server.sorgente(&voce).expect("sorgente");
+    for testo in [format!("{server:?}"), format!("{sorgente:?}")] {
+        assert!(
+            !testo.contains(&basic) && !testo.contains("pw-segreta"),
+            "{testo}"
+        );
+    }
+    assert!(
+        format!("{server:?}").contains("cloud.it"),
+        "il resto si vede"
+    );
+}
+
 #[test]
 fn una_password_sbagliata_si_dice() {
     let finto = Finto::avvia(|_: &Vista, _: &str| risposta(401, "text/plain", b""));

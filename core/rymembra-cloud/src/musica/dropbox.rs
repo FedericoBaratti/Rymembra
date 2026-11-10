@@ -767,7 +767,9 @@ impl Sorgente for DaDropbox {
             }
             altro => altro,
         };
-        // Il collegamento non esce da qui: è un permesso.
+        // Il collegamento non esce da qui: è un permesso. Da nessun codice che
+        // porti un indirizzo — un `net.timeout` o un `net.offline` lo
+        // portavano nel loro `url` — e da nessuna frase.
         esito
             .map(|pezzo| Pezzo {
                 url_finale: None,
@@ -779,6 +781,11 @@ impl Sorgente for DaDropbox {
                         status: *status,
                         url: None,
                     },
+                    ErrorCode::NetTimeout { timeout_ms, .. } => ErrorCode::NetTimeout {
+                        url: None,
+                        timeout_ms: *timeout_ms,
+                    },
+                    ErrorCode::NetOffline { .. } => ErrorCode::NetOffline { url: None },
                     altro => altro.clone(),
                 });
                 if let Some(causa) = err.cause() {

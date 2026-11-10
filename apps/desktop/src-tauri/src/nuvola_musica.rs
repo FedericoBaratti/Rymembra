@@ -26,7 +26,7 @@
 //! libreria a ritmo di [`RITMO_SCANSIONI`] mentre l'elenco scorre. Nessuno
 //! aspetta la fine dell'elenco per vedere i primi brani.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,7 +49,9 @@ use rymembra_cloud::musica::{
 use rymembra_cloud::oauth::{self, fornitore_della_musica};
 use rymembra_cloud::portachiavi::{self, DiSistema, Portachiavi};
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
-use rymembra_domain::nuvola::{Servizio, conto_di as conto_del_percorso, e_virtuale, segmenti};
+use rymembra_domain::nuvola::{
+    Servizio, VoceRemota, conto_di as conto_del_percorso, e_virtuale, segmenti,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 
@@ -902,6 +904,16 @@ fn un_giro(
         salvato.cursore = Some(primo);
     }
     dimentica_le_radici_tolte(stato, nuvola, conto)?;
+    // Fuori dalle cartelle scelte lo specchio non tiene niente: le voci di una
+    // radice appena tolta, e quelle che le versioni di prima salvavano dai
+    // cambiamenti di tutto il drive, se ne vanno qui. Prima della rete, così
+    // succede anche senza.
+    let Some(potate) = nello_specchio(nuvola, conto, deposito, |s| s.pota(conto)) else {
+        return Ok(());
+    };
+    if !potate.tolte.is_empty() && !salva_toccate(stato, nuvola, conto, deposito, &potate)? {
+        return Ok(());
+    }
     let da_elencare: Vec<RadiceSalvata> = nuvola
         .specchio
         .read()
@@ -969,7 +981,10 @@ fn un_giro(
         };
         toccate
     };
+    // Le cartelle entrate in una radice prima del cursore nuovo: vedi
+    // `elenca_le_entrate`.
     if !salva_toccate(stato, nuvola, conto, deposito, &toccate)?
+        || !elenca_le_entrate(app, stato, nuvola, conto, deposito, &toccate.da_elencare)?
         || !salva_cursore(stato, nuvola, conto, deposito, &nuovo, Some(adesso_ms()))?
     {
         return Ok(());
@@ -979,6 +994,110 @@ fn un_giro(
     }
     segui_le_radici_traslocate(app, stato, nuvola, conto, deposito);
     Ok(())
+}
+
+/// Elenca le cartelle che i cambiamenti hanno portato dentro una radice
+/// (`Toccate::da_elencare`): il flusso di OneDrive e di Drive, per una
+/// cartella spostata da fuori, consegna la cartella e non quel che contiene, e
+/// la cartella restava vuota fino a un rielenco completo. Le pagine vanno
+/// nello specchio con `metti`, che non toglie niente; niente `chiudi_elenco`,
+/// perché la radice è già completa. `Ok(false)` se il conto non è più di
+/// questo filo, o se l'app si chiude.
+///
+/// # Se l'elenco non arriva in fondo
+///
+/// Gli stessi cambiamenti riletti non la riporterebbero: la cartella adesso
+/// lo specchio la conosce, uguale, e non è più «entrata». Allora le radici del
+/// conto si riaprono e si salvano incomplete, come per un cursore scaduto, e
+/// il giro dopo le rielenca per intero. Tutto prima del cursore nuovo.
+fn elenca_le_entrate(
+    app: &AppHandle,
+    stato: &Stato,
+    nuvola: &StatoMusicaNuvola,
+    conto: &str,
+    deposito: &dyn Deposito,
+    entrate: &BTreeSet<String>,
+) -> Result<bool, AppError> {
+    if entrate.is_empty() {
+        return Ok(true);
+    }
+    let mut cartelle: BTreeSet<String> = BTreeSet::new();
+    let mut guasto_di_scrittura: Option<AppError> = None;
+    let mut non_piu_mio = false;
+    let esito = elenca_cartelle(deposito, entrate, &mut |pagina| {
+        if crate::spegnimento::in_uscita() {
+            return ControlFlow::Break(());
+        }
+        let Some(toccate) = nello_specchio(nuvola, conto, deposito, |s| s.metti(conto, pagina))
+        else {
+            non_piu_mio = true;
+            return ControlFlow::Break(());
+        };
+        match salva_toccate(stato, nuvola, conto, deposito, &toccate) {
+            Ok(true) => {}
+            Ok(false) => {
+                non_piu_mio = true;
+                return ControlFlow::Break(());
+            }
+            Err(guasto) => {
+                guasto_di_scrittura = Some(guasto);
+                return ControlFlow::Break(());
+            }
+        }
+        cartelle.extend(toccate.cartelle);
+        ControlFlow::Continue(())
+    });
+    if !cartelle.is_empty() {
+        crate::sorveglia::riguarda(app, cartelle.into_iter().collect());
+    }
+    if non_piu_mio {
+        return Ok(false);
+    }
+    let esito = match guasto_di_scrittura {
+        Some(guasto) => Err(guasto),
+        None => esito,
+    };
+    if matches!(esito, Ok(true)) {
+        di_al_diario_il_tetto(conto, deposito);
+        return Ok(true);
+    }
+    let Some(riaperte) = nello_specchio(nuvola, conto, deposito, |s| s.riapri_radici(conto)) else {
+        return Ok(false);
+    };
+    con_libreria(stato, |l| {
+        if ancora_mio(nuvola, conto, deposito) {
+            for radice in &riaperte {
+                specchio::salva_radice(&l.connection, radice)?;
+            }
+        }
+        Ok(())
+    })?;
+    // Un guasto si dice; un elenco fermato dall'uscita dell'app no. In tutti e
+    // due i casi il cursore resta quello di prima.
+    esito.map(|_| false)
+}
+
+/// Elenca delle cartelle una dopo l'altra, con la stessa `pagina`: `Ok(false)`
+/// alla prima che non arriva in fondo.
+///
+/// Una cartella che nel frattempo non c'è più (tolta, o spostata dove
+/// l'identificativo è il percorso) si salta: non è un guasto del conto, i
+/// cambiamenti dopo ne porteranno l'uscita, e riaprire per lei tutte le
+/// radici sarebbe un rielenco completo per niente.
+fn elenca_cartelle(
+    deposito: &dyn Deposito,
+    cartelle: &BTreeSet<String>,
+    pagina: &mut dyn FnMut(Vec<VoceRemota>) -> ControlFlow<()>,
+) -> Result<bool, AppError> {
+    for cartella in cartelle {
+        match deposito.elenca(cartella, pagina) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(guasto) if guasto.code().kind() == ErrorCodeKind::CloudNotFound => {}
+            Err(guasto) => return Err(guasto),
+        }
+    }
+    Ok(true)
 }
 
 /// Salva il cursore di un conto che c'è ancora: `false` se è stato scollegato
@@ -1024,11 +1143,17 @@ fn elenca_le_radici(
             }),
             Err(guasto) if guasto.code().kind() == ErrorCodeKind::CloudNotFound => {
                 let mut nuova = false;
-                nuvola.andamento(conto, |a| nuova = a.perse.insert(radice.percorso.clone()));
+                let mut perse = 0;
+                nuvola.andamento(conto, |a| {
+                    nuova = a.perse.insert(radice.percorso.clone());
+                    perse = a.perse.len();
+                });
+                // Il conto e quante, non quale: il nome di una cartella di
+                // musica nel diario non ci va.
                 if nuova {
                     nota!(
-                        "[nuvola] {conto}: la cartella {} non c'è più sul servizio, resta da scegliere di nuovo",
-                        radice.percorso
+                        "[nuvola] {conto}: una cartella scelta non c'è più sul servizio \
+                         ({perse} in tutto), resta da scegliere di nuovo"
                     );
                 }
             }
@@ -1133,6 +1258,7 @@ fn elenca_radice(
         return Err(guasto);
     }
     if completo? {
+        di_al_diario_il_tetto(conto, deposito);
         let Some((toccate, complete)) = nello_specchio(nuvola, conto, deposito, |s| {
             let toccate = s.chiudi_elenco(conto, &radice.cima, &elencati);
             let complete: Vec<RadiceSalvata> = s
@@ -1164,6 +1290,18 @@ fn elenca_radice(
     Ok(())
 }
 
+/// Un elenco arrivato in fondo si è fermato al tetto di profondità del
+/// servizio (WebDAV: vedi `Deposito::tetto_raggiunto`): lo si dice, col conto
+/// e i livelli. Niente percorso: nomi di cartelle nel diario non ne vanno.
+fn di_al_diario_il_tetto(conto: &str, deposito: &dyn Deposito) {
+    if let Some(livelli) = deposito.tetto_raggiunto() {
+        nota!(
+            "[nuvola] {conto}: l'elenco si è fermato a {livelli} livelli di sottocartelle, \
+             più in fondo non si scende: di solito è un anello di collegamenti sul server"
+        );
+    }
+}
+
 /// Quanto il trasloco di una cartella del cloud aspetta il turno delle
 /// scansioni: poco. Gira sul filo del conto, e se una scansione lo tiene si
 /// riprova al giro dopo — la radice intanto non si raggiunge, e niente si
@@ -1192,19 +1330,21 @@ fn segui_le_radici_traslocate(
         .radici_traslocate(conto);
     let mut nuove = Vec::new();
     for (radice, nuovo) in traslocate {
+        // Nel diario il conto e i numeri, non i nomi: vecchio e nuovo
+        // percorso sono nomi di cartelle di musica.
         match trasloca_la_radice(stato, nuvola, conto, deposito, &radice, &nuovo) {
             Ok(Some(seguiti)) => {
                 nota!(
-                    "[nuvola] {conto}: la cartella {} ora è {nuovo}, {seguiti} brani seguiti",
-                    radice.percorso
+                    "[nuvola] {conto}: una cartella scelta è stata spostata o rinominata sul \
+                     servizio, {seguiti} brani seguiti"
                 );
                 nuove.push(nuovo);
             }
             Ok(None) => return,
             Err(guasto) if guasto.code().kind() == ErrorCodeKind::LibraryScanBusy => {}
             Err(guasto) => nota!(
-                "[nuvola] {conto}: il trasloco di {} non è riuscito, si riprova al giro dopo: {guasto}",
-                radice.percorso
+                "[nuvola] {conto}: il trasloco di una cartella scelta non è riuscito, si riprova \
+                 al giro dopo: {guasto}"
             ),
         }
     }
@@ -1967,27 +2107,50 @@ fn aggiungi(
     } else {
         cima
     };
-    let toccate = nuvola
-        .specchio
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .metti(conto, prima_pagina);
-    let percorso = nuvola
-        .specchio
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .percorso(conto, &cima_vera)
-        .ok_or_else(|| {
-            AppError::new(ErrorCode::CloudNotFound)
-                .with_cause("la catena degli antenati non è arrivata")
-        })?;
+    // La cima si annuncia nello stesso lucchetto in cui la catena entra nello
+    // specchio: fino alla radice registrata, qui sotto, la potatura del filo
+    // del conto la tratta come una radice e non toglie la catena appena
+    // messa (vedi `Specchio::annuncia_radice`).
+    let toccate = {
+        let mut specchio = nuvola
+            .specchio
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        specchio.annuncia_radice(conto, &cima_vera);
+        specchio.metti(conto, prima_pagina)
+    };
     // Prima l'elenco delle cartelle, poi la radice nello specchio: il filo del
     // conto dimentica le radici che fra le sorvegliate non ci sono, e una
     // radice registrata un attimo prima di essere scritta lì verrebbe
     // dimenticata appena nata.
-    let mut cartelle = crate::comandi::cartelle_sorvegliate(&stato)?;
-    cartelle.push(percorso.clone());
-    let ordinate = crate::comandi::scrivi_cartelle(&stato, &cartelle)?;
+    let scritte = (|| {
+        let percorso = nuvola
+            .specchio
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .percorso(conto, &cima_vera)
+            .ok_or_else(|| {
+                AppError::new(ErrorCode::CloudNotFound)
+                    .with_cause("la catena degli antenati non è arrivata")
+            })?;
+        let mut cartelle = crate::comandi::cartelle_sorvegliate(&stato)?;
+        cartelle.push(percorso.clone());
+        let ordinate = crate::comandi::scrivi_cartelle(&stato, &cartelle)?;
+        Ok::<_, AppError>((percorso, ordinate))
+    })();
+    let (percorso, ordinate) = match scritte {
+        Ok(scritte) => scritte,
+        Err(guasto) => {
+            // La radice non nasce: quel che la catena aveva messo lo toglie la
+            // prossima potatura.
+            nuvola
+                .specchio
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ritira_radice(conto, &cima_vera);
+            return Err(guasto);
+        }
+    };
     let radice = RadiceSalvata {
         percorso: percorso.clone(),
         conto: conto.to_owned(),
@@ -2159,10 +2322,193 @@ pub async fn brano_apri_sul_web(app: AppHandle, id: i64) -> Esito<()> {
 mod prove {
     use super::*;
 
+    use rymembra_cloud::musica::Identita;
     use rymembra_cloud::portachiavi::{Guasto, InMemoria};
+    use rymembra_domain::nuvola::Cambio;
 
     fn servizio() -> String {
         "OneDrive".to_owned()
+    }
+
+    /// Un servizio finto alla Graph: l'elenco di una cartella consegna la
+    /// catena dei suoi antenati e poi quel che contiene, come i depositi veri.
+    /// Si ricorda quali cartelle gli si sono chieste.
+    struct GraphFinto {
+        albero: Vec<VoceRemota>,
+        elencate: Mutex<Vec<String>>,
+    }
+
+    impl GraphFinto {
+        fn voce(&self, id: &str) -> Option<&VoceRemota> {
+            self.albero.iter().find(|voce| voce.id == id)
+        }
+    }
+
+    impl Deposito for GraphFinto {
+        fn servizio(&self) -> Servizio {
+            Servizio::OneDrive
+        }
+        fn chi(&self) -> Result<Identita, AppError> {
+            Ok(Identita {
+                id_stabile: "d".into(),
+                nome: "prova".into(),
+            })
+        }
+        fn cartelle(&self, dentro: Option<&str>) -> Result<Vec<VoceRemota>, AppError> {
+            let _ = dentro;
+            Ok(Vec::new())
+        }
+        fn cursore_adesso(&self) -> Result<String, AppError> {
+            Ok("c".into())
+        }
+        fn elenca(
+            &self,
+            cima: &str,
+            pagina: &mut dyn FnMut(Vec<VoceRemota>) -> ControlFlow<()>,
+        ) -> Result<bool, AppError> {
+            self.elencate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(cima.to_owned());
+            if self.voce(cima).is_none() {
+                return Err(AppError::new(ErrorCode::CloudNotFound));
+            }
+            let mut catena = Vec::new();
+            let mut adesso = self.voce(cima);
+            while let Some(voce) = adesso {
+                catena.push(voce.clone());
+                adesso = voce.genitore.as_deref().and_then(|g| self.voce(g));
+            }
+            catena.reverse();
+            let mut sotto: Vec<String> = vec![cima.to_owned()];
+            let mut tutte = catena;
+            while let Some(madre) = sotto.pop() {
+                for voce in &self.albero {
+                    if voce.genitore.as_deref() == Some(madre.as_str()) {
+                        sotto.push(voce.id.clone());
+                        tutte.push(voce.clone());
+                    }
+                }
+            }
+            Ok(pagina(tutte).is_continue())
+        }
+        fn cambiamenti(
+            &self,
+            cursore: &str,
+            attesa: Duration,
+        ) -> Result<(Vec<Cambio>, String), AppError> {
+            let _ = attesa;
+            Ok((Vec::new(), cursore.to_owned()))
+        }
+        fn sorgente(
+            &self,
+            voce: &VoceRemota,
+        ) -> Result<Box<dyn rymembra_net::flusso::Sorgente>, AppError> {
+            let _ = voce;
+            Err(AppError::new(ErrorCode::CloudNotFound))
+        }
+        fn indirizzo_web(&self, voce: &VoceRemota) -> Option<String> {
+            let _ = voce;
+            None
+        }
+    }
+
+    fn voce(id: &str, genitore: Option<&str>, nome: &str) -> VoceRemota {
+        VoceRemota {
+            id: id.to_owned(),
+            genitore: genitore.map(str::to_owned),
+            nome: nome.to_owned(),
+            cartella: !nome.ends_with(".mp3"),
+            dimensione: if nome.ends_with(".mp3") { 10 } else { 0 },
+            modificato_ms: 1,
+            versione: None,
+            tag: None,
+        }
+    }
+
+    #[test]
+    fn una_cartella_spostata_dentro_una_radice_porta_con_se_i_suoi_brani() {
+        // Su OneDrive l'utente sposta `Download/Nuovo album` dentro `Musica`.
+        // Il delta consegna la cartella col genitore nuovo, e basta: i brani
+        // che contiene non sono cambiati. Fuori dalle radici lo specchio non
+        // li aveva, e la cartella restava vuota fino a un rielenco completo.
+        let conto = "onedrive-abcdefgh";
+        let servizio = GraphFinto {
+            albero: vec![
+                voce("R", None, ""),
+                voce("M", Some("R"), "Musica"),
+                voce("X", Some("M"), "Nuovo album"),
+                voce("a", Some("X"), "a.mp3"),
+                voce("D", Some("X"), "CD2"),
+                voce("b", Some("D"), "b.mp3"),
+            ],
+            elencate: Mutex::new(Vec::new()),
+        };
+        let mut specchio = Specchio::default();
+        specchio.metti(
+            conto,
+            vec![voce("R", None, ""), voce("M", Some("R"), "Musica")],
+        );
+        specchio.aggiungi_radice(RadiceSalvata {
+            percorso: format!("nuvola://{conto}/Musica"),
+            conto: conto.to_owned(),
+            cima: "M".to_owned(),
+            completa: true,
+        });
+        let toccate = specchio.applica(
+            conto,
+            vec![Cambio::Voce(voce("X", Some("M"), "Nuovo album"))],
+        );
+        assert_eq!(specchio.percorso(conto, "a"), None);
+
+        let completo = elenca_cartelle(&servizio, &toccate.da_elencare, &mut |pagina| {
+            specchio.metti(conto, pagina);
+            ControlFlow::Continue(())
+        })
+        .expect("elencate");
+        assert!(completo);
+        assert_eq!(
+            *servizio
+                .elencate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            ["X"],
+            "si elenca la cartella entrata, non la radice intera"
+        );
+        assert_eq!(
+            specchio.percorso(conto, "a").as_deref(),
+            Some("nuvola://onedrive-abcdefgh/Musica/Nuovo album/a.mp3")
+        );
+        assert_eq!(
+            specchio.percorso(conto, "b").as_deref(),
+            Some("nuvola://onedrive-abcdefgh/Musica/Nuovo album/CD2/b.mp3")
+        );
+    }
+
+    #[test]
+    fn una_cartella_entrata_e_gia_sparita_non_ferma_le_altre() {
+        // Fra il cambiamento e l'elenco la cartella è stata tolta (o, dove
+        // l'identificativo è il percorso, spostata): «non c'è» non è un guasto
+        // del conto, e i cambiamenti dopo ne porteranno l'uscita. Le altre si
+        // elencano, e le radici non si riaprono per questo.
+        let servizio = GraphFinto {
+            albero: vec![
+                voce("R", None, ""),
+                voce("M", Some("R"), "Musica"),
+                voce("X", Some("M"), "Nuovo album"),
+                voce("a", Some("X"), "a.mp3"),
+            ],
+            elencate: Mutex::new(Vec::new()),
+        };
+        let entrate: BTreeSet<String> = ["V", "X"].map(str::to_owned).into();
+        let mut arrivate = Vec::new();
+        let completo = elenca_cartelle(&servizio, &entrate, &mut |pagina| {
+            arrivate.extend(pagina.into_iter().map(|voce| voce.id));
+            ControlFlow::Continue(())
+        })
+        .expect("una cartella sparita non è un guasto");
+        assert!(completo);
+        assert!(arrivate.contains(&"a".to_owned()), "{arrivate:?}");
     }
 
     #[test]
@@ -2378,6 +2724,36 @@ mod prove {
             registrato.is_some() && riproposte.is_some() && riproposte > registrato,
             "le copie da misurare si ripropongono dopo aver registrato lo stato"
         );
+    }
+
+    /// Nessuna riga del diario di questo file scrive il percorso di una
+    /// cartella del cloud o la cima di una radice (che per Dropbox e WebDAV è
+    /// un percorso): sono nomi di cartelle di musica, e `PRIVACY.md` promette
+    /// che nel diario non finiscono. Il conto basta a ritrovare la riga.
+    #[test]
+    fn il_diario_non_scrive_i_percorsi_del_cloud() {
+        let sorgente = include_str!("nuvola_musica.rs");
+        let codice = sorgente
+            .split("#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or_default();
+        let righe: Vec<&str> = codice
+            .split("nota!(")
+            .skip(1)
+            .map(|resto| resto.split(");").next().unwrap_or_default())
+            .collect();
+        assert!(
+            righe.len() >= 8,
+            "le righe del diario si trovano: {righe:?}"
+        );
+        for riga in righe {
+            for vietato in ["percorso", "{nuovo", "nuovo\n", "cima"] {
+                assert!(
+                    !riga.contains(vietato),
+                    "una riga del diario scrive «{vietato}»: nota!({riga})"
+                );
+            }
+        }
     }
 
     /// «Scollega» toglie i brani in cache del conto (il commento del comando

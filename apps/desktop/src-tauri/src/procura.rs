@@ -1029,11 +1029,14 @@ fn copertina(app: &AppHandle, desiderato: &Desiderato) -> Option<Vec<u8>> {
     let rete = rymembra_catalogo::rimandi_pubblici(
         app.try_state::<StatoProcura>()?.cataloghi.archivio().rete(),
     );
-    rete.preleva(url, &[], &mut byte, &|| false, &mut |_, _| {})
-        .ok()?;
     // Otto mebibyte, lo stesso limite che `tag_scrittura` applica quando la
     // incorpora: scaricarne di più vorrebbe dire buttarli via un passo dopo.
-    rymembra_net::immagine::plausibile(&byte, 8 * 1024 * 1024).then_some(byte)
+    // Il prelievo si ferma lì, prima di allocare oltre.
+    let massima: usize = 8 * 1024 * 1024;
+    let tetto = u64::try_from(massima).unwrap_or(u64::MAX);
+    rete.preleva(url, &[], &mut byte, tetto, &|| false, &mut |_, _| {})
+        .ok()?;
+    rymembra_net::immagine::plausibile(&byte, massima).then_some(byte)
 }
 
 // ── gli eventi ──────────────────────────────────────────────────────────────
