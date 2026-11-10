@@ -88,7 +88,8 @@ use rusqlite::Connection;
 
 use rymembra_domain::errors::AppError;
 use rymembra_domain::nuvola::{
-    Cambio, Servizio, TagNoti, VoceRemota, componi, da_togliere, interessa, segmento_libero,
+    Cambio, Servizio, TagNoti, VoceRemota, componi, da_togliere, e_virtuale, interessa,
+    segmento_libero,
 };
 use rymembra_domain::paths::{PathRules, is_under, path_key};
 
@@ -623,9 +624,11 @@ impl Specchio {
         }
         self.pota_con(conto, &cime, &mut toccate);
         if let Some(del_conto) = self.conti.get(conto) {
+            // Una cartella virtuale (`~condivisi` di Drive) il servizio non la
+            // conosce, e non si elenca: si elencano quelle che contiene.
             let entrate: HashSet<String> = prima
                 .iter()
-                .filter(|(id, dentro)| !**dentro && del_conto.sotto(id, &cime))
+                .filter(|(id, dentro)| !**dentro && !e_virtuale(id) && del_conto.sotto(id, &cime))
                 .map(|(id, _)| id.clone())
                 .collect();
             toccate.da_elencare.extend(
@@ -2631,6 +2634,25 @@ mod prove {
         assert!(toccate.da_elencare.is_empty(), "{toccate:?}");
         assert_eq!(ids_tolti(&toccate), ["1", "2", "K", "X"]);
         assert_eq!(specchio.percorso(CONTO, "1"), None);
+    }
+
+    #[test]
+    fn una_cartella_condivisa_nuova_si_elenca_lei_e_non_la_cartella_virtuale() {
+        // Scelto il drive intero di Google: una cartella appena condivisa
+        // arriva dai cambiamenti sotto `~condivisi`, che arriva con lei. La
+        // cartella virtuale non si elenca (Drive non la conosce, e il suo
+        // elenco è un errore): si elenca la cartella condivisa.
+        let mut specchio = Specchio::default();
+        specchio.metti(CONTO, albero());
+        specchio.aggiungi_radice(radice("nuvola://onedrive-abcdefgh", "R"));
+        let toccate = specchio.applica(
+            CONTO,
+            vec![
+                Cambio::Voce(cartella("~condivisi", Some("R"), "Shared with me")),
+                Cambio::Voce(cartella("S", Some("~condivisi"), "Musica di Marco")),
+            ],
+        );
+        assert_eq!(toccate.da_elencare.iter().collect::<Vec<_>>(), ["S"]);
     }
 
     #[test]

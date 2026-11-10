@@ -1079,14 +1079,22 @@ fn elenca_le_entrate(
 
 /// Elenca delle cartelle una dopo l'altra, con la stessa `pagina`: `Ok(false)`
 /// alla prima che non arriva in fondo.
+///
+/// Una cartella che nel frattempo non c'è più (tolta, o spostata dove
+/// l'identificativo è il percorso) si salta: non è un guasto del conto, i
+/// cambiamenti dopo ne porteranno l'uscita, e riaprire per lei tutte le
+/// radici sarebbe un rielenco completo per niente.
 fn elenca_cartelle(
     deposito: &dyn Deposito,
     cartelle: &BTreeSet<String>,
     pagina: &mut dyn FnMut(Vec<VoceRemota>) -> ControlFlow<()>,
 ) -> Result<bool, AppError> {
     for cartella in cartelle {
-        if !deposito.elenca(cartella, pagina)? {
-            return Ok(false);
+        match deposito.elenca(cartella, pagina) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(guasto) if guasto.code().kind() == ErrorCodeKind::CloudNotFound => {}
+            Err(guasto) => return Err(guasto),
         }
     }
     Ok(true)
@@ -2362,6 +2370,9 @@ mod prove {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(cima.to_owned());
+            if self.voce(cima).is_none() {
+                return Err(AppError::new(ErrorCode::CloudNotFound));
+            }
             let mut catena = Vec::new();
             let mut adesso = self.voce(cima);
             while let Some(voce) = adesso {
@@ -2472,6 +2483,32 @@ mod prove {
             specchio.percorso(conto, "b").as_deref(),
             Some("nuvola://onedrive-abcdefgh/Musica/Nuovo album/CD2/b.mp3")
         );
+    }
+
+    #[test]
+    fn una_cartella_entrata_e_gia_sparita_non_ferma_le_altre() {
+        // Fra il cambiamento e l'elenco la cartella è stata tolta (o, dove
+        // l'identificativo è il percorso, spostata): «non c'è» non è un guasto
+        // del conto, e i cambiamenti dopo ne porteranno l'uscita. Le altre si
+        // elencano, e le radici non si riaprono per questo.
+        let servizio = GraphFinto {
+            albero: vec![
+                voce("R", None, ""),
+                voce("M", Some("R"), "Musica"),
+                voce("X", Some("M"), "Nuovo album"),
+                voce("a", Some("X"), "a.mp3"),
+            ],
+            elencate: Mutex::new(Vec::new()),
+        };
+        let entrate: BTreeSet<String> = ["V", "X"].map(str::to_owned).into();
+        let mut arrivate = Vec::new();
+        let completo = elenca_cartelle(&servizio, &entrate, &mut |pagina| {
+            arrivate.extend(pagina.into_iter().map(|voce| voce.id));
+            ControlFlow::Continue(())
+        })
+        .expect("una cartella sparita non è un guasto");
+        assert!(completo);
+        assert!(arrivate.contains(&"a".to_owned()), "{arrivate:?}");
     }
 
     #[test]
