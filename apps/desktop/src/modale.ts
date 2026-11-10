@@ -122,6 +122,39 @@ export function nuovoVelo(): Velo {
   };
 }
 
+// ── una risposta sola ──────────────────────────────────────────────────────
+
+/**
+ * Il cancello di una domanda: `true` alla prima risposta, `false` a tutte le
+ * altre.
+ *
+ * # Perché il dialogo non si chiude abbastanza in fretta
+ *
+ * Perché le conferme di `App` si chiudono con `useStatoPresente`, che per
+ * animare l'uscita passa da `startTransition`: un aggiornamento che React può
+ * interrompere e rimandare — e sotto carico lo fa: ogni aggiornamento
+ * sincrono che arriva intanto, lo stato del lettore o una pagina
+ * dell'elenco, gli passa davanti. Finché non è applicato la
+ * finestrella resta montata, il suo tasto risponde, e la chiusura che il clic
+ * chiama vede ancora la domanda aperta: un doppio clic su «Togli», o Invio
+ * tenuto giù su «Nuova playlist», rifaceva il gesto — due `rimozioniConferma`
+ * sullo stesso gettone, due playlist con lo stesso nome. Chiudere in modo
+ * sincrono avrebbe tolto l'animazione per salvare un clic; la finestrella
+ * invece sa da sé che ha già avuto la sua risposta.
+ *
+ * Uno per apertura, creato quando la finestrella si monta: la domanda di dopo
+ * è un'altra domanda. E vale per tutte le uscite insieme — «Togli» seguito da
+ * Escape non deve mandare anche lo scarto dello stesso elenco.
+ */
+export function unaVolta(): () => boolean {
+  let data = false;
+  return () => {
+    if (data) return false;
+    data = true;
+    return true;
+  };
+}
+
 // ── il fuoco ───────────────────────────────────────────────────────────────
 
 /**

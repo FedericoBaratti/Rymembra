@@ -9,6 +9,7 @@ import {
   modaleAperto,
   nuovoVelo,
   passaLaScorciatoia,
+  unaVolta,
   type NodoDiAlbero,
 } from "../src/modale";
 
@@ -183,4 +184,26 @@ test("un velo dentro una pagina rende inerte anche il resto della pagina", () =>
   const inerti = daRendereInerti(velo).map((n) => n.nome);
   assert.deepEqual(inerti, ["albero", "fascia", "barra"]);
   assert.ok(!inerti.includes("dentro"), "un antenato del velo non si spegne");
+});
+
+// ── una risposta sola ──────────────────────────────────────────────────────
+
+test("una conferma risponde una volta sola", () => {
+  // «Nuova playlist» con Invio tenuto giù, o «Togli» con un doppio clic: la
+  // chiusura della finestrella passa da una transizione, e finché non è
+  // applicata il tasto resta vivo. Ogni clic rifaceva il gesto — due
+  // playlist uguali, due `rimozioniConferma` sullo stesso gettone.
+  const risponde = unaVolta();
+  assert.equal(risponde(), true, "la prima risposta passa");
+  assert.equal(risponde(), false, "la seconda no");
+  assert.equal(risponde(), false, "e nemmeno quelle dopo");
+});
+
+test("ogni finestrella ha la sua risposta", () => {
+  // Una per apertura: la domanda di dopo non eredita quella già data.
+  const prima = unaVolta();
+  const dopo = unaVolta();
+  assert.equal(prima(), true);
+  assert.equal(dopo(), true);
+  assert.equal(prima(), false);
 });

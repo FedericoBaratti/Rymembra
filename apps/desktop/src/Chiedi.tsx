@@ -10,6 +10,7 @@ import { useState } from "react";
 
 import { Dialogo } from "./Dialogo";
 import { t } from "./lingue";
+import { unaVolta } from "./modale";
 
 export function Chiedi({
   titolo,
@@ -32,14 +33,23 @@ export function Chiedi({
   // velo che non chiude a una selezione trascinata fuori: sta tutto in
   // `Dialogo`, che di questi comportamenti porta anche le ragioni.
   const vuoto = testo.trim().length === 0;
+  // Una risposta sola, qualunque sia: la finestrella resta montata finché la
+  // sua chiusura non è applicata, e Invio tenuto giù su «Nuova playlist» ne
+  // creava una a ogni ripetizione. Vedi `unaVolta` in `modale.ts`.
+  const [prima] = useState(unaVolta);
+  const chiudi = () => {
+    if (prima()) onChiudi();
+  };
 
   return (
     <Dialogo
       titolo={titolo}
       classe="finestrella stretta glass-modal"
-      onChiudi={onChiudi}
+      onChiudi={chiudi}
       onInvia={() => {
-        if (vuoto) return;
+        // Il campo vuoto prima del cancello: un Invio che non risponde non
+        // consuma la risposta.
+        if (vuoto || !prima()) return;
         onRispondi(testo.trim());
       }}
     >
@@ -53,7 +63,7 @@ export function Chiedi({
         />
       </label>
       <div className="tasti-finestrella">
-        <button type="button" className="bottone" onClick={onChiudi}>
+        <button type="button" className="bottone" onClick={chiudi}>
           {t("common.cancel")}
         </button>
         <button type="submit" className="bottone primario" disabled={vuoto}>
