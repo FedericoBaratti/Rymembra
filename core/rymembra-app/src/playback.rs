@@ -154,10 +154,17 @@ pub fn record_play(
     // `play_count` non si incrementa più qui: lo ricalcola `conta_ascolto` come
     // somma dei contatori, subito sotto e nella stessa transazione. Farlo in due
     // posti darebbe due volte lo stesso ascolto.
+    //
+    // I due orologi non tornano mai indietro: un ascolto fatto lunedì su un
+    // altro dispositivo e arrivato giovedì conta, e va in cronologia col suo
+    // orario, ma non fa dire «ascoltato lunedì» a un brano suonato mercoledì —
+    // né fa perdere a questa riga, in `merge_stats`, il voto contro una copia
+    // più vecchia. `COALESCE` perché il `MAX` di SQLite con un NULL è NULL: il
+    // primo ascolto di un brano non scriverebbe niente.
     tx.execute(
         "UPDATE tracks
-            SET last_played_at = ?2,
-                stats_updated_at = ?2
+            SET last_played_at = MAX(COALESCE(last_played_at, ?2), ?2),
+                stats_updated_at = MAX(COALESCE(stats_updated_at, ?2), ?2)
           WHERE id = ?1",
         rusqlite::params![ascolto.track_id, ascolto.started_at],
     )

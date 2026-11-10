@@ -489,6 +489,32 @@ pub fn ascolto_nuovo(
     Ok(inseriti > 0)
 }
 
+/// Quanti ascolti di `dispositivo` sono stati ricevuti da `dal_ms` in poi.
+///
+/// Le chiavi degli ascolti ricevuti cominciano con la chiave pubblica di chi
+/// li ha mandati e `:` (le compone chi li riceve): il conto è un intervallo
+/// della chiave primaria, `[<chiave>:, <chiave>;)`.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ricevuti_da(
+    connection: &Connection,
+    dispositivo: &str,
+    dal_ms: i64,
+) -> Result<usize, AppError> {
+    let chiave = dispositivo.trim().to_ascii_lowercase();
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM dispositivi_ricevuti
+              WHERE chiave >= ?1 AND chiave < ?2 AND ricevuto_ms >= ?3",
+            rusqlite::params![format!("{chiave}:"), format!("{chiave};"), dal_ms],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|quanti| usize::try_from(quanti).unwrap_or(usize::MAX))
+        .map_err(|err| db_error("ascolti ricevuti da un dispositivo", &err))
+}
+
 /// Un ascolto ricevuto che non si è potuto contare: la sua chiave non lo
 /// deve dire contato, o il prossimo invio lo scarterebbe.
 ///
@@ -675,5 +701,24 @@ mod prove {
             ascolto_nuovo(c, "k1", 1_000 + MEMORIA_RICEVUTI_MS + 1).unwrap(),
             "dopo un mese la chiave si dimentica"
         );
+    }
+
+    #[test]
+    fn gli_ascolti_ricevuti_si_contano_per_dispositivo() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let uno = "1a".repeat(32);
+        let altro = "1b".repeat(32);
+        for (chiave, quando) in [
+            (format!("{uno}:a"), 100),
+            (format!("{uno}:b"), 200),
+            (format!("{altro}:a"), 200),
+        ] {
+            assert!(ascolto_nuovo(c, &chiave, quando).unwrap());
+        }
+        assert_eq!(ricevuti_da(c, &uno.to_ascii_uppercase(), 0).unwrap(), 2);
+        assert_eq!(ricevuti_da(c, &uno, 150).unwrap(), 1, "solo da allora");
+        assert_eq!(ricevuti_da(c, &altro, 0).unwrap(), 1);
+        assert_eq!(ricevuti_da(c, &"1c".repeat(32), 0).unwrap(), 0);
     }
 }

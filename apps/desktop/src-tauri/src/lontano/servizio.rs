@@ -11,6 +11,10 @@
 //! volta sola, anche se l'ascolto arriva due volte (la sua chiave lo rende
 //! innocuo). Si intesta a questo dispositivo, come un ascolto fatto qui: per
 //! la sincronia è un ascolto della sua libreria.
+//!
+//! Quel che manda l'altro non si prende sulla parola: l'inizio non è mai dopo
+//! adesso, se l'ascolto conta lo dice la durata del brano di qui, e da ogni
+//! dispositivo se ne contano al più [`ASCOLTI_ALL_ORA`] all'ora.
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -21,7 +25,7 @@ use rymembra_app::library::TrackOrder;
 use rymembra_app::library::condivisa::{self, FileCondiviso};
 use rymembra_app::playback;
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
-use rymembra_domain::listen::Listen;
+use rymembra_domain::listen::{Listen, counts_as_play};
 use rymembra_lontano::protocollo::{MASSIMA_PAGINA, MASSIMO_PEZZO};
 use rymembra_lontano::{Domanda, Risposta};
 use tauri::{AppHandle, Manager as _};
@@ -206,6 +210,28 @@ fn leggi(app: &AppHandle, brano: i64, da: u64, quanti: u64) -> Result<Risposta, 
     })
 }
 
+/// Al più tanti ascolti ricevuti all'ora da ogni dispositivo: contro un
+/// dispositivo collegato che ne inventa (ogni chiave nuova varrebbe un
+/// ascolto, e uno scrobble sull'account di chi ascolta qui).
+///
+/// Un'ora di musica vera ne fa al più qualche decina; il resto del margine è
+/// per chi torna dopo giorni senza rete con gli ascolti in fila. Oltre, chi
+/// li manda sente `lontano.irraggiungibile`, li tiene e riprova al giro dopo:
+/// una fila lunga arriva in qualche ora, e non si perde.
+const ASCOLTI_ALL_ORA: usize = 120;
+
+/// L'ora di [`ASCOLTI_ALL_ORA`].
+const UN_ORA_MS: i64 = 60 * 60 * 1000;
+
+/// Un ascolto fatto altrove di un brano di qui, come arriva.
+#[derive(Debug, Clone, Copy)]
+struct Arrivato<'a> {
+    brano: i64,
+    quando_ms: i64,
+    ascoltato_ms: i64,
+    chiave: &'a str,
+}
+
 /// Un ascolto fatto altrove di un brano di qui: si conta qui, una volta.
 fn ascoltato(
     app: &AppHandle,
@@ -215,46 +241,186 @@ fn ascoltato(
     ascoltato_ms: i64,
     chiave: &str,
 ) -> Result<Risposta, AppError> {
-    // La chiave è di chi ascolta: con la sua chiave davanti, due dispositivi
-    // non si pestano i piedi.
-    let chiave = format!("{da}:{}", chiave.chars().take(64).collect::<String>());
-    let ascolto = Listen {
-        track_id: brano,
-        started_at: quando_ms,
-        listened_ms: u64::try_from(ascoltato_ms).unwrap_or(0),
-        counts: true,
+    let arrivato = Arrivato {
+        brano,
+        quando_ms,
+        ascoltato_ms,
+        chiave,
     };
     let stato = app.try_state::<Stato>().ok_or_else(|| {
         AppError::new(ErrorCode::InternalAborted {
             what: Some("lontano".to_owned()),
         })
     })?;
-    let scritto = crate::stato::con_libreria_entro(&stato, ATTESA_LETTURA, |libreria| {
+    let contato = crate::stato::con_libreria_entro(&stato, ATTESA_LETTURA, |libreria| {
         let c = &mut libreria.connection;
-        // Un brano che non c'è più: l'ascolto non ha dove contarsi, e chi
-        // l'ha mandato lo può dimenticare.
-        if condivisa::brano(c, brano)?.is_none() {
-            return Ok(false);
-        }
-        if !dispositivi::ascolto_nuovo(c, &chiave, adesso_ms())? {
-            return Ok(false);
-        }
         let dispositivo = crate::nuvola::dispositivo(c)?;
-        match playback::record_play(c, &ascolto, &dispositivo) {
-            Ok(contato) => Ok(contato),
-            Err(err) => {
-                // Non contato: la chiave non lo deve dire contato.
-                let _ = dispositivi::ascolto_da_ricontare(c, &chiave);
-                Err(err)
-            }
-        }
+        conta_l_ascolto(c, da, &arrivato, &dispositivo, adesso_ms())
     })
     .unwrap_or_else(|| {
         Err(AppError::new(ErrorCode::LontanoIrraggiungibile).with_cause("la libreria è occupata"))
     })?;
-    if scritto {
+    if let Some(ascolto) = contato {
         crate::nuvola::sporca(app);
         crate::scrobble::dopo_un_ascolto(app, &ascolto);
     }
     Ok(Risposta::Fatto)
+}
+
+/// Il cuore di [`ascoltato`], sulla libreria: l'ascolto contato (da mandare
+/// allo scrobble), o `None` se non c'era niente da contare. `dispositivo` è
+/// l'identificativo di questa macchina, a cui l'ascolto s'intesta.
+fn conta_l_ascolto(
+    c: &mut rusqlite::Connection,
+    da: &str,
+    arrivato: &Arrivato<'_>,
+    dispositivo: &str,
+    adesso: i64,
+) -> Result<Option<Listen>, AppError> {
+    // La chiave è di chi ascolta: con la sua chiave davanti, due dispositivi
+    // non si pestano i piedi.
+    let chiave = format!(
+        "{da}:{}",
+        arrivato.chiave.chars().take(64).collect::<String>()
+    );
+    // Un brano che non c'è più: l'ascolto non ha dove contarsi, e chi
+    // l'ha mandato lo può dimenticare.
+    let Some(brano) = condivisa::brano(c, arrivato.brano)? else {
+        return Ok(None);
+    };
+    // Il tetto prima di segnare la chiave: un ascolto fermato qui resta in
+    // fila dall'altra parte e torna, e non deve trovarsi già «ricevuto».
+    if dispositivi::ricevuti_da(c, da, adesso.saturating_sub(UN_ORA_MS))? >= ASCOLTI_ALL_ORA {
+        return Err(AppError::new(ErrorCode::LontanoIrraggiungibile)
+            .with_cause("troppi ascolti da questo dispositivo nell'ultima ora"));
+    }
+    if !dispositivi::ascolto_nuovo(c, &chiave, adesso)? {
+        return Ok(None);
+    }
+    let ascoltato = u64::try_from(arrivato.ascoltato_ms).unwrap_or(0);
+    let ascolto = Listen {
+        track_id: arrivato.brano,
+        // Un ascolto non comincia dopo adesso: un orologio avanti lo
+        // metterebbe nel futuro, e `record_play` non lascia tornare indietro
+        // «ultimo ascolto» e l'orologio delle statistiche.
+        started_at: arrivato.quando_ms.min(adesso),
+        listened_ms: ascoltato,
+        // Conta con la regola e la durata di qui, non sulla parola dell'altro.
+        counts: counts_as_play(ascoltato, u64::try_from(brano.duration_ms).unwrap_or(0)),
+    };
+    match playback::record_play(c, &ascolto, dispositivo) {
+        Ok(true) => Ok(Some(ascolto)),
+        Ok(false) => Ok(None),
+        Err(err) => {
+            // Non contato: la chiave non lo deve dire contato.
+            let _ = dispositivi::ascolto_da_ricontare(c, &chiave);
+            Err(err)
+        }
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// Martedì 10 novembre 2026, più o meno.
+    const ADESSO: i64 = 1_794_312_000_000;
+
+    fn da() -> String {
+        "ab".repeat(32)
+    }
+
+    /// Una libreria con un brano condiviso di tre minuti, il numero 1.
+    fn libreria() -> rusqlite::Connection {
+        let c = rymembra_app::db::open_in_memory()
+            .expect("database in memoria")
+            .connection;
+        c.execute(
+            "INSERT INTO tracks
+                 (id, path, track_key, title, artist, album, duration_ms,
+                  file_size, date_added, date_modified)
+             VALUES (1, 'C:/m/1.mp3', 'k1', 'T', 'A', 'Al', 180000, 1000, 0, 0)",
+            [],
+        )
+        .expect("brano");
+        c
+    }
+
+    fn arrivato(chiave: &str, quando_ms: i64) -> Arrivato<'_> {
+        Arrivato {
+            brano: 1,
+            quando_ms,
+            ascoltato_ms: 120_000,
+            chiave,
+        }
+    }
+
+    fn orologi(c: &rusqlite::Connection) -> (Option<i64>, Option<i64>, i64) {
+        c.query_row(
+            "SELECT last_played_at, stats_updated_at, play_count FROM tracks WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("orologi")
+    }
+
+    #[test]
+    fn un_ascolto_dal_futuro_si_conta_adesso() {
+        // Un telefono con l'orologio avanti di un anno: l'ascolto conta, ma
+        // non fissa «ultimo ascolto» e l'orologio delle statistiche nel
+        // futuro, dove nessun ascolto vero li raggiungerebbe più.
+        let mut c = libreria();
+        let fra_un_anno = ADESSO + 365 * 24 * 3600 * 1000;
+        let contato = conta_l_ascolto(&mut c, &da(), &arrivato("k", fra_un_anno), "qui", ADESSO)
+            .expect("contato")
+            .expect("un ascolto");
+        assert_eq!(contato.started_at, ADESSO);
+        assert_eq!(orologi(&c), (Some(ADESSO), Some(ADESSO), 1));
+    }
+
+    #[test]
+    fn un_ascolto_troppo_breve_non_conta() {
+        // Chi lo manda dice «conta»; qui si guarda la durata del brano di qui.
+        let mut c = libreria();
+        let mut breve = arrivato("k", ADESSO - 1000);
+        breve.ascoltato_ms = 1;
+        assert_eq!(
+            conta_l_ascolto(&mut c, &da(), &breve, "qui", ADESSO).expect("risposto"),
+            None
+        );
+        assert_eq!(orologi(&c).2, 0);
+    }
+
+    #[test]
+    fn un_dispositivo_non_conta_piu_di_tanti_ascolti_all_ora() {
+        let mut c = libreria();
+        let chiavi: Vec<String> = (0..=ASCOLTI_ALL_ORA).map(|n| format!("k{n}")).collect();
+        // Ognuno col suo inizio: la cronologia non ne vuole due nello stesso
+        // millisecondo per lo stesso brano.
+        let inizio = |n: usize| ADESSO - 1000 * (i64::try_from(n).unwrap() + 1);
+        for (n, chiave) in chiavi.iter().take(ASCOLTI_ALL_ORA).enumerate() {
+            conta_l_ascolto(&mut c, &da(), &arrivato(chiave, inizio(n)), "qui", ADESSO)
+                .expect("contato")
+                .expect("un ascolto");
+        }
+        let oltre = arrivato(&chiavi[ASCOLTI_ALL_ORA], inizio(ASCOLTI_ALL_ORA));
+        let err = conta_l_ascolto(&mut c, &da(), &oltre, "qui", ADESSO).unwrap_err();
+        assert_eq!(err.code().kind(), ErrorCodeKind::LontanoIrraggiungibile);
+        assert_eq!(orologi(&c).2, i64::try_from(ASCOLTI_ALL_ORA).unwrap());
+        // Un altro dispositivo ha il suo conto.
+        let altro = "cd".repeat(32);
+        assert!(
+            conta_l_ascolto(&mut c, &altro, &arrivato("k0", ADESSO - 500), "qui", ADESSO)
+                .expect("contato")
+                .is_some()
+        );
+        // Chi è stato fermato lo tiene in fila e lo rimanda: passata l'ora
+        // conta, perché il rifiuto non l'aveva segnato come ricevuto.
+        let dopo = ADESSO + UN_ORA_MS + 1;
+        assert!(
+            conta_l_ascolto(&mut c, &da(), &oltre, "qui", dopo)
+                .expect("contato")
+                .is_some()
+        );
+    }
 }
