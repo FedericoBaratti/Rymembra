@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 9 November 2026.
+Last updated: 10 November 2026.
 
 **Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Rymembra server. There is no account to create. There is
@@ -36,9 +36,10 @@ Everything Rymembra knows about you:
 - **The PCs you paired** for «Listen together», if any: their public key and
   the name they had, in the same database (§ 4-ter).
 - **The cloud accounts you connected** for music folders, if any: the name
-  shown, the list of the chosen folders' files, and the cursor of each
-  service's change feed, in the same database; their tokens and passwords in
-  the keychain; the tracks you played, up to the cache's ceiling, in the local
+  shown, the list of the chosen folders' files — with the folders above them
+  that make up their paths, and nothing else of the drive — and the cursor of
+  each service's change feed, in the same database; their tokens and passwords
+  in the keychain; the tracks you played, up to the cache's ceiling, in the local
   application data folder (§ 4-quater).
 - **The apps you registered** with Microsoft, Google and Dropbox, if any, so
   that Rymembra can reach your OneDrive, your Drive and your Dropbox: the name
@@ -107,6 +108,15 @@ recognised by Android, not by Rymembra, which receives only the words. Nothing
 of this goes through a server of Rymembra's, which has none; what the Android
 Auto app does with what it shows is in Google's privacy statement.
 
+**No other app on the phone can browse the library.** Android's media session
+is open only to Rymembra itself, to the system — the notification, the lock
+screen, quick settings, Bluetooth, and an app you allowed to read your
+notifications, such as a watch's — to Android Auto, recognised by its package
+and by Google's certificate, and to the media centre of a car that runs
+Android. Any other app is turned away: it cannot browse the library, the
+history or the playlists, see what is playing, control playback or change
+favourites.
+
 **The covers** are served to the system — the car, the lock screen, the
 playback-resumption card — by a read-only content provider that any app on
 the phone could ask: Android Auto and SystemUI cannot read a file in
@@ -138,10 +148,24 @@ the program refuses before opening any connection. That isn't generic caution,
 it's the rule that keeps Rymembra inside the terms of the people who give it the
 music.
 
+Reading a link shows a preview with the cover of what it points to. Rymembra
+downloads that picture from the address the catalog's answer gives — an
+`archive.org` address, or for Audius an image host of its network, run by
+third parties — following its redirects, and hands it to the window already
+downloaded.
+
+When the download queue fetches a track whose file was already chosen — one
+imported from a link, or kept with «Keep a copy» from «Explore» — it first
+reads that item's page again (`archive.org/metadata/<identifier>`), or that
+Audius track (`/v1/tracks/<identifier>`), to know its license, its permission
+and its page as they are today. It is one more request, carrying the
+identifier and nothing of yours.
+
 Rymembra identifies itself with the same `User-Agent` in every request of its
 HTTP client — every web request in this document but the computer's update
 check, which on purpose carries none naming Rymembra (§ 6; on Android the check
-goes through this client, and carries it):
+goes through this client, and carries it), and the device link's, which iroh
+makes without one (§ 4-quinquies):
 `Rymembra/<version> (+https://github.com/federicobaratti/rymembra)`, where
 `<version>` is the program's, e.g. `Rymembra/3.2.0`, the same for every copy
 of that version. It doesn't disguise itself as a browser and it can't: the
@@ -157,10 +181,16 @@ Automatic enrichment **can be switched off** in Settings › Metadata.
 
 | Host | What reaches it | Rate |
 | --- | --- | --- |
-| `musicbrainz.org` | Artist, album and track durations of a record you're trying to identify | One request every 1.1 s |
-| `coverartarchive.org` | The MusicBrainz identifier of a record | One every 250 ms |
-| `itunes.apple.com`, `is1.mzstatic.com` | Artist and title, for the cover | One every 350 ms |
+| `musicbrainz.org` | The title, the artist and the number of tracks of an album you're trying to identify; for a single track, its title and artist (or the title alone); then the MusicBrainz identifier of each candidate record, to read it | One request every 1.1 s |
+| `coverartarchive.org`, and `archive.org` where it redirects | The MusicBrainz identifier of a record | One every 250 ms |
+| `itunes.apple.com` | Artist and title, for the cover | One every 3.1 s |
 | `api.deezer.com` | Artist and title, for the cover | One every 220 ms |
+| Apple's and Deezer's image servers (`*.mzstatic.com`, `*.dzcdn.net`) | The request for the cover that iTunes or Deezer pointed to | One every 250 ms |
+
+The cover of the service whose answer wins is downloaded from the address in
+that answer, following its redirects; Rymembra checks only that it is an
+`https` address. The Cover Art Archive answers every cover with a redirect to
+the Internet Archive, which serves the image.
 
 None of these receives an identifier belonging to you: there's no API key,
 there's no cookie, there's no session. They see an IP address and a search
@@ -182,7 +212,7 @@ When there's neither, it asks LRCLIB.
 
 | Host | What reaches it | Rate |
 | --- | --- | --- |
-| `lrclib.net` | Artist, title, album and duration of the track | One every 250 ms |
+| `lrclib.net` | Artist, title, album and duration of the track; for a track with no artist, its title alone, in a free search (`/api/search?q=`) | One every 250 ms |
 
 It's worth being precise about **when** it starts, because that's the part that
 matters:
@@ -343,8 +373,9 @@ case — see the rewritten point in § 7.
   is sent once: later turns do not send it again;
 - **your API key**, in the `Authorization` header, because that is how the
   service knows who is asking;
-- two courtesy headers naming the application (`Rymembra`, and this repository's
-  address), the same information the `User-Agent` already carries.
+- to OpenRouter only, two courtesy headers naming the application (`Rymembra`,
+  and this repository's address), the same information the `User-Agent`
+  already carries.
 
 **What does not go, ever.** No track, no album, no artist, no playlist, no
 listening history, no play count, no file name, no path, no identifier of you or
@@ -370,6 +401,13 @@ request and drops it afterwards.
 **A whole conversation is one request per turn.** There is no background thread,
 nothing periodic, and nothing that starts on its own — every request is one you
 made by pressing Send. Closing the window stops a generation in progress.
+
+The one other request is the list of models. Saving a profile in Settings › AI
+Models, and pressing «Test and read the models» there, ask the service for the
+models it offers (`GET …/models`): it is the connection test, and it fills the
+model menu. It carries your API key, if the profile has one, and for
+OpenRouter the two courtesy headers — nothing of the Studio, the chat or the
+skin.
 
 **Choosing a provider is choosing a privacy policy.** Rymembra can tell you what
 it sends; it cannot tell you what the other end keeps. OpenRouter routes your
@@ -421,7 +459,7 @@ has none of its own — and the consent you give is to that app (§ 4-quater,
 | Host | When | What reaches it |
 | --- | --- | --- |
 | `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Rymembra's window, with your app's ID |
-| `oauth2.googleapis.com` | On connecting and on renewals | The token exchange |
+| `oauth2.googleapis.com` | On connecting, on renewals, and on disconnecting | The token exchange; on disconnecting, the refresh token, to revoke the consent (see below) |
 | `www.googleapis.com` | On every backup | The backup document |
 
 The backup contains your **library**: tracks, playlists, ratings, history. Not
@@ -433,10 +471,18 @@ under the new name is kept; the rename is one more request to Google Drive, of
 the same kind as the backup itself.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
-account deletes it, and leaves your app registered; what has already been
-uploaded stays on your Drive until you delete it yourself.
+account first sends it to Google's revocation address, which withdraws the
+consent you gave your app, and then deletes it; your app stays registered.
+When a Google Drive music folder (§ 4-quater) goes through the same app,
+nothing is revoked — Google would withdraw that folder's access too — and the
+token is only deleted. What has already been uploaded stays on your Drive
+until you delete it yourself.
 
 The alternative that touches no network exists: syncing to a shared folder.
+A sync document written by another PC can add watched folders here, but never
+one on a network host (`\\host\…`) that this PC does not already use for its
+watched folders or its downloads, so a sync document cannot make this PC open
+a connection to a host of someone else's choosing.
 
 ---
 
@@ -481,8 +527,14 @@ What is **not** inside, and cannot be:
 
 Importing one **adds and never removes**: listens are summed, playlists merged,
 covers and skins written only where none exist, and a lyric you synced by hand
-is never overwritten. Before writing anything, Rymembra saves what your computer
-looks like right now to `<data folder>\profilo\prima-<timestamp>.ryprofile`,
+is never overwritten. It never deletes a playlist, switches off a watched
+folder, removes a like or clears a rating, and a date from the future becomes
+the moment of the import. While it prepares the plan, Rymembra checks on the
+disk only the folders the profile names on a drive letter or on a network host
+this computer already uses; any other is listed as missing and proposed for
+remapping without being looked up, and the scan reaches it only if you keep it
+as it is. Before writing anything, Rymembra saves what your computer looks like
+right now to `<data folder>\profilo\prima-<timestamp>.ryprofile`,
 keeping the last three. That backup restores your settings — not the merged
 history, which is additive and has no undo, and which the interface says so
 rather than promising a return that does not exist.
@@ -630,6 +682,7 @@ service you have not connected.
 | OneDrive's download servers (`*.1drv.com`, `*.sharepoint.com`…) | Every track you play, or whose tags are read | Range requests on the pre-authenticated address Graph gives for that file |
 | `accounts.google.com`, `oauth2.googleapis.com` | Connecting Google Drive, and on renewals | As for the backup, with the `drive.readonly` scope |
 | `www.googleapis.com` | Browsing, listing, change checks, tracks | As for OneDrive |
+| Google's content servers (`*.googleusercontent.com`) | Every track you play, or whose tags are read, when Drive redirects the bytes there | Range requests on the address Drive redirects to; the token does not follow the redirect |
 | `www.dropbox.com`, `api.dropboxapi.com` | Connecting Dropbox, renewals, browsing, listing, temporary links | As for OneDrive |
 | `notify.dropboxapi.com` | Waiting for changes | Only the change cursor: no token |
 | Dropbox's content servers (`*.dl.dropboxusercontent.com`) | Every track you play, or whose tags are read | Range requests on a four-hour temporary link |
@@ -645,6 +698,15 @@ The tracks' tags are read from the service in the background, a few hundred
 kilobytes per track, from the beginning and the end of each file. That is the
 one piece of traffic you did not start by pressing play, and it happens once
 per file (again only if the file changes).
+
+**What is kept of the drive.** The change feeds of OneDrive, Google Drive and
+Dropbox report changes anywhere on the drive. Rymembra keeps in its database
+only the folders you chose, what is under them and the folders above them that
+make up their paths; the other changes are dropped. Rows that an earlier
+version kept from elsewhere on the drive, and those of a folder you removed
+from the library, are deleted at the account's next pass. The tracks of a
+removed folder stay in the library, but do not open until you choose the
+folder again.
 
 **Secrets.** The refresh token of each account, the WebDAV password and the
 client secret of a Google app live in the operating system's keychain, never in
@@ -706,11 +768,12 @@ its name on the network.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `dns.iroh.link` (n0) | While the feature is on: when the device starts, and again when its addresses change | Your device's **public key** and its **home relay**, signed with its key (a pkarr record); and, to find a linked device, a lookup of that device's public key |
-| The BitTorrent «mainline» DHT — a network of strangers' computers, joined through `router.bittorrent.com`, `dht.transmissionbt.com`, `dht.libtorrent.org` and `relay.pkarr.org` | The same | The same record, as a second place to find each other that no single company runs |
-| n0's public relays (`use1-1`, `usw1-1`, `euc1-1`, `aps1-1` `.relay.n0.iroh.link`), or the relay you typed in *Settings › Devices › Relay* | While the feature is on | A connection from your device, which tells the relay your **public key** and **IP address**. When two devices cannot reach each other directly — both behind a mobile operator's NAT, for instance — their traffic passes through it: the relay sees the two keys, the two addresses, when and how much, and **only encrypted bytes**. It is also how a device learns its own public address |
+| `dns.iroh.link` (n0) | While the feature is on and the device awake: when it starts, when its addresses change, and every five minutes even if nothing changed | Your device's **public key** and its **home relay**, signed with its key (a pkarr record); and, to find a linked device, a lookup of that device's public key, over HTTPS |
+| Your network's DNS servers | While the feature is on | The names of the relays and of `dns.iroh.link`, and, to find a linked device, `_iroh.<its public key>.dns.iroh.link` — **in the clear**, as every DNS question (see below) |
+| The BitTorrent «mainline» DHT — a network of strangers' computers, joined through `router.bittorrent.com`, `dht.transmissionbt.com`, `dht.libtorrent.org` and `relay.pkarr.org` | The same; the record again every hour | The same record, as a second place to find each other that no single company runs. As any node of that network does, a device reachable from the internet can, after a while, start answering other nodes' requests and keeping their records |
+| n0's public relays (`use1-1`, `usw1-1`, `euc1-1`, `aps1-1` `.relay.n0.iroh.link`), or the relay you typed in *Settings › Devices › Relay* | While the feature is on | A connection from your device, which tells the relay your **public key** and **IP address**, and the HTTPS probes with which a device finds the nearest relay. When two devices cannot reach each other directly — both behind a mobile operator's NAT, for instance — their traffic passes through it: the relay sees the two keys, the two addresses, when and how much, and **only encrypted bytes**. It is also how a device learns its own public address |
 | Your router (UPnP, NAT-PMP, PCP) | While the feature is on | A request to open a port towards this device, so the other can reach it directly |
-| Your local network (mDNS) | While the feature is on, and on Android 17 only with the «Nearby devices» permission | This device's public key, so a linked device at home finds it without going out |
+| Your local network (mDNS) | While the feature is on, and on Android 17 only with the «Nearby devices» permission | This device's public key and its addresses on your network, so a linked device at home finds it without going out |
 | The linked device | See below | See below |
 
 n0's relays and DNS server are a free public service, with limits and without
@@ -718,17 +781,31 @@ guarantees; what n0 does with what it sees is in n0's privacy statement. A
 relay you run yourself (`iroh-relay`) sees the same and keeps it at home. The
 public key published in the DNS and in the DHT says nothing about you by
 itself, but it is the same every day: whoever knows it can tell when your
-device is on.
+device is on, and n0 sees it come back every five minutes while it is.
+
+**Which DNS servers.** Only the system's: on Android those of the active
+network, on Windows those of the network adapters. Android's Private DNS and
+the DNS over HTTPS of Windows are not used, so the questions travel
+unencrypted to your network's servers, and whoever runs them — your router,
+your operator, a hotel's network — can see the public key of the linked
+device being looked for. If those servers do not answer, nothing else is
+asked: there is no fallback to Cloudflare, Google, Quad9 or any other public
+resolver.
 
 ### Linking
 
 The QR code carries a link, `rymembra://collega/…`: the public key of the
 device showing it, a random 16-byte token, up to four of its direct
-addresses — which can include addresses on your home network — and the
-custom relay, if you set one. Anyone who reads the code can ask to link, for
-ten minutes and once; **the device showing it asks you to allow it**, naming
-the other («“Nothing Phone” wants to link»), and nothing is linked without
-that yes. When the link is made, the two devices tell each other their
+addresses — which can include addresses on your home network — the custom
+relay, if you set one, and the **name** of the device showing it, so whoever
+reads the code or receives the link reads that name too. Before asking to
+link, the device that read it shows that name and a short fingerprint of the
+other's key, to compare with the one shown next to the QR code. Anyone who
+reads the code can ask to link, for ten minutes and once; **the device showing
+it asks you to allow it**, naming the other («“Nothing Phone” wants to link»),
+and nothing is linked without that yes. Neither showing a code nor opening a
+link turns «Reachable from the internet» on by itself: if it is off, Rymembra
+asks first. When the link is made, the two devices tell each other their
 **name**, their platform, the id each uses for sync, and the public key of
 «Listen together»; each writes the other in the `dispositivi` table of its
 own library. «Forget» removes it there and tells the other device, which
@@ -780,8 +857,9 @@ between packets with the screen off.
 ### The log
 
 As for everything else (§ 8): error codes, counts, durations, the platform of
-a device that linked, and whether a request was allowed. Never a key, an
-address, a device name, a title or a token.
+a device that linked — as it declared it, cut to 16 letters and digits — and
+whether a request was allowed. Never a key, an address, a device name, a title
+or a token.
 
 ---
 
@@ -810,7 +888,7 @@ makes. § 7 lists them all.
 | Host | When | What reaches it |
 | --- | --- | --- |
 | `github.com` | Ten seconds after the window is ready, then every thirty minutes; after a failure for lack of network, again after one, five and fifteen minutes | Nothing: a GET to a public file |
-| `objects.githubusercontent.com` | Only if you press «Update» | The request for the installer file |
+| The GitHub file host that `github.com` redirects to (today `release-assets.githubusercontent.com`) | At every check, because `latest.json` is a release file and GitHub serves it from there; and if you press «Update», for the installer | The same GET, following GitHub's redirect; then the request for the installer file |
 
 **One check at every start, but not one per click.** Until 2.4 the startup check
 was skipped when the last successful one was less than half an hour old, which
@@ -830,7 +908,9 @@ counter, no information about your library. Not even the version you have
 installed travels: the comparison is done by the program on your computer, after
 reading the file. The request doesn't even carry a `User-Agent` naming Rymembra,
 and that is deliberate rather than forgotten — the code says so where the request
-is built. What GitHub can infer is that somebody, from a certain IP address,
+is built. What it carries is the one of the library that makes it, Tauri's
+updater, with that library's version: `tauri-plugin-updater/2.13.0` in this
+release. What GitHub can infer is that somebody, from a certain IP address,
 asked for a public file — exactly what it would know about anyone opening that
 page with a browser.
 
@@ -877,7 +957,7 @@ API for the latest release of the same project instead of `latest.json`:
 | Host | When | What reaches it |
 | --- | --- | --- |
 | `api.github.com` | Ten seconds after the app is ready, if the last successful check is more than six hours old, then every six hours while the app stays alive; after a failure for lack of network, again after one, five and fifteen minutes | A GET to the public description of the latest release, with Rymembra's `User-Agent` |
-| `github.com`, and the GitHub file host it redirects to | Only if you press «Update» | The request for the APK file |
+| `github.com`, and the GitHub file host it redirects to (`release-assets.githubusercontent.com` or `objects.githubusercontent.com`; no other host is followed) | Only if you press «Update» | The request for the APK file |
 
 Two things differ from the computer, and both are written here so that the
 section above stays true for it. The request goes through Rymembra's HTTP
@@ -885,9 +965,16 @@ client, so it carries the `User-Agent` of every other request,
 `Rymembra/<version> (+https://github.com/federicobaratti/rymembra)`: GitHub
 learns which version is asking. GitHub's API refuses requests without a
 `User-Agent`, and that string is a constant for the reason given in § 1. And
-the APK is not checked against Rymembra's key: Android does that, more
-strictly — it installs an APK **over** Rymembra only if it is signed with the
-same key as the one already installed, and refuses it otherwise.
+the APK is not checked against a key compiled into Rymembra, but against the
+app already installed. It is offered only if it is an asset of the project's
+GitHub release, and downloaded over `https` following redirects only to
+`github.com` and the two file hosts in the table. Before Android's installer
+sees it, Rymembra opens it and refuses it — deleting it, and saying so in the
+update banner — unless
+it is this same app (the same package) signed with the same certificate as
+the installed Rymembra, or with a key that proves it rotated from it. Then
+Android checks again: it installs an APK **over** Rymembra only if it is
+signed with the same key as the one already installed.
 
 The APK is downloaded into the app's cache and handed to Android's installer,
 which asks you to confirm; the first time, Android also asks you to allow
@@ -909,10 +996,10 @@ check off.
   go on talking to their own servers, and with «Listen together» switched on,
   looking for hosts on your own network starts with the program (§ 4-ter).
   With «Reachable from the internet» on, the device link starts too: its
-  record in n0's DNS and in the DHT, a connection to a relay, and one to each
-  linked device (§ 4-quinquies). There's no other ping, and nothing goes out
-  on closing, except telling the PCs of a «Listen together» session that you
-  left.
+  record in n0's DNS (again every five minutes) and in the DHT, a connection
+  to a relay, and one to each linked device (§ 4-quinquies). There's no other
+  ping, and nothing goes out on closing, except telling the PCs of a «Listen
+  together» session that you left.
 - **Nothing in the clear leaves for the internet.** The HTTP client refuses
   `http://` by construction, with exactly one exception: a language model
   running on your own machine (§ 2-quater). Ollama and LM Studio have no
@@ -932,9 +1019,13 @@ check off.
   encrypted with Noise (§ 4-ter), and the only bytes it sends in the clear are
   the 40-byte discovery datagrams and the 34-byte answers of a host, which
   carry no name and nothing about you. The device link does not use it either:
-  its connections are QUIC with TLS 1.3 between the two devices' keys, and
-  what goes in the clear is the signed record of § 4-quinquies — a public key
-  and a relay address — in the DNS, the DHT and, at home, mDNS.
+  its connections are QUIC with TLS 1.3 between the two devices' keys, and it
+  makes no plain-HTTP request — the check for a captive portal, which its
+  library would make in the clear, is switched off, and its probes of the
+  relays are HTTPS. What goes in the clear is the signed record of
+  § 4-quinquies — a public key and a relay address — in the DNS and the DHT;
+  at home, in mDNS, the device's key and its addresses on your network; and
+  the DNS questions of § 4-quinquies, to your network's DNS servers.
 - **No external domain in the window.** The content policy (`tauri.conf.json`)
   names no source outside this computer: besides `'self'` and `data:`, only
   Rymembra's own local protocols — `rymembra-cover:` for the cover art cache,
@@ -1000,8 +1091,11 @@ A track's context menu ends with **«Delete from disk»**, and it does what it
 says: the file goes to the **Recycle Bin**, and the library row goes with it —
 except where Windows has no Recycle Bin: a network share or a drive letter
 mapped onto one, a removable drive (a USB stick, an SD card, a CD) or a RAM
-disk, and a file whose location Rymembra could not determine. There the file
-is deleted **permanently**, and only after a confirmation that says so.
+disk, and a file whose location Rymembra could not determine. The drive is the
+one the file is really on, also behind a junction or a folder where another
+drive is mounted, and a drive whose type Windows cannot tell counts as one
+with no Recycle Bin. There the file is deleted **permanently**, and only after
+a confirmation that says so and lists the files that will go for good.
 It is the only thing in Rymembra that reaches a music file you already had, so
 the conditions on it are the ones you would want. It never runs by itself and
 is never part of a scan, an enrichment pass or any other background work; it
@@ -1051,7 +1145,8 @@ thing only, namely being able to answer «it won't open» with something more th
 `playback.deviceLost`), the technical cause that goes with them, the name of the
 thread that produced them, and the path of the **application's data folder** —
 the one above, which on Windows contains your account name because `%APPDATA%`
-runs through it. It's the only thing of yours that ends up there, and it's kept
+runs through it. Apart from what a technical cause can carry (see the cloud
+folders below), it's the only thing of yours that ends up there, and it's kept
 on purpose, because it's the first line to look at when Rymembra won't open: it
 says whether the database was where it should have been. Deleting it from the
 file before attaching it takes nothing away from the rest.
@@ -1062,6 +1157,23 @@ good intentions of whoever writes the code: where a message would have wanted to
 name a track there's its row number, and where it would have wanted to write a
 path there's the file extension alone. A log gets sent to someone, and sending
 the list of what a person listens to would not be a diagnosis.
+
+Nor the names of your audio outputs. Windows names Bluetooth headphones after
+what they announce, often their owner's name, so an output is written as a
+short fingerprint of its name (`uscita=[1a2b3c4d]`: the first eight
+hexadecimal digits of a BLAKE3 hash, the same for the same output in every
+session). Whoever knows the exact name can check it against the fingerprint;
+nobody can read the name back from it. Nor the cloud folders you chose: a
+chosen folder that disappeared from the service, was moved or renamed, or
+could not be followed is written as the account's internal identifier
+(`onedrive-k3x7q2ab`) and a count. The technical cause of a failed request is
+still written, and for a WebDAV server that answered with a redirect it can
+name the address it redirected to.
+
+Text that comes from outside — the body of an error a service returns, the
+platform a device declares when it links — cannot add lines of its own: line
+breaks and the other control characters in it are written visibly (`\n`,
+`\u{…}`), in `avvio.log` too.
 
 **Nothing goes out from there.** The log **is not sent to anyone**, ever, and
 there's no command that could do it: a program that can post its own logs by
@@ -1077,9 +1189,13 @@ data folder that cannot be found — there is nowhere to write those lines yet,
 so one more file can appear, *outside* the data folder:
 `%LOCALAPPDATA%\io.github.federicobaratti.rymembra\avvio.log` (or the
 temporary folder, if Windows does not say where `%LOCALAPPDATA%` is). Only the
-lines of that failed start go into it — the crash and its cause — under the
-same rules as the log: no track, no path of your music, your account name
-replaced by `%APPDATA%`, `%LOCALAPPDATA%` and `%USERPROFILE%`. It starts over
+lines of that failed start go into it — the crash and its cause, or why
+Rymembra refused to start with its data folder: the previous version's data
+could not be moved (with the folder involved), or the variable that chooses
+the data folder, `RYMEMBRA_DATI`, names a relative one (with the value as it
+was written) — under the same rules as the log: no track, no path of your
+music, your account name replaced by `%APPDATA%`, `%LOCALAPPDATA%` and
+`%USERPROFILE%`. It starts over
 when it passes 256 kilobytes, it is not sent anywhere either, and deleting it
 breaks nothing.
 

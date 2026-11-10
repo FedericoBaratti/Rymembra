@@ -78,7 +78,7 @@ music.*
 | --- | --- | --- |
 | **Local files** | The main library. Scanning of the folders you point at. | Already yours |
 | **Cloud folders** | Your own folders on OneDrive, Google Drive, Dropbox (through an app you register at each, guided step by step in the program) or a WebDAV server (Nextcloud, ownCloud, pCloud, Koofr…), read-only | Only what you play, in a capped cache |
-| **Internet Archive** | Live Music Archive (over 250,000 concerts by artists who authorized the recording), netlabels, public domain | Yes, when the item's license allows it |
+| **Internet Archive** | Live Music Archive (over 250,000 concerts by artists who authorized the recording), netlabels, public domain | Yes, when the item's license allows it; never for an item marked listen-only, nor for a 78 rpm record that declares no license of its own |
 | **Audius** | Tracks published by artists under an open license | Yes, when the artist has enabled downloading **and** the license allows it |
 | **Spotify GDPR archive** | Playlists, saved tracks and albums, followed artists, complete listening history | Metadata, not audio |
 | **Playlist files** | M3U, M3U8, PLS | The path, not the file |
@@ -114,10 +114,12 @@ picture. What the rows do:
 - **Internet Archive** and **Audius** are listed with the rule they follow: a
   track is streamed and downloaded only when its own license allows it.
 - **«Accetta registrazioni diverse»** (*Accept different recordings*) lets a
-  concert, a reissue or a re-recording stand in for the studio version, since
-  the free catalogs are mostly made of those. When one is taken, the track
-  says so with a «dal vivo» (*live*) badge. With the switch off, the search is
-  strict and finds much less.
+  concert, a reissue or a re-recording by the same artist stand in for the
+  studio version, since the free catalogs are mostly made of those — never a
+  cover by someone else. When one is taken, the track says so with a «dal
+  vivo» (*live*) badge. With the switch off, the search is strict and finds
+  much less. Either way a catalog file is taken only when its title and artist
+  match the track you want; what matches nothing goes to the shopping list.
 
 The imports themselves run in the «Importazioni» (*Imports*) page: the queue
 goes on with the screen closed, and the reports can be opened again from
@@ -164,8 +166,11 @@ a longer listening history than the public API offers.
 
 - **Every track at the same loudness.** Rymembra measures each file with EBU
   R128 — integrated loudness and true peak — in a background pass that runs
-  only while nothing is playing, and uses ReplayGain or R128 tags where the
-  file has them. Track, album or automatic mode; a track is never raised past
+  only while nothing is playing and stops, even halfway through a file, when
+  the music starts again; it uses ReplayGain or R128 tags where the file has
+  them. A network folder that is offline skips only its own tracks, and a
+  track on a share too slow to measure in time is marked slow and tried again
+  a day later. Track, album or automatic mode; a track is never raised past
   its own peak, and a soft limiter catches the rest. The volume slider follows
   a perceptual curve.
 - **Gapless playback**, gapless across sample rates too (a 44.1 kHz album on a
@@ -186,8 +191,11 @@ a longer listening history than the public API offers.
   track can leave it too: «Remove from library» takes the row out and leaves
   the file where it is, «Delete from disk» sends the file to the Recycle Bin —
   or, on a network share or a removable drive (a USB stick, an SD card), where
-  there is no Recycle Bin, asks you to confirm a permanent deletion — and both
-  ask first. A correction you made by hand
+  there is no Recycle Bin, asks you to confirm a permanent deletion and lists
+  the files that would go for good — and both ask first. The drive is the one
+  the file is really on, also behind a junction or a folder where a USB stick
+  is mounted, and a drive whose type Windows cannot tell counts as one without
+  a Recycle Bin. A correction you made by hand
   survives its track disappearing and coming back, and so do its plays,
   rating, heart and playlist places, for ninety days.
 - **Music on a NAS or a mapped drive.** A folder the share would not list for
@@ -276,7 +284,9 @@ a longer listening history than the public API offers.
   and the skin packages in it. It is written and read straight onto the disk,
   one entry at a time, so a profile of several hundred megabytes never sits in
   memory; importing shows you the plan first and proposes a remapping for every
-  root that does not exist on this machine. The old seventeen-line JSON is
+  root that does not exist on this machine, and it only adds: it never deletes
+  a playlist, switches off a watched folder, removes a like or clears a
+  rating. The old seventeen-line JSON is
   still read, and no longer written. Profiles and skin packages written by the
   previous version can still be imported.
 
@@ -316,7 +326,9 @@ a longer listening history than the public API offers.
 - **Your music away from home.** Show a QR code on the PC, scan it with the
   phone, and the two find each other on their own — on the same Wi-Fi or across
   the internet, directly or through a relay that sees only encrypted bytes,
-  with no Rymembra server. «Browse <device>» opens the other library — albums,
+  with no Rymembra server. Before linking, the phone shows the name the PC
+  gives itself and a short fingerprint of its key, to compare with the one
+  next to the QR code. «Browse <device>» opens the other library — albums,
   artists, tracks, search — to play its tracks here, streamed, or to download
   them («Download here»); a listen counts on the device that owns the track,
   which scrobbles it. On mobile data the phone asks first. Off by default; what
@@ -422,6 +434,17 @@ going over it is a warning, shown while you spend it.
 Skins written for Rymembra 2 are migrated as they are read and look as they
 did — a test compares what they compile to against frozen copies, rule by
 rule. Skins written in the new format do not open in Rymembra 2.
+
+One thing a skin cannot redraw: the dialogs that ask for a yes — linking a
+device, the «Listen together» code, invitations, the firewall question,
+deleting from disk, reviewing or replacing a skin. There a skin's layers,
+images and fonts do not apply, the text is in the system font, and only its
+colours remain. A skin's images may have at most as many pixels as 4096 ×
+4096, and its id cannot be a Windows device name (`con`, `nul`, `com1`…).
+Installing a skin — from the file picker or by dropping it on the window —
+whose id belongs to a different installed one asks first, showing both; the
+replaced skin is kept aside on this computer, and the notice that follows
+offers «Put it back».
 
 ![The Studio, the skin editor](immagini/studio.webp)
 
@@ -606,8 +629,15 @@ npm run tauri signer generate -- -w ../../.chiavi/rymembra.key
 ```
 
 The contents of the `.pub` file go into `plugins.updater.pubkey` inside
-`tauri.conf.json`; the private key goes into the repository secrets under the
-name `TAURI_SIGNING_PRIVATE_KEY`.
+`tauri.conf.json`; the private key goes into the secrets of the GitHub
+environment `release` under the name `TAURI_SIGNING_PRIVATE_KEY`, and its
+password, if it has one, under `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — not into
+the repository secrets, which any workflow on any branch can read. In
+*Settings → Environments → release*, allow only tags `v*` and add a required
+reviewer: the `firma` job, the only one that names the environment, then waits
+for an approval before it gets the key. A release run by hand starts
+from the tag itself (*Use workflow from → Tags*), with the same tag in its
+`tag` field; a run from a branch stops at once.
 
 The private key signs the executables that get installed automatically on users'
 systems: losing it permanently prevents every existing installation from
@@ -770,7 +800,12 @@ constraint is stated explicitly in the terms of use.
   as one MP3 with its `.cue` in a cloud folder plays with estimated track
   boundaries: exact at a constant bitrate, off by up to seconds at a variable
   one, because an exact seek would re-read the file from the start over the
-  network.
+  network. A cloud folder removed from the library takes its listing with it:
+  its tracks stay in the library but do not open until you choose the folder
+  again. On a WebDAV server whose symbolic links loop back to a parent folder,
+  listing stops at 32 levels of subfolders — the copies down to that depth
+  come in as duplicate paths — and the log says so at each full re-listing,
+  every half hour.
 - **Your devices over the internet.** It needs no server of Rymembra's, and
   so it leans on public ones: n0's relays and DNS are free, rate-limited and
   without guarantees, and when both devices sit behind a carrier's NAT — two
@@ -815,9 +850,12 @@ constraint is stated explicitly in the terms of use.
     devices (`arm64-v8a`) and the `x86_64` emulator are built: AAudio, the
     audio output, needs Android 8.
   - **Updates** are checked on GitHub as on the computer, and the APK for the
-    phone's architecture is downloaded by Rymembra; installing it is up to
-    Android, which asks the person using the phone to confirm every time — and,
-    the first time, to allow Rymembra to install apps. It is never silent.
+    phone's architecture is downloaded by Rymembra, only from an asset of the
+    project's GitHub release. Before Android's installer sees it, Rymembra
+    checks that it is this same app signed with the same certificate as the
+    installed one; if not, it deletes it and says so. Installing it is then up
+    to Android, which asks the person using the phone to confirm every time —
+    and, the first time, to allow Rymembra to install apps. It is never silent.
   - **Deleting a track from disk** sends it to Android's trash, from which the
     Files app restores it for 30 days, after Android's own confirmation. That
     trash exists from Android 11 and only for files Android's media index
@@ -830,7 +868,11 @@ constraint is stated explicitly in the terms of use.
     settings → Unknown sources* is switched on. And Android does not let an
     app open itself from the background: if Rymembra is not running at all,
     the car says «Open Rymembra on your phone» with a button that opens it,
-    and the library appears as soon as it has started once.
+    and the library appears as soon as it has started once. Only trusted
+    controllers reach the music session — Android Auto is recognised by its
+    package and Google's certificate — and that check has yet to be tried
+    with Android Auto on a real phone (with Google's Desktop Head Unit): if
+    the car stops showing Rymembra, it is the first thing to look at.
   - **Connecting a service** (Google Drive, OneDrive, Dropbox, Last.fm)
     opens its consent page in the phone's browser, which comes back to
     Rymembra through a local address while Rymembra waits behind it. If
