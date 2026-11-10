@@ -206,9 +206,10 @@ up with a phone that did not exist before.
   only if it carries an APK for the phone's architecture. «Update» downloads
   it into the cache, with its progress, and hands it to Android's installer,
   which asks for confirmation — and the first time for permission to install
-  apps. Android verifies the signature itself: an APK signed with another
-  key does not install over Rymembra. The pure part — which release, which
-  APK — is in `rilasci.rs`, with its tests.
+  apps. Before that, Rymembra opens the APK and refuses it unless it is this
+  same app signed with the same certificate, and takes it only from a GitHub
+  release asset (see Security). The pure part — which release, which APK — is
+  in `rilasci.rs`, with its tests.
 - **«Share the log»** replaces «Open the log folder», which a phone has no
   window for: it shares a copy of the log through Android's share sheet.
 - **Texts for a phone.** 87 sentences that spoke of «this PC», Windows, the
@@ -555,6 +556,22 @@ up with a phone that did not exist before.
 - **Rymembra no longer offers itself to Android TV.** The manifest declared
   the TV launcher, but the interface is made for a finger and cannot be used
   with a remote; the Gradle lint is clean of errors.
+- **A clean `npm ci` builds the interface again.** `vite.config.ts` reads
+  `process.env` and `@types/node` was not a declared dependency, so `tsc`
+  failed and with it `build:web`, CI and the release build; it is now a dev
+  dependency.
+- **`cargo deny check` passes again**: BSD-2-Clause (`spez`, through iroh) is
+  allowed, and three advisories that do not reach Rymembra's code are listed
+  with the reason (RUSTSEC-2026-0429, `zip::extract`; -0459, SQLite opening
+  someone else's `-wal`; -0386, tokio `AsyncFd`).
+- **Gradle 9.8.2** (from 9.6.1, affected by GHSA-xwqc-3h47-hg64,
+  GHSA-mvvg-497x-hmj8 and GHSA-j5m7-59rp-24f5), with the distribution's
+  SHA-256 checked by the wrapper; vite 7.3.8.
+- **Releases start from the tag**, a manual run from a branch stops at once,
+  and a release already published is never uploaded to again. The
+  `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
+  interface tests and the Kotlin sources; `strumenti/firma.js` accepts a key
+  without a password, as `tauri signer` does.
 
 ### Security
 
@@ -575,6 +592,160 @@ up with a phone that did not exist before.
 - **The device's key** is in the system keychain (`lontano.chiave.<device>`;
   the Android Keystore on the phone), never in the database, and an existing
   one is never overwritten. The log names no key, address or device.
+
+### Security — the review of 2026-11-10
+
+A full review of the code — eleven areas read against `SECURITY.md`, the
+untrusted parsers fuzzed for three hours, the phone build probed on an
+emulator — and every confirmed finding fixed with a test that failed first.
+
+- **A profile can no longer make Rymembra delete files outside its cover
+  store.** The cover hash in a `.ryprofile` went into the library unchecked,
+  and the automatic cleanup of orphan covers built a path from it and deleted
+  it: `../`, an absolute path or an uppercase twin reached any `*.jpg` on the
+  disk. The store now never builds a path outside itself for anything that is
+  not lowercase hex, and such rows are dropped on import.
+- **Archives that lie about their size are stopped by what they really
+  inflate.** Profile entries are read at most up to their declared size, with
+  a budget on the real bytes of the whole archive; the Spotify archive takes at
+  most 10,000 entries and 1 GiB, and its JSON files — like sync documents — are
+  value-counted before parsing, so a few hundred kilobytes of zip can no longer
+  ask for gigabytes of memory. A sync document that fails to parse is not
+  downloaded again at every pass.
+- **Sync no longer adds watched folders on network hosts this PC does not
+  already use** (`\\host\…`), so a sync document cannot make the scan open
+  SMB connections — and send the Windows login hash — to an arbitrary host.
+  The sync folder must still be writable by you alone: its documents are not
+  signed yet, which is planned work.
+- **A profile that carries library data with an empty library identity** is
+  treated as coming from another library.
+- **A forgotten device can no longer read the library on connections it had
+  already opened.** Every request of the device link checks that the key is
+  still linked, and forgetting a device — here or there — closes all of its
+  connections and «Listen together» streams. At most 8 requests are served at
+  a time per device, across all of its connections.
+- **Linking shows who is on the other side.** The link names the device as it
+  calls itself and a short fingerprint of its key, to compare with the one
+  next to the QR code; the PC asking for the «yes» shows the same. Showing a QR
+  code or opening a link no longer turns on «Reachable from the internet»
+  without a separate yes. «Forget» also removes the «Listen together» trust
+  the QR gave, and a QR code never unblocks a PC you blocked.
+- **«Download here» writes only audio files** with the extensions the scan
+  reads; anything else another device lists as a track is refused.
+- **The internet link uses only the system's DNS servers** — no fallback to
+  Cloudflare, Google or Quad9 — and makes no plain-HTTP captive-portal check.
+- **«Listen together» discovery no longer pauses on datagrams it drops**: a
+  PC on the LAN sending about twenty long datagrams a second could keep a
+  host from being found. Messages waiting for the session are capped at 256
+  and 8 MiB per connection, with TCP holding the sender back.
+- **Cloud folders: only the chosen folders are kept.** The change feeds of
+  OneDrive, Google Drive and Dropbox cover the whole drive, and every change
+  anywhere in it was written to the database and never removed; those rows go
+  at the account's next pass. The log no longer names cloud folders, and the
+  WebDAV password, Dropbox temporary links and Drive upload sessions no longer
+  appear in debug output or errors.
+- **Catalog downloads start only from the catalog the row claims** — an
+  `archive.org/download/…` file or Audius' own download path — and follow
+  redirects only inside it; a crafted profile could make the download queue
+  fetch any address and drop a `.url` or `.lnk` into the music folder. What
+  is downloaded must be audio (FLAC, MP3, AAC, Ogg, WAV, AIFF, MP4), its
+  extension comes from its content, every download has a byte cap, and Audius
+  nodes, cover addresses and redirects go only to public host names.
+- **A skin can no longer redraw a consent dialog.** Inside the dialogs that ask
+  for a yes — linking a device, the «Listen together» code, invites, the
+  firewall question, deleting from disk, reviewing or replacing a skin — skins
+  apply no layers, images or fonts; the text uses the system font and the
+  skin's colours stay. Skin images are capped at 4096 × 4096 pixels, read from
+  their header, an archive with more than 64 entries or zip64 is refused
+  before it is opened, and Windows device names (`con`, `nul`…) are refused as
+  ids and file names, also in profiles and in skins restored from Drive.
+- **AI service errors no longer carry the API key** to the screen or the log.
+- **Links opened in the system browser are always `https` pages**, parsed and
+  normalised first; a catalog link must have a real domain name.
+- **The log names no audio output** (Bluetooth headphones are often named after
+  their owner) — only a short fingerprint — and text from outside can no longer
+  write fake lines into it.
+- **Phone updates: the APK is checked before Android's installer sees it** —
+  same package, same signing certificate — and is downloaded only from a
+  GitHub release asset. Android's own check protected only an update over
+  Rymembra: an APK with another package name was offered as a new app.
+- **Phone: only trusted controllers reach the music session** — the app, the
+  system (notification, lock screen, Bluetooth), Android Auto and the car's
+  media centre. Other apps can no longer browse the library and the history
+  or control playback.
+- **Phone: «Save» takes only the document Rymembra wrote**, the file provider
+  shares two cache folders instead of the whole storage, the activity has an
+  empty task affinity (StrandHogg on Android 8–10), and an unreadable intent
+  extra no longer crashes the app.
+- **Updater signing key in a protected environment.** The release job that
+  signs updates runs in the `release` environment, so the key can live in
+  environment secrets instead of repository secrets readable by any workflow;
+  CI builds `cargo-deny` from crates.io instead of downloading an unchecked
+  binary, and the website is built by a job that cannot publish.
+
+### Fixed — the review of 2026-11-10
+
+- **«Delete from disk» could delete for good a file the dialog had promised to
+  the Recycle Bin.** The confirmation was a plain yes, and at execution a share
+  slow to answer could leave a local folder with no answer — and so with no
+  Recycle Bin. The confirmation now lists the files that go for good and
+  carries that exact list; any other file without a Recycle Bin stops
+  everything and the dialog asks again. The drive type is read on the volume
+  the file is really on (a junction or a folder-mounted USB stick is no longer
+  a fixed disk), and the confirmation answers once.
+- **Importing a profile only adds.** It no longer deletes playlists, switches
+  off watched folders, removes likes or clears ratings, and dates from the
+  future are clamped to the import.
+- **Out-of-range values from sync and profiles** — a rating above 5, huge play
+  counts, future timestamps, an extreme playlist position — no longer stop
+  every sync pass, overflow the totals or freeze local edits.
+- **Removing or moving a row of a playlist or of the queue carries the track
+  you saw in it**: a double click on × removed two tracks, and a list that had
+  changed underneath lost the wrong one. A double click on a row's buttons no
+  longer starts playback.
+- **Changing what plays next in the last seconds of a track** (Play next,
+  removing or moving the next track, shuffle, repeat, the end-of-track timer)
+  no longer plays the old next track and skips the one the queue shows: the
+  engine withdraws the next track it had already started, at the cost of a
+  ~12 ms gap in that case only. A seek in those seconds is no longer dropped.
+- **Loudness measurement really stops** at its deadline or when music starts,
+  instead of decoding on in the background; an offline network folder no
+  longer stops the analysis of the whole library, and a track on a slow share
+  is retried after a day. Long digital silence no longer leaves the equalizer
+  in denormal numbers.
+- **Listens from a linked device no longer move «last played» back**, a
+  future start counts as now, and at most 120 an hour are accepted per device.
+  An expired QR code always says it expired, and with the library busy a
+  just-forgotten device is not readmitted.
+- **Catalog downloads keep their licence.** Tracks imported from a link and
+  «Keep a copy» from Explore are downloaded with the licence and permission
+  read from the catalog at download time, the attribution is written into the
+  file's tags, and a download takes a catalog file only when its title and
+  artist match the wanted track — «Accept different recordings» admits a live
+  or a reissue by the same artist, never someone else's cover. Items in the
+  Archive's `stream_only` collection, restrictions in unexpected forms, 78 rpm
+  records without an explicit licence, unknown licence links and Audius tracks
+  without explicit permission are listen-only. A cancelled search or a catalog
+  that is down no longer marks a track «not available anywhere».
+- **WebDAV listings can no longer run forever** on a server that lists an
+  ancestor or loops through symbolic links; a cloud folder moved into a chosen
+  folder is listed at once instead of staying empty.
+- **Installing a skin with the id of another one asks first**, showing both,
+  and keeps the replaced one aside to put back.
+- **An update whose installer could not start** no longer leaves Rymembra
+  running without a window: it says so and closes. `RYMEMBRA_DATI` is read
+  once, a relative path is refused, and a refused start leaves its reason in
+  `avvio.log`.
+- **Interface:** a Shift-click range that straddles a list refresh is dropped
+  instead of mixing old and new rows; «Now playing» closes when the queue is
+  cleared; confirmations answer once; on the phone a menu reopened while the
+  last one slides down shows, and a dialog arriving with a menu open is no
+  longer hidden under it.
+- **Phone:** reopening from Recents no longer replays a voice search or an
+  old link, the update notice survives the process, and an APK for another
+  architecture is never offered.
+- On first start «Listen together» and the device link no longer each create
+  a «Listen together» key.
 
 ### Database
 

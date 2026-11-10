@@ -48,6 +48,15 @@ and, before copying the new files, silently uninstalls the previous version of t
 program (never its data); a way to make that step remove or run something it
 shouldn't is a report too.
 
+On the phone there is no minisign: Rymembra takes the APK only from an asset of
+the project's GitHub release, follows redirects only to GitHub's own hosts, and
+before handing it to Android's installer opens it and refuses it unless it is
+the same package signed with the same certificate as the installed Rymembra (or
+a key that proves it rotated from it). Getting another package or another
+signer past that check is as important a report as the minisign one. If
+Windows refuses to start the installer (AppLocker, WDAC, an antivirus), Rymembra
+says so and closes; it must never stay alive without a window.
+
 **The OAuth return port.** The consent screens of Google, Microsoft (from 3.2,
 for OneDrive) and Dropbox (from 3.2) open in the system browser and come back
 to this machine, on a port open for the length of one authorization
@@ -70,6 +79,14 @@ must not reach the log, the database or an error shown in the window. A way to
 make Rymembra send a token — or a Google app's client secret — to a host that
 is not the service's own (for example by following a `nextLink` or a
 redirect), or to read outside the folder the user chose, is a problem.
+
+Only the chosen folders, what is under them and the parents that make up their
+paths are kept in the database; changes elsewhere on the drive are dropped. A
+WebDAV listing takes only the direct children of each folder, visits each
+folder once and stops at 32 levels. Every download has a byte cap chosen by its
+caller, checked against the declared length and before each block is written.
+Passwords, temporary links and upload sessions do not appear in debug output
+or in errors.
 
 **«Listen together», while a PC hosts.** From 3.1 a PC that **hosts** a
 listening session listens on the local network, on TCP and UDP port 47811 (or
@@ -102,6 +119,11 @@ supposed to hold:
   first message must arrive within a second), and answers discovery at most 4
   times a second per address and 50 in all, with an answer shorter than the
   question.
+- whatever reaches the discovery port and is not a question is dropped and the
+  next datagram is read at once: only a real socket failure pauses. Messages
+  waiting for the session are capped at 256 and 8 MiB per connection; beyond
+  that the connection is not read (TCP holds the sender back), nothing is
+  dropped, and trust is checked again when the message gets its place.
 
 Reading a file that is not in the session queue, getting anything past the
 handshake without the code, two matching codes with a machine in the middle, a
@@ -139,6 +161,22 @@ feature off nothing listens. What is supposed to hold:
   (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
   of «Listen together» exchanged when linking is used only to recognise that
   device in a session.
+- the gate is checked before **every** request, not only when a connection
+  opens: forgetting a device — on either side — or removing it from the list
+  closes all of that key's connections and `rymembra/insieme/1` streams, and
+  the 8 requests served at a time are counted per key, across connections. The
+  gate changes only from a successful read of the library or from the
+  forget/link itself, never from a stale read;
+- the link carries the name the other device gives itself and the screens show
+  a short fingerprint of its ed25519 key (60 bits) to compare; turning on
+  «Reachable from the internet» needs its own yes, separate from linking.
+  Forgetting a device also removes the «Listen together» key its QR gave, and a
+  QR code never unblocks a key the user blocked;
+- «Download here» writes only audio files with the extensions the scan reads,
+  and listens reported by a linked device are capped (120 an hour), never dated
+  in the future and never move a clock back;
+- names are resolved only through the system's DNS servers, with no public
+  fallback, and no plain-HTTP request is made.
 
 Reaching a library — or a «Listen together» session — with a key that is not
 linked, linking without the user's «yes» or with a used or expired token,
@@ -151,6 +189,30 @@ on the manifest, on the files, on the paths — and they exist to stop unpacking
 something from writing outside its own folder or filling the disk. A path that
 escapes the install folder, a zip that explodes, a manifest that sends the
 compiler into recursion: all problems.
+
+The ceilings are on what is really inflated, not only on what an archive
+declares: a skin with more than 64 entries or zip64 is refused before it is
+opened, its images are capped at 4096 × 4096 pixels read from their header, a
+profile entry is read at most up to its declared size within a budget for the
+whole archive, and the JSON of the Spotify archive and of sync documents is
+value-counted before it is parsed. Windows device names (`con`, `nul`…) are
+refused as ids and file names. A profile only **adds** to the library: it
+never deletes, switches off or clears anything, and a cover hash that is not
+lowercase hex never becomes a path. Sync documents are validated value by value
+and cannot add folders on network hosts this PC does not already use — but they
+are not signed yet: the sync folder must be writable by you alone. Catalog
+downloads start only from the catalog's own addresses, follow redirects only
+inside it, and must be audio. Error messages of AI services are cleaned of the
+API key.
+
+**A skin cannot redraw a consent dialog.** The dialogs that ask for a yes are
+marked `data-consenso` — linking a device, the «Listen together» code, invites
+and join requests, the firewall question, deleting from disk, reviewing or
+replacing a skin. The skin compiler emits nothing that reaches them (no layers,
+images, pseudo-elements, part styling or fonts; view transitions pause while
+one is on screen), and the engine's own stylesheet sets the system font in an
+`@layer` a skin cannot override; the skin's colours still apply. A skin that
+makes a consent dialog say something else than what it asks is a problem.
 
 **Secrets at rest.** OAuth tokens, from 3.1 the private key that identifies
 the PC to the others in «Listen together», the private key of the device link,
@@ -174,6 +236,19 @@ The log (`PRIVACY.md` § 8) is written so as to contain nothing personal, and it
 isn't sent to anyone. If something ends up in there that shouldn't, say so: it's
 the same promise, and it holds even when the thing breaking it is a line written
 by mistake.
+
+Audio outputs appear in the log only as a short fingerprint of their name, and
+control characters coming from outside (a service's error, a device's declared
+platform) are written visibly, so nobody can add a line to the log. Links handed
+to the system browser are always `https` pages with a host and no credentials.
+
+**On the phone, other apps are the other side.** The music service accepts
+only trusted controllers — the app itself, the system (notification, lock
+screen, Bluetooth), Android Auto and the car's media centre, checked by uid and
+certificate; the cover provider serves only files of the cover folder, read-only;
+the file provider shares only two cache folders; the main activity has an empty
+task affinity. Another app browsing the library, controlling playback or
+reading a file it was not given: all problems.
 
 ## What isn't one
 
