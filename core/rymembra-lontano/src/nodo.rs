@@ -51,7 +51,8 @@ use std::time::{Duration, Instant};
 
 use iroh::dns::DnsResolver;
 use iroh::endpoint::{
-    Connection, ConnectionError, PortmapperConfig, RecvStream, SendStream, VarInt, presets,
+    ConnectError, ConnectingError, Connection, ConnectionError, PortmapperConfig, RecvStream,
+    SendStream, VarInt, presets,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId, NetReportConfig, RelayMode, RelayUrl, SecretKey};
@@ -732,7 +733,10 @@ impl Nodo {
                     self.endpoint.connect(indirizzo, ALPN_ASSOCIA),
                 ) => esito
                     .map_err(|_| irraggiungibile("il dispositivo del QR non risponde"))?
-                    .map_err(irraggiungibile)?,
+                    // Chi mostra il QR chiude subito un'associazione senza un
+                    // QR che valga: la chiusura può arrivare già qui, e dice
+                    // perché (`lontano.gettoneScaduto`), non «non risponde».
+                    .map_err(|err| chiusa_nel_collegarsi(&err).unwrap_or_else(|| irraggiungibile(err)))?,
             };
             let esito = tokio::select! {
                 () = &mut annullato => {
@@ -740,9 +744,14 @@ impl Nodo {
                     return Err(annullato_qui());
                 }
                 esito = tokio::time::timeout(ATTESA_CONFERMA + Duration::from_secs(30), async {
+                    // Ogni passo col motivo della chiusura, se l'altro ha
+                    // chiuso: quale passo trovi la connessione chiusa è una
+                    // corsa, l'esito non deve esserlo.
                     let (mut invio, mut ricevi) =
                         conn.open_bi().await.map_err(|e| perso(&conn, e))?;
-                    scrivi(&mut invio, &Associa::Chiedo { gettone, chi: io }).await?;
+                    scrivi(&mut invio, &Associa::Chiedo { gettone, chi: io })
+                        .await
+                        .map_err(|err| chiusa_perche(&conn).unwrap_or(err))?;
                     let _ = invio.finish();
                     leggi::<Associa>(&mut ricevi)
                         .await
@@ -1310,7 +1319,24 @@ fn perso(conn: &Connection, err: impl std::fmt::Display) -> AppError {
 
 /// Il codice con cui l'altro ha chiuso la connessione, se ne ha dato uno.
 fn chiusa_perche(conn: &Connection) -> Option<AppError> {
-    match conn.close_reason()? {
+    motivo(&conn.close_reason()?)
+}
+
+/// Lo stesso, per una connessione che l'altro ha chiuso mentre la si apriva.
+fn chiusa_nel_collegarsi(err: &ConnectError) -> Option<AppError> {
+    match err {
+        ConnectError::Connection { source, .. }
+        | ConnectError::Connecting {
+            source: ConnectingError::ConnectionError { source, .. },
+            ..
+        } => motivo(source),
+        _ => None,
+    }
+}
+
+/// Il codice `lontano.*` di una chiusura, se l'altro ne ha dato uno.
+fn motivo(chiusura: &ConnectionError) -> Option<AppError> {
+    match chiusura {
         ConnectionError::ApplicationClosed(chiusura) => std::str::from_utf8(&chiusura.reason)
             .ok()
             .and_then(da_testo)
