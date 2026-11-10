@@ -46,6 +46,23 @@ ignore = [
   { id = "RUSTSEC-2026-0367", reason = "zip: SUID/SGID in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati, e su Windows non ci sono" },
   { id = "RUSTSEC-2026-0368", reason = "zip: link simbolici fuori dalla cartella in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
   { id = "RUSTSEC-2026-0369", reason = "zip: permessi Unix attraverso link simbolici in extract(); mai chiamato da noi, e su Windows non ci sono" },
+  # Un quarto difetto di `zip`, nello stesso posto: `extract` che abortisce su
+  # una voce simbolica con una dimensione dichiarata enorme. Vale quel che vale
+  # per i tre sopra — nessuna chiamata a `extract` nel nostro codice, e
+  # l'updater estrae solo pacchetti firmati.
+  { id = "RUSTSEC-2026-0429", reason = "zip: abort in extract() su un link simbolico enorme; mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
+  # SQLite prima della 3.54 restituisce memoria non inizializzata se si apre un
+  # database insieme a un `-wal` costruito ad arte da qualcun altro. Rymembra
+  # apre soltanto il proprio database (`db::open`, il deposito dell'arricchimento
+  # sullo stesso file, la libreria della versione di prima nel trasloco): un
+  # profilo, un backup e un documento di sincronia sono JSON, mai un file
+  # SQLite. Si toglie da qui con `rusqlite` 0.41.
+  { id = "RUSTSEC-2026-0459", reason = "SQLite -wal costruito da altri: Rymembra apre solo il proprio database, mai un file SQLite ricevuto" },
+  # `AsyncFd::new` di tokio lascia costruire, senza `unsafe`, un uso che viola
+  # la sicurezza degli I/O: un'API solo Unix che il nostro codice non chiama
+  # (tokio ci arriva con iroh). Si toglie da qui al prossimo aggiornamento di
+  # tokio.
+  { id = "RUSTSEC-2026-0386", reason = "tokio AsyncFd (solo Unix): nessuna chiamata nel nostro codice" },
 ]
 
 # L'elenco chiuso delle licenze che `THIRD-PARTY-NOTICES.md` sa già
@@ -63,6 +80,8 @@ allow = [
   "0BSD",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
+  # `spez`, portato da iroh attraverso `n0-error`.
+  "BSD-2-Clause",
   "BSD-3-Clause",
   "CC0-1.0",
   "CDLA-Permissive-2.0",
