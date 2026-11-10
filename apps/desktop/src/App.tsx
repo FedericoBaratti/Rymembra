@@ -4317,6 +4317,9 @@ export function App() {
 
         {rimozioniInAttesa && (
           <ConfermaRimozioni
+            // Una domanda nuova è un'altra finestrella, con la sua risposta:
+            // quella di prima ha già usato la sua (`unaVolta`).
+            key={rimozioniInAttesa.gettone}
             attesa={rimozioniInAttesa}
             onChiudi={() => {
               // «Lasciali»: le righe restano, e il nucleo dimentica l'elenco.
@@ -4360,6 +4363,8 @@ export function App() {
 
         {daIndossare?.esame && (
           <ConfermaSkin
+            // Come per le rimozioni: un'altra skin, un'altra risposta.
+            key={daIndossare.id}
             nome={daIndossare.nome}
             esame={daIndossare.esame}
             onChiudi={() => setDaIndossare(null)}
