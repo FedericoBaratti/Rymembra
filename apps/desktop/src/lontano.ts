@@ -226,6 +226,55 @@ export function qrScaduto(scadeMs: number, adesso: number): boolean {
 }
 
 /**
+ * Il QR vale solo finché è a schermo: con un QR valido il nucleo tiene aperta
+ * l'associazione (`rymembra/associa/1`) a chiunque lo presenti, e chi non lo
+ * vede più non sa che c'è. La scheda che lo mostra lo annulla quando se ne va
+ * — un'altra sezione, le Impostazioni chiuse — e annulla anche quello di un
+ * «Mostra il QR» che torna quando lei non c'è più (il nucleo può metterci
+ * qualche secondo: accende il nodo, aspetta il relay).
+ *
+ * `annulla` è `ipc.lontanoQrAnnulla`, passato da chi la usa: questo modulo
+ * non carica l'IPC (vedi in cima).
+ */
+export function qrSoloInVista(annulla: () => Promise<StatoLontano>): {
+  /** La scheda c'è: un QR che arriva si mostra. */
+  monta: () => void;
+  /** La scheda se ne va: il QR in vista non vale più. */
+  smonta: () => void;
+  /** Chiede un QR; arrivato a scheda chiusa, lo annulla. */
+  crea: <T>(crea: () => Promise<T>) => Promise<T>;
+} {
+  let inVista = false;
+  // Un QR arrivato a scheda aperta: il pannello lo dice solo col
+  // `lontano:stato` che segue, e la scheda può andarsene prima.
+  let creato = false;
+  const togli = () => {
+    annulla()
+      .then((pannello) => archivioLontano.scrivi(pannello))
+      .catch(() => {
+        /* Il nucleo lo toglie comunque alla scadenza: qui non c'è più una
+           scheda a cui dire l'errore. */
+      });
+  };
+  return {
+    monta: () => {
+      inVista = true;
+    },
+    smonta: () => {
+      inVista = false;
+      if (creato || archivioLontano.leggi()?.invito != null) togli();
+      creato = false;
+    },
+    crea: async (crea) => {
+      const fatto = await crea();
+      if (inVista) creato = true;
+      else togli();
+      return fatto;
+    },
+  };
+}
+
+/**
  * L'errore di un collegamento annullato da qui (`lontanoCollegaAnnulla`): non
  * è un guasto, e non si dice.
  */

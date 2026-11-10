@@ -8,6 +8,10 @@
 //! toccare la libreria passa all'[`Ospite`] su un filo bloccante del runtime
 //! (`spawn_blocking`), mai su uno dei due che fanno girare la rete.
 //!
+//! Chi lo spegne non aspetta chi lo sta usando: [`Nodo::chiudi`] chiude la
+//! porta e ogni connessione subito, e chi lo teneva ancora torna con
+//! `lontano.spento`; il runtime se ne va con l'ultimo che lo lascia.
+//!
 //! # Una connessione per dispositivo
 //!
 //! Con ogni dispositivo associato si tiene al più una connessione, aperta da
@@ -36,9 +40,11 @@
 //!   quella che usa per chiedere.
 //! - Al più [`DOMANDE_INSIEME`] domande servite insieme per dispositivo, su
 //!   tutte le sue connessioni.
-//! - [`ALPN_ASSOCIA`]: chiuso se non c'è un QR attivo; al più
-//!   [`TENTATIVI_AL_MINUTO`]; il gettone vale [`VALIDITA_INVITO`], una volta
-//!   sola, e dopo [`MASSIMI_FALLIMENTI`] gettoni sbagliati il QR non vale più.
+//! - [`ALPN_ASSOCIA`]: chiuso se non c'è un QR attivo, senza contare il
+//!   tentativo; con un QR, al più [`TENTATIVI_AL_MINUTO`]; il gettone vale
+//!   [`VALIDITA_INVITO`], una volta sola, e dopo [`MASSIMI_FALLIMENTI`]
+//!   gettoni sbagliati il QR non vale più. Il QR lo toglie chi lo mostra
+//!   quando non è più a schermo ([`Nodo::annulla_invito`]).
 //!   Il gettone si confronta a tempo costante. Un gettone giusto non basta:
 //!   decide chi mostra il QR ([`Ospite::conferma`]).
 
@@ -76,7 +82,7 @@ pub const VALIDITA_INVITO: Duration = Duration::from_secs(10 * 60);
 /// Gettoni sbagliati prima che il QR non valga più.
 pub const MASSIMI_FALLIMENTI: u32 = 5;
 
-/// Tentativi di associazione al minuto, da chiunque.
+/// Tentativi di associazione al minuto, da chiunque, mentre c'è un QR.
 pub const TENTATIVI_AL_MINUTO: usize = 10;
 
 /// Quanto si aspetta chi decide, sul dispositivo che mostra il QR: come il
@@ -320,9 +326,11 @@ struct Condiviso {
     sveglia: Notify,
     /// Annulla l'associazione in corso da questo lato ([`Nodo::collega`]).
     annullo: Notify,
-    /// Il runtime gira: i [`Flusso`] lo guardano prima di ogni `block_on`, e
-    /// dopo lo spegnimento rispondono con un errore invece di usare un runtime
-    /// che non c'è più.
+    /// Il nodo è acceso: falso da [`Nodo::chiudi`] in poi, anche finché
+    /// qualcuno lo tiene ancora. I [`Flusso`] lo guardano prima di ogni
+    /// `block_on`, e da chiuso rispondono con un errore invece di usare un
+    /// runtime che può non esserci più; i metodi del nodo rispondono
+    /// `lontano.spento`.
     vivo: Arc<AtomicBool>,
 }
 
@@ -598,10 +606,26 @@ impl Nodo {
         })
     }
 
+    /// Il runtime, finché il nodo è acceso: chiuso ([`Nodo::chiudi`]) è
+    /// `lontano.spento` anche per chi lo tiene ancora.
     fn runtime(&self) -> Result<&tokio::runtime::Runtime, AppError> {
+        if !self.condiviso.vivo.load(Ordering::Acquire) {
+            return Err(errore(ErrorCodeKind::LontanoSpento));
+        }
         self.runtime
             .as_ref()
             .ok_or_else(|| errore(ErrorCodeKind::LontanoSpento))
+    }
+
+    /// L'esito di quel che si stava aspettando: se intanto il nodo è stato
+    /// chiuso ([`Nodo::chiudi`]), il guasto che ne è venuto — la connessione
+    /// chiusa sotto i piedi, l'altro che non risponde più — si dice per quel
+    /// che è, `lontano.spento`, e non come un dispositivo irraggiungibile.
+    fn finche_acceso<T>(&self, esito: Result<T, AppError>) -> Result<T, AppError> {
+        if esito.is_err() && !self.condiviso.vivo.load(Ordering::Acquire) {
+            return Err(errore(ErrorCodeKind::LontanoSpento));
+        }
+        esito
     }
 
     /// La chiave pubblica di questo dispositivo.
@@ -657,11 +681,19 @@ impl Nodo {
         }
         indirizzi.truncate(MASSIMO_INDIRIZZI);
         let relay = indirizzo.relay_urls().next().map(ToString::to_string);
-        *chiave(&self.condiviso.invito) = Some(InvitoAttivo {
-            gettone,
-            scade: Instant::now() + VALIDITA_INVITO,
-            fallimenti: 0,
-        });
+        {
+            let mut invito = chiave(&self.condiviso.invito);
+            // Chiuso mentre si aspettava il relay: un QR non nasce più. Sotto
+            // il lucchetto, che `chiudi` prende dopo aver spento `vivo`.
+            if !self.condiviso.vivo.load(Ordering::Acquire) {
+                return Err(errore(ErrorCodeKind::LontanoSpento));
+            }
+            *invito = Some(InvitoAttivo {
+                gettone,
+                scade: Instant::now() + VALIDITA_INVITO,
+                fallimenti: 0,
+            });
+        }
         Ok(Invito {
             chiave: *self.endpoint.id().as_bytes(),
             gettone,
@@ -730,7 +762,7 @@ impl Nodo {
         let io = self.condiviso.io.clone();
         let gettone = esadecimale(&invito.gettone);
         let annullo = &self.condiviso.annullo;
-        let accolto = runtime.block_on(async {
+        let accolto = self.finche_acceso(runtime.block_on(async {
             // Attivato subito: un «Annulla» che arriva mentre si apre la
             // connessione vale come uno che arriva mentre si aspetta.
             let annullato = annullo.notified();
@@ -770,7 +802,7 @@ impl Nodo {
             };
             conn.close(VarInt::from_u32(0), b"fatto");
             esito
-        })?;
+        }))?;
         match accolto {
             Associa::Accolto { chi } => {
                 let chiave_pari = pari.to_string();
@@ -941,14 +973,14 @@ impl Nodo {
             EndpointId::from_str(pari).map_err(|_| errore(ErrorCodeKind::LontanoNonAssociato))?;
         let condiviso = Arc::clone(&self.condiviso);
         let endpoint = self.endpoint.clone();
-        runtime.block_on(async move {
+        self.finche_acceso(runtime.block_on(async move {
             tokio::time::timeout(scadenza, async {
                 let conn = connessione(&condiviso, &endpoint, id).await?;
                 chiedi_su(&conn, domanda.nei_tetti()).await
             })
             .await
             .map_err(|_| irraggiungibile("la domanda è scaduta"))?
-        })
+        }))
     }
 
     /// Un flusso di «Ascolta insieme» verso un dispositivo associato, su una
@@ -970,7 +1002,7 @@ impl Nodo {
         let maniglia = runtime.handle().clone();
         let vivo = Arc::clone(&self.condiviso.vivo);
         let condiviso = Arc::clone(&self.condiviso);
-        runtime.block_on(async move {
+        self.finche_acceso(runtime.block_on(async move {
             tokio::time::timeout(entro, async {
                 let conn = endpoint
                     .connect(indirizzo, ALPN_INSIEME)
@@ -987,7 +1019,7 @@ impl Nodo {
             })
             .await
             .map_err(|_| irraggiungibile("il dispositivo non risponde"))?
-        })
+        }))
     }
 
     /// La rete è cambiata (il Wi-Fi è andato, è arrivato il 5G): si cercano
@@ -1006,21 +1038,46 @@ impl Nodo {
         self.spegni();
     }
 
-    fn spegni(&mut self) {
-        let Some(runtime) = self.runtime.take() else {
+    /// Chiude il nodo **adesso**, anche se altri lo tengono ancora (un
+    /// comando in volo, in un `Arc`): il QR non vale più, non si segue più
+    /// nessuno, non si accoglie più niente — né associazioni, né domande, né
+    /// «Ascolta insieme» — e ogni connessione si chiude. Chi lo stava usando
+    /// torna con `lontano.spento`, e così ogni chiamata dopo. Il runtime se ne
+    /// va con l'ultimo che lo lascia ([`Nodo::ferma`], o il drop). Una volta
+    /// sola: le chiamate dopo non fanno niente.
+    ///
+    /// I socket UDP restano aperti finché vive qualche copia dell'endpoint,
+    /// ma non li legge più nessuno: un pacchetto che arriva non ha risposta.
+    pub fn chiudi(&self) {
+        let Some(runtime) = self.runtime.as_ref() else {
             return;
         };
+        // Per primo: da qui chi chiama un metodo, o guarda un flusso, lo
+        // trova spento, e chi aspettava e si sveglia per la chiusura lo dice
+        // (`finche_acceso`).
+        if !self.condiviso.vivo.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        *chiave(&self.condiviso.invito) = None;
+        // Chi si stava collegando da qui smette di aspettare, anche se la
+        // connessione non c'è ancora.
+        self.condiviso.annullo.notify_waiters();
         for (_, compito) in chiave(&self.seguiti).drain() {
             compito.abort();
         }
+        // Il router chiude l'endpoint: ogni connessione, in entrata e in
+        // uscita, e chi aspetta su di lei si sveglia.
         let router = self.router.clone();
         runtime.block_on(async move {
             let _ = tokio::time::timeout(Duration::from_secs(3), router.shutdown()).await;
         });
-        // Dopo il router, che chiude le connessioni e sveglia chi aspetta: da
-        // qui un flusso rimasto in mano a qualcuno non tocca più il runtime.
-        self.condiviso.vivo.store(false, Ordering::Release);
-        runtime.shutdown_timeout(Duration::from_secs(2));
+    }
+
+    fn spegni(&mut self) {
+        self.chiudi();
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(Duration::from_secs(2));
+        }
     }
 }
 
@@ -1272,7 +1329,9 @@ async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppE
 /// Legge la risposta: la testa, e per dei byte i byte.
 async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
     match leggi::<Testa>(ricevi).await? {
-        Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza)),
+        // Come l'annuncio (`Domanda::nei_tetti`): quel che l'altro dice di sé
+        // arriva al pannello solo nei tetti.
+        Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza.nei_tetti())),
         Testa::Dati { dati } => Ok(Risposta::Dati(dati)),
         Testa::Fatto => Ok(Risposta::Fatto),
         Testa::Byte {
@@ -1362,7 +1421,12 @@ struct Associazione(Arc<Condiviso>);
 impl ProtocolHandler for Associazione {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let condiviso = &self.0;
-        if !condiviso.tentativo_ammesso() || !condiviso.invito_attivo() {
+        // Prima il QR, poi il tetto: senza un QR a schermo si chiude senza
+        // contare. Contati prima, chi conosce la chiave di questo nodo (in
+        // casa la annuncia mDNS) consumava i tentativi del minuto quando non
+        // c'era niente da indovinare, e il QR vero, mostrato subito dopo, si
+        // diceva scaduto a chi lo leggeva davvero (reperto 02-12).
+        if !condiviso.invito_attivo() || !condiviso.tentativo_ammesso() {
             conn.close(VarInt::from_u32(1), CHIUSA_SENZA_INVITO);
             return Ok(());
         }

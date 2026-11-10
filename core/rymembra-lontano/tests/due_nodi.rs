@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
+use rymembra_lontano::nodo::TENTATIVI_AL_MINUTO;
 use rymembra_lontano::{
     Domanda, Evento, Flusso, Identita, Impostazioni, Nodo, Ospite, PariNoto, Presentazione,
     Presenza, Rete, Risposta,
@@ -321,10 +322,11 @@ fn cinque_gettoni_sbagliati_bruciano_il_qr() {
 
 #[test]
 fn un_qr_che_non_vale_piu_si_dice_sempre_scaduto() {
-    // Senza un QR attivo — annullato, o oltre i tentativi al minuto — il PC
-    // chiude l'associazione appena arriva, e la chiusura corre con le prime
-    // domande di chi ha letto il QR: deve dire sempre «QR scaduto», mai «non
-    // risponde», qualunque delle due arrivi prima.
+    // Senza un QR attivo il PC chiude l'associazione appena arriva, e la
+    // chiusura corre con le prime domande di chi ha letto il QR: deve dire
+    // sempre «QR scaduto», mai «non risponde», qualunque delle due arrivi
+    // prima. (Oltre i tentativi al minuto si chiude allo stesso modo: vedi
+    // `con_un_qr_a_schermo_il_tetto_dei_tentativi_resta`.)
     let (pc, _) = nodo("PC");
     let (altro, _) = nodo("Altro");
     let invito = pc.invita().unwrap();
@@ -336,6 +338,64 @@ fn un_qr_che_non_vale_piu_si_dice_sempre_scaduto() {
             "tentativo {tentativo}"
         );
     }
+}
+
+#[test]
+fn senza_un_qr_a_schermo_i_tentativi_non_si_contano() {
+    // Reperto 02-12: il tetto dei tentativi si contava prima di guardare se
+    // c'era un QR. Chi conosce la chiave del nodo (in casa la annuncia mDNS;
+    // un dispositivo dimenticato la ricorda) consumava i tentativi del minuto
+    // senza nessun QR a schermo, e il QR vero, mostrato subito dopo,
+    // rispondeva «QR scaduto» a chi lo leggeva davvero.
+    let (pc, del_pc) = nodo("PC");
+    let (estraneo, _) = nodo("Estraneo");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.consente.lock().unwrap() = true;
+    let vecchio = pc.invita().unwrap();
+    pc.annulla_invito();
+    for tentativo in 0..TENTATIVI_AL_MINUTO + 2 {
+        assert_eq!(
+            codice(estraneo.collega(&vecchio.link())),
+            ErrorCodeKind::LontanoGettoneScaduto,
+            "tentativo {tentativo}"
+        );
+    }
+    let vero = pc.invita().unwrap();
+    telefono
+        .collega(&vero.link())
+        .expect("il QR appena mostrato vale per chi lo legge");
+}
+
+#[test]
+fn con_un_qr_a_schermo_il_tetto_dei_tentativi_resta() {
+    let (pc, del_pc) = nodo("PC");
+    let (altro, _) = nodo("Altro");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.consente.lock().unwrap() = true;
+    // Gettoni sbagliati, al più quattro per QR: il quinto lo brucerebbe, e il
+    // rifiuto verrebbe dal QR bruciato, non dal tetto.
+    let mut invito = pc.invita().unwrap();
+    for tentativo in 0..TENTATIVI_AL_MINUTO {
+        if tentativo > 0 && tentativo % 4 == 0 {
+            invito = pc.invita().unwrap();
+        }
+        let mut sbagliato = invito.clone();
+        sbagliato.gettone[0] ^= u8::try_from(tentativo + 1).unwrap();
+        assert_eq!(
+            codice(altro.collega(&sbagliato.link())),
+            ErrorCodeKind::LontanoGettoneScaduto,
+            "sbagliato {tentativo}"
+        );
+    }
+    assert!(pc.invito_attivo(), "l'ultimo QR vale ancora");
+    // Il minuto è pieno: anche il gettone giusto resta fuori, e il QR non si
+    // consuma.
+    assert_eq!(
+        codice(telefono.collega(&invito.link())),
+        ErrorCodeKind::LontanoGettoneScaduto,
+        "oltre il tetto"
+    );
+    assert!(pc.invito_attivo(), "il tetto non consuma il QR");
 }
 
 #[test]
@@ -395,6 +455,41 @@ fn la_presenza_arriva_da_sola_e_cambia() {
             .iter()
             .any(|e| matches!(e, Evento::Assente { chiave } if *chiave == chiave_pc))
     }));
+}
+
+#[test]
+fn la_presenza_dell_altro_arriva_nei_tetti() {
+    // Reperto 02-13, dalla risposta: chi chiede la presenza la riceve
+    // tagliata, qualunque cosa l'altro dica di sé.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.consente.lock().unwrap() = true;
+    telefono.collega(&pc.invita().unwrap().link()).unwrap();
+    pc.presenza(Presenza {
+        nome: "PC ".repeat(50_000),
+        piattaforma: "prova".to_owned(),
+        versione: format!("3.2.0\u{202E}{}", "9".repeat(100_000)),
+        ..Presenza::default()
+    });
+    let Risposta::Presenza(presenza) = telefono
+        .chiedi(&pc.chiave(), Domanda::Presenza, Duration::from_secs(10))
+        .unwrap()
+    else {
+        panic!("una presenza");
+    };
+    assert!(
+        presenza.nome.chars().count() <= 64,
+        "{}",
+        presenza.nome.len()
+    );
+    assert!(presenza.nome.starts_with("PC PC"));
+    assert!(
+        presenza.versione.chars().count() <= 64,
+        "{}",
+        presenza.versione.len()
+    );
+    assert!(!presenza.versione.contains('\u{202E}'));
+    assert_eq!(presenza.piattaforma, "prova");
 }
 
 #[test]
@@ -569,6 +664,49 @@ fn chi_ha_letto_il_qr_puo_rinunciare_e_l_altro_toglie_la_domanda() {
     );
     // Senza un'associazione in corso, annullare non fa niente.
     telefono.annulla_collegamento();
+}
+
+#[test]
+fn chiuso_mentre_si_collega_il_comando_finisce_spento() {
+    // Reperto 02-7: il `collega` in attesa del sì teneva il nodo acceso dopo
+    // l'interruttore spento. Chiuso, il comando torna subito, e con un errore
+    // che dice perché: non «annullato» (che la finestra tace), non «non
+    // risponde».
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.tentenna.lock().unwrap() = true;
+    let invito = pc.invita().unwrap();
+
+    let telefono = Arc::new(telefono);
+    let in_attesa = {
+        let telefono = Arc::clone(&telefono);
+        let link = invito.link();
+        std::thread::spawn(move || telefono.collega(&link))
+    };
+    assert!(aspetta(|| inviti_finiti(&del_pc) == 1));
+    std::thread::sleep(Duration::from_millis(200));
+    let partito = Instant::now();
+    telefono.chiudi();
+    let esito = in_attesa.join().unwrap();
+    assert_eq!(codice(esito), ErrorCodeKind::LontanoSpento);
+    assert!(
+        partito.elapsed() < Duration::from_secs(5),
+        "non aspetta la scadenza: {:?}",
+        partito.elapsed()
+    );
+    assert!(
+        aspetta(|| *del_pc.ritirate.lock().unwrap() == vec![telefono.chiave()]),
+        "chi mostrava il QR toglie la domanda"
+    );
+    assert!(
+        del_pc.nuovi.lock().unwrap().is_empty(),
+        "nessuno è associato"
+    );
+    assert_eq!(
+        codice(telefono.collega(&pc.invita().unwrap().link())),
+        ErrorCodeKind::LontanoSpento,
+        "e un comando dopo lo trova spento"
+    );
 }
 
 #[test]

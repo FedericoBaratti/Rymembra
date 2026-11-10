@@ -93,8 +93,9 @@ pub(super) enum Posta {
 /// Quel che il filo condivide con i comandi e con l'ospite.
 pub(super) struct Comune {
     /// Il nodo, quando è acceso. In un `Arc` perché un comando lo usa senza
-    /// tenere il lucchetto: spento qui, si ferma davvero quando l'ultimo
-    /// comando in volo lo lascia.
+    /// tenere il lucchetto: spento qui si chiude subito, anche per il comando
+    /// in volo (`lascia_il_nodo`), e il suo runtime se ne va quando l'ultimo
+    /// lo lascia.
     pub nodo: Mutex<Option<Arc<Nodo>>>,
     /// Le chiavi dei dispositivi associati e non revocati: il cancello del
     /// nodo le chiede a ogni connessione, e non deve aspettare la libreria.
@@ -289,6 +290,20 @@ fn tieni_la_lettura(
             false
         }
     }
+}
+
+/// Il nodo tolto da [`Comune::nodo`]: si chiude subito, anche se un comando
+/// lo tiene ancora — nessuno lo raggiunge più, il QR non vale più, e quel
+/// comando torna con `lontano.spento` — e il suo runtime se ne va con
+/// l'ultimo che lo lascia.
+///
+/// Fino al reperto 02-7 si fermava solo se nessuno lo teneva: un `collega`
+/// che aspettava il sì dell'altro (fino a quattro minuti), o una lettura di
+/// «Sfoglia» in volo, lo lasciava acceso e raggiungibile dopo l'interruttore
+/// spento, e riacceso subito ne partiva un secondo con la stessa chiave.
+fn lascia_il_nodo(nodo: Arc<Nodo>) {
+    nodo.chiudi();
+    drop(nodo);
 }
 
 struct Filo {
@@ -563,10 +578,7 @@ impl Filo {
         self.vie.clear();
         self.acceso_con = None;
         if let Some(nodo) = nodo {
-            // Se un comando lo sta usando, si ferma quando lo lascia.
-            if let Ok(nodo) = Arc::try_unwrap(nodo) {
-                nodo.ferma();
-            }
+            lascia_il_nodo(nodo);
         }
         self.pubblica();
     }
@@ -844,5 +856,84 @@ mod prove {
         assert!(tieni_la_lettura(&comune, &mut letto, leggi(c)));
         assert!(!comune.associato(&perso));
         assert!(comune.associato(&nuovo));
+    }
+
+    /// Un'app che non conosce nessuno.
+    struct Nessuno;
+
+    impl rymembra_lontano::Ospite for Nessuno {
+        fn associato(&self, _chiave: &str) -> bool {
+            false
+        }
+
+        fn conferma(&self, _chiave: &str, _chi: &Presentazione) -> bool {
+            false
+        }
+
+        fn nuovo_pari(
+            &self,
+            _chiave: &str,
+            _chi: &Presentazione,
+            _indirizzi: &[std::net::SocketAddr],
+        ) {
+        }
+
+        fn rispondi(
+            &self,
+            _da: &str,
+            _domanda: rymembra_lontano::Domanda,
+        ) -> Result<rymembra_lontano::Risposta, AppError> {
+            Err(AppError::new(ErrorCode::LontanoNonAssociato))
+        }
+
+        fn dimenticato(&self, _da: &str) {}
+
+        fn evento(&self, _evento: Evento) {}
+    }
+
+    #[test]
+    fn spento_qui_il_nodo_si_chiude_anche_se_un_comando_lo_tiene() {
+        // Reperto 02-7: spento «Raggiungibile da internet», il nodo si
+        // fermava solo se nessun comando lo teneva. Un `collega` in attesa del
+        // sì (fino a quattro minuti), o una lettura di «Sfoglia» in volo, lo
+        // teneva acceso e raggiungibile — col QR ancora valido — finché non
+        // finiva.
+        let nodo = Arc::new(
+            Nodo::avvia(
+                Impostazioni {
+                    identita: rymembra_lontano::Identita::nuova(),
+                    rete: Rete::SoloQuesta,
+                    io: Presentazione {
+                        nome: "PC".to_owned(),
+                        piattaforma: "windows".to_owned(),
+                        dispositivo: "pc-di-prova".to_owned(),
+                        chiave_insieme: None,
+                    },
+                    presenza: Presenza::default(),
+                },
+                Arc::new(Nessuno),
+            )
+            .unwrap(),
+        );
+        nodo.invita().unwrap();
+        assert!(nodo.invito_attivo());
+        // Il comando in volo.
+        let tenuto = Arc::clone(&nodo);
+        lascia_il_nodo(nodo);
+        assert!(!tenuto.invito_attivo(), "il QR non vale più");
+        let altro = rymembra_lontano::Identita::nuova().chiave();
+        assert_eq!(
+            tenuto
+                .chiedi(
+                    &altro,
+                    rymembra_lontano::Domanda::Presenza,
+                    Duration::from_secs(2)
+                )
+                .unwrap_err()
+                .code()
+                .kind(),
+            rymembra_domain::errors::ErrorCodeKind::LontanoSpento,
+            "chi lo tiene ancora lo trova spento"
+        );
     }
 }

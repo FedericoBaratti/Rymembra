@@ -45,7 +45,8 @@ pub struct Flusso {
     /// Le scadenze, comuni alle copie come quelle di un socket.
     leggi_entro: Arc<Mutex<Option<Duration>>>,
     scrivi_entro: Arc<Mutex<Option<Duration>>>,
-    /// Il runtime del nodo gira ancora.
+    /// Il nodo è ancora acceso: da chiuso (`Nodo::chiudi`) il suo runtime
+    /// può non esserci più.
     vivo: Arc<AtomicBool>,
 }
 

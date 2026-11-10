@@ -116,6 +116,34 @@ fn connessione_grezza(da: &Nodo, a: &Nodo, alpn: &[u8]) -> Connection {
         .expect("connessa")
 }
 
+/// Prova ad aprire una connessione verso `a`, per chiave e da questi
+/// indirizzi, entro `entro`: `true` se si apre.
+fn si_apre(
+    da: &Nodo,
+    a: EndpointId,
+    indirizzi: &[SocketAddr],
+    alpn: &[u8],
+    entro: Duration,
+) -> bool {
+    let mut indirizzo = EndpointAddr::new(a);
+    for diretto in indirizzi {
+        indirizzo = indirizzo.with_ip_addr(*diretto);
+    }
+    let endpoint = da.endpoint.clone();
+    let alpn = alpn.to_vec();
+    da.runtime().expect("acceso").block_on(async move {
+        match tokio::time::timeout(entro, endpoint.connect(indirizzo, &alpn)).await {
+            Ok(Ok(conn)) => {
+                // Il cancello di una porta aperta chiude subito: conta solo se
+                // resta in piedi un momento.
+                let chiusa = tokio::time::timeout(Duration::from_millis(300), conn.closed()).await;
+                chiusa.is_err()
+            }
+            _ => false,
+        }
+    })
+}
+
 fn chiedi_sulla(da: &Nodo, conn: &Connection, domanda: Domanda) -> Result<Risposta, AppError> {
     let conn = conn.clone();
     da.runtime().expect("acceso").block_on(async move {
@@ -179,6 +207,60 @@ fn un_dispositivo_non_piu_associato_non_legge_su_nessuna_connessione() {
         )),
         ErrorCodeKind::LontanoNonAssociato
     );
+}
+
+#[test]
+fn chiuso_mentre_altri_lo_tengono_non_accoglie_piu_nessuno() {
+    // Reperto 02-7: «Raggiungibile da internet» spento, il nodo si fermava
+    // solo all'ultimo `Arc`. Con `chiudi` la porta si chiude subito, anche con
+    // un comando che lo tiene ancora.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    let id = pc.endpoint.id();
+    let indirizzi = pc.socket();
+    let pc = Arc::new(pc);
+    let tenuto = Arc::clone(&pc);
+
+    // Acceso: la libreria e l'associazione rispondono.
+    let aperta = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+    chiedi_sulla(&telefono, &aperta, una_domanda()).expect("acceso: risponde");
+    pc.invita().expect("un QR");
+    let entro = Duration::from_secs(3);
+    assert!(si_apre(&telefono, id, &indirizzi, ALPN_LONTANO, entro));
+    assert!(si_apre(&telefono, id, &indirizzi, ALPN_ASSOCIA, entro));
+
+    pc.chiudi();
+    assert!(!tenuto.invito_attivo(), "il QR non vale più");
+    // La connessione già aperta si chiude.
+    let chiusa = aperta.clone();
+    let chiusa_in_tempo = telefono.runtime().expect("acceso").block_on(async move {
+        tokio::time::timeout(Duration::from_secs(5), chiusa.closed())
+            .await
+            .is_ok()
+    });
+    assert!(chiusa_in_tempo, "la connessione aperta si chiude");
+    // E nessuna nuova si apre, su nessuna porta.
+    for alpn in [ALPN_LONTANO, ALPN_ASSOCIA, ALPN_INSIEME] {
+        assert!(
+            !si_apre(&telefono, id, &indirizzi, alpn, entro),
+            "{}",
+            String::from_utf8_lossy(alpn)
+        );
+    }
+    // Chi lo tiene ancora lo trova spento.
+    assert_eq!(
+        codice(tenuto.chiedi(&telefono.chiave(), una_domanda(), entro)),
+        ErrorCodeKind::LontanoSpento
+    );
+    assert_eq!(
+        tenuto.invita().expect_err("spento").code().kind(),
+        ErrorCodeKind::LontanoSpento
+    );
+    // Una seconda volta non fa niente; l'ultimo `Arc` spegne il runtime.
+    tenuto.chiudi();
+    drop(pc);
+    drop(tenuto);
 }
 
 #[test]
