@@ -302,7 +302,7 @@ export function Sincronizza({
             const dopo = await ipc.riproduzioneStato();
             dove = dopo.coda.indexOf(brano.id, dopo.posizioneCoda ?? 0);
           }
-          if (dove >= 0) await ipc.codaVai(dove);
+          if (dove >= 0) await ipc.codaVai(dove, brano.id);
         }
       }
       await ipc.vaiA(Math.max(0, ms));

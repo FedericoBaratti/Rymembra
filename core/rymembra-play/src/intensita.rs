@@ -114,6 +114,33 @@ pub fn guadagno_db(lufs: f64) -> f32 {
 /// cartella di rete caduta, che non è colpa del brano. Un guasto della libreria
 /// di misura, che su dati validi non capita, diventa `playback.decodeFailed`.
 pub fn misura(sorgente: Sorgente) -> Result<Esito, AppError> {
+    misura_finche(sorgente, &|| true)
+}
+
+/// Come [`misura`], ma fra un blocco e l'altro chiede a `continua` se andare
+/// avanti.
+///
+/// # Perché
+///
+/// Perché chi misura una libreria lo fa solo mentre non suona niente, e con
+/// una scadenza addosso. Finché la misura era un ciclo che nessuno poteva
+/// interrompere, la scadenza smetteva di aspettare ma la decodifica no: il
+/// filo abbandonato leggeva il file fino in fondo, anche con la musica
+/// ripartita, e contendeva la share al brano dopo — il buco nel gapless che
+/// la passata esiste per non fare. Vedi `analisi.rs` nell'applicazione. La
+/// domanda costa una chiamata per blocco, cioè ogni qualche migliaio di
+/// fotogrammi.
+///
+/// # Errori
+///
+/// Quelli di [`misura`], e `internal.aborted` quando `continua` ha detto di
+/// no: non è un guasto del brano, e chi lo riceve non deve scrivere niente.
+pub fn misura_finche(sorgente: Sorgente, continua: &dyn Fn() -> bool) -> Result<Esito, AppError> {
+    let interrotta = || {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("misura dell'intensità".to_owned()),
+        })
+    };
     let track_id = sorgente.track_id;
     let mut decodificatore = Decodificatore::apri(sorgente, FREQUENZA, 2)?;
     let guasto = |cosa: &str, err: ebur128::Error| {
@@ -128,7 +155,15 @@ pub fn misura(sorgente: Sorgente) -> Result<Esito, AppError> {
 
     let mut blocco: Vec<f32> = Vec::with_capacity(8192);
     let mut campioni: u64 = 0;
-    while decodificatore.prossimo(&mut blocco)? {
+    loop {
+        // Prima di ogni lettura, anche della prima: aprire può aver già
+        // consumato il tempo concesso.
+        if !continua() {
+            return Err(interrotta());
+        }
+        if !decodificatore.prossimo(&mut blocco)? {
+            break;
+        }
         misuratore
             .add_frames_f32(&blocco)
             .map_err(|err| guasto("un blocco", err))?;
@@ -362,6 +397,33 @@ mod prove {
             (3_990..=4_010).contains(&seconda.durata_ms),
             "durata {}",
             seconda.durata_ms
+        );
+    }
+
+    #[test]
+    fn la_misura_si_ferma_quando_glielo_si_chiede() {
+        // Il difetto: la misura era un ciclo che nessuno poteva interrompere.
+        // Chi la aspettava con una scadenza smetteva di aspettare, ma la
+        // decodifica andava avanti fino in fondo al file — anche con la musica
+        // ripartita, a contendere la share al brano dopo. Qui la si ferma al
+        // terzo blocco di un brano da un minuto, e deve fermarsi lì.
+        let chieste = std::cell::Cell::new(0_u32);
+        let continua = || {
+            chieste.set(chieste.get() + 1);
+            chieste.get() <= 3
+        };
+        let esito = misura_finche(seno(48_000, 0.25, 60.0), &continua);
+        assert!(
+            matches!(
+                &esito,
+                Err(err) if err.code().kind() == rymembra_domain::errors::ErrorCodeKind::InternalAborted
+            ),
+            "la misura non si è fermata: {esito:?}"
+        );
+        assert_eq!(
+            chieste.get(),
+            4,
+            "dopo il «no» non si decodifica più niente"
         );
     }
 

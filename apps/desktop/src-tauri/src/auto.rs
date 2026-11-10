@@ -951,7 +951,9 @@ pub fn esegui(app: &tauri::AppHandle, gesto: GestoAuto) -> Esito<()> {
             }
             crate::riproduzione::suona_ora(app.clone(), lettore, ids, 0)
         }
-        GestoAuto::Coda(indice) => crate::riproduzione::coda_vai_ora(app.clone(), lettore, indice),
+        GestoAuto::Coda(indice) => {
+            crate::riproduzione::coda_vai_ora(app.clone(), lettore, indice, None)
+        }
         GestoAuto::Mescola => crate::riproduzione::mescola(app.clone(), lettore),
         GestoAuto::Ripeti => crate::riproduzione::ripeti(app.clone(), lettore),
         GestoAuto::Piace { id, valore } => {

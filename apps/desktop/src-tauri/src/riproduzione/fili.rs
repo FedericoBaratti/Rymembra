@@ -67,7 +67,19 @@ pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
     // momento non arriva mai. Un gapless perso per qualche millisecondo costa
     // meno di un brano sbagliato. È una scrittura su un canale: il lucchetto in
     // mano non la rallenta.
-    if lettore.in_canna.is_some() && lettore.in_canna != lettore.coda.peek_next() {
+    //
+    // Adesso, anche perché negli ultimi secondi del brano il motore quel
+    // successivo l'ha spesso già attaccato, e lo può ritirare solo finché non
+    // sta per arrivare all'orecchio: ogni millisecondo conta. Quando non fa più
+    // in tempo, il suo annuncio non sposta la coda — vedi
+    // `Lettore::ritirato`.
+    //
+    // Non per chi segue col cursore già sulla voce in canna: vedi
+    // [`aspetta_l_annuncio`].
+    if lettore.in_canna.is_some()
+        && lettore.in_canna != lettore.coda.peek_next()
+        && !aspetta_l_annuncio_del(lettore)
+    {
         lettore.prepara(None);
     }
     lettore.non_aperto = None;
@@ -81,6 +93,43 @@ pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
     if let Some(stato) = app.try_state::<StatoLettore>() {
         sveglia_preparatore(&stato);
     }
+}
+
+/// Chi segue ha il cursore sulla voce in canna, e il suo motore non l'ha
+/// ancora fatta sentire: si aspetta il suo annuncio prima di toccare il dopo.
+///
+/// # Perché
+///
+/// Perché il cursore di chi segue lo muove l'host: quando annuncia la voce
+/// dopo, il suo stato porta il cursore su di lei, e il motore di qui — che può
+/// stare indietro di qualche centinaio di millisecondi — l'ha già attaccata ma
+/// non ancora fatta sentire. Il dopo, da lì, è la voce ancora successiva, e
+/// consegnarla adesso, o togliere quella in canna, vorrebbe dire un `Prepara`
+/// che il motore legge come il gesto di chi cambia il brano dopo quello che si
+/// sente: ritirerebbe la voce appena partita sull'host (vedi
+/// `rymembra_play::motore`, `ritira_il_successivo`). Il suo annuncio arriva fra
+/// un istante e libera la canna (il ramo di chi segue in `iniziato`): da lì il
+/// dopo si prepara come sempre.
+///
+/// Non con «ripeti uno», dove in canna c'è la stessa voce che si sente: lì il
+/// cursore non si è mosso, e spegnere la ripetizione deve ritirarla.
+pub(super) fn aspetta_l_annuncio(
+    segue: bool,
+    corrente: Option<i64>,
+    in_canna: Option<i64>,
+    si_sente: Option<i64>,
+) -> bool {
+    segue && in_canna.is_some() && corrente == in_canna && si_sente != corrente
+}
+
+/// [`aspetta_l_annuncio`] sul lettore.
+fn aspetta_l_annuncio_del(lettore: &Lettore) -> bool {
+    aspetta_l_annuncio(
+        insieme::segue(lettore),
+        lettore.coda.current(),
+        lettore.in_canna,
+        lettore.motore.posizione().track_id,
+    )
 }
 
 /// Il colpetto sul canale del preparatore.
@@ -268,6 +317,12 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             lettore.prepara(None);
             return Ok(None);
         }
+        // Chi segue, col cursore sulla voce in canna che qui non si sente
+        // ancora: il dopo si prepara al suo annuncio. Vedi
+        // [`aspetta_l_annuncio`].
+        if aspetta_l_annuncio_del(lettore) {
+            return Ok(None);
+        }
 
         // La coda non ha un dopo: è lì che l'autoplay entra — al passo zero,
         // qui sopra — e **lì** e non sull'evento `Fermato`. Accodando adesso,
@@ -358,6 +413,12 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         // cadere invece di metterlo in canna — un successivo sbagliato attaccato
         // in gapless si sente, ed è peggio di un gapless mancato.
         if lettore.coda.peek_next() != Some(id) {
+            return Ok(());
+        }
+        // O chi segue ha avuto dall'host il cursore sulla voce in canna: il
+        // brano si riprepara al suo annuncio, che rimanda la spinta. Vedi
+        // [`aspetta_l_annuncio`].
+        if aspetta_l_annuncio_del(lettore) {
             return Ok(());
         }
         // E può essere cambiato il motore: un'uscita riaperta mentre il file si

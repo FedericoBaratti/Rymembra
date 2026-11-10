@@ -26,11 +26,16 @@
 //! scarso di moltiplicazioni al secondo su un'uscita stereo a 48 kHz, che è
 //! niente.
 //!
-//! In `f64` c'è anche un vantaggio che non si nota finché non manca: i
-//! subnormali. Lo stato di un biquad decade da solo durante il silenzio, e
-//! quando entra nell'intervallo subnormale ogni operazione costa decine di
-//! cicli invece di uno. In `f32` succede dopo qualche secondo di silenzio
-//! digitale; in `f64` quell'intervallo comincia a 10⁻³⁰⁸, cioè mai.
+//! I subnormali, invece, `f64` non li tiene lontani: questo commento diceva
+//! che l'intervallo, cominciando a 10⁻³⁰⁸, non si raggiunge mai, ed era
+//! falso. Lo stato di un biquad decade durante il silenzio in modo
+//! esponenziale, e con zeri esatti all'ingresso — la coda di un album in FLAC,
+//! una pausa fra due movimenti — entra fra i subnormali dopo pochi decimi di
+//! secondo nelle bande alte e una quindicina nella più bassa, e non ne esce
+//! più: l'arrotondamento lo tiene in un piccolo ciclo attorno a 10⁻³²³. Da lì
+//! ogni operazione della cascata costa decine di cicli invece di uno, dentro la
+//! callback. Il rimedio sta in [`Stato::applica`]: con un campione d'ingresso
+//! esattamente nullo, la memoria sotto [`SOGLIA_STATO`] torna a zero.
 //!
 //! Per la stessa ragione qui **non** si usa `mul_add`, che pure sarebbe la
 //! forma più precisa di `a·b + c`: su x86-64 la FMA non è abilitata di serie,
@@ -332,6 +337,14 @@ struct Memoria {
 /// Quel che una sezione non ha ancora finito di raccontare.
 const VUOTA: Memoria = Memoria { s1: 0.0, s2: 0.0 };
 
+/// Sotto questa ampiezza la memoria di una sezione, nel silenzio, vale zero.
+///
+/// 10⁻²⁰ sono quattrocento decibel sotto il fondo scala: duecentocinquanta
+/// sotto il rumore di un DAC a 24 bit, quindi azzerarla non si sente. Ed è
+/// abbastanza in alto perché la memoria ci arrivi molto prima dei subnormali,
+/// che per un `f64` cominciano a 10⁻³⁰⁸: vedi il `//!` del modulo.
+const SOGLIA_STATO: f64 = 1e-20;
+
 /// I filtri, con dentro quel che si ricordano.
 ///
 /// Vive nella callback audio, quindi ha una misura fissa e nessuna allocazione:
@@ -429,6 +442,22 @@ impl Stato {
             ricordo.s1 = sezione.b1 * x - sezione.a1 * y + ricordo.s2;
             ricordo.s2 = sezione.b2 * x - sezione.a2 * y;
             x = y;
+        }
+        // Silenzio digitale: la memoria che sta decadendo si porta a zero
+        // prima che arrivi fra i subnormali. Solo con un ingresso esattamente
+        // nullo, perché è l'unico da cui ci si arriva — un campione qualunque,
+        // anche piccolissimo, tiene lo stato della sua grandezza — e così la
+        // musica paga un confronto per campione e niente di più. Lo scarto
+        // introdotto è al più di [`SOGLIA_STATO`], cioè niente che si senta.
+        if campione == 0.0 {
+            for ricordo in memoria.iter_mut() {
+                if ricordo.s1.abs() < SOGLIA_STATO {
+                    ricordo.s1 = 0.0;
+                }
+                if ricordo.s2.abs() < SOGLIA_STATO {
+                    ricordo.s2 = 0.0;
+                }
+            }
         }
         x as f32
     }
@@ -893,6 +922,36 @@ mod prove {
                 (alto / basso - 2.0).abs() < 1e-4,
                 "{basso} Hz e {alto} Hz non distano un'ottava"
             );
+        }
+    }
+
+    /// Nel silenzio digitale la memoria dei filtri non resta fra i subnormali.
+    ///
+    /// Il commento in testa al modulo diceva che in `f64` non ci si arriva mai.
+    /// Ci si arriva: lo stato decade in modo esponenziale, entra fra i
+    /// subnormali dopo pochi decimi di secondo nelle bande alte e una quindicina
+    /// nella più bassa, e non torna più a zero — l'arrotondamento lo tiene in un
+    /// piccolo ciclo fra ±5e-324 e ±4e-323. Da lì ogni campione della callback
+    /// moltiplica subnormali, che su molti processori costano decine di cicli
+    /// l'uno. Un secondo di seno con tutte le bande alzate, poi trenta secondi di
+    /// zeri esatti, come la coda di un album in FLAC.
+    #[test]
+    fn nel_silenzio_la_memoria_non_resta_fra_i_subnormali() {
+        let mut stato = con(&[6.0; BANDE], 48_000);
+        for n in 0..48_000 {
+            let _ = stato.applica(seno(997.0, n, 48_000.0) * 0.5, 0);
+        }
+        for _ in 0..1_440_000 {
+            let _ = stato.applica(0.0, 0);
+        }
+        let canale = stato.memoria.first().copied().unwrap_or([VUOTA; BANDE]);
+        for (banda, ricordo) in canale.iter().enumerate() {
+            for valore in [ricordo.s1, ricordo.s2] {
+                assert!(
+                    valore == 0.0 || !valore.is_subnormal(),
+                    "la banda {banda} è rimasta a {valore:e} dopo trenta secondi di silenzio"
+                );
+            }
         }
     }
 }

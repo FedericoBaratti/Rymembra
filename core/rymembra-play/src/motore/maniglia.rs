@@ -454,6 +454,14 @@ impl Motore {
     /// È tutto il gapless: quando il corrente finisce, i campioni del prossimo
     /// sono già in coda per entrare nell'anello, e fra i due non c'è nessuna
     /// apertura di file da aspettare.
+    ///
+    /// «Il brano dopo» è quello dopo il brano che si **sente**, e `None` vuol
+    /// dire nessuno. Se negli ultimi secondi la decodifica ha già attaccato il
+    /// successivo di prima, questo comando lo ritira — il brano che si sente
+    /// riparte dal punto in cui è, con lo stacco di uno svuotamento — a meno
+    /// che quel successivo non stia per arrivare all'orecchio: vedi
+    /// `Contesto::ritira_il_successivo`. Per questo il brano ancora dopo si
+    /// consegna all'annuncio di quello prima, non appena la canna si libera.
     pub fn prepara(&self, brano: Option<BranoAperto>) {
         self.manda(Comando::Prepara(brano.map(Box::new)));
     }

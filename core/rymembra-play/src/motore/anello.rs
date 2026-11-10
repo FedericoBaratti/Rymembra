@@ -606,7 +606,7 @@ impl Contesto {
         // decodificato è ancora dentro l'anello, e per i prossimi secondi è
         // **lui** quello che si sente. Si mette da parte invece di lasciarlo
         // cadere, perché un salto che arriva adesso deve poterlo ritrovare.
-        // Vedi [`Contesto::uscente`].
+        // Vedi [`Contesto::uscenti`].
         //
         // Prima del `match` e non dentro il ramo che attacca il successivo:
         // l'ultimo brano di una coda finisce di decodificarsi con la stessa
@@ -626,8 +626,12 @@ impl Contesto {
         // `corrente` è già vuoto. Assegnare comunque cancellerebbe il brano che
         // in quel momento si sta ancora sentendo, che è esattamente quello
         // messo da parte al giro di prima.
+        //
+        // In fila e non al posto di quello di prima: con due brani più corti
+        // dell'anello questa funzione scatta due volte prima che il primo dei
+        // due finisca di sentirsi. Vedi [`Contesto::uscenti`].
         if let Some(decodificatore) = self.corrente.take() {
-            self.uscente = Some(Uscente {
+            self.uscenti.push_back(Uscente {
                 ascolto: self.ascolto_corrente,
                 brano: BranoAperto {
                     decodificatore,

@@ -589,6 +589,27 @@ pub(super) fn gesto_di_coda(
     Ok(())
 }
 
+/// Nella posizione `indice` della coda come si vede c'è ancora il brano che la
+/// finestra ci vedeva?
+///
+/// # Posizione e brano
+///
+/// La posizione da sola non basta: è quella della coda disegnata, e il nucleo
+/// la applica alla sua, che nel frattempo può essere cambiata — la prima × di
+/// un doppio clic già arrivata, il «Riproduci dopo» di chi ascolta insieme.
+/// Si toglieva, si faceva partire o si spostava allora un altro brano, in
+/// silenzio. Con il brano accanto, se a quella posizione non c'è più lui, il
+/// gesto non tocca niente: lo stato che torna ridisegna la coda vera, e chi
+/// voleva quella riga la ritrova e riprova. È la regola che `playlists`
+/// segue già per le righe di una playlist.
+///
+/// `None` vale «non lo so, fai come prima»: è chi non ha una coda disegnata
+/// davanti — l'auto, o il gesto di un membro che l'host ha già risolto per
+/// voce.
+pub(super) fn al_suo_posto(coda: &Queue, indice: usize, atteso: Option<i64>) -> bool {
+    atteso.is_none_or(|brano| coda.in_play_order().get(indice) == Some(&brano))
+}
+
 // ── i comandi della coda ────────────────────────────────────────────────────
 
 /// [`coda_accoda_ora`], sul pool bloccante: vedi
@@ -673,24 +694,35 @@ pub fn coda_dopo_ora(
 
 /// [`coda_vai_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
+///
+/// `brano` è quello che la finestra vedeva in `indice`: vedi
+/// [`al_suo_posto`].
 #[tauri::command]
-pub async fn coda_vai(app: tauri::AppHandle, indice: usize) -> Esito<()> {
+pub async fn coda_vai(app: tauri::AppHandle, indice: usize, brano: i64) -> Esito<()> {
     super::col_lettore_in_disparte(app, "salto nella coda", move |app, stato| {
-        coda_vai_ora(app, stato, indice)
+        coda_vai_ora(app, stato, indice, Some(brano))
     })
     .await
 }
 
 /// Salta a una posizione della coda.
+///
+/// Con `atteso`, solo se in quella posizione c'è ancora quel brano: vedi
+/// [`al_suo_posto`].
 pub fn coda_vai_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     indice: usize,
+    atteso: Option<i64>,
 ) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::CodaVai { indice }).map_err(errore)? {
         return Ok(());
     }
     gesto_di_coda(&app, &stato, |lettore| {
+        if !al_suo_posto(&lettore.coda, indice, atteso) {
+            manda_stato(&app, lettore);
+            return Ok(false);
+        }
         // L'indice arriva dalla coda **come si vede**, cioè nell'ordine di
         // riproduzione: con lo shuffle acceso non è quello dell'elenco interno.
         if lettore.coda.play_at(indice).is_none() {
@@ -704,10 +736,13 @@ pub fn coda_vai_ora(
 
 /// [`coda_togli_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
+///
+/// `brano` è quello che la finestra vedeva in `indice`: vedi
+/// [`al_suo_posto`].
 #[tauri::command]
-pub async fn coda_togli(app: tauri::AppHandle, indice: usize) -> Esito<()> {
+pub async fn coda_togli(app: tauri::AppHandle, indice: usize, brano: i64) -> Esito<()> {
     super::col_lettore_in_disparte(app, "togli dalla coda", move |app, stato| {
-        coda_togli_ora(app, stato, indice)
+        coda_togli_ora(app, stato, indice, Some(brano))
     })
     .await
 }
@@ -738,10 +773,17 @@ pub async fn coda_togli(app: tauri::AppHandle, indice: usize) -> Esito<()> {
 /// partiva. E se il motore non aveva ancora niente in mano — la coda di ieri,
 /// appena riaperta — non si apre niente: si sposta la coda, come per ogni brano
 /// che non sta suonando.
+///
+/// # Se lì c'è un altro brano
+///
+/// Con `atteso`, la riga si toglie solo se in quella posizione c'è ancora quel
+/// brano: vedi [`al_suo_posto`]. Altrimenti non si tocca niente e la finestra
+/// riceve la coda vera.
 pub fn coda_togli_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     indice: usize,
+    atteso: Option<i64>,
 ) -> Esito<()> {
     let gesto = Gesto::CodaTogli {
         indici: vec![indice],
@@ -750,6 +792,10 @@ pub fn coda_togli_ora(
         return Ok(());
     }
     let partenza = con_lettore(&stato, |lettore| {
+        if !al_suo_posto(&lettore.coda, indice, atteso) {
+            manda_stato(&app, lettore);
+            return Ok(None);
+        }
         // Stesso spazio di coordinate di `coda_vai`: l'ordine di riproduzione.
         let suonava = lettore.coda.position() == Some(indice);
         let era_ultimo = indice.saturating_add(1) >= lettore.coda.len();
@@ -890,18 +936,39 @@ pub(crate) fn sgombra_dalla_coda(
     Ok(())
 }
 
-/// Sposta un brano dentro la coda.
+/// [`coda_riordina_ora`], dalla finestra.
+///
+/// `brano` è quello che la finestra vedeva in `da`: vedi [`al_suo_posto`].
 #[tauri::command(async)]
 pub fn coda_riordina(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     da: usize,
     a: usize,
+    brano: i64,
+) -> Esito<()> {
+    coda_riordina_ora(app, stato, da, a, Some(brano))
+}
+
+/// Sposta un brano dentro la coda.
+///
+/// Con `atteso`, solo se in `da` c'è ancora quel brano: vedi [`al_suo_posto`].
+/// Senza, è il gesto di un membro che l'host ha già risolto per voce.
+pub fn coda_riordina_ora(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    da: usize,
+    a: usize,
+    atteso: Option<i64>,
 ) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::CodaRiordina { da, a }).map_err(errore)? {
         return Ok(());
     }
     con_lettore(&stato, |lettore| {
+        if !al_suo_posto(&lettore.coda, da, atteso) {
+            manda_stato(&app, lettore);
+            return Ok(());
+        }
         lettore.coda.reorder(da, a);
         lettore.coda_curata = true;
         prepara_prossimo(&app, lettore);

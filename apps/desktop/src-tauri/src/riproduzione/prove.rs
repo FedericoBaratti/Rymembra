@@ -12,17 +12,17 @@ use super::*;
 fn l_annuncio_del_brano_avviato_non_sposta_la_coda() {
     // Avviato 42, la coda lo indica, in canna il dopo.
     assert_eq!(
-        dopo_l_annuncio(42, Some(42), Some(42), Some(43)),
+        dopo_l_annuncio(42, Some(42), Some(42), Some(43), None),
         DopoLAnnuncio::Resta
     );
     // Avviato 42; prima del suo primo campione un gesto ha scelto 44.
     assert_eq!(
-        dopo_l_annuncio(42, Some(42), Some(44), Some(43)),
+        dopo_l_annuncio(42, Some(42), Some(44), Some(43), None),
         DopoLAnnuncio::Resta
     );
     // `[A, A, B]`: l'inizio del primo A non è quello del secondo in canna.
     assert_eq!(
-        dopo_l_annuncio(7, Some(7), Some(7), Some(7)),
+        dopo_l_annuncio(7, Some(7), Some(7), Some(7), None),
         DopoLAnnuncio::Resta
     );
 }
@@ -31,29 +31,127 @@ fn l_annuncio_del_brano_avviato_non_sposta_la_coda() {
 fn gli_altri_annunci_spostano_la_coda_come_prima() {
     // Il gapless: niente di atteso, il motore attacca quello in canna.
     assert_eq!(
-        dopo_l_annuncio(43, None, Some(42), Some(43)),
+        dopo_l_annuncio(43, None, Some(42), Some(43), None),
         DopoLAnnuncio::AvanzaDallaCanna
     );
     // `[A, A, B]`, il secondo A attaccato senza buchi.
     assert_eq!(
-        dopo_l_annuncio(7, None, Some(7), Some(7)),
+        dopo_l_annuncio(7, None, Some(7), Some(7), None),
         DopoLAnnuncio::AvanzaDallaCanna
     );
     // Avviato 42, che il motore ha saltato: comincia 43, già in canna.
     assert_eq!(
-        dopo_l_annuncio(43, Some(42), Some(42), Some(43)),
+        dopo_l_annuncio(43, Some(42), Some(42), Some(43), None),
         DopoLAnnuncio::AvanzaDallaCanna
     );
     // Un entrante che la coda non indica, fuori dalla canna.
     assert_eq!(
-        dopo_l_annuncio(50, None, Some(42), None),
+        dopo_l_annuncio(50, None, Some(42), None, None),
         DopoLAnnuncio::Avanza
     );
     // Il brano che la coda indica, senza attese: niente da fare.
     assert_eq!(
-        dopo_l_annuncio(42, None, Some(42), None),
+        dopo_l_annuncio(42, None, Some(42), None, None),
         DopoLAnnuncio::Resta
     );
+}
+
+/// L'annuncio del successivo che si era chiesto di ritirare non porta la
+/// coda oltre il brano mostrato.
+///
+/// Coda `[A, B, C]`, A suona, B già attaccato dal motore: negli ultimi istanti
+/// di A si fa «Riproduci dopo» su X, e la coda diventa `[A, X, B, C]`. Il
+/// motore ritira B quando fa in tempo; quando non fa più in tempo — B stava già
+/// per arrivare all'orecchio — B suona, e arriva il suo annuncio con la canna
+/// vuota o già su X. Prima la coda andava avanti di uno: su X, mostrato con la
+/// durata e il cursore di B, e dopo B suonava di nuovo. X non si sentiva mai.
+#[test]
+fn l_annuncio_del_successivo_ritirato_non_sposta_la_coda() {
+    const A: i64 = 1;
+    const B: i64 = 2;
+    const X: i64 = 9;
+    assert_eq!(
+        dopo_l_annuncio(B, None, Some(A), None, Some(B)),
+        DopoLAnnuncio::Resta,
+        "con la canna vuota"
+    );
+    assert_eq!(
+        dopo_l_annuncio(B, None, Some(A), Some(X), Some(B)),
+        DopoLAnnuncio::Resta,
+        "con il brano nuovo già in canna"
+    );
+    // Il brano nuovo in canna, se attacca, fa andare avanti la coda come
+    // sempre.
+    assert_eq!(
+        dopo_l_annuncio(X, None, Some(A), Some(X), Some(B)),
+        DopoLAnnuncio::AvanzaDallaCanna
+    );
+}
+
+/// Chi segue non ritira la voce che l'host ha appena fatto partire.
+///
+/// L'host annuncia B e manda il suo stato: il cursore di chi segue va su B,
+/// che il suo motore ha già attaccato ma non ancora fatto sentire — chi segue
+/// può stare indietro di qualche centinaio di millisecondi. Col dopo che è
+/// diventato C, `prepara_prossimo` mandava `Prepara(None)` e il preparatore
+/// C: il motore, che adesso ritira un successivo attaccato, ritirava B, e chi
+/// segue saltava la voce. Si aspetta l'annuncio di B: è lui a liberare la
+/// canna. Con «ripeti uno» invece la voce in canna è la stessa che si sente,
+/// e spegnerlo deve ritirarla come sempre.
+#[test]
+fn chi_segue_aspetta_l_annuncio_della_voce_in_canna() {
+    const A: i64 = -1;
+    const B: i64 = -2;
+    const C: i64 = -3;
+    assert!(
+        fili::aspetta_l_annuncio(true, Some(B), Some(B), Some(A)),
+        "il cursore dell'host è già su B, che qui non si sente ancora"
+    );
+    assert!(
+        !fili::aspetta_l_annuncio(true, Some(A), Some(A), Some(A)),
+        "«ripeti uno»: la voce in canna è quella che si sente"
+    );
+    assert!(
+        !fili::aspetta_l_annuncio(false, Some(B), Some(B), Some(A)),
+        "solo chi segue"
+    );
+    assert!(
+        !fili::aspetta_l_annuncio(true, Some(B), Some(C), Some(A)),
+        "in canna non c'è la voce del cursore"
+    );
+    assert!(!fili::aspetta_l_annuncio(true, Some(B), None, Some(A)));
+}
+
+/// Togliere, saltare e spostare una riga della coda portano il brano che la
+/// finestra ci vedeva: due × in fila prima della risposta toglievano la riga
+/// sbagliata.
+///
+/// La coda `[1, 2, 3, 4, 5]` disegnata, e due clic sulla × del 2 e del 4
+/// prima che arrivi lo stato nuovo: le posizioni sono 1 e 3, quelle dello
+/// schermo. Il primo toglie il 2 e la coda diventa `[1, 3, 4, 5]`; il
+/// secondo, per sola posizione, toglieva il **5**. Con il brano accanto il
+/// secondo vede che in 3 non c'è più il 4 e non tocca niente.
+#[test]
+fn togliere_da_una_coda_cambiata_sotto_non_toglie_un_altro_brano() {
+    let mut coda = rymembra_domain::queue::Queue::new();
+    coda.play_tracks(vec![1, 2, 3, 4, 5], 0, 7);
+    // Il primo clic, sulla riga che c'era davvero.
+    assert!(al_suo_posto(&coda, 1, Some(2)));
+    coda.remove_at(1);
+    // Il secondo, con le posizioni di prima.
+    if al_suo_posto(&coda, 3, Some(4)) {
+        coda.remove_at(3);
+    }
+    assert_eq!(
+        coda.in_play_order(),
+        [1, 3, 4, 5],
+        "il secondo clic ha tolto un brano che nessuno aveva indicato"
+    );
+    // Una posizione fuori dalla coda non porta nessun brano.
+    assert!(!al_suo_posto(&coda, 9, Some(4)));
+    // Chi non porta un brano — l'auto, un gesto già risolto per voce — passa
+    // come prima.
+    assert!(al_suo_posto(&coda, 2, None));
 }
 
 /// «Precedente» premuto mentre il brano nuovo si apre torna indietro: il

@@ -59,6 +59,12 @@ pub const OK: &str = "ok";
 pub const ILLEGGIBILE: &str = "illeggibile";
 /// Niente sopra la soglia assoluta di −70 LUFS. Terminale.
 pub const MUTO: &str = "muto";
+/// Il file arriva, ma troppo piano perché la misura finisca entro la sua
+/// scadenza. Si ritenta fra [`RITENTA_LENTO_MS`].
+pub const LENTO: &str = "lento";
+
+/// Ogni quanto si ritenta un brano [`LENTO`].
+pub const RITENTA_LENTO_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Cos'è successo provando a misurare un brano.
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +85,9 @@ pub enum Misurato {
     },
     /// La rete non risponde. **Non si scrive niente e il lotto si ferma.**
     NonRaggiungibile,
+    /// La misura si è fermata a metà perché glielo si è chiesto. Non si scrive
+    /// niente, e il brano resta candidato.
+    Interrotta,
 }
 
 /// Quali brani mancano, e a che condizioni ci si torna.
@@ -97,6 +106,10 @@ pub enum Misurato {
 /// Fuori anche i brani del cloud, come in `sonora::candidato_where`: si
 /// misurano dalla copia intera in cache, con [`scheda_per_id`], e mai
 /// scaricandoli apposta.
+///
+/// Un brano [`LENTO`] torna dopo [`RITENTA_LENTO_MS`] e non dopo un mese: è la
+/// share a essere lenta oggi, non il file a essere storto. `?1` è la
+/// versione, `?2` e `?3` le due soglie di [`scadenze`].
 fn candidato_where() -> String {
     format!(
         "t.path IS NOT NULL
@@ -104,7 +117,9 @@ fn candidato_where() -> String {
          AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
          AND (m.track_id IS NULL
               OR m.versione <> ?1
-              OR (m.lufs IS NULL AND m.esito <> 'muto' AND m.tentato_at < ?2))",
+              OR (m.lufs IS NULL AND m.esito NOT IN ('muto', '{LENTO}')
+                  AND m.tentato_at < ?2)
+              OR (m.lufs IS NULL AND m.esito = '{LENTO}' AND m.tentato_at < ?3))",
         crate::nuvola::FUORI_DALLA_NUVOLA
     )
 }
@@ -121,10 +136,11 @@ pub fn quanti_mancano(connection: &Connection, adesso: i64) -> Result<i64, AppEr
          WHERE {}",
         candidato_where()
     );
+    let (scadenza, scadenza_lento) = scadenze(adesso);
     connection
         .query_row(
             &sql,
-            rusqlite::params![versione(), scadenza(adesso)],
+            rusqlite::params![versione(), scadenza, scadenza_lento],
             |row| row.get(0),
         )
         .map_err(|err| db_error("conteggio dei brani da misurare", &err))
@@ -168,15 +184,35 @@ pub fn candidati(
     adesso: i64,
     quanti: usize,
 ) -> Result<Vec<SchedaSorgente>, AppError> {
+    candidati_tranne(connection, adesso, quanti, &[])
+}
+
+/// Come [`candidati`], senza i brani di `esclusi`.
+///
+/// Sono quelli che la passata in corso ha già deciso di saltare — la loro
+/// radice non risponde — e che senza questa clausola tornerebbero in testa a
+/// ogni lotto: sono di solito i più recenti, cioè proprio i primi.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn candidati_tranne(
+    connection: &Connection,
+    adesso: i64,
+    quanti: usize,
+    esclusi: &[i64],
+) -> Result<Vec<SchedaSorgente>, AppError> {
     let sql = format!(
         "SELECT t.id, t.path, t.duration_ms, t.immagine, t.inizio_cd, t.fine_cd
          FROM tracks t
          LEFT JOIN track_intensita m ON m.track_id = t.id
          WHERE {}
+           AND t.id NOT IN (SELECT value FROM json_each(?5))
          ORDER BY t.date_added DESC
-         LIMIT ?3",
+         LIMIT ?4",
         candidato_where()
     );
+    let (scadenza, scadenza_lento) = scadenze(adesso);
     let mut statement = connection
         .prepare(&sql)
         .map_err(|err| db_error("elenco dei brani da misurare", &err))?;
@@ -184,8 +220,10 @@ pub fn candidati(
         .query_map(
             rusqlite::params![
                 versione(),
-                scadenza(adesso),
+                scadenza,
+                scadenza_lento,
                 i64::try_from(quanti).unwrap_or(i64::MAX),
+                crate::sonora::elenco_json(esclusi),
             ],
             |row| {
                 // `candidato_where` ha escluso i brani senza file. Per un
@@ -225,11 +263,24 @@ pub fn candidati(
 /// share morta l'apertura sono i quaranta secondi di Windows.
 #[must_use]
 pub fn misura(files: &dyn MusicFiles, scheda: &SchedaSorgente) -> Misurato {
+    misura_finche(files, scheda, &|| true)
+}
+
+/// Come [`misura`], ma la decodifica si ferma fra un blocco e l'altro appena
+/// `continua` dice di no — la musica che riparte, la scadenza che passa — e
+/// allora non c'è niente da scrivere: [`Misurato::Interrotta`]. Vedi
+/// [`intensita::misura_finche`].
+#[must_use]
+pub fn misura_finche(
+    files: &dyn MusicFiles,
+    scheda: &SchedaSorgente,
+    continua: &dyn Fn() -> bool,
+) -> Misurato {
     let sorgente = match sorgente_da_scheda(files, scheda) {
         Ok(sorgente) => sorgente,
         Err(err) => return da_errore(scheda.track_id, &err),
     };
-    match intensita::misura(sorgente) {
+    match intensita::misura_finche(sorgente, continua) {
         Ok(Esito::Misurata(intensita)) => Misurato::Fatta {
             track_id: scheda.track_id,
             intensita,
@@ -297,6 +348,11 @@ pub fn scheda_per_id(
 /// (`cloud.notInCache`), un conto scollegato: vedi `sonora::da_errore`.
 fn da_errore(track_id: i64, err: &AppError) -> Misurato {
     let tipo = err.code().kind();
+    // Fermata da chi la aspettava: non è una proprietà del file, e segnarla
+    // illeggibile vorrebbe dire non riprovarla per un mese.
+    if tipo == ErrorCodeKind::InternalAborted {
+        return Misurato::Interrotta;
+    }
     if tipo == ErrorCodeKind::FsNetworkUnavailable
         || tipo == ErrorCodeKind::NetRateLimited
         || tipo.domain() == rymembra_domain::errors::Domain::Cloud
@@ -342,7 +398,7 @@ pub fn registra(
                 intensita,
             } => (*track_id, Some(*intensita), OK),
             Misurato::Negata { track_id, esito } => (*track_id, None, *esito),
-            Misurato::NonRaggiungibile => continue,
+            Misurato::NonRaggiungibile | Misurato::Interrotta => continue,
         };
         statement
             .execute(rusqlite::params![
@@ -440,8 +496,13 @@ fn versione() -> i64 {
     i64::from(intensita::VERSIONE)
 }
 
-fn scadenza(adesso: i64) -> i64 {
-    adesso.saturating_sub(RITENTA_MS)
+/// Le due soglie di [`candidato_where`]: prima di quando un tentativo andato
+/// male si ritenta, e prima di quando un brano [`LENTO`].
+fn scadenze(adesso: i64) -> (i64, i64) {
+    (
+        adesso.saturating_sub(RITENTA_MS),
+        adesso.saturating_sub(RITENTA_LENTO_MS),
+    )
 }
 
 #[cfg(test)]
@@ -611,6 +672,64 @@ mod prove {
             (2, 2)
         );
         assert_eq!(del_brano(&connection, 1).expect("lettura"), None);
+    }
+
+    /// Un brano segnato lento torna candidato dopo un giorno, non dopo un
+    /// mese: la share che oggi non ce la fa può farcela domani. E finché non
+    /// torna, non sta in testa a ogni lotto.
+    #[test]
+    fn un_brano_lento_torna_dopo_un_giorno() {
+        let mut connection = libreria();
+        brano(&connection, 1);
+        scrivi(
+            &mut connection,
+            &[Misurato::Negata {
+                track_id: 1,
+                esito: LENTO,
+            }],
+            1_000,
+        );
+        assert_eq!(quanti_mancano(&connection, 2_000).expect("subito"), 0);
+        assert_eq!(
+            quanti_mancano(&connection, 2_000 + RITENTA_LENTO_MS).expect("dopo un giorno"),
+            1
+        );
+        assert_eq!(
+            candidati(&connection, 2_000 + RITENTA_LENTO_MS, 10)
+                .expect("candidati")
+                .len(),
+            1
+        );
+    }
+
+    /// I brani che la passata ha già saltato non tornano in testa al lotto.
+    #[test]
+    fn i_brani_esclusi_non_tornano_fra_i_candidati() {
+        let connection = libreria();
+        for id in 1..=4 {
+            brano(&connection, id);
+        }
+        let ids: Vec<i64> = candidati_tranne(&connection, 0, 10, &[4, 2])
+            .expect("candidati")
+            .iter()
+            .map(|c| c.track_id)
+            .collect();
+        assert_eq!(ids, [3, 1]);
+    }
+
+    /// Una misura fermata a metà non è un file illeggibile: non si scrive
+    /// niente, e il brano resta candidato.
+    #[test]
+    fn una_misura_interrotta_non_dice_che_il_file_e_illeggibile() {
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let copia = cartella.path().join("copia.wav");
+        wav_sonoro(&copia);
+        let scheda = SchedaSorgente {
+            collocazione: Collocazione::File(NUVOLOSO.to_owned()),
+            ..scheda()
+        };
+        let misurato = misura_finche(&CopiaInCache(Some(copia)), &scheda, &|| false);
+        assert_eq!(misurato, Misurato::Interrotta);
     }
 
     #[test]
