@@ -200,12 +200,31 @@ pub fn candidati(
     adesso: i64,
     quanti: usize,
 ) -> Result<Vec<SchedaSorgente>, AppError> {
+    candidati_tranne(connection, adesso, quanti, &[])
+}
+
+/// Come [`candidati`], senza i brani di `esclusi`.
+///
+/// Sono quelli che la passata in corso ha già deciso di saltare — la loro
+/// radice non risponde — e che senza questa clausola tornerebbero in testa a
+/// ogni lotto: sono di solito i più recenti, cioè proprio i primi.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn candidati_tranne(
+    connection: &Connection,
+    adesso: i64,
+    quanti: usize,
+    esclusi: &[i64],
+) -> Result<Vec<SchedaSorgente>, AppError> {
     let sql = format!(
         "SELECT t.id, t.path, t.duration_ms, t.replaygain_track_db,
                 t.immagine, t.inizio_cd, t.fine_cd
          FROM tracks t
          LEFT JOIN track_impronta i ON i.track_id = t.id
          WHERE {}
+           AND t.id NOT IN (SELECT value FROM json_each(?4))
          ORDER BY t.date_added DESC
          LIMIT ?3",
         candidato_where()
@@ -219,6 +238,7 @@ pub fn candidati(
                 versione(),
                 scadenza(adesso),
                 i64::try_from(quanti).unwrap_or(i64::MAX),
+                elenco_json(esclusi),
             ],
             |row| {
                 // `candidato_where` ha già escluso i brani senza file: qui
@@ -615,6 +635,15 @@ fn scadenza(adesso: i64) -> i64 {
     adesso.saturating_sub(RITENTA_MS)
 }
 
+/// Un elenco di identificativi come lo vuole `json_each`: `[1,2,3]`.
+///
+/// Scritto a mano e non con `serde_json` perché sono soltanto numeri, che non
+/// hanno niente da far sfuggire.
+pub(crate) fn elenco_json(ids: &[i64]) -> String {
+    let dentro: Vec<String> = ids.iter().map(i64::to_string).collect();
+    format!("[{}]", dentro.join(","))
+}
+
 /// Da vettore a byte: `f32` in little-endian, di fila.
 ///
 /// Little-endian e non l'ordine della macchina: un database può viaggiare fra
@@ -678,6 +707,26 @@ mod prove {
         (0..impronta::DIMENSIONI)
             .map(|i| seme + i as f32 * 0.5)
             .collect()
+    }
+
+    /// I brani che la passata ha già saltato — la loro radice non risponde —
+    /// non tornano in testa al lotto dopo: sono i più recenti, e senza
+    /// escluderli ogni lotto ricominciava da loro.
+    #[test]
+    fn i_brani_esclusi_non_tornano_fra_i_candidati() {
+        let connection = libreria();
+        for id in 1..=5 {
+            brano(&connection, id, id);
+        }
+        let ids = |esclusi: &[i64]| -> Vec<i64> {
+            candidati_tranne(&connection, 0, 3, esclusi)
+                .expect("candidati")
+                .iter()
+                .map(|c| c.track_id)
+                .collect()
+        };
+        assert_eq!(ids(&[]), [5, 4, 3]);
+        assert_eq!(ids(&[5, 4]), [3, 2, 1]);
     }
 
     // ── i byte ──────────────────────────────────────────────────────────────

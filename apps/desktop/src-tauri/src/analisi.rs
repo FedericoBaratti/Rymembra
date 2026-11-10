@@ -126,11 +126,11 @@ const FILI: usize = 3;
 ///
 /// Venticinque secondi. La stessa forma della scadenza sull'apertura di un
 /// brano, e per la stessa ragione: una share morta non risponde con un errore,
-/// resta appesa. Chi scade diventa [`Misurato::NonRaggiungibile`], che ferma il
-/// lotto — gli altri fili non prendono un brano nuovo, vedi
-/// [`misura_lotto_con`] — invece di scrivere un fallimento per riga: il guasto
-/// è della radice, non del file, e segnarlo su mille righe vorrebbe dire
-/// ritentarle tutte fra un mese invece che stasera.
+/// resta appesa. Chi scade diventa [`Misurato::NonRaggiungibile`], che fa
+/// saltare la sua radice per il resto della passata — nessun filo prende più
+/// un brano suo, vedi [`RadiciMorte`] — invece di scrivere un fallimento per
+/// riga: il guasto è della radice, non del file, e segnarlo su mille righe
+/// vorrebbe dire ritentarle tutte fra un mese invece che stasera.
 const SCADENZA_BRANO: Duration = Duration::from_secs(25);
 
 /// Il nome del filo della scadenza, per il debugger.
@@ -331,20 +331,148 @@ enum Fine {
 /// che smette di saltare da un disco all'altro.
 ///
 /// Prima le impronte, poi l'intensità: le impronte costano trenta secondi di
-/// lettura a brano e finiscono presto, l'intensità un brano intero. Solo una
-/// metà finita lascia il posto all'altra — la musica, una scansione, la
-/// chiusura o una radice che non risponde fermano tutte e due.
+/// lettura a brano e finiscono presto, l'intensità un brano intero. Le
+/// impronte lasciano il posto al volume quando hanno finito quel che potevano
+/// finire: vedi [`si_misura_il_volume_dopo`]. La musica, una scansione o la
+/// chiusura fermano tutte e due.
 fn passata(app: &AppHandle) -> Fine {
-    match impronte(app) {
-        Fine::Finito => intensita(app),
+    let fine = impronte(app);
+    if !si_misura_il_volume_dopo(fine) {
+        return fine;
+    }
+    match intensita(app) {
+        // Una radice spenta durante le impronte lo è anche adesso: la passata
+        // dopo arriva col battito lungo, come se l'avesse trovata il volume.
+        Fine::Finito if fine == Fine::Irraggiungibile => Fine::Irraggiungibile,
         altro => altro,
     }
+}
+
+/// Dopo le impronte finite così, tocca al volume?
+///
+/// Anche quando una radice non rispondeva: i suoi brani le impronte li hanno
+/// saltati, e quelli di tutte le altre li hanno fatti. Prima solo «finito»
+/// lasciava il posto al volume, e con un NAS spento la seconda metà della
+/// passata non partiva mai: nessun brano nuovo, nemmeno locale, si misurava
+/// per il volume finché la share non tornava, e senza che niente lo dicesse.
+const fn si_misura_il_volume_dopo(fine: Fine) -> bool {
+    matches!(fine, Fine::Finito | Fine::Irraggiungibile)
+}
+
+/// Le radici che in questa passata non hanno risposto.
+///
+/// # Perché una radice e non la passata
+///
+/// Perché il guasto di una share è della share: fermare tutto al primo brano
+/// che non arrivava lasciava indietro anche i brani del disco di casa, e con un
+/// NAS spento — o un portatile fuori casa — per sempre, perché i brani più
+/// recenti, quelli che la passata prende per primi, stanno spesso proprio sul
+/// NAS. Si salta la radice, non la passata: i fili non prendono più un brano
+/// di quella radice, quelli delle altre sì.
+///
+/// La regola che la scansione ha imparato nella 2.1.0 resta: una radice morta
+/// si interroga al più una volta per filo, al primo brano che scade, e non file
+/// per file. I suoi brani restano candidati per la passata dopo.
+///
+/// Un lucchetto e non un'atomica: lo prendono i fili di un lotto, per un
+/// confronto fra stringhe, una volta per brano.
+#[derive(Debug, Default)]
+struct RadiciMorte(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl RadiciMorte {
+    /// Questa radice ha già mancato una scadenza in questa passata?
+    fn e_morta(&self, radice: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(radice)
+    }
+
+    /// Da qui in avanti i brani di questa radice si saltano.
+    fn segna(&self, radice: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(radice);
+    }
+
+    /// Nessuna radice ha mancato una scadenza.
+    fn nessuna(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+}
+
+/// La radice di un brano, per [`RadiciMorte`]: la condivisione o l'unità su
+/// cui sta il suo file.
+///
+/// Non la cartella sorvegliata, ma quel che cade tutto insieme quando la rete
+/// cade: `\\server\condivisione` per un percorso di rete, la lettera per un
+/// disco (anche una lettera mappata su un NAS), schema e nodo per un
+/// indirizzo. Due cartelle sorvegliate sulla stessa share muoiono insieme, ed
+/// è giusto che si saltino insieme. Maiuscole e barre non contano: Windows non
+/// le distingue.
+fn radice_di(scheda: &SchedaSorgente) -> String {
+    use rymembra_app::playback::Collocazione;
+    match &scheda.collocazione {
+        Collocazione::File(percorso) => radice_del_percorso(percorso),
+        Collocazione::Segmento { immagine, .. } => radice_del_percorso(immagine),
+        // Non è fra i candidati: un catalogo non si misura. Se ci arrivasse,
+        // tutti i cataloghi insieme sono una radice sola.
+        Collocazione::Catalogo { .. } => "catalogo".to_owned(),
+    }
+}
+
+/// Il cuore di [`radice_di`], sulla stringa.
+fn radice_del_percorso(percorso: &str) -> String {
+    if let Some((schema, resto)) = percorso.split_once("://") {
+        let nodo = resto.split('/').next().unwrap_or("");
+        return format!("{schema}://{nodo}").to_lowercase();
+    }
+    let unito = percorso.replace('/', "\\");
+    // I percorsi lunghi di Windows dicono la stessa radice con un prefisso.
+    let unito = if let Some(resto) = unito.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{resto}")
+    } else if let Some(resto) = unito.strip_prefix("\\\\?\\") {
+        resto.to_owned()
+    } else {
+        unito
+    };
+    if let Some(resto) = unito.strip_prefix("\\\\") {
+        let mut parti = resto.split('\\').filter(|parte| !parte.is_empty());
+        let server = parti.next().unwrap_or("");
+        let condivisione = parti.next().unwrap_or("");
+        return format!("\\\\{server}\\{condivisione}").to_lowercase();
+    }
+    let mut caratteri = unito.chars();
+    if let (Some(lettera), Some(':')) = (caratteri.next(), caratteri.next())
+        && lettera.is_ascii_alphabetic()
+    {
+        return format!("{}:", lettera.to_ascii_uppercase());
+    }
+    // Un percorso alla Unix: le prime due cartelle, che è dove sta il punto
+    // di montaggio — `/mnt/nas`, `/media/disco`. Un percorso relativo, che la
+    // scansione non scrive, è una radice sola.
+    if let Some(resto) = unito.strip_prefix('\\') {
+        let mut parti = resto.split('\\').filter(|parte| !parte.is_empty());
+        let prima = parti.next().unwrap_or("");
+        let seconda = parti.next().unwrap_or("");
+        return format!("\\{prima}\\{seconda}");
+    }
+    String::new()
 }
 
 /// La prima metà della passata: le impronte.
 fn impronte(app: &AppHandle) -> Fine {
     let mut fatti = 0_usize;
     let mut scritti = false;
+    // Le radici che non rispondono, e i brani loro che questa passata ha già
+    // saltato: vedi [`RadiciMorte`]. Questi ultimi non tornano nel lotto dopo,
+    // altrimenti ogni lotto ricomincerebbe da loro.
+    let morte = RadiciMorte::default();
+    let mut saltati: Vec<i64> = Vec::new();
     let fine = loop {
         // Prima di ogni lotto, non solo all'inizio: una passata su una libreria
         // grande dura minuti, e la musica può cominciare in mezzo.
@@ -364,7 +492,7 @@ fn impronte(app: &AppHandle) -> Fine {
         }
 
         // ── finestra 1: quali brani. ────────────────────────────────────────
-        let schede = match leggi_lotto(app) {
+        let schede = match leggi_lotto(app, &saltati) {
             Ok(schede) => schede,
             Err(err) => {
                 nota!(
@@ -376,23 +504,28 @@ fn impronte(app: &AppHandle) -> Fine {
             }
         };
         if schede.is_empty() {
-            break Fine::Finito;
+            break if morte.nessuna() {
+                Fine::Finito
+            } else {
+                Fine::Irraggiungibile
+            };
         }
 
         // ── in mezzo: nessun lucchetto. ─────────────────────────────────────
-        let misurati = misura_lotto(&schede);
+        let misurati = misura_lotto(&schede, &morte);
         // Una radice che non risponde si abbandona invece di interrogarla file
         // per file: è la lezione che la 2.1.0 ha scritto per la scansione, e
-        // qui vale identica. Dentro il lotto la ferma `misura_lotto_con` al
-        // primo brano che non arriva; qui si ferma la passata. Quel che si è
-        // già misurato si scrive lo stesso.
-        let fermarsi = misurati
-            .iter()
-            .any(|m| matches!(m, Misurato::NonRaggiungibile));
-        let buoni: Vec<Misurato> = misurati
-            .into_iter()
-            .filter(|m| !matches!(m, Misurato::NonRaggiungibile))
-            .collect();
+        // qui vale identica. Ma si abbandona **lei**, non la passata: i suoi
+        // brani si saltano e restano candidati per la passata dopo, quelli
+        // delle altre radici si misurano. Vedi [`RadiciMorte`].
+        let mut buoni: Vec<Misurato> = Vec::with_capacity(misurati.len());
+        for (track_id, misurato) in misurati {
+            if matches!(misurato, Misurato::NonRaggiungibile) {
+                saltati.push(track_id);
+            } else {
+                buoni.push(misurato);
+            }
+        }
 
         // ── finestra 2: scrivere. ───────────────────────────────────────────
         if !buoni.is_empty() {
@@ -411,10 +544,13 @@ fn impronte(app: &AppHandle) -> Fine {
                 }
             }
         }
-        if fermarsi {
-            break Fine::Irraggiungibile;
-        }
     };
+    if !saltati.is_empty() {
+        nota!(
+            "[analisi] {} brani saltati per le impronte: la loro radice non risponde",
+            saltati.len()
+        );
+    }
 
     // La scala si rifà una volta per passata, non una per lotto: rilegge tutte
     // le impronte della libreria, ed è la sola cosa qui dentro il cui costo
@@ -457,12 +593,15 @@ fn scansione_in_corso(app: &AppHandle) -> bool {
 /// porta normale. Vedi [`crate::spegnimento`] per perché `try_state` e non
 /// `state` in tutto questo file: `state` panica, e questo filo gira anche
 /// mentre la finestra si chiude.
-fn leggi_lotto(app: &AppHandle) -> Result<Vec<SchedaSorgente>, AppError> {
+///
+/// Senza i brani `saltati`: quelli di una radice che in questa passata non ha
+/// risposto. Vedi [`RadiciMorte`].
+fn leggi_lotto(app: &AppHandle, saltati: &[i64]) -> Result<Vec<SchedaSorgente>, AppError> {
     let Some(stato) = app.try_state::<Stato>() else {
         return Ok(Vec::new());
     };
     con_libreria(&stato, |libreria| {
-        sonora::candidati(&libreria.connection, adesso_ms(), sonora::LOTTO)
+        sonora::candidati_tranne(&libreria.connection, adesso_ms(), sonora::LOTTO, saltati)
     })
 }
 
@@ -615,10 +754,21 @@ fn misura_la_copia(app: &AppHandle, operaio: &mut Operaio, chiave: &DaMisurare) 
         if let Some(scheda) = intensita {
             let files = std::sync::Arc::clone(&files);
             let scadenza = scadenza_volume(&scheda);
-            let misurato = operaio
-                .esegui(scadenza, move || volume::misura(&*files, &scheda))
-                .unwrap_or(volume::Misurato::NonRaggiungibile);
-            if !matches!(misurato, volume::Misurato::NonRaggiungibile) {
+            // Come per i brani del giro, la misura si ferma davvero alla
+            // scadenza o alla chiusura. Non quando la musica riparte: questa
+            // copia sta sul disco dei dati, e la si misura apposta mentre
+            // suona — vedi «L'eccezione» in testa al modulo.
+            let misurato = misura_volume(
+                operaio,
+                &scheda,
+                scadenza,
+                non_in_uscita,
+                move |scheda, continua| volume::misura_finche(&*files, &scheda, continua),
+            );
+            if !matches!(
+                misurato,
+                volume::Misurato::NonRaggiungibile | volume::Misurato::Interrotta
+            ) {
                 let scritto = con_libreria(&stato, |libreria| {
                     let tx = libreria
                         .connection
@@ -682,10 +832,14 @@ fn ritara(app: &AppHandle) -> Result<Option<usize>, AppError> {
 /// dividere male costa qualche secondo alla fine del lotto, una coda condivisa
 /// costerebbe un lucchetto in più — e questo è il modulo che sui lucchetti ha
 /// appena scritto tre paragrafi.
-fn misura_lotto(schede: &[SchedaSorgente]) -> Vec<Misurato> {
-    misura_lotto_con(schede, SCADENZA_BRANO, si_puo_continuare, |scheda| {
-        sonora::misura(&rymembra_app::files::LocalFiles, &scheda)
-    })
+fn misura_lotto(schede: &[SchedaSorgente], morte: &RadiciMorte) -> Vec<(i64, Misurato)> {
+    misura_lotto_con(
+        schede,
+        SCADENZA_BRANO,
+        si_puo_continuare,
+        |scheda| sonora::misura(&rymembra_app::files::LocalFiles, &scheda),
+        morte,
+    )
 }
 
 /// La musica non è ripartita e l'applicazione non sta uscendo: un lotto può
@@ -695,37 +849,42 @@ fn misura_lotto(schede: &[SchedaSorgente]) -> Vec<Misurato> {
 /// passano la loro: [`SUONA`] è di tutto il processo, e la prova del battito la
 /// alza mentre le altre girano.
 fn si_puo_continuare() -> bool {
-    !SUONA.load(Ordering::Relaxed) && !crate::spegnimento::in_uscita()
+    !SUONA.load(Ordering::Relaxed) && non_in_uscita()
+}
+
+/// L'applicazione non sta uscendo: la domanda «si continua?» delle copie del
+/// cloud, che si misurano anche mentre la musica suona.
+fn non_in_uscita() -> bool {
+    !crate::spegnimento::in_uscita()
 }
 
 /// [`misura_lotto`] con la misura, la scadenza e la domanda «si continua?»
 /// date: la cucitura che le prove usano per far cadere un brano a comando.
 ///
-/// # Una radice che non risponde ferma il lotto
+/// # Una radice che non risponde si salta
 ///
-/// Al primo [`Misurato::NonRaggiungibile`], di qualunque filo, gli altri non
-/// prendono più un brano nuovo: quel che hanno in volo finisce, il resto del
-/// lotto non si tocca e resta candidato, come i lotti che vengono dopo. È la
-/// regola che la scansione ha imparato nella 2.1.0 (`SCADENZE_DI_FILA` in
-/// `rymembra_app::library`): senza, una share viva ma esausta — o appesa al
-/// risveglio — si faceva interrogare un brano dopo l'altro, venticinque secondi
-/// ciascuno, e ogni scadenza lasciava indietro un filo fermo dentro una `open`.
-/// Il prezzo è piccolo: in un lotto misto, i brani locali dopo il primo «non
-/// raggiungibile» slittano alla passata dopo, che la radice morta ferma
-/// comunque.
+/// Al primo [`Misurato::NonRaggiungibile`], di qualunque filo, la radice di quel
+/// brano finisce in `morte` e nessun filo prende più un brano suo: tornano
+/// anche loro «non raggiungibili», senza essere toccati, e restano candidati
+/// per la passata dopo. È la regola che la scansione ha imparato nella 2.1.0
+/// (`SCADENZE_DI_FILA` in `rymembra_app::library`): senza, una share viva ma
+/// esausta — o appesa al risveglio — si faceva interrogare un brano dopo
+/// l'altro, venticinque secondi ciascuno, e ogni scadenza lasciava indietro un
+/// filo fermo dentro una `open`. I brani delle altre radici si misurano come
+/// sempre: prima il lotto si fermava tutto, e i brani locali dietro a quello
+/// del NAS slittavano a una passata che il NAS spento fermava di nuovo.
 fn misura_lotto_con(
     schede: &[SchedaSorgente],
     scadenza: Duration,
     continua: fn() -> bool,
     misura: fn(SchedaSorgente) -> Misurato,
-) -> Vec<Misurato> {
+    morte: &RadiciMorte,
+) -> Vec<(i64, Misurato)> {
     if schede.is_empty() {
         return Vec::new();
     }
     let per_filo = schede.len().div_ceil(FILI).max(1);
-    let radice_morta = AtomicBool::new(false);
     std::thread::scope(|ambito| {
-        let radice_morta = &radice_morta;
         let mani: Vec<_> = schede
             .chunks(per_filo)
             .map(|pezzo| {
@@ -735,13 +894,17 @@ fn misura_lotto_con(
                     let mut operaio = Operaio::nuovo(SCADENZA_NOME);
                     pezzo
                         .iter()
-                        .take_while(|_| !radice_morta.load(Ordering::Relaxed) && continua())
+                        .take_while(|_| continua())
                         .map(|scheda| {
+                            let radice = radice_di(scheda);
+                            if morte.e_morta(&radice) {
+                                return (scheda.track_id, Misurato::NonRaggiungibile);
+                            }
                             let misurato = misura_uno(&mut operaio, scheda, scadenza, misura);
                             if matches!(misurato, Misurato::NonRaggiungibile) {
-                                radice_morta.store(true, Ordering::Relaxed);
+                                morte.segna(radice);
                             }
-                            misurato
+                            (scheda.track_id, misurato)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -809,9 +972,16 @@ fn misura_uno(
 /// preparatore non può aspettarlo. E un brano che fa cadere il decodificatore
 /// si segna illeggibile invece di fermare la passata: è il contenuto a essere
 /// storto, e senza segnarlo lo stesso brano — il più recente, quindi il primo
-/// candidato — si ripresenterebbe in testa a ogni passata.
+/// candidato — si ripresenterebbe in testa a ogni passata. Per la stessa
+/// ragione un brano che arriva ma non finisce in tempo si segna lento: vedi
+/// [`misura_volume`].
+///
+/// Una radice che non risponde salta i suoi brani e non la passata, come per
+/// le impronte: vedi [`RadiciMorte`].
 fn intensita(app: &AppHandle) -> Fine {
     let mut fatti = 0_usize;
+    let morte = RadiciMorte::default();
+    let mut saltati: Vec<i64> = Vec::new();
     let fine = loop {
         if SUONA.load(Ordering::Relaxed) {
             break Fine::Musica;
@@ -828,7 +998,7 @@ fn intensita(app: &AppHandle) -> Fine {
             break Fine::Scansione;
         }
         let schede = match con_libreria(&stato, |libreria| {
-            volume::candidati(&libreria.connection, adesso_ms(), volume::LOTTO)
+            volume::candidati_tranne(&libreria.connection, adesso_ms(), volume::LOTTO, &saltati)
         }) {
             Ok(schede) => schede,
             Err(err) => {
@@ -841,18 +1011,27 @@ fn intensita(app: &AppHandle) -> Fine {
             }
         };
         if schede.is_empty() {
-            break Fine::Finito;
+            break if morte.nessuna() {
+                Fine::Finito
+            } else {
+                Fine::Irraggiungibile
+            };
         }
 
         // ── in mezzo: nessun lucchetto. ─────────────────────────────────────
-        let misurati = misura_intensita(&schede);
-        let fermarsi = misurati
-            .iter()
-            .any(|m| matches!(m, volume::Misurato::NonRaggiungibile));
-        let buoni: Vec<volume::Misurato> = misurati
-            .into_iter()
-            .filter(|m| !matches!(m, volume::Misurato::NonRaggiungibile))
-            .collect();
+        let misurati = misura_intensita(&schede, &morte);
+        let mut buoni: Vec<volume::Misurato> = Vec::with_capacity(misurati.len());
+        for (track_id, misurato) in misurati {
+            match misurato {
+                // La radice non risponde: il brano resta candidato per la
+                // passata dopo, e per questa non torna nel lotto.
+                volume::Misurato::NonRaggiungibile => saltati.push(track_id),
+                // Fermata dalla musica o dalla chiusura: resta candidato, e il
+                // giro dopo se ne accorge da sé.
+                volume::Misurato::Interrotta => {}
+                altro => buoni.push(altro),
+            }
+        }
 
         // ── finestra 2: scrivere. ───────────────────────────────────────────
         if !buoni.is_empty() {
@@ -878,12 +1057,15 @@ fn intensita(app: &AppHandle) -> Fine {
                 }
             }
         }
-        if fermarsi {
-            break Fine::Irraggiungibile;
-        }
     };
     if fatti > 0 {
         nota!("[analisi] {fatti} brani misurati per il volume ({fine:?})");
+    }
+    if !saltati.is_empty() {
+        nota!(
+            "[analisi] {} brani saltati per il volume: la loro radice non risponde",
+            saltati.len()
+        );
     }
     fine
 }
@@ -894,14 +1076,29 @@ fn intensita(app: &AppHandle) -> Fine {
 /// pochi decimi di secondo, e l'operaio distingue un brano che fa cadere il
 /// decodificatore da uno che non torna — le due cose che qui vanno trattate
 /// all'opposto. Prima di ogni brano si guarda se la musica è ripartita: i
-/// brani rimasti non si misurano, non si scrivono, e restano candidati. E si
-/// guarda se un altro filo ha trovato la radice morta: vedi «Una radice che non
-/// risponde ferma il lotto» su [`misura_lotto_con`], che qui vale identica.
-fn misura_intensita(schede: &[SchedaSorgente]) -> Vec<volume::Misurato> {
-    misura_intensita_con(schede, scadenza_volume, si_puo_continuare, |scheda| {
-        volume::misura(&rymembra_app::files::LocalFiles, &scheda)
-    })
+/// brani rimasti non si misurano, non si scrivono, e restano candidati — e la
+/// misura in corso si ferma al blocco dopo, vedi [`misura_volume`]. E si
+/// guarda se un altro filo ha trovato morta la radice del brano: vedi «Una
+/// radice che non risponde si salta» su [`misura_lotto_con`], che qui vale
+/// identica.
+fn misura_intensita(
+    schede: &[SchedaSorgente],
+    morte: &RadiciMorte,
+) -> Vec<(i64, volume::Misurato)> {
+    misura_intensita_con(
+        schede,
+        scadenza_volume,
+        si_puo_continuare,
+        |scheda, continua| {
+            volume::misura_finche(&rymembra_app::files::LocalFiles, &scheda, continua)
+        },
+        morte,
+    )
 }
+
+/// La misura del volume vista dal lotto: la scheda, e la domanda «vado
+/// avanti?» che la decodifica si fa fra un blocco e l'altro.
+type MisuraVolume = fn(SchedaSorgente, &dyn Fn() -> bool) -> volume::Misurato;
 
 /// [`misura_intensita`] con la scadenza, la domanda «si continua?» e la misura
 /// date: la cucitura delle prove, come [`misura_lotto_con`].
@@ -909,15 +1106,14 @@ fn misura_intensita_con(
     schede: &[SchedaSorgente],
     scadenza: fn(&SchedaSorgente) -> Duration,
     continua: fn() -> bool,
-    misura: fn(SchedaSorgente) -> volume::Misurato,
-) -> Vec<volume::Misurato> {
+    misura: MisuraVolume,
+    morte: &RadiciMorte,
+) -> Vec<(i64, volume::Misurato)> {
     if schede.is_empty() {
         return Vec::new();
     }
     let per_filo = schede.len().div_ceil(FILI_INTENSITA).max(1);
-    let radice_morta = AtomicBool::new(false);
     std::thread::scope(|ambito| {
-        let radice_morta = &radice_morta;
         let mani: Vec<_> = schede
             .chunks(per_filo)
             .map(|pezzo| {
@@ -925,14 +1121,23 @@ fn misura_intensita_con(
                     let mut operaio = Operaio::nuovo(INTENSITA_NOME);
                     pezzo
                         .iter()
-                        .take_while(|_| !radice_morta.load(Ordering::Relaxed) && continua())
+                        .take_while(|_| continua())
                         .map(|scheda| {
-                            let misurato =
-                                misura_volume(&mut operaio, scheda, scadenza(scheda), misura);
-                            if matches!(misurato, volume::Misurato::NonRaggiungibile) {
-                                radice_morta.store(true, Ordering::Relaxed);
+                            let radice = radice_di(scheda);
+                            if morte.e_morta(&radice) {
+                                return (scheda.track_id, volume::Misurato::NonRaggiungibile);
                             }
-                            misurato
+                            let misurato = misura_volume(
+                                &mut operaio,
+                                scheda,
+                                scadenza(scheda),
+                                continua,
+                                misura,
+                            );
+                            if matches!(misurato, volume::Misurato::NonRaggiungibile) {
+                                morte.segna(radice);
+                            }
+                            (scheda.track_id, misurato)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -945,16 +1150,90 @@ fn misura_intensita_con(
     })
 }
 
+/// Perché una misura del volume si è fermata da sé: la musica o la chiusura.
+const FERMATA_DA_FUORI: u8 = 1;
+/// Perché una misura del volume si è fermata da sé: la sua scadenza.
+const FERMATA_DAL_TEMPO: u8 = 2;
+
 /// Un brano, con una scadenza che cresce con la sua durata.
+///
+/// # La misura si ferma davvero
+///
+/// Prima la scadenza smetteva soltanto di aspettare: il filo dell'operaio
+/// restava dentro la decodifica e leggeva il file fino in fondo, anche con la
+/// musica ripartita — contro la regola del modulo, e contro il preparatore che
+/// apre il brano dopo sulla stessa share. Adesso la misura si chiede fra un
+/// blocco e l'altro se andare avanti (`continua`, cioè musica e chiusura, e
+/// una scadenza sua appena più corta di quella dell'operaio), e quando la
+/// risposta è no si ferma al blocco dopo. Resta fuori solo una lettura che non
+/// torna — una share appesa dentro una `ReadFile` — che nessuno può
+/// interrompere: lì scade l'operaio, e il filo che resta indietro trova la
+/// bandiera alzata appena la lettura torna.
+///
+/// # Lento non è irraggiungibile
+///
+/// Tre esiti, secondo perché si è fermata:
+///
+/// - **la sua scadenza**, con i blocchi che arrivavano: la share risponde, ma
+///   troppo piano per questo brano — un FLAC lungo in alta risoluzione sul
+///   Wi-Fi. Si segna [`volume::LENTO`] e si ritenta fra un giorno. Prima
+///   diventava «non raggiungibile», fermava il lotto e restava in testa ai
+///   candidati: misurato mai, e ogni altro brano dietro di lui insieme.
+/// - **la musica o la chiusura**: non si scrive niente, e il brano resta
+///   candidato ([`volume::Misurato::Interrotta`]).
+/// - **la scadenza dell'operaio**, senza che la misura sia tornata: la radice
+///   non risponde ([`volume::Misurato::NonRaggiungibile`]).
 fn misura_volume(
     operaio: &mut Operaio,
     scheda: &SchedaSorgente,
     scadenza: Duration,
-    misura: fn(SchedaSorgente) -> volume::Misurato,
+    continua: fn() -> bool,
+    misura: impl FnOnce(SchedaSorgente, &dyn Fn() -> bool) -> volume::Misurato + Send + 'static,
 ) -> volume::Misurato {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU8;
+
     let copia = scheda.clone();
-    match operaio.esegui(scadenza, move || misura(copia)) {
-        Ok(misurato) => misurato,
+    // Alzata da qui quando l'operaio scade: il filo che resta indietro smette
+    // al primo blocco che riesce a leggere.
+    let abbandonata = Arc::new(AtomicBool::new(false));
+    let perche = Arc::new(AtomicU8::new(0));
+    // Un decimo prima di quella dell'operaio: una misura che legge ancora
+    // risponde da sé, in tempo, e si distingue da una che non torna.
+    let entro = std::time::Instant::now() + scadenza.saturating_sub(scadenza / 10);
+    let (dentro_abbandonata, dentro_perche) = (Arc::clone(&abbandonata), Arc::clone(&perche));
+    let esito = operaio.esegui(scadenza, move || {
+        let ancora = || {
+            if dentro_abbandonata.load(Ordering::Relaxed) {
+                return false;
+            }
+            if !continua() {
+                dentro_perche.store(FERMATA_DA_FUORI, Ordering::Relaxed);
+                return false;
+            }
+            if std::time::Instant::now() >= entro {
+                dentro_perche.store(FERMATA_DAL_TEMPO, Ordering::Relaxed);
+                return false;
+            }
+            true
+        };
+        misura(copia, &ancora)
+    });
+    match esito {
+        Ok(misurato) => match perche.load(Ordering::Relaxed) {
+            FERMATA_DA_FUORI => volume::Misurato::Interrotta,
+            FERMATA_DAL_TEMPO => {
+                nota!(
+                    "[analisi] misura del volume troppo lenta brano={}: si ritenta fra un giorno",
+                    scheda.track_id
+                );
+                volume::Misurato::Negata {
+                    track_id: scheda.track_id,
+                    esito: volume::LENTO,
+                }
+            }
+            _ => misurato,
+        },
         // Il file è arrivato ed è il contenuto a essere storto: si segna, e
         // si ritenta fra un mese come ogni illeggibile.
         Err(Mancato::Caduto { messaggio }) => {
@@ -968,7 +1247,10 @@ fn misura_volume(
                 esito: volume::ILLEGGIBILE,
             }
         }
-        Err(Mancato::Scaduto) => volume::Misurato::NonRaggiungibile,
+        Err(Mancato::Scaduto) => {
+            abbandonata.store(true, Ordering::Relaxed);
+            volume::Misurato::NonRaggiungibile
+        }
     }
 }
 
@@ -992,6 +1274,8 @@ fn db_errore(cosa: &str, err: &rusqlite::Error) -> AppError {
 
 #[cfg(test)]
 mod prove {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
 
     /// Il segnale della riproduzione va e viene.
@@ -1037,7 +1321,7 @@ mod prove {
         // Quattro schede su tre fili sono due pezzi da due: [1, 2] e [3, 4].
         // Il primo del primo pezzo cade, e il secondo deve passare lo stesso.
         let schede: Vec<SchedaSorgente> = (1..=4).map(scheda).collect();
-        let misurati = misura_lotto_con(
+        let misurati: Vec<Misurato> = misura_lotto_con(
             &schede,
             Duration::from_secs(10),
             || true,
@@ -1048,7 +1332,11 @@ mod prove {
                     vettore: vec![1.0],
                 }
             },
-        );
+            &RadiciMorte::default(),
+        )
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect();
 
         assert!(
             !misurati
@@ -1074,76 +1362,319 @@ mod prove {
         assert!(fatti.contains(&2), "anche quello dopo, sullo stesso filo");
     }
 
-    /// Una radice che non risponde ferma il lotto al primo brano che scade,
-    /// invece di interrogarla file per file: è la regola che la scansione ha
-    /// imparato nella 2.1.0 (`SCADENZE_DI_FILA`), e su una share appesa valeva
-    /// ventidue brani da venticinque secondi per filo.
+    /// Una scheda su una radice data.
+    fn scheda_in(track_id: i64, cartella: &str) -> SchedaSorgente {
+        SchedaSorgente {
+            collocazione: rymembra_app::playback::Collocazione::File(format!(
+                "{cartella}\\{track_id}.flac"
+            )),
+            ..scheda(track_id)
+        }
+    }
+
+    /// Quante volte le misure finte di una prova sono state chiamate davvero:
+    /// una casella per prova, perché le prove girano insieme.
+    static TENTATI_IMPRONTE: AtomicUsize = AtomicUsize::new(0);
+    static TENTATI_VOLUME: AtomicUsize = AtomicUsize::new(0);
+
+    /// Una radice che non risponde si interroga al più una volta per filo, al
+    /// primo brano che scade, invece che file per file: è la regola che la
+    /// scansione ha imparato nella 2.1.0 (`SCADENZE_DI_FILA`), e su una share
+    /// appesa valeva ventidue brani da venticinque secondi per filo. I brani
+    /// suoi che restano si saltano: tornano «non raggiungibili» senza essere
+    /// toccati.
     ///
     /// Nove schede su tre fili, una misura che non torna mai entro la
     /// scadenza: ogni filo può avere in volo al più il suo primo brano quando
     /// il primo «non raggiungibile» arriva, quindi non più di [`FILI`].
     #[test]
-    fn una_radice_che_non_risponde_ferma_il_lotto() {
+    fn una_radice_che_non_risponde_si_interroga_una_volta_per_filo() {
         let schede: Vec<SchedaSorgente> = (1..=9).map(scheda).collect();
         let misurati = misura_lotto_con(
             &schede,
             Duration::from_millis(50),
             || true,
             |scheda| {
+                TENTATI_IMPRONTE.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(300));
                 Misurato::Fatta {
                     track_id: scheda.track_id,
                     vettore: vec![1.0],
                 }
             },
+            &RadiciMorte::default(),
         );
-        let morti = misurati
-            .iter()
-            .filter(|m| matches!(m, Misurato::NonRaggiungibile))
-            .count();
+        let tentati = TENTATI_IMPRONTE.load(Ordering::Relaxed);
         assert!(
-            (1..=FILI).contains(&morti),
-            "la radice morta va interrogata al più una volta per filo: {morti} su {}",
+            (1..=FILI).contains(&tentati),
+            "la radice morta va interrogata al più una volta per filo: {tentati} su {}",
             schede.len()
         );
-        assert_eq!(
-            misurati.len(),
-            morti,
-            "dopo il primo «non raggiungibile» non si misura più niente: {misurati:?}"
+        assert_eq!(misurati.len(), schede.len(), "{misurati:?}");
+        assert!(
+            misurati
+                .iter()
+                .all(|(_, m)| matches!(m, Misurato::NonRaggiungibile)),
+            "nessun brano di una radice morta si scrive: {misurati:?}"
         );
     }
 
-    /// Lo stesso per il volume: un brano che scade ferma il lotto, invece di
-    /// lasciare ogni filo a interrogare la share brano dopo brano, ciascuno con
-    /// la sua scadenza più un ventesimo della durata.
+    /// Lo stesso per il volume, ciascuno con la sua scadenza più un ventesimo
+    /// della durata.
     #[test]
-    fn una_radice_che_non_risponde_ferma_il_lotto_del_volume() {
+    fn una_radice_che_non_risponde_si_interroga_una_volta_per_filo_anche_per_il_volume() {
         let schede: Vec<SchedaSorgente> = (1..=8).map(scheda).collect();
         let misurati = misura_intensita_con(
             &schede,
             |_| Duration::from_millis(50),
             || true,
-            |scheda| {
+            |scheda, _| {
+                TENTATI_VOLUME.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(300));
                 volume::Misurato::Negata {
                     track_id: scheda.track_id,
                     esito: volume::MUTO,
                 }
             },
+            &RadiciMorte::default(),
         );
-        let morti = misurati
-            .iter()
-            .filter(|m| matches!(m, volume::Misurato::NonRaggiungibile))
-            .count();
+        let tentati = TENTATI_VOLUME.load(Ordering::Relaxed);
         assert!(
-            (1..=FILI_INTENSITA).contains(&morti),
-            "la radice morta va interrogata al più una volta per filo: {morti} su {}",
+            (1..=FILI_INTENSITA).contains(&tentati),
+            "la radice morta va interrogata al più una volta per filo: {tentati} su {}",
             schede.len()
         );
+        assert_eq!(misurati.len(), schede.len(), "{misurati:?}");
+        assert!(
+            misurati
+                .iter()
+                .all(|(_, m)| matches!(m, volume::Misurato::NonRaggiungibile)),
+            "nessun brano di una radice morta si scrive: {misurati:?}"
+        );
+    }
+
+    /// Una misura finta che sulla share spenta resta appesa e sul disco
+    /// risponde subito.
+    fn dal_nas_non_torna(scheda: SchedaSorgente) -> Misurato {
+        if matches!(&scheda.collocazione,
+            rymembra_app::playback::Collocazione::File(p) if p.starts_with("\\\\nas"))
+        {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        Misurato::Fatta {
+            track_id: scheda.track_id,
+            vettore: vec![1.0],
+        }
+    }
+
+    /// I brani misurati, per numero.
+    fn fatti(misurati: &[(i64, Misurato)]) -> Vec<i64> {
+        let mut fatti: Vec<i64> = misurati
+            .iter()
+            .filter(|(_, m)| matches!(m, Misurato::Fatta { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        fatti.sort_unstable();
+        fatti
+    }
+
+    /// Una radice spenta salta i suoi brani, non quelli degli altri.
+    ///
+    /// Il NAS è spento e i suoi due brani sono i più recenti, in testa al
+    /// lotto. Prima il primo «non raggiungibile» fermava tutti i fili: i brani
+    /// locali che stavano dietro di lui sullo stesso filo non si misuravano, e
+    /// alla passata dopo il NAS era di nuovo in testa.
+    #[test]
+    fn una_radice_spenta_non_ferma_le_impronte_dei_brani_locali() {
+        let mut schede = vec![
+            scheda_in(1, "\\\\nas\\musica"),
+            scheda_in(2, "\\\\nas\\musica"),
+        ];
+        schede.extend((3..=9).map(|id| scheda_in(id, "C:\\Musica")));
+        let morte = RadiciMorte::default();
+        let misurati = misura_lotto_con(
+            &schede,
+            Duration::from_millis(50),
+            || true,
+            dal_nas_non_torna,
+            &morte,
+        );
         assert_eq!(
-            misurati.len(),
-            morti,
-            "dopo il primo «non raggiungibile» non si misura più niente"
+            fatti(&misurati),
+            (3..=9).collect::<Vec<i64>>(),
+            "i brani locali si misurano tutti: {misurati:?}"
+        );
+        assert!(
+            misurati
+                .iter()
+                .filter(|(id, _)| *id <= 2)
+                .all(|(_, m)| matches!(m, Misurato::NonRaggiungibile)),
+            "{misurati:?}"
+        );
+    }
+
+    /// Lo stesso per il volume: due fili, il NAS in testa al primo.
+    #[test]
+    fn una_radice_spenta_non_ferma_il_volume_dei_brani_locali() {
+        let mut schede = vec![
+            scheda_in(1, "\\\\nas\\musica"),
+            scheda_in(2, "\\\\nas\\musica"),
+        ];
+        schede.extend((3..=8).map(|id| scheda_in(id, "C:\\Musica")));
+        let misurati = misura_intensita_con(
+            &schede,
+            |_| Duration::from_millis(50),
+            || true,
+            |scheda, _| {
+                if matches!(&scheda.collocazione,
+                    rymembra_app::playback::Collocazione::File(p) if p.starts_with("\\\\nas"))
+                {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                volume::Misurato::Negata {
+                    track_id: scheda.track_id,
+                    esito: volume::MUTO,
+                }
+            },
+            &RadiciMorte::default(),
+        );
+        let mut misurati_locali: Vec<i64> = misurati
+            .iter()
+            .filter(|(_, m)| matches!(m, volume::Misurato::Negata { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        misurati_locali.sort_unstable();
+        assert_eq!(
+            misurati_locali,
+            (3..=8).collect::<Vec<i64>>(),
+            "i brani locali si misurano tutti: {misurati:?}"
+        );
+    }
+
+    /// La radice di un brano è quel che cade tutto insieme quando cade la
+    /// rete: la condivisione, la lettera, il nodo. Barre e maiuscole non
+    /// contano.
+    #[test]
+    fn la_radice_di_un_brano_e_la_sua_condivisione() {
+        let nas = radice_del_percorso("\\\\NAS\\Musica\\Rock\\1.flac");
+        assert_eq!(nas, "\\\\nas\\musica");
+        assert_eq!(radice_del_percorso("//nas/musica/Jazz/2.flac"), nas);
+        assert_eq!(radice_del_percorso("\\\\?\\UNC\\nas\\musica\\3.flac"), nas);
+        assert_ne!(radice_del_percorso("\\\\nas\\altro\\4.flac"), nas);
+        assert_eq!(radice_del_percorso("C:\\Musica\\5.flac"), "C:");
+        assert_eq!(radice_del_percorso("c:/Altro/6.flac"), "C:");
+        assert_eq!(radice_del_percorso("\\\\?\\D:\\Musica\\7.flac"), "D:");
+        assert_eq!(radice_del_percorso("/mnt/nas/musica/8.flac"), "\\mnt\\nas");
+        assert_eq!(
+            radice_del_percorso("nuvola://OneDrive-abc/Musica/9.wav"),
+            "nuvola://onedrive-abc"
+        );
+        // Le schede delle prove qui sotto: una radice sola.
+        assert_eq!(radice_del_percorso("1.flac"), radice_del_percorso("2.flac"));
+    }
+
+    /// Le impronte fermate da una radice spenta lasciano lo stesso il posto al
+    /// volume: prima la seconda metà della passata non partiva mai finché il
+    /// NAS restava spento, e i brani nuovi — locali compresi — non si
+    /// misuravano.
+    #[test]
+    fn dopo_le_impronte_con_una_radice_spenta_si_misura_il_volume() {
+        assert!(si_misura_il_volume_dopo(Fine::Finito));
+        assert!(si_misura_il_volume_dopo(Fine::Irraggiungibile));
+        for fine in [Fine::Musica, Fine::Scansione, Fine::Guasto, Fine::Uscita] {
+            assert!(!si_misura_il_volume_dopo(fine), "{fine:?}");
+        }
+    }
+
+    /// Le caselle delle prove della misura che si ferma da sé.
+    static BLOCCHI_SCADUTA: AtomicUsize = AtomicUsize::new(0);
+    static BLOCCHI_MUSICA: AtomicUsize = AtomicUsize::new(0);
+    static MUSICA_PROVA: AtomicBool = AtomicBool::new(false);
+
+    /// Una misura finta che legge per cinque secondi, un blocco ogni due
+    /// millisecondi, e si ferma quando glielo si chiede: come la vera.
+    fn legge_a_lungo(
+        scheda: SchedaSorgente,
+        continua: &dyn Fn() -> bool,
+        blocchi: &AtomicUsize,
+    ) -> volume::Misurato {
+        for _ in 0..2_500 {
+            if !continua() {
+                return volume::Misurato::Interrotta;
+            }
+            blocchi.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        volume::Misurato::Negata {
+            track_id: scheda.track_id,
+            esito: volume::MUTO,
+        }
+    }
+
+    /// Una misura scaduta smette di leggere, e il brano si segna lento invece
+    /// di fermare tutto.
+    ///
+    /// Prima la scadenza smetteva soltanto di aspettare: il filo abbandonato
+    /// continuava a decodificare tutto il file, anche con la musica ripartita,
+    /// e il brano — una share lenta ma viva — diventava «non raggiungibile»: in
+    /// testa a ogni passata, e misurato mai.
+    #[test]
+    fn una_misura_scaduta_smette_di_leggere() {
+        let misurati = misura_intensita_con(
+            &[scheda(1)],
+            |_| Duration::from_millis(100),
+            || true,
+            |scheda, continua| legge_a_lungo(scheda, continua, &BLOCCHI_SCADUTA),
+            &RadiciMorte::default(),
+        );
+        let subito = BLOCCHI_SCADUTA.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(200));
+        let dopo = BLOCCHI_SCADUTA.load(Ordering::Relaxed);
+        assert_eq!(
+            subito, dopo,
+            "la decodifica è andata avanti dopo la scadenza: {subito} blocchi, poi {dopo}"
+        );
+        assert_eq!(
+            misurati,
+            [(
+                1,
+                volume::Misurato::Negata {
+                    track_id: 1,
+                    esito: volume::LENTO,
+                }
+            )],
+            "un brano che arriva ma non finisce in tempo si segna lento"
+        );
+    }
+
+    /// La musica che riparte ferma anche la misura in corso, non solo il
+    /// brano dopo: la regola del modulo è che mentre la musica suona questo
+    /// filo non legge.
+    #[test]
+    fn la_musica_che_riparte_ferma_la_misura_in_corso() {
+        MUSICA_PROVA.store(false, Ordering::Relaxed);
+        let sveglia = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            MUSICA_PROVA.store(true, Ordering::Relaxed);
+        });
+        let partenza = std::time::Instant::now();
+        let misurati = misura_intensita_con(
+            &[scheda(1)],
+            |_| Duration::from_secs(20),
+            || !MUSICA_PROVA.load(Ordering::Relaxed),
+            |scheda, continua| legge_a_lungo(scheda, continua, &BLOCCHI_MUSICA),
+            &RadiciMorte::default(),
+        );
+        let _ = sveglia.join();
+        assert!(
+            partenza.elapsed() < Duration::from_secs(2),
+            "la misura è andata avanti con la musica: {:?}",
+            partenza.elapsed()
+        );
+        assert_eq!(
+            misurati,
+            [(1, volume::Misurato::Interrotta)],
+            "una misura interrotta dalla musica non si scrive, e il brano resta candidato"
         );
     }
 
@@ -1173,6 +1704,7 @@ mod prove {
                 track_id: scheda.track_id,
                 vettore: vec![1.0],
             },
+            &RadiciMorte::default(),
         );
         assert!(misurati.is_empty(), "{misurati:?}");
     }
@@ -1180,8 +1712,8 @@ mod prove {
     /// Un lotto vuoto non fa partire nessun filo e non è un guasto.
     #[test]
     fn un_lotto_vuoto_non_misura_niente() {
-        assert!(misura_lotto(&[]).is_empty());
-        assert!(misura_intensita(&[]).is_empty());
+        assert!(misura_lotto(&[], &RadiciMorte::default()).is_empty());
+        assert!(misura_intensita(&[], &RadiciMorte::default()).is_empty());
     }
 
     /// La scadenza della misura cresce con la durata, e non scende mai sotto
