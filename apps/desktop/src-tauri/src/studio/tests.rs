@@ -181,7 +181,17 @@ fn la_skin_di_serie_passa_dallo_studio_senza_errori() {
 
 #[test]
 fn una_bozza_non_puo_uscire_dalla_sua_cartella() {
-    for cattivo in ["../../altrove", "..\\fuori", "c:/assoluto", ""] {
+    // I dispositivi di Windows compresi: `bozze/con/` su Windows 10 non è una
+    // cartella.
+    for cattivo in [
+        "../../altrove",
+        "..\\fuori",
+        "c:/assoluto",
+        "",
+        "con",
+        "NUL",
+        "com1",
+    ] {
         assert!(!id_sicuro(cattivo), "«{cattivo}» non è stato respinto");
     }
     assert!(id_sicuro("ruggine"));
@@ -903,7 +913,7 @@ fn l_id_dichiarato_segue_la_regola_del_formato() {
     let troppo = "a".repeat(49);
     for candidato in [
         "a", "ab", "Ab", "a_b", "1ab", "-ab", "a-b", "notturno", "Notturno", "n0tte", &lungo,
-        &troppo,
+        &troppo, "con", "nul", "com1", "console",
     ] {
         assert_eq!(
             id_del_formato(candidato),

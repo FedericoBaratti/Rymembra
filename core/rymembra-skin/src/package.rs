@@ -299,7 +299,9 @@ fn classifica(name: &str) -> Option<Voce> {
         && estensione
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
-    if !ammesso {
+    // Lo Studio scrive la risorsa in `bozze/<id>/assets/<nome>`: su Windows 10
+    // `con.png` è il dispositivo e non un file, e la skin non si aprirebbe più.
+    if !ammesso || rymembra_domain::paths::riservato_da_windows(foglia) {
         return None;
     }
 
@@ -1344,6 +1346,35 @@ mod tests {
                 "{nome}"
             );
         }
+    }
+
+    #[test]
+    fn un_nome_riservato_di_windows_non_e_una_risorsa() {
+        // Lo Studio scrive le risorse in `bozze/<id>/assets/<nome>`: su
+        // Windows 10 `con.png` è il dispositivo, la scrittura fallisce e la
+        // skin non si apre più nello Studio.
+        for nome in [
+            "con.png",
+            "nul.webp",
+            "aux.jpg",
+            "com1.woff2",
+            "lpt9.png",
+            "prn.png",
+            "com0.png",
+        ] {
+            assert_eq!(
+                tipo_risorsa(nome),
+                None,
+                "«{nome}» è un dispositivo su Windows"
+            );
+            assert_eq!(riconosci_risorsa(nome, PNG), None, "«{nome}»");
+        }
+        assert_eq!(tipo_risorsa("console.png"), Some("image/png"));
+        let pacchetto = archivio(&[
+            (MANIFEST_NAME, MANIFEST.as_bytes()),
+            ("assets/con.png", PNG),
+        ]);
+        assert!(read_skin_package(&pacchetto).is_err());
     }
 
     #[test]

@@ -176,17 +176,16 @@ pub enum Voce {
 /// Un identificativo che diventa un nome di file non deve poter uscire dalla
 /// cartella.
 ///
-/// Volutamente la stessa regola di `rymembra_cloud::pacchetti::id_sicuro` e di
-/// `skin::id_sicuro`: `..`, le barre e i due punti di un percorso di Windows
-/// sono tutto ciò che serve a scrivere altrove, e qui l'identificativo arriva da
-/// un file che qualcuno ha passato all'utente.
+/// `..`, le barre e i due punti di un percorso di Windows sono tutto ciò che
+/// serve a scrivere altrove, e qui l'identificativo arriva da un file che
+/// qualcuno ha passato all'utente. Né un dispositivo di Windows: `skin/nul.ryskin`
+/// su Windows 10 scrive nel nulla.
+///
+/// La regola è [`rymembra_domain::paths::id_di_file`], la stessa delle skin
+/// installate e delle bozze dello Studio.
 #[must_use]
 pub fn id_sicuro(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    rymembra_domain::paths::id_di_file(id)
 }
 
 /// Un'impronta è esadecimale minuscola e nient'altro.
@@ -1000,6 +999,18 @@ mod prove {
                 miniatura: true
             })
         );
+    }
+
+    #[test]
+    fn un_dispositivo_di_windows_non_e_un_identificativo() {
+        // `skin/nul.ryskin`, `skin/bozze/con.json`: su Windows 10 sono il
+        // dispositivo, e il ripristino scrive nel nulla o fallisce.
+        for dispositivo in ["nul", "con", "COM1", "lpt9", "Aux", "com0"] {
+            assert!(!id_sicuro(dispositivo), "«{dispositivo}»");
+        }
+        assert_eq!(classifica("skin/nul.ryskin"), None);
+        assert_eq!(classifica("skin/bozze/con.json"), None);
+        assert!(id_sicuro("console"));
     }
 
     #[test]

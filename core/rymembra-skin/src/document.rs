@@ -880,6 +880,16 @@ fn identificatore(value: &Value, path: &str) -> Esito<String> {
             "l'id ammette da 2 a 48 fra minuscole, cifre e trattini, e comincia con una lettera",
         ));
     }
+    // Il nome di un file, `skin/<id>.ryskin`, e di una cartella dello Studio:
+    // su Windows 10 `con` o `nul` sono il dispositivo, e né l'uno né l'altra
+    // si scrivono. È una regola del formato, quindi vale su ogni sistema.
+    if rymembra_domain::paths::riservato_da_windows(scritto) {
+        return Err(problema(
+            path,
+            "l'id è il nome di un dispositivo di Windows (con, nul, aux, prn, com0-com9, \
+             lpt0-lpt9): diventa il nome di un file, e su Windows quel file non si scrive",
+        ));
+    }
     Ok(scritto.to_owned())
 }
 

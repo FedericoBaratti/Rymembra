@@ -91,15 +91,13 @@ fn con_le_bozze<T>(
 
 /// L'identificatore è anche un nome di cartella: non deve poter uscire.
 ///
-/// Stesso controllo di `skin.rs`, e ripetuto apposta: quello protegge la
-/// cartella delle skin installate, questo quella delle bozze, e sono due porte
-/// diverse. Un giorno una delle due potrebbe accettare qualcosa che l'altra no.
+/// Una funzione sua e non quella di `skin.rs`: quella protegge la cartella
+/// delle skin installate, questa quella delle bozze, e sono due porte diverse.
+/// La regola invece è una, [`rymembra_domain::paths::id_di_file`]: i
+/// dispositivi di Windows (`bozze/con/` su Windows 10 non è una cartella) li
+/// fermano tutte e due, e un elenco ricopiato si aggiorna in un posto solo.
 fn id_sicuro(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    rymembra_domain::paths::id_di_file(id)
 }
 
 /// L'id è uno che il formato accetta: da 2 a 48 fra minuscole, cifre e
@@ -117,6 +115,7 @@ fn id_del_formato(id: &str) -> bool {
     caratteri.next().is_some_and(|b| b.is_ascii_lowercase())
         && caratteri.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && (2..=48).contains(&id.len())
+        && !rymembra_domain::paths::riservato_da_windows(id)
 }
 
 fn non_trovata(id: &str) -> AppError {

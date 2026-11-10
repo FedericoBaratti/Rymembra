@@ -68,15 +68,12 @@ fn cartella_skin(data_dir: &Path) -> PathBuf {
 /// cartella.
 ///
 /// `..`, le barre e i due punti di un percorso di Windows sono tutto ciò che
-/// serve a scrivere altrove. Il formato dichiara già che un id è fatto di
+/// serve a scrivere altrove, e un dispositivo di Windows (`con`, `nul`) è un
+/// nome che non scrive affatto. Il formato dichiara già che un id è fatto di
 /// lettere, cifre e trattini — qui si controlla, perché questo è il punto in cui
-/// diventa un percorso.
+/// diventa un percorso. La regola è [`rymembra_domain::paths::id_di_file`].
 fn id_sicuro(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    rymembra_domain::paths::id_di_file(id)
 }
 
 /// Il manifest di una skin: quella di serie, o una installata.
@@ -1812,6 +1809,11 @@ mod tests {
                 "skin.notFound",
                 "«{cattivo}» non è stato respinto"
             );
+        }
+        // Né un dispositivo di Windows: `skin/con.ryskin` su Windows 10 non è
+        // un file.
+        for dispositivo in ["con", "nul", "COM1", "lpt9"] {
+            assert!(!id_sicuro(dispositivo), "«{dispositivo}»");
         }
         // E gli identificatori legittimi passano il controllo — se non
         // passassero, il guardiano avrebbe chiuso anche la porta d'ingresso.

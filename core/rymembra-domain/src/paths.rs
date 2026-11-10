@@ -237,9 +237,125 @@ pub fn is_under(path: &str, folder: &str, rules: PathRules) -> bool {
     child == parent || child.starts_with(&format!("{parent}/"))
 }
 
+/// I nomi che Windows riserva ai dispositivi, fuori dalle porte numerate.
+///
+/// `CONIN$` e `CONOUT$` sono la console, come `CON`: il `$` non sta in nessuno
+/// degli alfabeti che questo crate fa passare, ma la regola è sul nome, e un
+/// nome che un giorno lo ammettesse non deve riaprire il buco.
+const DISPOSITIVI: [&str; 6] = ["con", "prn", "aux", "nul", "conin$", "conout$"];
+
+/// Il nome è un dispositivo di Windows, e non un file: `CON`, `NUL`, `COM1`…
+///
+/// Conta la **radice**, quel che sta prima del primo punto: `nul.tar.gz` è
+/// `NUL` quanto `nul`, e lo stesso vale per una cartella. Senza badare alle
+/// maiuscole, e senza gli spazi in coda che Windows toglie da sé. Le porte
+/// sono `COM` e `LPT` con una cifra, zero compreso, o con gli apici ¹ ² ³, che
+/// la documentazione di Microsoft elenca a parte.
+///
+/// # Perché qui, e una volta sola
+///
+/// Su Windows 10 — che Rymembra promette dalla 1809 in su — un file chiamato
+/// così è il dispositivo: la scrittura fallisce con un errore di I/O che non
+/// dice niente, o finisce nel nulla. Su Windows 11 i nomi dentro un percorso
+/// sono file normali, e il guasto non si vede da chi sviluppa. È una regola
+/// del nome di file, e i posti che costruiscono un nome dal mondo — un id di
+/// skin, una risorsa di un pacchetto, una voce di un profilo, un titolo preso
+/// da un catalogo — devono dire la stessa cosa: un elenco per posto sarebbe un
+/// elenco che si aggiorna in un posto solo.
+#[must_use]
+pub fn riservato_da_windows(nome: &str) -> bool {
+    let radice = nome
+        .split('.')
+        .next()
+        .unwrap_or(nome)
+        .trim_end_matches(' ')
+        .to_ascii_lowercase();
+    if DISPOSITIVI.contains(&radice.as_str()) {
+        return true;
+    }
+    ["com", "lpt"].iter().any(|porta| {
+        let mut resto = radice.strip_prefix(porta).unwrap_or_default().chars();
+        matches!(
+            (resto.next(), resto.next()),
+            (Some('0'..='9' | '¹' | '²' | '³'), None)
+        )
+    })
+}
+
+/// Un identificativo che diventa un nome di file o di cartella: lettere e
+/// cifre ASCII, trattini e trattini bassi, da 1 a 64, e non un dispositivo di
+/// Windows ([`riservato_da_windows`]).
+///
+/// `..`, le barre e i due punti di un percorso di Windows sono tutto ciò che
+/// serve a scrivere altrove, e un dispositivo è un nome che non scrive affatto.
+/// È la regola delle skin installate, delle bozze dello Studio e delle voci di
+/// un profilo, che fino alla 3.2 ne avevano una copia ciascuna con la nota
+/// «volutamente identica»: quella nota si mantiene da sé solo se la regola sta
+/// in un posto.
+#[must_use]
+pub fn id_di_file(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !riservato_da_windows(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn i_dispositivi_di_windows_si_riconoscono_con_qualunque_estensione() {
+        for nome in [
+            "con",
+            "CON",
+            "Con.png",
+            "nul.tar.gz",
+            "aux",
+            "prn.txt",
+            "com1",
+            "COM9.woff2",
+            "com0",
+            "lpt0",
+            "LPT9",
+            "com¹",
+            "lpt³.png",
+            "conin$",
+            "CONOUT$",
+            "nul ",
+            "con .txt",
+        ] {
+            assert!(riservato_da_windows(nome), "«{nome}»");
+        }
+        for nome in [
+            "console",
+            "nulla",
+            "com10",
+            "lpt",
+            "com",
+            "auxilio",
+            "connie.png",
+            "a.con",
+            "com-1",
+            "",
+            ".con",
+        ] {
+            assert!(!riservato_da_windows(nome), "«{nome}»");
+        }
+    }
+
+    #[test]
+    fn un_id_di_file_non_esce_dalla_cartella_e_non_e_un_dispositivo() {
+        for cattivo in ["../fuori", "a/b", "C:\\altrove", "", "con", "NUL", "lpt1"] {
+            assert!(!id_di_file(cattivo), "«{cattivo}»");
+        }
+        assert!(!id_di_file(&"a".repeat(65)));
+        for buono in ["notte-2_v3", "Mia", "console"] {
+            assert!(id_di_file(buono), "«{buono}»");
+        }
+    }
 
     const WIN: PathRules = PathRules {
         case_insensitive: true,
