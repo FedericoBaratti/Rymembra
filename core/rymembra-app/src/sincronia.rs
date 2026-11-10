@@ -856,6 +856,13 @@ pub struct Cambiamenti {
     pub playlist_tolte: usize,
     /// Cartelle sorvegliate aggiunte o tolte.
     pub cartelle: usize,
+    /// Cartelle accese altrove su un host di rete che questo PC non usa, e
+    /// lasciate fuori: vedi [`applica_cartelle`].
+    ///
+    /// Non è una scrittura, e non conta per [`Cambiamenti::e_vuoto`]: serve a
+    /// dirlo nel diario invece di tacerlo.
+    #[serde(default)]
+    pub cartelle_di_rete: usize,
     /// Dispositivi visti in questa passata.
     pub dispositivi: usize,
 }
@@ -997,7 +1004,7 @@ pub fn applica_in(
     applica_lapidi(tx, fuso)?;
     cambiamenti.playlist_tolte = togli_playlist(tx, fuso)?;
     cambiamenti.playlist = applica_playlist(tx, fuso)?;
-    cambiamenti.cartelle = applica_cartelle(tx, fuso)?;
+    (cambiamenti.cartelle, cambiamenti.cartelle_di_rete) = applica_cartelle(tx, fuso)?;
     applica_skin(tx, fuso)?;
     cambiamenti.dispositivi = applica_dispositivi(tx, fuso, adesso_ms)?;
     Ok(cambiamenti)
@@ -1360,14 +1367,32 @@ fn applica_playlist(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
 /// viaggiano come sono, perché il conto nel percorso è lo stesso su ogni
 /// dispositivo che collega quell'account. Di là compaiono «da collegare»; lo
 /// specchio del servizio non viaggia — si rielenca.
-fn applica_cartelle(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError> {
+fn applica_cartelle(tx: &Transaction<'_>, fuso: &Fuso) -> Result<(usize, usize), AppError> {
     if fuso.cartelle.is_empty() {
-        return Ok(0);
+        return Ok((0, 0));
     }
+    // Gli host di rete che questo PC usa già, letti **prima** di scrivere:
+    // una cartella del documento non deve poter rendere «noto» il proprio host.
+    let host_noti = crate::profilo::host_di_questo_pc(tx)?;
     let mut mappa: BTreeMap<String, Interruttore> =
         settings::read_json(tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
     let mut cambiate = 0;
+    let mut di_rete = 0;
     for (percorso, stato) in &fuso.cartelle {
+        // Una cartella accesa su un host di rete che questo PC non usa resta
+        // fuori, e fuori anche dalla mappa: in `library.roots` la scansione e
+        // le Impostazioni la aprirebbero, cioè una connessione SMB verso un
+        // host scelto da chi ha scritto il documento, senza che nessuno qui
+        // l'abbia chiesta. È la stessa regola del piano del profilo
+        // (`profilo::host_di_questo_pc`); `MAX_SONDE` qui non serve, perché
+        // la sincronia non sonda niente. Nella mappa non si scrive nemmeno
+        // spenta: il documento di qui la ripubblicherebbe, e spenta la
+        // toglierebbe agli altri dispositivi che la usano. Chi la vuole qui
+        // la aggiunge a mano, e da lì il suo host è noto.
+        if stato.on && crate::profilo::verso_un_host_ignoto(percorso, &host_noti) {
+            di_rete += 1;
+            continue;
+        }
         match mappa.get(percorso) {
             Some(gia) if gia.at >= stato.at => {}
             Some(gia) => {
@@ -1390,7 +1415,7 @@ fn applica_cartelle(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
         .map(|(percorso, _)| percorso.as_str())
         .collect();
     settings::write_json(tx, CHIAVE_CARTELLE, &elenco)?;
-    Ok(cambiate)
+    Ok((cambiate, di_rete))
 }
 
 /// La skin scelta per ultima.
@@ -2349,6 +2374,112 @@ mod prove {
         let impostazioni = crate::insieme::impostazioni(&connection).expect("impostazioni");
         assert!(impostazioni.attivo);
         assert_eq!(impostazioni.indirizzi, ["10.20.30.40:47812"]);
+    }
+
+    // ── le cartelle di rete che un documento porta ──
+
+    fn cartelle_con(fuori: &[&str]) -> Contenuto {
+        let mut suo = Contenuto::default();
+        for percorso in fuori {
+            suo.cartelle.insert(
+                (*percorso).to_owned(),
+                Interruttore {
+                    on: true,
+                    at: 1_500,
+                },
+            );
+        }
+        suo
+    }
+
+    fn applica_cartelle_di(connection: &mut Connection, suo: Contenuto) -> Cambiamenti {
+        allinea(connection, "portatile", 1_000).expect("allineamento");
+        let mio = contenuto(connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 2_000),
+            Documento::nuovo("telefono", suo, 2_000),
+        ]);
+        applica(connection, &fuso, 2_000).expect("applicazione")
+    }
+
+    fn cartelle_di(connection: &Connection) -> Vec<String> {
+        settings::read_json(connection, CHIAVE_CARTELLE)
+            .expect("cartelle")
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn una_cartella_di_rete_di_un_host_che_questo_pc_non_usa_non_entra() {
+        // Solo impostazioni: nessuna di queste cartelle si chiede al disco.
+        let mut qui = libreria();
+        settings::write_json(&qui, CHIAVE_CARTELLE, &vec!["C:\\Musica"]).expect("cartelle");
+        let di_rete = [
+            r"\\192.0.2.1\m",
+            "//192.0.2.1/m",
+            r"\\?\UNC\192.0.2.1\m",
+            r"\\192.0.2.1@SSL@443\DavWWWRoot\m",
+            r"\\nas\musica",
+        ];
+        let locali = [
+            "D:\\Altra",
+            r"\\?\E:\Musica",
+            "nuvola://dropbox-abcdefgh/Musica",
+            "/storage/emulated/0/Music",
+        ];
+        let tutte: Vec<&str> = di_rete.iter().chain(locali.iter()).copied().collect();
+
+        let cambiamenti = applica_cartelle_di(&mut qui, cartelle_con(&tutte));
+
+        let cartelle = cartelle_di(&qui);
+        for percorso in di_rete {
+            assert!(
+                !cartelle.iter().any(|c| c == percorso),
+                "{percorso}: {cartelle:?}"
+            );
+        }
+        for percorso in locali {
+            assert!(
+                cartelle.iter().any(|c| c == percorso),
+                "{percorso}: {cartelle:?}"
+            );
+        }
+        assert_eq!(cambiamenti.cartelle_di_rete, di_rete.len());
+        // E non entrano nemmeno nella mappa: il documento di qui non le
+        // ripubblica, né accese né spente.
+        let mappa: BTreeMap<String, Interruttore> =
+            settings::read_json(&qui, CHIAVE_CARTELLE_SINCRONIA)
+                .expect("mappa")
+                .unwrap_or_default();
+        assert!(di_rete.iter().all(|p| !mappa.contains_key(*p)), "{mappa:?}");
+
+        // La passata dopo non cambia niente.
+        let di_nuovo = applica_cartelle_di(&mut qui, cartelle_con(&tutte));
+        assert_eq!(di_nuovo.cartelle, 0);
+        assert_eq!(cartelle_di(&qui), cartelle);
+    }
+
+    #[test]
+    fn una_cartella_di_rete_di_un_host_gia_usato_qui_entra() {
+        let mut qui = libreria();
+        settings::write_json(&qui, CHIAVE_CARTELLE, &vec![r"\\nas\musica"]).expect("cartelle");
+        settings::write(&qui, "download.folder", r"\\archivio\scaricati").expect("download");
+
+        let cambiamenti = applica_cartelle_di(
+            &mut qui,
+            cartelle_con(&[r"\\NAS\musica\Rock", r"\\archivio\musica"]),
+        );
+
+        let cartelle = cartelle_di(&qui);
+        assert!(
+            cartelle.iter().any(|c| c == r"\\NAS\musica\Rock"),
+            "{cartelle:?}"
+        );
+        assert!(
+            cartelle.iter().any(|c| c == r"\\archivio\musica"),
+            "{cartelle:?}"
+        );
+        assert_eq!(cambiamenti.cartelle_di_rete, 0);
     }
 
     // ── i valori fuori dominio, dalla cartella alla libreria ──

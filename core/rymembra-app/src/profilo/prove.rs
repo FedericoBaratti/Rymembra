@@ -2453,3 +2453,58 @@ fn un_v2_con_identita_vuota_ma_con_libreria_non_si_fonde_su_un_altra_libreria() 
         assert_eq!(ascolti(&qui), 1);
     }
 }
+
+#[test]
+fn una_radice_di_rete_del_profilo_entra_solo_se_il_piano_la_mostra() {
+    // Il ramo della sincronia lascia fuori le cartelle su host di rete che
+    // questo PC non usa. Nel profilo una radice che sta nelle preferenze passa
+    // dal piano — chi importa la vede fra i cambi e conferma — e allora vale
+    // nota; una che sta solo nel documento di sincronia, che il piano non
+    // mostra, resta fuori. Nessuna delle due si chiede al disco.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    let mostrata = r"\\192.0.2.7\musica";
+    let nascosta = r"\\192.0.2.8\musica";
+    for percorso in [mostrata, nascosta] {
+        contenuto_di(&mut letto).cartelle.insert(
+            percorso.to_owned(),
+            rymembra_sync::Interruttore {
+                on: true,
+                at: 5_000,
+            },
+        );
+    }
+    letto
+        .preferenze
+        .voci
+        .insert("library.roots".to_owned(), elenco(&[mostrata]));
+
+    let mut qui = libreria();
+    settings::write(&qui, "library.roots", &elenco(&["C:/Musica"])).expect("scrittura");
+    let chiesti = std::cell::RefCell::new(Vec::<String>::new());
+    let registra = |percorso: &str| {
+        chiesti.borrow_mut().push(percorso.to_owned());
+        true
+    };
+    let piano = importa(&mut qui, &letto, &ambiente(&registra)).expect("importazione");
+
+    let radici: Vec<String> = settings::read(&qui, "library.roots")
+        .expect("lettura")
+        .and_then(|valore| serde_json::from_str(&valore).ok())
+        .unwrap_or_default();
+    assert!(radici.iter().any(|r| r == mostrata), "{radici:?}");
+    assert!(!radici.iter().any(|r| r == nascosta), "{radici:?}");
+    assert!(
+        piano
+            .cambi
+            .iter()
+            .any(|c| c.chiave == "library.roots" && c.dopo.contains("192.0.2.7")),
+        "{:?}",
+        piano.cambi
+    );
+    assert!(
+        chiesti.borrow().iter().all(|p| !p.starts_with(r"\\")),
+        "{:?}",
+        chiesti.borrow()
+    );
+}

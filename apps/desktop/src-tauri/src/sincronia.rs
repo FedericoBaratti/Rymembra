@@ -783,6 +783,15 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
         sporca(app);
         sincronia::Cambiamenti::default()
     });
+    if cambiamenti.cartelle_di_rete > 0 {
+        // Dette e non taciute: chi si chiede perché una cartella accesa
+        // sull'altro computer qui non c'è trova il perché nel diario.
+        nota!(
+            "[sincronia] {} cartelle su host di rete che questo PC non usa sono rimaste fuori: \
+             per sorvegliarle qui vanno aggiunte a mano",
+            cambiamenti.cartelle_di_rete
+        );
+    }
 
     Ok(Resoconto {
         quando_ms: adesso,

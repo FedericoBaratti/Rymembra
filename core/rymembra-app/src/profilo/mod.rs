@@ -1589,9 +1589,25 @@ fn host_di_rete(percorso: &str) -> Option<String> {
     Some(host.to_lowercase())
 }
 
+/// Il percorso è di rete e il suo host non è fra quelli che questo computer usa
+/// già ([`host_di_questo_pc`]).
+///
+/// Lessicale, come le due sopra: non chiede niente al disco. Una forma di rete
+/// di cui non si legge l'host (`\\?\UNC\…`, `\\.\…`) vale «sconosciuta», e
+/// `\\?\X:\…` è un'unità con lettera, non la rete. Lo usa la sincronia per le
+/// cartelle che un documento porta: vedi `sincronia::applica_cartelle`.
+pub(crate) fn verso_un_host_ignoto(percorso: &str, noti: &[String]) -> bool {
+    let percorso = percorso.trim();
+    let di_rete = percorso.starts_with(r"\\") || percorso.starts_with("//");
+    if !di_rete || su_un_unita(percorso) {
+        return false;
+    }
+    host_di_rete(percorso).is_none_or(|host| !noti.contains(&host))
+}
+
 /// Gli host di rete che questo computer usa già: quelli delle sue cartelle
 /// sorvegliate e della cartella dei download.
-fn host_di_questo_pc(connection: &Connection) -> Result<Vec<String>, AppError> {
+pub(crate) fn host_di_questo_pc(connection: &Connection) -> Result<Vec<String>, AppError> {
     let mut host = Vec::new();
     for chiave in ["library.roots", "download.folder"] {
         if let Some(valore) = settings::read(connection, chiave)? {
