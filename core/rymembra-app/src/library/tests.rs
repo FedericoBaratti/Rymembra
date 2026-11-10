@@ -3441,7 +3441,7 @@ fn il_brano_che_torna_va_in_coda_se_il_suo_posto_e_stato_preso() {
         .expect("tolto");
     // Un riordino riscrive le posizioni da zero: il buco dove stava «a» è
     // stato preso da «b».
-    crate::playlists::reorder(&mut connection, lista, 1, 0).expect("riordinata");
+    crate::playlists::reorder(&mut connection, lista, 1, 0, 3).expect("riordinata");
 
     riga_con_chiave(&connection, 4, r"C:\m\a.mp3", "ka");
     let ordine: Vec<i64> = {

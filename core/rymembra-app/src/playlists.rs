@@ -1198,14 +1198,33 @@ pub fn add_tracks(
     aggiungi_brani(connection, id, track_ids).map(|fatta| fatta.playlist)
 }
 
-/// Toglie il brano che sta in una posizione, chiudendo il buco.
+/// La posizione, se a quella posizione c'è ancora il brano atteso.
+///
+/// La posizione viene dalla finestra, che la legge dall'elenco che mostra; il
+/// nucleo la applica al suo, che nel frattempo può essere cambiato — la prima
+/// metà di un doppio clic già scritta, una scansione che ha tolto un brano, un
+/// brano tornato al suo vecchio posto. Da sola, la posizione vecchia sull'elenco
+/// nuovo indica un altro brano. Con il brano accanto il disaccordo si vede, e la
+/// risposta è non fare niente: la finestra riceve la playlist com'è, rilegge le
+/// righe, e chi voleva quel gesto lo ritrova e lo rifà su quel che è vero.
+fn posizione_di(ordine: &[i64], posizione: i64, atteso: i64) -> Option<usize> {
+    usize::try_from(posizione)
+        .ok()
+        .filter(|indice| ordine.get(*indice) == Some(&atteso))
+}
+
+/// Toglie il brano `atteso` dalla posizione in cui la finestra lo vedeva,
+/// chiudendo il buco.
 ///
 /// Le posizioni restano `0..n` senza salti. Non è cosmesi: sono gli indici che
 /// la finestra rimanda indietro come bersaglio di uno spostamento, e un buco
 /// li farebbe puntare al brano sbagliato.
 ///
-/// Una posizione che non esiste non è un guasto: è una richiesta a vuoto, il
-/// caso di un clic su un elenco già cambiato sotto.
+/// Una posizione che non esiste, o in cui adesso c'è un altro brano, non è un
+/// guasto: è una richiesta a vuoto, il caso di un clic su un elenco già
+/// cambiato sotto, e non si tocca niente. Vedi [`posizione_di`]. La posizione
+/// e non il solo brano, perché lo stesso brano può stare due volte nella
+/// stessa playlist, e chi preme × su una riga ne vuole togliere una.
 ///
 /// # Errori
 ///
@@ -1214,19 +1233,16 @@ pub fn remove_at(
     connection: &mut Connection,
     id: i64,
     position: i64,
+    atteso: i64,
 ) -> Result<PlaylistSummary, AppError> {
     modificabile(connection, id)?;
     let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("rimozione da una playlist", &err))?;
     let mut ordine = ordine_attuale(&tx, id)?;
-    let Ok(indice) = usize::try_from(position) else {
+    let Some(indice) = posizione_di(&ordine, position, atteso) else {
         drop(tx);
         return read_one(connection, id);
     };
-    if indice >= ordine.len() {
-        drop(tx);
-        return read_one(connection, id);
-    }
     ordine.remove(indice);
     riscrivi_ordine(&tx, id, &ordine)?;
     tx.commit()
@@ -1235,12 +1251,14 @@ pub fn remove_at(
     read_one(connection, id)
 }
 
-/// Sposta un brano da una posizione a un'altra.
+/// Sposta il brano `atteso` dalla posizione in cui la finestra lo vedeva a
+/// un'altra.
 ///
-/// Le posizioni fuori dall'elenco non sono un guasto: un trascinamento su una
-/// lista già cambiata sotto non deve dare un errore, deve non fare niente.
-/// L'arrivo si taglia sull'ultimo posto valido, che è quel che l'utente intende
-/// quando lascia il brano oltre la fine.
+/// Una partenza fuori dall'elenco, o in cui adesso c'è un altro brano, non è
+/// un guasto: un trascinamento su una lista già cambiata sotto non deve dare
+/// un errore, deve non fare niente — vedi [`posizione_di`]. L'arrivo si taglia
+/// sull'ultimo posto valido, che è quel che l'utente intende quando lascia il
+/// brano oltre la fine.
 ///
 /// # Errori
 ///
@@ -1250,14 +1268,14 @@ pub fn reorder(
     id: i64,
     from: i64,
     to: i64,
+    atteso: i64,
 ) -> Result<PlaylistSummary, AppError> {
     modificabile(connection, id)?;
     let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("riordino di una playlist", &err))?;
     let mut ordine = ordine_attuale(&tx, id)?;
 
-    let partenza = usize::try_from(from).ok().filter(|i| *i < ordine.len());
-    let Some(partenza) = partenza else {
+    let Some(partenza) = posizione_di(&ordine, from, atteso) else {
         drop(tx);
         return read_one(connection, id);
     };
@@ -1471,7 +1489,7 @@ mod prove {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
         add_tracks(&mut connection, p, &[1, 2, 3]).expect("aggiunti");
-        remove_at(&mut connection, p, 1).expect("tolto");
+        remove_at(&mut connection, p, 1, 2).expect("tolto");
         assert_eq!(posizioni(&connection, p), ["Uno", "Tre"]);
         // Senza la chiusura del buco la posizione 2 resterebbe occupata e
         // l'aggiunta successiva finirebbe in 3, lasciando un vuoto che il
@@ -1499,9 +1517,9 @@ mod prove {
 
         // La posizione 1 di quel che si vede è «Tre», non il buco lasciato da
         // «Due».
-        remove_at(&mut connection, p, 1).expect("tolto");
+        remove_at(&mut connection, p, 1, 3).expect("tolto");
         assert_eq!(posizioni(&connection, p), ["Uno", "Quattro"]);
-        reorder(&mut connection, p, 1, 0).expect("spostato");
+        reorder(&mut connection, p, 1, 0, 4).expect("spostato");
         assert_eq!(posizioni(&connection, p), ["Quattro", "Uno"]);
     }
 
@@ -1510,7 +1528,7 @@ mod prove {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
         add_tracks(&mut connection, p, &[1, 2, 3, 4]).expect("aggiunti");
-        reorder(&mut connection, p, 0, 2).expect("spostato");
+        reorder(&mut connection, p, 0, 2, 1).expect("spostato");
         assert_eq!(posizioni(&connection, p), ["Due", "Tre", "Uno", "Quattro"]);
     }
 
@@ -1519,7 +1537,7 @@ mod prove {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
         add_tracks(&mut connection, p, &[1, 2, 3, 4]).expect("aggiunti");
-        reorder(&mut connection, p, 3, 1).expect("spostato");
+        reorder(&mut connection, p, 3, 1, 4).expect("spostato");
         assert_eq!(posizioni(&connection, p), ["Uno", "Quattro", "Due", "Tre"]);
     }
 
@@ -1532,7 +1550,7 @@ mod prove {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
         add_tracks(&mut connection, p, &[1, 2]).expect("aggiunti");
-        reorder(&mut connection, p, 0, 1).expect("scambiati");
+        reorder(&mut connection, p, 0, 1, 1).expect("scambiati");
         assert_eq!(posizioni(&connection, p), ["Due", "Uno"]);
     }
 
@@ -1545,9 +1563,9 @@ mod prove {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
         add_tracks(&mut connection, p, &[1, 2, 3, 4]).expect("aggiunti");
-        remove_at(&mut connection, p, 1).expect("tolto");
-        reorder(&mut connection, p, 2, 0).expect("spostato");
-        remove_at(&mut connection, p, 0).expect("tolto");
+        remove_at(&mut connection, p, 1, 2).expect("tolto");
+        reorder(&mut connection, p, 2, 0, 4).expect("spostato");
+        remove_at(&mut connection, p, 0, 4).expect("tolto");
 
         let mut statement = connection
             .prepare(
@@ -1563,17 +1581,60 @@ mod prove {
     }
 
     #[test]
+    fn togliere_da_un_elenco_cambiato_sotto_non_toglie_un_altro_brano() {
+        // Il difetto: la finestra mostra [Uno, Due, Tre, Quattro], si preme ×
+        // su «Due» e poi su «Tre» prima che la prima risposta arrivi. Il
+        // nucleo toglieva la posizione 1 e poi la posizione 2 dell'elenco
+        // **nuovo**, cioè «Quattro», che nessuno aveva scelto.
+        let mut connection = libreria();
+        let p = create(&connection, "Mista").expect("creata").id;
+        add_tracks(&mut connection, p, &[1, 2, 3, 4]).expect("aggiunti");
+        remove_at(&mut connection, p, 1, 2).expect("tolto");
+        // In posizione 2 adesso c'è «Quattro», non «Tre»: non si tocca niente,
+        // e la playlist torna com'è perché la finestra la ridisegni.
+        let com_e = remove_at(&mut connection, p, 2, 3).expect("a vuoto");
+        assert_eq!(com_e.tracks, 3);
+        assert_eq!(posizioni(&connection, p), ["Uno", "Tre", "Quattro"]);
+        // Il secondo clic di un doppio clic sulla × di «Due»: a quella
+        // posizione adesso c'è «Tre», e resta.
+        remove_at(&mut connection, p, 1, 2).expect("a vuoto");
+        assert_eq!(posizioni(&connection, p), ["Uno", "Tre", "Quattro"]);
+        // Sull'elenco vero, invece, si toglie quel che si è chiesto.
+        remove_at(&mut connection, p, 1, 3).expect("tolto");
+        assert_eq!(posizioni(&connection, p), ["Uno", "Quattro"]);
+    }
+
+    #[test]
+    fn spostare_in_un_elenco_cambiato_sotto_non_sposta_un_altro_brano() {
+        // La finestra mostra [Uno, Due, Tre, Quattro]; una scansione toglie
+        // «Due» e la cascata la sua riga, ma la finestra non lo sa ancora. Il
+        // trascinamento di «Tre» (posizione 2 a schermo) in cima spostava la
+        // posizione 2 dell'elenco vero, cioè «Quattro».
+        let mut connection = libreria();
+        let p = create(&connection, "Mista").expect("creata").id;
+        add_tracks(&mut connection, p, &[1, 2, 3, 4]).expect("aggiunti");
+        connection
+            .execute("DELETE FROM tracks WHERE id = 2", [])
+            .expect("cancellazione");
+        reorder(&mut connection, p, 2, 0, 3).expect("a vuoto");
+        assert_eq!(posizioni(&connection, p), ["Uno", "Tre", "Quattro"]);
+        // Riletta la playlist, «Tre» sta in posizione 1, e da lì si sposta.
+        reorder(&mut connection, p, 1, 0, 3).expect("spostato");
+        assert_eq!(posizioni(&connection, p), ["Tre", "Uno", "Quattro"]);
+    }
+
+    #[test]
     fn un_indice_fuori_elenco_non_fa_niente() {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
         add_tracks(&mut connection, p, &[1, 2]).expect("aggiunti");
         // Un trascinamento su una lista già cambiata sotto: niente errore,
         // niente modifica.
-        reorder(&mut connection, p, 7, 0).expect("a vuoto");
-        remove_at(&mut connection, p, 7).expect("a vuoto");
+        reorder(&mut connection, p, 7, 0, 1).expect("a vuoto");
+        remove_at(&mut connection, p, 7, 1).expect("a vuoto");
         assert_eq!(posizioni(&connection, p), ["Uno", "Due"]);
         // Oltre la fine si lascia in fondo: è quel che si intende lasciandolo lì.
-        reorder(&mut connection, p, 0, 99).expect("in fondo");
+        reorder(&mut connection, p, 0, 99, 1).expect("in fondo");
         assert_eq!(posizioni(&connection, p), ["Due", "Uno"]);
     }
 

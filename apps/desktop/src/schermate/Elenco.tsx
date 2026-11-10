@@ -131,9 +131,11 @@ const RigaBrano = memo(function RigaBrano({
    *
    * Prende l'indice invece di essere già legata a questa riga: una lambda
    * scritta dentro il `map` avrebbe un'identità nuova a ogni disegno, e
-   * basterebbe da sola ad annullare il `memo` di duecento righe.
+   * basterebbe da sola ad annullare il `memo` di duecento righe. E prende il
+   * brano della riga accanto all'indice, perché il nucleo controlli che a
+   * quella posizione ci sia ancora lui: vedi `togliDallaPlaylist`.
    */
-  onTogli?: ((indice: number) => void) | undefined;
+  onTogli?: ((indice: number, brano: number) => void) | undefined;
   /** Fa parte della selezione multipla. */
   selezionato: boolean;
   /** Ctrl per aggiungere una riga, Maiusc per prendere un intervallo. */
@@ -155,9 +157,10 @@ const RigaBrano = memo(function RigaBrano({
    * La sua presenza è quel che accende il trascinamento. `playlistRiordina`
    * stava nell'IPC dal primo giorno e non lo chiamava nessuno: la coda aveva
    * sia il trascinamento sia `Alt+↑↓`, l'elenco di una playlist nessuno dei
-   * due, quindi l'ordine di una playlist si poteva solo subire.
+   * due, quindi l'ordine di una playlist si poteva solo subire. Con il brano
+   * della riga, come `onTogli`.
    */
-  onRiordina?: ((da: number, a: number) => void) | undefined;
+  onRiordina?: ((da: number, a: number, brano: number) => void) | undefined;
   /**
    * La pressione che può diventare un trascinamento: vedi `riordino.ts`.
    *
@@ -206,7 +209,7 @@ const RigaBrano = memo(function RigaBrano({
     const passo = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
     if (passo === 0) return;
     e.preventDefault();
-    onRiordina(indice, indice + passo);
+    onRiordina(indice, indice + passo, brano.id);
     // Il fuoco segue la riga spostata invece di restare sulla posizione: chi
     // tiene premuto Alt sta spostando **una** canzone, e lasciando il fuoco
     // fermo al colpo dopo scenderebbe quella che ha preso il suo posto.
@@ -266,8 +269,15 @@ const RigaBrano = memo(function RigaBrano({
          c'è un dispositivo audio. */
       onKeyDown={daTastiera}
       /* Doppio clic oltre al tasto: è il gesto che chi arriva da un altro
-         lettore prova per primo, e non costa niente averlo. */
-      onDoubleClick={() => suonabile && onSuona(indice)}
+         lettore prova per primo, e non costa niente averlo. Ma sulla riga, non
+         sui suoi comandi: il doppio clic sulla × di una playlist, sul cuore o
+         sulle stelle risaliva fin qui, e oltre a togliere la riga (o a
+         cambiare due volte il cuore) sostituiva la coda e faceva partire il
+         brano. */
+      onDoubleClick={(e) => {
+        if ((e.target as Element).closest(TASTI_DELLA_RIGA)) return;
+        if (suonabile) onSuona(indice);
+      }}
       onClick={(e) => {
         // Sul telefono un tocco suona: il doppio tocco è lo zoom, e una riga
         // che al primo tocco si seleziona soltanto sembra una riga rotta. Il
@@ -411,7 +421,14 @@ const RigaBrano = memo(function RigaBrano({
             className="tasto icon-btn"
             tabIndex={-1}
             aria-label={t("list.removeFromPlaylist", { titolo: brano.title })}
-            onClick={() => onTogli(indice)}
+            onClick={(e) => {
+              // Il secondo clic di un doppio clic non è un'altra richiesta:
+              // dove lo stesso brano sta due volte di fila, il nucleo vedrebbe
+              // a quella posizione il brano atteso e toglierebbe anche la
+              // copia. Da tastiera `detail` è zero, e passa.
+              if (e.detail > 1) return;
+              onTogli(indice, brano.id);
+            }}
           >
             <Icona nome="i-x" dim={14} />
           </button>
@@ -805,8 +822,8 @@ export function ElencoBrani({
    * due righe.
    */
   chiaveConIndice?: boolean | undefined;
-  onTogli?: ((indice: number) => void) | undefined;
-  onRiordina?: ((da: number, a: number) => void) | undefined;
+  onTogli?: ((indice: number, brano: number) => void) | undefined;
+  onRiordina?: ((da: number, a: number, brano: number) => void) | undefined;
   onPresa?: ((indice: number | null) => void) | undefined;
   onMira?: ((indice: number | null) => void) | undefined;
   onLascia?: ((indice: number) => void) | undefined;

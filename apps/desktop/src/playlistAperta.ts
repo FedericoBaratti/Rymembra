@@ -44,10 +44,16 @@ export interface PlaylistAperta {
   playlistCaricata: number | null;
   /** Rimpiazza una playlist nell'elenco e, se è quella aperta, anche lì. */
   aggiornaPlaylist: (cambiata: Playlist) => void;
-  /** Toglie dalla playlist aperta la riga in quella posizione. */
-  togliDallaPlaylist: (indice: number) => void;
-  /** Sposta una riga da una posizione a un'altra. */
-  spostaNellaPlaylist: (da: number, a: number) => void;
+  /**
+   * Toglie dalla playlist aperta la riga in quella posizione, se ci sta
+   * ancora quel brano: vedi «Posizione e brano» qui sotto.
+   */
+  togliDallaPlaylist: (indice: number, brano: number) => void;
+  /**
+   * Sposta una riga da una posizione a un'altra. `brano` è quel che si vedeva
+   * in `da`, per la stessa ragione di `togliDallaPlaylist`.
+   */
+  spostaNellaPlaylist: (da: number, a: number, brano: number) => void;
   /** La riga che si sta portando in giro, o `null`. */
   trascinata: number | null;
   /** La riga su cui cadrebbe adesso, o `null`. */
@@ -168,12 +174,24 @@ export function usePlaylistAperta({
     [libreria, setPlaylistAperta],
   );
 
-  /** Toglie dalla playlist aperta la riga in quella posizione. */
+  /**
+   * Toglie dalla playlist aperta la riga in quella posizione.
+   *
+   * # Posizione e brano
+   *
+   * La posizione da sola non basta: è quella dell'elenco che si vede, e il
+   * nucleo la applica al suo, che nel frattempo può essere cambiato — la prima
+   * × di un doppio clic, già arrivata; una scansione che ha tolto un brano. Si
+   * toglieva allora un altro brano, in silenzio e senza ritorno. Con il brano
+   * accanto il nucleo controlla che a quella posizione ci sia ancora lui, e se
+   * non c'è non tocca niente: la playlist che torna ridisegna l'elenco vero, e
+   * chi voleva togliere quella riga la ritrova e riprova.
+   */
   const togliDallaPlaylist = useCallback(
-    (indice: number) => {
+    (indice: number, brano: number) => {
       if (!playlistAperta) return;
       ipc
-        .playlistTogli(playlistAperta.id, indice)
+        .playlistTogli(playlistAperta.id, indice, brano)
         .then(aggiornaPlaylist)
         .catch(segnalaErrore);
     },
@@ -192,14 +210,17 @@ export function usePlaylistAperta({
   const [mirata, setMirata] = useState<number | null>(null);
 
   const spostaNellaPlaylist = useCallback(
-    (da: number, a: number) => {
+    (da: number, a: number, brano: number) => {
       if (!playlistAperta || da === a) return;
       // Il taglio qui e non nel nucleo: `Alt+↑` sulla prima riga e `Alt+↓`
       // sull'ultima sono gesti legittimi che non devono fare niente, non
       // errori da mostrare.
       if (a < 0 || a >= braniPlaylist.length) return;
       // Ottimistico come il cuore: la riga si muove sotto il dito, e se la
-      // scrittura fallisce l'elenco si rilegge dalla playlist che torna.
+      // scrittura fallisce l'elenco si rilegge dalla playlist che torna. Anche
+      // quando il nucleo non sposta niente perché in `da` non c'era più
+      // `brano`: la playlist che torna è nuova, e l'effetto qui sopra rilegge
+      // le righe vere al posto di quelle mosse qui.
       setBraniPlaylist((prima) => {
         const dopo = [...prima];
         const [presa] = dopo.splice(da, 1);
@@ -207,7 +228,7 @@ export function usePlaylistAperta({
         return dopo;
       });
       ipc
-        .playlistRiordina(playlistAperta.id, da, a)
+        .playlistRiordina(playlistAperta.id, da, a, brano)
         .then(aggiornaPlaylist)
         .catch((e: unknown) => {
           segnalaErrore(e);
@@ -224,11 +245,16 @@ export function usePlaylistAperta({
 
   const lascia = useCallback(
     (indice: number) => {
-      if (trascinata !== null) spostaNellaPlaylist(trascinata, indice);
+      // Il brano preso è quello che l'elenco in mano ha nella riga presa: è
+      // la riga che il dito ha portato fin qui.
+      const preso = trascinata === null ? undefined : braniPlaylist[trascinata];
+      if (trascinata !== null && preso !== undefined) {
+        spostaNellaPlaylist(trascinata, indice, preso.id);
+      }
       setTrascinata(null);
       setMirata(null);
     },
-    [trascinata, spostaNellaPlaylist],
+    [trascinata, braniPlaylist, spostaNellaPlaylist],
   );
 
   return {

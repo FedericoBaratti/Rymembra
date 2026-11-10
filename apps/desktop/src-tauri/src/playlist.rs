@@ -277,21 +277,30 @@ pub async fn playlist_crea_e_aggiungi(
 }
 
 /// Toglie il brano che sta in una posizione.
+///
+/// `brano` è quello che la finestra vedeva in `posizione`: se adesso lì c'è un
+/// altro brano — un doppio clic sulla ×, una playlist cambiata sotto — non si
+/// toglie niente, e torna la playlist com'è. Vedi
+/// `rymembra_app::playlists::remove_at`.
 #[tauri::command]
 pub fn playlist_togli(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
     id: i64,
     posizione: i64,
+    brano: i64,
 ) -> Esito<PlaylistSummary> {
     let esito = con_libreria(&stato, |libreria| {
-        playlists::remove_at(&mut libreria.connection, id, posizione)
+        playlists::remove_at(&mut libreria.connection, id, posizione, brano)
     })
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
 }
 
 /// Sposta un brano dentro una playlist.
+///
+/// `brano` è quello che la finestra vedeva in `da`, con la stessa regola di
+/// [`playlist_togli`].
 #[tauri::command]
 pub fn playlist_riordina(
     app: tauri::AppHandle,
@@ -299,9 +308,10 @@ pub fn playlist_riordina(
     id: i64,
     da: i64,
     a: i64,
+    brano: i64,
 ) -> Esito<PlaylistSummary> {
     let esito = con_libreria(&stato, |libreria| {
-        playlists::reorder(&mut libreria.connection, id, da, a)
+        playlists::reorder(&mut libreria.connection, id, da, a, brano)
     })
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)

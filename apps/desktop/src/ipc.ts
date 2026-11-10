@@ -468,8 +468,11 @@ export const ipc = {
   // Crea e aggiunge in una transazione sola: o tutte e due, o niente.
   playlistCreaEAggiungi: (nome: string, brani: number[]) =>
     invoke<AggiuntaPlaylist>("playlist_crea_e_aggiungi", { nome, brani }),
-  playlistTogli: (id: number, posizione: number) =>
-    invoke<Playlist>("playlist_togli", { id, posizione }),
+  // La posizione **e** il brano che la finestra ci vedeva: se la playlist è
+  // cambiata sotto — un secondo clic prima della risposta, una scansione — a
+  // quella posizione c'è un altro brano, e il nucleo non toglie niente.
+  playlistTogli: (id: number, posizione: number, brano: number) =>
+    invoke<Playlist>("playlist_togli", { id, posizione, brano }),
   // ── le playlist intelligenti ──────────────────────────────────────────
   // Non si materializzano: una playlist intelligente **è** la sua
   // interrogazione, e `playlistBrani` la esegue. Scrivere le righe vorrebbe
@@ -499,8 +502,9 @@ export const ipc = {
   playlistEsporta: (id: number, percorso: string) =>
     invoke<PlaylistEsportata>("playlist_esporta", { id, percorso }),
 
-  playlistRiordina: (id: number, da: number, a: number) =>
-    invoke<Playlist>("playlist_riordina", { id, da, a }),
+  // Come `playlistTogli`: `brano` è quel che la finestra vedeva in `da`.
+  playlistRiordina: (id: number, da: number, a: number, brano: number) =>
+    invoke<Playlist>("playlist_riordina", { id, da, a, brano }),
 
   // ── importazione dal vecchio database ────────────────────────────────────
   // Due comandi e non uno con un booleano: il piano non tocca niente e

@@ -2290,18 +2290,22 @@ export function App() {
    * posizione la dice la riga stessa, `data-indice`, da cui viene il gesto.
    * Su una selezione di più righe la voce non c'è: le posizioni si
    * sposterebbero a ogni riga tolta, e il nucleo le toglie una per volta.
+   * Il brano della riga è il solo di `elenco`, che la riga manda col suo
+   * identificativo: il nucleo lo vuole accanto alla posizione, e se lì non
+   * c'è più non toglie niente.
    */
   const menuRigaPlaylist = useCallback(
     (e: React.MouseEvent, elenco: number[]) => {
       const riga = (e.target as Element).closest<HTMLElement>("[data-indice]");
       const indice = riga === null ? Number.NaN : Number(riga.dataset["indice"]);
+      const brano = elenco.length === 1 ? elenco[0] : undefined;
       const suPiuRighe = elenco.some((id) => selezione.has(id)) && selezionati.length > 1;
       menuSuSelezione(
         e,
         elenco,
         undefined,
-        Number.isInteger(indice) && !suPiuRighe
-          ? { togliDallaPlaylist: () => togliDallaPlaylist(indice) }
+        Number.isInteger(indice) && brano !== undefined && !suPiuRighe
+          ? { togliDallaPlaylist: () => togliDallaPlaylist(indice, brano) }
           : undefined,
       );
     },
