@@ -20,7 +20,8 @@ use crate::stato::con_libreria;
 
 use super::riapertura::{Modo, ferma_l_ascolto_se_perso, riapri_su};
 use super::{
-    ATTESA_MASSIMA_DISPOSITIVI, PASSO_DISPOSITIVI, StatoLettore, annota_ripresa, uscita_scelta,
+    ATTESA_MASSIMA_DISPOSITIVI, PASSO_DISPOSITIVI, StatoLettore, annota_ripresa, uscita_nel_diario,
+    uscita_scelta,
 };
 
 /// Un'uscita audio, come la vede la finestra.
@@ -335,15 +336,22 @@ fn perche_riaprire(
         // e scrivere nel diario che ha smesso manderebbe chi lo legge a
         // cercare un cavo che non c'entra. Quale dei due sia lo dice
         // `causa_perdita`, che finisce nella riga di `fili.rs`.
-        return Some(format!("il motore su «{dispositivo}» non suona più"));
+        return Some(format!(
+            "il motore sull'uscita {} non suona più",
+            uscita_nel_diario(dispositivo)
+        ));
     }
     // L'identità, non il nome a schermo: è con l'identità che il motore si
     // apre, e due nomi che non coincidono con lei vorrebbero dire una
     // riapertura a ogni passata, per sempre.
+    //
+    // Nel perché, che va nel diario, le uscite per impronta: vedi
+    // `uscita_nel_diario`.
     (giusta.id != dispositivo).then(|| {
         format!(
-            "si suonava su «{dispositivo}», adesso tocca a «{}»",
-            giusta.id
+            "si suonava sull'uscita {}, adesso tocca a {}",
+            uscita_nel_diario(dispositivo),
+            uscita_nel_diario(&giusta.id)
         )
     })
 }
@@ -535,9 +543,35 @@ mod prove {
         let adesso = [uscita("Altoparlanti", true), uscita("DAC", false)];
         let perche = perche_riaprire(Some(("Altoparlanti", false)), &adesso, Some("DAC"));
         assert!(
-            perche.as_deref().is_some_and(|p| p.contains("«DAC»")),
+            perche
+                .as_deref()
+                .is_some_and(|p| p.contains(&super::super::uscita_nel_diario("DAC"))),
             "{perche:?}"
         );
+    }
+
+    /// Il perché di una riapertura va nel diario: le uscite ci stanno per
+    /// impronta, mai per nome — sono le cuffie di qualcuno.
+    #[test]
+    fn il_perche_di_una_riapertura_non_porta_i_nomi_delle_uscite() {
+        let adesso = [
+            uscita("Altoparlanti", false),
+            uscita("Cuffie (AirPods di Mario)", true),
+        ];
+        let casi = [
+            perche_riaprire(Some(("Altoparlanti", false)), &adesso, None),
+            perche_riaprire(
+                Some(("Cuffie (AirPods di Mario)", true)),
+                &adesso,
+                Some("Cuffie (AirPods di Mario)"),
+            ),
+        ];
+        for perche in casi {
+            let perche = perche.unwrap_or_default();
+            assert!(!perche.is_empty());
+            assert!(!perche.contains("Mario"), "{perche}");
+            assert!(!perche.contains("Altoparlanti"), "{perche}");
+        }
     }
 
     /// La fissata che c'è, a motore perso: si riapre su di lei.
@@ -560,7 +594,9 @@ mod prove {
         let adesso = [uscita("A", false), uscita("B", true)];
         let perche = perche_riaprire(Some(("A", false)), &adesso, None);
         assert!(
-            perche.as_deref().is_some_and(|p| p.contains("«B»")),
+            perche
+                .as_deref()
+                .is_some_and(|p| p.contains(&super::super::uscita_nel_diario("B"))),
             "{perche:?}"
         );
     }
