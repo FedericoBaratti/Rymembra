@@ -104,9 +104,23 @@ pub fn scegli(rilascio: Rilascio, corrente: &str, architettura: &str) -> Option<
     })
 }
 
+/// I segni con cui il nome di un APK dice per quale architettura è: tutti
+/// quelli che si usano, non solo quelli dei telefoni per cui Rymembra esce.
+const ARCHITETTURE: [&str; 7] = [
+    "arm64", "aarch64", "armeabi", "armv7", "x86_64", "x86", "x64",
+];
+
 /// L'APK giusto per questo telefono: quello che nomina la sua architettura,
-/// o quello universale, o l'unico che c'è. Nessuno se la release è solo per
-/// il computer.
+/// o quello universale, o l'unico che c'è purché non ne nomini un'altra.
+/// Nessuno se la release è solo per il computer.
+///
+/// # Perché l'unico non basta
+///
+/// Il ripiego sull'unico APK esiste per un file che non dice niente
+/// (`rymembra.apk`). Uno che dice un'altra architettura — caricato solo quello
+/// dell'emulatore, `…-x86_64.apk`, su un telefono `arm64` — Android lo
+/// rifiuterebbe («App non installata») dopo decine di megabyte scaricati, e
+/// l'avviso avrebbe promesso un aggiornamento che non c'è.
 #[must_use]
 pub fn apk_per<'a>(allegati: &'a [Allegato], architettura: &str) -> Option<&'a Allegato> {
     let apk: Vec<&Allegato> = allegati
@@ -126,7 +140,7 @@ pub fn apk_per<'a>(allegati: &'a [Allegato], architettura: &str) -> Option<&'a A
         .find(|allegato| nomina(allegato, nomi))
         .or_else(|| apk.iter().find(|allegato| nomina(allegato, &["universal"])))
         .or(match apk.as_slice() {
-            [unico] => Some(unico),
+            [unico] if !nomina(unico, &ARCHITETTURE) => Some(unico),
             _ => None,
         })
         .copied()
@@ -175,9 +189,16 @@ mod prove {
     use super::*;
 
     fn allegato(nome: &str) -> Allegato {
+        allegato_da(
+            nome,
+            &format!("https://github.com/FedericoBaratti/Rymembra/releases/download/v3.3.0/{nome}"),
+        )
+    }
+
+    fn allegato_da(nome: &str, indirizzo: &str) -> Allegato {
         Allegato {
             name: nome.to_owned(),
-            browser_download_url: format!("https://example.invalid/{nome}"),
+            browser_download_url: indirizzo.to_owned(),
             size: Some(10),
         }
     }
@@ -239,6 +260,24 @@ mod prove {
         assert!(apk_per(&[allegato("rymembra.apk")], "aarch64").is_some());
         // Due senza architettura: nessuno, invece di uno a caso.
         assert!(apk_per(&[allegato("a.apk"), allegato("b.apk")], "aarch64").is_none());
+    }
+
+    #[test]
+    fn l_unico_apk_di_un_altra_architettura_non_si_propone() {
+        // L'unico che c'è, ma nomina un'altra architettura: l'installatore di
+        // Android lo rifiuterebbe dopo decine di megabyte scaricati.
+        assert!(apk_per(&[allegato("rymembra-3.3.0-x86_64.apk")], "aarch64").is_none());
+        assert!(apk_per(&[allegato("rymembra-3.3.0-arm64.apk")], "x86_64").is_none());
+        assert!(apk_per(&[allegato("rymembra-armeabi-v7a.apk")], "aarch64").is_none());
+        assert!(apk_per(&[allegato("rymembra-x86.apk")], "x86_64").is_none());
+        // Un telefono di cui non si conosce l'architettura: un APK che ne
+        // nomina una non è il suo.
+        assert!(apk_per(&[allegato("rymembra-arm64.apk")], "riscv64").is_none());
+        // L'unico che non ne nomina nessuna resta quello.
+        assert_eq!(
+            apk_per(&[allegato("Rymembra-3.3.0.apk")], "x86_64").map(|a| a.name.as_str()),
+            Some("Rymembra-3.3.0.apk")
+        );
     }
 
     #[test]
