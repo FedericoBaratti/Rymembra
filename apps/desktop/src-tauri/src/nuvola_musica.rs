@@ -1135,11 +1135,17 @@ fn elenca_le_radici(
             }),
             Err(guasto) if guasto.code().kind() == ErrorCodeKind::CloudNotFound => {
                 let mut nuova = false;
-                nuvola.andamento(conto, |a| nuova = a.perse.insert(radice.percorso.clone()));
+                let mut perse = 0;
+                nuvola.andamento(conto, |a| {
+                    nuova = a.perse.insert(radice.percorso.clone());
+                    perse = a.perse.len();
+                });
+                // Il conto e quante, non quale: il nome di una cartella di
+                // musica nel diario non ci va.
                 if nuova {
                     nota!(
-                        "[nuvola] {conto}: la cartella {} non c'è più sul servizio, resta da scegliere di nuovo",
-                        radice.percorso
+                        "[nuvola] {conto}: una cartella scelta non c'è più sul servizio \
+                         ({perse} in tutto), resta da scegliere di nuovo"
                     );
                 }
             }
@@ -1316,19 +1322,21 @@ fn segui_le_radici_traslocate(
         .radici_traslocate(conto);
     let mut nuove = Vec::new();
     for (radice, nuovo) in traslocate {
+        // Nel diario il conto e i numeri, non i nomi: vecchio e nuovo
+        // percorso sono nomi di cartelle di musica.
         match trasloca_la_radice(stato, nuvola, conto, deposito, &radice, &nuovo) {
             Ok(Some(seguiti)) => {
                 nota!(
-                    "[nuvola] {conto}: la cartella {} ora è {nuovo}, {seguiti} brani seguiti",
-                    radice.percorso
+                    "[nuvola] {conto}: una cartella scelta è stata spostata o rinominata sul \
+                     servizio, {seguiti} brani seguiti"
                 );
                 nuove.push(nuovo);
             }
             Ok(None) => return,
             Err(guasto) if guasto.code().kind() == ErrorCodeKind::LibraryScanBusy => {}
             Err(guasto) => nota!(
-                "[nuvola] {conto}: il trasloco di {} non è riuscito, si riprova al giro dopo: {guasto}",
-                radice.percorso
+                "[nuvola] {conto}: il trasloco di una cartella scelta non è riuscito, si riprova \
+                 al giro dopo: {guasto}"
             ),
         }
     }
@@ -2679,6 +2687,36 @@ mod prove {
             registrato.is_some() && riproposte.is_some() && riproposte > registrato,
             "le copie da misurare si ripropongono dopo aver registrato lo stato"
         );
+    }
+
+    /// Nessuna riga del diario di questo file scrive il percorso di una
+    /// cartella del cloud o la cima di una radice (che per Dropbox e WebDAV è
+    /// un percorso): sono nomi di cartelle di musica, e `PRIVACY.md` promette
+    /// che nel diario non finiscono. Il conto basta a ritrovare la riga.
+    #[test]
+    fn il_diario_non_scrive_i_percorsi_del_cloud() {
+        let sorgente = include_str!("nuvola_musica.rs");
+        let codice = sorgente
+            .split("#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or_default();
+        let righe: Vec<&str> = codice
+            .split("nota!(")
+            .skip(1)
+            .map(|resto| resto.split(");").next().unwrap_or_default())
+            .collect();
+        assert!(
+            righe.len() >= 8,
+            "le righe del diario si trovano: {righe:?}"
+        );
+        for riga in righe {
+            for vietato in ["percorso", "{nuovo", "nuovo\n", "cima"] {
+                assert!(
+                    !riga.contains(vietato),
+                    "una riga del diario scrive «{vietato}»: nota!({riga})"
+                );
+            }
+        }
     }
 
     /// «Scollega» toglie i brani in cache del conto (il commento del comando
