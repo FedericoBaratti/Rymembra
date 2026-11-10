@@ -129,7 +129,9 @@ impl Audius {
     #[must_use]
     pub fn nuovo() -> Self {
         Self {
-            rete: Rete::nuova("audius.co", SCADENZA),
+            // I rimandi delle domande seguono la stessa regola del nodo: solo
+            // verso un nome pubblico. Vedi `rimandi_pubblici`.
+            rete: crate::rimandi_pubblici(&Rete::nuova("audius.co", SCADENZA)),
             prelievo: Rete::per_prelievo("audius.co"),
             flusso: Rete::per_flusso("audius.co"),
             nodo: Arc::new(Mutex::new(None)),
@@ -1221,6 +1223,20 @@ mod prove {
             ),
             "invece dell'annullamento: {esito:?}"
         );
+    }
+
+    #[test]
+    fn le_domande_seguono_i_rimandi_solo_verso_nomi_pubblici() {
+        // Scegliere un nodo pubblico non basta se poi il nodo può rimandare
+        // la richiesta dove vuole: ricerche e schede seguono i rimandi a mano,
+        // e solo verso un nome pubblico.
+        let audius = Audius::nuovo();
+        let rymembra_net::Rimandi::Sorvegliati { cancello, .. } = audius.rete().rimandi() else {
+            panic!("i rimandi delle domande non sono sorvegliati");
+        };
+        assert!(cancello.ammette("https://creatornode2.audius.co/v1/tracks/x"));
+        assert!(!cancello.ammette("https://192.168.1.1/"));
+        assert!(!cancello.ammette("https://router.lan/"));
     }
 
     #[test]

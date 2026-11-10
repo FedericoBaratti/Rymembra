@@ -1024,12 +1024,11 @@ fn copertina(app: &AppHandle, desiderato: &Desiderato) -> Option<Vec<u8>> {
         .as_deref()
         .filter(|url| rymembra_catalogo::indirizzo_pubblico(url))?;
     let mut byte = Vec::new();
-    let rete = app
-        .try_state::<StatoProcura>()?
-        .cataloghi
-        .archivio()
-        .rete()
-        .clone();
+    // E anche i rimandi: un indirizzo pubblico che rimanda a casa non è
+    // meglio di un indirizzo di casa.
+    let rete = rymembra_catalogo::rimandi_pubblici(
+        app.try_state::<StatoProcura>()?.cataloghi.archivio().rete(),
+    );
     rete.preleva(url, &[], &mut byte, &|| false, &mut |_, _| {})
         .ok()?;
     // Otto mebibyte, lo stesso limite che `tag_scrittura` applica quando la

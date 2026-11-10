@@ -86,12 +86,12 @@ pub use riferimento::{
 /// — e restano largamente sotto il tetto di chi riceve.
 pub const FRASE_MASSIMA: usize = 250;
 
-/// Quanti rimandi può seguire un prelievo.
+/// Quanti rimandi può seguire un prelievo, o una richiesta di [`rimandi_pubblici`].
 ///
-/// Gli stessi dieci che la rete dei prelievi seguiva da sé, ma adesso uno per
-/// volta e solo dove [`bersaglio_ammesso`] dice di sì: l'Internet Archive
-/// rimanda al nodo che tiene il file, Audius al nodo di contenuti, e nessuno
-/// dei due ha bisogno di più di un paio di salti.
+/// Gli stessi dieci che le reti seguivano da sé, ma adesso uno per volta e
+/// solo dove il cancello dice di sì: l'Internet Archive rimanda al nodo che
+/// tiene il file, Audius al nodo di contenuti, e nessuno dei due ha bisogno di
+/// più di un paio di salti.
 const RIMANDI_PRELIEVO: u32 = 10;
 
 /// Il file di un item dell'Internet Archive: `https://archive.org/download/<id>/<file>`.
@@ -143,6 +143,22 @@ fn fuori_dal_catalogo(fonte: Fonte, titolo: &str) -> AppError {
         "l'indirizzo di «{titolo}» non è un file di {}: non si chiede",
         fonte.etichetta()
     ))
+}
+
+/// La stessa rete, con i rimandi seguiti a mano e solo verso un
+/// [`indirizzo_pubblico`].
+///
+/// Per le richieste che partono da un indirizzo scelto da una risposta — le
+/// domande ai nodi di Audius, le copertine — dove non c'è un'allowlist di
+/// domini da far valere sui salti, ma c'è un confine: un rimando non deve poter
+/// portare la richiesta al router o al NAS di casa. Scegliere un punto di
+/// partenza pubblico non basta, se poi il punto di partenza rimanda dove vuole.
+#[must_use]
+pub fn rimandi_pubblici(rete: &Rete) -> Rete {
+    rete.con_rimandi(Rimandi::Sorvegliati {
+        quanti: RIMANDI_PRELIEVO,
+        cancello: Cancello::nuovo(indirizzo_pubblico),
+    })
 }
 
 /// La rete di un prelievo, con il cancello sui rimandi.
@@ -918,6 +934,19 @@ mod prove {
             esito.as_ref().map_err(AppError::code),
             Err(ErrorCode::InternalAborted { .. })
         ));
+    }
+
+    #[test]
+    fn i_rimandi_pubblici_non_portano_a_casa() {
+        // La rete con cui `procura` scarica una copertina: partire da un nome
+        // pubblico non basta se un rimando può portare la richiesta al router.
+        let rete = rimandi_pubblici(&Rete::nuova("prova", std::time::Duration::from_secs(1)));
+        let Rimandi::Sorvegliati { cancello, .. } = rete.rimandi() else {
+            panic!("i rimandi non sono sorvegliati");
+        };
+        assert!(cancello.ammette("https://ia800305.us.archive.org/services/img/x"));
+        assert!(!cancello.ammette("https://192.168.1.1/x.jpg"));
+        assert!(!cancello.ammette("http://ia800305.us.archive.org/x.jpg"));
     }
 
     #[test]
