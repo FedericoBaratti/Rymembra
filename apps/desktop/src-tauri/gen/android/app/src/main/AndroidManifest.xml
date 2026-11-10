@@ -67,6 +67,15 @@
         <package android:name="com.google.android.projection.gearhead" />
         <package android:name="com.android.car.media" />
         <package android:name="com.android.car.carlauncher" />
+        <!-- L'installatore di sistema, che l'APK di un aggiornamento lo
+             riceve per nome e non da un intento che chiunque può prendere
+             (vedi `Installatore.installatoreDiSistema`). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data
+                android:scheme="content"
+                android:mimeType="application/vnd.android.package-archive" />
+        </intent>
     </queries>
 
 

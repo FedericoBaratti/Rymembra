@@ -181,8 +181,10 @@ pub fn cestina(percorsi: &[String]) -> Result<bool, Errore> {
     chiama("sistema.cestina", &Percorsi { percorsi })
 }
 
-/// La cartella della cache dell'app: quella che il `FileProvider` sa
-/// mostrare all'installatore di Android.
+/// La cartella della cache dell'app. Il `FileProvider` ne sa mostrare alle
+/// altre app due sottocartelle soltanto: `aggiornamenti` (l'APK, per
+/// l'installatore) e `diario` (la copia da condividere). Vedi
+/// `res/xml/file_paths.xml`.
 ///
 /// # Errori
 ///
@@ -287,8 +289,9 @@ struct Condivisione<'a> {
     titolo: &'a str,
 }
 
-/// Apre il foglio di condivisione di Android su un file della
-/// [`cartella_cache`]: posta, messaggi, Drive, «Salva in File». Non aspetta.
+/// Apre il foglio di condivisione di Android su un file della cartella
+/// `diario` della [`cartella_cache`]: posta, messaggi, Drive, «Salva in
+/// File». Non aspetta.
 ///
 /// # Errori
 ///

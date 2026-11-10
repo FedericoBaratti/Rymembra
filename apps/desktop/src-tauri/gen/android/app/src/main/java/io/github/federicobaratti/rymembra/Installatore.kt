@@ -1,5 +1,7 @@
 package io.github.federicobaratti.rymembra
 
+import android.Manifest
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -43,14 +45,40 @@ object Installatore {
       return "permesso"
     }
     val indirizzo = FileProvider.getUriForFile(attivita, "${attivita.packageName}.fileprovider", file)
-    attivita.runOnUiThread {
-      attivita.startActivity(
-        Intent(Intent.ACTION_VIEW)
-          .setDataAndType(indirizzo, "application/vnd.android.package-archive")
-          .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      )
-    }
+    val intento = Intent(Intent.ACTION_VIEW)
+      .setDataAndType(indirizzo, TIPO_APK)
+      .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    intento.component = installatoreDiSistema(attivita.packageManager, intento)
+    attivita.runOnUiThread { attivita.startActivity(intento) }
     return "installatore"
+  }
+
+  private const val TIPO_APK = "application/vnd.android.package-archive"
+
+  /**
+   * L'installatore del sistema, per nome. Con l'intento implicito di prima
+   * ogni app che dichiara di aprire gli APK compariva fra le scelte, e
+   * riceveva il permesso di leggerlo: un finto installatore in mezzo ai veri.
+   * Qui si guardano solo le app di sistema che aprono un APK, e fra loro si
+   * preferisce quella che può installare pacchetti (l'installatore vero, non
+   * un gestore file di sistema che l'APK lo mostra soltanto). Senza nessuna
+   * app di sistema che lo apra è un errore, non l'intento implicito: vedere
+   * la richiesta serve il `<queries>` del manifesto.
+   */
+  @Suppress("DEPRECATION")
+  private fun installatoreDiSistema(pm: PackageManager, intento: Intent): ComponentName {
+    val bandiere = PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY
+    val candidati =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        pm.queryIntentActivities(intento, PackageManager.ResolveInfoFlags.of(bandiere.toLong()))
+      } else {
+        pm.queryIntentActivities(intento, bandiere)
+      }
+    val scelto = candidati.firstOrNull {
+      pm.checkPermission(Manifest.permission.INSTALL_PACKAGES, it.activityInfo.packageName) ==
+        PackageManager.PERMISSION_GRANTED
+    } ?: candidati.firstOrNull() ?: error("sul telefono non c'è l'installatore di sistema")
+    return ComponentName(scelto.activityInfo.packageName, scelto.activityInfo.name)
   }
 
   /**

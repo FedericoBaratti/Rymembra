@@ -750,8 +750,9 @@ pub fn diario_apri() -> Esito<()> {
 /// [`diario_apri`] sul telefono: una cartella non c'è nessuno che la apra —
 /// i dati dell'app sono privati, e il gestore file di Android lì non entra —
 /// quindi il diario si **condivide**: posta, messaggi, «Salva in File». Una
-/// copia nella cache, perché è la cartella che il `FileProvider` sa mostrare
-/// alle altre app; il diario vero resta dov'è.
+/// copia in `cache/diario`, perché è una delle due cartelle che il
+/// `FileProvider` sa mostrare alle altre app (`res/xml/file_paths.xml`, con
+/// quella degli aggiornamenti); il diario vero resta dov'è.
 #[cfg(target_os = "android")]
 fn condividi_sul_telefono(dove: &Path) -> Esito<()> {
     let guasto = |causa: String| {
@@ -762,9 +763,11 @@ fn condividi_sul_telefono(dove: &Path) -> Esito<()> {
             .with_cause(causa),
         )
     };
-    let cache =
-        rymembra_android::sistema::cartella_cache().map_err(|err| guasto(err.to_string()))?;
-    let copia = cache.join("rymembra-diario.txt");
+    let cartella = rymembra_android::sistema::cartella_cache()
+        .map_err(|err| guasto(err.to_string()))?
+        .join("diario");
+    fs::create_dir_all(&cartella).map_err(|err| guasto(err.to_string()))?;
+    let copia = cartella.join("rymembra-diario.txt");
     fs::copy(dove.join(NOME), &copia).map_err(|err| guasto(err.to_string()))?;
     rymembra_android::sistema::condividi(&copia, "text/plain", "Rymembra")
         .map_err(|err| guasto(err.to_string()))
