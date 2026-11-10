@@ -30,12 +30,14 @@ use rymembra_lontano::protocollo::{MASSIMA_PAGINA, MASSIMO_PEZZO};
 use rymembra_lontano::{Domanda, Risposta};
 use tauri::{AppHandle, Manager as _};
 
-use super::filo::in_libreria;
 use crate::nota;
 use crate::stato::{Stato, adesso_ms};
 
-/// Quanto una domanda aspetta la libreria: l'altro ha la sua scadenza, e una
-/// libreria occupata da una scansione di solito si libera prima.
+/// Quanto una domanda aspetta la libreria: l'altro ha la sua scadenza.
+///
+/// Le letture in WAL non aspettano il lucchetto ([`leggi_da`]); questa attesa
+/// vale per gli ascolti, che scrivono, per le letture con il giornale ripiegato,
+/// e per SQLite stesso nelle rare volte in cui anche un lettore deve aspettare.
 const ATTESA_LETTURA: Duration = Duration::from_secs(5);
 
 /// Risponde a una domanda di `da`, un dispositivo associato.
@@ -123,13 +125,57 @@ fn leggi_la_libreria<T>(
     app: &AppHandle,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
-    in_libreria(app, ATTESA_LETTURA, azione).map_err(|err| {
-        if err.code().kind() == ErrorCodeKind::DbLocked {
-            AppError::new(ErrorCode::LontanoIrraggiungibile).with_cause("la libreria è occupata")
-        } else {
-            err
-        }
-    })
+    let stato = app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("lontano".to_owned()),
+        })
+    })?;
+    leggi_da(&stato, azione)
+}
+
+/// Il cuore di [`leggi_la_libreria`], sullo stato: la cucitura delle prove.
+///
+/// Non chiede il lucchetto della libreria: legge da una connessione di sola
+/// lettura sua ([`crate::stato::leggi_a_parte`]). Prima lo chiedeva, con
+/// [`ATTESA_LETTURA`], e dopo una scansione lo perdeva per tutto il tempo dei
+/// lavori di sottofondo, che lo prendono a turno: ogni «Sfoglia» da un altro
+/// dispositivo rispondeva «non raggiungibile», per minuti — e su una libreria
+/// vera, con ore di prima analisi, per ore (reperto 00-9).
+fn leggi_da<T>(
+    stato: &Stato,
+    azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    crate::stato::leggi_a_parte(stato, ATTESA_LETTURA, azione)
+        .unwrap_or_else(|| {
+            Err(AppError::new(ErrorCode::DbLocked)
+                .with_cause("la libreria è occupata: il collegamento non l'aspetta"))
+        })
+        .map_err(|err| {
+            if err.code().kind() == ErrorCodeKind::DbLocked {
+                occupata(&err)
+            } else {
+                err
+            }
+        })
+}
+
+/// La libreria occupata oltre [`ATTESA_LETTURA`]: all'altro arriva
+/// `lontano.irraggiungibile`, che lo fa riprovare, e qui una riga nel diario.
+///
+/// La riga serve perché [`rispondi`] non scrive gli errori del dominio
+/// `lontano` — sono quel che si risponde, non guasti di qui — e di una libreria
+/// che non risponde ai dispositivi collegati il diario non diceva niente. Può
+/// succedere ancora con il giornale ripiegato su `TRUNCATE`, quando le letture
+/// tornano al lucchetto, e per gli ascolti, che scrivono. Solo il codice e la
+/// causa, che dice l'operazione e cosa ha risposto SQLite: niente di chi
+/// chiede né di cosa.
+fn occupata(err: &AppError) -> AppError {
+    nota!(
+        "[lontano] una domanda non servita: la libreria è occupata codice={} causa={}",
+        err.code().kind().code(),
+        err.cause().unwrap_or("—")
+    );
+    AppError::new(ErrorCode::LontanoIrraggiungibile).with_cause("la libreria è occupata")
 }
 
 /// Una copertina, nella forma media (al più qualche centinaio di KB): quella
@@ -258,7 +304,9 @@ fn ascoltato(
         conta_l_ascolto(c, da, &arrivato, &dispositivo, adesso_ms())
     })
     .unwrap_or_else(|| {
-        Err(AppError::new(ErrorCode::LontanoIrraggiungibile).with_cause("la libreria è occupata"))
+        Err(occupata(&AppError::new(ErrorCode::DbLocked).with_cause(
+            "la libreria è occupata: l'ascolto ricevuto non l'aspetta",
+        )))
     })?;
     if let Some(ascolto) = contato {
         crate::nuvola::sporca(app);
@@ -422,5 +470,79 @@ mod prove {
                 .expect("contato")
                 .is_some()
         );
+    }
+
+    /// Un brano condiviso, scritto nella libreria dello stato.
+    fn metti_il_brano(c: &rusqlite::Connection, id: i64) -> Result<(), AppError> {
+        c.execute(
+            "INSERT INTO tracks
+                 (id, path, track_key, title, artist, album, duration_ms,
+                  file_size, date_added, date_modified)
+             VALUES (?1, 'C:/m/' || ?1 || '.mp3', 'k' || ?1, 'T', 'A', 'Al', 180000,
+                     1000, 0, 0)",
+            [id],
+        )
+        .map(|_| ())
+        .map_err(|err| rymembra_app::db::codice_da_sqlite("brano di prova", &err))
+    }
+
+    #[test]
+    fn una_scrittura_lunga_qui_non_ferma_chi_sfoglia_da_lontano() {
+        // Reperto 00-9: dopo una scansione i lavori di sottofondo prendono la
+        // libreria a turno — su una libreria vera, per ore — e ogni domanda di
+        // un dispositivo collegato rispondeva `lontano.irraggiungibile` dopo
+        // `ATTESA_LETTURA`. Qui il lavoro lento è simulato: tiene il lucchetto
+        // e una transazione di scrittura aperta finché la domanda non ha
+        // risposto, o ben oltre la sua attesa.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let stato = &stato;
+        let giornale =
+            crate::stato::con_libreria(stato, |l| Ok(l.giornale.clone())).expect("libreria aperta");
+        assert_eq!(giornale, "wal", "senza WAL questa prova non prova niente");
+        crate::stato::con_libreria(stato, |l| metti_il_brano(&l.connection, 1))
+            .expect("il brano di prima");
+
+        let (preso, lavoro_partito) = std::sync::mpsc::channel::<()>();
+        let (risposto, domanda_finita) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|ambito| {
+            let lavoro = ambito.spawn(move || {
+                crate::stato::con_libreria(stato, |l| {
+                    let tx = l
+                        .connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))?;
+                    metti_il_brano(&tx, 2)?;
+                    let _ = preso.send(());
+                    let _ = domanda_finita.recv_timeout(ATTESA_LETTURA * 3);
+                    tx.commit()
+                        .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))
+                })
+            });
+            lavoro_partito
+                .recv()
+                .expect("il lavoro ha preso la libreria");
+
+            let inizio = std::time::Instant::now();
+            let esito = leggi_da(stato, |c| condivisa::brani(c, TrackOrder::Title, 0, 20));
+            let tempo = inizio.elapsed();
+            let _ = risposto.send(());
+            lavoro
+                .join()
+                .expect("il lavoro non cade")
+                .expect("il lavoro scrive");
+
+            let brani = esito.expect("la domanda ha risposto");
+            // Quel che era scritto prima, e non la scrittura ancora aperta.
+            assert_eq!(brani.iter().map(|b| b.id).collect::<Vec<_>>(), vec![1]);
+            assert!(
+                tempo < ATTESA_LETTURA,
+                "la domanda ha aspettato il lavoro: {tempo:?}"
+            );
+        });
+        // Finito il lavoro, la domanda dopo vede anche il suo brano.
+        let dopo = leggi_da(stato, |c| condivisa::brani(c, TrackOrder::Title, 0, 20))
+            .expect("la domanda dopo");
+        assert_eq!(dopo.len(), 2);
     }
 }

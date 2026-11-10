@@ -18,6 +18,11 @@
 //! per cui la scansione ora lo prende e lo lascia lotto per lotto
 //! ([`DepositoStato`]) invece di tenerlo dal primo file all'ultimo.
 //!
+//! L'eccezione sono le letture che non possono aspettare e non hanno bisogno
+//! di quel che c'è dietro il mutex: le domande dei dispositivi collegati via
+//! internet. Quelle vanno su una connessione di sola lettura loro, quando il
+//! giornale è WAL: vedi [`leggi_a_parte`].
+//!
 //! # Dove stanno i dati
 //!
 //! Nella cartella dati dell'applicazione, chiesta a Tauri invece che composta a
@@ -36,9 +41,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::nota;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use rymembra_app::covers::CoverStore;
-use rymembra_domain::errors::AppError;
+use rymembra_domain::errors::{AppError, ErrorCode};
 
 /// Come si chiama il file del database dentro la cartella dati.
 ///
@@ -111,6 +116,14 @@ pub struct Stato {
     /// risorse delle skin, che sta sul filo della finestra, e un percorso che
     /// non cambia mai non vale una coda dietro una scansione.
     cartella_dati: Option<PathBuf>,
+
+    /// Il giornale della libreria è WAL, com'era all'apertura.
+    ///
+    /// Lo guarda [`leggi_a_parte`], e sta fuori dal mutex per la stessa ragione
+    /// di `cartella_dati`: chiedere il lucchetto per sapere se si può fare a
+    /// meno di chiederlo sarebbe il difetto da capo. Il giornale non cambia
+    /// dopo l'apertura.
+    in_wal: bool,
 
     /// Qualcuno ha chiesto di fermare la scansione in corso.
     ///
@@ -192,6 +205,7 @@ impl Stato {
         Self {
             store_copertine: libreria.as_ref().ok().map(|l| l.covers.clone()),
             cartella_dati: libreria.as_ref().ok().map(|l| l.data_dir.clone()),
+            in_wal: libreria.as_ref().is_ok_and(|l| l.giornale == "wal"),
             libreria: Mutex::new(libreria),
             scansione_da_fermare: AtomicBool::new(false),
             scansione_in_corso: AtomicBool::new(false),
@@ -1198,6 +1212,88 @@ pub fn con_libreria_entro<T>(
         Ok(libreria) => azione(libreria),
         Err(errore) => Err(errore.clone()),
     })
+}
+
+/// Una lettura della libreria che non chiede il suo lucchetto: su una
+/// connessione di sola lettura aperta apposta, quando il giornale è WAL.
+///
+/// # Perché
+///
+/// Il lucchetto lo prendono a turno, in finestre brevi, tutti i lavori di
+/// sottofondo — scansione, analisi, arricchimento, pulizie — e il primo che si
+/// mette in coda col blocco lo riceve appena si libera. Chi invece lo vuole
+/// entro una scadenza ([`con_libreria_entro`]) riprova ogni cinque millisecondi
+/// e può perdere la gara per tutto il tempo in cui quei lavori girano. Era il
+/// caso delle domande dei dispositivi collegati via internet (reperto 00-9):
+/// dopo una scansione ogni «Sfoglia» rispondeva «non raggiungibile» per
+/// minuti, e su una libreria vera la prima analisi dura ore. In WAL chi legge
+/// da una connessione sua vede l'ultima transazione chiusa, e non ferma né è
+/// fermato da chi scrive: il lucchetto qui non serve, chiunque lo tenga e per
+/// quanto.
+///
+/// # Quando si torna al lucchetto
+///
+/// Con il giornale ripiegato su `TRUNCATE` — lì un lettore in più bloccherebbe
+/// il commit di chi scrive, ed è la stessa regola del controllo rapido in
+/// `manutenzione::controlla` — e senza una libreria aperta. Anche se la
+/// connessione non si apre: allora lo si dice nel diario. In questi casi vale
+/// [`con_libreria_entro`], `None` compreso.
+///
+/// # La connessione
+///
+/// Si apre a ogni chiamata e si chiude alla fine, come quella dell'indice delle
+/// cartelle (`cartelle.rs`): qualche millisecondo accanto a una domanda che
+/// viaggia in rete, e niente di condiviso fra due domande insieme, cioè nessun
+/// altro lucchetto da aspettare. `SQLITE_OPEN_READ_ONLY` dice nel tipo che di
+/// qui non passa nessuna scrittura né nessuna migrazione. L'attesa di SQLite,
+/// se il file è occupato in un modo che anche un lettore WAL sente, è `entro`:
+/// lo stesso patto della funzione.
+pub fn leggi_a_parte<T>(
+    stato: &Stato,
+    entro: Duration,
+    azione: impl FnOnce(&Connection) -> Result<T, AppError>,
+) -> Option<Result<T, AppError>> {
+    let lettore = stato
+        .cartella_dati()
+        .filter(|_| stato.in_wal)
+        .map(|cartella| apri_un_lettore(&cartella.join(NOME_DATABASE), entro));
+    match lettore {
+        Some(Ok(connessione)) => Some(azione(&connessione)),
+        Some(Err(err)) => {
+            nota!(
+                "[stato] la lettura a parte non si apre, si aspetta la libreria codice={} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or("—")
+            );
+            con_libreria_entro(stato, entro, |libreria| azione(&libreria.connection))
+        }
+        None => con_libreria_entro(stato, entro, |libreria| azione(&libreria.connection)),
+    }
+}
+
+/// La connessione di sola lettura di [`leggi_a_parte`].
+///
+/// # Errori
+///
+/// `db.openFailed` col percorso, se il file non si apre in lettura.
+fn apri_un_lettore(percorso: &Path, attesa: Duration) -> Result<Connection, AppError> {
+    // Dal percorso lungo, come la connessione principale: con una cartella dati
+    // oltre i 260 caratteri la principale si apre, e questa deve aprirsi uguale.
+    let connessione = Connection::open_with_flags(
+        rymembra_app::files::percorso_lungo(percorso),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|err| {
+        AppError::new(ErrorCode::DbOpenFailed {
+            path: Some(percorso.display().to_string()),
+        })
+        .with_cause(err.to_string())
+    })?;
+    rymembra_app::db::prepara_connessione_secondaria(&connessione);
+    // Dopo, perché `prepara_connessione_secondaria` mette l'attesa di sempre:
+    // qui vale quella di chi chiede.
+    let _ = connessione.busy_timeout(attesa);
+    Ok(connessione)
 }
 
 #[cfg(test)]
