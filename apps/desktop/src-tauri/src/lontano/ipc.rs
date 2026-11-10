@@ -20,6 +20,10 @@ pub struct StatoLontanoIpc {
     pub acceso: bool,
     /// La chiave pubblica di questo dispositivo, quando il nodo è acceso.
     pub chiave: Option<String>,
+    /// La sua impronta (`rymembra_lontano::collegamento::impronta`), quando
+    /// il nodo è acceso: accanto al QR, e mentre si aspetta una conferma,
+    /// perché sull'altro schermo la si confronti.
+    pub impronta: Option<String>,
     /// Il relay proprio, se ce n'è uno.
     pub relay: Option<String>,
     /// «Solo Wi-Fi».
@@ -83,16 +87,33 @@ pub struct InvitoIpc {
     pub scade_ms: i64,
 }
 
+/// Un link di collegamento, prima di collegarsi: con chi.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkIpc {
+    /// Il link, da ripetere a `lontano_collega`.
+    pub link: String,
+    /// Il nome che chi mostra il QR dichiara, ripulito; `None` se il link non
+    /// ne porta uno (una versione di prima).
+    pub nome: Option<String>,
+    /// L'impronta della sua chiave: la stessa che lui mostra accanto al QR.
+    pub impronta: String,
+}
+
 /// Qualcuno ha letto il QR e aspetta.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RichiestaIpc {
     /// Da ripetere in `lontano_rispondi`.
     pub id: u64,
-    /// Come si presenta.
+    /// Come si presenta: il nome lo sceglie **lui**, e la finestra lo dice
+    /// come dichiarato.
     pub nome: String,
     /// `windows`, `android`.
     pub piattaforma: String,
+    /// L'impronta della sua chiave: quel che chi decide confronta con l'altro
+    /// schermo, dove il dispositivo la mostra mentre aspetta.
+    pub impronta: String,
     /// La chiave di chi aspetta: per togliere la domanda se rinuncia. Non va
     /// alla finestra, che non ne ha bisogno.
     #[serde(skip)]

@@ -158,6 +158,11 @@ fn col_gettone_giusto_ci_si_associa_e_ci_si_parla() {
 
     let invito = pc.invita().unwrap();
     assert!(!invito.indirizzi.is_empty(), "{invito:?}");
+    // Il link dice chi lo mostra — un nome dichiarato, e l'impronta della
+    // chiave, la stessa che il PC mostra accanto al QR.
+    let letto = rymembra_lontano::Invito::da_link(&invito.link()).unwrap();
+    assert_eq!(letto.nome.as_deref(), Some("PC"));
+    assert_eq!(letto.impronta(), pc.impronta());
     let (chiave_pc, chi) = telefono.collega(&invito.link()).expect("associati");
     assert_eq!(chiave_pc, pc.chiave());
     assert_eq!(chi.nome, "PC");

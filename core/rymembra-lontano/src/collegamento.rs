@@ -18,10 +18,21 @@
 //! versione (1) · chiave (32) · gettone (16) · n indirizzi (1)
 //!   · per ognuno: famiglia (4 o 6) · IP (4 o 16) · porta (2, big endian)
 //! · lunghezza del relay (1, zero se non c'è) · relay (UTF-8)
+//! · lunghezza del nome (1, zero se non c'è) · nome (UTF-8)     ← dalla 2
 //! ```
 //!
 //! Binario e non JSON perché il QR deve restare piccolo: con quattro indirizzi
-//! IPv6 e un relay il link sta sotto i trecento caratteri.
+//! IPv6 e un relay il link sta sotto i trecento caratteri. Il nome è al più
+//! [`MASSIMO_NOME`] byte; la versione 1 non l'aveva, e si legge ancora.
+//!
+//! # Con chi
+//!
+//! Prima di collegarsi, chi ha il link mostra il **nome** che l'altro
+//! dichiara e l'[`impronta`] della sua chiave; chi mostra il QR mostra la
+//! propria accanto al QR. Il nome lo sceglie chi ha fatto il link: è
+//! l'impronta, che viene dalla chiave che QUIC prova, a dire se l'altro
+//! schermo è quello giusto. Chi apre un link arrivato da una pagina web, e non
+//! ha davanti nessun QR suo, non ha niente con cui confrontarla.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -31,14 +42,20 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 pub const PREFISSO: &str = "rymembra://collega/";
 
 /// La versione della forma. Una più nuova è `lontano.linkNonValido`, che dice
-/// di aggiornare.
-const VERSIONE: u8 = 1;
+/// di aggiornare; la 1, senza il nome, si legge ancora.
+const VERSIONE: u8 = 2;
+
+/// La prima versione: finiva col relay.
+const VERSIONE_SENZA_NOME: u8 = 1;
 
 /// Quanti indirizzi diretti porta un link, al più.
 pub const MASSIMO_INDIRIZZI: usize = 4;
 
 /// Quanto può essere lungo l'indirizzo del relay.
 const MASSIMO_RELAY: usize = 200;
+
+/// Quanti byte del nome porta un link, al più.
+pub const MASSIMO_NOME: usize = 64;
 
 /// Quel che un link porta.
 #[derive(Clone, PartialEq, Eq)]
@@ -51,6 +68,8 @@ pub struct Invito {
     pub indirizzi: Vec<SocketAddr>,
     /// Il relay di casa di chi mostra il QR.
     pub relay: Option<String>,
+    /// Il nome che chi mostra il QR **dichiara**.
+    pub nome: Option<String>,
 }
 
 /// Scritto a mano: il gettone è un segreto, e non va in un diario.
@@ -93,6 +112,9 @@ impl Invito {
             .unwrap_or_default();
         byte.push(u8::try_from(relay.len()).unwrap_or(0));
         byte.extend_from_slice(relay.as_bytes());
+        let nome = taglia(self.nome.as_deref().unwrap_or_default(), MASSIMO_NOME);
+        byte.push(u8::try_from(nome.len()).unwrap_or(0));
+        byte.extend_from_slice(nome.as_bytes());
         format!("{PREFISSO}{}", base64url(&byte))
     }
 
@@ -117,7 +139,7 @@ impl Invito {
             .ok_or_else(|| non_valido("non è base64url"))?;
         let mut lettore = Lettore(&byte);
         let versione = lettore.uno().ok_or_else(|| non_valido("vuoto"))?;
-        if versione != VERSIONE {
+        if versione != VERSIONE && versione != VERSIONE_SENZA_NOME {
             return Err(non_valido(&format!("versione {versione}")));
         }
         let chiave: [u8; 32] = lettore
@@ -159,6 +181,20 @@ impl Invito {
         let relay = std::str::from_utf8(relay)
             .map_err(|_| non_valido("relay non UTF-8"))?
             .to_owned();
+        let nome = if versione == VERSIONE_SENZA_NOME {
+            String::new()
+        } else {
+            let lunghezza = usize::from(lettore.uno().ok_or_else(|| non_valido("corto"))?);
+            if lunghezza > MASSIMO_NOME {
+                return Err(non_valido("nome troppo lungo"));
+            }
+            let nome = lettore
+                .tanti(lunghezza)
+                .ok_or_else(|| non_valido("nome corto"))?;
+            std::str::from_utf8(nome)
+                .map_err(|_| non_valido("nome non UTF-8"))?
+                .to_owned()
+        };
         if !lettore.0.is_empty() {
             return Err(non_valido("byte in più"));
         }
@@ -167,8 +203,74 @@ impl Invito {
             gettone,
             indirizzi,
             relay: (!relay.is_empty()).then_some(relay),
+            nome: (!nome.is_empty()).then_some(nome),
         })
     }
+
+    /// L'impronta di chi mostra il QR: vedi [`impronta`].
+    #[must_use]
+    pub fn impronta(&self) -> String {
+        impronta(&self.chiave)
+    }
+}
+
+/// I primi `massimo` byte di `testo`, senza spezzare un carattere.
+fn taglia(testo: &str, massimo: usize) -> &str {
+    let mut fine = testo.len().min(massimo);
+    while !testo.is_char_boundary(fine) {
+        fine = fine.saturating_sub(1);
+    }
+    testo.get(..fine).unwrap_or_default()
+}
+
+/// L'alfabeto delle impronte (Crockford): niente I, L, O, U, che letti su
+/// uno schermo si confondono con 1, 0 e V.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// I caratteri di un'impronta, in gruppi da quattro.
+const CARATTERI_IMPRONTA: u32 = 12;
+
+/// L'impronta di una chiave pubblica: i suoi primi 60 bit, in tre gruppi di
+/// quattro caratteri (`K7QX 3MPA Z9TD`), da confrontare a occhio sui due
+/// schermi.
+///
+/// La chiave è già casuale (ed25519): i suoi primi bit valgono un'impronta,
+/// e non serve un hash che il crate non ha. Sessanta bit sono troppi da
+/// cercare per farne coincidere una con quella di un altro dispositivo — ne
+/// servirebbero un miliardo di miliardi di chiavi — e abbastanza pochi da
+/// leggere in un colpo d'occhio.
+#[must_use]
+pub fn impronta(chiave: &[u8; 32]) -> String {
+    let primi = u64::from_be_bytes(chiave.first_chunk::<8>().copied().unwrap_or_default());
+    let mut testo = String::with_capacity(14);
+    for i in 0..CARATTERI_IMPRONTA {
+        if i > 0 && i % 4 == 0 {
+            testo.push(' ');
+        }
+        let cinque = (primi >> (59 - 5 * i)) & 0x1f;
+        let carattere = usize::try_from(cinque)
+            .ok()
+            .and_then(|indice| CROCKFORD.get(indice))
+            .copied()
+            .unwrap_or(b'0');
+        testo.push(char::from(carattere));
+    }
+    testo
+}
+
+/// L'impronta di una chiave scritta in esadecimale (64 cifre), com'è nei
+/// comandi e nel pannello; `None` se non lo è.
+#[must_use]
+pub fn impronta_di(chiave: &str) -> Option<String> {
+    let chiave = chiave.trim();
+    if chiave.len() != 64 {
+        return None;
+    }
+    let mut byte = [0_u8; 32];
+    for (i, uno) in byte.iter_mut().enumerate() {
+        *uno = u8::from_str_radix(chiave.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(impronta(&byte))
 }
 
 /// I moduli di un QR, riga per riga: `true` è un modulo scuro.
@@ -292,6 +394,7 @@ mod prove {
                 "[2001:db8::1]:443".parse().unwrap(),
             ],
             relay: Some("https://euw1-1.relay.n0.iroh-canary.iroh.link./".to_owned()),
+            nome: Some("PC di casa".to_owned()),
         }
     }
 
@@ -306,9 +409,79 @@ mod prove {
         let senza = Invito {
             indirizzi: Vec::new(),
             relay: None,
+            nome: None,
             ..originale
         };
         assert_eq!(Invito::da_link(&senza.link()).unwrap(), senza);
+    }
+
+    #[test]
+    fn un_link_della_prima_versione_si_legge_ancora_senza_nome() {
+        // La 1 finiva col relay: niente nome.
+        let senza_nome = Invito {
+            nome: None,
+            ..invito()
+        };
+        let mut byte = da_base64url(senza_nome.link().strip_prefix(PREFISSO).unwrap()).unwrap();
+        byte[0] = 1;
+        byte.pop();
+        let vecchio = format!("{PREFISSO}{}", base64url(&byte));
+        assert_eq!(Invito::da_link(&vecchio).unwrap(), senza_nome);
+    }
+
+    #[test]
+    fn il_nome_nel_link_ha_un_tetto_e_resta_testo() {
+        let lungo = "è".repeat(100);
+        let letto = Invito::da_link(
+            &Invito {
+                nome: Some(lungo.clone()),
+                ..invito()
+            }
+            .link(),
+        )
+        .unwrap()
+        .nome
+        .unwrap();
+        assert!(letto.len() <= MASSIMO_NOME, "{} byte", letto.len());
+        assert!(
+            lungo.starts_with(&letto),
+            "tagliato fra un carattere e l'altro"
+        );
+        assert!(!letto.is_empty());
+    }
+
+    #[test]
+    fn l_impronta_e_corta_stabile_e_dice_la_chiave() {
+        let una = impronta(&[7; 32]);
+        // Tre gruppi di quattro, nell'alfabeto di Crockford: niente I, L, O, U
+        // da confondere con 1 e 0 leggendoli su due schermi.
+        let gruppi: Vec<&str> = una.split(' ').collect();
+        assert_eq!(gruppi.len(), 3, "{una}");
+        assert!(gruppi.iter().all(|g| g.len() == 4), "{una}");
+        assert!(
+            una.chars()
+                .filter(|c| *c != ' ')
+                .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c)),
+            "{una}"
+        );
+        assert_eq!(
+            impronta(&[7; 32]),
+            una,
+            "la stessa chiave, la stessa impronta"
+        );
+        let mut vicina = [7_u8; 32];
+        vicina[0] ^= 1;
+        assert_ne!(impronta(&vicina), una, "un bit dei primi la cambia");
+        // Dalla chiave scritta, com'è nei comandi e nel pannello.
+        let scritta: String = [7_u8; 32].iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(impronta_di(&scritta), Some(una.clone()));
+        assert_eq!(
+            impronta_di(&scritta.to_ascii_uppercase()),
+            Some(una.clone())
+        );
+        assert_eq!(invito().impronta(), una);
+        assert_eq!(impronta_di("corta"), None);
+        assert_eq!(impronta_di(&"z".repeat(64)), None);
     }
 
     #[test]
@@ -328,7 +501,7 @@ mod prove {
             );
         }
         let mut byte = da_base64url(link.strip_prefix(PREFISSO).unwrap()).unwrap();
-        byte[0] = 2;
+        byte[0] = 3;
         let futuro = format!("{PREFISSO}{}", base64url(&byte));
         assert!(Invito::da_link(&futuro).is_err(), "una versione nuova");
     }

@@ -53,8 +53,24 @@ export interface InvitoLontano {
 /** Qualcuno ha letto il QR e aspetta un sì o un no. */
 export interface RichiestaLontano {
   id: number;
+  /** Il nome che **dichiara**: lo sceglie lui. */
   nome: string;
   piattaforma: string;
+  /** L'impronta della sua chiave: lui la mostra mentre aspetta. */
+  impronta: string;
+}
+
+/**
+ * Un link di collegamento esaminato prima di collegarsi (`lontanoLinkEsamina`):
+ * con chi ci si collegherebbe.
+ */
+export interface LinkLontano {
+  /** Da ripetere a `lontanoCollega`. */
+  link: string;
+  /** Il nome che chi mostra il QR dichiara; `null` se il link non ne porta. */
+  nome: string | null;
+  /** L'impronta della sua chiave: la stessa che lui mostra accanto al QR. */
+  impronta: string;
 }
 
 /** Il pannello del collegamento (`StatoLontanoIpc`). */
@@ -65,6 +81,11 @@ export interface StatoLontano {
   acceso: boolean;
   /** La chiave di questo dispositivo, a nodo acceso. */
   chiave: string | null;
+  /**
+   * La sua impronta, a nodo acceso: accanto al QR, e mentre si aspetta una
+   * conferma, perché sull'altro schermo la si confronti.
+   */
+  impronta: string | null;
   /** Il relay proprio, se c'è. */
   relay: string | null;
   datiMobili: DatiMobili;

@@ -95,6 +95,8 @@ impl rymembra_lontano::Ospite for Ospite {
                 .filter(char::is_ascii_alphanumeric)
                 .take(16)
                 .collect(),
+            // La chiave l'ha provata QUIC: è sua, a differenza del nome.
+            impronta: rymembra_lontano::collegamento::impronta_di(chiave).unwrap_or_default(),
             chiave: chiave.to_owned(),
         };
         prendi(&self.comune.richieste).push((richiesta.clone(), risposta));

@@ -28,12 +28,30 @@ import type {
   DispositivoSincronia,
   ErroreIpc,
   FidatoInsieme,
+  LinkLontano,
   StatoLontano,
   ScaricoLontano,
 } from "./ipc";
 
 /** Il pannello, `null` finché il nucleo non ha risposto. */
 export const archivioLontano = creaArchivio<StatoLontano | null>(null);
+
+/**
+ * Il link di collegamento che aspetta il sì della persona, con chi ci si
+ * collegherebbe (`lontanoLinkEsamina`): aperto da fuori, letto dallo scanner o
+ * incollato, passa sempre dalla stessa finestrella, in `LontanoInApp`.
+ */
+export const archivioLink = creaArchivio<LinkLontano | null>(null);
+
+/**
+ * Collegarsi, o mostrare un QR, chiede prima un sì per accendere
+ * «Raggiungibile da internet»: il nucleo non lo accende da sé
+ * (`lontano.spento`). Con l'interruttore acceso basta: sul telefono il nodo
+ * addormentato lo sveglia il comando.
+ */
+export function serveAccendere(stato: StatoLontano | null): boolean {
+  return stato?.attivo !== true;
+}
 
 /**
  * Un gesto su un brano dell'altro che sui dati mobili aspetta un sì: la

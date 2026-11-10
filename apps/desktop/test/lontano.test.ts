@@ -33,6 +33,7 @@ import {
   NON_AUDIO,
   scaricoConNonAudio,
   scaricoFinito,
+  serveAccendere,
   sfogliabili,
   unisciDispositivi,
 } from "../src/lontano";
@@ -61,6 +62,7 @@ function stato(campi: Partial<StatoLontano> = {}): StatoLontano {
     attivo: true,
     acceso: true,
     chiave: null,
+    impronta: null,
     relay: null,
     datiMobili: "chiedi",
     errore: null,
@@ -70,6 +72,16 @@ function stato(campi: Partial<StatoLontano> = {}): StatoLontano {
     ...campi,
   };
 }
+
+test("collegarsi o mostrare il QR a collegamento spento chiede prima di accenderlo", () => {
+  assert.equal(serveAccendere(stato({ attivo: false })), true);
+  // Il pannello non c'è ancora: non si sa, e si chiede.
+  assert.equal(serveAccendere(null), true);
+  assert.equal(serveAccendere(stato({ attivo: true })), false);
+  // Sul telefono può essere acceso l'interruttore e spento il nodo: lì basta
+  // il sì di prima, il nucleo lo sveglia.
+  assert.equal(serveAccendere(stato({ attivo: true, acceso: false })), false);
+});
 
 test("il QR: una riga di moduli scuri di fila è un rettangolo solo", () => {
   // 3×3: «110 / 000 / 101».

@@ -667,7 +667,17 @@ impl Nodo {
             gettone,
             indirizzi,
             relay,
+            // Chi legge il QR lo vede prima di collegarsi, come nome
+            // dichiarato, accanto all'impronta.
+            nome: Some(self.condiviso.io.nome.clone()).filter(|nome| !nome.trim().is_empty()),
         })
+    }
+
+    /// L'impronta di questo dispositivo, da mostrare accanto al QR e mentre
+    /// si aspetta una conferma: vedi [`crate::collegamento::impronta`].
+    #[must_use]
+    pub fn impronta(&self) -> String {
+        crate::collegamento::impronta(self.endpoint.id().as_bytes())
     }
 
     /// Il QR mostrato non vale più.
