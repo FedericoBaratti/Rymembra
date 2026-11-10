@@ -514,7 +514,8 @@ export function InRiproduzione({
               {/* Sotto il sommario e non in un angolo: è la schermata che si
                   guarda mentre il brano suona, ed è lì che il rimando alla
                   pagina di chi l'ha pubblicato è davvero visibile. Su un file
-                  del disco non compare niente. */}
+                  preso da un catalogo compare la licenza; su uno messo lì da
+                  chi ascolta, niente. */}
               <Attribuzione brano={brano} onErrore={onErrore} />
             </div>
           </div>
