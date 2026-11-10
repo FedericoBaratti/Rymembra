@@ -152,7 +152,16 @@ impl rymembra_lontano::Ospite for Ospite {
             )
         });
         match scritto {
-            Ok(_) => nota!("[lontano] dispositivo collegato ({})", chi.piattaforma),
+            // La piattaforma la dichiara l'altro, e senza limiti: nel diario
+            // ne va solo quanto basta a riconoscerla, come in `filo.rs`.
+            Ok(_) => nota!(
+                "[lontano] dispositivo collegato ({})",
+                chi.piattaforma
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .take(16)
+                    .collect::<String>()
+            ),
             Err(err) => nota!(
                 "[lontano] il dispositivo collegato non si scrive codice={}",
                 err.code().kind().code()
