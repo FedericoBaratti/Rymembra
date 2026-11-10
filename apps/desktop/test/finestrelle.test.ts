@@ -68,3 +68,19 @@ test("Account: «Tolte N righe» resta a schermo quando la scheda degli importat
   assert.doesNotMatch(scheda, /account\.forgotten/);
   assert.match(account, /t\("account\.forgotten", \{ n: dimenticati \}\)/);
 });
+
+test("Elimina dal disco: un doppio clic, o Escape e poi «Elimina», non rispondono due volte", () => {
+  const app = sorgente("App.tsx");
+  // La conferma si chiude con `useStatoPresente`, che passa da una transizione:
+  // finché non è applicata la finestrella resta montata e il suo tasto
+  // risponde. Ogni uscita passa dal cancello della domanda (`unaVolta`).
+  const inizio = app.indexOf("<ConfermaEliminazione");
+  const montata = app.slice(inizio, app.indexOf("/>", inizio));
+  assert.match(montata, /onConferma=\{\(definitivi\) => \{\s+if \(!daEliminare\.risposta\(\)\) return;/);
+  assert.match(montata, /onChiudi=\{\(\) => \{\s+if \(daEliminare\.risposta\(\)\) setDaEliminare\(null\);/);
+  // E ogni apertura porta il suo cancello: la domanda rifatta è un'altra
+  // domanda, con la sua risposta.
+  const aperture = [...app.matchAll(/setDaEliminare\(\{[^}]*\}\)/g)].map((m) => m[0]);
+  assert.equal(aperture.length, 3, aperture.join("\n"));
+  for (const apertura of aperture) assert.match(apertura, /risposta: unaVolta\(\)/);
+});

@@ -129,6 +129,7 @@ import {
   vociPlaylist,
   type AzioniBrani,
 } from "./menuBrani";
+import { unaVolta } from "./modale";
 import { NuovoTema } from "./NuovoTema";
 import { chiaveDiPagina, paginaCorrente, type VistaLibreria } from "./pagina";
 import { sportelloAscolti, useAscolto, useRada } from "./pagine";
@@ -516,11 +517,18 @@ export function App() {
    *
    * `cambiata` quando la si riapre perché il nucleo ha rifiutato la conferma di
    * prima: vedi `elimina`.
+   *
+   * `risposta` è il cancello della domanda (`unaVolta` in `modale.ts`), creato
+   * con lei: la finestrella si chiude con una transizione, e fino ad allora il
+   * suo tasto risponde. Un doppio clic su «Elimina» mandava due cancellazioni
+   * degli stessi file; Escape seguito subito da «Elimina» cancellava quel che
+   * si era appena deciso di tenere. La domanda rifatta ne ha uno nuovo.
    */
   const [daEliminare, setDaEliminare] = useStatoPresente<{
     brani: number[];
     dalDisco: boolean;
     cambiata?: boolean;
+    risposta: () => boolean;
   } | null>(null);
   const [creandoPlaylist, setCreandoPlaylist] = useStatoPresente(false);
   /** La finestrella del ripristino è aperta. */
@@ -1799,8 +1807,8 @@ export function App() {
         apriPagina: (id) => {
           ipc.branoApriPagina(id).catch(segnalaErrore);
         },
-        togli: (brani) => setDaEliminare({ brani, dalDisco: false }),
-        elimina: (brani) => setDaEliminare({ brani, dalDisco: true }),
+        togli: (brani) => setDaEliminare({ brani, dalDisco: false, risposta: unaVolta() }),
+        elimina: (brani) => setDaEliminare({ brani, dalDisco: true, risposta: unaVolta() }),
         // Sul telefono la riga non ha il cuore: sta qui. Il brano si rilegge,
         // come per il disco e l'artista, perché il valore da invertire è
         // quello di adesso e non quello dell'elenco che ha aperto il menù.
@@ -2210,7 +2218,8 @@ export function App() {
         // Un elenco nuovo e non lo stesso: la conferma rifà la domanda a ogni
         // elenco che riceve, anche se non ha fatto in tempo a chiudersi.
         const daRichiedere = dalDisco && eErroreIpc(e) && e.code === "fs.noRecycleBin";
-        if (daRichiedere) setDaEliminare({ brani: [...brani], dalDisco: true, cambiata: true });
+        if (daRichiedere)
+          setDaEliminare({ brani: [...brani], dalDisco: true, cambiata: true, risposta: unaVolta() });
         else if (e !== RIPENSATO) segnalaErrore(e);
         await caricaVista();
         // `caricaVista` rifà gli elenchi impaginati, non questi due: hanno
@@ -4324,8 +4333,12 @@ export function App() {
             brani={daEliminare.brani}
             dalDisco={daEliminare.dalDisco}
             cambiata={daEliminare.cambiata}
-            onChiudi={() => setDaEliminare(null)}
+            // Tutte e due le uscite dallo stesso cancello: vedi `risposta`.
+            onChiudi={() => {
+              if (daEliminare.risposta()) setDaEliminare(null);
+            }}
             onConferma={(definitivi) => {
+              if (!daEliminare.risposta()) return;
               const cosa = daEliminare;
               setDaEliminare(null);
               void elimina(cosa.brani, cosa.dalDisco, definitivi);
