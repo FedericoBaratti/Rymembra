@@ -1537,6 +1537,7 @@
   "devices.download.done.uno": "Downloaded one track: the scan adds it to the library.",
   "devices.download.doneWithErrors": "Downloaded {n} tracks, {falliti} failed.",
   "devices.download.doneWithErrors.uno": "Downloaded one track, {falliti} failed.",
+  "devices.download.notAudio": "The other device had listed as tracks some files that are not music (programs or shortcuts, for example): they were not downloaded.",
   "together.title": "Listen together",
   "together.open": "Open «Listen together»",
   "together.open.short": "Open",

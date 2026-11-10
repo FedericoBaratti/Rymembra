@@ -30,6 +30,8 @@ import {
   qrScaduto,
   percentualeScarico,
   percorsoQr,
+  NON_AUDIO,
+  scaricoConNonAudio,
   scaricoFinito,
   sfogliabili,
   unisciDispositivi,
@@ -175,6 +177,13 @@ test("«Scarica qui» è finito quando il brano in corso se ne va e la coda è v
   assert.equal(scaricoFinito(scarico(), scarico()), false);
   // Fra un brano e l'altro c'è sempre un titolo.
   assert.equal(scaricoFinito(inCorso, scarico({ titolo: "Y" })), false);
+});
+
+test("un file che non è musica si dice alla fine della coda", () => {
+  assert.equal(scaricoConNonAudio(scarico({ falliti: 1, errore: NON_AUDIO })), true);
+  // Un altro guasto resta un conto e basta.
+  assert.equal(scaricoConNonAudio(scarico({ falliti: 1, errore: "lontano.fileCambiato" })), false);
+  assert.equal(scaricoConNonAudio(scarico({ falliti: 0, errore: NON_AUDIO })), false);
 });
 
 test("la percentuale di un brano che scende", () => {

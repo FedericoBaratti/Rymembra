@@ -40,6 +40,7 @@ import {
   linkDa,
   percorsoQr,
   qrScaduto,
+  scaricoConNonAudio,
   scaricoFinito,
   unisciDispositivi,
 } from "../lontano";
@@ -52,6 +53,19 @@ import { Interruttore } from "./Interruttore";
 import { Segmentato } from "./Segmentato";
 
 // ── in App ──────────────────────────────────────────────────────────────────
+
+/**
+ * La notizia di fine coda di «Scarica qui»: quanti, e — se un file non era
+ * musica — perché non è sceso. Il conto dei non riusciti da solo non lo dice.
+ */
+function testoScaricoFinito(adesso: ScaricoLontano): string {
+  if (adesso.falliti === 0) return t("devices.download.done", { n: adesso.fatti });
+  const conto = t("devices.download.doneWithErrors", {
+    n: adesso.fatti,
+    falliti: adesso.falliti,
+  });
+  return scaricoConNonAudio(adesso) ? `${conto} ${t("devices.download.notAudio")}` : conto;
+}
 
 /**
  * L'ascolto del pannello e le finestrelle che non stanno in una pagina. Uno
@@ -108,11 +122,7 @@ export function LontanoInApp({
       archivioScarico.scrivi(adesso);
       if (!scaricoFinito(prima, adesso)) return;
       if (adesso.fatti > 0 || adesso.falliti > 0) {
-        onNotizia(
-          adesso.falliti > 0
-            ? t("devices.download.doneWithErrors", { n: adesso.fatti, falliti: adesso.falliti })
-            : t("devices.download.done", { n: adesso.fatti }),
-        );
+        onNotizia(testoScaricoFinito(adesso));
       }
     },
     true,

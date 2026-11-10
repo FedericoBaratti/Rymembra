@@ -1537,6 +1537,7 @@
   "devices.download.done.uno": "Scaricato un brano: entra in libreria con la scansione.",
   "devices.download.doneWithErrors": "Scaricati {n} brani, {falliti} non riusciti.",
   "devices.download.doneWithErrors.uno": "Scaricato un brano, {falliti} non riusciti.",
+  "devices.download.notAudio": "L'altro dispositivo aveva messo fra i brani dei file che non sono musica (programmi o collegamenti, per esempio): non sono stati scaricati.",
   "together.title": "Ascolta insieme",
   "together.open": "Apri «Ascolta insieme»",
   "together.open.short": "Apri",

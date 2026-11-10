@@ -26,6 +26,10 @@
 //! dire tagliare il file, o portare l'immagine intera per un brano. In questa
 //! versione si saltano, e la finestra spegne il tasto dicendo perché.
 //!
+//! Un file che non è musica: si scrive solo con un'estensione audio che la
+//! scansione legge ([`estensione_audio`]). Il resto non scende, ed è un
+//! guasto che la finestra dice (`fs.extensionRefused`).
+//!
 //! # La rete
 //!
 //! Come lo streaming: «Solo Wi-Fi» vale (`dati_permessi`, guardato a ogni
@@ -41,6 +45,7 @@ use std::sync::{Arc, Mutex};
 use rymembra_app::library::condivisa::BranoRemoto;
 use rymembra_domain::destinazione::segmento_sicuro;
 use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::SUPPORTED_EXTENSIONS;
 use rymembra_lontano::protocollo::MASSIMO_PEZZO;
 use serde::Serialize;
 use tauri::AppHandle;
@@ -194,6 +199,36 @@ fn posto_libero(cartella: &Path, base: &str, estensione: &str, dimensione: u64) 
     Posto::Uguale
 }
 
+/// L'estensione del file da scrivere: solo una di quelle che la scansione
+/// riconosce come musica ([`SUPPORTED_EXTENSIONS`]).
+///
+/// L'estensione la dice l'altro dispositivo, e un brano «`Intro.exe`», un
+/// `.lnk`, un `.url` o un `desktop.ini` nella cartella dei download sono un
+/// programma da un clic o un'icona che Esplora risorse va a prendere da sé
+/// (anche su `\\un-altro-pc\…`). La scansione poi li ignorerebbe, e
+/// resterebbero lì senza che nessuno ne parli. Un brano di un formato che
+/// questa versione non legge non entrerebbe comunque in libreria.
+fn estensione_audio(estensione: &str) -> Result<String, AppError> {
+    estensione_buona(estensione)
+        .filter(|buona| SUPPORTED_EXTENSIONS.contains(&buona.as_str()))
+        .ok_or_else(|| {
+            AppError::new(ErrorCode::FsExtensionRefused {
+                path: format!(
+                    ".{}",
+                    estensione
+                        .chars()
+                        .filter(char::is_ascii_alphanumeric)
+                        .take(16)
+                        .collect::<String>()
+                ),
+                allowed: SUPPORTED_EXTENSIONS
+                    .iter()
+                    .map(|e| (*e).to_owned())
+                    .collect(),
+            })
+        })
+}
+
 /// La coda è stata annullata dopo che il brano `giro` è partito.
 fn annullato(giro: u64) -> bool {
     prendi(&CODA).giro != giro || crate::spegnimento::in_uscita()
@@ -277,9 +312,7 @@ fn scarica_uno(app: &AppHandle, lavoro: &Lavoro, giro: u64) -> Result<Fatto, App
             path: "cartella di scaricamento".to_owned(),
         })
     })?;
-    let estensione = estensione_buona(&brano.estensione).ok_or_else(|| {
-        AppError::new(ErrorCode::LontanoProtocollo).with_cause("un brano senza un'estensione buona")
-    })?;
+    let estensione = estensione_audio(&brano.estensione)?;
     let (relativa, base) = dove_va(brano);
     let cartella = cartella.join(relativa);
     let totale = u64::try_from(brano.dimensione).unwrap_or(0);
@@ -542,6 +575,21 @@ mod prove {
         let (cartella, base) = dove_va(&senza);
         assert_eq!(cartella, PathBuf::from("Sconosciuto").join("Singoli"));
         assert_eq!(base, "Solo");
+    }
+
+    #[test]
+    fn scende_solo_un_estensione_audio() {
+        assert_eq!(estensione_audio("FLAC").unwrap(), "flac");
+        assert_eq!(estensione_audio(".mp3").unwrap(), "mp3");
+        assert_eq!(estensione_audio("ape").unwrap(), "ape");
+        // Quel che l'altro dispositivo potrebbe chiamare «brano» e che
+        // Esplora risorse eseguirebbe, o aprirebbe da sé.
+        for cattiva in [
+            "exe", "lnk", "url", "scf", "ini", "hta", "js", "bat", "part", "",
+        ] {
+            let err = estensione_audio(cattiva).unwrap_err();
+            assert_eq!(err.code().kind().code(), "fs.extensionRefused", "{cattiva}");
+        }
     }
 
     #[test]

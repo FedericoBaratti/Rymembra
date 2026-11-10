@@ -146,6 +146,18 @@ export function scaricoFinito(prima: ScaricoLontano | null, adesso: ScaricoLonta
   return prima !== null && prima.titolo !== null && adesso.titolo === null && adesso.inCoda === 0;
 }
 
+/**
+ * Il codice con cui «Scarica qui» rifiuta un file che non è musica: l'altro
+ * dispositivo l'ha messo fra i brani con un'estensione che la scansione non
+ * legge (`lontano/scarico.rs`, `estensione_audio`).
+ */
+export const NON_AUDIO = "fs.extensionRefused";
+
+/** La coda è finita con un file rifiutato perché non era musica. */
+export function scaricoConNonAudio(stato: ScaricoLontano): boolean {
+  return stato.falliti > 0 && stato.errore === NON_AUDIO;
+}
+
 /** Quanto del brano in corso è sceso, da 0 a 100. */
 export function percentualeScarico(stato: ScaricoLontano): number {
   if (stato.totale <= 0) return 0;
