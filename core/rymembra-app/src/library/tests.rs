@@ -1,6 +1,6 @@
 //! Le prove della scansione e delle interrogazioni, su file audio veri e su dischi finti.
 
-use super::interrogazioni::sql_degli_album_di_un_artista;
+use super::interrogazioni::{sql_degli_album_di_un_artista, sql_di_un_brano};
 use super::*;
 use crate::files::LocalFiles;
 use lofty::config::WriteOptions;
@@ -6619,4 +6619,125 @@ fn agli_altri_dispositivi_si_mostrano_solo_i_file() {
             .expect("lettura")
             .is_none()
     );
+}
+
+/// Una riga di `tracks` con un file, e il marchio d'origine scelto.
+fn file_con_origine(connection: &Connection, id: i64, path: &str, origine: &str) {
+    connection
+        .execute(
+            "INSERT INTO tracks
+                     (id, path, track_key, content_key, title, artist, album, duration_ms,
+                      file_size, date_added, date_modified, source)
+                 VALUES (?1, ?2, 'a|t|al', ?3, 'T', 'A', 'Al', 1000, 65536, 0, 10, ?4)",
+            rusqlite::params![id, path, format!("c{id}"), origine],
+        )
+        .expect("riga di brano");
+}
+
+/// Una riga di `desiderati` in attesa, con la chiave dei brani qui sopra.
+fn desiderato(connection: &Connection, sorgente: &str) -> i64 {
+    connection
+        .execute(
+            "INSERT INTO desiderati (track_key, title, artist, album,
+                                     source_kind, source_id, source_title, added_at)
+                 VALUES ('a|t|al', 'T', 'A', 'Al', 'playlist', ?1, 'Una playlist', 0)",
+            [sorgente],
+        )
+        .expect("riga di desiderati");
+    connection.last_insert_rowid()
+}
+
+#[test]
+fn la_licenza_di_un_file_preso_da_un_catalogo_arriva_in_riproduzione() {
+    // TERMS § 1 promette la licenza su «In riproduzione». Il `CHECK` della 026
+    // vieta `tracks.licenza` su una riga con un file, e `segna_fatto` la scrive
+    // su `desiderati`: è da lì che la lettura di un brano la deve prendere.
+    let (_dir, _store, connection) = banco();
+    let preso = r"C:\Musica\Download\A\Al\01 - T.flac";
+    file_con_origine(&connection, 1, preso, "catalogo");
+    // Due righe che nominano lo stesso brano da due playlist: la seconda è una
+    // sorella, e `segna_fatto` le dà lo stesso percorso e la stessa licenza.
+    let prima = desiderato(&connection, "playlist-1");
+    desiderato(&connection, "playlist-2");
+    crate::desiderati::segna_fatto(
+        &connection,
+        prima,
+        preso,
+        "https://archive.org/download/x/01.flac",
+        &rymembra_domain::esterno::Licenza::CreativeCommons("by".to_owned()),
+    )
+    .expect("prelievo registrato");
+
+    let brano = read_summary(&connection, 1)
+        .expect("lettura")
+        .expect("il brano c'è");
+    assert_eq!(brano.licenza.as_deref(), Some("cc-by"));
+    // La pagina resta nei tag del file: nessuna colonna la porta fin qui.
+    assert_eq!(brano.fonte_pagina, None);
+    // Un file resta un file: la fonte decide i gesti che vogliono un percorso.
+    assert_eq!(brano.fonte, None);
+
+    // Due righe con lo stesso percorso e due licenze: ne vince una, la più
+    // recente, e il brano resta uno.
+    connection
+        .execute(
+            "UPDATE desiderati SET licenza = 'pubblicoDominio', updated_at = updated_at + 1
+              WHERE source_id = 'playlist-2'",
+            [],
+        )
+        .expect("prelievo più recente");
+    let brano = read_summary(&connection, 1)
+        .expect("lettura")
+        .expect("il brano c'è");
+    assert_eq!(brano.licenza.as_deref(), Some("pubblicoDominio"));
+
+    // Lo stesso brano in un altro file, che nessuno ha scaricato: la licenza è
+    // di quel file, non della canzone. Anche col marchio d'origine.
+    file_con_origine(&connection, 2, r"C:\Musica\A\Al\01 - T.mp3", "scan");
+    file_con_origine(&connection, 3, r"C:\Musica\Altro\T.ogg", "catalogo");
+    for altro in [2, 3] {
+        let brano = read_summary(&connection, altro)
+            .expect("lettura")
+            .expect("il brano c'è");
+        assert_eq!(brano.licenza, None, "il brano {altro} non è il file preso");
+    }
+
+    // Un brano di catalogo tiene la sua, che sta sulla riga.
+    connection
+        .execute(
+            "INSERT INTO tracks
+                     (id, path, track_key, content_key, title, artist, album, duration_ms,
+                      date_added, source, source_service, fonte_url, licenza, disponibilita)
+                 VALUES (4, NULL, 'a|t|al', 'c4', 'T', 'A', 'Al', 1000, 0,
+                         'catalogo', 'audius', '/v1/tracks/1/stream',
+                         'cc-by-sa', 'soloAscolto')",
+            [],
+        )
+        .expect("brano di catalogo");
+    let flusso = read_summary(&connection, 4)
+        .expect("lettura")
+        .expect("il brano c'è");
+    assert_eq!(flusso.licenza.as_deref(), Some("cc-by-sa"));
+}
+
+#[test]
+fn leggere_un_brano_resta_una_ricerca_per_identificativo() {
+    // La licenza presa da `desiderati` non deve cambiare la forma della
+    // lettura: il lettore la fa a ogni cambio di brano, con una scadenza.
+    let (_dir, _store, connection) = banco();
+    let piano: Vec<String> = {
+        let sql = format!("EXPLAIN QUERY PLAN {}", sql_di_un_brano());
+        let mut s = connection.prepare(&sql).expect("piano");
+        let righe = s
+            .query_map([1_i64], |r| r.get::<_, String>(3))
+            .expect("piano");
+        righe.collect::<Result<_, _>>().expect("righe del piano")
+    };
+    assert!(
+        piano
+            .iter()
+            .any(|r| r.starts_with("SEARCH t USING INTEGER PRIMARY KEY")),
+        "{piano:?}"
+    );
+    assert!(!piano.iter().any(|r| r.starts_with("SCAN t")), "{piano:?}");
 }

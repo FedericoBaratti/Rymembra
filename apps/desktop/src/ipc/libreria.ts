@@ -35,7 +35,13 @@ export interface Brano {
    * d'uso.
    */
   fontePagina: string | null;
-  /** Sotto che licenza sta, col nome stabile del dominio. */
+  /**
+   * Sotto che licenza sta, col nome stabile del dominio.
+   *
+   * Per un file preso da un catalogo arriva solo dalla lettura di un brano
+   * singolo, quella del brano in riproduzione (`library::read_summary`, che la
+   * prende da `desiderati`): negli elenchi è `null`.
+   */
   licenza: string | null;
 }
 

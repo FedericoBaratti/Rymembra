@@ -6,7 +6,11 @@
  * Perché il posto dove la si mostra è destinato a essere più di uno — la
  * schermata grande, e un domani il pannello laterale — e perché la regola che
  * decide **se** mostrarla è una sola e deve restare una sola: si mostra quando
- * il brano viene da un catalogo, cioè quando `fonte` non è nulla.
+ * il brano viene da un catalogo. Un flusso lo dice con `fonte`; un file che la
+ * coda ha preso da un catalogo no — è un file, e `fonte` nulla è ciò che tiene
+ * accesi i gesti che vogliono un percorso — ma porta la `licenza`, che il
+ * nucleo legge dalla riga di `desiderati` che l'ha scaricato
+ * (`library::read_summary`). Di quel file la pagina non arriva: sta nei tag.
  *
  * # Perché si mostra, e non è una gentilezza
  *
@@ -43,10 +47,12 @@ export function Attribuzione({
   brano: Brano;
   onErrore: (e: unknown) => void;
 }) {
-  // Un file sul disco non ha niente da attribuire: l'ha messo lì chi ascolta.
-  if (brano.fonte === null) return null;
+  // Un file messo sul disco da chi ascolta non ha niente da attribuire. Uno
+  // preso da un catalogo ha la sua licenza, anche senza `fonte`.
+  if (brano.fonte === null && brano.licenza === null) return null;
 
-  const pezzi = [nomeFonte(brano.fonte)];
+  const pezzi: string[] = [];
+  if (brano.fonte !== null) pezzi.push(nomeFonte(brano.fonte));
   if (brano.licenza !== null) pezzi.push(nomeLicenza(brano.licenza));
 
   return (

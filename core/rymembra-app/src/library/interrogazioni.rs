@@ -56,6 +56,9 @@ pub struct TrackSummary {
     pub fonte_pagina: Option<String>,
     /// Sotto che licenza sta, col nome stabile di
     /// [`rymembra_domain::esterno::Licenza`].
+    ///
+    /// Per un file preso da un catalogo la porta solo [`read_summary`], che la
+    /// legge da `desiderati`: negli elenchi quel file ha `None`.
     pub licenza: Option<String>,
 }
 
@@ -421,18 +424,73 @@ pub fn count_history(connection: &Connection) -> Result<i64, AppError> {
 /// `None` se la riga non c'è più: capita a un brano tolto dalla libreria mentre
 /// la coda lo teneva ancora, e non è un guasto da propagare — è una riga da
 /// saltare.
+///
+/// # La licenza di un file preso da un catalogo
+///
+/// È la lettura da cui «In riproduzione» prende il brano, e TERMS § 1 promette
+/// lì la licenza di quel che Rymembra ha procurato. Su `tracks` però un file
+/// non la può portare: il `CHECK` della 026 vuole `licenza` nulla accanto a un
+/// `path`. La licenza del prelievo la scrive `desiderati::segna_fatto` sulla
+/// riga della coda, insieme al percorso del file in `download_path`, ed è da lì
+/// che si prende: vedi [`sql_di_un_brano`].
 pub fn read_summary(connection: &Connection, id: i64) -> Result<Option<TrackSummary>, AppError> {
-    let sql = format!("SELECT {COLONNE_BRANO} FROM tracks t WHERE t.id = ?1");
     let mut statement = connection
-        .prepare_cached(&sql)
+        .prepare_cached(&sql_di_un_brano())
         .map_err(|err| db_error("lettura di un brano", &err))?;
     statement
-        .query_row([id], track_from_row)
+        .query_row([id], |row| {
+            let mut brano = track_from_row(row)?;
+            // La colonna in più, dopo quelle del riepilogo, come fa la
+            // cronologia: è `t.licenza` stessa quando c'è.
+            brano.licenza = row.get(COLONNE_BRANO_QUANTE)?;
+            Ok(brano)
+        })
         .map(Some)
         .or_else(|err| match err {
             rusqlite::Error::QueryReturnedNoRows => Ok(None),
             altro => Err(db_error("lettura di un brano", &altro)),
         })
+}
+
+/// La domanda di [`read_summary`], a parte perché la prova ne guardi il piano.
+///
+/// La licenza di un file si cerca solo se la riga ha un file e porta il
+/// marchio `source = 'catalogo'`, che `desiderati::riconcilia` mette ai file
+/// arrivati da un prelievo. Il marchio dice «viene da un catalogo», non da
+/// quale riga: a legare il file alla sua riga di `desiderati` è il percorso,
+/// `download_path = t.path`, lo stesso confronto con cui `riconcilia` mette il
+/// marchio. Non la `track_key`: la licenza è di quel file e non della canzone,
+/// e un'altra copia dello stesso brano, messa lì da chi ascolta, non ne ha una.
+///
+/// Una sottoquery scalare e non una `JOIN`, perché le sorelle di
+/// `segna_fatto` portano lo stesso percorso: una riga per brano resta una, e
+/// fra più righe vince la più recente. Fuori da quel ramo, cioè per i flussi
+/// (la licenza ce l'hanno sulla riga) e per i file messi da chi ascolta,
+/// `desiderati` non si legge affatto: questa
+/// funzione la chiamano anche il lettore e il conto della durata, con una
+/// scadenza.
+///
+/// # Perché solo qui e non in [`COLONNE_BRANO`]
+///
+/// Perché su `desiderati.download_path` non c'è un indice, e la sottoquery
+/// legge la tabella intera. Per un brano solo è una lettura, e solo per i file
+/// presi da un catalogo; dentro gli elenchi sarebbe una lettura per riga, su
+/// pagine di una libreria da cinquantamila brani. Nessun elenco mostra la
+/// licenza, quindi il ripiego sta dove la si mostra. Portarlo negli elenchi
+/// vuol dire prima un indice, cioè una migrazione.
+pub(super) fn sql_di_un_brano() -> String {
+    format!(
+        "SELECT {COLONNE_BRANO},
+                COALESCE(t.licenza,
+                         CASE WHEN t.path IS NOT NULL AND t.source = 'catalogo' THEN
+                           (SELECT w.licenza FROM desiderati AS w
+                             WHERE w.download_path = t.path AND w.licenza IS NOT NULL
+                             ORDER BY w.updated_at DESC, w.id DESC
+                             LIMIT 1)
+                         END)
+           FROM tracks t
+          WHERE t.id = ?1"
+    )
 }
 
 /// I dati tecnici del file di un brano: cos'è il file, non cosa esce dalle casse.
