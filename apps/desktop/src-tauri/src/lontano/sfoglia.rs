@@ -877,9 +877,10 @@ fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
     crate::cartella_di_cache(app, "copertine-lontane")
 }
 
-/// Una copertina dell'altro, per il protocollo `rymembra-cover`: dalla cache,
-/// o chiesta all'altro e messa in cache. `Ok(None)` se l'altro non ce l'ha.
-/// Si chiama su un filo del pool bloccante.
+/// Una copertina dell'altro, per il protocollo `rymembra-cover`: solo di un
+/// dispositivo ancora collegato, dalla sua parte della cache o chiesta a lui
+/// e messa lì. `Ok(None)` se l'altro non ce l'ha. Si chiama su un filo del
+/// pool bloccante.
 ///
 /// # Errori
 ///
@@ -894,13 +895,39 @@ pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>
     let Some(cartella) = cartella_copertine(app) else {
         return Ok(None);
     };
-    let file = cartella.join(format!("{impronta}.jpg"));
-    if let Some(byte) = dalla_cache(&file) {
-        return Ok(Some(byte));
-    }
     let comune = comune(app)?;
+    copertina_in(&cartella, &comune, dispositivo, impronta)
+}
+
+/// Il file di una copertina dell'altro nella cache:
+/// `<dispositivo>-<impronta>.jpg`, tutti e due già controllati
+/// ([`parti_della_copertina`]: solo cifre esadecimali).
+///
+/// Per dispositivo, e non per sola impronta: l'impronta la dice chi risponde,
+/// e con una cache comune un dispositivo che rispondeva a `Copertina{H}` con
+/// byte qualunque decideva la copertina di ogni album con l'impronta H, anche
+/// di un altro (reperto 02-10). I file di prima, `<impronta>.jpg`, non si
+/// leggono più e se ne vanno con la potatura.
+fn file_della_copertina(cartella: &Path, dispositivo: &str, impronta: &str) -> PathBuf {
+    cartella.join(format!("{dispositivo}-{impronta}.jpg"))
+}
+
+/// [`copertina`], con la cache in `cartella`.
+fn copertina_in(
+    cartella: &Path,
+    comune: &Comune,
+    dispositivo: &str,
+    impronta: &str,
+) -> Result<Option<Vec<u8>>, AppError> {
+    // Il cancello prima della cache: le copertine di un dispositivo
+    // dimenticato non escono più nemmeno da lì. Un dispositivo collegato e
+    // spento invece sì, dalla cache, prima di guardare se risponde.
     if !comune.associato(dispositivo) {
         return Err(AppError::new(ErrorCode::LontanoNonAssociato));
+    }
+    let file = file_della_copertina(cartella, dispositivo, impronta);
+    if let Some(byte) = dalla_cache(&file) {
+        return Ok(Some(byte));
     }
     // Un dispositivo che non risponde non tiene un posto per quindici
     // secondi a copertina: una griglia intera aspetterebbe minuti. La
@@ -931,7 +958,7 @@ pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>
     drop(nodo);
     match risposta? {
         Risposta::Byte { byte, .. } if !byte.is_empty() && byte.len() <= MASSIMA_COPERTINA => {
-            in_cache(&cartella, &file, &byte);
+            in_cache(cartella, &file, &byte);
             Ok(Some(byte))
         }
         Risposta::Byte { .. } | Risposta::Fatto => Ok(None),
@@ -1184,6 +1211,59 @@ mod prove {
         assert_eq!(estensione_buona(""), None);
         assert_eq!(estensione_buona("a/b"), None);
         assert_eq!(estensione_buona("lunghissima"), None);
+    }
+
+    #[test]
+    fn la_cache_delle_copertine_e_per_dispositivo_e_dietro_il_cancello() {
+        // Reperto 02-10: la cache era per sola impronta, e si leggeva prima
+        // del cancello. L'impronta la sceglie chi risponde: un dispositivo
+        // che rispondeva a `Copertina{H}` con byte qualunque decideva la
+        // copertina di ogni album con l'impronta H, anche di un altro
+        // dispositivo; e le copertine di un dispositivo dimenticato
+        // continuavano ad arrivare alla finestra dalla cache.
+        let cartella = std::env::temp_dir().join(format!(
+            "rymembra-prova-copertine-dispositivi-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cartella);
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Comune::nuovo(posta);
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let impronta = "0123456789abcdef";
+        comune.ammetti(&a, true);
+        comune.ammetti(&b, true);
+        // La copertina H di A è arrivata, ed è in cache.
+        in_cache(
+            &cartella,
+            &file_della_copertina(&cartella, &a, impronta),
+            b"di A",
+        );
+        assert_eq!(
+            copertina_in(&cartella, &comune, &a, impronta).unwrap(),
+            Some(b"di A".to_vec())
+        );
+
+        // B ha un album con la stessa impronta: la sua copertina la dice B,
+        // non A (qui B non risponde, e lo si dice).
+        let di_b = copertina_in(&cartella, &comune, &b, impronta);
+        assert!(
+            !matches!(&di_b, Ok(Some(byte)) if byte == b"di A"),
+            "la copertina di A per l'album di B: {di_b:?}"
+        );
+        assert_eq!(
+            di_b.unwrap_err().code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::LontanoIrraggiungibile
+        );
+
+        // A dimenticato: dalla cache non esce più niente.
+        comune.ammetti(&a, false);
+        let dimenticato = copertina_in(&cartella, &comune, &a, impronta);
+        assert_eq!(
+            dimenticato.map_err(|err| err.code().kind()),
+            Err(rymembra_domain::errors::ErrorCodeKind::LontanoNonAssociato)
+        );
+        let _ = std::fs::remove_dir_all(&cartella);
     }
 
     /// La cache scende sotto la soglia togliendo le meno usate.
