@@ -12,17 +12,17 @@ use super::*;
 fn l_annuncio_del_brano_avviato_non_sposta_la_coda() {
     // Avviato 42, la coda lo indica, in canna il dopo.
     assert_eq!(
-        dopo_l_annuncio(42, Some(42), Some(42), Some(43)),
+        dopo_l_annuncio(42, Some(42), Some(42), Some(43), None),
         DopoLAnnuncio::Resta
     );
     // Avviato 42; prima del suo primo campione un gesto ha scelto 44.
     assert_eq!(
-        dopo_l_annuncio(42, Some(42), Some(44), Some(43)),
+        dopo_l_annuncio(42, Some(42), Some(44), Some(43), None),
         DopoLAnnuncio::Resta
     );
     // `[A, A, B]`: l'inizio del primo A non è quello del secondo in canna.
     assert_eq!(
-        dopo_l_annuncio(7, Some(7), Some(7), Some(7)),
+        dopo_l_annuncio(7, Some(7), Some(7), Some(7), None),
         DopoLAnnuncio::Resta
     );
 }
@@ -31,28 +31,60 @@ fn l_annuncio_del_brano_avviato_non_sposta_la_coda() {
 fn gli_altri_annunci_spostano_la_coda_come_prima() {
     // Il gapless: niente di atteso, il motore attacca quello in canna.
     assert_eq!(
-        dopo_l_annuncio(43, None, Some(42), Some(43)),
+        dopo_l_annuncio(43, None, Some(42), Some(43), None),
         DopoLAnnuncio::AvanzaDallaCanna
     );
     // `[A, A, B]`, il secondo A attaccato senza buchi.
     assert_eq!(
-        dopo_l_annuncio(7, None, Some(7), Some(7)),
+        dopo_l_annuncio(7, None, Some(7), Some(7), None),
         DopoLAnnuncio::AvanzaDallaCanna
     );
     // Avviato 42, che il motore ha saltato: comincia 43, già in canna.
     assert_eq!(
-        dopo_l_annuncio(43, Some(42), Some(42), Some(43)),
+        dopo_l_annuncio(43, Some(42), Some(42), Some(43), None),
         DopoLAnnuncio::AvanzaDallaCanna
     );
     // Un entrante che la coda non indica, fuori dalla canna.
     assert_eq!(
-        dopo_l_annuncio(50, None, Some(42), None),
+        dopo_l_annuncio(50, None, Some(42), None, None),
         DopoLAnnuncio::Avanza
     );
     // Il brano che la coda indica, senza attese: niente da fare.
     assert_eq!(
-        dopo_l_annuncio(42, None, Some(42), None),
+        dopo_l_annuncio(42, None, Some(42), None, None),
         DopoLAnnuncio::Resta
+    );
+}
+
+/// L'annuncio del successivo che si era chiesto di ritirare non porta la
+/// coda oltre il brano mostrato.
+///
+/// Coda `[A, B, C]`, A suona, B già attaccato dal motore: negli ultimi istanti
+/// di A si fa «Riproduci dopo» su X, e la coda diventa `[A, X, B, C]`. Il
+/// motore ritira B quando fa in tempo; quando non fa più in tempo — B stava già
+/// per arrivare all'orecchio — B suona, e arriva il suo annuncio con la canna
+/// vuota o già su X. Prima la coda andava avanti di uno: su X, mostrato con la
+/// durata e il cursore di B, e dopo B suonava di nuovo. X non si sentiva mai.
+#[test]
+fn l_annuncio_del_successivo_ritirato_non_sposta_la_coda() {
+    const A: i64 = 1;
+    const B: i64 = 2;
+    const X: i64 = 9;
+    assert_eq!(
+        dopo_l_annuncio(B, None, Some(A), None, Some(B)),
+        DopoLAnnuncio::Resta,
+        "con la canna vuota"
+    );
+    assert_eq!(
+        dopo_l_annuncio(B, None, Some(A), Some(X), Some(B)),
+        DopoLAnnuncio::Resta,
+        "con il brano nuovo già in canna"
+    );
+    // Il brano nuovo in canna, se attacca, fa andare avanti la coda come
+    // sempre.
+    assert_eq!(
+        dopo_l_annuncio(X, None, Some(A), Some(X), Some(B)),
+        DopoLAnnuncio::AvanzaDallaCanna
     );
 }
 

@@ -101,6 +101,19 @@ const RIPRESA_MS: u64 = 40;
 /// ordine di grandezza dei quattro millisecondi del sonno del filo.
 const BILANCIO_RIEMPI: Duration = Duration::from_millis(10);
 
+/// Quanto prima del suo arrivo all'orecchio un successivo già attaccato non si
+/// ritira più: vedi [`Contesto::ritira_il_successivo`].
+///
+/// Duecento millisecondi, la somma di tre cose. La porta che la callback chiude
+/// a ogni svuotamento, una dozzina di millisecondi di musica che escono lo
+/// stesso. Il margine con cui `Decodificatore::cerca` tiene un salto lontano
+/// dalla fine del flusso, centoventi millisecondi: un ritiro più vicino di così
+/// alla fine del brano lo farebbe ripartire un po' prima, e se ne sentirebbe un
+/// pezzo due volte. E il giro della stretta di mano. Più vicino di così il
+/// successivo è già, in pratica, cominciato: suona, e chi sta sopra lo sa
+/// riconoscere quando arriva il suo annuncio.
+const MARGINE_DEL_RITIRO_MS: u64 = 200;
+
 /// Il codice di [`Condiviso::causa_perdita`] per il filo di decodifica caduto.
 ///
 /// Uno e due li assegna la callback dell'uscita ai due `StreamError` di cpal
@@ -650,7 +663,7 @@ impl Segno {
 
 /// Un brano decodificato per intero che si sta ancora sentendo.
 ///
-/// Il perché sta in [`Contesto::uscente`]. Qui interessa solo il numero che gli
+/// Il perché sta in [`Contesto::uscenti`]. Qui interessa solo il numero che gli
 /// sta accanto: è **l'ascolto**, non l'identificativo del brano, perché lo
 /// stesso brano può essere in fila due volte — «ripeti uno» fa esattamente
 /// questo — e allora `track_id` non distingue quale dei due si sta sentendo.
@@ -717,8 +730,8 @@ struct Contesto {
     /// decodificato. Con il numero chiesto il cursore e i testi resterebbero
     /// sfasati di quel pacchetto per tutto il resto del brano.
     riallinea_segno: bool,
-    /// Il brano che si sta ancora **sentendo** quando la decodifica è già
-    /// passata a quello dopo.
+    /// I brani che si stanno ancora **sentendo** quando la decodifica è già
+    /// passata a quello dopo, nell'ordine in cui la decodifica li ha finiti.
     ///
     /// # Perché va tenuto invece di essere lasciato cadere
     ///
@@ -746,7 +759,19 @@ struct Contesto {
     /// [`Contesto::scarta_in_volo`]. Non è una cache: tenerlo più a lungo
     /// vorrebbe dire un file aperto in più per tutta la durata del brano
     /// seguente, che su Windows è un file che non si può cancellare.
-    uscente: Option<Uscente>,
+    ///
+    /// # Perché una fila e non una casella
+    ///
+    /// Perché con brani più corti di quel che l'anello tiene da parte —
+    /// intermezzi di due secondi — la decodifica finisce anche il successivo
+    /// prima che il primo smetta di sentirsi, e `passa_al_prossimo` scatta due
+    /// volte. Con una casella sola il secondo passaggio si portava via il
+    /// decodificatore del primo: un salto sul brano che si sentiva cadeva nel
+    /// vuoto, e il successivo già attaccato non si poteva più ritirare (vedi
+    /// [`Contesto::ritira_il_successivo`]). La fila è corta per costruzione: il
+    /// successivo arriva solo dopo che il brano prima è stato annunciato, quindi
+    /// la decodifica sta al più un brano avanti a quel che si sente.
+    uscenti: VecDeque<Uscente>,
     prossimo: Option<BranoAperto>,
     /// Dove comincia ogni brano, in fotogrammi d'uscita.
     segni: VecDeque<Segno>,

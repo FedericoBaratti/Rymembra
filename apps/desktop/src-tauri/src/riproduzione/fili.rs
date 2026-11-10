@@ -67,6 +67,12 @@ pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
     // momento non arriva mai. Un gapless perso per qualche millisecondo costa
     // meno di un brano sbagliato. È una scrittura su un canale: il lucchetto in
     // mano non la rallenta.
+    //
+    // Adesso, anche perché negli ultimi secondi del brano il motore quel
+    // successivo l'ha spesso già attaccato, e lo può ritirare solo finché non
+    // sta per arrivare all'orecchio: ogni millisecondo conta. Quando non fa più
+    // in tempo, il suo annuncio non sposta la coda — vedi
+    // `Lettore::ritirato`.
     if lettore.in_canna.is_some() && lettore.in_canna != lettore.coda.peek_next() {
         lettore.prepara(None);
     }

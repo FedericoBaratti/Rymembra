@@ -618,6 +618,7 @@ fn riapri_davvero(
                 coda_del_giro: None,
                 pausa_chiesta: (0, false),
                 in_canna: None,
+                ritirato: None,
                 non_aperto: None,
                 annuncio_atteso: None,
                 puntina_a_vuoto: None,

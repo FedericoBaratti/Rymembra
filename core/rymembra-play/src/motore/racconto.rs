@@ -110,10 +110,10 @@ impl Contesto {
             }
         }
 
-        // Il brano messo da parte serve finché un suo campione deve ancora
-        // essere udito: dopo non lo ascolta più nessuno, e tenerne aperto il
+        // I brani messi da parte servono finché un loro campione deve ancora
+        // essere udito: dopo non li ascolta più nessuno, e tenerne aperto il
         // file costerebbe una cancellazione negata per tutta la durata del brano
-        // dopo. Vedi [`Contesto::uscente`].
+        // dopo. Vedi [`Contesto::uscenti`].
         //
         // La domanda è «il suo segno è ancora in fila?», e non «è ancora quello
         // in testa»: quando l'anello tiene da parte più di un brano —
@@ -122,13 +122,9 @@ impl Contesto {
         // sentirsi, e `passa_al_prossimo` posa qui il secondo mentre in testa
         // c'è ancora il primo. Guardare la testa lo butterebbe via un brano in
         // anticipo, ed è il salto durante quel brano a restare senza.
-        if self
-            .uscente
-            .as_ref()
-            .is_some_and(|u| !self.segni.iter().any(|s| s.ascolto == u.ascolto))
-        {
-            self.uscente = None;
-        }
+        let segni = &self.segni;
+        self.uscenti
+            .retain(|u| segni.iter().any(|s| s.ascolto == u.ascolto));
 
         let Some(segno) = self.segni.front() else {
             self.scrivi_posizione(Posizione::default());
@@ -226,10 +222,10 @@ impl Contesto {
             self.segni.clear();
             self.tolto = None;
             self.mappa_sporca = true;
-            // Con la musica finita non c'è più niente da sentire, e il brano
-            // messo da parte è solo un file che resta aperto — su Windows, un
-            // file che non si può cancellare. Vedi [`Contesto::uscente`].
-            self.uscente = None;
+            // Con la musica finita non c'è più niente da sentire, e i brani
+            // messi da parte sono solo file che restano aperti — su Windows,
+            // file che non si possono cancellare. Vedi [`Contesto::uscenti`].
+            self.uscenti.clear();
             self.annunciato = None;
             self.scrivi_posizione(Posizione::default());
             self.annuncia(Evento::Fermato);

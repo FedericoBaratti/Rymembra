@@ -871,7 +871,7 @@ fn con_l_anello_lungo_il_salto_cade_sul_brano_che_si_sente() {
     // Il caso che l'anello corto di [`banco_con`] non sa mostrare: quando
     // l'anello tiene da parte più di un brano, la decodifica finisce il
     // **secondo** prima che il primo smetta di sentirsi. Da quel momento
-    // `uscente` porta il secondo mentre in testa c'è ancora il primo, e chi
+    // `uscenti` porta il secondo mentre in testa c'è ancora il primo, e chi
     // lo lasciasse cadere al primo `pop_front` — cioè al cambio di brano —
     // butterebbe via proprio il decodificatore che il salto dentro il
     // secondo brano sta per chiedere.
@@ -889,18 +889,20 @@ fn con_l_anello_lungo_il_salto_cade_sul_brano_che_si_sente() {
     );
     let primo = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 2_000));
     banco.ctx.esegui(suona(primo));
-    // La coda che resta da consegnare, come farebbe chi sta sopra: uno alla
-    // volta, appena la canna si libera.
-    let mut resto = vec![
-        brano_onesto(3, 48_000, 0.2, 800),
-        brano_onesto(2, 48_000, 0.4, 800),
-    ];
+    // La coda che resta da consegnare, come la consegna chi sta sopra: il
+    // secondo subito, alla partenza, e ogni altro all'annuncio del brano
+    // prima di lui. Mai prima: un `Prepara` dice il brano dopo quello che si
+    // **sente**, e uno arrivato mentre il successivo è già attaccato e non
+    // ancora sentito lo ritira (vedi `Contesto::ritira_il_successivo`). Qui
+    // c'era «appena la canna si libera», che l'applicazione non fa.
+    let secondo = aperto(&banco.ctx, brano_onesto(2, 48_000, 0.4, 800));
+    banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+    let mut resto = vec![brano_onesto(3, 48_000, 0.2, 800)];
 
     let mut saltato = false;
     let mut storia = Vec::new();
     for _ in 0..200_000 {
-        if banco.ctx.prossimo.is_none()
-            && banco.ctx.corrente.is_some()
+        if quanti_eventi(&registro) >= 2
             && let Some(sorgente) = resto.pop()
         {
             let aperto = aperto(&banco.ctx, sorgente);
@@ -1194,17 +1196,34 @@ fn la_dissolvenza_manda_avanti_il_brano_dopo_non_quello_dopo_ancora() {
     // il brano **ancora dopo**, e finché «preparato» ed «entrante» erano la
     // stessa casella quella preparazione scippava il brano a metà curva.
     // Chi ascoltava sentiva gracchiare e si ritrovava un brano più avanti.
-    let mut banco = banco(48_000);
+    //
+    // Il terzo arriva quando lo manda chi sta sopra, cioè all'annuncio del
+    // secondo a metà curva. Qui arrivava all'inizio della sovrapposizione,
+    // prima che il secondo si sentisse: oggi un `Prepara` così ritira il
+    // successivo che entra (vedi `Contesto::ritira_il_successivo`), ed è
+    // giusto, perché dice che il brano dopo quello che si sente è un altro.
+    let (registro, osservatore) = spia();
+    let mut banco = banco_con(48_000, osservatore);
     banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
     let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
     banco.ctx.esegui(suona(primo));
     let secondo = aperto(&banco.ctx, brano(2, 24_000, 0.4));
     banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
-    let fuori = suona_tutto(&mut banco, |ctx| {
-        let terzo = aperto(ctx, brano(3, 48_000, 0.1));
-        ctx.esegui(Comando::Prepara(Some(Box::new(terzo))));
-    });
+    let mut fuori = Vec::new();
+    let mut terzo_dato = false;
+    for _ in 0..200_000 {
+        let (_, mosso) = un_giro_ascoltando(&mut banco, &mut fuori);
+        if !terzo_dato && quanti_eventi(&registro) >= 2 {
+            let terzo = aperto(&banco.ctx, brano(3, 48_000, 0.1));
+            banco.ctx.esegui(Comando::Prepara(Some(Box::new(terzo))));
+            terzo_dato = true;
+        }
+        if !mosso && banco.ctx.corrente.is_none() && banco.ctx.fine_dichiarata {
+            break;
+        }
+    }
+    assert!(terzo_dato, "il secondo brano non è mai stato annunciato");
 
     // Il secondo brano deve sentirsi **da solo**, cioè al suo livello: fra
     // la fine della prima dissolvenza e l'inizio della seconda c'è un
@@ -3134,7 +3153,7 @@ fn un_salto_negli_ultimi_secondi_di_ripeti_uno_non_ferma_la_musica() {
         if !saltato
             && annunci == 1
             && posizione.ms > 400
-            && banco.ctx.uscente.is_some()
+            && !banco.ctx.uscenti.is_empty()
             && banco.ctx.corrente.is_some()
         {
             banco.ctx.esegui(Comando::VaiA(100));
@@ -3821,4 +3840,342 @@ fn ripeti_uno_su_una_traccia_vuota_d_immagine_non_gira_in_tondo() {
         iniziati <= 2,
         "{iniziati} inizi in 2000 giri: gira in tondo"
     );
+}
+
+// ── il successivo già attaccato e ritirato ──────────────────────────────
+//
+// Negli ultimi secondi di ogni brano il decodificatore è già sul successivo:
+// i suoi primi campioni sono nell'anello, dietro la coda di quello che si
+// sente. Chi sta sopra, se in quei secondi la coda cambia — «Riproduci dopo»,
+// la riga tolta, lo shuffle, il timer «fine del brano» —, manda un
+// `Prepara` col brano giusto, o con niente. Finché `prepara` scriveva soltanto
+// `prossimo` il successivo vecchio suonava lo stesso, e la coda sopra saltava
+// quello mostrato.
+
+/// Un giro come [`un_giro`], che tiene da parte i campioni usciti: sono quel
+/// che le casse avrebbero suonato.
+fn un_giro_ascoltando(banco: &mut Banco, uditi: &mut Vec<f32>) -> (Posizione, bool) {
+    let lavorato = banco.ctx.riempi();
+    let mut presi = 0u64;
+    while presi < BLOCCO_FINTO {
+        let Ok(campione) = banco.consumatore.pop() else {
+            break;
+        };
+        uditi.push(campione);
+        presi = presi.saturating_add(1);
+    }
+    banco
+        .condiviso
+        .fotogrammi
+        .fetch_add(presi, Ordering::Relaxed);
+    banco.ctx.aggiorna();
+    let posizione = istantanea(&banco.ctx.posizione, &banco.ctx.intese);
+    (posizione, lavorato || presi > 0)
+}
+
+/// Esegue un comando, e se il comando ha buttato l'anello fa quel che fa la
+/// callback: lo svuota senza suonarlo.
+///
+/// La [`Stretta`] del banco abbassa la bandiera e basta, e i campioni di
+/// prima resterebbero lì, a passare per suonati al giro dopo. Lo svuotamento
+/// si riconosce dall'epoca, che `scarta_in_volo` alza proprio lì.
+fn esegui_e_svuota(banco: &mut Banco, comando: Comando) {
+    let epoca = banco.condiviso.epoca.load(Ordering::Acquire);
+    banco.ctx.esegui(comando);
+    if banco.condiviso.epoca.load(Ordering::Acquire) != epoca {
+        while banco.consumatore.pop().is_ok() {}
+    }
+}
+
+/// La decodifica è già sul successivo del brano 1, che si sente ancora, e il
+/// successivo arriverà all'orecchio fra più di mezzo secondo.
+fn successivo_impegnato(banco: &Banco) -> bool {
+    let suonati = banco.condiviso.fotogrammi.load(Ordering::Relaxed);
+    let margine = fotogrammi_da_ms(500, 48_000);
+    banco.ctx.segni.len() > 1
+        && banco.ctx.segni.front().is_some_and(|s| s.track_id == 1)
+        && banco
+            .ctx
+            .segni
+            .get(1)
+            .is_some_and(|s| s.da > suonati.saturating_add(margine))
+}
+
+/// Gira fino alla fine di tutto, raccogliendo quel che si sente e quel che si
+/// racconta.
+fn fino_alla_fine(banco: &mut Banco, uditi: &mut Vec<f32>) -> Vec<Posizione> {
+    let mut storia = Vec::new();
+    for _ in 0..400_000 {
+        let (posizione, mosso) = un_giro_ascoltando(banco, uditi);
+        storia.push(posizione);
+        if !mosso && banco.ctx.corrente.is_none() && banco.ctx.fine_dichiarata {
+            break;
+        }
+    }
+    storia
+}
+
+/// Quanti campioni negativi ci sono: il brano ritirato è l'unico a quel
+/// livello, e nessuna dissolvenza fra i due positivi ne produce.
+fn quanti_negativi(campioni: &[f32]) -> usize {
+    campioni.iter().filter(|c| **c < -0.1).count()
+}
+
+#[test]
+fn ritirare_il_successivo_gia_attaccato_non_lo_fa_suonare() {
+    // A suona, B è già attaccato in gapless dietro di lui; chi sta sopra
+    // toglie B: subito `Prepara(None)`, e qualche giro dopo — il tempo che il
+    // preparatore apra il file — `Prepara(Some(X))`. Deve suonare A per
+    // intero, poi X; B mai.
+    let (registro, osservatore) = spia();
+    let mut banco = banco_con_anello(
+        48_000,
+        usize::try_from(fotogrammi_da_ms(1_000, 48_000)).unwrap_or(48_000),
+        osservatore,
+    );
+    let a = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 2_000));
+    banco.ctx.esegui(suona(a));
+    let b = aperto(&banco.ctx, brano_onesto(2, 48_000, -0.5, 2_000));
+    banco.ctx.esegui(Comando::Prepara(Some(Box::new(b))));
+
+    let mut uditi = Vec::new();
+    let mut finestra = false;
+    for _ in 0..100_000 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+        if successivo_impegnato(&banco) {
+            finestra = true;
+            break;
+        }
+    }
+    assert!(
+        finestra,
+        "la decodifica non è mai passata a B mentre si sentiva A"
+    );
+    let al_gesto = uditi.len();
+
+    esegui_e_svuota(&mut banco, Comando::Prepara(None));
+    for _ in 0..10 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+    }
+    let x = aperto(&banco.ctx, brano_onesto(3, 48_000, 0.2, 1_000));
+    esegui_e_svuota(&mut banco, Comando::Prepara(Some(Box::new(x))));
+    fino_alla_fine(&mut banco, &mut uditi);
+
+    let dopo = uditi.get(al_gesto..).unwrap_or_default();
+    assert_eq!(
+        quanti_negativi(dopo),
+        0,
+        "dopo il gesto si sente ancora il brano tolto"
+    );
+    assert_eq!(
+        eventi(&registro),
+        ["iniziato:1", "iniziato:3", "fermato"],
+        "la coda sopra salterebbe il brano mostrato"
+    );
+    // A arriva intero — né tagliato né ripetuto, a meno del millisecondo a
+    // cui salta il decodificatore — e dopo di lui X.
+    let di_a = quanti_a(&uditi, 0.8);
+    assert!(
+        (95_800..=96_200).contains(&di_a),
+        "di A se ne sentono {di_a} campioni su 96 000"
+    );
+    let di_x = quanti_a(&uditi, 0.2);
+    assert!(
+        (47_800..=48_000).contains(&di_x),
+        "di X se ne sentono {di_x} campioni su 48 000"
+    );
+}
+
+#[test]
+fn ritirare_il_successivo_a_meta_dissolvenza_non_lo_fa_entrare() {
+    // Con la dissolvenza la finestra si allarga: il successivo comincia a
+    // entrare prima che il corrente finisca, e il suo segno sta a metà curva.
+    // Nella prima metà è ancora il brano che si sente a comandare, e il gesto
+    // deve togliere il brano che entra.
+    let (registro, osservatore) = spia();
+    let mut banco = banco_con_anello(
+        48_000,
+        usize::try_from(fotogrammi_da_ms(1_000, 48_000)).unwrap_or(48_000),
+        osservatore,
+    );
+    banco.ctx.esegui(Comando::Dissolvenza { ms: 1_000 });
+    let a = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 3_000));
+    banco.ctx.esegui(suona(a));
+    let b = aperto(&banco.ctx, brano_onesto(2, 48_000, -0.5, 2_000));
+    banco.ctx.esegui(Comando::Prepara(Some(Box::new(b))));
+
+    let mut uditi = Vec::new();
+    let mut finestra = false;
+    for _ in 0..100_000 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+        if banco.ctx.entrante.is_some() && successivo_impegnato(&banco) {
+            finestra = true;
+            break;
+        }
+    }
+    assert!(finestra, "la dissolvenza verso B non è mai cominciata");
+    let al_gesto = uditi.len();
+
+    esegui_e_svuota(&mut banco, Comando::Prepara(None));
+    for _ in 0..10 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+    }
+    let x = aperto(&banco.ctx, brano_onesto(3, 48_000, 0.2, 2_000));
+    esegui_e_svuota(&mut banco, Comando::Prepara(Some(Box::new(x))));
+    fino_alla_fine(&mut banco, &mut uditi);
+
+    assert_eq!(
+        quanti_negativi(uditi.get(al_gesto..).unwrap_or_default()),
+        0,
+        "dopo il gesto il brano tolto continua a entrare"
+    );
+    assert_eq!(
+        eventi(&registro),
+        ["iniziato:1", "iniziato:3", "fermato"],
+        "la coda sopra salterebbe il brano mostrato"
+    );
+}
+
+#[test]
+fn ritirare_il_successivo_vale_anche_fra_brani_piu_corti_dell_anello() {
+    // Due intermezzi più corti di quel che l'anello tiene: alla prima
+    // decodifica ci finiscono dentro tutti e due, e la finestra copre A per
+    // intero. Il decodificatore di A è già stato messo da parte e quello di B
+    // anche, finito: il ritiro deve ritrovare A comunque.
+    let (registro, osservatore) = spia();
+    let mut banco = banco_con_anello(
+        48_000,
+        usize::try_from(fotogrammi_da_ms(2_000, 48_000)).unwrap_or(96_000),
+        osservatore,
+    );
+    let a = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 600));
+    banco.ctx.esegui(suona(a));
+    let b = aperto(&banco.ctx, brano_onesto(2, 48_000, -0.5, 600));
+    banco.ctx.esegui(Comando::Prepara(Some(Box::new(b))));
+
+    let mut uditi = Vec::new();
+    let mut finestra = false;
+    for _ in 0..1_000 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+        if banco.ctx.corrente.is_none() && successivo_impegnato(&banco) {
+            finestra = true;
+            break;
+        }
+    }
+    assert!(
+        finestra,
+        "i due intermezzi non sono mai finiti tutti e due nell'anello"
+    );
+    let al_gesto = uditi.len();
+
+    esegui_e_svuota(&mut banco, Comando::Prepara(None));
+    let x = aperto(&banco.ctx, brano_onesto(3, 48_000, 0.2, 600));
+    esegui_e_svuota(&mut banco, Comando::Prepara(Some(Box::new(x))));
+    fino_alla_fine(&mut banco, &mut uditi);
+
+    assert_eq!(
+        quanti_negativi(uditi.get(al_gesto..).unwrap_or_default()),
+        0,
+        "dopo il gesto si sente ancora l'intermezzo tolto"
+    );
+    assert_eq!(eventi(&registro), ["iniziato:1", "iniziato:3", "fermato"]);
+    let di_a = quanti_a(&uditi, 0.8);
+    assert!(
+        (28_600..=29_000).contains(&di_a),
+        "di A se ne sentono {di_a} campioni su 28 800"
+    );
+}
+
+#[test]
+fn un_salto_dopo_il_gesto_non_si_perde() {
+    // Il secondo sintomo: dopo il gesto il preparatore ha già consegnato X, e
+    // un salto chiesto sulla coda di A — che si sente ancora — trovava
+    // `prossimo` pieno e si lasciava cadere in silenzio.
+    let (registro, osservatore) = spia();
+    let mut banco = banco_con_anello(
+        48_000,
+        usize::try_from(fotogrammi_da_ms(1_000, 48_000)).unwrap_or(48_000),
+        osservatore,
+    );
+    let a = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 2_000));
+    banco.ctx.esegui(suona(a));
+    let b = aperto(&banco.ctx, brano_onesto(2, 48_000, -0.5, 2_000));
+    banco.ctx.esegui(Comando::Prepara(Some(Box::new(b))));
+
+    let mut uditi = Vec::new();
+    let mut finestra = false;
+    for _ in 0..100_000 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+        if successivo_impegnato(&banco) {
+            finestra = true;
+            break;
+        }
+    }
+    assert!(
+        finestra,
+        "la decodifica non è mai passata a B mentre si sentiva A"
+    );
+
+    esegui_e_svuota(&mut banco, Comando::Prepara(None));
+    let x = aperto(&banco.ctx, brano_onesto(3, 48_000, 0.2, 1_000));
+    esegui_e_svuota(&mut banco, Comando::Prepara(Some(Box::new(x))));
+    esegui_e_svuota(&mut banco, Comando::VaiA(300));
+    let storia = fino_alla_fine(&mut banco, &mut uditi);
+
+    let tornato = storia
+        .iter()
+        .take(200)
+        .any(|p| p.track_id == Some(1) && (250..=500).contains(&p.ms));
+    assert!(tornato, "il salto a 300 ms è stato lasciato cadere");
+    assert_eq!(eventi(&registro), ["iniziato:1", "iniziato:3", "fermato"]);
+}
+
+#[test]
+fn un_salto_fra_due_intermezzi_non_si_perde() {
+    // Il caso che il commento di `riporta_sotto_la_puntina` dava per perso:
+    // due brani più corti dell'anello, e il secondo passaggio di
+    // `passa_al_prossimo` si portava via il decodificatore del primo. Il
+    // salto sul primo, che si sente ancora, cadeva nel vuoto.
+    let (registro, osservatore) = spia();
+    let mut banco = banco_con_anello(
+        48_000,
+        usize::try_from(fotogrammi_da_ms(2_000, 48_000)).unwrap_or(96_000),
+        osservatore,
+    );
+    let a = aperto(&banco.ctx, brano_onesto(1, 48_000, 0.8, 600));
+    banco.ctx.esegui(suona(a));
+    let b = aperto(&banco.ctx, brano_onesto(2, 48_000, 0.4, 600));
+    banco.ctx.esegui(Comando::Prepara(Some(Box::new(b))));
+
+    let mut uditi = Vec::new();
+    let mut finestra = false;
+    for _ in 0..1_000 {
+        un_giro_ascoltando(&mut banco, &mut uditi);
+        if banco.ctx.corrente.is_none() && successivo_impegnato(&banco) {
+            finestra = true;
+            break;
+        }
+    }
+    assert!(finestra, "i due intermezzi non sono mai finiti nell'anello");
+    // Un terzo di secondo di A, poi il salto indietro a cento millisecondi.
+    let mut sentito = 0;
+    for _ in 0..200 {
+        let (posizione, _) = un_giro_ascoltando(&mut banco, &mut uditi);
+        sentito = posizione.ms;
+        if posizione.ms > 300 {
+            break;
+        }
+    }
+    assert!(sentito > 300, "A non è mai arrivato a un terzo di secondo");
+    esegui_e_svuota(&mut banco, Comando::VaiA(100));
+    // Da qui in avanti: un ritorno sotto i duecento millisecondi può venire
+    // solo dal salto.
+    let storia = fino_alla_fine(&mut banco, &mut uditi);
+
+    let tornato = storia
+        .iter()
+        .take(100)
+        .any(|p| p.track_id == Some(1) && (50..=200).contains(&p.ms));
+    assert!(tornato, "il salto a 100 ms è stato lasciato cadere");
+    assert_eq!(eventi(&registro), ["iniziato:1", "iniziato:2", "fermato"]);
 }

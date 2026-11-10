@@ -627,6 +627,19 @@ pub struct Lettore {
     /// mai: alla fine del corrente suonava il brano tolto. Vedi
     /// [`fili::prepara_prossimo`].
     in_canna: Option<i64>,
+    /// Il successivo che si è chiesto al motore di ritirare: quello che stava
+    /// in canna quando [`Lettore::prepara`] ci ha messo un altro brano, o
+    /// nessuno.
+    ///
+    /// Il motore lo ritira anche se l'ha già attaccato, finché fa in tempo
+    /// (`rymembra_play::motore`, `ritira_il_successivo`). Quando non fa più in
+    /// tempo — il gesto è arrivato a un soffio dalla fine del brano — quel
+    /// successivo suona, e il suo annuncio arriva con la canna vuota o con il
+    /// brano nuovo dentro. Letto come un brano che la coda non indica, faceva
+    /// andare avanti la coda di uno: sul brano appena messo dopo, mostrato
+    /// mentre suonava l'altro, e dopo di lui il ritirato suonava di nuovo. Vedi
+    /// [`dopo_l_annuncio`].
+    ritirato: Option<i64>,
     /// Il brano dopo che il preparatore non è riuscito ad aprire.
     ///
     /// Quando il corrente finisce il motore si ferma, perché in canna non c'è
@@ -720,15 +733,22 @@ impl Lettore {
         self.puntina_a_vuoto = None;
         self.coda_del_giro = None;
         self.in_canna = None;
+        self.ritirato = None;
         self.non_aperto = None;
         self.annuncio_atteso = Some(avviato);
         self.fermato_della_sessione = false;
         insieme::dopo_un_avvio(self);
     }
 
-    /// Mette in canna il brano dopo, o toglie quello che c'era.
+    /// Mette in canna il brano dopo, o toglie quello che c'era — anche se il
+    /// motore l'aveva già attaccato: vedi `Motore::prepara`. Quello che
+    /// esce di canna si ricorda in [`Lettore::ritirato`].
     fn prepara(&mut self, brano: Option<rymembra_play::BranoAperto>) {
-        self.in_canna = brano.as_ref().map(rymembra_play::BranoAperto::track_id);
+        let nuovo = brano.as_ref().map(rymembra_play::BranoAperto::track_id);
+        if self.in_canna.is_some() && self.in_canna != nuovo {
+            self.ritirato = self.in_canna;
+        }
+        self.in_canna = nuovo;
         self.motore.prepara(brano);
     }
 
@@ -736,6 +756,7 @@ impl Lettore {
     fn ferma(&mut self) {
         self.motore.ferma();
         self.in_canna = None;
+        self.ritirato = None;
         self.non_aperto = None;
         self.annuncio_atteso = None;
         insieme::dopo_un_avvio(self);
@@ -769,16 +790,24 @@ enum DopoLAnnuncio {
 ///
 /// Se l'annuncio è di un altro brano, quello avviato non è mai uscito — un file
 /// che il motore ha saltato — e l'annuncio si legge come gli altri.
+///
+/// L'annuncio del successivo che si era chiesto di ritirare (`ritirato`, vedi
+/// [`Lettore::ritirato`]) non sposta la coda: il motore non ha fatto in tempo a
+/// toglierlo, e la coda è già dove il gesto l'ha messa — col brano scelto come
+/// successivo, che suonerà quando questo finisce.
 fn dopo_l_annuncio(
     brano: i64,
     atteso: Option<i64>,
     corrente: Option<i64>,
     in_canna: Option<i64>,
+    ritirato: Option<i64>,
 ) -> DopoLAnnuncio {
     if atteso == Some(brano) {
         DopoLAnnuncio::Resta
     } else if in_canna == Some(brano) {
         DopoLAnnuncio::AvanzaDallaCanna
+    } else if ritirato == Some(brano) {
+        DopoLAnnuncio::Resta
     } else if corrente != Some(brano) {
         DopoLAnnuncio::Avanza
     } else {
@@ -1158,6 +1187,7 @@ impl StatoLettore {
             coda_del_giro: None,
             pausa_chiesta: (0, false),
             in_canna: None,
+            ritirato: None,
             non_aperto: None,
             annuncio_atteso: None,
             puntina_a_vuoto: None,
@@ -2052,6 +2082,9 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
     // Prima di tutto, però, il brano appena avviato: vedi
     // `Lettore::annuncio_atteso` e [`dopo_l_annuncio`].
     let atteso = lettore.annuncio_atteso.take();
+    // Chiesto per questo annuncio o per nessuno: dopo il primo inizio il
+    // ritiro ha fatto il suo, riuscito o no.
+    let ritirato = lettore.ritirato.take();
     if insieme::segue(lettore) {
         // Chi segue non sceglie il brano dopo: lo decide l'ancora dell'host, e
         // la coda è lo specchio della sua. Il cursore va sulla voce che è
@@ -2065,7 +2098,13 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
             lettore.in_canna = None;
         }
     } else {
-        match dopo_l_annuncio(track_id, atteso, lettore.coda.current(), lettore.in_canna) {
+        match dopo_l_annuncio(
+            track_id,
+            atteso,
+            lettore.coda.current(),
+            lettore.in_canna,
+            ritirato,
+        ) {
             DopoLAnnuncio::Resta => {}
             DopoLAnnuncio::AvanzaDallaCanna => {
                 lettore.in_canna = None;

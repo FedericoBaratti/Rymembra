@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use rymembra_domain::errors::{AppError, ErrorCodeKind};
 
 use super::{
-    BranoAperto, Comando, Contesto, Evento, Intese, PASSI_EQ, Posizione, Segno, Sfumatura, Voce,
-    avvicina, fattore_di_sfumatura,
+    BranoAperto, Comando, Contesto, Evento, Intese, MARGINE_DEL_RITIRO_MS, PASSI_EQ, Posizione,
+    Segno, Sfumatura, Voce, avvicina, fattore_di_sfumatura, fotogrammi_da_ms, ms_da_fotogrammi,
 };
 use crate::ancora::Mappa;
 use crate::decodifica::Decodificatore;
@@ -33,6 +33,18 @@ enum Puntina {
     Riportata,
     /// Non c'è modo di riportarlo: il salto si lascia cadere.
     Persa,
+}
+
+/// Che fine fa, quando il brano che si sente torna sotto la puntina, quel che
+/// la decodifica aveva già attaccato dopo di lui. Vedi
+/// [`Contesto::riporta_sotto_la_puntina`].
+#[derive(Clone, Copy)]
+enum IlSeguito {
+    /// Torna in canna dal suo inizio: è ancora il brano dopo. È il salto.
+    InCanna,
+    /// Se ne va: chi sta sopra ha scelto un altro brano dopo, o nessuno. È il
+    /// ritiro.
+    Via,
 }
 
 impl Contesto {
@@ -83,7 +95,7 @@ impl Contesto {
             ascolto_entrante: 0,
             sfumatura: None,
             riallinea_segno: false,
-            uscente: None,
+            uscenti: VecDeque::new(),
             prossimo: None,
             segni: VecDeque::new(),
             resto: VecDeque::new(),
@@ -353,7 +365,16 @@ impl Contesto {
     /// finché la bandiera resta alta, [`Contesto::riempi_anello`] non ci spinge
     /// niente — il punto nuovo aspetta in `resto`, che `spinti` conta già, e
     /// non diventa un debito fra spinti e suonati.
-    fn scarta_in_volo(&mut self) {
+    ///
+    /// # Quel che restituisce
+    ///
+    /// I fotogrammi che la callback aveva contato quando ha svuotato: è il
+    /// punto esatto in cui il suono vecchio si è fermato, e chi deve ripartire
+    /// da lì — [`Contesto::ritira_il_successivo`] — non ha altro modo di
+    /// saperlo, perché subito dopo il contatore riparte da zero. Durante la
+    /// stretta di mano la callback consuma ancora la dozzina di millisecondi
+    /// della porta, e li conta: letti prima, sarebbero un pezzo ripetuto.
+    fn scarta_in_volo(&mut self) -> u64 {
         self.campanello.suona();
         self.resto.clear();
         self.condiviso.svuota.store(true, Ordering::Release);
@@ -366,6 +387,7 @@ impl Contesto {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+        let suonati = self.condiviso.fotogrammi.load(Ordering::Relaxed);
         self.condiviso.fotogrammi.store(0, Ordering::Relaxed);
         self.spinti = 0;
         self.condiviso.spinti.store(0, Ordering::Relaxed);
@@ -384,9 +406,10 @@ impl Contesto {
         self.condiviso.epoca.fetch_add(1, Ordering::Release);
         self.mappa_sporca = true;
         // Con l'anello vuoto non si sente più niente di quel che c'era dentro:
-        // il brano messo da parte non ha più nessuno che lo ascolti. Vedi
-        // [`Contesto::uscente`].
-        self.uscente = None;
+        // i brani messi da parte non hanno più nessuno che li ascolti. Vedi
+        // [`Contesto::uscenti`].
+        self.uscenti.clear();
+        suonati
     }
 
     /// Installa un brano già aperto e comincia a consegnarne i campioni.
@@ -516,7 +539,20 @@ impl Contesto {
     /// musica che riparte da sola dopo che era finita — e senza che si senta,
     /// perché [`Condiviso::in_pausa`] è alzato. Chi prepara a motore fermo sta
     /// solo tenendo pronto il dopo per quando qualcuno ripremerà play.
+    ///
+    /// # Quando il successivo di prima è già attaccato
+    ///
+    /// `Prepara` dice qual è il brano dopo **quello che si sente**. Negli ultimi
+    /// secondi di ogni brano, però, quel posto non è più libero: la decodifica
+    /// ha già attaccato il successivo di prima, e i suoi primi campioni stanno
+    /// nell'anello dietro la coda di quello che si sente. Scrivere soltanto
+    /// `prossimo`, com'era, lo lasciava suonare lo stesso — il brano appena
+    /// tolto dalla coda, quello di prima di un riordino o di uno shuffle, uno in
+    /// più col timer «alla fine del brano» — e chi sta sopra, che lo credeva
+    /// ancora ritirabile, mandava avanti la coda saltando quello che mostrava.
+    /// Adesso lo si ritira prima: vedi [`Contesto::ritira_il_successivo`].
     fn prepara(&mut self, brano: Option<BranoAperto>) {
+        self.ritira_il_successivo();
         self.prossimo = brano;
         if self.corrente.is_none() && self.prossimo.is_some() && !self.fine_dichiarata {
             self.passa_al_prossimo();
@@ -557,7 +593,7 @@ impl Contesto {
     /// Perché `corrente` non è il brano che esce dalle casse: è quello che il
     /// decodificatore sta macinando, e negli ultimi secondi di ogni brano i due
     /// sono diversi — la ragione, e il difetto che ne nasceva, stanno in
-    /// [`Contesto::uscente`]. Chi deve agire su quel che si sente lo chiede a
+    /// [`Contesto::uscenti`]. Chi deve agire su quel che si sente lo chiede a
     /// `segni.front()`, che è la stessa fonte da cui [`Contesto::aggiorna`]
     /// prende il titolo e la posizione mostrati.
     ///
@@ -573,7 +609,20 @@ impl Contesto {
     /// canna torna a essere il **prossimo**, riavvolto al suo inizio, e quello
     /// di prima torna corrente. La dissolvenza non passa di qui: là i brani
     /// vivi sono tre, e la domanda è un'altra.
-    fn riporta_sotto_la_puntina(&mut self) -> Puntina {
+    ///
+    /// # Il brano dopo
+    ///
+    /// Quel che la decodifica aveva già attaccato dopo il brano che si sente —
+    /// il primo degli uscenti che lo seguono, o il corrente — con
+    /// [`IlSeguito::InCanna`] torna in canna dal suo inizio, come faceva sempre;
+    /// con [`IlSeguito::Via`] se ne va, ed è il ritiro di
+    /// [`Contesto::ritira_il_successivo`]. In canna ci torna solo se la canna è
+    /// vuota: se chi sta sopra ci ha già messo un altro brano, l'ha scelto dopo,
+    /// e vale più di uno che la coda forse non indica più — la stessa regola di
+    /// [`Contesto::puntina_in_dissolvenza`]. Prima, con la canna piena, il salto
+    /// si lasciava cadere: niente salto, niente avviso, e il cursore tornava
+    /// dov'era.
+    fn riporta_sotto_la_puntina(&mut self, seguito: IlSeguito) -> Puntina {
         let Some(testa) = self.segni.front() else {
             // Nessun segno: non c'è nessun brano che si sente, e non c'è niente
             // da riportare indietro.
@@ -584,46 +633,145 @@ impl Contesto {
             return Puntina::AlSuoPosto;
         }
         // Serve quello messo da parte, e serve che sia proprio l'ascolto in
-        // testa: su brani più corti di quel che l'anello tiene da parte
-        // `passa_al_prossimo` scatta due volte prima che il primo dei due
-        // finisca di sentirsi, e il secondo passaggio si porta via il
-        // decodificatore del primo. Lì non c'è niente da riportare indietro, e
-        // il salto si lascia cadere.
-        if self.uscente.as_ref().map(|u| u.ascolto) != Some(ascolto) {
-            return Puntina::Persa;
-        }
-        // Con qualcosa già in canna lo scambio perderebbe un brano: quello che
-        // sposta indietro andrebbe scritto dove sta il seguente. Non capita —
-        // chi prepara non consegna finché l'annuncio non è arrivato — ma se
-        // capitasse, un salto lasciato cadere è meglio di una coda che salta una
-        // riga.
-        if self.prossimo.is_some() {
-            return Puntina::Persa;
-        }
-        let Some(uscente) = self.uscente.take() else {
+        // testa. C'è sempre: un brano messo da parte resta in fila finché il
+        // suo segno c'è (vedi `uscenti`), anche quando dopo di lui la
+        // decodifica ne ha finito un altro più corto dell'anello — il caso in
+        // cui, con una casella sola, il secondo passaggio si portava via il
+        // primo e il salto si lasciava cadere. Il ramo resta per la regola, non
+        // per un caso che si conosca.
+        let Some(posto) = self.uscenti.iter().position(|u| u.ascolto == ascolto) else {
             return Puntina::Persa;
         };
-        // Quel che stava in canna torna a essere il prossimo, dal suo inizio:
-        // l'anello con i suoi campioni sta per essere buttato, e riattaccarlo a
-        // metà lo farebbe cominciare dove nessuno l'ha sentito. Se non sa
-        // tornare al proprio inizio si lascia perdere, come per l'entrante.
-        if let Some(decodificatore) = self.corrente.take() {
-            let mut futuro = BranoAperto {
-                decodificatore,
-                durata_ms: self.durata_corrente_ms,
-                livello: self.rg_decodifica,
-                etichetta: self.etichetta_corrente,
-            };
-            if futuro.decodificatore.cerca(0).is_ok() {
-                self.prossimo = Some(futuro);
-            }
+        let mut dopo = self.uscenti.split_off(posto.saturating_add(1));
+        let Some(sentito) = self.uscenti.pop_back() else {
+            return Puntina::Persa;
+        };
+        // Quelli prima di lui non li sente più nessuno: i loro segni sono già
+        // usciti dalla fila.
+        self.uscenti.clear();
+        let corrente = self.corrente.take().map(|decodificatore| BranoAperto {
+            decodificatore,
+            durata_ms: self.durata_corrente_ms,
+            livello: self.rg_decodifica,
+            etichetta: self.etichetta_corrente,
+        });
+        // Il primo dopo di lui. Un secondo — un uscente finito e poi il corrente
+        // — non c'è, perché il successivo arriva solo dopo l'annuncio di chi lo
+        // precede; se ci fosse, se ne andrebbe con l'anello.
+        let il_dopo = dopo.pop_front().map(|u| u.brano).or(corrente);
+        // Dal suo inizio: l'anello con i suoi campioni sta per essere buttato,
+        // e riattaccarlo a metà lo farebbe cominciare dove nessuno l'ha
+        // sentito. Se non sa tornare al proprio inizio si lascia perdere, come
+        // per l'entrante.
+        if matches!(seguito, IlSeguito::InCanna)
+            && self.prossimo.is_none()
+            && let Some(mut futuro) = il_dopo
+            && futuro.decodificatore.cerca(0).is_ok()
+        {
+            self.prossimo = Some(futuro);
         }
-        self.durata_corrente_ms = uscente.brano.durata_ms;
-        self.rg_decodifica = uscente.brano.livello;
-        self.etichetta_corrente = uscente.brano.etichetta;
-        self.ascolto_corrente = uscente.ascolto;
-        self.corrente = Some(uscente.brano.decodificatore);
+        self.durata_corrente_ms = sentito.brano.durata_ms;
+        self.rg_decodifica = sentito.brano.livello;
+        self.etichetta_corrente = sentito.brano.etichetta;
+        self.ascolto_corrente = sentito.ascolto;
+        self.corrente = Some(sentito.brano.decodificatore);
         Puntina::Riportata
+    }
+
+    /// Ritira il successivo che la decodifica ha già attaccato, se c'è e se si
+    /// fa ancora in tempo: il brano che si sente torna sotto la puntina dal
+    /// punto esatto in cui il suono si ferma, e quel che c'era dopo di lui —
+    /// nell'anello e nei decodificatori — se ne va. La chiama
+    /// [`Contesto::prepara`], prima di scrivere il successivo nuovo.
+    ///
+    /// # Quando
+    ///
+    /// Quando in fila c'è più di un segno: il secondo è di un brano che la
+    /// decodifica ha già cominciato e che nessuno ha ancora sentito. Il
+    /// successivo in gapless, attaccato appena il corrente è finito di
+    /// decodificare, cioè negli ultimi secondi di ogni brano — e per tutto il
+    /// brano, se il brano è più corto dell'anello. O quello che entra in
+    /// dissolvenza, finché la curva non è a metà: la finestra si allarga della
+    /// dissolvenza. Dopo la metà il brano nuovo è quello che si sente, il suo
+    /// segno è in testa, e non c'è niente da ritirare.
+    ///
+    /// # Il prezzo
+    ///
+    /// Uno svuotamento: la porta della callback che si chiude e si riapre, una
+    /// dozzina di millisecondi, e quel che costa al decodificatore tornare al
+    /// punto — niente su un disco, una richiesta su una share. Lo paga solo chi
+    /// cambia il brano dopo negli ultimi secondi: è la scelta fatta, fra un
+    /// piccolo stacco e un brano sbagliato.
+    ///
+    /// # Quando non si fa più in tempo
+    ///
+    /// A meno di [`MARGINE_DEL_RITIRO_MS`] dal fotogramma in cui il successivo
+    /// comincia a sentirsi, contando quel che la callback ha già consegnato: lì
+    /// il successivo resta, e il suo annuncio arriva fra un istante. Chi sta
+    /// sopra lo riconosce come il brano che aveva chiesto di ritirare, e non
+    /// sposta la coda per lui.
+    fn ritira_il_successivo(&mut self) {
+        let (Some(testa), Some(seguente)) = (self.segni.front(), self.segni.get(1)) else {
+            return;
+        };
+        let suonati = self.condiviso.fotogrammi.load(Ordering::Relaxed);
+        let margine = fotogrammi_da_ms(MARGINE_DEL_RITIRO_MS, self.formato.frequenza);
+        if seguente.da <= suonati.saturating_add(margine) {
+            return;
+        }
+        let (da, offset, ascolto) = (testa.da, testa.offset_fotogrammi, testa.ascolto);
+        // Nella prima metà di una dissolvenza si sente ancora il corrente, e il
+        // successivo è quello che entra: se ne andrà con la sovrapposizione.
+        let in_dissolvenza =
+            self.entrante.is_some() && self.corrente.is_some() && self.ascolto_corrente == ascolto;
+        if !in_dissolvenza
+            && matches!(
+                self.riporta_sotto_la_puntina(IlSeguito::Via),
+                Puntina::Persa
+            )
+        {
+            return;
+        }
+        self.azzera_dissolvenza();
+        // Dove si è fermato il suono: in fotogrammi d'uscita, contati dalla
+        // callback fino allo svuotamento — la porta compresa — e tradotti nel
+        // brano col suo segno, che `da` e `offset_fotogrammi` dicono per lo
+        // stesso istante (vedi [`Segno`]).
+        let fermati = self.scarta_in_volo();
+        let fatti = offset.saturating_add(fermati.saturating_sub(da));
+        let Some(decodificatore) = self.corrente.as_mut() else {
+            return;
+        };
+        let track_id = decodificatore.track_id();
+        // Come in `vai_a`: un salto su un flusso può aspettare la rete, e il
+        // comando dopo deve poterlo interrompere.
+        self.condiviso.pubblica_lettura(decodificatore.bandiera());
+        let cercato = decodificatore.cerca(ms_da_fotogrammi(fatti, self.formato.frequenza));
+        self.condiviso.ritira_lettura();
+        // Dove si è atterrati, anche quando il salto non riesce: l'anello è
+        // già vuoto, e da lì il brano continua — o finisce, e attacca il
+        // successivo nuovo.
+        let raggiunto = decodificatore.consegnati();
+        if let Err(err) = cercato
+            && err.code().kind() != ErrorCodeKind::InternalAborted
+        {
+            self.annuncia(Evento::Errore(Box::new(err)));
+        }
+        // L'ascolto è quello di prima: il brano che si sente non ricomincia, e
+        // non si annuncia una seconda volta. Vedi `vai_a`.
+        self.segni.push_back(Segno {
+            da: 0,
+            track_id,
+            durata_ms: self.durata_corrente_ms,
+            offset_fotogrammi: raggiunto,
+            etichetta: self.etichetta_corrente,
+            replaygain_db: self.rg_decodifica.guadagno_db,
+            ascolto: self.ascolto_corrente,
+            formato: self.corrente.as_ref().map(Decodificatore::formato_suonato),
+        });
+        self.fine_dichiarata = false;
+        self.riallinea_segno = true;
+        self.mappa_sporca = true;
     }
 
     /// Il salto arriva a metà di una dissolvenza: su quale dei due brani cade.
@@ -683,7 +831,7 @@ impl Contesto {
         let puntina = if self.entrante.is_some() {
             self.puntina_in_dissolvenza()
         } else {
-            self.riporta_sotto_la_puntina()
+            self.riporta_sotto_la_puntina(IlSeguito::InCanna)
         };
         if matches!(puntina, Puntina::Persa) {
             return;
