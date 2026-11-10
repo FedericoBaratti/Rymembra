@@ -29,9 +29,16 @@ const VIETATI: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 /// Stavano in `organize`, che scriveva cartelle a partire dai tag; con il
 /// ritiro del riordino l'unico posto che costruisce ancora un percorso dai
 /// metadati è questo, e la costante lo ha seguito.
-const NOMI_RISERVATI: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+///
+/// L'elenco è quello di Microsoft («Naming Files, Paths, and Namespaces») per
+/// intero: anche lo zero e gli apici `¹ ² ³` dopo `COM` e `LPT`, che il
+/// sistema tratta come le cifre, e le due console `CONIN$` e `CONOUT$`. Un
+/// artista chiamato «LPT0» faceva scaricare il brano intero e poi fallire la
+/// cartella al deposito, tre volte di fila perché `fs.writeFailed` si ritenta.
+const NOMI_RISERVATI: [&str; 32] = [
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "com¹", "com²", "com³", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6",
+    "lpt7", "lpt8", "lpt9", "lpt¹", "lpt²", "lpt³", "conin$", "conout$",
 ];
 
 /// Quanti caratteri al massimo può essere lungo un segmento di percorso.
@@ -71,9 +78,16 @@ pub fn segmento_sicuro(grezzo: &str) -> String {
     // Un nome riservato da Windows (`CON`, `AUX`…) si disinnesca con un
     // suffisso, non cancellandolo: cancellarlo lascerebbe un nome vuoto, e il
     // ripiego «Senza titolo» qui sopra ha già consumato quel caso.
-    let radice = pulito.split('.').next().unwrap_or(&pulito).to_lowercase();
-    if NOMI_RISERVATI.contains(&radice.as_str()) {
-        pulito.push('_');
+    //
+    // La radice è quel che sta prima del primo punto **senza gli spazi in
+    // coda**, perché Windows li toglie: «con .mp3» è il dispositivo `CON`. E il
+    // segno va attaccato alla radice e non in fondo al nome, perché per Windows
+    // conta quel che precede il punto: «con.mp3_» resterebbe `CON`.
+    let fine = pulito.find('.').unwrap_or(pulito.len());
+    let radice = pulito.get(..fine).unwrap_or(&pulito).trim_end_matches(' ');
+    let lunghezza = radice.len();
+    if NOMI_RISERVATI.contains(&radice.to_lowercase().as_str()) {
+        pulito.insert(lunghezza, '_');
     }
     pulito
 }
@@ -203,6 +217,26 @@ mod prove {
         assert_eq!(segmento_sicuro("con"), "con_");
         // Un nome che li contiene soltanto non si tocca.
         assert_eq!(segmento_sicuro("Console"), "Console");
+    }
+
+    #[test]
+    fn tutti_i_nomi_riservati() {
+        // L'elenco di Microsoft («Naming Files»), non solo quello che si
+        // ricorda a memoria: lo zero e gli apici valgono come le cifre, e le
+        // due console hanno un nome loro.
+        for nome in [
+            "COM0", "LPT0", "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$",
+        ] {
+            assert_eq!(segmento_sicuro(nome), format!("{nome}_"), "su «{nome}»");
+        }
+        // La radice si giudica senza gli spazi prima del punto, perché Windows
+        // li toglie: «con .mp3» è il dispositivo `CON`. E il segno va sulla
+        // radice, non in coda: «con.mp3_» avrebbe ancora `CON` davanti al punto.
+        assert_eq!(segmento_sicuro("con .mp3"), "con_ .mp3");
+        assert_eq!(segmento_sicuro("Nul.Live"), "Nul_.Live");
+        // Chi li contiene soltanto resta com'è.
+        assert_eq!(segmento_sicuro("COM10"), "COM10");
+        assert_eq!(segmento_sicuro("Lpt.1"), "Lpt.1");
     }
 
     #[test]
