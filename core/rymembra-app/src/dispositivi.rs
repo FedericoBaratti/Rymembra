@@ -325,28 +325,25 @@ pub fn rinomina(connection: &Connection, chiave: &str, nome: &str) -> Result<(),
 }
 
 /// Non ci si fida più del dispositivo (ha chiesto di essere dimenticato), ma
-/// la riga resta, perché lo si veda e lo si possa togliere. Come per
-/// [`dimentica`], la sua chiave di «Ascolta insieme» smette di essere fidata.
+/// la riga resta, perché lo si veda e lo si possa togliere.
 ///
-/// `true` se la fiducia di «Ascolta insieme» è cambiata: chi chiama la fa
-/// rileggere alla sua rete, che chiude le connessioni di quella chiave.
+/// La fiducia di «Ascolta insieme» resta com'è, a differenza di
+/// [`dimentica`]: qui decide l'**altro**, e la chiave di «Ascolta insieme»
+/// che aveva dato col QR l'aveva solo dichiarata. Un dispositivo collegato che
+/// avesse dichiarato quella di un altro PC fidato potrebbe, con un
+/// «dimenticami», togliergli la fiducia. La toglie la persona, con «Dimentica».
 ///
 /// # Errori
 ///
 /// Quelli del database.
-pub fn revoca(connection: &Connection, chiave: &str) -> Result<bool, AppError> {
-    let chiave = chiave.trim().to_ascii_lowercase();
-    let guasto = |err: rusqlite::Error| db_error("revoca di un dispositivo", &err);
-    let tx = connection.unchecked_transaction().map_err(guasto)?;
-    let insieme = chiave_insieme_di(&tx, &chiave).map_err(guasto)?;
-    tx.execute(
-        "UPDATE dispositivi SET revocato = 1 WHERE chiave = ?1",
-        [&chiave],
-    )
-    .map_err(guasto)?;
-    let cambiata = senza_fiducia_insieme(&tx, insieme.as_deref()).map_err(guasto)?;
-    tx.commit().map_err(guasto)?;
-    Ok(cambiata)
+pub fn revoca(connection: &Connection, chiave: &str) -> Result<(), AppError> {
+    connection
+        .execute(
+            "UPDATE dispositivi SET revocato = 1 WHERE chiave = ?1",
+            [chiave.trim().to_ascii_lowercase()],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("revoca di un dispositivo", &err))
 }
 
 /// Dimentica un dispositivo, gli ascolti che aspettavano di arrivargli, e la
@@ -356,8 +353,14 @@ pub fn revoca(connection: &Connection, chiave: &str) -> Result<bool, AppError> {
 /// **bloccato** resta com'è: tolto, alla prossima associazione — sua, non
 /// nostra — tornerebbe fidato.
 ///
-/// Dimenticare due volte è dimenticare una volta. `true` come per
-/// [`revoca`].
+/// La chiave l'aveva dichiarata il dispositivo, e niente provava che fosse
+/// sua: se era quella di un altro PC fidato, anche quello torna a chiedere il
+/// codice. È la persona a dimenticare, e il prezzo è un codice a quattro
+/// cifre; il contrario — un dispositivo dimenticato che resta fidato — no.
+///
+/// Dimenticare due volte è dimenticare una volta. `true` se la fiducia di
+/// «Ascolta insieme» è cambiata: chi chiama la fa rileggere alla sua rete, che
+/// chiude le connessioni di quella chiave.
 ///
 /// # Errori
 ///
@@ -780,14 +783,16 @@ mod prove {
     }
 
     #[test]
-    fn un_dispositivo_che_ci_ha_dimenticati_non_resta_fidato_in_ascolta_insieme() {
+    fn un_dimenticami_dall_altra_parte_non_tocca_ascolta_insieme() {
+        // La chiave di «Ascolta insieme» l'aveva dichiarata lui: con un
+        // «dimenticami» non deve poter togliere la fiducia a un altro PC.
         let db = open_in_memory().unwrap();
         let c = &db.connection;
         let telefono = "0f".repeat(32);
         associa(c, nuovo(&telefono, &[]), 1000).unwrap();
         crate::insieme::fidato_dal_qr(c, INSIEME, "Telefono", 1000).unwrap();
         revoca(c, &telefono).unwrap();
-        assert!(fidati(c).is_empty());
+        assert_eq!(fidati(c), vec![(INSIEME.to_ascii_lowercase(), false)]);
         assert!(
             uno(c, &telefono).unwrap().unwrap().revocato,
             "la riga resta"

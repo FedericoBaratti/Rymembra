@@ -179,15 +179,13 @@ impl rymembra_lontano::Ospite for Ospite {
         self.comune.ammetti(da, false);
         // I suoi brani in coda non si aprono più: l'altro non ci risponde.
         crate::riproduzione::togli_lontane(&self.app, da);
-        match in_libreria(&self.app, ATTESA_SCRITTURA, |c| dispositivi::revoca(c, da)) {
-            // La sua chiave di «Ascolta insieme» non è più fidata: la rete di
-            // «Ascolta insieme» rilegge e chiude le sue connessioni.
-            Ok(true) => crate::insieme::fidati_cambiati(&self.app),
-            Ok(false) => {}
-            Err(err) => nota!(
+        // La fiducia di «Ascolta insieme» resta: la toglie la persona, con
+        // «Dimentica» (vedi `dispositivi::revoca`).
+        if let Err(err) = in_libreria(&self.app, ATTESA_SCRITTURA, |c| dispositivi::revoca(c, da)) {
+            nota!(
                 "[lontano] un dispositivo che ci ha dimenticati non si segna codice={}",
                 err.code().kind().code()
-            ),
+            );
         }
         self.comune.sveglia(Posta::Rileggi {
             risposta: None,

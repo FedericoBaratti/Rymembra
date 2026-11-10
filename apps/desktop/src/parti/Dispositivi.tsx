@@ -573,6 +573,7 @@ function RigaDispositivo({
               titolo: t("devices.forget.title", { nome: dispositivo.nome }),
               descrizione: t("devices.forget.sub"),
               conferma: t("devices.forget"),
+              consenso: true,
               fai: () => {
                 ipc
                   .lontanoDimentica(dispositivo.chiave)
