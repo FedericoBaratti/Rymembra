@@ -396,7 +396,12 @@ fn indicizza<C: Fn(&LibraryTrack) -> (String, String)>(
 /// Lo spazio davanti a `feat` e `ft` fa da confine di parola senza bisogno di
 /// un'espressione regolare: `feat` catturato così non può essere la fine di
 /// un'altra parola, e `featuring` comincia per `feat` quindi è già coperto.
-const SEPARATORI_ARTISTA: &[&str] = &[",", " & ", " feat", " ft.", " ft ", " with ", " vs "];
+///
+/// Gli stessi separatori dicono a [`crate::scelta`] dove finisce un interprete
+/// e comincia il successivo, quando confronta chi pubblica con chi è chiesto:
+/// due elenchi diversi vorrebbero dire due idee diverse di «artista».
+pub(crate) const SEPARATORI_ARTISTA: &[&str] =
+    &[",", " & ", " feat", " ft.", " ft ", " with ", " vs "];
 
 /// Solo il primo interprete.
 ///

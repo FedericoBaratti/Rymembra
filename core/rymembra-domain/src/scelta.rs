@@ -35,9 +35,22 @@
 //! decide — con `alternative_ammesse` — se prenderla o dire «non c'è». E in
 //! tutti e due i casi la natura viaggia fino all'interfaccia, perché «ho preso
 //! un live» è un'informazione e il silenzio no.
+//!
+//! # Prima di tutto, titolo e artista
+//!
+//! Sopra la durata c'è un cancello che non si apre con niente: il titolo **e**
+//! l'interprete del candidato devono essere quelli chiesti, a meno di come li
+//! si scrive (vedi [`combacia`]). Senza, l'archivio di Spotify — che non porta
+//! durate — lasciava vincere il solo scaricabile fra otto risultati, e un
+//! «Paranoid Android» caricato da un fan finiva sul disco col nome di «Karma
+//! Police». Le registrazioni diverse ammesse dall'interruttore sono quindi un
+//! live o una ristampa **dello stesso artista**; la cover di un altro non è il
+//! brano chiesto, qualunque cosa dica l'interruttore. Quel che non passa resta
+//! da comprare.
 
-use crate::abbinamento::{primo_artista, senza_decorazioni};
+use crate::abbinamento::{SEPARATORI_ARTISTA, primo_artista, senza_decorazioni};
 use crate::esterno::{BranoEsterno, Disponibilita, Fonte, Licenza};
+use crate::keys::normalize_key;
 use crate::text::{collapse_whitespace, fold_text};
 
 /// Lo scarto di durata entro cui due registrazioni sono la stessa.
@@ -339,6 +352,187 @@ pub fn scarto_durata(attesa_ms: Option<u64>, durata_sec: Option<u32>) -> Option<
     Some(sua_ms.saturating_sub(i64::try_from(attesa).ok()?))
 }
 
+/// Le parole che in coda a un titolo, senza parentesi né trattino, dicono
+/// soltanto l'edizione: «Karma Police Remastered 2009».
+///
+/// Più corta di quella dell'abbinamento in libreria, e di proposito: qui una
+/// parola tolta per sbaglio fa passare una registrazione al posto di un'altra.
+/// `mix`, `demo`, `acoustic` non ci sono — dicono un'altra registrazione, ed è
+/// [`natura_dal_titolo`] a dirlo, non questa ripulitura a nasconderlo.
+const CODE_EDIZIONE: &[&str] = &[
+    "live",
+    "remaster",
+    "remastered",
+    "rimasterizzato",
+    "version",
+    "versione",
+    "edit",
+    "mono",
+    "stereo",
+];
+
+/// Dove comincia l'elenco degli ospiti in un titolo, quando non è fra
+/// parentesi: «Feel Good Inc. feat. De La Soul».
+const OSPITI_NEL_TITOLO: &[&str] = &[" feat.", " feat ", " featuring ", " ft. ", " ft "];
+
+/// Il titolo nella forma in cui due titoli si confrontano.
+///
+/// Riusa le ripuliture che l'abbinamento in libreria fa già —
+/// [`senza_decorazioni`] per le parentesi e le code d'edizione,
+/// [`normalize_key`] per maiuscole, accenti, apostrofi e punteggiatura — più
+/// due cose che lì non servono: il taglio degli ospiti scritti senza parentesi
+/// e le parole di [`CODE_EDIZIONE`] rimaste in fondo, con gli anni. Se la
+/// ripulitura non lascia niente — una canzone che si chiama davvero «Live» — si
+/// torna al titolo intero.
+fn titolo_da_confrontare(titolo: &str) -> String {
+    let senza = senza_decorazioni(titolo);
+    // `to_ascii_lowercase` conserva la lunghezza in byte: la posizione trovata
+    // nella copia vale anche nell'originale, come in `primo_artista`.
+    let minuscolo = senza.to_ascii_lowercase();
+    let taglio = OSPITI_NEL_TITOLO
+        .iter()
+        .filter_map(|ospite| minuscolo.find(ospite))
+        .min();
+    let senza_ospiti = taglio.map_or(senza.as_str(), |dove| senza.get(..dove).unwrap_or(&senza));
+    let piegato = normalize_key(Some(senza_ospiti));
+    let mut parole: Vec<&str> = piegato.split(' ').filter(|p| !p.is_empty()).collect();
+    while parole.len() > 1
+        && parole.last().is_some_and(|ultima| {
+            CODE_EDIZIONE.contains(ultima)
+                || (ultima.len() == 4 && ultima.chars().all(|c| c.is_ascii_digit()))
+        })
+    {
+        parole.pop();
+    }
+    let pulito = parole.join(" ");
+    if pulito.is_empty() {
+        normalize_key(Some(titolo))
+    } else {
+        pulito
+    }
+}
+
+/// Un nome d'interprete nella forma in cui si confronta: piegato come una
+/// chiave, e senza l'articolo in testa («The Beatles» e «Beatles»).
+fn nome_da_confrontare(nome: &str) -> String {
+    let piegato = normalize_key(Some(nome));
+    piegato
+        .strip_prefix("the ")
+        .map_or_else(|| piegato.clone(), ToOwned::to_owned)
+}
+
+/// I nomi sotto cui un interprete può comparire: il campo intero, con `&` letto
+/// come «and», e ciascuno degli interpreti che contiene.
+///
+/// Così «Gorillaz, De La Soul» combacia con un caricamento di «Gorillaz» e
+/// «Simon & Garfunkel» con «Simon and Garfunkel». I separatori sono quelli di
+/// [`primo_artista`]: vedi [`SEPARATORI_ARTISTA`].
+fn artisti_da_confrontare(artista: &str) -> Vec<String> {
+    let mut nomi = vec![nome_da_confrontare(&artista.replace('&', " and "))];
+    let mut minuscolo = artista.to_ascii_lowercase();
+    for separatore in SEPARATORI_ARTISTA {
+        minuscolo = minuscolo.replace(separatore, "\u{1F}");
+    }
+    for pezzo in minuscolo.split('\u{1F}') {
+        let nome = nome_da_confrontare(pezzo);
+        if !nomi.contains(&nome) {
+            nomi.push(nome);
+        }
+    }
+    nomi.retain(|n| !n.is_empty());
+    nomi
+}
+
+/// Quante modifiche di un carattere separano due testi, fino a `tetto`.
+///
+/// `None` appena si capisce che sono di più: la tolleranza qui è di un refuso
+/// ogni dieci caratteri, e contare oltre non serve a niente.
+fn distanza_entro(a: &str, b: &str, tetto: usize) -> Option<usize> {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > tetto {
+        return None;
+    }
+    // Levenshtein con due righe: titoli di qualche decina di caratteri.
+    let mut prima: Vec<usize> = (0..=b.len()).collect();
+    let mut adesso = vec![0_usize; b.len().saturating_add(1)];
+    for (i, ca) in a.iter().enumerate() {
+        if let Some(primo) = adesso.first_mut() {
+            *primo = i.saturating_add(1);
+        }
+        for (j, cb) in b.iter().enumerate() {
+            let costo = usize::from(ca != cb);
+            let sostituzione = prima
+                .get(j)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(costo);
+            let cancellazione = prima
+                .get(j.saturating_add(1))
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(1);
+            let inserimento = adesso
+                .get(j)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(1);
+            if let Some(cella) = adesso.get_mut(j.saturating_add(1)) {
+                *cella = sostituzione.min(cancellazione).min(inserimento);
+            }
+        }
+        if adesso.iter().min().is_some_and(|minimo| *minimo > tetto) {
+            return None;
+        }
+        std::mem::swap(&mut prima, &mut adesso);
+    }
+    prima.last().copied().filter(|d| *d <= tetto)
+}
+
+/// Due testi già ripuliti sono lo stesso, a meno di un refuso ogni dieci
+/// caratteri di quello atteso.
+///
+/// Uguaglianza, e non contenimento: «Heaven» non è «Stairway to Heaven», in
+/// nessuno dei due versi.
+fn quasi_uguali(atteso: &str, suo: &str) -> bool {
+    if atteso.is_empty() || suo.is_empty() {
+        return false;
+    }
+    if atteso == suo {
+        return true;
+    }
+    #[expect(
+        clippy::integer_division,
+        reason = "un refuso ogni dieci caratteri interi: il resto non è un refuso in più"
+    )]
+    let tetto = atteso.chars().count() / 10;
+    tetto > 0 && distanza_entro(atteso, suo, tetto).is_some()
+}
+
+/// Il candidato è il brano chiesto per titolo **e** per interprete.
+///
+/// Il cancello in testa a [`scegli_candidato`]: vedi la carta del modulo. Un
+/// lato senza interprete — un candidato che non dice chi lo pubblica, un brano
+/// che non dice di chi è — non si può confermare, e non passa.
+#[must_use]
+pub fn combacia(candidato: &Candidato, brano: &BranoEsterno) -> bool {
+    let (Some(artista), Some(autore)) = (brano.artist.as_deref(), candidato.autore.as_deref())
+    else {
+        return false;
+    };
+    if !quasi_uguali(
+        &titolo_da_confrontare(&brano.title),
+        &titolo_da_confrontare(&candidato.titolo),
+    ) {
+        return false;
+    }
+    let attesi = artisti_da_confrontare(artista);
+    let suoi = artisti_da_confrontare(autore);
+    attesi
+        .iter()
+        .any(|atteso| suoi.iter().any(|suo| quasi_uguali(atteso, suo)))
+}
+
 /// La banda di durata in cui cade un candidato: 0 stretta, 1 larga.
 ///
 /// Restituisce `None` quando la durata lo esclude del tutto.
@@ -361,7 +555,8 @@ fn banda(attesa_ms: Option<u64>, durata_sec: Option<u32>) -> Option<(u8, u64)> {
 
 /// Sceglie il file da prendere, o nessuno.
 ///
-/// L'ordine dei criteri, dal più forte al più debole:
+/// Passa solo chi [`combacia`]: titolo e interprete sono un cancello, non un
+/// criterio. Fra chi passa, l'ordine dei criteri, dal più forte al più debole:
 ///
 /// 1. la banda di durata — stretta prima di larga, e fuori dalla larga si scarta;
 /// 2. la [`Natura`] — la registrazione chiesta prima di un'altra dello stesso brano;
@@ -392,6 +587,9 @@ pub fn scegli_candidato<'a>(
             continue;
         }
         if !alternative_ammesse && candidato.natura != Natura::Studio {
+            continue;
+        }
+        if !combacia(candidato, brano) {
             continue;
         }
         let Some((banda_sua, scarto)) = banda(brano.duration_ms, candidato.durata_sec) else {
@@ -464,16 +662,15 @@ mod prove {
 
     #[test]
     fn la_durata_e_un_cancello_che_lautore_non_apre() {
-        // Un'ora di «album completo» sul canale dell'artista non è la canzone.
+        // Un'ora di disco intero sul canale verificato dell'artista, con il
+        // titolo della canzone, non è la canzone.
         let b = brano("Radiohead", "Karma Police", Some(264_000));
         let candidati = [
-            cand(
-                "https://a/album",
-                "OK Computer Full Album",
-                "Radiohead",
-                3_180,
-            ),
-            cand("https://a/brano", "Karma Police", "Uno Qualunque", 262),
+            Candidato {
+                autore_verificato: true,
+                ..cand("https://a/album", "Karma Police", "Radiohead", 3_180)
+            },
+            cand("https://a/brano", "Karma Police", "radiohead", 262),
         ];
         assert_eq!(
             scegli_candidato(&candidati, &b, true).map(|c| c.url.as_str()),
@@ -489,14 +686,18 @@ mod prove {
     }
 
     #[test]
-    fn lo_studio_batte_il_live_anche_se_il_live_ha_lautore_giusto() {
+    fn lo_studio_batte_il_live_anche_se_il_live_e_verificato() {
+        // Fino alla 3.2 lo studio vinceva anche su un autore qualunque; adesso
+        // l'autore dev'essere quello chiesto, e fra due suoi caricamenti la
+        // natura viene prima della spunta.
         let b = brano("Grateful Dead", "Sugaree", Some(300_000));
         let candidati = [
             Candidato {
                 natura: Natura::DalVivo,
+                autore_verificato: true,
                 ..cand("https://a/live", "Sugaree", "Grateful Dead", 300)
             },
-            cand("https://a/studio", "Sugaree", "Raccolta", 300),
+            cand("https://a/studio", "Sugaree", "Grateful Dead", 300),
         ];
         assert_eq!(
             scegli_candidato(&candidati, &b, true).map(|c| c.url.as_str()),
@@ -555,6 +756,139 @@ mod prove {
             scegli_candidato(&candidati, &b, true).map(|c| c.url.as_str()),
             Some("https://a/nota")
         );
+    }
+
+    #[test]
+    fn un_titolo_diverso_non_e_una_risposta() {
+        // L'archivio di Spotify non porta durate: senza un titolo da
+        // confrontare, il solo scaricabile fra otto risultati vinceva, e
+        // finiva sul disco col nome della canzone chiesta.
+        let b = brano("Radiohead", "Karma Police", None);
+        let candidati = [cand("https://a/u", "Paranoid Android", "Radiohead", 380)];
+        assert_eq!(scegli_candidato(&candidati, &b, true), None);
+        // Il contenimento non è una corrispondenza, in nessuno dei due versi.
+        let b = brano("Led Zeppelin", "Stairway to Heaven", None);
+        let candidati = [cand("https://a/u", "Heaven", "Led Zeppelin", 300)];
+        assert_eq!(scegli_candidato(&candidati, &b, true), None);
+        let b = brano("Led Zeppelin", "Heaven", None);
+        let candidati = [cand(
+            "https://a/u",
+            "Stairway to Heaven",
+            "Led Zeppelin",
+            300,
+        )];
+        assert_eq!(scegli_candidato(&candidati, &b, true), None);
+    }
+
+    #[test]
+    fn un_altro_artista_non_e_una_risposta() {
+        // La durata giusta su un caricamento di qualcun altro è una cover, o
+        // un'altra canzone con lo stesso nome: non è il brano chiesto.
+        let b = brano("Radiohead", "Karma Police", Some(264_000));
+        let candidati = [cand("https://a/u", "Karma Police", "Fan Qualunque", 264)];
+        assert_eq!(scegli_candidato(&candidati, &b, true), None);
+        // E chi non dice chi è non si può confermare.
+        let senza = [Candidato {
+            autore: None,
+            ..cand("https://a/u", "Karma Police", "x", 264)
+        }];
+        assert_eq!(scegli_candidato(&senza, &b, true), None);
+        // Né si conferma un brano che non dice di chi è.
+        let anonimo = BranoEsterno {
+            artist: None,
+            ..b.clone()
+        };
+        let giusto = [cand("https://a/u", "Karma Police", "Radiohead", 264)];
+        assert_eq!(scegli_candidato(&giusto, &anonimo, true), None);
+    }
+
+    #[test]
+    fn titolo_e_artista_si_confrontano_su_testo_normalizzato() {
+        // Maiuscole, accenti, punteggiatura, «feat.», le code d'edizione e un
+        // refuso: sono lo stesso brano scritto da due persone diverse.
+        for ((artista, titolo), (autore, suo)) in [
+            (("Björk", "Jóga"), ("bjork", "JOGA")),
+            (
+                ("Radiohead", "Karma Police"),
+                ("Radiohead", "Karma Police (Remastered)"),
+            ),
+            (
+                ("Radiohead", "Karma Police"),
+                ("Radiohead", "Karma Police - 2017 Remaster"),
+            ),
+            (
+                ("Radiohead", "Karma Police"),
+                ("Radiohead", "Karma Police Remastered 2009"),
+            ),
+            (
+                ("Gorillaz", "Feel Good Inc."),
+                (
+                    "Gorillaz feat. De La Soul",
+                    "Feel Good Inc (feat. De La Soul)",
+                ),
+            ),
+            (
+                ("Gorillaz, De La Soul", "Feel Good Inc."),
+                ("Gorillaz", "Feel Good Inc. feat. De La Soul"),
+            ),
+            (
+                ("Guns N' Roses", "Sweet Child O' Mine"),
+                ("Guns N Roses", "Sweet Child O Mine"),
+            ),
+            (("The Beatles", "Let It Be"), ("Beatles", "Let It Be")),
+            (
+                ("Simon & Garfunkel", "The Boxer"),
+                ("Simon and Garfunkel", "The Boxer"),
+            ),
+            (
+                ("Grateful Dead", "Sugaree"),
+                ("Grateful Dead", "Sugaree ->"),
+            ),
+            (
+                ("Radiohead", "Karma Police"),
+                ("Radiohead", "Karma Pollice"),
+            ),
+        ] {
+            let b = brano(artista, titolo, None);
+            let candidati = [cand("https://a/u", suo, autore, 260)];
+            assert!(
+                scegli_candidato(&candidati, &b, true).is_some(),
+                "«{autore} – {suo}» per «{artista} – {titolo}»"
+            );
+        }
+    }
+
+    #[test]
+    fn la_tolleranza_e_un_refuso_ogni_dieci_caratteri() {
+        assert_eq!(distanza_entro("kitten", "sitting", 3), Some(3));
+        assert_eq!(distanza_entro("kitten", "sitting", 2), None);
+        // Un titolo corto non ha margine: «Hey Dude» non è «Hey Jude».
+        assert!(!quasi_uguali("hey jude", "hey dude"));
+        assert!(quasi_uguali("karma police", "karma pollice"));
+        assert!(!quasi_uguali("karma police", "karma polizia"));
+    }
+
+    #[test]
+    fn le_registrazioni_diverse_sono_dello_stesso_artista() {
+        // Con l'interruttore acceso un live dello stesso artista passa, e
+        // spento no; una cover di un altro non passa mai.
+        let b = brano("Radiohead", "Creep", None);
+        let live = [Candidato {
+            natura: Natura::DalVivo,
+            ..cand(
+                "https://a/live",
+                "Creep (Live at Glastonbury)",
+                "Radiohead",
+                260,
+            )
+        }];
+        assert!(scegli_candidato(&live, &b, true).is_some());
+        assert_eq!(scegli_candidato(&live, &b, false), None);
+        let cover = [Candidato {
+            natura: Natura::Alternativa,
+            ..cand("https://a/cover", "Creep (Cover)", "Uno Qualunque", 238)
+        }];
+        assert_eq!(scegli_candidato(&cover, &b, true), None);
     }
 
     #[test]

@@ -813,10 +813,22 @@ fn brani_dalla_scheda(
         }
 
         let chiave = (fold_text(&titolo), fold_text(&nome_pulito(nome)));
+        // Fuori da `etree` la natura la dice il titolo del file, e se quello
+        // tace il titolo dell'item: un concerto caricato in `audio_music` ha i
+        // file che si chiamano «Creep» e l'item che si chiama «Live at …», e
+        // senza il secondo passava per la versione in studio anche con
+        // «Accetta registrazioni diverse» spento.
         let natura = if dal_vivo {
             Natura::DalVivo
         } else {
-            atteso.map_or(Natura::Studio, |a| natura_dal_titolo(&titolo, &a.title))
+            atteso.map_or(Natura::Studio, |a| {
+                match natura_dal_titolo(&titolo, &a.title) {
+                    Natura::Studio => titolo_item
+                        .as_deref()
+                        .map_or(Natura::Studio, |item| natura_dal_titolo(item, &a.title)),
+                    altra => altra,
+                }
+            })
         };
 
         let candidato = Candidato {
@@ -1465,6 +1477,28 @@ mod prove {
             }"#,
         );
         let trovati = brani_dalla_scheda("gd77", &s, None, Uso::Ascoltare);
+        assert_eq!(trovati.first().map(|c| c.natura), Some(Natura::DalVivo));
+    }
+
+    #[test]
+    fn un_concerto_fuori_da_etree_si_riconosce_dal_titolo_dellitem() {
+        // Un concerto caricato in `audio_music`: il file si chiama «Creep», ed
+        // è il titolo dell'item a dire che è dal vivo. Con «Accetta
+        // registrazioni diverse» spento non deve passare per lo studio.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"rh97","collection":["audio_music"],
+                           "creator":"Radiohead","title":"Radiohead Live at Glastonbury 1997",
+                           "licenseurl":"https://creativecommons.org/licenses/by-nc/3.0/"},
+              "files": [{"name":"creep.flac","format":"Flac","title":"Creep","length":"260"}]
+            }"#,
+        );
+        let atteso = BranoEsterno {
+            title: "Creep".to_owned(),
+            artist: Some("Radiohead".to_owned()),
+            ..BranoEsterno::default()
+        };
+        let trovati = brani_dalla_scheda("rh97", &s, Some(&atteso), Uso::Tenere);
         assert_eq!(trovati.first().map(|c| c.natura), Some(Natura::DalVivo));
     }
 
