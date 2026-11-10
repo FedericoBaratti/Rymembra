@@ -295,11 +295,19 @@ jobs:
             exit 1
           fi
 
+      # Dove si guarda, uguale nei due passi: tutto `core` e tutto
+      # `apps/desktop`. Un elenco di cartelle scritto a mano lasciava fuori due
+      # crate del workspace (`rymembra-android`, `rymembra-barra`) e il Kotlin
+      # dell'app Android (`src-tauri/gen/android`, `.kt` e `.kts`): un ritorno
+      # lì passava verde. Fuori restano solo dipendenze e uscite di
+      # compilazione, che in questa corsa non ci sono ma sulla macchina di chi
+      # lo rilancia a mano sì.
       - name: Nessuno strumento di scaricamento
         run: |
           colpi=$(grep -rniE 'yt-dlp|ytdlp|spotdl|innertube|pathfinder|googlevideo' \
-            core apps/desktop/src apps/desktop/src-tauri/src \
-            --include='*.rs' --include='*.ts' --include='*.tsx' \
+            core apps/desktop \
+            --include='*.rs' --include='*.ts' --include='*.tsx' --include='*.kt' --include='*.kts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=target --exclude-dir=build \
             | grep -vE '^\S+: *(//!?|///|\*|#|--) ' || true)
           if [ -n "$colpi" ]; then
             echo "$colpi"
@@ -316,8 +324,9 @@ jobs:
       - name: Nessuna fonte di testi vietata
         run: |
           colpi=$(grep -rniE 'musixmatch|genius\.com|azlyrics|lyricfind|music\.163|netease|kugou' \
-            core apps/desktop/src apps/desktop/src-tauri/src \
-            --include='*.rs' --include='*.ts' --include='*.tsx' \
+            core apps/desktop \
+            --include='*.rs' --include='*.ts' --include='*.tsx' --include='*.kt' --include='*.kts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=target --exclude-dir=build \
             | grep -vE '^\S+: *(//!?|///|\*|#|--) ' || true)
           if [ -n "$colpi" ]; then
             echo "$colpi"
