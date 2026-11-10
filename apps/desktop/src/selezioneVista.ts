@@ -154,7 +154,10 @@ export function useSelezione({
                 Array.from({ length: a - da + 1 }, (_, k) => elenco.riga(da + k)),
               );
         void righe.then((arrivate) => {
-          if (mio !== giroSelezione.current) return;
+          // `null`: l'elenco è cambiato sotto mentre le pagine arrivavano, e
+          // le righe sarebbero state di due elenchi (vedi
+          // `ArchivioRado.intervallo`). La selezione resta com'era.
+          if (arrivate === null || mio !== giroSelezione.current) return;
           const nuovi = new Map<number, number>();
           arrivate.forEach((b, k) => {
             if (b !== undefined && !nuovi.has(b.id)) nuovi.set(b.id, da + k);

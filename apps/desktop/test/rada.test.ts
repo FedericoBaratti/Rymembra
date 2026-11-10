@@ -279,6 +279,53 @@ test("l'intervallo oltre la capienza restituisce tutte le righe", async () => {
   assert.ok(a.pagineInMano <= 2);
 });
 
+test("un intervallo attraversato da un cambio dell'elenco non mescola le righe", async () => {
+  // Maiusc+clic da cima a fondo, e a metà del recupero finisce una scansione
+  // che aggiunge dei brani prima dell'intervallo: le pagine chieste dopo si
+  // leggevano nell'elenco nuovo, spostato, quelle in volo tornavano vuote, e
+  // la selezione prendeva brani mai cliccati con dei buchi in mezzo.
+  const { a, richieste } = archivio(10, 40);
+  a.imposta("v", 100);
+  let finito = false;
+  const promessa = a.intervallo(0, 99).finally(() => {
+    finito = true;
+  });
+  for (const r of richieste.splice(0)) r.risolvi(pagina(r.offset, r.limite, 100));
+  await giro();
+  // Il primo giro è arrivato, e il secondo è già in volo.
+  a.invalida();
+  const inVoloAlCambio = richieste.length;
+  let servite = 0;
+  for (let giri = 0; giri < 50 && !finito; giri += 1) {
+    while (servite < richieste.length) {
+      const r = richieste[servite]!;
+      // L'elenco nuovo: le stesse posizioni, altri brani.
+      r.risolvi(pagina(r.offset, r.limite, 100).map((n) => n + 1000));
+      servite += 1;
+    }
+    await giro();
+  }
+  const righe = await promessa;
+  assert.equal(righe, null, "un intervallo a cavallo di due elenchi non si restituisce");
+  assert.equal(richieste.length, inVoloAlCambio, "e dopo il cambio non si chiede più niente");
+});
+
+test("una chiave nuova a metà intervallo lo butta", async () => {
+  // Cartelle: un'altra cartella mentre l'intervallo aspetta le sue pagine.
+  const { a, richieste } = archivio(10, 40);
+  a.imposta("cartella:a", 50);
+  let finito = false;
+  const promessa = a.intervallo(0, 49).finally(() => {
+    finito = true;
+  });
+  a.imposta("cartella:b", 50);
+  for (let giri = 0; giri < 50 && !finito; giri += 1) {
+    for (const r of richieste.splice(0)) r.risolvi(pagina(r.offset, r.limite, 50));
+    await giro();
+  }
+  assert.equal(await promessa, null);
+});
+
 test("l'intervallo non chiede tutte le pagine insieme", async () => {
   const { a, richieste } = archivio(10, 40);
   a.imposta("v", 1000);

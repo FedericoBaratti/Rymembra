@@ -9,6 +9,8 @@ import {
   modaleAperto,
   nuovoVelo,
   passaLaScorciatoia,
+  quandoSiApreUnModale,
+  unaVolta,
   type NodoDiAlbero,
 } from "../src/modale";
 
@@ -138,6 +140,30 @@ test("il conto dei modali regge una chiusura chiamata due volte", () => {
   assert.equal(modaleAperto(), false);
 });
 
+test("chi segue i modali sente ogni apertura, e niente altro", () => {
+  // Il menù del telefono è un foglio sopra le finestrelle: una richiesta di
+  // collegamento arrivata mentre era aperto si disegnava sotto di lui, e
+  // Indietro — che chiude prima le finestrelle — la rifiutava senza che
+  // fosse mai stata vista. Il foglio deve sapere che sotto si è aperta una
+  // finestrella, per scendere e lasciarla vedere.
+  let sentite = 0;
+  const smetti = quandoSiApreUnModale(() => {
+    sentite += 1;
+  });
+  const chiudiUno = apriModale();
+  assert.equal(sentite, 1, "un'apertura, un avviso");
+  const chiudiDue = apriModale();
+  assert.equal(sentite, 2);
+  chiudiDue();
+  chiudiUno();
+  assert.equal(sentite, 2, "le chiusure non si sentono");
+  smetti();
+  const chiudiTre = apriModale();
+  assert.equal(sentite, 2, "chi ha smesso di seguire non sente più");
+  chiudiTre();
+  assert.equal(modaleAperto(), false);
+});
+
 // ── chi diventa inerte ─────────────────────────────────────────────────────
 
 /** Un nodo finto, abbastanza per salire l'albero. */
@@ -183,4 +209,26 @@ test("un velo dentro una pagina rende inerte anche il resto della pagina", () =>
   const inerti = daRendereInerti(velo).map((n) => n.nome);
   assert.deepEqual(inerti, ["albero", "fascia", "barra"]);
   assert.ok(!inerti.includes("dentro"), "un antenato del velo non si spegne");
+});
+
+// ── una risposta sola ──────────────────────────────────────────────────────
+
+test("una conferma risponde una volta sola", () => {
+  // «Nuova playlist» con Invio tenuto giù, o «Togli» con un doppio clic: la
+  // chiusura della finestrella passa da una transizione, e finché non è
+  // applicata il tasto resta vivo. Ogni clic rifaceva il gesto — due
+  // playlist uguali, due `rimozioniConferma` sullo stesso gettone.
+  const risponde = unaVolta();
+  assert.equal(risponde(), true, "la prima risposta passa");
+  assert.equal(risponde(), false, "la seconda no");
+  assert.equal(risponde(), false, "e nemmeno quelle dopo");
+});
+
+test("ogni finestrella ha la sua risposta", () => {
+  // Una per apertura: la domanda di dopo non eredita quella già data.
+  const prima = unaVolta();
+  const dopo = unaVolta();
+  assert.equal(prima(), true);
+  assert.equal(dopo(), true);
+  assert.equal(prima(), false);
 });

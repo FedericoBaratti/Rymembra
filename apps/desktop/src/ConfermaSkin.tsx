@@ -24,9 +24,12 @@
  * la trappola del Tab, Escape, il fuoco che torna a chi l'aveva, la pagina
  * dietro inerte — viene tutto da `Dialogo`.
  */
+import { useState } from "react";
+
 import { Dialogo } from "./Dialogo";
 import type { EsameSkin, MisuraSkin } from "./ipc";
 import { t } from "./lingue";
+import { unaVolta } from "./modale";
 
 export function ConfermaSkin({
   nome,
@@ -41,6 +44,15 @@ export function ConfermaSkin({
 }) {
   const titolo = t("skin.review.title", { nome });
   const numeri = (m: MisuraSkin) => ({ costo: m.costo, budget: m.budget });
+  // Una risposta sola: un doppio clic su «Indossa» la indossava due volte.
+  // Vedi `unaVolta` in `modale.ts`.
+  const [prima] = useState(unaVolta);
+  const chiudi = () => {
+    if (prima()) onChiudi();
+  };
+  const indossa = () => {
+    if (prima()) onIndossa();
+  };
 
   // Una riga per quel che sfora, nell'ordine in cui si nota: prima il testo
   // che non si legge, poi la finestra che scatta, poi quel che non sta fermo.
@@ -77,7 +89,7 @@ export function ConfermaSkin({
       descrizione={t("skin.review.body")}
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
-      onChiudi={onChiudi}
+      onChiudi={chiudi}
     >
       <ul className="esame-skin">
         {righe.map((riga) => (
@@ -86,10 +98,10 @@ export function ConfermaSkin({
       </ul>
       <p>{t("skin.review.installed")}</p>
       <div className="tasti-finestrella">
-        <button type="button" className="bottone" onClick={onChiudi}>
+        <button type="button" className="bottone" onClick={chiudi}>
           {t("skin.review.notNow")}
         </button>
-        <button type="button" className="bottone primario" onClick={onIndossa}>
+        <button type="button" className="bottone primario" onClick={indossa}>
           {t("skin.review.wear")}
         </button>
       </div>

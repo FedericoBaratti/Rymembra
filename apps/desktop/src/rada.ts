@@ -293,8 +293,23 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
    * Le righe `[da, a]`, comprese, chiedendo le pagine che mancano.
    *
    * Serve alla selezione con Maiusc, che può prendere un intervallo più lungo
-   * di quel che è in mano. Una riga che non arriva — la generazione è cambiata
-   * nel mezzo, una pagina è fallita — resta `undefined`, e chi chiama decide.
+   * di quel che è in mano. Una riga che non arriva — una pagina è fallita —
+   * resta `undefined`, e chi chiama decide.
+   *
+   * # Una generazione sola, o niente
+   *
+   * `null` se la generazione cambia mentre si aspetta: l'elenco si è
+   * invalidato sotto (una scansione finita, un preferito tolto) o è diventato
+   * un altro. Le pagine già arrivate sono dell'elenco di prima, quelle chieste
+   * dopo sarebbero di quello nuovo — spostato di quante righe la scansione ha
+   * aggiunto o tolto più su — e quelle in volo tornano vuote: messe insieme
+   * davano una selezione con dei brani mai cliccati e dei buchi in mezzo, con
+   * un conteggio quasi uguale, e «Elimina dal disco» agiva su di loro. Una
+   * selezione mescolata non si ripara a valle, e rifarla da sola nell'elenco
+   * nuovo prenderebbe righe che chi ha cliccato non ha visto in quei posti:
+   * si butta, come chi chiama butta già quella arrivata dopo un cambio di
+   * vista, e Maiusc+clic si rifà sull'elenco che adesso si vede. Appena la
+   * generazione cambia non si chiede più niente.
    *
    * Le righe si prendono da quel che `prendi` restituisce, e **non** si
    * rileggono dalla cache alla fine: un intervallo più lungo della capienza
@@ -303,12 +318,13 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
    * «Togli dalla libreria» con lei, agiva su un pezzo non contiguo. Le pagine
    * si chiedono `INTERVALLO_IN_PARALLELO` alla volta.
    */
-  async intervallo(da: number, a: number): Promise<(T | undefined)[]> {
+  async intervallo(da: number, a: number): Promise<(T | undefined)[] | null> {
+    const generazione = this._generazione;
     const pagine = pagineDaPrendere(da, a + 1, this._totale, this.misura);
     const arrivate = new Map<number, T[] | null>();
     let prossima = 0;
     const lavora = async () => {
-      while (prossima < pagine.length) {
+      while (prossima < pagine.length && this._generazione === generazione) {
         const p = pagine[prossima] as number;
         prossima += 1;
         arrivate.set(p, await this.prendi(p));
@@ -317,6 +333,9 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
     await Promise.all(
       Array.from({ length: Math.min(INTERVALLO_IN_PARALLELO, pagine.length) }, lavora),
     );
+    // La generazione cresce sempre: uguale alla fine vuol dire uguale per
+    // tutto il tempo, e allora ogni pagina arrivata è di questa.
+    if (this._generazione !== generazione) return null;
     const righe: (T | undefined)[] = [];
     for (let i = Math.max(da, 0); i <= Math.min(a, this._totale - 1); i += 1) {
       const p = Math.floor(i / this.misura);

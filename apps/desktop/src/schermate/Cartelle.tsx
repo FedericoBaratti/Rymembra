@@ -1152,12 +1152,16 @@ export function Cartelle({
         e.preventDefault();
         void archivio
           .intervallo(Math.min(ancora, indice), Math.max(ancora, indice))
-          .then((presi) =>
+          .then((presi) => {
+            // L'elenco è cambiato mentre le pagine arrivavano — una scansione
+            // finita, un'altra cartella — e le righe sarebbero state di due
+            // elenchi: la selezione resta com'era (`ArchivioRado.intervallo`).
+            if (presi === null) return;
             setSceltaBrani({
               ids: new Set(presi.flatMap((b) => (b === undefined ? [] : [b.id]))),
               ancora,
-            }),
-          );
+            });
+          });
         return;
       }
       if (e.ctrlKey || e.metaKey) {

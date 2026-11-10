@@ -30,6 +30,9 @@
  */
 let aperti = 0;
 
+/** Chi vuole sapere quando un modale si apre: vedi `quandoSiApreUnModale`. */
+const allApertura = new Set<() => void>();
+
 /**
  * Dichiara un modale aperto, e restituisce la funzione che lo chiude.
  *
@@ -38,6 +41,8 @@ let aperti = 0;
  */
 export function apriModale(): () => void {
   aperti += 1;
+  // Una copia: chi sente l'apertura può smettere di seguire proprio adesso.
+  for (const ascolta of [...allApertura]) ascolta();
   let chiuso = false;
   return () => {
     if (chiuso) return;
@@ -49,6 +54,32 @@ export function apriModale(): () => void {
 /** C'è almeno un modale aperto? */
 export function modaleAperto(): boolean {
   return aperti > 0;
+}
+
+/**
+ * Chiama `ascolta` a ogni modale che si apre, finché non si chiama la
+ * funzione restituita.
+ *
+ * # Per il menù del telefono
+ *
+ * Sul telefono il menù è un foglio (`parti/Foglio.tsx`) che sta un gradino
+ * sopra le finestrelle (`--strato-menu` sopra `--strato-velo`), e tutti e due
+ * stanno in fondo allo schermo. Una finestrella che arriva da sola con un menù
+ * aperto — «X vuole collegarsi», un link da un altro dispositivo — si
+ * disegnava sotto il menù e lo rendeva inerte: il menù si vedeva ma non
+ * rispondeva, e l'unico gesto vivo era Indietro, che chiude prima la
+ * finestrella in cima (`tastiera.ts`). Cioè la rifiutava, senza che fosse
+ * mai stata vista. Il menù è la cosa di passaggio: quando si apre una
+ * finestrella scende lui, e la lascia vedere.
+ *
+ * Solo le aperture, e non le chiusure: a chi segue interessa che qualcosa si
+ * sia messo davanti, non quanti ce ne siano.
+ */
+export function quandoSiApreUnModale(ascolta: () => void): () => void {
+  allApertura.add(ascolta);
+  return () => {
+    allApertura.delete(ascolta);
+  };
 }
 
 // ── le scorciatoie sotto un modale ─────────────────────────────────────────
@@ -119,6 +150,39 @@ export function nuovoVelo(): Velo {
       giuSulVelo = false;
       return chiude;
     },
+  };
+}
+
+// ── una risposta sola ──────────────────────────────────────────────────────
+
+/**
+ * Il cancello di una domanda: `true` alla prima risposta, `false` a tutte le
+ * altre.
+ *
+ * # Perché il dialogo non si chiude abbastanza in fretta
+ *
+ * Perché le conferme di `App` si chiudono con `useStatoPresente`, che per
+ * animare l'uscita passa da `startTransition`: un aggiornamento che React può
+ * interrompere e rimandare — e sotto carico lo fa: ogni aggiornamento
+ * sincrono che arriva intanto, lo stato del lettore o una pagina
+ * dell'elenco, gli passa davanti. Finché non è applicato la
+ * finestrella resta montata, il suo tasto risponde, e la chiusura che il clic
+ * chiama vede ancora la domanda aperta: un doppio clic su «Togli», o Invio
+ * tenuto giù su «Nuova playlist», rifaceva il gesto — due `rimozioniConferma`
+ * sullo stesso gettone, due playlist con lo stesso nome. Chiudere in modo
+ * sincrono avrebbe tolto l'animazione per salvare un clic; la finestrella
+ * invece sa da sé che ha già avuto la sua risposta.
+ *
+ * Uno per apertura, creato quando la finestrella si monta: la domanda di dopo
+ * è un'altra domanda. E vale per tutte le uscite insieme — «Togli» seguito da
+ * Escape non deve mandare anche lo scarto dello stesso elenco.
+ */
+export function unaVolta(): () => boolean {
+  let data = false;
+  return () => {
+    if (data) return false;
+    data = true;
+    return true;
   };
 }
 

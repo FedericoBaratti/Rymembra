@@ -30,10 +30,13 @@
  * che la apre come `alertdialog`: è una domanda prima di un gesto che toglie.
  * Escape vale «Lasciali».
  */
+import { useState } from "react";
+
 import { Dialogo } from "./Dialogo";
 import { brani_ } from "./formato";
 import type { RimozioniDaConfermare } from "./ipc";
 import { t } from "./lingue";
+import { unaVolta } from "./modale";
 
 /**
  * Il percorso da sotto la sua cartella sorvegliata.
@@ -62,13 +65,23 @@ export function ConfermaRimozioni({
   onChiudi: () => void;
 }) {
   const titolo = t("scan.confirm.title", { brani: brani_(attesa.quante) });
+  // Una risposta sola, per tutte e due le uscite: un doppio clic su «Togli»
+  // mandava due conferme dello stesso gettone, e «Togli» seguito da Escape
+  // mandava anche lo scarto. Vedi `unaVolta` in `modale.ts`.
+  const [prima] = useState(unaVolta);
+  const lascia = () => {
+    if (prima()) onChiudi();
+  };
+  const togli = () => {
+    if (prima()) onTogli();
+  };
   return (
     <Dialogo
       titolo={titolo}
       descrizione={t("scan.confirm.body")}
       ruolo="alertdialog"
       classe="finestrella media glass-modal"
-      onChiudi={onChiudi}
+      onChiudi={lascia}
     >
       {/* Una voce per cartella sorvegliata, aperta: chi deve decidere
           deve vedere subito se sono tutti da `\\nas\musica` — la rete —
@@ -110,11 +123,11 @@ export function ConfermaRimozioni({
           type="button"
           className="bottone primario"
           data-fuoco-iniziale
-          onClick={onChiudi}
+          onClick={lascia}
         >
           {t("scan.confirm.keep")}
         </button>
-        <button type="button" className="bottone" onClick={onTogli}>
+        <button type="button" className="bottone" onClick={togli}>
           {t("scan.confirm.remove")}
         </button>
       </div>
