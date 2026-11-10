@@ -191,6 +191,15 @@ fn e_dominio(dominio: &str, base: &str) -> bool {
 }
 
 /// Dominio e percorso, senza schema, senza `www.`, senza query.
+///
+/// Lo schema è `https://`, `http://` o nessuno, e l'ospite è un nome di
+/// dominio: lettere, cifre, punti e trattini, nient'altro. Prima l'ospite era
+/// tutto quel che stava prima della prima `/`, e [`e_dominio`] guardava solo
+/// come finiva: `\\host\cartella\x.archive.org` o `search-ms:…x.archive.org`
+/// passavano per sottodomini di `archive.org`, mentre per Windows sono un
+/// percorso di rete e un protocollo di sistema. Niente porte, niente
+/// credenziali, niente barre rovesciate: nessun link vero di un catalogo li
+/// porta.
 fn spezza_indirizzo(input: &str) -> Option<(String, Vec<String>)> {
     let senza_schema = input
         .strip_prefix("https://")
@@ -199,7 +208,10 @@ fn spezza_indirizzo(input: &str) -> Option<(String, Vec<String>)> {
     let senza_query = senza_schema.split(['?', '#']).next()?;
     let (host, resto) = senza_query.split_once('/').unwrap_or((senza_query, ""));
     let dominio = host.trim_start_matches("www.").to_ascii_lowercase();
-    if dominio.is_empty() || !dominio.contains('.') {
+    let un_nome = dominio
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
+    if dominio.is_empty() || !dominio.contains('.') || !un_nome {
         return None;
     }
     let pezzi: Vec<String> = resto
@@ -363,6 +375,31 @@ mod prove {
     #[test]
     fn i_sottodomini_veri_si_riconoscono_ancora() {
         assert!(riconosci("https://web.archive.org/details/gd77").is_some());
+    }
+
+    /// L'ospite è un nome di dominio vero, preceduto da uno schema web o da
+    /// niente. Prima `spezza_indirizzo` prendeva per ospite tutto quel che
+    /// stava prima della prima `/`, e un ospite così finiva col dominio di un
+    /// catalogo anche quando era un percorso UNC o un protocollo di Windows:
+    /// `riconosci` diceva di sì, e la pagina di un brano si apriva.
+    #[test]
+    fn un_prefisso_non_web_non_si_riconosce() {
+        for url in [
+            "\\\\evil.example\\share\\x.archive.org/details/gd77",
+            "search-ms:query=x.archive.org/details/gd77",
+            "file:x.archive.org/details/gd77",
+            "ms-settings:x.audius.co/deadmau5",
+            "https://utente@x.archive.org/details/gd77",
+            "https://evil.example\\x.archive.org/details/gd77",
+            "https://x_y.archive.org/details/gd77",
+            "https://archive.org:8080/details/gd77",
+        ] {
+            assert_eq!(riconosci(url), None, "su «{url}»");
+        }
+        // Le forme buone di prima restano buone, maiuscole comprese.
+        assert!(riconosci("https://WEB.Archive.org/details/gd77").is_some());
+        assert!(riconosci("archive.org/details/gd77").is_some());
+        assert!(riconosci("http://www.archive.org/details/gd77").is_some());
     }
 
     #[test]
