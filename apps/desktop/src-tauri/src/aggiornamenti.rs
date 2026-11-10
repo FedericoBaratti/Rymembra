@@ -930,6 +930,10 @@ fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
         .updater_builder()
         .timeout(SCADENZA_RICHIESTA)
         .on_before_exit(move || {
+            // Per prima cosa, prima di spegnere: se l'installer poi non parte,
+            // `scarica_e_installa` deve sapere che il processo è già spento.
+            // Vedi [`AGGANCIO_ESEGUITO`].
+            AGGANCIO_ESEGUITO.store(true, Ordering::Release);
             nota!("[aggiornamenti] l'installer prende il posto di Rymembra: si spegne tutto");
             crate::spegnimento::spegni(&mano);
             mano.cleanup_before_exit();
@@ -990,8 +994,21 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     let esito = scarica(app, aggiornamento).and_then(|byte| {
         fermare_la_musica(app);
         musica_fermata = true;
-        aggiornamento.install(byte).map_err(guasto)
+        aggiornamento
+            .install(byte)
+            .map_err(|err| guasto_dell_installazione(err, aggancio_eseguito()))
     });
+    // Prima di tutto il resto: se l'aggancio ha già spento il processo e
+    // l'installer non è partito, non c'è più un'applicazione da far tornare —
+    // niente finestra, niente icona, nessun filo — e riaccendere o raccontare
+    // qui sotto vorrebbe dire lasciare un processo vivo e invisibile. Si dice
+    // con un dialogo, e si esce.
+    if dopo_l_installazione(esito.is_err(), aggancio_eseguito())
+        == DopoLInstallazione::EsciDicendolo
+        && let Err(err) = &esito
+    {
+        esci_dicendolo(err);
+    }
     // «Ascolta insieme» si era spento con la musica, per non lasciare gli altri
     // in una sessione che stava per sparire. Se siamo ancora qui l'installer
     // non è partito, e restare spenti con l'interruttore acceso vorrebbe dire un
@@ -1003,8 +1020,10 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     }
 
     // Se si arriva qui su Windows, è andata male: l'installazione riuscita non
-    // torna mai, perché il plugin fa uscire il processo. Un annullamento non è
-    // un guasto: non si annota e non si mostra.
+    // torna mai, perché il plugin fa uscire il processo, e quella fallita dopo
+    // l'aggancio è uscita qui sopra. Resta un guasto di prima — lo
+    // scaricamento, la firma, l'estrazione — con l'applicazione intera. Un
+    // annullamento non è un guasto: non si annota e non si mostra.
     if let (Some(aggiornamenti), Err(err)) = (aggiornamenti.as_ref(), esito)
         && !matches!(err.code(), ErrorCode::InternalAborted { .. })
     {
@@ -1024,6 +1043,141 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     // ancora di sì.
     drop(turno);
     riferisci(app);
+}
+
+/// Alzata dal nostro `on_before_exit` ([`costruisci`]), come prima cosa: da lì
+/// in poi il processo è spento.
+///
+/// # Perché serve
+///
+/// Perché il plugin chiama l'aggancio **prima** di lanciare l'installer, e
+/// l'ordine ha una ragione — l'installer sostituisce l'eseguibile, e il
+/// processo deve aver chiuso tutto quando parte — ma vuol dire che, se poi
+/// `ShellExecuteW` fallisce, l'aggancio ha già fatto i suoi passi
+/// irreversibili: [`crate::spegnimento::spegni`] (la bandiera d'uscita alzata
+/// per sempre, i fili che escono, l'icona e la scheda del sistema staccate) e
+/// `cleanup_before_exit` (le finestre nascoste). E il plugin, invece di
+/// uscire, risponde con un errore. Succede davvero: AppLocker, SRP o WDAC che
+/// non lasciano eseguire niente da `%TEMP%` sui PC aziendali, un antivirus che
+/// toglie l'installer non firmato fra l'estrazione e l'avvio. Il processo
+/// restava vivo, senza finestra né icona, con il database aperto e il
+/// guardiano dell'istanza unica preso.
+///
+/// Non si abbassa mai, come [`crate::spegnimento`]: dopo l'aggancio non esiste
+/// un modo sostenuto di tornare vivi. Su Windows soltanto: altrove il plugin
+/// l'aggancio non lo chiama.
+static AGGANCIO_ESEGUITO: AtomicBool = AtomicBool::new(false);
+
+/// Se l'aggancio è già girato: vedi [`AGGANCIO_ESEGUITO`].
+fn aggancio_eseguito() -> bool {
+    AGGANCIO_ESEGUITO.load(Ordering::Acquire)
+}
+
+/// Che cosa fare quando `install` è tornato.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DopoLInstallazione {
+    /// L'applicazione è viva: si torna come prima, raccontando alla finestra
+    /// com'è andata (un guasto compreso).
+    Racconta,
+    /// L'aggancio ha già spento tutto e l'installer non è partito: lo si dice
+    /// con un dialogo del sistema e si esce, invece di restare vivi e
+    /// invisibili.
+    EsciDicendolo,
+}
+
+/// La decisione dopo `install`, senza il plugin e senza la bandiera: vedi
+/// [`AGGANCIO_ESEGUITO`].
+///
+/// Un guasto **prima** dell'aggancio (l'estrazione dell'installer) lascia
+/// l'applicazione intera, e si racconta come ogni altro. Un guasto **dopo**
+/// trova un processo spento. Un `Ok` con l'aggancio eseguito, su Windows, non
+/// torna mai: il plugin esce da sé.
+fn dopo_l_installazione(fallita: bool, aggancio_eseguito: bool) -> DopoLInstallazione {
+    if fallita && aggancio_eseguito {
+        DopoLInstallazione::EsciDicendolo
+    } else {
+        DopoLInstallazione::Racconta
+    }
+}
+
+/// Da un guasto di `install` a un errore del catalogo, col suo nome.
+///
+/// Per tutto tranne `Io` è [`guasto`]. `Io` no: lì vuol dire «manca la rete»,
+/// perché nel controllo e nello scaricamento è quello che è; ma qui lo
+/// scaricamento è finito e verificato, e un `Io` è l'estrazione dell'installer
+/// nella cartella temporanea che non riesce o — dopo l'aggancio — il sistema
+/// che rifiuta di lanciarlo. Il diario diceva `net.offline` per un criterio
+/// aziendale che blocca `%TEMP%`, e mandava a cercare un cavo.
+fn guasto_dell_installazione(
+    err: tauri_plugin_updater::Error,
+    aggancio_eseguito: bool,
+) -> AppError {
+    match err {
+        tauri_plugin_updater::Error::Io(causa) => {
+            let cosa = if aggancio_eseguito {
+                "l'installer dell'aggiornamento non è partito"
+            } else {
+                "l'installer dell'aggiornamento non si è potuto preparare"
+            };
+            AppError::new(ErrorCode::InternalUnexpected {
+                detail: Some(cosa.to_owned()),
+            })
+            .with_cause(format!("{cosa}: {causa}"))
+        }
+        altro => guasto(altro),
+    }
+}
+
+/// L'installer non è partito dopo l'aggancio: una riga nel diario, il dialogo,
+/// e l'uscita.
+///
+/// Il diario è ancora aperto — lo spegnimento non lo chiude — e la posizione
+/// dell'ascolto e l'ultimo `PRAGMA optimize` li ha già scritti
+/// [`crate::spegnimento::spegni`]. Il dialogo è quello nativo di `rfd`, come
+/// per l'avvio fallito: il ciclo degli eventi di Tauri c'è ancora, ma le
+/// finestre sono nascoste e la pagina non ascolta più nessuno.
+fn esci_dicendolo(err: &AppError) -> ! {
+    nota!(
+        "[aggiornamenti] l'installer non è partito dopo lo spegnimento: Rymembra si chiude \
+         codice={} causa={}",
+        err.code().kind().code(),
+        err.cause().unwrap_or("—")
+    );
+    mostra_l_installer_fermo(&testo_dell_installer_fermo(err.cause().unwrap_or("—")));
+    std::process::exit(1);
+}
+
+/// Il testo del dialogo: che cosa è successo, il motivo più probabile, che
+/// Rymembra si chiude e cosa fare. Italiano poi inglese, e la causa del
+/// sistema una volta sola in fondo, come nel dialogo dell'avvio fallito
+/// (`diario::testo_dell_avvio_fallito`): le traduzioni della finestra qui non
+/// ci sono.
+fn testo_dell_installer_fermo(causa: &str) -> String {
+    format!(
+        "L'aggiornamento di Rymembra è stato scaricato e verificato, ma Windows non ha avviato \
+         il programma d'installazione. Spesso lo blocca un criterio aziendale o un antivirus \
+         che non lascia eseguire programmi dalla cartella temporanea. Rymembra si chiude: \
+         riaprilo e riprova, oppure installa l'aggiornamento dalla pagina del progetto.\n\n\
+         The Rymembra update was downloaded and verified, but Windows did not start the \
+         installer. Often a company policy or an antivirus does not let programs run from the \
+         temporary folder. Rymembra will now close: open it again and retry, or install the \
+         update from the project page.\n\n{causa}"
+    )
+}
+
+/// Il dialogo, nativo e bloccante: torna quando lo si chiude. Nelle prove mai.
+fn mostra_l_installer_fermo(testo: &str) {
+    #[cfg(not(test))]
+    {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Rymembra")
+            .set_description(testo)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    #[cfg(test)]
+    let _ = testo;
 }
 
 /// Scarica l'installer e ne verifica la firma, sorvegliando lo scaricamento.
@@ -1606,5 +1760,109 @@ mod prove {
         assert!(attivo(&connection).expect("la lettura riesce"));
         settings::write(&connection, CHIAVE_ATTIVO, "no").expect("la scrittura riesce");
         assert!(attivo(&connection).expect("la lettura riesce"));
+    }
+
+    /// Il corpo di una funzione di questo file, dalla firma alla graffa che la
+    /// chiude.
+    fn corpo_di(firma: &str) -> &'static str {
+        include_str!("aggiornamenti.rs")
+            .split(firma)
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default()
+    }
+
+    /// Se l'installer non parte **dopo** l'aggancio, il processo è già spento
+    /// — fili fermi, icona tolta, finestre nascoste — e non torna vivo: la
+    /// decisione va presa subito dopo `install`, prima di riaccendere «Ascolta
+    /// insieme» e prima di raccontare alla finestra, che non c'è più.
+    #[test]
+    fn dopo_l_aggancio_un_guasto_dell_installer_si_decide_prima_di_tutto() {
+        let corpo = corpo_di("fn scarica_e_installa(");
+        let decisione = corpo.find("dopo_l_installazione(");
+        let riaccendi = corpo.find("insieme::riaccendi(");
+        let riferisci = corpo.find("riferisci(app)");
+        assert!(
+            decisione.is_some() && decisione < riaccendi && decisione < riferisci,
+            "il guasto dell'installer dopo l'aggancio non si guarda prima di riaccendere e raccontare"
+        );
+        // E l'aggancio lo dice per prima cosa, prima di spegnere.
+        let aggancio = corpo_di("fn costruisci(");
+        let bandiera = aggancio.find("AGGANCIO_ESEGUITO.store(true");
+        let spegni = aggancio.find("spegnimento::spegni(");
+        assert!(
+            bandiera.is_some() && bandiera < spegni,
+            "l'aggancio non alza la sua bandiera prima di spegnere"
+        );
+    }
+
+    /// La decisione: si esce dicendolo solo se l'installer è fallito **dopo**
+    /// l'aggancio. Prima, l'applicazione è intera e il guasto si racconta.
+    #[test]
+    fn dopo_l_aggancio_un_guasto_dell_installer_chiude() {
+        assert_eq!(
+            dopo_l_installazione(true, true),
+            DopoLInstallazione::EsciDicendolo
+        );
+        assert_eq!(
+            dopo_l_installazione(true, false),
+            DopoLInstallazione::Racconta
+        );
+        assert_eq!(
+            dopo_l_installazione(false, false),
+            DopoLInstallazione::Racconta
+        );
+    }
+
+    /// Un `Io` dell'installazione non è la rete che manca: col suo nome, e con
+    /// la causa del sistema.
+    #[test]
+    fn un_installer_che_non_parte_non_si_chiama_net_offline() {
+        for aggancio in [true, false] {
+            let err = guasto_dell_installazione(
+                tauri_plugin_updater::Error::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )),
+                aggancio,
+            );
+            assert_ne!(err.code().kind().code(), "net.offline");
+            assert_eq!(err.code().kind().code(), "internal.unexpected");
+            let causa = err.cause().unwrap_or_default();
+            assert!(causa.contains("installer"), "{causa}");
+            assert!(
+                causa.contains(
+                    &std::io::Error::from(std::io::ErrorKind::PermissionDenied).to_string()
+                ),
+                "{causa}"
+            );
+        }
+        let partito = guasto_dell_installazione(
+            tauri_plugin_updater::Error::Io(std::io::Error::other("x")),
+            true,
+        );
+        assert!(
+            partito.cause().is_some_and(|c| c.contains("non è partito")),
+            "{partito:?}"
+        );
+        // Il resto resta quello di [`guasto`]: la firma non cambia nome.
+        assert_eq!(
+            guasto_dell_installazione(tauri_plugin_updater::Error::EmptyEndpoints, true)
+                .code()
+                .kind()
+                .code(),
+            "net.badSchema"
+        );
+    }
+
+    /// Il dialogo dice, in due lingue, che Rymembra si chiude, e porta la
+    /// causa del sistema una volta, in fondo.
+    #[test]
+    fn il_dialogo_dell_installer_fermo_dice_che_si_chiude() {
+        let testo = testo_dell_installer_fermo("Accesso negato. (os error 5)");
+        let parti: Vec<&str> = testo.split("\n\n").collect();
+        assert_eq!(parti.len(), 3, "{testo}");
+        assert!(parti[0].contains("Rymembra si chiude"), "{testo}");
+        assert!(parti[1].contains("Rymembra will now close"), "{testo}");
+        assert_eq!(parti[2], "Accesso negato. (os error 5)");
     }
 }
