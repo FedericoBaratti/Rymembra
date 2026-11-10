@@ -83,6 +83,7 @@ import { ConfermaSkin } from "./ConfermaSkin";
 import { ConfermaTrasloco } from "./ConfermaTrasloco";
 import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
+import { chiaveDellApertura, chiusuraDi } from "./foglio";
 import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import { Fornitori } from "./Fornitori";
 import {
@@ -4508,7 +4509,17 @@ export function App() {
           )}
         </ConScansione>
 
-        {menu && <Menu apertura={menu} onChiudi={() => setMenu(null)} />}
+        {/* Un menù per apertura, e ognuno chiude soltanto sé stesso: sul
+            telefono un menù aperto mentre il precedente scendeva riusava il
+            suo foglio, e a discesa finita si chiudeva senza essersi visto.
+            Vedi `chiaveDellApertura` in `foglio.ts`. */}
+        {menu && (
+          <Menu
+            key={chiaveDellApertura(menu)}
+            apertura={menu}
+            onChiudi={() => setMenu(chiusuraDi(menu))}
+          />
+        )}
 
         {/* Ultimo figlio, e non per ordine di importanza: il velo del giro copre
             la finestra intera, quindi deve stare **dopo** tutto quel che potrebbe

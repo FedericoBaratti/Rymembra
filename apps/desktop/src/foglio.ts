@@ -36,6 +36,50 @@ export function durataInMs(lista: string): number {
   return massima;
 }
 
+/** Le chiavi date finora, per oggetto: se ne vanno con lui. */
+const chiavi = new WeakMap<object, number>();
+let ultimaChiave = 0;
+
+/**
+ * Il numero di un'apertura: uno nuovo per ogni oggetto, sempre lo stesso per
+ * lo stesso oggetto.
+ *
+ * # Perché un foglio per apertura
+ *
+ * Per la `key` del menù in `App`. Senza, un menù aperto mentre il precedente
+ * scendeva — il ⋮ della riga A chiuso toccando il velo, e entro mezzo secondo
+ * il ⋮ della riga B — riusava lo stesso `Foglio`, con `chiudendo` ancora
+ * acceso: finita la discesa, `dopoLaTransizione` chiudeva il menù che c'era,
+ * cioè quello di B, che non si vedeva mai (il tocco lungo però aveva vibrato).
+ * Con una chiave per apertura il foglio di A si smonta, la sua attesa si
+ * annulla, e quello di B nasce da capo e sale.
+ *
+ * Una `WeakMap` sull'oggetto dell'apertura, e non un campo in più: ogni
+ * `setMenu` ne compone uno nuovo, e chi apre un menù non deve sapere niente
+ * delle chiavi.
+ */
+export function chiaveDellApertura(apertura: object): number {
+  let chiave = chiavi.get(apertura);
+  if (chiave === undefined) {
+    ultimaChiave += 1;
+    chiave = ultimaChiave;
+    chiavi.set(apertura, chiave);
+  }
+  return chiave;
+}
+
+/**
+ * La chiusura di un'apertura: toglie quella, e lascia stare quella che c'è
+ * adesso se è un'altra.
+ *
+ * Per un aggiornamento funzionale (`setMenu(chiusuraDi(apertura))`): una
+ * chiusura che arriva tardi — da un foglio che finisce di scendere, da una
+ * voce di un menù già sostituito — non deve chiudere il menù aperto dopo.
+ */
+export function chiusuraDi<T>(questa: T): (adesso: T | null) => T | null {
+  return (adesso) => (adesso === questa ? null : adesso);
+}
+
 /** Quanto oltre la durata dichiarata si aspetta un `transitionend` che non viene. */
 const MARGINE_MS = 60;
 
