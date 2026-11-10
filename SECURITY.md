@@ -177,6 +177,13 @@ feature off nothing listens. What is supposed to hold:
   in the future and never move a clock back;
 - names are resolved only through the system's DNS servers, with no public
   fallback, and no plain-HTTP request is made.
+- turning the feature off closes the node at once — no new connection is
+  accepted, every open one closes, the QR code stops being valid — even while
+  a command in progress still holds it; that command ends with
+  `lontano.spento`. Without a QR code on screen an attempt on
+  `rymembra/associa/1` is not even counted, and leaving the page that shows the
+  code cancels it. Covers of linked devices are cached per device, read only
+  behind the gate, and the window is told never to keep them.
 
 Reaching a library — or a «Listen together» session — with a key that is not
 linked, linking without the user's «yes» or with a used or expired token,

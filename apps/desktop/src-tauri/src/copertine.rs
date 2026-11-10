@@ -95,6 +95,23 @@ fn cache_per(status: u16) -> &'static str {
     }
 }
 
+/// La risposta per una copertina di un altro dispositivo collegato.
+///
+/// Mai in cache nella finestra, nemmeno quando c'è: la copertina si serve solo
+/// dietro il cancello del collegamento (vedi `lontano::copertina`), e una
+/// WebView che la tenesse per un anno («immutable», come le copertine di qui)
+/// continuerebbe a mostrarla dopo «Dimentica», senza ripassare dal cancello.
+/// La cache che conta sta nel nucleo, per dispositivo e dietro il cancello:
+/// rifare la domanda costa una lettura dal disco.
+fn risposta_lontana(esito: Result<Option<Vec<u8>>, ()>) -> http::Response<Vec<u8>> {
+    let senza_cache = "no-store";
+    match esito {
+        Ok(Some(byte)) => risposta_con(200, "image/jpeg", byte, senza_cache),
+        Ok(None) => risposta_con(404, "text/plain", Vec::new(), senza_cache),
+        Err(()) => risposta_con(503, "text/plain", Vec::new(), senza_cache),
+    }
+}
+
 fn risposta_con(
     status: u16,
     tipo: &str,
@@ -168,15 +185,11 @@ pub fn servi(
     if crate::lontano::e_una_copertina(&impronta) {
         // Da un altro dispositivo collegato: la rete, quindi il pool
         // bloccante, mai il filo della finestra. Le tre misure sono la media
-        // dell'altro. Un'immagine trovata è per impronta, quindi per sempre;
-        // un «non c'è» o un guasto no — l'altro può essere solo spento.
+        // dell'altro. Niente cache nella finestra: vedi [`risposta_lontana`].
         let app = ctx.app_handle().clone();
         tauri::async_runtime::spawn_blocking(move || {
-            match crate::lontano::copertina(&app, &impronta) {
-                Ok(Some(byte)) => responder.respond(risposta(200, "image/jpeg", byte)),
-                Ok(None) => responder.respond(risposta(404, "text/plain", Vec::new())),
-                Err(_) => responder.respond(risposta(503, "text/plain", Vec::new())),
-            }
+            let esito = crate::lontano::copertina(&app, &impronta).map_err(|_| ());
+            responder.respond(risposta_lontana(esito));
         });
         return;
     }
@@ -289,6 +302,23 @@ mod tests {
         let lontana = format!("lontano-{}-0123456789abcdef", "a".repeat(64));
         assert!(crate::lontano::e_una_copertina(&lontana));
         assert!(!e_un_impronta(&lontana));
+    }
+
+    #[test]
+    fn la_copertina_di_un_altro_dispositivo_non_resta_nella_finestra() {
+        // Si serve solo dietro il cancello del collegamento: una WebView che la
+        // tenesse per un anno la mostrerebbe anche dopo «Dimentica».
+        let cache = |r: &http::Response<Vec<u8>>| {
+            r.headers()
+                .get(http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        for esito in [Ok(Some(vec![1, 2, 3])), Ok(None), Err(())] {
+            let r = risposta_lontana(esito);
+            assert_eq!(cache(&r), "no-store", "stato {}", r.status());
+        }
     }
 
     #[test]

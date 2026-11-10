@@ -632,6 +632,14 @@ emulator — and every confirmed finding fixed with a test that failed first.
   the QR gave, and a QR code never unblocks a PC you blocked.
 - **«Download here» writes only audio files** with the extensions the scan
   reads; anything else another device lists as a track is refused.
+- **Turning off «Reachable from the internet» closes the node at once**, even
+  while a command still holds it: nothing is accepted any more, every
+  connection closes and the QR code stops being valid. Before, the node stayed
+  reachable for up to about four minutes. `rymembra/associa/1` no longer counts
+  an attempt when no QR code is shown, and leaving the Devices page cancels the
+  QR code. Covers of linked devices are cached per device, read only while the
+  device is still linked, and never kept by the window; what a device says
+  about itself (name, platform, version) is cut to 64 characters of plain text.
 - **The internet link uses only the system's DNS servers** — no fallback to
   Cloudflare, Google or Quad9 — and makes no plain-HTTP captive-portal check.
 - **«Listen together» discovery no longer pauses on datagrams it drops**: a
