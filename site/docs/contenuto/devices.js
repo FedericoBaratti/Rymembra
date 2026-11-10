@@ -32,7 +32,7 @@
         "apps/desktop/src-tauri/src/lontano/insieme.rs",
       ],
       body: [
-        "Off by default. Settings › Devices › «Reachable from the internet» starts the node; switched off there is no socket and no packet. On Windows the node runs as long as Rymembra does, tray included. On Android it runs while the app is on screen or playing, and goes to sleep two minutes after neither is true: the phone is reachable only then.",
+        "Off by default. Settings › Devices › «Reachable from the internet» starts the node; switched off there is no socket and no packet. Switching it off closes the node at once (`Nodo::chiudi`), even while a command still holds it — a link waiting for the other side's yes, a read from «Browse» — which then ends with `lontano.spento`: nothing is accepted any more and the QR stops being valid. On Windows the node runs as long as Rymembra does, tray included. On Android it runs while the app is on screen or playing, and goes to sleep two minutes after neither is true: the phone is reachable only then.",
         { h: "Linking with a QR code" },
         {
           ol: [

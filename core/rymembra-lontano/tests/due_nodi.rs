@@ -667,6 +667,49 @@ fn chi_ha_letto_il_qr_puo_rinunciare_e_l_altro_toglie_la_domanda() {
 }
 
 #[test]
+fn chiuso_mentre_si_collega_il_comando_finisce_spento() {
+    // Reperto 02-7: il `collega` in attesa del sì teneva il nodo acceso dopo
+    // l'interruttore spento. Chiuso, il comando torna subito, e con un errore
+    // che dice perché: non «annullato» (che la finestra tace), non «non
+    // risponde».
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.tentenna.lock().unwrap() = true;
+    let invito = pc.invita().unwrap();
+
+    let telefono = Arc::new(telefono);
+    let in_attesa = {
+        let telefono = Arc::clone(&telefono);
+        let link = invito.link();
+        std::thread::spawn(move || telefono.collega(&link))
+    };
+    assert!(aspetta(|| inviti_finiti(&del_pc) == 1));
+    std::thread::sleep(Duration::from_millis(200));
+    let partito = Instant::now();
+    telefono.chiudi();
+    let esito = in_attesa.join().unwrap();
+    assert_eq!(codice(esito), ErrorCodeKind::LontanoSpento);
+    assert!(
+        partito.elapsed() < Duration::from_secs(5),
+        "non aspetta la scadenza: {:?}",
+        partito.elapsed()
+    );
+    assert!(
+        aspetta(|| *del_pc.ritirate.lock().unwrap() == vec![telefono.chiave()]),
+        "chi mostrava il QR toglie la domanda"
+    );
+    assert!(
+        del_pc.nuovi.lock().unwrap().is_empty(),
+        "nessuno è associato"
+    );
+    assert_eq!(
+        codice(telefono.collega(&pc.invita().unwrap().link())),
+        ErrorCodeKind::LontanoSpento,
+        "e un comando dopo lo trova spento"
+    );
+}
+
+#[test]
 fn si_sa_se_si_passa_diritti_o_dal_relay() {
     let (pc, del_pc) = nodo("PC");
     let (telefono, _) = nodo("Telefono");
