@@ -258,7 +258,10 @@ impl Filo {
                     },
                 });
             }
-            DallaRete::Ricevuto { id, messaggio } => {
+            // Il posto nella coda d'entrata della connessione se ne va con
+            // `evento`, alla fine di questa funzione: trattato il messaggio,
+            // quella connessione può leggere il prossimo.
+            DallaRete::Ricevuto { id, messaggio, .. } => {
                 if let Messaggio::Esito { id: numero, codice } = &messaggio {
                     self.esito_arrivato(id, *numero, codice.as_deref());
                 }

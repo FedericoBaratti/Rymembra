@@ -38,6 +38,11 @@
 //! secondo allo stesso indirizzo e 50 in tutto ([`Limitatore`]): una
 //! scoperta onesta ne chiede una per giro ogni dieci secondi.
 //!
+//! Quel che non è una domanda — troppo lungo, troppo corto, storto, o un
+//! errore che riguarda un datagramma solo — si scarta e si passa subito al
+//! prossimo, senza pause: vedi `prossimo`. Chiunque in casa può mandarne, e
+//! non deve poter far dormire chi risponde.
+//!
 //! # Dove si chiede
 //!
 //! In broadcast diretto su ogni sottorete IPv4 di ogni scheda, più
@@ -94,6 +99,11 @@ const PORTE: u16 = 10;
 /// Quanto vale il nonce di una domanda: una risposta più vecchia è di un giro
 /// passato, e si butta.
 const NONCE_VALIDO: Duration = Duration::from_secs(15);
+
+/// Il buffer dei due cicli di ricezione: più dei 40 byte della domanda e dei
+/// 34 della risposta, così un datagramma più lungo si riconosce. Non serve
+/// riceverlo intero: si scarta, troncato o come errore (vedi `prossimo`).
+const BUFFER: usize = 64;
 
 /// Quanti host diversi si annunciano al desktop per ogni giro di scoperta, al
 /// più. Il desktop ne collega sedici; quattro volte tanti lasciano posto a una
@@ -544,10 +554,93 @@ fn cercatore(rete: &Arc<Condiviso>) -> Option<Arc<Cercatore>> {
     Some(cercatore)
 }
 
+/// Un socket UDP visto dai cicli di ricezione della scoperta. C'è per le
+/// prove, che mettono davanti a un ciclo i datagrammi e gli errori che un
+/// socket vero darebbe solo su un sistema o sotto attacco.
+pub(crate) trait Datagrammi {
+    /// Come [`UdpSocket::recv_from`].
+    fn ricevi(&self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
+    /// Come [`UdpSocket::send_to`].
+    fn manda(&self, datagramma: &[u8], a: SocketAddr) -> std::io::Result<usize>;
+}
+
+impl Datagrammi for UdpSocket {
+    fn ricevi(&self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        self.recv_from(buffer)
+    }
+
+    fn manda(&self, datagramma: &[u8], a: SocketAddr) -> std::io::Result<usize> {
+        self.send_to(datagramma, a)
+    }
+}
+
+/// Il prossimo datagramma da guardare, o `None` se questo giro non ne ha uno.
+///
+/// # Scartare non vuol dire dormire
+///
+/// Un datagramma che non è dei nostri si butta e si passa subito al
+/// prossimo, che arrivi come datagramma o come errore: vedi
+/// [`solo_quel_datagramma`]. La pausa di un [`RESPIRO`] resta per i guasti
+/// del socket, perché un errore che tornasse subito, per sempre, non faccia
+/// girare il filo a vuoto.
+///
+/// Fino al reperto 02-5 dormiva per ogni errore che non fosse la scadenza:
+/// su Windows un datagramma più lungo del buffer è un errore, e una
+/// ventina al secondo da un PC qualunque della rete teneva il filo a dormire,
+/// mentre le domande vere restavano nel buffer del socket fino a cadere.
+fn prossimo<'b>(presa: &impl Datagrammi, buffer: &'b mut [u8]) -> Option<(&'b [u8], SocketAddr)> {
+    match presa.ricevi(buffer) {
+        Ok((quanti, da)) => Some((buffer.get(..quanti)?, da)),
+        Err(err) if solo_quel_datagramma(&err) => None,
+        Err(_) => {
+            std::thread::sleep(RESPIRO);
+            None
+        }
+    }
+}
+
+/// L'errore riguarda un datagramma solo, o nessuno: il socket sta bene, e si
+/// riceve subito il prossimo.
+///
+/// - la scadenza del giro (`WouldBlock`, `TimedOut`) e un segnale
+///   (`Interrupted`);
+/// - su Windows, un datagramma più lungo del buffer (`WSAEMSGSIZE`, che la
+///   libreria standard non traduce): il sistema l'ha già tolto dalla coda.
+///   Su Unix lo stesso datagramma arriva troncato, e si scarta per misura;
+/// - su Windows, l'ICMP che torna per un datagramma mandato da qui
+///   (`WSAECONNRESET` per «porta irraggiungibile», `WSAENETRESET` per «tempo
+///   scaduto»): una domanda a mano verso una porta chiusa, o chiunque chieda
+///   da una porta che chiude subito dopo. Uno per risposta mandata.
+fn solo_quel_datagramma(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        err.kind(),
+        ErrorKind::WouldBlock
+            | ErrorKind::TimedOut
+            | ErrorKind::Interrupted
+            | ErrorKind::ConnectionReset
+    ) || di_un_datagramma_su_windows(err)
+}
+
+/// `WSAEMSGSIZE` e `WSAENETRESET`, che la libreria standard non traduce in
+/// un [`std::io::ErrorKind`]. Vedi [`solo_quel_datagramma`].
+#[cfg(windows)]
+fn di_un_datagramma_su_windows(err: &std::io::Error) -> bool {
+    const WSAEMSGSIZE: i32 = 10_040;
+    const WSAENETRESET: i32 = 10_052;
+    matches!(err.raw_os_error(), Some(WSAEMSGSIZE | WSAENETRESET))
+}
+
+/// Fuori da Windows non ce ne sono: vedi [`solo_quel_datagramma`].
+#[cfg(not(windows))]
+const fn di_un_datagramma_su_windows(_: &std::io::Error) -> bool {
+    false
+}
+
 /// Il filo che riceve le risposte, finché si cerca.
 fn ricevi_risposte(rete: &Condiviso, cercatore: &Cercatore) {
     let mia = rete.identita.pubblica().impronta();
-    let mut buffer = [0_u8; 64];
+    let mut buffer = [0_u8; BUFFER];
     loop {
         if rete.fermo() || chiave(&cercatore.ultima).elapsed() > CERCA_VIVO {
             // Si esce sotto il lucchetto del posto, ricontrollando: una
@@ -561,39 +654,26 @@ fn ricevi_risposte(rete: &Condiviso, cercatore: &Cercatore) {
                 return;
             }
         }
-        match cercatore.presa.recv_from(&mut buffer) {
-            Ok((quanti, da)) => {
-                let adesso = Instant::now();
-                let Some((porta, impronta, eco)) = buffer.get(..quanti).and_then(leggi_risposta)
-                else {
-                    continue;
-                };
-                // La propria risposta (si ospita e si cerca insieme, e il
-                // broadcast torna indietro) non è un PC trovato.
-                let indirizzo = SocketAddr::new(da.ip(), porta);
-                if porta == 0
-                    || impronta == mia
-                    || !cercatore.da_annunciare(&eco, indirizzo, impronta, adesso)
-                {
-                    continue;
-                }
-                rete.emetti(Evento::Trovato {
-                    indirizzo,
-                    impronta,
-                });
-            }
-            // La scadenza del giro, o il reset che Windows riporta su UDP
-            // quando una domanda a mano ha trovato una porta chiusa (ICMP
-            // «porta irraggiungibile»): niente di cui preoccuparsi, si
-            // continua. La pausa c'è per non girare a vuoto se un errore
-            // tornasse subito per sempre.
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(_) => std::thread::sleep(RESPIRO),
+        let Some((datagramma, da)) = prossimo(&cercatore.presa, &mut buffer) else {
+            continue;
+        };
+        let adesso = Instant::now();
+        let Some((porta, impronta, eco)) = leggi_risposta(datagramma) else {
+            continue;
+        };
+        // La propria risposta (si ospita e si cerca insieme, e il
+        // broadcast torna indietro) non è un PC trovato.
+        let indirizzo = SocketAddr::new(da.ip(), porta);
+        if porta == 0
+            || impronta == mia
+            || !cercatore.da_annunciare(&eco, indirizzo, impronta, adesso)
+        {
+            continue;
         }
+        rete.emetti(Evento::Trovato {
+            indirizzo,
+            impronta,
+        });
     }
 }
 
@@ -601,25 +681,23 @@ fn ricevi_risposte(rete: &Condiviso, cercatore: &Cercatore) {
 /// l'ascolto è quello di questa generazione.
 pub(crate) fn rispondi(rete: &Condiviso, presa: &UdpSocket, porta: u16, generazione: u64) {
     let _ = presa.set_read_timeout(Some(RESPIRO));
+    rispondi_da(rete, presa, porta, generazione);
+}
+
+/// Il ciclo di [`rispondi`], su un socket qualunque.
+fn rispondi_da(rete: &Condiviso, presa: &impl Datagrammi, porta: u16, generazione: u64) {
     let impronta = rete.identita.pubblica().impronta();
     let mut limitatore = Limitatore::default();
-    let mut buffer = [0_u8; 64];
+    let mut buffer = [0_u8; BUFFER];
     while !rete.fermo() && rete.generazione.load(Ordering::SeqCst) == generazione {
-        match presa.recv_from(&mut buffer) {
-            Ok((quanti, da)) => {
-                let Some(nonce) = buffer.get(..quanti).and_then(leggi_domanda) else {
-                    continue;
-                };
-                if limitatore.concedi(da.ip(), Instant::now()) {
-                    let _ = presa.send_to(&risposta(porta, &impronta, &nonce), da);
-                }
-            }
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(_) => std::thread::sleep(RESPIRO),
+        let Some((datagramma, da)) = prossimo(presa, &mut buffer) else {
+            continue;
+        };
+        let Some(nonce) = leggi_domanda(datagramma) else {
+            continue;
+        };
+        if limitatore.concedi(da.ip(), Instant::now()) {
+            let _ = presa.manda(&risposta(porta, &impronta, &nonce), da);
         }
     }
 }
@@ -720,6 +798,172 @@ mod prove {
             .filter(|i| limitatore.concedi(IpAddr::V4(Ipv4Addr::new(10, 0, 1, *i)), zero))
             .count();
         assert_eq!(concesse, 50, "il tetto totale con cento indirizzi diversi");
+    }
+
+    /// `WSAEMSGSIZE`: il datagramma non stava nel buffer.
+    #[cfg(windows)]
+    const MESSAGGIO_LUNGO: i32 = 10_040;
+
+    /// Lo stato di una rete che non ha aperto niente, per i cicli della
+    /// scoperta.
+    fn condiviso_di_prova() -> Condiviso {
+        let (eventi, _) = std::sync::mpsc::channel();
+        Condiviso::nuovo(
+            crate::Identita::nuova().expect("chiave"),
+            "prova",
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+            crate::prove_grezze::adesso_ns,
+            crate::Tempi::default(),
+            eventi,
+        )
+    }
+
+    /// Un socket finto: dà in fila i datagrammi e gli errori che gli si
+    /// danno, tutti dallo stesso mittente, e quando la fila è vuota ferma la
+    /// rete. Un datagramma più lungo del buffer si tronca, come su Unix.
+    struct Finto<'r> {
+        rete: &'r Condiviso,
+        da: SocketAddr,
+        fila: Mutex<VecDeque<std::io::Result<Vec<u8>>>>,
+        mandati: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    }
+
+    impl Datagrammi for Finto<'_> {
+        fn ricevi(&self, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            let Some(prossimo) = chiave(&self.fila).pop_front() else {
+                self.rete.ferma();
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            };
+            let byte = prossimo?;
+            let quanti = byte.len().min(buffer.len());
+            buffer
+                .get_mut(..quanti)
+                .expect("dentro")
+                .copy_from_slice(byte.get(..quanti).expect("dentro"));
+            Ok((quanti, self.da))
+        }
+
+        fn manda(&self, datagramma: &[u8], a: SocketAddr) -> std::io::Result<usize> {
+            chiave(&self.mandati).push((datagramma.to_vec(), a));
+            Ok(datagramma.len())
+        }
+    }
+
+    /// Cento giri di quel che un PC qualunque della rete può far arrivare a
+    /// chi ospita, senza essere associato.
+    fn da_scartare() -> VecDeque<std::io::Result<Vec<u8>>> {
+        let mut fila = VecDeque::new();
+        for _ in 0..100 {
+            // Un datagramma lungo: su Windows è un errore, su Unix si tronca.
+            #[cfg(windows)]
+            fila.push_back(Err(std::io::Error::from_raw_os_error(MESSAGGIO_LUNGO)));
+            fila.push_back(Ok(vec![0xAB; 100]));
+            // Il reset che Windows riporta su UDP per un ICMP «porta
+            // irraggiungibile»: basta chiedere da una porta e chiuderla.
+            fila.push_back(Err(std::io::ErrorKind::ConnectionReset.into()));
+        }
+        fila
+    }
+
+    #[test]
+    fn i_datagrammi_da_scartare_non_fanno_dormire_chi_risponde() {
+        // Reperto 02-5: ogni errore diverso dalla scadenza faceva dormire il
+        // filo cinquanta millisecondi. Venti datagrammi lunghi al secondo, e
+        // le domande vere restavano nel buffer del socket fino a cadere.
+        let rete = condiviso_di_prova();
+        let chi = SocketAddr::from((Ipv4Addr::new(10, 0, 0, 9), 50_000));
+        let mut fila = da_scartare();
+        fila.push_back(Ok(domanda(&[5; 16]).to_vec()));
+        let finto = Finto {
+            rete: &rete,
+            da: chi,
+            fila: Mutex::new(fila),
+            mandati: Mutex::new(Vec::new()),
+        };
+        let partenza = Instant::now();
+        rispondi_da(&rete, &finto, 47_811, 0);
+        let durata = partenza.elapsed();
+        let impronta = rete.identita.pubblica().impronta();
+        assert_eq!(
+            *chiave(&finto.mandati),
+            vec![(risposta(47_811, &impronta, &[5; 16]).to_vec(), chi)],
+            "la domanda vera ha la sua risposta, e solo lei"
+        );
+        assert!(durata < RESPIRO * 4, "senza pause: {durata:?}");
+    }
+
+    #[test]
+    fn chi_cerca_salta_subito_i_datagrammi_da_scartare() {
+        // Lo stesso per la porta effimera di chi cerca, che si vede nel suo
+        // broadcast: il suo ciclo passa dallo stesso `prossimo`.
+        let rete = condiviso_di_prova();
+        let fila = da_scartare();
+        let quanti = fila.len();
+        let finto = Finto {
+            rete: &rete,
+            da: SocketAddr::from((Ipv4Addr::new(10, 0, 0, 9), 47_811)),
+            fila: Mutex::new(fila),
+            mandati: Mutex::new(Vec::new()),
+        };
+        let mut buffer = [0_u8; 64];
+        let partenza = Instant::now();
+        for _ in 0..quanti {
+            if let Some((datagramma, _)) = prossimo(&finto, &mut buffer) {
+                assert_eq!(leggi_risposta(datagramma), None);
+            }
+        }
+        let durata = partenza.elapsed();
+        assert!(durata < RESPIRO * 4, "senza pause: {durata:?}");
+    }
+
+    #[test]
+    fn un_guasto_vero_del_socket_fa_ancora_la_pausa() {
+        // Un errore che torna subito, per sempre, non deve far girare il filo
+        // a vuoto: per quelli la pausa resta.
+        let rete = condiviso_di_prova();
+        let chi = SocketAddr::from((Ipv4Addr::new(10, 0, 0, 9), 50_000));
+        let fila = VecDeque::from([
+            Err(std::io::ErrorKind::NetworkDown.into()),
+            Err(std::io::ErrorKind::NetworkDown.into()),
+            Ok(domanda(&[6; 16]).to_vec()),
+        ]);
+        let finto = Finto {
+            rete: &rete,
+            da: chi,
+            fila: Mutex::new(fila),
+            mandati: Mutex::new(Vec::new()),
+        };
+        let partenza = Instant::now();
+        rispondi_da(&rete, &finto, 47_811, 0);
+        assert!(partenza.elapsed() >= RESPIRO * 2);
+        assert_eq!(chiave(&finto.mandati).len(), 1, "e poi risponde");
+    }
+
+    #[test]
+    fn cento_datagrammi_lunghi_su_un_socket_vero_non_ritardano_la_risposta() {
+        // La stessa cosa su un socket vero, su `127.0.0.1`: su Windows il
+        // datagramma più lungo del buffer torna come `WSAEMSGSIZE`.
+        let rete = Arc::new(condiviso_di_prova());
+        let presa = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("socket");
+        let dove = presa.local_addr().expect("indirizzo");
+        let per_il_filo = Arc::clone(&rete);
+        let filo = std::thread::spawn(move || rispondi(&per_il_filo, &presa, 47_811, 0));
+        let chi = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("socket");
+        chi.set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("scadenza");
+        let partenza = Instant::now();
+        for _ in 0..100 {
+            chi.send_to(&[0xAB; 100], dove).expect("parte");
+        }
+        chi.send_to(&domanda(&[7; 16]), dove).expect("parte");
+        let mut buffer = [0_u8; 64];
+        let ricevuta = chi.recv_from(&mut buffer).map(|(quanti, _)| quanti);
+        let durata = partenza.elapsed();
+        rete.ferma();
+        filo.join().expect("il filo esce");
+        assert_eq!(ricevuta.ok(), Some(LUNGHEZZA_RISPOSTA), "dopo {durata:?}");
+        assert!(durata < Duration::from_secs(1), "{durata:?}");
     }
 
     #[test]

@@ -15,7 +15,10 @@
 //! `collegamento::riuscita`); [`Condiviso::connessioni`] prima dei lucchetti
 //! di un `Collegamento` e di quello della fiducia (le scelte di
 //! [`Condiviso::registra_entrante`], che guardano le connessioni mentre
-//! decidono); la coda d'uscita di un `Collegamento` prima della sua chiusura.
+//! decidono); la coda d'uscita e quella d'entrata di un `Collegamento` prima
+//! della sua chiusura; il suo cancello degli eventi prima della sua coda
+//! d'entrata (un `Ricevuto` che il desktop non riceve più si butta lì, e il
+//! suo posto con lui).
 //! Nessun altro ne tiene due. Chi deve fare qualcosa
 //! su più connessioni copia prima l'elenco e lo lascia andare
 //! ([`Condiviso::connessioni_dove`]).
