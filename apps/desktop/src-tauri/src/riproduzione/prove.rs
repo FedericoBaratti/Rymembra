@@ -56,6 +56,38 @@ fn gli_altri_annunci_spostano_la_coda_come_prima() {
     );
 }
 
+/// Togliere, saltare e spostare una riga della coda portano il brano che la
+/// finestra ci vedeva: due × in fila prima della risposta toglievano la riga
+/// sbagliata.
+///
+/// La coda `[1, 2, 3, 4, 5]` disegnata, e due clic sulla × del 2 e del 4
+/// prima che arrivi lo stato nuovo: le posizioni sono 1 e 3, quelle dello
+/// schermo. Il primo toglie il 2 e la coda diventa `[1, 3, 4, 5]`; il
+/// secondo, per sola posizione, toglieva il **5**. Con il brano accanto il
+/// secondo vede che in 3 non c'è più il 4 e non tocca niente.
+#[test]
+fn togliere_da_una_coda_cambiata_sotto_non_toglie_un_altro_brano() {
+    let mut coda = rymembra_domain::queue::Queue::new();
+    coda.play_tracks(vec![1, 2, 3, 4, 5], 0, 7);
+    // Il primo clic, sulla riga che c'era davvero.
+    assert!(al_suo_posto(&coda, 1, Some(2)));
+    coda.remove_at(1);
+    // Il secondo, con le posizioni di prima.
+    if al_suo_posto(&coda, 3, Some(4)) {
+        coda.remove_at(3);
+    }
+    assert_eq!(
+        coda.in_play_order(),
+        [1, 3, 4, 5],
+        "il secondo clic ha tolto un brano che nessuno aveva indicato"
+    );
+    // Una posizione fuori dalla coda non porta nessun brano.
+    assert!(!al_suo_posto(&coda, 9, Some(4)));
+    // Chi non porta un brano — l'auto, un gesto già risolto per voce — passa
+    // come prima.
+    assert!(al_suo_posto(&coda, 2, None));
+}
+
 /// «Precedente» premuto mentre il brano nuovo si apre torna indietro: il
 /// punto del motore è ancora quello del brano di prima, e oltre i tre
 /// secondi faceva ricominciare il brano vecchio.

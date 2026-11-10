@@ -2780,7 +2780,9 @@ export function App() {
     (e: React.MouseEvent, indice: number, brano: Brano) =>
       apriMenu(e, [brano.id], brano, {
         togliDallaCoda: () => {
-          ipc.codaTogli(indice).catch(segnalaErrore);
+          // Col brano accanto alla posizione: se nel frattempo la coda è
+          // cambiata, il nucleo non toglie un'altra riga. Vedi `codaTogli`.
+          ipc.codaTogli(indice, brano.id).catch(segnalaErrore);
         },
       }),
     [apriMenu, segnalaErrore],

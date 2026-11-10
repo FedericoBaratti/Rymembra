@@ -39,6 +39,12 @@ import { Presenza } from "./presenza";
 import { MOBILE } from "./piattaforma";
 
 /**
+ * I comandi della riga su cui un doppio clic non fa partire il brano: la × che
+ * toglie e il ⋮ del telefono. Vedi `onDoubleClick` in `RigheCoda`.
+ */
+const TASTI_SENZA_PARTENZA = ".tasto, .tasto-altro";
+
+/**
  * Le righe della coda, per identificativo.
  *
  * La chiave è la coda unita con le virgole e non l'array: React confronta per
@@ -224,11 +230,14 @@ export function RigheCoda({
   };
 
   const lascia = (a: number) => {
-    if (trascinato === null || trascinato === a) {
+    // Il brano preso è quello che la coda in mano ha nella riga presa: è la
+    // riga che il dito ha portato fin qui. Vedi `codaRiordina` in `ipc.ts`.
+    const preso = trascinato === null ? undefined : stato.coda[trascinato];
+    if (trascinato === null || trascinato === a || preso === undefined) {
       posa();
       return;
     }
-    comanda(ipc.codaRiordina(trascinato, a));
+    comanda(ipc.codaRiordina(trascinato, a, preso));
     posa();
   };
 
@@ -247,7 +256,7 @@ export function RigheCoda({
     (indice: number) => {
       const id = coda[indice];
       if (!codaLibera || id === undefined || !righe.has(id)) return;
-      ipc.codaVai(indice).catch(onErrore);
+      ipc.codaVai(indice, id).catch(onErrore);
     },
     [coda, righe, onErrore, codaLibera],
   );
@@ -316,7 +325,7 @@ export function RigheCoda({
       // finestra — e di nuovo quando la coda nuova arriva: vedi `seguire`.
       seguire.current = { dove: a, id };
       fuoco.vaiA(a);
-      ipc.codaRiordina(indice, a).catch((errore: unknown) => {
+      ipc.codaRiordina(indice, a, id).catch((errore: unknown) => {
         seguire.current = null;
         onErrore(errore);
       });
@@ -386,8 +395,12 @@ export function RigheCoda({
             onPointerDown={(e) => {
               if (codaLibera) presa(e, indice);
             }}
-            onDoubleClick={() => {
-              if (codaLibera) comanda(ipc.codaVai(indice));
+            onDoubleClick={(e) => {
+              // Sulla riga, non sulla × né sul ⋮: il doppio clic sulla ×
+              // risaliva fin qui, e oltre a togliere la riga faceva partire
+              // quella che le era scivolata sotto.
+              if ((e.target as Element).closest(TASTI_SENZA_PARTENZA)) return;
+              if (codaLibera) comanda(ipc.codaVai(indice, id));
             }}
             // Sul telefono un tocco sulla riga, come il doppio clic qui sopra:
             // il tasto «salta» c'è, ma è piccolo, e la riga intera è il
@@ -396,7 +409,7 @@ export function RigheCoda({
               MOBILE
                 ? (e) => {
                     if (codaLibera && !(e.target as Element).closest("button")) {
-                      comanda(ipc.codaVai(indice));
+                      comanda(ipc.codaVai(indice, id));
                     }
                   }
                 : undefined
@@ -413,7 +426,7 @@ export function RigheCoda({
             <button
               type="button"
               className="salta"
-              onClick={() => comanda(ipc.codaVai(indice))}
+              onClick={() => comanda(ipc.codaVai(indice, id))}
               /* Si raggiunge con ←→ dalla riga, non con Tab: `fuoco.ts`. */
               tabIndex={-1}
               /* Un brano sparito dalla libreria non si può far partire, ma si
@@ -477,7 +490,14 @@ export function RigheCoda({
                 title={codaLibera ? t("queue.remove") : t("together.gestures.off.title")}
                 tabIndex={-1}
                 disabled={!codaLibera}
-                onClick={() => comanda(ipc.codaTogli(indice))}
+                onClick={(e) => {
+                  // Il secondo clic di un doppio clic non è un'altra richiesta:
+                  // dove lo stesso brano sta due volte di fila, il nucleo
+                  // vedrebbe a quella posizione il brano atteso e toglierebbe
+                  // anche la copia. Da tastiera `detail` è zero, e passa.
+                  if (e.detail > 1) return;
+                  comanda(ipc.codaTogli(indice, id));
+                }}
               >
                 <Icona nome="i-x" dim={14} />
               </button>

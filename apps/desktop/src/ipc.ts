@@ -827,10 +827,16 @@ export const ipc = {
   // e ricalcolarlo qui vorrebbe dire riscrivere il mescolamento in TypeScript.
   codaAccoda: (brani: number[]) => invoke<void>("coda_accoda", { brani }),
   codaDopo: (brani: number[]) => invoke<void>("coda_dopo", { brani }),
-  codaVai: (indice: number) => invoke<void>("coda_vai", { indice }),
-  codaTogli: (indice: number) => invoke<void>("coda_togli", { indice }),
-  codaRiordina: (da: number, a: number) =>
-    invoke<void>("coda_riordina", { da, a }),
+  //
+  // Accanto all'indice va il brano che la finestra ci vedeva (in `da`, per il
+  // riordino): se la coda è cambiata sotto — il primo clic di un doppio clic
+  // già arrivato, un «Riproduci dopo» di chi ascolta insieme — a quella
+  // posizione c'è un altro brano, e il nucleo non fa niente. Lo stato che
+  // torna ridisegna la coda vera.
+  codaVai: (indice: number, brano: number) => invoke<void>("coda_vai", { indice, brano }),
+  codaTogli: (indice: number, brano: number) => invoke<void>("coda_togli", { indice, brano }),
+  codaRiordina: (da: number, a: number, brano: number) =>
+    invoke<void>("coda_riordina", { da, a, brano }),
   codaSvuota: () => invoke<void>("coda_svuota"),
   // L'«Annulla» dell'avviso di coda sostituita. `numero` è quello arrivato con
   // l'evento `coda:sostituita`: `false` se nel frattempo la coda è stata
