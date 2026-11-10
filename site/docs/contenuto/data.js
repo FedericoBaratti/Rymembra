@@ -38,7 +38,7 @@
         },
         "With the fallback, readers and writers serialize, so the UI stutters during scans; the data folder is never moved automatically to get out of the fallback.",
         { h: "Connections" },
-        "One main connection, behind the library mutex ([Runtime](#runtime)). Two secondary connections to the same file — the enrichment response cache and the Folders tree index — get the same 5 s busy timeout and foreign keys via `prepara_connessione_secondaria`; they inherit the journal from the file and never migrate. Writes that read first use `TransactionBehavior::Immediate` (`library::transazione_di_scrittura`) to avoid `SQLITE_BUSY_SNAPSHOT`.",
+        "One main connection, behind the library mutex ([Runtime](#runtime)). Three secondary connections to the same file — the enrichment response cache, the Folders tree index and, for each answer to a linked device, a read-only one (`stato::leggi_a_parte`, WAL only) — get the same 5 s busy timeout and foreign keys via `prepara_connessione_secondaria`; they inherit the journal from the file and never migrate. Writes that read first use `TransactionBehavior::Immediate` (`library::transazione_di_scrittura`) to avoid `SQLITE_BUSY_SNAPSHOT`.",
         { h: "SQLite errors" },
         "`codice_da_sqlite` maps SQLite result codes to the catalog and appends the extended code to the cause:",
         {
