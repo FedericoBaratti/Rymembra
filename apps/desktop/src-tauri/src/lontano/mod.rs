@@ -434,6 +434,11 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
             );
         }
         comune.ammetti(&chiave, false);
+        // Subito, senza aspettare la rilettura: ogni sua connessione si
+        // chiude, anche quelle aperte prima e i flussi di «Ascolta insieme».
+        if let Some(nodo) = comune.nodo() {
+            nodo.revoca(&chiave);
+        }
         let insieme_cambiato = in_libreria(&app, ATTESA_LIBRERIA, |c| {
             dispositivi::dimentica(c, &chiave)
         })?;
