@@ -45,6 +45,31 @@
 //! blocca mai — oltre il tetto chiudono la connessione: un capo che lascia
 //! otto mega di stato non letti non sta seguendo la sessione.
 //!
+//! # La coda d'entrata
+//!
+//! Anche quel che arriva ha un tetto, dal reperto 02-15: prima ogni messaggio
+//! valido di un fidato diventava un `Evento::Ricevuto`, letto alla velocità
+//! della rete, mentre il desktop li tratta uno alla volta e può restare fermo
+//! secondi dentro un'apertura del lettore. La coda cresceva senza limite.
+//!
+//! Adesso ogni `Ricevuto` porta il suo posto ([`PostoInEntrata`]), e il
+//! desktop lo lascia andare con l'evento. Una connessione ne ha fuori al più
+//! [`CODA_ENTRATA`], e al più [`TETTO_ENTRATA`] byte di JSON: oltre, chi
+//! legge aspetta un posto ([`Entrata::prendi`]) e intanto non legge il
+//! socket. La contropressione la fa il TCP, come per le letture: chi manda
+//! più in fretta di quanto il desktop tratti resta fermo sulla sua scrittura,
+//! e se la sua coda d'uscita si riempie chiude lui.
+//!
+//! Aspettare, e non buttare né chiudere: un messaggio buttato è un gesto
+//! perso senza che nessuno lo sappia, e chiudere darebbe all'altro capo la
+//! colpa di un desktop lento. E il tetto è per connessione, non sul canale
+//! degli eventi: un canale pieno fermerebbe `emetti`, che gira anche sotto il
+//! cancello degli eventi e dentro `chiudi` — a volte sul filo stesso del
+//! desktop, che è quello che deve svuotarlo — e un canale che butta
+//! perderebbe una `Chiusa`. Gli altri eventi non servono un tetto: uno o due
+//! per connessione, l'orologio al ritmo dei ping di questo PC, i `Trovato`
+//! col tetto loro.
+//!
 //! # Gli stati in coda
 //!
 //! Lo stato della sessione (`Messaggio::Stato`) è una fotografia intera, col
@@ -133,6 +158,18 @@ const CODA: usize = 256;
 /// quattrocento mega nel caso peggiore, invece di ventiquattro gigabyte.
 pub(crate) const TETTO_USCITA: usize = 8 * 1024 * 1024;
 
+/// Quanti messaggi dell'applicazione arrivati da una connessione possono
+/// aspettare il desktop, al più. Vedi «La coda d'entrata».
+///
+/// Duecentocinquantasei, come le voci della coda d'uscita: un minuto di
+/// ancore a quattro al secondo, con il desktop fermo.
+pub(crate) const CODA_ENTRATA: usize = 256;
+
+/// I byte di quei messaggi, al più: gli stessi otto mebibyte della coda
+/// d'uscita ([`TETTO_USCITA`]). Un messaggio ne ha al più uno
+/// (`MASSIMO_MESSAGGIO`), quindi da solo entra sempre.
+pub(crate) const TETTO_ENTRATA: usize = TETTO_USCITA;
+
 /// Il tetto dei messaggi JSON di una chiave non fidata: quattro kibibyte.
 ///
 /// Il messaggio più lungo che un estraneo può mandare per davvero è il
@@ -220,6 +257,100 @@ impl Uscita {
             Self::Dati(dati) => dati.byte.len().saturating_add(PESO_TESTA),
             Self::Pong { .. } | Self::Sincronizza(_) | Self::Sveglia => PESO_TESTA,
         }
+    }
+}
+
+/// I messaggi che una connessione ha consegnato al desktop e che il desktop
+/// non ha ancora lasciato andare: quanti, e quanto pesano. Vedi «La coda
+/// d'entrata».
+#[derive(Debug, Default)]
+pub(crate) struct Entrata {
+    /// Messaggi e byte.
+    conto: Mutex<(usize, usize)>,
+    /// Suona quando un posto si libera, o quando la connessione si chiude.
+    libera: Condvar,
+}
+
+impl Entrata {
+    /// Un posto per un messaggio di `byte` byte: subito se c'è, se no quando
+    /// il desktop ne lascia andare uno. `None` se intanto `basta()` dice di
+    /// smettere: la connessione si sta chiudendo, e il messaggio non serve più.
+    ///
+    /// Chi la chiama non deve avere lucchetti in mano: aspetta il desktop.
+    pub(crate) fn prendi(
+        self: &Arc<Self>,
+        byte: usize,
+        basta: impl Fn() -> bool,
+    ) -> Option<PostoInEntrata> {
+        let peso = byte.saturating_add(PESO_TESTA);
+        let mut conto = chiave(&self.conto);
+        loop {
+            if basta() {
+                return None;
+            }
+            let (messaggi, occupati) = *conto;
+            // Con la coda vuota entra sempre: un messaggio ha il suo tetto,
+            // più basso di questo, e aspettare non lo farebbe entrare mai.
+            if messaggi == 0
+                || (messaggi < CODA_ENTRATA && occupati.saturating_add(peso) <= TETTO_ENTRATA)
+            {
+                *conto = (messaggi.saturating_add(1), occupati.saturating_add(peso));
+                return Some(PostoInEntrata {
+                    entrata: Arc::clone(self),
+                    peso,
+                });
+            }
+            // A giri di cinquanta millisecondi, come `aspetta_posto`: una
+            // chiusura decisa da un altro filo si vede anche senza che
+            // nessuno suoni.
+            conto = self
+                .libera
+                .wait_timeout(conto, Duration::from_millis(50))
+                .map_or_else(|e| e.into_inner().0, |(guardia, _)| guardia);
+        }
+    }
+
+    /// Un messaggio di quel peso è stato lasciato andare.
+    fn lascia(&self, peso: usize) {
+        {
+            let mut conto = chiave(&self.conto);
+            let (messaggi, occupati) = *conto;
+            *conto = (messaggi.saturating_sub(1), occupati.saturating_sub(peso));
+        }
+        self.libera.notify_all();
+    }
+
+    /// Sveglia chi aspetta un posto, perché guardi se deve smettere.
+    fn sveglia(&self) {
+        self.libera.notify_all();
+    }
+}
+
+/// Il posto che un messaggio arrivato occupa fra quelli che la sua
+/// connessione tiene in attesa del desktop: viaggia dentro
+/// [`Evento::Ricevuto`].
+///
+/// Lasciarlo andare libera il posto. Finché una connessione ne ha fuori
+/// duecentocinquantasei, o per otto mebibyte, chi la legge non legge oltre:
+/// vedi «La coda d'entrata» nel modulo della connessione. Il desktop non
+/// deve fare niente di speciale: il posto se ne va con l'evento, quando ha
+/// finito di trattarlo.
+pub struct PostoInEntrata {
+    entrata: Arc<Entrata>,
+    peso: usize,
+}
+
+impl Drop for PostoInEntrata {
+    fn drop(&mut self) {
+        self.entrata.lascia(self.peso);
+    }
+}
+
+impl std::fmt::Debug for PostoInEntrata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostoInEntrata")
+            .field("peso", &self.peso)
+            .finish_non_exhaustive()
     }
 }
 
@@ -366,6 +497,9 @@ pub(crate) struct Collegamento {
     in_uscita: Mutex<usize>,
     /// Suona quando chi scrive ne ha mandati.
     posto_libero: Condvar,
+    /// I messaggi arrivati che aspettano il desktop. Vedi «La coda
+    /// d'entrata».
+    entrata: Arc<Entrata>,
     /// Una maniglia del socket, per tagliarlo.
     presa: Box<dyn Presa>,
     /// Il perché della chiusura; `None` finché è aperta.
@@ -496,10 +630,12 @@ impl Collegamento {
             let _ = self.presa.shutdown(Shutdown::Both);
         }
         // Un colpetto a chi scrive, che sta aspettando sulla coda, e a chi
-        // legge, se sta aspettando posto in coda. Se la coda è piena chi scrive
-        // è sveglio comunque, e guarda la chiusura prima della voce dopo.
+        // legge, se sta aspettando posto in coda o che il desktop lasci
+        // andare un messaggio. Se la coda è piena chi scrive è sveglio
+        // comunque, e guarda la chiusura prima della voce dopo.
         let _ = self.uscita.try_send(Uscita::Sveglia);
         self.posto_libero.notify_all();
+        self.entrata.sveglia();
         let Some(rete) = self.rete.upgrade() else {
             return;
         };
@@ -870,6 +1006,7 @@ pub(crate) fn prepara(
         uscita,
         in_uscita: Mutex::new(0),
         posto_libero: Condvar::new(),
+        entrata: Arc::new(Entrata::default()),
         presa: maniglia,
         chiusura: Mutex::new(None),
         lettore_finito: AtomicBool::new(false),
@@ -1074,7 +1211,13 @@ fn leggi_finche(
             // ma non si legge lo stesso.
             Tipo::JsonCompresso => Err(Fine::protocollo()),
             Tipo::Json => match serde_json::from_slice::<Trasporto>(&carico) {
-                Ok(parola) => tratta(rete, collegamento, parola, arrivo, &mut in_arrivo),
+                Ok(parola) => tratta(
+                    rete,
+                    collegamento,
+                    parola,
+                    (arrivo, carico.len()),
+                    &mut in_arrivo,
+                ),
                 Err(_) => Err(Fine::protocollo()),
             },
         };
@@ -1085,12 +1228,13 @@ fn leggi_finche(
     }
 }
 
-/// Un messaggio del trasporto.
+/// Un messaggio del trasporto, con l'istante dell'arrivo e quanti byte di
+/// JSON era, decompresso: il suo peso nella coda d'entrata.
 fn tratta(
     rete: &Arc<Condiviso>,
     collegamento: &Arc<Collegamento>,
     parola: Trasporto,
-    arrivo: u64,
+    (arrivo, byte): (u64, usize),
     in_arrivo: &mut Option<InArrivo>,
 ) -> Result<(), Fine> {
     let controllo = || {
@@ -1208,13 +1352,22 @@ fn tratta(
         }
         Trasporto::App { messaggio } => {
             controllo()?;
-            app(rete, collegamento, messaggio)
+            app(rete, collegamento, messaggio, byte)
         }
     }
 }
 
 /// Un messaggio dell'applicazione: solo da chi è fidato, e solo nei tetti.
-fn app(rete: &Condiviso, collegamento: &Collegamento, messaggio: Messaggio) -> Result<(), Fine> {
+///
+/// Va al desktop con il suo posto nella coda d'entrata: se la coda è piena,
+/// qui si aspetta che il desktop ne lasci andare uno, e intanto questa
+/// connessione non si legge. Vedi «La coda d'entrata».
+fn app(
+    rete: &Condiviso,
+    collegamento: &Collegamento,
+    messaggio: Messaggio,
+    byte: usize,
+) -> Result<(), Fine> {
     if !rete.fidato(&collegamento.pari) {
         return Err(Fine::con(ErrorCodeKind::InsiemeNonAssociato));
     }
@@ -1224,11 +1377,17 @@ fn app(rete: &Condiviso, collegamento: &Collegamento, messaggio: Messaggio) -> R
     if matches!(messaggio, Messaggio::Sconosciuto) {
         return Ok(());
     }
+    // Chiusa mentre si aspettava: il messaggio non serve più a nessuno, e
+    // dopo la `Chiusa` il cancello non lo farebbe passare comunque.
+    let Some(posto) = collegamento.entrata.prendi(byte, || collegamento.chiusa()) else {
+        return Ok(());
+    };
     collegamento.annuncia(
         rete,
         Evento::Ricevuto {
             id: collegamento.id,
             messaggio,
+            posto,
         },
     );
     Ok(())
@@ -2124,5 +2283,87 @@ mod prove {
             let annunci = Mutex::new(stato);
             se_aperta(&annunci, || panic!("{stato:?}: non doveva partire"));
         }
+    }
+
+    /// Prova a prendere un posto in un altro filo: dice se l'ha preso entro
+    /// `entro`, e restituisce il filo, che il posto lo tiene finché vive.
+    fn prova_a_prendere(
+        entrata: &Arc<Entrata>,
+        byte: usize,
+        basta: Arc<AtomicBool>,
+        entro: Duration,
+    ) -> (bool, std::thread::JoinHandle<Option<PostoInEntrata>>) {
+        let (preso, aspetta_preso) = std::sync::mpsc::channel();
+        let entrata = Arc::clone(entrata);
+        let filo = std::thread::spawn(move || {
+            let posto = entrata.prendi(byte, || basta.load(Ordering::SeqCst));
+            let _ = preso.send(());
+            posto
+        });
+        (aspetta_preso.recv_timeout(entro).is_ok(), filo)
+    }
+
+    #[test]
+    fn la_coda_d_entrata_ha_un_tetto_in_messaggi_e_in_byte() {
+        let mai = || false;
+        let breve = Duration::from_millis(200);
+
+        // In messaggi: duecentocinquantasei piccoli, e il successivo aspetta
+        // che il desktop ne lasci andare uno.
+        let entrata = Arc::new(Entrata::default());
+        let mut posti: Vec<_> = (0..CODA_ENTRATA)
+            .map(|_| entrata.prendi(40, mai).expect("posto"))
+            .collect();
+        let (preso, filo) = prova_a_prendere(&entrata, 40, Arc::default(), breve);
+        assert!(!preso, "la coda è piena: si aspetta");
+        drop(posti.pop());
+        assert!(
+            filo.join().expect("il filo finisce").is_some(),
+            "un posto lasciato è un posto preso"
+        );
+        drop(posti);
+
+        // In byte: sette messaggi da un mebibyte entrano, l'ottavo no.
+        let mega = crate::cornice::MASSIMO_MESSAGGIO;
+        let entrata = Arc::new(Entrata::default());
+        let mut posti: Vec<_> = (0..7)
+            .map(|_| entrata.prendi(mega, mai).expect("posto"))
+            .collect();
+        let (preso, filo) = prova_a_prendere(&entrata, mega, Arc::default(), breve);
+        assert!(!preso, "otto mebibyte pieni: si aspetta");
+        drop(posti.pop());
+        assert!(filo.join().expect("il filo finisce").is_some());
+        drop(posti);
+        assert_eq!(
+            *chiave(&entrata.conto),
+            (0, 0),
+            "lasciati tutti, niente resta"
+        );
+
+        // Con la coda vuota un messaggio entra sempre, anche oltre il tetto.
+        let entrata = Arc::new(Entrata::default());
+        assert!(entrata.prendi(TETTO_ENTRATA * 2, mai).is_some());
+    }
+
+    #[test]
+    fn chi_aspetta_un_posto_smette_quando_la_connessione_si_chiude() {
+        let entrata = Arc::new(Entrata::default());
+        let pieno = entrata.prendi(TETTO_ENTRATA, || false).expect("posto");
+        let chiusa = Arc::new(AtomicBool::new(false));
+        let (preso, filo) = prova_a_prendere(
+            &entrata,
+            40,
+            Arc::clone(&chiusa),
+            Duration::from_millis(200),
+        );
+        assert!(!preso, "piena: si aspetta");
+        // Come fa `Collegamento::chiudi`: il perché, poi il colpetto.
+        chiusa.store(true, Ordering::SeqCst);
+        entrata.sveglia();
+        assert!(
+            filo.join().expect("il filo finisce").is_none(),
+            "chiusa: niente posto, e chi legge torna a leggere fino alla fine"
+        );
+        drop(pieno);
     }
 }

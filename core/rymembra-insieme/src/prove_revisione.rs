@@ -589,6 +589,59 @@ fn una_bomba_compressa_da_un_fidato_chiude_col_protocollo() {
     );
 }
 
+// ── la coda d'entrata ──────────────────────────────────────────────────────
+
+#[test]
+fn un_fidato_che_manda_di_fila_non_riempie_la_memoria_del_desktop() {
+    // Reperto 02-15: ogni messaggio valido di un fidato diventava un evento,
+    // letto alla velocità della rete e messo su un canale senza tetto; il
+    // desktop li tratta uno alla volta, e può restare fermo secondi dentro
+    // un'apertura del lettore. La coda d'uscita aveva il suo tetto, quella
+    // d'entrata no.
+    let (host_rete, eventi, indirizzo) = host(Tempi::default());
+    let identita = Identita::nuova().expect("chiave");
+    host_rete.pari(vec![identita.pubblica()], Vec::new());
+    let mut grezzo = grezzo_verso(indirizzo, identita, Uso::Controllo);
+    aspetta(&eventi, ATTESA, |e| match e {
+        Evento::Aperta { .. } => Some(()),
+        _ => None,
+    })
+    .expect("aperta");
+    let oltre = 64;
+    let chiedi = json_app(&Messaggio::Chiedi);
+    for _ in 0..crate::collegamento::CODA_ENTRATA + oltre {
+        grezzo.manda_grezzo(Tipo::Json, &chiedi);
+    }
+    // Il desktop è fermo: gli eventi arrivati restano in mano sua.
+    let mut in_mano = Vec::new();
+    let fine = Instant::now() + Duration::from_secs(1);
+    while let Ok(evento) = eventi.recv_timeout(fine.saturating_duration_since(Instant::now())) {
+        in_mano.push(evento);
+    }
+    let fermi = in_mano
+        .iter()
+        .filter(|e| matches!(e, Evento::Ricevuto { .. }))
+        .count();
+    assert_eq!(
+        fermi,
+        crate::collegamento::CODA_ENTRATA,
+        "al più tanti messaggi aspettano il desktop"
+    );
+    // Il desktop li tratta e li lascia andare: gli altri arrivano, nessuno
+    // perso, e la connessione resta aperta.
+    drop(in_mano);
+    let mut dopo = 0;
+    while dopo < oltre {
+        match eventi.recv_timeout(ATTESA) {
+            Ok(Evento::Ricevuto { .. }) => dopo += 1,
+            Ok(Evento::Chiusa { codice, .. }) => panic!("chiusa: {codice:?}"),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert_eq!(dopo, oltre, "gli altri aspettavano nel TCP, non sono persi");
+}
+
 #[test]
 fn degli_stati_in_coda_parte_solo_l_ultimo() {
     // Il grezzo non legge: chi scrive sull'host resta fermo sui primi

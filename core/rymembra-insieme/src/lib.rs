@@ -65,6 +65,7 @@ mod servente;
 mod tempi;
 mod trasporto;
 
+pub use collegamento::PostoInEntrata;
 pub use identita::{ChiavePubblica, Identita, Impronta};
 pub use messaggi::{Gettone, Messaggio};
 pub use presa::{Dove, Origine, Presa, Strada};

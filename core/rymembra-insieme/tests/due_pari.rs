@@ -300,6 +300,7 @@ fn fra_fidati_i_messaggi_passano_nei_due_sensi_e_quelli_fuori_dai_tetti_non_part
         Evento::Ricevuto {
             id,
             messaggio: Messaggio::Chiedi,
+            ..
         } if *id == dall_host => Some(()),
         _ => None,
     });
@@ -959,7 +960,9 @@ fn uno_stato_di_mille_voci_arriva_uguale_e_sul_filo_viaggia_compresso() {
     let json = serde_json::to_vec(&stato).expect("si serializza").len();
     host.rete.manda(sull_host, &stato).expect("parte");
     membro.aspetta("lo stato", |e| match e {
-        Evento::Ricevuto { id: suo, messaggio } if *suo == id => {
+        Evento::Ricevuto {
+            id: suo, messaggio, ..
+        } if *suo == id => {
             assert!(*messaggio == stato, "lo stato arriva uguale");
             Some(())
         }

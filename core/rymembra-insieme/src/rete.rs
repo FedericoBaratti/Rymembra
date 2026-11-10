@@ -52,7 +52,7 @@ use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 
 use crate::ascolto;
 use crate::cliente::{self, Vivaio};
-use crate::collegamento::{self, Atteso, Modo, Verso, json, prepara, vivi};
+use crate::collegamento::{self, Atteso, Modo, PostoInEntrata, Verso, json, prepara, vivi};
 use crate::condiviso::{Condiviso, Ospitata};
 use crate::cornice::{self, MASSIMO_MESSAGGIO};
 use crate::errori::{chiave, errore, inatteso};
@@ -152,11 +152,19 @@ pub enum Evento {
     },
     /// Un messaggio da una connessione di controllo, già passato da
     /// [`Messaggio::valida`]. Mai da una chiave non fidata.
+    ///
+    /// Porta il suo posto nella coda d'entrata della connessione: finché ne
+    /// ha fuori duecentocinquantasei, o per otto mebibyte, la connessione non
+    /// si legge oltre. Il posto se ne va con l'evento, quando il desktop ha
+    /// finito di trattarlo: tenere gli eventi in mano vuol dire fermare chi
+    /// li manda.
     Ricevuto {
         /// Da quale connessione.
         id: IdConnessione,
         /// Il messaggio.
         messaggio: Messaggio,
+        /// Il posto nella coda d'entrata. Vedi [`PostoInEntrata`].
+        posto: PostoInEntrata,
     },
     /// L'associazione è al punto del codice: va mostrato, e chiesto alla
     /// persona se coincide con quello sull'altro schermo.
@@ -239,11 +247,11 @@ impl std::fmt::Debug for Evento {
                 .field("ospita", ospita)
                 .field("in_entrata", in_entrata)
                 .finish_non_exhaustive(),
-            Self::Ricevuto { id, messaggio } => f
+            Self::Ricevuto { id, messaggio, .. } => f
                 .debug_struct("Ricevuto")
                 .field("id", id)
                 .field("messaggio", messaggio)
-                .finish(),
+                .finish_non_exhaustive(),
             Self::Codice { id, .. } => f
                 .debug_struct("Codice")
                 .field("id", id)
