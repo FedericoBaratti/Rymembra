@@ -41,11 +41,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use iroh::dns::DnsResolver;
 use iroh::endpoint::{
     Connection, ConnectionError, PortmapperConfig, RecvStream, SendStream, VarInt, presets,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, NetReportConfig, RelayMode, RelayUrl, SecretKey};
 use rymembra_domain::errors::{AppError, Domain, ErrorCode, ErrorCodeKind};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -455,7 +456,9 @@ impl Nodo {
         let (endpoint, router) = runtime.block_on(async {
             let costruttore = match impostazioni.rete {
                 Rete::Internet { relay, dht, mdns } => {
-                    let mut costruttore = Endpoint::builder(presets::N0);
+                    let mut costruttore = Endpoint::builder(presets::N0)
+                        .dns_resolver(risolutore())
+                        .net_report_config(rapporto_di_rete());
                     if let Relay::Proprio(indirizzo) = relay {
                         let url = RelayUrl::from_str(indirizzo.trim()).map_err(|err| {
                             AppError::new(ErrorCode::NetBadSchema {
@@ -1345,6 +1348,36 @@ impl ProtocolHandler for Insieme {
     }
 }
 
+/// Il risolutore DNS del nodo: **solo** i server del sistema.
+///
+/// Di serie iroh, quando quelli del sistema non rispondono (la rete di un
+/// albergo, una VPN che filtra, l'avvio prima che la rete sia pronta), rifà
+/// le stesse domande ai DNS pubblici di Cloudflare, Google e Quad9: i nomi
+/// dei relay e `_iroh.<chiave del dispositivo collegato>.dns.iroh.link`, cioè
+/// l'identificativo stabile di un dispositivo dell'utente, a tre società che
+/// `PRIVACY.md` non nomina. Senza ripiego, una rete senza DNS è una rete
+/// senza relay: si passa diritti, o si aspetta che il DNS torni.
+///
+/// Su Android i server del sistema iroh li legge da `LinkProperties` della
+/// rete attiva (JNI, col contesto che tao inizializza all'avvio
+/// dell'attività), e li rilegge a ogni cambio di rete.
+fn risolutore() -> DnsResolver {
+    DnsResolver::builder()
+        .with_system_defaults()
+        .disable_fallback()
+        .build()
+}
+
+/// Il rapporto di rete del nodo, senza il controllo del portale: è una
+/// `GET http://<relay>/generate_204` **in chiaro**, e `PRIVACY.md` promette
+/// che dal collegamento non esce niente in chiaro. Le sonde HTTPS restano:
+/// su una rete che chiude QUIC sono il solo modo di trovare il relay di casa.
+fn rapporto_di_rete() -> NetReportConfig {
+    let mut rapporto = NetReportConfig::default();
+    rapporto.captive_portal_check = false;
+    rapporto
+}
+
 /// Esadecimale minuscolo.
 fn esadecimale(byte: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -1392,6 +1425,38 @@ mod prove {
         assert!(uguali_a_tempo_costante(&byte, &byte));
         assert!(!uguali_a_tempo_costante(&byte, &[0, 1, 0xab, 0xfe]));
         assert!(!uguali_a_tempo_costante(&byte, &[0, 1]));
+    }
+
+    #[test]
+    fn il_dns_e_solo_quello_del_sistema() {
+        // Il `Debug` del risolutore porta la sua configurazione (nessuna rete:
+        // il sistema si legge alla prima domanda): i server di ripiego ci
+        // sarebbero scritti.
+        let scritto = format!("{:?}", risolutore());
+        assert!(scritto.contains("use_system_config: true"), "{scritto}");
+        for pubblico in [
+            "1.1.1.1",
+            "1.0.0.1",
+            "8.8.8.8",
+            "8.8.4.4",
+            "9.9.9.9",
+            "149.112.112.112",
+        ] {
+            assert!(!scritto.contains(pubblico), "{pubblico} in {scritto}");
+        }
+    }
+
+    #[test]
+    fn niente_controllo_del_portale_in_chiaro() {
+        let rapporto = rapporto_di_rete();
+        assert!(
+            !rapporto.captive_portal_check,
+            "GET http://<relay>/generate_204"
+        );
+        assert!(
+            rapporto.https_probes,
+            "le sonde HTTPS restano: su una rete che chiude QUIC trovano il relay"
+        );
     }
 
     #[test]
