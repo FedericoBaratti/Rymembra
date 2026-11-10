@@ -224,27 +224,41 @@ export function RigheCoda({
     azione.catch(onErrore);
   };
 
+  /**
+   * Il brano della riga presa, letto quando la si prende.
+   *
+   * Non al rilascio: lo stato arriva quattro volte al secondo, e mentre il dito
+   * trascina la coda può cambiare sotto — il «Riproduci dopo» di chi ascolta
+   * insieme. Letto alla fine sarebbe il brano che adesso sta nella posizione
+   * di partenza, il nucleo lo troverebbe al suo posto e sposterebbe la riga
+   * sbagliata. Vedi `codaRiordina` in `ipc.ts`.
+   */
+  const preso = useRef<number | null>(null);
+
   const posa = () => {
     setTrascinato(null);
     setMirato(null);
+    preso.current = null;
   };
 
   const lascia = (a: number) => {
-    // Il brano preso è quello che la coda in mano ha nella riga presa: è la
-    // riga che il dito ha portato fin qui. Vedi `codaRiordina` in `ipc.ts`.
-    const preso = trascinato === null ? undefined : stato.coda[trascinato];
-    if (trascinato === null || trascinato === a || preso === undefined) {
+    const brano = preso.current;
+    if (trascinato === null || trascinato === a || brano === null) {
       posa();
       return;
     }
-    comanda(ipc.codaRiordina(trascinato, a, preso));
+    comanda(ipc.codaRiordina(trascinato, a, brano));
     posa();
   };
 
   const presa = usePresaPerRiordino({
     onPresa: (indice) => {
-      if (indice === null) posa();
-      else setTrascinato(indice);
+      if (indice === null) {
+        posa();
+        return;
+      }
+      preso.current = stato.coda[indice] ?? null;
+      setTrascinato(indice);
     },
     onMira: setMirato,
     onLascia: lascia,
