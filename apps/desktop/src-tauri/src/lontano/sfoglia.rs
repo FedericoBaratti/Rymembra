@@ -53,7 +53,7 @@ use rymembra_lontano::protocollo::MASSIMO_PEZZO;
 use rymembra_lontano::{Domanda, Risposta};
 use rymembra_net::flusso::Sorgente;
 use rymembra_net::http::Pezzo;
-use tauri::{AppHandle, Manager as _};
+use tauri::AppHandle;
 
 use super::filo::{ATTESA_LIBRERIA, Comune, Posta, in_libreria, prendi};
 use super::{comune, in_disparte};
@@ -870,19 +870,11 @@ impl Drop for Posto {
 static SCRITTE: AtomicUsize = AtomicUsize::new(0);
 
 /// Dove stanno le copertine lontane: accanto alla cache dei brani del cloud,
-/// e per la stessa ragione fuori dai dati che vanno in giro coi profili.
-fn cartella_copertine(app: &AppHandle) -> PathBuf {
-    let stato = app.try_state::<crate::stato::Stato>();
-    let dati = stato
-        .as_ref()
-        .and_then(|stato| stato.cartella_dati())
-        .map(Path::to_path_buf);
-    let dentro_i_dati = std::env::var_os("RYMEMBRA_DATI").is_some();
-    match (dentro_i_dati, dati, app.path().app_local_data_dir()) {
-        (true, Some(dati), _) | (false, Some(dati), Err(_)) => dati.join("copertine-lontane"),
-        (_, _, Ok(locale)) => locale.join("copertine-lontane"),
-        (_, None, Err(_)) => std::env::temp_dir().join("rymembra-copertine-lontane"),
-    }
+/// e per la stessa ragione fuori dai dati che vanno in giro coi profili. La
+/// regola è quella di [`crate::cartella_di_cache`]; `None` vuol dire nessuna
+/// cache.
+fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
+    crate::cartella_di_cache(app, "copertine-lontane")
 }
 
 /// Una copertina dell'altro, per il protocollo `rymembra-cover`: dalla cache,
@@ -897,7 +889,11 @@ pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>
     let Some((dispositivo, impronta)) = parti_della_copertina(chiave) else {
         return Ok(None);
     };
-    let cartella = cartella_copertine(app);
+    // Senza una cartella per la cache non c'è dove tenerla, né dove cercarla:
+    // vedi `crate::cartella_di_cache`.
+    let Some(cartella) = cartella_copertine(app) else {
+        return Ok(None);
+    };
     let file = cartella.join(format!("{impronta}.jpg"));
     if let Some(byte) = dalla_cache(&file) {
         return Ok(Some(byte));

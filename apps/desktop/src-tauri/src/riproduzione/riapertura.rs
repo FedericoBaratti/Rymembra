@@ -23,7 +23,7 @@ use super::coda::{leggi_il_salvato, riga_delle_latenze, rimetti_il_salvato, ripr
 use super::fili::prepara_prossimo;
 use super::{
     Lettore, StatoLettore, apri_motore, brano_di, con_lettore, manda_stato,
-    manda_stato_con_posizione,
+    manda_stato_con_posizione, riga_dell_uscita, uscita_nel_diario,
 };
 
 /// L'ultimo brano su cui la puntina è stata rimessa, e quanti fili di
@@ -438,16 +438,14 @@ fn riapri_davvero(
     // una riapertura finita su un'uscita virtuale — l'aveva scelta Windows, o
     // il nostro ripiego?
     nota!(
-        "[riproduzione] audio riaperto uscita={} frequenza={} canali={} bluetooth={} predefinito={}",
-        motore.dispositivo(),
-        formato.frequenza,
-        formato.canali,
-        if motore.su_bluetooth() { "sì" } else { "no" },
-        if motore.era_predefinito() {
-            "sì"
-        } else {
-            "no"
-        }
+        "{}",
+        riga_dell_uscita(
+            "[riproduzione] audio riaperto",
+            motore.dispositivo(),
+            formato,
+            motore.su_bluetooth(),
+            motore.era_predefinito(),
+        )
     );
 
     // Il lettore mai aperto — l'avvio senza scheda audio — nasce qui, e nasce
@@ -718,14 +716,19 @@ fn rifiuto_automatico(
     if modo != Modo::Automatica {
         return None;
     }
+    // Il motivo diventa la causa di un errore, e la causa va nel diario: le
+    // uscite per impronta, mai per nome. Vedi `uscita_nel_diario`.
     match voluta {
         Some(fissata) if fissata != aperta => Some(format!(
-            "l'uscita fissata «{fissata}» non c'è più, e si aspetta che torni invece di suonare \
-             su «{aperta}»"
+            "l'uscita fissata {} non c'è più, e si aspetta che torni invece di suonare \
+             sull'uscita {}",
+            uscita_nel_diario(fissata),
+            uscita_nel_diario(aperta)
         )),
         None if !era_predefinito => Some(format!(
             "nessuna uscita era il predefinito di sistema: si aspetta che Windows ne scelga uno \
-             invece di suonare su «{aperta}»"
+             invece di suonare sull'uscita {}",
+            uscita_nel_diario(aperta)
         )),
         _ => None,
     }
@@ -1206,11 +1209,32 @@ mod prove {
     fn la_fissata_che_non_e_quella_aperta_si_rifiuta() {
         let causa = rifiuto_automatico(Modo::Automatica, Some("Cuffie BT"), "Altoparlanti", true);
         assert!(
-            causa
-                .as_deref()
-                .is_some_and(|c| c.contains("«Cuffie BT»") && c.contains("«Altoparlanti»")),
+            causa.as_deref().is_some_and(|c| {
+                c.contains(&super::super::uscita_nel_diario("Cuffie BT"))
+                    && c.contains(&super::super::uscita_nel_diario("Altoparlanti"))
+            }),
             "{causa:?}"
         );
+    }
+
+    /// Il motivo del rifiuto diventa la causa di un errore, e la causa va nel
+    /// diario: le uscite ci stanno per impronta, mai per nome.
+    #[test]
+    fn il_motivo_del_rifiuto_non_porta_i_nomi_delle_uscite() {
+        for causa in [
+            rifiuto_automatico(
+                Modo::Automatica,
+                Some("Cuffie (AirPods di Mario)"),
+                "Altoparlanti",
+                true,
+            ),
+            rifiuto_automatico(Modo::Automatica, None, "Cuffie (AirPods di Mario)", false),
+        ] {
+            let causa = causa.unwrap_or_default();
+            assert!(!causa.is_empty());
+            assert!(!causa.contains("Mario"), "{causa}");
+            assert!(!causa.contains("Altoparlanti"), "{causa}");
+        }
     }
 
     /// La fissata aperta davvero va bene.

@@ -119,7 +119,8 @@
         {
           ul: [
             "**What goes in**: every error that reaches the window (code, severity, retryability, cause — written by `errore::errore`), the startup line, thread panics with their location, slow-lock warnings.",
-            "**What never goes in**: library paths, titles, artist names. User folders in any line are rewritten to `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%` (`senza_utente`), so the file can be attached to a report.",
+            "**What never goes in**: library paths, titles, artist names, the names of audio outputs (an output is written as a short BLAKE3 fingerprint of its name, the same for the same output across sessions, next to `bluetooth=` and `predefinito=`). User folders in any line are rewritten to `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%` (`senza_utente`), so the file can be attached to a report.",
+            "**One line per event**: line breaks, carriage returns, other control characters, Unicode line separators and bidi controls inside a line are written visibly (`\\n`, `\\r`, `\\u{…}`) in the single place that composes lines for both the log and `avvio.log`, so text from outside (an error body from a service, the platform a device declares) cannot fake a line.",
             "Writing never fails the app: errors are ignored (a full disk must not stop the music). The frontend's uncaught errors arrive through `diario_annota`; `diario_apri` opens the folder.",
           ],
         },

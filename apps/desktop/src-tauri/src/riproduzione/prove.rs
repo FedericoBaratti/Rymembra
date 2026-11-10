@@ -5,6 +5,42 @@
 use super::seguito::aspetta_il_contatore;
 use super::*;
 
+/// Il nome di un'uscita è spesso quello di chi la usa — Windows dà alle cuffie
+/// Bluetooth il nome che annunciano, «Cuffie (AirPods di Mario)» — e il diario
+/// si allega alle segnalazioni. Nella riga va il genere dell'uscita e
+/// un'impronta del nome, mai il nome.
+#[test]
+fn la_riga_d_avvio_non_porta_il_nome_dell_uscita() {
+    let nome = "Cuffie (AirPods di Mario)";
+    let formato = rymembra_play::FormatoUscita {
+        frequenza: 48_000,
+        canali: 2,
+    };
+    let riga = riga_dell_uscita("[avvio] audio aperto", nome, formato, true, false);
+    assert!(!riga.contains("Mario"), "{riga}");
+    assert!(!riga.contains("AirPods"), "{riga}");
+    assert!(!riga.contains("Cuffie"), "{riga}");
+    // Il genere, che è quel che serve a capire.
+    for pezzo in [
+        "[avvio] audio aperto uscita=",
+        "frequenza=48000",
+        "canali=2",
+        "bluetooth=sì",
+        "predefinito=no",
+    ] {
+        assert!(riga.contains(pezzo), "manca «{pezzo}»: {riga}");
+    }
+    // La diagnosi resta possibile: la stessa uscita dà sempre la stessa
+    // impronta, e un'altra un'altra.
+    let impronta = uscita_nel_diario(nome);
+    assert!(riga.contains(&impronta), "{riga}");
+    assert_eq!(impronta, uscita_nel_diario(nome));
+    assert_ne!(
+        impronta,
+        uscita_nel_diario("Altoparlanti (Realtek(R) Audio)")
+    );
+}
+
 /// L'annuncio del brano avviato non sposta la coda, nemmeno quando un gesto
 /// l'ha già portata altrove: due scelte dalla coda a un secondo l'una
 /// dall'altra mandavano l'host una voce oltre la seconda.

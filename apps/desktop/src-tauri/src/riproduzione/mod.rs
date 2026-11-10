@@ -1313,20 +1313,18 @@ pub fn riga_di_avvio_lettore(stato: &StatoLettore) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guardia.as_ref() {
         Ok(lettore) => {
-            let f = lettore.motore.formato();
             // `bluetooth` è quel che ha visto `cpal`, e decide quanto presto la
             // pausa libera l'uscita: se le cuffie non passano al telefono, è
             // la prima cosa da guardare.
             nota!(
-                "[avvio] audio aperto uscita={} frequenza={} canali={} bluetooth={}",
-                lettore.motore.dispositivo(),
-                f.frequenza,
-                f.canali,
-                if lettore.motore.su_bluetooth() {
-                    "sì"
-                } else {
-                    "no"
-                }
+                "{}",
+                riga_dell_uscita(
+                    "[avvio] audio aperto",
+                    lettore.motore.dispositivo(),
+                    lettore.motore.formato(),
+                    lettore.motore.su_bluetooth(),
+                    lettore.motore.era_predefinito(),
+                )
             );
         }
         Err(err) => nota!(
@@ -1335,6 +1333,54 @@ pub fn riga_di_avvio_lettore(stato: &StatoLettore) {
             err.cause().unwrap_or("—")
         ),
     }
+}
+
+/// La riga del diario di un'uscita aperta: all'avvio e a ogni riapertura.
+///
+/// L'uscita ci sta per impronta ([`uscita_nel_diario`]), e accanto il suo
+/// genere — Bluetooth o no, predefinita di sistema o no — e il formato con cui
+/// si è aperta, che sono le cose che servono a capire un «non si sente».
+pub(super) fn riga_dell_uscita(
+    cosa: &str,
+    uscita: &str,
+    formato: rymembra_play::FormatoUscita,
+    bluetooth: bool,
+    predefinito: bool,
+) -> String {
+    let si_no = |vero: bool| if vero { "sì" } else { "no" };
+    format!(
+        "{cosa} uscita={} frequenza={} canali={} bluetooth={} predefinito={}",
+        uscita_nel_diario(uscita),
+        formato.frequenza,
+        formato.canali,
+        si_no(bluetooth),
+        si_no(predefinito)
+    )
+}
+
+/// Come un'uscita audio si nomina nel diario: mai per nome.
+///
+/// # Perché il nome no
+///
+/// Perché il nome lo sceglie chi ha le cuffie, non il driver: Windows dà a
+/// un'uscita Bluetooth il nome che il dispositivo annuncia, e quel nome è
+/// spesso «Cuffie (AirPods di Mario)». Il diario si allega alle segnalazioni,
+/// ed è la ragione per cui esiste; `PRIVACY.md` promette che l'unica cosa tua
+/// che ci finisce è il percorso della cartella dei dati. La stessa regola che
+/// `coda::riga_delle_latenze` tiene già per le latenze per uscita.
+///
+/// # Perché un'impronta, e perché sempre la stessa
+///
+/// Perché la domanda che il diario deve saper risolvere è «è cambiata
+/// uscita?», fra due righe e anche fra due sessioni: le prime otto cifre
+/// esadecimali del BLAKE3 del nome, tra parentesi quadre. La stessa uscita dà
+/// sempre la stessa impronta, su ogni avvio e su ogni versione; due uscite
+/// diverse, quasi sempre due impronte diverse. Il prezzo è dichiarato: chi
+/// conosce già il nome esatto di un'uscita può verificare che è quella. Non
+/// può ricavarlo dall'impronta.
+pub(super) fn uscita_nel_diario(uscita: &str) -> String {
+    let impronta = rymembra_app::backup::impronta(uscita.as_bytes());
+    format!("[{}]", impronta.get(..8).unwrap_or_default())
 }
 
 /// Esegue `azione` sul lettore aperto.

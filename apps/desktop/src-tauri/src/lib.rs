@@ -346,15 +346,20 @@ pub fn run() {
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
             let scelta = cartella_dati(app.handle())?;
-            let data_dir = scelta.cartella.clone();
+            // Se la cartella l'ha scelta una variabile, per chi tiene una
+            // cache fuori dai dati: la risposta dell'unica lettura delle
+            // variabili, e non una seconda lettura con una regola sua. Vedi
+            // [`cartella_di_cache`]. Prima di ogni stato che apre una cache.
+            app.manage(DatiAMano(fatta_a_mano(&scelta)));
             // I dati di chi aveva la versione di prima, **prima di tutto il
             // resto**: se la cartella nuova deve arrivare dalla vecchia, deve
             // arrivare prima che qualcosa ci scriva dentro — il diario qui
             // sotto, il database, le copertine — perché lo spostamento di una
             // cartella intera vale solo se quella nuova non c'è ancora. Il
             // diario si apre subito dopo, comunque, ed è lì che il trasloco
-            // racconta cos'ha fatto.
-            let esito = prepara_i_dati(&scelta);
+            // racconta cos'ha fatto. Una cartella che la variabile indica
+            // relativa non arriva nemmeno fin qui: è già un rifiuto.
+            let esito = scelta.and_then(|scelta| prepara_i_dati(&scelta).map(|()| scelta.cartella));
             // Un rifiuto non ferma il `setup`: gli stati vanno registrati
             // comunque, perché i comandi li estraggono per tipo e uno stato
             // mancante farebbe fallire ognuno con «state not managed», cioè
@@ -398,9 +403,9 @@ pub fn run() {
             // indice le sue domande rispondono `internal.aborted`: lo cercano
             // per `try_state` (vedi `cartelle::indice`), non con un'estrazione
             // per tipo.
-            if esito.is_ok() {
+            if let Ok(data_dir) = &esito {
                 app.manage(std::sync::Arc::new(cartelle::IndiceCartelle::nuovo(
-                    &data_dir,
+                    data_dir,
                 )));
             }
 
@@ -408,9 +413,9 @@ pub fn run() {
             // trattare — la stessa di un database che non si è aperto — e
             // `Stato::apri` non si chiama: creerebbe la cartella nuova, il
             // database e le copertine, proprio ciò che il rifiuto deve evitare.
-            let stato = match &esito {
-                Ok(()) => stato::Stato::apri(data_dir),
-                Err(errore) => rifiuta(app.handle(), errore),
+            let stato = match esito {
+                Ok(data_dir) => stato::Stato::apri(data_dir),
+                Err(errore) => rifiuta(app.handle(), &errore),
             };
             // La riga di avvio va stampata **prima** di disegnare: se
             // l'apertura del database è fallita, è l'unica traccia che resta
@@ -1151,8 +1156,9 @@ fn una_sola_istanza(costruttore: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     ))
 }
 
-/// Il nome della variabile d'ambiente con cui si sceglie a mano la cartella dati.
-const VARIABILE_DATI: &str = "RYMEMBRA_DATI";
+/// Il nome della variabile d'ambiente con cui si sceglie a mano la cartella dati:
+/// quello di [`trasloco::VARIABILE_DATI`], che ne nomina il rifiuto.
+const VARIABILE_DATI: &str = trasloco::VARIABILE_DATI;
 
 /// Le due variabili che possono dettare la cartella dati, nell'ordine in cui
 /// valgono: quella di adesso e quella della versione precedente.
@@ -1174,7 +1180,17 @@ fn variabili_dei_dati() -> (Option<OsString>, Option<OsString>) {
 /// la scelta della cartella devono andare d'accordo, e due modi di leggere
 /// «impostata» sono due modi di non andarci.
 fn dati_a_mano(nuova: Option<OsString>, vecchia: Option<OsString>) -> bool {
-    trasloco::scegli_cartella(nuova, vecchia, PathBuf::new()).personalizzata
+    fatta_a_mano(&trasloco::scegli_cartella(nuova, vecchia, PathBuf::new()))
+}
+
+/// Se la scelta della cartella dati l'ha fatta una variabile.
+///
+/// Anche quando la variabile la indica relativa e la scelta è un rifiuto: chi
+/// l'ha impostata stava provando un'istanza a parte, e quel che non deve
+/// toccare — il guardiano dell'istanza unica della libreria vera, la sua cache —
+/// resta da non toccare.
+fn fatta_a_mano(scelta: &Result<trasloco::Scelta, trasloco::Errore>) -> bool {
+    scelta.as_ref().map_or(true, |scelta| scelta.personalizzata)
 }
 
 /// La scelta della cartella dati, chiedendo quella di serie solo se serve.
@@ -1182,17 +1198,70 @@ fn dati_a_mano(nuova: Option<OsString>, vecchia: Option<OsString>) -> bool {
 /// Con una variabile impostata la cartella di serie non si calcola nemmeno,
 /// com'è sempre stato: `di_serie` può fallire, e un guasto lì non deve fermare
 /// chi la cartella l'ha già indicata a mano.
+///
+/// Il risultato di fuori è il guasto di `di_serie`, che ferma l'avvio; quello di
+/// dentro è la scelta, o il suo rifiuto ([`trasloco::Errore::CartellaRelativa`]),
+/// che l'avvio dice con un dialogo ([`rifiuta`]).
 fn scegli_la_cartella<E>(
     nuova: Option<OsString>,
     vecchia: Option<OsString>,
     di_serie: impl FnOnce() -> Result<PathBuf, E>,
-) -> Result<trasloco::Scelta, E> {
+) -> Result<Result<trasloco::Scelta, trasloco::Errore>, E> {
     let predefinita = if dati_a_mano(nuova.clone(), vecchia.clone()) {
         PathBuf::new()
     } else {
         di_serie()?
     };
     Ok(trasloco::scegli_cartella(nuova, vecchia, predefinita))
+}
+
+/// Se la cartella dati di questo avvio l'ha scelta una variabile d'ambiente
+/// (o se la variabile c'era, e la cartella è stata rifiutata): la risposta di
+/// [`fatta_a_mano`], registrata nel `setup` per chi deve saperlo dopo.
+///
+/// # Perché uno stato e non un'altra lettura dell'ambiente
+///
+/// Perché la cache dei brani del cloud e quella delle copertine lontane la
+/// leggevano da sé, con `var_os("RYMEMBRA_DATI").is_some()`: una regola che
+/// non vedeva la variabile della versione precedente (e la cache finiva
+/// condivisa con l'istanza vera, che può girare insieme) e contava come
+/// impostata una variabile vuota (e la cache finiva nel profilo roaming). La
+/// lettura è una, [`variabili_dei_dati`], e chi ne ha bisogno ne riceve la
+/// risposta.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DatiAMano(pub(crate) bool);
+
+/// Dove sta una cache che non deve viaggiare col profilo roaming: la cartella
+/// `nome` in `%LOCALAPPDATA%\<identificatore>`, oppure dentro la cartella dei
+/// dati se l'ha scelta una variabile ([`DatiAMano`]), così due istanze non si
+/// dividono la stessa cache.
+///
+/// `None` se la cartella l'ha scelta una variabile e la libreria non si è
+/// aperta (il rifiuto di una cartella relativa): la cartella locale è quella
+/// dell'istanza vera, che può girare insieme, e una cache aperta da qui
+/// poterebbe la sua. Senza nessuna delle due cartelle, quella temporanea.
+pub(crate) fn cartella_di_cache(app: &tauri::AppHandle, nome: &str) -> Option<PathBuf> {
+    let a_mano = app.try_state::<DatiAMano>().is_some_and(|dati| dati.0);
+    let dati = app
+        .try_state::<stato::Stato>()
+        .and_then(|stato| stato.cartella_dati().map(std::path::Path::to_path_buf));
+    let locale = app.path().app_local_data_dir().ok();
+    dove_sta_la_cache(a_mano, dati.as_deref(), locale.as_deref(), nome)
+}
+
+/// La regola di [`cartella_di_cache`], senza Tauri.
+fn dove_sta_la_cache(
+    a_mano: bool,
+    dati: Option<&std::path::Path>,
+    locale: Option<&std::path::Path>,
+    nome: &str,
+) -> Option<PathBuf> {
+    match (a_mano, dati, locale) {
+        (true, Some(dati), _) | (false, Some(dati), None) => Some(dati.join(nome)),
+        (false, _, Some(locale)) => Some(locale.join(nome)),
+        (true, None, _) => None,
+        (false, None, None) => Some(std::env::temp_dir().join(format!("rymembra-{nome}"))),
+    }
 }
 
 /// Dove stanno database, copertine e skin, e come ci si è arrivati.
@@ -1224,8 +1293,16 @@ fn scegli_la_cartella<E>(
 /// nemmeno che è successo.
 ///
 /// Le variabili si leggono **solo qui**, all'avvio, e da nessun'altra parte:
-/// quello che il resto del programma vede è un `PathBuf` e basta, come prima.
-fn cartella_dati(app: &tauri::AppHandle) -> Result<trasloco::Scelta, tauri::Error> {
+/// quello che il resto del programma vede è un `PathBuf` e basta, come prima, e
+/// [`DatiAMano`] per chi deve sapere se la cartella è quella di serie.
+///
+/// Una variabile che indica una cartella relativa dà il rifiuto di dentro
+/// ([`trasloco::Errore::CartellaRelativa`]): l'avvio lo dice e si chiude, senza
+/// ripiegare sulla cartella di serie, che è la libreria vera di chi stava
+/// facendo una prova.
+fn cartella_dati(
+    app: &tauri::AppHandle,
+) -> Result<Result<trasloco::Scelta, trasloco::Errore>, tauri::Error> {
     let (nuova, vecchia) = variabili_dei_dati();
     scegli_la_cartella(nuova, vecchia, || app.path().app_data_dir())
 }
@@ -1245,17 +1322,11 @@ fn cartella_dati(app: &tauri::AppHandle) -> Result<trasloco::Scelta, tauri::Erro
 ///
 /// `Err` vuol dire che il trasloco non è andato avanti — la versione di prima è
 /// ancora aperta, o una cartella non si lascia spostare — e che la cartella nuova
-/// **non** va toccata: niente diario, niente database, niente copertine. Il
-/// motivo si scrive solo dove si può (in sviluppo, su `stderr`), perché il
-/// diario è chiuso e non si apre; a dirlo a chi guarda ci pensa [`rifiuta`].
+/// **non** va toccata: niente diario, niente database, niente copertine. A
+/// dirlo ci pensa [`rifiuta`]: il motivo nel file di riserva, perché il diario è
+/// chiuso e non si apre, e un dialogo per chi guarda.
 fn prepara_i_dati(scelta: &trasloco::Scelta) -> Result<(), trasloco::Errore> {
-    let rapporto = match trasloco::trasloca(&trasloco::percorsi_per(scelta)) {
-        Ok(rapporto) => rapporto,
-        Err(errore) => {
-            nota!("[avvio] trasloco dei dati della versione precedente rifiutato: {errore}");
-            return Err(errore);
-        }
-    };
+    let rapporto = trasloco::trasloca(&trasloco::percorsi_per(scelta))?;
     diario::apri(&scelta.cartella);
     if scelta.da_variabile_precedente {
         nota!(
@@ -1270,7 +1341,19 @@ fn prepara_i_dati(scelta: &trasloco::Scelta) -> Result<(), trasloco::Errore> {
     Ok(())
 }
 
-/// Il trasloco ha detto di no: lo si dice all'utente, e lo stato non apre niente.
+/// Il motivo di un rifiuto, dove resta: il diario a quel punto è chiuso — si
+/// apre solo dopo un trasloco riuscito — e una riga di [`nota!`] non andava da
+/// nessuna parte. Il file di riserva esiste per questo: quel che succede prima
+/// che il diario si apra (`diario::nota_di_emergenza`). Di un «non parte»
+/// restava solo il testo del dialogo, se qualcuno lo ricopiava.
+fn annota_il_rifiuto(errore: &trasloco::Errore) {
+    diario::nota_di_emergenza(format_args!(
+        "[avvio] cartella dati rifiutata, Rymembra si chiude: {errore}"
+    ));
+}
+
+/// Il trasloco ha detto di no, o la variabile dei dati indica una cartella
+/// relativa: lo si dice all'utente, e lo stato non apre niente.
 ///
 /// # Che cosa ottiene chi guarda
 ///
@@ -1314,6 +1397,8 @@ fn rifiuta(app: &tauri::AppHandle, errore: &trasloco::Errore) -> stato::Stato {
     // cancellato. Per prima cosa, perché il `setup` prosegue e avvia i fili che
     // arrivano al portachiavi.
     rymembra_oauth::portachiavi::sospendi_il_travaso();
+    // Il motivo su disco **prima** del dialogo, che si chiude con l'uscita.
+    annota_il_rifiuto(errore);
     app.dialog()
         .message(trasloco::messaggio_di_rifiuto(errore))
         .kind(MessageDialogKind::Error)
@@ -1321,7 +1406,7 @@ fn rifiuta(app: &tauri::AppHandle, errore: &trasloco::Errore) -> stato::Stato {
         .show(|_| std::process::exit(1));
     stato::Stato::rifiutato(
         AppError::new(ErrorCode::InternalUnexpected {
-            detail: Some("trasloco dei dati della versione precedente rifiutato".to_owned()),
+            detail: Some("cartella dati rifiutata all'avvio".to_owned()),
         })
         .with_cause(errore.to_string()),
     )
@@ -1336,11 +1421,22 @@ mod prove {
         Some(OsString::from(testo))
     }
 
+    /// Una cartella assoluta su ogni sistema: quella temporanea, più un nome.
+    /// Non si crea niente.
+    fn assoluta(nome: &str) -> PathBuf {
+        std::env::temp_dir().join(nome)
+    }
+
+    fn os_assoluta(nome: &str) -> Option<OsString> {
+        Some(assoluta(nome).into_os_string())
+    }
+
     #[test]
     fn senza_variabili_la_cartella_e_quella_di_serie_e_il_guardiano_resta() {
         assert!(!dati_a_mano(None, None));
         let scelta = scegli_la_cartella(None, None, || Ok::<_, ()>(PathBuf::from("di-serie")))
-            .expect("la cartella di serie c'è");
+            .expect("la cartella di serie c'è")
+            .expect("una scelta");
         assert_eq!(scelta.cartella, PathBuf::from("di-serie"));
         assert!(!scelta.personalizzata);
         assert!(!scelta.da_variabile_precedente);
@@ -1373,15 +1469,26 @@ mod prove {
             Ok::<_, ()>(PathBuf::from("di-serie"))
         };
 
-        let scelta = scegli_la_cartella(os("a-mano"), None, di_serie).expect("scelta");
-        assert_eq!(scelta.cartella, PathBuf::from("a-mano"));
+        let scelta = scegli_la_cartella(os_assoluta("a-mano"), None, di_serie)
+            .expect("scelta")
+            .expect("valida");
+        assert_eq!(scelta.cartella, assoluta("a-mano"));
         assert!(scelta.personalizzata);
-        let scelta = scegli_la_cartella(None, os("di-prima"), di_serie).expect("scelta");
-        assert_eq!(scelta.cartella, PathBuf::from("di-prima"));
+        let scelta = scegli_la_cartella(None, os_assoluta("di-prima"), di_serie)
+            .expect("scelta")
+            .expect("valida");
+        assert_eq!(scelta.cartella, assoluta("di-prima"));
         assert!(scelta.da_variabile_precedente);
+        // Nemmeno per rifiutare una cartella relativa.
+        assert!(matches!(
+            scegli_la_cartella(os("relativa"), None, di_serie),
+            Ok(Err(trasloco::Errore::CartellaRelativa { .. }))
+        ));
         assert_eq!(chiamate.get(), 0, "la cartella di serie non serviva");
 
-        let scelta = scegli_la_cartella(os(""), os(""), di_serie).expect("scelta");
+        let scelta = scegli_la_cartella(os(""), os(""), di_serie)
+            .expect("scelta")
+            .expect("valida");
         assert_eq!(scelta.cartella, PathBuf::from("di-serie"));
         assert_eq!(chiamate.get(), 1, "serviva, e una volta sola");
     }
@@ -1395,16 +1502,158 @@ mod prove {
             "la cartella dati non si risolve"
         );
         // Con una variabile il guasto non viene nemmeno incontrato.
-        let scelta = scegli_la_cartella(os("a-mano"), None, guasto).expect("scelta");
-        assert_eq!(scelta.cartella, PathBuf::from("a-mano"));
+        let scelta = scegli_la_cartella(os_assoluta("a-mano"), None, guasto)
+            .expect("scelta")
+            .expect("valida");
+        assert_eq!(scelta.cartella, assoluta("a-mano"));
     }
 
     #[test]
     fn la_variabile_di_adesso_vince_su_quella_di_prima() {
-        let scelta = scegli_la_cartella(os("nuova"), os("vecchia"), || Ok::<_, ()>(PathBuf::new()))
-            .expect("scelta");
-        assert_eq!(scelta.cartella, PathBuf::from("nuova"));
+        let scelta = scegli_la_cartella(os_assoluta("nuova"), os_assoluta("vecchia"), || {
+            Ok::<_, ()>(PathBuf::new())
+        })
+        .expect("scelta")
+        .expect("valida");
+        assert_eq!(scelta.cartella, assoluta("nuova"));
         assert!(!scelta.da_variabile_precedente);
+    }
+
+    /// Una variabile che indica una cartella relativa resta una scelta a mano:
+    /// il guardiano dell'istanza unica non c'è (il rifiuto si deve vedere, non
+    /// finire nella finestra dell'istanza vera), e la cache non va in quella
+    /// dell'istanza di serie.
+    #[test]
+    fn una_cartella_relativa_resta_una_scelta_a_mano() {
+        assert!(dati_a_mano(os("relativa"), None));
+        assert!(dati_a_mano(None, os("relativa")));
+    }
+
+    /// Dove sta una cache: dentro i dati se la cartella l'ha scelta una
+    /// variabile, nella cartella locale se no; e **da nessuna parte** se la
+    /// cartella era a mano e la libreria non si è aperta, perché la cartella
+    /// locale è quella dell'istanza vera, che può girare insieme.
+    #[test]
+    fn la_cache_non_si_divide_con_l_istanza_vera() {
+        let dati = assoluta("dati");
+        let locale = assoluta("locale");
+        let dove = |a_mano, dati, locale| dove_sta_la_cache(a_mano, dati, locale, "cache");
+        assert_eq!(
+            dove(true, Some(dati.as_path()), Some(locale.as_path())),
+            Some(dati.join("cache"))
+        );
+        assert_eq!(
+            dove(false, Some(dati.as_path()), Some(locale.as_path())),
+            Some(locale.join("cache"))
+        );
+        assert_eq!(dove(true, None, Some(locale.as_path())), None);
+        assert_eq!(dove(true, None, None), None);
+        assert_eq!(
+            dove(false, Some(dati.as_path()), None),
+            Some(dati.join("cache"))
+        );
+        assert_eq!(
+            dove(false, None, Some(locale.as_path())),
+            Some(locale.join("cache"))
+        );
+        assert_eq!(
+            dove(false, None, None),
+            Some(std::env::temp_dir().join("rymembra-cache"))
+        );
+    }
+
+    /// Il rifiuto arriva a diario chiuso — il diario si apre solo dopo un
+    /// trasloco riuscito — e il dialogo si chiude con l'uscita. Senza una riga
+    /// nel file di riserva, di un «non parte» restava solo il testo del
+    /// dialogo, se qualcuno lo ricopiava.
+    #[test]
+    fn il_rifiuto_del_trasloco_resta_nella_riserva() {
+        let errore = trasloco::Errore::InUso {
+            percorso: PathBuf::from("dati-finti").join("aether.db"),
+        };
+        let riserva = diario::a_diario_chiuso(|| annota_il_rifiuto(&errore));
+        assert!(
+            riserva.contains("rifiutat") && riserva.contains(&errore.to_string()),
+            "il motivo del rifiuto non è da nessuna parte: {riserva:?}"
+        );
+    }
+
+    /// E il motivo lo scrive [`rifiuta`], che è la strada di ogni rifiuto
+    /// all'avvio — il trasloco e la cartella relativa — **prima** del dialogo,
+    /// che si chiude con l'uscita.
+    #[test]
+    fn ogni_rifiuto_all_avvio_lascia_il_motivo_prima_del_dialogo() {
+        let corpo = include_str!("lib.rs")
+            .split("fn rifiuta(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let riga = corpo.find("annota_il_rifiuto(");
+        let dialogo = corpo.find(".dialog()");
+        assert!(
+            riga.is_some() && riga < dialogo,
+            "il rifiuto si mostra senza lasciare il motivo su disco"
+        );
+    }
+
+    /// Le due variabili dei dati si leggono dall'ambiente in un posto solo,
+    /// [`variabili_dei_dati`]: chi altro deve sapere se la cartella è stata
+    /// scelta a mano lo riceve da lì. Due letture con due regole avevano dato
+    /// una cache condivisa fra due istanze (con la variabile di prima
+    /// impostata) e una cache di centinaia di megabyte nel profilo roaming (con
+    /// quella di adesso impostata ma vuota).
+    #[test]
+    fn la_variabile_dei_dati_si_legge_in_un_posto_solo() {
+        fn sorgenti(cartella: &std::path::Path, tutti: &mut Vec<(PathBuf, String)>) {
+            let Ok(voci) = std::fs::read_dir(cartella) else {
+                return;
+            };
+            for voce in voci.flatten() {
+                let percorso = voce.path();
+                if percorso.is_dir() {
+                    sorgenti(&percorso, tutti);
+                } else if percorso.extension().is_some_and(|e| e == "rs")
+                    && let Ok(testo) = std::fs::read_to_string(&percorso)
+                {
+                    tutti.push((percorso, testo));
+                }
+            }
+        }
+        let mut tutti = Vec::new();
+        sorgenti(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut tutti,
+        );
+        assert!(tutti.len() > 50, "i sorgenti non si sono trovati");
+        let mut letture = Vec::new();
+        for (percorso, testo) in &tutti {
+            for (dove, _) in testo.match_indices("env::var") {
+                let accanto: String = testo
+                    .get(dove..)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(48)
+                    .collect();
+                if accanto.contains("_DATI") {
+                    letture.push(format!("{}: {accanto}", percorso.display()));
+                }
+            }
+        }
+        let corpo = include_str!("lib.rs")
+            .split("fn variabili_dei_dati()")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        assert_eq!(
+            letture.len(),
+            2,
+            "le variabili dei dati si leggono anche fuori da `variabili_dei_dati`: {letture:#?}"
+        );
+        assert!(
+            letture.iter().all(|l| l.contains("lib.rs"))
+                && corpo.matches("env::var_os(").count() == 2,
+            "{letture:#?}"
+        );
     }
 
     #[test]

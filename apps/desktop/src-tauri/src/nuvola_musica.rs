@@ -296,8 +296,16 @@ pub fn avvia(app: &AppHandle) {
     });
     let specchio_condiviso: SpecchioCondiviso = Arc::new(RwLock::new(specchio_caricato));
     let depositi: Depositi = Arc::default();
-    let archivio = match Cache::apri(cartella_cache(app, &stato), tetto, cache_attiva) {
-        Ok(cache) => Some(Arc::new(ArchivioNuvola::nuovo(
+    let aperta = cartella_cache(app).map(|cartella| Cache::apri(cartella, tetto, cache_attiva));
+    let archivio = match aperta {
+        // Nessuna cartella per la cache: la cartella dei dati l'ha scelta una
+        // variabile e la libreria non si è aperta. Quella locale è dell'istanza
+        // vera, e aprirla da qui vorrebbe dire potarle la cache sotto i piedi.
+        None => {
+            nota!("[nuvola] nessuna cartella per la cache dei brani, cloud spento");
+            None
+        }
+        Some(Ok(cache)) => Some(Arc::new(ArchivioNuvola::nuovo(
             {
                 // Una copia completa è la misura «mentre suonano»: il volume e
                 // l'impronta di quel brano, dalla copia locale. Vedi `analisi`.
@@ -315,7 +323,7 @@ pub fn avvia(app: &AppHandle) {
             Arc::clone(&depositi),
             cache,
         ))),
-        Err(guasto) => {
+        Some(Err(guasto)) => {
             nota!("[nuvola] la cache dei brani non si apre, cloud spento: {guasto}");
             None
         }
@@ -366,20 +374,13 @@ pub fn avvia(app: &AppHandle) {
 ///
 /// Fuori dalla cartella dei dati, che sta in `%APPDATA%` e quindi va in giro
 /// coi profili roaming: duecento megabyte di brani da ricopiare a ogni accesso
-/// a un altro PC del dominio non li vuole nessuno. Con `RYMEMBRA_DATI`
-/// impostata (le istanze di prova) sta invece **dentro** quella cartella, così
-/// due istanze non si dividono la stessa cache.
-fn cartella_cache(app: &AppHandle, stato: &Stato) -> PathBuf {
-    let dentro_i_dati = std::env::var_os("RYMEMBRA_DATI").is_some();
-    match (
-        dentro_i_dati,
-        stato.cartella_dati(),
-        app.path().app_local_data_dir(),
-    ) {
-        (true, Some(dati), _) | (false, Some(dati), Err(_)) => dati.join("nuvola-cache"),
-        (_, _, Ok(locale)) => locale.join("nuvola-cache"),
-        (_, None, Err(_)) => std::env::temp_dir().join("rymembra-nuvola-cache"),
-    }
+/// a un altro PC del dominio non li vuole nessuno. Con la cartella dei dati
+/// scelta da una variabile (le istanze di prova) sta invece **dentro** quella
+/// cartella, così due istanze non si dividono la stessa cache. La regola, e la
+/// risposta a «scelta da una variabile», sono di [`crate::cartella_di_cache`];
+/// `None` vuol dire nessuna cache.
+fn cartella_cache(app: &AppHandle) -> Option<PathBuf> {
+    crate::cartella_di_cache(app, "nuvola-cache")
 }
 
 /// Il deposito di un conto salvato: la sua app, e il suo segreto nel

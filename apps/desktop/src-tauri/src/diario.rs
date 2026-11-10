@@ -269,8 +269,7 @@ fn scrivi_la_riga(guardia: &mut Option<Aperto>, argomenti: std::fmt::Arguments<'
     let Some(aperto) = guardia.as_mut() else {
         return false;
     };
-    let riga = format!("{} {argomenti}\n", istante_iso(adesso_ms()));
-    let riga = senza_utente(&riga, cartelle_dell_utente());
+    let riga = componi_la_riga(argomenti);
     // Un errore di scrittura non si racconta a nessuno: raccontarlo vorrebbe
     // dire scriverlo sul diario che non si riesce a scrivere.
     if aperto.file.write_all(riga.as_bytes()).is_ok() {
@@ -284,6 +283,75 @@ fn scrivi_la_riga(guardia: &mut Option<Aperto>, argomenti: std::fmt::Arguments<'
     // spiegava tutto, persa.
     let _ = aperto.file.flush();
     aperto.scritti >= TETTO
+}
+
+/// La riga come va su disco, nel diario o nel file di riserva: l'istante, il
+/// messaggio con i caratteri di controllo resi visibili ([`visibile`]), l'a
+/// capo, e senza il nome dell'utente ([`senza_utente`]).
+///
+/// Una sola per le due strade di scrittura, perché sono le due regole che
+/// fanno di un file una sequenza di righe di cui fidarsi: una che ne
+/// dimenticasse una delle due sarebbe il buco da cui passa tutto.
+fn componi_la_riga(argomenti: std::fmt::Arguments<'_>) -> String {
+    let messaggio = argomenti.to_string();
+    let riga = format!("{} {}\n", istante_iso(adesso_ms()), visibile(&messaggio));
+    senza_utente(&riga, cartelle_dell_utente()).into_owned()
+}
+
+/// Il messaggio con gli a capo e gli altri caratteri di controllo scritti in
+/// chiaro: `\n`, `\r`, `\t`, e `\u{…}` per il resto.
+///
+/// # Perché il diario non si fida di quel che scrive
+///
+/// Perché una riga per evento, con l'istante davanti, è la struttura su cui
+/// chi legge il diario costruisce la sua storia, e dentro le righe finisce
+/// testo che arriva da fuori: il corpo d'errore di un servizio (fino a
+/// cinquecento caratteri, a capo compresi), la piattaforma che dichiara un
+/// dispositivo che si collega, un ordinamento mandato dalla pagina. Un a capo
+/// lì dentro seguito da `2026-01-01T00:00:00Z [PANICO] …` era una riga finta
+/// indistinguibile da una vera; un `\r` o un controllo bidirezionale nascondono
+/// una parte della riga nell'editor di chi la legge. Resi visibili, restano
+/// tutti dentro la riga a cui appartengono.
+///
+/// Oltre ai controlli veri e propri (C0, `DEL`, C1) anche i due separatori di
+/// riga e di paragrafo di Unicode, che certi editor trattano come a capo, e i
+/// segni che cambiano la direzione del testo. La barra rovesciata no: è il
+/// separatore dei percorsi di Windows, e [`senza_utente`] li cerca così.
+fn visibile(testo: &str) -> Cow<'_, str> {
+    if !testo.chars().any(da_rendere_visibile) {
+        return Cow::Borrowed(testo);
+    }
+    let mut fuori = String::with_capacity(testo.len().saturating_add(16));
+    for carattere in testo.chars() {
+        match carattere {
+            '\n' => fuori.push_str("\\n"),
+            '\r' => fuori.push_str("\\r"),
+            '\t' => fuori.push_str("\\t"),
+            altro if da_rendere_visibile(altro) => {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut fuori,
+                    format_args!("\\u{{{:x}}}", u32::from(altro)),
+                );
+            }
+            altro => fuori.push(altro),
+        }
+    }
+    Cow::Owned(fuori)
+}
+
+/// Un carattere che nel diario non si scrive così com'è: vedi [`visibile`].
+fn da_rendere_visibile(carattere: char) -> bool {
+    carattere.is_control()
+        || matches!(
+            carattere,
+            '\u{2028}'
+                | '\u{2029}'
+                | '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
 }
 
 /// Le cartelle dell'utente che non si scrivono per esteso, con il loro
@@ -675,8 +743,7 @@ fn scrivi_di_riserva(argomenti: std::fmt::Arguments<'_>) -> Option<PathBuf> {
         opzioni.create(true).append(true);
     }
     let mut file = opzioni.open(&percorso).ok()?;
-    let riga = format!("{} {argomenti}\n", istante_iso(adesso_ms()));
-    let riga = senza_utente(&riga, cartelle_dell_utente());
+    let riga = componi_la_riga(argomenti);
     file.write_all(riga.as_bytes()).ok()?;
     let _ = file.flush();
     Some(percorso)
@@ -704,6 +771,40 @@ fn cartella_di_riserva() -> Option<PathBuf> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone()
+}
+
+/// Le prove che toccano il diario del processo si danno il turno.
+///
+/// Il diario è **uno per processo** — è il suo punto — e le prove girano
+/// tutte nello stesso. Senza questo lucchetto, quella che lo chiude per
+/// verificare che un diario chiuso non faccia danni lo chiuderebbe sotto i
+/// piedi di quella che sta misurando la rotazione, e a fallire sarebbe la
+/// seconda: il difetto peggiore che una prova possa avere. Sta fuori da
+/// `prove` perché lo prendono anche le prove di altri moduli, attraverso
+/// [`a_diario_chiuso`].
+#[cfg(test)]
+static IL_TURNO: Mutex<()> = Mutex::new(());
+
+/// Per le prove di altri moduli: esegue `prova` a diario chiuso, col file di
+/// riserva in una cartella temporanea, e restituisce quel che ci è finito.
+///
+/// È la condizione dell'avvio prima di [`apri`]: quel che una prova vuole
+/// sapere è se una riga di quel momento resta su disco.
+#[cfg(test)]
+pub(crate) fn a_diario_chiuso(prova: impl FnOnce()) -> String {
+    let _turno = IL_TURNO.lock().unwrap_or_else(PoisonError::into_inner);
+    let Ok(riserva) = tempfile::tempdir() else {
+        return String::new();
+    };
+    *RISERVA_DI_PROVA
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(riserva.path().to_path_buf());
+    *preso() = None;
+    prova();
+    *RISERVA_DI_PROVA
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+    fs::read_to_string(riserva.path().join(RISERVA)).unwrap_or_default()
 }
 
 /// Apre la cartella del diario nel gestore file del sistema.
@@ -838,15 +939,6 @@ pub fn diario_annota(dove: String, cosa: String) {
 #[cfg(test)]
 mod prove {
     use super::*;
-
-    /// Le prove di questo modulo si danno il turno.
-    ///
-    /// Il diario è **uno per processo** — è il suo punto — e le prove girano
-    /// tutte nello stesso. Senza questo lucchetto, quella che lo chiude per
-    /// verificare che un diario chiuso non faccia danni lo chiuderebbe sotto i
-    /// piedi di quella che sta misurando la rotazione, e a fallire sarebbe la
-    /// seconda: il difetto peggiore che una prova possa avere.
-    static IL_TURNO: Mutex<()> = Mutex::new(());
 
     /// Apre un diario in una cartella temporanea che sparisce da sé.
     fn in_una_cartella(prova: impl FnOnce(&Path)) {
@@ -1163,6 +1255,66 @@ mod prove {
             senza_utente(r"«C:\Users\Niccolò\x» è qui", &accentata),
             r"«%USERPROFILE%\x» è qui"
         );
+    }
+
+    /// Un testo che arriva da fuori — il corpo d'errore di un servizio, la
+    /// piattaforma di un dispositivo che si collega — non scrive righe sue.
+    ///
+    /// Il caso vero: una causa con un a capo dentro, seguito da quel che ha
+    /// l'aria di una riga del diario. Chi legge vedeva un `[PANICO]` mai
+    /// successo, con il suo istante davanti.
+    #[test]
+    fn una_causa_su_piu_righe_resta_una_riga() {
+        in_una_cartella(|radice| {
+            let percorso = radice.join(CARTELLA).join(NOME);
+            let prima = fs::read_to_string(&percorso).unwrap_or_default();
+            nota!(
+                "[x] causa={}",
+                "a\n2026-01-01T00:00:00Z [PANICO] finto\r\u{0}\u{1b}[31m\u{85}\u{2028}\u{202e}fine"
+            );
+            let dopo = fs::read_to_string(&percorso).unwrap_or_default();
+            let nuovo = dopo.get(prima.len()..).unwrap_or_default();
+            assert_eq!(
+                nuovo.lines().count(),
+                1,
+                "il testo da fuori ha scritto righe sue: {nuovo:?}"
+            );
+            let riga = nuovo.trim_end_matches('\n');
+            assert!(
+                riga.ends_with(
+                    r"[x] causa=a\n2026-01-01T00:00:00Z [PANICO] finto\r\u{0}\u{1b}[31m\u{85}\u{2028}\u{202e}fine"
+                ),
+                "i caratteri di controllo non sono diventati visibili: {riga:?}"
+            );
+            // Le barre rovesciate dei percorsi restano quelle: sono il modo in
+            // cui Windows scrive una cartella, e `senza_utente` le cerca.
+            nota!(r"[x] dati=C:\Prova\dati");
+            let ancora = fs::read_to_string(&percorso).unwrap_or_default();
+            assert!(ancora.contains(r"[x] dati=C:\Prova\dati"), "{ancora:?}");
+        });
+    }
+
+    /// La stessa regola vale per il file di riserva, che si scrive con la stessa
+    /// riga.
+    #[test]
+    fn anche_la_riserva_non_si_lascia_scrivere_righe_finte() {
+        let _turno = IL_TURNO.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok(riserva) = tempfile::tempdir() else {
+            return;
+        };
+        *RISERVA_DI_PROVA
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(riserva.path().to_path_buf());
+        *preso() = None;
+        nota_di_emergenza(format_args!(
+            "[avvio] x\n2026-01-01T00:00:00Z [PANICO] finto"
+        ));
+        *RISERVA_DI_PROVA
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        let testo = fs::read_to_string(riserva.path().join(RISERVA)).unwrap_or_default();
+        assert_eq!(testo.lines().count(), 1, "{testo:?}");
+        assert!(testo.contains(r"[avvio] x\n2026"), "{testo:?}");
     }
 
     #[test]
