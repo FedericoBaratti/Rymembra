@@ -92,6 +92,9 @@ export function ConfermaSkin({
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
       onChiudi={chiudi}
+      // Un consenso: la si legge com'è anche se la skin indossata adesso è
+      // proprio quella che non si legge. Vedi `consenso` in `Dialogo.tsx`.
+      consenso
     >
       <ul className="esame-skin">
         {righe.map((riga) => (

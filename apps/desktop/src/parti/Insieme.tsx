@@ -749,6 +749,9 @@ export function InsiemeInApp({
             titolo: t("together.firewall.title"),
             descrizione: t("together.firewall.body"),
             conferma: t("together.firewall.confirm"),
+            // Apre una porta a chi sta sulla stessa rete: la domanda si legge
+            // com'è, qualunque skin sia indossata.
+            consenso: true,
             fai: () => ospitaDopoIlFirewall(onErrore),
           }}
           onChiudi={chiudiFirewall}
@@ -811,6 +814,9 @@ function DialogoCodice({
       classe="finestrella stretta glass-modal"
       onChiudi={() => rispondi(false)}
       veloChiude={false}
+      // Il codice e i due tasti sono la difesa contro una macchina in mezzo:
+      // una skin non li ridisegna. Vedi `consenso` in `Dialogo.tsx`.
+      consenso
     >
       {/* Il codice arriva dopo l'apertura, quindi lo dice una regione viva e
           non la descrizione, che si legge una volta sola. Cifra per cifra:
@@ -1127,6 +1133,12 @@ function InAttesa({
         </button>
       </>
     );
+    // Accettare un invito o ammettere qualcuno è un consenso, in tutte e due le
+    // vesti: `data-consenso` e non `consenso` di `Dialogo`, perché qui non c'è
+    // una finestrella. Il nome di chi chiede e i due tasti li disegna il
+    // carattere di sistema, e nessun livello della skin ci passa sopra — nemmeno
+    // quello della finestrella del pannello che contiene la riga. Vedi
+    // «i consensi, fuori dalle skin» in `finestrelle.css`.
     return dove === "fascia" ? (
       <div
         key={`${voce.tipo}-${voce.id}`}
@@ -1135,6 +1147,7 @@ function InAttesa({
             ? "notizia toast-card attesa-insieme"
             : "notizia toast-card attesa-insieme con-diritti"
         }
+        data-consenso=""
       >
         <Icona nome="i-insieme" dim={16} />
         {contenuto}
@@ -1143,6 +1156,7 @@ function InAttesa({
       <li
         key={`${voce.tipo}-${voce.id}`}
         className={invito ? "riga-insieme" : "riga-insieme con-diritti"}
+        data-consenso=""
       >
         {contenuto}
       </li>

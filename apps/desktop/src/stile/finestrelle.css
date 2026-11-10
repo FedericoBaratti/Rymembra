@@ -319,6 +319,44 @@
   text-wrap: pretty;
 }
 
+/* ── i consensi, fuori dalle skin ─────────────────────────────────────────
+
+   Un dialogo che chiede un sì — collegare un dispositivo, associarsi per
+   «Ascolta insieme» e confrontare il codice, ammettere qualcuno, togliere file
+   dal disco, sostituire una skin — porta `data-consenso` sulla radice
+   (`consenso` di `Dialogo`), e lì dentro la skin non ridisegna niente: né
+   livelli, né immagini, né pseudo-elementi suoi, né caratteri. Restano i suoi
+   colori, che arrivano coi token. Due metà, e servono tutte e due:
+
+   - il compilatore non emette niente che raggiunga `[data-consenso]` e i suoi
+     discendenti — le regole delle parti portano una guardia a specificità
+     zero, i livelli di chi contiene un consenso si spengono, e le transizioni
+     di vista tacciono finché un consenso è a schermo (`rymembra-skin`,
+     `compile.rs`, «I consensi»);
+   - il carattere invece arriva coi token (`--font-sans`, `--font-dot`), che
+     sono variabili ereditate e non regole: qui lo si fissa a quello di
+     sistema. Un `woff2` del pacchetto con una sostituzione contestuale poteva
+     scrivere «Rifiuta» dove c'è «Consenti», o disegnare quattro cifre diverse
+     tutte uguali — il caso dei «due codici uguali con una macchina in mezzo».
+
+   Perché un `@layer`: una dichiarazione `!important` dentro uno strato vince
+   su **ogni** `!important` fuori dagli strati, qualunque sia la specificità, e
+   il foglio di una skin non ne dichiara mai (la prova sul CSS emesso lo
+   pretende). Le famiglie sono solo generiche: un `@font-face` di una skin si
+   chiama sempre `skin-<id>-…`, ma un nome proprio qui sarebbe comunque un nome
+   che qualcuno potrebbe dichiarare. */
+@layer consenso {
+  [data-consenso],
+  [data-consenso] * {
+    font-family: system-ui, sans-serif !important;
+  }
+  /* Le impronte dei dispositivi si confrontano a occhio, carattere per
+     carattere: a larghezza fissa, ma di sistema anche loro. */
+  [data-consenso] :is(code, kbd, samp, pre) {
+    font-family: ui-monospace, monospace !important;
+  }
+}
+
 .tasti-finestrella {
   display: flex;
   justify-content: flex-end;
