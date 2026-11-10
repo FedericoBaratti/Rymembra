@@ -243,6 +243,26 @@ pub fn troppo_presto(ultimo_ms: Option<i64>, adesso_ms: i64, guardia_ms: i64) ->
     (0..guardia_ms).contains(&adesso_ms.saturating_sub(ultimo_ms))
 }
 
+/// La passata d'avvio si salta: l'ultimo controllo riuscito è di poco fa
+/// ([`troppo_presto`]) **e** non aveva trovato niente.
+///
+/// `trovata` è la versione che l'ultimo controllo riuscito aveva trovato,
+/// come la ricorda il database. L'aggiornamento trovato vive solo in memoria,
+/// e su un telefono il processo muore di continuo: senza questa eccezione chi
+/// riapre l'app un'ora dopo l'avviso non lo rivedrebbe fino alla passata dopo,
+/// sei ore più in là. È la regola del computer (`CHIAVE_TROVATA` in
+/// `aggiornamenti.rs`).
+#[must_use]
+pub fn passata_d_avvio_saltata(
+    ultimo_ms: Option<i64>,
+    adesso_ms: i64,
+    guardia_ms: i64,
+    trovata: Option<&str>,
+) -> bool {
+    troppo_presto(ultimo_ms, adesso_ms, guardia_ms)
+        && !trovata.is_some_and(|versione| !versione.trim().is_empty())
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -453,5 +473,32 @@ mod prove {
         ));
         assert!(!troppo_presto(None, ora, sei_ore));
         assert!(!troppo_presto(Some(ora + 60_000), ora, sei_ore));
+    }
+
+    #[test]
+    fn la_guardia_cede_se_l_ultimo_controllo_aveva_trovato_qualcosa() {
+        let ora = 100 * 60 * 60 * 1_000;
+        let sei_ore = 6 * 60 * 60 * 1_000;
+        let un_ora_fa = Some(ora - 60 * 60 * 1_000);
+        // Un'ora fa non c'era niente: la passata d'avvio si salta.
+        assert!(passata_d_avvio_saltata(un_ora_fa, ora, sei_ore, None));
+        // Un'ora fa c'era la 3.3.0, e il processo nel frattempo è morto con
+        // l'avviso: la passata d'avvio si fa, ed è il solo modo di riaverlo.
+        assert!(!passata_d_avvio_saltata(
+            un_ora_fa,
+            ora,
+            sei_ore,
+            Some("3.3.0")
+        ));
+        // Una chiave vuota non è una versione.
+        assert!(passata_d_avvio_saltata(un_ora_fa, ora, sei_ore, Some("  ")));
+        // Senza un controllo recente si controlla comunque.
+        assert!(!passata_d_avvio_saltata(None, ora, sei_ore, None));
+        assert!(!passata_d_avvio_saltata(
+            Some(ora - 7 * 60 * 60 * 1_000),
+            ora,
+            sei_ore,
+            None
+        ));
     }
 }

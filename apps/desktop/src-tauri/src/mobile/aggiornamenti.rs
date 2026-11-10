@@ -57,7 +57,9 @@ use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
-use crate::rilasci::{Rilascio, Trovato, progetto_da, rimando_di_github, scegli, troppo_presto};
+use crate::rilasci::{
+    Rilascio, Trovato, passata_d_avvio_saltata, progetto_da, rimando_di_github, scegli,
+};
 use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
@@ -67,6 +69,16 @@ const CHIAVE_ATTIVO: &str = "aggiornamenti.attivo";
 const CHIAVE_ULTIMO: &str = "aggiornamenti.ultimo_ms";
 /// La versione per cui si è detto «non ora».
 const CHIAVE_SALTATA: &str = "aggiornamenti.saltata";
+/// La versione che l'ultimo controllo riuscito ha trovato.
+///
+/// L'aggiornamento trovato vive solo in memoria, e la guardia d'avvio salta
+/// il controllo se l'ultimo è di meno di [`GUARDIA`] fa: un processo morto
+/// dopo l'avviso — su un telefono succede di continuo — si riapriva senza.
+/// Qui si ricorda solo che una versione nuova c'era, quanto basta perché la
+/// passata d'avvio si faccia comunque (`rilasci::passata_d_avvio_saltata`),
+/// che è il solo modo di riavere l'indirizzo dell'APK. Si toglie quando un
+/// controllo riuscito non trova niente. La regola, e la chiave, del computer.
+const CHIAVE_TROVATA: &str = "aggiornamenti.trovata";
 
 /// Ogni quanto si ricontrolla finché l'app resta viva.
 const INTERVALLO: Duration = Duration::from_secs(6 * 60 * 60);
@@ -372,9 +384,16 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                     return;
                 }
                 let guardia_ms = i64::try_from(GUARDIA.as_millis()).unwrap_or(i64::MAX);
+                // Il `&&` tiene le letture dal database fuori da ogni giro
+                // tranne il primo. La guardia cede se l'ultimo controllo aveva
+                // trovato una versione nuova: vedi `CHIAVE_TROVATA`.
                 let giro = if guardia
-                    && troppo_presto(ultimo_controllo(&app), adesso_ms(), guardia_ms)
-                {
+                    && passata_d_avvio_saltata(
+                        ultimo_controllo(&app),
+                        adesso_ms(),
+                        guardia_ms,
+                        versione_trovata_prima(&app).as_deref(),
+                    ) {
                     Giro::Saltato
                 } else {
                     crate::stato::sorvegliato("rymembra-aggiornamenti", || passata(&app, a_mano))
@@ -440,6 +459,18 @@ fn ultimo_controllo(app: &AppHandle) -> Option<i64> {
     .flatten()
 }
 
+/// La versione che l'ultimo controllo riuscito aveva trovato, se il database
+/// la ricorda: vedi `CHIAVE_TROVATA`. `None` per tutto quel che non è una
+/// risposta, che vuol dire lasciare la guardia com'era.
+fn versione_trovata_prima(app: &AppHandle) -> Option<String> {
+    let stato = app.try_state::<Stato>()?;
+    con_libreria(&stato, |libreria| {
+        settings::read(&libreria.connection, CHIAVE_TROVATA)
+    })
+    .ok()
+    .flatten()
+}
+
 /// Un giro: controlla, deposita quel che ha trovato, racconta.
 fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     let Some(progetto) = progetto(app) else {
@@ -479,7 +510,11 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     };
     match esito {
         Ok(trovato) => {
-            if aggiornamenti.generazione.load(Ordering::Acquire) == partenza {
+            let versione = trovato.as_ref().map(|nuovo| nuovo.versione.clone());
+            // Spento intanto: il controllo è fatto (l'ora si scrive), ma quel
+            // che ha trovato non si mostra e non si ricorda.
+            let vale = aggiornamenti.generazione.load(Ordering::Acquire) == partenza;
+            if vale {
                 *aggiornamenti
                     .trovato
                     .lock()
@@ -495,7 +530,14 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
                         &libreria.connection,
                         CHIAVE_ULTIMO,
                         &adesso_ms().to_string(),
-                    )
+                    )?;
+                    match &versione {
+                        _ if !vale => Ok(()),
+                        Some(versione) => {
+                            settings::write(&libreria.connection, CHIAVE_TROVATA, versione)
+                        }
+                        None => settings::forget(&libreria.connection, CHIAVE_TROVATA).map(|_| ()),
+                    }
                 });
             }
         }
