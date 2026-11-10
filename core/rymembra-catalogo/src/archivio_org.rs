@@ -424,6 +424,27 @@ impl ArchivioOrg {
         )
     }
 
+    /// Lo stesso file, con la licenza, il permesso e la pagina di **adesso**.
+    ///
+    /// Per la coda che preleva un brano il cui file era già scelto: vedi
+    /// [`crate::Cataloghi::da_prelevare`]. A differenza di [`Self::per_tenere`]
+    /// non ripiega sul candidato di partenza, perché qui un candidato di
+    /// partenza non c'è — c'è una riga di tabella, e quel che dice di licenza
+    /// e permesso è proprio quel che si sta riverificando. Un file che l'item
+    /// non elenca più vale `None`.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di una scheda: `net.*` per i guasti di trasporto, `download.*`
+    /// per una risposta che non si legge.
+    pub fn riletto(&self, url: &str) -> Result<Option<Candidato>, AppError> {
+        let Some(riferimento) = crate::riconosci(url) else {
+            return Ok(None);
+        };
+        let scheda = self.scheda(&riferimento.id)?;
+        Ok(lo_stesso_brano(&riferimento.id, &scheda, url, Uso::Tenere))
+    }
+
     /// L'indirizzo da suonare al posto di un FLAC di questo catalogo.
     ///
     /// # Per chi

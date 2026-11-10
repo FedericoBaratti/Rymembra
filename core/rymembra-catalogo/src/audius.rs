@@ -68,7 +68,7 @@ use rymembra_domain::scelta::{Candidato, Natura, natura_dal_titolo, query_larga,
 use rymembra_net::{Corpo, Metodo, Rete, Richiesta, percento};
 use serde_json::Value;
 
-use crate::riferimento::Riferimento;
+use crate::riferimento::{Riferimento, indirizzo_pubblico};
 
 /// Dove si chiede l'elenco dei nodi in salute.
 const ELENCO_NODI: &str = "https://api.audius.co";
@@ -134,6 +134,15 @@ impl Audius {
             flusso: Rete::per_flusso("audius.co"),
             nodo: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Un client con un nodo già scelto, per le prove: niente elenco da
+    /// chiedere, quindi niente rete prima del prelievo vero.
+    #[cfg(test)]
+    pub(crate) fn con_nodo(quale: &str) -> Self {
+        let audius = Self::nuovo();
+        *audius.nodo.lock().unwrap_or_else(PoisonError::into_inner) = Some(quale.to_owned());
+        audius
     }
 
     /// La rete che usa per **chiedere**: ricerche, schede, elenchi.
@@ -396,6 +405,23 @@ impl Audius {
         })
     }
 
+    /// Un brano, con la licenza, i cancelli e la pagina di **adesso**.
+    ///
+    /// Per la coda che preleva un brano il cui file era già scelto: vedi
+    /// [`crate::Cataloghi::da_prelevare`]. L'indirizzo del candidato si rifà
+    /// dai dati di adesso, quindi è `/download` solo se oggi l'artista lo
+    /// consente. `None` se il catalogo non conosce più quel brano, o se lo
+    /// consegna sotto un altro identificativo.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::chiedi`]: `net.*`, `download.badResponse`,
+    /// `catalogo.notAvailable`.
+    pub fn riletto(&self, id: &str) -> Result<Option<Candidato>, AppError> {
+        let corpo = self.chiedi(&format!("/v1/tracks/{}", percento(id)), &[])?;
+        Ok(traccia_riletta(&corpo, id))
+    }
+
     /// Da un candidato conservato a uno pronto da andare a prendere.
     ///
     /// Rimette il nodo davanti al percorso e riporta fuori l'estensione che
@@ -515,12 +541,7 @@ impl Audius {
             AppError::new(ErrorCode::DownloadBadResponse)
                 .with_cause(format!("l'elenco dei nodi non è JSON: {err}"))
         })?;
-        let scelto = elenco(&corpo)
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|n| n.starts_with("https://"))
-            .map(ToOwned::to_owned);
-        let Some(scelto) = scelto else {
+        let Some(scelto) = nodo_dall_elenco(&corpo) else {
             return Err(AppError::new(ErrorCode::CatalogoNotAvailable)
                 .with_cause("Audius non ha nessun nodo in salute da offrire".to_owned()));
         };
@@ -539,6 +560,34 @@ impl Audius {
             *guardia = None;
         }
     }
+}
+
+/// Il brano `id` dalla risposta di `/v1/tracks/<id>`, come candidato.
+///
+/// L'oggetto o un elenco di uno, come per `resolve`. Un identificativo diverso
+/// da quello chiesto non è il brano chiesto.
+fn traccia_riletta(corpo: &Value, id: &str) -> Option<Candidato> {
+    let dato = corpo.get("data")?;
+    let traccia = dato.as_array().and_then(|a| a.first()).unwrap_or(dato);
+    if testo(traccia, "id").as_deref() != Some(id) {
+        return None;
+    }
+    candidato_da(traccia, None)
+}
+
+/// Il nodo da usare, dall'elenco che `api.audius.co` consegna.
+///
+/// Il primo che sia un [`indirizzo_pubblico`]: da quel nodo partono ricerche,
+/// flussi e prelievi, e un elenco alterato — una risposta manomessa, un
+/// servizio compromesso — non deve poterle mandare al router o al NAS di casa.
+/// Lo stesso controllo che i rimandi dei flussi facevano già sui salti, adesso
+/// anche sul punto di partenza.
+fn nodo_dall_elenco(corpo: &Value) -> Option<String> {
+    elenco(corpo)
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|n| indirizzo_pubblico(n))
+        .map(ToOwned::to_owned)
 }
 
 /// L'array che sta in `data`, o niente.
@@ -613,10 +662,14 @@ fn streaming_chiuso(traccia: &Value) -> bool {
 /// nei tag di un file che resterà sul disco per anni, e una miniatura da 150
 /// pixel dentro un FLAC è un difetto che non si corregge più senza riscrivere
 /// il file.
+///
+/// Solo un [`indirizzo_pubblico`]: l'indirizzo arriva dalla risposta e chi lo
+/// riceve ci fa una richiesta, quindi vale lo stesso controllo del nodo. Una
+/// misura che punta a casa si salta, e si prova la successiva.
 fn copertina(valore: &Value) -> Option<String> {
     let arte = valore.get("artwork")?;
     for misura in ["1000x1000", "480x480", "150x150"] {
-        if let Some(url) = testo(arte, misura) {
+        if let Some(url) = testo(arte, misura).filter(|u| indirizzo_pubblico(u)) {
             return Some(url);
         }
     }
@@ -1024,9 +1077,7 @@ mod prove {
 
     /// Un client con un nodo già scelto, per provare tutto senza rete.
     fn con_nodo(quale: &str) -> Audius {
-        let audius = Audius::nuovo();
-        *audius.nodo.lock().unwrap_or_else(PoisonError::into_inner) = Some(quale.to_owned());
-        audius
+        Audius::con_nodo(quale)
     }
 
     #[test]
@@ -1121,15 +1172,82 @@ mod prove {
     }
 
     #[test]
+    fn una_traccia_riletta_porta_licenza_pagina_e_permesso_di_adesso() {
+        let corpo = |scaricabile: bool| {
+            traccia(&format!(
+                r#"{{"data":{{"id":"aB3","title":"Una canzone","license":"Attribution ShareAlike CC BY-SA",
+                   "is_downloadable":{scaricabile},"is_download_gated":false,"is_stream_gated":false,
+                   "permalink":"/tizio/una-canzone","user":{{"name":"Tizio"}}}}}}"#
+            ))
+        };
+        let oggi = traccia_riletta(&corpo(true), "aB3").expect("il brano c'è");
+        assert_eq!(oggi.licenza, Licenza::CreativeCommons("by-sa".to_owned()));
+        assert_eq!(
+            oggi.pagina.as_deref(),
+            Some("https://audius.co/tizio/una-canzone")
+        );
+        assert!(oggi.si_puo_tenere());
+        assert!(oggi.url.ends_with("/download"), "{}", oggi.url);
+        // L'artista ha spento lo scarico dopo l'importazione: si rilegge come
+        // solo ascolto, e l'indirizzo torna allo streaming.
+        let spento = traccia_riletta(&corpo(false), "aB3").expect("il brano c'è");
+        assert!(!spento.si_puo_tenere());
+        assert!(spento.url.ends_with("/stream"), "{}", spento.url);
+        // Un altro brano, o nessuno, non è il brano chiesto.
+        assert!(traccia_riletta(&corpo(true), "zZ9").is_none());
+        assert!(traccia_riletta(&traccia(r#"{"data":null}"#), "aB3").is_none());
+    }
+
+    #[test]
+    fn un_nodo_di_casa_non_si_sceglie() {
+        // Un elenco alterato non deve poter mandare ricerche, flussi e
+        // prelievi al router o al NAS: si salta tutto ciò che non è un nome
+        // pubblico, e si prende il primo che lo è.
+        let corpo = traccia(
+            r#"{"data":["https://192.168.1.1","https://[::1]:8443","https://nas.local",
+                        "http://nodo-in-chiaro.esempio.com","https://nodo.esempio.com"]}"#,
+        );
+        assert_eq!(
+            nodo_dall_elenco(&corpo).as_deref(),
+            Some("https://nodo.esempio.com")
+        );
+        assert_eq!(
+            nodo_dall_elenco(&traccia(r#"{"data":["https://10.0.0.1"]}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn una_copertina_di_casa_non_si_prende() {
+        // L'indirizzo d'immagine arriva dalla risposta e finisce in una GET:
+        // lo stesso controllo del nodo.
+        let arte = traccia(
+            r#"{"artwork":{"1000x1000":"https://192.168.1.1/l.jpg","480x480":"https://p.esempio.com/m.jpg"}}"#,
+        );
+        assert_eq!(
+            copertina(&arte),
+            Some("https://p.esempio.com/m.jpg".to_owned())
+        );
+        let in_chiaro = traccia(r#"{"artwork":{"1000x1000":"http://p.esempio.com/l.jpg"}}"#);
+        assert_eq!(copertina(&in_chiaro), None);
+    }
+
+    #[test]
     fn la_copertina_si_prende_grande() {
         // Finisce dentro i tag di un file che resta sul disco per anni: una
         // miniatura da 150 pixel là dentro non si corregge più.
         let tutte = traccia(
-            r#"{"artwork":{"150x150":"https://p/s.jpg","480x480":"https://p/m.jpg","1000x1000":"https://p/l.jpg"}}"#,
+            r#"{"artwork":{"150x150":"https://p.esempio.com/s.jpg","480x480":"https://p.esempio.com/m.jpg","1000x1000":"https://p.esempio.com/l.jpg"}}"#,
         );
-        assert_eq!(copertina(&tutte), Some("https://p/l.jpg".to_owned()));
-        let poche = traccia(r#"{"artwork":{"150x150":"https://p/s.jpg"}}"#);
-        assert_eq!(copertina(&poche), Some("https://p/s.jpg".to_owned()));
+        assert_eq!(
+            copertina(&tutte),
+            Some("https://p.esempio.com/l.jpg".to_owned())
+        );
+        let poche = traccia(r#"{"artwork":{"150x150":"https://p.esempio.com/s.jpg"}}"#);
+        assert_eq!(
+            copertina(&poche),
+            Some("https://p.esempio.com/s.jpg".to_owned())
+        );
         assert_eq!(copertina(&traccia("{}")), None);
     }
 

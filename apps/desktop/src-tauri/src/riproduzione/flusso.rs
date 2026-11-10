@@ -240,88 +240,17 @@ pub(super) fn apri_flusso(
 /// [`riferimento_da_testo`], o per Audius quello col nodo davanti — e resta lo
 /// stesso per tutti i salti: il cancello giudica ogni bersaglio contro il
 /// catalogo da cui si è partiti, non contro il salto prima.
+///
+/// La regola è `rymembra_catalogo::bersaglio_ammesso`, la stessa dei prelievi:
+/// l'allowlist di `riconosci` per l'Internet Archive, un nome pubblico per i
+/// nodi di Audius. Stava qui, e quando anche il prelievo e la scelta del nodo
+/// hanno avuto bisogno dello stesso confine è passata accanto a `riconosci`
+/// invece di essere copiata: due copie di un cancello sono due cancelli.
 fn cancello_di(fonte: Fonte, partenza: &str) -> Cancello {
     let partenza = partenza.to_owned();
-    Cancello::nuovo(move |bersaglio| bersaglio_ammesso(fonte, &partenza, bersaglio))
-}
-
-/// Se un rimando di un flusso di `fonte`, partito da `partenza`, può andare a
-/// `bersaglio`.
-///
-/// # La stessa allowlist dell'indirizzo di partenza
-///
-/// L'indirizzo di partenza è passato da `rymembra_catalogo::riconosci`, e il
-/// bersaglio deve passare **dallo stesso posto**: un secondo elenco di domini
-/// scritto qui sarebbe il secondo, cioè quello che un giorno dice una cosa
-/// diversa (vedi [`riferimento_di`]). Ma `riconosci` legge link pubblici, e il
-/// bersaglio di un rimando non lo è: `archive.org/download/…` rimanda a
-/// `ia800305.us.archive.org/27/items/…`, un percorso che `riconosci` non ha
-/// motivo di conoscere. Quel che del bersaglio conta è l'**ospite**, e allora
-/// si chiede a `riconosci` esattamente quello: lo stesso indirizzo di partenza,
-/// con l'ospite del bersaglio al posto del suo. Se è ancora un link di quel
-/// catalogo, l'ospite è di casa; `evilarchive.org` e `archive.org.esempio.com`
-/// no, per le stesse ragioni per cui non lo sono come link.
-///
-/// # Audius, che un'allowlist di domini non ce l'ha
-///
-/// Audius non ha un server ma una rete di nodi gestiti da chi vuole, ognuno col
-/// suo dominio: il nodo di partenza viene dall'elenco che `api.audius.co`
-/// consegna, non da `riconosci`, e rimanda a un nodo di contenuti che può stare
-/// sotto qualunque nome. Un elenco di domini per Audius sarebbe un elenco che
-/// smette di suonare metà del catalogo il giorno in cui entra un nodo nuovo.
-/// Quel che si può esigere da un salto di Audius, e si esige, è che resti
-/// cifrato e che vada verso un **nome pubblico**: mai un indirizzo IP scritto a
-/// cifre, mai `localhost`, mai un nome da rete di casa. Un nodo ostile non può
-/// così usare il lettore per bussare al router o a un servizio di questa
-/// macchina.
-fn bersaglio_ammesso(fonte: Fonte, partenza: &str, bersaglio: &str) -> bool {
-    if !bersaglio.starts_with("https://") {
-        return false;
-    }
-    let Some(ospite) = rymembra_net::http::ospite(bersaglio) else {
-        return false;
-    };
-    if fonte == Fonte::Audius {
-        return nome_pubblico(ospite);
-    }
-    // Il percorso della partenza, query compresa: `riconosci` guarda il
-    // percorso per capire *che cosa* il link nomina, e deve trovarci quel che
-    // ci ha trovato la prima volta.
-    let percorso = partenza
-        .strip_prefix("https://")
-        .and_then(|resto| resto.find('/').and_then(|inizio| resto.get(inizio..)))
-        .unwrap_or("/");
-    rymembra_catalogo::riconosci(&format!("https://{ospite}{percorso}"))
-        .is_some_and(|riferimento| riferimento.fonte == fonte)
-}
-
-/// Un nome che si risolve nel DNS pubblico, e non un indirizzo di casa.
-///
-/// Si guarda l'ultima etichetta: un nome pubblico finisce con un dominio di
-/// primo livello fatto di lettere (o di punycode, `xn--…`). È la regola che
-/// esclude in un colpo solo `127.0.0.1`, `10.0.0.1`, `[::1]`, le forme
-/// esadecimali o decimali di un IPv4 che alcuni risolutori accettano
-/// (`0x7f.1`, `2130706433`) e i nomi senza punto; i suffissi da rete di casa si
-/// escludono per nome.
-fn nome_pubblico(ospite: &str) -> bool {
-    let ospite = ospite.trim_end_matches('.').to_ascii_lowercase();
-    let Some((_, ultima)) = ospite.rsplit_once('.') else {
-        return false;
-    };
-    let lettere = ultima.len() >= 2 && ultima.chars().all(|c| c.is_ascii_alphabetic());
-    let punycode = ultima.starts_with("xn--");
-    let di_casa = [
-        "localhost",
-        "local",
-        "internal",
-        "lan",
-        "home",
-        "arpa",
-        "test",
-        "invalid",
-    ]
-    .contains(&ultima);
-    (lettere || punycode) && !di_casa
+    Cancello::nuovo(move |bersaglio| {
+        rymembra_catalogo::bersaglio_ammesso(fonte, &partenza, bersaglio)
+    })
 }
 
 /// Un flusso di rete, vestito da [`rymembra_play::Flusso`].

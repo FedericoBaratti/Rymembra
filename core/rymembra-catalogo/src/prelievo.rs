@@ -15,14 +15,25 @@
 //! una cartella sorvegliata entrerebbe in libreria come brano troncato, e ne
 //! uscirebbe solo alla scansione dopo. Si scrive fuori, si sposta quando è
 //! intero, e lo spostamento è atomico sullo stesso volume.
+//!
+//! # Che cosa entra, e con che nome
+//!
+//! Fra l'arrivo e il deposito si guardano i primi byte (vedi
+//! [`formato_dei_byte`]): entra solo quel che **è** audio in uno dei formati
+//! che i cataloghi consegnano, e l'estensione la dice il contenuto, non i
+//! metadati remoti. Una pagina d'errore servita con un `200` non diventa un
+//! `.flac`, e un file che un catalogo — o una riga di `desiderati` scritta da
+//! un profilo — dichiara `.url` o `.exe` non arriva nella cartella musica con
+//! quell'estensione.
 
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::esterno::Licenza;
 use rymembra_domain::indirizzo::estensione_da_url;
+use rymembra_domain::paths::SUPPORTED_EXTENSIONS;
 use rymembra_domain::scelta::Candidato;
 use rymembra_net::Rete;
 
@@ -52,6 +63,11 @@ pub struct Prelevato {
     pub licenza: Licenza,
     /// La riga di attribuzione da mostrare e da scrivere nei tag.
     pub attribuzione: Option<String>,
+    /// La pagina pubblica del brano, quando il catalogo la dichiara.
+    ///
+    /// Viaggia accanto all'attribuzione per i formati che hanno un campo
+    /// apposta per l'indirizzo d'origine: vedi `tag_scrittura::Provenienza`.
+    pub pagina: Option<String>,
     /// Quanti byte sono arrivati.
     pub byte: u64,
 }
@@ -64,13 +80,21 @@ static PROGRESSIVO: AtomicU64 = AtomicU64::new(0);
 
 /// Prende un candidato e lo scrive in libreria.
 ///
+/// Del crate e non pubblica: da fuori si preleva con
+/// [`crate::Cataloghi::preleva`], che prima di arrivare qui controlla che
+/// l'indirizzo sia del catalogo che il candidato dichiara e mette il cancello
+/// ai rimandi. Una porta pubblica su questa funzione sarebbe stata la strada
+/// per scavalcare quel controllo.
+///
 /// # Errori
 ///
 /// `download.notPermitted` se la licenza non consente di tenerne una copia — ed
 /// è la prima cosa che si controlla, prima di qualunque richiesta: chiedere i
 /// byte di qualcosa che non si può tenere è già di troppo. Poi `net.*` e
-/// `download.*` per il trasferimento, `fs.*` per il disco.
-pub fn preleva(
+/// `download.*` per il trasferimento — `download.invalidFiles` anche per un
+/// contenuto che non è audio (vedi [`formato_dei_byte`]) — e `fs.*` per il
+/// disco.
+pub(crate) fn preleva(
     rete: &Rete,
     candidato: &Candidato,
     richiesta: &Richiesta<'_>,
@@ -78,20 +102,19 @@ pub fn preleva(
     avanzamento: &mut dyn FnMut(f32),
 ) -> Result<Prelevato, AppError> {
     if !candidato.si_puo_tenere() {
-        return Err(AppError::new(ErrorCode::DownloadNotPermitted {
-            licenza: Some(candidato.licenza.nome()),
-        })
-        .with_cause(format!(
-            "«{}» si può ascoltare ma non tenere",
-            candidato.titolo
-        )));
+        return Err(non_si_tiene(candidato));
     }
 
-    let estensione = candidato
+    // Solo un suggerimento, e solo se è un'estensione che la scansione legge:
+    // il nome definitivo lo decide il contenuto, al deposito. Qui serve a dare
+    // al file temporaneo un nome che dica cosa ci si aspetta.
+    let suggerita = candidato
         .estensione
         .clone()
         .or_else(|| estensione_da_url(&candidato.url))
-        .unwrap_or_else(|| "mp3".to_owned());
+        .map(|e| e.to_ascii_lowercase())
+        .filter(|e| SUPPORTED_EXTENSIONS.contains(&e.as_str()));
+    let estensione_temporanea = suggerita.as_deref().unwrap_or("audio");
 
     // La cartella dei download deve esserci **prima** di chiedere un byte. Su
     // un NAS spento o un disco esterno staccato il prelievo arriverebbe intero
@@ -121,31 +144,177 @@ pub fn preleva(
 
     let temporaneo = richiesta
         .cartella_temporanea
-        .join(nome_temporaneo(&estensione));
+        .join(nome_temporaneo(estensione_temporanea));
 
-    let esito = scrivi(rete, &candidato.url, &temporaneo, annullato, avanzamento);
-    let byte = match esito {
-        Ok(byte) => byte,
+    let esito =
+        scrivi(rete, &candidato.url, &temporaneo, annullato, avanzamento).and_then(|byte| {
+            let estensione = formato_del_file(&temporaneo, suggerita.as_deref())?;
+            Ok((byte, estensione))
+        });
+    let (byte, estensione) = match esito {
+        Ok(arrivato) => arrivato,
         Err(err) => {
-            // Un file a metà non serve a nessuno e occupa il disco finché
-            // qualcuno non ci pensa. Se anche la cancellazione fallisce non è
-            // questo il guasto da riportare. Lo stesso vale per un file
-            // arrivato intero che non si riesce a depositare: ci pensa
-            // [`deposita`]. Quel che resta dopo una chiusura forzata lo spazza
-            // [`spazza_parziali`].
+            // Un file a metà — o un file intero che non è audio — non serve a
+            // nessuno e occupa il disco finché qualcuno non ci pensa. Se anche
+            // la cancellazione fallisce non è questo il guasto da riportare.
+            // Lo stesso vale per un file arrivato intero che non si riesce a
+            // depositare: ci pensa [`deposita`]. Quel che resta dopo una
+            // chiusura forzata lo spazza [`spazza_parziali`].
             let _ = std::fs::remove_file(&temporaneo);
             return Err(err);
         }
     };
 
-    let definitivo = deposita(&temporaneo, richiesta, &estensione)?;
+    let definitivo = deposita(&temporaneo, richiesta, estensione)?;
 
     Ok(Prelevato {
         percorso: definitivo,
         licenza: candidato.licenza.clone(),
         attribuzione: attribuzione(candidato),
+        pagina: candidato.pagina.clone(),
         byte,
     })
+}
+
+/// Il no a un candidato che non si può tenere.
+pub(crate) fn non_si_tiene(candidato: &Candidato) -> AppError {
+    AppError::new(ErrorCode::DownloadNotPermitted {
+        licenza: Some(candidato.licenza.nome()),
+    })
+    .with_cause(format!(
+        "«{}» si può ascoltare ma non tenere",
+        candidato.titolo
+    ))
+}
+
+/// Quanti byte di testa si guardano per riconoscere un formato.
+///
+/// Abbastanza per l'intestazione più lunga fra quelle che si cercano — il
+/// `ftyp` di un MP4 sta ai byte 4..8, la parola `WAVE` ai byte 8..12 — dopo un
+/// eventuale tag ID3, che si salta a parte.
+const TESTA: usize = 64;
+
+/// Il formato di un file arrivato, dai suoi primi byte.
+///
+/// Legge la testa e, se il file comincia con un tag ID3v2, salta il tag e
+/// guarda quel che viene dopo: un FLAC o un AAC con un ID3 davanti esistono.
+///
+/// # Errori
+///
+/// `download.invalidFiles` per un contenuto che non è uno dei formati di
+/// [`formato_dei_byte`] — una pagina HTML, un archivio, un collegamento —, che
+/// **non** si ritenta: lo stesso indirizzo darà gli stessi byte, e riprovare
+/// vorrebbe dire scaricarli altre due volte. `fs.*` se il file non si rilegge.
+fn formato_del_file(percorso: &Path, suggerita: Option<&str>) -> Result<&'static str, AppError> {
+    let illeggibile = |err: &std::io::Error| {
+        AppError::new(ErrorCode::FsReadFailed {
+            path: percorso.display().to_string(),
+            detail: Some(err.to_string()),
+        })
+    };
+    let mut file = std::fs::File::open(percorso).map_err(|err| illeggibile(&err))?;
+    let mut testa = Vec::with_capacity(TESTA);
+    (&mut file)
+        .take(TESTA as u64)
+        .read_to_end(&mut testa)
+        .map_err(|err| illeggibile(&err))?;
+
+    let mut formato = formato_dei_byte(&testa, suggerita);
+    if let Some(dopo) = fine_del_tag_id3(&testa) {
+        // Dopo il tag: se lì c'è un formato riconoscibile vince quello, se no
+        // resta l'MP3, che è la famiglia a cui un ID3 in testa appartiene.
+        let mut seguito = Vec::with_capacity(TESTA);
+        file.seek(std::io::SeekFrom::Start(dopo))
+            .and_then(|_| (&mut file).take(TESTA as u64).read_to_end(&mut seguito))
+            .map_err(|err| illeggibile(&err))?;
+        if let Some(sotto) = formato_dei_byte(&seguito, suggerita) {
+            formato = Some(sotto);
+        }
+    }
+    formato.ok_or_else(|| {
+        AppError::new(ErrorCode::DownloadInvalidFiles).with_cause(
+            "il catalogo ha risposto con qualcosa che non è audio in un formato che si sa leggere"
+                .to_owned(),
+        )
+    })
+}
+
+/// Dove finisce un tag ID3v2 in testa al file, se c'è.
+///
+/// La dimensione è «sincronizzata» — sette bit per byte — e non conta né i
+/// dieci byte dell'intestazione né, quando la bandiera lo dice, i dieci del
+/// piè di pagina. Come in `rymembra_app::metadata::versione_ape`.
+fn fine_del_tag_id3(testa: &[u8]) -> Option<u64> {
+    if !testa.starts_with(b"ID3") {
+        return None;
+    }
+    let bandiere = *testa.get(5)?;
+    let dimensione = testa
+        .get(6..10)?
+        .iter()
+        .fold(0_u64, |somma, byte| (somma << 7) | u64::from(byte & 0x7F));
+    let piede = if bandiere & 0x10 == 0 { 0 } else { 10 };
+    Some(dimensione.saturating_add(10).saturating_add(piede))
+}
+
+/// Il formato audio che dicono questi primi byte, come estensione.
+///
+/// # Quali, e perché solo questi
+///
+/// Quelli che i cataloghi consegnano davvero — l'Internet Archive il FLAC e
+/// l'MP3, Audius il file che l'artista ha caricato — e che la scansione porta
+/// in libreria (`rymembra_domain::paths::SUPPORTED_EXTENSIONS`): FLAC, MP3 (un
+/// tag ID3 o il sincronismo di un fotogramma), AAC in ADTS, Ogg, WAV, AIFF e
+/// MP4. Tutto il resto è un no, e non per pignoleria: chi chiede un brano e
+/// riceve qualcos'altro ha ricevuto un errore travestito, e depositarlo nella
+/// cartella sorvegliata vorrebbe dire un «brano» che non suona — o un file che
+/// Esplora risorse apre da sé.
+///
+/// `suggerita` sceglie solo fra i nomi dello stesso contenitore: un Ogg
+/// dichiarato `opus` o `oga` resta tale, un AIFF dichiarato `aif` pure. Non
+/// cambia mai il contenitore, che lo dicono i byte.
+pub(crate) fn formato_dei_byte(testa: &[u8], suggerita: Option<&str>) -> Option<&'static str> {
+    let fra = |ammesse: &[&'static str], di_serie: &'static str| {
+        suggerita
+            .and_then(|s| ammesse.iter().copied().find(|a| *a == s))
+            .unwrap_or(di_serie)
+    };
+    if testa.starts_with(b"fLaC") {
+        return Some("flac");
+    }
+    if testa.starts_with(b"OggS") {
+        return Some(fra(&["ogg", "oga", "opus"], "ogg"));
+    }
+    if testa.starts_with(b"RIFF") && testa.get(8..12) == Some(b"WAVE") {
+        return Some("wav");
+    }
+    if testa.starts_with(b"FORM") && matches!(testa.get(8..12), Some(b"AIFF" | b"AIFC")) {
+        return Some(fra(&["aiff", "aif"], "aiff"));
+    }
+    if testa.get(4..8) == Some(b"ftyp") {
+        return Some("m4a");
+    }
+    if testa.starts_with(b"ID3") {
+        return Some("mp3");
+    }
+    if let [0xFF, secondo, ..] = testa {
+        // Il sincronismo: undici bit a uno. Nei due bit del «layer» ADTS ha
+        // `00`, l'MPEG audio uno dei tre valori validi; `01` nella versione è
+        // riservato e non è nessuno dei due.
+        let sincronismo = secondo & 0xE0 == 0xE0;
+        let versione = (secondo >> 3) & 0b11;
+        let strato = (secondo >> 1) & 0b11;
+        if sincronismo && versione != 0b01 {
+            if strato != 0 {
+                return Some("mp3");
+            }
+            // L'ADTS ha dodici bit di sincronismo, non undici.
+            if secondo & 0xF0 == 0xF0 {
+                return Some("aac");
+            }
+        }
+    }
+    None
 }
 
 /// La riga da scrivere nei tag del brano.
@@ -166,19 +335,34 @@ pub fn preleva(
 #[must_use]
 pub fn attribuzione(candidato: &Candidato) -> Option<String> {
     let fonte = candidato.fonte.etichetta();
-    let licenza = match &candidato.licenza {
-        Licenza::CreativeCommons(codice) => format!(", CC {}", codice.to_uppercase()),
-        Licenza::PubblicoDominio => ", pubblico dominio".to_owned(),
-        Licenza::LiberaNonCommerciale => ", distribuzione non commerciale".to_owned(),
-        Licenza::OpenMusicLicense => ", Open Music License".to_owned(),
-        Licenza::TutteRiservate | Licenza::Sconosciuta => String::new(),
-    };
+    let licenza = licenza_leggibile(&candidato.licenza)
+        .map(|nome| format!(", {nome}"))
+        .unwrap_or_default();
     let pagina = candidato
         .pagina
         .as_deref()
         .map(|p| format!(" — {p}"))
         .unwrap_or_default();
     Some(format!("via {fonte}{licenza}{pagina}"))
+}
+
+/// La licenza in parole, come si scrive dentro un file: «CC BY-SA», «pubblico
+/// dominio».
+///
+/// È il pezzo di [`attribuzione`] che dice il patto, e serve da solo ai
+/// formati che hanno un campo per la licenza (`LICENSE` nei commenti Vorbis e
+/// negli MP4). Nella stessa lingua dell'attribuzione e per la stessa ragione:
+/// sta sul disco, non sullo schermo. `None` per le due licenze che non dicono
+/// niente da scrivere.
+#[must_use]
+pub fn licenza_leggibile(licenza: &Licenza) -> Option<String> {
+    match licenza {
+        Licenza::CreativeCommons(codice) => Some(format!("CC {}", codice.to_uppercase())),
+        Licenza::PubblicoDominio => Some("pubblico dominio".to_owned()),
+        Licenza::LiberaNonCommerciale => Some("distribuzione non commerciale".to_owned()),
+        Licenza::OpenMusicLicense => Some("Open Music License".to_owned()),
+        Licenza::TutteRiservate | Licenza::Sconosciuta => None,
+    }
 }
 
 /// Scrive il corpo di una richiesta in un file, riportando l'avanzamento.
@@ -435,6 +619,42 @@ mod prove {
     }
 
     #[test]
+    fn una_licenza_sconosciuta_non_si_preleva_nemmeno_se_dichiarata_scaricabile() {
+        // È il candidato che la coda costruiva per un brano importato da un
+        // link: «scaricabile» dalla riga, e la licenza persa. Si rifiuta prima
+        // di creare cartelle e prima della rete.
+        let temporanea = std::env::temp_dir().join("rymembra-prova-licenza-sconosciuta");
+        let _ = std::fs::remove_dir_all(&temporanea);
+        let esito = preleva(
+            &Rete::nuova("prova", std::time::Duration::from_millis(1)),
+            &Candidato {
+                licenza: Licenza::Sconosciuta,
+                // Una porta chiusa su questa macchina: se il rifiuto arrivasse
+                // dopo la rete, si vedrebbe senza uscire di casa.
+                url: "https://127.0.0.1:9/t01.flac".to_owned(),
+                ..candidato(Disponibilita::Scaricabile)
+            },
+            &Richiesta {
+                cartella_download: &temporanea,
+                cartella_temporanea: &temporanea,
+                base_relativa: "A/B/01 - C",
+            },
+            &|| false,
+            &mut |_| {},
+        );
+        let err = esito.expect_err("senza licenza non si tiene");
+        assert!(
+            matches!(err.code(), ErrorCode::DownloadNotPermitted { .. }),
+            "codice sbagliato: {:?}",
+            err.code()
+        );
+        assert!(
+            !temporanea.exists(),
+            "non doveva nemmeno creare la cartella"
+        );
+    }
+
+    #[test]
     fn lestensione_si_ricava_dallindirizzo_quando_manca() {
         assert_eq!(
             estensione_da_url("https://archive.org/download/x/t01.flac"),
@@ -662,6 +882,154 @@ mod prove {
         let _ = std::fs::remove_dir_all(&radice);
         assert!(esito.is_err());
         assert!(accanto.is_empty(), "rimasti accanto: {accanto:?}");
+    }
+
+    /// Un prelievo verso il servitore di prova, con il corpo che serve: dove
+    /// finisce, e che cosa resta nella cartella temporanea.
+    fn preleva_dal_servitore(
+        corpo: &'static [u8],
+        estensione: Option<&str>,
+        nome: &str,
+    ) -> (Result<Prelevato, AppError>, Vec<String>, PathBuf) {
+        let radice =
+            std::env::temp_dir().join(format!("rymembra-contenuto-{}", nome_temporaneo("x")));
+        let temporanea = radice.join("procura");
+        let download = radice.join("Download");
+        let (base, _) = servitore(corpo);
+        let rete = Rete::verso("prova", std::time::Duration::from_secs(5), &base)
+            .expect("un indirizzo di casa costruisce");
+        let esito = preleva(
+            &rete,
+            &Candidato {
+                url: format!("{base}/{nome}"),
+                estensione: estensione.map(ToOwned::to_owned),
+                ..candidato(Disponibilita::Scaricabile)
+            },
+            &Richiesta {
+                cartella_download: &download,
+                cartella_temporanea: &temporanea,
+                base_relativa: "A/B/01 - C",
+            },
+            &|| false,
+            &mut |_| {},
+        );
+        let rimasti = parziali_in(&temporanea);
+        (esito, rimasti, radice)
+    }
+
+    /// Tutti i file che stanno sotto una cartella, con il percorso relativo.
+    fn file_sotto(cartella: &Path) -> Vec<String> {
+        let mut trovati = Vec::new();
+        let mut da_vedere = vec![cartella.to_path_buf()];
+        while let Some(qui) = da_vedere.pop() {
+            for voce in std::fs::read_dir(&qui).into_iter().flatten().flatten() {
+                let percorso = voce.path();
+                if percorso.is_dir() {
+                    da_vedere.push(percorso);
+                } else if let Ok(relativo) = percorso.strip_prefix(cartella) {
+                    trovati.push(relativo.display().to_string().replace('\\', "/"));
+                }
+            }
+        }
+        trovati
+    }
+
+    /// Una pagina HTML servita con `200` non diventa un `.flac` nella cartella
+    /// sorvegliata: il contenuto si guarda prima di depositarlo.
+    #[test]
+    fn una_pagina_html_non_diventa_un_brano() {
+        let (esito, rimasti, radice) = preleva_dal_servitore(
+            b"<!DOCTYPE html><html><head><title>Errore</title></head><body>no</body></html>",
+            Some("flac"),
+            "t01.flac",
+        );
+        let depositati = file_sotto(&radice.join("Download"));
+        let _ = std::fs::remove_dir_all(&radice);
+        let err = esito.expect_err("una pagina HTML non è un brano");
+        assert!(
+            matches!(err.code(), ErrorCode::DownloadInvalidFiles),
+            "codice sbagliato: {:?}",
+            err.code()
+        );
+        assert!(!err.is_retryable(), "riprovare darà la stessa pagina");
+        assert!(depositati.is_empty(), "depositati: {depositati:?}");
+        assert!(rimasti.is_empty(), "temporanei rimasti: {rimasti:?}");
+    }
+
+    /// L'estensione la dice il contenuto, non i metadati remoti: un MP3 che il
+    /// catalogo dichiara `.exe`, o il cui indirizzo finisce per `.url`, si
+    /// scrive `.mp3`.
+    #[test]
+    fn lestensione_la_dice_il_contenuto() {
+        const MP3: &[u8] = b"ID3\x03\x00\x00\x00\x00\x00\x00\xFF\xFB\x90\x64 e il resto del brano";
+        const FLAC: &[u8] = b"fLaC\x00\x00\x00\x22 e il resto del brano";
+        for (corpo, dichiarata, nome, attesa) in [
+            (MP3, Some("exe"), "t01.exe", "A/B/01 - C.mp3"),
+            (MP3, None, "x.url", "A/B/01 - C.mp3"),
+            (FLAC, Some("mp3"), "t01.mp3", "A/B/01 - C.flac"),
+            (FLAC, None, "senza-estensione", "A/B/01 - C.flac"),
+        ] {
+            let (esito, _, radice) = preleva_dal_servitore(corpo, dichiarata, nome);
+            let depositati = file_sotto(&radice.join("Download"));
+            let _ = std::fs::remove_dir_all(&radice);
+            assert!(esito.is_ok(), "{nome}: {:?}", esito.err());
+            assert_eq!(depositati, vec![attesa.to_owned()], "{nome}");
+        }
+    }
+
+    #[test]
+    fn i_formati_riconosciuti_sono_quelli_che_la_scansione_legge() {
+        // Ogni estensione che il riconoscimento del contenuto può dare deve
+        // essere una di quelle che la scansione porta in libreria: un file
+        // depositato con un'estensione che nessuno legge è un file perso.
+        for (testa, attesa) in [
+            (&b"fLaC\x00\x00\x00\x22"[..], "flac"),
+            (&b"\xFF\xFB\x90\x64\x00\x00"[..], "mp3"),
+            (&b"ID3\x04\x00\x00\x00\x00\x00\x00"[..], "mp3"),
+            (&b"\xFF\xF1\x50\x80\x00\x1F"[..], "aac"),
+            (&b"OggS\x00\x02\x00\x00"[..], "ogg"),
+            (&b"RIFF\x24\x00\x00\x00WAVEfmt "[..], "wav"),
+            (&b"FORM\x00\x00\x00\x00AIFFCOMM"[..], "aiff"),
+            (&b"\x00\x00\x00\x20ftypM4A \x00\x00"[..], "m4a"),
+        ] {
+            let trovato = formato_dei_byte(testa, None);
+            assert_eq!(trovato, Some(attesa), "su {testa:?}");
+            assert!(SUPPORTED_EXTENSIONS.contains(&attesa));
+        }
+        // Il suggerimento sceglie il nome dentro lo stesso contenitore, e mai
+        // un altro contenitore.
+        assert_eq!(
+            formato_dei_byte(b"OggS\x00\x02", Some("opus")),
+            Some("opus")
+        );
+        assert_eq!(
+            formato_dei_byte(b"FORM\x00\x00\x00\x00AIFF", Some("aif")),
+            Some("aif")
+        );
+        assert_eq!(formato_dei_byte(b"fLaC", Some("mp3")), Some("flac"));
+        for non_audio in [
+            &b"<html>"[..],
+            &b"<!DOCTYPE html>"[..],
+            &b"PK\x03\x04"[..],
+            &b"MZ\x90\x00"[..],
+            &b"[InternetShortcut]\r\nURL=file://x"[..],
+            &b"\xFF\xE8\x00\x00"[..],
+            &b""[..],
+        ] {
+            assert_eq!(formato_dei_byte(non_audio, None), None, "su {non_audio:?}");
+        }
+    }
+
+    #[test]
+    fn dopo_un_tag_id3_conta_quel_che_viene_dopo() {
+        // Dieci byte d'intestazione, dimensione sincronizzata 4: il FLAC
+        // comincia al byte 14.
+        let testa = b"ID3\x04\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00fLaC";
+        assert_eq!(fine_del_tag_id3(testa), Some(14));
+        // Con la bandiera del piè di pagina, altri dieci.
+        let con_piede = b"ID3\x04\x00\x10\x00\x00\x00\x04";
+        assert_eq!(fine_del_tag_id3(con_piede), Some(24));
+        assert_eq!(fine_del_tag_id3(b"fLaC"), None);
     }
 
     /// La pulizia all'inizio di una passata: via i temporanei di Rymembra, e

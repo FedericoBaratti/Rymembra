@@ -197,9 +197,17 @@ pub struct Candidato {
 
 impl Candidato {
     /// Se ne può tenere una copia sul disco.
+    ///
+    /// Servono **tutte e due** le cose: la fonte che consegna
+    /// ([`Disponibilita::Scaricabile`]) e una licenza che permette la copia.
+    /// Un candidato uscito da un catalogo le ha già insieme — è quel che
+    /// [`Disponibilita::decidi`] calcola — ma uno ricostruito da una riga di
+    /// `desiderati` no: l'importazione da un link non ne salvava la licenza, e
+    /// un profilo importato le scrive tutte e due come vuole. Una disponibilità
+    /// senza licenza non è un permesso.
     #[must_use]
-    pub fn si_puo_tenere(&self) -> bool {
-        self.disponibilita == Disponibilita::Scaricabile
+    pub const fn si_puo_tenere(&self) -> bool {
+        matches!(self.disponibilita, Disponibilita::Scaricabile) && self.licenza.permette_copia()
     }
 }
 
@@ -856,6 +864,32 @@ mod prove {
                 "«{autore} – {suo}» per «{artista} – {titolo}»"
             );
         }
+    }
+
+    #[test]
+    fn senza_una_licenza_che_lo_permetta_non_si_tiene() {
+        // La disponibilità di una riga ricostruita da `desiderati` non è un
+        // permesso: l'importazione da un link non salvava la licenza, e un
+        // profilo importato la scrive come vuole. Senza una licenza che
+        // permetta la copia, non si tiene.
+        let scaricabile = |licenza: Licenza| Candidato {
+            licenza,
+            disponibilita: Disponibilita::Scaricabile,
+            ..Candidato::default()
+        };
+        assert!(!scaricabile(Licenza::Sconosciuta).si_puo_tenere());
+        assert!(!scaricabile(Licenza::TutteRiservate).si_puo_tenere());
+        assert!(scaricabile(Licenza::LiberaNonCommerciale).si_puo_tenere());
+        assert!(scaricabile(Licenza::CreativeCommons("by".to_owned())).si_puo_tenere());
+        // E una licenza libera non basta senza il permesso della fonte.
+        assert!(
+            !Candidato {
+                licenza: Licenza::PubblicoDominio,
+                disponibilita: Disponibilita::SoloAscolto,
+                ..Candidato::default()
+            }
+            .si_puo_tenere()
+        );
     }
 
     #[test]

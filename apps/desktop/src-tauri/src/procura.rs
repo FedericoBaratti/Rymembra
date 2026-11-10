@@ -886,35 +886,6 @@ fn trova(
     alternative: bool,
     fermare: &dyn Fn() -> bool,
 ) -> Result<Option<Candidato>, AppError> {
-    // Chi ha importato ha visto *quell'elenco*: rifare la scelta vorrebbe dire
-    // prendere una registrazione diversa da quella che aveva davanti.
-    if let Some(url) = desiderato
-        .brano
-        .fonte_url
-        .as_deref()
-        .filter(|u| !u.is_empty())
-        && desiderato.brano.disponibilita == Disponibilita::Scaricabile
-    {
-        return Ok(Some(Candidato {
-            url: url.to_owned(),
-            titolo: desiderato.brano.title.clone(),
-            autore: desiderato.brano.artist.clone(),
-            durata_sec: desiderato.brano.duration_ms.and_then(|ms| {
-                #[expect(
-                    clippy::integer_division,
-                    reason = "i millisecondi che avanzano non cambiano una fascia di durata"
-                )]
-                let secondi = ms / 1000;
-                u32::try_from(secondi).ok()
-            }),
-            fonte: desiderato.fonte,
-            licenza: desiderato.brano.licenza.clone(),
-            disponibilita: desiderato.brano.disponibilita,
-            pagina: desiderato.brano.pagina_url.clone(),
-            ..Candidato::default()
-        }));
-    }
-
     // Senza stato è un annullamento, non un guasto: `chiudi_male` non consuma
     // tentativi per lui, e la riga resta in coda per la prossima apertura.
     let Some(procura) = app.try_state::<StatoProcura>() else {
@@ -923,6 +894,24 @@ fn trova(
         })
         .with_cause("la coda non è più fra gli stati gestiti"));
     };
+
+    // Chi ha importato ha visto *quell'elenco*: rifare la scelta vorrebbe dire
+    // prendere una registrazione diversa da quella che aveva davanti. Il file
+    // resta quello; licenza, permesso e pagina invece si rileggono adesso dal
+    // catalogo, perché la riga non li porta (l'importazione da un link non li
+    // salvava, e un profilo importato li scrive come vuole) e perché un artista
+    // può aver spento lo scarico nel frattempo. Un candidato che oggi non si
+    // può tenere arriva a `preleva`, che dice di no prima della rete, e la riga
+    // va fra quelle da comprare con il motivo giusto.
+    if let Some(url) = desiderato
+        .brano
+        .fonte_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        && desiderato.brano.disponibilita == Disponibilita::Scaricabile
+    {
+        return procura.cataloghi.da_prelevare(desiderato.fonte, url);
+    }
     let candidati = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
     // Solo quel che si può tenere: un file che si ascolta e basta non è una
     // risposta a «mettimelo in libreria», e sceglierlo per poi rifiutarlo un
@@ -1019,7 +1008,15 @@ fn segna(
 /// intoppo: un brano senza copertina è un brano, e far fallire un prelievo
 /// riuscito perché una miniatura non si scarica sarebbe assurdo.
 fn copertina(app: &AppHandle, desiderato: &Desiderato) -> Option<Vec<u8>> {
-    let url = desiderato.brano.cover_url.as_deref()?;
+    // L'indirizzo sta in `desiderati`, cioè l'ha scritto un catalogo, un
+    // archivio o un profilo importato: prima di chiederlo, deve essere un
+    // indirizzo cifrato verso un nome pubblico, non il router di casa. Vedi
+    // `rymembra_catalogo::indirizzo_pubblico`.
+    let url = desiderato
+        .brano
+        .cover_url
+        .as_deref()
+        .filter(|url| rymembra_catalogo::indirizzo_pubblico(url))?;
     let mut byte = Vec::new();
     let rete = app
         .try_state::<StatoProcura>()?
