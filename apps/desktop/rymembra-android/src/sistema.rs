@@ -207,14 +207,17 @@ struct Apk<'a> {
     percorso: &'a str,
 }
 
-/// Consegna un APK — un file nella [`cartella_cache`] — all'installatore di
-/// Android. Non aspetta la risposta: l'installazione è del sistema, e se va
-/// a buon fine il sistema chiude Rymembra per sostituirla.
+/// Consegna un APK — un file nella cartella `aggiornamenti` della
+/// [`cartella_cache`] — all'installatore di Android, dopo averlo verificato.
+/// Non aspetta la risposta: l'installazione è del sistema, e se va a buon fine
+/// il sistema chiude Rymembra per sostituirla.
 ///
 /// # Errori
 ///
-/// Se il ponte non risponde, se non c'è un'attività, o se il percorso non è
-/// testo.
+/// Se il ponte non risponde, se non c'è un'attività, se il percorso non è
+/// testo o non sta in quella cartella, e se l'APK non è questa app — un altro
+/// pacchetto, o firmato con un'altra chiave: allora Kotlin l'ha già
+/// cancellato.
 pub fn installa_apk(percorso: &Path) -> Result<Installazione, Errore> {
     let percorso = percorso
         .to_str()

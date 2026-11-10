@@ -47,7 +47,8 @@
         tools:ignore="ScopedStorage" />
 
     <!-- Gli aggiornamenti: l'APK nuovo, scaricato dalle release di GitHub, si
-         consegna all'installatore di Android, che chiede conferma (vedi
+         consegna all'installatore di Android, che chiede conferma; prima si
+         verifica che sia questa app, firmata come questa app (vedi
          `Installatore.kt`). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 

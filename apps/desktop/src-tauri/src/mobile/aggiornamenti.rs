@@ -14,13 +14,24 @@
 //! scritto una volta sola. Una release senza un APK per questo telefono non è
 //! un aggiornamento: è una versione per il computer, e qui non si annuncia.
 //!
-//! # Perché basta HTTPS
+//! # Che cosa si verifica
 //!
 //! Sul computer l'installer è firmato con una chiave nostra, e l'updater ne
-//! verifica la firma prima di eseguirlo. Su Android lo fa il sistema, e più
-//! severo: un APK si installa **sopra** Rymembra solo se è firmato con la stessa
-//! chiave di quella installata. Un file arrivato storto, o da qualcun altro,
-//! l'installatore lo rifiuta da sé.
+//! verifica la firma prima di eseguirlo. Sul telefono la chiave è quella che
+//! firma l'APK, e la verifica sta in tre passi:
+//!
+//! - l'APK si annuncia solo se si scarica da GitHub
+//!   ([`crate::rilasci::allegato_di_github`]), e lo scaricamento segue i
+//!   rimandi solo verso GitHub ([`rimando_di_github`]), in HTTPS;
+//! - prima di consegnarlo, `Installatore.kt` lo apre e pretende che sia
+//!   **questa** app — lo stesso pacchetto — firmata con lo stesso certificato
+//!   di quella installata; se no lo cancella, e l'errore torna qui;
+//! - l'installatore di Android, alla fine, lo mette sopra Rymembra solo se la
+//!   firma è la stessa.
+//!
+//! Il secondo passo esiste perché il terzo protegge solo il pacchetto che c'è
+//! già: un APK con un altro nome di pacchetto per Android non è un
+//! aggiornamento ma un'app nuova, e la proporrebbe da installare a un tocco.
 //!
 //! # I tempi
 //!
@@ -40,13 +51,13 @@ use std::time::{Duration, Instant};
 
 use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_net::{Corpo, Metodo, Rete, Richiesta};
+use rymembra_net::{Cancello, Corpo, Metodo, Rete, Richiesta, Rimandi};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
-use crate::rilasci::{Rilascio, Trovato, progetto_da, scegli, troppo_presto};
+use crate::rilasci::{Rilascio, Trovato, progetto_da, rimando_di_github, scegli, troppo_presto};
 use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
@@ -77,6 +88,9 @@ const RIPROVE_SENZA_RETE: [Duration; 3] = [
 const SCADENZA_RICHIESTA: Duration = Duration::from_secs(20);
 /// Ogni quanto si racconta l'avanzamento dello scaricamento.
 const RESPIRO_AVANZAMENTO: Duration = Duration::from_millis(200);
+/// Quanti rimandi si seguono scaricando l'APK: GitHub ne fa uno, verso chi
+/// serve i byte; uno in più per un progetto rinominato, e uno di margine.
+const RIMANDI_DELL_APK: u32 = 3;
 
 /// Perché il filo si è svegliato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,7 +639,13 @@ fn scarica(
         }
     };
     let annullato = || aggiornamenti.annulla.load(Ordering::Acquire);
-    let esito = Rete::per_prelievo("aggiornamenti").preleva(
+    // L'indirizzo è di GitHub (`rilasci::scegli`), e GitHub lo serve da
+    // un altro ospite suo: si segue quello, e nessun altro.
+    let rete = Rete::per_prelievo("aggiornamenti").con_rimandi(Rimandi::Sorvegliati {
+        quanti: RIMANDI_DELL_APK,
+        cancello: Cancello::nuovo(rimando_di_github),
+    });
+    let esito = rete.preleva(
         &trovato.indirizzo,
         &[],
         &mut file,
@@ -645,6 +665,10 @@ fn scarica(
 }
 
 /// Consegna l'APK all'installatore di Android.
+///
+/// Prima `Installatore.kt` lo verifica: un APK che non è questa app — un altro
+/// pacchetto, o un'altra firma — torna qui come errore, ed è già cancellato,
+/// così il prossimo «Aggiorna» non lo riusa.
 ///
 /// Se Rymembra non ha ancora il permesso di installare app, Android apre la
 /// pagina dove lo si concede: chi la chiude torna a «Aggiorna», che stavolta
