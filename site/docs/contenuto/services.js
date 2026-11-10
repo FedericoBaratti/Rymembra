@@ -40,7 +40,7 @@
     {
       id: "sync",
       title: "Device sync",
-      src: ["core/rymembra-sync/src/lib.rs", "core/rymembra-sync/src/documento.rs", "core/rymembra-sync/src/fusione.rs", "core/rymembra-sync/src/contatore.rs", "core/rymembra-sync/src/registro.rs", "core/rymembra-sync/src/sequenza.rs", "core/rymembra-sync/src/magazzino.rs", "core/rymembra-sync/src/motore.rs", "core/rymembra-app/src/sincronia.rs", "apps/desktop/src-tauri/src/sincronia.rs", "core/rymembra-sync/tests/convergenza.rs"],
+      src: ["core/rymembra-sync/src/lib.rs", "core/rymembra-sync/src/documento.rs", "core/rymembra-sync/src/dominio.rs", "core/rymembra-sync/src/fusione.rs", "core/rymembra-sync/src/contatore.rs", "core/rymembra-sync/src/registro.rs", "core/rymembra-sync/src/sequenza.rs", "core/rymembra-sync/src/magazzino.rs", "core/rymembra-sync/src/motore.rs", "core/rymembra-app/src/sincronia.rs", "apps/desktop/src-tauri/src/sincronia.rs", "core/rymembra-sync/tests/convergenza.rs"],
       body: [
         "No server, no ordering guarantees. Each device writes **only its own** document, `dispositivi/rymembra-<id>.v1.json.gz`, and every device merges all of them. The same layout works on a shared folder (Syncthing, OneDrive, Dropbox, a USB stick) and on Drive, and «conflicted copies» cannot occur. State per device, not an operation log: its size is the library's, not the history's, so nothing ever needs compaction.",
         { h: "Four merge shapes" },
@@ -55,7 +55,9 @@
             ],
           },
         },
-        "All merges are commutative, associative and idempotent; `tests/convergenza.rs` checks with seeded random histories that any merge order converges and that concurrent playlist edits are not lost. Documents are canonical JSON (BTreeMaps), gzipped, hashed with `blake3`, read up to 64 MiB decompressed; bad records are dropped, a newer version is refused.",
+        "All merges are commutative, associative and idempotent; `tests/convergenza.rs` checks with seeded random histories that any merge order converges and that concurrent playlist edits are not lost. Documents are canonical JSON (BTreeMaps), gzipped, hashed with `blake3`, read up to 64 MiB decompressed and at most 4,000,000 JSON values (counted before the tree is built); bad records are dropped, a newer version is refused. A document that does not parse is remembered by its hash and not re-read until it changes.",
+        "Out-of-domain records are dropped per record by `dominio::nel_dominio`, applied to other devices' documents on every pass: ratings above 5, play counts outside 0..=1,000,000,000, and anything dated more than 10 minutes (`MARGINE_FUTURO_MS`) in the future — deferred, not lost: the cached document is merged once its time comes. Sequence elements whose number is not below the element count are dropped on read (their numbers could never come from real edits, and they made new inserts overwrite each other).",
+        "A watched folder that a document turns on is left out — of `library.roots` and of the map — when it is a network path (`\\\\host\\…`, `//host/…`, `\\\\?\\UNC\\…`) to a host this PC does not already use in its roots or download folder: no SMB connection to a host chosen by the document's writer. The pass counts them (`Cambiamenti::cartelle_di_rete`) and logs them.",
         { h: "A pass" },
         {
           ol: [

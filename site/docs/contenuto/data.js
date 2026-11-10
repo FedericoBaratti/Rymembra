@@ -238,12 +238,12 @@
         {
           ol: [
             "`sincronia::allinea` brings the sync tables up to date (its own transaction);",
-            "identity check (`profilo.identita`): a library with no identity adopts the profile's; a **different** identity gets only preferences, covers and skins, unless the user says it is the same library (`unisci_comunque`);",
+            "identity check (`profilo.identita`): a library with no identity adopts the profile's; a **different** identity — or a profile that carries a library with an empty identity — gets only preferences, covers and skins, unless the user says it is the same library (`unisci_comunque`);",
             "outside the lock, path answers are computed: each remapped root is checked with a 3 s timeout, and for each remapping the plan samples `CAMPIONE_DEL_PIANO` = 64 files (the real import checks them all) with three answers — exists, missing, unknown;",
             "in one Immediate transaction: root remapping (`tracks.path` is rewritten only where the new file exists), preferences, corrections **first**, the sync merge (`rymembra_sync::fondi` of local and imported documents), then the library complement — history `INSERT OR IGNORE`, newest correction and lyrics win (never over hand-made lyrics), covers attached only to tracks without one.",
           ],
         },
-        "Nothing is ever deleted by an import: no tombstone from the profile is applied. Before writing, a safety copy goes to `profilo/prima-<ms>.ryprofile` (`COPIE_TENUTE` = 3); `profilo_annulla` restores preferences and the active skin from it — the additive library part cannot be undone. All four commands run in `in_disparte`, since a profile usually sits on a USB stick or a share; progress is the `profilo:avanzamento` event.",
+        "Nothing is ever deleted by an import: before the merge the profile's sync document goes through `in_dono`, which drops its tombstones, switched-off folders, removed likes and cleared ratings, and clamps future timestamps to now (`rymembra_sync::dominio`, `Futuro::Taglia`; the library complement likewise). Cover rows whose hash is not lowercase hex are dropped when the profile is read, and the cover store never builds a path outside its folder. Within a playlist both libraries share, a track removed or moved on the other side still follows the sequence. Before writing, a safety copy goes to `profilo/prima-<ms>.ryprofile` (`COPIE_TENUTE` = 3); `profilo_annulla` restores preferences and the active skin from it — the additive library part cannot be undone. All four commands run in `in_disparte`, since a profile usually sits on a USB stick or a share; progress is the `profilo:avanzamento` event.",
       ],
       see: ["sync", "cloud", "settings-store"],
     },
