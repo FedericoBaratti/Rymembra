@@ -1490,7 +1490,7 @@
   "devices.rename.aria": "New name for “{nome}”",
   "devices.forget": "Forget",
   "devices.forget.title": "Forget “{nome}”?",
-  "devices.forget.sub": "It won't be able to reach this device any more, and it will be told: linking again needs a new QR code. Listens already sent stay.",
+  "devices.forget.sub": "It won't be able to reach this device any more, and it will be told: linking again needs a new QR code. It also stops being trusted in «Listen together», which will ask for the code again. Listens already sent stay.",
   "devices.scan.denied": "Without the camera the QR code can't be read. You can allow it in Android's settings, or paste the link instead.",
   "devices.browse.eyebrow": "Browse",
   "devices.browse.tabs": "What to browse",

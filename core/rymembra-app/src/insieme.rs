@@ -421,6 +421,51 @@ pub fn associa(
         .map_err(|err| db_error("associazione di un PC", &err))
 }
 
+/// La chiave di «Ascolta insieme» che un dispositivo ha dato collegandosi col
+/// QR (`rymembra-lontano`): fidata come col codice a quattro cifre, con due
+/// differenze, perché la chiave la **dichiara** l'altro e il collegamento non
+/// prova che la possieda.
+///
+/// - Un PC che la persona aveva bloccato resta bloccato, e torna `None`: un QR
+///   non è la prova che lo si vuole, l'associazione col codice sì
+///   ([`associa`]).
+/// - Un PC che c'è già tiene il suo nome — scelto qui, o quello con cui si era
+///   associato — e diventa solo «visto adesso».
+///
+/// La riga, fidata, torna col suo id.
+///
+/// # Errori
+///
+/// `insieme.protocollo` per una chiave che non è di 64 cifre esadecimali.
+/// Poi quelli del database.
+pub fn fidato_dal_qr(
+    connection: &Connection,
+    chiave: &str,
+    nome: &str,
+    adesso_ms: i64,
+) -> Result<Option<i64>, AppError> {
+    let chiave = chiave_valida(chiave)?;
+    let mut nome = ripulisci_nome(nome);
+    if nome.is_empty() {
+        nome = chiave.chars().take(8).collect();
+    }
+    // Il `WHERE` dell'aggiornamento guarda la riga che c'è: bloccata, non si
+    // tocca, e `RETURNING` non torna niente.
+    connection
+        .query_row(
+            "INSERT INTO insieme_pari (chiave, nome, bloccato, associato_ms, visto_ms)
+             VALUES (?1, ?2, 0, ?3, ?3)
+             ON CONFLICT(chiave) DO UPDATE SET
+               visto_ms = excluded.visto_ms
+             WHERE bloccato = 0
+             RETURNING id",
+            rusqlite::params![chiave, nome, adesso_ms],
+            |riga| riga.get(0),
+        )
+        .optional()
+        .map_err(|err| db_error("PC fidato dal QR", &err))
+}
+
 /// Rinomina un PC associato.
 ///
 /// # Errori
@@ -1221,6 +1266,43 @@ mod prove {
             unico.chiave, CHIAVE,
             "in minuscolo, come la scrive il trasporto"
         );
+    }
+
+    #[test]
+    fn il_qr_non_sblocca_un_pc_bloccato_e_non_lo_rinomina() {
+        let c = libreria();
+        // Nuovo: fidato col nome che dichiara, come col codice.
+        let nuovo = fidato_dal_qr(&c, ALTRA, "Telefono", 1_000)
+            .expect("scritto")
+            .expect("fidato");
+        // Bloccato a mano: un QR — che porta una chiave dichiarata
+        // dall'altro, senza prova di possederla — non lo sblocca.
+        let id = associa(&c, CHIAVE, "PC di Marco", 1_000).expect("associato");
+        rinomina(&c, id, "Salotto").expect("rinominato");
+        blocca(&c, id, true).expect("bloccato");
+        assert_eq!(
+            fidato_dal_qr(&c, &CHIAVE.to_ascii_uppercase(), "Mario", 2_000).expect("scritto"),
+            None
+        );
+        let elenco = pari(&c).expect("elenco");
+        let bloccato = elenco.iter().find(|p| p.id == id).expect("c'è");
+        assert!(bloccato.bloccato, "resta bloccato");
+        assert_eq!(bloccato.nome, "Salotto");
+        // Sbloccato, il QR lo ritrova fidato, ma il nome scelto qui resta.
+        blocca(&c, id, false).expect("sbloccato");
+        assert_eq!(
+            fidato_dal_qr(&c, CHIAVE, "Mario", 3_000).expect("scritto"),
+            Some(id)
+        );
+        let elenco = pari(&c).expect("elenco");
+        let ritrovato = elenco.iter().find(|p| p.id == id).expect("c'è");
+        assert_eq!(
+            (ritrovato.nome.as_str(), ritrovato.bloccato),
+            ("Salotto", false)
+        );
+        assert_eq!(ritrovato.visto_ms, Some(3_000));
+        assert_eq!(elenco.len(), 2);
+        assert!(elenco.iter().any(|p| p.id == nuovo && p.nome == "Telefono"));
     }
 
     #[test]

@@ -52,21 +52,24 @@ impl Ospite {
 
 impl Ospite {
     /// Un dispositivo collegato col QR è anche un PC fidato di «Ascolta
-    /// insieme», se ha dato la sua chiave: il QR è una prova più forte del
-    /// codice a quattro cifre, e chiederlo di nuovo in casa sarebbe una
-    /// seconda associazione degli stessi due dispositivi. La riga va in
-    /// `insieme_pari` come la scriverebbe il codice — e sblocca un PC che si
-    /// era bloccato, perché collegarlo di nuovo è la prova che lo si vuole.
+    /// insieme», se ha dato la sua chiave: chiederlo di nuovo in casa sarebbe
+    /// una seconda associazione degli stessi due dispositivi. Ma la chiave la
+    /// dichiara l'altro, e niente prova che sia sua: un PC che la persona
+    /// aveva bloccato resta bloccato, e uno che c'è già tiene il suo nome
+    /// (`rymembra_app::insieme::fidato_dal_qr`). «Dimentica» la toglie.
     /// Un guasto qui non disfa il collegamento: in casa resta il codice.
     fn fidato_anche_insieme(&self, chi: &Presentazione) {
         let Some(chiave) = chi.chiave_insieme.as_deref() else {
             return;
         };
         let scritto = in_libreria(&self.app, ATTESA_SCRITTURA, |c| {
-            rymembra_app::insieme::associa(c, chiave, &chi.nome, adesso_ms())
+            rymembra_app::insieme::fidato_dal_qr(c, chiave, &chi.nome, adesso_ms())
         });
         match scritto {
-            Ok(_) => crate::insieme::fidati_cambiati(&self.app),
+            Ok(Some(_)) => crate::insieme::fidati_cambiati(&self.app),
+            Ok(None) => nota!(
+                "[lontano] la chiave di «Ascolta insieme» del dispositivo collegato è di un PC bloccato: resta bloccato"
+            ),
             Err(err) => nota!(
                 "[lontano] la chiave di «Ascolta insieme» non si scrive codice={}",
                 err.code().kind().code()
@@ -174,11 +177,15 @@ impl rymembra_lontano::Ospite for Ospite {
         self.comune.ammetti(da, false);
         // I suoi brani in coda non si aprono più: l'altro non ci risponde.
         crate::riproduzione::togli_lontane(&self.app, da);
-        if let Err(err) = in_libreria(&self.app, ATTESA_SCRITTURA, |c| dispositivi::revoca(c, da)) {
-            nota!(
+        match in_libreria(&self.app, ATTESA_SCRITTURA, |c| dispositivi::revoca(c, da)) {
+            // La sua chiave di «Ascolta insieme» non è più fidata: la rete di
+            // «Ascolta insieme» rilegge e chiude le sue connessioni.
+            Ok(true) => crate::insieme::fidati_cambiati(&self.app),
+            Ok(false) => {}
+            Err(err) => nota!(
                 "[lontano] un dispositivo che ci ha dimenticati non si segna codice={}",
                 err.code().kind().code()
-            );
+            ),
         }
         self.comune.sveglia(Posta::Rileggi {
             risposta: None,

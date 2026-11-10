@@ -434,9 +434,15 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
             );
         }
         comune.ammetti(&chiave, false);
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
+        let insieme_cambiato = in_libreria(&app, ATTESA_LIBRERIA, |c| {
             dispositivi::dimentica(c, &chiave)
         })?;
+        // Anche la sua chiave di «Ascolta insieme», che il QR aveva reso
+        // fidata: la rete di «Ascolta insieme» rilegge e chiude le sue
+        // connessioni.
+        if insieme_cambiato {
+            crate::insieme::fidati_cambiati(&app);
+        }
         // I suoi brani in coda non si aprono più.
         crate::riproduzione::togli_lontane(&app, &chiave);
         rileggi_e_aspetta(&app)
