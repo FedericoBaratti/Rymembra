@@ -88,6 +88,40 @@ fn l_annuncio_del_successivo_ritirato_non_sposta_la_coda() {
     );
 }
 
+/// Chi segue non ritira la voce che l'host ha appena fatto partire.
+///
+/// L'host annuncia B e manda il suo stato: il cursore di chi segue va su B,
+/// che il suo motore ha già attaccato ma non ancora fatto sentire — chi segue
+/// può stare indietro di qualche centinaio di millisecondi. Col dopo che è
+/// diventato C, `prepara_prossimo` mandava `Prepara(None)` e il preparatore
+/// C: il motore, che adesso ritira un successivo attaccato, ritirava B, e chi
+/// segue saltava la voce. Si aspetta l'annuncio di B: è lui a liberare la
+/// canna. Con «ripeti uno» invece la voce in canna è la stessa che si sente,
+/// e spegnerlo deve ritirarla come sempre.
+#[test]
+fn chi_segue_aspetta_l_annuncio_della_voce_in_canna() {
+    const A: i64 = -1;
+    const B: i64 = -2;
+    const C: i64 = -3;
+    assert!(
+        fili::aspetta_l_annuncio(true, Some(B), Some(B), Some(A)),
+        "il cursore dell'host è già su B, che qui non si sente ancora"
+    );
+    assert!(
+        !fili::aspetta_l_annuncio(true, Some(A), Some(A), Some(A)),
+        "«ripeti uno»: la voce in canna è quella che si sente"
+    );
+    assert!(
+        !fili::aspetta_l_annuncio(false, Some(B), Some(B), Some(A)),
+        "solo chi segue"
+    );
+    assert!(
+        !fili::aspetta_l_annuncio(true, Some(B), Some(C), Some(A)),
+        "in canna non c'è la voce del cursore"
+    );
+    assert!(!fili::aspetta_l_annuncio(true, Some(B), None, Some(A)));
+}
+
 /// Togliere, saltare e spostare una riga della coda portano il brano che la
 /// finestra ci vedeva: due × in fila prima della risposta toglievano la riga
 /// sbagliata.
