@@ -600,7 +600,10 @@ impl Cliente {
     /// «l'elenco è cambiato, usa questo slug» restava scritto in un `cause` che
     /// va nel diario.
     fn traduci(&self, err: AppError) -> AppError {
-        self.senza_segreti(self.tradotto(err))
+        // Due volte, e non per scrupolo: `tradotto` accorcia la frase del
+        // servizio, e una chiave che cade sul taglio non si riconosce più per
+        // intero. Ripulire prima vuol dire tagliare un testo che non la porta.
+        self.senza_segreti(self.tradotto(self.senza_segreti(err)))
     }
 
     /// Un errore con il messaggio e la causa ripuliti dai segreti.
@@ -845,13 +848,53 @@ const CHIAVE_MINIMA: usize = 8;
 /// conto, è un segreto lo stesso, e nel diario non ha niente da fare.
 fn senza_segreti(testo: &str, chiave: Option<&str>) -> String {
     let senza_la_chiave = match chiave.filter(|k| k.chars().count() >= CHIAVE_MINIMA) {
-        Some(chiave) => testo.replace(chiave, SEGRETO),
+        Some(chiave) => senza_la_coda(&testo.replace(chiave, SEGRETO), chiave),
         None => testo.to_owned(),
     };
     let di_una_chiave = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     let di_un_gettone = |c: char| c.is_ascii_alphanumeric() || "-._~+/=".contains(c);
     let senza_sk = togli_dopo(&senza_la_chiave, "sk-", 8, false, di_una_chiave);
     togli_dopo(&senza_sk, "bearer ", 1, true, di_un_gettone)
+}
+
+/// Quanti caratteri dell'inizio di una chiave, rimasti prima di un taglio,
+/// bastano per toglierli. Meno di così sono lettere qualunque.
+const CODA_MINIMA: usize = 4;
+
+/// Toglie l'inizio della chiave lasciato prima di un taglio.
+///
+/// # Perché
+///
+/// La rete accorcia il corpo di una risposta d'errore a cinquecento caratteri
+/// prima che arrivi qui (`stato_a_errore`), e una chiave che cade sul taglio
+/// arriva già a metà: «Invalid key: gsk_Q7w2Ee9Rr4…». Per intero non c'è più,
+/// e la metà rimasta è quasi tutta la chiave per chi la cerca. Un taglio è
+/// sempre in coda, ed è segnato dai puntini (`…`): lì si guarda se il testo
+/// finisce con un pezzo iniziale della chiave, e si toglie il più lungo.
+fn senza_la_coda(testo: &str, chiave: &str) -> String {
+    // Gli inizi della chiave, dal più lungo: lo scarto in byte dove finiscono.
+    let inizi: Vec<usize> = chiave
+        .char_indices()
+        .map(|(posto, _)| posto)
+        .chain(std::iter::once(chiave.len()))
+        .skip(CODA_MINIMA)
+        .collect();
+    let mut tagli: Vec<usize> = testo.match_indices('…').map(|(posto, _)| posto).collect();
+    tagli.push(testo.len());
+    let mut fuori = testo.to_owned();
+    // Da destra, così gli scarti dei tagli a sinistra restano validi.
+    for taglio in tagli.into_iter().rev() {
+        let prima = fuori.get(..taglio).unwrap_or_default();
+        let Some(lungo) = inizi.iter().rev().copied().find(|&fine| {
+            chiave
+                .get(..fine)
+                .is_some_and(|pezzo| prima.ends_with(pezzo))
+        }) else {
+            continue;
+        };
+        fuori.replace_range(taglio.saturating_sub(lungo)..taglio, SEGRETO);
+    }
+    fuori
 }
 
 /// Toglie quel che segue `prefisso` (cercato senza badare alle maiuscole),
@@ -1351,6 +1394,46 @@ mod prove {
         // non si cerca dentro le parole.
         let frase = "task-force-1234567890: API key expired";
         assert_eq!(senza_segreti(frase, Some("k")), frase);
+    }
+
+    #[test]
+    fn una_chiave_tagliata_a_meta_non_esce_lo_stesso() {
+        // Una chiave che non comincia per `sk-` — `gsk_…`, `AIza…`, quella che
+        // accetta un server locale — e una frase lunga abbastanza da farla
+        // cadere su un taglio. Due tagli: quello del messaggio qui dentro
+        // (`DETTAGLIO_MASSIMO`) e quello della rete, che arriva già fatto.
+        let chiave = "gsk_Q7w2Ee9Rr4Tt6Yy8Uu1Ii3Oo5Pp0AaSsDdFf";
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Personalizzato, "https://proxy.esempio.it/v1"),
+            Some(chiave.to_owned()),
+        )
+        .unwrap();
+        let http = |causa: String| {
+            AppError::new(ErrorCode::NetHttp {
+                status: 401,
+                url: None,
+            })
+            .with_cause(causa)
+        };
+        // La chiave a cavallo del trecentesimo carattere della frase.
+        let prima = "x".repeat(DETTAGLIO_MASSIMO - 30);
+        let corpo = format!(r#"{{"error":{{"message":"{prima} {chiave} fine"}}}}"#);
+        // E la rete che ha già tagliato a metà della chiave: i primi
+        // cinquecento caratteri del corpo, e i puntini.
+        let lungo = format!(
+            r#"{{"error":{{"message":"{} {chiave} fine"}}}}"#,
+            "y".repeat(470)
+        );
+        let tagliato = format!("{}…", lungo.chars().take(500).collect::<String>());
+        for err in [
+            cliente.traduci(http(corpo)),
+            cliente.traduci(http(tagliato)),
+        ] {
+            let tutto = format!("{err:?} {:?} {:?}", err.message(), err.cause());
+            // Nemmeno la metà: i primi sedici caratteri di una chiave sono
+            // già quasi tutta la chiave per chi la cerca.
+            assert!(!tutto.contains(&chiave[..16]), "{tutto}");
+        }
     }
 
     #[test]
