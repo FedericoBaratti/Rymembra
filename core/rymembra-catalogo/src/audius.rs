@@ -28,11 +28,13 @@
 //! Sopra la licenza c'è un terzo veto, che la licenza non conosce: i brani
 //! **con cancello**. Audius permette di chiudere lo streaming o lo scarico
 //! dietro un seguito, un acquisto o il possesso di un gettone
-//! (`is_stream_gated`, `is_download_gated`). Un brano col cancello sullo
-//! streaming non entra nemmeno nell'elenco — non lo si potrebbe sentire — e uno
-//! col cancello sullo scarico scende a solo ascolto qualunque cosa dica la sua
-//! licenza. Il permesso di un catalogo non è la somma delle sue licenze: è
-//! l'intersezione di tutti i suoi no.
+//! (`is_stream_gated`, `is_download_gated`, con le loro `…_conditions`). Un
+//! brano col cancello sullo streaming non entra nemmeno nell'elenco — non lo
+//! si potrebbe sentire — e uno col cancello sullo scarico scende a solo ascolto
+//! qualunque cosa dica la sua licenza. Il permesso di un catalogo non è la
+//! somma delle sue licenze: è l'intersezione di tutti i suoi no, e un no che la
+//! risposta non dice — un cancello assente, scritto in una forma che non si
+//! capisce — conta come detto.
 //!
 //! # Il nodo, e perché si sceglie una volta sola
 //!
@@ -66,7 +68,7 @@ use rymembra_domain::scelta::{Candidato, Natura, natura_dal_titolo, query_larga,
 use rymembra_net::{Corpo, Metodo, Rete, Richiesta, percento};
 use serde_json::Value;
 
-use crate::riferimento::Riferimento;
+use crate::riferimento::{Riferimento, indirizzo_pubblico};
 
 /// Dove si chiede l'elenco dei nodi in salute.
 const ELENCO_NODI: &str = "https://api.audius.co";
@@ -127,11 +129,22 @@ impl Audius {
     #[must_use]
     pub fn nuovo() -> Self {
         Self {
-            rete: Rete::nuova("audius.co", SCADENZA),
+            // I rimandi delle domande seguono la stessa regola del nodo: solo
+            // verso un nome pubblico. Vedi `rimandi_pubblici`.
+            rete: crate::rimandi_pubblici(&Rete::nuova("audius.co", SCADENZA)),
             prelievo: Rete::per_prelievo("audius.co"),
             flusso: Rete::per_flusso("audius.co"),
             nodo: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Un client con un nodo già scelto, per le prove: niente elenco da
+    /// chiedere, quindi niente rete prima del prelievo vero.
+    #[cfg(test)]
+    pub(crate) fn con_nodo(quale: &str) -> Self {
+        let audius = Self::nuovo();
+        *audius.nodo.lock().unwrap_or_else(PoisonError::into_inner) = Some(quale.to_owned());
+        audius
     }
 
     /// La rete che usa per **chiedere**: ricerche, schede, elenchi.
@@ -183,18 +196,22 @@ impl Audius {
     /// # Errori
     ///
     /// `download.externalSearchFailed` quando la ricerca non risponde, `net.*`
-    /// per i guasti di trasporto.
+    /// per i guasti di trasporto, `internal.aborted` se chi ha chiesto ha
+    /// annullato. Un annullamento non è mai un elenco vuoto: per la coda un
+    /// elenco vuoto vuol dire «introvabile», che è terminale.
     pub fn cerca(
         &self,
         brano: &BranoEsterno,
         annullato: &dyn Fn() -> bool,
     ) -> Result<Vec<Candidato>, AppError> {
         if annullato() {
-            return Ok(Vec::new());
+            return Err(crate::ricerca_annullata("Audius"));
         }
         let mut trovati = self.cerca_con(&query_stretta(brano), Some(&brano.title))?;
+        if annullato() {
+            return Err(crate::ricerca_annullata("Audius"));
+        }
         if trovati.is_empty()
-            && !annullato()
             && let Some(larga) = query_larga(brano)
         {
             trovati = self.cerca_con(&larga, Some(&brano.title))?;
@@ -394,6 +411,23 @@ impl Audius {
         })
     }
 
+    /// Un brano, con la licenza, i cancelli e la pagina di **adesso**.
+    ///
+    /// Per la coda che preleva un brano il cui file era già scelto: vedi
+    /// [`crate::Cataloghi::da_prelevare`]. L'indirizzo del candidato si rifà
+    /// dai dati di adesso, quindi è `/download` solo se oggi l'artista lo
+    /// consente. `None` se il catalogo non conosce più quel brano, o se lo
+    /// consegna sotto un altro identificativo.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::chiedi`]: `net.*`, `download.badResponse`,
+    /// `catalogo.notAvailable`.
+    pub fn riletto(&self, id: &str) -> Result<Option<Candidato>, AppError> {
+        let corpo = self.chiedi(&format!("/v1/tracks/{}", percento(id)), &[])?;
+        Ok(traccia_riletta(&corpo, id))
+    }
+
     /// Da un candidato conservato a uno pronto da andare a prendere.
     ///
     /// Rimette il nodo davanti al percorso e riporta fuori l'estensione che
@@ -513,12 +547,7 @@ impl Audius {
             AppError::new(ErrorCode::DownloadBadResponse)
                 .with_cause(format!("l'elenco dei nodi non è JSON: {err}"))
         })?;
-        let scelto = elenco(&corpo)
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|n| n.starts_with("https://"))
-            .map(ToOwned::to_owned);
-        let Some(scelto) = scelto else {
+        let Some(scelto) = nodo_dall_elenco(&corpo) else {
             return Err(AppError::new(ErrorCode::CatalogoNotAvailable)
                 .with_cause("Audius non ha nessun nodo in salute da offrire".to_owned()));
         };
@@ -539,6 +568,34 @@ impl Audius {
     }
 }
 
+/// Il brano `id` dalla risposta di `/v1/tracks/<id>`, come candidato.
+///
+/// L'oggetto o un elenco di uno, come per `resolve`. Un identificativo diverso
+/// da quello chiesto non è il brano chiesto.
+fn traccia_riletta(corpo: &Value, id: &str) -> Option<Candidato> {
+    let dato = corpo.get("data")?;
+    let traccia = dato.as_array().and_then(|a| a.first()).unwrap_or(dato);
+    if testo(traccia, "id").as_deref() != Some(id) {
+        return None;
+    }
+    candidato_da(traccia, None)
+}
+
+/// Il nodo da usare, dall'elenco che `api.audius.co` consegna.
+///
+/// Il primo che sia un [`indirizzo_pubblico`]: da quel nodo partono ricerche,
+/// flussi e prelievi, e un elenco alterato — una risposta manomessa, un
+/// servizio compromesso — non deve poterle mandare al router o al NAS di casa.
+/// Lo stesso controllo che i rimandi dei flussi facevano già sui salti, adesso
+/// anche sul punto di partenza.
+fn nodo_dall_elenco(corpo: &Value) -> Option<String> {
+    elenco(corpo)
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|n| indirizzo_pubblico(n))
+        .map(ToOwned::to_owned)
+}
+
 /// L'array che sta in `data`, o niente.
 fn elenco(corpo: &Value) -> Vec<Value> {
     corpo
@@ -555,8 +612,54 @@ fn testo(valore: &Value, campo: &str) -> Option<String> {
 }
 
 /// Un booleano, che vale `false` quando manca.
+///
+/// Solo per quel che **non** concede niente — la spunta di verifica di un
+/// autore. I permessi passano da [`esattamente`], e i cancelli da
+/// [`cancello_chiuso`].
 fn vero(valore: &Value, campo: &str) -> bool {
     valore.get(campo).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Il campo c'è, ed è esattamente il booleano `atteso`.
+///
+/// Un `"true"` scritto come testo, un numero, un campo assente: niente di
+/// questo è la risposta attesa, e chi decide un permesso deve poterlo
+/// distinguere da un sì.
+fn esattamente(valore: &Value, campo: &str, atteso: bool) -> bool {
+    valore.get(campo).and_then(Value::as_bool) == Some(atteso)
+}
+
+/// Un cancello di Audius che può essere chiuso: la bandiera `is_<…>_gated` o
+/// le condizioni `<…>_conditions`.
+///
+/// Chiuso è tutto ciò che non dice «aperto» per esteso: la bandiera deve essere
+/// `false` scritto, e le condizioni assenti o `null`. Un oggetto, anche vuoto,
+/// è una condizione; una bandiera che manca è una domanda senza risposta.
+/// Vedi [`disponibilita_da`] per perché si sbaglia da questa parte.
+fn cancello_chiuso(traccia: &Value, bandiera: &str, condizioni: &str) -> bool {
+    let condizioni_assenti = traccia.get(condizioni).is_none_or(Value::is_null);
+    !(esattamente(traccia, bandiera, false) && condizioni_assenti)
+}
+
+/// Il cancello sullo streaming è dichiarato chiuso.
+///
+/// Il gemello largo di [`cancello_chiuso`], per una domanda diversa: qui non
+/// si decide se tenere, ma se il brano entra nell'elenco di quel che si
+/// ascolta. Un campo **assente** lascia entrare — le risposte più vecchie non
+/// lo portano, e farle sparire vorrebbe dire svuotare il catalogo — mentre un
+/// valore che non sia `false`, una condizione o un accesso negato dal catalogo
+/// tengono fuori. Per tenerne una copia vale comunque la regola stretta.
+fn streaming_chiuso(traccia: &Value) -> bool {
+    let bandiera = traccia
+        .get("is_stream_gated")
+        .is_some_and(|v| v.as_bool() != Some(false));
+    let condizioni = traccia
+        .get("stream_conditions")
+        .is_some_and(|v| !v.is_null());
+    let accesso = traccia
+        .get("access")
+        .is_some_and(|a| a.get("stream").and_then(Value::as_bool) != Some(true));
+    bandiera || condizioni || accesso
 }
 
 /// La copertina, nella misura più grande che il catalogo dichiara.
@@ -565,10 +668,14 @@ fn vero(valore: &Value, campo: &str) -> bool {
 /// nei tag di un file che resterà sul disco per anni, e una miniatura da 150
 /// pixel dentro un FLAC è un difetto che non si corregge più senza riscrivere
 /// il file.
+///
+/// Solo un [`indirizzo_pubblico`]: l'indirizzo arriva dalla risposta e chi lo
+/// riceve ci fa una richiesta, quindi vale lo stesso controllo del nodo. Una
+/// misura che punta a casa si salta, e si prova la successiva.
 fn copertina(valore: &Value) -> Option<String> {
     let arte = valore.get("artwork")?;
     for misura in ["1000x1000", "480x480", "150x150"] {
-        if let Some(url) = testo(arte, misura) {
+        if let Some(url) = testo(arte, misura).filter(|u| indirizzo_pubblico(u)) {
             return Some(url);
         }
     }
@@ -628,9 +735,29 @@ fn licenza_da(traccia: &Value) -> Licenza {
 /// diventa scaricabile perché la sua licenza è una CC BY. La licenza dice cosa
 /// l'autore consente in astratto; il cancello dice cosa il catalogo consegna a
 /// noi, adesso.
+///
+/// # Si chiude in sicurezza
+///
+/// Fino alla 3.2 il divieto si deduceva dalla presenza di un `true`: un
+/// `is_download_gated` assente, scritto come testo o accompagnato da una
+/// `download_conditions` valeva «nessun cancello», e un brano col seguito
+/// obbligatorio diventava scaricabile. Adesso il permesso vuole **ogni no
+/// detto**: l'interruttore acceso, i due cancelli a `false` scritti — chi ha
+/// il cancello sullo streaming ce l'ha anche sullo scarico — nessuna
+/// condizione, e l'accesso che il catalogo calcola, quando lo manda, aperto.
+/// Lo schema attuale dell'API porta sempre i due cancelli e l'accesso, quindi
+/// un dato che manca è una risposta che non si capisce, e su quella non si
+/// scrive niente sul disco.
 fn disponibilita_da(traccia: &Value, licenza: &Licenza) -> Disponibilita {
-    let scaricabile = (vero(traccia, "is_downloadable") || vero(traccia, "downloadable"))
-        && !vero(traccia, "is_download_gated");
+    let interruttore =
+        esattamente(traccia, "is_downloadable", true) || esattamente(traccia, "downloadable", true);
+    let accesso = traccia
+        .get("access")
+        .is_none_or(|a| a.get("download").and_then(Value::as_bool) == Some(true));
+    let scaricabile = interruttore
+        && !cancello_chiuso(traccia, "is_download_gated", "download_conditions")
+        && !cancello_chiuso(traccia, "is_stream_gated", "stream_conditions")
+        && accesso;
     Disponibilita::decidi(Fonte::Audius, licenza, scaricabile)
 }
 
@@ -647,7 +774,7 @@ fn disponibilita_da(traccia: &Value, licenza: &Licenza) -> Disponibilita {
 fn candidato_da(traccia: &Value, atteso: Option<&str>) -> Option<Candidato> {
     let titolo = testo(traccia, "title")?;
     let id = testo(traccia, "id")?;
-    if vero(traccia, "is_stream_gated") {
+    if streaming_chiuso(traccia) {
         return None;
     }
     // `is_streamable` manca sulle risposte più vecchie: assente vale «sì», o
@@ -846,10 +973,10 @@ mod prove {
         // di no, e vince il catalogo. È l'intersezione dei no, non la somma dei
         // sì.
         let aperto = traccia(
-            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true}"#,
+            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":false,"is_stream_gated":false}"#,
         );
         let chiuso = traccia(
-            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":true}"#,
+            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":true,"is_stream_gated":false}"#,
         );
         assert_eq!(
             disponibilita_da(&aperto, &licenza_da(&aperto)),
@@ -858,6 +985,61 @@ mod prove {
         assert_eq!(
             disponibilita_da(&chiuso, &licenza_da(&chiuso)),
             Disponibilita::SoloAscolto
+        );
+    }
+
+    #[test]
+    fn un_cancello_che_manca_o_non_si_capisce_chiude_lo_scarico() {
+        // Il permesso si concede solo quando ogni no è stato guardato e
+        // detto: interruttore acceso, i due cancelli a `false` scritti, nessuna
+        // condizione, e l'accesso che il catalogo calcola — se c'è — aperto.
+        let base = r#""title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true"#;
+        let aperto = r#""is_download_gated":false,"is_stream_gated":false"#;
+        for (resto, perche) in [
+            ("", "cancelli assenti"),
+            (
+                r#","is_download_gated":false"#,
+                "cancello sullo streaming assente",
+            ),
+            (
+                r#","is_stream_gated":false"#,
+                "cancello sullo scarico assente",
+            ),
+            (
+                r#","is_download_gated":"false","is_stream_gated":false"#,
+                "un falso scritto come testo",
+            ),
+            (
+                &format!(r#",{aperto},"download_conditions":{{"follow_user_id":1}}"#),
+                "una condizione di scarico",
+            ),
+            (
+                &format!(r#",{aperto},"download_conditions":{{}}"#),
+                "una condizione vuota",
+            ),
+            (
+                &format!(r#",{aperto},"stream_conditions":{{"usdc_purchase":{{}}}}"#),
+                "una condizione sullo streaming",
+            ),
+            (
+                &format!(r#",{aperto},"access":{{"stream":true,"download":false}}"#),
+                "l'accesso calcolato dal catalogo",
+            ),
+        ] {
+            let t = traccia(&format!("{{{base}{resto}}}"));
+            assert_eq!(
+                disponibilita_da(&t, &licenza_da(&t)),
+                Disponibilita::SoloAscolto,
+                "con {perche}"
+            );
+        }
+        // Tutto detto, tutto aperto: si tiene.
+        let t = traccia(&format!(
+            r#"{{{base},{aperto},"download_conditions":null,"access":{{"stream":true,"download":true}}}}"#
+        ));
+        assert_eq!(
+            disponibilita_da(&t, &licenza_da(&t)),
+            Disponibilita::Scaricabile
         );
     }
 
@@ -871,6 +1053,15 @@ mod prove {
         let muto = traccia(r#"{"title":"t","id":"a1","is_streamable":false}"#);
         assert!(candidato_da(&muto, None).is_none());
 
+        // Un cancello scritto in un'altra forma resta un cancello.
+        for altro in [
+            r#"{"title":"t","id":"a1","is_stream_gated":"true"}"#,
+            r#"{"title":"t","id":"a1","stream_conditions":{"follow_user_id":1}}"#,
+            r#"{"title":"t","id":"a1","access":{"stream":false,"download":false}}"#,
+        ] {
+            assert!(candidato_da(&traccia(altro), None).is_none(), "su {altro}");
+        }
+
         // Ma un campo assente non deve far sparire il catalogo intero.
         let vecchio = traccia(r#"{"title":"t","id":"a1"}"#);
         assert!(candidato_da(&vecchio, None).is_some());
@@ -879,7 +1070,7 @@ mod prove {
     #[test]
     fn chi_non_puo_tenere_niente_chiede_lo_streaming_e_non_lo_scarico() {
         let libero = traccia(
-            r#"{"title":"t","id":"aB3","license":"Attribution CC BY","is_downloadable":true}"#,
+            r#"{"title":"t","id":"aB3","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":false,"is_stream_gated":false}"#,
         );
         let riservato = traccia(r#"{"title":"t","id":"aB3","license":"All rights reserved"}"#);
         let libero = candidato_da(&libero, None).unwrap_or_default();
@@ -892,9 +1083,7 @@ mod prove {
 
     /// Un client con un nodo già scelto, per provare tutto senza rete.
     fn con_nodo(quale: &str) -> Audius {
-        let audius = Audius::nuovo();
-        *audius.nodo.lock().unwrap_or_else(PoisonError::into_inner) = Some(quale.to_owned());
-        audius
+        Audius::con_nodo(quale)
     }
 
     #[test]
@@ -906,7 +1095,7 @@ mod prove {
         // `..Default::default()` — quindi l'estensione viaggia dentro
         // l'indirizzo, che invece sopravvive.
         let wav = traccia(
-            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"orig_filename":"la mia canzone.wav"}"#,
+            r#"{"title":"t","id":"a1","license":"Attribution CC BY","is_downloadable":true,"is_download_gated":false,"is_stream_gated":false,"orig_filename":"la mia canzone.wav"}"#,
         );
         let candidato = candidato_da(&wav, None).unwrap_or_default();
         assert!(
@@ -989,15 +1178,117 @@ mod prove {
     }
 
     #[test]
+    fn una_traccia_riletta_porta_licenza_pagina_e_permesso_di_adesso() {
+        let corpo = |scaricabile: bool| {
+            traccia(&format!(
+                r#"{{"data":{{"id":"aB3","title":"Una canzone","license":"Attribution ShareAlike CC BY-SA",
+                   "is_downloadable":{scaricabile},"is_download_gated":false,"is_stream_gated":false,
+                   "permalink":"/tizio/una-canzone","user":{{"name":"Tizio"}}}}}}"#
+            ))
+        };
+        let oggi = traccia_riletta(&corpo(true), "aB3").expect("il brano c'è");
+        assert_eq!(oggi.licenza, Licenza::CreativeCommons("by-sa".to_owned()));
+        assert_eq!(
+            oggi.pagina.as_deref(),
+            Some("https://audius.co/tizio/una-canzone")
+        );
+        assert!(oggi.si_puo_tenere());
+        assert!(oggi.url.ends_with("/download"), "{}", oggi.url);
+        // L'artista ha spento lo scarico dopo l'importazione: si rilegge come
+        // solo ascolto, e l'indirizzo torna allo streaming.
+        let spento = traccia_riletta(&corpo(false), "aB3").expect("il brano c'è");
+        assert!(!spento.si_puo_tenere());
+        assert!(spento.url.ends_with("/stream"), "{}", spento.url);
+        // Un altro brano, o nessuno, non è il brano chiesto.
+        assert!(traccia_riletta(&corpo(true), "zZ9").is_none());
+        assert!(traccia_riletta(&traccia(r#"{"data":null}"#), "aB3").is_none());
+    }
+
+    #[test]
+    fn una_ricerca_annullata_non_e_un_risultato_vuoto() {
+        // «Annulla» mentre la coda cerca: un elenco vuoto qui diventava
+        // «introvabile», che è terminale, e il brano finiva nella lista della
+        // spesa senza che nessuno l'avesse cercato davvero. L'annullamento si
+        // guarda prima di qualunque richiesta: la prova gira senza rete.
+        let brano = BranoEsterno {
+            title: "Karma Police".to_owned(),
+            artist: Some("Radiohead".to_owned()),
+            ..BranoEsterno::default()
+        };
+        let esito = con_nodo("https://127.0.0.1:9").cerca(&brano, &|| true);
+        assert!(
+            matches!(
+                esito.as_ref().map_err(AppError::code),
+                Err(ErrorCode::InternalAborted { .. })
+            ),
+            "invece dell'annullamento: {esito:?}"
+        );
+    }
+
+    #[test]
+    fn le_domande_seguono_i_rimandi_solo_verso_nomi_pubblici() {
+        // Scegliere un nodo pubblico non basta se poi il nodo può rimandare
+        // la richiesta dove vuole: ricerche e schede seguono i rimandi a mano,
+        // e solo verso un nome pubblico.
+        let audius = Audius::nuovo();
+        let rymembra_net::Rimandi::Sorvegliati { cancello, .. } = audius.rete().rimandi() else {
+            panic!("i rimandi delle domande non sono sorvegliati");
+        };
+        assert!(cancello.ammette("https://creatornode2.audius.co/v1/tracks/x"));
+        assert!(!cancello.ammette("https://192.168.1.1/"));
+        assert!(!cancello.ammette("https://router.lan/"));
+    }
+
+    #[test]
+    fn un_nodo_di_casa_non_si_sceglie() {
+        // Un elenco alterato non deve poter mandare ricerche, flussi e
+        // prelievi al router o al NAS: si salta tutto ciò che non è un nome
+        // pubblico, e si prende il primo che lo è.
+        let corpo = traccia(
+            r#"{"data":["https://192.168.1.1","https://[::1]:8443","https://nas.local",
+                        "http://nodo-in-chiaro.esempio.com","https://nodo.esempio.com"]}"#,
+        );
+        assert_eq!(
+            nodo_dall_elenco(&corpo).as_deref(),
+            Some("https://nodo.esempio.com")
+        );
+        assert_eq!(
+            nodo_dall_elenco(&traccia(r#"{"data":["https://10.0.0.1"]}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn una_copertina_di_casa_non_si_prende() {
+        // L'indirizzo d'immagine arriva dalla risposta e finisce in una GET:
+        // lo stesso controllo del nodo.
+        let arte = traccia(
+            r#"{"artwork":{"1000x1000":"https://192.168.1.1/l.jpg","480x480":"https://p.esempio.com/m.jpg"}}"#,
+        );
+        assert_eq!(
+            copertina(&arte),
+            Some("https://p.esempio.com/m.jpg".to_owned())
+        );
+        let in_chiaro = traccia(r#"{"artwork":{"1000x1000":"http://p.esempio.com/l.jpg"}}"#);
+        assert_eq!(copertina(&in_chiaro), None);
+    }
+
+    #[test]
     fn la_copertina_si_prende_grande() {
         // Finisce dentro i tag di un file che resta sul disco per anni: una
         // miniatura da 150 pixel là dentro non si corregge più.
         let tutte = traccia(
-            r#"{"artwork":{"150x150":"https://p/s.jpg","480x480":"https://p/m.jpg","1000x1000":"https://p/l.jpg"}}"#,
+            r#"{"artwork":{"150x150":"https://p.esempio.com/s.jpg","480x480":"https://p.esempio.com/m.jpg","1000x1000":"https://p.esempio.com/l.jpg"}}"#,
         );
-        assert_eq!(copertina(&tutte), Some("https://p/l.jpg".to_owned()));
-        let poche = traccia(r#"{"artwork":{"150x150":"https://p/s.jpg"}}"#);
-        assert_eq!(copertina(&poche), Some("https://p/s.jpg".to_owned()));
+        assert_eq!(
+            copertina(&tutte),
+            Some("https://p.esempio.com/l.jpg".to_owned())
+        );
+        let poche = traccia(r#"{"artwork":{"150x150":"https://p.esempio.com/s.jpg"}}"#);
+        assert_eq!(
+            copertina(&poche),
+            Some("https://p.esempio.com/s.jpg".to_owned())
+        );
         assert_eq!(copertina(&traccia("{}")), None);
     }
 

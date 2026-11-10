@@ -77,6 +77,107 @@ pub fn riconosci(input: &str) -> Option<Riferimento> {
     None
 }
 
+/// Un nome che si risolve nel DNS pubblico, e non un indirizzo di casa.
+///
+/// Si guarda l'ultima etichetta: un nome pubblico finisce con un dominio di
+/// primo livello fatto di lettere (o di punycode, `xn--…`). È la regola che
+/// esclude in un colpo solo `127.0.0.1`, `10.0.0.1`, `[::1]`, le forme
+/// esadecimali o decimali di un IPv4 che alcuni risolutori accettano
+/// (`0x7f.1`, `2130706433`) e i nomi senza punto; i suffissi da rete di casa si
+/// escludono per nome.
+///
+/// # Perché sta qui
+///
+/// Stava nel lettore (`riproduzione/flusso.rs`), e valeva soltanto per i
+/// rimandi dei flussi. Ma le altre richieste verso un indirizzo che arriva da
+/// una risposta — il nodo che `api.audius.co` elenca, le copertine, i rimandi
+/// di un prelievo — partono da questo crate, e un secondo controllo scritto qui
+/// sarebbe stato il secondo: quello che un giorno dice una cosa diversa. Sta
+/// accanto a [`riconosci`], che è l'altra metà dello stesso confine.
+#[must_use]
+pub fn nome_pubblico(ospite: &str) -> bool {
+    let ospite = ospite.trim_end_matches('.').to_ascii_lowercase();
+    let Some((_, ultima)) = ospite.rsplit_once('.') else {
+        return false;
+    };
+    let lettere = ultima.len() >= 2 && ultima.chars().all(|c| c.is_ascii_alphabetic());
+    let punycode = ultima.starts_with("xn--");
+    let di_casa = [
+        "localhost",
+        "local",
+        "internal",
+        "lan",
+        "home",
+        "arpa",
+        "test",
+        "invalid",
+    ]
+    .contains(&ultima);
+    (lettere || punycode) && !di_casa
+}
+
+/// Un indirizzo cifrato verso un [`nome_pubblico`].
+///
+/// La forma che si esige da ogni indirizzo che non si conosce in anticipo: il
+/// nodo di Audius, una copertina dichiarata da una risposta.
+#[must_use]
+pub fn indirizzo_pubblico(url: &str) -> bool {
+    url.starts_with("https://") && rymembra_net::http::ospite(url).is_some_and(nome_pubblico)
+}
+
+/// Se un rimando di una richiesta a `fonte`, partita da `partenza`, può andare
+/// a `bersaglio`.
+///
+/// # La stessa allowlist dell'indirizzo di partenza
+///
+/// L'indirizzo di partenza è passato da [`riconosci`], e il bersaglio deve
+/// passare **dallo stesso posto**: un secondo elenco di domini sarebbe il
+/// secondo, cioè quello che un giorno dice una cosa diversa. Ma `riconosci`
+/// legge link pubblici, e il bersaglio di un rimando non lo è:
+/// `archive.org/download/…` rimanda a `ia800305.us.archive.org/27/items/…`, un
+/// percorso che `riconosci` non ha motivo di conoscere. Quel che del bersaglio
+/// conta è l'**ospite**, e allora si chiede a `riconosci` esattamente quello: lo
+/// stesso indirizzo di partenza, con l'ospite del bersaglio al posto del suo.
+/// Se è ancora un link di quel catalogo, l'ospite è di casa; `evilarchive.org`
+/// e `archive.org.esempio.com` no, per le stesse ragioni per cui non lo sono
+/// come link.
+///
+/// # Audius, che un'allowlist di domini non ce l'ha
+///
+/// Audius non ha un server ma una rete di nodi gestiti da chi vuole, ognuno col
+/// suo dominio: il nodo di partenza viene dall'elenco che `api.audius.co`
+/// consegna, non da `riconosci`, e rimanda a un nodo di contenuti che può stare
+/// sotto qualunque nome. Un elenco di domini per Audius sarebbe un elenco che
+/// smette di suonare metà del catalogo il giorno in cui entra un nodo nuovo.
+/// Quel che si può esigere da un salto di Audius, e si esige, è che resti
+/// cifrato e che vada verso un [`nome_pubblico`]: mai un indirizzo IP scritto a
+/// cifre, mai `localhost`, mai un nome da rete di casa. Un nodo ostile non può
+/// così usare Rymembra per bussare al router o a un servizio di questa
+/// macchina.
+///
+/// Vale per i flussi del lettore e per i prelievi di [`crate::Cataloghi::preleva`].
+#[must_use]
+pub fn bersaglio_ammesso(fonte: Fonte, partenza: &str, bersaglio: &str) -> bool {
+    if !bersaglio.starts_with("https://") {
+        return false;
+    }
+    let Some(ospite) = rymembra_net::http::ospite(bersaglio) else {
+        return false;
+    };
+    if fonte == Fonte::Audius {
+        return nome_pubblico(ospite);
+    }
+    // Il percorso della partenza, query compresa: `riconosci` guarda il
+    // percorso per capire *che cosa* il link nomina, e deve trovarci quel che
+    // ci ha trovato la prima volta.
+    let percorso = partenza
+        .strip_prefix("https://")
+        .and_then(|resto| resto.find('/').and_then(|inizio| resto.get(inizio..)))
+        .unwrap_or("/");
+    riconosci(&format!("https://{ospite}{percorso}"))
+        .is_some_and(|riferimento| riferimento.fonte == fonte)
+}
+
 /// Il dominio è esattamente `base`, o un suo sottodominio.
 ///
 /// Un semplice `ends_with` accetterebbe `evilarchive.org`: il modulo esiste per
@@ -298,6 +399,32 @@ mod prove {
             riconosci("https://audius.co/deadmau5/album/random-album-title-99").map(|r| r.genere),
             Some(GenereContenuto::Playlist)
         );
+    }
+
+    #[test]
+    fn un_indirizzo_pubblico_e_cifrato_e_ha_un_nome() {
+        for buono in [
+            "https://creatornode2.audius.co/tracks/x",
+            "https://nodo.xn--p1ai/",
+            "https://Archive.ORG./details/x",
+        ] {
+            assert!(indirizzo_pubblico(buono), "su «{buono}»");
+        }
+        for cattivo in [
+            "https://127.0.0.1/",
+            "https://192.168.1.1",
+            "https://[::1]:8443/",
+            "https://0x7f.1/",
+            "https://2130706433/",
+            "https://localhost/",
+            "https://router.lan/",
+            "https://stampante.local/",
+            "https://p/s.jpg",
+            "http://creatornode2.audius.co/",
+            "https://utente@192.168.1.1/",
+        ] {
+            assert!(!indirizzo_pubblico(cattivo), "su «{cattivo}»");
+        }
     }
 
     #[test]

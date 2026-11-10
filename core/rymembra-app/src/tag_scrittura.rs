@@ -51,7 +51,36 @@ use crate::metadata::racconta_errore;
 /// per sempre.
 const COPERTINA_MASSIMA: usize = 8 * 1024 * 1024;
 
-/// Scrive sul file i tag autorevoli di Spotify.
+/// Da dove viene un file appena preso, e sotto che patto.
+///
+/// Quel che il file deve portare con sé quando esce da Rymembra: copiato su un
+/// altro computer, su un telefono, masterizzato, il file non ha più una riga di
+/// libreria accanto, e questi campi sono l'unica cosa che dice da quale
+/// catalogo è arrivato e cosa ci si può fare (TERMS § 1). Per certe Creative
+/// Commons e per i termini di Audius il rimando alla fonte è un obbligo.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Provenienza<'a> {
+    /// La riga di attribuzione intera — fonte, licenza, pagina — come la
+    /// compone `rymembra_catalogo::attribuzione`. Va nel commento, che ogni
+    /// formato ha.
+    pub attribuzione: Option<&'a str>,
+    /// La licenza in parole, per i formati che hanno un campo apposta
+    /// (`LICENSE` nei commenti Vorbis e negli MP4).
+    pub licenza: Option<&'a str>,
+    /// La pagina pubblica del brano, per i formati che hanno un campo per
+    /// l'indirizzo d'origine (`WOAS` negli ID3v2).
+    pub pagina: Option<&'a str>,
+}
+
+/// Scrive sul file i tag autorevoli di Spotify, e da dove viene.
+///
+/// # Solo su un file che Rymembra ha appena scritto
+///
+/// La chiama la coda sul file che il prelievo ha appena depositato, con un nome
+/// che il prelievo ha scelto libero (`posto_libero`): non è mai un file che
+/// l'utente aveva già, e nessun'altra strada la chiama. Il README lo promette —
+/// niente in Rymembra apre in scrittura la musica che c'era già — ed è il motivo
+/// per cui questa funzione sostituisce i tag in blocco invece di fonderli.
 ///
 /// `posizione` è il numero di traccia di ripiego, da usare quando Spotify non ne
 /// dà uno — si conta da 1.
@@ -59,6 +88,11 @@ const COPERTINA_MASSIMA: usize = 8 * 1024 * 1024;
 /// La copertina si incorpora solo se `copertina` contiene byte plausibili: un
 /// corpo HTML di errore travestito da JPEG non deve finire dentro il file, dove
 /// resterebbe per sempre e comparirebbe in griglia come un rettangolo rotto.
+///
+/// `provenienza` finisce nel commento e, dove il formato ha un campo apposta,
+/// nella licenza e nell'indirizzo d'origine: vedi [`Provenienza`]. Fino alla 3.2
+/// l'attribuzione arrivava fin qui dentro `pagina_url` e qui nessuno la leggeva,
+/// e i file presi uscivano senza dire sotto quale patto erano arrivati.
 ///
 /// # Errori
 ///
@@ -70,6 +104,7 @@ pub fn scrivi_tag(
     brano: &BranoEsterno,
     posizione: u32,
     copertina: Option<&[u8]>,
+    provenienza: &Provenienza<'_>,
 ) -> Result<(), AppError> {
     // Prima di aprire niente: un file del cloud è di sola lettura. Vedi
     // `scrittura::sola_lettura`.
@@ -130,6 +165,25 @@ pub fn scrivi_tag(
         && let Some(immagine) = immagine(byte)
     {
         tag.push_picture(immagine);
+    }
+
+    // Il commento c'è in ogni formato, ed è il posto in cui l'attribuzione
+    // intera sopravvive a qualunque lettore. Gli altri due campi esistono solo
+    // in certi formati: dove il tag non li ha, `insert` risponde `false` e non
+    // scrive niente, che è giusto — il commento li contiene già.
+    if let Some(riga) = pulito(provenienza.attribuzione) {
+        tag.insert_text(ItemKey::Comment, riga);
+    }
+    if let Some(licenza) = pulito(provenienza.licenza) {
+        tag.insert_text(ItemKey::License, licenza);
+    }
+    // Come testo e non come `ItemValue::Locator`, che sarebbe il tipo giusto:
+    // `lofty` 0.25, salvando un tag generico, legge gli elementi in prestito
+    // con `text()`, che per un indirizzo risponde `None`, e la cornice `WOAS`
+    // sparisce in silenzio. Come testo diventa la stessa cornice, e si rilegge
+    // come indirizzo.
+    if let Some(pagina) = pulito(provenienza.pagina).filter(|p| p.starts_with("https://")) {
+        tag.insert_text(ItemKey::AudioSourceUrl, pagina);
     }
 
     tag.save_to_path(percorso, WriteOptions::default())
@@ -427,7 +481,13 @@ mod prove {
                 errore.code().kind() == rymembra_domain::errors::ErrorCodeKind::CloudReadOnly
             })
         };
-        assert!(solo_lettura(scrivi_tag(percorso, &brano(), 1, None)));
+        assert!(solo_lettura(scrivi_tag(
+            percorso,
+            &brano(),
+            1,
+            None,
+            &Provenienza::default()
+        )));
         assert!(solo_lettura(scrivi_campi(percorso, &Fields::default())));
     }
 
@@ -478,7 +538,8 @@ mod prove {
     #[test]
     fn i_tag_di_spotify_finiscono_sul_file() {
         let (_cartella, percorso) = file_di_prova();
-        scrivi_tag(&percorso, &brano(), 1, None).expect("scrittura dei tag");
+        scrivi_tag(&percorso, &brano(), 1, None, &Provenienza::default())
+            .expect("scrittura dei tag");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.title.as_deref(), Some("Poetica"));
@@ -490,6 +551,69 @@ mod prove {
         assert_eq!(letti.year, Some(2017));
     }
 
+    /// Un campo del primo tag del file, riletto con `lofty`: testo o indirizzo.
+    fn campo_di(percorso: &std::path::Path, chiave: ItemKey) -> Option<String> {
+        let file = Probe::open(percorso).ok()?.read().ok()?;
+        let tag = file.primary_tag()?;
+        match tag.get(chiave)?.value() {
+            ItemValue::Text(testo) | ItemValue::Locator(testo) => Some(testo.clone()),
+            ItemValue::Binary(_) => None,
+        }
+    }
+
+    /// Un FLAC minimo ma vero: la firma e un blocco `STREAMINFO` (44,1 kHz,
+    /// stereo, 16 bit, zero campioni), che è tutto quel che `lofty` chiede per
+    /// aprirlo e scriverci un commento Vorbis.
+    fn flac_di_prova() -> (tempfile::TempDir, std::path::PathBuf) {
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let percorso = cartella.path().join("brano.flac");
+        let mut dati = b"fLaC".to_vec();
+        // Ultimo blocco, tipo 0 (STREAMINFO), 34 byte.
+        dati.extend_from_slice(&[0x80, 0x00, 0x00, 0x22]);
+        // Blocchi da 4096 campioni, dimensioni dei fotogrammi ignote.
+        dati.extend_from_slice(&[0x10, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0]);
+        // 44100 Hz (20 bit), 2 canali (3 bit, meno uno), 16 bit (5 bit, meno
+        // uno), zero campioni (36 bit).
+        dati.extend_from_slice(&[0x0A, 0xC4, 0x42, 0xF0, 0, 0, 0, 0]);
+        // L'MD5 del flusso, che senza campioni è zero.
+        dati.extend_from_slice(&[0; 16]);
+        std::fs::write(&percorso, &dati).expect("scrittura del file di prova");
+        (cartella, percorso)
+    }
+
+    #[test]
+    fn lattribuzione_resta_nel_file() {
+        // TERMS § 1: la licenza resta accanto al brano. Il file sopravvive
+        // all'applicazione, e su un altro computer quel commento è l'unica
+        // cosa che dice sotto quale patto è arrivato. Fino alla 3.2 la riga
+        // arrivava fin qui e non si scriveva.
+        let riga = "via Audius, CC BY-SA — https://audius.co/x/y";
+        let provenienza = Provenienza {
+            attribuzione: Some(riga),
+            licenza: Some("CC BY-SA"),
+            pagina: Some("https://audius.co/x/y"),
+        };
+        // Un MP3 (ID3v2): commento e indirizzo d'origine (`WOAS`), che ha.
+        let (_cartella, mp3) = file_di_prova();
+        scrivi_tag(&mp3, &brano(), 1, None, &provenienza).expect("scrittura dei tag");
+        assert_eq!(campo_di(&mp3, ItemKey::Comment).as_deref(), Some(riga));
+        assert_eq!(
+            campo_di(&mp3, ItemKey::AudioSourceUrl).as_deref(),
+            Some("https://audius.co/x/y")
+        );
+        // Un FLAC (commenti Vorbis): commento e `LICENSE`.
+        let (_altra, flac) = flac_di_prova();
+        scrivi_tag(&flac, &brano(), 1, None, &provenienza).expect("scrittura dei tag");
+        assert_eq!(campo_di(&flac, ItemKey::Comment).as_deref(), Some(riga));
+        assert_eq!(
+            campo_di(&flac, ItemKey::License).as_deref(),
+            Some("CC BY-SA")
+        );
+        // E i tag di sempre ci sono ancora.
+        let letti = read_tags(&LocalFiles, &flac.display().to_string()).expect("rilettura");
+        assert_eq!(letti.title.as_deref(), Some("Poetica"));
+    }
+
     #[test]
     fn linterprete_dellalbum_non_resta_mai_vuoto() {
         // È la chiave con cui un album si raggruppa in una sola uscita: vuota,
@@ -499,7 +623,7 @@ mod prove {
             album_artist: None,
             ..brano()
         };
-        scrivi_tag(&percorso, &senza, 1, None).expect("scrittura dei tag");
+        scrivi_tag(&percorso, &senza, 1, None, &Provenienza::default()).expect("scrittura dei tag");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.album_artist.as_deref(), Some("Cesare Cremonini"));
@@ -512,7 +636,7 @@ mod prove {
             track_number: None,
             ..brano()
         };
-        scrivi_tag(&percorso, &senza, 7, None).expect("scrittura dei tag");
+        scrivi_tag(&percorso, &senza, 7, None, &Provenienza::default()).expect("scrittura dei tag");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.track_number, Some(7));
@@ -523,7 +647,8 @@ mod prove {
         let (_cartella, percorso) = file_di_prova();
         let mut jpeg = vec![0xFF_u8, 0xD8, 0xFF, 0xE0];
         jpeg.resize(64, 0);
-        scrivi_tag(&percorso, &brano(), 1, Some(&jpeg)).expect("scrittura dei tag");
+        scrivi_tag(&percorso, &brano(), 1, Some(&jpeg), &Provenienza::default())
+            .expect("scrittura dei tag");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         let copertina = letti.cover.expect("la copertina c'è");
@@ -536,7 +661,8 @@ mod prove {
         // cancello finirebbero incorporati nel file per sempre.
         let (_cartella, percorso) = file_di_prova();
         let html = b"<!DOCTYPE html><html><body>404 Not Found</body></html>";
-        scrivi_tag(&percorso, &brano(), 1, Some(html)).expect("scrittura dei tag");
+        scrivi_tag(&percorso, &brano(), 1, Some(html), &Provenienza::default())
+            .expect("scrittura dei tag");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert!(letti.cover.is_none(), "l'HTML non deve entrare nei tag");
@@ -548,7 +674,14 @@ mod prove {
     #[test]
     fn una_copertina_troncata_non_e_una_copertina() {
         let (_cartella, percorso) = file_di_prova();
-        scrivi_tag(&percorso, &brano(), 1, Some(&[0xFF, 0xD8])).expect("scrittura dei tag");
+        scrivi_tag(
+            &percorso,
+            &brano(),
+            1,
+            Some(&[0xFF, 0xD8]),
+            &Provenienza::default(),
+        )
+        .expect("scrittura dei tag");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert!(letti.cover.is_none());
@@ -561,6 +694,7 @@ mod prove {
             &brano(),
             1,
             None,
+            &Provenienza::default(),
         )
         .expect_err("un file inesistente non si tagga");
         assert!(matches!(
@@ -578,7 +712,7 @@ mod prove {
         // stesso, e l'utente perderebbe il testo trascritto a mano e il
         // commento senza che nessuna asserzione sui campi scritti se ne accorga.
         let (_cartella, percorso) = file_di_prova();
-        scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
+        scrivi_tag(&percorso, &brano(), 1, None, &Provenienza::default()).expect("tag di partenza");
 
         let campi = Fields {
             album: Some("Possibili scenari (Deluxe)".to_owned()),
@@ -625,7 +759,7 @@ mod prove {
         // Un file che ne portava una se la tiene — è un dato dell'utente — e un
         // file che non ne aveva non se ne ritrova una addosso.
         let (_cartella, senza) = file_di_prova();
-        scrivi_tag(&senza, &brano(), 1, None).expect("tag di partenza");
+        scrivi_tag(&senza, &brano(), 1, None, &Provenienza::default()).expect("tag di partenza");
         scrivi_campi(
             &senza,
             &Fields {
@@ -644,7 +778,8 @@ mod prove {
         let (_altra, con) = file_di_prova();
         let mut immagine = vec![0xFF_u8, 0xD8, 0xFF, 0xE0];
         immagine.resize(64, 1);
-        scrivi_tag(&con, &brano(), 1, Some(&immagine)).expect("copertina di partenza");
+        scrivi_tag(&con, &brano(), 1, Some(&immagine), &Provenienza::default())
+            .expect("copertina di partenza");
         scrivi_campi(
             &con,
             &Fields {
@@ -664,7 +799,7 @@ mod prove {
     #[test]
     fn un_campo_nullo_non_svuota_niente() {
         let (_cartella, percorso) = file_di_prova();
-        scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
+        scrivi_tag(&percorso, &brano(), 1, None, &Provenienza::default()).expect("tag di partenza");
         scrivi_campi(&percorso, &Fields::default()).expect("scrittura a vuoto");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");

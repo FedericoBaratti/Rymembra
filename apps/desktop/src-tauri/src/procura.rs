@@ -63,7 +63,7 @@ use std::sync::{Arc, Mutex};
 use crate::spegnimento::Emette as _;
 use rymembra_app::desiderati::{self, Desiderato};
 use rymembra_app::settings;
-use rymembra_app::tag_scrittura::scrivi_tag;
+use rymembra_app::tag_scrittura::{Provenienza, scrivi_tag};
 use rymembra_catalogo::Cataloghi;
 use rymembra_domain::destinazione::destinazione;
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -843,9 +843,24 @@ fn un_brano(
     // Un guasto qui **non** annulla il prelievo: il file c'è ed è ascoltabile, e
     // rimetterlo in coda vorrebbe dire riprenderlo per riscrivere un campo. Si
     // annota e si prosegue.
+    // Il file è quello che il prelievo ha appena depositato con un nome libero:
+    // nessun file che l'utente avesse già si apre in scrittura. L'attribuzione,
+    // la licenza e la pagina vengono dal catalogo — riletto adesso, vedi
+    // `trova` — e restano nel file anche fuori da Rymembra.
     let copertina = copertina(app, desiderato);
-    let da_scrivere = con_attribuzione(&desiderato.brano, preso.attribuzione.as_deref());
-    if let Err(guasto) = scrivi_tag(&preso.percorso, &da_scrivere, numero, copertina.as_deref()) {
+    let licenza = rymembra_catalogo::licenza_leggibile(&preso.licenza);
+    let provenienza = Provenienza {
+        attribuzione: preso.attribuzione.as_deref(),
+        licenza: licenza.as_deref(),
+        pagina: preso.pagina.as_deref(),
+    };
+    if let Err(guasto) = scrivi_tag(
+        &preso.percorso,
+        &desiderato.brano,
+        numero,
+        copertina.as_deref(),
+        &provenienza,
+    ) {
         // L'estensione e non il percorso: il diario si spedisce, e un percorso
         // di download porta dentro il nome dell'account di Windows e — visto
         // come `destinazione` costruisce le cartelle — l'artista e l'album. Quel
@@ -886,35 +901,6 @@ fn trova(
     alternative: bool,
     fermare: &dyn Fn() -> bool,
 ) -> Result<Option<Candidato>, AppError> {
-    // Chi ha importato ha visto *quell'elenco*: rifare la scelta vorrebbe dire
-    // prendere una registrazione diversa da quella che aveva davanti.
-    if let Some(url) = desiderato
-        .brano
-        .fonte_url
-        .as_deref()
-        .filter(|u| !u.is_empty())
-        && desiderato.brano.disponibilita == Disponibilita::Scaricabile
-    {
-        return Ok(Some(Candidato {
-            url: url.to_owned(),
-            titolo: desiderato.brano.title.clone(),
-            autore: desiderato.brano.artist.clone(),
-            durata_sec: desiderato.brano.duration_ms.and_then(|ms| {
-                #[expect(
-                    clippy::integer_division,
-                    reason = "i millisecondi che avanzano non cambiano una fascia di durata"
-                )]
-                let secondi = ms / 1000;
-                u32::try_from(secondi).ok()
-            }),
-            fonte: desiderato.fonte,
-            licenza: desiderato.brano.licenza.clone(),
-            disponibilita: desiderato.brano.disponibilita,
-            pagina: desiderato.brano.pagina_url.clone(),
-            ..Candidato::default()
-        }));
-    }
-
     // Senza stato è un annullamento, non un guasto: `chiudi_male` non consuma
     // tentativi per lui, e la riga resta in coda per la prossima apertura.
     let Some(procura) = app.try_state::<StatoProcura>() else {
@@ -923,15 +909,41 @@ fn trova(
         })
         .with_cause("la coda non è più fra gli stati gestiti"));
     };
-    let candidati = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
+
+    // Chi ha importato ha visto *quell'elenco*: rifare la scelta vorrebbe dire
+    // prendere una registrazione diversa da quella che aveva davanti. Il file
+    // resta quello; licenza, permesso e pagina invece si rileggono adesso dal
+    // catalogo, perché la riga non li porta (l'importazione da un link non li
+    // salvava, e un profilo importato li scrive come vuole) e perché un artista
+    // può aver spento lo scarico nel frattempo. Un candidato che oggi non si
+    // può tenere arriva a `preleva`, che dice di no prima della rete, e la riga
+    // va fra quelle da comprare con il motivo giusto.
+    if let Some(url) = desiderato
+        .brano
+        .fonte_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        && desiderato.brano.disponibilita == Disponibilita::Scaricabile
+    {
+        return procura.cataloghi.da_prelevare(desiderato.fonte, url);
+    }
+    let ricerca = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
     // Solo quel che si può tenere: un file che si ascolta e basta non è una
     // risposta a «mettimelo in libreria», e sceglierlo per poi rifiutarlo un
     // passo dopo brucerebbe un tentativo per niente.
-    let prendibili: Vec<Candidato> = candidati
+    let prendibili: Vec<Candidato> = ricerca
+        .trovati
         .into_iter()
         .filter(Candidato::si_puo_tenere)
         .collect();
-    Ok(scegli_candidato(&prendibili, &desiderato.brano, alternative).cloned())
+    match scegli_candidato(&prendibili, &desiderato.brano, alternative) {
+        Some(scelto) => Ok(Some(scelto.clone())),
+        // «Introvabile» è terminale, e lo si può dire solo se hanno risposto
+        // tutti: con l'Archive giù, o una sua scheda muta, il brano può stare
+        // proprio lì. Allora è un guasto, ritentabile o no come dice lui, e la
+        // riga resta fra quelle che `riprova_falliti` rimette in coda.
+        None => ricerca.guasti.into_iter().next().map_or(Ok(None), Err),
+    }
 }
 
 /// Che cosa dire a chi guarda, del file scelto.
@@ -951,23 +963,6 @@ fn cartellino(scelto: &Candidato, desiderato: &Desiderato) -> Scelto {
         scarto_ms: scarto_durata(desiderato.brano.duration_ms, scelto.durata_sec),
         pagina: scelto.pagina.clone(),
     }
-}
-
-/// I metadati da scrivere nel file, con l'attribuzione dentro.
-///
-/// L'attribuzione finisce nel commento del brano e non solo a schermo, e non è
-/// pedanteria: il file sopravvive all'applicazione. Fra due anni, su un altro
-/// computer, quel campo è l'unica cosa che dice sotto quale patto quel brano è
-/// finito lì.
-fn con_attribuzione(
-    brano: &rymembra_domain::BranoEsterno,
-    attribuzione: Option<&str>,
-) -> rymembra_domain::BranoEsterno {
-    let mut copia = brano.clone();
-    if let Some(riga) = attribuzione {
-        copia.pagina_url = copia.pagina_url.or_else(|| Some(riga.to_owned()));
-    }
-    copia
 }
 
 /// Chiude una riga andata male, distinguendo i due modi.
@@ -1019,14 +1014,21 @@ fn segna(
 /// intoppo: un brano senza copertina è un brano, e far fallire un prelievo
 /// riuscito perché una miniatura non si scarica sarebbe assurdo.
 fn copertina(app: &AppHandle, desiderato: &Desiderato) -> Option<Vec<u8>> {
-    let url = desiderato.brano.cover_url.as_deref()?;
+    // L'indirizzo sta in `desiderati`, cioè l'ha scritto un catalogo, un
+    // archivio o un profilo importato: prima di chiederlo, deve essere un
+    // indirizzo cifrato verso un nome pubblico, non il router di casa. Vedi
+    // `rymembra_catalogo::indirizzo_pubblico`.
+    let url = desiderato
+        .brano
+        .cover_url
+        .as_deref()
+        .filter(|url| rymembra_catalogo::indirizzo_pubblico(url))?;
     let mut byte = Vec::new();
-    let rete = app
-        .try_state::<StatoProcura>()?
-        .cataloghi
-        .archivio()
-        .rete()
-        .clone();
+    // E anche i rimandi: un indirizzo pubblico che rimanda a casa non è
+    // meglio di un indirizzo di casa.
+    let rete = rymembra_catalogo::rimandi_pubblici(
+        app.try_state::<StatoProcura>()?.cataloghi.archivio().rete(),
+    );
     rete.preleva(url, &[], &mut byte, &|| false, &mut |_, _| {})
         .ok()?;
     // Otto mebibyte, lo stesso limite che `tag_scrittura` applica quando la
