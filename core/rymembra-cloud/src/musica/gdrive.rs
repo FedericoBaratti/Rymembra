@@ -22,10 +22,11 @@
 //! [`rymembra_domain::nuvola::e_virtuale`]). I percorsi di «Il mio Drive»
 //! restano quelli di prima.
 //!
-//! Vale nell'elenco e nei cambiamenti: lo specchio tiene quel che arriva dai
-//! cambiamenti anche fuori dalle radici scelte, e una cartella condivisa che
-//! cambia — o che è appena stata condivisa — non deve diventare una seconda
-//! cima.
+//! Vale nell'elenco e nei cambiamenti: una cartella condivisa che cambia — o
+//! che è appena stata condivisa — non deve diventare una seconda cima. Dei
+//! cambiamenti lo specchio tiene solo quel che sta sotto le radici scelte, e
+//! una cartella condivisa sta sotto il drive intero, se l'utente ha scelto
+//! quello, solo passando da `~condivisi`.
 //!
 //! Le scorciatoie («Aggiungi scorciatoia a Drive») il selettore le apre come la
 //! cartella a cui portano. L'elenco di una cartella scelta invece non le segue:
