@@ -51,7 +51,8 @@ impl Macchina {
     fn nuova() -> Self {
         let radice = tempfile::tempdir().expect("cartella temporanea");
         let nuova = radice.path().join("io.github.federicobaratti.rymembra");
-        let percorsi = percorsi_per(&scegli_cartella(None, None, nuova));
+        let percorsi =
+            percorsi_per(&scegli_cartella(None, None, nuova).expect("la cartella di serie"));
         Self { radice, percorsi }
     }
 

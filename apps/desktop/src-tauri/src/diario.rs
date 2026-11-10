@@ -773,6 +773,40 @@ fn cartella_di_riserva() -> Option<PathBuf> {
         .clone()
 }
 
+/// Le prove che toccano il diario del processo si danno il turno.
+///
+/// Il diario è **uno per processo** — è il suo punto — e le prove girano
+/// tutte nello stesso. Senza questo lucchetto, quella che lo chiude per
+/// verificare che un diario chiuso non faccia danni lo chiuderebbe sotto i
+/// piedi di quella che sta misurando la rotazione, e a fallire sarebbe la
+/// seconda: il difetto peggiore che una prova possa avere. Sta fuori da
+/// `prove` perché lo prendono anche le prove di altri moduli, attraverso
+/// [`a_diario_chiuso`].
+#[cfg(test)]
+static IL_TURNO: Mutex<()> = Mutex::new(());
+
+/// Per le prove di altri moduli: esegue `prova` a diario chiuso, col file di
+/// riserva in una cartella temporanea, e restituisce quel che ci è finito.
+///
+/// È la condizione dell'avvio prima di [`apri`]: quel che una prova vuole
+/// sapere è se una riga di quel momento resta su disco.
+#[cfg(test)]
+pub(crate) fn a_diario_chiuso(prova: impl FnOnce()) -> String {
+    let _turno = IL_TURNO.lock().unwrap_or_else(PoisonError::into_inner);
+    let Ok(riserva) = tempfile::tempdir() else {
+        return String::new();
+    };
+    *RISERVA_DI_PROVA
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(riserva.path().to_path_buf());
+    *preso() = None;
+    prova();
+    *RISERVA_DI_PROVA
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+    fs::read_to_string(riserva.path().join(RISERVA)).unwrap_or_default()
+}
+
 /// Apre la cartella del diario nel gestore file del sistema.
 ///
 /// # Perché un bottone e non un percorso scritto in una schermata
@@ -905,15 +939,6 @@ pub fn diario_annota(dove: String, cosa: String) {
 #[cfg(test)]
 mod prove {
     use super::*;
-
-    /// Le prove di questo modulo si danno il turno.
-    ///
-    /// Il diario è **uno per processo** — è il suo punto — e le prove girano
-    /// tutte nello stesso. Senza questo lucchetto, quella che lo chiude per
-    /// verificare che un diario chiuso non faccia danni lo chiuderebbe sotto i
-    /// piedi di quella che sta misurando la rotazione, e a fallire sarebbe la
-    /// seconda: il difetto peggiore che una prova possa avere.
-    static IL_TURNO: Mutex<()> = Mutex::new(());
 
     /// Apre un diario in una cartella temporanea che sparisce da sé.
     fn in_una_cartella(prova: impl FnOnce(&Path)) {

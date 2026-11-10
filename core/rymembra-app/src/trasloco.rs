@@ -142,12 +142,16 @@ pub struct Scelta {
     pub da_variabile_precedente: bool,
 }
 
+/// Il nome della variabile d'ambiente con cui si sceglie a mano la cartella
+/// dati. Quella della versione precedente è [`eredita::VARIABILE_DATI`].
+pub const VARIABILE_DATI: &str = "RYMEMBRA_DATI";
+
 /// Sceglie la cartella dei dati fra le due variabili d'ambiente e quella di
 /// serie.
 ///
 /// La precedenza è questa:
 ///
-/// 1. la variabile nuova (`RYMEMBRA_DATI`), se c'è e **non è vuota**;
+/// 1. la variabile nuova ([`VARIABILE_DATI`]), se c'è e **non è vuota**;
 /// 2. altrimenti la variabile di prima ([`eredita::VARIABILE_DATI`]), se c'è e
 ///    non è vuota: chi la teneva impostata, di solito per separare un'istanza
 ///    di prova da quella vera, se la vede rispettata;
@@ -156,31 +160,46 @@ pub struct Scelta {
 /// Una variabile impostata ma vuota si ignora: è quel che succede quando la si
 /// «toglie» da una shell senza toglierla davvero, e non vuol dire «usa la
 /// cartella corrente».
-#[must_use]
+///
+/// # Errors
+///
+/// [`Errore::CartellaRelativa`] se la variabile che vale indica un percorso
+/// relativo. Non si ripiega sulla cartella di serie: chi ha impostato la
+/// variabile stava facendo una prova, e ripiegare vorrebbe dire aprire la sua
+/// libreria vera proprio mentre credeva di non toccarla. Un percorso relativo
+/// dipende dalla cartella corrente di chi lancia — quella d'installazione da un
+/// collegamento, un'altra da un terminale — e due avvii aprirebbero due
+/// librerie diverse senza dirlo.
 pub fn scegli_cartella(
     nuova: Option<OsString>,
     vecchia: Option<OsString>,
     predefinita: PathBuf,
-) -> Scelta {
-    if let Some(valore) = nuova.filter(|valore| !valore.is_empty()) {
-        return Scelta {
-            cartella: PathBuf::from(valore),
+) -> Result<Scelta, Errore> {
+    let dettata = |valore: OsString, variabile: &'static str, precedente: bool| {
+        let cartella = PathBuf::from(valore);
+        if !cartella.is_absolute() {
+            return Err(Errore::CartellaRelativa {
+                variabile,
+                valore: cartella,
+            });
+        }
+        Ok(Scelta {
+            cartella,
             personalizzata: true,
-            da_variabile_precedente: false,
-        };
+            da_variabile_precedente: precedente,
+        })
+    };
+    if let Some(valore) = nuova.filter(|valore| !valore.is_empty()) {
+        return dettata(valore, VARIABILE_DATI, false);
     }
     if let Some(valore) = vecchia.filter(|valore| !valore.is_empty()) {
-        return Scelta {
-            cartella: PathBuf::from(valore),
-            personalizzata: true,
-            da_variabile_precedente: true,
-        };
+        return dettata(valore, eredita::VARIABILE_DATI, true);
     }
-    Scelta {
+    Ok(Scelta {
         cartella: predefinita,
         personalizzata: false,
         da_variabile_precedente: false,
-    }
+    })
 }
 
 /// Le due cartelle fra cui [`trasloca`] lavora.
@@ -240,9 +259,10 @@ pub struct Rapporto {
     pub saltati: Vec<String>,
 }
 
-/// Perché il trasloco non è potuto andare avanti.
+/// Perché la cartella dati non si è potuta prendere: il trasloco che non è
+/// potuto andare avanti, o una variabile che indica una cartella relativa.
 ///
-/// Sono i due guasti **fatali**: chi li riceve non deve aprire il database né
+/// Sono i guasti **fatali**: chi li riceve non deve aprire il database né
 /// creare niente nella cartella nuova, e deve dire all'utente cosa fare
 /// ([`messaggio_di_rifiuto`]). Un guasto su una voce secondaria non passa di
 /// qui: finisce in [`Rapporto::saltati`].
@@ -267,11 +287,24 @@ pub enum Errore {
         /// Perché, nelle parole del sistema.
         causa: String,
     },
+    /// La variabile d'ambiente che sceglie la cartella dati indica un percorso
+    /// relativo: vedi [`scegli_cartella`].
+    CartellaRelativa {
+        /// Quale delle due variabili.
+        variabile: &'static str,
+        /// Il valore che porta.
+        valore: PathBuf,
+    },
 }
 
 impl fmt::Display for Errore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CartellaRelativa { variabile, valore } => write!(
+                f,
+                "{variabile} indica una cartella relativa («{}»): serve un percorso completo",
+                valore.display()
+            ),
             Self::InUso { percorso } => write!(
                 f,
                 "i dati della versione precedente sono in uso da un altro programma: {}",
@@ -1088,9 +1121,26 @@ pub fn righe_di_diario(rapporto: &Rapporto) -> Vec<String> {
 /// l'errore nasce da un file del database che qualcuno tiene aperto, e di solito
 /// è lei, ma a tenerlo può essere anche un antivirus o un programma di backup
 /// che lo sta leggendo.
+///
+/// Per [`Errore::CartellaRelativa`] non c'è nessun trasloco di mezzo: il testo
+/// nomina la variabile e il valore, dice che non si apre nessuna libreria — e
+/// quindi nemmeno quella vera — e che cosa scriverci.
 #[must_use]
 pub fn messaggio_di_rifiuto(errore: &Errore) -> String {
     match errore {
+        Errore::CartellaRelativa { variabile, valore } => {
+            let valore = valore.display();
+            format!(
+                "La variabile d'ambiente {variabile} indica la cartella dei dati «{valore}», che non è \
+                 un percorso completo: dipenderebbe dalla cartella da cui si avvia Rymembra. \
+                 Rymembra si chiude senza aprire nessuna libreria, nemmeno quella di serie. \
+                 Indica un percorso completo (per esempio C:\\RymembraProva) oppure togli la variabile.\n\n\
+                 The environment variable {variabile} sets the data folder to \"{valore}\", which is \
+                 not a full path: it would depend on the folder Rymembra is started from. \
+                 Rymembra will close without opening any library, not even the default one. \
+                 Set a full path (for example C:\\RymembraProva) or remove the variable."
+            )
+        }
         Errore::InUso { .. } => concat!(
             "Rymembra non è riuscito a prendere i dati di Aether: i suoi file sono in uso da un altro programma. ",
             "Di solito è Aether ancora aperto, anche solo dall'icona vicino all'orologio; ",
@@ -1145,56 +1195,118 @@ mod prove {
         assert!(!e_vuota(&vuota));
     }
 
+    /// Una cartella assoluta dei test, che è assoluta su ogni sistema: quella
+    /// temporanea, più un nome. Non si crea niente.
+    fn assoluta(nome: &str) -> PathBuf {
+        std::env::temp_dir().join(nome)
+    }
+
+    fn os_assoluta(nome: &str) -> Option<OsString> {
+        Some(assoluta(nome).into_os_string())
+    }
+
+    /// La scelta, che con questi valori c'è sempre.
+    fn scelta(nuova: Option<OsString>, vecchia: Option<OsString>, predefinita: PathBuf) -> Scelta {
+        scegli_cartella(nuova, vecchia, predefinita).expect("una scelta valida")
+    }
+
     #[test]
     fn precedenza_delle_variabili() {
         // Nessuna delle due: la cartella di serie.
-        let scelta = scegli_cartella(None, None, predefinita());
-        assert_eq!(scelta.cartella, predefinita());
-        assert!(!scelta.personalizzata);
-        assert!(!scelta.da_variabile_precedente);
+        let s = scelta(None, None, predefinita());
+        assert_eq!(s.cartella, predefinita());
+        assert!(!s.personalizzata);
+        assert!(!s.da_variabile_precedente);
 
         // Solo quella nuova.
-        let scelta = scegli_cartella(os("nuova"), None, predefinita());
-        assert_eq!(scelta.cartella, PathBuf::from("nuova"));
-        assert!(scelta.personalizzata);
-        assert!(!scelta.da_variabile_precedente);
+        let s = scelta(os_assoluta("nuova"), None, predefinita());
+        assert_eq!(s.cartella, assoluta("nuova"));
+        assert!(s.personalizzata);
+        assert!(!s.da_variabile_precedente);
 
         // Solo quella di prima: rispettata, e lo dice.
-        let scelta = scegli_cartella(None, os("vecchia"), predefinita());
-        assert_eq!(scelta.cartella, PathBuf::from("vecchia"));
-        assert!(scelta.personalizzata);
-        assert!(scelta.da_variabile_precedente);
+        let s = scelta(None, os_assoluta("vecchia"), predefinita());
+        assert_eq!(s.cartella, assoluta("vecchia"));
+        assert!(s.personalizzata);
+        assert!(s.da_variabile_precedente);
 
         // Entrambe: vince la nuova.
-        let scelta = scegli_cartella(os("nuova"), os("vecchia"), predefinita());
-        assert_eq!(scelta.cartella, PathBuf::from("nuova"));
-        assert!(scelta.personalizzata);
-        assert!(!scelta.da_variabile_precedente);
+        let s = scelta(os_assoluta("nuova"), os_assoluta("vecchia"), predefinita());
+        assert_eq!(s.cartella, assoluta("nuova"));
+        assert!(s.personalizzata);
+        assert!(!s.da_variabile_precedente);
+    }
+
+    /// Una cartella relativa dipende dalla cartella corrente di chi lancia —
+    /// quella d'installazione da un collegamento, un'altra da un terminale — e
+    /// due avvii aprirebbero due librerie diverse senza dirlo. Si rifiuta, e
+    /// non si ripiega sulla cartella di serie: chi ha impostato la variabile
+    /// stava facendo una prova, e la cartella di serie è la sua libreria vera.
+    #[test]
+    fn una_cartella_relativa_non_e_una_scelta() {
+        for (nuova, vecchia, variabile) in [
+            (os("dati"), None, VARIABILE_DATI),
+            (None, os("dati"), eredita::VARIABILE_DATI),
+            (os(r"\dati"), None, VARIABILE_DATI),
+            (os("C:dati"), None, VARIABILE_DATI),
+            // Quella che vale è relativa: l'altra, assoluta, non la salva.
+            (os("dati"), os_assoluta("vecchia"), VARIABILE_DATI),
+        ] {
+            let esito = scegli_cartella(nuova.clone(), vecchia.clone(), predefinita());
+            assert!(
+                matches!(
+                    &esito,
+                    Err(Errore::CartellaRelativa { variabile: v, .. }) if *v == variabile
+                ),
+                "accettata una cartella relativa: {nuova:?} {vecchia:?} → {esito:?}"
+            );
+        }
+        // Una vuota resta come se non ci fosse, e non è una cartella relativa.
+        assert!(scegli_cartella(os(""), None, predefinita()).is_ok());
+    }
+
+    /// Il rifiuto di una cartella relativa si spiega: la variabile, il valore,
+    /// e che nessuna libreria si apre, in tutte e due le lingue.
+    #[test]
+    fn il_rifiuto_di_una_cartella_relativa_dice_cosa_fare() {
+        let errore = Errore::CartellaRelativa {
+            variabile: VARIABILE_DATI,
+            valore: PathBuf::from("dati"),
+        };
+        let testo = messaggio_di_rifiuto(&errore);
+        let (italiano, inglese) = testo.split_once("\n\n").expect("due lingue");
+        for parte in [italiano, inglese] {
+            assert!(parte.contains("RYMEMBRA_DATI"), "{parte}");
+            assert!(parte.contains("dati"), "{parte}");
+        }
+        assert!(italiano.contains("nessuna libreria"), "{italiano}");
+        assert!(inglese.contains("any library"), "{inglese}");
+        assert!(errore.to_string().contains("RYMEMBRA_DATI"));
     }
 
     #[test]
     fn le_variabili_vuote_si_ignorano() {
         // Nuova vuota, vecchia piena: tocca alla vecchia.
-        let scelta = scegli_cartella(os(""), os("vecchia"), predefinita());
-        assert_eq!(scelta.cartella, PathBuf::from("vecchia"));
-        assert!(scelta.da_variabile_precedente);
+        let s = scelta(os(""), os_assoluta("vecchia"), predefinita());
+        assert_eq!(s.cartella, assoluta("vecchia"));
+        assert!(s.da_variabile_precedente);
 
         // Nuova piena, vecchia vuota: tocca alla nuova.
-        let scelta = scegli_cartella(os("nuova"), os(""), predefinita());
-        assert_eq!(scelta.cartella, PathBuf::from("nuova"));
-        assert!(!scelta.da_variabile_precedente);
+        let s = scelta(os_assoluta("nuova"), os(""), predefinita());
+        assert_eq!(s.cartella, assoluta("nuova"));
+        assert!(!s.da_variabile_precedente);
 
         // Entrambe vuote: la cartella di serie, non personalizzata.
-        let scelta = scegli_cartella(os(""), os(""), predefinita());
-        assert_eq!(scelta.cartella, predefinita());
-        assert!(!scelta.personalizzata);
-        assert!(!scelta.da_variabile_precedente);
+        let s = scelta(os(""), os(""), predefinita());
+        assert_eq!(s.cartella, predefinita());
+        assert!(!s.personalizzata);
+        assert!(!s.da_variabile_precedente);
     }
 
     #[test]
     fn la_precedente_c_e_solo_per_la_cartella_di_serie() {
-        let scelta = scegli_cartella(None, None, predefinita());
-        let percorsi = percorsi_per(&scelta);
+        let s = scelta(None, None, predefinita());
+        let percorsi = percorsi_per(&s);
         assert_eq!(percorsi.nuova, predefinita());
         assert_eq!(
             percorsi.precedente,
@@ -1202,20 +1314,20 @@ mod prove {
         );
 
         // Né la variabile nuova né quella di prima portano a cercare la precedente.
-        for scelta in [
-            scegli_cartella(os("nuova"), None, predefinita()),
-            scegli_cartella(None, os("vecchia"), predefinita()),
-            scegli_cartella(os("nuova"), os("vecchia"), predefinita()),
+        for s in [
+            scelta(os_assoluta("nuova"), None, predefinita()),
+            scelta(None, os_assoluta("vecchia"), predefinita()),
+            scelta(os_assoluta("nuova"), os_assoluta("vecchia"), predefinita()),
         ] {
-            let percorsi = percorsi_per(&scelta);
-            assert_eq!(percorsi.nuova, scelta.cartella);
+            let percorsi = percorsi_per(&s);
+            assert_eq!(percorsi.nuova, s.cartella);
             assert_eq!(percorsi.precedente, None);
         }
     }
 
     #[test]
     fn la_precedente_e_la_sorella_della_nuova() {
-        let scelta = scegli_cartella(None, None, predefinita());
+        let scelta = scelta(None, None, predefinita());
         let percorsi = percorsi_per(&scelta);
         let precedente = percorsi.precedente.expect("precedente");
         assert_eq!(precedente.parent(), percorsi.nuova.parent());
@@ -1229,7 +1341,7 @@ mod prove {
     #[test]
     fn una_sorella_uguale_alla_nuova_non_e_un_trasloco() {
         let stessa = PathBuf::from("dati-finti").join(eredita::IDENTIFICATORE);
-        let percorsi = percorsi_per(&scegli_cartella(None, None, stessa.clone()));
+        let percorsi = percorsi_per(&scelta(None, None, stessa.clone()));
         assert_eq!(percorsi.nuova, stessa);
         assert_eq!(percorsi.precedente, None);
     }
@@ -1342,7 +1454,7 @@ mod prove {
     /// `<base>/<id di prima>`, calcolate dal codice vero.
     fn percorsi_di_prova(base: &Path) -> Percorsi {
         let nuova = base.join("io.github.federicobaratti.rymembra");
-        percorsi_per(&scegli_cartella(None, None, nuova))
+        percorsi_per(&scelta(None, None, nuova))
     }
 
     fn precedente_di(percorsi: &Percorsi) -> PathBuf {
@@ -1941,7 +2053,7 @@ mod prove {
         // prima; e, accanto, una cartella di prima che **non** va toccata perché
         // chi ha scelto a mano sa cosa vuole.
         let personale = base.path().join("scelta");
-        let scelta = scegli_cartella(
+        let scelta = scelta(
             Some(personale.clone().into_os_string()),
             None,
             base.path().join("io.github.federicobaratti.rymembra"),
