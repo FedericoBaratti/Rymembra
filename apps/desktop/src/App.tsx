@@ -168,6 +168,7 @@ import { useRicerca } from "./ricerca";
 import { Ripristino } from "./Ripristino";
 import { useRiproduzione } from "./riproduzione";
 import { useAvanzamentoScansione } from "./scansione";
+import { nienteInCorso } from "./schermoIntero";
 import { Altro } from "./schermate/Altro";
 import { Dispositivo, sottotitoloDispositivo, useDispositivo } from "./schermate/Dispositivo";
 import { Artisti } from "./schermate/Artisti";
@@ -545,6 +546,18 @@ export function App() {
    * `aspettoFinestra.ts`). Vedi «Lo stato, fuori da React» in `riproduzione.ts`.
    */
   const conBrano = useArchivio(riproduzione.archivio, (s) => s.brano !== null);
+  /*
+   * Quel che suonava è finito — la coda svuotata, o arrivata a nessun brano —
+   * e lo schermo intero si chiude davvero, non solo smette di disegnarsi:
+   * restando `grande` si mangiava il primo Indietro (o Escape) senza che
+   * niente cambiasse a schermo, e il brano fatto partire dopo lo riapriva da
+   * solo. Una scheda che tarda durante una scansione non lo chiude: vedi
+   * `schermoIntero.ts`.
+   */
+  const finito = useArchivio(riproduzione.archivio, nienteInCorso);
+  useEffect(() => {
+    if (finito && grande) setGrande(false);
+  }, [finito, grande]);
 
   /**
    * `avvio` all'apertura: conteggi, cartelle, preferenze. Vedi `libreria.ts`.
