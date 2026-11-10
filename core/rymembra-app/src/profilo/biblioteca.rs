@@ -565,6 +565,13 @@ pub fn serializza(biblioteca: &Biblioteca) -> Result<String, AppError> {
 
 /// Rilegge il documento.
 ///
+/// Le copertine con un'impronta che non è un'impronta
+/// ([`crate::covers::e_un_impronta`]) si scartano qui, all'ingresso: la riga
+/// non ha un file nell'archivio — i nomi delle voci passano dallo stesso
+/// criterio — e in `cover_art` sarebbe solo un nome che la pulizia delle orfane
+/// passa allo store. È la stessa indulgenza della sincronia: cade la riga, non
+/// il documento.
+///
 /// # Errori
 ///
 /// `settings.corrupt` se non è JSON leggibile o se dichiara una versione più
@@ -572,7 +579,7 @@ pub fn serializza(biblioteca: &Biblioteca) -> Result<String, AppError> {
 /// `rymembra_sync::documento::interpreta`: è l'unico caso in cui leggere male
 /// porterebbe a scrivere nella libreria una cosa che si è capita a metà.
 pub fn interpreta(byte: &[u8]) -> Result<Biblioteca, AppError> {
-    let biblioteca: Biblioteca = serde_json::from_slice(byte).map_err(|err| {
+    let mut biblioteca: Biblioteca = serde_json::from_slice(byte).map_err(|err| {
         AppError::new(ErrorCode::SettingsCorrupt {
             quarantined_as: None,
         })
@@ -587,6 +594,9 @@ pub fn interpreta(byte: &[u8]) -> Result<Biblioteca, AppError> {
             biblioteca.versione
         )));
     }
+    biblioteca
+        .copertine
+        .retain(|_, copertina| crate::covers::e_un_impronta(&copertina.hash));
     Ok(biblioteca)
 }
 

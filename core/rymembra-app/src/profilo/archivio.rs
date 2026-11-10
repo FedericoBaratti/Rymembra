@@ -190,8 +190,12 @@ pub fn id_sicuro(id: &str) -> bool {
 }
 
 /// Un'impronta è esadecimale minuscola e nient'altro.
+///
+/// Il criterio è quello dello store in cui la voce si estrae
+/// ([`crate::covers::e_un_impronta`]), e non una copia: prima questa accettava
+/// anche le maiuscole, che lo store su NTFS confonde con le minuscole.
 fn impronta_sicura(hash: &str) -> bool {
-    hash.len() >= 2 && hash.len() <= 128 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+    crate::covers::e_un_impronta(hash)
 }
 
 /// Il nome dentro l'archivio del documento di sincronia di un dispositivo.

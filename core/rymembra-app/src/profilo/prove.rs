@@ -2114,3 +2114,64 @@ fn una_firma_estranea_nel_campo_di_prima_resta_rifiutata() {
         assert_eq!(err.code().kind().code(), "settings.corrupt", "{estranea}");
     }
 }
+
+// ── le impronte delle copertine che arrivano dentro il JSON ─────────────────
+
+#[test]
+fn un_impronta_di_copertina_che_esce_dallo_store_non_entra() {
+    // Un profilo costruito a mano: una copertina per un brano che qui non c'è,
+    // con un'impronta che è il percorso di una foto dell'utente. La riga resta
+    // orfana, il piano non la conta, e la pulizia automatica la passava allo
+    // store — che cancellava la foto.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\a.flac", "chiave");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+
+    let store = CoverStore::open(dir.path().join("dati").join("copertine")).expect("store");
+    let foto = dir.path().join("foto");
+    std::fs::create_dir_all(&foto).expect("cartella delle foto");
+    let vittima = foto.join("IMG_0001.jpg");
+    std::fs::write(&vittima, b"una foto").expect("foto");
+    letto.biblioteca.copertine.insert(
+        "un brano che qui non c'e".to_owned(),
+        biblioteca::Copertina {
+            hash: foto.join("IMG_0001").to_string_lossy().into_owned(),
+            mime_type: "image/jpeg".to_owned(),
+            width: None,
+            height: None,
+            byte_size: None,
+            source: "tag".to_owned(),
+            created_at: 0,
+        },
+    );
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "chiave");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    crate::covers::pulisci(&qui, &store, std::time::Duration::ZERO).expect("pulizia");
+
+    assert!(
+        vittima.exists(),
+        "la pulizia ha cancellato una foto fuori dallo store"
+    );
+}
+
+#[test]
+fn la_biblioteca_scarta_le_copertine_con_un_impronta_storta() {
+    // All'ingresso: la riga cade, il documento no.
+    let buona = "ab".repeat(32);
+    let json = serde_json::json!({
+        "versione": 1,
+        "copertine": {
+            "buona": {"hash": buona, "mime_type": "image/jpeg", "source": "tag", "created_at": 0},
+            "risale": {"hash": "../../fuori", "mime_type": "image/jpeg", "source": "tag", "created_at": 0},
+            "assoluta": {"hash": "C:\\Users\\x\\IMG", "mime_type": "image/jpeg", "source": "tag", "created_at": 0},
+            "maiuscola": {"hash": buona.to_uppercase(), "mime_type": "image/jpeg", "source": "tag", "created_at": 0}
+        }
+    });
+    let biblioteca = biblioteca::interpreta(json.to_string().as_bytes()).expect("si legge");
+    let rimaste: Vec<&str> = biblioteca.copertine.keys().map(String::as_str).collect();
+    assert_eq!(rimaste, vec!["buona"]);
+}
