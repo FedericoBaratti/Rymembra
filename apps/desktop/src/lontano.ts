@@ -245,6 +245,9 @@ export function qrSoloInVista(annulla: () => Promise<StatoLontano>): {
   crea: <T>(crea: () => Promise<T>) => Promise<T>;
 } {
   let inVista = false;
+  // Un QR arrivato a scheda aperta: il pannello lo dice solo col
+  // `lontano:stato` che segue, e la scheda può andarsene prima.
+  let creato = false;
   const togli = () => {
     annulla()
       .then((pannello) => archivioLontano.scrivi(pannello))
@@ -259,11 +262,13 @@ export function qrSoloInVista(annulla: () => Promise<StatoLontano>): {
     },
     smonta: () => {
       inVista = false;
-      if (archivioLontano.leggi()?.invito != null) togli();
+      if (creato || archivioLontano.leggi()?.invito != null) togli();
+      creato = false;
     },
     crea: async (crea) => {
       const fatto = await crea();
-      if (!inVista) togli();
+      if (inVista) creato = true;
+      else togli();
       return fatto;
     },
   };

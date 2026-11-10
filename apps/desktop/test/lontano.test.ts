@@ -291,25 +291,45 @@ test("il QR si annulla quando la scheda che lo mostra se ne va", async () => {
 
 test("un QR chiesto prima e arrivato a scheda chiusa non resta valido", async () => {
   const annullati: number[] = [];
+  const conta = async () => {
+    annullati.push(1);
+    return stato();
+  };
+  const qr = qrSoloInVista(conta);
+  qr.monta();
+  // In vista quando arriva: resta.
+  assert.equal(await qr.crea(async () => UN_QR), UN_QR);
+  assert.equal(annullati.length, 0);
+
+  // Arriva dopo che la scheda se n'è andata: nessuno lo vede, e si annulla.
+  const tardi = qrSoloInVista(conta);
+  tardi.monta();
+  let arriva: (invito: typeof UN_QR) => void = () => undefined;
+  const inVolo = tardi.crea(() => new Promise<typeof UN_QR>((fatto) => (arriva = fatto)));
+  tardi.smonta();
+  arriva(UN_QR);
+  await inVolo;
+  assert.equal(annullati.length, 1);
+  // Un'altra volta in vista (StrictMode rimonta): torna a valere.
+  tardi.monta();
+  await tardi.crea(async () => UN_QR);
+  assert.equal(annullati.length, 1);
+});
+
+test("un QR arrivato in vista si annulla anche se il pannello non lo dice ancora", async () => {
+  // Il pannello lo porta il `lontano:stato` che segue: una scheda che se ne
+  // va prima non lo trova nell'archivio, ma il QR nel nucleo c'è.
+  archivioLontano.scrivi(stato({ invito: null }));
+  const annullati: number[] = [];
   const qr = qrSoloInVista(async () => {
     annullati.push(1);
     return stato();
   });
   qr.monta();
-  // In vista quando arriva: resta.
-  assert.equal(await qr.crea(async () => UN_QR), UN_QR);
-  assert.equal(annullati.length, 0);
-  // Arriva dopo che la scheda se n'è andata: nessuno lo vede, e si annulla.
-  let arriva: (invito: typeof UN_QR) => void = () => undefined;
-  const inVolo = qr.crea(() => new Promise<typeof UN_QR>((fatto) => (arriva = fatto)));
-  qr.smonta();
-  arriva(UN_QR);
-  await inVolo;
-  assert.equal(annullati.length, 1);
-  // Un'altra volta in vista (StrictMode rimonta): torna a valere.
-  qr.monta();
   await qr.crea(async () => UN_QR);
+  qr.smonta();
   assert.equal(annullati.length, 1);
+  archivioLontano.scrivi(null);
 });
 
 test("un collegamento annullato da qui non è un errore da dire", () => {
