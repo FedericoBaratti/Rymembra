@@ -185,9 +185,69 @@ impl Domanda {
                 da,
                 quanti: quanti.min(MASSIMO_PEZZO),
             },
+            Self::Annuncio(presenza) => Self::Annuncio(presenza.nei_tetti()),
             altra => altra,
         }
     }
+}
+
+/// Quanti caratteri, al più, ha ogni testo di una [`Presenza`] che arriva da
+/// un altro dispositivo: quanti ne ha il nome che l'associazione scrive.
+pub const MASSIMO_TESTO_PRESENZA: usize = 64;
+
+impl Presenza {
+    /// La stessa presenza coi tetti di questo protocollo: ogni testo come
+    /// testo puro — senza controlli né comandi di direzione, gli spazi
+    /// ridotti a uno — entro [`MASSIMO_TESTO_PRESENZA`] caratteri. Quel che l'altro dice di sé va nel pannello e in ogni
+    /// `lontano:stato` della finestra: senza tetto, una versione da qualche
+    /// megabyte ci arrivava intera (reperto 02-13). Il nodo la applica a ogni
+    /// presenza che riceve, annunciata o risposta.
+    #[must_use]
+    pub fn nei_tetti(self) -> Self {
+        Self {
+            nome: testo_puro(&self.nome),
+            piattaforma: testo_puro(&self.piattaforma),
+            versione: testo_puro(&self.versione),
+            ..self
+        }
+    }
+}
+
+/// Un testo di un altro dispositivo come testo puro, con le regole dei nomi
+/// che arrivano da fuori (`rymembra_app::insieme::ripulisci_nome`, che questo
+/// crate non vede): i caratteri di controllo e gli spazi di ogni sorta
+/// diventano uno spazio solo, e mai in testa né in coda; spariscono gli spazi
+/// di larghezza zero (U+200B, U+FEFF) e i comandi di direzione (U+202A–202E,
+/// U+2066–2069), che farebbero leggere a schermo un testo diverso. Il taglio è
+/// a [`MASSIMO_TESTO_PRESENZA`] caratteri, prima dello spazio che non ci
+/// starebbe.
+fn testo_puro(grezzo: &str) -> String {
+    let mut pulito = String::new();
+    let mut quanti = 0_usize;
+    let mut spazio_in_sospeso = false;
+    for carattere in grezzo.chars() {
+        if carattere.is_control() || carattere.is_whitespace() {
+            spazio_in_sospeso = !pulito.is_empty();
+            continue;
+        }
+        if matches!(
+            carattere,
+            '\u{200B}' | '\u{FEFF}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        ) {
+            continue;
+        }
+        let servono = if spazio_in_sospeso { 2 } else { 1 };
+        if quanti.saturating_add(servono) > MASSIMO_TESTO_PRESENZA {
+            break;
+        }
+        if spazio_in_sospeso {
+            pulito.push(' ');
+            spazio_in_sospeso = false;
+        }
+        pulito.push(carattere);
+        quanti = quanti.saturating_add(servono);
+    }
+    pulito
 }
 
 /// Chi è un dispositivo e cosa sta facendo: la prima cosa che si chiede.
@@ -444,6 +504,50 @@ mod prove {
 
         let troppo = (u32::try_from(MASSIMA_CORNICE).unwrap() + 1).to_be_bytes();
         assert!(lunghezza(troppo).is_err());
+    }
+
+    #[test]
+    fn la_presenza_dell_altro_ha_un_tetto() {
+        // Reperto 02-13: un dispositivo collegato annunciava una versione (o
+        // un nome, una piattaforma) da qualche megabyte, e finiva nel pannello
+        // e in ogni `lontano:stato` mandato alla finestra.
+        let enorme = Presenza {
+            nome: format!(" PC\u{202E} di\tcasa {}", "x".repeat(10_000)),
+            piattaforma: "windows\u{0}".repeat(1_000),
+            versione: format!("3.2.0\n{}", "9".repeat(1 << 20)),
+            insieme_acceso: true,
+            insieme_ospita: true,
+        };
+        let Domanda::Annuncio(tagliata) = Domanda::Annuncio(enorme).nei_tetti() else {
+            panic!("resta un annuncio");
+        };
+        for testo in [&tagliata.nome, &tagliata.piattaforma, &tagliata.versione] {
+            assert!(
+                testo.chars().count() <= MASSIMO_TESTO_PRESENZA,
+                "{} caratteri",
+                testo.len()
+            );
+            assert!(!testo.chars().any(char::is_control), "{testo:?}");
+            assert!(!testo.contains('\u{202E}'), "{testo:?}");
+        }
+        assert!(
+            tagliata.nome.starts_with("PC di casa x"),
+            "{}",
+            tagliata.nome
+        );
+        assert!(tagliata.versione.starts_with("3.2.0 9"));
+        assert!(tagliata.insieme_acceso && tagliata.insieme_ospita);
+        // Una presenza normale resta com'è.
+        let normale = Presenza {
+            nome: "PC di Mario".to_owned(),
+            piattaforma: "windows".to_owned(),
+            versione: "3.2.0".to_owned(),
+            ..Presenza::default()
+        };
+        assert_eq!(
+            Domanda::Annuncio(normale.clone()).nei_tetti(),
+            Domanda::Annuncio(normale)
+        );
     }
 
     #[test]

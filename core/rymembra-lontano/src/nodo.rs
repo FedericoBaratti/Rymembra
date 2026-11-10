@@ -1274,7 +1274,9 @@ async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppE
 /// Legge la risposta: la testa, e per dei byte i byte.
 async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
     match leggi::<Testa>(ricevi).await? {
-        Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza)),
+        // Come l'annuncio (`Domanda::nei_tetti`): quel che l'altro dice di sé
+        // arriva al pannello solo nei tetti.
+        Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza.nei_tetti())),
         Testa::Dati { dati } => Ok(Risposta::Dati(dati)),
         Testa::Fatto => Ok(Risposta::Fatto),
         Testa::Byte {

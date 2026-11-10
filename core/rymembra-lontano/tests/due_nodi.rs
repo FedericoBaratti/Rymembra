@@ -458,6 +458,41 @@ fn la_presenza_arriva_da_sola_e_cambia() {
 }
 
 #[test]
+fn la_presenza_dell_altro_arriva_nei_tetti() {
+    // Reperto 02-13, dalla risposta: chi chiede la presenza la riceve
+    // tagliata, qualunque cosa l'altro dica di sé.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.consente.lock().unwrap() = true;
+    telefono.collega(&pc.invita().unwrap().link()).unwrap();
+    pc.presenza(Presenza {
+        nome: "PC ".repeat(50_000),
+        piattaforma: "prova".to_owned(),
+        versione: format!("3.2.0\u{202E}{}", "9".repeat(100_000)),
+        ..Presenza::default()
+    });
+    let Risposta::Presenza(presenza) = telefono
+        .chiedi(&pc.chiave(), Domanda::Presenza, Duration::from_secs(10))
+        .unwrap()
+    else {
+        panic!("una presenza");
+    };
+    assert!(
+        presenza.nome.chars().count() <= 64,
+        "{}",
+        presenza.nome.len()
+    );
+    assert!(presenza.nome.starts_with("PC PC"));
+    assert!(
+        presenza.versione.chars().count() <= 64,
+        "{}",
+        presenza.versione.len()
+    );
+    assert!(!presenza.versione.contains('\u{202E}'));
+    assert_eq!(presenza.piattaforma, "prova");
+}
+
+#[test]
 fn dimenticami_toglie_l_associazione_dall_altra_parte() {
     let (pc, del_pc) = nodo("PC");
     let (telefono, _) = nodo("Telefono");
