@@ -209,6 +209,50 @@ fn l_ascolto_aggiorna_anche_l_orologio_delle_statistiche() {
 }
 
 #[test]
+fn un_ascolto_arrivato_tardi_non_porta_indietro_gli_orologi() {
+    // Il telefono ha ascoltato il brano del PC lunedì senza rete, il PC l'ha
+    // suonato mercoledì, e l'ascolto del telefono arriva giovedì.
+    let mut c = db();
+    brano(&c, 1, 180_000);
+    let orologi = |c: &Connection| -> (Option<i64>, Option<i64>) {
+        c.query_row(
+            "SELECT last_played_at, stats_updated_at FROM tracks WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("orologi")
+    };
+    for (quando, dopo) in [(3_000_i64, 3_000_i64), (1_000, 3_000)] {
+        record_play(
+            &mut c,
+            &Listen {
+                track_id: 1,
+                started_at: quando,
+                listened_ms: 120_000,
+                counts: true,
+            },
+            "prova",
+        )
+        .expect("registrato");
+        assert_eq!(
+            orologi(&c),
+            (Some(dopo), Some(dopo)),
+            "dopo l'ascolto delle {quando}"
+        );
+    }
+    // L'ascolto conta lo stesso, e la cronologia ha il suo vero orario.
+    assert_eq!(conteggio(&c, 1), (2, Some(3_000), 2));
+    let in_cronologia: i64 = c
+        .query_row(
+            "SELECT MIN(played_at) FROM play_history WHERE track_id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("cronologia");
+    assert_eq!(in_cronologia, 1_000);
+}
+
+#[test]
 fn la_coda_torna_com_era() {
     let c = db();
     let coda = QueueSnapshot {

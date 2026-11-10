@@ -628,6 +628,7 @@ impl Filo {
             attivo: self.letto.as_ref().is_some_and(|l| l.impostazioni.attivo),
             acceso: nodo.is_some(),
             chiave: nodo.as_ref().map(|n| n.chiave()),
+            impronta: nodo.as_ref().map(|n| n.impronta()),
             relay: self
                 .letto
                 .as_ref()

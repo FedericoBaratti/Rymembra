@@ -27,7 +27,15 @@
 //! # Il cancello
 //!
 //! - [`ALPN_LONTANO`]: una chiave che l'[`Ospite`] non dice associata viene
-//!   chiusa subito, col motivo `lontano.nonAssociato`.
+//!   chiusa subito, col motivo `lontano.nonAssociato`. Il cancello si guarda
+//!   di nuovo **a ogni domanda**: chi non è più associato riceve
+//!   `lontano.nonAssociato`, e perde ogni sua connessione.
+//! - La revoca ([`Nodo::revoca`], o [`Nodo::pari`] senza di lei) chiude
+//!   tutte le connessioni di quella chiave, in entrata e in uscita, e i suoi
+//!   flussi di «Ascolta insieme» già aperti: il nodo le tiene tutte, non solo
+//!   quella che usa per chiedere.
+//! - Al più [`DOMANDE_INSIEME`] domande servite insieme per dispositivo, su
+//!   tutte le sue connessioni.
 //! - [`ALPN_ASSOCIA`]: chiuso se non c'è un QR attivo; al più
 //!   [`TENTATIVI_AL_MINUTO`]; il gettone vale [`VALIDITA_INVITO`], una volta
 //!   sola, e dopo [`MASSIMI_FALLIMENTI`] gettoni sbagliati il QR non vale più.
@@ -41,11 +49,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use iroh::dns::DnsResolver;
 use iroh::endpoint::{
-    Connection, ConnectionError, PortmapperConfig, RecvStream, SendStream, VarInt, presets,
+    ConnectError, ConnectingError, Connection, ConnectionError, PortmapperConfig, RecvStream,
+    SendStream, VarInt, presets,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, NetReportConfig, RelayMode, RelayUrl, SecretKey};
 use rymembra_domain::errors::{AppError, Domain, ErrorCode, ErrorCodeKind};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -226,9 +236,16 @@ pub enum Via {
 }
 
 /// Quel che il nodo chiede all'app. Tutto bloccante: lo si chiama da un filo
-/// bloccante del runtime, mai da uno della rete.
+/// bloccante del runtime, mai da uno della rete — tranne
+/// [`Ospite::associato`] ed [`Ospite::evento`].
 pub trait Ospite: Send + Sync + 'static {
     /// Questa chiave è di un dispositivo associato, e non revocato?
+    ///
+    /// Il nodo lo chiede a ogni connessione e **prima di ogni domanda**, da
+    /// un filo della rete: deve rispondere subito, da quel che ha in memoria,
+    /// senza aspettare la libreria. Quando dice no per una chiave che lo era,
+    /// le connessioni di quella chiave si chiudono alla sua domanda dopo; per
+    /// chiuderle subito, [`Nodo::revoca`].
     fn associato(&self, chiave: &str) -> bool;
 
     /// Chi ha presentato il gettone giusto vuole collegarsi: lo si chiede a
@@ -286,6 +303,14 @@ struct Condiviso {
     invito: Mutex<Option<InvitoAttivo>>,
     tentativi: Mutex<VecDeque<Instant>>,
     connessioni: Mutex<HashMap<EndpointId, Connection>>,
+    /// **Tutte** le connessioni vive con ogni dispositivo — in entrata e in
+    /// uscita, della libreria e di «Ascolta insieme» — e non solo quella in
+    /// `connessioni`: chi esce dal cancello le perde tutte
+    /// ([`Condiviso::chiudi_tutte`]).
+    aperte: Mutex<HashMap<EndpointId, Vec<Connection>>>,
+    /// I posti per le domande di ogni dispositivo ([`DOMANDE_INSIEME`]),
+    /// comuni a tutte le sue connessioni: aprirne altre non ne dà di più.
+    posti: Mutex<HashMap<EndpointId, Arc<Semaphore>>>,
     /// Un turno per dispositivo per aprire una connessione: dieci domande
     /// insieme a un dispositivo senza connessione ne aprono una, non dieci.
     turni: Mutex<HashMap<EndpointId, Arc<tokio::sync::Mutex<()>>>>,
@@ -334,6 +359,70 @@ impl Condiviso {
         {
             connessioni.remove(&pari);
         }
+    }
+
+    /// Una connessione con `pari` da chiudere se esce dal cancello. Quelle già
+    /// chiuse si tolgono qui: un dispositivo che si ricollega cento volte
+    /// non ne lascia cento.
+    fn tieni(&self, pari: EndpointId, conn: &Connection) {
+        let mut aperte = chiave(&self.aperte);
+        let sue = aperte.entry(pari).or_default();
+        sue.retain(|c| c.close_reason().is_none());
+        sue.push(conn.clone());
+    }
+
+    /// `conn` è finita.
+    fn lascia(&self, pari: EndpointId, conn: &Connection) {
+        let mut aperte = chiave(&self.aperte);
+        if let Some(sue) = aperte.get_mut(&pari) {
+            sue.retain(|c| c.stable_id() != conn.stable_id());
+            if sue.is_empty() {
+                aperte.remove(&pari);
+            }
+        }
+    }
+
+    /// Tiene `conn` finché non si chiude da sé: per le connessioni di
+    /// «Ascolta insieme», che vivono in mano al loro [`Flusso`].
+    fn tieni_finche_vive(self: &Arc<Self>, pari: EndpointId, conn: &Connection) {
+        self.tieni(pari, conn);
+        let condiviso = Arc::clone(self);
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            conn.closed().await;
+            condiviso.lascia(pari, &conn);
+        });
+    }
+
+    /// `pari` non è più associato: si chiude ogni sua connessione — la
+    /// libreria, le domande in corso, i flussi di «Ascolta insieme» — col
+    /// motivo `lontano.nonAssociato`, e i suoi posti si dimenticano.
+    fn chiudi_tutte(&self, pari: EndpointId) {
+        let sue = chiave(&self.aperte).remove(&pari).unwrap_or_default();
+        chiave(&self.connessioni).remove(&pari);
+        chiave(&self.posti).remove(&pari);
+        for conn in sue {
+            conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
+        }
+    }
+
+    /// I dispositivi con una connessione aperta.
+    fn con_connessioni(&self) -> Vec<EndpointId> {
+        chiave(&self.aperte).keys().copied().collect()
+    }
+
+    /// I posti delle domande di `pari`: vedi [`Condiviso::posti`].
+    fn posti_di(&self, pari: EndpointId) -> Arc<Semaphore> {
+        Arc::clone(
+            chiave(&self.posti)
+                .entry(pari)
+                .or_insert_with(|| Arc::new(Semaphore::new(DOMANDE_INSIEME))),
+        )
+    }
+
+    /// Il cancello: `pari` è associato, adesso.
+    fn associato(&self, pari: EndpointId) -> bool {
+        self.ospite.associato(&pari.to_string())
     }
 
     fn indirizzo_di(&self, pari: EndpointId) -> EndpointAddr {
@@ -444,6 +533,8 @@ impl Nodo {
             invito: Mutex::new(None),
             tentativi: Mutex::new(VecDeque::new()),
             connessioni: Mutex::new(HashMap::new()),
+            aperte: Mutex::new(HashMap::new()),
+            posti: Mutex::new(HashMap::new()),
             turni: Mutex::new(HashMap::new()),
             noti: Mutex::new(HashMap::new()),
             sveglia: Notify::new(),
@@ -455,7 +546,9 @@ impl Nodo {
         let (endpoint, router) = runtime.block_on(async {
             let costruttore = match impostazioni.rete {
                 Rete::Internet { relay, dht, mdns } => {
-                    let mut costruttore = Endpoint::builder(presets::N0);
+                    let mut costruttore = Endpoint::builder(presets::N0)
+                        .dns_resolver(risolutore())
+                        .net_report_config(rapporto_di_rete());
                     if let Relay::Proprio(indirizzo) = relay {
                         let url = RelayUrl::from_str(indirizzo.trim()).map_err(|err| {
                             AppError::new(ErrorCode::NetBadSchema {
@@ -574,7 +667,17 @@ impl Nodo {
             gettone,
             indirizzi,
             relay,
+            // Chi legge il QR lo vede prima di collegarsi, come nome
+            // dichiarato, accanto all'impronta.
+            nome: Some(self.condiviso.io.nome.clone()).filter(|nome| !nome.trim().is_empty()),
         })
+    }
+
+    /// L'impronta di questo dispositivo, da mostrare accanto al QR e mentre
+    /// si aspetta una conferma: vedi [`crate::collegamento::impronta`].
+    #[must_use]
+    pub fn impronta(&self) -> String {
+        crate::collegamento::impronta(self.endpoint.id().as_bytes())
     }
 
     /// Il QR mostrato non vale più.
@@ -640,7 +743,10 @@ impl Nodo {
                     self.endpoint.connect(indirizzo, ALPN_ASSOCIA),
                 ) => esito
                     .map_err(|_| irraggiungibile("il dispositivo del QR non risponde"))?
-                    .map_err(irraggiungibile)?,
+                    // Chi mostra il QR chiude subito un'associazione senza un
+                    // QR che valga: la chiusura può arrivare già qui, e dice
+                    // perché (`lontano.gettoneScaduto`), non «non risponde».
+                    .map_err(|err| chiusa_nel_collegarsi(&err).unwrap_or_else(|| irraggiungibile(err)))?,
             };
             let esito = tokio::select! {
                 () = &mut annullato => {
@@ -648,9 +754,14 @@ impl Nodo {
                     return Err(annullato_qui());
                 }
                 esito = tokio::time::timeout(ATTESA_CONFERMA + Duration::from_secs(30), async {
+                    // Ogni passo col motivo della chiusura, se l'altro ha
+                    // chiuso: quale passo trovi la connessione chiusa è una
+                    // corsa, l'esito non deve esserlo.
                     let (mut invio, mut ricevi) =
                         conn.open_bi().await.map_err(|e| perso(&conn, e))?;
-                    scrivi(&mut invio, &Associa::Chiedo { gettone, chi: io }).await?;
+                    scrivi(&mut invio, &Associa::Chiedo { gettone, chi: io })
+                        .await
+                        .map_err(|err| chiusa_perche(&conn).unwrap_or(err))?;
                     let _ = invio.finish();
                     leggi::<Associa>(&mut ricevi)
                         .await
@@ -676,8 +787,24 @@ impl Nodo {
         }
     }
 
-    /// I dispositivi associati da seguire: chi non c'è più si lascia, chi è
-    /// nuovo si comincia a cercare.
+    /// Una chiave che non è più associata — dimenticata qui, o che ci ha
+    /// dimenticati — esce subito: si smette di seguirla, e si chiude **ogni**
+    /// sua connessione, anche quelle aperte prima e i flussi di «Ascolta
+    /// insieme» già in corso. Da chiamare dopo che [`Ospite::associato`] dice
+    /// no per lei; [`Nodo::pari`] fa lo stesso per chi non è più nell'elenco.
+    pub fn revoca(&self, chiave_pari: &str) {
+        let Ok(id) = EndpointId::from_str(chiave_pari) else {
+            return;
+        };
+        if let Some(compito) = chiave(&self.seguiti).remove(&id) {
+            compito.abort();
+        }
+        self.condiviso.chiudi_tutte(id);
+    }
+
+    /// I dispositivi associati da seguire: chi non c'è più si lascia — con
+    /// ogni sua connessione, vedi [`Nodo::revoca`] — chi è nuovo si comincia
+    /// a cercare.
     pub fn pari(&self, noti: Vec<PariNoto>) {
         let Ok(runtime) = self.runtime() else {
             return;
@@ -698,12 +825,16 @@ impl Nodo {
             let resta = voluti.contains(id);
             if !resta {
                 compito.abort();
-                if let Some(conn) = chiave(&self.condiviso.connessioni).remove(id) {
-                    conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
-                }
             }
             resta
         });
+        // Anche chi non si seguiva ancora: una connessione arrivata subito
+        // dopo l'associazione, prima del primo elenco.
+        for id in self.condiviso.con_connessioni() {
+            if !voluti.contains(&id) {
+                self.condiviso.chiudi_tutte(id);
+            }
+        }
         for id in voluti {
             seguiti.entry(id).or_insert_with(|| {
                 runtime
@@ -838,12 +969,19 @@ impl Nodo {
         let endpoint = self.endpoint.clone();
         let maniglia = runtime.handle().clone();
         let vivo = Arc::clone(&self.condiviso.vivo);
+        let condiviso = Arc::clone(&self.condiviso);
         runtime.block_on(async move {
             tokio::time::timeout(entro, async {
                 let conn = endpoint
                     .connect(indirizzo, ALPN_INSIEME)
                     .await
                     .map_err(irraggiungibile)?;
+                // Come in entrata: la revoca chiude anche i flussi aperti da qui.
+                condiviso.tieni_finche_vive(id, &conn);
+                if !condiviso.associato(id) {
+                    conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
+                    return Err(errore(ErrorCodeKind::LontanoNonAssociato));
+                }
                 let (invio, ricevi) = conn.open_bi().await.map_err(|err| perso(&conn, err))?;
                 Ok(Flusso::nuovo(conn, invio, ricevi, maniglia, vivo))
             })
@@ -970,29 +1108,32 @@ async fn connessione(
     .await
     .map_err(|_| irraggiungibile("il dispositivo non risponde"))?
     .map_err(irraggiungibile)?;
+    condiviso.tieni(pari, &conn);
     condiviso.registra(pari, &conn);
     let condiviso = Arc::clone(condiviso);
     let servita = conn.clone();
     tokio::spawn(async move {
         servi(&condiviso, &servita).await;
         condiviso.togli(pari, &servita);
+        condiviso.lascia(pari, &servita);
     });
     Ok(conn)
 }
 
-/// Le domande che arrivano su una connessione, finché resta aperta.
+/// Le domande che arrivano su una connessione, finché resta aperta. Al più
+/// [`DOMANDE_INSIEME`] servite insieme per dispositivo, su tutte le sue
+/// connessioni: chi ne apre cento non ne fa servire ottocento.
 async fn servi(condiviso: &Arc<Condiviso>, conn: &Connection) {
-    let posti = Arc::new(Semaphore::new(DOMANDE_INSIEME));
     let da = conn.remote_id();
+    let posti = condiviso.posti_di(da);
     while let Ok((invio, ricevi)) = conn.accept_bi().await {
         let Ok(posto) = Arc::clone(&posti).acquire_owned().await else {
             break;
         };
         let condiviso = Arc::clone(condiviso);
-        let conn = conn.clone();
         tokio::spawn(async move {
             let _posto = posto;
-            if let Err(guasto) = rispondi_a(&condiviso, &conn, da, invio, ricevi).await {
+            if let Err(guasto) = rispondi_a(&condiviso, da, invio, ricevi).await {
                 // Il codice e basta: né la chiave dell'altro né la causa, che
                 // per un guasto di rete può portare un indirizzo.
                 condiviso.evento(Evento::Diario(format!(
@@ -1007,7 +1148,6 @@ async fn servi(condiviso: &Arc<Condiviso>, conn: &Connection) {
 /// Una domanda, e la sua risposta.
 async fn rispondi_a(
     condiviso: &Arc<Condiviso>,
-    conn: &Connection,
     da: EndpointId,
     mut invio: SendStream,
     mut ricevi: RecvStream,
@@ -1015,6 +1155,16 @@ async fn rispondi_a(
     let domanda: Domanda = tokio::time::timeout(Duration::from_secs(30), leggi(&mut ricevi))
         .await
         .map_err(|_| protocollo("la domanda non arriva"))??;
+    // Il cancello a ogni domanda, non solo quando la connessione si apre: un
+    // dispositivo dimenticato non legge più niente nemmeno sulle connessioni
+    // che aveva già, e chi esce le perde tutte. Anche la presenza: chi non è
+    // associato non si fa vedere presente.
+    if !condiviso.associato(da) {
+        scrivi_risposta(&mut invio, Err(errore(ErrorCodeKind::LontanoNonAssociato))).await?;
+        let _ = tokio::time::timeout(Duration::from_secs(2), invio.stopped()).await;
+        condiviso.chiudi_tutte(da);
+        return Ok(());
+    }
     let testo = da.to_string();
     let mut dimentica = false;
     let esito = match domanda.nei_tetti() {
@@ -1053,8 +1203,9 @@ async fn rispondi_a(
     });
     scrivi_risposta(&mut invio, esito).await?;
     if dimentica {
+        // Dopo la risposta, che deve arrivare: chiudere prima la perderebbe.
         let _ = tokio::time::timeout(Duration::from_secs(2), invio.stopped()).await;
-        conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
+        condiviso.chiudi_tutte(da);
     }
     Ok(())
 }
@@ -1178,7 +1329,24 @@ fn perso(conn: &Connection, err: impl std::fmt::Display) -> AppError {
 
 /// Il codice con cui l'altro ha chiuso la connessione, se ne ha dato uno.
 fn chiusa_perche(conn: &Connection) -> Option<AppError> {
-    match conn.close_reason()? {
+    motivo(&conn.close_reason()?)
+}
+
+/// Lo stesso, per una connessione che l'altro ha chiuso mentre la si apriva.
+fn chiusa_nel_collegarsi(err: &ConnectError) -> Option<AppError> {
+    match err {
+        ConnectError::Connection { source, .. }
+        | ConnectError::Connecting {
+            source: ConnectingError::ConnectionError { source, .. },
+            ..
+        } => motivo(source),
+        _ => None,
+    }
+}
+
+/// Il codice `lontano.*` di una chiusura, se l'altro ne ha dato uno.
+fn motivo(chiusura: &ConnectionError) -> Option<AppError> {
+    match chiusura {
         ConnectionError::ApplicationClosed(chiusura) => std::str::from_utf8(&chiusura.reason)
             .ok()
             .and_then(da_testo)
@@ -1288,18 +1456,17 @@ impl ProtocolHandler for Servizio {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let condiviso = &self.0;
         let da = conn.remote_id();
-        let ospite = Arc::clone(&condiviso.ospite);
-        let testo = da.to_string();
-        let ammesso = tokio::task::spawn_blocking(move || ospite.associato(&testo))
-            .await
-            .unwrap_or(false);
-        if !ammesso {
+        // Una lettura e basta (vedi `Ospite::associato`): senza un filo
+        // bloccante, che cento connessioni potrebbero tenere tutti occupati.
+        if !condiviso.associato(da) {
             conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
             return Ok(());
         }
+        condiviso.tieni(da, &conn);
         condiviso.registra(da, &conn);
         servi(condiviso, &conn).await;
         condiviso.togli(da, &conn);
+        condiviso.lascia(da, &conn);
         Ok(())
     }
 }
@@ -1313,16 +1480,15 @@ struct Insieme(Arc<Condiviso>);
 impl ProtocolHandler for Insieme {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let condiviso = &self.0;
-        let da = conn.remote_id().to_string();
-        let ospite = Arc::clone(&condiviso.ospite);
-        let chi = da.clone();
-        let ammesso = tokio::task::spawn_blocking(move || ospite.associato(&chi))
-            .await
-            .unwrap_or(false);
-        if !ammesso {
+        let id = conn.remote_id();
+        let da = id.to_string();
+        if !condiviso.associato(id) {
             conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
             return Ok(());
         }
+        // Tenuta da qui: una revoca che arriva mentre si aspetta il flusso, o
+        // quando è già in mano a «Ascolta insieme», la chiude.
+        condiviso.tieni_finche_vive(id, &conn);
         // Chi apre parla per primo (la stretta Noise), quindi il flusso arriva
         // con i suoi primi byte; uno che non arriva in tempo è una connessione
         // che non serve.
@@ -1332,6 +1498,12 @@ impl ProtocolHandler for Insieme {
             conn.close(VarInt::from_u32(0), b"");
             return Ok(());
         };
+        // Di nuovo: la revoca può essere arrivata fra il primo sguardo e
+        // `tieni`, e allora non l'avrebbe chiusa.
+        if !condiviso.associato(id) {
+            conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
+            return Ok(());
+        }
         let flusso = Flusso::nuovo(
             conn,
             invio,
@@ -1343,6 +1515,36 @@ impl ProtocolHandler for Insieme {
         let _ = tokio::task::spawn_blocking(move || ospite.insieme(&da, flusso)).await;
         Ok(())
     }
+}
+
+/// Il risolutore DNS del nodo: **solo** i server del sistema.
+///
+/// Di serie iroh, quando quelli del sistema non rispondono (la rete di un
+/// albergo, una VPN che filtra, l'avvio prima che la rete sia pronta), rifà
+/// le stesse domande ai DNS pubblici di Cloudflare, Google e Quad9: i nomi
+/// dei relay e `_iroh.<chiave del dispositivo collegato>.dns.iroh.link`, cioè
+/// l'identificativo stabile di un dispositivo dell'utente, a tre società che
+/// `PRIVACY.md` non nomina. Senza ripiego, una rete senza DNS è una rete
+/// senza relay: si passa diritti, o si aspetta che il DNS torni.
+///
+/// Su Android i server del sistema iroh li legge da `LinkProperties` della
+/// rete attiva (JNI, col contesto che tao inizializza all'avvio
+/// dell'attività), e li rilegge a ogni cambio di rete.
+fn risolutore() -> DnsResolver {
+    DnsResolver::builder()
+        .with_system_defaults()
+        .disable_fallback()
+        .build()
+}
+
+/// Il rapporto di rete del nodo, senza il controllo del portale: è una
+/// `GET http://<relay>/generate_204` **in chiaro**, e `PRIVACY.md` promette
+/// che dal collegamento non esce niente in chiaro. Le sonde HTTPS restano:
+/// su una rete che chiude QUIC sono il solo modo di trovare il relay di casa.
+fn rapporto_di_rete() -> NetReportConfig {
+    let mut rapporto = NetReportConfig::default();
+    rapporto.captive_portal_check = false;
+    rapporto
 }
 
 /// Esadecimale minuscolo.
@@ -1379,6 +1581,9 @@ fn uguali_a_tempo_costante(uno: &[u8], altro: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+mod prove_connessioni;
+
+#[cfg(test)]
 mod prove {
     use super::*;
 
@@ -1392,6 +1597,38 @@ mod prove {
         assert!(uguali_a_tempo_costante(&byte, &byte));
         assert!(!uguali_a_tempo_costante(&byte, &[0, 1, 0xab, 0xfe]));
         assert!(!uguali_a_tempo_costante(&byte, &[0, 1]));
+    }
+
+    #[test]
+    fn il_dns_e_solo_quello_del_sistema() {
+        // Il `Debug` del risolutore porta la sua configurazione (nessuna rete:
+        // il sistema si legge alla prima domanda): i server di ripiego ci
+        // sarebbero scritti.
+        let scritto = format!("{:?}", risolutore());
+        assert!(scritto.contains("use_system_config: true"), "{scritto}");
+        for pubblico in [
+            "1.1.1.1",
+            "1.0.0.1",
+            "8.8.8.8",
+            "8.8.4.4",
+            "9.9.9.9",
+            "149.112.112.112",
+        ] {
+            assert!(!scritto.contains(pubblico), "{pubblico} in {scritto}");
+        }
+    }
+
+    #[test]
+    fn niente_controllo_del_portale_in_chiaro() {
+        let rapporto = rapporto_di_rete();
+        assert!(
+            !rapporto.captive_portal_check,
+            "GET http://<relay>/generate_204"
+        );
+        assert!(
+            rapporto.https_probes,
+            "le sonde HTTPS restano: su una rete che chiude QUIC trovano il relay"
+        );
     }
 
     #[test]

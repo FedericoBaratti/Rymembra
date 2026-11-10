@@ -28,12 +28,30 @@ import type {
   DispositivoSincronia,
   ErroreIpc,
   FidatoInsieme,
+  LinkLontano,
   StatoLontano,
   ScaricoLontano,
 } from "./ipc";
 
 /** Il pannello, `null` finché il nucleo non ha risposto. */
 export const archivioLontano = creaArchivio<StatoLontano | null>(null);
+
+/**
+ * Il link di collegamento che aspetta il sì della persona, con chi ci si
+ * collegherebbe (`lontanoLinkEsamina`): aperto da fuori, letto dallo scanner o
+ * incollato, passa sempre dalla stessa finestrella, in `LontanoInApp`.
+ */
+export const archivioLink = creaArchivio<LinkLontano | null>(null);
+
+/**
+ * Collegarsi, o mostrare un QR, chiede prima un sì per accendere
+ * «Raggiungibile da internet»: il nucleo non lo accende da sé
+ * (`lontano.spento`). Con l'interruttore acceso basta: sul telefono il nodo
+ * addormentato lo sveglia il comando.
+ */
+export function serveAccendere(stato: StatoLontano | null): boolean {
+  return stato?.attivo !== true;
+}
 
 /**
  * Un gesto su un brano dell'altro che sui dati mobili aspetta un sì: la
@@ -144,6 +162,18 @@ export const archivioScarico = creaArchivio<ScaricoLontano | null>(null);
 /** Una coda appena finita: c'era un brano in corso, e adesso non c'è niente. */
 export function scaricoFinito(prima: ScaricoLontano | null, adesso: ScaricoLontano): boolean {
   return prima !== null && prima.titolo !== null && adesso.titolo === null && adesso.inCoda === 0;
+}
+
+/**
+ * Il codice con cui «Scarica qui» rifiuta un file che non è musica: l'altro
+ * dispositivo l'ha messo fra i brani con un'estensione che la scansione non
+ * legge (`lontano/scarico.rs`, `estensione_audio`).
+ */
+export const NON_AUDIO = "fs.extensionRefused";
+
+/** La coda è finita con un file rifiutato perché non era musica. */
+export function scaricoConNonAudio(stato: ScaricoLontano): boolean {
+  return stato.falliti > 0 && stato.errore === NON_AUDIO;
 }
 
 /** Quanto del brano in corso è sceso, da 0 a 100. */

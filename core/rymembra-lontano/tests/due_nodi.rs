@@ -158,6 +158,11 @@ fn col_gettone_giusto_ci_si_associa_e_ci_si_parla() {
 
     let invito = pc.invita().unwrap();
     assert!(!invito.indirizzi.is_empty(), "{invito:?}");
+    // Il link dice chi lo mostra — un nome dichiarato, e l'impronta della
+    // chiave, la stessa che il PC mostra accanto al QR.
+    let letto = rymembra_lontano::Invito::da_link(&invito.link()).unwrap();
+    assert_eq!(letto.nome.as_deref(), Some("PC"));
+    assert_eq!(letto.impronta(), pc.impronta());
     let (chiave_pc, chi) = telefono.collega(&invito.link()).expect("associati");
     assert_eq!(chiave_pc, pc.chiave());
     assert_eq!(chi.nome, "PC");
@@ -281,24 +286,56 @@ fn il_gettone_vale_una_volta_e_non_si_indovina() {
         codice(altro.collega(&annullato.link())),
         ErrorCodeKind::LontanoGettoneScaduto
     );
-    // Cinque gettoni sbagliati, e il QR non vale più.
+    // Il proprio link non collega a sé stessi.
+    assert_eq!(
+        codice(pc.collega(&pc.invita().unwrap().link())),
+        ErrorCodeKind::LontanoLinkNonValido
+    );
+}
+
+#[test]
+fn cinque_gettoni_sbagliati_bruciano_il_qr() {
+    // Un PC suo: con quelli della prova di sopra si passerebbero i dieci
+    // tentativi al minuto, e l'ultimo lo fermerebbe il tetto, non il QR
+    // bruciato.
+    let (pc, del_pc) = nodo("PC");
+    let (altro, _) = nodo("Altro");
     let bersaglio = pc.invita().unwrap();
     for n in 0..5_u8 {
         let mut tentato = bersaglio.clone();
         tentato.gettone[1] ^= n + 1;
-        let _ = altro.collega(&tentato.link());
+        assert_eq!(
+            codice(altro.collega(&tentato.link())),
+            ErrorCodeKind::LontanoGettoneScaduto,
+            "sbagliato {n}"
+        );
     }
+    assert!(!pc.invito_attivo(), "bruciato");
     *del_pc.consente.lock().unwrap() = true;
     assert_eq!(
         codice(altro.collega(&bersaglio.link())),
         ErrorCodeKind::LontanoGettoneScaduto,
         "bruciato dai tentativi"
     );
-    // Il proprio link non collega a sé stessi.
-    assert_eq!(
-        codice(pc.collega(&pc.invita().unwrap().link())),
-        ErrorCodeKind::LontanoLinkNonValido
-    );
+}
+
+#[test]
+fn un_qr_che_non_vale_piu_si_dice_sempre_scaduto() {
+    // Senza un QR attivo — annullato, o oltre i tentativi al minuto — il PC
+    // chiude l'associazione appena arriva, e la chiusura corre con le prime
+    // domande di chi ha letto il QR: deve dire sempre «QR scaduto», mai «non
+    // risponde», qualunque delle due arrivi prima.
+    let (pc, _) = nodo("PC");
+    let (altro, _) = nodo("Altro");
+    let invito = pc.invita().unwrap();
+    pc.annulla_invito();
+    for tentativo in 0..14 {
+        assert_eq!(
+            codice(altro.collega(&invito.link())),
+            ErrorCodeKind::LontanoGettoneScaduto,
+            "tentativo {tentativo}"
+        );
+    }
 }
 
 #[test]

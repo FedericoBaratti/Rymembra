@@ -13,10 +13,14 @@
 //!
 //! # Collegarsi
 //!
-//! Un dispositivo mostra il QR ([`lontano_qr_crea`]), l'altro lo legge con la
-//! fotocamera o ne incolla il link ([`lontano_collega`]). Chi mostra il QR
-//! conferma (`lontano:richiesta`, poi [`lontano_rispondi`]); da lì i due si
-//! ritrovano da soli, per chiave, dovunque siano.
+//! Un dispositivo mostra il QR ([`lontano_qr_crea`]), con accanto la propria
+//! impronta; l'altro lo legge con la fotocamera o ne incolla il link, vede con
+//! chi si collegherebbe — il nome dichiarato e l'impronta,
+//! [`lontano_link_esamina`] — e dice sì ([`lontano_collega`]). Chi mostra il
+//! QR conferma a sua volta, col nome dichiarato e l'impronta dell'altro
+//! (`lontano:richiesta`, poi [`lontano_rispondi`]); da lì i due si ritrovano
+//! da soli, per chiave, dovunque siano. Nessuno dei due comandi accende
+//! «Raggiungibile da internet»: è un sì a parte ([`lontano_attiva`]).
 //!
 //! # I comandi
 //!
@@ -53,7 +57,7 @@ use crate::errore::{Esito, errore};
 use crate::stato::adesso_ms;
 use filo::{ATTESA_LIBRERIA, Comune, Posta, in_libreria, prendi};
 
-pub use ipc::{InvitoIpc, StatoLontanoIpc};
+pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
 
 /// Quanto un comando aspetta che il filo abbia riletto: accendere il nodo
@@ -177,6 +181,31 @@ pub fn lontano_link_in_attesa() -> Esito<Option<String>> {
         .take())
 }
 
+/// Con chi si collegherebbe questo link: il nome che dichiara, ripulito, e
+/// l'impronta della chiave. Da mostrare prima di [`lontano_collega`], qualunque
+/// strada abbia fatto il link — aperto da fuori, letto dallo scanner,
+/// incollato.
+fn esamina(link: &str) -> Result<LinkIpc, AppError> {
+    let invito = rymembra_lontano::Invito::da_link(link)?;
+    Ok(LinkIpc {
+        link: link.trim().to_owned(),
+        // Come ogni nome che arriva da un altro dispositivo: niente controlli
+        // né inversioni di direzione, e un tetto.
+        nome: invito
+            .nome
+            .as_deref()
+            .map(rymembra_app::insieme::ripulisci_nome)
+            .filter(|nome| !nome.is_empty()),
+        impronta: invito.impronta(),
+    })
+}
+
+/// Vedi [`esamina`].
+#[tauri::command]
+pub fn lontano_link_esamina(link: String) -> Esito<LinkIpc> {
+    esamina(&link).map_err(|err| errore(senza_causa_di_rete(err)))
+}
+
 /// Un errore senza la sua causa, se è del collegamento: vedi il `//!`.
 /// `identitaPersa` la tiene: la scrive `identita`, e dice solo quale strada
 /// è mancata.
@@ -227,16 +256,22 @@ fn nel_nodo<T>(
     azione(&nodo)
 }
 
-/// Accende «Raggiungibile da internet» se è spento: collegare due
-/// dispositivi lo chiede, e chi ha premuto «Collega» l'ha già detto.
-fn acceso_per_collegare(app: &AppHandle) -> Result<(), AppError> {
-    let attivo = in_libreria(app, ATTESA_LIBRERIA, |c| {
-        Ok(dispositivi::impostazioni(c)?.attivo)
-    })?;
-    if !attivo {
-        chiedi_la_rete_di_casa();
-        in_libreria(app, ATTESA_LIBRERIA, |c| dispositivi::attiva(c, true))?;
+/// Collegare due dispositivi vuole «Raggiungibile da internet» acceso. Spento,
+/// è `lontano.spento`, e **resta spento**: accenderlo apre questo dispositivo
+/// a internet, e lo si chiede a parte ([`lontano_attiva`], dopo un sì
+/// esplicito nella finestra). Un «Collega» su un link arrivato da una pagina
+/// web non deve bastare.
+fn attivo_per_collegare(c: &rusqlite::Connection) -> Result<(), AppError> {
+    if dispositivi::impostazioni(c)?.attivo {
+        Ok(())
+    } else {
+        Err(AppError::new(ErrorCode::LontanoSpento))
     }
+}
+
+/// Il nodo acceso per collegare: vedi [`attivo_per_collegare`].
+fn acceso_per_collegare(app: &AppHandle) -> Result<(), AppError> {
+    in_libreria(app, ATTESA_LIBRERIA, attivo_per_collegare)?;
     let pannello = rileggi_e_aspetta(app)?;
     if pannello.acceso {
         return Ok(());
@@ -310,7 +345,9 @@ pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<St
     .await
 }
 
-/// Un QR nuovo, da mostrare: quello di prima non vale più.
+/// Un QR nuovo, da mostrare: quello di prima non vale più. Con
+/// «Raggiungibile da internet» spento è `lontano.spento`: vedi
+/// [`attivo_per_collegare`].
 #[tauri::command]
 pub async fn lontano_qr_crea(app: AppHandle) -> Esito<InvitoIpc> {
     in_disparte(move || {
@@ -350,7 +387,10 @@ pub async fn lontano_qr_annulla(app: AppHandle) -> Esito<StatoLontanoIpc> {
     .await
 }
 
-/// Collega questo dispositivo a quello del link: il QR letto, o il link
+/// Collega questo dispositivo a quello del link — dopo che la finestra ha
+/// mostrato con chi ([`lontano_link_esamina`]) e la persona ha detto sì, e
+/// solo con «Raggiungibile da internet» già acceso ([`attivo_per_collegare`]).
+/// Il QR letto, o il link
 /// incollato. Aspetta che dall'altra parte dicano di sì.
 #[tauri::command]
 pub async fn lontano_collega(app: AppHandle, link: String) -> Esito<StatoLontanoIpc> {
@@ -434,12 +474,68 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
             );
         }
         comune.ammetti(&chiave, false);
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
+        // Subito, senza aspettare la rilettura: ogni sua connessione si
+        // chiude, anche quelle aperte prima e i flussi di «Ascolta insieme».
+        if let Some(nodo) = comune.nodo() {
+            nodo.revoca(&chiave);
+        }
+        let insieme_cambiato = in_libreria(&app, ATTESA_LIBRERIA, |c| {
             dispositivi::dimentica(c, &chiave)
         })?;
+        // Anche la sua chiave di «Ascolta insieme», che il QR aveva reso
+        // fidata: la rete di «Ascolta insieme» rilegge e chiude le sue
+        // connessioni.
+        if insieme_cambiato {
+            crate::insieme::fidati_cambiati(&app);
+        }
         // I suoi brani in coda non si aprono più.
         crate::riproduzione::togli_lontane(&app, &chiave);
         rileggi_e_aspetta(&app)
     })
     .await
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn collegarsi_non_accende_da_se_raggiungibile_da_internet() {
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let err = attivo_per_collegare(c).unwrap_err();
+        assert_eq!(err.code().kind(), ErrorCodeKind::LontanoSpento);
+        assert!(
+            !dispositivi::impostazioni(c).unwrap().attivo,
+            "resta spento: lo accende un sì a parte"
+        );
+        dispositivi::attiva(c, true).unwrap();
+        attivo_per_collegare(c).unwrap();
+    }
+
+    #[test]
+    fn un_link_si_esamina_prima_di_collegarsi() {
+        let invito = rymembra_lontano::Invito {
+            chiave: [7; 32],
+            gettone: [9; 16],
+            indirizzi: Vec::new(),
+            relay: None,
+            nome: Some(" PC\u{202E} di casa ".to_owned()),
+        };
+        let visto = esamina(&format!("  {}\n", invito.link())).unwrap();
+        assert_eq!(visto.link, invito.link());
+        assert_eq!(visto.nome.as_deref(), Some("PC di casa"), "ripulito");
+        assert_eq!(visto.impronta, invito.impronta());
+        assert!(!visto.impronta.is_empty());
+        // Un nome che ripulito non dice niente non c'è.
+        let muto = rymembra_lontano::Invito {
+            nome: Some("\u{202E}\t".to_owned()),
+            ..invito
+        };
+        assert_eq!(esamina(&muto.link()).unwrap().nome, None);
+        assert_eq!(
+            esamina("https://esempio.it").unwrap_err().code().kind(),
+            ErrorCodeKind::LontanoLinkNonValido
+        );
+    }
 }

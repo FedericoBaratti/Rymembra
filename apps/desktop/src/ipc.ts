@@ -18,6 +18,7 @@ import type {
   BranoRemoto,
   DatiMobili,
   InvitoLontano,
+  LinkLontano,
   OrdineRemoto,
   Scansione,
   StatoLontano,
@@ -1370,11 +1371,16 @@ export const ipc = {
   lontanoRelay: (relay: string | null) => invoke<StatoLontano>("lontano_relay", { relay }),
   lontanoDatiMobili: (scelta: DatiMobili) =>
     invoke<StatoLontano>("lontano_dati_mobili", { scelta }),
-  // Un QR nuovo: quello di prima non vale più. Accende il collegamento se è
-  // spento.
+  // Un QR nuovo: quello di prima non vale più. Con «Raggiungibile da
+  // internet» spento è `lontano.spento`: lo si accende prima, con un sì a
+  // parte (`lontanoAttiva`).
   lontanoQrCrea: () => invoke<InvitoLontano>("lontano_qr_crea"),
   lontanoQrAnnulla: () => invoke<StatoLontano>("lontano_qr_annulla"),
-  // Aspetta che dall'altra parte dicano di sì: fino a un paio di minuti.
+  // Con chi ci si collegherebbe: il nome dichiarato e l'impronta. Prima di
+  // `lontanoCollega`, per ogni link — aperto da fuori, letto, incollato.
+  lontanoLinkEsamina: (link: string) => invoke<LinkLontano>("lontano_link_esamina", { link }),
+  // Aspetta che dall'altra parte dicano di sì: fino a un paio di minuti. Come
+  // `lontanoQrCrea`, non accende il collegamento.
   lontanoCollega: (link: string) => invoke<StatoLontano>("lontano_collega", { link }),
   // Smette di aspettare la conferma dell'altro: `lontanoCollega` torna con
   // `internal.aborted`, che la finestra non dice come un errore.

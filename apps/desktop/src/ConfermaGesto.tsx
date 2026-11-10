@@ -45,6 +45,11 @@ export interface Domanda {
    * **spenta**: il caso di serie è quello che non toglie niente in più.
    */
   casella?: string | undefined;
+  /**
+   * Una domanda di consenso (`consenso` di `Dialogo`): le skin non la
+   * ridisegnano. Di serie no.
+   */
+  consenso?: boolean | undefined;
   /** Il gesto, quando la risposta è sì: con la casella, se c'era. */
   fai: (spuntata: boolean) => void;
 }
@@ -63,6 +68,7 @@ export function ConfermaGesto({
       descrizione={domanda.descrizione}
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
+      consenso={domanda.consenso}
       onChiudi={onChiudi}
     >
       {domanda.casella !== undefined && (

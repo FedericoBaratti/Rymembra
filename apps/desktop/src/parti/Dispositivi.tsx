@@ -1,13 +1,22 @@
 /**
  * Il collegamento via internet nella finestra: la scheda «Dispositivi» delle
- * Impostazioni, e le tre finestrelle che possono comparire dovunque.
+ * Impostazioni, e le finestrelle che possono comparire dovunque.
  *
- * - «"Nothing Phone" vuole collegarsi»: qualcuno ha letto il QR mostrato qui,
- *   e aspetta un sì (`StatoLontano.richieste`).
- * - «Collegarsi a questo dispositivo?»: un link `rymembra://collega/…` aperto
- *   da fuori — il QR letto con la fotocamera del sistema (`lontano:link`).
+ * - «Un dispositivo vuole collegarsi»: qualcuno ha letto il QR mostrato qui,
+ *   e aspetta un sì (`StatoLontano.richieste`). Il nome lo sceglie lui, e si
+ *   dice come dichiarato; accanto, l'impronta della sua chiave, che lui
+ *   mostra mentre aspetta.
+ * - «Collegarsi a "PC di casa"?»: un link `rymembra://collega/…` — aperto da
+ *   fuori (`lontano:link`), letto dallo scanner o incollato — col nome che
+ *   dichiara e l'impronta, da confrontare con quella accanto al QR
+ *   sull'altro schermo (`archivioLink`).
+ * - «Accendere "Raggiungibile da internet"?»: collegarsi o mostrare un QR col
+ *   collegamento spento; il nucleo non lo accende da sé.
  * - «Usare i dati mobili?»: un brano dell'altro su una rete a consumo, con
  *   «Solo Wi-Fi» su «Chiedi» (`gestoLontano` in `lontano.ts`).
+ *
+ * Sono tutte domande di consenso: `consenso` su `Dialogo`, che le skin non
+ * ridisegnano.
  *
  * Le apre `LontanoInApp`, montato una volta in `App`: è anche lui ad ascoltare
  * `lontano:stato` e a tenere l'archivio. Vedi `lontano.ts`.
@@ -26,6 +35,7 @@ import {
   type DispositivoSincronia,
   type FidatoInsieme,
   type InvitoLontano,
+  type LinkLontano,
   type StatoLontano,
   type StatoSincronia,
   type ScaricoLontano,
@@ -34,13 +44,16 @@ import { t, tSe } from "../lingue";
 import {
   annullatoDaQui,
   archivioDatiMobili,
+  archivioLink,
   archivioLontano,
   archivioScarico,
   eTelefono,
   linkDa,
   percorsoQr,
   qrScaduto,
+  scaricoConNonAudio,
   scaricoFinito,
+  serveAccendere,
   unisciDispositivi,
 } from "../lontano";
 import { useAscolto } from "../pagine";
@@ -52,6 +65,70 @@ import { Interruttore } from "./Interruttore";
 import { Segmentato } from "./Segmentato";
 
 // ── in App ──────────────────────────────────────────────────────────────────
+
+/**
+ * La notizia di fine coda di «Scarica qui»: quanti, e — se un file non era
+ * musica — perché non è sceso. Il conto dei non riusciti da solo non lo dice.
+ */
+function testoScaricoFinito(adesso: ScaricoLontano): string {
+  if (adesso.falliti === 0) return t("devices.download.done", { n: adesso.fatti });
+  const conto = t("devices.download.doneWithErrors", {
+    n: adesso.fatti,
+    falliti: adesso.falliti,
+  });
+  return scaricoConNonAudio(adesso) ? `${conto} ${t("devices.download.notAudio")}` : conto;
+}
+
+/**
+ * Chi è l'altro, in una domanda di collegamento: il nome che **dichiara** —
+ * lo sceglie lui, e lo si dice — e l'impronta della sua chiave, che è quel
+ * che si confronta con l'altro schermo.
+ */
+function ChiE({ nome, impronta }: { nome: string | null; impronta: string }) {
+  return (
+    <>
+      <p dir="auto">
+        {nome !== null ? t("devices.identity.declared", { nome }) : t("devices.identity.noName")}
+      </p>
+      <p>
+        {t("devices.identity.fingerprint")} <code translate="no">{impronta}</code>
+      </p>
+    </>
+  );
+}
+
+/**
+ * Il sì per accendere «Raggiungibile da internet», a parte: collegarsi o
+ * mostrare un QR lo chiedono, e il nucleo non lo accende da sé. Il no per
+ * primo, col fuoco.
+ */
+function ConsensoRaggiungibile({
+  onAccendi,
+  onAnnulla,
+}: {
+  onAccendi: () => void;
+  onAnnulla: () => void;
+}) {
+  return (
+    <Dialogo
+      titolo={t("devices.reachable.title")}
+      descrizione={t(MOBILE ? "devices.reachable.sub.phone" : "devices.reachable.sub")}
+      ruolo="alertdialog"
+      classe="finestrella stretta glass-modal"
+      consenso
+      onChiudi={onAnnulla}
+    >
+      <div className="tasti-finestrella">
+        <button type="button" className="bottone primario" data-fuoco-iniziale onClick={onAnnulla}>
+          {t("common.cancel")}
+        </button>
+        <button type="button" className="bottone" onClick={onAccendi}>
+          {t("devices.reachable.yes")}
+        </button>
+      </div>
+    </Dialogo>
+  );
+}
 
 /**
  * L'ascolto del pannello e le finestrelle che non stanno in una pagina. Uno
@@ -66,8 +143,10 @@ export function LontanoInApp({
 }) {
   const stato = useArchivio(archivioLontano);
   const riprova = useArchivio(archivioDatiMobili);
-  const [link, setLink] = useState<string | null>(null);
+  const link = useArchivio(archivioLink);
   const [collegando, setCollegando] = useState(false);
+  // «Collega» col collegamento spento: prima il sì per accenderlo.
+  const [accendere, setAccendere] = useState(false);
 
   useAscolto<StatoLontano>(
     "lontano:stato",
@@ -82,14 +161,16 @@ export function LontanoInApp({
   );
 
   // Il link aperto da fuori: dall'evento, o — a freddo, con l'app partita
-  // proprio per lui — da quello rimasto in attesa. Preso una volta sola.
+  // proprio per lui — da quello rimasto in attesa. Preso una volta sola, e
+  // esaminato: la finestrella dice con chi ci si collegherebbe.
   const prendiIlLink = () => {
     ipc
       .lontanoLinkInAttesa()
-      .then((preso) => {
-        if (preso !== null) setLink(preso);
+      .then((preso) => (preso === null ? null : ipc.lontanoLinkEsamina(preso)))
+      .then((visto) => {
+        if (visto !== null) archivioLink.scrivi(visto);
       })
-      .catch(() => undefined);
+      .catch(onErrore);
   };
   useAscolto<string>("lontano:link", () => prendiIlLink(), true, prendiIlLink);
 
@@ -108,11 +189,7 @@ export function LontanoInApp({
       archivioScarico.scrivi(adesso);
       if (!scaricoFinito(prima, adesso)) return;
       if (adesso.fatti > 0 || adesso.falliti > 0) {
-        onNotizia(
-          adesso.falliti > 0
-            ? t("devices.download.doneWithErrors", { n: adesso.fatti, falliti: adesso.falliti })
-            : t("devices.download.done", { n: adesso.fatti }),
-        );
+        onNotizia(testoScaricoFinito(adesso));
       }
     },
     true,
@@ -126,26 +203,49 @@ export function LontanoInApp({
 
   const richiesta = stato?.richieste[0] ?? null;
 
-  const collega = (daCollegare: string) => {
+  const collega = (daCollegare: LinkLontano) => {
     setCollegando(true);
     ipc
-      .lontanoCollega(daCollegare)
+      .lontanoCollega(daCollegare.link)
       .then((nuovo) => {
         archivioLontano.scrivi(nuovo);
         onNotizia(t("devices.linked"));
-        setLink(null);
+        archivioLink.scrivi(null);
       })
       .catch((errore) => {
-        setLink(null);
+        archivioLink.scrivi(null);
         if (!annullatoDaQui(errore)) onErrore(errore);
       })
       .finally(() => setCollegando(false));
   };
 
+  /** «Collega»: col collegamento spento, prima il sì per accenderlo. */
+  const conferma = (daCollegare: LinkLontano) => {
+    if (serveAccendere(stato)) setAccendere(true);
+    else collega(daCollegare);
+  };
+
+  /** Il sì per accendere è arrivato: si accende, e ci si collega. */
+  const accendiECollega = (daCollegare: LinkLontano) => {
+    setAccendere(false);
+    setCollegando(true);
+    ipc
+      .lontanoAttiva(true)
+      .then((nuovo) => {
+        archivioLontano.scrivi(nuovo);
+        collega(daCollegare);
+      })
+      .catch((errore) => {
+        setCollegando(false);
+        onErrore(errore);
+      });
+  };
+
   /** Lascia il link: smette di aspettare, se si stava aspettando. */
   const lascia = () => {
     if (collegando) ipc.lontanoCollegaAnnulla().catch(() => undefined);
-    setLink(null);
+    setAccendere(false);
+    archivioLink.scrivi(null);
   };
 
   const datiMobili = (scelta: DatiMobili) => {
@@ -165,7 +265,7 @@ export function LontanoInApp({
     <>
       {richiesta !== null && (
         <Dialogo
-          titolo={t("devices.request.title", { nome: richiesta.nome })}
+          titolo={t("devices.request.title")}
           descrizione={t(
             eTelefono(richiesta.piattaforma)
               ? "devices.request.sub.phone"
@@ -173,10 +273,13 @@ export function LontanoInApp({
           )}
           ruolo="alertdialog"
           classe="finestrella stretta glass-modal"
+          consenso
           onChiudi={() => {
             ipc.lontanoRispondi(richiesta.id, false).catch(onErrore);
           }}
         >
+          <ChiE nome={richiesta.nome} impronta={richiesta.impronta} />
+          <p>{t("devices.request.compare")}</p>
           <div className="tasti-finestrella">
             {/* Il no per primo, e col fuoco: un Invio battuto per riflesso non
                 deve collegare un dispositivo che non si conosce. */}
@@ -203,14 +306,27 @@ export function LontanoInApp({
         </Dialogo>
       )}
 
-      {link !== null && richiesta === null && (
+      {link !== null && richiesta === null && !accendere && (
         <Dialogo
-          titolo={t("devices.link.title")}
+          titolo={
+            link.nome !== null
+              ? t("devices.link.title", { nome: link.nome })
+              : t("devices.link.title.unnamed")
+          }
           descrizione={collegando ? t("devices.link.waiting") : t("devices.link.sub")}
           classe="finestrella stretta glass-modal"
           occupato={collegando}
+          consenso
           onChiudi={lascia}
         >
+          <ChiE nome={link.nome} impronta={link.impronta} />
+          {/* Mentre si aspetta, la propria: chi decide dall'altra parte la
+              confronta con quella che vede nella sua domanda. */}
+          {collegando && stato !== null && stato.impronta !== null && (
+            <p>
+              {t("devices.link.yours")} <code translate="no">{stato.impronta}</code>
+            </p>
+          )}
           <div className="tasti-finestrella">
             {/* Anche mentre si aspetta: dall'altra parte la domanda sparisce. */}
             <button
@@ -219,13 +335,13 @@ export function LontanoInApp({
               data-fuoco-iniziale
               onClick={lascia}
             >
-              {t("common.cancel")}
+              {collegando ? t("devices.link.cancel") : t("common.cancel")}
             </button>
             <button
               type="button"
               className="bottone"
               disabled={collegando}
-              onClick={() => collega(link)}
+              onClick={() => conferma(link)}
             >
               {t("devices.link.confirm")}
             </button>
@@ -233,11 +349,16 @@ export function LontanoInApp({
         </Dialogo>
       )}
 
+      {link !== null && richiesta === null && accendere && (
+        <ConsensoRaggiungibile onAccendi={() => accendiECollega(link)} onAnnulla={lascia} />
+      )}
+
       {riprova !== null && (
         <Dialogo
           titolo={t("devices.mobileData.title")}
           descrizione={t("devices.mobileData.sub")}
           classe="finestrella stretta glass-modal"
+          consenso
           onChiudi={() => archivioDatiMobili.scrivi(null)}
         >
           <div className="tasti-finestrella">
@@ -452,6 +573,7 @@ function RigaDispositivo({
               titolo: t("devices.forget.title", { nome: dispositivo.nome }),
               descrizione: t("devices.forget.sub"),
               conferma: t("devices.forget"),
+              consenso: true,
               fai: () => {
                 ipc
                   .lontanoDimentica(dispositivo.chiave)
@@ -627,9 +749,8 @@ export function SchedaDispositivi({
   const stato = useArchivio(archivioLontano);
   const insieme = useStatoInsieme();
   const [occupato, setOccupato] = useState(false);
-  // A parte da `occupato`: «Aspetto la conferma…» vale solo per un
-  // collegamento, non per l'interruttore o per il relay.
-  const [collegando, setCollegando] = useState(false);
+  // «Mostra il QR» col collegamento spento: prima il sì per accenderlo.
+  const [accendiPerQr, setAccendiPerQr] = useState(false);
   const [incollato, setIncollato] = useState("");
   const [relay, setRelay] = useState<string | null>(null);
   const [domanda, setDomanda] = useState<Domanda | null>(null);
@@ -655,28 +776,38 @@ export function SchedaDispositivi({
       .finally(() => setOccupato(false));
   };
 
+  /**
+   * Un link letto o incollato: non ci si collega da qui, ma dalla stessa
+   * finestrella dei link aperti da fuori (`LontanoInApp`), che dice prima con
+   * chi — il nome dichiarato e l'impronta.
+   */
   const collega = (testo: string) => {
     const link = linkDa(testo);
     if (link === null) {
       onNotizia(t("errors.lontano.linkNonValido"));
       return;
     }
-    setOccupato(true);
-    setCollegando(true);
     ipc
-      .lontanoCollega(link)
-      .then((nuovo) => {
-        archivioLontano.scrivi(nuovo);
+      .lontanoLinkEsamina(link)
+      .then((visto) => {
         setIncollato("");
-        onNotizia(t("devices.linked"));
+        archivioLink.scrivi(visto);
       })
-      .catch((errore) => {
-        if (!annullatoDaQui(errore)) onErrore(errore);
-      })
-      .finally(() => {
-        setOccupato(false);
-        setCollegando(false);
-      });
+      .catch(onErrore);
+  };
+
+  /** «Mostra il QR»: col collegamento spento, prima il sì per accenderlo. */
+  const mostraQr = () => {
+    if (serveAccendere(stato)) setAccendiPerQr(true);
+    else fai(() => ipc.lontanoQrCrea());
+  };
+
+  const accendiEMostraQr = () => {
+    setAccendiPerQr(false);
+    fai(async () => {
+      archivioLontano.scrivi(await ipc.lontanoAttiva(true));
+      return ipc.lontanoQrCrea();
+    });
   };
 
   const scansiona = () => {
@@ -742,7 +873,7 @@ export function SchedaDispositivi({
             type="button"
             className="bottone btn-ghost"
             disabled={occupato}
-            onClick={() => fai(() => ipc.lontanoQrCrea())}
+            onClick={mostraQr}
           >
             {t("settings.devices.qr.new")}
           </button>
@@ -753,6 +884,13 @@ export function SchedaDispositivi({
           <p className="nota">
             {t(MOBILE ? "settings.devices.qr.sub.phone" : "settings.devices.qr.sub")}
           </p>
+          {/* Chi legge il QR la vede prima di collegarsi: deve essere questa. */}
+          {stato.impronta !== null && (
+            <p className="nota">
+              {t("settings.devices.qr.fingerprint")}{" "}
+              <code translate="no">{stato.impronta}</code>
+            </p>
+          )}
           <p className="nota">
             {t("settings.devices.qr.expires", { n: scadenza?.minuti ?? 0 })}
           </p>
@@ -785,11 +923,17 @@ export function SchedaDispositivi({
             type="button"
             className={MOBILE ? "bottone btn-ghost" : "bottone primario btn-accent"}
             disabled={occupato}
-            onClick={() => fai(() => ipc.lontanoQrCrea())}
+            onClick={mostraQr}
           >
             {t("settings.devices.qr.show")}
           </button>
         </div>
+      )}
+      {accendiPerQr && (
+        <ConsensoRaggiungibile
+          onAccendi={accendiEMostraQr}
+          onAnnulla={() => setAccendiPerQr(false)}
+        />
       )}
 
       <form
@@ -816,22 +960,6 @@ export function SchedaDispositivi({
           {t("settings.devices.paste.cta")}
         </button>
       </form>
-      {collegando && (
-        <div className="azioni">
-          <p className="nota" role="status">
-            {t("devices.link.waiting")}
-          </p>
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            onClick={() => {
-              ipc.lontanoCollegaAnnulla().catch(onErrore);
-            }}
-          >
-            {t("devices.link.cancel")}
-          </button>
-        </div>
-      )}
 
       <h3 className="titoletto">{t("settings.devices.list")}</h3>
       {/* Un elenco solo per i tre registri — collegati via internet, PC di

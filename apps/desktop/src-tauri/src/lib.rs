@@ -834,6 +834,7 @@ pub fn run() {
             lontano::scarico::lontano_scarico_annulla,
             lontano::scarico::lontano_scarico_stato,
             lontano::lontano_link_in_attesa,
+            lontano::lontano_link_esamina,
             lontano::lontano_collega_annulla,
             lontano::lontano_cerca_ora,
             riproduzione::dispositivi_audio,

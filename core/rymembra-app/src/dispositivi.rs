@@ -327,6 +327,12 @@ pub fn rinomina(connection: &Connection, chiave: &str, nome: &str) -> Result<(),
 /// Non ci si fida più del dispositivo (ha chiesto di essere dimenticato), ma
 /// la riga resta, perché lo si veda e lo si possa togliere.
 ///
+/// La fiducia di «Ascolta insieme» resta com'è, a differenza di
+/// [`dimentica`]: qui decide l'**altro**, e la chiave di «Ascolta insieme»
+/// che aveva dato col QR l'aveva solo dichiarata. Un dispositivo collegato che
+/// avesse dichiarato quella di un altro PC fidato potrebbe, con un
+/// «dimenticami», togliergli la fiducia. La toglie la persona, con «Dimentica».
+///
 /// # Errori
 ///
 /// Quelli del database.
@@ -340,24 +346,71 @@ pub fn revoca(connection: &Connection, chiave: &str) -> Result<(), AppError> {
         .map_err(|err| db_error("revoca di un dispositivo", &err))
 }
 
-/// Dimentica un dispositivo, e gli ascolti che aspettavano di arrivargli.
-/// Dimenticare due volte è dimenticare una volta.
+/// Dimentica un dispositivo, gli ascolti che aspettavano di arrivargli, e la
+/// fiducia che il QR aveva dato in «Ascolta insieme» alla chiave che il
+/// dispositivo aveva portato: un telefono perso e dimenticato non deve poter
+/// entrare nelle sessioni di casa senza codice. Un PC che la persona aveva
+/// **bloccato** resta com'è: tolto, alla prossima associazione — sua, non
+/// nostra — tornerebbe fidato.
+///
+/// La chiave l'aveva dichiarata il dispositivo, e niente provava che fosse
+/// sua: se era quella di un altro PC fidato, anche quello torna a chiedere il
+/// codice. È la persona a dimenticare, e il prezzo è un codice a quattro
+/// cifre; il contrario — un dispositivo dimenticato che resta fidato — no.
+///
+/// Dimenticare due volte è dimenticare una volta. `true` se la fiducia di
+/// «Ascolta insieme» è cambiata: chi chiama la fa rileggere alla sua rete, che
+/// chiude le connessioni di quella chiave.
 ///
 /// # Errori
 ///
 /// Quelli del database.
-pub fn dimentica(connection: &Connection, chiave: &str) -> Result<(), AppError> {
+pub fn dimentica(connection: &Connection, chiave: &str) -> Result<bool, AppError> {
     let chiave = chiave.trim().to_ascii_lowercase();
+    let guasto = |err: rusqlite::Error| db_error("dispositivo da dimenticare", &err);
+    let tx = connection.unchecked_transaction().map_err(guasto)?;
+    let insieme = chiave_insieme_di(&tx, &chiave).map_err(guasto)?;
+    tx.execute("DELETE FROM dispositivi WHERE chiave = ?1", [&chiave])
+        .map_err(guasto)?;
+    tx.execute(
+        "DELETE FROM dispositivi_ascolti WHERE dispositivo = ?1",
+        [&chiave],
+    )
+    .map_err(guasto)?;
+    let cambiata = senza_fiducia_insieme(&tx, insieme.as_deref()).map_err(guasto)?;
+    tx.commit().map_err(guasto)?;
+    Ok(cambiata)
+}
+
+/// La chiave di «Ascolta insieme» che il dispositivo aveva dato, se c'è.
+fn chiave_insieme_di(connection: &Connection, chiave: &str) -> rusqlite::Result<Option<String>> {
     connection
-        .execute("DELETE FROM dispositivi WHERE chiave = ?1", [&chiave])
-        .and_then(|_| {
-            connection.execute(
-                "DELETE FROM dispositivi_ascolti WHERE dispositivo = ?1",
-                [&chiave],
-            )
-        })
-        .map(|_| ())
-        .map_err(|err| db_error("dispositivo da dimenticare", &err))
+        .query_row(
+            "SELECT chiave_insieme FROM dispositivi WHERE chiave = ?1",
+            [chiave],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+}
+
+/// Toglie dai PC fidati di «Ascolta insieme» la chiave `insieme`, col suo
+/// indirizzo ricordato, se c'è e non è bloccata. `true` se l'ha tolta.
+fn senza_fiducia_insieme(connection: &Connection, insieme: Option<&str>) -> rusqlite::Result<bool> {
+    let Some(insieme) = insieme.map(|k| k.trim().to_ascii_lowercase()) else {
+        return Ok(false);
+    };
+    connection.execute(
+        "DELETE FROM insieme_indirizzi
+          WHERE chiave = ?1
+            AND EXISTS (SELECT 1 FROM insieme_pari WHERE chiave = ?1 AND bloccato = 0)",
+        [&insieme],
+    )?;
+    let tolti = connection.execute(
+        "DELETE FROM insieme_pari WHERE chiave = ?1 AND bloccato = 0",
+        [&insieme],
+    )?;
+    Ok(tolti > 0)
 }
 
 /// Il dispositivo ha risposto adesso, da questi indirizzi (vuoti: quelli di
@@ -487,6 +540,32 @@ pub fn ascolto_nuovo(
         )
         .map_err(guasto)?;
     Ok(inseriti > 0)
+}
+
+/// Quanti ascolti di `dispositivo` sono stati ricevuti da `dal_ms` in poi.
+///
+/// Le chiavi degli ascolti ricevuti cominciano con la chiave pubblica di chi
+/// li ha mandati e `:` (le compone chi li riceve): il conto è un intervallo
+/// della chiave primaria, `[<chiave>:, <chiave>;)`.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ricevuti_da(
+    connection: &Connection,
+    dispositivo: &str,
+    dal_ms: i64,
+) -> Result<usize, AppError> {
+    let chiave = dispositivo.trim().to_ascii_lowercase();
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM dispositivi_ricevuti
+              WHERE chiave >= ?1 AND chiave < ?2 AND ricevuto_ms >= ?3",
+            rusqlite::params![format!("{chiave}:"), format!("{chiave};"), dal_ms],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|quanti| usize::try_from(quanti).unwrap_or(usize::MAX))
+        .map_err(|err| db_error("ascolti ricevuti da un dispositivo", &err))
 }
 
 /// Un ascolto ricevuto che non si è potuto contare: la sua chiave non lo
@@ -651,6 +730,75 @@ mod prove {
         assert!(associa(c, nuovo("corta", &[]), 1).is_err());
     }
 
+    /// Le chiavi fidate di «Ascolta insieme», e se sono bloccate.
+    fn fidati(c: &Connection) -> Vec<(String, bool)> {
+        crate::insieme::pari(c)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.chiave, p.bloccato))
+            .collect()
+    }
+
+    #[test]
+    fn dimenticare_un_dispositivo_toglie_la_fiducia_che_il_qr_gli_aveva_dato() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let insieme = INSIEME.to_ascii_lowercase();
+        // Il QR: il dispositivo, e la sua chiave di «Ascolta insieme» fidata.
+        let telefono = "0f".repeat(32);
+        associa(c, nuovo(&telefono, &[]), 1000).unwrap();
+        crate::insieme::fidato_dal_qr(c, INSIEME, "Telefono", 1000).unwrap();
+        crate::insieme::ricorda_indirizzo(c, &insieme, "192.168.1.5:47811", 1000).unwrap();
+        // Un PC di «Ascolta insieme» che col dispositivo non c'entra.
+        let estraneo = "cd".repeat(32);
+        crate::insieme::associa(c, &estraneo, "Altro PC", 1000).unwrap();
+
+        dimentica(c, &telefono).unwrap();
+        assert_eq!(fidati(c), vec![(estraneo.clone(), false)]);
+        assert!(
+            crate::insieme::indirizzi_ricordati(c).unwrap().is_empty(),
+            "nemmeno il suo indirizzo"
+        );
+        dimentica(c, &telefono).unwrap();
+
+        // Un PC che la persona aveva bloccato resta bloccato: tolto, alla
+        // prossima associazione tornerebbe fidato.
+        let pc = "1f".repeat(32);
+        let mut col_bloccato = nuovo(&pc, &[]);
+        col_bloccato.chiave_insieme = Some(&estraneo);
+        associa(c, col_bloccato, 2000).unwrap();
+        let id = fidati_id(c, &estraneo);
+        crate::insieme::blocca(c, id, true).unwrap();
+        dimentica(c, &pc).unwrap();
+        assert_eq!(fidati(c), vec![(estraneo, true)]);
+    }
+
+    fn fidati_id(c: &Connection, chiave: &str) -> i64 {
+        crate::insieme::pari(c)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.chiave == chiave)
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn un_dimenticami_dall_altra_parte_non_tocca_ascolta_insieme() {
+        // La chiave di «Ascolta insieme» l'aveva dichiarata lui: con un
+        // «dimenticami» non deve poter togliere la fiducia a un altro PC.
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let telefono = "0f".repeat(32);
+        associa(c, nuovo(&telefono, &[]), 1000).unwrap();
+        crate::insieme::fidato_dal_qr(c, INSIEME, "Telefono", 1000).unwrap();
+        revoca(c, &telefono).unwrap();
+        assert_eq!(fidati(c), vec![(INSIEME.to_ascii_lowercase(), false)]);
+        assert!(
+            uno(c, &telefono).unwrap().unwrap().revocato,
+            "la riga resta"
+        );
+    }
+
     #[test]
     fn un_ascolto_si_manda_una_volta_e_si_conta_una_volta() {
         let db = open_in_memory().unwrap();
@@ -675,5 +823,24 @@ mod prove {
             ascolto_nuovo(c, "k1", 1_000 + MEMORIA_RICEVUTI_MS + 1).unwrap(),
             "dopo un mese la chiave si dimentica"
         );
+    }
+
+    #[test]
+    fn gli_ascolti_ricevuti_si_contano_per_dispositivo() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let uno = "1a".repeat(32);
+        let altro = "1b".repeat(32);
+        for (chiave, quando) in [
+            (format!("{uno}:a"), 100),
+            (format!("{uno}:b"), 200),
+            (format!("{altro}:a"), 200),
+        ] {
+            assert!(ascolto_nuovo(c, &chiave, quando).unwrap());
+        }
+        assert_eq!(ricevuti_da(c, &uno.to_ascii_uppercase(), 0).unwrap(), 2);
+        assert_eq!(ricevuti_da(c, &uno, 150).unwrap(), 1, "solo da allora");
+        assert_eq!(ricevuti_da(c, &altro, 0).unwrap(), 1);
+        assert_eq!(ricevuti_da(c, &"1c".repeat(32), 0).unwrap(), 0);
     }
 }
