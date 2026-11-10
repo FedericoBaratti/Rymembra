@@ -720,7 +720,8 @@ emulator — and every confirmed finding fixed with a test that failed first.
 - **Catalog downloads keep their licence.** Tracks imported from a link and
   «Keep a copy» from Explore are downloaded with the licence and permission
   read from the catalog at download time, the attribution is written into the
-  file's tags, and a download takes a catalog file only when its title and
+  file's tags, «Now playing» shows the licence of such a file (its source page
+  stays in the tags), and a download takes a catalog file only when its title and
   artist match the wanted track — «Accept different recordings» admits a live
   or a reissue by the same artist, never someone else's cover. Items in the
   Archive's `stream_only` collection, restrictions in unexpected forms, 78 rpm
