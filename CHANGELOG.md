@@ -755,6 +755,14 @@ emulator — and every confirmed finding fixed with a test that failed first.
   architecture is never offered.
 - On first start «Listen together» and the device link no longer each create
   a «Listen together» key.
+- **«Browse» on a linked device no longer answers «not reachable» for minutes
+  after a scan** on the device that serves the library, while its analysis or
+  enrichment runs: list and search requests now read from a read-only database
+  connection of their own instead of waiting for the library lock. With the
+  journal fallen back to TRUNCATE (data folder on a network share) they still
+  wait up to 5 s, and the serving device logs every request it could not serve
+  because the library was busy. Found on two emulators; it was already there
+  before this review.
 - **`PRIVACY.md` lists what the code really sends.** The review compared every
   network request in the code with it: the Cover Art Archive redirect to
   `archive.org` and the image hosts of iTunes and Deezer, what MusicBrainz
