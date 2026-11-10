@@ -23,10 +23,15 @@
 //!
 //! # Che cosa non si prende, e non è una svista
 //!
-//! Un item marcato come consultabile e basta (`access-restricted-item`, o il
-//! vecchio `stream_only` dei soundboard) resta [`Disponibilita::SoloAscolto`]
-//! anche se i suoi file si scaricherebbero benissimo. Il fatto che un indirizzo
-//! risponda non è un permesso.
+//! Un item marcato come consultabile e basta (`access-restricted-item`, il
+//! vecchio campo `stream_only` dei soundboard, o la collezione `stream_only`)
+//! resta [`Disponibilita::SoloAscolto`] anche se i suoi file si scaricherebbero
+//! benissimo. Il fatto che un indirizzo risponda non è un permesso, e un
+//! divieto scritto in una forma che non si capisce resta un divieto.
+//!
+//! Lo stesso vale per i 78 giri: dalla collezione non si deduce che siano di
+//! pubblico dominio, quindi si ascoltano e si tengono solo se l'item dichiara
+//! una licenza. Vedi `dei_78_giri`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -556,15 +561,87 @@ fn collezioni_di(metadati: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Un campo che vale «sì» in una delle forme che l'Archive usa.
-fn vero(metadati: &Value, campo: &str) -> bool {
-    match metadati.get(campo) {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::String(s)) => {
-            matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+/// Un campo di divieto che vieta.
+///
+/// # Si chiude in sicurezza
+///
+/// Fino alla 3.2 qui c'era il contrario: un campo valeva «sì» solo se era
+/// `true`, `"true"`, `"1"` o `"yes"`, e **tutto il resto valeva «nessun
+/// divieto»** — compreso `["true"]`, che è la forma con cui l'Archive scrive le
+/// chiavi ripetute. Un concerto chiuso dietro un elenco diventava scaricabile.
+///
+/// Adesso il verso è quello giusto: un campo **assente** non vieta, un «no»
+/// detto chiaro ([`e_un_no`]) non vieta, e qualunque altra cosa — un sì, un
+/// elenco, un oggetto, un `null`, una parola che nessuno ha previsto — vieta.
+/// Un divieto scritto in una forma inattesa è comunque un divieto.
+fn vieta(metadati: &Value, campo: &str) -> bool {
+    metadati.get(campo).is_some_and(|valore| !e_un_no(valore))
+}
+
+/// Un valore che dice «no» senza ambiguità.
+///
+/// Un elenco è un no solo se non è vuoto e **ogni** elemento lo è: `["false",
+/// "true"]` è una contraddizione, e una contraddizione su un divieto si legge
+/// come divieto.
+fn e_un_no(valore: &Value) -> bool {
+    match valore {
+        Value::Bool(b) => !*b,
+        Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no"),
+        Value::Number(n) => n.as_u64() == Some(0) || n.as_i64() == Some(0),
+        Value::Array(elenco) => !elenco.is_empty() && elenco.iter().all(e_un_no),
+        Value::Null | Value::Object(_) => false,
+    }
+}
+
+/// Le collezioni dei dischi a 78 giri: `78rpm`, le sue sorelle (`78rpm_…`, il
+/// Great 78 Project) e la raccolta di George Blood che le digitalizza.
+///
+/// Servono a una regola sola: **dalla collezione non si deduce nessuna
+/// licenza**. Fino alla 3.2 un 78 giri valeva «pubblico dominio» per il solo
+/// fatto di stare lì, e non è vero: negli Stati Uniti lo sono le registrazioni
+/// anteriori al 1923, in Europa quelle pubblicate da più di settant'anni, e sul
+/// Great 78 Project c'è stata una causa delle case discografiche. Un 78 giri si
+/// ascolta; si tiene solo se l'item dichiara una licenza.
+fn dei_78_giri(collezioni: &[String]) -> bool {
+    collezioni
+        .iter()
+        .any(|c| c.starts_with("78rpm") || c.starts_with("great78") || c == "georgeblood")
+}
+
+/// I codici Creative Commons che si riconoscono: le sei licenze con
+/// attribuzione, e nient'altro.
+const CODICI_CC: [&str; 6] = ["by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd"];
+
+/// La licenza che dice un `licenseurl`, o [`Licenza::Sconosciuta`].
+///
+/// Si riconosce **solo** un indirizzo di `creativecommons.org`, e dentro solo
+/// due forme: `publicdomain/…` (il marchio e la CC0, più la vecchia
+/// `licenses/publicdomain`) e `licenses/<codice>/…` con un codice di
+/// [`CODICI_CC`]. Prima bastava che l'indirizzo contenesse `/licenses/`, su
+/// qualunque dominio, e `esempio.org/licenses/all-rights-reserved` diventava
+/// una Creative Commons «all-rights-reserved» che permetteva la copia.
+fn licenza_dichiarata(url: &str) -> Licenza {
+    let piatto = url.trim().to_ascii_lowercase();
+    let Some(resto) = piatto
+        .strip_prefix("https://")
+        .or_else(|| piatto.strip_prefix("http://"))
+    else {
+        return Licenza::Sconosciuta;
+    };
+    let resto = resto.split(['?', '#']).next().unwrap_or_default();
+    let (ospite, percorso) = resto.split_once('/').unwrap_or((resto, ""));
+    if ospite.strip_prefix("www.").unwrap_or(ospite) != "creativecommons.org" {
+        return Licenza::Sconosciuta;
+    }
+    let pezzi: Vec<&str> = percorso.split('/').filter(|p| !p.is_empty()).collect();
+    match pezzi.as_slice() {
+        ["publicdomain", "zero" | "mark", ..] | ["licenses", "publicdomain", ..] => {
+            Licenza::PubblicoDominio
         }
-        Some(Value::Number(n)) => n.as_i64().is_some_and(|v| v != 0),
-        _ => false,
+        ["licenses", codice, ..] if CODICI_CC.contains(codice) => {
+            Licenza::CreativeCommons((*codice).to_owned())
+        }
+        _ => Licenza::Sconosciuta,
     }
 }
 
@@ -573,29 +650,25 @@ fn vero(metadati: &Value, campo: &str) -> bool {
 /// L'ordine dei tentativi è quello dell'autorevolezza: `licenseurl` è una
 /// dichiarazione esplicita di chi ha caricato, la collezione è un'inferenza dal
 /// patto che quella collezione ha con i suoi artisti. La seconda si usa solo
-/// quando la prima tace, e mai per contraddirla.
+/// quando la prima tace, e mai per contraddirla: un `licenseurl` che non si
+/// riconosce — `rightsstatements.org/vocab/InC`, «in copyright» — **non**
+/// ricade sulla collezione, perché quella dichiarazione esiste e dice altro.
+/// Vale «non lo so», che non permette la copia.
 fn licenza_da(metadati: &Value) -> Licenza {
     if let Some(url) = testo_di(metadati, "licenseurl") {
-        let piatto = url.to_ascii_lowercase();
-        if piatto.contains("publicdomain") || piatto.contains("/zero/") {
-            return Licenza::PubblicoDominio;
-        }
-        if let Some(coda) = piatto.split("/licenses/").nth(1)
-            && let Some(codice) = coda.split('/').next()
-            && !codice.is_empty()
-        {
-            return Licenza::CreativeCommons(codice.to_owned());
-        }
+        return licenza_dichiarata(&url);
     }
 
     let collezioni = collezioni_di(metadati);
+    // Prima di ogni inferenza: un 78 giri non diventa libero per la
+    // collezione in cui sta, nemmeno se un giorno ne avesse una seconda.
+    if dei_78_giri(&collezioni) {
+        return Licenza::Sconosciuta;
+    }
     if collezioni.iter().any(|c| c == "etree") {
         // Il patto del Live Music Archive: gli artisti *trade-friendly*
         // acconsentono allo scambio non commerciale, e a quello soltanto.
         return Licenza::LiberaNonCommerciale;
-    }
-    if collezioni.iter().any(|c| c == "78rpm") {
-        return Licenza::PubblicoDominio;
     }
     Licenza::Sconosciuta
 }
@@ -604,9 +677,12 @@ fn licenza_da(metadati: &Value) -> Licenza {
 fn disponibilita_da(metadati: &Value, licenza: &Licenza) -> Disponibilita {
     // Il fatto che un indirizzo risponda non è un permesso: un item marcato
     // come consultabile e basta resta tale anche se i byte si prenderebbero.
-    let solo_ascolto = vero(metadati, "access-restricted-item")
-        || vero(metadati, "access-restricted")
-        || vero(metadati, "stream_only");
+    // La collezione `stream_only` è già il divieto, anche senza il campo
+    // omonimo: è lì che stanno i soundboard che la band vuole solo in ascolto.
+    let solo_ascolto = vieta(metadati, "access-restricted-item")
+        || vieta(metadati, "access-restricted")
+        || vieta(metadati, "stream_only")
+        || collezioni_di(metadati).iter().any(|c| c == "stream_only");
     Disponibilita::decidi(Fonte::InternetArchive, licenza, !solo_ascolto)
 }
 
@@ -713,7 +789,9 @@ fn brani_dalla_scheda(
     let mut migliori: Vec<((String, String), usize, Candidato)> = Vec::new();
 
     for voce in file {
-        if vero(voce, "private") {
+        // Lo stesso lettore dei divieti dell'item: un `private` scritto in una
+        // forma che non si capisce tiene fuori il file.
+        if vieta(voce, "private") {
             continue;
         }
         let Some((rango, estensione)) = formato_di(voce, uso) else {
@@ -996,9 +1074,11 @@ mod prove {
             )),
             Licenza::PubblicoDominio
         );
+        // La collezione dei 78 giri non è una dichiarazione: vedi
+        // `i_78_giri_sono_solo_ascolto_senza_una_licenza_esplicita`.
         assert_eq!(
             licenza_da(&scheda(r#"{"collection":"78rpm"}"#)),
-            Licenza::PubblicoDominio
+            Licenza::Sconosciuta
         );
     }
 
@@ -1024,6 +1104,138 @@ mod prove {
         assert_eq!(
             disponibilita_da(&libero, &licenza_da(&libero)),
             Disponibilita::Scaricabile
+        );
+    }
+
+    #[test]
+    fn la_collezione_stream_only_basta() {
+        // Un soundboard dei Grateful Dead può stare in `stream_only` senza
+        // portare il campo omonimo: la collezione è già il divieto.
+        let m = scheda(r#"{"collection":["etree","stream_only"]}"#);
+        assert_eq!(
+            disponibilita_da(&m, &licenza_da(&m)),
+            Disponibilita::SoloAscolto
+        );
+        // E il campo in forma di elenco, che è come l'Archive scrive le chiavi
+        // ripetute, vale quanto il campo semplice.
+        let elenco = scheda(r#"{"collection":["etree"],"access-restricted-item":["true"]}"#);
+        assert_eq!(
+            disponibilita_da(&elenco, &licenza_da(&elenco)),
+            Disponibilita::SoloAscolto
+        );
+    }
+
+    #[test]
+    fn una_forma_inattesa_vale_come_divieto() {
+        for campo in [
+            r#""stream_only":{"x":1}"#,
+            r#""stream_only":null"#,
+            r#""stream_only":"""#,
+            r#""access-restricted":"forse""#,
+            r#""access-restricted-item":[]"#,
+            r#""access-restricted-item":["false","true"]"#,
+            r#""access-restricted-item":2"#,
+        ] {
+            let m = scheda(&format!(r#"{{"collection":["etree"],{campo}}}"#));
+            assert_eq!(
+                disponibilita_da(&m, &licenza_da(&m)),
+                Disponibilita::SoloAscolto,
+                "su {campo}"
+            );
+        }
+        // Un no detto chiaro resta un no, in tutte le forme.
+        for campo in [
+            r#""stream_only":false"#,
+            r#""stream_only":"false""#,
+            r#""stream_only":"0""#,
+            r#""access-restricted":0"#,
+            r#""access-restricted-item":["false"]"#,
+        ] {
+            let m = scheda(&format!(r#"{{"collection":["etree"],{campo}}}"#));
+            assert_eq!(
+                disponibilita_da(&m, &licenza_da(&m)),
+                Disponibilita::Scaricabile,
+                "su {campo}"
+            );
+        }
+        // Lo stesso lettore vale per il file privato: una forma che non si
+        // capisce tiene fuori il file.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"x","collection":["etree"]},
+              "files": [{"name":"t01.flac","format":"Flac","title":"Jam","private":["true"]}]
+            }"#,
+        );
+        assert!(brani_dalla_scheda("x", &s, None, Uso::Tenere).is_empty());
+    }
+
+    #[test]
+    fn i_78_giri_sono_solo_ascolto_senza_una_licenza_esplicita() {
+        // La collezione non dice che una registrazione sia libera: negli USA
+        // lo sono solo quelle anteriori al 1923, e sul Great 78 Project c'è
+        // stata una causa. Solo ascolto, salvo una licenza scritta nell'item.
+        for collezioni in [
+            r#"["78rpm"]"#,
+            r#"["georgeblood","78rpm"]"#,
+            r#"["78rpm_bostonpubliclibrary"]"#,
+            r#""78rpm""#,
+        ] {
+            let m = scheda(&format!(r#"{{"collection":{collezioni}}}"#));
+            assert_eq!(licenza_da(&m), Licenza::Sconosciuta, "su {collezioni}");
+            assert_eq!(
+                disponibilita_da(&m, &licenza_da(&m)),
+                Disponibilita::SoloAscolto,
+                "su {collezioni}"
+            );
+        }
+        let dichiarato = scheda(
+            r#"{"collection":["78rpm"],
+                "licenseurl":"http://creativecommons.org/publicdomain/mark/1.0/"}"#,
+        );
+        assert_eq!(licenza_da(&dichiarato), Licenza::PubblicoDominio);
+        assert_eq!(
+            disponibilita_da(&dichiarato, &licenza_da(&dichiarato)),
+            Disponibilita::Scaricabile
+        );
+    }
+
+    #[test]
+    fn un_licenseurl_ignoto_non_e_un_permesso() {
+        for (url, collezioni) in [
+            ("http://rightsstatements.org/vocab/InC/1.0/", r#"["78rpm"]"#),
+            (
+                "https://esempio.org/licenses/all-rights-reserved",
+                r#"["etree"]"#,
+            ),
+            (
+                "https://creativecommons.org/licenses/by-xx/4.0/",
+                r#"["etree"]"#,
+            ),
+            (
+                "https://evilcreativecommons.org/licenses/by/4.0/",
+                r#"["netlabels"]"#,
+            ),
+            (
+                "https://esempio.org/publicdomain/zero/1.0/",
+                r#"["netlabels"]"#,
+            ),
+        ] {
+            let m = scheda(&format!(
+                r#"{{"collection":{collezioni},"licenseurl":"{url}"}}"#
+            ));
+            assert_eq!(licenza_da(&m), Licenza::Sconosciuta, "su {url}");
+            assert_eq!(
+                disponibilita_da(&m, &licenza_da(&m)),
+                Disponibilita::SoloAscolto,
+                "su {url}"
+            );
+        }
+        // Le dichiarazioni vere si leggono ancora.
+        assert_eq!(
+            licenza_da(&scheda(
+                r#"{"licenseurl":"https://www.creativecommons.org/licenses/by-sa/4.0/deed.it"}"#
+            )),
+            Licenza::CreativeCommons("by-sa".to_owned())
         );
     }
 
