@@ -38,12 +38,28 @@
 #
 #   tag → verifica → costruisci → firma → pubblica
 #
-# La chiave di firma dell'updater sta nei segreti del repository come
-# `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. La privata
-# non è recuperabile e non è sostituibile: gli eseguibili già installati si
-# fidano solo di quella, e perderla vuol dire che nessuno di loro si aggiornerà
-# mai più — andrebbero tutti reinstallati a mano. Una copia fuori da questo
-# computer e fuori da GitHub.
+# La chiave di firma dell'updater sta nei segreti dell'**ambiente `release`**
+# come `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Non
+# in quelli del repository: quelli li legge ogni workflow di ogni ramo, anche
+# uno aggiunto apposta per stamparli da chiunque possa fare push (o da un token
+# rubato con lo scope `workflow`), e con la chiave e la password si firma un
+# aggiornamento per ogni copia installata. La privata non è recuperabile e non
+# è sostituibile: gli eseguibili già installati si fidano solo di quella, e
+# perderla vuol dire che nessuno di loro si aggiornerà mai più — andrebbero
+# tutti reinstallati a mano. Una copia fuori da questo computer e fuori da
+# GitHub.
+#
+# # L'ambiente `release`, prima che funzioni
+#
+# In *Settings → Environments → release*: «Deployment branches and tags» su
+# *Selected*, con la sola regola di **tag** `v*`; un revisore obbligatorio; i
+# due segreti lì, e **tolti** da *Settings → Secrets → Actions → Repository
+# secrets* (finché ci sono anche lì, l'ambiente non protegge niente). Il lavoro
+# `firma` si ferma ad aspettare l'approvazione: è voluto, è un secondo gesto
+# umano prima che la chiave esca dal suo cassetto. Una corsa lanciata a mano
+# va lanciata **dal tag** («Use workflow from» → *Tags*), non da un ramo: un
+# ramo l'ambiente lo rifiuta, e il lavoro `tag` lo dice subito invece che dopo
+# un'ora di compilazione.
 #
 # Fino alla 2.4 la chiave stava nell'ambiente di `tauri build`: cioè accanto
 # agli script di compilazione di quattrocento crate e ai pacchetti npm, ognuno
@@ -64,7 +80,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Il tag da rilasciare, per esempio v3.0.0"
+        description: "Il tag da rilasciare, per esempio v3.0.0: lo stesso scelto in «Use workflow from» → Tags"
         required: true
 
 # Niente per nessuno, e ogni lavoro chiede il suo: un `contents: write` in cima
@@ -93,9 +109,14 @@ jobs:
       tag: ${{ steps.versione.outputs.tag }}
 
     steps:
-      # Il tag calcolato **prima** di guardare qualunque file: su
-      # `workflow_dispatch` `github.ref` è il ramo da cui si è lanciato, e un
-      # checkout senza `ref` costruirebbe `main` sotto il nome del tag.
+      # Il tag guardato **prima** di qualunque file. A mano (`workflow_dispatch`)
+      # la corsa deve partire dal tag stesso, e il campo `tag` deve dire lo
+      # stesso tag: da un ramo il lavoro `firma` verrebbe rifiutato
+      # dall'ambiente `release`, che accetta solo i tag `v*`, ma dopo un'ora di
+      # compilazione; e un workflow preso da un ramo è un workflow che chiunque
+      # possa fare push ha potuto riscrivere. Prima dell'ambiente si lanciava
+      # da `main` col tag nel campo, ed è il motivo per cui il checkout qui
+      # sotto nomina il tag invece di fidarsi di `github.ref`.
       #
       # # Perché il tag passa dall'ambiente e non da `${{ }}`
       #
@@ -112,9 +133,18 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           TAG_INPUT: ${{ inputs.tag }}
         run: |
-          if [ "$REF_TYPE" = "tag" ]; then tag="$REF_NAME"; else tag="$TAG_INPUT"; fi
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::Lanciata dal ramo «$REF_NAME»: va lanciata dal tag («Use workflow from» → Tags → il tag da rilasciare). L'ambiente «release» accetta solo i tag v*."
+            exit 1
+          fi
+          tag="$REF_NAME"
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "«$tag» non ha la forma di un tag di versione (v1.2.3)"
+            exit 1
+          fi
+          # Il campo non si stampa: è testo libero, e il tag è già a schermo.
+          if [ -n "$TAG_INPUT" ] && [ "$TAG_INPUT" != "$tag" ]; then
+            echo "::error::Lanciata dal tag $tag, ma il campo «tag» ne dice un altro: devono coincidere."
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -236,6 +266,11 @@ jobs:
     needs: [tag, costruisci]
     runs-on: windows-latest
     timeout-minutes: 15
+    # L'unico lavoro che vede la chiave, ed è per questo che è l'unico che
+    # nomina l'ambiente: i due segreti stanno lì e non fra quelli del
+    # repository, e l'ambiente li consegna solo a una corsa partita da un tag
+    # `v*` che una persona ha approvato. Come si configura: nel preambolo.
+    environment: release
     permissions:
       contents: read
 
@@ -337,14 +372,60 @@ jobs:
           name: rymembra-windows
           path: uscita/
 
+      # Una release già **pubblicata** non si ricarica. Su una release che
+      # esiste `action-gh-release` la lascia com'è, cioè pubblicata, e gli asset
+      # omonimi li cancella e li ricarica: un «Re-run failed jobs», o un lancio a
+      # mano sul tag di una release già uscita, spedirebbe a ogni copia
+      # installata un installer appena ricostruito (la build non è
+      # riproducibile: è un altro file), senza bozza e senza il gesto umano del
+      # preambolo; e fra la cancellazione e il nuovo caricamento `latest.json`
+      # mancherebbe. Il controllo sta qui e non nel lavoro `tag`, perché «Re-run
+      # failed jobs» i lavori riusciti non li ripete, e questo è il lavoro che
+      # scrive. Una bozza invece si ricarica: è il modo di ripararla.
+      #
+      # `releases/tags/…` risponde 404 se il tag non ha una release pubblicata;
+      # il campo `draft` si guarda lo stesso, per non dipendere da come tratta
+      # le bozze. Qualunque altra risposta ferma la corsa: nel dubbio non si
+      # carica niente. Il token arriva a curl dall'ingresso e non dalla riga di
+      # comando.
+      - name: La release del tag non è già uscita
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          risposta="$RUNNER_TEMP/release-esistente.json"
+          codice=$(printf 'Authorization: Bearer %s\n' "$GH_TOKEN" | curl -sS \
+            -o "$risposta" -w '%{http_code}' -H @- \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+          case "$codice" in
+            404)
+              echo "Il tag $TAG non ha una release pubblicata: si apre o si aggiorna la bozza."
+              ;;
+            200)
+              if [ "$(jq -r '.draft' "$risposta")" = "true" ]; then
+                echo "La release di $TAG è ancora una bozza: si aggiorna."
+              else
+                echo "::error::La release $TAG è già pubblicata: ricaricarne gli asset li spedirebbe subito a ogni copia installata, senza passare dalla bozza. Una correzione esce con un tag nuovo."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::GitHub ha risposto $codice alla domanda sulla release $TAG: non si sa se sia già pubblicata, e nel dubbio non si carica niente."
+              exit 1
+              ;;
+          esac
+
       - name: Pubblica la release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: uscita/*
           draft: true
           fail_on_unmatched_files: true
-          # Il tag calcolato sopra e non `github.ref`: su `workflow_dispatch` il
-          # ref è il ramo, e la release si chiamerebbe «main».
+          # Il tag validato dal lavoro `tag` e non `github.ref`: è quello di cui
+          # si sono guardate la forma e la versione.
           tag_name: ${{ needs.tag.outputs.tag }}
           body: |
             ## Rymembra ${{ needs.tag.outputs.tag }}

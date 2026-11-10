@@ -27,7 +27,8 @@
  * a capo, come ogni file di testo civile. Incollato com'è dentro il segreto,
  * quell'a capo diventa parte della password, e la chiave non si apre. Non c'è
  * modo di accorgersene guardando il campo su GitHub: sono caratteri invisibili
- * dentro un valore che nessuno può più rileggere.
+ * dentro un valore che nessuno può più rileggere. Una password vuota, invece,
+ * passa: è quella di una chiave generata senza, e `tauri` la accetta.
  *
  * # Cosa **non** guarda
  *
@@ -43,9 +44,9 @@
  *   node strumenti/firma.js
  *
  * Legge `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
- * dall'ambiente. **Non stampa mai niente che venga da lì dentro**: solo la
- * diagnosi. Un valore di segreto finito in un log è un segreto bruciato, e i
- * log delle corse restano.
+ * dall'ambiente (la seconda può mancare, se la chiave non ha password). **Non
+ * stampa mai niente che venga da lì dentro**: solo la diagnosi. Un valore di
+ * segreto finito in un log è un segreto bruciato, e i log delle corse restano.
  */
 
 /** Il prefisso che minisign mette in testa a ogni chiave, pubblica o privata. */
@@ -152,15 +153,24 @@ function main() {
     );
   }
 
+  // Senza password non è un guasto, e fermarsi qui voleva dire che una chiave
+  // generata senza password non poteva firmare mai: GitHub un segreto vuoto non
+  // lo accetta, e uno che non c'è arriva a questo passo come stringa vuota (o,
+  // su Windows, non arriva proprio). `tauri signer sign` (CLI 2.12) le tratta
+  // allo stesso modo: una password vuota la usa così com'è, e l'assenza, fuori
+  // da un terminale, la prende per una password vuota. Se la chiave invece una
+  // password ce l'ha, lo dice lui nel passo dopo, un secondo più tardi: qui non
+  // c'è più una compilazione da far perdere. Va detto, però, perché quel suo
+  // messaggio non nomina il segreto che manca.
   if (password === undefined || password === "") {
-    basta(
-      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD non c'è.\n" +
-        "Se la chiave è stata generata senza password il segreto va comunque\n" +
-        "creato, vuoto: `tauri` distingue «assente» da «vuota».",
+    console.log(
+      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD è vuoto o non c'è: si firma con la\n" +
+        "password vuota. Va bene se la chiave è stata generata senza password.\n" +
+        "Se ne ha una, e `tauri signer sign` risponde «incorrect updater private\n" +
+        "key password», il segreto della password manca fra quelli dell'ambiente\n" +
+        "`release` (Settings → Environments → release).",
     );
-  }
-
-  if (password !== password.trim()) {
+  } else if (password !== password.trim()) {
     basta(
       "TAURI_SIGNING_PRIVATE_KEY_PASSWORD ha spazi o un a capo ai bordi.\n" +
         "Succede incollando il contenuto di un file di testo, che finisce con\n" +

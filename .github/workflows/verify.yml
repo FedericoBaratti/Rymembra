@@ -63,8 +63,8 @@ jobs:
       # rossa per una ragione che non sta nel cambio che si sta guardando. La
       # variabile vince su `rust-toolchain.toml`, che sulla macchina di chi
       # sviluppa resta `stable`; la si alza a mano, insieme a `rust-version` se
-      # serve, e insieme a quella di `release.yml`. Sta qui e non in cima
-      # perché il contenitore di `cargo deny`, più sotto, porta il suo Rust.
+      # serve, e insieme a quella di `release.yml`. Lo stesso valore torna nei
+      # lavori `android` e `dipendenze`: tre righe da alzare insieme.
       RUSTUP_TOOLCHAIN: "1.97.1"
 
     steps:
@@ -240,7 +240,13 @@ jobs:
   # non è cambiato — e va letto come tale.
   dipendenze:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Venticinque e non dieci: `cargo-deny` si compila (vedi sotto), e la
+    # corsa gira accanto a `verifica`, che ne dura quaranta.
+    timeout-minutes: 25
+    env:
+      # Lo stesso Rust del lavoro `verifica`: vedi lì perché è inchiodato.
+      # Qui compila `cargo-deny` e risponde al suo `cargo metadata`.
+      RUSTUP_TOOLCHAIN: "1.97.1"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -248,13 +254,36 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      # Su Linux perché l'azione è un contenitore, e i contenitori su Windows
-      # non girano; i bersagli che guarda sono Windows e il telefono lo stesso,
-      # perché lo dice `deny.toml` (`[graph] targets`).
+      - name: Rust
+        run: rustup toolchain install ${{ env.RUSTUP_TOOLCHAIN }} --profile minimal
+
+      # `cargo-deny` compilato da crates.io, e non più l'azione contenitore di
+      # Embark. Il suo hash inchiodava il Dockerfile, non quel che il
+      # Dockerfile scaricava a ogni corsa: il binario da un asset di release,
+      # senza nessuna impronta, e i pacchetti Alpine senza versione. Un asset
+      # sostituito avrebbe dato un `cargo deny` che dice sempre «ok»: un
+      # cancello che mente. Una versione pubblicata su crates.io invece non si
+      # può più cambiare, cargo ne verifica l'impronta sull'indice, e
+      # `--locked` prende le dipendenze dal `Cargo.lock` che il crate porta con
+      # sé. La versione è quella che l'azione scaricava, e si alza a mano come
+      # gli hash delle azioni.
+      #
+      # Fuori dal repository, perché una `.cargo/config.toml` di qui (un
+      # `build.target`, un linker) non decida come si compila lo strumento; e
+      # senza `-D warnings`, che è una regola per il codice di Rymembra, non
+      # per quello di un altro.
+      - name: cargo-deny, dal suo lockfile
+        working-directory: ${{ runner.temp }}
+        env:
+          RUSTFLAGS: ""
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      # Gli stessi argomenti con cui la chiamava l'azione: `--all-features` era
+      # il suo `arguments` di serie, e toglierlo cambierebbe il grafo che si
+      # guarda. Gira su Linux, ma i bersagli che guarda sono Windows e il
+      # telefono, perché lo dice `deny.toml` (`[graph] targets`).
       - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check
+        run: cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -295,11 +324,19 @@ jobs:
             exit 1
           fi
 
+      # Dove si guarda, uguale nei due passi: tutto `core` e tutto
+      # `apps/desktop`. Un elenco di cartelle scritto a mano lasciava fuori due
+      # crate del workspace (`rymembra-android`, `rymembra-barra`) e il Kotlin
+      # dell'app Android (`src-tauri/gen/android`, `.kt` e `.kts`): un ritorno
+      # lì passava verde. Fuori restano solo dipendenze e uscite di
+      # compilazione, che in questa corsa non ci sono ma sulla macchina di chi
+      # lo rilancia a mano sì.
       - name: Nessuno strumento di scaricamento
         run: |
           colpi=$(grep -rniE 'yt-dlp|ytdlp|spotdl|innertube|pathfinder|googlevideo' \
-            core apps/desktop/src apps/desktop/src-tauri/src \
-            --include='*.rs' --include='*.ts' --include='*.tsx' \
+            core apps/desktop \
+            --include='*.rs' --include='*.ts' --include='*.tsx' --include='*.kt' --include='*.kts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=target --exclude-dir=build \
             | grep -vE '^\S+: *(//!?|///|\*|#|--) ' || true)
           if [ -n "$colpi" ]; then
             echo "$colpi"
@@ -316,8 +353,9 @@ jobs:
       - name: Nessuna fonte di testi vietata
         run: |
           colpi=$(grep -rniE 'musixmatch|genius\.com|azlyrics|lyricfind|music\.163|netease|kugou' \
-            core apps/desktop/src apps/desktop/src-tauri/src \
-            --include='*.rs' --include='*.ts' --include='*.tsx' \
+            core apps/desktop \
+            --include='*.rs' --include='*.ts' --include='*.tsx' --include='*.kt' --include='*.kts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=target --exclude-dir=build \
             | grep -vE '^\S+: *(//!?|///|\*|#|--) ' || true)
           if [ -n "$colpi" ]; then
             echo "$colpi"
