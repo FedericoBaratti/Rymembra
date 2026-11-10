@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -97,6 +98,9 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Prima di chiunque lo legga: `WryActivity` ne legge un extra già in
+    // `super.onCreate`. Vedi [leggibile].
+    intent?.let { setIntent(leggibile(it)) }
     // Il ponte **prima** di `super.onCreate`: è lì che parte il nucleo Rust, e
     // il nucleo può chiedere un segreto già nel suo `setup`.
     Ponte.aggancia(this)
@@ -108,21 +112,55 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
     controllore = MediaController.Builder(this, SessionToken(this, ComponentName(this, ServizioMusica::class.java)))
       .buildAsync()
-    // Aperta per svegliare il nucleo, perché l'ha chiesto l'auto con l'app
-    // chiusa (vedi `Nucleo`): il nucleo parte in `super.onCreate`, e la
-    // schermata torna dietro prima di farsi vedere.
-    if (savedInstanceState == null && intent?.getBooleanExtra(Nucleo.SFONDO, false) == true) {
-      moveTaskToBack(true)
+    // L'intento con cui l'attività è nata si esegue una volta sola. Non quando
+    // rinasce dallo stato salvato — il processo morto e l'attività riaperta
+    // dalle Recenti, che Android ricrea con l'intento di allora — e non quando
+    // la si riapre dalle Recenti senza stato (dopo un riavvio), che Android
+    // rilancia con lo stesso intento e `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`.
+    // Altrimenti «metti i Queen» di giorni prima rimpiazzerebbe la coda, e un
+    // invito a collegarsi già scaduto tornerebbe a chiedere.
+    if (savedInstanceState == null && !dalleRecenti(intent)) {
+      // Aperta per svegliare il nucleo, perché l'ha chiesto l'auto con l'app
+      // chiusa (vedi `Nucleo`): il nucleo parte in `super.onCreate`, e la
+      // schermata torna dietro prima di farsi vedere.
+      if (intent?.getBooleanExtra(Nucleo.SFONDO, false) == true) {
+        moveTaskToBack(true)
+      }
+      cercaDaIntento(intent)
+      collegaDaIntento(intent)
     }
-    cercaDaIntento(intent)
-    collegaDaIntento(intent)
   }
 
   override fun onNewIntent(intent: Intent) {
-    super.onNewIntent(intent)
-    cercaDaIntento(intent)
-    collegaDaIntento(intent)
+    val sano = leggibile(intent)
+    super.onNewIntent(sano)
+    if (dalleRecenti(sano)) return
+    cercaDaIntento(sano)
+    collegaDaIntento(sano)
   }
+
+  /**
+   * L'intento, se i suoi extra si leggono tutti; se no lo stesso intento senza
+   * extra. L'attività è esportata, e un'altra app può metterle negli extra un
+   * `Parcelable` di una classe che c'è solo nel suo APK: fino ad Android 12 il
+   * primo `get…Extra` apre tutto il pacchetto, e la `BadParcelableException`
+   * farebbe cadere Rymembra — e con lei la musica e il nucleo. Da Android 13
+   * si apre una voce alla volta e il guasto resta su quella: per questo qui le
+   * si leggono tutte, una per una.
+   */
+  @Suppress("DEPRECATION")
+  private fun leggibile(intento: Intent): Intent =
+    try {
+      intento.extras?.let { extra -> extra.keySet().forEach { extra.get(it) } }
+      intento
+    } catch (e: RuntimeException) {
+      Log.w("Rymembra", "un intento con extra illeggibili: li si ignora (${e.javaClass.simpleName})")
+      Intent(intento).apply { replaceExtras(null as Bundle?) }
+    }
+
+  /** Riaperta dalle Recenti: l'intento è quello di allora, già eseguito. */
+  private fun dalleRecenti(intento: Intent?): Boolean =
+    intento != null && (intento.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
 
   override fun onStart() {
     super.onStart()
@@ -144,8 +182,6 @@ class MainActivity : TauriActivity() {
     val link = intento.data ?: return
     if (link.scheme != "rymembra" || link.host != "collega") return
     Sessione.collega(link.toString())
-    // Una volta sola: un'attività ricreata non lo ripete.
-    intento.action = null
   }
 
   /**
@@ -156,8 +192,6 @@ class MainActivity : TauriActivity() {
   private fun cercaDaIntento(intento: Intent?) {
     if (intento?.action != MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
     Sessione.cerca(intento.getStringExtra(SearchManager.QUERY) ?: "", intento.extras)
-    // Una volta sola: un'attività ricreata — una rotazione — non la ripete.
-    intento.action = null
   }
 
   override fun onDestroy() {
