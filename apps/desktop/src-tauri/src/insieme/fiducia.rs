@@ -58,11 +58,24 @@ pub fn voce_della_chiave(dispositivo: &str) -> String {
 
 /// La chiave di questo PC, dal portachiavi; creata e salvata se non c'è.
 ///
+/// Leggere e creare stanno sotto un lucchetto di processo: la chiedono il
+/// filo di «Ascolta insieme» e quello del collegamento (per il QR), tutti e
+/// due all'avvio. Senza, col portachiavi vuoto trovavano «manca» tutti e due
+/// e ne creavano una a testa: vinceva l'ultima scritta, e il QR poteva dare
+/// agli altri dispositivi una chiave che nel portachiavi non c'era più
+/// (reperto 02-11).
+///
 /// # Errori
 ///
 /// `insieme.identitaPersa`: vedi il `//!`. La causa dice quale delle tre
 /// strade, mai la chiave.
 pub fn identita(portachiavi: &dyn Portachiavi, dispositivo: &str) -> Result<Identita, AppError> {
+    static UNA_ALLA_VOLTA: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Avvelenato vuol dire un panico in mezzo a una lettura: il portachiavi
+    // è com'era, o con la chiave già scritta, e si rilegge da capo.
+    let _una_alla_volta = UNA_ALLA_VOLTA
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let voce = voce_della_chiave(dispositivo);
     let persa =
         |perche: &str| AppError::new(ErrorCode::InsiemeIdentitaPersa).with_cause(perche.to_owned());
@@ -521,15 +534,20 @@ mod prove {
     use super::*;
     use std::sync::Mutex;
 
-    /// Un portachiavi in memoria, che può far finta di non rispondere.
+    /// Un portachiavi in memoria, che può far finta di non rispondere, o di
+    /// rispondere piano (quello di Windows ci mette qualche millisecondo).
     #[derive(Default)]
     struct Finto {
         voci: Mutex<HashMap<String, String>>,
         rotto: bool,
+        lento: bool,
     }
 
     impl Portachiavi for Finto {
         fn leggi(&self, chiave: &str) -> Result<Option<String>, AppError> {
+            if self.lento {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             if self.rotto {
                 return Err(AppError::new(ErrorCode::SettingsSecretUnavailable {
                     key: chiave.to_owned(),
@@ -593,6 +611,38 @@ mod prove {
             prima.pubblica(),
             altra.pubblica(),
             "una cartella dati, un'identità"
+        );
+    }
+
+    #[test]
+    fn due_fili_che_chiedono_insieme_la_prima_chiave_ne_creano_una_sola() {
+        // Reperto 02-11: il filo di «Ascolta insieme» e quello del
+        // collegamento la chiedono tutti e due all'avvio. Con il portachiavi
+        // vuoto trovavano tutti e due «manca», ne creavano una a testa, e
+        // l'ultima scrittura vinceva: il QR poteva dare agli altri dispositivi
+        // una chiave che non era quella rimasta nel portachiavi.
+        let finto = Finto {
+            lento: true,
+            ..Finto::default()
+        };
+        let insieme = std::sync::Barrier::new(8);
+        let chiavi: Vec<ChiavePubblica> = std::thread::scope(|fili| {
+            let fili: Vec<_> = (0..8)
+                .map(|_| {
+                    fili.spawn(|| {
+                        insieme.wait();
+                        identita(&finto, "abc").expect("chiave").pubblica()
+                    })
+                })
+                .collect();
+            fili.into_iter()
+                .map(|filo| filo.join().expect("il filo finisce"))
+                .collect()
+        });
+        let salvata = identita(&finto, "abc").expect("riletta").pubblica();
+        assert!(
+            chiavi.iter().all(|chiave| *chiave == salvata),
+            "una chiave sola, ed è quella nel portachiavi"
         );
     }
 
