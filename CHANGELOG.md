@@ -747,6 +747,15 @@ emulator — and every confirmed finding fixed with a test that failed first.
   architecture is never offered.
 - On first start «Listen together» and the device link no longer each create
   a «Listen together» key.
+- **`PRIVACY.md` lists what the code really sends.** The review compared every
+  network request in the code with it: the Cover Art Archive redirect to
+  `archive.org` and the image hosts of iTunes and Deezer, what MusicBrainz
+  receives (titles and track counts, not durations), iTunes paced at 3.1 s
+  (not 350 ms), the model list a language-model profile asks for when saved,
+  the Google token revoked on disconnect, Drive bytes from
+  `*.googleusercontent.com`, the import preview's cover, the update check's
+  redirect to GitHub's file host, how often the device link republishes its
+  address and what mDNS carries, and the DNS servers it asks.
 
 ### Database
 
