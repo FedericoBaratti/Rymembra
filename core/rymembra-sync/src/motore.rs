@@ -106,6 +106,14 @@ pub struct Memoria {
     /// la tiene — e in quel caso il documento si rilegge sempre. Leggere un file
     /// locale costa meno di ricordarsi se è cambiato.
     conosciuti: BTreeMap<String, (Option<String>, Documento)>,
+    /// I documenti che non si sono potuti leggere, con l'impronta con cui
+    /// erano lassù e il perché.
+    ///
+    /// Senza, un documento guasto e immutato si riscaricava e si riapriva a
+    /// ogni passata — fino a 64 MiB da decomprimere, ogni volta. Vale solo per
+    /// i magazzini che tengono le impronte: una cartella si rilegge comunque.
+    /// Il guasto si riferisce lo stesso a ogni passata, finché il file resta.
+    scartati: BTreeMap<String, (String, String)>,
     /// L'impronta del proprio contenuto, com'è stato scritto l'ultima volta.
     mia_impronta: Option<String>,
 }
@@ -275,19 +283,42 @@ impl<'a> Motore<'a> {
                 passata.saltati += 1;
                 continue;
             }
+            if let (Some((impronta, perche)), Some(sua)) =
+                (self.memoria.scartati.get(&file.nome), &file.impronta)
+                && impronta == sua
+            {
+                passata.guasti.push(Guasto {
+                    nome: file.nome.clone(),
+                    perche: perche.clone(),
+                });
+                continue;
+            }
 
             match self.magazzino.leggi(&file.id) {
                 Ok(byte) => match documento::interpreta(&byte) {
                     Ok(letto) => {
                         passata.letti += 1;
+                        self.memoria.scartati.remove(&file.nome);
                         self.memoria
                             .conosciuti
                             .insert(file.nome.clone(), (file.impronta.clone(), letto));
                     }
-                    Err(err) => passata.guasti.push(Guasto {
-                        nome: file.nome.clone(),
-                        perche: err.to_string(),
-                    }),
+                    Err(err) => {
+                        // Solo un documento che non si **interpreta** si
+                        // ricorda: gli stessi byte daranno lo stesso guasto.
+                        // Una lettura fallita (la rete, un permesso) no: va
+                        // ritentata alla passata dopo.
+                        let perche = err.to_string();
+                        if let Some(impronta) = &file.impronta {
+                            self.memoria
+                                .scartati
+                                .insert(file.nome.clone(), (impronta.clone(), perche.clone()));
+                        }
+                        passata.guasti.push(Guasto {
+                            nome: file.nome.clone(),
+                            perche,
+                        });
+                    }
                 },
                 Err(err) => passata.guasti.push(Guasto {
                     nome: file.nome.clone(),
@@ -306,6 +337,7 @@ impl<'a> Motore<'a> {
         self.memoria
             .conosciuti
             .retain(|nome, _| visti.contains(nome));
+        self.memoria.scartati.retain(|nome, _| visti.contains(nome));
 
         let mut tutti: Vec<Documento> = Vec::with_capacity(self.memoria.conosciuti.len() + 1);
         for (_, documento) in self.memoria.conosciuti.values() {
@@ -749,6 +781,83 @@ mod prove {
             .into_iter()
             .map(|file| file.nome)
             .collect()
+    }
+
+    /// Un magazzino che tiene le impronte, come Drive, e conta le letture.
+    struct ConImpronte {
+        cartella: Cartella,
+        letture: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Magazzino for ConImpronte {
+        fn elenca(&self) -> Result<Vec<FileRemoto>, AppError> {
+            Ok(self
+                .cartella
+                .elenca()?
+                .into_iter()
+                .map(|file| FileRemoto {
+                    impronta: Some(format!("sempre-la-stessa-{}", file.nome)),
+                    ..file
+                })
+                .collect())
+        }
+        fn leggi(&self, id: &str) -> Result<Vec<u8>, AppError> {
+            self.letture
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.cartella.leggi(id)
+        }
+        fn scrivi(
+            &self,
+            nome: &str,
+            esistente: Option<&str>,
+            tipo: &str,
+            dati: &[u8],
+            impronta: &str,
+        ) -> Result<FileRemoto, AppError> {
+            self.cartella.scrivi(nome, esistente, tipo, dati, impronta)
+        }
+        fn rinomina(&self, id: &str, nome: &str) -> Result<(), AppError> {
+            self.cartella.rinomina(id, nome)
+        }
+        fn cancella(&self, id: &str) -> Result<(), AppError> {
+            self.cartella.cancella(id)
+        }
+    }
+
+    #[test]
+    fn un_documento_guasto_e_immutato_non_si_rilegge_a_ogni_passata() {
+        // Un documento che non si interpreta finiva fra i guasti e non nella
+        // memoria: alla passata dopo «immutato» era falso e lo si riscaricava e
+        // riapriva, ogni volta. Il guasto si dice ancora, ogni volta.
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = ConImpronte {
+            cartella: Cartella::nuova(dove.path().join("dispositivi")),
+            letture: std::sync::atomic::AtomicUsize::new(0),
+        };
+        magazzino
+            .cartella
+            .scrivi(
+                &documento::nome_file("rotto"),
+                None,
+                TIPO,
+                b"non sono un gzip",
+                "x",
+            )
+            .expect("scrive");
+
+        let mut memoria = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "io", &mut memoria);
+        for _ in 0..3 {
+            let esito = motore
+                .passata(&Contenuto::default(), 1_000, &niente)
+                .expect("passata");
+            assert_eq!(esito.passata.guasti.len(), 1, "il guasto si dice");
+        }
+        assert_eq!(
+            magazzino.letture.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "letto una volta sola"
+        );
     }
 
     /// Un magazzino che non riesce né a rinominare né a cancellare: lo stato di
