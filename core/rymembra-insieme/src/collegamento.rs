@@ -58,7 +58,10 @@
 //! legge aspetta un posto ([`Entrata::prendi`]) e intanto non legge il
 //! socket. La contropressione la fa il TCP, come per le letture: chi manda
 //! più in fretta di quanto il desktop tratti resta fermo sulla sua scrittura,
-//! e se la sua coda d'uscita si riempie chiude lui.
+//! e se la sua coda d'uscita si riempie chiude lui. Quando il posto arriva,
+//! chi aspettava guarda di nuovo se la chiave è ancora fidata: l'attesa può
+//! durare quanto il desktop resta fermo, e una chiave tolta nel frattempo è
+//! un estraneo anche per il messaggio che aspettava.
 //!
 //! Aspettare, e non buttare né chiudere: un messaggio buttato è un gesto
 //! perso senza che nessuno lo sappia, e chiudere darebbe all'altro capo la
@@ -1382,6 +1385,12 @@ fn app(
     let Some(posto) = collegamento.entrata.prendi(byte, || collegamento.chiusa()) else {
         return Ok(());
     };
+    // L'attesa può essere durata quanto il desktop è rimasto fermo: una
+    // chiave uscita dai fidati nel frattempo è un estraneo da adesso, anche
+    // per il messaggio che aspettava. Il posto se ne va col ritorno.
+    if !rete.fidato(&collegamento.pari) {
+        return Err(Fine::con(ErrorCodeKind::InsiemeNonAssociato));
+    }
     collegamento.annuncia(
         rete,
         Evento::Ricevuto {

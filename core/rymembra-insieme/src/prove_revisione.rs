@@ -643,6 +643,46 @@ fn un_fidato_che_manda_di_fila_non_riempie_la_memoria_del_desktop() {
 }
 
 #[test]
+fn chi_esce_dai_fidati_mentre_aspetta_un_posto_non_consegna_niente() {
+    // Un messaggio controllato da fidato può aspettare il desktop quanto il
+    // desktop resta fermo: se intanto la chiave esce dai fidati («Dimentica»
+    // dal collegamento), quando il posto si libera non deve arrivare come se
+    // niente fosse. Una chiave tolta torna estranea dal messaggio dopo.
+    let (host_rete, eventi, indirizzo) = host(Tempi::default());
+    let identita = Identita::nuova().expect("chiave");
+    host_rete.pari(vec![identita.pubblica()], Vec::new());
+    let mut grezzo = grezzo_verso(indirizzo, identita, Uso::Controllo);
+    let id = aspetta(&eventi, ATTESA, |e| match e {
+        Evento::Aperta { id, .. } => Some(*id),
+        _ => None,
+    })
+    .expect("aperta");
+    let chiedi = json_app(&Messaggio::Chiedi);
+    for _ in 0..=crate::collegamento::CODA_ENTRATA {
+        grezzo.manda_grezzo(Tipo::Json, &chiedi);
+    }
+    let in_mano: Vec<Evento> = (0..crate::collegamento::CODA_ENTRATA)
+        .map(|_| eventi.recv_timeout(ATTESA).expect("ricevuto"))
+        .collect();
+    assert!(in_mano.iter().all(|e| matches!(e, Evento::Ricevuto { .. })));
+    // L'ultimo è già controllato, e aspetta un posto.
+    std::thread::sleep(Duration::from_millis(200));
+    host_rete.pari(Vec::new(), Vec::new());
+    drop(in_mano);
+    let dopo = aspetta(&eventi, ATTESA, |e| match e {
+        Evento::Ricevuto { .. } => Some(Err(())),
+        Evento::Chiusa { id: chiusa, codice } if *chiusa == id => Some(Ok(*codice)),
+        _ => None,
+    });
+    assert_eq!(
+        dopo,
+        Some(Ok(Some(ErrorCodeKind::InsiemeNonAssociato))),
+        "niente messaggio, e la connessione si chiude"
+    );
+    assert_eq!(grezzo.leggi(ATTESA), chiudo("insieme.nonAssociato"));
+}
+
+#[test]
 fn degli_stati_in_coda_parte_solo_l_ultimo() {
     // Il grezzo non legge: chi scrive sull'host resta fermo sui primi
     // comandi, grandi e incomprimibili, e dietro di loro si mettono in coda
