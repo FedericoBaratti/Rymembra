@@ -63,7 +63,7 @@ use std::sync::{Arc, Mutex};
 use crate::spegnimento::Emette as _;
 use rymembra_app::desiderati::{self, Desiderato};
 use rymembra_app::settings;
-use rymembra_app::tag_scrittura::scrivi_tag;
+use rymembra_app::tag_scrittura::{Provenienza, scrivi_tag};
 use rymembra_catalogo::Cataloghi;
 use rymembra_domain::destinazione::destinazione;
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -843,9 +843,24 @@ fn un_brano(
     // Un guasto qui **non** annulla il prelievo: il file c'è ed è ascoltabile, e
     // rimetterlo in coda vorrebbe dire riprenderlo per riscrivere un campo. Si
     // annota e si prosegue.
+    // Il file è quello che il prelievo ha appena depositato con un nome libero:
+    // nessun file che l'utente avesse già si apre in scrittura. L'attribuzione,
+    // la licenza e la pagina vengono dal catalogo — riletto adesso, vedi
+    // `trova` — e restano nel file anche fuori da Rymembra.
     let copertina = copertina(app, desiderato);
-    let da_scrivere = con_attribuzione(&desiderato.brano, preso.attribuzione.as_deref());
-    if let Err(guasto) = scrivi_tag(&preso.percorso, &da_scrivere, numero, copertina.as_deref()) {
+    let licenza = rymembra_catalogo::licenza_leggibile(&preso.licenza);
+    let provenienza = Provenienza {
+        attribuzione: preso.attribuzione.as_deref(),
+        licenza: licenza.as_deref(),
+        pagina: preso.pagina.as_deref(),
+    };
+    if let Err(guasto) = scrivi_tag(
+        &preso.percorso,
+        &desiderato.brano,
+        numero,
+        copertina.as_deref(),
+        &provenienza,
+    ) {
         // L'estensione e non il percorso: il diario si spedisce, e un percorso
         // di download porta dentro il nome dell'account di Windows e — visto
         // come `destinazione` costruisce le cartelle — l'artista e l'album. Quel
@@ -948,23 +963,6 @@ fn cartellino(scelto: &Candidato, desiderato: &Desiderato) -> Scelto {
         scarto_ms: scarto_durata(desiderato.brano.duration_ms, scelto.durata_sec),
         pagina: scelto.pagina.clone(),
     }
-}
-
-/// I metadati da scrivere nel file, con l'attribuzione dentro.
-///
-/// L'attribuzione finisce nel commento del brano e non solo a schermo, e non è
-/// pedanteria: il file sopravvive all'applicazione. Fra due anni, su un altro
-/// computer, quel campo è l'unica cosa che dice sotto quale patto quel brano è
-/// finito lì.
-fn con_attribuzione(
-    brano: &rymembra_domain::BranoEsterno,
-    attribuzione: Option<&str>,
-) -> rymembra_domain::BranoEsterno {
-    let mut copia = brano.clone();
-    if let Some(riga) = attribuzione {
-        copia.pagina_url = copia.pagina_url.or_else(|| Some(riga.to_owned()));
-    }
-    copia
 }
 
 /// Chiude una riga andata male, distinguendo i due modi.
