@@ -24,7 +24,9 @@
 //! Il secondo posto è venuto dopo, per la stessa ragione: «Elimina dal disco»
 //! deve sapere se un file sta su una chiavetta, una scheda SD, un CD o un RAM
 //! disk, dove Windows un Cestino non ce l'ha, e lo dice soltanto
-//! `GetDriveTypeW`. Nessuna dipendenza seria lo espone senza `unsafe`, e
+//! `GetDriveTypeW` — sul volume che `GetVolumePathNameW` trova, perché una
+//! scheda SD può stare montata in una cartella di `C:`. Nessuna dipendenza
+//! seria lo espone senza `unsafe`, e
 //! portarne dentro una per una chiamata sola costerebbe più di questa
 //! funzione: vedi [`unita_di`].
 //!

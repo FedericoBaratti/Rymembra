@@ -39,7 +39,10 @@
 //! CD e RAM disk: sono locali per `canonicalize`, ma Windows lì un Cestino non
 //! ce l'ha, e la shell cancellava per sempre mentre la conferma prometteva il
 //! Cestino e la fine diceva «Nel Cestino: N». Il genere dell'unità lo chiede
-//! [`rymembra_barra::unita_di`], solo per i file che `volumi` dice locali: vedi
+//! [`rymembra_barra::unita_di`], solo per i file che `volumi` dice locali, e
+//! sul nome **vero** della loro cartella: `C:\Musica\Chiavetta` può essere una
+//! giunzione verso una chiavetta, o la cartella in cui è montata una scheda SD,
+//! e la lettera scritta in libreria direbbe «disco fisso». Vedi
 //! [`con_un_cestino`].
 //!
 //! # L'ordine, in [`brani_elimina`]
@@ -476,44 +479,53 @@ fn brani_senza_cestino(
 /// Il Cestino di Windows può prendere un file che sta in `collocazione`, su
 /// un'unità del genere `unita`?
 ///
-/// Solo sul locale — vedi [`Collocazione::ha_un_cestino`] — e non su
-/// un'unità rimovibile, un CD o un RAM disk, dove Windows un Cestino non ce
-/// l'ha: lì la shell cancella per sempre come su una share. Un genere che non
-/// si sa (`None`, [`Unita::Sconosciuta`]) lascia la risposta della
-/// collocazione: chiederlo è un di più per le unità che si dichiarano, non
-/// una seconda ragione per dubitare di un disco locale. Un disco USB che si
-/// dichiara fisso il Cestino ce l'ha davvero, e resta così.
+/// Solo sul locale — vedi [`Collocazione::ha_un_cestino`] — e solo su un
+/// disco fisso: su un'unità rimovibile, un CD o un RAM disk Windows un Cestino
+/// non ce l'ha, e lì la shell cancella per sempre come su una share. Un disco
+/// USB che si dichiara fisso il Cestino ce l'ha davvero, e resta così.
+///
+/// Un genere chiesto e non saputo ([`Unita::Sconosciuta`]: Windows non ha dato
+/// il volume, o il percorso non ha una lettera) vale come senza Cestino, per la
+/// stessa ragione di una collocazione che non si sa: la promessa del Cestino
+/// non si fa a vuoto. Era il contrario, quando il genere si chiedeva alla sola
+/// lettera e «non so» voleva dire quasi sempre un disco fisso; adesso dietro
+/// può esserci la scheda SD montata in una cartella. `None` vuol dire invece
+/// che il genere non si chiede — fuori da Windows — e lì decide la
+/// collocazione da sola.
 ///
 /// Pura, con il genere dato da fuori: la domanda vera la fa
 /// [`rymembra_barra::unita_di`], e una prova non ha una chiavetta.
 fn con_un_cestino(collocazione: Collocazione, unita: Option<Unita>) -> bool {
-    collocazione.ha_un_cestino()
-        && !matches!(unita, Some(Unita::Rimovibile | Unita::Cd | Unita::RamDisk))
+    collocazione.ha_un_cestino() && matches!(unita, None | Some(Unita::Fissa))
 }
 
 /// Per ogni percorso, nello stesso ordine, se il Cestino lo può prendere.
 ///
-/// La collocazione la dice [`volumi::collocazioni`], con la sua scadenza; il
-/// genere dell'unità si chiede solo per quel che è risultato locale, così
-/// nessuna lettera di rete viene toccata un'altra volta. Chi non ha una
-/// risposta vale come senza Cestino: vedi il `//!`.
+/// La collocazione e il genere dell'unità li dà
+/// [`volumi::collocazioni_e_generi`], con la sua scadenza: il genere si chiede
+/// solo per quel che è risultato locale, così nessuna lettera di rete viene
+/// toccata un'altra volta, e si chiede sul nome **vero** della cartella — una
+/// giunzione o un volume montato in una cartella di `C:` che portano a una
+/// chiavetta stanno sulla chiavetta, non su `C:`. Chi non ha una risposta vale
+/// come senza Cestino: vedi il `//!`.
 fn cestini(percorsi: &[String]) -> Vec<bool> {
     // Su Android il Cestino è quello di `MediaStore`, e chi lo conosce file per
     // file è Kotlin: vedi [`cestini_del_telefono`].
     if cfg!(mobile) {
         return cestini_del_telefono(percorsi);
     }
-    let collocazioni = volumi::collocazioni(percorsi, volumi::SCADENZA_RISOLUZIONE);
-    percorsi
-        .iter()
-        .enumerate()
-        .map(|(i, percorso)| {
-            let collocazione = collocazioni.get(i).copied().unwrap_or(Collocazione::Ignota);
-            let unita = collocazione
-                .ha_un_cestino()
-                .then(|| rymembra_barra::unita_di(Path::new(percorso)))
-                .flatten();
-            con_un_cestino(collocazione, unita)
+    let risposte = volumi::collocazioni_e_generi(
+        percorsi,
+        volumi::SCADENZA_RISOLUZIONE,
+        rymembra_barra::unita_di,
+    );
+    (0..percorsi.len())
+        .map(|i| {
+            let (collocazione, unita) = risposte
+                .get(i)
+                .copied()
+                .unwrap_or((Collocazione::Ignota, None));
+            con_un_cestino(collocazione, unita.flatten())
         })
         .collect()
 }
@@ -1293,17 +1305,47 @@ mod prove_delle_unita {
                 "{senza:?}"
             );
         }
-        // Un disco fisso — compresi i dischi USB che si dichiarano tali — e un
-        // percorso di cui il genere non si sa restano quel che erano.
+        // Un disco fisso — compresi i dischi USB che si dichiarano tali — resta
+        // quel che era; e dove il genere non si chiede affatto (`None`: fuori
+        // da Windows) decide la collocazione da sola.
         assert!(con_un_cestino(Collocazione::Locale, Some(Unita::Fissa)));
-        assert!(con_un_cestino(
+        assert!(con_un_cestino(Collocazione::Locale, None));
+        // Ma un genere chiesto a Windows e non saputo non è un disco fisso: il
+        // volume montato in una cartella di cui non si è trovato il punto di
+        // montaggio, il percorso senza lettera. La promessa del Cestino non si
+        // fa a vuoto, come per una collocazione che non si sa.
+        assert!(!con_un_cestino(
             Collocazione::Locale,
             Some(Unita::Sconosciuta)
         ));
-        assert!(con_un_cestino(Collocazione::Locale, None));
+        assert!(!con_un_cestino(Collocazione::Locale, Some(Unita::DiRete)));
         // E quel che non è locale non lo diventa per il genere dell'unità.
         assert!(!con_un_cestino(Collocazione::DiRete, Some(Unita::Fissa)));
         assert!(!con_un_cestino(Collocazione::Ignota, None));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn un_file_di_un_disco_fisso_ha_il_cestino_e_una_share_no() {
+        // La domanda vera, dall'inizio alla fine: risolvere la cartella,
+        // trovarne il volume dal nome vero, chiederne il genere. Se una delle
+        // tre rifiutasse la forma verbatim che `canonicalize` restituisce, ogni
+        // file locale diventerebbe «senza Cestino», e ogni «Elimina dal disco»
+        // una cancellazione per sempre.
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let file = cartella.path().join("a.flac");
+        std::fs::write(&file, b"x").expect("file");
+        let sparito = cartella.path().join("sparito.flac");
+        // E quello la cui cartella non c'è più: risponde la radice, e il
+        // volume si cerca dalla cartella com'è scritta.
+        let orfano = cartella.path().join("non").join("c-e").join("b.flac");
+        let percorsi = vec![
+            file.to_string_lossy().into_owned(),
+            sparito.to_string_lossy().into_owned(),
+            orfano.to_string_lossy().into_owned(),
+            r"\\rymembra-server-che-non-esiste.invalid\m\a.flac".to_owned(),
+        ];
+        assert_eq!(super::cestini(&percorsi), vec![true, true, true, false]);
     }
 
     #[test]
