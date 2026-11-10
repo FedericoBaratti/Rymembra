@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -51,10 +52,19 @@ class Biblioteca(private val contesto: Context) : MediaLibrarySession.Callback {
   /** I risultati di una ricerca, tenuti fra `onSearch` e `onGetSearchResult`. */
   private val ricerche = ConcurrentHashMap<String, List<MediaItem>>()
 
+  /**
+   * Chi entra ha tutto — la libreria, la ricerca, la coda, «mi piace» — e
+   * per questo entra solo chi è fidato: vedi [Controllori]. Gli altri sono
+   * rifiutati, e non arrivano a nessuna delle domande qui sotto.
+   */
   override fun onConnect(
     session: MediaSession,
     controller: MediaSession.ControllerInfo,
   ): ConnectionResult {
+    if (!Controllori.fidato(contesto, controller)) {
+      Log.i("Rymembra", "controllore rifiutato: ${controller.packageName}")
+      return ConnectionResult.reject()
+    }
     val comandi = ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
       .apply { Sessione.COMANDI.forEach { add(SessionCommand(it, Bundle.EMPTY)) } }
       .build()

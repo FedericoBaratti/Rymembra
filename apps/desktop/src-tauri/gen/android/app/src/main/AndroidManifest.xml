@@ -59,6 +59,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
+    <!-- Le app che Rymembra deve poter vedere. Android Auto e il centro
+         multimediale delle auto con Android: entrano nella sessione della
+         musica solo se sono loro davvero, e per saperlo servono il loro uid e
+         il loro certificato (vedi `Controllori`). -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+        <package android:name="com.android.car.media" />
+        <package android:name="com.android.car.carlauncher" />
+    </queries>
+
 
     <!-- Niente backup di Android: la libreria si salva con il backup di
          Rymembra, che sa cosa porta e dove (PRIVACY.md), e i segreti cifrati
@@ -119,7 +129,9 @@
             android:exported="true">
             <!-- La prima è quella di Media3; la seconda è come Android Auto, e
                  la scheda di ripresa del sistema, trovano un lettore da
-                 sfogliare (vedi `ServizioMusica` e `Biblioteca`). -->
+                 sfogliare (vedi `ServizioMusica` e `Biblioteca`). Esportato
+                 perché lo cercano loro; chi poi entra lo decide
+                 `Controllori`, e un'app qualunque resta fuori. -->
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
