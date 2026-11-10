@@ -101,10 +101,13 @@
 //! # Un profilo è un dono, non un'autorità
 //!
 //! Niente cancella niente. Nessuna lapide del profilo si applica, nessuna
+//! cartella si spegne, nessun cuore e nessun voto si tolgono, nessuna
 //! preferenza si cancella, nessuna riga di libreria sparisce. Chi importa
 //! aggiunge quel che gli manca; quel che aveva resta. È la differenza fra
 //! questa funzione e un ripristino, e va detta dove si vede perché le due si
-//! somigliano abbastanza da confondersi.
+//! somigliano abbastanza da confondersi. Il documento di sincronia del profilo
+//! passa per questo da `in_dono` prima della fusione, che è anche dove le date
+//! nel futuro si tagliano ad adesso.
 //!
 //! # Perché l'importazione ha un piano
 //!
@@ -1020,7 +1023,8 @@ pub struct Portati {
     pub ascolti: usize,
     /// Voti che arriverebbero.
     pub voti: usize,
-    /// Cuoricini messi o tolti.
+    /// Cuoricini messi. Mai tolti: un profilo non toglie niente (vedi
+    /// `in_dono`).
     pub preferiti: usize,
     /// Posizioni di riascolto aggiornate.
     pub posizioni: usize,
@@ -1069,7 +1073,8 @@ pub struct Piano {
     pub creato_ms: i64,
     /// Quale formato è: 1 il JSON di prima, 2 l'archivio.
     pub versione: u32,
-    /// Il profilo viene da un'altra libreria.
+    /// Il profilo viene da un'altra libreria, o porta una libreria senza dire
+    /// di quale.
     ///
     /// Quando è vero la parte di libreria **non** si applica: le chiavi di
     /// brano di là nominano canzoni che qui non ci sono. Preferenze, copertine
@@ -1204,9 +1209,14 @@ fn esegui(
     let mia = settings::read(connection, CHIAVE_IDENTITA)?.filter(|id| !id.trim().is_empty());
     let sua = letto.manifesto.identita.trim();
     // Un profilo che non porta libreria non ha un'identità da confrontare, e
-    // chiedergliela vorrebbe dire rifiutare le preferenze di un v1.
+    // chiedergliela vorrebbe dire rifiutare le preferenze di un v1. Uno che la
+    // porta e non dice di quale libreria sia, invece, non si riconosce: ogni
+    // archivio scritto da Rymembra ha un'identità, e uno con l'identità vuota è
+    // stato scritto a mano — «compatibile con tutti» lo faceva applicare a
+    // qualunque libreria. Vale «diversa» anche dove questa non ne ha ancora
+    // una, e chi dice che è la sua lo dice con `unisci_comunque`.
     let identita_diversa =
-        letto.ha_libreria() && !sua.is_empty() && mia.is_some_and(|id| id != sua);
+        letto.ha_libreria() && (sua.is_empty() || mia.is_some_and(|id| id != sua));
 
     let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione del profilo", &err))?;
@@ -1348,11 +1358,16 @@ fn esegui(
     // ── la libreria, se le due identità si riconoscono — o se chi importa ha
     // detto di procedere lo stesso: vedi `Ambiente::unisci_comunque` ──
     if !identita_diversa || ambiente.unisci_comunque {
+        // Un dono: niente dal futuro, niente fuori scala. Qui, nel corpo che il
+        // piano e l'importazione condividono, perché il piano resti quel che
+        // l'importazione fa. Vedi [`biblioteca::Biblioteca::in_dono`].
+        let biblioteca = letto.biblioteca.clone().in_dono(ambiente.adesso_ms);
+
         // Le correzioni prima di tutto: cuori, voti, playlist, cronologia e
         // testi di un brano corretto stanno sotto la chiave corretta, e su un
         // computer nuovo nessun brano la porta finché la correzione non è
         // scritta. Vedi il `//!` di `biblioteca`.
-        piano.portati.correzioni = biblioteca::applica_correzioni_in(&tx, &letto.biblioteca)?;
+        piano.portati.correzioni = biblioteca::applica_correzioni_in(&tx, &biblioteca)?;
 
         if let Some(originale) = &letto.sincronia {
             // Le cartelle sorvegliate del documento sono percorsi di quella
@@ -1363,6 +1378,7 @@ fn esegui(
             // funzionerebbe sui brani e non sulle radici, che è il modo più
             // confuso possibile di non funzionare.
             let mut suo = originale.clone();
+            suo.content = in_dono(suo.content, ambiente.adesso_ms);
             if !ambiente.rimappature.is_empty() {
                 suo.content.cartelle = std::mem::take(&mut suo.content.cartelle)
                     .into_iter()
@@ -1395,7 +1411,7 @@ fn esegui(
             // `applica_in` con gli altri, e li conta una volta sola fra i brani
             // il cui conteggio cambia. Mai sotto `importazione`: vedi
             // [`biblioteca::Biblioteca::ascolti_altrui`].
-            for (chiave, per_dispositivo) in &letto.biblioteca.ascolti_altrui {
+            for (chiave, per_dispositivo) in &biblioteca.ascolti_altrui {
                 for (chi, quanti) in per_dispositivo {
                     if chi.is_empty() || chi == rymembra_sync::contatore::IMPORTAZIONE {
                         continue;
@@ -1415,7 +1431,7 @@ fn esegui(
             piano.portati.cartelle = cambiamenti.cartelle;
         }
 
-        let portato = biblioteca::applica_in(&tx, &letto.biblioteca, ambiente.adesso_ms)?;
+        let portato = biblioteca::applica_in(&tx, &biblioteca, ambiente.adesso_ms)?;
         piano.portati.cronologia = portato.cronologia;
         piano.portati.testi = portato.testi;
         piano.portati.desiderati = portato.desiderati;
@@ -1483,6 +1499,41 @@ fn esegui(
     Ok(piano)
 }
 
+/// Il documento di sincronia di un profilo, ridotto a quel che un dono porta.
+///
+/// Il ramo della libreria riusa la fusione e le scritture della sincronia, che
+/// per costruzione applicano anche le **rimozioni**: le lapidi delle playlist e
+/// dei brani, le cartelle spente, i cuori tolti, i voti tolti (lo zero). Fra
+/// due dispositivi è giusto; da un profilo no — è la promessa del `//!`, e la
+/// faceva mancare proprio il riuso. Un profilo esportato dall'altro computer
+/// della stessa persona porta le **sue** lapidi vere: una playlist di qui con
+/// lo stesso nome spariva, una cartella sorvegliata usciva da `library.roots`,
+/// un cuore si spegneva, e il piano non lo diceva. Una lapide datata molto
+/// avanti restava poi in `sync_tombstones` e, ripubblicata dalla sincronia,
+/// impediva di ricreare quella playlist su ogni dispositivo collegato.
+///
+/// Quindi le rimozioni e gli spegnimenti non partono dal profilo: restano
+/// fuori prima della fusione, e il piano — che è l'esecuzione annullata — conta
+/// solo quel che arriva. Poi il dominio dei valori, con gli istanti nel futuro
+/// **tagliati** ad adesso: vedi [`rymembra_sync::dominio`].
+///
+/// Resta, ed è un limite detto: dentro una playlist che le due librerie
+/// condividono, un brano tolto o spostato di là si toglie o si sposta anche
+/// qui. Uno spostamento è una rimozione più un'aggiunta, e tenere solo la
+/// seconda farebbe di ogni riordino un doppione.
+fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync::Contenuto {
+    let mut contenuto = rymembra_sync::dominio::nel_dominio(
+        contenuto,
+        adesso_ms,
+        rymembra_sync::dominio::Futuro::Taglia,
+    );
+    contenuto.lapidi = rymembra_sync::Lapidi::default();
+    contenuto.cartelle.retain(|_, stato| stato.on);
+    contenuto.preferiti.retain(|_, stato| stato.on);
+    contenuto.voti.retain(|_, voto| voto.v > 0);
+    contenuto
+}
+
 /// L'elenco di qui più le cartelle del profilo che qui non ci sono già.
 ///
 /// Restituisce il valore da scrivere e le cartelle aggiunte. Il confronto è per
@@ -1538,9 +1589,25 @@ fn host_di_rete(percorso: &str) -> Option<String> {
     Some(host.to_lowercase())
 }
 
+/// Il percorso è di rete e il suo host non è fra quelli che questo computer usa
+/// già ([`host_di_questo_pc`]).
+///
+/// Lessicale, come le due sopra: non chiede niente al disco. Una forma di rete
+/// di cui non si legge l'host (`\\?\UNC\…`, `\\.\…`) vale «sconosciuta», e
+/// `\\?\X:\…` è un'unità con lettera, non la rete. Lo usa la sincronia per le
+/// cartelle che un documento porta: vedi `sincronia::applica_cartelle`.
+pub(crate) fn verso_un_host_ignoto(percorso: &str, noti: &[String]) -> bool {
+    let percorso = percorso.trim();
+    let di_rete = percorso.starts_with(r"\\") || percorso.starts_with("//");
+    if !di_rete || su_un_unita(percorso) {
+        return false;
+    }
+    host_di_rete(percorso).is_none_or(|host| !noti.contains(&host))
+}
+
 /// Gli host di rete che questo computer usa già: quelli delle sue cartelle
 /// sorvegliate e della cartella dei download.
-fn host_di_questo_pc(connection: &Connection) -> Result<Vec<String>, AppError> {
+pub(crate) fn host_di_questo_pc(connection: &Connection) -> Result<Vec<String>, AppError> {
     let mut host = Vec::new();
     for chiave in ["library.roots", "download.folder"] {
         if let Some(valore) = settings::read(connection, chiave)? {

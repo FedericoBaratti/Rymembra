@@ -2114,3 +2114,436 @@ fn una_firma_estranea_nel_campo_di_prima_resta_rifiutata() {
         assert_eq!(err.code().kind().code(), "settings.corrupt", "{estranea}");
     }
 }
+
+// ── le impronte delle copertine che arrivano dentro il JSON ─────────────────
+
+#[test]
+fn un_impronta_di_copertina_che_esce_dallo_store_non_entra() {
+    // Un profilo costruito a mano: una copertina per un brano che qui non c'è,
+    // con un'impronta che è il percorso di una foto dell'utente. La riga resta
+    // orfana, il piano non la conta, e la pulizia automatica la passava allo
+    // store — che cancellava la foto.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\a.flac", "chiave");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+
+    let store = CoverStore::open(dir.path().join("dati").join("copertine")).expect("store");
+    let foto = dir.path().join("foto");
+    std::fs::create_dir_all(&foto).expect("cartella delle foto");
+    let vittima = foto.join("IMG_0001.jpg");
+    std::fs::write(&vittima, b"una foto").expect("foto");
+    letto.biblioteca.copertine.insert(
+        "un brano che qui non c'e".to_owned(),
+        biblioteca::Copertina {
+            hash: foto.join("IMG_0001").to_string_lossy().into_owned(),
+            mime_type: "image/jpeg".to_owned(),
+            width: None,
+            height: None,
+            byte_size: None,
+            source: "tag".to_owned(),
+            created_at: 0,
+        },
+    );
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "chiave");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    crate::covers::pulisci(&qui, &store, std::time::Duration::ZERO).expect("pulizia");
+
+    assert!(
+        vittima.exists(),
+        "la pulizia ha cancellato una foto fuori dallo store"
+    );
+}
+
+#[test]
+fn la_biblioteca_scarta_le_copertine_con_un_impronta_storta() {
+    // All'ingresso: la riga cade, il documento no.
+    let buona = "ab".repeat(32);
+    let json = serde_json::json!({
+        "versione": 1,
+        "copertine": {
+            "buona": {"hash": buona, "mime_type": "image/jpeg", "source": "tag", "created_at": 0},
+            "risale": {"hash": "../../fuori", "mime_type": "image/jpeg", "source": "tag", "created_at": 0},
+            "assoluta": {"hash": "C:\\Users\\x\\IMG", "mime_type": "image/jpeg", "source": "tag", "created_at": 0},
+            "maiuscola": {"hash": buona.to_uppercase(), "mime_type": "image/jpeg", "source": "tag", "created_at": 0}
+        }
+    });
+    let biblioteca = biblioteca::interpreta(json.to_string().as_bytes()).expect("si legge");
+    let rimaste: Vec<&str> = biblioteca.copertine.keys().map(String::as_str).collect();
+    assert_eq!(rimaste, vec!["buona"]);
+}
+
+// ── un profilo è un dono: non toglie, e non viene dal futuro ────────────────
+
+/// Un profilo esportato da una libreria con il brano «chiave», letto e pronto
+/// da ritoccare: il documento di sincronia è quello vero, e la prova ci mette
+/// dentro quel che un altro computer — o qualcuno a mano — potrebbe portare.
+fn profilo_da_ritoccare(dir: &Path) -> Letto {
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\a.flac", "chiave");
+    let archivio = esporta(&mut la, dir, "la", &identita_fissa);
+    leggi(&archivio).expect("lettura")
+}
+
+fn contenuto_di(letto: &mut Letto) -> &mut rymembra_sync::Contenuto {
+    &mut letto
+        .sincronia
+        .as_mut()
+        .expect("il profilo porta la sincronia")
+        .content
+}
+
+#[test]
+fn un_profilo_non_cancella_le_playlist_di_qui() {
+    // Le lapidi vere dell'altro computer, o una scritta a mano e datata molto
+    // avanti: la playlist di qui spariva, il piano non lo diceva, e la lapide
+    // restava in `sync_tombstones` a impedire di ricrearla, ovunque.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    contenuto_di(&mut letto)
+        .lapidi
+        .playlist
+        .insert("Preferite".to_owned(), i64::MAX);
+    contenuto_di(&mut letto)
+        .lapidi
+        .brani
+        .insert("chiave".to_owned(), 1_000);
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "chiave");
+    playlist(&qui, "Preferite", &[1]);
+
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(dentro(&qui, "Preferite"), vec!["chiave".to_owned()]);
+    let lapidi: i64 = qui
+        .query_row("SELECT COUNT(*) FROM sync_tombstones", [], |riga| {
+            riga.get(0)
+        })
+        .expect("lapidi");
+    assert_eq!(lapidi, 0, "nessuna lapide del profilo resta qui");
+    assert_eq!(piano.portati.playlist, 0, "{piano:?}");
+}
+
+#[test]
+fn un_profilo_non_spegne_le_cartelle_di_qui() {
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    contenuto_di(&mut letto).cartelle.insert(
+        "C:/Musica".to_owned(),
+        rymembra_sync::Interruttore {
+            on: false,
+            at: 5_000,
+        },
+    );
+
+    let mut qui = libreria();
+    settings::write(&qui, "library.roots", &elenco(&["C:/Musica"])).expect("scrittura");
+    crate::sincronia::allinea(&mut qui, "qui", 1_000).expect("allineamento");
+
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(
+        settings::read(&qui, "library.roots"),
+        Ok(Some(elenco(&["C:/Musica"]))),
+        "la cartella sorvegliata di qui resta"
+    );
+    assert_eq!(piano.portati.cartelle, 0, "{piano:?}");
+}
+
+#[test]
+fn un_profilo_non_toglie_i_cuori_e_i_voti_di_qui_e_il_piano_lo_dice() {
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    let contenuto = contenuto_di(&mut letto);
+    contenuto.preferiti.insert(
+        "chiave".to_owned(),
+        rymembra_sync::Interruttore {
+            on: false,
+            at: 5_000,
+        },
+    );
+    contenuto
+        .voti
+        .insert("chiave".to_owned(), rymembra_sync::Voto { v: 0, at: 5_000 });
+    // E un cuore messo, su un brano che qui non ne ha: quello sì che arriva.
+    contenuto.preferiti.insert(
+        "altra".to_owned(),
+        rymembra_sync::Interruttore {
+            on: true,
+            at: 5_000,
+        },
+    );
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "chiave");
+    brano(&qui, 2, r"E:\M\b.flac", "altra");
+    qui.execute(
+        "UPDATE tracks SET liked = 1, liked_at = 100, rating = 4, rating_at = 100 WHERE id = 1",
+        [],
+    )
+    .expect("cuore e voto di qui");
+
+    let previsto = piano(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("piano");
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    let (cuore, voto): (i64, i64) = qui
+        .query_row(
+            "SELECT liked, rating FROM tracks WHERE id = 1",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?)),
+        )
+        .expect("rilettura");
+    assert_eq!((cuore, voto), (1, 4), "il cuore e il voto di qui restano");
+    let altro: i64 = qui
+        .query_row("SELECT liked FROM tracks WHERE id = 2", [], |riga| {
+            riga.get(0)
+        })
+        .expect("rilettura");
+    assert_eq!(altro, 1, "il cuore messo di là arriva");
+    assert_eq!(
+        previsto.portati, fatto.portati,
+        "il piano è quel che succede"
+    );
+    assert_eq!(fatto.portati.preferiti, 1, "{fatto:?}");
+    assert_eq!(fatto.portati.voti, 0, "{fatto:?}");
+}
+
+#[test]
+fn un_istante_dal_futuro_del_profilo_si_taglia_ad_adesso() {
+    // Un voto e un testo datati fra dieci anni vincevano su ogni decisione
+    // presa qui fino ad allora.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    let adesso = ambiente(&c_e_tutto).adesso_ms;
+    let fra_dieci_anni = adesso + 10 * 365 * 24 * 60 * 60 * 1000;
+    contenuto_di(&mut letto).voti.insert(
+        "chiave".to_owned(),
+        rymembra_sync::Voto {
+            v: 5,
+            at: fra_dieci_anni,
+        },
+    );
+    letto.biblioteca.testi.insert(
+        "chiave".to_owned(),
+        biblioteca::Testo {
+            plain: Some("dal futuro".to_owned()),
+            source: "lrclib".to_owned(),
+            updated_at: fra_dieci_anni,
+            ..biblioteca::Testo::default()
+        },
+    );
+    letto.biblioteca.cronologia.push(biblioteca::Ascoltato {
+        chiave: "chiave".to_owned(),
+        quando_ms: fra_dieci_anni,
+        ms: 1_000,
+        fonte: "local".to_owned(),
+    });
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "chiave");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+
+    let (voto, quando): (i64, i64) = qui
+        .query_row(
+            "SELECT rating, rating_at FROM tracks WHERE id = 1",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?)),
+        )
+        .expect("voto");
+    assert_eq!((voto, quando), (5, adesso), "il voto entra, datato adesso");
+    let testo: i64 = qui
+        .query_row(
+            "SELECT updated_at FROM lyrics WHERE track_key = 'chiave'",
+            [],
+            |riga| riga.get(0),
+        )
+        .expect("testo");
+    assert_eq!(testo, adesso);
+    let suonato: i64 = qui
+        .query_row("SELECT MAX(played_at) FROM play_history", [], |riga| {
+            riga.get(0)
+        })
+        .expect("cronologia");
+    assert_eq!(suonato, adesso);
+}
+
+#[test]
+fn gli_ascolti_degli_altri_fuori_scala_non_fermano_l_importazione() {
+    // `SUM` di SQLite trabocca invece di saturare: un conteggio presso
+    // `i64::MAX` accanto agli ascolti di qui faceva fallire l'importazione.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    letto.biblioteca.ascolti_altrui.insert(
+        "chiave".to_owned(),
+        [("telefono".to_owned(), i64::MAX), ("tablet".to_owned(), 3)]
+            .into_iter()
+            .collect(),
+    );
+    contenuto_di(&mut letto)
+        .ascolti
+        .insert("chiave".to_owned(), i64::MAX);
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "chiave");
+    qui.execute("UPDATE tracks SET play_count = 2 WHERE id = 1", [])
+        .expect("ascolti di qui");
+
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    let quanti: i64 = qui
+        .query_row("SELECT play_count FROM tracks WHERE id = 1", [], |riga| {
+            riga.get(0)
+        })
+        .expect("conteggio");
+    assert_eq!(quanti, 5, "i due di qui più i tre del tablet");
+}
+
+// ── l'identità vuota di un profilo che porta la libreria ────────────────────
+
+#[test]
+fn un_v2_con_identita_vuota_ma_con_libreria_non_si_fonde_su_un_altra_libreria() {
+    // Un'identità **assente** è quella dei v1, che non portano libreria. Un
+    // archivio che porta la libreria e un'identità vuota è stato scritto a mano,
+    // e «compatibile con tutti» lo faceva applicare a qualunque libreria.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\a.flac", "chiave");
+    la.execute(
+        "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (1, 500, 200000)",
+        [],
+    )
+    .expect("cronologia");
+    settings::write(&la, "player.volume", "0.9").expect("scrittura");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+    letto.manifesto.identita = "  ".to_owned();
+
+    let ascolti = |c: &Connection| -> i64 {
+        c.query_row("SELECT COUNT(*) FROM play_history", [], |riga| riga.get(0))
+            .expect("conteggio")
+    };
+
+    // Su una libreria che ha la sua identità, e su una che non ne ha ancora.
+    for con_identita in [true, false] {
+        let mut qui = libreria();
+        brano(&qui, 1, r"E:\M\a.flac", "chiave");
+        if con_identita {
+            identita(&qui, &identita_altrui).expect("identità");
+        }
+        let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+        assert!(piano.identita_diversa, "con identità: {con_identita}");
+        assert_eq!(ascolti(&qui), 0, "la libreria non si applica");
+        assert_eq!(
+            settings::read(&qui, "player.volume"),
+            Ok(Some("0.9".to_owned())),
+            "le preferenze sì"
+        );
+        assert_eq!(
+            settings::read(&qui, CHIAVE_IDENTITA)
+                .expect("identità")
+                .is_some(),
+            con_identita,
+            "e un'identità vuota non si adotta"
+        );
+
+        // Chi dice che è la sua, la riavrà.
+        let mut ambiente = ambiente(&c_e_tutto);
+        ambiente.unisci_comunque = true;
+        importa(&mut qui, &letto, &ambiente).expect("importazione");
+        assert_eq!(ascolti(&qui), 1);
+    }
+}
+
+#[test]
+fn una_radice_di_rete_del_profilo_entra_solo_se_il_piano_la_mostra() {
+    // Il ramo della sincronia lascia fuori le cartelle su host di rete che
+    // questo PC non usa. Nel profilo una radice che sta nelle preferenze passa
+    // dal piano — chi importa la vede fra i cambi e conferma — e allora vale
+    // nota; una che sta solo nel documento di sincronia, che il piano non
+    // mostra, resta fuori. Nessuna delle due si chiede al disco.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut letto = profilo_da_ritoccare(dir.path());
+    let mostrata = r"\\192.0.2.7\musica";
+    let nascosta = r"\\192.0.2.8\musica";
+    for percorso in [mostrata, nascosta] {
+        contenuto_di(&mut letto).cartelle.insert(
+            percorso.to_owned(),
+            rymembra_sync::Interruttore {
+                on: true,
+                at: 5_000,
+            },
+        );
+    }
+    letto
+        .preferenze
+        .voci
+        .insert("library.roots".to_owned(), elenco(&[mostrata]));
+
+    let mut qui = libreria();
+    settings::write(&qui, "library.roots", &elenco(&["C:/Musica"])).expect("scrittura");
+    let chiesti = std::cell::RefCell::new(Vec::<String>::new());
+    let registra = |percorso: &str| {
+        chiesti.borrow_mut().push(percorso.to_owned());
+        true
+    };
+    let piano = importa(&mut qui, &letto, &ambiente(&registra)).expect("importazione");
+
+    let radici: Vec<String> = settings::read(&qui, "library.roots")
+        .expect("lettura")
+        .and_then(|valore| serde_json::from_str(&valore).ok())
+        .unwrap_or_default();
+    assert!(radici.iter().any(|r| r == mostrata), "{radici:?}");
+    assert!(!radici.iter().any(|r| r == nascosta), "{radici:?}");
+    assert!(
+        piano
+            .cambi
+            .iter()
+            .any(|c| c.chiave == "library.roots" && c.dopo.contains("192.0.2.7")),
+        "{:?}",
+        piano.cambi
+    );
+    assert!(
+        chiesti.borrow().iter().all(|p| !p.starts_with(r"\\")),
+        "{:?}",
+        chiesti.borrow()
+    );
+}
+
+// ── un'estrazione fallita non lascia avanzi nello store ─────────────────────
+
+#[test]
+fn una_copertina_rotta_nell_archivio_non_lascia_avanzi_nello_store() {
+    // Reperto 12-1 del fuzzing: il CRC di una copertina si guarda solo quando
+    // la si apre, quindi il file passa `leggi` e il piano; all'estrazione il
+    // provvisorio `<impronta>.parziale` restava nello store, per sempre.
+    use std::io::Write as _;
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let hash = "ab".repeat(32);
+    let manifesto = r#"{"rymembra":"rymembra.profilo","versione":2,"creatoMs":0,"identita":"","dispositivo":"","applicazione":"","abbinamento":"track_key","contiene":{"preferenze":0,"sincronia":false,"biblioteca":false,"copertine":1,"skin":0,"bozze":0}}"#;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let intatto =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("manifesto.json", intatto).expect("voce");
+    zip.write_all(manifesto.as_bytes()).expect("byte");
+    zip.start_file(archivio::nome_copertina(&hash, false), intatto)
+        .expect("voce");
+    zip.write_all(b"\xff\xd8\xff\xe0COPERTINA-PROVA")
+        .expect("byte");
+    let mut byte = zip.finish().expect("chiusura").into_inner();
+    // Un byte del contenuto cambiato: il CRC della voce non torna più.
+    let dove = byte
+        .windows(15)
+        .position(|w| w == b"COPERTINA-PROVA")
+        .expect("contenuto");
+    byte[dove] ^= 0x20;
+    let file = dir.path().join("rotto.ryprofile");
+    std::fs::write(&file, &byte).expect("archivio");
+
+    assert!(leggi(&file).is_ok());
+    let store = CoverStore::open(dir.path().join("copertine")).expect("store");
+    assert!(estrai_copertine(&file, &store, &|_| {}).is_err());
+    let rimasti: Vec<std::ffi::OsString> = std::fs::read_dir(store.radice().join("ab"))
+        .map(|voci| voci.flatten().map(|v| v.file_name()).collect())
+        .unwrap_or_default();
+    assert!(rimasti.is_empty(), "avanzi nello store: {rimasti:?}");
+}

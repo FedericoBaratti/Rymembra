@@ -211,6 +211,35 @@ pub fn ricodifica_estranea(byte: &[u8]) -> Result<Vec<u8>, AppError> {
     encode_jpeg(&fit(&immagine, MAX_LATO), QUALITA, ETICHETTA)
 }
 
+/// Un'impronta è esadecimale **minuscola**, da 2 a 128 cifre, e nient'altro.
+///
+/// È l'invariante su cui lo store costruisce i suoi percorsi, e sta qui perché
+/// è lo store che lo possiede: chi gli passa un'impronta non deve poterlo
+/// portare fuori dalla sua cartella, qualunque cosa ci sia scritto. Cifre
+/// esadecimali e basta non compongono né `..` né barre né i due punti di
+/// un'unità, e nemmeno un nome riservato di Windows.
+///
+/// Minuscola, e non per pignoleria: su NTFS `AB/ABCD….jpg` e `ab/abcd….jpg`
+/// sono lo stesso file, mentre per SQLite sono due righe. Un gemello maiuscolo
+/// orfano in `cover_art` avrebbe fatto togliere alla pulizia la copertina di
+/// chi la usa ancora. Le impronte che Rymembra scrive — blake3 in
+/// esadecimale — sono minuscole per costruzione.
+///
+/// Lo usano anche la lettura dei profili (i nomi delle voci e le righe della
+/// biblioteca): un criterio scritto in due posti è due criteri.
+#[must_use]
+pub fn e_un_impronta(hash: &str) -> bool {
+    (2..=128).contains(&hash.len())
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// La cartella e il nome, dentro lo store, di ciò che non è un'impronta: vedi
+/// [`CoverStore::percorso`]. Non è esadecimale, quindi lo store non lo scrive e
+/// [`CoverStore::spazza_avanzi`] non lo tocca.
+const NON_UN_IMPRONTA: &str = "__";
+
 /// Da dove viene una copertina. Serve a decidere se una trovata online debba
 /// sostituirne una già presente, o lasciarla stare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,25 +318,51 @@ impl CoverStore {
     /// dell'impronta. Non è eleganza: una cartella con decine di migliaia di
     /// voci rallenta ogni `readdir`, e su qualche filesystem molto più che
     /// linearmente.
+    ///
+    /// Sempre **dentro** lo store, qualunque cosa riceva: vedi
+    /// [`CoverStore::percorso`].
     #[must_use]
     pub fn path_for(&self, hash: &str) -> PathBuf {
-        let prefix = hash.get(..2).unwrap_or("__");
-        self.root.join(prefix).join(format!("{hash}.jpg"))
+        self.percorso(hash, "jpg")
     }
 
     /// Il percorso della miniatura.
     #[must_use]
     pub fn thumbnail_path_for(&self, hash: &str) -> PathBuf {
-        let prefix = hash.get(..2).unwrap_or("__");
-        self.root.join(prefix).join(format!("{hash}.t.jpg"))
+        self.percorso(hash, "t.jpg")
     }
 
     /// Il percorso della copertina media: `<impronta>.m.jpg`, accanto alle altre
     /// due e con lo stesso schema, così la pulizia la riconosce come loro.
     #[must_use]
     pub fn percorso_media(&self, hash: &str) -> PathBuf {
-        let prefix = hash.get(..2).unwrap_or("__");
-        self.root.join(prefix).join(format!("{hash}.m.jpg"))
+        self.percorso(hash, "m.jpg")
+    }
+
+    /// L'unico posto in cui un'impronta diventa un percorso.
+    ///
+    /// Un'impronta che non è un'impronta ([`e_un_impronta`]) arriva da fuori —
+    /// la riga di un profilo costruito a mano, un indirizzo chiesto dalla
+    /// finestra o da un altro PC — e unita così com'è alla radice usciva dallo
+    /// store: `..` risaliva, un assoluto o un prefisso d'unità la sostituiva, un
+    /// `\\host` apriva una sessione di rete. Per quella si restituisce un nome
+    /// **dentro** lo store che lo store non scrive mai e che la pulizia non
+    /// riconosce come suo (`__/__.<coda>`): chi legge trova una copertina che
+    /// manca, che è la verità. Chi scrive o cancella non arriva fin qui —
+    /// [`CoverStore::togli_tutte`] e [`CoverStore::media`] la scartano prima.
+    ///
+    /// Un nome e non un `Option`: i chiamanti sono una dozzina, in tre crate, e
+    /// trattano già «il file non c'è» come una copertina che manca.
+    fn percorso(&self, hash: &str, coda: &str) -> PathBuf {
+        if !e_un_impronta(hash) {
+            return self
+                .root
+                .join(NON_UN_IMPRONTA)
+                .join(format!("{NON_UN_IMPRONTA}.{coda}"));
+        }
+        // Le impronte sono ASCII di almeno due cifre: il prefisso c'è sempre.
+        let prefisso = hash.get(..2).unwrap_or(NON_UN_IMPRONTA);
+        self.root.join(prefisso).join(format!("{hash}.{coda}"))
     }
 
     /// I byte della copertina media, facendola dalla piena se non c'è ancora.
@@ -325,6 +380,11 @@ impl CoverStore {
     /// `metadata.tagReadFailed` se la piena sul disco non si decodifica; `fs.*`
     /// se la media non si scrive.
     pub fn media(&self, hash: &str) -> Result<Option<Vec<u8>>, AppError> {
+        // Una che non è un'impronta non ha una piena da cui nascere, e la media
+        // non si scrive nemmeno nel nome di ripiego di [`CoverStore::percorso`].
+        if !e_un_impronta(hash) {
+            return Ok(None);
+        }
         let percorso = self.percorso_media(hash);
         if let Ok(byte) = std::fs::read(&percorso) {
             return Ok(Some(byte));
@@ -353,6 +413,9 @@ impl CoverStore {
     /// l'interfaccia ha già il suo accento.
     #[must_use]
     pub fn tinta(&self, hash: &str) -> Option<[u8; 3]> {
+        if !e_un_impronta(hash) {
+            return None;
+        }
         let bytes = std::fs::read(self.thumbnail_path_for(hash)).ok()?;
         // Con i limiti anche qui, benché la miniatura l'abbia scritta Rymembra:
         // la cartella dati è una cartella come un'altra, e un file messo al
@@ -486,10 +549,16 @@ impl CoverStore {
     /// l'invariante «piena ⇒ miniatura» su cui conta il ramo «già presente» di
     /// [`CoverStore::store`], se la stessa copertina torna in libreria prima
     /// della pulizia dopo.
+    ///
+    /// Un'impronta che non è un'impronta ([`e_un_impronta`]) si salta, senza
+    /// chiedere niente al disco. Le impronte arrivano da `cover_art`, e una
+    /// riga scritta da un profilo costruito a mano poteva nominare `..`, un
+    /// assoluto o il gemello maiuscolo di una copertina in uso: la sua riga se
+    /// n'è già andata, e un file suo nello store non c'è mai stato.
     #[must_use]
     pub fn togli_tutte(&self, hashes: &[String]) -> Liberato {
         let mut liberato = Liberato::default();
-        for hash in hashes {
+        for hash in hashes.iter().filter(|hash| e_un_impronta(hash)) {
             let piena = self.path_for(hash);
             let tolta = togli_file(&piena);
             if tolta.is_none() && piena.exists() {
@@ -508,7 +577,8 @@ impl CoverStore {
     /// Due generi di avanzi, e nient'altro:
     ///
     /// - i temporanei di una scrittura interrotta (vedi
-    ///   [`crate::scrittura::e_temporaneo`]);
+    ///   [`crate::scrittura::e_temporaneo`]), e i provvisori di un'estrazione
+    ///   da profilo interrotta (`<impronta>.parziale`);
     /// - le copertine e le miniature la cui impronta **non ha una riga** in
     ///   `cover_art` (`registrate` è l'elenco delle impronte che ce l'hanno).
     ///   Nascono quando una scansione annullata ha salvato le immagini dei file
@@ -543,6 +613,7 @@ impl CoverStore {
                 continue;
             }
             let avanzo = e_temporaneo(&percorso)
+                || provvisorio_di_estrazione(&percorso)
                 || impronta_del_file(&percorso).is_some_and(|hash| !registrate.contains(hash));
             if avanzo {
                 liberato.aggiungi(togli_file(&percorso));
@@ -639,11 +710,31 @@ fn impronta_del_file(percorso: &Path) -> Option<&str> {
         .strip_suffix(".t.jpg")
         .or_else(|| nome.strip_suffix(".m.jpg"))
         .or_else(|| nome.strip_suffix(".jpg"))?;
-    let esadecimale = hash.len() == 64
+    e_di_blake3(hash).then_some(hash)
+}
+
+/// Il provvisorio con cui l'estrazione di un profilo scrive una copertina
+/// prima di rinominarla (`profilo::archivio::Lettore::estrai`):
+/// `<impronta>.parziale` o `<impronta>.t.parziale`. Un'estrazione fallita lo
+/// toglie da sé; questo è per quella interrotta dalla morte del processo, che
+/// lo lasciava nello store per sempre.
+fn provvisorio_di_estrazione(percorso: &Path) -> bool {
+    percorso
+        .file_name()
+        .and_then(|nome| nome.to_str())
+        .and_then(|nome| {
+            nome.strip_suffix(".t.parziale")
+                .or_else(|| nome.strip_suffix(".parziale"))
+        })
+        .is_some_and(e_di_blake3)
+}
+
+/// Un'impronta come la scrive lo store: blake3, 64 cifre esadecimali minuscole.
+fn e_di_blake3(hash: &str) -> bool {
+    hash.len() == 64
         && hash
             .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    esadecimale.then_some(hash)
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Le colonne che nominano un'impronta di `cover_art`, come `(tabella,
@@ -1367,6 +1458,35 @@ mod tests {
     }
 
     #[test]
+    fn il_provvisorio_di_un_estrazione_interrotta_si_spazza_da_vecchio() {
+        // L'estrazione di un profilo scrive `<impronta>.parziale` (e
+        // `<impronta>.t.parziale`) e lo rinomina alla fine: se il processo
+        // muore a metà, resta. Prima nessuna pulizia lo riconosceva.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let hash = "ab".repeat(32);
+        let cartella = dir.path().join("ab");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        let piena = cartella.join(format!("{hash}.parziale"));
+        let miniatura = cartella.join(format!("{hash}.t.parziale"));
+        let estraneo = cartella.join("non-un-impronta.parziale");
+        for file in [&piena, &miniatura, &estraneo] {
+            std::fs::write(file, b"a meta").expect("file");
+        }
+
+        let niente = store.spazza_avanzi(&HashSet::new(), Duration::from_secs(3600));
+        assert_eq!(
+            niente,
+            Liberato::default(),
+            "da giovane può essere in corso"
+        );
+        let spazzati = store.spazza_avanzi(&HashSet::new(), Duration::ZERO);
+        assert_eq!(spazzati.file, 2);
+        assert!(!piena.exists() && !miniatura.exists());
+        assert!(estraneo.exists(), "quel che non si riconosce non si tocca");
+    }
+
+    #[test]
     fn l_occupazione_conta_piene_miniature_e_avanzi() {
         let dir = tempfile::tempdir().expect("cartella");
         let store = CoverStore::open(dir.path()).expect("store");
@@ -1519,6 +1639,169 @@ mod tests {
                 (vera.width(), vera.height()),
                 "su {w}×{h}"
             );
+        }
+    }
+
+    // ── le impronte che non sono impronte ──
+
+    /// Le forme che un'impronta scritta da fuori può avere per uscire dallo
+    /// store: risalite, assoluti, prefissi d'unità, percorsi di rete, e il
+    /// gemello maiuscolo di un'impronta vera.
+    fn impronte_storte() -> Vec<String> {
+        vec![
+            "../../fuori".to_owned(),
+            "..\\..\\fuori".to_owned(),
+            "ab/../../fuori".to_owned(),
+            "ab\\..\\..\\fuori".to_owned(),
+            "C:\\Users\\qualcuno\\Pictures\\IMG_0001".to_owned(),
+            "C:fuori".to_owned(),
+            "/etc/fuori".to_owned(),
+            "\\\\host\\condivisa\\fuori".to_owned(),
+            "//host/condivisa/fuori".to_owned(),
+            "AB".repeat(32),
+            String::new(),
+            "a".to_owned(),
+        ]
+    }
+
+    #[test]
+    fn un_impronta_che_non_e_esadecimale_non_esce_dallo_store() {
+        // Solo calcoli sui percorsi: nessuna di queste forme tocca il disco, e
+        // le due di rete non aprono niente verso nessun host.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path().join("copertine")).expect("store");
+        for storta in impronte_storte() {
+            for percorso in [
+                store.path_for(&storta),
+                store.thumbnail_path_for(&storta),
+                store.percorso_media(&storta),
+            ] {
+                // `starts_with` da solo non basta: `radice/../..` comincia per
+                // la radice, componente per componente.
+                let dentro = percorso.starts_with(store.radice())
+                    && !percorso
+                        .components()
+                        .any(|parte| matches!(parte, std::path::Component::ParentDir));
+                assert!(
+                    dentro,
+                    "«{storta}» diventa {} — fuori dallo store",
+                    percorso.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn togliere_un_impronta_storta_non_cancella_niente_fuori_dallo_store() {
+        // Le foto dell'utente accanto alla cartella dei dati, e due righe
+        // orfane che le nominano: una per assoluto, una risalendo. È quel che un
+        // profilo costruito a mano lasciava in `cover_art` per la pulizia.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path().join("dati").join("copertine")).expect("store");
+        let foto = dir.path().join("foto");
+        std::fs::create_dir_all(&foto).expect("cartella delle foto");
+        let mut vittime = Vec::new();
+        for nome in ["IMG_0001", "IMG_0002"] {
+            for coda in ["jpg", "m.jpg", "t.jpg"] {
+                let file = foto.join(format!("{nome}.{coda}"));
+                std::fs::write(&file, b"una foto").expect("foto");
+                vittime.push(file);
+            }
+        }
+        let assoluta = foto.join("IMG_0001").to_string_lossy().into_owned();
+        // `..` come prefisso di due caratteri, poi un altro `..` nel nome: la
+        // radice dello store sta due livelli sotto la cartella temporanea.
+        let risalita = "../foto/IMG_0002".to_owned();
+
+        let tolti = store.togli_tutte(&[assoluta, risalita]);
+
+        for vittima in &vittime {
+            assert!(vittima.exists(), "{} è stata cancellata", vittima.display());
+        }
+        assert_eq!(tolti, Liberato::default());
+    }
+
+    #[test]
+    fn un_orfana_in_maiuscolo_non_porta_via_la_copertina_vera() {
+        // Su NTFS `AB/ABCD….jpg` e `ab/abcd….jpg` sono lo stesso file, ma per
+        // SQLite sono due chiavi: un gemello maiuscolo orfano in `cover_art`
+        // toglieva la copertina di chi la usa ancora.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let vera = salva(&store, 1).remove(0);
+        store.media(&vera).expect("media").expect("c'è");
+
+        let tolti = store.togli_tutte(&[vera.to_uppercase()]);
+
+        assert!(store.path_for(&vera).exists(), "la piena è sparita");
+        assert!(store.thumbnail_path_for(&vera).exists());
+        assert!(store.percorso_media(&vera).exists());
+        assert_eq!(tolti, Liberato::default());
+    }
+
+    #[test]
+    fn la_pulizia_di_una_riga_storta_toglie_la_riga_e_non_tocca_il_disco() {
+        // Dal database in giù, come la fa il filo di manutenzione: la riga se
+        // ne va — non la nomina nessuno — e il file fuori dallo store resta.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path().join("dati").join("copertine")).expect("store");
+        let foto = dir.path().join("foto");
+        std::fs::create_dir_all(&foto).expect("cartella delle foto");
+        let vittima = foto.join("IMG_0003.jpg");
+        std::fs::write(&vittima, b"una foto").expect("foto");
+        let storta = foto.join("IMG_0003").to_string_lossy().into_owned();
+        let connection = con_le_copertine(&[storta.as_str()]);
+
+        let esito = pulisci(&connection, &store, Duration::ZERO).expect("pulizia");
+
+        assert!(vittima.exists(), "la foto è stata cancellata");
+        assert_eq!(esito.righe, 1, "la riga storta se ne va");
+        assert_eq!(esito.liberato, Liberato::default());
+    }
+
+    #[test]
+    fn un_impronta_storta_non_scrive_e_non_legge() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        // Senza le due forme di rete: questa prova chiede davvero al disco, e
+        // prima della correzione le avrebbe chieste a un host.
+        let locali = impronte_storte()
+            .into_iter()
+            .filter(|storta| !storta.starts_with("\\\\") && !storta.starts_with("//"));
+        for storta in locali {
+            assert_eq!(store.media(&storta).expect("nessun guasto"), None);
+            assert_eq!(store.tinta(&storta), None);
+        }
+        assert_eq!(
+            store.occupazione(),
+            Occupazione::default(),
+            "niente scritto"
+        );
+    }
+
+    #[test]
+    fn un_impronta_vera_resta_dove_stava() {
+        // Il criterio nuovo non sposta niente: le copertine di prima stanno
+        // dove le cerca lo store di adesso.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let hash = "ab".repeat(32);
+        assert_eq!(
+            store.path_for(&hash),
+            dir.path().join("ab").join(format!("{hash}.jpg"))
+        );
+        assert_eq!(
+            store.thumbnail_path_for(&hash),
+            dir.path().join("ab").join(format!("{hash}.t.jpg"))
+        );
+        assert_eq!(
+            store.percorso_media(&hash),
+            dir.path().join("ab").join(format!("{hash}.m.jpg"))
+        );
+        assert!(e_un_impronta(&hash));
+        assert!(e_un_impronta("abcdef0123"), "le impronte corte delle prove");
+        for storta in impronte_storte() {
+            assert!(!e_un_impronta(&storta), "«{storta}»");
         }
     }
 

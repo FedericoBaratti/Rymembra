@@ -190,8 +190,12 @@ pub fn id_sicuro(id: &str) -> bool {
 }
 
 /// Un'impronta è esadecimale minuscola e nient'altro.
+///
+/// Il criterio è quello dello store in cui la voce si estrae
+/// ([`crate::covers::e_un_impronta`]), e non una copia: prima questa accettava
+/// anche le maiuscole, che lo store su NTFS confonde con le minuscole.
 fn impronta_sicura(hash: &str) -> bool {
-    hash.len() >= 2 && hash.len() <= 128 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+    crate::covers::e_un_impronta(hash)
 }
 
 /// Il nome dentro l'archivio del documento di sincronia di un dispositivo.
@@ -609,6 +613,10 @@ pub struct Lettore {
     pub voci: Vec<Ammessa>,
     /// Il manifesto, letto all'apertura.
     pub manifesto: Manifesto,
+    /// I byte aperti davvero finora, da tutte le voci lette.
+    aperti: u64,
+    /// Quanti se ne possono aprire in tutto: [`limiti::MAX_TOTALE`].
+    budget: u64,
 }
 
 impl std::fmt::Debug for Lettore {
@@ -674,7 +682,8 @@ impl Lettore {
             .find(|ammessa| ammessa.voce == Voce::Manifesto)
             .ok_or_else(|| rifiutato(format!("manca {NOME_MANIFESTO}")))?
             .clone();
-        let crudo = leggi_voce(&mut zip, &indice_manifesto)?;
+        let mut aperti = 0;
+        let crudo = leggi_voce(&mut zip, &indice_manifesto, &mut aperti, limiti::MAX_TOTALE)?;
         let manifesto: Manifesto = serde_json::from_slice(&crudo)
             .map_err(|err| rifiutato(format!("il manifesto non si legge: {err}")))?;
 
@@ -695,6 +704,8 @@ impl Lettore {
             zip,
             voci,
             manifesto,
+            aperti,
+            budget: limiti::MAX_TOTALE,
         })
     }
 
@@ -723,10 +734,10 @@ impl Lettore {
     ///
     /// # Errori
     ///
-    /// `settings.corrupt` se la voce non si decomprime o è più grande di quanto
-    /// l'indice dichiarasse.
+    /// `settings.corrupt` se la voce non si decomprime, se è più grande di
+    /// quanto l'indice dichiarasse, o se supera quel che resta del budget.
     pub fn byte(&mut self, ammessa: &Ammessa) -> Result<Vec<u8>, AppError> {
-        leggi_voce(&mut self.zip, ammessa)
+        leggi_voce(&mut self.zip, ammessa, &mut self.aperti, self.budget)
     }
 
     /// Estrae una voce su un file, **solo se quel file non c'è già**.
@@ -740,7 +751,9 @@ impl Lettore {
     /// # Errori
     ///
     /// `fs.writeFailed` se la scrittura fallisce, `settings.corrupt` se la voce
-    /// è più grande di quanto l'indice dichiarasse.
+    /// non si decomprime (un CRC che non torna), se è più grande di quanto
+    /// l'indice dichiarasse, o se supera quel che resta del budget. In ogni
+    /// caso d'errore il provvisorio se ne va: nello store non resta niente.
     pub fn estrai(&mut self, ammessa: &Ammessa, destinazione: &Path) -> Result<bool, AppError> {
         if destinazione.exists() {
             return Ok(false);
@@ -748,6 +761,7 @@ impl Lettore {
         if let Some(cartella) = destinazione.parent() {
             std::fs::create_dir_all(cartella).map_err(|err| scrittura(cartella, &err))?;
         }
+        let tetto = tetto_della_voce(ammessa, self.aperti, self.budget);
         let mut voce = self
             .zip
             .by_index(ammessa.indice)
@@ -756,37 +770,101 @@ impl Lettore {
         // Si scrive prima su un nome provvisorio e poi si rinomina: senza,
         // un'interruzione a metà lascerebbe nello store una copertina troncata
         // con il nome giusto, e siccome le copertine si scrivono «solo se
-        // mancano» quella troncata non verrebbe mai più sostituita.
+        // mancano» quella troncata non verrebbe mai più sostituita. Il nome
+        // provvisorio lo riconosce anche `CoverStore::spazza_avanzi`, per
+        // quando a interrompere è la morte del processo.
         let provvisorio = destinazione.with_extension("parziale");
-        let scritto = {
-            let file =
-                std::fs::File::create(&provvisorio).map_err(|err| scrittura(&provvisorio, &err))?;
-            let mut uscita = BufWriter::new(file);
-            let scritto = std::io::copy(
-                &mut voce.by_ref().take(limiti::MAX_VOCE.saturating_add(1)),
-                &mut uscita,
-            )
-            .map_err(|err| scrittura(&provvisorio, &err))?;
-            uscita
-                .flush()
-                .map_err(|err| scrittura(&provvisorio, &err))?;
-            scritto
-        };
-        if scritto > limiti::MAX_VOCE {
+        let file =
+            std::fs::File::create(&provvisorio).map_err(|err| scrittura(&provvisorio, &err))?;
+        // Da qui ogni uscita per errore toglie il provvisorio: un'estrazione
+        // fallita — un CRC che non torna su un profilo scaricato a metà — lo
+        // lasciava nello store per sempre, fino a 64 MiB a voce.
+        let butta = |errore: AppError| {
             let _ = std::fs::remove_file(&provvisorio);
-            return Err(rifiutato(format!(
-                "«{}» è più grande di quanto l'indice dichiarasse",
-                ammessa.nome
-            )));
+            errore
+        };
+        let mut uscita = BufWriter::new(file);
+        // Un byte oltre il tetto: è il modo di sapere che la voce ne ha di più.
+        // E si legge fino alla fine quando non ne ha di più, che è il momento
+        // in cui il lettore di `zip` controlla il CRC.
+        let copiato = std::io::copy(
+            &mut voce.by_ref().take(tetto.saturating_add(1)),
+            &mut uscita,
+        )
+        .and_then(|scritto| uscita.flush().map(|()| scritto));
+        // Chiuso prima di togliere o rinominare: su Windows un file aperto non
+        // si lascia fare né l'una né l'altra cosa.
+        drop(uscita);
+        let scritto = match copiato {
+            Ok(scritto) => scritto,
+            // Dati che non tornano — un CRC, un flusso `deflate` rotto — sono
+            // l'archivio; tutto il resto è il disco di qui.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::InvalidData
+                        | std::io::ErrorKind::InvalidInput
+                        | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                return Err(butta(rifiutato(format!(
+                    "«{}» non si estrae: {err}",
+                    ammessa.nome
+                ))));
+            }
+            Err(err) => return Err(butta(scrittura(&provvisorio, &err))),
+        };
+        self.aperti = self.aperti.saturating_add(scritto);
+        if scritto > tetto {
+            return Err(butta(oltre_il_tetto(ammessa, tetto)));
         }
-        std::fs::rename(&provvisorio, destinazione).map_err(|err| scrittura(destinazione, &err))?;
+        std::fs::rename(&provvisorio, destinazione)
+            .map_err(|err| butta(scrittura(destinazione, &err)))?;
         Ok(true)
+    }
+}
+
+/// Quanti byte aperti si accettano da una voce: quelli che l'indice
+/// **dichiara** per lei, e non più di quel che resta del budget.
+///
+/// La dichiarata e non [`limiti::MAX_VOCE`]: rapporto e totale si controllano
+/// sull'indice ([`indice`]), e reggono solo se la dichiarata è vera. Un
+/// mebibyte che si dichiara dieci byte passava tutti e due i controlli e poi si
+/// scriveva intero. Tenendo ogni voce alla sua dichiarata, i byte aperti in
+/// tutto non superano la somma dichiarata — e il budget lo dice comunque, anche
+/// per chi legge la stessa voce due volte.
+fn tetto_della_voce(ammessa: &Ammessa, aperti: u64, budget: u64) -> u64 {
+    ammessa.byte.min(budget.saturating_sub(aperti))
+}
+
+/// L'errore di una voce che ha dato più byte del suo tetto.
+fn oltre_il_tetto(ammessa: &Ammessa, tetto: u64) -> AppError {
+    if tetto < ammessa.byte {
+        rifiutato(format!(
+            "«{}» supera il budget dei byte che l'archivio può aprire in tutto ({})",
+            ammessa.nome,
+            limiti::MAX_TOTALE
+        ))
+    } else {
+        rifiutato(format!(
+            "«{}» è più grande di quanto l'indice dichiarasse",
+            ammessa.nome
+        ))
     }
 }
 
 /// L'indice: i nomi e le dimensioni dichiarate, senza aprire niente.
 ///
 /// È il punto in cui una bomba si ferma. Dopo, la memoria è già stata chiesta.
+/// Regge perché la lettura tiene ogni voce alla sua dichiarata
+/// ([`tetto_della_voce`]): senza, rapporto e totale guardavano numeri scritti da
+/// chi ha costruito l'archivio, e niente li confrontava coi byte veri.
+///
+/// Le voci che condividono gli stessi byte compressi
+/// (`ZipArchive::has_overlapping_files`) non si cercano: quel controllo è
+/// quadratico nelle voci, cioè minuti a duecentomila copertine, e quel che una
+/// sovrapposizione moltiplica sono i byte aperti, che hanno già il tetto per
+/// voce e il budget del [`Lettore`].
 fn indice(zip: &mut ZipArchive<BufReader<std::fs::File>>) -> Result<Vec<Ammessa>, AppError> {
     if zip.len() > limiti::MAX_VOCI {
         return Err(rifiutato(format!(
@@ -861,24 +939,28 @@ fn indice(zip: &mut ZipArchive<BufReader<std::fs::File>>) -> Result<Vec<Ammessa>
 ///
 /// Non è una ripetizione dell'indice: la dimensione lì è dichiarata da chi ha
 /// costruito l'archivio, quindi può mentire. Questa è la quantità di byte che si
-/// accetta davvero.
+/// accetta davvero — la dichiarata, e non più di quel che resta di `budget`
+/// (vedi [`tetto_della_voce`]) — e `aperti` sale di quelli aperti davvero.
 fn leggi_voce(
     zip: &mut ZipArchive<BufReader<std::fs::File>>,
     ammessa: &Ammessa,
+    aperti: &mut u64,
+    budget: u64,
 ) -> Result<Vec<u8>, AppError> {
+    let tetto = tetto_della_voce(ammessa, *aperti, budget);
     let mut voce = zip
         .by_index(ammessa.indice)
         .map_err(|err| rifiutato(format!("«{}» illeggibile: {err}", ammessa.nome)))?;
     let mut byte = Vec::new();
-    voce.by_ref()
-        .take(limiti::MAX_VOCE.saturating_add(1))
-        .read_to_end(&mut byte)
-        .map_err(|err| rifiutato(format!("«{}» illeggibile: {err}", ammessa.nome)))?;
-    if byte.len() as u64 > limiti::MAX_VOCE {
-        return Err(rifiutato(format!(
-            "«{}» è più grande di quanto l'indice dichiarasse",
-            ammessa.nome
-        )));
+    let letto = voce
+        .by_ref()
+        .take(tetto.saturating_add(1))
+        .read_to_end(&mut byte);
+    let quanti = u64::try_from(byte.len()).unwrap_or(u64::MAX);
+    *aperti = aperti.saturating_add(quanti);
+    letto.map_err(|err| rifiutato(format!("«{}» illeggibile: {err}", ammessa.nome)))?;
+    if quanti > tetto {
+        return Err(oltre_il_tetto(ammessa, tetto));
     }
     Ok(byte)
 }
@@ -1274,6 +1356,123 @@ mod prove {
         assert!(firma_riconosciuta(eredita::FIRMA_PROFILO));
         assert!(!firma_riconosciuta(""));
         assert!(!firma_riconosciuta("Rymembra.profilo"));
+    }
+
+    /// Riscrive la dimensione aperta che l'archivio **dichiara** per la voce
+    /// `nome`, nell'intestazione locale e nell'indice centrale: è quel che fa
+    /// chi costruisce una bomba, perché rapporto e totale guardano quel numero.
+    fn dichiara(byte: &mut [u8], nome: &str, dichiarata: u32) {
+        let nome = nome.as_bytes();
+        let mut riscritte = 0;
+        for i in 0..byte.len().saturating_sub(46) {
+            let (firma, dimensione, inizio_nome) = match &byte[i..i + 4] {
+                b"PK\x03\x04" => (true, i + 22, i + 30),
+                b"PK\x01\x02" => (true, i + 24, i + 46),
+                _ => (false, 0, 0),
+            };
+            if firma && byte.get(inizio_nome..inizio_nome + nome.len()) == Some(nome) {
+                byte[dimensione..dimensione + 4].copy_from_slice(&dichiarata.to_le_bytes());
+                riscritte += 1;
+            }
+        }
+        assert_eq!(riscritte, 2, "intestazione locale e indice centrale");
+    }
+
+    /// Un archivio con il manifesto e una voce in `deflate` che si apre in
+    /// `vera` byte e ne dichiara `dichiarata`.
+    fn bugiardo(dir: &Path, nome_voce: &str, vera: usize, dichiarata: u32) -> PathBuf {
+        let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(NOME_MANIFESTO, Scrittore::intatto())
+            .expect("manifesto");
+        zip.write_all(manifesto_finto().as_bytes())
+            .expect("manifesto");
+        zip.start_file(nome_voce, Scrittore::compresso())
+            .expect("voce");
+        zip.write_all(&vec![b' '; vera]).expect("voce");
+        let mut byte = zip.finish().expect("chiusura").into_inner();
+        dichiara(&mut byte, nome_voce, dichiarata);
+        let percorso = dir.join("bugiardo.ryprofile");
+        std::fs::write(&percorso, &byte).expect("archivio");
+        percorso
+    }
+
+    #[test]
+    fn una_voce_che_si_apre_oltre_la_dichiarata_si_rifiuta() {
+        // Un mebibyte che dice di essere dieci byte: rapporto e totale, letti
+        // dall'indice, restavano sotto soglia, e l'estrazione scriveva tutto
+        // il mebibyte — fino a 64 MiB per voce, per ogni voce.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let hash = "ab".repeat(32);
+        let archivio = bugiardo(dir.path(), &nome_copertina(&hash, false), 1024 * 1024, 10);
+        let mut lettore = Lettore::apri(&archivio).expect("l'indice passa: dice dieci byte");
+        let voce = lettore
+            .voce_di(|voce| matches!(voce, Voce::Copertina { .. }))
+            .expect("la copertina c'è");
+
+        let destinazione = dir
+            .path()
+            .join("store")
+            .join("ab")
+            .join(format!("{hash}.jpg"));
+        let err = lettore
+            .estrai(&voce, &destinazione)
+            .expect_err("più grande di quanto dichiarasse");
+        assert_eq!(err.code().kind().code(), "settings.corrupt");
+        assert!(!destinazione.exists());
+        assert_eq!(
+            nomi_in(destinazione.parent().expect("cartella")),
+            Vec::<String>::new(),
+            "niente a metà nello store"
+        );
+    }
+
+    #[test]
+    fn un_documento_che_si_apre_oltre_il_dichiarato_si_rifiuta() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let archivio = bugiardo(dir.path(), NOME_BIBLIOTECA, 1024 * 1024, 10);
+        let mut lettore = Lettore::apri(&archivio).expect("l'indice passa");
+        let voce = lettore
+            .voce_di(|voce| *voce == Voce::Biblioteca)
+            .expect("la biblioteca c'è");
+        let err = lettore
+            .byte(&voce)
+            .expect_err("più grande di quanto dichiarasse");
+        assert_eq!(err.code().kind().code(), "settings.corrupt");
+    }
+
+    #[test]
+    fn i_byte_aperti_hanno_un_budget_su_tutto_l_archivio() {
+        // Ogni voce sotto il proprio tetto, e tante: i byte aperti davvero si
+        // contano su tutto l'archivio, manifesto compreso.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let archivio = dir.path().join("p.ryprofile");
+        {
+            let mut scrittore = Scrittore::crea(&archivio).expect("archivio");
+            scrittore
+                .aggiungi_testo(NOME_MANIFESTO, &manifesto_finto())
+                .expect("manifesto");
+            for n in 0..3 {
+                scrittore
+                    .aggiungi_byte(&nome_copertina(&format!("ab{n:02}"), false), &[b'x'; 100])
+                    .expect("jpg");
+            }
+            scrittore.chiudi().expect("chiusura");
+        }
+        let mut lettore = Lettore::apri(&archivio).expect("lettura");
+        assert!(lettore.aperti > 0, "il manifesto si conta");
+        lettore.budget = lettore.aperti + 250;
+        let voci = lettore.voci_di(|voce| matches!(voce, Voce::Copertina { .. }));
+        let store = dir.path().join("store");
+        let mut esiti = Vec::new();
+        for (n, voce) in voci.iter().enumerate() {
+            esiti.push(
+                lettore
+                    .estrai(voce, &store.join(format!("{n}.jpg")))
+                    .is_ok(),
+            );
+        }
+        assert_eq!(esiti, vec![true, true, false], "la terza supera il budget");
+        assert!(!store.join("2.jpg").exists());
     }
 
     /// Un manifesto minimo, scritto a mano perché la prova non dipenda da chi lo

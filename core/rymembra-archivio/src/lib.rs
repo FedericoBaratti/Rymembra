@@ -110,11 +110,57 @@ impl Lettura {
 ///
 /// # Errori
 ///
-/// - `spotify.archiveUnreadable` se il file non è uno zip, o è troncato.
+/// - `spotify.archiveUnreadable` se il file non è uno zip, o è troncato; o se
+///   ha più voci, o una volta aperto più byte, di quanti un archivio di
+///   Spotify ne abbia mai (vedi [`Tetti`]). Un file oltre il suo tetto, o con
+///   più valori JSON di quanti se ne aprono, finisce invece fra gli
+///   illeggibili e gli altri entrano lo stesso.
 /// - `spotify.archiveEmpty` se lo zip si apre e non contiene niente di
 ///   riconoscibile. Porta l'elenco di quel che c'era: senza, chi ha scaricato
 ///   l'archivio sbagliato non ha modo di sapere quale dei due era quello giusto.
 pub fn leggi(percorso: &Path) -> Result<Lettura, AppError> {
+    leggi_con(percorso, &TETTI)
+}
+
+/// I tetti con cui si legge un archivio che l'utente ha scaricato da un link.
+///
+/// Il tetto per file da solo non bastava, per due ragioni misurate: le voci
+/// non avevano un numero massimo né un totale, quindi ogni voce pagava di nuovo
+/// il suo tetto; e il tetto stava sui byte di **testo**, mentre la memoria che
+/// conta è quella dell'albero `serde_json::Value` che ne nasce — `[0,0,…]` costa
+/// quaranta volte il testo, cioè gigabyte da 185 KB di zip.
+#[derive(Debug, Clone, Copy)]
+struct Tetti {
+    /// Quante voci può avere l'archivio. Spotify ne manda qualche decina.
+    voci: usize,
+    /// Quanti byte aperti per un file: [`BYTE_MASSIMI_PER_FILE`].
+    per_file: u64,
+    /// Quanti byte aperti in tutto l'archivio: un gibibyte, il triplo della
+    /// cronologia estesa più lunga che si sia vista.
+    totale: u64,
+    /// Quanti valori JSON per file, contati prima di costruire l'albero (vedi
+    /// [`valori_al_piu`]): quattro milioni sono qualche centinaio di megabyte
+    /// nel caso peggiore, e una cronologia estesa da quindici megabyte ne fa
+    /// mezzo milione.
+    valori: usize,
+}
+
+/// I tetti dell'app. Le prove ne usano di più piccoli.
+const TETTI: Tetti = Tetti {
+    voci: 10_000,
+    per_file: BYTE_MASSIMI_PER_FILE,
+    totale: 1024 * 1024 * 1024,
+    valori: 4_000_000,
+};
+
+/// [`leggi`], con dei tetti dati.
+fn leggi_con(percorso: &Path, tetti: &Tetti) -> Result<Lettura, AppError> {
+    let illeggibile = |detail: String| {
+        AppError::new(ErrorCode::SpotifyArchiveUnreadable {
+            path: percorso.display().to_string(),
+            detail: Some(detail),
+        })
+    };
     let file = std::fs::File::open(percorso).map_err(|err| {
         AppError::new(ErrorCode::SpotifyArchiveUnreadable {
             path: percorso.display().to_string(),
@@ -140,12 +186,29 @@ pub fn leggi(percorso: &Path) -> Result<Lettura, AppError> {
     let mut playlist = playlist::Lette::default();
     let mut ascolti = cronologia::Letti::default();
 
+    if zip.len() > tetti.voci {
+        return Err(illeggibile(format!(
+            "l'archivio ha {} voci, oltre le {} che si accettano",
+            zip.len(),
+            tetti.voci
+        )));
+    }
+    let mut restanti = tetti.totale;
     for indice in 0..zip.len() {
-        let (nome, corpo) = match voce(&mut zip, indice) {
-            Ok(voce) => voce,
-            Err(illeggibile) => {
-                lettura.illeggibili.push(illeggibile);
+        let (nome, corpo) = match voce(&mut zip, indice, tetti, &mut restanti) {
+            Letta::Voce(nome, corpo) => (nome, corpo),
+            Letta::Illeggibile(guasto) => {
+                lettura.illeggibili.push(guasto);
                 continue;
+            }
+            // Oltre il budget non si salta la voce: si rifiuta l'archivio.
+            // Un archivio vero ci sta largo, e uno che ci arriva non è uno
+            // da cui importare una parte a caso.
+            Letta::OltreIlBudget => {
+                return Err(illeggibile(format!(
+                    "aperto, l'archivio supera i {} byte che si accettano in tutto",
+                    tetti.totale
+                )));
             }
         };
 
@@ -227,27 +290,47 @@ pub fn leggi(percorso: &Path) -> Result<Lettura, AppError> {
     Ok(lettura)
 }
 
-/// Legge una voce dell'archivio: il nome base, e il JSON se lo è.
+/// Com'è andata la lettura di una voce.
+enum Letta {
+    /// Il nome base, e il JSON se lo è.
+    ///
+    /// `None` quando la voce è per noi ma non si è parsata: chi chiama decide
+    /// se contarla fra gli illeggibili, che dipende dal fatto che il nome sia
+    /// riconosciuto o no. Buttarla qui vorrebbe dire lamentarsi anche dei PDF
+    /// che Spotify mette nell'archivio per spiegare i campi.
+    Voce(String, Option<serde_json::Value>),
+    /// Una voce che non si legge, col perché.
+    Illeggibile(Illeggibile),
+    /// I byte aperti in tutto l'archivio hanno superato [`Tetti::totale`].
+    OltreIlBudget,
+}
+
+/// Legge una voce dell'archivio, dentro i [`Tetti`].
 ///
-/// `Ok((nome, None))` quando la voce è per noi ma non si è parsata: chi chiama
-/// decide se contarla fra gli illeggibili, che dipende dal fatto che il nome sia
-/// riconosciuto o no. Buttarla qui vorrebbe dire lamentarsi anche dei PDF che
-/// Spotify mette nell'archivio per spiegare i campi.
+/// `restanti` è quel che resta del budget dei byte aperti su tutto
+/// l'archivio, e scende di quel che questa voce ha aperto davvero.
 fn voce(
     zip: &mut zip::ZipArchive<std::fs::File>,
     indice: usize,
-) -> Result<(String, Option<serde_json::Value>), Illeggibile> {
-    let mut dentro = zip.by_index(indice).map_err(|err| Illeggibile {
-        nome: format!("voce {indice}"),
-        perche: err.to_string(),
-    })?;
+    tetti: &Tetti,
+    restanti: &mut u64,
+) -> Letta {
+    let mut dentro = match zip.by_index(indice) {
+        Ok(dentro) => dentro,
+        Err(err) => {
+            return Letta::Illeggibile(Illeggibile {
+                nome: format!("voce {indice}"),
+                perche: err.to_string(),
+            });
+        }
+    };
 
     // Il nome **base**: gli archivi di Spotify hanno una cartella in cima che si
     // chiama in modi diversi a seconda di quale dei due è, e le voci di cartella
     // finiscono con una barra.
     let intero = dentro.name().to_owned();
     if intero.ends_with('/') {
-        return Ok((intero, None));
+        return Letta::Voce(intero, None);
     }
     let nome = intero
         .rsplit(['/', '\\'])
@@ -256,25 +339,83 @@ fn voce(
         .to_owned();
 
     if !nome.to_ascii_lowercase().ends_with(".json") {
-        return Ok((nome, None));
+        return Letta::Voce(nome, None);
     }
 
     // Il tetto si applica al **letto**, non al dichiarato: `size()` viene
     // dall'intestazione dell'archivio, cioè da chi l'ha scritto, e una zip bomb
-    // dichiara quel che le pare.
-    let mut testo = String::new();
-    if (&mut dentro)
-        .take(BYTE_MASSIMI_PER_FILE)
-        .read_to_string(&mut testo)
-        .is_err()
-    {
-        return Err(Illeggibile {
+    // dichiara quel che le pare. Un byte oltre il più piccolo dei due tetti
+    // dice quale dei due si è superato, invece di troncare in silenzio.
+    // Byte e non testo: un tetto che taglia a metà un carattere non deve
+    // diventare «non è UTF-8», e i byte aperti si contano comunque.
+    let tetto = tetti.per_file.min(*restanti);
+    let mut byte = Vec::new();
+    let letto = (&mut dentro)
+        .take(tetto.saturating_add(1))
+        .read_to_end(&mut byte);
+    let aperti = u64::try_from(byte.len()).unwrap_or(u64::MAX);
+    *restanti = restanti.saturating_sub(aperti);
+    if aperti > tetto {
+        if tetto < tetti.per_file {
+            return Letta::OltreIlBudget;
+        }
+        return Letta::Illeggibile(Illeggibile {
+            nome,
+            perche: format!("aperto supera il tetto di {} byte per file", tetti.per_file),
+        });
+    }
+    let Some(testo) = letto.ok().and_then(|_| String::from_utf8(byte).ok()) else {
+        return Letta::Illeggibile(Illeggibile {
             nome,
             perche: "non si è potuto leggere, o non è testo UTF-8".to_owned(),
         });
-    }
+    };
 
-    Ok((nome, serde_json::from_str(&testo).ok()))
+    // L'albero costa molto più del testo: i valori si contano prima di
+    // costruirlo, e oltre il tetto la voce non si apre.
+    let valori = valori_al_piu(testo.as_bytes());
+    if valori > tetti.valori {
+        return Letta::Illeggibile(Illeggibile {
+            nome,
+            perche: format!(
+                "porterebbe fino a {valori} valori, oltre i {} che si accettano per file",
+                tetti.valori
+            ),
+        });
+    }
+    Letta::Voce(nome, serde_json::from_str(&testo).ok())
+}
+
+/// Quanti valori JSON al più stanno in questo testo, senza costruire niente.
+///
+/// Ogni elemento di un vettore o di un oggetto, tranne il primo, è preceduto
+/// da una virgola; i primi sono al più uno per contenitore; più la radice.
+/// Quindi virgole + contenitori + 1, contati **fuori** dalle stringhe. Un conto
+/// per eccesso, in un passaggio e senza allocare. È lo stesso conto di
+/// `rymembra_sync::documento`: due crate che non si vedono, e una funzione di
+/// quindici righe che non vale una dipendenza nuova fra i due.
+fn valori_al_piu(testo: &[u8]) -> usize {
+    let mut valori: usize = 1;
+    let mut in_stringa = false;
+    let mut dopo_barra = false;
+    for &byte in testo {
+        if in_stringa {
+            if dopo_barra {
+                dopo_barra = false;
+            } else if byte == b'\\' {
+                dopo_barra = true;
+            } else if byte == b'"' {
+                in_stringa = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_stringa = true,
+            b',' | b'[' | b'{' => valori = valori.saturating_add(1),
+            _ => {}
+        }
+    }
+    valori
 }
 
 /// Che cosa Rymembra sa fare di un file dell'archivio.
@@ -503,6 +644,103 @@ mod prove {
 
         let err = leggi(&dir.path().join("non_esiste.zip")).expect_err("non c'è");
         assert_eq!(err.code().kind().code(), "spotify.archiveUnreadable");
+    }
+
+    #[test]
+    fn un_json_enorme_che_non_e_del_formato_non_si_materializza() {
+        // `[0,0,…]` da 10 MB, una decina di KB compressi: come
+        // `serde_json::Value` pesa ~400 MB (misurato: 40 volte il testo), e al
+        // tetto dei 200 MB per file si arriva a gigabyte.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let enorme = format!("[{}0]", "0,".repeat(5_000_000));
+        let percorso = archivio(
+            dir.path(),
+            "bomba.zip",
+            &[
+                ("Playlist1.json", enorme.as_str()),
+                ("Identity.json", r#"{"username":"u"}"#),
+            ],
+        );
+        drop(enorme);
+        let lettura = leggi(&percorso).expect("lettura");
+        assert!(
+            lettura
+                .illeggibili
+                .iter()
+                .any(|i| i.nome == "Playlist1.json" && i.perche.contains("valori")),
+            "letti: {:?}, illeggibili: {:?}",
+            lettura.letti,
+            lettura.illeggibili
+        );
+        assert_eq!(lettura.letti, vec!["Identity.json".to_owned()]);
+    }
+
+    #[test]
+    fn un_archivio_con_troppe_voci_si_rifiuta() {
+        // Spotify ne manda qualche decina. Diecimila voci vuote non sono un
+        // archivio di Spotify, e ognuna costa una lettura.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let nomi: Vec<String> = (0..=TETTI.voci).map(|n| format!("vuoto{n}.txt")).collect();
+        let voci: Vec<(&str, &str)> = nomi.iter().map(|n| (n.as_str(), "")).collect();
+        let percorso = archivio(dir.path(), "tante.zip", &voci);
+        let err = leggi(&percorso).expect_err("troppe voci");
+        assert_eq!(err.code().kind().code(), "spotify.archiveUnreadable");
+    }
+
+    #[test]
+    fn un_file_oltre_il_tetto_si_dice_invece_di_troncarlo() {
+        // Prima il testo si troncava al tetto in silenzio, e il guasto che
+        // arrivava era «non è JSON valido»: vero, ma non il perché.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let percorso = archivio(
+            dir.path(),
+            "lungo.zip",
+            &[
+                (
+                    "Playlist1.json",
+                    r#"{"playlists":[{"name":"Lunghissima","items":[]}]}"#,
+                ),
+                ("Identity.json", r#"{"username":"u"}"#),
+            ],
+        );
+        let tetti = Tetti {
+            per_file: 20,
+            ..TETTI
+        };
+        let lettura = leggi_con(&percorso, &tetti).expect("lettura");
+        assert!(
+            lettura
+                .illeggibili
+                .iter()
+                .any(|i| i.nome == "Playlist1.json" && i.perche.contains("tetto")),
+            "{:?}",
+            lettura.illeggibili
+        );
+        assert_eq!(lettura.letti, vec!["Identity.json".to_owned()]);
+    }
+
+    #[test]
+    fn i_byte_aperti_hanno_un_budget_su_tutto_l_archivio() {
+        // Ogni file sotto il suo tetto, e tanti: il conto dei byte **aperti**
+        // davvero, su tutto l'archivio, è il solo posto in cui la somma si vede.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let percorso = archivio(
+            dir.path(),
+            "somma.zip",
+            &[
+                ("Playlist1.json", r#"{"playlists":[]}"#),
+                ("Playlist2.json", r#"{"playlists":[]}"#),
+                ("Playlist3.json", r#"{"playlists":[]}"#),
+            ],
+        );
+        let tetti = Tetti {
+            totale: 40,
+            ..TETTI
+        };
+        let err = leggi_con(&percorso, &tetti).expect_err("oltre il budget");
+        assert_eq!(err.code().kind().code(), "spotify.archiveUnreadable");
+        // Con il budget vero si legge tutto.
+        assert_eq!(leggi(&percorso).expect("lettura").letti.len(), 3);
     }
 
     #[test]

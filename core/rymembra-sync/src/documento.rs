@@ -34,6 +34,12 @@
 //! Una versione **maggiore** invece è un rifiuto netto, perché è l'unico caso in
 //! cui leggere male porterebbe a scrivere sopra il lavoro di un Rymembra più
 //! nuovo — cioè la sola perdita di dati vera che questo modulo può causare.
+//!
+//! I record leggibili ma **fuori dominio** — sei stelle, un conteggio presso
+//! `i64::MAX`, una data fra dieci anni — non si scartano qui ma in
+//! [`crate::dominio::nel_dominio`], che chi fonde chiama con il proprio
+//! «adesso»: il futuro dipende da quando lo si guarda, e un documento letto una
+//! volta resta in memoria per molte passate.
 
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
@@ -67,6 +73,22 @@ const SUFFISSO: &str = ".v1.json.gz";
 /// viene da una cartella condivisa, e «l'abbiamo scritto noi» non è una garanzia
 /// su cosa ci sia dentro adesso.
 const LIMITE_DECOMPRESSO: u64 = 64 * 1024 * 1024;
+
+/// Quanti valori JSON si accetta che un documento contenga: quattro milioni.
+///
+/// Il tetto sui byte aperti non basta, perché la memoria che conta è quella
+/// dell'albero: un `serde_json::Value` costa una trentina di byte per valore,
+/// più la crescita a raddoppi dei suoi vettori, e `[0,0,…]` sono due byte di
+/// testo per valore. Misurato: quaranta volte il testo, cioè ~2,6 GB al tetto
+/// dei 64 MiB, da 64 KB di gzip. I valori si contano **prima** di costruire
+/// l'albero ([`valori_al_piu`]), e oltre il tetto il documento si rifiuta.
+///
+/// Quattro milioni sono qualche centinaio di megabyte nel caso peggiore, e
+/// stanno larghi attorno a una libreria vera: centomila brani con ascolti,
+/// ultimi ascolti e voti fanno mezzo milione di valori, e anche le sequenze di
+/// cento playlist da duemila brani con le loro lapidi restano sotto i due
+/// milioni.
+const MASSIMO_VALORI: usize = 4_000_000;
 
 /// Il nome del documento di un dispositivo.
 ///
@@ -450,14 +472,23 @@ fn decomprimi(compresso: &[u8]) -> Result<Vec<u8>, AppError> {
 ///
 /// # Errori
 ///
-/// - `sync.remoteCorrupt` se il gzip o il JSON non si interpretano, o se non c'è
-///   un `content` dentro: non c'è niente da leggere, e chi chiama può mettere il
-///   file da parte.
+/// - `sync.remoteCorrupt` se il gzip o il JSON non si interpretano, se non c'è
+///   un `content` dentro, o se porterebbe più di [`MASSIMO_VALORI`] valori:
+///   non c'è niente da leggere, e chi chiama può mettere il file da parte.
 /// - `net.badSchema` se la versione è **più alta** di [`VERSIONE`]. Un documento
 ///   scritto da un Rymembra più nuovo non è corrotto, e chi chiama non deve
 ///   sovrascriverlo.
 pub fn interpreta(compresso: &[u8]) -> Result<Documento, AppError> {
     let crudo = decomprimi(compresso)?;
+    let valori = valori_al_piu(&crudo);
+    if valori > MASSIMO_VALORI {
+        return Err(
+            AppError::new(ErrorCode::SyncRemoteCorrupt).with_cause(format!(
+                "il documento porterebbe fino a {valori} valori, oltre i {MASSIMO_VALORI} che si \
+             accettano: aperto in memoria peserebbe troppo"
+            )),
+        );
+    }
     let radice: serde_json::Value = serde_json::from_slice(&crudo).map_err(|err| {
         AppError::new(ErrorCode::SyncRemoteCorrupt).with_cause(format!("json illeggibile: {err}"))
     })?;
@@ -511,6 +542,38 @@ pub fn interpreta(compresso: &[u8]) -> Result<Documento, AppError> {
                 .and_then(|valore| serde_json::from_value(valore.clone()).ok()),
         },
     })
+}
+
+/// Quanti valori JSON al più stanno in questo testo, senza costruire niente.
+///
+/// Ogni elemento di un vettore o di un oggetto, tranne il primo, è preceduto
+/// da una virgola; i primi sono al più uno per contenitore; più la radice.
+/// Quindi virgole + contenitori + 1, contati **fuori** dalle stringhe — una
+/// virgola dentro un nome di brano non è un valore. Un conto per eccesso, in
+/// un solo passaggio e senza allocare: su un testo che non è JSON sbaglia, ma
+/// lì il parser fallisce comunque, e una stringa costa quanto i suoi byte.
+fn valori_al_piu(testo: &[u8]) -> usize {
+    let mut valori: usize = 1;
+    let mut in_stringa = false;
+    let mut dopo_barra = false;
+    for &byte in testo {
+        if in_stringa {
+            if dopo_barra {
+                dopo_barra = false;
+            } else if byte == b'\\' {
+                dopo_barra = true;
+            } else if byte == b'"' {
+                in_stringa = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_stringa = true,
+            b',' | b'[' | b'{' => valori = valori.saturating_add(1),
+            _ => {}
+        }
+    }
+    valori
 }
 
 /// Una mappa di record, saltando quelli che non si interpretano.
@@ -716,6 +779,47 @@ mod prove {
             matches!(errore.code(), ErrorCode::NetBadSchema { .. }),
             "non è corrotto: è più nuovo di noi, e non va sovrascritto"
         );
+    }
+
+    #[test]
+    fn un_documento_piccolo_non_si_apre_in_un_albero_enorme() {
+        // Dieci megabyte di `[0,0,…]` dentro un record, una decina di
+        // kilobyte compressi: come `serde_json::Value` pesano ~400 MB
+        // (misurato, quaranta volte il testo), e al tetto di 64 MiB si arriva a
+        // gigabyte. Il documento si legge perché il record storto cade da sé:
+        // oggi il conto lo paga la memoria, prima di qualunque controllo.
+        let crudo = format!(
+            r#"{{"version":1,"device":"uno","generatedAt":5,"content":{{"voti":{{"a":[{}0]}}}}}}"#,
+            "0,".repeat(5_000_000)
+        );
+        let mut compressore =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        compressore.write_all(crudo.as_bytes()).expect("comprime");
+        let byte = compressore.finish().expect("chiude");
+        drop(crudo);
+
+        let errore = interpreta(&byte).expect_err("troppi valori per un documento vero");
+        assert_eq!(*errore.code(), ErrorCode::SyncRemoteCorrupt);
+        assert!(
+            errore.cause().is_some_and(|causa| causa.contains("valori")),
+            "{errore:?}"
+        );
+    }
+
+    #[test]
+    fn un_documento_vero_e_grande_si_legge_ancora() {
+        // Il tetto è sui valori, non sui record: una libreria da centomila
+        // brani con ascolti, ultimi ascolti e voti sta molto sotto.
+        let mut contenuto = Contenuto::default();
+        for n in 0..100_000 {
+            let chiave = format!("artista {n}|titolo {n}|album");
+            contenuto.ascolti.insert(chiave.clone(), 3);
+            contenuto.ultimo.insert(chiave.clone(), 1_700_000_000_000);
+            contenuto.voti.insert(chiave, Voto { v: 4, at: 10 });
+        }
+        let documento = Documento::nuovo("uno", contenuto, 5);
+        let riletto = interpreta(&serializza(&documento).expect("scrive")).expect("si legge");
+        assert_eq!(riletto, documento);
     }
 
     #[test]
