@@ -181,8 +181,10 @@ pub fn cestina(percorsi: &[String]) -> Result<bool, Errore> {
     chiama("sistema.cestina", &Percorsi { percorsi })
 }
 
-/// La cartella della cache dell'app: quella che il `FileProvider` sa
-/// mostrare all'installatore di Android.
+/// La cartella della cache dell'app. Il `FileProvider` ne sa mostrare alle
+/// altre app due sottocartelle soltanto: `aggiornamenti` (l'APK, per
+/// l'installatore) e `diario` (la copia da condividere). Vedi
+/// `res/xml/file_paths.xml`.
 ///
 /// # Errori
 ///
@@ -207,14 +209,17 @@ struct Apk<'a> {
     percorso: &'a str,
 }
 
-/// Consegna un APK — un file nella [`cartella_cache`] — all'installatore di
-/// Android. Non aspetta la risposta: l'installazione è del sistema, e se va
-/// a buon fine il sistema chiude Rymembra per sostituirla.
+/// Consegna un APK — un file nella cartella `aggiornamenti` della
+/// [`cartella_cache`] — all'installatore di Android, dopo averlo verificato.
+/// Non aspetta la risposta: l'installazione è del sistema, e se va a buon fine
+/// il sistema chiude Rymembra per sostituirla.
 ///
 /// # Errori
 ///
-/// Se il ponte non risponde, se non c'è un'attività, o se il percorso non è
-/// testo.
+/// Se il ponte non risponde, se non c'è un'attività, se il percorso non è
+/// testo o non sta in quella cartella, e se l'APK non è questa app — un altro
+/// pacchetto, o firmato con un'altra chiave: allora Kotlin l'ha già
+/// cancellato.
 pub fn installa_apk(percorso: &Path) -> Result<Installazione, Errore> {
     let percorso = percorso
         .to_str()
@@ -284,8 +289,9 @@ struct Condivisione<'a> {
     titolo: &'a str,
 }
 
-/// Apre il foglio di condivisione di Android su un file della
-/// [`cartella_cache`]: posta, messaggi, Drive, «Salva in File». Non aspetta.
+/// Apre il foglio di condivisione di Android su un file della cartella
+/// `diario` della [`cartella_cache`]: posta, messaggi, Drive, «Salva in
+/// File». Non aspetta.
 ///
 /// # Errori
 ///

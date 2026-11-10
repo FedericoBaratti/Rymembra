@@ -1,5 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Quel che il FileProvider può mostrare alle altre app: le sole due cartelle
+     della cache da cui Rymembra concede un file, e niente sopra di loro. Il
+     modello di Tauri offriva tutta la memoria condivisa e tutta la cache, cioè
+     anche i documenti aperti (`cache/aperti`), quelli da salvare
+     (`cache/da-salvare`) e la cache della WebView: un `getUriForFile` con un
+     percorso arrivato da fuori li avrebbe resi concedibili.
+
+     Nessuna `external-path`: l'unico che la usava è la foto di
+     `<input type="file" capture>` di wry, e la pagina di Rymembra quel campo
+     non ce l'ha; se un giorno comparisse, wry prende l'eccezione e apre il
+     selettore dei file. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <external-path name="my_images" path="." />
-  <cache-path name="my_cache_images" path="." />
+  <!-- L'APK dell'aggiornamento, per l'installatore: vedi `Installatore`. -->
+  <cache-path name="aggiornamenti" path="aggiornamenti/" />
+  <!-- La copia del diario da condividere: vedi `diario.rs` e `Condividi`. -->
+  <cache-path name="diario" path="diario/" />
 </paths>

@@ -14,13 +14,24 @@
 //! scritto una volta sola. Una release senza un APK per questo telefono non è
 //! un aggiornamento: è una versione per il computer, e qui non si annuncia.
 //!
-//! # Perché basta HTTPS
+//! # Che cosa si verifica
 //!
 //! Sul computer l'installer è firmato con una chiave nostra, e l'updater ne
-//! verifica la firma prima di eseguirlo. Su Android lo fa il sistema, e più
-//! severo: un APK si installa **sopra** Rymembra solo se è firmato con la stessa
-//! chiave di quella installata. Un file arrivato storto, o da qualcun altro,
-//! l'installatore lo rifiuta da sé.
+//! verifica la firma prima di eseguirlo. Sul telefono la chiave è quella che
+//! firma l'APK, e la verifica sta in tre passi:
+//!
+//! - l'APK si annuncia solo se si scarica da GitHub
+//!   ([`crate::rilasci::allegato_di_github`]), e lo scaricamento segue i
+//!   rimandi solo verso GitHub ([`rimando_di_github`]), in HTTPS;
+//! - prima di consegnarlo, `Installatore.kt` lo apre e pretende che sia
+//!   **questa** app — lo stesso pacchetto — firmata con lo stesso certificato
+//!   di quella installata; se no lo cancella, e l'errore torna qui;
+//! - l'installatore di Android, alla fine, lo mette sopra Rymembra solo se la
+//!   firma è la stessa.
+//!
+//! Il secondo passo esiste perché il terzo protegge solo il pacchetto che c'è
+//! già: un APK con un altro nome di pacchetto per Android non è un
+//! aggiornamento ma un'app nuova, e la proporrebbe da installare a un tocco.
 //!
 //! # I tempi
 //!
@@ -40,13 +51,15 @@ use std::time::{Duration, Instant};
 
 use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_net::{Corpo, Metodo, Rete, Richiesta};
+use rymembra_net::{Cancello, Corpo, Metodo, Rete, Richiesta, Rimandi};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
-use crate::rilasci::{Rilascio, Trovato, progetto_da, scegli, troppo_presto};
+use crate::rilasci::{
+    Rilascio, Trovato, passata_d_avvio_saltata, progetto_da, rimando_di_github, scegli,
+};
 use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
@@ -56,6 +69,16 @@ const CHIAVE_ATTIVO: &str = "aggiornamenti.attivo";
 const CHIAVE_ULTIMO: &str = "aggiornamenti.ultimo_ms";
 /// La versione per cui si è detto «non ora».
 const CHIAVE_SALTATA: &str = "aggiornamenti.saltata";
+/// La versione che l'ultimo controllo riuscito ha trovato.
+///
+/// L'aggiornamento trovato vive solo in memoria, e la guardia d'avvio salta
+/// il controllo se l'ultimo è di meno di [`GUARDIA`] fa: un processo morto
+/// dopo l'avviso — su un telefono succede di continuo — si riapriva senza.
+/// Qui si ricorda solo che una versione nuova c'era, quanto basta perché la
+/// passata d'avvio si faccia comunque (`rilasci::passata_d_avvio_saltata`),
+/// che è il solo modo di riavere l'indirizzo dell'APK. Si toglie quando un
+/// controllo riuscito non trova niente. La regola, e la chiave, del computer.
+const CHIAVE_TROVATA: &str = "aggiornamenti.trovata";
 
 /// Ogni quanto si ricontrolla finché l'app resta viva.
 const INTERVALLO: Duration = Duration::from_secs(6 * 60 * 60);
@@ -77,6 +100,9 @@ const RIPROVE_SENZA_RETE: [Duration; 3] = [
 const SCADENZA_RICHIESTA: Duration = Duration::from_secs(20);
 /// Ogni quanto si racconta l'avanzamento dello scaricamento.
 const RESPIRO_AVANZAMENTO: Duration = Duration::from_millis(200);
+/// Quanti rimandi si seguono scaricando l'APK: GitHub ne fa uno, verso chi
+/// serve i byte; uno in più per un progetto rinominato, e uno di margine.
+const RIMANDI_DELL_APK: u32 = 3;
 
 /// Perché il filo si è svegliato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,9 +384,16 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                     return;
                 }
                 let guardia_ms = i64::try_from(GUARDIA.as_millis()).unwrap_or(i64::MAX);
+                // Il `&&` tiene le letture dal database fuori da ogni giro
+                // tranne il primo. La guardia cede se l'ultimo controllo aveva
+                // trovato una versione nuova: vedi `CHIAVE_TROVATA`.
                 let giro = if guardia
-                    && troppo_presto(ultimo_controllo(&app), adesso_ms(), guardia_ms)
-                {
+                    && passata_d_avvio_saltata(
+                        ultimo_controllo(&app),
+                        adesso_ms(),
+                        guardia_ms,
+                        versione_trovata_prima(&app).as_deref(),
+                    ) {
                     Giro::Saltato
                 } else {
                     crate::stato::sorvegliato("rymembra-aggiornamenti", || passata(&app, a_mano))
@@ -426,6 +459,18 @@ fn ultimo_controllo(app: &AppHandle) -> Option<i64> {
     .flatten()
 }
 
+/// La versione che l'ultimo controllo riuscito aveva trovato, se il database
+/// la ricorda: vedi `CHIAVE_TROVATA`. `None` per tutto quel che non è una
+/// risposta, che vuol dire lasciare la guardia com'era.
+fn versione_trovata_prima(app: &AppHandle) -> Option<String> {
+    let stato = app.try_state::<Stato>()?;
+    con_libreria(&stato, |libreria| {
+        settings::read(&libreria.connection, CHIAVE_TROVATA)
+    })
+    .ok()
+    .flatten()
+}
+
 /// Un giro: controlla, deposita quel che ha trovato, racconta.
 fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     let Some(progetto) = progetto(app) else {
@@ -465,7 +510,11 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     };
     match esito {
         Ok(trovato) => {
-            if aggiornamenti.generazione.load(Ordering::Acquire) == partenza {
+            let versione = trovato.as_ref().map(|nuovo| nuovo.versione.clone());
+            // Spento intanto: il controllo è fatto (l'ora si scrive), ma quel
+            // che ha trovato non si mostra e non si ricorda.
+            let vale = aggiornamenti.generazione.load(Ordering::Acquire) == partenza;
+            if vale {
                 *aggiornamenti
                     .trovato
                     .lock()
@@ -481,7 +530,14 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
                         &libreria.connection,
                         CHIAVE_ULTIMO,
                         &adesso_ms().to_string(),
-                    )
+                    )?;
+                    match &versione {
+                        _ if !vale => Ok(()),
+                        Some(versione) => {
+                            settings::write(&libreria.connection, CHIAVE_TROVATA, versione)
+                        }
+                        None => settings::forget(&libreria.connection, CHIAVE_TROVATA).map(|_| ()),
+                    }
                 });
             }
         }
@@ -625,7 +681,13 @@ fn scarica(
         }
     };
     let annullato = || aggiornamenti.annulla.load(Ordering::Acquire);
-    let esito = Rete::per_prelievo("aggiornamenti").preleva(
+    // L'indirizzo è di GitHub (`rilasci::scegli`), e GitHub lo serve da
+    // un altro ospite suo: si segue quello, e nessun altro.
+    let rete = Rete::per_prelievo("aggiornamenti").con_rimandi(Rimandi::Sorvegliati {
+        quanti: RIMANDI_DELL_APK,
+        cancello: Cancello::nuovo(rimando_di_github),
+    });
+    let esito = rete.preleva(
         &trovato.indirizzo,
         &[],
         &mut file,
@@ -645,6 +707,10 @@ fn scarica(
 }
 
 /// Consegna l'APK all'installatore di Android.
+///
+/// Prima `Installatore.kt` lo verifica: un APK che non è questa app — un altro
+/// pacchetto, o un'altra firma — torna qui come errore, ed è già cancellato,
+/// così il prossimo «Aggiorna» non lo riusa.
 ///
 /// Se Rymembra non ha ancora il permesso di installare app, Android apre la
 /// pagina dove lo si concede: chi la chiude torna a «Aggiorna», che stavolta

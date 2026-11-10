@@ -185,27 +185,91 @@ pub async fn telefono_apri_documento(tipi: Vec<String>) -> Esito<Option<String>>
 }
 
 /// Fa scegliere dove salvare, e ci copia `sorgente` — un file che il nucleo ha
-/// appena scritto nella cache. Torna `false` se chi guarda ha annullato. La
-/// copia nella cache si toglie comunque.
+/// appena scritto dove dice [`telefono_file_temporaneo`]. Torna `false` se chi
+/// guarda ha annullato. La copia nella cache si toglie comunque.
+///
+/// `sorgente` arriva dalla finestra, e dopo la copia si **cancella**: si
+/// accetta quindi solo un file di quella cartella ([`da_salvare`]). Fuori di lì
+/// niente dialogo, niente copia e niente cancellazione — prima, uno script
+/// nella finestra poteva far sparire il database con un «Annulla».
 ///
 /// # Errori
 ///
-/// Come [`telefono_permessi`], e se la copia non riesce.
+/// `fs.pathInvalid` se `sorgente` non è un documento di quella cartella; come
+/// [`telefono_permessi`], e se la copia non riesce.
 #[tauri::command]
-pub async fn telefono_salva_documento(nome: String, tipo: String, sorgente: String) -> Esito<bool> {
+pub async fn telefono_salva_documento(
+    app: tauri::AppHandle,
+    nome: String,
+    tipo: String,
+    sorgente: String,
+) -> Esito<bool> {
     #[cfg(target_os = "android")]
-    return in_attesa("salvataggio di un documento", move || {
-        let sorgente = std::path::PathBuf::from(sorgente);
-        let esito = rymembra_android::sistema::salva_documento(&nome, &tipo, &sorgente);
-        let _ = std::fs::remove_file(&sorgente);
-        esito
-    })
-    .await;
+    {
+        let sorgente = da_salvare(&cartella_da_salvare(&app)?, std::path::Path::new(&sorgente))
+            .map_err(errore)?;
+        in_attesa("salvataggio di un documento", move || {
+            let esito = rymembra_android::sistema::salva_documento(&nome, &tipo, &sorgente);
+            let _ = std::fs::remove_file(&sorgente);
+            esito
+        })
+        .await
+    }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (nome, tipo, sorgente);
+        let _ = (app, nome, tipo, sorgente);
         solo_su_android()
     }
+}
+
+/// `sorgente` è un documento da salvare: un file figlio diretto di
+/// `cartella`, con `..` e collegamenti risolti. Restituisce la forma canonica,
+/// la sola che poi si copia e si cancella.
+///
+/// # Errori
+///
+/// `fs.pathInvalid` per tutto il resto: un percorso fuori, la cartella stessa,
+/// una sottocartella, un file che non c'è.
+#[cfg(any(target_os = "android", test))]
+fn da_salvare(
+    cartella: &std::path::Path,
+    sorgente: &std::path::Path,
+) -> Result<std::path::PathBuf, AppError> {
+    let rifiuto = |causa: String| {
+        AppError::new(ErrorCode::FsPathInvalid {
+            path: sorgente.display().to_string(),
+        })
+        .with_cause(causa)
+    };
+    let cartella = cartella
+        .canonicalize()
+        .map_err(|err| rifiuto(err.to_string()))?;
+    let file = sorgente
+        .canonicalize()
+        .map_err(|err| rifiuto(err.to_string()))?;
+    if file.parent() != Some(cartella.as_path()) || !file.is_file() {
+        return Err(rifiuto(
+            "non è un documento della cartella da salvare".to_owned(),
+        ));
+    }
+    Ok(file)
+}
+
+/// La cartella dei documenti da salvare: `da-salvare`, nella cache dell'app.
+#[cfg(target_os = "android")]
+fn cartella_da_salvare(app: &tauri::AppHandle) -> Esito<std::path::PathBuf> {
+    use tauri::Manager as _;
+    app.path()
+        .app_cache_dir()
+        .map(|cache| cache.join("da-salvare"))
+        .map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalUnexpected {
+                    detail: Some("cache dell'app".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
 }
 
 /// Dove il nucleo scrive quel che poi [`telefono_salva_documento`] copia
@@ -219,19 +283,7 @@ pub async fn telefono_salva_documento(nome: String, tipo: String, sorgente: Stri
 pub fn telefono_file_temporaneo(app: tauri::AppHandle, nome: String) -> Esito<String> {
     #[cfg(target_os = "android")]
     {
-        use tauri::Manager as _;
-        let cartella = app
-            .path()
-            .app_cache_dir()
-            .map(|cache| cache.join("da-salvare"))
-            .map_err(|err| {
-                errore(
-                    AppError::new(ErrorCode::InternalUnexpected {
-                        detail: Some("cache dell'app".to_owned()),
-                    })
-                    .with_cause(err.to_string()),
-                )
-            })?;
+        let cartella = cartella_da_salvare(&app)?;
         std::fs::create_dir_all(&cartella).map_err(|err| {
             errore(
                 AppError::new(ErrorCode::InternalUnexpected {
@@ -611,4 +663,69 @@ pub fn installa_l_uscita_audio() {
                 bluetooth: uscita.bluetooth,
             })
     });
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn un_percorso_fuori_dalla_cache_non_si_salva_ne_si_cancella() {
+        let radice = tempfile::tempdir().expect("cartella");
+        let cache = radice.path().join("cache");
+        let cartella = cache.join("da-salvare");
+        std::fs::create_dir_all(cartella.join("dentro")).expect("cartelle");
+        std::fs::create_dir_all(radice.path().join("databases")).expect("cartelle");
+        std::fs::write(cartella.join("lista.m3u"), b"#EXTM3U").expect("file");
+        std::fs::write(cartella.join("dentro").join("x"), b"x").expect("file");
+        std::fs::write(cache.join("lista.m3u"), b"#EXTM3U").expect("file");
+        let libreria = radice.path().join("databases").join("libreria.db");
+        std::fs::write(&libreria, b"SQLite").expect("file");
+
+        // Risalire con `..`, un percorso assoluto altrove, la cartella stessa,
+        // una sottocartella, un file che non c'è, la cache sopra: niente.
+        for fuori in [
+            cartella
+                .join("..")
+                .join("..")
+                .join("databases")
+                .join("libreria.db"),
+            libreria.clone(),
+            cartella.clone(),
+            cartella.join("dentro").join("x"),
+            cartella.join("manca.m3u"),
+            cache.join("lista.m3u"),
+        ] {
+            let err = da_salvare(&cartella, &fuori).expect_err("fuori dalla cartella");
+            assert!(
+                matches!(err.code(), ErrorCode::FsPathInvalid { .. }),
+                "{}: {:?}",
+                fuori.display(),
+                err.code()
+            );
+        }
+        // E il file fuori non è stato toccato.
+        assert!(libreria.is_file());
+
+        // Quel che `telefono_file_temporaneo` dà: un figlio diretto, nella
+        // forma canonica, che è quella che poi si copia e si cancella.
+        let buono = da_salvare(&cartella, &cartella.join("lista.m3u")).expect("dentro");
+        assert_eq!(
+            buono,
+            cartella.join("lista.m3u").canonicalize().expect("canonico")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn un_collegamento_dentro_la_cache_non_porta_fuori() {
+        let radice = tempfile::tempdir().expect("cartella");
+        let cartella = radice.path().join("cache").join("da-salvare");
+        std::fs::create_dir_all(&cartella).expect("cartelle");
+        let libreria = radice.path().join("libreria.db");
+        std::fs::write(&libreria, b"SQLite").expect("file");
+        let collegamento = cartella.join("lista.m3u");
+        std::os::unix::fs::symlink(&libreria, &collegamento).expect("collegamento");
+        assert!(da_salvare(&cartella, &collegamento).is_err());
+    }
 }

@@ -71,7 +71,7 @@ pub fn progetto_da(indirizzo: &str) -> Option<String> {
 }
 
 /// La versione nuova di una release, se lo è e se ha un APK per
-/// `architettura` (`std::env::consts::ARCH`).
+/// `architettura` (`std::env::consts::ARCH`) che si scarica da GitHub.
 #[must_use]
 pub fn scegli(rilascio: Rilascio, corrente: &str, architettura: &str) -> Option<Trovato> {
     if rilascio.draft || rilascio.prerelease {
@@ -86,6 +86,9 @@ pub fn scegli(rilascio: Rilascio, corrente: &str, architettura: &str) -> Option<
         return None;
     }
     let allegato = apk_per(&rilascio.assets, architettura)?;
+    if !allegato_di_github(&allegato.browser_download_url) {
+        return None;
+    }
     Some(Trovato {
         note: rilascio
             .body
@@ -104,9 +107,79 @@ pub fn scegli(rilascio: Rilascio, corrente: &str, architettura: &str) -> Option<
     })
 }
 
+/// L'indirizzo di un allegato ha la forma che GitHub gli dà:
+/// `https://github.com/<proprietario>/<progetto>/releases/download/<etichetta>/<nome>`.
+///
+/// # Perché, se l'APK lo verifica comunque Android
+///
+/// Perché la risposta della release la si legge e basta: quel che dice dove
+/// scaricare è un dato, e un dato che manda il telefono altrove — un allegato
+/// caricato con un indirizzo suo, una risposta storta — non deve diventare uno
+/// scaricamento verso chiunque. Il progetto non si confronta: chi può scrivere
+/// le release del progetto può anche caricarci un allegato, e un progetto
+/// rinominato risponde con il nome nuovo. Quel che conta è che i byte arrivino
+/// da GitHub; che siano Rymembra lo verifica `Installatore.kt` prima di
+/// consegnarli.
+#[must_use]
+pub fn allegato_di_github(indirizzo: &str) -> bool {
+    let Some(resto) = indirizzo.strip_prefix("https://github.com/") else {
+        return false;
+    };
+    let parti: Vec<&str> = resto.split('/').collect();
+    matches!(
+        parti.as_slice(),
+        [proprietario, progetto, "releases", "download", etichetta, nome]
+            if [proprietario, progetto, etichetta, nome].iter().all(|parte| !parte.is_empty())
+    )
+}
+
+/// Gli ospiti verso cui GitHub può rimandare lo scaricamento di un allegato.
+///
+/// `github.com` per il primo salto, e per il rimando di un progetto
+/// rinominato; poi chi serve davvero i byte: `release-assets.githubusercontent.com`
+/// (quello di oggi, visto rispondere a un `…/releases/download/…`) e
+/// `objects.githubusercontent.com` (quello di prima). Non tutto
+/// `*.githubusercontent.com`: `raw.githubusercontent.com` serve i file di
+/// qualunque progetto.
+const OSPITI_DEGLI_ALLEGATI: [&str; 3] = [
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+];
+
+/// Un rimando dello scaricamento dell'APK si può seguire: `https://` e un
+/// ospite di [`OSPITI_DEGLI_ALLEGATI`], esatto. L'ospite si legge dopo
+/// l'ultima chiocciola (`rymembra_net::http::ospite`), così
+/// `github.com@esempio.com` è `esempio.com`.
+#[must_use]
+pub fn rimando_di_github(bersaglio: &str) -> bool {
+    if !bersaglio.starts_with("https://") {
+        return false;
+    }
+    let Some(ospite) = rymembra_net::http::ospite(bersaglio) else {
+        return false;
+    };
+    let ospite = ospite.trim_end_matches('.').to_ascii_lowercase();
+    OSPITI_DEGLI_ALLEGATI.contains(&ospite.as_str())
+}
+
+/// I segni con cui il nome di un APK dice per quale architettura è: tutti
+/// quelli che si usano, non solo quelli dei telefoni per cui Rymembra esce.
+const ARCHITETTURE: [&str; 7] = [
+    "arm64", "aarch64", "armeabi", "armv7", "x86_64", "x86", "x64",
+];
+
 /// L'APK giusto per questo telefono: quello che nomina la sua architettura,
-/// o quello universale, o l'unico che c'è. Nessuno se la release è solo per
-/// il computer.
+/// o quello universale, o l'unico che c'è purché non ne nomini un'altra.
+/// Nessuno se la release è solo per il computer.
+///
+/// # Perché l'unico non basta
+///
+/// Il ripiego sull'unico APK esiste per un file che non dice niente
+/// (`rymembra.apk`). Uno che dice un'altra architettura — caricato solo quello
+/// dell'emulatore, `…-x86_64.apk`, su un telefono `arm64` — Android lo
+/// rifiuterebbe («App non installata») dopo decine di megabyte scaricati, e
+/// l'avviso avrebbe promesso un aggiornamento che non c'è.
 #[must_use]
 pub fn apk_per<'a>(allegati: &'a [Allegato], architettura: &str) -> Option<&'a Allegato> {
     let apk: Vec<&Allegato> = allegati
@@ -126,7 +199,7 @@ pub fn apk_per<'a>(allegati: &'a [Allegato], architettura: &str) -> Option<&'a A
         .find(|allegato| nomina(allegato, nomi))
         .or_else(|| apk.iter().find(|allegato| nomina(allegato, &["universal"])))
         .or(match apk.as_slice() {
-            [unico] => Some(unico),
+            [unico] if !nomina(unico, &ARCHITETTURE) => Some(unico),
             _ => None,
         })
         .copied()
@@ -170,14 +243,41 @@ pub fn troppo_presto(ultimo_ms: Option<i64>, adesso_ms: i64, guardia_ms: i64) ->
     (0..guardia_ms).contains(&adesso_ms.saturating_sub(ultimo_ms))
 }
 
+/// La passata d'avvio si salta: l'ultimo controllo riuscito è di poco fa
+/// ([`troppo_presto`]) **e** non aveva trovato niente.
+///
+/// `trovata` è la versione che l'ultimo controllo riuscito aveva trovato,
+/// come la ricorda il database. L'aggiornamento trovato vive solo in memoria,
+/// e su un telefono il processo muore di continuo: senza questa eccezione chi
+/// riapre l'app un'ora dopo l'avviso non lo rivedrebbe fino alla passata dopo,
+/// sei ore più in là. È la regola del computer (`CHIAVE_TROVATA` in
+/// `aggiornamenti.rs`).
+#[must_use]
+pub fn passata_d_avvio_saltata(
+    ultimo_ms: Option<i64>,
+    adesso_ms: i64,
+    guardia_ms: i64,
+    trovata: Option<&str>,
+) -> bool {
+    troppo_presto(ultimo_ms, adesso_ms, guardia_ms)
+        && !trovata.is_some_and(|versione| !versione.trim().is_empty())
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
 
     fn allegato(nome: &str) -> Allegato {
+        allegato_da(
+            nome,
+            &format!("https://github.com/FedericoBaratti/Rymembra/releases/download/v3.3.0/{nome}"),
+        )
+    }
+
+    fn allegato_da(nome: &str, indirizzo: &str) -> Allegato {
         Allegato {
             name: nome.to_owned(),
-            browser_download_url: format!("https://example.invalid/{nome}"),
+            browser_download_url: indirizzo.to_owned(),
             size: Some(10),
         }
     }
@@ -242,6 +342,24 @@ mod prove {
     }
 
     #[test]
+    fn l_unico_apk_di_un_altra_architettura_non_si_propone() {
+        // L'unico che c'è, ma nomina un'altra architettura: l'installatore di
+        // Android lo rifiuterebbe dopo decine di megabyte scaricati.
+        assert!(apk_per(&[allegato("rymembra-3.3.0-x86_64.apk")], "aarch64").is_none());
+        assert!(apk_per(&[allegato("rymembra-3.3.0-arm64.apk")], "x86_64").is_none());
+        assert!(apk_per(&[allegato("rymembra-armeabi-v7a.apk")], "aarch64").is_none());
+        assert!(apk_per(&[allegato("rymembra-x86.apk")], "x86_64").is_none());
+        // Un telefono di cui non si conosce l'architettura: un APK che ne
+        // nomina una non è il suo.
+        assert!(apk_per(&[allegato("rymembra-arm64.apk")], "riscv64").is_none());
+        // L'unico che non ne nomina nessuna resta quello.
+        assert_eq!(
+            apk_per(&[allegato("Rymembra-3.3.0.apk")], "x86_64").map(|a| a.name.as_str()),
+            Some("Rymembra-3.3.0.apk")
+        );
+    }
+
+    #[test]
     fn una_release_senza_apk_o_non_piu_nuova_non_si_annuncia() {
         let trovato = scegli(
             rilascio("v3.3.0", vec![allegato("rymembra-arm64.apk")]),
@@ -274,6 +392,76 @@ mod prove {
     }
 
     #[test]
+    fn un_allegato_fuori_da_github_non_si_annuncia() {
+        let con = |indirizzo: &str| {
+            scegli(
+                rilascio("v3.3.0", vec![allegato_da("rymembra-arm64.apk", indirizzo)]),
+                "3.2.0",
+                "aarch64",
+            )
+        };
+        assert!(con("https://example.invalid/rymembra-arm64.apk").is_none());
+        // La chiocciola: l'ospite vero è quello dopo.
+        assert!(
+            con(
+                "https://github.com@example.invalid/o/r/releases/download/v3.3.0/rymembra-arm64.apk"
+            )
+            .is_none()
+        );
+        assert!(con("http://github.com/o/r/releases/download/v3.3.0/rymembra-arm64.apk").is_none());
+        assert!(
+            con("https://github.com:8443/o/r/releases/download/v3.3.0/rymembra-arm64.apk")
+                .is_none()
+        );
+        // Un ospite di GitHub, ma non quello degli allegati: lì serve file
+        // chiunque abbia un progetto.
+        assert!(con("https://raw.githubusercontent.com/o/r/main/rymembra-arm64.apk").is_none());
+        assert!(
+            con("https://release-assets.githubusercontent.com/github-production-release-asset/1/2")
+                .is_none()
+        );
+        // Su github.com, ma non fra gli allegati di una release.
+        assert!(con("https://github.com/o/r/raw/main/rymembra-arm64.apk").is_none());
+        assert!(con("https://github.com/o/r/releases/download/v3.3.0/").is_none());
+        // La forma che GitHub dà davvero.
+        assert!(
+            con("https://github.com/o/r/releases/download/v3.3.0/rymembra-arm64.apk").is_some()
+        );
+    }
+
+    #[test]
+    fn i_rimandi_dello_scaricamento_restano_a_casa_di_github() {
+        // Dove GitHub manda davvero lo scaricamento di un allegato.
+        assert!(rimando_di_github(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/212613049/6460b392?sp=r&sig=x"
+        ));
+        assert!(rimando_di_github(
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/2?X-Amz-Signature=x"
+        ));
+        // Un progetto rinominato rimanda prima al nome nuovo.
+        assert!(rimando_di_github(
+            "https://github.com/nuovo/r/releases/download/v3.3.0/rymembra-arm64.apk"
+        ));
+        assert!(rimando_di_github(
+            "https://Release-Assets.GitHubUserContent.com./x"
+        ));
+        assert!(!rimando_di_github("https://example.invalid/x.apk"));
+        assert!(!rimando_di_github(
+            "http://release-assets.githubusercontent.com/x"
+        ));
+        assert!(!rimando_di_github(
+            "https://release-assets.githubusercontent.com@example.invalid/x"
+        ));
+        assert!(!rimando_di_github(
+            "https://raw.githubusercontent.com/o/r/main/x.apk"
+        ));
+        assert!(!rimando_di_github("https://evilgithub.com/x"));
+        assert!(!rimando_di_github(
+            "https://release-assets.githubusercontent.com.example.invalid/x"
+        ));
+    }
+
+    #[test]
     fn la_guardia_tiene_fuori_solo_i_controlli_di_poco_fa() {
         let ora = 100 * 60 * 60 * 1_000;
         let sei_ore = 6 * 60 * 60 * 1_000;
@@ -285,5 +473,32 @@ mod prove {
         ));
         assert!(!troppo_presto(None, ora, sei_ore));
         assert!(!troppo_presto(Some(ora + 60_000), ora, sei_ore));
+    }
+
+    #[test]
+    fn la_guardia_cede_se_l_ultimo_controllo_aveva_trovato_qualcosa() {
+        let ora = 100 * 60 * 60 * 1_000;
+        let sei_ore = 6 * 60 * 60 * 1_000;
+        let un_ora_fa = Some(ora - 60 * 60 * 1_000);
+        // Un'ora fa non c'era niente: la passata d'avvio si salta.
+        assert!(passata_d_avvio_saltata(un_ora_fa, ora, sei_ore, None));
+        // Un'ora fa c'era la 3.3.0, e il processo nel frattempo è morto con
+        // l'avviso: la passata d'avvio si fa, ed è il solo modo di riaverlo.
+        assert!(!passata_d_avvio_saltata(
+            un_ora_fa,
+            ora,
+            sei_ore,
+            Some("3.3.0")
+        ));
+        // Una chiave vuota non è una versione.
+        assert!(passata_d_avvio_saltata(un_ora_fa, ora, sei_ore, Some("  ")));
+        // Senza un controllo recente si controlla comunque.
+        assert!(!passata_d_avvio_saltata(None, ora, sei_ore, None));
+        assert!(!passata_d_avvio_saltata(
+            Some(ora - 7 * 60 * 60 * 1_000),
+            ora,
+            sei_ore,
+            None
+        ));
     }
 }
