@@ -265,6 +265,45 @@ impl Biblioteca {
             .map(|copertina| copertina.hash.clone())
             .collect()
     }
+
+    /// Il documento ridotto a quel che un profilo porta: niente dal futuro,
+    /// niente fuori scala.
+    ///
+    /// Le date oltre `adesso_ms` si tagliano ad adesso, come quelle del
+    /// documento di sincronia ([`rymembra_sync::dominio::Futuro::Taglia`]): un
+    /// testo, una correzione o un ascolto datati fra dieci anni vincevano su
+    /// ogni decisione presa qui fino ad allora («vince il più recente»). I
+    /// conteggi degli altri dispositivi fuori da
+    /// [`rymembra_sync::dominio::ascolti_ammessi`] cadono: uno presso
+    /// `i64::MAX` faceva traboccare la `SUM` di `play_count` e fallire
+    /// l'importazione.
+    ///
+    /// Lo chiama il corpo comune di piano e importazione, così il piano resta
+    /// quel che l'importazione fa. Le impronte delle copertine si guardano
+    /// prima, all'ingresso ([`interpreta`]).
+    #[must_use]
+    pub fn in_dono(mut self, adesso_ms: i64) -> Self {
+        let taglia = |at: &mut i64| *at = (*at).min(adesso_ms);
+        for riga in &mut self.cronologia {
+            taglia(&mut riga.quando_ms);
+        }
+        for correzione in self.correzioni.values_mut() {
+            taglia(&mut correzione.set_at);
+        }
+        for testo in self.testi.values_mut() {
+            taglia(&mut testo.updated_at);
+        }
+        for desiderato in &mut self.desiderati {
+            taglia(&mut desiderato.added_at);
+        }
+        for copertina in self.copertine.values_mut() {
+            taglia(&mut copertina.created_at);
+        }
+        for per_dispositivo in self.ascolti_altrui.values_mut() {
+            per_dispositivo.retain(|_, quanti| rymembra_sync::dominio::ascolti_ammessi(*quanti));
+        }
+        self
+    }
 }
 
 /// Quante cose una fusione ha portato.
