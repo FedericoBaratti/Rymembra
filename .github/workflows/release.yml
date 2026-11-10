@@ -372,6 +372,52 @@ jobs:
           name: rymembra-windows
           path: uscita/
 
+      # Una release già **pubblicata** non si ricarica. Su una release che
+      # esiste `action-gh-release` la lascia com'è, cioè pubblicata, e gli asset
+      # omonimi li cancella e li ricarica: un «Re-run failed jobs», o un lancio a
+      # mano sul tag di una release già uscita, spedirebbe a ogni copia
+      # installata un installer appena ricostruito (la build non è
+      # riproducibile: è un altro file), senza bozza e senza il gesto umano del
+      # preambolo; e fra la cancellazione e il nuovo caricamento `latest.json`
+      # mancherebbe. Il controllo sta qui e non nel lavoro `tag`, perché «Re-run
+      # failed jobs» i lavori riusciti non li ripete, e questo è il lavoro che
+      # scrive. Una bozza invece si ricarica: è il modo di ripararla.
+      #
+      # `releases/tags/…` risponde 404 se il tag non ha una release pubblicata;
+      # il campo `draft` si guarda lo stesso, per non dipendere da come tratta
+      # le bozze. Qualunque altra risposta ferma la corsa: nel dubbio non si
+      # carica niente. Il token arriva a curl dall'ingresso e non dalla riga di
+      # comando.
+      - name: La release del tag non è già uscita
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          risposta="$RUNNER_TEMP/release-esistente.json"
+          codice=$(printf 'Authorization: Bearer %s\n' "$GH_TOKEN" | curl -sS \
+            -o "$risposta" -w '%{http_code}' -H @- \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+          case "$codice" in
+            404)
+              echo "Il tag $TAG non ha una release pubblicata: si apre o si aggiorna la bozza."
+              ;;
+            200)
+              if [ "$(jq -r '.draft' "$risposta")" = "true" ]; then
+                echo "La release di $TAG è ancora una bozza: si aggiorna."
+              else
+                echo "::error::La release $TAG è già pubblicata: ricaricarne gli asset li spedirebbe subito a ogni copia installata, senza passare dalla bozza. Una correzione esce con un tag nuovo."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::GitHub ha risposto $codice alla domanda sulla release $TAG: non si sa se sia già pubblicata, e nel dubbio non si carica niente."
+              exit 1
+              ;;
+          esac
+
       - name: Pubblica la release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
