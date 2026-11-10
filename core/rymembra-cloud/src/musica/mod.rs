@@ -152,6 +152,19 @@ pub trait Deposito: Send + Sync {
         pagina: &mut dyn FnMut(Vec<VoceRemota>) -> ControlFlow<()>,
     ) -> Result<bool, AppError>;
 
+    /// Un [`Self::elenca`] si è fermato al tetto di profondità del servizio:
+    /// `Some` coi livelli del tetto, **una volta** — chi lo chiede lo consuma.
+    ///
+    /// Un elenco fermato al tetto è completo fin lì (`Ok(true)`), e lo
+    /// direbbe a nessuno: questo crate non scrive nel diario. Lo chiede chi
+    /// lo scrive, dopo un elenco arrivato in fondo. Oggi ce l'ha solo WebDAV
+    /// (`webdav::PROFONDITA_ELENCO`), dove un anello di collegamenti simbolici
+    /// non finisce mai; gli altri servizi hanno identificativi stabili, e un
+    /// registro delle visitate basta.
+    fn tetto_raggiunto(&self) -> Option<usize> {
+        None
+    }
+
     /// I cambiamenti da `cursore`, e il cursore nuovo.
     ///
     /// `attesa` è quanto si può restare in ascolto se il servizio sa

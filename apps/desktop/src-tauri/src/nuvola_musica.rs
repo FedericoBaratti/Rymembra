@@ -1133,6 +1133,7 @@ fn elenca_radice(
         return Err(guasto);
     }
     if completo? {
+        di_al_diario_il_tetto(conto, deposito);
         let Some((toccate, complete)) = nello_specchio(nuvola, conto, deposito, |s| {
             let toccate = s.chiudi_elenco(conto, &radice.cima, &elencati);
             let complete: Vec<RadiceSalvata> = s
@@ -1162,6 +1163,18 @@ fn elenca_radice(
     // l'ultima richiesta non devono aspettare il prossimo cambiamento.
     crate::sorveglia::riguarda(app, vec![radice.percorso.clone()]);
     Ok(())
+}
+
+/// Un elenco arrivato in fondo si è fermato al tetto di profondità del
+/// servizio (WebDAV: vedi `Deposito::tetto_raggiunto`): lo si dice, col conto
+/// e i livelli. Niente percorso: nomi di cartelle nel diario non ne vanno.
+fn di_al_diario_il_tetto(conto: &str, deposito: &dyn Deposito) {
+    if let Some(livelli) = deposito.tetto_raggiunto() {
+        nota!(
+            "[nuvola] {conto}: l'elenco si è fermato a {livelli} livelli di sottocartelle, \
+             più in fondo non si scende: di solito è un anello di collegamenti sul server"
+        );
+    }
 }
 
 /// Quanto il trasloco di una cartella del cloud aspetta il turno delle
