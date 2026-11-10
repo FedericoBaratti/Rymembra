@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use rymembra_app::settings::{CHIAVE_ACCENTO_DINAMICO, CHIAVE_SKIN};
 use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_skin::package::limits::MAX_ARCHIVE_BYTES;
 use serde::Serialize;
 use tauri::State;
 
@@ -859,12 +860,56 @@ pub fn skin_installa(
     // scriverne un altro, e il database non c'entra.
     let esito = crate::studio::cartella_dati(&stato)
         .and_then(|dati| {
-            let bytes = std::fs::read(&percorso)
+            let file = std::fs::File::open(&percorso)
                 .map_err(|err| rymembra_app::files::io_error(&percorso, &err))?;
+            // La via breve: quel che il disco dice del file, prima di leggerne
+            // un byte. `leggi_al_piu` resta il tetto vero, perché un file può
+            // crescere fra la domanda e la lettura.
+            if let Some(bytes) = file
+                .metadata()
+                .ok()
+                .map(|m| m.len())
+                .filter(|&n| n > MAX_ARCHIVE_BYTES)
+            {
+                return Err(troppo_grande(bytes));
+            }
+            let bytes = leggi_al_piu(file, &percorso)?;
             installa(&dati, &bytes)
         })
         .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Un pacchetto oltre il tetto dell'archivio.
+fn troppo_grande(bytes: u64) -> AppError {
+    AppError::new(ErrorCode::SkinTooLarge {
+        bytes,
+        limit_bytes: MAX_ARCHIVE_BYTES,
+    })
+}
+
+/// I byte di un pacchetto, mai più del tetto dell'archivio più uno.
+///
+/// # Perché non `std::fs::read`
+///
+/// Perché il tetto dei venti megabyte arrivava dopo, in `read_skin_package`, su
+/// byte già tutti in memoria. Un file da otto gigabyte con l'estensione giusta —
+/// un film rinominato, un trascinamento sbagliato — si smista come skin, e
+/// finiva intero in memoria per sentirsi dire che era troppo grande. Qui se ne
+/// legge al più un byte oltre il tetto: basta a dire che lo supera.
+fn leggi_al_piu(lettore: impl std::io::Read, origine: &str) -> Result<Vec<u8>, AppError> {
+    use std::io::Read as _;
+
+    let mut bytes = Vec::new();
+    lettore
+        .take(MAX_ARCHIVE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|err| rymembra_app::files::io_error(origine, &err))?;
+    let letti = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if letti > MAX_ARCHIVE_BYTES {
+        return Err(troppo_grande(letti));
+    }
+    Ok(bytes)
 }
 
 /// Installa una skin dal suo manifest, senza passare dal disco.
@@ -1825,6 +1870,48 @@ mod tests {
         }
         documento["parts"]["card"] = serde_json::json!({ "motion": innesco });
         serde_json::to_string_pretty(&documento).expect("riscritta")
+    }
+
+    /// Un file che non finisce mai, o quasi: conta i byte che gli si chiedono.
+    struct Fiume {
+        dati: u64,
+        letti: u64,
+    }
+
+    impl std::io::Read for Fiume {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let resto = self.dati - self.letti;
+            let quanti = usize::try_from(resto).unwrap_or(usize::MAX).min(buf.len());
+            buf[..quanti].fill(0);
+            self.letti += quanti as u64;
+            Ok(quanti)
+        }
+    }
+
+    #[test]
+    fn un_file_oltre_il_tetto_non_si_legge_tutto() {
+        // Un `.mkv` da otto gigabyte rinominato `.ryskin` e trascinato sulla
+        // finestra: si smista come skin per estensione, e finiva tutto in
+        // memoria prima che il tetto dei venti megabyte dicesse di no. Qui
+        // ne bastano sessantaquattro per vedere quanti se ne leggono.
+        let mut fiume = Fiume {
+            dati: 64 * 1024 * 1024,
+            letti: 0,
+        };
+        let esito = leggi_al_piu(&mut fiume, "film.ryskin");
+        assert!(
+            fiume.letti <= MAX_ARCHIVE_BYTES + 1,
+            "letti {} MB per un tetto di {} MB",
+            fiume.letti >> 20,
+            MAX_ARCHIVE_BYTES >> 20
+        );
+        let err = esito.expect_err("oltre il tetto");
+        assert_eq!(err.code().kind().code(), "skin.tooLarge");
+
+        // Un pacchetto vero si legge intero.
+        let pacchetto = pacchetto(&sorgente_con_id("nocturne"));
+        let letto = leggi_al_piu(pacchetto.as_slice(), "nocturne.ryskin").expect("letto");
+        assert_eq!(letto, pacchetto);
     }
 
     #[test]
