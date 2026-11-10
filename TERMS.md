@@ -1,6 +1,6 @@
 # Rymembra terms of use
 
-Last updated: 30 October 2026.
+Last updated: 10 November 2026.
 
 Rymembra is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
@@ -18,9 +18,11 @@ Rymembra's code is MIT: do what you like with it.
 
 The music you download through Rymembra is **not covered by that license**. Every
 track comes from a catalog, and carries with it the conditions that catalog
-and that artist put on it. Rymembra records each track's license next to the track
-itself, and shows it on the «Now playing» screen and in «Explore», precisely so
-this distinction doesn't get lost.
+and that artist put on it. Rymembra records each track's license and shows it on
+the «Now playing» screen and in «Explore», precisely so this distinction doesn't
+get lost. For a file it downloads, the license and the page it came from are
+also written into the file's tags, which travel with the file; the page itself
+is not shown in the app for downloaded files.
 
 The normal case is simple: what you download you can listen to, keep, put on
 your phone, burn to a CD for yourself. The conditions below are about
@@ -77,9 +79,12 @@ Some things a program like this *could* do, and that Rymembra does not:
   no one else's client id. The only Spotify thing it reads is the export Spotify
   hands **you** on request, which is yours by right of data portability.
 - **It doesn't download what the license doesn't allow.** The check happens
-  before any network request: a track marked listen-only isn't even asked for.
-  If a catalog says «you listen and you don't carry it away», Rymembra doesn't
-  test whether the server would let it.
+  before the file is asked for. For a track whose file was already chosen —
+  imported from a link, or kept from «Explore» — Rymembra first reads that
+  item's page, or that Audius track, again, and decides on the license it says
+  today. The download queue never asks for the file of a track marked
+  listen-only. If a catalog says «you listen and you don't carry it away»,
+  Rymembra doesn't test whether the server would let it.
 - **It doesn't circumvent protection measures.** No DRM is touched, in any form.
 
 If you find a way to make Rymembra do one of these things, that's a defect. Report
