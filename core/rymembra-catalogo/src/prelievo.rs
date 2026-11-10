@@ -72,6 +72,14 @@ pub struct Prelevato {
     pub byte: u64,
 }
 
+/// Quanti byte, al più, arrivano per un brano.
+///
+/// Quattro gibibyte: è il tetto di un WAV (le dimensioni nel RIFF sono a 32
+/// bit), e un FLAC o un MP3 della stessa musica pesa meno. Senza un tetto
+/// l'unico limite era la scadenza del prelievo, mezz'ora: su una linea
+/// veloce, decine di gigabyte di un corpo senza fine sul disco.
+const TETTO_BRANO: u64 = 4 * 1024 * 1024 * 1024;
+
 /// Il contatore che rende unico un nome temporaneo.
 ///
 /// Tre fili prelevano insieme, e due prelievi cominciati nello stesso
@@ -377,21 +385,28 @@ fn scrivi(
         .map_err(|err| fs_errore("non si riesce a scrivere il file", dove, &err))?;
     let mut buffer = std::io::BufWriter::new(file);
 
-    let byte = rete.preleva(url, &[], &mut buffer, annullato, &mut |fatti, totale| {
-        // Senza un totale dichiarato non c'è una frazione da mostrare, e
-        // inventarne una — «più byte, più vicino alla fine» — disegnerebbe
-        // una barra che avanza sempre e non arriva mai.
-        if let Some(totale) = totale
-            && totale > 0
-        {
-            #[expect(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                reason = "una frazione a schermo non ha bisogno di più di sette cifre"
-            )]
-            avanzamento((fatti as f64 / totale as f64) as f32);
-        }
-    })?;
+    let byte = rete.preleva(
+        url,
+        &[],
+        &mut buffer,
+        TETTO_BRANO,
+        annullato,
+        &mut |fatti, totale| {
+            // Senza un totale dichiarato non c'è una frazione da mostrare, e
+            // inventarne una — «più byte, più vicino alla fine» — disegnerebbe
+            // una barra che avanza sempre e non arriva mai.
+            if let Some(totale) = totale
+                && totale > 0
+            {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    clippy::cast_possible_truncation,
+                    reason = "una frazione a schermo non ha bisogno di più di sette cifre"
+                )]
+                avanzamento((fatti as f64 / totale as f64) as f32);
+            }
+        },
+    )?;
 
     buffer
         .flush()

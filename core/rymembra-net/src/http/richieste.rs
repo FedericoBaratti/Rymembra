@@ -437,17 +437,30 @@ impl Rete {
     ///
     /// Restituisce quanti byte sono stati scritti.
     ///
+    /// # Il tetto
+    ///
+    /// `tetto` è quanti byte, al più, arrivano a `destinazione`: lo sceglie chi
+    /// chiama per il suo caso (un brano, un APK, una copertina in memoria). Una
+    /// lunghezza dichiarata oltre il tetto si rifiuta prima di leggere; un
+    /// corpo senza lunghezza, o che ne manda più di quanti ne ha dichiarati, si
+    /// ferma al primo blocco che lo passerebbe, prima di scriverlo. Senza, l'unico
+    /// limite era la scadenza: un corpo a pezzi senza fine riempiva per trenta
+    /// secondi il `Vec` di una copertina, centinaia di megabyte su una linea
+    /// buona, prima che il controllo degli otto mebibyte lo buttasse.
+    ///
     /// # Errori
     ///
-    /// `net.*` per i guasti di trasporto, `download.network` per una lettura che
-    /// si interrompe a metà, `internal.aborted` per l'annullamento. Uno stato di
-    /// errore diventa un `Err` — qui, a differenza di [`Self::esegui`], un corpo
-    /// di errore non è un'informazione: è un file che non c'è.
+    /// `net.*` per i guasti di trasporto, `net.badSchema` per un corpo oltre il
+    /// tetto, `download.network` per una lettura che si interrompe a metà,
+    /// `internal.aborted` per l'annullamento. Uno stato di errore diventa un
+    /// `Err` — qui, a differenza di [`Self::esegui`], un corpo di errore non è
+    /// un'informazione: è un file che non c'è.
     pub fn preleva(
         &self,
         url: &str,
         intestazioni: &[(&str, &str)],
         destinazione: &mut dyn std::io::Write,
+        tetto: u64,
         annullato: &dyn Fn() -> bool,
         avanzamento: &mut dyn FnMut(u64, Option<u64>),
     ) -> Result<u64, AppError> {
@@ -466,6 +479,9 @@ impl Rete {
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
+        if totale.is_some_and(|totale| totale > tetto) {
+            return Err(self.oltre_il_tetto(tetto));
+        }
 
         let mut lettore = risposta.body_mut().as_reader();
         let mut blocco = vec![0_u8; BLOCCO_PRELIEVO];
@@ -486,6 +502,11 @@ impl Rete {
                         .with_cause(format!("lettura interrotta dopo {scritti} byte: {err}")));
                 }
             };
+            // Prima di scriverlo: chi riceve non deve avere, né allocare,
+            // niente oltre il tetto.
+            if scritti.saturating_add(quanti as u64) > tetto {
+                return Err(self.oltre_il_tetto(tetto));
+            }
             let pezzo = blocco.get(..quanti).unwrap_or(&[]);
             destinazione.write_all(pezzo).map_err(|err| {
                 AppError::new(ErrorCode::DownloadInvalidFiles)
@@ -966,17 +987,7 @@ impl Rete {
                     timeout_ms: None,
                 })
             }
-            // Un corpo più grande del tetto di questo client. Non è «la forma
-            // non è quella attesa», che è la frase del ripiego qui sotto: la
-            // forma andava benissimo, era il peso. Detto in megabyte, che è
-            // l'unità in cui chi legge un diario pensa a un file.
-            ureq::Error::BodyExceedsLimit(tetto) => AppError::new(ErrorCode::NetBadSchema {
-                service: Some(self.servizio.to_owned()),
-                detail: Some(format!(
-                    "la risposta supera il tetto di {} MB che questo client si dà",
-                    tetto >> 20
-                )),
-            }),
+            ureq::Error::BodyExceedsLimit(tetto) => self.oltre_il_tetto(*tetto),
             // Un guasto TLS, un'intestazione mostruosa, un corpo oltre il
             // limite: non sono «offline», e chiamarli così manderebbe l'utente a
             // controllare il cavo di rete per un certificato scaduto.
@@ -986,6 +997,22 @@ impl Rete {
             }),
         }
         .with_cause(err.to_string())
+    }
+
+    /// Un corpo più grande del tetto: quello di questo client
+    /// ([`Self::esegui`]) o quello di chi preleva ([`Self::preleva`]).
+    ///
+    /// Non è «la forma non è quella attesa», che è la frase del ripiego di
+    /// [`Self::trasporto`]: la forma andava benissimo, era il peso. Detto in
+    /// megabyte, che è l'unità in cui chi legge un diario pensa a un file.
+    fn oltre_il_tetto(&self, tetto: u64) -> AppError {
+        AppError::new(ErrorCode::NetBadSchema {
+            service: Some(self.servizio.to_owned()),
+            detail: Some(format!(
+                "la risposta supera il tetto di {} MB che questo client si dà",
+                tetto >> 20
+            )),
+        })
     }
 
     /// Il codice che corrisponde a uno stato di errore.

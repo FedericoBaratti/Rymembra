@@ -957,6 +957,143 @@ fn sempre_ciao(_: &str) -> String {
     pezzo("ciao")
 }
 
+/// Un servitore che a ogni richiesta manda `quanti` byte a pezzi
+/// (`Transfer-Encoding: chunked`, senza una lunghezza dichiarata), o
+/// dichiarandoli con `Content-Length` se `dichiara`. Restituisce l'indirizzo
+/// e quanti byte del corpo è riuscito a scrivere prima che il client
+/// chiudesse.
+fn servitore_a_pezzi(
+    quanti: usize,
+    dichiara: bool,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read as _, Write as _};
+    let ascolto = std::net::TcpListener::bind("127.0.0.1:0").expect("una porta");
+    let porta = ascolto.local_addr().expect("la porta").port();
+    let scritti = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let conta = std::sync::Arc::clone(&scritti);
+    std::thread::spawn(move || {
+        for connessione in ascolto.incoming() {
+            let Ok(mut connessione) = connessione else {
+                continue;
+            };
+            let mut testa = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !testa.ends_with(b"\r\n\r\n") {
+                match connessione.read(&mut byte) {
+                    Ok(1) => testa.push(byte[0]),
+                    _ => break,
+                }
+            }
+            let intestazione = if dichiara {
+                format!("Content-Length: {quanti}")
+            } else {
+                "Transfer-Encoding: chunked".to_owned()
+            };
+            if connessione
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\n{intestazione}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let blocco = vec![b'x'; 64 * 1024];
+            let mut mandati = 0;
+            while mandati < quanti {
+                let pezzo = blocco.len().min(quanti - mandati);
+                let scritto = if dichiara {
+                    connessione.write_all(&blocco[..pezzo])
+                } else {
+                    connessione
+                        .write_all(format!("{pezzo:x}\r\n").as_bytes())
+                        .and_then(|()| connessione.write_all(&blocco[..pezzo]))
+                        .and_then(|()| connessione.write_all(b"\r\n"))
+                };
+                if scritto.is_err() {
+                    break;
+                }
+                mandati += pezzo;
+                conta.store(mandati, std::sync::atomic::Ordering::SeqCst);
+            }
+            if !dichiara {
+                let _ = connessione.write_all(b"0\r\n\r\n");
+            }
+        }
+    });
+    (format!("http://127.0.0.1:{porta}"), scritti)
+}
+
+/// Una copertina che non finisce mai: un corpo a pezzi senza lunghezza, da
+/// sessantaquattro mebibyte. Prima `preleva` lo scriveva tutto nel `Vec` (in
+/// trenta secondi su una linea buona sono centinaia di megabyte), e il
+/// controllo degli otto mebibyte arrivava dopo.
+#[test]
+fn preleva_si_ferma_al_tetto() {
+    const TETTO: u64 = 8 * 1024 * 1024;
+    let (base, _) = servitore_a_pezzi(64 * 1024 * 1024, false);
+    let rete = Rete::verso("prova", Duration::from_secs(30), &base).expect("casa");
+    let mut preso = Vec::new();
+    let esito = rete.preleva(
+        &format!("{base}/copertina.jpg"),
+        &[],
+        &mut preso,
+        TETTO,
+        &|| false,
+        &mut |_, _| {},
+    );
+    let errore = esito.expect_err("oltre il tetto il prelievo si ferma");
+    assert!(
+        matches!(errore.code(), ErrorCode::NetBadSchema { detail: Some(d), .. } if d.contains("tetto di 8 MB")),
+        "la frase dice che era il peso: {errore}"
+    );
+    assert!(
+        preso.len() as u64 <= TETTO,
+        "niente oltre il tetto arriva a chi riceve: {} byte",
+        preso.len()
+    );
+    assert!(
+        preso.capacity() as u64 <= TETTO,
+        "e niente si alloca oltre: {} byte",
+        preso.capacity()
+    );
+}
+
+/// Una lunghezza dichiarata oltre il tetto si rifiuta prima di leggere un
+/// byte; una giusta al tetto passa.
+#[test]
+fn preleva_rifiuta_una_lunghezza_dichiarata_oltre_il_tetto() {
+    let (base, _) = servitore_a_pezzi(2 * 1024 * 1024, true);
+    let rete = Rete::verso("prova", Duration::from_secs(30), &base).expect("casa");
+    let mut preso = Vec::new();
+    let errore = rete
+        .preleva(
+            &format!("{base}/x"),
+            &[],
+            &mut preso,
+            1024 * 1024,
+            &|| false,
+            &mut |_, _| {},
+        )
+        .expect_err("dichiarato oltre il tetto");
+    assert_eq!(errore.code().kind().code(), "net.badSchema");
+    assert!(preso.is_empty(), "nemmeno un byte: {}", preso.len());
+
+    let mut preso = Vec::new();
+    let quanti = rete
+        .preleva(
+            &format!("{base}/x"),
+            &[],
+            &mut preso,
+            2 * 1024 * 1024,
+            &|| false,
+            &mut |_, _| {},
+        )
+        .expect("al tetto giusto passa");
+    assert_eq!(quanti, 2 * 1024 * 1024);
+    assert_eq!(preso.len(), 2 * 1024 * 1024);
+}
+
 #[test]
 fn un_intervallo_porta_le_intestazioni_di_chi_lo_chiede() {
     // Il caso per cui `intervallo_con` esiste: un servizio che serve i byte
@@ -1249,7 +1386,7 @@ fn verso_questa_macchina_non_si_passa_dal_proxy() {
         .unwrap_or_else(|err| panic!("l'intervallo è passato dal proxy: {err}"));
     assert_eq!(pezzo.byte, b"ciao");
     let mut preso = Vec::new();
-    rete.preleva(&url, &[], &mut preso, &|| false, &mut |_, _| {})
+    rete.preleva(&url, &[], &mut preso, 1024, &|| false, &mut |_, _| {})
         .unwrap_or_else(|err| panic!("il prelievo è passato dal proxy: {err}"));
     assert_eq!(preso, b"ciao");
     let mut arrivato = Vec::new();
