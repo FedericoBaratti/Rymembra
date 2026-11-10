@@ -912,15 +912,23 @@ fn trova(
     {
         return procura.cataloghi.da_prelevare(desiderato.fonte, url);
     }
-    let candidati = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
+    let ricerca = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
     // Solo quel che si può tenere: un file che si ascolta e basta non è una
     // risposta a «mettimelo in libreria», e sceglierlo per poi rifiutarlo un
     // passo dopo brucerebbe un tentativo per niente.
-    let prendibili: Vec<Candidato> = candidati
+    let prendibili: Vec<Candidato> = ricerca
+        .trovati
         .into_iter()
         .filter(Candidato::si_puo_tenere)
         .collect();
-    Ok(scegli_candidato(&prendibili, &desiderato.brano, alternative).cloned())
+    match scegli_candidato(&prendibili, &desiderato.brano, alternative) {
+        Some(scelto) => Ok(Some(scelto.clone())),
+        // «Introvabile» è terminale, e lo si può dire solo se hanno risposto
+        // tutti: con l'Archive giù, o una sua scheda muta, il brano può stare
+        // proprio lì. Allora è un guasto, ritentabile o no come dice lui, e la
+        // riga resta fra quelle che `riprova_falliti` rimette in coda.
+        None => ricerca.guasti.into_iter().next().map_or(Ok(None), Err),
+    }
 }
 
 /// Che cosa dire a chi guarda, del file scelto.

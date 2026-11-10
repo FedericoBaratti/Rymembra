@@ -235,22 +235,44 @@ impl ArchivioOrg {
     /// larga: la seconda richiesta si paga, e nella maggior parte dei casi la
     /// prima basta.
     ///
+    /// # Quel che non ha risposto
+    ///
+    /// Una scheda d'item che non risponde è un risultato in meno, non un
+    /// fallimento, e i candidati degli altri item restano. Ma il guasto non si
+    /// butta via: esce in [`crate::Ricerca::guasti`], perché per la coda «non
+    /// l'ho trovato» e «non ho potuto guardare dappertutto» sono due esiti
+    /// diversi — il primo è terminale, il secondo si riprova.
+    ///
     /// # Errori
     ///
     /// `download.externalSearchFailed` quando la ricerca non risponde,
-    /// `net.*` per i guasti di trasporto.
+    /// `net.*` per i guasti di trasporto, `internal.aborted` se chi ha chiesto
+    /// ha annullato: un elenco a metà dopo un annullamento non è una risposta.
     pub fn cerca(
         &self,
         brano: &BranoEsterno,
         annullato: &dyn Fn() -> bool,
-    ) -> Result<Vec<Candidato>, AppError> {
-        let mut trovati = self.cerca_con(&query_stretta(brano), Some(brano), true, annullato)?;
-        if trovati.is_empty()
+    ) -> Result<crate::Ricerca, AppError> {
+        // Prima di qualunque richiesta, e dopo ognuna delle due passate.
+        let fermo = || {
+            if annullato() {
+                Err(crate::ricerca_annullata("Internet Archive"))
+            } else {
+                Ok(())
+            }
+        };
+        fermo()?;
+        let mut ricerca = self.cerca_con(&query_stretta(brano), Some(brano), true, annullato)?;
+        fermo()?;
+        if ricerca.trovati.is_empty()
             && let Some(larga) = query_larga(brano)
         {
-            trovati = self.cerca_con(&larga, Some(brano), true, annullato)?;
+            let larga = self.cerca_con(&larga, Some(brano), true, annullato)?;
+            fermo()?;
+            ricerca.trovati = larga.trovati;
+            ricerca.guasti.extend(larga.guasti);
         }
-        Ok(trovati)
+        Ok(ricerca)
     }
 
     /// Gli item di questo catalogo che rispondono a una frase.
@@ -275,18 +297,23 @@ impl ArchivioOrg {
         annullato: &dyn Fn() -> bool,
     ) -> Result<Vec<Candidato>, AppError> {
         self.cerca_con(testo, None, esatta, annullato)
+            .map(|ricerca| ricerca.trovati)
     }
 
     /// Una passata di ricerca con una stringa sola.
+    ///
+    /// `Err` se la ricerca degli item non risponde, o se nessuna scheda ha dato
+    /// niente e una non ha risposto; altrimenti i candidati e, in
+    /// [`crate::Ricerca::guasti`], le schede che non hanno risposto.
     fn cerca_con(
         &self,
         testo: &str,
         atteso: Option<&BranoEsterno>,
         esatta: bool,
         annullato: &dyn Fn() -> bool,
-    ) -> Result<Vec<Candidato>, AppError> {
+    ) -> Result<crate::Ricerca, AppError> {
         if testo.trim().is_empty() {
-            return Ok(Vec::new());
+            return Ok(crate::Ricerca::default());
         }
         let item = self.cerca_item(&query_item(testo, esatta), ITEM_TROVATI)?;
 
@@ -297,8 +324,13 @@ impl ArchivioOrg {
         // guasto si conserva, e si riporta solo se non è rimasto niente.
         let mut primo_guasto: Option<AppError> = None;
         for doc in item.iter().take(ITEM_DA_APRIRE) {
+            // Per la ricerca libera quel che c'è basta; la coda guarda di nuovo
+            // l'annullamento appena questa funzione torna (vedi [`Self::cerca`]).
             if annullato() {
-                return Ok(candidati);
+                return Ok(crate::Ricerca {
+                    trovati: candidati,
+                    guasti: primo_guasto.into_iter().collect(),
+                });
             }
             let Some(identificativo) = testo_di(doc, "identifier") else {
                 continue;
@@ -324,12 +356,13 @@ impl ArchivioOrg {
                 break;
             }
         }
-        if candidati.is_empty()
-            && let Some(guasto) = primo_guasto
-        {
-            return Err(guasto);
+        if candidati.is_empty() {
+            return primo_guasto.map_or_else(|| Ok(crate::Ricerca::default()), Err);
         }
-        Ok(candidati)
+        Ok(crate::Ricerca {
+            trovati: candidati,
+            guasti: primo_guasto.into_iter().collect(),
+        })
     }
 
     /// Un item intero, come contenuto importabile.

@@ -302,37 +302,35 @@ impl Cataloghi {
 
     /// I file che potrebbero essere il brano chiesto, da tutti i cataloghi.
     ///
+    /// # Il guasto di uno, e i risultati dell'altro
+    ///
+    /// Finché un catalogo risponde, il guasto di un altro è un risultato in
+    /// meno, non un fallimento — ma **non è nemmeno niente**: esce in
+    /// [`Ricerca::guasti`]. Fino alla 3.2 si buttava via, e con l'Archive giù e
+    /// Audius che rispondeva con otto brani da non tenere la coda dichiarava
+    /// «introvabile», cioè terminale, un brano che stava solo sull'Archive.
+    ///
     /// # Errori
     ///
-    /// Solo se **nessun** catalogo ha risposto: finché uno risponde, il guasto
-    /// di un altro è un risultato in meno, non un fallimento. Con un catalogo
-    /// solo attivo le due cose coincidono; con più di uno la differenza è fra
-    /// «non l'ho trovato» e «sono tutti giù», e sono due frasi diverse.
+    /// `internal.aborted` se chi ha chiesto ha annullato, anche a metà: un
+    /// elenco parziale dopo un «Annulla» non è una risposta, e per la coda un
+    /// elenco vuoto è «introvabile». Poi il primo guasto se **nessun** catalogo
+    /// ha dato niente.
     pub fn cerca(
         &self,
         brano: &BranoEsterno,
         annullato: &dyn Fn() -> bool,
-    ) -> Result<Vec<Candidato>, AppError> {
-        let mut trovati = Vec::new();
-        let mut guasti: Vec<AppError> = Vec::new();
-
-        match self.archivio.cerca(brano, annullato) {
-            Ok(suoi) => trovati.extend(suoi),
-            Err(err) => guasti.push(err),
-        }
+    ) -> Result<Ricerca, AppError> {
+        let mut esiti = vec![self.archivio.cerca(brano, annullato)];
 
         // Audius **dopo** l'Internet Archive, e non è un ordine casuale: solo
         // una parte dei brani di Audius si può tenere, mentre quasi tutto quel
         // che sta nelle tre collezioni dell'Archive sì. `scegli_candidato`
         // giudica poi il mucchio intero — l'ordine non decide il vincitore —
-        // ma `annullato()` fra i due sì: chi ferma la coda mentre il primo
-        // catalogo sta rispondendo non paga anche il secondo.
-        if !annullato() {
-            match self.audius.cerca(brano, annullato) {
-                Ok(suoi) => trovati.extend(suoi),
-                Err(err) => guasti.push(err),
-            }
-        }
+        // ma l'annullamento fra i due sì: `Audius::cerca` lo guarda prima di
+        // chiedere, e chi ferma la coda mentre il primo catalogo sta
+        // rispondendo non paga anche il secondo.
+        esiti.push(self.audius.cerca(brano, annullato).map(Ricerca::da));
 
         // Jamendo per ultimo, e senza chiave non chiede niente. I suoi
         // candidati non si potranno mai tenere — `puo_consegnare` è `false` —
@@ -340,19 +338,13 @@ impl Cataloghi {
         // qualcosa da **ascoltare**, ed è `scegli_candidato` a scartarli quando
         // la domanda era un'altra.
         #[cfg(feature = "jamendo")]
-        if !annullato() && self.jamendo.configurato() {
-            match self.jamendo.cerca(brano, annullato) {
-                Ok(suoi) => trovati.extend(suoi),
-                Err(err) => guasti.push(err),
-            }
+        if annullato() {
+            esiti.push(Err(ricerca_annullata("Jamendo")));
+        } else if self.jamendo.configurato() {
+            esiti.push(self.jamendo.cerca(brano, annullato).map(Ricerca::da));
         }
 
-        if trovati.is_empty()
-            && let Some(primo) = guasti.into_iter().next()
-        {
-            return Err(primo);
-        }
-        Ok(trovati)
+        unisci(esiti)
     }
 
     /// I brani che rispondono a una frase scritta da una persona.
@@ -607,6 +599,67 @@ impl Cataloghi {
     }
 }
 
+/// Quel che la ricerca di un brano ha trovato, e quel che non ha potuto
+/// guardare.
+///
+/// La gemella di [`RicercaLibera`] per la coda, e per la stessa ragione: «non
+/// c'è» e «non tutti hanno risposto» sono due esiti diversi. Qui il secondo
+/// porta il guasto e non solo il nome del catalogo, perché la coda deve sapere
+/// se riprovare: è [`AppError::is_retryable`] a dirlo.
+#[derive(Debug, Clone, Default)]
+pub struct Ricerca {
+    /// I candidati, dai cataloghi che hanno risposto.
+    pub trovati: Vec<Candidato>,
+    /// I guasti di chi non ha risposto: un catalogo intero, o la scheda di un
+    /// item dell'Internet Archive. Vuoto è il caso normale.
+    pub guasti: Vec<AppError>,
+}
+
+impl Ricerca {
+    /// Una risposta completa: questi candidati, e nessun guasto.
+    #[must_use]
+    pub const fn da(trovati: Vec<Candidato>) -> Self {
+        Self {
+            trovati,
+            guasti: Vec::new(),
+        }
+    }
+}
+
+/// L'annullamento di una ricerca, che non è un guasto e non è un elenco vuoto.
+pub(crate) fn ricerca_annullata(catalogo: &str) -> AppError {
+    AppError::new(ErrorCode::InternalAborted {
+        what: Some(format!("ricerca su {catalogo}")),
+    })
+}
+
+/// Mette insieme quel che i cataloghi hanno risposto.
+///
+/// Un annullamento vince su tutto e torna com'è; un guasto si conserva accanto
+/// ai risultati degli altri; e solo se non è arrivato niente da nessuno il
+/// primo guasto diventa l'errore della ricerca.
+fn unisci(esiti: Vec<Result<Ricerca, AppError>>) -> Result<Ricerca, AppError> {
+    let mut tutto = Ricerca::default();
+    for esito in esiti {
+        match esito {
+            Ok(parte) => {
+                tutto.trovati.extend(parte.trovati);
+                tutto.guasti.extend(parte.guasti);
+            }
+            Err(annullata) if matches!(annullata.code(), ErrorCode::InternalAborted { .. }) => {
+                return Err(annullata);
+            }
+            Err(guasto) => tutto.guasti.push(guasto),
+        }
+    }
+    if tutto.trovati.is_empty()
+        && let Some(primo) = tutto.guasti.first()
+    {
+        return Err(primo.clone());
+    }
+    Ok(tutto)
+}
+
 /// Quel che una ricerca libera ha trovato, e chi non ha risposto.
 ///
 /// Due campi e non un `Vec` perché la seconda informazione esisteva già e si
@@ -785,6 +838,86 @@ mod prove {
             !temporanea.exists(),
             "non doveva nemmeno creare la cartella"
         );
+    }
+
+    fn candidato_di(fonte: Fonte, titolo: &str) -> Candidato {
+        Candidato {
+            fonte,
+            titolo: titolo.to_owned(),
+            url: format!("/v1/tracks/{titolo}/stream"),
+            ..Candidato::default()
+        }
+    }
+
+    #[test]
+    fn un_catalogo_muto_non_rende_completo_quel_che_dice_laltro() {
+        // L'Archive risponde 503, Audius risponde con un brano che non si può
+        // tenere: il risultato porta quel brano **e** il guasto, perché per la
+        // coda «non c'è» sarebbe terminale e qui non lo si sa.
+        let caduto = AppError::new(ErrorCode::NetHttp {
+            status: 503,
+            url: None,
+        });
+        let esito = unisci(vec![
+            Err(caduto),
+            Ok(Ricerca::da(vec![candidato_di(Fonte::Audius, "x")])),
+        ])
+        .expect("Audius ha risposto");
+        assert_eq!(esito.trovati.len(), 1);
+        assert_eq!(esito.guasti.len(), 1);
+        assert!(esito.guasti.iter().all(AppError::is_retryable));
+
+        // La scheda di un item che non risponde vale lo stesso.
+        let parziale = Ricerca {
+            trovati: vec![candidato_di(Fonte::InternetArchive, "y")],
+            guasti: vec![AppError::new(ErrorCode::NetHttp {
+                status: 502,
+                url: None,
+            })],
+        };
+        let esito = unisci(vec![Ok(parziale), Ok(Ricerca::default())]).expect("risposte");
+        assert_eq!(esito.guasti.len(), 1);
+
+        // Tutti giù: il primo guasto è l'errore.
+        let tutti = unisci(vec![
+            Err(AppError::new(ErrorCode::NetHttp {
+                status: 503,
+                url: None,
+            })),
+            Err(AppError::new(ErrorCode::DownloadExternalSearchFailed)),
+        ]);
+        assert!(matches!(
+            tutti.as_ref().map_err(AppError::code),
+            Err(ErrorCode::NetHttp { status: 503, .. })
+        ));
+
+        // E tutti che rispondono «niente» è un niente vero.
+        let niente =
+            unisci(vec![Ok(Ricerca::default()), Ok(Ricerca::default())]).expect("nessun guasto");
+        assert!(niente.trovati.is_empty() && niente.guasti.is_empty());
+    }
+
+    #[test]
+    fn un_annullamento_vince_sui_risultati() {
+        let esito = unisci(vec![
+            Ok(Ricerca::da(vec![candidato_di(Fonte::InternetArchive, "y")])),
+            Err(ricerca_annullata("Audius")),
+        ]);
+        assert!(matches!(
+            esito.as_ref().map_err(AppError::code),
+            Err(ErrorCode::InternalAborted { .. })
+        ));
+        // E senza rete: l'annullamento si guarda prima di ogni richiesta.
+        let brano = BranoEsterno {
+            title: "Karma Police".to_owned(),
+            artist: Some("Radiohead".to_owned()),
+            ..BranoEsterno::default()
+        };
+        let esito = cataloghi_senza_rete().cerca(&brano, &|| true);
+        assert!(matches!(
+            esito.as_ref().map_err(AppError::code),
+            Err(ErrorCode::InternalAborted { .. })
+        ));
     }
 
     #[test]

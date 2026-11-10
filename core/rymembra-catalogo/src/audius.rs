@@ -194,18 +194,22 @@ impl Audius {
     /// # Errori
     ///
     /// `download.externalSearchFailed` quando la ricerca non risponde, `net.*`
-    /// per i guasti di trasporto.
+    /// per i guasti di trasporto, `internal.aborted` se chi ha chiesto ha
+    /// annullato. Un annullamento non è mai un elenco vuoto: per la coda un
+    /// elenco vuoto vuol dire «introvabile», che è terminale.
     pub fn cerca(
         &self,
         brano: &BranoEsterno,
         annullato: &dyn Fn() -> bool,
     ) -> Result<Vec<Candidato>, AppError> {
         if annullato() {
-            return Ok(Vec::new());
+            return Err(crate::ricerca_annullata("Audius"));
         }
         let mut trovati = self.cerca_con(&query_stretta(brano), Some(&brano.title))?;
+        if annullato() {
+            return Err(crate::ricerca_annullata("Audius"));
+        }
         if trovati.is_empty()
-            && !annullato()
             && let Some(larga) = query_larga(brano)
         {
             trovati = self.cerca_con(&larga, Some(&brano.title))?;
@@ -1196,6 +1200,27 @@ mod prove {
         // Un altro brano, o nessuno, non è il brano chiesto.
         assert!(traccia_riletta(&corpo(true), "zZ9").is_none());
         assert!(traccia_riletta(&traccia(r#"{"data":null}"#), "aB3").is_none());
+    }
+
+    #[test]
+    fn una_ricerca_annullata_non_e_un_risultato_vuoto() {
+        // «Annulla» mentre la coda cerca: un elenco vuoto qui diventava
+        // «introvabile», che è terminale, e il brano finiva nella lista della
+        // spesa senza che nessuno l'avesse cercato davvero. L'annullamento si
+        // guarda prima di qualunque richiesta: la prova gira senza rete.
+        let brano = BranoEsterno {
+            title: "Karma Police".to_owned(),
+            artist: Some("Radiohead".to_owned()),
+            ..BranoEsterno::default()
+        };
+        let esito = con_nodo("https://127.0.0.1:9").cerca(&brano, &|| true);
+        assert!(
+            matches!(
+                esito.as_ref().map_err(AppError::code),
+                Err(ErrorCode::InternalAborted { .. })
+            ),
+            "invece dell'annullamento: {esito:?}"
+        );
     }
 
     #[test]
