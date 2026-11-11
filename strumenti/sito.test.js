@@ -366,3 +366,30 @@ test("con l'APK la pagina offre il telefono, con peso e impronta misurati sul fi
     fs.rmSync(cartella, { recursive: true, force: true });
   }
 });
+
+// Quando le frasi del telefono saranno in `site/testi/*.json`, la pagina con
+// l'APK deve costruirsi senza problemi in tutte e quattro le lingue: così un
+// errore nelle frasi ferma `verify` a ogni push, e non `sito.yml` il giorno in
+// cui la release è già pubblicata.
+test("con le frasi del telefono nei testi, il sito con l'APK si costruisce in ogni lingua", (t) => {
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, "../site/testi/en.json"), "utf8"));
+  if (!en.scarica || !en.scarica.android) {
+    t.skip("site/testi/*.json non ha ancora scarica.android: senza, una release con l'APK ferma sito.yml");
+    return;
+  }
+  const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-android-"));
+  const installer = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-installer-"));
+  const apk = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-apk-"));
+  try {
+    fs.writeFileSync(path.join(installer, `Rymembra_${versione}_x64-setup.exe`), Buffer.alloc(1024, 1));
+    fs.writeFileSync(path.join(apk, `Rymembra_${versione}_android-arm64.apk`), Buffer.alloc(2048, 2));
+    const esito = costruisci(dir, versione, installer, apk);
+    assert.deepEqual(esito.problemi, []);
+    for (const f of ["index.html", "it/index.html", "fr/index.html", "de/index.html"]) {
+      assert.ok(fs.readFileSync(path.join(dir, f), "utf8").includes(`Rymembra_${versione}_android-arm64.apk`), f);
+    }
+  } finally {
+    for (const d of [dir, installer, apk]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
