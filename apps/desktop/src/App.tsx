@@ -1118,6 +1118,7 @@ export function App() {
       inEsplora: vista === "esplora",
       studioVisibile,
       modaleAperto: unModaleAperto(),
+      telefono: MOBILE,
     });
     if (come === "no") return;
     if (come === "parti") {
