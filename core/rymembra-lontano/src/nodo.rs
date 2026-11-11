@@ -41,9 +41,11 @@
 //! - Al più [`DOMANDE_INSIEME`] domande servite insieme per dispositivo, su
 //!   tutte le sue connessioni.
 //! - [`ALPN_ASSOCIA`]: chiuso se non c'è un QR attivo, senza contare il
-//!   tentativo; con un QR, al più [`TENTATIVI_AL_MINUTO`]; il gettone vale
-//!   [`VALIDITA_INVITO`], una volta sola, e dopo [`MASSIMI_FALLIMENTI`]
-//!   gettoni sbagliati il QR non vale più. Il QR lo toglie chi lo mostra
+//!   tentativo; con un QR, al più [`TENTATIVI_AL_MINUTO`] **da ogni
+//!   dispositivo**; il gettone vale [`VALIDITA_INVITO`], una volta sola. Un
+//!   gettone sbagliato non tocca il QR: di 128 bit, non si indovina, e
+//!   bruciarlo dopo qualche errore dava a chiunque in casa il modo di far
+//!   fallire ogni collegamento (reperto R01-3). Il QR lo toglie chi lo mostra
 //!   quando non è più a schermo ([`Nodo::annulla_invito`]).
 //!   Il gettone si confronta a tempo costante. Un gettone giusto non basta:
 //!   decide chi mostra il QR ([`Ospite::conferma`]).
@@ -80,11 +82,20 @@ use crate::protocollo::{
 /// Quanto vale un QR.
 pub const VALIDITA_INVITO: Duration = Duration::from_secs(10 * 60);
 
-/// Gettoni sbagliati prima che il QR non valga più.
-pub const MASSIMI_FALLIMENTI: u32 = 5;
-
-/// Tentativi di associazione al minuto, da chiunque, mentre c'è un QR.
+/// Tentativi di associazione al minuto da ogni dispositivo (per chiave),
+/// mentre c'è un QR.
+///
+/// Per chiave e non per tutti: con un tetto comune, chi conosce la chiave di
+/// questo nodo (in casa la annuncia mDNS) ne consumava i posti, e a chi
+/// inquadrava il QR vero arrivava «QR scaduto» (reperto R01-3). Una chiave
+/// nuova non costa niente, quindi il tetto non ferma chi ne cambia: limita il
+/// lavoro di ognuno, e non toglie niente agli altri.
 pub const TENTATIVI_AL_MINUTO: usize = 10;
+
+/// Quanti dispositivi diversi si ricordano per [`TENTATIVI_AL_MINUTO`]. Oltre,
+/// si dimentica chi ha bussato meno di recente: rifiutare uno nuovo vorrebbe
+/// dire, di nuovo, un tetto comune.
+const MASSIME_FONTI: usize = 256;
 
 /// Quanto si aspetta chi decide, sul dispositivo che mostra il QR: come il
 /// consenso di un servizio cloud.
@@ -225,8 +236,7 @@ pub enum Evento {
         /// La sua chiave.
         chiave: String,
     },
-    /// Il QR mostrato non vale più: è stato usato, o i gettoni sbagliati
-    /// l'hanno bruciato, o è scaduto. Chi lo mostra lo toglie dallo schermo —
+    /// Il QR mostrato non vale più: è stato usato, o è scaduto. Chi lo mostra lo toglie dallo schermo —
     /// se nel frattempo non ce n'è già uno nuovo ([`Nodo::invito_attivo`]).
     InvitoFinito,
     /// Qualcosa da scrivere nel diario.
@@ -299,7 +309,6 @@ pub trait Ospite: Send + Sync + 'static {
 struct InvitoAttivo {
     gettone: [u8; 16],
     scade: Instant,
-    fallimenti: u32,
 }
 
 /// Quel che i compiti del nodo condividono.
@@ -308,7 +317,9 @@ struct Condiviso {
     io: Presentazione,
     presenza: Mutex<Presenza>,
     invito: Mutex<Option<InvitoAttivo>>,
-    tentativi: Mutex<VecDeque<Instant>>,
+    /// I tentativi di associazione dell'ultimo minuto, per chi li fa: vedi
+    /// [`TENTATIVI_AL_MINUTO`].
+    tentativi: Mutex<HashMap<EndpointId, VecDeque<Instant>>>,
     connessioni: Mutex<HashMap<EndpointId, Connection>>,
     /// **Tutte** le connessioni vive con ogni dispositivo — in entrata e in
     /// uscita, della libreria e di «Ascolta insieme» — e non solo quella in
@@ -442,20 +453,36 @@ impl Condiviso {
         indirizzo
     }
 
-    /// Un tentativo di associazione in più: `false` oltre il tetto.
-    fn tentativo_ammesso(&self) -> bool {
+    /// Un tentativo di associazione in più da `da`: `false` oltre il suo
+    /// tetto ([`TENTATIVI_AL_MINUTO`]). Gli altri non ne risentono.
+    fn tentativo_ammesso(&self, da: EndpointId) -> bool {
         let mut tentativi = chiave(&self.tentativi);
         let adesso = Instant::now();
-        while tentativi
-            .front()
-            .is_some_and(|quando| adesso.duration_since(*quando) > Duration::from_secs(60))
+        let minuto = Duration::from_secs(60);
+        // Chi non bussa da un minuto non conta più.
+        tentativi.retain(|_, suoi| {
+            while suoi
+                .front()
+                .is_some_and(|quando| adesso.duration_since(*quando) > minuto)
+            {
+                suoi.pop_front();
+            }
+            !suoi.is_empty()
+        });
+        if !tentativi.contains_key(&da)
+            && tentativi.len() >= MASSIME_FONTI
+            && let Some(meno_recente) = tentativi
+                .iter()
+                .min_by_key(|(_, suoi)| suoi.back().copied())
+                .map(|(chi, _)| *chi)
         {
-            tentativi.pop_front();
+            tentativi.remove(&meno_recente);
         }
-        if tentativi.len() >= TENTATIVI_AL_MINUTO {
+        let suoi = tentativi.entry(da).or_default();
+        if suoi.len() >= TENTATIVI_AL_MINUTO {
             return false;
         }
-        tentativi.push_back(adesso);
+        suoi.push_back(adesso);
         true
     }
 
@@ -466,14 +493,15 @@ impl Condiviso {
     }
 
     /// Il gettone presentato. Giusto, il QR non vale più (una volta sola);
-    /// sbagliato, conta un fallimento. L'errore è il codice per l'altro.
+    /// sbagliato, il QR resta com'è — vedi «Il cancello» nel `//!`. L'errore
+    /// è il codice per l'altro.
     ///
-    /// Un QR che smette di valere qui — usato, bruciato, trovato scaduto — si
-    /// dice con [`Evento::InvitoFinito`], fuori dal lucchetto.
+    /// Un QR che smette di valere qui — usato, trovato scaduto — si dice con
+    /// [`Evento::InvitoFinito`], fuori dal lucchetto.
     fn consuma(&self, presentato: &str) -> Result<(), &'static str> {
         let (esito, finito) = {
             let mut invito = chiave(&self.invito);
-            match invito.as_mut().filter(|i| i.scade > Instant::now()) {
+            match invito.as_ref().filter(|i| i.scade > Instant::now()) {
                 None => {
                     let c_era = invito.take().is_some();
                     (Err("lontano.gettoneScaduto"), c_era)
@@ -485,12 +513,7 @@ impl Condiviso {
                         *invito = None;
                         (Ok(()), true)
                     } else {
-                        attivo.fallimenti = attivo.fallimenti.saturating_add(1);
-                        let bruciato = attivo.fallimenti >= MASSIMI_FALLIMENTI;
-                        if bruciato {
-                            *invito = None;
-                        }
-                        (Err("lontano.gettoneScaduto"), bruciato)
+                        (Err("lontano.gettoneScaduto"), false)
                     }
                 }
             }
@@ -540,7 +563,7 @@ impl Nodo {
             io: impostazioni.io,
             presenza: Mutex::new(impostazioni.presenza),
             invito: Mutex::new(None),
-            tentativi: Mutex::new(VecDeque::new()),
+            tentativi: Mutex::new(HashMap::new()),
             connessioni: Mutex::new(HashMap::new()),
             aperte: Mutex::new(HashMap::new()),
             posti: Mutex::new(HashMap::new()),
@@ -692,7 +715,6 @@ impl Nodo {
             *invito = Some(InvitoAttivo {
                 gettone,
                 scade: Instant::now() + VALIDITA_INVITO,
-                fallimenti: 0,
             });
         }
         Ok(Invito {
@@ -718,7 +740,7 @@ impl Nodo {
         *chiave(&self.condiviso.invito) = None;
     }
 
-    /// C'è un QR che vale ancora: né usato, né bruciato, né scaduto.
+    /// C'è un QR che vale ancora: né usato, né scaduto.
     #[must_use]
     pub fn invito_attivo(&self) -> bool {
         self.condiviso.invito_attivo()
@@ -1444,12 +1466,13 @@ impl ProtocolHandler for Associazione {
         // contare. Contati prima, chi conosce la chiave di questo nodo (in
         // casa la annuncia mDNS) consumava i tentativi del minuto quando non
         // c'era niente da indovinare, e il QR vero, mostrato subito dopo, si
-        // diceva scaduto a chi lo leggeva davvero (reperto 02-12).
-        if !condiviso.invito_attivo() || !condiviso.tentativo_ammesso() {
+        // diceva scaduto a chi lo leggeva davvero (reperto 02-12). E il tetto
+        // è di chi bussa, non di tutti (reperto R01-3).
+        let da = conn.remote_id();
+        if !condiviso.invito_attivo() || !condiviso.tentativo_ammesso(da) {
             conn.close(VarInt::from_u32(1), CHIUSA_SENZA_INVITO);
             return Ok(());
         }
-        let da = conn.remote_id();
         let esito = tokio::time::timeout(
             ATTESA_CONFERMA + Duration::from_secs(20),
             associa(condiviso, &conn, da),
