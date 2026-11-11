@@ -30,10 +30,11 @@ import { CENTRI_EQ, LIMITE_EQ_DB, ipc, type VocePreset } from "../ipc";
 import { Icona } from "./Icone";
 import { t, tSe } from "../lingue";
 import { useDati } from "../dati";
-import { chiaveNomePreset, chiavePreset, decibel, trovaPreset } from "../eq";
+import { chiaveNomePreset, chiavePreset, creaFreno, decibel, trovaPreset } from "../eq";
 import { numero } from "../formato";
 import { useFinestrella } from "../finestrella";
 import { Presenza } from "../presenza";
+import { useStabile } from "../stabile";
 
 /** Dove sta l'equalizzatore, e quindi quanto è grande. */
 export type TagliaEq = "pannello" | "pagina";
@@ -107,55 +108,42 @@ export function Equalizzatore({
   // Confrontando solo con l'ultima, quel ritorno sembrerebbe un cambiamento
   // arrivato da fuori e riporterebbe il cursore dov'era due giri fa.
   const attesiDiRitorno = useRef<{ curva: number[]; acceso: boolean }[]>([]);
-  const inSospeso = useRef<{ curva: number[]; acceso: boolean } | null>(null);
-  const ultimoInvio = useRef(0);
-  const attesa = useRef(0);
 
-  useEffect(
-    () => () => {
-      if (attesa.current !== 0) window.clearTimeout(attesa.current);
-    },
-    [],
+  // Stabile, e sempre l'ultima: il freno nasce una volta sola e la chiama
+  // anche allo smontaggio, quando `onErrore` può essere cambiato.
+  const spedisci = useStabile((prossima: { curva: number[]; acceso: boolean }) => {
+    // Si annota **qui** e non a ogni movimento: a tornare indietro sono le
+    // curve mandate, non quelle disegnate, e fra le une e le altre c'è il
+    // freno di `PASSO_INVIO`.
+    attesiDiRitorno.current.push(prossima);
+    // Un tetto, per il caso in cui le eco non arrivino mai — un motore morto,
+    // un comando rifiutato: la coda non deve crescere per tutta la sessione.
+    if (attesiDiRitorno.current.length > 8) attesiDiRitorno.current.shift();
+    ipc.equalizzatore(prossima.curva, prossima.acceso).catch(onErrore);
+  });
+
+  // Al più una curva ogni `PASSO_INVIO`: vedi `creaFreno` in `eq.ts`.
+  const [freno] = useState(() =>
+    creaFreno(PASSO_INVIO, spedisci, {
+      ora: () => performance.now(),
+      dopo: (ms, fai) => window.setTimeout(fai, ms),
+      annulla: (id) => window.clearTimeout(id),
+    }),
   );
 
-  const spedisci = useCallback(
-    (prossima: { curva: number[]; acceso: boolean }) => {
-      ultimoInvio.current = performance.now();
-      // Si annota **qui** e non a ogni movimento: a tornare indietro sono le
-      // curve mandate, non quelle disegnate, e fra le une e le altre c'è il
-      // freno di `PASSO_INVIO`.
-      attesiDiRitorno.current.push(prossima);
-      // Un tetto, per il caso in cui le eco non arrivino mai — un motore morto,
-      // un comando rifiutato: la coda non deve crescere per tutta la sessione.
-      if (attesiDiRitorno.current.length > 8) attesiDiRitorno.current.shift();
-      ipc.equalizzatore(prossima.curva, prossima.acceso).catch(onErrore);
-    },
-    [onErrore],
-  );
+  // Chiudere il pannello a metà attesa manda subito l'ultima curva: senza, la
+  // finestra l'aveva disegnata e il nucleo teneva quella di prima, e
+  // riaprendo il cursore tornava indietro di un passo.
+  useEffect(() => () => freno.svuota(), [freno]);
 
   /** Disegna subito, e manda al nucleo al più ogni `PASSO_INVIO`. */
   const applica = useCallback(
     (prossimaCurva: number[], prossimoAcceso: boolean) => {
       setCurva(prossimaCurva);
       setAcceso(prossimoAcceso);
-      const prossima = { curva: prossimaCurva, acceso: prossimoAcceso };
-
-      const trascorso = performance.now() - ultimoInvio.current;
-      if (trascorso >= PASSO_INVIO) {
-        spedisci(prossima);
-        return;
-      }
-      // Troppo presto: si tiene solo l'ultima, e parte allo scadere.
-      inSospeso.current = prossima;
-      if (attesa.current !== 0) return;
-      attesa.current = window.setTimeout(() => {
-        attesa.current = 0;
-        const ultima = inSospeso.current;
-        inSospeso.current = null;
-        if (ultima) spedisci(ultima);
-      }, PASSO_INVIO - trascorso);
+      freno.metti({ curva: prossimaCurva, acceso: prossimoAcceso });
     },
-    [spedisci],
+    [freno],
   );
 
   // Quel che arriva dal nucleo: si adotta solo se non è l'eco di una che
