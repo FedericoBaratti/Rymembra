@@ -38,6 +38,7 @@
   "rating.stars.uno": "1 stella",
   "player.reopenColumn": "Riapri la colonna In riproduzione",
   "player.nowPlaying": "In riproduzione",
+  "player.announce.track": "In riproduzione: {titolo} — {artista}",
   "player.open.aria": "Apri «In riproduzione»: {titolo}",
   "player.queue.aria": "Coda di riproduzione, {n} brani",
   "player.queue.aria.uno": "Coda di riproduzione, 1 brano",

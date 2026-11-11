@@ -38,6 +38,7 @@
   "rating.stars.uno": "1 star",
   "player.reopenColumn": "Reopen the Now playing column",
   "player.nowPlaying": "Now playing",
+  "player.announce.track": "Now playing: {titolo} — {artista}",
   "player.open.aria": "Open Now Playing: {titolo}",
   "player.queue.aria": "Play queue, {n} tracks",
   "player.queue.aria.uno": "Play queue, 1 track",

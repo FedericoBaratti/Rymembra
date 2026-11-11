@@ -135,7 +135,7 @@ import { modaliAperti, unaVolta } from "./modale";
 import { NuovoTema } from "./NuovoTema";
 import { chiaveDiPagina, paginaCorrente, type VistaLibreria } from "./pagina";
 import { sportelloAscolti, useAscolto, useRada } from "./pagine";
-import { Annuncio } from "./parti/Annuncio";
+import { Annuncio, AnnuncioDelBrano } from "./parti/Annuncio";
 import { AnnuncioScansione } from "./parti/AnnuncioScansione";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
@@ -4682,6 +4682,10 @@ export function App() {
             : t("playlist.deleted", { nome: cancellata.nome })
         }
       />
+      {/* E il brano che parte, a ogni cambio — anche quello che arriva da sé
+          alla fine di un brano (D-71): «Brano successivo» cambiava il titolo
+          lontano dal fuoco, e nessuno lo diceva. Vedi `annuncioBrano.ts`. */}
+      <AnnuncioDelBrano />
 
       {/* Lo Studio occupa la finestra intera, navigazione compresa: è un'altra
           applicazione dentro la stessa finestra, e tenere la barra della
