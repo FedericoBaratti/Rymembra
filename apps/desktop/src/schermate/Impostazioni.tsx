@@ -2745,7 +2745,7 @@ export function Impostazioni({
 
                             Sul telefono lo Studio non c'è, e la scheda rotta
                             resta una scheda che dice cosa non va: spenta, con la
-                            ragione sotto, e la X per toglierla. Si aggiusta sul
+                            ragione sotto, e il ⋮ per toglierla. Si aggiusta sul
                             computer, e torna col profilo. */}
                         <button
                           type="button"

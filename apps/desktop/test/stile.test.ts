@@ -482,13 +482,12 @@ test("in contrasto elevato il guscio di un campo di ricerca segna il fuoco", () 
 });
 
 test("in contrasto elevato i colori che sono il contenuto restano quelli", () => {
-  // Il motore impone i colori di sistema anche a `fill` e agli stili in linea:
-  // il QR diventava un quadrato uniforme che la fotocamera non legge, e le
-  // anteprime delle skin tre riquadri uguali.
+  // Il motore impone i colori di sistema anche agli stili in linea: le
+  // anteprime delle skin diventavano tre riquadri uguali, i campioni dello
+  // Studio quadratini vuoti.
   const tutte = regole(senzaCommenti(FOGLIO));
   for (const contenuto of [
     ".scena-spettro",
-    ".qr-collega",
     ".scheda-skin .bande",
     ".basi-tema .bande",
     ".campione",
@@ -660,11 +659,14 @@ test("nessuna opacità porta un testo informativo sotto 4,5:1", () => {
   };
   const coppie: [string, string, (c: (n: string) => Rgba) => Rgba][] = [
     [".voce[data-active] .conteggio", "--accent", (c) => componi(c("--accent-soft"), c("--color-surface-1"))],
-    [".segmentato .quante", "--color-text-2", (c) => c("--color-surface-2")],
+    [".segmentato .quante", "--color-text-3", (c) => c("--color-surface-2")],
+    [".segmentato .quante", "--color-text-3", (c) => c("--color-surface-3")],
     [".nodo-spento", "--color-text-3", (c) => c("--color-surface-0")],
     [".nodo-spento", "--color-text-2", (c) => c("--color-surface-0")],
     [".uscite .assente label", "--color-text-2", (c) => c("--color-surface-1")],
+    [".uscite .assente .nome", "--color-text-3", (c) => c("--color-surface-1")],
     [".dettaglio-spettro", "--color-text-2", (c) => c("--color-surface-0")],
+    [".dettaglio-spettro", "--color-text-3", (c) => c("--color-surface-0")],
     ["[data-ereditato]", "--color-text-3", (c) => c("--color-surface-1")],
   ];
   const cadute: string[] = [];

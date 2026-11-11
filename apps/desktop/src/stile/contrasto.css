@@ -52,11 +52,14 @@
  *
  * `forced-color-adjust: none` sta in due famiglie di posti, e solo lì.
  *
- * Dove i colori **sono** il contenuto: la tela dello spettro, il QR, le
- * anteprime delle skin, i campioni dello Studio. Uno spettro ridipinto col
- * bianco e il nero di sistema non è uno spettro ad alto contrasto, è un
- * rettangolo; un QR ridipinto non si legge più. Sono le immagini che generiamo
- * noi invece di caricarle da un file, cioè quelle che il motore ridipingerebbe.
+ * Dove i colori **sono** il contenuto: la tela dello spettro, le anteprime
+ * delle skin, i campioni dello Studio. Uno spettro ridipinto col bianco e il
+ * nero di sistema non è uno spettro ad alto contrasto, è un rettangolo; tre
+ * fasce d'anteprima ridipinte sono tre riquadri uguali. Sono i colori che
+ * generiamo noi invece di caricarli da un file, cioè quelli che il motore
+ * ridipingerebbe. (Il QR di «Collega un dispositivo» non ne ha bisogno: un
+ * `<svg>` il motore lo lascia già com'è, `preserve-parent-color` nel foglio di
+ * serie, e i suoi `fill` restano bianco e nero.)
  *
  * E dove il testo sta su `Highlight`: lì il motore metterebbe dietro alle
  * lettere il suo fondo `Canvas`, che è proprio il colore di `HighlightText`.
@@ -342,14 +345,11 @@
     opacity: 1;
   }
 
-  /* Dove i colori sono il contenuto. Lo spettro; il QR di «Collega un
-     dispositivo», bianco e nero per costruzione, che ridipinto diventava un
-     quadrato uniforme (il motore forza anche gli attributi `fill` dell'SVG);
-     le fasce d'anteprima delle skin e di «Crea tema», e i campioni e le
-     pastiglie di colore dello Studio, che senza i loro colori non mostrano
-     più niente. */
+  /* Dove i colori sono il contenuto. Lo spettro; le fasce d'anteprima delle
+     skin e di «Crea tema», e i campioni e le pastiglie di colore dello Studio:
+     sono colori scritti in linea, che il motore forzava al fondo di sistema, e
+     senza i loro colori non mostrano più niente. */
   .scena-spettro,
-  .qr-collega,
   .scheda-skin .bande,
   .basi-tema .bande,
   .campione,
