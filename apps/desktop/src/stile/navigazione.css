@@ -683,8 +683,8 @@
   word-break: normal;
 }
 /* Un avviso dentro una scheda delle impostazioni, e non il `.avviso` globale:
-   quello è una griglia con la barretta d'accento, fatta per l'elenco degli
-   avvisi dello Studio. Qui è una frase sotto un percorso. */
+   quello è il riquadro col livello e l'icona (`importazioni.css`), fatto per
+   le notizie che chiedono qualcosa. Qui è una frase sotto un percorso. */
 .impostazioni .scheda > .avviso {
   display: block;
   margin: var(--spazio-2) 0 0;

@@ -360,3 +360,13 @@ test("la pista di una barra di avanzamento è un blocco anche dentro uno <span>"
   // non valgono, e la barra dello scaricamento non si vedeva mai.
   assert.match(regola(".toast-progress"), /display:\s*block/);
 });
+
+test("le regole nude dello Studio non vestono il markup del resto dell'app", () => {
+  // `.mancanti` e `.avviso` di `studio.css` disegnavano elenchi e avvisi che lo
+  // Studio non ha più: la prima metteva in fila come parole i brani mancanti del
+  // rapporto d'importazione (`parti/Rapporto.tsx`).
+  const nude = regole(senzaCommenti(FOGLIO))
+    .flatMap((r) => r.selettori)
+    .filter((s) => s === ".mancanti" || s === ".avviso" || s === ".avviso .cosa");
+  assert.deepEqual(nude, [".avviso"], "resta solo l'.avviso di importazioni.css");
+});
