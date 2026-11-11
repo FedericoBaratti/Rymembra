@@ -247,6 +247,23 @@ test("il codice di una parte non si perde cambiando parte, scheda o tema, né us
   assert.match(corpo(guscio, "const esci = useCallback("), /codiceInSospeso/);
 });
 
+test("le descrizioni del registro passano dal catalogo, anche nei suggerimenti (R14-9, R17-5)", () => {
+  // `title={tk.description}` e `def.description` mostravano la frase italiana
+  // del crate con l'interfaccia in inglese; i nomi delle animazioni pronte
+  // pure.
+  for (const file of ["Variabili.tsx", "AlberoScafale.tsx", "IspezioneParte.tsx", "Pila.tsx", "Livelli.tsx", "IspezioneVoci.tsx"]) {
+    assert.doesNotMatch(sorgente(file), /\.description\}/, `${file}: una descrizione del registro senza catalogo`);
+  }
+  const variabili = sorgente("Variabili.tsx");
+  assert.doesNotMatch(variabili, /<code>\{p\.nome\}<\/code>/, "il nome dell'animazione pronta arriva com'è dal nucleo");
+  assert.match(variabili, /nomeAnimazionePronta\(p\.id, p\.nome\)/);
+});
+
+test("l'editor del codice riceve le frasi dal catalogo (R14-9)", () => {
+  const editor = sorgente("EditorCodice.tsx");
+  assert.match(editor, /frasi: frasiDellEditor\(\)/, "l'editor nasce senza le sue frasi");
+});
+
 test("«Prova», «Salva e usa» ed «Esporta» non partono due volte (R14-8)", () => {
   // Un doppio clic su «Prova» con la compilazione non ancora in memoria
   // arrivava due volte a `iniziaProva`; su «Salva e usa» faceva due

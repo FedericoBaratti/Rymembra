@@ -529,11 +529,58 @@ const aspetto = EditorView.theme({
 });
 
 /** Tutto quel che serve a un editor dello Studio. */
+/**
+ * Le frasi che i pacchetti di CodeMirror chiedono a `state.phrase`: il pannello
+ * di ricerca, il «vai alla riga», le pieghe, i completamenti, le diagnostiche,
+ * gli annunci per il lettore di schermo.
+ *
+ * Senza `EditorState.phrases` restavano in inglese anche con l'interfaccia in
+ * italiano (R14-9). L'elenco sta qui, e non le traduzioni: questo modulo non
+ * legge il catalogo — lo provano i test senza un DOM e senza `import` di JSON —
+ * e le frasi gliele passa chi monta l'editor (`EditorCodice`), come le
+ * descrizioni delle `Fonti`. `test/codice.test.ts` legge i pacchetti installati
+ * e fallisce se uno ne chiede una che qui manca.
+ */
+export const FRASI_CODEMIRROR = [
+  "Find",
+  "Replace",
+  "next",
+  "previous",
+  "all",
+  "match case",
+  "regexp",
+  "by word",
+  "replace",
+  "replace all",
+  "close",
+  "current match",
+  "on line",
+  "replaced match on line $",
+  "replaced $ matches",
+  "Go to line",
+  "go",
+  "Fold line",
+  "Unfold line",
+  "Folded lines",
+  "Unfolded lines",
+  "folded code",
+  "unfold",
+  "to",
+  "Completions",
+  "Diagnostics",
+  "No diagnostics",
+  "Control character",
+  "Selection deleted",
+] as const;
+export type FraseCodeMirror = (typeof FRASI_CODEMIRROR)[number];
+
 export function estensioni(opzioni: {
   fonti: () => Fonti;
   onAnnulla: () => void;
   onRipeti: () => void;
   etichetta: string;
+  /** Le frasi di CodeMirror nella lingua dell'interfaccia: vedi `FRASI_CODEMIRROR`. */
+  frasi?: Readonly<Record<string, string>>;
 }): Extension[] {
   const storia = keymap.of([
     { key: "Mod-z", run: () => (opzioni.onAnnulla(), true), preventDefault: true },
@@ -561,6 +608,7 @@ export function estensioni(opzioni: {
     descrizioni(opzioni.fonti),
     EditorView.contentAttributes.of({ "aria-label": opzioni.etichetta, spellcheck: "false" }),
     EditorState.tabSize.of(2),
+    EditorState.phrases.of(opzioni.frasi ?? {}),
   ];
 }
 

@@ -4,7 +4,7 @@
  * # Perché non arrivano già tradotte
  *
  * Perché il registro non è interfaccia: è il **vocabolario** di quel che una
- * skin può ridisegnare, e vive in `rymembra-skin` — cinquantuno parti,
+ * skin può ridisegnare, e vive in `rymembra-skin` — un centinaio di parti,
  * settantatré token, quattordici widget, le loro manopole e i parametri degli
  * effetti. Ogni voce porta una frase che dice a cosa serve, e quelle frasi si
  * leggono nello Studio: nell'albero, nell'ispettore, sulle manopole di un
@@ -56,6 +56,17 @@ export function descrizioneToken(id: string, ripiego: string): string {
  */
 export function descrizionePreset(id: string, ripiego: string): string {
   return tSe(`skin.preset.${id}`, ripiego);
+}
+
+/**
+ * Come si chiama un'animazione pronta: `skin.anim.sobbalzo`.
+ *
+ * Un nome, come quello dei preset e per la stessa ragione: sta in `preset.rs`
+ * accanto ai fotogrammi, e il ripiego lo mostra in italiano il giorno stesso
+ * in cui nasce. Fino alla 3.2 si mostrava solo così (R17-5).
+ */
+export function nomeAnimazionePronta(id: string, ripiego: string): string {
+  return tSe(`skin.anim.${id}`, ripiego);
 }
 
 /** Cos'è un widget dello scafale: `skin.widget.navigation`. */

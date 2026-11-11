@@ -13,7 +13,8 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useEffect, useMemo, useRef } from "react";
 
-import { daFuori, diagnostiche, estensioni, type Fonti, type Segno } from "./codice";
+import { t } from "../lingue";
+import { daFuori, diagnostiche, estensioni, type FraseCodeMirror, type Fonti, type Segno } from "./codice";
 import { useStudio } from "./contesto";
 import { testo as testoDi } from "./negozio";
 import { nomeRisorsa } from "./usaPacchetto";
@@ -45,6 +46,46 @@ export function useFonti(radice: readonly string[]): Fonti {
     }),
     [registro, chiave],
   );
+}
+
+/**
+ * Le frasi di CodeMirror nella lingua dell'interfaccia, all'apertura
+ * dell'editor (R14-9). Un `Record` su tutte le frasi di `FRASI_CODEMIRROR`:
+ * una che si aggiunge là e manca qui non compila. `$` è il posto del numero,
+ * e CodeMirror lo riempie.
+ */
+function frasiDellEditor(): Record<FraseCodeMirror, string> {
+  return {
+    Find: t("studio3.cm.find"),
+    Replace: t("studio3.cm.replace"),
+    next: t("studio3.cm.next"),
+    previous: t("studio3.cm.previous"),
+    all: t("studio3.cm.all"),
+    "match case": t("studio3.cm.matchCase"),
+    regexp: t("studio3.cm.regexp"),
+    "by word": t("studio3.cm.byWord"),
+    replace: t("studio3.cm.replaceOne"),
+    "replace all": t("studio3.cm.replaceAll"),
+    close: t("studio3.cm.close"),
+    "current match": t("studio3.cm.currentMatch"),
+    "on line": t("studio3.cm.onLine"),
+    "replaced match on line $": t("studio3.cm.replacedOnLine"),
+    "replaced $ matches": t("studio3.cm.replacedMatches"),
+    "Go to line": t("studio3.cm.goToLine"),
+    go: t("studio3.cm.go"),
+    "Fold line": t("studio3.cm.foldLine"),
+    "Unfold line": t("studio3.cm.unfoldLine"),
+    "Folded lines": t("studio3.cm.foldedLines"),
+    "Unfolded lines": t("studio3.cm.unfoldedLines"),
+    "folded code": t("studio3.cm.foldedCode"),
+    unfold: t("studio3.cm.unfold"),
+    to: t("studio3.cm.to"),
+    Completions: t("studio3.cm.completions"),
+    Diagnostics: t("studio3.cm.diagnostics"),
+    "No diagnostics": t("studio3.cm.noDiagnostics"),
+    "Control character": t("studio3.cm.controlCharacter"),
+    "Selection deleted": t("studio3.cm.selectionDeleted"),
+  };
 }
 
 /** I problemi della validazione di adesso, come segni sul testo. */
@@ -117,6 +158,7 @@ export function EditorCodice({
             onAnnulla: () => ultime.current.onAnnulla(),
             onRipeti: () => ultime.current.onRipeti(),
             etichetta,
+            frasi: frasiDellEditor(),
           }),
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return;

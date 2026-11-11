@@ -540,7 +540,7 @@ function RigaScafale({
       tabIndex={raggiungibile ? 0 : -1}
       data-zona={zona || undefined}
       style={{ paddingLeft: `${(livello - 1) * 12 + 4}px` }}
-      title={def === null ? t("studio3.shell.zoneHint", { nome: nodo.name }) : def.description}
+      title={def === null ? t("studio3.shell.zoneHint", { nome: nodo.name }) : descrizioneWidget(def.name, def.description)}
       onPointerDown={onPresa}
       onClick={onScegli}
     >

@@ -1285,3 +1285,53 @@ fn buttare_la_bozza_non_mette_da_parte_i_file_del_pacchetto() {
             .is_file()
     );
 }
+
+/// Il catalogo di una lingua, come chiavi piatte.
+fn catalogo(testo: &str) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::from_str::<serde_json::Value>(testo) {
+        Ok(serde_json::Value::Object(voci)) => voci,
+        _ => panic!("un catalogo delle lingue non è un oggetto JSON"),
+    }
+}
+
+#[test]
+fn ogni_parte_ogni_parametro_e_ogni_animazione_pronta_hanno_la_loro_frase() {
+    // R17-5: metà delle parti e sette parametri degli effetti non avevano una
+    // riga nel catalogo, e lo Studio in inglese ripiegava sulla frase
+    // italiana del crate. Il ripiego resta — una voce nuova si vede subito —
+    // ma una voce senza frase non arriva fino al rilascio.
+    let lingue = [
+        ("it", catalogo(include_str!("../../../src/lingue/it.json"))),
+        ("en", catalogo(include_str!("../../../src/lingue/en.json"))),
+    ];
+    let registro = studio_registro();
+    let mut attese: Vec<String> = Vec::new();
+    attese.extend(
+        registro
+            .parts
+            .iter()
+            .map(|p| format!("skin.part.{}", p.name)),
+    );
+    for effetto in &registro.effects {
+        attese.extend(
+            effetto
+                .params
+                .iter()
+                .map(|p| format!("skin.par.{}.{}", effetto.name, p.name)),
+        );
+    }
+    attese.extend(
+        registro
+            .animazioni_pronte
+            .iter()
+            .map(|a| format!("skin.anim.{}", a.id)),
+    );
+    for (lingua, voci) in &lingue {
+        let mancanti: Vec<&String> = attese.iter().filter(|k| !voci.contains_key(*k)).collect();
+        assert!(
+            mancanti.is_empty(),
+            "{lingua}.json: {} voci del registro senza frase: {mancanti:?}",
+            mancanti.len()
+        );
+    }
+}

@@ -29,7 +29,8 @@ import { stessaSelezione, testo } from "./negozio";
 import { elencoBreve, usiDellaRisorsa } from "./risorse";
 import { sentieroColore, sentieroMotivo } from "./sentieri";
 import { ritrattoEffetto, tintaNel, type Livello } from "./valori";
-import { nomeGruppo } from "./vocabolario";
+import { nomeInnesco } from "./IspezioneParte";
+import { descrizioneToken, nomeAnimazionePronta, nomeGruppo } from "./vocabolario";
 
 type Sezione =
   | "tema"
@@ -412,7 +413,7 @@ function Token({ ago }: { ago: string }) {
                     data-active={scelta({ tipo: "token", id: tk.id }) || undefined}
                     data-dichiarato={proprio !== undefined || undefined}
                     data-ereditato={(variante && proprio === undefined && valore !== undefined) || undefined}
-                    title={tk.description}
+                    title={descrizioneToken(tk.id, tk.description)}
                     onClick={() => scegli({ tipo: "token", id: tk.id })}
                   >
                     {tk.kind === "color" ? (
@@ -631,7 +632,7 @@ function Animazioni({ ago }: { ago: string }) {
               key={p.id}
               type="button"
               className="un-widget"
-              title={t("studio3.vars.animations.readyFor", { innesco: p.innesco })}
+              title={t("studio3.vars.animations.readyFor", { innesco: nomeInnesco(p.innesco) })}
               onClick={() => {
                 try {
                   aggiungi(p.id, JSON.parse(p.valore));
@@ -640,8 +641,8 @@ function Animazioni({ ago }: { ago: string }) {
                 }
               }}
             >
-              <code>{p.nome}</code>
-              <span className="valore-token">{p.innesco}</span>
+              <code>{nomeAnimazionePronta(p.id, p.nome)}</code>
+              <span className="valore-token">{nomeInnesco(p.innesco)}</span>
             </button>
           ))}
           <button type="button" className="pillola btn-ghost" onClick={() => setPronte(false)}>
