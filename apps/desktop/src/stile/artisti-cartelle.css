@@ -533,7 +533,12 @@
   color: var(--color-text-2);
   margin-bottom: 5px;
 }
+/* `display: block` perché la forma la decide il foglio e non il tag: nella
+   fascia dell'aggiornamento la pista è uno `<span>` (sta dentro un paragrafo,
+   dove un `<div>` non è valido), e in linea `height` e `overflow` non valgono —
+   la barra dello scaricamento non si vedeva mai. */
 .toast-progress {
+  display: block;
   height: 4px;
   border-radius: 99px;
   background: var(--color-surface-3);

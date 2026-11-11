@@ -353,3 +353,10 @@ test("il campo della chat dello Studio sembra occupato durante un turno", () => 
   assert.match(occupato, /opacity:\s*0\.6/);
   assert.match(occupato, /cursor:\s*progress/);
 });
+
+test("la pista di una barra di avanzamento è un blocco anche dentro uno <span>", () => {
+  // `parti/Aggiornamenti.tsx` la scrive come `<span>`, perché sta dentro un
+  // paragrafo dove un `<div>` non è valido: in linea, `height` e `overflow`
+  // non valgono, e la barra dello scaricamento non si vedeva mai.
+  assert.match(regola(".toast-progress"), /display:\s*block/);
+});
