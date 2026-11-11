@@ -2593,13 +2593,32 @@ export function Impostazioni({
                   type="button"
                   className="bottone btn-ghost"
                   /* Senza righe da riportare non c'è niente da disfare, e un
-                     pulsante attivo prometterebbe qualcosa che non succede. */
+                     pulsante attivo prometterebbe qualcosa che non succede.
+
+                     Una passata in corso invece non lo spegne: lo dice
+                     (`aria-disabled`, `aria-busy`) e il clic si ignora. Con
+                     `disabled` il fuoco cadeva sul documento proprio quando
+                     il gesto partiva — ed è il tasto a cui torna il fuoco
+                     dopo la domanda. */
                   disabled={
-                    arricchimento === null ||
-                    arricchimento.inCorso ||
-                    arricchimento.annullabili === 0
+                    arricchimento === null || arricchimento.annullabili === 0
                   }
-                  onClick={onArricchimentoAnnulla}
+                  aria-disabled={arricchimento?.inCorso || undefined}
+                  aria-busy={arricchimento?.inCorso || undefined}
+                  /* Con una domanda prima, come «Rileggi tutti i tag»: il gesto
+                     rilegge ogni file arricchito e spegne anche l'automatico,
+                     e un clic sbagliato non deve bastare. */
+                  onClick={() => {
+                    if (arricchimento === null || arricchimento.inCorso) return;
+                    setDomanda({
+                      titolo: t("settings.enrich.undo.confirm.title"),
+                      descrizione: t("settings.enrich.undo.confirm.body", {
+                        n: arricchimento.annullabili,
+                      }),
+                      conferma: t("settings.enrich.undo"),
+                      fai: onArricchimentoAnnulla,
+                    });
+                  }}
                 >
                   <Icona nome="i-x" dim={15} />
                   {arricchimento?.inCorso

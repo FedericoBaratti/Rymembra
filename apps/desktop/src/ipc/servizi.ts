@@ -1086,7 +1086,7 @@ export interface StatoArricchimento {
 export interface EsitoAnnullamento {
   /** Brani tornati ai tag di prima. */
   riportati: number;
-  /** File che non si sono potuti riscrivere. */
+  /** File che non si sono potuti rileggere: restano arricchiti, e il gesto si può ripetere. */
   falliti: number;
   /** Lo stato dopo, per non doverlo richiedere. */
   stato: StatoArricchimento;
