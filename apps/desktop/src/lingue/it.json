@@ -2362,6 +2362,7 @@
   "imports.state.running": "in corso",
   "imports.state.paused": "in pausa · {n} rimasti",
   "imports.state.paused.uno": "in pausa · 1 rimasto",
+  "imports.state.done": "finita",
   "imports.history": "{n} importazioni concluse prima di questa sessione",
   "imports.history.uno": "{n} importazione conclusa prima di questa sessione",
   "imports.history.missing": "{n} mancavano",

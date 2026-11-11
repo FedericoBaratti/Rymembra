@@ -2362,6 +2362,7 @@
   "imports.state.running": "running",
   "imports.state.paused": "paused · {n} left",
   "imports.state.paused.uno": "paused · 1 left",
+  "imports.state.done": "done",
   "imports.history": "{n} imports finished before this session",
   "imports.history.uno": "{n} import finished before this session",
   "imports.history.missing": "{n} were missing",
