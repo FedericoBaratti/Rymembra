@@ -10,6 +10,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Copertina } from "./Copertina";
 import { useDati } from "./dati";
 import { t } from "./lingue";
+import { quandoSiApreUnModale } from "./modale";
 import { Foglio, useChiudiFoglio } from "./parti/Foglio";
 import { Icona, type NomeIcona } from "./parti/Icone";
 import { MOBILE } from "./piattaforma";
@@ -175,6 +176,24 @@ function MenuPopup({
   /** Il menù si è chiuso col Tab: il fuoco è già andato avanti da sé. */
   const uscitoColTab = useRef(false);
   const [posto, setPosto] = useState<{ left: number; top: number } | null>(null);
+  const chiudi = useRef(onChiudi);
+  chiudi.current = onChiudi;
+
+  // Una finestrella che si apre da sola mentre il menù è su — la conferma
+  // delle rimozioni a fine scansione, una richiesta di collegamento — rendeva
+  // inerte il menù ma lo lasciava disegnato sopra il velo (`--strato-menu`),
+  // e il suo ascolto in cattura qui sotto restava vivo: nella finestrella le
+  // frecce e Inizio/Fine finivano su voci inerti, il primo Escape chiudeva il
+  // menù invece della domanda, il Tab lo chiudeva. Il menù è la cosa di
+  // passaggio: quando si apre una finestrella scende lui, come fa il foglio
+  // del telefono (`quandoSiApreUnModale` in `modale.ts`). La chiusura in un
+  // riferimento, perché `onChiudi` cambia identità a ogni disegno di `App`.
+  // Il fuoco che torna a chi aveva aperto non lo toglie alla finestrella: chi
+  // aveva aperto è dietro il velo, inerte, e `focus()` lì non fa niente.
+  useEffect(() => {
+    if (anteprima) return;
+    return quandoSiApreUnModale(() => chiudi.current());
+  }, [anteprima]);
 
   /**
    * Dove sta il menù lo decide la sua misura, non un numero scritto qui.

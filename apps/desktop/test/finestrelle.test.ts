@@ -163,3 +163,15 @@ test("ogni superficie aria-modal rende inerte il resto della finestra", () => {
   assert.match(foglio, /useVeloInerte\(velo, pannello\)/);
   assert.ok(foglio.indexOf("chiAveva.current =") < foglio.indexOf("useVeloInerte(velo, pannello)"));
 });
+
+test("il menù del tasto destro si chiude quando si apre una finestrella", () => {
+  // R13d-4. Una finestrella arrivata da sola con un menù aperto lo rendeva
+  // inerte ma lo lasciava sopra il velo, col suo ascolto in cattura vivo:
+  // frecce, Inizio/Fine, Tab ed Escape della finestrella andavano al menù.
+  const menu = sorgente("Menu.tsx");
+  const popup = menu.slice(menu.indexOf("function MenuPopup("));
+  assert.match(popup, /quandoSiApreUnModale\(\(\) => chiudi\.current\(\)\)/);
+  // Non sulla tela dello Studio, dove il menù è un disegno.
+  const effetto = popup.slice(popup.lastIndexOf("useEffect(", popup.indexOf("quandoSiApreUnModale(")));
+  assert.match(effetto.slice(0, effetto.indexOf("quandoSiApreUnModale(")), /if \(anteprima\) return;/);
+});
