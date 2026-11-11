@@ -22,7 +22,9 @@
 //! e il `.ryprofile` — e la regola è una: [`nel_dominio`]. Chi la chiama sono
 //! [`crate::Motore::passata`], sui documenti degli altri, e il profilo, sul
 //! documento che porta. Chi scrive nel database dopo non deve controllare
-//! niente, e non controlla.
+//! niente, e non controlla. C'è una terza porta, il backup su Drive, che ha un
+//! formato suo: applica le stesse regole, con [`ascolti_ammessi`] e il futuro
+//! tagliato come per il profilo, in `rymembra_app::backup::nel_dominio`.
 //!
 //! # Due modi di trattare il futuro, e perché sono due
 //!
@@ -131,9 +133,21 @@ pub fn nel_dominio(mut contenuto: Contenuto, adesso_ms: i64, futuro: Futuro) -> 
     contenuto.cartelle.retain(|_, stato| istante(&mut stato.at));
     contenuto.lapidi.brani.retain(|_, at| istante(at));
     contenuto.lapidi.playlist.retain(|_, at| istante(at));
-    contenuto
-        .playlist
-        .retain(|_, playlist| istante(&mut playlist.at));
+    // Di una playlist si rinvia la **testata** — nome, descrizione, regole,
+    // l'«automatica» — e non i brani. Rinviarla intera congelava la sua
+    // sequenza su ogni altro dispositivo finché l'orologio non arrivava a
+    // quella data, e il documento di chi l'ha scritta non passa mai dal
+    // dominio (R02-3). La testata rinviata entra con l'orologio a zero: perde
+    // contro qualunque testata vera, e anche contro una lapide; quando sarà
+    // ora entrerà con la sua data. Una playlist rinviata senza brani da
+    // fondere non porta niente, e resta fuori come prima.
+    contenuto.playlist.retain(|_, playlist| {
+        if istante(&mut playlist.at) {
+            return true;
+        }
+        playlist.at = 0;
+        !playlist.sequenza.e_vuota()
+    });
     if futuro == Futuro::Taglia {
         for playlist in contenuto.playlist.values_mut() {
             playlist.creata_at = playlist.creata_at.min(adesso_ms);
@@ -269,5 +283,46 @@ mod prove {
             .map(|p| p.sequenza.elementi().map(|(_, e)| e.tolto).collect())
             .unwrap_or_default();
         assert_eq!(tolti, vec![Some(ADESSO), None]);
+    }
+
+    #[test]
+    fn la_sincronia_rinvia_la_testata_di_una_playlist_ma_non_i_suoi_brani() {
+        // R02-3: una playlist con la data nel futuro — un orologio sballato, o
+        // uno stato già sporco di prima — si rinviava intera, sequenza
+        // compresa. Il documento di chi l'ha scritta non passa dal dominio, e
+        // finché quella data restava avanti nessun altro dispositivo vedeva
+        // più un brano aggiunto o tolto in quella playlist.
+        let fra_dieci_anni = ADESSO + 10 * 365 * 24 * 60 * 60 * 1000;
+        let mut contenuto = Contenuto::default();
+        contenuto.playlist.insert(
+            "q".to_owned(),
+            crate::PlaylistSincronizzata {
+                nome: "Q".to_owned(),
+                at: fra_dieci_anni,
+                creata_at: 5,
+                sequenza: crate::Sequenza::dalla_lista("uno", &["a".to_owned(), "b".to_owned()]),
+                ..crate::PlaylistSincronizzata::default()
+            },
+        );
+        let rinviato = nel_dominio(contenuto, ADESSO, Futuro::Rinvia);
+        let q = rinviato.playlist.get("q").expect("i brani entrano");
+        assert_eq!(q.sequenza.ordine(), vec!["a", "b"]);
+        assert_eq!(q.at, 0, "la testata perde contro qualunque testata vera");
+
+        // Quando l'orologio ci arriva, entra anche la testata, con la sua data.
+        let mut contenuto = Contenuto::default();
+        contenuto.playlist.insert(
+            "q".to_owned(),
+            crate::PlaylistSincronizzata {
+                at: fra_dieci_anni,
+                sequenza: crate::Sequenza::dalla_lista("uno", &["a".to_owned()]),
+                ..crate::PlaylistSincronizzata::default()
+            },
+        );
+        let arrivato = nel_dominio(contenuto, fra_dieci_anni, Futuro::Rinvia);
+        assert_eq!(
+            arrivato.playlist.get("q").map(|q| q.at),
+            Some(fra_dieci_anni)
+        );
     }
 }
