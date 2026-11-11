@@ -1631,14 +1631,45 @@ fn su_un_unita(percorso: &str) -> bool {
         && byte.get(2).is_none_or(|c| *c == b'\\' || *c == b'/')
 }
 
-/// L'host di un percorso di rete `\\host\share` o `//host/share`, minuscolo e
-/// con l'eventuale `@SSL@porta`; `None` per tutto il resto, percorsi di
-/// dispositivo (`\\?\`, `\\.\`) compresi.
-fn host_di_rete(percorso: &str) -> Option<String> {
+/// Quel che segue i due separatori in testa di una forma UNC, in **qualunque**
+/// grafia: `\\`, `//`, `/\` o `\/`.
+///
+/// Win32 tratta come UNC ogni coppia di separatori iniziali, anche mista:
+/// riconoscere solo `\\` e `//` lasciava passare `/\host\m` come se fosse un
+/// percorso locale (R02-1).
+fn dopo_due_separatori(percorso: &str) -> Option<&str> {
+    let separatore = |c: Option<&u8>| matches!(c, Some(b'\\' | b'/'));
+    let byte = percorso.as_bytes();
+    if separatore(byte.first()) && separatore(byte.get(1)) {
+        percorso.get(2..)
+    } else {
+        None
+    }
+}
+
+/// Il percorso parla della rete, o di qualcosa che non si sa dire locale.
+///
+/// Una sola risposta per tutti quelli che la chiedono — l'host, la guardia
+/// della sincronia, il piano del profilo e quello del ripristino — costruita
+/// per **forma**: due separatori in testa in qualunque grafia (vedi
+/// [`dopo_due_separatori`]), oppure lo spazio dei nomi NT `\??\`, che Win32
+/// passa così com'è e che con `\??\UNC\host\…` arriva allo stesso share.
+/// `\\?\X:\…` è un'unità con lettera ([`su_un_unita`]), non la rete; un
+/// percorso con una sola barra in testa (`/storage/…` di un telefono) e
+/// `nuvola://…` non lo sono.
+fn di_rete(percorso: &str) -> bool {
     let percorso = percorso.trim();
-    let resto = percorso
-        .strip_prefix(r"\\")
-        .or_else(|| percorso.strip_prefix("//"))?;
+    if su_un_unita(percorso) {
+        return false;
+    }
+    dopo_due_separatori(percorso).is_some() || percorso.starts_with(r"\??\")
+}
+
+/// L'host di un percorso di rete `\\host\share` (in qualunque grafia dei due
+/// separatori), minuscolo e con l'eventuale `@SSL@porta`; `None` per tutto il
+/// resto, percorsi di dispositivo (`\\?\`, `\\.\`, `\??\`) compresi.
+fn host_di_rete(percorso: &str) -> Option<String> {
+    let resto = dopo_due_separatori(percorso.trim())?;
     let host = resto.split(['\\', '/']).next()?;
     if host.is_empty() || host == "?" || host == "." {
         return None;
@@ -1649,17 +1680,13 @@ fn host_di_rete(percorso: &str) -> Option<String> {
 /// Il percorso è di rete e il suo host non è fra quelli che questo computer usa
 /// già ([`host_di_questo_pc`]).
 ///
-/// Lessicale, come le due sopra: non chiede niente al disco. Una forma di rete
-/// di cui non si legge l'host (`\\?\UNC\…`, `\\.\…`) vale «sconosciuta», e
-/// `\\?\X:\…` è un'unità con lettera, non la rete. Lo usa la sincronia per le
-/// cartelle che un documento porta: vedi `sincronia::applica_cartelle`.
+/// Lessicale, come le tre sopra: non chiede niente al disco. Una forma di rete
+/// di cui non si legge l'host (`\\?\UNC\…`, `\\.\…`, `\??\UNC\…`) vale
+/// «sconosciuta». Lo usano la sincronia per le cartelle che un documento porta
+/// (`sincronia::applica_cartelle`) e il ripristino da Drive per quelle che
+/// chiede al disco (`backup::sondabili`).
 pub(crate) fn verso_un_host_ignoto(percorso: &str, noti: &[String]) -> bool {
-    let percorso = percorso.trim();
-    let di_rete = percorso.starts_with(r"\\") || percorso.starts_with("//");
-    if !di_rete || su_un_unita(percorso) {
-        return false;
-    }
-    host_di_rete(percorso).is_none_or(|host| !noti.contains(&host))
+    di_rete(percorso) && host_di_rete(percorso).is_none_or(|host| !noti.contains(&host))
 }
 
 /// Gli host di rete che questo computer usa già: quelli delle sue cartelle

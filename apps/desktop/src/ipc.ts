@@ -987,6 +987,10 @@ export const ipc = {
     invoke<DispositivoSincronia[]>("sincronia_dispositivi"),
   sincroniaAccoppia: (id: string, nome: string | null) =>
     invoke<DispositivoSincronia[]>("sincronia_accoppia", { id, nome }),
+  // Solo il nome: la fiducia la dà «Accetta». Lo stato aggiornato arriva anche
+  // con l'evento `sincronia:stato`.
+  sincroniaRinomina: (id: string, nome: string | null) =>
+    invoke<DispositivoSincronia[]>("sincronia_rinomina", { id, nome }),
   sincroniaDimentica: (id: string) =>
     invoke<DispositivoSincronia[]>("sincronia_dimentica", { id }),
 

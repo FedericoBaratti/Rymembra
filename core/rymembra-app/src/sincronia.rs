@@ -1571,6 +1571,28 @@ pub fn fidati(
     Ok(())
 }
 
+/// Dà un nome a un dispositivo, e non tocca nient'altro.
+///
+/// Non è [`fidati`]: dare un nome riconoscibile a un dispositivo «da
+/// accettare» prima di decidere non è decidere, e passare da lì lo rendeva
+/// fidato — da quel momento i suoi documenti valevano (R13-3). Un nome vuoto
+/// toglie il nome, e si torna all'identificativo. Un dispositivo che non c'è
+/// non nasce: restituisce `false`.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+pub fn rinomina(connection: &Connection, id: &str, nome: Option<&str>) -> Result<bool, AppError> {
+    let nome = nome.map(str::trim).filter(|nome| !nome.is_empty());
+    let toccate = connection
+        .execute(
+            "UPDATE sync_dispositivi SET nome = ?2 WHERE id = ?1",
+            rusqlite::params![id, nome],
+        )
+        .map_err(|err| db_error("nome di un dispositivo", &err))?;
+    Ok(toccate > 0)
+}
+
 /// Dimentica un dispositivo.
 ///
 /// Non tocca gli ascolti che ha già portato: erano ascolti veri, e cancellarli
@@ -2306,6 +2328,38 @@ mod prove {
     }
 
     #[test]
+    fn rinominare_non_rende_fidato() {
+        // R13-3: «Rinomina» su un dispositivo «da accettare» passava dallo
+        // stesso comando di «Accetta», e da lì i suoi documenti valevano. Dare
+        // un nome riconoscibile prima di decidere non è decidere.
+        let connection = libreria();
+        intravisti(&connection, &["sconosciuto".to_owned()], 1_000).expect("intravisto");
+        assert!(rinomina(&connection, "sconosciuto", Some("Il vecchio telefono")).expect("nome"));
+        let elenco = dispositivi(&connection).expect("dispositivi");
+        let lui = elenco
+            .iter()
+            .find(|d| d.id == "sconosciuto")
+            .expect("il dispositivo");
+        assert_eq!(lui.nome.as_deref(), Some("Il vecchio telefono"));
+        assert!(!lui.fidato, "rinominare non è accettare");
+
+        // E a uno fidato non toglie la fiducia; un nome vuoto torna all'id.
+        fidati(&connection, "sconosciuto", None, None).expect("fiducia");
+        assert!(rinomina(&connection, "sconosciuto", Some("  ")).expect("nome"));
+        let elenco = dispositivi(&connection).expect("dispositivi");
+        let lui = elenco
+            .iter()
+            .find(|d| d.id == "sconosciuto")
+            .expect("il dispositivo");
+        assert!(lui.fidato);
+        assert_eq!(lui.nome, None);
+        assert!(
+            !rinomina(&connection, "mai-visto", Some("x")).expect("niente"),
+            "un dispositivo che non c'è non nasce dandogli un nome"
+        );
+    }
+
+    #[test]
     fn lo_specchio_del_cloud_non_viaggia_con_la_sincronia() {
         // Una cache di questo PC: l'altro dispositivo rielenca da sé.
         let mut connection = libreria();
@@ -2428,6 +2482,12 @@ mod prove {
             r"\\?\UNC\192.0.2.1\m",
             r"\\192.0.2.1@SSL@443\DavWWWRoot\m",
             r"\\nas\musica",
+            // R02-1: Win32 tratta come UNC qualunque coppia di separatori in
+            // testa, e `\??\UNC\` è lo stesso share nello spazio dei nomi NT.
+            r"/\192.0.2.1\m",
+            r"\/192.0.2.1/m",
+            r"\??\UNC\192.0.2.1\m",
+            r"  \\192.0.2.1\m",
         ];
         let locali = [
             "D:\\Altra",

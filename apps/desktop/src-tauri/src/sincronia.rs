@@ -486,6 +486,34 @@ pub fn sincronia_accoppia(
     .map_err(errore)
 }
 
+/// Dà un nome a un dispositivo, **senza** fidarsene.
+///
+/// È il comando di «Rinomina»: prima il campo del nome passava da
+/// [`sincronia_accoppia`], e un dispositivo «da accettare» diventava fidato
+/// per il solo fatto di aver ricevuto un nome (R13-3). La fiducia la dà
+/// «Accetta». Lo stato nuovo va anche alla finestra con l'evento, così chi
+/// mostra l'elenco non deve rileggerlo.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+#[tauri::command]
+pub fn sincronia_rinomina(
+    app: AppHandle,
+    stato: State<'_, Stato>,
+    id: String,
+    nome: Option<String>,
+) -> Esito<Vec<DispositivoIpc>> {
+    let elenco = con_libreria(&stato, |libreria| {
+        sincronia::rinomina(&libreria.connection, &id, nome.as_deref())?;
+        let io = crate::nuvola::dispositivo(&libreria.connection)?;
+        Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
+    })
+    .map_err(errore)?;
+    riferisci(&app);
+    Ok(elenco)
+}
+
 /// Dimentica un dispositivo.
 ///
 /// Gli ascolti che ha già portato restano: erano ascolti veri, e cancellarli
