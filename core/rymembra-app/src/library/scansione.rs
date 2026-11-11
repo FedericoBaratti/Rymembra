@@ -1447,6 +1447,15 @@ impl Scan<'_> {
         report.removed += tolte;
         tempi.scrittura_ms = tempi.scrittura_ms.saturating_add(millisecondi(inizio));
 
+        // Il percorso con cui il piano ha visto ogni riga che riscriverà: la
+        // scrittura arriva prese dopo, e riscrive solo la riga che ce l'ha
+        // ancora (vedi `update_track`). Le provvisorie nate in questo giro non
+        // ci sono: il loro percorso è quello del file che le completa.
+        let percorsi_visti: std::collections::HashMap<i64, &str> = known
+            .iter()
+            .map(|riga| (riga.id, riga.path.as_str()))
+            .collect();
+
         // ── quel che va letto, in un elenco solo ──
         // Inserimenti e aggiornamenti differiscono solo per la presenza di una
         // riga da riusare; leggerli insieme tiene i lotti pieni anche quando gli
@@ -1889,6 +1898,13 @@ impl Scan<'_> {
                         .chain(provvisorie_rifiutate.iter().map(|(id, _)| *id))
                         .collect();
                     toccati.segna_brani(&tx, &scritte_qui)?;
+                    // Il percorso con cui il piano ha visto la riga: vedi
+                    // `percorsi_visti`, e `update_track` per il perché.
+                    let visto = |id: i64, row: &TrackRow| -> String {
+                        percorsi_visti
+                            .get(&id)
+                            .map_or_else(|| row.path.clone(), |percorso| (*percorso).to_owned())
+                    };
                     for (row, destinazione) in &righe {
                         match *destinazione {
                             Destinazione::Nuova => {
@@ -1911,7 +1927,13 @@ impl Scan<'_> {
                             // stessa riga, i tag del file sopra, le correzioni di
                             // chi l'ha già toccata rimesse sopra ai tag.
                             Destinazione::Aggiorna(id) | Destinazione::Provvisoria(id) => {
-                                let chiave = update_track(&tx, id, row, now)?;
+                                // Una riga cambiata sotto i piedi si salta: la
+                                // passata dopo la rivede da capo.
+                                let Some(chiave) =
+                                    update_track(&tx, id, &visto(id, row), row, now)?
+                                else {
+                                    continue;
+                                };
                                 // `update_track` ha appena rimesso i tag del file
                                 // sopra la riga: senza questa chiamata basta che
                                 // cambi la data di modifica di un file perché la
@@ -1923,7 +1945,11 @@ impl Scan<'_> {
                                 aggiornate += 1;
                             }
                             Destinazione::Sposta(id) => {
-                                let chiave = update_track(&tx, id, row, now)?;
+                                let Some(chiave) =
+                                    update_track(&tx, id, &visto(id, row), row, now)?
+                                else {
+                                    continue;
+                                };
                                 // Lo stesso, e qui conta doppio: un file spostato ha
                                 // anche un `album_key` nuovo, che si ricalcola dal
                                 // percorso d'arrivo e dall'album **corretto**.

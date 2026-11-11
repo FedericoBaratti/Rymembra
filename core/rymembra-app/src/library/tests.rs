@@ -6741,3 +6741,152 @@ fn leggere_un_brano_resta_una_ricerca_per_identificativo() {
     );
     assert!(!piano.iter().any(|r| r.starts_with("SCAN t")), "{piano:?}");
 }
+
+// ── la riscrittura di una riga e il file che c'è adesso ────────────────────
+
+/// Un'intensità e un'impronta «mute» per `id`: la misura terminale, quella che
+/// senza un file nuovo non si rifà mai. È anche quella che lascia un download a
+/// metà, con le regioni ancora a zero.
+fn misure_mute(lib: &mut Libreria, id: i64) {
+    let tx = lib.connection.transaction().expect("transazione");
+    crate::intensita::registra(
+        &tx,
+        &[crate::intensita::Misurato::Negata {
+            track_id: id,
+            esito: crate::intensita::MUTO,
+        }],
+        1,
+    )
+    .expect("intensità");
+    crate::sonora::registra(
+        &tx,
+        &[crate::sonora::Misurato::Negata {
+            track_id: id,
+            esito: crate::sonora::MUTO,
+        }],
+        1,
+    )
+    .expect("impronta");
+    tx.commit().expect("chiusura");
+}
+
+/// Chi aspetta una misura d'intensità, e chi un'impronta.
+fn da_misurare(lib: &Libreria) -> (Vec<i64>, Vec<i64>) {
+    let ids = |schede: Vec<crate::playback::SchedaSorgente>| {
+        let mut ids: Vec<i64> = schede.into_iter().map(|s| s.track_id).collect();
+        ids.sort_unstable();
+        ids
+    };
+    (
+        ids(crate::intensita::candidati(&lib.connection, 2, 100).expect("intensità")),
+        ids(crate::sonora::candidati(&lib.connection, 2, 100).expect("impronte")),
+    )
+}
+
+#[test]
+fn una_misura_non_sopravvive_al_file_cambiato() {
+    // Stesso percorso, audio cambiato: il download finito dopo una misura presa
+    // a metà, il CD ririppato con lo stesso schema di nomi, la versione
+    // rimasterizzata al posto di quella vecchia. La scansione rilegge i tag; la
+    // misura del file di prima non deve restare a nome di quello di adesso, o
+    // la normalizzazione applica per sempre il guadagno sbagliato.
+    let mut lib = Libreria::nuova();
+    let cambiato = lib.brano("A/Al/01.wav", "Cambiato", "Art", "Al");
+    lib.brano("A/Al/02.wav", "Fermo", "Art", "Al");
+    lib.scansiona();
+    let id = lib.id_del_titolo("Cambiato");
+    let fermo = lib.id_del_titolo("Fermo");
+    misure_mute(&mut lib, id);
+    misure_mute(&mut lib, fermo);
+    assert_eq!(da_misurare(&lib), (vec![], vec![]), "muti, e per sempre");
+
+    // Tre secondi di audio al posto del breve silenzio di prima: un altro
+    // contenuto, e un'altra dimensione.
+    wav_lungo(&cambiato, 3);
+    tagga(&cambiato, "Cambiato", "Art", "Al");
+    data(&cambiato, 1_700_000_000);
+    let esito = lib.scansiona();
+    assert_eq!(esito.updated, 1);
+
+    assert_eq!(
+        da_misurare(&lib),
+        (vec![id], vec![id]),
+        "il file nuovo si rimisura; quello che non è cambiato no"
+    );
+}
+
+#[test]
+fn rileggere_tutti_i_tag_non_butta_le_misure() {
+    // «Rileggi tutti i tag» mette `date_modified = -1` su ogni riga, e la
+    // scansione dopo le riscrive tutte: una data che cambia da lì non dice
+    // niente del contenuto, e buttare le misure per lei vorrebbe dire
+    // rianalizzare la libreria intera per un clic.
+    let mut lib = Libreria::nuova();
+    lib.brano("A/Al/01.wav", "Brano", "Art", "Al");
+    lib.scansiona();
+    let id = lib.id_del_titolo("Brano");
+    misure_mute(&mut lib, id);
+
+    rileggi_tutti_i_tag(&lib.connection).expect("sentinella");
+    let esito = lib.scansiona();
+    assert_eq!(esito.updated, 1, "la riga si è riletta");
+    assert_eq!(da_misurare(&lib), (vec![], vec![]), "e le misure restano");
+}
+
+#[test]
+fn una_riga_rinominata_fra_il_piano_e_la_scrittura_non_torna_al_file_di_prima() {
+    // Il piano decide alla prima presa che la riga 1 va riletta, e la scrive
+    // alla presa del lotto, file letti nel mezzo. Se nel frattempo un'altra
+    // scrittura ha cambiato il percorso della riga — l'importazione di un
+    // profilo con le radici rimappate, o un numero riusato da un'altra riga —
+    // la scrittura non deve rimetterci sopra il file e i tag di prima: come
+    // `remove_tracks`, guarda l'identificativo **e** il percorso.
+    let mut lib = Libreria::nuova();
+    let path = lib.brano("A/Al/01.wav", "Titolo vecchio", "Art", "Al");
+    lib.scansiona();
+    assert_eq!(lib.id_del_titolo("Titolo vecchio"), 1);
+    tagga(&path, "Titolo nuovo", "Art", "Al");
+    data(&path, 1_700_000_000);
+
+    let roots = vec![lib.root()];
+    let Libreria {
+        dir: _dir,
+        store,
+        connection,
+    } = lib;
+    let scan = Scan {
+        files: Arc::new(LocalFiles),
+        covers: store.clone(),
+        roots: &roots,
+        radici_della_libreria: &roots,
+        rules: PathRules::for_current_platform(),
+        prudente: false,
+        scadenze: Scadenze::default(),
+        fermati: None,
+    };
+    // Niente `.cue`, quindi niente presa per i fogli: il piano è la prima.
+    let mut deposito = DepositoDispettoso {
+        connection,
+        prestiti: 0,
+        quando: 1,
+    };
+    let report = scan
+        .run_su(&mut deposito, |_, _| ControlFlow::Continue(()))
+        .expect("scansione");
+
+    let (percorso, titolo): (String, String) = deposito
+        .connection
+        .query_row("SELECT path, title FROM tracks WHERE id = 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("riga");
+    assert_eq!(
+        percorso, r"C:\musica\rinominato.mp3",
+        "il percorso di adesso resta"
+    );
+    assert_eq!(
+        titolo, "Titolo vecchio",
+        "e i tag del file di prima non ci finiscono sopra"
+    );
+    assert_eq!(report.updated, 0, "una riga saltata non si conta");
+}
