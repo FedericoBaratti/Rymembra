@@ -868,7 +868,7 @@
   "primo.salta": "Lo faccio dopo",
   "telefono.accesso.title": "Prima, il permesso di leggerla",
   "telefono.accesso.body": "Android non lascia che un'app guardi i file del telefono finché non glielo concedi. Senza, le cartelle della musica sembrano vuote.",
-  "telefono.accesso.livelli": "Con «Accesso a tutti i file» Rymembra legge anche i testi (.lrc), i .cue e le copertine accanto ai brani, corregge i tag ed elimina i brani che togli. Con il solo accesso ai brani queste cose restano fuori.",
+  "telefono.accesso.livelli": "Con «Accesso a tutti i file» Rymembra legge anche i testi (.lrc), i .cue e le copertine accanto ai brani, ci salva i testi che sincronizzi se glielo chiedi, ed elimina dal disco i brani che togli. I file musicali che hai non li riscrive mai. Con il solo accesso ai brani queste cose restano fuori.",
   "telefono.accesso.consenti": "Consenti l'accesso",
   "telefono.accesso.soloBrani": "Continua solo con i brani",
   "telefono.accesso.manca": "Rymembra non ha ancora il permesso di leggere la musica del telefono: senza, le cartelle sembrano vuote.",

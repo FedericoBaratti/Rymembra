@@ -33,6 +33,21 @@ test("nelle Impostazioni si passa anche ad «Accesso a tutti i file»", () => {
   assert.equal(cosaChiedere("verifica", "impostazioni"), "niente");
 });
 
+test("la spiegazione di «Accesso a tutti i file» non promette di riscrivere i tag", () => {
+  // Rymembra scrive i tag soltanto dei brani che scarica (`procura.rs`): la
+  // libreria che c'è non la tocca, e PRIVACY lo promette. La frase del primo
+  // avvio diceva «corregge i tag», proprio dove si concede il permesso più
+  // ampio (R17-2, D-95).
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(leggi(`../src/lingue/${lingua}.json`)) as Record<string, string>;
+    const livelli = testi["telefono.accesso.livelli"] ?? "";
+    assert.ok(livelli, `${lingua}: manca telefono.accesso.livelli`);
+    assert.doesNotMatch(livelli, /\btag/i, `${lingua}: promette di toccare i tag: ${livelli}`);
+    // E dice quel che fa davvero: i .lrc, i .cue, le copertine, le eliminazioni.
+    for (const cosa of [".lrc", ".cue"]) assert.ok(livelli.includes(cosa), `${lingua}: non nomina ${cosa}`);
+  }
+});
+
 /** Il pezzo di sorgente da `inizio` alla prima `fine` che lo segue. */
 function tratto(sorgente: string, inizio: string, fine: string): string {
   const da = sorgente.indexOf(inizio);

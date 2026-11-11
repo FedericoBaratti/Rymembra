@@ -20,7 +20,8 @@ use crate::{Errore, chiama};
 pub struct Permessi {
     /// «Accesso a tutti i file» (Android 11+), o il vecchio permesso di
     /// lettura e scrittura (fino ad Android 10): i brani, ma anche i `.lrc`, i
-    /// `.cue`, le copertine accanto, e scrivere i tag.
+    /// `.cue` e le copertine accanto, i `.lrc` dei testi sincronizzati e le
+    /// eliminazioni.
     pub tutti_i_file: bool,
     /// I file audio (`READ_MEDIA_AUDIO`, o la lettura dell'archivio fino ad
     /// Android 12).

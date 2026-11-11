@@ -8,7 +8,7 @@
  *
  * I livelli sono due, perché Android ne ha due: i permessi «media» (un dialogo,
  * bastano ai brani e alle copertine) e «Accesso a tutti i file» (una pagina
- * delle impostazioni, serve ai `.lrc`, ai `.cue`, ai tag e alle eliminazioni).
+ * delle impostazioni, serve ai `.lrc`, ai `.cue` e alle eliminazioni).
  * Si chiedono tutti e due con un tasto solo; chi concede soltanto il primo può
  * continuare lo stesso, sapendo che cosa resta fuori.
  *

@@ -868,7 +868,7 @@
   "primo.salta": "I will do it later",
   "telefono.accesso.title": "First, permission to read it",
   "telefono.accesso.body": "Android does not let an app look at the files on your phone until you allow it. Without that, your music folders look empty.",
-  "telefono.accesso.livelli": "With «All files access» Rymembra also reads the lyrics (.lrc), the .cue files and the covers next to your tracks, fixes tags and deletes the tracks you remove. With access to tracks only, those things are left out.",
+  "telefono.accesso.livelli": "With “All files access” Rymembra also reads the lyrics (.lrc), the .cue files and the covers next to your tracks, saves the lyrics you sync there if you ask it to, and deletes from disk the tracks you remove. It never rewrites the music files you have. With access to tracks only, those things are left out.",
   "telefono.accesso.consenti": "Allow access",
   "telefono.accesso.soloBrani": "Continue with tracks only",
   "telefono.accesso.manca": "Rymembra doesn’t have permission to read the music on your phone yet: without it, your folders look empty.",

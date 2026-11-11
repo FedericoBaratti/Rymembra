@@ -30,8 +30,8 @@
 
     <!-- La libreria. Il permesso «musica e audio» basta ai brani e alle
          copertine dentro i tag; «Accesso a tutti i file» serve alle copertine,
-         ai `.lrc` e ai `.cue` accanto, ai tag da riscrivere e ai file da
-         eliminare (vedi `Permessi.kt`). Niente «foto e video»: per un lettore
+         ai `.lrc` e ai `.cue` accanto (e ai `.lrc` dei testi sincronizzati) e
+         ai file da eliminare (vedi `Permessi.kt`). Niente «foto e video»: per un lettore
          sarebbe una domanda sospetta, e quel che darebbe lo dà già l'accesso a
          tutti i file. Rymembra si distribuisce fuori dal Play Store, che quel
          permesso a un lettore non lo concederebbe. -->

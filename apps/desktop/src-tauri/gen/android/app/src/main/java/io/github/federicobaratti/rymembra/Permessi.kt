@@ -20,7 +20,9 @@ import org.json.JSONObject
  * si chiedono con un dialogo e bastano a leggere i brani e le copertine.
  * «Accesso a tutti i file» si concede da una pagina delle impostazioni, ed è
  * quel che serve per il resto di una libreria vera: i `.lrc` e i `.cue` accanto
- * ai brani, i tag da riscrivere, i file da eliminare.
+ * ai brani (e i `.lrc` dei testi sincronizzati, se lo si chiede), le copertine
+ * accanto, i file da eliminare. I tag dei file che ci sono Rymembra non li
+ * riscrive: scrive soltanto quelli dei brani che scarica.
  */
 object Permessi {
   private fun concesso(contesto: Context, permesso: String) =

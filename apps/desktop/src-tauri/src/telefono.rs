@@ -25,7 +25,8 @@ use crate::errore::{Esito, errore};
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermessiIpc {
-    /// «Accesso a tutti i file»: i brani, i testi e i `.cue` accanto, i tag.
+    /// «Accesso a tutti i file»: i brani, i testi e i `.cue` accanto, le
+    /// eliminazioni.
     pub tutti_i_file: bool,
     /// I file audio.
     pub audio: bool,
