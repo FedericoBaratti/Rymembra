@@ -35,10 +35,13 @@
  * # I controlli
  *
  * Ogni costruzione finisce con i controlli, così un sito rotto non si
- * pubblica: le quattro lingue hanno le stesse chiavi, ogni segnaposto è
- * risolto e ogni testo è usato, ogni collegamento interno porta a un file e a
- * un'ancora che esistono, ogni ancora che l'app apre (`ANCORE_GUIDA`) arriva a
- * una voce, e nessuna pagina carica qualcosa da un altro dominio.
+ * pubblica: le quattro lingue hanno le stesse chiavi (nessuna ripetuta), gli
+ * stessi segnaposto e gli stessi collegamenti in ogni testo, ogni segnaposto è
+ * risolto e ogni testo è usato, ogni collegamento interno — `data-src` e
+ * l'indice della ricerca compresi — porta a un file e a un'ancora che esistono,
+ * ogni ancora che l'app apre (`ANCORE_GUIDA`) arriva a una voce, e niente —
+ * HTML su qualunque elemento, `srcset`, CSS con `url()` o `@import`, JavaScript
+ * copiato — carica qualcosa da un altro dominio.
  *
  *   node strumenti/sito.js                     costruisce _site/
  *   node strumenti/sito.js --versione v3.0.1   la stessa cosa, annunciando quella release
@@ -50,6 +53,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const docs = require("./docs.js");
+const { leggiJson } = require("./json.js");
 
 // I percorsi si risolvono rispetto a questo file e non alla cartella da cui lo
 // si lancia: gli script npm girano da `apps/desktop`.
@@ -88,9 +92,13 @@ function esc(s) {
  */
 const PEZZI = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\))/g;
 
-/** Un indirizzo che un testo può linkare: https, mailto, un'ancora o un percorso relativo. */
+/**
+ * Un indirizzo che un testo può linkare: https, mailto, un'ancora o un percorso
+ * relativo. Non `//altrove`, che non ha due punti né barre rovesciate ma è un
+ * altro host: `[x](//docs/audio/)` scritto per sbaglio porterebbe a «docs».
+ */
 function indirizzoAmmesso(h) {
-  return /^(https:\/\/|mailto:|#)/.test(h) || !/[:\\]/.test(h);
+  return /^(https:\/\/|mailto:|#)/.test(h) || (!/[:\\]/.test(h) && !h.startsWith("//"));
 }
 
 function inline(testo, collega = (h) => h) {
@@ -204,7 +212,38 @@ function foglie(oggetto, prefisso = "", fuori = new Map()) {
   return fuori;
 }
 
-/** Le lingue dicono le stesse cose: stesse chiavi, elenchi lunghi uguali, elementi con gli stessi campi. */
+/**
+ * Quel che una traduzione deve conservare di un testo: i segnaposto `{x}`, il
+ * numero dei collegamenti `[…](…)`, e i bersagli di quelli che portano dentro
+ * il sito o a un valore del generatore. I bersagli `https://` possono cambiare
+ * con la lingua — la licenza CC si linka nella sua traduzione (`deed.it`) — ma
+ * non sparire: per questo se ne conta il numero.
+ */
+function pezziFissi(testo) {
+  const unici = (pezzi) => [...new Set(pezzi)].sort();
+  const bersagli = [...String(testo).matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1]);
+  return {
+    segnaposto: unici([...String(testo).matchAll(/\{(\w+)\}/g)].map((m) => `{${m[1]}}`)),
+    collegamenti: [`${bersagli.length}:`, ...unici(bersagli.filter((b) => !b.startsWith("https://")))],
+  };
+}
+
+/** Ogni testo di un documento, per percorso (`a.b`, `l[0].c`). */
+function testiPerPercorso(oggetto, prefisso = "", fuori = new Map()) {
+  for (const [k, v] of Object.entries(oggetto)) {
+    const p = Array.isArray(oggetto) ? `${prefisso}[${k}]` : prefisso ? `${prefisso}.${k}` : k;
+    if (typeof v === "string") fuori.set(p, v);
+    else if (v && typeof v === "object") testiPerPercorso(v, p, fuori);
+  }
+  return fuori;
+}
+
+/**
+ * Le lingue dicono le stesse cose: stesse chiavi, elenchi lunghi uguali,
+ * elementi con gli stessi campi, e in ogni testo gli stessi segnaposto e gli
+ * stessi collegamenti. Una traduzione che perde `[PRIVACY.md]({privacy})` è
+ * una pagina da cui, in quella lingua, all'informativa non si arriva.
+ */
 function confrontaLingue(testi) {
   const problemi = [];
   const [prima, ...altre] = Object.keys(testi);
@@ -222,6 +261,19 @@ function confrontaLingue(testi) {
   for (const [lingua, t] of Object.entries(testi)) {
     for (const [k, v] of foglie(t)) {
       if (v.tipo && v.tipo !== "string") problemi.push(`${lingua}: «${k}» dev'essere un testo`);
+    }
+  }
+  const fissi = new Map([...testiPerPercorso(testi[prima])].map(([k, v]) => [k, pezziFissi(v)]));
+  for (const lingua of altre) {
+    for (const [k, v] of testiPerPercorso(testi[lingua])) {
+      const attesi = fissi.get(k);
+      if (!attesi) continue;
+      const questi = pezziFissi(v);
+      for (const campo of ["segnaposto", "collegamenti"]) {
+        const a = attesi[campo].join(" ");
+        const q = questi[campo].join(" ");
+        if (a !== q) problemi.push(`${lingua}: «${k}» ha ${campo} ${q || "(nessuno)"} invece di ${a || "(nessuno)"}`);
+      }
     }
   }
   return problemi;
@@ -726,7 +778,11 @@ function costruisci(cartella, versione, cartellaInstaller = null) {
   const problemi = [];
   const r = rilascio(versione, cartellaInstaller);
   const testi = {};
-  for (const l of LINGUE) testi[l.codice] = JSON.parse(fs.readFileSync(path.join(SORGENTE, "testi", `${l.codice}.json`), "utf8"));
+  for (const l of LINGUE) {
+    // Una chiave ripetuta è un errore, non l'ultima che vince in silenzio.
+    const file = path.join(SORGENTE, "testi", `${l.codice}.json`);
+    testi[l.codice] = leggiJson(fs.readFileSync(file, "utf8"), path.relative(REPO, file));
+  }
   problemi.push(...confrontaLingue(testi));
 
   const usate = new Set();
@@ -784,8 +840,17 @@ function controllaUscita(cartella, mappa, ancore) {
 
   for (const [f, h] of Object.entries(html)) {
     if (/\{\{[=&#/]?[$.@\w-]/.test(h)) problemi.push(`${f}: un segnaposto è rimasto scritto`);
-    for (const m of h.matchAll(/<(?:script|img|source|iframe)\b[^>]*\ssrc="([^"]*)"/g)) {
-      if (/^(https?:)?\/\//.test(m[1])) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
+    // Quel che il browser carica da sé, su qualunque elemento: `src` (anche di
+    // `<audio>`, `<video>`, `<track>`, `<embed>`), `poster`, il `data` di
+    // `<object>`, ogni candidato di `srcset`. Un `<a href>` esterno no: lo apre
+    // un clic, non il caricamento della pagina.
+    for (const tag of h.matchAll(/<[a-z][\w-]*\b[^>]*>/gi)) {
+      for (const a of tag[0].matchAll(/\s(src|poster|data|srcset)="([^"]*)"/g)) {
+        const indirizzi = a[1] === "srcset" ? a[2].split(",").map((c) => c.trim().split(/\s+/)[0]) : [a[2]];
+        for (const u of indirizzi) {
+          if (/^(https?:)?\/\//.test(u)) problemi.push(`${f}: carica ${u} da un altro dominio`);
+        }
+      }
     }
     for (const m of h.matchAll(/<link\b([^>]*)>/g)) {
       const rel = /\srel="([^"]+)"/.exec(m[1]);
@@ -794,8 +859,10 @@ function controllaUscita(cartella, mappa, ancore) {
       const solo = rel && /^(canonical|alternate)$/.test(rel[1]);
       if (!solo && /^(https?:)?\/\//.test(href[1])) problemi.push(`${f}: carica ${href[1]} da un altro dominio`);
     }
-    // `data-src` è un file che lo script carica da sé: si controlla come gli altri.
-    for (const m of h.matchAll(/\s(?:href|src|data-src)="([^"]*)"/g)) {
+    // `data-src` e `data-ricerca` (l'indice della ricerca delle docs) sono file
+    // che lo script carica da sé: si controllano come gli altri. Un indice
+    // rinominato faceva morire la ricerca in silenzio.
+    for (const m of h.matchAll(/\s(?:href|src|data-src|data-ricerca)="([^"]*)"/g)) {
       const u = m[1].replace(/&amp;/g, "&");
       if (u === "" || /^(https?:|mailto:|data:|\/\/)/.test(u)) continue;
       // La 404 si serve a qualunque indirizzo: lì un percorso relativo non sa da dove parte.
@@ -820,11 +887,22 @@ function controllaUscita(cartella, mappa, ancore) {
       else if (c === "}" && --livello < 0) break;
     }
     if (livello !== 0) problemi.push(`${f}: le graffe non tornano`);
+    // `@import "…"` senza `url()`, che il controllo qui sotto non vede.
+    for (const m of css.matchAll(/@import\s+['"]([^'"]+)['"]/g)) {
+      if (/^(https?:)?\/\//.test(m[1])) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
+    }
     for (const m of css.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)) {
       if (/^(data:|#)/.test(m[1])) continue;
       if (/^(https?:)?\/\//.test(m[1])) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
       else if (!esiste.has(path.posix.normalize(path.posix.join(path.posix.dirname(f), m[1])))) problemi.push(`${f}: «${m[1]}» non esiste`);
     }
+  }
+  // Il JavaScript copiato: nessun indirizzo di un altro dominio fra virgolette
+  // (`fetch("https://…")`, `new Audio("//…")`). Un collegamento da aprire con
+  // un clic sta nell'HTML, non qui.
+  for (const f of file.filter((f) => f.endsWith(".js"))) {
+    const js = fs.readFileSync(path.join(cartella, f), "utf8");
+    for (const m of js.matchAll(/["'`]((?:https?:)?\/\/[^"'`\s]+)/g)) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
   }
   for (const a of ancore || []) {
     const dove = mappa[a];

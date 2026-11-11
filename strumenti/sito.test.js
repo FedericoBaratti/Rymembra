@@ -25,6 +25,7 @@ const {
   argomenti,
   costruisci,
 } = require("./sito.js");
+const { leggiJson } = require("./json.js");
 
 test("il marcatore in linea diventa HTML, e il resto si escapa", () => {
   assert.equal(inline("**a** *b* `c` [d](https://e.f)"), '<strong>a</strong> <em>b</em> <code>c</code> <a href="https://e.f">d</a>');
@@ -71,6 +72,33 @@ test("le lingue devono dire le stesse cose", () => {
   assert.ok(p.some((x) => /it: manca «a»/.test(x)));
   assert.ok(p.some((x) => /it: «l\[\]» ha 2 elementi/.test(x)));
   assert.ok(p.some((x) => /de: «b» non c'è/.test(x)));
+});
+
+// R27-4: i segnaposto e i collegamenti di un testo sono gli stessi in ogni
+// lingua. Un `de.json` che perde `[PRIVACY.md]({privacy})` passava.
+test("i segnaposto e i collegamenti sono gli stessi in ogni lingua", () => {
+  const en = { a: "See [PRIVACY.md]({privacy}), version {versione}.", b: "[x](#su)" };
+  assert.deepEqual(confrontaLingue({ en, it: { a: "Vedi [PRIVACY.md]({privacy}), versione {versione}.", b: "[y](#su)" } }), []);
+  const p = confrontaLingue({ en, de: { a: "Siehe PRIVACY.md, Version {versione}.", b: "[y](#unten)" } });
+  assert.ok(p.some((x) => /de: «a»/.test(x) && x.includes("{privacy}")), p.join("\n"));
+  assert.ok(p.some((x) => /de: «b»/.test(x) && x.includes("#su")), p.join("\n"));
+});
+
+// R27-4: `[x](//docs/audio/)` scritto per sbaglio è un link a un host di nome «docs».
+test("un collegamento senza schema non passa", () => {
+  assert.throws(() => inline("[x](//a.b/c)"), /non ammesso/);
+  assert.throws(() => inline("[x](//docs/audio/)"), /non ammesso/);
+  assert.equal(inline("[x](docs/audio/)"), '<a href="docs/audio/">x</a>');
+});
+
+// R27-4: JSON.parse tiene l'ultima di due chiavi uguali senza dirlo.
+test("una chiave ripetuta in un JSON di testi è un errore", () => {
+  assert.deepEqual(leggiJson('{"a":"x","b":{"c":1,"d":[{"e":1},{"e":2}]}}', "t.json"), { a: "x", b: { c: 1, d: [{ e: 1 }, { e: 2 }] } });
+  assert.throws(() => leggiJson('{"a":"x","a":"y"}', "t.json"), /t\.json.*«a»/);
+  // Una stringa che contiene una chiave fra virgolette non è una chiave.
+  assert.throws(() => leggiJson('{"s":{"b":1,"c":"\\"b\\"","b":2}}', "t.json"), /«s\.b»/);
+  // Una chiave uguale in due oggetti diversi non è una ripetizione.
+  assert.doesNotThrow(() => leggiJson('{"x":{"a":1},"y":{"a":2},"l":[{"a":1},{"a":2}]}', "t.json"));
 });
 
 test("un testo che nessuno mostra si vede", () => {
@@ -131,6 +159,39 @@ test("i collegamenti rotti, le risorse esterne e le ancore perse si vedono", () 
     assert.ok(p.some((x) => /«#altra» non arriva/.test(x)));
     assert.ok(p.some((x) => x.includes("«audio/manca.mp3»")));
     assert.equal(p.length, 8);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// R27-4: il controllo delle risorse esterne guardava solo `script|img|source|iframe`
+// e i `<link>`; non i `.js` copiati, non `@import`, non l'indice della ricerca.
+test("ogni risorsa da un altro dominio si vede, e l'indice della ricerca deve esistere", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-uscita-esterne-"));
+  try {
+    const scrivi = (rel, s) => {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), s);
+    };
+    scrivi(
+      "index.html",
+      '<audio src="https://cdn.example/a.mp3"></audio><video poster="//cdn.example/p.jpg"></video>' +
+        '<img srcset="immagine.webp 1x, https://cdn.example/b.webp 2x" src="immagine.webp" alt="">' +
+        '<object data="https://cdn.example/c.svg"></object><a href="https://github.com/x">un clic va bene</a>',
+    );
+    scrivi("immagine.webp", "x");
+    scrivi("docs/index.html", '<form data-ricerca="manca.json"></form><form data-ricerca="c.json"></form>');
+    scrivi("docs/c.json", "[]");
+    scrivi("stile.css", '@import "https://cdn.example/d.css";\na { b: c }');
+    scrivi("sito.js", 'fetch("https://cdn.example/e.json"); var a = new Audio(\'//cdn.example/f.mp3\');');
+    const p = controllaUscita(dir, {}, []);
+    const tutti = p.join("\n");
+    for (const atteso of ["a.mp3", "p.jpg", "b.webp", "c.svg", "d.css", "e.json", "f.mp3"]) {
+      assert.ok(p.some((x) => x.includes(`cdn.example/${atteso}`)), `${atteso}: ${tutti}`);
+    }
+    assert.ok(p.some((x) => x.includes("«manca.json»")), tutti);
+    assert.ok(!p.some((x) => /github\.com|c\.json|immagine\.webp 1x/.test(x)), tutti);
+    assert.equal(p.length, 8, tutti);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
