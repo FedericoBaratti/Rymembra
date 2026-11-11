@@ -178,7 +178,8 @@ function gruppi(): readonly (readonly [
         ...(MOBILE ? [] : ([["modelli", t("settings.section.modelli"), "i-ia"]] as const)),
         // Sul telefono non c'è una X da intercettare: l'app si lascia con i
         // gesti del sistema, e la musica continua sempre. Vedi `mobile/vassoio.rs`.
-        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-x"]] as const)),
+        // `i-win-min` e non la croce: la croce, nelle righe accanto, è «togli».
+        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-win-min"]] as const)),
       ],
     ],
     [
@@ -196,7 +197,7 @@ function gruppi(): readonly (readonly [
         // Accanto alla sincronia: è l'altra strada fra i propri dispositivi,
         // e la domanda della sezione è la stessa — cosa esce, e verso chi.
         ["dispositivi", t("settings.section.dispositivi"), "i-dispositivi"],
-        ["scrobbling", t("settings.section.scrobbling"), "i-eq"],
+        ["scrobbling", t("settings.section.scrobbling"), "i-radio"],
         ["esterno", t("settings.section.esterno"), "i-list"],
         ["legacy", t("settings.section.legacy"), "i-import"],
       ],
@@ -1162,7 +1163,7 @@ function SchedaDissolvenza({
   };
 
   return (
-    <Scheda icona="i-play" titolo={t("settings.crossfade.title")} guida="crossfade">
+    <Scheda icona="i-layers" titolo={t("settings.crossfade.title")} guida="crossfade">
       <div className="dissolvenza">
         <input
           type="range"
@@ -1264,7 +1265,7 @@ function SchedaSpegnimento({
   ];
 
   return (
-    <Scheda icona="i-play" titolo={t("settings.sleep.title")} guida="sleep">
+    <Scheda icona="i-moon" titolo={t("settings.sleep.title")} guida="sleep">
       <Segmentato
         etichetta={t("settings.sleep.title")}
         scelta={scelta}
@@ -1360,7 +1361,7 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
 
   return (
     <Scheda
-      icona="i-x"
+      icona="i-win-min"
       titolo={t("settings.background.title")}
       guida="background"
     >
@@ -3013,7 +3014,7 @@ export function Impostazioni({
                   la prima cosa che si viene a cercare qui quando qualcosa non si
                   sente, e la dissolvenza è una preferenza che si decide una
                   volta. */}
-              <Scheda icona="i-play" titolo={t("settings.output.title")} guida="output">
+              <Scheda icona="i-vol" titolo={t("settings.output.title")} guida="output">
                 <SchedaUscita onErrore={onErrore} />
               </Scheda>
               <SchedaDissolvenza
@@ -3041,7 +3042,7 @@ export function Impostazioni({
 
           {sezione === "movimento" && !MOBILE && (
             <Scheda
-              icona="i-eq"
+              icona="i-code"
               titolo={t("settings.shortcuts.title")}
               guida="shortcuts"
             >
@@ -3092,7 +3093,7 @@ export function Impostazioni({
           )}
 
           {sezione === "movimento" && (
-            <Scheda icona="i-eq" titolo={t("settings.motion.title")} guida="motion">
+            <Scheda icona="i-eye" titolo={t("settings.motion.title")} guida="motion">
               <p className="nota">
                 <Trans
                   k="settings.motion.p1"
@@ -3599,7 +3600,7 @@ export function Impostazioni({
           )}
           {sezione === "scrobbling" && (
             <Scheda
-              icona="i-cloud"
+              icona="i-radio"
               titolo={t("settings.scrobbling.title")}
               guida="scrobbling"
             >
