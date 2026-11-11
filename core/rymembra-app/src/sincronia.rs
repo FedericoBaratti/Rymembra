@@ -93,9 +93,10 @@ use crate::settings::{
 /// conto suo, non si uniscono. `origine:k` di qua e `origine:k` di là sono per
 /// la fusione lo stesso elemento, e dove i brani in quella posizione
 /// differiscono [`Sequenza`] ne tiene uno solo (la coppia minore): `[x, y]` e
-/// `[z, w]` diventano due brani, non quattro. Vedi la prova
-/// `le_playlist_si_fondono_invece_di_sostituirsi` in `profilo/prove.rs`, e
-/// quella qui in fondo che fissa il caso.
+/// `[z, w]` diventano due brani, non quattro. Vale fra due dispositivi che si
+/// sincronizzano, e la prova qui in fondo fissa il caso; il profilo non ci
+/// passa, perché dentro una playlist che c'è già accoda soltanto (vedi
+/// `profilo::dono_nelle_playlist`).
 ///
 /// Vale **solo per il primo battesimo** ([`Sequenza::dalla_lista`]). Ciò che si
 /// aggiunge o si sposta dopo porta il nome del dispositivo: vedi
@@ -337,13 +338,7 @@ fn allinea_sequenze(
     dispositivo: &str,
     adesso_ms: i64,
 ) -> Result<usize, AppError> {
-    // Un nome vuoto farebbe identità che `Identita::da_testo` non rilegge, e il
-    // brano aggiunto sparirebbe alla lettura dopo: meglio il nome comune.
-    let dispositivo = if dispositivo.trim().is_empty() {
-        ORIGINE
-    } else {
-        dispositivo
-    };
+    let dispositivo = nome_delle_aggiunte(dispositivo);
     let membri = membri_per_playlist(tx)?;
     let mut sequenze = sequenze_salvate(tx)?;
 
@@ -383,6 +378,19 @@ fn allinea_sequenze(
         rifatte += 1;
     }
     Ok(rifatte)
+}
+
+/// Il nome con cui si battezzano gli elementi che si aggiungono qui a una
+/// sequenza già esistente: quello del dispositivo.
+///
+/// Un nome vuoto farebbe identità che `Identita::da_testo` non rilegge, e il
+/// brano aggiunto sparirebbe alla lettura dopo: meglio il nome comune.
+pub(crate) fn nome_delle_aggiunte(dispositivo: &str) -> &str {
+    if dispositivo.trim().is_empty() {
+        ORIGINE
+    } else {
+        dispositivo
+    }
 }
 
 /// Le cartelle sorvegliate come mappa datata, in pari con l'elenco.

@@ -1405,6 +1405,12 @@ fn esegui(
                 )?,
                 ambiente.adesso_ms,
             );
+            dono_nelle_playlist(
+                &mut suo.content,
+                &mio.content,
+                ambiente.dispositivo,
+                ambiente.adesso_ms,
+            );
             let mut fuso = rymembra_sync::fondi(&[mio, suo]);
             // Gli ascolti degli altri dispositivi di là entrano nello stesso
             // contatore, sotto il loro nome e per massimo (`segna`): li scrive
@@ -1517,10 +1523,8 @@ fn esegui(
 /// solo quel che arriva. Poi il dominio dei valori, con gli istanti nel futuro
 /// **tagliati** ad adesso: vedi [`rymembra_sync::dominio`].
 ///
-/// Resta, ed è un limite detto: dentro una playlist che le due librerie
-/// condividono, un brano tolto o spostato di là si toglie o si sposta anche
-/// qui. Uno spostamento è una rimozione più un'aggiunta, e tenere solo la
-/// seconda farebbe di ogni riordino un doppione.
+/// Le playlist che le due librerie condividono le riduce a un dono
+/// [`dono_nelle_playlist`], che ha bisogno anche del documento di qui.
 fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync::Contenuto {
     let mut contenuto = rymembra_sync::dominio::nel_dominio(
         contenuto,
@@ -1532,6 +1536,59 @@ fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync
     contenuto.preferiti.retain(|_, stato| stato.on);
     contenuto.voti.retain(|_, voto| voto.v > 0);
     contenuto
+}
+
+/// Le playlist che il profilo e questa libreria hanno tutte e due, ridotte a
+/// quel che un dono porta: i brani che qui mancano, in coda.
+///
+/// Fondere le due sequenze, come fa la sincronia, portava qui anche quel che
+/// di là si era tolto o spostato: un brano usciva dalla playlist di qui e
+/// l'ordine diventava quello dell'altro computer, senza che il piano lo
+/// dicesse (R02-2). E la testata — nome, descrizione, «automatica» e regole —
+/// vinceva per data: una playlist fatta a mano diventava automatica con le
+/// regole di là. Quindi, per ogni playlist che c'è già, il documento del
+/// profilo porta **quella di qui**, con in coda i brani della sua che qui non
+/// ci sono, nell'ordine in cui stanno di là e una volta sola. Mai tolto, mai
+/// spostato, nessun doppione; la fusione poi non ha niente da decidere.
+///
+/// Un brano che qui si è **tolto** da quella playlist non torna: la sequenza
+/// di qui lo ricorda come lapide, e il dono rispetta la scelta fatta qui come
+/// [`in_dono`] rispetta i cuori tolti. Una playlist automatica di qui resta
+/// com'è: la sua appartenenza la decidono le regole.
+///
+/// Se qualcosa si accoda la playlist è cambiata adesso, su questo computer, e
+/// la data lo dice: è quel che fa vedere la modifica al backup e agli altri
+/// dispositivi. Le playlist che qui non ci sono arrivano come sono.
+fn dono_nelle_playlist(
+    suo: &mut rymembra_sync::Contenuto,
+    mio: &rymembra_sync::Contenuto,
+    dispositivo: &str,
+    adesso_ms: i64,
+) {
+    let nome = crate::sincronia::nome_delle_aggiunte(dispositivo);
+    for (chiave, sua) in &mut suo.playlist {
+        let Some(qui) = mio.playlist.get(chiave) else {
+            continue;
+        };
+        let mut tenuta = qui.clone();
+        if !qui.smart {
+            let gia: std::collections::BTreeSet<&str> = qui
+                .sequenza
+                .elementi()
+                .map(|(_, elemento)| elemento.brano.as_str())
+                .collect();
+            let mut accodati = std::collections::BTreeSet::new();
+            for brano in sua.sequenza.ordine() {
+                if !gia.contains(brano) && accodati.insert(brano) {
+                    tenuta.sequenza.accoda(nome, brano);
+                }
+            }
+            if !accodati.is_empty() {
+                tenuta.at = tenuta.at.max(adesso_ms);
+            }
+        }
+        *sua = tenuta;
+    }
 }
 
 /// L'elenco di qui più le cartelle del profilo che qui non ci sono già.
