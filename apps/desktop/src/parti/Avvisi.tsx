@@ -40,7 +40,7 @@
  * usa i tre livelli — non è il guasto di un gesto, è una condizione della
  * sessione — ma è un avviso, e questo è il file degli avvisi.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   dettaglioErrore,
@@ -50,6 +50,7 @@ import {
   testoErrore,
   type SaluteDatabase,
 } from "../ipc";
+import { Annuncio } from "./Annuncio";
 import { Icona, type NomeIcona } from "./Icone";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
@@ -112,6 +113,26 @@ export function Avviso({
   children: ReactNode;
   azione?: ReactNode | undefined;
 }) {
+  /*
+   * Chi dice l'avviso e l'esito a chi ascolta lo schermo.
+   *
+   * Il riquadro nasce insieme alla sua frase (chi lo usa lo monta quando c'è
+   * qualcosa da dire), e una regione di stato che nasce già piena spesso non la
+   * annuncia nessuno: è il difetto che `Annuncio.tsx` racconta per le notizie.
+   * Il riquadro quindi non ha più un ruolo, e la frase la dice un `Annuncio`
+   * accanto a lui, che nasce vuoto e la riceve dopo — letta dal paragrafo
+   * disegnato, perché `children` può essere qualunque cosa e quel che si deve
+   * sentire è quel che si vede. Il blocco resta `alert`: interrompe, e un
+   * `alert` si annuncia anche nascendo pieno.
+   */
+  const frase = useRef<HTMLParagraphElement>(null);
+  const [detta, setDetta] = useState<string | null>(null);
+  useEffect(() => {
+    if (livello === "nota" || livello === "blocco") return;
+    // A ogni disegno, e non solo al primo: la frase può cambiare sotto il
+    // riquadro. Una frase uguale non ridisegna niente.
+    setDetta(frase.current?.textContent ?? null);
+  });
   // Un `div` e non un `p`, benché `.nota` nasca su un paragrafo: dentro una nota
   // ci finisce un `<details>` — i nomi dei file illeggibili oltre i tre — e un
   // `<details>` dentro un `<p>` non è HTML valido. Il browser chiuderebbe il
@@ -130,15 +151,17 @@ export function Avviso({
     <div
       className="avviso"
       data-livello={livello}
-      // `alert` interrompe chi ascolta, `status` aspetta una pausa. Un blocco
-      // ferma il gesto in corso e va sentito adesso; un avviso no.
-      role={livello === "blocco" ? "alert" : "status"}
+      // `alert` interrompe chi ascolta. Un blocco ferma il gesto in corso e va
+      // sentito adesso; un avviso no, e lo dice l'`Annuncio` qui sotto, che
+      // aspetta una pausa.
+      role={livello === "blocco" ? "alert" : undefined}
     >
       <Icona nome={ICONE[livello]} dim={15} />
       <div className="dentro">
-        <p>{children}</p>
+        <p ref={frase}>{children}</p>
         {azione !== undefined && <div className="azioni">{azione}</div>}
       </div>
+      {livello !== "blocco" && <Annuncio testo={detta} />}
     </div>
   );
 }

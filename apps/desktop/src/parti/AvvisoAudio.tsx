@@ -12,9 +12,9 @@
  *
  * # I due avvisi, e perché non sono lo stesso
  *
- * - **Non c'è audio** (`role="alert"`): non si sente niente e non si sentirà
+ * - **Non c'è audio** (un allarme): non si sente niente e non si sentirà
  *   finché qualcosa non cambia. È rosso, resta, e ha un tasto.
- * - **Il suono si è spostato** (`role="status"`): si sente, ma da un'altra
+ * - **Il suono si è spostato** (una notizia): si sente, ma da un'altra
  *   parte. Non è un guasto — è la riapertura automatica che ha funzionato — e
  *   dirlo con la stessa fascia rossa insegnerebbe a ignorarla.
  *
@@ -27,6 +27,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ipc, type StatoRiproduzione } from "../ipc";
+import { Annuncio } from "./Annuncio";
 import { Icona } from "./Icone";
 import { t, tSe } from "../lingue";
 
@@ -90,6 +91,22 @@ export function AvvisoAudio({
   onErrore: (e: unknown) => void;
 }) {
   const spostato = useSpostato(stato.uscita);
+  /*
+   * Chi lo dice a chi ascolta lo schermo, e una copia sola.
+   *
+   * Il riquadro dello spostamento nasce insieme alla sua frase, e una
+   * regione di stato che nasce piena spesso non parla (vedi `Annuncio.tsx`):
+   * staccate le cuffie, chi ascolta lo schermo non sentiva niente. La frase
+   * la dice un `Annuncio` sempre montato. E una copia sola, quella della
+   * fascia: la terza colonna mostra lo stesso avviso nello stesso momento, e
+   * due regioni lo avrebbero fatto sentire due volte. Per la stessa ragione
+   * l'allarme «non c'è audio» è un `alert` solo nella fascia.
+   */
+  const daDire =
+    stato.audio === null && spostato !== null
+      ? `${t("audio.moved.what")} ${t("audio.moved.where", { nome: spostato })}`
+      : null;
+  const annuncio = dove === "fascia" && <Annuncio testo={daDire} />;
 
   if (stato.audio !== null) {
     const guasto = stato.audio;
@@ -136,26 +153,32 @@ export function AvvisoAudio({
 
     if (dove === "colonna") {
       return (
-        <div className="audio-perso" role="alert">
-          <div className="cosa">
-            <strong>{cosa}</strong> {perche}.
+        <>
+          {annuncio}
+          <div className="audio-perso">
+            <div className="cosa">
+              <strong>{cosa}</strong> {perche}.
+            </div>
+            {tasto}
           </div>
-          {tasto}
-        </div>
+        </>
       );
     }
     return (
-      <div className="errore audio-perso toast-card" role="alert">
-        <Icona nome="i-alert" dim={16} />
-        <span>
-          <strong>{cosa}</strong> {perche}.
-        </span>
-        {tasto}
-      </div>
+      <>
+        {annuncio}
+        <div className="errore audio-perso toast-card" role="alert">
+          <Icona nome="i-alert" dim={16} />
+          <span>
+            <strong>{cosa}</strong> {perche}.
+          </span>
+          {tasto}
+        </div>
+      </>
     );
   }
 
-  if (spostato === null) return null;
+  if (spostato === null) return <>{annuncio}</>;
 
   // Lo spostamento. Nella colonna riusa il vestito della fascia — stessa
   // larghezza, stessi margini — con la tinta dell'accento al posto di quella
@@ -168,15 +191,21 @@ export function AvvisoAudio({
   );
   if (dove === "colonna") {
     return (
-      <div className="audio-perso audio-spostato" role="status">
-        <div className="cosa">{testo}</div>
-      </div>
+      <>
+        {annuncio}
+        <div className="audio-perso audio-spostato">
+          <div className="cosa">{testo}</div>
+        </div>
+      </>
     );
   }
   return (
-    <div className="notizia audio-spostato toast-card" role="status">
-      <Icona nome="i-check" dim={16} />
-      <span>{testo}</span>
-    </div>
+    <>
+      {annuncio}
+      <div className="notizia audio-spostato toast-card">
+        <Icona nome="i-check" dim={16} />
+        <span>{testo}</span>
+      </div>
+    </>
   );
 }

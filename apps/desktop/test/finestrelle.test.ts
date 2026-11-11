@@ -175,3 +175,23 @@ test("il menù del tasto destro si chiude quando si apre una finestrella", () =>
   const effetto = popup.slice(popup.lastIndexOf("useEffect(", popup.indexOf("quandoSiApreUnModale(")));
   assert.match(effetto.slice(0, effetto.indexOf("quandoSiApreUnModale(")), /if \(anteprima\) return;/);
 });
+
+test("gli avvisi che nascono pieni parlano da una regione d'annuncio", () => {
+  // R13d-6. `role="status"` sul riquadro che compare insieme alla frase:
+  // NVDA e l'Assistente vocale spesso non lo dicono (vedi `Annuncio.tsx`).
+  const avvisi = sorgente("parti/Avvisi.tsx");
+  const avviso = avvisi.slice(avvisi.indexOf("export function Avviso("), avvisi.indexOf("export function AvvisoErrore("));
+  assert.doesNotMatch(avviso, /"status"/);
+  // Il blocco resta un `alert`, che si annuncia anche nascendo pieno.
+  assert.match(avviso, /role=\{livello === "blocco" \? "alert" : undefined\}/);
+  assert.match(avviso, /<Annuncio testo=\{detta\} \/>/);
+  // «Il suono si è spostato»: una regione sempre montata, e una copia sola
+  // che parla — la fascia; la terza colonna la mostra soltanto.
+  const audio = sorgente("parti/AvvisoAudio.tsx");
+  assert.doesNotMatch(audio, /role="status"/);
+  assert.match(audio, /dove === "fascia" && <Annuncio testo=\{daDire\} \/>/);
+  // Montata in ogni forma del riquadro, e anche quando non ce n'è nessuno.
+  assert.match(audio, /if \(spostato === null\) return <>\{annuncio\}<\/>;/);
+  // E l'allarme «non c'è audio» lo dice una copia sola anche lui.
+  assert.equal([...audio.matchAll(/role="alert"/g)].length, 1);
+});
