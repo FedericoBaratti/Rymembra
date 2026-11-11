@@ -144,6 +144,10 @@ pub(super) struct Comune {
     /// Cresce a ogni «Annulla» di un collegamento: un comando che stava
     /// ancora accendendo il nodo se ne accorge prima di cominciare ad aspettare.
     pub annulli: AtomicU64,
+    /// Cresce quando il QR si annulla da fuori della scheda che lo mostra — la
+    /// finestra nel vassoio (decisione D-30): un `lontano_qr_crea` in volo se
+    /// ne accorge prima di mettere il suo QR a schermo.
+    pub qr_annullati: AtomicU64,
     /// Il registro: le modifiche al cancello fatte qui e che una lettura della
     /// libreria non ha ancora visto scritte, per chiave. Vedi
     /// [`Comune::registra`].
@@ -173,6 +177,7 @@ impl Comune {
             ultimo_errore: Mutex::new(None),
             ospitano: Mutex::new(Vec::new()),
             annulli: AtomicU64::new(0),
+            qr_annullati: AtomicU64::new(0),
             sospese: Mutex::new(HashMap::new()),
             prossima_modifica: AtomicU64::new(1),
             scritture: AtomicU64::new(0),
