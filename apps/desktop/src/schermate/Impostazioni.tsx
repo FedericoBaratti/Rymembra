@@ -2311,7 +2311,9 @@ export function Impostazioni({
                     ? t("settings.roots.scanning")
                     : t("settings.roots.scan")}
                 </button>
-                <span className="oppure">{t("settings.roots.orDrop")}</span>
+                {/* Sul telefono sulla finestra non si trascina niente: come in
+                    `AggiungiCartella` e `Primo`, la frase c'è solo sul computer. */}
+                {!MOBILE && <span className="oppure">{t("settings.roots.orDrop")}</span>}
               </div>
 
               <RileggiTag
@@ -2923,7 +2925,7 @@ export function Impostazioni({
                     <Icona nome="i-import" dim={15} />
                     {t("settings.skin.install")}
                   </button>
-                  <span className="oppure">{t("settings.skin.orDrop")}</span>
+                  {!MOBILE && <span className="oppure">{t("settings.skin.orDrop")}</span>}
                 </div>
               </Scheda>
 

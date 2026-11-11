@@ -1410,7 +1410,7 @@
   "settings.sync.where.drive": "Google Drive",
   "settings.sync.folder.hint": "path of the shared folder",
   "settings.sync.folder.use": "Use this one",
-  "settings.sync.drive.needAccount": " Connect a Google account first, from the Backup to Drive section.",
+  "settings.sync.drive.needAccount": "Connect a Google account first, from the Backup to Drive section.",
   "settings.sync.thisDevice": "This device",
   "settings.sync.lastPass": "Last pass",
   "settings.sync.syncing": "Synchronizing…",
