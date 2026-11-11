@@ -31,3 +31,14 @@ test("Impostazioni, ricerca: Invio fa quel che fa il clic, scheda compresa", () 
   const apri = impostazioni.slice(impostazioni.indexOf("const apriVoce"));
   assert.match(apri.slice(0, apri.indexOf("};")), /vaiAllaScheda\(t\(v\.scheda\)\)/);
 });
+
+test("il posto del contenuto è il punto di riferimento main della finestra", () => {
+  // R16-10: axe `landmark-one-main` su tutte le schermate. Lo scafale
+  // disegnava `nav`, `aside` e `header`, mai `main`.
+  const impaginazione = sorgente("Impaginazione.tsx");
+  assert.match(
+    impaginazione,
+    /const Involucro = nodo\.name === "content" && ctx\.stato === undefined \? "main" : "div";/,
+  );
+  assert.match(impaginazione, /<Involucro className=\{classi\(nodo\)\} data-nodo=\{nodo\.at\}>/);
+});
