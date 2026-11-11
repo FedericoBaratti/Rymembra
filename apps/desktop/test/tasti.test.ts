@@ -122,3 +122,31 @@ test("le frecce sul cursore della posizione saltano di cinque secondi, come le s
   assert.equal(passoFreccia("Home", 10_000, 200_000), null);
   assert.equal(passoFreccia("PageUp", 10_000, 200_000), null);
 });
+
+test("altgr_e_tasti_morti_non_sono_un_tasto", () => {
+  // R13d-9. Su una tastiera italiana AltGr arriva come Ctrl+Alt+AltGraph, e
+  // «Assegna» si chiudeva su quello; un tasto morto si registrava come
+  // `Dead`, che poi scattava per ogni tasto morto. Anche Bloc Maiusc, Bloc
+  // Num, il tasto del menù e la composizione dell'IME diventavano scorciatoie.
+  const nudo = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+  assert.equal(tastoDi({ ...nudo, key: "AltGraph", ctrlKey: true, altKey: true }), null);
+  for (const key of [
+    "AltGraph",
+    "Dead",
+    "Process",
+    "Unidentified",
+    "CapsLock",
+    "NumLock",
+    "ScrollLock",
+    "Fn",
+    "FnLock",
+    "ContextMenu",
+  ]) {
+    assert.equal(tastoDi({ ...nudo, key }), null, key);
+    assert.deepEqual(nomiDi({ ...nudo, key }), [], key);
+  }
+  // Il carattere composto con AltGr resta un tasto, con gli stessi
+  // modificatori che vede chi lo preme: cattura e confronto usano la stessa
+  // funzione, quindi «Ctrl+Alt+[» assegnato scatta con AltGr+è.
+  assert.equal(tastoDi({ ...nudo, key: "[", ctrlKey: true, altKey: true }), "Ctrl+Alt+[");
+});

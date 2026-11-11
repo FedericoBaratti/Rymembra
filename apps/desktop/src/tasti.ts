@@ -42,8 +42,37 @@
  * non si caricano.
  */
 
-/** I tasti che da soli non sono un tasto. */
-const SOLO_MODIFICATORI = new Set(["Control", "Shift", "Alt", "Meta", "OS"]);
+/**
+ * I tasti che da soli non sono un tasto: i modificatori, e quelli «di
+ * servizio» che servono a scrivere o a cambiare modo, non a comandare.
+ *
+ * `AltGraph` è il caso che si incontra per primo: sulle tastiere italiana,
+ * tedesca, francese e spagnola AltGr arriva come Ctrl+Alt+`AltGraph`, e
+ * «Assegna» si chiudeva lì, con una scorciatoia che non scatta mai per il
+ * carattere che si voleva comporre. `Dead` è il tasto morto (l'accento, il
+ * `^` francese): registrato, scattava per **ogni** tasto morto. `Process` è
+ * la composizione dell'IME, `Unidentified` un tasto che il sistema non sa
+ * nominare; i blocchi (`CapsLock`, `NumLock`, `ScrollLock`) e `Fn`
+ * cambiano un modo; `ContextMenu` è il tasto del menù, che deve aprire il
+ * menù e basta.
+ */
+const SOLO_MODIFICATORI = new Set([
+  "Control",
+  "Shift",
+  "Alt",
+  "Meta",
+  "OS",
+  "AltGraph",
+  "Dead",
+  "Process",
+  "Unidentified",
+  "CapsLock",
+  "NumLock",
+  "ScrollLock",
+  "Fn",
+  "FnLock",
+  "ContextMenu",
+]);
 
 /** Quel che di un `KeyboardEvent` serve a dargli un nome. */
 export interface Pressione {
@@ -73,7 +102,8 @@ function componi(e: Pressione, tasto: string): string {
  * scorciatoia che ci sopra non la vedremmo comunque arrivare per intera.
  * Restituisce `null` quando è stato premuto soltanto un modificatore — cioè
  * mentre si sta ancora componendo la combinazione, che è esattamente l'istante
- * in cui la cattura non deve concludere niente.
+ * in cui la cattura non deve concludere niente — o un tasto di servizio
+ * (`SOLO_MODIFICATORI`): la cattura resta in ascolto del tasto vero.
  */
 export function tastoDi(e: Pressione): string | null {
   if (e.metaKey || SOLO_MODIFICATORI.has(e.key)) return null;
