@@ -12,7 +12,7 @@
  * È anche la forma che questa scelta avrà quando arriverà nel registro dei
  * widget: là è un `OptionKind::Word`, cioè un segmentato nello Studio.
  */
-import { memo } from "react";
+import { memo, useId } from "react";
 
 import { gestoPermesso } from "../insieme";
 import { ipc, type StatoRiproduzione } from "../ipc";
@@ -120,13 +120,38 @@ export const Trasporto = memo(function Trasporto({
    * ragione va nel suggerimento **sempre**, anche nella taglia senza
    * suggerimenti: un tasto spento senza spiegazione sembra rotto. La dice per
    * esteso, visibile, la fascia della sessione.
+   *
+   * Spenti con `aria-disabled` e non con `disabled`, come le voci del menù e
+   * le linguette di `Segmentato`: un tasto `disabled` non prende il fuoco, e
+   * la ragione stava solo nel `title`, cioè per chi ha il puntatore. Così il
+   * tasto resta raggiungibile da tastiera, si sente «non disponibile», e la
+   * ragione arriva come descrizione (`aria-describedby`). Premuto, non fa
+   * niente: lo dice `seAcceso`.
    */
   const trasporto = gestoPermesso(stato.insieme, "trasporto");
   const mescola = gestoPermesso(stato.insieme, "mescola");
   const spento = t("together.gestures.off.title");
+  const idSpento = useId();
+  const idSenzaCasuale = useId();
+  /** Il gesto, se il tasto è acceso; niente se è spento. */
+  const seAcceso = (acceso: boolean, gesto: () => Promise<void>) => () => {
+    if (acceso) comanda(gesto());
+  };
 
   return (
     <div className={classe}>
+      {/* Le ragioni dei tasti spenti, per chi ascolta lo schermo: i tasti le
+          citano con `aria-describedby`. */}
+      {!trasporto && (
+        <span id={idSpento} className="solo-lettori">
+          {spento}
+        </span>
+      )}
+      {conMescola && !mescola && (
+        <span id={idSenzaCasuale} className="solo-lettori">
+          {t("together.shuffle.off")}
+        </span>
+      )}
       {/* Le due modalità si possono togliere; i tre tasti in mezzo no. Non è
           una scelta di questo file: è `Essential` nel registro dei widget, e
           qui si vede solo l'assenza della manopola corrispondente. */}
@@ -137,8 +162,9 @@ export const Trasporto = memo(function Trasporto({
           aria-pressed={stato.shuffle}
           aria-label={t("player.shuffle")}
           title={mescola ? forse(t("player.shuffle")) : t("together.shuffle.off")}
-          disabled={!mescola}
-          onClick={() => comanda(ipc.mescola())}
+          aria-disabled={!mescola || undefined}
+          aria-describedby={mescola ? undefined : idSenzaCasuale}
+          onClick={seAcceso(mescola, ipc.mescola)}
         >
           <Icona nome="i-shuffle" dim={icona} />
         </button>
@@ -148,8 +174,9 @@ export const Trasporto = memo(function Trasporto({
         className="tasto icon-btn"
         aria-label={t("player.previous")}
         title={trasporto ? forse(t("player.previous.short")) : spento}
-        disabled={!trasporto}
-        onClick={() => comanda(ipc.precedente())}
+        aria-disabled={!trasporto || undefined}
+        aria-describedby={trasporto ? undefined : idSpento}
+        onClick={seAcceso(trasporto, ipc.precedente)}
       >
         <Icona nome="i-prev" dim={icona} />
       </button>
@@ -167,8 +194,9 @@ export const Trasporto = memo(function Trasporto({
               )
             : spento
         }
-        disabled={!trasporto}
-        onClick={() => comanda(ipc.alterna())}
+        aria-disabled={!trasporto || undefined}
+        aria-describedby={trasporto ? undefined : idSpento}
+        onClick={seAcceso(trasporto, ipc.alterna)}
       >
         <Icona nome={stato.inPausa ? "i-play" : "i-pause"} dim={play} />
       </button>
@@ -177,8 +205,9 @@ export const Trasporto = memo(function Trasporto({
         className="tasto icon-btn"
         aria-label={t("player.next")}
         title={trasporto ? forse(t("player.next.short")) : spento}
-        disabled={!trasporto}
-        onClick={() => comanda(ipc.prossimo())}
+        aria-disabled={!trasporto || undefined}
+        aria-describedby={trasporto ? undefined : idSpento}
+        onClick={seAcceso(trasporto, ipc.prossimo)}
       >
         <Icona nome="i-next" dim={icona} />
       </button>
@@ -189,8 +218,9 @@ export const Trasporto = memo(function Trasporto({
           aria-pressed={stato.ripeti !== "off"}
           aria-label={ripetizione()[stato.ripeti]}
           title={trasporto ? forse(ripetizione()[stato.ripeti]) : spento}
-          disabled={!trasporto}
-          onClick={() => comanda(ipc.ripeti())}
+          aria-disabled={!trasporto || undefined}
+          aria-describedby={trasporto ? undefined : idSpento}
+          onClick={seAcceso(trasporto, ipc.ripeti)}
         >
           <Icona nome="i-repeat" dim={icona} />
           {/* Il «1» resta: le tre modalità hanno un'icona sola, e senza questo

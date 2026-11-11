@@ -42,3 +42,26 @@ test("il posto del contenuto è il punto di riferimento main della finestra", ()
   );
   assert.match(impaginazione, /<Involucro className=\{classi\(nodo\)\} data-nodo=\{nodo\.at\}>/);
 });
+
+test("cuore e muto: nome fisso e stato in aria-pressed, mai tutti e due che cambiano", () => {
+  // R16-11. «Togli dai preferiti, premuto»: lo stato detto due volte, in due
+  // modi che si contraddicono.
+  for (const file of ["parti/Giudizio.tsx", "parti/Ora.tsx", "Lettore.tsx", "schermate/InRiproduzioneTelefono.tsx"]) {
+    const testo = sorgente(file);
+    assert.doesNotMatch(testo, /aria-label=\{brano\.liked \?/, file);
+    assert.doesNotMatch(testo, /aria-label=\{stato\.muto \?/, file);
+  }
+  assert.match(sorgente("parti/Giudizio.tsx"), /aria-pressed=\{brano\.liked\}\s+aria-label=\{t\("track\.favorite"\)\}/);
+  assert.match(sorgente("parti/Giudizio.tsx"), /aria-pressed=\{stato\.muto\}\s+aria-label=\{t\("player\.muted"\)\}/);
+});
+
+test("trasporto spento in sessione: raggiungibile, con la ragione detta", () => {
+  // R16-11. `disabled` + `title`: il tasto non prendeva il fuoco e la
+  // ragione stava solo nel suggerimento, per chi ha il puntatore.
+  const trasporto = sorgente("parti/Trasporto.tsx");
+  assert.doesNotMatch(trasporto, /\sdisabled=\{/);
+  assert.equal([...trasporto.matchAll(/aria-disabled=\{!(trasporto|mescola) \|\| undefined\}/g)].length, 5);
+  assert.equal([...trasporto.matchAll(/aria-describedby=\{(trasporto|mescola) \? undefined : id(Spento|SenzaCasuale)\}/g)].length, 5);
+  // Premuto da spento non fa niente.
+  assert.equal([...trasporto.matchAll(/onClick=\{seAcceso\((trasporto|mescola), ipc\.\w+\)\}/g)].length, 5);
+});
