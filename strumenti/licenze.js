@@ -55,11 +55,8 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-// Come in `versione.js`: i percorsi valgono rispetto a questo file.
-process.chdir(path.dirname(__dirname));
-
 const PIATTAFORME =
-  process.argv.length > 2
+  require.main === module && process.argv.length > 2
     ? process.argv.slice(2)
     : ["x86_64-pc-windows-msvc", "aarch64-linux-android"];
 const USCITA = "THIRD-PARTY-NOTICES.md";
@@ -71,10 +68,13 @@ const NOMI = /^(LICEN[SC]E|COPYING|NOTICE|UNLICENSE)([-._].*)?$/i;
  * Quanto testo si accetta da un singolo file.
  *
  * Serve contro il caso in cui un crate chiami `LICENSE` qualcosa che non lo è.
- * Il testo Apache-2.0 sta in undici kilobyte, quindi trentadue è largo tre
- * volte quel che serve senza lasciar passare un file di dati.
+ * Era trentadue kilobyte, «tre volte il testo Apache-2.0», ed era stretto: il
+ * `LICENSE-THIRD-PARTY` di `crossbeam-channel` (33 447 byte: il CC BY 3.0 e la
+ * BSD di Go che il crate riporta) restava fuori dal file senza che nessuno lo
+ * dicesse. Duecentocinquantasei coprono ogni testo di licenza vero; e quel che
+ * resta sopra non si scarta più in silenzio (vedi `main`).
  */
-const MASSIMO = 32 * 1024;
+const MASSIMO = 256 * 1024;
 
 /** Dove sta l'interfaccia, e il suo lockfile. */
 const INTERFACCIA = path.join("apps", "desktop");
@@ -90,6 +90,10 @@ function metadataPer(piattaforma) {
       "--filter-platform",
       piattaforma,
       "--all-features",
+      // Come ogni altro `cargo` della CI: in `costruisci` questo gira prima
+      // di `tauri build --locked`, e un lockfile riscritto qui in silenzio
+      // lo renderebbe cieco.
+      "--locked",
     ],
     { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
   );
@@ -108,29 +112,38 @@ function metadata() {
   return { workspace_members: [...membri], packages: [...pacchetti.values()] };
 }
 
-/** I testi di licenza che un crate porta con sé, dal suo `Cargo.toml`. */
+/**
+ * I testi di licenza che un crate porta con sé, dal suo `Cargo.toml`, e i file
+ * che sembrano di licenza ma passano il tetto (`scartati`, con nome e peso).
+ */
 function testiDi(manifestPath) {
   const dir = path.dirname(manifestPath);
   let voci;
   try {
     voci = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
-    return [];
+    return { trovati: [], scartati: [] };
   }
-  const fuori = [];
+  const trovati = [];
+  const scartati = [];
   for (const voce of voci) {
     if (!voce.isFile() || !NOMI.test(voce.name)) continue;
     try {
       const testo = fs.readFileSync(path.join(dir, voce.name), "utf8");
-      if (testo.trim() === "" || testo.length > MASSIMO) continue;
-      fuori.push({ nome: voce.name, testo: testo.replace(/\r\n/g, "\n").trimEnd() });
+      if (testo.trim() === "") continue;
+      if (testo.length > MASSIMO) {
+        scartati.push({ nome: voce.name, byte: Buffer.byteLength(testo) });
+        continue;
+      }
+      trovati.push({ nome: voce.name, testo: testo.replace(/\r\n/g, "\n").trimEnd() });
     } catch {
       // Un file illeggibile non ferma la generazione: si nota nel rapporto
       // finale come «senza testo», che è la cosa da andare a guardare.
     }
   }
-  fuori.sort((a, b) => a.nome.localeCompare(b.nome));
-  return fuori;
+  trovati.sort((a, b) => a.nome.localeCompare(b.nome));
+  scartati.sort((a, b) => a.nome.localeCompare(b.nome));
+  return { trovati, scartati };
 }
 
 /** Un indirizzo di repository come lo scrive un `package.json`, ripulito. */
@@ -172,6 +185,8 @@ function impronta(testo) {
 }
 
 function main() {
+  // Come in `versione.js`: i percorsi valgono rispetto a questo file.
+  process.chdir(path.dirname(__dirname));
   const m = metadata();
   const nostri = new Set(m.workspace_members);
   const esterni = m.packages
@@ -183,10 +198,12 @@ function main() {
   // copie identiche di Apache-2.0 sono centinaia di copie identiche.
   const testi = new Map(); // impronta → { testo, crate: [] }
   const senzaTesto = [];
+  const fuoriTetto = []; // { pacchetto, nome, byte }
   const npm = pacchettiNpm();
 
   for (const p of [...esterni, ...npm]) {
-    const trovati = testiDi(p.manifest_path);
+    const { trovati, scartati } = testiDi(p.manifest_path);
+    for (const s of scartati) fuoriTetto.push({ pacchetto: `${p.name} ${p.version}`, ...s });
     if (trovati.length === 0) {
       senzaTesto.push(p);
       continue;
@@ -359,6 +376,21 @@ function main() {
     righe.push("");
   }
 
+  // Un file che sembra di licenza e passa il tetto: si dice qui, e lo script
+  // esce con 1 perché la CI lo veda. Attribuire in meno è la sola cosa che si
+  // paga, e scartarlo in silenzio era esattamente quello.
+  if (fuoriTetto.length > 0) {
+    righe.push("### Licence files not reproduced");
+    righe.push("");
+    righe.push(
+      `Larger than ${MASSIMO / 1024} KiB, which no licence text is: read them in the`,
+      "package itself.",
+    );
+    righe.push("");
+    for (const f of fuoriTetto) righe.push(`- \`${f.pacchetto}\` — \`${f.nome}\`, ${f.byte} bytes`);
+    righe.push("");
+  }
+
   righe.push("---");
   righe.push("");
   righe.push("## The texts");
@@ -384,6 +416,18 @@ function main() {
     `${USCITA}: ${esterni.length} crates, ${npm.length} npm packages, ${testi.size} distinct texts, ` +
       `${senzaTesto.length} with no text attached.`,
   );
+  if (fuoriTetto.length > 0) {
+    console.error(
+      `${fuoriTetto.length} file di licenza oltre ${MASSIMO / 1024} KiB, non riprodotti:\n` +
+        fuoriTetto.map((f) => `  ${f.pacchetto}: ${f.nome} (${f.byte} byte)`).join("\n") +
+        "\nGuardarli: se sono testi di licenza veri, il tetto (MASSIMO) va alzato.",
+    );
+    process.exit(1);
+  }
 }
 
-main();
+// Come script rigenera il file; come modulo presta la lettura dei testi a
+// `licenze.test.js`, senza `cargo` e senza scrivere niente.
+if (require.main === module) main();
+
+module.exports = { testiDi, MASSIMO, NOMI };
