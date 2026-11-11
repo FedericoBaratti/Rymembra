@@ -1088,6 +1088,7 @@
   "settings.cloudAccounts.state.reconnect": "Da ricollegare.",
   "cloudAccounts.banner": "Il collegamento con {conto} è scaduto: ricollegalo per suonare e aggiornare le sue cartelle.",
   "errors.action.cloudAccounts": "Apri i conti cloud",
+  "errors.action.dataFolder": "Apri la cartella dei dati",
   "errors.action.folders": "Apri Cartelle",
   "settings.cloudAccounts.state.error": "Non risponde.",
   "settings.cloudAccounts.folders": "{n} cartelle",

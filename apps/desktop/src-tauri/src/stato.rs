@@ -117,6 +117,17 @@ pub struct Stato {
     /// non cambia mai non vale una coda dietro una scansione.
     cartella_dati: Option<PathBuf>,
 
+    /// La cartella in cui la libreria sta, o doveva stare: c'è anche quando
+    /// l'apertura è fallita.
+    ///
+    /// Non è un doppione di `cartella_dati`, che vale «la libreria è aperta» e
+    /// come tale la leggono [`leggi_a_parte`] e la scelta della cache. Questa
+    /// serve a chi deve aiutare **proprio quando** la libreria non c'è: il gesto
+    /// che apre la cartella dei dati dalla fascia d'errore, e quello che rimette
+    /// la copia di prima dell'aggiornamento. `None` solo dopo un rifiuto del
+    /// trasloco ([`Stato::rifiutato`]), dove la cartella nuova non si tocca.
+    cartella_scelta: Option<PathBuf>,
+
     /// Il giornale della libreria è WAL, com'era all'apertura.
     ///
     /// Lo guarda [`leggi_a_parte`], e sta fuori dal mutex per la stessa ragione
@@ -182,7 +193,7 @@ pub struct Stato {
 impl Stato {
     /// Apre la libreria nella cartella dati data.
     pub fn apri(data_dir: PathBuf) -> Self {
-        Self::da_libreria(apri_libreria(data_dir))
+        Self::da_libreria(apri_libreria(data_dir.clone()), Some(data_dir))
     }
 
     /// Lo stato di un avvio che non ha aperto niente, perché il trasloco dei
@@ -197,14 +208,16 @@ impl Stato {
     /// esattamente come l'applicazione tratta da sempre un database che non si
     /// è aperto: non c'è un secondo percorso d'errore da imparare.
     pub fn rifiutato(errore: AppError) -> Self {
-        Self::da_libreria(Err(errore))
+        Self::da_libreria(Err(errore), None)
     }
 
-    /// Lo stato attorno a una libreria già aperta, o all'errore che la sostituisce.
-    fn da_libreria(libreria: Result<Libreria, AppError>) -> Self {
+    /// Lo stato attorno a una libreria già aperta, o all'errore che la
+    /// sostituisce, e alla cartella in cui la si è cercata.
+    fn da_libreria(libreria: Result<Libreria, AppError>, cartella: Option<PathBuf>) -> Self {
         Self {
             store_copertine: libreria.as_ref().ok().map(|l| l.covers.clone()),
             cartella_dati: libreria.as_ref().ok().map(|l| l.data_dir.clone()),
+            cartella_scelta: cartella,
             in_wal: libreria.as_ref().is_ok_and(|l| l.giornale == "wal"),
             libreria: Mutex::new(libreria),
             scansione_da_fermare: AtomicBool::new(false),
@@ -241,6 +254,12 @@ impl Stato {
     /// non si è aperta.
     pub fn cartella_dati(&self) -> Option<&Path> {
         self.cartella_dati.as_deref()
+    }
+
+    /// La cartella in cui la libreria sta o doveva stare, anche se non si è
+    /// aperta. `None` dopo un rifiuto del trasloco. Vedi il campo.
+    pub fn cartella_della_libreria(&self) -> Option<&Path> {
+        self.cartella_scelta.as_deref()
     }
 
     /// Il diritto di essere l'unica scansione in corso.

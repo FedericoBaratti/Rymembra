@@ -953,6 +953,7 @@ pub fn run() {
             manutenzione::manutenzione_stato,
             manutenzione::manutenzione_salute,
             manutenzione::manutenzione_pulisci_copertine,
+            manutenzione::manutenzione_apri_cartella_dati,
             comandi::apri_documento,
             comandi::apri_guida,
             // Solo sul telefono: altrove rispondono `internal.aborted`. Vedi

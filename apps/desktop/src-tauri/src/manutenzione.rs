@@ -559,6 +559,54 @@ pub fn manutenzione_salute(app: AppHandle) -> Salute {
         .map_or_else(Salute::da_fare, |manutenzione| manutenzione.salute())
 }
 
+/// Apre nel gestore file la cartella dei dati: quella della libreria, **anche
+/// quando la libreria non si è aperta**.
+///
+/// # Perché esiste
+///
+/// Perché è il gesto che serve quando il database non si apre — una
+/// migrazione fermata a metà, un database scritto da una versione più nuova, un
+/// file rotto — e la fascia d'errore lo offre accanto alla frase. Lì dentro
+/// c'è `rymembra.db`, e accanto la copia di prima dell'aggiornamento
+/// (`rymembra.db.schema-NNN.bak`); e `%APPDATA%` in Esplora risorse è nascosta
+/// di serie, quindi un percorso scritto in una frase non porta nessuno da
+/// nessuna parte. È la stessa ragione di `diario_apri`.
+///
+/// Sul telefono la cartella dei dati è privata dell'app, e nessun gestore file
+/// ci entra: la finestra lì non offre il gesto, e il comando lo rifiuta.
+///
+/// # Errori
+///
+/// `internal.aborted` se la cartella non c'è da aprire — dopo un rifiuto del
+/// trasloco, o sul telefono — o se il gestore file rifiuta di aprirsi.
+#[tauri::command]
+pub fn manutenzione_apri_cartella_dati(app: AppHandle) -> Esito<()> {
+    let guasto = |causa: String| {
+        errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura della cartella dei dati".to_owned()),
+            })
+            .with_cause(causa),
+        )
+    };
+    let Some(dove) = app.try_state::<Stato>().and_then(|stato| {
+        stato
+            .cartella_della_libreria()
+            .map(std::path::Path::to_path_buf)
+    }) else {
+        return Err(guasto("nessuna cartella dei dati scelta".to_owned()));
+    };
+    #[cfg(target_os = "android")]
+    {
+        let _ = dove;
+        Err(guasto(
+            "sul telefono la cartella dei dati è privata".to_owned(),
+        ))
+    }
+    #[cfg(not(target_os = "android"))]
+    tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| guasto(err.to_string()))
+}
+
 /// Pulisce la cache delle copertine adesso, e dice quanto ha liberato.
 ///
 /// # Errori

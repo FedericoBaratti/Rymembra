@@ -1088,6 +1088,7 @@
   "settings.cloudAccounts.state.reconnect": "Needs reconnecting.",
   "cloudAccounts.banner": "The connection to {conto} has expired: reconnect it to play and update its folders.",
   "errors.action.cloudAccounts": "Open cloud accounts",
+  "errors.action.dataFolder": "Open the data folder",
   "errors.action.folders": "Open Folders",
   "settings.cloudAccounts.state.error": "Not responding.",
   "settings.cloudAccounts.folders": "{n} folders",

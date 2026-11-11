@@ -3945,6 +3945,25 @@ export function App() {
             vaiA("cartelle");
           },
         };
+      // Il database della libreria che non si apre, o che non si lascia
+      // scrivere: le frasi parlano della cartella dei dati — la copia di prima
+      // dell'aggiornamento sta lì, accanto a `rymembra.db` — e `%APPDATA%` in
+      // Esplora risorse è nascosta. La fascia resta: il gesto non la chiude.
+      // Sul telefono la cartella è privata dell'app, e il gesto non c'è.
+      case "db.migrationFailed":
+      case "db.versionAhead":
+      case "db.openFailed":
+      case "db.corrupt":
+      case "db.readOnly":
+      case "db.ioFailed":
+        return MOBILE
+          ? undefined
+          : {
+              etichetta: t("errors.action.dataFolder"),
+              onClick: () => {
+                ipc.manutenzioneApriCartellaDati().catch(segnalaErrore);
+              },
+            };
       default:
         return undefined;
     }

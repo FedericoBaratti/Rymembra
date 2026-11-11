@@ -1086,6 +1086,11 @@ export const ipc = {
   manutenzioneSalute: () => invoke<SaluteDatabase>("manutenzione_salute"),
   manutenzionePulisciCopertine: () =>
     invoke<EsitoPulizia>("manutenzione_pulisci_copertine"),
+  // La cartella dei dati nel gestore file, anche quando la libreria non si è
+  // aperta: è il gesto della fascia d'errore per i guasti del database. Non
+  // sul telefono, dove la cartella è privata dell'app.
+  manutenzioneApriCartellaDati: () =>
+    invoke<void>("manutenzione_apri_cartella_dati"),
 
   // I documenti pubblici, nel browser di sistema. Il nome e non l'indirizzo: di
   // là c'è un elenco chiuso, e un comando che aprisse l'indirizzo che gli si
