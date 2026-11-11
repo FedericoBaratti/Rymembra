@@ -779,16 +779,26 @@
  * comando raggiungibile solo col mouse è un comando che una parte delle persone
  * non usa.
  */
+/* Smorzato si legge come «senza la pista e senza il fondo della scelta», non
+   come un'opacità: al 55 % i numeri scendevano a 2,4:1. A riposo restano i
+   numeri in `text-3` e la scelta in `text-2`; al passaggio e al fuoco torna il
+   segmentato com'è. */
 .dettaglio-spettro {
   position: absolute;
   left: 32px;
   bottom: 24px;
-  opacity: 0.55;
-  transition: opacity var(--transition-fast);
 }
-.dettaglio-spettro:hover,
-.dettaglio-spettro:focus-within {
-  opacity: 1;
+.dettaglio-spettro:not(:hover, :focus-within) .segmentato {
+  background: transparent;
+  box-shadow: none;
+}
+.dettaglio-spettro:not(:hover, :focus-within) .segmentato .linguetta {
+  color: var(--color-text-3);
+}
+.dettaglio-spettro:not(:hover, :focus-within) .segmentato .linguetta[data-active] {
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text-2);
 }
 /* Tre classi e non due, e serve: `.segmentato.minuto .linguetta` fissa la sua
    misura, e con un selettore più leggero questa la perderebbe. */

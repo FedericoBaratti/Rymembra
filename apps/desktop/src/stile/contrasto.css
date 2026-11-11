@@ -333,12 +333,12 @@
      Non c'è quindi una regola da scrivere, e vale la pena dirlo qui invece di
      lasciar credere che sia una dimenticanza. */
 
-  /* La cartella che non risponde. L'opacità il motore non la appiattisce, e
-     proprio per questo qui è dannosa: smorzerebbe un testo a chi ha chiesto più
-     contrasto, senza aggiungere niente. Torna piena, e a dire che la radice è
-     spenta resta il corsivo del nome — insieme alla striscia «Ricontrolla», che
-     è dove sta il comando. */
-  .nodo-spento {
+  /* La cartella che non risponde: fuori di qui ha l'icona smorzata. L'opacità
+     il motore non la appiattisce, e proprio per questo qui è dannosa:
+     smorzerebbe un segno a chi ha chiesto più contrasto, senza aggiungere
+     niente. Torna piena, e a dire che la radice è spenta resta il corsivo del
+     nome — insieme alla striscia «Ricontrolla», che è dove sta il comando. */
+  .nodo-spento .icona-nodo {
     opacity: 1;
   }
 

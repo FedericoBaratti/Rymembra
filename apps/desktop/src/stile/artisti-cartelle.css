@@ -425,17 +425,18 @@
 /*
  * La radice che non risponde.
  *
- * L'opacità dice «spenta» a chi guarda, e da sola non basta: `forced-colors`
- * impone i colori ma non tocca l'opacità, quindi in contrasto elevato un testo
- * smorzato è solo un testo meno leggibile — cioè il difetto al posto del segno,
- * proprio per chi ha chiesto più contrasto. Il corsivo porta la stessa notizia
- * senza toglierne, e là sotto l'opacità torna piena e resta lui.
+ * «Spenta» lo dicono il corsivo e il grigio più quieto del nome, e l'icona
+ * smorzata. Non un'opacità sulla riga intera: al 55 % il nome e il conteggio
+ * scendevano a 2,3:1, cioè un testo da leggere — quale cartella non risponde —
+ * reso illeggibile per dire che è spenta. L'opacità resta sull'icona, che non
+ * si legge; in contrasto elevato torna piena anche lì (`contrasto.css`).
  */
-.nodo-spento {
-  opacity: 0.55;
-}
 .nodo-spento .nome-nodo {
   font-style: italic;
+  color: var(--color-text-3);
+}
+.nodo-spento .icona-nodo {
+  opacity: 0.55;
 }
 /* L'icona fra il triangolo e il nome: cartella o brano. È quel che distingue
    una foglia da una cartella chiusa senza doverla aprire. */

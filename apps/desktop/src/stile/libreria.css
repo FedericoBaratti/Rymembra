@@ -899,9 +899,13 @@
   color: var(--accent);
 }
 /* Scelto ma staccato. Spento e non tolto: una riga che sparisce racconta che
-   la preferenza è stata dimenticata, e invece è ancora lì. */
-.uscite .assente label {
-  opacity: 0.55;
+   la preferenza è stata dimenticata, e invece è ancora lì. Spento col nome in
+   corsivo e un grigio più quieto, non con un'opacità: al 55 % la parola
+   «assente» scendeva a 2,4:1, e il pallino — che si può ancora scegliere —
+   sembrava spento. */
+.uscite .assente .nome {
+  font-style: italic;
+  color: var(--color-text-3);
 }
 
 /* Il `user-select: text` che stava qui è salito su `.errore`: lì copre anche il

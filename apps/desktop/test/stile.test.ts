@@ -647,3 +647,33 @@ test("le testate sopra la copertina sfocata reggono 4,5:1 con qualunque copertin
   assert.ok(colonna.fin.endsWith("px") && Number.parseFloat(colonna.fin) >= 56, `colonna: fino a «${colonna.fin}»`);
   assert.match(telefono.fin, /--barra-titolo-h.*--barra-alta-h/, "telefono");
 });
+
+test("nessuna opacità porta un testo informativo sotto 4,5:1", () => {
+  // I token passano tutti 4,5:1 sulle quattro superfici; il foglio però li
+  // moltiplicava per un'opacità: il conteggio della voce attiva, i numeri di un
+  // segmentato, una cartella che non risponde, un'uscita audio staccata, il
+  // selettore delle barre a riposo, un valore ereditato nello Studio.
+  const fuori = regole(senzaCommenti(FOGLIO.replace(bloccoForzato(), "")));
+  const opacita = (selettore: string) => {
+    const r = fuori.find((x) => x.selettori.includes(selettore) && /opacity:/.test(x.dichiarazioni));
+    return r ? numeroDopo(r.dichiarazioni, /opacity:/) : 1;
+  };
+  const coppie: [string, string, (c: (n: string) => Rgba) => Rgba][] = [
+    [".voce[data-active] .conteggio", "--accent", (c) => componi(c("--accent-soft"), c("--color-surface-1"))],
+    [".segmentato .quante", "--color-text-2", (c) => c("--color-surface-2")],
+    [".nodo-spento", "--color-text-3", (c) => c("--color-surface-0")],
+    [".nodo-spento", "--color-text-2", (c) => c("--color-surface-0")],
+    [".uscite .assente label", "--color-text-2", (c) => c("--color-surface-1")],
+    [".dettaglio-spettro", "--color-text-2", (c) => c("--color-surface-0")],
+    ["[data-ereditato]", "--color-text-3", (c) => c("--color-surface-1")],
+  ];
+  const cadute: string[] = [];
+  for (const { nome, colore } of temiDiSerie()) {
+    for (const [selettore, testo, fondoDi] of coppie) {
+      const fondo = fondoDi(colore);
+      const valore = contrasto(componi(colore(testo), fondo, opacita(selettore)), fondo);
+      if (valore < SOGLIA_AA) cadute.push(`${nome}, ${selettore} (${testo}): ${valore.toFixed(2)}:1`);
+    }
+  }
+  assert.deepEqual(cadute, []);
+});
