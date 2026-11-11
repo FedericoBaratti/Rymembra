@@ -63,6 +63,7 @@ import { accorpa } from "./accorpa";
 import { Account } from "./Account";
 import { AggiungiAPlaylist, fraseDellAggiunta } from "./AggiungiAPlaylist";
 import { AggiungiCartella } from "./AggiungiCartella";
+import { ANNULLI, annullaATempo } from "./annullaATempo";
 import { ugualiInSuperficie, useArchivio } from "./archivio";
 import { useArtisti } from "./artisti";
 import { useAspetto } from "./aspettoFinestra";
@@ -78,6 +79,7 @@ import {
   InRiproduzioneTelefonoCollegata,
 } from "./collegati";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
+import { ConfermaGesto } from "./ConfermaGesto";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
 import { AvvisoSostituita, ConfermaSkin, ConfermaSostituzione } from "./ConfermaSkin";
 import { ConfermaTrasloco } from "./ConfermaTrasloco";
@@ -262,6 +264,13 @@ function ordinamenti(): readonly (readonly [Ordine, string])[] {
 const VISTE_TENUTE = ["brani", "preferiti", "album", "artisti"] as const;
 type VistaTenuta = (typeof VISTE_TENUTE)[number];
 
+/** Una playlist appena eliminata, finché il suo «Annulla» è a schermo. */
+interface PlaylistCancellata {
+  /** Il gettone della cancellazione: ripassato a `playlistRipristina`. */
+  gettone: number;
+  nome: string;
+}
+
 /**
  * «Ci ho ripensato»: il «no» al dialogo del Cestino di Android. Lo si lancia
  * dentro `elimina` per fare la strada del rimedio — le righe tolte in anticipo
@@ -391,16 +400,32 @@ export function App() {
    * chi si accorge di aver sbagliato voce del menù se ne accorge un attimo dopo.
    * Una cancellazione nuova prende il posto della precedente, e ricomincia il
    * conto.
+   *
+   * Il conto si ferma col fuoco o il puntatore sul riquadro, e `Ctrl+Z` fa
+   * l'ultimo «Annulla» a schermo: chi usa la tastiera trovava il riquadro
+   * lontano dal fuoco, e spesso spariva mentre ci arrivava (`annullaATempo.ts`).
+   * Lo stato è uno per le due copie del riquadro. Il gesto che rimette la
+   * playlist sta in `rimettiPlaylist`, più giù, perché usa la rilettura delle
+   * playlist e la notizia, che nascono dopo.
    */
-  const [cancellata, setCancellata] = useState<{
-    gettone: number;
-    nome: string;
+  const rimettiPlaylist = useRef<(quale: PlaylistCancellata) => void>(() => undefined);
+  const [annulloPlaylist] = useState(() =>
+    annullaATempo<PlaylistCancellata>((quale) => rimettiPlaylist.current(quale)),
+  );
+  const cancellata = useArchivio(annulloPlaylist.avviso);
+  /**
+   * La playlist da eliminare, finché la domanda è aperta (D-40).
+   *
+   * L'«Annulla» dopo resta, ma da solo non bastava: per chi usa la tastiera o
+   * un lettore di schermo era in pratica irraggiungibile, e l'eliminazione
+   * diventava irreversibile. `risposta` è il cancello della domanda
+   * (`unaVolta`), come per `daEliminare`: un doppio clic su «Elimina» non
+   * cancella due volte.
+   */
+  const [daCancellare, setDaCancellare] = useStatoPresente<{
+    playlist: Playlist;
+    risposta: () => boolean;
   } | null>(null);
-  useEffect(() => {
-    if (cancellata === null) return;
-    const conto = window.setTimeout(() => setCancellata(null), 10_000);
-    return () => window.clearTimeout(conto);
-  }, [cancellata]);
   const [vista, setVista] = useState<Vista>("home");
   /**
    * Quel che Esplora ha trovato l'ultima volta che era aperta.
@@ -1872,18 +1897,8 @@ export function App() {
           },
           rinomina: () => setDaRinominare(p),
           regole: () => setRegoleAperte({ playlist: p }),
-          cancella: () => {
-            ipc
-              .playlistCancella(p.id)
-              .then((gettone) => {
-                setPlaylistAperta((prima) =>
-                  prima && prima.id === p.id ? null : prima,
-                );
-                setCancellata({ gettone, nome: p.name });
-                return ricaricaPlaylist();
-              })
-              .catch(segnalaErrore);
-          },
+          // Prima la domanda (D-40), poi la cancellazione: vedi `daCancellare`.
+          cancella: () => setDaCancellare({ playlist: p, risposta: unaVolta() }),
           esporta: () => void esportaPlaylist(p),
         },
         t,
@@ -2430,6 +2445,11 @@ export function App() {
       // «qualunque»: la scorciatoia non viene da nessuna scheda, quindi non c'è
       // un servizio da suggerire e la finestrella li nomina tutti e due.
       incollaLink: () => setImportandoLink(true),
+      // L'ultimo «Annulla» ancora a schermo — la coda sostituita, la playlist
+      // eliminata — dovunque sia il fuoco (D-40). Vedi `annullaATempo.ts`.
+      annulla: () => {
+        ANNULLI.annullaLUltimo();
+      },
       chiudi: () => {
         if (grande) {
           setGrande(false);
@@ -3988,30 +4008,43 @@ export function App() {
    *
    * Non parla lui a chi ascolta lo schermo: nasce già pieno, e in due copie.
    * Lo dice una regione sola, sempre montata, accanto a quella delle notizie.
+   *
+   * Il gesto lo fa `annulloPlaylist` (vedi la sua dichiarazione): dal tasto o
+   * da `Ctrl+Z`, una volta sola, e l'avviso se ne va da tutte e due le copie.
    */
+  rimettiPlaylist.current = (quale) => {
+    ipc
+      .playlistRipristina(quale.gettone)
+      .then((tornata) => {
+        if (tornata === null) {
+          setNotizia(t("playlist.deleted.late", { nome: quale.nome }));
+          return;
+        }
+        setNotizia(t("playlist.deleted.back", { nome: tornata.name }));
+        return ricaricaPlaylist();
+      })
+      .catch(segnalaErrore);
+  };
+  /** La cancellazione, dopo il sì della domanda: vedi `daCancellare`. */
+  const cancellaPlaylist = (p: Playlist) => {
+    ipc
+      .playlistCancella(p.id)
+      .then((gettone) => {
+        setPlaylistAperta((prima) => (prima && prima.id === p.id ? null : prima));
+        annulloPlaylist.mostra({ gettone, nome: p.name });
+        return ricaricaPlaylist();
+      })
+      .catch(segnalaErrore);
+  };
   const avvisoCancellata = cancellata !== null && (
-    <div className="notizia toast-card">
+    <div className="notizia toast-card" {...annulloPlaylist.presa}>
       <Icona nome="i-check" dim={16} />
       <span>{t("playlist.deleted", { nome: cancellata.nome })}</span>
       <button
         type="button"
         className="bottone minuto btn-ghost"
         aria-label={t("playlist.deleted.undo.aria", { nome: cancellata.nome })}
-        onClick={() => {
-          const quale = cancellata;
-          setCancellata(null);
-          ipc
-            .playlistRipristina(quale.gettone)
-            .then((tornata) => {
-              if (tornata === null) {
-                setNotizia(t("playlist.deleted.late", { nome: quale.nome }));
-                return;
-              }
-              setNotizia(t("playlist.deleted.back", { nome: tornata.name }));
-              return ricaricaPlaylist();
-            })
-            .catch(segnalaErrore);
-        }}
+        onClick={annulloPlaylist.annulla}
       >
         {t("playlist.deleted.undo")}
       </button>
@@ -4019,7 +4052,7 @@ export function App() {
         type="button"
         className="tasto icon-btn"
         aria-label={t("common.close")}
-        onClick={() => setCancellata(null)}
+        onClick={() => annulloPlaylist.mostra(null)}
       >
         <Icona nome="i-x" dim={14} />
       </button>
@@ -4354,6 +4387,20 @@ export function App() {
               setDaEliminare(null);
               void elimina(cosa.brani, cosa.dalDisco, definitivi);
             }}
+          />
+        )}
+
+        {daCancellare && (
+          <ConfermaGesto
+            domanda={{
+              titolo: t("playlist.delete.confirm.title", { nome: daCancellare.playlist.name }),
+              descrizione: t("playlist.delete.confirm.body"),
+              conferma: t("common.delete"),
+              fai: () => {
+                if (daCancellare.risposta()) cancellaPlaylist(daCancellare.playlist);
+              },
+            }}
+            onChiudi={() => setDaCancellare(null)}
           />
         )}
 

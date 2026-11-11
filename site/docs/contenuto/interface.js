@@ -79,6 +79,7 @@
               ["Now Playing (`inRiproduzione`)", "F"],
               ["full screen", "F11"],
               ["zoom in / out / reset", "Ctrl++ (also Ctrl+= and Ctrl+Shift++), Ctrl+-, Ctrl+0"],
+              ["undo the last notice still on screen (`annulla`: queue replaced or cleared, playlist deleted)", "Ctrl+Z (not while typing in a field)"],
               ["Imports page, paste a link", "Ctrl+I, Ctrl+L"],
             ],
           },

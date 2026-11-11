@@ -321,7 +321,7 @@
       title: "Playlists and smart playlists",
       src: ["core/rymembra-app/src/playlists.rs", "core/rymembra-app/src/smart.rs", "core/rymembra-domain/src/regole.rs", "apps/desktop/src-tauri/src/playlist.rs", "apps/desktop/src/Regole.tsx"],
       body: [
-        "A playlist's identity is its `PlaylistKey` (unique), names are at most `NOME_MASSIMO` = 200 characters. Members are `playlist_tracks(playlist_id, track_id, position)` with primary key `(playlist_id, position)`, so removing or reordering rewrites positions; adding appends. Deleting writes a playlist tombstone for sync; the desktop keeps deleted playlists in memory for `DURATA_ANNULLO` = 60 s (at most 8) so `playlist_ripristina` can undo.",
+        "A playlist's identity is its `PlaylistKey` (unique), names are at most `NOME_MASSIMO` = 200 characters. Members are `playlist_tracks(playlist_id, track_id, position)` with primary key `(playlist_id, position)`, so removing or reordering rewrites positions; adding appends. Deleting writes a playlist tombstone for sync; the desktop keeps deleted playlists in memory for `DURATA_ANNULLO` = 60 s (at most 8) so `playlist_ripristina` can undo. The window asks before deleting, then shows an «Undo» notice for 10 s (paused while it has the focus or the pointer; Ctrl+Z also undoes it).",
         { h: "Smart playlists" },
         "A smart playlist **is** its query: rules are stored as JSON in `playlists.rules` and never materialized, so «played in the last 30 days» is right after midnight without anyone writing. The vocabulary is closed enums in `rymembra_domain::regole`:",
         {
