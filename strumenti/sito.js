@@ -527,8 +527,9 @@ function documentazione(r, problemi) {
   for (const c of capitoli) for (const v of c.entries) titoli[v.id] = v.title;
   const pagine = {};
 
+  // Cartella o file come li vede git, non il disco: vedi `docs.esisteNelRepository`.
   const fonte = (p) => {
-    const cartella = fs.existsSync(path.join(REPO, p)) && fs.statSync(path.join(REPO, p)).isDirectory();
+    const cartella = docs.cartellaNelRepository(p);
     return `<a href="${r.repo}/${cartella ? "tree" : "blob"}/main/${p}"><code>${esc(p)}</code></a>`;
   };
   const latoCon = (base, corrente) =>

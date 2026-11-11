@@ -15,14 +15,16 @@
  *   - ogni rimando — `see` e `[testo](#voce)` — porti a una voce o a un
  *     capitolo che esiste (i collegamenti delle pagine costruite li controlla
  *     `strumenti/sito.js`, sull'uscita);
- *   - ogni percorso in `src` esista nel repository: un file rinominato rompe
- *     questo controllo invece di lasciare una voce che indica il vuoto;
+ *   - ogni percorso in `src` esista nel repository, come lo vede git e con le
+ *     maiuscole giuste: un file rinominato rompe questo controllo invece di
+ *     lasciare una voce che indica il vuoto (o un 404 su GitHub);
  *   - ogni ancora ammessa dal nucleo (`ANCORE_GUIDA` in `comandi.rs`) esista
  *     come voce: il «?» di una scheda non deve mai aprire una pagina senza il
  *     suo punto d'arrivo.
  *
  *   node strumenti/docs.js
  */
+const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -30,6 +32,52 @@ const vm = require("vm");
 const REPO = path.dirname(__dirname);
 const CARTELLA = path.join(REPO, "site", "docs");
 const COMANDI = path.join(REPO, "apps/desktop/src-tauri/src/comandi.rs");
+
+/**
+ * I file e le cartelle del repository, come li vede git: con le maiuscole.
+ *
+ * Non `fs.existsSync`: la CI controlla le docs su Windows, dove NTFS risponde
+ * sì a `README.MD`, e il link «Source» del sito porta a
+ * `github.com/…/blob/main/README.MD`, che è un 404 perché GitHub le maiuscole
+ * le distingue. E nemmeno quel che sta sul disco senza essere versionato
+ * (`node_modules`, `target`): una fonte che solo questa macchina ha non è una
+ * fonte. Un file nuovo va quindi aggiunto con `git add` prima che una voce lo
+ * possa citare.
+ */
+let versionati = null;
+function delRepository() {
+  if (versionati === null) {
+    let uscita;
+    try {
+      uscita = execFileSync("git", ["ls-files", "-z"], { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    } catch (e) {
+      throw new Error(`docs: per controllare le fonti serve git (git ls-files in ${REPO}): ${e.message}`);
+    }
+    const file = new Set(uscita.split("\0").filter(Boolean));
+    const cartelle = new Set();
+    for (const f of file) {
+      for (let i = f.lastIndexOf("/"); i > 0; i = f.lastIndexOf("/", i - 1)) {
+        const c = f.slice(0, i);
+        if (cartelle.has(c)) break;
+        cartelle.add(c);
+      }
+    }
+    versionati = { file, cartelle };
+  }
+  return versionati;
+}
+
+/** Il percorso (relativo alla radice, con le barre `/`) è un file o una cartella versionati, maiuscole comprese. */
+function esisteNelRepository(p) {
+  const { file, cartelle } = delRepository();
+  const q = p.replace(/\/+$/, "");
+  return file.has(q) || cartelle.has(q);
+}
+
+/** Il percorso è una cartella versionata: `tree` invece di `blob` negli indirizzi di GitHub. */
+function cartellaNelRepository(p) {
+  return delRepository().cartelle.has(p.replace(/\/+$/, ""));
+}
 
 /**
  * I file di contenuto nell'ordine in cui si leggono: `indice.json` è un array di
@@ -162,7 +210,9 @@ function controlla(capitoli, ancore, esiste) {
         for (const p of v.src) {
           if (typeof p !== "string" || p === "" || path.isAbsolute(p) || p.includes("\\")) {
             dica(`${nome}: percorso «${p}» non relativo alla radice del repository`);
-          } else if (!esiste(p)) dica(`${nome}: «${p}» non esiste nel repository`);
+          } else if (!esiste(p)) {
+            dica(`${nome}: «${p}» non esiste nel repository (maiuscole comprese; un file nuovo va prima aggiunto con git add)`);
+          }
         }
       }
       if (!Array.isArray(v.body) || v.body.length === 0) {
@@ -208,7 +258,7 @@ function main() {
   for (const f of mancanti) problemi.push(`indice.json elenca ${f}, che non esiste`);
   for (const f of orfani) problemi.push(`${f} non è in indice.json`);
   if (!ancore || ancore.length === 0) problemi.push("non trovo ANCORE_GUIDA in comandi.rs");
-  problemi.push(...controlla(capitoli, ancore, (p) => fs.existsSync(path.join(REPO, p))));
+  problemi.push(...controlla(capitoli, ancore, esisteNelRepository));
   if (problemi.length) {
     console.error(`docs: ${problemi.length} problemi\n` + problemi.map((p) => "  - " + p).join("\n"));
     process.exit(1);
@@ -219,4 +269,15 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { carica, elencati, ancoreDelNucleo, controlla, forma, chiuso, testiInLinea, rimandi };
+module.exports = {
+  carica,
+  elencati,
+  ancoreDelNucleo,
+  controlla,
+  forma,
+  chiuso,
+  testiInLinea,
+  rimandi,
+  esisteNelRepository,
+  cartellaNelRepository,
+};

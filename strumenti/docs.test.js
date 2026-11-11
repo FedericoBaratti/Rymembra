@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { ancoreDelNucleo, elencati, carica, controlla, forma, chiuso, rimandi } = require("./docs.js");
+const { ancoreDelNucleo, elencati, carica, controlla, forma, chiuso, rimandi, esisteNelRepository, cartellaNelRepository } = require("./docs.js");
 
 const TUTTO_ESISTE = () => true;
 
@@ -105,9 +105,23 @@ test("la documentazione vera torna", () => {
   assert.deepEqual(orfani, []);
   const ancore = ancoreDelNucleo();
   assert.ok(ancore.length > 0);
-  const repo = path.dirname(__dirname);
-  assert.deepEqual(
-    controlla(capitoli, ancore, (p) => fs.existsSync(path.join(repo, p))),
-    [],
-  );
+  assert.deepEqual(controlla(capitoli, ancore, esisteNelRepository), []);
+});
+
+// GitHub distingue le maiuscole, NTFS no: in CI (su Windows) `existsSync` diceva
+// sì a `README.MD`, e il link «Source» del sito portava a un 404.
+test("una fonte con le maiuscole sbagliate si vede, su ogni sistema", () => {
+  assert.equal(esisteNelRepository("README.md"), true);
+  assert.equal(esisteNelRepository("README.MD"), false);
+  assert.equal(esisteNelRepository("core/rymembra-app/src/library.rs"), true);
+  assert.equal(esisteNelRepository("core/rymembra-app/src/Library.rs"), false);
+  // Le cartelle valgono come i file, con o senza la barra in fondo.
+  assert.equal(esisteNelRepository("core/rymembra-app/src"), true);
+  assert.equal(esisteNelRepository("core/rymembra-app/src/"), true);
+  assert.equal(esisteNelRepository("core/Rymembra-app/src"), false);
+  assert.equal(cartellaNelRepository("core/rymembra-app/src"), true);
+  assert.equal(cartellaNelRepository("README.md"), false);
+  // Quel che non è nel repository non c'è, anche se è sul disco.
+  assert.ok(fs.existsSync(path.join(__dirname, "../apps/desktop/node_modules")));
+  assert.equal(esisteNelRepository("apps/desktop/node_modules"), false);
 });

@@ -124,7 +124,7 @@
           },
         },
         "Inline markup: `**bold**`, `*italic*`, backticks for code, `[text](https://…)` and `[text](#entry-id)`. `src` lists repository paths shown as the entry's sources.",
-        "`node strumenti/docs.js` (also in `npm run verify` and CI) fails if a chapter file is not listed in `indice.json`, an id repeats, a block has an unknown shape, a table row has the wrong width, bold or code is unbalanced, a `see` or `#` link points nowhere, **a `src` path does not exist in the repository**, or an anchor of `ANCORE_GUIDA` has no entry. That list in `comandi.rs` is what the «?» on each Settings card may open (`apri_guida`, always `…/docs/#<entry>`): a script in the head of `/docs/` sends the anchor on to the chapter page that holds it, and `strumenti/sito.js` checks that every one of them arrives. Renaming a source file or an entry id is caught here.",
+        "`node strumenti/docs.js` (also in `npm run verify` and CI) fails if a chapter file is not listed in `indice.json`, an id repeats, a block has an unknown shape, a table row has the wrong width, bold or code is unbalanced, a `see` or `#` link points nowhere, **a `src` path is not tracked in the repository** (checked against `git ls-files`, letter case included: Windows would accept `README.MD`, GitHub answers 404), or an anchor of `ANCORE_GUIDA` has no entry. That list in `comandi.rs` is what the «?» on each Settings card may open (`apri_guida`, always `…/docs/#<entry>`): a script in the head of `/docs/` sends the anchor on to the chapter page that holds it, and `strumenti/sito.js` checks that every one of them arrives. Renaming a source file or an entry id is caught here.",
       ],
       see: ["tooling", "repository"],
     },
