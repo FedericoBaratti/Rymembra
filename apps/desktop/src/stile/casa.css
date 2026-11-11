@@ -629,7 +629,7 @@
 .finestrella > .avanzamento > div,
 .scheda > .avanzamento > div {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 60%, var(--color-text-1)));
   /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
      barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
      Qui serviva la scala del movimento, non la curva — e la durata è tarata

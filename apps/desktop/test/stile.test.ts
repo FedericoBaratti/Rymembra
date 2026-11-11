@@ -370,3 +370,10 @@ test("le regole nude dello Studio non vestono il markup del resto dell'app", () 
     .filter((s) => s === ".mancanti" || s === ".avviso" || s === ".avviso .cosa");
   assert.deepEqual(nude, [".avviso"], "resta solo l'.avviso di importazioni.css");
 });
+
+test("il foglio del motore non legge la tavolozza di una skin", () => {
+  // `--skin-color-*` è lo spazio dei nomi dei colori che **una** skin dichiara:
+  // letto qui, dava a Vinile e alle skin di terzi il ciano di Plain.
+  const fuori = senzaCommenti(FOGLIO.replace(GENERATO, ""));
+  assert.deepEqual(fuori.match(/var\(--skin-color-[\w-]+/g) ?? [], []);
+});
