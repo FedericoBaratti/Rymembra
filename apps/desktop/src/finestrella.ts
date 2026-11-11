@@ -301,18 +301,20 @@ export function rispondiNoAllaDomandaInCima(): boolean {
  * `onChiudi` è quel che fa Escape, e può essere una chiusura scritta sul posto:
  * vedi «`onChiudi` in un riferimento» qui sopra.
  *
- * `domanda` lo passa solo `Dialogo`: dice alla × della finestra che qui c'è
- * una domanda, e se adesso si può chiudere (`rispondiNoAllaDomandaInCima`).
+ * `domanda` dice alla × della finestra cosa fare con questa finestrella in
+ * cima (`rispondiNoAllaDomandaInCima`): di serie è una domanda che si chiude
+ * come con Escape; `Dialogo` dice se adesso si può chiudere; il primo avvio
+ * passa `"nonEUnaDomanda"`, e la × chiude la finestra.
  */
 export function useFinestrella<E extends HTMLElement>(
   onChiudi: () => void,
-  domanda?: { chiudibile: boolean },
+  domanda: { chiudibile: boolean } | "nonEUnaDomanda" = { chiudibile: true },
 ): RefObject<E | null> {
   const radice = useRef<E | null>(null);
   const chiudi = useRef(onChiudi);
   chiudi.current = onChiudi;
   const laDomanda = useRef<{ chiudibile: boolean } | null>(null);
-  laDomanda.current = domanda ?? null;
+  laDomanda.current = domanda === "nonEUnaDomanda" ? null : domanda;
   // Nell'anteprima dello Studio una finestrella è un disegno: prenderle il
   // fuoco lo toglierebbe al campo in cui si sta scrivendo un colore.
   const { anteprima } = useDati();

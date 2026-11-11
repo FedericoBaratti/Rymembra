@@ -120,8 +120,9 @@ export function Dialogo({
   // L'hook prima di `useVeloInerte`, e non per gusto: legge chi aveva il fuoco
   // in un effetto di disposizione, e deve farlo prima che la pagina dietro
   // diventi inerte. Vedi `finestrella.ts`. Il secondo argomento dice alla ×
-  // della finestra che questa è una domanda: con lei in cima, la × la chiude
-  // come Escape — vale «no» — invece di chiudere la finestra (`cosaFaLaX`).
+  // della finestra se adesso la domanda si può chiudere: con lei in cima, la ×
+  // la chiude come Escape — vale «no» — e se sta scrivendo chiude la finestra,
+  // come Alt+F4 (`cosaFaLaX`).
   const radice = useFinestrella<HTMLElement>(chiudibile ? onChiudi : restaAperta, { chiudibile });
   const velo = useRef<HTMLDivElement>(null);
   useVeloInerte(velo);

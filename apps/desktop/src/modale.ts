@@ -242,9 +242,10 @@ export function fuocoDopoTab<T>(
 /** Quel che la × deve sapere della finestrella in cima. */
 export interface CimaPerLaX {
   /**
-   * È una domanda (`Dialogo`): una conferma, un consenso, un nome da dare.
-   * Le finestrelle con una forma tutta loro — il primo avvio, il giro, i
-   * pannelli, l'editor delle regole — non lo sono.
+   * Sta davanti alla finestra e chiede qualcosa: una conferma, un consenso,
+   * un nome da dare, ma anche un editor con il suo «Annulla» o un pannello.
+   * Lo sono tutte le finestrelle tranne il primo avvio, che è una schermata
+   * d'ingresso e non una domanda (`useFinestrella`, secondo argomento).
    */
   domanda: boolean;
   /** Si può chiudere adesso: spento mentre la domanda sta scrivendo. */
@@ -260,7 +261,9 @@ export interface CimaPerLaX {
  * Escape, ed è la sola lettura che non perde niente. Chi voleva chiudere la
  * finestra la richiude un istante dopo; chi stava ancora leggendo «X vuole
  * collegarsi» non si ritrova la finestra sparita nel vassoio con la domanda
- * ancora in sospeso dall'altra parte.
+ * ancora in sospeso dall'altra parte; chi stava sincronizzando un testo si
+ * sente chiedere se buttare il lavoro, come con Escape, invece di perderlo
+ * con la finestra.
  *
  * In tutti gli altri casi la finestra si chiude come sempre, cioè come Alt+F4:
  * senza niente in cima, sopra una domanda che sta scrivendo (chiuderla a metà

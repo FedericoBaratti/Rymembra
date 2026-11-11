@@ -181,8 +181,13 @@ export function Primo({
    * le cartelle non sono ancora state contate, quindi «Continua» è spento, e i
    * due che restano aprono un dialogo di sistema o saltano il primo avvio. Un
    * Invio battuto per caso non deve fare nessuna delle due cose.
+   *
+   * `"nonEUnaDomanda"`: con le altre finestrelle la × della finestra chiude
+   * prima loro, come Escape; qui Escape è «Lo faccio dopo», e una × che salta
+   * il primo avvio invece di chiudere il programma toglierebbe a chi apre per
+   * la prima volta la sua strada d'ingresso. Vedi `cosaFaLaX` in `modale.ts`.
    */
-  const finestrella = useFinestrella<HTMLDivElement>(onSalta);
+  const finestrella = useFinestrella<HTMLDivElement>(onSalta, "nonEUnaDomanda");
   // E il resto della finestra inerte, con la radice che fa da velo: la
   // trappola del Tab tiene dentro il tabulatore e basta, e un lettore di
   // schermo in modalità navigazione usciva da qui e leggeva — e poteva
