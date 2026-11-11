@@ -677,3 +677,18 @@ test("nessuna opacità porta un testo informativo sotto 4,5:1", () => {
   }
   assert.deepEqual(cadute, []);
 });
+
+test("con lo spettro acceso l'alone dei comandi è del colore del fondo del tema", () => {
+  // Sopra le barre i comandi non hanno un fondo, solo un'ombra. Nera, reggeva il
+  // tema scuro (testo chiaro su ombra scura) e non il chiaro: icone scure con
+  // un'ombra scura sopra barre scure. L'alone deve venire da `surface-0`, che
+  // nel tema chiaro è chiaro (R14b-11).
+  for (const selettore of [
+    ".in-riproduzione .centro[data-spettro] .comandi-np",
+    ".in-riproduzione .centro[data-spettro] .comandi-np svg",
+  ]) {
+    const d = regola(selettore);
+    assert.match(d, /--surface-0-rgb/, selettore);
+    assert.doesNotMatch(d, /rgb\(0 0 0/, selettore);
+  }
+});

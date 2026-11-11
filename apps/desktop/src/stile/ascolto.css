@@ -528,12 +528,22 @@
    che quel fondo teneva leggibile — i due tempi ai lati del cursore e le stelle
    non accese — se lo tiene da sé, con un'ombra portata sul testo e sui segni:
    costa un'ombra e non un rettangolo, e sopra una tela che si ridisegna a ogni
-   fotogramma resta comunque più economica di un `backdrop-filter`. */
+   fotogramma resta comunque più economica di un `backdrop-filter`.
+
+   L'ombra è del colore del fondo del tema, non nera, e ha un alone stretto
+   oltre a quella portata. Nera reggeva solo il tema scuro: col chiaro le icone
+   del trasporto, il cuore, le stelle e i dati del file sono scuri, e un'ombra
+   scura sopra barre scure non stacca niente. `surface-0` nel tema chiaro è
+   chiaro, e stende attorno a ogni segno un filo del fondo che la pagina
+   avrebbe avuto. */
 .in-riproduzione .centro[data-spettro] .comandi-np {
-  text-shadow: 0 1px 3px rgb(0 0 0 / 0.55);
+  text-shadow:
+    0 0 2px rgb(var(--surface-0-rgb) / 0.8),
+    0 1px 3px rgb(var(--surface-0-rgb) / 0.55);
 }
 .in-riproduzione .centro[data-spettro] .comandi-np svg {
-  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.55));
+  filter: drop-shadow(0 0 1.5px rgb(var(--surface-0-rgb) / 0.8))
+    drop-shadow(0 1px 3px rgb(var(--surface-0-rgb) / 0.55));
 }
 /*
  * I due tempi si portano dietro il loro fondo, e sono gli unici.
