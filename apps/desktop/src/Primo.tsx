@@ -47,11 +47,12 @@ import {
   useState,
 } from "react";
 
+import { conAMano, type CartellaDelPrimo } from "./cartellePrimo";
 import { eNuvola, nomeRadice } from "./cartelleNuvola";
 import { contiDellaCamminata, momentoDi } from "./fasiScansione";
 import { useFinestrella, useVeloInerte } from "./finestrella";
 import { numero } from "./formato";
-import type { Avanzamento, CartellaCandidata, EsitoScansione } from "./ipc";
+import type { Avanzamento, EsitoScansione } from "./ipc";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
@@ -133,34 +134,11 @@ export interface PrimoProps {
   onSalta: () => void;
 }
 
-/** Come si scrive il numero di brani di una cartella. */
-function quantiBrani(cartella: CartellaCandidata): string {
+/** Come si scrive il numero di brani di una cartella contata. */
+function quantiBrani(cartella: CartellaDelPrimo & { brani: number }): string {
   return cartella.troncato
     ? t("primo.braniOltre", { n: cartella.brani })
     : t("primo.brani", { n: cartella.brani });
-}
-
-/**
- * L'elenco con in fondo le cartelle indicate a mano che non c'erano già.
- *
- * Senza conteggio: contarle vorrebbe dire camminarci dentro prima di
- * «Continua», cioè una scansione per sapere se fare la scansione.
- */
-function conAMano(
-  elenco: CartellaCandidata[],
-  percorsi: readonly string[],
-): CartellaCandidata[] {
-  const mancano = percorsi.filter((p) => !elenco.some((c) => c.percorso === p));
-  if (mancano.length === 0) return elenco;
-  return [
-    ...elenco,
-    ...mancano.map((percorso) => ({
-      percorso,
-      brani: 0,
-      troncato: false,
-      parziale: false,
-    })),
-  ];
 }
 
 /** La schermata di benvenuto. */
@@ -177,7 +155,7 @@ export function Primo({
   onSalta,
 }: PrimoProps) {
   const letture = useDati().ipc;
-  const [candidate, setCandidate] = useState<CartellaCandidata[] | null>(null);
+  const [candidate, setCandidate] = useState<CartellaDelPrimo[] | null>(null);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
   const [inCorso, setInCorso] = useState(false);
   // «Continua» è andato a buon fine: da qui in poi bastano i brani.
@@ -349,8 +327,14 @@ export function Primo({
                           «Continua»: contarla vorrebbe dire elencarla, che è
                           proprio quel che «Continua» fa partire. Uno zero lì
                           direbbe «vuota», che non è vero. */}
-                      {!eNuvola(cartella.percorso) && (
-                        <span className="primo-conto">{quantiBrani(cartella)}</span>
+                      {/* Una cartella indicata a mano non è contata (`brani`
+                          `null`, vedi `cartellePrimo.ts`): niente numero, e
+                          non «0 brani», che direbbe vuota la cartella della
+                          musica di chi l'ha appena scelta. */}
+                      {!eNuvola(cartella.percorso) && cartella.brani !== null && (
+                        <span className="primo-conto">
+                          {quantiBrani({ ...cartella, brani: cartella.brani })}
+                        </span>
                       )}
                     </label>
                     {cartella.parziale && (

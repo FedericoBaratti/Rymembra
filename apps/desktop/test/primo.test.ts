@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
+import { conAMano } from "../src/cartellePrimo";
 import { tastoDelPrimo } from "../src/tastoPrimo";
 
 const MUSICA = "C:\\Users\\X\\Music";
@@ -28,4 +30,18 @@ test("con tutte le spuntate già scritte i brani bastano a dire «Ascolta»", ()
 test("senza brani resta «Continua», confermato o no", () => {
   assert.equal(tastoDelPrimo({ brani: 0, spuntate: [MUSICA], scritte: [], confermato: false }), "continua");
   assert.equal(tastoDelPrimo({ brani: 0, spuntate: [MUSICA], scritte: [MUSICA], confermato: true }), "continua");
+});
+
+test("una cartella indicata a mano non è contata, e non dice «0 brani»", () => {
+  // R18-6. Dal vivo: «Scegli un'altra cartella…» → la riga diceva «0 brani»,
+  // e lo diceva ancora dopo «13 brani pronti».
+  const [aMano] = conAMano([], ["D:\\musica"]);
+  assert.equal(aMano?.percorso, "D:\\musica");
+  assert.equal(aMano?.brani, null);
+  // Una cartella già proposta dal sistema resta com'era, col suo conto.
+  const proposta = { percorso: MUSICA, brani: 12, troncato: false, parziale: false };
+  assert.deepEqual(conAMano([proposta], [MUSICA]), [proposta]);
+  // E la riga disegna il conto solo per le cartelle contate.
+  const primo = readFileSync(new URL("../src/Primo.tsx", import.meta.url), "utf8");
+  assert.match(primo, /!eNuvola\(cartella\.percorso\) && cartella\.brani !== null &&/);
 });
