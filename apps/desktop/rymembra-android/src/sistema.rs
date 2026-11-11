@@ -202,6 +202,22 @@ pub enum Installazione {
     /// Rymembra non può ancora installare app: è aperta la pagina delle
     /// impostazioni dove lo si concede.
     Permesso,
+    /// L'APK è questa app, ma firmato con un'altra chiave: Android non lo
+    /// installerebbe sopra di lei, e Kotlin l'ha già cancellato. È l'esito di
+    /// una copia di prova (la chiave di debug) davanti all'APK pubblico, e non
+    /// un guasto: chi chiama se lo ricorda e lo dice.
+    AltraChiave,
+}
+
+/// Le impronte SHA-256 dei certificati con cui è firmata la Rymembra
+/// installata, in esadecimale minuscolo: quelle che un aggiornamento deve
+/// avere perché Android lo installi sopra. Vuoto se Android non le dice.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn firmatari() -> Result<Vec<String>, Errore> {
+    chiama("sistema.firmatari", &())
 }
 
 #[derive(Serialize)]
@@ -214,12 +230,14 @@ struct Apk<'a> {
 /// Non aspetta la risposta: l'installazione è del sistema, e se va a buon fine
 /// il sistema chiude Rymembra per sostituirla.
 ///
+/// Un APK firmato con un'altra chiave non è un errore ma
+/// [`Installazione::AltraChiave`].
+///
 /// # Errori
 ///
 /// Se il ponte non risponde, se non c'è un'attività, se il percorso non è
-/// testo o non sta in quella cartella, e se l'APK non è questa app — un altro
-/// pacchetto, o firmato con un'altra chiave: allora Kotlin l'ha già
-/// cancellato.
+/// testo o non sta in quella cartella, e se l'APK non si legge o è un altro
+/// pacchetto: allora Kotlin l'ha già cancellato.
 pub fn installa_apk(percorso: &Path) -> Result<Installazione, Errore> {
     let percorso = percorso
         .to_str()

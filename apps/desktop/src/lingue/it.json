@@ -1871,6 +1871,8 @@
   "update.cancel.hint": "Ferma lo scaricamento: non resta niente sul disco, e puoi riprovare quando vuoi",
   "update.size.kb": "{n} kB",
   "update.size.mb": "{n} MB",
+  "update.otherKey": "Questa copia di Rymembra è firmata con un'altra chiave: Android non installa la {v} sopra di lei, e Rymembra non la scarica.",
+  "update.otherKey.steps": "Succede alle copie di prova. Per passare alla versione pubblica senza perdere la libreria: Impostazioni › Libreria e dati › «Esporta il profilo…»; poi disinstalla Rymembra, installa l'APK della {v} (Impostazioni › Aggiornamenti › «Il codice sorgente», alla voce Releases) e lì «Leggi un profilo…». I brani restano dove sono; gli account e i dispositivi collegati vanno ricollegati, perché i loro segreti non escono dal telefono.",
   "cmd.alterna.title": "Pausa e ripresa",
   "cmd.alterna.hint": "Ferma quel che suona, o lo riprende da dov'era.",
   "cmd.cerca.title": "Cerca",

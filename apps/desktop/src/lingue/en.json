@@ -1871,6 +1871,8 @@
   "update.cancel.hint": "Stops the download: nothing is left on disk, and you can try again whenever you like",
   "update.size.kb": "{n} kB",
   "update.size.mb": "{n} MB",
+  "update.otherKey": "This copy of Rymembra is signed with a different key: Android won’t install {v} over it, so Rymembra doesn’t download it.",
+  "update.otherKey.steps": "This happens to test copies. To switch to the public version without losing your library: Settings › Library and data › “Export the profile…”; then uninstall Rymembra, install the {v} APK (Settings › Updates › “The source code”, under Releases) and, there, “Read a profile…”. Your tracks stay where they are; connected accounts and devices have to be connected again, because their secrets never leave the phone.",
   "cmd.alterna.title": "Pause and resume",
   "cmd.alterna.hint": "Stops whatever is playing, or picks it up where it was.",
   "cmd.cerca.title": "Search",

@@ -281,6 +281,12 @@ trash = { version = "5", default-features = false, features = [
 # e `cpal`.
 [target.'cfg(target_os = "android")'.dependencies]
 rymembra-android = { path = "../rymembra-android" }
+# La firma minisign dell'APK, verificata prima di consegnarlo all'installatore
+# di Android con la stessa chiave pubblica dell'updater del computer
+# (`rilasci::verifica_la_firma`). Sul computer la verifica la fa
+# `tauri-plugin-updater`, che porta proprio questo crate: nel `Cargo.lock` non
+# entra nessun pacchetto nuovo, solo la riga che lo lega a questo.
+minisign-verify = "0.2.5"
 
 [features]
 # L'interruttore di Jamendo, da qui. Inoltra quello di `rymembra-catalogo`, dove
@@ -294,6 +300,9 @@ jamendo = ["rymembra-catalogo/jamendo"]
 # Installare una skin scrive un file: provarlo vuol dire una cartella vera che
 # sparisce da sé. La stessa versione di `rymembra-app` e `rymembra-play`.
 tempfile = "3"
+# La verifica della firma dell'APK si prova anche sul computer: vedi la riga
+# di Android qui sopra. Lo stesso crate, la stessa versione.
+minisign-verify = "0.2.5"
 
 [lints]
 workspace = true

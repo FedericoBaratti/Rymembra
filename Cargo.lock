@@ -5778,6 +5778,7 @@ dependencies = [
 name = "rymembra-desktop"
 version = "3.2.0"
 dependencies = [
+ "minisign-verify",
  "notify",
  "rfd",
  "rusqlite",

@@ -150,6 +150,7 @@ object Ponte {
       "sistema.condividi" ->
         Condividi.file(attivita(), a.getString("percorso"), a.getString("tipo"), a.getString("titolo")).let { null }
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
+      "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }
       "sistema.attesaConsenso" -> ConsensoInAttesa.imposta(contesto(), a.getBoolean("acceso")).let { null }
       "sistema.scarico" -> ScaricoInCorso.imposta(

@@ -17,21 +17,38 @@
 //! # Che cosa si verifica
 //!
 //! Sul computer l'installer è firmato con una chiave nostra, e l'updater ne
-//! verifica la firma prima di eseguirlo. Sul telefono la chiave è quella che
-//! firma l'APK, e la verifica sta in tre passi:
+//! verifica la firma prima di eseguirlo. Sul telefono le chiavi sono due —
+//! quella dell'updater, la stessa del computer, e quella che firma l'APK per
+//! Android — e la verifica sta in quattro passi:
 //!
 //! - l'APK si annuncia solo se si scarica da GitHub
-//!   ([`crate::rilasci::allegato_di_github`]), e lo scaricamento segue i
-//!   rimandi solo verso GitHub ([`rimando_di_github`]), in HTTPS;
-//! - prima di consegnarlo, `Installatore.kt` lo apre e pretende che sia
-//!   **questa** app — lo stesso pacchetto — firmata con lo stesso certificato
-//!   di quella installata; se no lo cancella, e l'errore torna qui;
+//!   ([`crate::rilasci::allegato_di_github`]) e ha accanto la sua firma
+//!   minisign, e lo scaricamento segue i rimandi solo verso GitHub
+//!   ([`rimando_di_github`]), in HTTPS;
+//! - prima di consegnarlo, l'APK sul disco si verifica con la firma minisign
+//!   e la chiave pubblica dell'updater, per la versione annunciata
+//!   ([`crate::rilasci::verifica_la_firma`]): se non torna si cancella, come fa
+//!   il computer con un installer;
+//! - poi `Installatore.kt` lo apre e pretende che sia **questa** app — lo
+//!   stesso pacchetto — firmata con lo stesso certificato di quella
+//!   installata; se no lo cancella;
 //! - l'installatore di Android, alla fine, lo mette sopra Rymembra solo se la
 //!   firma è la stessa.
 //!
-//! Il secondo passo esiste perché il terzo protegge solo il pacchetto che c'è
+//! Il terzo passo esiste perché il quarto protegge solo il pacchetto che c'è
 //! già: un APK con un altro nome di pacchetto per Android non è un
 //! aggiornamento ma un'app nuova, e la proporrebbe da installare a un tocco.
+//!
+//! # Le copie firmate con un'altra chiave
+//!
+//! Le copie di prova — compilate in debug, firmate con la chiave di prova di
+//! Gradle — non possono ricevere l'APK pubblico: Android lo rifiuta. Lo si sa
+//! prima di scaricare, dall'impronta del certificato di questa copia
+//! ([`crate::rilasci::copia_di_prova`]); e se non lo si sapeva, il primo rifiuto
+//! di `Installatore.kt` si ricorda ([`CHIAVE_RIFIUTATA`]). In tutti e due i casi
+//! quella versione non si scarica più — erano decine di megabyte a ogni tocco,
+//! e un «Riavvia Rymembra» che non serviva — e la finestra spiega come passare
+//! alla versione pubblica senza perdere la libreria (`altraChiave`).
 //!
 //! # I tempi
 //!
@@ -46,7 +63,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use rymembra_app::settings;
@@ -58,7 +75,8 @@ use tauri::{AppHandle, Manager as _, State};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::rilasci::{
-    Rilascio, Trovato, passata_d_avvio_saltata, progetto_da, rimando_di_github, scegli,
+    Rilascio, Trovato, copia_di_prova, non_installabile, note_dal_manifesto,
+    passata_d_avvio_saltata, progetto_da, rimando_di_github, scegli, verifica_la_firma,
 };
 use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
@@ -79,6 +97,9 @@ const CHIAVE_SALTATA: &str = "aggiornamenti.saltata";
 /// che è il solo modo di riavere l'indirizzo dell'APK. Si toglie quando un
 /// controllo riuscito non trova niente. La regola, e la chiave, del computer.
 const CHIAVE_TROVATA: &str = "aggiornamenti.trovata";
+/// La versione il cui APK Android ha rifiutato perché firmato con un'altra
+/// chiave: non si riscarica, e la finestra dice perché. Solo del telefono.
+const CHIAVE_RIFIUTATA: &str = "aggiornamenti.rifiutata";
 
 /// Ogni quanto si ricontrolla finché l'app resta viva.
 const INTERVALLO: Duration = Duration::from_secs(6 * 60 * 60);
@@ -103,6 +124,10 @@ const RESPIRO_AVANZAMENTO: Duration = Duration::from_millis(200);
 /// Quanti rimandi si seguono scaricando l'APK: GitHub ne fa uno, verso chi
 /// serve i byte; uno in più per un progetto rinominato, e uno di margine.
 const RIMANDI_DELL_APK: u32 = 3;
+/// Il tetto della firma minisign: qualche centinaio di byte, e un margine.
+const TETTO_DELLA_FIRMA: u64 = 16 * 1024;
+/// Il tetto di `latest.json`, per le note: qualche chilobyte, e un margine.
+const TETTO_DEL_MANIFESTO: u64 = 256 * 1024;
 
 /// Perché il filo si è svegliato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +150,10 @@ pub struct StatoAggiornamenti {
     /// Quante volte l'interruttore è stato spento: una risposta arrivata dopo
     /// lo spegnimento non rimette l'avviso. Vedi il computer.
     generazione: AtomicU64,
+    /// Questa copia è firmata con un'altra chiave di quella del rilascio
+    /// ([`crate::rilasci::copia_di_prova`]): si chiede ad Android una volta
+    /// sola, la firma di un'app installata non cambia mentre gira.
+    copia_di_prova: OnceLock<Option<bool>>,
 }
 
 impl StatoAggiornamenti {
@@ -142,9 +171,37 @@ impl StatoAggiornamenti {
                 annulla: AtomicBool::new(false),
                 pronto_detto: AtomicBool::new(false),
                 generazione: AtomicU64::new(0),
+                copia_di_prova: OnceLock::new(),
             },
             orecchio,
         )
+    }
+
+    /// Questa copia è firmata con un'altra chiave: vedi [`Self::copia_di_prova`].
+    /// `None` se Android non lo dice; allora decide il rifiuto dopo lo
+    /// scaricamento, e il diario lo scrive.
+    fn copia_di_prova(&self) -> Option<bool> {
+        *self.copia_di_prova.get_or_init(|| {
+            let esito = match rymembra_android::sistema::firmatari() {
+                Ok(firmatari) => copia_di_prova(&firmatari),
+                Err(err) => {
+                    nota!("[aggiornamenti] la firma di questa copia non si legge: {err}");
+                    None
+                }
+            };
+            match esito {
+                Some(true) => nota!(
+                    "[aggiornamenti] questa copia è firmata con un'altra chiave del rilascio: \
+                     gli APK pubblici non le si installano sopra, e non si scaricano"
+                ),
+                Some(false) => {}
+                None => nota!(
+                    "[aggiornamenti] la chiave di questa copia non si sa: decide Android, \
+                     dopo lo scaricamento"
+                ),
+            }
+            esito
+        })
     }
 }
 
@@ -197,6 +254,10 @@ pub struct AggiornamentoIpc {
     pub data_ms: Option<i64>,
     /// L'utente ha già detto «non ora» per questa versione.
     pub saltata: bool,
+    /// L'APK di questa versione è firmato con un'altra chiave di questa copia:
+    /// non si scarica, e la finestra spiega come passare alla versione
+    /// pubblica. Vedi [`crate::rilasci::non_installabile`].
+    pub altra_chiave: bool,
 }
 
 /// Quanto è arrivato di uno scaricamento in corso.
@@ -304,10 +365,14 @@ pub fn aggiornamenti_salta(
 /// sistema gli chiede di confermare, e la prima volta di permettere a Rymembra
 /// di installare app — vedi [`consegna`].
 ///
+/// Un APK che Android non installerebbe sopra questa copia — firmato con
+/// un'altra chiave ([`crate::rilasci::non_installabile`]) — non si scarica: la
+/// finestra non offre il tasto, e il comando rifiuta lo stesso.
+///
 /// # Errori
 ///
-/// `internal.aborted` se non c'è niente da installare, o se uno scaricamento
-/// è già in corso.
+/// `internal.aborted` se non c'è niente da installare, se uno scaricamento è
+/// già in corso, o se l'APK di questa versione è firmato con un'altra chiave.
 #[tauri::command]
 pub fn aggiornamenti_installa(
     app: AppHandle,
@@ -323,6 +388,18 @@ pub fn aggiornamenti_installa(
             what: Some("nessun aggiornamento da installare".to_owned()),
         })));
     };
+    if non_installabile(
+        aggiornamenti.copia_di_prova(),
+        versione_rifiutata(&app).as_deref(),
+        &trovato.versione,
+    ) {
+        return Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some(
+                "l'APK è firmato con un'altra chiave di questa copia: Android non lo installa sopra"
+                    .to_owned(),
+            ),
+        })));
+    }
     if aggiornamenti
         .installazione
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -471,9 +548,22 @@ fn versione_trovata_prima(app: &AppHandle) -> Option<String> {
     .flatten()
 }
 
+/// La versione il cui APK Android ha rifiutato per la chiave, se il database la
+/// ricorda: vedi [`CHIAVE_RIFIUTATA`].
+fn versione_rifiutata(app: &AppHandle) -> Option<String> {
+    let stato = app.try_state::<Stato>()?;
+    con_libreria(&stato, |libreria| {
+        settings::read(&libreria.connection, CHIAVE_RIFIUTATA)
+    })
+    .ok()
+    .flatten()
+}
+
 /// Un giro: controlla, deposita quel che ha trovato, racconta.
 fn passata(app: &AppHandle, a_mano: bool) -> Giro {
-    let Some(progetto) = progetto(app) else {
+    // Senza la chiave dell'updater un APK non si verifica: annunciarlo sarebbe
+    // solo un modo più lungo di fallire. Come sul computer.
+    let Some(progetto) = progetto(app).filter(|_| chiave_pubblica(app).is_some()) else {
         return Giro::Saltato;
     };
     let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
@@ -569,6 +659,60 @@ fn progetto(app: &AppHandle) -> Option<String> {
     progetto_da(indirizzo)
 }
 
+/// La chiave pubblica dell'updater (`plugins.updater.pubkey`): la stessa che
+/// verifica gli installer del computer, e qui gli APK. `None` in un albero
+/// compilato senza chiavi.
+fn chiave_pubblica(app: &AppHandle) -> Option<String> {
+    let updater = app.config().plugins.0.get("updater")?;
+    updater
+        .get("pubkey")?
+        .as_str()
+        .map(str::trim)
+        .filter(|chiave| !chiave.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Un client che segue i rimandi soltanto verso gli ospiti degli allegati di
+/// GitHub: per l'APK, la sua firma e `latest.json`.
+fn rete_degli_allegati(rete: &Rete) -> Rete {
+    rete.con_rimandi(Rimandi::Sorvegliati {
+        quanti: RIMANDI_DELL_APK,
+        cancello: Cancello::nuovo(rimando_di_github),
+    })
+}
+
+/// Le note della versione trovata, dal `latest.json` della stessa release:
+/// quelle del computer (vedi `rilasci::note_dal_manifesto`). Un guasto qui non
+/// ferma l'avviso: lo lascia senza note, e lo scrive nel diario.
+fn note_della_release(indirizzo: &str, versione: &str) -> Option<String> {
+    let rete = rete_degli_allegati(&Rete::nuova("aggiornamenti", SCADENZA_RICHIESTA));
+    let mut corpo = Vec::new();
+    match rete.preleva(
+        indirizzo,
+        &[],
+        &mut corpo,
+        TETTO_DEL_MANIFESTO,
+        &|| false,
+        &mut |_, _| {},
+    ) {
+        Ok(_) => {
+            let note = note_dal_manifesto(&corpo, versione);
+            if note.is_none() {
+                nota!("[aggiornamenti] latest.json non ha note per la {versione}");
+            }
+            note
+        }
+        Err(err) => {
+            nota!(
+                "[aggiornamenti] le note non si leggono: codice={} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or("—")
+            );
+            None
+        }
+    }
+}
+
 /// Chiede a GitHub l'ultima release, e la versione nuova se ce n'è una con un
 /// APK per questo telefono.
 ///
@@ -597,35 +741,141 @@ fn controlla(progetto: &str, corrente: &str) -> Result<Option<Trovato>, AppError
             detail: Some(err.to_string()),
         })
     })?;
-    Ok(scegli(rilascio, corrente, std::env::consts::ARCH))
+    let Some(mut trovato) = scegli(rilascio, corrente, std::env::consts::ARCH) else {
+        return Ok(None);
+    };
+    // Le note solo quando c'è qualcosa da annunciare: una richiesta in più ogni
+    // tanto, non a ogni controllo.
+    if let Some(manifesto) = trovato.manifesto.clone() {
+        trovato.note = note_della_release(&manifesto, &trovato.versione);
+    }
+    Ok(Some(trovato))
 }
 
 // ── l'installazione ─────────────────────────────────────────────────────────
 
-/// Scarica l'APK nella cache — o riusa quello già sceso — e lo consegna.
+/// Scarica la firma e l'APK nella cache — o riusa quello già sceso —, verifica
+/// l'uno con l'altra, e lo consegna.
+///
+/// La firma prima dell'APK: una firma che non arriva non vale quaranta
+/// megabyte scaricati per niente.
 fn scarica_e_consegna(app: &AppHandle, trovato: &Trovato) {
     let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
         return;
     };
     let turno = Turno::adotta(&aggiornamenti.installazione);
     aggiornamenti.annulla.store(false, Ordering::Release);
-    let esito = scarica(app, &aggiornamenti, trovato).and_then(|percorso| consegna(&percorso));
-    if let Err(err) = esito {
-        // Annullato a mano non è un guasto: la fascia torna com'era.
-        if !matches!(err.code(), ErrorCode::InternalAborted { .. }) {
+    let esito = scarica_la_firma(trovato).and_then(|firma| {
+        let percorso = scarica(app, &aggiornamenti, trovato)?;
+        verifica(app, trovato, &firma, &percorso)?;
+        consegna(&percorso)
+    });
+    match esito {
+        Ok(Consegnato::AlSistema) => {}
+        Ok(Consegnato::AltraChiave) => {
+            // Non un guasto da mostrare in rosso: un esito che la fascia
+            // spiega (`altraChiave`), e che si ricorda perché il prossimo tocco
+            // non riscarichi tutto per sentirsi dire la stessa cosa.
             nota!(
-                "[aggiornamenti] installazione non riuscita codice={} causa={}",
-                err.code().kind().code(),
-                err.cause().unwrap_or("—")
+                "[aggiornamenti] Android non installa la {} sopra questa copia: è firmata con \
+                 un'altra chiave. Non la si riscarica",
+                trovato.versione
             );
+            // Un guasto di un tentativo di prima non è più quel che c'è da dire.
             *aggiornamenti
                 .ultimo_errore
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(ErroreIpc::from(err));
+                .unwrap_or_else(PoisonError::into_inner) = None;
+            if let Some(stato) = app.try_state::<Stato>()
+                && let Err(err) = con_libreria(&stato, |libreria| {
+                    settings::write(&libreria.connection, CHIAVE_RIFIUTATA, &trovato.versione)
+                })
+            {
+                nota!(
+                    "[aggiornamenti] il rifiuto non si ricorda: codice={}",
+                    err.code().kind().code()
+                );
+            }
+        }
+        Err(err) => {
+            // Annullato a mano non è un guasto: la fascia torna com'era.
+            if !matches!(err.code(), ErrorCode::InternalAborted { .. }) {
+                nota!(
+                    "[aggiornamenti] installazione non riuscita codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                *aggiornamenti
+                    .ultimo_errore
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(ErroreIpc::from(err));
+            }
         }
     }
     drop(turno);
     riferisci(app);
+}
+
+/// La firma minisign dell'APK, il testo del `.sig` della release.
+///
+/// # Errori
+///
+/// `net.*` per la rete; `net.badSchema` per un corpo che non è testo.
+fn scarica_la_firma(trovato: &Trovato) -> Result<String, AppError> {
+    let rete = rete_degli_allegati(&Rete::nuova("aggiornamenti", SCADENZA_RICHIESTA));
+    let mut corpo = Vec::new();
+    rete.preleva(
+        &trovato.firma,
+        &[],
+        &mut corpo,
+        TETTO_DELLA_FIRMA,
+        &|| false,
+        &mut |_, _| {},
+    )?;
+    String::from_utf8(corpo).map_err(|_| {
+        AppError::new(ErrorCode::NetBadSchema {
+            service: Some("aggiornamenti".to_owned()),
+            detail: Some("la firma dell'APK non è testo".to_owned()),
+        })
+    })
+}
+
+/// L'APK sul disco è quello firmato con la chiave dell'updater per la
+/// versione annunciata ([`crate::rilasci::verifica_la_firma`]). Si rifà a ogni
+/// consegna, anche per l'APK riusato dalla cache: un file troncato o cambiato
+/// lì dentro non arriva all'installatore. Se non torna si cancella, e il
+/// prossimo «Aggiorna» lo riscarica.
+///
+/// # Errori
+///
+/// `internal.unexpected` con la causa, come il computer per un installer la
+/// cui firma non torna: è quel che si guarda se un aggiornamento non si
+/// installa su un telefono solo.
+fn verifica(
+    app: &AppHandle,
+    trovato: &Trovato,
+    firma: &str,
+    percorso: &std::path::Path,
+) -> Result<(), AppError> {
+    let guasto = |causa: String| {
+        AppError::new(ErrorCode::InternalUnexpected {
+            detail: Some("la firma dell'aggiornamento".to_owned()),
+        })
+        .with_cause(causa)
+    };
+    let chiave = chiave_pubblica(app)
+        .ok_or_else(|| guasto("manca la chiave pubblica dell'updater".to_owned()))?;
+    let esito = std::fs::File::open(percorso)
+        .map_err(|err| format!("l'APK non si apre: {err}"))
+        .and_then(|file| {
+            let mut lettore = std::io::BufReader::new(file);
+            verifica_la_firma(&chiave, firma, &trovato.versione, &mut lettore)
+        });
+    if let Err(causa) = esito {
+        let _ = std::fs::remove_file(percorso);
+        return Err(guasto(causa));
+    }
+    Ok(())
 }
 
 /// L'APK nella cache dell'app, scaricato se non c'è già intero.
@@ -683,10 +933,7 @@ fn scarica(
     let annullato = || aggiornamenti.annulla.load(Ordering::Acquire);
     // L'indirizzo è di GitHub (`rilasci::scegli`), e GitHub lo serve da
     // un altro ospite suo: si segue quello, e nessun altro.
-    let rete = Rete::per_prelievo("aggiornamenti").con_rimandi(Rimandi::Sorvegliati {
-        quanti: RIMANDI_DELL_APK,
-        cancello: Cancello::nuovo(rimando_di_github),
-    });
+    let rete = rete_degli_allegati(&Rete::per_prelievo("aggiornamenti"));
     // Un tetto ai byte, perché l'unico limite era la scadenza del prelievo, e
     // un corpo senza fine riempiva la cache del telefono fin lì. Mezzo
     // gibibyte: molte volte un APK, e se un giorno non bastasse l'errore lo
@@ -712,22 +959,35 @@ fn scarica(
     }
 }
 
+/// Com'è andata la consegna dell'APK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Consegnato {
+    /// L'installatore di Android è aperto, o la pagina del permesso di
+    /// installare app: da lì decide chi usa il telefono.
+    AlSistema,
+    /// L'APK è firmato con un'altra chiave di questa copia, e Android non lo
+    /// installerebbe sopra: `Installatore.kt` l'ha già cancellato.
+    AltraChiave,
+}
+
 /// Consegna l'APK all'installatore di Android.
 ///
 /// Prima `Installatore.kt` lo verifica: un APK che non è questa app — un altro
-/// pacchetto, o un'altra firma — torna qui come errore, ed è già cancellato,
-/// così il prossimo «Aggiorna» non lo riusa.
+/// pacchetto, un archivio che non si legge — torna qui come errore; uno
+/// firmato con un'altra chiave come [`Consegnato::AltraChiave`]. In tutti e
+/// due i casi è già cancellato, così il prossimo «Aggiorna» non lo riusa.
 ///
 /// Se Rymembra non ha ancora il permesso di installare app, Android apre la
 /// pagina dove lo si concede: chi la chiude torna a «Aggiorna», che stavolta
 /// non scarica niente e apre l'installatore.
-fn consegna(percorso: &std::path::Path) -> Result<(), AppError> {
+fn consegna(percorso: &std::path::Path) -> Result<Consegnato, AppError> {
     match rymembra_android::sistema::installa_apk(percorso) {
-        Ok(rymembra_android::sistema::Installazione::Installatore) => Ok(()),
+        Ok(rymembra_android::sistema::Installazione::Installatore) => Ok(Consegnato::AlSistema),
         Ok(rymembra_android::sistema::Installazione::Permesso) => {
             nota!("[aggiornamenti] Android chiede il permesso di installare app");
-            Ok(())
+            Ok(Consegnato::AlSistema)
         }
+        Ok(rymembra_android::sistema::Installazione::AltraChiave) => Ok(Consegnato::AltraChiave),
         Err(err) => Err(AppError::new(ErrorCode::InternalUnexpected {
             detail: Some("l'installatore di Android".to_owned()),
         })
@@ -755,27 +1015,34 @@ fn stato_ipc(
     stato: &Stato,
     aggiornamenti: &StatoAggiornamenti,
 ) -> Result<StatoAggiornamentiIpc, AppError> {
-    let (attivo, ultimo_ms, saltata) = con_libreria(stato, |libreria| {
+    let (attivo, ultimo_ms, saltata, rifiutata) = con_libreria(stato, |libreria| {
         let attivo = settings::read(&libreria.connection, CHIAVE_ATTIVO)?.as_deref() != Some("0");
         let ultimo_ms = settings::read(&libreria.connection, CHIAVE_ULTIMO)?
             .and_then(|testo| testo.parse::<i64>().ok());
         let saltata = settings::read(&libreria.connection, CHIAVE_SALTATA)?;
-        Ok((attivo, ultimo_ms, saltata))
+        let rifiutata = settings::read(&libreria.connection, CHIAVE_RIFIUTATA)?;
+        Ok((attivo, ultimo_ms, saltata, rifiutata))
     })?;
-    let disponibile = aggiornamenti
+    let trovato = aggiornamenti
         .trovato
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .map(|trovato| AggiornamentoIpc {
-            versione: trovato.versione.clone(),
-            note: trovato.note.clone(),
-            data_ms: trovato.data_ms,
-            saltata: saltata.as_deref() == Some(trovato.versione.as_str()),
-        });
+        .clone();
+    // Fuori dal lucchetto: la prima volta chiede la firma ad Android.
+    let disponibile = trovato.map(|trovato| AggiornamentoIpc {
+        altra_chiave: non_installabile(
+            aggiornamenti.copia_di_prova(),
+            rifiutata.as_deref(),
+            &trovato.versione,
+        ),
+        saltata: saltata.as_deref() == Some(trovato.versione.as_str()),
+        versione: trovato.versione,
+        note: trovato.note,
+        data_ms: trovato.data_ms,
+    });
     Ok(StatoAggiornamentiIpc {
         attivo,
-        configurato: progetto(app).is_some(),
+        configurato: progetto(app).is_some() && chiave_pubblica(app).is_some(),
         gestito_dal_store: false,
         versione_corrente: app.package_info().version.to_string(),
         ultimo_ms,
