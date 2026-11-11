@@ -407,6 +407,14 @@
   flex: 1 1 auto;
 }
 
+/* La striscia «−100 · 0 ms · +100» di un testo che aderisce bene: sul computer
+   è discreta e compare al passaggio. Qui un dito non passa sopra niente, e la
+   striscia trasparente prendeva i tocchi lo stesso: uno nel posto sbagliato
+   spostava il testo di 100 ms senza che si vedesse niente. Si vede sempre. */
+:root[data-forma="telefono"] .testo-np .scarto-testo.discreta {
+  opacity: 1;
+}
+
 /* Chi suona, e il cuore accanto. */
 :root[data-forma="telefono"] .info-np {
   flex: 0 0 auto;

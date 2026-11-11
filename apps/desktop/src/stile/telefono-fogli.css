@@ -269,6 +269,13 @@
   font-size: 15px;
 }
 
+/* I ritocchi per riga della revisione a battute: sul computer compaiono al
+   passaggio sulla riga, qui il primo tocco che li rivelava aveva già spostato
+   la battuta. Si vedono sempre. */
+:root[data-forma="telefono"] .sincronizza .elenco-battute:is(.rivedi, .parole) .ritocco {
+  opacity: 1;
+}
+
 /* I campi dentro le finestrelle, a misura di dito e di tastiera. */
 :root[data-forma="telefono"] .velo.scuro > .finestrella input:not([type="checkbox"], [type="radio"], [type="range"]) {
   min-height: var(--dito);
