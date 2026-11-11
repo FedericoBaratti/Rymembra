@@ -1,7 +1,8 @@
 /**
  * La pagina «Dispositivi» (`src/parti/Dispositivi.tsx`): quel che il nucleo non
  * vede e la finestra deve fare da sé. «Smetti di aspettare» mentre il
- * collegamento si sta accendendo (reperto R13-2, decisione D-26).
+ * collegamento si sta accendendo (reperto R13-2, decisione D-26), e la conferma
+ * prima di «Dimentica» per tutti e tre i tipi di dispositivo (D-28).
  *
  * Senza un DOM nelle prove: la sequenza «accendi poi collega» è una funzione
  * pura di `lontano.ts`, e il resto si guarda nel sorgente del componente.
@@ -84,4 +85,16 @@ test("la finestrella del link accende e collega con la sequenza che sa di essere
   assert.doesNotMatch(accendi, /\.then\(\(nuovo\) => \{[^}]*collega\(/, "niente collegamento in un `then` cieco");
   const lascia = funzione(DISPOSITIVI, "const lascia =", "\n  };\n");
   assert.match(lascia, /tentativi\.lascia\(\)/, "lasciare annulla anche il tentativo che si sta accendendo");
+});
+
+test("«Dimentica» chiede conferma per tutti e tre i tipi di dispositivo", () => {
+  // Decisione D-28: chiedeva conferma solo per i collegati via internet; un
+  // PC di «Ascolta insieme» o un dispositivo della sincronia si dimenticavano
+  // al primo clic.
+  for (const riga of ["function RigaFidato(", "function RigaSincronia(", "function RigaDispositivo("]) {
+    const corpo = funzione(DISPOSITIVI, riga);
+    const tasto = corpo.slice(corpo.lastIndexOf("<button"), corpo.indexOf('t("devices.forget")}'));
+    assert.match(tasto, /onDomanda\(\{/, `${riga} chiede prima di dimenticare`);
+    assert.match(tasto, /consenso: true/, `${riga}: è un consenso, che le skin non ridisegnano`);
+  }
 });

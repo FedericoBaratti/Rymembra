@@ -609,15 +609,18 @@ function RigaDispositivo({
 
 /**
  * Un PC di «Ascolta insieme» che non è collegato via internet: i tre gesti
- * che stavano nella sua scheda. Senza domanda, come lì: si rimedia
- * riassociando, e non si perde niente che non torni.
+ * che stavano nella sua scheda. «Dimentica» chiede prima, come per i
+ * collegati via internet (decisione D-28): si rimedia riassociandosi, ma col
+ * codice, e un clic sbagliato non lo deve costare.
  */
 function RigaFidato({
   fidato,
   onErrore,
+  onDomanda,
 }: {
   fidato: FidatoInsieme;
   onErrore: (errore: unknown) => void;
+  onDomanda: (domanda: Domanda) => void;
 }) {
   const [rinomina, setRinomina] = useState(false);
   const idNome = useId();
@@ -663,7 +666,15 @@ function RigaFidato({
           type="button"
           className="bottone minuto btn-ghost"
           aria-describedby={idNome}
-          onClick={() => comanda(ipc.insiemePariDimentica(fidato.id), onErrore)}
+          onClick={() =>
+            onDomanda({
+              titolo: t("devices.forget.title", { nome: fidato.nome }),
+              descrizione: t("devices.forget.together.sub"),
+              conferma: t("devices.forget"),
+              consenso: true,
+              fai: () => comanda(ipc.insiemePariDimentica(fidato.id), onErrore),
+            })
+          }
         >
           {t("devices.forget")}
         </button>
@@ -675,16 +686,18 @@ function RigaFidato({
 /**
  * Un dispositivo della sincronia che non è collegato via internet: Accetta
  * (finché non ci si fida di quel che scrive), Rinomina e Dimentica, come
- * nella scheda della sincronia.
+ * nella scheda della sincronia. «Dimentica» chiede prima (decisione D-28).
  */
 function RigaSincronia({
   dispositivo,
   onAccoppia,
   onDimentica,
+  onDomanda,
 }: {
   dispositivo: DispositivoSincronia;
   onAccoppia: (id: string, nome: string | null) => void;
   onDimentica: (id: string) => void;
+  onDomanda: (domanda: Domanda) => void;
 }) {
   const [rinomina, setRinomina] = useState(false);
   const idNome = useId();
@@ -734,7 +747,15 @@ function RigaSincronia({
           type="button"
           className="bottone minuto btn-ghost"
           aria-describedby={idNome}
-          onClick={() => onDimentica(dispositivo.id)}
+          onClick={() =>
+            onDomanda({
+              titolo: t("devices.forget.title", { nome }),
+              descrizione: t("devices.forget.sync.sub"),
+              conferma: t("devices.forget"),
+              consenso: true,
+              fai: () => onDimentica(dispositivo.id),
+            })
+          }
         >
           {t("devices.forget")}
         </button>
@@ -1013,6 +1034,7 @@ export function SchedaDispositivi({
                     key={`insieme:${riga.insieme.id}`}
                     fidato={riga.insieme}
                     onErrore={onErrore}
+                    onDomanda={setDomanda}
                   />
                 );
               case "sincronia":
@@ -1022,6 +1044,7 @@ export function SchedaDispositivi({
                     dispositivo={riga.sincronia}
                     onAccoppia={onSincroniaAccoppia}
                     onDimentica={onSincroniaDimentica}
+                    onDomanda={setDomanda}
                   />
                 );
             }
