@@ -164,9 +164,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 
 import { useDati } from "./dati";
 import {
   apriModale,
+  cosaFaLaX,
   daRendereInerti,
   fuocoDopoTab,
   fuocoIniziale,
+  type CimaPerLaX,
 } from "./modale";
 
 /**
@@ -220,10 +222,12 @@ function eUnCampoDaSostituire(nodo: HTMLElement): nodo is HTMLInputElement {
   );
 }
 
-/** Una finestrella aperta: la radice, e quel che fa Escape. */
+/** Una finestrella aperta: la radice, quel che fa Escape, e se è una domanda. */
 interface Aperta {
   radice: HTMLElement;
   chiudi: RefObject<() => void>;
+  /** `null` per chi non è una domanda: vedi `cosaFaLaX` in `modale.ts`. */
+  domanda: RefObject<{ chiudibile: boolean } | null>;
 }
 
 /**
@@ -268,6 +272,26 @@ export function chiudiLaPiuAlta(): boolean {
 }
 
 /**
+ * La × della finestra (`BarraTitolo`): se in cima c'è una domanda che si può
+ * chiudere, la chiude — vale come «no» — e restituisce `true`; altrimenti
+ * `false`, e la finestra si chiude come sempre. La regola, e il perché, in
+ * `cosaFaLaX`.
+ */
+export function rispondiNoAllaDomandaInCima(): boolean {
+  const cima = aperte[aperte.length - 1];
+  const comE: CimaPerLaX | null =
+    cima === undefined
+      ? null
+      : {
+          domanda: cima.domanda.current !== null,
+          chiudibile: cima.domanda.current?.chiudibile ?? false,
+        };
+  if (cima === undefined || cosaFaLaX(comE) !== "rispondiNo") return false;
+  cima.chiudi.current();
+  return true;
+}
+
+/**
  * Il comportamento comune delle finestrelle.
  *
  * Restituisce **solo** il riferimento da appendere alla radice della
@@ -276,13 +300,19 @@ export function chiudiLaPiuAlta(): boolean {
  *
  * `onChiudi` è quel che fa Escape, e può essere una chiusura scritta sul posto:
  * vedi «`onChiudi` in un riferimento» qui sopra.
+ *
+ * `domanda` lo passa solo `Dialogo`: dice alla × della finestra che qui c'è
+ * una domanda, e se adesso si può chiudere (`rispondiNoAllaDomandaInCima`).
  */
 export function useFinestrella<E extends HTMLElement>(
   onChiudi: () => void,
+  domanda?: { chiudibile: boolean },
 ): RefObject<E | null> {
   const radice = useRef<E | null>(null);
   const chiudi = useRef(onChiudi);
   chiudi.current = onChiudi;
+  const laDomanda = useRef<{ chiudibile: boolean } | null>(null);
+  laDomanda.current = domanda ?? null;
   // Nell'anteprima dello Studio una finestrella è un disegno: prenderle il
   // fuoco lo toglierebbe al campo in cui si sta scrivendo un colore.
   const { anteprima } = useDati();
@@ -344,7 +374,7 @@ export function useFinestrella<E extends HTMLElement>(
     };
     dentro.addEventListener("keydown", suTasto);
 
-    const questa: Aperta = { radice: dentro, chiudi };
+    const questa: Aperta = { radice: dentro, chiudi, domanda: laDomanda };
     aperte.push(questa);
     // Il nodo col fuoco è sparito o si è spento: il fuoco torna alla radice.
     // Solo in cima, e solo se è proprio caduto — un fuoco spostato altrove da

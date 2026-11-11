@@ -84,3 +84,32 @@ test("Elimina dal disco: un doppio clic, o Escape e poi «Elimina», non rispond
   assert.equal(aperture.length, 3, aperture.join("\n"));
   for (const apertura of aperture) assert.match(apertura, /risposta: unaVolta\(\)/);
 });
+
+test("i tasti della finestra non diventano mai inerti, e la × chiude prima la domanda", () => {
+  // R13d-1 e D-41. Il marchio sta sul contenitore dei tre tasti, quello che
+  // `main.tsx` monta accanto all'applicazione.
+  const barra = sorgente("parti/BarraTitolo.tsx");
+  assert.match(barra, /<div className="controlli-finestra window-controls"[^>]*data-sempre-vivo/);
+  // La × chiede prima alla finestrella in cima, e chiude la finestra solo se
+  // lei non c'era o non era una domanda da chiudere.
+  const chiudi = barra.slice(barra.indexOf("onChiudi={() =>"));
+  const corpo = chiudi.slice(0, chiudi.indexOf("\n      />"));
+  assert.ok(
+    corpo.indexOf("rispondiNoAllaDomandaInCima()") >= 0 &&
+      corpo.indexOf("rispondiNoAllaDomandaInCima()") < corpo.indexOf("finestraChiudi()"),
+    corpo,
+  );
+  // E la regola è quella di `modale.ts`, letta sulla finestrella in cima.
+  const finestrella = sorgente("finestrella.ts");
+  const risposta = finestrella.slice(finestrella.indexOf("export function rispondiNoAllaDomandaInCima"));
+  assert.match(risposta.slice(0, risposta.indexOf("\n}\n")), /cosaFaLaX\(/);
+  // `Dialogo` è la domanda: si dichiara tale, col suo `chiudibile`.
+  assert.match(sorgente("Dialogo.tsx"), /useFinestrella<HTMLElement>\([^;]*\{ chiudibile \}\)/);
+});
+
+test("le regioni d'annuncio portano il loro marchio, e restano vive sotto un velo", () => {
+  // R16-4: `daRendereInerti` salta `data-annuncio`.
+  for (const file of ["parti/Annuncio.tsx", "parti/AnnuncioScansione.tsx"]) {
+    assert.match(sorgente(file), /className="solo-lettori" role="status" data-annuncio/, file);
+  }
+});

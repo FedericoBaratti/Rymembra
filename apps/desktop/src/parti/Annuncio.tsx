@@ -38,7 +38,7 @@ export function Annuncio({ testo }: { testo: string | null }) {
     setDetto(anteprima ? "" : (testo ?? ""));
   }, [testo, anteprima]);
   return (
-    <div className="solo-lettori" role="status">
+    <div className="solo-lettori" role="status" data-annuncio="">
       {detto}
     </div>
   );

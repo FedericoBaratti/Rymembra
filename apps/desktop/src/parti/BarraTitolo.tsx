@@ -34,6 +34,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 
+import { rispondiNoAllaDomandaInCima } from "../finestrella";
 import { ipc } from "../ipc";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
@@ -137,7 +138,12 @@ export function BarraTitolo() {
       onIngrandisci={() => {
         ipc.finestraIngrandisci().then(setIngrandita).catch(chiediStato);
       }}
-      onChiudi={() => void ipc.finestraChiudi().catch(() => {})}
+      onChiudi={() => {
+        // Con una domanda aperta la × chiude lei, e vale come «no»: la
+        // finestra si chiude al clic dopo. Vedi `cosaFaLaX` in `modale.ts`.
+        if (rispondiNoAllaDomandaInCima()) return;
+        void ipc.finestraChiudi().catch(() => {});
+      }}
     />
   );
 }
@@ -165,7 +171,11 @@ export function ControlliFinestra({
   onChiudi?: (() => void) | undefined;
 }) {
   return (
-    <div className="controlli-finestra window-controls" ref={riquadro}>
+    // `data-sempre-vivo`: una finestrella aperta rende inerte il resto della
+    // finestra, e senza il marchio anche questi tre — disegnati sopra il velo
+    // ma trasparenti al puntatore, col clic che cadeva sul velo. Vedi
+    // `SEMPRE_VIVO` in `modale.ts`.
+    <div className="controlli-finestra window-controls" ref={riquadro} data-sempre-vivo="">
       <button
         type="button"
         className="controllo window-button"
