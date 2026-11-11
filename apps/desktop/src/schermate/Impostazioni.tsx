@@ -797,11 +797,20 @@ function SorveglianzaCartelle({
  * La scheda è pessimistica, come `SchedaChiusura`: lo stato arriva dalla
  * risposta e non dal clic. Allora una scelta che non arriva al database — un
  * `db.locked`, un comando che rifiuta — va detta (`onErrore`): in silenzio
- * l'interruttore restava dov'era e sembrava rotto. Resta silenziosa solo la
- * lettura dei numeri, per la ragione scritta lì.
+ * l'interruttore restava dov'era e sembrava rotto. Anche la lettura dello
+ * stato dice quando fallisce, ma dentro la scheda: vedi `guasto`.
  */
 function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
   const [stato, setStato] = useState<StatoTesti | null>(null);
+  /**
+   * L'ultima lettura dello stato non è riuscita.
+   *
+   * Non per i numeri, ma per i comandi: senza stato «Cerca i testi» resta
+   * spento, e in silenzio lo restava per sempre — un `db.locked` durante una
+   * scansione lunga bastava. Una riga dentro la scheda, con «Riprova», e non
+   * la fascia rossa in cima alla pagina: come `SchedaManutenzione`.
+   */
+  const [guasto, setGuasto] = useState<unknown>(null);
 
   /**
    * La scheda è ancora montata.
@@ -824,12 +833,12 @@ function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
     ipc
       .testiStato()
       .then((letto) => {
-        if (montata.current) setStato(letto);
+        if (!montata.current) return;
+        setStato(letto);
+        setGuasto(null);
       })
-      .catch(() => {
-        /* Una scheda che non sa dire i suoi numeri li lascia a zero: qui non
-           c'è niente di distruttivo da annunciare, e un errore rosso nelle
-           Impostazioni per una conta fallita sarebbe rumore. */
+      .catch((e: unknown) => {
+        if (montata.current) setGuasto(e);
       });
   }, []);
 
@@ -867,6 +876,14 @@ function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
       titolo={t("settings.lyrics.title")}
       guida="lyrics"
     >
+      {guasto !== null && (
+        <div className="errore" role="alert">
+          <span>{testoErrore(guasto)}</span>
+          <button type="button" className="bottone minuto" onClick={aggiorna}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
 
       <Interruttore
         etichetta={t("settings.lyrics.toggle")}
@@ -3484,11 +3501,22 @@ export function Impostazioni({
                 ))}
               </ul>
 
-              <Interruttore
-                etichetta={t("settings.import.alt")}
-                acceso={importazioni.stato?.alternative ?? true}
-                onCambia={(v) => void importazioni.ammettiAlternative(v)}
-              />
+              {/* Solo con lo stato arrivato: prima, `?? true` lo dipingeva
+                  acceso anche con la preferenza salvata spenta. E il guasto
+                  di una scrittura si dice qui, accanto: l'interruttore segue
+                  il nucleo, e senza questa riga non si muoveva e basta. */}
+              {importazioni.errore !== null && (
+                <div className="errore" role="alert">
+                  {importazioni.errore}
+                </div>
+              )}
+              {importazioni.stato !== null && (
+                <Interruttore
+                  etichetta={t("settings.import.alt")}
+                  acceso={importazioni.stato.alternative}
+                  onCambia={(v) => void importazioni.ammettiAlternative(v)}
+                />
+              )}
 
               {/* Un rimando e non più il pannello intero.
                   Quel che succede dopo la conferma dura **un'ora** e sopravvive
