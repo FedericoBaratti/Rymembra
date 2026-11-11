@@ -467,10 +467,13 @@ function landing(r, testi, problemi, usate) {
   for (const l of LINGUE) {
     const t = testi[l.codice];
     const base = l.cartella ? "../" : "";
+    // Il nome intero anche per il lettore di schermo, non solo nel `title`
+    // (che non legge): «IT» detto a voce non è una lingua. Contiene la sigla
+    // visibile, come vuole WCAG 2.5.3.
     const lingue = LINGUE.map(
       (x) =>
         `<a href="${base + x.cartella || "./"}" hreflang="${x.codice}" lang="${x.codice}" data-lingua="${x.codice}"` +
-        ` title="${esc(x.nome)}"${x === l ? ' aria-current="page"' : ""}>${x.codice.toUpperCase()}</a>`,
+        ` title="${esc(x.nome)}" aria-label="${esc(x.nome)}"${x === l ? ' aria-current="page"' : ""}>${x.codice.toUpperCase()}</a>`,
     ).join("");
     // Solo sulla radice, che è quella in cui arriva chi non ha scelto: una
     // striscia per lingua, nella lingua che offre. `sito.js` mostra quella del

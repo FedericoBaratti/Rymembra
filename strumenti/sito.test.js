@@ -235,6 +235,37 @@ test("la pagina 404 funziona alla radice e sotto /Rymembra/", () => {
   }
 });
 
+// R27-5: un lettore di schermo non sentiva né i risultati della ricerca delle
+// docs né «Link copiato»; le lingue si chiamavano «IT», «EN»; due animazioni
+// decorative giravano senza fine (WCAG 4.1.3, 2.2.2). Prova di cablaggio sulle
+// pagine costruite e sui sorgenti; l'ascolto con NVDA si fa dal vivo.
+test("ricerca, copia del link e lingue arrivano al lettore di schermo; niente si muove senza fine", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-a11y-"));
+  try {
+    const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+    assert.deepEqual(costruisci(dir, versione).problemi, []);
+    const docsPagina = fs.readFileSync(path.join(dir, "docs/index.html"), "utf8");
+    const modulo = /<form[^>]*data-cerca[\s\S]*?<\/form>/.exec(docsPagina);
+    assert.ok(modulo && /role="status"[^>]*data-stato|data-stato[^>]*role="status"/.test(modulo[0]), "la ricerca delle docs non ha una regione di stato");
+    const docsJs = fs.readFileSync(path.join(__dirname, "../site/docs/docs.js"), "utf8");
+    assert.match(docsJs, /\[data-stato\]/);
+    assert.match(docsJs, /stato\.textContent\s*=/);
+
+    for (const f of ["index.html", "it/index.html"]) {
+      const pagina = fs.readFileSync(path.join(dir, f), "utf8");
+      assert.match(pagina, /role="status"[^>]*data-stato-copia|data-stato-copia[^>]*role="status"/, `${f}: «Link copiato» senza regione di stato`);
+      const lingue = [...pagina.matchAll(/<a [^>]*data-lingua="(\w+)"[^>]*>/g)].filter((m) => !/<a [^>]*data-chiudi/.test(m[0]));
+      assert.ok(lingue.length >= 4, f);
+      for (const m of lingue.filter((m) => m[0].includes("hreflang"))) assert.match(m[0], /aria-label="[^"]+"/, `${f}: ${m[0]}`);
+    }
+    assert.match(fs.readFileSync(path.join(__dirname, "../site/sito.js"), "utf8"), /data-stato-copia/);
+    const css = fs.readFileSync(path.join(__dirname, "../site/sito.css"), "utf8");
+    assert.ok(!/animation[^;]*\binfinite\b/.test(css), "un'animazione infinita in sito.css");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("il sito vero si costruisce e torna", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-prova-"));
   try {

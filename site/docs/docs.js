@@ -74,6 +74,9 @@
   var campo = modulo.querySelector("input");
   var elenco = modulo.querySelector("[data-risultati]");
   var nessuno = modulo.querySelector("[data-nessuno]");
+  /* L'esito detto a voce: chi usa un lettore di schermo scrive nel campo e,
+     senza, non sente niente (WCAG 4.1.3). Il testo visibile resta quello. */
+  var stato = modulo.querySelector("[data-stato]");
   var base = modulo.getAttribute("data-base") || "";
   var indice = null;
   var inArrivo = null;
@@ -109,6 +112,7 @@
     if (!parole.length || !indice) {
       elenco.hidden = true;
       nessuno.hidden = true;
+      if (stato) stato.textContent = "";
       return;
     }
     var trovate = indice.filter(function (v) {
@@ -137,6 +141,14 @@
     });
     elenco.hidden = trovate.length === 0;
     nessuno.hidden = trovate.length !== 0;
+    if (stato) {
+      stato.textContent =
+        trovate.length === 0
+          ? nessuno.textContent
+          : trovate.length === 1
+            ? "1 entry"
+            : (trovate.length > 30 ? "The first 30 of " : "") + trovate.length + " entries";
+    }
   }
 
   campo.addEventListener("focus", carica);
