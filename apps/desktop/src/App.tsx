@@ -499,6 +499,16 @@ export function App() {
     if (nessunaCartella) setPrimoAperto(true);
   }, [nessunaCartella]);
   const primoVisibile = !primoChiuso && (primoAperto || nessunaCartella);
+  /*
+   * La testata della Home, finché non si sa se questo è il primo avvio.
+   *
+   * Il primo avvio si apre quando arriva `avvio` e dice che non ci sono né
+   * cartelle né brani; prima di allora si disegnava la Home, e sul telefono —
+   * dove `avvio` arriva dopo qualche secondo — si leggeva «Riprendi da dove eri
+   * rimasto» sopra lo scheletro, prima del benvenuto (R18-14). Finché `avvio`
+   * non c'è, una testata neutra che dice soltanto che sta arrivando.
+   */
+  const testaDellaHome = avvio === null ? { titolo: t("list.loading") } : testaHome();
   /** Le cartelle trascinate sulla finestra mentre il primo avvio le chiede. */
   const [lasciateAlPrimo, setLasciateAlPrimo] = useState<string[]>([]);
   /**
@@ -3061,7 +3071,7 @@ export function App() {
         );
       case "home":
         return (
-          <BarraAlta grande occhiello={t("home.eyebrow")} titolo={t("home.title")} azioni={cerca} />
+          <BarraAlta grande {...testaDellaHome} azioni={cerca} />
         );
       case "libreria":
         return (
@@ -3366,7 +3376,7 @@ export function App() {
       );
     }
     if (pagina.tipo === "home") {
-      return <Intestazione {...testaHome()} query={query} onQuery={setQuery} />;
+      return <Intestazione {...testaDellaHome} query={query} onQuery={setQuery} />;
     }
     // Le due pagine del solo telefono: sul computer non ci si arriva, e la
     // testata del telefono le ha già prese sopra.

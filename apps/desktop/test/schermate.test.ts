@@ -65,3 +65,17 @@ test("trasporto spento in sessione: raggiungibile, con la ragione detta", () => 
   // Premuto da spento non fa niente.
   assert.equal([...trasporto.matchAll(/onClick=\{seAcceso\((trasporto|mescola), ipc\.\w+\)\}/g)].length, 5);
 });
+
+test("prima di sapere se è il primo avvio la Home non dice «Riprendi da dove eri rimasto»", () => {
+  // R18-14. Sul telefono, a `pm clear`, la prima schermata per qualche
+  // secondo era «Your library / Pick up where you left off» con lo scheletro,
+  // prima del benvenuto.
+  const app = sorgente("App.tsx");
+  assert.match(
+    app,
+    /const testaDellaHome = avvio === null \? \{ titolo: t\("list\.loading"\) \} : testaHome\(\);/,
+  );
+  assert.match(app, /<BarraAlta grande \{\.\.\.testaDellaHome\} azioni=\{cerca\} \/>/);
+  assert.match(app, /<Intestazione \{\.\.\.testaDellaHome\} query=\{query\} onQuery=\{setQuery\} \/>/);
+  assert.doesNotMatch(app, /titolo=\{t\("home\.title"\)\}/);
+});
