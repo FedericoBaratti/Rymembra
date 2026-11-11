@@ -65,6 +65,7 @@ const sincronia = (campi: Partial<SincroniaInsieme> = {}): SincroniaInsieme =>
     agganciato: true,
     erroreMs: 3.2,
     incertezzaMs: 0.8,
+    reteLenta: false,
     ...campi,
   }) as SincroniaInsieme;
 
@@ -75,6 +76,17 @@ test("l'annuncio della sincronia non cambia con lo scarto", () => {
   const b = annuncioSincronia(sincronia({ erroreMs: -1.1, incertezzaMs: 0.3 }));
   assert.equal(a, b);
   assert.notEqual(a, annuncioSincronia(sincronia({ agganciato: false })));
+});
+
+test("con la rete troppo lenta per seguire lo si dice, invece di «aggancio…» per sempre", () => {
+  // Decisione D-31: dopo trenta secondi con ogni scambio d'orologio oltre il
+  // tetto, la frase è un'altra.
+  const { annuncioSincronia } = insieme;
+  assert.equal(
+    annuncioSincronia(sincronia({ agganciato: false, reteLenta: true })),
+    "together.sync.tooSlow",
+  );
+  assert.equal(annuncioSincronia(sincronia({ agganciato: false })), "together.sync.locking");
 });
 
 test("nella regione viva della sincronia non c'è lo scarto", () => {

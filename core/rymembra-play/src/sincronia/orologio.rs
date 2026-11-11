@@ -68,8 +68,9 @@
 //! - La deriva solo con **20 s** di dati: su un intervallo più corto la
 //!   pendenza la decide il rumore. Prima, lo scarto è la media pesata e la
 //!   deriva vale zero.
-//! - **Tre residui di fila oltre 10 ms**, o oltre l'rtt dello scambio se è
-//!   più grande, vogliono dire che l'altro orologio è cambiato davvero —
+//! - **Tre residui di fila oltre 10 ms**, o oltre l'rtt dello scambio, o
+//!   oltre l'incertezza della stima più metà di quell'rtt — la soglia più
+//!   grande delle tre —, vogliono dire che l'altro orologio è cambiato davvero —
 //!   l'ospite ha riavviato il programma, e la sua base dei tempi con lui: si
 //!   butta tutto e si ricomincia ([`Esito::Ricominciato`]). Uno o due da soli
 //!   si scartano: è più probabile un pacchetto rimasto fermo da qualche parte.
@@ -194,8 +195,9 @@ pub enum Perche {
     Superato,
     /// È più vecchio della finestra.
     Vecchio,
-    /// Lo scarto si allontana dalla stima più della soglia — 10 ms, o l'rtt
-    /// dello scambio se è più grande — ma non è ancora il terzo di fila.
+    /// Lo scarto si allontana dalla stima più della soglia — 10 ms, l'rtt
+    /// dello scambio, o l'incertezza della stima più metà di quell'rtt, la più
+    /// grande — ma non è ancora il terzo di fila.
     Salto,
 }
 
@@ -227,7 +229,8 @@ pub struct Taratura {
     pub durata_deriva_ns: u64,
     /// Un residuo oltre questo è un salto: 10 ms. Se l'rtt dello scambio è più
     /// grande, la soglia è l'rtt: fin lì il residuo si spiega con l'asimmetria
-    /// della rete.
+    /// della rete. E mai sotto l'incertezza della stima più metà dell'rtt:
+    /// vedi `soglia_del_salto`.
     pub salto_ns: u64,
     /// Quanti salti di fila fanno ricominciare: 3.
     pub salti_di_fila: u32,
@@ -390,10 +393,18 @@ impl Orologio {
         // parte di fila — scambi buoni, sotto la soglia dell'rtt — buttavano la
         // storia come per un riavvio dell'ospite. Il riavvio vero sposta lo
         // scarto di secondi, oltre il tetto di 100 ms che limita l'rtt.
+        //
+        // E cresce con l'errore della stima, che lei stessa dichiara: se la
+        // finestra si è formata con le code tutte da una parte, la stima è
+        // storta di quasi rtt_min/2 e lo dice nell'incertezza. Quando la rete
+        // poi migliora, lo scambio nuovo — con l'rtt basso — sta più vicino al
+        // vero della stima, e il suo residuo è l'errore di lei, non un
+        // orologio cambiato: prima tre di fila buttavano la storia, e chi
+        // seguiva restava senza stima per otto secondi (reperto R05-2).
         if let Some((stima, _)) = self.adattamento
             && let Some(atteso) = stima.scarto_in(punto.x)
             && (i128::from(punto.scarto) - atteso).unsigned_abs()
-                > u128::from(t.salto_ns.max(punto.rtt))
+                > u128::from(soglia_del_salto(&stima, &punto, &t))
         {
             self.salti = self.salti.saturating_add(1);
             if self.salti < t.salti_di_fila {
@@ -436,6 +447,17 @@ impl Orologio {
             }
         }
     }
+}
+
+/// Il residuo oltre il quale uno scambio è un salto: il più grande fra la
+/// soglia fissa, l'rtt dello scambio (fin lì sbaglia lui) e l'incertezza della
+/// stima più metà di quell'rtt (fin lì sbagliano tutti e due insieme). Vedi
+/// [`Orologio::valuta`].
+#[expect(clippy::integer_division, reason = "metà dell'rtt, al nanosecondo")]
+fn soglia_del_salto(stima: &Stima, punto: &Punto, t: &Taratura) -> u64 {
+    t.salto_ns
+        .max(punto.rtt)
+        .max(stima.incertezza_ns.saturating_add(punto.rtt / 2))
 }
 
 /// L'rtt oltre il quale uno scambio ha fatto coda.
@@ -913,6 +935,45 @@ mod prove {
             );
             assert!(o.stima().is_some(), "a {secondo} s la stima è sparita");
         }
+    }
+
+    #[test]
+    fn una_rete_che_migliora_non_e_un_riavvio() {
+        // Reperto R05-2. La finestra si forma col ritorno in coda (il primo
+        // brano che scende su un Wi-Fi con le code piene): andata 2 ms,
+        // ritorno 38 ms. La stima ha lo scarto storto di (2 − 38)/2 = −18 ms,
+        // e lo dichiara: l'incertezza è almeno rtt_min/2 = 20 ms. Poi la coda
+        // si vuota e l'rtt scende a 2 ms: ogni scambio buono ha 18 ms di
+        // residuo contro la stima, che la soglia fissa (10 ms, o l'rtt dello
+        // scambio) chiamava salto — e al terzo la stima si buttava come per un
+        // riavvio dell'host.
+        let mut rete = Rete::nuova(5_000_000.0, 0.0);
+        rete.andata = 2_000_000.0;
+        rete.ritorno = 38_000_000.0;
+        rete.coda = 20_000.0;
+        let mut o = Orologio::nuovo(Taratura::default());
+        rete.scambia(&mut o, 0, 40);
+        let prima = o.stima().expect("una stima");
+        assert!(prima.incertezza_ns >= 20_000_000, "{prima:?}");
+        rete.andata = 1_000_000.0;
+        rete.ritorno = 1_000_000.0;
+        for secondo in [21, 22, 23] {
+            let esito = o.aggiungi(rete.scambio(secondo * SECONDO));
+            assert_ne!(
+                esito,
+                Esito::Ricominciato,
+                "a {secondo} s una rete che migliora è passata per un riavvio"
+            );
+            assert!(o.stima().is_some(), "a {secondo} s la stima è sparita");
+        }
+        // E la stima va verso i punti nuovi, che sono quelli buoni.
+        assert!(errore(&o, &rete, 23 * SECONDO).abs() < 2_000_000.0);
+        // Il riavvio vero resta tale: lo scarto che salta di secondi.
+        rete.scarto += 3_000_000_000.0;
+        let esiti: Vec<Esito> = (24..27)
+            .map(|secondo| o.aggiungi(rete.scambio(secondo * SECONDO)))
+            .collect();
+        assert_eq!(esiti.last(), Some(&Esito::Ricominciato), "{esiti:?}");
     }
 
     #[test]

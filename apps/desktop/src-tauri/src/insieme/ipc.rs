@@ -209,6 +209,9 @@ pub struct SincroniaIpc {
     pub errore_ms: Option<f64>,
     /// Quanto la stima dell'orologio è incerta, in ms.
     pub incertezza_ms: Option<f64>,
+    /// Da trenta secondi ogni scambio d'orologio supera il tetto dell'rtt, e
+    /// una stima non c'è: la rete è troppo lenta per seguire (decisione D-31).
+    pub rete_lenta: bool,
 }
 
 /// Un avviso di passaggio. Evento `insieme:avviso`.

@@ -983,7 +983,7 @@ function FasciaInsieme({ onErrore }: { onErrore: (e: unknown) => void }) {
           : insieme?.diritti === "comanda"
             ? t("together.rights.line.control")
             : stato.sincronia !== null && !stato.sincronia.agganciato
-              ? t("together.sync.locking")
+              ? t(annuncioSincronia(stato.sincronia))
               : null;
 
   // Una conferma solo se c'è qualcuno da lasciare a metà brano: vedi

@@ -468,6 +468,8 @@ export interface SincroniaInsieme {
   /** Positivo se questo PC è avanti. */
   erroreMs: number | null;
   incertezzaMs: number | null;
+  /** Da trenta secondi la rete è troppo lenta per una stima dell'orologio. */
+  reteLenta: boolean;
 }
 
 /**

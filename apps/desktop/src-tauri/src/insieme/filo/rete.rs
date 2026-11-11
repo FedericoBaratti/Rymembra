@@ -14,6 +14,7 @@ use super::{
     OGNI_SCOPERTA_MS, Posta, chiave_per_la_finestra, lega, ora, riga_della_rete, senza_causa,
 };
 use crate::insieme::fasi::{Connessione, Evento};
+use crate::insieme::segui::EsitoScambio;
 use crate::insieme::{fiducia, voci};
 use crate::nota;
 use crate::stato::adesso_ms;
@@ -292,12 +293,23 @@ impl Filo {
                 if let Some(seguendo) = &self.seguendo
                     && seguendo.host == id
                 {
-                    seguendo.condivisa.scambio(Scambio {
+                    let esito = seguendo.condivisa.scambio(Scambio {
                         t1: campione.t1,
                         t2: campione.t2,
                         t3: campione.t3,
                         t4: campione.t4,
                     });
+                    // La stima dell'orologio dell'host è ricominciata da un
+                    // punto solo: si torna ai ping svelti, che ne rifanno una in
+                    // pochi secondi invece di aspettarne cinque al ritmo di uno
+                    // al secondo (reperto R05-3). Intanto la pausa dell'host si
+                    // segue lo stesso (vedi `segui`).
+                    if esito == EsitoScambio::Ricominciato {
+                        nota!("[insieme] l'orologio dell'host è cambiato: la stima ricomincia");
+                        if let Some(accesa) = &self.rete {
+                            accesa.rete.sincronizza(id, true);
+                        }
+                    }
                 }
             }
             DallaRete::Chiusa { id, codice } => {

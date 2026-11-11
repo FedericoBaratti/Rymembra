@@ -108,6 +108,10 @@
 //! misurare. Per il gradino aspetta sia la durata prevista sia che
 //! `in_correzione` torni falso: il motore la alza già nella richiesta, ma il
 //! regolatore non ci conta.
+//!
+//! L'attesa non vale per la pausa dell'ospite: un'ancora ferma la chiude
+//! subito, e chi segue si ferma — anche con un avvio programmato ancora da
+//! scattare, che altrimenti partirebbe con l'ospite zitto.
 
 use super::orologio::Stima;
 
@@ -502,6 +506,25 @@ impl Regolatore {
         if self.ha_saltato(&ancora) && ancora.in_corso {
             return self.riapri(adesso_ns, &ospite);
         }
+        // L'ospite si è fermato mentre si aspettava la fine di una mossa: la
+        // pausa passa davanti. Un avvio o una riapertura programmati non
+        // devono partire con l'ospite fermo, e un gradino non ha più niente
+        // da allineare. Prima si aspettava la mossa fino alla fine, e chi
+        // seguiva suonava — il punto vecchio, o l'avvio appena scattato —
+        // mentre chi ospitava taceva (reperto R05-1).
+        if !ancora.in_corso
+            && let Some(avvio_in_attesa) = self.attesa_da_interrompere()
+        {
+            self.fase = Fase::Libero;
+            self.ricomincia_a_misurare();
+            if avvio_in_attesa || mia.is_some_and(|m| m.in_corso) {
+                self.diversa_dal = None;
+                self.fase = Fase::Pausa {
+                    scadenza: adesso_ns.saturating_add(self.t.attesa_massima_ns),
+                };
+                return Mossa::Pausa;
+            }
+        }
         if !self.attesa_finita(adesso_ns, &ancora, mia.as_ref()) {
             return Mossa::Niente;
         }
@@ -579,6 +602,18 @@ impl Regolatore {
         }
         let adesso = i128::from(ancora.posizione_us) * 1000;
         (adesso - atteso).unsigned_abs() > u128::from(self.t.salto_ospite_ns)
+    }
+
+    /// La mossa in corso, se è una che la pausa dell'ospite interrompe:
+    /// `Some(true)` se è un avvio programmato che non deve partire (un
+    /// `AvviaA` o una riapertura), `Some(false)` per un gradino. `None` se non
+    /// si aspetta niente, o si aspetta già una pausa.
+    const fn attesa_da_interrompere(&self) -> Option<bool> {
+        match self.fase {
+            Fase::Avvio { .. } | Fase::Riapertura { .. } => Some(true),
+            Fase::Correzione { .. } => Some(false),
+            Fase::Libero | Fase::Pausa { .. } => None,
+        }
     }
 
     /// Se la mossa in corso è finita; se sì, si torna a misurare da capo.
@@ -1588,6 +1623,48 @@ mod prove {
         assert!((quando_ns as f64 - (t + 300 * MS) as f64).abs() < 0.3e6);
         b.avanti(SECONDO);
         assert!(b.errore().abs() < 0.5e6, "{} ms", b.errore() / 1e6);
+    }
+
+    #[test]
+    fn una_pausa_dell_ospite_annulla_un_avvio_in_attesa() {
+        // Reperto R05-1. Il membro è fermo 450 ms avanti: il regolatore
+        // programma l'avvio per quando l'ospite arriva al suo punto, fra 350
+        // ms. L'ospite mette in pausa subito dopo: l'avvio non deve partire.
+        // Prima l'attesa della mossa veniva prima della pausa, e il membro
+        // suonava finché il passo dopo non chiedeva `Pausa`.
+        let mut b = Banco::nuovo(450e6, 0.0);
+        b.membro.in_corso = false;
+        b.avanti(100 * MS);
+        assert!(
+            matches!(b.mosse.last(), Some((_, Mossa::AvviaA { .. }))),
+            "{:?}",
+            b.mosse
+        );
+        b.cambia_ospite(|o| o.in_corso = false);
+        for passo in 0..1000 {
+            b.avanti(MS);
+            assert!(
+                !b.membro.in_corso,
+                "dopo {passo} ms il membro suona con l'ospite fermo: {:?}",
+                b.mosse
+            );
+        }
+        // Lo stesso durante una riapertura: l'ospite salta, e prima che il
+        // membro riparta mette in pausa.
+        let mut b = Banco::nuovo(0.0, 0.0);
+        b.avanti(5 * SECONDO);
+        b.cambia_ospite(|o| o.contenuto += 30e9);
+        b.avanti(100 * MS);
+        assert!(matches!(b.mosse.last(), Some((_, Mossa::Riapri { .. }))));
+        b.cambia_ospite(|o| o.in_corso = false);
+        b.avanti(100 * MS);
+        assert!(
+            matches!(b.mosse.last(), Some((_, Mossa::Pausa))),
+            "la pausa dell'ospite passa davanti alla riapertura: {:?}",
+            b.mosse
+        );
+        b.avanti(SECONDO);
+        assert!(!b.membro.in_corso, "{:?}", b.mosse);
     }
 
     #[test]

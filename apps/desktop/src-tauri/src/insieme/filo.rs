@@ -1235,6 +1235,14 @@ impl Filo {
                 // Prima chi può leggere, poi lo stato: chi è appena entrato
                 // chiederà i byte appena lo riceve.
                 self.aggiorna_ammessi();
+                // Con qualcuno raggiunto via internet gli avvii si programmano
+                // più in là (decisione D-31).
+                let via_internet = fasi::connessioni_dei_membri(&self.s).iter().any(|conn| {
+                    self.capi
+                        .get(conn)
+                        .is_some_and(|(dove, _)| dove.e_lontano())
+                });
+                ponte::anticipo_via_internet(&self.app, via_internet);
                 if let Some(istantanea) = ponte::istantanea(&self.app) {
                     self.manda_stato(&istantanea, true);
                 }
@@ -2435,6 +2443,7 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
             incertezza_ms: a
                 .incertezza_ns
                 .map(|e| (e as f64 / 100_000.0).round() / 10.0),
+            rete_lenta: a.rete_lenta,
         }),
     }
 }

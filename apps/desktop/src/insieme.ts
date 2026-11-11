@@ -447,16 +447,24 @@ export function pezziSegno(insieme: InsiemeNelLettore): Pezzo[] {
 }
 
 /**
- * La frase della regione viva della sincronia: agganciato o no, e nient'altro.
+ * La frase della regione viva della sincronia: agganciato, aggancio in corso,
+ * o la rete troppo lenta per seguire — e nient'altro.
  *
  * Scarto e incertezza cambiano quasi a ogni secondo — il nucleo li rinfresca
  * una volta al secondo, al decimo di millisecondo — e ridetti da una regione
  * viva farebbero un lettore di schermo che non sta mai zitto: la regola di
  * `InAttesa`, che annuncia l'arrivo e non il conto. Si annuncia il passaggio;
  * i numeri restano scritti accanto, fuori dalla regione.
+ *
+ * La rete troppo lenta (decisione D-31): dopo trenta secondi con ogni scambio
+ * d'orologio oltre il tetto la stima non arriverà, e «aggancio in corso…»
+ * per sempre sarebbe una promessa falsa.
  */
-export function annuncioSincronia(sincronia: Pick<SincroniaInsieme, "agganciato">): Chiave {
-  return sincronia.agganciato ? "together.sync.locked" : "together.sync.locking";
+export function annuncioSincronia(
+  sincronia: Pick<SincroniaInsieme, "agganciato" | "reteLenta">,
+): Chiave {
+  if (sincronia.agganciato) return "together.sync.locked";
+  return sincronia.reteLenta ? "together.sync.tooSlow" : "together.sync.locking";
 }
 
 // ── terminare ──────────────────────────────────────────────────────────────

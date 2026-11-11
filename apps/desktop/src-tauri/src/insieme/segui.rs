@@ -22,12 +22,21 @@
 //! dire inseguire un errore di ore. Finché l'[`Orologio`] non ha una stima si
 //! aspetta, e la finestra mostra «aggancio».
 //!
+//! Tranne quando l'host è fermo: la pausa e il punto da cui ripartirà sono
+//! posizioni, non istanti, e chi segue si ferma subito anche senza stima — a
+//! metà sessione la stima può sparire per qualche secondo (decisione D-31).
+//! E se ogni scambio supera il tetto dell'rtt per [`TROPPO_LENTA_DOPO_NS`],
+//! la finestra dice che la rete è troppo lenta per seguire invece di
+//! «aggancio…» per sempre.
+//!
 //! # Quando si dice «agganciato»
 //!
 //! Quando l'errore filtrato del regolatore resta entro [`SOGLIA_AGGANCIO_NS`]
-//! per [`DURATA_AGGANCIO_NS`] di fila, senza mosse di mezzo. Con l'host in
-//! pausa non c'è niente da misurare, e basta avere la stima: la sincronia si
-//! vedrà alla ripresa, che è programmata.
+//! per [`DURATA_AGGANCIO_NS`] di fila, senza mosse di mezzo, e la stima
+//! dell'orologio non è più incerta della stessa soglia. Con l'host in pausa
+//! non c'è niente da misurare: bastano un orologio altrettanto preciso e la
+//! voce dell'host in mano al suo punto, perché la sincronia si vedrà alla
+//! ripresa, che è programmata (decisione D-31: prima bastava la stima).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -35,7 +44,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use rymembra_domain::errors::{AppError, ErrorCodeKind};
-use rymembra_play::sincronia::orologio::{Orologio, Scambio, Stima, Taratura as TaraturaOrologio};
+pub use rymembra_play::sincronia::orologio::Esito as EsitoScambio;
+use rymembra_play::sincronia::orologio::{
+    Orologio, Perche, Scambio, Stima, Taratura as TaraturaOrologio,
+};
 use rymembra_play::sincronia::regolatore::{
     DaMe, DallOspite, Mossa, Regolatore, Taratura as TaraturaRegolatore,
 };
@@ -95,6 +107,9 @@ pub struct Aggancio {
     pub errore_ns: Option<i64>,
     /// L'incertezza della stima dell'orologio, ns.
     pub incertezza_ns: Option<u64>,
+    /// Da trenta secondi la rete è troppo lenta per una stima: vedi
+    /// [`Condivisa::troppo_lenta`].
+    pub rete_lenta: bool,
 }
 
 /// Quel che il filo della sessione e quello della sincronia si passano.
@@ -110,6 +125,12 @@ pub struct Condivisa {
     pub fermo: AtomicBool,
     /// L'uscita audio è cambiata: il regolatore riparte da capo.
     pub uscita_cambiata: AtomicBool,
+    /// L'host è raggiunto via internet: tetto dell'rtt e anticipo più larghi.
+    pub lontano: bool,
+    /// Da quando (ns locali, l'istante d'arrivo dello scambio) ogni scambio
+    /// supera il tetto dell'rtt, senza una stima. Vedi
+    /// [`Condivisa::troppo_lenta`].
+    lenti_dal: Mutex<Option<u64>>,
 }
 
 /// Il tetto dell'andata e ritorno di uno scambio d'orologio con un host
@@ -119,6 +140,20 @@ pub struct Condivisa {
 /// pesano di più, e un rtt alto allarga la soglia dei salti
 /// (`Taratura::salto_ns`).
 const RTT_TETTO_INTERNET_NS: u64 = 400_000_000;
+
+/// Quanto avanti chi segue un host raggiunto via internet programma le sue
+/// riaperture: 400 ms invece dei 250 di casa (decisione D-31). Via relay
+/// l'ancora arriva già con un paio di centinaia di millisecondi di ritardo, e
+/// aprire una voce in rete fa più giri: con 250 ms si entrava quasi sempre in
+/// ritardo, cioè con un salto. È lo stesso numero di chi ospita una sessione
+/// con qualcuno via internet (`riproduzione::insieme::ANTICIPO_INTERNET_NS`).
+pub const ANTICIPO_INTERNET_NS: u64 = 400_000_000;
+
+/// Dopo quanto, con ogni scambio d'orologio oltre il tetto dell'rtt e nessuna
+/// stima, la finestra dice «rete troppo lenta per seguire» invece di
+/// «aggancio…»: trenta secondi (decisione D-31). Il README parlava di «may
+/// take a while», ma con ogni scambio scartato la stima non arriva mai.
+pub const TROPPO_LENTA_DOPO_NS: u64 = 30_000_000_000;
 
 impl Condivisa {
     /// Tutto vuoto: nessuna ancora, nessuna stima. Per le prove: il filo la
@@ -148,15 +183,41 @@ impl Condivisa {
             aggancio: Mutex::new(Aggancio::default()),
             fermo: AtomicBool::new(false),
             uscita_cambiata: AtomicBool::new(false),
+            lontano,
+            lenti_dal: Mutex::new(None),
         }
     }
 
-    /// Uno scambio d'orologio arrivato dal trasporto.
-    pub fn scambio(&self, s: Scambio) {
-        self.orologio
+    /// Uno scambio d'orologio arrivato dal trasporto. Restituisce che cosa ne
+    /// è stato: un [`EsitoScambio::Ricominciato`] lo deve sapere il filo della
+    /// sessione (vedi `filo::rete`), che rimette i ping alla cadenza svelta.
+    pub fn scambio(&self, s: Scambio) -> EsitoScambio {
+        let mut orologio = self.orologio.lock().unwrap_or_else(PoisonError::into_inner);
+        let esito = orologio.aggiungi(s);
+        let senza_stima = orologio.stima().is_none();
+        drop(orologio);
+        let mut dal = self
+            .lenti_dal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if senza_stima && esito == EsitoScambio::Scartato(Perche::Lento) {
+            dal.get_or_insert(s.t4);
+        } else if !matches!(esito, EsitoScambio::Scartato(Perche::Incoerente)) {
+            // Uno scambio che passa il tetto (o una stima che c'è): la rete
+            // non è troppo lenta. Uno incoerente non dice niente della rete.
+            *dal = None;
+        }
+        esito
+    }
+
+    /// Da [`TROPPO_LENTA_DOPO_NS`] ogni scambio supera il tetto dell'rtt, e
+    /// non c'è una stima: chi segue non può seguire, e la finestra lo dice.
+    #[must_use]
+    pub fn troppo_lenta(&self, adesso: u64) -> bool {
+        self.lenti_dal
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .aggiungi(s);
+            .is_some_and(|dal| adesso.saturating_sub(dal) >= TROPPO_LENTA_DOPO_NS)
     }
 
     /// Un'ancora nuova dall'host. Vero se cambia lo stato (voce, in corso, o
@@ -164,7 +225,11 @@ impl Condivisa {
     pub fn ancora(&self, nuova: DallOspite) -> bool {
         let mut ancora = self.ancora.lock().unwrap_or_else(PoisonError::into_inner);
         let cambia = ancora.is_none_or(|prima| {
-            prima.etichetta != nuova.etichetta || prima.in_corso != nuova.in_corso
+            prima.etichetta != nuova.etichetta
+                || prima.in_corso != nuova.in_corso
+                // Un avvio programmato nuovo — un salto dell'host nella
+                // stessa voce — non deve aspettare il colpo dopo.
+                || (nuova.programmata && prima != nuova)
         });
         *ancora = Some(nuova);
         cambia
@@ -186,17 +251,77 @@ pub struct Seguito {
     entro_dal: Option<u64>,
     /// L'ultimo guasto di una mossa, per non scriverlo nel diario a ogni passo.
     ultimo_guasto: Option<ErrorCodeKind>,
+    /// L'ultima riapertura non riuscita, e fino a quando non riprovarla: vedi
+    /// «Una riapertura che non riesce» in [`Seguito::passo`].
+    rimandata: Option<Rimandata>,
 }
+
+/// Una riapertura non riuscita, che non si ritenta prima di `fino`.
+#[derive(Debug, Clone, Copy)]
+struct Rimandata {
+    /// La voce che non si è aperta.
+    etichetta: u64,
+    /// Il perché.
+    codice: ErrorCodeKind,
+    /// Quante volte di fila.
+    volte: u32,
+    /// Non prima di quando riprovare, ns locali.
+    fino: u64,
+    /// L'ancora dell'host di allora: un'ancora programmata diversa è un
+    /// gesto nuovo dell'host, e si riprova subito.
+    ancora: DallOspite,
+}
+
+/// La prima attesa dopo una riapertura non riuscita: mezzo secondo, poi il
+/// doppio a ogni volta, fino a [`RIMANDA_AL_PIU_NS`].
+const RIMANDA_DOPO_NS: u64 = 500_000_000;
+
+/// L'attesa più lunga fra due riaperture non riuscite: otto secondi.
+const RIMANDA_AL_PIU_NS: u64 = 8_000_000_000;
 
 impl Default for Seguito {
     fn default() -> Self {
+        Self::per(false)
+    }
+}
+
+impl Seguito {
+    /// Da capo, per un host raggiunto via internet (`lontano`) o in casa:
+    /// via internet il regolatore programma le riaperture
+    /// [`ANTICIPO_INTERNET_NS`] più in là.
+    #[must_use]
+    pub fn per(lontano: bool) -> Self {
+        let taratura = if lontano {
+            TaraturaRegolatore {
+                anticipo_ns: ANTICIPO_INTERNET_NS,
+                ..TaraturaRegolatore::default()
+            }
+        } else {
+            TaraturaRegolatore::default()
+        };
         Self {
-            regolatore: Regolatore::nuovo(TaraturaRegolatore::default()),
+            regolatore: Regolatore::nuovo(taratura),
             frequenza: None,
             entro_dal: None,
             ultimo_guasto: None,
+            rimandata: None,
         }
     }
+}
+
+/// La voce che il motore di qui ha in mano è quella dell'host, al punto
+/// dell'host: con l'host fermo, è quel che serve per dirsi agganciati (la
+/// ripresa è programmata). Un punto lontano più del salto che fa riaprire il
+/// regolatore vuol dire che il motore non ci è arrivato.
+fn al_punto_dell_host(mia: Option<&DaMe>, ancora: &DallOspite) -> bool {
+    let salto_us = TaraturaRegolatore::default()
+        .salto_ospite_ns
+        .checked_div(1_000)
+        .unwrap_or(0);
+    mia.is_some_and(|m| {
+        m.etichetta == Some(ancora.etichetta)
+            && m.posizione_us.abs_diff(ancora.posizione_us) <= salto_us
+    })
 }
 
 /// Com'è andato un passo.
@@ -215,8 +340,19 @@ impl Seguito {
         self.entro_dal = None;
     }
 
-    /// Un passo. Vedi il `//!` del modulo per le due regole: niente senza
-    /// stima, e quando si dice agganciato.
+    /// Un passo. Vedi il `//!` del modulo per le regole: niente senza stima
+    /// (tranne la pausa), e quando si dice agganciato.
+    ///
+    /// # Una riapertura che non riesce
+    ///
+    /// Non si ritenta al passo dopo: la stessa voce, con lo stesso perché,
+    /// aspetta mezzo secondo, poi uno, due, fino a otto. Una voce che non si
+    /// apre per un motivo che non passa da solo — un brano di catalogo che di
+    /// qui non si raggiunge, un gettone rifiutato — si chiedeva dieci volte al
+    /// secondo, ognuna con un filo nuovo e una richiesta all'host (reperto
+    /// R05-4). L'attesa vale solo per le riaperture: pause e posizioni
+    /// dell'host passano sempre, e una voce nuova (o un avvio programmato
+    /// nuovo dell'host) si prova subito.
     pub fn passo(
         &mut self,
         adesso: u64,
@@ -233,29 +369,61 @@ impl Seguito {
                     agganciato: false,
                     errore_ns: None,
                     incertezza_ns,
+                    rete_lenta: false,
                 },
             }
         };
-        let (Some(stima), Some(frequenza)) = (stima, motore.frequenza()) else {
+        let Some(frequenza) = motore.frequenza() else {
             return fermo(&mut self.entro_dal);
         };
+        // Senza stima non si fa niente che dipenda dall'orologio: vedi «Mai
+        // senza stima». Ma un'ancora ferma non ne dipende — la pausa e il
+        // punto da cui ripartire sono posizioni, non istanti — e chi segue si
+        // deve fermare subito quando l'host si ferma, anche se la stima è
+        // appena sparita (reperto R05-3, decisione D-31). Lì il regolatore
+        // riceve `None`, che per un'ancora ferma non conta.
+        let host_fermo = ancora.is_some_and(|a| !a.in_corso);
+        if stima.is_none() && !host_fermo {
+            return fermo(&mut self.entro_dal);
+        }
         if self.frequenza.is_some_and(|f| f != frequenza) {
             // Un'altra frequenza è quasi sempre un'altra uscita: lo stesso
             // azzeramento del cambio d'uscita, anche se nessuno l'ha detto.
             self.azzera();
         }
         self.frequenza = Some(frequenza);
+        if let (Some(r), Some(a)) = (self.rimandata, ancora.as_ref())
+            && (a.etichetta != r.etichetta || (a.programmata && *a != r.ancora))
+        {
+            self.rimandata = None;
+        }
         let mia = motore.da_me();
-        let mossa = self.regolatore.passo(
+        let mut mossa = self.regolatore.passo(
             adesso,
             ancora.as_ref(),
             mia.as_ref(),
-            Some(&stima),
+            stima.as_ref(),
             frequenza,
         );
+        if let Mossa::Riapri { etichetta, .. } = mossa
+            && self
+                .rimandata
+                .is_some_and(|r| r.etichetta == etichetta && adesso < r.fino)
+        {
+            // Non adesso: vedi «Una riapertura che non riesce». Il regolatore
+            // torna libero, come per una mossa non riuscita, così non aspetta
+            // la fine di una riapertura mai partita.
+            self.regolatore.mossa_non_riuscita();
+            mossa = Mossa::Niente;
+        }
         if mossa != Mossa::Niente {
             match motore.applica(mossa, frequenza) {
-                Ok(()) => self.ultimo_guasto = None,
+                Ok(()) => {
+                    self.ultimo_guasto = None;
+                    if matches!(mossa, Mossa::Riapri { .. }) {
+                        self.rimandata = None;
+                    }
+                }
                 Err(err) => {
                     // La mossa non è partita: il regolatore non deve
                     // aspettarne la fine (ignorerebbe pause e salti
@@ -270,21 +438,31 @@ impl Seguito {
                         );
                     }
                     self.ultimo_guasto = Some(codice);
+                    if let (Mossa::Riapri { etichetta, .. }, Some(a)) = (mossa, ancora) {
+                        self.rimanda(etichetta, codice, a, adesso);
+                    }
                 }
             }
         }
         let diagnosi = self.regolatore.diagnosi();
         let errore_ns = diagnosi.errore_filtrato_ns;
         let in_corso = ancora.is_some_and(|a| a.in_corso);
+        // Un orologio che sbaglia più della soglia non può dire che due PC
+        // suonano entro la soglia: via internet l'incertezza può essere di
+        // decine di millisecondi (decisione D-31).
+        let orologio_preciso = incertezza_ns.is_some_and(|i| i <= SOGLIA_AGGANCIO_NS);
         let agganciato = match (ancora, mossa) {
             (None, _) => {
                 self.entro_dal = None;
                 false
             }
-            // Ospite fermo: niente da misurare, basta la stima.
-            (Some(_), _) if !in_corso => {
+            // Ospite fermo: niente da misurare. Basta un orologio preciso e la
+            // voce dell'host in mano, al suo punto: la ripresa è programmata.
+            // Prima bastava la stima, e «agganciato» compariva anche con la
+            // voce che non si era potuta aprire (decisione D-31).
+            (Some(a), _) if !in_corso => {
                 self.entro_dal = None;
-                true
+                orologio_preciso && al_punto_dell_host(mia.as_ref(), &a)
             }
             // Una mossa vera vuol dire che non si era agganciati.
             (
@@ -301,7 +479,7 @@ impl Seguito {
             (Some(_), Mossa::Niente | Mossa::Deriva(_)) => match errore_ns {
                 Some(e) if e.unsigned_abs() <= SOGLIA_AGGANCIO_NS => {
                     let dal = *self.entro_dal.get_or_insert(adesso);
-                    adesso.saturating_sub(dal) >= DURATA_AGGANCIO_NS
+                    orologio_preciso && adesso.saturating_sub(dal) >= DURATA_AGGANCIO_NS
                 }
                 _ => {
                     self.entro_dal = None;
@@ -315,8 +493,28 @@ impl Seguito {
                 agganciato,
                 errore_ns: if in_corso { errore_ns } else { None },
                 incertezza_ns,
+                rete_lenta: false,
             },
         }
+    }
+
+    /// Una riapertura di `etichetta` non è riuscita per `codice`: la prossima
+    /// non prima di un'attesa che raddoppia, se il perché è lo stesso.
+    fn rimanda(&mut self, etichetta: u64, codice: ErrorCodeKind, ancora: DallOspite, adesso: u64) {
+        let volte = self
+            .rimandata
+            .filter(|r| r.etichetta == etichetta && r.codice == codice)
+            .map_or(1, |r| r.volte.saturating_add(1));
+        let attesa = RIMANDA_DOPO_NS
+            .saturating_mul(1_u64 << volte.saturating_sub(1).min(8))
+            .min(RIMANDA_AL_PIU_NS);
+        self.rimandata = Some(Rimandata {
+            etichetta,
+            codice,
+            volte,
+            fino: adesso.saturating_add(attesa),
+            ancora,
+        });
     }
 }
 
@@ -344,7 +542,7 @@ pub fn ciclo(
     sveglia: &Receiver<()>,
     adesso: fn() -> u64,
 ) {
-    let mut seguito = Seguito::default();
+    let mut seguito = Seguito::per(condivisa.lontano);
     let mut cadute_di_fila = 0_u32;
     loop {
         if condivisa.fermo.load(Ordering::Acquire) || crate::spegnimento::in_uscita() {
@@ -363,7 +561,9 @@ pub fn ciclo(
             .unwrap_or_else(PoisonError::into_inner)
             .stima();
         let fatto = crate::stato::sorvegliato("rymembra-insieme-sincronia", || {
-            let esito = seguito.passo(adesso(), ancora, stima, motore);
+            let t = adesso();
+            let mut esito = seguito.passo(t, ancora, stima, motore);
+            esito.aggancio.rete_lenta = stima.is_none() && condivisa.troppo_lenta(t);
             *condivisa
                 .aggancio
                 .lock()
@@ -374,7 +574,7 @@ pub fn ciclo(
             PASSO
         } else {
             cadute_di_fila = cadute_di_fila.saturating_add(1);
-            seguito = Seguito::default();
+            seguito = Seguito::per(condivisa.lontano);
             *condivisa
                 .aggancio
                 .lock()
@@ -691,6 +891,7 @@ mod prove {
             agganciato: true,
             errore_ns: Some(0),
             incertezza_ns: Some(200_000),
+            rete_lenta: false,
         };
         // Una stima dell'orologio subito: un punto basta.
         *condivisa.orologio.lock().unwrap() = Orologio::nuovo(TaraturaOrologio {
@@ -733,6 +934,246 @@ mod prove {
             motore.agganciato_dopo_la_caduta.get(),
             Some(false),
             "dopo la caduta la finestra non deve leggere «agganciato»"
+        );
+    }
+
+    /// Quaranta passi agganciati alla voce 5: chi segue suona.
+    fn agganciato(motore: &Finto, seguito: &mut Seguito) -> u64 {
+        let mut t = 1_000 * MS;
+        for _ in 0..40 {
+            *motore.adesso.borrow_mut() = t;
+            seguito.passo(t, Some(ancora_dell_host(t)), Some(stima()), motore);
+            t += 100 * MS;
+        }
+        assert!(motore.punto_us(t).1, "suona");
+        t
+    }
+
+    #[test]
+    fn senza_stima_una_pausa_dell_host_ferma_chi_segue() {
+        // Reperto R05-3 e decisione D-31: a metà sessione la stima può
+        // sparire (un riavvio dell'orologio dell'host, uno di quelli falsi di
+        // R05-2), e per otto secondi chi segue non seguiva niente — nemmeno la
+        // pausa, che non ha bisogno dell'orologio.
+        let motore = Finto::default();
+        let mut seguito = Seguito::default();
+        let t = agganciato(&motore, &mut seguito);
+        let ferma = DallOspite {
+            in_corso: false,
+            programmata: false,
+            ..ancora_dell_host(t)
+        };
+        *motore.adesso.borrow_mut() = t;
+        let esito = seguito.passo(t, Some(ferma), None, &motore);
+        assert_eq!(esito.mossa, Mossa::Pausa);
+        assert!(!motore.punto_us(t + 500 * MS).1, "fermo");
+        assert!(
+            !esito.aggancio.agganciato,
+            "senza stima non si è agganciati"
+        );
+        // Ma un'ancora in corso, senza stima, resta senza mosse: quella sì
+        // vuole l'orologio.
+        let mosse = motore.mosse.borrow().len();
+        let esito = seguito.passo(t + 100 * MS, Some(ancora_dell_host(t)), None, &motore);
+        assert_eq!(esito.mossa, Mossa::Niente);
+        assert_eq!(motore.mosse.borrow().len(), mosse);
+    }
+
+    #[test]
+    fn con_l_host_in_pausa_si_e_agganciati_solo_con_la_voce_e_un_orologio_preciso() {
+        // Decisione D-31: «agganciato» con l'host fermo voleva dire solo «c'è
+        // una stima», anche con la voce non aperta o con un orologio incerto
+        // di decine di millisecondi (via internet).
+        let ferma = |t| DallOspite {
+            in_corso: false,
+            programmata: false,
+            ..ancora_dell_host(t)
+        };
+        // Nessuna voce in mano: il motore non è riuscito ad aprirla.
+        struct Muto;
+        impl Motore for Muto {
+            fn da_me(&self) -> Option<DaMe> {
+                None
+            }
+            fn frequenza(&self) -> Option<u32> {
+                Some(F)
+            }
+            fn applica(&self, _: Mossa, _: u32) -> Result<(), AppError> {
+                Err(AppError::new(
+                    rymembra_domain::errors::ErrorCode::PlaybackSourceUnavailable {
+                        track_id: None,
+                        path: None,
+                    },
+                ))
+            }
+        }
+        let mut seguito = Seguito::default();
+        let esito = seguito.passo(MS, Some(ferma(MS)), Some(stima()), &Muto);
+        assert!(!esito.aggancio.agganciato, "senza la voce");
+        // La voce c'è, ma l'orologio sbaglia di 30 ms.
+        let motore = Finto::default();
+        let mut seguito = Seguito::default();
+        let t = agganciato(&motore, &mut seguito);
+        let incerta = Stima {
+            incertezza_ns: 30 * MS,
+            ..stima()
+        };
+        *motore.adesso.borrow_mut() = t;
+        let esito = seguito.passo(t, Some(ferma(t)), Some(incerta), &motore);
+        assert!(!esito.aggancio.agganciato, "con un orologio incerto");
+        // Voce e orologio buoni: sì.
+        let esito = seguito.passo(t + 100 * MS, Some(ferma(t)), Some(stima()), &motore);
+        assert!(esito.aggancio.agganciato);
+        // E anche con l'host in corso un orologio incerto non è agganciato.
+        let motore = Finto::default();
+        let mut seguito = Seguito::default();
+        let mut t = 1_000 * MS;
+        let mut mai = true;
+        for _ in 0..80 {
+            *motore.adesso.borrow_mut() = t;
+            let esito = seguito.passo(t, Some(ancora_dell_host(t)), Some(incerta), &motore);
+            mai &= !esito.aggancio.agganciato;
+            t += 100 * MS;
+        }
+        assert!(
+            mai,
+            "l'errore misurato è piccolo, ma l'orologio non lo sa dire"
+        );
+    }
+
+    #[test]
+    fn una_riapertura_che_non_riesce_non_si_ritenta_a_ogni_passo() {
+        // Reperto R05-4: una voce che non si apre (un catalogo che di qui non
+        // si raggiunge, un gettone rifiutato) si chiedeva a ogni passo, dieci
+        // volte al secondo, con un filo nuovo e una richiesta ogni volta.
+        #[derive(Default)]
+        struct Rotto {
+            tentate: std::cell::Cell<u32>,
+        }
+        impl Motore for Rotto {
+            // Fermo, senza una voce in mano: il regolatore chiede subito la
+            // riapertura, senza il secondo di grazia del gapless.
+            fn da_me(&self) -> Option<DaMe> {
+                Some(DaMe {
+                    etichetta: None,
+                    posizione_us: 0,
+                    udito_ns: 0,
+                    in_corso: false,
+                    in_correzione: false,
+                    riserva_us: 0,
+                })
+            }
+            fn frequenza(&self) -> Option<u32> {
+                Some(F)
+            }
+            fn applica(&self, mossa: Mossa, _: u32) -> Result<(), AppError> {
+                if matches!(mossa, Mossa::Riapri { .. }) {
+                    self.tentate.set(self.tentate.get() + 1);
+                }
+                Err(AppError::new(
+                    rymembra_domain::errors::ErrorCode::PlaybackSourceUnavailable {
+                        track_id: None,
+                        path: None,
+                    },
+                ))
+            }
+        }
+        let motore = Rotto::default();
+        let mut seguito = Seguito::default();
+        let mut t = 1_000 * MS;
+        for _ in 0..20 {
+            seguito.passo(t, Some(ancora_dell_host(t)), Some(stima()), &motore);
+            t += 100 * MS;
+        }
+        let tentate = motore.tentate.get();
+        assert!(
+            (2..=4).contains(&tentate),
+            "in due secondi {tentate} riaperture"
+        );
+        // Un'altra voce dell'host: si prova subito.
+        let altra = DallOspite {
+            etichetta: 6,
+            programmata: true,
+            ..ancora_dell_host(t)
+        };
+        seguito.passo(t, Some(altra), Some(stima()), &motore);
+        assert_eq!(motore.tentate.get(), tentate + 1, "la voce nuova subito");
+        // E la pausa dell'host passa lo stesso, anche durante l'attesa.
+        let motore = Finto::default();
+        let mut seguito = Seguito::default();
+        let t = agganciato(&motore, &mut seguito);
+        let esito = seguito.passo(
+            t,
+            Some(DallOspite {
+                in_corso: false,
+                programmata: false,
+                ..ancora_dell_host(t)
+            }),
+            Some(stima()),
+            &motore,
+        );
+        assert_eq!(esito.mossa, Mossa::Pausa);
+    }
+
+    #[test]
+    fn una_rete_sempre_sopra_il_tetto_dopo_trenta_secondi_si_dice() {
+        // Decisione D-31: con ogni scambio oltre il tetto dell'rtt la stima
+        // non arriva mai, e la finestra restava su «aggancio…» per sempre.
+        let c = Condivisa::nuova();
+        let lento = |t: u64| Scambio {
+            t1: t,
+            t2: t + 75 * MS,
+            t3: t + 75 * MS,
+            t4: t + 150 * MS,
+        };
+        let mut t = 1_000 * MS;
+        for _ in 0..29 {
+            c.scambio(lento(t));
+            t += 1_000 * MS;
+        }
+        assert!(!c.troppo_lenta(t), "dopo 29 s ancora no");
+        c.scambio(lento(t));
+        t += 2_000 * MS;
+        c.scambio(lento(t));
+        assert!(c.troppo_lenta(t), "dopo trenta secondi sì");
+        // Uno scambio buono: non è più vero.
+        c.scambio(Scambio {
+            t1: t,
+            t2: t + MS,
+            t3: t + MS,
+            t4: t + 2 * MS,
+        });
+        assert!(!c.troppo_lenta(t + 2 * MS));
+    }
+
+    #[test]
+    fn via_internet_l_anticipo_e_di_quattrocento_millisecondi() {
+        // Decisione D-31: via relay l'ancora arriva già con un paio di
+        // centinaia di millisecondi di ritardo e l'apertura in rete fa più
+        // giri, quindi con 250 ms chi segue entrava quasi sempre tardi.
+        let mut lontano = Seguito::per(true);
+        let mut vicino = Seguito::per(false);
+        let motore = Finto::default();
+        *motore.adesso.borrow_mut() = 1_000 * MS;
+        let quando = |esito: Esito| match esito.mossa {
+            Mossa::Riapri { quando_ns, .. } => quando_ns,
+            altra => panic!("attesa una riapertura, non {altra:?}"),
+        };
+        // Una voce scelta dall'host: si riapre subito.
+        let a = DallOspite {
+            programmata: true,
+            ..ancora_dell_host(1_000 * MS)
+        };
+        let t = 1_000 * MS;
+        assert_eq!(
+            quando(lontano.passo(t, Some(a), Some(stima()), &motore)),
+            t + 400 * MS
+        );
+        let motore = Finto::default();
+        *motore.adesso.borrow_mut() = t;
+        assert_eq!(
+            quando(vicino.passo(t, Some(a), Some(stima()), &motore)),
+            t + 250 * MS
         );
     }
 

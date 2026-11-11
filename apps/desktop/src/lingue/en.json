@@ -1643,6 +1643,7 @@
   "together.network.member.telefono": "Followers open no ports: if a PC is hosting, the firewall prompt only appears there.",
   "together.sync.locked": "In sync",
   "together.sync.locking": "Getting in sync…",
+  "together.sync.tooSlow": "The network is too slow to follow the session",
   "together.sync.offset": "offset {ms} ms",
   "together.sync.uncertainty": "± {ms} ms",
   "together.calibrate.title": "Calibrate",

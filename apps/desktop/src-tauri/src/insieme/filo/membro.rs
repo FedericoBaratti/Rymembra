@@ -65,6 +65,9 @@ impl Filo {
             self.nutri(Evento::LettoreRifiuta);
             return;
         };
+        // Da un host raggiunto via internet gli avvii si programmano più in
+        // là, qui come nel regolatore (decisione D-31).
+        ponte::anticipo_via_internet(&self.app, indirizzo.e_lontano());
         let condivisa = Arc::new(Condivisa::nuova_per(indirizzo.e_lontano()));
         let (sveglia, orecchio) = channel();
         let filo = match segui::avvia(self.app.clone(), Arc::clone(&condivisa), orecchio) {

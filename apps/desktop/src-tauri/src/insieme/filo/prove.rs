@@ -567,6 +567,7 @@ fn la_vetrina_arrotonda_l_errore_al_decimo_di_millisecondo() {
             agganciato: true,
             errore_ns: Some(1_234_567),
             incertezza_ns: Some(260_000),
+            rete_lenta: false,
         }),
         adesso_ms: 0,
         ora: 0,

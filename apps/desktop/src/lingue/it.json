@@ -1643,6 +1643,7 @@
   "together.network.member.telefono": "Chi segue non apre porte: se a ospitare è un PC, la richiesta del firewall compare solo lì.",
   "together.sync.locked": "Agganciato",
   "together.sync.locking": "Aggancio in corso…",
+  "together.sync.tooSlow": "La rete è troppo lenta per seguire la sessione",
   "together.sync.offset": "scarto {ms} ms",
   "together.sync.uncertainty": "± {ms} ms",
   "together.calibrate.title": "Calibra",
