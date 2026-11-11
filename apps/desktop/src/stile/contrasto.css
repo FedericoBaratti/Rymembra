@@ -48,13 +48,20 @@
  * come «finito». Ognuno torna con un segno che il sistema non può appiattire: un
  * anello, un bordo, `Highlight`.
  *
- * # L'unica eccezione
+ * # Le eccezioni
  *
- * `forced-color-adjust: none` sta sulla sola tela dello spettro, e si giustifica
- * da sé: lì i colori **sono** il contenuto. Uno spettro ridipinto col bianco e
- * il nero di sistema non è uno spettro ad alto contrasto, è un rettangolo. È
- * anche l'unico posto del foglio in cui un'immagine la generiamo noi invece di
- * caricarla da un file, cioè l'unico che il motore ridipingerebbe.
+ * `forced-color-adjust: none` sta in due famiglie di posti, e solo lì.
+ *
+ * Dove i colori **sono** il contenuto: la tela dello spettro, il QR, le
+ * anteprime delle skin, i campioni dello Studio. Uno spettro ridipinto col
+ * bianco e il nero di sistema non è uno spettro ad alto contrasto, è un
+ * rettangolo; un QR ridipinto non si legge più. Sono le immagini che generiamo
+ * noi invece di caricarle da un file, cioè quelle che il motore ridipingerebbe.
+ *
+ * E dove il testo sta su `Highlight`: lì il motore metterebbe dietro alle
+ * lettere il suo fondo `Canvas`, che è proprio il colore di `HighlightText`.
+ * Quelle regole scrivono soltanto colori di sistema, quindi la tavolozza resta
+ * quella che l'utente ha scelto.
  */
 @media (forced-colors: active) {
   :root {
@@ -98,6 +105,18 @@
     outline-offset: 2px;
   }
 
+  /* I campi di ricerca. Il campo toglie il suo anello e il fuoco lo segna il
+     guscio, con un bordo e un'ombra d'accento — le due cose che il motore
+     appiattisce: restava il solo cursore lampeggiante, che sparisce appena il
+     testo è selezionato (Ctrl+F, `/`). L'anello va sul guscio, come il resto del
+     segno. */
+  .cerca:focus-within,
+  .filtro-impostazioni:focus-within,
+  .cerca-livelli:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
   /* Il brano in riproduzione, nell'elenco e nella coda. `outline` rientrato e non
      un bordo: un bordo cambierebbe l'altezza della riga, e l'altezza della riga
      è quella che la finestra virtuale misura. */
@@ -107,20 +126,113 @@
     outline-offset: -2px;
   }
 
-  /* La destinazione aperta nella navigazione e la linguetta scelta di un
-     segmentato: il fondo appena più chiaro con cui si distinguono è la prima
-     cosa che il contrasto elevato appiattisce. */
+  /*
+   * Quel che è scelto: la destinazione aperta, la linguetta scelta, le righe
+   * scelte di un elenco, un tasto premuto (casuale, ripeti, la coda, il testo,
+   * lo spettro), e le voci scelte dello Studio. Fuori di qui le dice un fondo
+   * tinto o il solo colore dell'accento, cioè la prima cosa che il contrasto
+   * elevato appiattisce: dodici righe scelte erano identiche alle altre, e
+   * «Casuale» acceso identico a spento.
+   *
+   * Tornano come le scrive il sistema stesso, fondo `Highlight` e testo
+   * `HighlightText`. Le tre righe in più non sono decorazione:
+   *
+   * - `forced-color-adjust: none`. Con `auto` il motore disegna dietro a ogni
+   *   riga di testo un fondo `Canvas`, e `HighlightText` in tutte le tavolozze
+   *   di sistema **è** il colore di `Canvas`: il nome della voce attiva
+   *   diventava un rettangolo pieno, nero su nero o bianco su bianco (R16-2,
+   *   visto dal vivo in tutti e due gli schemi). Tolto il fondo, restano i soli
+   *   colori di sistema scritti qui, che il motore non deve più correggere.
+   * - `!important`. Il foglio della skin arriva **dopo** questo, e i suoi stati
+   *   pesano (0,3,0) o più (`:root[data-skin] .nav-pill…`): Neon e Vinile
+   *   ridipingono proprio la voce attiva. In `auto` una regola d'autore più
+   *   pesante toglie il colore di sistema di qui anche se il motore poi la
+   *   forza; in `none` passerebbe com'è, ciano su un velo d'accento. È la
+   *   stessa ragione di `[hidden]` in `stile.css`, ristretta alle proprietà che
+   *   `none` lascerebbe passare.
+   * - I discendenti si tirano dietro il colore del genitore e perdono il fondo
+   *   loro: `none` si eredita, e un numerino col suo grigio o l'iniziale d'una
+   *   playlist col suo fondo d'accento comparirebbero coi colori della skin.
+   */
   .voce[data-active],
-  .segmentato .linguetta[data-active] {
-    background: Highlight;
-    color: HighlightText;
+  .segmentato .linguetta[data-active],
+  .riga[data-scelta],
+  .tasto[aria-pressed='true'],
+  .tasto-icona[aria-pressed='true'],
+  .voce-livello[aria-selected='true'],
+  .riga-scafale[aria-selected='true'] {
+    forced-color-adjust: none;
+    background: Highlight !important;
+    color: HighlightText !important;
+    border-color: Highlight !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
   }
-  /* I due numerini dentro quelle due: hanno un colore proprio, che il motore
-     forzerebbe a `CanvasText` — cioè al colore del **fondo** della finestra,
-     sopra `Highlight`. Si tirano dietro al loro genitore. */
-  .voce[data-active] .conteggio,
-  .segmentato .linguetta[data-active] .quante {
-    color: HighlightText;
+  .voce[data-active] *,
+  .segmentato .linguetta[data-active] *,
+  .riga[data-scelta] *,
+  .tasto[aria-pressed='true'] *,
+  .tasto-icona[aria-pressed='true'] *,
+  .voce-livello[aria-selected='true'] *,
+  .riga-scafale[aria-selected='true'] * {
+    color: inherit !important;
+    background: none !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+  /* Dentro una riga scelta i comandi hanno il loro fuoco: `Highlight` sopra
+     `Highlight` non si vedrebbe. E la riga è una parte con livelli
+     (`list-row`): un livello di skin, con `none` ereditato, si dipingerebbe coi
+     suoi colori sopra il fondo di sistema, quindi qui non c'è. */
+  .riga[data-scelta] :focus-visible {
+    outline-color: HighlightText !important;
+  }
+  .riga[data-scelta]::before,
+  .riga[data-scelta]::after {
+    content: none !important;
+  }
+  /* La riga che suona e insieme è scelta: il suo anello rientrato, qui sopra,
+     sarebbe `Highlight` sopra `Highlight`. In `HighlightText` e rientrato di
+     altri due pixel: sul bordo esatto della riga avrebbe il colore della
+     finestra lì accanto (`HighlightText` è `Canvas`), e si leggerebbe come una
+     riga un poco più stretta invece che come un anello. */
+  .riga[data-scelta][aria-current='true'] {
+    outline-color: HighlightText;
+    outline-offset: -4px;
+  }
+
+  /* Acceso ma non premuto: l'equalizzatore coi filtri attivi a pannello
+     chiuso, una sessione di «Ascolta insieme» in corso. Fuori di qui è
+     l'icona d'accento; qui l'icona in `Highlight`, un gradino sotto il fondo
+     pieno del premuto. Un'icona non ha testo, quindi niente fondo di sistema
+     dietro e niente `none`. */
+  .con-pannello .tasto[data-acceso]:not([aria-pressed='true']),
+  .tasto-insieme[data-acceso]:not([aria-pressed='true']) {
+    color: Highlight !important;
+  }
+
+  /* La riga cantata del testo. Fuori di qui è trasparente, e il suo colore lo
+     dà un gradiente ritagliato sulle lettere: tolto il gradiente, restava
+     distinta solo per l'ingrandimento. Testo `Highlight` sul fondo di sistema,
+     che è la coppia che il sistema garantisce leggibile. */
+  .lyric-line[data-attiva] {
+    color: Highlight !important;
+  }
+
+  /* Le tacche della fiducia di un'importazione: quante sono accese è
+     l'informazione, e accese e spente erano due fondi forzati allo stesso
+     colore. */
+  .tacche > span {
+    border: 1px solid CanvasText;
+  }
+  .tacche > span[data-accesa] {
+    background: Highlight;
+  }
+
+  /* La linguetta scelta dello Studio la dice un filo sotto, che è un fondo
+     d'accento: lo stesso filo, in `Highlight`. */
+  .scheda-studio[aria-selected='true']::after {
+    background: Highlight;
   }
 
   /* L'interruttore. La pista prende un bordo perché vuota non si vedrebbe, e
@@ -230,8 +342,18 @@
     opacity: 1;
   }
 
-  /* Lo spettro: qui i colori sono il contenuto. */
-  .scena-spettro {
+  /* Dove i colori sono il contenuto. Lo spettro; il QR di «Collega un
+     dispositivo», bianco e nero per costruzione, che ridipinto diventava un
+     quadrato uniforme (il motore forza anche gli attributi `fill` dell'SVG);
+     le fasce d'anteprima delle skin e di «Crea tema», e i campioni e le
+     pastiglie di colore dello Studio, che senza i loro colori non mostrano
+     più niente. */
+  .scena-spettro,
+  .qr-collega,
+  .scheda-skin .bande,
+  .basi-tema .bande,
+  .campione,
+  .valore-colore .pastiglia {
     forced-color-adjust: none;
   }
 }

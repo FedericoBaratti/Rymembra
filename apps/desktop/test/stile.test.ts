@@ -396,3 +396,107 @@ test("chi galleggia in fondo riserva il suo spazio, anche al fuoco", () => {
   const impaginazione = readFileSync(new URL("../src/Impaginazione.tsx", import.meta.url), "utf8");
   assert.match(impaginazione, /data-selezione=\{WIDGET\["selection-bar"\]\?\.visibile\?\.\(contesto/);
 });
+
+/** Vero se `selettore` è `antenato` stesso, o un suo discendente scritto a partire da lui. */
+function dentro(selettore: string, antenato: string): boolean {
+  return selettore === antenato || selettore.startsWith(`${antenato} `) || selettore.startsWith(`${antenato}::`);
+}
+
+test("in contrasto elevato nessun testo HighlightText finisce sul fondo di sistema", () => {
+  // Con `forced-color-adjust: auto` il motore disegna dietro a ogni riga di
+  // testo un fondo `Canvas`, e in tutte le tavolozze di sistema `HighlightText`
+  // è il colore di `Canvas`: la voce attiva della navigazione e la linguetta
+  // scelta diventavano un rettangolo pieno senza nome (R16-2, visto dal vivo).
+  // Chi scrive testo `HighlightText` deve togliere quel fondo, su di sé o su un
+  // antenato dichiarato nello stesso blocco.
+  const forzato = regole(bloccoForzato());
+  const senzaFondo = forzato
+    .filter((r) => /forced-color-adjust:\s*none/.test(r.dichiarazioni))
+    .flatMap((r) => r.selettori);
+  const scoperti = forzato
+    .filter((r) => /(^|[^-])color:\s*HighlightText/.test(r.dichiarazioni))
+    .flatMap((r) => r.selettori)
+    .filter((s) => !senzaFondo.some((a) => dentro(s, a)));
+  assert.deepEqual(scoperti, []);
+});
+
+test("in contrasto elevato la riga scelta e i tasti premuti hanno un segno", () => {
+  const forzato = regole(bloccoForzato());
+  /** Le dichiarazioni (unite) delle regole che nominano proprio questo selettore. */
+  const di = (selettore: string) =>
+    forzato
+      .filter((r) => r.selettori.includes(selettore))
+      .map((r) => r.dichiarazioni)
+      .join("\n");
+  // Riga scelta e tasti premuti: fondo `Highlight`, con `!important` perché il
+  // foglio della skin arriva dopo e i suoi stati pesano (0,3,0) o più — Neon e
+  // Vinile li ridipingono — e una regola d'autore più pesante, anche forzata,
+  // toglie il colore di sistema di questo blocco.
+  for (const scelto of [
+    ".voce[data-active]",
+    ".segmentato .linguetta[data-active]",
+    ".riga[data-scelta]",
+    ".tasto[aria-pressed='true']",
+    ".tasto-icona[aria-pressed='true']",
+    ".voce-livello[aria-selected='true']",
+    ".riga-scafale[aria-selected='true']",
+  ]) {
+    const d = di(scelto);
+    assert.match(d, /background:\s*Highlight !important/, `${scelto}: nessun fondo Highlight`);
+    assert.match(d, /(^|[^-])color:\s*HighlightText !important/, `${scelto}: il testo non è HighlightText`);
+    assert.match(d, /forced-color-adjust:\s*none/, `${scelto}: il testo finirebbe sul fondo di sistema`);
+  }
+  // La riga che suona e insieme è scelta: l'anello rientrato non può essere
+  // `Highlight` sopra un fondo `Highlight`.
+  assert.match(di(".riga[data-scelta][aria-current='true']"), /outline-color:\s*HighlightText/);
+  assert.match(di(".riga[data-scelta][aria-current='true']"), /outline-offset:\s*-4px/);
+  // Accesi (l'equalizzatore coi filtri, una sessione insieme): l'icona in
+  // `Highlight`, un gradino sotto il premuto.
+  for (const acceso of [
+    ".con-pannello .tasto[data-acceso]:not([aria-pressed='true'])",
+    ".tasto-insieme[data-acceso]:not([aria-pressed='true'])",
+  ]) {
+    assert.match(di(acceso), /(^|[^-])color:\s*Highlight !important/, acceso);
+  }
+  // La riga cantata, le tacche della fiducia e la linguetta dello Studio.
+  assert.match(di(".lyric-line[data-attiva]"), /(^|[^-])color:\s*Highlight !important/);
+  assert.match(di(".tacche > span"), /border:\s*1px solid CanvasText/);
+  assert.match(di(".tacche > span[data-accesa]"), /background:\s*Highlight/);
+  assert.match(di(".scheda-studio[aria-selected='true']::after"), /background:\s*Highlight/);
+});
+
+test("in contrasto elevato il guscio di un campo di ricerca segna il fuoco", () => {
+  // Il campo toglie il suo anello e il fuoco lo dice il guscio, con un bordo e
+  // un'ombra d'accento: due cose che il contrasto elevato appiattisce. Restava
+  // il cursore lampeggiante, che sparisce col testo selezionato (D-74).
+  const forzato = regole(bloccoForzato());
+  const anelli = forzato
+    .filter((r) => /outline:\s*2px solid Highlight/.test(r.dichiarazioni))
+    .flatMap((r) => r.selettori);
+  for (const guscio of [".cerca", ".filtro-impostazioni", ".cerca-livelli"]) {
+    assert.ok(
+      anelli.some((s) => s.endsWith(":focus-within") && s.includes(guscio)),
+      `${guscio}: nessun anello Highlight al fuoco`,
+    );
+  }
+});
+
+test("in contrasto elevato i colori che sono il contenuto restano quelli", () => {
+  // Il motore impone i colori di sistema anche a `fill` e agli stili in linea:
+  // il QR diventava un quadrato uniforme che la fotocamera non legge, e le
+  // anteprime delle skin tre riquadri uguali.
+  const tutte = regole(senzaCommenti(FOGLIO));
+  for (const contenuto of [
+    ".scena-spettro",
+    ".qr-collega",
+    ".scheda-skin .bande",
+    ".basi-tema .bande",
+    ".campione",
+    ".valore-colore .pastiglia",
+  ]) {
+    assert.ok(
+      tutte.some((r) => r.selettori.includes(contenuto) && /forced-color-adjust:\s*none/.test(r.dichiarazioni)),
+      `${contenuto}: il motore lo ridipinge`,
+    );
+  }
+});
