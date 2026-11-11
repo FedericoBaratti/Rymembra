@@ -149,19 +149,40 @@ pub fn telefono_cartella_musica() -> Esito<String> {
 ///
 /// # Errori
 ///
-/// Come [`telefono_permessi`], e se la cartella scelta non ha un percorso (un
-/// servizio cloud che si presenta nel selettore).
+/// Come [`telefono_permessi`]; `fs.pathInvalid` se la cartella scelta non sta
+/// nella memoria del telefono né su una scheda SD ([`cartella_fuori`]).
 #[tauri::command]
 pub async fn telefono_scegli_cartella() -> Esito<Option<String>> {
     #[cfg(target_os = "android")]
-    return in_attesa(
-        "scelta della cartella",
-        rymembra_android::sistema::scegli_cartella,
-    )
-    .await
-    .map(|scelta| scelta.map(|cartella| cartella.to_string_lossy().into_owned()));
+    {
+        use rymembra_android::sistema::Cartella;
+        match in_attesa(
+            "scelta della cartella",
+            rymembra_android::sistema::scegli_cartella,
+        )
+        .await?
+        {
+            None => Ok(None),
+            Some(Cartella::Percorso(cartella)) => Ok(Some(cartella.to_string_lossy().into_owned())),
+            Some(Cartella::Fuori(fornitore)) => Err(errore(cartella_fuori(&fornitore))),
+        }
+    }
     #[cfg(not(target_os = "android"))]
     solo_su_android()
+}
+
+/// Una cartella scelta nel selettore di Android che non ha un percorso: sta in
+/// «Download», o in un'app cloud che offre cartelle, e la scansione non la può
+/// camminare. Non un guasto — il selettore la offre, e sceglierla è un gesto
+/// normale — ma un percorso che non si può usare: la frase del telefono
+/// (`errors.fs.pathInvalid.telefono`) dice di sceglierne una nella memoria o
+/// su una scheda SD. Prima era `internal.unexpected`, «Riavvia Rymembra».
+#[cfg(any(target_os = "android", test))]
+fn cartella_fuori(fornitore: &str) -> AppError {
+    AppError::new(ErrorCode::FsPathInvalid {
+        path: fornitore.to_owned(),
+    })
+    .with_cause("la cartella scelta non sta nella memoria del telefono né su una scheda SD")
 }
 
 /// Fa scegliere un documento, e ne restituisce una copia nella cache. `None`
@@ -669,6 +690,20 @@ pub fn installa_l_uscita_audio() {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// «Download» o un'app cloud scelti nel selettore: un percorso che non si
+    /// può usare, con la frase che dice dove sceglierne uno, e non un guasto da
+    /// «Riavvia Rymembra».
+    #[test]
+    fn una_cartella_fuori_memoria_non_e_un_guasto() {
+        let err = cartella_fuori("com.android.providers.downloads.documents");
+        assert!(
+            matches!(err.code(), ErrorCode::FsPathInvalid { path } if path.contains("downloads")),
+            "{:?}",
+            err.code()
+        );
+        assert!(!err.is_retryable());
+    }
 
     #[test]
     fn un_percorso_fuori_dalla_cache_non_si_salva_ne_si_cancella() {

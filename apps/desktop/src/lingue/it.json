@@ -326,6 +326,7 @@
   "errors.fs.notFound": "Questo file non c'è più dov'era. Può essere stato spostato fuori da Rymembra: una scansione rimette a posto la libreria.",
   "errors.fs.permissionDenied": "Rymembra non ha il permesso di leggere o scrivere qui. Scegli una cartella tua, o cambia i permessi di questa.",
   "errors.fs.pathInvalid": "Questo percorso non si può usare. Scegli una cartella che esiste e su cui hai il permesso di scrivere.",
+  "errors.fs.pathInvalid.telefono": "Questa cartella non si può usare. Sul telefono Rymembra legge solo le cartelle della memoria del telefono e delle schede SD, non quelle di «Download» né delle app cloud: scegline una lì.",
   "errors.fs.extensionRefused": "Rymembra scrive questo file solo con l'estensione del suo formato. Tieni quella che il dialogo propone, o scegline un'altra dall'elenco dei tipi sotto il nome.",
   "errors.fs.diskFull": "Il disco è pieno. Libera dello spazio e riprova: niente è stato scritto a metà.",
   "errors.fs.inUse": "Questo file è aperto da un altro programma. Chiudilo e riprova.",

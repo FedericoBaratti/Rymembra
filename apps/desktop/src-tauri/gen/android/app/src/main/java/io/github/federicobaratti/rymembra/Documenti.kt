@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -21,22 +22,30 @@ object Documenti {
   /** L'autorità dei documenti della memoria del telefono e delle schede SD. */
   private const val MEMORIA = "com.android.externalstorage.documents"
 
-  fun scegliCartella(attivita: MainActivity): String? {
+  /**
+   * `null` se chi guarda ha annullato; `{"percorso": …}` per una cartella
+   * della memoria del telefono o di una scheda SD; `{"fuori": <fornitore>}` per
+   * una che non sta lì — «Download», un'app cloud che offre cartelle — e che
+   * quindi non ha un percorso da camminare. Non un'eccezione: è una scelta che
+   * il selettore permette, e Rust la dice con una frase sua invece che come un
+   * guasto (vedi `telefono::telefono_scegli_cartella`).
+   */
+  fun scegliCartella(attivita: MainActivity): JSONObject? {
     val risultato = attivita.aspettaRisultato(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE))
     if (risultato.resultCode != Activity.RESULT_OK) return null
     val albero = risultato.data?.data ?: return null
-    return percorsoDi(albero)
+    val percorso = percorsoDi(albero) ?: return JSONObject().put("fuori", albero.authority ?: "")
+    return JSONObject().put("percorso", percorso)
   }
 
   /**
    * `content://…externalstorage.documents/tree/primary:Music/Rock` diventa
    * `/storage/emulated/0/Music/Rock`; un volume che non è `primary` — una
-   * scheda SD, `1A2B-3C4D` — diventa `/storage/1A2B-3C4D/…`.
+   * scheda SD, `1A2B-3C4D` — diventa `/storage/1A2B-3C4D/…`. `null` per una
+   * cartella di un altro fornitore, che un percorso non ce l'ha.
    */
-  fun percorsoDi(albero: Uri): String {
-    require(albero.authority == MEMORIA) {
-      "la cartella scelta non sta nella memoria del telefono: sceglierne una lì, o su una scheda SD"
-    }
+  fun percorsoDi(albero: Uri): String? {
+    if (albero.authority != MEMORIA) return null
     val id = DocumentsContract.getTreeDocumentId(albero)
     val volume = id.substringBefore(':')
     val resto = id.substringAfter(':', "").trim('/')

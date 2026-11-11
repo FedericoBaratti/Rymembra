@@ -75,21 +75,46 @@ pub fn cartella_musica() -> Result<PathBuf, Errore> {
     chiama::<String>("sistema.cartellaMusica", &()).map(PathBuf::from)
 }
 
-/// Fa scegliere una cartella con il selettore di sistema, e la restituisce
-/// come percorso. `Ok(None)` se chi guarda ha annullato.
+/// La cartella scelta nel selettore di sistema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cartella {
+    /// Una cartella della memoria del telefono o di una scheda SD, col suo
+    /// percorso vero.
+    Percorso(PathBuf),
+    /// Una cartella di un altro fornitore — «Download», un'app cloud che offre
+    /// cartelle nel selettore —, che non ha un percorso da camminare. Il
+    /// fornitore, per il diario.
+    Fuori(String),
+}
+
+#[derive(Deserialize)]
+struct Scelta {
+    #[serde(default)]
+    percorso: Option<String>,
+    #[serde(default)]
+    fuori: Option<String>,
+}
+
+/// Fa scegliere una cartella con il selettore di sistema. `Ok(None)` se chi
+/// guarda ha annullato.
 ///
 /// Il selettore dà un URI di albero (`content://…/tree/primary:Music`); qui
 /// arriva tradotto nel percorso vero (`/storage/emulated/0/Music`), perché la
 /// scansione legge i file con le funzioni di sempre. Una cartella che non ha un
-/// percorso — un servizio cloud che si presenta nel selettore — è un errore.
+/// percorso non è un errore ma [`Cartella::Fuori`]: è una scelta che il
+/// selettore permette, e chi chiama la dice con una frase sua.
 ///
 /// Bloccante: vedi il preambolo del modulo.
 ///
 /// # Errori
 ///
-/// Se il ponte non risponde, o se la cartella scelta non ha un percorso.
-pub fn scegli_cartella() -> Result<Option<PathBuf>, Errore> {
-    chiama::<Option<String>>("sistema.scegliCartella", &()).map(|scelta| scelta.map(PathBuf::from))
+/// Se il ponte non risponde.
+pub fn scegli_cartella() -> Result<Option<Cartella>, Errore> {
+    let scelta: Option<Scelta> = chiama("sistema.scegliCartella", &())?;
+    Ok(scelta.map(|scelta| match (scelta.percorso, scelta.fuori) {
+        (Some(percorso), None) => Cartella::Percorso(PathBuf::from(percorso)),
+        (_, fuori) => Cartella::Fuori(fuori.unwrap_or_default()),
+    }))
 }
 
 #[derive(Serialize)]
