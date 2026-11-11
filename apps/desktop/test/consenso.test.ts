@@ -84,3 +84,37 @@ test("l'esame di una skin si legge com'è, anche sotto una skin che non si legge
   const dialogo = esame.slice(esame.indexOf("<Dialogo"), esame.indexOf("<ul"));
   assert.match(dialogo, /^\s*consenso$/m);
 });
+
+test("i consensi che arrivano da soli stanno fuori da .finestra-app, e si aprono sopra lo Studio", () => {
+  // R13-1 e D-29. «X vuole collegarsi» e il codice di «Ascolta insieme»
+  // arrivano anche con lo Studio aperto: montati dentro `.finestra-app`, che
+  // lo Studio rende inerte, non si vedevano e congelavano la finestra.
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const blocco = (apertura: string) => {
+    const da = app.indexOf(apertura);
+    assert.ok(da >= 0, `non trovo «${apertura}»`);
+    // I due contenitori sono figli di `Fornitori`, rientrati di sei spazi:
+    // il primo `</div>` allo stesso rientro li chiude.
+    return app.slice(da, app.indexOf("\n      </div>", da));
+  };
+  const finestraApp = blocco('<div className="finestra-app" inert={studioVisibile}>');
+  const domande = blocco('<div className="strato-domande">');
+  for (const ospite of ["<InsiemeInApp", "<LontanoInApp"]) {
+    assert.ok(!finestraApp.includes(ospite), `${ospite} è ancora sotto .finestra-app`);
+    assert.ok(domande.includes(ospite), `${ospite} non è nel loro strato`);
+  }
+  // Lo strato sta sopra lo Studio e sotto i tasti della finestra.
+  const valore = (nome: string) => {
+    const trovato = new RegExp(String.raw`--strato-${nome}:\s*(\d+);`).exec(FOGLIO);
+    assert.ok(trovato, `manca --strato-${nome}`);
+    return Number(trovato[1]);
+  };
+  assert.ok(valore("domande") > valore("studio"), "sotto lo Studio");
+  assert.ok(valore("domande") < valore("finestra"), "sopra i tasti della finestra");
+  const regola = corpo(FOGLIO, ".strato-domande {");
+  assert.match(regola, /position:\s*fixed;/);
+  assert.match(regola, /z-index:\s*var\(--strato-domande\);/);
+  // Niente `inset`: un contenitore grande quanto lo schermo si mangerebbe i
+  // clic; vuoto e fisso, è largo zero e i veli dentro coprono loro.
+  assert.doesNotMatch(regola, /inset|width|height/);
+});

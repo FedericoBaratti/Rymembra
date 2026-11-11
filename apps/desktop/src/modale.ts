@@ -276,6 +276,11 @@ export interface NodoDiAlbero {
   readonly children: ArrayLike<NodoDiAlbero>;
   /** Per i marchi: vedi `SEMPRE_VIVO` e `ANNUNCIO`. */
   hasAttribute(nome: string): boolean;
+  /**
+   * Già inerte. Lo porta `HTMLElement`; per gli altri nodi manca, e vale
+   * «no». Vedi «Un velo già sepolto».
+   */
+  readonly inert?: boolean;
 }
 
 /**
@@ -329,8 +334,21 @@ const NON_DISEGNATI: ReadonlySet<string> = new Set([
  * tutto quel che non è un antenato del velo e non sta sotto di lui.
  *
  * Tranne chi porta uno dei due marchi (`SEMPRE_VIVO`, `ANNUNCIO`).
+ *
+ * # Un velo già sepolto non spegne niente
+ *
+ * Se un antenato del velo è già inerte — e chi chiama ha appena tolto i suoi
+ * `inert`, quindi è di qualcun altro: la finestra sotto lo Studio — la
+ * finestrella non si vede e non prende il fuoco. Spegnere anche il resto
+ * voleva dire congelare la finestra intera, Studio compreso, per una domanda
+ * che nessuno poteva leggere. Le domande che arrivano da sole stanno fuori da
+ * quella finestra, sopra lo Studio (`.strato-domande` in `App.tsx`); questo è
+ * il ripiego per le altre.
  */
 export function daRendereInerti<N extends NodoDiAlbero>(velo: N): N[] {
+  for (let su = velo.parentElement; su !== null; su = su.parentElement) {
+    if (su.inert === true) return [];
+  }
   const inerti: N[] = [];
   let gradino: NodoDiAlbero = velo;
   let genitore = gradino.parentElement;

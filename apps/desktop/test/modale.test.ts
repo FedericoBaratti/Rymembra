@@ -173,6 +173,7 @@ interface Finto extends NodoDiAlbero {
   parentElement: Finto | null;
   children: Finto[];
   attributi: Set<string>;
+  inert?: boolean;
 }
 
 function nodo(nome: string, tagName = "DIV", ...figli: Finto[]): Finto {
@@ -294,4 +295,17 @@ test("ogni finestrella ha la sua risposta", () => {
   assert.equal(prima(), true);
   assert.equal(dopo(), true);
   assert.equal(prima(), false);
+});
+
+test("un velo già sepolto sotto un inerte d'altri non spegne niente", () => {
+  // R13-1. Una conferma montata dentro `.finestra-app` mentre lo Studio la
+  // rende inerte non si vede: spegnere anche Studio e tasti della finestra
+  // voleva dire congelare tutto per una domanda che nessuno poteva leggere.
+  const velo = nodo("velo");
+  const app = nodo("app", "DIV", nodo("pagina"), velo);
+  app.inert = true;
+  const radice = nodo("radice", "DIV", app, nodo("studio"), nodo("barra"));
+  nodo("body", "BODY", radice);
+
+  assert.deepEqual(daRendereInerti(velo), []);
 });

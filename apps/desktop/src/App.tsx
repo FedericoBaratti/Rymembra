@@ -4246,20 +4246,6 @@ export function App() {
           </RecintoErrori>
         )}
 
-        {/* Una volta sola, fuori dalle due copie della pagina: gli ascolti di
-            `insieme:stato` e `insieme:avviso`, e le finestrelle che ne nascono
-            — il codice dell'associazione, la spiegazione del firewall, il
-            pannello aperto dalla fascia o dalla colonna. Vedi `parti/Insieme`.
-            Il guasto della fascia gli arriva per disegnarlo anche dentro il
-            pannello, che copre la fascia: vedi `VistaInsieme.guasto`. */}
-        <InsiemeInApp onErrore={segnalaErrore} guasto={guasto} onChiudiGuasto={chiudiErrore} />
-
-        {/* Una volta sola, come quella sopra: l'ascolto di `lontano:stato` e
-            `lontano:link`, e le tre finestrelle del collegamento via internet
-            — chi chiede di collegarsi, il link aperto da fuori, i dati mobili.
-            Vedi `parti/Dispositivi.tsx`. */}
-        <LontanoInApp onErrore={segnalaErrore} onNotizia={setNotizia} />
-
         {filePlaylist !== null && (
           <ImportaPlaylist
             percorso={filePlaylist}
@@ -4600,6 +4586,29 @@ export function App() {
             del computer — la barra laterale, la terza colonna, le scorciatoie —
             e sul telefono indicherebbero posti che non ci sono. */}
         {giroAperto && !MOBILE && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
+      </div>
+
+      {/* Le domande che arrivano da sole, fuori da `.finestra-app` e sopra lo
+          Studio (`.strato-domande`): «X vuole collegarsi» e il codice di
+          «Ascolta insieme» arrivano anche mentre si disegna una skin, e
+          montate là dentro — che lo Studio rende inerte — non si vedevano, e
+          il loro velo congelava la finestra intera.
+
+          `InsiemeInApp`: una volta sola, fuori dalle due copie della pagina,
+          gli ascolti di `insieme:stato` e `insieme:avviso` e le finestrelle
+          che ne nascono — il codice dell'associazione, la spiegazione del
+          firewall, il pannello aperto dalla fascia o dalla colonna. Vedi
+          `parti/Insieme`. Il guasto della fascia gli arriva per disegnarlo
+          anche dentro il pannello, che copre la fascia: vedi
+          `VistaInsieme.guasto`.
+
+          `LontanoInApp`: l'ascolto di `lontano:stato` e `lontano:link`, e le
+          tre finestrelle del collegamento via internet — chi chiede di
+          collegarsi, il link aperto da fuori, i dati mobili. Vedi
+          `parti/Dispositivi.tsx`. */}
+      <div className="strato-domande">
+        <InsiemeInApp onErrore={segnalaErrore} guasto={guasto} onChiudiGuasto={chiudiErrore} />
+        <LontanoInApp onErrore={segnalaErrore} onNotizia={setNotizia} />
       </div>
 
       {/* Le notizie della fascia e «Playlist eliminata — Annulla», a chi
