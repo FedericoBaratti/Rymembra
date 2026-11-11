@@ -59,14 +59,26 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
-    <!-- Le app che Rymembra deve poter vedere. Android Auto e il centro
-         multimediale delle auto con Android: entrano nella sessione della
-         musica solo se sono loro davvero, e per saperlo servono il loro uid e
-         il loro certificato (vedi `Controllori`). -->
+    <!-- Le app che Rymembra deve poter vedere. Android Auto, il centro
+         multimediale delle auto con Android e l'Assistente Google (sul
+         telefono e nelle auto): entrano nella sessione della musica solo se
+         sono loro davvero, e per saperlo servono il loro uid e il loro
+         certificato (vedi `Controllori`). -->
     <queries>
         <package android:name="com.google.android.projection.gearhead" />
         <package android:name="com.android.car.media" />
         <package android:name="com.android.car.carlauncher" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.carassistant" />
+        <!-- Le app con un ascoltatore delle notifiche: l'app di un orologio,
+             un telecomando musicale. Entrano se chi usa il telefono ha dato
+             loro l'accesso alle notifiche, ed è Media3 a guardarlo
+             (`ControllerInfo.isTrusted`); ma per guardarlo deve vedere il loro
+             pacchetto, e da Android 11 un pacchetto che `<queries>` non nomina
+             per Rymembra non esiste: venivano rifiutate (vedi `Controllori`). -->
+        <intent>
+            <action android:name="android.service.notification.NotificationListenerService" />
+        </intent>
         <!-- L'installatore di sistema, che l'APK di un aggiornamento lo
              riceve per nome e non da un intento che chiunque può prendere
              (vedi `Installatore.installatoreDiSistema`). -->
@@ -98,13 +110,20 @@
              di Rymembra quando la si riapre. Android ritrova lo stesso il
              compito di un'attività `singleTask` dal nome dell'attività, non
              dall'affinità: lanciatore, notifiche, link e Recenti tornano lì. -->
+        <!-- In verticale, per questo rilascio: in orizzontale i fogli, le
+             finestrelle e le notifiche della pagina non tengono conto della
+             barra di sistema che va di lato, né del ritaglio della fotocamera
+             (D-77). Da Android 16 gli schermi grandi (tablet, pieghevoli
+             aperti) ignorano il blocco: lì l'orizzontale resta possibile. -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
             android:taskAffinity=""
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
-            android:exported="true">
+            android:screenOrientation="portrait"
+            android:exported="true"
+            tools:ignore="LockedOrientationActivity">
             <!-- Solo il lanciatore del telefono. Quello di Android TV
                  (`LEANBACK_LAUNCHER`, dal modello di Tauri) prometteva un'app
                  da televisore che non c'è: l'interfaccia è fatta per le dita,
@@ -184,6 +203,15 @@
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />
+
+        <!-- La finestra di Rymembra è una WebView di sistema, e la WebView di
+             sistema manda a Google dati d'uso e di diagnostica per ogni app che
+             la apre, se chi usa il telefono ha acconsentito alla condivisione
+             dei dati di utilizzo **e** l'app non dice di no. Rymembra non manda
+             niente a nessuno (PRIVACY.md): dice di no. -->
+        <meta-data
+            android:name="android.webkit.WebView.MetricsOptOut"
+            android:value="true" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

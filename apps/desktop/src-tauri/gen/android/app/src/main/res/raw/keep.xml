@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Le risorse che la build di rilascio deve tenere anche se nessun `R.drawable`
+  le nomina.
+
+  Le icone delle schede di Android Auto (`auto_recenti`, `auto_playlist`, …)
+  arrivano all'auto come indirizzo, `android.resource://<pacchetto>/drawable/<nome>`
+  (vedi `Biblioteca.risorsa`): il nome è una stringa, e la riduzione delle
+  risorse che `optimization { enable = true }` accende non la vede. Nella
+  release di prova le toglieva tutte («drawable:auto_… is not reachable»), e
+  l'auto mostrava le schede senza icona. Un'icona nuova presa per nome deve
+  cominciare con `auto_`, o va aggiunta qui.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/auto_*" />
