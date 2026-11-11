@@ -377,3 +377,22 @@ test("il foglio del motore non legge la tavolozza di una skin", () => {
   const fuori = senzaCommenti(FOGLIO.replace(GENERATO, ""));
   assert.deepEqual(fuori.match(/var\(--skin-color-[\w-]+/g) ?? [], []);
 });
+
+test("chi galleggia in fondo riserva il suo spazio, anche al fuoco", () => {
+  // Il lettore e la barra della selezione galleggiano sopra l'elenco: senza
+  // un `padding-bottom` l'ultima riga resta sotto, e senza `scroll-padding` il
+  // motore considera visibile una riga che il lettore copre, e non scorre
+  // quando il fuoco ci arriva (WCAG 2.4.11).
+  const fondo = regole(senzaCommenti(FOGLIO)).filter((r) =>
+    r.selettori.some((s) => /^\[data-scafale\].*\.posto-content \.dentro$/.test(s)),
+  );
+  for (const attributo of ["data-lettore", "data-selezione"]) {
+    const sua = fondo.find((r) => r.selettori.some((s) => s.includes(attributo)));
+    assert.ok(sua, `nessuna riserva in fondo con [${attributo}]`);
+    assert.match(sua.dichiarazioni, /padding-bottom:\s*var\(--player-clearance\)/, attributo);
+    assert.match(sua.dichiarazioni, /scroll-padding-bottom:\s*var\(--player-clearance\)/, attributo);
+  }
+  // L'attributo nasce dallo stesso predicato che decide se la barra si vede.
+  const impaginazione = readFileSync(new URL("../src/Impaginazione.tsx", import.meta.url), "utf8");
+  assert.match(impaginazione, /data-selezione=\{WIDGET\["selection-bar"\]\?\.visibile\?\.\(contesto/);
+});
