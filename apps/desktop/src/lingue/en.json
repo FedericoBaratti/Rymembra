@@ -2079,7 +2079,6 @@
   "restore.keptAsIs": "Those that are already here are left alone: {skin} skins and {bozze} drafts stay as they are.",
   "restore.skinItem": "skin “{nome}”",
   "restore.draftItem": "draft “{nome}”",
-  "restore.activeSkin": "The active skin will become “{nome}”.",
   "restore.tracksToUpdate": "{n} tracks to update",
   "restore.tracksToUpdate.uno": "1 track to update",
   "restore.shownAllUpdated": "Showing the first {quanti} of {totale}. All of them will be updated.",

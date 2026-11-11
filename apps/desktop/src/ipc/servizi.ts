@@ -849,7 +849,6 @@ export interface PianoRipristino {
   skinPresenti: number;
   bozzeDaScrivere: string[];
   bozzePresenti: number;
-  skinAttiva: string | null;
 }
 
 /** Com'è andato un ripristino. */
@@ -859,7 +858,6 @@ export interface EsitoRipristino {
   cartelle: number;
   skin: number;
   bozze: number;
-  skinAttiva: boolean;
   /** I file che il piano chiedeva e che su Drive non c'erano. */
   mancanti: string[];
 }

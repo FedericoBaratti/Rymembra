@@ -50,3 +50,15 @@ test("una cartella di rete non chiesta al disco non si dice «non esiste più»"
   assert.ok(testi("it")["restore.folderNotChecked"]);
   assert.ok(testi("en")["restore.folderNotChecked"]);
 });
+
+test("la skin attiva non viaggia nel backup, e il piano non ne parla", () => {
+  // Decisione 17 (R08-2): la skin attiva resta di ciascun dispositivo. Il
+  // piano non la cambia mai, quindi non c'è più un «diventerà X» da mostrare
+  // — né cinque zeri con «Ripristina» acceso per cambiarla soltanto (R13c-9).
+  const sorgente = readFileSync(new URL("../src/Ripristino.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(sorgente, /skinAttiva|restore\.activeSkin/);
+  const ipc = readFileSync(new URL("../src/ipc/servizi.ts", import.meta.url), "utf8");
+  const piano = ipc.slice(ipc.indexOf("export interface PianoRipristino"));
+  assert.doesNotMatch(piano.slice(0, piano.indexOf("\n}\n")), /skinAttiva/);
+  assert.equal(testi("it")["restore.activeSkin"], undefined);
+});

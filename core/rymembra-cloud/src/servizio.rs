@@ -51,7 +51,11 @@
 //! nostra ha un'impronta diversa da quella appena scritta, qualcuno è passato
 //! in mezzo e si rifà il giro con quel che c'è adesso. Le copie in più, una
 //! volta fuse, si cancellano. La fusione è idempotente e commutativa, quindi
-//! rifarla non costa altro che una lettura. Vedi [`salva`].
+//! rifarla non costa altro che una lettura. Vedi [`salva`]. Per un pezzo non lo
+//! era: le cartelle uscivano nell'ordine di chi fondeva, la skin attiva e le
+//! versioni dei pacchetti vincevano per chi fondeva, e due PC diversi si
+//! riscrivevano il file a vicenda a ogni passata (R08-1, R08-2). Vedi
+//! `backup::fondi`.
 //!
 //! # I nomi di prima
 //!
@@ -79,7 +83,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rymembra_app::backup::{self, Contenuto, Salvataggio, StatoLocale};
 use rymembra_domain::eredita;
@@ -233,6 +237,10 @@ pub struct Passata {
     /// Chi chiama la scrive in `settings`: è ciò che permette alla passata
     /// successiva di sapere cosa aveva lasciato lassù.
     pub impronta: String,
+    /// Le skin e le bozze che c'erano qui a questa passata. Chi chiama le
+    /// ricorda con `backup::ricorda_pacchetti`, **dopo** che la passata è
+    /// riuscita: alla prossima, quelle che mancano sono state tolte.
+    pub visti: backup::PacchettiVisti,
 }
 
 /// Il backup scaricato, pronto per essere pianificato.
@@ -270,7 +278,9 @@ pub struct Scritti {
     /// voleva dire nessuna playlist ripristinata.
     pub mancanti: Vec<String>,
     /// Perché ognuno dei mancanti che c'era non è arrivato: `nome — codice:
-    /// causa`, una riga per file, per il diario.
+    /// causa`, una riga per file, per il diario. Anche un pacchetto arrivato a
+    /// cui il disco non ha lasciato dare la data del backup (vedi
+    /// `data_del_backup`).
     ///
     /// Solo codici e cause, che non contengono né token né contenuti.
     pub guasti: Vec<String>,
@@ -300,7 +310,29 @@ pub fn salva<M: Magazzino + ?Sized>(
     // [`pacchetti::elenca_skin_sane`].
     let skin_locali = pacchetti::elenca_skin_sane(data_dir);
     let bozze_locali = pacchetti::elenca_bozze(data_dir);
-    let contenuto = backup::snapshot(stato, skin_locali.clone(), bozze_locali.clone());
+    let mut contenuto = backup::snapshot(stato, skin_locali.clone(), bozze_locali.clone());
+
+    // Le date di modifica dei pacchetti: fra due versioni della stessa skin o
+    // bozza vince la più recente (decisione 15). Un pacchetto ripristinato
+    // prende la data del backup (vedi `scarica_pacchetti`), non quella di
+    // quando è stato scritto qui.
+    contenuto.skins_at = date_di(skin_locali.keys(), |id| file_skin(data_dir, id));
+    contenuto.drafts_at = date_di(bozze_locali.keys(), |id| file_bozza(data_dir, id));
+
+    // Le skin e le bozze che c'erano alla passata di prima e adesso non ci
+    // sono: sono state tolte, e la lapide va nel backup (decisione 16). Le
+    // skin si cercano anche fra le rotte: un archivio troncato non è una skin
+    // disinstallata, e la sua copia buona lassù deve restare.
+    let visti = backup::PacchettiVisti {
+        skins: pacchetti::elenca_skin(data_dir).into_keys().collect(),
+        drafts: bozze_locali.keys().cloned().collect(),
+    };
+    for id in stato.pacchetti_visti.skins.difference(&visti.skins) {
+        contenuto.tombstones.skins.insert(id.clone(), adesso_ms);
+    }
+    for id in stato.pacchetti_visti.drafts.difference(&visti.drafts) {
+        contenuto.tombstones.drafts.insert(id.clone(), adesso_ms);
+    }
 
     // I file di prima si portano al nome di adesso prima di ogni confronto: da
     // qui in poi l'elenco parla solo dei nomi nuovi, salvo le copie che hanno
@@ -316,6 +348,7 @@ pub fn salva<M: Magazzino + ?Sized>(
         },
     )?;
     let remoti = per_nome(elenco.clone());
+    let tutti = elenco.clone();
     let mut caricati = 0usize;
     let mut saltati = 0usize;
 
@@ -332,18 +365,32 @@ pub fn salva<M: Magazzino + ?Sized>(
     caricati = caricati.saturating_add(libreria.caricati);
     let file_id = libreria.file_id;
     let nostra = libreria.impronta;
+    // L'inventario che sta lassù adesso, fuso con quelli degli altri: dice,
+    // per ogni pacchetto, quale versione vince e quali sono stati tolti.
+    let fusa = libreria.contenuto;
     avanzamento(Avanzamento {
         fatti: 1,
         totale: 1,
         cosa: Cosa::Metadati,
     });
 
+    // ── i doppioni e i pacchetti tolti ──────────────────────────────────────
+    togli_doppioni(drive, &tutti, &remoti)?;
+    togli_i_tolti(drive, &tutti, &fusa)?;
+
     // ── le skin ─────────────────────────────────────────────────────────────
+    //
+    // Si carica una skin solo se la versione di qui è quella che vince
+    // nell'inventario fuso, e lassù non c'è già: chi ha una versione più
+    // vecchia non la ricarica sopra quella nuova a ogni passata (R08-1), e una
+    // skin tolta altrove dopo l'ultima modifica di qui non torna su.
     let totale = skin_locali.len();
     for (fatti, (id, impronta)) in skin_locali.iter().enumerate() {
         let nome = nome_skin(id);
         let remoto = remoti.get(&nome);
-        if remoto.is_some_and(|voce| voce.impronta.as_deref() == Some(impronta.as_str())) {
+        let vince = fusa.skins.get(id) == Some(impronta);
+        if !vince || remoto.is_some_and(|voce| voce.impronta.as_deref() == Some(impronta.as_str()))
+        {
             saltati = saltati.saturating_add(1);
         } else {
             let byte = pacchetti::leggi_skin(data_dir, id)?;
@@ -369,7 +416,9 @@ pub fn salva<M: Magazzino + ?Sized>(
     for (fatti, (id, impronta)) in bozze_locali.iter().enumerate() {
         let nome = nome_bozza(id);
         let remoto = remoti.get(&nome);
-        if remoto.is_some_and(|voce| voce.impronta.as_deref() == Some(impronta.as_str())) {
+        let vince = fusa.drafts.get(id) == Some(impronta);
+        if !vince || remoto.is_some_and(|voce| voce.impronta.as_deref() == Some(impronta.as_str()))
+        {
             saltati = saltati.saturating_add(1);
         } else {
             let byte = comprimi(&pacchetti::leggi_bozza(data_dir, id)?)?;
@@ -395,7 +444,120 @@ pub fn salva<M: Magazzino + ?Sized>(
         saltati,
         file_id,
         impronta: nostra,
+        visti,
     })
+}
+
+/// Dove sta il pacchetto di una skin installata.
+///
+/// La stessa forma di quella di `pacchetti` (e di `skin.rs` e `profilo.rs` del
+/// desktop): qui serve il **percorso**, per la data di modifica, e
+/// `pacchetti` restituisce i byte.
+fn file_skin(data_dir: &Path, id: &str) -> PathBuf {
+    data_dir.join("skin").join(format!("{id}.ryskin"))
+}
+
+/// Dove sta il manifest di una bozza dello Studio. Vedi [`file_skin`].
+fn file_bozza(data_dir: &Path, id: &str) -> PathBuf {
+    data_dir
+        .join("skin")
+        .join("bozze")
+        .join(id)
+        .join("skin.json")
+}
+
+/// Quando è stato modificato l'ultima volta un file, in millisecondi.
+///
+/// `None` se il disco non lo sa dire: allora il pacchetto vale «senza data»,
+/// cioè perde contro qualunque versione datata (vedi `backup::fondi`).
+fn modificato_ms(percorso: &Path) -> Option<i64> {
+    let quando = std::fs::metadata(percorso).ok()?.modified().ok()?;
+    let da_allora = quando.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(da_allora.as_millis()).ok()
+}
+
+/// Le date di modifica di un insieme di pacchetti, quelle che si sanno.
+fn date_di<'a>(
+    ids: impl Iterator<Item = &'a String>,
+    percorso: impl Fn(&str) -> PathBuf,
+) -> BTreeMap<String, i64> {
+    ids.filter_map(|id| Some((id.clone(), modificato_ms(&percorso(id))?)))
+        .collect()
+}
+
+/// Toglie le copie in più di un pacchetto: stesso nome, stessa impronta.
+///
+/// Drive permette due file con lo stesso nome, e una creazione ritentata dopo
+/// una scadenza di rete — la richiesta arrivata, la risposta no — ne lascia
+/// due (R08-9). Per il file della libreria la passata li fondeva e cancellava;
+/// per skin e bozze il doppione restava per sempre, nello spazio dell'utente.
+/// Si tiene quello che [`per_nome`] sceglie e si tolgono gli altri **identici**
+/// a lui: una copia con un'altra impronta è un'altra versione, e non si butta.
+/// Solo i nomi di adesso: quelli di prima seguono le regole del `//!`.
+///
+/// # Errori
+///
+/// Soltanto il token scaduto: un'altra cancellazione che non riesce lascia il
+/// doppione dov'è, e la passata dopo ritenta.
+fn togli_doppioni<M: Magazzino + ?Sized>(
+    drive: &M,
+    tutti: &[FileRemoto],
+    tenuti: &BTreeMap<String, FileRemoto>,
+) -> Result<(), AppError> {
+    for file in tutti {
+        let e_un_pacchetto =
+            id_da_nome_skin(&file.nome).is_some() || id_da_nome_bozza(&file.nome).is_some();
+        let Some(tenuto) = tenuti.get(&file.nome).filter(|_| e_un_pacchetto) else {
+            continue;
+        };
+        if tenuto.id != file.id && tenuto.nome == file.nome && tenuto.impronta == file.impronta {
+            cancella_se_riesce(drive, &file.id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Toglie da Drive i pacchetti di skin e bozze tolte (decisione 16).
+///
+/// Solo quelli che l'inventario fuso non ha più **e** per cui c'è una lapide:
+/// è l'unico passo che non si può disfare, e un pacchetto che manca
+/// dall'inventario per un'altra ragione (una passata interrotta) non si tocca.
+/// Le copie col nome di prima vanno con lui: sono la stessa skin.
+///
+/// # Errori
+///
+/// Come [`togli_doppioni`].
+fn togli_i_tolti<M: Magazzino + ?Sized>(
+    drive: &M,
+    tutti: &[FileRemoto],
+    fusa: &Contenuto,
+) -> Result<(), AppError> {
+    for file in tutti {
+        let nome = canonico(&file.nome);
+        let tolto = if let Some(id) = id_da_nome_skin(&nome) {
+            !fusa.skins.contains_key(id) && fusa.tombstones.skins.contains_key(id)
+        } else if let Some(id) = id_da_nome_bozza(&nome) {
+            !fusa.drafts.contains_key(id) && fusa.tombstones.drafts.contains_key(id)
+        } else {
+            false
+        };
+        if tolto {
+            cancella_se_riesce(drive, &file.id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Cancella un file, a miglior sforzo, come [`rinomina_se_riesce`].
+///
+/// # Errori
+///
+/// Soltanto il token scaduto, che non riguarda il file ma la connessione.
+fn cancella_se_riesce<M: Magazzino + ?Sized>(drive: &M, id: &str) -> Result<(), AppError> {
+    match drive.cancella(id) {
+        Err(err) if drive::e_scaduto(&err) => Err(err),
+        _ => Ok(()),
+    }
 }
 
 /// Quel che c'è in locale, con l'impronta: serve a decidere se un file di prima
@@ -521,6 +683,8 @@ struct Libreria {
     impronta: String,
     /// Quante volte lo si è caricato: zero se era già lassù identico.
     caricati: usize,
+    /// Quel che c'è dentro: il contenuto di qui fuso con quelli lassù.
+    contenuto: Contenuto,
 }
 
 /// Il file dei metadati: fonde tutte le copie, scrive, rilegge.
@@ -578,6 +742,7 @@ fn salva_la_libreria<M: Magazzino + ?Sized>(
                 file_id: unica.id.clone(),
                 impronta: nostra,
                 caricati,
+                contenuto,
             });
         }
 
@@ -612,6 +777,7 @@ fn salva_la_libreria<M: Magazzino + ?Sized>(
                 file_id: unica.id.clone(),
                 impronta: nostra,
                 caricati,
+                contenuto,
             });
         }
 
@@ -650,6 +816,7 @@ fn salva_la_libreria<M: Magazzino + ?Sized>(
                 file_id: scritto.id,
                 impronta: nostra,
                 caricati,
+                contenuto,
             });
         }
     }
@@ -664,6 +831,7 @@ fn salva_la_libreria<M: Magazzino + ?Sized>(
         file_id,
         impronta,
         caricati,
+        contenuto,
     })
 }
 
@@ -813,7 +981,14 @@ pub fn scarica_pacchetti<M: Magazzino + ?Sized>(
                 let esito = pacchetto(drive, &remoto.id, false)?
                     .and_then(|byte| pacchetti::scrivi_skin(data_dir, id, &byte));
                 match esito {
-                    Ok(true) => scritti.skin = scritti.skin.saturating_add(1),
+                    Ok(true) => {
+                        scritti.skin = scritti.skin.saturating_add(1);
+                        scritti.data_del_backup(
+                            &file_skin(data_dir, id),
+                            nome_skin(id),
+                            da.contenuto.skins_at.get(id),
+                        );
+                    }
                     // `false` è «c'era già»: non è un lavoro svolto né un
                     // guasto. `Err` è un pacchetto che non è sceso o non si
                     // valida, e vale come mancante: la skin non c'è, e dirlo è
@@ -839,7 +1014,14 @@ pub fn scarica_pacchetti<M: Magazzino + ?Sized>(
                 let esito = pacchetto(drive, &remoto.id, true)?
                     .and_then(|byte| pacchetti::scrivi_bozza(data_dir, id, &byte));
                 match esito {
-                    Ok(true) => scritti.bozze = scritti.bozze.saturating_add(1),
+                    Ok(true) => {
+                        scritti.bozze = scritti.bozze.saturating_add(1);
+                        scritti.data_del_backup(
+                            &file_bozza(data_dir, id),
+                            nome_bozza(id),
+                            da.contenuto.drafts_at.get(id),
+                        );
+                    }
                     Ok(false) => {}
                     Err(err) => scritti.manca(nome_bozza(id), &err),
                 }
@@ -857,6 +1039,31 @@ pub fn scarica_pacchetti<M: Magazzino + ?Sized>(
 }
 
 impl Scritti {
+    /// Dà al pacchetto appena scritto la data di modifica che ha nel backup.
+    ///
+    /// Scritto adesso, sarebbe il più recente di tutti, e alla passata dopo
+    /// vincerebbe su una versione più nuova fatta altrove (decisione 15): il
+    /// lavoro di quei giorni, su Drive, tornerebbe indietro. Un pacchetto senza
+    /// data nel backup (di prima) resta com'è. Se il disco rifiuta, il
+    /// pacchetto c'è lo stesso e il perché va nel diario, col nome del file su
+    /// Drive e non col percorso di qui.
+    fn data_del_backup(&mut self, percorso: &Path, nome: String, quando: Option<&i64>) {
+        let Some(quando) = quando.and_then(|ms| u64::try_from(*ms).ok()) else {
+            return;
+        };
+        let data = std::time::UNIX_EPOCH + std::time::Duration::from_millis(quando);
+        let esito = std::fs::OpenOptions::new()
+            .write(true)
+            .open(percorso)
+            .and_then(|file| file.set_modified(data));
+        if let Err(err) = esito {
+            self.guasti.push(format!(
+                "{nome} — ripristinato, ma senza la data del backup: {}",
+                err.kind()
+            ));
+        }
+    }
+
     /// Un file che c'era e non è arrivato, con il suo perché.
     fn manca(&mut self, nome: String, err: &AppError) {
         self.guasti.push(format!(
@@ -934,9 +1141,9 @@ fn pacchetto<M: Magazzino + ?Sized>(
 /// Drive **permette** due file con lo stesso nome nella stessa cartella. Per il
 /// file dei metadati il caso è trattato davvero — le copie si fondono, vedi
 /// [`salva_la_libreria`]; per i pacchetti vince l'ultimo che compare
-/// nell'elenco, e la passata successiva sovrascriverà quello: un pacchetto è
-/// identificato dalla sua impronta, e due copie dello stesso tema non hanno
-/// niente da fondere.
+/// nell'elenco, le altre copie identiche le toglie [`togli_doppioni`], e quale
+/// versione debba stare lassù lo decide l'inventario fuso, per data di
+/// modifica (decisione 15).
 fn per_nome(file: Vec<FileRemoto>) -> BTreeMap<String, FileRemoto> {
     let mut remoti: BTreeMap<String, FileRemoto> = BTreeMap::new();
     for voce in file {
@@ -2228,7 +2435,10 @@ mod prove {
             tombstones: backup::Lapidi {
                 tracks: [("art|due|al".to_owned(), futuro)].into_iter().collect(),
                 playlists: [("inverno".to_owned(), futuro)].into_iter().collect(),
+                roots: [(r"D:\Vecchio".to_owned(), futuro)].into_iter().collect(),
+                ..backup::Lapidi::default()
             },
+            roots_at: [(r"C:\Qui".to_owned(), futuro)].into_iter().collect(),
             ..Contenuto::default()
         };
         let salvataggio = Salvataggio::nuovo(contenuto, futuro, "avanti".to_owned());
@@ -2259,6 +2469,8 @@ mod prove {
             .tracks
             .values()
             .chain(contenuto.tombstones.playlists.values())
+            .chain(contenuto.tombstones.roots.values())
+            .chain(contenuto.roots_at.values())
         {
             assert!(*at <= adesso, "{:?}", contenuto.tombstones);
         }
@@ -2350,6 +2562,264 @@ mod prove {
             prima.arrivati(dati.path()),
             (5, 0),
             "ma il ripristino ne ha portate cinque"
+        );
+    }
+
+    // ── due dispositivi sullo stesso backup (R08-1, R08-2, R08-9) ───────────
+
+    /// Un pacchetto con l'identificatore e la versione dati.
+    fn pacchetto_versione(id: &str, versione: &str) -> Vec<u8> {
+        let sorgente = rymembra_skin::PLAIN_SOURCE
+            .replace("\"id\": \"plain\"", &format!("\"id\": \"{id}\""))
+            .replace(
+                "\"version\": \"1.0.0\"",
+                &format!("\"version\": \"{versione}\""),
+            );
+        rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[],
+        })
+        .expect("pacchetto")
+    }
+
+    /// Installa una versione di una skin, modificata l'ultima volta a `quando`.
+    fn installa_datata(dati: &Path, id: &str, versione: &str, quando: u64) {
+        pacchetti::scrivi_skin(dati, id, &pacchetto_versione(id, versione)).expect("skin");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dati.join("skin").join(format!("{id}.ryskin")))
+            .expect("aperto")
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(quando))
+            .expect("data");
+    }
+
+    /// Quante volte si è caricato un file con quel nome.
+    fn caricamenti(finto: &Finto, nome: &str) -> usize {
+        finto
+            .operazioni()
+            .iter()
+            .filter(|op| op.starts_with(&format!("scrivi:{nome}@")))
+            .count()
+    }
+
+    #[test]
+    fn due_versioni_della_stessa_skin_non_si_rincorrono() {
+        // R08-1: A ha la 1.1 di «notte», B è rimasto alla 1.0. A ogni passata
+        // ognuno ricaricava la sua sopra quella dell'altro, per sempre — fino
+        // a venti megabyte a passata — e su Drive restava la versione di chi
+        // aveva scritto per ultimo, anche la più vecchia. Vince la più recente
+        // per data di modifica (decisione 15), e chi ha l'altra non la carica.
+        let a = tempfile::tempdir().expect("a");
+        let b = tempfile::tempdir().expect("b");
+        installa_datata(a.path(), "notte", "1.1.0", 2_000_000);
+        installa_datata(b.path(), "notte", "1.0.0", 1_000_000);
+        let finto = Finto::default();
+        // L'orologio vero: quel che si legge lassù si taglia ad «adesso» (vedi
+        // `backup::nel_dominio`), e le date dei pacchetti devono stare prima.
+        for _ in 0..3 {
+            salva(&finto, a.path(), &qui(), "a", ora(), |_| {}).expect("a");
+            salva(&finto, b.path(), &qui(), "b", ora(), |_| {}).expect("b");
+        }
+        assert_eq!(
+            caricamenti(&finto, &nome_skin("notte")),
+            1,
+            "{:?}",
+            finto.operazioni()
+        );
+        let lassu: Vec<String> = finto
+            .file
+            .lock()
+            .expect("file")
+            .iter()
+            .filter(|(file, _)| file.nome == nome_skin("notte"))
+            .map(|(_, byte)| backup::impronta(byte))
+            .collect();
+        assert_eq!(
+            lassu,
+            [backup::impronta(&pacchetto_versione("notte", "1.1.0"))],
+            "lassù c'è la più recente"
+        );
+    }
+
+    #[test]
+    fn due_dispositivi_con_cartelle_diverse_si_fermano() {
+        // R08-2: le cartelle si univano nell'ordine di chi fondeva, e il JSON
+        // di A e quello di B erano diversi: ognuno riscriveva il file della
+        // libreria a ogni passata alternata.
+        let dati = tempfile::tempdir().expect("cartella");
+        let a = StatoLocale {
+            roots: vec![r"C:\A".to_owned()],
+            ..StatoLocale::default()
+        };
+        let b = StatoLocale {
+            roots: vec![r"D:\B".to_owned()],
+            ..StatoLocale::default()
+        };
+        let finto = Finto::default();
+        let mut caricati = Vec::new();
+        for giro in 0..3 {
+            caricati.push(
+                salva(&finto, dati.path(), &a, "a", 10 + giro, |_| {})
+                    .expect("a")
+                    .caricati,
+            );
+            caricati.push(
+                salva(&finto, dati.path(), &b, "b", 20 + giro, |_| {})
+                    .expect("b")
+                    .caricati,
+            );
+        }
+        assert_eq!(&caricati[2..], &[0, 0, 0, 0], "{caricati:?}");
+    }
+
+    #[test]
+    fn due_dispositivi_con_skin_attive_diverse_si_fermano() {
+        // R08-2: la skin attiva vinceva per chi fondeva, e un fisso e un
+        // portatile con due skin diverse — il caso normale — riscrivevano il
+        // file a ogni passata. La skin attiva resta di ciascuno (decisione 17).
+        let dati = tempfile::tempdir().expect("cartella");
+        let a = StatoLocale {
+            active_skin: Some("notte".to_owned()),
+            ..qui()
+        };
+        let b = StatoLocale {
+            active_skin: Some("giorno".to_owned()),
+            ..qui()
+        };
+        let finto = Finto::default();
+        let mut caricati = Vec::new();
+        for giro in 0..3 {
+            caricati.push(
+                salva(&finto, dati.path(), &a, "a", 10 + giro, |_| {})
+                    .expect("a")
+                    .caricati,
+            );
+            caricati.push(
+                salva(&finto, dati.path(), &b, "b", 20 + giro, |_| {})
+                    .expect("b")
+                    .caricati,
+            );
+        }
+        assert_eq!(&caricati[1..], &[0, 0, 0, 0, 0], "{caricati:?}");
+    }
+
+    #[test]
+    fn i_doppioni_di_un_pacchetto_si_tolgono() {
+        // R08-9: una creazione ritentata dopo una scadenza di rete può lasciare
+        // due file con lo stesso nome e la stessa impronta. Per il file della
+        // libreria la passata dopo fondeva e cancellava; per skin e bozze il
+        // doppione restava per sempre, nello spazio dell'utente.
+        let dati = tempfile::tempdir().expect("cartella");
+        let (byte, impronta) = installa_skin(dati.path(), "notte");
+        let finto = Finto::con(vec![
+            (file_di("s1", &nome_skin("notte"), &impronta), byte.clone()),
+            (file_di("s2", &nome_skin("notte"), &impronta), byte),
+        ]);
+        salva(&finto, dati.path(), &qui(), "questo", 2, |_| {}).expect("passata");
+        let copie = finto
+            .nomi()
+            .into_iter()
+            .filter(|nome| *nome == nome_skin("notte"))
+            .count();
+        assert_eq!(copie, 1, "{:?}", finto.operazioni());
+    }
+
+    // ── skin disinstallate e date dei pacchetti (decisioni 15 e 16) ─────────
+
+    /// Il file dei metadati che c'è lassù, letto.
+    fn libreria_lassu(finto: &Finto) -> Contenuto {
+        let copie = finto.copie_della_libreria();
+        let (_, byte) = copie.first().expect("una copia");
+        backup::interpreta(&decomprimi(byte).expect("gzip"))
+            .expect("letto")
+            .content
+    }
+
+    #[test]
+    fn una_skin_disinstallata_esce_dal_backup() {
+        // R08-2, decisione 16: una skin disinstallata qui restava nel backup
+        // per sempre, e il ripristino su un PC nuovo la rimetteva.
+        let dati = tempfile::tempdir().expect("cartella");
+        installa_skin(dati.path(), "notte");
+        let finto = Finto::default();
+        let prima = salva(&finto, dati.path(), &qui(), "questo", 1_000, |_| {}).expect("prima");
+        assert!(finto.nomi().contains(&nome_skin("notte")));
+
+        std::fs::remove_file(dati.path().join("skin").join("notte.ryskin")).expect("tolta");
+        let stato = StatoLocale {
+            pacchetti_visti: prima.visti.clone(),
+            ..qui()
+        };
+        // L'orologio vero: la skin è stata scritta adesso, e la lapide viene dopo.
+        let adesso = ora();
+        let dopo = salva(&finto, dati.path(), &stato, "questo", adesso, |_| {}).expect("dopo");
+        assert!(
+            !finto.nomi().contains(&nome_skin("notte")),
+            "{:?}",
+            finto.nomi()
+        );
+        let lassu = libreria_lassu(&finto);
+        assert!(!lassu.skins.contains_key("notte"), "{lassu:?}");
+        assert_eq!(lassu.tombstones.skins.get("notte"), Some(&adesso));
+        assert!(dopo.visti.skins.is_empty());
+
+        // Un altro computer che ce l'ha ancora, da prima, non la riporta.
+        let altro = tempfile::tempdir().expect("altro");
+        installa_datata(altro.path(), "notte", "1.0.0", 500);
+        salva(&finto, altro.path(), &qui(), "altro", adesso + 1, |_| {}).expect("altro");
+        assert!(
+            !finto.nomi().contains(&nome_skin("notte")),
+            "{:?}",
+            finto.nomi()
+        );
+        assert!(!libreria_lassu(&finto).skins.contains_key("notte"));
+    }
+
+    #[test]
+    fn una_skin_rotta_qui_non_diventa_una_lapide() {
+        // Un `.ryskin` troncato non è una skin disinstallata: la copia buona
+        // lassù resta, e il ripristino la rimetterà.
+        let dati = tempfile::tempdir().expect("cartella");
+        installa_skin(dati.path(), "notte");
+        let finto = Finto::default();
+        let prima = salva(&finto, dati.path(), &qui(), "questo", 1_000, |_| {}).expect("prima");
+        std::fs::write(dati.path().join("skin").join("notte.ryskin"), b"troncato").expect("rotta");
+        let stato = StatoLocale {
+            pacchetti_visti: prima.visti,
+            ..qui()
+        };
+        salva(&finto, dati.path(), &stato, "questo", 2_000, |_| {}).expect("dopo");
+        assert!(finto.nomi().contains(&nome_skin("notte")));
+        let lassu = libreria_lassu(&finto);
+        assert!(lassu.skins.contains_key("notte"), "{lassu:?}");
+        assert!(lassu.tombstones.skins.is_empty(), "{lassu:?}");
+    }
+
+    #[test]
+    fn un_pacchetto_ripristinato_tiene_la_data_del_backup() {
+        // Scritto adesso, il pacchetto ripristinato sarebbe il più recente di
+        // tutti e alla passata dopo vincerebbe su una versione più nuova fatta
+        // altrove (decisione 15): prende la data che il backup gli dà.
+        let dati = tempfile::tempdir().expect("cartella");
+        let mut buona = copia("buona", "z");
+        buona.nome = nome_skin("notte");
+        let finto = Finto::con(vec![(buona, pacchetto_di("notte"))]);
+        let mut da = da_ripristinare(&[("notte", "buona")]);
+        da.contenuto.skins_at.insert("notte".to_owned(), 1_500_000);
+        let piano = RestorePlan {
+            skins_to_install: vec!["notte".to_owned()],
+            ..RestorePlan::default()
+        };
+        let scritti =
+            scarica_pacchetti(&finto, dati.path(), &da, &piano, |_| {}).expect("ripristino");
+        assert_eq!(scritti.skin, 1);
+        let quando = std::fs::metadata(dati.path().join("skin").join("notte.ryskin"))
+            .and_then(|m| m.modified())
+            .expect("data");
+        assert_eq!(
+            quando,
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_500_000)
         );
     }
 }

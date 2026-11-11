@@ -428,9 +428,6 @@ export function Ripristino({
                         </li>
                       ))}
                     </ul>
-                    {piano.skinAttiva !== null && (
-                      <p>{t("restore.activeSkin", { nome: piano.skinAttiva })}</p>
-                    )}
                   </details>
                 )}
 

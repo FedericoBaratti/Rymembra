@@ -2079,7 +2079,6 @@
   "restore.keptAsIs": "Quelle che ci sono già non vengono toccate: {skin} skin e {bozze} bozze restano come sono.",
   "restore.skinItem": "skin «{nome}»",
   "restore.draftItem": "bozza «{nome}»",
-  "restore.activeSkin": "La skin attiva diventerà «{nome}».",
   "restore.tracksToUpdate": "{n} brani da aggiornare",
   "restore.tracksToUpdate.uno": "1 brano da aggiornare",
   "restore.shownAllUpdated": "Mostrati i primi {quanti} di {totale}. Verranno aggiornati tutti.",

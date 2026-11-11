@@ -335,8 +335,8 @@ pub struct PianoRipristinoIpc {
     pub bozze_da_scrivere: Vec<String>,
     /// Quante bozze ci sono già.
     pub bozze_presenti: usize,
-    /// La skin che diventerebbe attiva.
-    pub skin_attiva: Option<String>,
+    // La skin attiva non c'è più: resta di ciascun dispositivo e non viaggia
+    // nel backup (decisione 17), quindi il ripristino non la cambia mai.
 }
 
 /// Com'è andato un ripristino.
@@ -353,8 +353,6 @@ pub struct EsitoRipristinoIpc {
     pub skin: usize,
     /// Quante bozze sono state scritte.
     pub bozze: usize,
-    /// La skin attiva è cambiata.
-    pub skin_attiva: bool,
     /// I file che il piano chiedeva e che su Drive non c'erano.
     pub mancanti: Vec<String>,
 }
@@ -798,7 +796,7 @@ fn ripristina(app: &AppHandle) -> Result<EsitoRipristinoIpc, AppError> {
             Ok((da, esistono, scritti))
         })?;
         for guasto in &scritti.guasti {
-            nota!("[nuvola] pacchetto non ripristinato: {guasto}");
+            nota!("[nuvola] pacchetto: {guasto}");
         }
 
         // Si rilegge e si ripianifica con le skin ormai su disco. Le cartelle
@@ -819,7 +817,6 @@ fn ripristina(app: &AppHandle) -> Result<EsitoRipristinoIpc, AppError> {
             cartelle: applicato.roots,
             skin,
             bozze,
-            skin_attiva: applicato.active_skin,
             mancanti: scritti.mancanti,
         })
     })()
@@ -954,10 +951,14 @@ fn passata_vera(app: &AppHandle) -> Result<(), AppError> {
         })
     })?;
 
-    // ── finestra 2: riscrivere tre chiavi. ──────────────────────────────────
+    // ── finestra 2: riscrivere quattro chiavi. ──────────────────────────────
+    //
+    // Le skin e le bozze di questa passata si ricordano solo adesso che è
+    // riuscita: alla prossima, quelle che mancano sono state tolte qui.
     con_libreria(&stato, |libreria| {
         settings::write(&libreria.connection, CHIAVE_FILE_ID, &salvata.file_id)?;
         settings::write(&libreria.connection, CHIAVE_IMPRONTA, &salvata.impronta)?;
+        backup::ricorda_pacchetti(&libreria.connection, &salvata.visti)?;
         settings::write(
             &libreria.connection,
             CHIAVE_ULTIMO,
@@ -1007,6 +1008,9 @@ fn leggi_per_passata(
     stato: &Stato,
 ) -> Result<(std::path::PathBuf, StatoLocale, Credenziali), AppError> {
     let (dati, locale, app) = con_libreria(stato, |libreria| {
+        // La mappa datata delle cartelle in pari con l'elenco: una cartella
+        // tolta diventa la lapide che il backup porta (decisione 16).
+        backup::allinea(&mut libreria.connection, adesso_ms())?;
         Ok((
             libreria.data_dir.clone(),
             backup::stato_locale(&libreria.connection)?,
@@ -1288,8 +1292,8 @@ fn stato_ipc(stato: &Stato, nuvola: &StatoNuvola) -> Result<StatoNuvolaIpc, AppE
 /// «non c'è», come prima valeva un `is_dir` fallito: è la direzione che non
 /// promette.
 ///
-/// Nello stesso ordine di `contenuto.roots`, che è lo stesso di
-/// `dal_salvataggio(..).roots`: le cartelle si copiano senza filtri.
+/// Nello stesso ordine di `dal_salvataggio(..).roots`, che il piano usa: le
+/// cartelle tolte (le lapidi del backup e di qui) non ci sono.
 ///
 /// Al disco si chiedono soltanto le cartelle [`backup::sondabile`]: una su un
 /// host di rete che questo PC non usa vale «non c'è» senza chiederla — prima
@@ -1297,9 +1301,8 @@ fn stato_ipc(stato: &Stato, nuvola: &StatoNuvola) -> Result<StatoNuvolaIpc, AppE
 /// chi ripristina, verso un nome scritto nel backup (R06-10). Il piano la
 /// mostra come non verificata (vedi [`in_ipc`]).
 fn cartelle_presenti(da: &DaRipristinare, qui: &StatoLocale) -> Vec<bool> {
-    let da_chiedere: Vec<String> = da
-        .contenuto
-        .roots
+    let radici = backup::dal_salvataggio(&da.contenuto, &qui.tombstones).roots;
+    let da_chiedere: Vec<String> = radici
         .iter()
         .filter(|radice| backup::sondabile(radice, &qui.host_noti))
         .cloned()
@@ -1307,8 +1310,7 @@ fn cartelle_presenti(da: &DaRipristinare, qui: &StatoLocale) -> Vec<bool> {
     let mut risposte =
         rymembra_app::volumi::esistenze(da_chiedere, rymembra_app::volumi::SCADENZA_RISOLUZIONE)
             .into_iter();
-    da.contenuto
-        .roots
+    radici
         .iter()
         .map(|radice| {
             backup::sondabile(radice, &qui.host_noti)
@@ -1374,7 +1376,6 @@ fn niente_backup() -> PianoRipristinoIpc {
         skin_presenti: 0,
         bozze_da_scrivere: Vec::new(),
         bozze_presenti: 0,
-        skin_attiva: None,
     }
 }
 
@@ -1451,7 +1452,6 @@ fn in_ipc(piano: &RestorePlan, da: &DaRipristinare, qui: &StatoLocale) -> PianoR
         skin_presenti: piano.skins_present,
         bozze_da_scrivere: piano.drafts_to_write.clone(),
         bozze_presenti: piano.drafts_present,
-        skin_attiva: piano.active_skin.clone(),
     }
 }
 

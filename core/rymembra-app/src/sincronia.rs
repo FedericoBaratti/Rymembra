@@ -401,7 +401,7 @@ pub(crate) fn nome_delle_aggiunte(dispositivo: &str) -> &str {
 /// sincronia che funziona e una che rimette le cartelle appena tolte: al primo
 /// avvio nessuna delle cartelle già configurate è una *decisione* presa adesso, e
 /// datarle adesso le farebbe vincere su una rimozione fatta ieri sul portatile.
-fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppError> {
+pub(crate) fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppError> {
     let elenco: Vec<String> = settings::read_json(tx, CHIAVE_CARTELLE)?.unwrap_or_default();
     let mut mappa: BTreeMap<String, Interruttore> =
         settings::read_json(tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
