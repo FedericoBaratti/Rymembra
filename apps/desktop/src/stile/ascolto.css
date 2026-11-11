@@ -16,7 +16,17 @@
 
 /* Lo strato ambientale: la tinta della copertina, e **solo** qui. Alto 340
    pixel, cioè il primo terzo della colonna, al venti per cento: sta dietro la
-   copertina, quindi dietro un'immagine, e non sotto una riga di testo. */
+   copertina, quindi dietro un'immagine.
+
+   Non tutto, però: la sua cima sta sotto la testata, cioè sotto l'occhiello
+   «In riproduzione» e i tre tasti, e lì una copertina bianca col tema scuro
+   lasciava l'occhiello a 2:1. Il velo in cima è una maschera e non un
+   elemento: lo strato è `ambient-backdrop`, una parte con livelli, e un suo
+   pseudo-elemento sarebbe il posto di una skin. Sfumare lo strato verso la
+   superficie della colonna è lo stesso che stendergli sopra un velo di
+   quella superficie: all'80 % fin sotto la testata, poi si dirada fino a
+   lasciare la tinta piena dietro la copertina. L'alfa lo ricalcola
+   `test/stile.test.ts` sui cinque temi di serie. */
 .colonna .ambiente {
   position: absolute;
   inset: 0 0 auto;
@@ -29,6 +39,8 @@
     rgb(var(--hero-rgb) / 0.2),
     transparent 70%
   );
+  /* `black` qui è la parola per «opaco», non un colore: vedi `.tinta`. */
+  mask-image: linear-gradient(180deg, rgb(0 0 0 / 0.2) 0, rgb(0 0 0 / 0.2) 56px, black 132px);
   pointer-events: none;
 }
 .colonna > *:not(.ambiente) {
@@ -255,13 +267,23 @@
    si dipingeva sopra la testata e il corpo, che sono `position: relative` e
    nient'altro, e si mangiava ogni clic della schermata. Il nome che resta è
    quello del registro delle skin, come per `.tooltip-pill` qui sotto. */
+/* Fitto in cima, rado in mezzo, fitto in fondo. In cima stanno la testata
+   («In riproduzione», 10 px) e, con lo spettro acceso, il sommario con la sua
+   riga «artista · album»: col velo al 42 % una copertina bianca col tema scuro,
+   o nera col tema chiaro, li lasciava a 2:1. La fascia fitta arriva fin sotto
+   il sommario (testata più una copertina da 168 px); in mezzo il velo torna
+   rado, ed è lì che la tinta della copertina si vede; in fondo regge i
+   comandi. Gli alfa li ricalcola `test/stile.test.ts` sui cinque temi di serie,
+   con una copertina bianca e una nera. */
 .in-riproduzione .np-scrim {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background: linear-gradient(
     180deg,
-    rgb(var(--surface-0-rgb) / 0.42),
+    rgb(var(--surface-0-rgb) / 0.86) 0,
+    rgb(var(--surface-0-rgb) / 0.86) 240px,
+    rgb(var(--surface-0-rgb) / 0.42) 60%,
     rgb(var(--surface-0-rgb) / 0.8)
   );
 }

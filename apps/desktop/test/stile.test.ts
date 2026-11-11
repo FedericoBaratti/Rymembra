@@ -500,3 +500,150 @@ test("in contrasto elevato i colori che sono il contenuto restano quelli", () =>
     );
   }
 });
+
+/**
+ * I temi delle tre skin di serie, base e variante, letti dai loro documenti:
+ * cinque in tutto (Plain scuro e chiaro, Neon, Vinile chiaro e scuro). Il
+ * blocco generato del foglio ha solo Plain, e una soglia che regge su Plain può
+ * non reggere sulle altre due. I nomi sono quelli del foglio (`--accent`,
+ * `--color-text-3`), tradotti in quelli del documento.
+ */
+function temiDiSerie(): { nome: string; colore: (nome: string) => Rgba }[] {
+  type Valore = string | { $palette?: string; $token?: string; alpha?: number };
+  const fuori: { nome: string; colore: (nome: string) => Rgba }[] = [];
+  for (const id of ["plain", "neon", "vinile"]) {
+    const doc = JSON.parse(
+      readFileSync(new URL(`../../../core/rymembra-skin/skins/${id}.json`, import.meta.url), "utf8"),
+    ) as {
+      palette: Record<string, string>;
+      tokens: Record<string, Valore>;
+      variant?: { palette?: Record<string, string>; tokens?: Record<string, Valore> };
+    };
+    const varianti: [string, Record<string, string>, Record<string, Valore>][] = [
+      [id, doc.palette, doc.tokens],
+    ];
+    if (doc.variant) {
+      varianti.push([
+        `${id}, variante`,
+        { ...doc.palette, ...(doc.variant.palette ?? {}) },
+        { ...doc.tokens, ...(doc.variant.tokens ?? {}) },
+      ]);
+    }
+    for (const [nome, tavolozza, token] of varianti) {
+      const risolvi = (v: Valore | undefined): Rgba => {
+        if (typeof v === "string") {
+          const c = leggiColore(v);
+          assert.ok(c, `${nome}: ${v} non è un colore`);
+          return c;
+        }
+        if (v?.$palette !== undefined) {
+          const c = risolvi(tavolozza[v.$palette]);
+          return { ...c, a: v.alpha ?? 1 };
+        }
+        if (v?.$token !== undefined) return risolvi(token[v.$token]);
+        throw new Error(`${nome}: colore? ${JSON.stringify(v)}`);
+      };
+      const chiave = (css: string) =>
+        css === "--accent"
+          ? "color.accent"
+          : css === "--accent-soft"
+            ? "color.accent.soft"
+            : css.replace(/^--/, "").replace(/-/g, ".");
+      fuori.push({ nome, colore: (css) => risolvi(token[chiave(css)]) });
+    }
+  }
+  assert.equal(fuori.length, 5);
+  return fuori;
+}
+
+/** Il primo numero che segue `prima` nel testo, o `ripiego`. */
+function numeroDopo(testo: string, prima: RegExp, ripiego?: number): number {
+  const m = new RegExp(prima.source + String.raw`\s*([\d.]+)`).exec(testo);
+  if (!m) {
+    assert.ok(ripiego !== undefined, `non trovo ${prima.source}`);
+    return ripiego;
+  }
+  return Number(m[1]);
+}
+
+test("le testate sopra la copertina sfocata reggono 4,5:1 con qualunque copertina", () => {
+  // La copertina sfocata è la copertina stessa: bianca col tema scuro, o nera
+  // col tema chiaro, sotto l'occhiello «In riproduzione» lasciava 2,1:1. Le tre
+  // testate stanno in cima, e in cima il velo deve essere fitto (D-75). Il
+  // caso peggiore è una copertina bianca o nera piena, con e senza l'alone
+  // della skin (`--hero-rgb`, l'accento) sotto di lei.
+  const bianco: Rgba = { r: 1, g: 1, b: 1, a: 1 };
+  const nero: Rgba = { r: 0, g: 0, b: 0, a: 1 };
+  const di = (selettore: string) => regola(selettore);
+  /**
+   * L'alfa del velo (o della maschera) in cima, e fin dove arriva prima di
+   * diradarsi. `assente` è l'alfa di quando non c'è: zero per un velo, uno per
+   * una maschera.
+   */
+  const fascia = (dichiarazioni: string, colore: RegExp, assente: number): { alfa: number; fin: string } => {
+    const fermate = [...dichiarazioni.matchAll(new RegExp(colore.source + String.raw`\s*([^,\n]*)`, "g"))];
+    if (fermate.length === 0) return { alfa: assente, fin: "" };
+    const [prima, seconda] = fermate;
+    // Una fascia è la seconda fermata con lo stesso alfa della prima.
+    const fin = prima?.[1] === seconda?.[1] ? (seconda?.[2] ?? "").trim() : (prima?.[2] ?? "").trim();
+    return { alfa: Number(prima?.[1]), fin };
+  };
+
+  // In riproduzione sul computer: superficie, alone, tinta, velo.
+  const np = fascia(di(".in-riproduzione .np-scrim"), /rgb\(var\(--surface-0-rgb\) \/ ([\d.]+)\)/, 0);
+  const tintaNp = numeroDopo(di(".in-riproduzione .ambiente .tinta"), /opacity:/);
+  const aloneNp = Math.max(
+    ...[...di(".in-riproduzione .ambiente").matchAll(/--hero-rgb\) \/ ([\d.]+)/g)].map((m) => Number(m[1])),
+  );
+  // La colonna: niente velo che possa starle sopra (la tinta è dentro
+  // `ambient-backdrop`, una parte con livelli), quindi la maschera dello strato.
+  const colonna = fascia(di(".colonna .ambiente"), /rgb\(0 0 0 \/ ([\d.]+)\)/, 1);
+  const tintaColonna = numeroDopo(di(".colonna .ambiente .tinta"), /opacity:/);
+  const aloneColonna = numeroDopo(di(".colonna .ambiente"), /--hero-rgb\) \/ /);
+  // Il telefono.
+  const telefono = fascia(
+    di(':root[data-forma="telefono"] .sfondo-np::after'),
+    /rgb\(var\(--surface-0-rgb\) \/ ([\d.]+)\)/,
+    0,
+  );
+  const tintaTelefono = numeroDopo(di(':root[data-forma="telefono"] .tinta-np'), /opacity:/);
+
+  const cadute: string[] = [];
+  for (const { nome, colore } of temiDiSerie()) {
+    const s0 = colore("--color-surface-0");
+    const s1 = colore("--color-surface-1");
+    const accento = colore("--accent");
+    for (const copertina of [bianco, nero]) {
+      for (const alone of [false, true]) {
+        const misura = (dove: string, testo: string, fondo: Rgba, soglia: number) => {
+          const valore = contrasto(colore(testo), fondo);
+          if (valore < soglia) cadute.push(`${nome}, ${dove}: ${valore.toFixed(2)}:1`);
+        };
+        // In riproduzione: occhiello 10 px e «artista · album» col testo, icone a 3:1.
+        let fondo = alone ? componi(accento, s0, aloneNp) : s0;
+        fondo = componi(copertina, fondo, tintaNp);
+        fondo = componi(s0, fondo, np.alfa);
+        misura("in riproduzione, occhiello", "--color-text-3", fondo, SOGLIA_AA);
+        misura("in riproduzione, artista · album", "--color-text-2", fondo, SOGLIA_AA);
+        // La colonna: la maschera mescola lo strato alla superficie che c'è sotto.
+        let strato = alone ? componi(accento, s1, aloneColonna) : s1;
+        strato = componi(copertina, strato, tintaColonna);
+        fondo = componi(strato, s1, colonna.alfa);
+        misura("colonna, occhiello", "--color-text-3", fondo, SOGLIA_AA);
+        misura("colonna, icone", "--color-text-2", fondo, 3);
+        // Il telefono: occhiello in `text-2`, il nome del disco in `text-1`.
+        fondo = componi(s0, componi(copertina, s0, tintaTelefono), telefono.alfa);
+        misura("telefono, occhiello", "--color-text-2", fondo, SOGLIA_AA);
+        misura("telefono, disco", "--color-text-1", fondo, SOGLIA_AA);
+      }
+    }
+  }
+  assert.deepEqual([...new Set(cadute)], []);
+  // E il velo fitto arriva fin sotto quel che legge. Sul computer, il sommario:
+  // con lo spettro acceso sale in cima con la sua riga «artista · album»
+  // (copertina fino a 168 px, sotto la testata). Nella colonna, la testata.
+  // Sul telefono, la barra di stato e la testata.
+  assert.ok(np.fin.endsWith("px") && Number.parseFloat(np.fin) >= 240, `in riproduzione: fino a «${np.fin}»`);
+  assert.ok(colonna.fin.endsWith("px") && Number.parseFloat(colonna.fin) >= 56, `colonna: fino a «${colonna.fin}»`);
+  assert.match(telefono.fin, /--barra-titolo-h.*--barra-alta-h/, "telefono");
+});

@@ -219,13 +219,18 @@
   pointer-events: none;
 }
 
+/* Più fitto anche in cima, sotto la barra di stato e la testata: l'occhiello
+   «In riproduzione» (10 px) e il nome del disco stanno sulla copertina
+   sfocata, e col velo al 30 % una copertina bianca col tema scuro li lasciava
+   a 2,4:1. Poi si dirada, e la tinta si vede intorno alla copertina. */
 :root[data-forma="telefono"] .sfondo-np::after {
   content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(
     180deg,
-    rgb(var(--surface-0-rgb) / 0.3) 0%,
+    rgb(var(--surface-0-rgb) / 0.72) 0,
+    rgb(var(--surface-0-rgb) / 0.72) calc(var(--barra-titolo-h) + var(--barra-alta-h)),
     rgb(var(--surface-0-rgb) / 0.5) 45%,
     rgb(var(--surface-0-rgb) / 0.88) 100%
   );
