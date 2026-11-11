@@ -1337,8 +1337,8 @@ export const ipc = {
   // Fuori da Android rispondono `internal.aborted`: chi li chiama guarda prima
   // `ANDROID` in `piattaforma.ts`. I selettori passano da `dialoghi.ts`.
   telefonoPermessi: () => invoke<PermessiTelefono>("telefono_permessi"),
-  // Il dialogo di sistema per audio, immagini e notifiche; torna con lo stato
-  // dopo la risposta.
+  // Il dialogo di sistema per leggere la musica (le notifiche si chiedono a
+  // parte, quando servono); torna con lo stato dopo la risposta.
   telefonoChiediPermessi: () => invoke<PermessiTelefono>("telefono_chiedi_permessi"),
   // Apre la pagina delle impostazioni: il permesso si rilegge al ritorno.
   telefonoChiediTuttiIFile: () => invoke<void>("telefono_chiedi_tutti_i_file"),

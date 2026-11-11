@@ -98,8 +98,9 @@ pub fn telefono_permessi() -> Esito<PermessiIpc> {
     solo_su_android()
 }
 
-/// Chiede audio, immagini e notifiche con il dialogo di sistema, e torna con
-/// lo stato dopo la risposta.
+/// Chiede di leggere la musica con il dialogo di sistema, e torna con lo stato
+/// dopo la risposta. Le notifiche no: si chiedono quando servono (vedi
+/// `Permessi.notificheAlBisogno`).
 ///
 /// # Errori
 ///

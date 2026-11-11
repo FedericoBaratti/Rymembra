@@ -42,8 +42,10 @@ pub fn permessi() -> Result<Permessi, Errore> {
     chiama("sistema.permessi", &())
 }
 
-/// Chiede i permessi che si possono chiedere con un dialogo — audio, immagini,
-/// notifiche — e torna con lo stato dopo la risposta.
+/// Chiede i permessi per leggere la musica che si possono chiedere con un
+/// dialogo, e torna con lo stato dopo la risposta. Le notifiche no: Kotlin le
+/// chiede al primo bisogno vero — «Scarica qui», l'attesa di un consenso —
+/// e non con questi.
 ///
 /// Bloccante: vedi il preambolo del modulo.
 ///

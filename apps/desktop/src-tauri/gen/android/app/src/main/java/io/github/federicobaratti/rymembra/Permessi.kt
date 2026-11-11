@@ -8,7 +8,10 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Looper
 import android.provider.Settings
+import android.util.Log
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -47,7 +50,15 @@ object Permessi {
       .put("notifiche", NotificationManagerCompat.from(contesto).areNotificationsEnabled())
   }
 
-  /** I permessi del dialogo, e lo stato dopo la risposta. */
+  /**
+   * I permessi del dialogo per leggere la musica, e lo stato dopo la risposta.
+   *
+   * Le notifiche no: la schermata che porta qui spiega l'accesso ai file, e un
+   * secondo dialogo di cui non parla — «Inviare notifiche?» — confonde chi sta
+   * rispondendo al primo. La notifica del lettore non ne ha bisogno (Android
+   * esenta quelle delle sessioni multimediali); le altre si chiedono quando
+   * servono davvero, in [notificheAlBisogno].
+   */
   fun chiedi(attivita: MainActivity): JSONObject {
     val chiesti = buildList {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -55,7 +66,6 @@ object Permessi {
         // a ragione, e le copertine accanto ai brani le legge già «Accesso a
         // tutti i file». Quelle dentro i tag arrivano con il brano.
         add(Manifest.permission.READ_MEDIA_AUDIO)
-        add(Manifest.permission.POST_NOTIFICATIONS)
       } else {
         add(Manifest.permission.READ_EXTERNAL_STORAGE)
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -64,6 +74,50 @@ object Permessi {
     attivita.aspettaPermessi(chiesti.toTypedArray())
     return stato(attivita)
   }
+
+  /** Le notifiche sono già state chieste, in questa vita del processo. */
+  @Volatile private var notificheChieste = false
+
+  /**
+   * Le notifiche, al primo bisogno vero (D-36): quando parte «Scarica qui» o
+   * l'attesa del consenso di un servizio da collegare. Sono i due servizi in
+   * primo piano che hanno una notifica da mostrare oltre a quella del lettore:
+   * senza il permesso lavorano lo stesso, ma la loro notifica finisce solo nel
+   * Task Manager. Si chiedono qui, nel momento in cui chi tocca il tasto sa
+   * perché arriva la domanda, e non al primo avvio.
+   *
+   * Una volta per processo: chi ha detto di no non se lo sente richiedere a
+   * ogni brano scaricato, e Android stesso smette di mostrare il dialogo dopo
+   * due rifiuti. Da Android 13: prima il permesso non c'è.
+   *
+   * Con `aspetta` si aspetta la risposta — il consenso, che apre il browser
+   * subito dopo e coprirebbe il dialogo —, ma mai dal filo principale, che
+   * aspetterebbe se stesso; senza, la domanda parte e chi chiama va avanti:
+   * lo scaricamento non si ferma ad aspettare un dialogo.
+   */
+  fun notificheAlBisogno(attivita: MainActivity?, aspetta: Boolean) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    if (attivita == null || attivita.isFinishing || attivita.isDestroyed) return
+    if (concesso(attivita, Manifest.permission.POST_NOTIFICATIONS)) return
+    synchronized(this) {
+      if (notificheChieste) return
+      notificheChieste = true
+    }
+    val chiesti = arrayOf(Manifest.permission.POST_NOTIFICATIONS)
+    if (aspetta && Looper.myLooper() != Looper.getMainLooper()) {
+      try {
+        attivita.aspettaPermessi(chiesti)
+      } catch (e: Exception) {
+        // Un dialogo che non si apre non ferma quel che lo ha chiesto.
+        Log.w("Rymembra", "le notifiche non si chiedono: ${e.javaClass.simpleName}")
+      }
+    } else {
+      attivita.runOnUiThread { ActivityCompat.requestPermissions(attivita, chiesti, CODICE_NOTIFICHE) }
+    }
+  }
+
+  /** Il codice della richiesta delle notifiche che non aspetta la risposta. */
+  private const val CODICE_NOTIFICHE = 4_213
 
   /**
    * La rete di casa. Da Android 17 un'app che si dichiara per Android 17 non
