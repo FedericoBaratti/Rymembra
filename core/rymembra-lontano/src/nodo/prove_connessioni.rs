@@ -334,6 +334,48 @@ fn revoca_e_guarda(revoca: impl FnOnce(&Nodo, &str)) {
 }
 
 #[test]
+fn un_dispositivo_tiene_al_piu_n_connessioni() {
+    // Reperto R01-4: un dispositivo collegato poteva aprire decine di
+    // migliaia di connessioni, ognuna viva col keepalive, col suo stato QUIC,
+    // un compito `servi` e una voce in `aperte`.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    let connessioni: Vec<Connection> = (0..20)
+        .map(|_| {
+            let conn = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+            // Servita: il PC l'ha accolta e tenuta prima della prossima.
+            chiedi_sulla(&telefono, &conn, una_domanda()).expect("risponde");
+            conn
+        })
+        .collect();
+    let vive = || {
+        connessioni
+            .iter()
+            .filter(|c| c.close_reason().is_none())
+            .count()
+    };
+    assert!(
+        aspetta(|| vive() <= MASSIME_CONNESSIONI),
+        "{} connessioni vive",
+        vive()
+    );
+    // Le più vecchie si chiudono senza dire «non associato»: lo è ancora.
+    let prima = connessioni.first().expect("venti");
+    assert!(
+        chiusa_perche(prima).is_none(),
+        "{:?}",
+        chiusa_perche(prima).map(|err| err.code().kind())
+    );
+    // Le più nuove restano, e servono.
+    let ultima = connessioni.last().expect("venti");
+    assert_eq!(
+        chiedi_sulla(&telefono, ultima, una_domanda()).expect("la più nuova risponde"),
+        Risposta::Fatto
+    );
+}
+
+#[test]
 fn le_domande_servite_insieme_si_contano_per_dispositivo_non_per_connessione() {
     let (pc, del_pc) = nodo("PC");
     let (telefono, _) = nodo("Telefono");

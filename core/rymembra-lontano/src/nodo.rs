@@ -108,6 +108,16 @@ pub const ATTESA_CONNESSIONE: Duration = Duration::from_secs(15);
 /// Domande servite insieme per ogni dispositivo.
 pub const DOMANDE_INSIEME: usize = 8;
 
+/// Connessioni vive tenute per ogni dispositivo, in entrata e in uscita, della
+/// libreria e di «Ascolta insieme»: oltre, la più vecchia si chiude.
+///
+/// Un dispositivo vero ne ha una, due quando i due si chiamano insieme, più un
+/// flusso di «Ascolta insieme» per verso. Senza tetto un dispositivo collegato
+/// poteva aprirne decine di migliaia, ognuna viva col keepalive, col suo stato
+/// QUIC e un compito che la serve (reperto R01-4); i posti delle domande
+/// ([`DOMANDE_INSIEME`]) reggevano, le connessioni no.
+pub const MASSIME_CONNESSIONI: usize = 4;
+
 /// La prima attesa dopo un dispositivo che non risponde.
 pub const PRIMA_PAUSA: Duration = Duration::from_secs(5);
 
@@ -126,6 +136,11 @@ const CHIUSA_SENZA_INVITO: &[u8] = b"lontano.gettoneScaduto";
 
 /// Il motivo con cui chi ha letto il QR chiude perché ha rinunciato.
 const CHIUSA_ANNULLATA: &[u8] = b"annullata";
+
+/// Il motivo con cui si chiude la connessione più vecchia di un dispositivo
+/// che ne ha aperte troppe ([`MASSIME_CONNESSIONI`]). Non è un codice
+/// `lontano.*`: l'altro non deve leggerci un «non associato».
+const CHIUSA_TROPPE: &[u8] = b"troppe connessioni";
 
 /// L'associazione annullata da questo lato: non è un guasto, e la finestra
 /// non lo dice come tale.
@@ -384,11 +399,22 @@ impl Condiviso {
     /// Una connessione con `pari` da chiudere se esce dal cancello. Quelle già
     /// chiuse si tolgono qui: un dispositivo che si ricollega cento volte
     /// non ne lascia cento.
+    ///
+    /// Al più [`MASSIME_CONNESSIONI`] per dispositivo: oltre, si chiudono le
+    /// più vecchie, che per chi si ricollega spesso sono anche quelle su un
+    /// percorso già morto.
     fn tieni(&self, pari: EndpointId, conn: &Connection) {
-        let mut aperte = chiave(&self.aperte);
-        let sue = aperte.entry(pari).or_default();
-        sue.retain(|c| c.close_reason().is_none());
-        sue.push(conn.clone());
+        let oltre: Vec<Connection> = {
+            let mut aperte = chiave(&self.aperte);
+            let sue = aperte.entry(pari).or_default();
+            sue.retain(|c| c.close_reason().is_none());
+            sue.push(conn.clone());
+            let troppe = sue.len().saturating_sub(MASSIME_CONNESSIONI);
+            sue.drain(..troppe).collect()
+        };
+        for vecchia in oltre {
+            vecchia.close(VarInt::from_u32(0), CHIUSA_TROPPE);
+        }
     }
 
     /// `conn` è finita.
