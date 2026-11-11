@@ -1458,6 +1458,7 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
   });
 
   const pulisci = () => {
+    if (pulendo) return;
     setPulendo(true);
     setLiberati(null);
     ipc
@@ -1512,8 +1513,12 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
           className="bottone btn-ghost"
           /* Su un database danneggiato non si scrive: il nucleo rifiuterebbe
              comunque, e un pulsante acceso prometterebbe un gesto che non
-             succede. */
-          disabled={pulendo || stato === null || danneggiato}
+             succede. Mentre pulisce, invece, non si spegne: lo dice, e il
+             clic in più si ignora (`pulisci`) — con `disabled` il fuoco
+             cadeva sul documento. */
+          disabled={stato === null || danneggiato}
+          aria-disabled={pulendo || undefined}
+          aria-busy={pulendo || undefined}
           onClick={pulisci}
         >
           {pulendo
@@ -1726,6 +1731,7 @@ function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
   };
 
   const svuota = () => {
+    if (svuotando) return;
     setSvuotando(true);
     ipc
       .nuvolaCacheSvuota()
@@ -1771,7 +1777,11 @@ function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
             <button
               type="button"
               className="bottone btn-ghost"
-              disabled={svuotando || stato.usatiByte === 0}
+              // Spento se non c'è niente da svuotare; mentre svuota lo dice e
+              // ignora il clic, così il fuoco resta qui (vedi `pulisci`).
+              disabled={stato.usatiByte === 0}
+              aria-disabled={svuotando || undefined}
+              aria-busy={svuotando || undefined}
               onClick={svuota}
             >
               {svuotando ? t("settings.cloudCache.clearing") : t("settings.cloudCache.clear")}
@@ -2284,13 +2294,19 @@ export function Impostazioni({
                   <Icona nome="i-plus" dim={15} />
                   {t("settings.roots.add")}
                 </button>
+                {/* Senza cartelle non c'è niente da leggere, e il tasto è
+                    spento. Durante la scansione invece lo dice e ignora il
+                    clic: con `disabled` il fuoco di chi l'aveva appena premuto
+                    cadeva sul documento. Vedi `InRiproduzione.tsx`. */}
                 <button
                   type="button"
                   className="bottone primario btn-accent"
-                  onClick={onScansiona}
-                  disabled={
-                    scansione !== null || (avvio?.cartelle.length ?? 0) === 0
-                  }
+                  onClick={() => {
+                    if (scansione === null) onScansiona();
+                  }}
+                  disabled={(avvio?.cartelle.length ?? 0) === 0}
+                  aria-disabled={scansione !== null || undefined}
+                  aria-busy={scansione !== null || undefined}
                 >
                   <Icona nome="i-scan" dim={15} />
                   {scansione
@@ -3183,11 +3199,19 @@ export function Impostazioni({
               <div className="azioni">
                 {nuvola?.collegato ? (
                   <>
+                    {/* Durante un salvataggio i tre tasti non si spengono: lo
+                        dicono (`aria-disabled`) e ignorano il clic. Con
+                        `disabled` il fuoco di chi aveva appena premuto
+                        «Salva adesso», o di chi tornava dalla domanda di
+                        «Scollega», cadeva sul documento. */}
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={nuvola.inCorso}
-                      onClick={onNuvolaSalva}
+                      aria-disabled={nuvola.inCorso || undefined}
+                      aria-busy={nuvola.inCorso || undefined}
+                      onClick={() => {
+                        if (!nuvola.inCorso) onNuvolaSalva();
+                      }}
                     >
                       <Icona nome="i-cloud" dim={15} />
                       {nuvola.inCorso
@@ -3197,8 +3221,10 @@ export function Impostazioni({
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={nuvola.inCorso}
-                      onClick={onNuvolaRipristina}
+                      aria-disabled={nuvola.inCorso || undefined}
+                      onClick={() => {
+                        if (!nuvola.inCorso) onNuvolaRipristina();
+                      }}
                     >
                       <Icona nome="i-import" dim={15} />
                       {t("settings.cloud.restore")}
@@ -3206,15 +3232,16 @@ export function Impostazioni({
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={nuvola.inCorso}
-                      onClick={() =>
+                      aria-disabled={nuvola.inCorso || undefined}
+                      onClick={() => {
+                        if (nuvola.inCorso) return;
                         setDomanda({
                           titolo: t("settings.cloud.disconnect.confirm.title"),
                           descrizione: t("settings.cloud.disconnect.confirm.body"),
                           conferma: t("settings.cloud.disconnect.confirm.ok"),
                           fai: onNuvolaScollega,
-                        })
-                      }
+                        });
+                      }}
                     >
                       {t("settings.cloud.disconnect")}
                     </button>
@@ -3366,8 +3393,15 @@ export function Impostazioni({
                 <button
                   type="button"
                   className="bottone btn-ghost"
-                  disabled={!sincronia?.pronta || sincronia.inCorso}
-                  onClick={onSincroniaAdesso}
+                  /* Spento finché la sincronia non è pronta; durante una
+                      passata lo dice e ignora il clic, così il fuoco di chi
+                      l'ha premuto resta qui. */
+                  disabled={!sincronia?.pronta}
+                  aria-disabled={sincronia?.inCorso || undefined}
+                  aria-busy={sincronia?.inCorso || undefined}
+                  onClick={() => {
+                    if (!sincronia?.inCorso) onSincroniaAdesso();
+                  }}
                 >
                   <Icona nome="i-cloud" dim={15} />
                   {sincronia?.inCorso
