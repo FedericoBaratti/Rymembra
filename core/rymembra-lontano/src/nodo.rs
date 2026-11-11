@@ -72,8 +72,9 @@ use crate::collegamento::{Invito, MASSIMO_INDIRIZZI};
 use crate::errori::{chiave, da_testo, dal_rifiuto, errore, inatteso, irraggiungibile, protocollo};
 use crate::flusso::Flusso;
 use crate::protocollo::{
-    ALPN_ASSOCIA, ALPN_INSIEME, ALPN_LONTANO, Associa, Domanda, MASSIMO_PEZZO, Presentazione,
-    Presenza, Risposta, Testa, cornice, lunghezza, valore,
+    ALPN_ASSOCIA, ALPN_INSIEME, ALPN_LONTANO, Associa, Domanda, MASSIMA_ASSOCIA, MASSIMA_DOMANDA,
+    MASSIMA_TESTA, MASSIMO_PEZZO, Presentazione, Presenza, Risposta, Testa, cornice,
+    lunghezza_entro, valore_entro,
 };
 
 /// Quanto vale un QR.
@@ -791,11 +792,17 @@ impl Nodo {
                     // corsa, l'esito non deve esserlo.
                     let (mut invio, mut ricevi) =
                         conn.open_bi().await.map_err(|e| perso(&conn, e))?;
-                    scrivi(&mut invio, &Associa::Chiedo { gettone, chi: io })
-                        .await
+                    scrivi(
+                        &mut invio,
+                        &Associa::Chiedo { gettone, chi: io },
+                        MASSIMA_ASSOCIA,
+                    )
+                    .await
                         .map_err(|err| chiusa_perche(&conn).unwrap_or(err))?;
                     let _ = invio.finish();
-                    leggi::<Associa>(&mut ricevi)
+                    // Chi mostra il QR non lo si conosce ancora: la sua
+                    // risposta ha il tetto dell'associazione (reperto R15-1).
+                    leggi::<Associa>(&mut ricevi, MASSIMA_ASSOCIA)
                         .await
                         .map_err(|err| chiusa_perche(&conn).unwrap_or(err))
                 }) => esito.map_err(|_| irraggiungibile("nessuna risposta all'associazione"))?,
@@ -1209,9 +1216,10 @@ async fn rispondi_a(
     mut invio: SendStream,
     mut ricevi: RecvStream,
 ) -> Result<(), AppError> {
-    let domanda: Domanda = tokio::time::timeout(Duration::from_secs(30), leggi(&mut ricevi))
-        .await
-        .map_err(|_| protocollo("la domanda non arriva"))??;
+    let domanda: Domanda =
+        tokio::time::timeout(Duration::from_secs(30), leggi(&mut ricevi, MASSIMA_DOMANDA))
+            .await
+            .map_err(|_| protocollo("la domanda non arriva"))??;
     // Il cancello a ogni domanda, non solo quando la connessione si apre: un
     // dispositivo dimenticato non legge più niente nemmeno sulle connessioni
     // che aveva già, e chi esce le perde tutte. Anche la presenza: chi non è
@@ -1286,13 +1294,16 @@ async fn scrivi_risposta(
                     totale,
                     versione,
                 },
+                MASSIMA_TESTA,
             )
             .await?;
             invio.write_all(&byte).await.map_err(irraggiungibile)?;
         }
-        Ok(Risposta::Presenza(presenza)) => scrivi(invio, &Testa::Presenza(presenza)).await?,
-        Ok(Risposta::Dati(dati)) => scrivi(invio, &Testa::Dati { dati }).await?,
-        Ok(Risposta::Fatto) => scrivi(invio, &Testa::Fatto).await?,
+        Ok(Risposta::Presenza(presenza)) => {
+            scrivi(invio, &Testa::Presenza(presenza), MASSIMA_TESTA).await?;
+        }
+        Ok(Risposta::Dati(dati)) => scrivi(invio, &Testa::Dati { dati }, MASSIMA_TESTA).await?,
+        Ok(Risposta::Fatto) => scrivi(invio, &Testa::Fatto, MASSIMA_TESTA).await?,
         Err(guasto) => {
             // Fra due dispositivi viaggiano solo i codici di questo dominio:
             // vedi `errori`.
@@ -1307,6 +1318,7 @@ async fn scrivi_risposta(
                 &Testa::Rifiuto {
                     codice: codice.to_owned(),
                 },
+                MASSIMA_TESTA,
             )
             .await?;
         }
@@ -1317,7 +1329,8 @@ async fn scrivi_risposta(
 /// Una domanda su una connessione già aperta.
 async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppError> {
     let (mut invio, mut ricevi) = conn.open_bi().await.map_err(|e| perso(conn, e))?;
-    scrivi(&mut invio, &domanda)
+    // Il tetto di chi la leggerà: oltre, qui si sa subito perché.
+    scrivi(&mut invio, &domanda, MASSIMA_DOMANDA)
         .await
         .map_err(|err| chiusa_perche(conn).unwrap_or(err))?;
     let _ = invio.finish();
@@ -1328,7 +1341,7 @@ async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppE
 
 /// Legge la risposta: la testa, e per dei byte i byte.
 async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
-    match leggi::<Testa>(ricevi).await? {
+    match leggi::<Testa>(ricevi, MASSIMA_TESTA).await? {
         // Come l'annuncio (`Domanda::nei_tetti`): quel che l'altro dice di sé
         // arriva al pannello solo nei tetti.
         Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza.nei_tetti())),
@@ -1358,26 +1371,32 @@ async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
     }
 }
 
-/// Scrive una cornice su un flusso.
-async fn scrivi(invio: &mut SendStream, valore: &impl Serialize) -> Result<(), AppError> {
-    let byte = cornice(valore)?;
+/// Scrive una cornice su un flusso, entro il `tetto` di chi la legge.
+async fn scrivi(
+    invio: &mut SendStream,
+    valore: &impl Serialize,
+    tetto: usize,
+) -> Result<(), AppError> {
+    let byte = cornice(valore, tetto)?;
     invio.write_all(&byte).await.map_err(irraggiungibile)
 }
 
-/// Legge una cornice da un flusso.
-async fn leggi<T: DeserializeOwned>(ricevi: &mut RecvStream) -> Result<T, AppError> {
+/// Legge una cornice da un flusso: al più `tetto` byte di JSON aperto, che
+/// chi legge sceglie secondo cosa si aspetta e da chi (vedi
+/// `protocollo::MASSIMA_ASSOCIA`).
+async fn leggi<T: DeserializeOwned>(ricevi: &mut RecvStream, tetto: usize) -> Result<T, AppError> {
     let mut testa = [0_u8; 4];
     ricevi
         .read_exact(&mut testa)
         .await
         .map_err(irraggiungibile)?;
-    let (quanti, compressa) = lunghezza(testa)?;
+    let (quanti, compressa) = lunghezza_entro(testa, tetto)?;
     let mut corpo = vec![0_u8; quanti];
     ricevi
         .read_exact(&mut corpo)
         .await
         .map_err(irraggiungibile)?;
-    valore(&corpo, compressa)
+    valore_entro(&corpo, compressa, tetto)
 }
 
 /// Il guasto di un flusso, detto col motivo della chiusura se l'altro ha
@@ -1452,9 +1471,12 @@ async fn associa(
     da: EndpointId,
 ) -> Result<(), AppError> {
     let (mut invio, mut ricevi) = conn.accept_bi().await.map_err(irraggiungibile)?;
-    let domanda: Associa = tokio::time::timeout(Duration::from_secs(10), leggi(&mut ricevi))
-        .await
-        .map_err(|_| protocollo("la domanda di associazione non arriva"))??;
+    // Prima del gettone, da uno che non si conosce: il tetto
+    // dell'associazione, non quello di tutte le cornici (reperto R15-1).
+    let domanda: Associa =
+        tokio::time::timeout(Duration::from_secs(10), leggi(&mut ricevi, MASSIMA_ASSOCIA))
+            .await
+            .map_err(|_| protocollo("la domanda di associazione non arriva"))??;
     let Associa::Chiedo { gettone, chi } = domanda else {
         return Err(protocollo("un'associazione senza domanda"));
     };
@@ -1504,7 +1526,7 @@ async fn associa(
             }
         }
     };
-    scrivi(&mut invio, &risposta).await?;
+    scrivi(&mut invio, &risposta, MASSIMA_ASSOCIA).await?;
     let _ = invio.finish();
     // Chi ha chiesto chiude quando ha letto: aspettarlo fa arrivare la
     // risposta intera prima che la connessione se ne vada.
