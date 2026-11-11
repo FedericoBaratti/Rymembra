@@ -16,7 +16,7 @@
  * riceverla per argomento — chi formatta un numero è quasi sempre dentro un
  * `map`, e farla scendere fin lì costerebbe una prop in venti componenti.
  */
-import { locale, t, tSe } from "./lingue";
+import { locale, localeDate, t, tSe } from "./lingue";
 
 /**
  * Millisecondi in `m:ss`, o `h:mm:ss` quando serve.
@@ -72,7 +72,7 @@ export function brani_(n: number): string {
  * cambiare idea su come si scrive una data è una modifica invece di una caccia.
  */
 export function dataOra(ms: number): string {
-  return new Date(ms).toLocaleString(locale());
+  return new Date(ms).toLocaleString(localeDate());
 }
 
 /**
@@ -84,7 +84,7 @@ export function dataOra(ms: number): string {
  * sulla riga sotto. I secondi di una passata di ieri non li legge nessuno.
  */
 export function dataOraBreve(ms: number): string {
-  return new Date(ms).toLocaleString(locale(), {
+  return new Date(ms).toLocaleString(localeDate(), {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -95,7 +95,7 @@ export function dataOraBreve(ms: number): string {
 
 /** Solo la data. */
 export function data(ms: number): string {
-  return new Date(ms).toLocaleDateString(locale());
+  return new Date(ms).toLocaleDateString(localeDate());
 }
 
 /**
