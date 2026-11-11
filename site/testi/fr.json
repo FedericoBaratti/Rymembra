@@ -1,8 +1,8 @@
 {
   "meta": {
-    "titolo": "Rymembra — lecteur de musique gratuit pour Windows : FLAC, sans blanc, volume constant",
-    "descrizione": "Lecteur de musique gratuit et open source pour Windows : FLAC et MP3 sans blanc et au même volume, dossiers locaux et cloud, playlists Spotify, écoute en LAN.",
-    "immagine": "Rymembra, un lecteur de musique pour Windows"
+    "titolo": "Rymembra — lecteur de musique gratuit pour Windows et Android : FLAC, sans blanc, volume constant",
+    "descrizione": "Lecteur de musique gratuit et open source pour Windows et Android : FLAC et MP3 sans blanc et au même volume, dossiers locaux et cloud, playlists Spotify, catalogues libres, écoute à plusieurs.",
+    "immagine": "Rymembra, un lecteur de musique pour Windows et Android"
   },
   "nav": {
     "salta": "Aller au contenu",
@@ -16,16 +16,16 @@
   },
   "hero": {
     "titolo": "Votre musique, retrouvée.",
-    "lede": "Rymembra est un lecteur de musique gratuit pour Windows. Il lit les fichiers déjà présents sur votre disque, reconstruit vos playlists — même depuis vos données Spotify — et ne cherche les titres manquants que là où c'est permis.",
+    "lede": "Rymembra est un lecteur de musique gratuit pour Windows et Android. Il lit les fichiers déjà présents sur votre disque, reconstruit vos playlists — même depuis vos données Spotify — et ne cherche les titres manquants que là où c'est permis.",
     "cta": "Télécharger pour Windows",
     "cta2": "Voir comment ça marche",
     "store": "Ou téléchargez-la depuis le Microsoft Store",
-    "nota": "Gratuit et open source, licence MIT. Windows 64 bits, version {versione}, publiée le {data}.",
+    "nota": "Gratuit et open source, licence MIT. Windows 64 bits et Android 8 ou plus récent, version {versione}, publiée le {data}.",
     "alt": "L'écran d'accueil de Rymembra, avec les sélections de la semaine, le titre à reprendre et la file d'attente",
-    "didascalia": "L'écran d'accueil : les sélections de la semaine, le titre interrompu prêt à reprendre là où il s'était arrêté, et la file d'attente à droite. Les images montrent l'interface en italien ; le programme parle aussi anglais."
+    "didascalia": "L'écran d'accueil : les sélections de la semaine, le titre interrompu prêt à reprendre là où il s'était arrêté, et la file d'attente à droite. Les images montrent l'interface en italien ; le programme existe en italien et en anglais."
   },
   "altrove": {
-    "testo": "Rymembra est un programme pour Windows : envoyez-vous le lien et téléchargez-le depuis votre PC.",
+    "testo": "Rymembra fonctionne sur les PC Windows et les téléphones Android : envoyez-vous le lien et téléchargez-le là-bas.",
     "manda": "Envoyer le lien",
     "copia": "Copier le lien",
     "copiato": "Lien copié"
@@ -84,11 +84,11 @@
   },
   "insieme": {
     "titolo": "Et on l'écoute ensemble.",
-    "testo": "Des collègues sur le même réseau, chacun avec son Rymembra, entendent la même musique au même instant : un PC accueille, les autres suivent, et chacun la joue de son côté. La première fois, les deux écrans affichent le même code à quatre chiffres ; ensuite les PC se reconnaissent, et ce qui passe entre eux est chiffré.",
+    "testo": "Des amis ou des collègues, chacun avec son Rymembra, entendent la même musique au même instant : un appareil accueille, les autres suivent, et chacun la joue de son côté. La première fois, les deux écrans affichent le même code à quatre chiffres ; ensuite les appareils se reconnaissent, et ce qui passe entre eux est chiffré.",
     "punti": [
       "Celui qui accueille choisit, pour chaque personne qui entre, si elle écoute seulement, si elle a les commandes — pause, déplacements, le morceau suivant et le précédent — ou si elle fait tout, y compris mettre ses propres morceaux dans la file, qui arrivent aux autres depuis le PC qui les possède.",
       "Alignés à quelques millisecondes près, assez pour deux paires d'enceintes dans la même pièce ; pour les casques Bluetooth, il y a l'étalonnage.",
-      "Ni Internet ni serveur : seulement le réseau du bureau ou de la maison. Le PC qui accueille ouvre un port sur le réseau local, et Windows demande l'autorisation une fois."
+      "Sur le même réseau, rien ne passe par Internet. Les appareils que vous avez reliés peuvent aussi écouter ensemble à distance, par une connexion chiffrée qui n'utilise des relais publics que lorsqu'une connexion directe est impossible. La première fois, Windows demande l'autorisation d'ouvrir le port."
     ]
   },
   "skin": {
@@ -140,7 +140,7 @@
   },
   "scarica": {
     "titolo": "Prêt à écouter.",
-    "testo": "Un installateur pour Windows 64 bits. Les mises à jour arrivent toutes seules, signées, et ne s'installent que quand vous le décidez.",
+    "testo": "Un installateur pour Windows 64 bits, un APK pour les téléphones Android. Les mises à jour arrivent toutes seules, signées, et ne s'installent que quand vous le décidez.",
     "sotto": "Pour Windows 64 bits. Gratuit.",
     "azione": "Télécharger",
     "store": {
@@ -166,7 +166,17 @@
       "titolo": "Indiquez-lui votre musique",
       "testo": "Choisissez votre dossier de musique. Une courte visite guidée vous montre le programme une fois, sur la vraie fenêtre."
     },
-    "precedente": "Vous venez d'Aether, l'ancien nom du programme ? L'installateur le remplace, et au premier démarrage votre bibliothèque, vos réglages, vos skins et vos comptes suivent tout seuls. Rien n'est écrasé."
+    "precedente": "Vous venez d'Aether, l'ancien nom du programme ? L'installateur le remplace, et au premier démarrage votre bibliothèque, vos réglages, vos skins et vos comptes suivent tout seuls. Rien n'est écrasé.",
+    "android": {
+      "titolo": "Pour les téléphones Android",
+      "sotto": "Android 8 ou plus récent, 64 bits. Gratuit.",
+      "azione": "Télécharger l'APK",
+      "file": "Le fichier s'appelle `{fileApk}`. La première fois, Android vous demande d'autoriser l'installation ; ensuite, les mises à jour arrivent depuis l'application.",
+      "impronta": {
+        "sommario": "{dimensioneApk} Mo · empreinte SHA-256",
+        "verifica": "Pour vérifier le fichier sur un ordinateur, dans PowerShell : `Get-FileHash $HOME\\Downloads\\{fileApk}` doit afficher la même empreinte."
+      }
+    }
   },
   "smartscreen": {
     "titolo": "Windows a protégé votre ordinateur",
@@ -183,8 +193,8 @@
         "r": "Oui, et ça le restera. Il n'existe pas de version payante et aucune n'est prévue : l'une de ses sources, le Live Music Archive, a une clause non commerciale qu'une version payante enfreindrait. Le développement est financé par les dons."
       },
       {
-        "d": "Fonctionne-t-il sous macOS ou Linux ?",
-        "r": "Pas aujourd'hui. L'installateur est uniquement pour Windows, et il n'existe pas encore de version macOS, Linux ou mobile."
+        "d": "Fonctionne-t-il sous macOS, Linux ou sur iPhone ?",
+        "r": "Pas aujourd'hui. Rymembra fonctionne sous Windows (64 bits) et sous Android 8 ou plus récent (64 bits) ; il n'existe pas encore de version macOS, Linux ou iOS. L'application existe en italien et en anglais."
       },
       {
         "d": "Pourquoi Windows m'avertit-il à l'installation ?",
@@ -204,11 +214,11 @@
       },
       {
         "d": "Peut-on écouter avec un collègue ?",
-        "r": "Oui, si vous êtes sur le même réseau et avez tous les deux Rymembra 3.1 ou plus récent. L'un accueille une session depuis « Écouter ensemble » ; l'autre la trouve tout seul, ou saisit l'adresse que le premier voit à l'écran, et la première fois vous comparez un code à quatre chiffres. Sur le PC qui accueille, Windows demande s'il faut laisser passer Rymembra : « Autoriser », aussi pour les « Réseaux publics » si le réseau est marqué ainsi."
+        "r": "Oui. Sur le même réseau, il vous faut tous les deux Rymembra 3.1 ou plus récent : l'un accueille une session depuis « Écouter ensemble » ; l'autre la trouve tout seul, ou saisit l'adresse que le premier voit à l'écran, et la première fois vous comparez un code à quatre chiffres. Sur le PC qui accueille, Windows demande s'il faut laisser passer Rymembra : « Autoriser », aussi pour les « Réseaux publics » si le réseau est marqué ainsi. À distance, reliez une fois les deux appareils dans Paramètres › Appareils avec un QR code (à partir de la 3.2.1), et la session fonctionne aussi par Internet."
       },
       {
         "d": "Envoie-t-il mes données quelque part ?",
-        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, Cover Art Archive, iTunes et Deezer pour les pochettes, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour (pas la copie du Store), et ce que vous connectez vous-même ; si vous écoutez ensemble, avec les autres PC de votre réseau, et personne d'autre. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
+        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, Cover Art Archive pour les pochettes, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour (pas la copie du Store), et ce que vous connectez vous-même, comme des dossiers cloud, le scrobbling ou un modèle d'IA. iTunes et Deezer ne servent aux pochettes que si vous les activez. Si vous reliez vos appareils pour les joindre à distance, ils se trouvent par des relais publics et une table d'adresses distribuée, qui peuvent voir que deux appareils se connectent, mais pas ce qui passe entre eux. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
       }
     ]
   },
@@ -234,7 +244,7 @@
     "piede": "Musique : [« Machina »](https://www.scottbuckley.com.au/library/machina/) de Scott Buckley, sous licence [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.fr). Recompressée pour le site ; dans la démonstration du son, elle est coupée en deux et son volume modifié."
   },
   "piede": {
-    "frase": "Un lecteur de musique pour Windows, écrit en Rust. Il lit ce que vous avez, et trouve le reste là où c'est permis.",
+    "frase": "Un lecteur de musique pour Windows et Android, écrit en Rust. Il lit ce que vous avez, et trouve le reste là où c'est permis.",
     "etichetta": "Site",
     "versioni": "Toutes les versions",
     "changelog": "Journal des modifications",
