@@ -37,10 +37,12 @@
   </Properties>
 
   <Dependencies>
-    <!-- Windows 10 1809: il più vecchio che il Store serve ancora con i
-         pacchetti a piena fiducia, e dove WebView2 è già di sistema o si
-         installa da sé. -->
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+    <!-- Windows 10 2004 (19041). Era la 1809, mai provata: fino alla 1903 un
+         pacchetto scrive in AppData con la copia alla scrittura, e i dati di
+         questa copia e quelli dell'installer divergerebbero in un modo che
+         nessun documento descrive. La 2004 è anche l'ultima base di Windows 10
+         che WebView2 supporta. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
   <Resources>
