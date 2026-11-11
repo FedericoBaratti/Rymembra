@@ -734,6 +734,40 @@ impl PlaylistSalvata {
         }
     }
 
+    /// Questa versione vince su `altra` nella fusione di due backup.
+    ///
+    /// Vince la più recente. A parità di data vinceva il locale, cioè chi
+    /// fonde: un PC con metà della musica caricava la sua copia monca sopra
+    /// quella intera, e il file su Drive cambiava secondo chi aveva caricato
+    /// per ultimo (R06-1). A parità vince la più **completa**, e fra due copie
+    /// ugualmente lunghe una regola qualsiasi purché sia la stessa da tutte e
+    /// due le parti: così la fusione non dipende da chi è «locale».
+    fn precede(&self, altra: &Self) -> bool {
+        type Chiave<'a> = (
+            i64,
+            usize,
+            i64,
+            bool,
+            &'a str,
+            Option<&'a str>,
+            Option<&'a str>,
+            &'a [String],
+        );
+        fn chiave(p: &PlaylistSalvata) -> Chiave<'_> {
+            (
+                p.updated_at,
+                p.members.len(),
+                p.created_at,
+                p.is_smart,
+                &p.name,
+                p.description.as_deref(),
+                p.rules.as_deref(),
+                &p.members,
+            )
+        }
+        chiave(self) > chiave(altra)
+    }
+
     /// La playlist nei tipi del dominio.
     fn stato(&self) -> PlaylistState {
         PlaylistState {
@@ -812,9 +846,10 @@ pub fn dal_salvataggio(contenuto: &Contenuto, lapidi_locali: &Lapidi) -> DalBack
 /// ascolti dell'altro computer bisogna comunque premere «Ripristina», ed è
 /// deliberato.
 ///
-/// A parità di informazione vince `locale`: è lo stesso verso di
-/// [`rymembra_domain::restore::plan_restore`], ed è ciò che rende l'operazione
-/// stabile quando la si ripete.
+/// Fra due versioni della stessa playlist vince la più recente e, a parità di
+/// data, la più completa: vedi [`PlaylistSalvata::precede`]. Il verso non
+/// dipende da chi è `locale`, ed è ciò che rende l'operazione stabile quando
+/// la si ripete da tutte e due le parti.
 #[must_use]
 pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
     let mut brani: BTreeMap<&str, TrackStats> = BTreeMap::new();
@@ -854,7 +889,7 @@ pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
         playlists
             .entry(&playlist.key)
             .and_modify(|gia| {
-                if playlist.updated_at > gia.updated_at {
+                if playlist.precede(gia) {
                     *gia = playlist;
                 }
             })
@@ -1959,5 +1994,94 @@ mod prove {
         assert_eq!(letto.content.roots, ["C:\\Musica".to_owned()]);
         assert!(!canonici.contains("insieme"), "{canonici}");
         assert!(!canonici.contains("Intruso"), "{canonici}");
+    }
+
+    // ── un ripristino prima della scansione (R06-1) ─────────────────────────
+
+    /// Un backup con la playlist «Estate» di due brani, toccata a 100.
+    fn backup_con_l_estate() -> Contenuto {
+        Contenuto {
+            playlists: vec![PlaylistSalvata {
+                key: "estate".to_owned(),
+                name: "Estate".to_owned(),
+                created_at: 50,
+                updated_at: 100,
+                members: vec!["art|uno|al".to_owned(), "art|due|al".to_owned()],
+                ..PlaylistSalvata::default()
+            }],
+            ..Contenuto::default()
+        }
+    }
+
+    #[test]
+    fn un_ripristino_su_una_libreria_senza_i_brani_si_completa_dopo_la_scansione() {
+        // Il PC appena reinstallato: la playlist torna vuota perché i file non
+        // sono ancora stati scansionati. Con la data del backup la copia monca
+        // fingeva di essere quella intera: il ripristino dopo la scansione la
+        // diceva «invariata», e il salvataggio la caricava vuota su Drive.
+        let backup = backup_con_l_estate();
+        let mut qui = crate::db::open_in_memory().expect("database").connection;
+        let stato = stato_locale(&qui).expect("stato");
+        let piano = pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones));
+        assert_eq!(piano.playlists.len(), 1);
+        applica(&mut qui, &piano).expect("applicato");
+
+        // Rifarlo subito, senza scansione, non propone niente: è lo stesso stato.
+        let stato = stato_locale(&qui).expect("stato");
+        let ancora = pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones));
+        assert!(ancora.playlists.is_empty(), "{ancora:?}");
+
+        // E il salvataggio dopo non fa vincere la copia monca su quella intera.
+        let fuso = fondi(&snapshot(&stato, BTreeMap::new(), BTreeMap::new()), &backup);
+        assert_eq!(
+            fuso.playlists.first().map(|p| p.members.len()),
+            Some(2),
+            "{fuso:?}"
+        );
+
+        // La scansione trova i file; il ripristino di nuovo completa la playlist.
+        qui.execute_batch(
+            "INSERT INTO tracks
+                 (id, path, track_key, title, artist, album, duration_ms,
+                  file_size, date_added, date_modified)
+             VALUES (1, 'a.mp3', 'art|uno|al', 'Uno', 'Art', 'Al', 1000, 1, 1, 1),
+                    (2, 'b.mp3', 'art|due|al', 'Due', 'Art', 'Al', 2000, 1, 1, 1);",
+        )
+        .expect("brani");
+        let stato = stato_locale(&qui).expect("stato");
+        let dopo = pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones));
+        assert_eq!(
+            dopo.playlists
+                .first()
+                .map(|cambio| cambio.playlist.members.len()),
+            Some(2),
+            "{dopo:?}"
+        );
+        applica(&mut qui, &dopo).expect("applicato");
+        let stato = stato_locale(&qui).expect("stato");
+        assert!(
+            pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones)).is_empty(),
+            "completata, il piano torna vuoto"
+        );
+    }
+
+    #[test]
+    fn fondere_non_fa_vincere_una_copia_monca_a_parita_di_data() {
+        // A parità di data vinceva il locale, che è il primo della catena: un PC
+        // con metà della musica caricava la sua versione monca sopra quella
+        // intera. A parità vince la più completa, da qualunque parte stia.
+        let intera = backup_con_l_estate();
+        let mut monca = intera.clone();
+        if let Some(p) = monca.playlists.first_mut() {
+            p.members.truncate(0);
+        }
+        for (locale, remoto) in [(&monca, &intera), (&intera, &monca)] {
+            let fuso = fondi(locale, remoto);
+            assert_eq!(
+                fuso.playlists.first().map(|p| p.members.len()),
+                Some(2),
+                "{fuso:?}"
+            );
+        }
     }
 }
