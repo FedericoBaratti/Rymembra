@@ -387,7 +387,14 @@ export function Ripristino({
                       {piano.cartelle.map((c) => (
                         <li key={c.percorso}>
                           {c.percorso}
-                          {c.esiste ? "" : t("restore.folderGone")}
+                          {/* Una cartella su un host di rete che questo PC non
+                              usa non si chiede al disco (R06-10): «non esiste
+                              più» sarebbe una cosa non saputa detta per vera. */}
+                          {!c.verificata
+                            ? t("restore.folderNotChecked")
+                            : c.esiste
+                              ? ""
+                              : t("restore.folderGone")}
                         </li>
                       ))}
                     </ul>

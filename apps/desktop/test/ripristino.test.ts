@@ -41,3 +41,12 @@ test("«nessun backup» ricorda che il backup è legato all'app Google", () => {
   assert.match(testi("it")["restore.noBackup"] ?? "", /un'altra app Google/);
   assert.match(testi("en")["restore.noBackup"] ?? "", /another Google app/);
 });
+
+test("una cartella di rete non chiesta al disco non si dice «non esiste più»", () => {
+  // R06-10: il piano non sonda gli host che questo PC non usa; per quelle
+  // cartelle `esiste` è falso perché nessuno l'ha chiesto, e la finestra lo dice.
+  const sorgente = readFileSync(new URL("../src/Ripristino.tsx", import.meta.url), "utf8");
+  assert.match(sorgente, /!c\.verificata\s*\?\s*t\("restore\.folderNotChecked"\)/);
+  assert.ok(testi("it")["restore.folderNotChecked"]);
+  assert.ok(testi("en")["restore.folderNotChecked"]);
+});

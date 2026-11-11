@@ -584,7 +584,7 @@ fn salva_la_libreria<M: Magazzino + ?Sized>(
         let mut tenuta: Option<&FileRemoto> = None;
         let mut doppioni: Vec<String> = Vec::new();
         for copia in &copie {
-            if let Some(loro) = leggi_remoto(drive, copia)? {
+            if let Some(loro) = leggi_remoto(drive, copia, adesso_ms)? {
                 contenuto = backup::fondi(&contenuto, &loro.content);
                 if tenuta.is_none() {
                     tenuta = Some(copia);
@@ -697,7 +697,10 @@ pub fn scarica_salvataggio<M: Magazzino + ?Sized>(
     // Il ripristino non scrive niente su Drive, nemmeno una rinomina: vede i
     // file di prima attraverso il nome canonico, e li lascia com'erano.
     let elenco = drive.elenca()?;
-    let Some(salvataggio) = libreria_da_ripristinare(drive, &elenco)? else {
+    // L'«adesso» di chi legge: un istante oltre si taglia qui (vedi
+    // `backup::nel_dominio`).
+    let adesso_ms = i64::try_from(adesso_grezzo()).unwrap_or(i64::MAX);
+    let Some(salvataggio) = libreria_da_ripristinare(drive, &elenco, adesso_ms)? else {
         return Ok(None);
     };
     let remoti = per_nome(elenco);
@@ -744,11 +747,12 @@ pub fn scarica_salvataggio<M: Magazzino + ?Sized>(
 fn libreria_da_ripristinare<M: Magazzino + ?Sized>(
     drive: &M,
     elenco: &[FileRemoto],
+    adesso_ms: i64,
 ) -> Result<Option<Salvataggio>, AppError> {
     for nome in [NOME_LIBRERIA, eredita::NOME_LIBRERIA_DRIVE] {
         let mut letto: Option<Salvataggio> = None;
         for copia in elenco.iter().filter(|file| file.nome == nome) {
-            let Some(loro) = leggi_e_basta(drive, copia)? else {
+            let Some(loro) = leggi_e_basta(drive, copia, adesso_ms)? else {
                 continue;
             };
             letto = Some(match letto {
@@ -864,6 +868,44 @@ impl Scritti {
     }
 }
 
+/// Le skin e le bozze che ci sono su questo disco, per contare alla fine
+/// quelle che un ripristino ha portato.
+///
+/// [`Scritti`] conta un giro solo. Ma su un token scaduto a metà chi chiama
+/// rinfresca e rifà tutto (vedi [`scarica_pacchetti`]), e il piano del secondo
+/// giro chiede soltanto quel che manca ancora: contare quel giro diceva «2
+/// skin ripristinate» quando ne erano arrivate cinque (R08-11). Il disco
+/// invece lo sa: quelle che ci sono adesso e prima non c'erano. Un ripristino
+/// non toglie mai niente, quindi la differenza è proprio il suo lavoro.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Presenti {
+    /// Le skin installate, sane.
+    skin: BTreeSet<String>,
+    /// Le bozze dello Studio.
+    bozze: BTreeSet<String>,
+}
+
+impl Presenti {
+    /// Quel che c'è adesso.
+    #[must_use]
+    pub fn adesso(data_dir: &Path) -> Self {
+        Self {
+            skin: pacchetti::elenca_skin_sane(data_dir).into_keys().collect(),
+            bozze: pacchetti::elenca_bozze(data_dir).into_keys().collect(),
+        }
+    }
+
+    /// Quante skin e quante bozze ci sono adesso che in `self` non c'erano.
+    #[must_use]
+    pub fn arrivati(&self, data_dir: &Path) -> (usize, usize) {
+        let dopo = Self::adesso(data_dir);
+        (
+            dopo.skin.difference(&self.skin).count(),
+            dopo.bozze.difference(&self.bozze).count(),
+        )
+    }
+}
+
 /// I byte di un pacchetto, o il guasto che riguarda **quel** pacchetto.
 ///
 /// Il `Result` esterno è la connessione — solo il token scaduto, che fa
@@ -928,8 +970,9 @@ fn per_nome(file: Vec<FileRemoto>) -> BTreeMap<String, FileRemoto> {
 fn leggi_remoto<M: Magazzino + ?Sized>(
     drive: &M,
     file: &FileRemoto,
+    adesso_ms: i64,
 ) -> Result<Option<Salvataggio>, AppError> {
-    let letto = leggi_e_basta(drive, file)?;
+    let letto = leggi_e_basta(drive, file, adesso_ms)?;
     if letto.is_none() {
         // Il rinomino è best-effort: se anche fallisse, la cosa importante è
         // non aver sovrascritto in silenzio.
@@ -943,6 +986,11 @@ fn leggi_remoto<M: Magazzino + ?Sized>(
 /// illeggibile. È la lettura del ripristino, che su Drive non scrive niente;
 /// [`leggi_remoto`] ci aggiunge la messa da parte, per la passata.
 ///
+/// Quel che si legge esce già dentro il dominio dei suoi valori, con gli
+/// istanti oltre `adesso_ms` tagliati: è l'unico punto da cui un backup entra,
+/// per il ripristino e per la fusione della passata (vedi
+/// `backup::nel_dominio`).
+///
 /// # Errori
 ///
 /// `net.*`; quelli di `backup::interpreta` per una versione più nuova, che
@@ -950,11 +998,15 @@ fn leggi_remoto<M: Magazzino + ?Sized>(
 fn leggi_e_basta<M: Magazzino + ?Sized>(
     drive: &M,
     file: &FileRemoto,
+    adesso_ms: i64,
 ) -> Result<Option<Salvataggio>, AppError> {
     let byte = drive.leggi(&file.id)?;
     let esito = decomprimi(&byte).and_then(|aperto| backup::interpreta(&aperto));
     match esito {
-        Ok(salvataggio) => Ok(Some(salvataggio)),
+        Ok(salvataggio) => Ok(Some(Salvataggio {
+            content: backup::nel_dominio(salvataggio.content, adesso_ms),
+            ..salvataggio
+        })),
         Err(err) if e_corrotto(&err) => Ok(None),
         // Una versione più nuova non è una corruzione, e **non** si mette da
         // parte: sovrascrivere il backup di un Rymembra più recente sarebbe
@@ -1149,6 +1201,9 @@ mod prove {
         /// Le scritture, le rinomine e le cancellazioni fatte, in ordine, per
         /// provare cosa è stato chiesto a Drive e cosa no.
         operazioni: std::sync::Mutex<Vec<String>>,
+        /// Se c'è, il token «scade» dopo tante letture: la successiva
+        /// risponde 401, una volta sola, come un token che si rinfresca.
+        scade_dopo: std::sync::Mutex<Option<usize>>,
     }
 
     impl Finto {
@@ -1218,6 +1273,20 @@ mod prove {
                     }));
                 }
                 _ => {}
+            }
+            {
+                let mut scade = self.scade_dopo.lock().expect("scadenza");
+                match *scade {
+                    Some(0) => {
+                        *scade = None;
+                        return Err(AppError::new(ErrorCode::NetHttp {
+                            status: 401,
+                            url: None,
+                        }));
+                    }
+                    Some(resto) => *scade = Some(resto - 1),
+                    None => {}
+                }
             }
             self.file
                 .lock()
@@ -2122,6 +2191,165 @@ mod prove {
             !finto.operazioni().iter().any(|riga| riga.contains("d1")),
             "{:?}",
             finto.operazioni()
+        );
+    }
+
+    // ── il dominio dei valori, anche per la terza porta (R06-4) ─────────────
+
+    /// L'orologio di questa macchina, in millisecondi.
+    fn ora() -> i64 {
+        i64::try_from(adesso_grezzo()).unwrap_or(i64::MAX)
+    }
+
+    /// Dieci anni, in millisecondi.
+    const DIECI_ANNI: i64 = 10 * 365 * 24 * 60 * 60 * 1000;
+
+    /// Un backup scritto da un PC con l'orologio avanti di dieci anni rispetto
+    /// ad `adesso`, e con un conteggio d'ascolto fuori scala.
+    fn backup_dal_futuro(adesso: i64) -> Vec<u8> {
+        let futuro = adesso + DIECI_ANNI;
+        let contenuto = Contenuto {
+            tracks: vec![backup::BranoSalvato {
+                key: "art|uno|al".to_owned(),
+                play_count: i64::MAX,
+                last_played_at: Some(futuro),
+                rating: 3,
+                liked: true,
+                liked_at: Some(futuro),
+                stats_updated_at: futuro,
+            }],
+            playlists: vec![backup::PlaylistSalvata {
+                key: "estate".to_owned(),
+                name: "Estate".to_owned(),
+                created_at: futuro,
+                updated_at: futuro,
+                ..backup::PlaylistSalvata::default()
+            }],
+            tombstones: backup::Lapidi {
+                tracks: [("art|due|al".to_owned(), futuro)].into_iter().collect(),
+                playlists: [("inverno".to_owned(), futuro)].into_iter().collect(),
+            },
+            ..Contenuto::default()
+        };
+        let salvataggio = Salvataggio::nuovo(contenuto, futuro, "avanti".to_owned());
+        comprimi(&backup::serializza(&salvataggio).expect("serializzato")).expect("compresso")
+    }
+
+    /// Nessun istante oltre `adesso`, e nessun conteggio fuori scala.
+    fn dentro_il_dominio(contenuto: &Contenuto, adesso: i64) {
+        for brano in &contenuto.tracks {
+            assert!(
+                rymembra_sync::dominio::ascolti_ammessi(brano.play_count),
+                "{brano:?}"
+            );
+            assert!(
+                brano.last_played_at.is_none_or(|at| at <= adesso),
+                "{brano:?}"
+            );
+            assert!(brano.liked_at.is_none_or(|at| at <= adesso), "{brano:?}");
+            assert!(brano.stats_updated_at <= adesso, "{brano:?}");
+            assert!(brano.liked, "il cuore resta: cade il numero, non il brano");
+        }
+        for playlist in &contenuto.playlists {
+            assert!(playlist.updated_at <= adesso, "{playlist:?}");
+            assert!(playlist.created_at <= adesso, "{playlist:?}");
+        }
+        for at in contenuto
+            .tombstones
+            .tracks
+            .values()
+            .chain(contenuto.tombstones.playlists.values())
+        {
+            assert!(*at <= adesso, "{:?}", contenuto.tombstones);
+        }
+    }
+
+    #[test]
+    fn un_backup_dal_futuro_si_ripristina_datato_adesso() {
+        // Un PC con l'orologio avanti salvava decisioni datate fra dieci anni:
+        // ogni ripristino le applicava, e `merge_stats` le faceva vincere su
+        // tutto quel che si decideva altrove fino ad allora. Il backup è la
+        // terza porta dei documenti, e non passava dal dominio.
+        let adesso = ora();
+        let finto = Finto::con(vec![(copia("a", "x"), backup_dal_futuro(adesso))]);
+        let da = scarica_salvataggio(&finto)
+            .expect("letto")
+            .expect("c'è un backup");
+        dentro_il_dominio(&da.contenuto, ora());
+        assert_eq!(da.contenuto.tracks.len(), 1);
+        assert_eq!(da.contenuto.playlists.len(), 1);
+    }
+
+    #[test]
+    fn la_fusione_della_passata_non_porta_avanti_il_futuro() {
+        // E la stessa cosa per la fusione: il file che si ricarica lassù non
+        // deve rimettere le date dal futuro nel backup di tutti.
+        const ADESSO: i64 = 1_700_000_000_000;
+        let dati = tempfile::tempdir().expect("cartella");
+        let finto = Finto::con(vec![(copia("a", "x"), backup_dal_futuro(ADESSO))]);
+        salva(&finto, dati.path(), &qui(), "questo", ADESSO, |_| {}).expect("la passata");
+        let copie = finto.copie_della_libreria();
+        let (_, byte) = copie.first().expect("una copia");
+        let scritto = backup::interpreta(&decomprimi(byte).expect("gzip")).expect("letto");
+        dentro_il_dominio(&scritto.content, ADESSO);
+    }
+
+    // ── il riepilogo di un ripristino rifatto (R08-11) ──────────────────────
+
+    #[test]
+    fn un_ripristino_rifatto_dopo_un_token_scaduto_conta_tutte_le_skin() {
+        // Cinque skin su una linea lenta, il token scade dopo la terza: chi
+        // chiama rinfresca e rifà tutto, e al secondo giro il piano chiede
+        // solo le due che mancano. La finestra contava il secondo giro e
+        // diceva «2 skin ripristinate» quando ne erano arrivate cinque.
+        let dati = tempfile::tempdir().expect("cartella");
+        let ids = ["uno", "due", "tre", "quattro", "cinque"];
+        let file: Vec<(FileRemoto, Vec<u8>)> = ids
+            .iter()
+            .map(|id| {
+                (
+                    file_di(&format!("s-{id}"), &nome_skin(id), "z"),
+                    pacchetto_di(id),
+                )
+            })
+            .collect();
+        let finto = Finto::con(file);
+        *finto.scade_dopo.lock().expect("scadenza") = Some(3);
+        let coppie: Vec<(&str, String)> = ids.iter().map(|id| (*id, format!("s-{id}"))).collect();
+        let da = da_ripristinare(
+            &coppie
+                .iter()
+                .map(|(id, file)| (*id, file.as_str()))
+                .collect::<Vec<_>>(),
+        );
+        let prima = Presenti::adesso(dati.path());
+
+        let mut ultimo = None;
+        for _ in 0..2 {
+            // Come `con_drive`: il piano si rifà con quel che c'è già su disco.
+            let presenti = pacchetti::elenca_skin_sane(dati.path());
+            let piano = RestorePlan {
+                skins_to_install: ids
+                    .iter()
+                    .filter(|id| !presenti.contains_key(**id))
+                    .map(|id| (*id).to_owned())
+                    .collect(),
+                ..RestorePlan::default()
+            };
+            match scarica_pacchetti(&finto, dati.path(), &da, &piano, |_| {}) {
+                Ok(scritti) => {
+                    ultimo = Some(scritti);
+                    break;
+                }
+                Err(err) => assert!(drive::e_scaduto(&err), "{err:?}"),
+            }
+        }
+        let scritti = ultimo.expect("il secondo giro riesce");
+        assert_eq!(scritti.skin, 2, "il secondo giro, da solo, ne scrive due");
+        assert_eq!(
+            prima.arrivati(dati.path()),
+            (5, 0),
+            "ma il ripristino ne ha portate cinque"
         );
     }
 }

@@ -251,6 +251,9 @@ pub struct StatoLocale {
     pub active_skin: Option<String>,
     /// Le cancellazioni registrate qui.
     pub tombstones: Lapidi,
+    /// Gli host di rete che questo computer usa già, dalle sue cartelle
+    /// sorvegliate e da quella dei download: vedi [`sondabile`].
+    pub host_noti: Vec<String>,
 }
 
 /// Il backup, tradotto nei tipi del dominio e già ripulito dalle lapidi.
@@ -483,7 +486,60 @@ pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
         roots: settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default(),
         active_skin: settings::read(connection, CHIAVE_SKIN)?,
         tombstones: leggi_lapidi(connection)?,
+        host_noti: crate::profilo::host_di_questo_pc(connection)?,
     })
+}
+
+/// Una cartella del backup si può chiedere al disco?
+///
+/// Il piano del ripristino guardava ogni cartella del backup, e su Windows
+/// chiedere se esiste `\\host\share` vuol dire aprire una sessione SMB verso
+/// quel nome e presentargli le credenziali di chi ripristina: bastava aprire
+/// «Ripristina» con il backup di un PC di lavoro, da casa o da un bar
+/// (R06-10). Vale la regola della sincronia e del profilo (decisione 20): le
+/// unità con lettera, i percorsi locali e gli host di rete che questo computer
+/// usa già (`host_noti`, letti **prima** di applicare) sì; il resto no. Una
+/// cartella non chiesta resta nel piano, che la mostra: chi conferma la
+/// aggiunge, e da lì il suo host è noto.
+#[must_use]
+pub fn sondabile(percorso: &str, host_noti: &[String]) -> bool {
+    !crate::profilo::verso_un_host_ignoto(percorso, host_noti)
+}
+
+/// Un backup letto da Drive, riportato dentro il dominio dei suoi valori.
+///
+/// Il backup è la terza porta da cui entrano i documenti, accanto alla
+/// sincronia e al profilo, e non passava dalle loro regole
+/// ([`rymembra_sync::dominio`]): un PC con l'orologio avanti salvava decisioni
+/// datate fra anni, ogni ripristino le applicava e `merge_stats` le faceva
+/// vincere su tutto quel che si decideva altrove; la fusione prima di caricare
+/// le rimetteva nel file di tutti (R06-4). Come per il profilo, che si legge e
+/// si applica una volta, un istante oltre `adesso` si **taglia** ad adesso; un
+/// conteggio fuori scala vale zero — «non si sa», che `merge_stats` lascia
+/// vincere al numero di qui — senza portarsi via il cuore e il voto del brano.
+/// Il voto oltre cinque lo taglia già [`BranoSalvato::statistiche`].
+#[must_use]
+pub fn nel_dominio(mut contenuto: Contenuto, adesso_ms: i64) -> Contenuto {
+    let taglia = |at: &mut i64| *at = (*at).min(adesso_ms);
+    for brano in &mut contenuto.tracks {
+        if !rymembra_sync::dominio::ascolti_ammessi(brano.play_count) {
+            brano.play_count = 0;
+        }
+        brano.last_played_at.iter_mut().for_each(taglia);
+        brano.liked_at.iter_mut().for_each(taglia);
+        taglia(&mut brano.stats_updated_at);
+    }
+    for playlist in &mut contenuto.playlists {
+        taglia(&mut playlist.updated_at);
+        taglia(&mut playlist.created_at);
+    }
+    contenuto
+        .tombstones
+        .tracks
+        .values_mut()
+        .chain(contenuto.tombstones.playlists.values_mut())
+        .for_each(taglia);
+    contenuto
 }
 
 /// I brani, uno per identità.
@@ -2073,7 +2129,7 @@ mod prove {
         let intera = backup_con_l_estate();
         let mut monca = intera.clone();
         if let Some(p) = monca.playlists.first_mut() {
-            p.members.truncate(0);
+            p.members.clear();
         }
         for (locale, remoto) in [(&monca, &intera), (&intera, &monca)] {
             let fuso = fondi(locale, remoto);
@@ -2082,6 +2138,42 @@ mod prove {
                 Some(2),
                 "{fuso:?}"
             );
+        }
+    }
+
+    // ── le cartelle di rete del backup (R06-10, decisione 20) ───────────────
+
+    #[test]
+    fn il_piano_del_ripristino_non_sonda_host_che_questo_pc_non_usa() {
+        // Aprire «Ripristina» chiedeva al disco ogni cartella del backup:
+        // `\\nas-ufficio\musica` di un PC di lavoro voleva dire una sessione
+        // SMB — e le credenziali di chi ripristina — verso quel nome, dalla
+        // rete di casa o di un bar. Si chiedono solo le unità con lettera, i
+        // percorsi locali e gli host che questo PC usa già, come nel profilo.
+        let connection = crate::db::open_in_memory().expect("database").connection;
+        settings::write_json(&connection, CHIAVE_CARTELLE, &vec![r"\\nas\musica"])
+            .expect("cartelle");
+        settings::write(&connection, "download.folder", r"\\archivio\scaricati").expect("download");
+        let qui = stato_locale(&connection).expect("stato");
+
+        for percorso in [
+            r"D:\Musica",
+            r"\\?\E:\Musica",
+            r"\\NAS\musica\Rock",
+            r"\\archivio\altro",
+            "/storage/emulated/0/Music",
+            "nuvola://dropbox-abcdefgh/Musica",
+        ] {
+            assert!(sondabile(percorso, &qui.host_noti), "{percorso}");
+        }
+        for percorso in [
+            r"\\nas-ufficio\musica",
+            "//192.0.2.1/m",
+            r"/\192.0.2.1\m",
+            r"\??\UNC\192.0.2.1\m",
+            r"\\?\UNC\nas\musica",
+        ] {
+            assert!(!sondabile(percorso, &qui.host_noti), "{percorso}");
         }
     }
 }

@@ -2073,6 +2073,7 @@
   "restore.foldersToAdd": "{n} watched folders to add",
   "restore.foldersToAdd.uno": "1 watched folder to add",
   "restore.folderGone": " — no longer on this disk",
+  "restore.folderNotChecked": " — on a network computer this PC doesn’t use yet: it wasn’t looked for. If you restore, it’s added and the scan will look for it",
   "restore.skinsAndDrafts": "{skin} skins and {bozze} drafts",
   "restore.keptAsIs": "Those that are already here are left alone: {skin} skins and {bozze} drafts stay as they are.",
   "restore.skinItem": "skin “{nome}”",

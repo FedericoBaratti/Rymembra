@@ -2073,6 +2073,7 @@
   "restore.foldersToAdd": "{n} cartelle sorvegliate da aggiungere",
   "restore.foldersToAdd.uno": "1 cartella sorvegliata da aggiungere",
   "restore.folderGone": " — non esiste più su questo disco",
+  "restore.folderNotChecked": " — su un computer di rete che questo PC non usa ancora: non si è cercata. Se ripristini si aggiunge, e la cercherà la scansione",
   "restore.skinsAndDrafts": "{skin} skin e {bozze} bozze",
   "restore.keptAsIs": "Quelle che ci sono già non vengono toccate: {skin} skin e {bozze} bozze restano come sono.",
   "restore.skinItem": "skin «{nome}»",
