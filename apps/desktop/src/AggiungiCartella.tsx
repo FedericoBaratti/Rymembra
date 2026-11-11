@@ -327,7 +327,17 @@ function PerBrowser({ linguetta, daRicollegare, onCollegato, onChiedi }: Collega
       <div className="collega-nuvola">
         <TestaServizio servizio={servizio} nome={nome} />
         {daRicollegare !== null && <AvvisoRicollega conto={daRicollegare} />}
-        <p>{t("folders.add.needApp", { servizio: nome, piattaforma: piattaforma.nome })}</p>
+        {/* Per Microsoft si dice prima del modulo che serve un account Azure
+            (di solito con una carta): «gratis, in una decina di minuti»
+            prometteva una strada che il primo passo poi smentiva. */}
+        <p>
+          {t(
+            piattaforma.chiave === "microsoft"
+              ? "folders.add.needApp.microsoft"
+              : "folders.add.needApp",
+            { servizio: nome, piattaforma: piattaforma.nome },
+          )}
+        </p>
         <AppServizio
           piattaforma={piattaforma}
           app={null}
