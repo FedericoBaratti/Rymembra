@@ -694,8 +694,8 @@ export function InsiemeInApp({
   });
 
   // Il guasto della fascia, copiato per il pannello. Per le due frasi e non per
-  // l'oggetto: `App` lo ricostruisce a ogni disegno — venti volte al secondo
-  // mentre suona — e copiarlo ogni volta sveglierebbe il pannello per niente.
+  // l'oggetto: `App` lo ricostruisce a ogni suo disegno, e copiarlo ogni volta
+  // sveglierebbe il pannello per niente.
   // La chiusura in un riferimento, per la ragione di `useFinestrella`.
   const chiudiGuasto = useRef(onChiudiGuasto);
   chiudiGuasto.current = onChiudiGuasto;
@@ -2042,18 +2042,23 @@ function DaInvitare({ stato, onErrore }: { stato: StatoInsieme; onErrore: (e: un
                 {!giaInvitato && (
                   <LivelloDaScegliere dove="inviti" id={fidato.id} nome={fidato.nome} />
                 )}
+                {/* Non `disabled`: toglierebbe il fuoco a chi ha appena
+                    premuto da tastiera, che lo ritroverebbe sul documento
+                    (R13-13, come R12-6). `aria-disabled`, e il clic in più si
+                    ignora qui: l'invito è già partito. */}
                 <button
                   type="button"
                   className="bottone minuto btn-ghost"
                   aria-label={t("together.invite.aria", { nome: fidato.nome })}
-                  disabled={giaInvitato}
-                  onClick={() =>
+                  aria-disabled={giaInvitato || undefined}
+                  onClick={() => {
+                    if (ARCHIVIO.leggi().invitati.has(fidato.id)) return;
                     invita(
                       fidato.id,
                       ARCHIVIO.leggi().livelli.inviti.get(fidato.id) ?? DIRITTI_DI_PARTENZA,
                       onErrore,
-                    )
-                  }
+                    );
+                  }}
                 >
                   {giaInvitato ? t("together.invite.sent") : t("together.invite")}
                 </button>

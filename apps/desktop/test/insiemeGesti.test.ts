@@ -97,6 +97,17 @@ test("nella regione viva della sincronia non c'è lo scarto", () => {
   assert.ok(!viva[1]!.includes("together.sync.offset"));
 });
 
+// ── il fuoco della tastiera ───────────────────────────────────────────────
+
+test("«Invita», una volta premuto, non si spegne con `disabled` e non perde il fuoco", () => {
+  // R13-13: `disabled` sul tasto appena premuto da tastiera manda il fuoco
+  // sul documento (come R12-6). `aria-disabled`, e il clic in più si ignora.
+  const corpo = corpoDi("DaInvitare");
+  assert.ok(!/\sdisabled=\{/.test(corpo), "«Invita» si spegne con `disabled`");
+  assert.ok(corpo.includes("aria-disabled={giaInvitato"));
+  assert.ok(corpo.includes("invitati.has(fidato.id)) return"), "il secondo clic si ignora");
+});
+
 // ── gli indirizzi scritti a mano ──────────────────────────────────────────
 
 test("un indirizzo che non può essere di un PC ha la sua frase, non quella della forma", () => {
