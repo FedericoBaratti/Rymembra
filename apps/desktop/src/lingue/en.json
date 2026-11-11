@@ -1915,6 +1915,8 @@
   "keys.end": "End",
   "shortcuts.contested": "{tasto} is also assigned to another command",
   "shortcuts.removeKey": "Remove {tasto}",
+  "shortcuts.removeKeyFrom": "Remove {tasto} from {comando}",
+  "shortcuts.removeKeyContested": "{tasto}, also assigned to another command: remove it from {comando}",
   "shortcuts.none": "none",
   "shortcuts.assignTo": "Assign a key to {comando}",
   "shortcuts.pressAKey": "Press a key…",

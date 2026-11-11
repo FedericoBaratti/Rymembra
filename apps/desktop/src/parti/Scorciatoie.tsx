@@ -130,6 +130,21 @@ export function Scorciatoie({
                   key={tasto}
                   type="button"
                   className="tasto-scorciatoia"
+                  /* Il nome dice il gesto e il comando, e il conflitto se c'è:
+                     dal solo `<kbd>` il tasto si chiamava «Spazio», e Invio lo
+                     toglieva senza che nessuno l'avesse detto. Il `title`
+                     resta per chi passa col puntatore. */
+                  aria-label={
+                    contesi.has(tasto)
+                      ? t("shortcuts.removeKeyContested", {
+                          tasto: tastoScritto(tasto),
+                          comando: titolo,
+                        })
+                      : t("shortcuts.removeKeyFrom", {
+                          tasto: tastoScritto(tasto),
+                          comando: titolo,
+                        })
+                  }
                   title={
                     contesi.has(tasto)
                       ? t("shortcuts.contested", { tasto: tastoScritto(tasto) })
@@ -154,6 +169,9 @@ export function Scorciatoie({
                 type="button"
                 className="bottone minuto btn-ghost"
                 aria-label={t("shortcuts.assignTo", { comando: titolo })}
+                /* Premuto mentre aspetta un tasto: il nome resta lo stesso, e
+                   lo stato è quel che si sente cambiare. */
+                aria-pressed={inAscolto === chiave}
                 data-inascolto={inAscolto === chiave || undefined}
                 onKeyDown={(e) => {
                   if (inAscolto === chiave) cattura(chiave, e);
@@ -173,24 +191,29 @@ export function Scorciatoie({
         ))}
       </ul>
 
-      {rifiutato !== null && <p className="nota">{rifiutato}</p>}
+      {/* Una regione viva montata sempre, che nasce vuota: un nodo che compare
+          già pieno non si annuncia, e il rifiuto («Tab sposta il fuoco…») e i
+          conflitti arrivano proprio mentre il fuoco è altrove. */}
+      <div role="status">
+        {rifiutato !== null && <p className="nota">{rifiutato}</p>}
 
-      {contesi.size > 0 && (
-        <p className="nota">
-          <strong>{t("shortcuts.clash")}</strong>:{" "}
-          {[...contesi.entries()]
-            .map(
-              ([tasto, quali]) =>
-                `${tastoScritto(tasto)} (${quali
-                  .map(
-                    (c) => comandi().find((x) => x.chiave === c)?.titolo ?? c,
-                  )
-                  .join(", ")})`,
-            )
-            .join("; ")}
-          {t("shortcuts.clash.tail")}
-        </p>
-      )}
+        {contesi.size > 0 && (
+          <p className="nota">
+            <strong>{t("shortcuts.clash")}</strong>:{" "}
+            {[...contesi.entries()]
+              .map(
+                ([tasto, quali]) =>
+                  `${tastoScritto(tasto)} (${quali
+                    .map(
+                      (c) => comandi().find((x) => x.chiave === c)?.titolo ?? c,
+                    )
+                    .join(", ")})`,
+              )
+              .join("; ")}
+            {t("shortcuts.clash.tail")}
+          </p>
+        )}
+      </div>
 
       <div className="azioni">
         <button

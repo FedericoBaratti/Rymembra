@@ -1915,6 +1915,8 @@
   "keys.end": "Fine",
   "shortcuts.contested": "{tasto} è assegnato anche a un altro comando",
   "shortcuts.removeKey": "Togli {tasto}",
+  "shortcuts.removeKeyFrom": "Togli {tasto} da {comando}",
+  "shortcuts.removeKeyContested": "{tasto}, assegnato anche a un altro comando: toglilo da {comando}",
   "shortcuts.none": "nessuna",
   "shortcuts.assignTo": "Assegna un tasto a {comando}",
   "shortcuts.pressAKey": "Premi un tasto…",
