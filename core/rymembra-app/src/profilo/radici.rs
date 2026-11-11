@@ -615,16 +615,40 @@ pub fn applica_verificati(
     // stesso file**: il confronto esatto li lasciava entrare tutti e due —
     // l'indice `UNIQUE` di `path` le maiuscole le guarda — e la scansione dopo
     // toglieva la riga in più, che era quasi sempre quella appena rimappata,
-    // con ascolti, voti e playlist dietro. L'indice
-    // `idx_tracks_percorso_piegato` della 030 tiene veloce anche questa forma.
-    let occupato_sql = if regole().case_insensitive {
-        "SELECT 1 FROM tracks WHERE path = ?1 COLLATE NOCASE AND id <> ?2"
-    } else {
-        "SELECT 1 FROM tracks WHERE path = ?1 AND id <> ?2"
+    // con ascolti, voti e playlist dietro.
+    //
+    // E con la **stessa** chiave con cui il resto del programma confronta i
+    // percorsi, `path_key`, che piega le maiuscole di ogni lingua. `COLLATE
+    // NOCASE` di SQLite piega solo l'ASCII: `É` ed `é` restavano due file, e il
+    // difetto qui sopra tornava fuori per ogni nome accentato (R06-9). Quindi
+    // un indice in memoria, costruito una volta nella transazione e tenuto in
+    // pari con le righe che si spostano. Dove le maiuscole contano si
+    // confronta la stringa esatta, come prima.
+    let chiave = |percorso: &str| {
+        if regole().case_insensitive {
+            path_key(percorso, regole())
+        } else {
+            percorso.to_owned()
+        }
     };
-    let mut occupato = tx
-        .prepare(occupato_sql)
-        .map_err(|err| db_error("percorsi da rimappare", &err))?;
+    let mut occupati: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut chiave_di: HashMap<i64, String> = HashMap::new();
+    {
+        let mut tutti = tx
+            .prepare("SELECT id, path FROM tracks WHERE path IS NOT NULL")
+            .map_err(|err| db_error("percorsi da rimappare", &err))?;
+        let righe = tutti
+            .query_map([], |riga| {
+                Ok((riga.get::<_, i64>(0)?, riga.get::<_, String>(1)?))
+            })
+            .map_err(|err| db_error("percorsi da rimappare", &err))?;
+        for riga in righe {
+            let (id, percorso) = riga.map_err(|err| db_error("percorsi da rimappare", &err))?;
+            let sua = chiave(&percorso);
+            occupati.entry(sua.clone()).or_default().push(id);
+            chiave_di.insert(id, sua);
+        }
+    }
     // L'immagine insieme al percorso, nella stessa riga e nello stesso
     // momento: per un brano qualunque è `NULL` prima e dopo.
     let mut sposta = tx
@@ -646,16 +670,26 @@ pub fn applica_verificati(
                 continue;
             }
         }
-        let gia = occupato
-            .exists(rusqlite::params![riga.percorso, riga.id])
-            .map_err(|err| db_error("percorsi da rimappare", &err))?;
+        let nuova = chiave(&riga.percorso);
+        let gia = occupati
+            .get(&nuova)
+            .is_some_and(|righe| righe.iter().any(|id| *id != riga.id));
         if gia {
             esito.gia_presenti += 1;
             continue;
         }
-        esito.percorsi += sposta
+        let spostate = sposta
             .execute(rusqlite::params![riga.id, riga.percorso, riga.immagine])
             .map_err(|err| db_error("riscrittura di un percorso", &err))?;
+        if spostate > 0 {
+            if let Some(vecchia) = chiave_di.insert(riga.id, nuova.clone())
+                && let Some(righe) = occupati.get_mut(&vecchia)
+            {
+                righe.retain(|id| *id != riga.id);
+            }
+            occupati.entry(nuova).or_default().push(riga.id);
+        }
+        esito.percorsi += spostate;
     }
     Ok(esito)
 }
@@ -1124,6 +1158,38 @@ mod prove {
         assert_eq!(fatto.gia_presenti, 1);
         assert_eq!(fatto.percorsi, 0);
         assert_eq!(percorso_di(&connection, 1), r"D:\Musica\a.flac");
+    }
+
+    #[test]
+    fn lo_stesso_file_con_maiuscole_accentate_diverse_e_gia_presente() {
+        // R06-9: `COLLATE NOCASE` di SQLite piega solo l'ASCII, il resto del
+        // programma confronta con `path_key`, che piega tutto. `É` ed `é`
+        // restavano due file diversi, la riga rimappata entrava accanto a
+        // quella scansionata, e la scansione dopo ne toglieva una.
+        if !regole().case_insensitive {
+            return;
+        }
+        let mut connection = crate::db::open_in_memory().expect("database").connection;
+        connection
+            .execute_batch(
+                r"INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                      file_size, date_added, date_modified)
+                  VALUES (1, 'D:\Musica\Élite\x.flac', 'k1', 'X', 'A', 'B', 1, 1, 1),
+                         (4, 'E:\Musica\éLITE\x.flac', 'k4', 'X', 'A', 'B', 1, 1, 1);",
+            )
+            .expect("brani");
+        let rimappature = vec![Rimappatura {
+            da: r"D:\Musica".to_owned(),
+            a: r"E:\Musica".to_owned(),
+            brani: 1,
+        }];
+        let tx = connection.transaction().expect("transazione");
+        let fatto =
+            applica_verificati(&tx, &rimappature, &|_| Esistenza::Presente).expect("rimappatura");
+        tx.commit().expect("chiusura");
+        assert_eq!(fatto.gia_presenti, 1, "{fatto:?}");
+        assert_eq!(fatto.percorsi, 0);
+        assert_eq!(percorso_di(&connection, 1), r"D:\Musica\Élite\x.flac");
     }
 
     #[test]
