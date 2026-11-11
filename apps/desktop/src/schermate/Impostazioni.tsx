@@ -3040,6 +3040,41 @@ export function Impostazioni({
             </>
           )}
 
+          {/* Per prima la scheda che dà il nome alla sezione: «Movimento e
+              accesso» apriva sulle scorciatoie da tastiera. */}
+          {sezione === "movimento" && (
+            <Scheda icona="i-eye" titolo={t("settings.motion.title")} guida="motion">
+              <p className="nota">
+                <Trans
+                  k="settings.motion.p1"
+                  v={{
+                    // Il livello della skin è una parola del suo formato
+                    // (`none`, `essential`, `full`, `maximum`): si legge
+                    // tradotto, e una parola che il formato aggiungerà dopo
+                    // si legge com'è invece di sparire.
+                    livello: <strong>{tSe(`settings.motion.level.${movimento}`, movimento)}</strong>,
+                  }}
+                />
+              </p>
+
+              {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
+                  quel che la skin dichiara: un livello «di più» contraddirebbe
+                  la frase qui sopra, che dice che una preferenza di
+                  accessibilità sovrascrivibile non è una preferenza. Chi vuole
+                  più movimento cambia skin, che è dove il movimento si
+                  dichiara. */}
+              <Segmentato
+                etichetta={t("settings.motion.pref")}
+                scelta={movimentoUtente}
+                onScegli={onMovimentoUtente}
+                voci={[
+                  { chiave: "sistema", etichetta: t("settings.motion.system") },
+                  { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
+                ]}
+              />
+            </Scheda>
+          )}
+
           {sezione === "movimento" && !MOBILE && (
             <Scheda
               icona="i-code"
@@ -3050,7 +3085,7 @@ export function Impostazioni({
             </Scheda>
           )}
 
-          {/* Fra le scorciatoie e il movimento, e in questa sezione e non in
+          {/* Dopo le scorciatoie, e in questa sezione e non in
               «Aspetto»: ingrandire non è una scelta di look come il tema o la
               skin — è la stessa domanda del movimento ridotto, cioè «fai in modo
               che io ci arrivi». Sta sotto le scorciatoie perché è la scheda che
@@ -3089,39 +3124,6 @@ export function Impostazioni({
               <p className="nota">
                 {t("settings.zoom.now", { quanto: Math.round(zoom * 100) })}
               </p>
-            </Scheda>
-          )}
-
-          {sezione === "movimento" && (
-            <Scheda icona="i-eye" titolo={t("settings.motion.title")} guida="motion">
-              <p className="nota">
-                <Trans
-                  k="settings.motion.p1"
-                  v={{
-                    // Il livello della skin è una parola del suo formato
-                    // (`none`, `essential`, `full`, `maximum`): si legge
-                    // tradotto, e una parola che il formato aggiungerà dopo
-                    // si legge com'è invece di sparire.
-                    livello: <strong>{tSe(`settings.motion.level.${movimento}`, movimento)}</strong>,
-                  }}
-                />
-              </p>
-
-              {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
-                  quel che la skin dichiara: un livello «di più» contraddirebbe
-                  la frase qui sopra, che dice che una preferenza di
-                  accessibilità sovrascrivibile non è una preferenza. Chi vuole
-                  più movimento cambia skin, che è dove il movimento si
-                  dichiara. */}
-              <Segmentato
-                etichetta={t("settings.motion.pref")}
-                scelta={movimentoUtente}
-                onScegli={onMovimentoUtente}
-                voci={[
-                  { chiave: "sistema", etichetta: t("settings.motion.system") },
-                  { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
-                ]}
-              />
             </Scheda>
           )}
 
