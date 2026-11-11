@@ -35,3 +35,11 @@ test("le schede della riproduzione non hanno tutte la stessa icona", () => {
   }
   assert.doesNotMatch(SORGENTE, /\["scrobbling", t\("settings\.section\.scrobbling"\), "i-eq"\]/);
 });
+
+test("Esplora, che è una pagina dell'app, non ha la freccia che apre il browser", () => {
+  const nav = readFileSync(new URL("../src/parti/Navigazione.tsx", import.meta.url), "utf8");
+  assert.ok(!nav.includes('["esplora", t("nav.explore"), "i-external"]'));
+  assert.match(nav, /\["esplora", t\("nav\.explore"\), "i-bussola"\]/);
+  const icone = readFileSync(new URL("../src/parti/Icone.tsx", import.meta.url), "utf8");
+  assert.match(icone, /<symbol id="i-bussola"/);
+});

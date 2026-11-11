@@ -143,7 +143,9 @@ function destinazioni(): readonly (readonly [Vista, string, NomeIcona])[] {
     // Senza conteggio: quel che sta nei cataloghi non si conta, e un numero
     // accanto a questa voce sarebbe il numero dell'ultima ricerca — cioè un
     // numero che parla di una cosa diversa da tutti gli altri della barra.
-    ["esplora", t("nav.explore"), "i-external"],
+    // La bussola e non la freccia che esce: Esplora è una pagina dell'app, e
+    // `i-external` qui dentro vuol dire «apre il browser».
+    ["esplora", t("nav.explore"), "i-bussola"],
   ];
 }
 
