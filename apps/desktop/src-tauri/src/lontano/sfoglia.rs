@@ -126,6 +126,12 @@ impl std::fmt::Debug for ViaNodo {
 
 impl Pezzi for ViaNodo {
     fn pezzo(&self, brano: i64, da: u64, quanti: u64) -> Result<(Vec<u8>, u64, String), AppError> {
+        // Il cancello anche da questa parte, a ogni blocco: dopo «Dimentica»
+        // il brano di quel dispositivo che stava suonando gli chiedeva ancora
+        // i pezzi, e `connessione()` gliene riapriva una (reperto R01-5).
+        if !self.comune.associato(&self.chiave) {
+            return Err(AppError::new(ErrorCode::LontanoNonAssociato));
+        }
         let nodo = self
             .comune
             .nodo()
@@ -791,7 +797,14 @@ pub(super) fn manda_gli_ascolti(app: &AppHandle, comune: &Arc<Comune>, solo: Opt
 
 /// Manda a `chiave` i suoi ascolti in fila, dal più vecchio. `false` se si è
 /// fermato prima della fine.
+///
+/// Solo a un dispositivo ancora collegato, guardato a ogni ascolto: a uno
+/// dimenticato non si chiede più niente, e non è un invio da riprovare
+/// (reperto R01-5).
 fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
+    if !comune.associato(chiave) {
+        return true;
+    }
     let da_mandare = match in_libreria(app, ATTESA_LIBRERIA, |c| {
         dispositivi::ascolti_da_mandare(c, chiave)
     }) {
@@ -799,6 +812,9 @@ fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
         Err(_) => return false,
     };
     for ascolto in da_mandare {
+        if !comune.associato(chiave) {
+            return true;
+        }
         let Some(nodo) = comune.nodo() else {
             return false;
         };
@@ -1264,6 +1280,25 @@ mod prove {
             Err(rymembra_domain::errors::ErrorCodeKind::LontanoNonAssociato)
         );
         let _ = std::fs::remove_dir_all(&cartella);
+    }
+
+    #[test]
+    fn una_voce_di_un_dispositivo_dimenticato_non_chiede_piu() {
+        // Reperto R01-5: dopo «Dimentica» il brano di quel dispositivo che
+        // stava suonando gli chiedeva ancora i pezzi, e `connessione()` gliene
+        // riapriva una.
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Arc::new(Comune::nuovo(posta));
+        let chiave = "c".repeat(64);
+        comune.ammetti(&chiave, false);
+        let voce = ViaNodo {
+            comune: Arc::clone(&comune),
+            chiave,
+        };
+        assert_eq!(
+            voce.pezzo(1, 0, 1024).map_err(|err| err.code().kind()),
+            Err(rymembra_domain::errors::ErrorCodeKind::LontanoNonAssociato)
+        );
     }
 
     /// La cache scende sotto la soglia togliendo le meno usate.
