@@ -27,7 +27,7 @@
  * riattacca il cavo. Il nucleo la manda comunque, con `presente: false`, e qui
  * si disegna spenta.
  */
-import { type CSSProperties, useCallback, useEffect, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   LATENZA_MASSIMA_MS,
@@ -38,6 +38,7 @@ import {
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
 import { MOBILE } from "../piattaforma";
+import { eventiEFotografia } from "../ultima";
 
 /** Il valore del gruppo di scelte che vuol dire «quella di sistema». */
 const SISTEMA = "";
@@ -68,29 +69,45 @@ export function SchedaUscita({
     null,
   );
 
+  // La prima lettura è una promessa e può tornare tardi: dopo lo smontaggio
+  // non scrive niente.
+  const vivo = useRef(true);
   useEffect(() => {
-    let annullato = false;
-    ipc
-      .dispositiviAudio()
-      .then((letti) => {
-        if (!annullato) setDispositivi(letti);
-      })
-      .catch(() => {
-        /* Un elenco che non si legge resta vuoto, e la scheda lo dice con la
-           riga «nessuna uscita collegata»: un errore rosso nelle Impostazioni
-           per un'enumerazione fallita sarebbe rumore, e la risposta pratica —
-           «non c'è niente da scegliere» — è la stessa. */
-        if (!annullato) setDispositivi([]);
-      });
+    vivo.current = true;
     return () => {
-      annullato = true;
+      vivo.current = false;
     };
   }, []);
 
-  // L'elenco che cambia da solo: `useAscolto` apre l'ascolto una volta e lo
-  // chiude allo smontaggio, quindi qui non serve la guardia di `annullato` —
-  // quella copre la prima lettura, che è una promessa e può tornare tardi.
-  useAscolto<DispositivoAudio[]>("riproduzione:dispositivi", setDispositivi);
+  // L'elenco che cambia da solo, e la fotografia **dopo** che il suo ascolto
+  // è aperto (`poi`), adottata solo se nel frattempo non è arrivato un elenco
+  // nuovo (`eventiEFotografia`, in `ultima.ts`). Si chiedeva in un effetto a
+  // parte e senza turno: una risposta più vecchia poteva ricoprire l'elenco
+  // appena mandato dal nucleo, fino al cambiamento dopo.
+  const [conto] = useState(eventiEFotografia);
+  useAscolto<DispositivoAudio[]>(
+    "riproduzione:dispositivi",
+    (letti) => {
+      conto.evento();
+      setDispositivi(letti);
+    },
+    true,
+    () => {
+      const valida = conto.chiedi();
+      ipc
+        .dispositiviAudio()
+        .then((letti) => {
+          if (vivo.current && valida()) setDispositivi(letti);
+        })
+        .catch(() => {
+          /* Un elenco che non si legge resta vuoto, e la scheda lo dice con la
+             riga «nessuna uscita collegata»: un errore rosso nelle Impostazioni
+             per un'enumerazione fallita sarebbe rumore, e la risposta pratica —
+             «non c'è niente da scegliere» — è la stessa. */
+          if (vivo.current && valida()) setDispositivi([]);
+        });
+    },
+  );
 
   const scegli = useCallback(
     (id: string) => {

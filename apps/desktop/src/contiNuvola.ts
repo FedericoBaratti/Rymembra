@@ -50,6 +50,7 @@ import {
 import { conDisponibili } from "./appNuvola";
 import { ipc, type AppNuvolaIpc, type ContoNuvola, type ServizioOfferto } from "./ipc";
 import { useAscolto } from "./pagine";
+import { eventiEFotografia } from "./ultima";
 
 /** Quel che la finestra sa dei servizi, dei conti e delle app. */
 export interface ContiNuvola {
@@ -98,22 +99,30 @@ function useContiNuvola(): ContiNuvola {
   const [guasto, setGuasto] = useState<unknown>(null);
   /** Una lettura in corso: un secondo «Riprova» non ne apre un'altra. */
   const inLettura = useRef(false);
+  /**
+   * I conti mandati dal nucleo (`nuvola:conti`) o scritti da `accogli`, contro
+   * la fotografia di `ricarica` (`eventiEFotografia`, in `ultima.ts`): la sua
+   * risposta, chiesta prima, poteva arrivare dopo e ricoprire l'elenco più
+   * nuovo — anche il conto appena collegato — fino al cambiamento dopo.
+   */
+  const [contoConti] = useState(eventiEFotografia);
 
   const ricarica = useCallback(() => {
     if (inLettura.current) return;
     inLettura.current = true;
     setGuasto(null);
+    const valida = contoConti.chiedi();
     Promise.all([ipc.nuvolaServizi(), ipc.nuvolaConti(), ipc.nuvolaApp()])
       .then(([offerti, collegati, registrate]) => {
         setServizi(offerti);
-        setConti(collegati);
+        if (valida()) setConti(collegati);
         setApp(registrate);
       })
       .catch((e: unknown) => setGuasto(e))
       .finally(() => {
         inLettura.current = false;
       });
-  }, []);
+  }, [contoConti]);
 
   /**
    * Le app nuove, e subito i servizi che ne discendono; poi la parola del
@@ -136,15 +145,27 @@ function useContiNuvola(): ContiNuvola {
 
   // La fotografia **dopo** che l'ascolto è aperto: il `poi` di `useAscolto`
   // esiste per questo — un cambiamento arrivato fra le due cose andrebbe perso.
-  useAscolto<ContoNuvola[]>("nuvola:conti", setConti, true, ricarica);
+  useAscolto<ContoNuvola[]>(
+    "nuvola:conti",
+    (collegati) => {
+      contoConti.evento();
+      setConti(collegati);
+    },
+    true,
+    ricarica,
+  );
   // Due ascolti e due fotografie: si aprono ognuno per conto suo, e un'app
   // salvata fra l'apertura del primo e quella del secondo sfuggirebbe a una
   // fotografia sola.
   useAscolto<AppNuvolaIpc>("nuvola:app", accogliApp, true, rileggiApp);
 
-  const accogli = useCallback((conto: ContoNuvola) => {
-    setConti((prima) => conIlConto(prima, conto));
-  }, []);
+  const accogli = useCallback(
+    (conto: ContoNuvola) => {
+      contoConti.evento();
+      setConti((prima) => conIlConto(prima, conto));
+    },
+    [contoConti],
+  );
 
   return useMemo(
     () => ({ servizi, conti, app, guasto, ricarica, accogli, accogliApp }),
