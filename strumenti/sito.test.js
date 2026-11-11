@@ -147,13 +147,15 @@ test("i collegamenti rotti, le risorse esterne e le ancore perse si vedono", () 
     scrivi("index.html", '<a href="docs/">d</a><a href="#su" id="su">s</a><a href="docs/a/#voce">v</a><a href="manca/">m</a><a href="#via">x</a><div data-src="audio/manca.mp3"></div>');
     scrivi("docs/index.html", '<a href="../">r</a>');
     scrivi("docs/a/index.html", '<article id="voce"></article><script src="https://cdn.example/x.js"></script>');
-    scrivi("404.html", '<a href="/">ok</a><a href="docs/">relativo</a>');
+    // La 404 lavora con una `<base>`: un percorso dalla radice la scavalca, e
+    // sotto `/Rymembra/` porterebbe fuori dal sito.
+    scrivi("404.html", '<base href="/"><a href="./">ok</a><a href="docs/">relativo</a><a href="/docs/">dalla radice</a>');
     scrivi("stile.css", "a { b: url(font/x.woff2) } c {");
     const p = controllaUscita(dir, { voce: "a", altra: "b" }, ["voce", "altra"]);
     assert.ok(p.some((x) => /manca\/index\.html/.test(x)));
     assert.ok(p.some((x) => /«#via»/.test(x)));
     assert.ok(p.some((x) => /cdn\.example/.test(x)));
-    assert.ok(p.some((x) => /404\.html: «docs\/»/.test(x)));
+    assert.ok(p.some((x) => /404\.html: «\/docs\/»/.test(x)), p.join("\n"));
     assert.ok(p.some((x) => /stile\.css: «font\/x\.woff2» non esiste/.test(x)));
     assert.ok(p.some((x) => /stile\.css: le graffe/.test(x)));
     assert.ok(p.some((x) => /«#altra» non arriva/.test(x)));
@@ -192,6 +194,42 @@ test("ogni risorsa da un altro dominio si vede, e l'indice della ricerca deve es
     assert.ok(p.some((x) => x.includes("«manca.json»")), tutti);
     assert.ok(!p.some((x) => /github\.com|c\.json|immagine\.webp 1x/.test(x)), tutti);
     assert.equal(p.length, 8, tutti);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// R27-1, la parte tecnica: Pages serve la 404 a qualunque indirizzo che non
+// esiste, alla radice di un dominio personalizzato o sotto `/Rymembra/` senza.
+// Con percorsi dalla radice, sotto `/Rymembra/` usciva senza stile e «Go to the
+// home page» portava a `federicobaratti.github.io/`, un altro sito.
+test("la pagina 404 funziona alla radice e sotto /Rymembra/", () => {
+  const vm = require("node:vm");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-404-"));
+  try {
+    const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+    assert.deepEqual(costruisci(dir, versione).problemi, []);
+    const pagina = fs.readFileSync(path.join(dir, "404.html"), "utf8");
+    // Nessun indirizzo dalla radice: tutto passa dalla `<base>`.
+    assert.match(pagina, /<base href="\/">/);
+    const indirizzi = [...pagina.replace('<base href="/">', "").matchAll(/\s(?:href|src)="([^"]*)"/g)].map((m) => m[1]);
+    assert.ok(indirizzi.length > 5);
+    assert.deepEqual(indirizzi.filter((u) => u.startsWith("/")), []);
+    const script = /<script>([\s\S]*?)<\/script>/.exec(pagina);
+    assert.ok(script, "manca lo script che sceglie la base");
+    assert.ok(pagina.indexOf("<script>") < pagina.indexOf('rel="stylesheet"'), "la base va scelta prima dei fogli di stile");
+    const base = (percorso) => {
+      const elemento = { href: "/" };
+      vm.runInNewContext(script[1], {
+        location: { pathname: percorso },
+        document: { querySelector: (s) => (s === "base" ? elemento : null) },
+      });
+      return elemento.href;
+    };
+    assert.equal(base("/qualcosa/che/manca"), "/");
+    assert.equal(base("/Rymembra/qualcosa/che/manca"), "/Rymembra/");
+    assert.equal(base("/rymembra/docs/vecchia/"), "/rymembra/");
+    assert.equal(base("/Rymembrax/manca"), "/");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

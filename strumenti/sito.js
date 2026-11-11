@@ -561,11 +561,33 @@ function landing(r, testi, problemi, usate) {
   return pagine;
 }
 
-/** La pagina che Pages serve a qualunque indirizzo che non esiste: percorsi dalla radice, perché può comparire ovunque. */
+/**
+ * Lo script che sceglie la base della 404, prima di qualunque foglio di stile.
+ *
+ * Pages serve la 404 a qualunque indirizzo che non esiste, a qualunque
+ * profondità, quindi un percorso relativo alla pagina non sa da dove parte.
+ * Fino alla 3.2 i percorsi erano dalla radice, e andavano solo con un dominio
+ * personalizzato: senza, il sito vive sotto `/<repository>/` e la 404 usciva
+ * senza stile, con «Go to the home page» che portava a
+ * `federicobaratti.github.io/`, un altro sito. Adesso i percorsi sono relativi
+ * a una `<base href="/">`, e questo script la sposta sotto `/<repository>/`
+ * quando l'indirizzo comincia così. Senza JavaScript resta la radice, cioè il
+ * comportamento di prima.
+ */
+function sceltaBase(progetto) {
+  const prefisso = JSON.stringify(`/${progetto.toLowerCase()}/`);
+  return (
+    `(function(){var p=location.pathname,n=${prefisso}.length;` +
+    `if(p.slice(0,n).toLowerCase()===${prefisso})document.querySelector("base").href=p.slice(0,n)})();`
+  );
+}
+
+/** La pagina che Pages serve a qualunque indirizzo che non esiste: percorsi relativi alla sua `<base>` (vedi `sceltaBase`). */
 function pagina404(r, problemi) {
   const modello = fs.readFileSync(path.join(SORGENTE, "404.html"), "utf8");
-  const lingue = LINGUE.map((l) => `<a href="/${l.cartella}" hreflang="${l.codice}" lang="${l.codice}">${esc(l.nome)}</a>`).join("");
-  return riempi(modello, {}, { $marchio: MARCHIO, $lingue: lingue, $versione: r.versione }, problemi);
+  const lingue = LINGUE.map((l) => `<a href="${l.cartella || "./"}" hreflang="${l.codice}" lang="${l.codice}">${esc(l.nome)}</a>`).join("");
+  const progetto = r.repo.replace(/\/+$/, "").split("/").pop();
+  return riempi(modello, {}, { $marchio: MARCHIO, $lingue: lingue, $versione: r.versione, $sceltaBase: sceltaBase(progetto) }, problemi);
 }
 
 /** Le pagine della documentazione: l'indice e un capitolo per pagina. */
@@ -603,6 +625,10 @@ function documentazione(r, problemi) {
     $docs: base || "./",
     $ricerca: `${base}ricerca.json`,
     $base: base,
+    // Gli indirizzi assoluti e il nome nel piede vengono da `DOMINIO`, come
+    // quelli della landing: un dominio solo, in un posto solo.
+    $dominio: DOMINIO,
+    $nomeDominio: DOMINIO.replace(/^https:\/\//, ""),
   });
   const percorsoPagina = (c) => `${DOMINIO}/docs/${percorsoCapitolo(c.id)}/`;
 
@@ -862,12 +888,20 @@ function controllaUscita(cartella, mappa, ancore) {
     // `data-src` e `data-ricerca` (l'indice della ricerca delle docs) sono file
     // che lo script carica da sé: si controllano come gli altri. Un indice
     // rinominato faceva morire la ricerca in silenzio.
-    for (const m of h.matchAll(/\s(?:href|src|data-src|data-ricerca)="([^"]*)"/g)) {
+    let collegamenti = h;
+    if (f === "404.html") {
+      // La base stessa è l'unico `href="/"` ammesso nella 404.
+      if (!h.includes('<base href="/">')) problemi.push('404.html: manca <base href="/">: i suoi percorsi non saprebbero da dove partono');
+      collegamenti = h.replace('<base href="/">', "");
+    }
+    for (const m of collegamenti.matchAll(/\s(?:href|src|data-src|data-ricerca)="([^"]*)"/g)) {
       const u = m[1].replace(/&amp;/g, "&");
       if (u === "" || /^(https?:|mailto:|data:|\/\/)/.test(u)) continue;
-      // La 404 si serve a qualunque indirizzo: lì un percorso relativo non sa da dove parte.
-      if (f === "404.html" && !u.startsWith("/") && !u.startsWith("#")) {
-        problemi.push(`404.html: «${u}» dev'essere un percorso dalla radice`);
+      // La 404 si serve a qualunque indirizzo, e i suoi percorsi valgono
+      // rispetto alla sua `<base>` (vedi `sceltaBase`): uno dalla radice la
+      // scavalcherebbe, e sotto `/Rymembra/` uscirebbe dal sito.
+      if (f === "404.html" && u.startsWith("/")) {
+        problemi.push(`404.html: «${u}» va scritto relativo alla base, non dalla radice`);
         continue;
       }
       const { bersaglio, ancora } = risolvi(f, u);

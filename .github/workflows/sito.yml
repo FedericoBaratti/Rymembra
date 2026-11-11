@@ -52,6 +52,26 @@
 # In *Settings → Pages* del repository, «Source» va messo su **GitHub Actions**.
 # Senza, il lavoro `pubblica` fallisce con un messaggio che parla di permessi e
 # non di configurazione.
+#
+# # Il dominio
+#
+# Il deploy da Actions non scrive un file `CNAME`: il dominio vive solo nelle
+# impostazioni del repository, e il generatore non lo può vedere. Due casi, e
+# va scelto uno:
+#
+#   - **Con un dominio personalizzato** (quello di `DOMINIO` in
+#     `strumenti/sito.js`, oggi `https://rymembra.com`): *Settings → Pages →
+#     Custom domain* con quel nome, *Enforce HTTPS*, e il dominio verificato
+#     sull'account (*Settings → Pages → Verified domains* del profilo) perché
+#     nessun altro account possa rivendicarlo se il sito si spegne o il
+#     repository cambia nome. Il README e il «?» delle Impostazioni
+#     (`comandi.rs`, `indirizzo_guida`) devono puntare allo stesso indirizzo.
+#   - **Senza**: Pages serve il sito sotto `<utente>.github.io/Rymembra/`, e
+#     `DOMINIO` va cambiato in quell'indirizzo, o canonical, `hreflang`, Open
+#     Graph e sitemap indicano un host che non serve queste pagine.
+#
+# La 404 funziona in tutti e due: sceglie la sua base da sé (vedi
+# `sceltaBase` in `strumenti/sito.js`).
 
 name: sito
 

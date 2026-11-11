@@ -20,7 +20,7 @@
 <meta property="og:title" content="{{=$titolo}}">
 <meta property="og:description" content="{{=$descrizione}}">
 <meta property="og:url" content="{{=$canonico}}">
-<meta property="og:image" content="https://rymembra.com/anteprima.jpg">
+<meta property="og:image" content="{{=$dominio}}/anteprima.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">{{&$jsonld}}</script>
 <script src="{{=$base}}docs.js" defer></script>
@@ -56,7 +56,7 @@
 
 <footer class="piede-docs">
   <p>Rymembra {{=$versione}}, under the MIT licence.</p>
-  <p class="collegamenti"><a href="{{=$radice}}">rymembra.com</a><a href="{{=$privacy}}">Privacy</a><a href="{{=$repo}}">Source on GitHub</a></p>
+  <p class="collegamenti"><a href="{{=$radice}}">{{=$nomeDominio}}</a><a href="{{=$privacy}}">Privacy</a><a href="{{=$repo}}">Source on GitHub</a></p>
 </footer>
 </body>
 </html>
