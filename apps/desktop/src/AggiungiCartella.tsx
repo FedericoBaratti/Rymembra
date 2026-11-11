@@ -257,6 +257,11 @@ interface Collegare {
    * fuori dal suo riquadro: vedi `AppServizio.tsx`.
    */
   onChiedi: (domanda: Domanda) => void;
+  /**
+   * Un collegamento WebDAV sta provando ad accedere: la finestrella non si
+   * chiude finché il server non risponde. Vedi `PerWebdav`.
+   */
+  onAttesa?: ((attesa: boolean) => void) | undefined;
 }
 
 /**
@@ -508,8 +513,17 @@ function fraseDifetto(difetto: DifettoIndirizzo): string {
  * nome del suo server, non sa dove sta la cartella WebDAV dentro di lui. Il
  * nome utente nel percorso lo mette il modulo, da quello scritto sotto.
  */
-function PerWebdav({ linguetta, daRicollegare, onCollegato }: Collegare) {
+function PerWebdav({ linguetta, daRicollegare, onCollegato, onAttesa }: Collegare) {
   const { inAttesa, guasto, prova } = useCollegamento(onCollegato);
+  // Il tentativo non si può fermare: l'annullo del nucleo lo legge solo
+  // l'attesa del browser, e un WebDAV che risponde dopo un «Annulla» scriveva
+  // lo stesso la password nel portachiavi e salvava il conto. Allora finché
+  // prova la finestrella resta aperta, come durante «Aggiungo…»: lo dice a chi
+  // la disegna, e smette di dirlo smontandosi.
+  useEffect(() => {
+    onAttesa?.(inAttesa);
+    return () => onAttesa?.(false);
+  }, [inAttesa, onAttesa]);
   const [preimpostata, setPreimpostata] = useState<string | null>(null);
   const [indirizzo, setIndirizzo] = useState("");
   // Ricollegando, l'utente c'è già: il nome del conto è `utente@server`. Solo
@@ -1170,6 +1184,8 @@ export function AggiungiCartella({
   const [elenchi, setElenchi] = useState<Elenchi>(NESSUN_ELENCO);
   const [cercaPC, setCercaPC] = useState(false);
   const [aggiungendo, setAggiungendo] = useState(false);
+  /** Un collegamento WebDAV sta provando: vedi `Collegare.onAttesa`. */
+  const [provaWebdav, setProvaWebdav] = useState(false);
   const [guastoUsa, setGuastoUsa] = useState<unknown>(null);
   /** La domanda prima di un gesto su un'app: vedi `Collegare.onChiedi`. */
   const [domanda, setDomanda] = useState<Domanda | null>(null);
@@ -1232,6 +1248,8 @@ export function AggiungiCartella({
   }, [contoQui, cartellaQui, chiaveQui, elenchi]);
 
   const scegliSorgente = (dove: Sorgente) => {
+    // Cambiare linguetta smonterebbe il pannello WebDAV a metà tentativo.
+    if (provaWebdav) return;
     ultimaSorgente = dove;
     setSorgente(dove);
     setGuastoUsa(null);
@@ -1279,12 +1297,16 @@ export function AggiungiCartella({
     );
   };
 
+  // Mentre WebDAV prova, le altre linguette sono spente con la ragione:
+  // `scegliSorgente` le ignorerebbe comunque, e in silenzio sembrerebbero rotte.
+  const occupata = (chiave: Sorgente) =>
+    provaWebdav && chiave !== sorgente ? t("folders.add.trying") : undefined;
   const voci: Voce<Sorgente>[] = [
-    { chiave: "pc", etichetta: t("folders.add.pc") },
+    { chiave: "pc", etichetta: t("folders.add.pc"), spenta: occupata("pc") },
     ...linguette.map((l) => ({
       chiave: l.scheda,
       etichetta: l.offerto.nome,
-      spenta: ragioneSpenta(statoLinguetta(l), l.offerto.nome),
+      spenta: occupata(l.scheda) ?? ragioneSpenta(statoLinguetta(l), l.offerto.nome),
     })),
   ];
 
@@ -1323,6 +1345,7 @@ export function AggiungiCartella({
             daRicollegare={null}
             onCollegato={collegato}
             onChiedi={setDomanda}
+            onAttesa={setProvaWebdav}
           />
         </>
       );
@@ -1353,6 +1376,7 @@ export function AggiungiCartella({
             daRicollegare={conto}
             onCollegato={collegato}
             onChiedi={setDomanda}
+            onAttesa={setProvaWebdav}
           />
         )}
       </>
@@ -1365,8 +1389,8 @@ export function AggiungiCartella({
         titolo={t("folders.add.title")}
         classe="finestrella media aggiungi-cartella glass-modal"
         onChiudi={onChiudi}
-        chiudibile={!aggiungendo}
-        occupato={aggiungendo}
+        chiudibile={!aggiungendo && !provaWebdav}
+        occupato={aggiungendo || provaWebdav}
       >
         <Segmentato
           voci={voci}
@@ -1423,7 +1447,12 @@ export function AggiungiCartella({
           </p>
         )}
         <div className="tasti-finestrella">
-          <button type="button" className="bottone" disabled={aggiungendo} onClick={onChiudi}>
+          <button
+            type="button"
+            className="bottone"
+            disabled={aggiungendo || provaWebdav}
+            onClick={onChiudi}
+          >
             {t("common.cancel")}
           </button>
           {sfogliato !== null && (
@@ -1492,6 +1521,8 @@ export function RicollegaConto({
 }) {
   const { servizi, conti, guasto, ricarica, accogli } = useContiNuvolaDellaFinestra();
   const [domanda, setDomanda] = useState<Domanda | null>(null);
+  /** Un collegamento WebDAV sta provando: vedi `Collegare.onAttesa`. */
+  const [provaWebdav, setProvaWebdav] = useState(false);
   /** Il conto com'è adesso: quello aperto, finché l'elenco non dice altro. */
   const adesso = conti?.find((c) => c.conto === conto.conto) ?? conto;
   // «Collegato» o «elenco» e non soltanto «non da ricollegare»: un conto che
@@ -1521,9 +1552,12 @@ export function RicollegaConto({
         titolo={t("folders.reconnect.title", { servizio: NOMI_SERVIZI[conto.servizio] })}
         classe="finestrella media glass-modal"
         onChiudi={onChiudi}
+        chiudibile={!provaWebdav}
+        occupato={provaWebdav}
       >
         {linguetta !== null ? (
           <Collega
+            onAttesa={setProvaWebdav}
             linguetta={linguetta}
             daRicollegare={adesso}
             onCollegato={(collegato) => {
@@ -1545,7 +1579,7 @@ export function RicollegaConto({
           <p className="attesa-sfoglia">{t("folders.add.loading")}</p>
         )}
         <div className="tasti-finestrella">
-          <button type="button" className="bottone" onClick={onChiudi}>
+          <button type="button" className="bottone" disabled={provaWebdav} onClick={onChiudi}>
             {t("common.cancel")}
           </button>
         </div>
