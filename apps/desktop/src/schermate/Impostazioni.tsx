@@ -178,8 +178,10 @@ function gruppi(): readonly (readonly [
         ...(MOBILE ? [] : ([["modelli", t("settings.section.modelli"), "i-ia"]] as const)),
         // Sul telefono non c'è una X da intercettare: l'app si lascia con i
         // gesti del sistema, e la musica continua sempre. Vedi `mobile/vassoio.rs`.
-        // `i-win-min` e non la croce: la croce, nelle righe accanto, è «togli».
-        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-win-min"]] as const)),
+        // I livelli, cioè «dietro», e non la croce: la croce, nelle righe
+        // accanto, è «togli». Nemmeno `i-win-min`: quelli della barra del
+        // titolo sono glifi di Windows, non icone dell'app (`Icone.tsx`).
+        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-layers"]] as const)),
       ],
     ],
     [
@@ -197,7 +199,7 @@ function gruppi(): readonly (readonly [
         // Accanto alla sincronia: è l'altra strada fra i propri dispositivi,
         // e la domanda della sezione è la stessa — cosa esce, e verso chi.
         ["dispositivi", t("settings.section.dispositivi"), "i-dispositivi"],
-        ["scrobbling", t("settings.section.scrobbling"), "i-radio"],
+        ["scrobbling", t("settings.section.scrobbling"), "i-timeline"],
         ["esterno", t("settings.section.esterno"), "i-list"],
         ["legacy", t("settings.section.legacy"), "i-import"],
       ],
@@ -1163,7 +1165,7 @@ function SchedaDissolvenza({
   };
 
   return (
-    <Scheda icona="i-layers" titolo={t("settings.crossfade.title")} guida="crossfade">
+    <Scheda icona="i-dopo" titolo={t("settings.crossfade.title")} guida="crossfade">
       <div className="dissolvenza">
         <input
           type="range"
@@ -1361,7 +1363,7 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
 
   return (
     <Scheda
-      icona="i-win-min"
+      icona="i-layers"
       titolo={t("settings.background.title")}
       guida="background"
     >
@@ -3602,7 +3604,7 @@ export function Impostazioni({
           )}
           {sezione === "scrobbling" && (
             <Scheda
-              icona="i-radio"
+              icona="i-timeline"
               titolo={t("settings.scrobbling.title")}
               guida="scrobbling"
             >
