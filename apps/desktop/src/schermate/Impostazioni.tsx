@@ -95,6 +95,7 @@ import type { Tema } from "../tema";
 import { Trans } from "../lingue/Trans";
 import { comeScorrere } from "../transizione";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
+import { CopiaDiPrima } from "../parti/CopiaDiPrima";
 import { nomeFonte } from "../parti/Incertezza";
 import { MOBILE } from "../piattaforma";
 
@@ -1504,6 +1505,8 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
             : t("settings.maintenance.clean")}
         </button>
       </div>
+      {/* Anche senza libreria: vedi `CopiaDiPrima`. */}
+      {!MOBILE && <CopiaDiPrima onErrore={onErrore} />}
     </Scheda>
   );
 }

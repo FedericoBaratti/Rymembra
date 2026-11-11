@@ -607,6 +607,114 @@ pub fn manutenzione_apri_cartella_dati(app: AppHandle) -> Esito<()> {
     tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| guasto(err.to_string()))
 }
 
+/// La copia di prima dell'aggiornamento che «Torna alla copia» rimetterebbe.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopiaDiPrimaIpc {
+    /// Il nome del file, accanto al database: `rymembra.db.schema-038.bak`.
+    pub nome: String,
+    /// Lo schema che contiene.
+    pub versione: u32,
+    /// Quando è stata fatta, in millisecondi dall'epoca.
+    pub quando_ms: i64,
+    /// Lo schema di questa versione. Una copia più vecchia vuole, dopo il
+    /// ritorno, la versione di Rymembra di prima: questa la riaggiornerebbe.
+    pub versione_di_questa: u32,
+    /// Il nome che prenderà la libreria di adesso, messa da parte.
+    pub messa_da_parte: String,
+}
+
+/// Il nome di un file, per la finestra.
+fn nome_del_file(percorso: &std::path::Path) -> String {
+    percorso
+        .file_name()
+        .map(|nome| nome.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// La copia di prima dell'aggiornamento da offrire, se ce n'è una.
+///
+/// Non apre il database, ed è il punto: la scheda la chiede anche quando la
+/// libreria non si è aperta, che è il caso in cui il gesto serve di più. Legge
+/// soltanto la cartella dei dati.
+///
+/// Sul telefono niente: Android non installa una versione più vecchia senza
+/// disinstallare, e disinstallare porta via libreria e copia insieme.
+#[tauri::command]
+pub fn manutenzione_copia_di_prima(app: AppHandle) -> Option<CopiaDiPrimaIpc> {
+    if cfg!(mobile) {
+        return None;
+    }
+    let stato = app.try_state::<Stato>()?;
+    let percorso = stato.cartella_della_libreria()?.join(NOME_DATABASE);
+    let copia = db::copia_di_prima(&percorso)?;
+    Some(CopiaDiPrimaIpc {
+        nome: nome_del_file(&copia.percorso),
+        versione: copia.versione,
+        quando_ms: copia.quando_ms,
+        versione_di_questa: db::LATEST_VERSION,
+        messa_da_parte: nome_del_file(&db::nome_messa_da_parte(&percorso)),
+    })
+}
+
+/// «Torna alla copia di prima dell'aggiornamento» (D-55): rimette la copia,
+/// mette da parte la libreria di adesso, e chiude Rymembra.
+///
+/// # Perché si chiude
+///
+/// Perché la copia rimessa è quasi sempre di uno schema più vecchio, e questa
+/// versione, se la riaprisse, la riaggiornerebbe subito: il ritorno ha senso
+/// solo con la versione di prima, da installare a programma chiuso. Il
+/// dialogo prima del gesto lo dice. Chiudere è la sequenza di sempre, quella
+/// di «Esci» dal vassoio: la libreria a quel punto è già chiusa
+/// ([`crate::stato::torna_alla_copia_di_prima`]), e i passi che la vogliono lo
+/// annotano e vanno avanti.
+///
+/// # Errori
+///
+/// Quelli del ritorno, e allora niente è cambiato e Rymembra resta aperto;
+/// `internal.aborted` sul telefono.
+#[tauri::command]
+pub async fn manutenzione_torna_alla_copia(app: AppHandle) -> Esito<()> {
+    if cfg!(mobile) {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("ritorno alla copia di prima dell'aggiornamento".to_owned()),
+            })
+            .with_cause("non sul telefono"),
+        ));
+    }
+    in_disparte("ritorno alla copia di prima", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(fuori_servizio());
+        };
+        match crate::stato::torna_alla_copia_di_prima(&stato) {
+            Ok(ritorno) => {
+                nota!(
+                    "[manutenzione] rimessa la copia di prima dell'aggiornamento {} (schema {}); la libreria di prima è in {}",
+                    ritorno.copia.percorso.display(),
+                    ritorno.copia.versione,
+                    ritorno.messa_da_parte.display()
+                );
+                crate::spegnimento::chiedi();
+                app.exit(0);
+                Ok(())
+            }
+            Err(err) => {
+                nota!(
+                    "[manutenzione] ritorno alla copia di prima non riuscito codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
 /// Pulisce la cache delle copertine adesso, e dice quanto ha liberato.
 ///
 /// # Errori

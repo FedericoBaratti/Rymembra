@@ -40,8 +40,9 @@ mod manutenzione;
 mod migrations;
 
 pub use manutenzione::{
-    Controllo, ISTANTANEE_TENUTE, Istantanea, controlla_il_file, controllo_rapido, nome_istantanea,
-    ottimizza,
+    Controllo, CopiaDiPrima, ISTANTANEE_TENUTE, Istantanea, Ritorno, controlla_il_file,
+    controllo_rapido, copia_di_prima, nome_istantanea, nome_messa_da_parte, ottimizza,
+    svuota_il_giornale, torna_alla_copia, torna_alla_copia_del_file,
 };
 pub use migrations::{LATEST_VERSION, MIGRATIONS, Migration};
 

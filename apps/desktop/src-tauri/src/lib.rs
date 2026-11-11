@@ -954,6 +954,8 @@ pub fn run() {
             manutenzione::manutenzione_salute,
             manutenzione::manutenzione_pulisci_copertine,
             manutenzione::manutenzione_apri_cartella_dati,
+            manutenzione::manutenzione_copia_di_prima,
+            manutenzione::manutenzione_torna_alla_copia,
             comandi::apri_documento,
             comandi::apri_guida,
             // Solo sul telefono: altrove rispondono `internal.aborted`. Vedi

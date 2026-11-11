@@ -877,15 +877,46 @@ const ATTESA_OTTIMIZZAZIONE_USCITA: Duration = Duration::from_millis(250);
 /// provare, perché anche un tentativo che rinuncia al lucchetto non va
 /// ripetuto — la seconda attesa costerebbe un altro quarto di secondo a
 /// un'uscita che sta già aspettando.
+///
+/// # E il giornale, riportato nel database
+///
+/// Dopo l'ottimizzazione, nella stessa presa, `wal_checkpoint(TRUNCATE)`
+/// ([`rymembra_app::db::svuota_il_giornale`]): il processo esce con
+/// `process::exit` e la connessione non si chiude mai, quindi senza questo il
+/// `rymembra.db-wal` restava pieno dopo ogni uscita — ed era quel giornale a
+/// rovinare la copia di prima dell'aggiornamento rimessa a mano. Uno fallito
+/// non toglie l'altro: sono due righe di diario diverse.
 pub fn ottimizza_uscendo(stato: &Stato) {
     static FATTA: AtomicBool = AtomicBool::new(false);
     if FATTA.swap(true, Ordering::AcqRel) {
         return;
     }
     match con_libreria_entro(stato, ATTESA_OTTIMIZZAZIONE_USCITA, |libreria| {
-        rymembra_app::db::ottimizza(&libreria.connection)
+        Ok((
+            rymembra_app::db::ottimizza(&libreria.connection),
+            rymembra_app::db::svuota_il_giornale(&libreria.connection),
+        ))
     }) {
-        Some(Ok(())) => {}
+        Some(Ok((ottimizzato, giornale))) => {
+            if let Err(err) = ottimizzato {
+                nota!(
+                    "[uscita] ottimizzazione del database non riuscita codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+            }
+            match giornale {
+                Ok(true) => {}
+                Ok(false) => nota!(
+                    "[uscita] giornale del database non svuotato: un lettore ne teneva ancora delle pagine"
+                ),
+                Err(err) => nota!(
+                    "[uscita] giornale del database non svuotato codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                ),
+            }
+        }
         Some(Err(err)) => nota!(
             "[uscita] ottimizzazione del database non riuscita codice={} causa={}",
             err.code().kind().code(),
@@ -896,6 +927,55 @@ pub fn ottimizza_uscendo(stato: &Stato) {
             ATTESA_OTTIMIZZAZIONE_USCITA.as_millis()
         ),
     }
+}
+
+/// «Torna alla copia di prima dell'aggiornamento»: rimette la copia più
+/// recente al posto del database, mette da parte quello di adesso, e lascia
+/// la libreria **chiusa** fino all'uscita.
+///
+/// Con la libreria aperta lo fa sulla sua connessione, col lucchetto in mano
+/// per tutto il tempo: nessun comando e nessuna scansione scrivono in mezzo.
+/// Con la libreria in errore — il caso in cui serve di più: una migrazione
+/// fermata a metà — su un'apertura del file fatta apposta, senza migrare.
+///
+/// Dopo, la libreria è un errore come quella che non si è aperta, e chi chiama
+/// chiude l'applicazione: questa versione, riaprendo una copia di uno schema
+/// più vecchio, la rimigrerebbe subito.
+///
+/// # Errori
+///
+/// `library.scanBusy` durante una scansione; `fs.notFound` se la copia non c'è;
+/// quelli di [`rymembra_app::db::torna_alla_copia`], e allora la libreria è
+/// com'era.
+pub fn torna_alla_copia_di_prima(stato: &Stato) -> Result<rymembra_app::db::Ritorno, AppError> {
+    let Some(cartella) = stato.cartella_della_libreria() else {
+        return Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("ritorno alla copia di prima dell'aggiornamento".to_owned()),
+        })
+        .with_cause("nessuna cartella dei dati scelta"));
+    };
+    let percorso = cartella.join(NOME_DATABASE);
+    let Some(copia) = rymembra_app::db::copia_di_prima(&percorso) else {
+        return Err(AppError::new(ErrorCode::FsNotFound {
+            path: format!("{}.schema-NNN.bak", percorso.display()),
+        }));
+    };
+    let Some(_turno) = stato.turno_di_manutenzione() else {
+        return Err(AppError::new(ErrorCode::LibraryScanBusy));
+    };
+    let mut guardia = prendi_la_libreria(stato);
+    let ritorno = match guardia.as_mut() {
+        Ok(libreria) => {
+            rymembra_app::db::torna_alla_copia(&mut libreria.connection, &percorso, &copia)?
+        }
+        Err(_) => rymembra_app::db::torna_alla_copia_del_file(&percorso, &copia)?,
+    };
+    // La connessione si chiude qui, cadendo: da adesso ogni comando risponde
+    // con questo errore, e nessuno scrive più nella copia rimessa.
+    *guardia = Err(AppError::new(ErrorCode::InternalAborted {
+        what: Some("libreria tornata alla copia di prima dell'aggiornamento".to_owned()),
+    }));
+    Ok(ritorno)
 }
 
 /// L'orologio, in millisecondi dall'epoca.
@@ -1318,6 +1398,35 @@ fn apri_un_lettore(percorso: &Path, attesa: Duration) -> Result<Connection, AppE
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// L'unica prova che chiama [`ottimizza_uscendo`]: fa il suo lavoro una
+    /// volta per processo.
+    #[test]
+    fn uscendo_il_giornale_resta_vuoto() {
+        // Il processo esce con `process::exit`, senza chiudere la connessione:
+        // quel che `ottimizza_uscendo` lascia sul disco è quel che resta. Un
+        // `-wal` pieno accanto a `rymembra.db` è quello che rovinava la copia
+        // di prima dell'aggiornamento rimessa a mano (R06b-2).
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        con_libreria(&stato, |libreria| {
+            rymembra_app::settings::write(&libreria.connection, "player.position", "42")
+        })
+        .expect("una scrittura");
+        let giornale = dir.path().join(format!("{NOME_DATABASE}-wal"));
+        assert!(
+            std::fs::metadata(&giornale).is_ok_and(|dati| dati.len() > 0),
+            "la scrittura sta nel giornale"
+        );
+
+        ottimizza_uscendo(&stato);
+
+        assert_eq!(
+            std::fs::metadata(&giornale).map_or(0, |dati| dati.len()),
+            0,
+            "uscendo il giornale torna nel database"
+        );
+    }
 
     #[test]
     fn il_turno_si_libera_anche_uscendo_per_la_via_breve() {

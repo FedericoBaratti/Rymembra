@@ -16,8 +16,9 @@
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 37"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 41"],
               ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
+              ["`rymembra.db.messa-da-parte.bak`", "The library set aside by “Go back to the copy from before the update” (kept until removed by hand)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
               ["`skin/`", "Installed `.ryskin` packages and Studio drafts (`skin/bozze/`)"],
               ["`diario/`", "The log, `rymembra.log`, rotated — see [Logs](#logs)"],
@@ -26,7 +27,7 @@
           },
         },
         { h: "Opening" },
-        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason.",
+        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason: with no library the `skin` command wears the built-in skin (`skin::da_indossare`, it needs nothing on disk), the error band shows the error of `avvio`, and for database errors it offers “Open the data folder” (`manutenzione_apri_cartella_dati`, not on the phone). `Stato` keeps the folder it looked in even when opening failed (`cartella_della_libreria`).",
         { h: "Pragmas and the journal" },
         {
           ol: [
@@ -87,6 +88,7 @@
           },
         },
         "Triggers on `tracks`: the three `tracks_fts_*` keep the FTS index current; `statistiche_restano_orfane` / `correzioni_restano_orfane` (BEFORE DELETE) and `statistiche_tornano` / `correzioni_tornano` (AFTER INSERT) park and restore statistics and corrections by `content_key` for 90 days — see [Removal](#removal); `lyrics_segue_track_key` moves lyrics when the key changes; the three `generazione_dopo_*` write a new `random()` into `libreria_stato.generazione` on every write.",
+        "Migration 041 adds two partial indexes, `idx_tracks_mb_recording` on `tracks(mb_recording_id)` and `idx_artists_mb` on `artists(mb_artist_id)` (both `WHERE … IS NOT NULL`): the ListenBrainz neighbours are written with one `INSERT … SELECT` per neighbour inside a transaction holding the library lock, and without them each one read the whole table.",
         { h: "Everything else" },
         {
           table: {
@@ -126,7 +128,7 @@
       title: "Migrations and the pre-migration copy",
       src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
-        "`MIGRATIONS` is an ordered list of 37 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
+        "`MIGRATIONS` is an ordered list of 41 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
         "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },
@@ -144,6 +146,9 @@
           ],
         },
         "The copy never blocks the migration: if it cannot be made, the result is `Istantanea::Saltata { motivo }` and the reason goes to the startup log. Every release that migrates names its migrations in `CHANGELOG.md`.",
+        { h: "Going back to the copy" },
+        "*Settings › Library and data*, in the maintenance card, offers “Go back to the copy from before the update” (not on the phone) when a copy exists: the newest `rymembra.db.schema-NNN.bak` by date whose schema this version can open (`db::copia_di_prima`). It works with the library open or not (a migration stopped halfway). It checks the copy (read-only `quick_check`, schema equal to `NNN`), sets the current library aside with `VACUUM INTO rymembra.db.messa-da-parte.bak` (a file copy of `.db` and `-wal` if `VACUUM` cannot read it), puts the copy back with SQLite's backup API into the open database — one write transaction, so it never renames a file another connection holds and never pairs the copy with the new database's `-wal` — truncates the journal, and closes Rymembra: this version would migrate the copy again. The copy itself stays where it was.",
+        "By hand, the copy must be **copied**, not renamed, over `rymembra.db`, after closing Rymembra and deleting `rymembra.db-wal` and `rymembra.db-shm`: a leftover `-wal` belongs to the new database, and SQLite applies it to any file with that name. On a clean exit the journal is empty anyway: `ottimizza_uscendo` runs `PRAGMA wal_checkpoint(TRUNCATE)` after the last `optimize`, because the process exits through `process::exit` and never closes the connection.",
       ],
       see: ["schema", "maintenance"],
     },
@@ -159,6 +164,7 @@
             rows: [
               ["`PRAGMA optimize=0x10002`", "At open, after migrations", "100 ms the first time, then ≈ 1 ms"],
               ["`PRAGMA optimize`", "Every pass (6 h) and once on exit, waiting at most 250 ms for the lock", "< 1 ms"],
+              ["`PRAGMA wal_checkpoint(TRUNCATE)`", "Once on exit, right after the last `optimize`", "—"],
               ["`PRAGMA quick_check(8)`", "Once per session, first pass", "200–240 ms warm"],
               ["`PRAGMA integrity_check`", "Never automatically", "1.8 s"],
               ["`VACUUM INTO`", "Before a migration", "370 ms"],
