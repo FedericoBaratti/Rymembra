@@ -692,3 +692,35 @@ test("con lo spettro acceso l'alone dei comandi è del colore del fondo del tema
     assert.doesNotMatch(d, /rgb\(0 0 0/, selettore);
   }
 });
+
+/** Un numero di pixel da una dichiarazione, o `ripiego`. */
+function pixel(dichiarazioni: string, proprieta: string, ripiego = 0): number {
+  const m = new RegExp(String.raw`(?:^|[;\s])` + proprieta + String.raw`:\s*(-?[\d.]+)px`).exec(dichiarazioni);
+  return m ? Number(m[1]) : ripiego;
+}
+
+test("le stelle e il triangolo dell'albero sono bersagli da 24 pixel", () => {
+  // WCAG 2.2 2.5.8: cinque stelle da 15 pixel a un pixel l'una dall'altra, e
+  // nessun'altra strada per votare: chi punta con poca precisione prendeva la
+  // stella accanto, cioè un voto sbagliato.
+  const stella = regola(".stella");
+  const stelle = regola(".stelle");
+  const passo = pixel(stella, "width") + pixel(stelle, "gap");
+  assert.ok(passo >= 24, `stelle a ${passo} px l'una dall'altra`);
+  assert.ok(pixel(stella, "height") >= 24, "stelle basse");
+  // La colonna del voto le contiene tutte e cinque, in ogni larghezza
+  // dell'elenco che la mostra: è la traccia subito prima della durata (46 px).
+  for (const m of senzaCommenti(FOGLIO).matchAll(/--colonne-riga:\s*([^;]+);/g)) {
+    const tracce = (m[1] ?? "").trim().split(/\s+(?![^(]*\))/);
+    const durata = tracce.indexOf("46px");
+    const titolo = tracce.indexOf("minmax(0, 1fr)");
+    if (durata - titolo < 2) continue; // la colonna del voto non c'è
+    const voto = Number.parseFloat(tracce[durata - 1] ?? "0");
+    assert.ok(voto >= passo * 5, `colonna del voto da ${voto} px in «${m[1]}»`);
+  }
+  // Il triangolo dell'albero resta di 16 pixel, perché l'altezza della riga la
+  // misura la finestra virtuale: il bersaglio cresce con uno pseudo-elemento.
+  const bersaglio = regola(".freccia-nodo:not(:empty)::after");
+  const lato = pixel(regola(".freccia-nodo"), "width") - 2 * pixel(bersaglio, "inset");
+  assert.ok(lato >= 24, `triangolo da ${lato} px`);
+});

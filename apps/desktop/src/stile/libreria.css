@@ -167,7 +167,7 @@
 .elenco {
   display: flex;
   flex-direction: column;
-  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 82px 46px 32px;
+  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 120px 46px 32px;
 }
 
 /*
@@ -181,7 +181,7 @@
  * capo: la × si vedeva sotto la riga a cui apparteneva, allineata a sinistra.
  */
 .elenco[data-con-togli] {
-  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 82px 46px 32px 32px;
+  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 120px 46px 32px 32px;
 }
 
 /*
@@ -204,10 +204,10 @@
  */
 @container (max-width: 760px) {
   .elenco {
-    --colonne-riga: 34px 40px minmax(0, 1fr) 82px 46px 32px;
+    --colonne-riga: 34px 40px minmax(0, 1fr) 120px 46px 32px;
   }
   .elenco[data-con-togli] {
-    --colonne-riga: 34px 40px minmax(0, 1fr) 82px 46px 32px 32px;
+    --colonne-riga: 34px 40px minmax(0, 1fr) 120px 46px 32px 32px;
   }
   .testa-elenco .disco,
   .riga .disco {
@@ -438,9 +438,15 @@
 }
 
 /* ── valutazione ─────────────────────────────────────────────────────────── */
+/* Bersagli da 24 pixel attaccati, con dentro la stella da 13: il disegno è lo
+   stesso, cambia dove si può premere. Erano quindici pixel a uno di distanza,
+   e chi punta con poca precisione (un tremore, una penna, un touchpad)
+   prendeva la stella accanto, cioè un voto sbagliato — e non c'è un'altra
+   strada per votare (WCAG 2.2 2.5.8). La colonna del voto dell'elenco li
+   contiene tutti e cinque: vedi `--colonne-riga`. */
 .stelle {
   display: flex;
-  gap: 1px;
+  gap: 0;
 }
 
 .stella {
@@ -449,8 +455,8 @@
   border: none;
   background: transparent;
   padding: 0;
-  width: 15px;
-  height: 15px;
+  width: 24px;
+  height: 24px;
   color: var(--color-text-3);
   line-height: 1;
   cursor: pointer;

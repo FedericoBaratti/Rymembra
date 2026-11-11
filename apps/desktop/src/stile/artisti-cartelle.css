@@ -394,6 +394,7 @@
    misura il loro nome si allineerebbe più a sinistra di quello dei fratelli che
    ce l'hanno: il rientro direbbe un livello che non è il loro. */
 .freccia-nodo {
+  position: relative;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -402,6 +403,16 @@
   height: 16px;
   color: var(--color-text-3);
   cursor: pointer;
+}
+/* Il bersaglio è di 24 pixel anche se il triangolo ne disegna 16 (WCAG 2.2
+   2.5.8). Non il riquadro: l'altezza della riga la misura la finestra
+   virtuale. Il di più cade nello spazio fra il triangolo e l'icona e nel
+   rientro, dove non c'è un altro comando; e solo se il triangolo c'è — su una
+   foglia il riquadro è vuoto, e un clic lì è un clic sulla riga. */
+.freccia-nodo:not(:empty)::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }
 /* Su una radice il nome è il percorso intero: qui il troncamento è la regola e
    non il caso limite, e il percorso per esteso resta nel `title`. */
