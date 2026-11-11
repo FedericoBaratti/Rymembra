@@ -116,6 +116,7 @@ import {
   type RimozioniDaConfermare,
   type Playlist,
   type VistaBrani,
+  type VoceSkin,
 } from "./ipc";
 import { conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
 import { nomeDiFile } from "./nomeDiFile";
@@ -589,8 +590,20 @@ export function App() {
    * vedi `skinAttiva.ts`. Qui, nel punto in cui stava la lettura della skin
    * all'apertura — subito dopo `avvio`, e prima del tema che la legge.
    */
-  const skinFinestra = useSkinAttiva(segnalaErrore);
-  const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin } = skinFinestra;
+  //
+  // Una scelta durante «Prova sull'app» chiude la prova (D-67), e lo si dice:
+  // lo Studio torna a coprire la finestra, e senza una parola sembrerebbe che
+  // la scelta abbia riaperto l'editor da sola. Il nome dall'elenco di adesso,
+  // letto quando l'avviso parte e non quando la funzione nasce.
+  const elencoSkin = useRef<readonly VoceSkin[]>([]);
+  const avvisaProvaChiusa = useCallback(
+    (id: string) =>
+      setNotizia(t("studio3.try.closed", { nome: elencoSkin.current.find((v) => v.id === id)?.nome ?? id })),
+    [setNotizia],
+  );
+  const skinFinestra = useSkinAttiva(segnalaErrore, avvisaProvaChiusa);
+  const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin, finisciProva } = skinFinestra;
+  elencoSkin.current = skin;
   const { daIndossare, setDaIndossare } = skinFinestra;
   const studioInProva = prova !== null;
   /** Lo Studio copre la finestra: l'app non prende né tasti né file. */
@@ -2658,7 +2671,12 @@ export function App() {
         setCreandoTema(true);
       },
       onApriStudio: (id) => {
-        if (!MOBILE) setStudioAperto(id);
+        if (MOBILE) return;
+        // Durante «Prova sull'app» lo Studio è nascosto: aprirne un altro
+        // senza chiudere la prova non mostrava niente, e dopo «Torna» lo
+        // Studio era ancora sulla bozza di prima. Si torna, e si apre.
+        finisciProva();
+        setStudioAperto(id);
       },
       onImporta: importaDatabase,
       onImportaLink: () => setImportandoLink(true),
@@ -2681,6 +2699,7 @@ export function App() {
       setImportandoLink,
       setImportandoAccount,
       setRipristinando,
+      finisciProva,
     ],
   );
 
@@ -4642,7 +4661,12 @@ export function App() {
                   </div>
                 }
               >
+                {/* `key`: lo Studio legge il documento una volta per montaggio,
+                    e un tema nuovo o «Apri nello Studio» su un'altra skin deve
+                    aprire davvero quella. Quel che aveva in mano lo salva lo
+                    Studio stesso, smontandosi. */}
                 <Studio
+                  key={studioAperto}
                   id={studioAperto}
                   onEsci={esciDalloStudio}
                   // «Salva e usa» ridipinge la finestra intera, non solo

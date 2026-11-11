@@ -141,7 +141,14 @@ export interface SkinDellaFinestra {
  * Va chiamato una volta sola, in `App`: è lo stato della finestra, e due copie
  * indosserebbero due skin a turno.
  */
-export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFinestra {
+export function useSkinAttiva(
+  segnalaErrore: (e: unknown) => void,
+  /**
+   * Una scelta ha chiuso «Prova sull'app»: l'id della skin scelta, per
+   * l'avviso. Vedi `scegliSkin`.
+   */
+  onProvaChiusa: (id: string) => void = () => undefined,
+): SkinDellaFinestra {
   const [skin, setSkin] = useState<VoceSkin[]>([]);
   /**
    * La skin appena installata che il nucleo vuole far guardare prima di
@@ -161,6 +168,18 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
   const [prova, setProva] = useState<Prova | null>(null);
   const provaAdesso = useRef(prova);
   provaAdesso.current = prova;
+  /**
+   * Chiude la prova **anche nel ref**, subito: `provaAdesso` si allinea solo
+   * al disegno dopo, e un gesto che arriva prima — «Tienila» che poi sceglie,
+   * un secondo clic su «Prova» — vedrebbe ancora la prova chiusa.
+   */
+  const chiudiProva = useCallback(() => {
+    provaAdesso.current = null;
+    setProva(null);
+  }, []);
+  /** Il ref e non la funzione: chi la passa la scrive a ogni disegno. */
+  const provaChiusa = useRef(onProvaChiusa);
+  provaChiusa.current = onProvaChiusa;
   /**
    * La skin dell'ultima prova, come oggetto: finché è lei quella indossata
    * l'accento della copertina non si chiede. Non si azzera mai a mano — conta
@@ -297,6 +316,12 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
   const scegliSkin = useCallback(
     async (id: string) => {
       const giro = (giroSkin.current += 1);
+      // Una scelta durante «Prova sull'app» — dalle Impostazioni, da un tema
+      // nuovo, da un `.ryskin` trascinato — chiude la prova (D-67). Fino alla
+      // 3.2 la lasciava accesa: la finestra indossava la skin scelta con la
+      // pillola che diceva ancora «Stai provando», e «Torna» rimetteva la
+      // skin di prima della prova, contro quel che il database diceva.
+      const inProva = provaAdesso.current;
       scelteInVolo.current += 1;
       let scelta: Skin;
       try {
@@ -314,9 +339,14 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       // database, quindi l'elenco e la skin attiva si aggiornano comunque.
       if (tocca(giro)) applicaSkin(scelta);
       setSkinAttiva(scelta);
+      // Solo se è ancora la stessa prova: «Tienila» la chiude prima di
+      // scegliere, e lì non c'è niente da dire.
+      const chiusa = inProva !== null && provaAdesso.current === inProva;
+      if (chiusa) chiudiProva();
       await ricaricaSkin();
+      if (chiusa) provaChiusa.current(scelta.id);
     },
-    [ricaricaSkin, rimettiDopoUnGuasto, segnalaErrore, tocca],
+    [ricaricaSkin, rimettiDopoUnGuasto, segnalaErrore, tocca, chiudiProva],
   );
 
   /**
@@ -326,7 +356,12 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
   const iniziaProva = useCallback(
     (bozza: { skin: Skin; sorgente: string; id: string }) => {
       giroSkin.current += 1;
-      setProva({ ...bozza, reale: skinAttivaAdesso.current });
+      // Con una prova già in corso — il secondo clic di un doppio clic su
+      // «Prova» — la skin «di prima» resta quella della prima: la indossata
+      // adesso è già la bozza, e «Torna» la rimetterebbe addosso (R14-8).
+      const nuova = { ...bozza, reale: provaAdesso.current?.reale ?? skinAttivaAdesso.current };
+      provaAdesso.current = nuova;
+      setProva(nuova);
       applicaSkin(bozza.skin);
       setSkinAttiva(bozza.skin);
       // Niente accento della copertina sulla bozza: il nucleo lo calcolerebbe
@@ -343,21 +378,30 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       applicaSkin(quale.reale);
       setSkinAttiva(quale.reale);
     }
-    setProva(null);
-  }, []);
+    chiudiProva();
+  }, [chiudiProva]);
+  /**
+   * «Tienila» in volo: un doppio clic installava due volte e sceglieva due
+   * volte (R14-8). La prova resta accesa finché l'installazione non riesce —
+   * se fallisce si può ancora tornare — quindi la guardia è a parte.
+   */
+  const tenendo = useRef(false);
   /** «Tienila»: la bozza si installa e si indossa, e si torna allo Studio. */
   const tieniProva = useCallback(async () => {
     const quale = provaAdesso.current;
-    if (quale === null) return;
+    if (quale === null || tenendo.current) return;
+    tenendo.current = true;
     try {
       const voce = await ipc.skinInstallaSorgente(quale.sorgente, quale.id);
-      setProva(null);
+      chiudiProva();
       await scegliSkin(voce.id);
     } catch (e) {
       segnalaErrore(e);
+    } finally {
+      tenendo.current = false;
     }
-  }, [scegliSkin, segnalaErrore]);
-  const scordaProva = useCallback(() => setProva(null), []);
+  }, [scegliSkin, segnalaErrore, chiudiProva]);
+  const scordaProva = chiudiProva;
 
   /**
    * Toglie una skin installata.

@@ -453,9 +453,7 @@ export function Chat({
   // nuova di una battuta, o di un giro intero dell'agent finito mentre si
   // provava la skin sull'app.
   const lettura = useRef(false);
-  useEffect(() => {
-    if (lettura.current) return;
-    lettura.current = true;
+  const leggiDalDisco = useCallback(() => {
     ipc
       .studioChatLeggi(idAttuale.current)
       .then((testo) => {
@@ -471,6 +469,20 @@ export function Chat({
       // e questa conversazione vive solo finché il cassetto è aperto.
       .catch(onErrore);
   }, [onErrore]);
+  useEffect(() => {
+    if (lettura.current) return;
+    lettura.current = true;
+    leggiDalDisco();
+  }, [leggiDalDisco]);
+  // E di nuovo quando lo Studio dice che sul disco è cambiata: «Butta la
+  // bozza» la mette da parte, un ripristino la può rimettere. Tenendo quella
+  // in memoria, la battuta dopo riscriveva la conversazione buttata.
+  const vistaSulDisco = useRef(s.chatSulDisco);
+  useEffect(() => {
+    if (vistaSulDisco.current === s.chatSulDisco) return;
+    vistaSulDisco.current = s.chatSulDisco;
+    leggiDalDisco();
+  }, [s.chatSulDisco, leggiDalDisco]);
 
   const salva = useCallback(
     (quale: Conversazione) => {

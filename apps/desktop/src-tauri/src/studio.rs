@@ -647,17 +647,30 @@ pub fn studio_salva(
 /// # Perché le istantanee restano
 ///
 /// Sono due cose diverse e non si cancellano insieme. La bozza è «dove sono
-/// arrivato»; le istantanee sono «dove sono passato», e sono l'unica rete sotto
-/// questo bottone — che è irreversibile per natura. Per questo non stanno più
-/// dentro la cartella della bozza ma in `skin/istantanee/<id>/`: la 2.x le
-/// teneva lì, e questo comando se le portava via.
+/// arrivato»; le istantanee sono «dove sono passato», e sono la rete sotto
+/// questo bottone. Per questo non stanno più dentro la cartella della bozza ma
+/// in `skin/istantanee/<id>/`: la 2.x le teneva lì, e questo comando se le
+/// portava via.
+///
+/// # Perché si torna indietro davvero
+///
+/// Fino alla 3.2 l'istantanea fotografava il solo testo, e la cartella della
+/// bozza se ne andava con i file aggiunti nello Studio e la conversazione: il
+/// ripristino riportava un documento che nominava caratteri e immagini che non
+/// c'erano più. Adesso i file che il pacchetto non ha e la conversazione vanno
+/// da parte accanto all'istantanea presa qui, e ripristinarla li rimette
+/// ([`rimetti_da_parte`]).
 ///
 /// Restituisce la sorgente del pacchetto, cioè quel che l'editor deve mostrare
 /// da qui in poi: farsela ridire con una seconda chiamata lascerebbe un istante
 /// in cui la finestra mostra un documento che non esiste più da nessuna parte.
+///
+/// `sorgente` è il testo che l'editor mostra: diventa l'istantanea «scartata»,
+/// presa qui e non dalla finestra, perché i file e la conversazione messi da
+/// parte stanno accanto a **lei** e il ripristino li ritrova da lì.
 #[tauri::command(async)]
-pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
-    con_le_bozze(&stato, |dati| scarta_bozza(dati, &id)).map_err(errore)
+pub fn studio_scarta(stato: State<'_, Stato>, id: String, sorgente: String) -> Esito<String> {
+    con_le_bozze(&stato, |dati| scarta_bozza(dati, &id, &sorgente)).map_err(errore)
 }
 
 /// Quel che fa [`studio_scarta`], senza lo stato di Tauri attorno.
@@ -672,15 +685,15 @@ pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
 /// guarda quindi prima: una skin di serie, o un pacchetto che si legge — la
 /// stessa lettura di [`da_lavorare`] — e senza nessuno dei due non si tocca
 /// niente.
-fn scarta_bozza(data_dir: &Path, id: &str) -> Result<String, AppError> {
+fn scarta_bozza(data_dir: &Path, id: &str, sorgente: &str) -> Result<String, AppError> {
     if !id_sicuro(id) {
         return Err(non_trovata(id));
     }
     let pacchetto = data_dir.join("skin").join(format!("{id}.ryskin"));
-    let si_torna = rymembra_skin::di_serie(id).is_some()
-        || std::fs::read(&pacchetto)
-            .is_ok_and(|bytes| rymembra_skin::package::leggi_pacchetto_grezzo(&bytes).is_ok());
-    if !si_torna {
+    let letto = std::fs::read(&pacchetto)
+        .ok()
+        .and_then(|bytes| rymembra_skin::package::leggi_pacchetto_grezzo(&bytes).ok());
+    if rymembra_skin::di_serie(id).is_none() && letto.is_none() {
         return Err(non_trovata(id).with_cause(
             "questa bozza non ha un pacchetto a cui tornare: buttarla vorrebbe dire perderla"
                 .to_owned(),
@@ -688,6 +701,10 @@ fn scarta_bozza(data_dir: &Path, id: &str) -> Result<String, AppError> {
     }
     let cartella = cartella_bozze(data_dir).join(id);
     if cartella.exists() {
+        let istantanee = istantanee_di(data_dir, id);
+        let presa = prendi_istantanea(&istantanee, sorgente, Causa::Scartata)?;
+        let del_pacchetto = letto.map(|letto| letto.assets).unwrap_or_default();
+        metti_da_parte(&cartella, &da_parte_di(&istantanee, &presa), &del_pacchetto)?;
         std::fs::remove_dir_all(&cartella)
             .map_err(|err| rymembra_app::files::io_error(&cartella.display().to_string(), &err))?;
     }
@@ -697,6 +714,47 @@ fn scarta_bozza(data_dir: &Path, id: &str) -> Result<String, AppError> {
     // divergere. Le istantanee non stanno più qui dentro, e restano — e non
     // se ne aggiunge un'altra per la migrazione: vedi `apri_documento`.
     apri_documento(data_dir, id, false)
+}
+
+/// Sposta da `bozza` a `da_parte` la conversazione e i file che il pacchetto
+/// non ha, o ha diversi.
+///
+/// Quelli uguali al pacchetto no: tornano comunque con lui, e una copia per
+/// ogni scarto riempirebbe le venti istantanee di caratteri che esistono già.
+/// Spostare e non copiare: è lo stesso disco, e prima di cancellare la bozza
+/// ogni file deve essere già al sicuro — un trasloco che non riesce ferma lo
+/// scarto, con la bozza ancora lì.
+fn metti_da_parte(
+    bozza: &Path,
+    da_parte: &Path,
+    del_pacchetto: &[rymembra_skin::package::SkinAsset],
+) -> Result<(), AppError> {
+    let io = |percorso: &Path, err: &std::io::Error| {
+        rymembra_app::files::io_error(&percorso.display().to_string(), err)
+    };
+    let sposta = |da: &Path, a: &Path| -> Result<(), AppError> {
+        if let Some(sopra) = a.parent() {
+            std::fs::create_dir_all(sopra).map_err(|err| io(sopra, &err))?;
+        }
+        std::fs::rename(da, a).map_err(|err| io(da, &err))
+    };
+    if let Ok(voci) = std::fs::read_dir(bozza.join("assets")) {
+        for voce in voci.flatten() {
+            let nome = voce.file_name();
+            let uguale = del_pacchetto.iter().any(|risorsa| {
+                nome.to_str() == Some(risorsa.name.as_str())
+                    && std::fs::read(voce.path()).is_ok_and(|bytes| bytes == risorsa.bytes)
+            });
+            if !uguale {
+                sposta(&voce.path(), &da_parte.join("assets").join(&nome))?;
+            }
+        }
+    }
+    let chat = bozza.join(FILE_CHAT);
+    if chat.is_file() {
+        sposta(&chat, &da_parte.join(FILE_CHAT))?;
+    }
+    Ok(())
 }
 
 /// Scrive un `.ryskin` da una sorgente, con dentro le risorse che aveva.
@@ -1010,8 +1068,9 @@ const CHAT_MASSIMA: usize = CHAT_MASSIMA_MB * 1024 * 1024;
 /// La conversazione salvata di una bozza, o `None` se non ce n'è.
 ///
 /// Sta dentro la cartella della bozza, accanto a `skin.json`: è una
-/// conversazione **su quella bozza**, e «Scarta» se la porta via insieme — le
-/// modifiche di cui parla non esistono più. Una rinomina la sposta con la
+/// conversazione **su quella bozza**, e «Butta la bozza» la mette da parte con
+/// i file, accanto all'istantanea che ripristinandola la rimette
+/// ([`scarta_bozza`]). Una rinomina la sposta con la
 /// cartella. Il backup su Drive (`rymembra_cloud::pacchetti`) prende soltanto il
 /// manifest: quel che si è scritto al modello resta su questo computer.
 fn leggi_chat(data_dir: &Path, id: &str) -> Result<Option<String>, AppError> {
@@ -1152,6 +1211,9 @@ pub enum Causa {
     Manuale,
     /// Il testo del formato 1, prima della migrazione.
     Migrata,
+    /// Prima di «Butta la bozza»: accanto ha i file e la conversazione messi
+    /// da parte (vedi [`da_parte_di`]).
+    Scartata,
 }
 
 impl Causa {
@@ -1162,6 +1224,7 @@ impl Causa {
             Self::Esportata => "esportata",
             Self::Manuale => "manuale",
             Self::Migrata => "migrata",
+            Self::Scartata => "scartata",
         }
     }
 
@@ -1172,6 +1235,7 @@ impl Causa {
             Self::Esportata,
             Self::Manuale,
             Self::Migrata,
+            Self::Scartata,
         ]
         .into_iter()
         .find(|causa| causa.nome() == nome)
@@ -1191,7 +1255,7 @@ pub struct IstantaneaIpc {
     /// Millisecondi dall'epoca. È anche la sua identità.
     pub quando: u64,
     /// Il nome di una [`Causa`] (`Causa::nome`): `derivata`, `salvata`,
-    /// `esportata`, `manuale` o `migrata`.
+    /// `esportata`, `manuale`, `migrata` o `scartata`.
     pub causa: &'static str,
     /// Quante parti ridisegnava.
     pub parti: usize,
@@ -1269,7 +1333,11 @@ pub fn studio_istantanee(stato: State<'_, Stato>, id: String) -> Esito<Vec<Istan
 /// Sta fuori dal comando perché il comando è un guscio: prende il lucchetto,
 /// compone un percorso e chiama questa. Provare l'una senza costruire l'altro è
 /// la stessa divisione che `skin.rs` fa con `installa`.
-fn prendi_istantanea(cartella: &Path, sorgente: &str, causa: Causa) -> Result<(), AppError> {
+fn prendi_istantanea(
+    cartella: &Path,
+    sorgente: &str,
+    causa: Causa,
+) -> Result<IstantaneaIpc, AppError> {
     {
         std::fs::create_dir_all(cartella)
             .map_err(|err| rymembra_app::files::io_error(&cartella.display().to_string(), &err))?;
@@ -1319,9 +1387,76 @@ fn prendi_istantanea(cartella: &Path, sorgente: &str, causa: Causa) -> Result<()
             drop(std::fs::remove_file(
                 cartella.join(nome_istantanea(&vecchia)),
             ));
+            // E quel che una «Butta la bozza» aveva messo da parte se ne va con
+            // la sua istantanea: senza il testo che li nomina, quei file non
+            // li rimetterebbe più nessuno.
+            let da_parte = da_parte_di(cartella, &vecchia);
+            if da_parte.exists() {
+                drop(std::fs::remove_dir_all(&da_parte));
+            }
         }
-        Ok(())
+        Ok(presa)
     }
+}
+
+/// Dove stanno i file e la conversazione messi da parte da «Butta la bozza»:
+/// accanto all'istantanea presa in quel momento, col suo stesso nome senza
+/// `.json`.
+///
+/// Una cartella e non un file, quindi l'elenco delle istantanee — che legge
+/// solo i nomi `….json` ([`istantanea_da`]) — non la vede; e sta sotto
+/// `skin/istantanee/<id>/`, che il backup non porta via (`rymembra_app::backup`):
+/// la conversazione col modello resta su questo computer, come prima.
+fn da_parte_di(cartella: &Path, istantanea: &IstantaneaIpc) -> PathBuf {
+    let nome = nome_istantanea(istantanea);
+    cartella.join(nome.strip_suffix(".json").unwrap_or(&nome))
+}
+
+/// Rimette nella bozza quel che una «Butta la bozza» aveva messo da parte
+/// accanto all'istantanea `presa`: i file che la bozza non ha, e la
+/// conversazione se la bozza non ne ha una sua.
+///
+/// Solo quel che manca, mai sopra: un file o una conversazione nati **dopo**
+/// lo scarto sono lavoro più nuovo di quello da parte, e ripristinare un testo
+/// non deve costare quello. Le risorse del pacchetto passano prima nella bozza
+/// ([`materializza_risorse`] con `forza`): una cartella `assets/` che nascesse
+/// qui coi soli file da parte nasconderebbe quelli del pacchetto.
+///
+/// La cartella da parte resta: ripristinare due volte la stessa istantanea
+/// deve dare due volte la stessa cosa. Se ne va quando si pota l'istantanea.
+fn rimetti_da_parte(
+    data_dir: &Path,
+    id: &str,
+    cartella: &Path,
+    presa: &IstantaneaIpc,
+) -> Result<(), AppError> {
+    let da_parte = da_parte_di(cartella, presa);
+    if !da_parte.is_dir() {
+        return Ok(());
+    }
+    let io = |percorso: &Path, err: &std::io::Error| {
+        rymembra_app::files::io_error(&percorso.display().to_string(), err)
+    };
+    if let Ok(voci) = std::fs::read_dir(da_parte.join("assets")) {
+        let da = da_lavorare(data_dir, id)?;
+        materializza_risorse(data_dir, id, &da.assets, true)?;
+        let risorse = cartella_risorse(data_dir, id);
+        for voce in voci.flatten() {
+            let dove = risorse.join(voce.file_name());
+            if dove.exists() {
+                continue;
+            }
+            let bytes = std::fs::read(voce.path()).map_err(|err| io(&voce.path(), &err))?;
+            scrivi_atomico(&dove, &bytes)?;
+        }
+    }
+    let chat = da_parte.join(FILE_CHAT);
+    let qui = cartella_bozze(data_dir).join(id).join(FILE_CHAT);
+    if chat.is_file() && !qui.exists() {
+        let bytes = std::fs::read(&chat).map_err(|err| io(&chat, &err))?;
+        scrivi_atomico(&qui, &bytes)?;
+    }
+    Ok(())
 }
 
 /// Prende un'istantanea del documento com'è adesso.
@@ -1336,7 +1471,7 @@ pub fn studio_istantanea(
         if !id_sicuro(&id) {
             return Err(non_trovata(&id));
         }
-        prendi_istantanea(&istantanee_di(dati, &id), &sorgente, causa)
+        prendi_istantanea(&istantanee_di(dati, &id), &sorgente, causa).map(|_| ())
     })
     .map_err(errore)
 }
@@ -1347,25 +1482,41 @@ pub fn studio_istantanea(
 /// cartella e confrontando, quindi non c'è nessun nome che arriva da fuori e
 /// finisce dentro un `join`.
 fn ripristina_istantanea(cartella: &Path, quando: u64) -> Result<String, AppError> {
-    let trovata = elenco_istantanee(cartella)
-        .into_iter()
-        .find(|istantanea| istantanea.quando == quando)
-        .ok_or_else(|| non_trovata(&quando.to_string()))?;
+    let trovata = trova_istantanea(cartella, quando)?;
     let file = cartella.join(nome_istantanea(&trovata));
     std::fs::read_to_string(&file)
         .map_err(|err| rymembra_app::files::io_error(&file.display().to_string(), &err))
 }
 
+/// L'istantanea `quando` di una cartella.
+fn trova_istantanea(cartella: &Path, quando: u64) -> Result<IstantaneaIpc, AppError> {
+    elenco_istantanee(cartella)
+        .into_iter()
+        .find(|istantanea| istantanea.quando == quando)
+        .ok_or_else(|| non_trovata(&quando.to_string()))
+}
+
+/// Quel che fa [`studio_ripristina`], senza lo stato di Tauri attorno: il
+/// testo dell'istantanea, e nella bozza i file e la conversazione che una
+/// «Butta la bozza» aveva messo da parte accanto a lei.
+fn ripristina(data_dir: &Path, id: &str, quando: u64) -> Result<String, AppError> {
+    if !id_sicuro(id) {
+        return Err(non_trovata(id));
+    }
+    let cartella = istantanee_di(data_dir, id);
+    let presa = trova_istantanea(&cartella, quando)?;
+    let testo = ripristina_istantanea(&cartella, quando)?;
+    rimetti_da_parte(data_dir, id, &cartella, &presa)?;
+    Ok(testo)
+}
+
 /// Riporta il documento a com'era in un'istantanea.
+///
+/// Dopo, la finestra rilegge l'elenco dei file e la conversazione: un'istantanea
+/// presa da «Butta la bozza» li rimette nella bozza (vedi [`rimetti_da_parte`]).
 #[tauri::command(async)]
 pub fn studio_ripristina(stato: State<'_, Stato>, id: String, quando: u64) -> Esito<String> {
-    con_le_bozze(&stato, |dati| {
-        if !id_sicuro(&id) {
-            return Err(non_trovata(&id));
-        }
-        ripristina_istantanea(&istantanee_di(dati, &id), quando)
-    })
-    .map_err(errore)
+    con_le_bozze(&stato, |dati| ripristina(dati, &id, quando)).map_err(errore)
 }
 
 #[cfg(test)]

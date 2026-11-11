@@ -1062,7 +1062,7 @@ fn scartare_una_bozza_senza_pacchetto_non_cancella_niente() {
     assert_eq!(esito.id, "mia");
     scrivi_chat(dir.path(), "mia", "{}").expect("chat");
 
-    let err = scarta_bozza(dir.path(), "mia").expect_err("niente a cui tornare");
+    let err = scarta_bozza(dir.path(), "mia", &con_id("mia")).expect_err("niente a cui tornare");
     assert_eq!(err.code().kind().code(), "skin.notFound");
     let bozza = cartella_bozze(dir.path()).join("mia");
     assert!(bozza.join("skin.json").is_file());
@@ -1071,8 +1071,12 @@ fn scartare_una_bozza_senza_pacchetto_non_cancella_niente() {
     // Un pacchetto che non si legge non è un posto a cui tornare.
     let skin = dir.path().join("skin");
     std::fs::write(skin.join("mia.ryskin"), b"non sono uno zip").expect("scritto");
-    assert!(scarta_bozza(dir.path(), "mia").is_err());
+    assert!(scarta_bozza(dir.path(), "mia", &con_id("mia")).is_err());
     assert!(bozza.join("skin.json").is_file());
+    assert!(
+        elenco_istantanee(&istantanee_di(dir.path(), "mia")).is_empty(),
+        "uno scarto rifiutato non lascia istantanee"
+    );
 }
 
 #[test]
@@ -1173,11 +1177,111 @@ fn scartare_la_bozza_di_una_skin_del_formato_1_non_aggiunge_istantanee() {
     let aperta = apri_documento(dir.path(), "scafalatura", true).expect("aperta");
     let serie = || elenco_istantanee(&istantanee_di(dir.path(), "scafalatura")).len();
     assert_eq!(serie(), 1, "la fotografia del testo del formato 1");
-    let riaperta = scarta_bozza(dir.path(), "scafalatura").expect("scartata");
+    let riaperta = scarta_bozza(dir.path(), "scafalatura", &aperta).expect("scartata");
     assert_eq!(riaperta, aperta);
+    // Lo scarto prende la sua istantanea (D-66), ma non rifotografa il testo
+    // del formato 1: quella della migrazione resta una.
+    let migrate = elenco_istantanee(&istantanee_di(dir.path(), "scafalatura"))
+        .into_iter()
+        .filter(|i| i.causa == "migrata")
+        .count();
     assert_eq!(
-        serie(),
-        1,
+        migrate, 1,
         "lo scarto non fotografa di nuovo lo stesso testo"
+    );
+    assert_eq!(serie(), 2, "la migrazione e lo scarto");
+}
+
+/// Un file con quel nome, da qualche parte sotto `cartella`.
+fn cerca_sotto(cartella: &Path, nome: &str) -> bool {
+    std::fs::read_dir(cartella).is_ok_and(|voci| {
+        voci.flatten().any(|voce| {
+            let percorso = voce.path();
+            if percorso.is_dir() {
+                cerca_sotto(&percorso, nome)
+            } else {
+                voce.file_name().to_str() == Some(nome)
+            }
+        })
+    })
+}
+
+#[test]
+fn buttare_la_bozza_mette_da_parte_file_e_conversazione() {
+    // R14-2: «Butta la bozza» cancellava `assets/` e `chat.json` con la
+    // cartella, e l'istantanea presa un attimo prima aveva il solo testo: un
+    // carattere aggiunto nello Studio spariva per sempre.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    installa_qui(dir.path(), &con_id("mia"), &[]);
+    apri_documento(dir.path(), "mia", true).expect("aperta");
+    let aggiunto = dir.path().join("aggiunto.woff2");
+    std::fs::write(&aggiunto, WOFF2).expect("scritto");
+    aggiungi_risorsa(dir.path(), "mia", &aggiunto).expect("aggiunta");
+    scrivi_chat(dir.path(), "mia", r#"{"versione":1,"battute":[]}"#).expect("chat");
+
+    let modificata = con_id("mia").replace("\"name\": \"Plain\"", "\"name\": \"Mia\"");
+    scarta_bozza(dir.path(), "mia", &modificata).expect("scartata");
+
+    assert!(
+        !cartella_risorse(dir.path(), "mia")
+            .join("aggiunto.woff2")
+            .exists(),
+        "la bozza torna al pacchetto"
+    );
+    assert_eq!(leggi_chat(dir.path(), "mia").expect("letta"), None);
+    let istantanee = istantanee_di(dir.path(), "mia");
+    assert!(
+        cerca_sotto(&istantanee, "aggiunto.woff2"),
+        "il file aggiunto è sparito invece di andare da parte"
+    );
+    assert!(
+        cerca_sotto(&istantanee, FILE_CHAT),
+        "la conversazione è sparita invece di andare da parte"
+    );
+
+    // E ripristinare l'istantanea dello scarto rimette tutto: il testo, il
+    // file, la conversazione.
+    let presa = elenco_istantanee(&istantanee)
+        .into_iter()
+        .find(|i| i.causa == "scartata")
+        .expect("l'istantanea dello scarto");
+    let testo = ripristina(dir.path(), "mia", presa.quando).expect("ripristinata");
+    assert_eq!(testo, modificata);
+    assert!(
+        cartella_risorse(dir.path(), "mia")
+            .join("aggiunto.woff2")
+            .is_file()
+    );
+    assert!(leggi_chat(dir.path(), "mia").expect("letta").is_some());
+
+    // Potata l'istantanea, quel che le stava accanto se ne va con lei.
+    for giro in 0..QUANTE_ISTANTANEE {
+        prendi_istantanea(
+            &istantanee,
+            &format!("{{ \"giro\": {giro} }}"),
+            Causa::Manuale,
+        )
+        .expect("presa");
+    }
+    assert!(
+        !cerca_sotto(&istantanee, "aggiunto.woff2"),
+        "la cartella da parte è rimasta orfana"
+    );
+}
+
+#[test]
+fn buttare_la_bozza_non_mette_da_parte_i_file_del_pacchetto() {
+    // Tornano comunque col pacchetto: una copia a ogni scarto riempirebbe
+    // le istantanee di caratteri che ci sono già.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    installa_qui(dir.path(), &con_carattere("mia"), &[carattere()]);
+    apri_documento(dir.path(), "mia", true).expect("aperta");
+    scarta_bozza(dir.path(), "mia", &con_carattere("mia")).expect("scartata");
+    let istantanee = istantanee_di(dir.path(), "mia");
+    assert!(!cerca_sotto(&istantanee, "prova.woff2"));
+    assert!(
+        cartella_risorse(dir.path(), "mia")
+            .join("prova.woff2")
+            .is_file()
     );
 }

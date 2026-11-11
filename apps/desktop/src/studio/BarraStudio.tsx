@@ -21,11 +21,14 @@ import type { Larghezza } from "./scena";
 import { cosaAnnulla, cosaRipete } from "./storia";
 
 export function BarraStudio({
+  inVolo,
   onEsci,
   onSalvaEUsa,
   onEsporta,
   onProva,
 }: {
+  /** «Prova», «Esporta» o «Salva e usa» non ha ancora finito: vedi `unoAllaVolta`. */
+  inVolo: boolean;
   onEsci: () => void;
   onSalvaEUsa: () => void;
   onEsporta: () => void;
@@ -161,7 +164,7 @@ export function BarraStudio({
         <button
           type="button"
           className="bottone minuto"
-          disabled={s.valido === null || rotta}
+          disabled={s.valido === null || rotta || inVolo}
           title={rotta ? t("studio3.bar.broken") : t("studio3.bar.try.hint")}
           onClick={onProva}
         >
@@ -171,7 +174,7 @@ export function BarraStudio({
         <button
           type="button"
           className="bottone minuto"
-          disabled={rotta}
+          disabled={rotta || inVolo}
           title={rotta ? t("studio3.bar.broken") : undefined}
           onClick={onEsporta}
         >
@@ -180,7 +183,7 @@ export function BarraStudio({
         <button
           type="button"
           className="bottone minuto primario"
-          disabled={rotta}
+          disabled={rotta || inVolo}
           title={rotta ? t("studio3.bar.broken") : t("studio3.bar.use.hint")}
           onClick={onSalvaEUsa}
         >

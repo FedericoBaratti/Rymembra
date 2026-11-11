@@ -119,3 +119,11 @@ test("due modifiche nello stesso giro si sommano: la seconda parte dal testo del
   });
   assert.equal((JSON.parse(testo(s)) as Record<string, unknown>)["parts"], undefined);
 });
+
+test("il codice di una parte non applicato resta nel negozio finché non torna l'editor (R14-3)", () => {
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "{}" });
+  s = riduci(s, { tipo: "codiceInSospeso", chiave: "base/card", testo: "{ rotto" });
+  assert.equal(s.codiceInSospeso["base/card"], "{ rotto");
+  s = riduci(s, { tipo: "codiceInSospeso", chiave: "base/card", testo: null });
+  assert.equal(s.codiceInSospeso["base/card"], undefined);
+});

@@ -570,7 +570,7 @@ export interface VoceFile {
  * Un'istantanea non si battezza, si prende: il nome dice **perché**, ed è un
  * insieme chiuso — il nucleo lo respinge al confine se arriva altro.
  */
-export type Causa = "derivata" | "salvata" | "esportata" | "manuale" | "migrata";
+export type Causa = "derivata" | "salvata" | "esportata" | "manuale" | "migrata" | "scartata";
 
 /** Un'istantanea di una bozza. */
 export interface Istantanea {

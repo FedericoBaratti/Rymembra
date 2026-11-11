@@ -87,6 +87,24 @@ export interface StatoStudio {
   riga: { riga: number; colonna: number; volta: number } | null;
   /** Quante istantanee ha preso lo Studio in questa sessione. */
   istantanee: number;
+  /**
+   * Cresce quando la conversazione salvata è cambiata sul disco fuori dalla
+   * chat: «Butta la bozza» la mette da parte, un ripristino la può rimettere.
+   * La chat la rilegge — se tenesse quella in memoria, alla battuta dopo
+   * riscriverebbe la conversazione appena messa da parte.
+   */
+  chatSulDisco: number;
+  /**
+   * Il codice di una parte scritto e non applicato, di un editor che non c'è
+   * più: per `tema/parte`.
+   *
+   * L'editor del codice di una parte applica il suo testo solo quando è JSON,
+   * e fino alla 3.2 un testo a metà viveva nel solo componente: un clic su
+   * un'altra parte, un cambio di scheda o di tema, e spariva — non era mai
+   * arrivato al documento, quindi nemmeno Ctrl+Z lo ritrovava (R14-3). Qui
+   * resta finché l'editor della stessa parte non torna a prenderlo.
+   */
+  codiceInSospeso: Readonly<Record<string, string>>;
 }
 
 /** I campi dell'interfaccia che si impostano così come sono. */
@@ -149,6 +167,10 @@ export type Azione =
   | { tipo: "risorsaTolta"; nome: string }
   /** È stata presa un'istantanea: Ctrl+S, «Salva e usa», «Esporta», la chat. */
   | { tipo: "fotografata" }
+  /** La conversazione salvata è cambiata sul disco: vedi `chatSulDisco`. */
+  | { tipo: "chatSulDisco" }
+  /** Mette da parte (o riprende, con `null`) il codice di una parte: vedi `codiceInSospeso`. */
+  | { tipo: "codiceInSospeso"; chiave: string; testo: string | null }
   | { tipo: "imposta"; campi: Partial<CampiUi> };
 
 export function iniziale(id: string): StatoStudio {
@@ -177,6 +199,8 @@ export function iniziale(id: string): StatoStudio {
     inPausa: false,
     riga: null,
     istantanee: 0,
+    chatSulDisco: 0,
+    codiceInSospeso: {},
   };
 }
 
@@ -281,6 +305,15 @@ export function riduci(stato: StatoStudio, azione: Azione): StatoStudio {
       // l'ispettore vuoto presenta come «salva e prende un'istantanea» —
       // sembrava non aver fatto niente.
       return { ...stato, istantanee: stato.istantanee + 1 };
+    case "chatSulDisco":
+      return { ...stato, chatSulDisco: stato.chatSulDisco + 1 };
+    case "codiceInSospeso": {
+      const { [azione.chiave]: tolto, ...altri } = stato.codiceInSospeso;
+      if (azione.testo === null) {
+        return tolto === undefined ? stato : { ...stato, codiceInSospeso: altri };
+      }
+      return { ...stato, codiceInSospeso: { ...altri, [azione.chiave]: azione.testo } };
+    }
     case "risorsaTolta":
       // Non un passo: il file non torna con Ctrl+Z, e le dichiarazioni dei
       // caratteri che lo usavano spariscono da ogni versione della storia.

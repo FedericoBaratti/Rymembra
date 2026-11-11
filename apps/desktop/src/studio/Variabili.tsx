@@ -846,9 +846,10 @@ function quandoFa(quando: number, adesso: number): string {
 }
 
 function Istantanee() {
-  const { s, manda, scriviTesto, onErrore } = useStudio();
+  const { s, manda, scriviTesto, rileggiFile, onErrore } = useStudio();
   const [elenco, setElenco] = useState<Istantanea[]>([]);
   const [giro, setGiro] = useState(0);
+  const [domanda, setDomanda] = useState<Domanda | null>(null);
   const derivata = testo(s) !== s.originale;
   /**
    * Le skin di serie e installate, per sapere se «Butta la bozza» ha un
@@ -909,6 +910,10 @@ function Istantanee() {
     try {
       const letto = await ipc.studioRipristina(s.id, quando);
       scriviTesto(letto, t("studio3.step.restore"), "istantanea");
+      // Un'istantanea di «Butta la bozza» rimette nella bozza i file e la
+      // conversazione messi da parte: l'elenco e la chat li devono vedere.
+      rileggiFile();
+      manda({ tipo: "chatSulDisco" });
     } catch (e) {
       onErrore(e);
     }
@@ -916,12 +921,18 @@ function Istantanee() {
 
   const scarta = async () => {
     try {
-      // Un'istantanea prima: è l'unica azione che butta via qualcosa, e la
-      // rete sotto è quella che c'è già.
-      await ipc.studioIstantanea(s.id, testo(s), "manuale");
-      const dalPacchetto = await ipc.studioScarta(s.id);
+      // L'istantanea la prende il nucleo, col testo dell'editor: i file
+      // aggiunti e la conversazione vanno da parte accanto a lei, e
+      // ripristinarla li rimette (D-66). Una presa da qui, prima, fotografava
+      // il solo testo, e il resto se ne andava con la cartella.
+      const dalPacchetto = await ipc.studioScarta(s.id, testo(s));
       scriviTesto(dalPacchetto, t("studio3.step.discard"), "istantanea");
       manda({ tipo: "salvato", testo: dalPacchetto });
+      // Il nucleo ha tolto dalla bozza i file che il pacchetto non ha, e la
+      // conversazione: senza rileggere, l'elenco «File» li mostrava ancora e
+      // la chat in memoria riscriveva alla battuta dopo quella buttata.
+      rileggiFile();
+      manda({ tipo: "chatSulDisco" });
       setGiro((g) => g + 1);
     } catch (e) {
       onErrore(e);
@@ -961,11 +972,19 @@ function Istantanee() {
               ? t("studio.pkg.drop.none")
               : t("studio.pkg.drop.noPackage")
         }
-        onClick={() => void scarta()}
+        onClick={() =>
+          setDomanda({
+            titolo: t("studio.pkg.drop.title"),
+            descrizione: t("studio.pkg.drop.what"),
+            conferma: t("studio.pkg.drop"),
+            fai: () => void scarta(),
+          })
+        }
       >
         <Icona nome="i-x" dim={13} />
         {t("studio.pkg.drop")}
       </button>
+      {domanda !== null && <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />}
     </div>
   );
 }
