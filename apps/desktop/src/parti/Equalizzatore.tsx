@@ -30,7 +30,16 @@ import { CENTRI_EQ, LIMITE_EQ_DB, ipc, type VocePreset } from "../ipc";
 import { Icona } from "./Icone";
 import { t, tSe } from "../lingue";
 import { useDati } from "../dati";
-import { chiaveNomePreset, chiavePreset, creaFreno, decibel, trovaPreset } from "../eq";
+import {
+  chiaveNomePreset,
+  chiavePreset,
+  creaFreno,
+  decibel,
+  etichettaBanda,
+  etichettaCortaBanda,
+  trovaPreset,
+} from "../eq";
+import { MOBILE } from "../piattaforma";
 import { numero } from "../formato";
 import { useFinestrella } from "../finestrella";
 import { Presenza } from "../presenza";
@@ -55,11 +64,6 @@ const PASSO_INVIO = 60;
 
 /** Il passo di un cursore, in decibel. */
 const PASSO_DB = 0.5;
-
-/** Come si legge il centro di una banda. */
-function etichettaBanda(hz: number): string {
-  return hz >= 1000 ? `${hz / 1000} kHz` : `${Math.round(hz)} Hz`;
-}
 
 /** Una curva lunga quanto deve, tagliata dove deve. */
 function allunga(guadagni: readonly number[]): number[] {
@@ -293,7 +297,11 @@ export function Equalizzatore({
                    richiede di trovare lo zero a mano. */
                 onDoubleClick={() => muoviBanda(banda, 0)}
               />
-              <span className="eq-hz">{etichettaBanda(hz)}</span>
+              {/* Corta sul telefono: a 360 dp dieci etichette lunghe si
+                  accavallavano. Il nome del cursore resta intero. */}
+              <span className="eq-hz">
+                {MOBILE ? etichettaCortaBanda(hz) : etichettaBanda(hz)}
+              </span>
             </label>
           );
         })}

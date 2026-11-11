@@ -56,6 +56,19 @@ export function decibel(db: number, numero: (n: number, decimali: number) => str
   return db > 0 ? `+${scritto}` : `−${scritto}`;
 }
 
+/** Come si legge il centro di una banda: «31 Hz», «1 kHz». */
+export function etichettaBanda(hz: number): string {
+  return hz >= 1000 ? `${hz / 1000} kHz` : `${Math.round(hz)} Hz`;
+}
+
+/**
+ * La stessa, corta: «31», «1k». Per il telefono, dove dieci etichette lunghe
+ * in trecento pixel si accavallano; l'unità la sa chi guarda un equalizzatore.
+ */
+export function etichettaCortaBanda(hz: number): string {
+  return hz >= 1000 ? `${hz / 1000}k` : String(Math.round(hz));
+}
+
 /** Il tempo, per il freno: quello della finestra, o uno finto nelle prove. */
 export interface OrologioFreno {
   ora: () => number;
