@@ -1427,15 +1427,21 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   /* La stessa animazione, con lo stesso inizio, sulle due schede: è il
-     punto. Il ritardo di ogni barra è nella sua posizione, non nel PC. */
+     punto. Il ritardo di ogni barra è nella sua posizione, non nel PC.
+     Per meno di cinque secondi ogni volta che la scena entra nello schermo, e
+     poi ferme: un movimento che parte da solo e dura di più va fermato da
+     un comando (WCAG 2.2.2), e qui non serve. Un numero pari di giri
+     `alternate` finisce dov'era cominciato, cioè sulla barra ferma. */
   [data-vista] .barre-insieme > span {
-    animation: insieme 1.6s ease-in-out infinite alternate;
+    animation: insieme 1.6s ease-in-out 2 alternate;
   }
   [data-vista] .barre-insieme > span:nth-child(2n) {
     animation-duration: 1.1s;
+    animation-iteration-count: 4;
   }
   [data-vista] .barre-insieme > span:nth-child(3n) {
     animation-duration: 0.8s;
+    animation-iteration-count: 6;
   }
 }
 @keyframes insieme {
@@ -1976,8 +1982,11 @@ html:not(.js) .scena-skin {
   will-change: transform, opacity;
 }
 @media (prefers-reduced-motion: no-preference) {
+  /* Un respiro solo, sotto i cinque secondi, quando la pagina si apre o la
+     musica si ferma: una luce che pulsa senza fine accanto al testo è un
+     movimento che nessun comando ferma (WCAG 2.2.2). */
   .bagliore-luce {
-    animation: respira 7s ease-in-out infinite;
+    animation: respira 4.8s ease-in-out 1;
   }
   .suona .bagliore-luce {
     animation: none;

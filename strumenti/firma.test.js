@@ -70,3 +70,15 @@ test("una chiave spezzata a ottanta colonne si ferma prima della password", () =
   assert.equal(codice, 1, uscita);
   assert.match(uscita, /non è base64 pulita/);
 });
+
+// `tauri signer sign` passa il segreto così com'è al decodificatore base64,
+// che rifiuta l'a capo che `clip.exe` o un editor lasciano in fondo: il
+// controllo non può essere più largo del consumatore che anticipa.
+test("una chiave con l'a capo dell'incollatura si ferma, come la password", () => {
+  for (const bordo of ["\n", "\r\n", " "]) {
+    const { codice, uscita } = lancia(CHIAVE + bordo, "");
+    assert.equal(codice, 1, `${JSON.stringify(bordo)}: ${uscita}`);
+    assert.match(uscita, /ai bordi/);
+    assert.ok(!uscita.includes(CHIAVE.slice(0, 20)), uscita);
+  }
+});

@@ -52,6 +52,26 @@
 # In *Settings → Pages* del repository, «Source» va messo su **GitHub Actions**.
 # Senza, il lavoro `pubblica` fallisce con un messaggio che parla di permessi e
 # non di configurazione.
+#
+# # Il dominio
+#
+# Il deploy da Actions non scrive un file `CNAME`: il dominio vive solo nelle
+# impostazioni del repository, e il generatore non lo può vedere. Due casi, e
+# va scelto uno:
+#
+#   - **Con un dominio personalizzato** (quello di `DOMINIO` in
+#     `strumenti/sito.js`, oggi `https://rymembra.com`): *Settings → Pages →
+#     Custom domain* con quel nome, *Enforce HTTPS*, e il dominio verificato
+#     sull'account (*Settings → Pages → Verified domains* del profilo) perché
+#     nessun altro account possa rivendicarlo se il sito si spegne o il
+#     repository cambia nome. Il README e il «?» delle Impostazioni
+#     (`comandi.rs`, `indirizzo_guida`) devono puntare allo stesso indirizzo.
+#   - **Senza**: Pages serve il sito sotto `<utente>.github.io/Rymembra/`, e
+#     `DOMINIO` va cambiato in quell'indirizzo, o canonical, `hreflang`, Open
+#     Graph e sitemap indicano un host che non serve queste pagine.
+#
+# La 404 funziona in tutti e due: sceglie la sua base da sé (vedi
+# `sceltaBase` in `strumenti/sito.js`).
 
 name: sito
 
@@ -120,12 +140,37 @@ jobs:
           TAG: ${{ steps.versione.outputs.tag }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_x64-setup.exe' --dir "$RUNNER_TEMP/installer"
 
+      # L'APK di quella release, per la stessa ragione, **se c'è**: una release
+      # senza APK è ammessa (decisione D-6), e allora il sito non offre il
+      # telefono invece di linkare un file che non esiste. Si guarda l'elenco
+      # degli asset prima di scaricare, e non si nasconde un errore di `gh`:
+      # un guasto della rete non deve diventare «questa release non ha APK».
+      - name: L'APK da descrivere, se la release ce l'ha
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.versione.outputs.tag }}
+        run: |
+          nomi=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if printf '%s\n' "$nomi" | grep -qE '_android-arm64\.apk$'; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_android-arm64.apk' --dir "$RUNNER_TEMP/apk"
+            echo "cartella=$RUNNER_TEMP/apk" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::La release $TAG non ha un APK: il sito offre solo il computer."
+          fi
+
       # Il tag passa da una variabile e non dentro lo script: un nome di tag
       # finisce nella shell come dato, non come codice.
       - name: Il sito si costruisce
         env:
           TAG: ${{ steps.versione.outputs.tag }}
-        run: node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer"
+          APK: ${{ steps.apk.outputs.cartella }}
+        run: |
+          if [ -n "$APK" ]; then
+            node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer" --apk "$APK"
+          else
+            node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer"
+          fi
 
       # L'impronta della pagina appena costruita, per l'ultimo passo di
       # `pubblica`: là `_site/` non c'è, c'è solo l'artefatto caricato qui

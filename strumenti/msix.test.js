@@ -159,3 +159,13 @@ test("il marcatore del Store ha il nome che il programma cerca", () => {
   // percorso: il programma lo cerca accanto all'eseguibile.
   assert.match(MARCATORE, /^[a-z0-9.-]+$/);
 });
+
+// D-99: Windows 10 2004 (19041). Sotto la 1903 un'app impacchettata scrive in
+// AppData con la copia alla scrittura, che nessuno ha provato; la 2004 è
+// l'ultima base di Windows 10 che WebView2 supporta.
+test("il pacchetto chiede Windows 10 2004 o successivo", () => {
+  const famiglia = /<TargetDeviceFamily Name="Windows\.Desktop" MinVersion="([\d.]+)" MaxVersionTested="([\d.]+)" \/>/.exec(MODELLO);
+  assert.ok(famiglia, "manca TargetDeviceFamily Windows.Desktop");
+  assert.equal(famiglia[1], "10.0.19041.0");
+  assert.equal([famiglia[2], famiglia[1]].sort(dallaMaggiore)[0], famiglia[2]);
+});

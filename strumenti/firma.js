@@ -1,18 +1,22 @@
 /*
- * La chiave di firma, guardata prima di compilare.
+ * La chiave di firma, guardata prima di firmare.
  *
- * # Il quarto d'ora che questo script esiste per non far perdere
+ * # Il guasto da incollatura che questo script esiste per dire per nome
  *
- * `tauri build` la chiave non la tocca fino alla fine: compila in release,
- * scarica NSIS, produce l'installer, e **solo allora** prova a firmarlo. Se il
- * segreto è malformato la corsa muore lì, dopo tredici minuti, con un messaggio
- * che parla di password mentre il guasto è nella chiave:
+ * Fino alla 2.4 `tauri build` la chiave non la toccava fino alla fine: compilava
+ * in release, scaricava NSIS, produceva l'installer, e **solo allora** provava
+ * a firmarlo. Alla v2.0.1 il segreto era malformato, e la corsa è morta lì,
+ * dopo tredici minuti, con un messaggio che parlava di password mentre il
+ * guasto era nella chiave:
  *
  *   failed to decode secret key: incorrect updater private key password:
  *   Missing comment in secret key
  *
- * È successo davvero, alla v2.0.1. Le due cose che si possono controllare senza
- * compilare niente si controllano qui, in un secondo, subito dopo il tag.
+ * Adesso la firma ha un lavoro suo, dopo la compilazione (`firma` e
+ * `firma-apk` in `release.yml`), e il tempo che questo passo fa risparmiare è
+ * poco. Resta la ragione che conta: `tauri signer sign` un segreto incollato
+ * male lo rifiuta con un messaggio che non nomina l'incollatura, e qui lo si
+ * dice per nome, prima, senza mai stampare il valore.
  *
  * # Cosa guarda, e perché proprio queste due
  *
@@ -21,7 +25,10 @@
  * che manda a capo a ottanta colonne arriva spezzata, e una base64 spezzata
  * decodifica in spazzatura — che è il modo in cui sparisce la riga
  * `untrusted comment:` che ogni chiave minisign ha in testa. Qui si decodifica
- * e si cerca quella riga: se c'è, il segreto è quantomeno *una chiave*.
+ * e si cerca quella riga: se c'è, il segreto è quantomeno *una chiave*. E
+ * senza spazi né a capo ai bordi, come la password: `tauri` passa il valore
+ * così com'è al decodificatore base64, che li rifiuta («failed to decode
+ * base64 secret key»), e `clip.exe` l'a capo finale lo conserva.
  *
  * **Che la password non porti spazi ai bordi.** `password.txt` finisce con un
  * a capo, come ogni file di testo civile. Incollato com'è dentro il segreto,
@@ -100,7 +107,21 @@ function main() {
     );
   }
 
-  const testo = testoDellaChiave(chiave.trim());
+  // Prima della forma, e senza `trim()`: `tauri signer sign` riceve il valore
+  // intero, e un controllo più largo di lui direbbe «ha la forma giusta» a un
+  // segreto che un secondo dopo non si decodifica.
+  if (chiave !== chiave.trim()) {
+    basta(
+      "TAURI_SIGNING_PRIVATE_KEY ha spazi o un a capo ai bordi.\n" +
+        "Succede incollando da `clip.exe` o da un editor, che lasciano l'a capo\n" +
+        "in fondo: `tauri` passa il valore così com'è al decodificatore base64,\n" +
+        "che lo rifiuta. Sul campo di GitHub non si vede. Da PowerShell, negli\n" +
+        "appunti tutto intero, in un pezzo solo e senza bordi:\n" +
+        '  Set-Clipboard -Value ([IO.File]::ReadAllText("$PWD\\.chiavi\\rymembra.key").Trim())',
+    );
+  }
+
+  const testo = testoDellaChiave(chiave);
   if (testo === null) {
     basta(
       "TAURI_SIGNING_PRIVATE_KEY non è base64 pulita: dentro c'è un a capo,\n" +

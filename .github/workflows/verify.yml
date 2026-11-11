@@ -33,13 +33,25 @@ on:
         type: string
         required: false
         default: ""
+      # Gli avvisi di sicurezza sulle dipendenze (`cargo deny check
+      # advisories`, `npm audit`) consultivi invece che bloccanti: lo chiede
+      # solo `release.yml`, vedi il lavoro `dipendenze`.
+      consultivo:
+        description: "Gli avvisi di sicurezza delle dipendenze non fermano la corsa: si scrivono nel riepilogo"
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      avvisi:
+        description: "«nessuno» o «trovati»: l'esito di cargo deny advisories e npm audit"
+        value: ${{ jobs.dipendenze.outputs.avvisi }}
 
 # Leggere l'albero e basta. Nessun lavoro qui scrive niente su GitHub.
 permissions:
   contents: read
 
 # Un push nuovo sullo stesso ramo rende vecchio quello di prima: verificarlo
-# fino in fondo sono quaranta minuti per una risposta che nessuno leggerà.
+# fino in fondo è un'ora di macchina per una risposta che nessuno leggerà.
 # `github.workflow` nel gruppo perché, chiamata da `release.yml`, questa corsa
 # porta il nome di chi la chiama e non deve annullare né essere annullata da
 # una verifica di un ramo.
@@ -56,7 +68,10 @@ env:
 jobs:
   verifica:
     runs-on: windows-latest
-    timeout-minutes: 45
+    # Sessanta: i quarantacinque erano misurati sulla 3.2.0, con 707 pacchetti
+    # nel lockfile; oggi sono 844 (iroh, il porting Android), e un tag spinto
+    # insieme a `main` trova la cache non ancora scritta e compila tutto.
+    timeout-minutes: 60
     env:
       # La versione di Rust inchiodata, e non «stable»: una CI che un martedì
       # mattina comincia a fallire perché è uscito un clippy nuovo è una CI
@@ -238,11 +253,26 @@ jobs:
   # sorgenti. Un lavoro suo perché fallisce per ragioni che non stanno nel
   # codice di questo repository — un avviso pubblicato stanotte su un crate che
   # non è cambiato — e va letto come tale.
+  #
+  # # Bloccante sui rami, consultivo nella release
+  #
+  # Licenze, divieti e sorgenti dipendono dal codice di questo repository:
+  # fermano sempre. Gli avvisi di sicurezza (e i crate ritirati, che
+  # `cargo-deny` mette fra gli avvisi) e `npm audit` dipendono invece dal giorno:
+  # il DB di RustSec e quello di npm si scaricano al momento, e un avviso uscito
+  # il giorno del tag fermava la release in un modo da cui «Re-run» non esce —
+  # rilancia lo stesso tag, con lo stesso `deny.toml`, e un tag non si sposta.
+  # Chiamata da `release.yml` (`consultivo: true`) questa corsa li scrive nel
+  # riepilogo e passa l'esito in `avvisi`, che la bozza mostra in testa a chi
+  # la pubblica: il cancello umano c'è già, ed è quello. Sui rami, sulle pull
+  # request e da `msix.yml` restano bloccanti.
   dipendenze:
     runs-on: ubuntu-latest
     # Venticinque e non dieci: `cargo-deny` si compila (vedi sotto), e la
     # corsa gira accanto a `verifica`, che ne dura quaranta.
     timeout-minutes: 25
+    outputs:
+      avvisi: ${{ steps.esito.outputs.avvisi }}
     env:
       # Lo stesso Rust del lavoro `verifica`: vedi lì perché è inchiodato.
       # Qui compila `cargo-deny` e risponde al suo `cargo metadata`.
@@ -282,8 +312,13 @@ jobs:
       # il suo `arguments` di serie, e toglierlo cambierebbe il grafo che si
       # guarda. Gira su Linux, ma i bersagli che guarda sono Windows e il
       # telefono, perché lo dice `deny.toml` (`[graph] targets`).
-      - name: cargo deny
-        run: cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check
+      - name: cargo deny, licenze, divieti e sorgenti
+        run: cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check bans licenses sources
+
+      - name: cargo deny, avvisi di sicurezza
+        id: rustsec
+        continue-on-error: ${{ inputs.consultivo == true }}
+        run: cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check advisories
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -293,8 +328,33 @@ jobs:
       # strumento di compilazione (`vite`, `typescript`) non tocca chi installa
       # Rymembra, e una CI rossa per quello si impara a ignorarla.
       - name: npm audit
+        id: npm
+        continue-on-error: ${{ inputs.consultivo == true }}
         working-directory: apps/desktop
         run: npm audit --omit=dev
+
+      # `outcome` e non `conclusion`: con `continue-on-error` la seconda dice
+      # sempre «success», la prima dice com'è andata davvero.
+      - name: L'esito degli avvisi
+        id: esito
+        if: always()
+        env:
+          RUSTSEC: ${{ steps.rustsec.outcome }}
+          NPM: ${{ steps.npm.outcome }}
+        run: |
+          if [ "$RUSTSEC" = "success" ] && [ "$NPM" = "success" ]; then
+            echo "avvisi=nessuno" >> "$GITHUB_OUTPUT"
+          else
+            echo "avvisi=trovati" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Avvisi sulle dipendenze"
+              echo ""
+              echo "- cargo deny check advisories: $RUSTSEC"
+              echo "- npm audit --omit=dev: $NPM"
+              echo ""
+              echo "Il dettaglio è nel registro dei due passi qui sopra."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # Un lavoro suo, e non un passo del precedente: fallisce per una ragione
   # diversa — qualcuno ha reintrodotto una dipendenza che non si può usare — e

@@ -55,7 +55,8 @@
     ],
     "windows": {
       "nsis": {
-        "installerHooks": "installer/precedente.nsh"
+        "installerHooks": "installer/precedente.nsh",
+        "languages": ["English", "Italian"]
       }
     }
   },

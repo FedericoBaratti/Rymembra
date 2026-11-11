@@ -76,7 +76,7 @@
       <a class="secondario" href="#viaggio">{{=hero.cta2}}</a>
     </div>
     <p class="store-link"><a href="{{=$store}}">{{=hero.store}}</a></p>
-    <p class="altrove">{{altrove.testo}} <button type="button" data-condividi data-url="{{=$canonico}}" data-copiato="{{=altrove.copiato}}"><span class="altrove-manda">{{=altrove.manda}}</span><span class="altrove-copia">{{=altrove.copia}}</span></button></p>
+    <p class="altrove">{{altrove.testo}} <button type="button" data-condividi data-url="{{=$canonico}}" data-copiato="{{=altrove.copiato}}"><span class="altrove-manda">{{=altrove.manda}}</span><span class="altrove-copia">{{=altrove.copia}}</span></button><span class="solo-lettore" role="status" data-stato-copia></span></p>
     <p class="piccolo">{{hero.nota}}</p>
   </div>
 
@@ -340,7 +340,8 @@
     <span class="azione">{{=scarica.store.azione}}</span>
   </a>
   <p class="file">{{scarica.store.nota}}</p>
-  <p class="altrove">{{altrove.testo}} <button type="button" data-condividi data-url="{{=$canonico}}" data-copiato="{{=altrove.copiato}}"><span class="altrove-manda">{{=altrove.manda}}</span><span class="altrove-copia">{{=altrove.copia}}</span></button></p>
+  {{&$android}}
+  <p class="altrove">{{altrove.testo}} <button type="button" data-condividi data-url="{{=$canonico}}" data-copiato="{{=altrove.copiato}}"><span class="altrove-manda">{{=altrove.manda}}</span><span class="altrove-copia">{{=altrove.copia}}</span></button><span class="solo-lettore" role="status" data-stato-copia></span></p>
   <p class="file">{{scarica.file}}</p>
   {{&$verifica}}
 

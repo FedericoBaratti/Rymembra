@@ -831,6 +831,13 @@ fn rifiuta_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
 /// e non tocca niente oltre a un contatore, quindi non è `(async)`.
 #[tauri::command]
 pub fn testi_pannello(testi: State<'_, StatoTesti>, aperto: bool) {
+    // Dalla 1.99 `fetch_update` si chiama `try_update`, che non esiste nella
+    // 1.97.1 della CI né nella 1.91 di `rust-version`: il nome nuovo quando lo
+    // avranno tutte e due.
+    #[allow(
+        deprecated,
+        reason = "try_update esiste solo dalla 1.99; la CI è a 1.97.1"
+    )]
     let _ = testi
         .pannelli_aperti
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |quanti| {
@@ -1148,7 +1155,11 @@ fn passata(app: &AppHandle) {
             // `fetch_update` restituisce il valore PRECEDENTE, come il
             // `fetch_add` qui sopra: senza la sottrazione l'evento direbbe
             // sempre un rimasto di troppo, e la barra non arriverebbe mai a
-            // zero prima di `testi:finito`.
+            // zero prima di `testi:finito`. (`allow`: vedi `testi_pannello`.)
+            #[allow(
+                deprecated,
+                reason = "try_update esiste solo dalla 1.99; la CI è a 1.97.1"
+            )]
             let rimasti = testi
                 .rimasti
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {

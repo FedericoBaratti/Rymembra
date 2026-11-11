@@ -902,14 +902,13 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     let mut problemi: Vec<SkinIssue> = Vec::new();
 
     let map = oggetto(raw, "").map_err(solo)?;
-    for vecchia in ["themes"] {
-        if map.contains_key(vecchia) {
-            return Err(solo(problema(
-                vecchia,
-                "nel formato 2 il tema opposto si chiama `variant`, e oltre ai token porta \
-                 tavolozza, motivi e parti",
-            )));
-        }
+    let vecchia = "themes";
+    if map.contains_key(vecchia) {
+        return Err(solo(problema(
+            vecchia,
+            "nel formato 2 il tema opposto si chiama `variant`, e oltre ai token porta \
+             tavolozza, motivi e parti",
+        )));
     }
     solo_chiavi(map, "", CHIAVI_DOCUMENTO).map_err(solo)?;
 

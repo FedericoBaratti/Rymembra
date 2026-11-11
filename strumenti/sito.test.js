@@ -25,6 +25,7 @@ const {
   argomenti,
   costruisci,
 } = require("./sito.js");
+const { leggiJson } = require("./json.js");
 
 test("il marcatore in linea diventa HTML, e il resto si escapa", () => {
   assert.equal(inline("**a** *b* `c` [d](https://e.f)"), '<strong>a</strong> <em>b</em> <code>c</code> <a href="https://e.f">d</a>');
@@ -73,6 +74,33 @@ test("le lingue devono dire le stesse cose", () => {
   assert.ok(p.some((x) => /de: «b» non c'è/.test(x)));
 });
 
+// R27-4: i segnaposto e i collegamenti di un testo sono gli stessi in ogni
+// lingua. Un `de.json` che perde `[PRIVACY.md]({privacy})` passava.
+test("i segnaposto e i collegamenti sono gli stessi in ogni lingua", () => {
+  const en = { a: "See [PRIVACY.md]({privacy}), version {versione}.", b: "[x](#su)" };
+  assert.deepEqual(confrontaLingue({ en, it: { a: "Vedi [PRIVACY.md]({privacy}), versione {versione}.", b: "[y](#su)" } }), []);
+  const p = confrontaLingue({ en, de: { a: "Siehe PRIVACY.md, Version {versione}.", b: "[y](#unten)" } });
+  assert.ok(p.some((x) => /de: «a»/.test(x) && x.includes("{privacy}")), p.join("\n"));
+  assert.ok(p.some((x) => /de: «b»/.test(x) && x.includes("#su")), p.join("\n"));
+});
+
+// R27-4: `[x](//docs/audio/)` scritto per sbaglio è un link a un host di nome «docs».
+test("un collegamento senza schema non passa", () => {
+  assert.throws(() => inline("[x](//a.b/c)"), /non ammesso/);
+  assert.throws(() => inline("[x](//docs/audio/)"), /non ammesso/);
+  assert.equal(inline("[x](docs/audio/)"), '<a href="docs/audio/">x</a>');
+});
+
+// R27-4: JSON.parse tiene l'ultima di due chiavi uguali senza dirlo.
+test("una chiave ripetuta in un JSON di testi è un errore", () => {
+  assert.deepEqual(leggiJson('{"a":"x","b":{"c":1,"d":[{"e":1},{"e":2}]}}', "t.json"), { a: "x", b: { c: 1, d: [{ e: 1 }, { e: 2 }] } });
+  assert.throws(() => leggiJson('{"a":"x","a":"y"}', "t.json"), /t\.json.*«a»/);
+  // Una stringa che contiene una chiave fra virgolette non è una chiave.
+  assert.throws(() => leggiJson('{"s":{"b":1,"c":"\\"b\\"","b":2}}', "t.json"), /«s\.b»/);
+  // Una chiave uguale in due oggetti diversi non è una ripetizione.
+  assert.doesNotThrow(() => leggiJson('{"x":{"a":1},"y":{"a":2},"l":[{"a":1},{"a":2}]}', "t.json"));
+});
+
 test("un testo che nessuno mostra si vede", () => {
   const testi = { a: "x", b: "y", l: [{ d: "1", r: "2" }], s: ["p"] };
   assert.deepEqual(nonUsate(testi, new Set(["a", "l[].d", "s"])), ["b", "l[].r"]);
@@ -97,9 +125,10 @@ test("le voci delle docs sanno in che pagina stanno", () => {
 });
 
 test("la versione arriva dal tag, con o senza la v", () => {
-  assert.deepEqual(argomenti(["--versione", "v3.0.1"]), { controlla: false, versione: "3.0.1", installer: null });
-  assert.deepEqual(argomenti(["--controlla"]), { controlla: true, versione: null, installer: null });
-  assert.deepEqual(argomenti(["--versione", "3.0.1", "--installer", "cartella"]), { controlla: false, versione: "3.0.1", installer: "cartella" });
+  assert.deepEqual(argomenti(["--versione", "v3.0.1"]), { controlla: false, versione: "3.0.1", installer: null, apk: null });
+  assert.deepEqual(argomenti(["--controlla"]), { controlla: true, versione: null, installer: null, apk: null });
+  assert.deepEqual(argomenti(["--versione", "3.0.1", "--installer", "cartella"]), { controlla: false, versione: "3.0.1", installer: "cartella", apk: null });
+  assert.deepEqual(argomenti(["--versione", "3.0.1", "--installer", "a", "--apk", "b"]), { controlla: false, versione: "3.0.1", installer: "a", apk: "b" });
   assert.throws(() => argomenti(["--boh"]));
 });
 
@@ -119,18 +148,120 @@ test("i collegamenti rotti, le risorse esterne e le ancore perse si vedono", () 
     scrivi("index.html", '<a href="docs/">d</a><a href="#su" id="su">s</a><a href="docs/a/#voce">v</a><a href="manca/">m</a><a href="#via">x</a><div data-src="audio/manca.mp3"></div>');
     scrivi("docs/index.html", '<a href="../">r</a>');
     scrivi("docs/a/index.html", '<article id="voce"></article><script src="https://cdn.example/x.js"></script>');
-    scrivi("404.html", '<a href="/">ok</a><a href="docs/">relativo</a>');
+    // La 404 lavora con una `<base>`: un percorso dalla radice la scavalca, e
+    // sotto `/Rymembra/` porterebbe fuori dal sito.
+    scrivi("404.html", '<base href="/"><a href="./">ok</a><a href="docs/">relativo</a><a href="/docs/">dalla radice</a>');
     scrivi("stile.css", "a { b: url(font/x.woff2) } c {");
     const p = controllaUscita(dir, { voce: "a", altra: "b" }, ["voce", "altra"]);
     assert.ok(p.some((x) => /manca\/index\.html/.test(x)));
     assert.ok(p.some((x) => /«#via»/.test(x)));
     assert.ok(p.some((x) => /cdn\.example/.test(x)));
-    assert.ok(p.some((x) => /404\.html: «docs\/»/.test(x)));
+    assert.ok(p.some((x) => /404\.html: «\/docs\/»/.test(x)), p.join("\n"));
     assert.ok(p.some((x) => /stile\.css: «font\/x\.woff2» non esiste/.test(x)));
     assert.ok(p.some((x) => /stile\.css: le graffe/.test(x)));
     assert.ok(p.some((x) => /«#altra» non arriva/.test(x)));
     assert.ok(p.some((x) => x.includes("«audio/manca.mp3»")));
     assert.equal(p.length, 8);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// R27-4: il controllo delle risorse esterne guardava solo `script|img|source|iframe`
+// e i `<link>`; non i `.js` copiati, non `@import`, non l'indice della ricerca.
+test("ogni risorsa da un altro dominio si vede, e l'indice della ricerca deve esistere", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-uscita-esterne-"));
+  try {
+    const scrivi = (rel, s) => {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), s);
+    };
+    scrivi(
+      "index.html",
+      '<audio src="https://cdn.example/a.mp3"></audio><video poster="//cdn.example/p.jpg"></video>' +
+        '<img srcset="immagine.webp 1x, https://cdn.example/b.webp 2x" src="immagine.webp" alt="">' +
+        '<object data="https://cdn.example/c.svg"></object><a href="https://github.com/x">un clic va bene</a>',
+    );
+    scrivi("immagine.webp", "x");
+    scrivi("docs/index.html", '<form data-ricerca="manca.json"></form><form data-ricerca="c.json"></form>');
+    scrivi("docs/c.json", "[]");
+    scrivi("stile.css", '@import "https://cdn.example/d.css";\na { b: c }');
+    scrivi("sito.js", 'fetch("https://cdn.example/e.json"); var a = new Audio(\'//cdn.example/f.mp3\');');
+    const p = controllaUscita(dir, {}, []);
+    const tutti = p.join("\n");
+    for (const atteso of ["a.mp3", "p.jpg", "b.webp", "c.svg", "d.css", "e.json", "f.mp3"]) {
+      assert.ok(p.some((x) => x.includes(`cdn.example/${atteso}`)), `${atteso}: ${tutti}`);
+    }
+    assert.ok(p.some((x) => x.includes("«manca.json»")), tutti);
+    assert.ok(!p.some((x) => /github\.com|c\.json|immagine\.webp 1x/.test(x)), tutti);
+    assert.equal(p.length, 8, tutti);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// R27-1, la parte tecnica: Pages serve la 404 a qualunque indirizzo che non
+// esiste, alla radice di un dominio personalizzato o sotto `/Rymembra/` senza.
+// Con percorsi dalla radice, sotto `/Rymembra/` usciva senza stile e «Go to the
+// home page» portava a `federicobaratti.github.io/`, un altro sito.
+test("la pagina 404 funziona alla radice e sotto /Rymembra/", () => {
+  const vm = require("node:vm");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-404-"));
+  try {
+    const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+    assert.deepEqual(costruisci(dir, versione).problemi, []);
+    const pagina = fs.readFileSync(path.join(dir, "404.html"), "utf8");
+    // Nessun indirizzo dalla radice: tutto passa dalla `<base>`.
+    assert.match(pagina, /<base href="\/">/);
+    const indirizzi = [...pagina.replace('<base href="/">', "").matchAll(/\s(?:href|src)="([^"]*)"/g)].map((m) => m[1]);
+    assert.ok(indirizzi.length > 5);
+    assert.deepEqual(indirizzi.filter((u) => u.startsWith("/")), []);
+    const script = /<script>([\s\S]*?)<\/script>/.exec(pagina);
+    assert.ok(script, "manca lo script che sceglie la base");
+    assert.ok(pagina.indexOf("<script>") < pagina.indexOf('rel="stylesheet"'), "la base va scelta prima dei fogli di stile");
+    const base = (percorso) => {
+      const elemento = { href: "/" };
+      vm.runInNewContext(script[1], {
+        location: { pathname: percorso },
+        document: { querySelector: (s) => (s === "base" ? elemento : null) },
+      });
+      return elemento.href;
+    };
+    assert.equal(base("/qualcosa/che/manca"), "/");
+    assert.equal(base("/Rymembra/qualcosa/che/manca"), "/Rymembra/");
+    assert.equal(base("/rymembra/docs/vecchia/"), "/rymembra/");
+    assert.equal(base("/Rymembrax/manca"), "/");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// R27-5: un lettore di schermo non sentiva né i risultati della ricerca delle
+// docs né «Link copiato»; le lingue si chiamavano «IT», «EN»; due animazioni
+// decorative giravano senza fine (WCAG 4.1.3, 2.2.2). Prova di cablaggio sulle
+// pagine costruite e sui sorgenti; l'ascolto con NVDA si fa dal vivo.
+test("ricerca, copia del link e lingue arrivano al lettore di schermo; niente si muove senza fine", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-a11y-"));
+  try {
+    const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+    assert.deepEqual(costruisci(dir, versione).problemi, []);
+    const docsPagina = fs.readFileSync(path.join(dir, "docs/index.html"), "utf8");
+    const modulo = /<form[^>]*data-cerca[\s\S]*?<\/form>/.exec(docsPagina);
+    assert.ok(modulo && /role="status"[^>]*data-stato|data-stato[^>]*role="status"/.test(modulo[0]), "la ricerca delle docs non ha una regione di stato");
+    const docsJs = fs.readFileSync(path.join(__dirname, "../site/docs/docs.js"), "utf8");
+    assert.match(docsJs, /\[data-stato\]/);
+    assert.match(docsJs, /stato\.textContent\s*=/);
+
+    for (const f of ["index.html", "it/index.html"]) {
+      const pagina = fs.readFileSync(path.join(dir, f), "utf8");
+      assert.match(pagina, /role="status"[^>]*data-stato-copia|data-stato-copia[^>]*role="status"/, `${f}: «Link copiato» senza regione di stato`);
+      const lingue = [...pagina.matchAll(/<a [^>]*data-lingua="(\w+)"[^>]*>/g)].filter((m) => !/<a [^>]*data-chiudi/.test(m[0]));
+      assert.ok(lingue.length >= 4, f);
+      for (const m of lingue.filter((m) => m[0].includes("hreflang"))) assert.match(m[0], /aria-label="[^"]+"/, `${f}: ${m[0]}`);
+    }
+    assert.match(fs.readFileSync(path.join(__dirname, "../site/sito.js"), "utf8"), /data-stato-copia/);
+    const css = fs.readFileSync(path.join(__dirname, "../site/sito.css"), "utf8");
+    assert.ok(!/animation[^;]*\binfinite\b/.test(css), "un'animazione infinita in sito.css");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -184,5 +315,81 @@ test("con l'installer la pagina ne dice peso e impronta, misurati sul file", () 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(installer, { recursive: true, force: true });
+  }
+});
+
+// Il link all'APK, come quello all'installer: peso e impronta misurati sul
+// file della release. Le frasi stanno in `site/testi/*.json` sotto
+// `scarica.android` (le scrive il coordinatore); il generatore le usa solo se
+// la release ha un APK, perché una release senza è ammessa (D-6).
+test("con l'APK la pagina offre il telefono, con peso e impronta misurati sul file", () => {
+  const { rigaAndroid, rilascio } = require("./sito.js");
+  const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+  const cartella = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-apk-"));
+  try {
+    const dati = Buffer.alloc(41 * 1048576 + 300000, 3);
+    fs.writeFileSync(path.join(cartella, `Rymembra_${versione}_android-arm64.apk`), dati);
+    const r = rilascio(versione, null, cartella);
+    assert.equal(r.apk.file, `Rymembra_${versione}_android-arm64.apk`);
+    assert.match(r.apk.scarica, new RegExp(`/releases/download/v${versione}/Rymembra_${versione}_android-arm64\.apk$`));
+    const testi = {
+      scarica: {
+        android: {
+          titolo: "For Android phones",
+          sotto: "Android 8 or later, 64-bit.",
+          azione: "Download",
+          file: "The file is `{fileApk}`.",
+          impronta: { sommario: "{dimensioneApk} MB · SHA-256 checksum", verifica: "`Get-FileHash {fileApk}`" },
+        },
+      },
+    };
+    const problemi = [];
+    const usate = new Set();
+    const html = rigaAndroid(r, testi, { $marchio: "" }, "it_IT", problemi, usate);
+    assert.deepEqual(problemi, []);
+    const impronta = require("node:crypto").createHash("sha256").update(dati).digest("hex").toUpperCase();
+    assert.ok(html.includes(`href="${r.apk.scarica}"`), html);
+    assert.ok(html.includes(`<code>${impronta}</code>`), html);
+    assert.ok(html.includes("41,3 MB"), html);
+    assert.ok(html.includes(`<code>Rymembra_${versione}_android-arm64.apk</code>`), html);
+    // Senza APK niente riga, e i testi non risultano «mai mostrati».
+    const senza = new Set();
+    assert.equal(rigaAndroid({ ...r, apk: null }, testi, {}, "it_IT", problemi, senza), "");
+    assert.ok(senza.has("scarica.android.titolo") && senza.has("scarica.android.impronta.verifica"));
+    // Con l'APK e senza le frasi, il sito non si pubblica: lo si dice.
+    const mancano = [];
+    rigaAndroid(r, {}, {}, "it_IT", mancano, new Set());
+    assert.ok(mancano.some((p) => p.includes("scarica.android")), mancano.join("\n"));
+    // Una cartella senza quel file è un errore, come per l'installer.
+    assert.throws(() => rilascio(versione, null, os.tmpdir()), /non c'è/);
+  } finally {
+    fs.rmSync(cartella, { recursive: true, force: true });
+  }
+});
+
+// Quando le frasi del telefono saranno in `site/testi/*.json`, la pagina con
+// l'APK deve costruirsi senza problemi in tutte e quattro le lingue: così un
+// errore nelle frasi ferma `verify` a ogni push, e non `sito.yml` il giorno in
+// cui la release è già pubblicata.
+test("con le frasi del telefono nei testi, il sito con l'APK si costruisce in ogni lingua", (t) => {
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, "../site/testi/en.json"), "utf8"));
+  if (!en.scarica || !en.scarica.android) {
+    t.skip("site/testi/*.json non ha ancora scarica.android: senza, una release con l'APK ferma sito.yml");
+    return;
+  }
+  const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-android-"));
+  const installer = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-installer-"));
+  const apk = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-apk-"));
+  try {
+    fs.writeFileSync(path.join(installer, `Rymembra_${versione}_x64-setup.exe`), Buffer.alloc(1024, 1));
+    fs.writeFileSync(path.join(apk, `Rymembra_${versione}_android-arm64.apk`), Buffer.alloc(2048, 2));
+    const esito = costruisci(dir, versione, installer, apk);
+    assert.deepEqual(esito.problemi, []);
+    for (const f of ["index.html", "it/index.html", "fr/index.html", "de/index.html"]) {
+      assert.ok(fs.readFileSync(path.join(dir, f), "utf8").includes(`Rymembra_${versione}_android-arm64.apk`), f);
+    }
+  } finally {
+    for (const d of [dir, installer, apk]) fs.rmSync(d, { recursive: true, force: true });
   }
 });

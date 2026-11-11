@@ -72,10 +72,9 @@ fn da_esadecimale(testo: &str) -> Option<Zeroizing<[u8; 32]>> {
         return None;
     }
     let mut byte = Zeroizing::new([0_u8; 32]);
-    for (posto, coppia) in byte.iter_mut().zip(testo.chunks_exact(2)) {
-        let [alto, basso] = coppia else {
-            return None;
-        };
+    // Sessantaquattro byte, quindi trentadue coppie e niente resto.
+    let (coppie, _) = testo.as_chunks::<2>();
+    for (posto, [alto, basso]) in byte.iter_mut().zip(coppie) {
         let alto = char::from(*alto).to_digit(16)?;
         let basso = char::from(*basso).to_digit(16)?;
         *posto = u8::try_from(alto * 16 + basso).ok()?;

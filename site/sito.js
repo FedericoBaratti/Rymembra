@@ -101,6 +101,10 @@
         navigator.clipboard.writeText(url).then(
           function () {
             b.querySelector(".altrove-copia").textContent = b.getAttribute("data-copiato");
+            /* La stessa conferma a voce: il testo del pulsante cambia, ma un
+               lettore di schermo non lo annuncia da sé (WCAG 4.1.3). */
+            var stato = b.parentNode.querySelector("[data-stato-copia]");
+            if (stato) stato.textContent = b.getAttribute("data-copiato");
           },
           function () {
             /* il browser non ha permesso: il link resta da copiare a mano */
@@ -540,8 +544,9 @@
     }).observe(barre.closest(".scena") || barre);
   }
 
-  /* Le barre dei due PC di «Insieme» pulsano solo mentre la loro scena è sullo
-     schermo: fuori, un'animazione infinita costerebbe per niente. */
+  /* Le barre dei due PC di «Insieme» pulsano quando la loro scena entra nello
+     schermo, per pochi secondi (vedi `sito.css`): l'attributo che si toglie
+     uscendo è quello che le fa ripartire al ritorno. */
   var insieme = document.querySelector("[data-insieme]");
   if (insieme && "IntersectionObserver" in window) {
     new IntersectionObserver(function (righe) {

@@ -35,14 +35,18 @@
  * # I controlli
  *
  * Ogni costruzione finisce con i controlli, così un sito rotto non si
- * pubblica: le quattro lingue hanno le stesse chiavi, ogni segnaposto è
- * risolto e ogni testo è usato, ogni collegamento interno porta a un file e a
- * un'ancora che esistono, ogni ancora che l'app apre (`ANCORE_GUIDA`) arriva a
- * una voce, e nessuna pagina carica qualcosa da un altro dominio.
+ * pubblica: le quattro lingue hanno le stesse chiavi (nessuna ripetuta), gli
+ * stessi segnaposto e gli stessi collegamenti in ogni testo, ogni segnaposto è
+ * risolto e ogni testo è usato, ogni collegamento interno — `data-src` e
+ * l'indice della ricerca compresi — porta a un file e a un'ancora che esistono,
+ * ogni ancora che l'app apre (`ANCORE_GUIDA`) arriva a una voce, e niente —
+ * HTML su qualunque elemento, `srcset`, CSS con `url()` o `@import`, JavaScript
+ * copiato — carica qualcosa da un altro dominio.
  *
  *   node strumenti/sito.js                     costruisce _site/
  *   node strumenti/sito.js --versione v3.0.1   la stessa cosa, annunciando quella release
  *   node strumenti/sito.js --versione v3.0.1 --installer <cartella>   e con peso e impronta dell'installer
+ *   node strumenti/sito.js --versione v3.0.1 --installer <c> --apk <c>  e il telefono, con quelli dell'APK
  *   node strumenti/sito.js --controlla         costruisce in una cartella temporanea, controlla, butta via
  */
 const crypto = require("crypto");
@@ -50,6 +54,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const docs = require("./docs.js");
+const { leggiJson } = require("./json.js");
+const { nomeAsset } = require("./apk.js");
 
 // I percorsi si risolvono rispetto a questo file e non alla cartella da cui lo
 // si lancia: gli script npm girano da `apps/desktop`.
@@ -88,9 +94,13 @@ function esc(s) {
  */
 const PEZZI = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\))/g;
 
-/** Un indirizzo che un testo può linkare: https, mailto, un'ancora o un percorso relativo. */
+/**
+ * Un indirizzo che un testo può linkare: https, mailto, un'ancora o un percorso
+ * relativo. Non `//altrove`, che non ha due punti né barre rovesciate ma è un
+ * altro host: `[x](//docs/audio/)` scritto per sbaglio porterebbe a «docs».
+ */
 function indirizzoAmmesso(h) {
-  return /^(https:\/\/|mailto:|#)/.test(h) || !/[:\\]/.test(h);
+  return /^(https:\/\/|mailto:|#)/.test(h) || (!/[:\\]/.test(h) && !h.startsWith("//"));
 }
 
 function inline(testo, collega = (h) => h) {
@@ -204,7 +214,38 @@ function foglie(oggetto, prefisso = "", fuori = new Map()) {
   return fuori;
 }
 
-/** Le lingue dicono le stesse cose: stesse chiavi, elenchi lunghi uguali, elementi con gli stessi campi. */
+/**
+ * Quel che una traduzione deve conservare di un testo: i segnaposto `{x}`, il
+ * numero dei collegamenti `[…](…)`, e i bersagli di quelli che portano dentro
+ * il sito o a un valore del generatore. I bersagli `https://` possono cambiare
+ * con la lingua — la licenza CC si linka nella sua traduzione (`deed.it`) — ma
+ * non sparire: per questo se ne conta il numero.
+ */
+function pezziFissi(testo) {
+  const unici = (pezzi) => [...new Set(pezzi)].sort();
+  const bersagli = [...String(testo).matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1]);
+  return {
+    segnaposto: unici([...String(testo).matchAll(/\{(\w+)\}/g)].map((m) => `{${m[1]}}`)),
+    collegamenti: [`${bersagli.length}:`, ...unici(bersagli.filter((b) => !b.startsWith("https://")))],
+  };
+}
+
+/** Ogni testo di un documento, per percorso (`a.b`, `l[0].c`). */
+function testiPerPercorso(oggetto, prefisso = "", fuori = new Map()) {
+  for (const [k, v] of Object.entries(oggetto)) {
+    const p = Array.isArray(oggetto) ? `${prefisso}[${k}]` : prefisso ? `${prefisso}.${k}` : k;
+    if (typeof v === "string") fuori.set(p, v);
+    else if (v && typeof v === "object") testiPerPercorso(v, p, fuori);
+  }
+  return fuori;
+}
+
+/**
+ * Le lingue dicono le stesse cose: stesse chiavi, elenchi lunghi uguali,
+ * elementi con gli stessi campi, e in ogni testo gli stessi segnaposto e gli
+ * stessi collegamenti. Una traduzione che perde `[PRIVACY.md]({privacy})` è
+ * una pagina da cui, in quella lingua, all'informativa non si arriva.
+ */
 function confrontaLingue(testi) {
   const problemi = [];
   const [prima, ...altre] = Object.keys(testi);
@@ -222,6 +263,19 @@ function confrontaLingue(testi) {
   for (const [lingua, t] of Object.entries(testi)) {
     for (const [k, v] of foglie(t)) {
       if (v.tipo && v.tipo !== "string") problemi.push(`${lingua}: «${k}» dev'essere un testo`);
+    }
+  }
+  const fissi = new Map([...testiPerPercorso(testi[prima])].map(([k, v]) => [k, pezziFissi(v)]));
+  for (const lingua of altre) {
+    for (const [k, v] of testiPerPercorso(testi[lingua])) {
+      const attesi = fissi.get(k);
+      if (!attesi) continue;
+      const questi = pezziFissi(v);
+      for (const campo of ["segnaposto", "collegamenti"]) {
+        const a = attesi[campo].join(" ");
+        const q = questi[campo].join(" ");
+        if (a !== q) problemi.push(`${lingua}: «${k}» ha ${campo} ${q || "(nessuno)"} invece di ${a || "(nessuno)"}`);
+      }
     }
   }
   return problemi;
@@ -288,8 +342,14 @@ function dataInLingua(data, locale) {
   }).format(new Date(Date.UTC(a, m - 1, g)));
 }
 
-/** Quello che la pagina annuncia, ricavato da una versione e da quello che il repository dice di lei. */
-function rilascio(versione, cartellaInstaller = null) {
+/**
+ * Quello che la pagina annuncia, ricavato da una versione e da quello che il
+ * repository dice di lei. Con `cartellaApk` (dove `sito.yml` ha scaricato
+ * l'APK della release) anche il telefono, con peso e impronta del file vero;
+ * senza, la pagina non offre il telefono: una release senza APK è ammessa
+ * (decisione D-6), e un link a un file che non c'è sarebbe un 404.
+ */
+function rilascio(versione, cartellaInstaller = null, cartellaApk = null) {
   if (!/^\d+\.\d+\.\d+$/.test(versione)) throw new Error(`versione «${versione}»: servono tre numeri`);
   const data = dataNelChangelog(leggi("CHANGELOG.md"), versione);
   if (!data) throw new Error(`il CHANGELOG.md non ha la voce «## [${versione}] — AAAA-MM-GG»`);
@@ -299,6 +359,8 @@ function rilascio(versione, cartellaInstaller = null) {
   // asset pubblicati (`Rymembra_3.0.1_x64-setup.exe`): `release.yml` ne
   // pretende uno solo.
   const file = `${prodotto}_${versione}_x64-setup.exe`;
+  // Il nome con cui `release.yml` carica l'APK, lo stesso che l'app cerca.
+  const fileApk = nomeAsset(versione, prodotto);
   return {
     versione,
     data,
@@ -307,12 +369,15 @@ function rilascio(versione, cartellaInstaller = null) {
     scarica: `${repo}/releases/download/v${versione}/${file}`,
     note: `${repo}/releases/tag/v${versione}`,
     installer: cartellaInstaller ? misuraInstaller(path.join(cartellaInstaller, file)) : null,
+    apk: cartellaApk
+      ? { file: fileApk, scarica: `${repo}/releases/download/v${versione}/${fileApk}`, ...misuraInstaller(path.join(cartellaApk, fileApk)) }
+      : null,
   };
 }
 
 /** Peso e impronta del file che il pulsante scarica: si misurano sul file, non si scrivono a mano. */
 function misuraInstaller(file) {
-  if (!fs.existsSync(file)) throw new Error(`l'installer «${file}» non c'è`);
+  if (!fs.existsSync(file)) throw new Error(`il file da scaricare «${file}» non c'è`);
   const dati = fs.readFileSync(file);
   // In maiuscolo, come la stampa `Get-FileHash`: chi le confronta a occhio deve vedere la stessa stringa.
   return { byte: dati.length, sha256: crypto.createHash("sha256").update(dati).digest("hex").toUpperCase() };
@@ -405,6 +470,46 @@ const IMPRONTA =
   '<details class="impronta"><summary>{{scarica.impronta.sommario}}</summary>' +
   '<p class="hash"><code>{{=$sha256}}</code></p><p>{{scarica.impronta.verifica}}</p></details>';
 
+/**
+ * La riga del telefono, sotto quella del Store: l'APK della release, il suo
+ * nome, il peso e l'impronta. Solo se la release ha un APK; le frasi stanno in
+ * `scarica.android` dei testi, con i valori `{fileApk}`, `{dimensioneApk}` e
+ * `{apk}` (che esistono solo qui dentro).
+ */
+const ANDROID =
+  '<a class="riga riga-cta riga-store" href="{{=$apk}}">' +
+  '<span class="copertina logo">{{&$marchio}}</span>' +
+  '<span class="titoli"><span class="titolo">{{=scarica.android.titolo}}</span><span class="artista">{{=scarica.android.sotto}}</span></span>' +
+  '<span class="azione">{{=scarica.android.azione}}</span></a>' +
+  '<p class="file">{{scarica.android.file}}</p>' +
+  '<details class="impronta"><summary>{{scarica.android.impronta.sommario}}</summary>' +
+  '<p class="hash"><code>{{=$sha256Apk}}</code></p><p>{{scarica.android.impronta.verifica}}</p></details>';
+
+/** Le chiavi dei testi che usa `ANDROID`. */
+const CHIAVI_ANDROID = ["titolo", "sotto", "azione", "file", "impronta.sommario", "impronta.verifica"].map((k) => `scarica.android.${k}`);
+
+/**
+ * La riga del telefono per una lingua, o niente se la release non ha un APK.
+ *
+ * Le chiavi contano come usate in tutti e due i casi: le frasi restano pronte
+ * per la release dopo, e il controllo dei testi mai mostrati non deve
+ * fermare una release senza APK. Con l'APK e senza le frasi, invece, il sito
+ * non si costruisce: un telefono che il sito non offre non è un silenzio da
+ * lasciar passare.
+ */
+function rigaAndroid(r, t, valori, locale, problemi, usate) {
+  for (const k of CHIAVI_ANDROID) usate.add(k);
+  if (!r.apk) return "";
+  const conApk = {
+    ...valori,
+    $apk: r.apk.scarica,
+    $fileApk: r.apk.file,
+    $dimensioneApk: pesoInLingua(r.apk.byte, locale),
+    $sha256Apk: r.apk.sha256,
+  };
+  return riempi(ANDROID, t, conApk, problemi, usate);
+}
+
 function landing(r, testi, problemi, usate) {
   const modello = fs.readFileSync(path.join(SORGENTE, "pagina.html"), "utf8");
   const pagine = {};
@@ -415,10 +520,13 @@ function landing(r, testi, problemi, usate) {
   for (const l of LINGUE) {
     const t = testi[l.codice];
     const base = l.cartella ? "../" : "";
+    // Il nome intero anche per il lettore di schermo, non solo nel `title`
+    // (che non legge): «IT» detto a voce non è una lingua. Contiene la sigla
+    // visibile, come vuole WCAG 2.5.3.
     const lingue = LINGUE.map(
       (x) =>
         `<a href="${base + x.cartella || "./"}" hreflang="${x.codice}" lang="${x.codice}" data-lingua="${x.codice}"` +
-        ` title="${esc(x.nome)}"${x === l ? ' aria-current="page"' : ""}>${x.codice.toUpperCase()}</a>`,
+        ` title="${esc(x.nome)}" aria-label="${esc(x.nome)}"${x === l ? ' aria-current="page"' : ""}>${x.codice.toUpperCase()}</a>`,
     ).join("");
     // Solo sulla radice, che è quella in cui arriva chi non ha scelto: una
     // striscia per lingua, nella lingua che offre. `sito.js` mostra quella del
@@ -443,7 +551,7 @@ function landing(r, testi, problemi, usate) {
           url: urlLingua(l),
           description: piano(t.meta.descrizione),
           inLanguage: lingueDelProgramma(),
-          operatingSystem: "Windows",
+          operatingSystem: r.apk ? "Windows, Android" : "Windows",
           applicationCategory: "MultimediaApplication",
           softwareVersion: r.versione,
           datePublished: r.data,
@@ -503,17 +611,40 @@ function landing(r, testi, problemi, usate) {
       const conFile = { ...valori, $dimensione: pesoInLingua(r.installer.byte, l.locale), $sha256: r.installer.sha256 };
       valori.$verifica = riempi(IMPRONTA, t, conFile, problemi, usate);
     }
+    valori.$android = rigaAndroid(r, t, valori, l.locale, problemi, usate);
     pagine[`${l.cartella}index.html`] = riempi(modello, t, valori, problemi, usate);
     for (let i = prima; i < problemi.length; i++) problemi[i] = `${l.codice}: ${problemi[i]}`;
   }
   return pagine;
 }
 
-/** La pagina che Pages serve a qualunque indirizzo che non esiste: percorsi dalla radice, perché può comparire ovunque. */
+/**
+ * Lo script che sceglie la base della 404, prima di qualunque foglio di stile.
+ *
+ * Pages serve la 404 a qualunque indirizzo che non esiste, a qualunque
+ * profondità, quindi un percorso relativo alla pagina non sa da dove parte.
+ * Fino alla 3.2 i percorsi erano dalla radice, e andavano solo con un dominio
+ * personalizzato: senza, il sito vive sotto `/<repository>/` e la 404 usciva
+ * senza stile, con «Go to the home page» che portava a
+ * `federicobaratti.github.io/`, un altro sito. Adesso i percorsi sono relativi
+ * a una `<base href="/">`, e questo script la sposta sotto `/<repository>/`
+ * quando l'indirizzo comincia così. Senza JavaScript resta la radice, cioè il
+ * comportamento di prima.
+ */
+function sceltaBase(progetto) {
+  const prefisso = JSON.stringify(`/${progetto.toLowerCase()}/`);
+  return (
+    `(function(){var p=location.pathname,n=${prefisso}.length;` +
+    `if(p.slice(0,n).toLowerCase()===${prefisso})document.querySelector("base").href=p.slice(0,n)})();`
+  );
+}
+
+/** La pagina che Pages serve a qualunque indirizzo che non esiste: percorsi relativi alla sua `<base>` (vedi `sceltaBase`). */
 function pagina404(r, problemi) {
   const modello = fs.readFileSync(path.join(SORGENTE, "404.html"), "utf8");
-  const lingue = LINGUE.map((l) => `<a href="/${l.cartella}" hreflang="${l.codice}" lang="${l.codice}">${esc(l.nome)}</a>`).join("");
-  return riempi(modello, {}, { $marchio: MARCHIO, $lingue: lingue, $versione: r.versione }, problemi);
+  const lingue = LINGUE.map((l) => `<a href="${l.cartella || "./"}" hreflang="${l.codice}" lang="${l.codice}">${esc(l.nome)}</a>`).join("");
+  const progetto = r.repo.replace(/\/+$/, "").split("/").pop();
+  return riempi(modello, {}, { $marchio: MARCHIO, $lingue: lingue, $versione: r.versione, $sceltaBase: sceltaBase(progetto) }, problemi);
 }
 
 /** Le pagine della documentazione: l'indice e un capitolo per pagina. */
@@ -527,8 +658,9 @@ function documentazione(r, problemi) {
   for (const c of capitoli) for (const v of c.entries) titoli[v.id] = v.title;
   const pagine = {};
 
+  // Cartella o file come li vede git, non il disco: vedi `docs.esisteNelRepository`.
   const fonte = (p) => {
-    const cartella = fs.existsSync(path.join(REPO, p)) && fs.statSync(path.join(REPO, p)).isDirectory();
+    const cartella = docs.cartellaNelRepository(p);
     return `<a href="${r.repo}/${cartella ? "tree" : "blob"}/main/${p}"><code>${esc(p)}</code></a>`;
   };
   const latoCon = (base, corrente) =>
@@ -550,6 +682,10 @@ function documentazione(r, problemi) {
     $docs: base || "./",
     $ricerca: `${base}ricerca.json`,
     $base: base,
+    // Gli indirizzi assoluti e il nome nel piede vengono da `DOMINIO`, come
+    // quelli della landing: un dominio solo, in un posto solo.
+    $dominio: DOMINIO,
+    $nomeDominio: DOMINIO.replace(/^https:\/\//, ""),
   });
   const percorsoPagina = (c) => `${DOMINIO}/docs/${percorsoCapitolo(c.id)}/`;
 
@@ -721,11 +857,15 @@ function scrivi(cartella, rel, contenuto) {
   fs.writeFileSync(p, contenuto);
 }
 
-function costruisci(cartella, versione, cartellaInstaller = null) {
+function costruisci(cartella, versione, cartellaInstaller = null, cartellaApk = null) {
   const problemi = [];
-  const r = rilascio(versione, cartellaInstaller);
+  const r = rilascio(versione, cartellaInstaller, cartellaApk);
   const testi = {};
-  for (const l of LINGUE) testi[l.codice] = JSON.parse(fs.readFileSync(path.join(SORGENTE, "testi", `${l.codice}.json`), "utf8"));
+  for (const l of LINGUE) {
+    // Una chiave ripetuta è un errore, non l'ultima che vince in silenzio.
+    const file = path.join(SORGENTE, "testi", `${l.codice}.json`);
+    testi[l.codice] = leggiJson(fs.readFileSync(file, "utf8"), path.relative(REPO, file));
+  }
   problemi.push(...confrontaLingue(testi));
 
   const usate = new Set();
@@ -783,8 +923,17 @@ function controllaUscita(cartella, mappa, ancore) {
 
   for (const [f, h] of Object.entries(html)) {
     if (/\{\{[=&#/]?[$.@\w-]/.test(h)) problemi.push(`${f}: un segnaposto è rimasto scritto`);
-    for (const m of h.matchAll(/<(?:script|img|source|iframe)\b[^>]*\ssrc="([^"]*)"/g)) {
-      if (/^(https?:)?\/\//.test(m[1])) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
+    // Quel che il browser carica da sé, su qualunque elemento: `src` (anche di
+    // `<audio>`, `<video>`, `<track>`, `<embed>`), `poster`, il `data` di
+    // `<object>`, ogni candidato di `srcset`. Un `<a href>` esterno no: lo apre
+    // un clic, non il caricamento della pagina.
+    for (const tag of h.matchAll(/<[a-z][\w-]*\b[^>]*>/gi)) {
+      for (const a of tag[0].matchAll(/\s(src|poster|data|srcset)="([^"]*)"/g)) {
+        const indirizzi = a[1] === "srcset" ? a[2].split(",").map((c) => c.trim().split(/\s+/)[0]) : [a[2]];
+        for (const u of indirizzi) {
+          if (/^(https?:)?\/\//.test(u)) problemi.push(`${f}: carica ${u} da un altro dominio`);
+        }
+      }
     }
     for (const m of h.matchAll(/<link\b([^>]*)>/g)) {
       const rel = /\srel="([^"]+)"/.exec(m[1]);
@@ -793,13 +942,23 @@ function controllaUscita(cartella, mappa, ancore) {
       const solo = rel && /^(canonical|alternate)$/.test(rel[1]);
       if (!solo && /^(https?:)?\/\//.test(href[1])) problemi.push(`${f}: carica ${href[1]} da un altro dominio`);
     }
-    // `data-src` è un file che lo script carica da sé: si controlla come gli altri.
-    for (const m of h.matchAll(/\s(?:href|src|data-src)="([^"]*)"/g)) {
+    // `data-src` e `data-ricerca` (l'indice della ricerca delle docs) sono file
+    // che lo script carica da sé: si controllano come gli altri. Un indice
+    // rinominato faceva morire la ricerca in silenzio.
+    let collegamenti = h;
+    if (f === "404.html") {
+      // La base stessa è l'unico `href="/"` ammesso nella 404.
+      if (!h.includes('<base href="/">')) problemi.push('404.html: manca <base href="/">: i suoi percorsi non saprebbero da dove partono');
+      collegamenti = h.replace('<base href="/">', "");
+    }
+    for (const m of collegamenti.matchAll(/\s(?:href|src|data-src|data-ricerca)="([^"]*)"/g)) {
       const u = m[1].replace(/&amp;/g, "&");
       if (u === "" || /^(https?:|mailto:|data:|\/\/)/.test(u)) continue;
-      // La 404 si serve a qualunque indirizzo: lì un percorso relativo non sa da dove parte.
-      if (f === "404.html" && !u.startsWith("/") && !u.startsWith("#")) {
-        problemi.push(`404.html: «${u}» dev'essere un percorso dalla radice`);
+      // La 404 si serve a qualunque indirizzo, e i suoi percorsi valgono
+      // rispetto alla sua `<base>` (vedi `sceltaBase`): uno dalla radice la
+      // scavalcherebbe, e sotto `/Rymembra/` uscirebbe dal sito.
+      if (f === "404.html" && u.startsWith("/")) {
+        problemi.push(`404.html: «${u}» va scritto relativo alla base, non dalla radice`);
         continue;
       }
       const { bersaglio, ancora } = risolvi(f, u);
@@ -819,11 +978,22 @@ function controllaUscita(cartella, mappa, ancore) {
       else if (c === "}" && --livello < 0) break;
     }
     if (livello !== 0) problemi.push(`${f}: le graffe non tornano`);
+    // `@import "…"` senza `url()`, che il controllo qui sotto non vede.
+    for (const m of css.matchAll(/@import\s+['"]([^'"]+)['"]/g)) {
+      if (/^(https?:)?\/\//.test(m[1])) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
+    }
     for (const m of css.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)) {
       if (/^(data:|#)/.test(m[1])) continue;
       if (/^(https?:)?\/\//.test(m[1])) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
       else if (!esiste.has(path.posix.normalize(path.posix.join(path.posix.dirname(f), m[1])))) problemi.push(`${f}: «${m[1]}» non esiste`);
     }
+  }
+  // Il JavaScript copiato: nessun indirizzo di un altro dominio fra virgolette
+  // (`fetch("https://…")`, `new Audio("//…")`). Un collegamento da aprire con
+  // un clic sta nell'HTML, non qui.
+  for (const f of file.filter((f) => f.endsWith(".js"))) {
+    const js = fs.readFileSync(path.join(cartella, f), "utf8");
+    for (const m of js.matchAll(/["'`]((?:https?:)?\/\/[^"'`\s]+)/g)) problemi.push(`${f}: carica ${m[1]} da un altro dominio`);
   }
   for (const a of ancore || []) {
     const dove = mappa[a];
@@ -836,11 +1006,12 @@ function controllaUscita(cartella, mappa, ancore) {
 /* ── il comando ───────────────────────────────────────────────────────── */
 
 function argomenti(argv) {
-  const fuori = { controlla: false, versione: null, installer: null };
+  const fuori = { controlla: false, versione: null, installer: null, apk: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--controlla") fuori.controlla = true;
     else if (argv[i] === "--versione") fuori.versione = String(argv[++i] || "").replace(/^v/, "");
     else if (argv[i] === "--installer") fuori.installer = argv[++i] || null;
+    else if (argv[i] === "--apk") fuori.apk = argv[++i] || null;
     else throw new Error(`argomento sconosciuto: ${argv[i]}`);
   }
   return fuori;
@@ -852,7 +1023,7 @@ function main() {
   const cartella = a.controlla ? fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-")) : USCITA;
   let esito;
   try {
-    esito = costruisci(cartella, versione, a.installer);
+    esito = costruisci(cartella, versione, a.installer, a.apk);
   } finally {
     if (a.controlla) fs.rmSync(cartella, { recursive: true, force: true });
   }
@@ -882,5 +1053,7 @@ module.exports = {
   controllaUscita,
   argomenti,
   costruisci,
+  rilascio,
+  rigaAndroid,
   LINGUE,
 };
