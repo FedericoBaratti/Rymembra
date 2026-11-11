@@ -57,6 +57,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 
 import { accorpa } from "./accorpa";
@@ -87,6 +88,7 @@ import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
 import { chiaveDellApertura, chiusuraDi } from "./foglio";
 import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import { SCHEDA_FERMA, fuocoDiRitorno, fuocoSullaTestata } from "./fuocoPagina";
 import { Fornitori } from "./Fornitori";
 import {
   Giro,
@@ -263,6 +265,12 @@ function ordinamenti(): readonly (readonly [Ordine, string])[] {
  */
 const VISTE_TENUTE = ["brani", "preferiti", "album", "artisti"] as const;
 type VistaTenuta = (typeof VISTE_TENUTE)[number];
+
+/** Chi ha il fuoco adesso, se non è il `<body>`: lì torna chiudendo. */
+function daChi(): HTMLElement | null {
+  const adesso = document.activeElement;
+  return adesso instanceof HTMLElement && adesso !== document.body ? adesso : null;
+}
 
 /** Una playlist appena eliminata, finché il suo «Annulla» è a schermo. */
 interface PlaylistCancellata {
@@ -574,6 +582,47 @@ export function App() {
   /** Da quale skin partire, quando si è arrivati da «Deriva…». */
   const [baseTema, setBaseTema] = useState<string | null>(null);
   const contenuto = useRef<HTMLDivElement>(null);
+  /*
+   * Il fuoco, aprendo e chiudendo un album o un artista (R16-1, D-73): vedi
+   * `fuocoPagina.ts`. Il cambio di vista smontava la scheda premuta e il fuoco
+   * cadeva sul `<body>`; aprendo un disco non si sentiva niente.
+   *
+   * Aprendo va sulla testata della pagina nuova; chiudendo torna a chi aveva
+   * aperto, che si ricorda **per livello**: un album si apre anche dentro un
+   * artista, e chiuderlo riporta alla scheda del disco nella pagina
+   * dell'artista, chiudere l'artista a quella dell'artista nella griglia.
+   * `fuocoDopo` è la richiesta, eseguita dopo il disegno che ha cambiato la
+   * pagina; chi la scrive sono `apriAlbum`, `apriArtista` e la scala di
+   * Escape (`chiudi`).
+   */
+  const daChiAlbum = useRef<HTMLElement | null>(null);
+  const daChiArtista = useRef<HTMLElement | null>(null);
+  const fuocoDopo = useRef<
+    | { verso: "testata"; daChi: HTMLElement | null; livello: RefObject<HTMLElement | null> }
+    | { verso: "ritorno"; livello: RefObject<HTMLElement | null> }
+    | null
+  >(null);
+  useEffect(() => {
+    const chiesto = fuocoDopo.current;
+    if (chiesto === null) return;
+    fuocoDopo.current = null;
+    // La pagina, e sul telefono anche la sua barra in alto, che porta il
+    // titolo quando la testata è un'immagine.
+    const pagina = {
+      querySelector: (selettore: string) =>
+        contenuto.current?.querySelector<HTMLElement>(selettore) ??
+        document.querySelector<HTMLElement>(`[data-scafale] ${selettore}`),
+    };
+    const attivo = () => document.activeElement;
+    if (chiesto.verso === "testata") {
+      chiesto.livello.current = chiesto.daChi;
+      fuocoSullaTestata(pagina, attivo);
+    } else {
+      const chi = chiesto.livello.current;
+      chiesto.livello.current = null;
+      fuocoDiRitorno([chi, pagina.querySelector(SCHEDA_FERMA)], pagina, attivo);
+    }
+  }, [aperto, artistaAperto]);
   const riproduzione = useRiproduzione();
   /*
    * Del motore, `App` sa soltanto se c'è un brano: decide se lo schermo intero
@@ -1368,10 +1417,18 @@ export function App() {
     // la trova già col nome. Tornando indietro resta dov'è, e la copertina
     // rientra nella sua scheda.
     if (quale !== null) setInVolo(quale.albumKey);
+    fuocoDopo.current =
+      quale !== null
+        ? { verso: "testata", daChi: daChi(), livello: daChiAlbum }
+        : { verso: "ritorno", livello: daChiAlbum };
     cambiandoVista(() => setAperto(quale));
   }, []);
 
   const apriArtista = useCallback((quale: Artista | null) => {
+    fuocoDopo.current =
+      quale !== null
+        ? { verso: "testata", daChi: daChi(), livello: daChiArtista }
+        : { verso: "ritorno", livello: daChiArtista };
     cambiandoVista(() => setArtistaAperto(quale));
   }, []);
 
@@ -1789,6 +1846,9 @@ export function App() {
           }
           const tracce = await ipc.braniAlbum(chiave);
           setQuery("");
+          // Il fuoco sulla testata del disco, come aprendolo dalla griglia; chi
+          // aveva aperto era una voce del menù, che non c'è più.
+          fuocoDopo.current = { verso: "testata", daChi: null, livello: daChiAlbum };
           cambiandoVista(() => {
             setPlaylistAperta(null);
             setAperto({
@@ -1817,6 +1877,7 @@ export function App() {
             return;
           }
           setQuery("");
+          fuocoDopo.current = { verso: "testata", daChi: null, livello: daChiArtista };
           cambiandoVista(() => {
             setPlaylistAperta(null);
             setAperto(null);
@@ -2484,11 +2545,13 @@ export function App() {
         // dentro un artista Escape saltava la pagina dell'artista — cioè
         // riportava due passi indietro chi ne aveva chiesto uno.
         if (aperto) {
+          fuocoDopo.current = { verso: "ritorno", livello: daChiAlbum };
           setAperto(null);
           if (artistaAperto === null) tornaAllaRicerca();
           return true;
         }
         if (artistaAperto) {
+          fuocoDopo.current = { verso: "ritorno", livello: daChiArtista };
           setArtistaAperto(null);
           tornaAllaRicerca();
           return true;

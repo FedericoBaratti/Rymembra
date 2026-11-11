@@ -99,6 +99,9 @@ export const Colonna = memo(function Colonna({
               «Ascolta insieme»: questo apre lo stesso pannello come
               finestrella. Anche a funzione spenta — vedi `TastoInsieme`. */}
           <TastoInsieme />
+          {/* `data-apri-grande`: chi chiude «In riproduzione» ritrova questo
+              tasto anche se la colonna, smontata dallo schermo intero, è
+              rinata nel frattempo. Vedi «il fuoco» in `InRiproduzione`. */}
           <button
             type="button"
             className="tasto icon-btn"
@@ -106,6 +109,7 @@ export const Colonna = memo(function Colonna({
             title={t("column.fullscreen.title")}
             disabled={!brano}
             onClick={onEspandi}
+            data-apri-grande="testata"
           >
             <Icona nome="i-expand" dim={15} />
           </button>
@@ -142,6 +146,7 @@ export const Colonna = memo(function Colonna({
               className="apri-grande"
               aria-label={t("column.fullscreen")}
               onClick={onEspandi}
+              data-apri-grande="copertina"
             >
               <Copertina
                 hash={brano.coverArtHash}
