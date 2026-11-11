@@ -1,27 +1,36 @@
-# Da un tag a un installer scaricabile.
+# Da un tag a un installer per Windows e a un APK per i telefoni, scaricabili.
 #
 # # Cosa non fa ancora, e perché è scritto qui e non altrove
 #
-# **Non firma il codice.** Il blocco `bundle.windows.signCommand` in
-# `tauri.conf.json` non c'è, perché un certificato OV richiede la validazione
-# dell'identità di chi lo chiede — settimane, e un costo annuo. Finché non c'è,
-# **SmartScreen mostra un avviso a chiunque scarichi**, ed è il singolo motivo
-# per cui la maggior parte delle applicazioni indipendenti non viene installata.
-# La release lo dice nel proprio corpo invece di lasciarlo scoprire.
+# **Non firma il codice per Windows.** Il blocco `bundle.windows.signCommand`
+# in `tauri.conf.json` non c'è, perché un certificato OV richiede la
+# validazione dell'identità di chi lo chiede — settimane, e un costo annuo.
+# Finché non c'è, **SmartScreen mostra un avviso a chiunque scarichi**, ed è il
+# singolo motivo per cui la maggior parte delle applicazioni indipendenti non
+# viene installata. La release lo dice nel proprio corpo invece di lasciarlo
+# scoprire. L'APK invece è firmato (vedi `firma-apk`): Android non installa
+# niente che non lo sia.
 #
 # # L'updater, e la cosa da sapere prima di premere «pubblica»
 #
 # La release nasce **bozza**, e questo interagisce con l'updater in un modo che
 # conviene aver capito: `plugins.updater.endpoints` punta a
 # `/releases/latest/download/latest.json`, e `/releases/latest` **salta le
-# bozze**. Finché la release resta bozza, quindi, nessuna copia installata di
-# Rymembra la vede: si può scaricare l'installer a mano dalla pagina, provarlo, e
-# accorgersi che qualcosa non va senza che nel frattempo si sia aggiornato
-# nessuno.
+# bozze**. Lo stesso vale per i telefoni, che chiedono `/releases/latest`
+# all'API di GitHub (`rilasci.rs`). Finché la release resta bozza, quindi,
+# nessuna copia installata di Rymembra la vede: si può scaricare l'installer o
+# l'APK a mano dalla pagina, provarlo, e accorgersi che qualcosa non va senza
+# che nel frattempo si sia aggiornato nessuno.
 #
-# Pubblicare la bozza **è** il gesto che spedisce l'aggiornamento a tutti. Non è
-# un effetto collaterale da correggere: è l'unico momento in cui una persona
-# guarda la cosa prima che parta, ed è messo lì apposta.
+# Pubblicare la bozza **è** il gesto che spedisce l'aggiornamento a tutti, ai
+# computer e ai telefoni insieme. Non è un effetto collaterale da correggere: è
+# l'unico momento in cui una persona guarda la cosa prima che parta, ed è messo
+# lì apposta.
+#
+# Una release senza APK è ammessa (decisione D-6): i telefoni non la vedono e
+# aspettano la prossima che lo porti. Questo workflow però lo costruisce sempre:
+# se la build del telefono si rompe, si ferma anche quella del computer, e una
+# release solo per Windows è una scelta da fare a mano, non un guasto che passa.
 #
 # # Perché le azioni sono inchiodate a un hash e non a un'etichetta
 #
@@ -34,40 +43,53 @@
 # Il prezzo è che le azioni non si aggiornano più da sole. Si aggiornano a mano,
 # leggendo la versione dal commento accanto all'hash.
 #
-# # Cinque lavori, e perché la chiave ne vede uno solo
+# # I lavori, e perché le chiavi ne vedono due soli
 #
-#   tag → verifica → costruisci → firma → pubblica
+#   tag → verifica ┬→ costruisci → firma ─────┬→ pubblica
+#                  └→ apk ───────→ firma-apk ─┘
 #
-# La chiave di firma dell'updater sta nei segreti dell'**ambiente `release`**
-# come `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Non
-# in quelli del repository: quelli li legge ogni workflow di ogni ramo, anche
-# uno aggiunto apposta per stamparli da chiunque possa fare push (o da un token
-# rubato con lo scope `workflow`), e con la chiave e la password si firma un
-# aggiornamento per ogni copia installata. La privata non è recuperabile e non
-# è sostituibile: gli eseguibili già installati si fidano solo di quella, e
-# perderla vuol dire che nessuno di loro si aggiornerà mai più — andrebbero
-# tutti reinstallati a mano. Una copia fuori da questo computer e fuori da
-# GitHub.
+# Le chiavi stanno nei segreti dell'**ambiente `release`**:
+#
+#   - `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, la
+#     chiave minisign dell'updater: firma l'installer (`firma`) e, con la
+#     stessa chiave, l'APK per la verifica dentro l'app (`firma-apk`);
+#   - `ANDROID_KEYSTORE_BASE64` (il `.jks` in base64), `ANDROID_KEYSTORE_PASSWORD`
+#     e `ANDROID_KEY_ALIAS`, la chiave con cui Android riconosce gli
+#     aggiornamenti dell'app (`firma-apk`).
+#
+# Non in quelli del repository: quelli li legge ogni workflow di ogni ramo,
+# anche uno aggiunto apposta per stamparli da chiunque possa fare push (o da un
+# token rubato con lo scope `workflow`). Nessuna delle due chiavi è
+# recuperabile o sostituibile: gli eseguibili già installati si fidano solo
+# della minisign, e un telefono accetta un aggiornamento solo dallo stesso
+# certificato dell'app che ha (l'impronta è in
+# `strumenti/android-certificato.sha256`, e `firma-apk` la confronta). Perderne
+# una vuol dire che nessuna copia di quel tipo si aggiornerà mai più — andrebbero
+# tutte reinstallate a mano. Una copia di tutte e due fuori da questo computer
+# e fuori da GitHub.
 #
 # # L'ambiente `release`, prima che funzioni
 #
 # In *Settings → Environments → release*: «Deployment branches and tags» su
 # *Selected*, con la sola regola di **tag** `v*`; un revisore obbligatorio; i
-# due segreti lì, e **tolti** da *Settings → Secrets → Actions → Repository
-# secrets* (finché ci sono anche lì, l'ambiente non protegge niente). Il lavoro
-# `firma` si ferma ad aspettare l'approvazione: è voluto, è un secondo gesto
-# umano prima che la chiave esca dal suo cassetto. Una corsa lanciata a mano
-# va lanciata **dal tag** («Use workflow from» → *Tags*), non da un ramo: un
-# ramo l'ambiente lo rifiuta, e il lavoro `tag` lo dice subito invece che dopo
-# un'ora di compilazione.
+# cinque segreti lì, e **tolti** da *Settings → Secrets → Actions → Repository
+# secrets* (finché ci sono anche lì, l'ambiente non protegge niente). I lavori
+# `firma` e `firma-apk` si fermano ad aspettare l'approvazione: è voluto, è un
+# secondo gesto umano prima che le chiavi escano dal loro cassetto. Sono **due
+# approvazioni**: se i due lavori aspettano insieme si approvano con un gesto
+# solo, altrimenti uno alla volta. Una corsa lanciata a mano va lanciata **dal
+# tag** («Use workflow from» → *Tags*), non da un ramo: un ramo l'ambiente lo
+# rifiuta, e il lavoro `tag` lo dice subito invece che dopo un'ora di
+# compilazione.
 #
 # Fino alla 2.4 la chiave stava nell'ambiente di `tauri build`: cioè accanto
 # agli script di compilazione di quattrocento crate e ai pacchetti npm, ognuno
-# dei quali esegue codice suo. Adesso `costruisci` produce l'installer **senza**
-# chiave e lo consegna come artefatto; `firma` gira su una macchina pulita,
-# installa solo la CLI di Tauri dal lockfile senza eseguirne gli script, e firma
-# con `tauri signer sign`. Sulla macchina che ha compilato la chiave non arriva
-# mai.
+# dei quali esegue codice suo. Adesso `costruisci` e `apk` producono installer
+# e APK **senza** chiave e li consegnano come artefatti; `firma` e `firma-apk`
+# girano su macchine pulite, installano solo la CLI di Tauri dal lockfile senza
+# eseguirne gli script (e gli strumenti dell'SDK di Android), e firmano. Sulle
+# macchine che hanno compilato le chiavi non arrivano mai: per questo l'APK non
+# lo firma Gradle con `keystore.properties`, ma `apksigner` dopo.
 #
 # Lo stesso per il permesso di scrivere sul repository: lo ha solo `pubblica`,
 # che non esegue codice del repository. Tutti gli altri leggono e basta.
@@ -98,6 +120,9 @@ env:
   # La stessa di `verify.yml`, e per la stessa ragione: l'installer deve uscire
   # dal compilatore con cui le prove sono passate.
   RUSTUP_TOOLCHAIN: "1.97.1"
+  # Gli strumenti dell'SDK di Android che leggono e firmano l'APK (`zipalign`,
+  # `aapt2`, `apksigner`), la stessa versione nei due lavori che li usano.
+  BUILD_TOOLS_VERSIONE: "36.1.0"
 
 jobs:
   tag:
@@ -138,7 +163,10 @@ jobs:
             exit 1
           fi
           tag="$REF_NAME"
-          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          # Tre numeri e niente suffissi: `versione.js` non ne ammette (NSIS,
+          # l'MSIX e il versionCode dell'APK non saprebbero cosa farne), e il
+          # confronto qui sotto lo rifiuterebbe comunque.
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "«$tag» non ha la forma di un tag di versione (v1.2.3)"
             exit 1
           fi
@@ -154,7 +182,7 @@ jobs:
           ref: refs/tags/${{ steps.scelto.outputs.tag }}
           persist-credentials: false
 
-      # Il tag dice una versione, i tre file ne dicono un'altra: costruire lo
+      # Il tag dice una versione, i file ne dicono un'altra: costruire lo
       # stesso è produrre un installer che si chiama in un modo e dichiara
       # l'altro. È il difetto che `strumenti/versione.js` esiste per impedire, e
       # questo è il punto in cui conta.
@@ -172,7 +200,24 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-  # Le stesse prove di ogni push, sul tag e non sul ramo.
+      # Il corpo della bozza: per chi ha una build di prova del telefono, per
+      # Windows, per Android. Da uno script e non scritto qui: nomina file,
+      # versione e impronta del certificato, e i menù dell'app come li dice
+      # `en.json` (vedi `strumenti/corpo.js`). Qui, e non in `pubblica`, che non
+      # esegue codice del repository.
+      - name: Il corpo della release
+        run: node strumenti/corpo.js corpo/corpo.md
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-corpo
+          path: corpo/
+          if-no-files-found: error
+
+  # Le stesse prove di ogni push, sul tag e non sul ramo. Con una differenza:
+  # gli avvisi di sicurezza sulle dipendenze non fermano la release, vanno in
+  # testa alla bozza (decisione D-96; vedi il lavoro `dipendenze` di
+  # `verify.yml`). Licenze e divieti fermano come sempre.
   verifica:
     needs: tag
     permissions:
@@ -180,11 +225,16 @@ jobs:
     uses: ./.github/workflows/verify.yml
     with:
       ref: refs/tags/${{ needs.tag.outputs.tag }}
+      consultivo: true
 
   costruisci:
     needs: [tag, verifica]
     runs-on: windows-latest
-    timeout-minutes: 60
+    # Novanta: senza cache (qui sotto) tutte le dipendenze si compilano in
+    # release con `codegen-units = 1` e LTO thin su quattro processori; i
+    # sessanta erano misurati sulla 3.2.0, con 707 pacchetti invece di 844. Un
+    # timeout a cinquantotto minuti vuol dire ricominciare da zero.
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -266,10 +316,10 @@ jobs:
     needs: [tag, costruisci]
     runs-on: windows-latest
     timeout-minutes: 15
-    # L'unico lavoro che vede la chiave, ed è per questo che è l'unico che
-    # nomina l'ambiente: i due segreti stanno lì e non fra quelli del
-    # repository, e l'ambiente li consegna solo a una corsa partita da un tag
-    # `v*` che una persona ha approvato. Come si configura: nel preambolo.
+    # Uno dei due lavori che vedono le chiavi, ed è per questo che nomina
+    # l'ambiente: i segreti stanno lì e non fra quelli del repository, e
+    # l'ambiente li consegna solo a una corsa partita da un tag `v*` che una
+    # persona ha approvato. Come si configura: nel preambolo.
     environment: release
     permissions:
       contents: read
@@ -357,8 +407,274 @@ jobs:
           path: uscita/
           if-no-files-found: error
 
+  # Il telefono, costruito senza chiave come l'installer. Solo arm64: i
+  # telefoni a 64 bit, cioè quasi tutti (decisione D-6); l'x86_64 serviva solo
+  # a emulatori e Chromebook e raddoppiava il tempo.
+  apk:
+    needs: [tag, verifica]
+    # `ubuntu-24.04` e non `-latest`: l'immagine non cambia sotto i piedi da un
+    # tag all'altro.
+    runs-on: ubuntu-24.04
+    # Novanta, come `costruisci`, e per le stesse ragioni: senza cache, la
+    # `.so` di rilascio con LTO thin e `codegen-units = 1`.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      # L'NDK **inchiodato**, e non quello di serie dell'immagine: lì
+      # `ANDROID_NDK_HOME` è il 27, che compila le `.so` allineate a 4 KB senza
+      # nessun errore — su un telefono con pagine da 16 KB l'app girerebbe in
+      # «compatibilità», con un avviso al primo avvio. Dal 28 in poi il 16 KB è
+      # di serie; il 30 è quello con cui l'APK è stato provato. Si alza a mano.
+      NDK_VERSIONE: "30.0.16248370"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Rust
+        run: |
+          rustup toolchain install ${{ env.RUSTUP_TOOLCHAIN }} --profile minimal
+          rustup target add aarch64-linux-android --toolchain ${{ env.RUSTUP_TOOLCHAIN }}
+
+      # Senza cache, come `costruisci`: quel che finisce nell'APK deve venire
+      # dal lockfile e da nient'altro.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      # Installati con `sdkmanager` nella versione scritta qui, e controllati:
+      # se l'immagine ne ha già uno uguale l'installazione non fa niente. Tutte
+      # le variabili che un pezzo della catena può leggere puntano al 30 —
+      # `NDK_HOME` la CLI di Tauri, `ANDROID_NDK_HOME`/`ANDROID_NDK_ROOT` il
+      # resto — così nessuno torna da solo al 27. Il compilatore C dell'NDK
+      # serve a SQLite e a `ring`; il linker alla `.so`. L'API 26 è
+      # `minSdkVersion` (`tauri.android.conf.json`).
+      - name: L'NDK e gli strumenti di Android, inchiodati
+        shell: bash
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          # Non `yes | …`: con `pipefail`, di serie per `bash` nelle azioni, il
+          # SIGPIPE di `yes` quando sdkmanager ha finito farebbe fallire il passo.
+          "$sdkmanager" --licenses < <(yes) > /dev/null
+          "$sdkmanager" --install "ndk;$NDK_VERSIONE" "build-tools;$BUILD_TOOLS_VERSIONE"
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSIONE"
+          if ! grep -qx "Pkg.Revision = $NDK_VERSIONE" "$ndk/source.properties"; then
+            echo "::error::In $ndk non c'è l'NDK $NDK_VERSIONE."
+            exit 1
+          fi
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "NDK_HOME=$ndk"
+            echo "ANDROID_NDK_HOME=$ndk"
+            echo "ANDROID_NDK_ROOT=$ndk"
+            echo "JAVA_HOME=$JAVA_HOME_17_X64"
+            echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSIONE"
+            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android26-clang"
+            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android26-clang++"
+            echo "AR_aarch64_linux_android=$bin/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android26-clang"
+          } >> "$GITHUB_ENV"
+
+      # Con `keystore.properties` Gradle firmerebbe qui, sulla macchina che ha
+      # appena eseguito gli script di compilazione di centinaia di crate e
+      # pacchetti npm. Non c'è (è nei `.gitignore`), e se un giorno ci fosse
+      # la corsa si ferma.
+      - name: Nessuna chiave sulla macchina che compila
+        shell: bash
+        run: |
+          if [ -e apps/desktop/src-tauri/gen/android/keystore.properties ]; then
+            echo "::error::gen/android/keystore.properties c'è: l'APK si firma in firma-apk, non qui."
+            exit 1
+          fi
+
+      # La release, senza chiave: Gradle produce `app-arm64-release-unsigned.apk`
+      # con R8 acceso. `--split-per-abi` per un APK della sola ABI arm64,
+      # invece dell'universale che ne porterebbe due.
+      - name: L'APK
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npx tauri android build --apk --split-per-abi --target aarch64 --ci
+
+      # La CLI di Tauri non passa `--locked` a cargo, che gira dentro Gradle:
+      # se il lockfile fosse cambiato, l'APK conterrebbe dipendenze diverse da
+      # quelle provate. `verifica` lo impedisce già (clippy `--locked` sul
+      # bersaglio del telefono); qui lo si guarda sull'albero che ha compilato.
+      - name: Il lockfile non è cambiato
+        run: git diff --exit-code -- Cargo.lock apps/desktop/package-lock.json
+
+      # Prima della firma, senza chiave: pagine da 16 KB, solo arm64, il
+      # manifesto (pacchetto, versione, versionCode, niente debug) e R8, che
+      # deve aver lasciato `Ponte.chiama` e gli altri nomi che Rust chiama per
+      # nome (`strumenti/apk.js`). Il nome è quello che l'app cerca
+      # (`rilasci.rs::apk_per`).
+      - name: L'APK, controllato
+        shell: bash
+        run: |
+          uscite=apps/desktop/src-tauri/gen/android/app/build/outputs
+          n=$(ls "$uscite"/apk/arm64/release/*.apk 2>/dev/null | wc -l)
+          if [ "$n" != "1" ]; then
+            echo "atteso un APK arm64 di rilascio, trovati $n"
+            ls -R "$uscite/apk"
+            exit 1
+          fi
+          nome=$(node strumenti/apk.js nome)
+          mkdir -p uscita-apk mapping-r8
+          cp "$uscite"/apk/arm64/release/*.apk "uscita-apk/$nome"
+          cp "$uscite/mapping/arm64Release/mapping.txt" mapping-r8/
+          node strumenti/apk.js controlla "uscita-apk/$nome" --mapping mapping-r8/mapping.txt
+          ls -la uscita-apk
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-android-non-firmato
+          path: uscita-apk/
+          if-no-files-found: error
+
+      # Il `mapping.txt` di R8, per leggere le tracce dei diari del telefono
+      # (i nomi accorciati tornano quelli veri). Un artefatto della corsa, con
+      # la conservazione più lunga, e **non** un asset della release.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-android-mapping
+          path: mapping-r8/
+          if-no-files-found: error
+          retention-days: 90
+
+  firma-apk:
+    needs: [tag, apk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # L'altro lavoro che vede le chiavi: quella di Android e la minisign.
+    # Nessuna compilazione: la CLI di Tauri dal lockfile senza script, e
+    # `apksigner` dall'SDK.
+    environment: release
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: La CLI di Tauri, dal lockfile
+        working-directory: apps/desktop
+        run: npm ci --ignore-scripts
+
+      - name: Gli strumenti di Android
+        shell: bash
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          # Non `yes | …`: con `pipefail`, di serie per `bash` nelle azioni, il
+          # SIGPIPE di `yes` quando sdkmanager ha finito farebbe fallire il passo.
+          "$sdkmanager" --licenses < <(yes) > /dev/null
+          "$sdkmanager" --install "build-tools;$BUILD_TOOLS_VERSIONE"
+          {
+            echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSIONE"
+            echo "JAVA_HOME=$JAVA_HOME_17_X64"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rymembra-android-non-firmato
+          path: non-firmato/
+
+      - name: La chiave dell'updater è quella che sembra
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node strumenti/firma.js
+
+      # La firma di Android, con `apksigner`. I segreti arrivano dall'ambiente
+      # del passo e mai dentro la riga di comando: le password con `env:`
+      # (`apksigner` le legge da lì, e non finiscono in `ps` né nel registro),
+      # il keystore in un file di `$RUNNER_TEMP` leggibile solo da chi lo
+      # scrive (`umask 077`), che il passo dopo cancella comunque vada. Niente
+      # `set -x`. Il keystore è PKCS12, con una password sola per il
+      # contenitore e la chiave. Solo v2 e v3 (`minSdk` 26): il v4 scriverebbe
+      # un `.idsig` accanto all'APK, che non serve a nessuno.
+      - name: Firma dell'APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Il segreto $v manca fra quelli dell'ambiente release (Settings → Environments → release)."
+              exit 1
+            fi
+          done
+          umask 077
+          ks="$RUNNER_TEMP/rilascio.jks"
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$ks" 2> /dev/null; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 non è base64: va il file .jks codificato, per intero."
+            exit 1
+          fi
+          mkdir -p uscita
+          for f in non-firmato/*.apk; do
+            "$ANDROID_BUILD_TOOLS/apksigner" sign --ks "$ks" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --v4-signing-enabled false --out "uscita/$(basename "$f")" "$f"
+          done
+          ls -la uscita
+
+      - name: La chiave di Android non resta su disco
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rilascio.jks"
+
+      # La firma minisign dell'APK, con la chiave dell'updater: `….apk.sig`
+      # accanto all'APK, come il `.sig` dell'installer, con la versione nel
+      # commento fidato. È quello che l'app sul telefono verifica prima di
+      # passare l'APK all'installatore di Android (decisione D-6), come fa il
+      # computer con l'installer. Il nome non finisce in `.apk`: l'app non lo
+      # scambia per l'APK.
+      - name: Firma dell'APK per l'app
+        shell: bash
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          for f in ../../uscita/*.apk; do
+            npx tauri signer sign --app-version "${TAG#v}" "$f"
+          done
+
+      # Sul file firmato, cioè quello che la gente scarica: allineamento (che
+      # `apksigner` può aver cambiato), un firmatario solo, non la chiave di
+      # debug, l'impronta del certificato uguale a quella inchiodata in
+      # `strumenti/android-certificato.sha256`, e il `.apk.sig` della chiave
+      # dell'updater per questa versione. È il gemello di `manifesto.js`: una
+      # chiave sbagliata qui vuol dire che nessun telefono si aggiornerà, e lo
+      # scoprirebbe solo chi prova.
+      - name: L'APK firmato, controllato
+        shell: bash
+        run: |
+          for f in uscita/*.apk; do
+            node strumenti/apk.js verifica "$f"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-android
+          path: uscita/
+          if-no-files-found: error
+
   pubblica:
-    needs: [tag, firma]
+    needs: [tag, verifica, firma, firma-apk]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # L'unico lavoro che scrive sul repository, e non esegue codice del
@@ -367,10 +683,23 @@ jobs:
       contents: write
 
     steps:
+      # Le due metà nella stessa cartella e nella stessa bozza: il gesto
+      # «pubblica» spedisce insieme a computer e telefoni.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rymembra-windows
           path: uscita/
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rymembra-android
+          path: uscita/
+
+      # Il corpo in una cartella sua: `uscita/*` sono gli asset.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rymembra-corpo
+          path: corpo/
 
       # Una release già **pubblicata** non si ricarica. Su una release che
       # esiste `action-gh-release` la lascia com'è, cioè pubblicata, e gli asset
@@ -418,6 +747,22 @@ jobs:
               ;;
           esac
 
+      # Gli avvisi di sicurezza delle dipendenze trovati da `verifica` non
+      # hanno fermato la corsa (D-96): si dicono in testa alla bozza, a chi la
+      # pubblica, con il collegamento alla corsa. È una nota da leggere e
+      # togliere prima di pubblicare, non una frase per chi scarica.
+      - name: Gli avvisi sulle dipendenze, in testa alla bozza
+        if: needs.verifica.outputs.avvisi == 'trovati'
+        shell: bash
+        env:
+          CORSA: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            printf '> **Before publishing — delete this note.** The dependency check of this run found security advisories (`cargo deny check advisories` or `npm audit`): read them in the [run summary](%s), decide, then remove these lines.\n\n' "$CORSA"
+            cat corpo/corpo.md
+          } > corpo/con-avvisi.md
+          mv corpo/con-avvisi.md corpo/corpo.md
+
       - name: Pubblica la release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -427,58 +772,19 @@ jobs:
           # Il tag validato dal lavoro `tag` e non `github.ref`: è quello di cui
           # si sono guardate la forma e la versione.
           tag_name: ${{ needs.tag.outputs.tag }}
-          body: |
-            ## Rymembra ${{ needs.tag.outputs.tag }}
-
-            See `CHANGELOG.md` for what changed.
-
-            ### Before installing
-
-            **This installer is not signed.** Windows SmartScreen will show a
-            warning: «Windows protected your PC». To proceed: *More info* →
-            *Run anyway*.
-
-            It isn't a formality and shouldn't be taken for granted. An
-            unsigned installer is an installer whose provenance you cannot
-            verify, and the only thing I can offer in exchange is that the
-            source is here and builds itself. An OV certificate requires
-            identity validation and an annual cost: when there is one, this
-            warning will disappear from these notes.
-
-            ### Coming from the previous version
-
-            This installer removes the previous version by itself and leaves
-            its data alone. The first time Rymembra starts, the library,
-            settings, skins, drafts, accounts and sync of the previous version
-            carry over automatically. If the previous version is open, close
-            it first (also from the icon next to the clock): the installer
-            waits a few seconds, then leaves it installed rather than closing
-            it under you.
-
-            ### Where the music comes from
-
-            Rymembra plays your files, and looks for what's missing in the
-            **free catalogs**. It doesn't download from YouTube and doesn't
-            scrape Spotify: the why is in `README.md`. What no free catalog
-            has ends up in a shopping list, not in an error.
-
-            ### Licenses
-
-            `LICENSE` (MIT), `THIRD-PARTY-NOTICES.md` (the dependencies, with
-            their texts), `PRIVACY.md` (every network request the program can
-            make), `TERMS.md` (what you can do with the music you download —
-            including the Live Music Archive's **non-commercial**
-            constraint).
+          # Dal lavoro `tag` (`strumenti/corpo.js`): la sezione per chi ha una
+          # build di prova del telefono, poi Windows, poi Android.
+          body_path: corpo/corpo.md
 
       # ── e adesso la bozza va guardata ────────────────────────────────────
       # Restano due gesti a mano, e sono entrambi voluti:
       #
-      #   1. scaricare l'installer dalla bozza e provarlo su una macchina vera.
-      #      Le prove dicono che il codice fa quel che deve; non dicono che
-      #      l'installer parta;
+      #   1. scaricare l'installer e l'APK dalla bozza e provarli su una
+      #      macchina vera e su un telefono vero. Le prove dicono che il codice
+      #      fa quel che deve; non dicono che l'installer parta;
       #   2. pubblicare la bozza. Da quel momento `/releases/latest` la vede, e
       #      ogni copia di Rymembra accesa nel mondo se ne accorge al prossimo
-      #      avvio.
+      #      controllo.
       #
       # Automatizzare il secondo si può in due righe. Non si fa: è l'unico punto
       # della catena in cui una persona guarda la cosa prima che parta.

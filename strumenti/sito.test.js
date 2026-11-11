@@ -125,9 +125,10 @@ test("le voci delle docs sanno in che pagina stanno", () => {
 });
 
 test("la versione arriva dal tag, con o senza la v", () => {
-  assert.deepEqual(argomenti(["--versione", "v3.0.1"]), { controlla: false, versione: "3.0.1", installer: null });
-  assert.deepEqual(argomenti(["--controlla"]), { controlla: true, versione: null, installer: null });
-  assert.deepEqual(argomenti(["--versione", "3.0.1", "--installer", "cartella"]), { controlla: false, versione: "3.0.1", installer: "cartella" });
+  assert.deepEqual(argomenti(["--versione", "v3.0.1"]), { controlla: false, versione: "3.0.1", installer: null, apk: null });
+  assert.deepEqual(argomenti(["--controlla"]), { controlla: true, versione: null, installer: null, apk: null });
+  assert.deepEqual(argomenti(["--versione", "3.0.1", "--installer", "cartella"]), { controlla: false, versione: "3.0.1", installer: "cartella", apk: null });
+  assert.deepEqual(argomenti(["--versione", "3.0.1", "--installer", "a", "--apk", "b"]), { controlla: false, versione: "3.0.1", installer: "a", apk: "b" });
   assert.throws(() => argomenti(["--boh"]));
 });
 
@@ -314,5 +315,54 @@ test("con l'installer la pagina ne dice peso e impronta, misurati sul file", () 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(installer, { recursive: true, force: true });
+  }
+});
+
+// Il link all'APK, come quello all'installer: peso e impronta misurati sul
+// file della release. Le frasi stanno in `site/testi/*.json` sotto
+// `scarica.android` (le scrive il coordinatore); il generatore le usa solo se
+// la release ha un APK, perché una release senza è ammessa (D-6).
+test("con l'APK la pagina offre il telefono, con peso e impronta misurati sul file", () => {
+  const { rigaAndroid, rilascio } = require("./sito.js");
+  const versione = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/package.json"), "utf8")).version;
+  const cartella = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-apk-"));
+  try {
+    const dati = Buffer.alloc(41 * 1048576 + 300000, 3);
+    fs.writeFileSync(path.join(cartella, `Rymembra_${versione}_android-arm64.apk`), dati);
+    const r = rilascio(versione, null, cartella);
+    assert.equal(r.apk.file, `Rymembra_${versione}_android-arm64.apk`);
+    assert.match(r.apk.scarica, new RegExp(`/releases/download/v${versione}/Rymembra_${versione}_android-arm64\.apk$`));
+    const testi = {
+      scarica: {
+        android: {
+          titolo: "For Android phones",
+          sotto: "Android 8 or later, 64-bit.",
+          azione: "Download",
+          file: "The file is `{fileApk}`.",
+          impronta: { sommario: "{dimensioneApk} MB · SHA-256 checksum", verifica: "`Get-FileHash {fileApk}`" },
+        },
+      },
+    };
+    const problemi = [];
+    const usate = new Set();
+    const html = rigaAndroid(r, testi, { $marchio: "" }, "it_IT", problemi, usate);
+    assert.deepEqual(problemi, []);
+    const impronta = require("node:crypto").createHash("sha256").update(dati).digest("hex").toUpperCase();
+    assert.ok(html.includes(`href="${r.apk.scarica}"`), html);
+    assert.ok(html.includes(`<code>${impronta}</code>`), html);
+    assert.ok(html.includes("41,3 MB"), html);
+    assert.ok(html.includes(`<code>Rymembra_${versione}_android-arm64.apk</code>`), html);
+    // Senza APK niente riga, e i testi non risultano «mai mostrati».
+    const senza = new Set();
+    assert.equal(rigaAndroid({ ...r, apk: null }, testi, {}, "it_IT", problemi, senza), "");
+    assert.ok(senza.has("scarica.android.titolo") && senza.has("scarica.android.impronta.verifica"));
+    // Con l'APK e senza le frasi, il sito non si pubblica: lo si dice.
+    const mancano = [];
+    rigaAndroid(r, {}, {}, "it_IT", mancano, new Set());
+    assert.ok(mancano.some((p) => p.includes("scarica.android")), mancano.join("\n"));
+    // Una cartella senza quel file è un errore, come per l'installer.
+    assert.throws(() => rilascio(versione, null, os.tmpdir()), /non c'è/);
+  } finally {
+    fs.rmSync(cartella, { recursive: true, force: true });
   }
 });

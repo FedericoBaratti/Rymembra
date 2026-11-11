@@ -29,13 +29,19 @@ path = "src/main.rs"
 
 # L'applicazione vera è una libreria: Android non ha un `main`, carica una
 # libreria condivisa (`cdylib`) dentro un processo che ha avviato lui, e Tauri
-# entra da `rymembra_lib::run`. `staticlib` è la forma che chiede iOS, `rlib`
-# quella che usa il binario qui sopra. Il nome non è `rymembra` perché su
-# Windows una libreria e un binario con lo stesso nome si contendono gli stessi
-# file `.pdb` e `.lib` in `target/`.
+# entra da `rymembra_lib::run`. `rlib` è la forma che usa il binario qui
+# sopra. Il nome non è `rymembra` perché su Windows una libreria e un binario
+# con lo stesso nome si contendono gli stessi file `.pdb` e `.lib` in `target/`.
+#
+# Niente `staticlib`, che il modello di Tauri mette per iOS: iOS non è un
+# bersaglio, e su Windows ogni build di rilascio la produceva lo stesso — 489
+# MB di `rymembra_lib.lib` che nessuno legge, minuti di compilazione nel lavoro
+# `costruisci` di `release.yml`, che gira senza cache. La `cdylib` invece si
+# compila anche su Windows, dove non serve: cargo non sa fare tipi di crate
+# diversi per bersaglio.
 [lib]
 name = "rymembra_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }

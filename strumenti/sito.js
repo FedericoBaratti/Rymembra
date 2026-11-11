@@ -46,6 +46,7 @@
  *   node strumenti/sito.js                     costruisce _site/
  *   node strumenti/sito.js --versione v3.0.1   la stessa cosa, annunciando quella release
  *   node strumenti/sito.js --versione v3.0.1 --installer <cartella>   e con peso e impronta dell'installer
+ *   node strumenti/sito.js --versione v3.0.1 --installer <c> --apk <c>  e il telefono, con quelli dell'APK
  *   node strumenti/sito.js --controlla         costruisce in una cartella temporanea, controlla, butta via
  */
 const crypto = require("crypto");
@@ -54,6 +55,7 @@ const os = require("os");
 const path = require("path");
 const docs = require("./docs.js");
 const { leggiJson } = require("./json.js");
+const { nomeAsset } = require("./apk.js");
 
 // I percorsi si risolvono rispetto a questo file e non alla cartella da cui lo
 // si lancia: gli script npm girano da `apps/desktop`.
@@ -340,8 +342,14 @@ function dataInLingua(data, locale) {
   }).format(new Date(Date.UTC(a, m - 1, g)));
 }
 
-/** Quello che la pagina annuncia, ricavato da una versione e da quello che il repository dice di lei. */
-function rilascio(versione, cartellaInstaller = null) {
+/**
+ * Quello che la pagina annuncia, ricavato da una versione e da quello che il
+ * repository dice di lei. Con `cartellaApk` (dove `sito.yml` ha scaricato
+ * l'APK della release) anche il telefono, con peso e impronta del file vero;
+ * senza, la pagina non offre il telefono: una release senza APK è ammessa
+ * (decisione D-6), e un link a un file che non c'è sarebbe un 404.
+ */
+function rilascio(versione, cartellaInstaller = null, cartellaApk = null) {
   if (!/^\d+\.\d+\.\d+$/.test(versione)) throw new Error(`versione «${versione}»: servono tre numeri`);
   const data = dataNelChangelog(leggi("CHANGELOG.md"), versione);
   if (!data) throw new Error(`il CHANGELOG.md non ha la voce «## [${versione}] — AAAA-MM-GG»`);
@@ -351,6 +359,8 @@ function rilascio(versione, cartellaInstaller = null) {
   // asset pubblicati (`Rymembra_3.0.1_x64-setup.exe`): `release.yml` ne
   // pretende uno solo.
   const file = `${prodotto}_${versione}_x64-setup.exe`;
+  // Il nome con cui `release.yml` carica l'APK, lo stesso che l'app cerca.
+  const fileApk = nomeAsset(versione, prodotto);
   return {
     versione,
     data,
@@ -359,12 +369,15 @@ function rilascio(versione, cartellaInstaller = null) {
     scarica: `${repo}/releases/download/v${versione}/${file}`,
     note: `${repo}/releases/tag/v${versione}`,
     installer: cartellaInstaller ? misuraInstaller(path.join(cartellaInstaller, file)) : null,
+    apk: cartellaApk
+      ? { file: fileApk, scarica: `${repo}/releases/download/v${versione}/${fileApk}`, ...misuraInstaller(path.join(cartellaApk, fileApk)) }
+      : null,
   };
 }
 
 /** Peso e impronta del file che il pulsante scarica: si misurano sul file, non si scrivono a mano. */
 function misuraInstaller(file) {
-  if (!fs.existsSync(file)) throw new Error(`l'installer «${file}» non c'è`);
+  if (!fs.existsSync(file)) throw new Error(`il file da scaricare «${file}» non c'è`);
   const dati = fs.readFileSync(file);
   // In maiuscolo, come la stampa `Get-FileHash`: chi le confronta a occhio deve vedere la stessa stringa.
   return { byte: dati.length, sha256: crypto.createHash("sha256").update(dati).digest("hex").toUpperCase() };
@@ -457,6 +470,46 @@ const IMPRONTA =
   '<details class="impronta"><summary>{{scarica.impronta.sommario}}</summary>' +
   '<p class="hash"><code>{{=$sha256}}</code></p><p>{{scarica.impronta.verifica}}</p></details>';
 
+/**
+ * La riga del telefono, sotto quella del Store: l'APK della release, il suo
+ * nome, il peso e l'impronta. Solo se la release ha un APK; le frasi stanno in
+ * `scarica.android` dei testi, con i valori `{fileApk}`, `{dimensioneApk}` e
+ * `{apk}` (che esistono solo qui dentro).
+ */
+const ANDROID =
+  '<a class="riga riga-cta riga-store" href="{{=$apk}}">' +
+  '<span class="copertina logo">{{&$marchio}}</span>' +
+  '<span class="titoli"><span class="titolo">{{=scarica.android.titolo}}</span><span class="artista">{{=scarica.android.sotto}}</span></span>' +
+  '<span class="azione">{{=scarica.android.azione}}</span></a>' +
+  '<p class="file">{{scarica.android.file}}</p>' +
+  '<details class="impronta"><summary>{{scarica.android.impronta.sommario}}</summary>' +
+  '<p class="hash"><code>{{=$sha256Apk}}</code></p><p>{{scarica.android.impronta.verifica}}</p></details>';
+
+/** Le chiavi dei testi che usa `ANDROID`. */
+const CHIAVI_ANDROID = ["titolo", "sotto", "azione", "file", "impronta.sommario", "impronta.verifica"].map((k) => `scarica.android.${k}`);
+
+/**
+ * La riga del telefono per una lingua, o niente se la release non ha un APK.
+ *
+ * Le chiavi contano come usate in tutti e due i casi: le frasi restano pronte
+ * per la release dopo, e il controllo dei testi mai mostrati non deve
+ * fermare una release senza APK. Con l'APK e senza le frasi, invece, il sito
+ * non si costruisce: un telefono che il sito non offre non è un silenzio da
+ * lasciar passare.
+ */
+function rigaAndroid(r, t, valori, locale, problemi, usate) {
+  for (const k of CHIAVI_ANDROID) usate.add(k);
+  if (!r.apk) return "";
+  const conApk = {
+    ...valori,
+    $apk: r.apk.scarica,
+    $fileApk: r.apk.file,
+    $dimensioneApk: pesoInLingua(r.apk.byte, locale),
+    $sha256Apk: r.apk.sha256,
+  };
+  return riempi(ANDROID, t, conApk, problemi, usate);
+}
+
 function landing(r, testi, problemi, usate) {
   const modello = fs.readFileSync(path.join(SORGENTE, "pagina.html"), "utf8");
   const pagine = {};
@@ -498,7 +551,7 @@ function landing(r, testi, problemi, usate) {
           url: urlLingua(l),
           description: piano(t.meta.descrizione),
           inLanguage: lingueDelProgramma(),
-          operatingSystem: "Windows",
+          operatingSystem: r.apk ? "Windows, Android" : "Windows",
           applicationCategory: "MultimediaApplication",
           softwareVersion: r.versione,
           datePublished: r.data,
@@ -558,6 +611,7 @@ function landing(r, testi, problemi, usate) {
       const conFile = { ...valori, $dimensione: pesoInLingua(r.installer.byte, l.locale), $sha256: r.installer.sha256 };
       valori.$verifica = riempi(IMPRONTA, t, conFile, problemi, usate);
     }
+    valori.$android = rigaAndroid(r, t, valori, l.locale, problemi, usate);
     pagine[`${l.cartella}index.html`] = riempi(modello, t, valori, problemi, usate);
     for (let i = prima; i < problemi.length; i++) problemi[i] = `${l.codice}: ${problemi[i]}`;
   }
@@ -803,9 +857,9 @@ function scrivi(cartella, rel, contenuto) {
   fs.writeFileSync(p, contenuto);
 }
 
-function costruisci(cartella, versione, cartellaInstaller = null) {
+function costruisci(cartella, versione, cartellaInstaller = null, cartellaApk = null) {
   const problemi = [];
-  const r = rilascio(versione, cartellaInstaller);
+  const r = rilascio(versione, cartellaInstaller, cartellaApk);
   const testi = {};
   for (const l of LINGUE) {
     // Una chiave ripetuta è un errore, non l'ultima che vince in silenzio.
@@ -952,11 +1006,12 @@ function controllaUscita(cartella, mappa, ancore) {
 /* ── il comando ───────────────────────────────────────────────────────── */
 
 function argomenti(argv) {
-  const fuori = { controlla: false, versione: null, installer: null };
+  const fuori = { controlla: false, versione: null, installer: null, apk: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--controlla") fuori.controlla = true;
     else if (argv[i] === "--versione") fuori.versione = String(argv[++i] || "").replace(/^v/, "");
     else if (argv[i] === "--installer") fuori.installer = argv[++i] || null;
+    else if (argv[i] === "--apk") fuori.apk = argv[++i] || null;
     else throw new Error(`argomento sconosciuto: ${argv[i]}`);
   }
   return fuori;
@@ -968,7 +1023,7 @@ function main() {
   const cartella = a.controlla ? fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-sito-")) : USCITA;
   let esito;
   try {
-    esito = costruisci(cartella, versione, a.installer);
+    esito = costruisci(cartella, versione, a.installer, a.apk);
   } finally {
     if (a.controlla) fs.rmSync(cartella, { recursive: true, force: true });
   }
@@ -998,5 +1053,7 @@ module.exports = {
   controllaUscita,
   argomenti,
   costruisci,
+  rilascio,
+  rigaAndroid,
   LINGUE,
 };

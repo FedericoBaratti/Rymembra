@@ -140,12 +140,37 @@ jobs:
           TAG: ${{ steps.versione.outputs.tag }}
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_x64-setup.exe' --dir "$RUNNER_TEMP/installer"
 
+      # L'APK di quella release, per la stessa ragione, **se c'è**: una release
+      # senza APK è ammessa (decisione D-6), e allora il sito non offre il
+      # telefono invece di linkare un file che non esiste. Si guarda l'elenco
+      # degli asset prima di scaricare, e non si nasconde un errore di `gh`:
+      # un guasto della rete non deve diventare «questa release non ha APK».
+      - name: L'APK da descrivere, se la release ce l'ha
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.versione.outputs.tag }}
+        run: |
+          nomi=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if printf '%s\n' "$nomi" | grep -qE '_android-arm64\.apk$'; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_android-arm64.apk' --dir "$RUNNER_TEMP/apk"
+            echo "cartella=$RUNNER_TEMP/apk" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::La release $TAG non ha un APK: il sito offre solo il computer."
+          fi
+
       # Il tag passa da una variabile e non dentro lo script: un nome di tag
       # finisce nella shell come dato, non come codice.
       - name: Il sito si costruisce
         env:
           TAG: ${{ steps.versione.outputs.tag }}
-        run: node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer"
+          APK: ${{ steps.apk.outputs.cartella }}
+        run: |
+          if [ -n "$APK" ]; then
+            node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer" --apk "$APK"
+          else
+            node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer"
+          fi
 
       # L'impronta della pagina appena costruita, per l'ultimo passo di
       # `pubblica`: là `_site/` non c'è, c'è solo l'artefatto caricato qui
