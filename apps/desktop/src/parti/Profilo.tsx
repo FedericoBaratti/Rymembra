@@ -55,6 +55,7 @@ import { Trans } from "../lingue/Trans";
 import { dataOra, numero } from "../formato";
 import { vinceLUltima } from "../ultima";
 import { pesoInMegabyte } from "./pesoProfilo";
+import { notiziaDelProfilo, vociPortate, type PezzoNotizia } from "./notiziaProfilo";
 
 /** Come si legge una data del profilo. */
 function quandoScritto(ms: number): string {
@@ -94,6 +95,20 @@ function breve(valore: string): string {
  */
 function conta(voci: [Chiave, number][]): [Chiave, number][] {
   return voci.filter(([, quanti]) => quanti > 0);
+}
+
+/** Un pezzo della notizia dopo «Applica», come si legge. Vedi `notiziaProfilo.ts`. */
+function frase(pezzo: PezzoNotizia): string {
+  switch (pezzo.chiave) {
+    case "profile.applied":
+      return t("profile.applied", { n: pezzo.n });
+    case "profile.applied.library":
+      return t("profile.applied.library", {
+        cosa: pezzo.voci.map(([cosa, quanti]) => t(cosa, { n: quanti })).join(", "),
+      });
+    case "profile.nothingChanged":
+      return t("profile.nothingChanged");
+  }
 }
 
 export function Profilo({
@@ -268,11 +283,9 @@ export function Profilo({
       );
       setDaApplicare(null);
       setAnnullabile(true);
-      onNotizia(
-        fatto.cambi.length === 0
-          ? t("profile.nothingChanged")
-          : t("profile.applied", { n: fatto.cambi.length }),
-      );
+      // Le impostazioni **e** la libreria: contare solo le prime faceva dire
+      // «non ha cambiato niente» dopo aver portato ascolti e playlist.
+      onNotizia(notiziaDelProfilo(fatto).map(frase).join(" · "));
       onImportato();
     } catch (e) {
       onErrore(e);
@@ -298,21 +311,7 @@ export function Profilo({
   };
 
   const piano = daApplicare?.piano;
-  const portati = piano
-    ? conta([
-        ["profile.brings.listens", piano.portati.ascolti],
-        ["profile.brings.history", piano.portati.cronologia],
-        ["profile.brings.ratings", piano.portati.voti],
-        ["profile.brings.loved", piano.portati.preferiti],
-        ["profile.brings.positions", piano.portati.posizioni],
-        ["profile.brings.playlists", piano.portati.playlist],
-        ["profile.brings.folders", piano.portati.cartelle],
-        ["profile.brings.fixes", piano.portati.correzioni],
-        ["profile.brings.lyrics", piano.portati.testi],
-        ["profile.brings.wanted", piano.portati.desiderati],
-        ["profile.brings.covers", piano.portati.fileCopertine],
-      ])
-    : [];
+  const portati = piano ? vociPortate(piano.portati) : [];
 
   return (
     <>
@@ -340,12 +339,21 @@ export function Profilo({
             type="button"
             className="bottone btn-ghost"
             disabled={inVolo || ripianificando}
+            aria-describedby="profilo-annulla-nota"
             onClick={() => void annulla()}
           >
             {t("profile.undo")}
           </button>
         )}
       </div>
+      {/* Quel che il tasto non disfa, prima di premerlo: la copia di sicurezza
+          rimette la configurazione, non la storia. Dirlo dopo, dalla notizia,
+          vorrebbe dire dirlo quando la copia è già stata usata. */}
+      {annullabile && (
+        <p className="nota" id="profilo-annulla-nota">
+          {t("profile.undo.note")}
+        </p>
+      )}
 
       {avanzamento && (
         <>
@@ -465,7 +473,11 @@ export function Profilo({
           )}
 
           {piano.cambi.length === 0 ? (
-            <p className="niente empty-state">{t("profile.noChanges")}</p>
+            <p className="niente empty-state">
+              {/* «Non cambierebbe niente» solo se non arriva niente nemmeno
+                  nella libreria: sopra l'elenco dei portati era falso. */}
+              {portati.length === 0 ? t("profile.noChanges") : t("profile.sameSettings")}
+            </p>
           ) : (
             <ul className="cartelle">
               {piano.cambi.map((c) => (
