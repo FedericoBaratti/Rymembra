@@ -71,6 +71,7 @@ import { dataOra, dataOraBreve, durata, numero, ore } from "../formato";
 import { DISPONIBILI, t, tSe, type Chiave } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Aggiornamenti } from "../parti/Aggiornamenti";
+import { PermessoMusica } from "../parti/AccessoTelefono";
 import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { gestoPermesso } from "../insieme";
@@ -2208,6 +2209,8 @@ export function Impostazioni({
               titolo={t("settings.roots.title")}
               guida="roots"
             >
+              {/* Sul telefono, il permesso di leggerle: vedi `AccessoTelefono`. */}
+              <PermessoMusica />
               {avvio && avvio.cartelle.length > 0 ? (
                 <ul className="cartelle">
                   {avvio.cartelle.map((c) => (

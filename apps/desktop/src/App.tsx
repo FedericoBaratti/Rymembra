@@ -136,6 +136,7 @@ import { sportelloAscolti, useAscolto, useRada } from "./pagine";
 import { Annuncio } from "./parti/Annuncio";
 import { AnnuncioScansione } from "./parti/AnnuncioScansione";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
+import { notaDelPermesso, useAccessoTelefono } from "./parti/AccessoTelefono";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
 import { AvvisoConti } from "./parti/AvvisoConti";
@@ -2575,6 +2576,12 @@ export function App() {
     segnalaErrore,
   );
 
+  /**
+   * Il permesso di leggere la musica, sul telefono: negli stati vuoti della
+   * libreria, se è lui a svuotarla (vedi `parti/AccessoTelefono.tsx`). Fuori da
+   * Android è sempre pieno, e la riga non c'è.
+   */
+  const accessoTelefono = useAccessoTelefono();
   const numeri = avvio?.numeri;
   const vuota = numeri !== undefined && numeri.tracks === 0;
   /**
@@ -3440,6 +3447,7 @@ export function App() {
           icona="i-folder"
           titolo={t("empty.noFolders.title")}
           testo={t("empty.noFolders.body")}
+          nota={notaDelPermesso(accessoTelefono)}
           azione={{
             etichetta: t("empty.noFolders.cta"),
             fai: () => setAggiunta("finestra"),
@@ -3454,6 +3462,7 @@ export function App() {
           icona="i-scan"
           titolo={t("empty.library.title")}
           testo={t("empty.library.body")}
+          nota={notaDelPermesso(accessoTelefono)}
           azione={{ etichetta: t("empty.library.cta"), fai: () => void scansiona() }}
         />
       );

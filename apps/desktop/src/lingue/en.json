@@ -871,6 +871,8 @@
   "telefono.accesso.livelli": "With «All files access» Rymembra also reads the lyrics (.lrc), the .cue files and the covers next to your tracks, fixes tags and deletes the tracks you remove. With access to tracks only, those things are left out.",
   "telefono.accesso.consenti": "Allow access",
   "telefono.accesso.soloBrani": "Continue with tracks only",
+  "telefono.accesso.manca": "Rymembra doesn’t have permission to read the music on your phone yet: without it, your folders look empty.",
+  "telefono.accesso.soloMedia": "Rymembra reads your tracks, but not the lyrics (.lrc), the .cue files and the covers next to them: those need “All files access”.",
   "primo.scansione": "Reading the library…",
   "primo.attesa": "waiting for the automatic scan to finish…",
   "primo.ascolta": "Play",

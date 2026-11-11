@@ -871,6 +871,8 @@
   "telefono.accesso.livelli": "Con «Accesso a tutti i file» Rymembra legge anche i testi (.lrc), i .cue e le copertine accanto ai brani, corregge i tag ed elimina i brani che togli. Con il solo accesso ai brani queste cose restano fuori.",
   "telefono.accesso.consenti": "Consenti l'accesso",
   "telefono.accesso.soloBrani": "Continua solo con i brani",
+  "telefono.accesso.manca": "Rymembra non ha ancora il permesso di leggere la musica del telefono: senza, le cartelle sembrano vuote.",
+  "telefono.accesso.soloMedia": "Rymembra legge i brani, ma non i testi (.lrc), i .cue e le copertine accanto: per quelli serve «Accesso a tutti i file».",
   "primo.scansione": "Sto leggendo la libreria…",
   "primo.attesa": "in attesa che finisca la scansione automatica…",
   "primo.ascolta": "Ascolta",
