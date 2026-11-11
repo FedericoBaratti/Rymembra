@@ -55,7 +55,7 @@ use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::stato::adesso_ms;
-use filo::{ATTESA_LIBRERIA, Comune, Posta, in_libreria, prendi};
+use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
@@ -121,6 +121,9 @@ pub fn ferma(app: &AppHandle) {
     let (risposta, attesa) = channel();
     stato.comune.sveglia(Posta::Ferma(risposta));
     let _ = attesa.recv_timeout(ATTESA_FERMA);
+    // Il registro non ancora scritto: un «Dimentica» che resta solo in
+    // memoria tornerebbe dentro al prossimo avvio.
+    filo::scrivi_prima_di_uscire(app, &stato.comune);
 }
 
 /// Quel che questo dispositivo dice di sé è cambiato fuori dal filo — «Ascolta
@@ -271,7 +274,7 @@ fn attivo_per_collegare(c: &rusqlite::Connection) -> Result<(), AppError> {
 
 /// Il nodo acceso per collegare: vedi [`attivo_per_collegare`].
 fn acceso_per_collegare(app: &AppHandle) -> Result<(), AppError> {
-    in_libreria(app, ATTESA_LIBRERIA, attivo_per_collegare)?;
+    leggi_a_parte(app, attivo_per_collegare)?;
     let pannello = rileggi_e_aspetta(app)?;
     if pannello.acceso {
         return Ok(());
@@ -315,7 +318,7 @@ pub async fn lontano_attiva(app: AppHandle, attivo: bool) -> Esito<StatoLontanoI
         if attivo {
             chiedi_la_rete_di_casa();
         }
-        in_libreria(&app, ATTESA_LIBRERIA, |c| dispositivi::attiva(c, attivo))?;
+        scrivi_in_libreria(&app, |c| dispositivi::attiva(c, attivo))?;
         rileggi_e_aspetta(&app)
     })
     .await
@@ -325,9 +328,7 @@ pub async fn lontano_attiva(app: AppHandle, attivo: bool) -> Esito<StatoLontanoI
 #[tauri::command]
 pub async fn lontano_relay(app: AppHandle, relay: Option<String>) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::scegli_relay(c, relay.as_deref())
-        })?;
+        scrivi_in_libreria(&app, |c| dispositivi::scegli_relay(c, relay.as_deref()))?;
         rileggi_e_aspetta(&app)
     })
     .await
@@ -337,9 +338,7 @@ pub async fn lontano_relay(app: AppHandle, relay: Option<String>) -> Esito<Stato
 #[tauri::command]
 pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::scegli_dati_mobili(c, scelta)
-        })?;
+        scrivi_in_libreria(&app, |c| dispositivi::scegli_dati_mobili(c, scelta))?;
         rileggi_e_aspetta(&app)
     })
     .await
@@ -451,15 +450,20 @@ pub async fn lontano_rinomina(
     nome: String,
 ) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::rinomina(c, &chiave, &nome)
-        })?;
+        scrivi_in_libreria(&app, |c| dispositivi::rinomina(c, &chiave, &nome))?;
         rileggi_e_aspetta(&app)
     })
     .await
 }
 
 /// Dimentica un dispositivo: glielo si dice, se risponde, e lo si toglie.
+///
+/// Fatto subito, anche con la libreria occupata (decisione D-24): esce dal
+/// cancello, perde ogni connessione, e il registro tiene la modifica finché la
+/// libreria non l'ha scritta — nessuna lettura la disfa (vedi
+/// `filo::Comune::registra`). Prima la scrittura rinunciava dopo due secondi,
+/// il comando diceva «occupato», e il dispositivo tornava dentro alla prima
+/// lettura riuscita (reperto R01-2).
 #[tauri::command]
 pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
@@ -473,23 +477,18 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
                 err.code().kind().code()
             );
         }
-        comune.ammetti(&chiave, false);
+        comune.registra(&chiave, Modifica::Dimentica);
         // Subito, senza aspettare la rilettura: ogni sua connessione si
         // chiude, anche quelle aperte prima e i flussi di «Ascolta insieme».
         if let Some(nodo) = comune.nodo() {
             nodo.revoca(&chiave);
         }
-        let insieme_cambiato = in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::dimentica(c, &chiave)
-        })?;
-        // Anche la sua chiave di «Ascolta insieme», che il QR aveva reso
-        // fidata: la rete di «Ascolta insieme» rilegge e chiude le sue
-        // connessioni.
-        if insieme_cambiato {
-            crate::insieme::fidati_cambiati(&app);
-        }
         // I suoi brani in coda non si aprono più.
         crate::riproduzione::togli_lontane(&app, &chiave);
+        // Nella libreria appena si può, con la sua chiave di «Ascolta
+        // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
+        // rete di «Ascolta insieme», che chiude le sue connessioni.
+        filo::scrivi_il_registro(&app, &comune);
         rileggi_e_aspetta(&app)
     })
     .await
