@@ -42,6 +42,7 @@ import {
 } from "../ipc";
 import { t, tSe } from "../lingue";
 import {
+  accendiPoiCollega,
   annullatoDaQui,
   archivioDatiMobili,
   archivioLink,
@@ -55,6 +56,7 @@ import {
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
+  tentativiDiCollegamento,
   unisciDispositivi,
 } from "../lontano";
 import { useAscolto } from "../pagine";
@@ -148,6 +150,8 @@ export function LontanoInApp({
   const [collegando, setCollegando] = useState(false);
   // «Collega» col collegamento spento: prima il sì per accenderlo.
   const [accendere, setAccendere] = useState(false);
+  // «Smetti di aspettare» vale anche mentre il collegamento si accende.
+  const [tentativi] = useState(tentativiDiCollegamento);
 
   useAscolto<StatoLontano>(
     "lontano:stato",
@@ -226,24 +230,36 @@ export function LontanoInApp({
     else collega(daCollegare);
   };
 
-  /** Il sì per accendere è arrivato: si accende, e ci si collega. */
+  /**
+   * Il sì per accendere è arrivato: si accende, e ci si collega — se intanto
+   * la finestrella non è stata lasciata (`accendiPoiCollega`).
+   */
   const accendiECollega = (daCollegare: LinkLontano) => {
     setAccendere(false);
     setCollegando(true);
-    ipc
-      .lontanoAttiva(true)
-      .then((nuovo) => {
-        archivioLontano.scrivi(nuovo);
-        collega(daCollegare);
+    const annullato = tentativi.nuovo();
+    accendiPoiCollega({
+      attiva: () => ipc.lontanoAttiva(true),
+      collega: () => collega(daCollegare),
+      annullato,
+    })
+      .then((partito) => {
+        // Lasciato mentre si accendeva: `collega` non c'è stato, e il suo
+        // `finally` nemmeno.
+        if (!partito) setCollegando(false);
       })
       .catch((errore) => {
         setCollegando(false);
-        onErrore(errore);
+        if (!annullato()) onErrore(errore);
       });
   };
 
-  /** Lascia il link: smette di aspettare, se si stava aspettando. */
+  /**
+   * Lascia il link: smette di aspettare, se si stava aspettando — anche un
+   * collegamento che si sta ancora accendendo (reperto R13-2).
+   */
   const lascia = () => {
+    tentativi.lascia();
     if (collegando) ipc.lontanoCollegaAnnulla().catch(() => undefined);
     setAccendere(false);
     archivioLink.scrivi(null);

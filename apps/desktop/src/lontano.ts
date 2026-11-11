@@ -275,6 +275,50 @@ export function qrSoloInVista(annulla: () => Promise<StatoLontano>): {
 }
 
 /**
+ * I tentativi di collegamento della finestrella del link: ognuno ha il suo
+ * numero, e «Smetti di aspettare» (o Esc) lo fa scadere. `nuovo` comincia un
+ * tentativo e torna la domanda «è stato lasciato?», che resta vera anche dopo
+ * che ne comincia un altro.
+ */
+export function tentativiDiCollegamento(): {
+  nuovo: () => () => boolean;
+  lascia: () => void;
+} {
+  let numero = 0;
+  return {
+    nuovo: () => {
+      const mio = ++numero;
+      return () => numero !== mio;
+    },
+    lascia: () => {
+      numero++;
+    },
+  };
+}
+
+/**
+ * «Accendi», poi «Collega»: il secondo solo se nel frattempo nessuno ha
+ * lasciato la finestrella. `true` se il collegamento è partito.
+ *
+ * Il nucleo guarda gli annulli quando `lontano_collega` comincia: un «Smetti
+ * di aspettare» premuto mentre `lontanoAttiva` girava — la finestrella diceva
+ * già «Aspetto la conferma…» — arrivava prima, e il collegamento partiva lo
+ * stesso, senza più niente da premere per fermarlo (reperto R13-2). Chi lascia
+ * qui lo sa, e il collegamento non si chiede.
+ */
+export async function accendiPoiCollega(passi: {
+  attiva: () => Promise<StatoLontano>;
+  collega: () => void;
+  annullato: () => boolean;
+}): Promise<boolean> {
+  const nuovo = await passi.attiva();
+  archivioLontano.scrivi(nuovo);
+  if (passi.annullato()) return false;
+  passi.collega();
+  return true;
+}
+
+/**
  * L'errore di un collegamento annullato da qui (`lontanoCollegaAnnulla`): non
  * è un guasto, e non si dice.
  */
