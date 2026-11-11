@@ -318,6 +318,61 @@ impl Accesso {
         self.travaso_sospeso
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// Fa una operazione su un servizio solo, senza posto di prima: è il modo
+    /// di lavorare del servizio delle prove ([`SERVIZIO_DELLE_PROVE`]). Il
+    /// turno è lo stesso di [`Accesso::esegui`].
+    #[cfg(debug_assertions)]
+    fn esegui_da_solo<T>(
+        &self,
+        nuovo: &dyn Portachiavi,
+        operazione: impl FnOnce(&ConRipiego<'_>) -> T,
+    ) -> T {
+        let _turno = self
+            .turno
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operazione(&ConRipiego {
+            nuovo,
+            vecchio: None,
+        })
+    }
+}
+
+/// Il servizio delle copie di sviluppo lanciate su una cartella dati di prova.
+///
+/// [`SERVIZIO`] è uno solo e fisso: una build di sviluppo avviata con
+/// `RYMEMBRA_DATI` su una cartella vuota ha una libreria sua, ma senza questo
+/// avrebbe gli account dell'utente — collegarne o scollegarne uno durante una
+/// prova lo farebbe su quelli veri, e l'identità del collegamento via internet
+/// sarebbe la stessa dell'app installata. In più il travaso porterebbe via le
+/// voci della versione di prima. Dopo [`usa_il_servizio_delle_prove`]
+/// [`DiSistema`] lavora soltanto qui, e il servizio di prima non lo vede.
+///
+/// Esiste solo nelle build di sviluppo: in quelle di rilascio non c'è né il
+/// nome né l'interruttore.
+#[cfg(debug_assertions)]
+pub const SERVIZIO_DELLE_PROVE: &str = "io.github.federicobaratti.rymembra.prova";
+
+/// Il servizio delle prove, per [`DiSistema`].
+#[cfg(all(feature = "portachiavi", not(target_os = "android"), debug_assertions))]
+static SERVIZIO_PROVE: Servizio = Servizio(SERVIZIO_DELLE_PROVE);
+
+/// [`DiSistema`] usa il servizio delle prove? Si alza una volta e non si
+/// abbassa più.
+#[cfg(all(feature = "portachiavi", not(target_os = "android"), debug_assertions))]
+static DELLE_PROVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Da qui alla fine del processo [`DiSistema`] legge, scrive e cancella soltanto
+/// sotto [`SERVIZIO_DELLE_PROVE`], e non tocca né [`SERVIZIO`] né il servizio
+/// della versione di prima.
+///
+/// La chiama il `setup` di una build di sviluppo quando la cartella dati l'ha
+/// scelta una variabile d'ambiente, prima che parta chiunque usi il
+/// portachiavi. Non si torna indietro.
+#[cfg(all(feature = "portachiavi", not(target_os = "android"), debug_assertions))]
+pub fn usa_il_servizio_delle_prove() {
+    DELLE_PROVE.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Il servizio di adesso, per [`DiSistema`].
@@ -381,8 +436,13 @@ pub struct DiSistema;
 
 #[cfg(all(feature = "portachiavi", not(target_os = "android")))]
 impl DiSistema {
-    /// Una operazione sui due servizi, sotto il turno di tutto il processo.
+    /// Una operazione sui due servizi, sotto il turno di tutto il processo (o
+    /// sul solo servizio delle prove, se lo si è scelto).
     fn con_ripiego<T>(operazione: impl FnOnce(&ConRipiego<'_>) -> T) -> T {
+        #[cfg(debug_assertions)]
+        if DELLE_PROVE.load(std::sync::atomic::Ordering::SeqCst) {
+            return ACCESSO.esegui_da_solo(&SERVIZIO_PROVE, operazione);
+        }
         ACCESSO.esegui(&SERVIZIO_NUOVO, &SERVIZIO_PRECEDENTE, operazione)
     }
 }
@@ -836,6 +896,36 @@ mod prove {
         // voce appena scritta, e ogni segreto durerebbe il tempo di una
         // scrittura.
         assert_ne!(SERVIZIO, rymembra_domain::eredita::IDENTIFICATORE);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn il_servizio_delle_prove_non_e_ne_quello_vero_ne_quello_di_prima() {
+        // Una copia di sviluppo su una cartella di prova che scrivesse sotto
+        // uno dei due toccherebbe gli account veri dell'utente.
+        assert_ne!(SERVIZIO_DELLE_PROVE, SERVIZIO);
+        assert_ne!(
+            SERVIZIO_DELLE_PROVE,
+            rymembra_domain::eredita::IDENTIFICATORE
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn da_solo_il_servizio_di_prima_non_esiste() {
+        // Il servizio delle prove non travasa: il posto di prima, per lui, è
+        // come se non ci fosse, e le operazioni passano dal turno di sempre.
+        let accesso = Accesso::nuovo();
+        let nuovo = InMemoria::nuovo();
+        assert!(accesso.esegui_da_solo(&nuovo, |s| s.vecchio.is_none()));
+        assert_eq!(
+            accesso.esegui_da_solo(&nuovo, |s| s.scrivi(GOOGLE, "di-prova")),
+            Ok(())
+        );
+        assert_eq!(
+            accesso.esegui_da_solo(&nuovo, |s| s.leggi(GOOGLE)),
+            Ok(Some("di-prova".to_owned()))
+        );
     }
 
     // ── la versione di prima è aperta: il travaso è sospeso ────────────────

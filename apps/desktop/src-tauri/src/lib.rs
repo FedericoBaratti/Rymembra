@@ -350,7 +350,17 @@ pub fn run() {
             // cache fuori dai dati: la risposta dell'unica lettura delle
             // variabili, e non una seconda lettura con una regola sua. Vedi
             // [`cartella_di_cache`]. Prima di ogni stato che apre una cache.
-            app.manage(DatiAMano(fatta_a_mano(&scelta)));
+            let a_mano = fatta_a_mano(&scelta);
+            app.manage(DatiAMano(a_mano));
+            // In una build di sviluppo, una cartella dati di prova ha anche un
+            // portachiavi di prova: il servizio vero è fisso, e senza questo la
+            // copia di prova userebbe gli account veri (e l'identità del
+            // collegamento via internet dell'app installata). Prima di ogni
+            // filo che arrivi ai segreti. Nelle build di rilascio non esiste.
+            #[cfg(all(desktop, debug_assertions))]
+            if a_mano {
+                rymembra_oauth::portachiavi::usa_il_servizio_delle_prove();
+            }
             // I dati di chi aveva la versione di prima, **prima di tutto il
             // resto**: se la cartella nuova deve arrivare dalla vecchia, deve
             // arrivare prima che qualcosa ci scriva dentro — il diario qui
