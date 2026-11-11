@@ -79,8 +79,23 @@ const QUANTI_TITOLI = 8;
  * prenderebbero due posti su otto per dire «qui c'è una regola di
  * numerazione». La 3.0.0 li aveva **solo** loro, e le note sarebbero state
  * quelle due righe.
+ *
+ * «Known limits» per la stessa ragione: dice che cosa **non** c'è, ed è giusto
+ * che lo dica il changelog, non l'avviso che annuncia che cosa c'è di nuovo.
  */
-const DI_SERVIZIO = /^(The number|Database)\b/;
+const DI_SERVIZIO = /^(The number|Database|Known limits)\b/;
+
+/**
+ * I titoli che vanno in testa, qualunque posto abbiano nel changelog.
+ *
+ * Le sezioni di sicurezza sono quelle per cui una persona deve sapere che
+ * conviene aggiornare, e con otto posti e il changelog in ordine di argomento
+ * finivano oltre il taglio: nella sezione `[Unreleased]` del novembre 2026
+ * «Security» e «Security — the review of 2026-11-10» erano le voci undici e
+ * dodici, cioè fuori dalle note. L'ordine del file resta quello per chi lo
+ * legge per intero.
+ */
+const IN_TESTA = /^Security\b/;
 
 /** Muore dicendo cosa, invece di scrivere un manifesto sbagliato. */
 function basta(messaggio) {
@@ -250,12 +265,17 @@ function noteDa(testo, v) {
     if (righe[i].startsWith("## ")) break;
     if (righe[i].startsWith("### ")) {
       const titolo = righe[i].slice(4).trim();
-      if (!DI_SERVIZIO.test(titolo)) titoli.push(`• ${titolo}`);
+      if (!DI_SERVIZIO.test(titolo)) titoli.push(titolo);
     }
   }
-  const mostrati = titoli.slice(0, QUANTI_TITOLI);
+  // Prima la sicurezza, poi il resto nell'ordine del file: `sort` è stabile.
+  titoli.sort((a, b) => Number(IN_TESTA.test(b)) - Number(IN_TESTA.test(a)));
+  const mostrati = titoli.slice(0, QUANTI_TITOLI).map((t) => `• ${t}`);
+  // In inglese come i titoli: la 3.2.0 è uscita con «… e altre 1 voci nel
+  // changelog.», una riga italiana nelle note di chi usa Rymembra in inglese.
+  // «N more» non chiede di scegliere fra singolare e plurale.
   if (titoli.length > QUANTI_TITOLI) {
-    mostrati.push(`… e altre ${titoli.length - QUANTI_TITOLI} voci nel changelog.`);
+    mostrati.push(`… and ${titoli.length - QUANTI_TITOLI} more in the changelog.`);
   }
   return mostrati.join("\n");
 }

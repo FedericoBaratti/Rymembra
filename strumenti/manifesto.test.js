@@ -73,12 +73,49 @@ test("la sezione della versione vince su quella non rilasciata", () => {
   assert.equal(noteDa(changelog, "9.1.0"), "• Added — ancora da uscire");
 });
 
-test("oltre otto titoli si rimanda al changelog", () => {
+test("oltre otto titoli si rimanda al changelog, in inglese come le note", () => {
   const righe = ["## [9.0.0]"];
   for (let i = 1; i <= 11; i++) righe.push(`### Voce ${i}`);
   const testo = noteDa(righe.join("\n"), "9.0.0").split("\n");
   assert.equal(testo.length, 9);
-  assert.match(testo[8], /altre 3 voci/);
+  // La 3.2.0 è uscita con «… e altre 1 voci nel changelog.»: una riga italiana
+  // (e sgrammaticata) nelle note di chi usa Rymembra in inglese.
+  assert.equal(testo[8], "… and 3 more in the changelog.");
+});
+
+test("le sezioni Security vengono prima, ovunque siano nel changelog", () => {
+  const changelog = [
+    "## [9.0.0] — 2030-01-01",
+    "### New — una",
+    "### New — due",
+    "### Changed — tre",
+    "### Changed — quattro",
+    "### Fixed — cinque",
+    "### Fixed — sei",
+    "### Changed — sette",
+    "### Changed — otto",
+    "### Security — la revisione",
+    "### Fixed — nove",
+    "### Security",
+    "### Known limits",
+    "### Database",
+  ].join("\n");
+  const titoli = noteDa(changelog, "9.0.0").split("\n");
+  assert.deepEqual(titoli.slice(0, 3), ["• Security — la revisione", "• Security", "• New — una"]);
+  assert.equal(titoli.length, 9);
+  // «Known limits» dice che cosa non c'è: non è una novità da annunciare.
+  assert.ok(!titoli.some((t) => /Known limits/.test(t)));
+  assert.equal(titoli[8], "… and 3 more in the changelog.");
+});
+
+test("le note della prossima versione mostrano le sezioni Security del changelog vero", () => {
+  const changelog = require("node:fs").readFileSync(require("node:path").join(__dirname, "../CHANGELOG.md"), "utf8");
+  const testo = noteDa(changelog, "999.0.0");
+  const titoli = testo.split("\n");
+  const security = titoli.filter((t) => t.startsWith("• Security"));
+  assert.ok(security.length >= 1, testo);
+  assert.ok(titoli.slice(0, security.length).every((t) => t.startsWith("• Security")), testo);
+  assert.ok(!/Known limits/.test(testo), testo);
 });
 
 test("una sezione che non c'è dà note vuote, e non quelle di un'altra versione", () => {
