@@ -185,3 +185,51 @@ test("quel che sul computer compare al passaggio, sul telefono c'è sempre", () 
   assert.match(impostazioni, /\{!s\.diSerie && MOBILE && \(\s*<button[^>]*?className="[^"]*\baltro-skin\b/);
   assert.match(impostazioni, /azione: \(\) => chiediDisinstalla\(s\)/);
 });
+
+test("i fogli del telefono non occupano i livelli che il registro promette alle skin", () => {
+  // Una parte «con livelli» (`.livelli()` in `rymembra-skin/src/parts.rs`)
+  // lascia alla skin il suo `::before` e il suo `::after`. Una regola del
+  // telefono su quegli pseudo-elementi pesa più di quella compilata e la
+  // sostituisce: la maniglia dei fogli, sul `::before` di `.finestrella`
+  // (`glass-modal`), diventava il livello di ogni skin che ne disegna uno.
+  const registro = readFileSync(
+    join(CARTELLA, "..", "..", "..", "..", "core", "rymembra-skin", "src", "parts.rs"),
+    "utf8",
+  );
+  const conLivelli = new Set(
+    [...registro.matchAll(/PartDef::nuova\(\s*"([\w-]+)"[\s\S]*?\)(?:\.\w+\(\))*\s*,\s*\n/g)]
+      .filter((m) => m[0].includes(".livelli()"))
+      .map((m) => m[1] ?? ""),
+  );
+  assert.ok(conLivelli.has("glass-modal") && conLivelli.has("list-row"), "il registro non si legge più");
+  // Le classi che nel markup stanno accanto a una di quelle parti, nello stesso letterale.
+  const sorgenti = (cartella: string): string[] =>
+    readdirSync(cartella, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? sorgenti(join(cartella, e.name))
+        : /\.tsx?$/.test(e.name)
+          ? [join(cartella, e.name)]
+          : [],
+    );
+  const accanto = new Map<string, string>();
+  for (const file of sorgenti(join(CARTELLA, ".."))) {
+    const testo = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+    for (const m of testo.matchAll(/["'`]([a-z][\w -]*)["'`]/g)) {
+      const classi = (m[1] ?? "").split(/\s+/).filter((c) => c !== "");
+      const parte = classi.find((c) => conLivelli.has(c));
+      if (parte) for (const c of classi) accanto.set(c, parte);
+    }
+  }
+  const occupati: string[] = [];
+  for (const foglio of fogli) {
+    for (const selettore of selettori(readFileSync(join(CARTELLA, foglio), "utf8")).flatMap(dividi)) {
+      const pseudo = /([^\s>+~]+)::(before|after)\s*$/.exec(selettore.trim());
+      if (!pseudo) continue;
+      const classi = [...(pseudo[1] ?? "").matchAll(/\.([\w-]+)/g)].map((m) => m[1] ?? "");
+      for (const c of classi.filter((x) => accanto.has(x))) {
+        occupati.push(`${selettore.trim().replace(/\s+/g, " ")} (${c} → ${accanto.get(c)})`);
+      }
+    }
+  }
+  assert.deepEqual(occupati, []);
+});
