@@ -51,7 +51,7 @@ import { Ispezione } from "./Ispezione";
 import { Livelli } from "./Livelli";
 import { creaMittente, type Mittente } from "./mittente";
 import { daSalvare, iniziale, riduci, testo, type SchedaSinistra } from "./negozio";
-import { applicaOperazioni, leggi, scriviIn, togliDa } from "./patch";
+import { leggi } from "./patch";
 import { daFotografare, poiSeSalvato } from "./salvataggio";
 import { Schede } from "./Schede";
 import { usePacchetto } from "./usaPacchetto";
@@ -248,16 +248,16 @@ export function Studio({
   }, [salva, onEsci, onErrore]);
 
   // ── le scritture ────────────────────────────────────────────────────────
+  //
+  // Come operazioni, e il testo lo calcola il riduttore: vedi l'azione
+  // `modifica` in `negozio.ts`. Calcolarlo qui da `attuale.current` voleva
+  // dire che due scritture nello stesso gestore partivano dallo stesso testo.
   const scrivi = useCallback(
     (percorso: readonly string[], valore: unknown, etichetta: string) => {
-      const prima = testo(attuale.current);
-      const dopo =
-        valore === null || valore === undefined
-          ? togliDa(prima, percorso)
-          : scriviIn(prima, percorso, valore);
+      const togli = valore === null || valore === undefined;
       manda({
-        tipo: "scrivi",
-        testo: dopo,
+        tipo: "modifica",
+        operazioni: [{ togli, percorso: [...percorso], valore: togli ? undefined : valore }],
         etichetta,
         gruppo: percorso.join("."),
         adesso: Date.now(),
@@ -270,10 +270,9 @@ export function Studio({
   }, []);
   const scriviMolti = useCallback(
     (operazioni: readonly OperazioneIa[], etichetta: string, gruppo?: string) => {
-      const { testo: dopo } = applicaOperazioni(testo(attuale.current), operazioni);
       manda({
-        tipo: "scrivi",
-        testo: dopo,
+        tipo: "modifica",
+        operazioni,
         etichetta,
         gruppo: gruppo ?? operazioni.map((o) => o.percorso.join(".")).join("|"),
         adesso: Date.now(),

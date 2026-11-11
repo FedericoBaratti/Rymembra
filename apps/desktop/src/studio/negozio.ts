@@ -16,7 +16,8 @@
  * `storia.ts`). Qui non c'è un modello della skin: c'è quel che l'editor sta
  * guardando e come lo sta guardando.
  */
-import type { Validazione } from "../ipc";
+import type { OperazioneIa, Validazione } from "../ipc";
+import { applicaOperazioni } from "./patch";
 import { senzaCaratteriDi } from "./risorse";
 import { DOVE, SCENA_DI_SERIE, scenaPer, type Larghezza, type Scena } from "./scena";
 import { annulla, ripeti, riscritta, scrivi, storiaDa, type Storia } from "./storia";
@@ -108,6 +109,23 @@ export type Azione =
   | { tipo: "apri"; testo: string }
   /** Una modifica: da un controllo, dall'editor di codice, dalla chat. */
   | { tipo: "scrivi"; testo: string; etichetta: string; gruppo: string; adesso: number }
+  /**
+   * Una modifica di un controllo, come operazioni sul documento: il testo
+   * nuovo lo calcola il riduttore, dal presente della storia.
+   *
+   * Non `scrivi` col testo già fatto fuori: chi lo calcolava partiva da
+   * `attuale.current`, che resta indietro finché React non ridisegna, e due
+   * scritture nello stesso gestore partivano dallo stesso testo — la seconda
+   * disfaceva la prima (R14-1, il «+» accanto a un innesco). Qui ogni azione
+   * vede il testo lasciato da quella prima, in qualunque giro arrivi.
+   */
+  | {
+      tipo: "modifica";
+      operazioni: readonly OperazioneIa[];
+      etichetta: string;
+      gruppo: string;
+      adesso: number;
+    }
   | { tipo: "annulla" }
   | { tipo: "ripeti" }
   /** È tornata una validazione: vale solo se è del testo di adesso. */
@@ -188,6 +206,19 @@ export function riduci(stato: StatoStudio, azione: Azione): StatoStudio {
           adesso: azione.adesso,
         }),
       };
+    case "modifica": {
+      // Le ragioni di quel che non si applica si perdono qui, come in
+      // `scriviIn`: un controllo che chiede una cosa impossibile è un difetto
+      // dello Studio, e il documento resta com'era.
+      const { testo: dopo } = applicaOperazioni(testo(stato), azione.operazioni);
+      return riduci(stato, {
+        tipo: "scrivi",
+        testo: dopo,
+        etichetta: azione.etichetta,
+        gruppo: azione.gruppo,
+        adesso: azione.adesso,
+      });
+    }
     case "annulla":
       return { ...stato, storia: annulla(stato.storia) };
     case "ripeti":

@@ -858,7 +858,7 @@ function Stati({ def }: { def: ParteRegistro }) {
 // ── Movimento ────────────────────────────────────────────────────────────────
 
 function Movimento({ def }: { def: ParteRegistro }) {
-  const { s, manda, registro, documento, scrivi } = useStudio();
+  const { s, manda, registro, documento, scrivi, scriviMolti } = useStudio();
   const radice = ["parts", def.name, "motion"];
   const movimento = oggetto(documento === null ? {} : valoreIn(documento, radice));
   const animazioni = oggetto(oggetto(documento?.["motion"])["animations"]);
@@ -904,8 +904,16 @@ function Movimento({ def }: { def: ParteRegistro }) {
     const base = `${def.name}-${innesco}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     let nome = base;
     for (let n = 2; presi.includes(nome); n += 1) nome = `${base}-${n}`;
-    scrivi(["motion", "animations", nome], valore, t("studio3.step.animationAdd", { nome }));
-    assegna(innesco, nome);
+    // Un passo solo, e una scrittura sola: l'animazione e chi la richiama
+    // vanno insieme, e un Ctrl+Z che togliesse solo l'assegnazione lascerebbe
+    // un'animazione che nessuno usa — o, al contrario, una che non c'è.
+    scriviMolti(
+      [
+        { togli: false, percorso: ["motion", "animations", nome], valore },
+        { togli: false, percorso: [...radice, innesco], valore: nome },
+      ],
+      t("studio3.step.animationAdd", { nome }),
+    );
     manda({ tipo: "scegli", selezione: { tipo: "animazione", nome } });
     manda({ tipo: "imposta", campi: { dock: "timeline" } });
   };

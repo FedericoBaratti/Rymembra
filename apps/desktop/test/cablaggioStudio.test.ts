@@ -147,3 +147,24 @@ test("ispettore del nodo: le scelte discrete hanno la guardia dello scafale, i c
   assert.match(nodo, /onScegli=\{\(v\) => scegli\("size"/);
   assert.match(nodo, /onCambia=\{\(v\) => v !== null && cambia\("size"/, "il cursore della misura resta senza guardia");
 });
+
+test("le scritture dei controlli si calcolano nel riduttore, non su `attuale` (R14-1)", () => {
+  // `attuale.current` resta indietro finché React non ridisegna: due scritture
+  // nello stesso gestore partivano dallo stesso testo e la seconda disfaceva la
+  // prima. Il «+» di un innesco ne faceva proprio due.
+  const guscio = sorgente("Guscio.tsx");
+  const tratti: readonly (readonly [string, string])[] = [
+    ["const scrivi = useCallback(", "const scriviTesto = useCallback("],
+    ["const scriviMolti = useCallback(", "// ── i file del pacchetto"],
+  ];
+  for (const [nome, fine] of tratti) {
+    const qui = guscio.slice(guscio.indexOf(nome), guscio.indexOf(fine));
+    assert.ok(qui.length > 0, `manca «${nome}»`);
+    assert.doesNotMatch(qui, /attuale\.current/, `${nome} calcola ancora il testo fuori dal riduttore`);
+    assert.match(qui, /tipo: "modifica"/);
+  }
+  // E il gesto è un passo solo: un Ctrl+Z toglie animazione e assegnazione insieme.
+  const crea = corpo(sorgente("IspezioneParte.tsx"), "const crea = (innesco: string, ciclo: boolean)");
+  assert.equal(crea.match(/scriviMolti\(/g)?.length, 1, "crea non scrive in un colpo solo");
+  assert.doesNotMatch(crea, /\bscrivi\(|assegna\(/);
+});
