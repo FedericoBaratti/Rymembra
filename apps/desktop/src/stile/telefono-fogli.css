@@ -222,17 +222,25 @@
     transform var(--transition-foglio);
 }
 
-/* La maniglia disegnata: dice «questo è un foglio», anche se non si trascina. */
-:root[data-forma="telefono"] .velo.scuro > .finestrella::before {
-  content: "";
-  position: absolute;
-  top: 10px;
-  left: calc(50% - 18px);
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--color-text-3);
-  opacity: 0.55;
+/* La maniglia disegnata: dice «questo è un foglio», anche se non si trascina.
+
+   Un fondo e non uno pseudo-elemento. `.finestrella` porta `glass-modal`, una
+   parte con livelli: il suo `::before` è il posto che il registro promette
+   alla skin, e una regola qui, più pesante di quella compilata, trasformava il
+   livello di ogni skin nella maniglia da 36×4. Come strato di fondo la
+   maniglia sta accanto alla luce di serie, e il selettore pesa quanto quello
+   compilato (`:where` attorno al velo): una skin che ridipinge il fondo della
+   finestrella vince, e il foglio resta senza maniglia invece di perdere il
+   disegno della skin. */
+:root[data-forma="telefono"] :where(.velo.scuro) > .finestrella {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--color-text-3) 55%, transparent) 0 0
+    ),
+    var(--luce);
+  background-repeat: no-repeat, repeat;
+  background-position: center 10px, 0 0;
+  background-size: 36px 4px, auto;
 }
 
 @starting-style {
@@ -267,6 +275,13 @@
   justify-content: center;
   min-height: var(--dito);
   font-size: 15px;
+}
+
+/* I ritocchi per riga della revisione a battute: sul computer compaiono al
+   passaggio sulla riga, qui il primo tocco che li rivelava aveva già spostato
+   la battuta. Si vedono sempre. */
+:root[data-forma="telefono"] .sincronizza .elenco-battute:is(.rivedi, .parole) .ritocco {
+  opacity: 1;
 }
 
 /* I campi dentro le finestrelle, a misura di dito e di tastiera. */

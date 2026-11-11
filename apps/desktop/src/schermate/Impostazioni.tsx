@@ -95,6 +95,8 @@ import type { Tema } from "../tema";
 import { Trans } from "../lingue/Trans";
 import { comeScorrere } from "../transizione";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
+import { chiaveDellApertura, chiusuraDi } from "../foglio";
+import { Menu, type Apertura } from "../Menu";
 import { nomeFonte } from "../parti/Incertezza";
 import { MOBILE } from "../piattaforma";
 
@@ -2058,6 +2060,20 @@ export function Impostazioni({
    * `ConfermaGesto.tsx`.
    */
   const [domanda, setDomanda] = useState<Domanda | null>(null);
+  /**
+   * Il ⋮ di una skin installata, sul telefono: la disinstallazione sta lì e non
+   * in una X che compare al passaggio. Il foglio chiude da sé con Indietro.
+   */
+  const [menuSkin, setMenuSkin] = useState<Apertura | null>(null);
+  const chiediDisinstalla = (s: VoceSkin) =>
+    setDomanda({
+      titolo: t("settings.skin.uninstall.confirm.title", { nome: s.nome }),
+      descrizione: s.attiva
+        ? t("settings.skin.uninstall.confirm.bodyActive")
+        : t("settings.skin.uninstall.confirm.body"),
+      conferma: t("settings.skin.uninstall.confirm.ok"),
+      fai: () => onDisinstallaSkin(s.id),
+    });
   /** L'account del cloud che si sta ricollegando: vedi `RicollegaConto`. */
   const [ricollega, setRicollega] = useState<ContoNuvola | null>(null);
   /**
@@ -2729,7 +2745,7 @@ export function Impostazioni({
 
                             Sul telefono lo Studio non c'è, e la scheda rotta
                             resta una scheda che dice cosa non va: spenta, con la
-                            ragione sotto, e la X per toglierla. Si aggiusta sul
+                            ragione sotto, e il ⋮ per toglierla. Si aggiusta sul
                             computer, e torna col profilo. */}
                         <button
                           type="button"
@@ -2809,8 +2825,15 @@ export function Impostazioni({
                           {/* Le skin si disinstallano. `diSerie` porta scritto
                               «non si può disinstallare», il che dice che le altre
                               sì — e il comando non c'era: una skin installata per
-                              curiosità restava nell'elenco per sempre. */}
-                          {!s.diSerie && (
+                              curiosità restava nell'elenco per sempre.
+
+                              Sul computer è la X che compare al passaggio. Sul
+                              telefono un dito non passa sopra niente: la X era
+                              una fascia invisibile larga quanto la scheda, e un
+                              tocco lì apriva «Disinstallare…?» senza che si
+                              vedesse cosa si era toccato. Lì sta nel ⋮ della
+                              scheda, come ogni «altro» del telefono. */}
+                          {!s.diSerie && !MOBILE && (
                             <button
                               type="button"
                               className="bottone minuto btn-ghost via-skin"
@@ -2824,20 +2847,32 @@ export function Impostazioni({
                                     })
                                   : t("settings.skin.uninstall", { nome: s.nome })
                               }
-                              onClick={() =>
-                                setDomanda({
-                                  titolo: t("settings.skin.uninstall.confirm.title", {
-                                    nome: s.nome,
-                                  }),
-                                  descrizione: s.attiva
-                                    ? t("settings.skin.uninstall.confirm.bodyActive")
-                                    : t("settings.skin.uninstall.confirm.body"),
-                                  conferma: t("settings.skin.uninstall.confirm.ok"),
-                                  fai: () => onDisinstallaSkin(s.id),
+                              onClick={() => chiediDisinstalla(s)}
+                            >
+                              <Icona nome="i-x" dim={13} />
+                            </button>
+                          )}
+                          {!s.diSerie && MOBILE && (
+                            <button
+                              type="button"
+                              className="bottone minuto btn-ghost altro-skin"
+                              aria-label={t("row.more.aria", { titolo: s.nome })}
+                              onClick={(e) =>
+                                setMenuSkin({
+                                  x: e.clientX,
+                                  y: e.clientY,
+                                  testata: { titolo: s.nome },
+                                  voci: [
+                                    {
+                                      etichetta: t("settings.skin.uninstall.confirm.ok"),
+                                      icona: "i-trash",
+                                      azione: () => chiediDisinstalla(s),
+                                    },
+                                  ],
                                 })
                               }
                             >
-                              <Icona nome="i-x" dim={13} />
+                              <Icona nome="i-dots-v" dim={18} />
                             </button>
                           )}
                         </div>
@@ -3596,6 +3631,14 @@ export function Impostazioni({
       </div>
       {domanda !== null && (
         <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />
+      )}
+      {/* Uno per apertura, come quello di `App`: vedi `chiaveDellApertura`. */}
+      {menuSkin !== null && (
+        <Menu
+          key={chiaveDellApertura(menuSkin)}
+          apertura={menuSkin}
+          onChiudi={() => setMenuSkin(chiusuraDi(menuSkin))}
+        />
       )}
       {ricollega !== null && (
         <RicollegaConto

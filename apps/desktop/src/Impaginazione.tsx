@@ -680,13 +680,16 @@ export function Impaginazione({
       data-nodo={albero.at}
       data-scafale=""
       inert={inerte || undefined}
-      /* Due attributi sulla radice, e non uno stato in più: sono derivati dagli
+      /* Tre attributi sulla radice, e non uno stato in più: sono derivati dagli
          **stessi** predicati di visibilità che decidono se i widget rendono,
          quindi non possono contraddirli. Servono a chi galleggia `fixed` sopra
-         il contenuto — la barra del lettore, la notifica — e deve sapere se
-         sotto c'è spazio suo o della terza colonna. */
+         il contenuto — la barra del lettore, quella della selezione che ne
+         prende il posto, la notifica — e deve sapere se sotto c'è spazio suo o
+         della terza colonna; e al foglio, che sotto l'elenco riserva lo spazio
+         di chi galleggia. */
       data-colonna={contesto.colonnaAperta || undefined}
       data-lettore={WIDGET.player?.visibile?.(contesto, conBrano) ? "" : undefined}
+      data-selezione={WIDGET["selection-bar"]?.visibile?.(contesto, conBrano) ? "" : undefined}
     >
       {albero.children.map((figlio) => (
         <Nodo key={figlio.at} nodo={figlio} ctx={contesto} slot={slot} />

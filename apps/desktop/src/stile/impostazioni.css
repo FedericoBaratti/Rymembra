@@ -705,10 +705,17 @@
   box-shadow: inset 0 1px 2px var(--incavo);
   overflow: hidden;
 }
+/* La seconda tinta del riempimento è l'accento schiarito (o scurito, nel tema
+   chiaro) verso il testo, cioè due token del registro: le cinque barre di
+   avanzamento leggevano `--skin-color-ciano`, la tavolozza di Plain, e con
+   Vinile o una skin di terzi andavano dal loro accento al ciano di un'altra
+   skin. Scritta su ogni barra e non in una variabile della radice: una
+   variabile della radice si calcolerebbe sull'accento della radice, non su
+   quello dell'anteprima dello Studio che la barra eredita. */
 .avanzamento-scansione .riempita {
   position: relative;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 60%, var(--color-text-1)));
   /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
      barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
      Qui serviva la scala del movimento, non la curva — e la durata è tarata

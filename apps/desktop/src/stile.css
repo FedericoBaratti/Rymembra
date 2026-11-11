@@ -872,9 +872,21 @@ body {
    dell'elenco resterebbe sotto la barra, raggiungibile solo scorrendo oltre la
    fine. Vale **solo** quando la barra c'è davvero: con la terza colonna aperta
    il lettore non è flottante, e novanta pixel di vuoto in fondo alla libreria
-   sarebbero un buco. */
-[data-scafale][data-lettore] .posto-content .dentro {
+   sarebbero un buco.
+
+   La barra della selezione prende il posto del lettore, e il posto le serve
+   uguale: con tre righe scelte `data-lettore` spariva e l'ultimo brano tornava
+   sotto la barra. `--player-clearance` copre anche la barra andata a capo su
+   due righe (la terza colonna aperta), che arriva a un centinaio di pixel.
+
+   `scroll-padding-bottom` è l'altra metà, e non è la stessa cosa: il
+   `padding` serve a scorrere oltre la fine, questo dice al motore quale parte
+   dell'area si vede davvero. Senza, una riga sotto la barra era «visibile», e
+   il fuoco che ci arrivava con ↓ non faceva scorrere niente — restava nascosto
+   per due pressioni di fila (WCAG 2.4.11). */
+[data-scafale]:is([data-lettore], [data-selezione]) .posto-content .dentro {
   padding-bottom: var(--player-clearance);
+  scroll-padding-bottom: var(--player-clearance);
 }
 
 /* I tre widget che galleggiano non prendono spazio nel flusso: il loro posto

@@ -308,9 +308,10 @@
   font-size: 12px;
   color: var(--color-text-3);
 }
+/* Il numero segue l'accento della voce, pieno: al 75 % scendeva a 3:1 sul
+   fondo tenue. A distinguerlo dal nome bastano il carattere e la misura. */
 .voce[data-active] .conteggio {
   color: inherit;
-  opacity: 0.75;
 }
 
 .gruppo .voce {
@@ -577,10 +578,12 @@
   opacity: 0.45;
   cursor: default;
 }
+/* Un gradino sotto il nome della linguetta con un token, non con
+   un'opacità: `text-2` al 70 % scendeva a 3,2:1 sulla pista. */
 .segmentato .quante {
   font-family: var(--font-mono);
   font-size: 11px;
-  opacity: 0.7;
+  color: var(--color-text-3);
 }
 .segmentato.minuto .linguetta {
   padding: 4px 10px;
@@ -683,8 +686,8 @@
   word-break: normal;
 }
 /* Un avviso dentro una scheda delle impostazioni, e non il `.avviso` globale:
-   quello è una griglia con la barretta d'accento, fatta per l'elenco degli
-   avvisi dello Studio. Qui è una frase sotto un percorso. */
+   quello è il riquadro col livello e l'icona (`importazioni.css`), fatto per
+   le notizie che chiedono qualcosa. Qui è una frase sotto un percorso. */
 .impostazioni .scheda > .avviso {
   display: block;
   margin: var(--spazio-2) 0 0;

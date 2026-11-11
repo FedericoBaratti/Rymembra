@@ -840,20 +840,6 @@
   width: 12px;
   color: var(--color-text-3);
 }
-.avviso {
-  display: grid;
-  grid-template-columns: 3px minmax(0, 1fr);
-  gap: 9px;
-  padding: 6px 9px;
-  background: var(--color-surface-2);
-  border-radius: 10px;
-}
-.avviso .cosa {
-  margin-top: 1px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--color-text-2);
-}
 .riga-contrasto {
   display: grid;
   grid-template-columns: 14px minmax(0, 1fr) 40px 40px;
@@ -867,12 +853,6 @@
 }
 .riga-contrasto .rapporto {
   text-align: right;
-}
-.mancanti {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 6px;
 }
 .quattro {
   display: grid;

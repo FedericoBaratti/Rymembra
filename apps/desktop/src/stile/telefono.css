@@ -428,6 +428,16 @@
   display: flex;
 }
 
+/* Il ⋮ di una skin installata, dove sul computer c'è la X che compare al
+   passaggio. È il primo figlio della riga dei comandi — lo Studio sul
+   telefono non c'è — e il primo figlio lì si allarga (`studio.css`): questo
+   no, sta in fondo a destra come gli altri ⋮. */
+:root[data-forma="telefono"] .azioni-skin .altro-skin {
+  flex: none;
+  margin-inline-start: auto;
+  padding-inline: 10px;
+}
+
 /* ── le playlist intelligenti ────────────────────────────────────────────── */
 
 /* Una condizione su due righe: il campo e l'operatore sopra, accanto alla

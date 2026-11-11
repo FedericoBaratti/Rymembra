@@ -394,6 +394,7 @@
    misura il loro nome si allineerebbe più a sinistra di quello dei fratelli che
    ce l'hanno: il rientro direbbe un livello che non è il loro. */
 .freccia-nodo {
+  position: relative;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -402,6 +403,16 @@
   height: 16px;
   color: var(--color-text-3);
   cursor: pointer;
+}
+/* Il bersaglio è di 24 pixel anche se il triangolo ne disegna 16 (WCAG 2.2
+   2.5.8). Non il riquadro: l'altezza della riga la misura la finestra
+   virtuale. Il di più cade nello spazio fra il triangolo e l'icona e nel
+   rientro, dove non c'è un altro comando; e solo se il triangolo c'è — su una
+   foglia il riquadro è vuoto, e un clic lì è un clic sulla riga. */
+.freccia-nodo:not(:empty)::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }
 /* Su una radice il nome è il percorso intero: qui il troncamento è la regola e
    non il caso limite, e il percorso per esteso resta nel `title`. */
@@ -425,17 +436,18 @@
 /*
  * La radice che non risponde.
  *
- * L'opacità dice «spenta» a chi guarda, e da sola non basta: `forced-colors`
- * impone i colori ma non tocca l'opacità, quindi in contrasto elevato un testo
- * smorzato è solo un testo meno leggibile — cioè il difetto al posto del segno,
- * proprio per chi ha chiesto più contrasto. Il corsivo porta la stessa notizia
- * senza toglierne, e là sotto l'opacità torna piena e resta lui.
+ * «Spenta» lo dicono il corsivo e il grigio più quieto del nome, e l'icona
+ * smorzata. Non un'opacità sulla riga intera: al 55 % il nome e il conteggio
+ * scendevano a 2,3:1, cioè un testo da leggere — quale cartella non risponde —
+ * reso illeggibile per dire che è spenta. L'opacità resta sull'icona, che non
+ * si legge; in contrasto elevato torna piena anche lì (`contrasto.css`).
  */
-.nodo-spento {
-  opacity: 0.55;
-}
 .nodo-spento .nome-nodo {
   font-style: italic;
+  color: var(--color-text-3);
+}
+.nodo-spento .icona-nodo {
+  opacity: 0.55;
 }
 /* L'icona fra il triangolo e il nome: cartella o brano. È quel che distingue
    una foglia da una cartella chiusa senza doverla aprire. */
@@ -533,7 +545,12 @@
   color: var(--color-text-2);
   margin-bottom: 5px;
 }
+/* `display: block` perché la forma la decide il foglio e non il tag: nella
+   fascia dell'aggiornamento la pista è uno `<span>` (sta dentro un paragrafo,
+   dove un `<div>` non è valido), e in linea `height` e `overflow` non valgono —
+   la barra dello scaricamento non si vedeva mai. */
 .toast-progress {
+  display: block;
   height: 4px;
   border-radius: 99px;
   background: var(--color-surface-3);
