@@ -774,6 +774,7 @@
   "folders.add.adding": "Aggiungo…",
   "folders.add.arriving": "«{nome}» è fra le cartelle sorvegliate: i brani compaiono mentre arrivano.",
   "folders.add.already": "Questa cartella è già fra le sorvegliate.",
+  "folders.add.reading": "«{nome}» è fra le cartelle sorvegliate: la leggo adesso, e i brani entrano in libreria fra qualche secondo.",
   "folders.reconnect.title": "Ricollega {servizio}",
   "cloudApp.title.new": "Configura la tua app {piattaforma}",
   "cloudApp.title.edit": "Modifica l'app «{nome}»",

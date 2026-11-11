@@ -774,6 +774,7 @@
   "folders.add.adding": "Adding…",
   "folders.add.arriving": "“{nome}” is now a watched folder: tracks show up as they arrive.",
   "folders.add.already": "This folder is already being watched.",
+  "folders.add.reading": "“{nome}” is now a watched folder: reading it now, and its tracks join the library in a few seconds.",
   "folders.reconnect.title": "Reconnect {servizio}",
   "cloudApp.title.new": "Set up your {piattaforma} app",
   "cloudApp.title.edit": "Edit the app “{nome}”",

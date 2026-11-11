@@ -139,6 +139,16 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
 /// Solo quando c'è una cartella nuova — togliere una cartella non ha bisogno di
 /// sapere dove stanno le altre.
 ///
+/// # Una cartella nuova si legge subito
+///
+/// La sorveglianza guarda i **cambiamenti**: una cartella appena scelta, con
+/// i suoi brani già dentro, non ne manda nessuno, e i brani non entravano
+/// finché qualcuno non premeva «Scansiona» — dalle Impostazioni, da un
+/// trascinamento, dalla Home vuota, senza che niente lo dicesse. Le radici
+/// nuove ([`radici_nuove`]) si chiedono alla sorveglianza con
+/// [`crate::sorveglia::riguarda`], la stessa strada delle cartelle del cloud:
+/// una scansione prudente di quelle sole, non dell'intera libreria.
+///
 /// # Errori
 ///
 /// `internal.aborted` se la libreria non c'è più, `db.*` se la lettura o la
@@ -151,17 +161,35 @@ pub async fn imposta_cartelle(
     let mano = app.clone();
     let esito = in_disparte("cartelle sorvegliate", move || {
         let stato = libreria_di(&mano, "cartelle sorvegliate")?;
-        scrivi_cartelle(&stato, &cartelle)
+        let prima = cartelle_sorvegliate(&stato)?;
+        let ordinate = scrivi_cartelle(&stato, &cartelle)?;
+        let nuove = radici_nuove(&prima, &ordinate.cartelle);
+        Ok((ordinate, nuove))
     })
     .await
     .map_err(errore)?
     .map_err(errore);
     // La sorveglianza segue l'elenco: una cartella nuova si comincia a
-    // guardare adesso, una tolta smette.
-    if esito.is_ok() {
+    // guardare adesso, una tolta smette. E una nuova si legge: vedi sopra.
+    let esito = esito.map(|(ordinate, nuove)| {
         crate::sorveglia::riconfigura(&app);
-    }
+        crate::sorveglia::riguarda(&app, nuove);
+        ordinate
+    });
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Le cartelle di `dopo` che in `prima` non c'erano, con il confronto della
+/// scansione ([`rymembra_domain::paths::path_key`]): `d:\musica` non è nuova
+/// se c'era `D:\Musica`.
+fn radici_nuove(prima: &[String], dopo: &[String]) -> Vec<String> {
+    let regole = PathRules::for_current_platform();
+    let chiave = |p: &str| rymembra_domain::paths::path_key(p, regole);
+    let note: std::collections::HashSet<String> = prima.iter().map(|p| chiave(p)).collect();
+    dopo.iter()
+        .filter(|c| !note.contains(&chiave(c)))
+        .cloned()
+        .collect()
 }
 
 /// Scrive l'elenco delle cartelle sorvegliate con le regole di sempre:
@@ -2473,6 +2501,26 @@ pub fn apri_guida(ancora: String) -> Esito<()> {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// R18-3: una cartella aggiunta si deve leggere, e le sole da leggere sono
+    /// quelle che non c'erano. Una grafia diversa della stessa cartella non è
+    /// nuova (sul computer il confronto ignora maiuscole e barre finali), e
+    /// togliere una cartella non chiede niente.
+    #[test]
+    fn le_radici_nuove_sono_quelle_che_non_c_erano() {
+        let prima = vec![r"D:\Musica".to_owned(), r"\\nas\dischi".to_owned()];
+        let dopo = vec![
+            r"D:\Musica".to_owned(),
+            r"\\nas\dischi".to_owned(),
+            r"E:\Nuova".to_owned(),
+        ];
+        assert_eq!(radici_nuove(&prima, &dopo), vec![r"E:\Nuova".to_owned()]);
+        assert!(radici_nuove(&prima, &prima[..1]).is_empty());
+        assert!(radici_nuove(&[], &[]).is_empty());
+        if cfg!(windows) {
+            assert!(radici_nuove(&prima, &[r"d:\musica\".to_owned()]).is_empty());
+        }
+    }
 
     /// Tutti i nomi che la finestra scrive a mano, in un posto solo.
     const TUTTI: &[&str] = &[
