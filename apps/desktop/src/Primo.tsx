@@ -421,8 +421,12 @@ export function Primo({
             >
               {t("primo.altra")}
             </button>
+            {/* «Lo faccio dopo» finché c'è qualcosa da rimandare; con i brani
+                già pronti la libreria c'è, e l'uscita è soltanto «Chiudi»: la
+                stessa frase avrebbe fatto credere di saltare la lettura appena
+                fatta (R18-18). */}
             <button type="button" className="bottone minuto" onClick={onSalta}>
-              {t("primo.salta")}
+              {brani > 0 ? t("common.close") : t("primo.salta")}
             </button>
           </div>
         </div>

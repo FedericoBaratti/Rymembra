@@ -59,3 +59,10 @@ test("il primo avvio parla da una regione sempre montata, e dice i passaggi, non
   assert.doesNotMatch(regola, /\{ n:/, "il conto non si annuncia");
   assert.match(primo, /<Annuncio testo=\{daDire\} \/>/);
 });
+
+test("con i brani già pronti l'uscita del primo avvio dice «Chiudi», non «Lo faccio dopo»", () => {
+  // R18-18 (la parte del primo avvio): dopo «13 brani pronti» l'uscita
+  // secondaria diceva ancora «Lo faccio dopo», come se si saltasse la lettura.
+  const primo = readFileSync(new URL("../src/Primo.tsx", import.meta.url), "utf8");
+  assert.match(primo, /\{brani > 0 \? t\("common\.close"\) : t\("primo\.salta"\)\}/);
+});
