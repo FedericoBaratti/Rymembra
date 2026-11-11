@@ -14,11 +14,20 @@ import { nomeDiFile } from "../src/nomeDiFile";
 test("il nome proposto non ha caratteri vietati da Windows", () => {
   assert.equal(nomeDiFile("AC/DC"), "AC-DC");
   assert.equal(nomeDiFile("Live: 2024?"), "Live- 2024-");
-  const brutto = nomeDiFile('a\b/c:d*e?f"g<h>i|j');
+  // `\\b` e non `\b`: fra apici `\b` è il carattere di controllo backspace, e
+  // la prova passava anche con la barra rovesciata fuori dall'elenco (R13d-3).
+  const brutto = nomeDiFile('a\\b/c:d*e?f"g<h>i|j');
   for (const vietato of ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]) {
     assert.ok(!brutto.includes(vietato), vietato);
   }
   assert.ok(brutto.includes("a") && brutto.includes("j"));
+});
+
+test("la_barra_rovesciata_diventa_un_trattino", () => {
+  // R13d-3. «AC\DC» proponeva `AC\DC.m3u8`, che il dialogo divide in cartella
+  // «AC» e nome «DC.m3u8»: il difetto che il modulo dichiarava chiuso per
+  // «AC/DC».
+  assert.equal(nomeDiFile("AC\\DC"), "AC-DC");
 });
 
 test("niente caratteri di controllo, punti e spazi in coda", () => {
