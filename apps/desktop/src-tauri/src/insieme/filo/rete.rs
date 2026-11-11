@@ -181,7 +181,19 @@ impl Filo {
             DallaRete::Trovato {
                 indirizzo,
                 impronta,
-            } => self.vicinato.trovato(Dove::Lan(indirizzo), impronta, ora()),
+            } => {
+                self.vicinato.trovato(Dove::Lan(indirizzo), impronta, ora());
+                // L'ultimo indirizzo su cui un fidato ha dimostrato la chiave,
+                // anche in un'altra accensione: vale come verificato. Vedi
+                // `Vicinato::ricordato` (reperto R26-1).
+                if let Some(ricordato) = self
+                    .fidati
+                    .per_impronta(&impronta)
+                    .and_then(|p| self.ricordati.get(&p.chiave))
+                {
+                    self.vicinato.ricordato(impronta, Dove::Lan(*ricordato));
+                }
+            }
             DallaRete::Aperta {
                 id,
                 pari,

@@ -218,7 +218,25 @@ pub struct Vicino {
     pub codice_detto: Option<ErrorCodeKind>,
     /// Le cadute di fila non scritte nel diario, perché uguali a quella prima.
     pub taciute: u32,
+    /// Gli altri indirizzi a cui la scoperta l'ha visto di recente, il più
+    /// nuovo in fondo: al più [`MASSIMO_CANDIDATI`]. Vedi «Più risposte per
+    /// la stessa impronta» in [`Vicinato::chiusa`].
+    pub candidati: Vec<Dove>,
+    /// Gli indirizzi su cui una connessione si è chiusa senza aprirsi, cioè
+    /// senza dimostrare la chiave: fino a quando non riprovarli. Il
+    /// verificato non ci finisce mai.
+    pub scartati: Vec<(Dove, u64)>,
 }
+
+/// Quanti indirizzi per impronta si tengono da un giro all'altro. Più di
+/// quanti la scoperta ne annuncia da un solo indirizzo d'origine in un giro
+/// (`rymembra_insieme`, `PER_ORIGINE`): chi risponde da solo con l'impronta di
+/// un altro non riesce a spingere fuori quello vero.
+pub const MASSIMO_CANDIDATI: usize = 4;
+
+/// Per quanto un indirizzo che non ha dimostrato la chiave non si riprova, a
+/// meno che non resti l'unico: un minuto.
+pub const SCARTATO_PER_MS: u64 = 60_000;
 
 /// I vicini: vedi il `//!`.
 #[derive(Debug, Default)]
@@ -248,6 +266,12 @@ impl Vicinato {
     }
 
     /// La scoperta l'ha visto a quell'indirizzo.
+    ///
+    /// L'indirizzo da provare diventa questo, se è nuovo — tranne quando la
+    /// connessione è già aperta (la stretta ha appena dimostrato dov'è la
+    /// chiave) e quando questo indirizzo ha già chiuso senza dimostrarla
+    /// (vedi [`Vicinato::chiusa`]). In tutti e due i casi resta fra i
+    /// candidati.
     pub fn trovato(&mut self, indirizzo: Dove, impronta: Impronta, adesso: u64) {
         let vicino = self
             .vicini
@@ -264,15 +288,48 @@ impl Vicinato {
                 verificato: None,
                 codice_detto: None,
                 taciute: 0,
+                candidati: Vec::new(),
+                scartati: Vec::new(),
             });
+        vicino.scartati.retain(|(_, fino)| *fino > adesso);
+        let scartato = vicino.scartati.iter().any(|(dove, _)| *dove == indirizzo);
+        if !scartato {
+            // Uno scartato non prende il posto di uno che può ancora essere
+            // quello vero: chi risponde con l'impronta di un altro non deve
+            // poter riempire i candidati di indirizzi già provati.
+            vicino.candidati.retain(|dove| *dove != indirizzo);
+            vicino.candidati.push(indirizzo.clone());
+            if vicino.candidati.len() > MASSIMO_CANDIDATI {
+                vicino.candidati.remove(0);
+            }
+        }
+        let era_visto = vicino.visto.is_some();
+        vicino.visto = Some(adesso);
+        if vicino.aperta || scartato {
+            return;
+        }
         // Rivisto dopo un'assenza, o visto a un indirizzo nuovo (scritto a
         // mano adesso, o il PC ha cambiato rete): si riprova subito,
         // l'attesa crescente era per un PC che a quell'indirizzo non c'era.
-        if vicino.conn.is_none() && (vicino.visto.is_none() || vicino.indirizzo != indirizzo) {
+        if vicino.conn.is_none() && (!era_visto || vicino.indirizzo != indirizzo) {
             vicino.non_prima = adesso;
         }
         vicino.indirizzo = indirizzo;
-        vicino.visto = Some(adesso);
+    }
+
+    /// Un indirizzo su cui questo PC ha già visto la chiave di quel vicino in
+    /// un'altra accensione: l'ultimo di un fidato, che la libreria ricorda
+    /// (`rymembra_app::insieme::ricorda_indirizzo`). Vale come verificato
+    /// finché una stretta non ne verifica uno da sé: spegnere la rete svuota
+    /// il vicinato, e senza questo, alla prima risposta falsa dopo un avvio,
+    /// non c'era nessun indirizzo buono a cui tornare.
+    pub fn ricordato(&mut self, impronta: Impronta, indirizzo: Dove) {
+        if let Some(v) = self.vicini.get_mut(&ImprontaOrdinata(impronta.0))
+            && v.verificato.is_none()
+        {
+            v.scartati.retain(|(dove, _)| *dove != indirizzo);
+            v.verificato = Some(indirizzo);
+        }
     }
 
     /// I vicini a cui aprire adesso una connessione: non collegati, non
@@ -360,6 +417,9 @@ impl Vicinato {
         v.aperta = true;
         v.cadute = 0;
         v.verificato = v.tentato.clone();
+        if let Some(verificato) = &v.verificato {
+            v.scartati.retain(|(dove, _)| dove != verificato);
+        }
         v.nome = Some(nome.to_owned());
         v.codice_detto = None;
         std::mem::take(&mut v.taciute)
@@ -378,6 +438,21 @@ impl Vicinato {
     /// codice cambia; le altre si contano, e quando il vicino torna lo dice
     /// [`Vicinato::aperta`]. Una connessione che si era aperta, e una che non
     /// è di un vicino, si scrivono sempre.
+    ///
+    /// # Più risposte per la stessa impronta
+    ///
+    /// La risposta della scoperta la può scrivere chiunque sia sulla rete, con
+    /// l'impronta che vuole (vedi il `//!` di `rymembra_insieme::scoperta`): a
+    /// vincere era l'ultima arrivata, e un dispositivo che rispondeva qualche
+    /// millisecondo dopo l'host vero, con la sua impronta e un indirizzo
+    /// falso, faceva provare solo il falso — e, prima di una stretta riuscita,
+    /// aspettare cinque secondi e ricominciare, a ogni giro (reperto R26-1).
+    /// Adesso un indirizzo che chiude senza aprirsi si mette da parte per
+    /// [`SCARTATO_PER_MS`], e si prova **subito**, senza contare una caduta,
+    /// il prossimo buono: quello verificato, se c'è, se no il più recente dei
+    /// candidati del giro. Si aspetta, e si conta la caduta, quando non ce
+    /// n'è un altro, o quando a non aprirsi è stato proprio il verificato: lì
+    /// il vicino è spento, non nascosto.
     pub fn chiusa(
         &mut self,
         conn: IdConnessione,
@@ -400,6 +475,19 @@ impl Vicinato {
         v.conn = None;
         v.aperta = false;
         let tentato = v.tentato.take();
+        // Non si è aperta: quell'indirizzo non ha dimostrato la chiave. Il
+        // verificato no: lì la chiave c'era, e se adesso non risponde è il
+        // vicino che è spento.
+        let verificato_caduto = tentato.is_some() && tentato == v.verificato;
+        if !era_aperta
+            && !verificato_caduto
+            && let Some(tentato) = &tentato
+        {
+            v.scartati.retain(|(dove, _)| dove != tentato);
+            v.scartati
+                .push((tentato.clone(), adesso.saturating_add(SCARTATO_PER_MS)));
+        }
+        let scartato = |v: &Vicino, dove: &Dove| v.scartati.iter().any(|(d, _)| d == dove);
         // Una connessione verso un indirizzo che intanto è cambiato (uno
         // scritto a mano adesso, la scoperta che l'ha trovato altrove): la sua
         // caduta non dice niente del vicino, si prova subito quello nuovo.
@@ -408,23 +496,30 @@ impl Vicinato {
         if tentato
             .as_ref()
             .is_some_and(|tentato| *tentato != v.indirizzo)
+            && !scartato(v, &v.indirizzo)
         {
             v.non_prima = adesso;
             return da_dire;
         }
-        // Un indirizzo che non si è mai aperto, diverso da quello su cui la
-        // stretta si è già aperta una volta: subito quello verificato. La
-        // scoperta dà ragione all'ultima risposta, e la può scrivere chiunque
-        // con l'impronta di un fidato: prima una risposta falsa dopo quella
-        // vera bastava a far riprovare solo indirizzi falsi. Se poi non si
-        // apre nemmeno il verificato, l'attesa cresce come sempre.
-        if !era_aperta
-            && let (Some(tentato), Some(verificato)) = (tentato, v.verificato.clone())
-            && tentato != verificato
-        {
-            v.indirizzo = verificato;
-            v.non_prima = adesso;
-            return da_dire;
+        // Non si è aperta, e non era il verificato: subito il prossimo buono.
+        // Vedi «Più risposte per la stessa impronta».
+        if !era_aperta && !verificato_caduto {
+            let prossimo = v
+                .verificato
+                .clone()
+                .filter(|verificato| Some(verificato) != tentato.as_ref())
+                .or_else(|| {
+                    v.candidati
+                        .iter()
+                        .rev()
+                        .find(|dove| Some(*dove) != tentato.as_ref() && !scartato(v, dove))
+                        .cloned()
+                });
+            if let Some(prossimo) = prossimo {
+                v.indirizzo = prossimo;
+                v.non_prima = adesso;
+                return da_dire;
+            }
         }
         v.cadute = v.cadute.saturating_add(1);
         v.non_prima = adesso.saturating_add(attesa_dopo(v.cadute));
@@ -915,6 +1010,95 @@ mod prove {
         v.collegando(anna, IdConnessione(3));
         v.chiusa(IdConnessione(3), 2_200, irraggiungibile);
         assert!(v.da_collegare(2_200, mia, &fidati).is_empty());
+    }
+
+    /// Reperto R26-1: prima di una stretta riuscita non c'è un indirizzo
+    /// verificato, e una risposta falsa con l'impronta di Anna arrivata
+    /// qualche millisecondo dopo quella vera la sostituiva. Fallita la prova
+    /// sul falso si aspettavano cinque secondi, e al giro dopo lo stesso: Anna
+    /// non si collegava mai. Vale per un fidato e per un estraneo.
+    #[test]
+    fn una_risposta_falsa_dopo_quella_vera_non_toglie_il_primo_collegamento() {
+        let mia = Impronta([9; 8]);
+        let anna = ChiavePubblica([1; 32]).impronta();
+        let irraggiungibile = Some(ErrorCodeKind::InsiemeIrraggiungibile);
+        for fidati in [Fidati::da(vec![pari(1, 1, false)]), Fidati::da(vec![])] {
+            let mut v = Vicinato::default();
+            v.trovato(addr(1), anna, 0); // la vera
+            v.trovato(addr(2), anna, 5); // la falsa, subito dopo
+            assert_eq!(v.da_collegare(1_000, mia, &fidati), vec![(anna, addr(2))]);
+            v.collegando(anna, IdConnessione(1));
+            v.chiusa(IdConnessione(1), 1_100, irraggiungibile);
+            assert_eq!(
+                v.da_collegare(1_100, mia, &fidati),
+                vec![(anna, addr(1))],
+                "subito l'altro indirizzo del giro, senza contare una caduta"
+            );
+            // Il giro dopo si ripete identico: il falso non torna in testa.
+            v.collegando(anna, IdConnessione(2));
+            v.trovato(addr(1), anna, 10_000);
+            v.trovato(addr(2), anna, 10_005);
+            let _ = v.aperta(IdConnessione(2), "Anna");
+            v.chiusa(IdConnessione(2), 20_000, None);
+            v.trovato(addr(1), anna, 20_000);
+            v.trovato(addr(2), anna, 20_005);
+            assert!(
+                v.da_collegare(30_000, mia, &fidati)
+                    .iter()
+                    .all(|(_, dove)| *dove == addr(1)),
+                "il falso non ha dimostrato la chiave: per un minuto non si riprova"
+            );
+        }
+        // Senza nessuna stretta riuscita, il giro dopo: entro due prove c'è
+        // quello vero.
+        let fidati = Fidati::da(vec![]);
+        let mut v = Vicinato::default();
+        let mut provati = Vec::new();
+        for giro in 0..2_u64 {
+            let t = giro * 10_000;
+            v.trovato(addr(1), anna, t);
+            v.trovato(addr(2), anna, t + 5);
+            for (n, (_, dove)) in v
+                .da_collegare(t + 1_000, mia, &fidati)
+                .into_iter()
+                .enumerate()
+            {
+                provati.push(dove);
+                let id = IdConnessione(giro * 10 + u64::try_from(n).unwrap_or(0));
+                v.collegando(anna, id);
+                v.chiusa(id, t + 1_100, irraggiungibile);
+            }
+            if let Some((_, dove)) = v.da_collegare(t + 1_100, mia, &fidati).first() {
+                provati.push(dove.clone());
+            }
+        }
+        assert!(
+            provati.iter().take(2).any(|d| *d == addr(1)),
+            "entro due prove l'indirizzo vero: {provati:?}"
+        );
+    }
+
+    /// Un indirizzo che non ha dimostrato la chiave non occupa i posti dei
+    /// candidati, e quello verificato non si mette mai da parte.
+    #[test]
+    fn i_candidati_non_si_riempiono_di_falsi_e_il_verificato_resta() {
+        let mia = Impronta([9; 8]);
+        let anna = ChiavePubblica([1; 32]).impronta();
+        let fidati = Fidati::da(vec![pari(1, 1, false)]);
+        let irraggiungibile = Some(ErrorCodeKind::InsiemeIrraggiungibile);
+        let mut v = Vicinato::default();
+        v.trovato(addr(1), anna, 0);
+        v.collegando(anna, IdConnessione(1));
+        let _ = v.aperta(IdConnessione(1), "Anna");
+        // Con la connessione aperta una risposta nuova non tocca l'indirizzo.
+        v.trovato(addr(7), anna, 100);
+        v.chiusa(IdConnessione(1), 1_000, None);
+        assert_eq!(v.da_collegare(6_000, mia, &fidati), vec![(anna, addr(1))]);
+        // Il verificato che non risponde: si aspetta, e resta il primo.
+        v.collegando(anna, IdConnessione(2));
+        v.chiusa(IdConnessione(2), 6_000, irraggiungibile);
+        assert!(v.da_collegare(6_000, mia, &fidati).is_empty());
+        assert_eq!(v.da_collegare(16_000, mia, &fidati), vec![(anna, addr(1))]);
     }
 
     #[test]
