@@ -213,7 +213,7 @@ export const Lettore = memo(function Lettore({
           type="button"
           className="tasto icon-btn"
           aria-pressed={stato.muto}
-          aria-label={stato.muto ? t("player.unmute") : t("player.mute")}
+          aria-label={t("player.muted")}
           title={stato.muto ? t("player.unmute.short") : t("player.mute")}
           /* Le due frecce valgono il volume: è l'unica via che resta quando il
              cursore accanto si ritira, e dichiararla è il solo modo perché chi

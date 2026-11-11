@@ -85,8 +85,13 @@ export const Giudizio = memo(function Giudizio({
         <button
           type="button"
           className="cuore icon-btn heart"
+          // Un nome fisso e lo stato in `aria-pressed`: col nome che cambiava
+          // («Aggiungi ai preferiti» / «Togli dai preferiti») lo stato si
+          // diceva due volte, e le due cose si contraddicevano — «Togli dai
+          // preferiti, premuto». `aria-pressed` resta: lo guardano il foglio e
+          // lo stato «checked» delle skin. Lo stesso per il muto qui sotto.
           aria-pressed={brano.liked}
-          aria-label={brano.liked ? t("track.unlike") : t("track.like")}
+          aria-label={t("track.favorite")}
           onClick={() => onPreferito(brano)}
         >
           <Icona
@@ -106,7 +111,7 @@ export const Giudizio = memo(function Giudizio({
           type="button"
           className="tasto icon-btn"
           aria-pressed={stato.muto}
-          aria-label={stato.muto ? t("player.unmute") : t("player.mute")}
+          aria-label={t("player.muted")}
           onClick={() => comanda(ipc.volume(stato.volume, !stato.muto))}
         >
           <Icona

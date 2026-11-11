@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   apriModale,
+  cosaFaLaX,
   daRendereInerti,
   fuocoDopoTab,
   fuocoIniziale,
@@ -171,11 +172,26 @@ interface Finto extends NodoDiAlbero {
   readonly nome: string;
   parentElement: Finto | null;
   children: Finto[];
+  attributi: Set<string>;
+  inert?: boolean;
 }
 
 function nodo(nome: string, tagName = "DIV", ...figli: Finto[]): Finto {
-  const n: Finto = { nome, tagName, parentElement: null, children: figli };
+  const n: Finto = {
+    nome,
+    tagName,
+    parentElement: null,
+    children: figli,
+    hasAttribute: (attributo) => n.attributi.has(attributo),
+    attributi: new Set<string>(),
+  };
   for (const figlio of figli) figlio.parentElement = n;
+  return n;
+}
+
+/** Lo stesso nodo, con un attributo addosso. */
+function con(attributo: string, n: Finto): Finto {
+  n.attributi.add(attributo);
   return n;
 }
 
@@ -211,6 +227,54 @@ test("un velo dentro una pagina rende inerte anche il resto della pagina", () =>
   assert.ok(!inerti.includes("dentro"), "un antenato del velo non si spegne");
 });
 
+test("i_controlli_della_finestra_non_diventano_inerti", () => {
+  // R13d-1. `main.tsx` monta la barra del titolo accanto all'applicazione,
+  // sotto `#radice`: la salita la trovava fra i fratelli e la spegneva, e il
+  // clic sulla × cadeva sul velo, che chiudeva la domanda o non faceva niente.
+  const velo = nodo("velo");
+  const app = nodo("app", "DIV", nodo("pagina"), velo);
+  const controlli = con("data-sempre-vivo", nodo("controlli"));
+  const radice = nodo("radice", "DIV", app, controlli);
+  nodo("body", "BODY", radice);
+
+  const inerti = daRendereInerti(velo).map((n) => n.nome);
+  assert.deepEqual(inerti, ["pagina"]);
+});
+
+test("una regione d'annuncio non diventa inerte", () => {
+  // R16-4. Le regioni vive sono solo testo: spente, una notizia arrivata con
+  // una finestrella aperta non si sentiva, né allora né dopo.
+  const velo = nodo("velo");
+  const app = nodo("app", "DIV", nodo("pagina"), velo, con("data-annuncio", nodo("scansione")));
+  const radice = nodo(
+    "radice",
+    "DIV",
+    app,
+    con("data-annuncio", nodo("notizie")),
+    nodo("studio"),
+  );
+  nodo("body", "BODY", radice);
+
+  const inerti = daRendereInerti(velo).map((n) => n.nome);
+  assert.deepEqual(inerti, ["pagina", "studio"]);
+});
+
+// ── la × della finestra ────────────────────────────────────────────────────
+
+test("la × con una domanda aperta chiude la domanda, che vale come no", () => {
+  // D-41: «X vuole collegarsi» aperta, clic sulla ×. Prima la domanda.
+  assert.equal(cosaFaLaX({ domanda: true, chiudibile: true }), "rispondiNo");
+});
+
+test("la × chiude la finestra quando in cima non c'è una domanda da chiudere", () => {
+  assert.equal(cosaFaLaX(null), "chiudiLaFinestra", "niente aperto");
+  // Una domanda che sta scrivendo non si chiude a metà: la finestra sì, come
+  // con Alt+F4, e il nucleo decide fra vassoio e uscita.
+  assert.equal(cosaFaLaX({ domanda: true, chiudibile: false }), "chiudiLaFinestra");
+  // Il primo avvio non è una domanda: la × non lo salta.
+  assert.equal(cosaFaLaX({ domanda: false, chiudibile: true }), "chiudiLaFinestra");
+});
+
 // ── una risposta sola ──────────────────────────────────────────────────────
 
 test("una conferma risponde una volta sola", () => {
@@ -231,4 +295,29 @@ test("ogni finestrella ha la sua risposta", () => {
   assert.equal(prima(), true);
   assert.equal(dopo(), true);
   assert.equal(prima(), false);
+});
+
+test("un velo già sepolto sotto un inerte d'altri non spegne niente", () => {
+  // R13-1. Una conferma montata dentro `.finestra-app` mentre lo Studio la
+  // rende inerte non si vede: spegnere anche Studio e tasti della finestra
+  // voleva dire congelare tutto per una domanda che nessuno poteva leggere.
+  const velo = nodo("velo");
+  const app = nodo("app", "DIV", nodo("pagina"), velo);
+  app.inert = true;
+  const radice = nodo("radice", "DIV", app, nodo("studio"), nodo("barra"));
+  nodo("body", "BODY", radice);
+
+  assert.deepEqual(daRendereInerti(velo), []);
+});
+
+test("un velo col pannello accanto lascia vivo il pannello", () => {
+  // R16-3. Il foglio del menù del telefono ha il velo e il pannello fratelli:
+  // tutto il resto si spegne, il pannello no.
+  const velo = nodo("velo");
+  const pannello = nodo("pannello");
+  const app = nodo("app", "DIV", nodo("pagina"), velo, pannello);
+  nodo("radice", "DIV", app, nodo("studio"));
+
+  const inerti = daRendereInerti(velo, [pannello]).map((n) => n.nome);
+  assert.deepEqual(inerti, ["pagina", "studio"]);
 });

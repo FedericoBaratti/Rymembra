@@ -14,11 +14,12 @@
  * suo effetto, dopo la skin e l'aspetto: l'ordine in cui si registrano è
  * quello di prima.
  */
-import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { ipc, type Avanzamento } from "./ipc";
 import type { Libreria } from "./libreria";
 import { useAscolto } from "./pagine";
+import { eventiEFotografia } from "./ultima";
 
 /** Le due maniglie della scansione per chi ne chiede una. */
 export interface AvanzamentoScansione {
@@ -58,7 +59,14 @@ export function useAvanzamentoScansione(libreria: Libreria): AvanzamentoScansion
     },
     [libreria],
   );
+  /**
+   * Gli eventi contro la fotografia dell'apertura (`eventiEFotografia`, in
+   * `ultima.ts`): la fotografia si adotta solo se nel frattempo non è
+   * arrivato né un avanzamento né la fine. Vedi in fondo.
+   */
+  const [conto] = useState(eventiEFotografia);
   useAscolto<Avanzamento>("scansione:avanzamento", (carico) => {
+    conto.evento();
     const r = strozzaScansione.current;
     r.valore = carico;
     const passato = performance.now() - r.ultimo;
@@ -87,18 +95,36 @@ export function useAvanzamentoScansione(libreria: Libreria): AvanzamentoScansion
    * che la prima non sia più di nessuno.
    */
   const scansioniMie = useRef(0);
-  useEffect(() => {
-    ipc
-      .scansioneAvanzamento()
-      .then((adesso) => {
-        if (scansioniMie.current === 0) posaScansione(adesso);
-      })
-      // Senza risposta resta quel che dicono gli eventi: è com'era prima.
-      .catch(() => undefined);
-  }, [posaScansione]);
-  useAscolto("scansione:finita", () => {
-    if (scansioniMie.current === 0) posaScansione(null);
-  });
+  /*
+   * La fotografia dell'apertura, **dopo** che l'ascolto della fine è aperto
+   * (`poi`), e adottata solo se nel frattempo non è arrivato nessun evento.
+   *
+   * Si chiedeva in un effetto al montaggio, prima dell'ascolto e senza turno:
+   * una finestra ricaricata mentre una scansione finiva chiedeva com'era con
+   * la scansione ancora in corso, e `scansione:finita` arrivava prima che
+   * l'ascolto ci fosse (e si perdeva) o prima della risposta (che, più
+   * vecchia, la ricopriva). La barra restava «in corso» per sempre,
+   * «Scansiona» spento nelle Impostazioni, e «Annulla» del toast non la
+   * toglieva: non c'era più una scansione da annullare.
+   */
+  useAscolto(
+    "scansione:finita",
+    () => {
+      conto.evento();
+      if (scansioniMie.current === 0) posaScansione(null);
+    },
+    true,
+    () => {
+      const valida = conto.chiedi();
+      ipc
+        .scansioneAvanzamento()
+        .then((adesso) => {
+          if (valida() && scansioniMie.current === 0) posaScansione(adesso);
+        })
+        // Senza risposta resta quel che dicono gli eventi: è com'era prima.
+        .catch(() => undefined);
+    },
+  );
 
   return { posaScansione, scansioniMie };
 }

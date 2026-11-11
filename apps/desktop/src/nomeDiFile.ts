@@ -15,8 +15,14 @@
  * Puro e senza lingue: `test/nomeDiFile.test.ts` lo prova con `node --test`.
  */
 
-/** I caratteri che Windows non accetta in un nome di file. */
-const VIETATI = /[\/:*?"<>|]/g;
+/**
+ * I caratteri che Windows non accetta in un nome di file.
+ *
+ * `\\` per la barra rovesciata e `/` per quella dritta: `\/` da solo è la barra
+ * dritta scappata, e la rovesciata era rimasta fuori dalla classe — «AC\DC»
+ * proponeva la cartella «AC» e il nome «DC.m3u8».
+ */
+const VIETATI = /[\\/:*?"<>|]/g;
 
 /** I nomi che Windows riserva ai dispositivi, con o senza estensione. */
 const RISERVATI = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;

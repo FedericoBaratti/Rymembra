@@ -54,7 +54,7 @@ export function AnnuncioScansione({ scansione }: { scansione: Avanzamento | null
   }, [stato]);
 
   return (
-    <div className="solo-lettori" role="status">
+    <div className="solo-lettori" role="status" data-annuncio="">
       {testo}
     </div>
   );

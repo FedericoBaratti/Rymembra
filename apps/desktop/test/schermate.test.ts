@@ -31,3 +31,51 @@ test("Impostazioni, ricerca: Invio fa quel che fa il clic, scheda compresa", () 
   const apri = impostazioni.slice(impostazioni.indexOf("const apriVoce"));
   assert.match(apri.slice(0, apri.indexOf("};")), /vaiAllaScheda\(t\(v\.scheda\)\)/);
 });
+
+test("il posto del contenuto è il punto di riferimento main della finestra", () => {
+  // R16-10: axe `landmark-one-main` su tutte le schermate. Lo scafale
+  // disegnava `nav`, `aside` e `header`, mai `main`.
+  const impaginazione = sorgente("Impaginazione.tsx");
+  assert.match(
+    impaginazione,
+    /const Involucro = nodo\.name === "content" && ctx\.stato === undefined \? "main" : "div";/,
+  );
+  assert.match(impaginazione, /<Involucro className=\{classi\(nodo\)\} data-nodo=\{nodo\.at\}>/);
+});
+
+test("cuore e muto: nome fisso e stato in aria-pressed, mai tutti e due che cambiano", () => {
+  // R16-11. «Togli dai preferiti, premuto»: lo stato detto due volte, in due
+  // modi che si contraddicono.
+  for (const file of ["parti/Giudizio.tsx", "parti/Ora.tsx", "Lettore.tsx", "schermate/InRiproduzioneTelefono.tsx"]) {
+    const testo = sorgente(file);
+    assert.doesNotMatch(testo, /aria-label=\{brano\.liked \?/, file);
+    assert.doesNotMatch(testo, /aria-label=\{stato\.muto \?/, file);
+  }
+  assert.match(sorgente("parti/Giudizio.tsx"), /aria-pressed=\{brano\.liked\}\s+aria-label=\{t\("track\.favorite"\)\}/);
+  assert.match(sorgente("parti/Giudizio.tsx"), /aria-pressed=\{stato\.muto\}\s+aria-label=\{t\("player\.muted"\)\}/);
+});
+
+test("trasporto spento in sessione: raggiungibile, con la ragione detta", () => {
+  // R16-11. `disabled` + `title`: il tasto non prendeva il fuoco e la
+  // ragione stava solo nel suggerimento, per chi ha il puntatore.
+  const trasporto = sorgente("parti/Trasporto.tsx");
+  assert.doesNotMatch(trasporto, /\sdisabled=\{/);
+  assert.equal([...trasporto.matchAll(/aria-disabled=\{!(trasporto|mescola) \|\| undefined\}/g)].length, 5);
+  assert.equal([...trasporto.matchAll(/aria-describedby=\{(trasporto|mescola) \? undefined : id(Spento|SenzaCasuale)\}/g)].length, 5);
+  // Premuto da spento non fa niente.
+  assert.equal([...trasporto.matchAll(/onClick=\{seAcceso\((trasporto|mescola), ipc\.\w+\)\}/g)].length, 5);
+});
+
+test("prima di sapere se è il primo avvio la Home non dice «Riprendi da dove eri rimasto»", () => {
+  // R18-14. Sul telefono, a `pm clear`, la prima schermata per qualche
+  // secondo era «Your library / Pick up where you left off» con lo scheletro,
+  // prima del benvenuto.
+  const app = sorgente("App.tsx");
+  assert.match(
+    app,
+    /const testaDellaHome = avvio === null \? \{ titolo: t\("list\.loading"\) \} : testaHome\(\);/,
+  );
+  assert.match(app, /<BarraAlta grande \{\.\.\.testaDellaHome\} azioni=\{cerca\} \/>/);
+  assert.match(app, /<Intestazione \{\.\.\.testaDellaHome\} query=\{query\} onQuery=\{setQuery\} \/>/);
+  assert.doesNotMatch(app, /titolo=\{t\("home\.title"\)\}/);
+});

@@ -67,7 +67,7 @@ export const Ora = memo(function Ora({
           type="button"
           className="cuore icon-btn heart"
           aria-pressed={brano.liked}
-          aria-label={brano.liked ? t("track.unlike") : t("track.like")}
+          aria-label={t("track.favorite")}
           onClick={() => onPreferito(brano)}
         >
           <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={17} />

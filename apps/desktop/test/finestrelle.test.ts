@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 /*
  * Prove sui sorgenti delle finestrelle, dove la regola sta nel cablaggio e non
@@ -83,4 +83,118 @@ test("Elimina dal disco: un doppio clic, o Escape e poi «Elimina», non rispond
   const aperture = [...app.matchAll(/setDaEliminare\(\{[^}]*\}\)/g)].map((m) => m[0]);
   assert.equal(aperture.length, 3, aperture.join("\n"));
   for (const apertura of aperture) assert.match(apertura, /risposta: unaVolta\(\)/);
+});
+
+test("i tasti della finestra non diventano mai inerti, e la × chiude prima la domanda", () => {
+  // R13d-1 e D-41. Il marchio sta sul contenitore dei tre tasti, quello che
+  // `main.tsx` monta accanto all'applicazione.
+  const barra = sorgente("parti/BarraTitolo.tsx");
+  assert.match(barra, /<div className="controlli-finestra window-controls"[^>]*data-sempre-vivo/);
+  // La × chiede prima alla finestrella in cima, e chiude la finestra solo se
+  // lei non c'era o non era una domanda da chiudere.
+  const chiudi = barra.slice(barra.indexOf("onChiudi={() =>"));
+  const corpo = chiudi.slice(0, chiudi.indexOf("\n      />"));
+  assert.ok(
+    corpo.indexOf("rispondiNoAllaDomandaInCima()") >= 0 &&
+      corpo.indexOf("rispondiNoAllaDomandaInCima()") < corpo.indexOf("finestraChiudi()"),
+    corpo,
+  );
+  // E la regola è quella di `modale.ts`, letta sulla finestrella in cima.
+  const finestrella = sorgente("finestrella.ts");
+  const risposta = finestrella.slice(finestrella.indexOf("export function rispondiNoAllaDomandaInCima"));
+  assert.match(risposta.slice(0, risposta.indexOf("\n}\n")), /cosaFaLaX\(/);
+  // Di serie ogni finestrella è una domanda che si chiude come con Escape;
+  // `Dialogo` dice se adesso si può, e il primo avvio non è una domanda.
+  assert.match(finestrella, /domanda: \{ chiudibile: boolean \} \| "nonEUnaDomanda" = \{ chiudibile: true \}/);
+  assert.match(sorgente("Dialogo.tsx"), /useFinestrella<HTMLElement>\([^;]*\{ chiudibile \}\)/);
+  assert.match(sorgente("Primo.tsx"), /useFinestrella<HTMLDivElement>\(onSalta, "nonEUnaDomanda"\)/);
+});
+
+test("le regioni d'annuncio portano il loro marchio, e restano vive sotto un velo", () => {
+  // R16-4: `daRendereInerti` salta `data-annuncio`.
+  for (const file of ["parti/Annuncio.tsx", "parti/AnnuncioScansione.tsx"]) {
+    assert.match(sorgente(file), /className="solo-lettori" role="status" data-annuncio/, file);
+  }
+});
+
+test("ogni superficie aria-modal rende inerte il resto della finestra", () => {
+  // R16-3: `aria-modal` è un suggerimento, e WebView2 e la WebView di Android
+  // lasciano leggibile e attivabile la pagina dietro. La regola sta in
+  // `useVeloInerte`, o in `Dialogo` che la chiama.
+  const DA_FARE: Record<string, string> = {
+    // Di altri gruppi della revisione: la correzione è la stessa riga.
+    "Giro.tsx": "F08 (il giro)",
+    "parti/Equalizzatore.tsx": "F13",
+    "parti/Insieme.tsx": "F02 (il pannello della barra)",
+    // Rende inerte la pagina da sé, con `inerte` di `Impaginazione`.
+    "schermate/InRiproduzioneTelefono.tsx": "inerte di suo",
+  };
+  const file = [
+    "Account.tsx",
+    "Dialogo.tsx",
+    "Primo.tsx",
+    "Regole.tsx",
+    "Ripristino.tsx",
+    "Sincronizza.tsx",
+    "parti/Foglio.tsx",
+    "parti/SceltaTesto.tsx",
+    ...Object.keys(DA_FARE),
+  ];
+  // L'elenco è completo: ogni sorgente fuori dallo Studio che dichiara un
+  // modale ci sta (lo Studio disegna finestrelle finte sulla tela).
+  const tutti = readdirSync(new URL("../src/", import.meta.url), { recursive: true })
+    .map((p) => String(p).replace(/\\/g, "/"))
+    .filter((p) => p.endsWith(".tsx") && !p.startsWith("studio/"))
+    .filter((p) => sorgente(p).includes('aria-modal="true"'))
+    .sort();
+  assert.deepEqual(tutti, [...file].sort());
+  for (const nome of file) {
+    const testo = sorgente(nome);
+    assert.match(testo, /aria-modal="true"/, nome);
+    if (nome in DA_FARE) continue;
+    assert.match(testo, /useVeloInerte\(/, nome);
+  }
+  // Il primo avvio: la radice fa da velo, dopo `useFinestrella`.
+  const primo = sorgente("Primo.tsx");
+  assert.ok(
+    primo.indexOf("useVeloInerte(finestrella)") > primo.indexOf("useFinestrella<HTMLDivElement>("),
+    "Primo: useVeloInerte dopo useFinestrella",
+  );
+  // Il foglio: il pannello resta vivo accanto al suo velo, e chi aveva il
+  // fuoco si legge prima che la pagina diventi inerte.
+  const foglio = sorgente("parti/Foglio.tsx");
+  assert.match(foglio, /useVeloInerte\(velo, pannello\)/);
+  assert.ok(foglio.indexOf("chiAveva.current =") < foglio.indexOf("useVeloInerte(velo, pannello)"));
+});
+
+test("il menù del tasto destro si chiude quando si apre una finestrella", () => {
+  // R13d-4. Una finestrella arrivata da sola con un menù aperto lo rendeva
+  // inerte ma lo lasciava sopra il velo, col suo ascolto in cattura vivo:
+  // frecce, Inizio/Fine, Tab ed Escape della finestrella andavano al menù.
+  const menu = sorgente("Menu.tsx");
+  const popup = menu.slice(menu.indexOf("function MenuPopup("));
+  assert.match(popup, /quandoSiApreUnModale\(\(\) => chiudi\.current\(\)\)/);
+  // Non sulla tela dello Studio, dove il menù è un disegno.
+  const effetto = popup.slice(popup.lastIndexOf("useEffect(", popup.indexOf("quandoSiApreUnModale(")));
+  assert.match(effetto.slice(0, effetto.indexOf("quandoSiApreUnModale(")), /if \(anteprima\) return;/);
+});
+
+test("gli avvisi che nascono pieni parlano da una regione d'annuncio", () => {
+  // R13d-6. `role="status"` sul riquadro che compare insieme alla frase:
+  // NVDA e l'Assistente vocale spesso non lo dicono (vedi `Annuncio.tsx`).
+  const avvisi = sorgente("parti/Avvisi.tsx");
+  const avviso = avvisi.slice(avvisi.indexOf("export function Avviso("), avvisi.indexOf("export function AvvisoErrore("));
+  assert.doesNotMatch(avviso, /"status"/);
+  // Il blocco resta un `alert`, che si annuncia anche nascendo pieno.
+  assert.match(avviso, /role=\{livello === "blocco" \? "alert" : undefined\}/);
+  assert.match(avviso, /<Annuncio testo=\{detta\} \/>/);
+  // «Il suono si è spostato»: una regione sempre montata, e una copia sola
+  // che parla — la fascia; la terza colonna la mostra soltanto.
+  const audio = sorgente("parti/AvvisoAudio.tsx");
+  assert.doesNotMatch(audio, /role="status"/);
+  assert.match(audio, /dove === "fascia" && <Annuncio testo=\{daDire\} \/>/);
+  // Montata in ogni forma del riquadro, e anche quando non ce n'è nessuno.
+  assert.match(audio, /if \(spostato === null\) return <>\{annuncio\}<\/>;/);
+  // E l'allarme «non c'è audio» lo dice una copia sola anche lui.
+  assert.equal([...audio.matchAll(/role="alert"/g)].length, 1);
 });

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { ESTENSIONE_SKIN_PRECEDENTE } from "../src/eredita";
 import type { Trascinati } from "../src/ipc";
@@ -18,7 +19,7 @@ function lasciati(parte: Partial<Trascinati>): Trascinati {
   };
 }
 
-const normale: SituazioneTrascinati = { primoInAttesa: false, avviato: true };
+const normale: SituazioneTrascinati = { primoInAttesa: false, avviato: true, finestrellaSopra: false };
 
 test("una skin vince su tutto il resto", () => {
   const piano = pianoDeiTrascinati(
@@ -52,6 +53,7 @@ test("brani e cartelle insieme: tutti e due, e nessuna notizia di troppo", () =>
 test("col primo avvio che chiede, le cartelle vanno a lui", () => {
   const piano = pianoDeiTrascinati(lasciati({ cartelle: ["C:/M"] }), {
     primoInAttesa: true,
+    finestrellaSopra: false,
     avviato: true,
   });
   assert.equal(piano.tipo, "resto");
@@ -61,6 +63,7 @@ test("col primo avvio che chiede, le cartelle vanno a lui", () => {
 test("prima di `avvio` le cartelle non si sistemano, e si dice quel che resta", () => {
   const piano = pianoDeiTrascinati(lasciati({ cartelle: ["C:/M"], ignorati: 1 }), {
     primoInAttesa: false,
+    finestrellaSopra: false,
     avviato: false,
   });
   assert.deepEqual(piano, { tipo: "resto", brani: [], cartelle: null, notizia: "niente" });
@@ -83,4 +86,30 @@ test("una skin di prima si installa come una di adesso", () => {
     normale,
   );
   assert.deepEqual(piano, { tipo: "skin", percorso: vecchia });
+});
+
+test("con una finestrella aperta non si fa niente dietro il velo, e lo si dice", () => {
+  // R13d-8. Il trascinamento è un evento nativo, e `inert` non lo ferma: con
+  // «Elimina dal disco» aperto, una cartella lasciata cadere portava dietro il
+  // velo alle Impostazioni e partiva la scansione; dei brani cambiavano la coda.
+  const sopra = { ...normale, finestrellaSopra: true };
+  for (const parte of [
+    { cartelle: ["C:/M"] },
+    { brani: [1, 2] },
+    { skin: ["a.ryskin"] },
+    { playlist: ["b.m3u8"] },
+  ]) {
+    assert.deepEqual(pianoDeiTrascinati(lasciati(parte), sopra), { tipo: "fermo" }, JSON.stringify(parte));
+  }
+  // Il primo avvio non conta come finestrella sopra: le cartelle sono per lui.
+  const alPrimo = pianoDeiTrascinati(lasciati({ cartelle: ["C:/M"] }), {
+    primoInAttesa: true,
+    avviato: true,
+    finestrellaSopra: false,
+  });
+  assert.equal(alPrimo.tipo, "resto");
+  // E `App` lo dice, invece di eseguire.
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /finestrellaSopra: modaliAperti\(\) > \(primoVisibile \? 1 : 0\)/);
+  assert.match(app, /if \(piano\.tipo === "fermo"\) \{\s+setNotizia\(t\("drop\.closeFirst"\)\);/);
 });
