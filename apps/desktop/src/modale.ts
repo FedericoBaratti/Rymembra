@@ -57,6 +57,14 @@ export function modaleAperto(): boolean {
 }
 
 /**
+ * Quanti modali sono aperti. Per chi deve togliere dal conto uno che sa
+ * aperto lui: il primo avvio, per i file trascinati (`trascinati.ts`).
+ */
+export function modaliAperti(): number {
+  return aperti;
+}
+
+/**
  * Chiama `ascolta` a ogni modale che si apre, finché non si chiama la
  * funzione restituita.
  *

@@ -129,7 +129,7 @@ import {
   vociPlaylist,
   type AzioniBrani,
 } from "./menuBrani";
-import { unaVolta } from "./modale";
+import { modaliAperti, unaVolta } from "./modale";
 import { NuovoTema } from "./NuovoTema";
 import { chiaveDiPagina, paginaCorrente, type VistaLibreria } from "./pagina";
 import { sportelloAscolti, useAscolto, useRada } from "./pagine";
@@ -2526,8 +2526,17 @@ export function App() {
       primoInAttesa:
         primoVisibile && !scansionando && (avvio?.numeri.tracks ?? 0) === 0,
       avviato: avvio !== null,
+      // Il primo avvio è un modale anche lui, ma le cartelle sono per lui:
+      // conta come «sopra» solo quel che sta oltre.
+      finestrellaSopra: modaliAperti() > (primoVisibile ? 1 : 0),
     }),
     (piano) => {
+      // Una finestrella aperta: niente dietro il velo. Lo dice la notizia,
+      // che si sente anche lì (le regioni d'annuncio restano vive).
+      if (piano.tipo === "fermo") {
+        setNotizia(t("drop.closeFirst"));
+        return;
+      }
       if (piano.tipo === "skin") {
         // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
         // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione

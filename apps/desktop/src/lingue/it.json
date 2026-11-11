@@ -650,6 +650,7 @@
   "drop.queued": "In coda: {brani}.",
   "drop.notInLibrary": "Alcuni file non sono nella libreria: trascina la cartella che li contiene per aggiungerla.",
   "drop.nothing": "Rymembra non sa cosa fare di questi file: trascina una cartella di musica, una playlist o una skin.",
+  "drop.closeFirst": "Prima chiudi la finestrella aperta, poi trascina di nuovo.",
   "page.settings.title": "Impostazioni",
   "page.settings.sub": "Cartelle, aspetto, dati",
   "page.search.eyebrow": "Ricerca",

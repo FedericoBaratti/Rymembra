@@ -650,6 +650,7 @@
   "drop.queued": "Queued: {brani}.",
   "drop.notInLibrary": "Some files are not in the library: drop the folder that contains them to add it.",
   "drop.nothing": "Rymembra doesn't know what to do with these files: drop a music folder, a playlist or a skin.",
+  "drop.closeFirst": "Close the open dialog first, then drop again.",
   "page.settings.title": "Settings",
   "page.settings.sub": "Folders, appearance, data",
   "page.search.eyebrow": "Search",

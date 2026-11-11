@@ -33,10 +33,26 @@ export interface SituazioneTrascinati {
   primoInAttesa: boolean;
   /** `avvio` è arrivato: si sa quali cartelle sono già sorvegliate. */
   avviato: boolean;
+  /**
+   * Una finestrella è aperta sopra la finestra: una conferma, un consenso,
+   * una domanda. Il primo avvio non conta: è lui a chiedere le cartelle.
+   */
+  finestrellaSopra: boolean;
 }
 
 /** Cosa fare dei file lasciati cadere. */
 export type PianoTrascinati =
+  /**
+   * Niente, e lo si dice: c'è una finestrella aperta.
+   *
+   * Il trascinamento è un evento nativo, e `inert` non lo ferma: senza questo
+   * una cartella lasciata cadere con «Elimina dal disco» aperto portava
+   * **dietro il velo** alle Impostazioni e faceva partire la scansione, dei
+   * brani cambiavano la coda, una skin si installava. È la regola di
+   * `passaLaScorciatoia` in `modale.ts`: con un modale aperto non passa
+   * niente che cambi cosa c'è dietro, dove l'utente non sta guardando.
+   */
+  | { tipo: "fermo" }
   /** Installare questa skin, e mostrarla. */
   | { tipo: "skin"; percorso: string }
   /** Aprire l'importazione di questa playlist. */
@@ -56,6 +72,7 @@ export function pianoDeiTrascinati(
   smistati: Trascinati,
   situazione: SituazioneTrascinati,
 ): PianoTrascinati {
+  if (situazione.finestrellaSopra) return { tipo: "fermo" };
   const skin = smistati.skin[0];
   if (skin !== undefined) return { tipo: "skin", percorso: skin };
   const playlist = smistati.playlist[0];
