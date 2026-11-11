@@ -295,10 +295,10 @@ fn il_gettone_vale_una_volta_e_non_si_indovina() {
 }
 
 #[test]
-fn cinque_gettoni_sbagliati_bruciano_il_qr() {
-    // Un PC suo: con quelli della prova di sopra si passerebbero i dieci
-    // tentativi al minuto, e l'ultimo lo fermerebbe il tetto, non il QR
-    // bruciato.
+fn i_gettoni_sbagliati_non_bruciano_il_qr() {
+    // Fino al reperto R01-3 cinque gettoni sbagliati, da chiunque, toglievano
+    // il QR. Il gettone è di 128 bit: sbagliarlo non avvicina a niente, e il
+    // QR resta per chi lo inquadra davvero — anche per chi ha sbagliato.
     let (pc, del_pc) = nodo("PC");
     let (altro, _) = nodo("Altro");
     let bersaglio = pc.invita().unwrap();
@@ -311,13 +311,36 @@ fn cinque_gettoni_sbagliati_bruciano_il_qr() {
             "sbagliato {n}"
         );
     }
-    assert!(!pc.invito_attivo(), "bruciato");
+    assert!(pc.invito_attivo(), "il QR vale ancora");
     *del_pc.consente.lock().unwrap() = true;
-    assert_eq!(
-        codice(altro.collega(&bersaglio.link())),
-        ErrorCodeKind::LontanoGettoneScaduto,
-        "bruciato dai tentativi"
-    );
+    altro
+        .collega(&bersaglio.link())
+        .expect("col gettone giusto ci si collega");
+}
+
+#[test]
+fn un_estraneo_non_brucia_il_qr_di_un_altro() {
+    // Reperto R01-3: cinque gettoni sbagliati da chiunque bruciavano il QR, e
+    // i dieci tentativi al minuto erano di tutti. Chi in casa legge la chiave
+    // del nodo da mDNS rendeva «scaduto» ogni QR appena compariva.
+    let (pc, del_pc) = nodo("PC");
+    let (estraneo, _) = nodo("Estraneo");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.consente.lock().unwrap() = true;
+    let vero = pc.invita().unwrap();
+    for tentativo in 0..TENTATIVI_AL_MINUTO + 2 {
+        let mut sbagliato = vero.clone();
+        sbagliato.gettone[0] ^= u8::try_from(tentativo + 1).unwrap();
+        assert_eq!(
+            codice(estraneo.collega(&sbagliato.link())),
+            ErrorCodeKind::LontanoGettoneScaduto,
+            "sbagliato {tentativo}"
+        );
+    }
+    assert!(pc.invito_attivo(), "il QR vale ancora per chi lo legge");
+    telefono
+        .collega(&vero.link())
+        .expect("chi inquadra il QR vero si collega");
 }
 
 #[test]
@@ -367,18 +390,13 @@ fn senza_un_qr_a_schermo_i_tentativi_non_si_contano() {
 }
 
 #[test]
-fn con_un_qr_a_schermo_il_tetto_dei_tentativi_resta() {
+fn con_un_qr_a_schermo_il_tetto_dei_tentativi_resta_per_chi_bussa() {
     let (pc, del_pc) = nodo("PC");
     let (altro, _) = nodo("Altro");
     let (telefono, _) = nodo("Telefono");
     *del_pc.consente.lock().unwrap() = true;
-    // Gettoni sbagliati, al più quattro per QR: il quinto lo brucerebbe, e il
-    // rifiuto verrebbe dal QR bruciato, non dal tetto.
-    let mut invito = pc.invita().unwrap();
+    let invito = pc.invita().unwrap();
     for tentativo in 0..TENTATIVI_AL_MINUTO {
-        if tentativo > 0 && tentativo % 4 == 0 {
-            invito = pc.invita().unwrap();
-        }
         let mut sbagliato = invito.clone();
         sbagliato.gettone[0] ^= u8::try_from(tentativo + 1).unwrap();
         assert_eq!(
@@ -387,15 +405,19 @@ fn con_un_qr_a_schermo_il_tetto_dei_tentativi_resta() {
             "sbagliato {tentativo}"
         );
     }
-    assert!(pc.invito_attivo(), "l'ultimo QR vale ancora");
-    // Il minuto è pieno: anche il gettone giusto resta fuori, e il QR non si
-    // consuma.
+    assert!(pc.invito_attivo(), "il QR vale ancora");
+    // Il suo minuto è pieno: anche col gettone giusto resta fuori, e il QR
+    // non si consuma.
     assert_eq!(
-        codice(telefono.collega(&invito.link())),
+        codice(altro.collega(&invito.link())),
         ErrorCodeKind::LontanoGettoneScaduto,
         "oltre il tetto"
     );
     assert!(pc.invito_attivo(), "il tetto non consuma il QR");
+    // Il minuto degli altri no (reperto R01-3).
+    telefono
+        .collega(&invito.link())
+        .expect("chi non ha bussato ha i suoi tentativi");
 }
 
 #[test]
@@ -613,20 +635,15 @@ fn un_qr_che_smette_di_valere_si_dice() {
     assert_eq!(inviti_finiti(&del_pc), 1);
     assert!(!pc.invito_attivo());
 
-    // Un gettone sbagliato non lo finisce; il quinto sì.
+    // I gettoni sbagliati non lo finiscono, quanti che siano (reperto R01-3).
     let bersaglio = pc.invita().unwrap();
-    for n in 0..4_u8 {
+    for n in 0..5_u8 {
         let mut tentato = bersaglio.clone();
         tentato.gettone[2] ^= n + 1;
         let _ = altro.collega(&tentato.link());
     }
-    assert_eq!(inviti_finiti(&del_pc), 1, "quattro sbagliati: vale ancora");
+    assert_eq!(inviti_finiti(&del_pc), 1, "cinque sbagliati: vale ancora");
     assert!(pc.invito_attivo());
-    let mut quinto = bersaglio.clone();
-    quinto.gettone[3] ^= 1;
-    let _ = altro.collega(&quinto.link());
-    assert_eq!(inviti_finiti(&del_pc), 2, "il quinto lo brucia");
-    assert!(!pc.invito_attivo());
 }
 
 #[test]

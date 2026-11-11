@@ -55,7 +55,7 @@ use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::stato::adesso_ms;
-use filo::{ATTESA_LIBRERIA, Comune, Posta, in_libreria, prendi};
+use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
@@ -121,6 +121,9 @@ pub fn ferma(app: &AppHandle) {
     let (risposta, attesa) = channel();
     stato.comune.sveglia(Posta::Ferma(risposta));
     let _ = attesa.recv_timeout(ATTESA_FERMA);
+    // Il registro non ancora scritto: un «Dimentica» che resta solo in
+    // memoria tornerebbe dentro al prossimo avvio.
+    filo::scrivi_prima_di_uscire(app, &stato.comune);
 }
 
 /// Quel che questo dispositivo dice di sé è cambiato fuori dal filo — «Ascolta
@@ -133,6 +136,47 @@ pub fn presenza_cambiata(app: &AppHandle) {
             subito: false,
         });
     }
+}
+
+/// La finestra è andata nel vassoio: il QR mostrato non vale più, e uno che
+/// sta nascendo non nascerà valido (decisione D-30). Con un QR valido
+/// `rymembra/associa/1` resta aperto a chi lo presenta, e chi non vede più la
+/// finestra non sa che c'è; la scheda che lo mostra resta montata anche con la
+/// finestra nascosta, e da sola non se ne accorge. Non aspetta.
+pub fn finestra_nascosta(app: &AppHandle) {
+    if let Some(stato) = app.try_state::<StatoLontano>() {
+        annulla_il_qr(&stato.comune);
+    }
+}
+
+/// Il QR non vale più, anche quello che sta nascendo in [`lontano_qr_crea`]:
+/// vedi [`metti_il_qr`].
+fn annulla_il_qr(comune: &Comune) {
+    comune.qr_annullati.fetch_add(1, Ordering::AcqRel);
+    if let Some(nodo) = comune.nodo() {
+        nodo.annulla_invito();
+    }
+    *prendi(&comune.invito) = None;
+    comune.sveglia(Posta::Pubblica);
+}
+
+/// Il QR appena creato va nel pannello, se nessuno l'ha annullato mentre
+/// nasceva (`annullati` è [`Comune::qr_annullati`] di prima): allora non vale
+/// nemmeno nel nodo, e il pannello non lo mostra. `true` se va a schermo.
+fn metti_il_qr(comune: &Comune, invito: InvitoIpc, annullati: u64) -> bool {
+    let mut mostrato = prendi(&comune.invito);
+    if comune.qr_annullati.load(Ordering::Acquire) != annullati {
+        drop(mostrato);
+        if let Some(nodo) = comune.nodo() {
+            nodo.annulla_invito();
+        }
+        crate::nota!("[lontano] un QR nato con la finestra nel vassoio non vale");
+        return false;
+    }
+    *mostrato = Some(invito);
+    drop(mostrato);
+    comune.sveglia(Posta::Pubblica);
+    true
 }
 
 /// La rete del sistema è cambiata (dal telefono): il nodo cerca strade
@@ -271,7 +315,7 @@ fn attivo_per_collegare(c: &rusqlite::Connection) -> Result<(), AppError> {
 
 /// Il nodo acceso per collegare: vedi [`attivo_per_collegare`].
 fn acceso_per_collegare(app: &AppHandle) -> Result<(), AppError> {
-    in_libreria(app, ATTESA_LIBRERIA, attivo_per_collegare)?;
+    leggi_a_parte(app, attivo_per_collegare)?;
     let pannello = rileggi_e_aspetta(app)?;
     if pannello.acceso {
         return Ok(());
@@ -315,7 +359,7 @@ pub async fn lontano_attiva(app: AppHandle, attivo: bool) -> Esito<StatoLontanoI
         if attivo {
             chiedi_la_rete_di_casa();
         }
-        in_libreria(&app, ATTESA_LIBRERIA, |c| dispositivi::attiva(c, attivo))?;
+        scrivi_in_libreria(&app, |c| dispositivi::attiva(c, attivo))?;
         rileggi_e_aspetta(&app)
     })
     .await
@@ -325,9 +369,7 @@ pub async fn lontano_attiva(app: AppHandle, attivo: bool) -> Esito<StatoLontanoI
 #[tauri::command]
 pub async fn lontano_relay(app: AppHandle, relay: Option<String>) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::scegli_relay(c, relay.as_deref())
-        })?;
+        scrivi_in_libreria(&app, |c| dispositivi::scegli_relay(c, relay.as_deref()))?;
         rileggi_e_aspetta(&app)
     })
     .await
@@ -337,9 +379,7 @@ pub async fn lontano_relay(app: AppHandle, relay: Option<String>) -> Esito<Stato
 #[tauri::command]
 pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::scegli_dati_mobili(c, scelta)
-        })?;
+        scrivi_in_libreria(&app, |c| dispositivi::scegli_dati_mobili(c, scelta))?;
         rileggi_e_aspetta(&app)
     })
     .await
@@ -351,6 +391,7 @@ pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<St
 #[tauri::command]
 pub async fn lontano_qr_crea(app: AppHandle) -> Esito<InvitoIpc> {
     in_disparte(move || {
+        let annullati = comune(&app)?.qr_annullati.load(Ordering::Acquire);
         acceso_per_collegare(&app)?;
         let invito = nel_nodo(&app, Nodo::invita)?;
         let link = invito.link();
@@ -366,9 +407,9 @@ pub async fn lontano_qr_crea(app: AppHandle) -> Esito<InvitoIpc> {
             scade_ms: adesso_ms()
                 .saturating_add(i64::try_from(VALIDITA_INVITO.as_millis()).unwrap_or(i64::MAX)),
         };
-        let comune = comune(&app)?;
-        *prendi(&comune.invito) = Some(ipc.clone());
-        comune.sveglia(Posta::Pubblica);
+        // La finestra andata nel vassoio mentre il QR nasceva (decisione
+        // D-30): nel pannello non arriva, e la finestra non lo mostra.
+        metti_il_qr(&*comune(&app)?, ipc.clone(), annullati);
         Ok(ipc)
     })
     .await
@@ -451,15 +492,20 @@ pub async fn lontano_rinomina(
     nome: String,
 ) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
-        in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::rinomina(c, &chiave, &nome)
-        })?;
+        scrivi_in_libreria(&app, |c| dispositivi::rinomina(c, &chiave, &nome))?;
         rileggi_e_aspetta(&app)
     })
     .await
 }
 
 /// Dimentica un dispositivo: glielo si dice, se risponde, e lo si toglie.
+///
+/// Fatto subito, anche con la libreria occupata (decisione D-24): esce dal
+/// cancello, perde ogni connessione, e il registro tiene la modifica finché la
+/// libreria non l'ha scritta — nessuna lettura la disfa (vedi
+/// `filo::Comune::registra`). Prima la scrittura rinunciava dopo due secondi,
+/// il comando diceva «occupato», e il dispositivo tornava dentro alla prima
+/// lettura riuscita (reperto R01-2).
 #[tauri::command]
 pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
@@ -473,23 +519,18 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
                 err.code().kind().code()
             );
         }
-        comune.ammetti(&chiave, false);
+        comune.registra(&chiave, Modifica::Dimentica);
         // Subito, senza aspettare la rilettura: ogni sua connessione si
         // chiude, anche quelle aperte prima e i flussi di «Ascolta insieme».
         if let Some(nodo) = comune.nodo() {
             nodo.revoca(&chiave);
         }
-        let insieme_cambiato = in_libreria(&app, ATTESA_LIBRERIA, |c| {
-            dispositivi::dimentica(c, &chiave)
-        })?;
-        // Anche la sua chiave di «Ascolta insieme», che il QR aveva reso
-        // fidata: la rete di «Ascolta insieme» rilegge e chiude le sue
-        // connessioni.
-        if insieme_cambiato {
-            crate::insieme::fidati_cambiati(&app);
-        }
         // I suoi brani in coda non si aprono più.
         crate::riproduzione::togli_lontane(&app, &chiave);
+        // Nella libreria appena si può, con la sua chiave di «Ascolta
+        // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
+        // rete di «Ascolta insieme», che chiude le sue connessioni.
+        filo::scrivi_il_registro(&app, &comune);
         rileggi_e_aspetta(&app)
     })
     .await
@@ -511,6 +552,96 @@ mod prove {
         );
         dispositivi::attiva(c, true).unwrap();
         attivo_per_collegare(c).unwrap();
+    }
+
+    /// Un nodo solo su questa macchina, per le prove del QR.
+    struct Nessuno;
+
+    impl rymembra_lontano::Ospite for Nessuno {
+        fn associato(&self, _chiave: &str) -> bool {
+            false
+        }
+        fn conferma(&self, _chiave: &str, _chi: &rymembra_lontano::Presentazione) -> bool {
+            false
+        }
+        fn nuovo_pari(
+            &self,
+            _chiave: &str,
+            _chi: &rymembra_lontano::Presentazione,
+            _indirizzi: &[std::net::SocketAddr],
+        ) {
+        }
+        fn rispondi(
+            &self,
+            _da: &str,
+            _domanda: Domanda,
+        ) -> Result<rymembra_lontano::Risposta, AppError> {
+            Err(AppError::new(ErrorCode::LontanoNonAssociato))
+        }
+        fn dimenticato(&self, _da: &str) {}
+        fn evento(&self, _evento: rymembra_lontano::Evento) {}
+    }
+
+    fn nodo() -> Nodo {
+        Nodo::avvia(
+            rymembra_lontano::Impostazioni {
+                identita: rymembra_lontano::Identita::nuova(),
+                rete: rymembra_lontano::Rete::SoloQuesta,
+                io: rymembra_lontano::Presentazione::default(),
+                presenza: rymembra_lontano::Presenza::default(),
+            },
+            Arc::new(Nessuno),
+        )
+        .unwrap()
+    }
+
+    fn invito_ipc() -> InvitoIpc {
+        InvitoIpc {
+            link: "rymembra://collega/x".to_owned(),
+            lato: 1,
+            moduli: "1".to_owned(),
+            scade_ms: 0,
+        }
+    }
+
+    #[test]
+    fn la_finestra_nel_vassoio_annulla_il_qr() {
+        // Decisione D-30: il QR restava valido per i suoi dieci minuti con la
+        // finestra nel vassoio — la scheda che lo mostra resta montata — e
+        // `rymembra/associa/1` aperto a chi lo presentava.
+        let (posta, _cassetta) = channel();
+        let comune = Comune::nuovo(posta);
+        *prendi(&comune.nodo) = Some(Arc::new(nodo()));
+        let annullati = comune.qr_annullati.load(Ordering::Acquire);
+        comune.nodo().unwrap().invita().unwrap();
+        assert!(metti_il_qr(&comune, invito_ipc(), annullati));
+        assert!(prendi(&comune.invito).is_some());
+
+        annulla_il_qr(&comune);
+        assert!(
+            prendi(&comune.invito).is_none(),
+            "il pannello non lo mostra"
+        );
+        assert!(
+            !comune.nodo().unwrap().invito_attivo(),
+            "e il nodo non lo accoglie"
+        );
+    }
+
+    #[test]
+    fn un_qr_che_nasce_mentre_la_finestra_va_nel_vassoio_non_vale() {
+        let (posta, _cassetta) = channel();
+        let comune = Comune::nuovo(posta);
+        *prendi(&comune.nodo) = Some(Arc::new(nodo()));
+        // «Mostra il QR»: il comando comincia…
+        let annullati = comune.qr_annullati.load(Ordering::Acquire);
+        // …la finestra va nel vassoio mentre il nodo aspetta il relay…
+        annulla_il_qr(&comune);
+        // …e il QR nasce dopo.
+        comune.nodo().unwrap().invita().unwrap();
+        assert!(!metti_il_qr(&comune, invito_ipc(), annullati));
+        assert!(prendi(&comune.invito).is_none());
+        assert!(!comune.nodo().unwrap().invito_attivo());
     }
 
     #[test]

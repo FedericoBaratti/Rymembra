@@ -13,22 +13,16 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rymembra_app::dispositivi::{self, Nuovo};
 use rymembra_domain::errors::AppError;
 use rymembra_lontano::nodo::ATTESA_CONFERMA;
 use rymembra_lontano::{Domanda, Evento, Presentazione, Risposta};
 use tauri::AppHandle;
 
-use super::filo::{Comune, Posta, in_libreria, prendi};
+use super::filo::{Collegato, Comune, Modifica, Posta, prendi, scrivi_il_registro};
 use super::ipc::RichiestaIpc;
 use crate::nota;
 use crate::spegnimento::Emette as _;
 use crate::stato::adesso_ms;
-
-/// Quanto si aspetta la libreria per scrivere un'associazione: è il momento
-/// che la persona sta guardando, e un no per una libreria occupata la
-/// costringerebbe a rifare il QR.
-const ATTESA_SCRITTURA: Duration = Duration::from_secs(10);
 
 /// L'ospite del nodo.
 pub struct Ospite {
@@ -46,34 +40,6 @@ impl Ospite {
             app,
             comune,
             confermati: Mutex::new(HashSet::new()),
-        }
-    }
-}
-
-impl Ospite {
-    /// Un dispositivo collegato col QR è anche un PC fidato di «Ascolta
-    /// insieme», se ha dato la sua chiave: chiederlo di nuovo in casa sarebbe
-    /// una seconda associazione degli stessi due dispositivi. Ma la chiave la
-    /// dichiara l'altro, e niente prova che sia sua: un PC che la persona
-    /// aveva bloccato resta bloccato, e uno che c'è già tiene il suo nome
-    /// (`rymembra_app::insieme::fidato_dal_qr`). «Dimentica» la toglie.
-    /// Un guasto qui non disfa il collegamento: in casa resta il codice.
-    fn fidato_anche_insieme(&self, chi: &Presentazione) {
-        let Some(chiave) = chi.chiave_insieme.as_deref() else {
-            return;
-        };
-        let scritto = in_libreria(&self.app, ATTESA_SCRITTURA, |c| {
-            rymembra_app::insieme::fidato_dal_qr(c, chiave, &chi.nome, adesso_ms())
-        });
-        match scritto {
-            Ok(Some(_)) => crate::insieme::fidati_cambiati(&self.app),
-            Ok(None) => nota!(
-                "[lontano] la chiave di «Ascolta insieme» del dispositivo collegato è di un PC bloccato: resta bloccato"
-            ),
-            Err(err) => nota!(
-                "[lontano] la chiave di «Ascolta insieme» non si scrive codice={}",
-                err.code().kind().code()
-            ),
         }
     }
 }
@@ -131,43 +97,37 @@ impl rymembra_lontano::Ospite for Ospite {
     }
 
     fn nuovo_pari(&self, chiave: &str, chi: &Presentazione, indirizzi: &[SocketAddr]) {
-        // Il cancello si apre subito: la connessione che arriva adesso è di
-        // questo dispositivo.
-        self.comune.ammetti(chiave, true);
+        // Il cancello si apre subito — la connessione che arriva adesso è di
+        // questo dispositivo — e il collegamento resta nel registro finché la
+        // libreria non l'ha scritto, anche se una scansione la tiene
+        // (decisione D-24): prima una scrittura che non arrivava in dieci
+        // secondi si perdeva, e la prima lettura chiudeva fuori il dispositivo
+        // appena accolto (reperto R01-2). Con lui la fiducia di «Ascolta
+        // insieme» per la chiave che ha dato: vedi `filo::associa`.
+        self.comune.registra(
+            chiave,
+            Modifica::Associa(Collegato {
+                nome: chi.nome.clone(),
+                piattaforma: chi.piattaforma.clone(),
+                dispositivo: chi.dispositivo.clone(),
+                chiave_insieme: chi.chiave_insieme.clone(),
+                indirizzi: indirizzi.iter().map(ToString::to_string).collect(),
+                associato_ms: adesso_ms(),
+            }),
+        );
         // Chi ha il QR davanti non lo deve rifare: il QR è consumato.
         *prendi(&self.comune.invito) = None;
-        let indirizzi: Vec<String> = indirizzi.iter().map(ToString::to_string).collect();
-        let scritto = in_libreria(&self.app, ATTESA_SCRITTURA, |c| {
-            dispositivi::associa(
-                c,
-                Nuovo {
-                    chiave,
-                    nome: &chi.nome,
-                    piattaforma: &chi.piattaforma,
-                    dispositivo: &chi.dispositivo,
-                    chiave_insieme: chi.chiave_insieme.as_deref(),
-                    indirizzi: &indirizzi,
-                },
-                adesso_ms(),
-            )
-        });
-        match scritto {
-            // La piattaforma la dichiara l'altro, e senza limiti: nel diario
-            // ne va solo quanto basta a riconoscerla, come in `filo.rs`.
-            Ok(_) => nota!(
-                "[lontano] dispositivo collegato ({})",
-                chi.piattaforma
-                    .chars()
-                    .filter(char::is_ascii_alphanumeric)
-                    .take(16)
-                    .collect::<String>()
-            ),
-            Err(err) => nota!(
-                "[lontano] il dispositivo collegato non si scrive codice={}",
-                err.code().kind().code()
-            ),
-        }
-        self.fidato_anche_insieme(chi);
+        // La piattaforma la dichiara l'altro, e senza limiti: nel diario ne va
+        // solo quanto basta a riconoscerla, come in `filo.rs`.
+        nota!(
+            "[lontano] dispositivo collegato ({})",
+            chi.piattaforma
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(16)
+                .collect::<String>()
+        );
+        scrivi_il_registro(&self.app, &self.comune);
         if prendi(&self.confermati).remove(chiave) {
             self.app.emetti(
                 "lontano:collegato",
@@ -185,17 +145,16 @@ impl rymembra_lontano::Ospite for Ospite {
     }
 
     fn dimenticato(&self, da: &str) {
-        self.comune.ammetti(da, false);
+        // Fuori subito, e nel registro finché la libreria non l'ha scritto:
+        // prima un «Dimenticami» arrivato con la libreria occupata oltre dieci
+        // secondi si perdeva, e il dispositivo restava collegato qui per
+        // sempre (reperto R01-2, decisione D-24). La fiducia di «Ascolta
+        // insieme» resta: la toglie la persona, con «Dimentica» (vedi
+        // `dispositivi::revoca`).
+        self.comune.registra(da, Modifica::Revoca);
         // I suoi brani in coda non si aprono più: l'altro non ci risponde.
         crate::riproduzione::togli_lontane(&self.app, da);
-        // La fiducia di «Ascolta insieme» resta: la toglie la persona, con
-        // «Dimentica» (vedi `dispositivi::revoca`).
-        if let Err(err) = in_libreria(&self.app, ATTESA_SCRITTURA, |c| dispositivi::revoca(c, da)) {
-            nota!(
-                "[lontano] un dispositivo che ci ha dimenticati non si segna codice={}",
-                err.code().kind().code()
-            );
-        }
+        scrivi_il_registro(&self.app, &self.comune);
         self.comune.sveglia(Posta::Rileggi {
             risposta: None,
             subito: false,

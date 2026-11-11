@@ -614,6 +614,9 @@ pub fn run() {
             }
             api.prevent_close();
             let _ = finestra.hide();
+            // Il QR del collegamento non resta valido nel vassoio, dove
+            // nessuno lo vede (decisione D-30).
+            lontano::finestra_nascosta(finestra.app_handle());
         })
         // La variante asincrona: consegna un `responder` invece di pretendere
         // la risposta subito. Serve perché la lettura dal disco possa avvenire

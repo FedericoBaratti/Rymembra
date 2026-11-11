@@ -126,6 +126,12 @@ impl std::fmt::Debug for ViaNodo {
 
 impl Pezzi for ViaNodo {
     fn pezzo(&self, brano: i64, da: u64, quanti: u64) -> Result<(Vec<u8>, u64, String), AppError> {
+        // Il cancello anche da questa parte, a ogni blocco: dopo «Dimentica»
+        // il brano di quel dispositivo che stava suonando gli chiedeva ancora
+        // i pezzi, e `connessione()` gliene riapriva una (reperto R01-5).
+        if !self.comune.associato(&self.chiave) {
+            return Err(AppError::new(ErrorCode::LontanoNonAssociato));
+        }
         let nodo = self
             .comune
             .nodo()
@@ -791,7 +797,14 @@ pub(super) fn manda_gli_ascolti(app: &AppHandle, comune: &Arc<Comune>, solo: Opt
 
 /// Manda a `chiave` i suoi ascolti in fila, dal più vecchio. `false` se si è
 /// fermato prima della fine.
+///
+/// Solo a un dispositivo ancora collegato, guardato a ogni ascolto: a uno
+/// dimenticato non si chiede più niente, e non è un invio da riprovare
+/// (reperto R01-5).
 fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
+    if !comune.associato(chiave) {
+        return true;
+    }
     let da_mandare = match in_libreria(app, ATTESA_LIBRERIA, |c| {
         dispositivi::ascolti_da_mandare(c, chiave)
     }) {
@@ -799,6 +812,9 @@ fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
         Err(_) => return false,
     };
     for ascolto in da_mandare {
+        if !comune.associato(chiave) {
+            return true;
+        }
         let Some(nodo) = comune.nodo() else {
             return false;
         };
@@ -958,6 +974,17 @@ fn copertina_in(
     drop(nodo);
     match risposta? {
         Risposta::Byte { byte, .. } if !byte.is_empty() && byte.len() <= MASSIMA_COPERTINA => {
+            // Solo un'immagine, riconosciuta dai suoi byte: prima un
+            // dispositivo collegato metteva qui fino a 4 MiB di byte qualunque
+            // col nome di una copertina, e la finestra li riceveva come
+            // `image/jpeg` (reperto R10-1, decisione D-32).
+            if crate::copertine::tipo_immagine(&byte).is_none() {
+                nota!(
+                    "[lontano] una copertina di un altro dispositivo non è un'immagine: non si tiene"
+                );
+                return Err(AppError::new(ErrorCode::LontanoProtocollo)
+                    .with_cause("una copertina che non è un'immagine"));
+            }
             in_cache(cartella, &file, &byte);
             Ok(Some(byte))
         }
@@ -967,9 +994,15 @@ fn copertina_in(
     }
 }
 
-/// Una copertina dalla cache, segnata come usata adesso.
+/// Una copertina dalla cache, segnata come usata adesso. Un file che non è
+/// un'immagine — messo da una versione di prima, che non guardava — si toglie,
+/// e vale come assente.
 fn dalla_cache(file: &Path) -> Option<Vec<u8>> {
     let byte = std::fs::read(file).ok()?;
+    if crate::copertine::tipo_immagine(&byte).is_none() {
+        let _ = std::fs::remove_file(file);
+        return None;
+    }
     if let Ok(aperto) = std::fs::File::options().write(true).open(file) {
         let _ = aperto.set_modified(SystemTime::now());
     }
@@ -1233,22 +1266,24 @@ mod prove {
         let impronta = "0123456789abcdef";
         comune.ammetti(&a, true);
         comune.ammetti(&b, true);
-        // La copertina H di A è arrivata, ed è in cache.
+        // La copertina H di A è arrivata, ed è in cache (un JPEG: vedi
+        // `una_copertina_che_non_e_un_immagine_non_si_serve`).
+        let di_a = b"\xFF\xD8\xFFdi A".to_vec();
         in_cache(
             &cartella,
             &file_della_copertina(&cartella, &a, impronta),
-            b"di A",
+            &di_a,
         );
         assert_eq!(
             copertina_in(&cartella, &comune, &a, impronta).unwrap(),
-            Some(b"di A".to_vec())
+            Some(di_a.clone())
         );
 
         // B ha un album con la stessa impronta: la sua copertina la dice B,
         // non A (qui B non risponde, e lo si dice).
         let di_b = copertina_in(&cartella, &comune, &b, impronta);
         assert!(
-            !matches!(&di_b, Ok(Some(byte)) if byte == b"di A"),
+            !matches!(&di_b, Ok(Some(byte)) if *byte == di_a),
             "la copertina di A per l'album di B: {di_b:?}"
         );
         assert_eq!(
@@ -1262,6 +1297,60 @@ mod prove {
         assert_eq!(
             dimenticato.map_err(|err| err.code().kind()),
             Err(rymembra_domain::errors::ErrorCodeKind::LontanoNonAssociato)
+        );
+        let _ = std::fs::remove_dir_all(&cartella);
+    }
+
+    #[test]
+    fn una_voce_di_un_dispositivo_dimenticato_non_chiede_piu() {
+        // Reperto R01-5: dopo «Dimentica» il brano di quel dispositivo che
+        // stava suonando gli chiedeva ancora i pezzi, e `connessione()` gliene
+        // riapriva una.
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Arc::new(Comune::nuovo(posta));
+        let chiave = "c".repeat(64);
+        comune.ammetti(&chiave, false);
+        let voce = ViaNodo {
+            comune: Arc::clone(&comune),
+            chiave,
+        };
+        assert_eq!(
+            voce.pezzo(1, 0, 1024).map_err(|err| err.code().kind()),
+            Err(rymembra_domain::errors::ErrorCodeKind::LontanoNonAssociato)
+        );
+    }
+
+    #[test]
+    fn una_copertina_che_non_e_un_immagine_non_si_serve() {
+        // Decisione D-32: dagli altri dispositivi arrivavano fino a 4 MiB di
+        // byte qualunque, messi nella cache come `.jpg` e serviti alla
+        // finestra come `image/jpeg`.
+        let cartella = std::env::temp_dir().join(format!(
+            "rymembra-prova-copertine-non-immagini-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cartella);
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Comune::nuovo(posta);
+        let a = "a".repeat(64);
+        comune.ammetti(&a, true);
+        let impronta = "0123456789abcdef";
+        // Una pagina HTML in cache al posto di una copertina (da un
+        // dispositivo di prima della correzione).
+        let file = file_della_copertina(&cartella, &a, impronta);
+        in_cache(&cartella, &file, b"<html><script>x</script></html>");
+        let servita = copertina_in(&cartella, &comune, &a, impronta);
+        assert!(
+            !matches!(&servita, Ok(Some(_))),
+            "byte che non sono un'immagine: {servita:?}"
+        );
+        assert!(!file.exists(), "e dalla cache se ne va");
+        // Un'immagine vera sì.
+        let png = b"\x89PNG\r\n\x1a\n....".to_vec();
+        in_cache(&cartella, &file, &png);
+        assert_eq!(
+            copertina_in(&cartella, &comune, &a, impronta).unwrap(),
+            Some(png)
         );
         let _ = std::fs::remove_dir_all(&cartella);
     }

@@ -42,6 +42,7 @@ import {
 } from "../ipc";
 import { t, tSe } from "../lingue";
 import {
+  accendiPoiCollega,
   annullatoDaQui,
   archivioDatiMobili,
   archivioLink,
@@ -55,6 +56,7 @@ import {
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
+  tentativiDiCollegamento,
   unisciDispositivi,
 } from "../lontano";
 import { useAscolto } from "../pagine";
@@ -148,6 +150,8 @@ export function LontanoInApp({
   const [collegando, setCollegando] = useState(false);
   // «Collega» col collegamento spento: prima il sì per accenderlo.
   const [accendere, setAccendere] = useState(false);
+  // «Smetti di aspettare» vale anche mentre il collegamento si accende.
+  const [tentativi] = useState(tentativiDiCollegamento);
 
   useAscolto<StatoLontano>(
     "lontano:stato",
@@ -226,24 +230,36 @@ export function LontanoInApp({
     else collega(daCollegare);
   };
 
-  /** Il sì per accendere è arrivato: si accende, e ci si collega. */
+  /**
+   * Il sì per accendere è arrivato: si accende, e ci si collega — se intanto
+   * la finestrella non è stata lasciata (`accendiPoiCollega`).
+   */
   const accendiECollega = (daCollegare: LinkLontano) => {
     setAccendere(false);
     setCollegando(true);
-    ipc
-      .lontanoAttiva(true)
-      .then((nuovo) => {
-        archivioLontano.scrivi(nuovo);
-        collega(daCollegare);
+    const annullato = tentativi.nuovo();
+    accendiPoiCollega({
+      attiva: () => ipc.lontanoAttiva(true),
+      collega: () => collega(daCollegare),
+      annullato,
+    })
+      .then((partito) => {
+        // Lasciato mentre si accendeva: `collega` non c'è stato, e il suo
+        // `finally` nemmeno.
+        if (!partito) setCollegando(false);
       })
       .catch((errore) => {
         setCollegando(false);
-        onErrore(errore);
+        if (!annullato()) onErrore(errore);
       });
   };
 
-  /** Lascia il link: smette di aspettare, se si stava aspettando. */
+  /**
+   * Lascia il link: smette di aspettare, se si stava aspettando — anche un
+   * collegamento che si sta ancora accendendo (reperto R13-2).
+   */
   const lascia = () => {
+    tentativi.lascia();
     if (collegando) ipc.lontanoCollegaAnnulla().catch(() => undefined);
     setAccendere(false);
     archivioLink.scrivi(null);
@@ -593,15 +609,18 @@ function RigaDispositivo({
 
 /**
  * Un PC di «Ascolta insieme» che non è collegato via internet: i tre gesti
- * che stavano nella sua scheda. Senza domanda, come lì: si rimedia
- * riassociando, e non si perde niente che non torni.
+ * che stavano nella sua scheda. «Dimentica» chiede prima, come per i
+ * collegati via internet (decisione D-28): si rimedia riassociandosi, ma col
+ * codice, e un clic sbagliato non lo deve costare.
  */
 function RigaFidato({
   fidato,
   onErrore,
+  onDomanda,
 }: {
   fidato: FidatoInsieme;
   onErrore: (errore: unknown) => void;
+  onDomanda: (domanda: Domanda) => void;
 }) {
   const [rinomina, setRinomina] = useState(false);
   const idNome = useId();
@@ -647,7 +666,15 @@ function RigaFidato({
           type="button"
           className="bottone minuto btn-ghost"
           aria-describedby={idNome}
-          onClick={() => comanda(ipc.insiemePariDimentica(fidato.id), onErrore)}
+          onClick={() =>
+            onDomanda({
+              titolo: t("devices.forget.title", { nome: fidato.nome }),
+              descrizione: t("devices.forget.together.sub"),
+              conferma: t("devices.forget"),
+              consenso: true,
+              fai: () => comanda(ipc.insiemePariDimentica(fidato.id), onErrore),
+            })
+          }
         >
           {t("devices.forget")}
         </button>
@@ -659,16 +686,18 @@ function RigaFidato({
 /**
  * Un dispositivo della sincronia che non è collegato via internet: Accetta
  * (finché non ci si fida di quel che scrive), Rinomina e Dimentica, come
- * nella scheda della sincronia.
+ * nella scheda della sincronia. «Dimentica» chiede prima (decisione D-28).
  */
 function RigaSincronia({
   dispositivo,
   onAccoppia,
   onDimentica,
+  onDomanda,
 }: {
   dispositivo: DispositivoSincronia;
   onAccoppia: (id: string, nome: string | null) => void;
   onDimentica: (id: string) => void;
+  onDomanda: (domanda: Domanda) => void;
 }) {
   const [rinomina, setRinomina] = useState(false);
   const idNome = useId();
@@ -718,7 +747,15 @@ function RigaSincronia({
           type="button"
           className="bottone minuto btn-ghost"
           aria-describedby={idNome}
-          onClick={() => onDimentica(dispositivo.id)}
+          onClick={() =>
+            onDomanda({
+              titolo: t("devices.forget.title", { nome }),
+              descrizione: t("devices.forget.sync.sub"),
+              conferma: t("devices.forget"),
+              consenso: true,
+              fai: () => onDimentica(dispositivo.id),
+            })
+          }
         >
           {t("devices.forget")}
         </button>
@@ -997,6 +1034,7 @@ export function SchedaDispositivi({
                     key={`insieme:${riga.insieme.id}`}
                     fidato={riga.insieme}
                     onErrore={onErrore}
+                    onDomanda={setDomanda}
                   />
                 );
               case "sincronia":
@@ -1006,6 +1044,7 @@ export function SchedaDispositivi({
                     dispositivo={riga.sincronia}
                     onAccoppia={onSincroniaAccoppia}
                     onDimentica={onSincroniaDimentica}
+                    onDomanda={setDomanda}
                   />
                 );
             }

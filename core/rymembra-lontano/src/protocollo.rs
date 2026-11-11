@@ -22,6 +22,9 @@
 //! Quattro byte di lunghezza (big endian) e un JSON. Il bit più alto della
 //! lunghezza dice che il JSON è compresso (deflate grezzo, sopra
 //! [`SOGLIA_COMPRESSIONE`]); il resto non supera mai [`MASSIMA_CORNICE`].
+//! Aperto, il JSON ha il tetto che sceglie chi legge, secondo cosa si aspetta
+//! e da chi: [`MASSIMA_ASSOCIA`] per chi bussa col QR, [`MASSIMA_DOMANDA`] per
+//! le domande, [`MASSIMA_TESTA`] per le risposte.
 //!
 //! # In avanti
 //!
@@ -50,6 +53,29 @@ pub const ALPN_INSIEME: &[u8] = b"rymembra/insieme/1";
 /// Quanto può pesare il JSON di una cornice: una pagina di cinquecento brani
 /// sta in qualche centinaio di kilobyte.
 pub const MASSIMA_CORNICE: usize = 1 << 20;
+
+/// Quanto può pesare, aperta, una cornice dell'associazione: un gettone e una
+/// [`Presentazione`], qualche centinaio di byte.
+///
+/// Chi bussa mentre il QR è a schermo non è ancora nessuno, e la sua domanda
+/// si legge **prima** di guardare il gettone. Con il tetto di tutte le cornici
+/// — 8 MiB aperti — otto kibibyte di deflate diventavano un `Content` di serde
+/// da ~200 MiB, dieci volte al minuto (reperto R15-1). Lo stesso tetto vale
+/// per la risposta di chi mostra il QR, che si legge prima di conoscerlo.
+pub const MASSIMA_ASSOCIA: usize = 16 * 1024;
+
+/// Quanto può pesare, aperta, una [`Domanda`] di un dispositivo associato.
+///
+/// La più lunga è una ricerca, o un artista o un album della libreria
+/// dell'altro: qualche centinaio di byte. Il margine è per i tag lunghi; oltre,
+/// chi chiede si sente dire `lontano.protocollo` prima di mandarla, e chi
+/// risponde non apre niente.
+pub const MASSIMA_DOMANDA: usize = 64 * 1024;
+
+/// Quanto può pesare, aperta, la testa di una risposta: una pagina di
+/// cinquecento brani, che compressa sta nel tetto del filo. Solo da un
+/// dispositivo associato, e solo a chi gliel'ha chiesta.
+pub const MASSIMA_TESTA: usize = MASSIMA_CORNICE * 8;
 
 /// Oltre questo il JSON si comprime.
 pub const SOGLIA_COMPRESSIONE: usize = 8 * 1024;
@@ -348,14 +374,21 @@ pub(crate) enum Associa {
     Sconosciuta,
 }
 
-/// Una cornice: la lunghezza e il JSON, compresso se è grande.
+/// Una cornice: la lunghezza e il JSON, compresso se è grande. `tetto` è
+/// quanto chi la legge accetta aperta ([`valore_entro`]): oltre, non parte.
 ///
 /// # Errori
 ///
-/// `lontano.protocollo` per un valore che non si serializza o che, compresso,
-/// supera [`MASSIMA_CORNICE`].
-pub(crate) fn cornice(valore: &impl Serialize) -> Result<Vec<u8>, AppError> {
+/// `lontano.protocollo` per un valore che non si serializza, che aperto supera
+/// `tetto` o che, compresso, supera [`MASSIMA_CORNICE`].
+pub(crate) fn cornice(valore: &impl Serialize, tetto: usize) -> Result<Vec<u8>, AppError> {
     let json = serde_json::to_vec(valore).map_err(protocollo)?;
+    if json.len() > tetto {
+        return Err(protocollo(format!(
+            "una cornice da {} byte supera il tetto di chi la legge",
+            json.len()
+        )));
+    }
     let (corpo, compressa) = if json.len() > SOGLIA_COMPRESSIONE {
         let mut compressore =
             flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -382,13 +415,17 @@ pub(crate) fn cornice(valore: &impl Serialize) -> Result<Vec<u8>, AppError> {
 
 /// Quanti byte segue la testa di una cornice, e se sono compressi.
 ///
+/// Il tetto lo decide chi legge, secondo cosa si aspetta: [`MASSIMA_ASSOCIA`],
+/// [`MASSIMA_DOMANDA`], [`MASSIMA_TESTA`]. Sul filo non si passa comunque
+/// [`MASSIMA_CORNICE`].
+///
 /// # Errori
 ///
-/// `lontano.protocollo` oltre [`MASSIMA_CORNICE`].
-pub(crate) fn lunghezza(testa: [u8; 4]) -> Result<(usize, bool), AppError> {
+/// `lontano.protocollo` oltre `tetto` o [`MASSIMA_CORNICE`].
+pub(crate) fn lunghezza_entro(testa: [u8; 4], tetto: usize) -> Result<(usize, bool), AppError> {
     let valore = u32::from_be_bytes(testa);
     let quanti = usize::try_from(valore & !COMPRESSA).map_err(protocollo)?;
-    if quanti > MASSIMA_CORNICE {
+    if quanti > tetto.min(MASSIMA_CORNICE) {
         return Err(protocollo(format!(
             "una cornice da {quanti} byte supera il tetto"
         )));
@@ -396,20 +433,32 @@ pub(crate) fn lunghezza(testa: [u8; 4]) -> Result<(usize, bool), AppError> {
     Ok((quanti, valore & COMPRESSA != 0))
 }
 
-/// Il valore di un corpo di cornice.
+/// Il valore di un corpo di cornice, che aperto non passa `tetto`.
+///
+/// Il tetto vale sul JSON **aperto**, compresso o no: serde, per un enum con
+/// `tag` come [`Associa`] o [`Domanda`], tiene l'oggetto intero in memoria —
+/// campi sconosciuti compresi — prima di scegliere la variante, e ogni byte di
+/// JSON gliene costa una ventina (reperto R15-1).
 ///
 /// # Errori
 ///
-/// `lontano.protocollo` per un JSON che non si legge, o che decompresso
-/// supera il tetto (una bomba di deflate).
-pub(crate) fn valore<T: DeserializeOwned>(corpo: &[u8], compressa: bool) -> Result<T, AppError> {
+/// `lontano.protocollo` per un JSON che non si legge, o che aperto supera
+/// `tetto` (una bomba di deflate).
+pub(crate) fn valore_entro<T: DeserializeOwned>(
+    corpo: &[u8],
+    compressa: bool,
+    tetto: usize,
+) -> Result<T, AppError> {
     if !compressa {
+        if corpo.len() > tetto {
+            return Err(protocollo("una cornice supera il tetto"));
+        }
         return serde_json::from_slice(corpo).map_err(protocollo);
     }
     let mut json = Vec::new();
-    let tetto = u64::try_from(MASSIMA_CORNICE * 8).unwrap_or(u64::MAX);
+    let tetto = u64::try_from(tetto).unwrap_or(u64::MAX);
     flate2::read::DeflateDecoder::new(corpo)
-        .take(tetto + 1)
+        .take(tetto.saturating_add(1))
         .read_to_end(&mut json)
         .map_err(protocollo)?;
     if u64::try_from(json.len()).unwrap_or(u64::MAX) > tetto {
@@ -423,11 +472,11 @@ mod prove {
     use super::*;
 
     fn andata_e_ritorno<T: Serialize + DeserializeOwned>(valore: &T) -> T {
-        let byte = cornice(valore).unwrap();
+        let byte = cornice(valore, MASSIMA_DOMANDA).unwrap();
         let testa: [u8; 4] = byte[..4].try_into().unwrap();
-        let (quanti, compressa) = lunghezza(testa).unwrap();
+        let (quanti, compressa) = lunghezza_entro(testa, MASSIMA_DOMANDA).unwrap();
         assert_eq!(quanti, byte.len() - 4);
-        self::valore(&byte[4..], compressa).unwrap()
+        valore_entro(&byte[4..], compressa, MASSIMA_DOMANDA).unwrap()
     }
 
     #[test]
@@ -489,21 +538,84 @@ mod prove {
         let grande = Testa::Dati {
             dati: serde_json::json!({ "brani": vec!["la stessa riga ripetuta"; 5000] }),
         };
-        let byte = cornice(&grande).unwrap();
-        let (quanti, compressa) = lunghezza(byte[..4].try_into().unwrap()).unwrap();
+        let byte = cornice(&grande, MASSIMA_TESTA).unwrap();
+        let (quanti, compressa) =
+            lunghezza_entro(byte[..4].try_into().unwrap(), MASSIMA_TESTA).unwrap();
         assert!(compressa);
         assert!(quanti < 10_000, "compressa: {quanti} byte");
-        assert_eq!(valore::<Testa>(&byte[4..], true).unwrap(), grande);
+        assert_eq!(
+            valore_entro::<Testa>(&byte[4..], true, MASSIMA_TESTA).unwrap(),
+            grande
+        );
 
         // Dieci megabyte di zeri compressi: stanno in pochi kilobyte, e
         // aperti supererebbero il tetto.
         let mut bomba = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
         bomba.write_all(&vec![b' '; 10 << 20]).unwrap();
         let bomba = bomba.finish().unwrap();
-        assert!(valore::<Testa>(&bomba, true).is_err());
+        assert!(valore_entro::<Testa>(&bomba, true, MASSIMA_TESTA).is_err());
 
         let troppo = (u32::try_from(MASSIMA_CORNICE).unwrap() + 1).to_be_bytes();
-        assert!(lunghezza(troppo).is_err());
+        assert!(lunghezza_entro(troppo, MASSIMA_TESTA).is_err());
+    }
+
+    #[test]
+    fn una_domanda_di_associazione_non_si_apre_oltre_il_suo_tetto() {
+        // Reperto R15-1. Chi bussa mentre il QR è a schermo non è ancora
+        // nessuno: la sua domanda (un gettone e una Presentazione) sta in
+        // qualche centinaio di byte. Otto kibibyte di deflate che si aprono in
+        // 8 MiB di `[0,0,…]` diventavano ~200 MiB di `Content` di serde.
+        let mut grande = String::from(
+            r#"{"tipo":"chiedo","gettone":"00000000000000000000000000000000","chi":{"nome":"x"},"x":["#,
+        );
+        // Appena sotto gli 8 MiB che si concedevano a ogni cornice aperta.
+        grande.push_str(&"0,".repeat((4 << 20) - 200));
+        grande.push_str("0]}");
+        assert!(grande.len() < 8 << 20);
+        let mut compressore =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        compressore.write_all(grande.as_bytes()).unwrap();
+        let bomba = compressore.finish().unwrap();
+        assert!(bomba.len() < 16 * 1024, "{}", bomba.len());
+        assert!(
+            valore_entro::<Associa>(&bomba, true, MASSIMA_ASSOCIA).is_err(),
+            "compressa"
+        );
+        // In chiaro, oltre il tetto dell'associazione, la testa basta a dire
+        // di no: il corpo non si legge nemmeno.
+        let testa = u32::try_from(MASSIMA_ASSOCIA + 1).unwrap().to_be_bytes();
+        assert!(lunghezza_entro(testa, MASSIMA_ASSOCIA).is_err());
+        // Una domanda vera passa.
+        let vera = cornice(
+            &Associa::Chiedo {
+                gettone: "00".repeat(16),
+                chi: Presentazione {
+                    nome: "Telefono".into(),
+                    ..Presentazione::default()
+                },
+            },
+            MASSIMA_ASSOCIA,
+        )
+        .unwrap();
+        let (quanti, compressa) =
+            lunghezza_entro(vera[..4].try_into().unwrap(), MASSIMA_ASSOCIA).unwrap();
+        assert_eq!(quanti, vera.len() - 4);
+        assert!(valore_entro::<Associa>(&vera[4..], compressa, MASSIMA_ASSOCIA).is_ok());
+    }
+
+    #[test]
+    fn una_domanda_oltre_il_tetto_non_parte_e_non_si_apre() {
+        // Chi chiede lo sa prima di mandarla; chi risponde non la apre.
+        let lunga = Domanda::Cerca {
+            testo: "x".repeat(MASSIMA_DOMANDA),
+            da: 0,
+            quanti: 1,
+        };
+        assert!(cornice(&lunga, MASSIMA_DOMANDA).is_err());
+        let mandata = cornice(&lunga, MASSIMA_TESTA).unwrap();
+        let (_, compressa) =
+            lunghezza_entro(mandata[..4].try_into().unwrap(), MASSIMA_DOMANDA).unwrap();
+        assert!(valore_entro::<Domanda>(&mandata[4..], compressa, MASSIMA_DOMANDA).is_err());
     }
 
     #[test]

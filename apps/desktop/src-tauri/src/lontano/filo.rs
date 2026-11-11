@@ -16,14 +16,31 @@
 //! comandi e l'[`super::ospite::Ospite`] toccano [`Comune`] e lo svegliano con
 //! la [`Posta`]; lui rilegge la libreria quando serve, e pubblica se qualcosa
 //! è cambiato davvero.
+//!
+//! # Il lucchetto della libreria
+//!
+//! Il filo **non lo chiede**: legge da una connessione di sola lettura sua
+//! ([`leggi_a_parte`]), come le domande degli altri dispositivi
+//! (`servizio::leggi_da`). Lo chiedeva con un'attesa di due secondi, e i
+//! lavori di sottofondo che lo prendono a turno — una prima analisi dura ore —
+//! glielo facevano perdere: il giro non leggeva, il nodo non si accendeva, e
+//! il telefono tornato in vista restava irraggiungibile per tutta l'analisi
+//! (reperto R01-1). Scrivono, aspettando il loro turno come ogni comando, i
+//! comandi ([`scrivi_in_libreria`]) e lo scrittore del registro.
+//!
+//! # Il registro delle modifiche
+//!
+//! «Dimentica», un «Dimenticami» ricevuto e un collegamento nuovo cambiano il
+//! cancello subito, e restano nel registro finché una lettura della libreria
+//! non le vede scritte: vedi [`Comune::registra`].
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use rymembra_app::dispositivi::{self, Dispositivo};
+use rymembra_app::dispositivi::{self, Dispositivo, Nuovo};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_lontano::{
     Evento, Impostazioni, Nodo, PariNoto, Presentazione, Presenza, Relay, Rete, Via,
@@ -40,9 +57,15 @@ use crate::stato::{Stato, adesso_ms};
 /// un'altra strada, il telefono andato in tasca.
 const GIRO: Duration = Duration::from_secs(20);
 
-/// Quanto si aspetta la libreria. Il filo non ha fretta: occupata, si
-/// riprova al giro dopo.
+/// Quanto si aspetta la libreria dove si può rinunciare — «visto», gli ascolti
+/// da mandare — e quanto aspetta SQLite una lettura a parte. Il filo non ha
+/// fretta: occupata, si riprova al giro dopo.
 pub(super) const ATTESA_LIBRERIA: Duration = Duration::from_secs(2);
+
+/// Quanto si aspetta la libreria uscendo, per scrivere il registro: un
+/// «Dimentica» che non arriva nella libreria tornerebbe dentro al prossimo
+/// avvio.
+const ATTESA_ULTIMA_SCRITTURA: Duration = Duration::from_secs(2);
 
 /// Dopo un'accensione non riuscita, quanto prima di riprovare da sé.
 const RIPROVA_DOPO: Duration = Duration::from_secs(60);
@@ -121,6 +144,21 @@ pub(super) struct Comune {
     /// Cresce a ogni «Annulla» di un collegamento: un comando che stava
     /// ancora accendendo il nodo se ne accorge prima di cominciare ad aspettare.
     pub annulli: AtomicU64,
+    /// Cresce quando il QR si annulla da fuori della scheda che lo mostra — la
+    /// finestra nel vassoio (decisione D-30): un `lontano_qr_crea` in volo se
+    /// ne accorge prima di mettere il suo QR a schermo.
+    pub qr_annullati: AtomicU64,
+    /// Il registro: le modifiche al cancello fatte qui e che una lettura della
+    /// libreria non ha ancora visto scritte, per chiave. Vedi
+    /// [`Comune::registra`].
+    sospese: Mutex<HashMap<String, Sospesa>>,
+    /// Il numero della prossima modifica del registro.
+    prossima_modifica: AtomicU64,
+    /// Quante scritture del registro sono arrivate nella libreria: chi legge lo
+    /// guarda **prima** di leggere, vedi [`tieni_la_lettura`].
+    scritture: AtomicU64,
+    /// Uno scrittore del registro è in giro ([`scrivi_il_registro`]).
+    scrittore: AtomicBool,
     /// La cassetta del filo.
     pub posta: Sender<Posta>,
 }
@@ -139,6 +177,11 @@ impl Comune {
             ultimo_errore: Mutex::new(None),
             ospitano: Mutex::new(Vec::new()),
             annulli: AtomicU64::new(0),
+            qr_annullati: AtomicU64::new(0),
+            sospese: Mutex::new(HashMap::new()),
+            prossima_modifica: AtomicU64::new(1),
+            scritture: AtomicU64::new(0),
+            scrittore: AtomicBool::new(false),
             posta,
         }
     }
@@ -156,18 +199,94 @@ impl Comune {
             .contains(chiave)
     }
 
-    /// Una chiave entra (subito: la connessione che segue l'associazione non
-    /// deve trovare il cancello chiuso) o esce.
+    /// Solo il cancello, per le prove che non c'entrano col registro: nel
+    /// codice vero il cancello cambia con [`Comune::registra`] o da una
+    /// lettura.
+    #[cfg(test)]
     pub(super) fn ammetti(&self, chiave: &str, dentro: bool) {
         let mut associati = self
             .associati
             .write()
             .unwrap_or_else(PoisonError::into_inner);
         if dentro {
-            associati.insert(chiave.to_owned());
+            associati.insert(chiave_di(chiave));
         } else {
-            associati.remove(chiave);
+            associati.remove(&chiave_di(chiave));
         }
+    }
+
+    /// Una modifica al cancello fatta qui: entra **adesso** — una chiave
+    /// collegata entra subito (la connessione che segue l'associazione non
+    /// deve trovarlo chiuso), una dimenticata esce subito — e resta nel
+    /// registro finché una lettura della libreria non la vede scritta
+    /// (decisione D-24). La scrive [`scrivi_il_registro`], appena la libreria
+    /// è libera.
+    ///
+    /// Fino al reperto R01-2 cambiava solo il cancello in memoria, e la
+    /// scrittura che non prendeva la libreria in due secondi — una scansione
+    /// in corso — si perdeva: la prima lettura riuscita rimetteva dentro il
+    /// dispositivo dimenticato, il nodo lo tornava a seguire, e la sua chiave
+    /// di «Ascolta insieme» restava fidata, finché la persona non rifaceva il
+    /// gesto. Ora una lettura non la disfa ([`tieni_la_lettura`]): ci passa
+    /// sopra.
+    pub(super) fn registra(&self, chiave: &str, modifica: Modifica) {
+        let chiave = chiave_di(chiave);
+        let dentro = matches!(modifica, Modifica::Associa(_));
+        // Registro e cancello insieme, nell'ordine di `tieni_la_lettura`: una
+        // lettura che rifà il cancello non passa in mezzo.
+        let mut sospese = prendi(&self.sospese);
+        let numero = self.prossima_modifica.fetch_add(1, Ordering::Relaxed);
+        sospese.insert(
+            chiave.clone(),
+            Sospesa {
+                modifica,
+                numero,
+                scritta: None,
+            },
+        );
+        let mut associati = self
+            .associati
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if dentro {
+            associati.insert(chiave);
+        } else {
+            associati.remove(&chiave);
+        }
+    }
+
+    /// Le modifiche del registro che la libreria non ha ancora, col loro
+    /// numero.
+    fn da_scrivere(&self) -> Vec<(String, u64, Modifica)> {
+        prendi(&self.sospese)
+            .iter()
+            .filter(|(_, sospesa)| sospesa.scritta.is_none())
+            .map(|(chiave, sospesa)| (chiave.clone(), sospesa.numero, sospesa.modifica.clone()))
+            .collect()
+    }
+
+    /// Queste modifiche sono nella libreria, a transazione chiusa: una
+    /// lettura che comincia da qui in poi le vede. Una arrivata dopo per la
+    /// stessa chiave (un altro numero) resta da scrivere.
+    fn segna_scritte(&self, fatte: &[(String, u64)]) {
+        let mut sospese = prendi(&self.sospese);
+        let scrittura = self
+            .scritture
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        for (chiave, numero) in fatte {
+            if let Some(sospesa) = sospese.get_mut(chiave)
+                && sospesa.numero == *numero
+            {
+                sospesa.scritta = Some(scrittura);
+            }
+        }
+    }
+
+    /// Il numero dell'ultima scrittura del registro arrivata nella libreria:
+    /// chi legge lo prende prima di cominciare.
+    fn scritture_viste(&self) -> u64 {
+        self.scritture.load(Ordering::SeqCst)
     }
 
     /// C'è un ascolto o uno scaricamento in corso.
@@ -190,23 +309,382 @@ pub(super) fn prendi<T>(lucchetto: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     lucchetto.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// La chiave di un dispositivo come la scrive la libreria
+/// (`rymembra_app::dispositivi`): senza spazi, minuscola.
+fn chiave_di(chiave: &str) -> String {
+    chiave.trim().to_ascii_lowercase()
+}
+
+/// Lo stato della libreria; senza, `internal.aborted`.
+fn lo_stato(app: &AppHandle) -> Result<tauri::State<'_, Stato>, AppError> {
+    app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("lontano".to_owned()),
+        })
+    })
+}
+
 /// La libreria, aspettata al più `entro`. Non presa in tempo è `db.locked`.
+///
+/// Solo per chi può rinunciare e riprovare: «visto», gli ascolti da mandare.
+/// Le letture del filo passano da [`leggi_a_parte`], le scritture dei comandi
+/// da [`scrivi_in_libreria`]: vedi il `//!`.
 pub(super) fn in_libreria<T>(
     app: &AppHandle,
     entro: Duration,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
-    let stato = app.try_state::<Stato>().ok_or_else(|| {
-        AppError::new(ErrorCode::InternalAborted {
-            what: Some("lontano".to_owned()),
-        })
-    })?;
-    crate::stato::con_libreria_entro(&stato, entro, |l| azione(&l.connection)).unwrap_or_else(
-        || {
+    crate::stato::con_libreria_entro(&*lo_stato(app)?, entro, |l| azione(&l.connection))
+        .unwrap_or_else(|| {
             Err(AppError::new(ErrorCode::DbLocked)
                 .with_cause("la libreria è occupata: il collegamento non l'aspetta"))
+        })
+}
+
+/// Una lettura della libreria senza il suo lucchetto: da una connessione di
+/// sola lettura (`crate::stato::leggi_a_parte`), che in WAL non ferma chi
+/// scrive e non ne è fermata (decisione D-25). Fuori dal WAL torna al
+/// lucchetto, con [`ATTESA_LIBRERIA`].
+pub(super) fn leggi_a_parte<T>(
+    app: &AppHandle,
+    azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    leggi_da(&*lo_stato(app)?, azione)
+}
+
+/// [`leggi_a_parte`], sullo stato: la cucitura delle prove.
+fn leggi_da<T>(
+    stato: &Stato,
+    azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    crate::stato::leggi_a_parte(stato, ATTESA_LIBRERIA, azione).unwrap_or_else(|| {
+        Err(AppError::new(ErrorCode::DbLocked)
+            .with_cause("la libreria è occupata, e senza WAL il collegamento non l'aspetta"))
+    })
+}
+
+/// Una scrittura di un comando: aspetta il suo turno col lucchetto, come ogni
+/// comando sul pool bloccante. Prima rinunciava dopo due secondi, e con i
+/// lavori di sottofondo in corso «Raggiungibile da internet», il relay, «Solo
+/// Wi-Fi» e «Rinomina» rispondevano «il database è occupato» (reperto R01-1).
+pub(super) fn scrivi_in_libreria<T>(
+    app: &AppHandle,
+    azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    crate::stato::con_libreria(&*lo_stato(app)?, |l| azione(&l.connection))
+}
+
+/// L'identificativo di questo dispositivo nella sincronia, per accendere il
+/// nodo: quasi sempre c'è già, e si legge a parte. La prima volta va scritto,
+/// e la lettura a parte non scrive: allora si aspetta il proprio turno.
+fn dispositivo_di(stato: &Stato) -> Result<String, AppError> {
+    leggi_da(stato, crate::nuvola::dispositivo).or_else(|_| {
+        crate::stato::con_libreria(stato, |l| crate::nuvola::dispositivo(&l.connection))
+    })
+}
+
+// ── il registro ─────────────────────────────────────────────────────────────
+
+/// Una modifica al cancello fatta qui: vedi [`Comune::registra`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Modifica {
+    /// «Dimentica», da qui: la riga se ne va, e con lei la fiducia che il QR
+    /// aveva dato in «Ascolta insieme» (`dispositivi::dimentica`).
+    Dimentica,
+    /// L'altro ci ha dimenticati: la riga resta, revocata
+    /// (`dispositivi::revoca`).
+    Revoca,
+    /// Un collegamento appena fatto.
+    Associa(Collegato),
+}
+
+/// Un dispositivo appena collegato, come si è presentato: la riga da scrivere,
+/// e da mostrare finché la libreria non ce l'ha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Collegato {
+    /// Il nome che dichiara, com'è arrivato: lo ripulisce chi lo scrive.
+    pub nome: String,
+    /// La piattaforma che dichiara.
+    pub piattaforma: String,
+    /// L'identificativo nella sincronia.
+    pub dispositivo: String,
+    /// La chiave di «Ascolta insieme», se l'ha data.
+    pub chiave_insieme: Option<String>,
+    /// Gli indirizzi da cui si è presentato.
+    pub indirizzi: Vec<String>,
+    /// Quando.
+    pub associato_ms: i64,
+}
+
+impl Collegato {
+    /// La riga come la scriverà `dispositivi::associa`, con le sue stesse
+    /// pulizie: per il pannello, per chi seguire e per il cancello, finché una
+    /// lettura non porta quella vera. Senza `id`, che qui nessuno usa.
+    fn come_riga(&self, chiave: &str) -> Dispositivo {
+        let mut nome = rymembra_app::insieme::ripulisci_nome(&self.nome);
+        if nome.is_empty() {
+            nome = chiave.chars().take(8).collect();
+        }
+        Dispositivo {
+            id: 0,
+            chiave: chiave.to_owned(),
+            nome,
+            piattaforma: self
+                .piattaforma
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(16)
+                .collect(),
+            dispositivo: self
+                .dispositivo
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .take(64)
+                .collect(),
+            chiave_insieme: self
+                .chiave_insieme
+                .as_deref()
+                .map(chiave_di)
+                .filter(|c| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit())),
+            indirizzi: self
+                .indirizzi
+                .iter()
+                .filter(|a| a.parse::<std::net::SocketAddr>().is_ok())
+                .take(dispositivi::MASSIMO_INDIRIZZI)
+                .cloned()
+                .collect(),
+            associato_ms: self.associato_ms,
+            visto_ms: Some(self.associato_ms),
+            revocato: false,
+        }
+    }
+}
+
+/// Una voce del registro.
+#[derive(Debug)]
+struct Sospesa {
+    modifica: Modifica,
+    /// Il suo numero: lo scrittore segna scritta la modifica che ha scritto,
+    /// non una arrivata dopo per la stessa chiave.
+    numero: u64,
+    /// La scrittura che l'ha portata nella libreria ([`Comune::scritture`]),
+    /// quando c'è.
+    scritta: Option<u64>,
+}
+
+/// Una modifica del registro sopra una lettura.
+fn applica(dispositivi: &mut Vec<Dispositivo>, chiave: &str, modifica: &Modifica) {
+    match modifica {
+        Modifica::Dimentica => dispositivi.retain(|d| chiave_di(&d.chiave) != chiave),
+        Modifica::Revoca => {
+            for d in dispositivi
+                .iter_mut()
+                .filter(|d| chiave_di(&d.chiave) == chiave)
+            {
+                d.revocato = true;
+            }
+        }
+        Modifica::Associa(collegato) => {
+            let riga = collegato.come_riga(chiave);
+            match dispositivi
+                .iter_mut()
+                .find(|d| chiave_di(&d.chiave) == chiave)
+            {
+                Some(d) => {
+                    *d = Dispositivo {
+                        id: d.id,
+                        visto_ms: d.visto_ms.max(riga.visto_ms),
+                        ..riga
+                    };
+                }
+                // Il più recente: in cima, come `dispositivi::tutti`.
+                None => dispositivi.insert(0, riga),
+            }
+        }
+    }
+}
+
+/// Quel che una passata dello scrittore ha fatto.
+#[derive(Debug, Default)]
+struct Scritte {
+    /// Le modifiche scritte, col loro numero.
+    fatte: Vec<(String, u64)>,
+    /// La fiducia di «Ascolta insieme» è cambiata: la sua rete rilegge.
+    insieme_cambiato: bool,
+    /// Perché si è fermata, se si è fermata prima della fine.
+    guasto: Option<AppError>,
+}
+
+/// Scrive le modifiche nella libreria, una alla volta, fino alla prima che
+/// non riesce. Ognuna è una transazione sua (`dispositivi::dimentica` ne apre
+/// una), e quelle fatte restano fatte. Scriverne una due volte non cambia
+/// niente: dimenticare due volte è dimenticare una volta.
+fn scrivi_su(c: &rusqlite::Connection, da_scrivere: &[(String, u64, Modifica)]) -> Scritte {
+    let mut scritte = Scritte::default();
+    for (chiave, numero, modifica) in da_scrivere {
+        let esito = match modifica {
+            Modifica::Dimentica => dispositivi::dimentica(c, chiave),
+            Modifica::Revoca => dispositivi::revoca(c, chiave).map(|()| false),
+            Modifica::Associa(collegato) => associa(c, chiave, collegato),
+        };
+        match esito {
+            Ok(cambiato) => {
+                scritte.insieme_cambiato |= cambiato;
+                scritte.fatte.push((chiave.clone(), *numero));
+            }
+            Err(err) => {
+                scritte.guasto = Some(err);
+                break;
+            }
+        }
+    }
+    scritte
+}
+
+/// Un collegamento nella libreria, e la fiducia di «Ascolta insieme» per la
+/// chiave che il dispositivo ha dato col QR: chiederlo di nuovo in casa
+/// sarebbe una seconda associazione degli stessi due dispositivi. Ma la chiave
+/// la dichiara l'altro, e niente prova che sia sua: un PC che la persona aveva
+/// bloccato resta bloccato, e uno che c'è già tiene il suo nome
+/// (`rymembra_app::insieme::fidato_dal_qr`). «Dimentica» la toglie. Un guasto
+/// lì non disfa il collegamento: in casa resta il codice. `true` se la fiducia
+/// è cambiata.
+fn associa(
+    c: &rusqlite::Connection,
+    chiave: &str,
+    collegato: &Collegato,
+) -> Result<bool, AppError> {
+    dispositivi::associa(
+        c,
+        Nuovo {
+            chiave,
+            nome: &collegato.nome,
+            piattaforma: &collegato.piattaforma,
+            dispositivo: &collegato.dispositivo,
+            chiave_insieme: collegato.chiave_insieme.as_deref(),
+            indirizzi: &collegato.indirizzi,
         },
-    )
+        collegato.associato_ms,
+    )?;
+    let Some(insieme) = collegato.chiave_insieme.as_deref() else {
+        return Ok(false);
+    };
+    match rymembra_app::insieme::fidato_dal_qr(c, insieme, &collegato.nome, collegato.associato_ms)
+    {
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => {
+            nota!(
+                "[lontano] la chiave di «Ascolta insieme» del dispositivo collegato è di un PC bloccato: resta bloccato"
+            );
+            Ok(false)
+        }
+        Err(err) => {
+            nota!(
+                "[lontano] la chiave di «Ascolta insieme» non si scrive codice={}",
+                err.code().kind().code()
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// Scrive nella libreria il registro, su un filo suo — uno alla volta — che
+/// aspetta il suo turno col lucchetto come ogni comando: una scansione lo fa
+/// aspettare, non rinunciare. Finito, sveglia il filo, la cui lettura toglie
+/// dal registro quel che vede scritto. Un guasto vero si dice nel diario, e si
+/// ritenta al giro dopo ([`Filo::riconcilia`]). Non aspetta.
+pub(super) fn scrivi_il_registro(app: &AppHandle, comune: &Arc<Comune>) {
+    if comune.da_scrivere().is_empty() || comune.scrittore.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    let suo = Arc::clone(comune);
+    let partito = std::thread::Builder::new()
+        .name("rymembra-lontano-registro".to_owned())
+        .spawn(move || scrivi_finche_ce_n_e(&app, &suo));
+    if let Err(err) = partito {
+        comune.scrittore.store(false, Ordering::Release);
+        nota!("[lontano] lo scrittore dei dispositivi non parte: {err}");
+    }
+}
+
+/// Il corpo dello scrittore di [`scrivi_il_registro`].
+fn scrivi_finche_ce_n_e(app: &AppHandle, comune: &Comune) {
+    loop {
+        let da_scrivere = comune.da_scrivere();
+        if da_scrivere.is_empty() {
+            comune.scrittore.store(false, Ordering::Release);
+            // Una modifica arrivata fra il conto e qui ha trovato lo scrittore
+            // ancora in giro, e non ne ha fatto partire un altro: la si prende
+            // adesso, se nessuno è partito nel frattempo.
+            if comune.da_scrivere().is_empty() || comune.scrittore.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            continue;
+        }
+        let scritte = lo_stato(app)
+            .and_then(|stato| {
+                crate::stato::con_libreria(&stato, |l| Ok(scrivi_su(&l.connection, &da_scrivere)))
+            })
+            .unwrap_or_else(|err| Scritte {
+                guasto: Some(err),
+                ..Scritte::default()
+            });
+        comune.segna_scritte(&scritte.fatte);
+        if scritte.insieme_cambiato {
+            // La rete di «Ascolta insieme» rilegge, e chiude le connessioni
+            // della chiave che non è più fidata.
+            crate::insieme::fidati_cambiati(app);
+        }
+        if !scritte.fatte.is_empty() {
+            comune.sveglia(Posta::Rileggi {
+                risposta: None,
+                subito: false,
+            });
+        }
+        if let Some(err) = scritte.guasto {
+            nota!(
+                "[lontano] una modifica dei dispositivi non si scrive codice={}: si riprova al giro",
+                err.code().kind().code()
+            );
+            comune.scrittore.store(false, Ordering::Release);
+            return;
+        }
+    }
+}
+
+/// Il registro ancora da scrivere, uscendo: al più [`ATTESA_ULTIMA_SCRITTURA`],
+/// e se la libreria non arriva lo si dice nel diario.
+pub(super) fn scrivi_prima_di_uscire(app: &AppHandle, comune: &Comune) {
+    let da_scrivere = comune.da_scrivere();
+    if da_scrivere.is_empty() {
+        return;
+    }
+    let Ok(stato) = lo_stato(app) else {
+        return;
+    };
+    let esito = crate::stato::con_libreria_entro(&stato, ATTESA_ULTIMA_SCRITTURA, |l| {
+        Ok(scrivi_su(&l.connection, &da_scrivere))
+    });
+    match esito {
+        Some(Ok(scritte)) => {
+            comune.segna_scritte(&scritte.fatte);
+            if let Some(err) = scritte.guasto {
+                nota!(
+                    "[lontano] uscendo, una modifica dei dispositivi non si scrive codice={}",
+                    err.code().kind().code()
+                );
+            }
+        }
+        Some(Err(err)) => nota!(
+            "[lontano] uscendo, le modifiche dei dispositivi non si scrivono codice={}",
+            err.code().kind().code()
+        ),
+        None => nota!(
+            "[lontano] uscendo, {} modifiche dei dispositivi non si scrivono: la libreria è occupata",
+            da_scrivere.len()
+        ),
+    }
 }
 
 /// Fa partire il filo.
@@ -247,36 +725,29 @@ fn leggi(c: &rusqlite::Connection) -> Result<Letto, AppError> {
     })
 }
 
-/// Tiene la lettura appena fatta e, se è riuscita, rifà da lei il cancello.
-/// `true` se è riuscita.
+/// Tiene la lettura appena fatta, ci mette sopra il registro, e da lì rifà il
+/// cancello. `true` se la lettura è riuscita. `vista` è
+/// [`Comune::scritture_viste`] preso **prima** di leggere.
 ///
-/// Con la libreria occupata (una scansione, «Rileggi tutti i tag») si tiene
-/// l'ultima lettura per il resto — accendere, spegnere, il nome — ma il
-/// cancello non si tocca: resta con le modifiche puntuali che
-/// [`Comune::ammetti`] ha fatto nel frattempo, e lo stesso vale per chi il
-/// nodo segue (`Nodo::pari`, solo dopo una lettura riuscita). Fino al reperto
-/// 02-8 lo si rifaceva dalla lettura vecchia: un dispositivo appena
-/// dimenticato tornava dentro, e il nodo lo tornava a seguire, fino alla
-/// lettura riuscita dopo; uno appena collegato restava fuori.
+/// Il registro sopra la lettura, sempre: dispositivi, cancello, chi il nodo
+/// segue (`Nodo::pari`) e il pannello vengono tutti dallo stesso elenco. Una
+/// modifica esce dal registro solo quando una lettura **cominciata dopo** che
+/// era scritta riesce: una lettura presa un attimo prima — dalla connessione a
+/// parte, che vede l'ultima transazione chiusa — non la disfa (reperto
+/// R01-2). Da lì decide la libreria.
+///
+/// Con la lettura che non riesce (fuori dal WAL, la libreria occupata) si
+/// tiene l'ultima, col registro sopra: lo stesso cancello che c'era, con le
+/// modifiche fatte nel frattempo. Fino al reperto 02-8 lo si rifaceva dalla
+/// lettura vecchia, senza le modifiche.
 fn tieni_la_lettura(
     comune: &Comune,
     letto: &mut Option<Letto>,
     lettura: Result<Letto, AppError>,
+    vista: u64,
 ) -> bool {
-    match lettura {
+    let riuscita = match lettura {
         Ok(nuova) => {
-            {
-                let mut associati = comune
-                    .associati
-                    .write()
-                    .unwrap_or_else(PoisonError::into_inner);
-                *associati = nuova
-                    .dispositivi
-                    .iter()
-                    .filter(|d| !d.revocato)
-                    .map(|d| d.chiave.clone())
-                    .collect();
-            }
             *letto = Some(nuova);
             true
         }
@@ -289,7 +760,29 @@ fn tieni_la_lettura(
             }
             false
         }
+    };
+    let mut sospese = prendi(&comune.sospese);
+    if riuscita {
+        sospese.retain(|_, sospesa| sospesa.scritta.is_none_or(|scrittura| scrittura > vista));
     }
+    let Some(letto) = letto.as_mut() else {
+        // Ancora nessuna lettura: il cancello è quello delle modifiche.
+        return riuscita;
+    };
+    for (chiave, sospesa) in sospese.iter() {
+        applica(&mut letto.dispositivi, chiave, &sospesa.modifica);
+    }
+    let mut associati = comune
+        .associati
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    *associati = letto
+        .dispositivi
+        .iter()
+        .filter(|d| !d.revocato)
+        .map(|d| chiave_di(&d.chiave))
+        .collect();
+    riuscita
 }
 
 /// Il nodo tolto da [`Comune::nodo`]: si chiude subito, anche se un comando
@@ -439,8 +932,13 @@ impl Filo {
 
     /// Rilegge, accende o spegne, e pubblica. `subito`: vedi [`Posta::Rileggi`].
     fn riconcilia(&mut self, subito: bool) {
-        let lettura = in_libreria(&self.app, ATTESA_LIBRERIA, leggi);
-        let riuscita = tieni_la_lettura(&self.comune, &mut self.letto, lettura);
+        // Prima di leggere: vedi `tieni_la_lettura`.
+        let vista = self.comune.scritture_viste();
+        let lettura = leggi_a_parte(&self.app, leggi);
+        tieni_la_lettura(&self.comune, &mut self.letto, lettura, vista);
+        // Quel che il registro non ha ancora scritto: un guasto di prima si
+        // ritenta qui, a ogni giro.
+        scrivi_il_registro(&self.app, &self.comune);
         let Some(letto) = &self.letto else {
             return;
         };
@@ -486,21 +984,19 @@ impl Filo {
             self.spegni();
         }
         if let (Some(nodo), Some(letto)) = (self.comune.nodo(), &self.letto) {
-            // Chi seguire, solo da una lettura riuscita: vedi
-            // `tieni_la_lettura`.
-            if riuscita {
-                nodo.pari(
-                    letto
-                        .dispositivi
-                        .iter()
-                        .filter(|d| !d.revocato)
-                        .map(|d| PariNoto {
-                            chiave: d.chiave.clone(),
-                            indirizzi: d.indirizzi.iter().filter_map(|a| a.parse().ok()).collect(),
-                        })
-                        .collect(),
-                );
-            }
+            // Chi seguire: dallo stesso elenco del cancello, la lettura col
+            // registro sopra (vedi `tieni_la_lettura`).
+            nodo.pari(
+                letto
+                    .dispositivi
+                    .iter()
+                    .filter(|d| !d.revocato)
+                    .map(|d| PariNoto {
+                        chiave: d.chiave.clone(),
+                        indirizzi: d.indirizzi.iter().filter_map(|a| a.parse().ok()).collect(),
+                    })
+                    .collect(),
+            );
             nodo.presenza(self.presenza());
         }
         self.togli_il_qr_finito();
@@ -526,7 +1022,7 @@ impl Filo {
     }
 
     fn accendi(&mut self, relay: Option<String>) -> Result<(), AppError> {
-        let dispositivo = in_libreria(&self.app, ATTESA_LIBRERIA, crate::nuvola::dispositivo)?;
+        let dispositivo = dispositivo_di(&*lo_stato(&self.app)?)?;
         let identita = identita::identita(&rymembra_oauth::portachiavi::DiSistema, &dispositivo)?;
         let io = Presentazione {
             nome: self
@@ -833,13 +1329,13 @@ mod prove {
         let (posta, _cassetta) = std::sync::mpsc::channel();
         let comune = Comune::nuovo(posta);
         let mut letto = None;
-        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c)));
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
         assert!(comune.associato(&perso));
 
         // «Dimentica»: fuori subito, e la riga se ne va.
-        comune.ammetti(&perso, false);
+        comune.registra(&perso, Modifica::Dimentica);
         dispositivi::dimentica(c, &perso).unwrap();
-        assert!(!tieni_la_lettura(&comune, &mut letto, occupata()));
+        assert!(!tieni_la_lettura(&comune, &mut letto, occupata(), 0));
         assert!(
             !comune.associato(&perso),
             "il dispositivo dimenticato resta fuori"
@@ -848,14 +1344,241 @@ mod prove {
         // Un collegamento appena fatto: dentro subito, e ci resta.
         let nuovo = chiave_finta('b');
         collega(c, &nuovo);
-        comune.ammetti(&nuovo, true);
-        assert!(!tieni_la_lettura(&comune, &mut letto, occupata()));
+        comune.registra(&nuovo, Modifica::Associa(collegato("Telefono")));
+        assert!(!tieni_la_lettura(&comune, &mut letto, occupata(), 0));
         assert!(comune.associato(&nuovo), "il nuovo non resta fuori");
 
         // La lettura che riesce dice com'è la libreria.
-        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c)));
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
         assert!(!comune.associato(&perso));
         assert!(comune.associato(&nuovo));
+    }
+
+    /// Un dispositivo appena collegato, come arriva dal nodo.
+    fn collegato(nome: &str) -> Collegato {
+        Collegato {
+            nome: nome.to_owned(),
+            piattaforma: "android".to_owned(),
+            dispositivo: "telefono-di-prova".to_owned(),
+            chiave_insieme: None,
+            indirizzi: Vec::new(),
+            associato_ms: 5,
+        }
+    }
+
+    /// Lo scrittore del registro, sulla libreria della prova.
+    fn scrivi_il_registro_su(c: &rusqlite::Connection, comune: &Comune) {
+        let scritte = scrivi_su(c, &comune.da_scrivere());
+        assert!(scritte.guasto.is_none(), "{:?}", scritte.guasto);
+        comune.segna_scritte(&scritte.fatte);
+    }
+
+    #[test]
+    fn una_revoca_non_scritta_non_si_disfa_alla_lettura_dopo() {
+        // Reperto R01-2: «Dimentica» con la libreria occupata cambiava il
+        // cancello solo in memoria; la scrittura non prendeva la libreria, e
+        // la prima lettura riuscita rimetteva dentro il dispositivo
+        // dimenticato — per sempre, se nessuno rifaceva il gesto.
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let perso = chiave_finta('a');
+        collega(c, &perso);
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Comune::nuovo(posta);
+        let mut letto = None;
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            leggi(c),
+            comune.scritture_viste()
+        ));
+        assert!(comune.associato(&perso));
+
+        // Fuori in memoria; la riga è ancora nella libreria.
+        comune.registra(&perso, Modifica::Dimentica);
+        let presa_prima = leggi(c);
+        let vista_prima = comune.scritture_viste();
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            leggi(c),
+            comune.scritture_viste()
+        ));
+        assert!(
+            !comune.associato(&perso),
+            "una lettura riuscita non rimette dentro un dispositivo dimenticato"
+        );
+        assert!(
+            letto
+                .as_ref()
+                .is_some_and(|l| l.dispositivi.iter().all(|d| d.chiave != perso)),
+            "né nel pannello, né fra chi il nodo segue"
+        );
+
+        // La libreria si libera, e lo scrittore la scrive.
+        scrivi_il_registro_su(c, &comune);
+        assert!(comune.da_scrivere().is_empty());
+        assert!(dispositivi::uno(c, &perso).unwrap().is_none());
+        // Una lettura presa prima della scrittura non la disfa.
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            presa_prima,
+            vista_prima
+        ));
+        assert!(!comune.associato(&perso), "una lettura vecchia, riuscita");
+        // Una cominciata dopo la vede: da lì decide la libreria.
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            leggi(c),
+            comune.scritture_viste()
+        ));
+        assert!(!comune.associato(&perso));
+        assert!(prendi(&comune.sospese).is_empty(), "il registro è vuoto");
+    }
+
+    #[test]
+    fn un_collegamento_e_un_dimenticami_non_scritti_valgono_finche_la_libreria_non_li_ha() {
+        // Decisione D-24, anche per un collegamento nuovo e per un
+        // «Dimenticami» ricevuto: prima la scrittura rinunciava (dieci
+        // secondi), e la prima lettura chiudeva fuori il dispositivo appena
+        // accolto, o lasciava collegato per sempre chi ci aveva dimenticati.
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let altro = chiave_finta('d');
+        collega(c, &altro);
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Comune::nuovo(posta);
+        let mut letto = None;
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
+
+        // Un collegamento mentre una scansione tiene la libreria, con la
+        // chiave come la scrive il nodo (maiuscole comprese), e un
+        // «Dimenticami» dall'altro.
+        let nuovo = chiave_finta('e');
+        comune.registra(
+            &nuovo.to_ascii_uppercase(),
+            Modifica::Associa(collegato(" Telefono\u{202E} ")),
+        );
+        comune.registra(&altro, Modifica::Revoca);
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
+        assert!(comune.associato(&nuovo), "il nuovo è dentro");
+        assert!(!comune.associato(&altro), "chi ci ha dimenticati è fuori");
+        let righe = &letto.as_ref().expect("letto").dispositivi;
+        let riga = righe
+            .iter()
+            .find(|d| d.chiave == nuovo)
+            .expect("il nuovo è nel pannello");
+        assert_eq!(riga.nome, "Telefono", "ripulito come lo scrive la libreria");
+        assert!(
+            righe
+                .iter()
+                .find(|d| d.chiave == altro)
+                .is_some_and(|d| d.revocato),
+            "chi ci ha dimenticati resta in vista, revocato"
+        );
+
+        // Scritti: la lettura dopo porta le righe vere, e il registro si
+        // svuota.
+        scrivi_il_registro_su(c, &comune);
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            leggi(c),
+            comune.scritture_viste()
+        ));
+        assert!(prendi(&comune.sospese).is_empty());
+        assert!(comune.associato(&nuovo));
+        assert!(!comune.associato(&altro));
+        assert_eq!(
+            dispositivi::uno(c, &nuovo).unwrap().expect("scritto").nome,
+            "Telefono"
+        );
+        assert!(dispositivi::uno(c, &altro).unwrap().expect("c'è").revocato);
+    }
+
+    #[test]
+    fn una_modifica_arrivata_mentre_si_scrive_resta_da_scrivere() {
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let chiave = chiave_finta('f');
+        collega(c, &chiave);
+        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let comune = Comune::nuovo(posta);
+        comune.registra(&chiave, Modifica::Revoca);
+        let in_scrittura = comune.da_scrivere();
+        // Mentre lo scrittore lavora, la persona lo dimentica.
+        comune.registra(&chiave, Modifica::Dimentica);
+        let scritte = scrivi_su(c, &in_scrittura);
+        comune.segna_scritte(&scritte.fatte);
+        assert_eq!(
+            comune
+                .da_scrivere()
+                .into_iter()
+                .map(|(_, _, modifica)| modifica)
+                .collect::<Vec<_>>(),
+            vec![Modifica::Dimentica],
+            "«Dimentica» non si perde dietro la revoca già scritta"
+        );
+        assert!(!comune.associato(&chiave));
+    }
+
+    #[test]
+    fn con_un_lavoro_lungo_il_filo_legge_e_il_nodo_si_accende() {
+        // Reperto R01-1: il filo chiedeva la libreria con
+        // `con_libreria_entro` (2 s), e i lavori di sottofondo che la prendono
+        // a turno — una prima analisi dura ore — gliela facevano perdere: la
+        // lettura del giro e l'accensione tornavano `db.locked`, e il nodo
+        // restava spento. Il lavoro lento è simulato come in
+        // `servizio::prove::una_scrittura_lunga_qui_non_ferma_chi_sfoglia_da_lontano`.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let stato = &stato;
+        let giornale =
+            crate::stato::con_libreria(stato, |l| Ok(l.giornale.clone())).expect("libreria aperta");
+        assert_eq!(giornale, "wal", "senza WAL questa prova non prova niente");
+        let io = crate::stato::con_libreria(stato, |l| crate::nuvola::dispositivo(&l.connection))
+            .expect("l'identificativo di questo dispositivo");
+
+        let (preso, lavoro_partito) = std::sync::mpsc::channel::<()>();
+        let (finito, filo_finito) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|ambito| {
+            let lavoro = ambito.spawn(move || {
+                crate::stato::con_libreria(stato, |l| {
+                    let tx = l
+                        .connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))?;
+                    dispositivi::attiva(&tx, true)?;
+                    let _ = preso.send(());
+                    let _ = filo_finito.recv_timeout(ATTESA_LIBRERIA * 4);
+                    tx.commit()
+                        .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))
+                })
+            });
+            lavoro_partito
+                .recv()
+                .expect("il lavoro ha preso la libreria");
+
+            let inizio = Instant::now();
+            let lettura = leggi_da(stato, leggi);
+            let dispositivo = dispositivo_di(stato);
+            let tempo = inizio.elapsed();
+            let _ = finito.send(());
+            lavoro
+                .join()
+                .expect("il lavoro non cade")
+                .expect("il lavoro scrive");
+
+            let lettura = lettura.expect("il filo legge il giro");
+            assert!(
+                !lettura.impostazioni.attivo,
+                "quel che era scritto, non la scrittura ancora aperta"
+            );
+            assert_eq!(dispositivo.expect("e chi è, per accendere il nodo"), io);
+            assert!(tempo < ATTESA_LIBRERIA, "ha aspettato il lavoro: {tempo:?}");
+        });
     }
 
     /// Un'app che non conosce nessuno.

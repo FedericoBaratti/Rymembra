@@ -1524,6 +1524,8 @@
   "devices.forget": "Dimentica",
   "devices.forget.title": "Dimenticare «{nome}»?",
   "devices.forget.sub": "Non potrà più raggiungere questo dispositivo, e glielo diciamo: per ricollegarvi servirà un QR nuovo. Smette anche di essere fidato in «Ascolta insieme», e per ascoltare insieme servirà di nuovo il codice. Gli ascolti già mandati restano.",
+  "devices.forget.together.sub": "Smette di essere fidato in «Ascolta insieme»: per ascoltare insieme servirà di nuovo il codice.",
+  "devices.forget.sync.sub": "Quel che scrive nella sincronia smette di valere qui; gli ascolti che ha già portato restano. Se continua a sincronizzarsi ricompare, da accettare.",
   "devices.scan.denied": "Senza la fotocamera il QR non si legge. Puoi concederla dalle impostazioni di Android, oppure incollare il link.",
   "devices.browse.eyebrow": "Sfoglia",
   "devices.browse.tabs": "Cosa sfogliare",
