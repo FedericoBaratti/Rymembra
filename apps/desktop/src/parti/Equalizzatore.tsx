@@ -279,9 +279,13 @@ export function Equalizzatore({
                 max={LIMITE_EQ_DB}
                 step={PASSO_DB}
                 value={db}
-                aria-label={t("eq.band.aria", {
-                  banda: etichettaBanda(hz),
-                  db,
+                /* Il nome è la banda, e basta: il valore lo dice
+                   `aria-valuetext`, scritto come accanto al cursore. Dentro
+                   il nome si sentiva due volte, la prima col punto inglese. */
+                aria-label={etichettaBanda(hz)}
+                aria-valuetext={t("eq.band.value", {
+                  n: Math.abs(db),
+                  db: decibel(db, numero),
                 })}
                 onChange={(e) => muoviBanda(banda, Number(e.target.value))}
                 /* Il doppio clic riporta a zero la banda: è la scorciatoia che
@@ -301,6 +305,7 @@ export function Equalizzatore({
             type="text"
             className="campo field-input"
             placeholder={t("eq.save.name")}
+            aria-label={t("eq.save.name")}
             value={nomeNuovo}
             maxLength={40}
             onChange={(e) => setNomeNuovo(e.target.value)}

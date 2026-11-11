@@ -175,10 +175,15 @@ export function Scrobbling({
           role="switch"
           aria-checked={stato?.attivo ?? false}
           aria-label={t("scrobble.toggle")}
-          disabled={!collegato || inVolo}
-          onClick={() =>
-            esegui(() => ipc.scrobbleAttivo(!(stato?.attivo ?? false)))
-          }
+          /* Spento senza un servizio collegato. Durante un comando invece lo
+             dice e ignora il clic: con `disabled` il fuoco di chi l'aveva
+             appena premuto cadeva sul documento. */
+          disabled={!collegato}
+          aria-disabled={inVolo || undefined}
+          onClick={() => {
+            if (inVolo) return;
+            esegui(() => ipc.scrobbleAttivo(!(stato?.attivo ?? false)));
+          }}
         >
           <span className="pista switch-track" aria-hidden="true">
             <span className="pallina" />
@@ -214,8 +219,11 @@ export function Scrobbling({
             <button
               type="button"
               className="bottone btn-ghost"
-              disabled={inVolo}
-              onClick={invia}
+              aria-disabled={inVolo || undefined}
+              aria-busy={inVolo || undefined}
+              onClick={() => {
+                if (!inVolo) invia();
+              }}
             >
               <Icona nome="i-cloud" dim={15} />
               {inVolo ? t("scrobble.sending") : t("scrobble.sendNow")}
@@ -236,6 +244,7 @@ export function Scrobbling({
             type="password"
             className="campo field-input"
             placeholder={t("scrobble.token")}
+            aria-label={t("scrobble.token")}
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
@@ -323,6 +332,7 @@ export function Scrobbling({
               type="text"
               className="campo field-input"
               placeholder={t("scrobble.lfm.key")}
+              aria-label={t("scrobble.lfm.key")}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
             />
@@ -330,6 +340,7 @@ export function Scrobbling({
               type="password"
               className="campo field-input"
               placeholder={t("scrobble.lfm.secret")}
+              aria-label={t("scrobble.lfm.secret")}
               value={segreto}
               onChange={(e) => setSegreto(e.target.value)}
             />

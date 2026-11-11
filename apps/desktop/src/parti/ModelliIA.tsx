@@ -399,6 +399,7 @@ export function ModelliIA({
           type="text"
           className="campo field-input"
           placeholder={t("ia.name")}
+          aria-label={t("ia.name")}
           value={bozza.nome}
           onChange={(e) => setBozza({ ...bozza, nome: e.target.value })}
         />
@@ -406,6 +407,7 @@ export function ModelliIA({
           type="text"
           className="campo field-input"
           placeholder={t("ia.url")}
+          aria-label={t("ia.url")}
           value={bozza.urlBase}
           onChange={(e) => setBozza({ ...bozza, urlBase: e.target.value })}
         />
@@ -416,6 +418,7 @@ export function ModelliIA({
           type="text"
           className="campo field-input"
           placeholder={t("ia.model")}
+          aria-label={t("ia.model")}
           list="modelli-ia"
           value={bozza.modello}
           onChange={(e) => setBozza({ ...bozza, modello: e.target.value })}
@@ -434,6 +437,7 @@ export function ModelliIA({
           type="password"
           className="campo field-input"
           placeholder={vuoleChiave ? t("ia.key") : t("ia.key.optional")}
+          aria-label={vuoleChiave ? t("ia.key") : t("ia.key.optional")}
           value={chiave}
           onChange={(e) => setChiave(e.target.value)}
         />
