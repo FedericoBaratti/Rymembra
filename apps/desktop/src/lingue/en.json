@@ -876,6 +876,7 @@
   "primo.ascolta": "Play",
   "primo.pronto": "{n} tracks ready",
   "primo.pronto.uno": "one track ready",
+  "primo.pronto.annuncio": "The first tracks are ready: you can start listening.",
   "primo.vuota.title": "No tracks found",
   "primo.vuota.body": "I read the folders you ticked and there was nothing to play. Check you picked the right ones, or point me to another.",
   "primo.saltate": "These folders did not respond, so I could not read them:",

@@ -54,6 +54,7 @@ import { useFinestrella, useVeloInerte } from "./finestrella";
 import { numero } from "./formato";
 import type { Avanzamento, EsitoScansione } from "./ipc";
 import { t } from "./lingue";
+import { Annuncio } from "./parti/Annuncio";
 import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
 import { useDati } from "./dati";
@@ -264,6 +265,20 @@ export function Primo({
   // Letto tutto, e non c'era niente. Si dice, e si dice perché se lo si sa: le
   // cartelle che non hanno risposto sono il caso del NAS spento.
   const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
+  /*
+   * Quel che si dice a chi ascolta lo schermo: i due passaggi che contano, e
+   * non lo stato. Una regione sola, montata con la schermata (`Annuncio`), e
+   * non un ruolo di stato sui riquadri, che nascevano già pieni dentro i loro
+   * rami e spesso tacevano. Il numero dei brani non c'è: cambia a ogni lotto,
+   * e dentro la regione si sarebbe ripetuto per tutta la scansione. L'inizio
+   * della lettura lo dice già `AnnuncioScansione`, che resta viva anche sotto
+   * questa schermata.
+   */
+  const daDire = lettaVuota
+    ? t("primo.vuota.title")
+    : brani > 0
+      ? t("primo.pronto.annuncio")
+      : null;
 
   if (!accesso.pronto) {
     return (
@@ -300,10 +315,10 @@ export function Primo({
           <p className="occhiello">{t("primo.eyebrow")}</p>
           <h1 id="primo-titolo">{t("primo.title")}</h1>
 
+          <Annuncio testo={daDire} />
+
           {cercando ? (
-            <p className="primo-attesa" role="status">
-              {t("primo.cercando")}
-            </p>
+            <p className="primo-attesa">{t("primo.cercando")}</p>
           ) : candidate.length === 0 ? (
             <>
               <h2 className="primo-sotto">{t("primo.nessuna.title")}</h2>
@@ -346,24 +361,19 @@ export function Primo({
             </>
           )}
 
-          {/* La frase nella regione viva, il conteggio fuori: il conteggio
-              cambia quattro volte al secondo, e dentro la regione un lettore
-              di schermo lo rileggeva a ogni passo. Vedi `AnnuncioScansione`. */}
+          {/* Testo semplice, frase e conteggio: a chi ascolta lo schermo
+              parla `daDire`, qui sopra. */}
           {scansionando && (
             <p className="primo-attesa">
-              <span role="status">{t("primo.scansione")}</span>
+              <span>{t("primo.scansione")}</span>
               {aChePunto(scansione)}
             </p>
           )}
 
-          {brani > 0 && (
-            <p className="primo-pronto" role="status">
-              {t("primo.pronto", { n: brani })}
-            </p>
-          )}
+          {brani > 0 && <p className="primo-pronto">{t("primo.pronto", { n: brani })}</p>}
 
           {lettaVuota && (
-            <div role="status">
+            <div>
               <h2 className="primo-sotto">{t("primo.vuota.title")}</h2>
               <p>{t("primo.vuota.body")}</p>
               {esito.radiciSaltate.length > 0 && (

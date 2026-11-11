@@ -45,3 +45,17 @@ test("una cartella indicata a mano non è contata, e non dice «0 brani»", () =
   const primo = readFileSync(new URL("../src/Primo.tsx", import.meta.url), "utf8");
   assert.match(primo, /!eNuvola\(cartella\.percorso\) && cartella\.brani !== null &&/);
 });
+
+test("il primo avvio parla da una regione sempre montata, e dice i passaggi, non il conto", () => {
+  // R16-12. Le regioni `role="status"` nascevano insieme al loro testo, dentro
+  // rami condizionali (`Annuncio.tsx` spiega perché spesso tacciono), e «{n}
+  // brani pronti» stava dentro la regione: cambiava a ogni lotto.
+  const primo = readFileSync(new URL("../src/Primo.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(primo, /role="status"/);
+  const annuncio = primo.slice(primo.indexOf("const daDire"));
+  const regola = annuncio.slice(0, annuncio.indexOf(";\n"));
+  assert.match(regola, /primo\.pronto\.annuncio/);
+  assert.match(regola, /primo\.vuota\.title/);
+  assert.doesNotMatch(regola, /\{ n:/, "il conto non si annuncia");
+  assert.match(primo, /<Annuncio testo=\{daDire\} \/>/);
+});
