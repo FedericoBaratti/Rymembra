@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 /*
  * Prove sui sorgenti delle finestrelle, dove la regola sta nel cablaggio e non
@@ -112,4 +112,54 @@ test("le regioni d'annuncio portano il loro marchio, e restano vive sotto un vel
   for (const file of ["parti/Annuncio.tsx", "parti/AnnuncioScansione.tsx"]) {
     assert.match(sorgente(file), /className="solo-lettori" role="status" data-annuncio/, file);
   }
+});
+
+test("ogni superficie aria-modal rende inerte il resto della finestra", () => {
+  // R16-3: `aria-modal` è un suggerimento, e WebView2 e la WebView di Android
+  // lasciano leggibile e attivabile la pagina dietro. La regola sta in
+  // `useVeloInerte`, o in `Dialogo` che la chiama.
+  const DA_FARE: Record<string, string> = {
+    // Di altri gruppi della revisione: la correzione è la stessa riga.
+    "Giro.tsx": "F08 (il giro)",
+    "parti/Equalizzatore.tsx": "F13",
+    "parti/Insieme.tsx": "F02 (il pannello della barra)",
+    // Rende inerte la pagina da sé, con `inerte` di `Impaginazione`.
+    "schermate/InRiproduzioneTelefono.tsx": "inerte di suo",
+  };
+  const file = [
+    "Account.tsx",
+    "Dialogo.tsx",
+    "Primo.tsx",
+    "Regole.tsx",
+    "Ripristino.tsx",
+    "Sincronizza.tsx",
+    "parti/Foglio.tsx",
+    "parti/SceltaTesto.tsx",
+    ...Object.keys(DA_FARE),
+  ];
+  // L'elenco è completo: ogni sorgente fuori dallo Studio che dichiara un
+  // modale ci sta (lo Studio disegna finestrelle finte sulla tela).
+  const tutti = readdirSync(new URL("../src/", import.meta.url), { recursive: true })
+    .map((p) => String(p).replace(/\\/g, "/"))
+    .filter((p) => p.endsWith(".tsx") && !p.startsWith("studio/"))
+    .filter((p) => sorgente(p).includes('aria-modal="true"'))
+    .sort();
+  assert.deepEqual(tutti, [...file].sort());
+  for (const nome of file) {
+    const testo = sorgente(nome);
+    assert.match(testo, /aria-modal="true"/, nome);
+    if (nome in DA_FARE) continue;
+    assert.match(testo, /useVeloInerte\(/, nome);
+  }
+  // Il primo avvio: la radice fa da velo, dopo `useFinestrella`.
+  const primo = sorgente("Primo.tsx");
+  assert.ok(
+    primo.indexOf("useVeloInerte(finestrella)") > primo.indexOf("useFinestrella<HTMLDivElement>("),
+    "Primo: useVeloInerte dopo useFinestrella",
+  );
+  // Il foglio: il pannello resta vivo accanto al suo velo, e chi aveva il
+  // fuoco si legge prima che la pagina diventi inerte.
+  const foglio = sorgente("parti/Foglio.tsx");
+  assert.match(foglio, /useVeloInerte\(velo, pannello\)/);
+  assert.ok(foglio.indexOf("chiAveva.current =") < foglio.indexOf("useVeloInerte(velo, pannello)"));
 });

@@ -309,3 +309,15 @@ test("un velo già sepolto sotto un inerte d'altri non spegne niente", () => {
 
   assert.deepEqual(daRendereInerti(velo), []);
 });
+
+test("un velo col pannello accanto lascia vivo il pannello", () => {
+  // R16-3. Il foglio del menù del telefono ha il velo e il pannello fratelli:
+  // tutto il resto si spegne, il pannello no.
+  const velo = nodo("velo");
+  const pannello = nodo("pannello");
+  const app = nodo("app", "DIV", nodo("pagina"), velo, pannello);
+  nodo("radice", "DIV", app, nodo("studio"));
+
+  const inerti = daRendereInerti(velo, [pannello]).map((n) => n.nome);
+  assert.deepEqual(inerti, ["pagina", "studio"]);
+});

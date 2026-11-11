@@ -454,8 +454,12 @@ export function useQuandoSiRitira(fai: () => void): (nodo: HTMLElement | null) =
 
 // ── il resto della finestra, inerte ────────────────────────────────────────
 
-/** I veli aperti, nell'ordine in cui si sono aperti: l'ultimo è quello sopra. */
-const veliAperti: HTMLElement[] = [];
+/**
+ * I veli aperti, nell'ordine in cui si sono aperti: l'ultimo è quello sopra.
+ * `accanto` è il nodo che resta vivo pur essendo fratello del velo: vedi
+ * `useVeloInerte`.
+ */
+const veliAperti: { velo: HTMLElement; accanto: HTMLElement | null }[] = [];
 
 /**
  * I nodi resi inerti da qui, e soltanto quelli.
@@ -491,13 +495,14 @@ function riapplicaInerzia(): void {
   sentinella?.disconnect();
   const cima = veliAperti[veliAperti.length - 1];
   if (cima === undefined) return;
-  for (const nodo of daRendereInerti<Element>(cima)) {
+  const accanto = cima.accanto === null ? [] : [cima.accanto];
+  for (const nodo of daRendereInerti<Element>(cima.velo, accanto)) {
     if (!(nodo instanceof HTMLElement) || nodo.inert) continue;
     nodo.inert = true;
     spentiDaQui.add(nodo);
   }
   sentinella ??= new MutationObserver(riapplicaInerzia);
-  for (let gradino = cima.parentElement; gradino !== null; gradino = gradino.parentElement) {
+  for (let gradino = cima.velo.parentElement; gradino !== null; gradino = gradino.parentElement) {
     sentinella.observe(gradino, { childList: true });
   }
 }
@@ -527,20 +532,32 @@ function riapplicaInerzia(): void {
  *
  * Nell'anteprima dello Studio non fa niente: la finestrella è un disegno sulla
  * tela, e spegnere lo Studio intorno a lei lo renderebbe inservibile.
+ *
+ * # Il velo, e quel che gli sta accanto
+ *
+ * Di solito la finestrella sta dentro il suo velo, e basta il velo. Non è
+ * così per il foglio del menù del telefono, dove velo e pannello sono
+ * fratelli — il velo è `aria-hidden`, e un pannello dentro sparirebbe con lui
+ * — e allora il pannello si passa come `accanto`. Il primo avvio invece non ha
+ * un velo: è una schermata piena, e la sua radice fa da velo.
  */
-export function useVeloInerte(velo: RefObject<HTMLElement | null>): void {
+export function useVeloInerte(
+  velo: RefObject<HTMLElement | null>,
+  accanto?: RefObject<HTMLElement | null>,
+): void {
   const { anteprima } = useDati();
   useLayoutEffect(() => {
     const nodo = velo.current;
     if (nodo === null || anteprima) return;
-    veliAperti.push(nodo);
+    const aperto = { velo: nodo, accanto: accanto?.current ?? null };
+    veliAperti.push(aperto);
     riapplicaInerzia();
     return () => {
-      const dove = veliAperti.indexOf(nodo);
+      const dove = veliAperti.indexOf(aperto);
       if (dove !== -1) veliAperti.splice(dove, 1);
       riapplicaInerzia();
     };
-    // `velo` è un riferimento: la sua identità non cambia, e il nodo si legge
-    // dentro l'effetto, dove è già appeso.
-  }, [velo, anteprima]);
+    // `velo` e `accanto` sono riferimenti: la loro identità non cambia, e i
+    // nodi si leggono dentro l'effetto, dove sono già appesi.
+  }, [velo, accanto, anteprima]);
 }

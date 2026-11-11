@@ -49,7 +49,7 @@ import {
 
 import { eNuvola, nomeRadice } from "./cartelleNuvola";
 import { contiDellaCamminata, momentoDi } from "./fasiScansione";
-import { useFinestrella } from "./finestrella";
+import { useFinestrella, useVeloInerte } from "./finestrella";
 import { numero } from "./formato";
 import type { Avanzamento, CartellaCandidata, EsitoScansione } from "./ipc";
 import { t } from "./lingue";
@@ -204,6 +204,14 @@ export function Primo({
    * Invio battuto per caso non deve fare nessuna delle due cose.
    */
   const finestrella = useFinestrella<HTMLDivElement>(onSalta);
+  // E il resto della finestra inerte, con la radice che fa da velo: la
+  // trappola del Tab tiene dentro il tabulatore e basta, e un lettore di
+  // schermo in modalità navigazione usciva da qui e leggeva — e poteva
+  // attivare — tutta la libreria che `.primo` copre alla vista. Dopo l'hook,
+  // come in `Dialogo`: chi aveva il fuoco si legge prima dell'inerzia. Le due
+  // forme qui sotto disegnano la stessa radice, che React tiene: il velo non
+  // cambia quando arriva il permesso del telefono.
+  useVeloInerte(finestrella);
   // Sul telefono si cerca solo dopo il permesso: prima, le cartelle della
   // musica risultano vuote. Altrove `pronto` è vero da subito.
   const accesso = useAccessoTelefono();

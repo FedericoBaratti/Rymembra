@@ -333,7 +333,9 @@ const NON_DISEGNATI: ReadonlySet<string> = new Set([
  * gradino fra il velo e la cima del documento, ogni fratello del gradino:
  * tutto quel che non è un antenato del velo e non sta sotto di lui.
  *
- * Tranne chi porta uno dei due marchi (`SEMPRE_VIVO`, `ANNUNCIO`).
+ * Tranne chi porta uno dei due marchi (`SEMPRE_VIVO`, `ANNUNCIO`), e chi è
+ * in `accanto`: il foglio del menù del telefono ha il velo e il pannello
+ * fratelli, e il pannello è proprio quel che deve restare vivo.
  *
  * # Un velo già sepolto non spegne niente
  *
@@ -345,7 +347,10 @@ const NON_DISEGNATI: ReadonlySet<string> = new Set([
  * quella finestra, sopra lo Studio (`.strato-domande` in `App.tsx`); questo è
  * il ripiego per le altre.
  */
-export function daRendereInerti<N extends NodoDiAlbero>(velo: N): N[] {
+export function daRendereInerti<N extends NodoDiAlbero>(
+  velo: N,
+  accanto: readonly N[] = [],
+): N[] {
   for (let su = velo.parentElement; su !== null; su = su.parentElement) {
     if (su.inert === true) return [];
   }
@@ -358,7 +363,8 @@ export function daRendereInerti<N extends NodoDiAlbero>(velo: N): N[] {
         fratello !== gradino &&
         !NON_DISEGNATI.has(fratello.tagName) &&
         !fratello.hasAttribute(SEMPRE_VIVO) &&
-        !fratello.hasAttribute(ANNUNCIO)
+        !fratello.hasAttribute(ANNUNCIO) &&
+        !(accanto as readonly NodoDiAlbero[]).includes(fratello)
       ) {
         // Lo stesso tipo del velo: sono nodi dello stesso albero.
         inerti.push(fratello as N);
