@@ -72,6 +72,21 @@ pub(crate) fn e_un_impronta(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Il tipo di un'immagine dai suoi primi byte: JPEG, PNG o WebP, le sole che
+/// una copertina di un altro dispositivo può essere (decisione D-32). `None`
+/// per tutto il resto.
+pub(crate) fn tipo_immagine(byte: &[u8]) -> Option<&'static str> {
+    if byte.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if byte.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if byte.starts_with(b"RIFF") && byte.get(8..12) == Some(b"WEBP".as_slice()) {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 fn risposta(status: u16, tipo: &str, corpo: Vec<u8>) -> http::Response<Vec<u8>> {
     risposta_con(status, tipo, corpo, cache_per(status))
 }
@@ -106,12 +121,21 @@ fn cache_per(status: u16) -> &'static str {
 fn risposta_lontana(esito: Result<Option<Vec<u8>>, ()>) -> http::Response<Vec<u8>> {
     let senza_cache = "no-store";
     match esito {
-        Ok(Some(byte)) => risposta_con(200, "image/jpeg", byte, senza_cache),
+        // Il tipo dai byte, che `lontano::copertina` ha già riconosciuto come
+        // un'immagine: con `nosniff` la finestra crede a quel che si dice.
+        Ok(Some(byte)) => {
+            let tipo = tipo_immagine(&byte).unwrap_or("application/octet-stream");
+            risposta_con(200, tipo, byte, senza_cache)
+        }
         Ok(None) => risposta_con(404, "text/plain", Vec::new(), senza_cache),
         Err(()) => risposta_con(503, "text/plain", Vec::new(), senza_cache),
     }
 }
 
+/// L'unico costruttore delle risposte del protocollo. `nosniff` su ognuna,
+/// come `skin::risposta_risorsa`: la finestra non indovina un tipo diverso da
+/// quello detto, nemmeno il giorno in cui un ramo restituisse un tipo che
+/// Chromium fiuta (reperto R10-1, il 09-4 annunciato e mai scritto).
 fn risposta_con(
     status: u16,
     tipo: &str,
@@ -122,6 +146,7 @@ fn risposta_con(
         .status(status)
         .header(http::header::CONTENT_TYPE, tipo)
         .header(http::header::CACHE_CONTROL, cache)
+        .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(corpo)
         .unwrap_or_else(|_| http::Response::new(Vec::new()))
 }
@@ -319,6 +344,59 @@ mod tests {
             let r = risposta_lontana(esito);
             assert_eq!(cache(&r), "no-store", "stato {}", r.status());
         }
+    }
+
+    #[test]
+    fn ogni_risposta_dice_nosniff() {
+        // Reperto R10-1 (il 09-4 annunciato e mai scritto): nessuna risposta
+        // di `rymembra-cover` diceva `X-Content-Type-Options: nosniff`.
+        let nosniff = |r: &http::Response<Vec<u8>>| {
+            r.headers()
+                .get(http::header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok())
+                == Some("nosniff")
+        };
+        let mut risposte = Vec::new();
+        for status in [200, 400, 404, 503] {
+            risposte.push(risposta(status, "text/plain", Vec::new()));
+        }
+        for esito in [Ok(Some(vec![0xFF, 0xD8, 0xFF, 0xE0])), Ok(None), Err(())] {
+            risposte.push(risposta_lontana(esito));
+        }
+        risposte.push(risposta_con(200, "image/jpeg", vec![1], "no-store"));
+        for r in &risposte {
+            assert!(nosniff(r), "stato {}", r.status());
+        }
+    }
+
+    #[test]
+    fn le_copertine_degli_altri_sono_solo_immagini() {
+        // Decisione D-32: JPEG, PNG e WebP, riconosciuti dai byte.
+        assert_eq!(
+            tipo_immagine(&[0xFF, 0xD8, 0xFF, 0xE0, 0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(tipo_immagine(b"\x89PNG\r\n\x1a\n\0\0"), Some("image/png"));
+        assert_eq!(tipo_immagine(b"RIFF\x10\0\0\0WEBPVP8 "), Some("image/webp"));
+        for altro in [
+            b"".as_slice(),
+            b"\xFF\xD8",
+            b"<html><script>x</script></html>",
+            b"GIF89a",
+            b"RIFF\x10\0\0\0WAVEfmt ",
+            b"RIFF",
+            b"%PDF-1.7",
+        ] {
+            assert_eq!(tipo_immagine(altro), None, "{altro:?}");
+        }
+        // E la risposta dice il tipo vero.
+        let png = risposta_lontana(Ok(Some(b"\x89PNG\r\n\x1a\n".to_vec())));
+        assert_eq!(
+            png.headers()
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
     }
 
     #[test]
