@@ -344,10 +344,12 @@ export function Scrobbling({
               value={segreto}
               onChange={(e) => setSegreto(e.target.value)}
             />
+            {/* Spento a campi vuoti, come «Collega» di ListenBrainz: prima si
+                premeva e rispondeva con un errore. */}
             <button
               type="button"
               className="bottone btn-ghost"
-              disabled={inVolo}
+              disabled={apiKey.trim() === "" || segreto.trim() === "" || inVolo}
               onClick={() =>
                 esegui(() =>
                   ipc.scrobbleLastfmCredenziali(apiKey, segreto).then((s: StatoScrobble) => {

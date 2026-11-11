@@ -46,6 +46,7 @@ import { Segmentato } from "./Segmentato";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { t, tSe } from "../lingue";
 import { NIENTE_IN_VOLO, inVoloDopo, profiloSalvato, qualcosaInVolo } from "./profiliIa";
+import { useStabile } from "../stabile";
 
 /** L'indirizzo che si propone scegliendo un fornitore. */
 const DI_SERIE: Record<FornitoreIa, string> = {
@@ -144,6 +145,21 @@ export function ModelliIA({
   const [bozza, setBozza] = useState<Bozza>(() => vuota("openrouter"));
   const [chiave, setChiave] = useState("");
   const [modelli, setModelli] = useState<ModelloIa[]>([]);
+  /**
+   * Un profilo eliminato non resta aperto nel modulo.
+   *
+   * «Modifica» e «Elimina» stanno sulla stessa riga: dopo averli premuti
+   * tutti e due il modulo restava su «Modifica profilo» con l'id di un
+   * profilo che non c'era più, e «Prova» e «Salva» rispondevano con un errore
+   * del nucleo. Stabile e sempre l'ultima: la chiama la risposta
+   * dell'eliminazione, che arriva quando il modulo può essere cambiato.
+   */
+  const dimenticaSeAperto = useStabile((id: string) => {
+    if (bozza.id !== id) return;
+    setBozza(vuota(bozza.fornitore));
+    setChiave("");
+    setModelli([]);
+  });
   /**
    * Il filtro dei gratuiti, spento di serie.
    *
@@ -363,7 +379,13 @@ export function ModelliIA({
                           ? t("ia.delete.confirm.bodyKey")
                           : t("ia.delete.confirm.body"),
                         conferma: t("ia.delete.confirm.ok"),
-                        fai: () => esegui(() => ipc.iaEliminaProfilo(profilo.id)),
+                        fai: () =>
+                          esegui(() =>
+                            ipc.iaEliminaProfilo(profilo.id).then((s) => {
+                              dimenticaSeAperto(profilo.id);
+                              return s;
+                            }),
+                          ),
                       })
                     }
                   >
