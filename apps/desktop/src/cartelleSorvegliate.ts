@@ -133,13 +133,32 @@ export function useCartelleSorvegliate({
 
   const aggiungiCartelle = async (percorsi: readonly string[]) => {
     try {
-      const esito = await fila(() => scriviCartelle((c) => conCartelle(c, percorsi)));
+      const fatto = await fila(async () => {
+        const prima = libreria.avvio.leggi()?.cartelle ?? [];
+        const esito = await scriviCartelle((c) => conCartelle(c, percorsi));
+        return esito === null
+          ? null
+          : { esito, nuove: esito.cartelle.filter((c) => !prima.includes(c)) };
+      });
       // La rilettura fuori dalla fila: l'archivio ha già le cartelle che il
       // nucleo ha scritto, e il gesto dopo parte da quelle. Dentro, i tasti
       // resterebbero spenti anche per tutta la rilettura dell'avvio — che
       // aspetta la libreria, e durante una scansione può volerci un po'.
       await libreria.ricarica();
-      if (esito !== null) dopoLeCartelle(esito);
+      if (fatto === null) return;
+      const { esito, nuove } = fatto;
+      if (esito.gemelle.length > 0 || esito.assorbite.length > 0) {
+        dopoLeCartelle(esito);
+        return;
+      }
+      // Il nucleo legge da sé le cartelle nuove (`imposta_cartelle`), con una
+      // scansione prudente di quelle sole: i brani entrano qualche secondo
+      // dopo, senza barra. Senza questa riga, quei secondi sembravano un
+      // gesto non riuscito.
+      const prima = nuove[0];
+      if (prima !== undefined) {
+        setNotizia(t("folders.add.reading", { nome: nomeRadice(prima) }));
+      }
     } catch (e) {
       segnalaErrore(e);
     }

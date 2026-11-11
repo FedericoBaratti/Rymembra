@@ -32,7 +32,9 @@ import { memo } from "react";
 
 import { useArchivio } from "./archivio";
 import type { Aspetto } from "./aspettoFinestra";
+import { notiziaDellAnnullamento } from "./esitoArricchimento";
 import { ipc, type Avanzamento, type StatoRiproduzione } from "./ipc";
+import { t } from "./lingue";
 import { useLibreria } from "./libreria";
 import { useNuvolaDellaFinestra } from "./nuvola";
 import { useImportazioniDellaFinestra } from "./parti/Importazioni";
@@ -256,7 +258,7 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
           .catch(onErrore);
       }}
       onArricchimentoAnnulla={() => {
-        // Ottimistico su `inCorso`: riscrivere i tag di centinaia di file
+        // Ottimistico su `inCorso`: rileggere i tag di centinaia di file
         // sono decine di secondi, e senza questo il pulsante resterebbe
         // premibile per tutto quel tempo — con il risultato che chi non
         // vede succedere niente clicca due volte e si prende un
@@ -266,7 +268,16 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
         );
         ipc
           .arricchimentoAnnulla()
-          .then((esito) => setArricchimento(esito.stato))
+          .then((esito) => {
+            setArricchimento(esito.stato);
+            // Com'è andata, e non soltanto lo stato: con la cartella spenta
+            // nessun file si rilegge, e senza questa riga il gesto sembrava
+            // fatto. Vedi `esitoArricchimento.ts`.
+            const pezzi = notiziaDellAnnullamento(esito);
+            if (pezzi.length > 0) {
+              onNotizia(pezzi.map((p) => t(p.chiave, { n: p.n })).join(" "));
+            }
+          })
           .catch(onErrore);
       }}
       nuvola={nuvola}

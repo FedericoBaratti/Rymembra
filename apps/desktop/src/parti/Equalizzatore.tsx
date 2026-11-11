@@ -30,10 +30,20 @@ import { CENTRI_EQ, LIMITE_EQ_DB, ipc, type VocePreset } from "../ipc";
 import { Icona } from "./Icone";
 import { t, tSe } from "../lingue";
 import { useDati } from "../dati";
-import { chiaveNomePreset, chiavePreset, decibel, trovaPreset } from "../eq";
+import {
+  chiaveNomePreset,
+  chiavePreset,
+  creaFreno,
+  decibel,
+  etichettaBanda,
+  etichettaCortaBanda,
+  trovaPreset,
+} from "../eq";
+import { MOBILE } from "../piattaforma";
 import { numero } from "../formato";
 import { useFinestrella } from "../finestrella";
 import { Presenza } from "../presenza";
+import { useStabile } from "../stabile";
 
 /** Dove sta l'equalizzatore, e quindi quanto è grande. */
 export type TagliaEq = "pannello" | "pagina";
@@ -54,11 +64,6 @@ const PASSO_INVIO = 60;
 
 /** Il passo di un cursore, in decibel. */
 const PASSO_DB = 0.5;
-
-/** Come si legge il centro di una banda. */
-function etichettaBanda(hz: number): string {
-  return hz >= 1000 ? `${hz / 1000} kHz` : `${Math.round(hz)} Hz`;
-}
 
 /** Una curva lunga quanto deve, tagliata dove deve. */
 function allunga(guadagni: readonly number[]): number[] {
@@ -107,55 +112,42 @@ export function Equalizzatore({
   // Confrontando solo con l'ultima, quel ritorno sembrerebbe un cambiamento
   // arrivato da fuori e riporterebbe il cursore dov'era due giri fa.
   const attesiDiRitorno = useRef<{ curva: number[]; acceso: boolean }[]>([]);
-  const inSospeso = useRef<{ curva: number[]; acceso: boolean } | null>(null);
-  const ultimoInvio = useRef(0);
-  const attesa = useRef(0);
 
-  useEffect(
-    () => () => {
-      if (attesa.current !== 0) window.clearTimeout(attesa.current);
-    },
-    [],
+  // Stabile, e sempre l'ultima: il freno nasce una volta sola e la chiama
+  // anche allo smontaggio, quando `onErrore` può essere cambiato.
+  const spedisci = useStabile((prossima: { curva: number[]; acceso: boolean }) => {
+    // Si annota **qui** e non a ogni movimento: a tornare indietro sono le
+    // curve mandate, non quelle disegnate, e fra le une e le altre c'è il
+    // freno di `PASSO_INVIO`.
+    attesiDiRitorno.current.push(prossima);
+    // Un tetto, per il caso in cui le eco non arrivino mai — un motore morto,
+    // un comando rifiutato: la coda non deve crescere per tutta la sessione.
+    if (attesiDiRitorno.current.length > 8) attesiDiRitorno.current.shift();
+    ipc.equalizzatore(prossima.curva, prossima.acceso).catch(onErrore);
+  });
+
+  // Al più una curva ogni `PASSO_INVIO`: vedi `creaFreno` in `eq.ts`.
+  const [freno] = useState(() =>
+    creaFreno(PASSO_INVIO, spedisci, {
+      ora: () => performance.now(),
+      dopo: (ms, fai) => window.setTimeout(fai, ms),
+      annulla: (id) => window.clearTimeout(id),
+    }),
   );
 
-  const spedisci = useCallback(
-    (prossima: { curva: number[]; acceso: boolean }) => {
-      ultimoInvio.current = performance.now();
-      // Si annota **qui** e non a ogni movimento: a tornare indietro sono le
-      // curve mandate, non quelle disegnate, e fra le une e le altre c'è il
-      // freno di `PASSO_INVIO`.
-      attesiDiRitorno.current.push(prossima);
-      // Un tetto, per il caso in cui le eco non arrivino mai — un motore morto,
-      // un comando rifiutato: la coda non deve crescere per tutta la sessione.
-      if (attesiDiRitorno.current.length > 8) attesiDiRitorno.current.shift();
-      ipc.equalizzatore(prossima.curva, prossima.acceso).catch(onErrore);
-    },
-    [onErrore],
-  );
+  // Chiudere il pannello a metà attesa manda subito l'ultima curva: senza, la
+  // finestra l'aveva disegnata e il nucleo teneva quella di prima, e
+  // riaprendo il cursore tornava indietro di un passo.
+  useEffect(() => () => freno.svuota(), [freno]);
 
   /** Disegna subito, e manda al nucleo al più ogni `PASSO_INVIO`. */
   const applica = useCallback(
     (prossimaCurva: number[], prossimoAcceso: boolean) => {
       setCurva(prossimaCurva);
       setAcceso(prossimoAcceso);
-      const prossima = { curva: prossimaCurva, acceso: prossimoAcceso };
-
-      const trascorso = performance.now() - ultimoInvio.current;
-      if (trascorso >= PASSO_INVIO) {
-        spedisci(prossima);
-        return;
-      }
-      // Troppo presto: si tiene solo l'ultima, e parte allo scadere.
-      inSospeso.current = prossima;
-      if (attesa.current !== 0) return;
-      attesa.current = window.setTimeout(() => {
-        attesa.current = 0;
-        const ultima = inSospeso.current;
-        inSospeso.current = null;
-        if (ultima) spedisci(ultima);
-      }, PASSO_INVIO - trascorso);
+      freno.metti({ curva: prossimaCurva, acceso: prossimoAcceso });
     },
-    [spedisci],
+    [freno],
   );
 
   // Quel che arriva dal nucleo: si adotta solo se non è l'eco di una che
@@ -291,9 +283,13 @@ export function Equalizzatore({
                 max={LIMITE_EQ_DB}
                 step={PASSO_DB}
                 value={db}
-                aria-label={t("eq.band.aria", {
-                  banda: etichettaBanda(hz),
-                  db,
+                /* Il nome è la banda, e basta: il valore lo dice
+                   `aria-valuetext`, scritto come accanto al cursore. Dentro
+                   il nome si sentiva due volte, la prima col punto inglese. */
+                aria-label={etichettaBanda(hz)}
+                aria-valuetext={t("eq.band.value", {
+                  n: Math.abs(db),
+                  db: decibel(db, numero),
                 })}
                 onChange={(e) => muoviBanda(banda, Number(e.target.value))}
                 /* Il doppio clic riporta a zero la banda: è la scorciatoia che
@@ -301,7 +297,11 @@ export function Equalizzatore({
                    richiede di trovare lo zero a mano. */
                 onDoubleClick={() => muoviBanda(banda, 0)}
               />
-              <span className="eq-hz">{etichettaBanda(hz)}</span>
+              {/* Corta sul telefono: a 360 dp dieci etichette lunghe si
+                  accavallavano. Il nome del cursore resta intero. */}
+              <span className="eq-hz">
+                {MOBILE ? etichettaCortaBanda(hz) : etichettaBanda(hz)}
+              </span>
             </label>
           );
         })}
@@ -313,6 +313,7 @@ export function Equalizzatore({
             type="text"
             className="campo field-input"
             placeholder={t("eq.save.name")}
+            aria-label={t("eq.save.name")}
             value={nomeNuovo}
             maxLength={40}
             onChange={(e) => setNomeNuovo(e.target.value)}

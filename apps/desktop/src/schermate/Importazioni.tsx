@@ -54,6 +54,7 @@ import { nomeGenere, nomeLicenza, numero } from "../formato";
 import { t, tSe } from "../lingue";
 import { chiaveDelGuasto, notaDi } from "../notaBrano";
 import { daRichiedere } from "../elencoDaComprare";
+import { statoDellaCoda } from "../riepilogoCoda";
 import { Trans } from "../lingue/Trans";
 import { StatoVuoto } from "./Libreria";
 
@@ -565,6 +566,7 @@ export function SchermataImportazioni({
   const attiva = stato?.attiva ?? false;
   const fatti = stato?.fatti ?? 0;
   const totale = fatti + inAttesa;
+  const comeSta = statoDellaCoda({ attiva, fatti, inAttesa });
 
   return (
     <div className="importazioni-pagina">
@@ -628,15 +630,18 @@ export function SchermataImportazioni({
                 <div
                   className="riempimento"
                   // Ferma e grigia, non assente: una barra che sparisce dice
-                  // «finito».
-                  data-ferma={!attiva || undefined}
+                  // «finito». Grigia solo in pausa: finita è piena e del suo
+                  // colore (vedi `riepilogoCoda.ts`).
+                  data-ferma={comeSta === "pausa" || undefined}
                   style={{ width: `${Math.round((fatti / totale) * 100)}%` }}
                 />
               </div>
               <span className="stato">
-                {attiva
+                {comeSta === "corso"
                   ? t("imports.state.running")
-                  : t("imports.state.paused", { n: inAttesa })}
+                  : comeSta === "pausa"
+                    ? t("imports.state.paused", { n: inAttesa })
+                    : t("imports.state.done")}
               </span>
             </div>
           )}

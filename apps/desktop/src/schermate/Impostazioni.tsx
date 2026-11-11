@@ -180,7 +180,10 @@ function gruppi(): readonly (readonly [
         ...(MOBILE ? [] : ([["modelli", t("settings.section.modelli"), "i-ia"]] as const)),
         // Sul telefono non c'è una X da intercettare: l'app si lascia con i
         // gesti del sistema, e la musica continua sempre. Vedi `mobile/vassoio.rs`.
-        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-x"]] as const)),
+        // I livelli, cioè «dietro», e non la croce: la croce, nelle righe
+        // accanto, è «togli». Nemmeno `i-win-min`: quelli della barra del
+        // titolo sono glifi di Windows, non icone dell'app (`Icone.tsx`).
+        ...(MOBILE ? [] : ([["chiusura", t("settings.section.chiusura"), "i-layers"]] as const)),
       ],
     ],
     [
@@ -198,7 +201,7 @@ function gruppi(): readonly (readonly [
         // Accanto alla sincronia: è l'altra strada fra i propri dispositivi,
         // e la domanda della sezione è la stessa — cosa esce, e verso chi.
         ["dispositivi", t("settings.section.dispositivi"), "i-dispositivi"],
-        ["scrobbling", t("settings.section.scrobbling"), "i-eq"],
+        ["scrobbling", t("settings.section.scrobbling"), "i-timeline"],
         ["esterno", t("settings.section.esterno"), "i-list"],
         ["legacy", t("settings.section.legacy"), "i-import"],
       ],
@@ -799,11 +802,20 @@ function SorveglianzaCartelle({
  * La scheda è pessimistica, come `SchedaChiusura`: lo stato arriva dalla
  * risposta e non dal clic. Allora una scelta che non arriva al database — un
  * `db.locked`, un comando che rifiuta — va detta (`onErrore`): in silenzio
- * l'interruttore restava dov'era e sembrava rotto. Resta silenziosa solo la
- * lettura dei numeri, per la ragione scritta lì.
+ * l'interruttore restava dov'era e sembrava rotto. Anche la lettura dello
+ * stato dice quando fallisce, ma dentro la scheda: vedi `guasto`.
  */
 function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
   const [stato, setStato] = useState<StatoTesti | null>(null);
+  /**
+   * L'ultima lettura dello stato non è riuscita.
+   *
+   * Non per i numeri, ma per i comandi: senza stato «Cerca i testi» resta
+   * spento, e in silenzio lo restava per sempre — un `db.locked` durante una
+   * scansione lunga bastava. Una riga dentro la scheda, con «Riprova», e non
+   * la fascia rossa in cima alla pagina: come `SchedaManutenzione`.
+   */
+  const [guasto, setGuasto] = useState<unknown>(null);
 
   /**
    * La scheda è ancora montata.
@@ -826,12 +838,12 @@ function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
     ipc
       .testiStato()
       .then((letto) => {
-        if (montata.current) setStato(letto);
+        if (!montata.current) return;
+        setStato(letto);
+        setGuasto(null);
       })
-      .catch(() => {
-        /* Una scheda che non sa dire i suoi numeri li lascia a zero: qui non
-           c'è niente di distruttivo da annunciare, e un errore rosso nelle
-           Impostazioni per una conta fallita sarebbe rumore. */
+      .catch((e: unknown) => {
+        if (montata.current) setGuasto(e);
       });
   }, []);
 
@@ -869,6 +881,14 @@ function SchedaTesti({ onErrore }: { onErrore: (e: unknown) => void }) {
       titolo={t("settings.lyrics.title")}
       guida="lyrics"
     >
+      {guasto !== null && (
+        <div className="errore" role="alert">
+          <span>{testoErrore(guasto)}</span>
+          <button type="button" className="bottone minuto" onClick={aggiorna}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
 
       <Interruttore
         etichetta={t("settings.lyrics.toggle")}
@@ -1086,6 +1106,7 @@ function VolumeUniforme({
     <>
       <Segmentato
         etichetta={t("settings.loudness.mode.label")}
+        etichettaVisibile
         scelta={modo}
         onScegli={(scelto) => {
           ipc.normalizzazioneModoScegli(scelto).then(setModo).catch(onErrore);
@@ -1146,7 +1167,7 @@ function SchedaDissolvenza({
   };
 
   return (
-    <Scheda icona="i-play" titolo={t("settings.crossfade.title")} guida="crossfade">
+    <Scheda icona="i-dopo" titolo={t("settings.crossfade.title")} guida="crossfade">
       <div className="dissolvenza">
         <input
           type="range"
@@ -1248,7 +1269,7 @@ function SchedaSpegnimento({
   ];
 
   return (
-    <Scheda icona="i-play" titolo={t("settings.sleep.title")} guida="sleep">
+    <Scheda icona="i-moon" titolo={t("settings.sleep.title")} guida="sleep">
       <Segmentato
         etichetta={t("settings.sleep.title")}
         scelta={scelta}
@@ -1344,7 +1365,7 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
 
   return (
     <Scheda
-      icona="i-x"
+      icona="i-layers"
       titolo={t("settings.background.title")}
       guida="background"
     >
@@ -1443,6 +1464,7 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
   });
 
   const pulisci = () => {
+    if (pulendo) return;
     setPulendo(true);
     setLiberati(null);
     ipc
@@ -1497,8 +1519,12 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
           className="bottone btn-ghost"
           /* Su un database danneggiato non si scrive: il nucleo rifiuterebbe
              comunque, e un pulsante acceso prometterebbe un gesto che non
-             succede. */
-          disabled={pulendo || stato === null || danneggiato}
+             succede. Mentre pulisce, invece, non si spegne: lo dice, e il
+             clic in più si ignora (`pulisci`) — con `disabled` il fuoco
+             cadeva sul documento. */
+          disabled={stato === null || danneggiato}
+          aria-disabled={pulendo || undefined}
+          aria-busy={pulendo || undefined}
           onClick={pulisci}
         >
           {pulendo
@@ -1711,6 +1737,7 @@ function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
   };
 
   const svuota = () => {
+    if (svuotando) return;
     setSvuotando(true);
     ipc
       .nuvolaCacheSvuota()
@@ -1730,22 +1757,19 @@ function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
             acceso={stato.attiva}
             onCambia={(attiva) => imposta(attiva, stato.tettoMb)}
           />
-          <div className="tetto-cache">
-            {/* Per chi guarda: il gruppo ha già il suo nome per chi ascolta. */}
-            <span className="etichetta-tetto" aria-hidden="true">
-              {t("settings.cloudCache.limit")}
-            </span>
-            <Segmentato
-              etichetta={t("settings.cloudCache.limit")}
-              scelta={String(stato.tettoMb)}
-              onScegli={(chiave) => imposta(stato.attiva, Number(chiave))}
-              voci={TETTI_CACHE_MB.map((mb) => ({
-                chiave: String(mb),
-                etichetta: etichettaTetto(mb),
-                spenta: stato.attiva ? undefined : t("settings.cloudCache.limitOff"),
-              }))}
-            />
-          </div>
+          {/* L'etichetta a schermo è il nome del gruppo: vedi
+              `etichettaVisibile` in `Segmentato`. */}
+          <Segmentato
+            etichetta={t("settings.cloudCache.limit")}
+            etichettaVisibile
+            scelta={String(stato.tettoMb)}
+            onScegli={(chiave) => imposta(stato.attiva, Number(chiave))}
+            voci={TETTI_CACHE_MB.map((mb) => ({
+              chiave: String(mb),
+              etichetta: etichettaTetto(mb),
+              spenta: stato.attiva ? undefined : t("settings.cloudCache.limitOff"),
+            }))}
+          />
           <p className="esito">
             {t("settings.cloudCache.used", {
               usati: peso(stato.usatiByte),
@@ -1756,7 +1780,11 @@ function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
             <button
               type="button"
               className="bottone btn-ghost"
-              disabled={svuotando || stato.usatiByte === 0}
+              // Spento se non c'è niente da svuotare; mentre svuota lo dice e
+              // ignora il clic, così il fuoco resta qui (vedi `pulisci`).
+              disabled={stato.usatiByte === 0}
+              aria-disabled={svuotando || undefined}
+              aria-busy={svuotando || undefined}
               onClick={svuota}
             >
               {svuotando ? t("settings.cloudCache.clearing") : t("settings.cloudCache.clear")}
@@ -2283,20 +2311,28 @@ export function Impostazioni({
                   <Icona nome="i-plus" dim={15} />
                   {t("settings.roots.add")}
                 </button>
+                {/* Senza cartelle non c'è niente da leggere, e il tasto è
+                    spento. Durante la scansione invece lo dice e ignora il
+                    clic: con `disabled` il fuoco di chi l'aveva appena premuto
+                    cadeva sul documento. Vedi `InRiproduzione.tsx`. */}
                 <button
                   type="button"
                   className="bottone primario btn-accent"
-                  onClick={onScansiona}
-                  disabled={
-                    scansione !== null || (avvio?.cartelle.length ?? 0) === 0
-                  }
+                  onClick={() => {
+                    if (scansione === null) onScansiona();
+                  }}
+                  disabled={(avvio?.cartelle.length ?? 0) === 0}
+                  aria-disabled={scansione !== null || undefined}
+                  aria-busy={scansione !== null || undefined}
                 >
                   <Icona nome="i-scan" dim={15} />
                   {scansione
                     ? t("settings.roots.scanning")
                     : t("settings.roots.scan")}
                 </button>
-                <span className="oppure">{t("settings.roots.orDrop")}</span>
+                {/* Sul telefono sulla finestra non si trascina niente: come in
+                    `AggiungiCartella` e `Primo`, la frase c'è solo sul computer. */}
+                {!MOBILE && <span className="oppure">{t("settings.roots.orDrop")}</span>}
               </div>
 
               <RileggiTag
@@ -2609,13 +2645,32 @@ export function Impostazioni({
                   type="button"
                   className="bottone btn-ghost"
                   /* Senza righe da riportare non c'è niente da disfare, e un
-                     pulsante attivo prometterebbe qualcosa che non succede. */
+                     pulsante attivo prometterebbe qualcosa che non succede.
+
+                     Una passata in corso invece non lo spegne: lo dice
+                     (`aria-disabled`, `aria-busy`) e il clic si ignora. Con
+                     `disabled` il fuoco cadeva sul documento proprio quando
+                     il gesto partiva — ed è il tasto a cui torna il fuoco
+                     dopo la domanda. */
                   disabled={
-                    arricchimento === null ||
-                    arricchimento.inCorso ||
-                    arricchimento.annullabili === 0
+                    arricchimento === null || arricchimento.annullabili === 0
                   }
-                  onClick={onArricchimentoAnnulla}
+                  aria-disabled={arricchimento?.inCorso || undefined}
+                  aria-busy={arricchimento?.inCorso || undefined}
+                  /* Con una domanda prima, come «Rileggi tutti i tag»: il gesto
+                     rilegge ogni file arricchito e spegne anche l'automatico,
+                     e un clic sbagliato non deve bastare. */
+                  onClick={() => {
+                    if (arricchimento === null || arricchimento.inCorso) return;
+                    setDomanda({
+                      titolo: t("settings.enrich.undo.confirm.title"),
+                      descrizione: t("settings.enrich.undo.confirm.body", {
+                        n: arricchimento.annullabili,
+                      }),
+                      conferma: t("settings.enrich.undo"),
+                      fai: onArricchimentoAnnulla,
+                    });
+                  }}
                 >
                   <Icona nome="i-x" dim={15} />
                   {arricchimento?.inCorso
@@ -2908,7 +2963,7 @@ export function Impostazioni({
                     <Icona nome="i-import" dim={15} />
                     {t("settings.skin.install")}
                   </button>
-                  <span className="oppure">{t("settings.skin.orDrop")}</span>
+                  {!MOBILE && <span className="oppure">{t("settings.skin.orDrop")}</span>}
                 </div>
               </Scheda>
 
@@ -2965,8 +3020,12 @@ export function Impostazioni({
                   in silenzio cambierebbe il volume di chi ha i tag senza che
                   nessuna schermata lo spieghi — ed è la ragione per cui i quattro
                   stati partono da qui e non da «spento». */}
+                {/* Con l'etichetta a schermo: subito sopra c'è l'interruttore
+                    dell'accento, e senza un nome le quattro linguette si
+                    leggevano come la sua intensità. */}
                 <Segmentato
                   etichetta={t("settings.replaygain.label")}
+                  etichettaVisibile
                   scelta={replaygain}
                   onScegli={onReplaygain}
                   voci={[
@@ -2992,7 +3051,7 @@ export function Impostazioni({
                   la prima cosa che si viene a cercare qui quando qualcosa non si
                   sente, e la dissolvenza è una preferenza che si decide una
                   volta. */}
-              <Scheda icona="i-play" titolo={t("settings.output.title")} guida="output">
+              <Scheda icona="i-vol" titolo={t("settings.output.title")} guida="output">
                 <SchedaUscita onErrore={onErrore} />
               </Scheda>
               <SchedaDissolvenza
@@ -3018,9 +3077,44 @@ export function Impostazioni({
             </>
           )}
 
+          {/* Per prima la scheda che dà il nome alla sezione: «Movimento e
+              accesso» apriva sulle scorciatoie da tastiera. */}
+          {sezione === "movimento" && (
+            <Scheda icona="i-eye" titolo={t("settings.motion.title")} guida="motion">
+              <p className="nota">
+                <Trans
+                  k="settings.motion.p1"
+                  v={{
+                    // Il livello della skin è una parola del suo formato
+                    // (`none`, `essential`, `full`, `maximum`): si legge
+                    // tradotto, e una parola che il formato aggiungerà dopo
+                    // si legge com'è invece di sparire.
+                    livello: <strong>{tSe(`settings.motion.level.${movimento}`, movimento)}</strong>,
+                  }}
+                />
+              </p>
+
+              {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
+                  quel che la skin dichiara: un livello «di più» contraddirebbe
+                  la frase qui sopra, che dice che una preferenza di
+                  accessibilità sovrascrivibile non è una preferenza. Chi vuole
+                  più movimento cambia skin, che è dove il movimento si
+                  dichiara. */}
+              <Segmentato
+                etichetta={t("settings.motion.pref")}
+                scelta={movimentoUtente}
+                onScegli={onMovimentoUtente}
+                voci={[
+                  { chiave: "sistema", etichetta: t("settings.motion.system") },
+                  { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
+                ]}
+              />
+            </Scheda>
+          )}
+
           {sezione === "movimento" && !MOBILE && (
             <Scheda
-              icona="i-eq"
+              icona="i-code"
               titolo={t("settings.shortcuts.title")}
               guida="shortcuts"
             >
@@ -3028,7 +3122,7 @@ export function Impostazioni({
             </Scheda>
           )}
 
-          {/* Fra le scorciatoie e il movimento, e in questa sezione e non in
+          {/* Dopo le scorciatoie, e in questa sezione e non in
               «Aspetto»: ingrandire non è una scelta di look come il tema o la
               skin — è la stessa domanda del movimento ridotto, cioè «fai in modo
               che io ci arrivi». Sta sotto le scorciatoie perché è la scheda che
@@ -3067,39 +3161,6 @@ export function Impostazioni({
               <p className="nota">
                 {t("settings.zoom.now", { quanto: Math.round(zoom * 100) })}
               </p>
-            </Scheda>
-          )}
-
-          {sezione === "movimento" && (
-            <Scheda icona="i-eq" titolo={t("settings.motion.title")} guida="motion">
-              <p className="nota">
-                <Trans
-                  k="settings.motion.p1"
-                  v={{
-                    // Il livello della skin è una parola del suo formato
-                    // (`none`, `essential`, `full`, `maximum`): si legge
-                    // tradotto, e una parola che il formato aggiungerà dopo
-                    // si legge com'è invece di sparire.
-                    livello: <strong>{tSe(`settings.motion.level.${movimento}`, movimento)}</strong>,
-                  }}
-                />
-              </p>
-
-              {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
-                  quel che la skin dichiara: un livello «di più» contraddirebbe
-                  la frase qui sopra, che dice che una preferenza di
-                  accessibilità sovrascrivibile non è una preferenza. Chi vuole
-                  più movimento cambia skin, che è dove il movimento si
-                  dichiara. */}
-              <Segmentato
-                etichetta={t("settings.motion.pref")}
-                scelta={movimentoUtente}
-                onScegli={onMovimentoUtente}
-                voci={[
-                  { chiave: "sistema", etichetta: t("settings.motion.system") },
-                  { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
-                ]}
-              />
             </Scheda>
           )}
 
@@ -3182,11 +3243,19 @@ export function Impostazioni({
               <div className="azioni">
                 {nuvola?.collegato ? (
                   <>
+                    {/* Durante un salvataggio i tre tasti non si spengono: lo
+                        dicono (`aria-disabled`) e ignorano il clic. Con
+                        `disabled` il fuoco di chi aveva appena premuto
+                        «Salva adesso», o di chi tornava dalla domanda di
+                        «Scollega», cadeva sul documento. */}
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={nuvola.inCorso}
-                      onClick={onNuvolaSalva}
+                      aria-disabled={nuvola.inCorso || undefined}
+                      aria-busy={nuvola.inCorso || undefined}
+                      onClick={() => {
+                        if (!nuvola.inCorso) onNuvolaSalva();
+                      }}
                     >
                       <Icona nome="i-cloud" dim={15} />
                       {nuvola.inCorso
@@ -3196,8 +3265,10 @@ export function Impostazioni({
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={nuvola.inCorso}
-                      onClick={onNuvolaRipristina}
+                      aria-disabled={nuvola.inCorso || undefined}
+                      onClick={() => {
+                        if (!nuvola.inCorso) onNuvolaRipristina();
+                      }}
                     >
                       <Icona nome="i-import" dim={15} />
                       {t("settings.cloud.restore")}
@@ -3205,15 +3276,16 @@ export function Impostazioni({
                     <button
                       type="button"
                       className="bottone btn-ghost"
-                      disabled={nuvola.inCorso}
-                      onClick={() =>
+                      aria-disabled={nuvola.inCorso || undefined}
+                      onClick={() => {
+                        if (nuvola.inCorso) return;
                         setDomanda({
                           titolo: t("settings.cloud.disconnect.confirm.title"),
                           descrizione: t("settings.cloud.disconnect.confirm.body"),
                           conferma: t("settings.cloud.disconnect.confirm.ok"),
                           fai: onNuvolaScollega,
-                        })
-                      }
+                        });
+                      }}
                     >
                       {t("settings.cloud.disconnect")}
                     </button>
@@ -3365,8 +3437,15 @@ export function Impostazioni({
                 <button
                   type="button"
                   className="bottone btn-ghost"
-                  disabled={!sincronia?.pronta || sincronia.inCorso}
-                  onClick={onSincroniaAdesso}
+                  /* Spento finché la sincronia non è pronta; durante una
+                      passata lo dice e ignora il clic, così il fuoco di chi
+                      l'ha premuto resta qui. */
+                  disabled={!sincronia?.pronta}
+                  aria-disabled={sincronia?.inCorso || undefined}
+                  aria-busy={sincronia?.inCorso || undefined}
+                  onClick={() => {
+                    if (!sincronia?.inCorso) onSincroniaAdesso();
+                  }}
                 >
                   <Icona nome="i-cloud" dim={15} />
                   {sincronia?.inCorso
@@ -3500,11 +3579,22 @@ export function Impostazioni({
                 ))}
               </ul>
 
-              <Interruttore
-                etichetta={t("settings.import.alt")}
-                acceso={importazioni.stato?.alternative ?? true}
-                onCambia={(v) => void importazioni.ammettiAlternative(v)}
-              />
+              {/* Solo con lo stato arrivato: prima, `?? true` lo dipingeva
+                  acceso anche con la preferenza salvata spenta. E il guasto
+                  di una scrittura si dice qui, accanto: l'interruttore segue
+                  il nucleo, e senza questa riga non si muoveva e basta. */}
+              {importazioni.errore !== null && (
+                <div className="errore" role="alert">
+                  {importazioni.errore}
+                </div>
+              )}
+              {importazioni.stato !== null && (
+                <Interruttore
+                  etichetta={t("settings.import.alt")}
+                  acceso={importazioni.stato.alternative}
+                  onCambia={(v) => void importazioni.ammettiAlternative(v)}
+                />
+              )}
 
               {/* Un rimando e non più il pannello intero.
                   Quel che succede dopo la conferma dura **un'ora** e sopravvive
@@ -3549,7 +3639,7 @@ export function Impostazioni({
           )}
           {sezione === "scrobbling" && (
             <Scheda
-              icona="i-cloud"
+              icona="i-timeline"
               titolo={t("settings.scrobbling.title")}
               guida="scrobbling"
             >

@@ -102,6 +102,10 @@ export type NomeIcona =
   | "i-eye"
   | "i-drop"
   | "i-timeline"
+  // «Esplora», i cataloghi liberi: una bussola, perché è una pagina dell'app in
+  // cui si va a cercare. Aveva la freccia che esce dal riquadro, che qui
+  // dentro vuol dire «apre il browser», e Esplora non lo apre.
+  | "i-bussola"
   // Il rimando alla pagina pubblica di un brano di catalogo. La freccia che
   // esce dal riquadro è il glifo con cui si dice «questo apre il browser» da
   // sempre, e qui quel che apre è un obbligo di certe licenze.
@@ -489,6 +493,10 @@ export function Simboli() {
         </symbol>
         <symbol id="i-drop" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M10 3.2s-4.8 5.4-4.8 8.6a4.8 4.8 0 0 0 9.6 0C14.8 8.6 10 3.2 10 3.2Z" />
+        </symbol>
+        <symbol id="i-bussola" viewBox="0 0 20 20" {...TRATTO}>
+          <circle cx="10" cy="10" r="7" />
+          <path d="M12.8 7.2 11 11l-3.8 1.8L9 9Z" />
         </symbol>
         <symbol id="i-timeline" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M2.8 10h14.4" />

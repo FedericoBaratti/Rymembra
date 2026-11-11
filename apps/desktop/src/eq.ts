@@ -55,3 +55,89 @@ export function decibel(db: number, numero: (n: number, decimali: number) => str
   const scritto = numero(Math.abs(db), Number.isInteger(db) ? 0 : 1);
   return db > 0 ? `+${scritto}` : `−${scritto}`;
 }
+
+/** Come si legge il centro di una banda: «31 Hz», «1 kHz». */
+export function etichettaBanda(hz: number): string {
+  return hz >= 1000 ? `${hz / 1000} kHz` : `${Math.round(hz)} Hz`;
+}
+
+/**
+ * La stessa, corta: «31», «1k». Per il telefono, dove dieci etichette lunghe
+ * in trecento pixel si accavallano; l'unità la sa chi guarda un equalizzatore.
+ */
+export function etichettaCortaBanda(hz: number): string {
+  return hz >= 1000 ? `${hz / 1000}k` : String(Math.round(hz));
+}
+
+/** Il tempo, per il freno: quello della finestra, o uno finto nelle prove. */
+export interface OrologioFreno {
+  ora: () => number;
+  dopo: (ms: number, fai: () => void) => number;
+  annulla: (id: number) => void;
+}
+
+/** Vedi [`creaFreno`]. */
+export interface Freno<T> {
+  /** Un valore nuovo: parte subito se è passato il passo, se no aspetta. */
+  metti: (valore: T) => void;
+  /** Manda subito quel che aspetta, se c'è, e ferma l'attesa. */
+  svuota: () => void;
+}
+
+/**
+ * Manda al più un valore ogni `passo` millisecondi, e mai l'ultimo in ritardo
+ * oltre il passo.
+ *
+ * Il primo parte **subito**: chi tocca un cursore deve sentire il
+ * cambiamento al primo pixel. Quelli che arrivano prima che il passo sia
+ * finito si tengono da parte, e allo scadere parte solo l'ultimo.
+ *
+ * # Perché `svuota`
+ *
+ * Chiudere il pannello dell'equalizzatore entro il passo dall'ultimo
+ * movimento smontava il componente con la curva più recente ancora in
+ * sospeso: la finestra l'aveva disegnata, il nucleo aveva quella di prima, e
+ * riaprendo il cursore tornava indietro. Allo smontaggio quel che aspetta
+ * parte subito — come fa `LivelloDelMembro` in «Ascolta insieme».
+ */
+export function creaFreno<T>(
+  passo: number,
+  spedisci: (valore: T) => void,
+  orologio: OrologioFreno,
+): Freno<T> {
+  let ultimoInvio = Number.NEGATIVE_INFINITY;
+  let inSospeso: { valore: T } | null = null;
+  let attesa: number | null = null;
+
+  const manda = (valore: T) => {
+    ultimoInvio = orologio.ora();
+    spedisci(valore);
+  };
+
+  return {
+    metti(valore) {
+      const trascorso = orologio.ora() - ultimoInvio;
+      if (trascorso >= passo && attesa === null) {
+        manda(valore);
+        return;
+      }
+      inSospeso = { valore };
+      if (attesa !== null) return;
+      attesa = orologio.dopo(Math.max(0, passo - trascorso), () => {
+        attesa = null;
+        const ultimo = inSospeso;
+        inSospeso = null;
+        if (ultimo) manda(ultimo.valore);
+      });
+    },
+    svuota() {
+      if (attesa !== null) {
+        orologio.annulla(attesa);
+        attesa = null;
+      }
+      const ultimo = inSospeso;
+      inSospeso = null;
+      if (ultimo) manda(ultimo.valore);
+    },
+  };
+}

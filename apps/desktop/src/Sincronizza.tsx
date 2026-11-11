@@ -60,7 +60,7 @@ import { posizioneAdesso } from "./riproduzione";
 import { Presenza } from "./presenza";
 import { comeScorrere } from "./transizione";
 import { ConfermaGesto } from "./ConfermaGesto";
-import { chiusuraLibera, gestoDelTasto, type Momento } from "./tastiSincronizza";
+import { bersaglioDi, chiusuraLibera, gestoDelTasto, type Momento } from "./tastiSincronizza";
 
 /** Di quanto si torna indietro quando si riparte da una riga. */
 const RINCORSA_MS = 2000;
@@ -360,6 +360,8 @@ export function Sincronizza({
   // Un raddrizzamento alla volta: la tastiera lo rispetta già
   // (`gestoDelTasto`), questo è per qualunque altra strada ci arrivi.
   const raddrizzando = useRef(false);
+  /** «Raddrizza», del momento delle battute o di quello delle parole. */
+  const tastoRaddrizza = useRef<HTMLButtonElement | null>(null);
   const finisci = useCallback(() => {
     if (raddrizzando.current) return;
     raddrizzando.current = true;
@@ -414,7 +416,11 @@ export function Sincronizza({
     // la riga **e** metteva in pausa il brano che si stava battendo — cioè la
     // battuta dopo cadeva su una musica ferma.
     const alTasto = (evento: KeyboardEvent) => {
-      const gesto = gestoDelTasto(evento.key, { raddrizzo, tutteBattute });
+      const gesto = gestoDelTasto(evento.key, {
+        raddrizzo,
+        tutteBattute,
+        su: bersaglioDi(evento.target),
+      });
       if (gesto === null) return;
       evento.preventDefault();
       evento.stopPropagation();
@@ -426,6 +432,15 @@ export function Sincronizza({
     return () =>
       window.removeEventListener("keydown", alTasto, { capture: true });
   }, [momento, batti, rifai, finisci, tutteBattute, raddrizzo, chiedeChiusura]);
+
+  // Finite le battute il fuoco va su «Raddrizza», che è il gesto dopo. Spazio e
+  // Invio su un tasto adesso sono del tasto (`gestoDelTasto`), e un clic su
+  // «Suona» fatto per partire lasciava il fuoco lì: senza questa riga l'Invio
+  // che la nota suggerisce («Invio quando hai finito») avrebbe messo in pausa.
+  useEffect(() => {
+    if (momento !== "battute" && momento !== "parole") return;
+    if (tutteBattute) tastoRaddrizza.current?.focus();
+  }, [momento, tutteBattute]);
 
   // ── il momento della revisione ────────────────────────────────────────────
 
@@ -684,6 +699,7 @@ export function Sincronizza({
                     <button
                       type="button"
                       className="bottone primario btn-accent"
+                      ref={tastoRaddrizza}
                       disabled={!tutteBattute || raddrizzo}
                       onClick={finisci}
                     >
@@ -895,6 +911,7 @@ export function Sincronizza({
                     <button
                       type="button"
                       className="bottone btn-ghost"
+                      ref={tastoRaddrizza}
                       disabled={!tutteBattute || raddrizzo}
                       onClick={finisci}
                     >
