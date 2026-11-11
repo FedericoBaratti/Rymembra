@@ -849,6 +849,44 @@ impl Letto {
             || !self.biblioteca.desiderati.is_empty()
             || !self.biblioteca.copertine.is_empty()
     }
+
+    /// Le skin che il profilo renderebbe attive qui: quella delle preferenze
+    /// (`skin.active`) e quella che porta il documento di sincronia, che
+    /// [`importa`] applica anche lei se è più recente della scelta di qui.
+    ///
+    /// Servono a chi deve farle passare dall'esame prima di indossarle
+    /// (decisione 21): questo modulo non apre pacchetti.
+    #[must_use]
+    pub fn skin_da_indossare(&self) -> Vec<&str> {
+        let mut skin: Vec<&str> = self
+            .preferenze
+            .voci
+            .get(settings::CHIAVE_SKIN)
+            .map(String::as_str)
+            .into_iter()
+            .chain(
+                self.sincronia
+                    .as_ref()
+                    .and_then(|documento| documento.content.skin_attiva.as_ref())
+                    .map(|scelta| scelta.id.as_str()),
+            )
+            .filter(|id| !id.trim().is_empty())
+            .collect();
+        skin.dedup();
+        skin
+    }
+
+    /// Il profilo non cambia la skin di qui: né con la preferenza né col
+    /// documento di sincronia. Il resto si applica com'è.
+    ///
+    /// È quel che si fa di una skin che non passa l'esame: resta installata,
+    /// non si indossa, e chi importa lo legge (decisione 21).
+    pub fn lascia_la_skin_di_qui(&mut self) {
+        self.preferenze.voci.remove(settings::CHIAVE_SKIN);
+        if let Some(documento) = self.sincronia.as_mut() {
+            documento.content.skin_attiva = None;
+        }
+    }
 }
 
 /// Apre un profilo, riconoscendo da sé quale dei due formati è.

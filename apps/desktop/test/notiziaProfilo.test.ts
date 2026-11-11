@@ -83,3 +83,13 @@ test("accanto a «Torna com'era prima» c'è la nota su quel che resta", () => {
     assert.ok(testi["profile.sameSettings"], `profile.sameSettings in ${lingua}`);
   }
 });
+
+test("una skin del profilo che non passa l'esame si dice, nel piano e dopo", () => {
+  // Decisione 21: arriva installata ma non indossata, e chi importa lo legge.
+  assert.deepEqual(
+    notiziaDelProfilo({ cambi: [], portati: NIENTE, skinNonIndossata: "notte" }),
+    [{ chiave: "profile.skinNotWorn", nome: "notte" }],
+  );
+  assert.match(sorgente, /piano\.skinNonIndossata && \(/);
+  assert.match(sorgente, /t\("profile\.skinNotWorn", \{ nome: piano\.skinNonIndossata \}\)/);
+});

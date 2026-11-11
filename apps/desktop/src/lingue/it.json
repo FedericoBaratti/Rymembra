@@ -1950,6 +1950,7 @@
   "profile.applied": "{n} impostazioni applicate",
   "profile.applied.uno": "{n} impostazione applicata",
   "profile.applied.library": "Nella libreria: {cosa}",
+  "profile.skinNotWorn": "La skin «{nome}» arriva installata ma non indossata: non ha passato l'esame dei contrasti e dei costi che vale per ogni skin. La trovi fra le skin installate, e puoi sceglierla da lì.",
   "profile.nothingChanged": "Il profilo non ha cambiato niente: era già tutto così.",
   "profile.export": "Esporta il profilo…",
   "profile.read": "Leggi un profilo…",

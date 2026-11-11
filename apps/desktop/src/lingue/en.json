@@ -1950,6 +1950,7 @@
   "profile.applied": "{n} settings applied",
   "profile.applied.uno": "{n} setting applied",
   "profile.applied.library": "In the library: {cosa}",
+  "profile.skinNotWorn": "The “{nome}” skin comes in installed but not worn: it didn’t pass the contrast and cost review every skin goes through. You’ll find it among the installed skins, and you can pick it from there.",
   "profile.nothingChanged": "The profile changed nothing: everything was already like this.",
   "profile.export": "Export the profile…",
   "profile.read": "Read a profile…",

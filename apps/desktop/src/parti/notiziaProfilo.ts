@@ -46,16 +46,21 @@ export function vociPortate(portati: PortatiProfilo): [Chiave, number][] {
 export type PezzoNotizia =
   | { chiave: "profile.applied"; n: number }
   | { chiave: "profile.applied.library"; voci: [Chiave, number][] }
+  | { chiave: "profile.skinNotWorn"; nome: string }
   | { chiave: "profile.nothingChanged" };
 
 /**
  * La notizia di un profilo applicato: le impostazioni cambiate, poi quel che
  * è arrivato nella libreria. «Non ha cambiato niente» solo quando non è
  * cambiato davvero niente, né di qua né di là.
+ *
+ * E la skin che il profilo avrebbe indossato e che non ha passato l'esame:
+ * è installata, ma non indossata, e va detto (decisione 21).
  */
 export function notiziaDelProfilo(fatto: {
   cambi: readonly unknown[];
   portati: PortatiProfilo;
+  skinNonIndossata?: string | null;
 }): PezzoNotizia[] {
   const pezzi: PezzoNotizia[] = [];
   if (fatto.cambi.length > 0) {
@@ -63,6 +68,9 @@ export function notiziaDelProfilo(fatto: {
   }
   const voci = vociPortate(fatto.portati);
   if (voci.length > 0) pezzi.push({ chiave: "profile.applied.library", voci });
+  if (fatto.skinNonIndossata) {
+    pezzi.push({ chiave: "profile.skinNotWorn", nome: fatto.skinNonIndossata });
+  }
   if (pezzi.length === 0) pezzi.push({ chiave: "profile.nothingChanged" });
   return pezzi;
 }

@@ -106,6 +106,8 @@ function frase(pezzo: PezzoNotizia): string {
       return t("profile.applied.library", {
         cosa: pezzo.voci.map(([cosa, quanti]) => t(cosa, { n: quanti })).join(", "),
       });
+    case "profile.skinNotWorn":
+      return t("profile.skinNotWorn", { nome: pezzo.nome });
     case "profile.nothingChanged":
       return t("profile.nothingChanged");
   }
@@ -536,6 +538,14 @@ export function Profilo({
 
           {piano.invariate > 0 && (
             <p className="nota">{t("profile.same", { n: piano.invariate })}</p>
+          )}
+
+          {/* La skin del profilo che non ha passato l'esame: arriva, ma non si
+              indossa (decisione 21). Prima di «Applica», come ogni cambio. */}
+          {piano.skinNonIndossata && (
+            <p className="nota avviso-profilo">
+              {t("profile.skinNotWorn", { nome: piano.skinNonIndossata })}
+            </p>
           )}
 
           {piano.percorsiMancanti.length > 0 && (
