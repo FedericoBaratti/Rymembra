@@ -1101,6 +1101,7 @@ function VolumeUniforme({
     <>
       <Segmentato
         etichetta={t("settings.loudness.mode.label")}
+        etichettaVisibile
         scelta={modo}
         onScegli={(scelto) => {
           ipc.normalizzazioneModoScegli(scelto).then(setModo).catch(onErrore);
@@ -1751,22 +1752,19 @@ function SchedaCacheNuvola({ onErrore }: { onErrore: (e: unknown) => void }) {
             acceso={stato.attiva}
             onCambia={(attiva) => imposta(attiva, stato.tettoMb)}
           />
-          <div className="tetto-cache">
-            {/* Per chi guarda: il gruppo ha già il suo nome per chi ascolta. */}
-            <span className="etichetta-tetto" aria-hidden="true">
-              {t("settings.cloudCache.limit")}
-            </span>
-            <Segmentato
-              etichetta={t("settings.cloudCache.limit")}
-              scelta={String(stato.tettoMb)}
-              onScegli={(chiave) => imposta(stato.attiva, Number(chiave))}
-              voci={TETTI_CACHE_MB.map((mb) => ({
-                chiave: String(mb),
-                etichetta: etichettaTetto(mb),
-                spenta: stato.attiva ? undefined : t("settings.cloudCache.limitOff"),
-              }))}
-            />
-          </div>
+          {/* L'etichetta a schermo è il nome del gruppo: vedi
+              `etichettaVisibile` in `Segmentato`. */}
+          <Segmentato
+            etichetta={t("settings.cloudCache.limit")}
+            etichettaVisibile
+            scelta={String(stato.tettoMb)}
+            onScegli={(chiave) => imposta(stato.attiva, Number(chiave))}
+            voci={TETTI_CACHE_MB.map((mb) => ({
+              chiave: String(mb),
+              etichetta: etichettaTetto(mb),
+              spenta: stato.attiva ? undefined : t("settings.cloudCache.limitOff"),
+            }))}
+          />
           <p className="esito">
             {t("settings.cloudCache.used", {
               usati: peso(stato.usatiByte),
@@ -2982,8 +2980,12 @@ export function Impostazioni({
                   in silenzio cambierebbe il volume di chi ha i tag senza che
                   nessuna schermata lo spieghi — ed è la ragione per cui i quattro
                   stati partono da qui e non da «spento». */}
+                {/* Con l'etichetta a schermo: subito sopra c'è l'interruttore
+                    dell'accento, e senza un nome le quattro linguette si
+                    leggevano come la sua intensità. */}
                 <Segmentato
                   etichetta={t("settings.replaygain.label")}
+                  etichettaVisibile
                   scelta={replaygain}
                   onScegli={onReplaygain}
                   voci={[

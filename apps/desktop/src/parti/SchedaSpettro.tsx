@@ -105,6 +105,7 @@ export function SchedaSpettro({
           ipc.spettroQualitaScegli(livello).then(setQualita).catch(onErrore);
         }}
         etichetta={t("settings.spectrum.quality.label")}
+        etichettaVisibile
       />
     </>
   );

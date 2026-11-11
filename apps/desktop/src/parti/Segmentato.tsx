@@ -70,6 +70,7 @@ export function Segmentato<T extends string>({
   etichetta,
   classe,
   verticale = false,
+  etichettaVisibile = false,
 }: {
   voci: readonly Voce<T>[];
   scelta: T;
@@ -89,9 +90,22 @@ export function Segmentato<T extends string>({
    * impila lo dichiara qui.
    */
   verticale?: boolean | undefined;
+  /**
+   * L'etichetta si legge anche a schermo, prima delle linguette.
+   *
+   * Di serie no: dove il gruppo è solo nella sua scheda — Lingua, Tema — il
+   * titolo della scheda fa già da etichetta. Ma una scheda con due o tre
+   * gruppi mostrava «Spenta · Bassa · Normale · Alta» sotto «L'accento segue
+   * la copertina», e chi guardava ci leggeva l'intensità dell'accento invece
+   * della normalizzazione del volume. Accesa, il testo è lo stesso che sente
+   * chi ascolta (`aria-labelledby`), e le classi sono quelle del tetto della
+   * cache, che per prima ha avuto un'etichetta accanto alle linguette.
+   */
+  etichettaVisibile?: boolean | undefined;
 }) {
   const linguette = useRef<(HTMLButtonElement | null)[]>([]);
   const idBase = useId();
+  const idEtichetta = `${idBase}-etichetta`;
   /**
    * Dove si è, quando si è dentro.
    *
@@ -158,11 +172,12 @@ export function Segmentato<T extends string>({
     vaiA(prossimo);
   };
 
-  return (
+  const gruppo = (
     <div
       className={classe ? `segmentato segmented ${classe}` : "segmentato segmented"}
       role="radiogroup"
-      aria-label={etichetta}
+      aria-label={etichettaVisibile ? undefined : etichetta}
+      aria-labelledby={etichettaVisibile ? idEtichetta : undefined}
       aria-orientation={verticale ? "vertical" : "horizontal"}
       /* Uscendo dal gruppo la fermata di tabulazione torna a essere la linguetta
          accesa. `relatedTarget` nullo vuol dire che il fuoco è andato fuori
@@ -218,6 +233,16 @@ export function Segmentato<T extends string>({
           </Fragment>
         );
       })}
+    </div>
+  );
+
+  if (!etichettaVisibile) return gruppo;
+  return (
+    <div className="tetto-cache">
+      <span className="etichetta-tetto" id={idEtichetta}>
+        {etichetta}
+      </span>
+      {gruppo}
     </div>
   );
 }
