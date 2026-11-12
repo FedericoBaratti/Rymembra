@@ -452,13 +452,26 @@ pub fn rapporti(connection: &Connection, limite: u32) -> Result<Vec<RapportoImpo
 
 /// La libreria, ridotta a quel che serve per riconoscere un brano.
 ///
+/// # Solo i brani con un file
+///
+/// «C'è già» vuol dire un file, come per la coda (`desiderati::SOLO_DA_PRENDERE`)
+/// e per `riconcilia`. Un brano ascoltato da Esplora entra in libreria come
+/// riferimento di catalogo, senza `path`: contato qui come ritrovato, un
+/// import lo metteva in playlist come flusso e non lo mandava in coda, e il
+/// file non arrivava mai (R04-7, D-60). Adesso manca, va fra i desiderati, e
+/// quando il file arriva `riconcilia` gli passa quel che il riferimento aveva.
+/// Uno che nessun catalogo dà da tenere finisce in «Da comprare».
+///
 /// Si legge **una volta per importazione**, non una per elenco: un account con
 /// duecento playlist la rileggerebbe duecento volte, ed è la ragione per cui
 /// `plan_account_import` prende la libreria come argomento invece di andarsela a
 /// prendere da sé.
 pub(crate) fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack>, AppError> {
     let mut statement = connection
-        .prepare("SELECT id, track_key, artist, title, duration_ms, isrc FROM tracks ORDER BY id")
+        .prepare(
+            "SELECT id, track_key, artist, title, duration_ms, isrc FROM tracks
+              WHERE path IS NOT NULL ORDER BY id",
+        )
         .map_err(|err| db_error("lettura della libreria", &err))?;
     let righe = statement
         .query_map([], |row| {
@@ -1773,6 +1786,63 @@ mod prove {
                 "SELECT COUNT(*) FROM desiderati WHERE download_state = 'attesa'"
             ),
             2
+        );
+    }
+
+    #[test]
+    fn un_brano_solo_in_ascolto_non_e_gia_in_libreria() {
+        // R04-7, dal report di F06: «c'è già» vuol dire un file. Un brano
+        // ascoltato da Esplora è in libreria come riferimento di catalogo,
+        // senza file; contarlo come ritrovato lo metteva in playlist come
+        // flusso e lo toglieva dalla coda, cioè non lo si teneva mai.
+        let mut db = database();
+        let chiave = TrackKey::compute(TrackKeyInput {
+            artist: Some("Radiohead"),
+            title: Some("Karma Police"),
+            album: Some("OK Computer"),
+        });
+        let Ok(_) = db.execute(
+            "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms, date_added,
+                                 source, source_service, fonte_url, licenza, disponibilita)
+             VALUES (NULL, ?1, 'Karma Police', 'Radiohead', 'OK Computer', 264000, 0,
+                     'catalogo', 'audius', 'https://audius.co/x', 'libera', 'soloAscolto')",
+            [chiave.as_str()],
+        ) else {
+            panic!("il riferimento di catalogo si deve scrivere");
+        };
+        let c = contenuto(vec![brano(
+            "Radiohead",
+            "Karma Police",
+            "OK Computer",
+            264_066,
+        )]);
+        let Ok(rapporto) = import(&mut db, &c, true) else {
+            panic!("l'importazione deve riuscire");
+        };
+        assert_eq!(
+            rapporto.matched, 0,
+            "un riferimento non è un file in libreria"
+        );
+        assert_eq!(rapporto.missing, 1);
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'attesa'"
+            ),
+            1,
+            "il brano aspetta in coda"
+        );
+        // `riconcilia` mette in playlist il riferimento, al posto del brano:
+        // si ascolta da subito, e quando il file arriva gli passa il posto
+        // (R04-7, D-60). Non conta fra i ritrovati.
+        assert_eq!(rapporto.playlist_entries, 0);
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+                  WHERE t.path IS NULL"
+            ),
+            1
         );
     }
 
