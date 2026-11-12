@@ -915,6 +915,11 @@ catalogo! {
     /// identificativo: il suo consenso appartiene all'app di prima. Si
     /// ricollega, e cartelle e brani restano dove sono.
     CloudAppChanged = "cloud.appChanged", Cloud, Info, Never, None, { servizio: String };
+    /// «Ricollega» con un altro account dello stesso servizio: il consenso è
+    /// di un account diverso da quello che si ricollegava. Non si salva
+    /// niente e il conto di prima resta com'era (D-92): nominare i due
+    /// account è compito della finestrella, che li ha tutti e due.
+    CloudOtherAccount = "cloud.otherAccount", Cloud, Warning, Never, None, { servizio: String };
     /// L'identificativo dell'app scritto a mano non ha la forma che la
     /// piattaforma gli dà (o il nome dell'app è vuoto o troppo lungo).
     CloudAppIdInvalid = "cloud.appIdInvalid", Cloud, Info, Never, None;

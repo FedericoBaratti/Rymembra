@@ -918,11 +918,15 @@ export const ipc = {
     servizio: ServizioNuvola,
     appId: string | null,
     modulo?: ModuloCollega,
+    // Il conto che si ricollega (`ContoNuvola.conto`): un consenso di un altro
+    // account si rifiuta con `cloud.otherAccount`, senza salvare niente (D-92).
+    atteso: string | null = null,
   ) =>
     invoke<ContoNuvola>("nuvola_conto_collega", {
       servizio,
       appId,
       modulo: modulo ?? null,
+      atteso,
     }),
   // Ferma l'attesa del consenso. Torna subito; la risposta vera è quella di
   // `nuvolaContoCollega`, che chi ha annullato non ascolta più.
