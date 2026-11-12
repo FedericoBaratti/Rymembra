@@ -1,6 +1,6 @@
 # Rymembra terms of use
 
-Last updated: 10 November 2026.
+Last updated: 12 November 2026.
 
 Rymembra is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
@@ -133,8 +133,9 @@ have the right to distribute them, sending them to a public catalog is your
 decision and not one Rymembra takes for you — and that's the reason there's no way
 for it to happen without your having decided it.
 
-What goes to LRCLIB goes there under LRCLIB's license, not Rymembra's: the
-catalog hosts it and answers for what it hosts. Rymembra keeps no copy, doesn't
+What goes to LRCLIB goes there under whatever terms LRCLIB applies — today it
+publishes no license or terms of use of its own — and not under Rymembra’s:
+the catalog hosts it and answers for what it hosts. Rymembra keeps no copy, doesn't
 resell it and doesn't put it back into circulation elsewhere. Your lyric stays
 in your library — and an `.lrc` you have stays on your disk, identical —
 whether you press that button or not.
@@ -144,8 +145,9 @@ whether you press that button or not.
 ## 3-ter. Listening together
 
 From 3.1 Rymembra can play the same music on several PCs of the same network
-at once («Listen together»). Two things follow from that, and both are about
-the music, not the program.
+at once («Listen together»), and from this version also between devices
+linked over the internet (§ 3-quater). Two things follow from that, and both
+are about the music, not the program.
 
 - **The music of the session travels between its PCs, while it plays.** The
   host's files go to the PCs that follow, and the tracks a member adds go to
@@ -164,6 +166,28 @@ Playing music for an audience — in a shop, a bar, an event — can be a public
 performance that needs a license of its own, depending on where you are.
 Listening together with colleagues or family does not change what you are
 allowed to do with the music, and Rymembra cannot give you that license.
+
+---
+
+## 3-quater. Your devices over the internet
+
+From this version a PC and a phone, or two PCs, that you link with a QR code
+can browse and play each other’s music away from home (`PRIVACY.md`
+§ 4-quinquies). Two things follow from that, and both are about the music:
+
+- **“Download here” makes a lasting copy.** A linked device can copy a track,
+  or a whole album, from the other into its own download folder, where it
+  stays. Between your own devices that is a copy for yourself. A device of
+  someone else’s that you link can do the same: it can browse your library,
+  play it and keep copies of your files, which is handing your music to that
+  person — something the music’s own terms may not allow. Link only devices
+  that are yours, or that belong to people you may share that music with.
+- **What is shared is your files.** A linked device sees only the tracks that
+  are files in your local and network folders. That includes the files you
+  downloaded from a catalog, which keep that catalog’s license (§ 1, § 2): a
+  non-commercial clause, where there is one, binds whoever receives them too.
+  It does not include your cloud folders, nor the catalog tracks you only
+  listen to.
 
 ---
 
@@ -218,6 +242,12 @@ Recycle Bin, or when Rymembra cannot tell where the file is: there the file is
 deleted permanently, and only after a confirmation that says so. It asks first and never runs by itself, and
 **«Remove from library»** beside it leaves the disk alone entirely.
 
+On an Android phone the file goes to Android’s trash instead, after
+Android’s own confirmation, and the Files app can restore it for 30 days.
+Where Android has no trash — before Android 11, or for a file its media
+index does not list — the deletion is permanent, and the confirmation says
+so first.
+
 A backup of what you care about remains a good idea all the same — that goes
 for any program that reads your disk, this one included.
 
@@ -236,6 +266,8 @@ you each track's conditions; respecting them is your business.
 ## 7. If something here is wrong
 
 If you represent a catalog, a label or an artist and you believe Rymembra is
-doing something it shouldn't, write. There's no formal procedure because there's
+doing something it shouldn’t, write: open an issue on the project’s GitHub
+page (`https://github.com/FedericoBaratti/Rymembra/issues`), or use the email
+address on the project’s website. There's no formal procedure because there's
 no company: there's a person, and the answer to a well-founded report is fixing
 the code.

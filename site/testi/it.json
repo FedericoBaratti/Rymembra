@@ -66,7 +66,7 @@
   "cataloghi": {
     "titolo": "Quello che manca, lo cerca dove è permesso.",
     "testo": "Internet Archive e Audius ospitano musica pubblicata per essere condivisa: più di 250.000 concerti nel Live Music Archive, netlabel, pubblico dominio, brani che gli artisti hanno rilasciato con licenze aperte. Un brano si scarica solo quando la sua licenza lo permette, e quella licenza se la porta dietro. Quando nessuna versione in studio è libera, può prenderne il posto un concerto — e il brano dice che è dal vivo.",
-    "acquisti": "Il catalogo commerciale non lo ha nessuna fonte libera, e Rymembra non va a prenderlo dove non dovrebbe: quello che non trova in modo lecito finisce in una lista acquisti, con i link a Bandcamp e Qobuz.",
+    "acquisti": "Il catalogo commerciale non lo ha nessuna fonte libera, e Rymembra non va a prenderlo dove non dovrebbe: quello che non trova in modo lecito finisce in «Da comprare», con i link a Bandcamp e Qobuz.",
     "esclusi": "Lasciati fuori apposta: YouTube, le cui regole vietano di scaricare e conservare i contenuti, e gli accessi privati di Spotify, che sarebbero un accesso non autorizzato.",
     "alt": "La scheda «Importa da un servizio» delle impostazioni, che elenca da dove viene la musica",
     "didascalia": "Impostazioni, «Importa da un servizio»: ogni fonte con la regola che segue."
@@ -119,7 +119,7 @@
     "dalVivo": "dal vivo",
     "youtube": "le sue regole vietano di scaricare",
     "spotify": "niente accessi non autorizzati",
-    "listaAcquisti": "Lista acquisti",
+    "listaAcquisti": "Da comprare",
     "inRiproduzione": "In riproduzione",
     "stessoVolume": "Ogni brano portato allo stesso volume",
     "senzaPause": "Un brano finisce, il successivo comincia: nessuna pausa",
@@ -210,7 +210,7 @@
       },
       {
         "d": "Posso portarmi le playlist di Spotify?",
-        "r": "Sì. Chiedi i tuoi dati a Spotify dalla pagina sulla privacy del tuo account: arrivano come ZIP, di solito in pochi giorni, e la cronologia completa degli ascolti richiede più tempo. Rymembra lo legge sul tuo computer e confronta ogni brano con la tua libreria e con i cataloghi liberi. Nello ZIP non c'è audio: quello che non hai e che nessun catalogo libero ha finisce nella lista acquisti."
+        "r": "Sì. Chiedi i tuoi dati a Spotify dalla pagina sulla privacy del tuo account: arrivano come ZIP, di solito in pochi giorni, e la cronologia completa degli ascolti richiede più tempo. Rymembra lo legge sul tuo computer e confronta ogni brano con la tua libreria e con i cataloghi liberi. Nello ZIP non c'è audio: quello che non hai e che nessun catalogo libero ha finisce in «Da comprare»."
       },
       {
         "d": "Si può ascoltare insieme a un collega?",

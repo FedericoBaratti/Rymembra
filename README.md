@@ -254,8 +254,9 @@ a longer listening history than the public API offers.
   and the cultural proximity read from ListenBrainz. Each missing layer removes
   itself without breaking the others, and underneath everything the old rule
   cascade remains as a floor. The queue says which layer chose each track.
-- **Monday**: up to four collections of twenty tracks, computed locally while
-  the machine is idle, which stay put for seven days and then become other ones.
+- **Monday**: up to four collections of twenty tracks, computed on this
+  computer the first time the Home opens in a new week, which stay put for
+  seven days and then become other ones.
   What came out last week does not come out again.
 - **Skins** that can repaint and animate any part of the window, with a
   built-in visual editor (the Studio) and a packaged distribution format.
@@ -278,8 +279,8 @@ a longer listening history than the public API offers.
   through an app **you** register with Microsoft, Google and Dropbox —
   Rymembra has none built in — and the program walks you through it, with the
   exact addresses and permissions to type (*Settings → Folders and scanning →
-  Your apps*, or straight from the «Add folder» dialog). MEGA is not in 3.2.0:
-  it will come, with a MEGA app key of your own, once MEGA's terms are
+  Your apps*, or straight from the «Add folder» dialog). MEGA is not supported
+  yet: it will come, with a MEGA app key of your own, once MEGA's terms are
   cleared. Details of every request in [`PRIVACY.md`](PRIVACY.md) § 4-quater.
 - **Backup and synchronization** to Google Drive or to a shared folder, plus a
   **profile** you can carry by hand: a `.ryprofile` archive with the settings,
@@ -310,18 +311,18 @@ a longer listening history than the public API offers.
   by itself. Backup and sync files that the previous version left in that
   folder are recognised and renamed in place at the next pass, without
   uploading them again.
-- **Listen together** on your own network. One PC hosts, colleagues or
-  family with Rymembra on the same network follow, and everybody hears the same
-  track at the same moment — close enough for two sets of speakers in one room
-  — while the host's music plays from the host's disk, with no server in
-  between. A member who already has an identical copy of a track plays it from
-  their own disk instead. Each time someone joins, the host chooses whether
-  they just listen, take the controls (pause, skip, seek), or can also change
-  the queue and add their own tracks; volume, equalizer, output and latency
-  stay each person's own. The
-  first time two PCs meet, both screens show the same four-digit code; after
-  that everything travels encrypted, and only between PCs you paired. Devices
-  linked with a QR code (below) are paired already, and can listen together
+- **Listen together** on your own network. One device hosts — a PC or a
+  phone — and colleagues or family with Rymembra on the same network follow,
+  and everybody hears the same track at the same moment — close enough for
+  two sets of speakers in one room — while the host's music plays from the
+  host's disk, with no server in between. A member who already has an
+  identical copy of a track plays it from their own disk instead. Each time
+  someone joins, the host chooses whether they just listen, take the controls
+  (pause, skip, seek), or can also change the queue and add their own tracks;
+  volume, equalizer, output and latency stay each person's own. The first
+  time two devices meet, both screens show the same four-digit code; after
+  that everything travels encrypted, and only between devices you paired.
+  Devices linked with a QR code (below) are paired already, and can listen together
   away from home too: a linked device that hosts shows up as «via internet».
   Off by default; what it sends is documented in [`PRIVACY.md`](PRIVACY.md)
   § 4-ter, and the firewall question Windows asks the hosting PC is explained
@@ -357,7 +358,8 @@ hole in the veil over it and puts the bubble beside it, so what you are shown
 is the program at the size and in the skin you are running it in. To show the
 player it puts something in the queue, and when it ends the view and the queue
 are put back as they were. A step whose element is not there is skipped rather
-than faked. *Settings → Redo the tour* brings it back.
+than faked. “Run the tour again”, in *Settings → Appearance → Guided tour*,
+brings it back.
 
 ![The track list](immagini/brani.webp)
 
@@ -582,7 +584,11 @@ version refuses to open a newer database rather than guessing at it. 2.3.1
 migrates twice, `019_identita_e_metadati.sql` and `020_cronologia_unica.sql`,
 and it is a patch. From 3.0 Rymembra takes that copy itself before every
 migration — `rymembra.db.schema-NNN.bak`, beside the database, the last two
-kept — so going back means putting it in place of `rymembra.db`.
+kept. Going back by hand means quitting Rymembra, also from its icon next to
+the clock, moving `rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm`
+aside together — the last two belong to the newer database, and next to the
+copy SQLite would read them as its own — and copying the `.bak` to
+`rymembra.db`, not moving it, so that the `.bak` stays as a fallback.
 
 ---
 
@@ -594,14 +600,19 @@ kept — so going back means putting it in place of `rymembra.db`.
   the exact release in `.github/workflows/verify.yml`
 - **Node.js** 24 or later — the interface's TypeScript tests run on Node's
   own type stripping
-- **Windows** — the only platform the installer supports
+- **Windows** for the installer; for the APK, the Android SDK and NDK as
+  well (see [Known limits](#known-limits-and-planned-work) → Android →
+  Builds)
 
 ### Commands
 
 ```bash
-# Everything CI checks, in one go: versions, translations, CSS classes, the
-# interface's build and tests, the release tools' tests, formatting, clippy
-# and about 3,400 Rust tests — all runnable with no network connection
+# Most of what CI's main job checks, in one go: versions, translations, CSS
+# classes, the docs and the website, the interface's build and tests, the
+# release tools' tests, formatting, clippy and about 4,000 Rust tests — all
+# runnable with no network connection. The Android build, the dependency
+# checks below, the check of the license notices and the checks for bundled
+# binaries and forbidden tools run in CI only (.github/workflows/verify.yml)
 cd apps/desktop && npm run verify
 ```
 
@@ -627,9 +638,11 @@ npm run dev
 ```
 
 ```bash
-# Build the NSIS installer
+# Build the NSIS installer. createUpdaterArtifacts is switched off for this
+# run, as the release workflow does: with it on, `tauri build` wants to sign
+# the update and stops without the private key (see below)
 cd apps/desktop
-npm run build
+npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
 ```bash
@@ -733,6 +746,13 @@ The dependencies use different licenses: the `symphonia` family is **MPL-2.0**,
 given in [Building](#building). The Geist and Bricolage Grotesque fonts are
 distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`).
 
+The music in `site/audio/` — the website’s soundtrack, `machina.mp3`, which
+two Rust tests also play, and the twelve seconds of it in the site’s sound
+demo, `passaggio.mp3` — is [“Machina”](https://www.scottbuckley.com.au/library/machina/)
+by Scott Buckley, licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); recompressed for
+the site, and for the demo cut and with its volume changed.
+
 The music acquired through Rymembra is subject to the license of the source it
 came from, which is distinct from the program's. The implications are described
 in [`TERMS.md`](TERMS.md), including the Live Music Archive's **non-commercial**
@@ -752,7 +772,7 @@ services whose folders you add, the scrobbling service and the language model
 configured for the Skin Studio — the last one possibly not a server at all,
 since Ollama and LM Studio run on your own machine.
 «Listen together», if you switch it on, talks only to other Rymembra on your
-own network, encrypted, and shares music only with the PCs you paired.
+own network, encrypted, and shares music only with the devices you paired.
 Linking your devices over the internet, if you switch it on, is the one
 feature that reaches beyond your network and your accounts: your devices find
 each other through n0's public DNS and the BitTorrent DHT, and talk directly
@@ -822,7 +842,7 @@ constraint is stated explicitly in the terms of use.
   seven days, so publish it. OneDrive for Business and Google shared drives are
   not supported (folders shared with your Google account are, under «Shared
   with me»); a shortcut inside a chosen Drive folder is not followed; a `.lrc`
-  next to a cloud track is not read; MEGA is not in 3.2.0. A CD image stored
+  next to a cloud track is not read; MEGA is not supported yet. A CD image stored
   as one MP3 with its `.cue` in a cloud folder plays with estimated track
   boundaries: exact at a constant bitrate, off by up to seconds at a variable
   one, because an exact seek would re-read the file from the start over the
@@ -836,7 +856,11 @@ constraint is stated explicitly in the terms of use.
   so it leans on public ones: n0's relays and DNS are free, rate-limited and
   without guarantees, and when both devices sit behind a carrier's NAT — two
   phones on mobile data, often — every byte goes through a relay, slower than
-  a direct path. A phone is reachable only while Rymembra is on screen or
+  a direct path. n0 offers its public relays for development and hobby use,
+  and supports on them only the latest stable release of iroh: a copy of
+  Rymembra left without updates can one day lose the relay, and with it the
+  link away from home. A relay of your own (`iroh-relay`) does not depend on
+  that. A phone is reachable only while Rymembra is on screen or
   playing, and for two minutes after. Only tracks in local and network
   folders are shared, not cloud folders or catalog tracks; a track of a CD
   image (one file with its `.cue`) plays but is not downloaded. Seeking in a
@@ -857,8 +881,9 @@ constraint is stated explicitly in the terms of use.
   afterwards: restart Rymembra to be sure every request uses it. (The update
   check goes through a client of its own, which reads the Windows setting by
   itself.)
-- **macOS and Linux.** The installer's only target is NSIS: the supported
-  platform is therefore Windows.
+- **macOS, Linux and iOS** are not supported: the computer version is built
+  only for Windows (the installer is NSIS, the Store package MSIX), the phone
+  version only for Android.
 - **Android.** The same application, built from the same code: the core is
   shared, and the window becomes an interface of its own — four tabs (Home,
   Library, Search, More), a mini player, menus as sheets from the bottom,
@@ -875,7 +900,8 @@ constraint is stated explicitly in the terms of use.
     `gradlew assemble<Arch>Debug -x rustBuild<Arch>Debug`. Only 64-bit
     devices (`arm64-v8a`) and the `x86_64` emulator are built: AAudio, the
     audio output, needs Android 8.
-  - **Updates** are checked on GitHub as on the computer, and the APK for the
+  - **Updates** are checked on GitHub, every six hours while the app is
+    running (on the computer, every thirty minutes), and the APK for the
     phone's architecture is downloaded by Rymembra, only from an asset of the
     project's GitHub release. Before Android's installer sees it, Rymembra
     checks that it is this same app signed with the same certificate as the

@@ -66,7 +66,7 @@
   "cataloghi": {
     "titolo": "Was fehlt, sucht er dort, wo es erlaubt ist.",
     "testo": "Das Internet Archive und Audius beherbergen Musik, die zum Teilen veröffentlicht wurde: mehr als 250.000 Konzerte im Live Music Archive, Netlabels, Gemeinfreies, Titel, die Künstler unter offenen Lizenzen veröffentlicht haben. Ein Titel wird nur heruntergeladen, wenn seine eigene Lizenz es erlaubt, und er behält diese Lizenz. Ist keine Studioversion frei, kann ein Konzert einspringen — und der Titel sagt, dass er live ist.",
-    "acquisti": "Keine freie Quelle hat den kommerziellen Katalog, und Rymembra holt ihn nicht von dort, wo er es nicht sollte: Was er nicht rechtmäßig findet, kommt auf eine Einkaufsliste, mit Links zu Bandcamp und Qobuz.",
+    "acquisti": "Keine freie Quelle hat den kommerziellen Katalog, und Rymembra holt ihn nicht von dort, wo er es nicht sollte: Was er nicht rechtmäßig findet, kommt in die Liste „To buy“, mit Links zu Bandcamp und Qobuz.",
     "esclusi": "Bewusst weggelassen: YouTube, dessen Bedingungen das Herunterladen und Speichern von Inhalten verbieten, und die privaten Schnittstellen von Spotify, deren Nutzung ein unbefugter Zugriff wäre.",
     "alt": "Die Einstellungskarte „Import from a service“, die zeigt, woher die Musik kommt",
     "didascalia": "Einstellungen, „Import from a service“: jede Quelle mit der Regel, der sie folgt."
@@ -119,7 +119,7 @@
     "dalVivo": "live",
     "youtube": "Bedingungen verbieten das Herunterladen",
     "spotify": "kein unbefugter Zugriff",
-    "listaAcquisti": "Einkaufsliste",
+    "listaAcquisti": "Zu kaufen",
     "inRiproduzione": "Jetzt läuft",
     "stessoVolume": "Jeder Titel auf dieselbe Lautheit gebracht",
     "senzaPause": "Ein Titel endet, der nächste beginnt: keine Lücke",
@@ -210,7 +210,7 @@
       },
       {
         "d": "Kann ich meine Spotify-Playlists mitnehmen?",
-        "r": "Ja. Fordere deine Daten auf der Datenschutzseite deines Spotify-Kontos an: Sie kommen als ZIP, meist innerhalb weniger Tage, der vollständige Hörverlauf dauert länger. Rymembra liest sie auf deinem Computer und gleicht jeden Titel mit deiner Bibliothek und den freien Katalogen ab. Das ZIP enthält keine Audiodateien: Was du nicht hast und kein freier Katalog hat, kommt auf die Einkaufsliste."
+        "r": "Ja. Fordere deine Daten auf der Datenschutzseite deines Spotify-Kontos an: Sie kommen als ZIP, meist innerhalb weniger Tage, der vollständige Hörverlauf dauert länger. Rymembra liest sie auf deinem Computer und gleicht jeden Titel mit deiner Bibliothek und den freien Katalogen ab. Das ZIP enthält keine Audiodateien: Was du nicht hast und kein freier Katalog hat, kommt in die Liste „To buy“."
       },
       {
         "d": "Kann ich mit einem Kollegen zusammen hören?",
