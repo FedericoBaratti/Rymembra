@@ -560,3 +560,52 @@ fn l_indirizzo_web_di_nextcloud() {
         Some("https://cloud.it/index.php/apps/files/?dir=%2FMusica")
     );
 }
+
+/// Un server che ignora `Range`: per i tag in coda (ID3v1, APE) il lettore
+/// dei tag scaricava il file intero, letto e buttato fino a sedici kilobyte
+/// dalla fine, fuori dal tetto di otto megabyte. Adesso si rinuncia alla coda:
+/// vale vuota, e il file non si scarica (R28-3, D-112).
+#[test]
+fn i_tag_di_un_server_senza_range_non_scaricano_il_file() {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    use crate::musica::lettura::{LettoreTag, TETTO_LETTURA};
+
+    const GRANDE: usize = 20 * 1024 * 1024;
+    let finto = Finto::avvia(|vista: &Vista, _: &str| match vista.percorso.as_str() {
+        "/remote.php/dav/files/mario/grande.mp3" => {
+            risposta(200, "audio/mpeg", &vec![b'x'; GRANDE])
+        }
+        _ => risposta(404, "text/plain", b""),
+    });
+    let server = server(&finto);
+    let voce = VoceRemota {
+        id: "/remote.php/dav/files/mario/grande.mp3".to_owned(),
+        genitore: Some("/remote.php/dav/files/mario".to_owned()),
+        nome: "grande.mp3".to_owned(),
+        cartella: false,
+        dimensione: GRANDE as u64,
+        modificato_ms: 0,
+        versione: None,
+        tag: None,
+    };
+    let mut lettore = LettoreTag::nuovo(
+        server.sorgente_per_i_tag(&voce).expect("sorgente"),
+        Some(GRANDE as u64),
+    );
+    let mut testa = [0_u8; 10];
+    lettore.read_exact(&mut testa).expect("la testa arriva");
+    assert_eq!(testa, [b'x'; 10]);
+    lettore.seek(SeekFrom::End(-128)).expect("in coda");
+    let mut coda = [1_u8; 128];
+    lettore.read_exact(&mut coda).expect("la coda vale vuota");
+    assert_eq!(coda, [0_u8; 128], "una coda che non si legge non ha tag");
+    assert!(lettore.letti() < TETTO_LETTURA, "letti {}", lettore.letti());
+    assert_eq!(
+        finto
+            .viste_a("/remote.php/dav/files/mario/grande.mp3")
+            .len(),
+        2,
+        "la testa e la domanda col `Range` ignorato: niente lettura di fila del file intero"
+    );
+}

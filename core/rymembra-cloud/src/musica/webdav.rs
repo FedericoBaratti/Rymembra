@@ -55,6 +55,7 @@ use rymembra_net::http::{
     Cancello, Corpo, DiFila, Metodo, Pezzo, Rete, Richiesta, Rimandi, Risposta, percento,
 };
 
+use super::lettura::TETTO_LETTURA;
 use super::{Deposito, Identita, errore_cursore_scaduto, ripasso_periodico};
 
 const CHIAVE: &str = "webdav";
@@ -144,6 +145,23 @@ impl std::fmt::Debug for WebDav {
 }
 
 impl WebDav {
+    /// I byte di un file, con un tetto al salto di fila o senza: vedi
+    /// [`DaWebDav`].
+    fn da_webdav(&self, voce: &VoceRemota, tetto_di_salto: Option<u64>) -> DaWebDav {
+        let mut url = self.url(&voce.id);
+        // Un file non ha la barra finale delle cartelle.
+        url.pop();
+        DaWebDav {
+            flusso: self.flusso.clone(),
+            rete_di_fila: self.di_fila.clone(),
+            url,
+            autorizzazione: self.autorizzazione.clone(),
+            senza_intervalli: AtomicBool::new(false),
+            di_fila: Mutex::new(None),
+            tetto_di_salto,
+        }
+    }
+
     /// Un server, dall'indirizzo che l'utente ha scritto.
     ///
     /// # Errori
@@ -478,17 +496,12 @@ impl Deposito for WebDav {
     }
 
     fn sorgente(&self, voce: &VoceRemota) -> Result<Box<dyn Sorgente>, AppError> {
-        let mut url = self.url(&voce.id);
-        // Un file non ha la barra finale delle cartelle.
-        url.pop();
-        Ok(Box::new(DaWebDav {
-            flusso: self.flusso.clone(),
-            rete_di_fila: self.di_fila.clone(),
-            url,
-            autorizzazione: self.autorizzazione.clone(),
-            senza_intervalli: AtomicBool::new(false),
-            di_fila: Mutex::new(None),
-        }))
+        Ok(Box::new(self.da_webdav(voce, None)))
+    }
+
+    /// Con un tetto al salto di fila: vedi [`DaWebDav`].
+    fn sorgente_per_i_tag(&self, voce: &VoceRemota) -> Result<Box<dyn Sorgente>, AppError> {
+        Ok(Box::new(self.da_webdav(voce, Some(TETTO_LETTURA))))
     }
 
     /// Per Nextcloud e ownCloud, la cartella nella loro interfaccia web.
@@ -529,6 +542,11 @@ pub struct DaWebDav {
     /// Il server ha risposto `200` a una domanda da metà file: da qui in poi
     /// questo brano si legge di fila.
     senza_intervalli: AtomicBool,
+    /// Per chi legge i tag: quanto si può leggere e buttare per arrivare a un
+    /// punto, di fila. Oltre, `cloud.rangeUnsupported`: il lettore dei tag
+    /// rinuncia alla coda invece di scaricare il file intero (R28-3,
+    /// D-112). `None` per chi suona, che il brano lo legge comunque tutto.
+    tetto_di_salto: Option<u64>,
     /// La risposta letta di fila, aperta fra un pezzo e l'altro.
     di_fila: Mutex<Option<DiFila>>,
 }
@@ -551,6 +569,23 @@ impl DaWebDav {
     fn di_fila(&self, da: u64, quanti: u64, avanti: &dyn Fn() -> bool) -> Result<Pezzo, AppError> {
         let mut aperta = self.di_fila.lock().unwrap_or_else(PoisonError::into_inner);
         let mut ancora = true;
+        // Per i tag, un salto più lungo del tetto non si fa: dalla risposta
+        // aperta se va avanti, da capo altrimenti.
+        if let Some(tetto) = self.tetto_di_salto {
+            let da_dove = aperta
+                .as_ref()
+                .map(DiFila::letti)
+                .filter(|letti| *letti <= da)
+                .unwrap_or(0);
+            if da.saturating_sub(da_dove) > tetto {
+                return Err(
+                    AppError::new(ErrorCode::CloudRangeUnsupported).with_cause(format!(
+                        "il server ignora `Range`: per i tag non si leggono {} byte di fila",
+                        da.saturating_sub(da_dove)
+                    )),
+                );
+            }
+        }
         loop {
             let lettura = match aperta.take() {
                 Some(lettura) if lettura.letti() <= da => lettura,

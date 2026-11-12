@@ -194,6 +194,21 @@ pub trait Deposito: Send + Sync {
     /// alla prima lettura).
     fn sorgente(&self, voce: &VoceRemota) -> Result<Box<dyn Sorgente>, AppError>;
 
+    /// I byte di un file per chi ne legge i tag ([`LettoreTag`]): pochi, e
+    /// mai il file intero per arrivare alla coda.
+    ///
+    /// Di serie è [`Self::sorgente`]: chi sa servire `Range` serve la coda
+    /// con una richiesta piccola. Lo cambia chi può trovarsi davanti un server
+    /// che `Range` lo ignora — WebDAV —, dove raggiungere la coda vorrebbe
+    /// dire leggere e buttare il file intero (R28-3).
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::sorgente`].
+    fn sorgente_per_i_tag(&self, voce: &VoceRemota) -> Result<Box<dyn Sorgente>, AppError> {
+        self.sorgente(voce)
+    }
+
     /// Come la scansione legge da questo servizio. Vedi [`limiti_di`].
     fn limiti(&self) -> Limiti {
         limiti_di(self.servizio())

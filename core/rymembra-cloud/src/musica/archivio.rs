@@ -182,7 +182,8 @@ impl ArchivioNuvola {
         })
     }
 
-    /// Il brano intero, dentro la cache, e la sua lunghezza.
+    /// Il brano intero, dentro la cache, e la sua lunghezza se lo specchio la
+    /// sa (vedi `dimensione_nota`).
     ///
     /// È la via della riproduzione, degli attacchi dei testi e del ponte di
     /// «Ascolta insieme»: quel che passa di qui resta nella cache (se è
@@ -191,13 +192,13 @@ impl ArchivioNuvola {
     /// # Errori
     ///
     /// Quelli di [`Self::trova`] e di [`Deposito::sorgente`].
-    pub fn apri_brano(&self, percorso: &str) -> Result<(Box<dyn Sorgente>, u64), AppError> {
+    pub fn apri_brano(&self, percorso: &str) -> Result<(Box<dyn Sorgente>, Option<u64>), AppError> {
         let trovato = self.trova(percorso)?;
         let sorgente = trovato.deposito.sorgente(&trovato.voce)?;
         let chiave = Chiave::di(&trovato.conto, &trovato.voce);
         Ok((
             Box::new(self.cache.con(chiave, sorgente)),
-            trovato.voce.dimensione,
+            dimensione_nota(trovato.voce.dimensione),
         ))
     }
 
@@ -217,6 +218,21 @@ impl ArchivioNuvola {
     pub fn indirizzo_web(&self, percorso: &str) -> Result<Option<String>, AppError> {
         let trovato = self.trova(percorso)?;
         Ok(trovato.deposito.indirizzo_web(&trovato.voce))
+    }
+}
+
+/// La dimensione che lo specchio sa di un file, se la sa davvero.
+///
+/// Zero vuol dire «il servizio non l'ha detta» — un server WebDAV senza
+/// `getcontentlength`, un `size` assente su OneDrive —, non «file vuoto»: un
+/// lettore che la prendesse per buona vedrebbe la fine al byte zero, e il
+/// brano entrerebbe senza tag e senza durata. Senza, la lunghezza si impara
+/// dalla prima risposta (R28-7).
+const fn dimensione_nota(dimensione: u64) -> Option<u64> {
+    if dimensione > 0 {
+        Some(dimensione)
+    } else {
+        None
     }
 }
 
@@ -308,10 +324,10 @@ impl MusicFiles for ArchivioNuvola {
 
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
         let trovato = self.trova(path)?;
-        let sorgente = trovato.deposito.sorgente(&trovato.voce)?;
+        let sorgente = trovato.deposito.sorgente_per_i_tag(&trovato.voce)?;
         Ok(Box::new(LettoreTag::nuovo(
             sorgente,
-            Some(trovato.voce.dimensione),
+            dimensione_nota(trovato.voce.dimensione),
         )))
     }
 
@@ -665,7 +681,7 @@ mod prove {
         assert!(archivio.copia_completa(percorso).is_none());
         // La riproduzione sì: letta per intero, la copia è completa.
         let (sorgente, lunghezza) = archivio.apri_brano(percorso).expect("prova");
-        assert_eq!(lunghezza, 6);
+        assert_eq!(lunghezza, Some(6));
         let pezzo = sorgente.pezzo(0, 6).expect("prova");
         assert_eq!(pezzo.byte, b"ABCDEF");
         assert!(archivio.copia_completa(percorso).is_some());
@@ -726,5 +742,33 @@ mod prove {
             errore.code().kind(),
             rymembra_domain::errors::ErrorCodeKind::CloudNotConnected
         );
+    }
+
+    /// Un server che non dichiara la dimensione (WebDAV senza
+    /// `getcontentlength`, OneDrive senza `size`) mette 0 nello specchio. Zero
+    /// non è «file vuoto»: il lettore dei tag impara la lunghezza dalla prima
+    /// risposta, come quando non la sa affatto (R28-7).
+    #[test]
+    fn una_dimensione_zero_non_e_un_file_vuoto() {
+        let (archivio, _, _cartella) = archivio(true, true);
+        let mut senza_misura = voce("f1", Some("rock"), "01.flac", false);
+        senza_misura.dimensione = 0;
+        let _ = archivio
+            .specchio
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .applica(CONTO, vec![Cambio::Voce(senza_misura)]);
+        let percorso = "nuvola://onedrive-abcdefgh/Musica/Rock/01.flac";
+        let mut letto = Vec::new();
+        archivio
+            .open(percorso)
+            .and_then(|mut r| {
+                r.read_to_end(&mut letto)
+                    .map_err(|e| rymembra_app::files::io_error(percorso, &e))
+            })
+            .expect("prova");
+        assert_eq!(letto, b"ABCDEF", "sei byte, non zero");
+        let (_, lunghezza) = archivio.apri_brano(percorso).expect("prova");
+        assert_eq!(lunghezza, None, "una lunghezza che non si sa non è zero");
     }
 }
