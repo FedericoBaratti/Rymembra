@@ -135,7 +135,8 @@ pub fn normalize_key(input: Option<&str>) -> String {
 ///
 /// La lista è **chiusa e corta di proposito**. «El» non c'è: è anche un nome
 /// («El-P», «El Guincho»), e ordinare El Guincho sotto G è più sbagliato che
-/// lasciarlo sotto E. Nel dubbio, non si tocca.
+/// lasciarlo sotto E. Nel dubbio, non si tocca. «I» c'è, ma vale solo davanti
+/// a una parola italiana: vedi [`e_l_articolo_italiano`].
 /// L'apostrofo va **prima** dello spazio: si toglie dal nome vero, non da
 /// quello normalizzato, perché `normalize_key` butta via la punteggiatura
 /// ASCII — apostrofo compreso — e a quel punto «L'Arc» è già diventato «larc»,
@@ -151,7 +152,8 @@ const ARTICOLI: &[&str] = &[
 
 /// Il nome sotto cui ordinare, senza l'articolo iniziale.
 ///
-/// «The Cure» finisce sotto C, «I Cani» sotto C, «Los Lobos» sotto L.
+/// «The Cure» finisce sotto C, «I Cani» sotto C, «Los Lobos» sotto L, «I
+/// Prevail» sotto I.
 /// L'articolo si cerca sul nome vero, senza distinguere le maiuscole e con gli
 /// apostrofi tipografici già unificati su quello dritto — `L’Arc~en~Ciel` come
 /// `L'Arc~en~Ciel`, che Picard e MusicBrainz scrivono volentieri col primo —; il
@@ -207,6 +209,9 @@ pub fn sort_name(name: &str) -> String {
         if !inizio.eq_ignore_ascii_case(articolo) {
             continue;
         }
+        if *articolo == "i " && !e_l_articolo_italiano(resto) {
+            continue;
+        }
         // Un nome fatto **solo** di un articolo non si svuota: «The The» ha un
         // resto, «The» da solo no, e una chiave vuota lo manderebbe in cima a
         // tutto invece che sotto T.
@@ -216,6 +221,24 @@ pub fn sort_name(name: &str) -> String {
         return normalize_key(Some(resto));
     }
     normalize_key(Some(pulito))
+}
+
+/// La «I» in testa a un nome è l'articolo italiano, e non il pronome inglese?
+///
+/// «I Cani» e «I Nomadi» vanno sotto C e N; «I Prevail», «I See Stars» e «I
+/// Will Survive» restano sotto I (D-63). La lingua dei tag la libreria non la
+/// conserva — servirebbe una colonna, cioè una migrazione — quindi la si
+/// legge dalla parola che segue: l'articolo «I» sta davanti al plurale
+/// maschile, che in italiano finisce in «i» (cani, nomadi, giardini, migliori),
+/// mentre dopo il pronome inglese viene un verbo o un nome che in «i» non
+/// finisce quasi mai. Quel che sfugge — «I Pooh», «I Dik Dik» — resta sotto la
+/// I, che è dove lo cerca chi non conosce la regola: nel dubbio, non si tocca.
+fn e_l_articolo_italiano(resto: &str) -> bool {
+    resto
+        .split(|c: char| !c.is_alphanumeric())
+        .find(|parola| !parola.is_empty())
+        .and_then(|parola| fold_text(parola).chars().next_back())
+        == Some('i')
 }
 
 /// I tre tag da cui si deriva l'identità di un brano.
@@ -726,5 +749,35 @@ mod tests {
             sort_name("L'Impératrice")
         );
         assert_eq!(sort_name("L'Impératrice"), "imperatrice");
+    }
+
+    #[test]
+    fn la_i_e_un_articolo_solo_in_italiano() {
+        // «I » è l'articolo di «I Cani» e «I Nomadi», e il pronome di «I
+        // Prevail» e «I Will Survive»: tolto sempre, i gruppi inglesi finivano
+        // sotto P, M, S, e con i titoli ordinati per nome (D-104) ogni «I …»
+        // inglese sotto la sua seconda parola (D-63).
+        for (nome, chiave) in [
+            ("I Cani", "cani"),
+            ("I Nomadi", "nomadi"),
+            ("I Camaleonti", "camaleonti"),
+            ("I giardini di marzo", "giardini di marzo"),
+            ("I migliori anni", "migliori anni"),
+        ] {
+            assert_eq!(sort_name(nome), chiave, "{nome}");
+        }
+        for (nome, chiave) in [
+            ("I Prevail", "i prevail"),
+            ("I Monster", "i monster"),
+            ("I See Stars", "i see stars"),
+            ("I Am Kloot", "i am kloot"),
+            ("I Will Survive", "i will survive"),
+            ("I Want to Hold Your Hand", "i want to hold your hand"),
+        ] {
+            assert_eq!(sort_name(nome), chiave, "{nome}");
+        }
+        // Gli altri articoli non cambiano.
+        assert_eq!(sort_name("Il Volo"), "volo");
+        assert_eq!(sort_name("Gli Ultimi"), "ultimi");
     }
 }
