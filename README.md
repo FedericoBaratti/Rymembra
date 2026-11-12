@@ -3,9 +3,10 @@
 A music player for Windows and Android, written in Rust. It plays the audio files on your
 disk and joins your local library up with the freely accessible music catalogs.
 
-> **Project status:** under development. It builds and runs on Windows, and
-> on Android 8 or later (64-bit). The Windows executable is not digitally
-> signed, and the macOS, Linux and iOS versions do not exist. See [Known limits and planned
+> **Project status:** in use and actively developed. It runs on Windows 10 and
+> 11 (64-bit) and on Android 8 or later (64-bit). The Windows installer is not
+> digitally signed (the Microsoft Store copy is), and there are no macOS, Linux
+> or iOS versions. See [Known limits and planned
 > work](#known-limits-and-planned-work).
 
 ## Contents
@@ -558,6 +559,14 @@ use. Nothing is overwritten or deleted: if a library already exists in the new
 folder it wins, and if the previous version is still running when Rymembra
 starts, Rymembra says so and closes without touching anything.
 
+**Uninstalling.** From Windows' *Settings → Apps*. The library, the settings
+and the covers stay unless you tick «Delete the application data» («Cancella i
+dati dell'applicazione») in the uninstaller; the tokens of the connected
+accounts and the keys that identify the PC stay in Windows' Credential Manager
+in any case, because the uninstaller never touches it — disconnect the accounts
+in Rymembra first, or delete those entries by hand. The full list is in
+[`PRIVACY.md`](PRIVACY.md#when-you-uninstall).
+
 The changes introduced by each version are listed in
 [`CHANGELOG.md`](CHANGELOG.md). The numbering rule is described at the top of
 that file, and 2.3.1 amended it: the number no longer tries to say how much a
@@ -581,7 +590,7 @@ kept — so going back means putting it in place of `rymembra.db`.
 
 ### Requirements
 
-- **Rust** — stable, 1.90 or later (`rust-version` in `Cargo.toml`); CI pins
+- **Rust** — stable, 1.91 or later (`rust-version` in `Cargo.toml`); CI pins
   the exact release in `.github/workflows/verify.yml`
 - **Node.js** 24 or later — the interface's TypeScript tests run on Node's
   own type stripping
@@ -594,6 +603,13 @@ kept — so going back means putting it in place of `rymembra.db`.
 # interface's build and tests, the release tools' tests, formatting, clippy
 # and about 3,400 Rust tests — all runnable with no network connection
 cd apps/desktop && npm run verify
+```
+
+```bash
+# The Rust part exactly as CI runs it: the toolchain pinned in verify.yml, with
+# warnings as errors and --locked. Install that toolchain once with
+# rustup toolchain install <version> --profile minimal --component rustfmt,clippy
+cd apps/desktop && npm run verify:ci
 ```
 
 ```bash

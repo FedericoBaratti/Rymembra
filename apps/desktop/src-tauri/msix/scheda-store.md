@@ -19,7 +19,7 @@ quel che il programma fa davvero.
 | Informativa sulla privacy | `https://github.com/FedericoBaratti/Rymembra/blob/main/PRIVACY.md` |
 | Contatto per l'assistenza | `https://github.com/FedericoBaratti/Rymembra/issues` |
 | Sviluppato da | Federico Baratti |
-| Requisiti | Windows 10 versione 1809 o successiva, 64 bit |
+| Requisiti | Windows 10 versione 2004 (build 19041) o successiva, 64 bit |
 
 ---
 

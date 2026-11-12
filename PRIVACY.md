@@ -58,6 +58,30 @@ yourself (§ 4), what a listening session shares with the PCs you paired — on
 your own network, and only if you start or join one (§ 4-ter) — and the
 requests to the cloud services whose folders you add (§ 4-quater).
 
+### When you uninstall
+
+Uninstalling Rymembra from Windows (*Settings → Apps*) removes the program. What
+else goes depends on the box «Delete the application data» («Cancella i dati
+dell'applicazione») that the uninstaller shows; an update, and an uninstall run
+with `/P` or `/S`, never show it and never delete data.
+
+| What | Without the box | With the box |
+|---|---|---|
+| The library, settings, covers, skins and drafts, the log and the copies of the database taken before a migration (`%APPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
+| The window's own data and the cache of tracks played from cloud folders (`%LOCALAPPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
+| The installer's registry key (`HKCU\Software\Federico Baratti\Rymembra`) | stays | removed |
+| The secrets in Windows Credential Manager — account tokens, API keys, the keys that identify this PC in «Listen together» and to your devices | **stay** | **stay** |
+| The previous version's window data (`%LOCALAPPDATA%\io.github.federicobaratti.aether`) | stays | stays |
+| The installers downloaded by updates (`%TEMP%\Rymembra-<version>-updater-*`, about 15 MB each) | stay | stay |
+| Your music, lyrics files, exported profiles, and the backup and sync files on your Google Drive | never touched | never touched |
+
+The uninstaller never touches Credential Manager. To take the secrets away too,
+disconnect the accounts in Rymembra before uninstalling; or, afterwards, delete
+in *Credential Manager → Windows Credentials* the entries whose name ends with
+`io.github.federicobaratti.rymembra`. A copy from the Microsoft Store keeps its
+files in its own folder under `%LOCALAPPDATA%\Packages\`, which Windows removes
+with the app; its secrets in Credential Manager stay the same way.
+
 ### On an Android phone
 
 The same things, in the places Android gives an app:
