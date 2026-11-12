@@ -132,30 +132,41 @@ pub fn traduci(gesto: &Gesto, specchio: &Istantanea) -> Result<Traduzione, AppEr
             etichetta: specchio.corrente.ok_or_else(superato)?,
             ms: *ms,
         }],
+        // Una riga che non mostra più il brano atteso: niente, come sulla
+        // coda di qui (`al_suo_posto` lì manda la coda vera e risponde «fatto»),
+        // e senza una fascia d'errore — è un gesto superato da un altro, e la
+        // coda giusta arriva col prossimo stato (decisione D-107).
         Gesto::CodaVai { indice, atteso } => {
             if !al_suo_posto(*indice, *atteso) {
-                return Err(superato());
+                return Ok(Traduzione::Azioni(Vec::new()));
             }
             vec![Azione::Vai {
                 uid: uid(*indice).ok_or_else(superato)?,
             }]
         }
         Gesto::CodaTogli { indici, attesi } => {
-            let azioni: Vec<Azione> = indici
+            let al_posto: Vec<usize> = indici
                 .iter()
                 .enumerate()
                 .filter(|(n, i)| al_suo_posto(**i, attesi.get(*n).copied()))
-                .filter_map(|(_, i)| uid(*i))
+                .map(|(_, i)| *i)
+                .collect();
+            if al_posto.is_empty() && !indici.is_empty() {
+                return Ok(Traduzione::Azioni(Vec::new()));
+            }
+            let azioni: Vec<Azione> = al_posto
+                .iter()
+                .filter_map(|i| uid(*i))
                 .map(|uid| Azione::Togli { uid })
                 .collect();
-            if azioni.is_empty() && !indici.is_empty() {
+            if azioni.is_empty() && !al_posto.is_empty() {
                 return Err(superato());
             }
             azioni
         }
         Gesto::CodaRiordina { da, a, atteso } => {
             if !al_suo_posto(*da, *atteso) {
-                return Err(superato());
+                return Ok(Traduzione::Azioni(Vec::new()));
             }
             sposta(&specchio.coda, *da, *a).into_iter().collect()
         }
@@ -523,6 +534,7 @@ mod prove {
         // Reperto R04-4: la finestra mostrava [u1, u2, u3]; nel frattempo
         // l'host ha messo u9 dopo u2, e lo specchio è già [u1, u2, u9, u3].
         // La × sulla terza riga (per chi guardava, u3) toglieva u9.
+        // Niente da fare, e nessun errore: come sulla coda di qui.
         let s = specchio(&[1, 2, 9, 3], Some(1));
         let u3 = -3;
         for gesto in [
@@ -540,8 +552,7 @@ mod prove {
                 atteso: Some(u3),
             },
         ] {
-            let err = traduci(&gesto, &s).unwrap_err();
-            assert_eq!(err.code().kind().code(), "insieme.superato", "{gesto:?}");
+            assert_eq!(azioni(&gesto, &s), Vec::new(), "{gesto:?}");
         }
         // Con l'atteso giusto, come prima.
         assert_eq!(

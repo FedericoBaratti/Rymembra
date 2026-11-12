@@ -1337,7 +1337,9 @@ function AvvisoDiPassaggio({
   const testo =
     avviso === null
       ? null
-      : tSe(avviso.chiave, t("together.notice.generic"), { nome: nomeDi(avviso.nome) });
+      : // Il nome lo sceglie l'altro PC: isolato dal resto della frase, che
+        // un nome da destra a sinistra non deve rovesciare (R26-7).
+        tSe(avviso.chiave, t("together.notice.generic"), { nome: isolato(nomeDi(avviso.nome)) });
   const daRaggiungere =
     avviso?.chiave === "together.notice.paired" && stato?.fase === "libera"
       ? fidatiCheOspitano(stato).find((f) => f.nome === avviso.nome)

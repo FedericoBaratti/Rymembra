@@ -140,6 +140,7 @@ test("la riga di una richiesta dice il nome dichiarato, o quello scelto qui per 
 test("un nome scelto da un altro PC si isola dal testo intorno", () => {
   // R26-7: nel titolo del dialogo e negli avvisi, dove c'è solo testo.
   assert.equal(insieme.isolato("PC di Marco"), "⁨PC di Marco⁩");
+  assert.ok(corpoDi("AvvisoDiPassaggio").includes("isolato(nomeDi(avviso.nome))"));
 });
 
 test("una richiesta d'associazione è una riga, non il dialogo, e il nome sta in un <bdi>", () => {
