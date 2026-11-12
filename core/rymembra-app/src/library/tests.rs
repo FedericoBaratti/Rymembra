@@ -387,12 +387,11 @@ fn gli_elenchi_non_ordinano_la_tabella_a_ogni_pagina() {
             "{ordine:?} ordina la tabella intera: {letto}"
         );
     }
-    let album = piano(
-        "SELECT a.title FROM albums a
-             ORDER BY a.artist COLLATE NOCASE, a.year, a.title COLLATE NOCASE
-             LIMIT 200 OFFSET 0",
-    );
-    assert!(!album.contains("TEMP B-TREE"), "gli album: {album}");
+    // La griglia degli album non c'è più, e non per dimenticanza: da D-104
+    // ordina con la chiave degli Artisti (`rymembra_ordine`, senza accenti e
+    // senza l'articolo in testa), che nessun indice serve — vedi
+    // `interrogazioni::assicura_ordine`. Gli album sono un ordine di grandezza
+    // meno dei brani, e l'ordinamento in memoria è voluto.
 }
 
 #[test]

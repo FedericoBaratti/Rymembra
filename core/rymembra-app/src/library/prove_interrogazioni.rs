@@ -156,3 +156,60 @@ fn trascurati_non_contiene_un_brano_appena_aggiunto() {
     trovati.sort_unstable();
     assert_eq!(trovati, vec![3, 4]);
 }
+
+#[test]
+fn album_e_artisti_ordinano_allo_stesso_modo() {
+    // Lo stesso nome in due posti diversi: «The Beatles» sotto T negli Album e
+    // sotto B negli Artisti, «Édith Piaf» dopo «ZZ Top» negli Album e sotto E
+    // negli Artisti.
+    let mut connection = libreria();
+    for (id, artista) in [
+        (1, "ZZ Top"),
+        (2, "Édith Piaf"),
+        (3, "The Beatles"),
+        (4, "Abba"),
+        (5, "Ólafur Arnalds"),
+    ] {
+        let path = format!("D:/M/{id}/01.flac");
+        let album_key = format!("disco d:/m/{id}");
+        scrivi(
+            &connection,
+            &Riga {
+                id,
+                path: &path,
+                title: "Brano",
+                artist: artista,
+                album: "Disco",
+                album_key: &album_key,
+                disco: None,
+                traccia: Some(1),
+                aggiunto: 1,
+            },
+        );
+    }
+    let tx = transazione_di_scrittura(&mut connection).expect("transazione");
+    rebuild_aggregates(&tx).expect("aggregati");
+    tx.commit().expect("commit");
+
+    let album: Vec<String> = list_albums(&connection, 0, 10)
+        .expect("album")
+        .into_iter()
+        .map(|a| a.artist)
+        .collect();
+    let artisti: Vec<String> = list_artists(&connection)
+        .expect("artisti")
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(
+        album,
+        [
+            "Abba",
+            "The Beatles",
+            "Édith Piaf",
+            "Ólafur Arnalds",
+            "ZZ Top"
+        ]
+    );
+    assert_eq!(album, artisti);
+}
