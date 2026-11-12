@@ -539,22 +539,29 @@ pub async fn playlist_regole_prova(
 /// file — e farlo sempre sul nome di serie diceva «verrà sostituita» per un
 /// nome che non era più quello che si stava per importare (R13c-2).
 ///
-/// `(async)`: legge dal disco. Un M3U è piccolo, ma la regola vale per tutti i
-/// comandi che toccano il filesystem — e la finestra non deve fermarsi perché
-/// qualcuno ha scelto un file su una chiavetta lenta.
-#[tauri::command(async)]
-pub fn playlist_file_piano(
-    stato: State<'_, Stato>,
+/// In disparte, sul pool bloccante, come [`playlist_file_importa`]: legge un
+/// file che l'utente ha scelto — da una chiavetta lenta, da una share che si
+/// sveglia — e poi prende il lucchetto della libreria. Un `(async)` su una
+/// funzione sincrona faceva aspettare tutte e due le cose a un *worker* del
+/// runtime (R10-5, il 03-13 di ieri).
+#[tauri::command]
+pub async fn playlist_file_piano(
+    app: tauri::AppHandle,
     percorso: String,
     nome: Option<String>,
 ) -> Esito<PianoFile> {
-    let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
-    let nome = nome_per_il_piano(nome, predefinito);
-    let rapporto = con_libreria(&stato, |libreria| {
-        import_playlist::plan(&mut libreria.connection, &letta, &nome, cartella.as_deref())
+    in_disparte("piano di un file di playlist", move || {
+        let stato = gestito::<Stato>(&app, "piano di un file di playlist").map_err(errore)?;
+        let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
+        let nome = nome_per_il_piano(nome, predefinito);
+        let rapporto = con_libreria(&stato, |libreria| {
+            import_playlist::plan(&mut libreria.connection, &letta, &nome, cartella.as_deref())
+        })
+        .map_err(errore)?;
+        Ok(PianoFile { nome, rapporto })
     })
-    .map_err(errore)?;
-    Ok(PianoFile { nome, rapporto })
+    .await
+    .map_err(errore)?
 }
 
 /// Il nome per cui si fa il piano: quello chiesto, o quello di serie se non ne
@@ -652,20 +659,33 @@ fn leggi_file(percorso: &str) -> Result<(PlaylistLetta, String, Option<PathBuf>)
 ///
 /// `fs.extensionRefused` o `fs.pathInvalid` per un percorso che la finestra non
 /// può chiedere; quelli della libreria e della scrittura per il resto.
-#[tauri::command(async)]
-pub fn playlist_esporta(
-    stato: State<'_, Stato>,
+///
+/// In disparte, sul pool bloccante, come [`playlist_file_importa`]: scrive dove
+/// l'utente ha scelto, cioè anche su una chiavetta o su una share (R10-5).
+#[tauri::command]
+pub async fn playlist_esporta(
+    app: tauri::AppHandle,
     id: i64,
     percorso: String,
 ) -> Esito<PlaylistEsportata> {
-    let file = destinazioni::file_da_scrivere(&percorso, destinazioni::ESTENSIONI_PLAYLIST)
+    in_disparte("esportazione di una playlist", move || {
+        let stato = gestito::<Stato>(&app, "esportazione di una playlist").map_err(errore)?;
+        esporta_adesso(&stato, id, &percorso)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`playlist_esporta`], sul pool bloccante.
+fn esporta_adesso(stato: &Stato, id: i64, percorso: &str) -> Esito<PlaylistEsportata> {
+    let file = destinazioni::file_da_scrivere(percorso, destinazioni::ESTENSIONI_PLAYLIST)
         .map_err(errore)?;
     // Non succede: `ESTENSIONI_PLAYLIST` e `da_estensione` sono tenute allineate
     // da un test in `destinazioni`. Ma se un giorno divergessero, il rifiuto è
     // la risposta giusta — non un ritorno silenzioso a M3U.
     let formato = FormatoPlaylist::da_estensione(file.estensione).ok_or_else(|| {
         errore(AppError::new(ErrorCode::FsExtensionRefused {
-            path: percorso.clone(),
+            path: percorso.to_owned(),
             allowed: destinazioni::ESTENSIONI_PLAYLIST
                 .iter()
                 .map(|&e| e.to_owned())
@@ -673,12 +693,12 @@ pub fn playlist_esporta(
         }))
     })?;
     let path = file.percorso;
-    let fatta = con_libreria(&stato, |libreria| {
+    let fatta = con_libreria(stato, |libreria| {
         import_playlist::esporta(&libreria.connection, id, formato)
     })
     .map_err(errore)?;
     std::fs::write(&path, fatta.testo.as_bytes())
-        .map_err(|err| errore(rymembra_app::files::io_error(&percorso, &err)))?;
+        .map_err(|err| errore(rymembra_app::files::io_error(percorso, &err)))?;
     Ok(PlaylistEsportata {
         scritti: fatta.scritti,
         lasciati_fuori: fatta.lasciati_fuori,

@@ -45,7 +45,7 @@ use rymembra_net::Rete;
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
-use crate::disparte::in_disparte;
+use crate::disparte::{in_disparte, leggi_la_libreria};
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -475,14 +475,15 @@ fn esegui(
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
+///
+/// In disparte, sul pool bloccante: deserializza il rapporto con gli elenchi
+/// dei mancanti, sotto il lucchetto della libreria (R24-7).
 #[tauri::command]
-pub fn import_rapporto(
-    stato: State<'_, Stato>,
-    source_id: String,
-) -> Esito<Option<RapportoImport>> {
-    con_libreria(&stato, |libreria| {
+pub async fn import_rapporto(app: AppHandle, source_id: String) -> Esito<Option<RapportoImport>> {
+    leggi_la_libreria(app, "rapporto di un'importazione", move |libreria| {
         import_esterno::rapporto(&libreria.connection, &source_id)
     })
+    .await
     .map_err(errore)
 }
 
@@ -495,11 +496,14 @@ pub fn import_rapporto(
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
+///
+/// In disparte come [`import_rapporto`].
 #[tauri::command]
-pub fn import_rapporti(stato: State<'_, Stato>, limite: u32) -> Esito<Vec<RapportoImport>> {
-    con_libreria(&stato, |libreria| {
+pub async fn import_rapporti(app: AppHandle, limite: u32) -> Esito<Vec<RapportoImport>> {
+    leggi_la_libreria(app, "rapporti delle importazioni", move |libreria| {
         import_esterno::rapporti(&libreria.connection, limite)
     })
+    .await
     .map_err(errore)
 }
 

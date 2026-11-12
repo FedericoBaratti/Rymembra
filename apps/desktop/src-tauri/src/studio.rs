@@ -403,16 +403,26 @@ fn aggiungi_risorsa(data_dir: &Path, id: &str, percorso: &Path) -> Result<VoceFi
 }
 
 /// Aggiunge una risorsa alla bozza. Restituisce la voce, col nome che ha preso.
-#[tauri::command(async)]
-pub fn studio_risorsa_aggiungi(
-    stato: State<'_, Stato>,
+///
+/// In disparte, sul pool bloccante: legge un file che l'utente ha scelto, che
+/// può stare su una share. Un `(async)` su una funzione sincrona lo faceva
+/// aspettare a un *worker* del runtime (R10-5).
+#[tauri::command]
+pub async fn studio_risorsa_aggiungi(
+    app: tauri::AppHandle,
     id: String,
     percorso: String,
 ) -> Esito<VoceFileIpc> {
-    con_le_bozze(&stato, |dati| {
-        aggiungi_risorsa(dati, &id, Path::new(&percorso))
+    crate::disparte::in_disparte("risorsa di una bozza", move || {
+        let stato =
+            crate::importa::gestito::<Stato>(&app, "risorsa di una bozza").map_err(errore)?;
+        con_le_bozze(&stato, |dati| {
+            aggiungi_risorsa(dati, &id, Path::new(&percorso))
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
+    .map_err(errore)?
 }
 
 /// Toglie una risorsa dalla bozza.
@@ -776,24 +786,38 @@ fn metti_da_parte(
 /// `fs.extensionRefused` o `fs.pathInvalid` per un percorso che la finestra non
 /// può chiedere, **prima** di prendere il lucchetto; quelli della validazione e
 /// della scrittura per il resto.
-#[tauri::command(async)]
-pub fn studio_esporta(
-    stato: State<'_, Stato>,
+///
+/// In disparte, sul pool bloccante: scrive dove l'utente ha scelto, anche su
+/// una chiavetta o su una share (R10-5).
+#[tauri::command]
+pub async fn studio_esporta(
+    app: tauri::AppHandle,
     id: String,
     sorgente: String,
     percorso: String,
 ) -> Esito<()> {
+    crate::disparte::in_disparte("esportazione di una bozza", move || {
+        esporta_adesso(&app, &id, &sorgente, &percorso)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`studio_esporta`], sul pool bloccante.
+fn esporta_adesso(app: &tauri::AppHandle, id: &str, sorgente: &str, percorso: &str) -> Esito<()> {
     let file =
-        crate::destinazioni::file_da_scrivere(&percorso, crate::destinazioni::ESTENSIONI_SKIN)
+        crate::destinazioni::file_da_scrivere(percorso, crate::destinazioni::ESTENSIONI_SKIN)
             .map_err(errore)?;
+    let stato =
+        crate::importa::gestito::<Stato>(app, "esportazione di una bozza").map_err(errore)?;
     con_le_bozze(&stato, |dati| {
-        let da = da_lavorare(dati, &id)?;
+        let da = da_lavorare(dati, id)?;
         // `write_skin_package` valida da sé prima di scrivere — passa dalle
         // stesse guardie della lettura — quindi qui non serve un `parse` in più:
         // sarebbe una seconda validazione che può divergere dalla prima.
         let bytes =
             rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
-                source: &sorgente,
+                source: sorgente,
                 preview: da.preview.as_deref(),
                 assets: &da.assets,
             })?;

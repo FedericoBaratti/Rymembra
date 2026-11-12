@@ -138,3 +138,132 @@ pub async fn leggi_la_libreria<T: Send + 'static>(
     })
     .await?
 }
+
+#[cfg(test)]
+mod prove {
+    /// I sorgenti dei comandi, letti dal disco: tutti i file `.rs` sotto `src`.
+    fn sorgenti() -> Vec<(std::path::PathBuf, String)> {
+        fn visita(cartella: &std::path::Path, tutti: &mut Vec<(std::path::PathBuf, String)>) {
+            let Ok(voci) = std::fs::read_dir(cartella) else {
+                return;
+            };
+            for voce in voci.flatten() {
+                let percorso = voce.path();
+                if percorso.is_dir() {
+                    visita(&percorso, tutti);
+                } else if percorso.extension().is_some_and(|e| e == "rs")
+                    && let Ok(testo) = std::fs::read_to_string(&percorso)
+                {
+                    tutti.push((percorso, testo));
+                }
+            }
+        }
+        let mut tutti = Vec::new();
+        visita(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut tutti,
+        );
+        tutti
+    }
+
+    /// Nessun comando con un percorso scelto dall'utente gira su un *worker*
+    /// del runtime (R10-5).
+    ///
+    /// Un `#[tauri::command(async)]` su una `fn` non asincrona manda il corpo
+    /// su un *worker*, e i worker sono tanti quanti i processori: un archivio
+    /// di Spotify su un NAS, una skin da una share che si sveglia, un `.m3u` da
+    /// una chiavetta lenta li tenevano fermi, e con loro ogni comando asincrono
+    /// della libreria. Chi legge o scrive dove l'utente ha scelto va in
+    /// disparte, nella forma di `playlist::playlist_file_importa`.
+    #[test]
+    fn nessun_comando_con_un_percorso_gira_su_un_worker() {
+        let tutti = sorgenti();
+        assert!(tutti.len() > 50, "i sorgenti non si sono trovati");
+        let mut sbagliati = Vec::new();
+        for (file, testo) in &tutti {
+            for (dove, _) in testo.match_indices(concat!("\n#[tauri::", "command(async)]")) {
+                let resto = &testo[dove + 1..];
+                let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+                if firma.contains("async fn ") || !firma.contains("percorso:") {
+                    continue;
+                }
+                let nome: String = firma
+                    .find("fn ")
+                    .map(|i| &firma[i + 3..])
+                    .unwrap_or_default()
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                let file = file.file_name().unwrap_or_default().to_string_lossy();
+                sbagliati.push(format!("{file}: {nome}"));
+            }
+        }
+        assert!(
+            sbagliati.is_empty(),
+            "comandi con un percorso su un worker del runtime: {sbagliati:#?}"
+        );
+    }
+
+    /// Nessun comando rilegge i file dei brani o conta la libreria intera sul
+    /// filo della finestra o su un *worker* (R24-6, R24-7): «Dimentica
+    /// l'arricchimento» rilegge un file per ogni brano arricchito, e lo stato
+    /// dell'arricchimento e del backup conta tutta la libreria (o legge il
+    /// portachiavi), fino a quattro secondi con una scansione che tiene il
+    /// lucchetto.
+    #[test]
+    fn chi_rilegge_o_conta_la_libreria_non_sta_sul_runtime() {
+        const REGOLE: [(&str, &[&str]); 3] = [
+            (
+                "arricchimento.rs",
+                &[
+                    concat!("rileggi_i", "_file("),
+                    concat!("stato", "_ipc("),
+                    concat!("concludi", "("),
+                ],
+            ),
+            (
+                "nuvola.rs",
+                &[concat!("stato", "_ipc("), concat!("concludi", "(")],
+            ),
+            ("importa.rs", &[concat!("import_esterno::", "rapport")]),
+        ];
+        let tutti = sorgenti();
+        let mut sbagliati = Vec::new();
+        for (nome_file, aghi) in REGOLE {
+            let Some((_, testo)) = tutti
+                .iter()
+                .find(|(percorso, _)| percorso.file_name().is_some_and(|n| n == nome_file))
+            else {
+                sbagliati.push(format!("{nome_file}: non trovato"));
+                continue;
+            };
+            for (dove, _) in testo.match_indices(concat!("\n#[tauri::", "command")) {
+                let resto = &testo[dove + 1..];
+                let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+                let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+                if !aghi.iter().any(|ago| corpo.contains(ago)) {
+                    continue;
+                }
+                if firma.contains("async fn ") && corpo.contains(concat!("in_", "disparte(")) {
+                    continue;
+                }
+                if firma.contains("async fn ") && corpo.contains(concat!("leggi_la", "_libreria("))
+                {
+                    continue;
+                }
+                let nome: String = firma
+                    .find("fn ")
+                    .map(|i| &firma[i + 3..])
+                    .unwrap_or_default()
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                sbagliati.push(format!("{nome_file}: {nome}"));
+            }
+        }
+        assert!(
+            sbagliati.is_empty(),
+            "comandi che rileggono o contano la libreria fuori dal pool bloccante: {sbagliati:#?}"
+        );
+    }
+}

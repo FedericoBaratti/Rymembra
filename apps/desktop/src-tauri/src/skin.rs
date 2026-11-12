@@ -1250,20 +1250,39 @@ fn installa_file(
 ///
 /// `attesa` è l'impronta della skin installata che il gesto vuole togliere:
 /// vedi [`installa_file`].
-#[tauri::command(async)]
-pub fn skin_installa(
+///
+/// In disparte, sul pool bloccante: legge un file che l'utente ha scelto — da
+/// una chiavetta, da una share che si sveglia — e ne scrive un altro. Un
+/// `(async)` su una funzione sincrona faceva aspettare quel disco a un *worker*
+/// del runtime, togliendo il posto a ogni altro comando asincrono (R10-5).
+#[tauri::command]
+pub async fn skin_installa(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     percorso: String,
+    sostituisci: Option<bool>,
+    attesa: Option<String>,
+) -> Esito<InstallazioneIpc> {
+    crate::disparte::in_disparte("installazione di una skin", move || {
+        installa_adesso(&app, &percorso, sostituisci, attesa)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`skin_installa`], sul pool bloccante.
+fn installa_adesso(
+    app: &tauri::AppHandle,
+    percorso: &str,
     sostituisci: Option<bool>,
     attesa: Option<String>,
 ) -> Esito<InstallazioneIpc> {
     // Senza il lucchetto della libreria: installare è leggere un file e
     // scriverne un altro, e il database non c'entra.
-    let esito = crate::studio::cartella_dati(&stato)
+    let esito = crate::importa::gestito::<Stato>(app, "installazione di una skin")
+        .and_then(|stato| crate::studio::cartella_dati(&stato))
         .and_then(|dati| {
-            let file = std::fs::File::open(&percorso)
-                .map_err(|err| rymembra_app::files::io_error(&percorso, &err))?;
+            let file = std::fs::File::open(percorso)
+                .map_err(|err| rymembra_app::files::io_error(percorso, &err))?;
             // La via breve: quel che il disco dice del file, prima di leggerne
             // un byte. `leggi_al_piu` resta il tetto vero, perché un file può
             // crescere fra la domanda e la lettura.
@@ -1275,7 +1294,7 @@ pub fn skin_installa(
             {
                 return Err(troppo_grande(bytes));
             }
-            let bytes = leggi_al_piu(file, &percorso)?;
+            let bytes = leggi_al_piu(file, percorso)?;
             installa_file(
                 &dati,
                 &bytes,
@@ -1284,7 +1303,7 @@ pub fn skin_installa(
             )
         })
         .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    crate::nuvola::se_riuscito(app, esito)
 }
 
 /// Un pacchetto oltre il tetto dell'archivio.

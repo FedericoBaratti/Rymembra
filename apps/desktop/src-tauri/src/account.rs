@@ -200,13 +200,27 @@ pub fn account_stato(
 
 /// Apre un archivio di Spotify e lo mette in cella.
 ///
-/// `(async)`: scompattare uno zip da trecento megabyte e leggere quarantamila
-/// righe di JSON non è un'operazione da filo dell'interfaccia.
-#[tauri::command(async)]
-pub fn archivio_apri(account: State<'_, StatoAccount>, percorso: String) -> Esito<Anteprima> {
+/// In disparte, sul pool bloccante: scompattare uno zip da trecento megabyte e
+/// leggere quarantamila righe di JSON da una chiavetta o da un NAS sono decine
+/// di secondi, e un `(async)` su una funzione sincrona li faceva aspettare a un
+/// *worker* del runtime, togliendo il posto a ogni altro comando asincrono
+/// (R10-5).
+#[tauri::command]
+pub async fn archivio_apri(app: AppHandle, percorso: String) -> Esito<Anteprima> {
+    in_disparte("apertura di un archivio di Spotify", move || {
+        let account =
+            gestito::<StatoAccount>(&app, "apertura di un archivio di Spotify").map_err(errore)?;
+        apri_archivio(&account, &percorso)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`archivio_apri`], sul pool bloccante.
+fn apri_archivio(account: &StatoAccount, percorso: &str) -> Esito<Anteprima> {
     let esito = (|| {
         let _turno = Turno::prendi(&account.in_corso).ok_or_else(occupato)?;
-        let lettura = rymembra_archivio::leggi(std::path::Path::new(&percorso))?;
+        let lettura = rymembra_archivio::leggi(std::path::Path::new(percorso))?;
 
         let anteprima = Anteprima {
             letti: lettura.letti,
@@ -224,7 +238,7 @@ pub fn archivio_apri(account: State<'_, StatoAccount>, percorso: String) -> Esit
             podcast: lettura.podcast,
             ..da_snapshot(&lettura.snapshot)
         };
-        metti_in_cella(&account, lettura.snapshot, anteprima.clone());
+        metti_in_cella(account, lettura.snapshot, anteprima.clone());
         Ok(anteprima)
     })();
     esito.map_err(errore)

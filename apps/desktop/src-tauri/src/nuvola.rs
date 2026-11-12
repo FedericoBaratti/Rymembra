@@ -359,13 +359,20 @@ pub struct EsitoRipristinoIpc {
 
 // ── i comandi ───────────────────────────────────────────────────────────────
 
-/// Lo stato del backup. Istantaneo: non tocca la rete.
+/// Lo stato del backup. Non tocca la rete.
+///
+/// In disparte, sul pool bloccante: lo stato legge il refresh token dal
+/// portachiavi, che non sempre risponde subito (vedi `passata_vera`), e lo
+/// chiedono la sezione Metadati e le Impostazioni a ogni apertura. Sul filo
+/// della finestra quell'attesa era la finestra ferma (R24-7).
 #[tauri::command]
-pub fn nuvola_stato(
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
-) -> Esito<StatoNuvolaIpc> {
-    stato_ipc(&stato, &nuvola).map_err(errore)
+pub async fn nuvola_stato(app: AppHandle) -> Esito<StatoNuvolaIpc> {
+    in_disparte("stato del backup", move || {
+        let (stato, nuvola) = stati(&app).map_err(errore)?;
+        stato_ipc(&stato, &nuvola).map_err(errore)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Collega un account Google.
@@ -688,29 +695,30 @@ pub(crate) fn con_il_backup_fermo<T>(
 }
 
 /// Accende o spegne il backup automatico.
+///
+/// In disparte come [`nuvola_stato`], perché ne restituisce lo stato.
 #[tauri::command]
-pub fn nuvola_attiva(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
-    attivo: bool,
-) -> Esito<StatoNuvolaIpc> {
-    let esito = (|| {
-        con_libreria(&stato, |libreria| {
-            settings::write(
-                &libreria.connection,
-                CHIAVE_ATTIVO,
-                if attivo { "1" } else { "0" },
-            )
-        })?;
-        if attivo {
-            sporca_subito(&nuvola);
-        }
-        scorda_errore(&nuvola);
-        Ok(())
-    })();
-
-    concludi(&app, &stato, &nuvola, esito)
+pub async fn nuvola_attiva(app: AppHandle, attivo: bool) -> Esito<StatoNuvolaIpc> {
+    in_disparte("interruttore del backup", move || {
+        let (stato, nuvola) = stati(&app).map_err(errore)?;
+        let esito = (|| {
+            con_libreria(&stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    CHIAVE_ATTIVO,
+                    if attivo { "1" } else { "0" },
+                )
+            })?;
+            if attivo {
+                sporca_subito(&nuvola);
+            }
+            scorda_errore(&nuvola);
+            Ok(())
+        })();
+        concludi(&app, &stato, &nuvola, esito)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Chiede una passata adesso.

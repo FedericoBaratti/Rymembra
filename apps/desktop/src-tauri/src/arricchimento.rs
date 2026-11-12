@@ -238,28 +238,59 @@ pub struct EsitoAnnullamentoIpc {
 
 // ── i comandi ───────────────────────────────────────────────────────────────
 
-/// Lo stato dell'arricchimento. Istantaneo: non tocca la rete.
+/// I due stati che servono ai comandi, presi dal registro di Tauri: i comandi
+/// che contano la libreria girano in disparte, e lì uno `State` in prestito
+/// non entra.
+fn stati<'a>(
+    app: &'a AppHandle,
+    cosa: &str,
+) -> Esito<(State<'a, Stato>, State<'a, StatoArricchimento>)> {
+    Ok((
+        crate::importa::gestito::<Stato>(app, cosa).map_err(errore)?,
+        crate::importa::gestito::<StatoArricchimento>(app, cosa).map_err(errore)?,
+    ))
+}
+
+/// Lo stato dell'arricchimento. Non tocca la rete.
+///
+/// In disparte, sul pool bloccante: lo stato sono tre `COUNT(*)` su `tracks` e
+/// i brani che mancano, cioè tutta la libreria, e con una scansione che tiene
+/// il lucchetto l'attesa arriva a quattro secondi — sul filo della finestra
+/// (R24-7).
 #[tauri::command]
-pub fn arricchimento_stato(
-    stato: State<'_, Stato>,
-    arricchimento: State<'_, StatoArricchimento>,
-) -> Esito<StatoArricchimentoIpc> {
-    stato_ipc(&stato, &arricchimento).map_err(errore)
+pub async fn arricchimento_stato(app: AppHandle) -> Esito<StatoArricchimentoIpc> {
+    crate::disparte::in_disparte("stato dell'arricchimento", move || {
+        let (stato, arricchimento) = stati(&app, "stato dell'arricchimento")?;
+        stato_ipc(&stato, &arricchimento).map_err(errore)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Accende o spegne l'arricchimento automatico.
 ///
 /// Accenderlo non aspetta la mezz'ora: chi tocca l'interruttore vuole vedere che
 /// ha funzionato, e mezz'ora di niente si legge come un interruttore rotto.
+/// In disparte come [`arricchimento_stato`], perché ne restituisce lo stato.
 #[tauri::command]
-pub fn arricchimento_attiva(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    arricchimento: State<'_, StatoArricchimento>,
+pub async fn arricchimento_attiva(app: AppHandle, attivo: bool) -> Esito<StatoArricchimentoIpc> {
+    crate::disparte::in_disparte("interruttore dell'arricchimento", move || {
+        let (stato, arricchimento) = stati(&app, "interruttore dell'arricchimento")?;
+        attiva_adesso(&app, &stato, &arricchimento, attivo)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`arricchimento_attiva`], sul pool bloccante.
+fn attiva_adesso(
+    app: &AppHandle,
+    stato: &Stato,
+    arricchimento: &StatoArricchimento,
     attivo: bool,
 ) -> Esito<StatoArricchimentoIpc> {
     let esito = (|| {
-        con_libreria(&stato, |libreria| {
+        con_libreria(stato, |libreria| {
             settings::write(
                 &libreria.connection,
                 CHIAVE_ATTIVO,
@@ -267,13 +298,13 @@ pub fn arricchimento_attiva(
             )
         })?;
         if attivo {
-            subito(&arricchimento);
+            subito(arricchimento);
         }
-        scorda_errore(&arricchimento);
+        scorda_errore(arricchimento);
         Ok(())
     })();
 
-    concludi(&app, &stato, &arricchimento, esito)
+    concludi(app, stato, arricchimento, esito)
 }
 
 /// Le fonti che si accendono una per una, oltre all'arricchimento.
@@ -298,12 +329,28 @@ pub enum FonteFacoltativa {
 /// anche con l'arricchimento spento (D-94): vedi `vicinanza::accese`.
 ///
 /// Accendere chiede una passata subito, come l'interruttore generale: chi
-/// accende vuole vedere che ha funzionato.
+/// accende vuole vedere che ha funzionato. In disparte come
+/// [`arricchimento_attiva`], perché scrive nella libreria e ne restituisce lo
+/// stato (R10-5, R24-7).
 #[tauri::command]
-pub fn arricchimento_fonte(
+pub async fn arricchimento_fonte(
     app: AppHandle,
-    stato: State<'_, Stato>,
-    arricchimento: State<'_, StatoArricchimento>,
+    fonte: FonteFacoltativa,
+    attiva: bool,
+) -> Esito<StatoArricchimentoIpc> {
+    crate::disparte::in_disparte("interruttore di una fonte dell'arricchimento", move || {
+        let (stato, arricchimento) = stati(&app, "interruttore di una fonte dell'arricchimento")?;
+        fonte_adesso(&app, &stato, &arricchimento, fonte, attiva)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`arricchimento_fonte`], sul pool bloccante.
+fn fonte_adesso(
+    app: &AppHandle,
+    stato: &Stato,
+    arricchimento: &StatoArricchimento,
     fonte: FonteFacoltativa,
     attiva: bool,
 ) -> Esito<StatoArricchimentoIpc> {
@@ -312,15 +359,15 @@ pub fn arricchimento_fonte(
         FonteFacoltativa::Deezer => enrich::CHIAVE_DEEZER,
         FonteFacoltativa::Vicini => vicinanza::CHIAVE_ACCESE,
     };
-    let esito = con_libreria(&stato, |libreria| {
+    let esito = con_libreria(stato, |libreria| {
         settings::write(&libreria.connection, chiave, if attiva { "1" } else { "0" })
     })
     .map(|()| {
         if attiva {
-            subito(&arricchimento);
+            subito(arricchimento);
         }
     });
-    concludi(&app, &stato, &arricchimento, esito)
+    concludi(app, stato, arricchimento, esito)
 }
 
 /// Dimentica quel che l'arricchimento ha deciso, e rimette le righe sui tag dei file.
@@ -336,19 +383,29 @@ pub fn arricchimento_fonte(
 /// è quindi l'unica lettura onesta del gesto; riaccenderlo è un clic nello
 /// stesso pannello.
 ///
-/// # Perché `(async)` su una funzione che non è `async`
+/// # Perché in disparte
 ///
-/// Perché un `#[tauri::command]` normale gira sul filo dell'anello degli eventi
-/// della finestra. Questo **rilegge** un file per ogni brano arricchito — su
-/// una libreria vera possono essere centinaia, e su una radice di rete lenta
-/// sono secondi. `(async)` su una funzione sincrona la manda sulla riserva di
-/// fili di Tauri: il corpo resta bloccante e ordinario, cambia solo **dove**
-/// gira.
-#[tauri::command(async)]
-pub fn arricchimento_annulla(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    arricchimento: State<'_, StatoArricchimento>,
+/// Perché questo **rilegge** un file per ogni brano arricchito — su una
+/// libreria vera possono essere migliaia, e su una radice di rete lenta sono
+/// minuti. Un `(async)` su una funzione sincrona li faceva aspettare a un
+/// *worker* del runtime, che sono tanti quanti i processori e servono a tutti
+/// i comandi asincroni (R24-6, la regola di `disparte.rs`). Il pool bloccante
+/// esiste per questo.
+#[tauri::command]
+pub async fn arricchimento_annulla(app: AppHandle) -> Esito<EsitoAnnullamentoIpc> {
+    crate::disparte::in_disparte("annullamento dell'arricchimento", move || {
+        let (stato, arricchimento) = stati(&app, "annullamento dell'arricchimento")?;
+        annulla_adesso(&app, &stato, &arricchimento)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`arricchimento_annulla`], sul pool bloccante.
+fn annulla_adesso(
+    app: &AppHandle,
+    stato: &Stato,
+    arricchimento: &StatoArricchimento,
 ) -> Esito<EsitoAnnullamentoIpc> {
     let annullati = (|| {
         // Il turno prima di tutto: una passata in corso sta scrivendo sulle
@@ -363,7 +420,7 @@ pub fn arricchimento_annulla(
         // Nel primo tempo anche le cartelle dei `.cue` dei brani d'immagine:
         // dopo, l'annotazione che le nomina non c'è più. Vedi
         // [`cartelle_dei_fogli_arricchiti`].
-        let (da_fare, cartelle) = con_libreria(&stato, |libreria| {
+        let (da_fare, cartelle) = con_libreria(stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
             Ok((
                 enrich::da_dimenticare(&libreria.connection)?,
@@ -371,7 +428,7 @@ pub fn arricchimento_annulla(
             ))
         })?;
         let riletti = enrich::rileggi_i_file(da_fare);
-        let annullati = con_libreria(&stato, |libreria| {
+        let annullati = con_libreria(stato, |libreria| {
             enrich::registra_dimenticati(&mut libreria.connection, riletti)
         })?;
         Ok::<_, AppError>((annullati, cartelle))
@@ -379,12 +436,12 @@ pub fn arricchimento_annulla(
     // Fuori dalla chiusura, cioè con il turno ormai lasciato cadere: qui dentro
     // lo stato direbbe `inCorso: true` per un'operazione appena finita, e il
     // pulsante resterebbe disabilitato fino al comando successivo.
-    scorda_errore(&arricchimento);
+    scorda_errore(arricchimento);
     // I brani d'immagine dimenticati aspettano la scansione che li ricostruisce
     // dal loro `.cue`, e sul disco non è cambiato niente che la faccia partire:
     // la si chiede alla sorveglianza, per quelle cartelle.
     let annullati = annullati.map(|(annullati, cartelle)| {
-        crate::sorveglia::riguarda(&app, cartelle);
+        crate::sorveglia::riguarda(app, cartelle);
         annullati
     });
 
@@ -392,10 +449,10 @@ pub fn arricchimento_annulla(
         Ok(EsitoAnnullamentoIpc {
             riportati: annullati.riportati,
             falliti: annullati.falliti,
-            stato: stato_ipc(&stato, &arricchimento)?,
+            stato: stato_ipc(stato, arricchimento)?,
         })
     });
-    riferisci(&app);
+    riferisci(app);
     esito.map_err(errore)
 }
 
