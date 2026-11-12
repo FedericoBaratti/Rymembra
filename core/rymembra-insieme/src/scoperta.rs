@@ -28,9 +28,11 @@
 //!
 //! Per lo stesso motivo una risposta non vale più di una volta per giro: lo
 //! stesso host (indirizzo, porta, impronta) dà un solo `Evento::Trovato` per
-//! domanda, e al più [`TROVATI_PER_GIRO`] host diversi; il resto si butta. Chi
-//! risponde mille volte, o con mille impronte, non riempie il canale degli
-//! eventi del desktop.
+//! domanda, al più [`PER_ORIGINE`] da uno stesso indirizzo d'origine, e al più
+//! [`TROVATI_PER_GIRO`] host diversi; il resto si butta. Chi risponde mille
+//! volte, o con mille impronte, non riempie il canale degli eventi del
+//! desktop, e non spinge fuori la risposta vera di un host con l'impronta di
+//! quello (reperto R26-1).
 //!
 //! # Chi risponde, e quanto
 //!
@@ -110,12 +112,25 @@ const BUFFER: usize = 64;
 /// rete affollata.
 pub(crate) const TROVATI_PER_GIRO: usize = 64;
 
+/// Quanti host si annunciano al più per ogni giro da uno stesso indirizzo
+/// d'origine: due, per due copie di Rymembra sullo stesso PC. Chi risponde da
+/// solo con l'impronta di un altro — e porte sempre nuove — riempiva i
+/// candidati che il desktop tiene per quell'impronta prima che arrivasse la
+/// risposta vera (reperto R26-1): adesso ne aggiunge al più due per giro, meno
+/// dei quattro posti del desktop. Questo stesso computer non ha tetto: da lì
+/// non risponde nessuno che stia sulla rete, e le prove ci aprono dieci host.
+pub(crate) const PER_ORIGINE: usize = 2;
+
 /// Un giro di scoperta: la domanda fatta, e gli host già annunciati.
 #[derive(Debug)]
 struct Giro {
     quando: Instant,
     nonce: [u8; 16],
     visti: HashSet<(SocketAddr, Impronta)>,
+    /// Gli indirizzi chiesti uno per uno, oltre al broadcast: quelli scritti
+    /// a mano e gli ultimi dei fidati. Le loro risposte passano anche a giro
+    /// pieno: vedi [`Cercatore::da_annunciare`].
+    a_mano: Vec<IpAddr>,
 }
 
 /// Quanto vive il socket della ricerca dopo l'ultima `cerca`: il desktop
@@ -458,8 +473,12 @@ impl std::fmt::Debug for Cercatore {
 
 impl Cercatore {
     /// Una risposta da annunciare? Sì se l'eco è di un giro recente, se in
-    /// quel giro quell'host non si è già annunciato, e se il giro non ne ha
-    /// già annunciati [`TROVATI_PER_GIRO`]. Se sì, se ne prende nota.
+    /// quel giro quell'host non si è già annunciato, se dal suo indirizzo
+    /// d'origine non se ne sono già annunciati [`PER_ORIGINE`], e se il giro
+    /// non ne ha già annunciati [`TROVATI_PER_GIRO`] — tetto che non vale per
+    /// le risposte degli indirizzi chiesti uno per uno, il posto riservato:
+    /// un giro riempito da chi risponde mille volte non toglie quella che la
+    /// persona aspetta. Se sì, se ne prende nota.
     fn da_annunciare(
         &self,
         eco: &[u8; 16],
@@ -473,7 +492,16 @@ impl Cercatore {
         }) else {
             return false;
         };
-        if giro.visti.len() >= TROVATI_PER_GIRO {
+        if giro.visti.contains(&(indirizzo, impronta)) {
+            return false;
+        }
+        let ip = indirizzo.ip();
+        if !ip.is_loopback()
+            && giro.visti.iter().filter(|(da, _)| da.ip() == ip).count() >= PER_ORIGINE
+        {
+            return false;
+        }
+        if giro.visti.len() >= TROVATI_PER_GIRO && !giro.a_mano.contains(&ip) {
             return false;
         }
         giro.visti.insert((indirizzo, impronta))
@@ -499,6 +527,7 @@ pub(crate) fn cerca(rete: &Arc<Condiviso>, a_mano: &[SocketAddr]) {
             quando: adesso,
             nonce,
             visti: HashSet::new(),
+            a_mano: a_mano.iter().map(SocketAddr::ip).collect(),
         });
         while giri
             .front()
@@ -751,6 +780,7 @@ mod prove {
                 quando: Instant::now(),
                 nonce: [1_u8; 16],
                 visti: HashSet::new(),
+                a_mano: Vec::new(),
             }])),
             ultima: Mutex::new(Instant::now()),
             vivo: AtomicBool::new(true),
@@ -771,14 +801,112 @@ mod prove {
             !cercatore.da_annunciare(&[1; 16], host, impronta, adesso),
             "lo stesso host, lo stesso giro"
         );
-        // Mille impronte inventate: ne passano al più `TROVATI_PER_GIRO`.
+        // Mille impronte inventate, da mille indirizzi: ne passano al più
+        // `TROVATI_PER_GIRO`. Da mille indirizzi e non da uno: da un indirizzo
+        // solo ne passano `PER_ORIGINE` (vedi la prova dopo).
         let passate = (0_u16..1_000)
             .filter(|i| {
                 let [a, b] = i.to_be_bytes();
-                cercatore.da_annunciare(&[1; 16], host, Impronta([a, b, 0, 0, 0, 0, 0, 1]), adesso)
+                let da = SocketAddr::from((Ipv4Addr::new(10, 1, a, b), 47_811));
+                cercatore.da_annunciare(&[1; 16], da, Impronta([a, b, 0, 0, 0, 0, 0, 1]), adesso)
             })
             .count();
         assert_eq!(passate, TROVATI_PER_GIRO - 1);
+    }
+
+    /// Un cercatore con un giro solo, col nonce `[1; 16]` e gli indirizzi
+    /// chiesti a mano dati.
+    fn cercatore_di_prova(a_mano: Vec<IpAddr>) -> Cercatore {
+        Cercatore {
+            presa: UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("socket"),
+            giri: Mutex::new(VecDeque::from([Giro {
+                quando: Instant::now(),
+                nonce: [1_u8; 16],
+                visti: HashSet::new(),
+                a_mano,
+            }])),
+            ultima: Mutex::new(Instant::now()),
+            vivo: AtomicBool::new(true),
+        }
+    }
+
+    #[test]
+    fn chi_risponde_da_un_indirizzo_solo_non_annuncia_piu_di_due_host_per_giro() {
+        // Reperto R26-1, il vettore dei 64: un dispositivo della rete
+        // risponde a ogni domanda con l'impronta di un host associato (e con
+        // tante sue), da porte diverse. Prima ne passavano 64 per giro, e
+        // riempivano i candidati del desktop per quell'impronta prima della
+        // risposta vera.
+        let cercatore = cercatore_di_prova(Vec::new());
+        let adesso = Instant::now();
+        let ostile = Ipv4Addr::new(10, 0, 0, 66);
+        let passate = (0_u16..100)
+            .filter(|porta| {
+                cercatore.da_annunciare(
+                    &[1; 16],
+                    SocketAddr::from((ostile, 40_000 + porta)),
+                    Impronta([7; 8]),
+                    adesso,
+                )
+            })
+            .count();
+        assert_eq!(passate, PER_ORIGINE);
+        // Gli altri indirizzi restano liberi di rispondere.
+        assert!(cercatore.da_annunciare(
+            &[1; 16],
+            SocketAddr::from((Ipv4Addr::new(10, 0, 0, 2), 47_811)),
+            Impronta([7; 8]),
+            adesso
+        ));
+        // Questo stesso PC (le prove, due copie sullo stesso computer) no:
+        // da lì non risponde nessuno che stia sulla rete.
+        let locali = (0_u16..10)
+            .filter(|porta| {
+                cercatore.da_annunciare(
+                    &[1; 16],
+                    SocketAddr::from((Ipv4Addr::LOCALHOST, 47_811 + porta)),
+                    Impronta([8; 8]),
+                    adesso,
+                )
+            })
+            .count();
+        assert_eq!(locali, 10);
+    }
+
+    #[test]
+    fn le_risposte_degli_indirizzi_chiesti_a_mano_passano_anche_col_giro_pieno() {
+        // Il posto riservato: chi riempie il giro di risposte non toglie
+        // quella dell'indirizzo che la persona ha scritto, o che un fidato ha
+        // usato l'ultima volta.
+        let scritto = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let cercatore = cercatore_di_prova(vec![scritto]);
+        let adesso = Instant::now();
+        for i in 0..u8::try_from(TROVATI_PER_GIRO).expect("sta in un byte") {
+            assert!(cercatore.da_annunciare(
+                &[1; 16],
+                SocketAddr::from((Ipv4Addr::new(10, 2, 0, i), 47_811)),
+                Impronta([i; 8]),
+                adesso
+            ));
+        }
+        assert!(
+            !cercatore.da_annunciare(
+                &[1; 16],
+                SocketAddr::from((Ipv4Addr::new(10, 3, 0, 1), 47_811)),
+                Impronta([200; 8]),
+                adesso
+            ),
+            "il giro è pieno"
+        );
+        assert!(
+            cercatore.da_annunciare(
+                &[1; 16],
+                SocketAddr::new(scritto, 47_811),
+                Impronta([201; 8]),
+                adesso
+            ),
+            "ma non per l'indirizzo chiesto a mano"
+        );
     }
 
     #[test]

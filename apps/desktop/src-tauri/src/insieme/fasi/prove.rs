@@ -995,6 +995,159 @@ fn l_associazione_scade_e_una_seconda_si_rifiuta() {
     assert_eq!(s.associazione, None);
 }
 
+/// Chi ospita, collegato a un estraneo che si chiama Marco.
+fn ospite_con_un_estraneo() -> Situazione {
+    let mut s = Situazione::default();
+    (s, _) = passo(s, Evento::Acceso, 0);
+    (s, _) = passo(
+        s,
+        Evento::Aperta {
+            id: MARCO,
+            connessione: conn(None, "Marco", false, true),
+        },
+        0,
+    );
+    s
+}
+
+#[test]
+fn un_codice_non_chiesto_non_porta_davanti_la_finestra() {
+    // 02-14: un codice arrivato senza che nessuno qui l'avesse chiesto o
+    // aperto portava avanti la finestra e apriva il dialogo modale, davanti a
+    // chi ospitava e magari sopra lo Studio. Adesso è un no.
+    let (s, fx) = passo(
+        ospite_con_un_estraneo(),
+        Evento::Codice {
+            id: MARCO,
+            codice: "0042".to_owned(),
+        },
+        0,
+    );
+    assert!(!fx.contains(&Effetto::MostraFinestra), "{fx:?}");
+    assert_eq!(
+        fx,
+        vec![Effetto::ConfermaCodice {
+            id: MARCO,
+            uguale: false
+        }]
+    );
+    assert_eq!(s.associazione, None);
+}
+
+#[test]
+fn una_richiesta_d_associazione_e_una_riga_che_scade_o_si_rifiuta() {
+    // 02-14: la richiesta è una riga del pannello, non il dialogo: niente
+    // finestra davanti. Il no la chiude; se nessuno risponde scade in un
+    // minuto, come un no.
+    let (s, fx) = passo(
+        ospite_con_un_estraneo(),
+        Evento::AssociazioneChiesta { id: MARCO },
+        0,
+    );
+    assert!(fx.is_empty(), "{fx:?}");
+    let riga = s.associazione.clone().expect("la riga");
+    assert!(riga.chiesta && riga.codice.is_none());
+    assert_eq!(riga.scade, SCADENZA_RICHIESTA_ASSOCIAZIONE_MS);
+    let (_, fx) = passo(
+        s.clone(),
+        Evento::Comando(Comando::ConfermaCodice {
+            associazione: MARCO.0,
+            uguale: false,
+        }),
+        5,
+    );
+    assert_eq!(
+        fx,
+        vec![Effetto::ConfermaCodice {
+            id: MARCO,
+            uguale: false
+        }]
+    );
+    let (s, fx) = passo(s, Evento::Tempo, SCADENZA_RICHIESTA_ASSOCIAZIONE_MS);
+    assert!(fx.contains(&Effetto::ConfermaCodice {
+        id: MARCO,
+        uguale: false
+    }));
+    assert_eq!(s.associazione, None);
+    // Una seconda richiesta mentre ce n'è un'altra in corso: «sta già
+    // associando un altro PC», e la chiave non resta respinta.
+    let (s, _) = passo(
+        ospite_con_un_estraneo(),
+        Evento::AssociazioneChiesta { id: MARCO },
+        0,
+    );
+    let (_, fx) = passo(s, Evento::AssociazioneChiesta { id: LUCA }, 1);
+    assert_eq!(
+        fx,
+        vec![Effetto::Chiudi {
+            id: LUCA,
+            codice: Some(ErrorCodeKind::InsiemeAssociazioneOccupata)
+        }]
+    );
+}
+
+#[test]
+fn il_tetto_di_chi_ospita_non_si_dice_come_troppi_tentativi_di_chi_chiede() {
+    // Reperto R26-2: chi chiedeva leggeva «Troppi tentativi di associazione»
+    // anche al primo tentativo, quando il tetto era quello dell'altro PC.
+    let mut s = Situazione::default();
+    (s, _) = passo(s, Evento::Acceso, 0);
+    (s, _) = passo(
+        s,
+        Evento::Aperta {
+            id: MARCO,
+            connessione: conn(None, "Marco", true, false),
+        },
+        0,
+    );
+    let (s, _) = passo(s, Evento::Comando(Comando::Associa { id: MARCO }), 0);
+    let (_, fx) = passo(
+        s,
+        Evento::Chiusa {
+            id: MARCO,
+            codice: Some(ErrorCodeKind::InsiemeTroppiTentativi),
+        },
+        5,
+    );
+    assert_eq!(avvisi(&fx), vec![AVVISO_ASSOCIAZIONI_FERME]);
+}
+
+#[test]
+fn annullare_prima_del_codice_chiude_l_associazione() {
+    // Reperto R26-3: «Annulla» mentre il codice non c'è ancora (l'host non
+    // ha mandato il nonce) diceva «i codici non coincidevano», e il dialogo
+    // restava inchiodato fino a due minuti.
+    let mut s = Situazione::default();
+    (s, _) = passo(s, Evento::Acceso, 0);
+    (s, _) = passo(
+        s,
+        Evento::Aperta {
+            id: MARCO,
+            connessione: conn(None, "Marco", true, false),
+        },
+        0,
+    );
+    let (s, _) = passo(s, Evento::Comando(Comando::Associa { id: MARCO }), 0);
+    let (s, fx) = passo(
+        s,
+        Evento::Comando(Comando::ConfermaCodice {
+            associazione: MARCO.0,
+            uguale: false,
+        }),
+        5,
+    );
+    assert!(errori(&fx).is_empty(), "{fx:?}");
+    assert_eq!(s.associazione, None, "il dialogo si chiude");
+    assert_eq!(
+        fx,
+        vec![Effetto::ConfermaCodice {
+            id: MARCO,
+            uguale: false
+        }],
+        "e il trasporto lo sa"
+    );
+}
+
 #[test]
 fn l_associazione_confermata_e_riuscita_rende_fidato() {
     let mut s = Situazione::default();
@@ -1007,16 +1160,31 @@ fn l_associazione_confermata_e_riuscita_rende_fidato() {
         },
         0,
     );
-    // Chi ospita non chiama `associa`: gli arriva il codice.
+    // Chi ospita non chiama `associa`: gli arriva la richiesta, una riga, e
+    // la apre lui con «Mostra il codice» (02-14). Poi il codice.
+    let (s, fx) = passo(s, Evento::AssociazioneChiesta { id: MARCO }, 0);
+    assert!(fx.is_empty(), "{fx:?}");
+    let (s, fx) = passo(
+        s,
+        Evento::Comando(Comando::ConfermaCodice {
+            associazione: MARCO.0,
+            uguale: true,
+        }),
+        1,
+    );
+    assert_eq!(fx, vec![Effetto::AccettaAssociazione { id: MARCO }]);
     let (s, fx) = passo(
         s,
         Evento::Codice {
             id: MARCO,
             codice: "0042".to_owned(),
         },
-        0,
+        2,
     );
-    assert_eq!(fx, vec![Effetto::MostraFinestra]);
+    assert!(
+        fx.is_empty(),
+        "niente finestra davanti: l'ha chiesto chi guarda"
+    );
     let (s, fx) = passo(
         s,
         Evento::Comando(Comando::ConfermaCodice {
@@ -1147,6 +1315,30 @@ fn l_esito_negativo_dall_host_e_un_avviso_tranne_il_secchiello() {
     assert!(fx.is_empty());
     let (_, fx) = passo(s, esito(None), 0);
     assert!(fx.is_empty());
+}
+
+#[test]
+fn un_gesto_superato_non_e_un_guasto() {
+    // Reperto R26-8: due membri premono «Avanti» insieme; al secondo l'host
+    // risponde `insieme.superato`, che diventava una fascia rossa che resta,
+    // letta come allarme. Adesso è una notizia che sparisce (D-107).
+    let (_, fx) = passo(
+        membro(),
+        Evento::Ricevuto {
+            id: HOST,
+            messaggio: Messaggio::Esito {
+                id: 1,
+                codice: Some("insieme.superato".to_owned()),
+            },
+        },
+        0,
+    );
+    let chiavi = avvisi(&fx);
+    assert!(
+        chiavi.iter().all(|c| !c.starts_with("errors.")),
+        "un guasto: {chiavi:?}"
+    );
+    assert_eq!(chiavi, vec![AVVISO_GESTO_SUPERATO]);
 }
 
 #[test]

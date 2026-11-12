@@ -86,11 +86,17 @@ pub enum Gesto {
     CodaVai {
         /// La posizione.
         indice: usize,
+        /// Il brano che la finestra vedeva lì (la sua maniglia), se lo dice:
+        /// vedi `gesti::traduci`.
+        atteso: Option<i64>,
     },
     /// Toglie voci dalla coda.
     CodaTogli {
         /// Le posizioni.
         indici: Vec<usize>,
+        /// I brani che la finestra vedeva in quelle posizioni, nello stesso
+        /// ordine; vuoto se non li dice.
+        attesi: Vec<i64>,
     },
     /// Sposta una voce.
     CodaRiordina {
@@ -98,6 +104,8 @@ pub enum Gesto {
         da: usize,
         /// A dove.
         a: usize,
+        /// Il brano che la finestra vedeva in `da`, se lo dice.
+        atteso: Option<i64>,
     },
     /// Svuota la coda.
     CodaSvuota,
@@ -236,9 +244,19 @@ mod prove {
             Gesto::Radio,
             Gesto::Accoda { ids: vec![1] },
             Gesto::Dopo { ids: vec![1] },
-            Gesto::CodaVai { indice: 0 },
-            Gesto::CodaTogli { indici: vec![0] },
-            Gesto::CodaRiordina { da: 0, a: 1 },
+            Gesto::CodaVai {
+                indice: 0,
+                atteso: None,
+            },
+            Gesto::CodaTogli {
+                indici: vec![0],
+                attesi: Vec::new(),
+            },
+            Gesto::CodaRiordina {
+                da: 0,
+                a: 1,
+                atteso: None,
+            },
             Gesto::CodaSvuota,
             Gesto::CodaRipristina,
             Gesto::Shuffle,
@@ -317,6 +335,7 @@ mod prove {
         use crate::insieme::gesti::{Traduzione, traduci};
         let specchio = crate::riproduzione::insieme::Istantanea {
             coda: vec![10, 11, 12],
+            maniglie: Vec::new(),
             corrente: Some(11),
             in_pausa: false,
             ripeti: rymembra_domain::queue::RepeatMode::Off,

@@ -56,6 +56,17 @@ pub struct Tempi {
 }
 
 impl Tempi {
+    /// Quanto vale una richiesta d'associazione che aspetta il clic di chi
+    /// ospita: metà di [`Tempi::associazione`], un minuto. Il tempo di chi
+    /// chiede parte dal suo impegno: così dopo «Mostra il codice» resta almeno
+    /// l'altra metà per confrontare le cifre.
+    #[must_use]
+    pub fn richiesta_associazione(&self) -> Duration {
+        self.associazione
+            .checked_div(2)
+            .unwrap_or(self.associazione)
+    }
+
     /// I tempi delle connessioni via internet (il collegamento di
     /// `rymembra-lontano`): più larghi dove la strada pesa — un primo contatto
     /// che passa dal relay prima di bucare il NAT, un telefono sui dati

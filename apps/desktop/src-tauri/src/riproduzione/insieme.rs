@@ -38,11 +38,17 @@
 //! # Chi ospita parte fra un quarto di secondo
 //!
 //! La ripresa, il salto e il brano nuovo di chi ospita non partono subito ma
-//! [`ANTICIPO_NS`] più in là, con `Motore::riprendi_a`, e l'ancora annuncia il
-//! punto e l'istante **prima** che succedano. Gli altri hanno così il tempo di
+//! [`ANTICIPO_NS`] più in là — [`ANTICIPO_INTERNET_NS`] se qualcuno della
+//! sessione passa da internet —, con `Motore::riprendi_a`, e l'ancora annuncia
+//! il punto e l'istante **prima** che succedano. Gli altri hanno così il tempo di
 //! aprire la stessa voce e partono nello stesso istante, invece di arrivare
 //! dopo e rincorrere a salti. La pausa invece è immediata: i membri si fermano
 //! quando arriva l'ancora, e i pochi millisecondi li toglie la ripresa dopo.
+//! Anche a metà di una mossa del regolatore, che la pausa interrompe; e una
+//! voce che finisce di aprirsi dopo la pausa si consegna ferma. Resta un
+//! limite: mentre una voce si apre, il filo della sincronia è dentro
+//! l'apertura, e fino alla consegna il motore di chi segue continua la voce di
+//! prima.
 
 mod brani;
 mod regole;
@@ -93,6 +99,10 @@ pub const UID_CALIBRAZIONE: u64 = u64::MAX;
 pub struct Istantanea {
     /// Gli `uid`, nell'ordine in cui suoneranno.
     pub coda: Vec<u64>,
+    /// Le maniglie delle stesse voci, nello stesso ordine: gli id che la
+    /// finestra ha in coda. Servono a controllare che una riga sia ancora
+    /// quella che la finestra vedeva (vedi `gesti::traduci`).
+    pub maniglie: Vec<i64>,
     /// La voce corrente.
     pub corrente: Option<u64>,
     /// In pausa.
@@ -129,6 +139,15 @@ pub struct AncoraDiQuesto {
 /// riapertura in rete dice che non basta, è questo il numero da alzare.
 pub(super) const ANTICIPO_NS: u64 = 250_000_000;
 
+/// L'anticipo di una sessione con qualcuno raggiunto via internet: 400 ms
+/// (decisione D-31). Via relay l'ancora arriva già con un paio di centinaia
+/// di millisecondi di ritardo, e aprire una voce in rete fa più giri: con
+/// [`ANTICIPO_NS`] chi seguiva da fuori casa entrava quasi sempre in ritardo,
+/// cioè con un salto. Il prezzo è un tasto che risponde 150 ms più tardi, per
+/// tutti: per questo solo quando serve. Lo stesso numero del regolatore di chi
+/// segue un host via internet (`insieme::segui::ANTICIPO_INTERNET_NS`).
+pub(super) const ANTICIPO_INTERNET_NS: u64 = 400_000_000;
+
 /// Fino a quando un avvio programmato vale come ancora, se il motore non ha
 /// ancora detto niente di meglio: due secondi dopo l'istante. Oltre, qualcosa
 /// non è partito — il flusso, il file — e l'ancora vera del motore dice il
@@ -160,6 +179,10 @@ pub(super) struct Sessione {
     /// regolatore che riapre), e un «riprendi» deciso dal motore di qui
     /// arriverebbe a un host che suona già.
     pausa_dell_host: Option<bool>,
+    /// Quanto avanti si programmano gli avvii: [`ANTICIPO_NS`], o
+    /// [`ANTICIPO_INTERNET_NS`] se qualcuno della sessione passa da internet.
+    /// Vedi [`anticipo_via_internet`].
+    anticipo_ns: u64,
 }
 
 impl Sessione {
@@ -170,8 +193,37 @@ impl Sessione {
             programmata: None,
             calibrazione: None,
             pausa_dell_host: None,
+            anticipo_ns: ANTICIPO_NS,
         }
     }
+}
+
+/// L'anticipo della sessione in mano al lettore: vedi [`Sessione::anticipo_ns`].
+pub(super) fn anticipo(lettore: &Lettore) -> u64 {
+    lettore
+        .sessione
+        .as_ref()
+        .map_or(ANTICIPO_NS, |sessione| sessione.anticipo_ns)
+}
+
+/// La sessione passa da internet, o non più: chi ospita, quando entra o esce
+/// un membro raggiunto via internet; chi segue, entrando da un host raggiunto
+/// così. Cambia l'anticipo degli avvii programmati che vengono dopo (decisione
+/// D-31): quello già annunciato resta com'è.
+pub fn anticipo_via_internet(app: &tauri::AppHandle, via_internet: bool) {
+    let Ok(stato) = stato_lettore(app) else {
+        return;
+    };
+    let _ = con_lettore(&stato, |lettore| {
+        if let Some(sessione) = lettore.sessione.as_mut() {
+            sessione.anticipo_ns = if via_internet {
+                ANTICIPO_INTERNET_NS
+            } else {
+                ANTICIPO_NS
+            };
+        }
+        Ok(())
+    });
 }
 
 /// La coda dell'utente all'ingresso: rimessa all'uscita, ferma, al punto in
@@ -563,14 +615,21 @@ pub fn istantanea(app: &tauri::AppHandle) -> Option<Istantanea> {
         // Le maniglie diventano `uid` col registro in mano per un attimo: è un
         // lucchetto foglia, e prenderlo qui dentro tiene la coda e la sua
         // traduzione nello stesso istante.
-        let (coda, corrente) = ospiti::con_registro(app, |registro| {
-            let uid = |maniglia: i64| registro.voce(maniglia).map(|voce| voce.uid);
-            (
-                ordine.iter().filter_map(|m| uid(*m)).collect(),
-                corrente.and_then(uid),
-            )
-        })
-        .unwrap_or_default();
+        //
+        // Le maniglie nello stesso giro degli `uid`: una maniglia senza voce
+        // si salta in tutti e due, e le posizioni restano le stesse.
+        let ((coda, maniglie), corrente): ((Vec<u64>, Vec<i64>), _) =
+            ospiti::con_registro(app, |registro| {
+                let uid = |maniglia: i64| registro.voce(maniglia).map(|voce| voce.uid);
+                (
+                    ordine
+                        .iter()
+                        .filter_map(|m| uid(*m).map(|u| (u, *m)))
+                        .unzip(),
+                    corrente.and_then(uid),
+                )
+            })
+            .unwrap_or_default();
         let in_pausa = lettore
             .sessione
             .as_ref()
@@ -578,6 +637,7 @@ pub fn istantanea(app: &tauri::AppHandle) -> Option<Istantanea> {
             .unwrap_or_else(|| lettore.motore.posizione().in_pausa);
         Ok(Some(Istantanea {
             coda,
+            maniglie,
             corrente,
             in_pausa,
             ripeti: lettore.coda.repeat(),
@@ -1346,6 +1406,17 @@ fn riapri(
         if continua {
             riapertura::continua_l_ascolto(maniglia);
         }
+        // L'host si è fermato mentre la voce si apriva (un salto e una pausa
+        // subito dopo, su una voce lenta ad aprirsi): la voce si consegna
+        // ferma, senza l'avvio. Prima partiva lo stesso, e chi seguiva
+        // suonava il punto nuovo con l'host zitto finché il regolatore non
+        // chiedeva la pausa (reperto R05-1). Il punto giusto della pausa lo
+        // dà il passo dopo, con `Posiziona`.
+        if lettore.sessione.as_ref().and_then(|s| s.pausa_dell_host) == Some(true) {
+            cursore_sulla_voce(lettore, maniglia);
+            manda_stato(app, lettore);
+            return Ok(());
+        }
         // Il punto e l'istante promessi, per la finestra: fino al primo
         // campione il motore direbbe il punto della voce di prima. Vedi
         // [`posizione_da_mostrare`]. Dopo `apri_fermo`, che dimentica quelli
@@ -1362,7 +1433,7 @@ fn riapri(
         {
             // Vedi «Quando l'apertura è stata più lunga dell'anticipo».
             let adesso = tempo::adesso_ns();
-            let nuovo_quando = adesso.saturating_add(ANTICIPO_NS);
+            let nuovo_quando = adesso.saturating_add(anticipo(lettore));
             let avanti_us = nuovo_quando
                 .saturating_sub(quando_ns)
                 .checked_div(1000)

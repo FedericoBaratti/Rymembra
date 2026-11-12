@@ -660,6 +660,12 @@ mod prove {
             da: 7,
         };
         assert_eq!(nome_del_gesto(&gesto), "suona");
-        assert!(!nome_del_gesto(&Gesto::CodaTogli { indici: vec![99] }).contains("99"));
+        assert!(
+            !nome_del_gesto(&Gesto::CodaTogli {
+                indici: vec![99],
+                attesi: Vec::new()
+            })
+            .contains("99")
+        );
     }
 }

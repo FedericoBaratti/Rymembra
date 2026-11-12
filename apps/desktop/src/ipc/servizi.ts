@@ -402,7 +402,13 @@ export interface ProprietarioInsieme {
 /** Una persona nella sessione; `membro` 0 è l'host. */
 export interface PersonaInsieme {
   membro: number;
+  /** Il nome che questo PC ha per lui: quello scelto qui, se c'è. */
   nome: string;
+  /**
+   * Il nome che il PC dichiara, quando non è quello qui sopra: lo sceglie lui
+   * (D-106).
+   */
+  dichiarato: string | null;
   io: boolean;
   /** Che cosa può fare: chi ospita lo cambia da «In sessione». L'host è `tutto`. */
   diritti: DirittiInsieme;
@@ -420,6 +426,8 @@ export interface VicinoInsieme {
   bloccato: boolean;
   /** Si raggiunge dal collegamento via internet, non dalla rete di casa. */
   viaInternet: boolean;
+  /** Non associato, ma col nome di un PC associato: un altro PC. */
+  omonimo: boolean;
 }
 
 /** Un PC associato. */
@@ -439,11 +447,25 @@ export interface FidatoInsieme {
 /** L'associazione in corso. */
 export interface AssociazioneInsieme {
   id: number;
+  /** Il nome scelto qui, se è già associato; se no quello che dichiara. */
   nome: string;
+  /** Il nome che l'altro PC dichiara: lo sceglie lui. */
+  dichiarato: string;
   /** Quattro cifre; `null` mentre si calcolano. */
   codice: string | null;
   /** Questo PC ha già confermato e aspetta l'altro. */
   confermato: boolean;
+  /**
+   * Chi ospita: l'ha chiesta l'altro PC e qui non si è ancora premuto «Mostra
+   * il codice». Una riga del pannello, non il dialogo (02-14).
+   */
+  chiesta: boolean;
+  /** Già associato: chiede di associarsi di nuovo. */
+  giaAssociato: boolean;
+  /** Non associato, ma col nome di un PC associato. */
+  omonimo: boolean;
+  /** Quando scade, ms dall'epoca su questo PC. */
+  scadeMs: number;
 }
 
 /** Un invito ricevuto. */
@@ -469,6 +491,8 @@ export interface SincroniaInsieme {
   /** Positivo se questo PC è avanti. */
   erroreMs: number | null;
   incertezzaMs: number | null;
+  /** Da trenta secondi la rete è troppo lenta per una stima dell'orologio. */
+  reteLenta: boolean;
 }
 
 /**

@@ -27,9 +27,11 @@
  * — qui servono a dire «no» prima del viaggio, non a decidere.
  */
 import type {
+  AssociazioneInsieme,
   Brano,
   FidatoInsieme,
   InsiemeNelLettore,
+  PersonaInsieme,
   ProprietarioInsieme,
   SincroniaInsieme,
   StatoInsieme,
@@ -261,6 +263,7 @@ export function ospitanti(stato: StatoInsieme): VicinoInsieme[] {
       pari: f.id,
       bloccato: f.bloccato,
       viaInternet: false,
+      omonimo: false,
     }));
   return ordinaVicini([...vivi, ...daiFidati]);
 }
@@ -447,16 +450,24 @@ export function pezziSegno(insieme: InsiemeNelLettore): Pezzo[] {
 }
 
 /**
- * La frase della regione viva della sincronia: agganciato o no, e nient'altro.
+ * La frase della regione viva della sincronia: agganciato, aggancio in corso,
+ * o la rete troppo lenta per seguire — e nient'altro.
  *
  * Scarto e incertezza cambiano quasi a ogni secondo — il nucleo li rinfresca
  * una volta al secondo, al decimo di millisecondo — e ridetti da una regione
  * viva farebbero un lettore di schermo che non sta mai zitto: la regola di
  * `InAttesa`, che annuncia l'arrivo e non il conto. Si annuncia il passaggio;
  * i numeri restano scritti accanto, fuori dalla regione.
+ *
+ * La rete troppo lenta (decisione D-31): dopo trenta secondi con ogni scambio
+ * d'orologio oltre il tetto la stima non arriverà, e «aggancio in corso…»
+ * per sempre sarebbe una promessa falsa.
  */
-export function annuncioSincronia(sincronia: Pick<SincroniaInsieme, "agganciato">): Chiave {
-  return sincronia.agganciato ? "together.sync.locked" : "together.sync.locking";
+export function annuncioSincronia(
+  sincronia: Pick<SincroniaInsieme, "agganciato" | "reteLenta">,
+): Chiave {
+  if (sincronia.agganciato) return "together.sync.locked";
+  return sincronia.reteLenta ? "together.sync.tooSlow" : "together.sync.locking";
 }
 
 // ── terminare ──────────────────────────────────────────────────────────────
@@ -623,6 +634,43 @@ export function chiaveAvviso(chiave: string): string | null {
 /** L'avviso è un guasto (rosso, `alert`) e non una notizia. */
 export function avvisoEGuasto(chiave: string): boolean {
   return chiave.startsWith("errors.");
+}
+
+/**
+ * Il nome di una persona della sessione com'è scritto nella riga: il nome
+ * scelto qui e, tra parentesi, quello che il PC dichiara se è un altro (D-106).
+ */
+export function nomeDellaPersona(persona: Pick<PersonaInsieme, "nome" | "dichiarato">): string {
+  return persona.dichiarato === null ? persona.nome : `${persona.nome} (${persona.dichiarato})`;
+}
+
+// ── l'associazione chiesta da un altro PC ─────────────────────────────────
+
+/**
+ * Un nome scelto da un altro PC, isolato dal testo intorno (U+2068 … U+2069):
+ * è il `<bdi>` dei posti dove c'è solo testo — il titolo di un dialogo, un
+ * avviso. Un nome che comincia da destra a sinistra, o che porta caratteri di
+ * direzione rimasti, non rovescia la frase che lo contiene (reperto R26-7). Il
+ * nucleo i comandi di direzione li toglie già (`ripulisci_nome`).
+ */
+export function isolato(nome: string): string {
+  return `\u2068${nome}\u2069`;
+}
+
+/**
+ * La riga di una richiesta d'associazione, per chi ospita: la frase e il nome
+ * da metterci (02-14). Un PC già associato col nome scelto qui, «già
+ * associato»; un estraneo col nome che dichiara, «che si presenta come».
+ */
+export function domandaDiAssociazione(a: AssociazioneInsieme): { chiave: Chiave; nome: string } {
+  return a.giaAssociato
+    ? { chiave: "together.pairing.requestAgain", nome: a.nome }
+    : { chiave: "together.pairing.request", nome: a.dichiarato };
+}
+
+/** Il titolo del dialogo del codice: vedi [`domandaDiAssociazione`]. */
+export function titoloDelCodice(a: AssociazioneInsieme): Chiave {
+  return a.giaAssociato ? "together.code.titleAgain" : "together.code.title";
 }
 
 // ── nomi e indirizzi ────────────────────────────────────────────────────────

@@ -315,6 +315,13 @@ fn la_rivelazione_falsa_chiude_con_codice_rifiutato() {
     grezzo.manda(&Trasporto::Impegno {
         impegno: Byte32(codice::impegno(&[1; 32], &mia, &rete.pubblica())),
     });
+    // Il nonce parte dal clic di chi ospita su «Mostra il codice» (02-14).
+    aspetta(&eventi, ATTESA, |e| match e {
+        Evento::AssociazioneChiesta { id: chiesta } if *chiesta == id => Some(()),
+        _ => None,
+    })
+    .expect("la riga");
+    rete.accetta_associazione(id);
     assert!(matches!(
         grezzo.leggi(ATTESA),
         Some(Trasporto::Nonce { .. })

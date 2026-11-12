@@ -28,11 +28,29 @@
 //! circa cinque giorni), ciascuno con una persona che guarda due schermi e
 //! dice di no. Il freno vero è lei; i tetti fanno sì che non basti un
 //! pomeriggio. Fino alla revisione del 30 ottobre qui c'era scritto «mesi».
+//!
+//! # Dal lato di chi ospita, il conto parte dal clic
+//!
+//! Chi ospita non manda il suo nonce appena arriva un impegno: la richiesta
+//! diventa una riga nel pannello, e il nonce parte — e il tentativo si conta —
+//! solo quando la persona preme «Mostra il codice» ([`Tentativi::chiedi`],
+//! poi [`Tentativi::prenota`]). Prima il conto partiva dall'impegno, prima di
+//! qualunque gesto: un estraneo della rete mandava dieci impegni e chiudeva,
+//! e per dieci minuti nessuno si associava più con quel PC (reperto R26-2);
+//! e un codice non chiesto apriva da solo il dialogo davanti a chi ospitava
+//! (02-14). Il freno contro chi sta nel mezzo resta intero: ogni tentativo
+//! vuole un nonce di chi ospita, cioè un clic.
+//!
+//! Le righe hanno tetti loro, che non costano niente a nessuno: una alla
+//! volta su tutto l'host, al più [`RIGHE_PER_ORIGINE`] dallo stesso indirizzo
+//! nella finestra, e una chiave a cui si è detto di no — o che non ha avuto
+//! risposta — non ne fa comparire altre per tutta la finestra.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::identita::ChiavePubblica;
+use crate::presa::Origine;
 
 /// Il contesto blake3 dell'impegno. Contesti diversi per usi diversi: un
 /// impegno non può mai valere come codice, né il contrario.
@@ -113,6 +131,10 @@ pub(crate) const PER_CHIAVE: usize = 3;
 /// Quante associazioni fallite in tutto, nella finestra.
 pub(crate) const IN_TUTTO: usize = 10;
 
+/// Quante richieste d'associazione da uno stesso indirizzo d'origine (via
+/// internet: da uno stesso dispositivo) diventano una riga, nella finestra.
+pub(crate) const RIGHE_PER_ORIGINE: usize = 3;
+
 /// Perché un'associazione non può cominciare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rifiuto {
@@ -120,6 +142,10 @@ pub(crate) enum Rifiuto {
     Troppi(Duration),
     /// Chi ospita ne ha già una in corso. Vedi [`Tentativi::prenota`].
     Occupato,
+    /// Chi ospita non vuole altre righe da questa chiave o da questo
+    /// indirizzo, per ora: gli ha detto di no di recente, o ne ha già viste
+    /// troppe. Vedi [`Tentativi::chiedi`].
+    Respinta,
 }
 
 /// I tentativi d'associazione degli ultimi [`FINESTRA`], falliti **o in
@@ -154,11 +180,21 @@ pub(crate) struct Tentativi {
     /// ce n'è una. Una sola alla volta: con due, un intermediario potrebbe
     /// tenerne aperte quante vuole e scegliere quale finire.
     risponde: Option<u64>,
+    /// La richiesta che aspetta il clic di chi ospita, se ce n'è una: il
+    /// numero della sua connessione. Una sola alla volta, e mai insieme a
+    /// `risponde`. Vedi «Dal lato di chi ospita, il conto parte dal clic».
+    chiesta: Option<u64>,
+    /// Le chiavi a cui chi ospita ha detto di no, o la cui riga è scaduta:
+    /// fino all'uscita dalla finestra non ne fanno comparire altre.
+    respinte: VecDeque<(Instant, ChiavePubblica)>,
+    /// Da dove sono arrivate le righe della finestra.
+    righe: VecDeque<(Instant, Origine)>,
 }
 
 impl Tentativi {
     /// Prenota un tentativo con questa chiave. `da_host` è il lato di chi
-    /// ospita, che ne tiene uno solo in corso alla volta.
+    /// ospita, che ne tiene uno solo in corso alla volta: lo chiama il clic su
+    /// «Mostra il codice», dopo [`Tentativi::chiedi`].
     ///
     /// # Errori
     ///
@@ -171,9 +207,24 @@ impl Tentativi {
         da_host: bool,
     ) -> Result<u64, Rifiuto> {
         self.pota(adesso);
-        if da_host && self.risponde.is_some() {
+        if da_host && (self.risponde.is_some() || self.chiesta.is_some()) {
             return Err(Rifiuto::Occupato);
         }
+        if let Some(attesa) = self.oltre_i_tetti(chiave, adesso) {
+            return Err(Rifiuto::Troppi(attesa));
+        }
+        let numero = self.prossima;
+        self.prossima = self.prossima.wrapping_add(1);
+        self.voci.push_back((adesso, *chiave, numero));
+        if da_host {
+            self.risponde = Some(numero);
+        }
+        Ok(numero)
+    }
+
+    /// Se una prenotazione con questa chiave adesso sarebbe rifiutata per i
+    /// tetti: fra quanto si potrà.
+    fn oltre_i_tetti(&self, chiave: &ChiavePubblica, adesso: Instant) -> Option<Duration> {
         let resta = |quando: Instant| {
             quando
                 .checked_add(FINESTRA)
@@ -187,22 +238,69 @@ impl Tentativi {
             .collect();
         if suoi.len() >= PER_CHIAVE {
             // Si riapre quando esce dalla finestra il più vecchio dei suoi.
-            return Err(Rifiuto::Troppi(
-                suoi.first().map_or(FINESTRA, |q| resta(*q)),
-            ));
+            return Some(suoi.first().map_or(FINESTRA, |q| resta(*q)));
         }
         if self.voci.len() >= IN_TUTTO {
-            return Err(Rifiuto::Troppi(
-                self.voci.front().map_or(FINESTRA, |(q, _, _)| resta(*q)),
-            ));
+            return Some(self.voci.front().map_or(FINESTRA, |(q, _, _)| resta(*q)));
         }
-        let numero = self.prossima;
-        self.prossima = self.prossima.wrapping_add(1);
-        self.voci.push_back((adesso, *chiave, numero));
-        if da_host {
-            self.risponde = Some(numero);
+        None
+    }
+
+    /// Chi ospita: è arrivato l'impegno di `chiave`, sulla connessione `conn`.
+    /// Se può diventare la riga che aspetta il clic, la si segna e basta:
+    /// niente prenotazione, niente nonce. Vedi «Dal lato di chi ospita, il
+    /// conto parte dal clic».
+    ///
+    /// # Errori
+    ///
+    /// [`Rifiuto::Occupato`] se c'è già una riga o un'associazione in corso;
+    /// [`Rifiuto::Respinta`] per una chiave a cui si è detto di no di recente,
+    /// o da un indirizzo che ne ha già fatte comparire [`RIGHE_PER_ORIGINE`];
+    /// [`Rifiuto::Troppi`] se il clic non potrebbe comunque prenotare: una
+    /// riga che non diventerebbe un codice non si mostra.
+    pub(crate) fn chiedi(
+        &mut self,
+        chiave: &ChiavePubblica,
+        origine: Origine,
+        conn: u64,
+        adesso: Instant,
+    ) -> Result<(), Rifiuto> {
+        self.pota(adesso);
+        if self.risponde.is_some() || self.chiesta.is_some() {
+            return Err(Rifiuto::Occupato);
         }
-        Ok(numero)
+        if self.respinte.iter().any(|(_, di)| di == chiave) {
+            return Err(Rifiuto::Respinta);
+        }
+        // Questo stesso computer no: le prove ci aprono dieci PC.
+        if !origine.e_locale()
+            && self.righe.iter().filter(|(_, da)| *da == origine).count() >= RIGHE_PER_ORIGINE
+        {
+            return Err(Rifiuto::Respinta);
+        }
+        if let Some(attesa) = self.oltre_i_tetti(chiave, adesso) {
+            return Err(Rifiuto::Troppi(attesa));
+        }
+        self.chiesta = Some(conn);
+        self.righe.push_back((adesso, origine));
+        Ok(())
+    }
+
+    /// Chi ospita: la riga della connessione `conn` non c'è più. Con
+    /// `respinta`, perché la persona ha detto di no o non ha risposto in
+    /// tempo: quella chiave non ne fa comparire altre fino all'uscita dalla
+    /// finestra. Senza, perché l'altro ha chiuso o si è passati al codice.
+    pub(crate) fn chiesta_finita(
+        &mut self,
+        conn: u64,
+        respinta: Option<(&ChiavePubblica, Instant)>,
+    ) {
+        if self.chiesta == Some(conn) {
+            self.chiesta = None;
+        }
+        if let Some((chiave, quando)) = respinta {
+            self.respinte.push_back((quando, *chiave));
+        }
     }
 
     /// Il tentativo `numero` è finito. Riuscito, esce dal conto; fallito,
@@ -218,9 +316,10 @@ impl Tentativi {
 
     /// Il tentativo `numero` non è mai cominciato davvero: dal lato di chi
     /// chiede, è finito prima di vedere il nonce di chi ospita — un
-    /// «occupato» (`Trasporto::Occupato`), o la connessione chiusa, per
+    /// «occupato» (`Trasporto::Occupato`), la connessione chiusa (per
     /// esempio dal `troppiTentativi` di un host al suo tetto per colpa di
-    /// altri PC. Esce dal conto come uno riuscito.
+    /// altri PC, o dal no di chi ospita alla riga), o la persona che annulla
+    /// mentre aspetta. Esce dal conto come uno riuscito.
     ///
     /// Non apre un buco nel conto: senza il nonce di chi ospita non c'è un
     /// codice, e chi chiede non ha rivelato il suo — a un terzo nel mezzo che
@@ -232,11 +331,23 @@ impl Tentativi {
 
     /// Toglie quel che è uscito dalla finestra.
     fn pota(&mut self, adesso: Instant) {
-        while let Some((quando, _, _)) = self.voci.front() {
-            if adesso.saturating_duration_since(*quando) < FINESTRA {
-                break;
-            }
+        let fuori = |quando: &Instant| adesso.saturating_duration_since(*quando) >= FINESTRA;
+        while self
+            .voci
+            .front()
+            .is_some_and(|(quando, _, _)| fuori(quando))
+        {
             self.voci.pop_front();
+        }
+        while self
+            .respinte
+            .front()
+            .is_some_and(|(quando, _)| fuori(quando))
+        {
+            self.respinte.pop_front();
+        }
+        while self.righe.front().is_some_and(|(quando, _)| fuori(quando)) {
+            self.righe.pop_front();
         }
     }
 }
@@ -397,6 +508,76 @@ mod prove {
         assert!(
             minuti > 6 * 24 * 60 && minuti < 8 * 24 * 60,
             "{minuti} minuti"
+        );
+    }
+
+    fn da(ultimo: u8) -> Origine {
+        Origine::Ip(std::net::IpAddr::from([10, 0, 0, ultimo]))
+    }
+
+    #[test]
+    fn le_richieste_che_nessuno_apre_non_contano() {
+        // Reperto R26-2: dieci impegni abbandonati, prima del clic di chi
+        // ospita, non tolgono niente ai tentativi di chi si associa davvero.
+        let zero = Instant::now();
+        let mut tentativi = Tentativi::default();
+        for i in 0_u8..10 {
+            let estraneo = ChiavePubblica([i.saturating_add(10); 32]);
+            tentativi
+                .chiedi(&estraneo, da(i), u64::from(i), zero)
+                .expect("una riga");
+            tentativi.chiesta_finita(u64::from(i), None);
+        }
+        assert!(
+            tentativi.prenota(&A, zero, true).is_ok(),
+            "contano i tentativi aperti da un clic, non le richieste"
+        );
+    }
+
+    #[test]
+    fn una_riga_alla_volta_e_dopo_un_no_la_stessa_chiave_aspetta() {
+        let zero = Instant::now();
+        let mut tentativi = Tentativi::default();
+        tentativi.chiedi(&A, da(1), 1, zero).expect("la prima");
+        assert_eq!(tentativi.chiedi(&B, da(2), 2, zero), Err(Rifiuto::Occupato));
+        assert_eq!(
+            tentativi.prenota(&C, zero, true),
+            Err(Rifiuto::Occupato),
+            "e niente associazione mentre una riga aspetta"
+        );
+        // Il no di chi ospita: per dieci minuti A non fa comparire altre righe.
+        tentativi.chiesta_finita(1, Some((&A, zero)));
+        let dopo = zero + Duration::from_secs(60);
+        assert_eq!(tentativi.chiedi(&A, da(1), 3, dopo), Err(Rifiuto::Respinta));
+        assert!(tentativi.chiedi(&B, da(2), 4, dopo).is_ok(), "le altre sì");
+        tentativi.chiesta_finita(4, None);
+        assert!(
+            tentativi
+                .chiedi(&A, da(1), 5, zero + FINESTRA + Duration::from_secs(1))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn da_uno_stesso_indirizzo_al_piu_tre_righe_nella_finestra() {
+        let zero = Instant::now();
+        let mut tentativi = Tentativi::default();
+        for i in 0_u8..3 {
+            let chiave = ChiavePubblica([i.saturating_add(40); 32]);
+            tentativi
+                .chiedi(&chiave, da(7), u64::from(i), zero)
+                .expect("una riga");
+            tentativi.chiesta_finita(u64::from(i), None);
+        }
+        assert_eq!(
+            tentativi.chiedi(&ChiavePubblica([99; 32]), da(7), 9, zero),
+            Err(Rifiuto::Respinta),
+            "chi cambia chiave a ogni richiesta resta fermo lo stesso"
+        );
+        assert!(
+            tentativi
+                .chiedi(&ChiavePubblica([99; 32]), da(8), 9, zero)
+                .is_ok()
         );
     }
 

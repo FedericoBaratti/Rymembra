@@ -5,12 +5,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_insieme::messaggi::{
-    AncoraSulFilo, Azione, Dove, MASSIMO_AGGIUNTE, Messaggio, VoceSulFilo,
+    Ambito, AncoraSulFilo, Azione, Diritti, Dove, MASSIMO_AGGIUNTE, Messaggio, VoceSulFilo,
 };
 use rymembra_insieme::{ChiavePubblica, Gettone, IdConnessione};
 use tauri::{AppHandle, Manager as _};
@@ -606,6 +606,20 @@ impl Filo {
         accesa.rete.ammessi(chiavi);
     }
 
+    /// I diritti dei membri di adesso, per l'esecutore: dal riduttore, a ogni
+    /// cambio delle persone (un ingresso, un'uscita, «Allontana», un livello
+    /// nuovo). Fuori da una sessione ospitata, nessuno.
+    pub(super) fn aggiorna_diritti_vivi(&self) {
+        let vivi: HashMap<u32, Diritti> = match &self.s.fase {
+            Fase::Ospita(o) => o.membri.iter().map(|m| (m.membro, m.diritti)).collect(),
+            _ => HashMap::new(),
+        };
+        *self
+            .diritti_vivi
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = vivi;
+    }
+
     /// Un membro non c'è più: le sue voci escono dalla coda, e i suoi gettoni
     /// inoltrati si dimenticano.
     pub(super) fn membro_uscito(&mut self, membro: u32) {
@@ -794,6 +808,43 @@ impl Lavoro {
     }
 }
 
+/// I membri della sessione di adesso e che cosa possono fare: il riduttore li
+/// scrive (vedi `Filo::aggiorna_diritti_vivi`), l'esecutore li legge.
+pub(super) type DirittiVivi = Arc<RwLock<HashMap<u32, Diritti>>>;
+
+/// Il gesto di `membro` si può ancora fare, adesso che tocca a lui? `None` se
+/// sì; se no il codice dell'`Esito`: `insieme.rifiutato` per chi non è più
+/// nella sessione (allontanato, uscito), `insieme.nonConcesso` per chi non ha
+/// più quel livello.
+///
+/// # Perché qui e non solo all'arrivo
+///
+/// I diritti si guardano all'arrivo del gesto, prima del secchiello (vedi il
+/// riduttore). Ma un gesto può restare in fila a lungo — dietro un'apertura da
+/// un disco di rete, o dietro le voci lente di un altro membro — e intanto chi
+/// ospita può aver tolto i comandi a quel membro o averlo allontanato: prima i
+/// gesti già accettati partivano lo stesso, uno dopo l'altro (reperto R26-4).
+/// Adesso si buttano (decisione D-108). Non vale per `Togli`, che è di chi
+/// ospita: le voci di chi esce.
+pub(super) fn ancora_concesso(
+    membro: u32,
+    lavoro: &Lavoro,
+    vivi: &HashMap<u32, Diritti>,
+) -> Option<String> {
+    let ambito = match lavoro {
+        Lavoro::Togli(_) => return None,
+        Lavoro::Accoda { .. } => Ambito::Coda,
+        Lavoro::Azione(azione) => azione.ambito()?,
+    };
+    match vivi.get(&membro) {
+        None => Some(ErrorCodeKind::InsiemeRifiutato.code().to_owned()),
+        Some(diritti) if !diritti.concede(ambito) => {
+            Some(ErrorCodeKind::InsiemeNonConcesso.code().to_owned())
+        }
+        Some(_) => None,
+    }
+}
+
 /// Un lavoro, e a chi rispondere.
 pub(super) struct Incarico {
     lavoro: Lavoro,
@@ -818,6 +869,7 @@ pub(super) fn avvia_l_esecutore(
     app: AppHandle,
     posta: Sender<Posta>,
     sessione_viva: Arc<AtomicU64>,
+    diritti_vivi: DirittiVivi,
 ) -> Option<Sender<Incarico>> {
     let (coda, orecchio) = channel::<Incarico>();
     let avviato = std::thread::Builder::new()
@@ -830,8 +882,21 @@ pub(super) fn avvia_l_esecutore(
                 let attesa = incarico.arrivato.elapsed();
                 let inizio = Instant::now();
                 let nome = incarico.lavoro.nome();
-                let (codice, fuori) = if incarico.sessione == sessione_viva.load(Ordering::Acquire)
-                {
+                let viva = incarico.sessione == sessione_viva.load(Ordering::Acquire);
+                // I diritti riletti adesso, non all'arrivo: vedi
+                // `ancora_concesso`.
+                let negato = viva
+                    .then(|| {
+                        ancora_concesso(
+                            incarico.membro,
+                            &incarico.lavoro,
+                            &diritti_vivi.read().unwrap_or_else(PoisonError::into_inner),
+                        )
+                    })
+                    .flatten();
+                let (codice, fuori) = if let Some(codice) = negato {
+                    (Some(codice), Vec::new())
+                } else if viva {
                     crate::stato::sorvegliato("rymembra-insieme-esecutore", || {
                         esegui(&app, incarico.lavoro)
                     })
@@ -971,9 +1036,15 @@ fn fai(app: &AppHandle, azione: &Azione) -> Option<String> {
         Passo::Prossimo => dalla_finestra(r::prossimo_ora(app.clone(), stato)),
         Passo::Precedente => dalla_finestra(r::precedente_ora(app.clone(), stato)),
         Passo::VaiA(ms) => dalla_finestra(r::vai_a(app.clone(), stato, ms)),
-        Passo::Riordina { da, a } => {
-            dalla_finestra(r::coda_riordina_ora(app.clone(), stato, da, a, None))
-        }
+        // Col brano che l'istantanea ha in `da`: se la coda cambia fra
+        // l'istantanea e il lucchetto, non si sposta un'altra voce (R04-4).
+        Passo::Riordina { da, a } => dalla_finestra(r::coda_riordina_ora(
+            app.clone(),
+            stato,
+            da,
+            a,
+            adesso.maniglie.get(da).copied(),
+        )),
     };
     esito.err().map(|codice| codice_sul_filo(&codice))
 }

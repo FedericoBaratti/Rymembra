@@ -1,7 +1,9 @@
 //! Le prove del filo della sessione. Alcune leggono il sorgente (`corpo_di`):
 //! per loro il testo è quello del padre e dei suoi sottomoduli.
 
-use super::ospita::{codice_sul_filo, esito_dell_aggiunta, prossima_da_preparare};
+use super::ospita::{
+    Lavoro, ancora_concesso, codice_sul_filo, esito_dell_aggiunta, prossima_da_preparare,
+};
 use super::*;
 use rymembra_insieme::messaggi::{Persona, SorgenteSulFilo};
 use rymembra_insieme::{CampioneOrologio, Impronta};
@@ -567,6 +569,7 @@ fn la_vetrina_arrotonda_l_errore_al_decimo_di_millisecondo() {
             agganciato: true,
             errore_ns: Some(1_234_567),
             incertezza_ns: Some(260_000),
+            rete_lenta: false,
         }),
         adesso_ms: 0,
         ora: 0,
@@ -574,4 +577,126 @@ fn la_vetrina_arrotonda_l_errore_al_decimo_di_millisecondo() {
     let sincronia = v.sincronia.unwrap();
     assert_eq!(sincronia.errore_ms, Some(1.2));
     assert_eq!(sincronia.incertezza_ms, Some(0.3));
+}
+
+#[test]
+fn i_gesti_in_fila_di_un_membro_abbassato_o_allontanato_si_buttano() {
+    let esecutore = corpo_di("fn avvia_l_esecutore(");
+    let controllo = esecutore.find("ancora_concesso(");
+    let esegue = esecutore.find("esegui(&app, incarico.lavoro)");
+    assert!(
+        controllo.is_some() && controllo < esegue,
+        "l'esecutore non rilegge i diritti: {controllo:?} {esegue:?}"
+    );
+}
+
+#[test]
+fn associare_non_dipende_dalla_rilettura() {
+    // Reperto R26-5, sul modello di `bloccare_e_dimenticare_…`: il PC nuovo
+    // va fra i fidati in memoria prima della rilettura, e una scrittura non
+    // riuscita si ritenta, con la chiave che resta fidata per la rete.
+    let salvata = corpo_di("fn salvata(");
+    let in_memoria = salvata.find("self.fidati.aggiungi(");
+    let rilettura = salvata.find("self.ricarica_fidati()");
+    assert!(
+        in_memoria.is_some() && in_memoria < rilettura,
+        "{in_memoria:?} {rilettura:?}"
+    );
+    assert!(corpo_di("fn associato(").contains("self.da_salvare.push("));
+    assert!(corpo_di("fn rileggi_se_tocca(").contains("self.salva_le_associazioni()"));
+    assert!(corpo_di("fn ricarica_fidati(").contains("self.da_salvare.iter()"));
+}
+
+#[test]
+fn il_nome_dichiarato_passa_dalla_stessa_ripulitura_della_libreria() {
+    assert!(corpo_di("pub(super) fn dalla_rete(").contains("ripulisci_nome(&nome)"));
+}
+
+#[test]
+fn chi_ospita_vede_il_nome_scelto_da_lui() {
+    use crate::insieme::fasi::{MembroDiQui, Ospitata};
+    let mut s = Situazione::default();
+    (s, _) = fasi::passo(s, Evento::Acceso, 0);
+    (s, _) = fasi::passo(
+        s,
+        Evento::Aperta {
+            id: IdConnessione(5),
+            connessione: Connessione {
+                chiave: ChiavePubblica([5; 32]),
+                nome: "Portatile di Anna".to_owned(),
+                dichiarato: "Fisso di Marco".to_owned(),
+                ospita: false,
+                in_entrata: true,
+                pari: Some(5),
+            },
+        },
+        0,
+    );
+    s.fase = Fase::Ospita(Ospitata {
+        porta: 47_811,
+        membri: vec![MembroDiQui {
+            membro: 1,
+            conn: IdConnessione(5),
+            secchiello: crate::insieme::gesti::Secchiello::default(),
+            diritti: rymembra_insieme::messaggi::Diritti::Tutto,
+        }],
+        prossimo: 2,
+        inviti: Vec::new(),
+        richieste: Vec::new(),
+    });
+    let impostazioni = rymembra_app::insieme::Impostazioni::default();
+    let fidati = fidati();
+    let vicinato = Vicinato::default();
+    let v = vetrina(&Parti {
+        s: &s,
+        impostazioni: &impostazioni,
+        nome: "Io",
+        fidati: &fidati,
+        vicinato: &vicinato,
+        aggancio: None,
+        calibrazione: false,
+        proprietari: &[],
+        indirizzi_di_qui: &[],
+        adesso_ms: 0,
+        ora: 0,
+    });
+    let persone = v.sessione.expect("la sessione").persone;
+    assert_eq!(persone[1].nome, "Portatile di Anna");
+    assert_eq!(persone[1].dichiarato.as_deref(), Some("Fisso di Marco"));
+    assert_eq!(persone[0].dichiarato, None, "chi ospita è questo PC");
+}
+
+#[test]
+fn un_gesto_in_fila_si_rilegge_coi_diritti_di_adesso() {
+    use rymembra_insieme::messaggi::{Azione, Diritti};
+    // Reperto R26-4, decisione D-108: un `Pausa` del membro 2 rimasto in fila
+    // mentre chi ospita lo porta ad «Ascolta», e uno del membro 3 intanto
+    // allontanato.
+    let vivi: HashMap<u32, Diritti> = HashMap::from([(2, Diritti::Ascolta), (4, Diritti::Comanda)]);
+    let pausa = Lavoro::Azione(Azione::Pausa);
+    assert_eq!(
+        ancora_concesso(2, &pausa, &vivi).as_deref(),
+        Some("insieme.nonConcesso")
+    );
+    assert_eq!(
+        ancora_concesso(3, &pausa, &vivi).as_deref(),
+        Some("insieme.rifiutato")
+    );
+    assert_eq!(
+        ancora_concesso(4, &pausa, &vivi),
+        None,
+        "«Comanda» la pausa la fa"
+    );
+    let accoda = Lavoro::Accoda {
+        voci: vec![(1, -1)],
+        dopo: false,
+        suona: None,
+    };
+    assert_eq!(
+        ancora_concesso(4, &accoda, &vivi).as_deref(),
+        Some("insieme.nonConcesso"),
+        "ma non la coda"
+    );
+    // Le voci di chi esce le toglie chi ospita: sempre.
+    assert_eq!(ancora_concesso(3, &Lavoro::Togli(vec![1]), &vivi), None);
 }

@@ -91,7 +91,7 @@ use rymembra_insieme::messaggi::{
 use rymembra_insieme::{ChiavePubblica, Gettone, IdConnessione, LettoreRemoto, Rete};
 use tauri::{AppHandle, Manager as _};
 
-use self::ospita::{DaPreparare, Incarico, avvia_il_preparatore, avvia_l_esecutore};
+use self::ospita::{DaPreparare, DirittiVivi, Incarico, avvia_il_preparatore, avvia_l_esecutore};
 use super::fasi::{self, Comando, Connessione, Effetto, Evento, Fase, Situazione};
 use super::fiducia::{self, Fidati, Vicinato};
 use super::preparazione::Preparazione;
@@ -637,6 +637,12 @@ struct Filo {
     /// ritentare. Vedi [`RILEGGI_DOPO_MS`].
     impostazioni_da_rileggere: Option<u64>,
     fidati_da_rileggere: Option<u64>,
+    /// Associazioni confermate da tutti e due e non ancora scritte, perché la
+    /// libreria era occupata: si ritentano, e intanto il trasporto le tiene
+    /// fidate. Vedi `Filo::associato`.
+    da_salvare: Vec<DaSalvare>,
+    /// Quando ritentare [`Filo::da_salvare`].
+    salva_dopo: Option<u64>,
     /// I fidati si sono letti almeno una volta: prima di allora la rete non
     /// si accende (vedi [`Filo::accendi`]).
     fidati_letti: bool,
@@ -703,6 +709,9 @@ struct Filo {
     /// fila dietro un'apertura lunga, della sessione di prima, non si esegue
     /// in quella nuova, dove i suoi `uid` sono altre voci.
     sessione_viva: Arc<AtomicU64>,
+    /// Chi ospita: i membri di adesso e che cosa possono fare, letti
+    /// dall'esecutore prima di ogni gesto. Vedi `ospita::ancora_concesso`.
+    diritti_vivi: DirittiVivi,
     /// Il numero della sessione ospitata, per riconoscere gli esiti vecchi.
     sessione: u64,
     /// I fili della sincronia che stanno uscendo, da aspettare fermando.
@@ -787,6 +796,8 @@ pub(super) fn avvia(
                 fidati: Fidati::default(),
                 impostazioni_da_rileggere: None,
                 fidati_da_rileggere: None,
+                da_salvare: Vec::new(),
+                salva_dopo: None,
                 fidati_letti: false,
                 accendi_dopo_la_lettura: false,
                 vicinato: Vicinato::default(),
@@ -818,6 +829,7 @@ pub(super) fn avvia(
                 chiesta_subito: None,
                 esecutore: None,
                 sessione_viva: Arc::new(AtomicU64::new(0)),
+                diritti_vivi: DirittiVivi::default(),
                 sessione: 0,
                 in_uscita: Vec::new(),
                 pubblicata: None,
@@ -875,6 +887,7 @@ impl Filo {
             self.app.clone(),
             self.posta.clone(),
             Arc::clone(&self.sessione_viva),
+            Arc::clone(&self.diritti_vivi),
         );
         self.ricarica_impostazioni();
         self.ricarica_fidati();
@@ -932,9 +945,13 @@ impl Filo {
             _ => {}
         }
         // In ogni fase, anche spenta: vedi `RILEGGI_DOPO_MS`.
-        for quando in [self.impostazioni_da_rileggere, self.fidati_da_rileggere]
-            .into_iter()
-            .flatten()
+        for quando in [
+            self.impostazioni_da_rileggere,
+            self.fidati_da_rileggere,
+            self.salva_dopo,
+        ]
+        .into_iter()
+        .flatten()
         {
             presto(quando);
         }
@@ -1133,6 +1150,9 @@ impl Filo {
         {
             self.ricarica_fidati();
         }
+        if self.salva_dopo.is_some_and(|quando| quando <= adesso) {
+            self.salva_le_associazioni();
+        }
         if self.accendi_dopo_la_lettura
             && self.impostazioni_da_rileggere.is_none()
             && self.fidati_letti
@@ -1180,6 +1200,7 @@ impl Filo {
             Effetto::MostraFinestra => mostra_finestra(&self.app),
             Effetto::Ospita => self.ospita(),
             Effetto::SmettiDiOspitare => {
+                self.aggiorna_diritti_vivi();
                 if let Some(accesa) = &self.rete {
                     accesa.rete.smetti_di_ospitare();
                     accesa.rete.revoca_tutto();
@@ -1232,9 +1253,21 @@ impl Filo {
             } => self.esegui_comando(da, membro, comando, *azione),
             Effetto::MembroUscito { membro } => self.membro_uscito(membro),
             Effetto::PersoneCambiate => {
+                // I diritti che l'esecutore rilegge, per primi: un membro
+                // abbassato o allontanato non deve veder eseguire i gesti che
+                // aveva già in fila (decisione D-108).
+                self.aggiorna_diritti_vivi();
                 // Prima chi può leggere, poi lo stato: chi è appena entrato
                 // chiederà i byte appena lo riceve.
                 self.aggiorna_ammessi();
+                // Con qualcuno raggiunto via internet gli avvii si programmano
+                // più in là (decisione D-31).
+                let via_internet = fasi::connessioni_dei_membri(&self.s).iter().any(|conn| {
+                    self.capi
+                        .get(conn)
+                        .is_some_and(|(dove, _)| dove.e_lontano())
+                });
+                ponte::anticipo_via_internet(&self.app, via_internet);
                 if let Some(istantanea) = ponte::istantanea(&self.app) {
                     self.manda_stato(&istantanea, true);
                 }
@@ -1253,6 +1286,16 @@ impl Filo {
             Effetto::ConfermaCodice { id, uguale } => {
                 if let Some(accesa) = &self.rete {
                     accesa.rete.conferma_codice(id, uguale);
+                }
+            }
+            Effetto::AccettaAssociazione { id } => {
+                if let Some(accesa) = &self.rete {
+                    accesa.rete.accetta_associazione(id);
+                }
+            }
+            Effetto::Chiudi { id, codice } => {
+                if let Some(accesa) = &self.rete {
+                    accesa.rete.chiudi(id, codice);
                 }
             }
         }
@@ -1609,7 +1652,11 @@ impl Filo {
                 .collect();
         }
         if let Some(accesa) = &self.rete {
-            let (fidate, bloccate) = self.fidati.per_la_rete();
+            let (mut fidate, bloccate) = self.fidati.per_la_rete();
+            // E quelle confermate che la libreria non ha ancora preso: per le
+            // due persone sono associate, e il trasporto non deve dire il
+            // contrario all'altro PC (reperto R26-5).
+            fidate.extend(self.da_salvare.iter().map(|d| d.chiave));
             accesa.rete.pari(fidate, bloccate);
         }
     }
@@ -2129,6 +2176,10 @@ pub(super) fn riga_della_rete(
             "[insieme] associazione riuscita sulla connessione #{}",
             id.0
         )),
+        DallaRete::AssociazioneChiesta { id } => Some(format!(
+            "[insieme] richiesta d'associazione sulla connessione #{}",
+            id.0
+        )),
         DallaRete::Codice { id, .. } => Some(format!(
             "[insieme] codice di associazione pronto sulla connessione #{}",
             id.0
@@ -2244,6 +2295,24 @@ struct Parti<'a> {
     ora: u64,
 }
 
+/// Un'associazione confermata da tutti e due e non ancora scritta: vedi
+/// `Filo::da_salvare`.
+#[derive(Debug, Clone)]
+pub(super) struct DaSalvare {
+    /// Su quale connessione.
+    id: IdConnessione,
+    /// La chiave da ricordare.
+    chiave: ChiavePubblica,
+    /// Il nome con cui salvarla.
+    nome: String,
+    /// Quante volte la scrittura non è riuscita.
+    volte: u32,
+}
+
+/// Quante volte si ritenta di scrivere un'associazione confermata prima di
+/// dire che non si è salvata: dodici, un minuto con [`RILEGGI_DOPO_MS`].
+const SALVA_AL_PIU: u32 = 12;
+
 /// La vetrina prima che il filo abbia letto qualcosa.
 pub(super) fn vetrina_spenta() -> StatoInsiemeIpc {
     StatoInsiemeIpc {
@@ -2286,6 +2355,18 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
         Fase::Membro(_) => FaseIpc::Membro,
         Fase::Uscendo { .. } => FaseIpc::Uscendo,
     };
+    // Il nome di qui e, se è un altro, quello dichiarato (decisione D-106):
+    // `persone_di_qui` dà i dichiarati, che viaggiano uguali per tutti; la
+    // vetrina di chi ospita mostra il nome che questo PC ha scelto per quella
+    // chiave. Prima un membro poteva stare in «In sessione» col nome di un
+    // altro associato (reperto R26-6).
+    let con_dichiarato = |nome: String, dichiarato: String| PersonaIpc {
+        io: false,
+        membro: 0,
+        dichiarato: (dichiarato != nome).then_some(dichiarato),
+        nome,
+        diritti: rymembra_insieme::messaggi::Diritti::Tutto,
+    };
     let (sessione, porta, richieste, in_sessione) = match &s.fase {
         Fase::Ospita(o) => (
             Some(SessioneIpc {
@@ -2293,11 +2374,19 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
                 mia: true,
                 persone: fasi::persone_di_qui(s, p.nome)
                     .into_iter()
-                    .map(|persona| PersonaIpc {
-                        io: persona.membro == 0,
-                        membro: persona.membro,
-                        nome: persona.nome,
-                        diritti: persona.diritti,
+                    .map(|persona| {
+                        let di_qui = o
+                            .membri
+                            .iter()
+                            .find(|m| m.membro == persona.membro)
+                            .and_then(|m| s.connessioni.get(&m.conn))
+                            .map_or_else(|| persona.nome.clone(), |c| c.nome.clone());
+                        PersonaIpc {
+                            io: persona.membro == 0,
+                            membro: persona.membro,
+                            diritti: persona.diritti,
+                            ..con_dichiarato(di_qui, persona.nome)
+                        }
                     })
                     .collect(),
                 calibrazione: p.calibrazione,
@@ -2319,14 +2408,23 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
             Some(SessioneIpc {
                 host: nome_conn(&m.host),
                 mia: false,
+                // Chi segue: l'host col nome di qui (è un associato), gli altri
+                // col nome che dichiarano, che è l'unico che questo PC ha.
                 persone: m
                     .persone
                     .iter()
-                    .map(|persona| PersonaIpc {
-                        io: persona.membro == m.io,
-                        membro: persona.membro,
-                        nome: persona.nome.clone(),
-                        diritti: persona.diritti,
+                    .map(|persona| {
+                        let di_qui = if persona.membro == 0 {
+                            nome_conn(&m.host)
+                        } else {
+                            persona.nome.clone()
+                        };
+                        PersonaIpc {
+                            io: persona.membro == m.io,
+                            membro: persona.membro,
+                            diritti: persona.diritti,
+                            ..con_dichiarato(di_qui, persona.nome.clone())
+                        }
                     })
                     .collect(),
                 calibrazione: p.calibrazione,
@@ -2401,6 +2499,10 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
                 pari: fidato.map(|f| f.id),
                 bloccato: fidato.is_some_and(|f| f.bloccato),
                 via_internet: v.indirizzo.e_lontano(),
+                omonimo: fidato.is_none()
+                    && v.nome
+                        .as_deref()
+                        .is_some_and(|nome| p.fidati.omonimo(nome, None)),
             }
         })
         .collect();
@@ -2413,11 +2515,21 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
         sessione,
         vicini,
         fidati,
-        associazione: s.associazione.as_ref().map(|a| AssociazioneIpc {
-            id: a.conn.0,
-            nome: nome_conn(&a.conn),
-            codice: a.codice.clone(),
-            confermato: a.confermato,
+        associazione: s.associazione.as_ref().map(|a| {
+            let conn = s.connessioni.get(&a.conn);
+            let pari = conn.and_then(|c| c.pari);
+            let dichiarato = conn.map(|c| c.dichiarato.clone()).unwrap_or_default();
+            AssociazioneIpc {
+                id: a.conn.0,
+                nome: nome_conn(&a.conn),
+                omonimo: pari.is_none() && p.fidati.omonimo(&dichiarato, None),
+                dichiarato,
+                codice: a.codice.clone(),
+                confermato: a.confermato,
+                chiesta: a.chiesta,
+                gia_associato: pari.is_some(),
+                scade_ms: in_epoca(a.scade),
+            }
         }),
         inviti,
         richieste,
@@ -2435,6 +2547,7 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
             incertezza_ms: a
                 .incertezza_ns
                 .map(|e| (e as f64 / 100_000.0).round() / 10.0),
+            rete_lenta: a.rete_lenta,
         }),
     }
 }

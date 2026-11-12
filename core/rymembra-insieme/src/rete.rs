@@ -166,6 +166,18 @@ pub enum Evento {
         /// Il posto nella coda d'entrata. Vedi [`PostoInEntrata`].
         posto: PostoInEntrata,
     },
+    /// Chi ospita: un PC collegato chiede di associarsi (è arrivato il suo
+    /// impegno). Non è partito niente: né il nonce né il conto dei tentativi.
+    /// Il desktop lo dice in una riga, e con il clic della persona su «Mostra
+    /// il codice» chiama [`Rete::accetta_associazione`]; il no è
+    /// [`Rete::conferma_codice`] con `false`. Senza risposta, la richiesta
+    /// scade da sé in metà di `Tempi::associazione` e la connessione si chiude
+    /// con `insieme.rifiutato`. Vedi «Dal lato di chi ospita, il conto parte
+    /// dal clic» in `codice`.
+    AssociazioneChiesta {
+        /// Su quale connessione.
+        id: IdConnessione,
+    },
     /// L'associazione è al punto del codice: va mostrato, e chiesto alla
     /// persona se coincide con quello sull'altro schermo.
     Codice {
@@ -252,6 +264,10 @@ impl std::fmt::Debug for Evento {
                 .field("id", id)
                 .field("messaggio", messaggio)
                 .finish_non_exhaustive(),
+            Self::AssociazioneChiesta { id } => f
+                .debug_struct("AssociazioneChiesta")
+                .field("id", id)
+                .finish(),
             Self::Codice { id, .. } => f
                 .debug_struct("Codice")
                 .field("id", id)
@@ -664,9 +680,26 @@ impl Rete {
         collegamento::associa(&self.dentro, &collegamento)
     }
 
+    /// Chi ospita: la persona ha premuto «Mostra il codice» sulla riga di
+    /// un'[`Evento::AssociazioneChiesta`]. Parte il nonce — e da qui il
+    /// tentativo conta — e arriverà l'[`Evento::Codice`] come sempre. Oltre i
+    /// tetti dei tentativi la connessione si chiude con
+    /// `insieme.troppiTentativi`; senza una richiesta in attesa (scaduta, o
+    /// l'altro che ha chiuso) non succede niente.
+    pub fn accetta_associazione(&self, connessione: IdConnessione) {
+        if let Some(collegamento) = self.dentro.connessione(connessione) {
+            collegamento::accetta(&self.dentro, &collegamento);
+        }
+    }
+
     /// La risposta della persona al codice: coincide o no. Con un sì da tutti e
     /// due arriva [`Evento::Associato`]; con un no da uno dei due la
     /// connessione si chiude con `insieme.codiceRifiutato`.
+    ///
+    /// Un no prima del codice: da chi ospita, sulla riga di una richiesta, la
+    /// chiude con `insieme.rifiutato` (e quella chiave non ne fa comparire
+    /// altre per dieci minuti); da chi chiede, mentre aspetta il nonce, è
+    /// «Annulla»: la connessione si chiude subito, senza contare il tentativo.
     ///
     /// Con `Evento::Associato` la chiave è già fidata per questa `Rete`, fino
     /// al prossimo [`Rete::pari`]: il primo messaggio dell'altro capo può

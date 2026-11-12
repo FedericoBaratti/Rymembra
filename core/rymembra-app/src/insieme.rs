@@ -299,8 +299,9 @@ fn indirizzo(grezzo: &str) -> Option<String> {
 /// spezzerebbe la riga dell'elenco dei vicini, e il trasporto lo rifiuterebbe
 /// comunque.
 ///
-/// Spariscono anche i comandi di direzione (U+202A–202E, U+2066–2069) e i due
-/// caratteri invisibili (U+200B, U+FEFF). Non sono di controllo per Unicode, e
+/// Spariscono anche i comandi di direzione (U+202A–202E, U+2066–2069), i segni
+/// di direzione da soli (U+200E, U+200F, U+061C) e gli invisibili (U+200B,
+/// U+FEFF, U+2060, e il trattino morbido U+00AD). Non sono di controllo per Unicode, e
 /// sono il trucco classico per far leggere un nome al contrario: «PC di
 /// Marco» che a schermo diventa un altro nome. I nomi arrivano anche dagli
 /// altri PC, che sono fidati per il codice ma non per quel che scrivono. Il
@@ -321,7 +322,15 @@ pub fn ripulisci_nome(grezzo: &str) -> String {
         }
         if matches!(
             carattere,
-            '\u{200B}' | '\u{FEFF}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            '\u{200B}'
+                | '\u{FEFF}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{061C}'
+                | '\u{2060}'
+                | '\u{00AD}'
         ) {
             continue;
         }
@@ -1107,6 +1116,18 @@ mod prove {
         assert_eq!(ripulisci_nome("\u{FEFF}Cucina\u{200B}"), "Cucina");
         let famiglia = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
         assert_eq!(ripulisci_nome(famiglia), famiglia);
+    }
+
+    #[test]
+    fn il_nome_perde_anche_i_segni_di_direzione_e_gli_invisibili_che_restavano() {
+        // Reperto R26-7: i segni di direzione da soli (U+200E, U+200F, U+061C),
+        // il legante di parola (U+2060) e il trattino morbido (U+00AD)
+        // passavano, e un nome poteva sembrare quello di un altro.
+        assert_eq!(ripulisci_nome("a\u{200E}b\u{2060}c"), "abc");
+        assert_eq!(
+            ripulisci_nome("PC\u{200F} di\u{061C} Ma\u{00AD}rio"),
+            "PC di Mario"
+        );
     }
 
     #[test]

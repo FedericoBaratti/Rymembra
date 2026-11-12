@@ -11,7 +11,7 @@ use crate::riproduzione::Lettore;
 use crate::riproduzione::ospiti::{self, MANIGLIA_CALIBRAZIONE};
 use crate::spegnimento::Emette as _;
 
-use super::{ANTICIPO_NS, Programmata, Ruolo, SCADENZA_PROGRAMMATA_NS};
+use super::{Programmata, Ruolo, SCADENZA_PROGRAMMATA_NS, anticipo};
 
 // ── le regole ───────────────────────────────────────────────────────────────
 
@@ -427,7 +427,7 @@ pub(super) fn finestra(
 
 // ── il motore in sessione ───────────────────────────────────────────────────
 
-/// Fa partire `brano` dal millisecondo `da_ms`: chi ospita fra [`ANTICIPO_NS`]
+/// Fa partire `brano` dal millisecondo `da_ms`: chi ospita fra l'[`anticipo`]
 /// e annunciandolo, tutti gli altri subito. Vedi «Chi ospita parte fra un
 /// quarto di secondo» nel `//!` del ponte (`insieme.rs`).
 pub(crate) fn parti(lettore: &mut Lettore, brano: rymembra_play::BranoAperto, da_ms: u64) {
@@ -446,7 +446,7 @@ pub(crate) fn parti(lettore: &mut Lettore, brano: rymembra_play::BranoAperto, da
     );
 }
 
-/// Riprende: chi ospita fra [`ANTICIPO_NS`], dal punto in cui il motore
+/// Riprende: chi ospita fra l'[`anticipo`], dal punto in cui il motore
 /// aspetta; tutti gli altri subito.
 ///
 /// Solo da fermi: un motore che sta già suonando non ha niente da
@@ -468,7 +468,7 @@ pub(crate) fn riprendi(lettore: &mut Lettore) {
 }
 
 /// Salta a `ms`: chi ospita, mentre suona, ferma, salta e riparte fra
-/// [`ANTICIPO_NS`]; tutti gli altri — e chi ospita da fermo — saltano e
+/// l'[`anticipo`]; tutti gli altri — e chi ospita da fermo — saltano e
 /// basta. Vedi «Chi ospita parte fra un quarto di secondo» nel `//!` del ponte
 /// (`insieme.rs`).
 ///
@@ -519,7 +519,7 @@ fn programma(
     posizione_us: Option<u64>,
 ) {
     lettore.motore.sveglia();
-    let quando_ns = tempo::adesso_ns().saturating_add(ANTICIPO_NS);
+    let quando_ns = tempo::adesso_ns().saturating_add(anticipo(lettore));
     match lettore.motore.riprendi_a(quando_ns) {
         Ok(()) => {
             if let Some(sessione) = lettore.sessione.as_mut() {

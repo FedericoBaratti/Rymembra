@@ -406,6 +406,11 @@ pub(crate) enum Associazione {
         dal: Instant,
         prenotazione: u64,
     },
+    /// Chi risponde (l'host): impegno ricevuto e tenuto da parte, senza
+    /// prenotazione e senza nonce, finché la persona non preme «Mostra il
+    /// codice» (`Rete::accetta_associazione`). Vedi «Dal lato di chi ospita,
+    /// il conto parte dal clic» in `codice`.
+    Chiesta { impegno: [u8; 32], dal: Instant },
     /// Chi risponde (l'host): impegno ricevuto, nonce mandato, aspetta la
     /// rivelazione.
     AttesaRivela {
@@ -429,15 +434,17 @@ impl Associazione {
         match self {
             Self::Nessuna => None,
             Self::Impegnata { dal, .. }
+            | Self::Chiesta { dal, .. }
             | Self::AttesaRivela { dal, .. }
             | Self::Codice { dal, .. } => Some(*dal),
         }
     }
 
-    /// La sua prenotazione, se è in corso.
+    /// La sua prenotazione, se è in corso. Una richiesta non ancora aperta
+    /// da chi ospita non ne ha.
     const fn prenotazione(&self) -> Option<u64> {
         match self {
-            Self::Nessuna => None,
+            Self::Nessuna | Self::Chiesta { .. } => None,
             Self::Impegnata { prenotazione, .. }
             | Self::AttesaRivela { prenotazione, .. }
             | Self::Codice { prenotazione, .. } => Some(*prenotazione),
@@ -654,13 +661,20 @@ impl Collegamento {
         // tentativi per colpa di altri PC rifiuta l'impegno con
         // `troppiTentativi` prima del nonce, e al terzo rifiuto il membro si
         // fermava da solo per dieci minuti.
-        let (prenotazione, prima_del_nonce) = {
+        //
+        // E la richiesta che aspettava il clic di chi ospita (`Chiesta`):
+        // niente da contare, solo il posto della riga da liberare.
+        let (prenotazione, prima_del_nonce, chiesta) = {
             let mut associazione = chiave(&self.associazione);
             let prenotazione = associazione.prenotazione();
             let prima_del_nonce = matches!(*associazione, Associazione::Impegnata { .. });
+            let chiesta = matches!(*associazione, Associazione::Chiesta { .. });
             *associazione = Associazione::Nessuna;
-            (prenotazione, prima_del_nonce)
+            (prenotazione, prima_del_nonce, chiesta)
         };
+        if chiesta {
+            chiave(&rete.tentativi).chiesta_finita(self.id.0, None);
+        }
         if let Some(numero) = prenotazione {
             let mut tentativi = chiave(&rete.tentativi);
             if prima_del_nonce {
@@ -1905,6 +1919,12 @@ fn congeda(
 ///   suo tempo, quello qui sopra, e tagliarla a metà vorrebbe dire togliere
 ///   il codice dagli schermi mentre due persone lo stanno confrontando.
 fn scadenze(rete: &Condiviso, collegamento: &Collegamento) {
+    // Una richiesta a cui chi ospita non ha risposto: la riga vale metà del
+    // tempo di un'associazione, così dopo «Mostra il codice» ne resta almeno
+    // l'altra metà per confrontare le cifre. Scaduta vale un no.
+    if respingi_se_scaduta(rete, collegamento) {
+        return;
+    }
     let dal = chiave(&collegamento.associazione).dal();
     if dal.is_some_and(|dal| dal.elapsed() > collegamento.tempi.associazione) {
         collegamento.chiudi(
@@ -1920,6 +1940,41 @@ fn scadenze(rete: &Condiviso, collegamento: &Collegamento) {
     {
         collegamento.chiudi(Some(ErrorCodeKind::InsiemeEstraneoScaduto), Modo::Cortese);
     }
+}
+
+/// Chi ospita: la richiesta di questa connessione è scaduta senza risposta
+/// (vedi [`scadenze`]). Si chiude come per un no, e lo è.
+fn respingi_se_scaduta(rete: &Condiviso, collegamento: &Collegamento) -> bool {
+    let scaduta = matches!(
+        *chiave(&collegamento.associazione),
+        Associazione::Chiesta { dal, .. } if dal.elapsed() > collegamento.tempi.richiesta_associazione()
+    );
+    if scaduta {
+        respingi(rete, collegamento);
+    }
+    scaduta
+}
+
+/// Chi ospita: no alla richiesta d'associazione che aspettava il clic — la
+/// persona ha detto di no, o non ha risposto in tempo. Prima del nonce,
+/// quindi dall'altra parte non conta fra i tentativi (vedi
+/// `Collegamento::chiudi`); da questa, la chiave non fa comparire altre righe
+/// per la finestra dei tentativi. Il perché è `insieme.rifiutato` («nessuna
+/// risposta, o la risposta è stata no»): un codice non c'è mai stato, e
+/// `codiceRifiutato` direbbe che non coincideva.
+fn respingi(rete: &Condiviso, collegamento: &Collegamento) {
+    {
+        let mut stato = chiave(&collegamento.associazione);
+        if !matches!(*stato, Associazione::Chiesta { .. }) {
+            return;
+        }
+        *stato = Associazione::Nessuna;
+        chiave(&rete.tentativi).chiesta_finita(
+            collegamento.id.0,
+            Some((&collegamento.pari, Instant::now())),
+        );
+    }
+    collegamento.chiudi(Some(ErrorCodeKind::InsiemeRifiutato), Modo::Cortese);
 }
 
 /// Trentadue byte dal generatore del sistema.
@@ -1968,7 +2023,8 @@ pub(crate) fn associa(rete: &Condiviso, collegamento: &Collegamento) -> Result<(
                 Rifiuto::Troppi(attesa) => {
                     Some(u64::try_from(attesa.as_millis()).unwrap_or(u64::MAX))
                 }
-                Rifiuto::Occupato => None,
+                // Dal lato di chi chiede `prenota` non dà gli altri due.
+                Rifiuto::Occupato | Rifiuto::Respinta => None,
             };
             AppError::new(ErrorCode::InsiemeTroppiTentativi {
                 riprova_fra_ms: riprova,
@@ -1996,13 +2052,22 @@ pub(crate) fn associa(rete: &Condiviso, collegamento: &Collegamento) -> Result<(
     Ok(())
 }
 
-/// L'associazione, dal lato di chi risponde: arriva l'impegno, si manda il
-/// nonce. Solo su una connessione in entrata (vedi [`associa`]), e una sola
-/// alla volta su tutto l'host (vedi `codice::Tentativi`).
+/// L'associazione, dal lato di chi risponde: arriva l'impegno. Solo su una
+/// connessione in entrata (vedi [`associa`]), e una sola alla volta su tutto
+/// l'host (vedi `codice::Tentativi`).
 ///
-/// Con un'altra già in corso si risponde `Occupato` e la connessione resta:
-/// vedi [`Trasporto::Occupato`]. Oltre i tetti dei tentativi invece si chiude
-/// con `insieme.troppiTentativi`, che è un no vero.
+/// Il nonce **non** parte: l'impegno si tiene da parte (`Chiesta`) e il
+/// desktop ne fa una riga nel pannello, con `Evento::AssociazioneChiesta`. Il
+/// nonce lo manda [`accetta`], quando la persona preme «Mostra il codice»; il
+/// no lo dice [`conferma`]. Vedi «Dal lato di chi ospita, il conto parte dal
+/// clic» in `codice` (02-14, reperto R26-2). Chi chiede non se ne accorge:
+/// aspetta il nonce come prima, nello stesso stato.
+///
+/// Con un'altra riga o un'altra associazione in corso si risponde `Occupato`
+/// e la connessione resta: vedi [`Trasporto::Occupato`]. Una chiave che ha
+/// appena avuto un no, o un indirizzo con troppe righe, si chiude prima del
+/// nonce col no di prima; oltre i tetti dei tentativi si chiude con
+/// `insieme.troppiTentativi`, che è un no vero.
 fn impegno_ricevuto(
     rete: &Condiviso,
     collegamento: &Collegamento,
@@ -2018,32 +2083,83 @@ fn impegno_ricevuto(
     if stato.dal().is_some() {
         return Err(Fine::protocollo());
     }
-    let prenotata = chiave(&rete.tentativi).prenota(&collegamento.pari, Instant::now(), true);
-    let prenotazione = match prenotata {
-        Ok(numero) => numero,
+    let adesso = Instant::now();
+    let chiesta = chiave(&rete.tentativi).chiedi(
+        &collegamento.pari,
+        collegamento.origine,
+        collegamento.id.0,
+        adesso,
+    );
+    match chiesta {
+        Ok(()) => {}
         Err(Rifiuto::Occupato) => {
             drop(stato);
             let _ = collegamento.metti(Uscita::Json(json(&Trasporto::Occupato)));
             return Ok(());
         }
+        Err(Rifiuto::Respinta) => return Err(Fine::con(ErrorCodeKind::InsiemeRifiutato)),
         Err(Rifiuto::Troppi(_)) => return Err(Fine::con(ErrorCodeKind::InsiemeTroppiTentativi)),
-    };
-    let Some(nonce) = casuale() else {
-        drop(stato);
-        chiave(&rete.tentativi).finito(prenotazione, true);
-        return Err(Fine::protocollo());
-    };
-    *stato = Associazione::AttesaRivela {
+    }
+    *stato = Associazione::Chiesta {
         impegno,
-        nonce,
-        dal: Instant::now(),
-        prenotazione,
+        dal: adesso,
     };
     drop(stato);
-    let _ = collegamento.metti(Uscita::Json(json(&Trasporto::Nonce {
-        nonce: Byte32(nonce),
-    })));
+    collegamento.annuncia(
+        rete,
+        Evento::AssociazioneChiesta {
+            id: collegamento.id,
+        },
+    );
     Ok(())
+}
+
+/// Chi ospita: la persona ha premuto «Mostra il codice» sulla riga di questa
+/// connessione. Si prenota il tentativo — è qui che si conta — e parte il
+/// nonce; da qui tutto come prima. Vedi `Rete::accetta_associazione`.
+///
+/// Oltre i tetti dei tentativi (contati dal clic in poi: altri «Mostra il
+/// codice» finiti male) la connessione si chiude con `insieme.troppiTentativi`.
+/// Senza una richiesta in attesa non fa niente: la riga può essere appena
+/// scaduta, o l'altro aver chiuso.
+pub(crate) fn accetta(rete: &Condiviso, collegamento: &Collegamento) {
+    let mut stato = chiave(&collegamento.associazione);
+    let Associazione::Chiesta { impegno, dal } = *stato else {
+        return;
+    };
+    let prenotata = {
+        let mut tentativi = chiave(&rete.tentativi);
+        tentativi.chiesta_finita(collegamento.id.0, None);
+        tentativi.prenota(&collegamento.pari, Instant::now(), true)
+    };
+    let fine = match prenotata {
+        Ok(prenotazione) => match casuale() {
+            Some(nonce) => {
+                *stato = Associazione::AttesaRivela {
+                    impegno,
+                    nonce,
+                    dal,
+                    prenotazione,
+                };
+                drop(stato);
+                let _ = collegamento.metti(Uscita::Json(json(&Trasporto::Nonce {
+                    nonce: Byte32(nonce),
+                })));
+                return;
+            }
+            None => {
+                chiave(&rete.tentativi).finito(prenotazione, true);
+                ErrorCodeKind::InsiemeProtocollo
+            }
+        },
+        // Non succede — la riga e un'associazione in corso non stanno mai
+        // insieme — ma se succedesse è «sta già associando un altro PC».
+        Err(Rifiuto::Occupato | Rifiuto::Respinta) => ErrorCodeKind::InsiemeAssociazioneOccupata,
+        Err(Rifiuto::Troppi(_)) => ErrorCodeKind::InsiemeTroppiTentativi,
+    };
+    *stato = Associazione::Nessuna;
+    drop(stato);
+    collegamento.chiudi(Some(fine), Modo::Cortese);
 }
 
 /// Chi ha chiesto: arriva il nonce dell'host, si rivela il proprio e si
@@ -2199,8 +2315,43 @@ fn conferma_ricevuta(
 
 /// La persona davanti a questo schermo ha risposto al codice. Vedi
 /// `Rete::conferma_codice`.
+///
+/// Un no prima del codice vale anche lui:
+///
+/// - chi ospita, sulla riga di una richiesta (`Chiesta`): è il «No» della
+///   riga, vedi [`respingi`];
+/// - chi chiede, mentre aspetta il nonce (`Impegnata`): è «Annulla». Il
+///   tentativo esce dal conto — un codice non c'è stato — e la connessione
+///   si chiude senza un perché, che dall'altra parte toglie la riga. Prima non
+///   faceva niente, e il dialogo restava fino alla scadenza di due minuti
+///   (reperto R26-3);
+/// - chi ospita, dopo il nonce e prima della rivelazione (`AttesaRivela`): si
+///   chiude, e il tentativo conta come fallito, come per ogni chiusura dopo
+///   il nonce.
 pub(crate) fn conferma(rete: &Condiviso, collegamento: &Collegamento, uguale: bool) {
     let mut stato = chiave(&collegamento.associazione);
+    if !uguale {
+        match *stato {
+            Associazione::Chiesta { .. } => {
+                drop(stato);
+                respingi(rete, collegamento);
+                return;
+            }
+            Associazione::Impegnata { prenotazione, .. } => {
+                *stato = Associazione::Nessuna;
+                chiave(&rete.tentativi).annulla(prenotazione);
+                drop(stato);
+                collegamento.chiudi(None, Modo::Cortese);
+                return;
+            }
+            Associazione::AttesaRivela { .. } => {
+                drop(stato);
+                collegamento.chiudi(Some(ErrorCodeKind::InsiemeCodiceRifiutato), Modo::Cortese);
+                return;
+            }
+            Associazione::Nessuna | Associazione::Codice { .. } => {}
+        }
+    }
     let Associazione::Codice {
         la,
         dal,

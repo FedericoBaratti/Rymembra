@@ -20,8 +20,10 @@
 //! voce che chi ha premuto vedeva suonare (`da`), e si fanno solo se suona
 //! ancora quella; lo stesso `VaiA`, che nomina la voce in cui saltare. Una voce
 //! da far suonare, togliere o spostare che nel frattempo non c'è più è un
-//! gesto già superato: si risponde «fatto», perché non c'è niente di sbagliato
-//! da dire a chi l'ha chiesto. Per pausa e ripresa vince l'ultimo arrivato.
+//! gesto già superato: si risponde `insieme.superato`, che per chi l'ha chiesto
+//! è una notizia che sparisce e non una fascia d'errore — non c'è niente di
+//! sbagliato da dirgli (decisione D-107). Per pausa e ripresa vince l'ultimo
+//! arrivato.
 //!
 //! # Il secchiello
 //!
@@ -98,6 +100,15 @@ fn righe(ids: &[i64]) -> Vec<i64> {
 /// porta nessuna riga della libreria.
 pub fn traduci(gesto: &Gesto, specchio: &Istantanea) -> Result<Traduzione, AppError> {
     let uid = |indice: usize| specchio.coda.get(indice).copied();
+    // La riga che la finestra vedeva c'è ancora lì? Lo specchio si aggiorna
+    // quattro volte al secondo, e la finestra può mostrare la coda di un
+    // istante prima: senza, un «Riproduci dopo» dell'host arrivato in mezzo
+    // faceva togliere, suonare o spostare la voce appena inserita invece di
+    // quella cliccata (reperto R04-4). È il `al_suo_posto` della coda di qui,
+    // fatto sulla stessa istantanea da cui escono gli `uid`.
+    let al_suo_posto = |indice: usize, atteso: Option<i64>| {
+        atteso.is_none_or(|maniglia| specchio.maniglie.get(indice) == Some(&maniglia))
+    };
     let azioni = match gesto {
         Gesto::Pausa => vec![Azione::Pausa],
         Gesto::Riprendi => vec![Azione::Riprendi],
@@ -121,21 +132,44 @@ pub fn traduci(gesto: &Gesto, specchio: &Istantanea) -> Result<Traduzione, AppEr
             etichetta: specchio.corrente.ok_or_else(superato)?,
             ms: *ms,
         }],
-        Gesto::CodaVai { indice } => vec![Azione::Vai {
-            uid: uid(*indice).ok_or_else(superato)?,
-        }],
-        Gesto::CodaTogli { indici } => {
-            let azioni: Vec<Azione> = indici
+        // Una riga che non mostra più il brano atteso: niente, come sulla
+        // coda di qui (`al_suo_posto` lì manda la coda vera e risponde «fatto»),
+        // e senza una fascia d'errore — è un gesto superato da un altro, e la
+        // coda giusta arriva col prossimo stato (decisione D-107).
+        Gesto::CodaVai { indice, atteso } => {
+            if !al_suo_posto(*indice, *atteso) {
+                return Ok(Traduzione::Azioni(Vec::new()));
+            }
+            vec![Azione::Vai {
+                uid: uid(*indice).ok_or_else(superato)?,
+            }]
+        }
+        Gesto::CodaTogli { indici, attesi } => {
+            let al_posto: Vec<usize> = indici
+                .iter()
+                .enumerate()
+                .filter(|(n, i)| al_suo_posto(**i, attesi.get(*n).copied()))
+                .map(|(_, i)| *i)
+                .collect();
+            if al_posto.is_empty() && !indici.is_empty() {
+                return Ok(Traduzione::Azioni(Vec::new()));
+            }
+            let azioni: Vec<Azione> = al_posto
                 .iter()
                 .filter_map(|i| uid(*i))
                 .map(|uid| Azione::Togli { uid })
                 .collect();
-            if azioni.is_empty() && !indici.is_empty() {
+            if azioni.is_empty() && !al_posto.is_empty() {
                 return Err(superato());
             }
             azioni
         }
-        Gesto::CodaRiordina { da, a } => sposta(&specchio.coda, *da, *a).into_iter().collect(),
+        Gesto::CodaRiordina { da, a, atteso } => {
+            if !al_suo_posto(*da, *atteso) {
+                return Ok(Traduzione::Azioni(Vec::new()));
+            }
+            sposta(&specchio.coda, *da, *a).into_iter().collect()
+        }
         Gesto::Ripeti => vec![Azione::Ripeti {
             modo: ripeti_sul_filo(specchio.ripeti.next()),
         }],
@@ -197,6 +231,7 @@ pub fn traduci_senza_specchio(gesto: &Gesto) -> Result<Traduzione, AppError> {
             gesto,
             &Istantanea {
                 coda: Vec::new(),
+                maniglie: Vec::new(),
                 corrente: None,
                 in_pausa: false,
                 ripeti: RepeatMode::Off,
@@ -359,9 +394,15 @@ mod prove {
     use super::*;
     use rymembra_insieme::messaggi::Ripeti;
 
+    /// Lo specchio di una coda di `uid`; le maniglie sono gli stessi numeri,
+    /// col segno meno come le voci della sessione.
     fn specchio(coda: &[u64], corrente: Option<u64>) -> Istantanea {
         Istantanea {
             coda: coda.to_vec(),
+            maniglie: coda
+                .iter()
+                .map(|uid| -i64::try_from(*uid).unwrap_or(0))
+                .collect(),
             corrente,
             in_pausa: false,
             ripeti: RepeatMode::Off,
@@ -409,12 +450,24 @@ mod prove {
     fn le_posizioni_della_coda_diventano_uid() {
         let s = specchio(&[10, 11, 12, 13], Some(10));
         assert_eq!(
-            azioni(&Gesto::CodaVai { indice: 2 }, &s),
+            azioni(
+                &Gesto::CodaVai {
+                    indice: 2,
+                    atteso: None
+                },
+                &s
+            ),
             vec![Azione::Vai { uid: 12 }]
         );
         for gesto in [
-            Gesto::CodaVai { indice: 9 },
-            Gesto::CodaTogli { indici: vec![7, 8] },
+            Gesto::CodaVai {
+                indice: 9,
+                atteso: None,
+            },
+            Gesto::CodaTogli {
+                indici: vec![7, 8],
+                attesi: Vec::new(),
+            },
         ] {
             let err = traduci(&gesto, &s).unwrap_err();
             assert_eq!(err.code().kind().code(), "insieme.superato", "{gesto:?}");
@@ -422,7 +475,8 @@ mod prove {
         assert_eq!(
             azioni(
                 &Gesto::CodaTogli {
-                    indici: vec![1, 3, 7]
+                    indici: vec![1, 3, 7],
+                    attesi: Vec::new(),
                 },
                 &s
             ),
@@ -430,7 +484,14 @@ mod prove {
         );
         // 10 11 12 13: la 13 in seconda posizione → 10 13 11 12.
         assert_eq!(
-            azioni(&Gesto::CodaRiordina { da: 3, a: 1 }, &s),
+            azioni(
+                &Gesto::CodaRiordina {
+                    da: 3,
+                    a: 1,
+                    atteso: None
+                },
+                &s
+            ),
             vec![Azione::Sposta {
                 uid: 13,
                 dopo: Some(10)
@@ -438,7 +499,14 @@ mod prove {
         );
         // In testa.
         assert_eq!(
-            azioni(&Gesto::CodaRiordina { da: 2, a: 0 }, &s),
+            azioni(
+                &Gesto::CodaRiordina {
+                    da: 2,
+                    a: 0,
+                    atteso: None
+                },
+                &s
+            ),
             vec![Azione::Sposta {
                 uid: 12,
                 dopo: None
@@ -446,11 +514,56 @@ mod prove {
         );
         // In avanti: 10 11 12 13, la 10 in terza → 11 12 10 13.
         assert_eq!(
-            azioni(&Gesto::CodaRiordina { da: 0, a: 2 }, &s),
+            azioni(
+                &Gesto::CodaRiordina {
+                    da: 0,
+                    a: 2,
+                    atteso: None
+                },
+                &s
+            ),
             vec![Azione::Sposta {
                 uid: 10,
                 dopo: Some(12)
             }]
+        );
+    }
+
+    #[test]
+    fn un_gesto_su_una_coda_cambiata_sotto_non_tocca_un_altra_voce() {
+        // Reperto R04-4: la finestra mostrava [u1, u2, u3]; nel frattempo
+        // l'host ha messo u9 dopo u2, e lo specchio è già [u1, u2, u9, u3].
+        // La × sulla terza riga (per chi guardava, u3) toglieva u9.
+        // Niente da fare, e nessun errore: come sulla coda di qui.
+        let s = specchio(&[1, 2, 9, 3], Some(1));
+        let u3 = -3;
+        for gesto in [
+            Gesto::CodaTogli {
+                indici: vec![2],
+                attesi: vec![u3],
+            },
+            Gesto::CodaVai {
+                indice: 2,
+                atteso: Some(u3),
+            },
+            Gesto::CodaRiordina {
+                da: 2,
+                a: 0,
+                atteso: Some(u3),
+            },
+        ] {
+            assert_eq!(azioni(&gesto, &s), Vec::new(), "{gesto:?}");
+        }
+        // Con l'atteso giusto, come prima.
+        assert_eq!(
+            azioni(
+                &Gesto::CodaTogli {
+                    indici: vec![3],
+                    attesi: vec![u3],
+                },
+                &s
+            ),
+            vec![Azione::Togli { uid: 3 }]
         );
     }
 
@@ -469,7 +582,16 @@ mod prove {
                     v.insert(a, x);
                     v
                 };
-                let fatta = match azioni(&Gesto::CodaRiordina { da, a }, &s).as_slice() {
+                let fatta = match azioni(
+                    &Gesto::CodaRiordina {
+                        da,
+                        a,
+                        atteso: None,
+                    },
+                    &s,
+                )
+                .as_slice()
+                {
                     [] => coda.to_vec(),
                     [azione] => match piano(azione, &s) {
                         Passo::Riordina { da, a } => {
@@ -528,9 +650,19 @@ mod prove {
             Gesto::Prossimo,
             Gesto::Precedente,
             Gesto::VaiA { ms: 1 },
-            Gesto::CodaVai { indice: 0 },
-            Gesto::CodaTogli { indici: vec![0] },
-            Gesto::CodaRiordina { da: 0, a: 1 },
+            Gesto::CodaVai {
+                indice: 0,
+                atteso: None,
+            },
+            Gesto::CodaTogli {
+                indici: vec![0],
+                attesi: Vec::new(),
+            },
+            Gesto::CodaRiordina {
+                da: 0,
+                a: 1,
+                atteso: None,
+            },
             Gesto::Ripeti,
         ] {
             let err = traduci_senza_specchio(&gesto).unwrap_err();
