@@ -102,7 +102,9 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 use crate::document::{RouteFrame, Scheme, SkinDocument, SkinMotion};
-use crate::effects::{Effect, EffectTarget, FiltroElemento, ImageSize, Paint, stack_cost};
+use crate::effects::{
+    Effect, EffectTarget, FiltroElemento, ImageSize, Paint, RadialShape, stack_cost,
+};
 use crate::movimento::{
     AnimFrame, AnimTrigger, Animation, AnimationRef, CASCATA_VOCI, Curva, Ritaglio,
 };
@@ -355,17 +357,30 @@ impl Ambito {
     /// Nella finestra serve la skin installata; nell'anteprima — e nella prova
     /// sull'app — la bozza, che è dove lo Studio mette le voci nuove prima che
     /// la skin si installi.
-    fn url_risorsa(&self, nome: &str) -> String {
+    ///
+    /// `None` per un nome che non è una voce del pacchetto: chi chiama non
+    /// scrive l'`url()`. Vedi sotto.
+    fn url_risorsa(&self, nome: &str) -> Option<String> {
         // Il nome di una voce sta fra virgolette dentro `url("…")`: una
         // virgoletta o una barra inversa lo chiuderebbero, una barra lo
         // manderebbe in un'altra cartella. L'alfabeto del pacchetto non ha
         // nessuno dei tre.
+        //
+        // Il punto però ci sta, e `..` è fatto solo di punti: un documento
+        // costruito a mano con `src: ".."` diventava `…/plain/..`, che il
+        // motore risolve nella radice dell'origine delle risorse (R15-2). Il
+        // filtro dei caratteri non basta: il nome ripulito deve essere una
+        // voce che il pacchetto ammette — un nome con la sua estensione — e
+        // `.`, `..` e il vuoto non lo sono. Su un documento letto da
+        // `parse_skin` non cambia niente: la validazione pretende già la
+        // stessa grammatica.
         let nome = nel_suo_alfabeto(nome, &['-', '_', '.']);
-        if self.bozza {
+        crate::package::tipo_risorsa(&nome)?;
+        Some(if self.bozza {
             format!("{ORIGINE_RISORSE}/bozza/{}/{nome}", self.id)
         } else {
             format!("{ORIGINE_RISORSE}/{}/{nome}", self.id)
-        }
+        })
     }
 
     /// Il selettore di uno stato.
@@ -539,8 +554,18 @@ fn compile_effect(effect: &Effect, ambito: &Ambito) -> String {
             size,
             ref stops,
         } => {
+            // Il documento dice **un** raggio. Per il cerchio è la sua scrittura;
+            // per l'ellisse il motore ne vuole due, orizzontale e verticale, e
+            // con uno solo scarta il gradiente — e con lui, perché arriva in una
+            // `var()`, l'intera dichiarazione `background` che lo usa: fino alla
+            // 3.2.0 «In riproduzione» di Neon e Vinile restava senza fondo,
+            // trasparente sulla pagina sotto. Lo stesso raggio sui due assi è
+            // quel che l'autore ha scritto.
             let misura = size
-                .map(|s| format!(" {}", format_length(s)))
+                .map(|s| match shape {
+                    RadialShape::Circle => format!(" {}", format_length(s)),
+                    RadialShape::Ellipse => format!(" {0} {0}", format_length(s)),
+                })
                 .unwrap_or_default();
             format!(
                 "radial-gradient({}{misura}{}, {})",
@@ -694,9 +719,14 @@ fn compile_effect(effect: &Effect, ambito: &Ambito) -> String {
                 || "center".to_owned(),
                 |(x, y)| format!("{} {}", format_length(x), format_length(y)),
             );
+            // Un nome che non è una voce del pacchetto non diventa un
+            // indirizzo: lo strato resta, vuoto (`none` è un'immagine valida),
+            // così la lista dei fondi non cambia lunghezza.
+            let immagine = ambito
+                .url_risorsa(src)
+                .map_or_else(|| "none".to_owned(), |url| format!("url(\"{url}\")"));
             format!(
-                "url(\"{}\") {dove} / {misura} {}",
-                ambito.url_risorsa(src),
+                "{immagine} {dove} / {misura} {}",
                 if repeat { "repeat" } else { "no-repeat" }
             )
         }
@@ -2193,15 +2223,18 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
     );
 
     for font in &skin.fonts {
+        // Un carattere senza una voce del pacchetto da cui leggerlo non si
+        // dichiara: la pila ricade sulle famiglie che seguono. Vedi
+        // `url_risorsa`.
+        let Some(url) = ambito.url_risorsa(&font.src) else {
+            continue;
+        };
         let mut dichiarazioni = vec![
             dichiara(
                 "font-family",
                 format!("'{}'", ambito.famiglia(&font.family)),
             ),
-            dichiara(
-                "src",
-                format!("url(\"{}\") format('woff2')", ambito.url_risorsa(&font.src)),
-            ),
+            dichiara("src", format!("url(\"{url}\") format('woff2')")),
             dichiara(
                 "font-weight",
                 if font.weight.0 == font.weight.1 {

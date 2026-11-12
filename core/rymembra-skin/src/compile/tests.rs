@@ -1654,3 +1654,126 @@ fn una_skin_non_raggiunge_un_dialogo_di_consenso() {
         );
     }
 }
+
+/// Le misure di ogni `radial-gradient(` di un foglio, come le legge il motore:
+/// la forma, e le parole fra la forma e `at` (o la prima virgola).
+fn radiali(css: &str) -> Vec<(String, Vec<String>)> {
+    css.match_indices("radial-gradient(")
+        .filter_map(|(i, aperta)| {
+            let dentro = css.get(i + aperta.len()..)?;
+            let fine = dentro.find(',')?;
+            let testa = dentro.get(..fine)?;
+            let testa = testa.split(" at ").next().unwrap_or(testa);
+            let mut parole = testa.split_whitespace().map(ToOwned::to_owned);
+            let forma = parole.next()?;
+            Some((forma, parole.collect()))
+        })
+        .collect()
+}
+
+/// Una misura di un radiale è CSS valido per il motore: un'ellisse ne vuole
+/// due (o nessuna), un cerchio una sola e non in percentuale.
+fn radiale_valido(forma: &str, misure: &[String]) -> bool {
+    match forma {
+        "ellipse" => misure.is_empty() || misure.len() == 2,
+        "circle" => {
+            misure.is_empty() || (misure.len() == 1 && misure.iter().all(|m| !m.ends_with('%')))
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn un_radiale_ellittico_con_una_misura_e_css_valido() {
+    let css = compila_documento(&con(
+        r##", "patterns": { "luce": { "effect": "radialGradient", "shape": "ellipse", "size": "90%", "at": ["50%", "100%"], "stops": [{ "color": "#ff00ff", "at": "0%" }, { "color": "#00000000", "at": "80%" }] } },
+            "parts": { "app-shell": { "background": [{ "$pattern": "luce" }] } }"##,
+    ))
+    .css;
+    assert!(
+        css.contains("radial-gradient(ellipse 90% 90% at 50% 100%,"),
+        "{css}"
+    );
+    for (forma, misure) in radiali(&css) {
+        assert!(radiale_valido(&forma, &misure), "{forma} {misure:?}\n{css}");
+    }
+}
+
+#[test]
+fn un_cerchio_non_si_misura_in_percentuale_ne_in_negativo() {
+    for (forma, misura) in [("circle", "40%"), ("circle", "-4px"), ("ellipse", "-10%")] {
+        let json = con(&format!(
+            r##", "patterns": {{ "luce": {{ "effect": "radialGradient", "shape": "{forma}", "size": "{misura}", "stops": [{{ "color": "#ff00ff" }}, {{ "color": "#000000" }}] }} }}"##
+        ));
+        let problemi = crate::leggi_skin(&json).expect_err(&format!("{forma} {misura} passa"));
+        assert!(
+            problemi.iter().any(|p| p.path == "patterns.luce.size"),
+            "{forma} {misura}: {problemi:?}"
+        );
+    }
+}
+
+#[test]
+fn i_radiali_delle_skin_di_serie_sono_css_valido() {
+    for (nome, testo) in documenti_veri() {
+        let skin = crate::leggi_skin(testo).unwrap_or_else(|p| panic!("{nome}: {p:?}"));
+        for ambito in ambiti(&skin.id) {
+            let css = super::compila(&skin, &ambito).css;
+            for (forma, misure) in radiali(&css) {
+                assert!(
+                    radiale_valido(&forma, &misure),
+                    "{nome}, {ambito:?}: radial-gradient({forma} {})",
+                    misure.join(" ")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn un_nome_di_voce_scritto_a_mano_non_esce_dalla_cartella_della_skin() {
+    // Solo un documento costruito a mano ci arriva: i campi sono pubblici, e
+    // nessuno obbliga a passare da `parse_skin`, che pretende la grammatica del
+    // pacchetto (R15-2).
+    for src in ["..", ".", ""] {
+        let mut skin = crate::plain().expect("plain");
+        skin.patterns.push((
+            "sfondo".to_owned(),
+            Effect::Image {
+                src: src.to_owned(),
+                size: ImageSize::Cover,
+                repeat: false,
+                position: None,
+            },
+        ));
+        skin.fonts.push(crate::document::FontFace {
+            family: "Mia".to_owned(),
+            src: src.to_owned(),
+            weight: (400, 400),
+            italic: false,
+        });
+        for ambito in ambiti(&skin.id) {
+            let css = super::compila(&skin, &ambito).css;
+            for (i, _) in css.match_indices("url(\"") {
+                let resto = css.get(i + 5..).unwrap_or_default();
+                let indirizzo = resto
+                    .get(..resto.find('"').expect("chiuso"))
+                    .unwrap_or_default();
+                let percorso = indirizzo
+                    .strip_prefix(ORIGINE_RISORSE)
+                    .expect("schema locale");
+                assert!(
+                    percorso
+                        .trim_start_matches('/')
+                        .split('/')
+                        .all(|s| !s.is_empty() && s != "." && s != ".."),
+                    "src {src:?} → {indirizzo}"
+                );
+            }
+            assert!(
+                css.contains("--skin-sfondo: none center / cover no-repeat;"),
+                "{css}"
+            );
+        }
+    }
+}

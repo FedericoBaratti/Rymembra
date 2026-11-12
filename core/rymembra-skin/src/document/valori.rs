@@ -552,8 +552,8 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
             angle: angolo(map, path, "angle", 180.0)?,
             stops: fermate_di()?,
         }),
-        "radialGradient" => Ok(Effect::RadialGradient {
-            shape: campo(map, "shape")
+        "radialGradient" => {
+            let shape = campo(map, "shape")
                 .map(|v| {
                     parola(
                         v,
@@ -565,11 +565,28 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                     )
                 })
                 .transpose()?
-                .unwrap_or(RadialShape::Ellipse),
-            at: centro(map, path)?,
-            size: lunghezza_facoltativa(map, path, "size")?,
-            stops: fermate_di()?,
-        }),
+                .unwrap_or(RadialShape::Ellipse);
+            // Un raggio negativo il motore lo scarta, e un cerchio in
+            // percentuale anche: la percentuale di che cosa, con due lati
+            // diversi? Scartato il gradiente, cade l'intero `background` della
+            // parte, e la parte resta trasparente.
+            let size = non_negativa_facoltativa(map, path, "size")?;
+            if shape == RadialShape::Circle
+                && size.is_some_and(|s| s.unit == crate::values::LengthUnit::Percent)
+            {
+                return Err(problema(
+                    &giu(path, "size"),
+                    "il raggio di un cerchio non può essere una percentuale: scrivilo in px o \
+                     rem, o usa \"shape\": \"ellipse\"",
+                ));
+            }
+            Ok(Effect::RadialGradient {
+                shape,
+                at: centro(map, path)?,
+                size,
+                stops: fermate_di()?,
+            })
+        }
         "conicGradient" => Ok(Effect::ConicGradient {
             from: angolo(map, path, "from", 0.0)?,
             at: centro(map, path)?,

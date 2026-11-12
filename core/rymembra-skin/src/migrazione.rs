@@ -160,7 +160,43 @@ pub(crate) fn da_1_a_2(map: &mut Map<String, Value>) -> Esito<()> {
         }
     }
 
+    for valore in map.values_mut() {
+        cerchi_in_ellissi(valore);
+    }
+
     Ok(())
+}
+
+/// Un radiale `circle` col raggio in percentuale diventa un'ellisse con lo
+/// stesso raggio sui due assi.
+///
+/// Il formato 1 lo accettava e il motore no: `radial-gradient(circle 96%, …)`
+/// è CSS non valido, e il fondo che lo conteneva non si disegnava. Il formato 2
+/// lo rifiuta (`document/valori.rs`), quindi una skin di prima non si
+/// leggerebbe più per una riga che non si è mai vista: la migrazione la porta
+/// alla scrittura valida più vicina a quel che l'autore aveva scritto. È uno
+/// dei casi in cui l'aspetto cambia perché prima non c'era (vedi
+/// `tests/migrazione.rs`).
+fn cerchi_in_ellissi(valore: &mut Value) {
+    match valore {
+        Value::Object(map) => {
+            let cerchio_in_percentuale = map.get("effect").and_then(Value::as_str)
+                == Some("radialGradient")
+                && map.get("shape").and_then(Value::as_str) == Some("circle")
+                && map
+                    .get("size")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.trim_end().ends_with('%'));
+            if cerchio_in_percentuale {
+                map.insert("shape".to_owned(), Value::from("ellipse"));
+            }
+            for dentro in map.values_mut() {
+                cerchi_in_ellissi(dentro);
+            }
+        }
+        Value::Array(voci) => voci.iter_mut().for_each(cerchi_in_ellissi),
+        _ => {}
+    }
 }
 
 fn migra_parte(nome: &str, parte: &mut Map<String, Value>) {
