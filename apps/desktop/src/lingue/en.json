@@ -1743,6 +1743,8 @@
   "together.notice.paired": "{nome} is paired: from now on the two PCs recognise each other.",
   "together.notice.paired.telefono": "{nome} is paired: from now on the two devices recognise each other.",
   "together.notice.pairingCancelled": "Pairing with {nome} didn't go ahead: nothing was saved.",
+  "together.notice.pairingPaused": "{nome} has paused pairing for a few minutes: try again later.",
+  "together.notice.superseded": "The track had already changed, so the action was no longer needed.",
   "together.notice.calibrationOn": "{nome} started the calibration clicks.",
   "together.notice.calibrationOff": "Calibration over: the music picks up where it was.",
   "together.notice.forgottenBy": "{nome} no longer recognises this PC: it may have forgotten it. Forget it here too, in Settings › Sync between devices › Listen together › Paired PCs, and pair again.",

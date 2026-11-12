@@ -162,6 +162,16 @@ impl Fidati {
         *self = Self::da(elenco);
     }
 
+    /// Un PC appena associato, in memoria: quel che la libreria ha appena
+    /// scritto, come [`Fidati::segna_bloccato`]. Uno con lo stesso id o la
+    /// stessa chiave lascia il posto.
+    pub fn aggiungi(&mut self, pari: Pari) {
+        let mut elenco = std::mem::take(&mut self.elenco);
+        elenco.retain(|p| p.id != pari.id && p.chiave != pari.chiave);
+        elenco.insert(0, pari);
+        *self = Self::da(elenco);
+    }
+
     /// Il PC `id` dimenticato, in memoria: come [`Fidati::segna_bloccato`].
     pub fn togli(&mut self, id: i64) {
         let mut elenco = std::mem::take(&mut self.elenco);
@@ -817,6 +827,24 @@ mod prove {
         assert_eq!(fidati.per_chiave(&anna).map(|p| p.id), Some(5));
         assert_eq!(fidati.per_impronta(&anna.impronta()).map(|p| p.id), Some(5));
         assert_eq!(fidati.per_la_rete(), (vec![anna], vec![]));
+    }
+
+    #[test]
+    fn un_associato_nuovo_vale_subito_anche_per_la_rete() {
+        // Reperto R26-5: senza, la rilettura con la libreria occupata dava a
+        // `Rete::pari` l'elenco di prima, e toglieva la fiducia appena data.
+        let mut fidati = Fidati::da(vec![pari(4, 4, false)]);
+        let nuovo = ChiavePubblica([6; 32]);
+        fidati.aggiungi(pari(6, 6, false));
+        assert_eq!(fidati.per_chiave(&nuovo).map(|p| p.id), Some(6));
+        assert!(fidati.per_la_rete().0.contains(&nuovo));
+        // Di nuovo, con un altro nome: un posto solo.
+        fidati.aggiungi(Pari {
+            nome: "Sala".to_owned(),
+            ..pari(6, 6, false)
+        });
+        assert_eq!(fidati.elenco().len(), 2);
+        assert_eq!(fidati.per_id(6).map(|p| p.nome.as_str()), Some("Sala"));
     }
 
     #[test]

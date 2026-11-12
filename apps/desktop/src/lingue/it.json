@@ -1743,6 +1743,8 @@
   "together.notice.paired": "{nome} è associato: d'ora in poi i due PC si riconoscono.",
   "together.notice.paired.telefono": "{nome} è associato: d'ora in poi i due dispositivi si riconoscono.",
   "together.notice.pairingCancelled": "L'associazione con {nome} non è andata avanti: non si è salvato niente.",
+  "together.notice.pairingPaused": "{nome} ha fermato le associazioni per qualche minuto: riprova più tardi.",
+  "together.notice.superseded": "Il brano era già cambiato: il gesto non serviva più.",
   "together.notice.calibrationOn": "{nome} ha fatto partire i clic della calibrazione.",
   "together.notice.calibrationOff": "Calibrazione finita: la musica riprende da dove era.",
   "together.notice.forgottenBy": "{nome} non riconosce più questo PC: forse l'ha dimenticato. Dimenticalo anche qui, in Impostazioni › Sincronia fra dispositivi › Ascolta insieme › PC associati, e associatevi di nuovo.",

@@ -1087,6 +1087,32 @@ fn una_richiesta_d_associazione_e_una_riga_che_scade_o_si_rifiuta() {
 }
 
 #[test]
+fn il_tetto_di_chi_ospita_non_si_dice_come_troppi_tentativi_di_chi_chiede() {
+    // Reperto R26-2: chi chiedeva leggeva «Troppi tentativi di associazione»
+    // anche al primo tentativo, quando il tetto era quello dell'altro PC.
+    let mut s = Situazione::default();
+    (s, _) = passo(s, Evento::Acceso, 0);
+    (s, _) = passo(
+        s,
+        Evento::Aperta {
+            id: MARCO,
+            connessione: conn(None, "Marco", true, false),
+        },
+        0,
+    );
+    let (s, _) = passo(s, Evento::Comando(Comando::Associa { id: MARCO }), 0);
+    let (_, fx) = passo(
+        s,
+        Evento::Chiusa {
+            id: MARCO,
+            codice: Some(ErrorCodeKind::InsiemeTroppiTentativi),
+        },
+        5,
+    );
+    assert_eq!(avvisi(&fx), vec![AVVISO_ASSOCIAZIONI_FERME]);
+}
+
+#[test]
 fn annullare_prima_del_codice_chiude_l_associazione() {
     // Reperto R26-3: «Annulla» mentre il codice non c'è ancora (l'host non
     // ha mandato il nonce) diceva «i codici non coincidevano», e il dialogo
@@ -1289,6 +1315,30 @@ fn l_esito_negativo_dall_host_e_un_avviso_tranne_il_secchiello() {
     assert!(fx.is_empty());
     let (_, fx) = passo(s, esito(None), 0);
     assert!(fx.is_empty());
+}
+
+#[test]
+fn un_gesto_superato_non_e_un_guasto() {
+    // Reperto R26-8: due membri premono «Avanti» insieme; al secondo l'host
+    // risponde `insieme.superato`, che diventava una fascia rossa che resta,
+    // letta come allarme. Adesso è una notizia che sparisce (D-107).
+    let (_, fx) = passo(
+        membro(),
+        Evento::Ricevuto {
+            id: HOST,
+            messaggio: Messaggio::Esito {
+                id: 1,
+                codice: Some("insieme.superato".to_owned()),
+            },
+        },
+        0,
+    );
+    let chiavi = avvisi(&fx);
+    assert!(
+        chiavi.iter().all(|c| !c.starts_with("errors.")),
+        "un guasto: {chiavi:?}"
+    );
+    assert_eq!(chiavi, vec![AVVISO_GESTO_SUPERATO]);
 }
 
 #[test]

@@ -144,6 +144,17 @@ pub const AVVISO_ASSOCIATO: &str = "together.notice.paired";
 /// Tutti e due: «associazione con {altro} annullata o scaduta». Per un codice
 /// diverso c'è `errors.insieme.codiceRifiutato`.
 pub const AVVISO_ASSOCIAZIONE_ANNULLATA: &str = "together.notice.pairingCancelled";
+/// Chi segue: un suo gesto non è servito, perché un altro (di un altro
+/// membro, o di chi ospita) l'aveva già superato — «il brano era già
+/// cambiato». Una notizia e non `errors.insieme.superato`: due persone che
+/// premono «Avanti» insieme non hanno sbagliato niente (decisione D-107).
+pub const AVVISO_GESTO_SUPERATO: &str = "together.notice.superseded";
+/// Chi ha chiesto di associarsi: l'altro PC ha chiuso con
+/// `insieme.troppiTentativi`. È il tetto di **chi ospita**, consumato da altri
+/// tentativi aperti lì: «{nome} ha fermato le associazioni per qualche
+/// minuto», e non «troppi tentativi», che a chi l'ha chiesto una volta sola
+/// direbbe che ha sbagliato lui (reperto R26-2).
+pub const AVVISO_ASSOCIAZIONI_FERME: &str = "together.notice.pairingPaused";
 /// Chi segue: «{host} ha fatto partire i clic».
 pub const AVVISO_CALIBRAZIONE_ACCESA: &str = "together.notice.calibrationOn";
 /// Tutti: calibrazione finita.

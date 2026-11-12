@@ -159,6 +159,18 @@ test("una richiesta d'associazione è una riga, non il dialogo, e il nome sta in
   assert.ok(dialogo.includes('daDecidere && omonimo ? "bottone primario" : "bottone"'));
 });
 
+test("chi ospita vede il nome scelto da lui e, tra parentesi, quello dichiarato", () => {
+  // D-106 (R26-6): due membri che si presentavano entrambi come «Fisso di
+  // Marco» erano due righe uguali con «Allontana» accanto.
+  assert.equal(
+    insieme.nomeDellaPersona({ nome: "Portatile di Anna", dichiarato: "Fisso di Marco" }),
+    "Portatile di Anna (Fisso di Marco)",
+  );
+  assert.equal(insieme.nomeDellaPersona({ nome: "Sala", dichiarato: null }), "Sala");
+  const persone = corpoDi("Persone");
+  assert.ok(persone.includes("<bdi>{persona.dichiarato}</bdi>"));
+});
+
 // ── gli indirizzi scritti a mano ──────────────────────────────────────────
 
 test("un indirizzo che non può essere di un PC ha la sua frase, non quella della forma", () => {

@@ -401,7 +401,13 @@ export interface ProprietarioInsieme {
 /** Una persona nella sessione; `membro` 0 è l'host. */
 export interface PersonaInsieme {
   membro: number;
+  /** Il nome che questo PC ha per lui: quello scelto qui, se c'è. */
   nome: string;
+  /**
+   * Il nome che il PC dichiara, quando non è quello qui sopra: lo sceglie lui
+   * (D-106).
+   */
+  dichiarato: string | null;
   io: boolean;
   /** Che cosa può fare: chi ospita lo cambia da «In sessione». L'host è `tutto`. */
   diritti: DirittiInsieme;

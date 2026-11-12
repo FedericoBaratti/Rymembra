@@ -106,8 +106,11 @@ pub struct ProprietarioIpc {
 pub struct PersonaIpc {
     /// Il suo numero nella sessione; `0` è l'host.
     pub membro: u32,
-    /// Il nome del suo PC.
+    /// Il nome del suo PC per questo PC: quello scelto qui, se lo è.
     pub nome: String,
+    /// Il nome che il suo PC dichiara, quando non è quello qui sopra: la
+    /// finestra lo scrive tra parentesi (decisione D-106).
+    pub dichiarato: Option<String>,
     /// È questo PC.
     pub io: bool,
     /// Che cosa può fare: chi ospita lo cambia da qui. L'host è `tutto`.

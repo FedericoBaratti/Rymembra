@@ -72,6 +72,7 @@ import {
   invitiAncoraAperti,
   isolato,
   mappaProprietari,
+  nomeDellaPersona,
   nomePulito,
   ospitanti,
   pezziSegno,
@@ -1973,8 +1974,22 @@ function Persone({ stato, onErrore }: { stato: StatoInsieme; onErrore: (e: unkno
             className={mia && !persona.io ? "riga-insieme con-diritti" : "riga-insieme"}
           >
             <span className="chi-insieme">
-              <span className="nome-insieme" dir="auto" title={persona.nome}>
-                {persona.nome}
+              {/* Il nome scelto qui e, tra parentesi, quello che il PC
+                  dichiara (D-106): due membri che si presentano allo stesso
+                  modo restano due righe che chi ospita sa distinguere. */}
+              <span
+                className="nome-insieme"
+                dir="auto"
+                title={nomeDellaPersona(persona)}
+              >
+                <bdi>{persona.nome}</bdi>
+                {persona.dichiarato !== null && (
+                  <>
+                    {" ("}
+                    <bdi>{persona.dichiarato}</bdi>
+                    {")"}
+                  </>
+                )}
               </span>
             </span>
             {persona.membro === 0 && (

@@ -10,15 +10,16 @@ use rymembra_insieme::messaggi::{Diritti, MASSIMO_PERSONE, Messaggio, Persona};
 
 use super::{
     ATTESA_AMMISSIONE_MS, AVVISO_ALLONTANATO, AVVISO_ASSOCIAZIONE_ANNULLATA,
-    AVVISO_CALIBRAZIONE_ACCESA, AVVISO_CALIBRAZIONE_SPENTA, AVVISO_CHIUSA, AVVISO_ENTRATO,
-    AVVISO_FINITA, AVVISO_HOST_SPARITO, AVVISO_INVITO_MANDATO, AVVISO_INVITO_RIFIUTATO,
-    AVVISO_INVITO_SCADUTO, AVVISO_INVITO_SENZA_RISPOSTA, AVVISO_NON_TI_RICONOSCE,
-    AVVISO_RICHIESTA_MANDATA, AVVISO_RICHIESTA_RIFIUTATA, AVVISO_RICHIESTA_SCADUTA,
-    AVVISO_RICHIESTA_SENZA_RISPOSTA, AVVISO_SEI_DENTRO, AVVISO_SEI_USCITO,
-    AVVISO_TI_HA_ALLONTANATO, AVVISO_USCITO, Associazione, CODICE_ALLONTANATO, Comando, Effetto,
-    Fase, InvitoMandato, InvitoRicevuto, MembroDiQui, Ospitata, RichiestaRicevuta,
-    SCADENZA_ASSOCIAZIONE_MS, SCADENZA_INVITO_MS, SCADENZA_RICHIESTA_ASSOCIAZIONE_MS,
-    SCADENZA_RICHIESTA_MS, Seguita, Situazione, Via, avviso_dei_diritti, chiave_del_codice,
+    AVVISO_ASSOCIAZIONI_FERME, AVVISO_CALIBRAZIONE_ACCESA, AVVISO_CALIBRAZIONE_SPENTA,
+    AVVISO_CHIUSA, AVVISO_ENTRATO, AVVISO_FINITA, AVVISO_GESTO_SUPERATO, AVVISO_HOST_SPARITO,
+    AVVISO_INVITO_MANDATO, AVVISO_INVITO_RIFIUTATO, AVVISO_INVITO_SCADUTO,
+    AVVISO_INVITO_SENZA_RISPOSTA, AVVISO_NON_TI_RICONOSCE, AVVISO_RICHIESTA_MANDATA,
+    AVVISO_RICHIESTA_RIFIUTATA, AVVISO_RICHIESTA_SCADUTA, AVVISO_RICHIESTA_SENZA_RISPOSTA,
+    AVVISO_SEI_DENTRO, AVVISO_SEI_USCITO, AVVISO_TI_HA_ALLONTANATO, AVVISO_USCITO, Associazione,
+    CODICE_ALLONTANATO, Comando, Effetto, Fase, InvitoMandato, InvitoRicevuto, MembroDiQui,
+    Ospitata, RichiestaRicevuta, SCADENZA_ASSOCIAZIONE_MS, SCADENZA_INVITO_MS,
+    SCADENZA_RICHIESTA_ASSOCIAZIONE_MS, SCADENZA_RICHIESTA_MS, Seguita, Situazione, Via,
+    avviso_dei_diritti, chiave_del_codice,
 };
 use crate::insieme::gesti::Secchiello;
 use crate::riproduzione::insieme::UID_CALIBRAZIONE;
@@ -212,6 +213,7 @@ pub(super) fn chiusa(
     fx: &mut Vec<Effetto>,
 ) {
     let nome = nome_di(s, id);
+    let in_uscita = s.connessioni.get(&id).is_some_and(|c| !c.in_entrata);
     let pari = s.connessioni.remove(&id).and_then(|c| c.pari);
     // Per questo PC l'altro è associato, per l'altro no: l'ha dimenticato, o
     // ha cambiato identità. Senza dirlo, questo PC riprovava a collegarsi per
@@ -231,6 +233,8 @@ pub(super) fn chiusa(
             | Some(
                 ErrorCodeKind::InsiemeConnessioneCaduta | ErrorCodeKind::InsiemeIrraggiungibile,
             ) => AVVISO_ASSOCIAZIONE_ANNULLATA,
+            // Il tetto dell'altro PC, non i tentativi di questo.
+            Some(ErrorCodeKind::InsiemeTroppiTentativi) if in_uscita => AVVISO_ASSOCIAZIONI_FERME,
             Some(kind) if kind.domain() == Domain::Insieme => kind.i18n_key(),
             Some(_) => AVVISO_ASSOCIAZIONE_ANNULLATA,
         };
@@ -450,7 +454,13 @@ pub(super) fn ricevuto(
                 _ => {}
             }
         }
-        Messaggio::Stato(stato) => {
+        Messaggio::Stato(mut stato) => {
+            // I nomi delle persone li scrive l'host per tutti: passano dalla
+            // stessa ripulitura dei nomi salvati, prima di finire negli avvisi
+            // e nella vetrina (reperto R26-7).
+            for persona in &mut stato.persone {
+                persona.nome = rymembra_app::insieme::ripulisci_nome(&persona.nome);
+            }
             if let Fase::Membro(seguita) = &mut s.fase
                 && seguita.host == id
                 && seguita.versione.is_none_or(|v| stato.versione > v)
@@ -576,7 +586,9 @@ pub(super) fn ricevuto(
         }
         // Un gesto di questo PC che l'host non ha fatto: il perché, come
         // guasto. Tranne il secchiello: chi tiene premuto un tasto lo sa già,
-        // e una fascia rossa per ogni colpo in più sarebbe solo rumore.
+        // e una fascia rossa per ogni colpo in più sarebbe solo rumore. E
+        // tranne il gesto superato da un altro: una notizia che sparisce,
+        // perché non è un guasto (reperto R26-8, decisione D-107).
         Messaggio::Esito {
             codice: Some(codice),
             ..
@@ -584,7 +596,12 @@ pub(super) fn ricevuto(
             if matches!(&s.fase, Fase::Membro(seguita) if seguita.host == id)
                 && codice != ErrorCodeKind::InsiemeTroppiTentativi.code()
             {
-                fx.push(avviso(chiave_del_codice(&codice), None));
+                let chiave = if codice == ErrorCodeKind::InsiemeSuperato.code() {
+                    AVVISO_GESTO_SUPERATO
+                } else {
+                    chiave_del_codice(&codice)
+                };
+                fx.push(avviso(chiave, None));
             }
         }
         Messaggio::Esito { codice: None, .. } | Messaggio::Sconosciuto => {}

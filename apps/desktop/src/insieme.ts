@@ -31,6 +31,7 @@ import type {
   Brano,
   FidatoInsieme,
   InsiemeNelLettore,
+  PersonaInsieme,
   ProprietarioInsieme,
   SincroniaInsieme,
   StatoInsieme,
@@ -633,6 +634,14 @@ export function chiaveAvviso(chiave: string): string | null {
 /** L'avviso è un guasto (rosso, `alert`) e non una notizia. */
 export function avvisoEGuasto(chiave: string): boolean {
   return chiave.startsWith("errors.");
+}
+
+/**
+ * Il nome di una persona della sessione com'è scritto nella riga: il nome
+ * scelto qui e, tra parentesi, quello che il PC dichiara se è un altro (D-106).
+ */
+export function nomeDellaPersona(persona: Pick<PersonaInsieme, "nome" | "dichiarato">): string {
+  return persona.dichiarato === null ? persona.nome : `${persona.nome} (${persona.dichiarato})`;
 }
 
 // ── l'associazione chiesta da un altro PC ─────────────────────────────────

@@ -20,8 +20,10 @@
 //! voce che chi ha premuto vedeva suonare (`da`), e si fanno solo se suona
 //! ancora quella; lo stesso `VaiA`, che nomina la voce in cui saltare. Una voce
 //! da far suonare, togliere o spostare che nel frattempo non c'è più è un
-//! gesto già superato: si risponde «fatto», perché non c'è niente di sbagliato
-//! da dire a chi l'ha chiesto. Per pausa e ripresa vince l'ultimo arrivato.
+//! gesto già superato: si risponde `insieme.superato`, che per chi l'ha chiesto
+//! è una notizia che sparisce e non una fascia d'errore — non c'è niente di
+//! sbagliato da dirgli (decisione D-107). Per pausa e ripresa vince l'ultimo
+//! arrivato.
 //!
 //! # Il secchiello
 //!

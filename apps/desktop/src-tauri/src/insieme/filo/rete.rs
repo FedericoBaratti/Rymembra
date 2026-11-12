@@ -5,17 +5,18 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
-use rymembra_insieme::messaggi::{MASSIMO_NOME, Messaggio};
+use rymembra_insieme::messaggi::Messaggio;
 use rymembra_insieme::{ChiavePubblica, Dove, IdConnessione, Impostazioni, Rete};
 use rymembra_play::sincronia::orologio::Scambio;
 
 use super::{
-    ATTESA_LIBRERIA, ATTESA_LIBRERIA_BREVE, ATTESA_RETE, Accesa, Filo, LENTO, OGNI_COLLEGAMENTO_MS,
-    OGNI_SCOPERTA_MS, Posta, chiave_per_la_finestra, lega, ora, riga_della_rete, senza_causa,
+    ATTESA_LIBRERIA, ATTESA_LIBRERIA_BREVE, ATTESA_RETE, Accesa, DaSalvare, Filo, LENTO,
+    OGNI_COLLEGAMENTO_MS, OGNI_SCOPERTA_MS, Posta, RILEGGI_DOPO_MS, SALVA_AL_PIU,
+    chiave_per_la_finestra, lega, ora, riga_della_rete, senza_causa,
 };
 use crate::insieme::fasi::{Connessione, Evento};
+use crate::insieme::fiducia;
 use crate::insieme::segui::EsitoScambio;
-use crate::insieme::{fiducia, voci};
 use crate::nota;
 use crate::stato::adesso_ms;
 
@@ -211,7 +212,11 @@ impl Filo {
                     }
                     return;
                 }
-                let dichiarato = voci::testo(&nome, MASSIMO_NOME);
+                // La stessa ripulitura dei nomi salvati, e non una più debole:
+                // il nome dichiarato è quello del dialogo del codice, e un
+                // comando di direzione lasciato qui faceva leggere «PC di
+                // Marco» a un nome che poi si salvava diverso (reperto R26-7).
+                let dichiarato = rymembra_app::insieme::ripulisci_nome(&nome);
                 self.capi.insert(id, (dove.clone(), pari));
                 if !in_entrata {
                     let taciute = self.vicinato.aperta(id, &dichiarato);
@@ -347,40 +352,115 @@ impl Filo {
         }
     }
 
+    /// Tutte e due le persone hanno detto sì: si salva.
+    ///
+    /// # La libreria occupata
+    ///
+    /// Il trasporto la chiave l'ha già fatta fidata, e l'altro PC l'ha già
+    /// salvata. Prima, con la scrittura riuscita, la rilettura subito dopo —
+    /// se non trovava la libreria libera — rimandava al trasporto l'elenco di
+    /// prima e toglieva la fiducia appena data; con la scrittura non riuscita
+    /// la decisione delle due persone si buttava, ma il trasporto restava
+    /// fidato fino al `Rete::pari` dopo: da una parte «associato», dall'altra
+    /// «non ti riconosce più» (reperto R26-5). Adesso il PC nuovo va fra i
+    /// fidati in memoria appena è scritto, e una scrittura non riuscita si
+    /// ritenta (vedi [`Filo::salva_le_associazioni`]), con la chiave fidata
+    /// nel trasporto intanto; solo dopo un minuto di tentativi si dice che non
+    /// si è salvato niente.
     fn associato(&mut self, id: IdConnessione, chiave: ChiavePubblica) {
         if Some(chiave) == self.mia() {
             return;
         }
+        // Il nome scelto qui resta, se il PC era già associato (chiede di
+        // associarsi di nuovo); se no, quello che dichiara.
         let nome = self
             .s
             .connessioni
             .get(&id)
-            .map(|c| c.dichiarato.clone())
+            .map(|c| {
+                if c.pari.is_some() {
+                    c.nome.clone()
+                } else {
+                    c.dichiarato.clone()
+                }
+            })
             .unwrap_or_default();
         let esito = self.in_libreria(ATTESA_LIBRERIA, |c| {
             rymembra_app::insieme::associa(c, &chiave.in_testo(), &nome, adesso_ms())
         });
         match esito {
-            Ok(pari) => {
-                nota!("[insieme] associato: pari #{pari}");
-                self.ricarica_fidati();
-                self.nutri(Evento::Associato { id, pari });
-            }
+            Ok(pari) => self.salvata(id, chiave, &nome, pari),
             Err(err) => {
                 nota!(
-                    "[insieme] associazione non salvata codice={}",
+                    "[insieme] associazione non ancora salvata codice={}: si riprova",
                     err.code().kind().code()
                 );
-                // «Non si è salvato niente»: è la frase di `codiceRifiutato`, ed
-                // è esattamente quel che è successo.
-                if let Some(chiave) =
-                    chiave_per_la_finestra(&err, Some(ErrorCodeKind::InsiemeCodiceRifiutato))
-                {
-                    self.avvisa(chiave, None);
-                }
+                self.da_salvare.retain(|d| d.chiave != chiave);
+                self.da_salvare.push(DaSalvare {
+                    id,
+                    chiave,
+                    nome,
+                    volte: 1,
+                });
+                self.salva_dopo = Some(ora().saturating_add(RILEGGI_DOPO_MS));
+                // Il dialogo si chiude: le due persone hanno risposto.
+                // «Associato» lo dirà la scrittura riuscita.
                 self.nutri(Evento::AssociazioneFinita { id });
             }
         }
+    }
+
+    /// L'associazione è scritta, col numero `pari`: fra i fidati in memoria
+    /// **prima** della rilettura, che con la libreria occupata non deve poter
+    /// togliere al trasporto la fiducia appena data.
+    fn salvata(&mut self, id: IdConnessione, chiave: ChiavePubblica, nome: &str, pari: i64) {
+        nota!("[insieme] associato: pari #{pari}");
+        self.fidati.aggiungi(rymembra_app::insieme::Pari {
+            id: pari,
+            chiave: chiave.in_testo(),
+            nome: rymembra_app::insieme::ripulisci_nome(nome),
+            bloccato: false,
+            associato_ms: adesso_ms(),
+            visto_ms: None,
+        });
+        self.ricarica_fidati();
+        self.nutri(Evento::Associato { id, pari });
+    }
+
+    /// Ritenta di scrivere le associazioni confermate che la libreria non ha
+    /// preso: vedi «La libreria occupata» in [`Filo::associato`].
+    pub(super) fn salva_le_associazioni(&mut self) {
+        self.salva_dopo = None;
+        for mut d in std::mem::take(&mut self.da_salvare) {
+            let esito = self.in_libreria(ATTESA_LIBRERIA, |c| {
+                rymembra_app::insieme::associa(c, &d.chiave.in_testo(), &d.nome, adesso_ms())
+            });
+            match esito {
+                Ok(pari) => self.salvata(d.id, d.chiave, &d.nome, pari),
+                Err(err) if d.volte >= SALVA_AL_PIU => {
+                    nota!(
+                        "[insieme] associazione non salvata codice={}",
+                        err.code().kind().code()
+                    );
+                    // «Non si è salvato niente»: è la frase di
+                    // `codiceRifiutato`, ed è esattamente quel che è successo.
+                    if let Some(chiave) =
+                        chiave_per_la_finestra(&err, Some(ErrorCodeKind::InsiemeCodiceRifiutato))
+                    {
+                        self.avvisa(chiave, None);
+                    }
+                }
+                Err(_) => {
+                    d.volte = d.volte.saturating_add(1);
+                    self.da_salvare.push(d);
+                }
+            }
+        }
+        if !self.da_salvare.is_empty() {
+            self.salva_dopo = Some(ora().saturating_add(RILEGGI_DOPO_MS));
+        }
+        // Una rinuncia la sente anche il trasporto: la chiave torna estranea.
+        self.ricarica_fidati();
     }
 
     pub(super) fn cerca(&mut self, adesso: u64) {
