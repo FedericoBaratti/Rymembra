@@ -503,6 +503,12 @@ export interface EsitoAccount {
   statsUpdated: number;
   playlistRestored: number;
   wantedClosed: number;
+  /**
+   * Quanti brani **distinti** della libreria si sono ritrovati: lo stesso
+   * brano fra i preferiti e in tre playlist è uno (R13c-12). La somma per
+   * elenco di `totaliAccount` lo conterebbe quattro volte.
+   */
+  matchedDistinct: number;
 }
 
 /** Che aria tira sull'account. Istantaneo: legge solo il database. */

@@ -195,6 +195,11 @@ export function Account({
     if (!anteprima) return;
     let annullato = false;
     setInCorso(true);
+    // Il piano e l'errore di prima descrivono altre scelte: lasciati a schermo,
+    // un piano nuovo fallito mostrava i numeri di prima con «Importa» acceso,
+    // che avrebbe importato con le scelte di adesso (R13c-12).
+    setPiano(null);
+    setErrore(null);
     ipc
       .accountPiano(scelte)
       .then((p) => {
@@ -475,9 +480,12 @@ export function Account({
                   {piano && totali && (
                     <>
                       <div className="rapporto">
+                        {/* Distinti, contati dal nucleo: lo stesso brano fra i
+                            preferiti e in tre playlist è un brano ritrovato, non
+                            quattro. */}
                         <Voce
                           etichetta={t("account.found")}
-                          valore={totali.ritrovati}
+                          valore={piano.matchedDistinct}
                         />
                         {/* Il conteggio **distinto**, non la somma per elenco: lo
                             stesso brano che manca da tre playlist è un brano che non

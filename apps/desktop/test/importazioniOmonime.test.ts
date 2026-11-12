@@ -67,6 +67,7 @@ function esito(playlists: EsitoImport[]): EsitoAccount {
     statsUpdated: 0,
     playlistRestored: 0,
     wantedClosed: 0,
+    matchedDistinct: 0,
   };
 }
 
@@ -95,6 +96,14 @@ test("l'importazione da un link e il vecchio database dicono la playlist accanto
   assert.match(importa, /piano\?\.playlistBeside != null/);
   assert.match(importa, /rapporto\.playlistsBeside\.length > 0/);
   assert.match(importa, /rapporto\.playlistsSkipped\.length > 0/);
+});
+
+test("il piano dell'account conta i ritrovati distinti e riparte pulito", () => {
+  // R13c-12.
+  const account = leggi("../src/Account.tsx");
+  assert.match(account, /etichetta=\{t\("account\.found"\)\}\s+valore=\{piano\.matchedDistinct\}/);
+  const effetto = account.slice(account.indexOf(".accountPiano(scelte)") - 600, account.indexOf(".accountPiano(scelte)"));
+  assert.match(effetto, /setPiano\(null\);\s+setErrore\(null\);/);
 });
 
 test("un file di playlist si importa solo con il piano del nome scritto", () => {

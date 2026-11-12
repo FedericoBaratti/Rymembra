@@ -160,6 +160,14 @@ pub struct AccountImportReport {
     pub playlist_restored: usize,
     /// Quante righe di «desiderati» si sono chiuse perché il brano ormai c'è.
     pub wanted_closed: usize,
+    /// Quanti brani **distinti** della libreria sono stati ritrovati, in tutti
+    /// gli elenchi scritti.
+    ///
+    /// [`Self::matched`] somma per elenco: lo stesso brano fra i preferiti e in
+    /// tre playlist conta quattro volte, e «Brani ritrovati» poteva superare la
+    /// libreria (R13c-12). Il rapporto non porta gli identificativi, quindi il
+    /// conto distinto si fa qui, dove ci sono.
+    pub matched_distinct: usize,
 }
 
 impl AccountImportReport {
@@ -263,6 +271,9 @@ fn run(
 
     let ordinali = ordinali_degli_omonimi(&snapshot.playlist);
     let mut gia_scritte: HashSet<i64> = HashSet::new();
+    // I brani ritrovati negli elenchi scritti davvero: una playlist rifiutata
+    // non porta niente, e non conta.
+    let mut ritrovati: HashSet<i64> = HashSet::new();
     for voce in &piano.playlist {
         let Some(playlist) = snapshot.playlist.get(voce.indice) else {
             continue;
@@ -278,6 +289,7 @@ fn run(
         ) {
             Ok(fatto) => {
                 scritti_album = scritti_album.saturating_add(fatto.spotify_album_ids_written);
+                ritrovati.extend(voce.piano.abbinati.iter().map(|a| a.track_id));
                 rapporto.playlists.push(fatto);
             }
             Err(err) if e_rifiuto(&err) => rapporto.rejected_playlists.push(RejectedPlaylist {
@@ -304,6 +316,7 @@ fn run(
             true,
         )?;
         scritti_album = scritti_album.saturating_add(rapporto.liked.spotify_album_ids_written);
+        ritrovati.extend(piano.preferiti.abbinati.iter().map(|a| a.track_id));
         (rapporto.liked_marked, rapporto.liked_kept_off) =
             segna_preferiti(&tx, &piano.preferiti, adesso)?;
     }
@@ -332,9 +345,11 @@ fn run(
             true,
         )?;
         scritti_album = scritti_album.saturating_add(fatto.spotify_album_ids_written);
+        ritrovati.extend(voce.piano.abbinati.iter().map(|a| a.track_id));
         rapporto.albums.push(fatto);
     }
     rapporto.album_ids_written = scritti_album;
+    rapporto.matched_distinct = ritrovati.len();
 
     if scelte.artisti {
         rapporto.artists_linked = lega_artisti(&tx, &snapshot.artisti)?;
@@ -1990,6 +2005,23 @@ mod prove {
             0,
             "non ha più motivo di essere scaricato"
         );
+    }
+
+    #[test]
+    fn i_brani_ritrovati_si_contano_una_volta() {
+        // R13c-12: «Song 2» sta nella «Corsa» e fra i preferiti. La somma per
+        // elenco lo conta due volte; il conto che la finestra mostra no.
+        let mut db = database();
+        libreria_di_prova(&db);
+        let Ok(piano) = plan(&mut db, &snapshot_completo(), &Scelte::default()) else {
+            panic!("il piano deve riuscire");
+        };
+        assert_eq!(
+            piano.matched(),
+            3,
+            "due nella playlist, uno fra i preferiti"
+        );
+        assert_eq!(piano.matched_distinct, 2, "Song 2 e Feel Good Inc");
     }
 
     #[test]
