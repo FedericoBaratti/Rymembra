@@ -1322,7 +1322,7 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
     // basta lei.
     let fermati = || stato.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = rymembra_app::library::Scan {
-        files: crate::nuvola_musica::archivi(app),
+        files: crate::nuvola_musica::archivi_per_la_scansione(app),
         covers: copertine,
         roots: &roots,
         // La guardia per radice vale per le cartelle sorvegliate, non per la

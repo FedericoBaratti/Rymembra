@@ -556,6 +556,8 @@ export interface EsitoScansione {
   cartelleIlleggibili: string[];
   /** Quante righe stanno sotto quelle cartelle, lasciate stare. */
   nonVerificati: number;
+  /** I file «solo online» di una cartella sincronizzata non letti, per non farli scaricare (D-101). */
+  soloInRete: number;
   numeri: Numeri;
 }
 

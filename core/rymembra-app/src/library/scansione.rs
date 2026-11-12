@@ -1013,6 +1013,18 @@ impl Scan<'_> {
                 stato.frenate.insert(StatoLettura::fonte(radice).to_owned());
                 stato.rimanda(radice, lavoro.voci.len(), report);
             }
+            // Un file «solo online» di una cartella sincronizzata: leggerlo lo
+            // farebbe scaricare (D-101, R25-2). Non è illeggibile e non si
+            // ricorda; si conta, e la sua radice non toglie niente in questa
+            // passata — come per le letture rimandate: un file nuovo non letto
+            // può essere il brano di prima, spostato, e la sua riga resta.
+            Ok(Err(error)) if error.code().kind() == ErrorCodeKind::CloudOnlineOnly => {
+                let radice = radice.unwrap_or("");
+                report.solo_in_rete = report.solo_in_rete.saturating_add(lavoro.voci.len());
+                if !stato.rimandate.iter().any(|r| r == radice) {
+                    stato.rimandate.push(radice.to_owned());
+                }
+            }
             Ok(Err(error)) if rifiuto_deterministico(&error) => {
                 // Il file è arrivato, e il lettore ha detto di no: la radice
                 // risponde, e il no si ricorda — vedi la migrazione 032.

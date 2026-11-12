@@ -507,6 +507,12 @@ pub struct ScanReport {
     /// le completa, nella stessa passata o in una dopo, si contano fra le
     /// [`ScanReport::updated`].
     pub provvisorie: usize,
+    /// I file di una cartella sincronizzata che stanno solo in rete (i
+    /// segnaposto di OneDrive, Dropbox, Google Drive per desktop): non si sono
+    /// letti, per non farli scaricare, e le righe che c'erano restano come
+    /// sono — anche quella che uno di loro, spostato, avrebbe reclamato. Vedi
+    /// `cloud.onlineOnly` (D-101, R25-2).
+    pub solo_in_rete: usize,
     /// Le letture rimandate: voci che il piano dava da leggere e che questa
     /// passata non ha letto, perché la radice ha un tetto di letture per giro
     /// ([`Limiti::letture_per_giro`]) o perché il servizio ha chiesto di

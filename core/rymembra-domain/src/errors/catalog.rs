@@ -969,6 +969,13 @@ catalogo! {
     /// scarica niente apposta. Non è un guasto del file: si misura dopo un
     /// ascolto.
     CloudNotInCache = "cloud.notInCache", Cloud, Info, Never, None;
+    /// Un file di una cartella sincronizzata (OneDrive, Dropbox, Google Drive per
+    /// desktop) che sta solo in rete: un segnaposto, col contenuto sul server.
+    /// Leggerlo lo farebbe scaricare dal client di sincronizzazione — e la
+    /// scansione e l'analisi lo farebbero per ogni brano della cartella. Non lo
+    /// leggono, e lo dicono (D-101, R25-2). Chi lo suona lo scarica: è il
+    /// gesto di chi ascolta.
+    CloudOnlineOnly = "cloud.onlineOnly", Cloud, Info, Never, None, { path: String };
 
     // ── settings ────────────────────────────────────────────────────────────
     /// Le impostazioni salvate sono illeggibili.

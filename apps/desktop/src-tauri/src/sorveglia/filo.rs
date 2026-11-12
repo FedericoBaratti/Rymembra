@@ -1103,7 +1103,7 @@ fn esegui(
     .unwrap_or_else(|| cartelle.to_vec());
     let scan = Scan {
         // Il disco e il cloud: le radici di OneDrive camminano sullo specchio.
-        files: crate::nuvola_musica::archivi(app),
+        files: crate::nuvola_musica::archivi_per_la_scansione(app),
         covers: copertine,
         roots: cartelle,
         radici_della_libreria: &radici_della_libreria,

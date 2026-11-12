@@ -34,7 +34,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use rymembra_app::files::{Archivi, LocalFiles, MusicFiles};
+use rymembra_app::files::{Archivi, LocalFiles, MusicFiles, SenzaScaricare};
 use rymembra_app::nuvola::{
     self as specchio, ContoSalvato, RadiceSalvata, Specchio, SpecchioCondiviso,
 };
@@ -212,6 +212,15 @@ pub fn archivi(app: &AppHandle) -> Arc<dyn MusicFiles> {
     })
 }
 
+/// Le sorgenti per la scansione: come [`archivi`], ma un file «solo online»
+/// di una cartella sincronizzata (OneDrive, Dropbox, Google Drive per
+/// desktop) non si apre, per non farlo scaricare (D-101, R25-2). La
+/// riproduzione no: chi suona un brano lo vuole, e lo scarica.
+#[must_use]
+pub fn archivi_per_la_scansione(app: &AppHandle) -> Arc<dyn MusicFiles> {
+    Arc::new(SenzaScaricare(archivi(app)))
+}
+
 /// Una scansione che ha rimandato delle letture (`ScanReport::rimasti`) cede
 /// il turno: le sue cartelle del cloud tornano in fila **dietro** a quel che
 /// la sorveglianza ha già in mano, e le letture riprendono al giro dopo.
@@ -233,16 +242,18 @@ pub fn rimetti_in_fila(app: &AppHandle, cartelle: &[String], rimasti: usize) {
 }
 
 /// Le sorgenti per l'analisi: il disco, e del cloud solo le copie complete.
+/// Un file «solo online» del disco non si apre: l'analisi lo salta senza
+/// segnarlo, e lo misura quando è sul PC (D-101, R25-2).
 #[must_use]
 pub fn archivi_per_l_analisi(app: &AppHandle) -> Arc<dyn MusicFiles> {
     let nuvola = app
         .try_state::<StatoMusicaNuvola>()
         .and_then(|stato| stato.archivio.clone())
         .map(|archivio| Arc::new(CopieComplete::di(archivio)) as Arc<dyn MusicFiles>);
-    Arc::new(Archivi {
+    Arc::new(SenzaScaricare(Arc::new(Archivi {
         locali: LocalFiles,
         nuvola,
-    })
+    })))
 }
 
 /// Il percorso del file di una copia della cache, dallo specchio.

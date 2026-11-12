@@ -407,6 +407,100 @@ impl MusicFiles for Archivi {
     }
 }
 
+/// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`: i byte stanno sul server, e leggerli
+/// li fa scaricare. È l'attributo dei segnaposto di OneDrive, Dropbox e Google
+/// Drive per desktop («File su richiesta»).
+const RICHIAMO_ALLA_LETTURA: u32 = 0x0040_0000;
+/// `FILE_ATTRIBUTE_RECALL_ON_OPEN`: anche solo aprire costa uno scaricamento.
+const RICHIAMO_ALL_APERTURA: u32 = 0x0004_0000;
+/// `FILE_ATTRIBUTE_OFFLINE`: i byte non sono disponibili subito.
+const FUORI_LINEA: u32 = 0x0000_1000;
+
+/// Gli attributi di Windows di un file che sta solo in rete.
+///
+/// Pura, e quindi provata su ogni sistema: chi la chiama legge gli attributi
+/// (vedi [`SenzaScaricare`]).
+#[must_use]
+pub const fn e_solo_in_rete(attributi: u32) -> bool {
+    attributi & (RICHIAMO_ALLA_LETTURA | RICHIAMO_ALL_APERTURA | FUORI_LINEA) != 0
+}
+
+/// Il file locale sta solo in rete?
+///
+/// Gli attributi si chiedono senza leggere: un segnaposto aperto per i soli
+/// metadati non si scarica (i servizi di sincronizzazione scaricano alla
+/// lettura dei dati). Un file che non risponde nemmeno a questo non è «solo
+/// in rete»: lo dirà l'apertura vera.
+#[cfg(windows)]
+fn sta_solo_in_rete(path: &str) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    std::fs::metadata(percorso_lungo(Path::new(path)))
+        .is_ok_and(|metadati| e_solo_in_rete(metadati.file_attributes()))
+}
+
+/// Fuori da Windows i segnaposto con questi attributi non esistono.
+#[cfg(not(windows))]
+fn sta_solo_in_rete(path: &str) -> bool {
+    let _ = path;
+    false
+}
+
+/// Le sorgenti di chi legge per conto suo — la scansione, l'analisi —, che un
+/// file «solo online» non lo aprono.
+///
+/// # Perché
+///
+/// Una cartella di OneDrive (o Dropbox, Google Drive per desktop) con «File su
+/// richiesta» acceso, scelta come cartella normale: quasi tutti i file sono
+/// segnaposto, con la dimensione e la data vere e il contenuto sul server. La
+/// scansione li apriva per leggerne i tag, e l'analisi li decodificava:
+/// leggerli li fa scaricare, cioè la libreria intera sul disco e sulla rete a
+/// consumo, con la notifica di Windows degli scaricamenti chiesti da un'app
+/// (R25-2). Adesso l'apertura risponde `cloud.onlineOnly` e non tocca i byte:
+/// la scansione conta quei file e lascia stare le righe che c'erano (D-101),
+/// l'analisi li salta senza segnarli e li misura quando sono sul PC.
+///
+/// La camminata no: un segnaposto si elenca come un file qualunque, con la sua
+/// dimensione e la sua data, e un brano già in libreria e non cambiato resta
+/// com'è senza che nessuno lo apra. E nemmeno chi suona: un brano scelto per
+/// ascoltarlo si scarica, ed è quel che chi l'ha scelto vuole.
+pub struct SenzaScaricare(pub std::sync::Arc<dyn MusicFiles>);
+
+impl MusicFiles for SenzaScaricare {
+    fn walk(&self, root: &str) -> Result<Camminata, AppError> {
+        self.0.walk(root)
+    }
+
+    fn walk_a_rate(
+        &self,
+        root: &str,
+        su_voce: &mut dyn FnMut(Voce) -> ControlFlow<()>,
+    ) -> Result<bool, AppError> {
+        self.0.walk_a_rate(root, su_voce)
+    }
+
+    fn radice_raggiungibile(&self, root: &str) -> bool {
+        self.0.radice_raggiungibile(root)
+    }
+
+    fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
+        if !e_nuvola(path) && sta_solo_in_rete(path) {
+            return Err(AppError::new(ErrorCode::CloudOnlineOnly {
+                path: path.to_owned(),
+            }));
+        }
+        self.0.open(path)
+    }
+
+    fn limiti(&self, root: &str) -> Limiti {
+        self.0.limiti(root)
+    }
+
+    fn tag_noti(&self, path: &str) -> Option<TagNoti> {
+        self.0.tag_noti(path)
+    }
+}
+
 /// Traduce un errore di I/O nel catalogo, distinguendo i casi che cambiano cosa
 /// deve fare il chiamante.
 ///
@@ -2026,5 +2120,50 @@ mod tests {
         // nuovo non deve inghiottire il caso normale.
         let mancante = io_error("C:/m/a.mp3", &std::io::Error::from_raw_os_error(2));
         assert_eq!(mancante.code().kind(), ErrorCodeKind::FsNotFound);
+    }
+
+    /// I tre attributi di un file che sta solo in rete, e nient'altro: un file
+    /// nascosto, di sistema, compresso o in sola lettura si legge (R25-2).
+    #[test]
+    fn solo_in_rete_sono_i_tre_attributi_del_richiamo() {
+        assert!(e_solo_in_rete(0x0040_0000), "RECALL_ON_DATA_ACCESS");
+        assert!(e_solo_in_rete(0x0004_0000), "RECALL_ON_OPEN");
+        assert!(e_solo_in_rete(0x0000_1000), "OFFLINE");
+        assert!(e_solo_in_rete(0x0040_0020), "anche con l'archivio acceso");
+        for normale in [0, 0x1, 0x2, 0x4, 0x20, 0x80, 0x800, 0x0008_0000] {
+            assert!(!e_solo_in_rete(normale), "{normale:#x}");
+        }
+    }
+
+    /// Un file «fuori linea» non si apre per la scansione e l'analisi, e si
+    /// apre per chi suona (D-101). `attrib +O` mette l'attributo che i servizi
+    /// di sincronizzazione usano accanto al richiamo.
+    #[cfg(windows)]
+    #[test]
+    fn un_file_solo_in_rete_non_si_apre_per_leggerlo() {
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let file = cartella.path().join("segnaposto.mp3");
+        std::fs::write(&file, b"ID3 finto").expect("file");
+        let messo = std::process::Command::new("attrib")
+            .arg("+O")
+            .arg(&file)
+            .output()
+            .is_ok_and(|esito| esito.status.success());
+        if !messo {
+            eprintln!("attrib +O non riuscito: prova saltata");
+            return;
+        }
+        let percorso = file.to_string_lossy().into_owned();
+        let per_leggere = SenzaScaricare(std::sync::Arc::new(LocalFiles));
+        let rifiuto = per_leggere
+            .open(&percorso)
+            .err()
+            .map(|e| e.code().kind().code());
+        assert_eq!(rifiuto, Some("cloud.onlineOnly"));
+        assert!(LocalFiles.open(&percorso).is_ok(), "chi suona lo apre");
+        let _ = std::process::Command::new("attrib")
+            .arg("-O")
+            .arg(&file)
+            .output();
     }
 }

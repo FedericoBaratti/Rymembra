@@ -339,6 +339,10 @@ function riassuntoScansione(esito: EsitoScansione): string {
   if (esito.rimozioniRinviate > 0) {
     parti.push(t("settings.scan.held.strong", { n: esito.rimozioniRinviate }));
   }
+  // I segnaposto di OneDrive & C. non letti, per non farli scaricare (D-101).
+  if (esito.soloInRete > 0) {
+    parti.push(t("settings.scan.onlineOnly.strong", { n: esito.soloInRete }));
+  }
   return parti.join(" · ");
 }
 
