@@ -1162,6 +1162,16 @@ export interface CopiaDiPrima {
   messaDaParte: string;
 }
 
+/**
+ * La libreria che la copia del Microsoft Store può prendere al primo avvio
+ * (`manutenzione::LibreriaDiPrimaIpc`): della copia installata dal sito, o sua
+ * prima dell'aggiornamento.
+ */
+export interface LibreriaDiPrima {
+  /** Dove sta. */
+  cartella: string;
+}
+
 /** Quanto ha liberato una pulizia a mano, e lo stato dopo. */
 export interface EsitoPulizia {
   /** Righe di copertina tolte dal database. */

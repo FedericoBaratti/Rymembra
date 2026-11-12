@@ -138,6 +138,7 @@ import { AnnuncioScansione } from "./parti/AnnuncioScansione";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
+import { LibreriaDiPrima } from "./parti/LibreriaDiPrima";
 import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
@@ -4192,6 +4193,9 @@ export function App() {
                         guasto che dura finché qualcuno non fa qualcosa. Vedi
                         `parti/AvvisoConti.tsx`. */}
                     <AvvisoConti onNotizia={setNotizia} />
+                    {/* La copia del Microsoft Store, al primo avvio, propone la
+                        libreria che c'era: vedi `parti/LibreriaDiPrima.tsx`. */}
+                    {!MOBILE && <LibreriaDiPrima onErrore={segnalaErrore} />}
                     {/* Qui e non solo nella terza colonna: la colonna si può
                         chiudere, e il lettore flottante sparisce quando non c'è un
                         brano — cioè proprio nei due casi in cui il dispositivo

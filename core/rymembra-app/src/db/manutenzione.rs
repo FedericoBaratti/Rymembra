@@ -646,37 +646,8 @@ pub fn torna_alla_copia(
 ) -> Result<Ritorno, AppError> {
     let sorgente = verifica_la_copia(copia)?;
     let messa_da_parte = metti_da_parte(connection, percorso)?;
-    {
-        let ritorno = rusqlite::backup::Backup::new(&sorgente, connection).map_err(|err| {
-            super::codice_da_sqlite("ritorno alla copia di prima dell'aggiornamento", &err)
-        })?;
-        // Tutte le pagine in un passo: la transazione sulla destinazione è una
-        // sola, e un database occupato si riprova qualche volta.
-        let mut tentativi = 0_u32;
-        loop {
-            match ritorno.step(-1) {
-                Ok(rusqlite::backup::StepResult::Done) => break,
-                Ok(_) if tentativi < 20 => {
-                    tentativi += 1;
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Ok(_) => {
-                    return Err(AppError::new(ErrorCode::DbLocked)
-                        .with_cause("ritorno alla copia: il database resta occupato"));
-                }
-                Err(err) => {
-                    return Err(super::codice_da_sqlite(
-                        "ritorno alla copia di prima dell'aggiornamento",
-                        &err,
-                    ));
-                }
-            }
-        }
-    }
+    rimetti_da(connection, &sorgente)?;
     drop(sorgente);
-    // Il ritorno è nel giornale: si riporta nel file, così chi apre dopo trova
-    // la copia intera anche senza il `-wal`.
-    let _ = svuota_il_giornale(connection);
     let versione = super::user_version(connection)?;
     if versione != copia.versione {
         return Err(AppError::new(ErrorCode::DbOpenFailed {
@@ -717,6 +688,66 @@ pub fn torna_alla_copia_del_file(
     })?;
     super::prepara_connessione_secondaria(&connection);
     torna_alla_copia(&mut connection, percorso, copia)
+}
+
+/// Copia dentro il database di `connection`, che resta aperto, il database di
+/// `sorgente`, pagina per pagina e in una transazione sola; poi riporta il
+/// giornale nel file.
+///
+/// È l'API di backup di SQLite letta al contrario: la destinazione è la
+/// libreria. O passa tutto o niente — un passo che fallisce lascia la
+/// libreria com'era —, il `-wal` resta quello del suo file, e nessun file si
+/// rinomina sotto le altre connessioni.
+fn rimetti_da(connection: &mut Connection, sorgente: &Connection) -> Result<(), AppError> {
+    let guasto = |err: &rusqlite::Error| {
+        super::codice_da_sqlite("copia di un database dentro la libreria", err)
+    };
+    {
+        let passo =
+            rusqlite::backup::Backup::new(sorgente, connection).map_err(|err| guasto(&err))?;
+        // Tutte le pagine in un passo: la transazione sulla destinazione è una
+        // sola, e un database occupato si riprova qualche volta.
+        let mut tentativi = 0_u32;
+        loop {
+            match passo.step(-1) {
+                Ok(rusqlite::backup::StepResult::Done) => break,
+                Ok(_) if tentativi < 20 => {
+                    tentativi += 1;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Ok(_) => {
+                    return Err(AppError::new(ErrorCode::DbLocked)
+                        .with_cause("copia dentro la libreria: il database resta occupato"));
+                }
+                Err(err) => return Err(guasto(&err)),
+            }
+        }
+    }
+    // La copia è nel giornale: si riporta nel file, così chi apre dopo la
+    // trova intera anche senza il `-wal`.
+    let _ = svuota_il_giornale(connection);
+    Ok(())
+}
+
+/// Mette nel database aperto su `connection` il contenuto del database in
+/// `sorgente`, che dev'essere sano e già alla versione di questa build.
+///
+/// Serve alla copia del Microsoft Store che prende la libreria della copia
+/// dell'installatore (`trasloco::copia_la_libreria_di`): là la sorgente è una
+/// copia dei file, già portata avanti con [`super::aggiorna_una_copia`].
+///
+/// # Errori
+///
+/// `db.corrupt` se la sorgente è danneggiata, `db.openFailed` se non si apre o
+/// non è alla versione di questa build; `db.*` se SQLite rifiuta, e allora la
+/// libreria è quella di prima.
+pub fn sostituisci_con(connection: &mut Connection, sorgente: &Path) -> Result<(), AppError> {
+    let aperta = verifica_la_copia(&CopiaDiPrima {
+        percorso: sorgente.to_path_buf(),
+        versione: super::LATEST_VERSION,
+        quando_ms: 0,
+    })?;
+    rimetti_da(connection, &aperta)
 }
 
 /// La copia aperta in sola lettura, se è sana e contiene lo schema che il nome

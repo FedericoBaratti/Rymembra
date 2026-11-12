@@ -42,7 +42,7 @@ mod migrations;
 pub use manutenzione::{
     Controllo, CopiaDiPrima, ISTANTANEE_TENUTE, Istantanea, Ritorno, controlla_il_file,
     controllo_rapido, copia_di_prima, nome_istantanea, nome_messa_da_parte, ottimizza,
-    svuota_il_giornale, torna_alla_copia, torna_alla_copia_del_file,
+    sostituisci_con, svuota_il_giornale, torna_alla_copia, torna_alla_copia_del_file,
 };
 pub use migrations::{LATEST_VERSION, MIGRATIONS, Migration};
 
@@ -371,6 +371,31 @@ pub fn open(path: &Path) -> Result<Opened, AppError> {
         )
     })?;
     open_connection(connection, Some(path))
+}
+
+/// Porta alla versione di questa build la **copia** di un database che sta in
+/// `percorso`, e la chiude. Restituisce la versione da cui è partita.
+///
+/// Non è [`open`]: non scrive il contesto del modulo, che descrive la libreria
+/// e non un file di passaggio, e non fa l'istantanea di prima delle
+/// migrazioni — la copia è già una copia, e l'originale resta dov'è. Serve a
+/// `trasloco::copia_la_libreria_di`, che porta nella copia del Microsoft Store
+/// la libreria di un'altra copia sullo stesso PC.
+///
+/// # Errori
+///
+/// `db.openFailed` se il file non si apre; `db.versionAhead` se è di una
+/// versione più nuova; `db.migrationFailed` se una migrazione cade.
+pub fn aggiorna_una_copia(percorso: &Path) -> Result<u32, AppError> {
+    let connection = Connection::open(crate::files::percorso_lungo(percorso)).map_err(|err| {
+        db_error(
+            ErrorCode::DbOpenFailed {
+                path: Some(percorso.display().to_string()),
+            },
+            &err,
+        )
+    })?;
+    open_connection(connection, None).map(|aperto| aperto.version_before)
 }
 
 /// Un database in memoria, per i test e per una diagnosi a vuoto.

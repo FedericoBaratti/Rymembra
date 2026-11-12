@@ -715,6 +715,160 @@ pub async fn manutenzione_torna_alla_copia(app: AppHandle) -> Esito<()> {
     .map_err(errore)
 }
 
+// ── la libreria di prima, per la copia del Microsoft Store ─────────────────
+
+/// Dove si ricorda che la proposta è stata fatta: `copiata` o `rifiutata`.
+/// Si propone una volta sola.
+const CHIAVE_LIBRERIA_DI_PRIMA: &str = "store.libreria_di_prima";
+
+/// Quel che la proposta mostra.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibreriaDiPrimaIpc {
+    /// Dove sta la libreria da prendere.
+    pub cartella: String,
+}
+
+/// La libreria che la copia del Microsoft Store può prendere, se va proposta
+/// adesso (D-97).
+///
+/// Dalla 3.2.1 la copia del Store tiene una libreria sua (vedi
+/// `cartella_di_serie` in `lib.rs`). Quella che c'era — della copia installata
+/// dal sito, o sua prima dell'aggiornamento — si propone al primo avvio, una
+/// volta sola, e solo se la libreria di qui è ancora vuota: niente brani e
+/// niente playlist. Una libreria che qualcuno ha già cominciato a riempire non
+/// si sostituisce con una domanda.
+///
+/// # Errori
+///
+/// `db.*` se la libreria non risponde. Fuori dal Store, e senza una libreria
+/// da prendere, `None`.
+#[tauri::command]
+pub async fn store_libreria_di_prima(app: AppHandle) -> Esito<Option<LibreriaDiPrimaIpc>> {
+    let Some(cartella) = app
+        .try_state::<crate::LibreriaDiPrima>()
+        .and_then(|libreria| libreria.0.clone())
+    else {
+        return Ok(None);
+    };
+    in_disparte("libreria di prima", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Ok(None);
+        };
+        let da_proporre = con_libreria(&stato, |libreria| {
+            let chiesta =
+                rymembra_app::settings::read(&libreria.connection, CHIAVE_LIBRERIA_DI_PRIMA)?
+                    .is_some();
+            let vuota: bool = libreria
+                .connection
+                .query_row(
+                    "SELECT NOT EXISTS (SELECT 1 FROM tracks)
+                        AND NOT EXISTS (SELECT 1 FROM playlists)",
+                    [],
+                    |riga| riga.get(0),
+                )
+                .map_err(|err| db::codice_da_sqlite("la libreria è vuota?", &err))?;
+            Ok(!chiesta && vuota)
+        })?;
+        Ok(da_proporre.then(|| LibreriaDiPrimaIpc {
+            cartella: cartella.display().to_string(),
+        }))
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Prende la [`LibreriaDiPrimaIpc`] proposta: la copia nella libreria di qui
+/// (`trasloco::copia_la_libreria_di`, l'originale non si tocca) e chiude
+/// Rymembra, che riaperto la trova al suo posto.
+///
+/// Si chiude perché quel che è partito all'avvio — le cartelle sorvegliate,
+/// lo specchio del cloud, la coda — viene dalla libreria vuota di prima.
+///
+/// # Errori
+///
+/// `library.scanBusy` durante una scansione; quelli della copia, e allora la
+/// libreria di qui è com'era e Rymembra resta aperto.
+#[tauri::command]
+pub async fn store_copia_libreria_di_prima(app: AppHandle) -> Esito<()> {
+    let Some(da) = app
+        .try_state::<crate::LibreriaDiPrima>()
+        .and_then(|libreria| libreria.0.clone())
+    else {
+        return Err(errore(fuori_servizio()));
+    };
+    in_disparte("copia della libreria di prima", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(fuori_servizio());
+        };
+        let Some(a) = stato.cartella_dati().map(std::path::Path::to_path_buf) else {
+            return Err(fuori_servizio());
+        };
+        let Some(_turno) = stato.turno_di_manutenzione() else {
+            return Err(AppError::new(ErrorCode::LibraryScanBusy));
+        };
+        let esito = con_libreria(&stato, |libreria| {
+            let copiata =
+                rymembra_app::trasloco::copia_la_libreria_di(&mut libreria.connection, &da, &a)?;
+            rymembra_app::settings::write(
+                &libreria.connection,
+                CHIAVE_LIBRERIA_DI_PRIMA,
+                "copiata",
+            )?;
+            Ok(copiata)
+        });
+        match esito {
+            Ok(copiata) => {
+                nota!(
+                    "[manutenzione] libreria di prima copiata da {} file={} gia_presenti={}",
+                    da.display(),
+                    copiata.file,
+                    copiata.gia_presenti
+                );
+                crate::spegnimento::chiedi();
+                app.exit(0);
+                Ok(())
+            }
+            Err(err) => {
+                nota!(
+                    "[manutenzione] copia della libreria di prima non riuscita codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// «Comincia da capo»: la proposta non si rifà.
+///
+/// # Errori
+///
+/// `db.*` se la libreria non risponde.
+#[tauri::command]
+pub async fn store_rifiuta_libreria_di_prima(app: AppHandle) -> Esito<()> {
+    in_disparte("libreria di prima rifiutata", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(fuori_servizio());
+        };
+        con_libreria(&stato, |libreria| {
+            rymembra_app::settings::write(
+                &libreria.connection,
+                CHIAVE_LIBRERIA_DI_PRIMA,
+                "rifiutata",
+            )
+        })
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
 /// Pulisce la cache delle copertine adesso, e dice quanto ha liberato.
 ///
 /// # Errori

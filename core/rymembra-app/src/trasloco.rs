@@ -1275,6 +1275,132 @@ fn elenco_di(percorsi: &[PathBuf]) -> String {
         .join(", ")
 }
 
+// ── la libreria di un'altra copia sullo stesso PC ────────────────────────────
+
+/// La cartella di passaggio, dentro quella che riceve, dove arrivano i file
+/// del database prima di entrare nella libreria.
+const ARRIVO: &str = "arrivo";
+
+/// Le cartelle che viaggiano con la libreria: le copertine, che il database
+/// nomina per impronta, e le skin installate, che `skin.active` può nominare.
+/// Il resto — il diario, le copie del profilo — è dell'altra copia.
+const CARTELLE_DELLA_LIBRERIA: [&str; 2] = ["copertine", "skin"];
+
+/// Quel che [`copia_la_libreria_di`] ha portato, oltre al database.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Copiata {
+    /// I file di copertine e skin copiati.
+    pub file: u64,
+    /// Quelli che c'erano già, lasciati com'erano.
+    pub gia_presenti: u64,
+}
+
+/// Copia nella libreria aperta su `connection`, che sta in `a`, la libreria di
+/// un'altra copia di Rymembra che sta in `da`. L'originale non si tocca.
+///
+/// # A chi serve
+///
+/// Alla copia del Microsoft Store, che tiene una libreria sua in una cartella
+/// che fuori dal pacchetto non esiste: aprire sul posto quella della copia
+/// installata dal sito voleva dire il `rymembra.db` vero col `-wal` e lo
+/// `-shm` nella cartella privata del pacchetto, cioè un database diviso fra
+/// due posti. Al primo avvio la copia del Store propone di prendere quella che
+/// c'è — della copia del sito, o sua di prima dell'aggiornamento: dall'interno
+/// del pacchetto si vedono nello stesso posto.
+///
+/// # Come
+///
+/// 1. il database si copia **coi file**, `.db` e `-wal` (lo `-shm` si
+///    ricostruisce), in una cartella di passaggio dentro `a`: SQLite non apre
+///    mai l'originale, accanto al quale aprirlo da dentro il pacchetto farebbe
+///    nascere un giornale privato;
+/// 2. la copia si porta alla versione di questa build
+///    ([`db::aggiorna_una_copia`]): una libreria scritta da una versione più
+///    nuova si rifiuta;
+/// 3. entra nella libreria aperta ([`db::sostituisci_con`]), in una
+///    transazione sola;
+/// 4. copertine e skin si copiano accanto, senza sovrascrivere niente;
+/// 5. la cartella di passaggio se ne va.
+///
+/// Chi chiama chiude poi l'applicazione: quel che si era aperto all'avvio — le
+/// cartelle sorvegliate, lo specchio del cloud — viene dalla libreria vuota di
+/// prima.
+///
+/// # Errori
+///
+/// `fs.*` se un file non si legge o non si scrive; `db.versionAhead` se la
+/// libreria è di una versione più nuova; i `db.*` del database copiato. In
+/// tutti i casi prima del passo 3 la libreria è quella di prima.
+pub fn copia_la_libreria_di(
+    connection: &mut rusqlite::Connection,
+    da: &Path,
+    a: &Path,
+) -> Result<Copiata, rymembra_domain::errors::AppError> {
+    let guasto = |percorso: &Path, err: &io::Error| {
+        crate::files::io_error(&percorso.display().to_string(), err)
+    };
+    let arrivo = a.join(ARRIVO);
+    let _ = fs::remove_dir_all(&arrivo);
+    fs::create_dir_all(&arrivo).map_err(|err| guasto(&arrivo, &err))?;
+    let esito = (|| {
+        let [wal, _, database] = file_del_database(da, NOME_DATABASE);
+        let [wal_arrivo, _, database_arrivo] = file_del_database(&arrivo, NOME_DATABASE);
+        fs::copy(&database, &database_arrivo).map_err(|err| guasto(&database, &err))?;
+        if wal.is_file() {
+            fs::copy(&wal, &wal_arrivo).map_err(|err| guasto(&wal, &err))?;
+        }
+        db::aggiorna_una_copia(&database_arrivo)?;
+        db::sostituisci_con(connection, &database_arrivo)?;
+        let mut copiata = Copiata::default();
+        for nome in CARTELLE_DELLA_LIBRERIA {
+            copia_senza_sovrascrivere(&da.join(nome), &a.join(nome), &mut copiata)?;
+        }
+        Ok(copiata)
+    })();
+    let _ = fs::remove_dir_all(&arrivo);
+    esito
+}
+
+/// Copia l'albero `da` in `a`, file per file, lasciando stare quelli che ci
+/// sono già. Una cartella `da` che non c'è non è un guasto: non c'è niente da
+/// portare.
+fn copia_senza_sovrascrivere(
+    da: &Path,
+    a: &Path,
+    copiata: &mut Copiata,
+) -> Result<(), rymembra_domain::errors::AppError> {
+    if !da.is_dir() {
+        return Ok(());
+    }
+    for voce in walkdir::WalkDir::new(da).min_depth(1) {
+        let voce = voce.map_err(|err| {
+            let percorso = err.path().unwrap_or(da).display().to_string();
+            crate::files::io_error(&percorso, &io::Error::other(err.to_string()))
+        })?;
+        let Ok(relativo) = voce.path().strip_prefix(da) else {
+            continue;
+        };
+        let destinazione = a.join(relativo);
+        if voce.file_type().is_dir() {
+            fs::create_dir_all(&destinazione)
+                .map_err(|err| crate::files::io_error(&destinazione.display().to_string(), &err))?;
+        } else if voce.file_type().is_file() {
+            if esiste(&destinazione) {
+                copiata.gia_presenti += 1;
+                continue;
+            }
+            if let Some(cartella) = destinazione.parent() {
+                fs::create_dir_all(cartella)
+                    .map_err(|err| crate::files::io_error(&cartella.display().to_string(), &err))?;
+            }
+            fs::copy(voce.path(), &destinazione)
+                .map_err(|err| crate::files::io_error(&voce.path().display().to_string(), &err))?;
+            copiata.file += 1;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -1594,6 +1720,142 @@ mod prove {
             voci.insert(nome, contenuto);
         }
         voci
+    }
+
+    /// I byte di ogni file sotto `radice`: per dire che una cartella con dentro
+    /// un database vero non è stata toccata.
+    fn byte_dell_albero(radice: &Path) -> BTreeMap<String, Vec<u8>> {
+        walkdir::WalkDir::new(radice)
+            .min_depth(1)
+            .into_iter()
+            .map(|voce| voce.expect("voce"))
+            .filter(|voce| voce.file_type().is_file())
+            .map(|voce| {
+                (
+                    relativo(radice, voce.path()),
+                    fs::read(voce.path()).expect("contenuto"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn la_libreria_di_un_altra_copia_entra_e_l_originale_resta() {
+        // La copia del Microsoft Store, al primo avvio, con la sua libreria
+        // appena creata, prende quella della copia installata dal sito: una
+        // 3.2.0 (schema 38) con un brano e un ascolto, le copertine, una skin.
+        let base = tempfile::tempdir().expect("cartella temporanea");
+        let installatore = base.path().join("io.github.federicobaratti.rymembra");
+        let store = base.path().join("io.github.federicobaratti.rymembra.store");
+        fs::create_dir_all(&installatore).expect("cartella dell'installatore");
+        {
+            let vecchia =
+                rusqlite::Connection::open(installatore.join(NOME_DATABASE)).expect("apertura");
+            for migrazione in db::MIGRATIONS.iter().filter(|m| m.version <= 38) {
+                vecchia.execute_batch(migrazione.sql).expect("migrazione");
+            }
+            vecchia
+                .execute_batch(
+                    "PRAGMA user_version = 38;
+                     INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                         file_size, date_added, date_modified)
+                     VALUES (1, 'C:/Musica/a.flac', 'k', 'Dal sito', 'A', 'B', 1, 0, 0);
+                     INSERT INTO play_history (track_id, played_at, ms_played)
+                     VALUES (1, 1700000000000, 200000);",
+                )
+                .expect("la libreria di prima");
+        }
+        scrivi(&installatore, "copertine/ab/abcdef.jpg", "JPG");
+        scrivi(&installatore, "copertine/cd/cdef.jpg", "ALTRA");
+        scrivi(
+            &installatore,
+            &format!("skin/notte.{ESTENSIONE_SKIN}"),
+            "SKIN",
+        );
+        scrivi(&installatore, "diario/rymembra.log", "DIARIO");
+        let prima = byte_dell_albero(&installatore);
+
+        fs::create_dir_all(&store).expect("cartella del Store");
+        let mut aperta = db::open(&store.join(NOME_DATABASE))
+            .expect("la libreria nuova")
+            .connection;
+        scrivi(&store, "copertine/ab/abcdef.jpg", "SUA");
+
+        let copiata =
+            copia_la_libreria_di(&mut aperta, &installatore, &store).expect("la copia entra");
+
+        let (titolo, ascolti, versione): (String, i64, i64) = aperta
+            .query_row(
+                "SELECT title, (SELECT COUNT(*) FROM play_history),
+                        (SELECT user_version FROM pragma_user_version) FROM tracks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("la libreria dopo");
+        assert_eq!(titolo, "Dal sito");
+        assert_eq!(ascolti, 1);
+        assert_eq!(versione, i64::from(db::LATEST_VERSION), "portata avanti");
+        assert_eq!(
+            copiata,
+            Copiata {
+                file: 2,
+                gia_presenti: 1
+            }
+        );
+        assert_eq!(
+            leggi(&store, "copertine/ab/abcdef.jpg"),
+            "SUA",
+            "niente si sovrascrive"
+        );
+        assert_eq!(leggi(&store, "copertine/cd/cdef.jpg"), "ALTRA");
+        assert_eq!(
+            leggi(&store, &format!("skin/notte.{ESTENSIONE_SKIN}")),
+            "SKIN"
+        );
+        assert!(
+            !store.join("diario/rymembra.log").exists(),
+            "il diario è dell'altra"
+        );
+        assert!(
+            !store.join(ARRIVO).exists(),
+            "la cartella di passaggio se ne va"
+        );
+        drop(aperta);
+        assert_eq!(
+            byte_dell_albero(&installatore),
+            prima,
+            "l'originale non si tocca"
+        );
+    }
+
+    #[test]
+    fn una_libreria_piu_nuova_non_entra() {
+        let base = tempfile::tempdir().expect("cartella temporanea");
+        let installatore = base.path().join("installatore");
+        let store = base.path().join("store");
+        fs::create_dir_all(&installatore).expect("cartella");
+        fs::create_dir_all(&store).expect("cartella");
+        drop(db::open(&installatore.join(NOME_DATABASE)).expect("apertura"));
+        rusqlite::Connection::open(installatore.join(NOME_DATABASE))
+            .expect("apertura")
+            .execute_batch("PRAGMA user_version = 999")
+            .expect("dal futuro");
+        let mut aperta = db::open(&store.join(NOME_DATABASE))
+            .expect("la libreria nuova")
+            .connection;
+
+        let errore = copia_la_libreria_di(&mut aperta, &installatore, &store)
+            .expect_err("più nuova di questa build");
+
+        assert_eq!(
+            errore.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::DbVersionAhead
+        );
+        assert!(!store.join(ARRIVO).exists());
+        let brani: i64 = aperta
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(brani, 0, "la libreria è quella di prima");
     }
 
     /// Una cartella dati com'era sul disco di chi usava la versione di prima, o
