@@ -2340,6 +2340,8 @@
   "imports.resume": "Riprendi ({n})",
   "imports.retryFailed": "Riprova i {n} non riusciti",
   "imports.retryFailed.uno": "Riprova quello non riuscito",
+  "imports.retryNotFound": "Riprova anche i {n} non trovati",
+  "imports.retryNotFound.uno": "Riprova anche quello non trovato",
   "imports.pasteLink": "Incolla un link…",
   "imports.track.searching": "cerco nei cataloghi…",
   "imports.track.fetching": "prendo…",

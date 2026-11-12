@@ -2340,6 +2340,8 @@
   "imports.resume": "Resume ({n})",
   "imports.retryFailed": "Retry the {n} that failed",
   "imports.retryFailed.uno": "Retry the one that failed",
+  "imports.retryNotFound": "Also retry the {n} not found",
+  "imports.retryNotFound.uno": "Also retry the one not found",
   "imports.pasteLink": "Paste a link…",
   "imports.track.searching": "searching the catalogs…",
   "imports.track.fetching": "fetching…",

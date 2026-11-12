@@ -727,6 +727,7 @@ pub fn run() {
             procura::annulla_scarico,
             procura::scarico_stato,
             procura::riprova_falliti,
+            procura::riprova_introvabili,
             procura::da_comprare,
             procura::cerca_dove_comprare,
             procura::alternative_ammettile,

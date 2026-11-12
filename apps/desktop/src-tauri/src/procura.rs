@@ -64,7 +64,7 @@ use crate::spegnimento::Emette as _;
 use rymembra_app::desiderati::{self, Desiderato};
 use rymembra_app::settings;
 use rymembra_app::tag_scrittura::{Provenienza, scrivi_tag};
-use rymembra_catalogo::Cataloghi;
+use rymembra_catalogo::{Cataloghi, StradaRapida};
 use rymembra_domain::destinazione::destinazione;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::esterno::{Disponibilita, Fonte};
@@ -349,6 +349,16 @@ pub fn scarico_stato(
     // lascerebbe passare in mezzo un brano che si conclude, e i totali
     // direbbero una cosa mentre le righe per importazione ne dicono un'altra.
     let (conteggi, sorgenti, alternative) = con_libreria(&stato, |libreria| {
+        // Una volta per libreria, e qui perché è la prima cosa che ogni
+        // finestra chiede: le copie che la 3.2.0 chiudeva come prese senza un
+        // file tornano in attesa prima di essere contate, e la pagina delle
+        // importazioni le mostra con «Riprendi». Dopo la prima volta è la
+        // lettura di una riga di `settings`. Vedi
+        // `desiderati::riapri_le_copie_chiuse_senza_file`.
+        let riaperte = desiderati::riapri_le_copie_chiuse_senza_file(&libreria.connection)?;
+        if riaperte > 0 {
+            nota!("[procura] {riaperte} copie chiuse senza file dalla 3.2.0 tornano in coda");
+        }
         Ok((
             desiderati::conteggi(&libreria.connection)?,
             desiderati::per_sorgente(&libreria.connection)?,
@@ -496,6 +506,22 @@ pub fn cerca_dove_comprare(negozio: String, cosa: String) -> Esito<()> {
 pub fn riprova_falliti(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
     let quanti = con_libreria(&stato, |libreria| {
         desiderati::riprova_falliti(&libreria.connection)
+    })
+    .map_err(errore)?;
+    if quanti > 0 {
+        avvia(&app);
+    }
+    Ok(quanti)
+}
+
+/// Rimette in coda anche i non trovati, e riavvia.
+///
+/// Il gesto «Riprova anche i non trovati»: vedi
+/// [`desiderati::riprova_introvabili`] per perché è un gesto a parte.
+#[tauri::command]
+pub fn riprova_introvabili(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
+    let quanti = con_libreria(&stato, |libreria| {
+        desiderati::riprova_introvabili(&libreria.connection)
     })
     .map_err(errore)?;
     if quanti > 0 {
@@ -915,9 +941,11 @@ fn trova(
     // resta quello; licenza, permesso e pagina invece si rileggono adesso dal
     // catalogo, perché la riga non li porta (l'importazione da un link non li
     // salvava, e un profilo importato li scrive come vuole) e perché un artista
-    // può aver spento lo scarico nel frattempo. Un candidato che oggi non si
-    // può tenere arriva a `preleva`, che dice di no prima della rete, e la riga
-    // va fra quelle da comprare con il motivo giusto.
+    // può aver spento lo scarico nel frattempo. E il file riletto dev'essere il
+    // brano della riga: titolo e interprete finiscono nei tag, e un profilo può
+    // scrivere l'indirizzo di un brano qualunque sotto il nome di un altro. Vedi
+    // `rymembra_catalogo::strada_rapida`, che decide; qui si esegue.
+    let mut negato = None;
     if let Some(url) = desiderato
         .brano
         .fonte_url
@@ -925,7 +953,11 @@ fn trova(
         .filter(|u| !u.is_empty())
         && desiderato.brano.disponibilita == Disponibilita::Scaricabile
     {
-        return procura.cataloghi.da_prelevare(desiderato.fonte, url);
+        let riletto = procura.cataloghi.da_prelevare(desiderato.fonte, url)?;
+        match rymembra_catalogo::strada_rapida(riletto, &desiderato.brano) {
+            StradaRapida::Prendi(scelto) => return Ok(Some(scelto)),
+            StradaRapida::Cerca { negato: suo } => negato = suo,
+        }
     }
     let ricerca = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
     // Solo quel che si può tenere: un file che si ascolta e basta non è una
@@ -942,7 +974,12 @@ fn trova(
         // tutti: con l'Archive giù, o una sua scheda muta, il brano può stare
         // proprio lì. Allora è un guasto, ritentabile o no come dice lui, e la
         // riga resta fra quelle che `riprova_falliti` rimette in coda.
-        None => ricerca.guasti.into_iter().next().map_or(Ok(None), Err),
+        //
+        // Se invece hanno risposto tutti e non c'è niente, il file della riga
+        // che oggi non si può tenere è la risposta: arriva a `preleva`, che
+        // dice di no prima della rete, e la riga va fra quelle da comprare con
+        // il motivo vero invece di «non c'è».
+        None => ricerca.guasti.into_iter().next().map_or(Ok(negato), Err),
     }
 }
 

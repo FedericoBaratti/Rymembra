@@ -474,6 +474,108 @@ pub fn riprova_falliti(connection: &Connection) -> Result<u32, AppError> {
     Ok(u32::try_from(quanti).unwrap_or(u32::MAX))
 }
 
+/// Rimette in coda anche i brani che nessun catalogo aveva, azzerandone i
+/// tentativi.
+///
+/// È il gesto «Riprova anche i non trovati», e non sostituisce
+/// [`riprova_falliti`]: chi lo preme sa che rifà le ricerche di tutta la lista
+/// della spesa, che è più lungo. Serve perché un `introvabile` non dice
+/// **perché** lo è: fino alla 3.2.0 una ricerca annullata, o fatta con l'Internet
+/// Archive giù, finiva qui come un brano che non c'è, e non c'è modo di
+/// distinguerla da uno vero. Decidere se rifare la ricerca tocca a chi guarda
+/// l'elenco.
+///
+/// Restituisce quanti ne sono tornati in coda.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn riprova_introvabili(connection: &Connection) -> Result<u32, AppError> {
+    let quanti = connection
+        .execute(
+            "UPDATE desiderati
+             SET download_state = ?1, download_attempts = 0, updated_at = ?3
+             WHERE download_state = ?2",
+            rusqlite::params![
+                Stato::Attesa.come_testo(),
+                Stato::Introvabile.come_testo(),
+                now_ms()
+            ],
+        )
+        .map_err(|err| db_error("rimessa in coda dei non trovati", &err))?;
+    Ok(u32::try_from(quanti).unwrap_or(u32::MAX))
+}
+
+/// La chiave di `settings` che dice che [`riapri_le_copie_chiuse_senza_file`]
+/// è già passata su questa libreria.
+const CHIAVE_RIAPERTE: &str = "desiderati.riaperteSenzaFile";
+
+/// Riapre, una volta sola, le righe che la 3.2.0 chiudeva come `fatto` senza
+/// nessun file.
+///
+/// # Che cosa ripara
+///
+/// Nella 3.2.0 «c'è già» voleva dire una riga di `tracks` qualunque con la
+/// stessa chiave, e un brano ascoltato da Esplora è una riga di `tracks` senza
+/// file: il riferimento di catalogo. Così «Tieni una copia» su un brano già
+/// ascoltato — o un'importazione che lo conteneva — veniva chiusa da
+/// [`riconcilia`] come `fatto` senza scaricare niente, e nessuno lo diceva. La
+/// regola giusta ([`SOLO_DA_PRENDERE`]) vale per le righe nuove; questa passa
+/// sulle vecchie.
+///
+/// # Quali righe, e quali no
+///
+/// `fatto` senza `download_path` (cioè chiusa da [`riconcilia`] e non da un
+/// prelievo), con un riferimento di catalogo della stessa chiave, e senza
+/// nessun file di quella chiave. Il riferimento è la prova che a chiuderla è
+/// stato lui: una riga chiusa da un file che poi l'utente ha cancellato non ne
+/// ha uno, e non si riscarica da sola.
+///
+/// # Perché una volta sola, e senza migrazione
+///
+/// Perché la regola nuova non chiude più righe così, quindi dopo il primo
+/// passaggio non ce ne sono altre da trovare. La chiave in `settings` evita di
+/// rifare l'interrogazione a ogni apertura; scriverla **dopo** la `UPDATE` vuol
+/// dire che, se la seconda scrittura cade, il passaggio si ripete la volta
+/// dopo, e ripeterlo non riapre niente due volte: le righe riaperte non sono
+/// più `fatto`.
+///
+/// Le righe riaperte tornano in `attesa`: la coda le prende quando parte — da
+/// un'importazione o da «Riprendi» nella pagina delle importazioni, che le
+/// mostra. Non parte da sola: si scaricherebbe dalla rete senza un gesto.
+///
+/// Restituisce quante righe ha riaperto.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn riapri_le_copie_chiuse_senza_file(connection: &Connection) -> Result<u32, AppError> {
+    if crate::settings::read(connection, CHIAVE_RIAPERTE)?.is_some() {
+        return Ok(0);
+    }
+    let quante = connection
+        .execute(
+            "UPDATE desiderati
+             SET download_state = ?1, download_attempts = 0, download_error = NULL,
+                 updated_at = ?3
+             WHERE download_state = ?2
+               AND download_path IS NULL
+               AND EXISTS (SELECT 1 FROM tracks AS t
+                            WHERE t.track_key = desiderati.track_key AND t.path IS NULL)
+               AND NOT EXISTS (SELECT 1 FROM tracks AS t
+                                WHERE t.track_key = desiderati.track_key
+                                  AND t.path IS NOT NULL)",
+            rusqlite::params![
+                Stato::Attesa.come_testo(),
+                Stato::Fatto.come_testo(),
+                now_ms()
+            ],
+        )
+        .map_err(|err| db_error("riapertura delle copie chiuse senza file", &err))?;
+    crate::settings::write(connection, CHIAVE_RIAPERTE, "1")?;
+    Ok(u32::try_from(quante).unwrap_or(u32::MAX))
+}
+
 // ── il viaggio di ritorno ───────────────────────────────────────────────────
 
 /// Cosa ha rimesso a posto una passata di [`riconcilia`].
@@ -871,12 +973,13 @@ pub fn da_comprare(connection: &Connection, limite: u32) -> Result<Vec<DaComprar
         .query_map(
             rusqlite::params![Stato::Introvabile.come_testo(), limite],
             |riga| {
+                let motivo: String = riga.get(4)?;
                 Ok(DaComprare {
                     titolo: riga.get(0)?,
                     artista: riga.get(1)?,
                     album: riga.get(2)?,
                     provenienza: riga.get(3)?,
-                    motivo: riga.get(4)?,
+                    motivo: codice_del_motivo(&motivo).to_owned(),
                 })
             },
         )
@@ -887,6 +990,28 @@ pub fn da_comprare(connection: &Connection, limite: u32) -> Result<Vec<DaComprar
         esito.push(trovato.map_err(|err| db_error("elenco di quel che resta da comprare", &err))?);
     }
     Ok(esito)
+}
+
+/// Il codice del catalogo degli errori dentro un `download_error`.
+///
+/// La coda scrive `codice: causa` (vedi `codice_e_causa` in `procura.rs`): la
+/// causa serve al diario, il codice alla finestra, che lo confronta per dire
+/// «si ascolta, non si copia». Fino alla 3.2.0 [`da_comprare`] restituiva la
+/// colonna intera, il confronto non riusciva mai, e quella distinzione non
+/// arrivava a nessuno.
+///
+/// Quel che non comincia con un codice — una frase senza codice, come la
+/// scriveva Esplora fino alla 3.2.0, o un campo vuoto — vale
+/// `download.noResults`: è un brano che si compra, e non si sa altro.
+fn codice_del_motivo(grezzo: &str) -> &str {
+    let testa = grezzo.split_once(": ").map_or(grezzo, |(codice, _)| codice);
+    let e_un_codice =
+        testa.contains('.') && testa.chars().all(|c| c.is_ascii_alphanumeric() || c == '.');
+    if e_un_codice {
+        testa
+    } else {
+        "download.noResults"
+    }
 }
 
 #[cfg(test)]
@@ -1415,6 +1540,145 @@ mod prove {
         );
         // …e i tentativi ripartono da zero, o il ritentativo si esaurirebbe
         // subito contro il freno che aveva appena fermato quel brano.
+        assert_eq!(coda.first().map(|d| d.tentativi), Some(0));
+    }
+
+    #[test]
+    fn da_comprare_restituisce_il_codice_nudo() {
+        // La coda scrive in `download_error` il codice **e** la causa, che al
+        // diario servono tutti e due; la finestra confronta il codice nudo per
+        // dire «si ascolta, non si copia».
+        let connection = connessione();
+        let negato = inserisci(&connection, "Solo da ascoltare");
+        segna_introvabile(
+            &connection,
+            negato,
+            "download.notPermitted: «x» si può ascoltare ma non tenere",
+        )
+        .expect("segna");
+        let nessuno = inserisci(&connection, "Da nessuna parte");
+        segna_introvabile(&connection, nessuno, "download.noResults").expect("segna");
+        // Una frase senza codice, come la scriveva Esplora fino alla 3.2.0.
+        let vecchia = inserisci(&connection, "Una frase");
+        segna_introvabile(
+            &connection,
+            vecchia,
+            "nessun catalogo libero lo distribuisce",
+        )
+        .expect("segna");
+
+        let motivi: HashMap<String, String> = da_comprare(&connection, 10)
+            .expect("lettura")
+            .into_iter()
+            .map(|r| (r.titolo, r.motivo))
+            .collect();
+        assert_eq!(
+            motivi.get("Solo da ascoltare").map(String::as_str),
+            Some("download.notPermitted")
+        );
+        assert_eq!(
+            motivi.get("Da nessuna parte").map(String::as_str),
+            Some("download.noResults")
+        );
+        assert_eq!(
+            motivi.get("Una frase").map(String::as_str),
+            Some("download.noResults")
+        );
+    }
+
+    /// Un riferimento di catalogo e la sua riga di «Tieni una copia», come li
+    /// lasciava la 3.2.0: la riga chiusa `fatto` senza nessun file.
+    fn copia_chiusa_senza_file(connection: &mut Connection, titolo: &str) {
+        let candidato = rymembra_domain::scelta::Candidato {
+            url: format!("/v1/tracks/{titolo}/download"),
+            titolo: titolo.to_owned(),
+            autore: Some("Un'artista".to_owned()),
+            durata_sec: Some(200),
+            fonte: Fonte::Audius,
+            licenza: Licenza::CreativeCommons("by".to_owned()),
+            disponibilita: Disponibilita::Scaricabile,
+            ..rymembra_domain::scelta::Candidato::default()
+        };
+        crate::catalogo::aggiungi(connection, std::slice::from_ref(&candidato))
+            .expect("il riferimento entra");
+        crate::catalogo::da_tenere(connection, std::slice::from_ref(&candidato), "x")
+            .expect("la riga si scrive");
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE title = ?1",
+                [titolo],
+            )
+            .expect("la chiusura della 3.2.0");
+    }
+
+    #[test]
+    fn una_copia_chiusa_senza_file_dalla_versione_di_prima_torna_in_coda() {
+        let mut connection = crate::db::open_in_memory()
+            .expect("apertura in memoria")
+            .connection;
+        copia_chiusa_senza_file(&mut connection, "Senza file");
+        // Accanto, una riga chiusa per davvero: il suo file c'è.
+        let presa = inserisci(&connection, "Presa");
+        in_libreria(&connection, "Presa", "/musica/presa.flac");
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE id = ?1",
+                [presa],
+            )
+            .expect("chiusura");
+        // E una chiusa da un file che poi è stato cancellato: senza un
+        // riferimento con la sua chiave non si sa che cosa fosse, e non si
+        // riscarica da sola.
+        let sparita = inserisci(&connection, "Sparita");
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE id = ?1",
+                [sparita],
+            )
+            .expect("chiusura");
+
+        assert_eq!(riapri_le_copie_chiuse_senza_file(&connection), Ok(1));
+        let coda = leggi_da_scaricare(&connection, 10).expect("lettura");
+        assert_eq!(
+            coda.iter()
+                .map(|d| d.brano.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Senza file"]
+        );
+        assert_eq!(conteggi(&connection).expect("conteggi").fatto, 2);
+
+        // Una volta sola: una riga richiusa a torto dopo l'aggiornamento non
+        // può esistere (la regola nuova non lo fa), e ripassare a ogni
+        // apertura sarebbe un'interrogazione per niente.
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE title = 'Senza file'",
+                [],
+            )
+            .expect("chiusura");
+        assert_eq!(riapri_le_copie_chiuse_senza_file(&connection), Ok(0));
+    }
+
+    #[test]
+    fn riprovare_i_non_trovati_li_rimette_in_coda() {
+        // Il gesto esplicito «Riprova anche i non trovati»: un «introvabile»
+        // scritto da un annullamento o da un catalogo muto della 3.2.0 non si
+        // distingue da uno vero, e decidere tocca a chi guarda l'elenco.
+        let connection = connessione();
+        let introvabile = inserisci(&connection, "Introvabile");
+        segna_introvabile(&connection, introvabile, "download.noResults").expect("segna");
+        let fallito = inserisci(&connection, "Fallito");
+        segna_fallito(&connection, fallito, "download.network", false).expect("segna");
+
+        assert_eq!(riprova_introvabili(&connection), Ok(1));
+        let coda = leggi_da_scaricare(&connection, 10).expect("lettura");
+        assert_eq!(
+            coda.iter()
+                .map(|d| d.brano.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Introvabile"],
+            "i falliti hanno il loro gesto"
+        );
         assert_eq!(coda.first().map(|d| d.tentativi), Some(0));
     }
 

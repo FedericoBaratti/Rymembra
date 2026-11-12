@@ -655,6 +655,9 @@ export const ipc = {
   // `ConteggiScarico`. Restituisce quanti ne sono tornati in coda, e se sono
   // più di zero riavvia la coda da sé.
   riprovaFalliti: () => invoke<number>("riprova_falliti"),
+  // Il gesto a parte per gli introvabili: «Riprova anche i non trovati». Rifà
+  // le ricerche di tutta la lista della spesa, e riavvia la coda come sopra.
+  riprovaIntrovabili: () => invoke<number>("riprova_introvabili"),
   // Quel che resta da comprare: le righe `introvabile`, distinte per titolo e
   // artista. Un comando a parte e non un campo di `scaricoStato`, che viene
   // chiamato decine di volte in una coda: questa lista può essere lunga come la

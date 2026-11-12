@@ -505,9 +505,11 @@ fn fra_i_desiderati(
 
 /// Perché quel brano sta nella lista della spesa e non in libreria.
 ///
-/// Finisce in `download_error`, che è la colonna che `da_comprare` mostra come
-/// «motivo»: non è un guasto, è la risposta.
-const MOTIVO_SOLO_NEGOZIO: &str = "nessun catalogo libero lo distribuisce";
+/// Finisce in `download_error`, che è la colonna da cui `da_comprare` prende il
+/// «motivo»: non è un guasto, è la risposta. Nella forma `codice: causa` della
+/// coda (`codice_e_causa` in `procura.rs`), perché `da_comprare` ne restituisce
+/// il codice: fino alla 3.2.0 qui c'era la sola frase, in italiano.
+const MOTIVO_SOLO_NEGOZIO: &str = "download.noResults: nessun catalogo libero lo distribuisce";
 
 #[cfg(test)]
 mod prove {
@@ -782,7 +784,7 @@ mod prove {
         let primo = da_comprare.first().expect("la riga");
         assert_eq!(primo.titolo, "Un disco che si compra");
         assert_eq!(primo.provenienza, "cercato: prova");
-        assert_eq!(primo.motivo, MOTIVO_SOLO_NEGOZIO);
+        assert_eq!(primo.motivo, "download.noResults");
     }
     /// «Tieni una copia» mette il brano in coda di prelievo, non in libreria.
     ///
