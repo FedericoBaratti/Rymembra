@@ -1270,7 +1270,7 @@ pub(crate) fn cartella_di_cache(app: &tauri::AppHandle, nome: &str) -> Option<Pa
         .path()
         .app_local_data_dir()
         .ok()
-        .map(|base| cartella_di_serie(base, aggiornamenti::gestita_dallo_store()));
+        .map(|base| cartella_di_serie(base, dallo_store()));
     dove_sta_la_cache(a_mano, dati.as_deref(), locale.as_deref(), nome)
 }
 
@@ -1329,12 +1329,25 @@ fn cartella_dati(
     app: &tauri::AppHandle,
 ) -> Result<Result<trasloco::Scelta, trasloco::Errore>, tauri::Error> {
     let (nuova, vecchia) = variabili_dei_dati();
-    let dallo_store = aggiornamenti::gestita_dallo_store();
+    let store = dallo_store();
     scegli_la_cartella(nuova, vecchia, || {
         app.path()
             .app_data_dir()
-            .map(|base| cartella_di_serie(base, dallo_store))
+            .map(|base| cartella_di_serie(base, store))
     })
+}
+
+/// Questa copia è quella del Microsoft Store?
+///
+/// Lo dice il marcatore accanto all'eseguibile (`aggiornamenti::gestita_dallo_store`).
+/// Sul telefono mai: il Store è del computer, e lì `aggiornamenti` è il modulo
+/// di `mobile/`, che non ha marcatori da cercare.
+fn dallo_store() -> bool {
+    #[cfg(desktop)]
+    let store = aggiornamenti::gestita_dallo_store();
+    #[cfg(not(desktop))]
+    let store = false;
+    store
 }
 
 /// Il suffisso della cartella dati, e della cache locale, della copia del
@@ -1380,7 +1393,7 @@ pub(crate) struct LibreriaDiPrima(pub(crate) Option<PathBuf>);
 
 /// Dove sta la [`LibreriaDiPrima`], se c'è.
 fn libreria_di_prima(app: &tauri::AppHandle, a_mano: bool) -> Option<PathBuf> {
-    if a_mano || !aggiornamenti::gestita_dallo_store() {
+    if a_mano || !dallo_store() {
         return None;
     }
     app.path()
@@ -1413,7 +1426,7 @@ fn prepara_i_dati(scelta: &trasloco::Scelta) -> Result<(), trasloco::Errore> {
     // sarebbe quella vera, fuori dal pacchetto, e il trasloco la porterebbe
     // nella cartella privata, lontano dalla copia del sito. Quel che c'è lo
     // propone la [`LibreriaDiPrima`], copiandolo e lasciandolo dov'è.
-    if aggiornamenti::gestita_dallo_store() {
+    if dallo_store() {
         percorsi.precedente = None;
     }
     let rapporto = trasloco::trasloca(&percorsi)?;
