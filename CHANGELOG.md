@@ -321,7 +321,7 @@ up with a phone that did not exist before.
 - **Linking two devices with the QR pairs them for «Listen together» too**,
   without the four-digit code: each tells the other its «Listen together» key
   inside the encrypted link. A PC you blocked stays blocked: the QR code does
-  not prove you want it back — «Unblock», or pairing it again with the
+  not prove you want it back — “Unblock”, or pairing it again with the
   four-digit code, does.
 - **Listen together away from home**, between devices linked with the QR. A
   linked device that hosts a session tells so in its presence, and shows in
@@ -655,7 +655,7 @@ signing the sync documents is planned work (`SECURITY.md`).
   join» did not say who.
 - **«Listen together» could be found only at the bottom of Settings** on the
   phone: the player's button is in the desktop's player bar. It is now on
-  the «More» page.
+  the “More” page.
 - The first line of the phone's log says which Android and which phone, and
   a window error says where it happened, not only its message.
 - **A track deleted on the phone came back.** Android's trash is not a
@@ -798,7 +798,7 @@ undoing only 039 leaves `insieme_indirizzi` behind, and the next update to
 this version then fails on it: `DROP TABLE insieme_indirizzi; DROP TABLE
 dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
 PRAGMA user_version = 38;`. The links are lost (made again with a QR code),
-and so are the listens not yet sent; the «Listen together» addresses come
+and so are the listens not yet sent; the “Listen together” addresses come
 back at the next connection.
 
 ### Known limits
