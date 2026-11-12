@@ -1319,6 +1319,9 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         if tolti > 0 {
             turno.segna_cambiamenti();
         }
+        // La scrittura è finita: il turno delle scansioni si lascia qui, e la
+        // coda non lo tiene occupato.
+        drop(turno);
         // E brani che la coda non deve più tenere, come dopo «Togli dalla
         // libreria» (R23-8): il brano che suonava restava in coda col suo id,
         // e con «ripeti tutto» tornava per essere saltato con un avviso. Dopo
