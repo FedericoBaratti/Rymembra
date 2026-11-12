@@ -618,6 +618,7 @@
   "delete.library.body": "I file restano dove sono. Se stanno ancora sotto una cartella sorvegliata, la prossima scansione li rimette, e con loro il voto, il preferito, i conteggi d’ascolto e il posto nelle playlist, che restano da parte per 90 giorni. Per non rivederli, «Elimina dal disco…».",
   "delete.library.ok": "Togli",
   "delete.disk.title": "Eliminare {brani} dal disco?",
+  "delete.disk.refused.title": "Non si può eliminare dal disco",
   "delete.disk.body": "I file vanno nel Cestino. Dal Cestino si recuperano, ma Rymembra non se ne accorge da sé: rimessi al loro posto entro 90 giorni, «Scansiona» li ritrova col voto, il preferito, i conteggi d’ascolto e il posto nelle playlist.",
   "delete.disk.ok": "Elimina",
   "delete.disk.network": "{brani} stanno su un'unità di rete o rimovibile, dove il Cestino non c'è: saranno cancellati per sempre, senza modo di recuperarli. Gli altri vanno nel Cestino come sempre.",

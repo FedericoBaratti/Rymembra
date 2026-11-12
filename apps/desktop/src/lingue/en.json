@@ -618,6 +618,7 @@
   "delete.library.body": "The files stay where they are. If they are still inside a watched folder, the next scan puts them back, and with them the rating, the like, the play counts and the place in playlists, which are kept aside for 90 days. To not see them again, use “Delete from disk…”.",
   "delete.library.ok": "Remove",
   "delete.disk.title": "Delete {brani} from disk?",
+  "delete.disk.refused.title": "Can’t delete from disk",
   "delete.disk.body": "The files go to the Recycle Bin. You can get them back from there, but Rymembra will not notice on its own: put them back within 90 days and “Scan” finds them again with their rating, like, play counts and place in playlists.",
   "delete.disk.ok": "Delete",
   "delete.disk.network": "{brani} are on a network or removable drive, which has no Recycle Bin: they will be deleted for good, with no way to get them back. The others go to the Recycle Bin as usual.",

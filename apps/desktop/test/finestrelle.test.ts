@@ -198,3 +198,15 @@ test("gli avvisi che nascono pieni parlano da una regione d'annuncio", () => {
   // E l'allarme «non c'è audio» lo dice una copia sola anche lui.
   assert.equal([...audio.matchAll(/role="alert"/g)].length, 1);
 });
+
+// ── R18-16: un'eliminazione che non si può fare non si chiede ──────────────
+
+test("Elimina dal disco rifiutato (un brano d'immagine CD da solo): il titolo dice il fatto", () => {
+  const conferma = readFileSync(new URL("../src/ConfermaEliminazione.tsx", import.meta.url), "utf8");
+  const titolo = conferma.slice(conferma.indexOf("const titolo ="), conferma.indexOf("return (", conferma.indexOf("const titolo =")));
+  assert.match(titolo, /rifiuto !== null/);
+  assert.match(titolo, /delete\.disk\.refused\.title/);
+  // E il testo del Cestino non si dice sopra un'eliminazione che non avverrà.
+  const descrizione = conferma.slice(conferma.indexOf("descrizione={"), conferma.indexOf("ruolo="));
+  assert.match(descrizione, /rifiuto/);
+});
