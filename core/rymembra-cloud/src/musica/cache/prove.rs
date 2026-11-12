@@ -841,6 +841,7 @@ fn una_copia_coperta_e_non_ricomposta_si_ricompone_alla_riapertura() {
         ],
         usato_ms: 0,
         da_misurare: false,
+        formato: FORMATO_INDICE,
     };
     scrivi_indice(cartella.path(), &nome, &indice).unwrap();
 
@@ -921,4 +922,95 @@ fn il_nome_dei_file_non_dice_cosa_c_e_dentro() {
         versione: "v".to_owned(),
     };
     assert_ne!(unita.nome(), spostata.nome());
+}
+
+/// Il difetto della 3.2.0 lasciato da un crash: la copia era già stata messa in
+/// ordine, ma l'indice era ancora quello dei pezzi in fila. Ricomposta di nuovo
+/// seguendo quell'indice, ne uscirebbe un brano mescolato, servito e misurato
+/// così. Un indice senza formato è di prima della correzione: si butta, con la
+/// sua copia, e il brano si riscarica (R06b-8).
+#[test]
+fn un_indice_a_pezzi_sopra_una_copia_gia_in_ordine_non_si_ricompone() {
+    let cartella = tempfile::tempdir().unwrap();
+    let brano = contenuto(1000, 9);
+    let a = chiave("A", "v1");
+    let nome = a.nome();
+    // La copia è già in ordine…
+    std::fs::write(percorso(cartella.path(), &nome, DATI), &brano).unwrap();
+    // …ma l'indice, della 3.2.0 (senza `formato`), dice ancora dove stavano i
+    // pezzi prima.
+    let vecchio = serde_json::json!({
+        "conto": a.conto,
+        "id": a.id,
+        "versione": a.versione,
+        "totale": 1000,
+        "segmenti": [
+            { "da": 0, "fino": 500, "pos": 500 },
+            { "da": 500, "fino": 1000, "pos": 0 },
+        ],
+        "usato_ms": 0,
+        "da_misurare": false,
+    });
+    std::fs::write(
+        percorso(cartella.path(), &nome, INDICE),
+        serde_json::to_vec(&vecchio).unwrap(),
+    )
+    .unwrap();
+
+    let cache = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    aspetta(&cache);
+    if let Some(copia) = cache.copia_completa(&a) {
+        assert_eq!(
+            std::fs::read(copia).unwrap(),
+            brano,
+            "una copia ricomposta da un indice vecchio è un brano mescolato"
+        );
+    }
+    let (sorgente, _) = finta(&brano, true);
+    let con = cache.con(Some(a), sorgente);
+    assert_eq!(con.pezzo(0, 1000).unwrap().byte, brano, "i byte del brano");
+}
+
+/// Due processi sulla stessa cartella (due avvii con la stessa
+/// `RYMEMBRA_DATI`): il secondo non deve cancellare il `.dati` che il primo sta
+/// scrivendo e non ha ancora indicizzato, né scriverci accanto. Si apre spento,
+/// e lo dice (R28-8).
+#[test]
+fn una_seconda_apertura_della_stessa_cartella_si_rifiuta() {
+    let cartella = tempfile::tempdir().unwrap();
+    let byte = contenuto(50_000, 3);
+    let prima = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    let (sorgente, _) = finta(&byte, true);
+    let in_corso = prima.con(Some(chiave("F1", "v1")), sorgente);
+    in_corso.pezzo(0, 2000).unwrap();
+    let dati = file_con(cartella.path(), &[DATI]);
+    assert_eq!(dati.len(), 1, "il primo processo sta scrivendo");
+
+    let seconda = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    assert_eq!(
+        file_con(cartella.path(), &[DATI]),
+        dati,
+        "il .dati del primo resta"
+    );
+    assert!(seconda.condivisa(), "la seconda sa di non essere sola");
+    assert!(!seconda.stato().2, "e passa diretta");
+    // Accenderla dalle impostazioni non la accende: la cartella è dell'altro.
+    seconda.imposta(TETTO_DI_SERIE, true);
+    assert!(!seconda.stato().2);
+    let (sorgente, richieste) = finta(&byte, true);
+    let diretta = seconda.con(Some(chiave("F2", "v1")), sorgente);
+    assert_eq!(diretta.pezzo(0, 10).unwrap().byte, byte[..10]);
+    assert_eq!(richieste.lock().unwrap().len(), 1);
+    assert_eq!(
+        file_con(cartella.path(), &[DATI]),
+        dati,
+        "la seconda non scrive nella cartella dell'altra"
+    );
+    drop(in_corso);
+    drop(prima);
+    drop(seconda);
+    // Chiusa la prima, la cartella torna di chi la apre.
+    let terza = Cache::apri(cartella.path(), TETTO_DI_SERIE, true).unwrap();
+    assert!(!terza.condivisa());
+    assert!(terza.stato().2);
 }

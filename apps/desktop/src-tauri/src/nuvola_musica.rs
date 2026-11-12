@@ -297,6 +297,17 @@ pub fn avvia(app: &AppHandle) {
     let specchio_condiviso: SpecchioCondiviso = Arc::new(RwLock::new(specchio_caricato));
     let depositi: Depositi = Arc::default();
     let aperta = cartella_cache(app).map(|cartella| Cache::apri(cartella, tetto, cache_attiva));
+    // Due avvii con la stessa cartella dei dati: la cache è dell'altro, e
+    // questa resta spenta (R28-8). Lo si dice, perché da fuori sembrerebbe
+    // una cache che non tiene niente.
+    if let Some(Ok(cache)) = &aperta
+        && cache.condivisa()
+    {
+        nota!(
+            "[nuvola] la cartella della cache dei brani è in uso da un altro processo di \
+             Rymembra: qui resta spenta"
+        );
+    }
     let archivio = match aperta {
         // Nessuna cartella per la cache: la cartella dei dati l'ha scelta una
         // variabile e la libreria non si è aperta. Quella locale è dell'istanza
