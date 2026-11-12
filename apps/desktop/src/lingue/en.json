@@ -85,6 +85,7 @@
   "action.enqueue": "Add to queue",
   "action.addToPlaylist": "Add to a playlist…",
   "nav.aria": "Navigation",
+  "nav.skipToContent": "Skip to content",
   "nav.albums": "Albums",
   "nav.artists": "Artists",
   "nav.tracks": "Tracks",

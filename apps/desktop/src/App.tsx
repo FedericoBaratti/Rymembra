@@ -166,6 +166,7 @@ import { BarraCerca } from "./parti/BarraCerca";
 import { PilloleLibreria } from "./parti/PilloleLibreria";
 import type { Vista } from "./parti/Navigazione";
 import { PilaToast } from "./parti/PilaToast";
+import { SaltaAlContenuto } from "./parti/SaltaAlContenuto";
 import { ToastImportazioni } from "./parti/ToastImportazioni";
 import { usePlaylistAperta } from "./playlistAperta";
 import {
@@ -4316,6 +4317,10 @@ export function App() {
           finestra vera su cui provare. `inert` la toglie dal fuoco e dai clic
           finché lo Studio la copre. */}
       <div className="finestra-app" inert={studioVisibile}>
+        {/* Il primo comando della finestra: «Salta al contenuto», che si vede
+            solo col fuoco e porta oltre la navigazione (R16-10). Sul telefono
+            no: la si percorre col dito o con TalkBack, che ha i suoi salti. */}
+        {!MOBILE && <SaltaAlContenuto />}
        {/* Il menù delle righe della coda, per tutti i posti dove la coda si
            disegna: vedi `MenuDellaCoda` in `Coda.tsx`. */}
        <MenuDellaCoda value={menuDellaCoda}>
