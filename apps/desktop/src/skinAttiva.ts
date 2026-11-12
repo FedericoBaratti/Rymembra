@@ -41,7 +41,11 @@ import {
 import { t } from "./lingue";
 import { useStatoPresente } from "./presenza";
 import { segnoAccento } from "./segnoAccento";
+import { FINESTRA_MAIUSC_MS, maiuscAllAvvio } from "./tieniSkin";
 import { vinceLUltima } from "./ultima";
+
+/** La skin di serie: quella a cui riporta Maiusc tenuto all'avvio. */
+const DI_SERIE = "plain";
 
 /**
  * Un file `.ryskin` con l'id di una skin installata e diversa: la domanda
@@ -60,6 +64,27 @@ export interface Sostituita {
   nuova: VersioneSkin;
   vecchia: VersioneSkin;
   percorso: string;
+  /**
+   * L'impronta di quella appena installata: «Rimettila» scambia le due solo se
+   * è ancora lei, e un secondo clic non torna indietro (R04b-4).
+   */
+  impronta: string | null;
+}
+
+/**
+ * Dove si torna se chi ha indossato una skin da un file non la tiene.
+ *
+ * Un'altra skin installata, oppure — se il file ha sostituito proprio quella
+ * indossata — la sua versione di prima, che sta fra le copie.
+ */
+export type Ritorno =
+  | { tipo: "skin"; id: string; nome: string }
+  | { tipo: "copia"; nome: string; percorso: string; impronta: string | null };
+
+/** «Tieni questa skin?»: la skin appena indossata da un file, e il ritorno. */
+export interface DaTenere {
+  nome: string;
+  ritorno: Ritorno;
 }
 
 /** Una bozza dello Studio provata sulla finestra. */
@@ -107,8 +132,11 @@ export interface SkinDellaFinestra {
    * selettore — chiedendo prima di sostituire una skin con lo stesso id.
    */
   installaDaFile: (percorso: string) => Promise<void>;
-  /** Una skin appena installata da un file: indossata subito, o prima guardata. */
-  dopoInstallazione: (installata: VoceSkin) => Promise<void>;
+  /**
+   * Una skin appena installata da un file: indossata subito, o prima guardata.
+   * Con un `ritorno`, indossata chiede se tenerla.
+   */
+  dopoInstallazione: (installata: VoceSkin, ritorno?: Ritorno | null) => Promise<void>;
   /** La sostituzione che aspetta una risposta: vedi `ConfermaSostituzione`. */
   daSostituire: DaSostituire | null;
   /** «Sostituisci»: il file si reinstalla, e quella di prima va da parte. */
@@ -120,11 +148,31 @@ export interface SkinDellaFinestra {
   /** Chiude la notizia della sostituzione. */
   chiudiSostituita: () => void;
   /**
-   * Rimette la skin che un'installazione aveva sostituito: la copia tenuta da
-   * parte (`VoceSkin.sostituita.percorso`) si reinstalla, e quella di adesso va
-   * da parte al suo posto.
+   * Rimette la skin che l'ultima sostituzione ha messo da parte: la copia si
+   * reinstalla, e quella di adesso va da parte al suo posto. Senza domande, ma
+   * solo se quella installata è ancora quella della notizia.
    */
-  rimettiSostituita: (percorso: string) => Promise<void>;
+  rimettiSostituita: () => Promise<void>;
+  /** «Indossala» dall'esame della skin appena installata. */
+  indossaEsaminata: () => void;
+  /**
+   * «Non ora» dall'esame. Se il file aveva sostituito proprio la skin
+   * indossata, torna la sua versione di prima: rifiutare deve voler dire non
+   * indossarla (R04b-3).
+   */
+  nonOraEsaminata: () => void;
+  /** «Tieni questa skin?» aperta, o `null`. Vedi `tieniSkin.ts`. */
+  daTenere: DaTenere | null;
+  /** «Tienila». */
+  tieniSkin: () => void;
+  /** «Torna indietro», o i quindici secondi passati senza risposta. */
+  tornaIndietro: () => Promise<void>;
+  /** La skin di prima, se all'avvio Maiusc tenuto ha rimesso Plain. */
+  tornataAPlain: { id: string; nome: string } | null;
+  /** Rimette la skin che Maiusc all'avvio aveva tolto. */
+  rimettiDopoMaiusc: () => Promise<void>;
+  /** Chiude la notizia di Maiusc all'avvio. */
+  chiudiTornataAPlain: () => void;
   /** «Prova sull'app». */
   iniziaProva: (bozza: { skin: Skin; sorgente: string; id: string }) => void;
   /** Torna dalla prova alla skin di prima. */
@@ -143,6 +191,14 @@ export interface SkinDellaFinestra {
  */
 export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFinestra {
   const [skin, setSkin] = useState<VoceSkin[]>([]);
+  /** L'elenco di adesso, per chi lo legge da un gesto: i nomi del ritorno. */
+  const skinAdesso = useRef(skin);
+  skinAdesso.current = skin;
+  /**
+   * `scegliSkin`, per chi la chiama da un ascoltatore nato prima di lei: il
+   * Maiusc all'avvio.
+   */
+  const scegliSkinRef = useRef<(id: string) => Promise<void>>(() => Promise.resolve());
   /**
    * La skin appena installata che il nucleo vuole far guardare prima di
    * indossarla: vedi `ConfermaSkin.tsx` e `dopoInstallazione`.
@@ -185,11 +241,46 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       .then((s) => {
         applicaSkin(s);
         setSkinAttiva(s);
+        avvio.current = performance.now();
       })
       .catch((e: unknown) => segnalaErrore(e));
     // Una volta sola, all'apertura: `segnalaErrore` è stabile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Maiusc tenuto all'avvio: la finestra si rimette Plain (D-48).
+   *
+   * È l'uscita da una skin che rende la finestra inservibile, e per questo non
+   * passa da niente che la skin disegni: un tasto tenuto mentre l'app si apre.
+   * La scelta si scrive — al riavvio dopo resta Plain — e la notizia offre di
+   * rimettere quella di prima. Vedi `maiuscAllAvvio` in `tieniSkin.ts`.
+   */
+  const avvio = useRef<number | null>(null);
+  const [tornataAPlain, setTornataAPlain] = useStatoPresente<{ id: string; nome: string } | null>(
+    null,
+  );
+  const scattato = useRef(false);
+  useEffect(() => {
+    const sente = (e: KeyboardEvent) => {
+      const quando = avvio.current;
+      if (quando === null || scattato.current) return;
+      const trascorsi = performance.now() - quando;
+      if (trascorsi > FINESTRA_MAIUSC_MS) {
+        window.removeEventListener("keydown", sente, true);
+        return;
+      }
+      if (!maiuscAllAvvio(e, trascorsi)) return;
+      scattato.current = true;
+      window.removeEventListener("keydown", sente, true);
+      const prima = skinAttivaAdesso.current;
+      if (prima === null || prima.id === DI_SERIE) return;
+      const nome = skinAdesso.current.find((v) => v.id === prima.id)?.nome ?? prima.id;
+      void scegliSkinRef.current(DI_SERIE).then(() => setTornataAPlain({ id: prima.id, nome }));
+    };
+    window.addEventListener("keydown", sente, true);
+    return () => window.removeEventListener("keydown", sente, true);
+  }, [setTornataAPlain]);
 
   /** Rilegge le skin installate. Vince l'ultima, come `ricarica` in `libreria.ts`. */
   const [turnoSkin] = useState(vinceLUltima);
@@ -318,6 +409,7 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
     },
     [ricaricaSkin, rimettiDopoUnGuasto, segnalaErrore, tocca],
   );
+  scegliSkinRef.current = scegliSkin;
 
   /**
    * «Prova sull'app»: la finestra indossa la bozza compilata, lo Studio si
@@ -454,24 +546,64 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
   );
 
   /**
+   * Il ritorno di «Tieni questa skin?» e dell'esame, mentre la domanda è
+   * aperta: un ref e non lo stato della domanda, perché `daIndossare` resta la
+   * voce che `App` mostra (vedi `ConfermaSkin`).
+   */
+  const ritornoDellEsame = useRef<Ritorno | null>(null);
+  /** «Tieni questa skin?»: vedi `tieniSkin.ts`. */
+  const [daTenere, setDaTenere] = useStatoPresente<DaTenere | null>(null);
+
+  /**
+   * Dove si torna se una skin indossata da un file non si tiene: la skin
+   * scelta adesso, se è un'altra. `null` se non c'è niente da cui tornare —
+   * è già quella, o non si sa quale fosse.
+   */
+  const ritornoAllaScelta = useCallback((id: string): Ritorno | null => {
+    const prima = sceltaAdesso.current;
+    if (prima === undefined || prima === id) return null;
+    const nome = skinAdesso.current.find((v) => v.id === prima)?.nome ?? prima;
+    return { tipo: "skin", id: prima, nome };
+  }, []);
+
+  /**
+   * Indossa una skin arrivata da un file e chiede se tenerla (D-48).
+   *
+   * La domanda nasce **solo** qui, cioè dai file: «Rimettila», il Maiusc
+   * all'avvio, lo Studio e un profilo applicato rimettono o scelgono skin che
+   * si conoscono, e ritornare da sé dopo quindici secondi sarebbe un dispetto.
+   */
+  const indossaDaFile = useCallback(
+    async (voce: VoceSkin, ritorno: Ritorno | null) => {
+      await scegliSkin(voce.id);
+      if (ritorno !== null) setDaTenere({ nome: voce.nome, ritorno });
+    },
+    [scegliSkin, setDaTenere],
+  );
+
+  /**
    * Una skin appena installata da un file: indossata subito, o prima guardata.
    *
    * Installare e non provare sarebbe metà del gesto: chi sceglie un file di
    * skin vuole vederla. Ma una skin arriva da altri, e quando il nucleo dice
    * che c'è qualcosa da sapere prima — un testo che non si legge, un budget
-   * sforato (`esame.daConfermare`) — la si indossa dopo averlo detto. Intanto
-   * è già nell'elenco, quindi l'elenco si ricarica comunque.
+   * sforato, una cornice trasparente (`esame.daConfermare`) — la si indossa
+   * dopo averlo detto. Intanto è già nell'elenco, quindi l'elenco si ricarica
+   * comunque.
+   *
+   * `ritorno` è dove si torna se non la si tiene: senza, non si chiede.
    */
   const dopoInstallazione = useCallback(
-    async (installata: VoceSkin) => {
+    async (installata: VoceSkin, ritorno: Ritorno | null = null) => {
       if (installata.esame?.daConfermare === true) {
+        ritornoDellEsame.current = ritorno;
         setDaIndossare(installata);
         await ricaricaSkin();
         return;
       }
-      await scegliSkin(installata.id);
+      await indossaDaFile(installata, ritorno);
     },
-    [ricaricaSkin, scegliSkin, setDaIndossare],
+    [indossaDaFile, ricaricaSkin, setDaIndossare],
   );
 
   /**
@@ -501,9 +633,12 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
         setDaSostituire({ percorso, domanda: risposta.daSostituire });
         return;
       }
-      if (risposta.installata !== null) await dopoInstallazione(risposta.installata);
+      const installata = risposta.installata;
+      if (installata !== null) {
+        await dopoInstallazione(installata, ritornoAllaScelta(installata.id));
+      }
     },
-    [dopoInstallazione, setDaSostituire],
+    [dopoInstallazione, ritornoAllaScelta, setDaSostituire],
   );
 
   /**
@@ -521,47 +656,152 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
     [dopoRisposta, segnalaErrore],
   );
 
+  /**
+   * «Sostituisci». Il sì porta l'impronta della skin che la domanda mostrava:
+   * se nel frattempo ne è arrivata un'altra, il nucleo non scrive e la domanda
+   * si riapre con quella vera (R04b-5).
+   *
+   * Se il file sostituisce proprio la skin indossata, il ritorno non è «la
+   * skin di prima» — è la stessa — ma la sua versione di prima, che il nucleo
+   * ha appena messo fra le copie (R04b-3).
+   */
   const confermaSostituzione = useCallback(async () => {
     const quale = daSostituire;
     if (quale === null) return;
     setDaSostituire(null);
     try {
-      const risposta = await ipc.skinInstalla(quale.percorso, true);
+      const risposta = await ipc.skinInstalla(quale.percorso, true, quale.domanda.impronta);
+      if (risposta.daSostituire !== null) {
+        setDaSostituire({ percorso: quale.percorso, domanda: risposta.daSostituire });
+        return;
+      }
       const installata = risposta.installata;
       if (installata === null) return;
-      if (installata.sostituita !== undefined) {
+      const copia = installata.sostituita;
+      if (copia !== undefined) {
         setSostituita({
           nuova: quale.domanda.nuova,
           vecchia: quale.domanda.presente,
-          percorso: installata.sostituita.percorso,
+          percorso: copia.percorso,
+          impronta: risposta.impronta,
         });
       }
-      await dopoInstallazione(installata);
+      const ritorno: Ritorno | null =
+        installata.id === sceltaAdesso.current && copia !== undefined
+          ? {
+              tipo: "copia",
+              nome: quale.domanda.presente.nome,
+              percorso: copia.percorso,
+              impronta: risposta.impronta,
+            }
+          : ritornoAllaScelta(installata.id);
+      await dopoInstallazione(installata, ritorno);
     } catch (e) {
       segnalaErrore(e);
     }
-  }, [daSostituire, dopoInstallazione, segnalaErrore, setDaSostituire, setSostituita]);
+  }, [
+    daSostituire,
+    dopoInstallazione,
+    ritornoAllaScelta,
+    segnalaErrore,
+    setDaSostituire,
+    setSostituita,
+  ]);
 
   const annullaSostituzione = useCallback(() => setDaSostituire(null), [setDaSostituire]);
   const chiudiSostituita = useCallback(() => setSostituita(null), [setSostituita]);
 
   /**
-   * La copia tenuta da parte torna al suo posto. È un'installazione con il sì
-   * già dato: chi preme «Rimettila» ha già risposto, e il nucleo tiene da
-   * parte quella di adesso, così il gesto si può rifare al contrario.
+   * Una copia tenuta da parte torna al suo posto, e si indossa: la versione di
+   * prima della skin che si sta indossando. Senza domanda di ritorno — è quella
+   * che c'era — e solo se l'installata è ancora quella che il gesto sa di
+   * togliere: altrimenti il nucleo non scrive, e la domanda si apre.
    */
-  const rimettiSostituita = useCallback(
-    async (percorso: string) => {
-      setSostituita(null);
-      try {
-        const risposta = await ipc.skinInstalla(percorso, true);
-        if (risposta.installata !== null) await dopoInstallazione(risposta.installata);
-      } catch (e) {
-        segnalaErrore(e);
+  const rimettiCopia = useCallback(
+    async (percorso: string, impronta: string | null) => {
+      const risposta = await ipc.skinInstalla(percorso, true, impronta);
+      if (risposta.daSostituire !== null) {
+        setDaSostituire({ percorso, domanda: risposta.daSostituire });
+        return;
       }
+      if (risposta.installata !== null) await scegliSkin(risposta.installata.id);
     },
-    [dopoInstallazione, segnalaErrore, setSostituita],
+    [scegliSkin, setDaSostituire],
   );
+
+  /**
+   * «Rimettila» dalla notizia. È un'installazione col sì già dato: chi la preme
+   * ha già risposto, e il nucleo tiene da parte quella di adesso, così il gesto
+   * si può rifare al contrario. L'impronta lega il gesto alla skin che la
+   * notizia nomina: un secondo clic arrivato prima che la notizia sparisca
+   * trova installata un'altra skin, e non scambia di nuovo (R04b-4).
+   */
+  const rimettiSostituita = useCallback(async () => {
+    const quale = sostituita;
+    if (quale === null) return;
+    setSostituita(null);
+    setDaTenere(null);
+    try {
+      await rimettiCopia(quale.percorso, quale.impronta);
+    } catch (e) {
+      segnalaErrore(e);
+    }
+  }, [rimettiCopia, segnalaErrore, setDaTenere, setSostituita, sostituita]);
+
+  /** «Indossala» dall'esame: si indossa, e si chiede se tenerla. */
+  const indossaEsaminata = useCallback(() => {
+    const quale = daIndossare;
+    if (quale === null) return;
+    const ritorno = ritornoDellEsame.current;
+    ritornoDellEsame.current = null;
+    setDaIndossare(null);
+    void indossaDaFile(quale, ritorno);
+  }, [daIndossare, indossaDaFile, setDaIndossare]);
+
+  /**
+   * «Non ora» dall'esame. Di solito non cambia niente: la skin resta
+   * installata e non indossata. Ma se il file ha sostituito proprio quella
+   * indossata, la scelta punta già all'id nuovo, e al primo riavvio — o al
+   * primo passaggio del puntatore sulle schede — si sarebbe indossata la
+   * versione mai accettata. Torna quella di prima, dalle copie (R04b-3).
+   */
+  const nonOraEsaminata = useCallback(() => {
+    const ritorno = ritornoDellEsame.current;
+    ritornoDellEsame.current = null;
+    setDaIndossare(null);
+    if (ritorno?.tipo !== "copia") return;
+    setSostituita(null);
+    rimettiCopia(ritorno.percorso, ritorno.impronta).catch(segnalaErrore);
+  }, [rimettiCopia, segnalaErrore, setDaIndossare, setSostituita]);
+
+  const tieniSkin = useCallback(() => setDaTenere(null), [setDaTenere]);
+
+  /** «Torna indietro», o il tempo scaduto: la skin di prima, o la versione di prima. */
+  const tornaIndietro = useCallback(async () => {
+    const quale = daTenere;
+    if (quale === null) return;
+    setDaTenere(null);
+    try {
+      if (quale.ritorno.tipo === "skin") {
+        await scegliSkin(quale.ritorno.id);
+      } else {
+        setSostituita(null);
+        await rimettiCopia(quale.ritorno.percorso, quale.ritorno.impronta);
+      }
+    } catch (e) {
+      segnalaErrore(e);
+    }
+  }, [daTenere, rimettiCopia, scegliSkin, segnalaErrore, setDaTenere, setSostituita]);
+
+  /** «Rimettila» dalla notizia di Maiusc all'avvio. */
+  const rimettiDopoMaiusc = useCallback(async () => {
+    const quale = tornataAPlain;
+    if (quale === null) return;
+    setTornataAPlain(null);
+    await scegliSkin(quale.id);
+  }, [scegliSkin, setTornataAPlain, tornataAPlain]);
+  const chiudiTornataAPlain = useCallback(() => setTornataAPlain(null), [setTornataAPlain]);
+
 
   const installaSkin = useCallback(async () => {
     try {
@@ -601,6 +841,14 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       sostituita,
       chiudiSostituita,
       rimettiSostituita,
+      indossaEsaminata,
+      nonOraEsaminata,
+      daTenere,
+      tieniSkin,
+      tornaIndietro,
+      tornataAPlain,
+      rimettiDopoMaiusc,
+      chiudiTornataAPlain,
       iniziaProva,
       finisciProva,
       tieniProva,
@@ -628,6 +876,14 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
       sostituita,
       chiudiSostituita,
       rimettiSostituita,
+      indossaEsaminata,
+      nonOraEsaminata,
+      daTenere,
+      tieniSkin,
+      tornaIndietro,
+      tornataAPlain,
+      rimettiDopoMaiusc,
+      chiudiTornataAPlain,
       iniziaProva,
       finisciProva,
       tieniProva,

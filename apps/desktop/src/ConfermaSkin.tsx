@@ -24,14 +24,29 @@
  * la trappola del Tab, Escape, il fuoco che torna a chi l'aveva, la pagina
  * dietro inerte — viene tutto da `Dialogo`.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Dialogo } from "./Dialogo";
 import type { EsameSkin, MisuraSkin, SostituzioneSkin, VersioneSkin } from "./ipc";
 import { t } from "./lingue";
 import { unaVolta } from "./modale";
 import { Icona } from "./parti/Icone";
-import type { Sostituita } from "./skinAttiva";
+import type { DaTenere, Sostituita } from "./skinAttiva";
+import { SECONDI_PER_TENERE, secondiRimasti } from "./tieniSkin";
+
+/**
+ * Il nome di una skin dentro una frase, isolato col suo verso.
+ *
+ * Il nome lo scrive chi ha fatto la skin, e finisce nei titoli di domande che
+ * sono consensi: un nome in arabo o in ebraico dentro una frase italiana
+ * rovescerebbe l'ordine delle parole intorno. Il nucleo rifiuta già i segni di
+ * direzione dentro il nome (R09-12); l'isolamento — U+2068 … U+2069, il
+ * `<bdi>` di un testo semplice — tiene il nome al suo posto anche quando è
+ * scritto in un verso diverso da quello della frase.
+ */
+export function isolato(nome: string): string {
+  return `⁨${nome}⁩`;
+}
 
 export function ConfermaSkin({
   nome,
@@ -44,7 +59,7 @@ export function ConfermaSkin({
   onIndossa: () => void;
   onChiudi: () => void;
 }) {
-  const titolo = t("skin.review.title", { nome });
+  const titolo = t("skin.review.title", { nome: isolato(nome) });
   const numeri = (m: MisuraSkin) => ({ costo: m.costo, budget: m.budget });
   // Una risposta sola: un doppio clic su «Indossa» la indossava due volte.
   // Vedi `unaVolta` in `modale.ts`.
@@ -129,7 +144,9 @@ export function ConfermaSkin({
 function Versione({ skin }: { skin: VersioneSkin }) {
   return (
     <>
-      <strong>{skin.nome}</strong>
+      <strong>
+        <bdi>{skin.nome}</bdi>
+      </strong>
       {skin.versione !== "" && <> · {t("skin.replace.version", { versione: skin.versione })}</>}
       {skin.autore !== "" && <> · {t("skin.replace.by", { autore: skin.autore })}</>}
     </>
@@ -175,7 +192,7 @@ export function ConfermaSostituzione({
   };
   return (
     <Dialogo
-      titolo={t("skin.replace.title", { nome: domanda.presente.nome })}
+      titolo={t("skin.replace.title", { nome: isolato(domanda.presente.nome) })}
       descrizione={t("skin.replace.body")}
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
@@ -226,7 +243,11 @@ export function AvvisoSostituita({
   onRimetti: () => void;
   onChiudi: () => void;
 }) {
-  const nomi = { nuova: sostituita.nuova.nome, vecchia: sostituita.vecchia.nome };
+  const nomi = { nuova: isolato(sostituita.nuova.nome), vecchia: isolato(sostituita.vecchia.nome) };
+  // Una risposta sola: un doppio clic su «Rimettila» scambiava due volte, e
+  // lasciava addosso la skin da togliere (R04b-4). Il nucleo lo ferma anche da
+  // sé, con l'impronta; qui non parte nemmeno la seconda chiamata.
+  const [prima] = useState(unaVolta);
   return (
     <div className="notizia toast-card">
       <Icona nome="i-check" dim={16} />
@@ -235,9 +256,122 @@ export function AvvisoSostituita({
         type="button"
         className="bottone minuto btn-ghost"
         aria-label={t("skin.replace.undo.aria", nomi)}
-        onClick={onRimetti}
+        onClick={() => {
+          if (prima()) onRimetti();
+        }}
       >
         {t("skin.replace.undo")}
+      </button>
+      <button
+        type="button"
+        className="tasto icon-btn"
+        aria-label={t("common.close")}
+        onClick={onChiudi}
+      >
+        <Icona nome="i-x" dim={14} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * «Tieni “Notte”?» — dopo aver indossato una skin arrivata da un file (D-48).
+ *
+ * # Perché c'è
+ *
+ * Una skin valida può ancora rendere la finestra inservibile in modi che
+ * l'esame non vede tutti, e le Impostazioni da cui la si toglierebbe stanno
+ * dentro la finestra. Come quando si cambia la risoluzione dello schermo: se
+ * entro quindici secondi nessuno dice di tenerla, torna quella di prima. Chi
+ * non vede niente non deve trovare niente: basta aspettare.
+ *
+ * È un consenso, quindi la skin appena indossata non la ridisegna; il fuoco
+ * parte da «Torna», ed Escape vale «Torna»: nel dubbio si torna indietro. Il
+ * conto non si ferma col puntatore sopra, a differenza degli «Annulla» a tempo:
+ * qui il tempo è la via d'uscita, non una scadenza da allungare.
+ */
+export function TieniSkin({
+  daTenere,
+  onTieni,
+  onTorna,
+}: {
+  daTenere: DaTenere;
+  onTieni: () => void;
+  onTorna: () => void;
+}) {
+  const [prima] = useState(unaVolta);
+  const [scadenza] = useState(() => Date.now() + SECONDI_PER_TENERE * 1000);
+  const [restano, setRestano] = useState(SECONDI_PER_TENERE);
+  const torna = () => {
+    if (prima()) onTorna();
+  };
+  const tieni = () => {
+    if (prima()) onTieni();
+  };
+  useEffect(() => {
+    const giro = window.setInterval(() => {
+      const quanti = secondiRimasti(scadenza, Date.now());
+      setRestano(quanti);
+      if (quanti === 0 && prima()) onTorna();
+    }, 250);
+    return () => window.clearInterval(giro);
+    // Il conto parte una volta, all'apertura: `onTorna` cambia a ogni disegno.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scadenza]);
+  const nomi = { nome: isolato(daTenere.nome), prima: isolato(daTenere.ritorno.nome) };
+  return (
+    <Dialogo
+      titolo={t("skin.keep.title", nomi)}
+      descrizione={t("skin.keep.body", { ...nomi, secondi: SECONDI_PER_TENERE })}
+      ruolo="alertdialog"
+      classe="finestrella stretta glass-modal"
+      onChiudi={torna}
+      consenso
+    >
+      <div className="tasti-finestrella">
+        <button type="button" className="bottone" onClick={torna} data-fuoco-iniziale>
+          {/* Il numero non è annunciato a ogni secondo: lo dice la frase sopra,
+              una volta. */}
+          {t("skin.keep.back", nomi)} <span aria-hidden="true">({restano})</span>
+        </button>
+        <button type="button" className="bottone primario" onClick={tieni}>
+          {t("skin.keep.keep")}
+        </button>
+      </div>
+    </Dialogo>
+  );
+}
+
+/**
+ * «Hai tenuto premuto Maiusc: la finestra è tornata a Plain — Rimetti “Notte”».
+ *
+ * La stessa forma di `AvvisoSostituita`: è lo stesso gesto, rimettere quel che
+ * è appena stato tolto. Vedi `tieniSkin.ts`.
+ */
+export function AvvisoMaiusc({
+  nome,
+  onRimetti,
+  onChiudi,
+}: {
+  nome: string;
+  onRimetti: () => void;
+  onChiudi: () => void;
+}) {
+  const [prima] = useState(unaVolta);
+  const nomi = { nome: isolato(nome) };
+  return (
+    <div className="notizia toast-card">
+      <Icona nome="i-check" dim={16} />
+      <span>{t("skin.shift.done", nomi)}</span>
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        aria-label={t("skin.shift.undo.aria", nomi)}
+        onClick={() => {
+          if (prima()) onRimetti();
+        }}
+      >
+        {t("skin.shift.undo")}
       </button>
       <button
         type="button"

@@ -1804,6 +1804,7 @@ export function Impostazioni({
   esito,
   skin,
   ripiego,
+  ripiegoGuasto = null,
   accentoPermesso,
   accentoDinamico,
   onAccentoDinamico,
@@ -1885,6 +1886,8 @@ export function Impostazioni({
    * serie. `null` quando quel che si vede è quel che si è scelto.
    */
   ripiego: string | null;
+  /** Perché `ripiego` non si è indossata: il codice del guasto. Vedi `Skin.ripiegoGuasto`. */
+  ripiegoGuasto?: string | null;
   /**
    * La skin attiva permette l'accento dinamico (`capabilities.dynamicAccent`).
    *
@@ -2093,6 +2096,22 @@ export function Impostazioni({
    * in una X che compare al passaggio. Il foglio chiude da sé con Indietro.
    */
   const [menuSkin, setMenuSkin] = useState<Apertura | null>(null);
+  /**
+   * Un'anteprima accesa dal puntatore su una scheda delle skin. Se la pagina se
+   * ne va con la scheda ancora sotto il puntatore — «/», Ctrl+F, Ctrl+I, che
+   * cambiano pagina dalla tastiera — `pointerleave` non arriva, e la finestra
+   * restava dipinta con la skin provata mentre quella scelta era un'altra
+   * (R12-4). Allo smontaggio si revoca.
+   */
+  const anteprimaAccesa = useRef(false);
+  const revocaAnteprima = useRef(onAnteprimaSkin);
+  revocaAnteprima.current = onAnteprimaSkin;
+  useEffect(
+    () => () => {
+      if (anteprimaAccesa.current) revocaAnteprima.current(null);
+    },
+    [],
+  );
   const chiediDisinstalla = (s: VoceSkin) =>
     setDomanda({
       titolo: t("settings.skin.uninstall.confirm.title", { nome: s.nome }),
@@ -2770,7 +2789,15 @@ export function Impostazioni({
                     «cambiata», si dice «non si legge». */}
                 {ripiego !== null && (
                   <p className="nota nota-ripiego" role="status">
-                    {t("settings.skin.fallback", { id: ripiego })}
+                    {/* Un pacchetto che non c'è torna da sé quando torna il
+                        file; uno che c'è e non si legge più no, e la frase lo
+                        dice col suo perché (R06b-4). */}
+                    {ripiegoGuasto === null || ripiegoGuasto === "skin.notFound"
+                      ? t("settings.skin.fallback", { id: ripiego })
+                      : t("settings.skin.fallback.broken", {
+                          id: ripiego,
+                          motivo: tSe(`errors.${ripiegoGuasto}`, ripiegoGuasto),
+                        })}
                   </p>
                 )}
                 <div className="griglia-skin">
@@ -2790,8 +2817,19 @@ export function Impostazioni({
                         className="scheda-skin section-card"
                         data-active={s.attiva || undefined}
                         data-rotta={rotta || undefined}
-                        onMouseEnter={() => !s.attiva && !rotta && onAnteprimaSkin(s.id)}
-                        onMouseLeave={() => !s.attiva && !rotta && onAnteprimaSkin(null)}
+                        // Solo col mouse: al tocco Chromium manda i `mouseenter`
+                        // di compatibilità, e toccare la descrizione di una scheda
+                        // la indossava in prova senza un modo di toglierla (R12-4).
+                        onPointerEnter={(e) => {
+                          if (e.pointerType !== "mouse" || s.attiva || rotta) return;
+                          anteprimaAccesa.current = true;
+                          onAnteprimaSkin(s.id);
+                        }}
+                        onPointerLeave={(e) => {
+                          if (e.pointerType !== "mouse" || s.attiva || rotta) return;
+                          anteprimaAccesa.current = false;
+                          onAnteprimaSkin(null);
+                        }}
                       >
                         {/* Una skin installata che non passa più la validazione
                             non si indossa e non si prova al passaggio: la scheda
@@ -2802,13 +2840,18 @@ export function Impostazioni({
                             resta una scheda che dice cosa non va: spenta, con la
                             ragione sotto, e il ⋮ per toglierla. Si aggiusta sul
                             computer, e torna col profilo. */}
+                        {/* Il nome viene dal contenuto — il nome della skin e il
+                            suo stato, «in uso», l'autore, «da aprire nello
+                            Studio» — e la skin indossata è premuta: un
+                            `aria-label` che diceva solo «Usa la skin X» copriva
+                            tutti e due, e chi usa un lettore di schermo non sapeva
+                            quale fosse indossata (R16-9). */}
                         <button
                           type="button"
                           className="prova"
-                          aria-label={
-                            rotta
-                              ? t("settings.skin.openBroken", { nome: s.nome })
-                              : t("settings.skin.use", { nome: s.nome })
+                          aria-pressed={rotta ? undefined : s.attiva}
+                          aria-describedby={
+                            rotta || s.descrizione !== null ? `descrizione-skin-${s.id}` : undefined
                           }
                           aria-disabled={(MOBILE && rotta) || undefined}
                           onClick={() => {
@@ -2833,7 +2876,9 @@ export function Impostazioni({
                           </span>
                         </button>
                         {s.guasto !== undefined && (
-                          <p className="descrizione">{tSe(`errors.${s.guasto}`, s.guasto)}</p>
+                          <p className="descrizione" id={`descrizione-skin-${s.id}`}>
+                            {tSe(`errors.${s.guasto}`, s.guasto)}
+                          </p>
                         )}
                         {s.descrizione !== null && (
                           /* Solo le skin di serie passano dal catalogo delle
@@ -2843,7 +2888,10 @@ export function Impostazioni({
                              un'applicazione in inglese. Quella di una skin
                              installata resta com'è: è un testo di chi l'ha
                              fatta, e tradurlo vorrebbe dire riscriverlo. */
-                          <p className="descrizione">
+                          <p
+                            className="descrizione"
+                            id={rotta ? undefined : `descrizione-skin-${s.id}`}
+                          >
                             {s.diSerie
                               ? tSe(`skin.builtin.${s.id}.desc`, s.descrizione)
                               : s.descrizione}

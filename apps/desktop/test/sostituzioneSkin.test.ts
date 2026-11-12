@@ -29,8 +29,14 @@ test("il sì alla sostituzione arriva al nucleo solo dalla risposta o da «Rimet
   const skin = sorgente("skinAttiva.ts");
   const chiamate = [...skin.matchAll(/ipc\.skinInstalla\(([^)]*)\)/g)].map((m) => m[1]);
   // Una senza il sì (la prima installazione) e due col sì: la conferma della
-  // domanda e la copia tenuta da parte che torna al suo posto.
-  assert.deepEqual(chiamate, ["percorso", "quale.percorso, true", "percorso, true"]);
+  // domanda e la copia tenuta da parte che torna al suo posto. Tutte e due col
+  // sì portano l'impronta della skin che il gesto vuole togliere (R04b-4,
+  // R04b-5).
+  assert.deepEqual(chiamate, [
+    "percorso",
+    "quale.percorso, true, quale.domanda.impronta",
+    "percorso, true, impronta",
+  ]);
 });
 
 test("la domanda è un consenso, e il fuoco parte da «Annulla»", () => {
