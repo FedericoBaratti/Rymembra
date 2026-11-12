@@ -615,6 +615,65 @@ impl Cataloghi {
     }
 }
 
+/// Che cosa fare di una riga che il file l'aveva già scelto, dopo averlo
+/// riletto: vedi [`strada_rapida`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StradaRapida {
+    /// Il file riletto è il brano della riga e si può tenere: lo si prende.
+    Prendi(Candidato),
+    /// Si cerca sui cataloghi come per una riga senza file.
+    Cerca {
+        /// Il file riletto, quando è il brano della riga ma oggi non si può
+        /// tenere. Se la ricerca non trova niente è lui la risposta: arriva a
+        /// [`Cataloghi::preleva`], che lo rifiuta prima della rete, e la riga va
+        /// fra quelle da comprare con il motivo vero — si ascolta, non si
+        /// copia — invece di «non c'è».
+        negato: Option<Candidato>,
+    },
+}
+
+/// Decide se una riga che il file l'aveva già scelto lo prende, o cerca.
+///
+/// # Perché si confronta il brano riletto con la riga
+///
+/// Perché la riga dice *quale* file e anche *che cosa* è — titolo e interprete
+/// finiscono nei tag — e la seconda cosa non la verificava nessuno. Una riga
+/// nata da un link o da «Tieni una copia» ha titolo e interprete dello stesso
+/// catalogo, e combacia da sé; una scritta da un profilo ricevuto da altri può
+/// mettere l'indirizzo di un brano lecito qualunque sotto il nome di un altro.
+/// Il cancello è lo stesso della ricerca, [`rymembra_domain::scelta::combacia`]:
+/// mai un'altra canzone col nome di quella chiesta. Una riga senza interprete
+/// si conferma sul titolo solo se nemmeno il file ne dichiara uno: è un item
+/// dell'Internet Archive senza autore, e il tag che si scrive non ne avrà.
+///
+/// # Perché uno scarico spento fa cercare altrove
+///
+/// Perché l'artista di Audius che ha spento lo scarico dopo l'importazione non
+/// ha tolto il brano dagli altri cataloghi: fino alla 3.2.0 la riga andava
+/// dritta fra quelle da comprare senza chiederlo a nessuno. Lo stesso per un
+/// file che non c'è più (`riletto` a `None`) e per uno che non è il brano della
+/// riga.
+#[must_use]
+pub fn strada_rapida(riletto: Option<Candidato>, atteso: &BranoEsterno) -> StradaRapida {
+    let Some(riletto) = riletto else {
+        return StradaRapida::Cerca { negato: None };
+    };
+    let e_lui = match (atteso.artist.as_deref(), riletto.autore.as_deref()) {
+        (None, None) => rymembra_domain::scelta::stesso_titolo(&atteso.title, &riletto.titolo),
+        _ => rymembra_domain::scelta::combacia(&riletto, atteso),
+    };
+    if !e_lui {
+        return StradaRapida::Cerca { negato: None };
+    }
+    if riletto.si_puo_tenere() {
+        StradaRapida::Prendi(riletto)
+    } else {
+        StradaRapida::Cerca {
+            negato: Some(riletto),
+        }
+    }
+}
+
 /// Quel che la ricerca di un brano ha trovato, e quel che non ha potuto
 /// guardare.
 ///
@@ -1056,6 +1115,81 @@ mod prove {
         // E il tetto è un tetto, non una soglia di sospetto: una ricerca vera
         // ci sta dentro con otto volte di margine.
         assert!("grateful dead 1977 cornell".chars().count() * 8 <= FRASE_MASSIMA);
+    }
+
+    /// Una traccia di Audius riletta adesso, come la consegna `riletto`.
+    fn riletta(titolo: &str, autore: &str, disponibilita: Disponibilita) -> Candidato {
+        Candidato {
+            url: "/v1/tracks/aB3/download".to_owned(),
+            titolo: titolo.to_owned(),
+            autore: Some(autore.to_owned()),
+            fonte: Fonte::Audius,
+            licenza: Licenza::CreativeCommons("by".to_owned()),
+            disponibilita,
+            ..Candidato::default()
+        }
+    }
+
+    #[test]
+    fn una_riga_rapida_che_non_combacia_non_si_prende() {
+        // Un profilo ricevuto da altri può scrivere in una riga l'indirizzo di
+        // un brano CC qualunque col titolo di un altro: il file è lecito, ma
+        // finirebbe sul disco come «The Beatles – Hey Jude».
+        let atteso = BranoEsterno {
+            title: "Hey Jude".to_owned(),
+            artist: Some("The Beatles".to_owned()),
+            ..BranoEsterno::default()
+        };
+        let altro = riletta("Altro", "Uno qualunque", Disponibilita::Scaricabile);
+        assert_eq!(
+            strada_rapida(Some(altro), &atteso),
+            StradaRapida::Cerca { negato: None }
+        );
+        // La riga nata da un link, che nomina proprio quel file, passa.
+        let giusto = riletta("Hey Jude", "The Beatles", Disponibilita::Scaricabile);
+        assert_eq!(
+            strada_rapida(Some(giusto.clone()), &atteso),
+            StradaRapida::Prendi(giusto)
+        );
+        // E un file che non c'è più si cerca altrove, invece di finire subito
+        // fra quelli da comprare.
+        assert_eq!(
+            strada_rapida(None, &atteso),
+            StradaRapida::Cerca { negato: None }
+        );
+    }
+
+    #[test]
+    fn uno_scarico_spento_fa_cercare_altrove() {
+        // L'artista ha spento lo scarico dopo l'importazione: prima si cerca
+        // sugli altri cataloghi, e solo se non c'è niente la riga va fra
+        // quelle da comprare con il motivo vero — «si ascolta, non si copia».
+        let atteso = BranoEsterno {
+            title: "Una canzone".to_owned(),
+            artist: Some("Un'artista".to_owned()),
+            ..BranoEsterno::default()
+        };
+        let spento = riletta("Una canzone", "Un'artista", Disponibilita::SoloAscolto);
+        assert_eq!(
+            strada_rapida(Some(spento.clone()), &atteso),
+            StradaRapida::Cerca {
+                negato: Some(spento)
+            }
+        );
+        // Una riga senza interprete, come un item dell'Archive senza autore,
+        // si conferma sul titolo se nemmeno il file ne dice uno.
+        let anonimo = BranoEsterno {
+            title: "Track 01".to_owned(),
+            ..BranoEsterno::default()
+        };
+        let senza = Candidato {
+            autore: None,
+            ..riletta("Track 01", "x", Disponibilita::Scaricabile)
+        };
+        assert_eq!(
+            strada_rapida(Some(senza.clone()), &anonimo),
+            StradaRapida::Prendi(senza)
+        );
     }
 
     #[test]

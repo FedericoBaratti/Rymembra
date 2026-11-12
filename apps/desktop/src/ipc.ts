@@ -27,7 +27,7 @@ import type {
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -662,6 +662,9 @@ export const ipc = {
   // `ConteggiScarico`. Restituisce quanti ne sono tornati in coda, e se sono
   // più di zero riavvia la coda da sé.
   riprovaFalliti: () => invoke<number>("riprova_falliti"),
+  // Il gesto a parte per gli introvabili: «Riprova anche i non trovati». Rifà
+  // le ricerche di tutta la lista della spesa, e riavvia la coda come sopra.
+  riprovaIntrovabili: () => invoke<number>("riprova_introvabili"),
   // Quel che resta da comprare: le righe `introvabile`, distinte per titolo e
   // artista. Un comando a parte e non un campo di `scaricoStato`, che viene
   // chiamato decine di volte in una coda: questa lista può essere lunga come la
@@ -1274,6 +1277,10 @@ export const ipc = {
   arricchimentoStato: () => invoke<StatoArricchimento>("arricchimento_stato"),
   arricchimentoAttiva: (attivo: boolean) =>
     invoke<StatoArricchimento>("arricchimento_attiva", { attivo }),
+  // Le fonti che si accendono una per una: iTunes e Deezer (spenti di serie,
+  // per i loro termini) e le somiglianze di ListenBrainz.
+  arricchimentoFonte: (fonte: FonteFacoltativa, attiva: boolean) =>
+    invoke<StatoArricchimento>("arricchimento_fonte", { fonte, attiva }),
   // **Spegne anche l'interruttore**, e non è un effetto collaterale: annullare
   // rimette i brani fra i candidati, quindi con l'automatico acceso la passata
   // successiva riscriverebbe entro mezz'ora quel che si è appena disfatto.

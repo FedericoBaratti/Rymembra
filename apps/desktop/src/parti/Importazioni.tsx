@@ -54,6 +54,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -69,6 +70,15 @@ import {
 } from "../ipc";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
+import {
+  allaFine,
+  ATTESA_RITENTATIVO_MS,
+  conAvanzamento,
+  conRitentativi,
+  daRileggere,
+  RITENTATIVI_AVVIO,
+  type Avanzamento,
+} from "../statoScarico";
 
 /** Un'importazione confermata in questa sessione. */
 interface Sessione {
@@ -171,6 +181,14 @@ export interface UsoImportazioni {
   /** Rimette in fila i non riusciti. */
   riprovaFalliti: () => void;
   /**
+   * Rimette in fila anche i non trovati: «Riprova anche i non trovati».
+   *
+   * Un gesto a parte e non un pezzo di `riprovaFalliti`: rifà le ricerche di
+   * tutta la lista della spesa, e serve per i brani che la 3.2.0 dichiarava
+   * introvabili per una ricerca annullata o un catalogo giù.
+   */
+  riprovaIntrovabili: () => void;
+  /**
    * Accetta o rifiuta le registrazioni diverse da quella chiesta.
    *
    * Vale per quel che la coda farà da adesso: non tocca niente di già preso.
@@ -226,55 +244,76 @@ export function useImportazioni(): UsoImportazioni {
     };
   }, []);
 
+  // Lo stato in mano, per gli ascolti qui sotto: chi riceve un evento deve
+  // sapere se lo stato c'è senza chiederlo dentro un `setStato`, che React può
+  // chiamare due volte.
+  const statoAttuale = useRef<StatoScarico | null>(null);
+  useEffect(() => {
+    statoAttuale.current = stato;
+  }, [stato]);
+
+  // Una rilettura dello stato, per chi ne ha bisogno fuori dalla lettura
+  // d'avvio. Senza errore da mostrare: se non si legge, restano gli eventi.
+  const rileggi = useCallback(() => {
+    void ipc
+      .scaricoStato()
+      .then(setStato)
+      .catch(() => {});
+  }, []);
+
   // Lo stato iniziale. È l'interrogazione che fa ricomparire una coda rimasta
   // in sospeso dalla sessione precedente: senza, l'elenco resterebbe vuoto
   // finché il primo brano non si conclude, cioè fino a un minuto di silenzio
   // identico a «non sta succedendo niente».
+  //
+  // Si ritenta, qualche volta: all'avvio la libreria può essere ancora presa
+  // (una scansione che parte, il primo lotto di un arricchimento), e una
+  // lettura caduta lasciava lo stato a `null` fino alla prossima importazione
+  // — con lui l'interruttore delle registrazioni diverse e «Riprendi».
   useEffect(() => {
     let annullato = false;
-    ipc
-      .scaricoStato()
+    const timer: { id?: ReturnType<typeof setTimeout> } = {};
+    conRitentativi(
+      () => ipc.scaricoStato(),
+      RITENTATIVI_AVVIO,
+      () =>
+        new Promise<void>((fatto) => {
+          timer.id = setTimeout(fatto, ATTESA_RITENTATIVO_MS);
+        }),
+      () => annullato,
+    )
       .then((s) => {
         if (!annullato) setStato(s);
       })
       .catch(() => {
         /* Lo stato della coda non è un errore da mostrare: se non si legge,
-           restano gli eventi. */
+           restano gli eventi, che lo richiedono (vedi sotto). */
       });
     return () => {
       annullato = true;
+      if (timer.id !== undefined) clearTimeout(timer.id);
     };
   }, []);
 
   // E poi solo eventi: interrogare a ripetizione darebbe numeri in ritardo su
-  // quel che gli eventi già raccontano.
-  useAscolto<{ fatti: number; totale: number; sorgenti: SorgenteScarico[] }>(
-    "scarico:avanzamento",
-    (carico) => {
-      setStato((prima) =>
-        prima
-          ? {
-              ...prima,
-              attiva: true,
-              fatti: carico.fatti,
-              rimasti: carico.totale - carico.fatti,
-              sorgenti: carico.sorgenti,
-            }
-          : prima,
-      );
-    },
-  );
+  // quel che gli eventi già raccontano. Un avanzamento che arriva senza lo
+  // stato — la lettura d'avvio non è riuscita — lo fa chiedere: senza, ogni
+  // evento della coda si buttava.
+  useAscolto<Avanzamento>("scarico:avanzamento", (carico) => {
+    setStato((prima) => conAvanzamento(prima, carico));
+    if (daRileggere(statoAttuale.current)) rileggi();
+  });
 
   useAscolto<BranoScarico>("scarico:brano", setBrano);
 
-  // La coda è finita: si rilegge lo stato una volta sola, per avere i
-  // conteggi definitivi senza tenere un interrogatorio acceso.
+  // La coda è finita: è ferma subito, e si rilegge lo stato una volta sola,
+  // per avere i conteggi definitivi senza tenere un interrogatorio acceso.
+  // «Ferma» prima della rilettura e non dopo: se la rilettura cadeva, la coda
+  // restava «in corso» — con «Ferma» al posto di «Riprendi» — per sempre.
   useAscolto("scarico:finito", () => {
     setBrano(null);
-    void ipc
-      .scaricoStato()
-      .then(setStato)
-      .catch(() => {});
+    setStato(allaFine);
+    rileggi();
   });
 
   // Il viaggio di ritorno. Non è solo una notizia da mostrare: `riconcilia`
@@ -284,10 +323,7 @@ export function useImportazioni(): UsoImportazioni {
   // resterebbe a mostrare dei brani «in attesa» che non esistono più.
   useAscolto<Rientro>("scarico:riconciliato", (carico) => {
     setRientro(carico);
-    void ipc
-      .scaricoStato()
-      .then(setStato)
-      .catch(() => {});
+    rileggi();
   });
 
   // Il carico è un `ErroreIpc` — `procura.rs` lo compone con
@@ -374,6 +410,14 @@ export function useImportazioni(): UsoImportazioni {
   const riprovaFalliti = useCallback(() => {
     ipc
       .riprovaFalliti()
+      .then(() => ipc.scaricoStato())
+      .then(setStato)
+      .catch((e: unknown) => setErrore(testoErrore(e)));
+  }, []);
+
+  const riprovaIntrovabili = useCallback(() => {
+    ipc
+      .riprovaIntrovabili()
       .then(() => ipc.scaricoStato())
       .then(setStato)
       .catch((e: unknown) => setErrore(testoErrore(e)));
@@ -494,6 +538,7 @@ export function useImportazioni(): UsoImportazioni {
       annulla,
       riprendi,
       riprovaFalliti,
+      riprovaIntrovabili,
       ammettiAlternative,
     }),
     [
@@ -509,6 +554,7 @@ export function useImportazioni(): UsoImportazioni {
       annulla,
       riprendi,
       riprovaFalliti,
+      riprovaIntrovabili,
       ammettiAlternative,
     ],
   );

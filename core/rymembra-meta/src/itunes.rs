@@ -12,7 +12,7 @@
 //! - **una copertina quadrata ad alta risoluzione**, legata alla pubblicazione
 //!   esatta invece che al gruppo di pubblicazione.
 
-use rymembra_domain::enrich::{Candidate, FonteMeta, normalize_for_match, titolo_da_cercare};
+use rymembra_domain::enrich::{Candidate, FonteMeta, titolo_da_cercare};
 use rymembra_domain::errors::AppError;
 use rymembra_net::percento;
 use serde_json::Value;
@@ -130,11 +130,23 @@ pub fn cerca(
     let corpo = fornitori.json(
         &fornitori.itunes,
         "itunes-ricerca",
-        &normalize_for_match(&termine),
+        &chiave(&termine),
         &url,
         VIVE_RICERCA_MS,
     )?;
     Ok(corpo.as_deref().map(interpreta).unwrap_or_default())
+}
+
+/// La chiave sotto cui si ricorda la risposta a un termine, qui e in Deezer.
+///
+/// Il termine così come va nell'indirizzo, minuscolo e con gli spazi
+/// compressi: quel che cambia l'indirizzo deve cambiare la chiave, come dice
+/// [`crate::lrclib`]. Fino alla 3.2.0 era `normalize_for_match`, che toglie le
+/// parentesi e le code d'edizione: «Brano (Live at Reading)», «Brano (Remix)» e
+/// «Brano» erano tre domande diverse sotto una chiave sola, e per una settimana
+/// ricevevano tutte la risposta di quella cercata per prima.
+pub(crate) fn chiave(termine: &str) -> String {
+    rymembra_domain::text::collapse_whitespace(&termine.to_lowercase())
 }
 
 /// La stringa da cercare: interprete e titolo, ripuliti dal rumore.
@@ -222,6 +234,18 @@ mod prove {
         assert!(interpreta(b"non json").is_empty());
         assert!(interpreta(b"{}").is_empty());
         assert!(interpreta(br#"{"results":"non un elenco"}"#).is_empty());
+    }
+
+    #[test]
+    fn la_chiave_cambia_quando_cambia_la_domanda() {
+        let dal_vivo = termine("Wattershed (Live at Reading)", "Foo Fighters").expect("termine");
+        let studio = termine("Wattershed", "Foo Fighters").expect("termine");
+        assert_ne!(chiave(&dal_vivo), chiave(&studio));
+        // Maiuscole e spazi non cambiano la domanda.
+        assert_eq!(
+            chiave("Foo  Fighters Wattershed"),
+            chiave("foo fighters wattershed")
+        );
     }
 
     #[test]

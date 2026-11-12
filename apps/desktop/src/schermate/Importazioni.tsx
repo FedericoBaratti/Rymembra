@@ -99,6 +99,7 @@ export function TestaImportazioni({
 }) {
   const inAttesa = importazioni.stato?.conteggi.attesa ?? 0;
   const falliti = importazioni.stato?.conteggi.fallito ?? 0;
+  const introvabili = importazioni.stato?.conteggi.introvabile ?? 0;
   const attiva = importazioni.stato?.attiva ?? false;
 
   return (
@@ -140,6 +141,20 @@ export function TestaImportazioni({
             >
               <Icona nome="i-repeat" dim={15} />
               {t("imports.retryFailed", { n: falliti })}
+            </button>
+          )}
+          {/* Gli introvabili hanno un gesto loro, che lo dice: rifà le
+              ricerche di tutta la lista della spesa. Serve per quelli che la
+              3.2.0 dichiarava introvabili per una ricerca annullata o un
+              catalogo giù, che da qui non si distinguono dai veri. */}
+          {!attiva && introvabili > 0 && (
+            <button
+              type="button"
+              className="pillola btn-ghost"
+              onClick={importazioni.riprovaIntrovabili}
+            >
+              <Icona nome="i-repeat" dim={15} />
+              {t("imports.retryNotFound", { n: introvabili })}
             </button>
           )}
           <button

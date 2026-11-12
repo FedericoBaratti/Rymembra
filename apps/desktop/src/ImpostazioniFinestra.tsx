@@ -257,6 +257,12 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
           .then(setArricchimento)
           .catch(onErrore);
       }}
+      onArricchimentoFonte={(fonte, attiva) => {
+        ipc
+          .arricchimentoFonte(fonte, attiva)
+          .then(setArricchimento)
+          .catch(onErrore);
+      }}
       onArricchimentoAnnulla={() => {
         // Ottimistico su `inCorso`: rileggere i tag di centinaia di file
         // sono decine di secondi, e senza questo il pulsante resterebbe

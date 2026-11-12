@@ -1094,9 +1094,24 @@ export interface QuadroSorveglianza {
  * sintomo sarebbe un pannello che dice «142 completati» su una libreria che ne
  * ha novanta.
  */
+/** Le fonti dei metadati che si accendono una per una. */
+export type FonteFacoltativa = "itunes" | "deezer" | "vicini";
+
 export interface StatoArricchimento {
   /** L'arricchimento automatico è acceso. */
   attivo: boolean;
+  /**
+   * iTunes è acceso come secondo parere. Spento di serie, per i termini di
+   * Apple: vedi `rymembra_meta::Pareri`.
+   */
+  itunes: boolean;
+  /** Deezer è acceso come terzo parere. Spento di serie, per i suoi termini. */
+  deezer: boolean;
+  /**
+   * Le somiglianze di ListenBrainz sono accese. Hanno un interruttore loro, e
+   * girano anche con l'arricchimento spento.
+   */
+  vicini: boolean;
   /** C'è una passata in corso adesso. */
   inCorso: boolean;
   /** Brani che hanno ricevuto una corrispondenza applicata. */

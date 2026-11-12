@@ -331,7 +331,7 @@ pub(crate) fn formato_dei_byte(testa: &[u8], suggerita: Option<&str>) -> Option<
 /// costruirla qui — accanto a chi conosce la fonte — è ciò che impedisce che si
 /// dimentichi in uno dei posti in cui va messa.
 ///
-/// # Perché questa non segue la lingua dell'interfaccia
+/// # Perché questa non segue la lingua dell'interfaccia, e perché è in inglese
 ///
 /// Perché non si mostra: si **scrive**, dentro il file, e ci resta. Comporla
 /// nella lingua attiva al momento dello scarico vorrebbe dire una libreria con
@@ -340,6 +340,11 @@ pub(crate) fn formato_dei_byte(testa: &[u8], suggerita: Option<&str>) -> Option<
 /// i due segnaposti «sconosciuto» di `album.rs`: quel che finisce sul disco è
 /// un valore, non un'etichetta. La riga che invece si **mostra**, nell'anteprima
 /// di un link, la compone il frontend dal catalogo delle lingue.
+///
+/// In inglese, nella forma in cui le licenze si nominano da sé («CC BY-SA»,
+/// «Public Domain»), e non in italiano come fino alla 3.2.0: il file lo legge
+/// chiunque lo riceva, con qualunque programma, e «pubblico dominio» lo capiva
+/// solo chi parla italiano (D-58).
 #[must_use]
 pub fn attribuzione(candidato: &Candidato) -> Option<String> {
     let fonte = candidato.fonte.etichetta();
@@ -354,20 +359,25 @@ pub fn attribuzione(candidato: &Candidato) -> Option<String> {
     Some(format!("via {fonte}{licenza}{pagina}"))
 }
 
-/// La licenza in parole, come si scrive dentro un file: «CC BY-SA», «pubblico
-/// dominio».
+/// La licenza in parole, come si scrive dentro un file: «CC BY-SA», «Public
+/// Domain».
 ///
 /// È il pezzo di [`attribuzione`] che dice il patto, e serve da solo ai
 /// formati che hanno un campo per la licenza (`LICENSE` nei commenti Vorbis e
 /// negli MP4). Nella stessa lingua dell'attribuzione e per la stessa ragione:
 /// sta sul disco, non sullo schermo. `None` per le due licenze che non dicono
 /// niente da scrivere.
+///
+/// Senza numero di versione: i cataloghi non lo portano fino a qui (per
+/// l'Internet Archive `CC0` e il marchio di pubblico dominio sono la stessa
+/// [`Licenza::PubblicoDominio`]), e inventarne uno vorrebbe dire scrivere nel
+/// file un patto che nessuno ha dichiarato.
 #[must_use]
 pub fn licenza_leggibile(licenza: &Licenza) -> Option<String> {
     match licenza {
         Licenza::CreativeCommons(codice) => Some(format!("CC {}", codice.to_uppercase())),
-        Licenza::PubblicoDominio => Some("pubblico dominio".to_owned()),
-        Licenza::LiberaNonCommerciale => Some("distribuzione non commerciale".to_owned()),
+        Licenza::PubblicoDominio => Some("Public Domain".to_owned()),
+        Licenza::LiberaNonCommerciale => Some("Non-commercial distribution".to_owned()),
         Licenza::OpenMusicLicense => Some("Open Music License".to_owned()),
         Licenza::TutteRiservate | Licenza::Sconosciuta => None,
     }
@@ -696,7 +706,7 @@ mod prove {
     fn lattribuzione_dice_fonte_licenza_e_pagina() {
         let a = attribuzione(&candidato(Disponibilita::Scaricabile)).unwrap_or_default();
         assert!(a.contains("Internet Archive"));
-        assert!(a.contains("non commerciale"));
+        assert!(a.contains("Non-commercial distribution"));
         assert!(a.contains("archive.org/details/x"));
 
         let cc = Candidato {
@@ -704,6 +714,24 @@ mod prove {
             ..candidato(Disponibilita::Scaricabile)
         };
         assert!(attribuzione(&cc).unwrap_or_default().contains("CC BY-SA"));
+    }
+
+    #[test]
+    fn la_licenza_si_scrive_in_inglese() {
+        // Sta nel file e la legge chiunque lo riceva (D-58).
+        assert_eq!(
+            licenza_leggibile(&Licenza::PubblicoDominio).as_deref(),
+            Some("Public Domain")
+        );
+        assert_eq!(
+            licenza_leggibile(&Licenza::LiberaNonCommerciale).as_deref(),
+            Some("Non-commercial distribution")
+        );
+        assert_eq!(
+            licenza_leggibile(&Licenza::CreativeCommons("by-nc-sa".to_owned())).as_deref(),
+            Some("CC BY-NC-SA")
+        );
+        assert_eq!(licenza_leggibile(&Licenza::Sconosciuta), None);
     }
 
     #[test]

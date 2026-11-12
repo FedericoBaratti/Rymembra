@@ -84,6 +84,9 @@ fn main() {
 
     let deposito = DepositoSqlite::apri(&dati.join("rymembra.db"), adesso).expect("deposito");
     let fornitori = Fornitori::nuovo(Box::new(deposito));
+    // Le stesse fonti dell'applicazione: iTunes e Deezer solo se accesi in
+    // Impostazioni › Metadati (vedi `rymembra_meta::Pareri`).
+    fornitori.usa_pareri(enrich::pareri(&connection).expect("interruttori dei metadati"));
 
     let mut applicati = 0usize;
     let mut astenuti = 0usize;

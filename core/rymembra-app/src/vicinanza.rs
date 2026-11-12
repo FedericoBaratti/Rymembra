@@ -92,6 +92,30 @@ pub const SCONTO_ARTISTA: f64 = 0.7;
 /// risposta identica.
 pub const RICHIEDI_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 
+/// La chiave di `settings` che accende le somiglianze di ListenBrainz.
+///
+/// Fino alla 3.2.0 non c'era: le somiglianze andavano con l'arricchimento
+/// automatico (`enrich.auto`), e chi lo spegneva spegneva anche loro, come
+/// prometteva `PRIVACY.md`. Adesso hanno il loro interruttore (D-94); vedi
+/// [`accese`] per che cosa vale quando non è mai stato toccato.
+pub const CHIAVE_ACCESE: &str = "enrich.vicini";
+
+/// Le somiglianze di ListenBrainz sono accese?
+///
+/// Con la chiave scritta, quel che dice (`"0"` spento, il resto acceso). Senza,
+/// quel che valeva prima che l'interruttore esistesse: `arricchimento`, cioè lo
+/// stato dell'arricchimento automatico. Così chi l'aveva spento non comincia a
+/// parlare con ListenBrainz con l'aggiornamento, e chi l'aveva acceso non perde
+/// le somiglianze.
+///
+/// # Errori
+///
+/// `db.queryFailed` se `settings` non si legge.
+pub fn accese(connection: &Connection, arricchimento: bool) -> Result<bool, AppError> {
+    Ok(crate::settings::read(connection, CHIAVE_ACCESE)?
+        .map_or(arricchimento, |valore| valore != "0"))
+}
+
 /// Un brano di cui si vogliono i vicini.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chiesta {
@@ -437,6 +461,19 @@ pub fn quanti_vicini(connection: &Connection) -> Result<HashMap<i64, usize>, App
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    #[test]
+    fn le_somiglianze_ereditano_l_arricchimento_finche_non_si_toccano() {
+        let connessione = crate::db::open_in_memory().expect("database").connection;
+        // Mai toccate: valgono quel che valeva l'arricchimento.
+        assert_eq!(accese(&connessione, true), Ok(true));
+        assert_eq!(accese(&connessione, false), Ok(false));
+        // Toccate, contano da sole: anche con l'arricchimento spento (D-94).
+        crate::settings::write(&connessione, CHIAVE_ACCESE, "1").expect("scrittura");
+        assert_eq!(accese(&connessione, false), Ok(true));
+        crate::settings::write(&connessione, CHIAVE_ACCESE, "0").expect("scrittura");
+        assert_eq!(accese(&connessione, true), Ok(false));
+    }
 
     /// Una libreria con due artisti, identificativi MusicBrainz e tutto.
     fn libreria() -> Connection {

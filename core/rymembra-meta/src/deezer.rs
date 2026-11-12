@@ -11,7 +11,7 @@
 //! qualunque delle due, cadendo, spegne la possibilità di applicare qualcosa.
 //! Con tre, ne basta una che risponda insieme a MusicBrainz.
 
-use rymembra_domain::enrich::{Candidate, FonteMeta, normalize_for_match};
+use rymembra_domain::enrich::{Candidate, FonteMeta};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_net::percento;
 use serde_json::Value;
@@ -153,7 +153,7 @@ pub fn cerca(
     let corpo = fornitori.json(
         &fornitori.deezer,
         "deezer-ricerca",
-        &normalize_for_match(&termine),
+        &itunes::chiave(&termine),
         &url,
         VIVE_RICERCA_MS,
     )?;
@@ -281,7 +281,7 @@ mod prove {
         let ricordo = std::sync::Arc::new(Ricordo::default());
         let termine = itunes::termine("Poetica", "Cesare Cremonini").expect("un termine");
         ricordo.voci.lock().unwrap().insert(
-            format!("deezer-ricerca/{}", normalize_for_match(&termine)),
+            format!("deezer-ricerca/{}", itunes::chiave(&termine)),
             Voce::Corpo(br#"{"error":{"type":"Exception","message":"busy","code":700}}"#.to_vec()),
         );
         let fornitori = Fornitori::nuovo(Box::new(std::sync::Arc::clone(&ricordo)));
@@ -293,6 +293,32 @@ mod prove {
             esito.is_err(),
             "letto dalla memoria come risposta: {esito:?}"
         );
+    }
+
+    /// «Brano (Live at Reading)» e «Brano» sono due domande: la risposta della
+    /// prima non vale per la seconda. Qui l'interruttore è aperto, quindi una
+    /// domanda senza risposta ricordata è «non si sa», non i candidati del live.
+    #[test]
+    fn la_risposta_del_live_non_vale_per_lo_studio() {
+        let ricordo = std::sync::Arc::new(Ricordo::default());
+        let dal_vivo =
+            itunes::termine("Wattershed (Live at Reading)", "Foo Fighters").expect("termine");
+        ricordo.voci.lock().unwrap().insert(
+            format!("deezer-ricerca/{}", itunes::chiave(&dal_vivo)),
+            Voce::Corpo(
+                br#"{"data":[{"title":"Wattershed (Live at Reading)","duration":300,
+                    "artist":{"name":"Foo Fighters"}}]}"#
+                    .to_vec(),
+            ),
+        );
+        let fornitori = Fornitori::nuovo(Box::new(std::sync::Arc::clone(&ricordo)));
+        for _ in 0..crate::cadenza::GUASTI_PER_APRIRE {
+            fornitori.deezer.guasto();
+        }
+        let esito = cerca(&fornitori, "Wattershed", "Foo Fighters");
+        assert!(esito.is_err(), "la risposta del live: {esito:?}");
+        // E la domanda del live trova la sua.
+        assert!(cerca(&fornitori, "Wattershed (Live at Reading)", "Foo Fighters").is_ok());
     }
 
     /// Un `200` con dentro un errore non si ricorda, esce come errore, e tre di

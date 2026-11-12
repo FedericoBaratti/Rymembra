@@ -474,6 +474,108 @@ pub fn riprova_falliti(connection: &Connection) -> Result<u32, AppError> {
     Ok(u32::try_from(quanti).unwrap_or(u32::MAX))
 }
 
+/// Rimette in coda anche i brani che nessun catalogo aveva, azzerandone i
+/// tentativi.
+///
+/// È il gesto «Riprova anche i non trovati», e non sostituisce
+/// [`riprova_falliti`]: chi lo preme sa che rifà le ricerche di tutta la lista
+/// della spesa, che è più lungo. Serve perché un `introvabile` non dice
+/// **perché** lo è: fino alla 3.2.0 una ricerca annullata, o fatta con l'Internet
+/// Archive giù, finiva qui come un brano che non c'è, e non c'è modo di
+/// distinguerla da uno vero. Decidere se rifare la ricerca tocca a chi guarda
+/// l'elenco.
+///
+/// Restituisce quanti ne sono tornati in coda.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn riprova_introvabili(connection: &Connection) -> Result<u32, AppError> {
+    let quanti = connection
+        .execute(
+            "UPDATE desiderati
+             SET download_state = ?1, download_attempts = 0, updated_at = ?3
+             WHERE download_state = ?2",
+            rusqlite::params![
+                Stato::Attesa.come_testo(),
+                Stato::Introvabile.come_testo(),
+                now_ms()
+            ],
+        )
+        .map_err(|err| db_error("rimessa in coda dei non trovati", &err))?;
+    Ok(u32::try_from(quanti).unwrap_or(u32::MAX))
+}
+
+/// La chiave di `settings` che dice che [`riapri_le_copie_chiuse_senza_file`]
+/// è già passata su questa libreria.
+const CHIAVE_RIAPERTE: &str = "desiderati.riaperteSenzaFile";
+
+/// Riapre, una volta sola, le righe che la 3.2.0 chiudeva come `fatto` senza
+/// nessun file.
+///
+/// # Che cosa ripara
+///
+/// Nella 3.2.0 «c'è già» voleva dire una riga di `tracks` qualunque con la
+/// stessa chiave, e un brano ascoltato da Esplora è una riga di `tracks` senza
+/// file: il riferimento di catalogo. Così «Tieni una copia» su un brano già
+/// ascoltato — o un'importazione che lo conteneva — veniva chiusa da
+/// [`riconcilia`] come `fatto` senza scaricare niente, e nessuno lo diceva. La
+/// regola giusta ([`SOLO_DA_PRENDERE`]) vale per le righe nuove; questa passa
+/// sulle vecchie.
+///
+/// # Quali righe, e quali no
+///
+/// `fatto` senza `download_path` (cioè chiusa da [`riconcilia`] e non da un
+/// prelievo), con un riferimento di catalogo della stessa chiave, e senza
+/// nessun file di quella chiave. Il riferimento è la prova che a chiuderla è
+/// stato lui: una riga chiusa da un file che poi l'utente ha cancellato non ne
+/// ha uno, e non si riscarica da sola.
+///
+/// # Perché una volta sola, e senza migrazione
+///
+/// Perché la regola nuova non chiude più righe così, quindi dopo il primo
+/// passaggio non ce ne sono altre da trovare. La chiave in `settings` evita di
+/// rifare l'interrogazione a ogni apertura; scriverla **dopo** la `UPDATE` vuol
+/// dire che, se la seconda scrittura cade, il passaggio si ripete la volta
+/// dopo, e ripeterlo non riapre niente due volte: le righe riaperte non sono
+/// più `fatto`.
+///
+/// Le righe riaperte tornano in `attesa`: la coda le prende quando parte — da
+/// un'importazione o da «Riprendi» nella pagina delle importazioni, che le
+/// mostra. Non parte da sola: si scaricherebbe dalla rete senza un gesto.
+///
+/// Restituisce quante righe ha riaperto.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn riapri_le_copie_chiuse_senza_file(connection: &Connection) -> Result<u32, AppError> {
+    if crate::settings::read(connection, CHIAVE_RIAPERTE)?.is_some() {
+        return Ok(0);
+    }
+    let quante = connection
+        .execute(
+            "UPDATE desiderati
+             SET download_state = ?1, download_attempts = 0, download_error = NULL,
+                 updated_at = ?3
+             WHERE download_state = ?2
+               AND download_path IS NULL
+               AND EXISTS (SELECT 1 FROM tracks AS t
+                            WHERE t.track_key = desiderati.track_key AND t.path IS NULL)
+               AND NOT EXISTS (SELECT 1 FROM tracks AS t
+                                WHERE t.track_key = desiderati.track_key
+                                  AND t.path IS NOT NULL)",
+            rusqlite::params![
+                Stato::Attesa.come_testo(),
+                Stato::Fatto.come_testo(),
+                now_ms()
+            ],
+        )
+        .map_err(|err| db_error("riapertura delle copie chiuse senza file", &err))?;
+    crate::settings::write(connection, CHIAVE_RIAPERTE, "1")?;
+    Ok(u32::try_from(quante).unwrap_or(u32::MAX))
+}
+
 // ── il viaggio di ritorno ───────────────────────────────────────────────────
 
 /// Cosa ha rimesso a posto una passata di [`riconcilia`].
@@ -541,6 +643,12 @@ pub fn riconcilia(
     connection: &Connection,
     sorgente: Option<&str>,
 ) -> Result<Riconciliazione, AppError> {
+    // Prima di tutto il resto: il file di «Tieni una copia» prende il posto del
+    // riferimento ascoltato prima. Dopo, nelle playlist si mette lui e non il
+    // riferimento (che ha l'identificativo più piccolo, e `MIN(t.id)` qui sotto
+    // sceglierebbe quello).
+    il_file_al_posto_del_riferimento(connection)?;
+
     // Prima il ritorno in playlist, poi la chiusura delle righe: l'ordine
     // inverso funzionerebbe lo stesso — nessuna delle due condizioni guarda
     // quel che tocca l'altra — ma così il conteggio delle voci rimesse resta
@@ -642,6 +750,119 @@ pub fn riconcilia(
         voci_rimesse,
         righe_chiuse,
     })
+}
+
+/// Il file preso con «Tieni una copia» prende il posto del riferimento di
+/// catalogo dello stesso brano, con cuore, voto, ascolti e playlist (D-60).
+///
+/// # Il difetto che chiude
+///
+/// «Ascolta» in Esplora mette in libreria un riferimento: una riga di `tracks`
+/// senza file, che suona dalla rete. «Tieni una copia» poi scarica il file, e
+/// la scansione lo inserisce come riga **nuova** con la stessa `track_key`. Fino
+/// alla 3.2.0 restavano tutte e due: in «Tutti i brani» lo stesso brano due
+/// volte, un flusso e un file, e il cuore, gli ascolti e le playlist sul flusso.
+///
+/// # Quali coppie
+///
+/// Un riferimento (`path` NULL) e un file della stessa chiave, dove il file è
+/// arrivato da un prelievo — il `download_path` di una riga di `desiderati`
+/// della stessa chiave — e la riga è della stessa fonte del riferimento. Un
+/// file messo a mano nella cartella, o preso per un'altra fonte, non tocca
+/// niente: non c'è la prova che sia la stessa registrazione.
+///
+/// # Che cosa passa al file
+///
+/// Le stesse cose che `028_statistiche_orfane.sql` mette da parte quando una
+/// riga sparisce: il conteggio e l'ultimo ascolto (sommati, presi i due), il
+/// voto e il cuore con i loro orologi (vince il più recente, come nella
+/// sincronia), ogni riga di `play_history`, ogni posto nelle playlist e nelle
+/// raccolte della settimana. Poi il riferimento si toglie, come
+/// `catalogo::togli`; gli album si rifanno per intero alla scansione dopo,
+/// perché questa può girare dentro la transazione di un'importazione.
+///
+/// Restituisce quanti riferimenti ha sostituito.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+fn il_file_al_posto_del_riferimento(connection: &Connection) -> Result<usize, AppError> {
+    let errore =
+        |err: rusqlite::Error| db_error("sostituzione di un riferimento col suo file", &err);
+    let coppie: Vec<(i64, i64)> = {
+        let mut query = connection
+            .prepare(
+                "SELECT DISTINCT r.id, f.id
+                   FROM tracks AS r
+                   JOIN tracks AS f ON f.track_key = r.track_key AND f.path IS NOT NULL
+                  WHERE r.path IS NULL
+                    AND EXISTS (SELECT 1 FROM desiderati AS w
+                                 WHERE w.download_path = f.path
+                                   AND w.track_key = r.track_key
+                                   AND w.source_service = r.source_service)",
+            )
+            .map_err(errore)?;
+        let righe = query
+            .query_map([], |riga| Ok((riga.get(0)?, riga.get(1)?)))
+            .map_err(errore)?;
+        righe.collect::<Result<_, _>>().map_err(errore)?
+    };
+    let mut fatti = 0_usize;
+    let mut visti = std::collections::HashSet::new();
+    for (riferimento, file) in coppie {
+        // Un riferimento solo una volta: due file della stessa chiave (lo
+        // stesso brano scaricato due volte) non si dividono la sua storia.
+        if !visti.insert(riferimento) {
+            continue;
+        }
+        connection
+            .execute(
+                "UPDATE tracks AS f
+                    SET play_count = f.play_count + r.play_count,
+                        last_played_at = NULLIF(max(COALESCE(f.last_played_at, 0),
+                                                    COALESCE(r.last_played_at, 0)), 0),
+                        rating = CASE WHEN r.stats_updated_at > f.stats_updated_at
+                                      THEN r.rating ELSE f.rating END,
+                        rating_at = CASE WHEN r.stats_updated_at > f.stats_updated_at
+                                         THEN r.rating_at ELSE f.rating_at END,
+                        liked = CASE WHEN r.stats_updated_at > f.stats_updated_at
+                                     THEN r.liked ELSE f.liked END,
+                        liked_at = CASE WHEN r.stats_updated_at > f.stats_updated_at
+                                        THEN r.liked_at ELSE f.liked_at END,
+                        stats_updated_at = max(f.stats_updated_at, r.stats_updated_at)
+                   FROM tracks AS r
+                  WHERE f.id = ?2 AND r.id = ?1",
+                rusqlite::params![riferimento, file],
+            )
+            .map_err(errore)?;
+        // `OR IGNORE`: un ascolto nello stesso istante su tutti e due è lo
+        // stesso ascolto (l'indice unico della migrazione 20), e quel che resta
+        // sul riferimento se ne va con lui.
+        for sql in [
+            "UPDATE OR IGNORE play_history SET track_id = ?2 WHERE track_id = ?1",
+            "UPDATE playlist_tracks SET track_id = ?2 WHERE track_id = ?1",
+            "UPDATE settimana_brano SET track_id = ?2 WHERE track_id = ?1",
+        ] {
+            connection
+                .execute(sql, rusqlite::params![riferimento, file])
+                .map_err(errore)?;
+        }
+        connection
+            .execute(
+                "UPDATE playlists SET updated_at = ?2
+                  WHERE id IN (SELECT playlist_id FROM playlist_tracks WHERE track_id = ?1)",
+                rusqlite::params![file, now_ms()],
+            )
+            .map_err(errore)?;
+        connection
+            .execute("DELETE FROM tracks WHERE id = ?1", [riferimento])
+            .map_err(errore)?;
+        fatti = fatti.saturating_add(1);
+    }
+    if fatti > 0 {
+        crate::library::chiedi_ricostruzione_intera(connection)?;
+    }
+    Ok(fatti)
 }
 
 /// Quanti brani ci sono per stato: `(attesa, fatto, fallito, introvabile)`.
@@ -871,12 +1092,13 @@ pub fn da_comprare(connection: &Connection, limite: u32) -> Result<Vec<DaComprar
         .query_map(
             rusqlite::params![Stato::Introvabile.come_testo(), limite],
             |riga| {
+                let motivo: String = riga.get(4)?;
                 Ok(DaComprare {
                     titolo: riga.get(0)?,
                     artista: riga.get(1)?,
                     album: riga.get(2)?,
                     provenienza: riga.get(3)?,
-                    motivo: riga.get(4)?,
+                    motivo: codice_del_motivo(&motivo).to_owned(),
                 })
             },
         )
@@ -887,6 +1109,28 @@ pub fn da_comprare(connection: &Connection, limite: u32) -> Result<Vec<DaComprar
         esito.push(trovato.map_err(|err| db_error("elenco di quel che resta da comprare", &err))?);
     }
     Ok(esito)
+}
+
+/// Il codice del catalogo degli errori dentro un `download_error`.
+///
+/// La coda scrive `codice: causa` (vedi `codice_e_causa` in `procura.rs`): la
+/// causa serve al diario, il codice alla finestra, che lo confronta per dire
+/// «si ascolta, non si copia». Fino alla 3.2.0 [`da_comprare`] restituiva la
+/// colonna intera, il confronto non riusciva mai, e quella distinzione non
+/// arrivava a nessuno.
+///
+/// Quel che non comincia con un codice — una frase senza codice, come la
+/// scriveva Esplora fino alla 3.2.0, o un campo vuoto — vale
+/// `download.noResults`: è un brano che si compra, e non si sa altro.
+fn codice_del_motivo(grezzo: &str) -> &str {
+    let testa = grezzo.split_once(": ").map_or(grezzo, |(codice, _)| codice);
+    let e_un_codice =
+        testa.contains('.') && testa.chars().all(|c| c.is_ascii_alphanumeric() || c == '.');
+    if e_un_codice {
+        testa
+    } else {
+        "download.noResults"
+    }
 }
 
 #[cfg(test)]
@@ -1036,6 +1280,100 @@ mod prove {
         let esito = riconcilia(&connection, None).expect("riconciliazione");
         assert_eq!(esito.righe_chiuse, 0, "chiusa come «fatto» senza un file");
         assert_eq!(conteggi(&connection).expect("conteggi").attesa, 1);
+    }
+
+    #[test]
+    fn tenere_un_brano_ascoltato_lascia_una_riga_sola() {
+        // «Ascolta» in Esplora, un cuore, due ascolti e un posto in playlist sul
+        // riferimento; poi «Tieni una copia», il file arriva, la scansione lo
+        // inserisce. Deve restare il file solo, con tutto quel che aveva il
+        // riferimento (D-60).
+        let mut connection = crate::db::open_in_memory()
+            .expect("apertura in memoria")
+            .connection;
+        let candidato = rymembra_domain::scelta::Candidato {
+            url: "/v1/tracks/aB3/download".to_owned(),
+            titolo: "Una canzone".to_owned(),
+            autore: Some("Un'artista".to_owned()),
+            durata_sec: Some(200),
+            fonte: Fonte::Audius,
+            licenza: Licenza::CreativeCommons("by".to_owned()),
+            disponibilita: Disponibilita::Scaricabile,
+            ..rymembra_domain::scelta::Candidato::default()
+        };
+        crate::catalogo::aggiungi(&mut connection, std::slice::from_ref(&candidato))
+            .expect("il riferimento entra");
+        let (riferimento, chiave, album): (i64, String, String) = connection
+            .query_row(
+                "SELECT id, track_key, album FROM tracks WHERE path IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("il riferimento");
+        let lista = playlist(&connection, "Preferite");
+        connection
+            .execute_batch(&format!(
+                "UPDATE tracks SET liked = 1, liked_at = 5, play_count = 2,
+                        last_played_at = 9, stats_updated_at = 9 WHERE id = {riferimento};
+                 INSERT INTO play_history (track_id, played_at, ms_played)
+                 VALUES ({riferimento}, 7, 1000), ({riferimento}, 9, 1000);
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 VALUES ({lista}, {riferimento}, 0);"
+            ))
+            .expect("la storia del riferimento");
+        crate::catalogo::da_tenere(&mut connection, std::slice::from_ref(&candidato), "x")
+            .expect("la riga si scrive");
+        let riga = leggi_da_scaricare(&connection, 10)
+            .expect("coda")
+            .first()
+            .map(|d| d.id)
+            .expect("la riga in coda");
+        segna_fatto(
+            &connection,
+            riga,
+            "/musica/una-canzone.flac",
+            &candidato.url,
+            &candidato.licenza,
+        )
+        .expect("presa");
+        // Il file, come lo inserisce la scansione: stessa chiave, riga nuova.
+        connection
+            .execute(
+                "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms,
+                                     file_size, date_added, date_modified)
+                 VALUES ('/musica/una-canzone.flac', ?1, 'Una canzone', 'Un''artista',
+                         ?2, 200000, 1, 0, 0)",
+                [&chiave, &album],
+            )
+            .expect("il file entra");
+
+        riconcilia(&connection, None).expect("riconciliazione");
+
+        let righe: Vec<(Option<String>, i64, i64, i64)> = {
+            let mut query = connection
+                .prepare("SELECT path, liked, play_count, id FROM tracks WHERE track_key = ?1")
+                .expect("query");
+            query
+                .query_map([&chiave], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
+                .expect("righe")
+                .filter_map(Result::ok)
+                .collect()
+        };
+        assert_eq!(righe.len(), 1, "flusso e file insieme: {righe:?}");
+        let (percorso, cuore, ascolti, file) = righe.first().cloned().expect("una riga");
+        assert_eq!(percorso.as_deref(), Some("/musica/una-canzone.flac"));
+        assert_eq!((cuore, ascolti), (1, 2), "il cuore e gli ascolti restano");
+        let storia: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM play_history WHERE track_id = ?1",
+                [file],
+                |r| r.get(0),
+            )
+            .expect("storia");
+        assert_eq!(storia, 2);
+        assert_eq!(voci_di(&connection, lista), vec![(0, file)]);
     }
 
     #[test]
@@ -1415,6 +1753,145 @@ mod prove {
         );
         // …e i tentativi ripartono da zero, o il ritentativo si esaurirebbe
         // subito contro il freno che aveva appena fermato quel brano.
+        assert_eq!(coda.first().map(|d| d.tentativi), Some(0));
+    }
+
+    #[test]
+    fn da_comprare_restituisce_il_codice_nudo() {
+        // La coda scrive in `download_error` il codice **e** la causa, che al
+        // diario servono tutti e due; la finestra confronta il codice nudo per
+        // dire «si ascolta, non si copia».
+        let connection = connessione();
+        let negato = inserisci(&connection, "Solo da ascoltare");
+        segna_introvabile(
+            &connection,
+            negato,
+            "download.notPermitted: «x» si può ascoltare ma non tenere",
+        )
+        .expect("segna");
+        let nessuno = inserisci(&connection, "Da nessuna parte");
+        segna_introvabile(&connection, nessuno, "download.noResults").expect("segna");
+        // Una frase senza codice, come la scriveva Esplora fino alla 3.2.0.
+        let vecchia = inserisci(&connection, "Una frase");
+        segna_introvabile(
+            &connection,
+            vecchia,
+            "nessun catalogo libero lo distribuisce",
+        )
+        .expect("segna");
+
+        let motivi: HashMap<String, String> = da_comprare(&connection, 10)
+            .expect("lettura")
+            .into_iter()
+            .map(|r| (r.titolo, r.motivo))
+            .collect();
+        assert_eq!(
+            motivi.get("Solo da ascoltare").map(String::as_str),
+            Some("download.notPermitted")
+        );
+        assert_eq!(
+            motivi.get("Da nessuna parte").map(String::as_str),
+            Some("download.noResults")
+        );
+        assert_eq!(
+            motivi.get("Una frase").map(String::as_str),
+            Some("download.noResults")
+        );
+    }
+
+    /// Un riferimento di catalogo e la sua riga di «Tieni una copia», come li
+    /// lasciava la 3.2.0: la riga chiusa `fatto` senza nessun file.
+    fn copia_chiusa_senza_file(connection: &mut Connection, titolo: &str) {
+        let candidato = rymembra_domain::scelta::Candidato {
+            url: format!("/v1/tracks/{titolo}/download"),
+            titolo: titolo.to_owned(),
+            autore: Some("Un'artista".to_owned()),
+            durata_sec: Some(200),
+            fonte: Fonte::Audius,
+            licenza: Licenza::CreativeCommons("by".to_owned()),
+            disponibilita: Disponibilita::Scaricabile,
+            ..rymembra_domain::scelta::Candidato::default()
+        };
+        crate::catalogo::aggiungi(connection, std::slice::from_ref(&candidato))
+            .expect("il riferimento entra");
+        crate::catalogo::da_tenere(connection, std::slice::from_ref(&candidato), "x")
+            .expect("la riga si scrive");
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE title = ?1",
+                [titolo],
+            )
+            .expect("la chiusura della 3.2.0");
+    }
+
+    #[test]
+    fn una_copia_chiusa_senza_file_dalla_versione_di_prima_torna_in_coda() {
+        let mut connection = crate::db::open_in_memory()
+            .expect("apertura in memoria")
+            .connection;
+        copia_chiusa_senza_file(&mut connection, "Senza file");
+        // Accanto, una riga chiusa per davvero: il suo file c'è.
+        let presa = inserisci(&connection, "Presa");
+        in_libreria(&connection, "Presa", "/musica/presa.flac");
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE id = ?1",
+                [presa],
+            )
+            .expect("chiusura");
+        // E una chiusa da un file che poi è stato cancellato: senza un
+        // riferimento con la sua chiave non si sa che cosa fosse, e non si
+        // riscarica da sola.
+        let sparita = inserisci(&connection, "Sparita");
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE id = ?1",
+                [sparita],
+            )
+            .expect("chiusura");
+
+        assert_eq!(riapri_le_copie_chiuse_senza_file(&connection), Ok(1));
+        let coda = leggi_da_scaricare(&connection, 10).expect("lettura");
+        assert_eq!(
+            coda.iter()
+                .map(|d| d.brano.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Senza file"]
+        );
+        assert_eq!(conteggi(&connection).expect("conteggi").fatto, 2);
+
+        // Una volta sola: una riga richiusa a torto dopo l'aggiornamento non
+        // può esistere (la regola nuova non lo fa), e ripassare a ogni
+        // apertura sarebbe un'interrogazione per niente.
+        connection
+            .execute(
+                "UPDATE desiderati SET download_state = 'fatto' WHERE title = 'Senza file'",
+                [],
+            )
+            .expect("chiusura");
+        assert_eq!(riapri_le_copie_chiuse_senza_file(&connection), Ok(0));
+    }
+
+    #[test]
+    fn riprovare_i_non_trovati_li_rimette_in_coda() {
+        // Il gesto esplicito «Riprova anche i non trovati»: un «introvabile»
+        // scritto da un annullamento o da un catalogo muto della 3.2.0 non si
+        // distingue da uno vero, e decidere tocca a chi guarda l'elenco.
+        let connection = connessione();
+        let introvabile = inserisci(&connection, "Introvabile");
+        segna_introvabile(&connection, introvabile, "download.noResults").expect("segna");
+        let fallito = inserisci(&connection, "Fallito");
+        segna_fallito(&connection, fallito, "download.network", false).expect("segna");
+
+        assert_eq!(riprova_introvabili(&connection), Ok(1));
+        let coda = leggi_da_scaricare(&connection, 10).expect("lettura");
+        assert_eq!(
+            coda.iter()
+                .map(|d| d.brano.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Introvabile"],
+            "i falliti hanno il loro gesto"
+        );
         assert_eq!(coda.first().map(|d| d.tentativi), Some(0));
     }
 
