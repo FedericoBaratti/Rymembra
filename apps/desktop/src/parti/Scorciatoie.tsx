@@ -119,7 +119,7 @@ export function Scorciatoie({
     <>
       <ul className="cartelle">
         {comandi().map(({ chiave, titolo, spiegazione }) => (
-          <li className="cartella scorciatoia" key={chiave}>
+          <li className="cartella riga-scorciatoia" key={chiave}>
             <div className="che-cosa">
               <div className="etichetta">{titolo}</div>
               <div className="spiegazione">{spiegazione}</div>
@@ -233,7 +233,7 @@ export function Scorciatoie({
       <h3 className="titoletto">{t("shortcuts.lists.title")}</h3>
       <ul className="cartelle">
         {tastiDegliElenchi().map(({ tasti, cosa }) => (
-          <li className="cartella scorciatoia" key={tasti.join(" ")}>
+          <li className="cartella riga-scorciatoia" key={tasti.join(" ")}>
             <div className="che-cosa">
               <div className="etichetta">{cosa}</div>
             </div>

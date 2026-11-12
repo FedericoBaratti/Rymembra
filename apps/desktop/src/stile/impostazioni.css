@@ -142,15 +142,18 @@
 
 /* ── le scorciatoie ── */
 
-.impostazioni .cartella.scorciatoia {
+/* La riga si chiama `riga-scorciatoia`, non `scorciatoia`: quella è il tastino
+   «/» della ricerca (`navigazione.css`), e sul telefono si nasconde. */
+
+.impostazioni .cartella.riga-scorciatoia {
   align-items: center;
   gap: var(--spazio-2);
 }
-.impostazioni .cartella.scorciatoia .che-cosa {
+.impostazioni .cartella.riga-scorciatoia .che-cosa {
   min-width: 0;
   flex: 1;
 }
-.impostazioni .cartella.scorciatoia .tasti {
+.impostazioni .cartella.riga-scorciatoia .tasti {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -890,7 +893,8 @@
      ventotto. */
   inset: -2.5px -2px;
 }
-.interruttore:disabled {
+.interruttore:disabled,
+.interruttore[aria-disabled='true'] {
   cursor: default;
   opacity: 0.55;
 }

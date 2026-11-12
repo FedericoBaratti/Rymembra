@@ -422,7 +422,8 @@
   opacity: 1;
 }
 
-.in-riproduzione .comandi .tasto:disabled {
+.in-riproduzione .comandi .tasto:disabled,
+.in-riproduzione .comandi .tasto[aria-disabled='true'] {
   color: var(--color-text-3);
   opacity: 0.55;
   cursor: default;
