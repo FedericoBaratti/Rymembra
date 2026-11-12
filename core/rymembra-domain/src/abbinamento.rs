@@ -461,15 +461,28 @@ fn indicizza<C: Fn(&LibraryTrack) -> (String, String)>(
 
 /// I separatori dopo i quali comincia un artista che non è il principale.
 ///
-/// Lo spazio davanti a `feat` e `ft` fa da confine di parola senza bisogno di
-/// un'espressione regolare: `feat` catturato così non può essere la fine di
-/// un'altra parola, e `featuring` comincia per `feat` quindi è già coperto.
+/// Ognuno ha un confine **ai due lati**: lo spazio davanti, e dopo un punto,
+/// uno spazio o il resto della parola intera (`featuring`). Senza il confine
+/// dopo, ` feat` tagliava dentro una parola — «Little Feat» diventava
+/// «Little», «The Featherz» «The» — e l'abbinamento cercava in libreria un
+/// artista che non c'è.
 ///
-/// Gli stessi separatori dicono a [`crate::scelta`] dove finisce un interprete
-/// e comincia il successivo, quando confronta chi pubblica con chi è chiesto:
-/// due elenchi diversi vorrebbero dire due idee diverse di «artista».
-pub(crate) const SEPARATORI_ARTISTA: &[&str] =
-    &[",", " & ", " feat", " ft.", " ft ", " with ", " vs "];
+/// Sono i separatori dell'abbinamento con la libreria, dove il taglio largo
+/// (anche a `&`) è il prezzo per ritrovare «A» quando Spotify scrive «A & B»: a
+/// decidere resta poi la durata. La scelta fra i candidati di un catalogo
+/// ([`crate::scelta`]) ha i suoi, più stretti, perché lì un pezzo del nome
+/// preso per l'interprete scarica il brano di qualcun altro.
+pub(crate) const SEPARATORI_ARTISTA: &[&str] = &[
+    ",",
+    " & ",
+    " feat.",
+    " feat ",
+    " featuring ",
+    " ft.",
+    " ft ",
+    " with ",
+    " vs ",
+];
 
 /// Solo il primo interprete.
 ///
@@ -1024,6 +1037,17 @@ mod prove {
             "Canzone (senza chiusura",
             "una parentesi non chiusa lascia il titolo intero"
         );
+    }
+
+    #[test]
+    fn il_feat_si_riconosce_come_parola_intera() {
+        // « feat» senza confine dopo tagliava dentro una parola: «Little Feat»
+        // diventava «Little», «The Featherz» diventava «The».
+        assert_eq!(primo_artista("Little Feat"), "Little Feat");
+        assert_eq!(primo_artista("The Featherz"), "The Featherz");
+        assert_eq!(primo_artista("Eminem feat. Rihanna"), "Eminem");
+        assert_eq!(primo_artista("Eminem Feat Rihanna"), "Eminem");
+        assert_eq!(primo_artista("Eminem featuring Rihanna"), "Eminem");
     }
 
     #[test]
