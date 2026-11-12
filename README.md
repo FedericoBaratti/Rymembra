@@ -502,7 +502,7 @@ images and fonts do not apply, the text is in the system font, and only its
 colours remain. A skin's images may have at most as many pixels as 4096 ×
 4096 — checked when the skin is installed, so a skin already installed with
 larger ones keeps working — and its id cannot be a Windows device name
-(`con`, `nul`, `com1`…). The frame's measures and every effect's parameters
+(`con`, `nul`, `com1`…). The frame’s measures and every effect’s parameters
 have bounds too: a clip larger than 64 pixels or a player pushed off the
 window is refused at installation, and a part made invisible or clipped shut
 is a question of the review before the skin is worn.

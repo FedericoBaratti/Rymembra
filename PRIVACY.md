@@ -1194,7 +1194,7 @@ WebView2 keeps its own data — cache, storage, crash reports — in
 
 **On Android**, Android System WebView can send Google usage and diagnostic
 data for the apps that use it when you agreed to share usage data with
-Google; Rymembra’s manifest tells it not to (§ «On an Android phone»).
+Google; Rymembra’s manifest tells it not to (see “On an Android phone”).
 
 ---
 
