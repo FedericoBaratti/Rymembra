@@ -88,6 +88,41 @@ pub fn id_sicuro(id: &str) -> bool {
     rymembra_domain::paths::id_di_file(id)
 }
 
+/// Un nome di bozza che Windows riserva a un dispositivo (`aux`, `con`, `nul`,
+/// `com1`…) ma che per il resto è un identificatore pulito: lettere, cifre,
+/// trattini, e niente che esca dalla cartella.
+///
+/// Il formato oggi lo rifiuta, ma una bozza salvata prima c'è (su Windows 11
+/// e su Android quel nome era una cartella qualunque): non sparisce
+/// dall'elenco del backup e del profilo, e si legge dal file, non dal
+/// dispositivo — vedi [`cartella_della_bozza`] (R04b-6).
+fn bozza_di_un_dispositivo(id: &str) -> bool {
+    rymembra_domain::paths::riservato_da_windows(id)
+        && !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// La cartella di una bozza che si può leggere: `None` per un id che esce
+/// dalla cartella delle bozze.
+///
+/// Per un nome di dispositivo il percorso è quello verbatim (`\\?\` su
+/// Windows, dal percorso pieno della cartella): così apre la cartella e non
+/// il dispositivo. Su Windows 10 `bozze\aux` è la porta ausiliaria.
+fn cartella_della_bozza(data_dir: &Path, id: &str) -> Option<PathBuf> {
+    if id_sicuro(id) {
+        return Some(cartella_bozze(data_dir).join(id));
+    }
+    if bozza_di_un_dispositivo(id) {
+        return std::fs::canonicalize(cartella_bozze(data_dir))
+            .ok()
+            .map(|piena| piena.join(id));
+    }
+    None
+}
+
 /// Le skin installate, con l'impronta del loro archivio.
 ///
 /// # Perché si ridigerisce ogni volta invece di ricordarsi le impronte
@@ -176,10 +211,12 @@ pub fn elenca_bozze(data_dir: &Path) -> BTreeMap<String, String> {
         let Some(id) = voce.file_name().to_str().map(ToOwned::to_owned) else {
             continue;
         };
-        if !id_sicuro(&id) {
+        // Un nome di dispositivo resta, letto dal file (R04b-6); quel che esce
+        // dalla cartella no.
+        let Some(cartella) = cartella_della_bozza(data_dir, &id) else {
             continue;
-        }
-        if let Ok(bytes) = std::fs::read(voce.path().join(MANIFEST)) {
+        };
+        if let Ok(bytes) = std::fs::read(cartella.join(MANIFEST)) {
             trovate.insert(id, impronta(&bytes));
         }
     }
@@ -207,10 +244,10 @@ pub fn leggi_skin(data_dir: &Path, id: &str) -> Result<Vec<u8>, AppError> {
 ///
 /// `skin.notFound` se l'identificatore non è utilizzabile o la bozza non c'è.
 pub fn leggi_bozza(data_dir: &Path, id: &str) -> Result<Vec<u8>, AppError> {
-    if !id_sicuro(id) {
+    let Some(cartella) = cartella_della_bozza(data_dir, id) else {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
-    }
-    let percorso = cartella_bozze(data_dir).join(id).join(MANIFEST);
+    };
+    let percorso = cartella.join(MANIFEST);
     std::fs::read(&percorso).map_err(|err| {
         AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }).with_cause(err.to_string())
     })
@@ -302,6 +339,19 @@ pub fn scrivi_bozza(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, App
     // Nessun «rotto» oltre la copia a metà: lo Studio salva anche le bozze che
     // non passano la validazione, perché sono lavoro in corso, e un manifest
     // che non si legge può essere esattamente quello.
+    // Il tetto del manifest di un `.ryskin`, prima di guardare il disco: una
+    // bozza che arriva da un profilo o da Drive con un testo enorme è una
+    // bozza che lo Studio, aprendola, misurerebbe valore per valore, e che non
+    // si potrebbe nemmeno esportare. Non si scrive, e lo si dice (R09-1).
+    let tetto = rymembra_skin::package::limits::MAX_MANIFEST_BYTES;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > tetto {
+        return Err(AppError::new(ErrorCode::SkinManifestInvalid {
+            detail: Some(format!(
+                "la bozza supera i {} KiB del manifest di una skin",
+                tetto >> 10
+            )),
+        }));
+    }
     let file = cartella_bozze(data_dir).join(id).join(MANIFEST);
     if !da_scrivere(&file, bytes, |_| false) {
         return Ok(false);
@@ -782,5 +832,56 @@ mod prove {
             leggi_bozza(dir.path(), "in-corso").as_deref(),
             Ok(&b"{ \"a meta\": "[..])
         );
+    }
+
+    /// Una bozza arrivata da un profilo o da Drive con un manifest enorme non
+    /// si scrive: lo Studio, aprendola, ne misurerebbe ogni valore, e una
+    /// bozza che non si potrebbe esportare (oltre il tetto del manifest di un
+    /// `.ryskin`) non è lavoro da riportare (R09-1).
+    #[test]
+    fn una_bozza_oltre_il_tetto_del_manifest_non_si_scrive() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let tetto =
+            usize::try_from(rymembra_skin::package::limits::MAX_MANIFEST_BYTES).expect("ci sta");
+        let enorme = format!("{{\"{}\": 0}}", "k".repeat(tetto));
+        let rifiuto = scrivi_bozza(dir.path(), "enorme", enorme.as_bytes())
+            .expect_err("oltre il tetto non si scrive");
+        assert_eq!(rifiuto.code().kind().code(), "skin.manifestInvalid");
+        assert!(
+            !dir.path()
+                .join("skin")
+                .join("bozze")
+                .join("enorme")
+                .exists(),
+            "niente sul disco"
+        );
+        // Al tetto, sì.
+        let giusta = rymembra_skin::PLAIN_SOURCE.as_bytes();
+        assert_eq!(scrivi_bozza(dir.path(), "giusta", giusta), Ok(true));
+    }
+
+    /// Una bozza `aux` (o `con`, `nul`, `com1`…), salvata quando il formato
+    /// lo permetteva, non sparisce dall'elenco del backup e del profilo, e si
+    /// legge dal file e non dal dispositivo (R04b-6). Una che esce dalla
+    /// cartella resta fuori.
+    #[test]
+    fn una_bozza_col_nome_di_un_dispositivo_resta_nell_elenco() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let bozze = dir.path().join("skin").join("bozze");
+        std::fs::create_dir_all(&bozze).expect("cartella");
+        // Dal percorso verbatim: su Windows 10 `bozze\aux` sarebbe il
+        // dispositivo, e la cartella non si creerebbe.
+        let vera = std::fs::canonicalize(&bozze).expect("percorso pieno");
+        std::fs::create_dir_all(vera.join("aux")).expect("la cartella di una bozza vecchia");
+        std::fs::write(vera.join("aux").join(MANIFEST), b"{\"id\":\"aux\"}").expect("manifest");
+
+        let elenco = elenca_bozze(dir.path());
+        assert!(elenco.contains_key("aux"), "{elenco:?}");
+        assert_eq!(
+            leggi_bozza(dir.path(), "aux").as_deref(),
+            Ok(&b"{\"id\":\"aux\"}"[..])
+        );
+        assert!(leggi_bozza(dir.path(), "..").is_err());
+        assert!(leggi_bozza(dir.path(), "a/b").is_err());
     }
 }
