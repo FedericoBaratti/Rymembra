@@ -5,13 +5,14 @@ Format [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions
 
 ## How versioning works here
 
-One number for the whole monorepo. It is written in four files — the root
-`Cargo.toml`, which the sixteen workspace members inherit, `apps/desktop/package.json`,
-`apps/desktop/src-tauri/tauri.conf.json` and `Cargo.lock` — and `npm run
-check:version` fails `verify` if they don't agree. It changes with `npm run
+One number for the whole monorepo. It is written in five files — the root
+`Cargo.toml`, which the eighteen workspace members inherit,
+`apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`, and the
+two lockfiles that repeat it, `Cargo.lock` and `apps/desktop/package-lock.json`
+— and `npm run check:version` fails `verify` if they don't agree. It changes with `npm run
 version:set -- <version>`, never by hand.
 
-Why one number instead of four: the version ends up in places the user sees —
+Why one number instead of five: the version ends up in places the user sees —
 the installer's name, the version in the startup log and in *Settings →
 Updates*, the release the update check compares with — and those places read it
 from different files. Independent numbers are chances to diverge; in the old
@@ -92,7 +93,7 @@ were, not restated.
 ## [Unreleased]
 
 **Rymembra on Android.** The same application, from the same code: the
-fourteen core crates build for `aarch64-linux-android` and
+fifteen core crates build for `aarch64-linux-android` and
 `x86_64-linux-android` unchanged, and the window becomes an Android activity.
 The number will be decided when it ships; nothing outside Rymembra has to keep
 up with a phone that did not exist before.

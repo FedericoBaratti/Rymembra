@@ -241,8 +241,10 @@ When there's neither, it asks LRCLIB.
 It's worth being precise about **when** it starts, because that's the part that
 matters:
 
-- only for the track you're listening to at that moment, and **only while the
-  lyrics panel is open**. With that panel closed, nothing starts;
+- only for the track you're listening to at that moment and the one queued
+  after it — so that its lyrics are ready when it starts — and **only while the
+  lyrics panel is open**. With that panel closed, nothing starts; the next
+  track is asked for even if you then skip it or take it out of the queue;
 - or when you press «Fill the library» in Settings › Folders, which is the only
   sweep over the whole library and you're the one who launches it.
 
