@@ -137,10 +137,7 @@
   --hairline: rgb(255 255 255 / 0.07);
   --ambient-1: rgb(139 124 246 / 0.1);
   --ambient-2: rgb(76 60 180 / 0.06);
-  --rail-w: 68px;
   --rail-w-expanded: 240px;
-  --player-h: 92px;
-  --player-gap: 14px;
   --content-x: clamp(16px, 3cqw, 48px);
   --radius-panel: 20px;
   --radius-card: 14px;
@@ -174,12 +171,17 @@
   --viz-floor: -70;
   --scrubber-glow: 6;
   --scrubber-rest: rgb(255 255 255 / 0.18);
-  --shell-left: var(--rail-w);
-  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
   --surface-0-rgb: 9 9 13;
   --transition-fast: calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo);
   --transition-med: calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo);
   color-scheme: dark;
+}
+:root:where(:not([data-forma='telefono'])) {
+  --rail-w: 68px;
+  --player-h: 92px;
+  --player-gap: 14px;
+  --shell-left: var(--rail-w);
+  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
 }
 :root[data-theme='light'] {
   --color-surface-0: rgb(251 251 253);

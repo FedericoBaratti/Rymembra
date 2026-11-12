@@ -172,9 +172,17 @@ fn i_valori_non_colore_sono_identici() {
     let skin = plain().expect("valida");
     let css = compile_skin(&skin).css;
 
+    // Le misure della cornice stanno in un blocco della radice che sul
+    // telefono non vale: lì le decide il motore (R09-3).
+    let fuori_dal_telefono = format!("{BASE}:where(:not([data-forma='telefono']))");
     for (proprieta, atteso) in IDENTICI {
+        let blocco = if rymembra_skin::compile::MISURE_DEL_TELEFONO.contains(proprieta) {
+            fuori_dal_telefono.as_str()
+        } else {
+            BASE
+        };
         assert_eq!(
-            valore(&css, BASE, proprieta).as_deref(),
+            valore(&css, blocco, proprieta).as_deref(),
             Some(*atteso),
             "{proprieta}"
         );

@@ -34,10 +34,16 @@
 //!   con lo stesso raggio sui due assi, e un cerchio in percentuale diventa
 //!   quell'ellisse. Prima tutti e due erano CSS non valido e il motore buttava
 //!   l'intero fondo — «In riproduzione» di Neon e Vinile restava trasparente —
-//!   quindi anche qui l'aspetto cambia perché prima non c'era (3.2.1, R18-1).
+//!   quindi anche qui l'aspetto cambia perché prima non c'era (3.2.1, R18-1);
+//! - il blocco del telefono si chiama con l'attributo che la finestra scrive,
+//!   `[data-forma='telefono']` e non `[data-mobile]`, che non metteva nessuno; e
+//!   le misure della cornice che sul telefono decide il motore stanno in un
+//!   blocco della radice che sul telefono non vale. Sul computer non cambia
+//!   niente (3.2.1, R09-2, R09-3).
 
 use std::collections::BTreeSet;
 
+use rymembra_skin::compile::MISURE_DEL_TELEFONO;
 use rymembra_skin::migrazione::COPIE;
 use rymembra_skin::{compile_skin, migra_testo, parse_skin_json};
 
@@ -148,6 +154,22 @@ fn rinomina(regola: &str) -> String {
             ":where([data-active], .is-active)",
             ":where([aria-current]:not([aria-current=\"false\"]), [data-active], .is-active)",
         )
+        .replace("[data-mobile]", "[data-forma='telefono']")
+}
+
+/// Le misure della cornice com'è scritte oggi: in un blocco della radice che
+/// sul telefono non vale. Vedi il `//!`.
+fn ripara_telefono(terna: Terna) -> Terna {
+    let della_radice = terna.regola.starts_with(":root[data-skin='")
+        && !terna.regola.contains(' ')
+        && !terna.regola.contains("[data-forma=");
+    if della_radice && MISURE_DEL_TELEFONO.contains(&terna.proprieta.as_str()) {
+        return Terna {
+            regola: format!("{}:where(:not([data-forma='telefono']))", terna.regola),
+            ..terna
+        };
+    }
+    terna
 }
 
 /// I pezzi di una lista CSS separati dalle virgole di primo livello.
@@ -330,10 +352,10 @@ fn la_migrazione_non_cambia_l_aspetto() {
             .into_iter()
             .map(|terna| {
                 let terna = ripara_radiali(ripara_tripla(terna, &accenti));
-                ripara_sfondo(Terna {
+                ripara_telefono(ripara_sfondo(Terna {
                     regola: rinomina(&terna.regola),
                     ..terna
-                })
+                }))
             })
             .collect();
         let (dopo, ordine_dopo) = terne(&oggi);

@@ -1853,6 +1853,53 @@ mod tests {
             generato, atteso,
             "\nrigenera con: cargo run -p rymembra-skin --example compila\n"
         );
+        // E le misure della cornice, che sul telefono sono del motore
+        // (`rymembra_skin::compile::MISURE_DEL_TELEFONO`): stanno in un blocco
+        // che sul telefono non vale, anche qui.
+        let generato = corpo(STILE, ":root:where(:not([data-forma='telefono'])) {");
+        let atteso = corpo(
+            &compilata().css,
+            ":root[data-skin='plain']:where(:not([data-forma='telefono'])) {",
+        );
+        assert_eq!(
+            generato, atteso,
+            "\nrigenera con: cargo run -p rymembra-skin --example compila\n"
+        );
+    }
+
+    #[test]
+    fn il_telefono_del_foglio_e_quello_della_finestra() {
+        // Il compilatore scrive le sovrascritture del telefono e la guardia
+        // delle misure su `data-forma='telefono'`: è la parola che `main.tsx`
+        // mette sulla radice. Fino alla 3.2.0 il compilatore scriveva
+        // `[data-mobile]`, che non metteva nessuno (R09-2).
+        let main = include_str!("../../src/main.tsx");
+        assert!(
+            main.contains(r#"dataset["forma"] = MOBILE ? "telefono" : "computer""#),
+            "l'attributo della forma in `main.tsx` è cambiato"
+        );
+        let documento = rymembra_skin::parse_skin_json(&rymembra_skin::PLAIN_SOURCE.replacen(
+            "\"tokens\": {",
+            "\"platforms\": { \"mobile\": { \"radius.panel\": \"12px\" } },\n  \"tokens\": {",
+            1,
+        ))
+        .expect("plain col telefono");
+        let css = rymembra_skin::compile_skin(&documento).css;
+        assert!(
+            css.contains(":root[data-skin='plain'][data-forma='telefono'] {"),
+            "{css}"
+        );
+        assert!(!css.contains("data-mobile"));
+        // E il foglio del motore per il telefono riscrive le stesse misure che
+        // il compilatore gli lascia.
+        let telefono = include_str!("../../src/stile/telefono.css");
+        let radice = corpo(telefono, ":root[data-forma=\"telefono\"] {");
+        for misura in rymembra_skin::compile::MISURE_DEL_TELEFONO {
+            assert!(
+                radice.contains(&format!("{misura}:")),
+                "{misura} manca in telefono.css"
+            );
+        }
     }
 
     #[test]

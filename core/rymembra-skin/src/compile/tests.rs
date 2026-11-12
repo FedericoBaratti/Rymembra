@@ -968,7 +968,7 @@ const COMPLETA: &str = r##"{
     "patterns": { "griglia": { "effect": "hairlineGrid", "color": "#000000", "cell": "40px" } },
     "parts": { "card": { "radius": "2px" } }
   },
-  "platforms": { "mobile": { "layout.rail": "56px" } },
+  "platforms": { "mobile": { "radius.panel": "12px", "layout.contentX": "12px" } },
   "motion": {
     "intensity": "full",
     "easings": { "molla": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] } },
@@ -1775,5 +1775,77 @@ fn un_nome_di_voce_scritto_a_mano_non_esce_dalla_cartella_della_skin() {
                 "{css}"
             );
         }
+    }
+}
+
+/// Le misure che sul telefono sono del motore (`stile/telefono.css`), come
+/// proprietà del foglio.
+const MISURE_DEL_TELEFONO: &[&str] = &[
+    "--rail-w",
+    "--player-h",
+    "--player-gap",
+    "--shell-left",
+    "--player-clearance",
+];
+
+#[test]
+fn il_blocco_del_telefono_usa_l_attributo_della_finestra() {
+    // `main.tsx` scrive `data-forma="telefono"` sulla radice: `[data-mobile]`
+    // non lo mette nessuno, e `platforms.mobile` non valeva mai (R09-2).
+    let css = compila_documento(&con(
+        r##", "platforms": { "mobile": { "color.surface.0": "#000000", "layout.contentX": "12px" } }"##,
+    ))
+    .css;
+    assert!(!css.contains("[data-mobile]"), "{css}");
+    let telefono = corpo(&css, ":root[data-skin='prova'][data-forma='telefono']");
+    assert!(
+        telefono.contains("--color-surface-0: rgb(0 0 0);"),
+        "{telefono}"
+    );
+    assert!(telefono.contains("--content-x: 12px;"), "{telefono}");
+}
+
+#[test]
+fn sul_telefono_le_misure_del_lettore_sono_del_motore() {
+    // Il foglio della skin viene dopo `telefono.css` e ha la stessa
+    // specificità: le misure del computer vincevano anche sul telefono, con un
+    // lettore da 92 pixel e 120 di vuoto in fondo a ogni pagina (R09-3).
+    let plain = compile_skin(&crate::plain().expect("plain")).css;
+    let base = corpo(&plain, ":root[data-skin='plain']");
+    let computer = corpo(
+        &plain,
+        ":root[data-skin='plain']:where(:not([data-forma='telefono']))",
+    );
+    for misura in MISURE_DEL_TELEFONO {
+        assert!(
+            !base.contains(&format!("{misura}:")),
+            "{misura} nel blocco di base:\n{base}"
+        );
+        assert!(
+            computer.contains(&format!("{misura}:")),
+            "{misura} manca sul computer:\n{computer}"
+        );
+    }
+    // E `platforms.mobile` non le riprende: lo dice un avviso.
+    let json = con(
+        r##", "platforms": { "mobile": { "layout.playerHeight": "64px", "layout.rail": "56px", "color.surface.0": "#000000" } }"##,
+    );
+    let css = compila_documento(&json).css;
+    let telefono = corpo(&css, ":root[data-skin='prova'][data-forma='telefono']");
+    for misura in MISURE_DEL_TELEFONO {
+        assert!(
+            !telefono.contains(&format!("{misura}:")),
+            "{misura}:\n{telefono}"
+        );
+    }
+    let skin = parse_skin_json(&json).expect("valida");
+    let avvisi = crate::check_skin(&skin);
+    for token in ["layout.playerHeight", "layout.rail"] {
+        assert!(
+            avvisi
+                .iter()
+                .any(|a| a.path == format!("platforms.mobile.{token}")),
+            "{token}: {avvisi:?}"
+        );
     }
 }

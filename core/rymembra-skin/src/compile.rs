@@ -300,8 +300,15 @@ impl Ambito {
         format!("{}[data-theme='{}']", self.radice(), scheme.as_str())
     }
 
+    /// Le sovrascritture di `platforms.mobile`.
+    ///
+    /// L'attributo è quello che la finestra scrive davvero: `main.tsx` mette
+    /// `data-forma="telefono"` sulla radice della pagina costruita per Android.
+    /// Fino alla 3.2.0 qui c'era `[data-mobile]`, che non metteva nessuno, e il
+    /// blocco non valeva mai (R09-2). Una regola più pesante di
+    /// `stile/telefono.css` (0,2,0), quindi sul telefono vince lei.
     fn telefono(&self) -> String {
-        format!("{}[data-mobile]", self.radice())
+        format!("{}[data-forma='telefono']", self.radice())
     }
 
     /// La radice sotto cui la preferenza di Rymembra ferma il movimento.
@@ -411,6 +418,40 @@ fn dichiara(property: impl Into<String>, value: impl Into<String>) -> Dichiarazi
         property: property.into(),
         value: value.into(),
     }
+}
+
+/// Le proprietà della cornice che sul telefono decide il motore.
+///
+/// `stile/telefono.css` le riscrive sotto `:root[data-forma="telefono"]` — la
+/// barra laterale che non c'è, il mini lettore da 64 pixel nel flusso — e il
+/// foglio della skin, che arriva dopo con la stessa specificità, le batteva:
+/// anche Plain portava sul telefono il lettore da 92 pixel del computer e 120
+/// pixel di vuoto in fondo a ogni pagina (R09-3). Sono i token `layout.rail`,
+/// `layout.playerHeight`, `layout.playerGap` e le due misure che il compilatore
+/// ne ricava ([`calcolati`]).
+pub const MISURE_DEL_TELEFONO: &[&str] = &[
+    "--rail-w",
+    "--player-h",
+    "--player-gap",
+    "--shell-left",
+    "--player-clearance",
+];
+
+/// Il blocco di una radice, con le [`MISURE_DEL_TELEFONO`] in un blocco a
+/// parte che sul telefono non vale.
+///
+/// La guardia sta in un `:where()`: sul computer la specificità resta quella
+/// della radice, e la cascata contro `stile.css` non cambia.
+fn blocchi_della_radice(selector: &str, dichiarazioni: Vec<Dichiarazione>) -> String {
+    let (computer, ovunque): (Vec<Dichiarazione>, Vec<Dichiarazione>) = dichiarazioni
+        .into_iter()
+        .partition(|d| MISURE_DEL_TELEFONO.contains(&d.property.as_str()));
+    let mut css = blocco(selector, &ovunque);
+    css.push_str(&blocco(
+        &format!("{selector}:where(:not([data-forma='telefono']))"),
+        &computer,
+    ));
+    css
 }
 
 fn blocco(selector: &str, dichiarazioni: &[Dichiarazione]) -> String {
@@ -2261,7 +2302,7 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
     // `color-scheme` non è un token: dice al motore come disegnare le barre di
     // scorrimento e i controlli nativi, e segue il tema di base.
     dichiarazioni.push(dichiara("color-scheme", skin.scheme.as_str()));
-    css.push_str(&blocco(&ambito.radice(), &dichiarazioni));
+    css.push_str(&blocchi_della_radice(&ambito.radice(), dichiarazioni));
 
     let tema_variante = ambito.tema(skin.scheme.opposto());
     if let Some(variante) = skin.variant.as_ref() {
@@ -2271,12 +2312,16 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
         dichiarazioni.extend(compila_tavolozza(&variante.palette));
         dichiarazioni.extend(compila_motivi(&variante.patterns, ambito));
         dichiarazioni.push(dichiara("color-scheme", skin.scheme.opposto().as_str()));
-        css.push_str(&blocco(&tema_variante, &dichiarazioni));
+        css.push_str(&blocchi_della_radice(&tema_variante, dichiarazioni));
     }
 
     if let Some(telefono) = skin.mobile.as_ref() {
         let (mut dichiarazioni, _) = compila_token(telefono, Some(&skin.tokens), &famiglia);
         dichiarazioni.extend(calcolati(telefono, false));
+        // Le misure del lettore e della barra sul telefono sono del motore
+        // (D-50): `platforms.mobile` non le riprende, e l'avviso lo dice a chi
+        // le scrive (`document/avvisi.rs`).
+        dichiarazioni.retain(|d| !MISURE_DEL_TELEFONO.contains(&d.property.as_str()));
         css.push_str(&blocco(&ambito.telefono(), &dichiarazioni));
     }
 

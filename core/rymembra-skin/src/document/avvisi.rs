@@ -577,6 +577,27 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         });
     }
 
+    // Sul telefono le misure del lettore e della barra sono del motore (D-50):
+    // `platforms.mobile` che le scrive scrive una cosa che non si vedrà.
+    if let Some(telefono) = skin.mobile.as_ref() {
+        for def in crate::tokens::TOKENS
+            .iter()
+            .filter(|d| crate::compile::MISURE_DEL_TELEFONO.contains(&d.css))
+            .filter(|d| telefono.contains(d.id))
+        {
+            avvisi.push(SkinWarning {
+                kind: WarningKind::UnkeptCapability,
+                path: format!("platforms.mobile.{}", def.id),
+                message: format!(
+                    "Sul telefono «{}» lo decide il motore: il lettore e la barra hanno le \
+                     misure di Android, e questo valore non si usa. Sul telefono si possono \
+                     cambiare i colori, i caratteri e le altre misure.",
+                    def.id
+                ),
+            });
+        }
+    }
+
     // Una variante dichiarata e vuota è una promessa non mantenuta:
     // l'interruttore del tema apparirebbe e non farebbe niente.
     if skin.variant.as_ref().is_some_and(Variante::is_empty) {
