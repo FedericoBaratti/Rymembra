@@ -249,6 +249,63 @@ pub struct PianoProfilo {
     /// I numeri della rimappatura vengono da un campione: è il piano, e sul
     /// piano non si guarda ogni file. L'importazione li guarda tutti.
     pub stima: bool,
+    /// La skin che il profilo avrebbe reso attiva e che non ha passato
+    /// l'esame: arriva installata, ma qui resta quella di prima. Vedi
+    /// [`skin_che_non_passa`].
+    pub skin_non_indossata: Option<String>,
+}
+
+/// La prima skin che il profilo renderebbe attiva e che non passa l'esame.
+///
+/// Un `.ryskin` scelto a mano passa dall'esame del nucleo — contrasti, anelli
+/// del fuoco, costi delle superfici e del movimento — e se l'esame ha da
+/// ridire la finestra chiede prima di indossarlo. Un profilo, anche di un
+/// altro, la rendeva attiva senza chiedere niente a nessuno (R13c, decisione
+/// 21). Adesso passa dallo stesso esame: se non lo supera resta installata ma
+/// non indossata, e il piano lo dice.
+///
+/// Si esamina il pacchetto che verrebbe **indossato**: quello già installato
+/// qui, se c'è — l'importazione non sovrascrive mai una skin che c'è — o
+/// altrimenti quello del profilo. Una skin di serie non ha pacchetto e non si
+/// esamina; una che non c'è da nessuna parte nemmeno: chi la legge ripiega già
+/// sulla skin di serie. Un pacchetto che non si apre non passa.
+fn skin_che_non_passa(
+    data_dir: &Path,
+    percorso: &Path,
+    letto: &profilo::Letto,
+) -> Result<Option<String>, AppError> {
+    for id in letto.skin_da_indossare() {
+        if rymembra_skin::di_serie(id).is_some() {
+            continue;
+        }
+        let byte = match std::fs::read(file_skin(data_dir, id)) {
+            Ok(byte) => Some(byte),
+            Err(_) => {
+                let mut trovato = None;
+                profilo::per_ogni_pacchetto(percorso, |suo, bozza, byte| {
+                    if !bozza && suo == id {
+                        trovato = Some(byte.to_vec());
+                    }
+                    Ok(false)
+                })?;
+                trovato
+            }
+        };
+        if byte.is_some_and(|byte| !supera_l_esame(&byte)) {
+            return Ok(Some(id.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+/// Il pacchetto si apre, si può installare, e l'esame non ha niente da
+/// chiedere prima di indossarlo: la stessa domanda di `ConfermaSkin`.
+fn supera_l_esame(byte: &[u8]) -> bool {
+    let Ok(pacchetto) = rymembra_skin::read_skin_package(byte) else {
+        return false;
+    };
+    rymembra_skin::document::controlla_installazione(&pacchetto.document).is_ok()
+        && !rymembra_skin::document::esamina(&pacchetto.document).da_confermare()
 }
 
 /// Quanti file per rimappatura guarda il **piano**.
@@ -394,7 +451,7 @@ fn applica_ora(
     let store = stato.copertine()?;
 
     // ── fase 2: leggere. Fuori da ogni lucchetto. ──────────────────────────
-    let letto = profilo::leggi(Path::new(percorso))?;
+    let mut letto = profilo::leggi(Path::new(percorso))?;
 
     // ── fase 2 bis: gli allegati, sempre fuori dal lucchetto. ──────────────
     //
@@ -424,6 +481,16 @@ fn applica_ora(
             // per colpa di un tema.
             Ok(scritto.unwrap_or(false))
         })?;
+    }
+
+    // ── fase 2 bis bis: la skin da indossare passa dall'esame. ─────────────
+    //
+    // Dopo l'estrazione, perché si esamina quel che verrebbe indossato (vedi
+    // `skin_che_non_passa`), e nel piano come nell'importazione, perché il
+    // piano resti quel che succede.
+    let skin_non_indossata = skin_che_non_passa(&data_dir, Path::new(percorso), &letto)?;
+    if skin_non_indossata.is_some() {
+        letto.lascia_la_skin_di_qui();
     }
 
     // ── fase 2 ter: i file della rimappatura, fuori da ogni lucchetto. ─────
@@ -470,6 +537,7 @@ fn applica_ora(
         piano,
         brani_non_verificati,
         stima: verifiche.stima(),
+        skin_non_indossata,
     })
 }
 
@@ -654,5 +722,58 @@ mod prove {
             piano.brani_irrintracciabili, 1,
             "solo quello che non c'è davvero: {piano:?}"
         );
+    }
+
+    /// Un profilo v1 che rende attiva la skin `id`.
+    fn profilo_con_la_skin(dir: &Path, id: &str) -> profilo::Letto {
+        let percorso = dir.join("profilo.json");
+        let json = serde_json::json!({
+            "rymembra": profilo::FIRMA,
+            "versione": 1,
+            "creato_ms": 1,
+            "voci": { "skin.active": id },
+        });
+        std::fs::write(&percorso, json.to_string()).expect("scrittura");
+        profilo::leggi(&percorso).expect("lettura")
+    }
+
+    #[test]
+    fn una_skin_che_non_passa_l_esame_non_si_indossa_dal_profilo() {
+        // Decisione 21: la skin che un profilo rende attiva passa dall'esame
+        // come un `.ryskin`. Prima diventava attiva senza che nessuno la
+        // guardasse; ora, se non passa, resta installata e qui resta quella
+        // di prima.
+        let dir = tempfile::tempdir().expect("cartella");
+        let dati = dir.path().join("dati");
+        std::fs::create_dir_all(dati.join("skin")).expect("cartella delle skin");
+        std::fs::write(dati.join("skin").join("rotta.ryskin"), b"non un archivio")
+            .expect("pacchetto rotto");
+        let sorgente =
+            rymembra_skin::PLAIN_SOURCE.replace("\"id\": \"plain\"", "\"id\": \"buona\"");
+        let buona = rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[],
+        })
+        .expect("pacchetto");
+        std::fs::write(dati.join("skin").join("buona.ryskin"), buona).expect("pacchetto buono");
+
+        let mut letto = profilo_con_la_skin(dir.path(), "rotta");
+        let percorso = dir.path().join("profilo.json");
+        assert_eq!(
+            skin_che_non_passa(&dati, &percorso, &letto).expect("esame"),
+            Some("rotta".to_owned())
+        );
+        letto.lascia_la_skin_di_qui();
+        assert!(letto.skin_da_indossare().is_empty());
+
+        for id in ["buona", "plain", "mai-installata"] {
+            let letto = profilo_con_la_skin(dir.path(), id);
+            assert_eq!(
+                skin_che_non_passa(&dati, &percorso, &letto).expect("esame"),
+                None,
+                "{id}"
+            );
+        }
     }
 }

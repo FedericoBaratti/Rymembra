@@ -115,3 +115,42 @@ test("una fotografia più vecchia non sovrascrive un evento arrivato prima di le
   altro.evento();
   assert.equal(seconda(), true);
 });
+
+test("la fotografia della scansione chiesta prima della fine non la ricopre", async () => {
+  // R13d-7. Una finestra ricaricata mentre una scansione finisce: la domanda
+  // parte con la scansione in corso, `scansione:finita` arriva prima della
+  // risposta, e la risposta — più vecchia — rimetteva la barra «in corso»
+  // per sempre, con «Scansiona» spento nelle Impostazioni.
+  const { eventiEFotografia } = await import("../src/ultima");
+  const conto = eventiEFotografia();
+  let barra: { fatti: number; totale: number } | null = null;
+  const valida = conto.chiedi(); // il `poi` dell'ascolto di `scansione:finita`
+  conto.evento(); // arriva `scansione:finita`
+  barra = null;
+  const fotografia = { fatti: 10, totale: 20 }; // la risposta, scattata prima
+  if (valida()) barra = fotografia;
+  assert.equal(barra, null);
+
+  // E il cablaggio: la fotografia si chiede nel `poi` dell'ascolto della fine,
+  // e la contano tutti e due gli eventi.
+  const { readFileSync } = await import("node:fs");
+  const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+  const scansione = sorgente("scansione.ts");
+  const avanzamento = scansione.slice(scansione.indexOf('useAscolto<Avanzamento>("scansione:avanzamento"'));
+  assert.match(avanzamento.slice(0, avanzamento.indexOf("});")), /conto\.evento\(\);/);
+  const finita = scansione.slice(scansione.indexOf('"scansione:finita"'));
+  const ascolto = finita.slice(0, finita.indexOf("\n  );"));
+  assert.match(ascolto, /conto\.evento\(\);/);
+  assert.match(ascolto, /const valida = conto\.chiedi\(\);/);
+  assert.match(ascolto, /if \(valida\(\) && scansioniMie\.current === 0\) posaScansione\(adesso\);/);
+  // Niente più fotografia in un effetto all'apertura, prima dell'ascolto.
+  assert.doesNotMatch(scansione, /useEffect\(\(\) => \{\s+ipc\s+\.scansioneAvanzamento\(\)/);
+
+  // Le uscite audio e i conti del cloud: lo stesso schema.
+  const uscita = sorgente("parti/UscitaAudio.tsx");
+  assert.match(uscita, /useAscolto<DispositivoAudio\[\]>\(\s*"riproduzione:dispositivi",[\s\S]*?conto\.evento\(\);[\s\S]*?conto\.chiedi\(\)/);
+  const nuvola = sorgente("contiNuvola.ts");
+  const ricarica = nuvola.slice(nuvola.indexOf("const ricarica = useCallback"));
+  assert.match(ricarica.slice(0, ricarica.indexOf("}, []);")), /if \(valida\(\)\) setConti\(collegati\);/);
+  assert.match(nuvola, /useAscolto<ContoNuvola\[\]>\(\s*"nuvola:conti",\s*\(collegati\) => \{\s*contoConti\.evento\(\);/);
+});

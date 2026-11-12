@@ -482,6 +482,26 @@ fn lampi_rapidi(giro: &Giro<'_>, durata: f64, direzione: AnimDirection, volte: u
     (lampi, piu_breve)
 }
 
+/// Come si chiama una luce di [`LUCI`] nella forma che si traduce: vedi
+/// [`crate::motivo`].
+fn motivo_luce(cosa: &'static str) -> crate::motivo::Motivo {
+    match cosa {
+        "l'opacità" => motivo!("luce.opacita", "l'opacità"),
+        "la sfocatura" => motivo!("luce.sfocatura", "la sfocatura"),
+        "la luminosità" => motivo!("luce.luminosita", "la luminosità"),
+        "la saturazione" => motivo!("luce.saturazione", "la saturazione"),
+        "la tinta" => motivo!("luce.tinta", "la tinta"),
+        "il colore di fondo" => motivo!("luce.fondo", "il colore di fondo"),
+        "il colore del testo" => motivo!("luce.testo", "il colore del testo"),
+        "il colore del bordo" => motivo!("luce.bordo", "il colore del bordo"),
+        "l'ombra" => motivo!("luce.ombra", "l'ombra"),
+        // Una luce nuova in `LUCI` senza la sua riga qui: si legge in
+        // italiano, e la prova delle lingue dello Studio non la vede. La
+        // prova `ogni_luce_ha_il_suo_motivo` qui sotto sì.
+        altro => crate::motivo::Motivo::from(altro),
+    }
+}
+
 /// La durata che il foglio userà, come fattore: `essential` la dimezza.
 ///
 /// `maximum` la allunga, e non si conta — lo Studio fa scorrere le animazioni
@@ -505,7 +525,7 @@ struct Lampo<'m> {
     /// Il mezzo ciclo più breve, in millisecondi.
     mezzo: f64,
     /// «fa 5 lampi in un giro solo», o «si ripete all'infinito».
-    quanto: String,
+    quanto: crate::motivo::Motivo,
     /// È una corsa che si ferma entro [`RIPETIZIONI_SENZA_LAMPEGGIO`] giri.
     breve: bool,
 }
@@ -547,16 +567,25 @@ fn lampi<'m>(motion: &'m SkinMotion, tracce: &[Tracciato]) -> Vec<Lampo<'m>> {
                 let Some((cosa, lampi, mezzo)) = peggiore else {
                     continue;
                 };
-                let dove = if volte == 1 {
-                    "in un giro solo".to_owned()
+                let quanto = if volte == 1 {
+                    motivo!(
+                        "lampi.unGiro",
+                        "fa {lampi} lampi in un giro solo",
+                        lampi = lampi
+                    )
                 } else {
-                    format!("in {volte} giri")
+                    motivo!(
+                        "lampi.giri",
+                        "fa {lampi} lampi in {volte} giri",
+                        lampi = lampi,
+                        volte = volte
+                    )
                 };
                 Lampo {
                     nome,
                     cosa,
                     mezzo,
-                    quanto: format!("fa {lampi} lampi {dove}"),
+                    quanto,
                     breve: true,
                 }
             }
@@ -576,8 +605,12 @@ fn lampi<'m>(motion: &'m SkinMotion, tracce: &[Tracciato]) -> Vec<Lampo<'m>> {
                     cosa,
                     mezzo,
                     quanto: match iterazioni {
-                        Iterazioni::Infinite => "si ripete all'infinito".to_owned(),
-                        Iterazioni::Volte(n) => format!("si ripete {n} volte"),
+                        Iterazioni::Infinite => {
+                            motivo!("ripete.infinito", "si ripete all'infinito")
+                        }
+                        Iterazioni::Volte(n) => {
+                            motivo!("ripete.volte", "si ripete {volte} volte", volte = n)
+                        }
                     },
                     breve: false,
                 }
@@ -591,15 +624,6 @@ fn lampi<'m>(motion: &'m SkinMotion, tracce: &[Tracciato]) -> Vec<Lampo<'m>> {
 /// Le animazioni che lampeggiano, come errori sulla loro durata.
 pub(super) fn lampeggi(motion: &SkinMotion) -> Vec<SkinIssue> {
     let scala = scala_delle_durate(motion);
-    let dimezzata = if scala < 1.0 {
-        format!(
-            " Con l'intensità «{}» il foglio moltiplica ogni durata per {scala}, e il conto \
-             si fa sulla durata che il foglio userà.",
-            motion.intensity.as_str()
-        )
-    } else {
-        String::new()
-    };
     lampi(motion, LUCI)
         .into_iter()
         .map(|lampo| {
@@ -611,26 +635,62 @@ pub(super) fn lampeggi(motion: &SkinMotion) -> Vec<SkinIssue> {
                 breve,
             } = lampo;
             let consiglio = if breve {
-                format!(
-                    "o anima una trasformazione invece della luce: più di \
-                     {RIPETIZIONI_SENZA_LAMPEGGIO} lampi rapidi non passano nemmeno in \
-                     un'animazione che si ferma."
+                motivo!(
+                    "consiglio.ferma",
+                    "o anima una trasformazione invece della luce: più di {massimo} lampi \
+                     rapidi non passano nemmeno in un'animazione che si ferma.",
+                    massimo = RIPETIZIONI_SENZA_LAMPEGGIO
                 )
             } else {
-                format!(
-                    "anima una trasformazione invece della luce, o fermala a \
-                     {RIPETIZIONI_SENZA_LAMPEGGIO} ripetizioni."
+                motivo!(
+                    "consiglio.ciclo",
+                    "anima una trasformazione invece della luce, o fermala a {massimo} \
+                     ripetizioni.",
+                    massimo = RIPETIZIONI_SENZA_LAMPEGGIO
+                )
+            };
+            // Arrotondati prima: il modello di `motivo!` non ha formati, perché
+            // sono gli stessi segnaposto del catalogo delle lingue.
+            let mezzo = format!("{mezzo:.0}");
+            let minimo = format!("{MEZZO_CICLO_MINIMO_MS:.0}");
+            let cosa = motivo_luce(cosa);
+            let motivo = if scala < 1.0 {
+                motivo!(
+                    "lampeggiaIntensita",
+                    "«{nome}» lampeggia: {cosa} cambia ogni {mezzo} ms e {quanto}, sotto i \
+                     {minimo} ms per mezzo ciclo. Una luce che cambia così in fretta e si ripete \
+                     può scatenare una crisi in chi soffre di epilessia fotosensibile (WCAG \
+                     2.3.1). Allunga la durata, togli i fotogrammi che vanno e vengono, \
+                     {consiglio} Con l'intensità «{intensita}» il foglio moltiplica ogni durata \
+                     per {scala}, e il conto si fa sulla durata che il foglio userà.",
+                    nome = nome,
+                    cosa = cosa,
+                    mezzo = mezzo,
+                    quanto = quanto,
+                    minimo = minimo,
+                    consiglio = consiglio,
+                    intensita = motion.intensity.as_str(),
+                    scala = scala
+                )
+            } else {
+                motivo!(
+                    "lampeggia",
+                    "«{nome}» lampeggia: {cosa} cambia ogni {mezzo} ms e {quanto}, sotto i \
+                     {minimo} ms per mezzo ciclo. Una luce che cambia così in fretta e si ripete \
+                     può scatenare una crisi in chi soffre di epilessia fotosensibile (WCAG \
+                     2.3.1). Allunga la durata, togli i fotogrammi che vanno e vengono, \
+                     {consiglio}",
+                    nome = nome,
+                    cosa = cosa,
+                    mezzo = mezzo,
+                    quanto = quanto,
+                    minimo = minimo,
+                    consiglio = consiglio
                 )
             };
             problema(
                 &giu(&giu(&giu("motion", "animations"), nome), "duration"),
-                format!(
-                    "«{nome}» lampeggia: {cosa} cambia ogni {mezzo:.0} ms e {quanto}, sotto i \
-                     {MEZZO_CICLO_MINIMO_MS:.0} ms per mezzo ciclo. Una luce che cambia così in fretta \
-                     e si ripete può scatenare una crisi in chi soffre di epilessia fotosensibile \
-                     (WCAG 2.3.1). Allunga la durata, togli i fotogrammi che vanno e vengono, \
-                     {consiglio}{dimezzata}"
-                ),
+                motivo,
             )
         })
         .collect()
@@ -724,28 +784,29 @@ const FORME: &[Tracciato] = &[
     ),
 ];
 
-/// Un'animazione che fa apparire e sparire la parte troppo in fretta: il suo
-/// nome e la frase che lo dice. Vedi «Il lampeggio della forma».
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LampoDiForma {
-    /// Il nome dell'animazione, in `motion.animations`.
-    pub(crate) animazione: String,
-    /// La frase che lo spiega.
-    pub(crate) perche: String,
-}
-
-/// Le animazioni che lampeggiano con la forma invece che con la luce.
-#[must_use]
-pub(crate) fn lampi_di_forma(motion: &SkinMotion) -> Vec<LampoDiForma> {
+/// Le animazioni che fanno apparire e sparire la parte troppo in fretta, con
+/// la forma invece che con la luce: i loro nomi, in `motion.animations`. Vedi
+/// «Il lampeggio della forma».
+pub(crate) fn lampi_di_forma(motion: &SkinMotion) -> Vec<String> {
     lampi(motion, FORME)
         .into_iter()
-        .map(|lampo| LampoDiForma {
-            animazione: lampo.nome.to_owned(),
-            perche: format!(
-                "«{}»: {} fa apparire e sparire la parte ogni {:.0} ms e {}, sotto i {:.0} ms per \
-                 mezzo ciclo",
-                lampo.nome, lampo.cosa, lampo.mezzo, lampo.quanto, MEZZO_CICLO_MINIMO_MS
-            ),
-        })
+        .map(|lampo| lampo.nome.to_owned())
         .collect()
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn ogni_luce_ha_il_suo_motivo() {
+        // Una luce aggiunta a `LUCI` senza la sua riga in `motivo_luce` si
+        // leggerebbe in italiano anche nell'interfaccia inglese.
+        for (cosa, _, _) in LUCI {
+            assert!(
+                !motivo_luce(cosa).chiave.is_empty(),
+                "«{cosa}» senza chiave"
+            );
+        }
+    }
 }

@@ -68,7 +68,12 @@
 //!   conflitti. Il database e i suoi `-wal` e `-shm` passano **per ultimi, e
 //!   insieme**: i tre nomi sono una unità sola, e se anche una sola delle tre
 //!   destinazioni è già occupata non ne passa nessuna (un `.db` accanto al
-//!   giornale di un altro è peggio di un database che aspetta). Passano nell'ordine
+//!   giornale di un altro è peggio di un database che aspetta). Ma un database
+//!   che aspetta deve aspettare davvero: se il `.db` di prima c'è e un suo
+//!   posto è occupato, il trasloco si ferma prima di muovere niente con
+//!   [`Errore::DatabaseInConflitto`], perché aprire lo stesso creerebbe una
+//!   libreria vuota e dal giro dopo quella di prima non si guarderebbe più.
+//!   Passano nell'ordine
 //!   `-wal`, `-shm`, `.db`, e se uno spostamento fallisce quelli già fatti
 //!   tornano dov'erano. Se qualcosa si inceppa prima, la libreria è ancora tutta
 //!   dov'era e il giro dopo riprende da lì. Qualunque guasto in questa fase è
@@ -295,6 +300,23 @@ pub enum Errore {
         /// Il valore che porta.
         valore: PathBuf,
     },
+    /// Il database di prima non può arrivare intero al suo posto: nella
+    /// cartella nuova, dove non c'è ancora `rymembra.db`, un giornale o un
+    /// database a metà occupa uno dei nomi del trio — il segno di un trasloco
+    /// interrotto, o di una copia fatta a mano.
+    ///
+    /// Fino alla 3.2.0 era un conflitto e basta: il trio restava indietro, il
+    /// trasloco riportava successo, e l'apertura creava subito un
+    /// `rymembra.db` vuoto. Dal giro dopo la regola «i dati di Rymembra
+    /// vincono» non guardava più la cartella di prima, e la libreria di Aether
+    /// non arrivava mai, con una riga di diario come unica traccia. Adesso è un
+    /// rifiuto come [`Errore::InUso`]: non si muove e non si crea niente.
+    DatabaseInConflitto {
+        /// Il database rimasto dov'è.
+        database: PathBuf,
+        /// I file che, nella cartella nuova, ne occupano il posto.
+        occupati: Vec<PathBuf>,
+    },
 }
 
 impl fmt::Display for Errore {
@@ -314,6 +336,12 @@ impl fmt::Display for Errore {
                 f,
                 "trasloco dei dati della versione precedente non riuscito su {}: {causa}",
                 percorso.display()
+            ),
+            Self::DatabaseInConflitto { database, occupati } => write!(
+                f,
+                "il database della versione precedente ({}) non può prendere il suo posto: lo occupa {}",
+                database.display(),
+                elenco_di(occupati)
             ),
         }
     }
@@ -343,7 +371,10 @@ impl std::error::Error for Errore {}
 /// # Errors
 ///
 /// [`Errore::InUso`] se la versione di prima tiene aperto il database;
-/// [`Errore::Io`] se la cartella o il database non si lasciano portare.
+/// [`Errore::Io`] se la cartella o il database non si lasciano portare;
+/// [`Errore::DatabaseInConflitto`] se il database di prima non può prendere il
+/// suo posto, perché nella cartella nuova un giornale o un database a metà lo
+/// occupa e `rymembra.db` non c'è.
 pub fn trasloca(percorsi: &Percorsi) -> Result<Rapporto, Errore> {
     trasloca_con(percorsi, &Attese::DI_SERIE)
 }
@@ -461,6 +492,19 @@ fn file_del_database(cartella: &Path, nome: &str) -> [PathBuf; 3] {
         cartella.join(format!("{nome}-shm")),
         cartella.join(nome),
     ]
+}
+
+/// I nomi che il database di prima deve trovare liberi in `nuova` per
+/// arrivarci e prendere il nome di adesso, quelli che non lo sono: i tre col
+/// nome di prima, e il giornale di adesso (`-wal`, `-shm`). `rymembra.db` non
+/// c'è: se ci fosse, i dati di Rymembra vincerebbero e il trio non si muove.
+fn posti_del_database_occupati(nuova: &Path) -> Vec<PathBuf> {
+    let [wal, shm, _] = file_del_database(nuova, NOME_DATABASE);
+    file_del_database(nuova, eredita::NOME_DATABASE)
+        .into_iter()
+        .chain([wal, shm])
+        .filter(|percorso| esiste(percorso))
+        .collect()
 }
 
 /// Questo percorso è uno dei tre file del database di prima?
@@ -623,6 +667,24 @@ fn porta_la_cartella(
     }
 
     sonda_il_database(precedente, attese)?;
+
+    // Il database di prima deve poter arrivare intero, e prendere poi il nome
+    // di adesso. Se nella nuova uno di quei nomi è già occupato — un giornale
+    // orfano, un `.db` a metà di un trasloco interrotto — il trio resterebbe
+    // indietro, o a metà strada col nome di prima, e l'apertura creerebbe
+    // subito un `rymembra.db` vuoto: dal giro dopo, con i dati di Rymembra che
+    // vincono, la cartella di prima non si guarderebbe più. Ci si ferma qui,
+    // prima di muovere qualunque cosa.
+    let database_di_prima = precedente.join(eredita::NOME_DATABASE);
+    if esiste(&database_di_prima) {
+        let occupati = posti_del_database_occupati(nuova);
+        if !occupati.is_empty() {
+            return Err(Errore::DatabaseInConflitto {
+                database: database_di_prima,
+                occupati,
+            });
+        }
+    }
 
     match fs::metadata(nuova) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -893,6 +955,26 @@ fn rinomina_il_database(
 
     let occupati: Vec<&(&Path, &Path)> =
         presenti.iter().filter(|(_, nuovo)| esiste(nuovo)).collect();
+    // Un nome di adesso occupato senza `rymembra.db`: il giornale di prima e un
+    // giornale col nome di adesso, uno accanto all'altro. Il `.db` di prima non
+    // può prendere il suo nome, e l'apertura creerebbe un `rymembra.db` vuoto
+    // accanto a un giornale che non è suo, con la libreria vera lasciata col
+    // nome di prima. È un rifiuto, come nel trasloco dalla cartella di prima.
+    //
+    // Un giornale col nome di adesso **e nessuno** col nome di prima, invece, è
+    // una rinomina interrotta — i giornali passano per primi, il `.db` per
+    // ultimo — e il `.db` lo raggiunge qui sotto: lì non c'è niente da fermare.
+    if !occupati.is_empty() && !esiste(&nuova.join(NOME_DATABASE)) {
+        return Err(Errore::DatabaseInConflitto {
+            database: database.clone(),
+            occupati: occupati
+                .iter()
+                .map(|(_, nuovo)| nuovo.to_path_buf())
+                .collect(),
+        });
+    }
+    // Con `rymembra.db` presente vincono i dati di Rymembra: il database di
+    // prima resta dov'è, ed è un conflitto e basta.
     if !occupati.is_empty() {
         for (vecchio, nuovo) in occupati {
             rapporto.conflitti.push(format!(
@@ -1165,7 +1247,158 @@ pub fn messaggio_di_rifiuto(errore: &Errore) -> String {
                  and open Rymembra again: it will pick up where it left off."
             )
         }
+        Errore::DatabaseInConflitto { database, occupati } => {
+            let database = database.display();
+            let occupati = elenco_di(occupati);
+            format!(
+                "Rymembra non ha aperto nessuna libreria: la libreria di Aether, {database}, non può \
+                 prendere il suo posto, perché nella cartella dei dati nuova c'è già {occupati}. Aprire \
+                 adesso vorrebbe dire una libreria vuota al posto della tua. Nessun dato è stato \
+                 cancellato. Se quei file vengono da un trasloco interrotto, rimettili accanto alla \
+                 libreria di Aether; altrimenti spostali in un'altra cartella. Poi riapri Rymembra.\n\n\
+                 Rymembra did not open any library: Aether's library, {database}, cannot take its \
+                 place, because the new data folder already holds {occupati}. Opening now would mean \
+                 an empty library instead of yours. No data has been deleted. If those files come \
+                 from an interrupted move, put them back next to Aether's library; otherwise move \
+                 them to another folder. Then open Rymembra again."
+            )
+        }
     }
+}
+
+/// I percorsi di un elenco, in una riga: per il diario e per il dialogo.
+fn elenco_di(percorsi: &[PathBuf]) -> String {
+    percorsi
+        .iter()
+        .map(|percorso| percorso.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+// ── la libreria di un'altra copia sullo stesso PC ────────────────────────────
+
+/// La cartella di passaggio, dentro quella che riceve, dove arrivano i file
+/// del database prima di entrare nella libreria.
+const ARRIVO: &str = "arrivo";
+
+/// Le cartelle che viaggiano con la libreria: le copertine, che il database
+/// nomina per impronta, e le skin installate, che `skin.active` può nominare.
+/// Il resto — il diario, le copie del profilo — è dell'altra copia.
+const CARTELLE_DELLA_LIBRERIA: [&str; 2] = ["copertine", "skin"];
+
+/// Quel che [`copia_la_libreria_di`] ha portato, oltre al database.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Copiata {
+    /// I file di copertine e skin copiati.
+    pub file: u64,
+    /// Quelli che c'erano già, lasciati com'erano.
+    pub gia_presenti: u64,
+}
+
+/// Copia nella libreria aperta su `connection`, che sta in `a`, la libreria di
+/// un'altra copia di Rymembra che sta in `da`. L'originale non si tocca.
+///
+/// # A chi serve
+///
+/// Alla copia del Microsoft Store, che tiene una libreria sua in una cartella
+/// che fuori dal pacchetto non esiste: aprire sul posto quella della copia
+/// installata dal sito voleva dire il `rymembra.db` vero col `-wal` e lo
+/// `-shm` nella cartella privata del pacchetto, cioè un database diviso fra
+/// due posti. Al primo avvio la copia del Store propone di prendere quella che
+/// c'è — della copia del sito, o sua di prima dell'aggiornamento: dall'interno
+/// del pacchetto si vedono nello stesso posto.
+///
+/// # Come
+///
+/// 1. il database si copia **coi file**, `.db` e `-wal` (lo `-shm` si
+///    ricostruisce), in una cartella di passaggio dentro `a`: SQLite non apre
+///    mai l'originale, accanto al quale aprirlo da dentro il pacchetto farebbe
+///    nascere un giornale privato;
+/// 2. la copia si porta alla versione di questa build
+///    ([`db::aggiorna_una_copia`]): una libreria scritta da una versione più
+///    nuova si rifiuta;
+/// 3. entra nella libreria aperta ([`db::sostituisci_con`]), in una
+///    transazione sola;
+/// 4. copertine e skin si copiano accanto, senza sovrascrivere niente;
+/// 5. la cartella di passaggio se ne va.
+///
+/// Chi chiama chiude poi l'applicazione: quel che si era aperto all'avvio — le
+/// cartelle sorvegliate, lo specchio del cloud — viene dalla libreria vuota di
+/// prima.
+///
+/// # Errori
+///
+/// `fs.*` se un file non si legge o non si scrive; `db.versionAhead` se la
+/// libreria è di una versione più nuova; i `db.*` del database copiato. In
+/// tutti i casi prima del passo 3 la libreria è quella di prima.
+pub fn copia_la_libreria_di(
+    connection: &mut rusqlite::Connection,
+    da: &Path,
+    a: &Path,
+) -> Result<Copiata, rymembra_domain::errors::AppError> {
+    let guasto = |percorso: &Path, err: &io::Error| {
+        crate::files::io_error(&percorso.display().to_string(), err)
+    };
+    let arrivo = a.join(ARRIVO);
+    let _ = fs::remove_dir_all(&arrivo);
+    fs::create_dir_all(&arrivo).map_err(|err| guasto(&arrivo, &err))?;
+    let esito = (|| {
+        let [wal, _, database] = file_del_database(da, NOME_DATABASE);
+        let [wal_arrivo, _, database_arrivo] = file_del_database(&arrivo, NOME_DATABASE);
+        fs::copy(&database, &database_arrivo).map_err(|err| guasto(&database, &err))?;
+        if wal.is_file() {
+            fs::copy(&wal, &wal_arrivo).map_err(|err| guasto(&wal, &err))?;
+        }
+        db::aggiorna_una_copia(&database_arrivo)?;
+        db::sostituisci_con(connection, &database_arrivo)?;
+        let mut copiata = Copiata::default();
+        for nome in CARTELLE_DELLA_LIBRERIA {
+            copia_senza_sovrascrivere(&da.join(nome), &a.join(nome), &mut copiata)?;
+        }
+        Ok(copiata)
+    })();
+    let _ = fs::remove_dir_all(&arrivo);
+    esito
+}
+
+/// Copia l'albero `da` in `a`, file per file, lasciando stare quelli che ci
+/// sono già. Una cartella `da` che non c'è non è un guasto: non c'è niente da
+/// portare.
+fn copia_senza_sovrascrivere(
+    da: &Path,
+    a: &Path,
+    copiata: &mut Copiata,
+) -> Result<(), rymembra_domain::errors::AppError> {
+    if !da.is_dir() {
+        return Ok(());
+    }
+    for voce in walkdir::WalkDir::new(da).min_depth(1) {
+        let voce = voce.map_err(|err| {
+            let percorso = err.path().unwrap_or(da).display().to_string();
+            crate::files::io_error(&percorso, &io::Error::other(err.to_string()))
+        })?;
+        let Ok(relativo) = voce.path().strip_prefix(da) else {
+            continue;
+        };
+        let destinazione = a.join(relativo);
+        if voce.file_type().is_dir() {
+            fs::create_dir_all(&destinazione)
+                .map_err(|err| crate::files::io_error(&destinazione.display().to_string(), &err))?;
+        } else if voce.file_type().is_file() {
+            if esiste(&destinazione) {
+                copiata.gia_presenti += 1;
+                continue;
+            }
+            if let Some(cartella) = destinazione.parent() {
+                fs::create_dir_all(cartella)
+                    .map_err(|err| crate::files::io_error(&cartella.display().to_string(), &err))?;
+            }
+            fs::copy(voce.path(), &destinazione)
+                .map_err(|err| crate::files::io_error(&voce.path().display().to_string(), &err))?;
+            copiata.file += 1;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1489,6 +1722,142 @@ mod prove {
         voci
     }
 
+    /// I byte di ogni file sotto `radice`: per dire che una cartella con dentro
+    /// un database vero non è stata toccata.
+    fn byte_dell_albero(radice: &Path) -> BTreeMap<String, Vec<u8>> {
+        walkdir::WalkDir::new(radice)
+            .min_depth(1)
+            .into_iter()
+            .map(|voce| voce.expect("voce"))
+            .filter(|voce| voce.file_type().is_file())
+            .map(|voce| {
+                (
+                    relativo(radice, voce.path()),
+                    fs::read(voce.path()).expect("contenuto"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn la_libreria_di_un_altra_copia_entra_e_l_originale_resta() {
+        // La copia del Microsoft Store, al primo avvio, con la sua libreria
+        // appena creata, prende quella della copia installata dal sito: una
+        // 3.2.0 (schema 38) con un brano e un ascolto, le copertine, una skin.
+        let base = tempfile::tempdir().expect("cartella temporanea");
+        let installatore = base.path().join("io.github.federicobaratti.rymembra");
+        let store = base.path().join("io.github.federicobaratti.rymembra.store");
+        fs::create_dir_all(&installatore).expect("cartella dell'installatore");
+        {
+            let vecchia =
+                rusqlite::Connection::open(installatore.join(NOME_DATABASE)).expect("apertura");
+            for migrazione in db::MIGRATIONS.iter().filter(|m| m.version <= 38) {
+                vecchia.execute_batch(migrazione.sql).expect("migrazione");
+            }
+            vecchia
+                .execute_batch(
+                    "PRAGMA user_version = 38;
+                     INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                         file_size, date_added, date_modified)
+                     VALUES (1, 'C:/Musica/a.flac', 'k', 'Dal sito', 'A', 'B', 1, 0, 0);
+                     INSERT INTO play_history (track_id, played_at, ms_played)
+                     VALUES (1, 1700000000000, 200000);",
+                )
+                .expect("la libreria di prima");
+        }
+        scrivi(&installatore, "copertine/ab/abcdef.jpg", "JPG");
+        scrivi(&installatore, "copertine/cd/cdef.jpg", "ALTRA");
+        scrivi(
+            &installatore,
+            &format!("skin/notte.{ESTENSIONE_SKIN}"),
+            "SKIN",
+        );
+        scrivi(&installatore, "diario/rymembra.log", "DIARIO");
+        let prima = byte_dell_albero(&installatore);
+
+        fs::create_dir_all(&store).expect("cartella del Store");
+        let mut aperta = db::open(&store.join(NOME_DATABASE))
+            .expect("la libreria nuova")
+            .connection;
+        scrivi(&store, "copertine/ab/abcdef.jpg", "SUA");
+
+        let copiata =
+            copia_la_libreria_di(&mut aperta, &installatore, &store).expect("la copia entra");
+
+        let (titolo, ascolti, versione): (String, i64, i64) = aperta
+            .query_row(
+                "SELECT title, (SELECT COUNT(*) FROM play_history),
+                        (SELECT user_version FROM pragma_user_version) FROM tracks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("la libreria dopo");
+        assert_eq!(titolo, "Dal sito");
+        assert_eq!(ascolti, 1);
+        assert_eq!(versione, i64::from(db::LATEST_VERSION), "portata avanti");
+        assert_eq!(
+            copiata,
+            Copiata {
+                file: 2,
+                gia_presenti: 1
+            }
+        );
+        assert_eq!(
+            leggi(&store, "copertine/ab/abcdef.jpg"),
+            "SUA",
+            "niente si sovrascrive"
+        );
+        assert_eq!(leggi(&store, "copertine/cd/cdef.jpg"), "ALTRA");
+        assert_eq!(
+            leggi(&store, &format!("skin/notte.{ESTENSIONE_SKIN}")),
+            "SKIN"
+        );
+        assert!(
+            !store.join("diario/rymembra.log").exists(),
+            "il diario è dell'altra"
+        );
+        assert!(
+            !store.join(ARRIVO).exists(),
+            "la cartella di passaggio se ne va"
+        );
+        drop(aperta);
+        assert_eq!(
+            byte_dell_albero(&installatore),
+            prima,
+            "l'originale non si tocca"
+        );
+    }
+
+    #[test]
+    fn una_libreria_piu_nuova_non_entra() {
+        let base = tempfile::tempdir().expect("cartella temporanea");
+        let installatore = base.path().join("installatore");
+        let store = base.path().join("store");
+        fs::create_dir_all(&installatore).expect("cartella");
+        fs::create_dir_all(&store).expect("cartella");
+        drop(db::open(&installatore.join(NOME_DATABASE)).expect("apertura"));
+        rusqlite::Connection::open(installatore.join(NOME_DATABASE))
+            .expect("apertura")
+            .execute_batch("PRAGMA user_version = 999")
+            .expect("dal futuro");
+        let mut aperta = db::open(&store.join(NOME_DATABASE))
+            .expect("la libreria nuova")
+            .connection;
+
+        let errore = copia_la_libreria_di(&mut aperta, &installatore, &store)
+            .expect_err("più nuova di questa build");
+
+        assert_eq!(
+            errore.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::DbVersionAhead
+        );
+        assert!(!store.join(ARRIVO).exists());
+        let brani: i64 = aperta
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(brani, 0, "la libreria è quella di prima");
+    }
+
     /// Una cartella dati com'era sul disco di chi usava la versione di prima, o
     /// com'è quando ha già i nomi di adesso: stessa roba, nomi diversi.
     fn riempi(radice: &Path, di_prima: bool) {
@@ -1788,52 +2157,46 @@ mod prove {
         // A turno, ognuno dei tre nomi occupato nella cartella nuova da un file
         // che non è di prima. Il database di prima resta intero dov'è: spostarne
         // due su tre vorrebbe dire dividerlo fra due cartelle.
+        //
+        // E l'avvio si ferma lì, prima di muovere qualunque cosa: con il
+        // database di prima rimasto indietro l'apertura creerebbe una libreria
+        // vuota, e dal giro dopo la cartella di prima non si guarderebbe più.
         for (occupato, _) in il_trio_di_prima() {
             let base = tempfile::tempdir().expect("cartella temporanea");
             let percorsi = percorsi_di_prova(base.path());
             let precedente = precedente_di(&percorsi);
             riempi(&precedente, true);
             scrivi(&percorsi.nuova, &occupato, "OCCUPANTE");
+            let prima = albero(base.path());
 
-            let rapporto = vai(&percorsi).expect("un conflitto non è un errore");
+            let errore = vai(&percorsi).expect_err("il trio non può passare");
 
-            // Il trio è dov'era, tutto e com'era.
+            assert!(
+                matches!(
+                    &errore,
+                    Errore::DatabaseInConflitto { occupati, .. }
+                        if *occupati == vec![percorsi.nuova.join(&occupato)]
+                ),
+                "{occupato}: {errore:?}"
+            );
+            // Il trio è dov'era, tutto e com'era, e nella nuova c'è soltanto
+            // l'occupante: niente si è mosso.
             for (nome, contenuto) in il_trio_di_prima() {
                 assert_eq!(leggi(&precedente, &nome), contenuto, "{nome}");
             }
-            // E nella nuova, sotto un nome di database, c'è soltanto l'occupante:
-            // nemmeno uno dei tre, né col nome di prima né con quello di adesso.
-            let nomi_del_database: Vec<String> = il_trio_di_prima()
-                .into_iter()
-                .map(|(nome, _)| nome)
-                .chain(["rymembra.db-wal", "rymembra.db-shm", "rymembra.db"].map(str::to_owned))
-                .collect();
-            let in_nuova = albero(&percorsi.nuova);
-            for (nome, contenuto) in &in_nuova {
-                if nomi_del_database.contains(nome) {
-                    assert_eq!(contenuto, "OCCUPANTE", "{nome}");
-                }
-            }
-            // Ognuno dei tre è un conflitto registrato.
-            for (nome, _) in il_trio_di_prima() {
-                assert!(
-                    rapporto.conflitti.contains(&nome),
-                    "{nome} non è fra i conflitti: {:?}",
-                    rapporto.conflitti
-                );
-            }
-            // Il resto, che non ha di questi problemi, è passato.
-            assert_eq!(leggi(&percorsi.nuova, "copertine/ab/abcdef.jpg"), "JPG");
-            assert!(precedente.exists(), "il trio la tiene in piedi");
+            assert_eq!(albero(base.path()), prima, "{occupato}");
         }
     }
 
     #[test]
-    fn un_giornale_estraneo_nella_nuova_ferma_anche_il_database_che_non_ha_il_suo() {
+    fn un_database_lasciato_indietro_ferma_l_avvio() {
         // Il database di prima c'è da solo, senza giornale; nella nuova c'è un
-        // `-wal` che non è il suo. Se il `.db` passasse, SQLite lo aprirebbe
-        // applicandogli i frame di un altro: la destinazione occupata è quella
-        // del `-wal`, anche se di qua quel file non c'è.
+        // `-wal` che non è il suo — un trasloco interrotto, una copia fatta a
+        // mano. Se il `.db` passasse, SQLite lo aprirebbe applicandogli i frame
+        // di un altro; e se resta indietro con un conflitto e basta, l'avvio
+        // apre una libreria vuota e dal giro dopo la cartella di prima non si
+        // guarda più. È un rifiuto, come `InUso`: niente si muove e niente si
+        // crea, e il dialogo dice quali file stanno in mezzo.
         let base = tempfile::tempdir().expect("cartella temporanea");
         let percorsi = percorsi_di_prova(base.path());
         let precedente = precedente_di(&percorsi);
@@ -1841,20 +2204,76 @@ mod prove {
         scrivi(&precedente, "copertine/ab/abcdef.jpg", "JPG");
         let giornale = format!("{}-wal", eredita::NOME_DATABASE);
         scrivi(&percorsi.nuova, &giornale, "ESTRANEO");
+        let prima = albero(base.path());
 
-        let rapporto = vai(&percorsi).expect("un conflitto non è un errore");
+        let errore = vai(&percorsi).expect_err("il database resterebbe indietro");
 
-        assert_eq!(leggi(&precedente, eredita::NOME_DATABASE), "DB");
-        assert!(!percorsi.nuova.join(eredita::NOME_DATABASE).exists());
-        assert!(!percorsi.nuova.join("rymembra.db").exists());
-        assert_eq!(leggi(&percorsi.nuova, &giornale), "ESTRANEO");
         assert!(
-            rapporto
-                .conflitti
-                .contains(&eredita::NOME_DATABASE.to_owned()),
-            "{:?}",
-            rapporto.conflitti
+            matches!(
+                &errore,
+                Errore::DatabaseInConflitto { database, occupati }
+                    if *database == precedente.join(eredita::NOME_DATABASE)
+                        && *occupati == vec![percorsi.nuova.join(&giornale)]
+            ),
+            "{errore:?}"
         );
+        assert_eq!(albero(base.path()), prima, "niente si è mosso");
+        let messaggio = messaggio_di_rifiuto(&errore);
+        assert!(messaggio.contains(&giornale), "{messaggio}");
+        assert!(
+            messaggio.contains("Nessun dato è stato cancellato"),
+            "{messaggio}"
+        );
+    }
+
+    #[test]
+    fn un_giornale_col_nome_di_adesso_ferma_anche_lui() {
+        // Lo stesso, col giornale orfano che porta il nome di adesso: il trio
+        // passerebbe, e poi non potrebbe prendere il suo nome — e l'avvio
+        // creerebbe `rymembra.db` accanto a un `-wal` che non è suo.
+        let base = tempfile::tempdir().expect("cartella temporanea");
+        let percorsi = percorsi_di_prova(base.path());
+        let precedente = precedente_di(&percorsi);
+        riempi(&precedente, true);
+        scrivi(&percorsi.nuova, "rymembra.db-shm", "ESTRANEO");
+        let prima = albero(base.path());
+
+        let errore = vai(&percorsi).expect_err("il database resterebbe a metà");
+
+        assert!(
+            matches!(&errore, Errore::DatabaseInConflitto { .. }),
+            "{errore:?}"
+        );
+        assert_eq!(albero(base.path()), prima, "niente si è mosso");
+    }
+
+    #[test]
+    fn sul_posto_un_database_di_prima_bloccato_ferma_l_avvio() {
+        // Una cartella scelta a mano con il database di prima, il suo giornale,
+        // e un giornale orfano col nome di adesso, senza `rymembra.db`: la
+        // rinomina non può farsi, e aprire vorrebbe dire un `rymembra.db` vuoto
+        // accanto a un giornale che non è suo, con la libreria vera lasciata
+        // col nome di prima.
+        let base = tempfile::tempdir().expect("cartella temporanea");
+        let nuova = base.path().join("mia");
+        let vecchio = eredita::NOME_DATABASE;
+        scrivi(&nuova, vecchio, "VECCHIO");
+        scrivi(&nuova, &format!("{vecchio}-wal"), "WAL VECCHIO");
+        scrivi(&nuova, "rymembra.db-wal", "ORFANO");
+        let prima = albero(base.path());
+
+        let errore = vai_sul_posto(&nuova).expect_err("bloccato");
+
+        assert!(
+            matches!(
+                &errore,
+                Errore::DatabaseInConflitto { database, occupati }
+                    if *database == nuova.join(vecchio)
+                        && *occupati == vec![nuova.join("rymembra.db-wal")]
+            ),
+            "{errore:?}"
+        );
+        assert_eq!(albero(base.path()), prima);
     }
 
     #[test]

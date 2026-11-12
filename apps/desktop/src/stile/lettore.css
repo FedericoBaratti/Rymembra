@@ -200,7 +200,7 @@
   cursor: pointer;
   transition: color var(--transition-fast), background var(--transition-fast);
 }
-.tasto:hover:not(:disabled) {
+.tasto:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--color-surface-3);
   color: var(--color-text-1);
 }
@@ -217,7 +217,7 @@
   color: var(--color-surface-0);
   font-size: 16px;
 }
-.tasto.grande:hover:not(:disabled) {
+.tasto.grande:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--accent);
   color: var(--color-surface-0);
   filter: brightness(1.08);
@@ -227,13 +227,17 @@
    altrove un tasto del trasporto o della coda non si spegneva mai; adesso lo
    spegne una sessione — il casuale per tutti, il trasporto e la coda per chi
    segue senza averli avuti da chi ospita — e un tasto che sembra acceso e non
-   risponde insegna che il lettore è rotto. Il perché è nel `title`. */
-.tasto:disabled {
+   risponde insegna che il lettore è rotto. Il perché è nel `title`. Un tasto
+   spento con `aria-disabled` (resta focalizzabile, per leggerne il perché) si
+   vede spento uguale. */
+.tasto:disabled,
+.tasto[aria-disabled='true'] {
   color: var(--color-text-3);
   opacity: 0.55;
   cursor: default;
 }
-.tasto.grande:disabled {
+.tasto.grande:disabled,
+.tasto.grande[aria-disabled='true'] {
   color: var(--color-surface-0);
 }
 /* Il «1» di «ripeti questo brano»: un esponente, non un'icona diversa — il

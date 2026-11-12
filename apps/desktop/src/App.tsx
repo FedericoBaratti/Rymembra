@@ -57,12 +57,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 
 import { accorpa } from "./accorpa";
 import { Account } from "./Account";
 import { AggiungiAPlaylist, fraseDellAggiunta } from "./AggiungiAPlaylist";
 import { AggiungiCartella } from "./AggiungiCartella";
+import { ANNULLI, annullaATempo } from "./annullaATempo";
 import { ugualiInSuperficie, useArchivio } from "./archivio";
 import { useArtisti } from "./artisti";
 import { useAspetto } from "./aspettoFinestra";
@@ -78,6 +80,7 @@ import {
   InRiproduzioneTelefonoCollegata,
 } from "./collegati";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
+import { ConfermaGesto } from "./ConfermaGesto";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
 import {
   AvvisoMaiusc,
@@ -91,6 +94,7 @@ import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
 import { chiaveDellApertura, chiusuraDi } from "./foglio";
 import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import { SCHEDA_FERMA, fuocoDiRitorno, fuocoSullaTestata } from "./fuocoPagina";
 import { Fornitori } from "./Fornitori";
 import {
   Giro,
@@ -122,6 +126,7 @@ import {
   type RimozioniDaConfermare,
   type Playlist,
   type VistaBrani,
+  type VoceSkin,
 } from "./ipc";
 import { conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
 import { nomeDiFile } from "./nomeDiFile";
@@ -135,15 +140,17 @@ import {
   vociPlaylist,
   type AzioniBrani,
 } from "./menuBrani";
-import { unaVolta } from "./modale";
+import { modaliAperti, unaVolta } from "./modale";
 import { NuovoTema } from "./NuovoTema";
 import { chiaveDiPagina, paginaCorrente, type VistaLibreria } from "./pagina";
 import { sportelloAscolti, useAscolto, useRada } from "./pagine";
-import { Annuncio } from "./parti/Annuncio";
+import { Annuncio, AnnuncioDelBrano } from "./parti/Annuncio";
 import { AnnuncioScansione } from "./parti/AnnuncioScansione";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
+import { notaDelPermesso, useAccessoTelefono } from "./parti/AccessoTelefono";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
+import { LibreriaDiPrima } from "./parti/LibreriaDiPrima";
 import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
@@ -267,6 +274,19 @@ function ordinamenti(): readonly (readonly [Ordine, string])[] {
  */
 const VISTE_TENUTE = ["brani", "preferiti", "album", "artisti"] as const;
 type VistaTenuta = (typeof VISTE_TENUTE)[number];
+
+/** Chi ha il fuoco adesso, se non è il `<body>`: lì torna chiudendo. */
+function daChi(): HTMLElement | null {
+  const adesso = document.activeElement;
+  return adesso instanceof HTMLElement && adesso !== document.body ? adesso : null;
+}
+
+/** Una playlist appena eliminata, finché il suo «Annulla» è a schermo. */
+interface PlaylistCancellata {
+  /** Il gettone della cancellazione: ripassato a `playlistRipristina`. */
+  gettone: number;
+  nome: string;
+}
 
 /**
  * «Ci ho ripensato»: il «no» al dialogo del Cestino di Android. Lo si lancia
@@ -397,16 +417,32 @@ export function App() {
    * chi si accorge di aver sbagliato voce del menù se ne accorge un attimo dopo.
    * Una cancellazione nuova prende il posto della precedente, e ricomincia il
    * conto.
+   *
+   * Il conto si ferma col fuoco o il puntatore sul riquadro, e `Ctrl+Z` fa
+   * l'ultimo «Annulla» a schermo: chi usa la tastiera trovava il riquadro
+   * lontano dal fuoco, e spesso spariva mentre ci arrivava (`annullaATempo.ts`).
+   * Lo stato è uno per le due copie del riquadro. Il gesto che rimette la
+   * playlist sta in `rimettiPlaylist`, più giù, perché usa la rilettura delle
+   * playlist e la notizia, che nascono dopo.
    */
-  const [cancellata, setCancellata] = useState<{
-    gettone: number;
-    nome: string;
+  const rimettiPlaylist = useRef<(quale: PlaylistCancellata) => void>(() => undefined);
+  const [annulloPlaylist] = useState(() =>
+    annullaATempo<PlaylistCancellata>((quale) => rimettiPlaylist.current(quale)),
+  );
+  const cancellata = useArchivio(annulloPlaylist.avviso);
+  /**
+   * La playlist da eliminare, finché la domanda è aperta (D-40).
+   *
+   * L'«Annulla» dopo resta, ma da solo non bastava: per chi usa la tastiera o
+   * un lettore di schermo era in pratica irraggiungibile, e l'eliminazione
+   * diventava irreversibile. `risposta` è il cancello della domanda
+   * (`unaVolta`), come per `daEliminare`: un doppio clic su «Elimina» non
+   * cancella due volte.
+   */
+  const [daCancellare, setDaCancellare] = useStatoPresente<{
+    playlist: Playlist;
+    risposta: () => boolean;
   } | null>(null);
-  useEffect(() => {
-    if (cancellata === null) return;
-    const conto = window.setTimeout(() => setCancellata(null), 10_000);
-    return () => window.clearTimeout(conto);
-  }, [cancellata]);
   const [vista, setVista] = useState<Vista>("home");
   /**
    * Quel che Esplora ha trovato l'ultima volta che era aperta.
@@ -472,6 +508,16 @@ export function App() {
     if (nessunaCartella) setPrimoAperto(true);
   }, [nessunaCartella]);
   const primoVisibile = !primoChiuso && (primoAperto || nessunaCartella);
+  /*
+   * La testata della Home, finché non si sa se questo è il primo avvio.
+   *
+   * Il primo avvio si apre quando arriva `avvio` e dice che non ci sono né
+   * cartelle né brani; prima di allora si disegnava la Home, e sul telefono —
+   * dove `avvio` arriva dopo qualche secondo — si leggeva «Riprendi da dove eri
+   * rimasto» sopra lo scheletro, prima del benvenuto (R18-14). Finché `avvio`
+   * non c'è, una testata neutra che dice soltanto che sta arrivando.
+   */
+  const testaDellaHome = avvio === null ? { titolo: t("list.loading") } : testaHome();
   /** Le cartelle trascinate sulla finestra mentre il primo avvio le chiede. */
   const [lasciateAlPrimo, setLasciateAlPrimo] = useState<string[]>([]);
   /**
@@ -555,6 +601,47 @@ export function App() {
   /** Da quale skin partire, quando si è arrivati da «Deriva…». */
   const [baseTema, setBaseTema] = useState<string | null>(null);
   const contenuto = useRef<HTMLDivElement>(null);
+  /*
+   * Il fuoco, aprendo e chiudendo un album o un artista (R16-1, D-73): vedi
+   * `fuocoPagina.ts`. Il cambio di vista smontava la scheda premuta e il fuoco
+   * cadeva sul `<body>`; aprendo un disco non si sentiva niente.
+   *
+   * Aprendo va sulla testata della pagina nuova; chiudendo torna a chi aveva
+   * aperto, che si ricorda **per livello**: un album si apre anche dentro un
+   * artista, e chiuderlo riporta alla scheda del disco nella pagina
+   * dell'artista, chiudere l'artista a quella dell'artista nella griglia.
+   * `fuocoDopo` è la richiesta, eseguita dopo il disegno che ha cambiato la
+   * pagina; chi la scrive sono `apriAlbum`, `apriArtista` e la scala di
+   * Escape (`chiudi`).
+   */
+  const daChiAlbum = useRef<HTMLElement | null>(null);
+  const daChiArtista = useRef<HTMLElement | null>(null);
+  const fuocoDopo = useRef<
+    | { verso: "testata"; daChi: HTMLElement | null; livello: RefObject<HTMLElement | null> }
+    | { verso: "ritorno"; livello: RefObject<HTMLElement | null> }
+    | null
+  >(null);
+  useEffect(() => {
+    const chiesto = fuocoDopo.current;
+    if (chiesto === null) return;
+    fuocoDopo.current = null;
+    // La pagina, e sul telefono anche la sua barra in alto, che porta il
+    // titolo quando la testata è un'immagine.
+    const pagina = {
+      querySelector: (selettore: string) =>
+        contenuto.current?.querySelector<HTMLElement>(selettore) ??
+        document.querySelector<HTMLElement>(`[data-scafale] ${selettore}`),
+    };
+    const attivo = () => document.activeElement;
+    if (chiesto.verso === "testata") {
+      chiesto.livello.current = chiesto.daChi;
+      fuocoSullaTestata(pagina, attivo);
+    } else {
+      const chi = chiesto.livello.current;
+      chiesto.livello.current = null;
+      fuocoDiRitorno([chi, pagina.querySelector(SCHEDA_FERMA)], pagina, attivo);
+    }
+  }, [aperto, artistaAperto]);
   const riproduzione = useRiproduzione();
   /*
    * Del motore, `App` sa soltanto se c'è un brano: decide se lo schermo intero
@@ -595,8 +682,20 @@ export function App() {
    * vedi `skinAttiva.ts`. Qui, nel punto in cui stava la lettura della skin
    * all'apertura — subito dopo `avvio`, e prima del tema che la legge.
    */
-  const skinFinestra = useSkinAttiva(segnalaErrore);
-  const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin } = skinFinestra;
+  //
+  // Una scelta durante «Prova sull'app» chiude la prova (D-67), e lo si dice:
+  // lo Studio torna a coprire la finestra, e senza una parola sembrerebbe che
+  // la scelta abbia riaperto l'editor da sola. Il nome dall'elenco di adesso,
+  // letto quando l'avviso parte e non quando la funzione nasce.
+  const elencoSkin = useRef<readonly VoceSkin[]>([]);
+  const avvisaProvaChiusa = useCallback(
+    (id: string) =>
+      setNotizia(t("studio3.try.closed", { nome: elencoSkin.current.find((v) => v.id === id)?.nome ?? id })),
+    [setNotizia],
+  );
+  const skinFinestra = useSkinAttiva(segnalaErrore, avvisaProvaChiusa);
+  const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin, finisciProva } = skinFinestra;
+  elencoSkin.current = skin;
   const { daIndossare } = skinFinestra;
   const studioInProva = prova !== null;
   /** Lo Studio copre la finestra: l'app non prende né tasti né file. */
@@ -645,11 +744,30 @@ export function App() {
    * deve lasciare la finestra com'è dopo una chiusura normale, prova
    * dimenticata e skin rilette compresi.
    */
+  /**
+   * Il controllo che aveva il fuoco quando lo Studio si è aperto, per
+   * rimettercelo all'uscita (R14-10). Senza, il fuoco cadeva sul `<body>` e
+   * chi usa la tastiera o un lettore di schermo ripartiva dall'inizio della
+   * finestra invece che da Impostazioni › Aspetto.
+   */
+  const fuocoPrimaDelloStudio = useRef<HTMLElement | null>(null);
+  const ricordaIlFuoco = useCallback(() => {
+    const qui = document.activeElement;
+    fuocoPrimaDelloStudio.current = qui instanceof HTMLElement && qui !== document.body ? qui : null;
+  }, []);
   const esciDalloStudio = useCallback(() => {
     setStudioAperto(null);
     skinFinestra.scordaProva();
     // Le skin possono essere cambiate mentre si era là dentro.
     void ricaricaSkin();
+    // Dopo il disegno: finché lo Studio c'è, la finestra sotto è `inert`.
+    const torna = fuocoPrimaDelloStudio.current;
+    fuocoPrimaDelloStudio.current = null;
+    if (torna !== null) {
+      window.requestAnimationFrame(() => {
+        if (torna.isConnected) torna.focus();
+      });
+    }
   }, [skinFinestra, ricaricaSkin]);
 
   /**
@@ -1123,6 +1241,7 @@ export function App() {
       inEsplora: vista === "esplora",
       studioVisibile,
       modaleAperto: unModaleAperto(),
+      telefono: MOBILE,
     });
     if (come === "no") return;
     if (come === "parti") {
@@ -1349,10 +1468,18 @@ export function App() {
     // la trova già col nome. Tornando indietro resta dov'è, e la copertina
     // rientra nella sua scheda.
     if (quale !== null) setInVolo(quale.albumKey);
+    fuocoDopo.current =
+      quale !== null
+        ? { verso: "testata", daChi: daChi(), livello: daChiAlbum }
+        : { verso: "ritorno", livello: daChiAlbum };
     cambiandoVista(() => setAperto(quale));
   }, []);
 
   const apriArtista = useCallback((quale: Artista | null) => {
+    fuocoDopo.current =
+      quale !== null
+        ? { verso: "testata", daChi: daChi(), livello: daChiArtista }
+        : { verso: "ritorno", livello: daChiArtista };
     cambiandoVista(() => setArtistaAperto(quale));
   }, []);
 
@@ -1770,6 +1897,9 @@ export function App() {
           }
           const tracce = await ipc.braniAlbum(chiave);
           setQuery("");
+          // Il fuoco sulla testata del disco, come aprendolo dalla griglia; chi
+          // aveva aperto era una voce del menù, che non c'è più.
+          fuocoDopo.current = { verso: "testata", daChi: null, livello: daChiAlbum };
           cambiandoVista(() => {
             setPlaylistAperta(null);
             setAperto({
@@ -1798,6 +1928,7 @@ export function App() {
             return;
           }
           setQuery("");
+          fuocoDopo.current = { verso: "testata", daChi: null, livello: daChiArtista };
           cambiandoVista(() => {
             setPlaylistAperta(null);
             setAperto(null);
@@ -1878,18 +2009,8 @@ export function App() {
           },
           rinomina: () => setDaRinominare(p),
           regole: () => setRegoleAperte({ playlist: p }),
-          cancella: () => {
-            ipc
-              .playlistCancella(p.id)
-              .then((gettone) => {
-                setPlaylistAperta((prima) =>
-                  prima && prima.id === p.id ? null : prima,
-                );
-                setCancellata({ gettone, nome: p.name });
-                return ricaricaPlaylist();
-              })
-              .catch(segnalaErrore);
-          },
+          // Prima la domanda (D-40), poi la cancellazione: vedi `daCancellare`.
+          cancella: () => setDaCancellare({ playlist: p, risposta: unaVolta() }),
           esporta: () => void esportaPlaylist(p),
         },
         t,
@@ -2436,6 +2557,11 @@ export function App() {
       // «qualunque»: la scorciatoia non viene da nessuna scheda, quindi non c'è
       // un servizio da suggerire e la finestrella li nomina tutti e due.
       incollaLink: () => setImportandoLink(true),
+      // L'ultimo «Annulla» ancora a schermo — la coda sostituita, la playlist
+      // eliminata — dovunque sia il fuoco (D-40). Vedi `annullaATempo.ts`.
+      annulla: () => {
+        ANNULLI.annullaLUltimo();
+      },
       chiudi: () => {
         if (grande) {
           setGrande(false);
@@ -2470,11 +2596,13 @@ export function App() {
         // dentro un artista Escape saltava la pagina dell'artista — cioè
         // riportava due passi indietro chi ne aveva chiesto uno.
         if (aperto) {
+          fuocoDopo.current = { verso: "ritorno", livello: daChiAlbum };
           setAperto(null);
           if (artistaAperto === null) tornaAllaRicerca();
           return true;
         }
         if (artistaAperto) {
+          fuocoDopo.current = { verso: "ritorno", livello: daChiArtista };
           setArtistaAperto(null);
           tornaAllaRicerca();
           return true;
@@ -2532,8 +2660,17 @@ export function App() {
       primoInAttesa:
         primoVisibile && !scansionando && (avvio?.numeri.tracks ?? 0) === 0,
       avviato: avvio !== null,
+      // Il primo avvio è un modale anche lui, ma le cartelle sono per lui:
+      // conta come «sopra» solo quel che sta oltre.
+      finestrellaSopra: modaliAperti() > (primoVisibile ? 1 : 0),
     }),
     (piano) => {
+      // Una finestrella aperta: niente dietro il velo. Lo dice la notizia,
+      // che si sente anche lì (le regioni d'annuncio restano vive).
+      if (piano.tipo === "fermo") {
+        setNotizia(t("drop.closeFirst"));
+        return;
+      }
       if (piano.tipo === "skin") {
         // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
         // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
@@ -2581,6 +2718,12 @@ export function App() {
     segnalaErrore,
   );
 
+  /**
+   * Il permesso di leggere la musica, sul telefono: negli stati vuoti della
+   * libreria, se è lui a svuotarla (vedi `parti/AccessoTelefono.tsx`). Fuori da
+   * Android è sempre pieno, e la riga non c'è.
+   */
+  const accessoTelefono = useAccessoTelefono();
   const numeri = avvio?.numeri;
   const vuota = numeri !== undefined && numeri.tracks === 0;
   /**
@@ -2664,7 +2807,13 @@ export function App() {
         setCreandoTema(true);
       },
       onApriStudio: (id) => {
-        if (!MOBILE) setStudioAperto(id);
+        if (MOBILE) return;
+        // Durante «Prova sull'app» lo Studio è nascosto: aprirne un altro
+        // senza chiudere la prova non mostrava niente, e dopo «Torna» lo
+        // Studio era ancora sulla bozza di prima. Si torna, e si apre.
+        finisciProva();
+        ricordaIlFuoco();
+        setStudioAperto(id);
       },
       onImporta: importaDatabase,
       onImportaLink: () => setImportandoLink(true),
@@ -2687,6 +2836,8 @@ export function App() {
       setImportandoLink,
       setImportandoAccount,
       setRipristinando,
+      finisciProva,
+      ricordaIlFuoco,
     ],
   );
 
@@ -2975,7 +3126,7 @@ export function App() {
         );
       case "home":
         return (
-          <BarraAlta grande occhiello={t("home.eyebrow")} titolo={t("home.title")} azioni={cerca} />
+          <BarraAlta grande {...testaDellaHome} azioni={cerca} />
         );
       case "libreria":
         return (
@@ -3280,7 +3431,7 @@ export function App() {
       );
     }
     if (pagina.tipo === "home") {
-      return <Intestazione {...testaHome()} query={query} onQuery={setQuery} />;
+      return <Intestazione {...testaDellaHome} query={query} onQuery={setQuery} />;
     }
     // Le due pagine del solo telefono: sul computer non ci si arriva, e la
     // testata del telefono le ha già prese sopra.
@@ -3446,6 +3597,7 @@ export function App() {
           icona="i-folder"
           titolo={t("empty.noFolders.title")}
           testo={t("empty.noFolders.body")}
+          nota={notaDelPermesso(accessoTelefono)}
           azione={{
             etichetta: t("empty.noFolders.cta"),
             fai: () => setAggiunta("finestra"),
@@ -3460,6 +3612,7 @@ export function App() {
           icona="i-scan"
           titolo={t("empty.library.title")}
           testo={t("empty.library.body")}
+          nota={notaDelPermesso(accessoTelefono)}
           azione={{ etichetta: t("empty.library.cta"), fai: () => void scansiona() }}
         />
       );
@@ -3951,6 +4104,25 @@ export function App() {
             vaiA("cartelle");
           },
         };
+      // Il database della libreria che non si apre, o che non si lascia
+      // scrivere: le frasi parlano della cartella dei dati — la copia di prima
+      // dell'aggiornamento sta lì, accanto a `rymembra.db` — e `%APPDATA%` in
+      // Esplora risorse è nascosta. La fascia resta: il gesto non la chiude.
+      // Sul telefono la cartella è privata dell'app, e il gesto non c'è.
+      case "db.migrationFailed":
+      case "db.versionAhead":
+      case "db.openFailed":
+      case "db.corrupt":
+      case "db.readOnly":
+      case "db.ioFailed":
+        return MOBILE
+          ? undefined
+          : {
+              etichetta: t("errors.action.dataFolder"),
+              onClick: () => {
+                ipc.manutenzioneApriCartellaDati().catch(segnalaErrore);
+              },
+            };
       default:
         return undefined;
     }
@@ -3985,30 +4157,43 @@ export function App() {
    *
    * Non parla lui a chi ascolta lo schermo: nasce già pieno, e in due copie.
    * Lo dice una regione sola, sempre montata, accanto a quella delle notizie.
+   *
+   * Il gesto lo fa `annulloPlaylist` (vedi la sua dichiarazione): dal tasto o
+   * da `Ctrl+Z`, una volta sola, e l'avviso se ne va da tutte e due le copie.
    */
+  rimettiPlaylist.current = (quale) => {
+    ipc
+      .playlistRipristina(quale.gettone)
+      .then((tornata) => {
+        if (tornata === null) {
+          setNotizia(t("playlist.deleted.late", { nome: quale.nome }));
+          return;
+        }
+        setNotizia(t("playlist.deleted.back", { nome: tornata.name }));
+        return ricaricaPlaylist();
+      })
+      .catch(segnalaErrore);
+  };
+  /** La cancellazione, dopo il sì della domanda: vedi `daCancellare`. */
+  const cancellaPlaylist = (p: Playlist) => {
+    ipc
+      .playlistCancella(p.id)
+      .then((gettone) => {
+        setPlaylistAperta((prima) => (prima && prima.id === p.id ? null : prima));
+        annulloPlaylist.mostra({ gettone, nome: p.name });
+        return ricaricaPlaylist();
+      })
+      .catch(segnalaErrore);
+  };
   const avvisoCancellata = cancellata !== null && (
-    <div className="notizia toast-card">
+    <div className="notizia toast-card" {...annulloPlaylist.presa}>
       <Icona nome="i-check" dim={16} />
       <span>{t("playlist.deleted", { nome: cancellata.nome })}</span>
       <button
         type="button"
         className="bottone minuto btn-ghost"
         aria-label={t("playlist.deleted.undo.aria", { nome: cancellata.nome })}
-        onClick={() => {
-          const quale = cancellata;
-          setCancellata(null);
-          ipc
-            .playlistRipristina(quale.gettone)
-            .then((tornata) => {
-              if (tornata === null) {
-                setNotizia(t("playlist.deleted.late", { nome: quale.nome }));
-                return;
-              }
-              setNotizia(t("playlist.deleted.back", { nome: tornata.name }));
-              return ricaricaPlaylist();
-            })
-            .catch(segnalaErrore);
-        }}
+        onClick={annulloPlaylist.annulla}
       >
         {t("playlist.deleted.undo")}
       </button>
@@ -4016,7 +4201,7 @@ export function App() {
         type="button"
         className="tasto icon-btn"
         aria-label={t("common.close")}
-        onClick={() => setCancellata(null)}
+        onClick={() => annulloPlaylist.mostra(null)}
       >
         <Icona nome="i-x" dim={14} />
       </button>
@@ -4193,6 +4378,9 @@ export function App() {
                         guasto che dura finché qualcuno non fa qualcosa. Vedi
                         `parti/AvvisoConti.tsx`. */}
                     <AvvisoConti onNotizia={setNotizia} />
+                    {/* La copia del Microsoft Store, al primo avvio, propone la
+                        libreria che c'era: vedi `parti/LibreriaDiPrima.tsx`. */}
+                    {!MOBILE && <LibreriaDiPrima onErrore={segnalaErrore} />}
                     {/* Qui e non solo nella terza colonna: la colonna si può
                         chiudere, e il lettore flottante sparisce quando non c'è un
                         brano — cioè proprio nei due casi in cui il dispositivo
@@ -4265,20 +4453,6 @@ export function App() {
             />
           </RecintoErrori>
         )}
-
-        {/* Una volta sola, fuori dalle due copie della pagina: gli ascolti di
-            `insieme:stato` e `insieme:avviso`, e le finestrelle che ne nascono
-            — il codice dell'associazione, la spiegazione del firewall, il
-            pannello aperto dalla fascia o dalla colonna. Vedi `parti/Insieme`.
-            Il guasto della fascia gli arriva per disegnarlo anche dentro il
-            pannello, che copre la fascia: vedi `VistaInsieme.guasto`. */}
-        <InsiemeInApp onErrore={segnalaErrore} guasto={guasto} onChiudiGuasto={chiudiErrore} />
-
-        {/* Una volta sola, come quella sopra: l'ascolto di `lontano:stato` e
-            `lontano:link`, e le tre finestrelle del collegamento via internet
-            — chi chiede di collegarsi, il link aperto da fuori, i dati mobili.
-            Vedi `parti/Dispositivi.tsx`. */}
-        <LontanoInApp onErrore={segnalaErrore} onNotizia={setNotizia} />
 
         {filePlaylist !== null && (
           <ImportaPlaylist
@@ -4379,6 +4553,20 @@ export function App() {
               setDaEliminare(null);
               void elimina(cosa.brani, cosa.dalDisco, definitivi);
             }}
+          />
+        )}
+
+        {daCancellare && (
+          <ConfermaGesto
+            domanda={{
+              titolo: t("playlist.delete.confirm.title", { nome: daCancellare.playlist.name }),
+              descrizione: t("playlist.delete.confirm.body"),
+              conferma: t("common.delete"),
+              fai: () => {
+                if (daCancellare.risposta()) cancellaPlaylist(daCancellare.playlist);
+              },
+            }}
+            onChiudi={() => setDaCancellare(null)}
           />
         )}
 
@@ -4630,6 +4818,29 @@ export function App() {
         {giroAperto && !MOBILE && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
       </div>
 
+      {/* Le domande che arrivano da sole, fuori da `.finestra-app` e sopra lo
+          Studio (`.strato-domande`): «X vuole collegarsi» e il codice di
+          «Ascolta insieme» arrivano anche mentre si disegna una skin, e
+          montate là dentro — che lo Studio rende inerte — non si vedevano, e
+          il loro velo congelava la finestra intera.
+
+          `InsiemeInApp`: una volta sola, fuori dalle due copie della pagina,
+          gli ascolti di `insieme:stato` e `insieme:avviso` e le finestrelle
+          che ne nascono — il codice dell'associazione, la spiegazione del
+          firewall, il pannello aperto dalla fascia o dalla colonna. Vedi
+          `parti/Insieme`. Il guasto della fascia gli arriva per disegnarlo
+          anche dentro il pannello, che copre la fascia: vedi
+          `VistaInsieme.guasto`.
+
+          `LontanoInApp`: l'ascolto di `lontano:stato` e `lontano:link`, e le
+          tre finestrelle del collegamento via internet — chi chiede di
+          collegarsi, il link aperto da fuori, i dati mobili. Vedi
+          `parti/Dispositivi.tsx`. */}
+      <div className="strato-domande">
+        <InsiemeInApp onErrore={segnalaErrore} guasto={guasto} onChiudiGuasto={chiudiErrore} />
+        <LontanoInApp onErrore={segnalaErrore} onNotizia={setNotizia} />
+      </div>
+
       {/* Le notizie della fascia e «Playlist eliminata — Annulla», a chi
           ascolta lo schermo: una regione sola per ciascuna, sempre montata, e
           non i riquadri, che nascono già pieni e in più copie (vedi
@@ -4645,6 +4856,10 @@ export function App() {
             : t("playlist.deleted", { nome: cancellata.nome })
         }
       />
+      {/* E il brano che parte, a ogni cambio — anche quello che arriva da sé
+          alla fine di un brano (D-71): «Brano successivo» cambiava il titolo
+          lontano dal fuoco, e nessuno lo diceva. Vedi `annuncioBrano.ts`. */}
+      <AnnuncioDelBrano />
 
       {/* Lo Studio occupa la finestra intera, navigazione compresa: è un'altra
           applicazione dentro la stessa finestra, e tenere la barra della
@@ -4670,7 +4885,12 @@ export function App() {
                   </div>
                 }
               >
+                {/* `key`: lo Studio legge il documento una volta per montaggio,
+                    e un tema nuovo o «Apri nello Studio» su un'altra skin deve
+                    aprire davvero quella. Quel che aveva in mano lo salva lo
+                    Studio stesso, smontandosi. */}
                 <Studio
+                  key={studioAperto}
                   id={studioAperto}
                   onEsci={esciDalloStudio}
                   // «Salva e usa» ridipinge la finestra intera, non solo

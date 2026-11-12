@@ -150,6 +150,13 @@ export function AvvisoAggiornamento({
     disponibile.saltata ||
     disponibile.versione === nonOra;
   const scaricando = stato?.installazione === true;
+  /**
+   * Sul telefono, l'APK di questa versione non si installa sopra questa copia:
+   * è firmato con un'altra chiave. «Aggiorna» non c'è — scaricherebbe decine di
+   * megabyte che Android rifiuta — e al suo posto si dice come passare alla
+   * versione pubblica senza perdere la libreria. Vedi `altraChiave`.
+   */
+  const altraChiave = disponibile?.altraChiave === true;
   const guasto = tentato && !scaricando && stato?.errore != null ? stato.errore : null;
   /*
    * Quel che si dice a chi ascolta lo schermo, da una regione sempre montata
@@ -193,6 +200,12 @@ export function AvvisoAggiornamento({
             <p>{disponibile.note}</p>
           </details>
         )}
+        {altraChiave && (
+          <details className="note-versione">
+            <summary>{t("update.otherKey", { v: disponibile.versione })}</summary>
+            <p>{t("update.otherKey.steps", { v: disponibile.versione })}</p>
+          </details>
+        )}
         {scaricando && (
           <span className="scaricamento">
             <span className="toast-progress">
@@ -223,13 +236,15 @@ export function AvvisoAggiornamento({
       )}
       {!scaricando && (
         <>
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            onClick={installa}
-          >
-            {t("update.install")}
-          </button>
+          {!altraChiave && (
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={installa}
+            >
+              {t("update.install")}
+            </button>
+          )}
           <button
             type="button"
             className="bottone minuto btn-ghost"

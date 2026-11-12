@@ -40,8 +40,9 @@ mod manutenzione;
 mod migrations;
 
 pub use manutenzione::{
-    Controllo, ISTANTANEE_TENUTE, Istantanea, controlla_il_file, controllo_rapido, nome_istantanea,
-    ottimizza,
+    Controllo, CopiaDiPrima, ISTANTANEE_TENUTE, Istantanea, Ritorno, controlla_il_file,
+    controllo_rapido, copia_di_prima, nome_istantanea, nome_messa_da_parte, ottimizza,
+    sostituisci_con, svuota_il_giornale, torna_alla_copia, torna_alla_copia_del_file,
 };
 pub use migrations::{LATEST_VERSION, MIGRATIONS, Migration};
 
@@ -370,6 +371,31 @@ pub fn open(path: &Path) -> Result<Opened, AppError> {
         )
     })?;
     open_connection(connection, Some(path))
+}
+
+/// Porta alla versione di questa build la **copia** di un database che sta in
+/// `percorso`, e la chiude. Restituisce la versione da cui è partita.
+///
+/// Non è [`open`]: non scrive il contesto del modulo, che descrive la libreria
+/// e non un file di passaggio, e non fa l'istantanea di prima delle
+/// migrazioni — la copia è già una copia, e l'originale resta dov'è. Serve a
+/// `trasloco::copia_la_libreria_di`, che porta nella copia del Microsoft Store
+/// la libreria di un'altra copia sullo stesso PC.
+///
+/// # Errori
+///
+/// `db.openFailed` se il file non si apre; `db.versionAhead` se è di una
+/// versione più nuova; `db.migrationFailed` se una migrazione cade.
+pub fn aggiorna_una_copia(percorso: &Path) -> Result<u32, AppError> {
+    let connection = Connection::open(crate::files::percorso_lungo(percorso)).map_err(|err| {
+        db_error(
+            ErrorCode::DbOpenFailed {
+                path: Some(percorso.display().to_string()),
+            },
+            &err,
+        )
+    })?;
+    open_connection(connection, None).map(|aperto| aperto.version_before)
 }
 
 /// Un database in memoria, per i test e per una diagnosi a vuoto.
@@ -2442,6 +2468,9 @@ mod tests {
         // `migrate` porta all'ultima: prima si toglie quel che è venuto dopo
         // la 037, col ritorno indietro scritto in testa a ciascuna.
         tornata
+            .execute_batch(RITORNO_DALLA_41)
+            .expect("ritorno a mano dalla 41");
+        tornata
             .execute_batch(RITORNO_DALLA_40)
             .expect("ritorno a mano dalla 40");
         tornata
@@ -2892,5 +2921,279 @@ mod tests {
             );
         }
         assert_eq!(LATEST_VERSION, atteso);
+    }
+
+    // ── la 041: gli indici dei vicini ───────────────────────────────────────
+
+    /// I vicini d'artista di ListenBrainz, com'è scritto in
+    /// `vicinanza::scrivi_fonte`.
+    ///
+    /// Copiate qui, e non lette da là, perché `vicinanza.rs` non le espone; e
+    /// la prova del piano deve interrogare il database con le parole vere, non
+    /// con una query che le somiglia. Che la copia non si allontani lo tiene
+    /// [`le_query_dei_vicini_sono_quelle_di_vicinanza`].
+    const VICINI_PER_ARTISTA: &str =
+        "INSERT INTO brano_vicino (track_id, vicino_id, punteggio, fonte, raccolto_at)
+         SELECT ?1, scelti.id, ?3, ?4, ?5 FROM (
+           SELECT t.id FROM tracks t
+           JOIN artists a ON a.name = t.artist
+           WHERE a.mb_artist_id = ?2 AND t.id <> ?1
+           ORDER BY t.play_count DESC, t.id
+           LIMIT ?6
+         ) scelti WHERE true
+         ON CONFLICT(track_id, vicino_id, fonte)
+           DO UPDATE SET punteggio = MAX(punteggio, ?3), raccolto_at = ?5";
+
+    /// I vicini di registrazione, come sopra.
+    const VICINI_PER_REGISTRAZIONE: &str =
+        "INSERT INTO brano_vicino (track_id, vicino_id, punteggio, fonte, raccolto_at)
+         SELECT ?1, scelti.id, ?3, ?4, ?5 FROM (
+           SELECT t.id FROM tracks t
+           WHERE t.mb_recording_id = ?2 AND t.id <> ?1
+           ORDER BY t.id
+           LIMIT ?6
+         ) scelti WHERE true
+         ON CONFLICT(track_id, vicino_id, fonte)
+           DO UPDATE SET punteggio = MAX(punteggio, ?3), raccolto_at = ?5";
+
+    /// Il testo con gli spazi ridotti a uno: il rientro di una stringa Rust
+    /// non è parte della query.
+    fn spazi_compressi(testo: &str) -> String {
+        testo.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn le_query_dei_vicini_sono_quelle_di_vicinanza() {
+        let sorgente = spazi_compressi(include_str!("../vicinanza.rs"));
+        for sql in [VICINI_PER_ARTISTA, VICINI_PER_REGISTRAZIONE] {
+            assert!(
+                sorgente.contains(&spazi_compressi(sql)),
+                "la copia di una query dei vicini non è più quella di `vicinanza.rs`: {sql}"
+            );
+        }
+    }
+
+    /// Una libreria da qualche migliaio di brani, con gli identificativi di
+    /// MusicBrainz come li lasciano Picard e l'arricchimento: un terzo dei
+    /// brani ne ha uno, qualcuno lo divide con un altro (la stessa
+    /// registrazione in due album), il resto niente; metà degli artisti ha il
+    /// suo.
+    fn libreria_coi_vicini(connection: &Connection) {
+        let tx = connection.unchecked_transaction().expect("transazione");
+        for artista in 0..300_i64 {
+            let mbid = (artista % 2 == 0).then(|| format!("artista-{artista:04}"));
+            tx.execute(
+                "INSERT OR IGNORE INTO artists (name, mb_artist_id) VALUES (?1, ?2)",
+                rusqlite::params![format!("Artista {artista}"), mbid],
+            )
+            .expect("un artista");
+        }
+        for brano in 0..3_000_i64 {
+            // Un brano su tre ha la sua registrazione; uno su trenta la divide
+            // col brano accanto.
+            let mbid = match brano % 30 {
+                0 => Some(format!("registrazione-{:05}", brano + 1)),
+                n if n % 3 == 1 => Some(format!("registrazione-{brano:05}")),
+                _ => None,
+            };
+            tx.execute(
+                "INSERT INTO tracks (path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified, play_count, mb_recording_id)
+                 VALUES (?1, ?1, 'T', ?2, 'B', 4000000, 1, 1, ?3, ?4)",
+                rusqlite::params![
+                    format!("C:/Musica/{brano:05}.flac"),
+                    format!("Artista {}", brano % 300),
+                    brano % 17,
+                    mbid
+                ],
+            )
+            .expect("un brano");
+        }
+        tx.commit().expect("chiusura");
+    }
+
+    /// Il piano di `sql`, una riga per passo.
+    fn piano(connection: &Connection, sql: &str) -> Vec<String> {
+        let mut query = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("piano");
+        query
+            .query_map(
+                rusqlite::params![1_i64, "registrazione-00001", 0.5_f64, "lb", 1_i64, 20_i64],
+                |riga| riga.get::<_, String>(3),
+            )
+            .expect("lettura")
+            .collect::<Result<_, _>>()
+            .expect("righe del piano")
+    }
+
+    /// Il passo legge per intero `tracks` o `artists`?
+    fn lettura_intera(passo: &str) -> bool {
+        let mut parole = passo.split_whitespace();
+        parole.next() == Some("SCAN")
+            && matches!(parole.next(), Some("t" | "a" | "tracks" | "artists"))
+    }
+
+    #[test]
+    fn i_vicini_si_risolvono_per_indice() {
+        // Ogni vicino di ListenBrainz è uno di questi `INSERT … SELECT`, fino a
+        // venti per brano e cento brani per lotto, dentro una transazione col
+        // lucchetto della libreria in mano. Senza un indice su
+        // `tracks.mb_recording_id` e su `artists.mb_artist_id` ognuno legge la
+        // tabella intera. `ANALYZE` prima, come fa l'apertura vera
+        // (`optimize=0x10002`): senza statistiche il pianificatore potrebbe
+        // preferire l'ordine di `id` a un indice che non conosce.
+        let db = open_in_memory().expect("database");
+        libreria_coi_vicini(&db.connection);
+        db.connection.execute_batch("ANALYZE").expect("statistiche");
+
+        let per_registrazione = piano(&db.connection, VICINI_PER_REGISTRAZIONE);
+        assert!(
+            !per_registrazione.iter().any(|passo| lettura_intera(passo)),
+            "{per_registrazione:?}"
+        );
+        assert!(
+            per_registrazione
+                .iter()
+                .any(|passo| passo.contains("idx_tracks_mb_recording")),
+            "{per_registrazione:?}"
+        );
+
+        let per_artista = piano(&db.connection, VICINI_PER_ARTISTA);
+        assert!(
+            !per_artista.iter().any(|passo| lettura_intera(passo)),
+            "{per_artista:?}"
+        );
+        assert!(
+            per_artista
+                .iter()
+                .any(|passo| passo.contains("idx_artists_mb")),
+            "{per_artista:?}"
+        );
+    }
+
+    #[test]
+    fn la_quarantuno_aggiunge_due_indici_e_non_tocca_il_resto() {
+        // Una libreria alla 40, con le righe che si perderebbero e quelle che
+        // gli indici devono coprire — identificativi assenti e ripetuti
+        // compresi —, poi la 41 per la strada vera.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 40);
+        libreria_da_perdere(&connection);
+        libreria_coi_vicini(&connection);
+        let conti = |c: &Connection| {
+            [
+                "tracks",
+                "artists",
+                "playlist_tracks",
+                "play_history",
+                "track_overrides",
+            ]
+            .map(|tabella| quante(c, tabella))
+        };
+        let prima = conti(&connection);
+
+        assert_eq!(migrate(&connection).expect("la 41"), 1);
+        assert_eq!(user_version(&connection).expect("versione"), 41);
+        assert_eq!(conti(&connection), prima, "nessuna riga è cambiata");
+        assert_eq!(
+            colonna(
+                &connection,
+                "SELECT name FROM sqlite_master
+                  WHERE type = 'index' AND name IN ('idx_tracks_mb_recording', 'idx_artists_mb')
+                  ORDER BY name"
+            ),
+            ["idx_artists_mb", "idx_tracks_mb_recording"]
+        );
+        // E il brano più vecchio di tutti è ancora com'era, voto compreso.
+        assert_eq!(
+            colonna(
+                &connection,
+                "SELECT title || '|' || rating || '|' || play_count FROM tracks WHERE id = 1"
+            ),
+            ["A|4|7"]
+        );
+    }
+
+    /// Il ritorno indietro a mano scritto in testa alla 041.
+    const RITORNO_DALLA_41: &str =
+        "DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording; PRAGMA user_version = 40;";
+
+    /// Il ritorno a mano dalla 41 alla 38 — la 3.2.0 — in un blocco solo e
+    /// nell'ordine giusto, come lo scrive la testa della 041: prima quel che ha
+    /// aggiunto l'ultima, poi le altre.
+    const RITORNO_ALLA_38: &str = "DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording;
+         DROP TABLE insieme_indirizzi;
+         DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+         PRAGMA user_version = 38;";
+
+    #[test]
+    fn le_ricette_di_ritorno_stanno_in_testa_alla_quarantuno() {
+        let testa = spazi_compressi(
+            &include_str!("schema/041_indici_musicbrainz.sql")
+                .lines()
+                .filter_map(|riga| riga.strip_prefix("--"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        for ricetta in [RITORNO_DALLA_41, RITORNO_ALLA_38] {
+            assert!(
+                testa.contains(&spazi_compressi(ricetta)),
+                "la testa della 041 non porta la ricetta: {ricetta}"
+            );
+        }
+    }
+
+    #[test]
+    fn togliere_la_quarantuno_a_mano_riporta_la_quaranta() {
+        let alla_40 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_40, 40);
+        let tornata = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&tornata, 41);
+        libreria_coi_vicini(&tornata);
+        tornata
+            .execute_batch(RITORNO_DALLA_41)
+            .expect("ritorno a mano");
+        assert_eq!(schema(&tornata), schema(&alla_40));
+        assert_eq!(user_version(&tornata).expect("versione"), 40);
+        assert_eq!(quante(&tornata, "tracks"), 3_000, "i brani restano");
+    }
+
+    #[test]
+    fn la_ricetta_dalla_quarantuno_alla_trentotto_lascia_riaggiornare() {
+        // Il guasto di R06b-6: chi applicava da solo il ritorno della 039 a un
+        // database alla 40 lasciava `insieme_indirizzi`, la 3.2.0 lo apriva lo
+        // stesso, e al riaggiornamento la 040 cadeva su una tabella che c'era
+        // già — `db.migrationFailed`, libreria chiusa. La ricetta composta,
+        // invece, riporta lo schema della 38 e lascia ripartire la catena.
+        let alla_38 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_38, 38);
+
+        let tornata = open_in_memory().expect("database");
+        libreria_da_perdere(&tornata.connection);
+        tornata
+            .connection
+            .execute(
+                "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                ["ab".repeat(32)],
+            )
+            .expect("un dispositivo");
+        tornata
+            .connection
+            .execute_batch(RITORNO_ALLA_38)
+            .expect("ritorno a mano");
+        assert_eq!(schema(&tornata.connection), schema(&alla_38));
+        assert_eq!(user_version(&tornata.connection).expect("versione"), 38);
+
+        assert_eq!(
+            u32::try_from(migrate(&tornata.connection).expect("il riaggiornamento riparte"))
+                .expect("conto"),
+            LATEST_VERSION - 38
+        );
+        assert_eq!(
+            quante(&tornata.connection, "play_history"),
+            1,
+            "gli ascolti restano"
+        );
     }
 }

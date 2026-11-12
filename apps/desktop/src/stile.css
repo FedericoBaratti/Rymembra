@@ -306,6 +306,12 @@
      sopra invece di prenderne il posto: vedi `.strato-studio`. Sotto i comandi
      della finestra, per la stessa ragione del giro. */
   --strato-studio: 85;
+  /* Le domande che arrivano da sole — «X vuole collegarsi», il codice di
+     «Ascolta insieme» — con il loro velo: **sopra lo Studio**, perché arrivano
+     anche mentre lo si usa, e una domanda sotto di lui non si vede e non si
+     può rispondere. Sopra il giro e i toast per la stessa ragione. Sotto i
+     comandi della finestra, come tutto. Vedi `.strato-domande`. */
+  --strato-domande: 87;
   /* I tre comandi della finestra, in cima alla scala. Il perché sta accanto a
      `.controlli-finestra`, dove la regola si legge. */
   --strato-finestra: 90;
@@ -725,6 +731,18 @@ body {
   display: flex;
   height: var(--barra-titolo-h);
   pointer-events: none;
+}
+/* Le domande che arrivano da sole, fuori da `.finestra-app` (che lo Studio
+   rende inerte) e un gradino sopra lo Studio: vedi `--strato-domande`.
+
+   Fisso e senza `inset`, di proposito: dentro ci sono solo veli, fissi anche
+   loro, quindi il contenitore resta largo e alto zero e non prende nessun
+   clic; serve soltanto a dare ai veli il suo strato. Il `--strato-velo` di un
+   velo qui dentro vale dentro questo strato, non contro il resto della
+   finestra. */
+.strato-domande {
+  position: fixed;
+  z-index: var(--strato-domande);
 }
 .controlli-finestra .controllo {
   position: relative;

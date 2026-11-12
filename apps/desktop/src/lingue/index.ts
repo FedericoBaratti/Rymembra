@@ -42,6 +42,7 @@ import { useSyncExternalStore } from "react";
 
 import it from "./it.json";
 import { formaPlurale } from "./plurali";
+import { regioneDelleDate } from "./regione";
 import { MOBILE } from "../piattaforma";
 
 /** Un dizionario, come sta sul disco: chiave piatta → testo. */
@@ -186,6 +187,25 @@ function leggi(): string {
  */
 export function locale(): string {
   return attiva;
+}
+
+/**
+ * Il codice da passare a `Intl` per le date e le ore.
+ *
+ * È il primo punto in cui le due cose qui sopra divergono (D-42): la lingua
+ * dell'interfaccia, ma con la regione del sistema quando parla la stessa
+ * lingua — `en-GB` sotto un'interfaccia inglese, e la data del 10 novembre si
+ * scrive `10/11/2026` invece di `11/10/2026`. La regola sta in `regione.ts`.
+ * I numeri restano a `locale`.
+ */
+export function localeDate(): string {
+  const delSistema =
+    typeof navigator === "undefined"
+      ? []
+      : navigator.languages.length > 0
+        ? navigator.languages
+        : [navigator.language];
+  return regioneDelleDate(attiva, delSistema);
 }
 
 /**

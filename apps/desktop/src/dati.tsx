@@ -50,6 +50,8 @@ export type LettureDati = Pick<
   | "cronologia"
   | "cronologiaConteggio"
   | "cartelleCandidate"
+  | "cartelleRadiciVive"
+  | "cartelleUi"
 >;
 
 /** Le misure della finestra, o della tela che la finge. */

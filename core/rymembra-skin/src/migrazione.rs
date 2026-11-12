@@ -243,7 +243,11 @@ fn migra_impaginazione(impaginazione: &mut Map<String, Value>) -> Esito<()> {
             .ok_or_else(|| {
                 problema(
                     "layout.player",
-                    "ammessi soltanto: bottom-bar, floating, compact",
+                    motivo!(
+                        "ammessi",
+                        "ammessi soltanto: {nomi}",
+                        nomi = "bottom-bar, floating, compact"
+                    ),
                 )
             })?,
     };
@@ -253,7 +257,14 @@ fn migra_impaginazione(impaginazione: &mut Map<String, Value>) -> Esito<()> {
             .as_str()
             .and_then(SidebarLayout::parse)
             .ok_or_else(|| {
-                problema("layout.sidebar", "ammessi soltanto: rail, expanded, hidden")
+                problema(
+                    "layout.sidebar",
+                    motivo!(
+                        "ammessi",
+                        "ammessi soltanto: {nomi}",
+                        nomi = "rail, expanded, hidden"
+                    ),
+                )
             })?,
     };
     impaginazione.insert(

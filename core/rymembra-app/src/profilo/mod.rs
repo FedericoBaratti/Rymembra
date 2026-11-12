@@ -849,6 +849,44 @@ impl Letto {
             || !self.biblioteca.desiderati.is_empty()
             || !self.biblioteca.copertine.is_empty()
     }
+
+    /// Le skin che il profilo renderebbe attive qui: quella delle preferenze
+    /// (`skin.active`) e quella che porta il documento di sincronia, che
+    /// [`importa`] applica anche lei se è più recente della scelta di qui.
+    ///
+    /// Servono a chi deve farle passare dall'esame prima di indossarle
+    /// (decisione 21): questo modulo non apre pacchetti.
+    #[must_use]
+    pub fn skin_da_indossare(&self) -> Vec<&str> {
+        let mut skin: Vec<&str> = self
+            .preferenze
+            .voci
+            .get(settings::CHIAVE_SKIN)
+            .map(String::as_str)
+            .into_iter()
+            .chain(
+                self.sincronia
+                    .as_ref()
+                    .and_then(|documento| documento.content.skin_attiva.as_ref())
+                    .map(|scelta| scelta.id.as_str()),
+            )
+            .filter(|id| !id.trim().is_empty())
+            .collect();
+        skin.dedup();
+        skin
+    }
+
+    /// Il profilo non cambia la skin di qui: né con la preferenza né col
+    /// documento di sincronia. Il resto si applica com'è.
+    ///
+    /// È quel che si fa di una skin che non passa l'esame: resta installata,
+    /// non si indossa, e chi importa lo legge (decisione 21).
+    pub fn lascia_la_skin_di_qui(&mut self) {
+        self.preferenze.voci.remove(settings::CHIAVE_SKIN);
+        if let Some(documento) = self.sincronia.as_mut() {
+            documento.content.skin_attiva = None;
+        }
+    }
 }
 
 /// Apre un profilo, riconoscendo da sé quale dei due formati è.
@@ -1405,6 +1443,12 @@ fn esegui(
                 )?,
                 ambiente.adesso_ms,
             );
+            dono_nelle_playlist(
+                &mut suo.content,
+                &mio.content,
+                ambiente.dispositivo,
+                ambiente.adesso_ms,
+            );
             let mut fuso = rymembra_sync::fondi(&[mio, suo]);
             // Gli ascolti degli altri dispositivi di là entrano nello stesso
             // contatore, sotto il loro nome e per massimo (`segna`): li scrive
@@ -1517,10 +1561,8 @@ fn esegui(
 /// solo quel che arriva. Poi il dominio dei valori, con gli istanti nel futuro
 /// **tagliati** ad adesso: vedi [`rymembra_sync::dominio`].
 ///
-/// Resta, ed è un limite detto: dentro una playlist che le due librerie
-/// condividono, un brano tolto o spostato di là si toglie o si sposta anche
-/// qui. Uno spostamento è una rimozione più un'aggiunta, e tenere solo la
-/// seconda farebbe di ogni riordino un doppione.
+/// Le playlist che le due librerie condividono le riduce a un dono
+/// [`dono_nelle_playlist`], che ha bisogno anche del documento di qui.
 fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync::Contenuto {
     let mut contenuto = rymembra_sync::dominio::nel_dominio(
         contenuto,
@@ -1532,6 +1574,59 @@ fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync
     contenuto.preferiti.retain(|_, stato| stato.on);
     contenuto.voti.retain(|_, voto| voto.v > 0);
     contenuto
+}
+
+/// Le playlist che il profilo e questa libreria hanno tutte e due, ridotte a
+/// quel che un dono porta: i brani che qui mancano, in coda.
+///
+/// Fondere le due sequenze, come fa la sincronia, portava qui anche quel che
+/// di là si era tolto o spostato: un brano usciva dalla playlist di qui e
+/// l'ordine diventava quello dell'altro computer, senza che il piano lo
+/// dicesse (R02-2). E la testata — nome, descrizione, «automatica» e regole —
+/// vinceva per data: una playlist fatta a mano diventava automatica con le
+/// regole di là. Quindi, per ogni playlist che c'è già, il documento del
+/// profilo porta **quella di qui**, con in coda i brani della sua che qui non
+/// ci sono, nell'ordine in cui stanno di là e una volta sola. Mai tolto, mai
+/// spostato, nessun doppione; la fusione poi non ha niente da decidere.
+///
+/// Un brano che qui si è **tolto** da quella playlist non torna: la sequenza
+/// di qui lo ricorda come lapide, e il dono rispetta la scelta fatta qui come
+/// [`in_dono`] rispetta i cuori tolti. Una playlist automatica di qui resta
+/// com'è: la sua appartenenza la decidono le regole.
+///
+/// Se qualcosa si accoda la playlist è cambiata adesso, su questo computer, e
+/// la data lo dice: è quel che fa vedere la modifica al backup e agli altri
+/// dispositivi. Le playlist che qui non ci sono arrivano come sono.
+fn dono_nelle_playlist(
+    suo: &mut rymembra_sync::Contenuto,
+    mio: &rymembra_sync::Contenuto,
+    dispositivo: &str,
+    adesso_ms: i64,
+) {
+    let nome = crate::sincronia::nome_delle_aggiunte(dispositivo);
+    for (chiave, sua) in &mut suo.playlist {
+        let Some(qui) = mio.playlist.get(chiave) else {
+            continue;
+        };
+        let mut tenuta = qui.clone();
+        if !qui.smart {
+            let gia: std::collections::BTreeSet<&str> = qui
+                .sequenza
+                .elementi()
+                .map(|(_, elemento)| elemento.brano.as_str())
+                .collect();
+            let mut accodati = std::collections::BTreeSet::new();
+            for brano in sua.sequenza.ordine() {
+                if !gia.contains(brano) && accodati.insert(brano) {
+                    tenuta.sequenza.accoda(nome, brano);
+                }
+            }
+            if !accodati.is_empty() {
+                tenuta.at = tenuta.at.max(adesso_ms);
+            }
+        }
+        *sua = tenuta;
+    }
 }
 
 /// L'elenco di qui più le cartelle del profilo che qui non ci sono già.
@@ -1574,14 +1669,45 @@ fn su_un_unita(percorso: &str) -> bool {
         && byte.get(2).is_none_or(|c| *c == b'\\' || *c == b'/')
 }
 
-/// L'host di un percorso di rete `\\host\share` o `//host/share`, minuscolo e
-/// con l'eventuale `@SSL@porta`; `None` per tutto il resto, percorsi di
-/// dispositivo (`\\?\`, `\\.\`) compresi.
-fn host_di_rete(percorso: &str) -> Option<String> {
+/// Quel che segue i due separatori in testa di una forma UNC, in **qualunque**
+/// grafia: `\\`, `//`, `/\` o `\/`.
+///
+/// Win32 tratta come UNC ogni coppia di separatori iniziali, anche mista:
+/// riconoscere solo `\\` e `//` lasciava passare `/\host\m` come se fosse un
+/// percorso locale (R02-1).
+fn dopo_due_separatori(percorso: &str) -> Option<&str> {
+    let separatore = |c: Option<&u8>| matches!(c, Some(b'\\' | b'/'));
+    let byte = percorso.as_bytes();
+    if separatore(byte.first()) && separatore(byte.get(1)) {
+        percorso.get(2..)
+    } else {
+        None
+    }
+}
+
+/// Il percorso parla della rete, o di qualcosa che non si sa dire locale.
+///
+/// Una sola risposta per tutti quelli che la chiedono — l'host, la guardia
+/// della sincronia, il piano del profilo e quello del ripristino — costruita
+/// per **forma**: due separatori in testa in qualunque grafia (vedi
+/// [`dopo_due_separatori`]), oppure lo spazio dei nomi NT `\??\`, che Win32
+/// passa così com'è e che con `\??\UNC\host\…` arriva allo stesso share.
+/// `\\?\X:\…` è un'unità con lettera ([`su_un_unita`]), non la rete; un
+/// percorso con una sola barra in testa (`/storage/…` di un telefono) e
+/// `nuvola://…` non lo sono.
+fn di_rete(percorso: &str) -> bool {
     let percorso = percorso.trim();
-    let resto = percorso
-        .strip_prefix(r"\\")
-        .or_else(|| percorso.strip_prefix("//"))?;
+    if su_un_unita(percorso) {
+        return false;
+    }
+    dopo_due_separatori(percorso).is_some() || percorso.starts_with(r"\??\")
+}
+
+/// L'host di un percorso di rete `\\host\share` (in qualunque grafia dei due
+/// separatori), minuscolo e con l'eventuale `@SSL@porta`; `None` per tutto il
+/// resto, percorsi di dispositivo (`\\?\`, `\\.\`, `\??\`) compresi.
+fn host_di_rete(percorso: &str) -> Option<String> {
+    let resto = dopo_due_separatori(percorso.trim())?;
     let host = resto.split(['\\', '/']).next()?;
     if host.is_empty() || host == "?" || host == "." {
         return None;
@@ -1592,17 +1718,13 @@ fn host_di_rete(percorso: &str) -> Option<String> {
 /// Il percorso è di rete e il suo host non è fra quelli che questo computer usa
 /// già ([`host_di_questo_pc`]).
 ///
-/// Lessicale, come le due sopra: non chiede niente al disco. Una forma di rete
-/// di cui non si legge l'host (`\\?\UNC\…`, `\\.\…`) vale «sconosciuta», e
-/// `\\?\X:\…` è un'unità con lettera, non la rete. Lo usa la sincronia per le
-/// cartelle che un documento porta: vedi `sincronia::applica_cartelle`.
+/// Lessicale, come le tre sopra: non chiede niente al disco. Una forma di rete
+/// di cui non si legge l'host (`\\?\UNC\…`, `\\.\…`, `\??\UNC\…`) vale
+/// «sconosciuta». Lo usano la sincronia per le cartelle che un documento porta
+/// (`sincronia::applica_cartelle`) e il ripristino da Drive per quelle che
+/// chiede al disco (`backup::sondabili`).
 pub(crate) fn verso_un_host_ignoto(percorso: &str, noti: &[String]) -> bool {
-    let percorso = percorso.trim();
-    let di_rete = percorso.starts_with(r"\\") || percorso.starts_with("//");
-    if !di_rete || su_un_unita(percorso) {
-        return false;
-    }
-    host_di_rete(percorso).is_none_or(|host| !noti.contains(&host))
+    di_rete(percorso) && host_di_rete(percorso).is_none_or(|host| !noti.contains(&host))
 }
 
 /// Gli host di rete che questo computer usa già: quelli delle sue cartelle

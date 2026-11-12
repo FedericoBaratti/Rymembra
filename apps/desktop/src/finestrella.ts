@@ -164,9 +164,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 
 import { useDati } from "./dati";
 import {
   apriModale,
+  cosaFaLaX,
   daRendereInerti,
   fuocoDopoTab,
   fuocoIniziale,
+  type CimaPerLaX,
 } from "./modale";
 
 /**
@@ -220,10 +222,12 @@ function eUnCampoDaSostituire(nodo: HTMLElement): nodo is HTMLInputElement {
   );
 }
 
-/** Una finestrella aperta: la radice, e quel che fa Escape. */
+/** Una finestrella aperta: la radice, quel che fa Escape, e se è una domanda. */
 interface Aperta {
   radice: HTMLElement;
   chiudi: RefObject<() => void>;
+  /** `null` per chi non è una domanda: vedi `cosaFaLaX` in `modale.ts`. */
+  domanda: RefObject<{ chiudibile: boolean } | null>;
 }
 
 /**
@@ -268,6 +272,26 @@ export function chiudiLaPiuAlta(): boolean {
 }
 
 /**
+ * La × della finestra (`BarraTitolo`): se in cima c'è una domanda che si può
+ * chiudere, la chiude — vale come «no» — e restituisce `true`; altrimenti
+ * `false`, e la finestra si chiude come sempre. La regola, e il perché, in
+ * `cosaFaLaX`.
+ */
+export function rispondiNoAllaDomandaInCima(): boolean {
+  const cima = aperte[aperte.length - 1];
+  const comE: CimaPerLaX | null =
+    cima === undefined
+      ? null
+      : {
+          domanda: cima.domanda.current !== null,
+          chiudibile: cima.domanda.current?.chiudibile ?? false,
+        };
+  if (cima === undefined || cosaFaLaX(comE) !== "rispondiNo") return false;
+  cima.chiudi.current();
+  return true;
+}
+
+/**
  * Il comportamento comune delle finestrelle.
  *
  * Restituisce **solo** il riferimento da appendere alla radice della
@@ -276,13 +300,21 @@ export function chiudiLaPiuAlta(): boolean {
  *
  * `onChiudi` è quel che fa Escape, e può essere una chiusura scritta sul posto:
  * vedi «`onChiudi` in un riferimento» qui sopra.
+ *
+ * `domanda` dice alla × della finestra cosa fare con questa finestrella in
+ * cima (`rispondiNoAllaDomandaInCima`): di serie è una domanda che si chiude
+ * come con Escape; `Dialogo` dice se adesso si può chiudere; il primo avvio
+ * passa `"nonEUnaDomanda"`, e la × chiude la finestra.
  */
 export function useFinestrella<E extends HTMLElement>(
   onChiudi: () => void,
+  domanda: { chiudibile: boolean } | "nonEUnaDomanda" = { chiudibile: true },
 ): RefObject<E | null> {
   const radice = useRef<E | null>(null);
   const chiudi = useRef(onChiudi);
   chiudi.current = onChiudi;
+  const laDomanda = useRef<{ chiudibile: boolean } | null>(null);
+  laDomanda.current = domanda === "nonEUnaDomanda" ? null : domanda;
   // Nell'anteprima dello Studio una finestrella è un disegno: prenderle il
   // fuoco lo toglierebbe al campo in cui si sta scrivendo un colore.
   const { anteprima } = useDati();
@@ -344,7 +376,7 @@ export function useFinestrella<E extends HTMLElement>(
     };
     dentro.addEventListener("keydown", suTasto);
 
-    const questa: Aperta = { radice: dentro, chiudi };
+    const questa: Aperta = { radice: dentro, chiudi, domanda: laDomanda };
     aperte.push(questa);
     // Il nodo col fuoco è sparito o si è spento: il fuoco torna alla radice.
     // Solo in cima, e solo se è proprio caduto — un fuoco spostato altrove da
@@ -424,8 +456,12 @@ export function useQuandoSiRitira(fai: () => void): (nodo: HTMLElement | null) =
 
 // ── il resto della finestra, inerte ────────────────────────────────────────
 
-/** I veli aperti, nell'ordine in cui si sono aperti: l'ultimo è quello sopra. */
-const veliAperti: HTMLElement[] = [];
+/**
+ * I veli aperti, nell'ordine in cui si sono aperti: l'ultimo è quello sopra.
+ * `accanto` è il nodo che resta vivo pur essendo fratello del velo: vedi
+ * `useVeloInerte`.
+ */
+const veliAperti: { velo: HTMLElement; accanto: HTMLElement | null }[] = [];
 
 /**
  * I nodi resi inerti da qui, e soltanto quelli.
@@ -461,13 +497,14 @@ function riapplicaInerzia(): void {
   sentinella?.disconnect();
   const cima = veliAperti[veliAperti.length - 1];
   if (cima === undefined) return;
-  for (const nodo of daRendereInerti<Element>(cima)) {
+  const accanto = cima.accanto === null ? [] : [cima.accanto];
+  for (const nodo of daRendereInerti<Element>(cima.velo, accanto)) {
     if (!(nodo instanceof HTMLElement) || nodo.inert) continue;
     nodo.inert = true;
     spentiDaQui.add(nodo);
   }
   sentinella ??= new MutationObserver(riapplicaInerzia);
-  for (let gradino = cima.parentElement; gradino !== null; gradino = gradino.parentElement) {
+  for (let gradino = cima.velo.parentElement; gradino !== null; gradino = gradino.parentElement) {
     sentinella.observe(gradino, { childList: true });
   }
 }
@@ -497,20 +534,32 @@ function riapplicaInerzia(): void {
  *
  * Nell'anteprima dello Studio non fa niente: la finestrella è un disegno sulla
  * tela, e spegnere lo Studio intorno a lei lo renderebbe inservibile.
+ *
+ * # Il velo, e quel che gli sta accanto
+ *
+ * Di solito la finestrella sta dentro il suo velo, e basta il velo. Non è
+ * così per il foglio del menù del telefono, dove velo e pannello sono
+ * fratelli — il velo è `aria-hidden`, e un pannello dentro sparirebbe con lui
+ * — e allora il pannello si passa come `accanto`. Il primo avvio invece non ha
+ * un velo: è una schermata piena, e la sua radice fa da velo.
  */
-export function useVeloInerte(velo: RefObject<HTMLElement | null>): void {
+export function useVeloInerte(
+  velo: RefObject<HTMLElement | null>,
+  accanto?: RefObject<HTMLElement | null>,
+): void {
   const { anteprima } = useDati();
   useLayoutEffect(() => {
     const nodo = velo.current;
     if (nodo === null || anteprima) return;
-    veliAperti.push(nodo);
+    const aperto = { velo: nodo, accanto: accanto?.current ?? null };
+    veliAperti.push(aperto);
     riapplicaInerzia();
     return () => {
-      const dove = veliAperti.indexOf(nodo);
+      const dove = veliAperti.indexOf(aperto);
       if (dove !== -1) veliAperti.splice(dove, 1);
       riapplicaInerzia();
     };
-    // `velo` è un riferimento: la sua identità non cambia, e il nodo si legge
-    // dentro l'effetto, dove è già appeso.
-  }, [velo, anteprima]);
+    // `velo` e `accanto` sono riferimenti: la loro identità non cambia, e i
+    // nodi si leggono dentro l'effetto, dove sono già appesi.
+  }, [velo, accanto, anteprima]);
 }

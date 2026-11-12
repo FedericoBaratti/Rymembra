@@ -54,7 +54,15 @@ lofty = "0.25.4"
 # Nemmeno `fallible_uint`, e non serve: dalla 0.38 `u64` e `usize` non passano
 # più da soli verso SQLite (che ha solo interi con segno), e nessuna riga di
 # questo crate ce li faceva passare.
+#
+# `backup` per «Torna alla copia di prima dell'aggiornamento»
+# (`db::torna_alla_copia`): l'API di backup di SQLite rimette la copia dentro il
+# database aperto, pagina per pagina in una transazione sola, senza rinominare
+# file che altre connessioni tengono aperti e senza accoppiare la copia al
+# `-wal` del database nuovo. È un modulo di `rusqlite` e basta: nessuna cassa in
+# più, e le funzioni di SQLite che usa sono già nel `bundled`.
 rusqlite = { version = "0.40", default-features = false, features = [
+    "backup",
     "bundled",
     "cache",
     "functions",

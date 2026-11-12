@@ -81,3 +81,16 @@ test("peso variabile: il cursore arriva a 100, 400, 700, 900 e 1000", () => {
     assert.ok(peso >= min && peso <= max && (peso - min) % passo === 0, String(peso));
   }
 });
+
+test("il quinto sfondo e il quarto livello di uno pseudo-elemento non si aggiungono (R14-6)", async () => {
+  // Il formato vuole da 0 a 4 sfondi su una parte e da 1 a 3 su `::before` e
+  // `::after` (`parti.rs`): oltre, il documento non si valida.
+  const valori = await import("../src/studio/valori");
+  assert.equal(valori.LIVELLI_SFONDO_MASSIMI, 4);
+  assert.equal(valori.LIVELLI_PSEUDO_MASSIMI, 3);
+  // E i due numeri sono quelli del nucleo, letti nel sorgente.
+  const { readFileSync } = await import("node:fs");
+  const parti = readFileSync(new URL("../../../core/rymembra-skin/src/document/parti.rs", import.meta.url), "utf8");
+  assert.match(parti, /livelli\(grezzo, &giu\(path, "background"\), 0, 4, motivi\)/);
+  assert.match(parti, /&giu\(path, "background"\),\s*1,\s*3,\s*motivi/);
+});

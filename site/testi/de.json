@@ -1,8 +1,8 @@
 {
   "meta": {
-    "titolo": "Rymembra — kostenloser Musikplayer für Windows: FLAC, lückenlos, gleiche Lautstärke",
-    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows: FLAC und MP3 lückenlos und gleich laut, lokale und Cloud-Ordner, Playlists aus Spotify, gemeinsames Hören im LAN.",
-    "immagine": "Rymembra, ein Musikplayer für Windows"
+    "titolo": "Rymembra — kostenloser Musikplayer für Windows und Android: FLAC, lückenlos, gleiche Lautstärke",
+    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows und Android: FLAC und MP3 lückenlos und gleich laut, lokale und Cloud-Ordner, Playlists aus Spotify, freie Kataloge, gemeinsames Hören.",
+    "immagine": "Rymembra, ein Musikplayer für Windows und Android"
   },
   "nav": {
     "salta": "Zum Inhalt",
@@ -16,16 +16,16 @@
   },
   "hero": {
     "titolo": "Deine Musik, wiedergefunden.",
-    "lede": "Rymembra ist ein kostenloser Musikplayer für Windows. Er spielt die Dateien, die schon auf deiner Festplatte liegen, baut deine Playlists wieder auf — sogar aus deinen Spotify-Daten — und sucht fehlende Titel nur dort, wo es erlaubt ist.",
+    "lede": "Rymembra ist ein kostenloser Musikplayer für Windows und Android. Er spielt die Dateien, die schon auf deiner Festplatte liegen, baut deine Playlists wieder auf — sogar aus deinen Spotify-Daten — und sucht fehlende Titel nur dort, wo es erlaubt ist.",
     "cta": "Für Windows herunterladen",
     "cta2": "So funktioniert's",
     "store": "Oder aus dem Microsoft Store",
-    "nota": "Kostenlos und Open Source, MIT-Lizenz. Windows 64 Bit, Version {versione}, erschienen am {data}.",
+    "nota": "Kostenlos und Open Source, MIT-Lizenz. Windows 64 Bit und Android ab Version 8, Version {versione}, erschienen am {data}.",
     "alt": "Der Startbildschirm von Rymembra mit den Sammlungen der Woche, dem Titel zum Fortsetzen und der Warteschlange",
-    "didascalia": "Der Startbildschirm: die Sammlungen der Woche, der unterbrochene Titel, bereit, an genau der Stelle weiterzuspielen, und rechts die Warteschlange. Die Bilder zeigen die italienische Oberfläche; das Programm spricht auch Englisch."
+    "didascalia": "Der Startbildschirm: die Sammlungen der Woche, der unterbrochene Titel, bereit, an genau der Stelle weiterzuspielen, und rechts die Warteschlange. Die Bilder zeigen die italienische Oberfläche; das Programm gibt es auf Italienisch und Englisch."
   },
   "altrove": {
-    "testo": "Rymembra ist ein Programm für Windows: Schick dir den Link und lade es am PC herunter.",
+    "testo": "Rymembra läuft auf Windows-PCs und Android-Handys: Schick dir den Link und lade es dort herunter.",
     "manda": "Link senden",
     "copia": "Link kopieren",
     "copiato": "Link kopiert"
@@ -60,16 +60,16 @@
       "Ordner überwachen sich selbst: Kopierst du ein Album hinein, ist es Sekunden später in der Bibliothek.",
       "Auf einem NAS oder Netzlaufwerk macht eine Freigabe, die kurz nicht antwortet, Titel ungeprüft, nie verschwunden.",
       "Ein Scan, der viele Titel entfernen würde, zeigt sie dir und fragt vorher.",
-      "Ein Musikordner kann auch auf OneDrive, Google Drive, Dropbox oder einem WebDAV-Server wie Nextcloud liegen, nur lesend, über eine App, die du selbst registrierst — das Programm führt dich Schritt für Schritt; für OneDrive brauchst du ein kostenloses Azure-Konto."
+      "Ein Musikordner kann auch auf OneDrive, Google Drive, Dropbox oder einem WebDAV-Server wie Nextcloud liegen, nur lesend, über eine App, die du selbst registrierst — das Programm führt dich Schritt für Schritt; für OneDrive brauchst du ein kostenloses Azure-Konto (Microsoft verlangt zur Prüfung meist eine Karte, ohne sie zu belasten) oder ein Arbeits- oder Schulkonto."
     ]
   },
   "cataloghi": {
     "titolo": "Was fehlt, sucht er dort, wo es erlaubt ist.",
     "testo": "Das Internet Archive und Audius beherbergen Musik, die zum Teilen veröffentlicht wurde: mehr als 250.000 Konzerte im Live Music Archive, Netlabels, Gemeinfreies, Titel, die Künstler unter offenen Lizenzen veröffentlicht haben. Ein Titel wird nur heruntergeladen, wenn seine eigene Lizenz es erlaubt, und er behält diese Lizenz. Ist keine Studioversion frei, kann ein Konzert einspringen — und der Titel sagt, dass er live ist.",
-    "acquisti": "Keine freie Quelle hat den kommerziellen Katalog, und Rymembra holt ihn nicht von dort, wo er es nicht sollte: Was er nicht rechtmäßig findet, kommt auf eine Einkaufsliste, mit Links zu Bandcamp und Qobuz.",
+    "acquisti": "Keine freie Quelle hat den kommerziellen Katalog, und Rymembra holt ihn nicht von dort, wo er es nicht sollte: Was er nicht rechtmäßig findet, kommt in die Liste „To buy“, mit Links zu Bandcamp und Qobuz.",
     "esclusi": "Bewusst weggelassen: YouTube, dessen Bedingungen das Herunterladen und Speichern von Inhalten verbieten, und die privaten Schnittstellen von Spotify, deren Nutzung ein unbefugter Zugriff wäre.",
-    "alt": "Die Einstellungskarte, die zeigt, woher die Musik kommt",
-    "didascalia": "Einstellungen, „Woher die Musik kommt“: jede Quelle mit der Regel, der sie folgt."
+    "alt": "Die Einstellungskarte „Import from a service“, die zeigt, woher die Musik kommt",
+    "didascalia": "Einstellungen, „Import from a service“: jede Quelle mit der Regel, der sie folgt."
   },
   "suono": {
     "titolo": "Dann spielt er, wie es sich gehört.",
@@ -84,11 +84,11 @@
   },
   "insieme": {
     "titolo": "Und man hört zusammen.",
-    "testo": "Kollegen im selben Netz, jeder mit seinem Rymembra, hören dieselbe Musik im selben Moment: Ein PC lädt ein, die anderen folgen, und jeder spielt sie selbst ab. Beim ersten Mal zeigen beide Bildschirme denselben vierstelligen Code; danach erkennen sich die PCs, und was zwischen ihnen läuft, ist verschlüsselt.",
+    "testo": "Freunde oder Kollegen, jeder mit seinem Rymembra, hören dieselbe Musik im selben Moment: Ein Gerät lädt ein, die anderen folgen, und jeder spielt sie selbst ab. Beim ersten Mal zeigen beide Bildschirme denselben vierstelligen Code; danach erkennen sich die Geräte, und was zwischen ihnen läuft, ist verschlüsselt.",
     "punti": [
       "Wer einlädt, wählt für jeden, der dazukommt: nur zuhören, die Bedienung — Pause, Springen, der nächste und der vorige Titel — oder alles, auch die eigenen Titel in der Warteschlange, die von dem PC zu den anderen kommen, der sie hat.",
       "Bis auf wenige Millisekunden abgestimmt, genug für zwei Paar Lautsprecher im selben Raum; für Bluetooth-Kopfhörer gibt es die Kalibrierung.",
-      "Kein Internet und kein Server: nur das Netz im Büro oder zu Hause. Der einladende PC öffnet einen Port im LAN, und Windows fragt einmal um Erlaubnis."
+      "Im selben Netz läuft nichts über das Internet. Geräte, die du verbunden hast, können auch aus der Ferne zusammen hören, über eine verschlüsselte Verbindung, die öffentliche Relays nur dann nutzt, wenn keine direkte möglich ist. Beim ersten Mal fragt Windows um Erlaubnis, den Port zu öffnen."
     ]
   },
   "skin": {
@@ -119,7 +119,7 @@
     "dalVivo": "live",
     "youtube": "Bedingungen verbieten das Herunterladen",
     "spotify": "kein unbefugter Zugriff",
-    "listaAcquisti": "Einkaufsliste",
+    "listaAcquisti": "Zu kaufen",
     "inRiproduzione": "Jetzt läuft",
     "stessoVolume": "Jeder Titel auf dieselbe Lautheit gebracht",
     "senzaPause": "Ein Titel endet, der nächste beginnt: keine Lücke",
@@ -140,7 +140,7 @@
   },
   "scarica": {
     "titolo": "Bereit zum Hören.",
-    "testo": "Ein Installer für Windows 64 Bit. Updates kommen von selbst, signiert, und werden nur installiert, wenn du es sagst.",
+    "testo": "Ein Installer für Windows 64 Bit, eine APK für Android-Handys. Updates kommen von selbst, signiert, und werden nur installiert, wenn du es sagst.",
     "sotto": "Für Windows 64 Bit. Kostenlos.",
     "azione": "Herunterladen",
     "store": {
@@ -166,7 +166,17 @@
       "titolo": "Zeig ihm deine Musik",
       "testo": "Wähle deinen Musikordner. Eine kurze Tour zeigt dir das Programm einmal, im echten Fenster."
     },
-    "precedente": "Du kommst von Aether, dem früheren Namen des Programms? Der Installer ersetzt es, und beim ersten Start ziehen Bibliothek, Einstellungen, Skins und Konten von selbst um. Nichts wird überschrieben."
+    "precedente": "Du kommst von Aether, dem früheren Namen des Programms? Der Installer ersetzt es, und beim ersten Start ziehen Bibliothek, Einstellungen, Skins und Konten von selbst um. Nichts wird überschrieben.",
+    "android": {
+      "titolo": "Für Android-Handys",
+      "sotto": "Android ab Version 8, 64 Bit. Kostenlos.",
+      "azione": "APK herunterladen",
+      "file": "Die Datei heißt `{fileApk}`. Beim ersten Mal fragt Android, ob du die Installation erlaubst; danach kommen Updates aus der App.",
+      "impronta": {
+        "sommario": "{dimensioneApk} MB · SHA-256-Prüfsumme",
+        "verifica": "Zum Prüfen der Datei auf einem Computer, in PowerShell: `Get-FileHash $HOME\\Downloads\\{fileApk}` muss dieselbe Prüfsumme ausgeben."
+      }
+    }
   },
   "smartscreen": {
     "titolo": "Der Computer wurde durch Windows geschützt",
@@ -183,8 +193,8 @@
         "r": "Ja, und das bleibt so. Es gibt keine Bezahlversion und es ist keine geplant: Eine seiner Quellen, das Live Music Archive, hat eine nicht-kommerzielle Klausel, die eine Bezahlversion verletzen würde. Die Entwicklung wird über Spenden finanziert."
       },
       {
-        "d": "Läuft er unter macOS oder Linux?",
-        "r": "Heute nicht. Den Installer gibt es nur für Windows, und eine Version für macOS, Linux oder Mobilgeräte gibt es noch nicht."
+        "d": "Läuft er unter macOS, Linux oder auf dem iPhone?",
+        "r": "Heute nicht. Rymembra läuft unter Windows (64 Bit) und unter Android ab Version 8 (64 Bit); eine Version für macOS, Linux oder iOS gibt es noch nicht. Die App gibt es auf Italienisch und Englisch."
       },
       {
         "d": "Warum warnt mich Windows bei der Installation?",
@@ -200,15 +210,15 @@
       },
       {
         "d": "Kann ich meine Spotify-Playlists mitnehmen?",
-        "r": "Ja. Fordere deine Daten auf der Datenschutzseite deines Spotify-Kontos an: Sie kommen als ZIP, meist innerhalb weniger Tage, der vollständige Hörverlauf dauert länger. Rymembra liest sie auf deinem Computer und gleicht jeden Titel mit deiner Bibliothek und den freien Katalogen ab. Das ZIP enthält keine Audiodateien: Was du nicht hast und kein freier Katalog hat, kommt auf die Einkaufsliste."
+        "r": "Ja. Fordere deine Daten auf der Datenschutzseite deines Spotify-Kontos an: Sie kommen als ZIP, meist innerhalb weniger Tage, der vollständige Hörverlauf dauert länger. Rymembra liest sie auf deinem Computer und gleicht jeden Titel mit deiner Bibliothek und den freien Katalogen ab. Das ZIP enthält keine Audiodateien: Was du nicht hast und kein freier Katalog hat, kommt in die Liste „To buy“."
       },
       {
         "d": "Kann ich mit einem Kollegen zusammen hören?",
-        "r": "Ja, wenn ihr im selben Netz seid und beide Rymembra 3.1 oder neuer habt. Einer lädt über „Zusammen hören“ zu einer Sitzung ein; der andere findet sie von selbst oder tippt die Adresse ein, die der erste auf dem Bildschirm sieht, und beim ersten Mal vergleicht ihr einen vierstelligen Code. Auf dem einladenden PC fragt Windows, ob Rymembra durchgelassen werden soll: „Zulassen“, auch für „Öffentliche Netzwerke“, wenn das Netz so markiert ist."
+        "r": "Ja. Im selben Netz braucht ihr beide Rymembra 3.1 oder neuer: Einer lädt über „Zusammen hören“ zu einer Sitzung ein; der andere findet sie von selbst oder tippt die Adresse ein, die der erste auf dem Bildschirm sieht, und beim ersten Mal vergleicht ihr einen vierstelligen Code. Auf dem einladenden PC fragt Windows, ob Rymembra durchgelassen werden soll: „Zulassen“, auch für „Öffentliche Netzwerke“, wenn das Netz so markiert ist. Aus der Ferne verbindet ihr die beiden Geräte einmal unter Einstellungen › Geräte mit einem QR-Code (ab 3.2.1), dann funktioniert die Sitzung auch über das Internet."
       },
       {
         "d": "Schickt er meine Daten irgendwohin?",
-        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, Cover Art Archive, iTunes und Deezer für Cover, LRCLIB für Songtexte, GitHub für die Update-Prüfung (nicht die Store-Version) und allem, was du selbst verbindest; wenn du zusammen hörst, mit den anderen PCs in deinem Netz, und sonst niemandem. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
+        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, Cover Art Archive für Cover, LRCLIB für Songtexte, GitHub für die Update-Prüfung (nicht die Store-Version) und allem, was du selbst verbindest, etwa Cloud-Ordner, Scrobbling oder ein KI-Modell. iTunes und Deezer werden für Cover nur genutzt, wenn du sie einschaltest. Wenn du deine Geräte verbindest, um sie aus der Ferne zu erreichen, finden sie sich über öffentliche Relays und eine verteilte Adresstabelle, die sehen können, dass sich zwei Geräte verbinden, aber nicht, was zwischen ihnen läuft. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
       }
     ]
   },
@@ -234,7 +244,7 @@
     "piede": "Musik: [„Machina“](https://www.scottbuckley.com.au/library/machina/) von Scott Buckley, lizenziert unter [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.de). Für die Website neu komprimiert; in der Klang-Demo in zwei Teile geteilt und in der Lautstärke verändert."
   },
   "piede": {
-    "frase": "Ein Musikplayer für Windows, geschrieben in Rust. Er spielt, was du hast, und findet den Rest dort, wo es erlaubt ist.",
+    "frase": "Ein Musikplayer für Windows und Android, geschrieben in Rust. Er spielt, was du hast, und findet den Rest dort, wo es erlaubt ist.",
     "etichetta": "Website",
     "versioni": "Alle Versionen",
     "changelog": "Änderungsprotokoll",

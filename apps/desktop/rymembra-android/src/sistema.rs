@@ -20,7 +20,8 @@ use crate::{Errore, chiama};
 pub struct Permessi {
     /// «Accesso a tutti i file» (Android 11+), o il vecchio permesso di
     /// lettura e scrittura (fino ad Android 10): i brani, ma anche i `.lrc`, i
-    /// `.cue`, le copertine accanto, e scrivere i tag.
+    /// `.cue` e le copertine accanto, i `.lrc` dei testi sincronizzati e le
+    /// eliminazioni.
     pub tutti_i_file: bool,
     /// I file audio (`READ_MEDIA_AUDIO`, o la lettura dell'archivio fino ad
     /// Android 12).
@@ -41,8 +42,10 @@ pub fn permessi() -> Result<Permessi, Errore> {
     chiama("sistema.permessi", &())
 }
 
-/// Chiede i permessi che si possono chiedere con un dialogo — audio, immagini,
-/// notifiche — e torna con lo stato dopo la risposta.
+/// Chiede i permessi per leggere la musica che si possono chiedere con un
+/// dialogo, e torna con lo stato dopo la risposta. Le notifiche no: Kotlin le
+/// chiede al primo bisogno vero — «Scarica qui», l'attesa di un consenso —
+/// e non con questi.
 ///
 /// Bloccante: vedi il preambolo del modulo.
 ///
@@ -74,21 +77,46 @@ pub fn cartella_musica() -> Result<PathBuf, Errore> {
     chiama::<String>("sistema.cartellaMusica", &()).map(PathBuf::from)
 }
 
-/// Fa scegliere una cartella con il selettore di sistema, e la restituisce
-/// come percorso. `Ok(None)` se chi guarda ha annullato.
+/// La cartella scelta nel selettore di sistema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cartella {
+    /// Una cartella della memoria del telefono o di una scheda SD, col suo
+    /// percorso vero.
+    Percorso(PathBuf),
+    /// Una cartella di un altro fornitore — «Download», un'app cloud che offre
+    /// cartelle nel selettore —, che non ha un percorso da camminare. Il
+    /// fornitore, per il diario.
+    Fuori(String),
+}
+
+#[derive(Deserialize)]
+struct Scelta {
+    #[serde(default)]
+    percorso: Option<String>,
+    #[serde(default)]
+    fuori: Option<String>,
+}
+
+/// Fa scegliere una cartella con il selettore di sistema. `Ok(None)` se chi
+/// guarda ha annullato.
 ///
 /// Il selettore dà un URI di albero (`content://…/tree/primary:Music`); qui
 /// arriva tradotto nel percorso vero (`/storage/emulated/0/Music`), perché la
 /// scansione legge i file con le funzioni di sempre. Una cartella che non ha un
-/// percorso — un servizio cloud che si presenta nel selettore — è un errore.
+/// percorso non è un errore ma [`Cartella::Fuori`]: è una scelta che il
+/// selettore permette, e chi chiama la dice con una frase sua.
 ///
 /// Bloccante: vedi il preambolo del modulo.
 ///
 /// # Errori
 ///
-/// Se il ponte non risponde, o se la cartella scelta non ha un percorso.
-pub fn scegli_cartella() -> Result<Option<PathBuf>, Errore> {
-    chiama::<Option<String>>("sistema.scegliCartella", &()).map(|scelta| scelta.map(PathBuf::from))
+/// Se il ponte non risponde.
+pub fn scegli_cartella() -> Result<Option<Cartella>, Errore> {
+    let scelta: Option<Scelta> = chiama("sistema.scegliCartella", &())?;
+    Ok(scelta.map(|scelta| match (scelta.percorso, scelta.fuori) {
+        (Some(percorso), None) => Cartella::Percorso(PathBuf::from(percorso)),
+        (_, fuori) => Cartella::Fuori(fuori.unwrap_or_default()),
+    }))
 }
 
 #[derive(Serialize)]
@@ -202,6 +230,22 @@ pub enum Installazione {
     /// Rymembra non può ancora installare app: è aperta la pagina delle
     /// impostazioni dove lo si concede.
     Permesso,
+    /// L'APK è questa app, ma firmato con un'altra chiave: Android non lo
+    /// installerebbe sopra di lei, e Kotlin l'ha già cancellato. È l'esito di
+    /// una copia di prova (la chiave di debug) davanti all'APK pubblico, e non
+    /// un guasto: chi chiama se lo ricorda e lo dice.
+    AltraChiave,
+}
+
+/// Le impronte SHA-256 dei certificati con cui è firmata la Rymembra
+/// installata, in esadecimale minuscolo: quelle che un aggiornamento deve
+/// avere perché Android lo installi sopra. Vuoto se Android non le dice.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn firmatari() -> Result<Vec<String>, Errore> {
+    chiama("sistema.firmatari", &())
 }
 
 #[derive(Serialize)]
@@ -214,12 +258,14 @@ struct Apk<'a> {
 /// Non aspetta la risposta: l'installazione è del sistema, e se va a buon fine
 /// il sistema chiude Rymembra per sostituirla.
 ///
+/// Un APK firmato con un'altra chiave non è un errore ma
+/// [`Installazione::AltraChiave`].
+///
 /// # Errori
 ///
 /// Se il ponte non risponde, se non c'è un'attività, se il percorso non è
-/// testo o non sta in quella cartella, e se l'APK non è questa app — un altro
-/// pacchetto, o firmato con un'altra chiave: allora Kotlin l'ha già
-/// cancellato.
+/// testo o non sta in quella cartella, e se l'APK non si legge o è un altro
+/// pacchetto: allora Kotlin l'ha già cancellato.
 pub fn installa_apk(percorso: &Path) -> Result<Installazione, Errore> {
     let percorso = percorso
         .to_str()

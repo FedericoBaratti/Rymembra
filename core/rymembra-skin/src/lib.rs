@@ -87,6 +87,10 @@
 //! che rende l'animazione di una skin fermabile da chi ha chiesto meno
 //! movimento, cicli infiniti compresi.
 
+// Per primo: le sue macro (`motivo!`) le usano i moduli dichiarati dopo.
+#[macro_use]
+pub mod motivo;
+
 pub mod compile;
 pub mod dinamico;
 pub mod document;
@@ -117,6 +121,7 @@ pub use layout::{
     LayoutNode, LayoutZone, SHELL_COST_BUDGET, WIDGETS, WidgetDef, WidgetInstance, default_shell,
 };
 pub use migrazione::{Migrato, forma_canonica, migra_testo};
+pub use motivo::{Motivo, Valore};
 pub use movimento::{
     AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, MOTION_COST_BUDGET, PartMotion,
     WINDOW_MOTION_BUDGET, animation_cost,

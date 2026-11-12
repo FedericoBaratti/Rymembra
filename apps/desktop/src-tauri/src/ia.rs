@@ -327,6 +327,9 @@ pub struct OperazioniIpc {
     /// modalità agent — dove sono esattamente l'informazione che gli serve per
     /// correggersi.
     pub ragioni: Vec<String>,
+    /// Le stesse ragioni per chi legge, nella lingua dell'interfaccia (D-68):
+    /// vedi [`rymembra_ia::operazioni::Ragione`].
+    pub motivi: Vec<crate::studio::MotivoIpc>,
 }
 
 // ── i comandi ───────────────────────────────────────────────────────────────
@@ -664,7 +667,12 @@ fn conversa(app: &AppHandle, messaggi: Vec<Messaggio>) -> Esito<u64> {
 /// quindi nello stesso annullo.
 #[tauri::command]
 pub fn ia_operazioni(testo: String) -> Esito<OperazioniIpc> {
-    let (operazioni, ragioni) = rymembra_ia::operazioni::estrai(&testo);
+    let (operazioni, ragionate) = rymembra_ia::operazioni::estrai_ragionate(&testo);
+    let motivi = ragionate
+        .iter()
+        .map(crate::studio::motivo_di_ragione)
+        .collect();
+    let ragioni = ragionate.into_iter().map(|r| r.testo).collect();
     Ok(OperazioniIpc {
         operazioni: operazioni
             .into_iter()
@@ -675,6 +683,7 @@ pub fn ia_operazioni(testo: String) -> Esito<OperazioniIpc> {
             })
             .collect(),
         ragioni,
+        motivi,
     })
 }
 

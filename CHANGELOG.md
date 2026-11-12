@@ -5,13 +5,14 @@ Format [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions
 
 ## How versioning works here
 
-One number for the whole monorepo. It is written in four files — the root
-`Cargo.toml`, which the sixteen workspace members inherit, `apps/desktop/package.json`,
-`apps/desktop/src-tauri/tauri.conf.json` and `Cargo.lock` — and `npm run
-check:version` fails `verify` if they don't agree. It changes with `npm run
+One number for the whole monorepo. It is written in five files — the root
+`Cargo.toml`, which the eighteen workspace members inherit,
+`apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`, and the
+two lockfiles that repeat it, `Cargo.lock` and `apps/desktop/package-lock.json`
+— and `npm run check:version` fails `verify` if they don't agree. It changes with `npm run
 version:set -- <version>`, never by hand.
 
-Why one number instead of four: the version ends up in places the user sees —
+Why one number instead of five: the version ends up in places the user sees —
 the installer's name, the version in the startup log and in *Settings →
 Updates*, the release the update check compares with — and those places read it
 from different files. Independent numbers are chances to diverge; in the old
@@ -92,7 +93,7 @@ were, not restated.
 ## [Unreleased]
 
 **Rymembra on Android.** The same application, from the same code: the
-fourteen core crates build for `aarch64-linux-android` and
+fifteen core crates build for `aarch64-linux-android` and
 `x86_64-linux-android` unchanged, and the window becomes an Android activity.
 The number will be decided when it ships; nothing outside Rymembra has to keep
 up with a phone that did not exist before.
@@ -167,8 +168,9 @@ up with a phone that did not exist before.
   the same state (`telefono::riapri_la_finestra`).
 - **Permissions at first start.** Before looking for music the first run asks
   for access: «Music and audio» with Android's dialog, then «All files
-  access» in Android's settings, which the lyrics, the `.cue` files, the
-  covers next to the tracks, tag fixes and deletions need. Rymembra goes on
+  access» in Android's settings, which reading the lyrics, the `.cue` files
+  and the covers next to the tracks, writing an `.lrc` beside a track when
+  you ask for it, and deleting a track need. Rymembra goes on
   with the first alone if that is all you grant, and does not ask for
   «Photos and videos». Then it proposes the phone's `Music` folder and the
   one on each SD card.
@@ -217,113 +219,9 @@ up with a phone that did not exist before.
   `t()` picks `<key>.telefono` when it exists and the app runs on a phone.
   What a phone cannot do is not offered: network folders, «Show in folder»,
   «drop it on the window», the reorder hint for the keyboard.
-- **The Skin Studio on a phone** shows one panel at a time — Parts, Canvas,
-  Inspector — chosen from tabs under its bar, and a part picked from the
-  layers or on the canvas opens the inspector. The bar wraps onto three rows
-  instead of overflowing the screen.
 - **Touch targets**: switches, hearts, tabs, small buttons, the rating stars
   and the A–Z index of the artists grow to a finger's size; the artists grid
   has two columns; Explore no longer opens the keyboard by itself.
-
-### Fixed — the phone
-
-- **Music came out of the earpiece, and Bluetooth headphones got nothing.** On
-  Android cpal's default output is an empty `Device` — an AAudio stream that
-  doesn't say where, so Android routes it — and it is not in the device list.
-  No row was marked default, the opening fell back to the first one, and on a
-  real phone that is the call earpiece («A059P (Earpiece)», mono, in the log
-  that reported it); a stream pinned with `setDeviceId` stays there. On
-  Android the list is now one row, the empty device, named after where
-  Android plays right now (`AudioManager`, `Uscita.kt`): connecting
-  headphones changes the name, and the device watcher reopens the stream as
-  it does on Windows when the default changes. Settings › Playback says that
-  the output follows Android instead of offering a choice that chooses
-  nothing, and an output picked by an earlier build is ignored.
-- **«Listen together» found nobody, and nobody found the phone**, on
-  Android 17: an app that targets Android 17 sees the home network only with
-  «Nearby devices» (`ACCESS_LOCAL_NETWORK`), and without it the packets stop
-  in the system with no error. Rymembra now asks for it when you turn the
-  function on, host, pair or join, and says so (`net.localNetwork`) when it
-  is denied. The same permission is asked before connecting a WebDAV server
-  or a language model on a private address; a WebDAV server reopened at
-  startup, with nobody to ask, says the permission is missing instead of
-  failing as if the server were down. Tried between two emulators: hosting, discovery by typed
-  address, pairing, joining and playback streamed from the host, in sync.
-- **The phone called itself «Rymembra»** to the other devices: it now uses
-  Android's «Device name», or the model. With two phones, «Rymembra asks to
-  join» did not say who.
-- **«Listen together» could be found only at the bottom of Settings** on the
-  phone: the player's button is in the desktop's player bar. It is now in
-  the «More» drawer.
-- The first line of the phone's log says which Android and which phone, and
-  a window error says where it happened, not only its message.
-- **A track deleted on the phone came back.** Android's trash is not a
-  folder: `MediaStore` renames the file to `.trashed-<expiry>-<name>` next to
-  where it was, and the folder watcher saw a new MP3 and put it back in the
-  library, with the same title. Files named `.trashed-…` and `.pending-…` are
-  no longer music (`paths::tenuto_da_parte_da_android`), and a row that an
-  earlier build had created for one goes away at the next scan instead of
-  staying because its file is still on disk (`scan_plan`).
-- **No link opened on the phone**, and with them no service could be
-  connected: the project's pages, donations, «Report a problem», a track's
-  page on its catalog, and the consent page of Google Drive, OneDrive,
-  Dropbox and Last.fm. `tauri-plugin-opener` opens a URL by launching a
-  program, which Android does not allow an app to do (`Permission denied`).
-  Every URL now goes through `browser::apri`, which on Android hands it to
-  the bridge, and Kotlin opens it with an `Intent` (`Browser.kt`, `https`
-  and `http` only). Tried on the emulator: with Rymembra behind the browser
-  for twenty seconds, the local server of the consent still answers.
-- **A long press on a track selected a word of its title** along with opening
-  the menu: the title allows selection on the computer, for copying it.
-- **«Show in folder»** in the Folders menu is not offered on the phone, where
-  there is no file manager to open on a folder.
-- **A smart playlist's condition** wraps onto two rows: four columns in a
-  phone's width cut the operator to «conta…».
-- **The clock and the battery were black on black** with Rymembra dark on a
-  light phone (and white on white the other way round): Android picks the
-  colour of the system bars' icons from the phone's theme. The page now tells
-  Android which theme it shows (`barreDiSistema.ts`, bridge `sistema.barre`),
-  and an activity reborn after a swipe from the recents keeps it. The first
-  frame no longer flashes the dark base under a light theme: until the skin
-  arrives the page uses the theme it showed last time (`temaDiPartenza`).
-- **An album, an artist, a playlist**: the cover's tint now reaches under the
-  status bar, and the top bar floats over it — two round buttons that read on
-  any cover — and fills in only when the big title slides under it, driven by
-  the scroll (`animation-timeline`). It used to start under a solid bar with a
-  straight cut from edge to edge. Every other top bar gets a hairline once the
-  page scrolls under it.
-- **Alignment**: track lists, the Library's pills and the Search field start
-  at the page's edge, under the title's first letter — the covers were
-  fourteen pixels further in than everything else. The queue in «Now
-  playing» lost an empty column (the drag grip, which a finger never sees),
-  and its titles sit under «Queued».
-- **Settings on the phone**: no more of the section's icon repeated on every
-  card (a ▶ before «Audio output» read as a button); segmented controls share
-  the whole track instead of huddling on the left, and the sleep timer's
-  «End of track» no longer spills out; the search field is a pill like the
-  other ones; «Output latency» and the group titles line up with the rest; a
-  date or a device name among the numbers no longer wraps in the headline
-  size. The sections also have icons of their own — sync, devices, scrobbling,
-  data and updates all had the backup's cloud (on the computer too).
-- **Folders on the phone** are «Internal storage › Music» and «SD card ›
-  Music», not `/storage/emulated/0/Music` (`percorsoAndroid`).
-- **Back from a Settings section opened from «More»** («Link a device»,
-  «Music folders») went to the list of sections, which nobody had seen: it
-  goes back to «More».
-- The Artists' alphabet fits the screen (the Z was under the player), and the
-  page no longer scrolls by one pixel — enough for Android to draw its grey
-  scrollbar down the whole right edge at the first drag.
-- **Words left untranslated**: the skin's motion level («full») and the
-  descriptions of Vinile and Neon in English; «Listen together» in «More» no
-  longer says «on the same network», now that linked devices listen together
-  over the internet.
-- «Relay» and «Send the history you already have too» are grey like any
-  advanced panel, not yellow like a warning (on the computer too).
-- Touch sizes: the first run's «I will do it later» is a full-height text
-  button instead of a 27-pixel pill; small buttons are 34 pixels; the six
-  sources of «Add a folder» are a three-by-two grid instead of two crooked
-  rows. Album cards say «3 tracks», not «· 3», and artist cards use the same
-  type as album cards.
 
 ### New — your devices over the internet
 
@@ -338,8 +236,8 @@ up with a phone that did not exist before.
   behind a blocking façade, with its own two-thread runtime — the one corner of
   Rymembra that is asynchronous, and the `Cargo.toml` says why.
   - **Linking, step by step.** The QR disappears from the PC as soon as it
-    stops being valid — used, refused, burned by five wrong codes or past its
-    ten minutes — and «New QR code» makes another. While the phone waits for
+    stops being valid — used, refused or past its ten minutes — and «New QR
+    code» makes another. While the phone waits for
     the PC's answer, «Stop waiting» cancels it, and the question on the PC
     disappears with it. The PC says «“Nothing Phone 2a” is linked» too, not
     only the phone.
@@ -422,8 +320,9 @@ up with a phone that did not exist before.
 
 - **Linking two devices with the QR pairs them for «Listen together» too**,
   without the four-digit code: each tells the other its «Listen together» key
-  inside the encrypted link, and a PC that had been blocked is unblocked —
-  linking it again is the proof you want it.
+  inside the encrypted link. A PC you blocked stays blocked: the QR code does
+  not prove you want it back — “Unblock”, or pairing it again with the
+  four-digit code, does.
 - **Listen together away from home**, between devices linked with the QR. A
   linked device that hosts a session tells so in its presence, and shows in
   the panel with «via internet» under its name; joining, inviting, asking to
@@ -457,25 +356,6 @@ up with a phone that did not exist before.
   `insieme.protocollo`, and a frame of an unknown type is skipped — its length
   is in the header — instead of closing the connection: a newer Rymembra can
   add one without breaking the session for the older ones.
-
-### Changed — for both
-
-- The app crate is a library (`rymembra_lib`, with `run()`); `rymembra.exe`
-  is a one-line binary that calls it.
-- Desktop-only dependencies — the tray, the updater, single instance, SMTC,
-  the Recycle Bin, the native error dialog, the Credential Manager — moved to
-  a `[target]` table, and the modules that use them have an Android
-  counterpart in `src/mobile/` with the same commands. `media.rs` became
-  `media/`: the shared gestures in `mod.rs`, SMTC in `smtc.rs`, the Media3
-  session in `android.rs`.
-- A new crate, `apps/desktop/rymembra-android`, is the bridge to Kotlin: one
-  JNI method, `Ponte.chiama(command, arguments)` with JSON in and out, and
-  the only `unsafe` in `jvm.rs`, under the same declared exception as
-  `rymembra-barra`.
-- On Android the TLS roots are the Mozilla list compiled in (`webpki-roots`):
-  `rustls-platform-verifier` there needs JNI and a Gradle component.
-- `apps/desktop/src-tauri/gen/android` is versioned now; only `gen/schemas`
-  is ignored.
 
 ### Changed — folders in the cloud
 
@@ -546,38 +426,12 @@ up with a phone that did not exist before.
   now deleted first; a crash in between leaves a file no index names, which
   the next start throws away.
 
-### Changed — building
-
-- **The CI builds Android.** A new `android` job runs clippy for
-  `aarch64-linux-android`, `tauri android build --apk --debug` and the Gradle
-  lint; `deny.toml` checks the Android dependency graph too (`jni` and
-  `ndk-context` were outside it).
-- `rust-version` is 1.91, the minimum of `iroh` 1.0 (see the device link).
-- **Rymembra no longer offers itself to Android TV.** The manifest declared
-  the TV launcher, but the interface is made for a finger and cannot be used
-  with a remote; the Gradle lint is clean of errors.
-- **A clean `npm ci` builds the interface again.** `vite.config.ts` reads
-  `process.env` and `@types/node` was not a declared dependency, so `tsc`
-  failed and with it `build:web`, CI and the release build; it is now a dev
-  dependency.
-- **`cargo deny check` passes again**: BSD-2-Clause (`spez`, through iroh) is
-  allowed, and three advisories that do not reach Rymembra's code are listed
-  with the reason (RUSTSEC-2026-0429, `zip::extract`; -0459, SQLite opening
-  someone else's `-wal`; -0386, tokio `AsyncFd`).
-- **Gradle 9.8.2** (from 9.6.1, affected by GHSA-xwqc-3h47-hg64,
-  GHSA-mvvg-497x-hmj8 and GHSA-j5m7-59rp-24f5), with the distribution's
-  SHA-256 checked by the wrapper; vite 7.3.8.
-- **Releases start from the tag**, a manual run from a branch stops at once,
-  and a release already published is never uploaded to again. The
-  `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
-  interface tests and the Kotlin sources; `strumenti/firma.js` accepts a key
-  without a password, as `tauri signer` does.
-
 ### Security
 
 - **Linking a device needs its QR code and a «yes».** The code's random
   16-byte token is valid for ten minutes and once, compared in constant time;
-  five wrong tokens end the code, and attempts are capped at ten a minute. The
+  each device gets at most ten attempts a minute, and a wrong token does not
+  end the code, so nobody else on the network can expire it. The
   device showing the code asks its user before anything is linked. The
   `rymembra/associa/1` protocol is closed whenever no code is on screen, and
   `rymembra/lontano/1` turns away any key that is not linked before it can ask
@@ -587,8 +441,9 @@ up with a phone that did not exist before.
 - **What a linked device can read**: the lists of tracks in local and network
   folders, and the file of such a track by its id, while it is still under a
   watched folder — size and date checked around every read. No path crosses
-  the connection. Frames are capped at 1 MiB (8 MiB inflated), reads at 2 MiB,
-  lists at 500 entries, and requests at 8 at a time per device.
+  the connection. Frames are capped at 1 MiB, and inflated at 16 KiB while
+  linking, 64 KiB for a request and 8 MiB for an answer; reads at 2 MiB, lists
+  at 500 entries, requests at 8 at a time and connections at four per device.
 - **The device's key** is in the system keychain (`lontano.chiave.<device>`;
   the Android Keystore on the phone), never in the database, and an existing
   one is never overwritten. The log names no key, address or device.
@@ -597,7 +452,8 @@ up with a phone that did not exist before.
 
 A full review of the code — eleven areas read against `SECURITY.md`, the
 untrusted parsers fuzzed for three hours, the phone build probed on an
-emulator — and every confirmed finding fixed with a test that failed first.
+emulator. What it fixed is below. Some low-risk findings are still open, and
+signing the sync documents is planned work (`SECURITY.md`).
 
 - **A profile can no longer make Rymembra delete files outside its cover
   store.** The cover hash in a `.ryprofile` went into the library unchecked,
@@ -760,8 +616,8 @@ emulator — and every confirmed finding fixed with a test that failed first.
   of their own, so a long write on the serving device (a scan, the analysis)
   does not make them time out; the serving device logs any request it could
   not serve because the library was busy.
-- **`PRIVACY.md` lists what the code really sends.** The review compared every
-  network request in the code with it: the Cover Art Archive redirect to
+- **`PRIVACY.md` was compared with the network requests in the code**, and
+  corrected where it differed: the Cover Art Archive redirect to
   `archive.org` and the image hosts of iTunes and Deezer, what MusicBrainz
   receives (titles and track counts, not durations), iTunes paced at 3.1 s
   (not 350 ms), the model list a language-model profile asks for when saved,
@@ -769,6 +625,152 @@ emulator — and every confirmed finding fixed with a test that failed first.
   `*.googleusercontent.com`, the import preview's cover, the update check's
   redirect to GitHub's file host, how often the device link republishes its
   address and what mDNS carries, and the DNS servers it asks.
+
+### Fixed — the phone
+
+- **Music came out of the earpiece, and Bluetooth headphones got nothing.** On
+  Android cpal's default output is an empty `Device` — an AAudio stream that
+  doesn't say where, so Android routes it — and it is not in the device list.
+  No row was marked default, the opening fell back to the first one, and on a
+  real phone that is the call earpiece («A059P (Earpiece)», mono, in the log
+  that reported it); a stream pinned with `setDeviceId` stays there. On
+  Android the list is now one row, the empty device, named after where
+  Android plays right now (`AudioManager`, `Uscita.kt`): connecting
+  headphones changes the name, and the device watcher reopens the stream as
+  it does on Windows when the default changes. Settings › Playback says that
+  the output follows Android instead of offering a choice that chooses
+  nothing, and an output picked by an earlier build is ignored.
+- **«Listen together» found nobody, and nobody found the phone**, on
+  Android 17: an app that targets Android 17 sees the home network only with
+  «Nearby devices» (`ACCESS_LOCAL_NETWORK`), and without it the packets stop
+  in the system with no error. Rymembra now asks for it when you turn the
+  function on, host, pair or join, and says so (`net.localNetwork`) when it
+  is denied. The same permission is asked before connecting a WebDAV server
+  or a language model on a private address; a WebDAV server reopened at
+  startup, with nobody to ask, says the permission is missing instead of
+  failing as if the server were down. Tried between two emulators: hosting, discovery by typed
+  address, pairing, joining and playback streamed from the host, in sync.
+- **The phone called itself «Rymembra»** to the other devices: it now uses
+  Android's «Device name», or the model. With two phones, «Rymembra asks to
+  join» did not say who.
+- **«Listen together» could be found only at the bottom of Settings** on the
+  phone: the player's button is in the desktop's player bar. It is now on
+  the “More” page.
+- The first line of the phone's log says which Android and which phone, and
+  a window error says where it happened, not only its message.
+- **A track deleted on the phone came back.** Android's trash is not a
+  folder: `MediaStore` renames the file to `.trashed-<expiry>-<name>` next to
+  where it was, and the folder watcher saw a new MP3 and put it back in the
+  library, with the same title. Files named `.trashed-…` and `.pending-…` are
+  no longer music (`paths::tenuto_da_parte_da_android`), and a row that an
+  earlier build had created for one goes away at the next scan instead of
+  staying because its file is still on disk (`scan_plan`).
+- **No link opened on the phone**, and with them no service could be
+  connected: the project's pages, donations, «Report a problem», a track's
+  page on its catalog, and the consent page of Google Drive, OneDrive,
+  Dropbox and Last.fm. `tauri-plugin-opener` opens a URL by launching a
+  program, which Android does not allow an app to do (`Permission denied`).
+  Every URL now goes through `browser::apri`, which on Android hands it to
+  the bridge, and Kotlin opens it with an `Intent` (`Browser.kt`, `https`
+  and `http` only). Tried on the emulator: with Rymembra behind the browser
+  for twenty seconds, the local server of the consent still answers.
+- **A long press on a track selected a word of its title** along with opening
+  the menu: the title allows selection on the computer, for copying it.
+- **«Show in folder»** in the Folders menu is not offered on the phone, where
+  there is no file manager to open on a folder.
+- **A smart playlist's condition** wraps onto two rows: four columns in a
+  phone's width cut the operator to «conta…».
+- **The clock and the battery were black on black** with Rymembra dark on a
+  light phone (and white on white the other way round): Android picks the
+  colour of the system bars' icons from the phone's theme. The page now tells
+  Android which theme it shows (`barreDiSistema.ts`, bridge `sistema.barre`),
+  and an activity reborn after a swipe from the recents keeps it. The first
+  frame no longer flashes the dark base under a light theme: until the skin
+  arrives the page uses the theme it showed last time (`temaDiPartenza`).
+- **An album, an artist, a playlist**: the cover's tint now reaches under the
+  status bar, and the top bar floats over it — two round buttons that read on
+  any cover — and fills in only when the big title slides under it, driven by
+  the scroll (`animation-timeline`). It used to start under a solid bar with a
+  straight cut from edge to edge. Every other top bar gets a hairline once the
+  page scrolls under it.
+- **Alignment**: track lists, the Library's pills and the Search field start
+  at the page's edge, under the title's first letter — the covers were
+  fourteen pixels further in than everything else. The queue in «Now
+  playing» lost an empty column (the drag grip, which a finger never sees),
+  and its titles sit under «Queued».
+- **Settings on the phone**: no more of the section's icon repeated on every
+  card (a ▶ before «Audio output» read as a button); segmented controls share
+  the whole track instead of huddling on the left, and the sleep timer's
+  «End of track» no longer spills out; the search field is a pill like the
+  other ones; «Output latency» and the group titles line up with the rest; a
+  date or a device name among the numbers no longer wraps in the headline
+  size. The sections also have icons of their own — sync, devices, scrobbling,
+  data and updates all had the backup's cloud (on the computer too).
+- **Folders on the phone** are «Internal storage › Music» and «SD card ›
+  Music», not `/storage/emulated/0/Music` (`percorsoAndroid`).
+- **Back from a Settings section opened from «More»** («Link a device»,
+  «Music folders») went to the list of sections, which nobody had seen: it
+  goes back to «More».
+- The Artists' alphabet fits the screen (the Z was under the player), and the
+  page no longer scrolls by one pixel — enough for Android to draw its grey
+  scrollbar down the whole right edge at the first drag.
+- **Words left untranslated**: the skin's motion level («full») and the
+  descriptions of Vinile and Neon in English; «Listen together» in «More» no
+  longer says «on the same network», now that linked devices listen together
+  over the internet.
+- «Relay» and «Send the history you already have too» are grey like any
+  advanced panel, not yellow like a warning (on the computer too).
+- Touch sizes: the first run's «I will do it later» is a full-height text
+  button instead of a 27-pixel pill; small buttons are 34 pixels; the six
+  sources of «Add a folder» are a three-by-two grid instead of two crooked
+  rows. Album cards say «3 tracks», not «· 3», and artist cards use the same
+  type as album cards.
+
+### Changed — for both
+
+- The app crate is a library (`rymembra_lib`, with `run()`); `rymembra.exe`
+  is a one-line binary that calls it.
+- Desktop-only dependencies — the tray, the updater, single instance, SMTC,
+  the Recycle Bin, the native error dialog, the Credential Manager — moved to
+  a `[target]` table, and the modules that use them have an Android
+  counterpart in `src/mobile/` with the same commands. `media.rs` became
+  `media/`: the shared gestures in `mod.rs`, SMTC in `smtc.rs`, the Media3
+  session in `android.rs`.
+- A new crate, `apps/desktop/rymembra-android`, is the bridge to Kotlin: one
+  JNI method, `Ponte.chiama(command, arguments)` with JSON in and out, and
+  the only `unsafe` in `jvm.rs`, under the same declared exception as
+  `rymembra-barra`.
+- On Android the TLS roots are the Mozilla list compiled in (`webpki-roots`):
+  `rustls-platform-verifier` there needs JNI and a Gradle component.
+- `apps/desktop/src-tauri/gen/android` is versioned now; only `gen/schemas`
+  is ignored.
+
+### Changed — building
+
+- **The CI builds Android.** A new `android` job runs clippy for
+  `aarch64-linux-android`, `tauri android build --apk --debug` and the Gradle
+  lint; `deny.toml` checks the Android dependency graph too (`jni` and
+  `ndk-context` were outside it).
+- `rust-version` is 1.91, the minimum of `iroh` 1.0 (see the device link).
+- **Rymembra no longer offers itself to Android TV.** The manifest declared
+  the TV launcher, but the interface is made for a finger and cannot be used
+  with a remote; the Gradle lint is clean of errors.
+- **A clean `npm ci` builds the interface again.** `vite.config.ts` reads
+  `process.env` and `@types/node` was not a declared dependency, so `tsc`
+  failed and with it `build:web`, CI and the release build; it is now a dev
+  dependency.
+- **`cargo deny check` passes again**: BSD-2-Clause (`spez`, through iroh) is
+  allowed, and three advisories that do not reach Rymembra's code are listed
+  with the reason (RUSTSEC-2026-0429, `zip::extract`; -0459, SQLite opening
+  someone else's `-wal`; -0386, tokio `AsyncFd`).
+- **Gradle 9.8.2** (from 9.6.1, affected by GHSA-xwqc-3h47-hg64,
+  GHSA-mvvg-497x-hmj8 and GHSA-j5m7-59rp-24f5), with the distribution's
+  SHA-256 checked by the wrapper; vite 7.3.8.
+- **Releases start from the tag**, a manual run from a branch stops at once,
+  and a release already published is never uploaded to again. The
+  `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
+  interface tests and the Kotlin sources; `strumenti/firma.js` accepts a key
+  without a password, as `tauri signer` does.
 
 ### Database
 
@@ -780,13 +782,25 @@ Two migrations, schema 38 → 40, both additive.
   linked and last seen, and whether it was revoked), `dispositivi_ascolti`
   (listens of other devices' tracks made here, waiting to be sent to their
   owner, with a key that makes a repeat harmless) and `dispositivi_ricevuti`
-  (the keys of the listens already counted here). Going back: drop the three
-  tables and set `user_version` to 38; the links are lost (made again with a
-  QR code) and so are the listens not yet sent.
+  (the keys of the listens already counted here).
 - `040_insieme_indirizzi` — one table, `insieme_indirizzi`: the last
   `ip:port` at which each paired «Listen together» PC answered, by its key.
-  It does not travel either. Going back: drop the table and set
-  `user_version` to 39; the addresses come back at the next connection.
+  It does not travel either.
+
+**Going back to 3.2.0.** The first way is the copy Rymembra takes before it
+migrates, `rymembra.db.schema-038.bak`, beside the database. Quit Rymembra —
+from its icon next to the clock too — and move `rymembra.db`,
+`rymembra.db-wal` and `rymembra.db-shm` aside together: the last two belong
+to the new database, and next to the copy SQLite would read them as the
+copy’s own and spoil it. Then copy the `.bak` to `rymembra.db` — copy, not
+move, so that the `.bak` stays as a fallback. By hand instead, both
+migrations in one go and in this order — undoing only 039 leaves
+`insieme_indirizzi` behind, and the next update to this version then fails
+on it: `DROP TABLE insieme_indirizzi; DROP TABLE
+dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+PRAGMA user_version = 38;`. The links are lost (made again with a QR code),
+and so are the listens not yet sent; the “Listen together” addresses come
+back at the next connection.
 
 ### Known limits
 

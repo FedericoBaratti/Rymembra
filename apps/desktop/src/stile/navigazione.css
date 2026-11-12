@@ -719,10 +719,11 @@
   font: inherit;
   cursor: pointer;
 }
-.bottone:hover:not(:disabled) {
+.bottone:hover:not(:disabled):not([aria-disabled='true']) {
   border-color: var(--accent);
 }
-.bottone:disabled {
+.bottone:disabled,
+.bottone[aria-disabled='true'] {
   opacity: 0.5;
   cursor: default;
 }
@@ -735,7 +736,7 @@
   color: var(--color-surface-0);
   font-weight: 600;
 }
-.bottone.primario:hover:not(:disabled) {
+.bottone.primario:hover:not(:disabled):not([aria-disabled='true']) {
   filter: brightness(1.08);
 }
 /*
@@ -747,7 +748,8 @@
  * premibile. Qui l'accento se ne va del tutto e resta la superficie di riposo,
  * che è quel che dice davvero «non ancora».
  */
-.bottone.primario:disabled {
+.bottone.primario:disabled,
+.bottone.primario[aria-disabled='true'] {
   opacity: 1;
   background: var(--color-surface-2);
   border-color: var(--hairline);

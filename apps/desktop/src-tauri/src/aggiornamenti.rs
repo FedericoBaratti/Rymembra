@@ -1347,7 +1347,7 @@ const MARCATORE_STORE: &str = "rymembra-store.txt";
 /// pacchetto del Store.
 ///
 /// Si legge una volta e si ricorda: l'eseguibile non cambia posto mentre gira.
-fn gestita_dallo_store() -> bool {
+pub(crate) fn gestita_dallo_store() -> bool {
     static STORE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *STORE.get_or_init(|| {
         std::env::current_exe()

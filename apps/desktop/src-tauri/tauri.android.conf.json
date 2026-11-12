@@ -6,7 +6,8 @@
         "title": "Rymembra",
         "backgroundColor": "#09090d",
         "dragDropEnabled": false,
-        "visible": true
+        "visible": true,
+        "create": false
       }
     ]
   },

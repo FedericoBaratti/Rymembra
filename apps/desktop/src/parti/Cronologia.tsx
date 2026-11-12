@@ -31,7 +31,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { data, dataOra, durata, nomeArtista, numero } from "../formato";
 import { ipc, type StatoRiproduzione, type VoceCronologia } from "../ipc";
-import { locale, t } from "../lingue";
+import { localeDate, t } from "../lingue";
 import { Icona } from "./Icone";
 import { fasciaQuando } from "./quandoCronologia";
 import { useDati } from "../dati";
@@ -50,7 +50,7 @@ const PAGINA = 50;
 function quando(ms: number): string {
   const fascia = fasciaQuando(ms, Date.now());
   const ora = () =>
-    new Date(ms).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
+    new Date(ms).toLocaleTimeString(localeDate(), { hour: "2-digit", minute: "2-digit" });
   switch (fascia.tipo) {
     case "futuro":
       return data(ms);
@@ -63,9 +63,9 @@ function quando(ms: number): string {
     case "ieri":
       return t("history.yesterday", { ora: ora() });
     case "settimana":
-      return new Date(ms).toLocaleDateString(locale(), { weekday: "short" });
+      return new Date(ms).toLocaleDateString(localeDate(), { weekday: "short" });
     case "data":
-      return new Date(ms).toLocaleDateString(locale(), {
+      return new Date(ms).toLocaleDateString(localeDate(), {
         day: "numeric",
         month: "short",
         ...(fascia.anno ? { year: "2-digit" } : {}),

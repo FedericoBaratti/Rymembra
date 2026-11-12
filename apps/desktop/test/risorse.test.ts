@@ -65,3 +65,17 @@ test("rinominare una famiglia: un nome non ammesso o già preso si dice", () => 
   assert.equal(problemaNomeFamiglia("Inter", "Inter", presi), null, "il nome di adesso non è un problema");
   assert.equal(problemaNomeFamiglia("Inter Display", "Inter", presi), null);
 });
+
+test("i file che il documento nomina e il pacchetto non ha sono un problema (R14-5)", async () => {
+  // La validazione guarda il testo e non il disco: un livello `image` su un
+  // file tolto diceva «valida», e lo si scopriva solo installando.
+  const { risorseMancanti } = await import("../src/studio/risorse");
+  const voci = [
+    { nome: "skin.json", byte: 1, genere: "manifest" as const },
+    { nome: "assets/trama.png", byte: 1, genere: "risorsa" as const },
+  ];
+  assert.deepEqual(risorseMancanti(["trama.png", "marmo.png", "marmo.png"], voci), ["marmo.png"]);
+  // L'elenco dei file non è ancora arrivato: niente da dire, invece di un
+  // «rotta» che lampeggia all'apertura.
+  assert.deepEqual(risorseMancanti(["trama.png"], []), []);
+});

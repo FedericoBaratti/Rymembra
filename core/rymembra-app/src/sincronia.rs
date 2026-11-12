@@ -93,9 +93,10 @@ use crate::settings::{
 /// conto suo, non si uniscono. `origine:k` di qua e `origine:k` di là sono per
 /// la fusione lo stesso elemento, e dove i brani in quella posizione
 /// differiscono [`Sequenza`] ne tiene uno solo (la coppia minore): `[x, y]` e
-/// `[z, w]` diventano due brani, non quattro. Vedi la prova
-/// `le_playlist_si_fondono_invece_di_sostituirsi` in `profilo/prove.rs`, e
-/// quella qui in fondo che fissa il caso.
+/// `[z, w]` diventano due brani, non quattro. Vale fra due dispositivi che si
+/// sincronizzano, e la prova qui in fondo fissa il caso; il profilo non ci
+/// passa, perché dentro una playlist che c'è già accoda soltanto (vedi
+/// `profilo::dono_nelle_playlist`).
 ///
 /// Vale **solo per il primo battesimo** ([`Sequenza::dalla_lista`]). Ciò che si
 /// aggiunge o si sposta dopo porta il nome del dispositivo: vedi
@@ -337,13 +338,7 @@ fn allinea_sequenze(
     dispositivo: &str,
     adesso_ms: i64,
 ) -> Result<usize, AppError> {
-    // Un nome vuoto farebbe identità che `Identita::da_testo` non rilegge, e il
-    // brano aggiunto sparirebbe alla lettura dopo: meglio il nome comune.
-    let dispositivo = if dispositivo.trim().is_empty() {
-        ORIGINE
-    } else {
-        dispositivo
-    };
+    let dispositivo = nome_delle_aggiunte(dispositivo);
     let membri = membri_per_playlist(tx)?;
     let mut sequenze = sequenze_salvate(tx)?;
 
@@ -385,6 +380,19 @@ fn allinea_sequenze(
     Ok(rifatte)
 }
 
+/// Il nome con cui si battezzano gli elementi che si aggiungono qui a una
+/// sequenza già esistente: quello del dispositivo.
+///
+/// Un nome vuoto farebbe identità che `Identita::da_testo` non rilegge, e il
+/// brano aggiunto sparirebbe alla lettura dopo: meglio il nome comune.
+pub(crate) fn nome_delle_aggiunte(dispositivo: &str) -> &str {
+    if dispositivo.trim().is_empty() {
+        ORIGINE
+    } else {
+        dispositivo
+    }
+}
+
 /// Le cartelle sorvegliate come mappa datata, in pari con l'elenco.
 ///
 /// L'elenco è la verità su questo computer; la mappa è ciò che di quella verità
@@ -394,9 +402,23 @@ fn allinea_sequenze(
 /// avvio nessuna delle cartelle già configurate è una *decisione* presa adesso, e
 /// datarle adesso le farebbe vincere su una rimozione fatta ieri sul portatile.
 fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppError> {
+    allinea_mappa_delle_cartelle(tx, CHIAVE_CARTELLE_SINCRONIA, adesso_ms)
+}
+
+/// Il corpo di [`allinea_cartelle`], per una mappa qualunque.
+///
+/// Il backup ne tiene una sua (`backup::allinea`) con la stessa regola: se
+/// scrivesse in quella della sincronia anche a sincronia spenta, le cartelle
+/// tolte prima di accenderla arriverebbero agli altri dispositivi come
+/// decisioni datate, e li spegnerebbero.
+pub(crate) fn allinea_mappa_delle_cartelle(
+    tx: &Transaction<'_>,
+    chiave_mappa: &str,
+    adesso_ms: i64,
+) -> Result<usize, AppError> {
     let elenco: Vec<String> = settings::read_json(tx, CHIAVE_CARTELLE)?.unwrap_or_default();
     let mut mappa: BTreeMap<String, Interruttore> =
-        settings::read_json(tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
+        settings::read_json(tx, chiave_mappa)?.unwrap_or_default();
     let prima_volta = mappa.is_empty();
     let presenti: BTreeSet<&str> = elenco.iter().map(String::as_str).collect();
 
@@ -437,7 +459,7 @@ fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppEr
     }
 
     if cambiate > 0 {
-        settings::write_json(tx, CHIAVE_CARTELLE_SINCRONIA, &mappa)?;
+        settings::write_json(tx, chiave_mappa, &mappa)?;
     }
     Ok(cambiate)
 }
@@ -1563,6 +1585,28 @@ pub fn fidati(
     Ok(())
 }
 
+/// Dà un nome a un dispositivo, e non tocca nient'altro.
+///
+/// Non è [`fidati`]: dare un nome riconoscibile a un dispositivo «da
+/// accettare» prima di decidere non è decidere, e passare da lì lo rendeva
+/// fidato — da quel momento i suoi documenti valevano (R13-3). Un nome vuoto
+/// toglie il nome, e si torna all'identificativo. Un dispositivo che non c'è
+/// non nasce: restituisce `false`.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+pub fn rinomina(connection: &Connection, id: &str, nome: Option<&str>) -> Result<bool, AppError> {
+    let nome = nome.map(str::trim).filter(|nome| !nome.is_empty());
+    let toccate = connection
+        .execute(
+            "UPDATE sync_dispositivi SET nome = ?2 WHERE id = ?1",
+            rusqlite::params![id, nome],
+        )
+        .map_err(|err| db_error("nome di un dispositivo", &err))?;
+    Ok(toccate > 0)
+}
+
 /// Dimentica un dispositivo.
 ///
 /// Non tocca gli ascolti che ha già portato: erano ascolti veri, e cancellarli
@@ -2298,6 +2342,38 @@ mod prove {
     }
 
     #[test]
+    fn rinominare_non_rende_fidato() {
+        // R13-3: «Rinomina» su un dispositivo «da accettare» passava dallo
+        // stesso comando di «Accetta», e da lì i suoi documenti valevano. Dare
+        // un nome riconoscibile prima di decidere non è decidere.
+        let connection = libreria();
+        intravisti(&connection, &["sconosciuto".to_owned()], 1_000).expect("intravisto");
+        assert!(rinomina(&connection, "sconosciuto", Some("Il vecchio telefono")).expect("nome"));
+        let elenco = dispositivi(&connection).expect("dispositivi");
+        let lui = elenco
+            .iter()
+            .find(|d| d.id == "sconosciuto")
+            .expect("il dispositivo");
+        assert_eq!(lui.nome.as_deref(), Some("Il vecchio telefono"));
+        assert!(!lui.fidato, "rinominare non è accettare");
+
+        // E a uno fidato non toglie la fiducia; un nome vuoto torna all'id.
+        fidati(&connection, "sconosciuto", None, None).expect("fiducia");
+        assert!(rinomina(&connection, "sconosciuto", Some("  ")).expect("nome"));
+        let elenco = dispositivi(&connection).expect("dispositivi");
+        let lui = elenco
+            .iter()
+            .find(|d| d.id == "sconosciuto")
+            .expect("il dispositivo");
+        assert!(lui.fidato);
+        assert_eq!(lui.nome, None);
+        assert!(
+            !rinomina(&connection, "mai-visto", Some("x")).expect("niente"),
+            "un dispositivo che non c'è non nasce dandogli un nome"
+        );
+    }
+
+    #[test]
     fn lo_specchio_del_cloud_non_viaggia_con_la_sincronia() {
         // Una cache di questo PC: l'altro dispositivo rielenca da sé.
         let mut connection = libreria();
@@ -2420,6 +2496,12 @@ mod prove {
             r"\\?\UNC\192.0.2.1\m",
             r"\\192.0.2.1@SSL@443\DavWWWRoot\m",
             r"\\nas\musica",
+            // R02-1: Win32 tratta come UNC qualunque coppia di separatori in
+            // testa, e `\??\UNC\` è lo stesso share nello spazio dei nomi NT.
+            r"/\192.0.2.1\m",
+            r"\/192.0.2.1/m",
+            r"\??\UNC\192.0.2.1\m",
+            r"  \\192.0.2.1\m",
         ];
         let locali = [
             "D:\\Altra",

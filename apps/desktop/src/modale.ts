@@ -57,6 +57,14 @@ export function modaleAperto(): boolean {
 }
 
 /**
+ * Quanti modali sono aperti. Per chi deve togliere dal conto uno che sa
+ * aperto lui: il primo avvio, per i file trascinati (`trascinati.ts`).
+ */
+export function modaliAperti(): number {
+  return aperti;
+}
+
+/**
  * Chiama `ascolta` a ogni modale che si apre, finché non si chiama la
  * funzione restituita.
  *
@@ -229,6 +237,47 @@ export function fuocoDopoTab<T>(
   return null;
 }
 
+// ── la × della finestra ────────────────────────────────────────────────────
+
+/** Quel che la × deve sapere della finestrella in cima. */
+export interface CimaPerLaX {
+  /**
+   * Sta davanti alla finestra e chiede qualcosa: una conferma, un consenso,
+   * un nome da dare, ma anche un editor con il suo «Annulla» o un pannello.
+   * Lo sono tutte le finestrelle tranne il primo avvio, che è una schermata
+   * d'ingresso e non una domanda (`useFinestrella`, secondo argomento).
+   */
+  domanda: boolean;
+  /** Si può chiudere adesso: spento mentre la domanda sta scrivendo. */
+  chiudibile: boolean;
+}
+
+/**
+ * Cosa fa la × della finestra, guardando quel che sta in cima.
+ *
+ * # Prima la domanda, poi la finestra
+ *
+ * Con una domanda aperta la × la chiude, e vale come «no»: è quel che fa
+ * Escape, ed è la sola lettura che non perde niente. Chi voleva chiudere la
+ * finestra la richiude un istante dopo; chi stava ancora leggendo «X vuole
+ * collegarsi» non si ritrova la finestra sparita nel vassoio con la domanda
+ * ancora in sospeso dall'altra parte; chi stava sincronizzando un testo si
+ * sente chiedere se buttare il lavoro, come con Escape, invece di perderlo
+ * con la finestra.
+ *
+ * In tutti gli altri casi la finestra si chiude come sempre, cioè come Alt+F4:
+ * senza niente in cima, sopra una domanda che sta scrivendo (chiuderla a metà
+ * lascerebbe il lavoro senza nessuno che ne dica l'esito, e il nucleo decide
+ * lui fra vassoio e uscita), e sopra le finestrelle che non sono domande — il
+ * primo avvio, dove una × che salta la schermata invece di chiudere il
+ * programma toglierebbe a chi apre per la prima volta la sua strada d'ingresso.
+ * Chiudere la finestra resta l'unico comando che funziona sempre: vedi
+ * `.controlli-finestra` in `stile.css`.
+ */
+export function cosaFaLaX(cima: CimaPerLaX | null): "rispondiNo" | "chiudiLaFinestra" {
+  return cima !== null && cima.domanda && cima.chiudibile ? "rispondiNo" : "chiudiLaFinestra";
+}
+
 // ── chi diventa inerte ─────────────────────────────────────────────────────
 
 /** Quel che serve di un nodo per salire l'albero: il genitore e i figli. */
@@ -236,7 +285,37 @@ export interface NodoDiAlbero {
   readonly tagName: string;
   readonly parentElement: NodoDiAlbero | null;
   readonly children: ArrayLike<NodoDiAlbero>;
+  /** Per i marchi: vedi `SEMPRE_VIVO` e `ANNUNCIO`. */
+  hasAttribute(nome: string): boolean;
+  /**
+   * Già inerte. Lo porta `HTMLElement`; per gli altri nodi manca, e vale
+   * «no». Vedi «Un velo già sepolto».
+   */
+  readonly inert?: boolean;
 }
+
+/**
+ * Il marchio di chi non diventa mai inerte: i tre comandi della finestra.
+ *
+ * Stanno fuori dall'applicazione apposta (`main.tsx`), cioè proprio dove la
+ * salita li trovava, e una finestrella aperta li spegneva: restavano disegnati
+ * sopra il velo, ma un nodo inerte è trasparente al puntatore, e il clic sulla
+ * × cadeva sul velo sotto — che chiudeva la domanda invece della finestra, o
+ * non faceva niente.
+ */
+export const SEMPRE_VIVO = "data-sempre-vivo";
+
+/**
+ * Il marchio delle regioni d'annuncio (`parti/Annuncio.tsx`,
+ * `AnnuncioScansione`).
+ *
+ * Sono solo testo, senza un fuoco né un clic: lasciarle vive non apre
+ * nessuna strada dietro il velo, e spegnerle voleva dire tacere le notizie
+ * che arrivano mentre una finestrella è aperta — la fine di una scansione,
+ * «il suono si è spostato». E quando l'inerzia se ne andava il testo era già
+ * lì, quindi la regione non cambiava e taceva anche dopo.
+ */
+export const ANNUNCIO = "data-annuncio";
 
 /**
  * I nodi che non si disegnano: renderli inerti non toglie niente a nessuno.
@@ -264,14 +343,40 @@ const NON_DISEGNATI: ReadonlySet<string> = new Set([
  * Cartelle — quindi «il resto della finestra» non è un nodo solo. È, a ogni
  * gradino fra il velo e la cima del documento, ogni fratello del gradino:
  * tutto quel che non è un antenato del velo e non sta sotto di lui.
+ *
+ * Tranne chi porta uno dei due marchi (`SEMPRE_VIVO`, `ANNUNCIO`), e chi è
+ * in `accanto`: il foglio del menù del telefono ha il velo e il pannello
+ * fratelli, e il pannello è proprio quel che deve restare vivo.
+ *
+ * # Un velo già sepolto non spegne niente
+ *
+ * Se un antenato del velo è già inerte — e chi chiama ha appena tolto i suoi
+ * `inert`, quindi è di qualcun altro: la finestra sotto lo Studio — la
+ * finestrella non si vede e non prende il fuoco. Spegnere anche il resto
+ * voleva dire congelare la finestra intera, Studio compreso, per una domanda
+ * che nessuno poteva leggere. Le domande che arrivano da sole stanno fuori da
+ * quella finestra, sopra lo Studio (`.strato-domande` in `App.tsx`); questo è
+ * il ripiego per le altre.
  */
-export function daRendereInerti<N extends NodoDiAlbero>(velo: N): N[] {
+export function daRendereInerti<N extends NodoDiAlbero>(
+  velo: N,
+  accanto: readonly N[] = [],
+): N[] {
+  for (let su = velo.parentElement; su !== null; su = su.parentElement) {
+    if (su.inert === true) return [];
+  }
   const inerti: N[] = [];
   let gradino: NodoDiAlbero = velo;
   let genitore = gradino.parentElement;
   while (genitore !== null) {
     for (const fratello of Array.from(genitore.children)) {
-      if (fratello !== gradino && !NON_DISEGNATI.has(fratello.tagName)) {
+      if (
+        fratello !== gradino &&
+        !NON_DISEGNATI.has(fratello.tagName) &&
+        !fratello.hasAttribute(SEMPRE_VIVO) &&
+        !fratello.hasAttribute(ANNUNCIO) &&
+        !(accanto as readonly NodoDiAlbero[]).includes(fratello)
+      ) {
         // Lo stesso tipo del velo: sono nodi dello stesso albero.
         inerti.push(fratello as N);
       }

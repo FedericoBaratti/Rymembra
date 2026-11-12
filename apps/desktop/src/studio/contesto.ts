@@ -56,6 +56,13 @@ export interface AzioniDelloStudio {
   scriviTesto: (testo: string, etichetta: string, gruppo?: string) => void;
   /** Rilegge i file del pacchetto della bozza. */
   rileggiFile: () => void;
+  /**
+   * Si fa trovare da chi salva: `svuota` scrive nel negozio — o mette da
+   * parte, se non si può applicare — quel che l'editor tiene ancora in mano.
+   * Lo chiamano «Esci», Ctrl+S, «Prova», «Salva e usa» ed «Esporta», dentro un
+   * `flushSync`, prima di leggere il documento. Restituisce chi lo toglie.
+   */
+  registraSospeso: (svuota: () => void) => () => void;
   onErrore: (e: unknown) => void;
 }
 

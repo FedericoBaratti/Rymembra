@@ -93,6 +93,7 @@ export type Comando =
   | "ingrandisci"
   | "rimpicciolisci"
   | "zoomNormale"
+  | "annulla"
   | "importazioni"
   | "incollaLink";
 
@@ -123,6 +124,7 @@ const CHIAVI: readonly Comando[] = [
   "ingrandisci",
   "rimpicciolisci",
   "zoomNormale",
+  "annulla",
   "importazioni",
   "incollaLink",
 ];
@@ -192,6 +194,11 @@ export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
   // contati non sa quante volte premere. È la terza scorciatoia di ogni
   // programma che ha le prime due, e costa una riga.
   zoomNormale: ["Ctrl+0"],
+  // L'ultimo «Annulla» ancora a schermo: la coda sostituita o svuotata, la
+  // playlist eliminata (D-40, vedi `annullaATempo.ts`). `Ctrl+Z` perché è il
+  // tasto che ogni programma usa per questo, e il riquadro sta spesso lontano
+  // dal fuoco. Mai dentro un campo: lì `Ctrl+Z` annulla quel che si è scritto.
+  annulla: ["Ctrl+z"],
   // `Ctrl` e non `Meta`: `tastoDi` scarta il tasto Windows apposta, quindi qui
   // non esiste una variante per Mac da tenere allineata. Le associazioni assenti
   // in `ui.shortcuts` cadono su queste, quindi nessuna migrazione: chi ha già
@@ -258,6 +265,7 @@ export function serieMutabile(): Associazioni {
     ingrandisci: [...DI_SERIE.ingrandisci],
     rimpicciolisci: [...DI_SERIE.rimpicciolisci],
     zoomNormale: [...DI_SERIE.zoomNormale],
+    annulla: [...DI_SERIE.annulla],
     importazioni: [...DI_SERIE.importazioni],
     incollaLink: [...DI_SERIE.incollaLink],
   };
@@ -355,6 +363,8 @@ export type Azioni = {
   importazioni: () => void;
   /** La finestrella che legge un link, da qualunque pagina. */
   incollaLink: () => void;
+  /** L'ultimo «Annulla» ancora a schermo, se c'è. */
+  annulla: () => void;
   /** La durata del brano, per non uscirne. */
   durataMs: number;
 };
@@ -519,6 +529,9 @@ function esegui(comando: Comando, azioni: Azioni): void {
     case "incollaLink":
       azioni.incollaLink();
       break;
+    case "annulla":
+      azioni.annulla();
+      break;
   }
 }
 
@@ -654,6 +667,9 @@ export function useScorciatoie(
       // Una freccia, anche con `Ctrl`, resta al campo in cui si scrive: lì
       // `Ctrl+←` è la parola prima, e non il brano prima.
       if (TASTI_CURSORE.has(e.key) && siStaScrivendo(e.target)) return;
+      // E l'«Annulla» del campo resta al campo: `Ctrl+Z` mentre si scrive
+      // toglie l'ultima cosa scritta, non rimette una coda.
+      if (comando === "annulla" && siStaScrivendo(e.target)) return;
 
       // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive, e con esso
       // i tasti funzione, che nessuna parola contiene; un tasto nudo no. Vedi il

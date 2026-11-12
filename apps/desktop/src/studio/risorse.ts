@@ -16,7 +16,7 @@
  *
  * Pure, per `node --test` (`test/risorse.test.ts`).
  */
-import type { OperazioneIa } from "../ipc";
+import type { OperazioneIa, Problema, VoceFile } from "../ipc";
 import { applicaOperazioni, leggi } from "./patch";
 
 const oggetto = (v: unknown): Record<string, unknown> =>
@@ -65,6 +65,44 @@ export function senzaCaratteriDi(testo: string, nome: string): string {
 }
 
 /** Gli usi in una riga, per la domanda: i primi `quanti`, poi quanti altri. */
+/**
+ * I file che il documento nomina e il pacchetto della bozza non ha (R14-5).
+ *
+ * La validazione è pura sul testo — per poter ricordare le risposte — e non
+ * guarda il disco: un livello `image` su un file tolto diceva «valida», la
+ * tela mostrava un fondo vuoto, e lo si scopriva solo a «Salva e usa». Il
+ * confronto si fa qui, con l'elenco che la finestra ha già. Un elenco senza il
+ * manifest non è ancora arrivato: niente da dire, invece di un «rotta» che
+ * lampeggia all'apertura.
+ */
+export function risorseMancanti(nominate: readonly string[], voci: readonly VoceFile[]): string[] {
+  if (!voci.some((v) => v.genere === "manifest")) return [];
+  const ci = new Set(voci.filter((v) => v.genere === "risorsa").map((v) => v.nome.replace(/^assets\//, "")));
+  return [...new Set(nominate)].filter((nome) => !ci.has(nome));
+}
+
+/**
+ * Un file mancante come problema, per il giro dell'assistente: la frase
+ * italiana per il modello, come quelle del validatore, e il motivo per chi
+ * legge.
+ */
+export function problemaRisorsa(nome: string): Problema {
+  return {
+    code: "skin.assetMissing",
+    path: "",
+    message: `il documento nomina il file «${nome}», e il pacchetto della bozza non lo contiene: aggiungilo fra i file, o togli chi lo nomina`,
+    motivo: {
+      chiave: "studio3.problems.missingFile",
+      testo: `il documento nomina il file «${nome}», e il pacchetto della bozza non lo contiene`,
+      valori: { nome },
+      forse: [],
+    },
+    forse: [],
+    riga: null,
+    colonna: null,
+  };
+}
+
 export function elencoBreve(usi: readonly string[], quanti = 8): string {
   const visti = usi.slice(0, quanti).join(", ");
   return usi.length > quanti ? `${visti}, … (+${usi.length - quanti})` : visti;

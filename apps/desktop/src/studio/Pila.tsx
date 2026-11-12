@@ -392,9 +392,12 @@ export function Livelli({
   titolo,
   motivi = {},
   immagini = [],
+  massimo,
   onCambia,
 }: {
   livelli: readonly Livello[];
+  /** Quanti livelli ammette il formato qui: vedi `LIVELLI_SFONDO_MASSIMI`. */
+  massimo: number;
   effetti: readonly EffettoRegistro[];
   tokens: readonly TokenRegistro[];
   tavolozza: Readonly<Record<string, string>>;
@@ -598,6 +601,9 @@ export function Livelli({
           type="button"
           className="aggiungi-livello"
           aria-expanded={apertoElenco}
+          // Il tetto del formato: oltre, il documento non si valida.
+          disabled={!puoAggiungere(livelli.length, massimo)}
+          title={puoAggiungere(livelli.length, massimo) ? undefined : t("studio.layers.maxLayers", { n: massimo })}
           onClick={() => setApertoElenco((prima) => !prima)}
         >
           <Icona nome={apertoElenco ? "i-chev-u" : "i-plus"} dim={13} />

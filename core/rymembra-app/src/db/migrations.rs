@@ -289,6 +289,13 @@ pub const MIGRATIONS: &[Migration] = &[
         // Una tabella nuova, senza chiavi esterne: non tocca niente.
         ricostruisce: false,
     },
+    Migration {
+        version: 41,
+        name: "indici-musicbrainz",
+        sql: include_str!("schema/041_indici_musicbrainz.sql"),
+        // Due indici nuovi e basta: nessuna tabella si rifà.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

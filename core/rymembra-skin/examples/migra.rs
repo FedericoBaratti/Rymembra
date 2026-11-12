@@ -32,7 +32,7 @@ fn main() -> ExitCode {
         }
         Err(problemi) => {
             for guasto in problemi {
-                eprintln!("{}: {}", guasto.path, guasto.message);
+                eprintln!("{}: {}", guasto.path, guasto.message());
             }
             ExitCode::FAILURE
         }

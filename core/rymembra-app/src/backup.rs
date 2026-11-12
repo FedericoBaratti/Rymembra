@@ -30,7 +30,7 @@
 //!   ripristino su un computer nuovo che li riportasse farebbe fidare quel
 //!   computer di PC a cui nessuno, di là, ha confermato un codice. Non c'è una
 //!   riga che li escluda, ed è la garanzia: [`Contenuto`] ha una forma fissa,
-//!   delle impostazioni porta solo le cartelle e la skin, e [`interpreta`]
+//!   delle impostazioni porta solo le cartelle, e [`interpreta`]
 //!   butta via quel che non conosce. Una prova in fondo lo tiene vero.
 //!
 //! Scritto qui perché la tentazione di «aggiungerci anche» è forte e arriva
@@ -146,6 +146,12 @@ pub struct PlaylistSalvata {
 /// più rapido di far perdere fiducia in un backup.
 ///
 /// Chiave → millisecondo della cancellazione.
+///
+/// Le cartelle sorvegliate, le skin e le bozze hanno le loro dalla decisione
+/// 16: prima il backup le univa e basta, e una cartella tolta o una skin
+/// disinstallata restavano lassù per sempre — l'altro dispositivo, o la copia
+/// su Drive, le rimettevano nell'unione — e un ripristino le riproponeva.
+/// Un file che non le porta (di una versione di prima) si legge come senza.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lapidi {
@@ -155,6 +161,15 @@ pub struct Lapidi {
     /// Le playlist cancellate.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playlists: BTreeMap<String, i64>,
+    /// Le cartelle sorvegliate tolte: percorso → quando.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roots: BTreeMap<String, i64>,
+    /// Le skin disinstallate: identificativo → quando.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skins: BTreeMap<String, i64>,
+    /// Le bozze dello Studio tolte: identificativo → quando.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drafts: BTreeMap<String, i64>,
 }
 
 /// Quello che il file dice, senza la busta.
@@ -176,12 +191,24 @@ pub struct Contenuto {
     /// Le cancellazioni.
     #[serde(default)]
     pub tombstones: Lapidi,
-    /// Le cartelle sorvegliate, nell'ordine in cui le ha messe chi le ha scelte.
+    /// Le cartelle sorvegliate, in ordine di percorso.
+    ///
+    /// In ordine e non nell'ordine di chi le ha scelte: la fusione le metteva
+    /// nell'ordine di chi fondeva, e due PC con cartelle diverse scrivevano due
+    /// JSON diversi per la stessa unione — cioè si riscrivevano il file a vicenda
+    /// a ogni passata (R08-2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
-    /// La skin attiva.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_skin: Option<String>,
+    /// Quando ogni cartella è stata accesa: percorso → millisecondo. Una che
+    /// manca vale zero, «da sempre»: è quel che si legge da un file di prima.
+    /// Serve a decidere contro una lapide: vedi [`Lapidi::roots`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roots_at: BTreeMap<String, i64>,
+    // La skin attiva non c'è più: resta di ciascun dispositivo e non viaggia
+    // (decisione 17). Fra un fisso e un portatile con due skin diverse — il caso
+    // normale — vinceva quella di chi fondeva, e i due si riscrivevano il file a
+    // ogni passata; un ripristino su un terzo riceveva quella di chi aveva
+    // scritto per ultimo. Un file di prima che la porta si legge senza.
     /// Le skin installate: identificativo → impronta del pacchetto.
     ///
     /// I byte stanno in un file a parte su Drive — un `.ryskin` pesa fino a
@@ -190,9 +217,18 @@ pub struct Contenuto {
     /// scaricare.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub skins: BTreeMap<String, String>,
+    /// Quando è stato modificato il pacchetto di ogni skin: identificativo →
+    /// millisecondo. Fra due versioni della stessa skin vince la più recente
+    /// (decisione 15): vedi [`fondi`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skins_at: BTreeMap<String, i64>,
     /// Le bozze dello Studio: identificativo → impronta del `skin.json`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<String, String>,
+    /// Quando è stato modificato il manifest di ogni bozza, come
+    /// [`Contenuto::skins_at`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drafts_at: BTreeMap<String, i64>,
 }
 
 /// Il file intero: la busta e il contenuto.
@@ -247,11 +283,55 @@ pub struct StatoLocale {
     pub playlists: Vec<PlaylistState>,
     /// Le cartelle sorvegliate.
     pub roots: Vec<String>,
+    /// Quando ogni cartella è stata accesa, dalla mappa datata delle cartelle
+    /// (vedi [`allinea`]). Una che manca vale zero.
+    pub roots_at: BTreeMap<String, i64>,
     /// La skin attiva, se ne è stata scelta una.
+    ///
+    /// Di questo dispositivo: nel backup non va (decisione 17).
     pub active_skin: Option<String>,
-    /// Le cancellazioni registrate qui.
+    /// Le cancellazioni registrate qui, cartelle tolte comprese. Quelle di
+    /// skin e bozze le vede chi guarda il disco: vedi [`PacchettiVisti`].
     pub tombstones: Lapidi,
+    /// Gli host di rete che questo computer usa già, dalle sue cartelle
+    /// sorvegliate e da quella dei download: vedi [`sondabile`].
+    pub host_noti: Vec<String>,
+    /// Le skin e le bozze che c'erano qui alla passata di prima.
+    pub pacchetti_visti: PacchettiVisti,
 }
+
+/// Le skin e le bozze che c'erano su questo dispositivo all'ultima passata di
+/// backup riuscita.
+///
+/// È l'unico modo di sapere che una skin è stata **disinstallata** qui, e non
+/// solo che qui non c'è: la cartella delle skin dice cosa c'è adesso, non cosa
+/// c'era. Quella che c'era e non c'è più diventa una lapide nel backup
+/// (decisione 16). Lo scrive chi ha fatto la passata, dopo che è riuscita:
+/// vedi [`ricorda_pacchetti`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PacchettiVisti {
+    /// Le skin, presenti anche se il loro archivio non si apre: una skin rotta
+    /// non è una skin tolta, e la sua copia buona su Drive deve restare.
+    #[serde(default)]
+    pub skins: BTreeSet<String>,
+    /// Le bozze dello Studio.
+    #[serde(default)]
+    pub drafts: BTreeSet<String>,
+}
+
+/// Dove si ricorda [`PacchettiVisti`]. È di questo dispositivo: il profilo non
+/// la porta (non è nel suo catalogo).
+const CHIAVE_PACCHETTI_VISTI: &str = "backup.pacchetti";
+
+/// La mappa datata delle cartelle sorvegliate del backup: percorso → accesa o
+/// spenta, e quando.
+///
+/// La stessa forma di quella della sincronia, ma un'altra chiave: tenuta da
+/// [`allinea`] anche a sincronia spenta, quella della sincronia avrebbe
+/// raccontato agli altri dispositivi, il giorno in cui la si accende, le
+/// cartelle tolte prima come decisioni datate. Di questo dispositivo, come
+/// [`CHIAVE_PACCHETTI_VISTI`].
+const CHIAVE_CARTELLE_DEL_BACKUP: &str = "backup.cartelle";
 
 /// Il backup, tradotto nei tipi del dominio e già ripulito dalle lapidi.
 ///
@@ -269,7 +349,8 @@ pub struct DalBackup {
     pub skins: Vec<String>,
     /// Le bozze dello Studio del backup, ordinate.
     pub drafts: Vec<String>,
-    /// La skin attiva nel backup.
+    /// La skin attiva nel backup: sempre `None`, perché la skin attiva non
+    /// viaggia (decisione 17). Il campo resta per chi legge già questa forma.
     pub active_skin: Option<String>,
 }
 
@@ -390,14 +471,18 @@ pub fn interpreta(raw: &[u8]) -> Result<Salvataggio, AppError> {
             tombstones: Lapidi {
                 tracks: numeri(contenuto.pointer("/tombstones/tracks")),
                 playlists: numeri(contenuto.pointer("/tombstones/playlists")),
+                roots: numeri(contenuto.pointer("/tombstones/roots")),
+                skins: numeri(contenuto.pointer("/tombstones/skins")),
+                drafts: numeri(contenuto.pointer("/tombstones/drafts")),
             },
             roots: testi(contenuto.get("roots")),
-            active_skin: contenuto
-                .get("activeSkin")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
+            roots_at: numeri(contenuto.get("rootsAt")),
+            // `activeSkin` di un file di prima non si legge: vedi la nota su
+            // [`Contenuto`].
             skins: stringhe(contenuto.get("skins")),
+            skins_at: numeri(contenuto.get("skinsAt")),
             drafts: stringhe(contenuto.get("drafts")),
+            drafts_at: numeri(contenuto.get("draftsAt")),
         },
     })
 }
@@ -477,13 +562,126 @@ fn testi(valore: Option<&serde_json::Value>) -> Vec<String> {
 ///
 /// `db.queryFailed` se una lettura fallisce.
 pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
+    let roots: Vec<String> = settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
+    // La mappa datata delle cartelle del backup: dice quando ognuna è stata
+    // accesa e quando una è stata tolta. Una tolta che è di nuovo nell'elenco
+    // (la mappa non ancora allineata) non è una lapide.
+    let mappa: BTreeMap<String, rymembra_sync::Interruttore> =
+        settings::read_json(connection, CHIAVE_CARTELLE_DEL_BACKUP)?.unwrap_or_default();
+    let roots_at = roots
+        .iter()
+        .filter_map(|radice| {
+            mappa
+                .get(radice)
+                .filter(|stato| stato.on && stato.at > 0)
+                .map(|stato| (radice.clone(), stato.at))
+        })
+        .collect();
+    let mut tombstones = leggi_lapidi(connection)?;
+    tombstones.roots = mappa
+        .iter()
+        .filter(|(radice, stato)| !stato.on && !roots.contains(radice))
+        .map(|(radice, stato)| (radice.clone(), stato.at))
+        .collect();
     Ok(StatoLocale {
         tracks: leggi_brani(connection)?,
         playlists: leggi_playlist(connection)?,
-        roots: settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default(),
+        roots,
+        roots_at,
         active_skin: settings::read(connection, CHIAVE_SKIN)?,
-        tombstones: leggi_lapidi(connection)?,
+        tombstones,
+        host_noti: crate::profilo::host_di_questo_pc(connection)?,
+        pacchetti_visti: settings::read_json(connection, CHIAVE_PACCHETTI_VISTI)?
+            .unwrap_or_default(),
     })
+}
+
+/// Porta in pari la mappa datata delle cartelle sorvegliate con l'elenco, prima
+/// di leggere lo [`stato_locale`] per una passata o un ripristino.
+///
+/// È la stessa scrittura pigra della sincronia (vedi
+/// [`crate::sincronia::allinea`]), per le sole cartelle e su una mappa **sua**
+/// ([`CHIAVE_CARTELLE_DEL_BACKUP`]): una cartella tolta dall'elenco diventa
+/// «spenta adesso», ed è la lapide che il backup porta (decisione 16). Su un
+/// elenco fermo non scrive niente.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la lettura o la scrittura falliscono.
+pub fn allinea(connection: &mut Connection, adesso_ms: i64) -> Result<(), AppError> {
+    let tx = crate::library::transazione_di_scrittura(connection)
+        .map_err(|err| db_error("allineamento delle cartelle", &err))?;
+    crate::sincronia::allinea_mappa_delle_cartelle(&tx, CHIAVE_CARTELLE_DEL_BACKUP, adesso_ms)?;
+    tx.commit()
+        .map_err(|err| db_error("allineamento delle cartelle", &err))
+}
+
+/// Ricorda le skin e le bozze che c'erano a questa passata: vedi
+/// [`PacchettiVisti`]. Da scrivere solo dopo una passata riuscita.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+pub fn ricorda_pacchetti(connection: &Connection, visti: &PacchettiVisti) -> Result<(), AppError> {
+    settings::write_json(connection, CHIAVE_PACCHETTI_VISTI, visti)
+}
+
+/// Una cartella del backup si può chiedere al disco?
+///
+/// Il piano del ripristino guardava ogni cartella del backup, e su Windows
+/// chiedere se esiste `\\host\share` vuol dire aprire una sessione SMB verso
+/// quel nome e presentargli le credenziali di chi ripristina: bastava aprire
+/// «Ripristina» con il backup di un PC di lavoro, da casa o da un bar
+/// (R06-10). Vale la regola della sincronia e del profilo (decisione 20): le
+/// unità con lettera, i percorsi locali e gli host di rete che questo computer
+/// usa già (`host_noti`, letti **prima** di applicare) sì; il resto no. Una
+/// cartella non chiesta resta nel piano, che la mostra: chi conferma la
+/// aggiunge, e da lì il suo host è noto.
+#[must_use]
+pub fn sondabile(percorso: &str, host_noti: &[String]) -> bool {
+    !crate::profilo::verso_un_host_ignoto(percorso, host_noti)
+}
+
+/// Un backup letto da Drive, riportato dentro il dominio dei suoi valori.
+///
+/// Il backup è la terza porta da cui entrano i documenti, accanto alla
+/// sincronia e al profilo, e non passava dalle loro regole
+/// ([`rymembra_sync::dominio`]): un PC con l'orologio avanti salvava decisioni
+/// datate fra anni, ogni ripristino le applicava e `merge_stats` le faceva
+/// vincere su tutto quel che si decideva altrove; la fusione prima di caricare
+/// le rimetteva nel file di tutti (R06-4). Come per il profilo, che si legge e
+/// si applica una volta, un istante oltre `adesso` si **taglia** ad adesso; un
+/// conteggio fuori scala vale zero — «non si sa», che `merge_stats` lascia
+/// vincere al numero di qui — senza portarsi via il cuore e il voto del brano.
+/// Il voto oltre cinque lo taglia già [`BranoSalvato::statistiche`].
+#[must_use]
+pub fn nel_dominio(mut contenuto: Contenuto, adesso_ms: i64) -> Contenuto {
+    let taglia = |at: &mut i64| *at = (*at).min(adesso_ms);
+    for brano in &mut contenuto.tracks {
+        if !rymembra_sync::dominio::ascolti_ammessi(brano.play_count) {
+            brano.play_count = 0;
+        }
+        brano.last_played_at.iter_mut().for_each(taglia);
+        brano.liked_at.iter_mut().for_each(taglia);
+        taglia(&mut brano.stats_updated_at);
+    }
+    for playlist in &mut contenuto.playlists {
+        taglia(&mut playlist.updated_at);
+        taglia(&mut playlist.created_at);
+    }
+    let lapidi = &mut contenuto.tombstones;
+    lapidi
+        .tracks
+        .values_mut()
+        .chain(lapidi.playlists.values_mut())
+        .chain(lapidi.roots.values_mut())
+        .chain(lapidi.skins.values_mut())
+        .chain(lapidi.drafts.values_mut())
+        .chain(contenuto.roots_at.values_mut())
+        .chain(contenuto.skins_at.values_mut())
+        .chain(contenuto.drafts_at.values_mut())
+        .for_each(taglia);
+    contenuto
 }
 
 /// I brani, uno per identità.
@@ -658,10 +856,20 @@ pub fn snapshot(
             .collect(),
         playlists: stato.playlists.iter().map(PlaylistSalvata::nuova).collect(),
         tombstones: stato.tombstones.clone(),
-        roots: stato.roots.clone(),
-        active_skin: stato.active_skin.clone(),
+        // In ordine, com'è nel file fuso: vedi [`Contenuto::roots`].
+        roots: stato
+            .roots
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .cloned()
+            .collect(),
+        roots_at: stato.roots_at.clone(),
         skins,
+        // Le date dei pacchetti le aggiunge chi ha il disco.
+        skins_at: BTreeMap::new(),
         drafts,
+        drafts_at: BTreeMap::new(),
     }
 }
 
@@ -734,6 +942,40 @@ impl PlaylistSalvata {
         }
     }
 
+    /// Questa versione vince su `altra` nella fusione di due backup.
+    ///
+    /// Vince la più recente. A parità di data vinceva il locale, cioè chi
+    /// fonde: un PC con metà della musica caricava la sua copia monca sopra
+    /// quella intera, e il file su Drive cambiava secondo chi aveva caricato
+    /// per ultimo (R06-1). A parità vince la più **completa**, e fra due copie
+    /// ugualmente lunghe una regola qualsiasi purché sia la stessa da tutte e
+    /// due le parti: così la fusione non dipende da chi è «locale».
+    fn precede(&self, altra: &Self) -> bool {
+        type Chiave<'a> = (
+            i64,
+            usize,
+            i64,
+            bool,
+            &'a str,
+            Option<&'a str>,
+            Option<&'a str>,
+            &'a [String],
+        );
+        fn chiave(p: &PlaylistSalvata) -> Chiave<'_> {
+            (
+                p.updated_at,
+                p.members.len(),
+                p.created_at,
+                p.is_smart,
+                &p.name,
+                p.description.as_deref(),
+                p.rules.as_deref(),
+                &p.members,
+            )
+        }
+        chiave(self) > chiave(altra)
+    }
+
     /// La playlist nei tipi del dominio.
     fn stato(&self) -> PlaylistState {
         PlaylistState {
@@ -769,16 +1011,24 @@ impl PlaylistSalvata {
 /// significherebbe soltanto che quel file era stato tolto e poi rimesso, e
 /// buttare via la sua storia d'ascolto sarebbe una perdita senza nessun
 /// guadagno.
+///
+/// # E per le cartelle, le skin e le bozze (decisione 16)
+///
+/// Come per le playlist: una cartella tolta, una skin disinstallata o una bozza
+/// tolta — qui o nel backup — dopo l'ultima volta che è stata accesa o
+/// modificata non si ripropone. La skin attiva del backup non c'è: resta di
+/// ciascun dispositivo (decisione 17).
 #[must_use]
 pub fn dal_salvataggio(contenuto: &Contenuto, lapidi_locali: &Lapidi) -> DalBackup {
-    let sepolta = |chiave: &str, updated_at: i64| {
+    let sepolta = |nel_backup: &BTreeMap<String, i64>,
+                   qui: &BTreeMap<String, i64>,
+                   chiave: &str,
+                   updated_at: i64| {
         let quando = |lapidi: &BTreeMap<String, i64>| lapidi.get(chiave).copied();
-        let piu_recente = quando(&contenuto.tombstones.playlists)
-            .into_iter()
-            .chain(quando(&lapidi_locali.playlists))
-            .max();
+        let piu_recente = quando(nel_backup).into_iter().chain(quando(qui)).max();
         piu_recente.is_some_and(|quando| quando >= updated_at)
     };
+    let data = |date: &BTreeMap<String, i64>, chiave: &str| date.get(chiave).copied().unwrap_or(0);
 
     DalBackup {
         tracks: contenuto
@@ -794,13 +1044,56 @@ pub fn dal_salvataggio(contenuto: &Contenuto, lapidi_locali: &Lapidi) -> DalBack
         playlists: contenuto
             .playlists
             .iter()
-            .filter(|playlist| !sepolta(&playlist.key, playlist.updated_at))
+            .filter(|playlist| {
+                !sepolta(
+                    &contenuto.tombstones.playlists,
+                    &lapidi_locali.playlists,
+                    &playlist.key,
+                    playlist.updated_at,
+                )
+            })
             .map(PlaylistSalvata::stato)
             .collect(),
-        roots: contenuto.roots.clone(),
-        skins: contenuto.skins.keys().cloned().collect(),
-        drafts: contenuto.drafts.keys().cloned().collect(),
-        active_skin: contenuto.active_skin.clone(),
+        roots: contenuto
+            .roots
+            .iter()
+            .filter(|radice| {
+                !sepolta(
+                    &contenuto.tombstones.roots,
+                    &lapidi_locali.roots,
+                    radice,
+                    data(&contenuto.roots_at, radice),
+                )
+            })
+            .cloned()
+            .collect(),
+        skins: contenuto
+            .skins
+            .keys()
+            .filter(|id| {
+                !sepolta(
+                    &contenuto.tombstones.skins,
+                    &lapidi_locali.skins,
+                    id,
+                    data(&contenuto.skins_at, id),
+                )
+            })
+            .cloned()
+            .collect(),
+        drafts: contenuto
+            .drafts
+            .keys()
+            .filter(|id| {
+                !sepolta(
+                    &contenuto.tombstones.drafts,
+                    &lapidi_locali.drafts,
+                    id,
+                    data(&contenuto.drafts_at, id),
+                )
+            })
+            .cloned()
+            .collect(),
+        active_skin: None,
     }
 }
 
@@ -812,9 +1105,10 @@ pub fn dal_salvataggio(contenuto: &Contenuto, lapidi_locali: &Lapidi) -> DalBack
 /// ascolti dell'altro computer bisogna comunque premere «Ripristina», ed è
 /// deliberato.
 ///
-/// A parità di informazione vince `locale`: è lo stesso verso di
-/// [`rymembra_domain::restore::plan_restore`], ed è ciò che rende l'operazione
-/// stabile quando la si ripete.
+/// Fra due versioni della stessa playlist vince la più recente e, a parità di
+/// data, la più completa: vedi [`PlaylistSalvata::precede`]. Il verso non
+/// dipende da chi è `locale`, ed è ciò che rende l'operazione stabile quando
+/// la si ripete da tutte e due le parti.
 #[must_use]
 pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
     let mut brani: BTreeMap<&str, TrackStats> = BTreeMap::new();
@@ -826,35 +1120,21 @@ pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
             .or_insert(stats);
     }
 
-    let mut tombstones = Lapidi::default();
-    for (chiave, quando) in locale
-        .tombstones
-        .tracks
-        .iter()
-        .chain(&remoto.tombstones.tracks)
-    {
-        let voce = tombstones.tracks.entry(chiave.clone()).or_insert(*quando);
-        *voce = (*voce).max(*quando);
-    }
-    for (chiave, quando) in locale
-        .tombstones
-        .playlists
-        .iter()
-        .chain(&remoto.tombstones.playlists)
-    {
-        let voce = tombstones
-            .playlists
-            .entry(chiave.clone())
-            .or_insert(*quando);
-        *voce = (*voce).max(*quando);
-    }
+    let (l, r) = (&locale.tombstones, &remoto.tombstones);
+    let tombstones = Lapidi {
+        tracks: piu_recenti(&l.tracks, &r.tracks),
+        playlists: piu_recenti(&l.playlists, &r.playlists),
+        roots: piu_recenti(&l.roots, &r.roots),
+        skins: piu_recenti(&l.skins, &r.skins),
+        drafts: piu_recenti(&l.drafts, &r.drafts),
+    };
 
     let mut playlists: BTreeMap<&str, &PlaylistSalvata> = BTreeMap::new();
     for playlist in locale.playlists.iter().chain(&remoto.playlists) {
         playlists
             .entry(&playlist.key)
             .and_modify(|gia| {
-                if playlist.updated_at > gia.updated_at {
+                if playlist.precede(gia) {
                     *gia = playlist;
                 }
             })
@@ -865,29 +1145,47 @@ pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
     // due elenchi possono venire da due sistemi operativi diversi, e applicare
     // le regole di questo a un percorso dell'altro darebbe unioni diverse a
     // seconda di chi carica. La deduplica vera la fa `plan_restore`, sul
-    // dispositivo che dovrà davvero usare quei percorsi.
-    let mut viste: BTreeSet<&str> = BTreeSet::new();
-    let roots = locale
-        .roots
-        .iter()
-        .chain(&remoto.roots)
-        .filter(|radice| viste.insert(radice.as_str()))
-        .cloned()
-        .collect();
+    // dispositivo che dovrà davvero usare quei percorsi. Escono in ordine di
+    // percorso — non in quello di chi fonde, che faceva riscrivere il file a
+    // ogni passata fra due PC con cartelle diverse (R08-2) — e una cartella
+    // tolta dopo l'ultima volta che qualcuno l'ha accesa esce (decisione 16).
+    let mut accese: BTreeMap<&str, i64> = BTreeMap::new();
+    for contenuto in [locale, remoto] {
+        for radice in &contenuto.roots {
+            let at = contenuto.roots_at.get(radice).copied().unwrap_or(0);
+            let voce = accese.entry(radice).or_insert(at);
+            *voce = (*voce).max(at);
+        }
+    }
+    let mut roots = Vec::new();
+    let mut roots_at = BTreeMap::new();
+    for (radice, at) in accese {
+        if tombstones
+            .roots
+            .get(radice)
+            .is_some_and(|tolta| *tolta >= at)
+        {
+            continue;
+        }
+        roots.push(radice.to_owned());
+        if at > 0 {
+            roots_at.insert(radice.to_owned(), at);
+        }
+    }
 
-    let mut skins = remoto.skins.clone();
-    skins.extend(
-        locale
-            .skins
-            .iter()
-            .map(|(id, impronta)| (id.clone(), impronta.clone())),
+    // Skin e bozze: per ogni identificativo la versione più recente, da
+    // qualunque parte stia (decisione 15) — prima vinceva il locale, e due PC
+    // con due versioni della stessa skin se la ricaricavano a vicenda a ogni
+    // passata (R08-1). Poi quelle tolte dopo (decisione 16).
+    let (skins, skins_at) = fondi_pacchetti(
+        (&locale.skins, &locale.skins_at),
+        (&remoto.skins, &remoto.skins_at),
+        &tombstones.skins,
     );
-    let mut drafts = remoto.drafts.clone();
-    drafts.extend(
-        locale
-            .drafts
-            .iter()
-            .map(|(id, impronta)| (id.clone(), impronta.clone())),
+    let (drafts, drafts_at) = fondi_pacchetti(
+        (&locale.drafts, &locale.drafts_at),
+        (&remoto.drafts, &remoto.drafts_at),
+        &tombstones.drafts,
     );
 
     Contenuto {
@@ -907,13 +1205,65 @@ pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
             .collect(),
         tombstones,
         roots,
-        active_skin: locale
-            .active_skin
-            .clone()
-            .or_else(|| remoto.active_skin.clone()),
+        roots_at,
         skins,
+        skins_at,
         drafts,
+        drafts_at,
     }
+}
+
+/// Le due mappe di lapidi in una: per ogni chiave la cancellazione più recente.
+fn piu_recenti(
+    una: &BTreeMap<String, i64>,
+    altra: &BTreeMap<String, i64>,
+) -> BTreeMap<String, i64> {
+    let mut tutte = una.clone();
+    for (chiave, quando) in altra {
+        let voce = tutte.entry(chiave.clone()).or_insert(*quando);
+        *voce = (*voce).max(*quando);
+    }
+    tutte
+}
+
+/// Un inventario di pacchetti — skin o bozze — fuso: per ogni identificativo
+/// la versione più recente, meno quelle tolte dopo.
+///
+/// Ogni lato è `(impronte, date)`. Vince la data di modifica più recente e, a
+/// parità, l'impronta maggiore: una regola qualsiasi purché sia la stessa da
+/// tutte e due le parti. Una data che manca vale zero, cioè perde contro
+/// qualunque versione datata e contro qualunque lapide.
+fn fondi_pacchetti(
+    locale: (&BTreeMap<String, String>, &BTreeMap<String, i64>),
+    remoto: (&BTreeMap<String, String>, &BTreeMap<String, i64>),
+    tolti: &BTreeMap<String, i64>,
+) -> (BTreeMap<String, String>, BTreeMap<String, i64>) {
+    let mut scelti: BTreeMap<&str, (i64, &str)> = BTreeMap::new();
+    for (impronte, date) in [locale, remoto] {
+        for (id, impronta) in impronte {
+            let candidato = (date.get(id).copied().unwrap_or(0), impronta.as_str());
+            scelti
+                .entry(id)
+                .and_modify(|gia| {
+                    if candidato > *gia {
+                        *gia = candidato;
+                    }
+                })
+                .or_insert(candidato);
+        }
+    }
+    let mut impronte = BTreeMap::new();
+    let mut date = BTreeMap::new();
+    for (id, (at, impronta)) in scelti {
+        if tolti.get(id).is_some_and(|tolto| *tolto >= at) {
+            continue;
+        }
+        impronte.insert(id.to_owned(), impronta.to_owned());
+        if at > 0 {
+            date.insert(id.to_owned(), at);
+        }
+    }
+    (impronte, date)
 }
 
 // ── applicazione ────────────────────────────────────────────────────────────
@@ -1823,13 +2173,11 @@ mod prove {
         let locale = Contenuto {
             tracks: vec![brano("a|b|c", 3), brano("d|e|f", 20)],
             roots: vec!["C:\\Qui".to_owned()],
-            active_skin: Some("notte".to_owned()),
             ..Contenuto::default()
         };
         let remoto = Contenuto {
             tracks: vec![brano("a|b|c", 17), brano("g|h|i", 1)],
             roots: vec!["D:\\Là".to_owned(), "C:\\Qui".to_owned()],
-            active_skin: Some("giorno".to_owned()),
             ..Contenuto::default()
         };
         let unione = fondi(&locale, &remoto);
@@ -1848,9 +2196,9 @@ mod prove {
         );
         assert_eq!(unione.roots, ["C:\\Qui".to_owned(), "D:\\Là".to_owned()]);
         assert_eq!(
-            unione.active_skin.as_deref(),
-            Some("notte"),
-            "vince il locale"
+            fondi(&remoto, &locale),
+            unione,
+            "da tutte e due le parti la stessa cosa"
         );
 
         // Idempotente: rifonderla con lo stesso remoto non cambia niente.
@@ -1959,5 +2307,255 @@ mod prove {
         assert_eq!(letto.content.roots, ["C:\\Musica".to_owned()]);
         assert!(!canonici.contains("insieme"), "{canonici}");
         assert!(!canonici.contains("Intruso"), "{canonici}");
+    }
+
+    // ── un ripristino prima della scansione (R06-1) ─────────────────────────
+
+    /// Un backup con la playlist «Estate» di due brani, toccata a 100.
+    fn backup_con_l_estate() -> Contenuto {
+        Contenuto {
+            playlists: vec![PlaylistSalvata {
+                key: "estate".to_owned(),
+                name: "Estate".to_owned(),
+                created_at: 50,
+                updated_at: 100,
+                members: vec!["art|uno|al".to_owned(), "art|due|al".to_owned()],
+                ..PlaylistSalvata::default()
+            }],
+            ..Contenuto::default()
+        }
+    }
+
+    #[test]
+    fn un_ripristino_su_una_libreria_senza_i_brani_si_completa_dopo_la_scansione() {
+        // Il PC appena reinstallato: la playlist torna vuota perché i file non
+        // sono ancora stati scansionati. Con la data del backup la copia monca
+        // fingeva di essere quella intera: il ripristino dopo la scansione la
+        // diceva «invariata», e il salvataggio la caricava vuota su Drive.
+        let backup = backup_con_l_estate();
+        let mut qui = crate::db::open_in_memory().expect("database").connection;
+        let stato = stato_locale(&qui).expect("stato");
+        let piano = pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones));
+        assert_eq!(piano.playlists.len(), 1);
+        applica(&mut qui, &piano).expect("applicato");
+
+        // Rifarlo subito, senza scansione, non propone niente: è lo stesso stato.
+        let stato = stato_locale(&qui).expect("stato");
+        let ancora = pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones));
+        assert!(ancora.playlists.is_empty(), "{ancora:?}");
+
+        // E il salvataggio dopo non fa vincere la copia monca su quella intera.
+        let fuso = fondi(&snapshot(&stato, BTreeMap::new(), BTreeMap::new()), &backup);
+        assert_eq!(
+            fuso.playlists.first().map(|p| p.members.len()),
+            Some(2),
+            "{fuso:?}"
+        );
+
+        // La scansione trova i file; il ripristino di nuovo completa la playlist.
+        qui.execute_batch(
+            "INSERT INTO tracks
+                 (id, path, track_key, title, artist, album, duration_ms,
+                  file_size, date_added, date_modified)
+             VALUES (1, 'a.mp3', 'art|uno|al', 'Uno', 'Art', 'Al', 1000, 1, 1, 1),
+                    (2, 'b.mp3', 'art|due|al', 'Due', 'Art', 'Al', 2000, 1, 1, 1);",
+        )
+        .expect("brani");
+        let stato = stato_locale(&qui).expect("stato");
+        let dopo = pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones));
+        assert_eq!(
+            dopo.playlists
+                .first()
+                .map(|cambio| cambio.playlist.members.len()),
+            Some(2),
+            "{dopo:?}"
+        );
+        applica(&mut qui, &dopo).expect("applicato");
+        let stato = stato_locale(&qui).expect("stato");
+        assert!(
+            pianifica(&stato, &dal_salvataggio(&backup, &stato.tombstones)).is_empty(),
+            "completata, il piano torna vuoto"
+        );
+    }
+
+    #[test]
+    fn fondere_non_fa_vincere_una_copia_monca_a_parita_di_data() {
+        // A parità di data vinceva il locale, che è il primo della catena: un PC
+        // con metà della musica caricava la sua versione monca sopra quella
+        // intera. A parità vince la più completa, da qualunque parte stia.
+        let intera = backup_con_l_estate();
+        let mut monca = intera.clone();
+        if let Some(p) = monca.playlists.first_mut() {
+            p.members.clear();
+        }
+        for (locale, remoto) in [(&monca, &intera), (&intera, &monca)] {
+            let fuso = fondi(locale, remoto);
+            assert_eq!(
+                fuso.playlists.first().map(|p| p.members.len()),
+                Some(2),
+                "{fuso:?}"
+            );
+        }
+    }
+
+    // ── le cartelle di rete del backup (R06-10, decisione 20) ───────────────
+
+    #[test]
+    fn il_piano_del_ripristino_non_sonda_host_che_questo_pc_non_usa() {
+        // Aprire «Ripristina» chiedeva al disco ogni cartella del backup:
+        // `\\nas-ufficio\musica` di un PC di lavoro voleva dire una sessione
+        // SMB — e le credenziali di chi ripristina — verso quel nome, dalla
+        // rete di casa o di un bar. Si chiedono solo le unità con lettera, i
+        // percorsi locali e gli host che questo PC usa già, come nel profilo.
+        let connection = crate::db::open_in_memory().expect("database").connection;
+        settings::write_json(&connection, CHIAVE_CARTELLE, &vec![r"\\nas\musica"])
+            .expect("cartelle");
+        settings::write(&connection, "download.folder", r"\\archivio\scaricati").expect("download");
+        let qui = stato_locale(&connection).expect("stato");
+
+        for percorso in [
+            r"D:\Musica",
+            r"\\?\E:\Musica",
+            r"\\NAS\musica\Rock",
+            r"\\archivio\altro",
+            "/storage/emulated/0/Music",
+            "nuvola://dropbox-abcdefgh/Musica",
+        ] {
+            assert!(sondabile(percorso, &qui.host_noti), "{percorso}");
+        }
+        for percorso in [
+            r"\\nas-ufficio\musica",
+            "//192.0.2.1/m",
+            r"/\192.0.2.1\m",
+            r"\??\UNC\192.0.2.1\m",
+            r"\\?\UNC\nas\musica",
+        ] {
+            assert!(!sondabile(percorso, &qui.host_noti), "{percorso}");
+        }
+    }
+
+    // ── la skin attiva resta di ciascun dispositivo (decisione 17) ──────────
+
+    #[test]
+    fn la_skin_attiva_non_viaggia_nel_backup() {
+        // R08-2: la skin attiva viaggiava nel backup, e fra due PC vinceva
+        // quella di chi fondeva; un ripristino su un terzo riceveva quella di
+        // chi aveva scritto per ultimo. Resta di ciascuno: non si scrive, e
+        // quella di un backup di prima non si rimette.
+        let connection = libreria();
+        settings::write(&connection, CHIAVE_SKIN, "notte").expect("skin");
+        let contenuto = snapshot(
+            &stato_locale(&connection).expect("stato"),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        let testo = String::from_utf8(canonico(&contenuto).expect("canonico")).expect("JSON");
+        assert!(!testo.contains("notte"), "{testo}");
+
+        let di_prima =
+            interpreta(br#"{"version":1,"content":{"activeSkin":"notte"}}"#).expect("letto");
+        let qui = stato_locale(&libreria()).expect("stato");
+        assert_eq!(
+            dal_salvataggio(&di_prima.content, &qui.tombstones).active_skin,
+            None
+        );
+        let fuso = fondi(&contenuto, &di_prima.content);
+        let testo = String::from_utf8(canonico(&fuso).expect("canonico")).expect("JSON");
+        assert!(!testo.contains("notte"), "{testo}");
+    }
+
+    // ── cartelle tolte: escono anche dal backup (decisione 16) ──────────────
+
+    #[test]
+    fn una_cartella_tolta_esce_dal_backup_e_non_torna_col_ripristino() {
+        // R08-2: le cartelle si univano e basta. Una tolta dalla libreria — un
+        // vecchio NAS, «Download» — restava nel backup per sempre, perché
+        // l'altro dispositivo o la copia lassù la rimettevano nell'unione, e il
+        // ripristino su un PC nuovo la riproponeva. Ora viaggia la lapide.
+        let mut c = libreria();
+        settings::write_json(&c, CHIAVE_CARTELLE, &vec![r"C:\A", r"D:\Vecchio"]).expect("cartelle");
+        allinea(&mut c, 1_000).expect("allineamento");
+        let prima = snapshot(
+            &stato_locale(&c).expect("stato"),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        settings::write_json(&c, CHIAVE_CARTELLE, &vec![r"C:\A"]).expect("tolta");
+        allinea(&mut c, 2_000).expect("allineamento");
+        let dopo = snapshot(
+            &stato_locale(&c).expect("stato"),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+
+        let fuso = fondi(&dopo, &prima);
+        assert_eq!(fuso.roots, [r"C:\A".to_owned()]);
+        assert_eq!(fuso.tombstones.roots.get(r"D:\Vecchio"), Some(&2_000));
+        assert_eq!(
+            canonico(&fondi(&prima, &dopo)).expect("canonico"),
+            canonico(&fuso).expect("canonico"),
+            "da tutte e due le parti"
+        );
+
+        let nuovo = stato_locale(&libreria()).expect("stato");
+        assert_eq!(
+            dal_salvataggio(&fuso, &nuovo.tombstones).roots,
+            [r"C:\A".to_owned()],
+            "il ripristino non la ripropone"
+        );
+
+        // Rimessa dopo, torna: vale la decisione più recente.
+        settings::write_json(&c, CHIAVE_CARTELLE, &vec![r"C:\A", r"D:\Vecchio"]).expect("rimessa");
+        allinea(&mut c, 3_000).expect("allineamento");
+        let ancora = fondi(
+            &snapshot(
+                &stato_locale(&c).expect("stato"),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+            &fuso,
+        );
+        assert_eq!(ancora.roots, [r"C:\A".to_owned(), r"D:\Vecchio".to_owned()]);
+
+        // E la mappa della sincronia non si tocca: tenuta dal backup anche a
+        // sincronia spenta, il giorno in cui la si accende porterebbe agli
+        // altri dispositivi le cartelle tolte prima come decisioni datate.
+        assert_eq!(
+            settings::read(&c, crate::settings::CHIAVE_CARTELLE_SINCRONIA).expect("lettura"),
+            None
+        );
+    }
+
+    #[test]
+    fn fra_due_versioni_di_un_pacchetto_vince_la_piu_recente_da_tutte_e_due_le_parti() {
+        // Decisione 15: per ogni skin e bozza con lo stesso id vince la più
+        // recente per data di modifica; a parità una regola che non dipende da
+        // chi fonde. E una lapide più recente la toglie (decisione 16).
+        let con = |impronta: &str, quando: i64| Contenuto {
+            skins: [("notte".to_owned(), impronta.to_owned())]
+                .into_iter()
+                .collect(),
+            skins_at: [("notte".to_owned(), quando)].into_iter().collect(),
+            drafts: [("prova".to_owned(), impronta.to_owned())]
+                .into_iter()
+                .collect(),
+            drafts_at: [("prova".to_owned(), quando)].into_iter().collect(),
+            ..Contenuto::default()
+        };
+        let vecchia = con("aaaa", 100);
+        let nuova = con("bbbb", 200);
+        for (l, r) in [(&vecchia, &nuova), (&nuova, &vecchia)] {
+            let fuso = fondi(l, r);
+            assert_eq!(fuso.skins.get("notte").map(String::as_str), Some("bbbb"));
+            assert_eq!(fuso.skins_at.get("notte"), Some(&200));
+            assert_eq!(fuso.drafts.get("prova").map(String::as_str), Some("bbbb"));
+        }
+        let mut tolta = vecchia.clone();
+        tolta.skins.clear();
+        tolta.skins_at.clear();
+        tolta.tombstones.skins.insert("notte".to_owned(), 300);
+        let fuso = fondi(&nuova, &tolta);
+        assert!(!fuso.skins.contains_key("notte"), "{fuso:?}");
+        assert_eq!(canonico(&fuso).ok(), canonico(&fondi(&tolta, &nuova)).ok());
     }
 }

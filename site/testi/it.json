@@ -1,8 +1,8 @@
 {
   "meta": {
-    "titolo": "Rymembra — lettore musicale gratuito per Windows: FLAC, senza pause, volume uniforme",
-    "descrizione": "Lettore musicale gratuito e open source per Windows: FLAC e MP3 senza pause e allo stesso volume, cartelle locali e cloud, playlist da Spotify, ascolto in LAN.",
-    "immagine": "Rymembra, un lettore musicale per Windows"
+    "titolo": "Rymembra — lettore musicale gratuito per Windows e Android: FLAC, senza pause, volume uniforme",
+    "descrizione": "Lettore musicale gratuito e open source per Windows e Android: FLAC e MP3 senza pause e allo stesso volume, cartelle locali e cloud, playlist da Spotify, cataloghi liberi, ascolto insieme.",
+    "immagine": "Rymembra, un lettore musicale per Windows e Android"
   },
   "nav": {
     "salta": "Vai al contenuto",
@@ -16,16 +16,16 @@
   },
   "hero": {
     "titolo": "La tua musica, ricordata.",
-    "lede": "Rymembra è un lettore musicale gratuito per Windows. Suona i file che hai già sul disco, ricostruisce le tue playlist — anche dall'archivio di Spotify — e cerca i brani che mancano solo dove è permesso.",
+    "lede": "Rymembra è un lettore musicale gratuito per Windows e Android. Suona i file che hai già sul disco, ricostruisce le tue playlist — anche dall'archivio di Spotify — e cerca i brani che mancano solo dove è permesso.",
     "cta": "Scarica per Windows",
     "cta2": "Guarda come funziona",
     "store": "Oppure scaricala dal Microsoft Store",
-    "nota": "Gratuito e open source, licenza MIT. Windows a 64 bit, versione {versione}, uscita il {data}.",
+    "nota": "Gratuito e open source, licenza MIT. Windows a 64 bit e Android 8 o successivo, versione {versione}, uscita il {data}.",
     "alt": "La schermata iniziale di Rymembra, con le raccolte della settimana, il brano da riprendere e la coda",
     "didascalia": "La schermata iniziale: le raccolte della settimana, il brano interrotto pronto a ripartire dal punto esatto, e la coda a destra."
   },
   "altrove": {
-    "testo": "Rymembra è un programma per Windows: mandati il link e scaricalo dal computer.",
+    "testo": "Rymembra funziona sui PC Windows e sui telefoni Android: mandati il link e scaricalo da lì.",
     "manda": "Manda il link",
     "copia": "Copia il link",
     "copiato": "Link copiato"
@@ -60,16 +60,16 @@
       "Le cartelle si sorvegliano da sole: copi dentro un album, e pochi secondi dopo è in libreria.",
       "Su un NAS o un'unità di rete, una condivisione che per un momento non risponde rende i brani non verificati, mai spariti.",
       "Una scansione che toglierebbe molti brani te li mostra e chiede prima.",
-      "Una cartella di musica può stare anche su OneDrive, Google Drive, Dropbox o un server WebDAV come Nextcloud, in sola lettura, con un'app che registri tu — il programma ti guida passo passo; per OneDrive serve un account Azure gratuito."
+      "Una cartella di musica può stare anche su OneDrive, Google Drive, Dropbox o un server WebDAV come Nextcloud, in sola lettura, con un'app che registri tu — il programma ti guida passo passo; per OneDrive serve un account Azure gratuito (di solito Microsoft chiede una carta per verificarlo, senza addebitare niente) o un account di lavoro o della scuola."
     ]
   },
   "cataloghi": {
     "titolo": "Quello che manca, lo cerca dove è permesso.",
     "testo": "Internet Archive e Audius ospitano musica pubblicata per essere condivisa: più di 250.000 concerti nel Live Music Archive, netlabel, pubblico dominio, brani che gli artisti hanno rilasciato con licenze aperte. Un brano si scarica solo quando la sua licenza lo permette, e quella licenza se la porta dietro. Quando nessuna versione in studio è libera, può prenderne il posto un concerto — e il brano dice che è dal vivo.",
-    "acquisti": "Il catalogo commerciale non lo ha nessuna fonte libera, e Rymembra non va a prenderlo dove non dovrebbe: quello che non trova in modo lecito finisce in una lista acquisti, con i link a Bandcamp e Qobuz.",
+    "acquisti": "Il catalogo commerciale non lo ha nessuna fonte libera, e Rymembra non va a prenderlo dove non dovrebbe: quello che non trova in modo lecito finisce in «Da comprare», con i link a Bandcamp e Qobuz.",
     "esclusi": "Lasciati fuori apposta: YouTube, le cui regole vietano di scaricare e conservare i contenuti, e gli accessi privati di Spotify, che sarebbero un accesso non autorizzato.",
-    "alt": "La scheda delle impostazioni che elenca da dove viene la musica",
-    "didascalia": "Impostazioni, «Da dove viene la musica»: ogni fonte con la regola che segue."
+    "alt": "La scheda «Importa da un servizio» delle impostazioni, che elenca da dove viene la musica",
+    "didascalia": "Impostazioni, «Importa da un servizio»: ogni fonte con la regola che segue."
   },
   "suono": {
     "titolo": "Poi suona, come deve.",
@@ -84,11 +84,11 @@
   },
   "insieme": {
     "titolo": "E si ascolta insieme.",
-    "testo": "Colleghi sulla stessa rete, ognuno col suo Rymembra, sentono la stessa musica nello stesso istante: un PC ospita, gli altri seguono, e ognuno la suona per conto suo. La prima volta i due schermi mostrano lo stesso codice di quattro cifre; da lì i PC si riconoscono, e quel che passa fra loro è cifrato.",
+    "testo": "Amici o colleghi, ognuno col suo Rymembra, sentono la stessa musica nello stesso istante: un dispositivo ospita, gli altri seguono, e ognuno la suona per conto suo. La prima volta i due schermi mostrano lo stesso codice di quattro cifre; da lì i dispositivi si riconoscono, e quel che passa fra loro è cifrato.",
     "punti": [
       "Chi ospita sceglie, per ognuno che entra, se ascolta e basta, se comanda — pausa, salti, il brano dopo e quello prima — o se fa tutto, anche mettere in coda i suoi brani, che arrivano agli altri dal PC di chi li ha.",
       "Allineati a pochi millesimi di secondo, abbastanza per due coppie di casse nella stessa stanza; per le cuffie Bluetooth c'è la calibrazione.",
-      "Niente Internet e nessun server: solo la rete dell'ufficio o di casa. Il PC che ospita apre una porta in LAN, e Windows chiede il permesso una volta."
+      "Sulla stessa rete non passa niente da Internet. I dispositivi che hai collegato possono ascoltare insieme anche da lontano, con una connessione cifrata che usa dei relay pubblici solo quando una diretta non è possibile. La prima volta Windows chiede il permesso di aprire la porta."
     ]
   },
   "skin": {
@@ -119,7 +119,7 @@
     "dalVivo": "dal vivo",
     "youtube": "le sue regole vietano di scaricare",
     "spotify": "niente accessi non autorizzati",
-    "listaAcquisti": "Lista acquisti",
+    "listaAcquisti": "Da comprare",
     "inRiproduzione": "In riproduzione",
     "stessoVolume": "Ogni brano portato allo stesso volume",
     "senzaPause": "Un brano finisce, il successivo comincia: nessuna pausa",
@@ -140,7 +140,7 @@
   },
   "scarica": {
     "titolo": "Pronto da ascoltare.",
-    "testo": "Un installer per Windows a 64 bit. Gli aggiornamenti arrivano da soli, firmati, e si installano solo quando lo dici tu.",
+    "testo": "Un installer per Windows a 64 bit, un APK per i telefoni Android. Gli aggiornamenti arrivano da soli, firmati, e si installano solo quando lo dici tu.",
     "sotto": "Per Windows a 64 bit. Gratis.",
     "azione": "Scarica",
     "store": {
@@ -166,7 +166,17 @@
       "titolo": "Indicagli la tua musica",
       "testo": "Scegli la cartella della musica. Un breve giro guidato ti mostra il programma una volta, sulla finestra vera."
     },
-    "precedente": "Arrivi da Aether, il nome precedente del programma? L'installer lo sostituisce, e al primo avvio libreria, impostazioni, skin e account passano da soli. Niente viene sovrascritto."
+    "precedente": "Arrivi da Aether, il nome precedente del programma? L'installer lo sostituisce, e al primo avvio libreria, impostazioni, skin e account passano da soli. Niente viene sovrascritto.",
+    "android": {
+      "titolo": "Per i telefoni Android",
+      "sotto": "Android 8 o successivo, 64 bit. Gratis.",
+      "azione": "Scarica l'APK",
+      "file": "Il file è `{fileApk}`. La prima volta Android ti chiede di permettere l'installazione; poi gli aggiornamenti arrivano dall'app.",
+      "impronta": {
+        "sommario": "{dimensioneApk} MB · impronta SHA-256",
+        "verifica": "Per controllare il file su un computer, in PowerShell: `Get-FileHash $HOME\\Downloads\\{fileApk}` deve stampare la stessa impronta."
+      }
+    }
   },
   "smartscreen": {
     "titolo": "Windows ha protetto il PC",
@@ -183,8 +193,8 @@
         "r": "Sì, e resterà gratis. Non c'è una versione a pagamento e non è prevista: una delle sue fonti, il Live Music Archive, ha una clausola non commerciale che una versione a pagamento violerebbe. Lo sviluppo si regge sulle donazioni."
       },
       {
-        "d": "Funziona su macOS o Linux?",
-        "r": "Oggi no. L'installer è solo per Windows, e non esistono ancora versioni per macOS, Linux o telefono."
+        "d": "Funziona su macOS, Linux o iPhone?",
+        "r": "Oggi no. Rymembra funziona su Windows (64 bit) e su Android 8 o successivo (64 bit); non esistono ancora versioni per macOS, Linux o iOS."
       },
       {
         "d": "Perché Windows mi avvisa quando lo installo?",
@@ -200,15 +210,15 @@
       },
       {
         "d": "Posso portarmi le playlist di Spotify?",
-        "r": "Sì. Chiedi i tuoi dati a Spotify dalla pagina sulla privacy del tuo account: arrivano come ZIP, di solito in pochi giorni, e la cronologia completa degli ascolti richiede più tempo. Rymembra lo legge sul tuo computer e confronta ogni brano con la tua libreria e con i cataloghi liberi. Nello ZIP non c'è audio: quello che non hai e che nessun catalogo libero ha finisce nella lista acquisti."
+        "r": "Sì. Chiedi i tuoi dati a Spotify dalla pagina sulla privacy del tuo account: arrivano come ZIP, di solito in pochi giorni, e la cronologia completa degli ascolti richiede più tempo. Rymembra lo legge sul tuo computer e confronta ogni brano con la tua libreria e con i cataloghi liberi. Nello ZIP non c'è audio: quello che non hai e che nessun catalogo libero ha finisce in «Da comprare»."
       },
       {
         "d": "Si può ascoltare insieme a un collega?",
-        "r": "Sì, se siete sulla stessa rete e avete tutti e due Rymembra 3.1 o successivo. Uno ospita una sessione da «Ascolta insieme»; l'altro la trova da solo, o scrive l'indirizzo che il primo vede sullo schermo, e la prima volta confrontate un codice di quattro cifre. Sul PC che ospita Windows chiede se lasciar passare Rymembra: «Consenti», anche per le «Reti pubbliche» se la rete è segnata così."
+        "r": "Sì. Sulla stessa rete vi serve Rymembra 3.1 o successivo: uno ospita una sessione da «Ascolta insieme»; l'altro la trova da solo, o scrive l'indirizzo che il primo vede sullo schermo, e la prima volta confrontate un codice di quattro cifre. Sul PC che ospita Windows chiede se lasciar passare Rymembra: «Consenti», anche per le «Reti pubbliche» se la rete è segnata così. Da lontano, collegate una volta i due dispositivi in Impostazioni › Dispositivi con un QR (dalla 3.2.1), e la sessione funziona anche via Internet."
       },
       {
         "d": "Manda i miei dati da qualche parte?",
-        "r": "Non c'è telemetria e non c'è un server di Rymembra. Il programma parla solo con i servizi che usi — i cataloghi, MusicBrainz per i tag, Cover Art Archive, iTunes e Deezer per le copertine, LRCLIB per i testi, GitHub per controllare gli aggiornamenti (non la copia dello Store), e quello che colleghi tu; se ascolti insieme, con gli altri PC della tua rete, e con nessun altro. [PRIVACY.md]({privacy}) elenca ogni richiesta e che cosa trasmette."
+        "r": "Non c'è telemetria e non c'è un server di Rymembra. Il programma parla solo con i servizi che usi — i cataloghi, MusicBrainz per i tag, Cover Art Archive per le copertine, LRCLIB per i testi, GitHub per controllare gli aggiornamenti (non la copia dello Store), e quello che colleghi tu, come le cartelle nel cloud, lo scrobbling o un modello di IA. iTunes e Deezer servono per le copertine solo se li accendi. Se colleghi i tuoi dispositivi per raggiungerli da lontano, si trovano attraverso dei relay pubblici e una tabella di indirizzi distribuita, che possono vedere che due dispositivi si collegano ma non che cosa passa fra loro. [PRIVACY.md]({privacy}) elenca ogni richiesta e che cosa trasmette."
       }
     ]
   },
@@ -234,7 +244,7 @@
     "piede": "Musica: [«Machina»](https://www.scottbuckley.com.au/library/machina/) di Scott Buckley, con licenza [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.it). Ricompressa per il sito; nella dimostrazione del suono è divisa in due e il volume è cambiato."
   },
   "piede": {
-    "frase": "Un lettore musicale per Windows, scritto in Rust. Suona quello che hai, e trova il resto dove è permesso.",
+    "frase": "Un lettore musicale per Windows e Android, scritto in Rust. Suona quello che hai, e trova il resto dove è permesso.",
     "etichetta": "Sito",
     "versioni": "Tutte le versioni",
     "changelog": "Novità per versione",

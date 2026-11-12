@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { notiziaDelRipristino } from "../src/esitoRipristino";
 
@@ -12,4 +13,52 @@ test("un ripristino finito a finestrella chiusa si racconta lo stesso", () => {
     { chiave: "restore.done.notice.folders" },
     { chiave: "restore.done.notice.missing", n: 3 },
   ]);
+});
+
+/** Le due lingue, come le legge la finestra. */
+function testi(lingua: "it" | "en"): Record<string, string> {
+  return JSON.parse(
+    readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+  ) as Record<string, string>;
+}
+
+test("prima della scansione il piano dice di scansionare o di ripetere il ripristino", () => {
+  // Decisione 14 (R06-1): i brani senza file non ritrovano le statistiche da
+  // soli dopo la scansione; serve un secondo ripristino, e la frase lo dice.
+  const it = testi("it");
+  const en = testi("en");
+  for (const chiave of ["restore.absent", "restore.absent.uno"]) {
+    assert.match(it[chiave] ?? "", /ripristina di nuovo/, chiave);
+    assert.match(en[chiave] ?? "", /restore again/, chiave);
+  }
+  assert.match(it["restore.foldersBack"] ?? "", /ripeti il ripristino/);
+  assert.match(en["restore.foldersBack"] ?? "", /restore again/);
+});
+
+test("«nessun backup» ricorda che il backup è legato all'app Google", () => {
+  // R13c-13: con un'altra app Google il backup di prima non si vede, e il
+  // consiglio di «lasciar passare un salvataggio» portava a crederlo perso.
+  assert.match(testi("it")["restore.noBackup"] ?? "", /un'altra app Google/);
+  assert.match(testi("en")["restore.noBackup"] ?? "", /another Google app/);
+});
+
+test("una cartella di rete non chiesta al disco non si dice «non esiste più»", () => {
+  // R06-10: il piano non sonda gli host che questo PC non usa; per quelle
+  // cartelle `esiste` è falso perché nessuno l'ha chiesto, e la finestra lo dice.
+  const sorgente = readFileSync(new URL("../src/Ripristino.tsx", import.meta.url), "utf8");
+  assert.match(sorgente, /!c\.verificata\s*\?\s*t\("restore\.folderNotChecked"\)/);
+  assert.ok(testi("it")["restore.folderNotChecked"]);
+  assert.ok(testi("en")["restore.folderNotChecked"]);
+});
+
+test("la skin attiva non viaggia nel backup, e il piano non ne parla", () => {
+  // Decisione 17 (R08-2): la skin attiva resta di ciascun dispositivo. Il
+  // piano non la cambia mai, quindi non c'è più un «diventerà X» da mostrare
+  // — né cinque zeri con «Ripristina» acceso per cambiarla soltanto (R13c-9).
+  const sorgente = readFileSync(new URL("../src/Ripristino.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(sorgente, /skinAttiva|restore\.activeSkin/);
+  const ipc = readFileSync(new URL("../src/ipc/servizi.ts", import.meta.url), "utf8");
+  const piano = ipc.slice(ipc.indexOf("export interface PianoRipristino"));
+  assert.doesNotMatch(piano.slice(0, piano.indexOf("\n}\n")), /skinAttiva/);
+  assert.equal(testi("it")["restore.activeSkin"], undefined);
 });

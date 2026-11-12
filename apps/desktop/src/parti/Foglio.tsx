@@ -38,6 +38,7 @@ import {
 } from "react";
 
 import { useDito } from "../dito";
+import { useVeloInerte } from "../finestrella";
 import { dopoLaTransizione } from "../foglio";
 import { elastico, esitoTrascinamento } from "../gesti";
 import { useSuIndietro } from "../indietro";
@@ -73,6 +74,7 @@ export function Foglio({
   children: ReactNode;
 }) {
   const pannello = useRef<HTMLDivElement>(null);
+  const velo = useRef<HTMLDivElement>(null);
   const [chiudendo, setChiudendo] = useState(false);
   const [trascinando, setTrascinando] = useState(false);
   const ultimaChiusura = useRef(onChiudi);
@@ -93,16 +95,33 @@ export function Foglio({
     return dopoLaTransizione(pannello.current, () => ultimaChiusura.current());
   }, [chiudendo]);
 
-  // Il fuoco entra nella prima voce, e torna dov'era alla chiusura: come il
-  // menu del computer, e per la stessa ragione — vedi `Menu.tsx`.
+  // Chi aveva il fuoco, letto **prima** che la pagina diventi inerte: un nodo
+  // reso inerte lo perde, e dopo si leggerebbe il `<body>`. Lo stesso ordine
+  // di `Dialogo`, per la stessa ragione.
+  const chiAveva = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    const chiAveva = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    chiAveva.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, []);
+
+  // Il resto della finestra inerte, pannello escluso: `aria-modal` non basta,
+  // e dietro il foglio TalkBack leggeva — e attivava col doppio tocco — le
+  // stelle e i tasti della schermata sotto. Velo e pannello sono fratelli, e
+  // il pannello resta vivo. Vedi `useVeloInerte`.
+  useVeloInerte(velo, pannello);
+
+  // Il fuoco entra nella prima voce, e torna dov'era alla chiusura: come il
+  // menu del computer, e per la stessa ragione — vedi `Menu.tsx`. Dopo
+  // l'inerzia, e anche alla chiusura: React smonta questi effetti nell'ordine
+  // in cui sono scritti, quindi la pagina torna viva prima che il fuoco ci
+  // ritorni.
+  useLayoutEffect(() => {
+    const daRidare = chiAveva.current;
     pannello.current
       ?.querySelector<HTMLElement>(".corpo-foglio button:not([aria-disabled='true'])")
       ?.focus({ preventScroll: true });
     return () => {
-      if (chiAveva !== null && chiAveva !== document.body && chiAveva.isConnected) {
-        chiAveva.focus({ preventScroll: true });
+      if (daRidare !== null && daRidare !== document.body && daRidare.isConnected) {
+        daRidare.focus({ preventScroll: true });
       }
     };
   }, []);
@@ -149,6 +168,7 @@ export function Foglio({
   return (
     <ContestoFoglio value={chiudi}>
       <div
+        ref={velo}
         className="velo foglio-velo"
         data-chiudendo={chiudendo || undefined}
         aria-hidden="true"

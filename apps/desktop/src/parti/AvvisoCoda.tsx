@@ -19,9 +19,21 @@
  * secondi in cui l'avviso è a schermo la coda è stata sostituita di nuovo, il
  * nucleo risponde `false` e non tocca niente: rimettere la coda di prima del
  * gesto **successivo** sarebbe un annulla che non annulla quel che dice.
+ *
+ * # Perché lo stato sta fuori dal componente
+ *
+ * Il riquadro si disegna in due posti — nella pagina e sopra «In riproduzione»
+ * — e `Ctrl+Z` fa l'ultimo «Annulla» dovunque sia il fuoco. Con uno stato per
+ * copia il gesto ne avrebbe chiusa una e lasciata l'altra col suo «Annulla»
+ * ancora premibile, cioè un secondo ripristino dello stesso gesto. Lo stato, il
+ * conto e l'offerta a `Ctrl+Z` stanno una volta, in `ANNULLO`; le copie lo
+ * leggono. Il conto si ferma col fuoco o il puntatore sul riquadro: vedi
+ * `annullaATempo.ts`.
  */
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
+import { annullaATempo } from "../annullaATempo";
+import { useArchivio } from "../archivio";
 import { gestoPermesso } from "../insieme";
 import { ipc } from "../ipc";
 import { useAscolto } from "../pagine";
@@ -31,15 +43,6 @@ import { Icona } from "./Icone";
 import { brani_ } from "../formato";
 import { t } from "../lingue";
 
-/**
- * Quanto resta a schermo, in millisecondi.
- *
- * Dieci secondi, più dei sei dell'uscita spostata in `AvvisoAudio`: quello si
- * legge e basta, questo chiede un gesto, e chi si accorge di aver perso la coda
- * se ne accorge quando la musica cambia — un paio di secondi dopo il clic.
- */
-const DURATA = 10_000;
-
 /** Quel che arriva con `coda:sostituita`. */
 interface CodaSostituita {
   numero: number;
@@ -47,8 +50,22 @@ interface CodaSostituita {
   svuotata: boolean;
 }
 
+/** Chi dice un ripristino che non riesce: l'`onErrore` dell'ultima copia disegnata. */
+let segnala: (e: unknown) => void = () => undefined;
+
+/**
+ * L'«Annulla» della coda, uno per tutte e due le copie. Il numero torna al
+ * nucleo: vedi «Perché il numero» qui sopra.
+ */
+const ANNULLO = annullaATempo<CodaSostituita>((avviso) => {
+  ipc.codaRipristina(avviso.numero).catch((e: unknown) => segnala(e));
+});
+
 export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
-  const [avviso, setAvviso] = useState<CodaSostituita | null>(null);
+  useEffect(() => {
+    segnala = onErrore;
+  }, [onErrore]);
+  const avviso = useArchivio(ANNULLO.avviso);
   /*
    * In una sessione di «Ascolta insieme» l'«Annulla» non c'è, per nessuno:
    * rimetterebbe una coda di prima della sessione, fatta di brani che gli
@@ -58,23 +75,19 @@ export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
    */
   const ripristinabile = useLettore((s) => gestoPermesso(s.insieme, "ripristina"));
 
+  // Tutte e due le copie ascoltano, e l'avviso è uno: la seconda trova già
+  // a schermo lo stesso numero, e non ricomincia il conto.
   useAscolto<CodaSostituita>("coda:sostituita", (carico) => {
-    if (ripristinabile) setAvviso(carico);
+    if (ripristinabile && ANNULLO.avviso.leggi()?.numero !== carico.numero) {
+      ANNULLO.mostra(carico);
+    }
   });
 
   // Una sessione che comincia con l'avviso a schermo lo chiude: l'«Annulla»
   // di prima, premuto adesso, chiederebbe la stessa cosa che la sessione vieta.
   useEffect(() => {
-    if (!ripristinabile) setAvviso(null);
+    if (!ripristinabile) ANNULLO.mostra(null);
   }, [ripristinabile]);
-
-  // Un avviso nuovo riparte da dieci secondi: ogni evento è un oggetto nuovo,
-  // quindi il conto si rifà anche quando uno ne sostituisce un altro a schermo.
-  useEffect(() => {
-    if (avviso === null) return;
-    const conto = window.setTimeout(() => setAvviso(null), DURATA);
-    return () => window.clearTimeout(conto);
-  }, [avviso]);
 
   // «1 brano» o «12 brani»: la forma la sceglie il motore delle lingue.
   const frase =
@@ -90,18 +103,14 @@ export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
     <>
       <Annuncio testo={frase} />
       {avviso !== null && (
-        <div className="notizia toast-card">
+        <div className="notizia toast-card" {...ANNULLO.presa}>
           <Icona nome="i-check" dim={16} />
           <span>{frase}</span>
           <button
             type="button"
             className="bottone minuto btn-ghost"
             title={t("queue.undo.aria")}
-            onClick={() => {
-              const numero = avviso.numero;
-              setAvviso(null);
-              ipc.codaRipristina(numero).catch(onErrore);
-            }}
+            onClick={ANNULLO.annulla}
           >
             {t("queue.undo")}
           </button>
@@ -109,7 +118,7 @@ export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
             type="button"
             className="tasto icon-btn"
             aria-label={t("common.close")}
-            onClick={() => setAvviso(null)}
+            onClick={() => ANNULLO.mostra(null)}
           >
             <Icona nome="i-x" dim={14} />
           </button>

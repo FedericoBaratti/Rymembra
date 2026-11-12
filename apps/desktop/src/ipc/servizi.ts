@@ -1,5 +1,6 @@
 /** Parte del contratto con il nucleo: cloud, sincronia, «Ascolta insieme», aggiornamenti, scrobbling, IA, testi, sorveglianza, arricchimento e manutenzione. La riesporta `ipc.ts`: si importa da lì. */
 import type { ErroreIpc } from "./errori";
+import type { Motivo } from "./skin";
 
 /**
  * Lo stato del backup su Drive.
@@ -525,6 +526,14 @@ export interface AggiornamentoDisponibile {
    * ogni mezz'ora una domanda a cui è già stato risposto.
    */
   saltata: boolean;
+  /**
+   * Solo sul telefono: l'APK di questa versione è firmato con un'altra chiave
+   * di quella di questa copia, e Android non lo installerebbe sopra. Lo si sa
+   * prima di scaricare (la copia è firmata con la chiave di prova) o dopo un
+   * rifiuto, che si ricorda: in tutti e due i casi non si scarica, e la fascia
+   * spiega come passare alla versione pubblica. Il computer non lo manda.
+   */
+  altraChiave?: boolean;
 }
 
 /**
@@ -787,6 +796,8 @@ export interface OperazioniIa {
    * costringerebbe a rifare la stessa domanda sperando in un'altra fortuna.
    */
   ragioni: string[];
+  /** Le stesse ragioni per chi legge, da tradurre (D-68): vedi `studio/motivo.ts`. */
+  motivi: Motivo[];
 }
 
 /** Un turno finito male, sull'evento `ia:errore`. */
@@ -823,6 +834,11 @@ export interface CartellaDalBackup {
   percorso: string;
   /** Esiste ancora su questo disco. Si aggiunge lo stesso, ma si dice. */
   esiste: boolean;
+  /**
+   * Si è chiesto al disco. `false` per una cartella su un host di rete che
+   * questo PC non usa: allora `esiste` non dice niente.
+   */
+  verificata: boolean;
 }
 
 /** Quel che un ripristino farebbe. */
@@ -844,7 +860,6 @@ export interface PianoRipristino {
   skinPresenti: number;
   bozzeDaScrivere: string[];
   bozzePresenti: number;
-  skinAttiva: string | null;
 }
 
 /** Com'è andato un ripristino. */
@@ -854,7 +869,6 @@ export interface EsitoRipristino {
   cartelle: number;
   skin: number;
   bozze: number;
-  skinAttiva: boolean;
   /** I file che il piano chiedeva e che su Drive non c'erano. */
   mancanti: string[];
 }
@@ -1140,6 +1154,36 @@ export interface StatoManutenzione {
   /** Quante copertine nessun brano, album, artista o playlist nomina più. */
   orfane: number;
   salute: SaluteDatabase;
+}
+
+/**
+ * La copia di prima dell'aggiornamento che «Torna alla copia» rimetterebbe
+ * (`manutenzione::CopiaDiPrimaIpc`).
+ */
+export interface CopiaDiPrima {
+  /** Il nome del file, accanto al database: `rymembra.db.schema-038.bak`. */
+  nome: string;
+  /** Lo schema che contiene. */
+  versione: number;
+  /** Quando è stata fatta, in millisecondi dall'epoca. */
+  quandoMs: number;
+  /**
+   * Lo schema di questa versione: una copia più vecchia vuole, dopo il
+   * ritorno, la versione di Rymembra di prima.
+   */
+  versioneDiQuesta: number;
+  /** Il nome che prenderà la libreria di adesso, messa da parte. */
+  messaDaParte: string;
+}
+
+/**
+ * La libreria che la copia del Microsoft Store può prendere al primo avvio
+ * (`manutenzione::LibreriaDiPrimaIpc`): della copia installata dal sito, o sua
+ * prima dell'aggiornamento.
+ */
+export interface LibreriaDiPrima {
+  /** Dove sta. */
+  cartella: string;
 }
 
 /** Quanto ha liberato una pulizia a mano, e lo stato dopo. */

@@ -20,10 +20,19 @@ const PRONTO: CondizioniDelGiro = {
   inEsplora: false,
   studioVisibile: false,
   modaleAperto: false,
+  telefono: false,
 };
 
 test("con tutte le condizioni il giro parte", () => {
   assert.equal(comeParteIlGiro(PRONTO), "parti");
+});
+
+test("sul telefono il giro non parte (D-37)", () => {
+  // Il giro lì non si disegna: partiva lo stesso, senza vedersi, riempiva la
+  // coda con cinquanta brani a ogni avvio con la coda vuota e non si chiudeva
+  // mai (R12-2).
+  assert.equal(comeParteIlGiro({ ...PRONTO, telefono: true }), "no");
+  assert.equal(comeParteIlGiro({ ...PRONTO, telefono: true, modaleAperto: true }), "no");
 });
 
 test("sopra un modale aperto il giro aspetta, non rinuncia", () => {

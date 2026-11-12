@@ -2,14 +2,18 @@ package io.github.federicobaratti.rymembra
 
 import android.Manifest
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import org.json.JSONArray
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * La consegna di un aggiornamento all'installatore di Android.
@@ -26,16 +30,25 @@ import java.io.File
  * La prima volta Android vuole che si permetta a Rymembra di installare app:
  * allora si apre la pagina delle impostazioni dove lo si concede, e il secondo
  * «Aggiorna» trova l'APK già sceso.
+ *
+ * Un APK firmato con un'altra chiave non è un guasto ma un esito
+ * (`altraChiave`): è quel che succede a una copia di prova, firmata con la
+ * chiave di debug, davanti all'APK pubblico. Rust se lo ricorda, non lo
+ * riscarica a ogni tocco, e la finestra spiega come passare alla versione
+ * pubblica senza perdere la libreria (vedi `src/mobile/aggiornamenti.rs`).
  */
 object Installatore {
   /** La cartella della cache dove Rust scarica l'APK. */
   private const val CARTELLA = "aggiornamenti"
 
-  /** `installatore` o `permesso`: vedi `sistema::Installazione` in Rust. */
+  /**
+   * `installatore`, `permesso` o `altraChiave`: vedi `sistema::Installazione`
+   * in Rust.
+   */
   fun installa(attivita: MainActivity, percorso: String): String {
     val file = apk(attivita, percorso)
     // Prima del permesso: un APK che non è Rymembra non vale la domanda.
-    verifica(attivita, file)
+    if (!verifica(attivita, file)) return "altraChiave"
     if (!attivita.packageManager.canRequestPackageInstalls()) {
       attivita.runOnUiThread {
         attivita.startActivity(
@@ -94,12 +107,15 @@ object Installatore {
   }
 
   /**
-   * L'APK è questa app, firmata come questa app; se no si cancella, e
-   * l'eccezione arriva a Rust come errore dell'aggiornamento. Chiusa per
+   * L'APK è questa app, firmata come questa app; se no si cancella. Chiusa per
    * difetto: un archivio che non si legge, o che non porta firme, vale come
    * un archivio sbagliato.
+   *
+   * `false` se è questa app ma firmata con un'altra chiave: l'esito che Rust
+   * distingue (vedi [installa]). Gli altri rifiuti — un archivio illeggibile,
+   * un altro pacchetto — sono un'eccezione, e arrivano a Rust come errore.
    */
-  private fun verifica(attivita: MainActivity, file: File) {
+  private fun verifica(attivita: MainActivity, file: File): Boolean {
     fun rifiuta(perche: String): Nothing {
       file.delete()
       throw SecurityException("l'aggiornamento scaricato non è questa Rymembra: $perche")
@@ -110,8 +126,42 @@ object Installatore {
       rifiuta("è il pacchetto ${archivio.packageName}")
     }
     if (!stessaFirma(archivio, installata(pm, attivita.packageName))) {
-      rifiuta("è firmato con un'altra chiave")
+      file.delete()
+      return false
     }
+    return true
+  }
+
+  /**
+   * Le impronte SHA-256 dei certificati con cui è firmata la Rymembra
+   * installata, adesso: in esadecimale minuscolo, senza separatori. Con un
+   * firmatario solo è l'ultimo della storia della rotazione, cioè quello che
+   * un aggiornamento deve avere; con più firmatari, tutti.
+   *
+   * Rust le confronta con l'impronta della chiave di rilascio prima di
+   * scaricare (`rilasci::copia_di_prova`): una copia firmata con un'altra
+   * chiave non scarica quaranta megabyte che Android rifiuterebbe.
+   */
+  @Suppress("DEPRECATION")
+  fun firmatari(contesto: Context): JSONArray {
+    val info = installata(contesto.packageManager, contesto.packageName)
+    val certificati: List<Signature> =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val firma = info.signingInfo ?: return JSONArray()
+        if (firma.hasMultipleSigners()) {
+          firma.apkContentsSigners?.toList().orEmpty()
+        } else {
+          listOfNotNull(firma.signingCertificateHistory?.lastOrNull())
+        }
+      } else {
+        info.signatures?.toList().orEmpty()
+      }
+    return JSONArray(
+      certificati.map { certificato ->
+        MessageDigest.getInstance("SHA-256").digest(certificato.toByteArray())
+          .joinToString("") { "%02x".format(it) }
+      }
+    )
   }
 
   /**

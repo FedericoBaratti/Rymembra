@@ -106,13 +106,29 @@ pub fn nome_file(dispositivo: &str) -> String {
 /// nome stanno ancora nella cartella condivisa, e un dispositivo che non li
 /// vedesse smetterebbe di contare gli ascolti di tutti gli altri. L'identificativo
 /// del dispositivo non contiene il marchio, quindi è lo stesso sotto i due nomi.
+///
+/// L'identificativo [`RISERVATO`] non è di nessun dispositivo: è il file della
+/// libreria del backup su Drive, che con la sincronia su Drive sta nella
+/// stessa cartella dell'app e ha lo stesso prefisso e lo stesso suffisso.
 #[must_use]
 pub fn dispositivo_da_nome(nome: &str) -> Option<&str> {
     let resto = nome
         .strip_prefix(PREFISSO)
         .or_else(|| nome.strip_prefix(eredita::PREFISSO_DISPOSITIVO))?;
-    resto.strip_suffix(SUFFISSO)
+    resto.strip_suffix(SUFFISSO).filter(|id| *id != RISERVATO)
 }
+
+/// L'identificativo che nessun dispositivo può avere.
+///
+/// `rymembra-libreria.v1.json.gz` (e `aether-libreria.v1.json.gz`, il nome di
+/// prima) è il file della libreria del backup, non un documento della
+/// sincronia: letto come tale, a ogni passata dopo un backup cambiato ogni
+/// dispositivo lo scaricava e lo interpretava come il documento del
+/// dispositivo «libreria» (R08-12). Oggi non sporcava la fusione — il
+/// contenuto risultava vuoto — ma bastava un campo in comune fra i due formati
+/// perché il backup entrasse nella sincronia. Gli identificativi veri sono
+/// casuali e non lo incontrano mai.
+pub const RISERVATO: &str = "libreria";
 
 /// Il file ha ancora il nome di prima?
 ///
@@ -719,6 +735,10 @@ mod prove {
             "rymembra-skin-notte.ryskin",
             "aether-skin-notte.aeskin",
             "rymembra-libreria.v1.json.gz.corrotto-1",
+            // R08-12: il file della libreria del backup, sotto i due nomi, sta
+            // nella stessa cartella dell'app quando la sincronia è su Drive.
+            "rymembra-libreria.v1.json.gz",
+            "aether-libreria.v1.json.gz",
             "rymembra-uno.v1.json.gz.in-corso",
             "rymembra-uno.v2.json.gz",
             "aether-uno.v2.json.gz",

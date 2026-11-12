@@ -111,6 +111,7 @@ import { Trasporto } from "../parti/Trasporto";
 import { t } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
 import { useDati } from "../dati";
+import { fuocoDiRitorno } from "../fuocoPagina";
 import { branoDaMostrare, gestoPermesso, idDiLibreria } from "../insieme";
 import { RecintoErrori } from "../Recinto";
 import { vinceLUltima } from "../ultima";
@@ -289,19 +290,31 @@ export function InRiproduzione({
   };
 
   // ── il fuoco entra, e alla chiusura torna ──
+  //
+  // Torna a chi l'aveva, e se quel nodo non c'è più al suo gemello rinato. I
+  // due «Apri a schermo intero» stanno nella terza colonna, che lo schermo
+  // intero smonta: il nodo salvato non era più montato, e il fuoco cadeva sul
+  // `<body>`. Il segno `data-apri-grande` dice quale dei due era, e la colonna
+  // rinata lo porta ancora. Se non si trova nemmeno lui, la testata della
+  // pagina. Vedi `fuocoPagina.ts`.
   useEffect(() => {
     const chiAveva =
-      document.activeElement instanceof HTMLElement
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement !== document.body
         ? document.activeElement
         : null;
+    const segno = chiAveva?.getAttribute("data-apri-grande") ?? null;
     schermata.current?.focus({ preventScroll: true });
     return () => {
-      if (
-        chiAveva !== null &&
-        chiAveva !== document.body &&
-        chiAveva.isConnected
-      )
-        chiAveva.focus({ preventScroll: true });
+      const rinato =
+        segno === null
+          ? null
+          : document.querySelector<HTMLElement>(`[data-apri-grande="${segno}"]`);
+      const pagina = {
+        querySelector: (selettore: string) =>
+          document.querySelector<HTMLElement>(`.page-content ${selettore}`),
+      };
+      fuocoDiRitorno([chiAveva, rinato], pagina, () => document.activeElement);
     };
   }, []);
 

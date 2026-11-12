@@ -32,7 +32,7 @@
       title: "IPC: commands, events, URI schemes",
       src: ["apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src-tauri/src/errore.rs", "apps/desktop/src/ipc.ts"],
       body: [
-        "**297 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
+        "**337 commands** are registered in one `generate_handler!` list. Commands are thin: they take the right lock, call the core, map errors with `errore()`. By area:",
         {
           table: {
             head: ["Area", "Commands", "Area", "Commands"],
@@ -52,7 +52,8 @@
               ["Watched folders", "2", "Tour", "2"],
               ["Drag and drop", "1", "Views", "1"],
               ["Cloud folders (`nuvola_musica.rs`)", "12", "Your apps (`nuvola_app.rs`)", "3"],
-              ["Listen together (`insieme/mod.rs`)", "21", "—", "—"],
+              ["Listen together (`insieme/mod.rs`)", "21", "Devices over the internet (`lontano/`)", "27"],
+              ["Phone only (`telefono.rs`)", "13", "—", "—"],
             ],
           },
         },
@@ -106,9 +107,9 @@
             "**Reads**: the cover scheme accepts only a hash, the skin scheme only a checked id and a name from the package's closed list, typed by magic bytes. Documents and the docs open in the **system browser** from closed lists (`apri_documento`, `apri_guida` with `ANCORE_GUIDA`), never from a URL the page composes.",
           ],
         },
-        "Inside the core: untrusted archives (`.ryskin`, `.ryprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. Two things listen for connections, and nothing else: the OAuth return port on `127.0.0.1`, open for the length of one authorization ([OAuth](#oauth)), and — only while this PC hosts a «Listen together» session — TCP and UDP 47811 (or one of the nine after it) on the local network, behind Noise and pairing ([Encryption and pairing](#together-security)). `unsafe` is forbidden in every crate except `rymembra-barra`, where it is confined to `finestra.rs` with a justification on each block (`undocumented_unsafe_blocks` is denied).",
+        "Inside the core: untrusted archives (`.ryskin`, `.ryprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. Three things listen for connections, and nothing else: the OAuth return port on `127.0.0.1`, open for the length of one authorization ([OAuth](#oauth)); only while this PC hosts a “Listen together” session, TCP and UDP 47811 (or one of the nine after it) on the local network, behind Noise and pairing ([Encryption and pairing](#together-security)); and only while “Reachable from the internet” is on, the iroh endpoint of `rymembra-lontano`, reachable from the internet through its relay or its public address, which answers only linked keys — and, while a QR code is on screen, a device asking to link ([Your devices over the internet](#devices)). On the phone, other apps can also reach the exported music service and the read-only cover provider (`SECURITY.md`). `unsafe` is forbidden in every crate except two that declare the exception with their own lint table: `rymembra-barra`, where it is confined to `finestra.rs` and the drive-type call in `unita.rs`, and `rymembra-android`, where it is confined to `jvm.rs`, the two lines that turn the JVM pointers into `jni` objects; each block carries its justification (`undocumented_unsafe_blocks` is denied).",
       ],
-      see: ["skin-package", "profile", "http", "oauth", "together-security"],
+      see: ["skin-package", "profile", "http", "oauth", "together-security", "devices"],
     },
     {
       id: "logs",

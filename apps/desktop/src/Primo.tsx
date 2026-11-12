@@ -47,12 +47,14 @@ import {
   useState,
 } from "react";
 
+import { conAMano, type CartellaDelPrimo } from "./cartellePrimo";
 import { eNuvola, nomeRadice } from "./cartelleNuvola";
 import { contiDellaCamminata, momentoDi } from "./fasiScansione";
-import { useFinestrella } from "./finestrella";
+import { useFinestrella, useVeloInerte } from "./finestrella";
 import { numero } from "./formato";
-import type { Avanzamento, CartellaCandidata, EsitoScansione } from "./ipc";
+import type { Avanzamento, EsitoScansione } from "./ipc";
 import { t } from "./lingue";
+import { Annuncio } from "./parti/Annuncio";
 import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
 import { useDati } from "./dati";
@@ -133,34 +135,11 @@ export interface PrimoProps {
   onSalta: () => void;
 }
 
-/** Come si scrive il numero di brani di una cartella. */
-function quantiBrani(cartella: CartellaCandidata): string {
+/** Come si scrive il numero di brani di una cartella contata. */
+function quantiBrani(cartella: CartellaDelPrimo & { brani: number }): string {
   return cartella.troncato
     ? t("primo.braniOltre", { n: cartella.brani })
     : t("primo.brani", { n: cartella.brani });
-}
-
-/**
- * L'elenco con in fondo le cartelle indicate a mano che non c'erano già.
- *
- * Senza conteggio: contarle vorrebbe dire camminarci dentro prima di
- * «Continua», cioè una scansione per sapere se fare la scansione.
- */
-function conAMano(
-  elenco: CartellaCandidata[],
-  percorsi: readonly string[],
-): CartellaCandidata[] {
-  const mancano = percorsi.filter((p) => !elenco.some((c) => c.percorso === p));
-  if (mancano.length === 0) return elenco;
-  return [
-    ...elenco,
-    ...mancano.map((percorso) => ({
-      percorso,
-      brani: 0,
-      troncato: false,
-      parziale: false,
-    })),
-  ];
 }
 
 /** La schermata di benvenuto. */
@@ -177,7 +156,7 @@ export function Primo({
   onSalta,
 }: PrimoProps) {
   const letture = useDati().ipc;
-  const [candidate, setCandidate] = useState<CartellaCandidata[] | null>(null);
+  const [candidate, setCandidate] = useState<CartellaDelPrimo[] | null>(null);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
   const [inCorso, setInCorso] = useState(false);
   // «Continua» è andato a buon fine: da qui in poi bastano i brani.
@@ -202,8 +181,21 @@ export function Primo({
    * le cartelle non sono ancora state contate, quindi «Continua» è spento, e i
    * due che restano aprono un dialogo di sistema o saltano il primo avvio. Un
    * Invio battuto per caso non deve fare nessuna delle due cose.
+   *
+   * `"nonEUnaDomanda"`: con le altre finestrelle la × della finestra chiude
+   * prima loro, come Escape; qui Escape è «Lo faccio dopo», e una × che salta
+   * il primo avvio invece di chiudere il programma toglierebbe a chi apre per
+   * la prima volta la sua strada d'ingresso. Vedi `cosaFaLaX` in `modale.ts`.
    */
-  const finestrella = useFinestrella<HTMLDivElement>(onSalta);
+  const finestrella = useFinestrella<HTMLDivElement>(onSalta, "nonEUnaDomanda");
+  // E il resto della finestra inerte, con la radice che fa da velo: la
+  // trappola del Tab tiene dentro il tabulatore e basta, e un lettore di
+  // schermo in modalità navigazione usciva da qui e leggeva — e poteva
+  // attivare — tutta la libreria che `.primo` copre alla vista. Dopo l'hook,
+  // come in `Dialogo`: chi aveva il fuoco si legge prima dell'inerzia. Le due
+  // forme qui sotto disegnano la stessa radice, che React tiene: il velo non
+  // cambia quando arriva il permesso del telefono.
+  useVeloInerte(finestrella);
   // Sul telefono si cerca solo dopo il permesso: prima, le cartelle della
   // musica risultano vuote. Altrove `pronto` è vero da subito.
   const accesso = useAccessoTelefono();
@@ -278,6 +270,20 @@ export function Primo({
   // Letto tutto, e non c'era niente. Si dice, e si dice perché se lo si sa: le
   // cartelle che non hanno risposto sono il caso del NAS spento.
   const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
+  /*
+   * Quel che si dice a chi ascolta lo schermo: i due passaggi che contano, e
+   * non lo stato. Una regione sola, montata con la schermata (`Annuncio`), e
+   * non un ruolo di stato sui riquadri, che nascevano già pieni dentro i loro
+   * rami e spesso tacevano. Il numero dei brani non c'è: cambia a ogni lotto,
+   * e dentro la regione si sarebbe ripetuto per tutta la scansione. L'inizio
+   * della lettura lo dice già `AnnuncioScansione`, che resta viva anche sotto
+   * questa schermata.
+   */
+  const daDire = lettaVuota
+    ? t("primo.vuota.title")
+    : brani > 0
+      ? t("primo.pronto.annuncio")
+      : null;
 
   if (!accesso.pronto) {
     return (
@@ -314,10 +320,10 @@ export function Primo({
           <p className="occhiello">{t("primo.eyebrow")}</p>
           <h1 id="primo-titolo">{t("primo.title")}</h1>
 
+          <Annuncio testo={daDire} />
+
           {cercando ? (
-            <p className="primo-attesa" role="status">
-              {t("primo.cercando")}
-            </p>
+            <p className="primo-attesa">{t("primo.cercando")}</p>
           ) : candidate.length === 0 ? (
             <>
               <h2 className="primo-sotto">{t("primo.nessuna.title")}</h2>
@@ -341,8 +347,14 @@ export function Primo({
                           «Continua»: contarla vorrebbe dire elencarla, che è
                           proprio quel che «Continua» fa partire. Uno zero lì
                           direbbe «vuota», che non è vero. */}
-                      {!eNuvola(cartella.percorso) && (
-                        <span className="primo-conto">{quantiBrani(cartella)}</span>
+                      {/* Una cartella indicata a mano non è contata (`brani`
+                          `null`, vedi `cartellePrimo.ts`): niente numero, e
+                          non «0 brani», che direbbe vuota la cartella della
+                          musica di chi l'ha appena scelta. */}
+                      {!eNuvola(cartella.percorso) && cartella.brani !== null && (
+                        <span className="primo-conto">
+                          {quantiBrani({ ...cartella, brani: cartella.brani })}
+                        </span>
                       )}
                     </label>
                     {cartella.parziale && (
@@ -354,24 +366,19 @@ export function Primo({
             </>
           )}
 
-          {/* La frase nella regione viva, il conteggio fuori: il conteggio
-              cambia quattro volte al secondo, e dentro la regione un lettore
-              di schermo lo rileggeva a ogni passo. Vedi `AnnuncioScansione`. */}
+          {/* Testo semplice, frase e conteggio: a chi ascolta lo schermo
+              parla `daDire`, qui sopra. */}
           {scansionando && (
             <p className="primo-attesa">
-              <span role="status">{t("primo.scansione")}</span>
+              <span>{t("primo.scansione")}</span>
               {aChePunto(scansione)}
             </p>
           )}
 
-          {brani > 0 && (
-            <p className="primo-pronto" role="status">
-              {t("primo.pronto", { n: brani })}
-            </p>
-          )}
+          {brani > 0 && <p className="primo-pronto">{t("primo.pronto", { n: brani })}</p>}
 
           {lettaVuota && (
-            <div role="status">
+            <div>
               <h2 className="primo-sotto">{t("primo.vuota.title")}</h2>
               <p>{t("primo.vuota.body")}</p>
               {esito.radiciSaltate.length > 0 && (
@@ -419,8 +426,12 @@ export function Primo({
             >
               {t("primo.altra")}
             </button>
+            {/* «Lo faccio dopo» finché c'è qualcosa da rimandare; con i brani
+                già pronti la libreria c'è, e l'uscita è soltanto «Chiudi»: la
+                stessa frase avrebbe fatto credere di saltare la lettura appena
+                fatta (R18-18). */}
             <button type="button" className="bottone minuto" onClick={onSalta}>
-              {t("primo.salta")}
+              {brani > 0 ? t("common.close") : t("primo.salta")}
             </button>
           </div>
         </div>

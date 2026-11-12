@@ -615,10 +615,19 @@ function NodoWidget({ nodo, ctx, slot }: Argomenti) {
   // foglio. La parte la porta il componente dentro: quando la portavano tutti
   // e due, ogni widget si dipingeva due volte — l'opacità si moltiplicava, i
   // bordi si raddoppiavano, un livello si disegnava sopra l'altro.
+  //
+  // Il posto del contenuto è il punto di riferimento `main` della finestra: lo
+  // scafale disegnava `nav`, `aside` e `header`, mai `main`, e un lettore di
+  // schermo non aveva un salto diretto alla pagina — davanti c'erano tutte le
+  // voci della navigazione, una per playlist. Le regole del foglio e delle
+  // skin guardano le classi, non l'elemento. Nell'anteprima dello Studio, che
+  // porta uno stato finto, resta un `div`: la tela sta dentro una finestra, e
+  // un secondo `main` sarebbe un secondo «qui c'è il contenuto».
+  const Involucro = nodo.name === "content" && ctx.stato === undefined ? "main" : "div";
   return (
-    <div className={classi(nodo)} data-nodo={nodo.at}>
+    <Involucro className={classi(nodo)} data-nodo={nodo.at}>
       <Foglia nodo={nodo} ctx={ctx} slot={slot} />
-    </div>
+    </Involucro>
   );
 }
 

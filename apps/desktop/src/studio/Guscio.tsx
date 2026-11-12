@@ -32,6 +32,8 @@ import { salvaCon } from "../dialoghi";
 import { Activity, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
+import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
+import { modaleAperto } from "../modale";
 import { ipc, testoErrore, type OperazioneIa, type Registro, type Skin } from "../ipc";
 import { t } from "../lingue";
 import { Avviso } from "../parti/Avvisi";
@@ -51,7 +53,8 @@ import { Ispezione } from "./Ispezione";
 import { Livelli } from "./Livelli";
 import { creaMittente, type Mittente } from "./mittente";
 import { daSalvare, iniziale, riduci, testo, type SchedaSinistra } from "./negozio";
-import { applicaOperazioni, leggi, scriviIn, togliDa } from "./patch";
+import { leggi } from "./patch";
+import { primaDiChiudere } from "./primaDiChiudere";
 import { daFotografare, poiSeSalvato } from "./salvataggio";
 import { Schede } from "./Schede";
 import { usePacchetto } from "./usaPacchetto";
@@ -156,6 +159,21 @@ export function Studio({
     };
   }, [id, onErrore, tentativo]);
 
+  // Le scorciatoie di una lettera, accese o spente: una volta, all'apertura.
+  // Un guasto le lascia accese, com'erano fino alla 3.2, e si dice.
+  useEffect(() => {
+    let vivo = true;
+    ipc
+      .studioLettere()
+      .then((lettere) => {
+        if (vivo) manda({ tipo: "imposta", campi: { lettere } });
+      })
+      .catch(onErrore);
+    return () => {
+      vivo = false;
+    };
+  }, [onErrore]);
+
   // ── la validazione: l'ultimo vince ─────────────────────────────────────
   //
   // Il mittente nasce nell'effetto e muore con lui: `ferma` è per sempre, e
@@ -235,6 +253,49 @@ export function Studio({
     const attesa = window.setTimeout(() => void salva().catch(onErrore), RESPIRO_SALVATAGGIO);
     return () => window.clearTimeout(attesa);
   }, [s, salva, onErrore]);
+  // E smontandosi, o nascondendosi sotto `<Activity>`: un'altra skin aperta
+  // durante la prova rimonta lo Studio (`key` in `App`), e il respiro qui
+  // sopra si spegne con lui — l'ultima modifica restava indietro. `salva`
+  // legge dai ref, quindi lavora anche a componente smontato.
+  useEffect(
+    () => () => {
+      if (daSalvare(attuale.current)) void salva().catch(onErrore);
+    },
+    [salva, onErrore],
+  );
+
+  // ── quel che gli editor tengono in mano ─────────────────────────────────
+  //
+  // L'editor del codice di una parte applica il suo testo dopo mezzo secondo,
+  // e solo se è JSON: fino alla 3.2 «Esci», Ctrl+S o «Prova» partivano senza
+  // le ultime battute, e un testo a metà spariva con l'editor (R14-3). Chi
+  // salva per un gesto svuota prima gli editor, dentro un `flushSync`, così
+  // il negozio — e `attuale`, che `salva` legge — ha già il loro testo.
+  const sospesi = useRef(new Set<() => void>());
+  const registraSospeso = useCallback((svuota: () => void) => {
+    sospesi.current.add(svuota);
+    return () => {
+      sospesi.current.delete(svuota);
+    };
+  }, []);
+  const svuotaSospesi = useCallback(() => {
+    flushSync(() => {
+      for (const svuota of sospesi.current) svuota();
+    });
+  }, []);
+  // La X della finestra aspetta che lo Studio abbia scritto quel che ha in
+  // mano: il respiro degli 800 ms non sopravvive alla chiusura (R14-7).
+  useEffect(
+    () =>
+      primaDiChiudere(async () => {
+        svuotaSospesi();
+        await salva();
+      }),
+    [salva, svuotaSospesi],
+  );
+
+  /** La domanda di «Esci» con un codice che non si è potuto applicare. */
+  const [domandaUscita, setDomandaUscita] = useState<Domanda | null>(null);
 
   /**
    * Esce solo a salvataggio riuscito: niente si perde chiudendo.
@@ -242,22 +303,36 @@ export function Studio({
    * Fino alla 3.0 usciva comunque — `finally` — e un salvataggio fallito
    * (disco pieno, cartella senza permessi) diventava un messaggio sopra uno
    * Studio che non c'era più, col lavoro dentro.
+   *
+   * Un codice di parte che non è JSON non arriva al documento, e uscendo se
+   * ne andrebbe: lo si chiede prima, nominando le parti.
    */
   const esci = useCallback(() => {
-    void poiSeSalvato(salva, onEsci, onErrore);
-  }, [salva, onEsci, onErrore]);
+    svuotaSospesi();
+    const sospese = Object.keys(attuale.current.codiceInSospeso).map((chiave) => chiave.split("/")[1] ?? chiave);
+    if (sospese.length === 0) {
+      void poiSeSalvato(salva, onEsci, onErrore);
+      return;
+    }
+    setDomandaUscita({
+      titolo: t("studio3.code.pending.title"),
+      descrizione: t("studio3.code.pending.what", { parti: [...new Set(sospese)].join(", ") }),
+      conferma: t("studio3.code.pending.leave"),
+      fai: () => void poiSeSalvato(salva, onEsci, onErrore),
+    });
+  }, [salva, onEsci, onErrore, svuotaSospesi]);
 
   // ── le scritture ────────────────────────────────────────────────────────
+  //
+  // Come operazioni, e il testo lo calcola il riduttore: vedi l'azione
+  // `modifica` in `negozio.ts`. Calcolarlo qui da `attuale.current` voleva
+  // dire che due scritture nello stesso gestore partivano dallo stesso testo.
   const scrivi = useCallback(
     (percorso: readonly string[], valore: unknown, etichetta: string) => {
-      const prima = testo(attuale.current);
-      const dopo =
-        valore === null || valore === undefined
-          ? togliDa(prima, percorso)
-          : scriviIn(prima, percorso, valore);
+      const togli = valore === null || valore === undefined;
       manda({
-        tipo: "scrivi",
-        testo: dopo,
+        tipo: "modifica",
+        operazioni: [{ togli, percorso: [...percorso], valore: togli ? undefined : valore }],
         etichetta,
         gruppo: percorso.join("."),
         adesso: Date.now(),
@@ -270,10 +345,9 @@ export function Studio({
   }, []);
   const scriviMolti = useCallback(
     (operazioni: readonly OperazioneIa[], etichetta: string, gruppo?: string) => {
-      const { testo: dopo } = applicaOperazioni(testo(attuale.current), operazioni);
       manda({
-        tipo: "scrivi",
-        testo: dopo,
+        tipo: "modifica",
+        operazioni,
         etichetta,
         gruppo: gruppo ?? operazioni.map((o) => o.percorso.join(".")).join("|"),
         adesso: Date.now(),
@@ -320,6 +394,7 @@ export function Studio({
   }, [istantanea]);
 
   const salvaEUsa = useCallback(async () => {
+    svuotaSospesi();
     const ora = attuale.current;
     try {
       await salva();
@@ -329,9 +404,10 @@ export function Studio({
     } catch (e) {
       onErrore(e);
     }
-  }, [salva, istantanea, onInstallata, onErrore]);
+  }, [salva, istantanea, onInstallata, onErrore, svuotaSospesi]);
 
   const esporta = useCallback(async () => {
+    svuotaSospesi();
     const ora = attuale.current;
     try {
       await salvaCon(
@@ -348,9 +424,10 @@ export function Studio({
     } catch (e) {
       onErrore(e);
     }
-  }, [istantanea, onErrore]);
+  }, [istantanea, onErrore, svuotaSospesi]);
 
   const prova = useCallback(async () => {
+    svuotaSospesi();
     const ora = attuale.current;
     try {
       // Prima si salva: la prova usa le risorse della bozza su disco, e chi
@@ -364,11 +441,38 @@ export function Studio({
     } catch (e) {
       onErrore(e);
     }
-  }, [salva, onProva, onErrore]);
+  }, [salva, onProva, onErrore, svuotaSospesi]);
+
+  /**
+   * I gesti della barra che salvano e installano, uno alla volta.
+   *
+   * Un doppio clic su «Prova» con la compilazione non ancora in memoria
+   * arrivava due volte a `iniziaProva`, e la seconda prendeva la bozza già
+   * indossata per «la skin di prima»; su «Salva e usa» faceva due istantanee e
+   * due installazioni (R14-8). Il ref ferma il secondo clic dello stesso giro,
+   * lo stato spegne i tasti finché il primo non ha finito.
+   */
+  const gestoInVolo = useRef(false);
+  const [inVolo, setInVolo] = useState(false);
+  const unoAllaVolta = useCallback(async (fai: () => Promise<void>) => {
+    if (gestoInVolo.current) return;
+    gestoInVolo.current = true;
+    setInVolo(true);
+    try {
+      await fai();
+    } finally {
+      gestoInVolo.current = false;
+      setInVolo(false);
+    }
+  }, []);
 
   // ── la tastiera ─────────────────────────────────────────────────────────
   useEffect(() => {
     const ascolta = (e: KeyboardEvent) => {
+      // Una finestrella aperta sopra lo Studio — una conferma, un dialogo —
+      // ha la tastiera: fino alla 3.2 Ctrl+Z annullava un passo del documento
+      // dietro la domanda, e scrivere nel dialogo accendeva la sonda.
+      if (modaleAperto()) return;
       const ora = attuale.current;
       const mod = e.ctrlKey || e.metaKey;
       const tasto = e.key.toLowerCase();
@@ -393,6 +497,7 @@ export function Studio({
       }
       if (mod && tasto === "s") {
         e.preventDefault();
+        svuotaSospesi();
         void salva()
           .then(istantaneaManuale)
           .catch(onErrore);
@@ -413,6 +518,8 @@ export function Studio({
         manda({ tipo: "scegli", selezione: null });
         return;
       }
+      // Le scorciatoie di una lettera, se chi lavora non le ha spente (D-69).
+      if (!ora.lettere) return;
       if (tasto === "i") {
         e.preventDefault();
         manda({ tipo: "imposta", campi: { sonda: !ora.sonda } });
@@ -433,7 +540,7 @@ export function Studio({
     };
     window.addEventListener("keydown", ascolta);
     return () => window.removeEventListener("keydown", ascolta);
-  }, [salva, istantaneaManuale, onErrore]);
+  }, [salva, istantaneaManuale, onErrore, svuotaSospesi]);
 
   const documento = useMemo(() => leggi(adesso), [adesso]);
   const parti = useMemo(
@@ -446,8 +553,8 @@ export function Studio({
     () =>
       registro === null
         ? null
-        : { manda, registro, parti, scrivi, scriviMolti, scriviTesto, rileggiFile, onErrore },
-    [registro, parti, scrivi, scriviMolti, scriviTesto, rileggiFile, onErrore],
+        : { manda, registro, parti, scrivi, scriviMolti, scriviTesto, rileggiFile, registraSospeso, onErrore },
+    [registro, parti, scrivi, scriviMolti, scriviTesto, rileggiFile, registraSospeso, onErrore],
   );
   const statoDelloStudio = useMemo<StatoDelloStudio>(
     () => ({ s, documento, file }),
@@ -503,10 +610,11 @@ export function Studio({
           data-chat={s.chat || undefined}
         >
           <BarraStudio
+            inVolo={inVolo}
             onEsci={esci}
-            onSalvaEUsa={() => void salvaEUsa()}
-            onEsporta={() => void esporta()}
-            onProva={() => void prova()}
+            onSalvaEUsa={() => void unoAllaVolta(salvaEUsa)}
+            onEsporta={() => void unoAllaVolta(esporta)}
+            onProva={() => void unoAllaVolta(prova)}
           />
           <aside className="studio3-sinistra" aria-label={t("studio3.left.aria")}>
             <Schede<SchedaSinistra>
@@ -545,9 +653,15 @@ export function Studio({
                 // Anche questa strada smonta lo Studio: la stessa regola di
                 // «Esci», o quel che il respiro del salvataggio non aveva
                 // ancora scritto andrebbe perso.
-                onVaiAImpostazioni={() => void poiSeSalvato(salva, onModelli, onErrore)}
+                onVaiAImpostazioni={() => {
+                  svuotaSospesi();
+                  void poiSeSalvato(salva, onModelli, onErrore);
+                }}
               />
             </div>
+          )}
+          {domandaUscita !== null && (
+            <ConfermaGesto domanda={domandaUscita} onChiudi={() => setDomandaUscita(null)} />
           )}
         </div>
       </ContestoStatoStudio>

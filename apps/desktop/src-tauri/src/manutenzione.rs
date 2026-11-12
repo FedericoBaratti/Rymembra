@@ -559,6 +559,316 @@ pub fn manutenzione_salute(app: AppHandle) -> Salute {
         .map_or_else(Salute::da_fare, |manutenzione| manutenzione.salute())
 }
 
+/// Apre nel gestore file la cartella dei dati: quella della libreria, **anche
+/// quando la libreria non si è aperta**.
+///
+/// # Perché esiste
+///
+/// Perché è il gesto che serve quando il database non si apre — una
+/// migrazione fermata a metà, un database scritto da una versione più nuova, un
+/// file rotto — e la fascia d'errore lo offre accanto alla frase. Lì dentro
+/// c'è `rymembra.db`, e accanto la copia di prima dell'aggiornamento
+/// (`rymembra.db.schema-NNN.bak`); e `%APPDATA%` in Esplora risorse è nascosta
+/// di serie, quindi un percorso scritto in una frase non porta nessuno da
+/// nessuna parte. È la stessa ragione di `diario_apri`.
+///
+/// Sul telefono la cartella dei dati è privata dell'app, e nessun gestore file
+/// ci entra: la finestra lì non offre il gesto, e il comando lo rifiuta.
+///
+/// # Errori
+///
+/// `internal.aborted` se la cartella non c'è da aprire — dopo un rifiuto del
+/// trasloco, o sul telefono — o se il gestore file rifiuta di aprirsi.
+#[tauri::command]
+pub fn manutenzione_apri_cartella_dati(app: AppHandle) -> Esito<()> {
+    let guasto = |causa: String| {
+        errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura della cartella dei dati".to_owned()),
+            })
+            .with_cause(causa),
+        )
+    };
+    let Some(dove) = app.try_state::<Stato>().and_then(|stato| {
+        stato
+            .cartella_della_libreria()
+            .map(std::path::Path::to_path_buf)
+    }) else {
+        return Err(guasto("nessuna cartella dei dati scelta".to_owned()));
+    };
+    #[cfg(target_os = "android")]
+    {
+        let _ = dove;
+        Err(guasto(
+            "sul telefono la cartella dei dati è privata".to_owned(),
+        ))
+    }
+    #[cfg(not(target_os = "android"))]
+    tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| guasto(err.to_string()))
+}
+
+/// La copia di prima dell'aggiornamento che «Torna alla copia» rimetterebbe.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopiaDiPrimaIpc {
+    /// Il nome del file, accanto al database: `rymembra.db.schema-038.bak`.
+    pub nome: String,
+    /// Lo schema che contiene.
+    pub versione: u32,
+    /// Quando è stata fatta, in millisecondi dall'epoca.
+    pub quando_ms: i64,
+    /// Lo schema di questa versione. Una copia più vecchia vuole, dopo il
+    /// ritorno, la versione di Rymembra di prima: questa la riaggiornerebbe.
+    pub versione_di_questa: u32,
+    /// Il nome che prenderà la libreria di adesso, messa da parte.
+    pub messa_da_parte: String,
+}
+
+/// Il nome di un file, per la finestra.
+fn nome_del_file(percorso: &std::path::Path) -> String {
+    percorso
+        .file_name()
+        .map(|nome| nome.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// La copia di prima dell'aggiornamento da offrire, se ce n'è una.
+///
+/// Non apre il database, ed è il punto: la scheda la chiede anche quando la
+/// libreria non si è aperta, che è il caso in cui il gesto serve di più. Legge
+/// soltanto la cartella dei dati.
+///
+/// Sul telefono niente: Android non installa una versione più vecchia senza
+/// disinstallare, e disinstallare porta via libreria e copia insieme.
+#[tauri::command]
+pub fn manutenzione_copia_di_prima(app: AppHandle) -> Option<CopiaDiPrimaIpc> {
+    if cfg!(mobile) {
+        return None;
+    }
+    let stato = app.try_state::<Stato>()?;
+    let percorso = stato.cartella_della_libreria()?.join(NOME_DATABASE);
+    let copia = db::copia_di_prima(&percorso)?;
+    Some(CopiaDiPrimaIpc {
+        nome: nome_del_file(&copia.percorso),
+        versione: copia.versione,
+        quando_ms: copia.quando_ms,
+        versione_di_questa: db::LATEST_VERSION,
+        messa_da_parte: nome_del_file(&db::nome_messa_da_parte(&percorso)),
+    })
+}
+
+/// «Torna alla copia di prima dell'aggiornamento» (D-55): rimette la copia,
+/// mette da parte la libreria di adesso, e chiude Rymembra.
+///
+/// # Perché si chiude
+///
+/// Perché la copia rimessa è quasi sempre di uno schema più vecchio, e questa
+/// versione, se la riaprisse, la riaggiornerebbe subito: il ritorno ha senso
+/// solo con la versione di prima, da installare a programma chiuso. Il
+/// dialogo prima del gesto lo dice. Chiudere è la sequenza di sempre, quella
+/// di «Esci» dal vassoio: la libreria a quel punto è già chiusa
+/// ([`crate::stato::torna_alla_copia_di_prima`]), e i passi che la vogliono lo
+/// annotano e vanno avanti.
+///
+/// # Errori
+///
+/// Quelli del ritorno, e allora niente è cambiato e Rymembra resta aperto;
+/// `internal.aborted` sul telefono.
+#[tauri::command]
+pub async fn manutenzione_torna_alla_copia(app: AppHandle) -> Esito<()> {
+    if cfg!(mobile) {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("ritorno alla copia di prima dell'aggiornamento".to_owned()),
+            })
+            .with_cause("non sul telefono"),
+        ));
+    }
+    in_disparte("ritorno alla copia di prima", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(fuori_servizio());
+        };
+        match crate::stato::torna_alla_copia_di_prima(&stato) {
+            Ok(ritorno) => {
+                nota!(
+                    "[manutenzione] rimessa la copia di prima dell'aggiornamento {} (schema {}); la libreria di prima è in {}",
+                    ritorno.copia.percorso.display(),
+                    ritorno.copia.versione,
+                    ritorno.messa_da_parte.display()
+                );
+                crate::spegnimento::chiedi();
+                app.exit(0);
+                Ok(())
+            }
+            Err(err) => {
+                nota!(
+                    "[manutenzione] ritorno alla copia di prima non riuscito codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+// ── la libreria di prima, per la copia del Microsoft Store ─────────────────
+
+/// Dove si ricorda che la proposta è stata fatta: `copiata` o `rifiutata`.
+/// Si propone una volta sola.
+const CHIAVE_LIBRERIA_DI_PRIMA: &str = "store.libreria_di_prima";
+
+/// Quel che la proposta mostra.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibreriaDiPrimaIpc {
+    /// Dove sta la libreria da prendere.
+    pub cartella: String,
+}
+
+/// La libreria che la copia del Microsoft Store può prendere, se va proposta
+/// adesso (D-97).
+///
+/// Dalla 3.2.1 la copia del Store tiene una libreria sua (vedi
+/// `cartella_di_serie` in `lib.rs`). Quella che c'era — della copia installata
+/// dal sito, o sua prima dell'aggiornamento — si propone al primo avvio, una
+/// volta sola, e solo se la libreria di qui è ancora vuota: niente brani e
+/// niente playlist. Una libreria che qualcuno ha già cominciato a riempire non
+/// si sostituisce con una domanda.
+///
+/// # Errori
+///
+/// `db.*` se la libreria non risponde. Fuori dal Store, e senza una libreria
+/// da prendere, `None`.
+#[tauri::command]
+pub async fn store_libreria_di_prima(app: AppHandle) -> Esito<Option<LibreriaDiPrimaIpc>> {
+    let Some(cartella) = app
+        .try_state::<crate::LibreriaDiPrima>()
+        .and_then(|libreria| libreria.0.clone())
+    else {
+        return Ok(None);
+    };
+    in_disparte("libreria di prima", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Ok(None);
+        };
+        let da_proporre = con_libreria(&stato, |libreria| {
+            let chiesta =
+                rymembra_app::settings::read(&libreria.connection, CHIAVE_LIBRERIA_DI_PRIMA)?
+                    .is_some();
+            let vuota: bool = libreria
+                .connection
+                .query_row(
+                    "SELECT NOT EXISTS (SELECT 1 FROM tracks)
+                        AND NOT EXISTS (SELECT 1 FROM playlists)",
+                    [],
+                    |riga| riga.get(0),
+                )
+                .map_err(|err| db::codice_da_sqlite("la libreria è vuota?", &err))?;
+            Ok(!chiesta && vuota)
+        })?;
+        Ok(da_proporre.then(|| LibreriaDiPrimaIpc {
+            cartella: cartella.display().to_string(),
+        }))
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Prende la [`LibreriaDiPrimaIpc`] proposta: la copia nella libreria di qui
+/// (`trasloco::copia_la_libreria_di`, l'originale non si tocca) e chiude
+/// Rymembra, che riaperto la trova al suo posto.
+///
+/// Si chiude perché quel che è partito all'avvio — le cartelle sorvegliate,
+/// lo specchio del cloud, la coda — viene dalla libreria vuota di prima.
+///
+/// # Errori
+///
+/// `library.scanBusy` durante una scansione; quelli della copia, e allora la
+/// libreria di qui è com'era e Rymembra resta aperto.
+#[tauri::command]
+pub async fn store_copia_libreria_di_prima(app: AppHandle) -> Esito<()> {
+    let Some(da) = app
+        .try_state::<crate::LibreriaDiPrima>()
+        .and_then(|libreria| libreria.0.clone())
+    else {
+        return Err(errore(fuori_servizio()));
+    };
+    in_disparte("copia della libreria di prima", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(fuori_servizio());
+        };
+        let Some(a) = stato.cartella_dati().map(std::path::Path::to_path_buf) else {
+            return Err(fuori_servizio());
+        };
+        let Some(_turno) = stato.turno_di_manutenzione() else {
+            return Err(AppError::new(ErrorCode::LibraryScanBusy));
+        };
+        let esito = con_libreria(&stato, |libreria| {
+            let copiata =
+                rymembra_app::trasloco::copia_la_libreria_di(&mut libreria.connection, &da, &a)?;
+            rymembra_app::settings::write(
+                &libreria.connection,
+                CHIAVE_LIBRERIA_DI_PRIMA,
+                "copiata",
+            )?;
+            Ok(copiata)
+        });
+        match esito {
+            Ok(copiata) => {
+                nota!(
+                    "[manutenzione] libreria di prima copiata da {} file={} gia_presenti={}",
+                    da.display(),
+                    copiata.file,
+                    copiata.gia_presenti
+                );
+                crate::spegnimento::chiedi();
+                app.exit(0);
+                Ok(())
+            }
+            Err(err) => {
+                nota!(
+                    "[manutenzione] copia della libreria di prima non riuscita codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// «Comincia da capo»: la proposta non si rifà.
+///
+/// # Errori
+///
+/// `db.*` se la libreria non risponde.
+#[tauri::command]
+pub async fn store_rifiuta_libreria_di_prima(app: AppHandle) -> Esito<()> {
+    in_disparte("libreria di prima rifiutata", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(fuori_servizio());
+        };
+        con_libreria(&stato, |libreria| {
+            rymembra_app::settings::write(
+                &libreria.connection,
+                CHIAVE_LIBRERIA_DI_PRIMA,
+                "rifiutata",
+            )
+        })
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
 /// Pulisce la cache delle copertine adesso, e dice quanto ha liberato.
 ///
 /// # Errori

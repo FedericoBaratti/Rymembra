@@ -27,7 +27,7 @@ import type {
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -412,8 +412,14 @@ export const ipc = {
     invoke<Salvataggio>("studio_salva", { id, sorgente, origine }),
   // Butta la bozza e restituisce quel che dice il pacchetto: la sorgente torna
   // di qui e non da una seconda chiamata, così non esiste un istante in cui la
-  // finestra mostra un documento che non sta più da nessuna parte.
-  studioScarta: (id: string) => invoke<string>("studio_scarta", { id }),
+  // finestra mostra un documento che non sta più da nessuna parte. `sorgente`
+  // è il testo dell'editor: il nucleo ne prende l'istantanea «scartata» e ci
+  // mette accanto i file aggiunti e la conversazione.
+  studioScarta: (id: string, sorgente: string) => invoke<string>("studio_scarta", { id, sorgente }),
+  // Le scorciatoie di una lettera dello Studio («i», «f», «1»–«4»): accese di
+  // serie, si spengono (D-69).
+  studioLettere: () => invoke<boolean>("studio_lettere"),
+  studioLettereImposta: (attive: boolean) => invoke<void>("studio_lettere_imposta", { attive }),
   // Vuole l'`id` perché il manifest è quello dell'editor ma le risorse sono
   // quelle del pacchetto: senza, una skin col suo carattere dentro lo perdeva
   // ogni volta che usciva da qui.
@@ -990,6 +996,10 @@ export const ipc = {
     invoke<DispositivoSincronia[]>("sincronia_dispositivi"),
   sincroniaAccoppia: (id: string, nome: string | null) =>
     invoke<DispositivoSincronia[]>("sincronia_accoppia", { id, nome }),
+  // Solo il nome: la fiducia la dà «Accetta». Lo stato aggiornato arriva anche
+  // con l'evento `sincronia:stato`.
+  sincroniaRinomina: (id: string, nome: string | null) =>
+    invoke<DispositivoSincronia[]>("sincronia_rinomina", { id, nome }),
   sincroniaDimentica: (id: string) =>
     invoke<DispositivoSincronia[]>("sincronia_dimentica", { id }),
 
@@ -1089,6 +1099,24 @@ export const ipc = {
   manutenzioneSalute: () => invoke<SaluteDatabase>("manutenzione_salute"),
   manutenzionePulisciCopertine: () =>
     invoke<EsitoPulizia>("manutenzione_pulisci_copertine"),
+  // La cartella dei dati nel gestore file, anche quando la libreria non si è
+  // aperta: è il gesto della fascia d'errore per i guasti del database. Non
+  // sul telefono, dove la cartella è privata dell'app.
+  manutenzioneApriCartellaDati: () =>
+    invoke<void>("manutenzione_apri_cartella_dati"),
+  // «Torna alla copia di prima dell'aggiornamento»: la copia da offrire, letta
+  // senza aprire il database, e il gesto, che se riesce chiude Rymembra.
+  manutenzioneCopiaDiPrima: () =>
+    invoke<CopiaDiPrima | null>("manutenzione_copia_di_prima"),
+  manutenzioneTornaAllaCopia: () => invoke<void>("manutenzione_torna_alla_copia"),
+  // La copia del Microsoft Store ha una libreria sua: al primo avvio propone
+  // quella che c'era. Copiarla chiude Rymembra; «Comincia da capo» non la
+  // ripropone più.
+  storeLibreriaDiPrima: () =>
+    invoke<LibreriaDiPrima | null>("store_libreria_di_prima"),
+  storeCopiaLibreriaDiPrima: () => invoke<void>("store_copia_libreria_di_prima"),
+  storeRifiutaLibreriaDiPrima: () =>
+    invoke<void>("store_rifiuta_libreria_di_prima"),
 
   // I documenti pubblici, nel browser di sistema. Il nome e non l'indirizzo: di
   // là c'è un elenco chiuso, e un comando che aprisse l'indirizzo che gli si
@@ -1340,8 +1368,8 @@ export const ipc = {
   // Fuori da Android rispondono `internal.aborted`: chi li chiama guarda prima
   // `ANDROID` in `piattaforma.ts`. I selettori passano da `dialoghi.ts`.
   telefonoPermessi: () => invoke<PermessiTelefono>("telefono_permessi"),
-  // Il dialogo di sistema per audio, immagini e notifiche; torna con lo stato
-  // dopo la risposta.
+  // Il dialogo di sistema per leggere la musica (le notifiche si chiedono a
+  // parte, quando servono); torna con lo stato dopo la risposta.
   telefonoChiediPermessi: () => invoke<PermessiTelefono>("telefono_chiedi_permessi"),
   // Apre la pagina delle impostazioni: il permesso si rilegge al ritorno.
   telefonoChiediTuttiIFile: () => invoke<void>("telefono_chiedi_tutti_i_file"),

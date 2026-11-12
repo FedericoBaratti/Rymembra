@@ -14,12 +14,14 @@
  */
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 
+import type { NodoScafale } from "../ipc";
 import { t, tSe } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useStudio } from "./contesto";
 import { parteScelta, testo, type Zoom } from "./negozio";
 import { PAGINE, SOVRAPPOSIZIONI, type Pagina, type Sovrapposizione } from "./scena";
+import { stabile } from "./stabile";
 import { Tela } from "./Tela";
 
 export function Centro() {
@@ -37,6 +39,10 @@ export function Centro() {
   const scura = s.tema === "base" ? scuraDiBase : !scuraDiBase;
   const scelta = parteScelta(s);
   const layout = valido?.layout ?? null;
+  // Lo scafale per contenuto e non per identità: vedi `stabile.ts` (R14-11).
+  const ultimoScafale = useRef<NodoScafale | null>(null);
+  const scafale = stabile(ultimoScafale.current, layout?.shell ?? null);
+  ultimoScafale.current = scafale;
   const rotto =
     s.esito !== null && s.esito.errori.length > 0 && s.validato === testo(s) ? s.esito : null;
 
@@ -81,7 +87,7 @@ export function Centro() {
           tema={scura ? "dark" : "light"}
           densita={layout?.density ?? "comfortable"}
           movimento={layout?.motion ?? "full"}
-          shell={layout?.shell ?? null}
+          shell={scafale}
           scena={s.scena}
           larghezza={s.larghezza}
           zoom={s.zoom}
