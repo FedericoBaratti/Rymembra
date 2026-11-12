@@ -19,7 +19,8 @@
 //! # Quel che non è un brano
 //!
 //! Ogni voce ha tre caselle e due sono quasi sempre nulle. `episode` è un
-//! podcast; `localTrack` è un file che l'utente aveva aggiunto a Spotify dal
+//! podcast (e `audiobook`, dove c'è, un audiolibro: si contano insieme);
+//! `localTrack` è un file che l'utente aveva aggiunto a Spotify dal
 //! proprio disco — e quello è il caso interessante, perché **è già suo**: molto
 //! probabilmente è ancora lì. Non porta però né un percorso utilizzabile né un
 //! identificativo, quindi l'unica cosa onesta è trattarlo come un brano
@@ -46,7 +47,7 @@ use crate::cronologia::id_da_uri;
 pub struct Lette {
     /// Le playlist riconosciute, con i loro brani.
     pub playlist: Vec<PlaylistSpotify>,
-    /// Quante voci erano podcast.
+    /// Quante voci erano podcast o audiolibri: quel che non è musica.
     pub podcast: usize,
     /// Quante voci non avevano né un brano né un episodio riconoscibile.
     pub illeggibili: usize,
@@ -132,7 +133,12 @@ enum Esito {
 }
 
 fn voce_a_brano(item: &Value) -> Esito {
-    if item.get("episode").is_some_and(|e| !e.is_null()) {
+    // Una puntata o un audiolibro: non sono musica, si contano insieme e non
+    // entrano.
+    if ["episode", "audiobook"]
+        .iter()
+        .any(|campo| item.get(campo).is_some_and(|e| !e.is_null()))
+    {
         return Esito::Podcast;
     }
 
@@ -245,6 +251,25 @@ mod prove {
             Some(1),
             "la playlist esiste comunque, con quel che era musica"
         );
+    }
+
+    #[test]
+    fn un_audiolibro_in_playlist_si_conta_e_non_entra() {
+        // Come una puntata: non è musica, e contarlo fra gli illeggibili
+        // manderebbe a cercare un guasto che non c'è.
+        let corpo = json!({"playlists": [{
+            "name": "Mista",
+            "items": [
+                {"track": null, "episode": null, "localTrack": null,
+                 "audiobook": {"audiobookName": "Un libro"}},
+                {"track": {"trackName": "Song 2", "artistName": "Blur"},
+                 "episode": null, "localTrack": null, "audiobook": null}
+            ]
+        }]});
+        let lette = leggi(&corpo);
+        assert_eq!(lette.illeggibili, 0);
+        assert_eq!(lette.podcast, 1);
+        assert_eq!(lette.playlist.first().map(|p| p.brani.len()), Some(1));
     }
 
     #[test]
