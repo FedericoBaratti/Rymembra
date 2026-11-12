@@ -26,16 +26,19 @@ want it there.
 ## Which versions get fixes
 
 The latest published one, and nothing else. There are no maintenance branches:
-anyone on an older version updates, and the updater says so on its own within
-half an hour.
+anyone on an older version updates. Rymembra says so on its own: the
+installer’s copy within half an hour while it runs, the phone within six hours
+while the app runs; the Microsoft Store copy is updated by the Store.
 
 ## What counts as a vulnerability here
 
-Rymembra is a local application with no account and no Rymembra server. There's no network
-surface listening — with **two** exceptions, and they're worth naming — and
-there is no other user's data to expose. The things that really matter are
-six, and they're the ones that can get code executed or carry off something
-that isn't ours.
+Rymembra is a local application with no account and no Rymembra server.
+There’s no network surface listening — with three exceptions, all closed
+until used and worth naming: the OAuth return port, “Listen together” while
+a PC hosts, and the device link while “Reachable from the internet” is on;
+on the phone, add the components other apps can reach — and there is no
+other user’s data to expose. The things that really matter are below, and they’re the ones that
+can get code executed or carry off something that isn’t ours.
 
 **The update chain.** It's the only part of Rymembra that downloads an executable
 and launches it. The installer is verified with minisign against the public key
