@@ -1258,36 +1258,20 @@ impl StatoLettore {
         // database su questa strada: da qui in poi vive nella copia in memoria
         // qui sotto. Un database che non risponde vale «predefinito di
         // sistema», che è il ripiego di tutto il resto del modulo.
-        // Si gira nel `setup`, cioè sul filo della finestra: è il momento di
-        // segnarlo. Vedi [`FILO_DELLA_FINESTRA`].
+        // Si gira nel resto dell'avvio, sul filo della finestra: è il momento
+        // di segnarlo. Vedi [`FILO_DELLA_FINESTRA`].
         let _ = FILO_DELLA_FINESTRA.set(std::thread::current().id());
         let voluta = uscita_scelta(app);
-        let motore = apri_motore(app, voluta.clone());
-        let lettore = motore.map(|motore| Lettore {
-            motore,
-            coda: Queue::new(),
-            ascolto: None,
-            volume: Volume::default(),
-            eq: Equalizzazione::default(),
-            normalizzazione: Normalizzazione::default(),
-            autoplay: false,
-            dissolvenza_s: 0,
-            latenza_ms: 0,
-            motivo_prossimo: None,
-            coda_di_prima: None,
-            coda_curata: false,
-            coda_del_giro: None,
-            pausa_chiesta: (0, false),
-            in_canna: None,
-            ritirato: None,
-            in_apertura: None,
-            parte_appena_aperto: None,
-            non_aperto: None,
-            annuncio_atteso: None,
-            puntina_a_vuoto: None,
-            sessione: None,
-            fermato_della_sessione: false,
-        });
+        // Il dispositivo **non** si apre qui (R23-9). Aprirlo parla col
+        // sistema, e un driver piantato — le cuffie Bluetooth a metà
+        // negoziazione, un DAC USB che si riavvia — lo teneva fino ai venti
+        // secondi di `APERTURA_USCITA`, sul filo della finestra: la finestra
+        // non compariva, e sul telefono era un ANR. Il lettore nasce «in
+        // apertura», e lo apre [`apri_il_primo_motore`] su un filo suo, per la
+        // stessa strada di un motore mai aperto (`riapri_davvero`), che rimette
+        // anche la coda di ieri.
+        let lettore: Result<Lettore, AppError> =
+            Err(AppError::new(ErrorCode::PlaybackEngineOpening));
         let (prepara, orecchio) = std::sync::mpsc::channel();
         let (sveglia_dispositivi, orecchio_dispositivi) = std::sync::mpsc::channel();
         let seguito = avvia_seguito(app);
@@ -1421,6 +1405,11 @@ pub fn riga_di_avvio_lettore(stato: &StatoLettore) {
                     lettore.motore.era_predefinito(),
                 )
             );
+        }
+        // Non ancora: si apre su un filo suo. La riga vera arriva da
+        // `riapri_davvero` («[avvio] audio aperto»), o da qui se non si apre.
+        Err(err) if err.code().kind() == ErrorCodeKind::PlaybackEngineOpening => {
+            nota!("[avvio] audio: si apre in disparte, dopo la libreria");
         }
         Err(err) => nota!(
             "[avvio] audio NON aperto codice={} causa={}",

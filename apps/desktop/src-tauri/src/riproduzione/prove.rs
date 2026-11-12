@@ -1229,3 +1229,19 @@ fn un_formato_che_fa_cadere_l_apertura_non_si_riprova() {
     assert_eq!(flusso.code().kind(), ErrorCodeKind::NetTimeout);
     assert!(flusso.is_retryable());
 }
+
+/// R23-9: l'avvio non apre il dispositivo audio sul filo della finestra.
+///
+/// `StatoLettore::avvia` gira nel resto dell'avvio, sul filo della finestra:
+/// aprirci il motore voleva dire, su un driver piantato, fino a venti secondi
+/// senza finestra (e un ANR sul telefono). Il lettore nasce «in apertura» e lo
+/// apre `apri_il_primo_motore`, su un filo suo.
+#[test]
+fn l_avvio_non_apre_il_dispositivo_sul_filo_della_finestra() {
+    let avvia = corpo(include_str!("mod.rs"), "avvia").expect("StatoLettore::avvia");
+    assert!(
+        !avvia.contains("apri_motore("),
+        "StatoLettore::avvia apre il dispositivo sul filo della finestra"
+    );
+    assert!(avvia.contains("ErrorCode::PlaybackEngineOpening"));
+}

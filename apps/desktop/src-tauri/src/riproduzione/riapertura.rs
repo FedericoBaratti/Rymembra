@@ -13,7 +13,7 @@
 use rymembra_app::playback::{Equalizzazione, Normalizzazione, Volume};
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::queue::Queue;
-use tauri::State;
+use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -429,6 +429,14 @@ fn riapri_davvero(
     // dopo è dietro il lucchetto, e serve a [`riprendi_dov_era`] che gira
     // quando il lucchetto è già stato lasciato. Sono due interi `Copy`.
     let formato = motore.formato();
+    // Il primo motore della sessione — l'avvio, che lo apre qui (R23-9) — si
+    // racconta come l'avvio, non come una riapertura.
+    let primo = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_err_and(|err| err.code().kind() == ErrorCodeKind::PlaybackEngineOpening);
     // La riga gemella di `riga_di_avvio_lettore`: le cuffie Bluetooth si
     // collegano quasi sempre a programma già aperto, e senza questa il diario
     // direbbe soltanto com'era l'uscita all'avvio.
@@ -440,7 +448,11 @@ fn riapri_davvero(
     nota!(
         "{}",
         riga_dell_uscita(
-            "[riproduzione] audio riaperto",
+            if primo {
+                "[avvio] audio aperto"
+            } else {
+                "[riproduzione] audio riaperto"
+            },
             motore.dispositivo(),
             formato,
             motore.su_bluetooth(),
@@ -672,6 +684,85 @@ fn riapri_davvero(
     } else {
         Ok(Riaperta::Vuota)
     }
+}
+
+/// Apre il primo motore della sessione su un filo suo, e poi avvia il
+/// sorvegliante dei dispositivi (R23-9).
+///
+/// # Perché non nel `setup`
+///
+/// Aprire un dispositivo parla col sistema, e su un driver piantato — le
+/// cuffie Bluetooth a metà negoziazione, un DAC USB che si riavvia — l'attesa
+/// arriva ai venti secondi di `APERTURA_USCITA`. Sul filo della finestra
+/// voleva dire nessuna finestra per tutto quel tempo, e un secondo doppio clic
+/// che finiva all'istanza unica, ferma sullo stesso filo; sul telefono, oltre
+/// i cinque secondi, un ANR.
+///
+/// # La strada è quella del motore mai aperto
+///
+/// Il lettore nasce `playback.engineOpening` ([`StatoLettore::avvia`]), e qui
+/// si apre come se l'avvio fosse stato senza scheda audio e la scheda fosse
+/// arrivata adesso: [`riapri_su`], che nel ramo del motore mai aperto
+/// costruisce il lettore **completo** — coda di ieri, volume, curva — e solo
+/// dopo lo pubblica, con `manda_stato`. Nessuna seconda copia di quella strada.
+///
+/// # Se non si apre
+///
+/// Al posto di «in apertura» va il guasto vero, `playback.engineUnavailable`
+/// o quel che il sistema ha detto: la finestra lo mostra nella fascia, come
+/// all'avvio senza scheda, e il sorvegliante riaprirà quando un'uscita
+/// arriva. Il sorvegliante parte **dopo** questo primo tentativo, e non
+/// insieme: due aperture in gara si escluderebbero, e quella perdente non
+/// saprebbe dire se il lettore è ancora «in apertura».
+pub fn apri_il_primo_motore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
+    let avviato = std::thread::Builder::new()
+        .name("rymembra-audio-avvio".to_owned())
+        .spawn(move || {
+            if let Some(stato) = app.try_state::<StatoLettore>() {
+                let esito = crate::stato::sorvegliato("rymembra-audio-avvio", || {
+                    riapri_su(&app, &stato, None, Modo::AMano)
+                });
+                let guasto = match esito {
+                    Some(Ok(_)) => None,
+                    Some(Err(err)) => Some(err),
+                    None => Some(
+                        AppError::new(ErrorCode::PlaybackEngineUnavailable)
+                            .with_cause("l'apertura dell'uscita è caduta in panico"),
+                    ),
+                };
+                if let Some(err) = guasto {
+                    primo_guasto(&app, &stato, err);
+                }
+            }
+            super::avvia_sorveglianza(app, orecchio);
+        });
+    if let Err(err) = avviato {
+        nota!("[riproduzione] il filo dell'apertura dell'audio non parte: {err}");
+    }
+}
+
+/// Il primo motore non si è aperto: il lettore passa da «in apertura» al
+/// guasto vero, e la finestra lo sa.
+///
+/// Solo se è ancora «in apertura»: un gesto a mano arrivato nel frattempo
+/// («Riapri», un'uscita scelta) può aver già aperto un motore, o scritto un
+/// guasto suo, e quello vale di più.
+fn primo_guasto(app: &tauri::AppHandle, stato: &StatoLettore, err: AppError) {
+    {
+        let mut guardia = stato
+            .lettore
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ancora_in_apertura = guardia
+            .as_ref()
+            .is_err_and(|attuale| attuale.code().kind() == ErrorCodeKind::PlaybackEngineOpening);
+        if !ancora_in_apertura {
+            return;
+        }
+        *guardia = Err(err.clone());
+    }
+    super::riga_di_avvio_lettore(stato);
+    app.emetti("riproduzione:errore", errore(err));
 }
 
 /// Quanto la riapertura aspetta la libreria per rileggere le latenze.

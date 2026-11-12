@@ -92,6 +92,7 @@ use std::path::PathBuf;
 use rymembra_app::trasloco;
 use rymembra_domain::eredita;
 use rymembra_domain::errors::{AppError, ErrorCode};
+use spegnimento::Emette as _;
 use tauri::Manager as _;
 use tauri_plugin_dialog::{DialogExt as _, MessageDialogKind};
 
@@ -126,6 +127,18 @@ const ATTESA_PRIMO_COLORE: std::time::Duration = std::time::Duration::from_secs(
 fn pronto(finestra: tauri::Window) {
     let _ = finestra.show();
     aggiornamenti::finestra_pronta(finestra.app_handle());
+}
+
+/// Mostra la finestra e basta, senza aspettare skin e tema.
+///
+/// La chiama l'attesa dell'apertura (`AttesaDellaLibreria.tsx`) quando la libreria ci mette
+/// più di un attimo: chi aspetta una migrazione deve vedere che Rymembra sta
+/// lavorando. Non è [`pronto`], che dà anche il via al controllo degli
+/// aggiornamenti: quello vuole la libreria, e parte quando la finestra vera è
+/// pronta.
+#[tauri::command]
+fn finestra_mostra(finestra: tauri::Window) {
+    let _ = finestra.show();
 }
 
 /// # La barra del titolo la disegna la pagina
@@ -261,12 +274,109 @@ fn finestra_chiudi(finestra: tauri::Window) {
     let _ = finestra.close();
 }
 
+/// Apre la libreria su un filo suo, e quando è aperta fa il resto dell'avvio
+/// sul filo della finestra.
+///
+/// # Perché fuori dal `setup`
+///
+/// Il `setup` gira sul filo della finestra prima che il ciclo degli eventi
+/// parta: finché non ritorna non si disegna niente, e la rete di sicurezza che
+/// mostra la finestra parte alla sua fine. Lì dentro una migrazione lunga — la
+/// copia di prima, gli schemi nuovi su una libreria da un gigabyte, un disco
+/// lento — era un processo invisibile per secondi o minuti, e un secondo
+/// doppio clic finiva all'istanza unica, ferma sullo stesso filo (R06b-5).
+/// Adesso il `setup` ritorna subito, la finestra compare e dice «Apro la
+/// libreria…» o «Aggiorno la libreria…» (`AttesaDellaLibreria.tsx`), e il lavoro lungo
+/// lo fa il filo `rymembra-apertura`.
+///
+/// # L'ordine resta quello di prima
+///
+/// Il trasloco dei dati di prima e il diario restano nel `setup`, prima di
+/// tutto. Poi, su questo filo: la libreria — la copia di prima delle
+/// migrazioni, le migrazioni, l'ottimizzazione — e la riga di avvio. Poi, sul
+/// filo della finestra come sempre, [`avvia_dopo_la_libreria`]: le cartelle
+/// dal cloud, il lettore, i fili di sottofondo, il vassoio, nello stesso ordine
+/// e sullo stesso filo di quando stavano nel `setup`. Solo alla fine il
+/// cancello si apre e la finestra monta l'applicazione: gli stati che i comandi
+/// cercano ci sono tutti, come quando il `setup` era finito.
+///
+/// # Se qualcosa va storto
+///
+/// Un panico nell'apertura è un guasto della libreria, non un filo morto con
+/// la finestra ferma su «Apro la libreria…» per sempre. Un filo che non parte
+/// apre la libreria qui, sul filo della finestra, com'era.
+fn apri_e_avvia(app: &tauri::AppHandle, data_dir: PathBuf) {
+    let mano = app.clone();
+    let cartella = data_dir.clone();
+    let avviato = std::thread::Builder::new()
+        .name("rymembra-apertura".to_owned())
+        .spawn(move || {
+            let Some(stato) = mano.try_state::<stato::Stato>() else {
+                return;
+            };
+            apri_la_libreria(&mano, &stato, cartella);
+            // Il resto sul filo della finestra, dove stava: i controlli
+            // multimediali e i pulsanti della miniatura si appendono alla
+            // finestra, e l'ordine fra i passi è quello di sempre.
+            let dopo = mano.clone();
+            if let Err(err) = mano.run_on_main_thread(move || finisci_l_avvio(&dopo)) {
+                nota!("[avvio] il filo della finestra non risponde, l'avvio si ferma: {err}");
+            }
+        });
+    if let Err(err) = avviato {
+        nota!("[avvio] il filo dell'apertura non parte, la libreria si apre qui: {err}");
+        if let Some(stato) = app.try_state::<stato::Stato>() {
+            apri_la_libreria(app, &stato, data_dir);
+        }
+        finisci_l_avvio(app);
+    }
+}
+
+/// L'apertura vera: la fase da dire alla finestra, la libreria, la riga di
+/// avvio. Un panico qui dentro diventa il guasto della libreria.
+fn apri_la_libreria(app: &tauri::AppHandle, stato: &stato::Stato, data_dir: PathBuf) {
+    let da = stato::versione_da_aggiornare(&data_dir.join(stato::NOME_DATABASE));
+    if let Some(da) = da {
+        stato.in_aggiornamento(da);
+    }
+    stato::riga_dell_apertura(da);
+    app.emetti("libreria:stato", stato.fase());
+    let aperta = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stato::apri_libreria(data_dir)
+    }))
+    .unwrap_or_else(|panico| {
+        let perche = panico
+            .downcast_ref::<&str>()
+            .map(|testo| (*testo).to_owned())
+            .or_else(|| panico.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panico senza messaggio".to_owned());
+        Err(AppError::new(ErrorCode::InternalUnexpected {
+            detail: Some("apertura della libreria".to_owned()),
+        })
+        .with_cause(perche))
+    });
+    stato.completa(aperta);
+    // **Prima** di disegnare, come sempre: se l'apertura è fallita è l'unica
+    // traccia che resta quando la finestra mostra solo l'errore.
+    stato::riga_di_avvio(stato);
+}
+
+/// Il resto dell'avvio, e poi il cancello: da qui la finestra monta
+/// l'applicazione. Sul filo della finestra.
+fn finisci_l_avvio(app: &tauri::AppHandle) {
+    avvia_dopo_la_libreria(app);
+    if let Some(stato) = app.try_state::<stato::Stato>() {
+        let fase = stato.apri_il_cancello();
+        app.emetti("libreria:stato", fase);
+    }
+}
+
 /// Il resto dell'avvio: quel che vuole la libreria aperta, nell'ordine di sempre.
 ///
 /// Tutto quel che il `setup` faceva dopo aver registrato la libreria: le
 /// cartelle dal cloud, il lettore, i controlli multimediali, i fili di
-/// sottofondo, il vassoio, la sorveglianza. Spostata qui così com'era: il
-/// `setup` la chiama nello stesso punto di prima.
+/// sottofondo, il vassoio, la sorveglianza. Gira sul filo della finestra, come
+/// quando stava nel `setup`: vedi [`apri_e_avvia`].
 fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // Le cartelle dal cloud **subito dopo** la libreria: lo specchio si
     // carica da lì, e prima di ogni scansione — anche quella del lettore
@@ -276,9 +386,9 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // cambiata su OneDrive visibile all'avvio.
     nuvola_musica::avvia(app);
 
-    // Il lettore **dopo** la libreria: apre il dispositivo audio e
-    // rilegge la coda di ieri, e per la seconda cosa il database deve
-    // già essere aperto.
+    // Il lettore **dopo** la libreria. Il dispositivo audio non si apre qui
+    // ma su un filo suo, [`riproduzione::apri_il_primo_motore`] più sotto,
+    // che rimette anche la coda di ieri (R23-9).
     // Lo stato dei controlli multimediali **prima** del lettore, anche
     // se a riempirlo si farà più sotto. Il filo dell'orologio parte
     // insieme al lettore e chiama `manda_stato` da sé quando il
@@ -288,12 +398,11 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     app.manage(media::StatoMedia::nuovo());
     // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
     // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
-    // ci siano, e il primo stato del lettore arriva da `riprendi_coda`
-    // qui sotto. Vedi `barra`.
+    // ci siano, e il primo stato del lettore arriva quando il dispositivo
+    // si apre. Vedi `barra`.
     app.manage(barra::StatoBarra::nuovo());
 
-    let (lettore, orecchio, orecchio_dispositivi) =
-        riproduzione::StatoLettore::avvia(app);
+    let (lettore, orecchio, orecchio_dispositivi) = riproduzione::StatoLettore::avvia(app);
     riproduzione::riga_di_avvio_lettore(&lettore);
     app.manage(lettore);
     // Il filo che apre il brano successivo, insieme agli altri del
@@ -306,7 +415,6 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // si rifanno con lui. Il suo filo parte più sotto, dopo «Ascolta
     // insieme»; lo stato da solo non apre niente.
     app.manage(lontano::StatoLontano::nuovo());
-    riproduzione::riprendi_coda(app);
     riproduzione::avvia_orologio(app.clone());
     // Sul telefono lo spettro non c'è (`InRiproduzione.tsx`,
     // `CON_SPETTRO`), e un filo che si sveglia quattro volte al secondo
@@ -315,11 +423,12 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // la musica continua anche a schermata chiusa.
     #[cfg(desktop)]
     riproduzione::avvia_spettro(app.clone());
-    // Il filo che guarda le uscite audio andare e venire. Ultimo dei
-    // quattro, e non conta nemmeno qui: la prima passata la fa da sé
-    // appena parte, e chi la pungola prima che sia in piedi trova un
-    // canale che tiene la spinta finché non c'è nessuno a raccoglierla.
-    riproduzione::avvia_sorveglianza(app.clone(), orecchio_dispositivi);
+    // Il dispositivo audio, su un filo suo, e dopo il primo tentativo il
+    // filo che guarda le uscite andare e venire. Ultimo dei quattro, e non
+    // conta nemmeno qui: chi pungola il sorvegliante prima che sia in piedi
+    // trova un canale che tiene la spinta finché non c'è nessuno a
+    // raccoglierla. Vedi `riproduzione::apri_il_primo_motore`.
+    riproduzione::apri_il_primo_motore(app.clone(), orecchio_dispositivi);
 
     // I controlli veri **dopo** il lettore, e per una ragione che non è
     // l'ordine di dipendenza ma quello della finestra: su Windows le
@@ -595,22 +704,31 @@ pub fn run() {
                 )));
             }
 
+            // La libreria **non** si apre qui: lo stato nasce «in apertura»,
+            // si registra subito — i comandi lo cercano per tipo — e la
+            // libreria si apre su un filo suo. Il resto dell'avvio segue
+            // quando è aperta: vedi [`apri_e_avvia`].
+            //
             // Dopo un rifiuto la libreria è l'errore che l'applicazione sa già
             // trattare — la stessa di un database che non si è aperto — e
-            // `Stato::apri` non si chiama: creerebbe la cartella nuova, il
-            // database e le copertine, proprio ciò che il rifiuto deve evitare.
-            let stato = match esito {
-                Ok(data_dir) => stato::Stato::apri(data_dir),
-                Err(errore) => rifiuta(app.handle(), &errore),
-            };
-            // La riga di avvio va stampata **prima** di disegnare: se
-            // l'apertura del database è fallita, è l'unica traccia che resta
-            // quando la finestra mostra solo l'errore.
-            stato::riga_di_avvio(&stato);
-            app.manage(stato);
-            // Il resto dell'avvio, quel che vuole la libreria aperta: vedi
-            // [`avvia_dopo_la_libreria`].
-            avvia_dopo_la_libreria(app.handle());
+            // non si apre niente: si creerebbero la cartella nuova, il database
+            // e le copertine, proprio ciò che il rifiuto deve evitare. Lì il
+            // resto dell'avvio parte subito, com'era.
+            match esito {
+                Ok(data_dir) => {
+                    app.manage(stato::Stato::in_apertura(data_dir.clone()));
+                    apri_e_avvia(app.handle(), data_dir);
+                }
+                Err(errore) => {
+                    let stato = rifiuta(app.handle(), &errore);
+                    // La riga di avvio va stampata **prima** di disegnare: è
+                    // l'unica traccia che resta quando la finestra mostra solo
+                    // l'errore.
+                    stato::riga_di_avvio(&stato);
+                    app.manage(stato);
+                    avvia_dopo_la_libreria(app.handle());
+                }
+            }
 
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
@@ -653,6 +771,8 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("rymembra-skin", skin::servi_risorsa)
         .invoke_handler(tauri::generate_handler![
             pronto,
+            finestra_mostra,
+            stato::libreria_fase,
             finestra_trascina,
             finestra_riduci,
             finestra_ingrandisci,
@@ -1839,6 +1959,68 @@ mod prove {
         assert!(
             costruzione.contains(".plugin(pagina::plugin())"),
             "nessun guardiano della pagina fra i plugin"
+        );
+    }
+
+    /// Il corpo del `setup`, fino alla sua chiusura.
+    fn corpo_del_setup() -> &'static str {
+        include_str!("lib.rs")
+            .split(".setup(|app| {")
+            .nth(1)
+            .and_then(|resto| {
+                resto
+                    .split(
+                        "
+        })
+",
+                    )
+                    .next()
+            })
+            .unwrap_or_default()
+    }
+
+    /// R06b-5: il `setup` non apre la libreria. Gira sul filo della finestra
+    /// prima che il ciclo degli eventi parta, e una migrazione lunga lì dentro
+    /// era un processo senza finestra per tutto il tempo della migrazione.
+    #[test]
+    fn il_setup_non_apre_la_libreria() {
+        let setup = corpo_del_setup();
+        assert!(!setup.is_empty(), "il setup non si trova");
+        assert!(
+            !setup.contains("Stato::apri("),
+            "il setup apre la libreria sul filo della finestra"
+        );
+        assert!(setup.contains("Stato::in_apertura("));
+        assert!(setup.contains("apri_e_avvia("));
+    }
+
+    /// Il resto dell'avvio non riprende la coda da sé e non apre il
+    /// dispositivo: lo fa `apri_il_primo_motore`, su un filo suo, per la
+    /// strada del motore mai aperto (R23-9).
+    #[test]
+    fn il_resto_dell_avvio_apre_l_audio_in_disparte() {
+        let resto = include_str!("lib.rs")
+            .split("fn avvia_dopo_la_libreria(")
+            .nth(1)
+            .and_then(|resto| {
+                resto
+                    .split(
+                        "
+}
+",
+                    )
+                    .next()
+            })
+            .unwrap_or_default();
+        assert!(!resto.is_empty(), "il resto dell'avvio non si trova");
+        assert!(
+            !resto.contains("riprendi_coda("),
+            "la coda si riprende due volte"
+        );
+        assert!(resto.contains("riproduzione::apri_il_primo_motore("));
+        assert!(
+            !resto.contains("riproduzione::avvia_sorveglianza("),
+            "il sorvegliante parte dopo il primo tentativo, non insieme"
         );
     }
 }

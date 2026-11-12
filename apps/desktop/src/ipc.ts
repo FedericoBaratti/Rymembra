@@ -24,7 +24,7 @@ import type {
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
 import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
@@ -43,6 +43,11 @@ export const ipc = {
   // tema sono già sul documento. Se questa chiamata non arriva mai, la mostra
   // il nucleo dopo due secondi.
   pronto: () => invoke<void>("pronto"),
+  // A che punto è l'apertura della libreria, e la finestra mostrata senza
+  // aspettare skin e tema: chi aspetta una migrazione lunga deve vedere che
+  // Rymembra sta lavorando. Vedi `AttesaDellaLibreria.tsx`.
+  libreriaFase: () => invoke<FaseLibreria>("libreria_fase"),
+  finestraMostra: () => invoke<void>("finestra_mostra"),
 
   // ── la barra del titolo ───────────────────────────────────────────────────
   // La finestra non ha decorazioni: i quattro gesti che dava il sistema

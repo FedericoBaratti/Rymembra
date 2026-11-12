@@ -415,6 +415,14 @@ catalogo! {
     PlaybackStreamInterrupted = "playback.streamInterrupted", Playback, Warning, Always, None;
     /// Nessun motore audio disponibile.
     PlaybackEngineUnavailable = "playback.engineUnavailable", Playback, Fatal, Never, None;
+    /// L'uscita audio si sta ancora aprendo.
+    ///
+    /// Il dispositivo si apre su un filo suo, dopo la libreria e fuori dal
+    /// `setup`: un driver che si prende venti secondi non tiene più ferma la
+    /// finestra (R23-9). Fino ad allora il lettore risponde questo, che non è
+    /// un guasto: `Info` e ritentabile, e la finestra non accende la fascia.
+    /// Se l'apertura fallisce, al suo posto arriva `playback.engineUnavailable`.
+    PlaybackEngineOpening = "playback.engineOpening", Playback, Info, Always, None;
 
     // ── library ─────────────────────────────────────────────────────────────
     /// La scansione è fallita.
@@ -433,6 +441,14 @@ catalogo! {
     /// sé quando la coda dei download ha finito: chi la riceve non ha fatto
     /// niente di strano, e il messaggio glielo dice.
     LibraryScanBusy = "library.scanBusy", Library, Info, Always, None;
+    /// La libreria si sta ancora aprendo, o aggiornando.
+    ///
+    /// Si apre su un filo suo, fuori dal `setup`, così la finestra compare
+    /// subito anche durante una migrazione lunga (R06b-5). Chi lavora su un
+    /// filo di sottofondo aspetta che finisca; questo lo riceve chi non può
+    /// aspettare — il filo della finestra, chi ha una scadenza — ed è `Info` e
+    /// ritentabile come `library.scanBusy`: fra un momento la libreria c'è.
+    LibraryOpening = "library.opening", Library, Info, Always, None;
     /// Il brano non è in libreria.
     LibraryTrackNotFound = "library.trackNotFound", Library, Warning, Never, Some("TRACK_NOT_FOUND"), { track_id: Option<i64> };
     /// Si è chiesto di eliminare dal disco una parte dei brani di
