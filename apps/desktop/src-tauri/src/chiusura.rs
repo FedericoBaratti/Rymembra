@@ -24,8 +24,11 @@
 //! deve tenere aperta una finestra che si è chiesto di chiudere. Ogni rinvio ha
 //! il suo numero e il suo ripiego: dopo [`TETTO`] il nucleo rifà il gesto da
 //! sé, se **quel** rinvio è ancora in attesa. E una pagina che si ricarica
-//! dimentica di avere qualcosa da scrivere ([`pagina_nuova`]): altrimenti ogni
-//! chiusura dopo aspetterebbe il tetto intero.
+//! non ha più niente da scrivere: lo dimentica `pagina::pagina_nuova`, all'inizio
+//! del caricamento e prima degli script — anche se la pagina nuova non arriva
+//! mai a disegnarsi —, e la barra del titolo della pagina nuova, iscrivendosi,
+//! ridice com'è adesso (`quandoCambiaDaScrivere`). Non `pronto`, che arriva
+//! dopo la skin e lo zoom: uno Studio aperto prima di lui sarebbe dimenticato.
 //!
 //! Le regole stanno in [`Chiusura`], senza Tauri, perché si possano provare.
 //! Solo sul computer: sul telefono la finestra che si chiude è l'attività, e
@@ -119,11 +122,6 @@ impl Chiusura {
     /// La pagina dice se ha qualcosa da scrivere prima di chiudere.
     pub fn da_scrivere(&self, si: bool) {
         self.stato().da_scrivere = si;
-    }
-
-    /// La pagina è nata, o rinata: quel che aveva da scrivere non c'è più.
-    pub fn pagina_nuova(&self) {
-        self.stato().da_scrivere = false;
     }
 
     /// La X della pagina ha già aspettato lo Studio: la sua chiusura passa.
@@ -420,8 +418,6 @@ mod prove {
         );
         let chiudi = &lib[lib.find("fn finestra_chiudi(").expect("la X")..];
         assert!(chiudi[..chiudi.find('}').expect("fine")].contains("CHIUSURA.concedi()"));
-        let pronto = &lib[lib.find("fn pronto(").expect("pronto")..];
-        assert!(pronto[..pronto.find('}').expect("fine")].contains("CHIUSURA.pagina_nuova()"));
         for comando in [
             "chiusura::chiusura_da_scrivere,",
             "chiusura::chiusura_scritto,",
@@ -437,9 +433,10 @@ mod prove {
     }
 
     #[test]
-    fn una_pagina_ricaricata_non_ha_piu_niente_da_scrivere() {
+    fn una_pagina_che_dice_di_aver_finito_non_fa_piu_aspettare() {
+        // La barra del titolo di una pagina ricaricata manda subito «no».
         let c = con_lo_studio();
-        c.pagina_nuova();
+        c.da_scrivere(false);
         assert_eq!(c.chiede_chiudi(false), Decisione::Passa);
     }
 }

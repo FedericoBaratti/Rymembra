@@ -125,9 +125,6 @@ const ATTESA_PRIMO_COLORE: std::time::Duration = std::time::Duration::from_secs(
 /// `aggiornamenti::finestra_pronta`.
 #[tauri::command]
 fn pronto(finestra: tauri::Window) {
-    // Una pagina nuova non ha niente da scrivere: se la vecchia era a metà di
-    // uno Studio aperto, ogni chiusura dopo aspetterebbe il tetto intero.
-    chiusura::CHIUSURA.pagina_nuova();
     let _ = finestra.show();
     aggiornamenti::finestra_pronta(finestra.app_handle());
 }

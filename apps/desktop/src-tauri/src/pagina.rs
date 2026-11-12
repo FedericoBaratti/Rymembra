@@ -141,6 +141,10 @@ fn pagina_nuova(app: &AppHandle) {
         let _ = crate::riproduzione::spettro(lettore, false);
     }
     crate::lontano::finestra_nascosta(app);
+    // Lo Studio della pagina di prima non c'è più: una chiusura non deve
+    // aspettare che scriva (`chiusura.rs`). Se la pagina nuova lo riapre, lo
+    // ridice la barra del titolo.
+    crate::chiusura::CHIUSURA.da_scrivere(false);
 }
 
 /// La pagina è nascosta perché la finestra è ridotta: l'ultima cosa detta a
@@ -307,6 +311,7 @@ mod prove {
             "testi.pagina_nuova()",
             "riproduzione::spettro(lettore, false)",
             "lontano::finestra_nascosta(app)",
+            "chiusura::CHIUSURA.da_scrivere(false)",
         ] {
             assert!(nuova.contains(pulizia), "la pagina nuova non fa {pulizia}");
         }
