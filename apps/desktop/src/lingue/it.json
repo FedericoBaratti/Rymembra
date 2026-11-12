@@ -3279,6 +3279,7 @@
   "explore.addAll.busy": "Aggiungo…",
   "explore.play": "Ascolta",
   "explore.enqueued": "Messo in coda.",
+  "explore.gone": "Non trovo più questo brano nel catalogo: rifai la ricerca.",
   "explore.page": "Pagina del brano",
   "explore.done": "{n} aggiunti alla libreria.",
   "explore.done.uno": "1 brano aggiunto alla libreria.",
