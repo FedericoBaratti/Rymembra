@@ -49,8 +49,11 @@ import {
   creaProva,
   durataDaCampo,
   durataInCampo,
+  entrano,
   limiteDaCampo,
   numeroDaCampo,
+  salvabile,
+  TETTO_REGOLE,
 } from "./editorRegole";
 
 /** Il genere di un campo, per sapere quali operatori mostrargli accanto. */
@@ -210,7 +213,16 @@ export function Regole({
   // deve togliere quello della lettura delle regole o del salvataggio.
   const [erroreAnteprima, setErroreAnteprima] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
-  const [caricato, setCaricato] = useState(playlist === null);
+  /**
+   * Le regole di una playlist che c'è già: in viaggio, arrivate, o non
+   * arrivate. Una playlist nuova non ha niente da leggere.
+   */
+  const [lettura, setLettura] = useState<"attesa" | "fatta" | "fallita">(
+    playlist === null ? "fatta" : "attesa",
+  );
+  /** Cresce a ogni «Riprova»: rifà la lettura. */
+  const [giroLettura, setGiroLettura] = useState(0);
+  const caricato = lettura === "fatta";
   const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
   // Il resto della finestra inerte, e il velo che chiude solo un clic nato **e**
   // finito su di lui: una selezione trascinata fuori dal pannello chiudeva
@@ -222,7 +234,11 @@ export function Regole({
 
   // Le regole di una playlist che c'è già. Finché non arrivano non si mostra
   // l'insieme vuoto come se fosse suo: sarebbe «nessuna condizione», cioè
-  // tutta la libreria, e chi legge lo prenderebbe per il contenuto vero.
+  // tutta la libreria, e chi legge lo prenderebbe per il contenuto vero. Né le
+  // condizioni né «Salva»: al loro posto «Leggo le regole…», e se la lettura
+  // fallisce (il database occupato da una scansione) l'errore e «Riprova». Un
+  // editor che lasciava scrivere sopra le regole non ancora arrivate salvava
+  // il vuoto, e la sincronia lo portava su ogni dispositivo (R13b-1).
   useEffect(() => {
     if (playlist === null) return;
     let annullato = false;
@@ -231,15 +247,23 @@ export function Regole({
       .then((lette) => {
         if (annullato) return;
         setInsieme(conUnaRiga(lette ?? VUOTO));
-        setCaricato(true);
+        setLettura("fatta");
       })
       .catch((e: unknown) => {
-        if (!annullato) setErrore(testoErrore(e));
+        if (annullato) return;
+        setErrore(testoErrore(e));
+        setLettura("fallita");
       });
     return () => {
       annullato = true;
     };
-  }, [playlist]);
+  }, [playlist, giroLettura]);
+
+  const rileggi = () => {
+    setErrore(null);
+    setLettura("attesa");
+    setGiroLettura((n) => n + 1);
+  };
 
   // L'anteprima, a ogni modifica. Nessun ritardo artificiale: la query gira su
   // indici che la libreria ha già, e un `debounce` qui vorrebbe dire un numero
@@ -306,6 +330,9 @@ export function Regole({
 
   /** C'è una riga che si sta ancora scrivendo: cambia cosa vale la pena dire. */
   const incomplete = insieme.regole.some((r) => !completa(r));
+  /** Le condizioni finite: quelle che `salva` manderebbe. */
+  const condizioni = insieme.regole.filter(completa).length;
+  const siSalva = salvabile({ caricato, nome, salvando, condizioni });
 
   const salva = () => {
     const pulito = nome.trim();
@@ -313,6 +340,8 @@ export function Regole({
       setErrore(t("rules.needName"));
       return;
     }
+    // Il tasto è già spento: questo è per chi arrivasse qui da un'altra strada.
+    if (!siSalva) return;
     setSalvando(true);
     setErrore(null);
     // `scritte` anche qui: una regola col valore vuoto salvata su disco è una
@@ -385,252 +414,280 @@ export function Regole({
               </label>
             )}
 
-            <div className="riga-combinazione">
-              <span>{t("rules.take")}</span>
-              <select
-                value={insieme.combinazione}
-                onChange={(e) =>
-                  setInsieme((p) => ({
-                    ...p,
-                    combinazione: e.target.value as InsiemeSmart["combinazione"],
-                  }))
-                }
-              >
-                <option value="tutte">{t("rules.all")}</option>
-                <option value="qualsiasi">{t("rules.any")}</option>
-              </select>
-              <span>{t("rules.conditions")}</span>
-            </div>
+            {caricato ? (
+              <>
+              <div className="riga-combinazione">
+                <span>{t("rules.take")}</span>
+                <select
+                  value={insieme.combinazione}
+                  onChange={(e) =>
+                    setInsieme((p) => ({
+                      ...p,
+                      combinazione: e.target.value as InsiemeSmart["combinazione"],
+                    }))
+                  }
+                >
+                  <option value="tutte">{t("rules.all")}</option>
+                  <option value="qualsiasi">{t("rules.any")}</option>
+                </select>
+                <span>{t("rules.conditions")}</span>
+              </div>
 
-            <ul className="regole">
-              {insieme.regole.map((regola, indice) => {
-                const genere = genereDi(regola.campo);
-                return (
-                  // L'indice è la chiave perché è l'identità: due condizioni sullo
-                  // stesso campo sono due regole diverse e nient'altro le distingue.
-                  <li className="regola" key={indice}>
+              <ul className="regole">
+                {insieme.regole.map((regola, indice) => {
+                  const genere = genereDi(regola.campo);
+                  return (
+                    // L'indice è la chiave perché è l'identità: due condizioni sullo
+                    // stesso campo sono due regole diverse e nient'altro le distingue.
+                    <li className="regola" key={indice}>
+                      <select
+                        aria-label={t("rules.field")}
+                        value={regola.campo}
+                        onChange={(e) =>
+                          cambiaCampo(indice, e.target.value as CampoSmart)
+                        }
+                      >
+                        {campiSmart().map((c) => (
+                          <option key={c.chiave} value={c.chiave}>
+                            {c.etichetta}
+                          </option>
+                        ))}
+                      </select>
+
+                      <select
+                        aria-label={t("rules.operator")}
+                        value={regola.operatore}
+                        onChange={(e) => {
+                          const operatore = e.target.value as OperatoreSmart;
+                          cambia(indice, {
+                            operatore,
+                            ...valoreDiSerie(genere, operatore),
+                          });
+                        }}
+                      >
+                        {operatoriSmart()[genere].map((o) => (
+                          <option key={o.chiave} value={o.chiave}>
+                            {o.etichetta}
+                          </option>
+                        ))}
+                      </select>
+
+                      {senzaValore(regola.operatore) ? (
+                        <span className="senza-valore">—</span>
+                      ) : genere === "testo" ? (
+                        <input
+                          type="text"
+                          aria-label={t("rules.value")}
+                          value={regola.testo ?? ""}
+                          onChange={(e) => cambia(indice, { testo: e.target.value })}
+                        />
+                      ) : genere === "booleano" ? (
+                        <select
+                          aria-label={t("rules.value")}
+                          value={String(regola.numero ?? 1)}
+                          onChange={(e) =>
+                            cambia(indice, { numero: Number(e.target.value) })
+                          }
+                        >
+                          <option value="1">{t("rules.yes")}</option>
+                          <option value="0">{t("rules.no")}</option>
+                        </select>
+                      ) : regola.campo === "durata" ? (
+                        <CampoDurata
+                          ms={regola.numero ?? null}
+                          onCambia={(ms) => cambia(indice, { numero: ms })}
+                        />
+                      ) : (
+                        // Interi soltanto, e vuoto vuol dire vuoto: un «3.5»
+                        // arrivava al nucleo e tornava come errore di
+                        // deserializzazione, e un campo svuotato diventava 0, cioè
+                        // una regola finita invece che una da finire.
+                        <input
+                          type="number"
+                          step={1}
+                          aria-label={t("rules.value")}
+                          value={regola.numero ?? ""}
+                          onChange={(e) =>
+                            cambia(indice, { numero: numeroDaCampo(e.target.value) })
+                          }
+                        />
+                      )}
+
+                      <button
+                        type="button"
+                        className="tasto icon-btn"
+                        aria-label={t("rules.remove")}
+                        onClick={() =>
+                          setInsieme((p) => ({
+                            ...p,
+                            regole: p.regole.filter((_, i) => i !== indice),
+                          }))
+                        }
+                      >
+                        <Icona nome="i-x" dim={14} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+
+              {/* L'azione che porta avanti la finestrella, e non un tasto scolorito:
+                  aggiungere una condizione è **il** verbo di questo editor, mentre
+                  «Crea» è solo la fine. Lasciarlo in tinta smorta e tenere l'accento
+                  sul salvataggio metteva il risalto sull'unico tasto che qui non si
+                  deve premere per primo. */}
+              <div className="azioni">
+                <button
+                  type="button"
+                  className="bottone aggiungi-regola"
+                  onClick={() =>
+                    setInsieme((p) => ({ ...p, regole: [...p.regole, regolaNuova()] }))
+                  }
+                >
+                  <Icona nome="i-plus" dim={15} />
+                  {t("rules.add")}
+                </button>
+              </div>
+
+              {/*
+               * Il risultato: come si presenta, quanto è grande, e i primi.
+               *
+               * `In ordine di` e `Al massimo` stanno **qui** e non su fra le
+               * condizioni: non dicono quali brani entrano, dicono come esce quel che
+               * è entrato. In mezzo all'editor spezzavano la frase — condizioni,
+               * due tendine di tutt'altro, e solo dopo il numero che le condizioni
+               * producono.
+               */}
+              <div className="anteprima-regole">
+                <div className="riga-ordine">
+                  <label>
+                    {t("rules.orderBy")}
                     <select
-                      aria-label={t("rules.field")}
-                      value={regola.campo}
+                      value={insieme.ordinamento}
                       onChange={(e) =>
-                        cambiaCampo(indice, e.target.value as CampoSmart)
+                        setInsieme((p) => ({
+                          ...p,
+                          ordinamento: e.target.value as InsiemeSmart["ordinamento"],
+                        }))
                       }
                     >
-                      {campiSmart().map((c) => (
-                        <option key={c.chiave} value={c.chiave}>
-                          {c.etichetta}
-                        </option>
-                      ))}
-                    </select>
-
-                    <select
-                      aria-label={t("rules.operator")}
-                      value={regola.operatore}
-                      onChange={(e) => {
-                        const operatore = e.target.value as OperatoreSmart;
-                        cambia(indice, {
-                          operatore,
-                          ...valoreDiSerie(genere, operatore),
-                        });
-                      }}
-                    >
-                      {operatoriSmart()[genere].map((o) => (
+                      {ordinamentiSmart().map((o) => (
                         <option key={o.chiave} value={o.chiave}>
                           {o.etichetta}
                         </option>
                       ))}
                     </select>
-
-                    {senzaValore(regola.operatore) ? (
-                      <span className="senza-valore">—</span>
-                    ) : genere === "testo" ? (
-                      <input
-                        type="text"
-                        aria-label={t("rules.value")}
-                        value={regola.testo ?? ""}
-                        onChange={(e) => cambia(indice, { testo: e.target.value })}
-                      />
-                    ) : genere === "booleano" ? (
-                      <select
-                        aria-label={t("rules.value")}
-                        value={String(regola.numero ?? 1)}
-                        onChange={(e) =>
-                          cambia(indice, { numero: Number(e.target.value) })
-                        }
-                      >
-                        <option value="1">{t("rules.yes")}</option>
-                        <option value="0">{t("rules.no")}</option>
-                      </select>
-                    ) : regola.campo === "durata" ? (
-                      <CampoDurata
-                        ms={regola.numero ?? null}
-                        onCambia={(ms) => cambia(indice, { numero: ms })}
-                      />
-                    ) : (
-                      // Interi soltanto, e vuoto vuol dire vuoto: un «3.5»
-                      // arrivava al nucleo e tornava come errore di
-                      // deserializzazione, e un campo svuotato diventava 0, cioè
-                      // una regola finita invece che una da finire.
-                      <input
-                        type="number"
-                        step={1}
-                        aria-label={t("rules.value")}
-                        value={regola.numero ?? ""}
-                        onChange={(e) =>
-                          cambia(indice, { numero: numeroDaCampo(e.target.value) })
-                        }
-                      />
-                    )}
-
-                    <button
-                      type="button"
-                      className="tasto icon-btn"
-                      aria-label={t("rules.remove")}
-                      onClick={() =>
+                  </label>
+                  <label>
+                    {t("rules.atMost")}
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      placeholder={t("rules.atMost.all")}
+                      value={insieme.limite ?? ""}
+                      onChange={(e) =>
                         setInsieme((p) => ({
                           ...p,
-                          regole: p.regole.filter((_, i) => i !== indice),
+                          limite: limiteDaCampo(e.target.value),
                         }))
                       }
-                    >
-                      <Icona nome="i-x" dim={14} />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+                    />
+                  </label>
+                </div>
 
-            {/* L'azione che porta avanti la finestrella, e non un tasto scolorito:
-                aggiungere una condizione è **il** verbo di questo editor, mentre
-                «Crea» è solo la fine. Lasciarlo in tinta smorta e tenere l'accento
-                sul salvataggio metteva il risalto sull'unico tasto che qui non si
-                deve premere per primo. */}
-            <div className="azioni">
-              <button
-                type="button"
-                className="bottone aggiungi-regola"
-                onClick={() =>
-                  setInsieme((p) => ({ ...p, regole: [...p.regole, regolaNuova()] }))
-                }
-              >
-                <Icona nome="i-plus" dim={15} />
-                {t("rules.add")}
-              </button>
-            </div>
-
-            {/*
-             * Il risultato: come si presenta, quanto è grande, e i primi.
-             *
-             * `In ordine di` e `Al massimo` stanno **qui** e non su fra le
-             * condizioni: non dicono quali brani entrano, dicono come esce quel che
-             * è entrato. In mezzo all'editor spezzavano la frase — condizioni,
-             * due tendine di tutt'altro, e solo dopo il numero che le condizioni
-             * producono.
-             */}
-            <div className="anteprima-regole">
-              <div className="riga-ordine">
-                <label>
-                  {t("rules.orderBy")}
-                  <select
-                    value={insieme.ordinamento}
-                    onChange={(e) =>
-                      setInsieme((p) => ({
-                        ...p,
-                        ordinamento: e.target.value as InsiemeSmart["ordinamento"],
-                      }))
-                    }
-                  >
-                    {ordinamentiSmart().map((o) => (
-                      <option key={o.chiave} value={o.chiave}>
-                        {o.etichetta}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  {t("rules.atMost")}
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    placeholder={t("rules.atMost.all")}
-                    value={insieme.limite ?? ""}
-                    onChange={(e) =>
-                      setInsieme((p) => ({
-                        ...p,
-                        limite: limiteDaCampo(e.target.value),
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-
-              {anteprima && (
-                <>
-                  <div className="quanti">
-                    {anteprima.prendeNiente ? (
-                      <strong>{t("rules.none")}</strong>
-                    ) : (
-                      <>
-                        <strong>{numero(anteprima.quanti)}</strong>{" "}
-                        {t("rules.count.unit", { n: anteprima.quanti })}
-                      </>
-                    )}
-                    {insieme.limite != null &&
-                      insieme.limite > 0 &&
-                      anteprima.quanti > insieme.limite && (
+                {anteprima && (
+                  <>
+                    <div className="quanti">
+                      {anteprima.prendeNiente ? (
+                        <strong>{t("rules.none")}</strong>
+                      ) : (
+                        <>
+                          <strong>{numero(anteprima.quanti)}</strong>{" "}
+                          {t("rules.count.unit", { n: anteprima.quanti })}
+                        </>
+                      )}
+                      {/* «Ne entrano N» quando non entrano tutti: per il limite
+                          scritto o per il tetto, che vale anche senza limite
+                          (D-100). Il conto qui accanto è quello vero. */}
+                      {entrano(anteprima.quanti, insieme.limite) < anteprima.quanti && (
                         <span className="nota">
-                          {t("rules.fitting", { n: insieme.limite })}
+                          {t("rules.fitting", {
+                            n: entrano(anteprima.quanti, insieme.limite),
+                          })}
                         </span>
                       )}
-                  </div>
+                    </div>
+                    {/* Il tetto non è un limite che si è scritto: senza dirlo, «ne
+                        entrano 5.000» sotto un «Al massimo» vuoto sembra un
+                        errore. */}
+                    {anteprima.quanti > TETTO_REGOLE &&
+                      (insieme.limite == null || insieme.limite > TETTO_REGOLE) && (
+                        <p className="nota">{t("rules.cap", { n: TETTO_REGOLE })}</p>
+                      )}
 
-                  {/* «Prende tutto» solo a righe finite. Mentre se ne sta scrivendo
-                      una, il nucleo non la conta — è giusto — e quindi le regole in
-                      corso d'opera prendono davvero tutta la libreria: dirlo col
-                      riquadro giallo vorrebbe dire allarmare chi sta digitando per
-                      una condizione che sta arrivando. Lo dice la riga sotto, che
-                      non ha un riquadro perché non c'è niente da rimediare. */}
-                  {anteprima.prendeTutto && !incomplete && (
-                    <p className="avviso">
-                      <Trans
-                        k="rules.takesAll"
-                        v={{
-                          tutta: <strong>{t("rules.takesAll.emphasis")}</strong>,
-                        }}
-                      />
-                    </p>
-                  )}
-                  {anteprima.prendeNiente && (
-                    <p className="avviso">{t("rules.takesNothing")}</p>
-                  )}
-                  {incomplete && <p className="nota">{t("rules.incomplete")}</p>}
-                  {anteprima.scartate > 0 && (
-                    <p className="avviso">
-                      {t("rules.skipped", { n: anteprima.scartate })}
-                    </p>
-                  )}
+                    {/* «Prende tutto» solo a righe finite. Mentre se ne sta scrivendo
+                        una, il nucleo non la conta — è giusto — e quindi le regole in
+                        corso d'opera prendono davvero tutta la libreria: dirlo col
+                        riquadro giallo vorrebbe dire allarmare chi sta digitando per
+                        una condizione che sta arrivando. Lo dice la riga sotto, che
+                        non ha un riquadro perché non c'è niente da rimediare. */}
+                    {anteprima.prendeTutto && !incomplete && (
+                      <p className="avviso">
+                        <Trans
+                          k="rules.takesAll"
+                          v={{
+                            tutta: <strong>{t("rules.takesAll.emphasis")}</strong>,
+                          }}
+                        />
+                      </p>
+                    )}
+                    {anteprima.prendeNiente && (
+                      <p className="avviso">{t("rules.takesNothing")}</p>
+                    )}
+                    {incomplete && <p className="nota">{t("rules.incomplete")}</p>}
+                    {anteprima.scartate > 0 && (
+                      <p className="avviso">
+                        {t("rules.skipped", { n: anteprima.scartate })}
+                      </p>
+                    )}
 
-                  {/* Un assaggio, non un elenco da sfogliare: sei righe che ci
-                      stanno tutte. Il nucleo ne manda venti e le venti stavano in
-                      un riquadro alto centonovanta con la sua barra di scorrimento
-                      — cioè uno scorrimento dentro una finestrella che ne ha già
-                      uno suo, e proprio sotto le condizioni, che sono la parte che
-                      finiva spinta fuori dallo schermo. */}
-                  {anteprima.primi.length > 0 && (
-                    <ol className="primi">
-                      {anteprima.primi.slice(0, ASSAGGIO).map((b) => (
-                        <li key={b.id}>
-                          <span className="nome">{b.title}</span>
-                          <span className="autore">{nomeArtista(b.artist)}</span>
-                          <span className="durata">{durata(b.durationMs)}</span>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </>
-              )}
-            </div>
+                    {/* Un assaggio, non un elenco da sfogliare: sei righe che ci
+                        stanno tutte. Il nucleo ne manda venti e le venti stavano in
+                        un riquadro alto centonovanta con la sua barra di scorrimento
+                        — cioè uno scorrimento dentro una finestrella che ne ha già
+                        uno suo, e proprio sotto le condizioni, che sono la parte che
+                        finiva spinta fuori dallo schermo. */}
+                    {anteprima.primi.length > 0 && (
+                      <ol className="primi">
+                        {anteprima.primi.slice(0, ASSAGGIO).map((b) => (
+                          <li key={b.id}>
+                            <span className="nome">{b.title}</span>
+                            <span className="autore">{nomeArtista(b.artist)}</span>
+                            <span className="durata">{durata(b.durationMs)}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </>
+                )}
+              </div>
+              </>
+            ) : (
+              // Le regole non sono ancora in mano: né le condizioni né
+              // l'anteprima, che mostrerebbero un insieme che non è il suo.
+              lettura === "attesa" ? (
+                <p className="nota" role="status">
+                  {t("rules.loading")}
+                </p>
+              ) : (
+                <div className="azioni">
+                  <button type="button" className="bottone" onClick={rileggi}>
+                    {t("common.retry")}
+                  </button>
+                </div>
+              )
+            )}
 
             <div className="tasti-finestrella">
               <button
@@ -644,7 +701,7 @@ export function Regole({
               <button
                 type="button"
                 className="bottone primario"
-                disabled={salvando || nome.trim().length === 0}
+                disabled={!siSalva}
                 onClick={salva}
               >
                 {salvando

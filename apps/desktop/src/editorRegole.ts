@@ -107,3 +107,65 @@ export function durataInCampo(ms: number | null | undefined): string {
   if (millesimi === 0) return base;
   return `${base}.${String(millesimi).padStart(3, "0").replace(/0+$/, "")}`;
 }
+
+/**
+ * Il tetto di una playlist intelligente: quanti brani ne entrano al più,
+ * qualunque sia il limite scritto.
+ *
+ * È `smart::TETTO` del nucleo, ripetuto qui perché l'anteprima porta il conto
+ * esatto (`quanti`, senza limite) ma non il tetto, e la finestrella deve poter
+ * dire «ne entrano 5.000» anche a chi un limite non l'ha scritto. Due numeri
+ * scritti in due posti divergono: `test/regole.test.ts` legge `smart.rs` e li
+ * tiene d'accordo.
+ */
+export const TETTO_REGOLE = 5_000;
+
+/**
+ * Quanti dei brani che rispettano le regole entrano nella playlist: il limite
+ * scritto, se c'è, e mai più del tetto.
+ *
+ * Prima la nota «ne entrano N» compariva solo con un limite scritto, e il conto
+ * stesso si fermava al tetto: una regola che ne prendeva 12.300 diceva «5.000
+ * brani», e nessuno sapeva che 7.300 restavano fuori (R25-1). Adesso il conto è
+ * esatto e la nota dice quanti ne entrano.
+ */
+export function entrano(quanti: number, limite: number | null | undefined): number {
+  return Math.min(quanti, limite ?? TETTO_REGOLE, TETTO_REGOLE);
+}
+
+/** Quel che decide se «Salva» si può premere. */
+export interface StatoSalvataggio {
+  /** Le regole di una playlist che c'è già sono arrivate dal nucleo. */
+  caricato: boolean;
+  nome: string;
+  salvando: boolean;
+  /** Le condizioni finite, cioè quelle che si manderebbero (`scritte`). */
+  condizioni: number;
+}
+
+/**
+ * «Salva» si può premere.
+ *
+ * # Prima che le regole arrivino, no
+ *
+ * L'editor di una playlist che c'è già si apriva con una condizione vuota e
+ * «Salva» acceso, mentre le regole vere erano ancora in viaggio — o la lettura
+ * era fallita, con il database occupato da una scansione. Salvare mandava
+ * `regole: []`, cioè «tutta la libreria», e la sincronia lo portava su ogni
+ * dispositivo (R13b-1). Finché le regole non sono in mano non si salva niente.
+ *
+ * # Senza condizioni, no
+ *
+ * Una playlist intelligente senza nessuna condizione è tutta la libreria (o,
+ * con «ne vale almeno una», niente): il nucleo la rifiuta come rifiuta un nome
+ * vuoto (D-22), e un tasto acceso che risponde con un errore insegna che
+ * l'editor è rotto. Si spegne, e l'avviso sotto l'anteprima dice perché.
+ */
+export function salvabile(stato: StatoSalvataggio): boolean {
+  return (
+    stato.caricato &&
+    !stato.salvando &&
+    stato.nome.trim().length > 0 &&
+    stato.condizioni > 0
+  );
+}
