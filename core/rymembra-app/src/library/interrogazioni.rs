@@ -314,11 +314,7 @@ pub fn list_liked(
     offset: i64,
     limit: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
-    let sql = format!(
-        "SELECT {COLONNE_BRANO} FROM tracks t WHERE t.liked = 1
-         ORDER BY t.liked_at IS NULL, t.liked_at DESC, t.title COLLATE NOCASE
-         LIMIT ?1 OFFSET ?2"
-    );
+    let sql = format!("SELECT {COLONNE_BRANO} {DA_PREFERITI} LIMIT ?1 OFFSET ?2");
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("elenco dei preferiti", &err))?;
@@ -328,6 +324,14 @@ pub fn list_liked(
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("elenco dei preferiti", &err))
 }
+
+/// Da dove e in che ordine si leggono i preferiti: vedi [`list_liked`].
+///
+/// A parte perché lo legge anche `identificativi`, che deve dare gli stessi
+/// brani nello stesso ordine senza leggerne le colonne: due copie della
+/// clausola sarebbero due ordini il giorno in cui una cambia.
+pub(super) const DA_PREFERITI: &str = "FROM tracks t WHERE t.liked = 1
+         ORDER BY t.liked_at IS NULL, t.liked_at DESC, t.title COLLATE NOCASE";
 
 /// Un ascolto, con il brano che lo ha prodotto.
 ///
@@ -1108,16 +1112,7 @@ pub fn search(
     if expression.is_empty() {
         return Ok(Vec::new());
     }
-    // Il nome della tabella e non un alias: in FTS5 il lato sinistro di `MATCH`
-    // e l'argomento di `bm25` devono nominare la tabella virtuale per esteso, e
-    // con un alias SQLite risponde che quella colonna non esiste.
-    let sql = format!(
-        "SELECT {COLONNE_BRANO}
-         FROM tracks_fts
-         JOIN tracks t ON t.id = tracks_fts.rowid
-         WHERE tracks_fts MATCH ?1
-         ORDER BY bm25(tracks_fts) LIMIT ?2 OFFSET ?3"
-    );
+    let sql = format!("SELECT {COLONNE_BRANO} {DA_RICERCA} LIMIT ?2 OFFSET ?3");
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("ricerca", &err))?;
@@ -1127,6 +1122,17 @@ pub fn search(
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("ricerca", &err))
 }
+
+/// Da dove e in che ordine legge la ricerca, con l'espressione in `?1`: vedi
+/// [`search`]. A parte per la stessa ragione di [`DA_PREFERITI`].
+///
+/// Il nome della tabella e non un alias: in FTS5 il lato sinistro di `MATCH` e
+/// l'argomento di `bm25` devono nominare la tabella virtuale per esteso, e con
+/// un alias SQLite risponde che quella colonna non esiste.
+pub(super) const DA_RICERCA: &str = "FROM tracks_fts
+         JOIN tracks t ON t.id = tracks_fts.rowid
+         WHERE tracks_fts MATCH ?1
+         ORDER BY bm25(tracks_fts)";
 
 /// Quanti brani risponderebbero a questa ricerca.
 ///

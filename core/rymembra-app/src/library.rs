@@ -135,6 +135,7 @@ use crate::scadenza::Mancato;
 mod aggregati;
 mod camminata;
 pub mod condivisa;
+mod identificativi;
 mod immagini;
 mod interrogazioni;
 mod righe;
@@ -148,6 +149,7 @@ pub use camminata::{
     Cambiamento, Natura, Ricognizione, cammina, cartelle_da_riguardare, dentro_le_radici,
     piu_esterne,
 };
+pub use identificativi::{id_dei_brani, id_dei_preferiti, id_della_ricerca};
 pub use interrogazioni::{
     AlbumSummary, ArtistSummary, Counts, FormatoFile, TrackOrder, TrackSummary, VoceCronologia,
     album_tracks, albums_by_artist, ascoltati_di_recente, count_history, counts, etichetta_codec,
