@@ -394,6 +394,7 @@
   "errors.net.unavailable": "The service is temporarily down and said when to try again. Rymembra waits and retries by itself.",
   "errors.net.http": "The server replied with an error.",
   "errors.net.badSchema": "The service's reply does not have the expected shape. If it stays this way, something changed on their side.",
+  "errors.net.releaseMissing": "The update server answered, but the published release can’t be found or doesn’t include the update. It isn’t your connection; it usually sorts itself out by the next check.",
   "errors.net.circuitOpen": "This service failed too many times in a row, and Rymembra stopped insisting for a while. It resumes by itself.",
   "errors.net.localNetwork": "Android doesn’t let Rymembra see your home network. Allow “Nearby devices” when Android asks, or in Settings › Apps › Rymembra › Permissions.",
   "errors.playback.engineUnavailable": "The audio engine did not start. Check that the computer has an active sound card, then restart Rymembra.",

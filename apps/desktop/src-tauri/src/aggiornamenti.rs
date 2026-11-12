@@ -1467,16 +1467,18 @@ fn guasto(err: tauri_plugin_updater::Error) -> AppError {
         Guasto::Reqwest(_) | Guasto::Network(_) | Guasto::Io(_) => {
             AppError::new(ErrorCode::NetOffline { url: None }).with_cause(dettaglio)
         }
+        // `ReleaseNotFound` vuol dire «l'indirizzo del manifesto ha risposto
+        // con uno stato che non è 2xx» (404 se la release non ha
+        // `latest.json`, 5xx se GitHub è giù), e il plugin non dice quale: un
+        // codice suo, senza stato, e non «la risposta non ha la forma attesa»
+        // per una risposta che non c'era (R20-10).
+        Guasto::ReleaseNotFound => AppError::new(ErrorCode::NetReleaseMissing {
+            service: Some("aggiornamenti".to_owned()),
+        })
+        .with_cause(dettaglio),
         // Il manifesto non ha la forma attesa, o non parla di questa
         // piattaforma. È un guasto di chi pubblica, non di chi installa.
-        //
-        // `ReleaseNotFound` in realtà vuol dire «l'indirizzo del manifesto ha
-        // risposto con uno stato che non è 2xx» (404 se la release non ha
-        // `latest.json`, 5xx se GitHub è giù), e il plugin non dice quale. Il
-        // catalogo non ha un codice per «il server ha risposto con un errore»
-        // senza lo stato: resta qui finché non ce l'avrà (vedi R20-10).
-        Guasto::ReleaseNotFound
-        | Guasto::Serialization(_)
+        Guasto::Serialization(_)
         | Guasto::Semver(_)
         | Guasto::TargetNotFound(_)
         | Guasto::TargetsNotFound(_)
@@ -1888,6 +1890,29 @@ mod prove {
         // Il resto resta quello di [`guasto`]: la firma non cambia nome.
         assert_eq!(
             guasto_dell_installazione(tauri_plugin_updater::Error::EmptyEndpoints, true)
+                .code()
+                .kind()
+                .code(),
+            "net.badSchema"
+        );
+    }
+
+    /// R20-10, il resto: `ReleaseNotFound` vuol dire che l'indirizzo del
+    /// manifesto ha risposto con uno stato che non è 2xx — la release non ha
+    /// `latest.json`, o GitHub è giù — e il plugin non dice quale. Diventava
+    /// `net.badSchema`, «la risposta non ha la forma attesa», per una risposta
+    /// che non c'era; `net.http` vuole lo stato, `net.unavailable` dice «ha
+    /// detto quando riprovare». Ha un codice suo, senza stato.
+    #[test]
+    fn una_release_che_non_si_trova_non_e_una_risposta_storta() {
+        let err = guasto(tauri_plugin_updater::Error::ReleaseNotFound);
+        assert_eq!(err.code().kind().code(), "net.releaseMissing", "{err:?}");
+        // Non si riprova fra pochi minuti come una rete che manca: lo si
+        // vedrà al prossimo controllo, ed è quasi sempre chi pubblica.
+        assert!(!err.is_retryable());
+        // Il resto del manifesto storto resta quel che era.
+        assert_eq!(
+            guasto(tauri_plugin_updater::Error::EmptyEndpoints)
                 .code()
                 .kind()
                 .code(),
