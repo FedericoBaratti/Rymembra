@@ -19,12 +19,12 @@
 -- # Chi le riempie, e perché non un trigger che le calcola
 --
 -- Le scrive Rust, `library::riempi_le_chiavi_d_ordine`, con `sort_name`: in
--- testa a ogni ricostruzione degli aggregati — che segue ogni scrittura dei
--- nomi: scansione, «Rileggi tutti i tag», arricchimento, correzioni a mano,
--- catalogo, profilo — e a ogni apertura della libreria, che è quando le righe
--- di prima di questa migrazione le ricevono la prima volta. Toccano solo le
--- righe che non le hanno, trovate per indice: una ricostruzione dopo un
--- ascolto non riscrive niente.
+-- `Toccati::segna_brani`, che ogni transazione che scrive brani chiama prima
+-- di chiudersi — scansione, «Rileggi tutti i tag», arricchimento, correzioni a
+-- mano —, in testa a ogni ricostruzione degli aggregati — catalogo, profilo —,
+-- e all'apertura dopo una migrazione, che è quando le righe di prima di questa
+-- le ricevono la prima volta. Toccano solo le righe che non le hanno, trovate
+-- per indice: una transazione che non ha cambiato nomi non riscrive niente.
 --
 -- Un trigger o una colonna generata che chiamassero la funzione la
 -- vorrebbero registrata su **ogni** connessione che scrive `tracks`, compresa
@@ -34,9 +34,10 @@
 -- le chiavi, e la prossima ricostruzione le rifà. Un brano nuovo nasce con le
 -- chiavi a NULL. Chi scrive i nomi non deve ricordarsi di niente.
 --
--- Una riga con le chiavi a NULL, fra la scrittura e la ricostruzione, sta in
--- cima all'ordine per nome (in SQLite NULL viene prima di tutto) per il tempo
--- di una transazione: è il prezzo della regola in un posto solo.
+-- Le chiavi si rifanno nella stessa transazione che ha scritto i nomi, quindi
+-- chi legge non vede mai una riga senza. Solo chi scrivesse da fuori — uno
+-- strumento esterno — lascerebbe la riga in cima all'ordine per nome (in
+-- SQLite NULL viene prima di tutto) fino alla prossima scrittura dei brani.
 --
 -- # Gli indici di prima
 --

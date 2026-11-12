@@ -366,6 +366,12 @@ impl Toccati {
     ///
     /// `db.*` se la lettura fallisce.
     pub fn segna_brani(&mut self, connection: &Connection, ids: &[i64]) -> Result<(), AppError> {
+        // Ogni transazione che scrive brani passa di qui prima di chiudersi:
+        // è il posto in cui le chiavi d'ordine che il trigger della 042 ha
+        // rimesso a NULL, o che un brano nuovo non ha ancora, si rifanno nella
+        // stessa transazione — e un brano appena scritto non compare mai in
+        // cima ai Brani per nome. Vedi [`riempi_le_chiavi_d_ordine`].
+        riempi_le_chiavi_d_ordine(connection)?;
         if self.tutto || ids.is_empty() {
             return Ok(());
         }
@@ -602,9 +608,11 @@ pub fn ricostruisci_aggregati(
 /// Nessuno di quelli che scrivono i nomi. Un brano nuovo nasce con le chiavi a
 /// NULL, e un trigger della 042 le rimette a NULL quando cambiano titolo,
 /// artista o album — da qualunque modulo, la scansione come una correzione a
-/// mano o uno strumento esterno. Questa funzione rifà quelle a NULL: la
-/// chiamano le due ricostruzioni degli aggregati, che seguono ogni scrittura
-/// dei nomi, e l'apertura della libreria, per le righe di prima della 042.
+/// mano o uno strumento esterno. Questa funzione rifà quelle a NULL, nella
+/// transazione di chi ha scritto: la chiama [`Toccati::segna_brani`], che ogni
+/// transazione di scrittura dei brani chiama prima di chiudersi, e la chiamano
+/// le due ricostruzioni degli aggregati e l'apertura dopo una migrazione, per
+/// le righe di prima della 042.
 ///
 /// Chi cambia la regola di `sort_name` scrive una migrazione che le rimette
 /// tutte a NULL (`UPDATE tracks SET ordine_titolo = NULL, …`): la prima

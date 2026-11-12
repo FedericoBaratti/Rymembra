@@ -463,9 +463,14 @@ fn open_connection(connection: Connection, percorso: Option<&Path>) -> Result<Op
         .map(|percorso| manutenzione::prima_di_migrare(&connection, percorso, version_before));
     let applied = migrate(&connection)?;
     // Le chiavi d'ordine dei brani che non le hanno ancora: dopo la 042 tutte
-    // quelle di prima, poi nessuna. Vedi
+    // quelle di prima. Solo quando si è appena migrato, che è anche la prova
+    // che il file si scrive: una libreria aperta da un disco in sola lettura
+    // si apre come prima, e le chiavi che una caduta avesse lasciato a NULL le
+    // rifà la prossima scrittura dei brani (`Toccati::segna_brani`). Vedi
     // `library::riempi_le_chiavi_d_ordine_all_apertura`.
-    crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection)?;
+    if applied > 0 {
+        crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection)?;
+    }
     if percorso.is_some() {
         // Dopo le migrazioni e non prima: SQLite chiede un `optimize` dopo ogni
         // cambio di schema, e un indice appena creato è precisamente la cosa

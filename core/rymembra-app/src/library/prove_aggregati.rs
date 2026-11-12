@@ -135,9 +135,11 @@ fn una_libreria_appena_nata_non_rifa_le_chiavi() {
 ///
 /// Nessuna le scrive da sé: un brano nuovo nasce con le chiavi a NULL, il
 /// trigger `chiavi_d_ordine_da_rifare` le rimette a NULL quando un nome cambia,
-/// e [`riempi_le_chiavi_d_ordine`] le rifà in testa a ogni ricostruzione degli
-/// aggregati e a ogni apertura. Quel che conta, per ognuna, è che dopo arrivi
-/// una ricostruzione.
+/// e [`riempi_le_chiavi_d_ordine`] le rifà in `Toccati::segna_brani` (che ogni
+/// transazione di scrittura dei brani chiama prima di chiudersi), in testa a
+/// ogni ricostruzione degli aggregati e all'apertura dopo una migrazione.
+/// Quel che conta, per ognuna, è che nella sua transazione passi una delle
+/// due.
 const CHI_SCRIVE_I_NOMI: &[(&str, &str, &str)] = &[
     (
         "src/catalogo.rs",
@@ -147,27 +149,27 @@ const CHI_SCRIVE_I_NOMI: &[(&str, &str, &str)] = &[
     (
         "src/enrich.rs",
         "aggiorna_brano",
-        "registra; poi la passata di arricchimento chiama ricostruisci_aggregati",
+        "dentro registra: la passata segna i brani (segna_brani) nella stessa transazione",
     ),
     (
         "src/enrich.rs",
         "rimetti_i_tag_del_file",
-        "registra_dimenticati chiama ricostruisci_aggregati",
+        "registra_dimenticati: segna_brani e ricostruisci_aggregati nella stessa transazione",
     ),
     (
         "src/incerti.rs",
         "applica_correzioni",
-        "correggi e riapplica: ricostruisci_aggregati, o la scansione che li ha chiamati",
+        "correggi: segna_brani e ricostruisci_aggregati; riapplica: dentro la transazione della scansione",
     ),
     (
         "src/library/righe.rs",
         "insert_track",
-        "la scansione chiama ricostruisci_aggregati",
+        "la transazione del lotto segna i brani (segna_brani) prima di chiudersi",
     ),
     (
         "src/library/righe.rs",
         "update_track",
-        "la scansione chiama ricostruisci_aggregati",
+        "la transazione del lotto segna i brani (segna_brani) prima di chiudersi",
     ),
 ];
 
@@ -314,4 +316,25 @@ fn le_chiavi_d_ordine_si_rifanno_alla_ricostruzione() {
             Some("ete".to_owned())
         )
     );
+}
+
+#[test]
+fn segnare_i_brani_rifa_le_chiavi_nella_stessa_transazione() {
+    // Una scansione lunga chiude un lotto alla volta e ricostruisce gli
+    // aggregati alla fine: senza questo, i brani dei primi lotti stavano in
+    // cima ai Brani per nome per tutta la scansione. Ogni transazione che
+    // scrive brani li segna prima di chiudersi, ed è lì che le chiavi si
+    // rifanno.
+    let mut connection = libreria();
+    let tx = transazione_di_scrittura(&mut connection).expect("transazione");
+    su_file(&tx, 7, "C:/M/B/01.flac", "Les Misérables", "chiave");
+    let mut toccati = Toccati::nessuno();
+    toccati.segna_brani(&tx, &[7]).expect("segnati");
+    let chiave: Option<String> = tx
+        .query_row("SELECT ordine_album FROM tracks WHERE id = 7", [], |r| {
+            r.get(0)
+        })
+        .expect("chiave");
+    assert_eq!(chiave.as_deref(), Some("miserables"));
+    tx.commit().expect("commit");
 }
