@@ -134,14 +134,14 @@ macro_rules! token {
 /// Come [`token!`], per i token che hanno estremi.
 ///
 /// È una macro a parte e non un ottavo argomento di `token!` perché gli estremi
-/// riguardano ventisette voci su settantatré: aggiungere un `None` alle altre
-/// quarantasei metterebbe due `None` di fila su ogni riga della tabella, e da lì
+/// riguardano trentadue voci su settantatré: aggiungere un `None` alle altre
+/// quarantuno metterebbe due `None` di fila su ogni riga della tabella, e da lì
 /// in poi nessuno saprebbe più a vista quale dei due è la tripla.
 ///
 /// Le voci limitate erano undici, ed erano davvero «poche». Sono diventate
 /// ventisette con il blocco dei canvas, dove ogni numero ha estremi per una
 /// ragione che non è la difesa del motore ma l'usabilità del cursore — sta
-/// scritta lì.
+/// scritta lì — e trentadue con le cinque misure della cornice (R09-4).
 macro_rules! token_limitato {
     ($id:literal, $css:literal, $kind:ident, $group:ident, $min:literal, $max:literal, $desc:literal) => {
         TokenDef {
