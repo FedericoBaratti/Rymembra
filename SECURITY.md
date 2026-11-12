@@ -108,8 +108,15 @@ supposed to hold:
   paired can do exactly two things after the handshake: say its name and ask
   to pair. Pairing needs the same four-digit code confirmed on both screens,
   built on a commit–reveal exchange so that a machine in the middle cannot
-  steer the two codes to match; only one pairing runs at a time on a host, an
-  attempt is counted from the moment it starts, and pairing stops after three
+  steer the two codes to match. A request to pair does not bring the host’s
+  window forward and shows no code: it appears as a row — “A PC calling itself
+  “name” is asking to pair”, the name chosen by the other side — with “Show the
+  code” and “No”, for one minute. Only “Show the code” starts the exchange; “No”,
+  or the minute running out, closes it before anything is sent, and the same
+  key brings no new row for ten minutes. One row at a time on a host, at most
+  three per origin in ten minutes, and a name equal to that of a paired PC is
+  flagged, with “No” as the main button. Only one pairing runs at a time on a
+  host, an attempt is counted from that click, and pairing stops after three
   failures in ten minutes from one key, ten from any. A PC that is not paired
   gets at most eight connections in all and one per address, may send nothing
   larger than 4 KiB, and is dropped after two minutes if it does not pair;
@@ -127,7 +134,9 @@ supposed to hold:
   connections, 6 per address and 4 handshakes at a time (2 per address, whose
   first message must arrive within a second), and answers discovery at most 4
   times a second per address and 50 in all, with an answer shorter than the
-  question.
+  question. A PC looking for hosts takes at most two hosts per round from the
+  same address, keeps a few candidate addresses per host, and a fake answer
+  arriving after the real one does not replace the address it already uses.
 - whatever reaches the discovery port and is not a question is dropped and the
   next datagram is read at once: only a real socket failure pauses. Messages
   waiting for the session are capped at 256 and 8 MiB per connection; beyond
@@ -220,7 +229,11 @@ declares: a skin with more than 64 entries or zip64 is refused before it is
 opened, its images are capped at 4096 × 4096 pixels read from their header, a
 profile entry is read at most up to its declared size within a budget for the
 whole archive, and the JSON of the Spotify archive and of sync documents is
-value-counted before it is parsed. Windows device names (`con`, `nul`…) are
+value-counted before it is parsed. The “previous database” you import, which
+can be any SQLite file someone sent you, is opened read-only as `immutable` —
+its `-wal` and `-shm` are never read — with `trusted_schema=OFF` and
+`query_only`, and the tables read from it must be real tables, not views or
+virtual tables. Windows device names (`con`, `nul`…) are
 refused as ids and file names. A profile only **adds** to the library: it
 never deletes, switches off or clears anything — in a playlist both libraries
 have it only appends the tracks missing here, never removing, reordering or
@@ -241,13 +254,18 @@ API key.
 **A skin cannot redraw a consent dialog.** The dialogs that ask for a yes are
 marked `data-consenso` — linking a device, the «Listen together» code, invites
 and join requests, the firewall question, deleting from disk, reviewing or
-replacing a skin. The skin compiler emits nothing that reaches them (no layers,
-images, pseudo-elements, part styling or fonts; view transitions pause while
-one is on screen), and the engine's own stylesheet sets the system font in an
-`@layer` a skin cannot override; the skin's colours still apply. Questions
-that arrive on their own — a link or «Listen together» request — open above
-the Skin Studio too. A skin that makes a consent dialog say something else
-than what it asks is a problem.
+replacing a skin, and from this version also the tracks a scan would remove,
+a watched folder that is already there under another name, the plan of a
+Drive restore and the plan of a profile import. The skin compiler emits
+nothing that reaches them (no layers, images, pseudo-elements, part styling or
+fonts; view transitions pause while one is on screen), and the engine's own
+stylesheet sets the system font in an `@layer` a skin cannot override; the
+skin's colours still apply. The veil of a consent dialog sits above
+notifications and menus, which a skin redraws. Questions that arrive on their
+own — a link or «Listen together» request — open above the Skin Studio too.
+A skin that makes a consent dialog say something else than what it asks is a
+problem. One limit is known: a skin can still apply `filter`, `opacity` or a
+`clip` to a part that contains a dialog, and that reaches the dialog too.
 
 **Secrets at rest.** OAuth tokens, from 3.1 the private key that identifies
 the PC to the others in «Listen together», the private key of the device link,
@@ -276,6 +294,15 @@ Audio outputs appear in the log only as a short fingerprint of their name, and
 control characters coming from outside (a service's error, a device's declared
 platform) are written visibly, so nobody can add a line to the log. Links handed
 to the system browser are always `https` pages with a host and no credentials.
+
+**The window shows only Rymembra’s own page**, on Windows and on Android.
+Every navigation to any other address — a web page, `about:blank`, `data:`,
+`file:`, `javascript:`, one of Rymembra’s own local schemes, a window opened
+by a script — is refused, opens nothing, and leaves a line in the log
+(`src-tauri/src/pagina.rs`). On the computer the browser’s own context menu is
+off outside text fields, and so are its keys for reloading, printing, saving,
+viewing the source and going back and forward. A way to load another page in
+the window, or to keep one there, is a problem.
 
 **On the phone, other apps are the other side.** The music service accepts
 only trusted controllers — the app itself, the system (notification, lock
