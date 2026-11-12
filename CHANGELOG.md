@@ -173,7 +173,10 @@ up with a phone that did not exist before.
   you ask for it, and deleting a track need. Rymembra goes on
   with the first alone if that is all you grant, and does not ask for
   «Photos and videos». Then it proposes the phone's `Music` folder and the
-  one on each SD card.
+  one on each SD card. Access not granted then can be granted later, from
+  the empty library or *Settings › Folders and scanning*; the permission for
+  notifications is asked only when a download or connecting a service first
+  needs it.
 - **Secrets in the Android Keystore.** `DiSistema` on Android uses an AES-GCM
   key that never leaves the Keystore. It never falls back to `keyring`, which
   on Android has no keychain and would have kept tokens in memory, silently.
@@ -205,13 +208,23 @@ up with a phone that did not exist before.
   says so — the same rule as a network share on Windows.
 - **Updates on the phone.** *Settings → Updates* checks the project's latest
   GitHub release, every six hours while the app is alive, and announces it
-  only if it carries an APK for the phone's architecture. «Update» downloads
-  it into the cache, with its progress, and hands it to Android's installer,
+  only if it carries an APK for the phone's architecture, with the same notes
+  the computer shows (from the release’s `latest.json`). «Update» downloads it
+  into the cache, with its progress, and hands it to Android's installer,
   which asks for confirmation — and the first time for permission to install
-  apps. Before that, Rymembra opens the APK and refuses it unless it is this
-  same app signed with the same certificate, and takes it only from a GitHub
-  release asset (see Security). The pure part — which release, which APK — is
-  in `rilasci.rs`, with its tests.
+  apps. Before that, Rymembra verifies the APK with the updater’s minisign
+  key, for the version announced, then opens it and refuses it unless it is
+  this same app signed with the same certificate; it takes it only from a
+  GitHub release asset (see Security). A test build, signed with another key,
+  does not download an update Android would refuse: its banner says how to
+  move to the public version without losing the library. The pure part — which
+  release, which APK — is in `rilasci.rs`, with its tests.
+- **The APK is on every release**, `Rymembra_X.Y.Z_android-arm64.apk`, signed
+  with the release key (its SHA-256 fingerprint is on the release page), built
+  for 16 KB memory pages and with its minisign signature (`.apk.sig`) beside
+  it; the website offers it with its size and checksum. It carries the
+  license and the third-party notices. The release page starts with how to
+  move over from a test build.
 - **«Share the log»** replaces «Open the log folder», which a phone has no
   window for: it shares a copy of the log through Android's share sheet.
 - **Texts for a phone.** 87 sentences that spoke of «this PC», Windows, the
@@ -316,6 +329,67 @@ up with a phone that did not exist before.
   Browse are there; the «Listen together» and sync cards point to it instead
   of keeping their own lists.
 
+### Changed — what works differently
+
+- **iTunes and Deezer are off by default, for everyone.** Each has its own
+  switch on the Metadata card of *Settings › Folders and scanning*, with a
+  note on its terms. There was no switch before, so this update turns them off
+  on every copy: switch them back on if you want them. With both off,
+  MusicBrainz alone does not confirm a single track, so only whole albums are
+  enriched, enrichment adds no genre, and covers come only from the Cover Art
+  Archive.
+- **Similar tracks from ListenBrainz have a switch of their own**, in the same
+  place, and are fetched even with no albums to enrich (a library tagged with
+  Picard) and with enrichment off. Until you touch it, it follows automatic
+  enrichment: if you had that off, nothing new is sent.
+- **Playback pauses when the output in use disappears** — Bluetooth headphones
+  switched off or out of range — on Windows too, with or without a pinned
+  output, as it does on the phone. It also pauses when the PC wakes from
+  sleep, instead of resuming by itself.
+- **An import never replaces a playlist you made.** A Spotify archive, a link,
+  a playlist file, the old 1.0 database, a profile or a Drive restore that
+  brings a different playlist with the same name puts it beside yours — “Name
+  (Spotify)”, “Name (Internet Archive)”, “Name (file)”, “Name (1.0)”, “Name
+  (.ryprofile)”, “Name (Drive)” — and the plan names both; restoring again
+  finds that copy instead of making another. A playlist both libraries share
+  still only receives the tracks missing here. Playlists imported from an
+  archive or a file by 3.2.0 or earlier cannot be told apart from yours, so
+  the first re-import puts the new copy beside them.
+- **A disc split into folders is one album.** “Title (CD1)” and “Title (CD2)”
+  — or “- CD1”, “CD2”, “[Disc 2]”, “Disc 1 - …” — make one album; “(Vol. 1)”
+  and “(Vol. 2)” stay two. Existing libraries are regrouped once after the
+  update, so some album cards merge.
+- **Tracks that “Keep a copy” skipped in 3.2.0 go back to the queue once.** On
+  a track already played from Explore it marked the copy done without
+  downloading anything: after the update, press “Resume” on the Imports page.
+  Tracks marked “not found” because of a canceled search or a catalog that was
+  down can be searched again with the new “Also retry the N not found”.
+- **The Microsoft Store copy keeps its own library**, in a data folder of its
+  own (`…rymembra.store`, which Windows keeps under `%LOCALAPPDATA%\Packages\`
+  and removes with the app). Opening the installer copy’s library from inside
+  the package split the database from its `-wal` and `-shm`, which went to the
+  package’s private folder. On first start, while its library is still empty,
+  the Store copy offers once to copy the library it finds — the installer
+  copy’s, or its own from before this version — leaves the original untouched,
+  and closes; it no longer moves Aether’s data folder. The Store package
+  requires Windows 10 2004 (build 19041).
+- **On the phone, for this release,** the app stays in portrait, and the
+  guided tour is not offered: it started out of sight and filled the queue.
+- **A skin you can always get out of.** After you wear a skin from a file, the
+  “Keep …?” question goes back to the previous skin by itself after 15 seconds
+  without an answer, and holding Shift while Rymembra starts switches back to
+  Plain.
+- **A folder you add is read at once** — from Settings, by dropping it on the
+  window or from the empty Home: its tracks appear a few seconds later,
+  without pressing “Scan”.
+- **“Undo” waits for you.** Its notices pause while focused or under the
+  pointer, Ctrl+Z undoes the last one, and deleting a playlist asks first.
+- **The window is no longer a web page.** A right click on an empty part of it
+  no longer opens Edge’s menu (Back, Refresh, Save as, Print), and the
+  browser’s shortcuts — F5, Ctrl+R, Ctrl+P, Ctrl+S, Ctrl+F, F3… — no longer
+  reload, print, save or search the page. Text fields keep Cut, Copy and
+  Paste, and Rymembra’s own shortcuts are unchanged.
+
 ### Changed — Listen together
 
 - **Linking two devices with the QR pairs them for «Listen together» too**,
@@ -338,9 +412,10 @@ up with a phone that did not exist before.
     they look for it at once: it shows within seconds, not half a minute.
   - Internet connections get wider timings — connect 15 s, handshake 10 s,
     silence 30 s, forwarded reads 20 s — and the heartbeat stays the same, so
-    an older peer is not cut off. The per-address caps of a host count by
-    device key, so two members behind the same relay or carrier NAT do not
-    share one.
+    an older peer is not cut off. A session with a member over the internet
+    schedules its starts 400 ms ahead instead of 250. The per-address caps of
+    a host count by device key, so two members behind the same relay or
+    carrier NAT do not share one.
   - A member's clock estimate keeps samples up to a 400 ms round trip, instead
     of 100 ms at home; the filter on the fastest samples is unchanged.
   - «Wi-Fi only» covers it: on mobile data, joining, accepting an invite,
@@ -416,17 +491,7 @@ up with a phone that did not exist before.
   like the wait itself) runs from before the browser opens until the answer,
   «Cancel» or the timeout, with the notification «Waiting for your consent».
 
-### Fixed — folders in the cloud
-
-- **A reassembly interrupted at the wrong moment could serve the wrong
-  bytes.** The in-order copy was renamed over the old file and the index
-  written after: a crash in between left the index of the out-of-order
-  pieces on top of the in-order file, and after a restart the cache served
-  bytes from one point of the track in place of another. The old index is
-  now deleted first; a crash in between leaves a file no index names, which
-  the next start throws away.
-
-### Security
+### Security — your devices over the internet
 
 - **Linking a device needs its QR code and a «yes».** The code's random
   16-byte token is valid for ten minutes and once, compared in constant time;
@@ -443,17 +508,83 @@ up with a phone that did not exist before.
   watched folder — size and date checked around every read. No path crosses
   the connection. Frames are capped at 1 MiB, and inflated at 16 KiB while
   linking, 64 KiB for a request and 8 MiB for an answer; reads at 2 MiB, lists
-  at 500 entries, requests at 8 at a time and connections at four per device.
+  at 500 entries, requests at 8 at a time and connections at four per device
+  (a fifth closes the oldest).
 - **The device's key** is in the system keychain (`lontano.chiave.<device>`;
   the Android Keystore on the phone), never in the database, and an existing
   one is never overwritten. The log names no key, address or device.
 
-### Security — the review of 2026-11-10
+### Security — the reviews of November 2026
 
-A full review of the code — eleven areas read against `SECURITY.md`, the
-untrusted parsers fuzzed for three hours, the phone build probed on an
-emulator. What it fixed is below. Some low-risk findings are still open, and
-signing the sync documents is planned work (`SECURITY.md`).
+Two reviews of the code. The first, on 2026-11-10, read eleven areas against
+`SECURITY.md`, fuzzed the untrusted parsers for three hours and probed the
+phone build on an emulator; the second, the day after, checked those fixes
+again, read the interface, the texts, the documents and the release, and
+fuzzed the parsers once more. What they fixed is below. Some low-risk findings
+are still open, and signing the sync documents is planned work
+(`SECURITY.md`).
+
+**Your devices over the internet.**
+
+- **A forgotten device can no longer read the library on connections it had
+  already opened.** Every request of the device link checks that the key is
+  still linked, and forgetting a device — here or there — closes all of its
+  connections and “Listen together” streams; a track of that device that was
+  playing asks it for nothing more, and listens queued for it are not sent.
+  “Forget”, a “forget me” from the other side and a new link take effect at
+  once, even while a scan keeps the library busy, and no later read of the
+  library undoes them. At most 8 requests are served at a time per device,
+  across all of its connections.
+- **Linking shows who is on the other side.** The link names the device as it
+  calls itself and a short fingerprint of its key, to compare with the one
+  next to the QR code; the PC asking for the «yes» shows the same. Showing a QR
+  code or opening a link no longer turns on «Reachable from the internet»
+  without a separate yes. «Forget» also removes the «Listen together» trust
+  the QR gave, and a QR code never unblocks a PC you blocked.
+- **«Download here» writes only audio files** with the extensions the scan
+  reads; anything else another device lists as a track is refused.
+- **Turning off “Reachable from the internet” closes the node at once**, even
+  while a command still holds it: nothing is accepted any more, every
+  connection closes and the QR code stops being valid. Before, the node stayed
+  reachable for up to about four minutes. `rymembra/associa/1` no longer
+  counts an attempt when no QR code is shown, and the QR code is canceled when
+  you leave the Devices page or the window goes to the tray, one still being
+  made included.
+- **Covers of linked devices** are cached per device, read only while the
+  device is still linked, kept and shown only when their bytes are a JPEG, PNG
+  or WebP image, and never kept by the window; every `rymembra-cover` response
+  says `X-Content-Type-Options: nosniff`. What a device says about itself
+  (name, platform, version) is cut to 64 characters of plain text.
+- **The internet link uses only the system's DNS servers** — no fallback to
+  Cloudflare, Google or Quad9 — and makes no plain-HTTP captive-portal check.
+
+**Listen together.**
+
+- **Discovery no longer pauses on datagrams it drops**: a PC on the LAN
+  sending about twenty long datagrams a second could keep a host from being
+  found. Messages waiting for the session are capped at 256 and 8 MiB per
+  connection, with TCP holding the sender back.
+- **A fake discovery reply no longer hides the host.** One sent right after
+  the real one took its place; a PC now keeps up to four addresses per
+  fingerprint, skips for a minute an address whose connection never proved the
+  key, and tries the next at once. Discovery announces at most two hosts per
+  source address per round, and replies from typed or remembered addresses
+  always get through.
+- **A pairing request no longer opens the code dialog by itself**, nor brings
+  the window forward. The host sees a row — a PC calling itself by some name
+  is asking to pair — with “Show the code” and “No”, and the code and its
+  attempts start only from that click, so a stranger can no longer use them up
+  by sending commitments and hanging up. One request at a time and three per
+  address in ten minutes; a key refused, or left unanswered, shows no new
+  request for ten minutes.
+- When a member is lowered to “Listen” or removed, the gestures it had already
+  queued on the host are discarded.
+- Names declared by other PCs go through the same cleanup as saved names,
+  which now also removes lone direction marks, word joiners and soft hyphens.
+  They are isolated from the text around them, and the pairing dialog says
+  that the other PC picks its own name, and warns when it matches a paired PC.
+
+**Profiles, sync and backup.**
 
 - **A profile can no longer make Rymembra delete files outside its cover
   store.** The cover hash in a `.ryprofile` went into the library unchecked,
@@ -469,85 +600,118 @@ signing the sync documents is planned work (`SECURITY.md`).
   ask for gigabytes of memory. A sync document that fails to parse is not
   downloaded again at every pass.
 - **Sync no longer adds watched folders on network hosts this PC does not
-  already use** (`\\host\…`), so a sync document cannot make the scan open
-  SMB connections — and send the Windows login hash — to an arbitrary host.
-  The sync folder must still be writable by you alone: its documents are not
-  signed yet, which is planned work.
+  already use** (`\\host\…`, also written with mixed separators or as
+  `\??\UNC\…`), so a sync document cannot make the scan open SMB connections —
+  and send the Windows login hash — to an arbitrary host; the Drive restore
+  plan shows such folders as not checked instead of probing them. The sync
+  folder must still be writable by you alone: its documents are not signed
+  yet, which is planned work.
 - **A profile that carries library data with an empty library identity** is
   treated as coming from another library.
-- **A forgotten device can no longer read the library on connections it had
-  already opened.** Every request of the device link checks that the key is
-  still linked, and forgetting a device — here or there — closes all of its
-  connections and «Listen together» streams. At most 8 requests are served at
-  a time per device, across all of its connections.
-- **Linking shows who is on the other side.** The link names the device as it
-  calls itself and a short fingerprint of its key, to compare with the one
-  next to the QR code; the PC asking for the «yes» shows the same. Showing a QR
-  code or opening a link no longer turns on «Reachable from the internet»
-  without a separate yes. «Forget» also removes the «Listen together» trust
-  the QR gave, and a QR code never unblocks a PC you blocked.
-- **«Download here» writes only audio files** with the extensions the scan
-  reads; anything else another device lists as a track is refused.
-- **Turning off «Reachable from the internet» closes the node at once**, even
-  while a command still holds it: nothing is accepted any more, every
-  connection closes and the QR code stops being valid. Before, the node stayed
-  reachable for up to about four minutes. `rymembra/associa/1` no longer counts
-  an attempt when no QR code is shown, and leaving the Devices page cancels the
-  QR code. Covers of linked devices are cached per device, read only while the
-  device is still linked, and never kept by the window; what a device says
-  about itself (name, platform, version) is cut to 64 characters of plain text.
-- **The internet link uses only the system's DNS servers** — no fallback to
-  Cloudflare, Google or Quad9 — and makes no plain-HTTP captive-portal check.
-- **«Listen together» discovery no longer pauses on datagrams it drops**: a
-  PC on the LAN sending about twenty long datagrams a second could keep a
-  host from being found. Messages waiting for the session are capped at 256
-  and 8 MiB per connection, with TCP holding the sender back.
-- **Cloud folders: only the chosen folders are kept.** The change feeds of
-  OneDrive, Google Drive and Dropbox cover the whole drive, and every change
-  anywhere in it was written to the database and never removed; those rows go
-  at the account's next pass. The log no longer names cloud folders, and the
-  WebDAV password, Dropbox temporary links and Drive upload sessions no longer
-  appear in debug output or errors.
+- Renaming a sync device that is waiting to be accepted no longer accepts it.
+
+**Imports and catalogs.**
+
 - **Catalog downloads start only from the catalog the row claims** — an
-  `archive.org/download/…` file or Audius' own download path — and follow
+  `archive.org/download/…` file or Audius’ own download path — and follow
   redirects only inside it; a crafted profile could make the download queue
-  fetch any address and drop a `.url` or `.lnk` into the music folder. What
-  is downloaded must be audio (FLAC, MP3, AAC, Ogg, WAV, AIFF, MP4), its
+  fetch any address and drop a `.url` or `.lnk` into the music folder. What is
+  downloaded must be audio (FLAC, MP3, AAC, Ogg, WAV, AIFF, MP4), its
   extension comes from its content, every download has a byte cap, and Audius
-  nodes, cover addresses and redirects go only to public host names.
-- **A skin can no longer redraw a consent dialog.** Inside the dialogs that ask
-  for a yes — linking a device, the «Listen together» code, invites, the
-  firewall question, deleting from disk, reviewing or replacing a skin — skins
-  apply no layers, images or fonts; the text uses the system font and the
-  skin's colours stay. Skin images are capped at 4096 × 4096 pixels, read from
-  their header, an archive with more than 64 entries or zip64 is refused
-  before it is opened, and Windows device names (`con`, `nul`…) are refused as
-  ids and file names, also in profiles and in skins restored from Drive.
+  nodes, cover addresses and redirects go only to public host names. A file
+  that a profile’s row names in advance is used only if it is the track the
+  row is for.
+- **The old 1.0 database chosen for import is opened as an untrusted file**:
+  only its main file is read — never the `-wal` or `-shm` beside it
+  (RUSTSEC-2026-0459) — with `trusted_schema=OFF` and read-only queries, and
+  it is refused if the tables it reads are views or virtual tables. The plan
+  says when a pending `-wal` was ignored.
+
+**Cloud folders.**
+
+- **Only the chosen folders are kept.** The change feeds of OneDrive, Google
+  Drive and Dropbox cover the whole drive, and every change anywhere in it was
+  written to the database and never removed; those rows go at the account’s
+  next pass. The log no longer names cloud folders, and the WebDAV password,
+  Dropbox temporary links and Drive upload sessions no longer appear in debug
+  output or errors.
+
+**Skins and the Skin Studio.**
+
+- **A skin can no longer redraw a consent dialog.** Inside the dialogs that
+  ask for a yes — linking a device, the “Listen together” code, invites, the
+  firewall question, deleting from disk, removing rows from the library,
+  moving a folder you already watch under another name, reviewing or replacing
+  a skin, restores and applying a profile — skins apply no layers, images or
+  fonts; the text uses the system font and the skin’s colors stay. Those
+  dialogs also sit above notifications and menus, which a skin could enlarge
+  over their buttons.
+- **Skin files are checked before they are opened.** Images are capped at 4096
+  × 4096 pixels, read from their header (skins installed before the cap keep
+  working); an archive with more than 64 entries or zip64 is refused; Windows
+  device names (`con`, `nul`…) are refused as ids and file names, also in
+  profiles and in skins restored from Drive, and an installed skin with such a
+  name shows as broken and can be uninstalled. A resource address built from
+  `..` or `.` no longer leaves the skin’s folder.
+- Skin names, authors and descriptions can no longer contain bidirectional
+  controls or invisible characters, and names inside questions are isolated.
+- A hostile Skin Studio draft — one from a profile, say — with one enormous
+  key no longer exhausts memory or processor time while the Studio locates its
+  lines.
+
+**The window and the log.**
+
+- **The window can no longer be taken to another page**: on Windows and
+  Android anything that is not Rymembra itself — a website, a blank page, the
+  app’s own resource addresses — is refused in the main window, and the log
+  notes the refusal.
 - **AI service errors no longer carry the API key** to the screen or the log.
 - **Links opened in the system browser are always `https` pages**, parsed and
   normalised first; a catalog link must have a real domain name.
-- **The log names no audio output** (Bluetooth headphones are often named after
-  their owner) — only a short fingerprint — and text from outside can no longer
+- **The log names no audio output** (Bluetooth headphones are often named
+  after their owner) — only a short fingerprint — nor the address a browser
+  failed to open, which can carry a token; and text from outside can no longer
   write fake lines into it.
-- **Phone updates: the APK is checked before Android's installer sees it** —
-  same package, same signing certificate — and is downloaded only from a
-  GitHub release asset. Android's own check protected only an update over
+
+**Phone.**
+
+- **Updates: the APK is checked before Android’s installer sees it.** It is
+  verified with the updater’s minisign key, for the version announced — an APK
+  without a signature is not offered — then opened to make sure it is the same
+  package, signed with the same certificate; and it is downloaded only from a
+  GitHub release asset. Android’s own check protected only an update over
   Rymembra: an APK with another package name was offered as a new app.
-- **Phone: only trusted controllers reach the music session** — the app, the
-  system (notification, lock screen, Bluetooth), Android Auto and the car's
-  media centre. Other apps can no longer browse the library and the history
-  or control playback.
-- **Phone: «Save» takes only the document Rymembra wrote**, the file provider
-  shares two cache folders instead of the whole storage, the activity has an
-  empty task affinity (StrandHogg on Android 8–10), and an unreadable intent
-  extra no longer crashes the app.
+- **Only trusted controllers reach the music session**: the app, the system
+  (notification, lock screen, Bluetooth), Android Auto, the car’s media
+  center, Google Assistant, and the watches and remote controls you gave
+  notification access. Other apps can no longer browse the library and the
+  history or control playback.
+- **The page gets no camera, microphone or location**: the WebView refuses
+  those permissions and has content access, geolocation and windows opened by
+  scripts turned off, and the system WebView is opted out of usage metrics.
+- **“Save” takes only the document Rymembra wrote**, the file provider shares
+  two cache folders instead of the whole storage, the activity has an empty
+  task affinity (StrandHogg on Android 8–10), and an unreadable intent extra
+  no longer crashes the app.
+
+**Installer and release.**
+
+- **The installer removes a previous version only if it really is Aether**:
+  publisher “Federico Baratti”, name “Aether”, the same folder in its
+  uninstall entry and in its product key, with `uninstall.exe` and
+  `aether.exe` inside. Until now any program registered as “Aether” was
+  uninstalled and its uninstall entry deleted.
 - **Updater signing key in a protected environment.** The release job that
   signs updates runs in the `release` environment, so the key can live in
   environment secrets instead of repository secrets readable by any workflow;
   CI builds `cargo-deny` from crates.io instead of downloading an unchecked
   binary, and the website is built by a job that cannot publish.
 
-### Fixed — the review of 2026-11-10
+### Fixed — the reviews of November 2026
+
+The rest of what the two reviews fixed, by area.
+
+**Library, folders and Home.**
 
 - **«Delete from disk» could delete for good a file the dialog had promised to
   the Recycle Bin.** The confirmation was a plain yes, and at execution a share
@@ -557,65 +721,512 @@ signing the sync documents is planned work (`SECURITY.md`).
   everything and the dialog asks again. The drive type is read on the volume
   the file is really on (a junction or a folder-mounted USB stick is no longer
   a fixed disk), and the confirmation answers once.
-- **Importing a profile only adds.** It no longer deletes playlists, switches
-  off watched folders, removes likes or clears ratings, and dates from the
-  future are clamped to the import.
-- **Out-of-range values from sync and profiles** — a rating above 5, huge play
-  counts, future timestamps, an extreme playlist position — no longer stop
-  every sync pass, overflow the totals or freeze local edits.
+- **Folders.** “Remove from library” and “Delete from disk” refresh the tree,
+  its counts and the track panel at once, and the panel no longer stops at the
+  first short page. When a deletion cannot happen at all — a single track of a
+  CD image — the dialog says so instead of asking. The panel’s track menu
+  knows its rows: on the phone “Add to favorites” no longer removes a
+  favorite, and cloud tracks get “Open on OneDrive” (or their own service) and
+  a disabled “Delete from disk”. Under a folder that is not responding, “Play”
+  is disabled with the reason instead of filling the queue with unreachable
+  tracks; in a “Listen together” session without the right to the queue it is
+  disabled like “Add to queue”.
+- **The first scan shows itself**: library counts, the Home and the welcome
+  screen’s “Listen” update while the folder is being read, instead of staying
+  at zero until the end, and a folder picked by hand on the first-run screen
+  no longer says “0 tracks”. A window reloaded while a scan was finishing no
+  longer stays on “scanning”.
+- **A file that changes at the same path is measured again** — a re-ripped CD,
+  a remaster, a download measured halfway: its loudness and fingerprint no
+  longer stay those of the old file for good (“Re-read all tags” does not
+  trigger this). A scan no longer writes a track back with the file and tags
+  it had planned on if another change moved that track or reused its number in
+  the meantime: the track is skipped, and the next scan looks at it again.
+- **Albums.** A compilation with no album artist shows “Various artists”, not
+  the guest with the shortest name. The album grid sorts like Artists, here
+  and in Browse: accents and a leading article are ignored (“Édith Piaf” under
+  E, “The Beatles” under B), and a leading “I” is an article only in Italian
+  names — “I Cani” under C, “I Prevail” under I. A tag year of “0000” is no
+  year: no “0” under the cover, and the album no longer sorts first.
+- **On first launch “Play” no longer plays the library backwards**: tracks
+  added in the same instant keep album, disc and track order in “Recently
+  added”, the Tracks view and Browse from another device.
+- **The Monday collections fill an empty week**: one that came out empty is
+  made again when a listening history or the sound analysis arrives, “Rescued”
+  no longer repeats tracks from the last four weeks, and collections made
+  while the clock was set ahead are removed instead of hiding tracks for
+  years. The Home renews them at local midnight on Monday and when the window
+  comes back; “You haven’t played these in a while” leaves out tracks added in
+  the last 30 days; a Home that fails to load says so, with “Try again”,
+  instead of an endless skeleton.
+- A file whose tags cannot be read is no longer offered “Try again”.
+
+**Playlists, the queue and selection.**
+
 - **Removing or moving a row of a playlist or of the queue carries the track
   you saw in it**: a double click on × removed two tracks, and a list that had
-  changed underneath lost the wrong one. A double click on a row's buttons no
-  longer starts playback.
+  changed underneath lost the wrong one. A double click on a row’s buttons no
+  longer starts playback, and dragging a row moves the row that was picked up,
+  even if the playlist changed during the drag.
+- **Smart playlists.** The rule editor no longer offers “Save” before an
+  existing playlist’s rules have loaded, or after reading them failed: saving
+  then wiped the rules, and the playlist took the whole library on every
+  synced device. “Save” stays off until at least one condition is complete,
+  and a smart playlist without a valid condition is refused. The editor’s
+  count is exact beyond 5,000 tracks and says how many fit, with a note on the
+  5,000-track cap. A missing year, rating or duration no longer counts as 0:
+  “Year less than 1980” no longer takes every track without a year — “is
+  empty” finds those — and a rule saved as “Rating equals 0” matches nothing.
+- **The queue.** Holding Alt+↓ keeps moving the same track, and a pending move
+  no longer pulls the focus into the queue later. Rows still loading show a
+  placeholder instead of “track no longer in library · id 12345”; tracks that
+  left the library are removed from the queue (outside a “Listen together”
+  session), and a failed read is retried. Screen readers hear each row’s real
+  position in the whole queue.
+- **Reordering without dragging.** Queue rows and the rows of a manual
+  playlist have “Move up”, “Move down” and “Move to top” in their menu (right
+  click, or ⋮ on the phone); in the queue “to top” means right after the
+  playing track.
+- **Selection.** A Shift-click range that straddles a list refresh, or crosses
+  a page that failed to load, is dropped instead of mixing old and new rows or
+  leaving a hole; after a scan has moved the rows, an anchor that moved acts
+  like a plain click; in the Folders tree, Shift-click after expanding a
+  folder above the anchor starts from the row clicked. Clicking the heart, the
+  stars or × no longer closes or changes a multiple selection, and Shift+↑/↓
+  extends the selection from the keyboard in track lists too.
+- Scrolling away from the focused row of the queue or of the Folders tree no
+  longer drops the keyboard focus, and the playlist menu says “Delete…”, since
+  it asks first.
+
+**Playback.**
+
 - **Changing what plays next in the last seconds of a track** (Play next,
   removing or moving the next track, shuffle, repeat, the end-of-track timer)
   no longer plays the old next track and skips the one the queue shows: the
   engine withdraws the next track it had already started, at the cost of a
   ~12 ms gap in that case only. A seek in those seconds is no longer dropped.
+- When the next track can no longer be withdrawn — a change in the last
+  fraction of a second — the queue shows the track that is actually playing,
+  and that track no longer plays a second time. A “Play next” in the last
+  seconds of a track, with a next track slow to open (a stream, a cloud file,
+  a network share), no longer stops playback: the track starts as soon as it
+  opens.
 - **Loudness measurement really stops** at its deadline or when music starts,
   instead of decoding on in the background; an offline network folder no
   longer stops the analysis of the whole library, and a track on a slow share
   is retried after a day. Long digital silence no longer leaves the equalizer
   in denormal numbers.
+- **A pause is never lost.** One pressed while the audio output was reopening
+  by itself — headphones sending “pause” as they disconnect — stays a pause,
+  and on the phone unplugged headphones no longer make the track resume from
+  the speaker. Pause from the media keys, the tray, the taskbar thumbnail or
+  the phone’s notification no longer waits behind a slow “Next”. The threads
+  that run those gestures, and Android Auto’s, survive a crash in one gesture;
+  without them a key press is dropped and logged instead of running on the
+  system’s or the window’s thread.
+- **A network drop mid-song.** On the phone a catalog, cloud or other-device
+  track that loses the network now stops with “Retry” at the same point,
+  instead of being reported as a damaged file and skipped. “Retry” continues
+  the same listen, so a long track is no longer counted and scrobbled twice,
+  and a cloud track interrupted says it comes from the network, not that a
+  network folder is unreachable.
+- The “resume where you left off” mark is reset at the end of the queue even
+  after a failed output reopen, and the periodic mark can no longer overwrite
+  it once the queue has ended.
+- Deleting the playing track from disk, or confirming held removals, no longer
+  hides the player bar or shows the Windows media card as “stopped” while the
+  music plays on.
+- When the audio engine cannot start, the notice says what to check — an
+  active sound card, or on the phone a free audio output — instead of a
+  technical cause in Italian.
+
+**Listen together.**
+
+- **A follower stops as soon as the host pauses**, even during a scheduled
+  start, a resync or a correction, and without a clock estimate; a track that
+  finishes opening after the pause is delivered paused. A network that gets
+  faster no longer throws away the estimate of the host’s clock.
+- **“In sync” means in sync**: the host’s track loaded at the host’s position,
+  and a clock estimate within 5 ms. After 30 seconds of exchanges over the
+  round-trip limit the panel says “The network is too slow to follow the
+  session”.
+- A track a follower cannot open is retried with a growing delay, from half a
+  second up to eight, instead of ten times a second.
+- **Pairing.** “Cancel” while waiting for the code cancels at once, without
+  “the codes did not match” and without counting an attempt. A pairing
+  confirmed on both PCs while the library is busy is retried instead of half
+  saved, and the other PC is not told it is no longer recognized; pairing
+  again keeps the name chosen here. The host sees each member with the name it
+  chose for it and, in parentheses, the name the member’s PC declares.
+- When two members press Next together, the second gets a short notice instead
+  of a red error banner; a follower’s clicks in the queue act on the track the
+  row showed, even if the host changed the queue a moment before; “Invite”
+  keeps the keyboard focus after being pressed.
+- On first start «Listen together» and the device link no longer each create
+  a «Listen together» key.
+
+**Your devices over the internet.**
+
+- **The device link no longer waits for the library lock.** The node starts
+  during a long scan or the first sound analysis — a phone could stay
+  unreachable for the whole of it — and *Settings › Devices* no longer answers
+  “the database is busy”. “Browse” requests from a linked device read from a
+  read-only database connection of their own, so a long write on the serving
+  device (a scan, the analysis) does not make them time out; the serving
+  device logs any request it could not serve because the library was busy.
 - **Listens from a linked device no longer move «last played» back**, a
   future start counts as now, and at most 120 an hour are accepted per device.
   An expired QR code always says it expired, and with the library busy a
   just-forgotten device is not readmitted.
-- **Catalog downloads keep their licence.** Tracks imported from a link and
-  «Keep a copy» from Explore are downloaded with the licence and permission
-  read from the catalog at download time, the attribution is written into the
-  file's tags, «Now playing» shows the licence of such a file (its source page
-  stays in the tags), and a download takes a catalog file only when its title and
-  artist match the wanted track — «Accept different recordings» admits a live
-  or a reissue by the same artist, never someone else's cover. Items in the
-  Archive's `stream_only` collection, restrictions in unexpected forms, 78 rpm
-  records without an explicit licence, unknown licence links and Audius tracks
-  without explicit permission are listen-only. A cancelled search or a catalog
-  that is down no longer marks a track «not available anywhere».
+- “Stop waiting” while “Reachable from the internet” is being turned on really
+  stops the link; before, it went ahead with nothing left to stop it.
+  Forgetting a “Listen together” PC or a sync device from the Devices page
+  asks first.
+- Pairing and link requests that arrive while the Skin Studio is open appear
+  above it instead of freezing the window.
+
+**Imports, profiles and backup.**
+
+- **Importing a profile only adds.** It no longer deletes playlists, switches
+  off watched folders, removes likes or clears ratings, and dates from the
+  future are clamped to the import. In a playlist both libraries share it only
+  appends the tracks missing here: it no longer removes or reorders tracks
+  there, nor turns the playlist into a smart one.
+- **Out-of-range values from sync, profiles and the Drive backup** — a rating
+  above 5, huge play counts, future timestamps, an extreme playlist position —
+  are brought back into range: they no longer stop every sync pass, overflow
+  the totals or freeze edits made elsewhere, and a synced playlist with a
+  future date no longer keeps its tracks from syncing.
+- **A Drive restore made before the music is scanned** no longer leaves
+  playlists incomplete for good, or uploads the incomplete copy over the full
+  one: restoring again after the scan completes them, and the plan says so.
+  Restoring a playlist, or replacing one in an import, also drops the places
+  held for its old tracks, so a track that comes back no longer returns to it.
+- **The Drive backup settles.** Two PCs with different versions of the same
+  skin or draft, different watched folders or different active skins no longer
+  rewrite it at every pass: the newest version wins, each device keeps its own
+  active skin, and duplicate copies on Drive are removed. Removed watched
+  folders, uninstalled skins and deleted drafts leave the backup and are no
+  longer offered by a restore.
+- A skin made active by an imported profile goes through the same review as an
+  installed `.ryskin`; if it fails, it stays installed but is not worn, and
+  the plan says so. After the import the notice counts what reached the
+  library (history, playlists…) too, not only settings, and its undo button is
+  “Restore the previous settings”, with a note on what stays.
+- “No backup on Drive” explains that the backup belongs to the Google app that
+  made it; after a restore retried because the Google token expired, the
+  summary counts every skin and draft restored; with sync on Drive, the
+  backup’s library file is no longer read as a device named “libreria”;
+  remapping a profile’s folders recognizes an already scanned file whose path
+  differs only in the case of a non-ASCII letter (É/é) instead of adding it
+  twice.
+- **Re-importing the old 1.0 database** no longer empties a playlist it
+  brought before, turns a manual playlist into an automatic one or drops an
+  automatic one’s rules: it only adds the tracks the playlist lacks, so tracks
+  found after a new scan arrive and what you added stays. Automatic playlists
+  without any condition are left out and listed.
+- **Spotify archive.** Re-importing it no longer puts back the hearts you
+  removed in Rymembra, and the plan says how many stay off; the plan also
+  lists the playlists that go in beside yours and the ones imported before
+  that will be rewritten. After a failed plan the numbers of the previous
+  choice no longer stay on screen with “Import” on; “Tracks found” counts each
+  track once; audiobook chapters are counted with podcasts, not as unreadable
+  rows. The studio version of a track is no longer swapped for the only live
+  or acoustic one in your library, and titles like “Act II - The Deliverance”
+  or artists like “Little Feat” are no longer cut at a word that merely
+  contains “live” or “feat”.
+- Playlist files: the plan is made again for the name you type, “Import” waits
+  until it matches, and the warning names the playlist that would really be
+  replaced. Re-importing a playlist removes from the download queue the tracks
+  its source no longer has and that were not downloaded yet; nothing leaves
+  the library.
+- A track you only listened to from Explore — a stream, no file — no longer
+  counts as already in the library when you import: it is queued for download,
+  or listed under “To buy”, and plays from the playlist meanwhile.
+- A history row with an impossible year is skipped like any malformed row,
+  instead of crashing the import or dating a play thousands of years ahead.
+  Sending the history to ListenBrainz again no longer resends what that
+  account already has: only listens added since are queued.
+- Errors in the import dialogs are announced to screen readers, and while a
+  Spotify archive is being written the window’s × closes the window instead of
+  doing nothing.
+
+**Explore, catalogs and metadata.**
+
+- **Catalog downloads keep their license.** Tracks imported from a link and
+  “Keep a copy” from Explore are downloaded with the license and permission
+  read from the catalog at download time; the attribution is written into the
+  file’s tags, in English (“Public Domain”, “Non-commercial distribution”, “CC
+  BY-SA”), and “Now playing” shows the license of such a file (its source page
+  stays in the tags). Items in the Archive’s `stream_only` collection,
+  restrictions in unexpected forms, 78 rpm records without an explicit
+  license, unknown license links and Audius tracks without explicit permission
+  are listen-only, and “listen, do not copy” shows on tracks a catalog has but
+  does not let you keep. A canceled search or a catalog that is down no longer
+  marks a track “not available anywhere”.
+- **A download takes a catalog file only when its title and artist match the
+  wanted track.** A different number is not a typo — “Sunrise, Pt. 2” is not
+  “Pt. 1”, “Symphony No. 10” not “No. 1”, “Class of 1999” not “Class of 1984”
+  — and among the matches the exact title comes before the duration. One piece
+  of an artist’s name is not the artist: an uploader named “Simon” is not
+  Simon & Garfunkel, nor “DJ X feat. Radiohead” Radiohead; “&” and “and”
+  match, and “Bach, Johann Sebastian” is “Johann Sebastian Bach”. “Accept
+  different recordings” admits a live or a reissue by the same artist, never
+  someone else’s cover.
+- When an Audius artist turns downloads off after you imported a link, or the
+  file is gone, the queue searches the other catalogs before putting the track
+  on the list to buy. “Keep a copy” after “Listen” replaces the streamed entry
+  with the downloaded file, keeping its heart, rating, plays and playlist
+  places, instead of showing the track twice.
+- The download queue’s state is read again if it fails at startup; the queue
+  no longer shows as running after it has finished, and a finished queue says
+  “done” with a full bar instead of “paused · 0 left”.
+- Explore: “Listen” and “Add to queue” on a result removed from the library in
+  the meantime add it back instead of doing nothing, and screen readers hear
+  the outcome of a search (“24 results”, “No results”, “The catalogs aren’t
+  responding”).
+- Metadata: “Song (Live …)”, “Song (Remix)” and “Song” no longer share, for a
+  week, the iTunes or Deezer answer of whichever was looked up first. “Forget
+  the enrichment” asks first, and afterwards says how many tracks went back to
+  their files’ tags and how many files could not be read (a sleeping NAS,
+  say).
+
+**Cloud folders.**
+
 - **WebDAV listings can no longer run forever** on a server that lists an
   ancestor or loops through symbolic links; a cloud folder moved into a chosen
   folder is listed at once instead of staying empty.
+
+**Skins.**
+
 - **Installing a skin with the id of another one asks first**, showing both,
-  and keeps the replaced one aside to put back.
+  and replaces only the skin the question showed; the last three versions it
+  replaced are kept aside to put back, and uninstalling removes them. “Put it
+  back” can no longer swap twice on a double click, the question opened twice
+  in a row for the same file always answers, and replacing the skin you wear
+  and answering “Not now” to its review no longer puts the rejected version on
+  at the next start.
+- **Neon and Vinile**: the full-screen “Now playing” has its background again
+  — a one-radius elliptical gradient compiled to invalid CSS, and the page
+  underneath showed through.
+- **A valid skin can no longer break the window.** The frame sizes (sidebar,
+  player height and gap, content margin) have bounds, and the layout budget
+  counts “hug” zones made of fixed widgets and the sidebar at the skin’s own
+  width, so a skin can no longer push the player off screen or squeeze the
+  page to nothing. Effect parameters (corner cut, background blur, grid cell,
+  stripes…) have the bounds of the Studio’s sliders, and pattern, palette and
+  curve names that would overwrite each other in the stylesheet are refused.
+- **The review before you wear a skin asks about more**: an essential part
+  (frame, page, navigation, player controls, full screen, window controls,
+  dialogs) that is transparent or clipped, a focus ring 0 px wide, a required
+  text color missing, a part that flashes by scaling to zero, clipping shut or
+  moving away. Contrast is measured on what the window shows.
+- On the phone a skin’s `platforms.mobile` overrides apply, and the player and
+  sidebar sizes are the engine’s: the mini player was 92 px tall, with a large
+  gap under every page, even with Plain. Dialog sheets no longer take over a
+  skin’s decorative layer.
+- In the light themes of Plain and Vinile, danger, warning and success text on
+  its tinted background reads at 4.8:1 or more, and progress bars follow the
+  skin’s colors instead of Plain’s cyan.
+- *Settings › Appearance*: hovering a skin card previews it only with a mouse,
+  and the preview is cleared when you leave the page; screen readers hear
+  which skin is worn and who made the others; Plain’s description no longer
+  calls it dark.
+
+**Skin Studio.**
+
+- The “+” next to a trigger creates the animation and assigns it in one step;
+  the assignment no longer erased the animation it had just created.
+- “Throw the draft away” asks first, and sets the files added in the Studio
+  and the chat conversation aside in a “Before throwing the draft away”
+  snapshot, which brings them back.
+- Code typed in a part’s Code tab is applied when you leave the field or
+  switch part, tab or theme; code that isn’t valid JSON is kept until you come
+  back, and leaving the Studio asks first. Closing Rymembra with the title
+  bar’s × waits for the Studio to save your last edits.
+- Choosing or creating another skin during “Try on the app” ends the trial
+  with a notice, and “Open in the Studio” on another skin really opens it.
+  Double clicks on “Try on the app”, “Save and use”, “Export” and “Keep it” no
+  longer run the action twice.
+- A draft that names a file its package does not contain is marked broken,
+  listed under Problems and sent back to the assistant; “Add a layer” stops at
+  the format’s limit (4 backgrounds, 3 on `::before` and `::after`).
+- The names and descriptions of parts, effect parameters and ready-made
+  animations, two tooltips, the code editor’s search panel, validation errors
+  and warnings, and the reasons the chat rejected parts of a reply follow the
+  interface language; two token descriptions no longer name skins that do not
+  exist. The inspector of dialogs notes that consent dialogs cannot be
+  customized, and in Italian the chat’s “Agent” mode is «Assistente».
+- Shortcuts no longer fire while a dialog is open, single-letter shortcuts can
+  be turned off, and leaving the Studio returns the focus where it was. The
+  canvas no longer redraws the whole preview at every validation when the
+  layout has not changed, and its Folders page no longer probes your real
+  drives or reads your saved panel state.
+
+**Settings.**
+
+- If the lyrics status cannot be read, its card says so with “Try again”
+  instead of leaving “Fill the library” off for good. The import card shows
+  why “Accept different recordings” did not change, and no longer shows it on
+  before its state is known.
+- Buttons that start work — Scan, Clean, Empty, Save now, Restore, Disconnect,
+  Sync now, Forget the enrichment — keep the keyboard focus while they work.
+- WebDAV: while it is trying to sign in, the dialog cannot be closed or
+  switched to another tab, so a canceled attempt can no longer save the
+  account.
+- Equalizer: closing the panel right after moving a slider no longer loses the
+  last curve; on a phone the band labels are short (“31”, “1k”) and no longer
+  overlap. Its fields, and those of Scrobbling and AI Models, have accessible
+  names; band sliders are named after their band, and their value is spoken
+  once, localized.
+- AI Models: deleting the profile open in the form clears the form. Last.fm’s
+  “Use these credentials” is off while the fields are empty.
+- Lyrics editor: once every tap is done, Space and Enter on a focused button
+  press that button (Save, Back, ±10), and the focus moves to “Straighten”.
+- Keyboard shortcuts: the button that removes a key says which key and from
+  which command, “Assign” announces when it is listening, and refusals and
+  clashes are announced. The rows no longer look like the “/” key of the
+  search field.
+- Before the Microsoft form, Rymembra says that registering your own app for
+  OneDrive needs an Azure account (usually verified with a card) or a work or
+  school account.
+- The ReplayGain, track or album level and spectrum quality choices have a
+  visible label; the index entries match the card titles (“Devices”, “Import
+  from a service”), and “Motion and access” opens on its own card. Icons no
+  longer contradict what they do: closing and background behavior no longer
+  uses the “remove” cross, playback cards have distinct icons, and Explore no
+  longer uses the “opens the browser” arrow.
+- Texts: no “or drop it here” on the phone and no leading space in the Google
+  Drive note; restore and Spotify archive texts no longer say “1 skins and 1
+  drafts” or “1 duplicates”, nor the Italian ones «1 brani» or «1 aggiunti».
+
+**The window, keyboard and screen readers.**
+
+- **Dialogs.** The window’s minimize, maximize and close buttons keep working
+  while a dialog is open; with a dialog on top, × first closes it, as a “no”,
+  except on the first-run screen. Confirmations answer once, the context menu
+  closes when a dialog opens on its own, and files dropped on the window while
+  a dialog is open do nothing, with a notice that says so. “Now playing”
+  closes when the queue is cleared.
+- **After a reload** (“Reload” on the error screen), lyrics for the next track
+  are no longer asked of LRCLIB with the lyrics panel closed, and the
+  spectrum’s audio tap and a pairing QR code no longer stay active out of
+  sight. The log records the code and message of an unhandled failure in the
+  window instead of “[object Object]”.
+- **Screen readers.** Live announcements are no longer silenced while a dialog
+  is open; the track that starts playing is announced, automatic advances
+  included, and so are retryable warnings and “sound moved to another output”.
+  The first-run screen and the phone’s menu sheet make the rest of the app
+  inert; the content area is a main landmark; opening an album or an artist
+  moves the focus to its title, and closing it returns the focus to the card.
+- **Buttons.** The heart and mute buttons have a fixed name with their pressed
+  state, and every column header of a track list has a name. Transport buttons
+  disabled in a session stay focusable and say why, and buttons and switches
+  disabled that way now look disabled and no longer light up under the
+  pointer.
+- The last rows of a list and the keyboard focus are no longer hidden behind
+  the player or the selection bar, and the rating stars and the expand arrows
+  of the Folders tree are larger targets (24 px).
+- Export no longer proposes a backslash in the file name; AltGr, dead keys and
+  lock keys can no longer be assigned as shortcuts; English dates and times
+  follow the system region when the language matches.
+- **Windows contrast themes**: the open destination, the selected tab,
+  selected rows, pressed toggles (shuffle, repeat, queue, lyrics, spectrum),
+  the active lyric line, the confidence ticks of an import and the Studio’s
+  selected items use the system highlight colors, and their labels no longer
+  vanish into a solid box. Search fields show a focus ring around the whole
+  field; skin previews and the Studio’s color swatches keep their colors.
+- **Contrast.** The “Now playing” header over the blurred cover (side column,
+  full screen, phone) stays readable with very light or very dark covers.
+  Small labels — counts on the active destination and tabs, an offline folder,
+  a disconnected output, the spectrum bar selector, inherited values in the
+  Studio — are no longer faded below readable contrast. In full screen with
+  the spectrum on and a light theme, the playback controls get a light halo
+  over the bars. The missing tracks of an import report are listed one per
+  line again.
+
+**Phone.**
+
+- Reopening from Recents no longer replays a voice search or an old link, the
+  update notice survives the process, and an APK for another architecture is
+  never offered. A menu reopened while the last one slides down shows, and a
+  dialog that arrives with a menu open is no longer hidden under it.
+- Picking a folder outside the phone’s storage (Downloads, a cloud app) says
+  so instead of “Restart Rymembra”, and the “All files access” explanation no
+  longer claims Rymembra fixes tags.
+- Invisible controls no longer catch taps: the lyrics timing strip and the
+  beat editor’s per-line nudges are always visible, and uninstalling a skin
+  moved to the card’s ⋮ menu. The ⋮ in “Now playing” is announced with the
+  track’s title, and “Pick up where you left off” no longer shows before the
+  welcome screen.
+
+**Responsiveness.**
+
+- **Nothing that waits for a slow disk or a busy library holds up the window
+  any more**, nor other commands: opening a Spotify archive or a playlist
+  file, exporting a playlist, installing a skin, adding a file to the Studio
+  or exporting from it, the Metadata and Drive backup cards, import reports,
+  the Lyrics card and the lyrics editor, and the spectrum, technical data,
+  normalization and equalizer preset settings. Some of these froze the window
+  for seconds during a scan. With the library busy, a burst of gestures no
+  longer leaves the window, the Windows media card and the tray minutes
+  behind.
+- **Less work when nothing happens.** The decoding thread no longer wakes
+  about 250 times a second while paused or with nothing playing: it waits for
+  a command. A minimized window stops drawing: while music plays, the page no
+  longer repaints, or runs the 3D spectrum, behind the taskbar.
+- “Select all” and “Play from here” in large lists read only track ids, from
+  the sort index. The metadata cache inside the library is capped at 32 MiB
+  and pruned while the app runs, not only at startup. Fingerprint and loudness
+  passes leave out the tracks of a network share that is off in a single
+  query, instead of reading and skipping them batch by batch under the library
+  lock.
+
+**Updates and the library’s data.**
+
+- **A library that does not open no longer leaves an empty window** — an
+  update stopped partway, a database written by a newer version, a damaged
+  file. Rymembra uses the built-in skin, the error band says what happened,
+  and for database errors it offers “Open the data folder”, where the copy
+  from before the update sits next to `rymembra.db`.
+- **Going back to the copy from before an update no longer spoils it.**
+  Rymembra closed without folding its journal back into the database, so
+  `rymembra.db-wal` stayed full, and a copy put in place of `rymembra.db` as
+  the README said took that journal as its own and came back as the new
+  schema, or malformed. A clean exit now leaves the journal empty, and
+  *Settings › Library and data* has “Go back to the copy from before the
+  update” (see Database).
+- The message for a database update that stopped partway no longer says the
+  previous database is intact — after a step already applied the previous
+  version cannot open the file — and, like the one for a database from a newer
+  version, it names the copy made before the update and the action that puts
+  it back. The damaged-database notice says to delete `rymembra.db-wal` and
+  `rymembra.db-shm` before putting the copy in place; on the phone, where the
+  data folder is private, it says to export the profile, reinstall and import
+  it.
+- Moving the data from Aether: when a stray journal or a half-moved database
+  holds one of the names Aether’s database needs in the new folder, Rymembra
+  stops with a dialog naming the files. Before, it opened an empty library and
+  never looked at Aether’s folder again.
 - **An update whose installer could not start** no longer leaves Rymembra
   running without a window: it says so and closes. `RYMEMBRA_DATI` is read
   once, a relative path is refused, and a refused start leaves its reason in
   `avvio.log`.
-- **Interface:** a Shift-click range that straddles a list refresh is dropped
-  instead of mixing old and new rows; «Now playing» closes when the queue is
-  cleared; confirmations answer once; on the phone a menu reopened while the
-  last one slides down shows, and a dialog arriving with a menu open is no
-  longer hidden under it.
-- **Phone:** reopening from Recents no longer replays a voice search or an
-  old link, the update notice survives the process, and an APK for another
-  architecture is never offered.
-- On first start «Listen together» and the device link no longer each create
-  a «Listen together» key.
-- **«Browse» requests from a linked device no longer wait for the library
-  lock**: list and search requests read from a read-only database connection
-  of their own, so a long write on the serving device (a scan, the analysis)
-  does not make them time out; the serving device logs any request it could
-  not serve because the library was busy.
+- A missing or failing update download (HTTP 404, 429, 5xx) is no longer
+  reported as “No internet connection”, and its progress bar is visible again.
+  Update notes list the Security sections first, skip “Known limits”, and end
+  with “… and N more in the changelog.” in English.
+
+**Installer, website and documents.**
+
+- The installer and the uninstaller speak Italian on an Italian Windows and
+  English elsewhere, and their messages about Aether say it is Rymembra’s
+  previous name.
+- The website: the 404 page works both at the domain root and under
+  `/Rymembra/`; screen readers announce the docs’ search results and “Link
+  copied”; language links have full names; decorative animations stop after a
+  few seconds. The issue form asks where Rymembra runs, and explains how to
+  get the log on Android and from the Store copy.
 - **`PRIVACY.md` was compared with the network requests in the code**, and
   corrected where it differed: the Cover Art Archive redirect to
   `archive.org` and the image hosts of iTunes and Deezer, what MusicBrainz
@@ -625,6 +1236,16 @@ signing the sync documents is planned work (`SECURITY.md`).
   `*.googleusercontent.com`, the import preview's cover, the update check's
   redirect to GitHub's file host, how often the device link republishes its
   address and what mDNS carries, and the DNS servers it asks.
+
+### Fixed — folders in the cloud
+
+- **A reassembly interrupted at the wrong moment could serve the wrong
+  bytes.** The in-order copy was renamed over the old file and the index
+  written after: a crash in between left the index of the out-of-order
+  pieces on top of the in-order file, and after a restart the cache served
+  bytes from one point of the track in place of another. The old index is
+  now deleted first; a crash in between leaves a file no index names, which
+  the next start throws away.
 
 ### Fixed — the phone
 
@@ -771,6 +1392,24 @@ signing the sync documents is planned work (`SECURITY.md`).
   `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
   interface tests and the Kotlin sources; `strumenti/firma.js` accepts a key
   without a password, as `tauri signer` does.
+- **A security advisory published on release day no longer stops the release
+  build**: it is flagged at the top of the draft. Licenses and bans still
+  block. Release jobs have longer time limits, and the desktop build no
+  longer produces a static library nobody uses.
+- `npm run version:set` rewrites `Cargo.lock` and `package-lock.json` too, and
+  `check:version` checks them and refuses a version the Android
+  `versionCode` cannot hold. `npm run verify` uses `--locked`; the new
+  `npm run verify:ci` runs the Rust checks with CI’s toolchain and
+  `-D warnings`.
+- `THIRD-PARTY-NOTICES.md` includes the license files over 32 KiB, which were
+  dropped (crossbeam-channel’s CC BY 3.0 and the Go texts); a file too large
+  is listed and stops the build. The signing preflight stops a key pasted with
+  a trailing newline.
+- The website’s build checks catch external resources on any element, in
+  `srcset`, in `@import` and in copied JavaScript, protocol-relative links,
+  translations that drop a placeholder or a link, and repeated JSON keys. The
+  docs’ links to the sources are checked against git, so a wrong letter case
+  no longer becomes a 404 on GitHub.
 
 ### Database
 
