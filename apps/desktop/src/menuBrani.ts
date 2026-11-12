@@ -67,6 +67,30 @@ export interface AzioniBrani {
    * due volte.
    */
   togliDallaCoda?: (() => void) | undefined;
+  /**
+   * Sposta la riga su cui si è aperto il menù: su, giù, in cima.
+   *
+   * Riordinare la coda o una playlist a mano era solo trascinare o `Alt+↑↓`:
+   * chi usa un puntatore senza riuscire a trascinare non aveva un gesto, e sul
+   * telefono — dove il trascinamento è lo scorrimento e la tastiera non c'è —
+   * nessuno poteva riordinare (R16-6, D-72). Come per «Togli», la riga e non il
+   * brano, e solo su una riga: chi passa queste mosse conosce la posizione e la
+   * manda al nucleo col suo brano. Una mossa che non porta da nessuna parte (la
+   * prima riga in su) non si passa, e la voce non c'è.
+   */
+  sposta?: Spostamenti | undefined;
+}
+
+/** Le mosse di una riga, dal menù: vedi `sposta` in [`AzioniBrani`]. */
+export interface Spostamenti {
+  /**
+   * La riga è della coda: senza la coda concessa da chi ospita (`senzaCoda`)
+   * non si sposta, come non si toglie. Quella di una playlist sì.
+   */
+  inCoda: boolean;
+  su?: (() => void) | undefined;
+  giu?: (() => void) | undefined;
+  inCima?: (() => void) | undefined;
 }
 
 /**
@@ -74,9 +98,10 @@ export interface AzioniBrani {
  *
  * `inMano` è l'elenco che si sta guardando, letto al momento del tasto
  * destro: dice di un brano se è un file o un brano di catalogo. Un brano che
- * non vi si trova — il menù aperto da un pannello che mostra un'altra lista —
- * lascia le voci come stavano prima di distinguere i due casi, e il nucleo si
- * difende comunque da sé.
+ * non vi si trova lascia le voci come stavano prima di distinguere i due casi,
+ * e il nucleo si difende comunque da sé — tranne il cuore, che senza il brano
+ * non si offre (vedi sotto). Chi apre il menù da un pannello che mostra
+ * un'altra lista — le Cartelle — passa il modo di trovarvi le righe.
  */
 export function vociBrani(
   scelti: number[],
@@ -217,13 +242,15 @@ export function vociBrani(
           { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: () => fai.accoda(brani) },
         ]),
     { etichetta: t("action.addToPlaylist"), icona: "i-plus" as const, azione: () => fai.aggiungiAPlaylist(brani) },
-    ...(primo !== undefined && fai.preferito !== undefined
+    ...(primo !== undefined && fai.preferito !== undefined && delPrimo !== undefined
       ? [
           // L'etichetta dice che cosa succederà, come il cuore: chi lo ha già
-          // fra i preferiti legge «Togli». Un brano che non si trova
-          // nell'elenco si dà per non preferito, che è la scommessa che non fa
-          // danni: il cuore si accende, e lo si spegne col gesto di prima.
-          inMano(primo)?.liked === true
+          // fra i preferiti legge «Togli». Solo con il brano in mano: un brano
+          // che non si trovava si dava per non preferito, la voce diceva
+          // «Aggiungi» e l'azione — che rilegge il brano vero e lo inverte — lo
+          // toglieva dai preferiti (R13b-3). Un'etichetta che indovina non va
+          // bene quando l'azione non indovina.
+          delPrimo.liked
             ? {
                 etichetta: t("track.unlike"),
                 icona: "i-heart-f" as const,
@@ -247,6 +274,7 @@ export function vociBrani(
           },
         ]
       : []),
+    ...vociDelleMosse(fai.sposta, senzaCoda, t),
     ...daUnBrano,
     ...(fai.togliDallaPlaylist !== undefined
       ? [
@@ -284,6 +312,23 @@ export function vociBrani(
             },
           ]
         : [{ etichetta: t("menu.deleteFromDisk"), icona: "i-trash" as const, azione: () => fai.elimina(brani) }]),
+  ];
+}
+
+/** Le voci di [`Spostamenti`]: quelle che portano da qualche parte, e basta. */
+function vociDelleMosse(
+  sposta: Spostamenti | undefined,
+  senzaCoda: boolean,
+  t: Traduci,
+): Voce[] {
+  if (sposta === undefined || (sposta.inCoda && senzaCoda)) return [];
+  const { su, giu, inCima } = sposta;
+  return [
+    ...(su === undefined ? [] : [{ etichetta: t("menu.moveUp"), icona: "i-chev-u" as const, azione: su }]),
+    ...(giu === undefined ? [] : [{ etichetta: t("menu.moveDown"), icona: "i-chev-d" as const, azione: giu }]),
+    ...(inCima === undefined
+      ? []
+      : [{ etichetta: t("menu.moveToTop"), icona: "i-sort" as const, azione: inCima }]),
   ];
 }
 
@@ -336,17 +381,16 @@ export interface AzioniCartella {
  * `senzaCoda` toglie «Dopo» e «In coda», come in [`vociBrani`]: in una
  * sessione dove chi ospita non ha dato la coda a questo PC il pannello le
  * offriva lo stesso, e premerle portava la fascia rossa del rifiuto del
- * nucleo.
+ * nucleo. E toglie anche «Riproduci»: per il nucleo far suonare è un gesto di
+ * coda come gli altri due (`Gesto::Suona` in `insieme/strada.rs`), e restava
+ * acceso a rispondere con lo stesso rifiuto (R13b-9).
  */
 export function vociCartella(fai: AzioniCartella, t: Traduci, senzaCoda = false): Voce[] {
+  if (senzaCoda) return [];
   return [
     { etichetta: t("action.play"), icona: "i-play" as const, azione: fai.riproduci },
-    ...(senzaCoda
-      ? []
-      : [
-          { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: fai.dopo },
-          { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: fai.accoda },
-        ]),
+    { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: fai.dopo },
+    { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: fai.accoda },
   ];
 }
 
@@ -369,11 +413,10 @@ export function vociPlaylist(p: Playlist, fai: AzioniPlaylist, t: Traduci): Voce
     p.isSmart
       ? { etichetta: t("menu.editRules"), icona: "i-settings" as const, azione: fai.regole }
       : { etichetta: t("menu.rename"), icona: "i-text" as const, azione: fai.rinomina },
-    // Senza domanda, e con un «Annulla» dopo: la cancellazione è già
-    // scritta quando l'avviso compare, e il nucleo tiene quel che serve a
-    // rimetterla com'era — vedi `playlists::Cancellata`. Una domanda a ogni
-    // eliminazione insegnerebbe a rispondere «sì» senza leggere.
-    { etichetta: t("common.delete"), icona: "i-trash" as const, azione: fai.cancella },
+    // Coi puntini: prima chiede (D-40), poi cancella, e dopo c'è anche un
+    // «Annulla» — il nucleo tiene quel che serve a rimetterla com'era, vedi
+    // `playlists::Cancellata`. La domanda arriva da `App` (`daCancellare`).
+    { etichetta: t("menu.deletePlaylist"), icona: "i-trash" as const, azione: fai.cancella },
     // L'esportazione vale per tutte e due: una playlist intelligente si
     // esporta con i brani che ha **adesso**, che è quel che un M3U può
     // rappresentare — le regole non attraversano il formato, e portarle via

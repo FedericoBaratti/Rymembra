@@ -7,14 +7,15 @@ import { vociCartella } from "../src/menuBrani";
 const t = (chiave: string) => chiave;
 const fai = { riproduci: () => undefined, dopo: () => undefined, accoda: () => undefined };
 
-test("pannello Cartelle: senza la coda il menù non offre «Dopo» né «In coda»", () => {
+test("pannello Cartelle: senza la coda il menù non offre «Riproduci», «Dopo» né «In coda»", () => {
   assert.deepEqual(
     vociCartella(fai, t).map((v) => v.etichetta),
     ["action.play", "action.playNext", "action.enqueue"],
   );
   // In una sessione con diritto «Ascolta»: niente gesti sulla coda che il
-  // nucleo rifiuta, come in `vociBrani`.
-  assert.deepEqual(vociCartella(fai, t, true).map((v) => v.etichetta), ["action.play"]);
+  // nucleo rifiuta, come in `vociBrani` — e far suonare è uno di loro
+  // (R13b-9).
+  assert.deepEqual(vociCartella(fai, t, true).map((v) => v.etichetta), []);
 });
 
 test("pannello Cartelle: la striscia e il trascinamento guardano il permesso della coda", () => {

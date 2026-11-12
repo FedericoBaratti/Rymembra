@@ -79,6 +79,7 @@ import {
   InRiproduzioneCollegata,
   InRiproduzioneTelefonoCollegata,
 } from "./collegati";
+import { MenuDellaCoda } from "./Coda";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
 import { ConfermaGesto } from "./ConfermaGesto";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
@@ -1804,7 +1805,7 @@ export function App() {
        * Le voci che solo chi apre sa offrire: «Togli da questa playlist», che
        * vuole la posizione della riga. Vedi `menuRigaPlaylist`.
        */
-      piu?: Pick<AzioniBrani, "togliDallaPlaylist" | "togliDallaCoda">,
+      piu?: Pick<AzioniBrani, "togliDallaPlaylist" | "togliDallaCoda" | "sposta">,
     ) => {
       e.preventDefault();
       const inMano = (id: number) =>
@@ -1913,6 +1914,7 @@ export function App() {
           : undefined,
         togliDallaPlaylist: piu?.togliDallaPlaylist,
         togliDallaCoda: piu?.togliDallaCoda,
+        sposta: piu?.sposta,
       };
       // Su cosa si agisce, per la testata del foglio del telefono: il brano,
       // se è uno solo e lo si ha in mano, o quanti sono.
@@ -2400,7 +2402,7 @@ export function App() {
       e: React.MouseEvent,
       elenco: number[],
       conosciuto?: Brano,
-      piu?: Pick<AzioniBrani, "togliDallaPlaylist">,
+      piu?: Pick<AzioniBrani, "togliDallaPlaylist" | "sposta">,
     ) => {
       const dentro = elenco.some((id) => selezione.has(id));
       apriMenu(e, dentro && selezionati.length > 0 ? selezionati : elenco, conosciuto, piu);
@@ -2409,8 +2411,9 @@ export function App() {
   );
 
   /**
-   * Il menù di una riga di una playlist a mano, sul telefono: quello di
-   * sempre, più «Togli da questa playlist».
+   * Il menù di una riga di una playlist a mano: quello di sempre, più le mosse
+   * della riga (su, giù, in cima: R16-6, D-72) e, sul telefono, «Togli da
+   * questa playlist».
    *
    * Sul computer la riga ha la sua ×; sul telefono la riga è copertina,
    * titolo e ⋮, e la × sta qui. Vuole la **posizione** e non il brano —
@@ -2428,16 +2431,32 @@ export function App() {
       const indice = riga === null ? Number.NaN : Number(riga.dataset["indice"]);
       const brano = elenco.length === 1 ? elenco[0] : undefined;
       const suPiuRighe = elenco.some((id) => selezione.has(id)) && selezionati.length > 1;
-      menuSuSelezione(
-        e,
-        elenco,
-        undefined,
-        Number.isInteger(indice) && brano !== undefined && !suPiuRighe
-          ? { togliDallaPlaylist: () => togliDallaPlaylist(indice, brano) }
-          : undefined,
-      );
+      if (!Number.isInteger(indice) || brano === undefined || suPiuRighe) {
+        menuSuSelezione(e, elenco);
+        return;
+      }
+      // Le mosse col brano accanto, come il gesto da tastiera: se la playlist
+      // è cambiata sotto, il nucleo non sposta un'altra riga.
+      const vai = (a: number) => () => spostaNellaPlaylist(indice, a, brano);
+      menuSuSelezione(e, elenco, undefined, {
+        togliDallaPlaylist: MOBILE ? () => togliDallaPlaylist(indice, brano) : undefined,
+        sposta: {
+          inCoda: false,
+          su: indice > 0 ? vai(indice - 1) : undefined,
+          giu: indice < braniPlaylist.length - 1 ? vai(indice + 1) : undefined,
+          // Dalla seconda riga «in cima» è «su»: una voce sola basta.
+          inCima: indice > 1 ? vai(0) : undefined,
+        },
+      });
     },
-    [menuSuSelezione, selezione, selezionati.length, togliDallaPlaylist],
+    [
+      menuSuSelezione,
+      selezione,
+      selezionati.length,
+      togliDallaPlaylist,
+      spostaNellaPlaylist,
+      braniPlaylist.length,
+    ],
   );
 
   /** Il ⋮ della barra della selezione, sul telefono: il menù di tutti i scelti. */
@@ -2882,20 +2901,34 @@ export function App() {
   const apriGrande = useCallback(() => setGrande(true), []);
   const chiudiGrande = useCallback(() => setGrande(false), []);
   /**
-   * Il ⋮ di una riga della coda, sul telefono: il menù del brano, più «Togli
-   * dalla coda», che è quel che la × della riga faceva. La posizione viene
-   * dalla riga: lo stesso brano può stare in coda due volte.
+   * Il menù di una riga della coda — il ⋮ del telefono, il tasto destro del
+   * computer: il menù del brano, più «Togli dalla coda», che è quel che la ×
+   * della riga fa, e le mosse della riga (su, giù, in cima: R16-6, D-72), che
+   * sono il modo di riordinare senza trascinare. La posizione viene dalla
+   * riga: lo stesso brano può stare in coda due volte. La lunghezza della coda
+   * si legge al gesto, come la sessione in `apriMenu`.
    */
   const menuDellaCoda = useCallback(
-    (e: React.MouseEvent, indice: number, brano: Brano) =>
+    (e: React.MouseEvent, indice: number, brano: Brano) => {
+      const lunga = riproduzione.archivio.leggi().coda.length;
+      // Col brano accanto alla posizione: se nel frattempo la coda è cambiata,
+      // il nucleo non tocca un'altra riga. Vedi `codaTogli` e `codaRiordina`.
+      const vai = (a: number) => () => {
+        ipc.codaRiordina(indice, a, brano.id).catch(segnalaErrore);
+      };
       apriMenu(e, [brano.id], brano, {
         togliDallaCoda: () => {
-          // Col brano accanto alla posizione: se nel frattempo la coda è
-          // cambiata, il nucleo non toglie un'altra riga. Vedi `codaTogli`.
           ipc.codaTogli(indice, brano.id).catch(segnalaErrore);
         },
-      }),
-    [apriMenu, segnalaErrore],
+        sposta: {
+          inCoda: true,
+          su: indice > 0 ? vai(indice - 1) : undefined,
+          giu: indice < lunga - 1 ? vai(indice + 1) : undefined,
+          inCima: indice > 1 ? vai(0) : undefined,
+        },
+      });
+    },
+    [apriMenu, segnalaErrore, riproduzione.archivio],
   );
   /** Il ⋮ di «In riproduzione» sul telefono: il menu del brano che suona. */
   const menuDelBranoGrande = useCallback(
@@ -3653,7 +3686,7 @@ export function App() {
             onSuona={suonaQui}
             onPreferito={cambiaPreferito}
             onVoto={cambiaVoto}
-            onMenu={MOBILE && !pagina.playlist.isSmart ? menuRigaPlaylist : menuSuSelezione}
+            onMenu={!pagina.playlist.isSmart ? menuRigaPlaylist : menuSuSelezione}
             onSeleziona={seleziona}
             onAlternaSelezione={alternaSelezione}
             inSelezione={MOBILE && selezionati.length > 0}
@@ -4181,6 +4214,9 @@ export function App() {
           finestra vera su cui provare. `inert` la toglie dal fuoco e dai clic
           finché lo Studio la copre. */}
       <div className="finestra-app" inert={studioVisibile}>
+       {/* Il menù delle righe della coda, per tutti i posti dove la coda si
+           disegna: vedi `MenuDellaCoda` in `Coda.tsx`. */}
+       <MenuDellaCoda value={menuDellaCoda}>
         {/* Prima di tutto il resto e sopra tutto il resto: al primo avvio non c'è
             una libreria da guardare dietro, e la schermata che chiede dove sta la
             musica è l'unica cosa che ha senso leggere. */}
@@ -4715,6 +4751,7 @@ export function App() {
             del computer — la barra laterale, la terza colonna, le scorciatoie —
             e sul telefono indicherebbero posti che non ci sono. */}
         {giroAperto && !MOBILE && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
+       </MenuDellaCoda>
       </div>
 
       {/* Le domande che arrivano da sole, fuori da `.finestra-app` e sopra lo

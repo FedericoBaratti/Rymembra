@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { Brano, Playlist } from "../src/ipc";
 import {
   vociAlbum,
   vociArtista,
   vociBrani,
+  vociCartella,
   vociPlaylist,
   type AzioniBrani,
 } from "../src/menuBrani";
@@ -135,14 +137,15 @@ test("una playlist a mano si rinomina, una automatica cambia le regole", () => {
     esporta: () => undefined,
   };
   const aMano = vociPlaylist({ isSmart: false } as Playlist, fai, t).map((v) => v.etichetta);
-  assert.deepEqual(aMano, ["action.play", "menu.rename", "common.delete", "menu.exportFile"]);
+  // «Elimina…» coi puntini: chiede prima di cancellare (D-40).
+  assert.deepEqual(aMano, ["action.play", "menu.rename", "menu.deletePlaylist", "menu.exportFile"]);
   const automatica = vociPlaylist({ isSmart: true } as Playlist, fai, t).map(
     (v) => v.etichetta,
   );
   assert.deepEqual(automatica, [
     "action.play",
     "menu.editRules",
-    "common.delete",
+    "menu.deletePlaylist",
     "menu.exportFile",
   ]);
 });
@@ -289,4 +292,80 @@ test("il cuore e «togli dalla playlist» compaiono solo se chi apre il menù li
     (v) => v.etichetta,
   );
   assert.ok(!due.includes(t("track.like")) && !due.includes(t("track.unlike")));
+});
+
+// ── R13b-3: senza il brano in mano, il cuore non indovina ──────────────────
+
+test("un brano che il menù non ha in mano non ha la voce del cuore", () => {
+  const { fai } = azioni();
+  const nulla = () => undefined;
+  // Il pannello Cartelle sul telefono: il brano è fra i preferiti, ma l'elenco
+  // della vista non lo conosce. La voce diceva «Aggiungi», e l'azione — che
+  // rilegge il brano vero — lo toglieva.
+  const voci = vociBrani([7], () => undefined, { ...fai, preferito: nulla }, t).map(
+    (v) => v.etichetta,
+  );
+  assert.ok(!voci.includes(t("track.like")) && !voci.includes(t("track.unlike")));
+});
+
+// ── R13b-9: senza la coda, nemmeno «Riproduci» ─────────────────────────────
+
+test("nel pannello Cartelle, senza la coda concessa «Riproduci» non c'è", () => {
+  const nulla = () => undefined;
+  const fai = { riproduci: nulla, dopo: nulla, accoda: nulla };
+  assert.deepEqual(
+    vociCartella(fai, t).map((v) => v.etichetta),
+    ["action.play", "action.playNext", "action.enqueue"],
+  );
+  // Il nucleo tratta «Suona» come un gesto di coda (`insieme/strada.rs`).
+  assert.deepEqual(vociCartella(fai, t, true), []);
+});
+
+// ── R16-6, D-72: riordinare senza trascinare ───────────────────────────────
+
+test("una riga della coda o di una playlist a mano si sposta dal menù", () => {
+  const { fai } = azioni();
+  const fatte: string[] = [];
+  const sposta = {
+    inCoda: true,
+    su: () => fatte.push("su"),
+    giu: () => fatte.push("giu"),
+    inCima: () => fatte.push("inCima"),
+  };
+  const voci = vociBrani([7], inMano(file(7)), { ...fai, sposta }, t);
+  const etichette = voci.map((v) => v.etichetta);
+  assert.ok(etichette.includes("menu.moveUp"));
+  assert.ok(etichette.includes("menu.moveDown"));
+  assert.ok(etichette.includes("menu.moveToTop"));
+  for (const v of voci) if (v.etichetta.startsWith("menu.move")) v.azione();
+  assert.deepEqual(fatte, ["su", "giu", "inCima"]);
+  // La prima riga non sale: le voci che non portano da nessuna parte non ci sono.
+  const prima = vociBrani([7], inMano(file(7)), { ...fai, sposta: { inCoda: false, giu: () => undefined } }, t).map(
+    (v) => v.etichetta,
+  );
+  assert.ok(prima.includes("menu.moveDown"));
+  assert.ok(!prima.includes("menu.moveUp") && !prima.includes("menu.moveToTop"));
+  // Nella coda di una sessione che non è di questo PC, niente mosse.
+  const senzaCoda = vociBrani([7], inMano(file(7)), { ...fai, sposta }, t, false, true).map(
+    (v) => v.etichetta,
+  );
+  assert.ok(!senzaCoda.some((e) => e.startsWith("menu.move")));
+  // In una playlist le mosse restano anche senza la coda: non la toccano.
+  const playlist = vociBrani([7], inMano(file(7)), { ...fai, sposta: { ...sposta, inCoda: false } }, t, false, true).map(
+    (v) => v.etichetta,
+  );
+  assert.ok(playlist.includes("menu.moveUp"));
+});
+
+test("App: la coda e le playlist a mano passano le mosse al menù, anche sul computer", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /<MenuDellaCoda value=\{menuDellaCoda\}>/);
+  const coda = app.slice(app.indexOf("const menuDellaCoda"), app.indexOf("const menuDelBranoGrande"));
+  assert.match(coda, /sposta:/);
+  assert.match(coda, /codaRiordina\(/);
+  const riga = app.slice(app.indexOf("const menuRigaPlaylist"), app.indexOf("const menuDellaSelezione"));
+  assert.match(riga, /sposta/);
+  assert.match(riga, /spostaNellaPlaylist\(/);
+  // Sul computer la riga di una playlist a mano apre lo stesso menù del telefono.
+  assert.doesNotMatch(app, /onMenu=\{MOBILE && !pagina\.playlist\.isSmart \? menuRigaPlaylist/);
 });
