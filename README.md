@@ -587,8 +587,8 @@ migration — `rymembra.db.schema-NNN.bak`, beside the database, the last two
 kept. Going back by hand means quitting Rymembra, also from its icon next to
 the clock, moving `rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm`
 aside together — the last two belong to the newer database, and next to the
-copy SQLite would read them as its own — and copying the `.bak`, without
-renaming it, to `rymembra.db`.
+copy SQLite would read them as its own — and copying the `.bak` to
+`rymembra.db`, not moving it, so that the `.bak` stays as a fallback.
 
 ---
 
@@ -600,8 +600,8 @@ renaming it, to `rymembra.db`.
   the exact release in `.github/workflows/verify.yml`
 - **Node.js** 24 or later — the interface's TypeScript tests run on Node's
   own type stripping
-- **Windows** 10 or 11 for the installer; for the APK, the Android SDK and
-  NDK as well (see [Known limits](#known-limits-and-planned-work) → Android →
+- **Windows** for the installer; for the APK, the Android SDK and NDK as
+  well (see [Known limits](#known-limits-and-planned-work) → Android →
   Builds)
 
 ### Commands

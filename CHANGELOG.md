@@ -792,10 +792,11 @@ migrates, `rymembra.db.schema-038.bak`, beside the database. Quit Rymembra —
 from its icon next to the clock too — and move `rymembra.db`,
 `rymembra.db-wal` and `rymembra.db-shm` aside together: the last two belong
 to the new database, and next to the copy SQLite would read them as the
-copy's own and spoil it. Then copy the `.bak`, without renaming it, to
-`rymembra.db`. By hand instead, both migrations in one go and in this order —
-undoing only 039 leaves `insieme_indirizzi` behind, and the next update to
-this version then fails on it: `DROP TABLE insieme_indirizzi; DROP TABLE
+copy’s own and spoil it. Then copy the `.bak` to `rymembra.db` — copy, not
+move, so that the `.bak` stays as a fallback. By hand instead, both
+migrations in one go and in this order — undoing only 039 leaves
+`insieme_indirizzi` behind, and the next update to this version then fails
+on it: `DROP TABLE insieme_indirizzi; DROP TABLE
 dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
 PRAGMA user_version = 38;`. The links are lost (made again with a QR code),
 and so are the listens not yet sent; the “Listen together” addresses come
