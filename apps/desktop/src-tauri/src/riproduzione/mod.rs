@@ -131,7 +131,7 @@ use self::flusso::{apri_flusso, riferimento_di, sorgente_da_flusso};
 use self::ospiti::Chi;
 use self::seguito::{
     Seguito, abbozzo, aspetta_le_risposte, avvia_scritture, avvia_seguito, completa, da_scrivere,
-    guasto_di, guasto_di_apertura, nome_ripetizione, pubblica,
+    guasto_di, guasto_di_apertura, nome_ripetizione, spedisci,
 };
 use self::suono::nome_normalizzazione;
 
@@ -1061,6 +1061,9 @@ pub struct StatoLettore {
     scritture_chieste: std::sync::atomic::AtomicU64,
     /// Quante di quelle il filo delle scritture ha finito, riuscite o no.
     scritture_fatte: std::sync::atomic::AtomicU64,
+    /// Quante fotografie dello stato sono state spedite al seguito, da sempre:
+    /// vedi `seguito::superato`.
+    stati_spediti: std::sync::atomic::AtomicU64,
     /// La coda in memoria non è ancora quella sul disco.
     ///
     /// La stessa bandiera di [`StatoLettore::volume_da_salvare`], per la stessa
@@ -1308,6 +1311,7 @@ impl StatoLettore {
                 scritture,
                 scritture_chieste: std::sync::atomic::AtomicU64::new(0),
                 scritture_fatte: std::sync::atomic::AtomicU64::new(0),
+                stati_spediti: std::sync::atomic::AtomicU64::new(0),
                 coda_da_salvare: std::sync::atomic::AtomicBool::new(false),
                 sfumando_fino: std::sync::atomic::AtomicI64::new(0),
                 aprendo: std::sync::atomic::AtomicI64::new(NESSUN_BRANO),
@@ -2006,7 +2010,7 @@ fn apertura_mancata(
 pub(crate) fn manda_stato(app: &tauri::AppHandle, lettore: &Lettore) {
     let abbozzo = abbozzo(app, lettore);
     insieme::cambiato(app, lettore);
-    in_ordine(app, move |app| pubblica(app, abbozzo));
+    spedisci(app, abbozzo);
 }
 
 /// Come [`manda_stato`], ma senza avvisare la sessione: per chi ridisegna
@@ -2016,7 +2020,7 @@ pub(crate) fn manda_stato(app: &tauri::AppHandle, lettore: &Lettore) {
 /// ridisegnare.
 pub(super) fn manda_stato_alla_finestra(app: &tauri::AppHandle, lettore: &Lettore) {
     let abbozzo = abbozzo(app, lettore);
-    in_ordine(app, move |app| pubblica(app, abbozzo));
+    spedisci(app, abbozzo);
 }
 
 /// Il primo stato, a chi lo mostra fuori dalla finestra.
@@ -2054,7 +2058,7 @@ fn manda_stato_con_posizione(app: &tauri::AppHandle, lettore: &Lettore, ms: u64)
     let mut abbozzo = abbozzo(app, lettore);
     abbozzo.stato.posizione_ms = ms;
     insieme::cambiato(app, lettore);
-    in_ordine(app, move |app| pubblica(app, abbozzo));
+    spedisci(app, abbozzo);
 }
 
 /// Quel che arriva dal motore.
@@ -2888,6 +2892,16 @@ pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -
 }
 
 // ── lo spettro ──────────────────────────────────────────────────────────────
+//
+// Le preferenze dello spettro e dei dati tecnici leggono e scrivono la
+// libreria, e sono `(async)` come le sorelle — dissolvenza, latenza,
+// normalizzazione — per la stessa ragione: sul filo della finestra
+// `con_libreria` aspetta fino a quattro secondi, e i due «scegli» che toccano
+// anche il lettore altri due, oltre la soglia dei cinque con cui Windows
+// dichiara la finestra «Non risponde» (R23-11). Fuori dal filo della finestra
+// due clic ravvicinati non sono più in fila per costruzione: i setter si
+// mettono in fila sul lucchetto delle preferenze, come gli altri (vedi
+// [`cambia_preferenza`]).
 
 /// Accende o spegne lo spettro.
 ///
@@ -2926,7 +2940,7 @@ pub fn spettro(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
 }
 
 /// Quante barre disegna la scena dello spettro.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn spettro_bande(stato: State<'_, Stato>) -> Esito<u16> {
     con_libreria(&stato, |libreria| {
         playback::load_spettro_bande(&libreria.connection)
@@ -2943,12 +2957,16 @@ pub fn spettro_bande(stato: State<'_, Stato>) -> Esito<u16> {
 /// deve vedere la linguetta che è rimasta accesa davvero — la stessa disciplina
 /// dell'equalizzatore, che rilegge quel che ha scritto invece di fidarsi di
 /// quel che è arrivato.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn spettro_bande_scegli(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     quante: u16,
 ) -> Esito<u16> {
+    let _in_fila = stato
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let stato_app = libreria_di(&app, "barre dello spettro").map_err(errore)?;
     let rimaste = con_libreria(&stato_app, |libreria| {
         playback::save_spettro_bande(&libreria.connection, quante)?;
@@ -2969,7 +2987,7 @@ pub fn spettro_bande_scegli(
 }
 
 /// Se la scena dello spettro parte accesa.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn spettro_visibile(stato: State<'_, Stato>) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
         playback::load_spettro_visibile(&libreria.connection)
@@ -2991,8 +3009,16 @@ pub fn spettro_visibile(stato: State<'_, Stato>) -> Esito<bool> {
 /// sorvegliate e skin attiva) e la sincronia tre — nessuna delle quali è
 /// questa. Chiamarlo qui vorrebbe dire un giro su Drive che non porterebbe via
 /// niente.
-#[tauri::command]
-pub fn spettro_visibile_scegli(stato: State<'_, Stato>, acceso: bool) -> Esito<bool> {
+#[tauri::command(async)]
+pub fn spettro_visibile_scegli(
+    stato: State<'_, Stato>,
+    lettore: State<'_, StatoLettore>,
+    acceso: bool,
+) -> Esito<bool> {
+    let _in_fila = lettore
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     con_libreria(&stato, |libreria| {
         playback::save_spettro_visibile(&libreria.connection, acceso)?;
         playback::load_spettro_visibile(&libreria.connection)
@@ -3001,7 +3027,7 @@ pub fn spettro_visibile_scegli(stato: State<'_, Stato>, acceso: bool) -> Esito<b
 }
 
 /// Quanto la scena dello spettro può costare a questa macchina.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn spettro_qualita(stato: State<'_, Stato>) -> Esito<Qualita> {
     con_libreria(&stato, |libreria| {
         playback::load_spettro_qualita(&libreria.connection)
@@ -3023,8 +3049,16 @@ pub fn spettro_qualita(stato: State<'_, Stato>) -> Esito<Qualita> {
 ///
 /// Come sopra: **niente `nuvola::se_riuscito`**, questa riga non sta né nel
 /// backup né nella sincronia.
-#[tauri::command]
-pub fn spettro_qualita_scegli(stato: State<'_, Stato>, livello: String) -> Esito<Qualita> {
+#[tauri::command(async)]
+pub fn spettro_qualita_scegli(
+    stato: State<'_, Stato>,
+    lettore: State<'_, StatoLettore>,
+    livello: String,
+) -> Esito<Qualita> {
+    let _in_fila = lettore
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let scelta = Qualita::da_nome(&livello);
     con_libreria(&stato, |libreria| {
         playback::save_spettro_qualita(&libreria.connection, scelta)?;
@@ -3040,7 +3074,7 @@ pub fn spettro_qualita_scegli(stato: State<'_, Stato>, livello: String) -> Esito
 /// Serve all'interruttore delle Impostazioni, che è l'unico a chiederlo: le due
 /// viste che disegnano la riga non leggono questa preferenza, e la ragione sta
 /// nella carta di [`StatoRiproduzione::formato`].
-#[tauri::command]
+#[tauri::command(async)]
 pub fn formato_visibile(stato: State<'_, Stato>) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
         playback::load_formato_visibile(&libreria.connection)
@@ -3070,12 +3104,16 @@ pub fn formato_visibile(stato: State<'_, Stato>) -> Esito<bool> {
 /// questo modulo: il backup su Drive copia due righe di `settings` e la
 /// sincronia tre, nessuna delle quali è questa. A portarla su un altro computer
 /// ci pensa il profilo, dove la chiave è in elenco.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn formato_visibile_scegli(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     acceso: bool,
 ) -> Esito<bool> {
+    let _in_fila = stato
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let stato_app = libreria_di(&app, "formato visibile").map_err(errore)?;
     let rimasto = con_libreria(&stato_app, |libreria| {
         playback::save_formato_visibile(&libreria.connection, acceso)?;
@@ -3972,6 +4010,18 @@ pub fn riprendi_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
 /// staccate — nessuno aveva premuto pausa — e il tasto multimediale, sotto
 /// un'icona che mostrava «riproduci», metteva in pausa: il primo tocco non
 /// faceva niente, il secondo faceva il contrario di quel che diceva.
+/// La musica sta andando, per chi deve scegliere fra pausa e ripresa prima di
+/// chiederlo: la corsia dei tasti che non aspetta (`crate::media::premi`). La
+/// stessa domanda di [`alterna_ora`], con la stessa risposta: un dispositivo
+/// perso conta come fermo. Il lettore che non risponde vale «fermo»: il gesto
+/// allora sta in fila con gli altri, com'era sempre.
+pub(crate) fn suona_adesso(stato: &StatoLettore) -> bool {
+    con_lettore(stato, |lettore| {
+        Ok(!(lettore.motore.posizione().in_pausa || lettore.motore.dispositivo_perso()))
+    })
+    .unwrap_or(false)
+}
+
 pub fn alterna_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Alterna).map_err(errore)? {
         return Ok(());

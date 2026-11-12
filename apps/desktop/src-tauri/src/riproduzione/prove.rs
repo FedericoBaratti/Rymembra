@@ -1091,6 +1091,83 @@ fn un_buco_fra_due_giri_d_orologio_e_un_risveglio() {
     assert!(!fili::e_un_risveglio(None, 1_000 + salto + 1));
 }
 
+/// R23-4: una fotografia superata da una più recente non aspetta la
+/// libreria. Con la libreria occupata ogni stato costava fino a un secondo,
+/// e una raffica di gesti — → tenuta premuta — lasciava finestra, scheda di
+/// Windows e vassoio indietro di minuti.
+#[test]
+fn uno_stato_superato_non_aspetta_la_libreria() {
+    assert!(seguito::superato(1, 2));
+    assert!(!seguito::superato(2, 2));
+    let testo = senza_prove(include_str!("seguito.rs"));
+    let pubblica = &testo[testo.find("pub(super) fn pubblica(").unwrap_or(0)..];
+    let pubblica = &pubblica[..pubblica.find("\n}\n").unwrap_or(pubblica.len())];
+    let controllo = pubblica
+        .find("superato(")
+        .expect("pubblica non chiede se è superata");
+    for attesa in ["aspetta_le_scritture(", "completa("] {
+        assert!(
+            pubblica.find(attesa).is_some_and(|dove| dove > controllo),
+            "«{attesa}» viene prima del controllo"
+        );
+    }
+}
+
+/// R23-8: il brano che il motore sta suonando non sparisce dallo stato
+/// quando la sua riga esce dalla libreria — cancellato da Esplora risorse,
+/// tolto con le rimozioni trattenute. La barra spariva, la scheda di Windows
+/// diceva «fermo» e il vassoio tornava a «Rymembra» a musica in corso.
+#[test]
+fn il_brano_che_suona_non_sparisce_dallo_stato() {
+    let mut ricordo = Some((7, "Titolo", None::<u8>));
+    assert_eq!(
+        seguito::dal_ricordo(Some(Ok((None, None))), &mut ricordo, 7, true),
+        (Some("Titolo"), None)
+    );
+    assert_eq!(ricordo, Some((7, "Titolo", None)));
+    // Un brano che non suona più e non c'è più sparisce davvero.
+    assert_eq!(
+        seguito::dal_ricordo(Some(Ok((None, None))), &mut ricordo, 7, false),
+        (None, None)
+    );
+    assert_eq!(ricordo, None);
+    // Una lettura riuscita aggiorna il ricordo; una mancata lo usa.
+    assert_eq!(
+        seguito::dal_ricordo(Some(Ok((Some("Nuovo"), Some(3)))), &mut ricordo, 8, true),
+        (Some("Nuovo"), Some(3))
+    );
+    assert_eq!(
+        seguito::dal_ricordo(None, &mut ricordo, 8, true),
+        (Some("Nuovo"), Some(3))
+    );
+}
+
+/// R23-11: nessun comando sincrono del lettore aspetta la libreria sul filo
+/// della finestra: lì `con_libreria` rinuncia dopo quattro secondi, e la
+/// finestra ferma oltre i cinque Windows la dichiara «Non risponde».
+#[test]
+fn nessun_comando_sincrono_del_lettore_aspetta_la_libreria() {
+    let mut sbagliati = Vec::new();
+    for (file, testo) in SORGENTI {
+        let codice = senza_prove(testo);
+        for (dove, _) in codice.match_indices("\n#[tauri::command]\npub fn ") {
+            let resto = &codice[dove + 1..];
+            let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+            if corpo.contains("con_libreria(") {
+                let nome: String = resto["#[tauri::command]\npub fn ".len()..]
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                sbagliati.push(format!("{file}: {nome}"));
+            }
+        }
+    }
+    assert!(
+        sbagliati.is_empty(),
+        "comandi sincroni che aspettano la libreria: {sbagliati:#?}"
+    );
+}
+
 /// Un file che fa cadere il riconoscimento del formato non è la rete.
 ///
 /// Era il difetto: la caduta chiudeva il canale della scadenza, l'apertura
