@@ -17,13 +17,15 @@ publish = false
 # La 0.62 è quella che l'albero aveva già — la usano `tauri` e `trash` — e il
 # `Cargo.lock` non guadagna nessun pacchetto: si accendono soltanto le parti
 # dell'API che servono qui. `Win32_Storage_FileSystem` è per `GetDriveTypeW` e
-# `GetVolumePathNameW` (vedi `src/unita.rs`), e anche quella non porta
-# pacchetti nuovi.
+# `GetVolumePathNameW` (vedi `src/unita.rs`), `Win32_System_Power` per
+# `GetSystemPowerStatus` (vedi `src/sottofondo.rs`, con `SetThreadPriority` di
+# `Win32_System_Threading`): nessuna delle due porta pacchetti nuovi.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
@@ -37,7 +39,8 @@ windows = { version = "0.62", features = [
 # workspace e cambiarne una riga, quindi la si ricopia: i lint di clippy sono
 # gli stessi, parola per parola, e `unsafe_code` scende da `forbid` a `deny` —
 # vietato ovunque in questo crate tranne dove lo si dichiara: il modulo
-# `src/finestra.rs` e la funzione `chiedi_a_windows` di `src/unita.rs`.
+# `src/finestra.rs`, la funzione `chiedi_a_windows` di `src/unita.rs` e le tre
+# funzioni di sistema di `src/sottofondo.rs`.
 #
 # In cambio, tre regole che il resto del workspace non ha bisogno di avere: ogni
 # blocco `unsafe` spiega perché è giusto (`undocumented_unsafe_blocks`), e dentro
