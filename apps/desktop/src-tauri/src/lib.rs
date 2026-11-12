@@ -315,6 +315,11 @@ fn apri_e_avvia(app: &tauri::AppHandle, data_dir: PathBuf) {
                 return;
             };
             apri_la_libreria(&mano, &stato, cartella);
+            // Chi ha chiuso Rymembra mentre la libreria si apriva non vuole
+            // il resto dell'avvio: vedi [`finisci_l_avvio`].
+            if spegnimento::in_uscita() {
+                return;
+            }
             // Il resto sul filo della finestra, dove stava: i controlli
             // multimediali e i pulsanti della miniatura si appendono alla
             // finestra, e l'ordine fra i passi è quello di sempre.
@@ -363,7 +368,17 @@ fn apri_la_libreria(app: &tauri::AppHandle, stato: &stato::Stato, data_dir: Path
 
 /// Il resto dell'avvio, e poi il cancello: da qui la finestra monta
 /// l'applicazione. Sul filo della finestra.
+///
+/// Non se si sta uscendo: chi chiude Rymembra durante una migrazione lunga
+/// passa per `spegnimento::spegni` mentre questo è ancora in coda, e far
+/// nascere adesso la scheda del sistema, i pulsanti della miniatura, l'icona
+/// del vassoio e i fili di sottofondo vorrebbe dire toccare la finestra
+/// mentre la si smonta — il modo in cui questa applicazione moriva, vedi
+/// [`rete_di_sicurezza`].
 fn finisci_l_avvio(app: &tauri::AppHandle) {
+    if spegnimento::in_uscita() {
+        return;
+    }
     avvia_dopo_la_libreria(app);
     if let Some(stato) = app.try_state::<stato::Stato>() {
         let fase = stato.apri_il_cancello();
@@ -2021,6 +2036,31 @@ mod prove {
         assert!(
             !resto.contains("riproduzione::avvia_sorveglianza("),
             "il sorvegliante parte dopo il primo tentativo, non insieme"
+        );
+    }
+
+    /// Chi chiude Rymembra mentre la libreria si apre non deve vedersi
+    /// partire il resto dell'avvio sotto una finestra che si smonta.
+    #[test]
+    fn il_resto_dell_avvio_non_parte_uscendo() {
+        let corpo = include_str!("lib.rs")
+            .split("fn finisci_l_avvio(")
+            .nth(1)
+            .and_then(|resto| {
+                resto
+                    .split(
+                        "
+}
+",
+                    )
+                    .next()
+            })
+            .unwrap_or_default();
+        let guardia = corpo.find("spegnimento::in_uscita()");
+        let resto = corpo.find("avvia_dopo_la_libreria(");
+        assert!(
+            guardia.is_some() && guardia < resto,
+            "il resto dell'avvio parte anche uscendo"
         );
     }
 }
