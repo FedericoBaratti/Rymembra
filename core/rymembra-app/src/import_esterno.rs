@@ -319,6 +319,12 @@ fn run(
         &piano.mancanti,
         rapporto.playlist_id,
     )?;
+    // Quel che la fonte non ha più esce dalla coda (D-13), ma solo se l'elenco
+    // è intero: da uno monco, un brano che manca è nella pagina che non è
+    // arrivata, non tolto lassù.
+    if contenuto.truncation().is_none() {
+        togli_superati(&tx, &contenuto.id, &contenuto.tracks)?;
+    }
 
     // Il viaggio di ritorno, ristretto a **questa** importazione: quel che è
     // successo alle altre playlist non è affar suo e non deve comparire nel suo
@@ -787,6 +793,72 @@ pub(crate) struct Sorgente<'a> {
     pub titolo: &'a str,
 }
 
+/// La chiave con cui un brano di fuori sta in `desiderati`: metà
+/// dell'identità `(track_key, source_id)`.
+fn chiave_desiderato(brano: &BranoEsterno) -> TrackKey {
+    TrackKey::compute(TrackKeyInput {
+        artist: brano.artist.as_deref(),
+        title: Some(&brano.title),
+        album: brano.album.as_deref(),
+    })
+}
+
+/// Toglie dalla coda i brani che la fonte non ha più (R06-7, D-13).
+///
+/// Si importa una playlist con quaranta brani che mancano, lassù se ne tolgono
+/// dieci, si reimporta: le voci della playlist si sostituiscono, e quei dieci
+/// non ci sono più. Le loro righe però restavano in attesa, la coda li
+/// scaricava lo stesso, e [`crate::desiderati::riconcilia`] poteva rimetterli
+/// nella playlist appena sostituita quando il loro vecchio posto era libero.
+/// L'importazione era una sostituzione per le voci e un «solo aggiunte» per i
+/// desiderati: le due metà non dicevano la stessa cosa.
+///
+/// `brani` è **tutto** il contenuto di adesso, ritrovati e mancanti: una riga
+/// il cui brano oggi si ritrova in libreria la chiude `riconcilia` come
+/// `fatto`, e non va tolta. Si tolgono le righe di questa sorgente non ancora
+/// prese — in attesa, fallite, introvabili — e mai quelle `fatto`: quelle sono
+/// la storia di un file che c'è, e niente di questa funzione tocca la
+/// libreria. Fallite e introvabili comprese perché sono anche loro una
+/// richiesta: «Riprova i falliti» le rimetterebbe in coda, e «Da comprare»
+/// proporrebbe di comprare un brano che la playlist non vuole più.
+///
+/// Chi chiama la salta per un elenco monco.
+pub(crate) fn togli_superati(
+    tx: &Transaction<'_>,
+    source_id: &str,
+    brani: &[BranoEsterno],
+) -> Result<usize, AppError> {
+    let ancora: HashSet<String> = brani
+        .iter()
+        .map(|brano| chiave_desiderato(brano).into_string())
+        .collect();
+    let righe: Vec<(i64, String)> = {
+        let mut lettura = tx
+            .prepare(
+                "SELECT id, track_key FROM desiderati
+                  WHERE source_id = ?1 AND download_state <> 'fatto'",
+            )
+            .map_err(|err| db_error("desiderati di una sorgente", &err))?;
+        let righe = lettura
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|err| db_error("desiderati di una sorgente", &err))?;
+        righe
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error("desiderati di una sorgente", &err))?
+    };
+    let mut tolte = 0_usize;
+    for (id, chiave) in righe {
+        if ancora.contains(&chiave) {
+            continue;
+        }
+        tolte = tolte.saturating_add(
+            tx.execute("DELETE FROM desiderati WHERE id = ?1", [id])
+                .map_err(|err| db_error("un desiderato che la fonte non ha più", &err))?,
+        );
+    }
+    Ok(tolte)
+}
+
 /// Registra i brani che in libreria non ci sono.
 pub(crate) fn scrivi_desiderati(
     tx: &Transaction<'_>,
@@ -864,11 +936,7 @@ pub(crate) fn scrivi_desiderati(
         let Some(brano) = brani.get(*indice) else {
             continue;
         };
-        let chiave = TrackKey::compute(TrackKeyInput {
-            artist: brano.artist.as_deref(),
-            title: Some(&brano.title),
-            album: brano.album.as_deref(),
-        });
+        let chiave = chiave_desiderato(brano);
         if viste.contains_key(chiave.as_str()) {
             continue;
         }
@@ -1616,6 +1684,95 @@ mod prove {
                 &format!("SELECT COUNT(*) FROM playlist_orfane WHERE playlist_id = {id}")
             ),
             0
+        );
+    }
+
+    #[test]
+    fn reimportare_toglie_dalla_coda_i_brani_che_la_playlist_non_ha_piu() {
+        // R06-7, D-13: due brani mancano, e lassù uno dei due viene tolto.
+        // Reimportando, la sua riga non aspetta più: non ha più motivo di
+        // essere scaricato. Quella del brano che c'è ancora resta, e niente
+        // si toglie dalla libreria.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let resta = brano("Nessuno", "Resta", "Ignoto", 200_000);
+        let tolto = brano("Nessuno", "Tolto", "Ignoto", 200_000);
+        let tutti = contenuto(vec![
+            brano("Radiohead", "Karma Police", "OK Computer", 264_066),
+            resta.clone(),
+            tolto,
+        ]);
+        let Ok(primo) = import(&mut db, &tutti, true) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        assert_eq!(primo.wanted_rows, 2);
+        // Un brano scaricato in passato da questa stessa importazione: la sua
+        // riga è storia, e resta anche se la playlist non lo vuole più.
+        let Ok(_) = db.execute(
+            "INSERT INTO desiderati (track_key, title, source_kind, source_id, source_title,
+                                     added_at, download_state)
+             VALUES ('k-preso', 'Preso', 'playlist', ?1, 'La mia playlist', 1, 'fatto')",
+            [&tutti.id],
+        ) else {
+            panic!("la riga fatta si deve scrivere");
+        };
+
+        let dopo = contenuto(vec![
+            brano("Radiohead", "Karma Police", "OK Computer", 264_066),
+            resta,
+        ]);
+        let Ok(_) = import(&mut db, &dopo, true) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'attesa'"
+            ),
+            1,
+            "il brano tolto lassù non aspetta più"
+        );
+        assert_eq!(
+            testo(
+                &db,
+                "SELECT title FROM desiderati WHERE download_state = 'attesa'"
+            )
+            .as_deref(),
+            Some("Resta")
+        );
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'fatto'"
+            ),
+            1,
+            "quel che è già stato preso resta"
+        );
+    }
+
+    #[test]
+    fn un_elenco_monco_non_toglie_niente_dalla_coda() {
+        // Duecento brani letti su trecento: quelli che mancano all'elenco non
+        // sono stati tolti lassù, sono rimasti nella pagina che non è arrivata.
+        let mut db = database();
+        let tutti = contenuto(vec![
+            brano("Nessuno", "Uno", "Ignoto", 200_000),
+            brano("Nessuno", "Due", "Ignoto", 200_000),
+        ]);
+        let Ok(_) = import(&mut db, &tutti, false) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        let mut monco = contenuto(vec![brano("Nessuno", "Uno", "Ignoto", 200_000)]);
+        monco.declared_total = Some(2);
+        let Ok(_) = import(&mut db, &monco, false) else {
+            panic!("la seconda importazione, senza playlist, deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'attesa'"
+            ),
+            2
         );
     }
 

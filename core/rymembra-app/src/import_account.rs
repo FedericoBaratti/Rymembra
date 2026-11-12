@@ -59,6 +59,7 @@ use rymembra_domain::spotify_account::{
 use crate::import_esterno::{
     MissingTrack, RapportoImport, Sorgente, Truncation, etichetta_accanto, leggi_libreria,
     prepara_playlist_escludendo, riempi_playlist, scrivi_desiderati, scrivi_identificativi,
+    togli_superati,
 };
 use crate::library::{db_error, now_ms, rebuild_aggregates};
 use crate::playlists::Provenienza;
@@ -300,6 +301,7 @@ fn run(
             },
             snapshot.provenienza.nome(),
             None,
+            true,
         )?;
         scritti_album = scritti_album.saturating_add(rapporto.liked.spotify_album_ids_written);
         (rapporto.liked_marked, rapporto.liked_kept_off) =
@@ -327,6 +329,7 @@ fn run(
             },
             snapshot.provenienza.nome(),
             None,
+            true,
         )?;
         scritti_album = scritti_album.saturating_add(fatto.spotify_album_ids_written);
         rapporto.albums.push(fatto);
@@ -513,6 +516,7 @@ fn scrivi_playlist(
         },
         provenienza,
         Some(id),
+        playlist.troncatura().is_none(),
     )?;
     rapporto.playlist_id = Some(id);
     // Il nome che ha in libreria: troncato, o «(Spotify)» se sta accanto.
@@ -529,6 +533,10 @@ fn scrivi_playlist(
 
 /// Il rapporto di un elenco, e le due scritture che ogni elenco fa: gli
 /// identificativi esterni sui brani ritrovati, i desiderati su quelli no.
+///
+/// `completo` dice che l'elenco è intero: solo allora le righe di coda dei
+/// brani che non ci sono più se ne vanno (D-13, vedi
+/// [`crate::import_esterno::togli_superati`]).
 fn scrivi_elenco(
     tx: &Transaction<'_>,
     brani: &[BranoEsterno],
@@ -536,6 +544,7 @@ fn scrivi_elenco(
     sorgente: Sorgente<'_>,
     provenienza: &str,
     playlist_id: Option<i64>,
+    completo: bool,
 ) -> Result<RapportoImport, AppError> {
     let mut rapporto = RapportoImport {
         kind: sorgente.kind.to_owned(),
@@ -581,6 +590,9 @@ fn scrivi_elenco(
     rapporto.isrc_written = isrc;
 
     rapporto.wanted_rows = scrivi_desiderati(tx, brani, sorgente, &piano.mancanti, playlist_id)?;
+    if completo {
+        togli_superati(tx, sorgente.id, brani)?;
+    }
     Ok(rapporto)
 }
 
@@ -1944,6 +1956,40 @@ mod prove {
                 );
             }
         }
+    }
+
+    #[test]
+    fn reimportare_l_archivio_toglie_dalla_coda_quel_che_la_playlist_non_ha_piu() {
+        // R06-7, D-13, per l'account: «Mai Sentita» manca ed entra in coda;
+        // un archivio dopo, la «Corsa» non ce l'ha più. La sua riga se ne va.
+        let mut db = database();
+        libreria_di_prova(&db);
+        let mut snapshot = snapshot_completo();
+        snapshot.preferiti.clear();
+        let Ok(_) = import(&mut db, &snapshot, &Scelte::default()) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE title = 'Mai Sentita'"
+            ),
+            1
+        );
+        if let Some(corsa) = snapshot.playlist.first_mut() {
+            corsa.brani.retain(|b| b.title != "Mai Sentita");
+        }
+        let Ok(_) = import(&mut db, &snapshot, &Scelte::default()) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE title = 'Mai Sentita'"
+            ),
+            0,
+            "non ha più motivo di essere scaricato"
+        );
     }
 
     #[test]
