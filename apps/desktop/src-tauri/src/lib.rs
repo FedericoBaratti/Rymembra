@@ -261,6 +261,169 @@ fn finestra_chiudi(finestra: tauri::Window) {
     let _ = finestra.close();
 }
 
+/// Il resto dell'avvio: quel che vuole la libreria aperta, nell'ordine di sempre.
+///
+/// Tutto quel che il `setup` faceva dopo aver registrato la libreria: le
+/// cartelle dal cloud, il lettore, i controlli multimediali, i fili di
+/// sottofondo, il vassoio, la sorveglianza. Spostata qui così com'era: il
+/// `setup` la chiama nello stesso punto di prima.
+fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
+    // Le cartelle dal cloud **subito dopo** la libreria: lo specchio si
+    // carica da lì, e prima di ogni scansione — anche quella del lettore
+    // che riapre la coda di ieri — chi apre un file deve già trovare il
+    // cloud. I fili dei conti partono qui, e la loro prima domanda alla
+    // rete non aspetta niente: è quel che rende una cartella appena
+    // cambiata su OneDrive visibile all'avvio.
+    nuvola_musica::avvia(app);
+
+    // Il lettore **dopo** la libreria: apre il dispositivo audio e
+    // rilegge la coda di ieri, e per la seconda cosa il database deve
+    // già essere aperto.
+    // Lo stato dei controlli multimediali **prima** del lettore, anche
+    // se a riempirlo si farà più sotto. Il filo dell'orologio parte
+    // insieme al lettore e chiama `manda_stato` da sé quando il
+    // dispositivo audio sparisce: se quel momento arrivasse prima di
+    // questa riga, cercherebbe uno stato non registrato. Registrarlo
+    // vuoto costa un mutex e un intero.
+    app.manage(media::StatoMedia::nuovo());
+    // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
+    // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
+    // ci siano, e il primo stato del lettore arriva da `riprendi_coda`
+    // qui sotto. Vedi `barra`.
+    app.manage(barra::StatoBarra::nuovo());
+
+    let (lettore, orecchio, orecchio_dispositivi) =
+        riproduzione::StatoLettore::avvia(app);
+    riproduzione::riga_di_avvio_lettore(&lettore);
+    app.manage(lettore);
+    // Il filo che apre il brano successivo, insieme agli altri del
+    // lettore. L'ordine fra questi quattro non conta: il canale del
+    // preparatore non ha limite, quindi una spinta che arrivasse prima
+    // che il filo sia in piedi lo aspetta lì invece di perdersi.
+    riproduzione::avvia_preparatore(app.clone(), orecchio);
+    // Lo stato del collegamento via internet prima della coda: la coda
+    // di ieri può avere brani di un altro dispositivo, e le loro voci
+    // si rifanno con lui. Il suo filo parte più sotto, dopo «Ascolta
+    // insieme»; lo stato da solo non apre niente.
+    app.manage(lontano::StatoLontano::nuovo());
+    riproduzione::riprendi_coda(app);
+    riproduzione::avvia_orologio(app.clone());
+    // Sul telefono lo spettro non c'è (`InRiproduzione.tsx`,
+    // `CON_SPETTRO`), e un filo che si sveglia quattro volte al secondo
+    // per sentirsi dire che nessuno guarda è batteria spesa per niente,
+    // per tutta la vita del processo — che su Android è lunga, perché
+    // la musica continua anche a schermata chiusa.
+    #[cfg(desktop)]
+    riproduzione::avvia_spettro(app.clone());
+    // Il filo che guarda le uscite audio andare e venire. Ultimo dei
+    // quattro, e non conta nemmeno qui: la prima passata la fa da sé
+    // appena parte, e chi la pungola prima che sia in piedi trova un
+    // canale che tiene la spinta finché non c'è nessuno a raccoglierla.
+    riproduzione::avvia_sorveglianza(app.clone(), orecchio_dispositivi);
+
+    // I controlli veri **dopo** il lettore, e per una ragione che non è
+    // l'ordine di dipendenza ma quello della finestra: su Windows le
+    // SMTC si appendono a una finestra, e qui la finestra esiste già —
+    // `tauri.conf.json` la crea nascosta, non assente. Serve anche la
+    // libreria aperta, per sapere dove stanno le copertine. Il primo
+    // stato le riempirà da sé, perché passa dallo stesso `manda_stato`
+    // di tutti gli altri.
+    media::avvia(app);
+    // I pulsanti nell'anteprima, accanto ai controlli multimediali e per
+    // la stessa ragione: si appendono alla finestra, che qui esiste già.
+    // Compaiono quando la finestra si mostra.
+    barra::avvia(app);
+
+    // Il backup **per ultimo**: il suo filo aspetta mezzo minuto prima
+    // della prima passata proprio per lasciar finire quel che parte
+    // adesso, e non ha senso averlo in piedi prima che ci sia una
+    // libreria da salvare.
+    let (nuvola, orecchio) = nuvola::StatoNuvola::nuovo();
+    app.manage(nuvola);
+    nuvola::avvia_filo(app.clone(), orecchio);
+
+    // L'arricchimento **dopo il backup**, ed è l'ordine giusto anche se
+    // i due fili non si aspettano a vicenda: il suo aspetta un minuto e
+    // mezzo prima della prima passata — il triplo della nuvola — perché
+    // arricchire mentre una scansione riscrive le righe vuol dire
+    // decidere su dati che stanno per cambiare.
+    // La sincronia **subito dopo il backup**: condivide con lui la cache
+    // dell'access token di Drive, e il suo filo aspetta venti secondi —
+    // meno della nuvola, perché una passata a vuoto su una cartella è una
+    // lettura di directory e nient'altro.
+    let (sincronia, orecchio) = sincronia::StatoSincronia::nuovo();
+    app.manage(sincronia);
+    sincronia::avvia_filo(app.clone(), orecchio);
+
+    let (arricchimento, orecchio) = arricchimento::StatoArricchimento::nuovo();
+    app.manage(arricchimento);
+    arricchimento::avvia_filo(app.clone(), orecchio);
+
+    // La manutenzione del database: controllo, `optimize`, copertine
+    // orfane. Il suo filo aspetta un minuto — vedi `manutenzione`.
+    manutenzione::avvia(app);
+
+    // L'analisi sonora **dopo** l'arricchimento, e il suo filo aspetta
+    // due minuti. È l'unica cosa qui dentro che legge dal disco a tutta
+    // velocità senza che nessuno l'abbia chiesta, e cede alla
+    // riproduzione: se in quei due minuti parte una canzone, non
+    // comincia affatto.
+    let (analisi, orecchio) = analisi::StatoAnalisi::nuovo();
+    app.manage(analisi);
+    analisi::avvia_filo(app.clone(), orecchio);
+
+    // Lo scrobbling **dopo** la libreria, perché la prima cosa che fa è
+    // guardare se è rimasto qualcosa in coda dalla sessione precedente.
+    // Il suo filo dorme finché non lo si chiama: a servizi scollegati
+    // non costa niente.
+    app.manage(scrobble::StatoScrobble::nuovo());
+    scrobble::avvia(app);
+
+    // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
+    // legge le impostazioni da lì e parla col lettore attraverso il
+    // ponte. Spento di serie, e da spento il suo filo dorme: nessun
+    // pacchetto in rete finché qualcuno non accende l'interruttore.
+    let (insieme, orecchio) = insieme::StatoInsieme::nuovo();
+    app.manage(insieme);
+    insieme::avvia_filo(app.clone(), orecchio);
+
+    // Il collegamento via internet **dopo** «Ascolta insieme»: dice
+    // agli altri dispositivi se la sessione è accesa. Spento di serie:
+    // da spento il filo legge le impostazioni e basta.
+    lontano::avvia_filo(app);
+
+    // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
+    // nessun filo. Qui non parte niente da solo — non c'e` niente da
+    // riprendere e nessuna coda da svuotare — e finche' nessuno apre la
+    // chat dello Studio questo stato non tocca ne' rete ne' disco.
+    app.manage(ia::StatoIa::nuovo());
+
+    // Gli aggiornamenti **dopo tutti gli altri**: il suo filo aspetta
+    // che la finestra dica `pronto`, e poi dieci secondi. È l'unica
+    // cosa che parla con la rete senza che nessuno gliel'abbia
+    // chiesto, e lo fa una volta per avvio: vedi `aggiornamenti`.
+    let (aggiornamenti, orecchio) = aggiornamenti::StatoAggiornamenti::nuovo();
+    app.manage(aggiornamenti);
+    aggiornamenti::avvia_filo(app.clone(), orecchio);
+
+    // Il vassoio **dopo** la libreria, perché la prima cosa che fa è
+    // leggere la preferenza da lì. Non compare ancora niente nell'area
+    // di notifica: le due etichette del menù arrivano dalla finestra
+    // qualche decina di millisecondi più tardi, e senza di quelle non
+    // c'è un menù da costruire. Vedi `vassoio`.
+    app.manage(vassoio::StatoVassoio::nuovo());
+    vassoio::avvia(app);
+    // Adesso che ci sono tutti e tre — il riquadro multimediale, i
+    // pulsanti della miniatura, il vassoio — il brano della coda di
+    // ieri anche a loro. Vedi `riproduzione::primo_stato_fuori`.
+    riproduzione::primo_stato_fuori(app);
+
+    // Le cartelle sorvegliate **dopo** la libreria: legge la scelta e
+    // l'elenco da lì, e il suo filo aspetta dieci secondi prima di
+    // guardare il disco. Vedi `sorveglia`.
+    sorveglia::avvia(app);
+}
+
 /// Mostra la finestra fra due secondi, qualunque cosa succeda di là.
 ///
 /// Salvo che di là si sia deciso di chiudere: due secondi sono lunghi
@@ -445,160 +608,9 @@ pub fn run() {
             // quando la finestra mostra solo l'errore.
             stato::riga_di_avvio(&stato);
             app.manage(stato);
-            // Le cartelle dal cloud **subito dopo** la libreria: lo specchio si
-            // carica da lì, e prima di ogni scansione — anche quella del lettore
-            // che riapre la coda di ieri — chi apre un file deve già trovare il
-            // cloud. I fili dei conti partono qui, e la loro prima domanda alla
-            // rete non aspetta niente: è quel che rende una cartella appena
-            // cambiata su OneDrive visibile all'avvio.
-            nuvola_musica::avvia(app.handle());
-
-            // Il lettore **dopo** la libreria: apre il dispositivo audio e
-            // rilegge la coda di ieri, e per la seconda cosa il database deve
-            // già essere aperto.
-            // Lo stato dei controlli multimediali **prima** del lettore, anche
-            // se a riempirlo si farà più sotto. Il filo dell'orologio parte
-            // insieme al lettore e chiama `manda_stato` da sé quando il
-            // dispositivo audio sparisce: se quel momento arrivasse prima di
-            // questa riga, cercherebbe uno stato non registrato. Registrarlo
-            // vuoto costa un mutex e un intero.
-            app.manage(media::StatoMedia::nuovo());
-            // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
-            // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
-            // ci siano, e il primo stato del lettore arriva da `riprendi_coda`
-            // qui sotto. Vedi `barra`.
-            app.manage(barra::StatoBarra::nuovo());
-
-            let (lettore, orecchio, orecchio_dispositivi) =
-                riproduzione::StatoLettore::avvia(app.handle());
-            riproduzione::riga_di_avvio_lettore(&lettore);
-            app.manage(lettore);
-            // Il filo che apre il brano successivo, insieme agli altri del
-            // lettore. L'ordine fra questi quattro non conta: il canale del
-            // preparatore non ha limite, quindi una spinta che arrivasse prima
-            // che il filo sia in piedi lo aspetta lì invece di perdersi.
-            riproduzione::avvia_preparatore(app.handle().clone(), orecchio);
-            // Lo stato del collegamento via internet prima della coda: la coda
-            // di ieri può avere brani di un altro dispositivo, e le loro voci
-            // si rifanno con lui. Il suo filo parte più sotto, dopo «Ascolta
-            // insieme»; lo stato da solo non apre niente.
-            app.manage(lontano::StatoLontano::nuovo());
-            riproduzione::riprendi_coda(app.handle());
-            riproduzione::avvia_orologio(app.handle().clone());
-            // Sul telefono lo spettro non c'è (`InRiproduzione.tsx`,
-            // `CON_SPETTRO`), e un filo che si sveglia quattro volte al secondo
-            // per sentirsi dire che nessuno guarda è batteria spesa per niente,
-            // per tutta la vita del processo — che su Android è lunga, perché
-            // la musica continua anche a schermata chiusa.
-            #[cfg(desktop)]
-            riproduzione::avvia_spettro(app.handle().clone());
-            // Il filo che guarda le uscite audio andare e venire. Ultimo dei
-            // quattro, e non conta nemmeno qui: la prima passata la fa da sé
-            // appena parte, e chi la pungola prima che sia in piedi trova un
-            // canale che tiene la spinta finché non c'è nessuno a raccoglierla.
-            riproduzione::avvia_sorveglianza(app.handle().clone(), orecchio_dispositivi);
-
-            // I controlli veri **dopo** il lettore, e per una ragione che non è
-            // l'ordine di dipendenza ma quello della finestra: su Windows le
-            // SMTC si appendono a una finestra, e qui la finestra esiste già —
-            // `tauri.conf.json` la crea nascosta, non assente. Serve anche la
-            // libreria aperta, per sapere dove stanno le copertine. Il primo
-            // stato le riempirà da sé, perché passa dallo stesso `manda_stato`
-            // di tutti gli altri.
-            media::avvia(app.handle());
-            // I pulsanti nell'anteprima, accanto ai controlli multimediali e per
-            // la stessa ragione: si appendono alla finestra, che qui esiste già.
-            // Compaiono quando la finestra si mostra.
-            barra::avvia(app.handle());
-
-            // Il backup **per ultimo**: il suo filo aspetta mezzo minuto prima
-            // della prima passata proprio per lasciar finire quel che parte
-            // adesso, e non ha senso averlo in piedi prima che ci sia una
-            // libreria da salvare.
-            let (nuvola, orecchio) = nuvola::StatoNuvola::nuovo();
-            app.manage(nuvola);
-            nuvola::avvia_filo(app.handle().clone(), orecchio);
-
-            // L'arricchimento **dopo il backup**, ed è l'ordine giusto anche se
-            // i due fili non si aspettano a vicenda: il suo aspetta un minuto e
-            // mezzo prima della prima passata — il triplo della nuvola — perché
-            // arricchire mentre una scansione riscrive le righe vuol dire
-            // decidere su dati che stanno per cambiare.
-            // La sincronia **subito dopo il backup**: condivide con lui la cache
-            // dell'access token di Drive, e il suo filo aspetta venti secondi —
-            // meno della nuvola, perché una passata a vuoto su una cartella è una
-            // lettura di directory e nient'altro.
-            let (sincronia, orecchio) = sincronia::StatoSincronia::nuovo();
-            app.manage(sincronia);
-            sincronia::avvia_filo(app.handle().clone(), orecchio);
-
-            let (arricchimento, orecchio) = arricchimento::StatoArricchimento::nuovo();
-            app.manage(arricchimento);
-            arricchimento::avvia_filo(app.handle().clone(), orecchio);
-
-            // La manutenzione del database: controllo, `optimize`, copertine
-            // orfane. Il suo filo aspetta un minuto — vedi `manutenzione`.
-            manutenzione::avvia(app.handle());
-
-            // L'analisi sonora **dopo** l'arricchimento, e il suo filo aspetta
-            // due minuti. È l'unica cosa qui dentro che legge dal disco a tutta
-            // velocità senza che nessuno l'abbia chiesta, e cede alla
-            // riproduzione: se in quei due minuti parte una canzone, non
-            // comincia affatto.
-            let (analisi, orecchio) = analisi::StatoAnalisi::nuovo();
-            app.manage(analisi);
-            analisi::avvia_filo(app.handle().clone(), orecchio);
-
-            // Lo scrobbling **dopo** la libreria, perché la prima cosa che fa è
-            // guardare se è rimasto qualcosa in coda dalla sessione precedente.
-            // Il suo filo dorme finché non lo si chiama: a servizi scollegati
-            // non costa niente.
-            app.manage(scrobble::StatoScrobble::nuovo());
-            scrobble::avvia(app.handle());
-
-            // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
-            // legge le impostazioni da lì e parla col lettore attraverso il
-            // ponte. Spento di serie, e da spento il suo filo dorme: nessun
-            // pacchetto in rete finché qualcuno non accende l'interruttore.
-            let (insieme, orecchio) = insieme::StatoInsieme::nuovo();
-            app.manage(insieme);
-            insieme::avvia_filo(app.handle().clone(), orecchio);
-
-            // Il collegamento via internet **dopo** «Ascolta insieme»: dice
-            // agli altri dispositivi se la sessione è accesa. Spento di serie:
-            // da spento il filo legge le impostazioni e basta.
-            lontano::avvia_filo(app.handle());
-
-            // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
-            // nessun filo. Qui non parte niente da solo — non c'e` niente da
-            // riprendere e nessuna coda da svuotare — e finche' nessuno apre la
-            // chat dello Studio questo stato non tocca ne' rete ne' disco.
-            app.manage(ia::StatoIa::nuovo());
-
-            // Gli aggiornamenti **dopo tutti gli altri**: il suo filo aspetta
-            // che la finestra dica `pronto`, e poi dieci secondi. È l'unica
-            // cosa che parla con la rete senza che nessuno gliel'abbia
-            // chiesto, e lo fa una volta per avvio: vedi `aggiornamenti`.
-            let (aggiornamenti, orecchio) = aggiornamenti::StatoAggiornamenti::nuovo();
-            app.manage(aggiornamenti);
-            aggiornamenti::avvia_filo(app.handle().clone(), orecchio);
-
-            // Il vassoio **dopo** la libreria, perché la prima cosa che fa è
-            // leggere la preferenza da lì. Non compare ancora niente nell'area
-            // di notifica: le due etichette del menù arrivano dalla finestra
-            // qualche decina di millisecondi più tardi, e senza di quelle non
-            // c'è un menù da costruire. Vedi `vassoio`.
-            app.manage(vassoio::StatoVassoio::nuovo());
-            vassoio::avvia(app.handle());
-            // Adesso che ci sono tutti e tre — il riquadro multimediale, i
-            // pulsanti della miniatura, il vassoio — il brano della coda di
-            // ieri anche a loro. Vedi `riproduzione::primo_stato_fuori`.
-            riproduzione::primo_stato_fuori(app.handle());
-
-            // Le cartelle sorvegliate **dopo** la libreria: legge la scelta e
-            // l'elenco da lì, e il suo filo aspetta dieci secondi prima di
-            // guardare il disco. Vedi `sorveglia`.
-            sorveglia::avvia(app.handle());
+            // Il resto dell'avvio, quel che vuole la libreria aperta: vedi
+            // [`avvia_dopo_la_libreria`].
+            avvia_dopo_la_libreria(app.handle());
 
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
