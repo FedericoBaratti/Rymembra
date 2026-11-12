@@ -90,6 +90,13 @@ Some things a program like this *could* do, and that Rymembra does not:
 If you find a way to make Rymembra do one of these things, that's a defect. Report
 it.
 
+One thing is left to you. To identify tracks and find covers, Rymembra can
+also ask iTunes and Deezer, whose terms do not clearly allow this use: Apple’s
+let its search promote the iTunes Store, Deezer’s allow non-commercial use
+only and ask for permission to show its images. Both are off by default, and
+if you switch one on, in Settings › Folders and scanning › Metadata, you use
+that service under its own terms.
+
 ---
 
 ## 3-bis. Lyrics, and what LRCLIB is
