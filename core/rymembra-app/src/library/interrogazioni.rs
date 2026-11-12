@@ -291,6 +291,65 @@ pub fn ascoltati_di_recente(
         .map_err(|err| db_error("ascoltati di recente", &err))
 }
 
+/// Da quanti giorni un brano dev'essere fermo per contare come «trascurato».
+///
+/// Sei mesi. Trenta giorni sarebbero «non di questo mese», che su una libreria
+/// vera comprende quasi tutto e non racconta niente.
+pub const GIORNI_TRASCURATO: i64 = 180;
+
+/// Da quanti giorni un brano dev'essere in libreria per poter essere
+/// «trascurato».
+///
+/// Trenta (D-63). «Non negli ultimi sei mesi» comprende anche chi non è mai
+/// stato ascoltato — è la playlist delle canzoni dimenticate, e la regola lo
+/// vuole —, ma un brano entrato cinque minuti fa non è dimenticato, è nuovo: al
+/// primo avvio il ripiano si riempiva di dodici brani appena scansionati, gli
+/// stessi di «Aggiunti di recente».
+pub const GIORNI_NUOVO: i64 = 30;
+
+/// I brani che non ascolti da un po', a caso: il ripiano «Non li ascolti da un
+/// po'» della Home.
+///
+/// Passa dal motore delle regole invece che da una query scritta a mano: è la
+/// stessa domanda che una playlist intelligente sa già fare, e scriverla due
+/// volte vorrebbe dire due idee di cosa significhi «non di recente». Sta qui e
+/// non nel comando della Home perché è una regola sulla libreria, e la Home del
+/// telefono la chiede uguale.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn trascurati(
+    connection: &Connection,
+    adesso_ms: i64,
+    quanti: u32,
+) -> Result<Vec<TrackSummary>, AppError> {
+    use rymembra_domain::regole::{
+        Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
+    };
+    crate::smart::brani(
+        connection,
+        &Insieme {
+            combinazione: Combinazione::Tutte,
+            regole: vec![
+                Regola {
+                    campo: Campo::UltimoAscolto,
+                    operatore: Operatore::NonNegliUltimi,
+                    valore: Valore::Numero(GIORNI_TRASCURATO),
+                },
+                Regola {
+                    campo: Campo::Aggiunto,
+                    operatore: Operatore::NonNegliUltimi,
+                    valore: Valore::Numero(GIORNI_NUOVO),
+                },
+            ],
+            limite: Some(quanti),
+            ordinamento: Ordinamento::Casuale,
+        },
+        adesso_ms,
+    )
+}
+
 /// La domanda di [`ascoltati_di_recente`], a parte perché la prova ne guardi
 /// il piano.
 ///

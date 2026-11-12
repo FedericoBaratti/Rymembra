@@ -107,3 +107,52 @@ fn recenti_a_parita_di_data_tiene_l_ordine_del_disco() {
     let brani = list_tracks(&connection, TrackOrder::RecentlyAdded, 0, 10).expect("elenco");
     assert_eq!(ids(&brani), vec![6, 1, 2, 3, 5, 4]);
 }
+
+#[test]
+fn trascurati_non_contiene_un_brano_appena_aggiunto() {
+    // «Non li ascolti da un po'» al primo avvio si riempiva di dodici brani a
+    // caso appena scansionati: mai ascoltati, quindi «non negli ultimi 180
+    // giorni». Un brano entrato da meno di trenta giorni non è trascurato, è
+    // nuovo (D-63).
+    let connection = libreria();
+    let giorno = 86_400_000_i64;
+    let adesso = 1_800_000_000_000_i64;
+    let percorsi: Vec<String> = (1..=5).map(|id| format!("D:/M/{id}.flac")).collect();
+    for ((id, aggiunto), path) in [
+        (1, adesso),               // appena entrato, mai ascoltato
+        (2, adesso - 10 * giorno), // entrato dieci giorni fa
+        (3, adesso - 40 * giorno), // in libreria da più di un mese, mai sentito
+        (4, adesso - 400 * giorno),
+        (5, adesso - 400 * giorno),
+    ]
+    .into_iter()
+    .zip(&percorsi)
+    {
+        scrivi(
+            &connection,
+            &Riga {
+                id,
+                path,
+                title: "Brano",
+                artist: "Tizio",
+                album: "Disco",
+                album_key: "disco d:/m",
+                disco: None,
+                traccia: None,
+                aggiunto,
+            },
+        );
+    }
+    // Il 4 è fermo da sette mesi, il 5 l'hai sentito la settimana scorsa.
+    for (id, giorni_fa) in [(4, 210), (5, 7)] {
+        connection
+            .execute(
+                "UPDATE tracks SET play_count = 3, last_played_at = ?2 WHERE id = ?1",
+                rusqlite::params![id, adesso - giorni_fa * giorno],
+            )
+            .expect("ascolto");
+    }
+    let mut trovati = ids(&trascurati(&connection, adesso, 12).expect("trascurati"));
+    trovati.sort_unstable();
+    assert_eq!(trovati, vec![3, 4]);
+}

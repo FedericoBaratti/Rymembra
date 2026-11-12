@@ -2072,12 +2072,6 @@ pub fn imposta_cartelle_ui(
 /// impaginate apposta.
 const RIPIANO: i64 = 12;
 
-/// Da quanti giorni un brano dev'essere fermo per contare come «trascurato».
-///
-/// Sei mesi. Trenta giorni sarebbero «non di questo mese», che su una libreria
-/// vera comprende quasi tutto e non racconta niente.
-const GIORNI_TRASCURATO: i64 = 180;
-
 /// Quel che la Home mostra all'apertura.
 ///
 /// # Perché un comando solo e non cinque
@@ -2112,10 +2106,6 @@ pub struct Casa {
 /// motore delle regole su tutta la libreria.
 #[tauri::command]
 pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
-    use rymembra_domain::regole::{
-        Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
-    };
-
     leggi_la_libreria(app, "Home", |libreria| {
         let connection = &libreria.connection;
 
@@ -2143,24 +2133,9 @@ pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
 
         let aggiunti = recently_added_albums(connection, RIPIANO)?;
 
-        // I trascurati passano dal motore delle regole invece che da una query
-        // scritta a mano: è la stessa domanda che una playlist intelligente sa
-        // già fare, e scriverla due volte vorrebbe dire due idee di cosa
-        // significhi «non di recente».
-        let trascurati = rymembra_app::smart::brani(
-            connection,
-            &Insieme {
-                combinazione: Combinazione::Tutte,
-                regole: vec![Regola {
-                    campo: Campo::UltimoAscolto,
-                    operatore: Operatore::NonNegliUltimi,
-                    valore: Valore::Numero(GIORNI_TRASCURATO),
-                }],
-                limite: Some(12),
-                ordinamento: Ordinamento::Casuale,
-            },
-            adesso_ms(),
-        )?;
+        // La regola dei trascurati è della libreria, non di questo comando:
+        // vedi `rymembra_app::library::trascurati`.
+        let trascurati = rymembra_app::library::trascurati(connection, adesso_ms(), 12)?;
 
         Ok(Casa {
             riprendi,
