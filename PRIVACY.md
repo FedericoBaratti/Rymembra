@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 10 November 2026.
+Last updated: 12 November 2026.
 
 **Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Rymembra server. There is no account to create. There is
@@ -23,20 +23,39 @@ Everything Rymembra knows about you:
 
 - **The library**, in an SQLite database in the application's data folder
   (`%APPDATA%\io.github.federicobaratti.rymembra` on Windows): tracks, playlists,
-  ratings, favorites, listening history, play counts.
+  ratings, favorites, listening history, play counts. Before each upgrade
+  that changes the database, Rymembra also keeps a full copy of it beside
+  it — `rymembra.db.schema-NNN.bak`, the last two — with everything the
+  library held at that moment.
 - **The settings**, in the same folder.
 - **The cover art**, in a file cache next to the database.
 - **Your skins and Skin Studio drafts**, in the `skin` folder beside it —
-  including, from 3.0, the conversations with the Studio's chat (§ 2-quater).
+  including, from 3.0, the conversations with the Studio's chat (§ 2-quater),
+  and a skin you replaced by installing another with the same id, kept aside
+  in `skin\sostituite` so you can put it back.
 - **The secrets** — the Google Drive tokens, the client secret of the Google
   app you registered, the scrobbling credentials, the API keys of any language
   model you configure and, from 3.1, the key that identifies this PC to the
   others in «Listen together» — in the **operating system's keychain**, not in
   a file. On Windows that's Credential Manager.
-- **The PCs you paired** for «Listen together», if any: their public key and
-  the name they had, in the same database (§ 4-ter).
+- **The PCs you paired** for «Listen together», if any: their public key, the
+  name they had and the last address (`ip:port`) at which they answered on
+  your network, in the same database (§ 4-ter).
+- **The devices you linked** over the internet, if any (§ 4-quinquies): their
+  public key, the name and platform they gave, the id each uses for sync,
+  their “Listen together” key, the last addresses (`ip:port`) at which they
+  were reached — away from home, often their public IP address — and when
+  they were linked and last seen, in the same database. A device that forgot
+  you stays there, marked as unlinked, until you remove it. Next to it, the
+  listens of their tracks made here and not yet delivered, and in the local
+  application data folder (`%LOCALAPPDATA%` on Windows) a cache of the covers
+  of the libraries you browsed, 50 MB at most.
+- **The Google account of the backup**, if you connect it: its email
+  address, which Google gives Rymembra with the `openid email` permission,
+  shown in Settings and kept in the database until you disconnect (§ 4).
 - **The cloud accounts you connected** for music folders, if any: the name
-  shown, the list of the chosen folders' files — with the folders above them
+  shown — the account’s email address, when the service gives one — the list
+  of the chosen folders’ files — with the folders above them
   that make up their paths, and nothing else of the drive — and the cursor of
   each service's change feed, in the same database; their tokens and passwords
   in the keychain; the tracks you played, up to the cache's ceiling, in the local
@@ -53,10 +72,20 @@ which are moved to the new entries rather than copied. The installer removes the
 previous version but never its data. All of this happens on your computer; no
 request is made for it.
 
-None of this leaves your computer, except for the backup if you turn it on
-yourself (§ 4), what a listening session shares with the PCs you paired — on
-your own network, and only if you start or join one (§ 4-ter) — and the
-requests to the cloud services whose folders you add (§ 4-quater).
+None of this leaves your computer, except in the cases this document
+describes one by one. On by default: the titles and artists of the tracks
+and albums that metadata enrichment looks up (§ 2) — or, for similarity,
+their MusicBrainz identifiers (§ 2-ter) — and, while the lyrics panel is
+open, the artist, title, album and duration of the track playing and of the
+next one (§ 2-bis); never your plays, ratings or files. Only if you turn
+them on or ask for them: the backup and sync, through a shared folder or
+your Google Drive (§ 4); your listens, to the scrobbling service you connect
+(§ 3); the skin and the chat you send to a language model (§ 2-quater); a
+lyric you give back to LRCLIB (§ 2-bis); what a listening session shares
+with the devices you paired (§ 4-ter); the lists, covers and files that the
+devices you linked browse (§ 4-quinquies);
+the requests to the cloud services whose folders you add (§ 4-quater); and
+the profile archive, which you export yourself, where you choose (§ 4-bis).
 
 ### When you uninstall
 
@@ -68,7 +97,7 @@ with `/P` or `/S`, never show it and never delete data.
 | What | Without the box | With the box |
 |---|---|---|
 | The library, settings, covers, skins and drafts, the log and the copies of the database taken before a migration (`%APPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
-| The window's own data and the cache of tracks played from cloud folders (`%LOCALAPPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
+| The window’s own data, the cache of tracks played from cloud folders and the cache of your linked devices’ covers (`%LOCALAPPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
 | The installer's registry key (`HKCU\Software\Federico Baratti\Rymembra`) | stays | removed |
 | The secrets in Windows Credential Manager — account tokens, API keys, the keys that identify this PC in «Listen together» and to your devices | **stay** | **stay** |
 | The previous version's window data (`%LOCALAPPDATA%\io.github.federicobaratti.aether`) | stays | stays |
@@ -106,11 +135,11 @@ What the app asks Android for, and why:
 | Permission | Why |
 | --- | --- |
 | Music and audio | Reading your tracks, and the covers inside their tags. Asked at first start, with Android's dialog. Rymembra does not ask for *Photos and videos*. |
-| All files access | Reading the covers, the lyrics (`.lrc`) and the `.cue` files next to your tracks, fixing tags, and deleting a track when you ask. Granted in Android's settings page; Rymembra works without it, with those things left out. |
+| All files access | Reading the covers, the lyrics (`.lrc`) and the `.cue` files next to your tracks, writing an `.lrc` beside a track if you switch that on (§ 8), and deleting a track when you ask. It is not used to write the tags of your files: Rymembra writes tags only into the files it downloaded itself (§ 8). Granted in Android's settings page; Rymembra works without it, with those things left out. |
 | Notifications | The player's notification. The music plays without it. |
 | Foreground service (media playback) | Keeping the music playing with the screen off. Android allows it only together with the player's notification. |
 | Foreground service (data sync) | Finishing a «Download here» from another linked device with the screen off (§ 4-quinquies): only while tracks are downloading, with a notification that says which one, stopped at the end of the queue. Nothing is sent anywhere for it. |
-| Internet, network state | The same requests as on the computer, described in the rest of this document. None is added on the phone. |
+| Internet, network state | The same requests as on the computer, described in the rest of this document, except the update check, which on the phone is a different request, to GitHub’s API (§ 6). |
 | Wi-Fi state, Wi-Fi multicast | «Listen together» (§ 4-ter): finding the other Rymembra instances on your network. The multicast lock is held only while the function is on. |
 | Keep the device awake (Wi-Fi lock) | Keeping the Wi-Fi from dozing with the screen off during a «Listen together» session, and while a track of another linked device is playing or downloading (§ 4-quinquies). Released as soon as neither is true. |
 | Camera | Reading the QR code that links a device (§ 4-quinquies). Asked the first time you press «Scan QR code», used only while the scanner is open; the frames never leave the phone. Denied, you can paste the link instead. |
@@ -201,7 +230,8 @@ constructor that allowed that was removed along with the code that needed it.
 
 These start on their own, on a background thread, when the library holds tracks
 with no album, no cover art, or a title that looks derived from a file name.
-Automatic enrichment **can be switched off** in Settings › Metadata.
+Automatic enrichment **can be switched off** in Settings › Folders and
+scanning › Metadata.
 
 | Host | What reaches it | Rate |
 | --- | --- | --- |
@@ -245,17 +275,18 @@ matters:
   after it — so that its lyrics are ready when it starts — and **only while the
   lyrics panel is open**. With that panel closed, nothing starts; the next
   track is asked for even if you then skip it or take it out of the queue;
-- or when you press «Fill the library» in Settings › Folders, which is the only
-  sweep over the whole library and you're the one who launches it.
+- or when you press «Fill the library» in Settings › Folders and scanning ›
+  Lyrics, which is the only sweep over the whole library and you're the one
+  who launches it.
 
 There is no background thread going through the library on its own. The
 difference from the metadata in section 2 is deliberate: there, files are being
 tidied; here, you'd be telling somebody else what you're listening to right now.
 
 As with the others, LRCLIB receives no identifier of yours: no key, no cookie,
-no session. And as with the others, it switches off — Settings › Folders ›
-Lyrics. Switched off, what remains are the lyrics you already have in your
-files.
+no session. And as with the others, it switches off — Settings › Folders and
+scanning › Lyrics. Switched off, what remains are the lyrics you already have
+in your files.
 
 **No lyric goes up** to the Google Drive backup, nor into sync: not the ones
 downloaded from the catalog, which can be downloaded again and would be
@@ -345,9 +376,9 @@ is the residue of years of aggregated listening and doesn't change from one day
 to the next, so asking often would be traffic spent getting the same number
 back.
 
-**It switches off** in Settings › Metadata, together with the enrichment it
-depends on. Switched off, the sound and your listening remain: the queue keeps
-working, it knows a little less.
+**It switches off** in Settings › Folders and scanning › Metadata, together
+with the enrichment it depends on. Switched off, the sound and your listening
+remain: the queue keeps working, it knows a little less.
 
 **Why ListenBrainz and not something else.** Because MetaBrainz's data is CC0 —
 public domain, commercial use included — and because it's the same foundation
@@ -484,17 +515,39 @@ has none of its own — and the consent you give is to that app (§ 4-quater,
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Rymembra's window, with your app's ID |
+| `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Rymembra's window, with your app's ID. Besides the Drive permission, Rymembra asks for `openid email`, so that Settings can show which account is connected: Google gives it the account’s email address, which stays in the library database until you disconnect |
 | `oauth2.googleapis.com` | On connecting, on renewals, and on disconnecting | The token exchange; on disconnecting, the refresh token, to revoke the consent (see below) |
-| `www.googleapis.com` | On every backup | The backup document |
+| `www.googleapis.com` | Thirty seconds after start, then every fifteen minutes, and two minutes after a burst of changes; on a library that did not change, a pass is one request that lists the files and their fingerprints | The backup files, described below |
+| Google’s content servers (`*.googleusercontent.com`) | When a restore downloads a file and Drive redirects the download there | The request for that file’s bytes; the token does not follow the redirect |
 
-The backup contains your **library**: tracks, playlists, ratings, history. Not
-the audio files. It ends up in the application-reserved folder of **your**
-Drive, which belongs to your app: no other program sees it. The backup files that the previous
-version left there are recognised and renamed in place the next time it runs, so
-nothing is uploaded twice, and a file is removed only when an identical copy
-under the new name is kept; the rename is one more request to Google Drive, of
-the same kind as the backup itself.
+The backup carries what a scan cannot rebuild — not the audio files, not the
+cover art, not the lyrics:
+
+- **the library file**, `rymembra-libreria.v1.json.gz`: for each track with
+  something to say, its play count, last play, rating and favorite (not the
+  dated history of each listen, which only the profile archive of § 4-bis
+  carries); your playlists, with their names, descriptions, rules and
+  tracks; the tracks you removed from the library and the playlists you
+  deleted, so that they do not come back from another computer; the
+  **paths of your watched folders**, as you chose them — which often contain
+  your Windows user name, as in `C:\Users\<name>\Music`; the skin in use;
+  and this computer’s random device identifier, which says which copy wrote
+  it;
+- **each installed skin**, as its package (`rymembra-skin-<id>.ryskin`, up
+  to 20 MB), uploaded again only when it changes;
+- **each Skin Studio draft**, as its `skin.json` alone
+  (`rymembra-bozza-<id>.json.gz`): not its undo history, and not the
+  conversation with the chat (§ 2-quater).
+
+It all ends up in the application-reserved folder of **your** Drive, which
+belongs to your app: no other program sees it. Up there Rymembra deletes only
+extra copies of the library file — two computers saving for the first time
+at the same moment can create two — once they are merged into the one just
+written; a library file that cannot be read is renamed
+(`….corrotto-<time>`) and kept, not overwritten. The backup files that the
+previous version left there are recognised and renamed in place the next
+time it runs, so nothing is uploaded twice; the rename is one more request to
+Google Drive, of the same kind as the backup itself.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
 account first sends it to Google's revocation address, which withdraws the
@@ -504,7 +557,31 @@ nothing is revoked — Google would withdraw that folder's access too — and th
 token is only deleted. What has already been uploaded stays on your Drive
 until you delete it yourself.
 
-The alternative that touches no network exists: syncing to a shared folder.
+### Sync between devices
+
+Sync, in *Settings › Sync between devices*, is off until you turn it on, and
+keeps its documents in one place you choose: a shared folder, or your Drive.
+Either way each device writes one file of its own,
+`rymembra-<device>.v1.json.gz`, and reads the others’. It carries, for each
+track, this device’s play count, the last play, the rating, the favorite
+and **the position where you stopped** a track left halfway; the playlists,
+with their names, descriptions, rules and tracks; the deletions; the watched
+folders, with their paths; and the skins and Studio drafts by id, with a
+fingerprint of each — not their contents. It does not carry the dated
+history of each listen, lyrics, accounts, secrets or the devices you linked.
+Rymembra looks for changes twenty seconds after it starts, then every five
+minutes, and thirty seconds after a burst of changes.
+
+**Through a shared folder** — one that Syncthing, OneDrive or Dropbox keeps
+in step, for example — Rymembra makes no network request of its own: it
+writes its file in a `dispositivi` subfolder, and what carries it further is
+the program that syncs that folder, under its own terms.
+
+**Through Drive**, it uses the same connection and the same app as the
+backup: the file goes up to the application-reserved folder of your Drive,
+and the others’ come down from there, through `www.googleapis.com`, at the
+times above.
+
 A sync document written by another PC can add watched folders here, but never
 one on a network host (`\\host\…`) that this PC does not already use for its
 watched folders or its downloads, so a sync document cannot make this PC open
@@ -518,8 +595,9 @@ This touches no network at all. It is here because it is the one file Rymembra
 writes that is *meant* to be carried somewhere else, and you should know what
 is inside it before you hand it to anyone.
 
-*Settings › Profile › Export* writes a `rymembra-profilo.ryprofile` where you ask
-for it. It is a zip; you can open it with any archive manager and read what it
+“Export the profile…”, in *Settings › Library and data › Rymembra profile*,
+writes a `rymembra-profilo.ryprofile` where you ask for it. It is a zip; you
+can open it with any archive manager and read what it
 holds:
 
 | Inside | What it is |
@@ -583,7 +661,8 @@ socket for it and sends no packet: not one.
   and sixteen random bytes. Nothing else — no name, no title, nothing about
   you. It goes out as a broadcast on each of this PC's local networks, which
   routers do not forward, and as a single datagram to each address you typed by
-  hand in *Settings › Listen together*, which goes wherever that address is —
+  hand in *Settings › Sync between devices › Listen together*, which goes
+  wherever that address is —
   and to the last address at which each paired PC answered (see «Pairing»).
 - **Only a PC that is hosting answers**, with **34 bytes**: the port to connect
   to and an 8-byte fingerprint of its public key. So a hosting PC is
@@ -592,7 +671,8 @@ socket for it and sends no packet: not one.
 - **A connection to each host it sees**, at most sixteen, kept open so an
   invitation can reach you. Every connection is encrypted and authenticated —
   Noise `XX`, with X25519 keys and ChaCha20-Poly1305 — and inside it the two
-  PCs tell each other their **name**: the one in *Settings › Listen together*,
+  PCs tell each other their **name**: the one in *Settings › Sync between
+  devices › Listen together*,
   which by default is the Windows computer name. That name is said to any
   Rymembra that completes the handshake, paired or not. Nothing else is said to
   a PC that is not paired.
@@ -803,8 +883,12 @@ its name on the network.
 | The linked device | See below | See below |
 
 n0's relays and DNS server are a free public service, with limits and without
-guarantees; what n0 does with what it sees is in n0's privacy statement. A
-relay you run yourself (`iroh-relay`) sees the same and keeps it at home. The
+guarantees. The page of n0’s public relays
+(`docs.iroh.computer/iroh-services/relays/public`) links no privacy
+statement; it says that they cannot read the traffic they forward, that they
+see the source and destination IP addresses, the connection times and the
+amount of data, and that traffic is rate-limited to prevent abuse. A relay
+you run yourself (`iroh-relay`) sees the same and keeps it at home. The
 public key published in the DNS and in the DHT says nothing about you by
 itself, but it is the same every day: whoever knows it can tell when your
 device is on, and n0 sees it come back every five minutes while it is.
@@ -927,7 +1011,9 @@ do something.
 
 The file it downloads is called `latest.json`, sits among the latest release's
 assets, and is public: it's the same one you'd see opening the releases page in
-a browser. Inside are a version number, two lines of notes and an address.
+a browser. Inside are a version number, the date, the headings of that
+release’s changelog — at most eight, then how many more — the installer’s
+address and its signature.
 
 **Nothing of yours goes into the request.** No identifier, no serial number, no
 counter, no information about your library. Not even the version you have
@@ -1019,8 +1105,10 @@ check off.
   switched off, and then it asks nothing. If you connected Last.fm or
   ListenBrainz, the listens left in the queue are sent (§ 3). The services you
   connected yourself — the cloud folders (§ 4-quater), the Drive backup (§ 4) —
-  go on talking to their own servers, and with «Listen together» switched on,
-  looking for hosts on your own network starts with the program (§ 4-ter).
+  go on talking to their own servers; sync, if you turned it on, looks for
+  changes twenty seconds in, on Drive if that is where you keep it (§ 4); and
+  with «Listen together» switched on, looking for hosts on your own network
+  starts with the program (§ 4-ter).
   With «Reachable from the internet» on, the device link starts too: its
   record in n0's DNS (again every five minutes) and in the DHT, a connection
   to a relay, and one to each linked device (§ 4-quinquies). There's no other
@@ -1078,9 +1166,11 @@ are not on it.
 What Rymembra writes, and where:
 
 - **Files it downloaded itself**, in the download folder you chose. Rymembra
-  writes the tags and the cover art into those, because it is the one that
-  created them: a file that arrived a minute ago with no artist and no title
-  is not "your file" in the sense this section is about.
+  writes the tags and the cover art into those it took from a catalog,
+  because it is the one that created them: a file that arrived a minute ago
+  with no artist and no title is not "your file" in the sense this section is
+  about. The tracks copied from a linked device with “Download here”
+  (§ 4-quinquies) are written as the other device sent them.
 - **The lyrics files it saves next to a track**, only if you switch on «Also
   write synced lyrics to an .lrc next to the track» in *Settings › Folders and
   scanning › Lyrics* (from 3.0 it is off by default, and the lyrics you sync
@@ -1096,20 +1186,27 @@ What Rymembra writes, and where:
 - **The skin packages you export** from the Skin Studio (`.ryskin`), where you
   ask for them.
 - **This PC's synchronization file**, `dispositivi\rymembra-<device>.v1.json.gz`,
-  in the shared folder you chose for syncing, if you chose one (§ 4).
+  in the shared folder you chose for syncing, if you chose one (§ 4); if you
+  chose Drive instead, the same file goes to your Drive and nothing is
+  written here.
 - **The application's data folder** —
   `%APPDATA%\io.github.federicobaratti.rymembra` — which holds the library
-  database, the cover art cache, the installed skins and the log described
+  database with the copies taken before the last two upgrades of it
+  (`rymembra.db.schema-NNN.bak`), the cover art cache, the installed skins
+  and the ones you replaced, and the log described
   below. On the first start after an upgrade, Rymembra also renames the data
   folder of the previous version into this one (and the files inside to the
   new names), without overwriting or deleting anything.
 - **Its local counterpart** — `%LOCALAPPDATA%\io.github.federicobaratti.rymembra`,
   which does not roam with your Windows profile — where Rymembra keeps the
-  cache of the cloud tracks you played (`nuvola-cache`, § 4-quater) and, after
-  a start that failed, `avvio.log` (see «The log» below).
+  cache of the cloud tracks you played (`nuvola-cache`, § 4-quater), the
+  cache of the covers of your linked devices (`copertine-lontane`,
+  § 4-quinquies) and, after a start that failed, `avvio.log` (see «The log»
+  below).
 
-Nothing on that list leaves your computer, and nothing on it is a file you
-already had.
+Rymembra sends none of it anywhere by itself — a synchronization file goes
+only as far as the program that syncs its folder takes it — and nothing on
+that list is a file you already had.
 
 ### The one thing that reaches a file you already had — from 2.3.2
 
@@ -1202,10 +1299,12 @@ breaks and the other control characters in it are written visibly (`\n`,
 `\u{…}`), in `avvio.log` too.
 
 **Nothing goes out from there.** The log **is not sent to anyone**, ever, and
-there's no command that could do it: a program that can post its own logs by
-itself is a program with telemetry, and there isn't any here. The only thing the
-window knows how to do is open that folder in the file manager, from the button
-in *Settings → Updates*. What to do with it afterwards is up to you.
+there’s no command that could send it by itself: a program that can post its
+own logs by itself is a program with telemetry, and there isn’t any here. On
+the computer the window can only open that folder in the file manager, from
+the button in *Settings → Updates*; on the phone the same button, “Share the
+log”, hands a copy to the app you pick in Android’s share sheet, and only
+when you press it. What to do with it afterwards is up to you.
 
 The files rotate when they reach two megabytes, and three are kept: the oldest
 is deleted. Deleting them all by hand breaks nothing.
@@ -1224,6 +1323,25 @@ music, your account name replaced by `%APPDATA%`, `%LOCALAPPDATA%` and
 `%USERPROFILE%`. It starts over
 when it passes 256 kilobytes, it is not sent anywhere either, and deleting it
 breaks nothing.
+
+---
+
+## 8-bis. This website
+
+The project’s website — the landing page in four languages and the technical
+documentation — is a set of static pages served by GitHub Pages. GitHub logs
+the IP address of everyone who visits a GitHub Pages site, for security
+purposes, as GitHub’s own documentation says; what it does with it is in
+GitHub’s privacy statement.
+
+The pages set no cookies, run no analytics or visitor counter, and load
+nothing from other domains: the fonts, the pictures and the soundtrack come
+from the site itself. In your browser’s local storage they keep two things,
+which no request carries: the language you picked and the point the
+soundtrack had reached. The download buttons point at the files of the
+project’s GitHub release, and the other links — GitHub, the Microsoft Store,
+GitHub Sponsors, an email address — are ordinary links that do nothing until
+you follow them.
 
 ---
 
