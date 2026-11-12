@@ -1621,3 +1621,57 @@ fn un_parametro_d_effetto_fuori_dagli_estremi_e_un_errore() {
         }
     }
 }
+
+#[test]
+fn i_colori_di_stato_si_leggono_sul_loro_fondo_tenue() {
+    // Un avviso, un errore, un esito scritti col loro colore sopra il loro
+    // fondo tenue — `.tipo-avviso` nei Problemi dello Studio, le fasce — su
+    // ogni superficie: nei due temi chiari stavano fra 4,07 e 4,41 a uno
+    // (R14b-8, seguito). Per ogni skin di serie e ogni suo tema.
+    for (id, testo) in crate::DI_SERIE {
+        let skin = parse_skin_json(testo).expect("di serie");
+        let mut temi = vec![(skin.scheme.nome(), &skin.tokens, None, skin.palette.clone())];
+        if let Some(variante) = skin.variant.as_ref() {
+            temi.push((
+                skin.scheme.opposto().nome(),
+                &variante.tokens,
+                Some(&skin.tokens),
+                skin.tavolozza_variante(),
+            ));
+        }
+        for (tema, tokens, base, tavolozza) in temi {
+            let colore = |nome: &str| {
+                colore_di(nome, tokens, base, &tavolozza)
+                    .unwrap_or_else(|| panic!("{id} {tema}: {nome} non si risolve"))
+            };
+            for stato in ["color.danger", "color.success", "color.warning"] {
+                let davanti = colore(stato);
+                let tenue = colore(&format!("{stato}.soft"));
+                for superficie in DIETRO {
+                    let sotto = colore(superficie);
+                    let piatto = |a: u8, b: u8| {
+                        let v = f64::from(a).mul_add(tenue.a, f64::from(b) * (1.0 - tenue.a));
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "una media pesata di due byte sta fra 0 e 255"
+                        )]
+                        let byte = v.round() as u8;
+                        byte
+                    };
+                    let fondo = crate::values::Rgba {
+                        r: piatto(tenue.r, sotto.r),
+                        g: piatto(tenue.g, sotto.g),
+                        b: piatto(tenue.b, sotto.b),
+                        a: 1.0,
+                    };
+                    let rapporto = crate::values::contrast_ratio(davanti, fondo);
+                    assert!(
+                        rapporto >= CONTRASTO_MINIMO,
+                        "{id} {tema}: {stato} sul suo tenue sopra {superficie} fa {rapporto:.2}:1"
+                    );
+                }
+            }
+        }
+    }
+}

@@ -469,12 +469,15 @@ fn il_tema_chiaro_esiste_davvero() {
     for (proprieta, scritto) in [
         ("--sidebar-bg", "rgba(0, 0, 0, 0.04)"),
         ("--hairline", "rgba(0, 0, 0, 0.08)"),
-        ("--danger", "#c41f26"),
-        ("--danger-soft", "rgba(196, 31, 38, 0.12)"),
-        ("--success", "#0a7040"),
-        ("--success-soft", "rgba(10, 112, 64, 0.12)"),
-        ("--warning", "#7d6200"),
-        ("--warning-soft", "rgba(125, 98, 0, 0.14)"),
+        // Le tre semantiche si sono scurite ancora nella 3.2.1: scritte sul loro
+        // fondo tenue sopra la superficie più scura facevano 4,07–4,40 a uno
+        // (R14b-8, seguito; la prova è in `document/tests.rs`).
+        ("--danger", "#b01b22"),
+        ("--danger-soft", "rgba(176, 27, 34, 0.12)"),
+        ("--success", "#08663b"),
+        ("--success-soft", "rgba(8, 102, 59, 0.12)"),
+        ("--warning", "#6e5700"),
+        ("--warning-soft", "rgba(110, 87, 0, 0.14)"),
     ] {
         assert_eq!(
             Some(colore(&css, CHIARO, proprieta)),
@@ -587,7 +590,7 @@ fn nel_tema_chiaro_il_testo_e_le_semantiche_si_leggono() {
         // realizzata della decisione raccontata qui sopra, e senza questa riga
         // resterebbe un numero in un commento — cioè la cosa che questo file
         // esiste per non lasciare in giro. Vale in tutti e due i temi: alla luce
-        // `#c41f26` faceva già 4,57:1 e non è stato toccato.
+        // `#c41f26` faceva già 4,57:1, e `#b01b22` della 3.2.1 ne fa di più.
         let rosso = colore(&css, selettore, "--danger");
         let quarta = colore(&css, selettore, "--color-surface-3");
         let rosso_sulla_quarta = contrast_ratio(rosso, quarta);

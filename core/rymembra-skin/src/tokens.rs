@@ -207,7 +207,7 @@ pub static TOKENS: &[TokenDef] = &[
     token!("color.accent.glow", "--accent-glow", Color, Accent, false, None,
         "Accento per gli aloni."),
     token!("color.accent.like", "--accent-like", Color, Accent, false, None,
-        "Riempimento del cuore. Nothing lo porta al rosso, il suo unico rosso."),
+        "Riempimento del cuore. Una skin che lo porta al rosso può farne il suo unico rosso."),
     // Solo tripla: i gradienti degli hero la usano dentro `rgba()` calcolate a
     // runtime dalla copertina, quindi emettere `--hero-rgb: rgb(...)` le
     // romperebbe tutte.
@@ -283,7 +283,7 @@ pub static TOKENS: &[TokenDef] = &[
 
     // ── Geometria ───────────────────────────────────────────────────────────
     token!("radius.panel", "--radius-panel", Length, Geometry, true, None,
-        "Raggio dei pannelli. Cyberpunk lo porta a 4px, ed è metà della sua identità."),
+        "Raggio dei pannelli: a 4px dà un'aria tecnica, a 24px morbida."),
     token!("radius.card", "--radius-card", Length, Geometry, true, None,
         "Raggio delle schede."),
     // Fattori e non misure: erano `calc(var(--radius-card) * 0.6)` scritti nel

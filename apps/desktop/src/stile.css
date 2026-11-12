@@ -195,12 +195,12 @@
   --accent-rgb: 96 74 206;
   --accent-soft: rgb(96 74 206 / 0.14);
   --accent-glow: rgb(96 74 206 / 0.28);
-  --danger: rgb(196 31 38);
-  --danger-soft: rgb(196 31 38 / 0.12);
-  --success: rgb(10 112 64);
-  --success-soft: rgb(10 112 64 / 0.12);
-  --warning: rgb(125 98 0);
-  --warning-soft: rgb(125 98 0 / 0.14);
+  --danger: rgb(176 27 34);
+  --danger-soft: rgb(176 27 34 / 0.12);
+  --success: rgb(8 102 59);
+  --success-soft: rgb(8 102 59 / 0.12);
+  --warning: rgb(110 87 0);
+  --warning-soft: rgb(110 87 0 / 0.14);
   --sidebar-bg: rgb(0 0 0 / 0.04);
   --hairline: rgb(0 0 0 / 0.08);
   --ambient-1: rgb(103 82 214 / 0.08);
