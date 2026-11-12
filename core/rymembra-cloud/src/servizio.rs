@@ -76,6 +76,9 @@
 //!   stati fusi: è la regola di sempre, e vale anche per le copie di prima. Una
 //!   skin o una bozza di prima che ha accanto la sua copia nuova resta dov'è,
 //!   perché un dispositivo non ancora aggiornato potrebbe averne ancora bisogno.
+//!   Fanno eccezione, con tutte le loro copie, la skin e la bozza **tolte**:
+//!   con la lapide e fuori dall'inventario fuso escono da Drive (decisione 16,
+//!   vedi `togli_i_tolti`).
 //! - **Un guasto non ferma la passata.** Rinominare è una cortesia, non una
 //!   condizione: se non riesce, il file resta com'era e la passata dopo ritenta.
 //!   L'unica eccezione è il token scaduto, che è una cosa della connessione e

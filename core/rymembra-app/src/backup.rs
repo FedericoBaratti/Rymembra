@@ -62,7 +62,7 @@ use rymembra_domain::restore::{
 };
 
 use crate::library::db_error;
-use crate::settings::{self, CHIAVE_CARTELLE, CHIAVE_CARTELLE_SINCRONIA, CHIAVE_SKIN};
+use crate::settings::{self, CHIAVE_CARTELLE, CHIAVE_SKIN};
 
 /// La versione del formato scritta nei file nuovi.
 ///
@@ -323,6 +323,16 @@ pub struct PacchettiVisti {
 /// la porta (non è nel suo catalogo).
 const CHIAVE_PACCHETTI_VISTI: &str = "backup.pacchetti";
 
+/// La mappa datata delle cartelle sorvegliate del backup: percorso → accesa o
+/// spenta, e quando.
+///
+/// La stessa forma di quella della sincronia, ma un'altra chiave: tenuta da
+/// [`allinea`] anche a sincronia spenta, quella della sincronia avrebbe
+/// raccontato agli altri dispositivi, il giorno in cui la si accende, le
+/// cartelle tolte prima come decisioni datate. Di questo dispositivo, come
+/// [`CHIAVE_PACCHETTI_VISTI`].
+const CHIAVE_CARTELLE_DEL_BACKUP: &str = "backup.cartelle";
+
 /// Il backup, tradotto nei tipi del dominio e già ripulito dalle lapidi.
 ///
 /// Le fette di [`rymembra_domain::restore::RestoreInput`] puntano qui dentro,
@@ -553,11 +563,11 @@ fn testi(valore: Option<&serde_json::Value>) -> Vec<String> {
 /// `db.queryFailed` se una lettura fallisce.
 pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
     let roots: Vec<String> = settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
-    // La mappa datata delle cartelle, la stessa della sincronia: dice quando
-    // ognuna è stata accesa e quando una è stata tolta. Una tolta che è di
-    // nuovo nell'elenco (la mappa non ancora allineata) non è una lapide.
+    // La mappa datata delle cartelle del backup: dice quando ognuna è stata
+    // accesa e quando una è stata tolta. Una tolta che è di nuovo nell'elenco
+    // (la mappa non ancora allineata) non è una lapide.
     let mappa: BTreeMap<String, rymembra_sync::Interruttore> =
-        settings::read_json(connection, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
+        settings::read_json(connection, CHIAVE_CARTELLE_DEL_BACKUP)?.unwrap_or_default();
     let roots_at = roots
         .iter()
         .filter_map(|radice| {
@@ -590,9 +600,10 @@ pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
 /// di leggere lo [`stato_locale`] per una passata o un ripristino.
 ///
 /// È la stessa scrittura pigra della sincronia (vedi
-/// [`crate::sincronia::allinea`]), per le sole cartelle: una cartella tolta
-/// dall'elenco diventa «spenta adesso», ed è la lapide che il backup porta
-/// (decisione 16). Su un elenco fermo non scrive niente.
+/// [`crate::sincronia::allinea`]), per le sole cartelle e su una mappa **sua**
+/// ([`CHIAVE_CARTELLE_DEL_BACKUP`]): una cartella tolta dall'elenco diventa
+/// «spenta adesso», ed è la lapide che il backup porta (decisione 16). Su un
+/// elenco fermo non scrive niente.
 ///
 /// # Errori
 ///
@@ -600,7 +611,7 @@ pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
 pub fn allinea(connection: &mut Connection, adesso_ms: i64) -> Result<(), AppError> {
     let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("allineamento delle cartelle", &err))?;
-    crate::sincronia::allinea_cartelle(&tx, adesso_ms)?;
+    crate::sincronia::allinea_mappa_delle_cartelle(&tx, CHIAVE_CARTELLE_DEL_BACKUP, adesso_ms)?;
     tx.commit()
         .map_err(|err| db_error("allineamento delle cartelle", &err))
 }
@@ -2505,6 +2516,14 @@ mod prove {
             &fuso,
         );
         assert_eq!(ancora.roots, [r"C:\A".to_owned(), r"D:\Vecchio".to_owned()]);
+
+        // E la mappa della sincronia non si tocca: tenuta dal backup anche a
+        // sincronia spenta, il giorno in cui la si accende porterebbe agli
+        // altri dispositivi le cartelle tolte prima come decisioni datate.
+        assert_eq!(
+            settings::read(&c, crate::settings::CHIAVE_CARTELLE_SINCRONIA).expect("lettura"),
+            None
+        );
     }
 
     #[test]

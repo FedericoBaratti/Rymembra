@@ -401,10 +401,24 @@ pub(crate) fn nome_delle_aggiunte(dispositivo: &str) -> &str {
 /// sincronia che funziona e una che rimette le cartelle appena tolte: al primo
 /// avvio nessuna delle cartelle già configurate è una *decisione* presa adesso, e
 /// datarle adesso le farebbe vincere su una rimozione fatta ieri sul portatile.
-pub(crate) fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppError> {
+fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<usize, AppError> {
+    allinea_mappa_delle_cartelle(tx, CHIAVE_CARTELLE_SINCRONIA, adesso_ms)
+}
+
+/// Il corpo di [`allinea_cartelle`], per una mappa qualunque.
+///
+/// Il backup ne tiene una sua (`backup::allinea`) con la stessa regola: se
+/// scrivesse in quella della sincronia anche a sincronia spenta, le cartelle
+/// tolte prima di accenderla arriverebbero agli altri dispositivi come
+/// decisioni datate, e li spegnerebbero.
+pub(crate) fn allinea_mappa_delle_cartelle(
+    tx: &Transaction<'_>,
+    chiave_mappa: &str,
+    adesso_ms: i64,
+) -> Result<usize, AppError> {
     let elenco: Vec<String> = settings::read_json(tx, CHIAVE_CARTELLE)?.unwrap_or_default();
     let mut mappa: BTreeMap<String, Interruttore> =
-        settings::read_json(tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
+        settings::read_json(tx, chiave_mappa)?.unwrap_or_default();
     let prima_volta = mappa.is_empty();
     let presenti: BTreeSet<&str> = elenco.iter().map(String::as_str).collect();
 
@@ -445,7 +459,7 @@ pub(crate) fn allinea_cartelle(tx: &Transaction<'_>, adesso_ms: i64) -> Result<u
     }
 
     if cambiate > 0 {
-        settings::write_json(tx, CHIAVE_CARTELLE_SINCRONIA, &mappa)?;
+        settings::write_json(tx, chiave_mappa, &mappa)?;
     }
     Ok(cambiate)
 }
