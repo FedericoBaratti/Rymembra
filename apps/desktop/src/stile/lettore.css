@@ -1093,6 +1093,18 @@
   font-size: 11px;
   color: var(--color-text-2);
 }
+/* Una riga della coda ancora in viaggio dal nucleo: due barre al posto del
+   titolo e dell'autore (R13b-5). Alte quanto le due righe di testo che
+   prenderanno il posto — la barra più il margine fa la riga del carattere —
+   così l'arrivo dei nomi non fa saltare la coda di qualche pixel per riga. */
+.riga-coda .nome.riga-finta.skeleton {
+  width: 78%;
+  margin-block: 4px;
+}
+.riga-coda .autore.riga-finta.skeleton {
+  height: 9px;
+  margin-block: 3px 4px;
+}
 .riga-coda .durata {
   font-family: var(--font-mono);
   font-size: 11px;

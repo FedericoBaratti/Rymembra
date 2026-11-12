@@ -300,6 +300,17 @@
   color: var(--color-text-2);
 }
 
+/* «Una cartella non risponde» e il suo «Ricontrolla»: il tasto stava attaccato
+   all'ultima parola (R18-11). Accanto quando ci sta, sotto quando la colonna
+   è stretta. */
+.colonna-albero > .nota {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2) var(--spazio-3);
+  margin-bottom: 0;
+}
+
 /* La selezione: quante, e i tre gesti che si fanno su di lei. Il resto sta nel
    menù contestuale, come nell'elenco dei brani. */
 .scelta-cartelle {

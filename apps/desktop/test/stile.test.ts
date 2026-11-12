@@ -726,3 +726,36 @@ test("le stelle e il triangolo dell'albero sono bersagli da 24 pixel", () => {
   const lato = pixel(regola(".freccia-nodo"), "width") - 2 * pixel(bersaglio, "inset");
   assert.ok(lato >= 24, `triangolo da ${lato} px`);
 });
+
+test("chi galleggia in cima alla pagina riserva il suo spazio al fuoco (R14b-4)", () => {
+  // Gli avvisi aderenti (`.aderenti-pagina`) stanno in cima allo scorrevole
+  // della pagina: senza `scroll-padding-top` il salto a una riga lontana
+  // (`scorriA`, che lo legge dal foglio) la metteva sotto di loro.
+  const cima = regole(senzaCommenti(FOGLIO)).filter((r) =>
+    r.selettori.some((s) => s.startsWith(".posto-content .dentro:has(> .aderenti-pagina > :not(.solo-lettori)")),
+  );
+  assert.equal(cima.length, 3, "una riserva per uno, due e tre avvisi");
+  assert.match(cima[0]?.dichiarazioni ?? "", /scroll-padding-top:\s*var\(--riserva-avviso\)/);
+  assert.match(cima[1]?.dichiarazioni ?? "", /scroll-padding-top:\s*calc\(var\(--riserva-avviso\) \* 2\)/);
+  const virtuale = readFileSync(new URL("../src/virtuale.ts", import.meta.url), "utf8");
+  assert.match(virtuale, /getComputedStyle\(scorrevole\)\.scrollPaddingTop/);
+});
+
+test("le righe della coda in viaggio hanno la misura del testo che aspettano", () => {
+  // R13b-5: al posto del titolo e dell'autore due barre finte, che senza una
+  // regola loro erano due barre da 11 px attaccate.
+  const tutte = regole(senzaCommenti(FOGLIO));
+  const nome = tutte.find((r) => r.selettori.includes(".riga-coda .nome.riga-finta.skeleton"));
+  const autore = tutte.find((r) => r.selettori.includes(".riga-coda .autore.riga-finta.skeleton"));
+  assert.match(nome?.dichiarazioni ?? "", /margin-block:/);
+  assert.match(autore?.dichiarazioni ?? "", /height:\s*9px/);
+  const coda = readFileSync(new URL("../src/Coda.tsx", import.meta.url), "utf8");
+  assert.match(coda, /<span className="nome riga-finta skeleton" \/>/);
+  assert.match(coda, /<span className="autore riga-finta corta skeleton" \/>/);
+});
+
+test("«Ricontrolla» non sta attaccato al testo della nota (R18-11)", () => {
+  const nota = regole(senzaCommenti(FOGLIO)).find((r) => r.selettori.includes(".colonna-albero > .nota"));
+  assert.match(nota?.dichiarazioni ?? "", /display:\s*flex/);
+  assert.match(nota?.dichiarazioni ?? "", /gap:\s*var\(--spazio-2\)/);
+});

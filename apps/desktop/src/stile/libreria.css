@@ -734,6 +734,24 @@
   z-index: calc(var(--strato-aderente) + 1);
 }
 
+/* E quel che galleggia in cima allo scorrevole il fuoco non lo deve finire
+   sotto. Il browser lo rispetta da sé quando porta il fuoco su una riga
+   disegnata, e `scorriA` (`virtuale.ts`) lo legge quando salta a una riga che
+   non lo è ancora (R14b-4). Una riserva per avviso — il riquadro e il suo
+   margine — e non una misura: il foglio non sa misurare, e un avviso andato a
+   capo copre al più mezza riga in più. Il conto guarda gli avvisi veri, non la
+   regione per i lettori che può restare montata dentro. */
+.posto-content .dentro:has(> .aderenti-pagina > :not(.solo-lettori)) {
+  --riserva-avviso: calc(var(--spazio-3) * 3 + 32px);
+  scroll-padding-top: var(--riserva-avviso);
+}
+.posto-content .dentro:has(> .aderenti-pagina > :not(.solo-lettori) ~ :not(.solo-lettori)) {
+  scroll-padding-top: calc(var(--riserva-avviso) * 2);
+}
+.posto-content .dentro:has(> .aderenti-pagina > :not(.solo-lettori) ~ :not(.solo-lettori) ~ :not(.solo-lettori)) {
+  scroll-padding-top: calc(var(--riserva-avviso) * 3);
+}
+
 /* Una versione nuova è una notizia, non un allarme: stessa fascia, stesso
    posto, stesso modo di chiudersi. Quel che cambia è che qui dentro può
    starci un paragrafo di note di rilascio, quindi gli elementi si allineano
