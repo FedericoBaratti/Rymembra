@@ -1112,7 +1112,7 @@ API for the latest release of the same project instead of `latest.json`:
 | Host | When | What reaches it |
 | --- | --- | --- |
 | `api.github.com` | Ten seconds after the app is ready, if the last successful check is more than six hours old, then every six hours while the app stays alive; after a failure for lack of network, again after one, five and fifteen minutes | A GET to the public description of the latest release, with Rymembra's `User-Agent` |
-| `github.com`, and the GitHub file host it redirects to (`release-assets.githubusercontent.com` or `objects.githubusercontent.com`; no other host is followed) | Only if you press «Update» | The request for the APK file |
+| `github.com`, and the GitHub file host it redirects to (`release-assets.githubusercontent.com` or `objects.githubusercontent.com`; no other host is followed) | When a newer release carries an APK for the phone: its `latest.json`, for the notes. If you press «Update»: the APK’s signature (`<apk>.sig`), then the APK | GET requests for those public files, with Rymembra’s `User-Agent` |
 
 Two things differ from the computer, and both are written here so that the
 section above stays true for it. The request goes through Rymembra's HTTP
@@ -1120,14 +1120,18 @@ client, so it carries the `User-Agent` of every other request,
 `Rymembra/<version> (+https://github.com/federicobaratti/rymembra)`: GitHub
 learns which version is asking. GitHub's API refuses requests without a
 `User-Agent`, and that string is a constant for the reason given in § 1. And
-the APK is not checked against a key compiled into Rymembra, but against the
-app already installed. It is offered only if it is an asset of the project's
-GitHub release, and downloaded over `https` following redirects only to
-`github.com` and the two file hosts in the table. Before Android's installer
-sees it, Rymembra opens it and refuses it — deleting it, and saying so in the
-update banner — unless
-it is this same app (the same package) signed with the same certificate as
-the installed Rymembra, or with a key that proves it rotated from it. Then
+the APK is checked twice: against the same key the computer's updater uses,
+and against the app already installed. It is offered only if it is an asset
+of the project's GitHub release with its minisign signature beside it, and
+downloaded over `https` following redirects only to `github.com` and the two
+file hosts in the table. Before Android's installer sees it, Rymembra
+verifies it against that signature, for the version announced, and then
+opens it; it refuses it — deleting it, and saying so in the update banner —
+unless the signature holds and it is this same app (the same package) signed
+with the same certificate as the installed Rymembra, or with a key that
+proves it rotated from it. A copy signed with another key, such as a test
+build, does not download the APK at all, since Android would refuse it, and
+the banner says so. Then
 Android checks again: it installs an APK **over** Rymembra only if it is
 signed with the same key as the one already installed.
 
