@@ -119,10 +119,10 @@
           ul: [
             "**Rediscovered** (`ripescati`): score = affection × oblivion. Oblivion grows from 60 to 365 days since the last play; affection is full at 6 plays, a heart adds one third.",
             "**More like this** (`ancora`): deterministic «seed and grow» clustering on fingerprints over up to 2,000 candidates — fixed-size groups, next seed = the farthest point — named after the most frequent genre or artist when it covers at least half the group (`MAGGIORANZA` = 0.5), otherwise «Mix N».",
-            "The week starts at local Monday midnight (`lunedi(now, utc_offset)`); tracks that appeared last week are excluded; 4 weeks are kept.",
+            "The week starts at local Monday midnight (`lunedi(now, utc_offset)`); 4 weeks are kept. «Rediscovered» excludes every track shown in the kept weeks, «more like this» the tracks of last week; weeks dated after the one being generated (a clock that was set ahead) are pruned and never count.",
           ],
         },
-        "Generated once, in one transaction, and recorded in `settimana.ultimo_lunedi`: recomputing mid-week would change the collections as soon as you played them. Commands `settimana` and `settimana_apri` (marks a collection as opened, so Home stops announcing it).",
+        "Generated once, in one transaction, and recorded in `settimana.ultimo_lunedi`: recomputing mid-week would change the collections as soon as you played them. A week that came out **empty** records its material in `settimana.vuota` (is there a fingerprint scale, how many rediscovery candidates) and is generated again when the scale arrives or the candidates grow — an imported listening history, a finished analysis. Home asks again at local Monday midnight, when the window becomes visible and after a scan, and does not latch an empty week. Commands `settimana` and `settimana_apri` (marks a collection as opened, so Home stops announcing it).",
       ],
       see: ["autoplay", "analysis"],
     },
