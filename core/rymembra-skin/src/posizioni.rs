@@ -109,6 +109,25 @@ const TETTO: u32 = 20_000;
 /// ammetta — la parte più profonda che esiste sta in otto passi.
 const PROFONDITA: usize = 32;
 
+/// La chiave più lunga sotto cui si scende, in byte.
+///
+/// Ogni valore si segna col percorso intero, cioè con una copia di tutte le
+/// chiavi che lo contengono: il [`TETTO`] conta i valori, non i byte, e una
+/// chiave da trecentomila caratteri con ventimila figli faceva sei gigabyte di
+/// stringhe con un testo da mezzo megabyte — nel processo dell'app, che ne
+/// moriva (R09-1). Nessun percorso del formato ha una chiave così: la più lunga
+/// del registro sta sotto i cinquanta byte. Una chiave più lunga si segna lei,
+/// perché è lì che il validatore dirà che non va, e quel che contiene si salta.
+const CHIAVE_PIU_LUNGA: usize = 128;
+
+/// Quanti byte di percorsi si tengono in tutto.
+///
+/// Anche con chiavi corte l'annidamento copia gli antenati in ogni figlio:
+/// trenta livelli da cento byte e ventimila foglie sono sessanta megabyte. Un
+/// documento vero ne usa qualche decina di kilobyte; otto mebibyte sono un
+/// margine largo, e oltre si smette come al [`TETTO`].
+const MAX_BYTE_DEI_PERCORSI: usize = 8 << 20;
+
 /// Il lettore: scorre il testo una volta e segna dove comincia ogni valore.
 struct Lettore<'a> {
     testo: &'a [u8],
@@ -121,6 +140,8 @@ struct Lettore<'a> {
     dove: HashMap<String, Punto>,
     /// Quanti valori restano da segnare. Vedi [`TETTO`].
     restanti: u32,
+    /// Quanti byte di percorsi restano. Vedi [`MAX_BYTE_DEI_PERCORSI`].
+    byte_restanti: usize,
 }
 
 impl<'a> Lettore<'a> {
@@ -132,6 +153,7 @@ impl<'a> Lettore<'a> {
             colonna: 1,
             dove: HashMap::new(),
             restanti: TETTO,
+            byte_restanti: MAX_BYTE_DEI_PERCORSI,
         }
     }
 
@@ -233,17 +255,62 @@ impl<'a> Lettore<'a> {
     /// fra portare il cursore su `"color.accent": "#zzz"` e portarlo sul
     /// `"#zzz"`, e la prima è quel che si è venuti a cercare.
     fn valore(&mut self, percorso: &str, punto: Punto, profondita: usize) {
-        if self.restanti == 0 {
+        if !self.segna(percorso, punto) {
             return;
         }
-        self.restanti -= 1;
-        self.dove.insert(percorso.to_owned(), punto);
 
         self.respira();
         match self.guarda() {
             Some(b'{') if profondita < PROFONDITA => self.oggetto(percorso, profondita),
             Some(b'[') if profondita < PROFONDITA => self.lista(percorso, profondita),
             _ => self.salta(),
+        }
+    }
+
+    /// Segna un valore, se i due tetti lo permettono; quando uno è finito si
+    /// smette del tutto, e `false` lo dice a chi chiama.
+    fn segna(&mut self, percorso: &str, punto: Punto) -> bool {
+        if self.restanti == 0 {
+            return false;
+        }
+        let Some(dopo) = self.byte_restanti.checked_sub(percorso.len()) else {
+            self.restanti = 0;
+            return false;
+        };
+        self.restanti -= 1;
+        self.byte_restanti = dopo;
+        self.dove.insert(percorso.to_owned(), punto);
+        true
+    }
+
+    /// Consuma un valore intero senza segnare niente: graffe e quadre si
+    /// contano, le stringhe si leggono come stringhe. Si ferma, senza
+    /// consumarlo, sul segno che chiude chi sta intorno.
+    fn salta_valore(&mut self) {
+        self.respira();
+        let mut livello = 0_usize;
+        while let Some(byte) = self.guarda() {
+            match byte {
+                b'"' => {
+                    self.stringa();
+                }
+                b'{' | b'[' => {
+                    livello += 1;
+                    self.avanti();
+                }
+                b'}' | b']' => {
+                    let Some(sopra) = livello.checked_sub(1) else {
+                        return;
+                    };
+                    livello = sopra;
+                    self.avanti();
+                }
+                b',' if livello == 0 => return,
+                _ => self.avanti(),
+            }
+            if livello == 0 && matches!(self.guarda(), Some(b',' | b'}' | b']')) {
+                return;
+            }
         }
     }
 
@@ -276,11 +343,21 @@ impl<'a> Lettore<'a> {
                 return;
             }
             self.avanti();
+            let lunga = chiave.len() > CHIAVE_PIU_LUNGA;
             let dentro = if percorso.is_empty() {
                 chiave
             } else {
                 format!("{percorso}.{chiave}")
             };
+            if lunga {
+                // Si segna la chiave e si salta quel che porta: vedi
+                // [`CHIAVE_PIU_LUNGA`].
+                if !self.segna(&dentro, punto) {
+                    return;
+                }
+                self.salta_valore();
+                continue;
+            }
             self.valore(&dentro, punto, profondita + 1);
         }
     }
@@ -587,5 +664,54 @@ mod prove {
                 riga.trim()
             );
         }
+    }
+
+    /// Quanti byte di percorso la mappa tiene, in tutto.
+    fn byte_segnati(trovate: &Posizioni) -> usize {
+        trovate.dove.keys().map(String::len).sum()
+    }
+
+    /// Una bozza arrivata da un profilo o da Drive la scrive chiunque: una
+    /// chiave lunghissima con ventimila figli copiava la chiave in ogni figlio,
+    /// gigabyte di stringhe per un testo da mezzo megabyte, nel processo
+    /// dell'app (R09-1). Qui una chiave da diecimila byte: abbastanza per
+    /// vedere la moltiplicazione, non per affondare chi prova.
+    #[test]
+    fn una_chiave_lunghissima_non_moltiplica_la_memoria() {
+        let chiave = "k".repeat(10_000);
+        let figli: Vec<String> = (0..20_000).map(|n| format!("\"a{n}\":0")).collect();
+        let sorgente = format!("{{\"{chiave}\": {{{}}}}}", figli.join(","));
+        let lungo = sorgente.len();
+        let trovate = torna_in_tempo(sorgente).expect("torna");
+        assert!(
+            byte_segnati(&trovate) <= 4 * lungo,
+            "{} byte di percorsi per un testo di {lungo}",
+            byte_segnati(&trovate)
+        );
+        // La chiave stessa si ritrova: è lì che il validatore dirà che non va.
+        assert!(trovate.di(&chiave).is_some());
+    }
+
+    /// Anche senza chiavi lunghe, l'annidamento copia gli antenati in ogni
+    /// figlio: il conto dei byte ha il suo tetto, come quello dei valori.
+    #[test]
+    fn i_percorsi_hanno_un_tetto_in_byte() {
+        let chiave = "c".repeat(100);
+        let mut sorgente = String::new();
+        for _ in 0..30 {
+            sorgente.push_str(&format!("{{\"{chiave}\":"));
+        }
+        let figli: Vec<String> = (0..20_000).map(|n| format!("\"a{n}\":0")).collect();
+        sorgente.push_str(&format!("{{{}}}", figli.join(",")));
+        for _ in 0..30 {
+            sorgente.push('}');
+        }
+        let trovate = torna_in_tempo(sorgente).expect("torna");
+        // `MAX_BYTE_DEI_PERCORSI`: otto mebibyte.
+        assert!(
+            byte_segnati(&trovate) <= 8 << 20,
+            "{}",
+            byte_segnati(&trovate)
+        );
     }
 }
