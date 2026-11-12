@@ -59,6 +59,8 @@ export function ConfermaTrasloco({
       }
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
+      // Sposta dati dell'utente: una skin non la ridisegna (D-51).
+      consenso
       onChiudi={onChiudi}
       veloChiude={!inCorso}
       occupato={inCorso}

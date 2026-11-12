@@ -84,3 +84,43 @@ test("l'esame di una skin si legge com'è, anche sotto una skin che non si legge
   const dialogo = esame.slice(esame.indexOf("<Dialogo"), esame.indexOf("<ul"));
   assert.match(dialogo, /^\s*consenso$/m);
 });
+
+/** Il valore numerico di un `--strato-*` dichiarato in `stile.css`. */
+function strato(nome: string): number {
+  const trovato = FOGLIO.match(new RegExp(`--strato-${nome}:\\s*(\\d+);`));
+  assert.ok(trovato, `manca --strato-${nome}`);
+  return Number(trovato[1]);
+}
+
+test("il velo di un consenso sta sopra toast e menù, sotto la pastiglia e il giro", () => {
+  // Il recinto dei consensi copre il loro sottoalbero, non lo schermo: un
+  // toast (50) o un menù (41) che la skin gonfia stavano sopra il velo (40),
+  // fuori dalle guardie del compilatore, e potevano coprire i tasti della
+  // domanda (R04b-2, D-51).
+  const regola = corpo(FOGLIO, ".velo:has(> [data-consenso]) {");
+  assert.match(regola, /z-index:\s*var\(--strato-consenso\);/);
+  const consenso = strato("consenso");
+  for (const sotto of ["velo", "menu", "toast", "primo", "sopraprimo"]) {
+    assert.ok(consenso > strato(sotto), `--strato-consenso non sta sopra --strato-${sotto}`);
+  }
+  for (const sopra of ["pastiglia", "giro", "studio", "finestra"]) {
+    assert.ok(consenso < strato(sopra), `--strato-consenso non sta sotto --strato-${sopra}`);
+  }
+});
+
+test("rimozioni, trasloco, ripristino e importazione del profilo sono consensi", () => {
+  // Quattro domande che tolgono o riscrivono qualcosa: una skin le poteva
+  // ancora ridisegnare, con un livello `::after` su `glass-modal` o i caratteri
+  // del pacchetto (D-51).
+  for (const file of ["ConfermaRimozioni.tsx", "ConfermaTrasloco.tsx"]) {
+    const testo = sorgente(file);
+    const dialogo = testo.slice(testo.indexOf("<Dialogo"), testo.indexOf(">", testo.indexOf("onChiudi=", testo.indexOf("<Dialogo"))));
+    assert.match(dialogo, /^\s*consenso$/m, file);
+  }
+  const ripristino = sorgente("Ripristino.tsx");
+  const finestrella = ripristino.slice(ripristino.indexOf('className="finestrella larga glass-modal"'), ripristino.indexOf("<h2>"));
+  assert.match(finestrella, /data-consenso=""/);
+  const profilo = sorgente("parti/Profilo.tsx");
+  const piano = profilo.slice(profilo.indexOf("{daApplicare && piano && ("), profilo.indexOf("profile.writtenOn"));
+  assert.match(piano, /data-consenso=""/);
+});

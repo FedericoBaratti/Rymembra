@@ -396,7 +396,9 @@ export function Profilo({
       )}
 
       {daApplicare && piano && (
-        <div className="scheda-anteprima">
+        // Quel che il profilo riscrive, e il sì che lo applica: un consenso, e
+        // una skin non lo ridisegna (D-51). Vedi `consenso` in `Dialogo.tsx`.
+        <div className="scheda-anteprima" data-consenso="">
           <h3 className="titoletto">
             {t("profile.writtenOn", {
               quando: quandoScritto(piano.creatoMs),

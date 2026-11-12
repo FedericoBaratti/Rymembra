@@ -274,6 +274,13 @@
      la pastiglia, perché le linguette spente della finestrella hanno la loro
      ragione da mostrare sopra di lei. Vedi `.sopra-primo`. */
   --strato-sopraprimo: 65;
+  /* Il velo di una domanda di consenso (`data-consenso`): sopra i toast e i
+     menù, che una skin può ridisegnare grandi quanto vuole e che stanno fuori
+     dal recinto dei consensi — un toast gonfiato copriva i tasti della domanda
+     (R04b-2). Anche sopra il primo avvio, perché una domanda aperta da lì non
+     resti sotto. Sotto la pastiglia, il giro e i comandi della finestra, per le
+     loro ragioni. Vedi `.velo:has(> [data-consenso])`. */
+  --strato-consenso: 66;
   /* La pastiglia che spiega perché un comando è spento: sopra qualunque cosa la
      possa sollevare, altrimenti spiega a metà. */
   --strato-pastiglia: 70;
