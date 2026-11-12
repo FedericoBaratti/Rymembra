@@ -462,6 +462,8 @@ export interface EsitoAccount {
   liked: EsitoImport;
   /** Quanti brani sono stati segnati preferiti **adesso**: zero alla seconda passata. */
   likedMarked: number;
+  /** Preferiti di Spotify a cui qui il cuore è stato tolto: restano senza (D-12). */
+  likedKeptOff: number;
   albums: EsitoImport[];
   albumsSeen: number;
   albumIdsWritten: number;

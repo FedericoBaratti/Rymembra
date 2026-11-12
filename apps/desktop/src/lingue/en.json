@@ -2150,6 +2150,8 @@
   "account.missing.queue.uno": "1 row in the download queue",
   "account.toLike": "Favorites to mark",
   "account.toLike.note": "the ones already marked are not counted",
+  "account.toLike.keptOff": "the ones already marked are not counted; you removed the heart from {n} here, and they stay without it",
+  "account.toLike.keptOff.uno": "the ones already marked are not counted; you removed the heart from one here, and it stays without it",
   "account.toWrite": "Plays to write",
   "account.skipped": "left out — duplicates: {doppioni}, too short: {brevi}, not in the library: {fuori}",
   "account.artistsLink": "Artists to link",

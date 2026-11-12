@@ -130,6 +130,12 @@ pub struct AccountImportReport {
     /// Meno di `liked.matched` alla seconda passata, e zero alla terza: chi era
     /// già segnato non si conta due volte.
     pub liked_marked: usize,
+    /// Quanti preferiti di Spotify restano **senza** cuore, perché qui il cuore
+    /// è stato tolto (D-12: vince la scelta fatta qui).
+    ///
+    /// Contati a parte perché altrimenti la differenza fra «preferiti ritrovati»
+    /// e «segnati adesso» sembrerebbe un guasto: sono decisioni, e si dicono.
+    pub liked_kept_off: usize,
     /// Un rapporto per album salvato che portava le proprie tracce.
     pub albums: Vec<RapportoImport>,
     /// Quanti album salvati si sono visti.
@@ -293,7 +299,8 @@ fn run(
             None,
         )?;
         scritti_album = scritti_album.saturating_add(rapporto.liked.spotify_album_ids_written);
-        rapporto.liked_marked = segna_preferiti(&tx, &piano.preferiti, adesso)?;
+        (rapporto.liked_marked, rapporto.liked_kept_off) =
+            segna_preferiti(&tx, &piano.preferiti, adesso)?;
     }
 
     for voce in &piano.album {
@@ -562,12 +569,24 @@ fn scrivi_elenco(
     Ok(rapporto)
 }
 
-/// Segna come preferiti i brani ritrovati.
+/// Segna come preferiti i brani ritrovati, e dice quanti ne ha lasciati stare
+/// perché qui il cuore è stato tolto.
 ///
 /// `liked = 0` nel `WHERE` fa due cose insieme: rende la scrittura idempotente e
 /// fa sì che il conteggio dica quanti brani sono stati segnati **adesso**, non
 /// quanti risultano preferiti. Alla seconda passata è zero, ed è la risposta
 /// giusta.
+///
+/// # Un cuore tolto qui non torna
+///
+/// `liked = 0` da solo non distingueva «mai espresso» da «tolto apposta»: chi
+/// importava l'archivio, toglieva trenta cuori e reimportava se li ritrovava
+/// tutti, con un `liked_at` più nuovo della sua decisione — e quell'istante è
+/// quello con cui [`merge_stats`] fa vincere la scelta su ogni altro
+/// dispositivo. D-12: vince la scelta fatta qui. Togliere il cuore scrive
+/// `liked_at` (il comando della finestra lo data adesso, la sincronia con la
+/// data dell'altro), quindi «mai espresso» è `liked_at IS NULL`, e solo quello
+/// si segna.
 ///
 /// `liked_at` prende l'ora di adesso perché Spotify, per un brano salvato, la
 /// data non la dà da nessuna delle due strade: `YourLibrary.json` non ha un
@@ -580,22 +599,38 @@ fn segna_preferiti(
     tx: &Transaction<'_>,
     piano: &PianoAbbinamento,
     adesso: i64,
-) -> Result<usize, AppError> {
+) -> Result<(usize, usize), AppError> {
     let mut segna = tx
         .prepare_cached(
             "UPDATE tracks SET liked = 1, liked_at = ?2, stats_updated_at = ?2
-              WHERE id = ?1 AND liked = 0",
+              WHERE id = ?1 AND liked = 0 AND liked_at IS NULL",
         )
         .map_err(|err| db_error("segnatura dei preferiti", &err))?;
+    let mut tolto_qui = tx
+        .prepare_cached("SELECT 1 FROM tracks WHERE id = ?1 AND liked = 0 AND liked_at IS NOT NULL")
+        .map_err(|err| db_error("segnatura dei preferiti", &err))?;
     let mut quanti = 0_usize;
+    let mut lasciati = 0_usize;
+    // Un brano può stare due volte fra i preferiti di Spotify (lo stesso
+    // abbinamento da due righe): si conta una volta.
+    let mut visti: HashSet<i64> = HashSet::new();
     for abbinato in &piano.abbinati {
-        quanti = quanti.saturating_add(
-            segna
-                .execute(rusqlite::params![abbinato.track_id, adesso])
-                .map_err(|err| db_error("segnatura dei preferiti", &err))?,
-        );
+        if !visti.insert(abbinato.track_id) {
+            continue;
+        }
+        let scritti = segna
+            .execute(rusqlite::params![abbinato.track_id, adesso])
+            .map_err(|err| db_error("segnatura dei preferiti", &err))?;
+        quanti = quanti.saturating_add(scritti);
+        if scritti == 0
+            && tolto_qui
+                .exists([abbinato.track_id])
+                .map_err(|err| db_error("segnatura dei preferiti", &err))?
+        {
+            lasciati = lasciati.saturating_add(1);
+        }
     }
-    Ok(quanti)
+    Ok((quanti, lasciati))
 }
 
 /// Lega un album salvato ai brani che in libreria portano quel titolo.
@@ -1796,6 +1831,43 @@ mod prove {
         assert_eq!(
             conta(&db, "SELECT liked_at FROM tracks WHERE title = 'Song 2'"),
             12_345
+        );
+    }
+
+    #[test]
+    fn un_cuore_tolto_dopo_l_importazione_non_torna_reimportando() {
+        // D-12: vince la scelta fatta qui. Un cuore tolto in Rymembra ha
+        // `liked = 0` e la data della decisione; reimportare lo stesso archivio
+        // lo rimetteva con una data più nuova, che backup e sincronia avrebbero
+        // portato ovunque. «Mai espresso» (`liked_at` nullo) resta da segnare.
+        let mut db = database();
+        libreria_di_prova(&db);
+        let Ok(primo) = import(&mut db, &snapshot_completo(), &Scelte::default()) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        assert_eq!(primo.liked_marked, 1);
+        assert_eq!(primo.liked_kept_off, 0);
+        let Ok(_) = db.execute(
+            "UPDATE tracks SET liked = 0, liked_at = 99999, stats_updated_at = 99999
+              WHERE title = 'Song 2'",
+            [],
+        ) else {
+            panic!("il cuore tolto di prova si deve scrivere");
+        };
+
+        let Ok(secondo) = import(&mut db, &snapshot_completo(), &Scelte::default()) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(secondo.liked_marked, 0, "il cuore tolto qui non torna");
+        assert_eq!(secondo.liked_kept_off, 1, "e il piano lo dice");
+        assert_eq!(
+            conta(&db, "SELECT liked FROM tracks WHERE title = 'Song 2'"),
+            0
+        );
+        assert_eq!(
+            conta(&db, "SELECT liked_at FROM tracks WHERE title = 'Song 2'"),
+            99_999,
+            "la data della decisione resta quella di qui"
         );
     }
 

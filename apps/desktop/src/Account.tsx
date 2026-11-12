@@ -493,7 +493,14 @@ export function Account({
                         <Voce
                           etichetta={t("account.toLike")}
                           valore={piano.likedMarked}
-                          nota={t("account.toLike.note")}
+                          nota={
+                            // Il cuore tolto qui vince su quello di Spotify
+                            // (D-12): si dice quanti, perché la differenza con
+                            // i preferiti dell'archivio non sembri un guasto.
+                            piano.likedKeptOff > 0
+                              ? t("account.toLike.keptOff", { n: piano.likedKeptOff })
+                              : t("account.toLike.note")
+                          }
                         />
                         <Voce
                           etichetta={t("account.toWrite")}

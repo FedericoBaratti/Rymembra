@@ -2150,6 +2150,8 @@
   "account.missing.queue.uno": "1 riga in coda di scaricamento",
   "account.toLike": "Preferiti da segnare",
   "account.toLike.note": "quelli già segnati non si contano",
+  "account.toLike.keptOff": "quelli già segnati non si contano; {n} li hai tolti qui, e restano senza cuore",
+  "account.toLike.keptOff.uno": "quelli già segnati non si contano; uno l'hai tolto qui, e resta senza cuore",
   "account.toWrite": "Ascolti da scrivere",
   "account.skipped": "fuori — doppioni: {doppioni}, troppo brevi: {brevi}, non in libreria: {fuori}",
   "account.artistsLink": "Artisti da collegare",
