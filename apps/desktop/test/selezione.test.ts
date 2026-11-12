@@ -178,3 +178,13 @@ test("l'àncora di una lista rada si verifica sulle sole pagine di adesso", () =
   const scegli = cartelle.slice(cartelle.indexOf("const scegliBrano"), cartelle.indexOf("const alternaBrano"));
   assert.match(scegli, /archivio\.rigaFresca\(/);
 });
+
+// ── R16-11, la parte di Elenco.tsx ─────────────────────────────────────────
+
+test("Elenco: il cuore ha un nome fisso, e ogni intestazione di colonna ha un nome", () => {
+  const elenco = readFileSync(new URL("../src/schermate/Elenco.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(elenco, /aria-label=\{brano\.liked \?/);
+  assert.match(elenco, /aria-pressed=\{brano\.liked\}\s*aria-label=\{t\("track\.favorite"\)\}/);
+  const testa = elenco.slice(elenco.indexOf("function TestaElenco"), elenco.indexOf("export function GrigliaFinta"));
+  assert.doesNotMatch(testa, /<span role=\{cella\} \/>/);
+});
