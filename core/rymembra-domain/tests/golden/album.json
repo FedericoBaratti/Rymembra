@@ -68,9 +68,9 @@
       "atteso": "Vol. 2"
     },
     {
-      "nota": "vol fra parentesi: si toglie",
+      "nota": "vol fra parentesi: resta (deviazione voluta dall'originale, che lo toglieva: un volume è un'altra pubblicazione, R07-3)",
       "input": "Best Of (Vol. 2)",
-      "atteso": "Best Of"
+      "atteso": "Best Of (Vol. 2)"
     },
     {
       "nota": "vuoto",

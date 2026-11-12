@@ -3073,6 +3073,7 @@
   "studio3.step.discard": "draft discarded",
   "format.unknownAlbum": "Unknown album",
   "format.unknownArtist": "Unknown artist",
+  "format.variousArtists": "Various artists",
   "source.spotifyArchive": "Spotify archive",
   "link.attribution": "via {fonte}",
   "link.attribution.by": "{autore} — via {fonte}",
