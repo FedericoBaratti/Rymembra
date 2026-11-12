@@ -687,17 +687,23 @@ function RigaFidato({
  * Un dispositivo della sincronia che non è collegato via internet: Accetta
  * (finché non ci si fida di quel che scrive), Rinomina e Dimentica, come
  * nella scheda della sincronia. «Dimentica» chiede prima (decisione D-28).
+ *
+ * Rinomina ha il suo comando e non passa da «Accetta»: dare un nome
+ * riconoscibile a un dispositivo prima di decidere non è decidere (R13-3). La
+ * riga si aggiorna con l'evento `sincronia:stato` che il comando manda.
  */
 function RigaSincronia({
   dispositivo,
   onAccoppia,
   onDimentica,
   onDomanda,
+  onErrore,
 }: {
   dispositivo: DispositivoSincronia;
   onAccoppia: (id: string, nome: string | null) => void;
   onDimentica: (id: string) => void;
   onDomanda: (domanda: Domanda) => void;
+  onErrore: (errore: unknown) => void;
 }) {
   const [rinomina, setRinomina] = useState(false);
   const idNome = useId();
@@ -719,7 +725,7 @@ function RigaSincronia({
           inModifica={rinomina}
           onFine={(nuovo) => {
             setRinomina(false);
-            if (nuovo !== null) onAccoppia(dispositivo.id, nuovo);
+            if (nuovo !== null) ipc.sincroniaRinomina(dispositivo.id, nuovo).catch(onErrore);
           }}
         />
         <Etichette parti={parti} />
@@ -1045,6 +1051,7 @@ export function SchedaDispositivi({
                     onAccoppia={onSincroniaAccoppia}
                     onDimentica={onSincroniaDimentica}
                     onDomanda={setDomanda}
+                    onErrore={onErrore}
                   />
                 );
             }

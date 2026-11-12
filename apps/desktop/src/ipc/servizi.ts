@@ -823,6 +823,11 @@ export interface CartellaDalBackup {
   percorso: string;
   /** Esiste ancora su questo disco. Si aggiunge lo stesso, ma si dice. */
   esiste: boolean;
+  /**
+   * Si è chiesto al disco. `false` per una cartella su un host di rete che
+   * questo PC non usa: allora `esiste` non dice niente.
+   */
+  verificata: boolean;
 }
 
 /** Quel che un ripristino farebbe. */
@@ -844,7 +849,6 @@ export interface PianoRipristino {
   skinPresenti: number;
   bozzeDaScrivere: string[];
   bozzePresenti: number;
-  skinAttiva: string | null;
 }
 
 /** Com'è andato un ripristino. */
@@ -854,7 +858,6 @@ export interface EsitoRipristino {
   cartelle: number;
   skin: number;
   bozze: number;
-  skinAttiva: boolean;
   /** I file che il piano chiedeva e che su Drive non c'erano. */
   mancanti: string[];
 }

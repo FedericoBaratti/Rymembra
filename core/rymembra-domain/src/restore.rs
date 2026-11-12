@@ -251,7 +251,9 @@ fn fold_local(local_tracks: &[(TrackKey, TrackStats)]) -> BTreeMap<&TrackKey, Tr
 /// di data vince quel che c'è già, perché è la direzione che non riscrive.
 ///
 /// I membri che qui non esistono si saltano, e le posizioni si ricompattano:
-/// una playlist non può avere buchi. Le playlist **automatiche** ricevono le
+/// una playlist non può avere buchi. Una copia così, a cui manca qualcosa,
+/// prende la data del backup meno uno: non è quella versione, e il ripristino
+/// fatto dopo la scansione deve poterla ricompletare. Le playlist **automatiche** ricevono le
 /// regole ma mai l'appartenenza: ogni dispositivo la ricalcola, ed è per questo
 /// che restano vere anche sui brani che l'altro dispositivo non ha.
 ///
@@ -309,8 +311,12 @@ pub fn plan_restore(input: &RestoreInput<'_>) -> RestorePlan {
             playlists_unchanged = playlists_unchanged.saturating_add(1);
             continue;
         }
-        let members_in_backup = dal_backup.members.len();
-        let members = if dal_backup.is_smart {
+        let members_in_backup = if dal_backup.is_smart {
+            0
+        } else {
+            dal_backup.members.len()
+        };
+        let members: Vec<TrackKey> = if dal_backup.is_smart {
             Vec::new()
         } else {
             dal_backup
@@ -320,13 +326,42 @@ pub fn plan_restore(input: &RestoreInput<'_>) -> RestorePlan {
                 .cloned()
                 .collect()
         };
+        // Una copia a cui mancano dei brani non è la versione del backup, e
+        // non deve dirsi tale: prende la sua data **meno uno**. Con la data
+        // del backup la copia monca di un PC appena reinstallato vinceva per
+        // sempre — il ripristino dopo la scansione la diceva «invariata», e la
+        // passata di backup la caricava su Drive sopra quella intera (R06-1).
+        // Così il backup resta più recente: la fusione tiene la versione
+        // intera, e un ripristino fatto dopo la scansione la ricompleta. Una
+        // modifica a mano la porta ad adesso, e vince com'è giusto.
+        let incompleta = members.len() < members_in_backup;
+        let dopo = PlaylistState {
+            members,
+            updated_at: if incompleta {
+                dal_backup.updated_at.saturating_sub(1)
+            } else {
+                dal_backup.updated_at
+            },
+            ..dal_backup.clone()
+        };
+        // Quel che l'applicazione scriverebbe è già quel che c'è: è la copia
+        // monca di un ripristino fatto prima, e nessun file nuovo è arrivato.
+        // Il piano resta vuoto, come promette l'idempotenza. La data di
+        // creazione è quella che l'applicazione terrebbe, la più antica.
+        if let Some(qui) = esistente {
+            let scritta = PlaylistState {
+                created_at: qui.created_at.min(dopo.created_at),
+                ..dopo.clone()
+            };
+            if scritta == *qui {
+                playlists_unchanged = playlists_unchanged.saturating_add(1);
+                continue;
+            }
+        }
         playlists.insert(
             &dal_backup.key,
             PlaylistChange {
-                playlist: PlaylistState {
-                    members,
-                    ..dal_backup.clone()
-                },
+                playlist: dopo,
                 is_new: esistente.is_none(),
                 members_in_backup,
             },

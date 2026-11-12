@@ -733,15 +733,9 @@ fn le_playlist_si_fondono_invece_di_sostituirsi() {
     // riscriverebbe la tabella, e il sintomo sarebbe una serata di lavoro
     // sparita senza che niente lo dica.
     //
-    // Il limite, scritto qui perché non si scopra sul campo: due playlist con
-    // lo **stesso nome** e contenuti diversi, mai sincronizzate prima, non si
-    // uniscono elemento per elemento. È la contropartita dichiarata di
-    // `sincronia::ORIGINE` — due librerie battezzano i propri elementi con lo
-    // stesso pseudo-dispositivo, quindi `origine:0` di qua e `origine:0` di là
-    // risultano lo stesso elemento e la fusione ne tiene uno. Vale già oggi
-    // fra due dispositivi che si sincronizzano, e il profilo lo eredita:
-    // cambiarlo vorrebbe dire cambiare il protocollo della sincronia, non
-    // questo modulo.
+    // Due playlist con lo **stesso nome** invece non si fondono: quella di
+    // qui riceve in coda i brani che le mancano, e basta. Vedi
+    // `dentro_una_playlist_condivisa_il_profilo_accoda_e_non_toglie_ne_riordina`.
     let dir = tempfile::tempdir().expect("cartella temporanea");
     let mut la = libreria();
     brano(&la, 1, r"D:\M.flac", "a");
@@ -2546,4 +2540,125 @@ fn una_copertina_rotta_nell_archivio_non_lascia_avanzi_nello_store() {
         .map(|voci| voci.flatten().map(|v| v.file_name()).collect())
         .unwrap_or_default();
     assert!(rimasti.is_empty(), "avanzi nello store: {rimasti:?}");
+}
+
+// ── dentro una playlist che le due librerie condividono ─────────────────────
+
+/// Le chiavi dei brani di una playlist **nell'ordine** in cui stanno.
+fn in_ordine(connection: &Connection, nome: &str) -> Vec<String> {
+    connection
+        .prepare(
+            "SELECT t.track_key FROM playlist_tracks pt
+               JOIN tracks t ON t.id = pt.track_id
+               JOIN playlists p ON p.id = pt.playlist_id
+              WHERE p.name = ?1 ORDER BY pt.position",
+        )
+        .expect("interrogazione")
+        .query_map([nome], |riga| riga.get(0))
+        .expect("lettura")
+        .collect::<Result<_, _>>()
+        .expect("lettura")
+}
+
+/// Una libreria con i brani «a», «b», «c», «d» e la playlist «Preferite» = a, b, c.
+fn libreria_con_le_preferite(percorso: &str) -> Connection {
+    let qui = libreria();
+    for (id, chiave) in [(1, "a"), (2, "b"), (3, "c"), (4, "d")] {
+        brano(&qui, id, &format!(r"{percorso}\{chiave}.flac"), chiave);
+    }
+    playlist(&qui, "Preferite", &[1, 2, 3]);
+    qui
+}
+
+#[test]
+fn dentro_una_playlist_condivisa_il_profilo_accoda_e_non_toglie_ne_riordina() {
+    // R02-2: l'altro computer ha tolto «b», spostato «c» in testa e aggiunto
+    // «d». La fusione della sincronia portava qui tutte e tre le cose, e la
+    // playlist diventava c, a, d. Un dono aggiunge soltanto: resta a, b, c, e
+    // «d» — che qui manca — arriva in coda.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_con_le_preferite(r"D:\M");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+    let voluto: Vec<String> = ["c", "a", "d"].iter().map(|b| (*b).to_owned()).collect();
+    contenuto_di(&mut letto)
+        .playlist
+        .get_mut("Preferite")
+        .expect("la playlist viaggia nel documento")
+        .sequenza
+        .riordina("la", &voluto, 5_000);
+
+    let mut qui = libreria_con_le_preferite(r"E:\M");
+    let previsto = piano(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("piano");
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+
+    assert_eq!(
+        in_ordine(&qui, "Preferite"),
+        vec!["a", "b", "c", "d"],
+        "niente tolto, niente spostato, «d» in coda"
+    );
+    assert_eq!(fatto.portati.playlist, 1, "{fatto:?}");
+    assert_eq!(
+        previsto.portati, fatto.portati,
+        "il piano è quel che succede"
+    );
+
+    // Rifarlo non aggiunge di nuovo «d»: c'è già.
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("di nuovo");
+    assert_eq!(in_ordine(&qui, "Preferite"), vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn un_brano_tolto_qui_non_torna_dal_profilo() {
+    // Il rovescio: qui si è tolto «b» apposta, di là c'è ancora. Il dono
+    // accoda quel che qui manca, non quel che qui si è scelto di togliere.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_con_le_preferite(r"D:\M");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria_con_le_preferite(r"E:\M");
+    crate::sincronia::allinea(&mut qui, "qui", 1_000).expect("allineamento");
+    qui.execute("DELETE FROM playlist_tracks WHERE track_id = 2", [])
+        .expect("tolto");
+    qui.execute(
+        "UPDATE playlist_tracks SET position = 1 WHERE track_id = 3",
+        [],
+    )
+    .expect("ricompattato");
+
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(in_ordine(&qui, "Preferite"), vec!["a", "c"]);
+    assert_eq!(fatto.portati.playlist, 0, "{fatto:?}");
+}
+
+#[test]
+fn una_playlist_condivisa_non_cambia_natura_ne_regole_dal_profilo() {
+    // Il quarto meccanismo di R02-2: la testata fusa per «vince il più
+    // recente» faceva diventare automatica, con le regole di là, una playlist
+    // fatta a mano qui. I brani di qui restavano in tabella, invisibili.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_con_le_preferite(r"D:\M");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+    let sua = contenuto_di(&mut letto)
+        .playlist
+        .get_mut("Preferite")
+        .expect("la playlist viaggia nel documento");
+    sua.smart = true;
+    sua.regole = Some(r#"[{"campo":"genere","valore":"jazz"}]"#.to_owned());
+    sua.descrizione = Some("di là".to_owned());
+    sua.at = 1_000_000;
+
+    let mut qui = libreria_con_le_preferite(r"E:\M");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    let (automatica, regole, descrizione): (i64, Option<String>, Option<String>) = qui
+        .query_row(
+            "SELECT is_smart, rules, description FROM playlists WHERE name = 'Preferite'",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+        )
+        .expect("rilettura");
+    assert_eq!((automatica, regole, descrizione), (0, None, None));
+    assert_eq!(in_ordine(&qui, "Preferite"), vec!["a", "b", "c"]);
 }

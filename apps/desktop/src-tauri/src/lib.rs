@@ -912,6 +912,7 @@ pub fn run() {
             sincronia::sincronia_magazzino,
             sincronia::sincronia_dispositivi,
             sincronia::sincronia_accoppia,
+            sincronia::sincronia_rinomina,
             sincronia::sincronia_dimentica,
             testi::testo_brano,
             testi::testo_scarto,

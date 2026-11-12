@@ -471,6 +471,12 @@ export interface PianoProfilo {
   /** I numeri della rimappatura vengono da un campione: è il piano. */
   stima?: boolean;
   portati: PortatiProfilo;
+  /**
+   * La skin che il profilo avrebbe reso attiva e che non ha passato l'esame:
+   * arriva installata, ma qui resta quella di prima. Assente nella risposta
+   * dell'annullamento.
+   */
+  skinNonIndossata?: string | null;
 }
 
 /**
