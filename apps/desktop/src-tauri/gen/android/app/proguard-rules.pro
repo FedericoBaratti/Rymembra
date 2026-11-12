@@ -25,3 +25,19 @@
 -keep class io.github.federicobaratti.rymembra.Ponte {
     public static java.lang.String chiama(java.lang.String, java.lang.String);
 }
+
+# Due metodi della WebView che wry chiama per nome (`main_pipe.rs`, per
+# `clear_all_browsing_data` e `cookies_for_url`) e che `proguard-wry.pro` non
+# tiene: R8 li toglie (`usage.txt` della release di prova). Oggi Rymembra non li
+# usa, quindi non si vede; il giorno che li usasse, la chiamata cadrebbe con un
+# `NoSuchMethodError` solo nella build di rilascio.
+-keep class io.github.federicobaratti.rymembra.RustWebView {
+    void clearAllBrowsingData();
+    java.lang.String getCookies(java.lang.String);
+}
+
+# Le annotazioni che Tauri legge per riflessione (`@TauriPlugin`, `@Command`,
+# in `PluginHandle.kt`): senza, i comandi dei plugin rispondono «No command …
+# found». Oggi restano perché qualche libreria lo chiede per sé; scritto qui non
+# dipende più da loro.
+-keepattributes RuntimeVisibleAnnotations,AnnotationDefault

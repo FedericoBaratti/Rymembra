@@ -8,9 +8,15 @@
  *
  * I livelli sono due, perché Android ne ha due: i permessi «media» (un dialogo,
  * bastano ai brani e alle copertine) e «Accesso a tutti i file» (una pagina
- * delle impostazioni, serve ai `.lrc`, ai `.cue`, ai tag e alle eliminazioni).
+ * delle impostazioni, serve ai `.lrc`, ai `.cue` e alle eliminazioni).
  * Si chiedono tutti e due con un tasto solo; chi concede soltanto il primo può
  * continuare lo stesso, sapendo che cosa resta fuori.
+ *
+ * Non solo al primo avvio: «Lo faccio dopo» resta, e chi lo sceglie — o dice di
+ * no al dialogo di Android — lo ritrova negli stati vuoti della libreria
+ * ([notaDelPermesso]) e in Impostazioni › Cartelle e scansione
+ * ([PermessoMusica]). La regola di che cosa chiedere dove sta in
+ * `permessoMusica.ts`.
  *
  * Fuori da Android l'accesso è sempre «pieno» e qui non si disegna niente.
  */
@@ -19,9 +25,9 @@ import { useCallback, useEffect, useState } from "react";
 import { ipc, type PermessiTelefono } from "../ipc";
 import { t } from "../lingue";
 import { ANDROID } from "../piattaforma";
+import { cosaChiedere, type StatoAccesso } from "./permessoMusica";
 
-/** Dove sta l'accesso adesso. */
-export type StatoAccesso = "verifica" | "manca" | "solo-media" | "pieno";
+export type { StatoAccesso };
 
 /** Lo stato dell'accesso, e i due gesti che lo cambiano. */
 export interface Accesso {
@@ -88,6 +94,60 @@ export function useAccessoTelefono(): Accesso {
     consenti,
     soloBrani: () => setSoloMedia(true),
   };
+}
+
+/**
+ * La riga in più di uno stato vuoto della libreria, quando a svuotarla è il
+ * permesso che manca: lo dice, e lo chiede. `undefined` negli altri casi, così
+ * lo stato vuoto non disegna una riga vuota.
+ *
+ * Prende l'accesso da chi la usa, e non lo legge da sé: lo stato vuoto si
+ * disegna dentro `App`, che di accessi ne tiene uno solo per tutte le pagine.
+ */
+export function notaDelPermesso(accesso: Accesso): React.ReactNode | undefined {
+  if (cosaChiedere(accesso.stato, "vuoto") === "niente") return undefined;
+  return (
+    <>
+      {t("telefono.accesso.manca")}{" "}
+      <button
+        type="button"
+        className="bottone minuto"
+        onClick={accesso.consenti}
+        disabled={accesso.inCorso}
+      >
+        {t("telefono.accesso.consenti")}
+      </button>
+    </>
+  );
+}
+
+/**
+ * Il permesso nella scheda delle cartelle sorvegliate: che cosa manca, e il
+ * tasto che lo chiede. Anche a chi ha i soli brani, che da qui passa ad
+ * «Accesso a tutti i file». Niente fuori da Android, e niente con l'accesso
+ * pieno.
+ */
+export function PermessoMusica() {
+  const accesso = useAccessoTelefono();
+  const daChiedere = cosaChiedere(accesso.stato, "impostazioni");
+  if (daChiedere === "niente") return null;
+  return (
+    <>
+      <p className="nota">
+        {t(daChiedere === "musica" ? "telefono.accesso.manca" : "telefono.accesso.soloMedia")}
+      </p>
+      <div className="azioni">
+        <button
+          type="button"
+          className="bottone"
+          onClick={accesso.consenti}
+          disabled={accesso.inCorso}
+        >
+          {t("telefono.accesso.consenti")}
+        </button>
+      </div>
+    </>
+  );
 }
 
 export function AccessoTelefono({

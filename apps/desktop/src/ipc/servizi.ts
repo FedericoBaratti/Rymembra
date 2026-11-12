@@ -525,6 +525,14 @@ export interface AggiornamentoDisponibile {
    * ogni mezz'ora una domanda a cui è già stato risposto.
    */
   saltata: boolean;
+  /**
+   * Solo sul telefono: l'APK di questa versione è firmato con un'altra chiave
+   * di quella di questa copia, e Android non lo installerebbe sopra. Lo si sa
+   * prima di scaricare (la copia è firmata con la chiave di prova) o dopo un
+   * rifiuto, che si ricorda: in tutti e due i casi non si scarica, e la fascia
+   * spiega come passare alla versione pubblica. Il computer non lo manda.
+   */
+  altraChiave?: boolean;
 }
 
 /**

@@ -117,6 +117,12 @@ export interface CondizioniDelGiro {
   studioVisibile: boolean;
   /** Un dialogo modale o un menù è aperto adesso. */
   modaleAperto: boolean;
+  /**
+   * Si è sul telefono, dove per questo rilascio il giro non c'è (D-37): il
+   * `Giro` lì non si monta, e partire senza vedersi voleva dire una coda
+   * riempita a ogni avvio e un giro che non si chiudeva mai.
+   */
+  telefono: boolean;
 }
 
 /**
@@ -145,7 +151,7 @@ export interface CondizioniDelGiro {
 export function comeParteIlGiro(
   c: CondizioniDelGiro,
 ): "parti" | "aspetta" | "no" {
-  if (!c.daFare || c.aperto || !c.avviato) return "no";
+  if (c.telefono || !c.daFare || c.aperto || !c.avviato) return "no";
   if (c.primoVisibile || c.brani === 0 || c.inEsplora || c.studioVisibile)
     return "no";
   return c.modaleAperto ? "aspetta" : "parti";

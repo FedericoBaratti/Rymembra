@@ -150,15 +150,26 @@ object Ponte {
       "sistema.condividi" ->
         Condividi.file(attivita(), a.getString("percorso"), a.getString("tipo"), a.getString("titolo")).let { null }
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
+      "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }
-      "sistema.attesaConsenso" -> ConsensoInAttesa.imposta(contesto(), a.getBoolean("acceso")).let { null }
-      "sistema.scarico" -> ScaricoInCorso.imposta(
-        contesto(),
-        a.getBoolean("acceso"),
-        a.getInt("numero"),
-        a.getInt("di"),
-        a.getString("titolo"),
-      ).let { null }
+      "sistema.attesaConsenso" -> {
+        val acceso = a.getBoolean("acceso")
+        // Prima di aprire il browser, che coprirebbe il dialogo: vedi
+        // `Permessi.notificheAlBisogno`.
+        if (acceso) Permessi.notificheAlBisogno(attivita.get(), aspetta = true)
+        ConsensoInAttesa.imposta(contesto(), acceso).let { null }
+      }
+      "sistema.scarico" -> {
+        val acceso = a.getBoolean("acceso")
+        if (acceso) Permessi.notificheAlBisogno(attivita.get(), aspetta = false)
+        ScaricoInCorso.imposta(
+          contesto(),
+          acceso,
+          a.getInt("numero"),
+          a.getInt("di"),
+          a.getString("titolo"),
+        ).let { null }
+      }
       "sistema.cestinabili" -> org.json.JSONArray(Cestino.cestinabili(contesto(), testi(a, "percorsi")))
       "sistema.cestina" -> Cestino.cestina(attivitaPerAspettare(), testi(a, "percorsi"))
       "sistema.multicast" -> Rete.multicast(contesto(), a.getBoolean("acceso")).let { null }

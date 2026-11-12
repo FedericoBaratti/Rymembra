@@ -397,7 +397,7 @@ export function InRiproduzioneTelefono({
           <button
             type="button"
             className="tasto-np"
-            aria-label={t("row.more")}
+            aria-label={t("row.more", { titolo: brano.title })}
             onClick={(e) => onMenu(e, brano)}
           >
             <Icona nome="i-dots-v" dim={22} />

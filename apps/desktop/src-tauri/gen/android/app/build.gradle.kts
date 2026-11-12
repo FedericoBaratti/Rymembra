@@ -103,6 +103,59 @@ rust {
     rootDirRel = "../../../"
 }
 
+// Gli avvisi di licenza dentro l'APK, in `assets/legale/`: gli stessi file che
+// l'installer del computer mette accanto all'eseguibile (`bundle.resources` di
+// `tauri.conf.json`), con gli stessi nomi. La MIT chiede l'avviso «in all
+// copies», l'Apache-2.0 una copia della licenza a chi riceve il programma, la
+// OFL la licenza accanto ai font: un link a GitHub, che senza rete non si apre
+// e porta al file di `main`, non bastava. I percorsi partono da questa cartella
+// (`gen/android`): la radice del repository è cinque cartelle sopra.
+val avvisiDellApk = mapOf(
+    "LICENSE.txt" to "../../../../../LICENSE",
+    "THIRD-PARTY-NOTICES.md" to "../../../../../THIRD-PARTY-NOTICES.md",
+    "PRIVACY.md" to "../../../../../PRIVACY.md",
+    "TERMS.md" to "../../../../../TERMS.md",
+    "font-OFL.txt" to "../../../src/font/OFL.txt",
+)
+
+/** Copia gli avvisi in una cartella che diventa una sorgente di asset. */
+abstract class AvvisiLegali : DefaultTask() {
+    /** Il nome dentro l'APK, e il file da cui viene. */
+    @get:Input
+    abstract val avvisi: MapProperty<String, String>
+
+    /** Gli stessi file, perché un avviso cambiato rifaccia la copia. */
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val sorgenti: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val cartella: DirectoryProperty
+
+    @TaskAction
+    fun copia() {
+        val legale = cartella.get().asFile.resolve("legale")
+        legale.deleteRecursively()
+        legale.mkdirs()
+        avvisi.get().forEach { (nome, sorgente) ->
+            // Un avviso che manca ferma la build: un APK senza è proprio quel
+            // che questo compito esiste per non pubblicare.
+            File(sorgente).copyTo(legale.resolve(nome))
+        }
+    }
+}
+
+val avvisiLegali = tasks.register<AvvisiLegali>("avvisiLegali") {
+    avvisi.set(avvisiDellApk.mapValues { (_, sorgente) -> rootProject.file(sorgente).absolutePath })
+    sorgenti.from(avvisiDellApk.values.map { rootProject.file(it) })
+}
+
+androidComponents {
+    onVariants { variante ->
+        variante.sources.assets?.addGeneratedSourceDirectory(avvisiLegali, AvvisiLegali::cartella)
+    }
+}
+
 dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")

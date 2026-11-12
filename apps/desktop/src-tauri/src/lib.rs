@@ -345,6 +345,11 @@ pub fn run() {
             // solo punto in cui lo si può riconoscere. Vedi
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
+            // Sul telefono la finestra la crea Rymembra, col gestore che nega i
+            // permessi alla pagina: vedi `telefono::crea_la_finestra`. Subito,
+            // dove prima la creava Tauri, perché quel che segue la trovi.
+            #[cfg(target_os = "android")]
+            telefono::crea_la_finestra(app.handle())?;
             let scelta = cartella_dati(app.handle())?;
             // Se la cartella l'ha scelta una variabile, per chi tiene una
             // cache fuori dai dati: la risposta dell'unica lettura delle

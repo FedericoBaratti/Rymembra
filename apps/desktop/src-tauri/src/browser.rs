@@ -16,18 +16,58 @@
 ///
 /// Il motivo, in testo, se l'indirizzo non è una pagina web cifrata o se il
 /// sistema rifiuta: chi chiama lo mette come causa dell'errore del catalogo
-/// che gli compete.
+/// che gli compete. Senza l'indirizzo: vedi [`causa_senza_indirizzi`].
 pub fn apri(indirizzo: &str) -> Result<(), String> {
-    let indirizzo = indirizzo_web(indirizzo)?;
-    let indirizzo = indirizzo.as_str();
+    let normale = indirizzo_web(indirizzo)?;
     #[cfg(target_os = "android")]
-    {
-        rymembra_android::sistema::apri_indirizzo(indirizzo).map_err(|err| err.to_string())
-    }
+    let esito = rymembra_android::sistema::apri_indirizzo(&normale).map_err(|err| err.to_string());
     #[cfg(not(target_os = "android"))]
+    let esito =
+        tauri_plugin_opener::open_url(&normale, None::<&str>).map_err(|err| err.to_string());
+    esito.map_err(|motivo| {
+        causa_senza_indirizzi(&causa_senza_indirizzi(&motivo, indirizzo), &normale)
+    })
+}
+
+/// Al posto di un indirizzo tolto da una causa.
+const SEGNAPOSTO: &str = "‹indirizzo›";
+
+/// Il motivo di un guasto del sistema, senza `indirizzo` e senza nessun altro
+/// indirizzo web che citi.
+///
+/// Il motivo finisce nel diario come causa, e il diario è fatto per essere
+/// allegato alle segnalazioni; l'indirizzo può portare un gettone (il consenso
+/// di Last.fm) o lo `state` di un consenso OAuth. Il controllo di
+/// [`indirizzo_web`] ne teneva fuori i propri rifiuti, ma il guasto che conta
+/// nasce dopo, nel sistema: su Android `Browser.kt` scriveva «non c'è un
+/// browser che apra <indirizzo intero>», e sul computer chi lo dice è il
+/// plugin. Qui, per tutte e due le piattaforme, ogni `http://` o `https://`
+/// fino al primo spazio o alla prima parentesi diventa [`SEGNAPOSTO`].
+fn causa_senza_indirizzi(motivo: &str, indirizzo: &str) -> String {
+    let motivo = if indirizzo.is_empty() {
+        motivo.to_owned()
+    } else {
+        motivo.replace(indirizzo, SEGNAPOSTO)
+    };
+    let mut fuori = String::with_capacity(motivo.len());
+    let mut resto = motivo.as_str();
+    while let Some(inizio) = ["http://", "https://"]
+        .iter()
+        .filter_map(|schema| resto.find(schema))
+        .min()
     {
-        tauri_plugin_opener::open_url(indirizzo, None::<&str>).map_err(|err| err.to_string())
+        let Some((prima, dopo)) = resto.split_at_checked(inizio) else {
+            break;
+        };
+        fuori.push_str(prima);
+        fuori.push_str(SEGNAPOSTO);
+        let fine = dopo
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\''))
+            .unwrap_or(dopo.len());
+        resto = dopo.get(fine..).unwrap_or_default();
     }
+    fuori.push_str(resto);
+    fuori
 }
 
 /// L'indirizzo come lo si consegna al sistema: una pagina `https://` con un
@@ -167,6 +207,30 @@ mod prove {
                 "lasciato passare al sistema: {cattivo:?}"
             );
         }
+    }
+
+    /// Il guasto del sistema finisce nel diario come causa, e il diario si
+    /// allega alle segnalazioni: l'indirizzo, che può portare un gettone (il
+    /// consenso di Last.fm) o lo `state` di un consenso OAuth, non ci va. Su
+    /// Android il motivo nasceva in `Browser.kt` con l'indirizzo intero dentro
+    /// (R03-3).
+    #[test]
+    fn la_causa_di_un_guasto_non_ripete_l_indirizzo() {
+        let indirizzo = "https://www.last.fm/api/auth/?api_key=k&token=gettone";
+        for motivo in [
+            format!("sistema.apriIndirizzo: sul telefono non c'è un browser che apra {indirizzo}"),
+            "Failed to open (https://accounts.google.com/o/oauth2/auth?client_id=1&state=segreto): denied"
+                .to_owned(),
+        ] {
+            let causa = causa_senza_indirizzi(&motivo, indirizzo);
+            assert!(!causa.contains("gettone") && !causa.contains("segreto"), "{causa}");
+            assert!(!causa.contains("last.fm/api") && !causa.contains("oauth2"), "{causa}");
+        }
+        // Un motivo senza indirizzi resta com'è.
+        assert_eq!(
+            causa_senza_indirizzi("nessuna attività aperta", indirizzo),
+            "nessuna attività aperta"
+        );
     }
 
     /// Si apre la forma normalizzata, non la stringa ricevuta: quella che il

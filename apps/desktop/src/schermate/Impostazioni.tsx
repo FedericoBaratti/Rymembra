@@ -71,6 +71,7 @@ import { dataOra, dataOraBreve, durata, numero, ore } from "../formato";
 import { DISPONIBILI, t, tSe, type Chiave } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Aggiornamenti } from "../parti/Aggiornamenti";
+import { PermessoMusica } from "../parti/AccessoTelefono";
 import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { gestoPermesso } from "../insieme";
@@ -342,7 +343,8 @@ function voci(): readonly {
     v("aspetto", "theme", "settings.theme.title"),
     v("aspetto", "skin", "settings.skin.title"),
     // Nessuno cerca «onboarding»: si cerca «giro», «tour», «guida», «aiuto».
-    v("aspetto", "tour", "settings.tour.title"),
+    // Sul telefono il giro non c'è, per questo rilascio: vedi `comeParteIlGiro`.
+    ...(MOBILE ? [] : [v("aspetto", "tour", "settings.tour.title")]),
     v("riproduzione", "output", "settings.output.title"),
     v("riproduzione", "eq", "settings.eq.title"),
     v("riproduzione", "replaygain", "settings.playback.title"),
@@ -2252,6 +2254,8 @@ export function Impostazioni({
               titolo={t("settings.roots.title")}
               guida="roots"
             >
+              {/* Sul telefono, il permesso di leggerle: vedi `AccessoTelefono`. */}
+              <PermessoMusica />
               {avvio && avvio.cartelle.length > 0 ? (
                 <ul className="cartelle">
                   {avvio.cartelle.map((c) => (
@@ -2972,19 +2976,23 @@ export function Impostazioni({
                   lingua, il tema e le skin. La sezione «Movimento e accesso» —
                   dove stanno le scorciatoie, che il decimo passo nomina —
                   sarebbe stata l'altra candidata, ma là dentro si dichiara una
-                  condizione, non si chiede una presentazione. */}
-              <Scheda
-                icona="i-home"
-                titolo={t("settings.tour.title")}
-                guida="tour"
-              >
-                <div className="azioni">
-                  <button type="button" className="bottone" onClick={onGiro}>
-                    <Icona nome="i-play" dim={15} />
-                    {t("settings.tour.redo")}
-                  </button>
-                </div>
-              </Scheda>
+                  condizione, non si chiede una presentazione. Sul telefono
+                  il giro non c'è, per questo rilascio (D-37): «Rifai il giro»
+                  non mostrava niente. */}
+              {!MOBILE && (
+                <Scheda
+                  icona="i-home"
+                  titolo={t("settings.tour.title")}
+                  guida="tour"
+                >
+                  <div className="azioni">
+                    <button type="button" className="bottone" onClick={onGiro}>
+                      <Icona nome="i-play" dim={15} />
+                      {t("settings.tour.redo")}
+                    </button>
+                  </div>
+                </Scheda>
+              )}
             </>
           )}
 
