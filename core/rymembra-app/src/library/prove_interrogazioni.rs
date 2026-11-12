@@ -213,3 +213,65 @@ fn album_e_artisti_ordinano_allo_stesso_modo() {
     );
     assert_eq!(album, artisti);
 }
+
+#[test]
+fn i_brani_ordinano_per_nome_come_artisti_e_album() {
+    // `COLLATE NOCASE` piega solo l'ASCII: «È sera» e «Ça plane pour moi»
+    // finivano dopo «Zombie», e «The Beatles» stava sotto T. I Brani per
+    // titolo e per scaffale ordinano ora con la chiave degli Artisti e degli
+    // Album (D-104), scritta nelle colonne della migrazione 042.
+    let mut connection = libreria();
+    for (id, titolo, artista) in [
+        (1, "Zombie", "ZZ Top"),
+        (2, "È sera", "Édith Piaf"),
+        (3, "Alba", "The Beatles"),
+        (4, "Ça plane pour moi", "Abba"),
+        (5, "The Wall", "Ólafur Arnalds"),
+    ] {
+        let path = format!("D:/M/{id}.flac");
+        scrivi(
+            &connection,
+            &Riga {
+                id,
+                path: &path,
+                title: titolo,
+                artist: artista,
+                album: "Disco",
+                album_key: "disco d:/m",
+                disco: None,
+                traccia: None,
+                aggiunto: 1,
+            },
+        );
+    }
+    // Chi scrive i brani ricostruisce gli aggregati: è lì che le chiavi si
+    // riempiono.
+    let tx = transazione_di_scrittura(&mut connection).expect("transazione");
+    rebuild_aggregates(&tx).expect("aggregati");
+    tx.commit().expect("commit");
+
+    let titoli: Vec<String> = list_tracks(&connection, TrackOrder::Title, 0, 10)
+        .expect("per titolo")
+        .into_iter()
+        .map(|b| b.title)
+        .collect();
+    assert_eq!(
+        titoli,
+        ["Alba", "Ça plane pour moi", "È sera", "The Wall", "Zombie"]
+    );
+    let artisti: Vec<String> = list_tracks(&connection, TrackOrder::Shelf, 0, 10)
+        .expect("per scaffale")
+        .into_iter()
+        .map(|b| b.artist)
+        .collect();
+    assert_eq!(
+        artisti,
+        [
+            "Abba",
+            "The Beatles",
+            "Édith Piaf",
+            "Ólafur Arnalds",
+            "ZZ Top"
+        ]
+    );
+}

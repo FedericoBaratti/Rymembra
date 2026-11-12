@@ -296,6 +296,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // Due indici nuovi e basta: nessuna tabella si rifà.
         ricostruisce: false,
     },
+    Migration {
+        version: 42,
+        name: "chiavi-d-ordine",
+        sql: include_str!("schema/042_chiavi_d_ordine.sql"),
+        // Tre colonne in coda a `tracks` con `ADD COLUMN`, due indici e un
+        // trigger: nessuna tabella si rifà, e le righe restano dove sono.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

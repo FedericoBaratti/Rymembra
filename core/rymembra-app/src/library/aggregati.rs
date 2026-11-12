@@ -78,6 +78,9 @@ pub(super) const ARTISTA_EFFETTIVO: &str = "TRIM(COALESCE(NULLIF(TRIM(album_arti
 pub fn rebuild_aggregates(tx: &Transaction<'_>) -> Result<Aggregates, AppError> {
     #[cfg(test)]
     INTERE_IN_QUESTO_FILO.with(|n| n.set(n.get().saturating_add(1)));
+    // Le chiavi d'ordine dei brani che le hanno perse: vedi
+    // [`riempi_le_chiavi_d_ordine`].
+    riempi_le_chiavi_d_ordine(tx)?;
     // Prima di raggruppare: una libreria costruita con una regola delle chiavi
     // di base più vecchia si rimette sulla regola di adesso. Vedi
     // [`PRIMA_DELLE_CHIAVI_NUOVE`].
@@ -565,6 +568,9 @@ pub fn ricostruisci_aggregati(
     tx: &Transaction<'_>,
     toccati: &Toccati,
 ) -> Result<Aggregates, AppError> {
+    // Prima di tutto, e anche quando non c'è nessun album da rifare: un titolo
+    // corretto non tocca gli album, ma le sue chiavi d'ordine sì.
+    riempi_le_chiavi_d_ordine(tx)?;
     if toccati.tutto || toccati.album.len() > TETTO_PER_CHIAVI || !aggregati_in_regola(tx)? {
         return rebuild_aggregates(tx);
     }
@@ -579,6 +585,111 @@ pub fn ricostruisci_aggregati(
     }
     ricostruisci_gli_artisti(tx, &toccati.artisti)?;
     conta_aggregati(tx)
+}
+
+/// Riempie le chiavi d'ordine dei brani che non le hanno.
+///
+/// # Che cosa sono
+///
+/// `ordine_titolo`, `ordine_artista` e `ordine_album` (migrazione 042): i nomi
+/// passati da [`rymembra_domain::keys::sort_name`] — senza accenti, senza
+/// l'articolo in testa —, scritti in colonne con i loro indici perché i Brani
+/// per titolo e per scaffale si ordinino come Artisti e Album senza ordinare la
+/// libreria a ogni pagina (D-104).
+///
+/// # Chi le tiene in pari
+///
+/// Nessuno di quelli che scrivono i nomi. Un brano nuovo nasce con le chiavi a
+/// NULL, e un trigger della 042 le rimette a NULL quando cambiano titolo,
+/// artista o album — da qualunque modulo, la scansione come una correzione a
+/// mano o uno strumento esterno. Questa funzione rifà quelle a NULL: la
+/// chiamano le due ricostruzioni degli aggregati, che seguono ogni scrittura
+/// dei nomi, e l'apertura della libreria, per le righe di prima della 042.
+///
+/// Chi cambia la regola di `sort_name` scrive una migrazione che le rimette
+/// tutte a NULL (`UPDATE tracks SET ordine_titolo = NULL, …`): la prima
+/// apertura le rifà con la regola nuova.
+///
+/// # Quanto costa
+///
+/// Quando non c'è niente da fare, una lettura d'indice: le righe da riempire si
+/// trovano per `ordine_titolo IS NULL`, che sta in testa a
+/// `idx_tracks_titolo_per_nome`. Le tre chiavi si scrivono e si buttano
+/// insieme, quindi una basta a dire «mancano».
+///
+/// # Errori
+///
+/// `db.*` se la lettura o la scrittura falliscono. Va chiamata dentro una
+/// transazione di scrittura: una riga alla volta fuori da una transazione
+/// costerebbe un'attesa del disco per brano.
+pub fn riempi_le_chiavi_d_ordine(connection: &Connection) -> Result<usize, AppError> {
+    use rymembra_domain::keys::sort_name;
+    let fallito = |err: &rusqlite::Error| db_error("chiavi d'ordine dei brani", err);
+    let righe: Vec<(i64, String, String, String)> = {
+        let mut statement = connection
+            .prepare_cached(
+                "SELECT id, title, artist, album FROM tracks WHERE ordine_titolo IS NULL",
+            )
+            .map_err(|err| fallito(&err))?;
+        let lette = statement
+            .query_map([], |riga| {
+                Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?, riga.get(3)?))
+            })
+            .map_err(|err| fallito(&err))?;
+        lette
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| fallito(&err))?
+    };
+    if righe.is_empty() {
+        return Ok(0);
+    }
+    let mut scrivi = connection
+        .prepare_cached(
+            "UPDATE tracks SET ordine_titolo = ?2, ordine_artista = ?3, ordine_album = ?4
+             WHERE id = ?1",
+        )
+        .map_err(|err| fallito(&err))?;
+    for (id, titolo, artista, album) in &righe {
+        scrivi
+            .execute(rusqlite::params![
+                id,
+                sort_name(titolo),
+                sort_name(artista),
+                sort_name(album)
+            ])
+            .map_err(|err| fallito(&err))?;
+    }
+    Ok(righe.len())
+}
+
+/// Riempie le chiavi d'ordine mancanti all'apertura della libreria: vedi
+/// [`riempi_le_chiavi_d_ordine`].
+///
+/// Prima guarda, e scrive solo se c'è da scrivere: quasi ogni apertura trova
+/// tutto in ordine, e una transazione di scrittura per niente prenderebbe il
+/// lucchetto dello scrittore a ogni avvio. Dopo la migrazione 042 — e dopo una
+/// che le rimettesse a NULL — le scrive tutte, in una transazione sola.
+///
+/// # Errori
+///
+/// `db.*` se la lettura o la scrittura falliscono.
+pub fn riempi_le_chiavi_d_ordine_all_apertura(connection: &Connection) -> Result<usize, AppError> {
+    let mancano: bool = connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM tracks WHERE ordine_titolo IS NULL)",
+            [],
+            |riga| riga.get(0),
+        )
+        .map_err(|err| db_error("chiavi d'ordine dei brani", &err))?;
+    if !mancano {
+        return Ok(0);
+    }
+    let tx = Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|err| db_error("chiavi d'ordine dei brani", &err))?;
+    let scritte = riempi_le_chiavi_d_ordine(&tx)?;
+    tx.commit()
+        .map_err(|err| db_error("chiavi d'ordine dei brani", &err))?;
+    Ok(scritte)
 }
 
 /// I membri degli album con queste chiavi, con l'identificativo del brano.
