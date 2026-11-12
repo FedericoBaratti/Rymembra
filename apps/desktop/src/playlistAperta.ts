@@ -238,23 +238,36 @@ export function usePlaylistAperta({
     [playlistAperta, braniPlaylist.length, aggiornaPlaylist, segnalaErrore, rileggiPlaylist],
   );
 
+  /**
+   * Il brano della riga presa, letto quando la si prende.
+   *
+   * Non al rilascio: una × premuta un attimo prima arriva mentre il dito
+   * trascina, la playlist si rilegge, e al rilascio nella riga presa c'è il
+   * brano che le stava sotto. Il nucleo lo trovava al suo posto e spostava
+   * quello (R13b-13). È la regola della coda (`Coda.tsx`, `preso`).
+   */
+  const preso = useRef<number | null>(null);
+  const braniOra = useRef(braniPlaylist);
+  braniOra.current = braniPlaylist;
+
   const presa = useCallback((indice: number | null) => {
     setTrascinata(indice);
+    preso.current = indice === null ? null : (braniOra.current[indice]?.id ?? null);
     if (indice === null) setMirata(null);
   }, []);
 
   const lascia = useCallback(
     (indice: number) => {
-      // Il brano preso è quello che l'elenco in mano ha nella riga presa: è
-      // la riga che il dito ha portato fin qui.
-      const preso = trascinata === null ? undefined : braniPlaylist[trascinata];
-      if (trascinata !== null && preso !== undefined) {
-        spostaNellaPlaylist(trascinata, indice, preso.id);
+      // Il brano preso è quello della riga quando il dito l'ha presa.
+      const brano = preso.current;
+      if (trascinata !== null && brano !== null) {
+        spostaNellaPlaylist(trascinata, indice, brano);
       }
+      preso.current = null;
       setTrascinata(null);
       setMirata(null);
     },
-    [trascinata, braniPlaylist, spostaNellaPlaylist],
+    [trascinata, spostaNellaPlaylist],
   );
 
   return {
