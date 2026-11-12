@@ -9,7 +9,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { fogliDi, classiDelFoglio, testiDeiFogli } = require("./classi.js");
+const { fogliDi, classiDelFoglio, testiDeiFogli, stratiDellaScala, consiglioDegliStrati } = require("./classi.js");
 
 const REPO = path.dirname(__dirname);
 const SRC = path.join(REPO, "apps/desktop/src");
@@ -34,4 +34,21 @@ test("le classi del foglio sono quelle di tutti i fogli, non solo di stile.css",
   const classi = classiDelFoglio(testiDeiFogli(REPO).map((t) => t.crudo).join("\n"));
   assert.ok(classi.has("strato-studio")); // sta in stile/studio.css
   assert.ok(classi.has("pannello-coda")); // sta in stile/lettore.css
+});
+
+test("il consiglio sugli z-index dice quanti strati ha la scala vera", () => {
+  // report-f12b: il messaggio diceva ancora «dodici token» quando la scala ne
+  // aveva quindici, e mandava a cercare un elenco che non c'era più.
+  const stile = testiDeiFogli(REPO).find((t) => t.nome === "stile.css");
+  const pulito = stile.crudo.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const scala = stratiDellaScala(pulito);
+  assert.ok(scala.length >= 15, scala.join(", "));
+  assert.equal(scala[0], "--strato-decoro");
+  assert.equal(scala[scala.length - 1], "--strato-finestra");
+  assert.equal(new Set(scala).size, scala.length);
+  const consiglio = consiglioDegliStrati(scala);
+  assert.ok(consiglio.includes(`: ${scala.length} token --strato-*`), consiglio);
+  assert.doesNotMatch(consiglio, /dodici|undici/);
+  // Un `var(--strato-…)` non è una dichiarazione della scala.
+  assert.deepEqual(stratiDellaScala(":root { --strato-a: 1; } .x { z-index: var(--strato-a); }"), ["--strato-a"]);
 });
