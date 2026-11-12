@@ -68,8 +68,8 @@ pub(crate) use avvisi::{DIETRO, colore_di};
 pub(crate) use blocchi::famiglia_ridotta;
 
 use blocchi::{
-    capacita, caratteri, meta, motivi, movimento, tavolozza, tavolozza_mancante,
-    tinte_che_cambiano, variante,
+    capacita, caratteri, meta, motivi, movimento, nomi_che_si_scontrano, tavolozza,
+    tavolozza_mancante, tinte_che_cambiano, variante,
 };
 use lampeggio::lampeggi;
 use parti::{Richiamabili, superfici};
@@ -1006,6 +1006,7 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         motion.as_ref().map_or(&[], |blocco| &blocco.animations);
     let curve_dichiarate: &[(String, Easing)] =
         motion.as_ref().map_or(&[], |blocco| &blocco.easings);
+    problemi.extend(nomi_che_si_scontrano(&palette, &patterns, curve_dichiarate));
     let richiamabili = Richiamabili {
         motivi: &patterns,
         animazioni: animazioni_dichiarate,

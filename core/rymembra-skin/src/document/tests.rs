@@ -1479,3 +1479,143 @@ fn le_misure_della_cornice_hanno_estremi() {
     );
     parse_skin_json(&json).expect("l'adattiva di serie passa");
 }
+
+#[test]
+fn il_nome_non_porta_controlli_bidi_ne_invisibili() {
+    // Il nome finisce nel titolo di una domanda di consenso («Sostituire
+    // “…”?»): un U+202E rovescia il resto della frase, uno spazio di larghezza
+    // zero rende uguali alla vista due nomi diversi (R09-12).
+    for (campo, scritto) in [
+        ("name", r"Neon\u202E"),
+        ("name", r"Ne\u200Bon"),
+        ("name", r"\u2066Neon\u2069"),
+        ("author", r"Rymembra\u200F"),
+        ("name", r"Neon\nfalsa"),
+        ("description", r"Una\u0007 skin"),
+    ] {
+        let json = match campo {
+            "name" => {
+                minima("").replace("\"name\": \"Prova\"", &format!("\"name\": \"{scritto}\""))
+            }
+            "author" => minima("").replace(
+                "\"author\": \"Rymembra\"",
+                &format!("\"author\": \"{scritto}\""),
+            ),
+            _ => minima("").replace(
+                "\"meta\": {",
+                &format!("\"meta\": {{ \"{campo}\": \"{scritto}\","),
+            ),
+        };
+        let detto = messaggio(&json);
+        assert!(
+            detto.contains(&format!("meta.{campo}")),
+            "{campo} {scritto}: {detto}"
+        );
+    }
+    // Le lettere di ogni scrittura, gli accenti e le emoji composte restano.
+    for nome in [
+        "Città notturna",
+        "Ночь",
+        "ليل",
+        "Notte 🌙",
+        "Famiglia 👨\u{200d}👩\u{200d}👧",
+    ] {
+        let json = minima("").replace("\"name\": \"Prova\"", &format!("\"name\": \"{nome}\""));
+        parse_skin_json(&json).unwrap_or_else(|e| panic!("«{nome}»: {e:?}"));
+    }
+}
+
+#[test]
+fn un_motivo_non_puo_chiamarsi_come_una_variabile_della_tavolozza() {
+    // I tre spazi di nomi stanno sotto lo stesso prefisso nel foglio:
+    // `patterns.color-carta` riscriveva `--skin-color-carta`, `palette.carta-rgb`
+    // la tripla di `carta`, `patterns.ease-molla` la curva `molla`, e
+    // `patterns.suona` la variabile del ciclo (R09-11).
+    let motivo = r##"{ "effect": "solid", "color": "#000000" }"##;
+    for (extra, dove) in [
+        (
+            format!(
+                r##", "palette": {{ "carta": "#ffffff" }}, "patterns": {{ "color-carta": {motivo} }}"##
+            ),
+            "patterns.color-carta",
+        ),
+        (
+            format!(
+                r##", "palette": {{ "carta": "#ffffff" }}, "patterns": {{ "color-carta-rgb": {motivo} }}"##
+            ),
+            "patterns.color-carta-rgb",
+        ),
+        (
+            r##", "palette": { "carta": "#ffffff", "carta-rgb": "#000000" }"##.to_owned(),
+            "palette.carta-rgb",
+        ),
+        (
+            format!(
+                r##", "patterns": {{ "ease-molla": {motivo} }},
+                   "motion": {{ "easings": {{ "molla": {{ "kind": "cubicBezier", "points": [0.3, 1.5, 0.6, 1] }} }} }}"##
+            ),
+            "patterns.ease-molla",
+        ),
+        (
+            format!(r##", "patterns": {{ "suona": {motivo} }}"##),
+            "patterns.suona",
+        ),
+    ] {
+        let detto = messaggio(&minima(&extra));
+        assert!(detto.contains(dove), "{dove}: {detto}");
+    }
+    // Un nome che somiglia ma non si scontra passa.
+    let json = minima(&format!(
+        r##", "palette": {{ "carta": "#ffffff" }}, "patterns": {{ "color-altro": {motivo}, "easy": {motivo} }}"##
+    ));
+    parse_skin_json(&json).expect("nessuno scontro");
+}
+
+#[test]
+fn un_parametro_d_effetto_fuori_dagli_estremi_e_un_errore() {
+    // Gli estremi stavano solo nei cursori dello Studio: `chamfer.size: 5000px`
+    // ritagliava la parte intera ed era una skin valida (R09-10). Per ogni
+    // estremo, un valore appena fuori da una parte e dall'altra.
+    let minimo = |effetto: &str| -> &'static str {
+        match effetto {
+            "linearGradient" | "radialGradient" | "conicGradient" => {
+                r##""stops":[{"color":"#000000"},{"color":"#ffffff"}]"##
+            }
+            "hairlineGrid" => r##""color":"#000000","cell":"36px""##,
+            "scanlines" => r##""color":"#000000","line":"1px","gap":"3px""##,
+            "stripes" => r##""color":"#000000","background":"#ffffff","width":"8px""##,
+            "dotGrid" => r##""color":"#000000","spacing":"8px","dot":"1px""##,
+            "vignette" => r##""color":"#000000""##,
+            "chamfer" => r##""size":"10px""##,
+            "blurBehind" => r##""radius":"24px""##,
+            altro => panic!("manca un esemplare per {altro}"),
+        }
+    };
+    for (effetto, parametro, min, max) in crate::effects::ESTREMI_DEI_PARAMETRI {
+        for fuori in [min - 1.0, max + 1.0] {
+            let numerico = matches!(*parametro, "angle" | "from" | "start" | "saturate");
+            let valore = if numerico {
+                format!("{fuori}")
+            } else {
+                format!("\"{fuori}px\"")
+            };
+            // L'esemplare senza il campo, se lo aveva, e poi il campo fuori misura.
+            // Le virgole dentro le fermate si separano e si ricuciono uguali.
+            let mut pezzi: Vec<String> = minimo(effetto)
+                .split(',')
+                .filter(|pezzo| !pezzo.starts_with(&format!("\"{parametro}\":")))
+                .map(ToOwned::to_owned)
+                .collect();
+            pezzi.push(format!("\"{parametro}\": {valore}"));
+            let json = minima(&format!(
+                r##", "patterns": {{ "x": {{ "effect": "{effetto}", {} }} }}"##,
+                pezzi.join(",")
+            ));
+            let detto = messaggio(&json);
+            assert!(
+                detto.contains(&format!("patterns.x.{parametro}")),
+                "{effetto}.{parametro} = {fuori}: {detto}"
+            );
+        }
+    }
+}

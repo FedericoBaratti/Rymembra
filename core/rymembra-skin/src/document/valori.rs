@@ -531,9 +531,8 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
 
     let colore_di =
         |name: &str| -> Esito<ColorValue> { colore(richiesto(map, path, name)?, &giu(path, name)) };
-    let lunghezza_di =
-        |name: &str| -> Esito<Length> { lunghezza(richiesto(map, path, name)?, &giu(path, name)) };
-    // Le misure di un motivo e il raggio del vetro: negative, il CSS le scarta.
+    // Le misure di un motivo, il raggio del vetro e il taglio d'angolo: negative,
+    // il CSS le scarta (o, per il taglio, il poligono si rovescia).
     let misura_di = |name: &str| -> Esito<Length> {
         lunghezza_non_negativa(richiesto(map, path, name)?, &giu(path, name))
     };
@@ -542,6 +541,30 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
 
     if Effect::NAMES.contains(&nome) {
         solo_chiavi(map, path, chiavi_effetto(nome))?;
+    }
+    // Gli estremi dei parametri, gli stessi dei cursori dello Studio: vedi
+    // `ESTREMI_DEI_PARAMETRI`. Un valore che non si legge lo dice dopo il
+    // lettore del suo campo, col messaggio giusto.
+    for (_, parametro, min, max) in crate::effects::ESTREMI_DEI_PARAMETRI
+        .iter()
+        .filter(|(effetto, ..)| *effetto == nome)
+    {
+        let scritto = match campo(map, parametro) {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) => crate::values::parse_length(s).map(|l| l.value),
+            _ => None,
+        };
+        // Un negativo dove il CSS non lo ammette lo dice il lettore del campo,
+        // con la sua frase: è un altro errore, non una misura fuori scala.
+        if let Some(quanto) = scritto
+            && !(quanto < 0.0 && *min >= 0.0)
+            && (quanto < *min || quanto > *max)
+        {
+            return Err(problema(
+                &giu(path, parametro),
+                format!("va fra {min} e {max}, non {quanto}"),
+            ));
+        }
     }
 
     match nome {
@@ -637,7 +660,7 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                 }
             };
             Ok(Effect::Chamfer {
-                size: lunghezza_di("size")?,
+                size: misura_di("size")?,
                 corners,
             })
         }

@@ -30,7 +30,44 @@ fn stringa_lunga(value: &Value, path: &str, min: usize, max: usize) -> Esito<Str
     if scritto.chars().count() < min || scritto.chars().count() > max {
         return Err(problema(path, format!("va da {min} a {max} caratteri")));
     }
+    if let Some(segno) = scritto.chars().find(|c| invisibile(*c)) {
+        return Err(problema(
+            path,
+            format!(
+                "contiene un carattere di controllo o invisibile (U+{:04X}): un nome si legge in \
+                 una domanda, e un segno che rovescia la frase o rende uguali due nomi diversi \
+                 non ci deve stare",
+                u32::from(segno)
+            ),
+        ));
+    }
     Ok(scritto.to_owned())
+}
+
+/// Un carattere che non si vede, o che cambia come si legge quel che ha
+/// intorno.
+///
+/// Nome, autore e descrizione finiscono nelle domande d'installazione e di
+/// sostituzione, che sono consensi: `Neon\u{202E}` rovesciava il resto del
+/// titolo, e uno spazio di larghezza zero rendeva identici alla vista due nomi
+/// diversi (R09-12). Fuori i caratteri di controllo (`Cc`, a capo compreso), i
+/// segni di direzione e di isolamento bidirezionale, e gli spazi e i
+/// congiuntori invisibili che non servono a nessuna scrittura. Restano ZWJ e
+/// ZWNJ (U+200D, U+200C): compongono le emoji e servono al persiano e alle
+/// scritture indiane.
+fn invisibile(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200B}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
 }
 
 fn versione(value: &Value, path: &str) -> Esito<String> {
@@ -875,4 +912,65 @@ pub(super) fn tavolozza_mancante(
         }
         _ => {}
     }
+}
+
+/// I nomi che nel foglio finirebbero sulla stessa variabile.
+///
+/// Tavolozza, motivi e curve stanno sotto lo stesso prefisso: il colore `x` è
+/// `--skin-color-x` (con la tripla `--skin-color-x-rgb`), il motivo `x` è
+/// `--skin-x`, la curva `x` è `--skin-ease-x`, e `--skin-suona` è la variabile
+/// con cui il compilatore ferma i cicli in pausa. Un motivo `color-carta`
+/// accanto al colore `carta` riscriveva il colore con un gradiente, e ogni testo
+/// che lo usava diventava non valido al calcolo; un colore `carta-rgb` riscriveva
+/// la tripla di `carta`; un motivo `ease-molla` la curva `molla` (R09-11). Si
+/// rifiuta lo scontro, non il nome: `color-altro` senza un colore `altro` non
+/// tocca niente, e le skin che non si scontrano non cambiano di una riga.
+pub(super) fn nomi_che_si_scontrano(
+    palette: &[(String, Rgba)],
+    patterns: &[(String, Effect)],
+    curve: &[(String, Easing)],
+) -> Vec<SkinIssue> {
+    let colore = |nome: &str| palette.iter().any(|(n, _)| n == nome);
+    let tripla = |nome: &str| nome.strip_suffix("-rgb").is_some_and(colore);
+    let mut problemi = Vec::new();
+    for (nome, _) in palette {
+        if tripla(nome) {
+            problemi.push(problema(
+                &giu("palette", nome),
+                format!(
+                    "«{nome}» è anche il nome della tripla di «{}»: nel foglio i due finirebbero \
+                     sulla stessa variabile. Chiamalo in un altro modo",
+                    nome.trim_end_matches("-rgb")
+                ),
+            ));
+        }
+    }
+    for (nome, _) in patterns {
+        let scontro = if nome == "suona" {
+            Some("quella con cui il motore ferma i cicli in pausa".to_owned())
+        } else if let Some(resto) = nome.strip_prefix("color-")
+            && (colore(resto) || tripla(resto))
+        {
+            Some(format!(
+                "«{}», un colore della tavolozza",
+                resto.trim_end_matches("-rgb")
+            ))
+        } else if let Some(resto) = nome.strip_prefix("ease-")
+            && curve.iter().any(|(n, _)| n == resto)
+        {
+            Some(format!("«{resto}», una curva di `motion.easings`"))
+        } else {
+            None
+        };
+        if let Some(con_chi) = scontro {
+            problemi.push(problema(
+                &giu("patterns", nome),
+                format!(
+                    "il motivo «{nome}» finirebbe nel foglio sulla stessa variabile di {con_chi}, \
+                     e la riscriverebbe. Chiamalo in un altro modo"
+                ),
+            ));
+        }
+    }
+    problemi
 }
