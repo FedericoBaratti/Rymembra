@@ -1274,12 +1274,21 @@ mod prove {
             );
             let dopo = fs::read_to_string(&percorso).unwrap_or_default();
             let nuovo = dopo.get(prima.len()..).unwrap_or_default();
+            // Il diario è uno solo per il processo: mentre questa prova gira,
+            // le prove di altri moduli (insieme, fili) ci scrivono le loro
+            // righe. Contano solo quelle che vengono dalla causa di qui: la
+            // riga vera e, se il testo da fuori ne avesse scritta una sua, il
+            // `[PANICO]` finto a inizio riga.
+            let nostre: Vec<&str> = nuovo
+                .lines()
+                .filter(|r| r.contains("[x] causa=") || r.contains("[PANICO] finto"))
+                .collect();
             assert_eq!(
-                nuovo.lines().count(),
+                nostre.len(),
                 1,
                 "il testo da fuori ha scritto righe sue: {nuovo:?}"
             );
-            let riga = nuovo.trim_end_matches('\n');
+            let riga = nostre[0];
             assert!(
                 riga.ends_with(
                     r"[x] causa=a\n2026-01-01T00:00:00Z [PANICO] finto\r\u{0}\u{1b}[31m\u{85}\u{2028}\u{202e}fine"
