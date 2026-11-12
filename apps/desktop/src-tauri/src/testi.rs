@@ -354,6 +354,18 @@ impl StatoTesti {
     pub fn ferma(&self) {
         self.da_fermare.store(true, Ordering::Relaxed);
     }
+
+    /// La finestra ha cominciato una pagina nuova: nessun pannello è aperto.
+    ///
+    /// I pannelli si contano con la pulizia di un effetto di React, e una
+    /// pagina che si ricarica — «Ricarica» della schermata di guasto — non la
+    /// esegue: il conto restava a uno per sempre, e il testo del brano dopo si
+    /// chiedeva a LRCLIB a ogni cambio di brano col pannello chiuso, contro la
+    /// promessa di `PRIVACY.md` (R13-4). La pagina nuova riconta da sé i
+    /// pannelli che monta. La chiama `pagina::pagina_nuova`.
+    pub fn pagina_nuova(&self) {
+        self.pannelli_aperti.store(0, Ordering::Relaxed);
+    }
 }
 
 /// I fornitori, aprendoli se è la prima volta.
@@ -1328,6 +1340,23 @@ mod prove {
             sbagliati.is_empty(),
             "comandi che contano la libreria fuori dal pool bloccante: {sbagliati:#?}"
         );
+    }
+
+    /// Una pagina nuova azzera i pannelli aperti (R13-4): quella di prima non
+    /// ha eseguito le sue pulizie, e con il conto rimasto a uno il testo del
+    /// brano dopo si chiedeva al catalogo col pannello chiuso.
+    #[test]
+    fn una_pagina_nuova_azzera_i_pannelli_aperti() {
+        use std::sync::atomic::Ordering;
+        let testi = super::StatoTesti::nuovo();
+        // La colonna e lo schermo intero, aperti; poi la pagina si ricarica
+        // senza chiuderli.
+        testi.pannelli_aperti.store(2, Ordering::Relaxed);
+        testi.pagina_nuova();
+        assert_eq!(testi.pannelli_aperti.load(Ordering::Relaxed), 0);
+        // E la pagina nuova riconta da zero quel che monta.
+        testi.pannelli_aperti.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(testi.pannelli_aperti.load(Ordering::Relaxed), 1);
     }
 
     #[test]

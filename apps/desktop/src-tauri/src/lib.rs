@@ -58,6 +58,7 @@ mod metadati;
 mod nuvola;
 mod nuvola_app;
 mod nuvola_musica;
+mod pagina;
 mod playlist;
 mod procura;
 mod profilo;
@@ -339,6 +340,10 @@ pub fn run() {
     // `aggiornamenti` sa solo dire che c'è una versione nuova.
     #[cfg(desktop)]
     let costruttore = costruttore.plugin(tauri_plugin_updater::Builder::new().build());
+    // La pagina della finestra: che cosa può caricare (solo l'app, decisione
+    // D-44), che cosa si spegne a ogni pagina nuova, e quando disegna. Su tutte
+    // e due le piattaforme: vedi `pagina`.
+    let costruttore = costruttore.plugin(pagina::plugin());
     let costruita = costruttore
         .setup(|app| {
             // Per prima cosa: il `setup` gira sul filo della finestra, ed è il
@@ -1675,5 +1680,24 @@ mod prove {
         // le prove di sviluppo e la documentazione lo usano per esteso.
         assert_eq!(VARIABILE_DATI, "RYMEMBRA_DATI");
         assert_ne!(VARIABILE_DATI, eredita::VARIABILE_DATI);
+    }
+
+    /// La pagina della finestra ha il suo guardiano, registrato con gli altri
+    /// plugin: la navigazione (D-44), le pulizie di una pagina nuova (R13-4) e
+    /// il disegno a finestra ridotta (R21-3). Un plugin vale per ogni webview,
+    /// anche quella che Android ricostruisce con la stessa etichetta, e per
+    /// quella nata da `tauri.conf.json`, che non ha un costruttore a cui
+    /// appendere un gestore.
+    #[test]
+    fn la_pagina_della_finestra_ha_il_suo_guardiano() {
+        let costruzione = include_str!("lib.rs")
+            .split("pub fn run()")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        assert!(
+            costruzione.contains(".plugin(pagina::plugin())"),
+            "nessun guardiano della pagina fra i plugin"
+        );
     }
 }
