@@ -3283,7 +3283,7 @@
   "explore.addAll.busy": "Adding…",
   "explore.play": "Listen",
   "explore.enqueued": "Added to the queue.",
-  "explore.gone": "This track can’t be found in the catalog anymore: search again.",
+  "explore.gone": "This track isn’t in the catalog anymore: search again.",
   "explore.page": "Track page",
   "explore.done": "{n} added to the library.",
   "explore.done.uno": "1 track added to the library.",

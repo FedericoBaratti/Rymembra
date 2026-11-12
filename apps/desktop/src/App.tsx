@@ -2914,7 +2914,13 @@ export function App() {
    */
   const menuDellaCoda = useCallback(
     (e: React.MouseEvent, indice: number, brano: Brano) => {
-      const lunga = riproduzione.archivio.leggi().coda.length;
+      const { coda, posizioneCoda } = riproduzione.archivio.leggi();
+      const lunga = coda.length;
+      // La cima della coda è la cima di quel che resta da sentire: subito dopo
+      // il brano in ascolto. Il posto 0 sta nella storia, sopra di lui, e un
+      // brano portato lì non suonerebbe più. Dalla riga subito sotto, «in cima»
+      // è «su»: una voce sola basta.
+      const cima = posizioneCoda !== null && indice > posizioneCoda ? posizioneCoda + 1 : 0;
       // Col brano accanto alla posizione: se nel frattempo la coda è cambiata,
       // il nucleo non tocca un'altra riga. Vedi `codaTogli` e `codaRiordina`.
       const vai = (a: number) => () => {
@@ -2928,7 +2934,7 @@ export function App() {
           inCoda: true,
           su: indice > 0 ? vai(indice - 1) : undefined,
           giu: indice < lunga - 1 ? vai(indice + 1) : undefined,
-          inCima: indice > 1 ? vai(0) : undefined,
+          inCima: indice - cima >= 2 ? vai(cima) : undefined,
         },
       });
     },

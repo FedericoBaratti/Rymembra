@@ -435,12 +435,14 @@ export function RigheCoda({
    * libreria» non serve a nessuno. Una volta per riga, dalla più in fondo e
    * ognuna col suo brano (`sparizioniDaTogliere`), quindi se la coda cambia nel
    * frattempo il nucleo non toglie un'altra riga. Non dallo Studio, che
-   * disegna una coda finta, e non dove la coda non è di questo PC: lì la riga
-   * resta, col suo nome.
+   * disegna una coda finta, e non in una sessione di «Ascolta insieme»: lì la
+   * coda è anche degli altri, e una voce che non si trova può essere una voce
+   * della sessione e non un brano tolto. La riga resta, col suo nome.
    */
   const chiesteVia = useRef(new Set<string>());
+  const inSessione = stato.insieme !== null;
   useEffect(() => {
-    if (anteprima || !codaLibera) return;
+    if (anteprima || !codaLibera || inSessione) return;
     const via = sparizioniDaTogliere(coda, righe);
     const chiavi = new Set(via.map((v) => `${v.indice}-${v.id}`));
     // Si dimentica quel che non è più da togliere: una riga tolta lascia la
@@ -455,7 +457,7 @@ export function RigheCoda({
         Promise.resolve(),
       )
       .catch(onErrore);
-  }, [coda, righe, codaLibera, anteprima, onErrore]);
+  }, [coda, righe, codaLibera, anteprima, inSessione, onErrore]);
 
   if (stato.coda.length === 0) {
     return <p className="vuota-coda empty-state">{t("queue.empty")}</p>;

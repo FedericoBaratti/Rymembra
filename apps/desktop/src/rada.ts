@@ -289,6 +289,23 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
     return this.pagine.get(p)?.righe[indice - p * this.misura];
   }
 
+  /**
+   * La riga, solo se la sua pagina è della generazione di adesso.
+   *
+   * `riga` risponde anche da una pagina vecchia, ed è giusto per disegnare;
+   * non per dire **chi** sta in quel posto adesso. Lo chiede l'àncora della
+   * selezione (`ancoraUsabile`): dopo un'invalidazione la pagina dell'àncora,
+   * se è fuori dalla finestra, non si richiede, e la riga vecchia avrebbe
+   * confermato un posto che nell'elenco nuovo è di un altro brano (R04b-1).
+   */
+  rigaFresca(indice: number): T | undefined {
+    if (indice < 0 || indice >= this._totale) return undefined;
+    const p = Math.floor(indice / this.misura);
+    const pagina = this.pagine.get(p);
+    if (pagina === undefined || pagina.generazione !== this._generazione) return undefined;
+    return pagina.righe[indice - p * this.misura];
+  }
+
   /** La prima riga in mano che risponde a `predicato`, in qualunque pagina. */
   cerca(predicato: (riga: T) => boolean): T | undefined {
     for (const pagina of this.pagine.values()) {

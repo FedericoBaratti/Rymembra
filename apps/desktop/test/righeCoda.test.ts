@@ -91,3 +91,15 @@ test("Coda.tsx: il colpo da tastiera passa da prossimoRiordino, e l'attesa scade
   assert.match(tastiera, /prossimoRiordino\(/);
   assert.match(coda, /ATTESA_RIORDINO_MS/);
 });
+
+test("Coda.tsx: in una sessione le righe sparite non si tolgono da sole", () => {
+  const coda = sorgente("Coda.tsx");
+  assert.match(coda, /if \(anteprima \|\| !codaLibera \|\| inSessione\) return;/);
+});
+
+test("App: «Sposta in cima» nella coda porta subito dopo il brano in ascolto", () => {
+  const app = sorgente("App.tsx");
+  const menu = app.slice(app.indexOf("const menuDellaCoda"), app.indexOf("const menuDelBranoGrande"));
+  assert.match(menu, /posizioneCoda \+ 1/);
+  assert.match(menu, /inCima: indice - cima >= 2 \? vai\(cima\)/);
+});

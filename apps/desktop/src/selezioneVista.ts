@@ -156,7 +156,15 @@ export function useSelezione({
       const brano = elenco.riga(indice);
       if (!brano) return;
       const generazione = rada?.generazione ?? null;
-      const riga = (i: number) => elenco.riga(i);
+      // Chi sta in un posto **adesso**: in una lista rada solo dalle pagine
+      // della generazione di adesso, perché una pagina vecchia resta a schermo
+      // e direbbe il brano di prima (`rigaFresca`).
+      const riga = (i: number) => (rada !== null ? rada.rigaFresca(i) : elenco.riga(i));
+      // La generazione da scrivere su un'àncora nuova: quella di adesso se la
+      // sua riga è di adesso, se no nessuna — e allora la si riconosce solo dal
+      // suo brano al suo posto.
+      const generazioneDi = (i: number) =>
+        rada === null || rada.rigaFresca(i) === undefined ? null : generazione;
       let usabile = ancoraUsabile(ancora, { generazione, riga });
       let base = usabile === null ? null : ancora;
       // Maiusc+↑↓ senza un'àncora: si parte dalla riga da cui ci si muove,
@@ -164,7 +172,7 @@ export function useSelezione({
       const daQui = partenza === undefined ? undefined : elenco.riga(partenza);
       if (e.shiftKey && usabile === null && partenza !== undefined && daQui !== undefined) {
         usabile = partenza;
-        base = { indice: partenza, id: daQui.id, generazione };
+        base = { indice: partenza, id: daQui.id, generazione: generazioneDi(partenza) };
       }
       const { gesto, ancora: dopo } = gestoDelClic(
         { indice, maiuscolo: e.shiftKey, controllo: e.ctrlKey || e.metaKey },
@@ -174,10 +182,10 @@ export function useSelezione({
       // dell'elenco di adesso; ogni altro gesto la mette sulla riga premuta.
       setAncora(
         gesto.tipo === "intervallo" && base !== null
-          ? { ...base, generazione }
+          ? { ...base, generazione: generazioneDi(base.indice) ?? base.generazione }
           : dopo === null
             ? null
-            : { indice: dopo, id: brano.id, generazione },
+            : { indice: dopo, id: brano.id, generazione: generazioneDi(indice) },
       );
       if (gesto.tipo === "intervallo") {
         e.preventDefault();
@@ -236,7 +244,11 @@ export function useSelezione({
         if (!dopo.delete(brano.id)) dopo.set(brano.id, indice);
         return dopo;
       });
-      setAncora({ indice, id: brano.id, generazione: rada?.generazione ?? null });
+      setAncora({
+        indice,
+        id: brano.id,
+        generazione: rada === null || rada.rigaFresca(indice) === undefined ? null : rada.generazione,
+      });
     },
     [elenco, rada, setScelti],
   );

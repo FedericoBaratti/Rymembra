@@ -170,3 +170,11 @@ test("Elenco: Maiusc+↑↓ allarga la selezione dall'àncora, come nell'albero"
   assert.match(tastiera.slice(0, 2000), /e\.shiftKey &&[\s\S]{0,120}?\(e\.key === "ArrowDown" \|\| e\.key === "ArrowUp"\)/);
   assert.match(tastiera.slice(0, 2000), /onSeleziona\(e, dove, (fuoco\.attivo|da)\)/);
 });
+
+test("l'àncora di una lista rada si verifica sulle sole pagine di adesso", () => {
+  const vista = readFileSync(new URL("../src/selezioneVista.ts", import.meta.url), "utf8");
+  assert.match(vista, /rada\.rigaFresca\(/);
+  const cartelle = readFileSync(new URL("../src/schermate/Cartelle.tsx", import.meta.url), "utf8");
+  const scegli = cartelle.slice(cartelle.indexOf("const scegliBrano"), cartelle.indexOf("const alternaBrano"));
+  assert.match(scegli, /archivio\.rigaFresca\(/);
+});

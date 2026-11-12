@@ -1221,16 +1221,23 @@ export function Cartelle({
       const brano = archivio.riga(indice);
       if (brano === undefined) return;
       const generazione = archivio.generazione;
+      // Chi sta in un posto adesso, dalle sole pagine di adesso: vedi
+      // `rigaFresca` e la stessa regola in `selezioneVista.ts`.
+      const generazioneDi = (i: number) =>
+        archivio.rigaFresca(i) === undefined ? null : generazione;
       let ancora = sceltaBrani.ancora;
-      let da = ancoraUsabile(ancora, { generazione, riga: (i) => archivio.riga(i) });
+      let da = ancoraUsabile(ancora, { generazione, riga: (i) => archivio.rigaFresca(i) });
       const daQui = partenza === undefined ? undefined : archivio.riga(partenza);
       if (e.shiftKey && da === null && partenza !== undefined && daQui !== undefined) {
         da = partenza;
-        ancora = { indice: partenza, id: daQui.id, generazione };
+        ancora = { indice: partenza, id: daQui.id, generazione: generazioneDi(partenza) };
       }
       if (e.shiftKey && da !== null && ancora !== null) {
         e.preventDefault();
-        const base: Ancora = { ...ancora, generazione };
+        const base: Ancora = {
+          ...ancora,
+          generazione: generazioneDi(ancora.indice) ?? ancora.generazione,
+        };
         void archivio
           .intervallo(Math.min(da, indice), Math.max(da, indice))
           .then((presi) => {
@@ -1246,7 +1253,7 @@ export function Cartelle({
           });
         return;
       }
-      const qui: Ancora = { indice, id: brano.id, generazione };
+      const qui: Ancora = { indice, id: brano.id, generazione: generazioneDi(indice) };
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         setSceltaBrani((prima) => {
@@ -1265,7 +1272,11 @@ export function Cartelle({
     (indice: number) => {
       const brano = archivio.riga(indice);
       if (brano === undefined) return;
-      const qui: Ancora = { indice, id: brano.id, generazione: archivio.generazione };
+      const qui: Ancora = {
+        indice,
+        id: brano.id,
+        generazione: archivio.rigaFresca(indice) === undefined ? null : archivio.generazione,
+      };
       setSceltaBrani((prima) => {
         const dopo = new Set(prima.ids);
         if (!dopo.delete(brano.id)) dopo.add(brano.id);
