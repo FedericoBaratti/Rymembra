@@ -83,10 +83,11 @@ pub const ANCORA: usize = 3;
 
 /// Quante settimane restano prima di essere buttate.
 ///
-/// Quattro. Servono a due cose: non ripetere la settimana appena passata, e
-/// lasciare che chi apre il programma dopo dieci giorni ritrovi la raccolta di
-/// cui si ricordava. Oltre il mese è archivio di qualcosa che nessuno ha chiesto
-/// di archiviare.
+/// Quattro. Servono a due cose: non ripetere quel che è già uscito — per i
+/// Ripescati tutte e quattro, per le raccolte per somiglianza la settimana
+/// appena passata: vedi [`genera`] —, e lasciare che chi apre il programma dopo
+/// dieci giorni ritrovi la raccolta di cui si ricordava. Oltre il mese è
+/// archivio di qualcosa che nessuno ha chiesto di archiviare.
 pub const SETTIMANE_TENUTE: i64 = 4;
 
 /// Quanti candidati al ripescaggio si leggono prima di ordinarli.
@@ -147,15 +148,26 @@ pub fn genera(tx: &Transaction<'_>, lunedi: i64, adesso: i64) -> Result<usize, A
     if gia_generate(tx, lunedi)? {
         return Ok(0);
     }
+    // Il materiale di **prima** del calcolo: è quello con cui la settimana è
+    // girata, e quello contro cui una settimana rimasta vuota si confronterà.
+    let materiale = Materiale::di(tx, lunedi)?;
 
-    // Quel che è uscito lunedì scorso non esce di nuovo. Solo la settimana prima
-    // e non tutte e quattro: su una libreria piccola escludere un mese intero
-    // vorrebbe dire non avere più niente da proporre — e la promessa è «qualcosa
-    // di diverso da sette giorni fa», non «mai più lo stesso brano».
-    let visti = della_scorsa(tx, lunedi.saturating_sub(SETTIMANA_MS))?;
+    // Quel che è già uscito non esce di nuovo, per due misure diverse. I
+    // Ripescati sono una manciata di brani amati e fermi, e su una libreria con
+    // pochi candidati le stesse due ventine si alternavano a settimane alterne:
+    // si esclude tutto quel che le settimane tenute hanno mostrato (D-63). Le
+    // raccolte per somiglianza pescano da tutta la libreria analizzata, e per
+    // loro basta la settimana prima: la promessa è «qualcosa di diverso da sette
+    // giorni fa», non «mai più lo stesso brano».
+    let visti_ripescati = usciti_fra(
+        tx,
+        lunedi.saturating_sub(SETTIMANE_TENUTE.saturating_mul(SETTIMANA_MS)),
+        lunedi,
+    )?;
+    let visti = usciti_fra(tx, lunedi.saturating_sub(SETTIMANA_MS), lunedi)?;
 
     let mut scritte: usize = 0;
-    if let Some(brani) = ripescati(tx, lunedi, &visti)? {
+    if let Some(brani) = ripescati(tx, lunedi, &visti_ripescati)? {
         scrivi(tx, lunedi, RIPESCATI, 0, None, &brani, adesso)?;
         scritte = scritte.saturating_add(1);
     }
@@ -170,6 +182,11 @@ pub fn genera(tx: &Transaction<'_>, lunedi: i64, adesso: i64) -> Result<usize, A
     // Nella stessa transazione di quel che ha appena scritto: o si è generato
     // il lunedì e si è segnato, o non è successo niente delle due.
     crate::settings::write(tx, CHIAVE_ULTIMO, &lunedi.to_string())?;
+    if scritte == 0 {
+        crate::settings::write(tx, CHIAVE_VUOTA, &materiale.in_testo(lunedi))?;
+    } else {
+        crate::settings::forget(tx, CHIAVE_VUOTA)?;
+    }
     Ok(scritte)
 }
 
@@ -316,21 +333,90 @@ const CHIAVE_ULTIMO: &str = "settimana.ultimo_lunedi";
 /// due lunedì veri.
 const STESSA_SETTIMANA_MS: i64 = 12 * 60 * 60 * 1000;
 
+/// La chiave in `settings` che ricorda con che materiale è girata una
+/// settimana rimasta vuota: vedi [`Materiale`].
+const CHIAVE_VUOTA: &str = "settimana.vuota";
+
+/// Quel che una settimana ha a disposizione per riempirsi.
+///
+/// # A cosa serve
+///
+/// A rifare una settimana **vuota** quando nel frattempo è arrivato di che
+/// riempirla (D-63). [`CHIAVE_ULTIMO`] segna «ho girato» anche quando non è
+/// uscito niente — rifare il calcolo a ogni apertura della Home costerebbe
+/// troppo —, e così chi installa di martedì, o importa la cronologia di
+/// Spotify dopo aver aperto la Home, non vedeva né Ripescati né Ancora fino al
+/// lunedì dopo, anche se l'analisi finiva in un'ora.
+///
+/// Le due cose che fanno una settimana sono la scala sonora (senza, nessuna
+/// raccolta per somiglianza) e i candidati al ripescaggio (brani ascoltati e
+/// fermi da prima della soglia). Si ricordano alla generazione vuota; a ogni
+/// apertura della Home si rileggono — una riga di `impronta_scala` e un
+/// conteggio su un indice — e la settimana si rifà se la scala è arrivata o i
+/// candidati sono cresciuti. Non per un ascolto nuovo: il brano appena sentito
+/// sta sopra la soglia della settimana e non cambia il conto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Materiale {
+    /// C'è una scala sonora per questa versione delle impronte.
+    scala: bool,
+    /// Quanti brani ascoltati sono fermi da prima della soglia del ripescaggio.
+    candidati: i64,
+}
+
+impl Materiale {
+    /// Il materiale di adesso, per il lunedì dato.
+    fn di(connection: &Connection, lunedi: i64) -> Result<Self, AppError> {
+        let scala = sonora::scala(connection)?.is_some();
+        let candidati: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks
+                 WHERE play_count > 0 AND last_played_at IS NOT NULL AND last_played_at < ?1",
+                [soglia_del_ripescaggio(lunedi)],
+                |row| row.get(0),
+            )
+            .map_err(|err| db_error("conteggio dei candidati al ripescaggio", &err))?;
+        Ok(Self { scala, candidati })
+    }
+
+    /// Com'è scritto in [`CHIAVE_VUOTA`]: il lunedì, la scala, i candidati.
+    fn in_testo(self, lunedi: i64) -> String {
+        format!("{lunedi} {} {}", u8::from(self.scala), self.candidati)
+    }
+
+    /// Il materiale con cui è girato `lunedi`, se è scritto per quella
+    /// settimana.
+    fn da_testo(testo: &str, lunedi: i64) -> Option<Self> {
+        let mut pezzi = testo.split(' ');
+        let scritto: i64 = pezzi.next()?.parse().ok()?;
+        let scala = match pezzi.next()? {
+            "0" => false,
+            "1" => true,
+            _ => return None,
+        };
+        let candidati: i64 = pezzi.next()?.parse().ok()?;
+        (pezzi.next().is_none() && scritto.abs_diff(lunedi) < STESSA_SETTIMANA_MS.unsigned_abs())
+            .then_some(Self { scala, candidati })
+    }
+
+    /// C'è qualcosa in più di quando la settimana è girata a vuoto?
+    const fn e_arrivato_qualcosa(self, prima: Self) -> bool {
+        (self.scala && !prima.scala) || self.candidati > prima.candidati
+    }
+}
+
 /// Se il lunedì è già stato generato.
 ///
-/// Le righe si contano lo stesso, e non per ridondanza: i database generati
-/// prima che questa chiave esistesse hanno le raccolte e non hanno la chiave, e
+/// Le righe si contano, e non per ridondanza: i database generati prima che
+/// [`CHIAVE_ULTIMO`] esistesse hanno le raccolte e non hanno la chiave, e
 /// senza il conteggio se le rifarebbero tutte una volta. Costa una `COUNT` su
 /// un indice, una volta per apertura della Home.
 ///
+/// Una settimana segnata e **vuota** è fatta finché non arriva di che
+/// riempirla: vedi [`Materiale`]. Una settimana vuota segnata da una versione
+/// che non ricordava il materiale si rifà una volta.
+///
 /// Il confronto è per settimana, non per istante: vedi [`STESSA_SETTIMANA_MS`].
 fn gia_generate(connection: &Connection, lunedi: i64) -> Result<bool, AppError> {
-    if crate::settings::read(connection, CHIAVE_ULTIMO)?
-        .and_then(|v| v.parse::<i64>().ok())
-        .is_some_and(|ultimo| ultimo.abs_diff(lunedi) < STESSA_SETTIMANA_MS.unsigned_abs())
-    {
-        return Ok(true);
-    }
     let quante: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM settimana_raccolta WHERE lunedi BETWEEN ?1 - ?2 AND ?1 + ?2",
@@ -338,24 +424,43 @@ fn gia_generate(connection: &Connection, lunedi: i64) -> Result<bool, AppError> 
             |row| row.get(0),
         )
         .map_err(|err| db_error("conteggio delle raccolte della settimana", &err))?;
-    Ok(quante > 0)
+    if quante > 0 {
+        return Ok(true);
+    }
+    let segnata = crate::settings::read(connection, CHIAVE_ULTIMO)?
+        .and_then(|v| v.parse::<i64>().ok())
+        .is_some_and(|ultimo| ultimo.abs_diff(lunedi) < STESSA_SETTIMANA_MS.unsigned_abs());
+    if !segnata {
+        return Ok(false);
+    }
+    let Some(prima) = crate::settings::read(connection, CHIAVE_VUOTA)?
+        .and_then(|testo| Materiale::da_testo(&testo, lunedi))
+    else {
+        return Ok(false);
+    };
+    Ok(!Materiale::di(connection, lunedi)?.e_arrivato_qualcosa(prima))
 }
 
-/// I brani già usciti da un certo lunedì in poi.
+/// I brani usciti nelle settimane da `da` fino a quella **prima** di `lunedi`.
 ///
-/// Con [`STESSA_SETTIMANA_MS`] di margine sotto: la serie di sette giorni fa
-/// può essere stata scritta con l'altro scostamento, un'ora prima del lunedì
-/// che si chiede.
-fn della_scorsa(tx: &Transaction<'_>, da: i64) -> Result<Vec<i64>, AppError> {
+/// Con [`STESSA_SETTIMANA_MS`] di margine ai due capi: la serie di sette giorni
+/// fa può essere stata scritta con l'altro scostamento, un'ora prima o dopo del
+/// lunedì esatto. Il limite in alto non è un dettaglio: senza, le raccolte di
+/// un lunedì «del futuro» — un orologio messo avanti, poi rimesso giusto —
+/// contavano come uscite la settimana scorsa per tutti gli anni che mancavano a
+/// quella data, e i ripescati migliori restavano esclusi da ogni lunedì.
+fn usciti_fra(tx: &Transaction<'_>, da: i64, lunedi: i64) -> Result<Vec<i64>, AppError> {
     let mut statement = tx
         .prepare(
             "SELECT b.track_id FROM settimana_brano b
              JOIN settimana_raccolta r ON r.id = b.raccolta_id
-             WHERE r.lunedi >= ?1 - ?2",
+             WHERE r.lunedi BETWEEN ?1 - ?3 AND ?2 - ?3",
         )
         .map_err(|err| db_error("lettura delle raccolte passate", &err))?;
     let righe = statement
-        .query_map([da, STESSA_SETTIMANA_MS], |row| row.get::<_, i64>(0))
+        .query_map([da, lunedi, STESSA_SETTIMANA_MS], |row| {
+            row.get::<_, i64>(0)
+        })
         .map_err(|err| db_error("lettura delle raccolte passate", &err))?;
     let mut fuori = Vec::new();
     for riga in righe {
@@ -380,17 +485,8 @@ fn ripescati(
     // dominio, qui sotto, e decide comunque lui. Costa una lettura dei brani
     // ascoltati, una volta a settimana.
     //
-    // La soglia dei sessanta giorni è una costante in virgola mobile perché il
-    // dominio la usa per dividere. Qui serve come intero, e il
-    // troncamento è esattamente ciò che si vuole: la soglia SQL taglia un po'
-    // più larga della curva dell'oblio, e un candidato in più che poi prende
-    // punteggio zero è preferibile a un candidato in meno che non si vede.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "troncamento voluto e discusso qui sopra: OBLIO_MINIMO_GIORNI vale 60"
-    )]
-    let giorni = OBLIO_MINIMO_GIORNI.trunc() as i64;
-    let soglia = lunedi.saturating_sub(giorni.saturating_mul(GIORNO_MS));
+    // La soglia dei sessanta giorni: vedi `soglia_del_ripescaggio`.
+    let soglia = soglia_del_ripescaggio(lunedi);
     let mut statement = tx
         .prepare(
             "SELECT id, play_count, last_played_at, liked FROM tracks
@@ -451,6 +547,22 @@ fn ripescati(
     punteggi.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     punteggi.truncate(QUANTI);
     Ok(Some(punteggi.into_iter().map(|(id, _)| id).collect()))
+}
+
+/// Sotto quale ultimo ascolto un brano può essere ripescato il `lunedi` dato.
+///
+/// La soglia dei sessanta giorni è una costante in virgola mobile perché il
+/// dominio la usa per dividere. Qui serve come intero, e il troncamento è
+/// esattamente ciò che si vuole: la soglia SQL taglia un po' più larga della
+/// curva dell'oblio, e un candidato in più che poi prende punteggio zero è
+/// preferibile a un candidato in meno che non si vede.
+fn soglia_del_ripescaggio(lunedi: i64) -> i64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "troncamento voluto e discusso qui sopra: OBLIO_MINIMO_GIORNI vale 60"
+    )]
+    let giorni = OBLIO_MINIMO_GIORNI.trunc() as i64;
+    lunedi.saturating_sub(giorni.saturating_mul(GIORNO_MS))
 }
 
 /// Le raccolte per somiglianza, o niente se non c'è ancora da raggruppare.
@@ -581,11 +693,19 @@ fn scrivi(
     Ok(())
 }
 
-/// Butta le settimane troppo vecchie.
+/// Butta le settimane troppo vecchie, e quelle «del futuro».
+///
+/// Il futuro c'è quando l'orologio è stato avanti — la batteria del BIOS, una
+/// data cambiata a mano per una prova — e la Home ha generato quel lunedì: le
+/// sue righe, oltre a non essere vere, restavano per sempre, perché a una
+/// settimana più recente di quella che si genera nessuno arrivava mai.
 fn potatura(tx: &Transaction<'_>, lunedi: i64) -> Result<(), AppError> {
     let limite = lunedi.saturating_sub(SETTIMANE_TENUTE.saturating_mul(SETTIMANA_MS));
-    tx.execute("DELETE FROM settimana_raccolta WHERE lunedi < ?1", [limite])
-        .map_err(|err| db_error("potatura delle raccolte vecchie", &err))?;
+    tx.execute(
+        "DELETE FROM settimana_raccolta WHERE lunedi < ?1 OR lunedi > ?2 + ?3",
+        [limite, lunedi, STESSA_SETTIMANA_MS],
+    )
+    .map_err(|err| db_error("potatura delle raccolte vecchie", &err))?;
     Ok(())
 }
 
@@ -1068,6 +1188,126 @@ mod prove {
         assert!(
             prima.iter().all(|id| !dopo.contains(id)),
             "la settimana nuova ripete quella vecchia"
+        );
+    }
+
+    /// I Ripescati non tornano per tutte le settimane che si tengono (D-63).
+    ///
+    /// Con l'esclusione della sola settimana prima, su una libreria con pochi
+    /// candidati le stesse due ventine si alternavano a settimane alterne.
+    #[test]
+    fn ripescati_esclude_le_quattro_settimane_tenute() {
+        let mut connection = libreria();
+        brani_di(&connection, 1, 100, "Art", "Rock");
+        for id in 1..=100 {
+            ascoltato(&connection, id, 5, 400, false);
+        }
+        let settimane: Vec<i64> = (0..5).map(|n| LUNEDI + n * SETTIMANA_MS).collect();
+        for quando in &settimane {
+            genera_a(&mut connection, *quando);
+        }
+        let usciti_in: Vec<Vec<i64>> = settimane.iter().map(|q| usciti(&connection, *q)).collect();
+        for (n, questa) in usciti_in.iter().enumerate() {
+            assert_eq!(questa.len(), QUANTI, "settimana {n}");
+            for (m, prima) in usciti_in.iter().enumerate().take(n) {
+                assert!(
+                    questa.iter().all(|id| !prima.contains(id)),
+                    "la settimana {n} ripete la {m}"
+                );
+            }
+        }
+    }
+
+    /// Un orologio messo avanti non lascia raccolte «del futuro» (R07-9).
+    ///
+    /// La data salta di dieci anni, la Home genera quel lunedì; poi l'orologio
+    /// torna giusto. Le righe del futuro restavano per sempre (la potatura
+    /// toglie solo le vecchie) e contavano come «uscite la settimana scorsa»:
+    /// i ripescati migliori erano esclusi da ogni lunedì fino a quella data.
+    #[test]
+    fn un_lunedi_del_futuro_non_esclude_per_sempre() {
+        let mut connection = libreria();
+        brani_di(&connection, 1, 25, "Art", "Rock");
+        for id in 1..=25 {
+            ascoltato(&connection, id, 5, 400, false);
+        }
+        let futuro = LUNEDI + 520 * SETTIMANA_MS;
+        assert_eq!(genera_a(&mut connection, futuro), 1);
+        assert_eq!(
+            genera_a(&mut connection, LUNEDI),
+            1,
+            "i ripescati di adesso"
+        );
+        assert_eq!(usciti(&connection, LUNEDI).len(), QUANTI);
+        let del_futuro: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM settimana_raccolta WHERE lunedi > ?1",
+                [LUNEDI + SETTIMANA_MS],
+                |r| r.get(0),
+            )
+            .expect("conteggio");
+        assert_eq!(del_futuro, 0, "le raccolte del futuro sono rimaste");
+    }
+
+    /// Una settimana rimasta vuota si rifà quando arriva la cronologia (D-63).
+    ///
+    /// Chi installa di martedì e importa la cronologia di Spotify dopo aver
+    /// aperto la Home non vedeva i Ripescati fino al lunedì dopo.
+    #[test]
+    fn una_settimana_vuota_si_rifa_quando_arriva_la_cronologia() {
+        let mut connection = libreria();
+        brani_di(&connection, 1, 12, "Art", "Rock");
+        assert!(
+            aggiorna(&mut connection, LUNEDI, LUNEDI)
+                .expect("primo giro")
+                .is_empty()
+        );
+        assert!(gia_generate(&connection, LUNEDI).expect("controllo"));
+
+        // L'importazione della cronologia: ascolti vecchi di un anno.
+        for id in 1..=12 {
+            ascoltato(&connection, id, 5, 400, false);
+        }
+        assert!(
+            !gia_generate(&connection, LUNEDI).expect("controllo"),
+            "è arrivata la cronologia: la settimana vuota va rifatta"
+        );
+        let raccolte = aggiorna(&mut connection, LUNEDI, LUNEDI).expect("secondo giro");
+        assert_eq!(raccolte.len(), 1);
+        assert!(gia_generate(&connection, LUNEDI).expect("controllo"));
+    }
+
+    /// …e quando arriva la scala sonora, anche se poi non ne esce niente.
+    #[test]
+    fn una_settimana_vuota_si_rifa_quando_arriva_la_scala() {
+        let mut connection = libreria();
+        let quante = i64::try_from(sonora::MINIMO_BRANI).unwrap_or(50);
+        brani_di(&connection, 1, quante, "Art", "Rock");
+        assert_eq!(genera_a(&mut connection, LUNEDI), 0);
+        assert!(gia_generate(&connection, LUNEDI).expect("controllo"));
+
+        // L'analisi finisce: le impronte ci sono e la scala è tarata.
+        let tx = connection.transaction().expect("transazione");
+        let misurati: Vec<sonora::Misurato> = (1..=quante)
+            .map(|id| sonora::Misurato::Fatta {
+                track_id: id,
+                vettore: (0..rymembra_play::impronta::DIMENSIONI)
+                    .map(|i| (id as f32) * 0.1 + i as f32 * 0.5)
+                    .collect(),
+            })
+            .collect();
+        sonora::registra(&tx, &misurati, 1_000).expect("impronte");
+        assert!(sonora::ritara(&tx, 1_000).expect("scala").is_some());
+        tx.commit().expect("commit");
+
+        assert!(
+            !gia_generate(&connection, LUNEDI).expect("controllo"),
+            "è arrivata la scala: la settimana vuota va rifatta"
+        );
+        genera_a(&mut connection, LUNEDI);
+        assert!(
+            gia_generate(&connection, LUNEDI).expect("controllo"),
+            "rifatta una volta, con la scala, non si rifà a ogni apertura"
         );
     }
 
