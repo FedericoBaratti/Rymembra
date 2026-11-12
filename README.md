@@ -54,7 +54,8 @@ interrupted track at the exact point where it stopped — here *Fuochi a mare*, 
 1:32 — and one
 click plays it from there. Then «Ascoltati di recente» (*Recently played*);
 further down the page, out of the picture, the most recently added albums and
-the records you haven't played in a while.
+the records you haven't played in six months or more, among those in the
+library for at least a month.
 
 On the left, the destinations with their counts — «Cartelle» (*Folders*) counts
 the watched folders, not the tracks, and «Esplora» (*Explore*) has no count at
@@ -126,6 +127,18 @@ The imports themselves run in the «Importazioni» (*Imports*) page: the queue
 goes on with the screen closed, and the reports can be opened again from
 there.
 
+An import never rewrites a playlist you made yourself. Each import remembers
+which playlists it created: importing the same source again rewrites only
+those, and when a playlist of yours already has the same name, the imported
+one goes beside it — “Chill (Spotify)”, “(Internet Archive)”, “(file)”, or
+“(1.0)” for the old database, and likewise “(Drive)” for a Drive restore and
+“(.ryprofile)” for a profile — and the plan says so first. Importing the old
+database again only lengthens the playlists it brought the time before. A
+heart you removed here stays removed when the archive is imported again. When
+a playlist at the source loses a track, the import queue drops that track if
+it was still waiting, and “Send the history you already have too”, for
+scrobbling, sends each listen once even if you press it twice.
+
 ### What it doesn't cover
 
 No freely accessible source distributes the commercial catalog. This is not a
@@ -133,7 +146,10 @@ technical limitation to be worked around: it is the reason other programs carry
 out operations the terms of the services they use do not permit. Rymembra covers
 what it can through lawful channels and, for the rest of the catalog, points at
 where to buy it. Anyone looking for a tool to obtain commercial discographies
-for free will not find that feature in Rymembra.
+for free will not find that feature in Rymembra. The one exception is opt-in:
+the iTunes and Deezer searches used for a second opinion on metadata, whose
+terms do not clearly cover a player, are off by default for everyone, and
+turning either on is your call (see [`PRIVACY.md`](PRIVACY.md) § 2).
 
 ---
 
@@ -255,9 +271,13 @@ a longer listening history than the public API offers.
   itself without breaking the others, and underneath everything the old rule
   cascade remains as a floor. The queue says which layer chose each track.
 - **Monday**: up to four collections of twenty tracks, computed on this
-  computer the first time the Home opens in a new week, which stay put for
-  seven days and then become other ones.
-  What came out last week does not come out again.
+  computer when a new week begins and the Home is open, or the first time it
+  opens after that, which stay put for
+  seven days and then become other ones. A week that came out empty — a new
+  library, the analysis still running — is computed again as soon as there is
+  something to fill it with, such as the analysis finishing or an imported
+  history. The rediscovered tracks leave out what the last four weeks showed;
+  the collections by similarity, what last week showed.
 - **Skins** that can repaint and animate any part of the window, with a
   built-in visual editor (the Studio) and a packaged distribution format.
   Inside the Studio, a side chat can ask a language model to make the change
@@ -291,7 +311,8 @@ a longer listening history than the public API offers.
   root that does not exist on this machine, and it only adds: it never deletes
   a playlist, switches off a watched folder, removes a like or clears a
   rating, and in a playlist both libraries have it only appends the tracks
-  missing here, without reordering it or changing its rules. A skin the
+  missing here, without reordering it or changing its rules (a different
+  playlist that only shares the name enters beside it). A skin the
   profile would make the one worn passes the same review as an installed
   `.ryskin`, or stays installed but not worn. The old seventeen-line JSON is
   still read, and no longer written. Profiles and skin packages written by the
@@ -331,8 +352,10 @@ a longer listening history than the public API offers.
   someone joins, the host chooses whether they just listen, take the controls
   (pause, skip, seek), or can also change the queue and add their own tracks;
   volume, equalizer, output and latency stay each person's own. The first
-  time two devices meet, both screens show the same four-digit code; after
-  that everything travels encrypted, and only between devices you paired.
+  time two devices meet, the one asked to pair shows a row with “Show the
+  code” and “No”, and only after “Show the code” do both screens show the same
+  four-digit code; after that everything travels encrypted, and only between
+  devices you paired.
   Devices linked with a QR code (below) are paired already, and can listen together
   away from home too: a linked device that hosts shows up as «via internet».
   Off by default; what it sends is documented in [`PRIVACY.md`](PRIVACY.md)
@@ -418,6 +441,18 @@ key can be changed in *Settings → Keyboard shortcuts*). Deleting a playlist
 also asks first. With a dialog open, the window's × closes the dialog first,
 as Esc does.
 
+In the lists, Space selects the focused row and Shift+↑/↓ extends the
+selection, as in the Folders tree. A row of the queue or of a playlist you
+made can be moved without dragging it: its menu (the right click on the
+computer, the ⋮ on the phone) has “Move up”, “Move down” and “Move to top” —
+in the queue, the top means right after the track playing.
+
+A smart playlist holds at most 5,000 tracks; its editor counts how many
+match the rules, also beyond that, and says how many get in. A track with no
+value — no year, no rating, no duration — never satisfies a numeric
+comparison, “not equal” included: a rule on a year before 1980 no longer
+takes in every track without a year. To find those, there is “is missing”.
+
 ---
 
 ## Customization
@@ -465,11 +500,23 @@ device, the «Listen together» code, invitations, the firewall question,
 deleting from disk, reviewing or replacing a skin. There a skin's layers,
 images and fonts do not apply, the text is in the system font, and only its
 colours remain. A skin's images may have at most as many pixels as 4096 ×
-4096, and its id cannot be a Windows device name (`con`, `nul`, `com1`…).
+4096 — checked when the skin is installed, so a skin already installed with
+larger ones keeps working — and its id cannot be a Windows device name
+(`con`, `nul`, `com1`…). The frame’s measures and every effect’s parameters
+have bounds too: a clip larger than 64 pixels or a player pushed off the
+window is refused at installation, and a part made invisible or clipped shut
+is a question of the review before the skin is worn.
 Installing a skin — from the file picker or by dropping it on the window —
 whose id belongs to a different installed one asks first, showing both; the
-replaced skin is kept aside on this computer, and the notice that follows
-offers «Put it back».
+replaced skin is kept aside on this computer — the last three versions for
+each id, removed with the skin when it is uninstalled — and the notice that
+follows offers «Put it back».
+
+Two ways out stay open whatever a skin does to the window. A new skin from a
+file, once worn, asks “Keep “name”?”: without an answer, the previous skin
+comes back by itself after fifteen seconds, for a window that cannot be read
+or does not respond. And holding Shift while Rymembra starts opens the
+window with Plain; a notice says so and offers “Put it back”.
 
 ![The Studio, the skin editor](immagini/studio.webp)
 
@@ -810,9 +857,11 @@ clause, which binds the listener too.
 ## Privacy
 
 Rymembra collects no telemetry, requires no account and talks to no servers other
-than these: GitHub, to check for updates, and MusicBrainz, Cover Art Archive,
-iTunes, Deezer and ListenBrainz, for metadata, cover art and similarity — both
-on by default, and both can be switched off; LRCLIB for lyrics, only while the
+than these: GitHub, to check for updates; MusicBrainz and the Cover Art
+Archive, for metadata and cover art, and ListenBrainz, for similarity — on by
+default, each with a switch; iTunes and Deezer, only if you switch them on
+(they are off by default, because their terms do not clearly cover this use);
+LRCLIB for lyrics, only while the
 lyrics panel is open or when you fill the library; the music catalogs, when you
 search or import; and, only if you connect them, Google Drive, the cloud
 services whose folders you add, the scrobbling service and the language model
@@ -829,7 +878,8 @@ bytes; they share music only with the devices you linked with a QR code. A
 inside that same link, encrypted twice.
 
 [`PRIVACY.md`](PRIVACY.md) lists every single network request the program can
-make and the data each one transmits.
+make and the data each one transmits, and what the system’s own browser
+engine, which draws the window, collects by itself.
 
 ---
 
@@ -877,7 +927,11 @@ constraint is stated explicitly in the terms of use.
   networks, «client isolation») cannot be used at all: nothing reaches the
   host. On a very slow or congested link (around 5 Mbit/s with tens of
   milliseconds of jitter) a member may take a while to estimate the host's
-  clock before it starts.
+  clock before it starts, and after thirty seconds with every exchange too
+  slow it says “The network is too slow to follow the session”. When the host
+  changes track and the new one is slow to open on a member (a long variable
+  bitrate MP3 over the network, for instance), the member keeps playing the
+  previous track until the new one is ready.
 - **Cloud folders.** Each service is reached through an app you register
   yourself, and two of the registrations have a catch. Microsoft no longer lets
   a personal account register an app outside a directory: OneDrive needs a
@@ -917,6 +971,16 @@ constraint is stated explicitly in the terms of use.
   several members can stall, and over a jittery link the members stay in
   step less tightly than at home (clock samples are kept up to a 400 ms round
   trip instead of 100 ms).
+- **The window’s engine on Windows.** WebView2 sends Microsoft its required
+  diagnostic data, and a minidump when one of its processes crashes, which
+  can hold the titles on screen. Turning the minidumps off needs an option of
+  the WebView2 environment that Tauri does not expose yet; see
+  [`PRIVACY.md`](PRIVACY.md) § 6-bis.
+- **Sorting by title.** The Albums and Artists grids sort ignoring accents and
+  a leading article (“The Beatles” under B, “Édith Piaf” under E); the Tracks
+  list sorted by title or by shelf still puts accented initials after Z,
+  because doing it there at the same speed needs a new indexed column in the
+  database, which is planned.
 - **Proxies.** Rymembra follows the proxy set in Windows Settings
   (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
   NAS, a computer at home — and this computer itself always go direct. It does
@@ -962,6 +1026,10 @@ constraint is stated explicitly in the terms of use.
   - **The screen** stays upright: the phone interface is locked to portrait
     in this version. The guided tour of the computer is not offered on the
     phone.
+  - **TalkBack** reads the app, but cannot offer custom actions on a row: a
+    page drawn in Android’s WebView has no way to add them. Moving a row of
+    the queue or of a playlist is in the row’s ⋮ menu (“Move up”, “Move
+    down”, “Move to top”).
   - **Deleting a track from disk** sends it to Android's trash, from which the
     Files app restores it for 30 days, after Android's own confirmation. That
     trash exists from Android 11 and only for files Android's media index
@@ -1002,10 +1070,11 @@ constraint is stated explicitly in the terms of use.
     and Android then refuses to install the public APK over it, or it over
     the public one.
 
-Two questions require a written clarification before publication: whether
-**donations** constitute commercial use for the purposes of Jamendo's terms
-(`licensing@jamendo.com`) and of the Deezer API used for metadata. Failing a
-reply, the Jamendo module stays behind a Cargo feature that can be switched off.
+One question still has no written answer: whether **donations** constitute
+commercial use for the purposes of Jamendo’s terms (`licensing@jamendo.com`)
+and of the Deezer API. Until there is one, the Jamendo module stays behind a
+Cargo feature that is off in the builds, and Deezer, like iTunes, is off by
+default and turned on only by whoever uses it.
 
 ---
 

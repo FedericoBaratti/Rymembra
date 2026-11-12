@@ -2,8 +2,8 @@
 
 Last updated: 12 November 2026.
 
-**Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
-to me.** There is no Rymembra server. There is no account to create. There is
+**Rymembra has no telemetry and no analytics, sends no crash reports of its
+own, and sends nothing to me.** There is no Rymembra server. There is no account to create. There is
 nothing I can see of what you do. (When you host a «Listen together» session,
 your own PC serves the other PCs on your network that you paired with it — or,
 away from home, the devices you linked — and nobody else: § 4-ter. When you
@@ -13,7 +13,9 @@ through public relays that see only encrypted bytes: § 4-quinquies.)
 That said, the program does talk to the network — a player that looks for cover
 art and downloads music necessarily does. This document lists **every single
 request** it can make, when it makes it, and what goes inside. If you find one
-that isn't written here, that's a defect: report it.
+that isn't written here, that's a defect: report it. The browser engine the
+window is drawn with is a part of Windows or of Android with data collection
+of its own, which Rymembra can only partly switch off: § 6-bis says what.
 
 ---
 
@@ -247,15 +249,20 @@ constructor that allowed that was removed along with the code that needed it.
 These start on their own, on a background thread, when the library holds tracks
 with no album, no cover art, or a title that looks derived from a file name.
 Automatic enrichment **can be switched off** in Settings › Folders and
-scanning › Metadata.
+scanning › Metadata. In the same place, **iTunes and Deezer each have a
+switch of their own, and both are off by default** — for everyone, also
+after updating from a version that used them: their terms do not clearly
+cover this use, so turning them on is your call, and the note next to each
+switch says why. With both off, a single track is not identified on its own,
+only whole albums.
 
 | Host | What reaches it | Rate |
 | --- | --- | --- |
 | `musicbrainz.org` | The title, the artist and the number of tracks of an album you're trying to identify; for a single track, its title and artist (or the title alone); then the MusicBrainz identifier of each candidate record, to read it | One request every 1.1 s |
 | `coverartarchive.org`, and `archive.org` where it redirects | The MusicBrainz identifier of a record | One every 250 ms |
-| `itunes.apple.com` | Artist and title, for the cover | One every 3.1 s |
-| `api.deezer.com` | Artist and title, for the cover | One every 220 ms |
-| Apple's and Deezer's image servers (`*.mzstatic.com`, `*.dzcdn.net`) | The request for the cover that iTunes or Deezer pointed to | One every 250 ms |
+| `itunes.apple.com` | Only if you switch it on: the artist and title of each track being identified, for a second opinion, the genre and the cover | One every 3.1 s |
+| `api.deezer.com` | Only if you switch it on: the artist and title of each track being identified, for another opinion and the cover | One every 220 ms |
+| Apple’s and Deezer’s image servers (`*.mzstatic.com`, `*.dzcdn.net`) | Only with those two on: the request for the cover that iTunes or Deezer pointed to | One every 250 ms |
 
 The cover of the service whose answer wins is downloaded from the address in
 that answer, following its redirects; Rymembra checks only that it is an
@@ -384,16 +391,20 @@ of the batches is the database's and not your preferences' — but it would be
 dishonest to write «one track at a time» and let you believe it's less than it
 is.
 
-**When it starts.** On the background thread, like the metadata, and **only for
-tracks that already have a MusicBrainz identifier** — that is, the ones
-enrichment has recognized. On a library that hasn't been enriched, nothing
-starts. Each identifier is asked about **once every three months**: the answer
+**When it starts.** On the background thread, in the same passes as the
+metadata, and **only for tracks that already have a MusicBrainz identifier** —
+the ones enrichment has recognized, or whose tags already carried one (a
+library tagged with MusicBrainz Picard, for example). It runs even when there
+is nothing to enrich, and even with enrichment switched off. On a library with
+no such identifier, nothing starts. Each identifier is asked about **once every three months**: the answer
 is the residue of years of aggregated listening and doesn't change from one day
 to the next, so asking often would be traffic spent getting the same number
 back.
 
-**It switches off** in Settings › Folders and scanning › Metadata, together
-with the enrichment it depends on. Switched off, the sound and your listening
+**It switches off** with its own switch, “Find similar tracks with
+ListenBrainz”, in Settings › Folders and scanning › Metadata. Until you touch
+it, it follows the switch of automatic enrichment, as it did before it had
+one of its own: if you had turned enrichment off, it stays off. Switched off, the sound and your listening
 remain: the queue keeps working, it knows a little less.
 
 **Why ListenBrainz and not something else.** Because MetaBrainz's data is CC0 —
@@ -461,8 +472,12 @@ before anything is sent.
 **The conversation is kept on this computer.** From 3.0 it is saved next to the
 draft it is about, in `skin\bozze\<id>\chat.json` inside the data folder: what
 you wrote, what the model answered, the token counts the service reported and
-the list of changes each answer made. The pictures are not saved. Discarding
-the draft deletes it, and «New conversation» empties it. It is **not** part of
+the list of changes each answer made. The pictures are not saved. «New
+conversation» empties it. Discarding the draft does **not** delete it: so that
+the discard can be undone, the conversation is moved, with the draft’s own
+files, next to the snapshot taken before discarding
+(`skin\istantanee\<id>\<snapshot>\chat.json`), and it goes only when that
+snapshot drops out of the last twenty kept for the skin. It is **not** part of
 the Google Drive backup (§ 4) nor of the profile archive (§ 4-bis): both carry
 only the draft's `skin.json`.
 
@@ -578,7 +593,8 @@ network host this PC already uses for its watched folders or downloads: a
 folder on any other network host is listed as not looked for, because
 asking whether `\\host\share` exists means opening a connection to that
 host, and it is added — and later scanned — only if you go on with the
-restore.
+restore. A playlist of the backup that only has the same name as one made
+here enters beside it, as “Name (Drive)”, and yours is left as it is.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
 account first sends it to Google's revocation address, which withdraws the
@@ -663,10 +679,12 @@ What is **not** inside, and cannot be:
 Importing one **adds and never removes**: listens are summed, playlists that
 exist only in the profile arrive as they are, covers and skins are written
 only where none exist, and a lyric you synced by hand is never overwritten.
-In a playlist both libraries have, it only appends at the end the tracks
-missing here, once each and in the profile’s order: it does not remove or
+In a playlist both libraries have — the same playlist, carried from one to the
+other — it only appends at the end the tracks missing here, once each and in the profile’s order: it does not remove or
 reorder anything, does not bring back a track you took out of it here, and
-does not change its name, description, type or rules. It never deletes a
+does not change its name, description, type or rules. A different playlist
+that only has the same name as one of yours enters beside it, as
+“Name (.ryprofile)”. It never deletes a
 playlist, switches off a watched folder, removes a like or clears a rating,
 and a date from the future becomes the moment of the import. A skin the
 profile would make the one you wear goes through the same review as an
@@ -717,8 +735,11 @@ socket for it and sends no packet: not one.
 
 ### Pairing
 
-The first time two PCs meet, both screens show the **same four-digit code**,
-and both people confirm it. The code is computed from the encrypted handshake
+The first time two PCs meet, the one asked to pair shows a row — “A PC
+calling itself “name” is asking to pair” — with “Show the code” and “No”;
+nothing goes further unless someone there presses “Show the code”, within a
+minute. Then both screens show the **same four-digit code**, and both people
+confirm it. The code is computed from the encrypted handshake
 and from random numbers each side committed to before seeing the other's, so
 a third PC in the middle cannot arrange for two matching codes. After that
 each PC remembers the other's **public key** and name, in the table
@@ -1142,14 +1163,50 @@ check off.
 
 ---
 
+## 6-bis. The window’s engine
+
+Rymembra’s window is a web page drawn by the system’s own engine: Microsoft
+Edge WebView2 on Windows, Android System WebView on a phone. Those engines
+belong to Microsoft and Google, and collect data of their own, which
+Rymembra does not receive.
+
+**On Windows**, according to Microsoft’s page on WebView2 data and privacy:
+
+- WebView2 collects **required** diagnostic data, “necessary to maintain
+  performance and reliability”, regardless of the Windows *Diagnostic data*
+  setting. Rymembra cannot switch it off.
+- **Optional** diagnostic data — WebView2’s API and SDK usage, creation
+  failures, browser events relevant to WebView2 — is collected only when
+  optional diagnostic data is on in Windows (*Settings › Privacy & security ›
+  Diagnostics & feedback*). That setting is yours.
+- **If a WebView2 process crashes**, one or more minidump files are created
+  and sent to Microsoft. A minidump can hold part of the page’s memory, that
+  is, the titles and artists on screen. Microsoft lets an app turn this off
+  only through an option of the WebView2 environment
+  (`IsCustomCrashReportingEnabled`) that the libraries Rymembra is built on
+  do not expose; in this version **it is not switched off**.
+- **SmartScreen**, which checks the addresses a page visits with Microsoft,
+  is off in Rymembra’s window (wry, the library under Tauri, starts WebView2
+  with it disabled), and the window opens no address but its own.
+
+WebView2 keeps its own data — cache, storage, crash reports — in
+`%LOCALAPPDATA%\io.github.federicobaratti.rymembra\EBWebView` (§ 8).
+
+**On Android**, Android System WebView can send Google usage and diagnostic
+data for the apps that use it when you agreed to share usage data with
+Google; Rymembra’s manifest tells it not to (see “On an Android phone”).
+
+---
+
 ## 7. What *doesn't* happen, and is worth saying
 
 - **Little at startup, and all of it listed here.** Ten seconds after the
   window is ready comes the update check of § 6, a GET to a public file — or
   not even that, if the last one is less than five minutes old. Ninety seconds
   in, metadata enrichment (§ 2), on by default, looks at the library and asks
-  MusicBrainz and the cover services only about what is missing; it can be
-  switched off, and then it asks nothing. If you connected Last.fm or
+  MusicBrainz and the cover services only about what is missing — iTunes and
+  Deezer only if you switched them on — and similarity asks ListenBrainz
+  (§ 2-ter); each can be switched off, and then it asks nothing. If you connected Last.fm or
   ListenBrainz, the listens left in the queue are sent (§ 3). The services you
   connected yourself — the cloud folders (§ 4-quater), the Drive backup (§ 4) —
   go on talking to their own servers; sync, if you turned it on, looks for
@@ -1249,8 +1306,8 @@ What Rymembra writes, and where:
   which does not roam with your Windows profile — where Rymembra keeps the
   cache of the cloud tracks you played (`nuvola-cache`, § 4-quater), the
   cache of the covers of your linked devices (`copertine-lontane`,
-  § 4-quinquies) and, after a start that failed, `avvio.log` (see «The log»
-  below).
+  § 4-quinquies), the window engine’s own data (`EBWebView`, § 6-bis) and,
+  after a start that failed, `avvio.log` (see «The log» below).
 
 Rymembra sends none of it anywhere by itself — a synchronization file goes
 only as far as the program that syncs its folder takes it — and nothing on

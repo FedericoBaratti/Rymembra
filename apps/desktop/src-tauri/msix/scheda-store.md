@@ -210,7 +210,7 @@ Third-party components have their own licenses, listed in THIRD-PARTY-NOTICES.md
 ```
 No sign-in or test account needed: the app opens on the library and plays audio files from disk. To test: Settings > Folders and scanning, add any folder with music files, then play a track.
 
-Network use, all listed in the privacy policy; no Rymembra server, no telemetry. On by default: metadata enrichment (switchable in Settings) asks musicbrainz.org, coverartarchive.org (→ archive.org), labs.api.listenbrainz.org, itunes.apple.com, api.deezer.com. On user action only: archive.org and audius.co (Explore, links), lrclib.net (lyrics), the cloud folders the user adds (Microsoft Graph, Google Drive, Dropbox, WebDAV), Drive backup and sync, scrobbling, a language model the user configures.
+Network use, all listed in the privacy policy; no Rymembra server, no telemetry. On by default, each switchable in Settings: musicbrainz.org, coverartarchive.org (→ archive.org), labs.api.listenbrainz.org (metadata, covers, similarity); itunes.apple.com and api.deezer.com only if the user turns them on. On user action only: archive.org and audius.co (Explore, links), lrclib.net (lyrics), the cloud folders the user adds (Microsoft Graph, Google Drive, Dropbox, WebDAV), Drive backup and sync, scrobbling, a language model the user configures.
 
 Two peer-to-peer features, off by default: "Listen together" (while a PC hosts, it listens on TCP/UDP 47811 on the local network, found by LAN broadcast; Windows asks about the firewall) and "Reachable from the internet" (an iroh QUIC endpoint, encrypted end to end, using n0's DNS at dns.iroh.link, relays *.relay.n0.iroh.link, the BitTorrent mainline DHT, UPnP/NAT-PMP and mDNS; it serves only devices the user linked with a QR code).
 
@@ -218,7 +218,7 @@ Features that need the user's own accounts show as "not configured": Drive backu
 
 No YouTube downloads, no Spotify scraping; Internet Archive and Audius tracks are fetched only when their license allows it.
 
-"Support" only opens GitHub Sponsors in the browser; nothing is unlocked.
+"Support" only opens GitHub Sponsors; nothing is unlocked.
 
 runFullTrust: a Win32 desktop program (Rust, Tauri 2, WebView2) that reads and writes music folders chosen at run time, uses the audio device and Credential Manager (optional account tokens) and a notification-area icon; it cannot run in an AppContainer.
 
