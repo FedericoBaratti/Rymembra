@@ -168,8 +168,9 @@ up with a phone that did not exist before.
   the same state (`telefono::riapri_la_finestra`).
 - **Permissions at first start.** Before looking for music the first run asks
   for access: «Music and audio» with Android's dialog, then «All files
-  access» in Android's settings, which the lyrics, the `.cue` files, the
-  covers next to the tracks, tag fixes and deletions need. Rymembra goes on
+  access» in Android's settings, which reading the lyrics, the `.cue` files
+  and the covers next to the tracks, writing an `.lrc` beside a track when
+  you ask for it, and deleting a track need. Rymembra goes on
   with the first alone if that is all you grant, and does not ask for
   «Photos and videos». Then it proposes the phone's `Music` folder and the
   one on each SD card.
@@ -218,10 +219,6 @@ up with a phone that did not exist before.
   `t()` picks `<key>.telefono` when it exists and the app runs on a phone.
   What a phone cannot do is not offered: network folders, «Show in folder»,
   «drop it on the window», the reorder hint for the keyboard.
-- **The Skin Studio on a phone** shows one panel at a time — Parts, Canvas,
-  Inspector — chosen from tabs under its bar, and a part picked from the
-  layers or on the canvas opens the inspector. The bar wraps onto three rows
-  instead of overflowing the screen.
 - **Touch targets**: switches, hearts, tabs, small buttons, the rating stars
   and the A–Z index of the artists grow to a finger's size; the artists grid
   has two columns; Explore no longer opens the keyboard by itself.
@@ -254,8 +251,8 @@ up with a phone that did not exist before.
   Android's «Device name», or the model. With two phones, «Rymembra asks to
   join» did not say who.
 - **«Listen together» could be found only at the bottom of Settings** on the
-  phone: the player's button is in the desktop's player bar. It is now in
-  the «More» drawer.
+  phone: the player's button is in the desktop's player bar. It is now on
+  the «More» page.
 - The first line of the phone's log says which Android and which phone, and
   a window error says where it happened, not only its message.
 - **A track deleted on the phone came back.** Android's trash is not a
@@ -423,8 +420,9 @@ up with a phone that did not exist before.
 
 - **Linking two devices with the QR pairs them for «Listen together» too**,
   without the four-digit code: each tells the other its «Listen together» key
-  inside the encrypted link, and a PC that had been blocked is unblocked —
-  linking it again is the proof you want it.
+  inside the encrypted link. A PC you blocked stays blocked: the QR code does
+  not prove you want it back — «Unblock», or pairing it again with the
+  four-digit code, does.
 - **Listen together away from home**, between devices linked with the QR. A
   linked device that hosts a session tells so in its presence, and shows in
   the panel with «via internet» under its name; joining, inviting, asking to
@@ -600,7 +598,8 @@ up with a phone that did not exist before.
 
 A full review of the code — eleven areas read against `SECURITY.md`, the
 untrusted parsers fuzzed for three hours, the phone build probed on an
-emulator — and every confirmed finding fixed with a test that failed first.
+emulator. What it fixed is below. Some low-risk findings are still open, and
+signing the sync documents is planned work (`SECURITY.md`).
 
 - **A profile can no longer make Rymembra delete files outside its cover
   store.** The cover hash in a `.ryprofile` went into the library unchecked,
@@ -763,8 +762,8 @@ emulator — and every confirmed finding fixed with a test that failed first.
   of their own, so a long write on the serving device (a scan, the analysis)
   does not make them time out; the serving device logs any request it could
   not serve because the library was busy.
-- **`PRIVACY.md` lists what the code really sends.** The review compared every
-  network request in the code with it: the Cover Art Archive redirect to
+- **`PRIVACY.md` was compared with the network requests in the code**, and
+  corrected where it differed: the Cover Art Archive redirect to
   `archive.org` and the image hosts of iTunes and Deezer, what MusicBrainz
   receives (titles and track counts, not durations), iTunes paced at 3.1 s
   (not 350 ms), the model list a language-model profile asks for when saved,
@@ -783,13 +782,24 @@ Two migrations, schema 38 → 40, both additive.
   linked and last seen, and whether it was revoked), `dispositivi_ascolti`
   (listens of other devices' tracks made here, waiting to be sent to their
   owner, with a key that makes a repeat harmless) and `dispositivi_ricevuti`
-  (the keys of the listens already counted here). Going back: drop the three
-  tables and set `user_version` to 38; the links are lost (made again with a
-  QR code) and so are the listens not yet sent.
+  (the keys of the listens already counted here).
 - `040_insieme_indirizzi` — one table, `insieme_indirizzi`: the last
   `ip:port` at which each paired «Listen together» PC answered, by its key.
-  It does not travel either. Going back: drop the table and set
-  `user_version` to 39; the addresses come back at the next connection.
+  It does not travel either.
+
+**Going back to 3.2.0.** The first way is the copy Rymembra takes before it
+migrates, `rymembra.db.schema-038.bak`, beside the database. Quit Rymembra —
+from its icon next to the clock too — and move `rymembra.db`,
+`rymembra.db-wal` and `rymembra.db-shm` aside together: the last two belong
+to the new database, and next to the copy SQLite would read them as the
+copy's own and spoil it. Then copy the `.bak`, without renaming it, to
+`rymembra.db`. By hand instead, both migrations in one go and in this order —
+undoing only 039 leaves `insieme_indirizzi` behind, and the next update to
+this version then fails on it: `DROP TABLE insieme_indirizzi; DROP TABLE
+dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+PRAGMA user_version = 38;`. The links are lost (made again with a QR code),
+and so are the listens not yet sent; the «Listen together» addresses come
+back at the next connection.
 
 ### Known limits
 
