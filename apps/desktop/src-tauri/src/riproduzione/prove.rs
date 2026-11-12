@@ -894,6 +894,20 @@ fn il_segno_si_scrive_solo_da_strade_guardate() {
         );
         prima = dove;
     }
+    // R23-7: ogni strada di fili.rs passa dal filo delle scritture, in fila col
+    // segno a zero di `fermato`. L'orologio lo scriveva da sé, con un'attesa
+    // della libreria, e poteva scriverlo **dopo** lo zero: il giorno dopo
+    // «Riprendi» saltava a due secondi dalla fine di un brano finito.
+    let mut prima = 0;
+    for (dove, _) in fili.match_indices("playback::save_posizione(") {
+        let davanti = &fili[prima..dove];
+        let funzione = &davanti[davanti.rfind("\nfn ").unwrap_or(0)..];
+        assert!(
+            funzione.contains("da_scrivere("),
+            "una strada di fili.rs scrive il segno fuori dalla fila delle scritture"
+        );
+        prima = dove;
+    }
     let lettore = senza_prove(include_str!("mod.rs"));
     let fine = &lettore[..lettore.find("playback::save_posizione(").unwrap_or(0)];
     let fine = &fine[fine.rfind("fn fermato(").unwrap_or(0)..];
@@ -929,6 +943,80 @@ fn un_flusso_interrotto_non_parla_di_cartelle() {
         interruzione_di_flusso(formato).code().kind(),
         ErrorCodeKind::PlaybackFormatUnsupported
     );
+}
+
+/// R23-5: un brano del cloud che si interrompe a metà parla di un brano che
+/// arriva dalla rete, come all'apertura, e non di una cartella da
+/// ricollegare. Lo stesso criterio di `brano_di_libreria`.
+#[test]
+fn un_brano_del_cloud_interrotto_non_parla_di_cartelle() {
+    let scheda = |percorso: &str| playback::SchedaSorgente {
+        track_id: 1,
+        collocazione: playback::Collocazione::File(percorso.to_owned()),
+        durata_ms: 0,
+        replaygain_db: None,
+        picco: None,
+    };
+    let cloud = format!(
+        "{}onedrive/conto/Musica/brano.flac",
+        rymembra_domain::nuvola::SCHEMA
+    );
+    assert!(arriva_dalla_rete(&scheda(&cloud)), "il cloud è rete");
+    assert!(!arriva_dalla_rete(&scheda(r"\\nas\musica\brano.flac")));
+    assert!(!arriva_dalla_rete(&scheda(r"C:\Musica\brano.flac")));
+}
+
+/// R23-7: il segno di un'uscita che si riapre non è una rete caduta. Restava
+/// dopo una riapertura fallita su un motore sano, e a coda finita `fermato`
+/// non azzerava il segno di «riprendi dov'eri».
+#[test]
+fn il_segno_di_un_uscita_non_e_una_rete_caduta() {
+    let ripresa = |causa| Ripresa {
+        track_id: 7,
+        ms: 1_000,
+        suonava: true,
+        quando_ms: 0,
+        gesti: 0,
+        causa,
+    };
+    assert!(!e_una_rete_caduta(Some(&ripresa(CausaRipresa::Uscita))));
+    assert!(e_una_rete_caduta(Some(&ripresa(CausaRipresa::Rete))));
+    assert!(!e_una_rete_caduta(None));
+}
+
+/// R23-6: a rete caduta l'ascolto si ferma e non si chiude: «Riprova» lo
+/// continua, e un brano lungo non conta due volte.
+#[test]
+fn una_rete_caduta_ferma_l_ascolto_senza_chiuderlo() {
+    assert!(!dopo_il_fermato(false, false, true, Some(7)).chiude_l_ascolto);
+    assert!(dopo_il_fermato(false, false, false, Some(7)).chiude_l_ascolto);
+}
+
+/// R23-6: «Riprova» e il play che riparte dal punto della rete caduta
+/// continuano l'ascolto di prima invece di aprirne uno nuovo.
+#[test]
+fn riprova_continua_l_ascolto_del_brano_interrotto() {
+    let riprova = corpo(include_str!("riapertura.rs"), "riprova_corrente_ora")
+        .expect("riprova_corrente_ora c'è");
+    assert!(
+        riprova.contains("continua_l_ascolto("),
+        "«Riprova» apre un ascolto nuovo"
+    );
+    let riprendi = corpo(include_str!("mod.rs"), "riprendi_ora").expect("riprendi_ora c'è");
+    assert!(
+        riprendi.contains("continua_l_ascolto("),
+        "play dal punto della rete caduta apre un ascolto nuovo"
+    );
+}
+
+/// D-89: un buco fra due giri d'orologio più lungo di quel che l'ascolto
+/// conta è un PC che ha dormito, e al risveglio la musica va in pausa.
+#[test]
+fn un_buco_fra_due_giri_d_orologio_e_un_risveglio() {
+    let salto = i64::try_from(rymembra_domain::listen::SALTO_MASSIMO_MS).unwrap_or(i64::MAX);
+    assert!(fili::e_un_risveglio(Some(1_000), 1_000 + salto + 1));
+    assert!(!fili::e_un_risveglio(Some(1_000), 1_250));
+    assert!(!fili::e_un_risveglio(None, 1_000 + salto + 1));
 }
 
 /// Un file che fa cadere il riconoscimento del formato non è la rete.

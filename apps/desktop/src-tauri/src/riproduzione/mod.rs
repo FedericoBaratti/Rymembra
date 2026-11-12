@@ -1114,6 +1114,36 @@ pub struct Ripresa {
     /// l'ascolto, è una musica che parte senza che nessuno l'abbia chiesta.
     /// Oltre [`RIPRESA_FRESCA`] la puntina torna al suo posto ma resta ferma.
     pub quando_ms: i64,
+    /// Il numero di [`Lettore::pausa_chiesta`] quando si è segnato, letto
+    /// sotto lo stesso lucchetto della posizione.
+    ///
+    /// # Perché serve saperlo
+    ///
+    /// Perché una pausa o una ripresa chiesta **dopo** il segno vale più del
+    /// bit `suonava` letto prima: le cuffie che si staccano mandano «pausa»
+    /// mentre l'uscita si riapre da sola, e quella pausa si perdeva — il brano
+    /// ripartiva suonando, sul telefono dall'altoparlante (R23-1). Vedi
+    /// `riapertura::riparte_fermo`.
+    pub gesti: u64,
+    /// Perché la musica si è fermata: vedi [`CausaRipresa`].
+    pub causa: CausaRipresa,
+}
+
+/// Perché si è segnato un punto a cui tornare.
+///
+/// Un campo esplicito e non «c'è una [`Ripresa`]»: il segno di un'uscita che
+/// si riapre sopravviveva a una riapertura fallita su un motore sano, e
+/// [`fermato`] lo leggeva come una rete caduta — il segno di «riprendi
+/// dov'eri» non tornava a zero a coda finita (R23-7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CausaRipresa {
+    /// La rete — una cartella, un catalogo, il cloud — si è interrotta, o il
+    /// brano non si è aperto per una ragione che si può riprovare: è il punto
+    /// di «Riprova».
+    Rete,
+    /// L'uscita audio si riapre, o è sparita: è il punto in cui il motore
+    /// nuovo rimette la puntina.
+    Uscita,
 }
 
 /// Fino a quando una [`Ripresa`] può far ripartire la musica da sola.
@@ -2024,8 +2054,12 @@ fn su_evento(app: &tauri::AppHandle, annuncio: Annuncio) {
             // controlli: quello di un motore sostituito riguarda campioni che
             // non usciranno più, e dirlo alla finestra vorrebbe dire un avviso
             // per un brano che nel frattempo è ripartito altrove.
-            let Ok((ha_voce, superato)) = con_lettore(&stato_lettore, |_| {
-                Ok((annuncio.ha_voce(), annuncio.superato()))
+            let Ok((ha_voce, superato, gesti)) = con_lettore(&stato_lettore, |lettore| {
+                Ok((
+                    annuncio.ha_voce(),
+                    annuncio.superato(),
+                    lettore.pausa_chiesta.0,
+                ))
             }) else {
                 return;
             };
@@ -2064,7 +2098,12 @@ fn su_evento(app: &tauri::AppHandle, annuncio: Annuncio) {
             let mut err = (**err).clone();
             if err.code().kind() == ErrorCodeKind::FsNetworkUnavailable
                 && !superato
-                && let Some(track_id) = annota_ripresa_da(&stato_lettore, annuncio.posizione)
+                && let Some(track_id) = annota_ripresa_da(
+                    &stato_lettore,
+                    annuncio.posizione,
+                    gesti,
+                    CausaRipresa::Rete,
+                )
                 && e_un_flusso(app, track_id)
             {
                 err = interruzione_di_flusso(err);
@@ -2216,11 +2255,13 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     // Lo stop con cui si è usciti da una sessione: vedi
     // `Lettore::fermato_della_sessione`. Si ridisegna e basta.
     let della_sessione = std::mem::take(&mut lettore.fermato_della_sessione);
-    let rete_caduta = stato_lettore
-        .ripresa
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_some();
+    let rete_caduta = e_una_rete_caduta(
+        stato_lettore
+            .ripresa
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref(),
+    );
     let da_fare = dopo_il_fermato(
         della_sessione,
         insieme::segue(lettore),
@@ -2231,7 +2272,11 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
         manda_stato(app, lettore);
         return;
     }
-    chiudi_ascolto(app, lettore);
+    if da_fare.chiude_l_ascolto {
+        chiudi_ascolto(app, lettore);
+    } else if let Some(ascolto) = lettore.ascolto.as_mut() {
+        ascolto.pause(adesso_ms());
+    }
     // Il timer «alla fine di questo brano» ha fatto il suo lavoro: la musica si
     // è fermata dove doveva. Non ha una scadenza — `scade_il_timer` guarda solo
     // gli istanti positivi — e nessun altro lo spegneva: la finestra continuava
@@ -2300,6 +2345,13 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     manda_stato(app, lettore);
 }
 
+/// La fermata viene da una rete caduta: c'è un punto di «Riprova».
+///
+/// Dalla causa del segno e non dalla sua sola presenza: vedi [`CausaRipresa`].
+fn e_una_rete_caduta(ripresa: Option<&Ripresa>) -> bool {
+    ripresa.is_some_and(|ripresa| ripresa.causa == CausaRipresa::Rete)
+}
+
 /// Che cosa fa un `Fermato`, deciso senza motore: vedi [`fermato`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DopoIlFermato {
@@ -2311,6 +2363,8 @@ struct DopoIlFermato {
     avanza_sul_non_aperto: bool,
     /// Il brano il cui segno di «riprendi dov'eri» torna a zero.
     segno_a_zero: Option<i64>,
+    /// L'ascolto in corso si chiude e si scrive.
+    chiude_l_ascolto: bool,
 }
 
 /// La regola di [`fermato`]. Il segno torna a zero solo per una riga della
@@ -2328,6 +2382,7 @@ const fn dopo_il_fermato(
             tocca_l_utente: false,
             avanza_sul_non_aperto: false,
             segno_a_zero: None,
+            chiude_l_ascolto: false,
         };
     }
     let segno_a_zero = match corrente {
@@ -2338,6 +2393,12 @@ const fn dopo_il_fermato(
         tocca_l_utente: true,
         avanza_sul_non_aperto: !segue,
         segno_a_zero,
+        // A rete caduta l'ascolto si ferma e basta: «Riprova» lo continua
+        // dal punto in cui si era interrotto. Chiuso qui, il brano di nove
+        // minuti fermato al quinto contava due volte — cinque minuti prima,
+        // quattro dopo — in cronologia e su Last.fm (R23-6). Lo chiude chi
+        // volta pagina, o l'uscita.
+        chiude_l_ascolto: !rete_caduta,
     }
 }
 
@@ -2370,7 +2431,21 @@ fn e_un_flusso(app: &tauri::AppHandle, track_id: i64) -> bool {
     con_libreria(&stato, |libreria| {
         playback::scheda_sorgente(&libreria.connection, track_id)
     })
-    .is_ok_and(|scheda| riferimento_di(&scheda).is_some())
+    .is_ok_and(|scheda| arriva_dalla_rete(&scheda))
+}
+
+/// I byte di questa scheda arrivano dalla rete: un catalogo, o il cloud.
+///
+/// Lo stesso criterio con cui [`brano_di_libreria`] sceglie la scadenza e la
+/// frase di un'apertura mancata. Qui c'era il solo catalogo, e un brano di
+/// OneDrive che si interrompeva a metà diceva «la cartella di rete non
+/// risponde: il server può essere spento, la VPN caduta» (R23-5).
+fn arriva_dalla_rete(scheda: &playback::SchedaSorgente) -> bool {
+    riferimento_di(scheda).is_some()
+        || scheda
+            .collocazione
+            .file_audio()
+            .is_some_and(rymembra_domain::nuvola::e_nuvola)
 }
 
 /// Il guasto di rete di un brano che arriva da un catalogo, con la sua frase.
@@ -2404,17 +2479,27 @@ fn interruzione_di_flusso(err: AppError) -> AppError {
 /// Chi se ne accorge da un annuncio usa [`annota_ripresa_da`] con la posizione
 /// che l'annuncio si porta dietro.
 fn annota_ripresa(stato: &State<'_, StatoLettore>) -> Option<i64> {
-    let Ok(posizione) = con_lettore(stato, |lettore| Ok(lettore.motore.posizione())) else {
+    let Ok((posizione, gesti)) = con_lettore(stato, |lettore| {
+        Ok((lettore.motore.posizione(), lettore.pausa_chiesta.0))
+    }) else {
         return None;
     };
-    annota_ripresa_da(stato, posizione)
+    annota_ripresa_da(stato, posizione, gesti, CausaRipresa::Uscita)
 }
 
 /// Come [`annota_ripresa`], con la posizione data da chi chiama.
 ///
 /// Serve al ramo dei guasti di [`su_evento`]: l'annuncio arriva dopo che il
 /// motore si è fermato, e la posizione di quell'istante la porta lui.
-fn annota_ripresa_da(stato: &StatoLettore, posizione: Posizione) -> Option<i64> {
+///
+/// `gesti` è il numero di [`Lettore::pausa_chiesta`] letto con la posizione:
+/// vedi [`Ripresa::gesti`].
+fn annota_ripresa_da(
+    stato: &StatoLettore,
+    posizione: Posizione,
+    gesti: u64,
+    causa: CausaRipresa,
+) -> Option<i64> {
     let track_id = posizione.track_id?;
     let mut guardia = stato
         .ripresa
@@ -2436,6 +2521,8 @@ fn annota_ripresa_da(stato: &StatoLettore, posizione: Posizione) -> Option<i64> 
         // questo bit a decidere se il suono ripartirà da solo.
         suonava: !posizione.in_pausa,
         quando_ms,
+        gesti,
+        causa,
     });
     Some(track_id)
 }
@@ -3558,20 +3645,22 @@ pub(super) fn avvio_fallito(
     da_ms: u64,
     err: AppError,
 ) -> Result<(), AppError> {
+    // Il numero dei gesti si legge con la coda, sotto lo stesso lucchetto:
+    // vedi `Ripresa::gesti`.
     let ancora_lui = con_lettore(stato, |lettore| {
         if lettore.coda.current() != Some(id) {
-            return Ok(false);
+            return Ok(None);
         }
         chiudi_ascolto(app, lettore);
         lettore.ferma();
         salva_coda(app, lettore);
         manda_stato_con_posizione(app, lettore, da_ms);
-        Ok(true)
+        Ok(Some(lettore.pausa_chiesta.0))
     })
-    .unwrap_or(false);
-    if !(ancora_lui && err.is_retryable()) {
+    .unwrap_or(None);
+    let Some(gesti) = ancora_lui.filter(|_| err.is_retryable()) else {
         return Err(err);
-    }
+    };
     *stato
         .ripresa
         .lock()
@@ -3580,6 +3669,8 @@ pub(super) fn avvio_fallito(
         ms: da_ms,
         suonava: false,
         quando_ms: adesso_ms(),
+        gesti,
+        causa: CausaRipresa::Rete,
     });
     app.emetti("riproduzione:errore", errore(err));
     Ok(())
@@ -3650,26 +3741,26 @@ pub fn riprendi_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
     if let Strada::Fatto = strada(&app, &Gesto::Riprendi).map_err(errore)? {
         return Ok(());
     }
-    let perso =
-        con_lettore(&stato, |lettore| Ok(lettore.motore.dispositivo_perso())).map_err(errore)?;
+    // A dispositivo perso il gesto si conta **prima** di riaprire: la
+    // riapertura — questa, o quella che il sorvegliante ha già in corso —
+    // decide alla consegna se il brano riparte, e un gesto più recente del
+    // segno vince sul bit letto al guasto (`riapertura::riparte_fermo`).
+    let perso = con_lettore(&stato, |lettore| {
+        let perso = lettore.motore.dispositivo_perso();
+        if perso {
+            lettore.pausa_chiesta = (lettore.pausa_chiesta.0.wrapping_add(1), false);
+        }
+        Ok(perso)
+    })
+    .map_err(errore)?;
     if perso {
         match riapertura::riapri_su(&app, &stato, None, riapertura::Modo::Suona).map_err(errore)? {
             riapertura::Riaperta::Rimessa => return Ok(()),
-            riapertura::Riaperta::Saltata => {
-                // Un'altra riapertura è già in corso — il sorvegliante, di
-                // solito. Le si dice che adesso si vuole sentire: il segno che
-                // rileggerà quando ha finito è questo.
-                if let Some(ripresa) = stato
-                    .ripresa
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .as_mut()
-                {
-                    ripresa.suonava = true;
-                    ripresa.quando_ms = adesso_ms();
-                }
-                return Ok(());
-            }
+            // Un'altra riapertura è già in corso — il sorvegliante, di solito.
+            // Il gesto l'ha già visto, se non aveva ancora consegnato; se
+            // l'aveva fatto, il brano è fermo nel motore nuovo. Si aspetta che
+            // finisca e si riprende come a motore vivo, qui sotto.
+            riapertura::Riaperta::Saltata => aspetta_la_riapertura(&stato),
             // Un motore nuovo e niente da rimettere: si prosegue come a motore
             // vuoto, qui sotto.
             riapertura::Riaperta::Vuota => {}
@@ -3695,19 +3786,28 @@ pub fn riprendi_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
             // play invece di «Riprova» è lo stesso gesto, e deve tornare allo
             // stesso millisecondo invece che al segno salvato qualche secondo
             // prima.
-            let chiesto = lettore
+            let a_vuoto = lettore
                 .puntina_a_vuoto
                 .take()
                 .filter(|(id, _)| Some(*id) == corrente)
-                .map(|(_, ms)| ms)
-                .or_else(|| {
-                    stato
-                        .ripresa
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .filter(|ripresa| Some(ripresa.track_id) == corrente)
-                        .map(|ripresa| ripresa.ms)
-                });
+                .map(|(_, ms)| ms);
+            let dalla_ripresa = if a_vuoto.is_some() {
+                None
+            } else {
+                stato
+                    .ripresa
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .filter(|ripresa| Some(ripresa.track_id) == corrente)
+                    .map(|ripresa| (ripresa.track_id, ripresa.ms))
+            };
+            // Dal punto in cui si era interrotto è lo stesso ascolto, fermo e
+            // non chiuso: il suo annuncio d'inizio lo continua (R23-6). Scritto
+            // qui, col lucchetto in mano, come in `riapertura`.
+            if let Some((id, _)) = dalla_ripresa {
+                riapertura::continua_l_ascolto(id);
+            }
+            let chiesto = a_vuoto.or(dalla_ripresa.map(|(_, ms)| ms));
             return Ok(Some((corrente, chiesto)));
         }
         insieme::riprendi(lettore);
