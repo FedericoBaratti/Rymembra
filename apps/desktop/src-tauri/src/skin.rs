@@ -584,8 +584,14 @@ pub struct EsameIpc {
     /// Quante coppie di testo e superficie non si leggono.
     pub contrasti: usize,
     /// Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici,
-    /// tema per tema (`rymembra_skin::focus_ring_pairs`).
+    /// tema per tema (`rymembra_skin::focus_ring_pairs`), o larghi zero.
     pub anelli: usize,
+    /// Quanti token di testo obbligatori la skin non dichiara.
+    pub testi_mancanti: usize,
+    /// Le parti essenziali trasparenti o ritagliate, coi percorsi.
+    pub nascoste: Vec<String>,
+    /// Le animazioni che fanno apparire e sparire una parte troppo in fretta.
+    pub lampi: Vec<String>,
     /// C'è qualcosa da chiedere prima di indossarla.
     pub da_confermare: bool,
 }
@@ -610,6 +616,9 @@ impl From<rymembra_skin::document::Esame> for EsameIpc {
                 .collect(),
             contrasti: esame.contrasti,
             anelli: esame.anelli,
+            testi_mancanti: esame.testi_mancanti,
+            nascoste: esame.nascoste,
+            lampi: esame.lampi,
         }
     }
 }

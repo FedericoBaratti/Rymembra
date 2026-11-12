@@ -1061,7 +1061,7 @@ fn calcolati(tokens: &TokenSet, tutti: bool) -> Vec<Dichiarazione> {
 /// Il compilatore non fallisce, e la skin di riferimento è compilata dentro il
 /// binario e provata dai test: se non si leggesse, l'anteprima semplicemente
 /// non avrebbe il blocco di serie — che è il comportamento di prima.
-fn di_serie() -> Option<&'static SkinDocument> {
+pub(crate) fn di_serie() -> Option<&'static SkinDocument> {
     static PLAIN: OnceLock<Option<SkinDocument>> = OnceLock::new();
     PLAIN.get_or_init(|| crate::plain().ok()).as_ref()
 }

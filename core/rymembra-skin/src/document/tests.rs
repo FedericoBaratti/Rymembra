@@ -1367,7 +1367,9 @@ fn un_anello_che_non_si_vede_e_un_avviso_e_va_chiesto() {
         .find(|a| a.path == "parts.card.focusRing")
         .expect("l'anello della parte si misura");
     assert!(!della_scheda.passa(), "{della_scheda:?}");
-    assert_eq!(della_scheda.background, "color.surface.0");
+    // Le superfici che la skin non dichiara sono quelle di Plain, come nella
+    // finestra (R09-8): la peggiore per un grigio scuro è la più chiara delle tre.
+    assert_eq!(della_scheda.background, "color.surface.2");
 
     let avvisi: Vec<SkinWarning> = check_skin(&skin)
         .into_iter()

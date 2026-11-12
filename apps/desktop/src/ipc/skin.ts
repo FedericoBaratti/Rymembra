@@ -236,8 +236,14 @@ export interface EsameSkin {
   cicli: CicloSkin[];
   /** Quante coppie di testo e superficie non si leggono. */
   contrasti: number;
-  /** Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici. */
+  /** Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici, o larghi zero. */
   anelli: number;
+  /** Quanti token di testo obbligatori la skin non dichiara: il testo ricade su quello di Plain. */
+  testiMancanti: number;
+  /** Le parti essenziali che la skin rende trasparenti o ritaglia, coi percorsi nel documento. */
+  nascoste: string[];
+  /** Le animazioni che fanno apparire e sparire una parte più volte al secondo. */
+  lampi: string[];
   /** C'è qualcosa da chiedere prima di indossarla. */
   daConfermare: boolean;
 }

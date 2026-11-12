@@ -59,8 +59,19 @@ export function ConfermaSkin({
   // Una riga per quel che sfora, nell'ordine in cui si nota: prima il testo
   // che non si legge, poi la finestra che scatta, poi quel che non sta fermo.
   const righe: string[] = [];
+  // Prima di tutto quel che rende la finestra inservibile: una cornice
+  // trasparente, i comandi ritagliati, una parte che appare e sparisce (D-49).
+  if (esame.nascoste.length > 0) {
+    righe.push(t("skin.review.hidden", { n: esame.nascoste.length }));
+  }
+  if (esame.lampi.length > 0) {
+    righe.push(t("skin.review.flash", { n: esame.lampi.length }));
+  }
   if (esame.contrasti > 0) {
     righe.push(t("skin.review.contrast", { n: esame.contrasti }));
+  }
+  if (esame.testiMancanti > 0) {
+    righe.push(t("skin.review.missingText", { n: esame.testiMancanti }));
   }
   // L'anello del fuoco sta col testo: è l'altra cosa che, se non si vede, lascia
   // qualcuno senza sapere dove si trova (WP27, `rymembra_skin::focus_ring_pairs`).
