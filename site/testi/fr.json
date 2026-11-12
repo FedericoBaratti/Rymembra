@@ -147,7 +147,7 @@
       "titolo": "Depuis le Microsoft Store",
       "sotto": "Les mises à jour viennent du Store, sans avertissement SmartScreen.",
       "azione": "Télécharger",
-      "nota": "Choisissez-en une seule par PC : les deux copies n'ont pas été testées ensemble, et elles partageraient les mêmes comptes connectés."
+      "nota": "Mieux vaut une seule par PC. La copie du Store garde sa propre bibliothèque et, au premier lancement, propose de copier celle de l'installeur ; les comptes connectés restent cependant les mêmes pour les deux."
     },
     "file": "Le fichier est `{file}`, publié le {data}. [Les nouveautés]({note}), [toutes les versions]({tutte}).",
     "impronta": {

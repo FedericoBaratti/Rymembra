@@ -147,7 +147,7 @@
       "titolo": "Dal Microsoft Store",
       "sotto": "Si aggiorna dallo Store, senza l'avviso di SmartScreen.",
       "azione": "Scarica",
-      "nota": "Scegline una sola per PC: le due copie insieme non sono state provate, e userebbero gli stessi account collegati."
+      "nota": "Meglio una sola per PC. La copia dello Store tiene una libreria sua e, al primo avvio, propone di copiare quella dell'installer; gli account collegati, però, sono gli stessi per le due."
     },
     "file": "Il file è `{file}`, uscito il {data}. [Le novità]({note}), [tutte le versioni]({tutte}).",
     "impronta": {
