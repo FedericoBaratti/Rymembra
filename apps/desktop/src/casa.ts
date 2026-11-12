@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ipc, type Casa, type Raccolta } from "./ipc";
+import { lunediLocale, prossimoLunedi } from "./lunedi";
 import type { Vista } from "./parti/Navigazione";
 import type { ArchivioLettore } from "./riproduzione";
 import { vinceLUltima } from "./ultima";
@@ -41,6 +42,15 @@ export interface IngressiCasa {
 export interface CasaDellaFinestra {
   /** I ripiani, o `null` finché non sono stati chiesti. */
   casa: Casa | null;
+  /**
+   * Il guasto dell'ultima richiesta dei ripiani, o `null` se è andata.
+   *
+   * Conta solo finché `casa` è `null`: con dei ripiani già in mano si tengono
+   * quelli, e il guasto lo dice la fascia. Senza, una prima lettura fallita
+   * lasciava la Home a scheletro per sempre — `CasaFinta`, «Caricamento…» —
+   * senza un modo di riprovare se non uscire e rientrare.
+   */
+  guasto: unknown;
   /** Le raccolte del lunedì. */
   settimana: Raccolta[];
   /** Riscrive le raccolte: una appena aperta non è più nuova. */
@@ -60,6 +70,8 @@ export function useCasa({
   // diverso da «vuota»: la schermata mostra i suoi segnaposto finché il nucleo
   // non ha risposto, invece dello stato vuoto per un fotogramma.
   const [casa, setCasa] = useState<Casa | null>(null);
+  // Vedi `CasaDellaFinestra.guasto`. Si azzera a ogni risposta buona.
+  const [guasto, setGuasto] = useState<unknown>(null);
   // Le raccolte del lunedì. Vuoto e non `null`: qui «non ancora chieste» e
   // «questa settimana non ce ne sono» si disegnano uguale — niente ripiano — e
   // distinguerle costerebbe uno stato in più per non mostrare niente in due modi.
@@ -119,9 +131,14 @@ export function useCasa({
         // cioè una seconda richiesta nel momento in cui la finestra ha già tutto
         // il resto da fare.
         casaPerBrano.current = arrivata.riprendi?.id ?? null;
+        setGuasto(null);
         setCasa(arrivata);
       })
-      .catch(segnalaErrore);
+      .catch((e: unknown) => {
+        if (annullato || !mio()) return;
+        segnalaErrore(e);
+        setGuasto(e);
+      });
     return () => {
       annullato = true;
     };
@@ -147,35 +164,61 @@ export function useCasa({
    * lo stesso, la risposta che si ha in mano è già quella giusta.
    */
   const settimanaChiesta = useRef<number | null>(null);
+  /*
+   * Quando rifare la domanda senza uscire dalla Home.
+   *
+   * Il lunedì cambiava «da sé» solo nel valore: l'effetto lo ricalcolava
+   * quando girava, cioè entrando nella vista. Chi tiene Rymembra aperto sulla
+   * Home — magari ridotto nel vassoio — la domenica sera, il lunedì mattina
+   * ritrovava le raccolte della settimana prima, senza «Nuove questa
+   * settimana». Adesso l'effetto rigira a tre colpi: la mezzanotte locale del
+   * lunedì dopo (un timer, ricalcolato con `new Date` e quindi giusto anche la
+   * settimana del cambio dell'ora), la finestra che torna visibile (il timer
+   * di una macchina sospesa arriva in ritardo, o non arriva), e `rileggiCasa`
+   * dopo una scansione o un'importazione.
+   */
+  const [sveglia, setSveglia] = useState(0);
   useEffect(() => {
     if (vista !== "home" || cercando) return;
-    // Lo stesso lunedì che il nucleo calcolerebbe, e con lo stesso fuso: qui
-    // serve solo a riconoscere che è cambiato, e a mezzanotte di domenica
-    // cambia da sé senza che nessuno debba svegliare niente.
     const adesso = new Date();
-    const giorno = (adesso.getDay() + 6) % 7;
-    const lunedi = new Date(
-      adesso.getFullYear(),
-      adesso.getMonth(),
-      adesso.getDate() - giorno,
-    ).getTime();
-    if (settimanaChiesta.current === lunedi) return;
+    // Lo stesso lunedì che il nucleo calcolerebbe, e con lo stesso fuso: qui
+    // serve solo a riconoscere che è cambiato.
+    const lunedi = lunediLocale(adesso);
+    const timer = window.setTimeout(
+      () => setSveglia((n) => n + 1),
+      // Un secondo dopo la mezzanotte, non un istante prima: un timer che
+      // arriva in anticipo di qualche millisecondo ricalcolerebbe la
+      // domenica, e si riaddormenterebbe per una settimana.
+      prossimoLunedi(adesso) - adesso.getTime() + 1_000,
+    );
+    const tornata = () => {
+      if (document.visibilityState === "visible") setSveglia((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", tornata);
 
     let annullato = false;
-    ipc
-      .settimana()
-      .then((arrivate) => {
-        if (annullato) return;
-        // Si segna **dopo** la risposta, non prima della domanda: una chiamata
-        // fallita deve poter essere rifatta entrando di nuovo nella Home.
-        settimanaChiesta.current = lunedi;
-        setSettimana(arrivate);
-      })
-      .catch(segnalaErrore);
+    if (settimanaChiesta.current !== lunedi) {
+      ipc
+        .settimana()
+        .then((arrivate) => {
+          if (annullato) return;
+          // Si segna **dopo** la risposta, non prima della domanda: una
+          // chiamata fallita deve poter essere rifatta. E si segna solo una
+          // settimana che ha qualcosa: una vuota il nucleo la rifà quando
+          // arriva la cronologia o la scala sonora (D-63), e la Home deve
+          // tornare a chiederla — la domanda su una settimana vuota e ferma
+          // costa al nucleo una riga e un conteggio.
+          if (arrivate.length > 0) settimanaChiesta.current = lunedi;
+          setSettimana(arrivate);
+        })
+        .catch(segnalaErrore);
+    }
     return () => {
       annullato = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", tornata);
     };
-  }, [vista, cercando, segnalaErrore]);
+  }, [vista, cercando, segnalaErrore, sveglia]);
 
   /*
    * E la Home, restando.
@@ -211,11 +254,16 @@ export function useCasa({
         .casa()
         .then((arrivata) => {
           if (annullato || !mio()) return;
+          setGuasto(null);
           setCasa((prima) =>
             prima ? { ...arrivata, trascurati: prima.trascurati } : arrivata,
           );
         })
-        .catch(segnalaErrore);
+        .catch((e: unknown) => {
+          if (annullato || !mio()) return;
+          segnalaErrore(e);
+          setGuasto(e);
+        });
     };
     segui();
     const smetti = lettore.iscrivi(segui);
@@ -228,21 +276,30 @@ export function useCasa({
   /*
    * La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
    * fatti di «di recente», e quel che è appena entrato in libreria li cambia
-   * tutti e quattro. Vince l'ultima: vedi `turnoCasa`.
+   * tutti e quattro. Vince l'ultima: vedi `turnoCasa`. È anche il «Riprova»
+   * della Home rimasta senza ripiani (`guasto`).
+   *
+   * E le raccolte: una settimana vuota può essersi riempita con quel che è
+   * appena arrivato (D-63), e la sveglia rifà la domanda — che non parte se
+   * la settimana ha già le sue raccolte.
    */
   const rileggiCasa = useCallback(() => {
     const mio = turnoCasa();
+    setSveglia((n) => n + 1);
     ipc
       .casa()
       .then((arrivata) => {
         if (!mio()) return;
         casaPerBrano.current = arrivata.riprendi?.id ?? null;
+        setGuasto(null);
         setCasa(arrivata);
       })
       .catch((e: unknown) => {
-        if (mio()) segnalaErrore(e);
+        if (!mio()) return;
+        segnalaErrore(e);
+        setGuasto(e);
       });
   }, [segnalaErrore, turnoCasa]);
 
-  return { casa, settimana, setSettimana, rileggiCasa };
+  return { casa, guasto, settimana, setSettimana, rileggiCasa };
 }

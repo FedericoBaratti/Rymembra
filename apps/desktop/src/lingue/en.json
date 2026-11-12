@@ -109,6 +109,8 @@
   "home.week.new": "New",
   "home.empty.title": "Nothing to pick up yet",
   "home.empty.hint": "Add a music folder: as soon as the library fills up, what you were listening to shows up here.",
+  "home.error.title": "Home could not be loaded",
+  "home.error.hint": "Your library is fine; loading the shelves failed.",
   "nav.donate": "Support",
   "nav.donate.title": "Support the development · opens in your browser",
   "nav.settings": "Settings",
