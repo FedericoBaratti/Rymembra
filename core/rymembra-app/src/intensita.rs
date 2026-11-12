@@ -184,7 +184,7 @@ pub fn candidati(
     adesso: i64,
     quanti: usize,
 ) -> Result<Vec<SchedaSorgente>, AppError> {
-    candidati_tranne(connection, adesso, quanti, &[])
+    candidati_tranne(connection, adesso, quanti, &[], &[])
 }
 
 /// Come [`candidati`], senza i brani di `esclusi`.
@@ -201,16 +201,21 @@ pub fn candidati_tranne(
     adesso: i64,
     quanti: usize,
     esclusi: &[i64],
+    radici_escluse: &[String],
 ) -> Result<Vec<SchedaSorgente>, AppError> {
+    // Le radici spente fuori nella query, come per le impronte: vedi
+    // `sonora::fuori_dalle_radici`.
     let sql = format!(
         "SELECT t.id, t.path, t.duration_ms, t.immagine, t.inizio_cd, t.fine_cd
          FROM tracks t
          LEFT JOIN track_intensita m ON m.track_id = t.id
          WHERE {}
            AND t.id NOT IN (SELECT value FROM json_each(?5))
+           AND {}
          ORDER BY t.date_added DESC
          LIMIT ?4",
-        candidato_where()
+        candidato_where(),
+        crate::sonora::fuori_dalle_radici(6)
     );
     let (scadenza, scadenza_lento) = scadenze(adesso);
     let mut statement = connection
@@ -224,6 +229,7 @@ pub fn candidati_tranne(
                 scadenza_lento,
                 i64::try_from(quanti).unwrap_or(i64::MAX),
                 crate::sonora::elenco_json(esclusi),
+                crate::sonora::radici_json(radici_escluse),
             ],
             |row| {
                 // `candidato_where` ha escluso i brani senza file. Per un
@@ -709,12 +715,31 @@ mod prove {
         for id in 1..=4 {
             brano(&connection, id);
         }
-        let ids: Vec<i64> = candidati_tranne(&connection, 0, 10, &[4, 2])
+        let ids: Vec<i64> = candidati_tranne(&connection, 0, 10, &[4, 2], &[])
             .expect("candidati")
             .iter()
             .map(|c| c.track_id)
             .collect();
         assert_eq!(ids, [3, 1]);
+    }
+
+    /// E una radice spenta si tiene fuori tutta, come per le impronte.
+    #[test]
+    fn una_radice_spenta_non_torna_fra_i_candidati() {
+        let connection = libreria();
+        for id in 1..=2 {
+            brano(&connection, id);
+        }
+        let percorso: String = connection
+            .query_row("SELECT path FROM tracks WHERE id = 1", [], |r| r.get(0))
+            .expect("percorso");
+        let radice: String = percorso.split('/').take(3).collect::<Vec<_>>().join("/");
+        let ids: Vec<i64> = candidati_tranne(&connection, 0, 10, &[], &[radice])
+            .expect("candidati")
+            .iter()
+            .map(|c| c.track_id)
+            .collect();
+        assert!(ids.is_empty(), "{percorso}: {ids:?}");
     }
 
     /// Una misura fermata a metà non è un file illeggibile: non si scrive

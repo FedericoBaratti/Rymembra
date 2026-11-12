@@ -396,6 +396,17 @@ impl RadiciMorte {
             .insert(radice);
     }
 
+    /// Le radici che hanno mancato una scadenza, per tenerle fuori dal lotto
+    /// dopo in una volta: vedi `sonora::candidati_tranne`.
+    fn elenco(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     /// Nessuna radice ha mancato una scadenza.
     fn nessuna(&self) -> bool {
         self.0
@@ -492,7 +503,7 @@ fn impronte(app: &AppHandle) -> Fine {
         }
 
         // ── finestra 1: quali brani. ────────────────────────────────────────
-        let schede = match leggi_lotto(app, &saltati) {
+        let schede = match leggi_lotto(app, &saltati, &morte.elenco()) {
             Ok(schede) => schede,
             Err(err) => {
                 nota!(
@@ -594,14 +605,26 @@ fn scansione_in_corso(app: &AppHandle) -> bool {
 /// `state` in tutto questo file: `state` panica, e questo filo gira anche
 /// mentre la finestra si chiude.
 ///
-/// Senza i brani `saltati`: quelli di una radice che in questa passata non ha
-/// risposto. Vedi [`RadiciMorte`].
-fn leggi_lotto(app: &AppHandle, saltati: &[i64]) -> Result<Vec<SchedaSorgente>, AppError> {
+/// Senza i brani `saltati` e senza quelli delle radici `morte`: una radice che
+/// in questa passata non ha risposto si tiene fuori tutta nella query, e i
+/// brani già saltati per identificativo restano la rete sotto. Vedi
+/// [`RadiciMorte`].
+fn leggi_lotto(
+    app: &AppHandle,
+    saltati: &[i64],
+    morte: &[String],
+) -> Result<Vec<SchedaSorgente>, AppError> {
     let Some(stato) = app.try_state::<Stato>() else {
         return Ok(Vec::new());
     };
     con_libreria(&stato, |libreria| {
-        sonora::candidati_tranne(&libreria.connection, adesso_ms(), sonora::LOTTO, saltati)
+        sonora::candidati_tranne(
+            &libreria.connection,
+            adesso_ms(),
+            sonora::LOTTO,
+            saltati,
+            morte,
+        )
     })
 }
 
@@ -998,7 +1021,13 @@ fn intensita(app: &AppHandle) -> Fine {
             break Fine::Scansione;
         }
         let schede = match con_libreria(&stato, |libreria| {
-            volume::candidati_tranne(&libreria.connection, adesso_ms(), volume::LOTTO, &saltati)
+            volume::candidati_tranne(
+                &libreria.connection,
+                adesso_ms(),
+                volume::LOTTO,
+                &saltati,
+                &morte.elenco(),
+            )
         }) {
             Ok(schede) => schede,
             Err(err) => {
@@ -1571,6 +1600,58 @@ mod prove {
         );
         // Le schede delle prove qui sotto: una radice sola.
         assert_eq!(radice_del_percorso("1.flac"), radice_del_percorso("2.flac"));
+    }
+
+    /// La radice di [`radice_del_percorso`] tiene fuori dal lotto dopo, in una
+    /// lettura sola, tutti i brani che stanno sotto di lei: la query e questa
+    /// funzione piegano barre e maiuscole allo stesso modo. Prima i brani di
+    /// una share spenta si escludevano uno per uno, con un elenco che cresceva
+    /// a ogni lotto (R04-8).
+    #[test]
+    fn una_radice_spenta_si_tiene_fuori_dal_lotto_in_una_volta() {
+        let connessione = rymembra_app::db::open_in_memory()
+            .expect("database")
+            .connection;
+        let percorsi = [
+            r"\\NAS\Musica\Rock\1.flac",
+            "//nas/musica/Jazz/2.flac",
+            r"C:\Musica\3.flac",
+            "c:/Altro/4.flac",
+            "/mnt/nas/musica/5.flac",
+            r"\\nas\altro\6.flac",
+        ];
+        for (n, percorso) in percorsi.iter().enumerate() {
+            connessione
+                .execute(
+                    "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms,
+                                         file_size, date_added, date_modified)
+                     VALUES (?1, ?2, 'T', 'A', 'AL', 180000, 1, 0, 0)",
+                    rusqlite::params![percorso, format!("k{n}")],
+                )
+                .expect("brano");
+        }
+        let fuori = |radice: String| -> Vec<String> {
+            sonora::candidati_tranne(&connessione, 0, 10, &[], &[radice])
+                .expect("candidati")
+                .into_iter()
+                .filter_map(|scheda| match scheda.collocazione {
+                    rymembra_app::playback::Collocazione::File(percorso) => Some(percorso),
+                    _ => None,
+                })
+                .collect()
+        };
+        let restano = fuori(radice_del_percorso(percorsi[0]));
+        assert!(
+            !restano
+                .iter()
+                .any(|p| p.contains("usica/Jazz") || p.contains("Rock")),
+            "{restano:?}"
+        );
+        assert_eq!(restano.len(), 4, "{restano:?}");
+        let restano = fuori(radice_del_percorso(percorsi[2]));
+        assert_eq!(restano.len(), 4, "le due della lettera C: {restano:?}");
+        let restano = fuori(radice_del_percorso(percorsi[4]));
+        assert_eq!(restano.len(), 5, "il punto di montaggio: {restano:?}");
     }
 
     /// Le impronte fermate da una radice spenta lasciano lo stesso il posto al

@@ -200,7 +200,7 @@ pub fn candidati(
     adesso: i64,
     quanti: usize,
 ) -> Result<Vec<SchedaSorgente>, AppError> {
-    candidati_tranne(connection, adesso, quanti, &[])
+    candidati_tranne(connection, adesso, quanti, &[], &[])
 }
 
 /// Come [`candidati`], senza i brani di `esclusi`.
@@ -217,6 +217,7 @@ pub fn candidati_tranne(
     adesso: i64,
     quanti: usize,
     esclusi: &[i64],
+    radici_escluse: &[String],
 ) -> Result<Vec<SchedaSorgente>, AppError> {
     let sql = format!(
         "SELECT t.id, t.path, t.duration_ms, t.replaygain_track_db,
@@ -225,9 +226,11 @@ pub fn candidati_tranne(
          LEFT JOIN track_impronta i ON i.track_id = t.id
          WHERE {}
            AND t.id NOT IN (SELECT value FROM json_each(?4))
+           AND {}
          ORDER BY t.date_added DESC
          LIMIT ?3",
-        candidato_where()
+        candidato_where(),
+        fuori_dalle_radici(5)
     );
     let mut statement = connection
         .prepare(&sql)
@@ -239,6 +242,7 @@ pub fn candidati_tranne(
                 scadenza(adesso),
                 i64::try_from(quanti).unwrap_or(i64::MAX),
                 elenco_json(esclusi),
+                radici_json(radici_escluse),
             ],
             |row| {
                 // `candidato_where` ha già escluso i brani senza file: qui
@@ -639,6 +643,45 @@ fn scadenza(adesso: i64) -> i64 {
 ///
 /// Scritto a mano e non con `serde_json` perché sono soltanto numeri, che non
 /// hanno niente da far sfuggire.
+/// La clausola che tiene fuori i brani sotto le radici date, col parametro
+/// `?{parametro}` che porta l'elenco di [`radici_json`].
+///
+/// # Perché una radice e non i suoi brani uno per uno
+///
+/// Con una share spenta la passata li escludeva **per identificativo**: ogni
+/// lotto ne portava altri sessantaquattro che tornavano subito «non
+/// raggiungibili», e ogni lotto dopo li escludeva con un elenco che cresceva —
+/// su cinquantamila candidati, migliaia di letture sotto il lucchetto della
+/// libreria, ciascuna con fino a cinquantamila esclusi. Con la radice nella
+/// query il lotto dopo è già senza di lei.
+///
+/// Il confronto è sul prefisso del percorso, con le barre e le maiuscole
+/// ASCII piegate come le piega la radice (vedi [`radici_json`]), e vuole un
+/// confine dopo: `\\nas\musica` non tiene fuori `\\nas\musica2`. Un
+/// percorso scritto in un'altra forma (un prefisso `\\?\`) non si riconosce,
+/// e resta escluso per identificativo come prima.
+pub(crate) fn fuori_dalle_radici(parametro: usize) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM json_each(?{parametro}) AS r
+                      WHERE lower(replace(substr(t.path, 1, length(r.value)), '/', '\\')) = r.value
+                        AND (length(t.path) = length(r.value)
+                             OR substr(t.path, length(r.value) + 1, 1) IN ('\\', '/')))"
+    )
+}
+
+/// Le radici, in JSON, nella forma che [`fuori_dalle_radici`] confronta:
+/// minuscole ASCII (come `lower()` di SQLite) e barre rovesciate. Una radice
+/// vuota — un percorso relativo, che la scansione non scrive — non tiene fuori
+/// niente.
+pub(crate) fn radici_json(radici: &[String]) -> String {
+    let piegate: Vec<String> = radici
+        .iter()
+        .filter(|r| !r.is_empty())
+        .map(|r| r.to_ascii_lowercase().replace('/', "\\"))
+        .collect();
+    serde_json::to_string(&piegate).unwrap_or_else(|_| "[]".to_owned())
+}
+
 pub(crate) fn elenco_json(ids: &[i64]) -> String {
     let dentro: Vec<String> = ids.iter().map(i64::to_string).collect();
     format!("[{}]", dentro.join(","))
@@ -719,7 +762,7 @@ mod prove {
             brano(&connection, id, id);
         }
         let ids = |esclusi: &[i64]| -> Vec<i64> {
-            candidati_tranne(&connection, 0, 3, esclusi)
+            candidati_tranne(&connection, 0, 3, esclusi, &[])
                 .expect("candidati")
                 .iter()
                 .map(|c| c.track_id)
@@ -727,6 +770,43 @@ mod prove {
         };
         assert_eq!(ids(&[]), [5, 4, 3]);
         assert_eq!(ids(&[5, 4]), [3, 2, 1]);
+    }
+
+    /// Una radice spenta si tiene fuori tutta, in una lettura: i suoi brani
+    /// non tornano lotto per lotto per essere esclusi uno per uno.
+    #[test]
+    fn una_radice_spenta_si_tiene_fuori_tutta() {
+        let connection = libreria();
+        for (id, percorso) in [
+            (1, r"\\NAS\Musica\a.flac"),
+            (2, r"\\nas\musica\b\c.flac"),
+            (3, r"\\NAS\Musica2\d.flac"),
+            (4, r"C:\Musica\e.flac"),
+            (5, "//nas/musica/f.flac"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                         file_size, date_added, date_modified)
+                     VALUES (?1, ?2, ?3, 'T', 'A', 'AL', 180000, 1, ?1, 0)",
+                    rusqlite::params![id, percorso, format!("k{id}")],
+                )
+                .expect("inserimento del brano");
+        }
+        let ids = |radici: &[&str]| -> Vec<i64> {
+            let radici: Vec<String> = radici.iter().map(|r| (*r).to_owned()).collect();
+            candidati_tranne(&connection, 0, 10, &[], &radici)
+                .expect("candidati")
+                .iter()
+                .map(|c| c.track_id)
+                .collect()
+        };
+        assert_eq!(ids(&[]), [5, 4, 3, 2, 1]);
+        // La radice come la scrive `radice_del_percorso`: minuscola per una
+        // share, la lettera maiuscola per un disco.
+        assert_eq!(ids(&[r"\\nas\musica"]), [4, 3], "la share e i suoi brani");
+        assert_eq!(ids(&[r"C:"]), [5, 3, 2, 1]);
+        assert_eq!(ids(&[r"\\nas\musica", "C:"]), [3]);
     }
 
     // ── i byte ──────────────────────────────────────────────────────────────
