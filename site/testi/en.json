@@ -65,8 +65,8 @@
   },
   "cataloghi": {
     "titolo": "What's missing, it looks for where it's allowed.",
-    "testo": "The Internet Archive and Audius hold music published to be shared: more than 250,000 concerts on the Live Music Archive, netlabels, the public domain, tracks that artists released under open licences. A track is downloaded only when its own licence allows it, and it keeps that licence. When no studio version is free, a concert can stand in — and the track says it's live.",
-    "acquisti": "No free source carries the commercial catalog, and Rymembra won't fetch it from where it shouldn't: what it can't find lawfully goes on a shopping list, with links to Bandcamp and Qobuz.",
+    "testo": "The Internet Archive and Audius hold music published to be shared: more than 250,000 concerts on the Live Music Archive, netlabels, the public domain, tracks that artists released under open licenses. A track is downloaded only when its own license allows it, and it keeps that license. When no studio version is free, a concert can stand in — and the track says it's live.",
+    "acquisti": "No free source carries the commercial catalog, and Rymembra won't fetch it from where it shouldn't: what it can't find lawfully goes into “To buy”, with links to Bandcamp and Qobuz.",
     "esclusi": "Left out on purpose: YouTube, whose terms forbid downloading and storing its content, and Spotify's private endpoints, which would mean unauthorized access.",
     "alt": "The “Import from a service” card in the settings, listing where the music comes from",
     "didascalia": "Settings, “Import from a service”: every source with the rule it follows."
@@ -83,7 +83,7 @@
     "didascalia": "Now playing, with the spectrum scene and the line that says what the file is. [How the audio engine works]({base}docs/audio/)."
   },
   "insieme": {
-    "titolo": "And it listens together.",
+    "titolo": "And you listen together.",
     "testo": "Friends or colleagues, each with their own Rymembra, hear the same music at the same moment: one device hosts, the others follow, and each plays it on its own. The first time, both screens show the same four-digit code; from then on the devices recognize each other, and whatever passes between them is encrypted.",
     "punti": [
       "The host chooses, for each person who joins, whether they just listen, take the controls — pause, seeking, the next track and the one before — or do everything, their own tracks in the queue included, which reach the others from the PC that has them.",
@@ -119,7 +119,7 @@
     "dalVivo": "live",
     "youtube": "its terms forbid downloading",
     "spotify": "no unauthorized access",
-    "listaAcquisti": "Shopping list",
+    "listaAcquisti": "To buy",
     "inRiproduzione": "Now playing",
     "stessoVolume": "Every track brought to the same loudness",
     "senzaPause": "One track ends, the next begins: no gap",
@@ -160,7 +160,7 @@
     },
     "passo2": {
       "titolo": "Get past SmartScreen",
-      "testo": "The installer isn't signed with a certificate, which costs money every year, so Windows warns you the first time. Click «More info», then «Run anyway»."
+      "testo": "The installer isn't signed with a certificate, which costs money every year, so Windows warns you the first time. Click “More info”, then “Run anyway”."
     },
     "passo3": {
       "titolo": "Point it at your music",
@@ -198,11 +198,11 @@
       },
       {
         "d": "Why does Windows warn me when I install it?",
-        "r": "Because the installer isn't signed with a code-signing certificate, which needs an identity check and a yearly fee. SmartScreen stops unsigned programs it hasn't seen often: click «More info», then «Run anyway». Updates are a different matter: the program verifies their signature before installing anything. The Microsoft Store copy doesn't show this warning: the Store signs it."
+        "r": "Because the installer isn't signed with a code-signing certificate, which needs an identity check and a yearly fee. SmartScreen stops unsigned programs it hasn't seen often: click “More info”, then “Run anyway”. Updates are a different matter: the program verifies their signature before installing anything. The Microsoft Store copy doesn't show this warning: the Store signs it."
       },
       {
         "d": "Where does the music come from? Is it legal?",
-        "r": "From your own files first. Then from the Internet Archive and Audius, and only when a track's licence allows a copy; every track keeps its licence, and the Live Music Archive's non-commercial clause binds you too. Rymembra doesn't download from YouTube and doesn't scrape Spotify. The details are in [TERMS.md]({termini})."
+        "r": "From your own files first. Then from the Internet Archive and Audius, and only when a track's license allows a copy; every track keeps its license, and the Live Music Archive's non-commercial clause binds you too. Rymembra doesn't download from YouTube and doesn't scrape Spotify. The details are in [TERMS.md]({termini})."
       },
       {
         "d": "Will it change my music files?",
@@ -210,7 +210,7 @@
       },
       {
         "d": "Can I bring my Spotify playlists?",
-        "r": "Yes. Ask Spotify for your data from your account's privacy page: it arrives as a ZIP, usually within days, and the full listening history takes longer. Rymembra reads it on your computer and matches each track against your library and the free catalogs. The ZIP holds no audio: what you don't own and no free catalog has goes on the shopping list."
+        "r": "Yes. Ask Spotify for your data from your account's privacy page: it arrives as a ZIP, usually within days, and the full listening history takes longer. Rymembra reads it on your computer and matches each track against your library and the free catalogs. The ZIP holds no audio: what you don't own and no free catalog has goes into “To buy”."
       },
       {
         "d": "Can I listen together with a colleague?",
@@ -251,8 +251,8 @@
     "privacy": "Privacy",
     "termini": "Terms",
     "sicurezza": "Security",
-    "licenza": "Licence",
-    "mit": "Code under the MIT licence."
+    "licenza": "License",
+    "mit": "Code under the MIT license."
   },
   "lingua": {
     "suggerimento": "Read this page in English",
