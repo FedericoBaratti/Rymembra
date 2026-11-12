@@ -60,6 +60,12 @@ export const ipc = {
   // desktop. Torna com'è rimasta, come `finestraIngrandisci`.
   finestraSchermoIntero: () => invoke<boolean>("finestra_schermo_intero"),
   finestraChiudi: () => invoke<void>("finestra_chiudi"),
+  // La chiusura che arriva dal nucleo — Alt+F4, la barra delle applicazioni,
+  // «Esci» dal vassoio — aspetta lo Studio come la X: la pagina dice quando ha
+  // qualcosa da scrivere, e risponde a `finestra:scrivi` quando ha scritto.
+  // Vedi `src-tauri/src/chiusura.rs` e `studio/primaDiChiudere.ts`.
+  chiusuraDaScrivere: (si: boolean) => invoke<void>("chiusura_da_scrivere", { si }),
+  chiusuraScritto: () => invoke<void>("chiusura_scritto"),
 
   // ── il secondo piano ──────────────────────────────────────────────────────
   // Se `finestraChiudi` spenga il programma o nasconda soltanto la finestra. La

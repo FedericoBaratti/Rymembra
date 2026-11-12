@@ -40,6 +40,7 @@ mod auto;
 mod barra;
 mod cancellazione;
 mod cartelle;
+mod chiusura;
 mod comandi;
 mod copertine;
 mod destinazioni;
@@ -124,6 +125,9 @@ const ATTESA_PRIMO_COLORE: std::time::Duration = std::time::Duration::from_secs(
 /// `aggiornamenti::finestra_pronta`.
 #[tauri::command]
 fn pronto(finestra: tauri::Window) {
+    // Una pagina nuova non ha niente da scrivere: se la vecchia era a metà di
+    // uno Studio aperto, ogni chiusura dopo aspetterebbe il tetto intero.
+    chiusura::CHIUSURA.pagina_nuova();
     let _ = finestra.show();
     aggiornamenti::finestra_pronta(finestra.app_handle());
 }
@@ -256,8 +260,12 @@ fn finestra_schermo_intero() -> bool {
 /// permette adesso a `on_window_event` di **impedire** questa chiusura quando il
 /// secondo piano è acceso. La X di `BarraTitolo.tsx` non sa niente della
 /// preferenza, e non deve: chiede di chiudere, e chi ascolta decide.
+///
+/// La X della pagina ha già aspettato lo Studio (`studio/primaDiChiudere.ts`):
+/// la sua chiusura non si rinvia una seconda volta. Vedi `chiusura.rs`.
 #[tauri::command]
 fn finestra_chiudi(finestra: tauri::Window) {
+    chiusura::CHIUSURA.concedi();
     let _ = finestra.close();
 }
 
@@ -622,14 +630,23 @@ pub fn run() {
             if spegnimento::in_uscita() {
                 return;
             }
-            if !vassoio::nasconde(finestra.app_handle()) {
-                return;
+            let mano = finestra.app_handle();
+            match chiusura::alla_richiesta(mano, vassoio::nasconde(mano)) {
+                chiusura::Decisione::Passa => {}
+                // Alt+F4 o la barra delle applicazioni con lo Studio aperto:
+                // la pagina scrive prima, e la chiusura la rifà `chiusura.rs`
+                // quando ha scritto — o dopo il suo tetto (R14-7).
+                chiusura::Decisione::Rinvia(_) | chiusura::Decisione::Aspetta => {
+                    api.prevent_close();
+                }
+                chiusura::Decisione::Nascondi => {
+                    api.prevent_close();
+                    let _ = finestra.hide();
+                    // Il QR del collegamento non resta valido nel vassoio, dove
+                    // nessuno lo vede (decisione D-30).
+                    lontano::finestra_nascosta(mano);
+                }
             }
-            api.prevent_close();
-            let _ = finestra.hide();
-            // Il QR del collegamento non resta valido nel vassoio, dove
-            // nessuno lo vede (decisione D-30).
-            lontano::finestra_nascosta(finestra.app_handle());
         })
         // La variante asincrona: consegna un `responder` invece di pretendere
         // la risposta subito. Serve perché la lettura dal disco possa avvenire
@@ -647,6 +664,8 @@ pub fn run() {
             finestra_ingrandita,
             finestra_schermo_intero,
             finestra_chiudi,
+            chiusura::chiusura_da_scrivere,
+            chiusura::chiusura_scritto,
             vassoio::secondo_piano,
             vassoio::secondo_piano_attiva,
             vassoio::vassoio_lingua,
@@ -1082,7 +1101,14 @@ pub fn run() {
             // spettro, sorveglianza dei dispositivi, posizione di ripresa,
             // scrobbling e scheda del sistema, spenti per sempre dentro un
             // programma vivo.
-            if chiusura && !spegnimento::in_uscita() && vassoio::nasconde(mano) {
+            //
+            // Lo stesso per una chiusura rinviata ad aspettare lo Studio: la
+            // finestra resta aperta finché la pagina non ha scritto, e
+            // spegnere adesso fermerebbe tutto sotto di lei (`chiusura.rs`).
+            if chiusura
+                && !spegnimento::in_uscita()
+                && (vassoio::nasconde(mano) || crate::chiusura::CHIUSURA.rinviata())
+            {
                 return;
             }
 

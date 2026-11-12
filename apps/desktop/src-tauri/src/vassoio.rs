@@ -270,9 +270,12 @@ pub(crate) fn mostra(app: &tauri::AppHandle) {
 /// decidere se impedire la chiusura, e trovandola alzata si tira da parte. In
 /// quest'ordine «Esci» funziona qualunque sia l'ordine interno con cui Tauri
 /// manda i suoi eventi, che non è una cosa su cui valga la pena scommettere.
+///
+/// Con lo Studio aperto, però, prima la pagina scrive quel che ha in mano, al
+/// più per il tetto di `chiusura.rs` (R14-7): l'uscita la fa lui, nello stesso
+/// ordine, quando la pagina risponde o il tempo finisce.
 fn esci(app: &tauri::AppHandle) {
-    crate::spegnimento::chiedi();
-    app.exit(0);
+    crate::chiusura::esci(app);
 }
 
 /// Quel che fa una voce del menù dell'icona.
