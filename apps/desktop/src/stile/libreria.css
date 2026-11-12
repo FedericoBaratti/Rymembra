@@ -653,6 +653,26 @@
 .primo-avvisi > * {
   margin-bottom: 0;
 }
+/* Sul computer gli avvisi galleggiano sopra la scheda, in cima alla
+   schermata: dentro il flusso la facevano crescere, e la scheda centrata
+   spostava «Ascolta» di sessanta pixel mentre lo si stava per premere
+   (R18-17). In cima e non in fondo, dove su una finestra bassa coprirebbero i
+   tasti; sotto la fascia del titolo, da cui si trascina la finestra. Il
+   contenitore è `.primo`, che è fisso: la scheda non è posizionata. Sul
+   telefono restano nel flusso, sotto il testo. */
+:root[data-forma="computer"] .primo-avvisi {
+  position: absolute;
+  top: calc(var(--barra-titolo-h) + var(--spazio-2));
+  left: 50%;
+  translate: -50% 0;
+  width: min(560px, calc(100% - 2 * var(--spazio-4)));
+}
+:root[data-forma="computer"] .primo-avvisi > * {
+  box-shadow: var(--filo), var(--shadow-3);
+}
+:root[data-forma="computer"] .primo-avvisi > .errore {
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)) var(--color-surface-1);
+}
 .primo-tasti {
   display: flex;
   flex-wrap: wrap;

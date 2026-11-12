@@ -4478,8 +4478,12 @@ export function App() {
                     <AvvisiInsieme onErrore={segnalaErrore} />
                     {/* Col primo avvio aperto le notizie le mostra lui: qui
                         sarebbero sotto la sua schermata, e due copie della stessa
-                        fascia d'errore si annuncerebbero due volte. */}
-                    {!primoVisibile && notizieDiFascia}
+                        fascia d'errore si annuncerebbero due volte.
+                        Qui solo sul telefono: sul computer stanno nella pila
+                        dei toast (più sotto), perché nel flusso spingevano giù
+                        la pagina — titolo, indice, filtro — proprio mentre si
+                        stava per cliccarci (R18-17). */}
+                    {!primoVisibile && MOBILE && notizieDiFascia}
                     {corpo()}
                   </div>
                 </PresenzaPagina>
@@ -4828,6 +4832,14 @@ export function App() {
                   ipc.annullaScansione().catch(segnalaErrore);
                 }}
               >
+                {/* Le fasce di notizia e d'errore, sul computer: galleggiano
+                    qui sopra il lettore invece di entrare nel flusso della
+                    pagina, che spingevano giù di una fascia (R18-17). Una copia
+                    viva sola: non col primo avvio, che le mostra da sé, né a
+                    schermo intero, che ha la sua (`avvisiGrande`); con lo
+                    Studio aperto questa è sotto di lui e inerte, e parla la
+                    sua. */}
+                {!MOBILE && !primoVisibile && !(grande && conBrano) && notizieDiFascia}
                 {/* La coda segue chi se ne va, per la ragione scritta sopra — e a
                     maggior ragione: la scansione dura venti secondi, questa un'ora, e
                     sopravvive alla chiusura dell'applicazione. Sulla pagina stessa il

@@ -547,6 +547,22 @@
   flex: 1;
   min-width: 0;
 }
+/* Le fasce di notizia e d'errore della pagina, sul computer: stanno qui e non
+   nel flusso, che spingevano giù (R18-17). Forma di toast: la larghezza della
+   pila, un fondo pieno — sotto ci passa la pagina, e un rosso trasparente su
+   un elenco non si legge — e la stessa ombra. Il resto resta quello di
+   `.notizia` ed `.errore`, comprese le frasi che si copiano. */
+.pila-toast > .notizia,
+.pila-toast > .errore {
+  pointer-events: auto;
+  width: 360px;
+  max-width: calc(100vw - 2 * var(--player-gap));
+  margin-bottom: 0;
+  box-shadow: var(--filo), var(--shadow-3);
+}
+.pila-toast > .errore {
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)) var(--color-surface-1);
+}
 /* Nel toast la causa tecnica sta qui, in carattere a spaziatura fissa: si copia,
    per la stessa ragione di `.errore`. */
 .toast .cosa {
