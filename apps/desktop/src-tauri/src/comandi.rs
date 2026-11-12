@@ -1293,14 +1293,20 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         // Si prende l'elenco solo se è quello confermato; resta in mano fino a
         // scrittura riuscita, e se la scrittura fallisce torna al suo posto.
         let elenco = in_attesa().take_if(|(atteso, _)| *atteso == gettone);
-        let tolti = match elenco {
-            None => 0,
+        let (tolti, via) = match elenco {
+            None => (0, Vec::new()),
             Some((segno, righe)) => {
                 let fatto = con_libreria(&stato, |libreria| {
-                    applica_rimozioni(&mut libreria.connection, &righe)
+                    let tolti = applica_rimozioni(&mut libreria.connection, &righe)?;
+                    let ids: Vec<i64> = righe.iter().map(|riga| riga.id).collect();
+                    let rimaste: Vec<i64> = summaries_by_id(&libreria.connection, &ids)?
+                        .iter()
+                        .map(|brano| brano.id)
+                        .collect();
+                    Ok((tolti, sparite(&righe, &rimaste)))
                 });
                 match fatto {
-                    Ok(tolti) => tolti,
+                    Ok(fatto) => fatto,
                     Err(guasto) => {
                         *in_attesa() = Some((segno, righe));
                         return Err(guasto);
@@ -1312,6 +1318,15 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         // manutenzione va svegliata come dopo una scansione che toglie.
         if tolti > 0 {
             turno.segna_cambiamenti();
+        }
+        // E brani che la coda non deve più tenere, come dopo «Togli dalla
+        // libreria» (R23-8): il brano che suonava restava in coda col suo id,
+        // e con «ripeti tutto» tornava per essere saltato con un avviso. Dopo
+        // la scrittura riuscita, e solo le righe sparite davvero. Senza
+        // fermare: i file sono già spariti dal disco, e togliere dalla coda
+        // vuol dire «non risuonarlo», come in `brani_togli`.
+        if !via.is_empty() {
+            crate::cancellazione::sgombera(&mano, &via, false);
         }
         let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection))?;
         Ok(EsitoRimozioni { tolti, numeri })
@@ -1325,6 +1340,19 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         crate::cartelle::cambiate(&app);
     }
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Le righe di un elenco di rimozioni che dopo la scrittura non ci sono più.
+///
+/// `applica_rimozioni` toglie una riga solo se ha ancora il percorso con cui la
+/// si era giudicata sparita: una riga che un'altra scansione ha ritrovato
+/// altrove resta, e con lei il suo posto nella coda.
+fn sparite(righe: &[RimozioneInAttesa], rimaste: &[i64]) -> Vec<i64> {
+    righe
+        .iter()
+        .map(|riga| riga.id)
+        .filter(|id| !rimaste.contains(id))
+        .collect()
 }
 
 /// Lascia cadere le rimozioni in attesa: la risposta è stata no.
@@ -2528,6 +2556,39 @@ mod prove {
                 "«{nome}» apre «{indirizzo}», che non è un indirizzo"
             );
         }
+    }
+
+    /// R23-8, la seconda metà: le rimozioni confermate tolgono righe dalla
+    /// libreria, e la coda le deve perdere come dopo «Togli dalla libreria».
+    /// Prima la coda teneva l'id del brano che suonava: con «ripeti tutto»
+    /// tornava, e veniva saltato con un avviso. Dopo la scrittura riuscita, e
+    /// non prima: se fallisce, le righe ci sono ancora.
+    #[test]
+    fn le_rimozioni_confermate_sgomberano_la_coda() {
+        let sorgente = include_str!("comandi.rs");
+        let corpo = &sorgente[sorgente
+            .find("pub async fn rimozioni_conferma(")
+            .expect("il comando")..];
+        let corpo = &corpo[..corpo.find("\n}\n").expect("la fine del comando")];
+        let scrive = corpo.find("applica_rimozioni(").expect("la scrittura");
+        let sgombera = corpo
+            .find("crate::cancellazione::sgombera(&mano, &via, false)")
+            .expect("rimozioni_conferma non sgombera la coda");
+        assert!(sgombera > scrive, "la coda si sgombera dopo la scrittura");
+    }
+
+    /// Solo le righe sparite davvero: una che nel frattempo ha un altro
+    /// percorso resta in libreria, e il suo posto nella coda con lei.
+    #[test]
+    fn la_coda_perde_solo_le_righe_sparite_davvero() {
+        let riga = |id: i64| RimozioneInAttesa {
+            id,
+            path: format!(r"D:\Musica\{id}.flac"),
+        };
+        let righe = [riga(1), riga(2), riga(3)];
+        assert_eq!(sparite(&righe, &[2]), vec![1, 3]);
+        assert!(sparite(&righe, &[1, 2, 3]).is_empty());
+        assert_eq!(sparite(&righe, &[]), vec![1, 2, 3]);
     }
 
     /// Un nome fuori elenco non ha un indirizzo, e non lo inventa.
