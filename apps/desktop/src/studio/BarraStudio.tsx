@@ -17,6 +17,7 @@ import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useStudio } from "./contesto";
 import { inValidazione, statoBozza } from "./negozio";
+import { risorseMancanti } from "./risorse";
 import type { Larghezza } from "./scena";
 import { cosaAnnulla, cosaRipete } from "./storia";
 
@@ -34,12 +35,13 @@ export function BarraStudio({
   onEsporta: () => void;
   onProva: () => void;
 }) {
-  const { s, manda, documento } = useStudio();
+  const { s, manda, documento, file } = useStudio();
   const meta = (documento?.["meta"] ?? {}) as Record<string, unknown>;
   const nome = typeof meta["name"] === "string" && meta["name"] !== "" ? meta["name"] : s.id;
   const versione = typeof meta["version"] === "string" ? meta["version"] : null;
   const scuraDiBase = documento?.["scheme"] !== "light";
-  const bozza = statoBozza(s);
+  const mancanti = risorseMancanti(s.esito?.risorse ?? [], file);
+  const bozza = statoBozza(s, mancanti.length);
   const annulla = cosaAnnulla(s.storia);
   const ripete = cosaRipete(s.storia);
   const rotta = bozza === "rotta";

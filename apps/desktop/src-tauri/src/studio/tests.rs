@@ -1335,3 +1335,367 @@ fn ogni_parte_ogni_parametro_e_ogni_animazione_pronta_hanno_la_loro_frase() {
         );
     }
 }
+
+// ── Il validatore tradotto (D-46) ───────────────────────────────────────────
+
+/// I sorgenti di `rymembra-skin`, senza le prove.
+fn sorgenti_del_validatore() -> Vec<(String, String)> {
+    fn giu(cartella: &Path, fuori: &mut Vec<(String, String)>) {
+        let Ok(voci) = std::fs::read_dir(cartella) else {
+            return;
+        };
+        for voce in voci.flatten() {
+            let percorso = voce.path();
+            let nome = voce.file_name().to_string_lossy().into_owned();
+            if percorso.is_dir() {
+                if nome != "tests" {
+                    giu(&percorso, fuori);
+                }
+            } else if percorso.extension().is_some_and(|e| e == "rs") && nome != "tests.rs" {
+                let testo = std::fs::read_to_string(&percorso).expect("un sorgente");
+                // Le prove in coda al file non contano: lì i messaggi si leggono.
+                let corpo = testo
+                    .find("#[cfg(test)]")
+                    .map_or(testo.as_str(), |taglio| testo.get(..taglio).unwrap_or(""));
+                fuori.push((nome, corpo.to_owned()));
+            }
+        }
+    }
+    let radice = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../core/rymembra-skin/src");
+    let mut fuori = Vec::new();
+    giu(&radice, &mut fuori);
+    assert!(
+        fuori.len() > 10,
+        "i sorgenti del validatore non si trovano in {}",
+        radice.display()
+    );
+    fuori
+}
+
+/// Il testo fra la parentesi aperta in `da` e quella che la chiude, saltando
+/// le stringhe.
+fn fra_parentesi(testo: &str, da: usize) -> &str {
+    let byte = testo.as_bytes();
+    let mut livello = 1_u32;
+    let mut i = da;
+    let mut in_stringa = false;
+    while let Some(&c) = byte.get(i) {
+        if in_stringa {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_stringa = false;
+            }
+        } else if c == b'"' {
+            in_stringa = true;
+        } else if c == b'(' || c == b'[' || c == b'{' {
+            livello += 1;
+        } else if c == b')' || c == b']' || c == b'}' {
+            livello -= 1;
+            if livello == 0 {
+                return testo.get(da..i).unwrap_or("");
+            }
+        }
+        i += 1;
+    }
+    panic!("parentesi non chiusa");
+}
+
+/// Gli argomenti di primo livello.
+fn argomenti(dentro: &str) -> Vec<String> {
+    let mut fuori = Vec::new();
+    let mut livello = 0_i32;
+    let mut in_stringa = false;
+    let mut salta = false;
+    let mut pezzo = String::new();
+    for c in dentro.chars() {
+        if salta {
+            salta = false;
+            pezzo.push(c);
+            continue;
+        }
+        if in_stringa {
+            if c == '\\' {
+                salta = true;
+            } else if c == '"' {
+                in_stringa = false;
+            }
+            pezzo.push(c);
+            continue;
+        }
+        match c {
+            '"' => in_stringa = true,
+            '(' | '[' | '{' => livello += 1,
+            ')' | ']' | '}' => livello -= 1,
+            ',' if livello == 0 => {
+                fuori.push(pezzo.trim().to_owned());
+                pezzo.clear();
+                continue;
+            }
+            _ => {}
+        }
+        pezzo.push(c);
+    }
+    if !pezzo.trim().is_empty() {
+        fuori.push(pezzo.trim().to_owned());
+    }
+    fuori
+}
+
+/// Il contenuto di un letterale di Rust come lo stampa `format!`: le
+/// continuazioni di riga tolte, le virgolette e le graffe raddoppiate sciolte.
+fn letterale(sorgente: &str) -> String {
+    let dentro = sorgente
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("non è un letterale: {sorgente}"));
+    let mut fuori = String::new();
+    let mut caratteri = dentro.chars().peekable();
+    while let Some(c) = caratteri.next() {
+        match c {
+            '\\' => match caratteri.next() {
+                Some('\n') => {
+                    while caratteri.peek().is_some_and(|c| c.is_whitespace()) {
+                        caratteri.next();
+                    }
+                }
+                Some('"') => fuori.push('"'),
+                Some('\\') => fuori.push('\\'),
+                Some('n') => fuori.push('\n'),
+                altro => panic!("escape inatteso: {altro:?}"),
+            },
+            '{' if caratteri.peek() == Some(&'{') => {
+                caratteri.next();
+                fuori.push('{');
+            }
+            '}' if caratteri.peek() == Some(&'}') => {
+                caratteri.next();
+                fuori.push('}');
+            }
+            altro => fuori.push(altro),
+        }
+    }
+    fuori
+}
+
+/// I segnaposto `{nome}` di un modello.
+fn segnaposto(modello: &str) -> std::collections::BTreeSet<String> {
+    let mut fuori = std::collections::BTreeSet::new();
+    let mut resto = modello;
+    while let Some(da) = resto.find('{') {
+        let dopo = resto.get(da + 1..).unwrap_or("");
+        let nome: String = dopo
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !nome.is_empty()
+            && nome.starts_with(|c: char| c.is_ascii_lowercase())
+            && dopo.get(nome.len()..).is_some_and(|s| s.starts_with('}'))
+        {
+            fuori.insert(nome);
+        }
+        resto = dopo;
+    }
+    fuori
+}
+
+#[test]
+fn ogni_problema_del_validatore_ha_la_sua_frase_nelle_due_lingue() {
+    // D-46: il validatore parlava solo italiano, e lo Studio in inglese
+    // mostrava l'elenco dei problemi in italiano. Ogni messaggio nasce ora da
+    // `motivo!` con una chiave del catalogo; qui si controlla che nessuno ci
+    // sfugga, che la riga italiana del catalogo sia **la stessa** frase del
+    // nucleo (le due non possono divergere), e che l'inglese abbia gli stessi
+    // segnaposto.
+    let it = catalogo(include_str!("../../../src/lingue/it.json"));
+    let en = catalogo(include_str!("../../../src/lingue/en.json"));
+    let mut viste = 0;
+    let mut guasti: Vec<String> = Vec::new();
+    for (file, testo) in sorgenti_del_validatore() {
+        // Nessun messaggio scritto a mano fuori da `motivo!`.
+        for chiamata in ["problema(", "guasto(", "token_non_valido("] {
+            for (da, _) in testo.match_indices(chiamata) {
+                let prima = testo.get(..da).unwrap_or("");
+                if prima.ends_with("fn ")
+                    || prima.ends_with("::")
+                    || prima
+                        .chars()
+                        .last()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                let args = argomenti(fra_parentesi(&testo, da + chiamata.len()));
+                let ultimo = args.last().map_or("", String::as_str);
+                if ultimo.starts_with('"') || ultimo.starts_with("format!") {
+                    guasti.push(format!("{file}: {chiamata}…, {ultimo}) senza motivo!"));
+                }
+            }
+        }
+        if file != "motivo.rs" && testo.contains("message: format!(") {
+            guasti.push(format!("{file}: un `message: format!(` senza motivo!"));
+        }
+        // `motivo.rs` è la macro: i suoi motivi sono gli esempi della documentazione.
+        if file == "motivo.rs" {
+            continue;
+        }
+        for (da, _) in testo.match_indices("motivo!(") {
+            let args = argomenti(fra_parentesi(&testo, da + "motivo!(".len()));
+            let (Some(chiave), Some(modello)) = (args.first(), args.get(1)) else {
+                continue;
+            };
+            if !chiave.starts_with('"') {
+                // La definizione della macro e i suoi esempi.
+                continue;
+            }
+            viste += 1;
+            let chiave = letterale(chiave);
+            let modello = letterale(modello);
+            let nomi: std::collections::BTreeSet<String> = args
+                .iter()
+                .skip(2)
+                .filter_map(|a| a.split_once('=').map(|(n, _)| n.trim().to_owned()))
+                .collect();
+            if segnaposto(&modello) != nomi {
+                guasti.push(format!(
+                    "{file}: «{chiave}» ha segnaposto {:?} e argomenti {nomi:?}",
+                    segnaposto(&modello)
+                ));
+            }
+            let piena = format!("skin.issue.{chiave}");
+            match it.get(&piena).and_then(|v| v.as_str()) {
+                Some(riga) if riga == modello => {}
+                Some(riga) => guasti.push(format!(
+                    "it.json «{piena}» non è la frase del nucleo:\n  {riga}\n  {modello}"
+                )),
+                None => guasti.push(format!("it.json: manca «{piena}»")),
+            }
+            match en.get(&piena).and_then(|v| v.as_str()) {
+                Some(riga) if segnaposto(riga) == segnaposto(&modello) => {}
+                Some(_) => guasti.push(format!("en.json «{piena}»: segnaposto diversi")),
+                None => guasti.push(format!("en.json: manca «{piena}»")),
+            }
+        }
+    }
+    assert!(
+        viste > 150,
+        "pochi motivi trovati ({viste}): la lettura dei sorgenti non funziona"
+    );
+    for chiave in ["skin.issue.forse", "skin.issue.forse.nome"] {
+        assert!(
+            it.contains_key(chiave) && en.contains_key(chiave),
+            "manca «{chiave}»"
+        );
+    }
+    // Le descrizioni che un avviso riprende dal registro (`Motivo::dal_catalogo`).
+    for token in rymembra_skin::TOKENS {
+        let chiave = format!("skin.token.{}", token.id);
+        if !en.contains_key(&chiave) {
+            guasti.push(format!("en.json: manca «{chiave}»"));
+        }
+    }
+    for widget in &studio_registro().widgets {
+        let chiave = format!("skin.widget.{}", widget.name);
+        if !en.contains_key(&chiave) {
+            guasti.push(format!("en.json: manca «{chiave}»"));
+        }
+    }
+    assert!(
+        guasti.is_empty(),
+        "{} guasti:\n{}",
+        guasti.len(),
+        guasti.join("\n")
+    );
+}
+
+#[test]
+fn un_problema_arriva_alla_finestra_con_la_sua_chiave_e_i_suoi_valori() {
+    let esito = studio_valida(
+        rymembra_skin::PLAIN_SOURCE.replacen(
+            "\"tokens\": {",
+            "\"tokens\": { \"color.accentz\": \"#fff\",",
+            1,
+        ),
+        None,
+    );
+    let problema = esito.errori.first().expect("un errore");
+    assert_eq!(problema.motivo.chiave, "skin.issue.tokenInesistente");
+    assert!(
+        matches!(problema.motivo.valori.get("nome"), Some(ValoreIpc::Testo(nome)) if nome == "color.accentz"),
+        "{:?}",
+        problema.motivo
+    );
+    assert!(problema.motivo.forse.iter().any(|n| n == "color.accent"));
+}
+
+#[test]
+fn le_ragioni_della_chat_si_traducono_e_l_italiano_e_il_modello_del_catalogo() {
+    // D-68: le ragioni degli scarti di una risposta della chat arrivavano solo
+    // in italiano. Ogni ragione porta ora la chiave `studio3.reject.ia.*` e i
+    // suoi valori; la frase italiana — quella che torna al modello — è la riga
+    // di `it.json` coi valori al loro posto.
+    let it = catalogo(include_str!("../../../src/lingue/it.json"));
+    let en = catalogo(include_str!("../../../src/lingue/en.json"));
+    fn controlla(
+        motivo: &MotivoIpc,
+        it: &serde_json::Map<String, serde_json::Value>,
+        en: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        let modello = it
+            .get(&motivo.chiave)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("it.json: manca «{}»", motivo.chiave));
+        let inglese = en
+            .get(&motivo.chiave)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("en.json: manca «{}»", motivo.chiave));
+        assert_eq!(
+            segnaposto(modello),
+            segnaposto(inglese),
+            "{}",
+            motivo.chiave
+        );
+        let mut pieno = modello.to_owned();
+        for (nome, valore) in &motivo.valori {
+            let testo = match valore {
+                ValoreIpc::Testo(testo) => testo.clone(),
+                ValoreIpc::Motivo(dentro) => {
+                    controlla(dentro, it, en);
+                    dentro.testo.clone()
+                }
+            };
+            pieno = pieno.replace(&format!("{{{nome}}}"), &testo);
+        }
+        assert_eq!(pieno, motivo.testo, "{}", motivo.chiave);
+    }
+    let lungo: Vec<String> = (0..100).map(|n| format!("\"p{n}\"")).collect();
+    let risposta = format!(
+        "```rymembra-patch\n[{{\"op\":\"push\",\"percorso\":[\"a\"]}},{{\"op\":\"boh\",\"percorso\":[\"a\"]}},\
+         {{\"percorso\":[\"a\"]}},{{\"op\":\"scrivi\",\"percorso\":\"parts.a\"}},\
+         {{\"op\":\"scrivi\",\"percorso\":3}},{{\"op\":\"scrivi\"}},{{\"op\":\"scrivi\",\"percorso\":[]}},\
+         {{\"op\":\"scrivi\",\"percorso\":[{}]}},{{\"op\":\"scrivi\",\"percorso\":[true]}},\
+         {{\"op\":\"scrivi\",\"percorso\":[\"\"]}},{{\"op\":\"scrivi\",\"percorso\":[\"a\"]}},\
+         {{\"op\":\"togli\",\"percorso\":[\"a\"],\"valore\":1}}]\n```\n```rymembra-patch\nnon json\n```",
+        lungo.join(",")
+    );
+    let (_, ragioni) = rymembra_ia::operazioni::estrai_ragionate(&risposta);
+    let chiavi: std::collections::BTreeSet<&str> = ragioni
+        .iter()
+        .flat_map(|r| {
+            std::iter::once(r.chiave).chain(r.valori.iter().filter_map(|(_, p)| match p {
+                rymembra_ia::operazioni::Pezzo::Ragione(dentro) => Some(dentro.chiave),
+                rymembra_ia::operazioni::Pezzo::Testo(_) => None,
+            }))
+        })
+        .collect();
+    assert_eq!(
+        chiavi.len(),
+        15,
+        "non tutte le ragioni sono passate dalla prova: {chiavi:?}"
+    );
+    for ragione in &ragioni {
+        controlla(&motivo_di_ragione(ragione), &it, &en);
+    }
+}

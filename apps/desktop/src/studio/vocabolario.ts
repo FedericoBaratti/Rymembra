@@ -29,7 +29,27 @@
  * catalogo ne ha una sua?» — e la risposta sbagliata sarebbe la stessa: un
  * bottone senza scritta.
  */
+import type { Motivo } from "../ipc";
 import { tSe } from "../lingue";
+import { testoMotivo, type Traduci } from "./motivo";
+
+/** Il segno di una chiave che il catalogo non ha: nessuna frase è così. */
+const ASSENTE = "\u0000";
+
+/** Il traduttore di `motivo.ts`, sul catalogo vero. */
+export const traduciMotivo: Traduci = (chiave, valori) => {
+  const frase = tSe(chiave, ASSENTE, valori);
+  return frase === ASSENTE ? null : frase;
+};
+
+/**
+ * La frase di un problema o di un avviso del validatore, nella lingua
+ * dell'interfaccia (D-46). Senza un motivo — un esito di prima — resta la frase
+ * del nucleo.
+ */
+export function testoProblema(problema: { message: string; motivo?: Motivo }): string {
+  return problema.motivo === undefined ? problema.message : testoMotivo(problema.motivo, traduciMotivo);
+}
 
 /** Cosa fa una parte: `skin.part.section-card`. */
 export function descrizioneParte(nome: string, ripiego: string): string {

@@ -506,10 +506,28 @@ export interface AnimazionePronta {
 }
 
 /** Un problema che blocca. */
+/**
+ * Il perché di un problema o di un avviso, nella forma che si traduce: vedi
+ * `rymembra_skin::motivo` e `studio/motivo.ts`.
+ */
+export interface Motivo {
+  /** La chiave intera del catalogo delle lingue; vuota se non ce n'è una. */
+  chiave: string;
+  /** La frase italiana del nucleo: il ripiego. */
+  testo: string;
+  /** I valori dei segnaposto: un dato, o un pezzo di frase da tradurre. */
+  valori: Record<string, string | Motivo>;
+  /** I nomi vicini, per «Forse intendevi…». */
+  forse: string[];
+}
+
 export interface Problema {
   code: string;
   path: string;
+  /** La frase italiana del nucleo: la legge il modello della chat. */
   message: string;
+  /** La stessa cosa, da tradurre: vedi {@link Motivo}. */
+  motivo: Motivo;
   /** Il nome che forse si voleva scrivere, da `vicini()`. */
   forse: string[];
   /**
@@ -539,6 +557,8 @@ export interface Avviso {
     | "contrast";
   path: string;
   message: string;
+  /** La stessa cosa, da tradurre: vedi {@link Motivo}. */
+  motivo: Motivo;
   /** La riga in cui è scritto, come per {@link Problema}. */
   riga: number | null;
   /** La colonna, da uno. */

@@ -23,7 +23,7 @@ use crate::parts::{
 };
 use crate::stati::PartState;
 use crate::values::{Easing, FontKind};
-use crate::vicini::{forse, vicini};
+use crate::vicini::vicini;
 
 // ── Le parti ────────────────────────────────────────────────────────────────
 
@@ -61,17 +61,24 @@ fn pittura(
         let candidati = vicini(nome, motivi.iter().map(|(n, _)| n.as_str()));
         return Err(problema(
             &percorso,
-            format!("motivo inesistente: «{nome}».{}", forse(&candidati)),
+            motivo!(
+                "motivoInesistente",
+                "motivo inesistente: «{nome}».",
+                nome = nome.to_string()
+            )
+            .forse(&candidati),
         ));
     };
 
     if def.target() != dove {
         return Err(problema(
             &percorso,
-            format!(
-                "il motivo «{nome}» è un {}, e qui ci va un {}",
-                nome_destinazione(def.target()),
-                nome_destinazione(dove)
+            motivo!(
+                "motivoDestinazione",
+                "il motivo «{nome}» è un {era}, e qui ci va un {serve}",
+                nome = nome.to_string(),
+                era = motivo_destinazione(def.target()),
+                serve = motivo_destinazione(dove)
             ),
         ));
     }
@@ -82,12 +89,13 @@ fn pittura(
     })
 }
 
-/// Come si chiama una destinazione nel messaggio d'errore.
-pub(super) const fn nome_destinazione(target: EffectTarget) -> &'static str {
+/// Come si chiama una destinazione di un effetto nel messaggio d'errore,
+/// nella forma che si traduce: vedi [`crate::motivo`].
+pub(super) fn motivo_destinazione(target: EffectTarget) -> crate::motivo::Motivo {
     match target {
-        EffectTarget::Background => "sfondo",
-        EffectTarget::ClipPath => "ritaglio",
-        EffectTarget::Filter => "filtro di quel che sta dietro",
+        EffectTarget::Background => motivo!("destinazione.sfondo", "sfondo"),
+        EffectTarget::ClipPath => motivo!("destinazione.ritaglio", "ritaglio"),
+        EffectTarget::Filter => motivo!("destinazione.filtro", "filtro di quel che sta dietro"),
     }
 }
 
@@ -120,7 +128,10 @@ fn raggio(value: &Value, path: &str) -> Esito<Raggio> {
     if map.is_empty() {
         return Err(problema(
             path,
-            "un raggio per angolo deve nominare almeno un angolo",
+            motivo!(
+                "raggioAngoli",
+                "un raggio per angolo deve nominare almeno un angolo"
+            ),
         ));
     }
     Ok(Raggio::Angoli {
@@ -142,8 +153,10 @@ fn filtri_elemento(value: &Value, path: &str) -> Esito<Vec<FiltroElemento>> {
     if value.is_object() {
         return Err(problema(
             path,
-            "qui ci va una lista di filtri sull'elemento, come [{ \"blur\": \"2px\" }]. Il filtro \
-             di quel che sta dietro — la sfocatura del vetro — si chiama `backdrop`",
+            motivo!(
+                "filtri",
+                "qui ci va una lista di filtri sull'elemento, come [{{ \"blur\": \"2px\" }}]. Il filtro di quel che sta dietro — la sfocatura del vetro — si chiama `backdrop`"
+            ),
         ));
     }
     let voci = lista_fra(value, path, 1, 6)?;
@@ -155,7 +168,10 @@ fn filtri_elemento(value: &Value, path: &str) -> Esito<Vec<FiltroElemento>> {
         let (Some(nome), None) = (chiavi.next(), chiavi.next()) else {
             return Err(problema(
                 &dentro,
-                "ogni filtro è un oggetto con una chiave sola: il nome del filtro",
+                motivo!(
+                    "filtroUnaChiave",
+                    "ogni filtro è un oggetto con una chiave sola: il nome del filtro"
+                ),
             ));
         };
         let valore = map.get(nome).unwrap_or(&Value::Null);
@@ -184,7 +200,12 @@ fn filtri_elemento(value: &Value, path: &str) -> Esito<Vec<FiltroElemento>> {
                 let candidati = vicini(altro, FiltroElemento::NAMES.iter().copied());
                 return Err(problema(
                     &qui,
-                    format!("filtro sconosciuto: «{altro}».{}", forse(&candidati)),
+                    motivo!(
+                        "filtroSconosciuto",
+                        "filtro sconosciuto: «{altro}».",
+                        altro = altro.to_string()
+                    )
+                    .forse(&candidati),
                 ));
             }
         });
@@ -306,9 +327,11 @@ fn livello(
         // c'era, o non disegnerebbe niente.
         return Err(problema(
             path,
-            format!(
-                "la parte «{}» non ha `::{quale}` libero per un livello",
-                def.name
+            motivo!(
+                "livelloOccupato",
+                "la parte «{parte}» non ha `::{quale}` libero per un livello",
+                parte = def.name,
+                quale = quale.to_string()
             ),
         ));
     }
@@ -346,7 +369,11 @@ fn movimento_parte(
                 if passo.ms > MAX_CASCATA_MS {
                     return Err(problema(
                         &percorso,
-                        format!("il passo della cascata va fino a {MAX_CASCATA_MS}ms"),
+                        motivo!(
+                            "cascataMassima",
+                            "il passo della cascata va fino a {massimo}ms",
+                            massimo = MAX_CASCATA_MS.to_string()
+                        ),
                     ));
                 }
                 motion.stagger = Some(passo);
@@ -361,7 +388,11 @@ fn movimento_parte(
                 if tempo.ms > MAX_DURATA_MS {
                     return Err(problema(
                         &giu(&percorso, "duration"),
-                        format!("al massimo {MAX_DURATA_MS}ms"),
+                        motivo!(
+                            "massimoDurata",
+                            "al massimo {massimo}ms",
+                            massimo = MAX_DURATA_MS.to_string()
+                        ),
                     ));
                 }
                 motion.transition = Some(Transizione {
@@ -379,38 +410,41 @@ fn movimento_parte(
                         .chain(CHIAVI_MOVIMENTO_PARTE.iter().copied())
                         .collect();
                     let candidati = vicini(altro, nomi.iter().copied());
-                    let dopo = if altro == "active" {
-                        " Nel formato 2 lo stato che si chiamava «active» si chiama «current»."
+                    let motivo = if altro == "active" {
+                        motivo!(
+                            "innescoActive",
+                            "innesco sconosciuto: «{nome}». Nel formato 2 lo stato che si \
+                             chiamava «active» si chiama «current». Ammessi: {nomi}.",
+                            nome = altro,
+                            nomi = nomi.join(", ")
+                        )
                     } else {
-                        ""
+                        motivo!(
+                            "innescoSconosciuto",
+                            "innesco sconosciuto: «{nome}». Ammessi: {nomi}.",
+                            nome = altro,
+                            nomi = nomi.join(", ")
+                        )
                     };
-                    return Err(problema(
-                        &percorso,
-                        format!(
-                            "innesco sconosciuto: «{altro}».{}{dopo} Ammessi: {}.",
-                            forse(&candidati),
-                            nomi.join(", ")
-                        ),
-                    ));
+                    return Err(problema(&percorso, motivo.forse(&candidati)));
                 };
                 if trigger == AnimTrigger::Exit && !def.presenza {
                     return Err(problema(
                         &percorso,
-                        format!(
-                            "«{}» non entra ed esce dal documento come un'unità, quindi non ha \
-                             un'uscita da animare: l'uscita esiste solo sulle presenze — menù, \
-                             modali, notifiche, la colonna, la coda, il contenuto della pagina",
-                            def.name
+                        motivo!(
+                            "uscitaSenzaPresenza",
+                            "«{parte}» non entra ed esce dal documento come un'unità, quindi non ha un'uscita da animare: l'uscita esiste solo sulle presenze — menù, modali, notifiche, la colonna, la coda, il contenuto della pagina",
+                            parte = def.name
                         ),
                     ));
                 }
                 if trigger == AnimTrigger::Share && !def.condivisa {
                     return Err(problema(
                         &percorso,
-                        format!(
-                            "«{}» non vola fra due schermate: il volo condiviso esiste solo sulle \
-                             copertine",
-                            def.name
+                        motivo!(
+                            "voloSoloCopertine",
+                            "«{parte}» non vola fra due schermate: il volo condiviso esiste solo sulle copertine",
+                            parte = def.name
                         ),
                     ));
                 }
@@ -429,21 +463,17 @@ fn movimento_parte(
                     );
                     return Err(problema(
                         &percorso,
-                        format!(
-                            "animazione inesistente: «{richiamata}». \
-                             Le animazioni si dichiarano in `motion.animations`.{}",
-                            forse(&candidati)
-                        ),
+                        motivo!("animazioneInesistente", "animazione inesistente: «{nome}». Le animazioni si dichiarano in `motion.animations`.", nome = richiamata.to_string()).forse(&candidati),
                     ));
                 };
                 if animazione.iterations == Iterazioni::Infinite && !trigger.ammette_ciclo() {
                     return Err(problema(
                         &percorso,
-                        format!(
-                            "«{richiamata}» si ripete all'infinito, e «{altro}» non è uno stato: \
-                             un ciclo dura quanto lo stato che lo accende, e un'entrata, \
-                             un'uscita o un cambio non finirebbero mai. Mettilo su uno stato — \
-                             «playing», «hover», «current» — o dagli un numero di ripetizioni"
+                        motivo!(
+                            "cicloSenzaStato",
+                            "«{nome}» si ripete all'infinito, e «{innesco}» non è uno stato: un ciclo dura quanto lo stato che lo accende, e un'entrata, un'uscita o un cambio non finirebbero mai. Mettilo su uno stato — «playing», «hover», «current» — o dagli un numero di ripetizioni",
+                            nome = richiamata.to_string(),
+                            innesco = altro.to_string()
                         ),
                     ));
                 }
@@ -482,7 +512,12 @@ fn stile_parte(
         let candidati = nearest_parts(nome);
         return Err(problema(
             path,
-            format!("parte inesistente: «{nome}».{}", forse(&candidati)),
+            motivo!(
+                "parteInesistente",
+                "parte inesistente: «{nome}».",
+                nome = nome.to_string()
+            )
+            .forse(&candidati),
         ));
     };
     let map = oggetto(value, path)?;
@@ -496,7 +531,10 @@ fn stile_parte(
     if nella_variante && campo(map, "motion").is_some() {
         return Err(problema(
             &giu(path, "motion"),
-            "il movimento non cambia col tema: dichiaralo sulla parte della skin, fuori da `variant`",
+            motivo!(
+                "movimentoNelTema",
+                "il movimento non cambia col tema: dichiaralo sulla parte della skin, fuori da `variant`"
+            ),
         ));
     }
 
@@ -541,19 +579,23 @@ fn stile_parte(
         for (chiave, valore) in blocco {
             let Some(stato) = PartState::parse(chiave) else {
                 let candidati = vicini(chiave, PartState::ALL.iter().map(|s| s.as_str()));
-                let dopo = if chiave == "active" {
-                    " Nel formato 2 lo stato che si chiamava «active» si chiama «current»."
+                let motivo = if chiave == "active" {
+                    motivo!(
+                        "statoActive",
+                        "stato sconosciuto: «{nome}». Nel formato 2 lo stato che si chiamava \
+                         «active» si chiama «current». Ammessi: {nomi}.",
+                        nome = chiave.as_str(),
+                        nomi = PartState::nomi().join(", ")
+                    )
                 } else {
-                    ""
+                    motivo!(
+                        "statoSconosciuto",
+                        "stato sconosciuto: «{nome}». Ammessi: {nomi}.",
+                        nome = chiave.as_str(),
+                        nomi = PartState::nomi().join(", ")
+                    )
                 };
-                return Err(problema(
-                    &giu(&dentro, chiave),
-                    format!(
-                        "stato sconosciuto: «{chiave}».{}{dopo} Ammessi: {}.",
-                        forse(&candidati),
-                        PartState::nomi().join(", ")
-                    ),
-                ));
+                return Err(problema(&giu(&dentro, chiave), motivo.forse(&candidati)));
             };
             stati.push((
                 stato,

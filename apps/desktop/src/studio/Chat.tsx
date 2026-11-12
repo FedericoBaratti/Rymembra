@@ -76,6 +76,7 @@ import type {
   FineIa,
   GuastoIa,
   MessaggioIa,
+  Motivo,
   OperazioneIa,
   PezzoIa,
   StatoIa,
@@ -103,6 +104,8 @@ import {
 import { differenze, differenzeFoglia, quanteCambiano, type Cambio } from "./differenze";
 import { fotografaTela, telaDelloStudio } from "./fotografia";
 import { applicaOperazioni } from "./patch";
+import { testoMotivo } from "./motivo";
+import { problemaRisorsa, risorseMancanti } from "./risorse";
 import {
   BLOCCO,
   correzione,
@@ -115,6 +118,7 @@ import {
 } from "./prompt";
 import { useAlloSmontaggio, useAscoltiTenaci } from "./tenace";
 import { useVai } from "./vai";
+import { traduciMotivo } from "./vocabolario";
 
 /**
  * Quanti caratteri di ragionamento si mostrano mentre arriva.
@@ -141,6 +145,11 @@ type Proposta = {
   operazioni: OperazioneIa[];
   /** Perché qualcosa è stato scartato, dal lettore o dall'applicatore. */
   ragioni: string[];
+  /**
+   * Le stesse ragioni per chi legge, nella lingua dell'interfaccia (D-68):
+   * `ragioni` resta in italiano, perché torna al modello.
+   */
+  motivi: Motivo[];
 };
 
 /** Cosa è scelto nello Studio, in parole per chi legge; `null` se niente. */
@@ -299,7 +308,7 @@ export function Chat({
   /** Non c'è nessun modello: la strada per configurarne uno. */
   onVaiAImpostazioni: () => void;
 }) {
-  const { s, registro } = useStudio();
+  const { s, registro, file } = useStudio();
   const vai = useVai();
   const esito = s.esito;
   const sguardo = useMemo<Sguardo>(
@@ -620,11 +629,12 @@ export function Chat({
         // potuto fare» — e le loro ragioni finiscono in un elenco solo: chi
         // legge non ha motivo di sapere quale delle due l'ha scritta, e il
         // giro di correzione le manda indietro tutte insieme.
-        const { testo: candidato, scartate } = applicaOperazioni(
+        const { testo: candidato, scartate, motivi: scarti } = applicaOperazioni(
           sorgente,
           lette.operazioni,
         );
         const ragioni = [...lette.ragioni, ...scartate];
+        const motivi = [...lette.motivi, ...scarti];
 
         // Il documento non è cambiato, e i casi sono due.
         //
@@ -639,7 +649,7 @@ export function Chat({
         // che riceve è lo stesso di prima, perché nessuna modifica è passata.
         if (candidato === sorgente) {
           segnaRisposta(false);
-          setProposta(ragioni.length > 0 ? { operazioni: [], ragioni } : null);
+          setProposta(ragioni.length > 0 ? { operazioni: [], ragioni, motivi } : null);
           if (
             !apreUnAltroGiro({
               ciclo: cicloAgent.current,
@@ -663,7 +673,7 @@ export function Chat({
         }
 
         if (modoDelGiro.current === "proposta") {
-          setProposta({ operazioni: lette.operazioni, ragioni });
+          setProposta({ operazioni: lette.operazioni, ragioni, motivi });
           return;
         }
 
@@ -686,9 +696,12 @@ export function Chat({
         // passata: senza, «nove buone e una storta valgono nove» varrebbe solo
         // in proposta, e in agent la storta sparirebbe — applicata la parte
         // buona, di quella rifiutata non resterebbe traccia da nessuna parte.
-        setProposta(ragioni.length > 0 ? { operazioni: [], ragioni } : null);
+        setProposta(ragioni.length > 0 ? { operazioni: [], ragioni, motivi } : null);
         const controllo = await ipc.studioValida(candidato, idAttuale.current);
-        const restano = controllo.errori;
+        // Coi file che il candidato nomina e il pacchetto non ha: la
+        // validazione non li vede, e un giro che inventa `marmo.png` si
+        // fermava «riuscito» (R14-5).
+        const restano = [...controllo.errori, ...risorseMancanti(controllo.risorse, file).map(problemaRisorsa)];
         // Un modello che riscrive ogni giro la stessa modifica sbagliata: la
         // validazione da sola non lo ferma, perché gli errori che restano sono
         // sempre gli stessi. Vedi [`ultimoCandidato`].
@@ -722,7 +735,7 @@ export function Chat({
         onErrore(e);
       }
     },
-    [sorgente, giro, esito, manda, onSorgente, onErrore, segnaRisposta],
+    [sorgente, giro, esito, manda, onSorgente, onErrore, segnaRisposta, file],
   );
 
   const chiedi = useCallback(async () => {
@@ -1175,8 +1188,8 @@ export function Chat({
                 elenco di rifiuti direbbe la stessa cosa peggio. */}
             {proposta.ragioni.length > 0 && (
               <ul className="scartate">
-                {proposta.ragioni.map((r, i) => (
-                  <li key={i}>{r}</li>
+                {proposta.motivi.map((m, i) => (
+                  <li key={i}>{testoMotivo(m, traduciMotivo)}</li>
                 ))}
               </ul>
             )}

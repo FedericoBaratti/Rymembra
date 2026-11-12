@@ -370,8 +370,11 @@ export function parteScelta(stato: StatoStudio): string | null {
  * errore di un testo già corretto non è più vero, e dirlo mentre la
  * validazione è in volo farebbe lampeggiare la bandierina a ogni battuta.
  */
-export function statoBozza(stato: StatoStudio): "salvata" | "daSalvare" | "rotta" {
-  if (stato.esito !== null && stato.esito.errori.length > 0 && stato.validato === testo(stato))
+export function statoBozza(stato: StatoStudio, mancanti = 0): "salvata" | "daSalvare" | "rotta" {
+  // `mancanti`: i file che il documento nomina e il pacchetto non ha
+  // (`risorseMancanti`). Rompono l'installazione come un errore, e contano
+  // come un errore (R14-5).
+  if (stato.esito !== null && stato.esito.errori.length + mancanti > 0 && stato.validato === testo(stato))
     return "rotta";
   return daSalvare(stato) ? "daSalvare" : "salvata";
 }

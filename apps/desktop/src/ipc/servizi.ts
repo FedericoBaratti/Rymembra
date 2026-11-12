@@ -1,5 +1,6 @@
 /** Parte del contratto con il nucleo: cloud, sincronia, «Ascolta insieme», aggiornamenti, scrobbling, IA, testi, sorveglianza, arricchimento e manutenzione. La riesporta `ipc.ts`: si importa da lì. */
 import type { ErroreIpc } from "./errori";
+import type { Motivo } from "./skin";
 
 /**
  * Lo stato del backup su Drive.
@@ -787,6 +788,8 @@ export interface OperazioniIa {
    * costringerebbe a rifare la stessa domanda sperando in un'altra fortuna.
    */
   ragioni: string[];
+  /** Le stesse ragioni per chi legge, da tradurre (D-68): vedi `studio/motivo.ts`. */
+  motivi: Motivo[];
 }
 
 /** Un turno finito male, sull'evento `ia:errore`. */

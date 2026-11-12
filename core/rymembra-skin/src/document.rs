@@ -44,11 +44,12 @@ use serde_json::{Map, Value};
 
 use crate::effects::Effect;
 use crate::layout::{Align, GapStep, LayoutZone, Spread, ZoneKind, shell_di_serie};
+use crate::motivo::Motivo;
 use crate::movimento::{AnimDirection, Animation, Curva, Riempimento};
 use crate::parts::{BorderStyle, PartStyle, TextTransform};
 use crate::tokens::TokenSet;
 use crate::values::{Duration, Easing, EasingKeyword, Rgba};
-use crate::vicini::{forse, vicini};
+use crate::vicini::vicini;
 
 mod avvisi;
 mod blocchi;
@@ -89,8 +90,13 @@ pub const SKIN_FORMAT_VERSION: u32 = 2;
 pub struct SkinIssue {
     /// Dove: `tokens.color.accent`.
     pub path: String,
-    /// Cosa non va, e cosa scrivere al suo posto.
-    pub message: String,
+    /// Cosa non va, e cosa scrivere al suo posto: la frase italiana
+    /// ([`Self::message`]) e la forma che si traduce, cioè la chiave del
+    /// catalogo delle lingue e i valori dei segnaposto. Vedi [`crate::motivo`].
+    ///
+    /// In una scatola perché un `SkinIssue` viaggia nell'`Err` di ogni parser
+    /// del documento, e tenerlo piccolo tiene piccoli tutti quei risultati.
+    pub motivo: Box<Motivo>,
     /// Il codice del catalogo che descrive questo problema.
     pub code: ErrorCode,
     /// Riga e colonna, quando si sanno **senza** il percorso.
@@ -103,17 +109,26 @@ pub struct SkinIssue {
     pub punto: Option<crate::posizioni::Punto>,
 }
 
+impl SkinIssue {
+    /// Cosa non va, e cosa scrivere al suo posto: la frase italiana, per il
+    /// diario, il modello della chat e il dettaglio di un pacchetto rifiutato.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.motivo.testo
+    }
+}
+
 /// Il tipo di risultato dei parser interni.
 pub(crate) type Esito<T> = Result<T, SkinIssue>;
 
-pub(crate) fn problema(path: &str, message: impl Into<String>) -> SkinIssue {
-    let message = message.into();
+pub(crate) fn problema(path: &str, motivo: impl Into<Motivo>) -> SkinIssue {
+    let motivo = motivo.into();
     SkinIssue {
         code: ErrorCode::SkinManifestInvalid {
-            detail: Some(format!("{path}: {message}")),
+            detail: Some(format!("{path}: {}", motivo.testo)),
         },
         path: path.to_owned(),
-        message,
+        motivo: Box::new(motivo),
         punto: None,
     }
 }
@@ -124,16 +139,16 @@ fn token_non_valido(
     path: &str,
     token: &str,
     grezzo: &Value,
-    message: impl Into<String>,
+    motivo: impl Into<Motivo>,
 ) -> SkinIssue {
-    let message = message.into();
+    let motivo = motivo.into();
     SkinIssue {
         code: ErrorCode::SkinTokenInvalid {
             token: token.to_owned(),
             value: compatto(grezzo),
         },
         path: path.to_owned(),
-        message,
+        motivo: Box::new(motivo),
         punto: None,
     }
 }
@@ -162,26 +177,35 @@ pub(crate) fn giu(path: &str, name: &str) -> String {
 pub(crate) fn oggetto<'a>(value: &'a Value, path: &str) -> Esito<&'a Map<String, Value>> {
     value
         .as_object()
-        .ok_or_else(|| problema(path, "qui ci va un oggetto"))
+        .ok_or_else(|| problema(path, motivo!("oggetto", "qui ci va un oggetto")))
 }
 
 fn testo<'a>(value: &'a Value, path: &str) -> Esito<&'a str> {
     value
         .as_str()
-        .ok_or_else(|| problema(path, "qui ci va una stringa"))
+        .ok_or_else(|| problema(path, motivo!("stringa", "qui ci va una stringa")))
 }
 
 fn numero(value: &Value, path: &str) -> Esito<f64> {
     value
         .as_f64()
         .filter(|n| n.is_finite())
-        .ok_or_else(|| problema(path, "qui ci va un numero"))
+        .ok_or_else(|| problema(path, motivo!("numero", "qui ci va un numero")))
 }
 
 fn numero_fra(value: &Value, path: &str, min: f64, max: f64) -> Esito<f64> {
     let n = numero(value, path)?;
     if n < min || n > max {
-        return Err(problema(path, format!("va fra {min} e {max}, non {n}")));
+        return Err(problema(
+            path,
+            motivo!(
+                "fraMinMax",
+                "va fra {min} e {max}, non {n}",
+                min = min,
+                max = max,
+                n = n
+            ),
+        ));
     }
     Ok(n)
 }
@@ -189,13 +213,13 @@ fn numero_fra(value: &Value, path: &str, min: f64, max: f64) -> Esito<f64> {
 fn booleano(value: &Value, path: &str) -> Esito<bool> {
     value
         .as_bool()
-        .ok_or_else(|| problema(path, "qui ci va vero o falso"))
+        .ok_or_else(|| problema(path, motivo!("booleano", "qui ci va vero o falso")))
 }
 
 fn lista<'a>(value: &'a Value, path: &str) -> Esito<&'a Vec<Value>> {
     value
         .as_array()
-        .ok_or_else(|| problema(path, "qui ci va una lista"))
+        .ok_or_else(|| problema(path, motivo!("lista", "qui ci va una lista")))
 }
 
 fn lista_fra<'a>(value: &'a Value, path: &str, min: usize, max: usize) -> Esito<&'a Vec<Value>> {
@@ -203,7 +227,13 @@ fn lista_fra<'a>(value: &'a Value, path: &str, min: usize, max: usize) -> Esito<
     if voci.len() < min || voci.len() > max {
         return Err(problema(
             path,
-            format!("la lista va da {min} a {max} voci, non {}", voci.len()),
+            motivo!(
+                "voci",
+                "la lista va da {min} a {max} voci, non {n}",
+                min = min,
+                max = max,
+                n = voci.len()
+            ),
         ));
     }
     Ok(voci)
@@ -218,7 +248,7 @@ fn solo_chiavi(map: &Map<String, Value>, path: &str, ammesse: &[&str]) -> Esito<
         let candidati = vicini(chiave, ammesse.iter().copied());
         return Err(problema(
             &giu(path, chiave),
-            format!("chiave sconosciuta.{}", forse(&candidati)),
+            motivo!("chiaveSconosciuta", "chiave sconosciuta.").forse(&candidati),
         ));
     }
     Ok(())
@@ -229,7 +259,12 @@ fn campo<'a>(map: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
 }
 
 fn richiesto<'a>(map: &'a Map<String, Value>, path: &str, name: &str) -> Esito<&'a Value> {
-    campo(map, name).ok_or_else(|| problema(&giu(path, name), "campo obbligatorio, manca"))
+    campo(map, name).ok_or_else(|| {
+        problema(
+            &giu(path, name),
+            motivo!("obbligatorio", "campo obbligatorio, manca"),
+        )
+    })
 }
 
 fn parola<T: Copy>(value: &Value, path: &str, ammesse: &[(&str, T)]) -> Esito<T> {
@@ -240,7 +275,14 @@ fn parola<T: Copy>(value: &Value, path: &str, ammesse: &[(&str, T)]) -> Esito<T>
         .map(|(_, valore)| *valore)
         .ok_or_else(|| {
             let nomi: Vec<&str> = ammesse.iter().map(|(nome, _)| *nome).collect();
-            problema(path, format!("ammessi soltanto: {}", nomi.join(", ")))
+            problema(
+                path,
+                motivo!(
+                    "ammessi",
+                    "ammessi soltanto: {nomi}",
+                    nomi = nomi.join(", ")
+                ),
+            )
         })
 }
 
@@ -877,7 +919,10 @@ fn identificatore(value: &Value, path: &str) -> Esito<String> {
         // romperebbe uno dei tre.
         return Err(problema(
             path,
-            "l'id ammette da 2 a 48 fra minuscole, cifre e trattini, e comincia con una lettera",
+            motivo!(
+                "id",
+                "l'id ammette da 2 a 48 fra minuscole, cifre e trattini, e comincia con una lettera"
+            ),
         ));
     }
     // Il nome di un file, `skin/<id>.ryskin`, e di una cartella dello Studio:
@@ -886,8 +931,10 @@ fn identificatore(value: &Value, path: &str) -> Esito<String> {
     if rymembra_domain::paths::riservato_da_windows(scritto) {
         return Err(problema(
             path,
-            "l'id è il nome di un dispositivo di Windows (con, nul, aux, prn, com0-com9, \
-             lpt0-lpt9): diventa il nome di un file, e su Windows quel file non si scrive",
+            motivo!(
+                "idRiservato",
+                "l'id è il nome di un dispositivo di Windows (con, nul, aux, prn, com0-com9, lpt0-lpt9): diventa il nome di un file, e su Windows quel file non si scrive"
+            ),
         ));
     }
     Ok(scritto.to_owned())
@@ -906,8 +953,10 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         if map.contains_key(vecchia) {
             return Err(solo(problema(
                 vecchia,
-                "nel formato 2 il tema opposto si chiama `variant`, e oltre ai token porta \
-                 tavolozza, motivi e parti",
+                motivo!(
+                    "temiVariante",
+                    "nel formato 2 il tema opposto si chiama `variant`, e oltre ai token porta tavolozza, motivi e parti"
+                ),
             )));
         }
     }
@@ -1038,7 +1087,7 @@ fn in_errore(problemi: &[SkinIssue]) -> AppError {
     let elenco: Vec<String> = problemi
         .iter()
         .take(20)
-        .map(|guasto| format!("{}: {}", guasto.path, guasto.message))
+        .map(|guasto| format!("{}: {}", guasto.path, guasto.message()))
         .collect();
     // Il codice è quello del primo problema, perché è quello che nomina il punto
     // esatto; il messaggio li elenca tutti.
@@ -1071,7 +1120,10 @@ pub fn parse_skin(raw: &Value) -> Result<SkinDocument, AppError> {
 /// La sequenza vera: versione, migrazione, schema — e l'elenco dei problemi.
 fn valida(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     let Some(trovata) = versione_formato(raw) else {
-        return Err(solo(problema("format", "campo obbligatorio, manca")));
+        return Err(solo(problema(
+            "format",
+            motivo!("obbligatorio", "campo obbligatorio, manca"),
+        )));
     };
     let nostra = u64::from(SKIN_FORMAT_VERSION);
 
@@ -1079,15 +1131,19 @@ fn valida(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     // passa. **Più vecchia: si migra e passa.**
     if trovata > nostra {
         let found = u32::try_from(trovata).unwrap_or(u32::MAX);
+        let motivo = motivo!(
+            "formatoNuovo",
+            "è del formato {trovato}, e questa versione di Rymembra legge fino al {nostro}",
+            trovato = found,
+            nostro = SKIN_FORMAT_VERSION
+        );
         return Err(solo(SkinIssue {
             code: ErrorCode::SkinFormatUnsupported {
                 found,
                 supported: SKIN_FORMAT_VERSION,
             },
             path: "format".to_owned(),
-            message: format!(
-                "è del formato {found}, e questa versione di Rymembra legge fino al {SKIN_FORMAT_VERSION}"
-            ),
+            motivo: Box::new(motivo),
             punto: None,
         }));
     }
@@ -1135,9 +1191,11 @@ pub(crate) fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
             // nessuno sa portarlo avanti. Non si finge di riuscirci.
             return Err(solo(problema(
                 "format",
-                format!(
-                    "il formato {versione} non si sa più leggere: \
-                     nessuna migrazione porta da lì a {SKIN_FORMAT_VERSION}"
+                motivo!(
+                    "formatoIlleggibile",
+                    "il formato {versione} non si sa più leggere: nessuna migrazione porta da lì a {nostro}",
+                    versione = versione,
+                    nostro = SKIN_FORMAT_VERSION
                 ),
             )));
         };
@@ -1153,7 +1211,7 @@ pub(crate) fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
 ///
 /// Il messaggio di serde è inglese e finisce con «at line 42 column 7», cioè
 /// ripete dentro la frase i due numeri che qui viaggiano come numeri.
-pub(crate) fn perche_non_e_json(err: &serde_json::Error) -> String {
+pub(crate) fn perche_non_e_json(err: &serde_json::Error) -> Motivo {
     let inglese = err.to_string();
     let nudo = match inglese.find(" at line ") {
         Some(taglio) => inglese.get(..taglio).unwrap_or(&inglese),
@@ -1161,60 +1219,92 @@ pub(crate) fn perche_non_e_json(err: &serde_json::Error) -> String {
     };
 
     if err.classify() == serde_json::error::Category::Eof {
-        return "il documento finisce prima di chiudersi: manca una parentesi, o una virgoletta"
-            .to_owned();
+        return motivo!(
+            "json.finisce",
+            "il documento finisce prima di chiudersi: manca una parentesi, o una virgoletta"
+        );
     }
     for (segno, detto) in [
         (
             "expected `,` or `}`",
-            "manca una virgola fra due campi, o la graffa che chiude l'oggetto",
+            motivo!(
+                "json.virgolaCampi",
+                "manca una virgola fra due campi, o la graffa che chiude l'oggetto"
+            ),
         ),
         (
             "expected `,` or `]`",
-            "manca una virgola fra due voci, o la quadra che chiude la lista",
+            motivo!(
+                "json.virgolaVoci",
+                "manca una virgola fra due voci, o la quadra che chiude la lista"
+            ),
         ),
         (
             "expected `:`",
-            "dopo il nome di un campo ci va un due punti",
+            motivo!(
+                "json.duePunti",
+                "dopo il nome di un campo ci va un due punti"
+            ),
         ),
         (
             "key must be a string",
-            "il nome di un campo va fra virgolette",
+            motivo!("json.virgolette", "il nome di un campo va fra virgolette"),
         ),
         (
             "trailing comma",
-            "c'è una virgola di troppo prima della chiusura",
+            motivo!(
+                "json.virgolaDiTroppo",
+                "c'è una virgola di troppo prima della chiusura"
+            ),
         ),
         (
             "trailing characters",
-            "c'è altro dopo la fine del documento, o una parentesi che chiude due volte",
+            motivo!(
+                "json.dopoLaFine",
+                "c'è altro dopo la fine del documento, o una parentesi che chiude due volte"
+            ),
         ),
         (
             "control character while parsing a string",
-            "una stringa non è chiusa: c'è un a capo dentro le virgolette",
+            motivo!(
+                "json.stringaAperta",
+                "una stringa non è chiusa: c'è un a capo dentro le virgolette"
+            ),
         ),
         (
             "invalid escape",
-            "dentro una stringa, una barra rovescia che non introduce niente",
+            motivo!(
+                "json.barra",
+                "dentro una stringa, una barra rovescia che non introduce niente"
+            ),
         ),
-        ("expected value", "qui ci vuole un valore, e non ce n'è uno"),
+        (
+            "expected value",
+            motivo!("json.valore", "qui ci vuole un valore, e non ce n'è uno"),
+        ),
     ] {
         if nudo.contains(segno) {
-            return detto.to_owned();
+            return detto;
         }
     }
-    format!("il documento non è JSON: {nudo}")
+    // Il testo di serde, com'è: è inglese in tutte e due le lingue, ma è il
+    // caso che le righe sopra non hanno saputo dire meglio.
+    motivo!(
+        "json.altro",
+        "il documento non è JSON: {perche}",
+        perche = nudo
+    )
 }
 
 /// Il problema di sintassi di un testo che non è JSON.
 pub(crate) fn non_e_json(err: &serde_json::Error) -> SkinIssue {
-    let message = perche_non_e_json(err);
+    let motivo = perche_non_e_json(err);
     SkinIssue {
         code: ErrorCode::SkinManifestInvalid {
-            detail: Some(message.clone()),
+            detail: Some(motivo.testo.clone()),
         },
         path: String::new(),
-        message,
+        motivo: Box::new(motivo),
         punto: Some(crate::posizioni::Punto {
             riga: u32::try_from(err.line()).unwrap_or(1).max(1),
             colonna: u32::try_from(err.column()).unwrap_or(1).max(1),

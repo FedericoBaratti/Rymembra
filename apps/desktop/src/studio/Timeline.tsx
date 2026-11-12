@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as EventoPuntat
 
 import type { CampoFotogramma } from "../ipc";
 import { t, tSe } from "../lingue";
+import { testoProblema } from "./vocabolario";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useAzioniStudio, useStudio } from "./contesto";
@@ -393,7 +394,7 @@ function TimelineDi({
         </div>
         {avvisi.map((a, i) => (
           <p key={i} className="nota-dock" data-esito="attenzione">
-            <Icona nome="i-alert" dim={12} /> {a.message}
+            <Icona nome="i-alert" dim={12} /> {testoProblema(a)}
           </p>
         ))}
       </div>

@@ -13,6 +13,89 @@ use super::id_sicuro;
 
 // ── La validazione ──────────────────────────────────────────────────────────
 
+/// Il perché di un problema, nella forma che la finestra traduce: vedi
+/// [`rymembra_skin::motivo`].
+///
+/// Fino alla 3.2 arrivava soltanto `message`, la frase italiana, e lo Studio in
+/// inglese mostrava i problemi in italiano (D-46). La frase resta, ed è il
+/// ripiego quando la chiave manca; il modello della chat continua a leggere
+/// quella.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotivoIpc {
+    /// La chiave intera del catalogo delle lingue (`skin.issue.…`, o la
+    /// descrizione di un token), vuota se il problema non ne ha una.
+    pub chiave: String,
+    /// La frase italiana: il ripiego.
+    pub testo: String,
+    /// I valori dei segnaposto: un dato, o un pezzo di frase da tradurre.
+    pub valori: std::collections::BTreeMap<&'static str, ValoreIpc>,
+    /// I nomi vicini, per «Forse intendevi…».
+    pub forse: Vec<String>,
+}
+
+/// Il valore di un segnaposto: vedi [`rymembra_skin::Valore`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum ValoreIpc {
+    /// Un dato, che si mette com'è.
+    Testo(String),
+    /// Un pezzo di frase, da tradurre prima.
+    Motivo(Box<MotivoIpc>),
+}
+
+/// Un [`rymembra_skin::Motivo`] per la finestra.
+fn motivo_ipc(motivo: &rymembra_skin::Motivo) -> MotivoIpc {
+    let chiave = if motivo.chiave.is_empty() || motivo.chiave.starts_with("skin.") {
+        motivo.chiave.clone().into_owned()
+    } else {
+        format!("skin.issue.{}", motivo.chiave)
+    };
+    MotivoIpc {
+        chiave,
+        testo: motivo.testo.clone(),
+        valori: motivo
+            .valori
+            .iter()
+            .map(|(nome, valore)| {
+                let valore = match valore {
+                    rymembra_skin::Valore::Testo(testo) => ValoreIpc::Testo(testo.clone()),
+                    rymembra_skin::Valore::Motivo(dentro) => {
+                        ValoreIpc::Motivo(Box::new(motivo_ipc(dentro)))
+                    }
+                };
+                (*nome, valore)
+            })
+            .collect(),
+        forse: motivo.forse.clone(),
+    }
+}
+
+/// Una ragione di uno scarto della chat dello Studio, nella stessa forma di un
+/// problema del validatore: la finestra la traduce con lo stesso codice
+/// (`studio/motivo.ts`), sotto `studio3.reject.*` (D-68).
+#[must_use]
+pub fn motivo_di_ragione(ragione: &rymembra_ia::operazioni::Ragione) -> MotivoIpc {
+    MotivoIpc {
+        chiave: format!("studio3.reject.{}", ragione.chiave),
+        testo: ragione.testo.clone(),
+        valori: ragione
+            .valori
+            .iter()
+            .map(|(nome, pezzo)| {
+                let valore = match pezzo {
+                    rymembra_ia::operazioni::Pezzo::Testo(testo) => ValoreIpc::Testo(testo.clone()),
+                    rymembra_ia::operazioni::Pezzo::Ragione(dentro) => {
+                        ValoreIpc::Motivo(Box::new(motivo_di_ragione(dentro)))
+                    }
+                };
+                (*nome, valore)
+            })
+            .collect(),
+        forse: Vec::new(),
+    }
+}
+
 /// Un problema che blocca.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,8 +104,10 @@ pub struct ProblemaIpc {
     pub code: String,
     /// Dove, in forma di percorso nel documento.
     pub path: String,
-    /// Cosa non va, e cosa scrivere al suo posto.
+    /// Cosa non va, e cosa scrivere al suo posto: la frase italiana.
     pub message: String,
+    /// La stessa cosa, per chi la traduce.
+    pub motivo: MotivoIpc,
     /// Il nome che forse si voleva scrivere, quando ce n'è uno vicino.
     pub forse: Vec<String>,
     /// La riga in cui è scritto, da uno.
@@ -53,8 +138,10 @@ pub struct AvvisoIpc {
     pub kind: &'static str,
     /// Dove.
     pub path: String,
-    /// Cosa.
+    /// Cosa: la frase italiana.
     pub message: String,
+    /// La stessa cosa, per chi la traduce.
+    pub motivo: MotivoIpc,
     /// La riga in cui è scritto, da uno. Come per [`ProblemaIpc`]: un avviso ha
     /// un percorso, quindi ha un posto, e il bottone che ci porta è lo stesso.
     pub riga: Option<u32>,
@@ -343,6 +430,7 @@ fn valida(sorgente: &str, bozza: Option<&str>) -> ValidazioneIpc {
                 let punto = dove.di(&a.path);
                 AvvisoIpc {
                     kind: nome_avviso(a.kind),
+                    motivo: motivo_ipc(&a.motivo),
                     path: a.path,
                     message: a.message,
                     riga: punto.map(|p| p.riga),
@@ -436,8 +524,9 @@ fn problema_da(guasto: &rymembra_skin::SkinIssue, dove: &rymembra_skin::Posizion
     ProblemaIpc {
         code: guasto.code.kind().code().to_owned(),
         path: guasto.path.clone(),
-        message: guasto.message.clone(),
-        forse: suggeriti(&guasto.message),
+        message: guasto.message().to_owned(),
+        motivo: motivo_ipc(&guasto.motivo),
+        forse: suggeriti(guasto.message()),
         riga: punto.map(|p| p.riga),
         colonna: punto.map(|p| p.colonna),
     }

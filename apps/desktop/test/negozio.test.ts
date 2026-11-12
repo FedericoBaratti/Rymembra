@@ -127,3 +127,11 @@ test("il codice di una parte non applicato resta nel negozio finché non torna l
   s = riduci(s, { tipo: "codiceInSospeso", chiave: "base/card", testo: null });
   assert.equal(s.codiceInSospeso["base/card"], undefined);
 });
+
+test("una bozza che nomina un file che non ha è «rotta», come una con errori (R14-5)", async () => {
+  const { statoBozza } = await import("../src/studio/negozio");
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "a" });
+  s = riduci(s, { tipo: "validato", testo: "a", esito: esito(0) });
+  assert.equal(statoBozza(s), "salvata");
+  assert.equal(statoBozza(s, 1), "rotta");
+});

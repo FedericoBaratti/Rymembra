@@ -65,3 +65,46 @@ test("quel che non si applica si nomina, e il resto passa", () => {
   assert.equal(scartate.length, 1);
   assert.match(scartate[0]!, /buco/);
 });
+
+test("le ragioni degli scarti si traducono: la frase italiana è il modello del catalogo (D-68)", async () => {
+  // L'elenco «scartate» sotto una proposta della chat era sempre in italiano.
+  // Adesso ogni ragione porta la chiave `studio3.reject.*` e i suoi valori; la
+  // frase italiana — quella che torna al modello — è la riga di `it.json` coi
+  // valori al loro posto, e l'inglese ha gli stessi segnaposto.
+  const { readFileSync } = await import("node:fs");
+  const catalogo = (lingua: string) =>
+    JSON.parse(readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8")) as Record<string, string>;
+  const it = catalogo("it");
+  const en = catalogo("en");
+  type M = { chiave: string; testo: string; valori: Record<string, string | M> };
+  const segnaposto = (frase: string) => [...frase.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+  const controlla = (m: M) => {
+    const modello = it[m.chiave];
+    assert.ok(modello !== undefined, `it.json: manca ${m.chiave}`);
+    assert.ok(en[m.chiave] !== undefined, `en.json: manca ${m.chiave}`);
+    assert.deepEqual(segnaposto(en[m.chiave] ?? ""), segnaposto(modello ?? ""), m.chiave);
+    const pieno = (modello ?? "").replace(/\{(\w+)\}/g, (_, n: string) => {
+      const v = m.valori[n];
+      if (typeof v === "string") return v;
+      assert.ok(v !== undefined, `${m.chiave}: manca {${n}}`);
+      controlla(v);
+      return v.testo;
+    });
+    assert.equal(pieno, m.testo, m.chiave);
+  };
+  const doc = JSON.stringify({ parts: { card: { background: [{ $pattern: "x" }] } }, tokens: { colore: "#fff" } });
+  const { motivi, scartate } = applicaOperazioni(doc, [
+    { togli: false, percorso: [], valore: 1 },
+    { togli: false, percorso: ["tokens", "colore", "dentro"], valore: 1 },
+    { togli: false, percorso: ["parts", "card", "background", "x"], valore: 1 },
+    { togli: false, percorso: ["parts", "card", "background", "5"], valore: 1 },
+    { togli: true, percorso: ["parts", "nessuna", "background"], valore: undefined },
+    { togli: true, percorso: ["parts", "card", "background", "x"], valore: undefined },
+    { togli: true, percorso: ["parts", "card", "background", "7"], valore: undefined },
+    { togli: true, percorso: ["parts", "card", "manca"], valore: undefined },
+  ]);
+  assert.equal(motivi.length, 8);
+  assert.deepEqual(motivi.map((m) => m.testo), scartate, "le due forme dicono la stessa cosa");
+  for (const m of motivi) controlla(m as M);
+  for (const m of applicaOperazioni("{ rotto", [{ togli: true, percorso: ["x"], valore: undefined }]).motivi) controlla(m as M);
+});

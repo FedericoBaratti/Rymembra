@@ -1104,8 +1104,10 @@ pub struct ShellIssue {
     /// Quando [`Self::prefab`] è popolato, è relativo alla **dichiarazione** del
     /// prefab e non al punto in cui è usato.
     pub path: String,
-    /// Cosa non va.
+    /// Cosa non va: la frase italiana di [`Self::motivo`].
     pub message: String,
+    /// La stessa cosa nella forma che si traduce: vedi [`crate::motivo`].
+    pub motivo: crate::motivo::Motivo,
     /// Quale widget essenziale manca, quando è quello il problema.
     ///
     /// Serve a [`crate::document`] per scegliere il codice del catalogo: un
@@ -1120,10 +1122,12 @@ pub struct ShellIssue {
     pub prefab: Option<String>,
 }
 
-fn guasto(path: &str, message: impl Into<String>) -> ShellIssue {
+fn guasto(path: &str, motivo: impl Into<crate::motivo::Motivo>) -> ShellIssue {
+    let motivo = motivo.into();
     ShellIssue {
         path: path.to_owned(),
-        message: message.into(),
+        message: motivo.testo.clone(),
+        motivo,
         missing: None,
         prefab: None,
     }
@@ -1150,7 +1154,12 @@ pub fn verifica(radice: &LayoutZone) -> Vec<ShellIssue> {
     if nodi > MAX_SHELL_NODES {
         problemi.push(guasto(
             "",
-            format!("lo scafale ha {nodi} nodi, e il massimo è {MAX_SHELL_NODES}"),
+            motivo!(
+                "scafale.nodi",
+                "lo scafale ha {nodi} nodi, e il massimo è {massimo}",
+                nodi = nodi,
+                massimo = MAX_SHELL_NODES
+            ),
         ));
         // Oltre il tetto non si scende: un albero fuori misura produrrebbe
         // centinaia di messaggi che dicono tutti la stessa cosa.
@@ -1207,9 +1216,12 @@ fn zona(
     if profondita > MAX_SHELL_DEPTH {
         miei.push(guasto(
             path,
-            format!(
-                "questa zona è annidata a {profondita}, e il massimo è {MAX_SHELL_DEPTH}: \
-                 lo scafale vero è profondo 4"
+            motivo!(
+                "scafale.profondita",
+                "questa zona è annidata a {profondita}, e il massimo è {massimo}: \
+                 lo scafale vero è profondo 4",
+                profondita = profondita,
+                massimo = MAX_SHELL_DEPTH
             ),
         ));
         chiudi(miei, problemi);
@@ -1219,7 +1231,10 @@ fn zona(
     if corrente.children.is_empty() {
         miei.push(guasto(
             path,
-            "una zona senza figli è aria che nessuno ha chiesto: mettici qualcosa o toglila",
+            motivo!(
+                "scafale.zonaVuota",
+                "una zona senza figli è aria che nessuno ha chiesto: mettici qualcosa o toglila"
+            ),
         ));
         chiudi(miei, problemi);
         return;
@@ -1237,14 +1252,19 @@ fn zona(
         1 => {}
         0 => miei.push(guasto(
             path,
-            "nessun figlio è «fill»: serve una traccia elastica che assorba \
-             lo spazio che avanza, altrimenti la zona lascia un vuoto",
+            motivo!(
+                "scafale.nessunFill",
+                "nessun figlio è «fill»: serve una traccia elastica che assorba \
+                 lo spazio che avanza, altrimenti la zona lascia un vuoto"
+            ),
         )),
         quanti => miei.push(guasto(
             path,
-            format!(
+            motivo!(
+                "scafale.troppiFill",
                 "{quanti} figli sono «fill»: si dividono lo spazio in parti uguali, \
-                 che non è una scelta che qualcuno abbia fatto. Uno solo"
+                 che non è una scelta che qualcuno abbia fatto. Uno solo",
+                quanti = quanti
             ),
         )),
     }
@@ -1279,25 +1299,36 @@ fn zona(
         SHELL_FIXED_BUDGET_COLONNA
     };
     if somma + barra > budget {
-        let piu_la_barra = if barra > 0.0 {
-            format!(", più {}px della barra laterale,", num(barra))
-        } else {
-            String::new()
-        };
         let asse = if riga {
-            "in larghezza"
+            motivo!("scafale.asse.larghezza", "in larghezza")
         } else {
-            "in altezza, contro i 560px della finestra più bassa"
+            motivo!(
+                "scafale.asse.altezza",
+                "in altezza, contro i 560px della finestra più bassa"
+            )
         };
-        miei.push(guasto(
-            path,
-            format!(
-                "le misure fisse di questa zona sommano {}px{piu_la_barra} sul budget di {}px \
+        let motivo = if barra > 0.0 {
+            motivo!(
+                "scafale.misureFisseBarra",
+                "le misure fisse di questa zona sommano {somma}px, più {barra}px della barra \
+                 laterale, sul budget di {budget}px {asse}: al «fill» resterebbe meno di quanto \
+                 serve a un elenco di brani",
+                somma = num(somma),
+                barra = num(barra),
+                budget = num(budget),
+                asse = asse
+            )
+        } else {
+            motivo!(
+                "scafale.misureFisse",
+                "le misure fisse di questa zona sommano {somma}px sul budget di {budget}px \
                  {asse}: al «fill» resterebbe meno di quanto serve a un elenco di brani",
-                num(somma),
-                num(budget)
-            ),
-        ));
+                somma = num(somma),
+                budget = num(budget),
+                asse = asse
+            )
+        };
+        miei.push(guasto(path, motivo));
     }
 
     for (indice, figlio) in corrente.children.iter().enumerate() {
@@ -1350,10 +1381,11 @@ fn misura(size: TrackSize, path: &str, problemi: &mut Vec<ShellIssue>) {
     let Some(px) = size.in_px() else {
         problemi.push(guasto(
             path,
-            format!(
-                "«{}» dipende da qualcosa che al momento di validare non esiste ancora: \
+            motivo!(
+                "scafale.misuraRelativa",
+                "«{misura}» dipende da qualcosa che al momento di validare non esiste ancora: \
                  una misura fissa si scrive in px o in rem",
-                crate::values::format_length(length)
+                misura = crate::values::format_length(length)
             ),
         ));
         return;
@@ -1361,11 +1393,12 @@ fn misura(size: TrackSize, path: &str, problemi: &mut Vec<ShellIssue>) {
     if !(FIXED_MIN..=FIXED_MAX).contains(&px) {
         problemi.push(guasto(
             path,
-            format!(
-                "una misura fissa va da {}px a {}px, e questa è {}px",
-                num(FIXED_MIN),
-                num(FIXED_MAX),
-                num(px)
+            motivo!(
+                "scafale.misuraFissa",
+                "una misura fissa va da {min}px a {max}px, e questa è {px}px",
+                min = num(FIXED_MIN),
+                max = num(FIXED_MAX),
+                px = num(px)
             ),
         ));
     }
@@ -1384,11 +1417,12 @@ fn foglia(
         let ammesse: Vec<&str> = def.fits.iter().map(|k| k.as_str()).collect();
         problemi.push(guasto(
             path,
-            format!(
-                "«{}» non ci sta in una zona «{}»: ci sta in {}",
-                def.name,
-                dove.as_str(),
-                ammesse.join(" o ")
+            motivo!(
+                "scafale.zonaSbagliata",
+                "«{widget}» non ci sta in una zona «{zona}»: ci sta in una fra {ammesse}",
+                widget = def.name,
+                zona = dove.as_str(),
+                ammesse = ammesse.join(", ")
             ),
         ));
     }
@@ -1399,9 +1433,10 @@ fn foglia(
     if def.singleton && visti.contains(&def.name) {
         problemi.push(guasto(
             path,
-            format!(
-                "«{}» può stare in un posto solo, ed è già montato",
-                def.name
+            motivo!(
+                "scafale.giaMontato",
+                "«{widget}» può stare in un posto solo, ed è già montato",
+                widget = def.name
             ),
         ));
     }
@@ -1415,13 +1450,19 @@ fn essenziali(visti: &[&'static str], problemi: &mut Vec<ShellIssue>) {
             Essential::No => {}
             Essential::Yes => {
                 if !visti.contains(&def.name) {
+                    let motivo = motivo!(
+                        "scafale.essenziale",
+                        "«{widget}» deve esserci: {descrizione}",
+                        widget = def.name,
+                        descrizione = crate::motivo::Motivo::dal_catalogo(
+                            format!("skin.widget.{}", def.name),
+                            &def.description.to_lowercase()
+                        )
+                    );
                     problemi.push(ShellIssue {
                         path: String::new(),
-                        message: format!(
-                            "«{}» deve esserci: {}",
-                            def.name,
-                            def.description.to_lowercase()
-                        ),
+                        message: motivo.testo.clone(),
+                        motivo,
                         missing: Some(def.name.to_owned()),
                         prefab: None,
                     });
@@ -1440,14 +1481,16 @@ fn essenziali(visti: &[&'static str], problemi: &mut Vec<ShellIssue>) {
         if membri.iter().any(|nome| visti.contains(nome)) {
             continue;
         }
-        let elenco: Vec<String> = membri.iter().map(|n| format!("«{n}»")).collect();
+        let motivo = motivo!(
+            "scafale.nessunoDelGruppo",
+            "lo scafale non monta nessuno fra {nomi}: senza, non c'è modo di \
+             comandare la riproduzione o di cambiare vista",
+            nomi = membri.join(", ")
+        );
         problemi.push(ShellIssue {
             path: String::new(),
-            message: format!(
-                "lo scafale non monta nessuno di {}: senza, non c'è modo di \
-                 comandare la riproduzione o di cambiare vista",
-                elenco.join(", ")
-            ),
+            message: motivo.testo.clone(),
+            motivo,
             missing: Some(gruppo.to_owned()),
             prefab: None,
         });
@@ -1654,9 +1697,11 @@ mod tests {
             "{problemi:?}"
         );
         // Il messaggio elenca i membri, perché «manca uno del gruppo» senza
-        // dire quali è un messaggio che costringe ad aprire il registro.
+        // dire quali è un messaggio che costringe ad aprire il registro. Per
+        // nome e senza virgolette: le virgolette sono della lingua, e il nome
+        // è un dato che arriva com'è anche alla frase tradotta.
         assert!(
-            messaggi(&radice).contains("«player»"),
+            messaggi(&radice).contains("nessuno fra ") && messaggi(&radice).contains("player"),
             "{}",
             messaggi(&radice)
         );

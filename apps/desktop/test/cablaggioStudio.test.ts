@@ -276,3 +276,27 @@ test("«Prova», «Salva e usa» ed «Esporta» non partono due volte (R14-8)", 
   const barra = sorgente("BarraStudio.tsx");
   assert.equal(barra.match(/disabled=\{[^}]*inVolo/g)?.length, 3, "i tasti restano accesi mentre il gesto è in volo");
 });
+
+test("i problemi e gli avvisi del validatore si mostrano tradotti (D-46)", () => {
+  // `{p.message}` era la frase italiana del nucleo, anche con l'interfaccia
+  // in inglese.
+  for (const file of ["Dock.tsx", "Timeline.tsx", "EditorCodice.tsx"]) {
+    const testo = sorgente(file);
+    assert.doesNotMatch(testo, /\{[pa]\.message\}|messaggio: [pa]\.message/, `${file} mostra la frase del nucleo`);
+    assert.match(testo, /testoProblema\(/, `${file} non traduce`);
+  }
+});
+
+test("i file mancanti spengono «Salva e usa», si vedono fra i Problemi e tornano all'assistente (R14-5)", () => {
+  assert.match(sorgente("BarraStudio.tsx"), /statoBozza\(s, mancanti\.length\)/);
+  assert.match(sorgente("Dock.tsx"), /risorseMancanti\(/);
+  const chat = sorgente("Chat.tsx");
+  assert.match(chat, /const restano = \[\.\.\.controllo\.errori, \.\.\.risorseMancanti\(controllo\.risorse, file\)\.map\(problemaRisorsa\)\]/);
+});
+
+test("gli scarti della chat si mostrano tradotti; al modello torna l'italiano (D-68)", () => {
+  const chat = sorgente("Chat.tsx");
+  assert.match(chat, /proposta\.motivi\.map\(\(m, i\) => \(\s*<li key=\{i\}>\{testoMotivo\(m, traduciMotivo\)\}<\/li>/);
+  assert.doesNotMatch(chat, /proposta\.ragioni\.map\(/, "l'elenco mostra ancora le frasi italiane");
+  assert.match(chat, /correzione\(restano, ragioni\)/, "al modello torna la frase italiana");
+});

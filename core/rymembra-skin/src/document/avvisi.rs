@@ -6,6 +6,7 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use super::{MotionIntensity, SkinDocument, SkinIssue, Variante, in_errore};
 use crate::effects::{Effect, Paint, Stop};
 use crate::layout::shell_di_serie;
+use crate::motivo::Motivo;
 use crate::movimento::{AnimFrame, AnimTrigger, CASCATA_VOCI, Iterazioni};
 use crate::parts::PartStyle;
 use crate::tokens::{ColorValue, TokenSet, TokenValue};
@@ -309,17 +310,21 @@ fn avvisi_superfici(skin: &SkinDocument) -> Vec<SkinWarning> {
             if rapporto >= CONTRASTO_MINIMO {
                 continue;
             }
-            avvisi.push(SkinWarning {
-                kind: WarningKind::Contrast,
-                path: format!("parts.{}.background", base.def.name),
-                message: format!(
-                    "«{}» si dipinge un fondo su cui il testo fa {rapporto:.2}:1 nel tema {}, \
-                     sotto {CONTRASTO_MINIMO}:1. Un colore scritto per esteso resta quello in \
+            avvisi.push(SkinWarning::nuovo(
+                WarningKind::Contrast,
+                format!("parts.{}.background", base.def.name),
+                motivo!(
+                    "contrastoSuperficie",
+                    "«{parte}» si dipinge un fondo su cui il testo fa {rapporto}:1 nel tema \
+                     {tema}, sotto {minimo}:1. Un colore scritto per esteso resta quello in \
                      tutti e due i temi: usa un token (`color.surface.1` e simili), ridipingi \
                      la parte nella variante, o dichiara `textColor` su questa parte.",
-                    base.def.name, tema.nome
+                    parte = base.def.name,
+                    rapporto = format!("{rapporto:.2}"),
+                    tema = motivo_tema(tema.nome),
+                    minimo = CONTRASTO_MINIMO
                 ),
-            });
+            ));
         }
     }
     avvisi
@@ -438,16 +443,20 @@ fn avvisi_anelli(skin: &SkinDocument) -> Vec<SkinWarning> {
     focus_ring_pairs(skin)
         .into_iter()
         .filter(|a| !a.passa())
-        .map(|a| SkinWarning {
-            kind: WarningKind::Contrast,
-            message: format!(
-                "L'anello del fuoco scritto in «{}» fa {:.2}:1 contro «{}» nel tema {}, sotto \
-                 {CONTRASTO_ANELLO}:1: chi naviga con la tastiera non vede dove si trova. \
+        .map(|a| {
+            let motivo = motivo!(
+                "contrastoAnello",
+                "L'anello del fuoco scritto in «{dove}» fa {rapporto}:1 contro «{fondo}» nel tema \
+                 {tema}, sotto {minimo}:1: chi naviga con la tastiera non vede dove si trova. \
                  L'anello di serie è `color.accent`; una parte può dichiarare un suo \
                  `focusRing` più acceso.",
-                a.path, a.rapporto, a.background, a.tema
-            ),
-            path: a.path,
+                dove = a.path.as_str(),
+                rapporto = format!("{:.2}", a.rapporto),
+                fondo = a.background,
+                tema = motivo_tema(a.tema),
+                minimo = CONTRASTO_ANELLO
+            );
+            SkinWarning::nuovo(WarningKind::Contrast, a.path, motivo)
         })
         .collect()
 }
@@ -534,8 +543,30 @@ pub struct SkinWarning {
     pub kind: WarningKind,
     /// Dove.
     pub path: String,
-    /// Cosa.
+    /// Cosa: la frase italiana di [`Self::motivo`].
     pub message: String,
+    /// La stessa cosa nella forma che si traduce: vedi [`crate::motivo`].
+    pub motivo: Motivo,
+}
+
+impl SkinWarning {
+    fn nuovo(kind: WarningKind, path: String, motivo: Motivo) -> Self {
+        Self {
+            kind,
+            path,
+            message: motivo.testo.clone(),
+            motivo,
+        }
+    }
+}
+
+/// Il nome di un tema (`Schema::nome`) nella forma che si traduce.
+fn motivo_tema(nome: &str) -> Motivo {
+    match nome {
+        "scuro" => motivo!("tema.scuro", "scuro"),
+        "chiaro" => motivo!("tema.chiaro", "chiaro"),
+        altro => Motivo::from(altro),
+    }
 }
 
 /// Il primo fotogramma di un ciclo è la parte com'è?
@@ -567,27 +598,30 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         if skin.tokens.contains(def.id) {
             continue;
         }
-        avvisi.push(SkinWarning {
-            kind: WarningKind::MissingRequiredToken,
-            path: format!("tokens.{}", def.id),
-            message: format!(
-                "{} Non dichiarato: erediterà il valore di base.",
-                def.description
+        avvisi.push(SkinWarning::nuovo(
+            WarningKind::MissingRequiredToken,
+            format!("tokens.{}", def.id),
+            motivo!(
+                "tokenMancante",
+                "{descrizione} Non dichiarato: erediterà il valore di base.",
+                descrizione =
+                    Motivo::dal_catalogo(format!("skin.token.{}", def.id), def.description)
             ),
-        });
+        ));
     }
 
     // Una variante dichiarata e vuota è una promessa non mantenuta:
     // l'interruttore del tema apparirebbe e non farebbe niente.
     if skin.variant.as_ref().is_some_and(Variante::is_empty) {
-        avvisi.push(SkinWarning {
-            kind: WarningKind::UnkeptCapability,
-            path: "variant".to_owned(),
-            message: format!(
-                "La skin dichiara un tema {} e non ci scrive niente.",
-                skin.scheme.opposto().nome()
+        avvisi.push(SkinWarning::nuovo(
+            WarningKind::UnkeptCapability,
+            "variant".to_owned(),
+            motivo!(
+                "varianteVuota",
+                "La skin dichiara un tema {tema} e non ci scrive niente.",
+                tema = motivo_tema(skin.scheme.opposto().nome())
             ),
-        });
+        ));
     }
 
     // Il contrasto: un avviso e non un errore, ma da sapere **prima** di
@@ -596,24 +630,28 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         if coppia.passa() {
             continue;
         }
-        let dove = if coppia.base < CONTRASTO_MINIMO {
-            format!("{:.2}:1 nel tema {}", coppia.base, skin.scheme.nome())
+        let (rapporto, tema) = if coppia.base < CONTRASTO_MINIMO {
+            (coppia.base, skin.scheme.nome())
         } else {
-            format!(
-                "{:.2}:1 nel tema {}",
+            (
                 coppia.variante.unwrap_or(CONTRASTO_MINIMO),
-                skin.scheme.opposto().nome()
+                skin.scheme.opposto().nome(),
             )
         };
-        avvisi.push(SkinWarning {
-            kind: WarningKind::Contrast,
-            path: format!("tokens.{}", coppia.foreground),
-            message: format!(
-                "«{}» su «{}» fa {dove}, sotto {CONTRASTO_MINIMO}:1. L'opacità conta: \
-                 un bianco al 38% sopra una superficie scura non è un bianco.",
-                coppia.foreground, coppia.background
+        avvisi.push(SkinWarning::nuovo(
+            WarningKind::Contrast,
+            format!("tokens.{}", coppia.foreground),
+            motivo!(
+                "contrasto",
+                "«{davanti}» su «{dietro}» fa {rapporto}:1 nel tema {tema}, sotto {minimo}:1. \
+                 L'opacità conta: un bianco al 38% sopra una superficie scura non è un bianco.",
+                davanti = coppia.foreground,
+                dietro = coppia.background,
+                rapporto = format!("{rapporto:.2}"),
+                tema = motivo_tema(tema),
+                minimo = CONTRASTO_MINIMO
             ),
-        });
+        ));
     }
 
     avvisi.extend(avvisi_superfici(skin));
@@ -625,14 +663,16 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
             if usati.contains(&nome.as_str()) {
                 continue;
             }
-            avvisi.push(SkinWarning {
-                kind: WarningKind::UnusedPrefab,
-                path: format!("layout.prefabs.{nome}"),
-                message: format!(
+            avvisi.push(SkinWarning::nuovo(
+                WarningKind::UnusedPrefab,
+                format!("layout.prefabs.{nome}"),
+                motivo!(
+                    "prefabInutile",
                     "il prefab «{nome}» non è richiamato da nessuna parte dello scafale: \
-                     scrivi {{\"prefab\": \"{nome}\"}} dove serve, o toglilo."
+                     scrivi {{\"prefab\": \"{nome}\"}} dove serve, o toglilo.",
+                    nome = nome.as_str()
                 ),
-            });
+            ));
         }
 
         avvisi.extend(sfori_scafale(skin).into_iter().map(Sforo::avviso));
@@ -645,14 +685,16 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         if usati.contains(&nome.as_str()) {
             continue;
         }
-        avvisi.push(SkinWarning {
-            kind: WarningKind::UnusedPattern,
-            path: format!("patterns.{nome}"),
-            message: format!(
+        avvisi.push(SkinWarning::nuovo(
+            WarningKind::UnusedPattern,
+            format!("patterns.{nome}"),
+            motivo!(
+                "motivoInutile",
                 "il motivo «{nome}» non è richiamato da nessuna parte: \
-                 scrivi {{\"$pattern\": \"{nome}\"}} dove serve, o toglilo."
+                 scrivi {{\"$pattern\": \"{nome}\"}} dove serve, o toglilo.",
+                nome = nome.as_str()
             ),
-        });
+        ));
     }
 
     let animate: Vec<&str> = skin
@@ -669,30 +711,34 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         if animate.contains(&nome.as_str()) {
             continue;
         }
-        avvisi.push(SkinWarning {
-            kind: WarningKind::UnusedAnimation,
-            path: format!("motion.animations.{nome}"),
-            message: format!(
+        avvisi.push(SkinWarning::nuovo(
+            WarningKind::UnusedAnimation,
+            format!("motion.animations.{nome}"),
+            motivo!(
+                "animazioneInutile",
                 "l'animazione «{nome}» non è assegnata a nessuna parte: \
                  scrivi \"motion\": {{\"enter\": \"{nome}\"}} sulla parte che deve \
-                 muoversi, o toglila."
+                 muoversi, o toglila.",
+                nome = nome.as_str()
             ),
-        });
+        ));
     }
     for (nome, animazione) in dichiarate {
         if animazione.iterations != Iterazioni::Infinite {
             continue;
         }
         if animazione.frames.first().is_some_and(|f| !a_riposo(f)) {
-            avvisi.push(SkinWarning {
-                kind: WarningKind::RestingLoop,
-                path: format!("motion.animations.{nome}.frames.0"),
-                message: format!(
+            avvisi.push(SkinWarning::nuovo(
+                WarningKind::RestingLoop,
+                format!("motion.animations.{nome}.frames.0"),
+                motivo!(
+                    "cicloStorto",
                     "«{nome}» è un ciclo, e il suo primo fotogramma non è la parte com'è: \
                      prima di partire e in pausa la parte resta lì, storta. Metti al primo \
-                     fotogramma la posa di riposo."
+                     fotogramma la posa di riposo.",
+                    nome = nome.as_str()
                 ),
-            });
+            ));
         }
     }
 
@@ -712,21 +758,31 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         let entra_a_tempo = !stile.def.presenza && stile.motion.get(AnimTrigger::Enter).is_some();
         if stile.motion.stagger.is_some() && !entra_a_tempo {
             let perche = if stile.def.presenza {
-                "entra come una presenza, tutta insieme, e non ha voci da far partire una dopo l'altra"
+                motivo!(
+                    "cascata.presenza",
+                    "entra come una presenza, tutta insieme, e non ha voci da far partire una \
+                     dopo l'altra"
+                )
             } else if stile.motion.get(AnimTrigger::InView).is_some() {
-                "entra con lo scorrimento, e ogni voce parte già quando arriva in vista"
+                motivo!(
+                    "cascata.scorrimento",
+                    "entra con lo scorrimento, e ogni voce parte già quando arriva in vista"
+                )
             } else {
-                "non ha un'entrata"
+                motivo!("cascata.senzaEntrata", "non ha un'entrata")
             };
-            avvisi.push(SkinWarning {
-                kind: WarningKind::UnusedAnimation,
-                path: format!("parts.{}.motion.stagger", stile.def.name),
-                message: format!(
-                    "la cascata ritarda l'entrata di ogni voce, e «{}» {perche}: assegna \
-                     «enter», o togli la cascata. Parte al più per le prime {CASCATA_VOCI} voci.",
-                    stile.def.name
+            avvisi.push(SkinWarning::nuovo(
+                WarningKind::UnusedAnimation,
+                format!("parts.{}.motion.stagger", stile.def.name),
+                motivo!(
+                    "cascataInutile",
+                    "la cascata ritarda l'entrata di ogni voce, e «{parte}» {perche}: assegna \
+                     «enter», o togli la cascata. Parte al più per le prime {voci} voci.",
+                    parte = stile.def.name,
+                    perche = perche,
+                    voci = CASCATA_VOCI
                 ),
-            });
+            ));
         }
     }
 
@@ -780,31 +836,32 @@ impl Misura {
 struct Sforo {
     path: String,
     misura: Misura,
-    message: String,
+    motivo: Motivo,
 }
 
 impl Sforo {
-    fn nuovo(path: String, misura: Misura, message: String) -> Self {
+    fn nuovo(path: String, misura: Misura, motivo: Motivo) -> Self {
         // Chi lavora nello Studio deve sapere **prima** che la skin non si
         // installerà: l'avviso lo dice nella stessa frase.
-        let message = if misura.fuori_misura() {
-            format!("{message} Oltre {OLTRE_IL_BUDGET} volte il budget la skin non si installa.")
+        let motivo = if misura.fuori_misura() {
+            motivo!(
+                "oltreIlBudget",
+                "{sforo} Oltre {volte} volte il budget la skin non si installa.",
+                sforo = motivo,
+                volte = OLTRE_IL_BUDGET
+            )
         } else {
-            message
+            motivo
         };
         Self {
             path,
             misura,
-            message,
+            motivo,
         }
     }
 
     fn avviso(self) -> SkinWarning {
-        SkinWarning {
-            kind: WarningKind::CostBudget,
-            path: self.path,
-            message: self.message,
-        }
+        SkinWarning::nuovo(WarningKind::CostBudget, self.path, self.motivo)
     }
 }
 
@@ -827,10 +884,12 @@ fn sfori_scafale(skin: &SkinDocument) -> Option<Sforo> {
         Sforo::nuovo(
             "layout.shell".to_owned(),
             misura,
-            format!(
-                "lo scafale monta {} sul budget di {}: \
+            motivo!(
+                "sforoScafale",
+                "lo scafale monta {costo} sul budget di {budget}: \
                  tanti pezzi insieme sono una finestra in cui non si trova niente.",
-                misura.costo, misura.budget
+                costo = misura.costo,
+                budget = misura.budget
             ),
         )
     })
@@ -848,10 +907,12 @@ fn sfori_movimento(skin: &SkinDocument) -> Vec<Sforo> {
             sfori.push(Sforo::nuovo(
                 format!("parts.{}.motion", stile.def.name),
                 misura,
-                format!(
-                    "il movimento costa {} sul budget di {}: \
+                motivo!(
+                    "sforoMovimento",
+                    "il movimento costa {costo} sul budget di {budget}: \
                      togli una ripetizione, un innesco, o un colore animato.",
-                    misura.costo, misura.budget
+                    costo = misura.costo,
+                    budget = misura.budget
                 ),
             ));
         }
@@ -861,10 +922,12 @@ fn sfori_movimento(skin: &SkinDocument) -> Vec<Sforo> {
         sfori.push(Sforo::nuovo(
             "parts".to_owned(),
             finestra,
-            format!(
-                "tutte le parti insieme muovono {} sul budget di {} della finestra: \
+            motivo!(
+                "sforoFinestra",
+                "tutte le parti insieme muovono {costo} sul budget di {budget} della finestra: \
                  ognuna sta nel suo, e insieme fanno una finestra che non sta ferma.",
-                finestra.costo, finestra.budget
+                costo = finestra.costo,
+                budget = finestra.budget
             ),
         ));
     }
@@ -892,9 +955,12 @@ fn sfori_superfici(skin: &SkinDocument) -> Vec<Sforo> {
                 Sforo::nuovo(
                     format!("parts.{}", stile.def.name),
                     misura,
-                    format!(
-                        "costo {} sul budget di {}: su WebView questa superficie salterà fotogrammi.",
-                        misura.costo, misura.budget
+                    motivo!(
+                        "sforoSuperficie",
+                        "costo {costo} sul budget di {budget}: su WebView questa superficie \
+                         salterà fotogrammi.",
+                        costo = misura.costo,
+                        budget = misura.budget
                     ),
                 )
             })
@@ -923,7 +989,7 @@ pub fn fuori_misura(skin: &SkinDocument) -> Vec<SkinIssue> {
                 budget: sforo.misura.budget,
             },
             path: sforo.path,
-            message: sforo.message,
+            motivo: Box::new(sforo.motivo),
             punto: None,
         })
         .collect()

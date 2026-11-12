@@ -18,7 +18,7 @@ import { daFuori, diagnostiche, estensioni, type FraseCodeMirror, type Fonti, ty
 import { useStudio } from "./contesto";
 import { testo as testoDi } from "./negozio";
 import { nomeRisorsa } from "./usaPacchetto";
-import { descrizioneParte, descrizioneToken } from "./vocabolario";
+import { descrizioneParte, descrizioneToken, testoProblema } from "./vocabolario";
 
 /**
  * Quel che l'editor sa dello Studio, per il completamento.
@@ -97,10 +97,10 @@ export function useSegni(): readonly Segno[] {
     if (esito === null || !attuale) return [];
     return [
       ...esito.errori.flatMap((p) =>
-        p.riga === null ? [] : [{ riga: p.riga, colonna: p.colonna ?? 1, messaggio: p.message, gravita: "error" as const }],
+        p.riga === null ? [] : [{ riga: p.riga, colonna: p.colonna ?? 1, messaggio: testoProblema(p), gravita: "error" as const }],
       ),
       ...esito.avvisi.flatMap((a) =>
-        a.riga === null ? [] : [{ riga: a.riga, colonna: a.colonna ?? 1, messaggio: a.message, gravita: "warning" as const }],
+        a.riga === null ? [] : [{ riga: a.riga, colonna: a.colonna ?? 1, messaggio: testoProblema(a), gravita: "warning" as const }],
       ),
     ];
   }, [esito, attuale]);

@@ -162,6 +162,53 @@ fn corto(cosa: &str) -> String {
 /// che spiega qualcosa senza proporre modifiche non è un errore.
 #[must_use]
 pub fn estrai(testo: &str) -> (Vec<Operazione>, Vec<String>) {
+    let (operazioni, ragioni) = estrai_ragionate(testo);
+    (operazioni, ragioni.into_iter().map(|r| r.testo).collect())
+}
+
+/// Un pezzo di una [`Ragione`]: un dato, o un'altra ragione.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pezzo {
+    /// Un dato — un numero, un nome, un percorso — che si mette com'è.
+    Testo(String),
+    /// Una frase dentro la frase, da tradurre prima.
+    Ragione(Box<Ragione>),
+}
+
+/// Perché un pezzo di risposta è stato scartato, nelle due forme che servono.
+///
+/// `testo` è la frase italiana di sempre, che torna al modello in modalità
+/// assistente. `chiave` e `valori` sono la stessa cosa per chi legge, nella
+/// lingua dell'interfaccia: la finestra cerca `studio3.reject.<chiave>` nel
+/// suo catalogo e ci mette i valori (D-68). Fino alla 3.2 l'elenco degli
+/// scarti sotto una proposta era sempre in italiano.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ragione {
+    /// La chiave, senza il prefisso del catalogo: `ia.badOp`.
+    pub chiave: &'static str,
+    /// La frase italiana.
+    pub testo: String,
+    /// I valori dei segnaposto `{nome}` della frase.
+    pub valori: Vec<(&'static str, Pezzo)>,
+}
+
+impl Ragione {
+    fn nuova(chiave: &'static str, testo: String, valori: Vec<(&'static str, Pezzo)>) -> Self {
+        Self {
+            chiave,
+            testo,
+            valori,
+        }
+    }
+}
+
+fn dato(valore: impl ToString) -> Pezzo {
+    Pezzo::Testo(valore.to_string())
+}
+
+/// [`estrai`], con le ragioni nella forma che si traduce: vedi [`Ragione`].
+#[must_use]
+pub fn estrai_ragionate(testo: &str) -> (Vec<Operazione>, Vec<Ragione>) {
     let mut operazioni = Vec::new();
     let mut ragioni = Vec::new();
 
@@ -169,9 +216,11 @@ pub fn estrai(testo: &str) -> (Vec<Operazione>, Vec<String>) {
         let grezze: Vec<Grezza> = match serde_json::from_str(blocco.trim()) {
             Ok(elenco) => elenco,
             Err(err) => {
-                ragioni.push(format!(
-                    "il blocco {} non è un elenco JSON valido: {err}",
-                    indice.saturating_add(1)
+                let numero = indice.saturating_add(1);
+                ragioni.push(Ragione::nuova(
+                    "ia.block",
+                    format!("il blocco {numero} non è un elenco JSON valido: {err}"),
+                    vec![("n", dato(numero)), ("errore", dato(err))],
                 ));
                 continue;
             }
@@ -187,12 +236,35 @@ pub fn estrai(testo: &str) -> (Vec<Operazione>, Vec<String>) {
             match controlla(grezza) {
                 Ok(operazione) => operazioni.push(operazione),
                 Err(perche) => {
-                    let dove = dove.map_or_else(String::new, |p| format!(" su {}", corto(&p)));
-                    ragioni.push(format!(
-                        "l'operazione {}{dove} del blocco {}: {perche}",
-                        n.saturating_add(1),
-                        indice.saturating_add(1)
-                    ));
+                    let numero = n.saturating_add(1);
+                    let blocco = indice.saturating_add(1);
+                    let detto = perche.testo.clone();
+                    ragioni.push(match dove {
+                        Some(dove) => {
+                            let dove = corto(&dove);
+                            Ragione::nuova(
+                                "ia.operationAt",
+                                format!(
+                                    "l'operazione {numero} su {dove} del blocco {blocco}: {detto}"
+                                ),
+                                vec![
+                                    ("n", dato(numero)),
+                                    ("percorso", dato(dove)),
+                                    ("blocco", dato(blocco)),
+                                    ("perche", Pezzo::Ragione(Box::new(perche))),
+                                ],
+                            )
+                        }
+                        None => Ragione::nuova(
+                            "ia.operation",
+                            format!("l'operazione {numero} del blocco {blocco}: {detto}"),
+                            vec![
+                                ("n", dato(numero)),
+                                ("blocco", dato(blocco)),
+                                ("perche", Pezzo::Ragione(Box::new(perche))),
+                            ],
+                        ),
+                    });
                 }
             }
         }
@@ -250,7 +322,9 @@ fn blocchi(testo: &str) -> Vec<&str> {
 }
 
 /// La forma grezza diventa un'operazione, o dice perché no.
-fn controlla(grezza: Grezza) -> Result<Operazione, String> {
+fn controlla(grezza: Grezza) -> Result<Operazione, Ragione> {
+    let solo =
+        |chiave: &'static str, testo: &str| Ragione::nuova(chiave, testo.to_owned(), Vec::new());
     // I nomi italiani sono il protocollo, e restano quelli. Quelli inglesi si
     // accettano perché le istruzioni che il modello legge sono **in inglese** —
     // vedi il preambolo di `prompt.ts`, dove sta scritto perché — e un modello
@@ -276,14 +350,23 @@ fn controlla(grezza: Grezza) -> Result<Operazione, String> {
         // di no: dice come si fa, ed è quel che in modalità agent basta al giro
         // dopo.
         Some(nome @ ("add" | "push" | "append" | "insert" | "prepend")) => {
-            return Err(format!(
-                "«{nome}» non esiste: per aggiungere in fondo a un elenco usa «scrivi» con, come ultimo passo del percorso, la posizione pari alla lunghezza attuale dell'elenco; per inserire in mezzo o riordinare, riscrivi l'elenco intero con una «scrivi» sola sull'elenco"
+            return Err(Ragione::nuova(
+                "ia.noAdd",
+                format!(
+                    "«{nome}» non esiste: per aggiungere in fondo a un elenco usa «scrivi» con, come ultimo passo del percorso, la posizione pari alla lunghezza attuale dell'elenco; per inserire in mezzo o riordinare, riscrivi l'elenco intero con una «scrivi» sola sull'elenco"
+                ),
+                vec![("nome", dato(nome))],
             ));
         }
         Some(altro) => {
-            return Err(format!("«{}» non è né «scrivi» né «togli»", corto(altro)));
+            let nome = corto(altro);
+            return Err(Ragione::nuova(
+                "ia.badOp",
+                format!("«{nome}» non è né «scrivi» né «togli»"),
+                vec![("nome", dato(nome))],
+            ));
         }
-        None => return Err("manca il campo «op»".to_owned()),
+        None => return Err(solo("ia.noOp", "manca il campo «op»")),
     };
 
     let passi = match grezza.percorso {
@@ -295,26 +378,34 @@ fn controlla(grezza: Grezza) -> Result<Operazione, String> {
         // modulo il documento non ce l'ha e non deve averlo. La ragione porta
         // allora la forma giusta, che è quel che serve al giro dopo.
         Some(Value::String(scritto)) => {
-            return Err(format!(
-                "«percorso» è la stringa «{}»: dev'essere un elenco di passi, uno per livello, per esempio [\"parts\", \"section-card\", \"background\", \"0\", \"stops\", \"0\", \"color\"]",
-                corto(&scritto)
+            let scritto = corto(&scritto);
+            return Err(Ragione::nuova(
+                "ia.pathString",
+                format!(
+                    "«percorso» è la stringa «{scritto}»: dev'essere un elenco di passi, uno per livello, per esempio [\"parts\", \"section-card\", \"background\", \"0\", \"stops\", \"0\", \"color\"]"
+                ),
+                vec![("percorso", dato(scritto))],
             ));
         }
         Some(altro) => {
-            return Err(format!(
-                "«percorso» non è un elenco di passi: {}",
-                corto(&altro.to_string())
+            let valore = corto(&altro.to_string());
+            return Err(Ragione::nuova(
+                "ia.pathNotList",
+                format!("«percorso» non è un elenco di passi: {valore}"),
+                vec![("valore", dato(valore))],
             ));
         }
-        None => return Err("manca il campo «percorso»".to_owned()),
+        None => return Err(solo("ia.noPath", "manca il campo «percorso»")),
     };
     if passi.is_empty() {
-        return Err("il percorso è vuoto: non dice dove".to_owned());
+        return Err(solo("ia.emptyPath", "il percorso è vuoto: non dice dove"));
     }
     if passi.len() > PASSI_MASSIMI {
-        return Err(format!(
-            "il percorso ha {} passi, il massimo è {PASSI_MASSIMI}",
-            passi.len()
+        let n = passi.len();
+        return Err(Ragione::nuova(
+            "ia.longPath",
+            format!("il percorso ha {n} passi, il massimo è {PASSI_MASSIMI}"),
+            vec![("n", dato(n)), ("massimo", dato(PASSI_MASSIMI))],
         ));
     }
     let mut percorso = Vec::with_capacity(passi.len());
@@ -329,14 +420,16 @@ fn controlla(grezza: Grezza) -> Result<Operazione, String> {
             Value::String(s) => s,
             Value::Number(n) => n.to_string(),
             altro => {
-                return Err(format!(
-                    "un passo del percorso non è testo: {}",
-                    corto(&altro.to_string())
+                let valore = corto(&altro.to_string());
+                return Err(Ragione::nuova(
+                    "ia.stepNotText",
+                    format!("un passo del percorso non è testo: {valore}"),
+                    vec![("valore", dato(valore))],
                 ));
             }
         };
         if passo.is_empty() {
-            return Err("un passo del percorso è vuoto".to_owned());
+            return Err(solo("ia.emptyStep", "un passo del percorso è vuoto"));
         }
         percorso.push(passo);
     }
@@ -351,13 +444,16 @@ fn controlla(grezza: Grezza) -> Result<Operazione, String> {
             percorso,
             valore: Some(valore),
         }),
-        (Op::Scrivi, None) => Err("«scrivi» senza il campo «valore»".to_owned()),
+        (Op::Scrivi, None) => Err(solo("ia.writeNoValue", "«scrivi» senza il campo «valore»")),
         (Op::Togli, None) => Ok(Operazione {
             op,
             percorso,
             valore: None,
         }),
-        (Op::Togli, Some(_)) => Err("«togli» con un «valore»: forse era «scrivi»".to_owned()),
+        (Op::Togli, Some(_)) => Err(solo(
+            "ia.removeWithValue",
+            "«togli» con un «valore»: forse era «scrivi»",
+        )),
     }
 }
 
