@@ -281,6 +281,10 @@ pub struct CambioPlaylistIpc {
     pub brani_qui: usize,
     /// Quanti ne aveva nel backup.
     pub brani_nel_backup: usize,
+    /// Qui c'è già una playlist con il nome di questa, ma è un'altra (D-11):
+    /// resta com'è, e questa le entra accanto col nome in [`Self::nome`]. È il
+    /// nome di quella lasciata stare.
+    pub accanto_a: Option<String>,
 }
 
 /// Una cartella sorvegliata che il ripristino aggiungerebbe.
@@ -1444,6 +1448,7 @@ fn in_ipc(piano: &RestorePlan, da: &DaRipristinare, qui: &StatoLocale) -> PianoR
                 automatica: cambio.playlist.is_smart,
                 brani_qui: cambio.playlist.members.len(),
                 brani_nel_backup: cambio.members_in_backup,
+                accanto_a: cambio.beside_of.clone(),
             })
             .collect(),
         playlist_invariate: piano.playlists_unchanged,

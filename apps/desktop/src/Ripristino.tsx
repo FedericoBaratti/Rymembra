@@ -375,6 +375,12 @@ export function Ripristino({
                                 qui: p.braniQui,
                                 backup: p.braniNelBackup,
                               })}
+                          {/* La playlist di qui con lo stesso nome è un'altra,
+                              e non si tocca: quella del backup le va accanto
+                              (D-11). Detto qui, perché nell'elenco c'è solo
+                              il nome nuovo. */}
+                          {p.accantoA !== null &&
+                            t("restore.playlist.beside", { esistente: p.accantoA })}
                         </li>
                       ))}
                     </ul>

@@ -2609,6 +2609,60 @@ fn dentro_una_playlist_condivisa_il_profilo_accoda_e_non_toglie_ne_riordina() {
 }
 
 #[test]
+fn una_playlist_omonima_diversa_dal_profilo_entra_accanto() {
+    // D-11: «Preferite» di qui e «Preferite» del profilo sono nate in due
+    // momenti diversi: sono due playlist. Prima il dono metteva i brani
+    // dell'altra in coda a quella di qui; adesso quella di qui resta com'è, e
+    // quella del profilo entra accanto, una volta sola anche reimportando.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_con_le_preferite(r"D:\M");
+    // Chiavi vere, quelle che `PlaylistKey` calcola dal nome: le omonime si
+    // cercano per nome.
+    la.execute(
+        "UPDATE playlists SET created_at = 111, playlist_key = 'preferite'",
+        [],
+    )
+    .expect("nata di là");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let mut letto = leggi(&archivio).expect("lettura");
+    let voluto: Vec<String> = ["c", "a", "d"].iter().map(|b| (*b).to_owned()).collect();
+    contenuto_di(&mut letto)
+        .playlist
+        .get_mut("preferite")
+        .expect("la playlist viaggia nel documento")
+        .sequenza
+        .riordina("la", &voluto, 5_000);
+
+    let mut qui = libreria_con_le_preferite(r"E:\M");
+    qui.execute(
+        "UPDATE playlists SET created_at = 222, playlist_key = 'preferite'",
+        [],
+    )
+    .expect("nata qui");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(
+        in_ordine(&qui, "Preferite"),
+        vec!["a", "b", "c"],
+        "quella di qui resta"
+    );
+    let quante: i64 = qui
+        .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+        .expect("conteggio");
+    assert_eq!(quante, 2, "quella del profilo entra accanto");
+    assert_eq!(
+        in_ordine(&qui, "Preferite (.ryprofile)"),
+        vec!["c", "a", "d"]
+    );
+
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("di nuovo");
+    let quante: i64 = qui
+        .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+        .expect("conteggio");
+    assert_eq!(quante, 2, "una volta sola");
+    assert_eq!(in_ordine(&qui, "Preferite"), vec!["a", "b", "c"]);
+}
+
+#[test]
 fn un_brano_tolto_qui_non_torna_dal_profilo() {
     // Il rovescio: qui si è tolto «b» apposta, di là c'è ancora. Il dono
     // accoda quel che qui manca, non quel che qui si è scelto di togliere.

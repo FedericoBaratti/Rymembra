@@ -508,6 +508,18 @@ export function Profilo({
             </ul>
           )}
 
+          {/* Le omonime diverse: la playlist di qui resta com'è, e quella del
+              profilo le entra accanto (D-11). Per nome, perché fra le
+              «playlist» contate sopra non si distinguono. */}
+          {(piano.playlistAccanto ?? []).length > 0 && (
+            <p className="nota">
+              {t("profile.playlistBeside", { n: (piano.playlistAccanto ?? []).length })}{" "}
+              {(piano.playlistAccanto ?? [])
+                .map((p) => `«${p.name}» → «${p.importedAs}»`)
+                .join(" · ")}
+            </p>
+          )}
+
           {piano.percorsiRiscritti > 0 && (
             <p className="nota">
               {t("profile.remap.rewritten", { n: piano.percorsiRiscritti })}
