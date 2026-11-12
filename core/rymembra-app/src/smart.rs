@@ -306,18 +306,36 @@ fn traduci(regola: &Regola, adesso_ms: i64, in_compagnia: bool) -> Option<Pezzo>
                 Operatore::Minore => "<",
                 _ => return None,
             };
-            // `COALESCE` per la stessa ragione del testo, e in più perché
-            // `play_count` e `rating` sono `NOT NULL` mentre `year` no: una
-            // regola non deve comportarsi diversamente su due colonne che a
-            // chi la scrive sembrano la stessa cosa.
+            // Un valore che manca non soddisfa mai un confronto (D-102).
+            // Prima valeva zero: «anno minore di 1980» prendeva tutti i brani
+            // senza anno, «valutazione minore di 3» tutti quelli mai votati.
+            // Chi vuole proprio quelli ha «è vuoto». Dove zero è un valore
+            // vero — gli ascolti, il cuore — il confronto resta com'era, con
+            // `COALESCE` perché una colonna `NULL` non lo faccia diverso da una
+            // che non lo può essere.
+            let sql = if puo_mancare(regola.campo) {
+                format!("({col} IS NOT NULL AND {col} <> 0 AND {col} {forma} ?)")
+            } else {
+                format!("COALESCE({col}, 0) {forma} ?")
+            };
             Some(Pezzo {
-                sql: format!("COALESCE({col}, 0) {forma} ?"),
+                sql,
                 parametri: vec![SqlValue::Integer(*n)],
             })
         }
 
         (Valore::Nessuno, _) => None,
     }
+}
+
+/// Il campo numerico può mancare, e zero (o `NULL`) vuol dire «non lo so».
+///
+/// È la stessa idea di `Vuoto`: l'anno senza tag, la valutazione mai data, la
+/// durata che la lettura non ha trovato. Gli ascolti no — zero ascolti è un
+/// conteggio vero, e «meno di 3 ascolti» deve prendere chi non è mai stato
+/// sentito — e nemmeno il cuore, che è sì o no.
+const fn puo_mancare(campo: Campo) -> bool {
+    matches!(campo, Campo::Anno | Campo::Valutazione | Campo::Durata)
 }
 
 /// Il nome della funzione SQL che piega il testo come la ricerca.
@@ -404,12 +422,12 @@ const fn ordine(ordinamento: Ordinamento) -> &'static str {
     }
 }
 
-/// La query di un insieme di regole, con i suoi parametri.
+/// Il pezzo `WHERE` di un insieme di regole, con i suoi parametri.
 ///
-/// Pubblica dentro il crate perché la prova che conta è su di lei: guardare la
-/// stringa prodotta è l'unico modo di dimostrare che nessun valore ci è finito
-/// dentro.
-pub(crate) fn query(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>) {
+/// A parte da [`query`] perché lo usa anche [`quanti`], che conta senza ordine
+/// e senza limite: le condizioni sono una sola traduzione, e chi conta e chi
+/// elenca leggono la stessa.
+fn dove_di(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>) {
     let tradotte = |in_compagnia: bool| -> Vec<Pezzo> {
         insieme
             .regole
@@ -445,7 +463,16 @@ pub(crate) fn query(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>
         };
         condizioni.join(giunzione)
     };
+    (dove, parametri)
+}
 
+/// La query di un insieme di regole, con i suoi parametri.
+///
+/// Pubblica dentro il crate perché la prova che conta è su di lei: guardare la
+/// stringa prodotta è l'unico modo di dimostrare che nessun valore ci è finito
+/// dentro.
+pub(crate) fn query(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>) {
+    let (dove, parametri) = dove_di(insieme, adesso_ms);
     let limite = insieme.limite.unwrap_or(TETTO).min(TETTO);
     let sql = format!(
         "SELECT {COLONNE_BRANO} FROM tracks t WHERE {dove} ORDER BY {} LIMIT {limite}",
@@ -602,25 +629,23 @@ fn guarda_l_orologio(insieme: &Insieme) -> bool {
     })
 }
 
-/// Quanti brani soddisfano le regole, senza il limite.
+/// Quanti brani soddisfano le regole, senza il limite e senza il tetto.
 ///
-/// Serve a dire «120 brani, ne mostro 50» invece di lasciar credere che siano
-/// cinquanta. Il tetto non si applica: è un conteggio, non un trasferimento.
+/// Serve a dire «12.300 brani, ne entrano 5.000» invece di lasciar credere che
+/// siano cinquemila. Il tetto non si applica: è un conteggio, non un
+/// trasferimento. Prima passava da [`query`], che il `LIMIT` lo mette sempre, e
+/// il conto non superava mai il tetto (R25-1).
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn quanti(connection: &Connection, insieme: &Insieme, adesso_ms: i64) -> Result<i64, AppError> {
     assicura_piegatura(connection)?;
-    let senza_limite = Insieme {
-        limite: None,
-        ..insieme.clone()
-    };
-    let (sql, parametri) = query(&senza_limite, adesso_ms);
-    // Si conta la query com'è, sottoquery compresa: rifare le condizioni a mano
-    // vorrebbe dire due traduzioni da tenere d'accordo, e la seconda
-    // sbaglierebbe per prima.
-    let conteggio = format!("SELECT COUNT(*) FROM ({sql})");
+    // Le condizioni sono quelle di `query` (`dove_di`): rifarle a mano vorrebbe
+    // dire due traduzioni da tenere d'accordo, e la seconda sbaglierebbe per
+    // prima.
+    let (dove, parametri) = dove_di(insieme, adesso_ms);
+    let conteggio = format!("SELECT COUNT(*) FROM tracks t WHERE {dove}");
     connection
         .prepare(&conteggio)
         .and_then(|mut s| {
@@ -962,6 +987,116 @@ mod prove {
         };
         assert_eq!(brani(&c, &insieme, 0).expect("query").len(), 2);
         assert_eq!(quanti(&c, &insieme, 0), Ok(5));
+    }
+
+    /// Tanti brani quanti ne servono a passare il tetto, in una transazione
+    /// sola: uno per `INSERT` sarebbero cinquemila scritture in fila.
+    fn oltre_il_tetto(c: &Connection) -> i64 {
+        let quanti = i64::from(TETTO) + 1;
+        c.execute_batch("BEGIN").expect("transazione");
+        for id in 1..=quanti {
+            brano(c, id, "T", "X", "genre");
+        }
+        c.execute_batch("COMMIT").expect("transazione");
+        quanti
+    }
+
+    #[test]
+    fn quanti_conta_oltre_il_tetto() {
+        // R25-1: `quanti` passava da `query`, che mette sempre `LIMIT 5000`, e
+        // l'anteprima diceva «5.000 brani» per una regola che ne prendeva di
+        // più. Il tetto vale per quel che si mostra, non per il conto.
+        let c = db();
+        let tutti = oltre_il_tetto(&c);
+        assert_eq!(quanti(&c, &Insieme::default(), 0), Ok(tutti));
+        // Quel che la playlist tiene invece resta al tetto.
+        assert_eq!(
+            brani(&c, &Insieme::default(), 0).expect("query").len(),
+            TETTO as usize
+        );
+        assert_eq!(
+            conteggi(&c, &Insieme::default(), 0).map(|(n, _)| n),
+            Ok(i64::from(TETTO))
+        );
+    }
+
+    #[test]
+    fn quanti_ignora_un_limite_oltre_il_tetto() {
+        let c = db();
+        let tutti = oltre_il_tetto(&c);
+        let insieme = Insieme {
+            limite: Some(10_000),
+            ..Insieme::default()
+        };
+        assert_eq!(quanti(&c, &insieme, 0), Ok(tutti));
+    }
+
+    /// D-102: un valore che manca non soddisfa mai un confronto numerico.
+    ///
+    /// «Mancare» dipende dalla colonna, come per `Vuoto`: per l'anno è `NULL`
+    /// o zero, per la valutazione zero (mai votato), per la durata zero (non
+    /// letta). Le riproduzioni no: zero ascolti è un conteggio vero, e «meno di
+    /// 3 ascolti» deve prendere anche i brani mai sentiti.
+    #[test]
+    fn un_valore_che_manca_non_soddisfa_un_confronto_numerico() {
+        let c = db();
+        // 1: anno 1975, votato 2, durata vera, mai ascoltato.
+        // 2: senza anno (NULL), mai votato, durata 0.
+        // 3: anno 0 (il «non lo so» della scansione).
+        c.execute_batch(
+            "INSERT INTO tracks (id, path, title, artist, album, duration_ms, year, rating, play_count)
+             VALUES (1, '/m/1', 'Uno', 'A', 'Al', 200000, 1975, 2, 0),
+                    (2, '/m/2', 'Due', 'A', 'Al', 0, NULL, 0, 5),
+                    (3, '/m/3', 'Tre', 'A', 'Al', 180000, 0, 4, 1)",
+        )
+        .expect("brani");
+        let ids = |regola: Regola| -> Vec<i64> {
+            let mut ids: Vec<i64> = brani(&c, &insieme(vec![regola]), 0)
+                .expect("query")
+                .into_iter()
+                .map(|b| b.id)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        let numero = |campo, operatore, n| regola(campo, operatore, Valore::Numero(n));
+        // Prima: «Anno minore di 1980» prendeva anche 2 e 3, che un anno non ce
+        // l'hanno; «Valutazione minore di 3» tutti i mai votati.
+        assert_eq!(ids(numero(Campo::Anno, Operatore::Minore, 1980)), vec![1]);
+        assert_eq!(
+            ids(numero(Campo::Anno, Operatore::Diverso, 1975)),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            ids(numero(Campo::Anno, Operatore::Uguale, 0)),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            ids(numero(Campo::Valutazione, Operatore::Minore, 3)),
+            vec![1]
+        );
+        assert_eq!(
+            ids(numero(Campo::Valutazione, Operatore::Diverso, 4)),
+            vec![1]
+        );
+        assert_eq!(
+            ids(numero(Campo::Durata, Operatore::Minore, 190_000)),
+            vec![3]
+        );
+        // Zero ascolti è un numero: «meno di 3» prende chi non è mai stato sentito.
+        assert_eq!(
+            ids(numero(Campo::Riproduzioni, Operatore::Minore, 3)),
+            vec![1, 3]
+        );
+        assert_eq!(
+            ids(numero(Campo::Riproduzioni, Operatore::Uguale, 0)),
+            vec![1]
+        );
+        // E chi i valori mancanti li vuole ha `Vuoto`, che resta com'era.
+        assert_eq!(
+            ids(regola(Campo::Anno, Operatore::Vuoto, Valore::Nessuno)),
+            vec![2, 3]
+        );
     }
 
     /// Una libreria vera, con la migrazione 030 e i suoi trigger: le prove
