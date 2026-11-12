@@ -143,6 +143,7 @@ import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { notaDelPermesso, useAccessoTelefono } from "./parti/AccessoTelefono";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
+import { LibreriaDiPrima } from "./parti/LibreriaDiPrima";
 import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
@@ -4057,6 +4058,25 @@ export function App() {
             vaiA("cartelle");
           },
         };
+      // Il database della libreria che non si apre, o che non si lascia
+      // scrivere: le frasi parlano della cartella dei dati — la copia di prima
+      // dell'aggiornamento sta lì, accanto a `rymembra.db` — e `%APPDATA%` in
+      // Esplora risorse è nascosta. La fascia resta: il gesto non la chiude.
+      // Sul telefono la cartella è privata dell'app, e il gesto non c'è.
+      case "db.migrationFailed":
+      case "db.versionAhead":
+      case "db.openFailed":
+      case "db.corrupt":
+      case "db.readOnly":
+      case "db.ioFailed":
+        return MOBILE
+          ? undefined
+          : {
+              etichetta: t("errors.action.dataFolder"),
+              onClick: () => {
+                ipc.manutenzioneApriCartellaDati().catch(segnalaErrore);
+              },
+            };
       default:
         return undefined;
     }
@@ -4298,6 +4318,9 @@ export function App() {
                         guasto che dura finché qualcuno non fa qualcosa. Vedi
                         `parti/AvvisoConti.tsx`. */}
                     <AvvisoConti onNotizia={setNotizia} />
+                    {/* La copia del Microsoft Store, al primo avvio, propone la
+                        libreria che c'era: vedi `parti/LibreriaDiPrima.tsx`. */}
+                    {!MOBILE && <LibreriaDiPrima onErrore={segnalaErrore} />}
                     {/* Qui e non solo nella terza colonna: la colonna si può
                         chiudere, e il lettore flottante sparisce quando non c'è un
                         brano — cioè proprio nei due casi in cui il dispositivo

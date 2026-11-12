@@ -99,6 +99,44 @@ pub fn ottimizza(connection: &Connection) -> Result<(), AppError> {
         .map_err(|err| super::codice_da_sqlite("ottimizzazione del database", &err))
 }
 
+/// Riporta il giornale dentro il database e lo lascia vuoto: l'ultimo gesto
+/// prima di uscire.
+///
+/// # Perché
+///
+/// Rymembra esce con `process::exit` — lo fa il ciclo degli eventi di `tao`
+/// alla fine, lo fa l'aggiornatore — e la connessione della libreria non si
+/// chiude mai: SQLite non riporta da sé il `-wal` dentro il database, come
+/// farebbe alla chiusura dell'ultima connessione. Dopo ogni uscita restava un
+/// `rymembra.db-wal` pieno, e chi tornava a mano alla copia di prima
+/// dell'aggiornamento — la `.bak` rinominata in `rymembra.db` — ci rimetteva
+/// sopra i frame del database nuovo: nell'intestazione del giornale niente lo
+/// lega al suo file, e SQLite lo applica a qualunque database porti quel nome.
+/// La copia, l'unica strada di ritorno, si rovinava. È il caso «Mispairing
+/// database files and hot journals» di `sqlite.org/howtocorrupt.html`.
+///
+/// `TRUNCATE` riporta tutto nel file e accorcia il `-wal` a zero byte. Con il
+/// giornale ripiegato su `TRUNCATE` (non WAL) non c'è niente da riportare, e la
+/// pragma risponde senza fare niente.
+///
+/// Restituisce `true` se il giornale è vuoto, `false` se un lettore — una
+/// connessione in più, come quella dei testi — ne teneva ancora delle pagine:
+/// allora il `-wal` resta, coerente col suo database, e chi chiama lo annota.
+///
+/// # Errori
+///
+/// `db.*` secondo quel che SQLite ha detto.
+pub fn svuota_il_giornale(connection: &Connection) -> Result<bool, AppError> {
+    // La risposta è una riga: (occupato, pagine nel giornale, pagine
+    // riportate). `occupato` è 1 quando un lettore ha impedito di finire.
+    connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |riga| {
+            riga.get::<_, i64>(0)
+        })
+        .map(|occupato| occupato == 0)
+        .map_err(|err| super::codice_da_sqlite("svuotamento del giornale", &err))
+}
+
 /// Com'è andato un controllo rapido che non ha trovato danni.
 ///
 /// Un danno trovato non è qui: è un `Err` con [`ErrorCode::DbCorrupt`], lo
@@ -452,8 +490,20 @@ fn prova_lo_spazio(percorso: &Path, byte: u64) -> Result<(), String> {
 /// quella che conta di più anche se il numero è più piccolo. Un'istantanea che
 /// non si lascia cancellare resta: occupa spazio, non fa danni.
 fn tieni_le_ultime(percorso: &Path, appena_fatta: &Path) {
+    let mut istantanee = istantanee_di(percorso);
+    istantanee.sort_by_key(|(quando, _, _)| std::cmp::Reverse(*quando));
+    for (_, vecchia, _) in istantanee.into_iter().skip(ISTANTANEE_TENUTE) {
+        if vecchia != appena_fatta {
+            let _ = std::fs::remove_file(vecchia);
+        }
+    }
+}
+
+/// Le istantanee di `percorso` che ci sono: data di modifica, file, e la
+/// versione dello schema scritta nel nome ([`nome_istantanea`]).
+fn istantanee_di(percorso: &Path) -> Vec<(std::time::SystemTime, PathBuf, u32)> {
     let Some(cartella) = percorso.parent() else {
-        return;
+        return Vec::new();
     };
     let nome = percorso
         .file_name()
@@ -461,26 +511,336 @@ fn tieni_le_ultime(percorso: &Path, appena_fatta: &Path) {
         .unwrap_or_default();
     let prefisso = format!("{nome}.schema-");
     let Ok(voci) = std::fs::read_dir(cartella) else {
-        return;
+        return Vec::new();
     };
-    let mut istantanee: Vec<(std::time::SystemTime, PathBuf)> = voci
-        .flatten()
+    voci.flatten()
         .filter_map(|voce| {
             let nome = voce.file_name().to_str()?.to_owned();
             let versione = nome.strip_prefix(&prefisso)?.strip_suffix(".bak")?;
             if versione.is_empty() || !versione.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }
+            let versione = versione.parse::<u32>().ok()?;
             let quando = voce.metadata().ok()?.modified().ok()?;
-            Some((quando, voce.path()))
+            Some((quando, voce.path(), versione))
         })
-        .collect();
-    istantanee.sort_by_key(|(quando, _)| std::cmp::Reverse(*quando));
-    for (_, vecchia) in istantanee.into_iter().skip(ISTANTANEE_TENUTE) {
-        if vecchia != appena_fatta {
-            let _ = std::fs::remove_file(vecchia);
+        .collect()
+}
+
+// ── tornare alla copia di prima dell'aggiornamento ─────────────────────────
+
+/// Un'istantanea che si può rimettere al posto del database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopiaDiPrima {
+    /// Dove sta: `rymembra.db.schema-NNN.bak`, accanto al database.
+    pub percorso: PathBuf,
+    /// Lo schema che contiene, `NNN` nel nome.
+    pub versione: u32,
+    /// Quando è stata scritta, in millisecondi dall'epoca.
+    pub quando_ms: i64,
+}
+
+/// La copia da rimettere al posto di `percorso`, se ce n'è una.
+///
+/// La più recente per data, come in [`tieni_le_ultime`], fra quelle che
+/// questa versione sa aprire: uno schema più nuovo del suo (una copia lasciata
+/// da una versione successiva) rimesso al suo posto risponderebbe
+/// `db.versionAhead`, cioè sarebbe un altro modo di non avere la libreria.
+#[must_use]
+pub fn copia_di_prima(percorso: &Path) -> Option<CopiaDiPrima> {
+    istantanee_di(percorso)
+        .into_iter()
+        .filter(|(_, _, versione)| *versione <= super::LATEST_VERSION)
+        .max_by_key(|(quando, _, _)| *quando)
+        .map(|(quando, percorso, versione)| CopiaDiPrima {
+            percorso,
+            versione,
+            quando_ms: quando
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|d| i64::try_from(d.as_millis()).ok())
+                .unwrap_or(0),
+        })
+}
+
+/// Dove va la libreria di adesso quando [`torna_alla_copia`] la mette da
+/// parte: `rymembra.db.messa-da-parte.bak`, o col primo numero libero
+/// (`…messa-da-parte-2.bak`) se il nome è preso.
+///
+/// Non ha la forma delle istantanee: non si conta fra le
+/// [`ISTANTANEE_TENUTE`], e non si offre come copia da rimettere. È una
+/// libreria intera, e resta finché qualcuno non la toglie a mano.
+#[must_use]
+pub fn nome_messa_da_parte(percorso: &Path) -> PathBuf {
+    let nome = percorso
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let candidato = |n: u32| {
+        percorso.with_file_name(if n == 1 {
+            format!("{nome}.messa-da-parte.bak")
+        } else {
+            format!("{nome}.messa-da-parte-{n}.bak")
+        })
+    };
+    (1..u32::MAX)
+        .map(candidato)
+        .find(|percorso| !percorso.exists())
+        .unwrap_or_else(|| candidato(u32::MAX))
+}
+
+/// Com'è andato il ritorno alla copia.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ritorno {
+    /// La copia rimessa. Resta anche dov'era, intera.
+    pub copia: CopiaDiPrima,
+    /// Dove sta adesso la libreria di prima del ritorno.
+    pub messa_da_parte: PathBuf,
+}
+
+/// Quanto aspettare la verifica della copia: un minuto, come un controllo
+/// rapido su un disco lento. Oltre, la copia non si rimette: non si sa com'è.
+const TEMPO_DELLA_VERIFICA: Duration = Duration::from_secs(60);
+
+/// Rimette `copia` al posto del database aperto su `connection`, che sta in
+/// `percorso`, dopo aver messo da parte quello di adesso.
+///
+/// # Perché con SQLite e non coi file
+///
+/// La strada a mano — chiudere, rinominare, rimettere — con l'applicazione
+/// aperta non si può fare: su Windows un file che una connessione tiene aperto
+/// non si rinomina, e le connessioni sono più d'una (il deposito dei testi
+/// resta aperto per tutta la sessione). E seguita a programma chiuso aveva la
+/// trappola di [`svuota_il_giornale`]: un `-wal` rimasto accanto alla copia è
+/// del database nuovo. L'API di backup di SQLite copia la copia dentro il
+/// database **aperto**, pagina per pagina e in una transazione sola sulla
+/// destinazione: o tutto o niente, con il giornale che resta quello del suo
+/// file, coerente. La copia resta dov'è.
+///
+/// # I passi
+///
+/// 1. la copia si verifica: si apre in sola lettura, `quick_check`, e lo
+///    schema dev'essere quello del nome; se no non si tocca niente;
+/// 2. la libreria di adesso si mette da parte con `VACUUM INTO`, provando lo
+///    spazio prima, in [`nome_messa_da_parte`]; un file che `VACUUM` non sa
+///    leggere — danneggiato — si mette da parte copiandone i file, `.db` e
+///    `-wal` coi loro nomi accoppiati;
+/// 3. la copia si rimette;
+/// 4. il giornale si svuota, e si verifica che lo schema sia quello della
+///    copia.
+///
+/// Chi chiama chiude poi la connessione e **non la riapre con questa
+/// versione** se la copia è di uno schema più vecchio: la rimigrerebbe, e il
+/// ritorno non sarebbe servito a niente.
+///
+/// # Errori
+///
+/// `db.corrupt` se la copia è danneggiata, `db.openFailed` se non si apre o
+/// non è quella che il nome dice; `fs.diskFull` se lo spazio per mettere da
+/// parte la libreria non c'è; `db.*` se SQLite rifiuta il ritorno, e allora la
+/// libreria è quella di prima.
+pub fn torna_alla_copia(
+    connection: &mut Connection,
+    percorso: &Path,
+    copia: &CopiaDiPrima,
+) -> Result<Ritorno, AppError> {
+    let sorgente = verifica_la_copia(copia)?;
+    let messa_da_parte = metti_da_parte(connection, percorso)?;
+    rimetti_da(connection, &sorgente)?;
+    drop(sorgente);
+    let versione = super::user_version(connection)?;
+    if versione != copia.versione {
+        return Err(AppError::new(ErrorCode::DbOpenFailed {
+            path: Some(percorso.display().to_string()),
+        })
+        .with_cause(format!(
+            "dopo il ritorno lo schema è {versione}, la copia diceva {}",
+            copia.versione
+        )));
+    }
+    Ok(Ritorno {
+        copia: copia.clone(),
+        messa_da_parte,
+    })
+}
+
+/// [`torna_alla_copia`] con la libreria chiusa — una migrazione fermata a
+/// metà, un database scritto da una versione più nuova: il file si apre
+/// apposta, senza crearlo e senza migrarlo, e si chiude alla fine.
+///
+/// # Errori
+///
+/// Quelli di [`torna_alla_copia`], più `db.openFailed` se il database non si
+/// apre nemmeno così.
+pub fn torna_alla_copia_del_file(
+    percorso: &Path,
+    copia: &CopiaDiPrima,
+) -> Result<Ritorno, AppError> {
+    let mut connection = Connection::open_with_flags(
+        crate::files::percorso_lungo(percorso),
+        OpenFlags::default().difference(OpenFlags::SQLITE_OPEN_CREATE),
+    )
+    .map_err(|err| {
+        AppError::new(ErrorCode::DbOpenFailed {
+            path: Some(percorso.display().to_string()),
+        })
+        .with_cause(err.to_string())
+    })?;
+    super::prepara_connessione_secondaria(&connection);
+    torna_alla_copia(&mut connection, percorso, copia)
+}
+
+/// Copia dentro il database di `connection`, che resta aperto, il database di
+/// `sorgente`, pagina per pagina e in una transazione sola; poi riporta il
+/// giornale nel file.
+///
+/// È l'API di backup di SQLite letta al contrario: la destinazione è la
+/// libreria. O passa tutto o niente — un passo che fallisce lascia la
+/// libreria com'era —, il `-wal` resta quello del suo file, e nessun file si
+/// rinomina sotto le altre connessioni.
+fn rimetti_da(connection: &mut Connection, sorgente: &Connection) -> Result<(), AppError> {
+    let guasto = |err: &rusqlite::Error| {
+        super::codice_da_sqlite("copia di un database dentro la libreria", err)
+    };
+    {
+        let passo =
+            rusqlite::backup::Backup::new(sorgente, connection).map_err(|err| guasto(&err))?;
+        // Tutte le pagine in un passo: la transazione sulla destinazione è una
+        // sola, e un database occupato si riprova qualche volta.
+        let mut tentativi = 0_u32;
+        loop {
+            match passo.step(-1) {
+                Ok(rusqlite::backup::StepResult::Done) => break,
+                Ok(_) if tentativi < 20 => {
+                    tentativi += 1;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Ok(_) => {
+                    return Err(AppError::new(ErrorCode::DbLocked)
+                        .with_cause("copia dentro la libreria: il database resta occupato"));
+                }
+                Err(err) => return Err(guasto(&err)),
+            }
         }
     }
+    // La copia è nel giornale: si riporta nel file, così chi apre dopo la
+    // trova intera anche senza il `-wal`.
+    let _ = svuota_il_giornale(connection);
+    Ok(())
+}
+
+/// Mette nel database aperto su `connection` il contenuto del database in
+/// `sorgente`, che dev'essere sano e già alla versione di questa build.
+///
+/// Serve alla copia del Microsoft Store che prende la libreria della copia
+/// dell'installatore (`trasloco::copia_la_libreria_di`): là la sorgente è una
+/// copia dei file, già portata avanti con [`super::aggiorna_una_copia`].
+///
+/// # Errori
+///
+/// `db.corrupt` se la sorgente è danneggiata, `db.openFailed` se non si apre o
+/// non è alla versione di questa build; `db.*` se SQLite rifiuta, e allora la
+/// libreria è quella di prima.
+pub fn sostituisci_con(connection: &mut Connection, sorgente: &Path) -> Result<(), AppError> {
+    let aperta = verifica_la_copia(&CopiaDiPrima {
+        percorso: sorgente.to_path_buf(),
+        versione: super::LATEST_VERSION,
+        quando_ms: 0,
+    })?;
+    rimetti_da(connection, &aperta)
+}
+
+/// La copia aperta in sola lettura, se è sana e contiene lo schema che il nome
+/// dice.
+fn verifica_la_copia(copia: &CopiaDiPrima) -> Result<Connection, AppError> {
+    let dove = || Some(copia.percorso.display().to_string());
+    let non_buona =
+        |causa: String| AppError::new(ErrorCode::DbOpenFailed { path: dove() }).with_cause(causa);
+    let sorgente = Connection::open_with_flags(
+        crate::files::percorso_lungo(&copia.percorso),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| non_buona(err.to_string()))?;
+    match controllo_rapido(&sorgente, TEMPO_DELLA_VERIFICA) {
+        Ok(Controllo::Sano { .. }) => {}
+        Ok(Controllo::Interrotto { .. }) => {
+            return Err(non_buona(
+                "la verifica della copia non è finita in tempo".to_owned(),
+            ));
+        }
+        Err(errore) => {
+            return Err(AppError::new(ErrorCode::DbCorrupt {
+                path: dove(),
+                quarantined_as: None,
+            })
+            .with_cause(errore.cause().unwrap_or_default().to_owned()));
+        }
+    }
+    let versione = super::user_version(&sorgente)?;
+    if versione != copia.versione {
+        return Err(non_buona(format!(
+            "la copia contiene lo schema {versione}, il nome dice {}",
+            copia.versione
+        )));
+    }
+    Ok(sorgente)
+}
+
+/// Mette da parte il database aperto su `connection`, e dice dove.
+fn metti_da_parte(connection: &Connection, percorso: &Path) -> Result<PathBuf, AppError> {
+    let destinazione = nome_messa_da_parte(percorso);
+    let pieno = |motivo: String| {
+        AppError::new(ErrorCode::FsDiskFull {
+            path: Some(destinazione.display().to_string()),
+        })
+        .with_cause(motivo)
+    };
+    let mut parziale = destinazione.clone().into_os_string();
+    parziale.push(".parziale");
+    let parziale = PathBuf::from(parziale);
+    let _ = std::fs::remove_file(&parziale);
+    let stima = pagine_usate(connection).unwrap_or(0);
+    if let Err(motivo) = prova_lo_spazio(&parziale, spazio_da_chiedere(stima)) {
+        let _ = std::fs::remove_file(&parziale);
+        return Err(pieno(motivo));
+    }
+    let verso = crate::files::percorso_lungo(&parziale)
+        .to_str()
+        .map(ToOwned::to_owned);
+    let copiata = verso
+        .ok_or_else(|| "il percorso della cartella dati non è UTF-8".to_owned())
+        .and_then(|verso| {
+            connection
+                .execute("VACUUM INTO ?1", [verso])
+                .map_err(|err| err.to_string())
+        })
+        .and_then(|_| std::fs::rename(&parziale, &destinazione).map_err(|err| err.to_string()));
+    if copiata.is_ok() {
+        return Ok(destinazione);
+    }
+    let _ = std::fs::remove_file(&parziale);
+    // `VACUUM` legge il database come SQLite lo vede, e un file danneggiato
+    // può non lasciarsi leggere tutto: allora si copiano i suoi file così come
+    // sono, il `.db` e il `-wal` coi nomi accoppiati — chi apre la copia trova
+    // il suo giornale, e nessun altro. Una copia sotto i piedi di qualche
+    // scrittura in corso, magari: ma di un file che si sta per sostituire è il
+    // meglio che resta.
+    let accanto = |file: &Path, suffisso: &str| {
+        let mut nome = file.as_os_str().to_owned();
+        nome.push(suffisso);
+        PathBuf::from(nome)
+    };
+    let copia_il_file = |da: &Path, a: &Path| {
+        std::fs::copy(da, a)
+            .map(|_| ())
+            .map_err(|err| crate::files::io_error(&a.display().to_string(), &err))
+    };
+    copia_il_file(percorso, &destinazione)?;
+    let giornale = accanto(percorso, "-wal");
+    if giornale.is_file() {
+        copia_il_file(&giornale, &accanto(&destinazione, "-wal"))?;
+    }
+    Ok(destinazione)
 }
 
 #[cfg(test)]
@@ -741,5 +1101,280 @@ mod prove {
         let prova = dir.path().join("prova");
         prova_lo_spazio(&prova, 4 * 1024 * 1024).expect("quattro mebibyte ci sono");
         assert_eq!(std::fs::metadata(&prova).expect("file").len(), 0);
+    }
+
+    // ── il giornale all'uscita, e il ritorno alla copia ────────────────────
+
+    /// Una libreria su disco alla versione `versione`, con quel che c'è in una
+    /// vera: duecento brani, duemila ascolti, una playlist di dieci.
+    fn libreria_vera_alla(percorso: &Path, versione: u32) {
+        let mut connection = Connection::open(percorso).expect("apertura");
+        for migrazione in super::super::MIGRATIONS
+            .iter()
+            .filter(|m| m.version <= versione)
+        {
+            connection
+                .execute_batch(migrazione.sql)
+                .unwrap_or_else(|err| panic!("migrazione {}: {err}", migrazione.version));
+        }
+        connection
+            .execute_batch(&format!("PRAGMA user_version = {versione};"))
+            .expect("versione");
+        let tx = connection.transaction().expect("transazione");
+        for brano in 1..=200_i64 {
+            tx.execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                     file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?2, 'T', 'A', 'B', 4000000, 1, 1)",
+                rusqlite::params![brano, format!("C:/Musica/{brano:03}.flac")],
+            )
+            .expect("un brano");
+        }
+        for ascolto in 0..2_000_i64 {
+            tx.execute(
+                "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (?1, ?2, 200000)",
+                rusqlite::params![ascolto % 200 + 1, 1_700_000_000_000 + ascolto * 1_000],
+            )
+            .expect("un ascolto");
+        }
+        tx.execute_batch(
+            "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at)
+             VALUES (1, 'p', 'P', 1, 1);",
+        )
+        .expect("una playlist");
+        for posto in 0..10_i64 {
+            tx.execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, ?1, ?2)",
+                rusqlite::params![posto * 7 + 1, posto],
+            )
+            .expect("un brano in playlist");
+        }
+        tx.commit().expect("chiusura");
+    }
+
+    /// Brani, ascolti e brani in playlist.
+    fn conti(connection: &Connection) -> [i64; 3] {
+        ["tracks", "play_history", "playlist_tracks"].map(|tabella| {
+            connection
+                .query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
+                .unwrap_or(-1)
+        })
+    }
+
+    /// Schema, integrità e conti di un file, aprendolo come lo aprirebbe la
+    /// versione di prima: senza migrare. Un guasto diventa un testo, così la
+    /// prova dice che cosa ha trovato invece di cadere sulla prima lettura.
+    fn com_e(percorso: &Path) -> (String, String, [i64; 3]) {
+        let connection = Connection::open(percorso).expect("apertura");
+        let versione = connection
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .map_or_else(|err| err.to_string(), |v| v.to_string());
+        let integrita = connection
+            .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap_or_else(|err| err.to_string());
+        (versione, integrita, conti(&connection))
+    }
+
+    /// Accanto a `percorso`, col suffisso dato: `rymembra.db` → `rymembra.db-wal`.
+    fn accanto(percorso: &Path, suffisso: &str) -> PathBuf {
+        let mut nome = percorso.as_os_str().to_owned();
+        nome.push(suffisso);
+        PathBuf::from(nome)
+    }
+
+    #[test]
+    fn la_copia_rimessa_a_mano_resta_la_copia() {
+        // R06b-2. Si aggiorna dalla 3.2.0 (schema 38): la migrazione, e la
+        // copia `rymembra.db.schema-038.bak`. Si ascolta qualcosa, e si esce
+        // come esce Rymembra: `ottimizza_uscendo`, poi `process::exit`, che non
+        // chiude la connessione — quindi il `-wal` resta com'è in quel momento.
+        // Poi la strada del README: `rymembra.db` da parte, la copia al suo
+        // posto, e il `-wal`, che nessuna istruzione nominava, lasciato dov'era.
+        // La copia deve restare la copia.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        libreria_vera_alla(&percorso, 38);
+        let aperto = super::super::open(&percorso).expect("apertura con migrazione");
+        let copia = nome_istantanea(&percorso, 38);
+        assert!(copia.is_file(), "la copia di prima della migrazione");
+        aperto
+            .connection
+            .execute_batch(
+                "INSERT INTO play_history (track_id, played_at, ms_played)
+                 VALUES (3, 1800000000000, 180000);
+                 INSERT OR REPLACE INTO settings (key, value) VALUES ('player.position', '42');",
+            )
+            .expect("un ascolto dopo l'aggiornamento");
+
+        // L'uscita.
+        ottimizza(&aperto.connection).expect("optimize");
+        svuota_il_giornale(&aperto.connection).expect("giornale");
+        // I byte del giornale come li lascia il processo che esce: presi con la
+        // connessione ancora aperta, perché chiuderla lo riporterebbe da sé.
+        let giornale = std::fs::read(accanto(&percorso, "-wal")).unwrap_or_default();
+        drop(aperto);
+
+        std::fs::rename(&percorso, dir.path().join("rymembra.db.vecchio")).expect("da parte");
+        std::fs::copy(&copia, &percorso).expect("la copia al suo posto");
+        let _ = std::fs::remove_file(accanto(&percorso, "-shm"));
+        std::fs::write(accanto(&percorso, "-wal"), &giornale).expect("il -wal rimasto");
+
+        assert_eq!(
+            com_e(&percorso),
+            ("38".to_owned(), "ok".to_owned(), [200, 2_000, 10]),
+            "la copia rimessa si è presa i frame del database nuovo"
+        );
+    }
+
+    #[test]
+    fn tornare_alla_copia_la_rimette_e_mette_da_parte_la_libreria_di_adesso() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        libreria_vera_alla(&percorso, 38);
+        let aperto = super::super::open(&percorso).expect("apertura con migrazione");
+        aperto
+            .connection
+            .execute(
+                "INSERT INTO play_history (track_id, played_at, ms_played)
+                 VALUES (3, 1800000000000, 180000)",
+                [],
+            )
+            .expect("un ascolto dopo l'aggiornamento");
+        let copia = copia_di_prima(&percorso).expect("la copia c'è");
+        assert_eq!(copia.versione, 38);
+        assert_eq!(copia.percorso, nome_istantanea(&percorso, 38));
+
+        // Con la libreria aperta, e una seconda connessione accanto — come il
+        // deposito dei testi — che su Windows impedirebbe di rinominare il
+        // file.
+        let accanto_aperta = Connection::open(&percorso).expect("seconda connessione");
+        let mut connection = aperto.connection;
+        let ritorno =
+            torna_alla_copia(&mut connection, &percorso, &copia).expect("ritorno alla copia");
+        drop(accanto_aperta);
+        drop(connection);
+
+        assert_eq!(
+            com_e(&percorso),
+            ("38".to_owned(), "ok".to_owned(), [200, 2_000, 10]),
+            "al posto del database c'è la copia, intera"
+        );
+        assert_eq!(
+            ritorno.messa_da_parte,
+            nome_messa_da_parte_atteso(&percorso)
+        );
+        assert_eq!(
+            com_e(&ritorno.messa_da_parte),
+            (
+                super::super::LATEST_VERSION.to_string(),
+                "ok".to_owned(),
+                [200, 2_001, 10]
+            ),
+            "la libreria di prima del ritorno è messa da parte, con l'ascolto nuovo"
+        );
+        assert!(copia.percorso.is_file(), "la copia resta anche dov'era");
+        assert_eq!(
+            std::fs::metadata(accanto(&percorso, "-wal")).map_or(0, |dati| dati.len()),
+            0,
+            "nessun giornale resta accanto alla copia rimessa"
+        );
+    }
+
+    /// Il nome che la prima messa da parte prende.
+    fn nome_messa_da_parte_atteso(percorso: &Path) -> PathBuf {
+        percorso.with_file_name("rymembra.db.messa-da-parte.bak")
+    }
+
+    #[test]
+    fn tornare_alla_copia_si_puo_anche_a_libreria_chiusa() {
+        // Il caso in cui serve di più: la libreria non si è aperta. Qui un
+        // database «dal futuro» (`db.versionAhead`), che nessuno ha aperto.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        libreria_vera_alla(&percorso, 38);
+        drop(super::super::open(&percorso).expect("apertura con migrazione"));
+        Connection::open(&percorso)
+            .expect("apertura")
+            .execute_batch("PRAGMA user_version = 99")
+            .expect("dal futuro");
+        let copia = copia_di_prima(&percorso).expect("la copia c'è");
+
+        let ritorno = torna_alla_copia_del_file(&percorso, &copia).expect("ritorno");
+
+        assert_eq!(
+            com_e(&percorso),
+            ("38".to_owned(), "ok".to_owned(), [200, 2_000, 10])
+        );
+        assert_eq!(com_e(&ritorno.messa_da_parte).0, "99");
+    }
+
+    #[test]
+    fn una_copia_rovinata_non_si_rimette_e_non_tocca_niente() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        libreria_vera_alla(&percorso, super::super::LATEST_VERSION);
+        let copia = nome_istantanea(&percorso, 38);
+        std::fs::write(&copia, vec![0x5a_u8; 64 * 1024]).expect("una copia rovinata");
+        let trovata = copia_di_prima(&percorso).expect("la copia c'è");
+
+        let mut connection = Connection::open(&percorso).expect("apertura");
+        let errore = torna_alla_copia(&mut connection, &percorso, &trovata)
+            .expect_err("una copia rovinata non si rimette");
+        drop(connection);
+
+        assert!(
+            matches!(
+                errore.code().kind(),
+                ErrorCodeKind::DbCorrupt | ErrorCodeKind::DbOpenFailed
+            ),
+            "{errore:?}"
+        );
+        assert_eq!(
+            com_e(&percorso),
+            (
+                super::super::LATEST_VERSION.to_string(),
+                "ok".to_owned(),
+                [200, 2_000, 10]
+            ),
+            "la libreria è quella di prima"
+        );
+        assert!(
+            !nome_messa_da_parte_atteso(&percorso).exists(),
+            "e niente è stato messo da parte"
+        );
+    }
+
+    #[test]
+    fn la_copia_da_rimettere_e_la_piu_recente_che_si_sa_aprire() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        assert_eq!(copia_di_prima(&percorso), None, "senza copie, niente");
+        let alla = |versione: u32, secondi: i64| {
+            let file = nome_istantanea(&percorso, versione);
+            std::fs::write(&file, b"copia").expect("copia");
+            filetime::set_file_mtime(&file, filetime::FileTime::from_unix_time(secondi, 0))
+                .expect("data");
+        };
+        alla(36, 1_600_000_000);
+        alla(38, 1_700_000_000);
+        // Una copia lasciata da una versione più nuova: questa non la sa aprire.
+        alla(super::super::LATEST_VERSION + 1, 1_800_000_000);
+
+        let scelta = copia_di_prima(&percorso).expect("una copia");
+        assert_eq!(scelta.versione, 38);
+        assert_eq!(scelta.quando_ms, 1_700_000_000_000);
+
+        // E la messa da parte non ha la forma di una copia, né ne prende il
+        // posto: il nome si cerca libero.
+        assert_eq!(
+            nome_messa_da_parte(&percorso),
+            nome_messa_da_parte_atteso(&percorso)
+        );
+        std::fs::write(nome_messa_da_parte_atteso(&percorso), b"x").expect("presa");
+        assert_eq!(
+            nome_messa_da_parte(&percorso),
+            dir.path().join("rymembra.db.messa-da-parte-2.bak")
+        );
+        assert_eq!(copia_di_prima(&percorso).map(|c| c.versione), Some(38));
     }
 }

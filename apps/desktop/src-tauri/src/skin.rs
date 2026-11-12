@@ -776,15 +776,45 @@ pub fn skin(stato: State<'_, Stato>, id: Option<String>) -> Esito<SkinIpc> {
     let (dati, scelta) = match id.as_deref() {
         Some(chiesta) => (crate::studio::cartella_dati(&stato), chiesta.to_owned()),
         None => {
-            let (dati, scelta) = con_libreria(&stato, |libreria| {
+            let scelta = con_libreria(&stato, |libreria| {
                 Ok((libreria.data_dir.clone(), skin_scelta(&libreria.connection)))
-            })
-            .map_err(errore)?;
-            (Ok(dati), scelta)
+            });
+            return da_indossare(scelta).map_err(errore);
         }
     };
     dati.and_then(|dati| compila_o_ripiega(&dati, id.as_deref(), &scelta))
         .map_err(errore)
+}
+
+/// La skin da indossare quando nessuno l'ha chiesta per nome: quella scelta,
+/// letta dalla libreria (cartella dati e identificatore), col suo ripiego.
+///
+/// # Quando la libreria non c'è
+///
+/// Una libreria che non si è aperta — una migrazione fermata a metà, un
+/// database scritto da una versione più nuova, un file rotto, un permesso
+/// negato — non dice quale skin è scelta, e fino alla 3.2.0 il suo errore
+/// usciva di qui intero. Senza skin non c'è impaginazione, e senza impaginazione
+/// la finestra restava vuota: niente fascia d'errore, niente Impostazioni, e
+/// davanti a una finestra vuota il gesto naturale è reinstallare o cancellare la
+/// cartella dei dati, cioè proprio quelli che fanno perdere la libreria.
+///
+/// Si indossa quella di serie, che viene dal binario e non ha bisogno di niente
+/// sul disco. Il perché lo dice la fascia, con l'errore di `avvio`, che è lo
+/// stesso della libreria. `ripiego` resta vuoto: non è la skin scelta a non
+/// compilarsi, e la nota delle Impostazioni direbbe una cosa falsa.
+fn da_indossare(scelta: Result<(PathBuf, String), AppError>) -> Result<SkinIpc, AppError> {
+    match scelta {
+        Ok((dati, scelta)) => compila_o_ripiega(&dati, None, &scelta),
+        Err(guasto) => {
+            crate::nota!(
+                "[skin] libreria non aperta ({}): si indossa quella di serie",
+                guasto.code().kind().code()
+            );
+            // La cartella non serve: quella di serie non tocca il disco.
+            compila(Path::new(""), DI_SERIE)
+        }
+    }
 }
 
 /// La skin da indossare, col ripiego già deciso. Vedi [`skin`].
@@ -1985,6 +2015,41 @@ mod tests {
         let indossata = compila_o_ripiega(dir.path(), None, "nocturne").expect("compilata");
         assert_eq!(indossata.id, "nocturne");
         assert_eq!(indossata.ripiego, None);
+    }
+
+    #[test]
+    fn senza_libreria_si_indossa_quella_di_serie() {
+        // Una libreria che non si apre — una migrazione fallita, un database
+        // scritto da una versione più nuova, un file rotto — non dice quale
+        // skin è scelta. Senza skin non c'è impaginazione, e senza
+        // impaginazione la finestra è vuota: niente fascia che dica perché,
+        // niente Impostazioni. Quella di serie viene dal binario, e basta lei
+        // a disegnare la finestra che spiega il guasto.
+        for guasto in [
+            ErrorCode::DbVersionAhead {
+                db_version: 99,
+                app_version: rymembra_app::db::LATEST_VERSION,
+            },
+            ErrorCode::DbMigrationFailed {
+                from: 38,
+                to: 40,
+                step: Some("insieme-indirizzi".to_owned()),
+            },
+        ] {
+            let indossata =
+                da_indossare(Err(AppError::new(guasto))).expect("la finestra si disegna");
+            assert_eq!(indossata.id, DI_SERIE);
+            assert_eq!(
+                indossata.ripiego, None,
+                "non è la skin scelta che non si compila: la scelta non si sa"
+            );
+        }
+        // E con la libreria aperta la regola resta quella di sempre.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        installa(dir.path(), &pacchetto(&sorgente_con_id("nocturne"))).expect("installata");
+        let indossata =
+            da_indossare(Ok((dir.path().to_path_buf(), "nocturne".to_owned()))).expect("compilata");
+        assert_eq!(indossata.id, "nocturne");
     }
 
     #[test]

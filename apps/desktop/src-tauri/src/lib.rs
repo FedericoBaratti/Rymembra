@@ -357,6 +357,9 @@ pub fn run() {
             // [`cartella_di_cache`]. Prima di ogni stato che apre una cache.
             let a_mano = fatta_a_mano(&scelta);
             app.manage(DatiAMano(a_mano));
+            // La copia del Store, la libreria che c'era prima: vedi
+            // [`cartella_di_serie`].
+            app.manage(LibreriaDiPrima(libreria_di_prima(app.handle(), a_mano)));
             // In una build di sviluppo, una cartella dati di prova ha anche un
             // portachiavi di prova: il servizio vero è fisso, e senza questo la
             // copia di prova userebbe gli account veri (e l'identità del
@@ -962,6 +965,12 @@ pub fn run() {
             manutenzione::manutenzione_stato,
             manutenzione::manutenzione_salute,
             manutenzione::manutenzione_pulisci_copertine,
+            manutenzione::manutenzione_apri_cartella_dati,
+            manutenzione::manutenzione_copia_di_prima,
+            manutenzione::manutenzione_torna_alla_copia,
+            manutenzione::store_libreria_di_prima,
+            manutenzione::store_copia_libreria_di_prima,
+            manutenzione::store_rifiuta_libreria_di_prima,
             comandi::apri_documento,
             comandi::apri_guida,
             // Solo sul telefono: altrove rispondono `internal.aborted`. Vedi
@@ -1264,7 +1273,13 @@ pub(crate) fn cartella_di_cache(app: &tauri::AppHandle, nome: &str) -> Option<Pa
     let dati = app
         .try_state::<stato::Stato>()
         .and_then(|stato| stato.cartella_dati().map(std::path::Path::to_path_buf));
-    let locale = app.path().app_local_data_dir().ok();
+    // Della copia del Microsoft Store, per la copia del Store: vedi
+    // [`cartella_di_serie`].
+    let locale = app
+        .path()
+        .app_local_data_dir()
+        .ok()
+        .map(|base| cartella_di_serie(base, dallo_store()));
     dove_sta_la_cache(a_mano, dati.as_deref(), locale.as_deref(), nome)
 }
 
@@ -1323,7 +1338,77 @@ fn cartella_dati(
     app: &tauri::AppHandle,
 ) -> Result<Result<trasloco::Scelta, trasloco::Errore>, tauri::Error> {
     let (nuova, vecchia) = variabili_dei_dati();
-    scegli_la_cartella(nuova, vecchia, || app.path().app_data_dir())
+    let store = dallo_store();
+    scegli_la_cartella(nuova, vecchia, || {
+        app.path()
+            .app_data_dir()
+            .map(|base| cartella_di_serie(base, store))
+    })
+}
+
+/// Questa copia è quella del Microsoft Store?
+///
+/// Lo dice il marcatore accanto all'eseguibile (`aggiornamenti::gestita_dallo_store`).
+/// Sul telefono mai: il Store è del computer, e lì `aggiornamenti` è il modulo
+/// di `mobile/`, che non ha marcatori da cercare.
+fn dallo_store() -> bool {
+    #[cfg(desktop)]
+    let store = aggiornamenti::gestita_dallo_store();
+    #[cfg(not(desktop))]
+    let store = false;
+    store
+}
+
+/// Il suffisso della cartella dati, e della cache locale, della copia del
+/// Microsoft Store.
+const SUFFISSO_STORE: &str = ".store";
+
+/// La cartella di serie di questa copia: quella che Tauri dà, o, per la copia
+/// del Microsoft Store, la sua sorella col suffisso [`SUFFISSO_STORE`].
+///
+/// # Perché due librerie
+///
+/// Dentro il pacchetto MSIX Windows manda nella cartella privata del pacchetto
+/// i file che la copia **crea** in `%APPDATA%`, e lascia dove sono quelli che
+/// esistono già. Sullo stesso nome della copia installata dal sito, quindi, la
+/// copia del Store apriva il `rymembra.db` vero e ne creava `-wal` e `-shm`
+/// nella cartella privata: un database diviso fra due posti. Un processo
+/// chiuso a metà lasciava le transazioni in un giornale che l'altra copia non
+/// vede; riaperta, la copia del Store applicava il suo giornale vecchio a un
+/// database cambiato nel frattempo; e la casella «cancella i dati» del
+/// disinstallatore toglieva il database lasciando il giornale orfano. Con un
+/// nome che fuori dal pacchetto non esiste ogni file è nuovo, e resta privato
+/// per intero, database e giornale insieme.
+///
+/// La libreria che c'era — della copia del sito, o della stessa copia del
+/// Store prima di questa versione: da dentro il pacchetto si vedono nello
+/// stesso posto — si offre al primo avvio (`manutenzione::store_libreria_di_prima`).
+fn cartella_di_serie(base: PathBuf, dallo_store: bool) -> PathBuf {
+    if !dallo_store {
+        return base;
+    }
+    let mut nome = base.file_name().map(OsString::from).unwrap_or_default();
+    nome.push(SUFFISSO_STORE);
+    base.with_file_name(nome)
+}
+
+/// La libreria che la copia del Microsoft Store può proporre di prendere:
+/// quella nella cartella di serie senza suffisso, se c'è un `rymembra.db`.
+///
+/// `None` fuori dal Store, e quando la cartella l'ha scelta una variabile:
+/// chi fa una prova non riceve proposte sulla libreria vera.
+#[derive(Debug, Clone)]
+pub(crate) struct LibreriaDiPrima(pub(crate) Option<PathBuf>);
+
+/// Dove sta la [`LibreriaDiPrima`], se c'è.
+fn libreria_di_prima(app: &tauri::AppHandle, a_mano: bool) -> Option<PathBuf> {
+    if a_mano || !dallo_store() {
+        return None;
+    }
+    app.path()
+        .app_data_dir()
+        .ok()
+        .filter(|cartella| cartella.join(stato::NOME_DATABASE).is_file())
 }
 
 /// Porta nella cartella dati quella della versione precedente, poi apre il diario.
@@ -1345,7 +1430,15 @@ fn cartella_dati(
 /// dirlo ci pensa [`rifiuta`]: il motivo nel file di riserva, perché il diario è
 /// chiuso e non si apre, e un dialogo per chi guarda.
 fn prepara_i_dati(scelta: &trasloco::Scelta) -> Result<(), trasloco::Errore> {
-    let rapporto = trasloco::trasloca(&trasloco::percorsi_per(scelta))?;
+    let mut percorsi = trasloco::percorsi_per(scelta);
+    // La copia del Store non sposta la cartella di Aether: la sua sorella
+    // sarebbe quella vera, fuori dal pacchetto, e il trasloco la porterebbe
+    // nella cartella privata, lontano dalla copia del sito. Quel che c'è lo
+    // propone la [`LibreriaDiPrima`], copiandolo e lasciandolo dov'è.
+    if dallo_store() {
+        percorsi.precedente = None;
+    }
+    let rapporto = trasloco::trasloca(&percorsi)?;
     diario::apri(&scelta.cartella);
     if scelta.da_variabile_precedente {
         nota!(
@@ -1546,6 +1639,32 @@ mod prove {
     fn una_cartella_relativa_resta_una_scelta_a_mano() {
         assert!(dati_a_mano(os("relativa"), None));
         assert!(dati_a_mano(None, os("relativa")));
+    }
+
+    #[test]
+    fn la_copia_dello_store_non_apre_la_libreria_della_copia_nsis() {
+        // R20-3: la stessa cartella per le due copie voleva dire, dentro il
+        // pacchetto MSIX, il `rymembra.db` della copia del sito aperto sul
+        // posto e il suo giornale nella cartella privata del pacchetto. La
+        // copia del Store ne ha una sua, sorella e con un nome che fuori dal
+        // pacchetto non esiste; quella del sito resta dov'è.
+        let base = assoluta("io.github.federicobaratti.rymembra");
+        assert_eq!(cartella_di_serie(base.clone(), false), base);
+        let dello_store = cartella_di_serie(base.clone(), true);
+        assert_ne!(dello_store, base);
+        assert_eq!(dello_store.parent(), base.parent(), "sorella, accanto");
+        assert_eq!(
+            dello_store.file_name().and_then(|nome| nome.to_str()),
+            Some("io.github.federicobaratti.rymembra.store")
+        );
+        // E la scelta di una variabile vince anche sulla copia del Store: la
+        // cartella di serie non si calcola nemmeno.
+        let a_mano = scegli_la_cartella(os_assoluta("prova"), None, || -> Result<PathBuf, ()> {
+            Ok(cartella_di_serie(base.clone(), true))
+        })
+        .expect("di serie")
+        .expect("scelta");
+        assert_eq!(a_mano.cartella, assoluta("prova"));
     }
 
     /// Dove sta una cache: dentro i dati se la cartella l'ha scelta una

@@ -98,6 +98,7 @@ import { comeScorrere } from "../transizione";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { chiaveDellApertura, chiusuraDi } from "../foglio";
 import { Menu, type Apertura } from "../Menu";
+import { CopiaDiPrima } from "../parti/CopiaDiPrima";
 import { nomeFonte } from "../parti/Incertezza";
 import { MOBILE } from "../piattaforma";
 
@@ -1534,6 +1535,8 @@ function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
             : t("settings.maintenance.clean")}
         </button>
       </div>
+      {/* Anche senza libreria: vedi `CopiaDiPrima`. */}
+      {!MOBILE && <CopiaDiPrima onErrore={onErrore} />}
     </Scheda>
   );
 }

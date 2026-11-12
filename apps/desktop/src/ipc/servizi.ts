@@ -1153,6 +1153,36 @@ export interface StatoManutenzione {
   salute: SaluteDatabase;
 }
 
+/**
+ * La copia di prima dell'aggiornamento che «Torna alla copia» rimetterebbe
+ * (`manutenzione::CopiaDiPrimaIpc`).
+ */
+export interface CopiaDiPrima {
+  /** Il nome del file, accanto al database: `rymembra.db.schema-038.bak`. */
+  nome: string;
+  /** Lo schema che contiene. */
+  versione: number;
+  /** Quando è stata fatta, in millisecondi dall'epoca. */
+  quandoMs: number;
+  /**
+   * Lo schema di questa versione: una copia più vecchia vuole, dopo il
+   * ritorno, la versione di Rymembra di prima.
+   */
+  versioneDiQuesta: number;
+  /** Il nome che prenderà la libreria di adesso, messa da parte. */
+  messaDaParte: string;
+}
+
+/**
+ * La libreria che la copia del Microsoft Store può prendere al primo avvio
+ * (`manutenzione::LibreriaDiPrimaIpc`): della copia installata dal sito, o sua
+ * prima dell'aggiornamento.
+ */
+export interface LibreriaDiPrima {
+  /** Dove sta. */
+  cartella: string;
+}
+
 /** Quanto ha liberato una pulizia a mano, e lo stato dopo. */
 export interface EsitoPulizia {
   /** Righe di copertina tolte dal database. */

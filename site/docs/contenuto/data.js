@@ -10,14 +10,15 @@
       src: ["core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/trasloco.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/lib.rs", "apps/desktop/src-tauri/msix/LEGGIMI.md"],
       body: [
         "Everything Rymembra keeps lives in the application data folder, `%APPDATA%\\io.github.federicobaratti.rymembra` on Windows (asked to Tauri, never composed by hand). The environment variable `RYMEMBRA_DATI` replaces it at startup — the way to try an import or a migration on a copy without touching the real library; it also disables the single-instance guard, and the cloud track cache and the remote-cover cache then live inside that folder. It is read once (`variabili_dei_dati` in `lib.rs`) and must be a full path: a relative one is refused at startup with a dialog and a line in `avvio.log`, and the default folder is not opened in its place.",
-        "**A copy from the Microsoft Store** asks for the same folder, and Windows (1903 and later) redirects by itself the files it **creates** there to the package's private folder under `%LOCALAPPDATA%\\Packages\\`, which uninstalling the package removes. Files that already exist are used where they are: on a PC where the installer copy has already made a library, the Store copy would open that `rymembra.db` while its new `-wal` and `-shm` went to the private folder. That has not been tried, which is why the site says to keep one copy per PC; keychain entries are not virtualized, so connected accounts are the same for both.",
+        "**A copy from the Microsoft Store** keeps its own library, in `%APPDATA%\io.github.federicobaratti.rymembra.store` (and its local cache in the matching `%LOCALAPPDATA%` folder): `cartella_di_serie` in `lib.rs`, when the package marker `rymembra-store.txt` sits next to the executable. Inside the package Windows (1903 and later) sends the files a program **creates** in AppData to the package's private folder under `%LOCALAPPDATA%\Packages\`, which uninstalling the package removes, while files that already exist are used where they are; on the installer copy's folder that would have split one database between two places — the real `rymembra.db`, its `-wal` and `-shm` in the private folder. A name that does not exist outside the package keeps every file private, the database together with its journal. The Store copy does not move Aether's folder. On its first start, while its own library is still empty, it offers once to copy the library found in the old folder — the installer copy's, or its own from before 3.2.1, which from inside the package look the same — with `trasloco::copia_la_libreria_di`: the database files are copied to a staging folder (SQLite never opens the original), brought to the current schema, put into the open library with SQLite's backup API, then covers and skins are copied without overwriting anything, and Rymembra closes. Keychain entries are not virtualized, so connected accounts are the same for both copies.",
         "**Coming from the previous version.** On the first start the data of the previous version are transferred automatically, before the log or the database is opened (`trasloco.rs`, only for the default folder): the old data folder is renamed to this one — library, settings, covers, skins, drafts, profile copies and log files, which take the new names — and an interrupted transfer resumes at the next start. Nothing is overwritten and nothing is deleted: if the new folder already holds a library, it wins and the old one is left untouched; if the previous version is still running (its database is open), nothing is moved and Rymembra says so in a dialog and closes. Skins and profile archives written by the previous version still import, and its keychain entries and Drive files are picked up on first use ([OAuth](#oauth), [Drive backup](#cloud)).",
         {
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 40"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 41"],
               ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
+              ["`rymembra.db.messa-da-parte.bak`", "The library set aside by “Go back to the copy from before the update” (kept until removed by hand)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
               ["`skin/`", "Installed `.ryskin` packages and Studio drafts (`skin/bozze/`)"],
               ["`diario/`", "The log, `rymembra.log`, rotated — see [Logs](#logs)"],
@@ -26,7 +27,7 @@
           },
         },
         { h: "Opening" },
-        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason.",
+        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason: with no library the `skin` command wears the built-in skin (`skin::da_indossare`, it needs nothing on disk), the error band shows the error of `avvio`, and for database errors it offers “Open the data folder” (`manutenzione_apri_cartella_dati`, not on the phone). `Stato` keeps the folder it looked in even when opening failed (`cartella_della_libreria`).",
         { h: "Pragmas and the journal" },
         {
           ol: [
@@ -87,6 +88,7 @@
           },
         },
         "Triggers on `tracks`: the three `tracks_fts_*` keep the FTS index current; `statistiche_restano_orfane` / `correzioni_restano_orfane` (BEFORE DELETE) and `statistiche_tornano` / `correzioni_tornano` (AFTER INSERT) park and restore statistics and corrections by `content_key` for 90 days — see [Removal](#removal); `lyrics_segue_track_key` moves lyrics when the key changes; the three `generazione_dopo_*` write a new `random()` into `libreria_stato.generazione` on every write.",
+        "Migration 041 adds two partial indexes, `idx_tracks_mb_recording` on `tracks(mb_recording_id)` and `idx_artists_mb` on `artists(mb_artist_id)` (both `WHERE … IS NOT NULL`): the ListenBrainz neighbours are written with one `INSERT … SELECT` per neighbour inside a transaction holding the library lock, and without them each one read the whole table.",
         { h: "Everything else" },
         {
           table: {
@@ -126,7 +128,7 @@
       title: "Migrations and the pre-migration copy",
       src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
-        "`MIGRATIONS` is an ordered list of 40 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
+        "`MIGRATIONS` is an ordered list of 41 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
         "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },
@@ -144,6 +146,9 @@
           ],
         },
         "The copy never blocks the migration: if it cannot be made, the result is `Istantanea::Saltata { motivo }` and the reason goes to the startup log. Every release that migrates names its migrations in `CHANGELOG.md`.",
+        { h: "Going back to the copy" },
+        "*Settings › Library and data*, in the maintenance card, offers “Go back to the copy from before the update” (not on the phone) when a copy exists: the newest `rymembra.db.schema-NNN.bak` by date whose schema this version can open (`db::copia_di_prima`). It works with the library open or not (a migration stopped halfway). It checks the copy (read-only `quick_check`, schema equal to `NNN`), sets the current library aside with `VACUUM INTO rymembra.db.messa-da-parte.bak` (a file copy of `.db` and `-wal` if `VACUUM` cannot read it), puts the copy back with SQLite's backup API into the open database — one write transaction, so it never renames a file another connection holds and never pairs the copy with the new database's `-wal` — truncates the journal, and closes Rymembra: this version would migrate the copy again. The copy itself stays where it was.",
+        "By hand, the copy must be **copied**, not renamed, over `rymembra.db`, after closing Rymembra and deleting `rymembra.db-wal` and `rymembra.db-shm`: a leftover `-wal` belongs to the new database, and SQLite applies it to any file with that name. On a clean exit the journal is empty anyway: `ottimizza_uscendo` runs `PRAGMA wal_checkpoint(TRUNCATE)` after the last `optimize`, because the process exits through `process::exit` and never closes the connection.",
       ],
       see: ["schema", "maintenance"],
     },
@@ -159,6 +164,7 @@
             rows: [
               ["`PRAGMA optimize=0x10002`", "At open, after migrations", "100 ms the first time, then ≈ 1 ms"],
               ["`PRAGMA optimize`", "Every pass (6 h) and once on exit, waiting at most 250 ms for the lock", "< 1 ms"],
+              ["`PRAGMA wal_checkpoint(TRUNCATE)`", "Once on exit, right after the last `optimize`", "—"],
               ["`PRAGMA quick_check(8)`", "Once per session, first pass", "200–240 ms warm"],
               ["`PRAGMA integrity_check`", "Never automatically", "1.8 s"],
               ["`VACUUM INTO`", "Before a migration", "370 ms"],

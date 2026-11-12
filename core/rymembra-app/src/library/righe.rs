@@ -634,12 +634,57 @@ pub(super) fn insert_track(tx: &Transaction<'_>, row: &TrackRow, now: i64) -> Re
 /// l'arricchimento rimesso. Passarle quella dei soli tag, com'era prima,
 /// riporterebbe un brano arricchito all'identità del suo file un istante dopo
 /// averla corretta.
+///
+/// # La riga dev'essere ancora quella che il piano ha visto
+///
+/// Il piano decide quale riga riscrivere a una presa del lucchetto, e la
+/// scrittura arriva a un'altra, file letti nel mezzo. Fra le due un'altra
+/// scrittura può aver cambiato il percorso della riga — l'importazione di un
+/// profilo con le radici rimappate — o la riga può essere sparita e il suo
+/// numero riusato da un'altra: SQLite riassegna il `rowid` più alto, e `tracks`
+/// non ha `AUTOINCREMENT`. Il numero da solo non è un'identità, come sa già
+/// [`remove_tracks`]: per questo si riscrive solo la riga che ha ancora
+/// `percorso_visto`, il percorso con cui il piano l'aveva giudicata. Altrimenti
+/// non si tocca niente e torna `None`: la passata dopo deciderà da capo, sul
+/// database com'è allora.
+///
+/// # Le misure del file di prima
+///
+/// Volume (`track_intensita`) e impronta (`track_impronta`) sono misure del
+/// **contenuto**, e le passate d'analisi chiedono solo «c'è una misura di
+/// questa versione dell'algoritmo». Se il file è cambiato — un'altra
+/// dimensione, o un'altra data di modifica — la misura era di un altro file: un
+/// CD ririppato con lo stesso nome, la versione rimasterizzata, un download
+/// misurato a metà e poi finito. Si toglie qui, e il brano torna fra i
+/// candidati dell'analisi. Non per la sentinella di «Rileggi tutti i tag»
+/// (`date_modified = -1`, vedi [`rileggi_tutti_i_tag`]): quella data non dice
+/// niente del contenuto, e rimisurare la libreria intera per un clic sarebbe
+/// ore di lavoro per niente. Lì vale solo la dimensione.
+///
+/// # Errori
+///
+/// `db.*` se il database non risponde.
 pub(super) fn update_track(
     tx: &Transaction<'_>,
     track_id: i64,
+    percorso_visto: &str,
     row: &TrackRow,
     now: i64,
-) -> Result<String, AppError> {
+) -> Result<Option<String>, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let prima: Option<(Option<i64>, Option<i64>)> = tx
+        .prepare_cached("SELECT file_size, date_modified FROM tracks WHERE id = ?1 AND path = ?2")
+        .and_then(|mut statement| {
+            statement
+                .query_row(rusqlite::params![track_id, percorso_visto], |riga| {
+                    Ok((riga.get(0)?, riga.get(1)?))
+                })
+                .optional()
+        })
+        .map_err(|err| db_error("lettura di un brano da aggiornare", &err))?;
+    let Some((dimensione, data)) = prima else {
+        return Ok(None);
+    };
     insert_cover(tx, row, now)?;
     let sopra = crate::incerti::arricchimento_sopra_i_tag(tx, track_id, row)?;
     let (finale, copertina_arricchita) = match sopra.as_ref() {
@@ -669,7 +714,30 @@ pub(super) fn update_track(
         .map_err(|err| db_error("aggiornamento di un brano", &err))?;
     esegui_coi_campi!(statement, finale, copertina, track_id)
         .map_err(|err| db_error("aggiornamento di un brano", &err))?;
-    Ok(finale.track_key.clone())
+    if contenuto_cambiato(dimensione, data, row) {
+        tx.execute(
+            "DELETE FROM track_intensita WHERE track_id = ?1",
+            [track_id],
+        )
+        .and_then(|_| tx.execute("DELETE FROM track_impronta WHERE track_id = ?1", [track_id]))
+        .map_err(|err| db_error("misure di un file cambiato", &err))?;
+    }
+    Ok(Some(finale.track_key.clone()))
+}
+
+/// La data che «Rileggi tutti i tag» mette su ogni riga: vedi
+/// [`rileggi_tutti_i_tag`].
+const DATA_DA_RILEGGERE: i64 = -1;
+
+/// Il file sotto la riga non è più quello che le misure hanno letto?
+///
+/// Una dimensione diversa lo dice sempre; una data diversa solo se quella di
+/// prima era una data vera, e non la sentinella di [`DATA_DA_RILEGGERE`]. Un
+/// valore che in tabella manca non dice niente: nel dubbio la misura resta,
+/// com'era prima di questa regola.
+fn contenuto_cambiato(dimensione: Option<i64>, data: Option<i64>, row: &TrackRow) -> bool {
+    dimensione.is_some_and(|prima| prima != row.file_size)
+        || data.is_some_and(|prima| prima != DATA_DA_RILEGGERE && prima != row.date_modified)
 }
 
 /// Fa rileggere i tag di ogni file alla prossima scansione.

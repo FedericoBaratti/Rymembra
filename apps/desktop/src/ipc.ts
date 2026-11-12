@@ -27,7 +27,7 @@ import type {
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -1090,6 +1090,24 @@ export const ipc = {
   manutenzioneSalute: () => invoke<SaluteDatabase>("manutenzione_salute"),
   manutenzionePulisciCopertine: () =>
     invoke<EsitoPulizia>("manutenzione_pulisci_copertine"),
+  // La cartella dei dati nel gestore file, anche quando la libreria non si è
+  // aperta: è il gesto della fascia d'errore per i guasti del database. Non
+  // sul telefono, dove la cartella è privata dell'app.
+  manutenzioneApriCartellaDati: () =>
+    invoke<void>("manutenzione_apri_cartella_dati"),
+  // «Torna alla copia di prima dell'aggiornamento»: la copia da offrire, letta
+  // senza aprire il database, e il gesto, che se riesce chiude Rymembra.
+  manutenzioneCopiaDiPrima: () =>
+    invoke<CopiaDiPrima | null>("manutenzione_copia_di_prima"),
+  manutenzioneTornaAllaCopia: () => invoke<void>("manutenzione_torna_alla_copia"),
+  // La copia del Microsoft Store ha una libreria sua: al primo avvio propone
+  // quella che c'era. Copiarla chiude Rymembra; «Comincia da capo» non la
+  // ripropone più.
+  storeLibreriaDiPrima: () =>
+    invoke<LibreriaDiPrima | null>("store_libreria_di_prima"),
+  storeCopiaLibreriaDiPrima: () => invoke<void>("store_copia_libreria_di_prima"),
+  storeRifiutaLibreriaDiPrima: () =>
+    invoke<void>("store_rifiuta_libreria_di_prima"),
 
   // I documenti pubblici, nel browser di sistema. Il nome e non l'indirizzo: di
   // là c'è un elenco chiuso, e un comando che aprisse l'indirizzo che gli si
