@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
@@ -237,6 +238,7 @@ class Giocatore(looper: Looper) : SimpleBasePlayer(looper) {
   }
 
   override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+    if (!playWhenReady) Log.i(Sessione.PAUSA, "pausa da ${Sessione.chiChiede()}")
     Sessione.gesto(if (playWhenReady) "riprendi" else "pausa")
     // In attesa della scheda vera, quella che si è chiesta: senza, il tasto
     // tornerebbe indietro per un istante e poi avanti.
@@ -321,6 +323,7 @@ class Giocatore(looper: Looper) : SimpleBasePlayer(looper) {
   }
 
   override fun handleStop(): ListenableFuture<*> {
+    Log.i(Sessione.PAUSA, "pausa da uno «stop» di ${Sessione.chiChiede()}")
     Sessione.gesto("pausa")
     return Futures.immediateVoidFuture()
   }
@@ -594,10 +597,12 @@ object Sessione {
         .setOnAudioFocusChangeListener({ cambio ->
           when (cambio) {
             AudioManager.AUDIOFOCUS_LOSS -> {
+              Log.i(PAUSA, "pausa: il fuoco audio è passato a un'altra app, per sempre")
               riprendiDopo = false
               gesto("pausa")
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+              Log.i(PAUSA, "pausa: il fuoco audio è passato a un'altra app, per poco")
               riprendiDopo = true
               gesto("pausa")
             }
@@ -608,7 +613,12 @@ object Sessione {
           }
         }, principale)
         .build()
-      if (audio.requestAudioFocus(nuova) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) richiesta = nuova
+      val esito = audio.requestAudioFocus(nuova)
+      if (esito == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+        richiesta = nuova
+      } else {
+        Log.i(PAUSA, "il fuoco audio non è stato concesso (esito $esito): si suona senza")
+      }
     } else if (!riprendiDopo) {
       richiesta?.let { audio.abandonAudioFocusRequest(it) }
       richiesta = null
@@ -617,7 +627,10 @@ object Sessione {
 
   private val rumore = object : BroadcastReceiver() {
     override fun onReceive(contesto: Context, intento: Intent) {
-      if (intento.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) gesto("pausa")
+      if (intento.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+        Log.i(PAUSA, "pausa: le cuffie si sono staccate")
+        gesto("pausa")
+      }
     }
   }
 
@@ -639,4 +652,23 @@ object Sessione {
 
   /** Quanto resta sullo schermo dell'auto un avviso. */
   private const val AVVISO_MS = 6_000L
+
+  /**
+   * L'etichetta del logcat per ogni pausa che non viene dalla finestra: il
+   * fuoco audio, le cuffie, un controllore della sessione (col suo pacchetto:
+   * vedi [chiChiede]). Una musica che si ferma da sola —
+   * il «Play» del primo avvio che resta a 0:00 (R18-5) — si spiega così:
+   * `adb logcat -s RymembraPausa`. Nel diario no: i nomi dei pacchetti delle
+   * altre app non ci vanno.
+   */
+  const val PAUSA = "RymembraPausa"
+
+  /**
+   * Il controllore che sta chiedendo qualcosa al giocatore adesso, per il
+   * logcat: pacchetto e uid. Lo sa la sessione, sul filo principale, mentre
+   * esegue il comando.
+   */
+  fun chiChiede(): String =
+    libreria?.controllerForCurrentRequest?.let { "${it.packageName} (uid ${it.uid})" }
+      ?: "un controllore che la sessione non nomina"
 }
