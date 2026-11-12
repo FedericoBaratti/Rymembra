@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { readFileSync } from "node:fs";
+
 import type { Avvio, Playlist } from "../src/ipc";
 import { conteggiDi, creaLibreria, type Domande } from "../src/libreria";
 
@@ -128,4 +130,37 @@ test("i conteggi: niente prima di avvio, e le radici per le cartelle", () => {
     cartelle: 2,
     preferiti: 4,
   });
+});
+
+// ── R21-2: durante la prima scansione i numeri salgono ─────────────────────
+
+test("la rilettura durante una scansione scrive i numeri e tace un guasto", async () => {
+  const { libreria, avvii, errori } = libreriaFinta();
+  const prima = libreria.rileggiInSilenzio();
+  avvii[0]?.risolvi(avvio(500));
+  await prima;
+  assert.equal(libreria.avvio.leggi()?.numeri.tracks, 500);
+  // Il database occupato dal lotto in scrittura: niente fascia rossa, i
+  // numeri restano quelli di prima e il prossimo avanzamento riprova.
+  const seconda = libreria.rileggiInSilenzio();
+  avvii[1]?.rifiuta(new Error("db.locked"));
+  await seconda;
+  assert.deepEqual(errori, []);
+  assert.equal(libreria.avvio.leggi()?.numeri.tracks, 500);
+  // E il turno è quello delle altre letture: una rilettura in silenzio
+  // arrivata dopo la `ricarica` di fine scansione non la riporta indietro.
+  const silenziosa = libreria.rileggiInSilenzio();
+  const finale = libreria.ricarica();
+  avvii[3]?.risolvi(avvio(29_183));
+  await finale;
+  avvii[2]?.risolvi(avvio(28_500));
+  await silenziosa;
+  assert.equal(libreria.avvio.leggi()?.numeri.tracks, 29_183);
+});
+
+test("scansione.ts rilegge i numeri a ogni avanzamento, al più ogni tre secondi", () => {
+  const scansione = readFileSync(new URL("../src/scansione.ts", import.meta.url), "utf8");
+  const ascolto = scansione.slice(scansione.indexOf('useAscolto<Avanzamento>("scansione:avanzamento"'));
+  assert.match(ascolto.slice(0, 1500), /libreria\.rileggiInSilenzio\(\)/);
+  assert.match(scansione, /RILETTURA_IN_SCANSIONE_MS = 3_000/);
 });
