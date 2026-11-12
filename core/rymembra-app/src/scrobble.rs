@@ -240,7 +240,7 @@ fn album_utile(valore: Option<String>) -> Option<String> {
         .filter(|album| album.trim() != UNKNOWN_ALBUM && !e_segnaposto(Some(album)))
 }
 
-/// Accoda tutta la cronologia già registrata.
+/// Accoda tutta la cronologia già registrata, tranne quel che è già partito.
 ///
 /// È il gesto che chiude il cerchio dell'importazione da Spotify: anni di
 /// ascolti arrivati nell'archivio diventano la propria cronologia su un servizio
@@ -249,8 +249,26 @@ fn album_utile(valore: Option<String>) -> Option<String> {
 /// quarantamila righe là dentro non entrerebbero comunque.
 ///
 /// `sorgente` restringe a una provenienza di `play_history` (`local`,
-/// `spotify`); `da_ms` a partire da un istante. `INSERT OR IGNORE` sul vincolo
-/// di unicità: chiamarla due volte non raddoppia niente.
+/// `spotify`); `da_ms` a partire da un istante.
+///
+/// # Fin dove si è già accodato
+///
+/// `INSERT OR IGNORE` sul vincolo di unicità non raddoppia quel che è **ancora**
+/// in coda, ma la coda dimentica quel che consegna ([`fatte`] cancella), e il
+/// secondo clic rimandava tutto (R06-8): decine di migliaia di righe per
+/// niente, e un brano ritoccato nel frattempo — l'arricchimento, «Rileggi i
+/// tag» — diventava su ListenBrainz un ascolto doppio per sempre.
+///
+/// Per questo ogni servizio ricorda in `settings`, per provenienza e per «tutta»,
+/// fino a quale riga di `play_history` il gesto è già arrivato
+/// ([`chiave_segno`]): `id` cresce con l'inserimento, quindi un archivio
+/// arrivato dopo, anche con ascolti più vecchi, sta oltre il segno e parte.
+/// «Tutta» salta quel che «solo Spotify» ha già mandato, e il contrario. Il segno
+/// avanza solo per la cronologia intera (`da_ms <= 0`) e nella stessa
+/// transazione dell'accodamento: o tutti e due, o nessuno.
+///
+/// Resta fuori quel che il segno non può sapere: un ascolto fatto qui e già
+/// mandato da solo, mentre si suonava, riparte con il primo «Tutta» dopo di lui.
 ///
 /// # Errori
 ///
@@ -261,7 +279,12 @@ pub fn accoda_cronologia(
     sorgente: Option<&str>,
     da_ms: i64,
 ) -> Result<usize, AppError> {
-    connection
+    let transazione = connection
+        .unchecked_transaction()
+        .map_err(|err| db_error("apertura dell'accodamento della cronologia", &err))?;
+    let prefisso = prefisso_segni(servizio);
+    let segno_tutta = segno(&transazione, &chiave_segno(servizio, None))?;
+    let accodati = transazione
         .execute(
             "INSERT OR IGNORE INTO scrobble_queue
                (service, played_at, artist, title, album, album_artist,
@@ -278,13 +301,91 @@ pub fn accoda_cronologia(
                     ?2
                FROM play_history AS h
                JOIN tracks AS t ON t.id = h.track_id
+               LEFT JOIN settings AS s ON s.key = ?5 || h.source
               WHERE trim(t.artist) <> ''
                 AND trim(t.title) <> ''
                 AND h.played_at >= ?3
-                AND (?4 IS NULL OR h.source = ?4)",
-            rusqlite::params![servizio.chiave(), now_ms(), da_ms, sorgente],
+                AND (?4 IS NULL OR h.source = ?4)
+                AND h.id > ?6
+                AND h.id > COALESCE(CAST(s.value AS INTEGER), 0)",
+            rusqlite::params![
+                servizio.chiave(),
+                now_ms(),
+                da_ms,
+                sorgente,
+                prefisso,
+                segno_tutta
+            ],
         )
-        .map_err(|err| db_error("accodamento della cronologia", &err))
+        .map_err(|err| db_error("accodamento della cronologia", &err))?;
+    if da_ms <= 0 {
+        let fin_qui: i64 = transazione
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM play_history WHERE (?1 IS NULL OR source = ?1)",
+                [sorgente],
+                |r| r.get(0),
+            )
+            .map_err(|err| db_error("segno della cronologia accodata", &err))?;
+        crate::settings::write(
+            &transazione,
+            &chiave_segno(servizio, sorgente),
+            &fin_qui.to_string(),
+        )?;
+    }
+    transazione
+        .commit()
+        .map_err(|err| db_error("chiusura dell'accodamento della cronologia", &err))?;
+    Ok(accodati)
+}
+
+/// Dove un servizio ricorda fin dove la cronologia è già stata accodata: una
+/// chiave per provenienza, e `…tutta` per il gesto senza provenienza.
+///
+/// Non entra nel profilo (non sta in `profilo::CATALOGO`): è la storia di
+/// quel che **questa** installazione ha mandato, non un gusto.
+fn chiave_segno(servizio: Servizio, sorgente: Option<&str>) -> String {
+    format!("{}{}", prefisso_segni(servizio), sorgente.unwrap_or(TUTTA))
+}
+
+/// L'inizio delle chiavi di [`chiave_segno`] di un servizio.
+fn prefisso_segni(servizio: Servizio) -> String {
+    format!("scrobble.{}.cronologia.", servizio.chiave())
+}
+
+/// Il nome del segno della cronologia intera. Non è una provenienza di
+/// `play_history` (`local`, `spotify`), quindi non si scontra con loro.
+const TUTTA: &str = "tutta";
+
+/// Il segno scritto, o zero.
+fn segno(connection: &Connection, chiave: &str) -> Result<i64, AppError> {
+    Ok(crate::settings::read(connection, chiave)?
+        .and_then(|valore| valore.trim().parse::<i64>().ok())
+        .unwrap_or(0))
+}
+
+/// Dopo che delle righe di `play_history` se ne sono andate: nessun segno resta
+/// oltre l'ultima riga rimasta.
+///
+/// `play_history.id` è `INTEGER PRIMARY KEY` senza `AUTOINCREMENT`: tolte le
+/// righe più alte, quelle nuove riprendono i loro numeri. Un segno rimasto più
+/// in alto le lascerebbe fuori da ogni accodamento, per sempre e senza dirlo —
+/// un archivio dimenticato e reimportato non partirebbe più. La chiama chi
+/// cancella la cronologia in blocco ([`crate::import_account::dimentica_importati`]).
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub(crate) fn dopo_una_cronologia_tolta(connection: &Connection) -> Result<(), AppError> {
+    connection
+        .execute(
+            "UPDATE settings
+                SET value = CAST(MIN(CAST(value AS INTEGER),
+                                     (SELECT COALESCE(MAX(id), 0) FROM play_history)) AS TEXT)
+              WHERE key GLOB 'scrobble.*.cronologia.*'",
+            [],
+        )
+        .map_err(|err| db_error("segni della cronologia accodata", &err))?;
+    Ok(())
 }
 
 /// Cosa resta da mandare a un servizio, dal più vecchio.
@@ -772,6 +873,96 @@ mod prove {
         let voci = da_mandare(&c, Servizio::ListenBrainz, 10).expect("coda");
         assert_eq!(voci.len(), 1);
         assert_eq!(voci[0].ascolto.quando_s, 2, "2000 ms sono 2 secondi");
+    }
+
+    /// Manda e chiude tutto quel che c'è in coda per ListenBrainz.
+    fn consegna_tutto(c: &Connection) -> usize {
+        let voci = da_mandare(c, Servizio::ListenBrainz, 1000).expect("coda");
+        let id: Vec<i64> = voci.iter().map(|v| v.id).collect();
+        fatte(c, &id).expect("chiusura")
+    }
+
+    #[test]
+    fn riaccodare_la_cronologia_dopo_la_consegna_non_rimanda_niente() {
+        // R06-8: la coda dimentica quel che consegna, e il vincolo di unicità
+        // vale solo finché le righe ci stanno. Il secondo clic su «Manda anche
+        // la cronologia» rimandava tutto, e un brano ritoccato nel frattempo
+        // diventava su ListenBrainz un ascolto doppio per sempre.
+        let c = libreria();
+        c.execute_batch(
+            "INSERT INTO play_history (track_id, played_at, ms_played, source) VALUES
+               (1, 1000, 200000, 'local'),
+               (1, 2000, 200000, 'spotify'),
+               (1, 3000, 200000, 'spotify');",
+        )
+        .expect("cronologia");
+
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(2)
+        );
+        assert_eq!(consegna_tutto(&c), 2);
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(0),
+            "quel che è già partito non riparte"
+        );
+        // «Tutta» dopo «Solo Spotify»: parte quel che non era partito.
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, None, 0),
+            Ok(1)
+        );
+        assert_eq!(consegna_tutto(&c), 1);
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, None, 0),
+            Ok(0)
+        );
+
+        // Un archivio arrivato dopo, anche con ascolti più vecchi: parte.
+        c.execute(
+            "INSERT INTO play_history (track_id, played_at, ms_played, source)
+             VALUES (1, 500, 200000, 'spotify')",
+            [],
+        )
+        .expect("ascolto arrivato dopo");
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(1)
+        );
+        // E ogni servizio ha il suo segno.
+        assert_eq!(accoda_cronologia(&c, Servizio::LastFm, None, 0), Ok(4));
+    }
+
+    #[test]
+    fn dimenticare_gli_ascolti_importati_non_nasconde_quelli_che_tornano() {
+        // `play_history.id` non ha AUTOINCREMENT: tolte le righe più alte, le
+        // nuove riprendono quei numeri. Un segno rimasto oltre li lascerebbe
+        // fuori per sempre senza dirlo.
+        let mut c = libreria();
+        c.execute_batch(
+            "INSERT INTO play_history (track_id, played_at, ms_played, source) VALUES
+               (1, 1000, 200000, 'local'),
+               (1, 2000, 200000, 'spotify'),
+               (1, 3000, 200000, 'spotify');",
+        )
+        .expect("cronologia");
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(2)
+        );
+        consegna_tutto(&c);
+        assert_eq!(crate::import_account::dimentica_importati(&mut c), Ok(2));
+        c.execute_batch(
+            "INSERT INTO play_history (track_id, played_at, ms_played, source) VALUES
+               (1, 5000, 200000, 'spotify'),
+               (1, 6000, 200000, 'spotify');",
+        )
+        .expect("un archivio reimportato");
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(2),
+            "le righe nuove partono anche se riprendono numeri già usati"
+        );
     }
 
     #[test]

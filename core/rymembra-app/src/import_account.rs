@@ -1015,6 +1015,10 @@ pub fn dimentica_importati(connection: &mut Connection) -> Result<usize, AppErro
         [],
     )
     .map_err(|err| db_error("riallineamento degli ultimi ascolti", &err))?;
+    // Le righe tolte sono quasi sempre le più alte, e le prossime ne
+    // riprenderanno i numeri: i segni di «Manda anche la cronologia» non
+    // devono restare oltre (vedi `scrobble::dopo_una_cronologia_tolta`).
+    crate::scrobble::dopo_una_cronologia_tolta(&tx)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della cancellazione", &err))?;
     Ok(quante)
