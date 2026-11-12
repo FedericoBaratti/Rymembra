@@ -932,6 +932,7 @@ pub fn run() {
             testi::testo_pubblica,
             arricchimento::arricchimento_stato,
             arricchimento::arricchimento_attiva,
+            arricchimento::arricchimento_fonte,
             arricchimento::arricchimento_annulla,
             scrobble::scrobble_stato,
             scrobble::scrobble_attivo,

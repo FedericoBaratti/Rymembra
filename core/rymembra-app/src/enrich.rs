@@ -57,6 +57,7 @@
 //! `enrich_undo`, che nessuno legge e nessuno scrive più.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction};
@@ -70,9 +71,9 @@ use rymembra_domain::enrich::{
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::keys::{TrackKey, TrackKeyInput};
 use rymembra_domain::paths::file_stem;
-use rymembra_meta::Fornitori;
 use rymembra_meta::copertine::{Copertina, Sorgenti};
 use rymembra_meta::deposito::{Deposito, Voce};
+use rymembra_meta::{Fornitori, Pareri};
 use serde::{Deserialize, Serialize};
 
 use crate::covers::{CoverSource, CoverStore, StoredCover};
@@ -91,6 +92,37 @@ use crate::tag_scrittura;
 /// che è la durata giusta per qualcosa che gira ogni mezz'ora e deve potersi
 /// fermare senza lasciare niente a metà.
 pub const LOTTO: usize = 12;
+
+/// La chiave di `settings` che accende iTunes come secondo parere.
+///
+/// Assente vale **spento**: vedi `rymembra_meta::Pareri`. Nessuna versione
+/// prima della 3.2.1 l'ha mai scritta, quindi non c'è un «acceso dall'utente»
+/// da rispettare: fino alla 3.2.0 iTunes era acceso per tutti con
+/// l'arricchimento, senza un interruttore suo, e con l'aggiornamento si spegne
+/// per tutti finché qualcuno non lo riaccende.
+pub const CHIAVE_ITUNES: &str = "enrich.itunes";
+
+/// La chiave di `settings` che accende Deezer come terzo parere. Assente vale
+/// spento, come [`CHIAVE_ITUNES`] e per la stessa ragione.
+pub const CHIAVE_DEEZER: &str = "enrich.deezer";
+
+/// I pareri di iTunes e Deezer che l'utente ha acceso.
+///
+/// Solo `"1"` accende: un valore storto o assente lascia spento, cioè nessuna
+/// richiesta a un servizio i cui termini non coprono quest'uso.
+///
+/// # Errori
+///
+/// `db.queryFailed` se `settings` non si legge.
+pub fn pareri(connection: &Connection) -> Result<Pareri, AppError> {
+    let acceso = |chiave| -> Result<bool, AppError> {
+        Ok(crate::settings::read(connection, chiave)?.as_deref() == Some("1"))
+    };
+    Ok(Pareri {
+        itunes: acceso(CHIAVE_ITUNES)?,
+        deezer: acceso(CHIAVE_DEEZER)?,
+    })
+}
 
 /// Ogni quanto si ritenta un brano rimasto incerto o andato in errore.
 pub const RITENTA_INCERTI_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -1996,6 +2028,66 @@ fn rimetti_i_tag_del_file(
 /// perdere una riga di cache è perdere una richiesta HTTP, non un dato.
 pub struct DepositoSqlite {
     connessione: Mutex<Connection>,
+    /// Quante scritture dall'apertura, per potare ogni [`POTA_OGNI`].
+    scritture: AtomicU32,
+}
+
+/// Quanti byte di risposte il deposito tiene al massimo.
+///
+/// Trentadue MiB. Il deposito sta nello **stesso file** della libreria, e senza
+/// un tetto «Riempi la libreria» su ventimila brani ci lasciava centinaia di MB
+/// di risposte di LRCLIB (ogni ricerca porta tutti i testi trovati) per una
+/// settimana — che SQLite non restituisce al disco, e che le copie di sicurezza
+/// prima di una migrazione si portano dietro. Le voci «non c'è» non pesano: il
+/// loro corpo è `NULL`.
+pub const TETTO_DEPOSITO_BYTE: i64 = 32 * 1024 * 1024;
+
+/// Ogni quante scritture si pota il deposito.
+///
+/// La potatura costa una somma sulla tabella: farla a ogni scrittura vorrebbe
+/// dire pagarla per ogni risposta, farla solo all'apertura (come fino alla
+/// 3.2.0) vuol dire che con l'app aperta per settimane il deposito cresce senza
+/// fine.
+const POTA_OGNI: u32 = 64;
+
+/// Quante voci si tolgono per giro, quando si è sopra il tetto.
+const SFRATTO_PER_GIRO: i64 = 64;
+
+/// Toglie dal deposito quel che è scaduto, e poi le voci che scadono prima
+/// finché i byte non stanno sotto [`TETTO_DEPOSITO_BYTE`].
+///
+/// Le voci che scadono prima sono le più vecchie della loro specie (una
+/// ricerca vive una settimana, una pubblicazione un mese): sono quelle che
+/// sarebbero sparite comunque per prime. Sforzo minimo, come ogni scrittura del
+/// deposito: un guasto si inghiotte.
+fn pota(connessione: &Connection, adesso: i64) {
+    let _ = connessione.execute("DELETE FROM enrich_cache WHERE expires_at < ?1", [adesso]);
+    // Un tetto ai giri: un deposito che non scende (un `DELETE` che non riesce)
+    // non deve tenere il filo qui per sempre.
+    for _ in 0..1024 {
+        let byte: i64 = connessione
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(body)), 0) FROM enrich_cache",
+                [],
+                |riga| riga.get(0),
+            )
+            .unwrap_or(0);
+        if byte <= TETTO_DEPOSITO_BYTE {
+            return;
+        }
+        let tolte = connessione
+            .execute(
+                "DELETE FROM enrich_cache WHERE (service, key) IN (
+                     SELECT service, key FROM enrich_cache
+                      WHERE body IS NOT NULL
+                      ORDER BY expires_at LIMIT ?1)",
+                [SFRATTO_PER_GIRO],
+            )
+            .unwrap_or(0);
+        if tolte == 0 {
+            return;
+        }
+    }
 }
 
 impl std::fmt::Debug for DepositoSqlite {
@@ -2007,9 +2099,8 @@ impl std::fmt::Debug for DepositoSqlite {
 impl DepositoSqlite {
     /// Apre il deposito sullo stesso file della libreria.
     ///
-    /// Butta via quel che è scaduto, una volta per apertura: è il momento in cui
-    /// costa meno — nessuno sta aspettando — e senza, la tabella crescerebbe di
-    /// una riga per richiesta e non calerebbe mai.
+    /// Butta via quel che è scaduto e quel che passa il tetto, una volta per
+    /// apertura e poi ogni [`POTA_OGNI`] scritture: vedi [`pota`].
     ///
     /// # Errori
     ///
@@ -2031,9 +2122,10 @@ impl DepositoSqlite {
         // deve toccare lo schema — se lo facesse, due connessioni migrerebbero
         // lo stesso database insieme.
         crate::db::prepara_connessione_secondaria(&connessione);
-        let _ = connessione.execute("DELETE FROM enrich_cache WHERE expires_at < ?1", [adesso]);
+        pota(&connessione, adesso);
         Ok(Self {
             connessione: Mutex::new(connessione),
+            scritture: AtomicU32::new(0),
         })
     }
 }
@@ -2077,6 +2169,13 @@ impl Deposito for DepositoSqlite {
                body = excluded.body, expires_at = excluded.expires_at",
             rusqlite::params![servizio, chiave, corpo, now_ms().saturating_add(vive_ms)],
         );
+        let fatte = self
+            .scritture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        if fatte.is_multiple_of(POTA_OGNI) {
+            pota(&connessione, now_ms());
+        }
     }
 }
 
@@ -2295,6 +2394,56 @@ mod prove {
         );
         assert!(decisione.scritture.is_empty());
         assert!(decisione.astensioni.is_empty());
+    }
+
+    #[test]
+    fn il_deposito_ha_un_tetto() {
+        // Mille risposte da 64 KiB: 64 MiB nello stesso file della libreria,
+        // che fino alla 3.2.0 restavano lì una settimana.
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let percorso = cartella.path().join("rymembra.db");
+        let aperto = crate::db::open(&percorso).expect("database");
+        let deposito = DepositoSqlite::apri(&percorso, now_ms()).expect("deposito");
+        let corpo = vec![b'x'; 64 * 1024];
+        for n in 0..1000 {
+            deposito.scrivi(
+                "lrclib-ricerca",
+                &format!("brano {n}"),
+                &Voce::Corpo(corpo.clone()),
+                7 * 24 * 60 * 60 * 1000,
+            );
+        }
+        let byte: i64 = aperto
+            .connection
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(body)), 0) FROM enrich_cache",
+                [],
+                |r| r.get(0),
+            )
+            .expect("somma");
+        assert!(
+            byte <= TETTO_DEPOSITO_BYTE + 64 * 1024 * i64::from(POTA_OGNI),
+            "{byte} byte nel deposito"
+        );
+        // E le ultime ci sono ancora: si tolgono quelle che scadono prima.
+        assert!(deposito.leggi("lrclib-ricerca", "brano 999").is_some());
+    }
+
+    #[test]
+    fn itunes_e_deezer_sono_spenti_finche_nessuno_li_accende() {
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let aperto = crate::db::open(&cartella.path().join("rymembra.db")).expect("database");
+        let c = &aperto.connection;
+        assert_eq!(pareri(c), Ok(Pareri::default()));
+        crate::settings::write(c, CHIAVE_ITUNES, "1").expect("scrittura");
+        crate::settings::write(c, CHIAVE_DEEZER, "si").expect("scrittura");
+        assert_eq!(
+            pareri(c),
+            Ok(Pareri {
+                itunes: true,
+                deezer: false
+            })
+        );
     }
 
     #[test]

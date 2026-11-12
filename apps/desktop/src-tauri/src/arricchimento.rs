@@ -69,7 +69,7 @@ use rymembra_app::settings;
 use rymembra_app::vicinanza;
 use rymembra_domain::enrich::Verdetto;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_meta::Fornitori;
+use rymembra_meta::{Fornitori, Pareri};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -197,6 +197,13 @@ fn occupato() -> AppError {
 pub struct StatoArricchimentoIpc {
     /// L'arricchimento automatico è acceso.
     pub attivo: bool,
+    /// iTunes è acceso come secondo parere: vedi `rymembra_meta::Pareri`.
+    pub itunes: bool,
+    /// Deezer è acceso come terzo parere.
+    pub deezer: bool,
+    /// Le somiglianze di ListenBrainz sono accese: vedi
+    /// `vicinanza::accese`.
+    pub vicini: bool,
     /// C'è una passata in corso adesso.
     pub in_corso: bool,
     /// Quanti brani hanno ricevuto una corrispondenza applicata.
@@ -266,6 +273,53 @@ pub fn arricchimento_attiva(
         Ok(())
     })();
 
+    concludi(&app, &stato, &arricchimento, esito)
+}
+
+/// Le fonti che si accendono una per una, oltre all'arricchimento.
+///
+/// Un nome e non una stringa: un valore che non è fra questi non arriva
+/// nemmeno al comando, lo rifiuta la deserializzazione.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FonteFacoltativa {
+    /// iTunes Search, secondo parere: spento di serie.
+    Itunes,
+    /// Deezer, terzo parere: spento di serie.
+    Deezer,
+    /// Le somiglianze di ListenBrainz.
+    Vicini,
+}
+
+/// Accende o spegne una delle fonti facoltative.
+///
+/// iTunes e Deezer sono spenti di serie, per i loro termini: vedi
+/// `rymembra_meta::Pareri`. Le somiglianze hanno un interruttore loro e girano
+/// anche con l'arricchimento spento (D-94): vedi `vicinanza::accese`.
+///
+/// Accendere chiede una passata subito, come l'interruttore generale: chi
+/// accende vuole vedere che ha funzionato.
+#[tauri::command]
+pub fn arricchimento_fonte(
+    app: AppHandle,
+    stato: State<'_, Stato>,
+    arricchimento: State<'_, StatoArricchimento>,
+    fonte: FonteFacoltativa,
+    attiva: bool,
+) -> Esito<StatoArricchimentoIpc> {
+    let chiave = match fonte {
+        FonteFacoltativa::Itunes => enrich::CHIAVE_ITUNES,
+        FonteFacoltativa::Deezer => enrich::CHIAVE_DEEZER,
+        FonteFacoltativa::Vicini => vicinanza::CHIAVE_ACCESE,
+    };
+    let esito = con_libreria(&stato, |libreria| {
+        settings::write(&libreria.connection, chiave, if attiva { "1" } else { "0" })
+    })
+    .map(|()| {
+        if attiva {
+            subito(&arricchimento);
+        }
+    });
     concludi(&app, &stato, &arricchimento, esito)
 }
 
@@ -495,8 +549,86 @@ struct DaFare {
     dati: PathBuf,
     /// Lo store delle copertine, staccato dalla libreria.
     covers: CoverStore,
-    /// I gruppi d'album di questo lotto.
+    /// Gli interruttori, letti nella stessa finestra.
+    interruttori: Interruttori,
+    /// I gruppi d'album di questo lotto. Vuoto con l'arricchimento spento.
     gruppi: Vec<Gruppo>,
+}
+
+/// Gli interruttori di Impostazioni › Metadati, letti insieme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Interruttori {
+    /// L'arricchimento automatico.
+    arricchimento: bool,
+    /// iTunes e Deezer.
+    pareri: Pareri,
+    /// Le somiglianze di ListenBrainz.
+    vicini: bool,
+}
+
+/// Legge gli interruttori.
+///
+/// # Errori
+///
+/// Quelli di `settings::read`.
+fn interruttori(connection: &rusqlite::Connection) -> Result<Interruttori, AppError> {
+    let arricchimento = attivo(connection)?;
+    Ok(Interruttori {
+        arricchimento,
+        pareri: enrich::pareri(connection)?,
+        vicini: vicinanza::accese(connection, arricchimento)?,
+    })
+}
+
+/// Che cosa fare dei gruppi d'album di una passata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gruppi {
+    /// Niente: l'arricchimento è spento, o non c'è niente da arricchire.
+    Nessuno,
+    /// Arricchirli.
+    DaFare,
+    /// Ci sarebbero, ma l'interruttore di MusicBrainz è aperto: si dice.
+    MusicBrainzGiu,
+}
+
+/// Che cosa fa una passata, deciso prima di andare in rete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Piano {
+    /// I gruppi d'album.
+    gruppi: Gruppi,
+    /// Le somiglianze di ListenBrainz.
+    vicini: bool,
+}
+
+/// Decide che cosa fa una passata. Funzione pura.
+///
+/// # Perché le somiglianze non dipendono dai gruppi
+///
+/// Fino alla 3.2.0 i vicini si chiedevano solo in coda a una passata che aveva
+/// album da arricchire. Ma i loro candidati sono il contrario: i brani che un
+/// identificativo MusicBrainz **ce l'hanno già**. Su una libreria taggata con
+/// Picard nessun brano è da arricchire, e i vicini non partivano mai; su una
+/// disordinata si fermavano quando finivano i gruppi, e il rinnovo a tre mesi
+/// non arrivava. Adesso girano col loro interruttore (D-94): anche senza
+/// gruppi, con l'arricchimento spento o con MusicBrainz giù — ListenBrainz è un
+/// altro servizio, con un interruttore suo.
+fn piano(
+    interruttori: Interruttori,
+    ci_sono_gruppi: bool,
+    musicbrainz_in_piedi: bool,
+    affinita_in_piedi: bool,
+) -> Piano {
+    let gruppi = if !interruttori.arricchimento || !ci_sono_gruppi {
+        Gruppi::Nessuno
+    } else if musicbrainz_in_piedi {
+        Gruppi::DaFare
+    } else {
+        Gruppi::MusicBrainzGiu
+    };
+    Piano {
+        gruppi,
+        vicini: interruttori.vicini && affinita_in_piedi,
+    }
 }
 
 /// Il corpo della passata, con le sue finestre di lucchetto.
@@ -541,12 +673,35 @@ fn passata_vera(
     let Some(servizi) = fornitori.as_ref() else {
         return Ok(None);
     };
-    if !servizi.in_piedi() {
-        // L'interruttore di MusicBrainz è aperto: le altre due fonti possono al
-        // massimo correggere un titolo, e senza il consenso non applicherebbero
-        // comunque niente. Meglio dirlo che spendere il traffico.
-        return Err(AppError::new(ErrorCode::MetadataMusicbrainzUnavailable)
-            .with_cause("l'interruttore di MusicBrainz è aperto"));
+    servizi.usa_pareri(da_fare.interruttori.pareri);
+    let piano = piano(
+        da_fare.interruttori,
+        !da_fare.gruppi.is_empty(),
+        servizi.in_piedi(),
+        servizi.affinita_in_piedi(),
+    );
+    match piano.gruppi {
+        Gruppi::DaFare => {}
+        Gruppi::Nessuno => {
+            // Solo le somiglianze, se ci sono: nessun evento, come una passata
+            // senza niente da fare — una riga di «zero applicati» ogni mezz'ora
+            // addestrerebbe chi guarda a ignorarle.
+            if piano.vicini {
+                vicini_della_passata(&stato, servizi);
+            }
+            return Ok(None);
+        }
+        Gruppi::MusicBrainzGiu => {
+            // L'interruttore di MusicBrainz è aperto: le altre fonti possono al
+            // massimo correggere un titolo, e senza il consenso non
+            // applicherebbero comunque niente. Meglio dirlo che spendere il
+            // traffico. Le somiglianze sì: sono un altro servizio.
+            if piano.vicini {
+                vicini_della_passata(&stato, servizi);
+            }
+            return Err(AppError::new(ErrorCode::MetadataMusicbrainzUnavailable)
+                .with_cause("l'interruttore di MusicBrainz è aperto"));
+        }
     }
 
     // Da qui la passata comincia davvero, e la finestra deve saperlo: senza
@@ -560,7 +715,6 @@ fn passata_vera(
     // Le chiavi d'album e gli artisti che le scritture hanno toccato, per la
     // finestra 3: vedi [`Toccati`].
     let mut toccati = Toccati::nessuno();
-    let mut interrotta = false;
     // Il guasto che ha fermato il ciclo, se ce n'è uno. Si tiene da parte invece
     // di uscire con un `?`: i gruppi registrati prima sono già scritti, ognuno
     // nella sua transazione, e uscire da qui saltava la finestra 3 — gli album
@@ -589,18 +743,17 @@ fn passata_vera(
         // restano, gli album si rifanno qui sotto come dopo ogni
         // interruzione, e il resto lo fa la passata dopo.
         if stato.scansione_in_corso() {
-            interrotta = true;
             rimanda_per_la_scansione(app);
             break;
         }
         match da_interrompere(&stato) {
-            Ok(false) => {}
-            Ok(true) => {
-                interrotta = true;
-                break;
+            Ok(Some(ora)) => {
+                // Spenti a metà passata, iTunes e Deezer non ricevono la
+                // richiesta dopo: vedi `rymembra_meta::Pareri`.
+                servizi.usa_pareri(ora.pareri);
             }
+            Ok(None) => break,
             Err(err) => {
-                interrotta = true;
                 guasto = Some(err);
                 break;
             }
@@ -615,7 +768,6 @@ fn passata_vera(
             // ferma anche per i gruppi dopo, che troverebbero la stessa rete,
             // e si salta `vicini`, che la troverebbe anche lui. Vedi
             // [`guasto_del_gruppo`].
-            interrotta = true;
             senza_rete = true;
             guasto = Some(err);
             break;
@@ -668,7 +820,6 @@ fn passata_vera(
         let conto = match registrato {
             Ok(conto) => conto,
             Err(err) => {
-                interrotta = true;
                 guasto = Some(err);
                 break;
             }
@@ -690,34 +841,24 @@ fn passata_vera(
 
     // ── le somiglianze culturali, in coda alla stessa passata. ──────────────
     //
-    // Qui e non su un filo suo per tre ragioni che si sommano. La prima è che
-    // dipende da quel che l'arricchimento ha appena fatto: senza un
-    // `mb_recording_id` non c'è niente da chiedere, e chiederlo un istante dopo
-    // che è stato scritto è il momento migliore possibile. La seconda è che ha
-    // già il `Fornitori` in mano, con la sua cadenza e il suo interruttore. La
-    // terza è che così eredita l'interruttore dell'utente: chi spegne
-    // l'arricchimento in Impostazioni › Metadati spegne anche questo, che è
-    // esattamente quel che `PRIVACY.md` gli promette.
+    // Qui e non su un filo suo per due ragioni. La prima è che dipende da quel
+    // che l'arricchimento ha appena fatto: senza un `mb_recording_id` non c'è
+    // niente da chiedere, e chiederlo un istante dopo che è stato scritto è il
+    // momento migliore possibile. La seconda è che ha già il `Fornitori` in
+    // mano, con la sua cadenza e il suo interruttore. Ma hanno un interruttore
+    // loro, e girano anche nelle passate senza gruppi: vedi [`piano`].
     //
     // Un guasto non fa cadere la passata: i metadati sono già scritti, e
     // perderli per una domanda sulle somiglianze sarebbe il torto sbagliato.
     //
-    // Una passata interrotta le salta: sono altre richieste in rete, e sia chi
-    // esce sia chi ha spento l'interruttore ha appena detto di non volerne.
-    bilancio.vicini = if interrotta {
+    // Una passata caduta per la rete le salta, perché troverebbero la stessa
+    // rete; una fermata per l'uscita o per una scansione anche. Una fermata
+    // perché l'arricchimento si è spento no: le somiglianze hanno il loro
+    // interruttore, e `vicini_della_passata` lo rilegge.
+    bilancio.vicini = if senza_rete || guasto.is_some() || !piano.vicini {
         0
     } else {
-        match vicini(&stato, servizi) {
-            Ok(quanti) => quanti,
-            Err(err) => {
-                nota!(
-                    "[arricchimento] vicini non raccolti codice={} causa={}",
-                    err.code().kind().code(),
-                    err.cause().unwrap_or("—")
-                );
-                0
-            }
-        }
+        vicini_della_passata(&stato, servizi)
     };
 
     // ── finestra 3: gli aggregati, una volta sola. ──────────────────────────
@@ -831,20 +972,25 @@ fn chiudi_la_passata(
 
 /// Legge sotto il lucchetto tutto ciò che serve a una passata, e lo rilascia.
 ///
-/// `Ok(None)` quando non c'è niente da fare: l'interruttore è spento, o il lotto
-/// è vuoto. Nessuno dei due è un guasto.
+/// `Ok(None)` quando non c'è niente da fare: l'arricchimento è spento e il
+/// lotto vuoto, e le somiglianze spente. Nessuno dei due è un guasto. Con le
+/// sole somiglianze accese il lotto dei gruppi è vuoto, e quello dei vicini lo
+/// legge [`vicini`], che lo chiede quando serve.
 fn apri_passata(stato: &Stato) -> Result<Option<DaFare>, AppError> {
     con_libreria(stato, |libreria| {
-        if !attivo(&libreria.connection)? {
-            return Ok(None);
-        }
-        let gruppi = enrich::candidati(&libreria.connection, adesso_ms(), enrich::LOTTO)?;
-        if gruppi.is_empty() {
+        let interruttori = interruttori(&libreria.connection)?;
+        let gruppi = if interruttori.arricchimento {
+            enrich::candidati(&libreria.connection, adesso_ms(), enrich::LOTTO)?
+        } else {
+            Vec::new()
+        };
+        if gruppi.is_empty() && !interruttori.vicini {
             return Ok(None);
         }
         Ok(Some(DaFare {
             dati: libreria.data_dir.clone(),
             covers: libreria.covers.clone(),
+            interruttori,
             gruppi,
         }))
     })
@@ -899,18 +1045,23 @@ fn attivo(connection: &rusqlite::Connection) -> Result<bool, AppError> {
     Ok(settings::read(connection, CHIAVE_ATTIVO)?.as_deref() != Some("0"))
 }
 
-/// Se la passata in corso deve smettere prima del prossimo gruppo: si sta
-/// uscendo, o qualcuno ha spento l'interruttore mentre lavorava.
+/// Gli interruttori di adesso, se la passata in corso può andare avanti col
+/// prossimo gruppo; `None` se deve smettere: si sta uscendo, o qualcuno ha
+/// spento l'arricchimento mentre lavorava.
+///
+/// Si rilegge tutto, e non solo l'interruttore generale: iTunes e Deezer spenti
+/// a metà passata non devono ricevere la richiesta del gruppo dopo.
 ///
 /// # Errori
 ///
-/// Quelli di [`attivo`]: un database che non risponde qui non risponderebbe
-/// nemmeno alla registrazione del gruppo, un passo dopo.
-fn da_interrompere(stato: &Stato) -> Result<bool, AppError> {
+/// Quelli di [`interruttori`]: un database che non risponde qui non
+/// risponderebbe nemmeno alla registrazione del gruppo, un passo dopo.
+fn da_interrompere(stato: &Stato) -> Result<Option<Interruttori>, AppError> {
     if crate::spegnimento::in_uscita() {
-        return Ok(true);
+        return Ok(None);
     }
-    con_libreria(stato, |libreria| attivo(&libreria.connection)).map(|acceso| !acceso)
+    con_libreria(stato, |libreria| interruttori(&libreria.connection))
+        .map(|ora| ora.arricchimento.then_some(ora))
 }
 
 /// Dimentica l'errore dell'ultima passata.
@@ -920,6 +1071,39 @@ fn scorda_errore(arricchimento: &StatoArricchimento) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *ultimo = None;
+}
+
+/// Le somiglianze di una passata, se si possono chiedere adesso: quante righe
+/// sono entrate.
+///
+/// Si ricontrolla tutto quel che può essere cambiato da quando la passata è
+/// cominciata: l'uscita, una scansione partita, l'interruttore delle
+/// somiglianze, quello di ListenBrainz. Un guasto non si propaga: si annota e
+/// vale zero, per la ragione scritta dove la si chiama.
+fn vicini_della_passata(stato: &State<'_, Stato>, servizi: &Fornitori) -> usize {
+    if crate::spegnimento::in_uscita() || stato.scansione_in_corso() || !servizi.affinita_in_piedi()
+    {
+        return 0;
+    }
+    let esito =
+        con_libreria(stato, |libreria| interruttori(&libreria.connection)).and_then(|ora| {
+            if ora.vicini {
+                vicini(stato, servizi)
+            } else {
+                Ok(0)
+            }
+        });
+    match esito {
+        Ok(quanti) => quanti,
+        Err(err) => {
+            nota!(
+                "[arricchimento] vicini non raccolti codice={} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or("—")
+            );
+            0
+        }
+    }
 }
 
 /// Chiede a ListenBrainz i vicini di un lotto di brani, e li scrive.
@@ -976,8 +1160,12 @@ fn stato_ipc(
         .clone();
 
     con_libreria(stato, |libreria| {
+        let interruttori = interruttori(&libreria.connection)?;
         Ok(StatoArricchimentoIpc {
-            attivo: attivo(&libreria.connection)?,
+            attivo: interruttori.arricchimento,
+            itunes: interruttori.pareri.itunes,
+            deezer: interruttori.pareri.deezer,
+            vicini: interruttori.vicini,
             in_corso: arricchimento.in_corso.load(Ordering::Acquire),
             completati: quanti(
                 &libreria.connection,
@@ -1079,19 +1267,116 @@ mod prove {
     fn l_interruttore_spento_ferma_la_passata_al_gruppo_dopo() {
         let dir = tempfile::tempdir().expect("cartella");
         let stato = Stato::apri(dir.path().to_path_buf());
-        assert_eq!(da_interrompere(&stato), Ok(false), "acceso di serie");
+        assert!(
+            matches!(da_interrompere(&stato), Ok(Some(_))),
+            "acceso di serie"
+        );
 
         con_libreria(&stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")
         })
         .expect("spento");
-        assert_eq!(da_interrompere(&stato), Ok(true));
+        assert_eq!(da_interrompere(&stato), Ok(None));
 
         con_libreria(&stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_ATTIVO, "1")
         })
         .expect("riacceso");
-        assert_eq!(da_interrompere(&stato), Ok(false));
+        assert!(matches!(da_interrompere(&stato), Ok(Some(_))));
+    }
+
+    /// iTunes e Deezer spenti di serie, e riletti prima di ogni gruppo: chi li
+    /// spegne a metà passata non manda la richiesta del gruppo dopo.
+    #[test]
+    fn itunes_e_deezer_si_rileggono_prima_di_ogni_gruppo() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let pareri = |stato: &Stato| {
+            da_interrompere(stato)
+                .expect("lettura")
+                .expect("acceso")
+                .pareri
+        };
+        assert_eq!(pareri(&stato), Pareri::default(), "accesi di serie");
+        con_libreria(&stato, |libreria| {
+            settings::write(&libreria.connection, enrich::CHIAVE_ITUNES, "1")
+        })
+        .expect("acceso");
+        assert_eq!(
+            pareri(&stato),
+            Pareri {
+                itunes: true,
+                deezer: false
+            }
+        );
+    }
+
+    /// Una libreria taggata con Picard: niente da arricchire, ma i vicini sì.
+    ///
+    /// Fino alla 3.2.0 la passata tornava a vuoto appena il lotto dei gruppi era
+    /// vuoto, e i vicini — che vogliono proprio i brani con un identificativo
+    /// MusicBrainz — non partivano mai.
+    #[test]
+    fn una_libreria_taggata_con_musicbrainz_chiede_i_vicini() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        con_libreria(&stato, |libreria| {
+            libreria
+                .connection
+                .execute_batch(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                         duration_ms, file_size, date_added, date_modified,
+                                         mb_recording_id)
+                     VALUES (1, 'C:\\M\\a.flac', 'k', 'Karma Police', 'Radiohead',
+                             'OK Computer', 'ok', 264000, 1, 0, 0,
+                             '6c6b1c2e-0000-0000-0000-000000000000')",
+                )
+                .map_err(|err| db_errore("banco", &err))
+        })
+        .expect("banco");
+
+        let da_fare = apri_passata(&stato).expect("lettura").expect("c'è da fare");
+        assert!(da_fare.gruppi.is_empty(), "niente da arricchire");
+        let fatto = piano(da_fare.interruttori, false, true, true);
+        assert_eq!(fatto.gruppi, Gruppi::Nessuno);
+        assert!(fatto.vicini, "i vicini restano a terra");
+        let lotto = con_libreria(&stato, |libreria| {
+            vicinanza::candidati(&libreria.connection, adesso_ms(), vicinanza::LOTTO)
+        })
+        .expect("candidati");
+        assert_eq!(lotto.len(), 1);
+
+        // Con l'arricchimento spento e le somiglianze accese a mano, lo stesso.
+        con_libreria(&stato, |libreria| {
+            settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
+            settings::write(&libreria.connection, vicinanza::CHIAVE_ACCESE, "1")
+        })
+        .expect("interruttori");
+        let da_fare = apri_passata(&stato).expect("lettura").expect("c'è da fare");
+        assert!(!da_fare.interruttori.arricchimento);
+        assert!(piano(da_fare.interruttori, false, true, true).vicini);
+
+        // E spente le due cose, la passata non comincia nemmeno.
+        con_libreria(&stato, |libreria| {
+            settings::write(&libreria.connection, vicinanza::CHIAVE_ACCESE, "0")
+        })
+        .expect("spente");
+        assert!(apri_passata(&stato).expect("lettura").is_none());
+    }
+
+    #[test]
+    fn con_musicbrainz_giu_i_vicini_partono_lo_stesso() {
+        let accesi = Interruttori {
+            arricchimento: true,
+            pareri: Pareri::default(),
+            vicini: true,
+        };
+        let fatto = piano(accesi, true, false, true);
+        assert_eq!(fatto.gruppi, Gruppi::MusicBrainzGiu);
+        assert!(fatto.vicini, "ListenBrainz è un altro servizio");
+        // Con il suo interruttore aperto no.
+        assert!(!piano(accesi, true, true, false).vicini);
+        assert_eq!(piano(accesi, false, true, true).gruppi, Gruppi::Nessuno);
     }
 
     /// Se la ricostruzione degli aggregati cade dopo che i gruppi sono già

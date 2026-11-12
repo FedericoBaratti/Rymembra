@@ -3,7 +3,8 @@
 //! Quattro fonti, e nessuna vuole una registrazione, un account o un segreto da
 //! tenere nel portachiavi: **MusicBrainz** per il catalogo e gli identificativi,
 //! il **Cover Art Archive** per le copertine che ne discendono, **iTunes** e
-//! **Deezer** come secondo e terzo parere.
+//! **Deezer** come secondo e terzo parere — questi due solo se l'utente li
+//! accende: vedi [`Pareri`].
 //!
 //! # La regola di dipendenza
 //!
@@ -62,6 +63,7 @@ pub mod listenbrainz;
 pub mod lrclib;
 pub mod musicbrainz;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rymembra_domain::enrich::{Candidate, RemoteRelease};
@@ -121,6 +123,32 @@ pub struct Esito {
     pub tutte_giu: bool,
 }
 
+/// I due pareri in più che l'utente accende a mano: iTunes e Deezer.
+///
+/// # Perché sono spenti di serie
+///
+/// Perché i loro termini non coprono l'uso che se ne farebbe. Quelli di Apple
+/// ammettono la ricerca di iTunes e le sue copertine solo per promuovere lo
+/// Store, accanto a un rimando allo Store; quelli di Deezer vogliono un uso non
+/// commerciale e un permesso per riprodurre le immagini, e il progetto riceve
+/// donazioni. Fino alla 3.2.0 erano accesi con l'arricchimento, senza un
+/// interruttore loro e senza che l'interfaccia li nominasse. Adesso li accende
+/// chi li vuole, in Impostazioni › Metadati, con la nota sui termini accanto.
+///
+/// # Quel che costa spegnerli
+///
+/// Il consenso di `decide_track` si misura fra fonti **diverse**: con la sola
+/// MusicBrainz un brano sciolto non arriva mai ad «applica», e restano gli album
+/// riconosciuti interi. Il genere lo dà soltanto iTunes, e le copertine
+/// arrivano solo dal Cover Art Archive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Pareri {
+    /// iTunes Search: secondo parere, genere, copertina.
+    pub itunes: bool,
+    /// Deezer: terzo parere e copertina.
+    pub deezer: bool,
+}
+
 /// I servizi di metadati, con il loro ritmo e la loro memoria.
 ///
 /// Si costruisce una volta sola e si tiene viva: dentro ci sono la riserva di
@@ -156,6 +184,15 @@ pub struct Fornitori {
     /// vorrebbe dire che una coda di ascolti da mandare rallenta il calcolo
     /// delle somiglianze, o peggio che l'interruttore di uno spegne l'altro.
     pub listenbrainz: Cadenza,
+    /// iTunes è acceso dall'utente: vedi [`Pareri`].
+    ///
+    /// Un atomico e non un campo semplice perché il `Fornitori` vive per tutta
+    /// la sessione sul filo dell'arricchimento, e l'interruttore si rilegge dal
+    /// database prima di ogni gruppo: spento a metà passata, la richiesta dopo
+    /// non parte.
+    itunes_acceso: AtomicBool,
+    /// Deezer è acceso dall'utente: vedi [`Pareri`].
+    deezer_acceso: AtomicBool,
 }
 
 impl std::fmt::Debug for Fornitori {
@@ -187,6 +224,25 @@ impl Fornitori {
                 .con_vaglio(deezer::guasto_nel_corpo),
             lrclib: Cadenza::nuova("lrclib", cadenza::RITMO_LRCLIB),
             listenbrainz: Cadenza::nuova("listenbrainz-labs", cadenza::RITMO_LISTENBRAINZ),
+            // Spenti finché chi li usa non dice altrimenti: vedi `Pareri`.
+            itunes_acceso: AtomicBool::new(false),
+            deezer_acceso: AtomicBool::new(false),
+        }
+    }
+
+    /// Accende o spegne i pareri di iTunes e Deezer, per le richieste da qui in
+    /// poi.
+    pub fn usa_pareri(&self, pareri: Pareri) {
+        self.itunes_acceso.store(pareri.itunes, Ordering::Relaxed);
+        self.deezer_acceso.store(pareri.deezer, Ordering::Relaxed);
+    }
+
+    /// I pareri accesi adesso.
+    #[must_use]
+    pub fn pareri(&self) -> Pareri {
+        Pareri {
+            itunes: self.itunes_acceso.load(Ordering::Relaxed),
+            deezer: self.deezer_acceso.load(Ordering::Relaxed),
         }
     }
 
@@ -396,7 +452,14 @@ impl Fornitori {
         musicbrainz::pubblicazioni(self, titolo, artista, tracce)
     }
 
-    /// I candidati per un singolo brano, da tutte e tre le fonti testuali.
+    /// I candidati per un singolo brano, dalle fonti testuali accese.
+    ///
+    /// MusicBrainz sempre; iTunes e Deezer solo se l'utente li ha accesi (vedi
+    /// [`Pareri`]). Una fonte spenta non si interroga, nemmeno nella sua
+    /// memoria: un candidato di iTunes ricordato porta l'indirizzo di una
+    /// copertina sul suo CDN, che si andrebbe a prendere. E **non conta** fra
+    /// le interrogate: con MusicBrainz giù e gli altri spenti la risposta è «non
+    /// si sa», non «nessuno lo riconosce».
     ///
     /// Non fallisce: una fonte caduta è un parere in meno, e i pareri in meno si
     /// contano in [`Esito::tutte_giu`] invece di far cadere la ricerca. Chi
@@ -407,12 +470,16 @@ impl Fornitori {
         let mut candidati = Vec::new();
         let mut giu = 0_usize;
         let mut interrogate = 0_usize;
+        let pareri = self.pareri();
 
-        for esito in [
-            musicbrainz::registrazioni(self, titolo, artista),
-            itunes::cerca(self, titolo, artista),
-            deezer::cerca(self, titolo, artista),
-        ] {
+        let mut esiti = vec![musicbrainz::registrazioni(self, titolo, artista)];
+        if pareri.itunes {
+            esiti.push(itunes::cerca(self, titolo, artista));
+        }
+        if pareri.deezer {
+            esiti.push(deezer::cerca(self, titolo, artista));
+        }
+        for esito in esiti {
             interrogate = interrogate.saturating_add(1);
             match esito {
                 Ok(trovati) => candidati.extend(trovati),
@@ -583,6 +650,65 @@ mod prove {
             let _ = fornitori.json_senza_memoria(&cadenza, &format!("{base}/search"));
         }
         assert!(!cadenza.aperta());
+    }
+
+    /// Un deposito che non ricorda niente e tiene il conto dei servizi a cui
+    /// si è chiesto: ogni domanda a una fonte comincia da lui, prima della rete.
+    #[derive(Default)]
+    struct Spia(std::sync::Mutex<Vec<String>>);
+
+    impl Deposito for std::sync::Arc<Spia> {
+        fn leggi(&self, servizio: &str, _chiave: &str) -> Option<Voce> {
+            self.0.lock().unwrap().push(servizio.to_owned());
+            None
+        }
+
+        fn scrivi(&self, _servizio: &str, _chiave: &str, _voce: &Voce, _vive_ms: i64) {}
+    }
+
+    /// iTunes e Deezer spenti di serie: non si chiedono nemmeno alla memoria, e
+    /// con MusicBrainz giù la risposta è «non si sa», non «nessuno lo
+    /// riconosce». Tutti gli interruttori sono aperti: nessuna richiesta può
+    /// partire, nemmeno se una fonte venisse interrogata.
+    #[test]
+    fn itunes_e_deezer_spenti_di_serie_non_si_interrogano() {
+        let spia = std::sync::Arc::new(Spia::default());
+        let fornitori = Fornitori::nuovo(Box::new(std::sync::Arc::clone(&spia)));
+        assert_eq!(fornitori.pareri(), Pareri::default(), "accesi di serie");
+        for _ in 0..cadenza::GUASTI_PER_APRIRE {
+            fornitori.musicbrainz.guasto();
+            fornitori.itunes.guasto();
+            fornitori.deezer.guasto();
+        }
+        let esito = fornitori.candidati("Poetica", "Cesare Cremonini");
+        assert!(esito.candidati.is_empty());
+        assert!(
+            esito.tutte_giu,
+            "una fonte spenta contata come una che ha risposto"
+        );
+        let chiesti = std::mem::take(&mut *spia.0.lock().unwrap());
+        assert!(
+            chiesti
+                .iter()
+                .all(|s| !s.starts_with("itunes") && !s.starts_with("deezer")),
+            "interrogati da spenti: {chiesti:?}"
+        );
+
+        // Accesi, si interrogano.
+        fornitori.usa_pareri(Pareri {
+            itunes: true,
+            deezer: true,
+        });
+        assert!(fornitori.candidati("Poetica", "Cesare Cremonini").tutte_giu);
+        let chiesti = spia.0.lock().unwrap().clone();
+        assert!(
+            chiesti.iter().any(|s| s.starts_with("itunes")),
+            "{chiesti:?}"
+        );
+        assert!(
+            chiesti.iter().any(|s| s.starts_with("deezer")),
+            "{chiesti:?}"
+        );
     }
 
     #[test]

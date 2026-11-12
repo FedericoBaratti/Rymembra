@@ -40,6 +40,7 @@ import type {
   Normalizzazione,
   QuadroSorveglianza,
   StatoArricchimento,
+  FonteFacoltativa,
   Resoconto,
   SaluteDatabase,
   StatoCacheNuvola,
@@ -1859,6 +1860,7 @@ export function Impostazioni({
   avanzaArricchimento,
   esitoArricchimento,
   onArricchimentoAttiva,
+  onArricchimentoFonte,
   onArricchimentoAnnulla,
   nuvola,
   onNuvolaCollega,
@@ -2055,6 +2057,14 @@ export function Impostazioni({
   /** Cosa ha prodotto l'ultima passata di questa sessione. */
   esitoArricchimento: EsitoArricchimento | null;
   onArricchimentoAttiva: (attivo: boolean) => void;
+  /**
+   * Accende o spegne iTunes, Deezer o le somiglianze di ListenBrainz.
+   *
+   * Facoltativo perché il mondo finto dello Studio
+   * (`studio/mondoImpostazioni.ts`) disegna questa schermata senza darglielo:
+   * lì gli interruttori si vedono e non fanno niente.
+   */
+  onArricchimentoFonte?: (fonte: FonteFacoltativa, attiva: boolean) => void;
   /** Dimentica quel che l'arricchimento ha dedotto, e spegne l'automatico. */
   onArricchimentoAnnulla: () => void;
   /** Lo stato del backup, o `null` finché non è stato chiesto. */
@@ -2561,6 +2571,29 @@ export function Impostazioni({
                 etichetta={t("settings.enrich.toggle")}
                 acceso={arricchimento?.attivo ?? false}
                 onCambia={onArricchimentoAttiva}
+              />
+
+              {/* iTunes e Deezer spenti di serie, con la nota sui termini
+                  accanto: i loro termini non coprono quest'uso, e accenderli è
+                  una scelta di chi li usa. Le somiglianze hanno il loro
+                  interruttore e girano anche con l'arricchimento spento. */}
+              <Interruttore
+                etichetta={t("settings.enrich.itunes")}
+                spiegazione={t("settings.enrich.itunes.note")}
+                acceso={arricchimento?.itunes ?? false}
+                onCambia={(attiva) => onArricchimentoFonte?.("itunes", attiva)}
+              />
+              <Interruttore
+                etichetta={t("settings.enrich.deezer")}
+                spiegazione={t("settings.enrich.deezer.note")}
+                acceso={arricchimento?.deezer ?? false}
+                onCambia={(attiva) => onArricchimentoFonte?.("deezer", attiva)}
+              />
+              <Interruttore
+                etichetta={t("settings.enrich.similar")}
+                spiegazione={t("settings.enrich.similar.note")}
+                acceso={arricchimento?.vicini ?? false}
+                onCambia={(attiva) => onArricchimentoFonte?.("vicini", attiva)}
               />
 
               <dl className="numeri">

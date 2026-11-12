@@ -99,7 +99,7 @@
         {
           ul: [
             "**Sound** — distance between 47-number fingerprints, normalized by the library's own scale (needs at least `MINIMO_BRANI` = 50 measured tracks).",
-            "**Neighbours** — `brano_vicino`, filled during the enrichment pass from ListenBrainz Labs «similar recordings/artists» (25 MBIDs per request, at most 20 kept per track, artist-level neighbours ×0.7, refreshed every 90 days); only neighbours already in your library are stored.",
+            "**Neighbours** — `brano_vicino`, filled by the enrichment thread from ListenBrainz Labs «similar recordings/artists», with their own switch (`enrich.vicini`; never touched, it follows `enrich.auto`) and also on passes with no album to enrich (25 MBIDs per request, at most 20 kept per track, artist-level neighbours ×0.7, refreshed every 90 days); only neighbours already in your library are stored.",
             "**Taste** — play count and likes with a half-life of 180 days; **repetition** — a penalty with a 7-day half-life, so something heard an hour ago cannot win.",
           ],
         },
