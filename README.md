@@ -96,7 +96,7 @@ already set up for streaming-only listening — the terms forbid caching and
 offline access — through `rymembra-net::FlussoHttp`, which plays a track without
 writing it to disk. See [Known limits](#known-limits-and-planned-work).
 
-![The «Where the music comes from» section in the settings](immagini/fonti.webp)
+![The «Import from a service» card in the settings](immagini/fonti.webp)
 
 The same sources in the program, under *Settings → Services → Import from a
 service* («Servizi → Importa da un servizio»). The «?» in the corner of the card
@@ -221,7 +221,9 @@ a longer listening history than the public API offers.
 - **Folders that watch themselves.** An album copied into a music folder,
   renamed or deleted there enters or leaves the library a few seconds later,
   without a scan: only the folders that changed are looked at again, and a
-  change that would remove too many tracks at once removes nothing. Network
+  change that would remove too many tracks at once removes nothing. A folder
+  you add — from Settings, by dropping it on the window or from the empty
+  Home — is read right away, without pressing «Scan». Network
   shares are watched too, by default: where the share sends notifications
   they are used, plus a realignment at startup, on waking, when the network
   comes back and every 30 minutes; where it cannot, a realignment every five
@@ -392,6 +394,14 @@ and not a scale in the stylesheet, so the two places that measure the DOM — th
 virtualized list and the tour's spotlight — go on working in CSS pixels and
 never notice. The step is remembered; it does not travel in a profile, because
 it is the correction left over after Windows' own scaling on this monitor.
+
+Replacing or clearing the queue and deleting a playlist leave a notice with
+«Undo» for ten seconds; the countdown stops while the notice has the keyboard
+focus or the pointer over it, and `Ctrl+Z` takes back the last one wherever the
+focus is, except inside a text field, where it stays the field's own undo (the
+key can be changed in *Settings → Keyboard shortcuts*). Deleting a playlist
+also asks first. With a dialog open, the window's × closes the dialog first,
+as Esc does.
 
 ---
 

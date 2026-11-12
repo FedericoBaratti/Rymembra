@@ -60,7 +60,7 @@
       "Folders watch themselves: copy an album in, and seconds later it's in the library.",
       "On a NAS or a mapped drive, a share that doesn't answer for a moment makes tracks unverified, never gone.",
       "A scan that would remove many tracks shows them to you and asks first.",
-      "A music folder can also live on OneDrive, Google Drive, Dropbox or a WebDAV server like Nextcloud, read-only, through an app you register yourself — the program walks you through it; OneDrive needs a free Azure account."
+      "A music folder can also live on OneDrive, Google Drive, Dropbox or a WebDAV server like Nextcloud, read-only, through an app you register yourself — the program walks you through it; OneDrive needs a free Azure account (Microsoft usually asks for a card to verify it, without charging it) or a work or school account."
     ]
   },
   "cataloghi": {
@@ -68,8 +68,8 @@
     "testo": "The Internet Archive and Audius hold music published to be shared: more than 250,000 concerts on the Live Music Archive, netlabels, the public domain, tracks that artists released under open licences. A track is downloaded only when its own licence allows it, and it keeps that licence. When no studio version is free, a concert can stand in — and the track says it's live.",
     "acquisti": "No free source carries the commercial catalog, and Rymembra won't fetch it from where it shouldn't: what it can't find lawfully goes on a shopping list, with links to Bandcamp and Qobuz.",
     "esclusi": "Left out on purpose: YouTube, whose terms forbid downloading and storing its content, and Spotify's private endpoints, which would mean unauthorized access.",
-    "alt": "The settings card that lists where the music comes from",
-    "didascalia": "Settings, «Where the music comes from»: every source with the rule it follows."
+    "alt": "The “Import from a service” card in the settings, listing where the music comes from",
+    "didascalia": "Settings, “Import from a service”: every source with the rule it follows."
   },
   "suono": {
     "titolo": "Then it plays, the way it should.",

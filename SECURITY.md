@@ -146,17 +146,23 @@ feature off nothing listens. What is supposed to hold:
   and the per-address limits count by device key instead.
   `rymembra/associa/1` is closed whenever no QR code is on screen;
 - linking needs the QR code's random 16-byte token, valid for ten minutes and
-  **once**, compared in constant time; five wrong tokens end the code, a new
-  code ends the previous one, and attempts from anyone are capped at ten a
-  minute. A right token is not enough: the device showing the code asks its
-  user, naming the other, and only a «yes» links;
+  **once**, compared in constant time; a new code ends the previous one, and
+  each device key gets at most ten attempts a minute while a code is on screen.
+  A wrong token does not end the code: at 128 bits it cannot be guessed, and
+  ending it after a few errors would let anyone on the same network expire
+  every code before the right device scanned it. A right token is not enough:
+  the device showing the code asks its user, naming the other, and only a
+  «yes» links;
 - a linked device can list only tracks in local and network folders and read
   only the file of such a track, by its id, while it is still under a watched
   folder; the size and date are checked around every read. No path ever
   crosses the connection, in either direction;
-- every frame is size-checked before anything is allocated (1 MiB), inflating
-  one stops at 8 MiB, a read asks for at most 2 MiB, a list for at most 500
-  entries, and a device has at most 8 requests served at a time;
+- every frame is size-checked before anything is allocated (1 MiB), and so is
+  what it inflates to: 16 KiB for a link request — read before its token is
+  checked — 64 KiB for a request from a linked device, 8 MiB for an answer. A
+  read asks for at most 2 MiB, a list for at most 500 entries; a device has at
+  most 8 requests served at a time and at most four live connections, and a
+  fifth closes the oldest;
 - the device's secret key lives in the system keychain
   (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
   of «Listen together» exchanged when linking is used only to recognise that
@@ -164,9 +170,9 @@ feature off nothing listens. What is supposed to hold:
 - the gate is checked before **every** request, not only when a connection
   opens: forgetting a device — on either side — or removing it from the list
   closes all of that key's connections and `rymembra/insieme/1` streams, and
-  the 8 requests served at a time are counted per key, across connections. The
-  gate changes only from a successful read of the library or from the
-  forget/link itself, never from a stale read;
+  the 8 requests served at a time are counted per key, across connections. A
+  forget or a link changes the gate at once — even while a scan keeps the
+  library busy — and no later read of the library undoes it;
 - the link carries the name the other device gives itself and the screens show
   a short fingerprint of its ed25519 key (60 bits) to compare; turning on
   «Reachable from the internet» needs its own yes, separate from linking.
@@ -182,8 +188,11 @@ feature off nothing listens. What is supposed to hold:
   a command in progress still holds it; that command ends with
   `lontano.spento`. Without a QR code on screen an attempt on
   `rymembra/associa/1` is not even counted, and leaving the page that shows the
-  code cancels it. Covers of linked devices are cached per device, read only
-  behind the gate, and the window is told never to keep them.
+  code cancels it, and so does sending the window to the tray. Covers of linked
+  devices are cached per device, read only behind the gate, kept and shown only
+  when their bytes are a JPEG, PNG or WebP image, and every `rymembra-cover`
+  response says `X-Content-Type-Options: nosniff`; the window is told never to
+  keep them.
 
 Reaching a library — or a «Listen together» session — with a key that is not
 linked, linking without the user's «yes» or with a used or expired token,
@@ -218,8 +227,10 @@ and join requests, the firewall question, deleting from disk, reviewing or
 replacing a skin. The skin compiler emits nothing that reaches them (no layers,
 images, pseudo-elements, part styling or fonts; view transitions pause while
 one is on screen), and the engine's own stylesheet sets the system font in an
-`@layer` a skin cannot override; the skin's colours still apply. A skin that
-makes a consent dialog say something else than what it asks is a problem.
+`@layer` a skin cannot override; the skin's colours still apply. Questions
+that arrive on their own — a link or «Listen together» request — open above
+the Skin Studio too. A skin that makes a consent dialog say something else
+than what it asks is a problem.
 
 **Secrets at rest.** OAuth tokens, from 3.1 the private key that identifies
 the PC to the others in «Listen together», the private key of the device link,

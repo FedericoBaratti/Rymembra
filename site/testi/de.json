@@ -60,7 +60,7 @@
       "Ordner überwachen sich selbst: Kopierst du ein Album hinein, ist es Sekunden später in der Bibliothek.",
       "Auf einem NAS oder Netzlaufwerk macht eine Freigabe, die kurz nicht antwortet, Titel ungeprüft, nie verschwunden.",
       "Ein Scan, der viele Titel entfernen würde, zeigt sie dir und fragt vorher.",
-      "Ein Musikordner kann auch auf OneDrive, Google Drive, Dropbox oder einem WebDAV-Server wie Nextcloud liegen, nur lesend, über eine App, die du selbst registrierst — das Programm führt dich Schritt für Schritt; für OneDrive brauchst du ein kostenloses Azure-Konto."
+      "Ein Musikordner kann auch auf OneDrive, Google Drive, Dropbox oder einem WebDAV-Server wie Nextcloud liegen, nur lesend, über eine App, die du selbst registrierst — das Programm führt dich Schritt für Schritt; für OneDrive brauchst du ein kostenloses Azure-Konto (Microsoft verlangt zur Prüfung meist eine Karte, ohne sie zu belasten) oder ein Arbeits- oder Schulkonto."
     ]
   },
   "cataloghi": {
@@ -68,8 +68,8 @@
     "testo": "Das Internet Archive und Audius beherbergen Musik, die zum Teilen veröffentlicht wurde: mehr als 250.000 Konzerte im Live Music Archive, Netlabels, Gemeinfreies, Titel, die Künstler unter offenen Lizenzen veröffentlicht haben. Ein Titel wird nur heruntergeladen, wenn seine eigene Lizenz es erlaubt, und er behält diese Lizenz. Ist keine Studioversion frei, kann ein Konzert einspringen — und der Titel sagt, dass er live ist.",
     "acquisti": "Keine freie Quelle hat den kommerziellen Katalog, und Rymembra holt ihn nicht von dort, wo er es nicht sollte: Was er nicht rechtmäßig findet, kommt auf eine Einkaufsliste, mit Links zu Bandcamp und Qobuz.",
     "esclusi": "Bewusst weggelassen: YouTube, dessen Bedingungen das Herunterladen und Speichern von Inhalten verbieten, und die privaten Schnittstellen von Spotify, deren Nutzung ein unbefugter Zugriff wäre.",
-    "alt": "Die Einstellungskarte, die zeigt, woher die Musik kommt",
-    "didascalia": "Einstellungen, „Woher die Musik kommt“: jede Quelle mit der Regel, der sie folgt."
+    "alt": "Die Einstellungskarte „Import from a service“, die zeigt, woher die Musik kommt",
+    "didascalia": "Einstellungen, „Import from a service“: jede Quelle mit der Regel, der sie folgt."
   },
   "suono": {
     "titolo": "Dann spielt er, wie es sich gehört.",

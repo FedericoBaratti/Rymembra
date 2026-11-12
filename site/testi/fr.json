@@ -60,7 +60,7 @@
       "Les dossiers se surveillent tout seuls : copiez-y un album, il est dans la bibliothèque quelques secondes plus tard.",
       "Sur un NAS ou un lecteur réseau, un partage qui ne répond pas un instant rend les titres non vérifiés, jamais disparus.",
       "Une analyse qui supprimerait beaucoup de titres vous les montre et demande d'abord.",
-      "Un dossier de musique peut aussi se trouver sur OneDrive, Google Drive, Dropbox ou un serveur WebDAV comme Nextcloud, en lecture seule, via une application que vous enregistrez vous-même — le programme vous guide pas à pas ; pour OneDrive, il faut un compte Azure gratuit."
+      "Un dossier de musique peut aussi se trouver sur OneDrive, Google Drive, Dropbox ou un serveur WebDAV comme Nextcloud, en lecture seule, via une application que vous enregistrez vous-même — le programme vous guide pas à pas ; pour OneDrive, il faut un compte Azure gratuit (Microsoft demande généralement une carte pour le vérifier, sans la débiter) ou un compte professionnel ou scolaire."
     ]
   },
   "cataloghi": {
@@ -68,8 +68,8 @@
     "testo": "Internet Archive et Audius hébergent de la musique publiée pour être partagée : plus de 250 000 concerts sur le Live Music Archive, des netlabels, le domaine public, des titres que les artistes ont publiés sous licence ouverte. Un titre n'est téléchargé que si sa propre licence le permet, et il garde cette licence. Quand aucune version studio n'est libre, un concert peut la remplacer — et le titre indique qu'il est en live.",
     "acquisti": "Aucune source libre ne propose le catalogue commercial, et Rymembra ne va pas le chercher là où il ne devrait pas : ce qu'il ne trouve pas légalement va dans une liste d'achats, avec des liens vers Bandcamp et Qobuz.",
     "esclusi": "Écartés exprès : YouTube, dont les conditions interdisent de télécharger et de conserver les contenus, et les accès privés de Spotify, qui seraient un accès non autorisé.",
-    "alt": "La carte des réglages qui indique d'où vient la musique",
-    "didascalia": "Réglages, « D'où vient la musique » : chaque source avec la règle qu'elle suit."
+    "alt": "La carte « Import from a service » des réglages, qui indique d'où vient la musique",
+    "didascalia": "Réglages, « Import from a service » : chaque source avec la règle qu'elle suit."
   },
   "suono": {
     "titolo": "Puis il joue, comme il se doit.",

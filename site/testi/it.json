@@ -60,7 +60,7 @@
       "Le cartelle si sorvegliano da sole: copi dentro un album, e pochi secondi dopo è in libreria.",
       "Su un NAS o un'unità di rete, una condivisione che per un momento non risponde rende i brani non verificati, mai spariti.",
       "Una scansione che toglierebbe molti brani te li mostra e chiede prima.",
-      "Una cartella di musica può stare anche su OneDrive, Google Drive, Dropbox o un server WebDAV come Nextcloud, in sola lettura, con un'app che registri tu — il programma ti guida passo passo; per OneDrive serve un account Azure gratuito."
+      "Una cartella di musica può stare anche su OneDrive, Google Drive, Dropbox o un server WebDAV come Nextcloud, in sola lettura, con un'app che registri tu — il programma ti guida passo passo; per OneDrive serve un account Azure gratuito (di solito Microsoft chiede una carta per verificarlo, senza addebitare niente) o un account di lavoro o della scuola."
     ]
   },
   "cataloghi": {
@@ -68,8 +68,8 @@
     "testo": "Internet Archive e Audius ospitano musica pubblicata per essere condivisa: più di 250.000 concerti nel Live Music Archive, netlabel, pubblico dominio, brani che gli artisti hanno rilasciato con licenze aperte. Un brano si scarica solo quando la sua licenza lo permette, e quella licenza se la porta dietro. Quando nessuna versione in studio è libera, può prenderne il posto un concerto — e il brano dice che è dal vivo.",
     "acquisti": "Il catalogo commerciale non lo ha nessuna fonte libera, e Rymembra non va a prenderlo dove non dovrebbe: quello che non trova in modo lecito finisce in una lista acquisti, con i link a Bandcamp e Qobuz.",
     "esclusi": "Lasciati fuori apposta: YouTube, le cui regole vietano di scaricare e conservare i contenuti, e gli accessi privati di Spotify, che sarebbero un accesso non autorizzato.",
-    "alt": "La scheda delle impostazioni che elenca da dove viene la musica",
-    "didascalia": "Impostazioni, «Da dove viene la musica»: ogni fonte con la regola che segue."
+    "alt": "La scheda «Importa da un servizio» delle impostazioni, che elenca da dove viene la musica",
+    "didascalia": "Impostazioni, «Importa da un servizio»: ogni fonte con la regola che segue."
   },
   "suono": {
     "titolo": "Poi suona, come deve.",

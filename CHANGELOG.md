@@ -338,8 +338,8 @@ up with a phone that did not exist before.
   behind a blocking façade, with its own two-thread runtime — the one corner of
   Rymembra that is asynchronous, and the `Cargo.toml` says why.
   - **Linking, step by step.** The QR disappears from the PC as soon as it
-    stops being valid — used, refused, burned by five wrong codes or past its
-    ten minutes — and «New QR code» makes another. While the phone waits for
+    stops being valid — used, refused or past its ten minutes — and «New QR
+    code» makes another. While the phone waits for
     the PC's answer, «Stop waiting» cancels it, and the question on the PC
     disappears with it. The PC says «“Nothing Phone 2a” is linked» too, not
     only the phone.
@@ -577,7 +577,8 @@ up with a phone that did not exist before.
 
 - **Linking a device needs its QR code and a «yes».** The code's random
   16-byte token is valid for ten minutes and once, compared in constant time;
-  five wrong tokens end the code, and attempts are capped at ten a minute. The
+  each device gets at most ten attempts a minute, and a wrong token does not
+  end the code, so nobody else on the network can expire it. The
   device showing the code asks its user before anything is linked. The
   `rymembra/associa/1` protocol is closed whenever no code is on screen, and
   `rymembra/lontano/1` turns away any key that is not linked before it can ask
@@ -587,8 +588,9 @@ up with a phone that did not exist before.
 - **What a linked device can read**: the lists of tracks in local and network
   folders, and the file of such a track by its id, while it is still under a
   watched folder — size and date checked around every read. No path crosses
-  the connection. Frames are capped at 1 MiB (8 MiB inflated), reads at 2 MiB,
-  lists at 500 entries, and requests at 8 at a time per device.
+  the connection. Frames are capped at 1 MiB, and inflated at 16 KiB while
+  linking, 64 KiB for a request and 8 MiB for an answer; reads at 2 MiB, lists
+  at 500 entries, requests at 8 at a time and connections at four per device.
 - **The device's key** is in the system keychain (`lontano.chiave.<device>`;
   the Android Keystore on the phone), never in the database, and an existing
   one is never overwritten. The log names no key, address or device.
