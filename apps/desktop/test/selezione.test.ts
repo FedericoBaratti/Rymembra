@@ -113,3 +113,60 @@ test("i selezionati nell'ordine della vista, piena o rada", () => {
     [20, 30, 20],
   );
 });
+
+// ── R04b-1: un'àncora di un elenco cambiato sotto non fa da àncora ─────────
+
+import { ancoraUsabile } from "../src/selezione";
+import { readFileSync } from "node:fs";
+
+test("l'àncora vale nell'elenco di adesso solo se è ancora lei", () => {
+  const righe = new Map<number, { id: number }>([
+    [1000, { id: 7 }],
+    [1040, { id: 42 }],
+  ]);
+  const ora = (generazione: number | null) => ({
+    generazione,
+    riga: (i: number) => righe.get(i),
+  });
+  // Stessa generazione: gli indici sono dello stesso elenco, anche senza la riga in mano.
+  assert.equal(ancoraUsabile({ indice: 3000, id: 9, generazione: 5 }, ora(5)), 3000);
+  // Una scansione ha inserito 40 brani sopra: alla posizione 1000 c'è un
+  // altro brano, e l'intervallo prenderebbe righe mai cliccate.
+  assert.equal(ancoraUsabile({ indice: 1000, id: 42, generazione: 5 }, ora(6)), null);
+  // L'elenco è cambiato altrove, ma la riga dell'àncora è ancora lì.
+  assert.equal(ancoraUsabile({ indice: 1000, id: 7, generazione: 5 }, ora(6)), 1000);
+  // Cambiato, e la riga non è in mano: non si sa, e non si indovina.
+  assert.equal(ancoraUsabile({ indice: 2000, id: 7, generazione: 5 }, ora(6)), null);
+  // Un elenco pieno non ha generazione: decide la riga.
+  assert.equal(ancoraUsabile({ indice: 1040, id: 42, generazione: null }, ora(null)), 1040);
+  assert.equal(ancoraUsabile({ indice: 1000, id: 42, generazione: null }, ora(null)), null);
+  assert.equal(ancoraUsabile(null, ora(5)), null);
+});
+
+test("selezioneVista e il pannello Cartelle passano l'àncora da ancoraUsabile", () => {
+  const vista = readFileSync(new URL("../src/selezioneVista.ts", import.meta.url), "utf8");
+  assert.match(vista, /ancoraUsabile\(/);
+  const cartelle = readFileSync(new URL("../src/schermate/Cartelle.tsx", import.meta.url), "utf8");
+  const scegli = cartelle.slice(cartelle.indexOf("const scegliBrano"), cartelle.indexOf("const alternaBrano"));
+  assert.match(scegli, /ancoraUsabile\(/);
+});
+
+// ── R13b-15, R13b-16: l'elenco dei brani ───────────────────────────────────
+
+test("Elenco: un clic sul cuore, sulle stelle o sulla × non tocca la selezione", () => {
+  const elenco = readFileSync(new URL("../src/schermate/Elenco.tsx", import.meta.url), "utf8");
+  const clic = elenco.slice(elenco.indexOf("onClick={(e) => {\n        // Sul telefono un tocco suona"));
+  const fine = clic.indexOf("onSeleziona(e, indice);");
+  assert.ok(fine > 0);
+  // La guardia dei comandi della riga vale anche sul computer, prima di `onSeleziona`.
+  const prima = clic.slice(clic.indexOf("if (MOBILE) {"), fine);
+  const fuoriDalTelefono = prima.slice(prima.lastIndexOf("}") );
+  assert.match(fuoriDalTelefono, /closest\(TASTI_DELLA_RIGA\)/);
+});
+
+test("Elenco: Maiusc+↑↓ allarga la selezione dall'àncora, come nell'albero", () => {
+  const elenco = readFileSync(new URL("../src/schermate/Elenco.tsx", import.meta.url), "utf8");
+  const tastiera = elenco.slice(elenco.indexOf("const daTastiera = (e: React.KeyboardEvent<HTMLElement>) => {\n    if (\n      onSelezionaTutto"));
+  assert.match(tastiera.slice(0, 2000), /e\.shiftKey &&[\s\S]{0,120}?\(e\.key === "ArrowDown" \|\| e\.key === "ArrowUp"\)/);
+  assert.match(tastiera.slice(0, 2000), /onSeleziona\(e, dove, (fuoco\.attivo|da)\)/);
+});

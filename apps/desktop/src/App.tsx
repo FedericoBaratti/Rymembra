@@ -1800,7 +1800,7 @@ export function App() {
        * del foglio del telefono, e a non offrire voci per un brano che
        * l'elenco della vista non conosce.
        */
-      conosciuto?: Brano,
+      conosciuto?: Brano | ((id: number) => Brano | undefined),
       /**
        * Le voci che solo chi apre sa offrire: «Togli da questa playlist», che
        * vuole la posizione della riga. Vedi `menuRigaPlaylist`.
@@ -1808,10 +1808,14 @@ export function App() {
       piu?: Pick<AzioniBrani, "togliDallaPlaylist" | "togliDallaCoda" | "sposta">,
     ) => {
       e.preventDefault();
+      // Chi apre il menù da un pannello con le sue righe (le Cartelle) passa
+      // il modo di trovarle: l'elenco della vista lì è vuoto (R13b-3).
       const inMano = (id: number) =>
-        conosciuto !== undefined && conosciuto.id === id
-          ? conosciuto
-          : elencoCorrenteRef.current.cerca((b) => b.id === id);
+        typeof conosciuto === "function"
+          ? (conosciuto(id) ?? elencoCorrenteRef.current.cerca((b) => b.id === id))
+          : conosciuto !== undefined && conosciuto.id === id
+            ? conosciuto
+            : elencoCorrenteRef.current.cerca((b) => b.id === id);
       // Il brano si legge al momento del gesto: l'elenco che ha aperto il menù
       // ha solo i numeri.
       const conBrano =

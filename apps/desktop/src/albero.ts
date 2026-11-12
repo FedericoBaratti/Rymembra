@@ -520,13 +520,16 @@ export function attraversoLente(stato: StatoAlbero, filtro: Lente): StatoAlbero 
  *
  * Per [`chiave`] e non per indice: le righe si spostano — un nodo che si apre
  * sopra ne fa scendere cento — e una selezione per indice sceglierebbe righe
- * diverse da quelle cliccate. L'àncora invece è un indice, ed è giusto così:
- * Maiusc prende «da lì a qui» in quel che si vede adesso, come nell'elenco dei
- * brani.
+ * diverse da quelle cliccate. **Anche l'àncora**: era un indice, e dopo aver
+ * aperto una cartella sopra di lei Maiusc+clic contava dalla riga che adesso
+ * stava in quel posto — i figli appena comparsi — invece che da quella
+ * cliccata (R13b-8). Maiusc prende «da lì a qui» in quel che si vede adesso,
+ * cercando «lì» per chiave; se l'àncora non si vede più, vale come senza.
  */
 export interface Selezione {
   chiavi: ReadonlySet<string>;
-  ancora: number | null;
+  /** La chiave della riga da cui parte un intervallo. */
+  ancora: string | null;
 }
 
 /** Niente di scelto. */
@@ -551,10 +554,12 @@ export function seleziona(
 ): Selezione {
   const riga = righe[indice];
   if (riga === undefined) return prima;
-  if (gesto === "azzera") return { chiavi: new Set(), ancora: indice };
-  if (gesto === "intervallo" && prima.ancora !== null) {
-    const da = Math.max(0, Math.min(prima.ancora, indice));
-    const a = Math.min(righe.length - 1, Math.max(prima.ancora, indice));
+  const k = chiaveRiga(riga);
+  if (gesto === "azzera") return { chiavi: new Set(), ancora: k };
+  const daAncora = posizioneDellAncora(prima, righe);
+  if (gesto === "intervallo" && daAncora !== null) {
+    const da = Math.min(daAncora, indice);
+    const a = Math.max(daAncora, indice);
     return {
       chiavi: new Set(righe.slice(da, a + 1).map(chiaveRiga)),
       ancora: prima.ancora,
@@ -562,10 +567,52 @@ export function seleziona(
   }
   // Alterna, o un intervallo senza àncora: senza un «da dove» l'intervallo è la
   // riga sola, ed è il punto da cui partirà il prossimo.
-  const k = chiaveRiga(riga);
   const chiavi = new Set(prima.chiavi);
   if (!chiavi.delete(k)) chiavi.add(k);
-  return { chiavi, ancora: indice };
+  return { chiavi, ancora: k };
+}
+
+/** Dove sta adesso l'àncora fra le righe che si vedono, o `null`. */
+function posizioneDellAncora(sel: Selezione, righe: readonly RigaAlbero[]): number | null {
+  if (sel.ancora === null) return null;
+  const dove = righe.findIndex((r) => chiaveRiga(r) === sel.ancora);
+  return dove < 0 ? null : dove;
+}
+
+/**
+ * La selezione con un'àncora che si vede: se manca, o la sua riga non è più
+ * fra quelle visibili, diventa `righe[indice]`.
+ *
+ * È il punto da cui parte Maiusc+↑↓: la riga da cui ci si muove, se non c'è
+ * un'altra àncora da cui contare.
+ */
+export function conAncora(
+  prima: Selezione,
+  righe: readonly RigaAlbero[],
+  indice: number,
+): Selezione {
+  const riga = righe[indice];
+  if (riga === undefined || posizioneDellAncora(prima, righe) !== null) return prima;
+  return { ...prima, ancora: chiaveRiga(riga) };
+}
+
+/**
+ * Il percorso sta sotto (o è) una radice che la sonda ha trovato muta.
+ *
+ * Serve al pannello dei brani: la cartella scelta di un disco staccato si
+ * apriva con i suoi brani e «Riproduci» acceso, che sostituiva la coda con
+ * brani irraggiungibili (R18-11). Una radice non ancora sondata non è morta.
+ */
+export function radiceSpenta(
+  percorso: string,
+  radici: readonly string[],
+  vive: ReadonlyMap<string, boolean>,
+): boolean {
+  const k = chiave(percorso);
+  return radici.some((radice) => {
+    const r = chiave(radice);
+    return (k === r || k.startsWith(`${r}/`)) && vive.get(r) === false;
+  });
 }
 
 /**

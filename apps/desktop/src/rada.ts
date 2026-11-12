@@ -262,6 +262,26 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
     this.cambia();
   }
 
+  /**
+   * Chi possiede la lista ne ha una verità nuova per la stessa vista: questo
+   * totale, anche se è uguale a quello detto l'ultima volta, e le righe in mano
+   * sono vecchie.
+   *
+   * Serve dove le pagine sono fette di identificativi già in mano, come il
+   * pannello delle Cartelle: un identificativo sparito fa tornare una fetta più
+   * corta, e la lista la legge come la fine dell'elenco (`accetta`). Riletti gli
+   * identificativi, il loro numero può essere quello di prima — uno tolto, uno
+   * arrivato — e `imposta`, che ascolta solo i cambiamenti di quel che si dice,
+   * lascerebbe la lista accorciata per sempre (R13b-2).
+   */
+  rinnova(totale: number): void {
+    const n = Math.max(0, Math.floor(totale));
+    this.totaleDetto = n;
+    this._totale = n;
+    this.togliOltre();
+    this.invalida();
+  }
+
   /** La riga, se è in mano: anche da una pagina vecchia. */
   riga(indice: number): T | undefined {
     if (indice < 0 || indice >= this._totale) return undefined;
@@ -293,8 +313,15 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
    * Le righe `[da, a]`, comprese, chiedendo le pagine che mancano.
    *
    * Serve alla selezione con Maiusc, che può prendere un intervallo più lungo
-   * di quel che è in mano. Una riga che non arriva — una pagina è fallita —
-   * resta `undefined`, e chi chiama decide.
+   * di quel che è in mano.
+   *
+   * # Senza buchi, o niente
+   *
+   * Una pagina fallita da poco si richiede comunque: è un gesto, non la
+   * finestra che chiede a ogni disegno, e `RIPROVA_MS` non vale. Se non arriva
+   * nemmeno così, `null`: le righe che restavano `undefined` si saltavano, e
+   * la selezione diceva «1.400 brani» invece di 1.600, con una fascia di righe
+   * non scelte in mezzo su cui «Togli dalla libreria» non agiva (R13b-14).
    *
    * # Una generazione sola, o niente
    *
@@ -327,7 +354,7 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
       while (prossima < pagine.length && this._generazione === generazione) {
         const p = pagine[prossima] as number;
         prossima += 1;
-        arrivate.set(p, await this.prendi(p));
+        arrivate.set(p, await this.prendi(p, true));
       }
     };
     await Promise.all(
@@ -336,6 +363,7 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
     // La generazione cresce sempre: uguale alla fine vuol dire uguale per
     // tutto il tempo, e allora ogni pagina arrivata è di questa.
     if (this._generazione !== generazione) return null;
+    if ([...arrivate.values()].some((pagina) => pagina === null)) return null;
     const righe: (T | undefined)[] = [];
     for (let i = Math.max(da, 0); i <= Math.min(a, this._totale - 1); i += 1) {
       const p = Math.floor(i / this.misura);
@@ -362,8 +390,11 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
   /**
    * Una pagina della generazione di adesso: quella in mano, quella già in
    * volo, o una richiesta nuova. `null` se non arriva.
+   *
+   * `subito` richiede anche una pagina fallita da meno di `RIPROVA_MS`: lo
+   * chiede un gesto (`intervallo`), che una risposta la vuole adesso.
    */
-  private prendi(p: number): Promise<T[] | null> {
+  private prendi(p: number, subito = false): Promise<T[] | null> {
     const generazione = this._generazione;
     const pagina = this.pagine.get(p);
     if (pagina !== undefined && pagina.generazione === generazione) {
@@ -375,6 +406,7 @@ export class ArchivioRado<T> implements SorgenteRada<T> {
     if (volo !== undefined && volo.generazione === generazione) return volo.promessa;
     const fallita = this.fallite.get(p);
     if (
+      !subito &&
       fallita !== undefined &&
       fallita.generazione === generazione &&
       this.adesso() - fallita.quando < RIPROVA_MS

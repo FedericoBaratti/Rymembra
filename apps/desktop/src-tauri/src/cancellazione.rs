@@ -165,6 +165,13 @@ pub async fn brani_togli(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Cancel
         // perché i file restano leggibili — togliere dalla coda vuol dire «non
         // risuonarlo», non «zitto adesso».
         sgombera(&mano, &brani, false);
+        // E l'albero delle Cartelle: il suo indice ricorda i brani, e senza
+        // questo il pannello mostrava ancora i tolti, i conteggi di prima, e
+        // dopo un cambio di cartella si fermava alla prima fetta corta (R13b-2).
+        // Fuori dal lucchetto: `cambiate` non legge la libreria.
+        if fatto.tolti > 0 {
+            crate::cartelle::cambiate(&mano);
+        }
         Ok(fatto)
     })
     .await
@@ -841,6 +848,11 @@ pub async fn brani_elimina(
                 PathRules::for_current_platform(),
             )
         })?;
+        // Come per «Togli dalla libreria»: l'albero delle Cartelle si rifà, anche
+        // quando ci si è fermati a metà (R13b-2).
+        if fatto.tolti > 0 {
+            crate::cartelle::cambiate(&mano);
+        }
         match guasto {
             Some(err) => Err(err),
             None => Ok(fatto.tolti),

@@ -18,6 +18,7 @@ import { t, useLingua } from "../lingue";
 import { useVersione } from "../pagine";
 import { Icona } from "../parti/Icone";
 import type { SorgenteRada } from "../rada";
+import type { GestoModificato } from "../selezioneVista";
 import { usePresaPerRiordino } from "../riordino";
 import { conIndice, statoSuono } from "../segnali";
 import { Stelle } from "../Stelle";
@@ -295,6 +296,11 @@ const RigaBrano = memo(function RigaBrano({
             return;
           }
         }
+        // Anche sul computer: il cuore, le stelle, la × e l'indice hanno un
+        // mestiere loro. Un clic sul cuore chiudeva la selezione di duecento
+        // brani, e Ctrl+clic metteva il cuore **e** cambiava la selezione
+        // (R13b-15). È la stessa guardia del doppio clic, qui sopra.
+        if ((e.target as Element).closest(TASTI_DELLA_RIGA)) return;
         onSeleziona(e, indice);
       }}
       onContextMenu={(e) => {
@@ -407,8 +413,12 @@ const RigaBrano = memo(function RigaBrano({
           type="button"
           className="cuore icon-btn"
           tabIndex={-1}
+          /* Un nome fisso e lo stato in `aria-pressed`, come il cuore del
+             lettore: col nome che cambiava lo stato si diceva due volte, e le
+             due cose si contraddicevano — «Togli dai preferiti, premuto»
+             (R16-11). */
           aria-pressed={brano.liked}
-          aria-label={brano.liked ? t("track.unlike") : t("track.like")}
+          aria-label={t("track.favorite")}
           onClick={() => onPreferito(brano)}
         >
           <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={15} />
@@ -467,9 +477,11 @@ const RigaBrano = memo(function RigaBrano({
  * riga della griglia, e un lettore di schermo la usa per dire «Durata, 3:41»
  * invece di «3:41».
  *
- * I due `<span />` vuoti sono celle anche loro: una `row` può contenere solo
- * celle, e un figlio senza ruolo in mezzo a quelli che l'hanno romperebbe il
- * conteggio delle colonne.
+ * Le colonne senza una parola sopra — la copertina, il cuore, la ×, il ⋮ —
+ * sono celle anche loro: una `row` può contenere solo celle, e un figlio senza
+ * ruolo in mezzo a quelli che l'hanno romperebbe il conteggio delle colonne.
+ * Il loro nome c'è, per chi ascolta (`solo-lettori`): un'intestazione vuota
+ * diceva «colonna» e basta (R16-11).
  */
 function TestaElenco({
   conTogli,
@@ -498,7 +510,9 @@ function TestaElenco({
       <span className="indice" role={cella}>
         #
       </span>
-      <span role={cella} />
+      <span role={cella}>
+        <span className="solo-lettori">{t("list.cover")}</span>
+      </span>
       <span role={cella}>{t("list.title")}</span>
       {/* Le due colonne che si ritirano quando il contenuto si stringe portano un
           nome: nasconderle per posizione — `:nth-child(4)` — vorrebbe dire tenere
@@ -512,10 +526,20 @@ function TestaElenco({
       <span className="durata" role={cella}>
         {t("list.duration")}
       </span>
-      <span role={cella} />
-      {conTogli && <span role={cella} />}
+      <span role={cella}>
+        <span className="solo-lettori">{t("track.favorite")}</span>
+      </span>
+      {conTogli && (
+        <span role={cella}>
+          <span className="solo-lettori">{t("list.remove")}</span>
+        </span>
+      )}
       {/* La colonna del ⋮: vedi `RigaBrano`. */}
-      {MOBILE && <span role={cella} />}
+      {MOBILE && (
+        <span role={cella}>
+          <span className="solo-lettori">{t("list.actions")}</span>
+        </span>
+      )}
     </div>
   );
 }
@@ -803,7 +827,12 @@ export function ElencoBrani({
   onPreferito: (b: Brano) => void;
   onVoto: (b: Brano, stelle: number) => void;
   onMenu: (e: React.MouseEvent, brani: number[]) => void;
-  onSeleziona: (e: React.MouseEvent, indice: number) => void;
+  /**
+   * Un clic su una riga, coi modificatori; o Maiusc+↑↓, che è il Maiusc+clic
+   * detto da tastiera, con la riga da cui si parte (`partenza`) per quando
+   * l'àncora manca.
+   */
+  onSeleziona: (e: GestoModificato, indice: number, partenza?: number) => void;
   /** Spazio sulla riga col fuoco: il Ctrl+clic detto da tastiera. */
   onAlternaSelezione: (indice: number) => void;
   /**
@@ -909,6 +938,28 @@ export function ElencoBrani({
       e.preventDefault();
       e.stopPropagation();
       onSelezionaTutto();
+      return;
+    }
+    /*
+     * Maiusc+↑↓: il fuoco si sposta e la selezione si allarga dall'àncora, che
+     * se manca è la riga da cui si parte — come nell'albero delle Cartelle.
+     * Da tastiera la selezione era solo Spazio, una riga per volta: i brani
+     * dal 10 al 40 di un album erano trenta volte ↓ e Spazio (R13b-16).
+     */
+    if (
+      e.shiftKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+      totale > 0
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      const da = fuoco.attivo;
+      const dove = Math.min(Math.max(da + (e.key === "ArrowDown" ? 1 : -1), 0), totale - 1);
+      if (dove !== da) fuoco.vaiA(dove);
+      onSeleziona(e, dove, da);
       return;
     }
     fuoco.daTastiera(e);

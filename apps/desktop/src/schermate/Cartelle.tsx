@@ -115,12 +115,14 @@ import {
   chiaveRiga,
   chiudi,
   codaDaFile,
+  conAncora,
   conFigli,
   eAperto,
   figliDi,
   fratelliDi,
   indicePadre,
   lente as lenteDi,
+  radiceSpenta,
   saltaA,
   seleziona,
   type GestoSelezione,
@@ -138,6 +140,8 @@ import { ipc, type Brano, type NodoCartella } from "../ipc";
 import { t, useLingua } from "../lingue";
 import type { Apertura, Voce } from "../Menu";
 import { useAscolto, useRada } from "../pagine";
+import { ancoraUsabile, type Ancora } from "../selezione";
+import type { GestoModificato } from "../selezioneVista";
 import { Icona } from "../parti/Icone";
 import { ANDROID, MOBILE } from "../piattaforma";
 import { conIndice } from "../segnali";
@@ -258,19 +262,38 @@ export interface ManiDeiBrani {
   suonabile: boolean;
   onPreferito: (b: Brano) => void;
   onVoto: (b: Brano, stelle: number) => void;
-  /** Il menù contestuale dei brani: lo stesso dell'elenco della libreria. */
-  onMenu: (e: EventoMouse, brani: number[]) => void;
+  /**
+   * Il menù contestuale dei brani: lo stesso dell'elenco della libreria.
+   *
+   * `inMano` trova le righe del pannello: `App` le cerca nell'elenco della
+   * vista, che qui è vuoto, e senza il brano in mano il menù non sapeva se era
+   * un preferito, un file del cloud o un brano di catalogo (R13b-3).
+   */
+  onMenu: (
+    e: EventoMouse,
+    brani: number[],
+    inMano?: (id: number) => Brano | undefined,
+  ) => void;
   /** «Aggiungi a playlist…»: la finestrella che tiene `App`. */
   onAggiungiAPlaylist: (brani: number[]) => void;
 }
 
-/** La selezione dentro il pannello dei brani: per brano, con l'àncora. */
+/**
+ * La selezione dentro il pannello dei brani: per brano, con l'àncora — che
+ * porta il suo brano e la generazione della lista, come quella della libreria
+ * (`ancoraUsabile`, R04b-1).
+ */
 interface SceltaBrani {
   ids: ReadonlySet<number>;
-  ancora: number | null;
+  ancora: Ancora | null;
 }
 
 const NESSUN_BRANO: SceltaBrani = { ids: new Set(), ancora: null };
+
+/** Due elenchi di identificativi uguali, nello stesso ordine. */
+function stessi(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
 
 /** Le righe dell'albero finto: piene e corte alternate, come i nomi veri. */
 const RIGHE_FINTE: readonly boolean[] = [false, true, false, false, true, false];
@@ -523,7 +546,10 @@ export function Cartelle({
    */
   const sonda = useCallback(
     (forza: boolean) => {
-      if (radici.length === 0) return;
+      // Nello Studio le radici sono finte: sondarle vorrebbe dire toccare il
+      // disco di chi disegna (fino a otto secondi su un'unità che dorme), e
+      // senza risposta una radice vale viva (R13b-12).
+      if (radici.length === 0 || anteprima) return;
       const adesso = Date.now();
       if (!forza && adesso - ultimaSonda.current < FRESCHEZZA_MS) return;
       // Si segna **prima** della risposta: due espansioni ravvicinate non
@@ -541,7 +567,7 @@ export function Cartelle({
         })
         .catch(onErrore);
     },
-    [radici, onErrore],
+    [radici, onErrore, anteprima],
   );
 
   /*
@@ -568,6 +594,13 @@ export function Cartelle({
     chiediFiglie(null, false);
     sonda(false);
     let vivo = true;
+    // Nello Studio il ricordo è quello vero dell'utente, con una scelta che
+    // nell'albero finto non c'è: il pannello restava su «Scegli una cartella»
+    // per sempre. Lì si parte chiusi, come la prima volta (R13b-12).
+    if (anteprima) {
+      setRipristinato(true);
+      return;
+    }
     ipc
       .cartelleUi()
       .then((ricordo) => {
@@ -945,6 +978,8 @@ export function Cartelle({
     (indice: number) => {
       const riga = righe[indice];
       if (riga === undefined) return;
+      // Far suonare è un gesto di coda (R13b-9): senza la coda, niente.
+      if (!codaLiberaOra.current) return;
       if (riga.brano !== null) suonaDaFile(indice);
       else riproduci([riga]);
     },
@@ -1079,6 +1114,11 @@ export function Cartelle({
     return () => window.clearTimeout(attesa);
   }, [cartellaDelCursore, ripristinato]);
 
+  /** Cresce per rileggere gli identificativi del pannello: vedi `chiedi` qui sotto. */
+  const [giroIds, setGiroIds] = useState(0);
+  /** Gli identificativi per cui la rilettura è già stata chiesta. */
+  const idsRiletti = useRef<readonly number[] | null>(null);
+
   /*
    * Gli identificativi della cartella scelta: tutti, e subito, perché costano
    * otto byte l'uno e sono quel che va in coda. Le righe invece arrivano a
@@ -1092,9 +1132,18 @@ export function Cartelle({
     let vivo = true;
     letture
       .cartelleBrani(radiciRef.current, cartellaScelta, conSottocartelle)
-      .then((ids) => {
+      .then((nuovi) => {
         if (!vivo) return;
-        setIdsPannello({ percorso: cartellaScelta, ricorsivo: conSottocartelle, ids });
+        setIdsPannello((prima) =>
+          // Uguali a quelli in mano: niente da rifare. È anche quel che ferma
+          // la rilettura chiesta da una fetta corta, se l'indice non lo sa.
+          prima !== null &&
+          prima.percorso === cartellaScelta &&
+          prima.ricorsivo === conSottocartelle &&
+          stessi(prima.ids, nuovi)
+            ? prima
+            : { percorso: cartellaScelta, ricorsivo: conSottocartelle, ids: nuovi },
+        );
       })
       .catch((e: unknown) => {
         if (vivo) onErroreRef.current(e);
@@ -1102,30 +1151,48 @@ export function Cartelle({
     return () => {
       vivo = false;
     };
-  }, [cartellaScelta, conSottocartelle, firmaRadici, giroLibreria, letture]);
+  }, [cartellaScelta, conSottocartelle, firmaRadici, giroLibreria, giroIds, letture]);
 
   const ids = idsPannello?.ids ?? NESSUN_ID;
   const chiavePannello =
     idsPannello === null ? "" : `${idsPannello.percorso}|${String(idsPannello.ricorsivo)}`;
+  /*
+   * Una fetta che torna più corta di quanti identificativi si sono chiesti
+   * vuol dire che gli identificativi sono vecchi: un brano se n'è andato fra la
+   * loro lettura e quella delle righe. La lista leggerebbe la fetta corta come
+   * la fine dell'elenco, e il pannello resterebbe a 195 righe sotto un titolo
+   * che ne dice mille (R13b-2): si rileggono gli identificativi, una volta per
+   * elenco — se tornano uguali (l'indice delle cartelle non lo sa ancora) non
+   * si insiste.
+   */
   const archivio = useRada<Brano>({
     chiave: chiavePannello,
     totale: ids.length,
     chiedi: (offset, limite) => {
       const pezzo = ids.slice(offset, offset + limite);
-      return pezzo.length === 0 ? Promise.resolve([]) : letture.braniPerId(pezzo);
+      if (pezzo.length === 0) return Promise.resolve([]);
+      const diQuesti = ids;
+      return letture.braniPerId(pezzo).then((righe) => {
+        if (righe.length < pezzo.length && idsRiletti.current !== diQuesti) {
+          idsRiletti.current = diQuesti;
+          setGiroIds((n) => n + 1);
+        }
+        return righe;
+      });
     },
     onErrore,
   });
 
   /*
-   * La stessa cartella con identificativi nuovi — una scansione è finita — è
-   * la stessa vista cambiata sotto: le righe restano a schermo e si
-   * richiedono. Una cartella nuova invece la svuota da sé `useRada`, con la
+   * La stessa cartella con identificativi nuovi — una scansione è finita, dei
+   * brani tolti — è la stessa vista cambiata sotto: le righe restano a schermo
+   * e si richiedono, col totale nuovo anche se è uguale a quello di prima
+   * (`rinnova`). Una cartella nuova invece la svuota da sé `useRada`, con la
    * chiave, e la selezione del pannello se ne va con lei.
    */
   const chiaveDiPrima = useRef("");
   useEffect(() => {
-    if (chiaveDiPrima.current === chiavePannello) archivio.invalida();
+    if (chiaveDiPrima.current === chiavePannello) archivio.rinnova(ids.length);
     else setSceltaBrani(NESSUN_BRANO);
     chiaveDiPrima.current = chiavePannello;
   }, [ids, chiavePannello, archivio]);
@@ -1142,38 +1209,54 @@ export function Cartelle({
     [archivio, ids, onErrore],
   );
 
-  /** La selezione del pannello: le regole dell'elenco della libreria. */
+  /**
+   * La selezione del pannello: le regole dell'elenco della libreria, àncora
+   * compresa (`ancoraUsabile`): dopo una scansione che ha spostato le righe,
+   * Maiusc+clic vale un clic semplice invece di contare da un posto che adesso
+   * è di un altro brano (R04b-1). `partenza` è la riga da cui parte un
+   * Maiusc+↑↓ senza àncora.
+   */
   const scegliBrano = useCallback(
-    (e: EventoMouse, indice: number) => {
+    (e: GestoModificato, indice: number, partenza?: number) => {
       const brano = archivio.riga(indice);
       if (brano === undefined) return;
-      const { ancora } = sceltaBrani;
-      if (e.shiftKey && ancora !== null) {
+      const generazione = archivio.generazione;
+      let ancora = sceltaBrani.ancora;
+      let da = ancoraUsabile(ancora, { generazione, riga: (i) => archivio.riga(i) });
+      const daQui = partenza === undefined ? undefined : archivio.riga(partenza);
+      if (e.shiftKey && da === null && partenza !== undefined && daQui !== undefined) {
+        da = partenza;
+        ancora = { indice: partenza, id: daQui.id, generazione };
+      }
+      if (e.shiftKey && da !== null && ancora !== null) {
         e.preventDefault();
+        const base: Ancora = { ...ancora, generazione };
         void archivio
-          .intervallo(Math.min(ancora, indice), Math.max(ancora, indice))
+          .intervallo(Math.min(da, indice), Math.max(da, indice))
           .then((presi) => {
             // L'elenco è cambiato mentre le pagine arrivavano — una scansione
-            // finita, un'altra cartella — e le righe sarebbero state di due
-            // elenchi: la selezione resta com'era (`ArchivioRado.intervallo`).
+            // finita, un'altra cartella — o una pagina non è arrivata: le
+            // righe sarebbero di due elenchi, o con un buco. La selezione
+            // resta com'era (`ArchivioRado.intervallo`).
             if (presi === null) return;
             setSceltaBrani({
               ids: new Set(presi.flatMap((b) => (b === undefined ? [] : [b.id]))),
-              ancora,
+              ancora: base,
             });
           });
         return;
       }
+      const qui: Ancora = { indice, id: brano.id, generazione };
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         setSceltaBrani((prima) => {
           const dopo = new Set(prima.ids);
           if (!dopo.delete(brano.id)) dopo.add(brano.id);
-          return { ids: dopo, ancora: indice };
+          return { ids: dopo, ancora: qui };
         });
         return;
       }
-      setSceltaBrani({ ids: new Set(), ancora: indice });
+      setSceltaBrani({ ids: new Set(), ancora: qui });
     },
     [archivio, sceltaBrani],
   );
@@ -1182,10 +1265,11 @@ export function Cartelle({
     (indice: number) => {
       const brano = archivio.riga(indice);
       if (brano === undefined) return;
+      const qui: Ancora = { indice, id: brano.id, generazione: archivio.generazione };
       setSceltaBrani((prima) => {
         const dopo = new Set(prima.ids);
         if (!dopo.delete(brano.id)) dopo.add(brano.id);
-        return { ids: dopo, ancora: indice };
+        return { ids: dopo, ancora: qui };
       });
     },
     [archivio],
@@ -1208,9 +1292,13 @@ export function Cartelle({
       if (mani === undefined) return;
       const dentro = brani.some((id) => sceltaBrani.ids.has(id));
       const scelti = ids.filter((id) => sceltaBrani.ids.has(id));
-      mani.onMenu(e, dentro && scelti.length > 0 ? scelti : brani);
+      // Le righe stanno qui, nell'archivio del pannello: senza, il menù non
+      // sapeva niente dei brani (R13b-3).
+      mani.onMenu(e, dentro && scelti.length > 0 ? scelti : brani, (id) =>
+        archivio.cerca((b) => b.id === id),
+      );
     },
-    [mani, sceltaBrani.ids, ids],
+    [mani, sceltaBrani.ids, ids, archivio],
   );
 
   /*
@@ -1397,12 +1485,7 @@ export function Cartelle({
           righe.length - 1,
         );
         setSelezione((prima) =>
-          seleziona(
-            prima.ancora === null ? { ...prima, ancora: indice } : prima,
-            righe,
-            dove,
-            "intervallo",
-          ),
+          seleziona(conAncora(prima, righe, indice), righe, dove, "intervallo"),
         );
         fuoco.vaiA(dove);
         return;
@@ -1493,6 +1576,9 @@ export function Cartelle({
     () => radici.filter((percorso) => vive.get(chiave(percorso)) === false).length,
     [radici, vive],
   );
+  /** La cartella del pannello sta sotto una radice che non risponde. */
+  const pannelloMuto =
+    cartellaScelta !== null && radiceSpenta(cartellaScelta, radici, vive);
 
   if (radici.length === 0) {
     return (
@@ -1595,9 +1681,12 @@ export function Cartelle({
         {quanteScelte > 0 && (
           <div className="scelta-cartelle">
             <span className="conteggio-nodo">{t("folders.selected", { n: quanteScelte })}</span>
+            {/* Far suonare è un gesto di coda come «In coda» (R13b-9). */}
             <button
               type="button"
               className="bottone minuto btn-ghost"
+              disabled={!codaLibera}
+              title={spentoInSessione}
               onClick={() => riproduci(scelte)}
             >
               {t("action.play")}
@@ -1740,6 +1829,7 @@ export function Cartelle({
                   }}
                   onDoubleClick={(e) => {
                     if (e.ctrlKey || e.shiftKey || e.metaKey) return;
+                    // `invioIndice` guarda anche la coda: vedi R13b-9.
                     invioIndice(i);
                   }}
                   onContextMenu={(e) => {
@@ -1848,10 +1938,21 @@ export function Cartelle({
                     </span>
                   </button>
                 </span>
+                {/* Spenta, con la ragione, senza la coda (R13b-9) e sotto una
+                    radice che non risponde: lì sostituiva la coda con brani
+                    che non si raggiungono, e rispondeva con la fascia rossa
+                    (R18-11). */}
                 <button
                   type="button"
                   className="pillola btn-accent"
-                  disabled={ids.length === 0 || mani?.suonabile === false}
+                  disabled={
+                    ids.length === 0 || mani?.suonabile === false || !codaLibera || pannelloMuto
+                  }
+                  title={
+                    pannelloMuto
+                      ? t("folders.blocked", { nome: nomeRadice(cartellaScelta) })
+                      : spentoInSessione
+                  }
                   onClick={suonaTuttoIlPannello}
                 >
                   <Icona nome="i-play" dim={14} />
@@ -1871,7 +1972,10 @@ export function Cartelle({
                   scorrevole={scorrePannello}
                   inAscolto={mani?.inAscolto ?? null}
                   inPausa={mani?.inPausa ?? false}
-                  suonabile={mani?.suonabile ?? true}
+                  /* Le righe non suonano senza la coda (R13b-9) né sotto una
+                     radice muta (R18-11): il tasto dell'indice si spegne, Invio
+                     e il doppio clic tacciono. */
+                  suonabile={(mani?.suonabile ?? true) && codaLibera && !pannelloMuto}
                   selezione={sceltaBrani.ids}
                   onSuona={suonaDalPannello}
                   onPreferito={preferito}

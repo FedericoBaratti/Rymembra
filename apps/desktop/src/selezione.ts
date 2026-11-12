@@ -132,3 +132,53 @@ export function nellOrdineDellaVista(
     ? pieni.filter((b) => scelti.has(b.id)).map((b) => b.id)
     : [...scelti.entries()].sort((x, y) => x[1] - y[1]).map(([id]) => id);
 }
+
+/**
+ * L'àncora di un intervallo: la posizione, il brano che vi stava, e di quale
+ * versione dell'elenco era.
+ */
+export interface Ancora {
+  /** La posizione nella vista. */
+  indice: number;
+  /** Il brano che vi stava quando è diventata àncora. */
+  id: number;
+  /**
+   * La generazione della lista rada in cui lo era (`ArchivioRado.generazione`);
+   * `null` per un elenco intero, che le righe le ha tutte in mano.
+   */
+  generazione: number | null;
+}
+
+/**
+ * La posizione da cui contare un intervallo nell'elenco di **adesso**, o
+ * `null` se l'àncora non vi si può più usare.
+ *
+ * # Perché non basta la posizione
+ *
+ * L'àncora era un numero e basta. Una scansione che inseriva quaranta brani
+ * sopra la riga cliccata la spostava di quaranta posti, e Maiusc+clic contava
+ * dalla posizione vecchia: l'intervallo prendeva quaranta brani mai cliccati,
+ * fuori schermo, e «Elimina dal disco» agiva anche su di loro (R04b-1). È
+ * proprio il gesto che il rifiuto di un intervallo a cavallo di un
+ * aggiornamento invita a rifare.
+ *
+ * Vale se l'elenco è la stessa versione (gli indici dicono le stesse righe,
+ * anche quelle non in mano), o se alla sua posizione c'è ancora il suo brano
+ * (cambiato altrove, ma l'estremo è quello). Altrimenti no, e Maiusc vale un
+ * clic semplice, come senza àncora: indovinare dove sia finita vorrebbe dire
+ * scegliere righe che nessuno ha guardato.
+ */
+export function ancoraUsabile(
+  ancora: Ancora | null,
+  ora: {
+    generazione: number | null;
+    riga: (indice: number) => { id: number } | undefined;
+  },
+): number | null {
+  if (ancora === null) return null;
+  if (ora.riga(ancora.indice)?.id === ancora.id) return ancora.indice;
+  if (ancora.generazione !== null && ancora.generazione === ora.generazione) {
+    return ancora.indice;
+  }
+  return null;
+}

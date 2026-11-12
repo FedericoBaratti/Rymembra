@@ -29,7 +29,16 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Brano, VistaBrani } from "./ipc";
 import { useStatoPresente } from "./presenza";
 import type { ArchivioRado, Elenco } from "./rada";
-import { gestoDelClic, nellOrdineDellaVista } from "./selezione";
+import { ancoraUsabile, gestoDelClic, nellOrdineDellaVista, type Ancora } from "./selezione";
+
+/**
+ * Quel che un gesto di selezione porta dei modificatori: un clic, o un tasto
+ * (Maiusc+↑↓ nell'elenco, che è il Maiusc+clic detto da tastiera).
+ */
+export type GestoModificato = Pick<
+  React.MouseEvent,
+  "shiftKey" | "ctrlKey" | "metaKey" | "preventDefault"
+>;
 
 /** Quel che la selezione legge dalla pagina. */
 export interface IngressiSelezione {
@@ -56,8 +65,11 @@ export interface Selezione {
   scelti: Map<number, number>;
   /** Gli scelti nell'ordine della vista: vedi `nellOrdineDellaVista`. */
   selezionati: number[];
-  /** Clic su una riga, con i modificatori. */
-  seleziona: (e: React.MouseEvent, indice: number) => void;
+  /**
+   * Clic su una riga, con i modificatori. `partenza` è la riga da cui parte un
+   * Maiusc+↑↓: se l'àncora manca, l'intervallo parte da lì.
+   */
+  seleziona: (e: GestoModificato, indice: number, partenza?: number) => void;
   /** Spazio sulla riga col fuoco. */
   alterna: (indice: number) => void;
   /** «Seleziona tutto», e Ctrl+A nell'elenco. */
@@ -100,14 +112,14 @@ export function useSelezione({
     () => new Map(),
     (mappa) => mappa.size > 0,
   );
-  const [ancora, setAncora] = useState<number | null>(null);
+  const [ancora, setAncora] = useState<Ancora | null>(null);
   /**
    * La selezione di ciascuna vista tenuta montata, mentre se ne guarda
    * un'altra: vedi `VISTE_TENUTE` in `App.tsx` e l'effetto che la mette da
    * parte, qui sotto.
    */
   const selezioniTenute = useRef(
-    new Map<string, { scelti: Map<number, number>; ancora: number | null }>(),
+    new Map<string, { scelti: Map<number, number>; ancora: Ancora | null }>(),
   );
 
   /**
@@ -133,16 +145,40 @@ export function useSelezione({
    * `selezione.ts`: l'àncora è una posizione nella vista, e si sposta anche col
    * clic semplice — prima no, e Maiusc+clic dopo un clic semplice partiva
    * dall'ultima riga toccata con Ctrl, magari tre schermate più su.
+   *
+   * L'àncora porta anche il suo brano e la generazione dell'elenco, e vale solo
+   * se è ancora lei (`ancoraUsabile`): dopo una scansione che sposta le righe,
+   * Maiusc+clic vale un clic semplice invece di contare da una posizione che
+   * adesso è di un altro brano (R04b-1).
    */
   const seleziona = useCallback(
-    (e: React.MouseEvent, indice: number) => {
+    (e: GestoModificato, indice: number, partenza?: number) => {
       const brano = elenco.riga(indice);
       if (!brano) return;
+      const generazione = rada?.generazione ?? null;
+      const riga = (i: number) => elenco.riga(i);
+      let usabile = ancoraUsabile(ancora, { generazione, riga });
+      let base = usabile === null ? null : ancora;
+      // Maiusc+↑↓ senza un'àncora: si parte dalla riga da cui ci si muove,
+      // come nell'albero delle Cartelle.
+      const daQui = partenza === undefined ? undefined : elenco.riga(partenza);
+      if (e.shiftKey && usabile === null && partenza !== undefined && daQui !== undefined) {
+        usabile = partenza;
+        base = { indice: partenza, id: daQui.id, generazione };
+      }
       const { gesto, ancora: dopo } = gestoDelClic(
         { indice, maiuscolo: e.shiftKey, controllo: e.ctrlKey || e.metaKey },
-        ancora,
+        usabile,
       );
-      setAncora(dopo);
+      // L'intervallo l'àncora non la sposta, e quella verificata adesso è
+      // dell'elenco di adesso; ogni altro gesto la mette sulla riga premuta.
+      setAncora(
+        gesto.tipo === "intervallo" && base !== null
+          ? { ...base, generazione }
+          : dopo === null
+            ? null
+            : { indice: dopo, id: brano.id, generazione },
+      );
       if (gesto.tipo === "intervallo") {
         e.preventDefault();
         const { da, a } = gesto;
@@ -200,9 +236,9 @@ export function useSelezione({
         if (!dopo.delete(brano.id)) dopo.set(brano.id, indice);
         return dopo;
       });
-      setAncora(indice);
+      setAncora({ indice, id: brano.id, generazione: rada?.generazione ?? null });
     },
-    [elenco, setScelti],
+    [elenco, rada, setScelti],
   );
 
   /*
