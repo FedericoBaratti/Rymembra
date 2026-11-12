@@ -122,16 +122,15 @@ test("ogni superficie aria-modal rende inerte il resto della finestra", () => {
   // lasciano leggibile e attivabile la pagina dietro. La regola sta in
   // `useVeloInerte`, o in `Dialogo` che la chiama.
   const DA_FARE: Record<string, string> = {
-    // Di altri gruppi della revisione: la correzione è la stessa riga.
-    "Giro.tsx": "F08 (il giro)",
-    "parti/Equalizzatore.tsx": "F13",
-    "parti/Insieme.tsx": "F02 (il pannello della barra)",
     // Rende inerte la pagina da sé, con `inerte` di `Impaginazione`.
     "schermate/InRiproduzioneTelefono.tsx": "inerte di suo",
   };
   const file = [
     "Account.tsx",
     "Dialogo.tsx",
+    "Giro.tsx",
+    "parti/Equalizzatore.tsx",
+    "parti/Insieme.tsx",
     "Primo.tsx",
     "Regole.tsx",
     "Ripristino.tsx",
@@ -160,6 +159,22 @@ test("ogni superficie aria-modal rende inerte il resto della finestra", () => {
     primo.indexOf("useVeloInerte(finestrella)") > primo.indexOf("useFinestrella<HTMLDivElement>("),
     "Primo: useVeloInerte dopo useFinestrella",
   );
+  // Il giro, l'equalizzatore e il pannello di «Ascolta insieme» nella barra
+  // (R16-3): velo e riquadro sono fratelli, quindi il riquadro va passato
+  // accanto al velo; e dopo `useFinestrella`, che deve leggere chi aveva il
+  // fuoco prima che la pagina diventi inerte.
+  for (const [nome, dove] of [
+    ["Giro.tsx", "export function Giro("],
+    ["parti/Equalizzatore.tsx", "useFinestrella<HTMLDivElement>(onChiudi)"],
+    ["parti/Insieme.tsx", "function PannelloInsieme("],
+  ] as const) {
+    const testo = sorgente(nome);
+    const corpo = testo.slice(testo.indexOf(dove));
+    const finestrella = corpo.indexOf("useFinestrella<HTMLDivElement>(onChiudi)");
+    const velo = corpo.indexOf("useVeloInerte(velo, radice)");
+    assert.ok(finestrella !== -1 && velo > finestrella, `${nome}: useVeloInerte(velo, radice) dopo useFinestrella`);
+    assert.match(corpo, /ref=\{velo\}/, `${nome}: il velo ha il suo riferimento`);
+  }
   // Il foglio: il pannello resta vivo accanto al suo velo, e chi aveva il
   // fuoco si legge prima che la pagina diventi inerte.
   const foglio = sorgente("parti/Foglio.tsx");
