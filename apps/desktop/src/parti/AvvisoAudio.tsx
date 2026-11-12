@@ -122,11 +122,18 @@ export function AvvisoAudio({
       guasto.attesa !== null
         ? t("audio.waiting.what", { nome: guasto.attesa })
         : t("audio.lost.what");
+    /* Senza il codice della causa il motore non si è mai aperto, e la causa è
+       un errore del nucleo: la frase la dice il suo codice (`errors.…`, con la
+       variante `.telefono` che `tSe` sceglie da sé), cioè che cosa controllare.
+       La causa del motore — «l'apertura del dispositivo non è finita entro 20
+       secondi», in italiano anche con l'interfaccia in inglese — resta il
+       ripiego, ed è nel diario. La frase del catalogo finisce già col punto, e
+       qui sotto se ne aggiunge uno. */
     const perche =
       guasto.attesa !== null
         ? t("audio.waiting.how")
         : guasto.causaCodice === null
-          ? guasto.causa
+          ? tSe(`errors.${guasto.codice}`, guasto.causa).replace(/\.+$/, "")
           : tSe(`audio.lost.cause.${guasto.causaCodice}`, guasto.causa);
     const tasto = guasto.riapribile && (
       <button

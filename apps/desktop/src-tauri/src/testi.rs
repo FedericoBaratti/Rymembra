@@ -354,6 +354,18 @@ impl StatoTesti {
     pub fn ferma(&self) {
         self.da_fermare.store(true, Ordering::Relaxed);
     }
+
+    /// La finestra ha cominciato una pagina nuova: nessun pannello è aperto.
+    ///
+    /// I pannelli si contano con la pulizia di un effetto di React, e una
+    /// pagina che si ricarica — «Ricarica» della schermata di guasto — non la
+    /// esegue: il conto restava a uno per sempre, e il testo del brano dopo si
+    /// chiedeva a LRCLIB a ogni cambio di brano col pannello chiuso, contro la
+    /// promessa di `PRIVACY.md` (R13-4). La pagina nuova riconta da sé i
+    /// pannelli che monta. La chiama `pagina::pagina_nuova`.
+    pub fn pagina_nuova(&self) {
+        self.pannelli_aperti.store(0, Ordering::Relaxed);
+    }
 }
 
 /// I fornitori, aprendoli se è la prima volta.
@@ -855,12 +867,22 @@ pub fn testi_pannello(testi: State<'_, StatoTesti>, aperto: bool) {
 /// chiama ogni pannello che si apre, e farne una sonda vorrebbe dire
 /// un'interfaccia che aspetta un servizio esterno per disegnare quattro numeri.
 ///
+/// In disparte, sul pool bloccante, per la ragione di [`testi_rete`]: la
+/// copertura è un conteggio su tutta la libreria, e con una scansione che tiene
+/// il lucchetto l'attesa arriva a quattro secondi. Sul filo della finestra
+/// voleva dire Impostazioni › Testi e l'editor dei testi fermi per quel tempo.
+///
 /// # Errori
 ///
 /// `db.queryFailed`.
 #[tauri::command]
-pub fn testi_stato(stato: State<'_, Stato>, testi: State<'_, StatoTesti>) -> Esito<StatoTestiIpc> {
-    stato_adesso(&stato, &testi).map_err(errore)
+pub async fn testi_stato(app: AppHandle) -> Esito<StatoTestiIpc> {
+    in_disparte("stato dei testi", move || {
+        let (stato, testi) = stati(&app, "stato dei testi").map_err(errore)?;
+        stato_adesso(&stato, &testi).map_err(errore)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Accende o spegne le richieste al catalogo.
@@ -909,42 +931,49 @@ fn rete_adesso(app: &AppHandle, attivo: bool) -> Esito<StatoTestiIpc> {
 /// l'interruttore spento promette di non fare — e continuano a leggersi. Il
 /// perché del valore di serie sta su `rymembra_app::testi::accanto_ai_file`.
 ///
-/// # Errori
-///
-/// `db.queryFailed`.
-#[tauri::command(async)]
-pub fn testi_accanto(
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    attivo: bool,
-) -> Esito<StatoTestiIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(
-            &libreria.connection,
-            testi::CHIAVE_ACCANTO,
-            if attivo { "1" } else { "0" },
-        )
-    })
-    .map_err(errore)?;
-    stato_adesso(&stato, &testi).map_err(errore)
-}
-
-/// Cerca il testo di tutti i brani che ne sono senza.
-///
-/// Torna subito: il lavoro va su un filo suo, e l'avanzamento arriva con
-/// l'evento `testi:avanzamento`.
+/// In disparte come [`testi_rete`], e per la stessa ragione: dopo la scrittura
+/// rilegge lo stato intero.
 ///
 /// # Errori
 ///
 /// `db.queryFailed`.
 #[tauri::command]
-pub fn testi_riempi(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-) -> Esito<StatoTestiIpc> {
-    avvia(&app);
-    stato_adesso(&stato, &testi).map_err(errore)
+pub async fn testi_accanto(app: AppHandle, attivo: bool) -> Esito<StatoTestiIpc> {
+    in_disparte("interruttore dei testi accanto ai file", move || {
+        let (stato, testi) =
+            stati(&app, "interruttore dei testi accanto ai file").map_err(errore)?;
+        con_libreria(&stato, |libreria| {
+            settings::write(
+                &libreria.connection,
+                testi::CHIAVE_ACCANTO,
+                if attivo { "1" } else { "0" },
+            )
+        })
+        .map_err(errore)?;
+        stato_adesso(&stato, &testi).map_err(errore)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Cerca il testo di tutti i brani che ne sono senza.
+///
+/// Torna subito: il lavoro va su un filo suo, e l'avanzamento arriva con
+/// l'evento `testi:avanzamento`. Lo stato che restituisce si legge in
+/// disparte, come in [`testi_stato`].
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+#[tauri::command]
+pub async fn testi_riempi(app: AppHandle) -> Esito<StatoTestiIpc> {
+    in_disparte("passata dei testi", move || {
+        avvia(&app);
+        let (stato, testi) = stati(&app, "passata dei testi").map_err(errore)?;
+        stato_adesso(&stato, &testi).map_err(errore)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Chiede alla passata in corso di fermarsi.
@@ -1275,6 +1304,70 @@ mod prove {
             sbagliati.is_empty(),
             "comandi (async) che aspettano disco o rete: {sbagliati:#?}"
         );
+    }
+
+    /// Nessun comando conta i testi di tutta la libreria fuori dal pool
+    /// bloccante (R24-7).
+    ///
+    /// Lo stato dei testi è la copertura di tutta la libreria — un `DISTINCT`
+    /// su `tracks` — più la coda: decine di millisecondi su cinquantamila
+    /// brani, e fino a quattro secondi se una scansione tiene il lucchetto. Un
+    /// comando sincrono li toglie al filo che ridisegna la finestra (lo stato
+    /// lo chiedono Impostazioni › Testi e l'editor dei testi a ogni apertura),
+    /// uno `(async)` su una `fn` sincrona a un *worker* del runtime. Vale la
+    /// regola di `disparte.rs`: un comando che legge più di una riga per chiave
+    /// non è sincrono. `rete_adesso` è nell'elenco perché finisce nello stesso
+    /// conto.
+    #[test]
+    fn chi_conta_la_libreria_non_sta_sul_filo_della_finestra() {
+        const CONTI: [&str; 2] = [concat!("stato", "_adesso("), concat!("rete", "_adesso(")];
+        let sorgente = include_str!("testi.rs");
+        let mut contati = 0;
+        let mut sbagliati = Vec::new();
+        for (dove, _) in sorgente.match_indices(concat!("\n#[tauri::", "command")) {
+            let resto = &sorgente[dove + 1..];
+            let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+            let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+            if !CONTI.iter().any(|conto| corpo.contains(conto)) {
+                continue;
+            }
+            contati += 1;
+            let nome: String = firma
+                .find("fn ")
+                .map(|i| &firma[i + 3..])
+                .unwrap_or_default()
+                .chars()
+                .take_while(|c| *c == '_' || c.is_alphanumeric())
+                .collect();
+            if !firma.contains("async fn ") || !corpo.contains(concat!("in_", "disparte(")) {
+                sbagliati.push(nome);
+            }
+        }
+        assert!(
+            contati >= 4,
+            "la ricerca non ha trovato i comandi dello stato"
+        );
+        assert!(
+            sbagliati.is_empty(),
+            "comandi che contano la libreria fuori dal pool bloccante: {sbagliati:#?}"
+        );
+    }
+
+    /// Una pagina nuova azzera i pannelli aperti (R13-4): quella di prima non
+    /// ha eseguito le sue pulizie, e con il conto rimasto a uno il testo del
+    /// brano dopo si chiedeva al catalogo col pannello chiuso.
+    #[test]
+    fn una_pagina_nuova_azzera_i_pannelli_aperti() {
+        use std::sync::atomic::Ordering;
+        let testi = super::StatoTesti::nuovo();
+        // La colonna e lo schermo intero, aperti; poi la pagina si ricarica
+        // senza chiuderli.
+        testi.pannelli_aperti.store(2, Ordering::Relaxed);
+        testi.pagina_nuova();
+        assert_eq!(testi.pannelli_aperti.load(Ordering::Relaxed), 0);
+        // E la pagina nuova riconta da zero quel che monta.
+        testi.pannelli_aperti.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(testi.pannelli_aperti.load(Ordering::Relaxed), 1);
     }
 
     #[test]

@@ -1443,6 +1443,24 @@ fn azzera_errore(aggiornamenti: &StatoAggiornamenti) {
 fn guasto(err: tauri_plugin_updater::Error) -> AppError {
     use tauri_plugin_updater::Error as Guasto;
     let dettaglio = err.to_string();
+    // Il server dello scaricamento ha risposto, e con uno stato d'errore:
+    // l'installer manca (404), GitHub è giù (5xx), o chiede di rallentare
+    // (429). Non è la rete che manca, e dirlo così mandava a guardare il cavo
+    // mentre il browser apriva GitHub senza problemi (R20-10). Il plugin lo
+    // mette solo nel testo: vedi [`stato_dello_scaricamento`].
+    if let Guasto::Network(testo) = &err
+        && let Some(status) = stato_dello_scaricamento(testo)
+    {
+        let codice = if status == 429 {
+            ErrorCode::NetRateLimited {
+                service: Some("aggiornamenti".to_owned()),
+                retry_after_ms: None,
+            }
+        } else {
+            ErrorCode::NetHttp { status, url: None }
+        };
+        return AppError::new(codice).with_cause(dettaglio);
+    }
     match err {
         // La rete: succede, si ritenta al giro dopo e non si dice niente a
         // nessuno.
@@ -1451,6 +1469,12 @@ fn guasto(err: tauri_plugin_updater::Error) -> AppError {
         }
         // Il manifesto non ha la forma attesa, o non parla di questa
         // piattaforma. È un guasto di chi pubblica, non di chi installa.
+        //
+        // `ReleaseNotFound` in realtà vuol dire «l'indirizzo del manifesto ha
+        // risposto con uno stato che non è 2xx» (404 se la release non ha
+        // `latest.json`, 5xx se GitHub è giù), e il plugin non dice quale. Il
+        // catalogo non ha un codice per «il server ha risposto con un errore»
+        // senza lo stato: resta qui finché non ce l'avrà (vedi R20-10).
         Guasto::ReleaseNotFound
         | Guasto::Serialization(_)
         | Guasto::Semver(_)
@@ -1475,6 +1499,23 @@ fn guasto(err: tauri_plugin_updater::Error) -> AppError {
         })
         .with_cause(dettaglio),
     }
+}
+
+/// Lo stato HTTP di uno scaricamento rifiutato, se il testo lo dice.
+///
+/// `tauri-plugin-updater` 2.13 non ha una variante per «il server ha risposto
+/// con un errore»: lo scrive in un `Error::Network` come
+/// «Download request failed with status: 404 Not Found». Si legge da lì, e solo
+/// da lì: un `Network` con un altro testo resta la rete che manca. Se un giorno
+/// il plugin cambiasse le parole, si tornerebbe a `net.offline`, cioè al
+/// difetto di prima e non a un guasto nuovo.
+fn stato_dello_scaricamento(testo: &str) -> Option<u16> {
+    let resto = testo.strip_prefix("Download request failed with status: ")?;
+    let cifre: String = resto.chars().take_while(char::is_ascii_digit).collect();
+    cifre
+        .parse()
+        .ok()
+        .filter(|stato| (100..=599).contains(stato))
 }
 
 /// Lo stato, nella forma che la finestra riceve.
@@ -1852,6 +1893,46 @@ mod prove {
                 .code(),
             "net.badSchema"
         );
+    }
+
+    /// Uno stato HTTP sullo scaricamento dell'installer non è la rete che
+    /// manca (R20-10): il plugin lo mette solo nel testo di un
+    /// `Error::Network`, e la fascia diceva «Nessuna connessione a Internet»
+    /// mentre il browser apriva GitHub senza problemi.
+    #[test]
+    fn uno_stato_http_dello_scaricamento_non_e_offline() {
+        let scaricamento = |stato: &str| {
+            guasto(tauri_plugin_updater::Error::Network(format!(
+                "Download request failed with status: {stato}"
+            )))
+        };
+        let mancante = scaricamento("404 Not Found");
+        assert!(
+            matches!(mancante.code(), ErrorCode::NetHttp { status: 404, .. }),
+            "{mancante:?}"
+        );
+        assert!(!mancante.is_retryable(), "un 404 non passa da sé");
+        let giu = scaricamento("503 Service Unavailable");
+        assert!(
+            matches!(giu.code(), ErrorCode::NetHttp { status: 503, .. }),
+            "{giu:?}"
+        );
+        assert!(giu.is_retryable(), "un 5xx si riprova presto");
+        let troppe = scaricamento("429 Too Many Requests");
+        assert_eq!(troppe.code().kind().code(), "net.rateLimited", "{troppe:?}");
+        assert!(troppe.is_retryable());
+        // La causa resta quella del plugin, per il diario.
+        assert!(
+            mancante
+                .cause()
+                .is_some_and(|causa| causa.contains("404 Not Found")),
+            "{mancante:?}"
+        );
+        // Un `Network` che non dice uno stato resta la rete che manca.
+        let rete = guasto(tauri_plugin_updater::Error::Network(
+            "error sending request".to_owned(),
+        ));
+        assert_eq!(rete.code().kind().code(), "net.offline");
     }
 
     /// Il dialogo dice, in due lingue, che Rymembra si chiude, e porta la

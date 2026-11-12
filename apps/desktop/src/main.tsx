@@ -2,6 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { spegniIlBrowser } from "./browserSpento";
+import { conDove, rigaDelRifiuto } from "./diarioDellaFinestra";
 import { ipc } from "./ipc";
 import { leggiLaMemoriaCome } from "./cartelleNuvola";
 import { applicaLingua, scegli, t } from "./lingue";
@@ -78,34 +80,19 @@ applicaLingua(scegli(null, navigator.language));
 window.addEventListener("error", (evento) => {
   ipc.diarioAnnota("finestra", conDove(evento));
 });
-
-/**
- * Il messaggio, e dove è successo: le prime righe della pila, o almeno file,
- * riga e colonna. Il messaggio da solo — «Cannot read properties of undefined
- * (reading 'length')», arrivato così da un diario vero — non dice quale dei
- * cento `.length` dell'interfaccia fosse, e senza il punto un guasto che non
- * si ripete non si trova. Il nucleo taglia a una riga sola, e le righe della
- * pila si legano con « ← » perché ci stiano.
- */
-function conDove(evento: ErrorEvent): string {
-  const pila = evento.error instanceof Error ? evento.error.stack : undefined;
-  const righe = pila
-    ?.split("\n")
-    .map((riga) => riga.trim())
-    .filter((riga) => riga.startsWith("at "))
-    .slice(0, 4);
-  if (righe && righe.length > 0) return `${evento.message} ${righe.join(" ← ")}`;
-  return evento.filename
-    ? `${evento.message} (${evento.filename}:${evento.lineno}:${evento.colno})`
-    : evento.message;
-}
 window.addEventListener("unhandledrejection", (evento) => {
   // `reason` è quel che è stato passato a `reject`, e può essere qualunque
-  // cosa: un `Error`, un `ErroreIpc` del nucleo, una stringa, `undefined`.
-  // `String(...)` è l'unica lettura che non fallisce su tutti e quattro, e il
-  // nucleo taglia a una riga sola prima di scrivere.
-  ipc.diarioAnnota("promessa", String(evento.reason));
+  // cosa: un `Error`, un `ErroreIpc` del nucleo, una stringa, `undefined`. Il
+  // caso normale è il secondo, e `String(...)` ne faceva «[object Object]»:
+  // vedi `rigaDelRifiuto`. Il nucleo taglia a una riga sola prima di scrivere.
+  ipc.diarioAnnota("promessa", rigaDelRifiuto(evento.reason));
 });
+
+// Il menù di Edge e le scorciatoie del browser, spenti prima del primo disegno
+// e fuori dai campi di testo (decisione D-43): un «Aggiorna» o un F5 rifaceva
+// tutta l'interfaccia, perdendo dialoghi aperti e testo non salvato. Solo sul
+// computer: vedi `browserSpento.ts`.
+if (!MOBILE) spegniIlBrowser(window);
 
 // La forma prima del primo disegno, come la lingua: una pagina disegnata da
 // computer e poi rifatta da telefono sarebbe un fotogramma con la barra
