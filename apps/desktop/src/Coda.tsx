@@ -40,7 +40,7 @@ import {
   type RiordinoInVolo,
 } from "./righeCoda";
 import { t, tSe, useLingua } from "./lingue";
-import { useVirtuale } from "./virtuale";
+import { pezziDellaFinestra, useVirtuale } from "./virtuale";
 import { conIndice, statoSuono } from "./segnali";
 import { useDati } from "./dati";
 import { Presenza } from "./presenza";
@@ -470,13 +470,25 @@ export function RigheCoda({
       /* Un gestore solo per tutte le righe, come nell'elenco dei brani. */
       onKeyDown={daTastiera}
     >
-      <li
-        className="paglia"
-        style={{ height: finestra.pagliaSopra }}
-        role="presentation"
-      />
-      {stato.coda.slice(finestra.primo, finestra.ultimo).map((id, k) => {
-        const indice = finestra.primo + k;
+      {/* La finestra, le paglie, e la riga col fuoco anche quando una rotellata
+          l'ha portata fuori: smontata, il fuoco cadeva sul `<body>` (R13b-7).
+          Vedi `pezziDellaFinestra`. */}
+      {pezziDellaFinestra(finestra.primo, finestra.ultimo, coda.length, fuoco.attivo).map((pezzo) => {
+        if ("paglia" in pezzo) {
+          return (
+            <li
+              key={pezzo.paglia}
+              className="paglia"
+              style={{
+                height: Math.max(finestra.inizioDi(pezzo.a) - finestra.inizioDi(pezzo.da), 0),
+              }}
+              role="presentation"
+            />
+          );
+        }
+        const indice = pezzo.riga;
+        const id = coda[indice];
+        if (id === undefined) return null;
         const brano = righe.get(id) ?? undefined;
         const comeSta = statoRiga(id, righe);
         const inAscolto = indice === stato.posizioneCoda;
@@ -650,11 +662,6 @@ export function RigheCoda({
           </li>
         );
       })}
-      <li
-        className="paglia"
-        style={{ height: finestra.pagliaSotto }}
-        role="presentation"
-      />
     </ol>
   );
 }

@@ -148,7 +148,7 @@ import { conIndice } from "../segnali";
 import { gestoPermesso } from "../insieme";
 import { vociCartella } from "../menuBrani";
 import { useLettore } from "../riproduzione";
-import { useVirtuale } from "../virtuale";
+import { pezziDellaFinestra, useVirtuale } from "../virtuale";
 import { ElencoBrani, ElencoFinto } from "./Elenco";
 import { StatoVuoto } from "./Libreria";
 
@@ -1744,13 +1744,24 @@ export function Cartelle({
             {/* Il posto che occupano le righe non disegnate. `presentation`
                 perché non sono righe: un `tree` con dentro due `div`
                 sconosciuti direbbe di avere due nodi che non ha. */}
-            <div
-              className="paglia"
-              style={{ height: finestra.sopra * finestra.altezza }}
-              role="presentation"
-            />
-            {righe.slice(finestra.primo, finestra.ultimo).map((riga, k) => {
-              const i = finestra.primo + k;
+            {/* La finestra, le paglie, e la riga col fuoco anche fuori dalla
+                finestra: smontata da una rotellata, il fuoco cadeva sul
+                `<body>` e le lettere della digitazione andavano alle
+                scorciatoie della finestra (R13b-7). */}
+            {pezziDellaFinestra(finestra.primo, finestra.ultimo, righe.length, fuoco.attivo).map((pezzo) => {
+              if ("paglia" in pezzo) {
+                return (
+                  <div
+                    key={pezzo.paglia}
+                    className="paglia"
+                    style={{ height: Math.max(pezzo.a - pezzo.da, 0) * finestra.altezza }}
+                    role="presentation"
+                  />
+                );
+              }
+              const i = pezzo.riga;
+              const riga = righe[i];
+              if (riga === undefined) return null;
               const morta = spenta(riga);
               const file = riga.brano !== null;
               /* Una radice del cloud porta l'icona del suo servizio, e il suo
@@ -1778,6 +1789,10 @@ export function Cartelle({
                         : "nodo-cartella list-row folder-row"
                   }
                   role="treeitem"
+                  /* L'indice scritto sulla riga: la riga col fuoco si disegna
+                     anche fuori ordine, e la posizione nel DOM non dice più
+                     quale sia (`indiceDi`). */
+                  data-indice={i}
                   aria-level={riga.livello}
                   /* Solo su una cartella che si apre: su una foglia
                      `aria-expanded` annuncerebbe un comando che non esiste, e
@@ -1800,7 +1815,7 @@ export function Cartelle({
                   tabIndex={i === fuoco.fermata ? 0 : -1}
                   /* Il rientro lo decide il foglio a partire dal livello: quanto
                      valga un livello è ritmo, e il ritmo è della skin. */
-                  style={conIndice(k, { "--livello-nodo": riga.livello } as CSSProperties)}
+                  style={conIndice(Math.max(i - finestra.primo, 0), { "--livello-nodo": riga.livello } as CSSProperties)}
                   onFocus={() => segnaFuoco(i)}
                   onPointerDown={(e) => presaVersoCoda(e, riga)}
                   /* Maiusc+clic selezionerebbe anche il testo delle righe in
@@ -1890,11 +1905,6 @@ export function Cartelle({
                 </div>
               );
             })}
-            <div
-              className="paglia"
-              style={{ height: finestra.sotto * finestra.altezza }}
-              role="presentation"
-            />
           </div>
         </div>
       </div>
