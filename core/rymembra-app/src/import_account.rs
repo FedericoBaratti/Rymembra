@@ -27,7 +27,9 @@
 //! un caso:
 //!
 //! - le playlist si **sostituiscono** (`prepara_playlist`), quindi la seconda
-//!   passata non accoda;
+//!   passata non accoda — ma solo quelle che questa importazione aveva scritto:
+//!   una playlist fatta qui con lo stesso nome resta com'è, e quella di Spotify
+//!   le sta accanto (D-11);
 //! - la cronologia ha `WHERE NOT EXISTS (track_id, played_at)`, la stessa
 //!   guardia di `import_legacy`, servita dall'indice che `005_account.sql` ha
 //!   messo lì apposta;
@@ -55,10 +57,11 @@ use rymembra_domain::spotify_account::{
 };
 
 use crate::import_esterno::{
-    MissingTrack, RapportoImport, Sorgente, Truncation, leggi_libreria,
+    MissingTrack, RapportoImport, Sorgente, Truncation, etichetta_accanto, leggi_libreria,
     prepara_playlist_escludendo, riempi_playlist, scrivi_desiderati, scrivi_identificativi,
 };
 use crate::library::{db_error, now_ms, rebuild_aggregates};
+use crate::playlists::Provenienza;
 
 /// Una playlist che si è rifiutato di importare, e perché.
 ///
@@ -467,16 +470,26 @@ fn scrivi_playlist(
     gia_scritte: &mut HashSet<i64>,
 ) -> Result<RapportoImport, AppError> {
     let identita = identita_playlist(playlist, ordinale);
-    let (id, creata, sostituita) = prepara_playlist_escludendo(
+    // La provenienza si scrive **anche** dall'archivio, con l'identificativo
+    // fabbricato dal nome: è quel che rende riconoscibile alla volta dopo una
+    // playlist importata, che fino alla 3.2.0 era indistinguibile da una fatta
+    // a mano con lo stesso nome — e quella veniva svuotata (R06-3, D-11).
+    let fatta = prepara_playlist_escludendo(
         tx,
         &playlist.nome,
+        Provenienza {
+            servizio: Fonte::ArchivioSpotify.nome(),
+            id: &identita,
+            stabile: playlist.spotify_id.is_some(),
+            etichetta: etichetta_accanto(Fonte::ArchivioSpotify),
+            nata_il: None,
+        },
         playlist
-            .spotify_id
-            .as_deref()
-            .map(|id| (Fonte::ArchivioSpotify, id)),
-        playlist.troncatura(),
+            .troncatura()
+            .map(|(letti, attesi)| (Fonte::ArchivioSpotify, letti, attesi)),
         gia_scritte,
     )?;
+    let id = fatta.id;
     gia_scritte.insert(id);
     let voci = riempi_playlist(
         tx,
@@ -502,9 +515,11 @@ fn scrivi_playlist(
         Some(id),
     )?;
     rapporto.playlist_id = Some(id);
-    rapporto.playlist_name = Some(playlist.nome.trim().to_owned());
-    rapporto.playlist_created = creata;
-    rapporto.playlist_replaced = sostituita;
+    // Il nome che ha in libreria: troncato, o «(Spotify)» se sta accanto.
+    rapporto.playlist_name = Some(fatta.nome);
+    rapporto.playlist_created = fatta.creata;
+    rapporto.playlist_replaced = fatta.sostituita;
+    rapporto.playlist_beside = fatta.accanto_a;
     rapporto.playlist_entries = voci;
     rapporto.truncated = playlist
         .troncatura()
@@ -1873,6 +1888,62 @@ mod prove {
             99_999,
             "la data della decisione resta quella di qui"
         );
+    }
+
+    #[test]
+    fn una_playlist_fatta_a_mano_con_lo_stesso_nome_non_si_svuota() {
+        // R06-3, D-11: «Corsa» messa insieme qui, brano per brano, e la
+        // «Corsa» dell'account. Dall'archivio (senza identificativo) e dall'API
+        // (con): la playlist fatta qui resta com'è, con le sue voci e senza
+        // provenienza, e quella di Spotify entra accanto.
+        for spotify_id in [None, Some("37i9dQZF1DXcBWIGoYBM5M")] {
+            let mut db = database();
+            libreria_di_prova(&db);
+            let Ok(mia) = crate::playlists::create(&db, "Corsa") else {
+                panic!("la playlist fatta a mano si deve creare");
+            };
+            let feel_good = conta(&db, "SELECT id FROM tracks WHERE title = 'Feel Good Inc'");
+            let Ok(_) = crate::playlists::add_tracks(&mut db, mia.id, &[feel_good]) else {
+                panic!("la voce fatta a mano si deve scrivere");
+            };
+            let mut snapshot = snapshot_completo();
+            if let Some(p) = snapshot.playlist.first_mut() {
+                p.spotify_id = spotify_id.map(str::to_owned);
+            }
+
+            for giro in 0..2 {
+                let Ok(_) = import(&mut db, &snapshot, &Scelte::default()) else {
+                    panic!("l'importazione deve riuscire");
+                };
+                assert_eq!(
+                    conta(
+                        &db,
+                        &format!(
+                            "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = {}",
+                            mia.id
+                        )
+                    ),
+                    1,
+                    "{spotify_id:?}, giro {giro}: la playlist fatta a mano tiene le sue voci"
+                );
+                assert_eq!(
+                    conta(
+                        &db,
+                        &format!(
+                            "SELECT COUNT(*) FROM playlists WHERE id = {} AND source_service IS NULL",
+                            mia.id
+                        )
+                    ),
+                    1,
+                    "{spotify_id:?}, giro {giro}: e non diventa di Spotify"
+                );
+                assert_eq!(
+                    conta(&db, "SELECT COUNT(*) FROM playlists"),
+                    2,
+                    "{spotify_id:?}, giro {giro}: quella di Spotify sta accanto, una volta sola"
+                );
+            }
+        }
     }
 
     #[test]

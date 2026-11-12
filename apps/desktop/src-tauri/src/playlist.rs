@@ -533,12 +533,23 @@ pub async fn playlist_regole_prova(
 
 /// Legge un file di playlist e dice cosa porterebbe dentro, senza scrivere.
 ///
+/// `nome` è quello per cui fare il piano: quello scritto nel campo. Senza (la
+/// prima volta) vale il nome di serie del file. Il piano dipende dal nome —
+/// una playlist che c'è già con quel nome, fatta qui o importata prima da un
+/// file — e farlo sempre sul nome di serie diceva «verrà sostituita» per un
+/// nome che non era più quello che si stava per importare (R13c-2).
+///
 /// `(async)`: legge dal disco. Un M3U è piccolo, ma la regola vale per tutti i
 /// comandi che toccano il filesystem — e la finestra non deve fermarsi perché
 /// qualcuno ha scelto un file su una chiavetta lenta.
 #[tauri::command(async)]
-pub fn playlist_file_piano(stato: State<'_, Stato>, percorso: String) -> Esito<PianoFile> {
-    let (letta, nome, cartella) = leggi_file(&percorso).map_err(errore)?;
+pub fn playlist_file_piano(
+    stato: State<'_, Stato>,
+    percorso: String,
+    nome: Option<String>,
+) -> Esito<PianoFile> {
+    let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
+    let nome = nome_per_il_piano(nome, predefinito);
     let rapporto = con_libreria(&stato, |libreria| {
         import_playlist::plan(&mut libreria.connection, &letta, &nome, cartella.as_deref())
     })
@@ -546,11 +557,24 @@ pub fn playlist_file_piano(stato: State<'_, Stato>, percorso: String) -> Esito<P
     Ok(PianoFile { nome, rapporto })
 }
 
-/// Il piano, più il nome di serie che la finestra propone nel campo.
+/// Il nome per cui si fa il piano: quello chiesto, o quello di serie se non ne
+/// è stato chiesto uno che identifichi qualcosa. Lo stesso ripiego di
+/// [`playlist_file_importa`], così piano e importazione parlano dello stesso
+/// nome.
+fn nome_per_il_piano(chiesto: Option<String>, predefinito: String) -> String {
+    match chiesto {
+        Some(nome) if !nome.trim().is_empty() => nome,
+        _ => predefinito,
+    }
+}
+
+/// Il piano, più il nome per cui è stato fatto.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PianoFile {
-    /// Come si chiamerebbe: il titolo dentro il file, o il nome del file.
+    /// Il nome per cui è stato fatto il piano: quello chiesto, o, la prima
+    /// volta, il titolo dentro il file o il nome del file. La finestra lo
+    /// confronta con il campo, e non importa finché non coincidono.
     pub nome: String,
     /// Cosa porterebbe dentro.
     pub rapporto: PlaylistFileReport,
@@ -572,11 +596,7 @@ pub async fn playlist_file_importa(
         let stato =
             gestito::<Stato>(&app, "importazione di un file di playlist").map_err(errore)?;
         let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
-        let nome = if nome.trim().is_empty() {
-            predefinito
-        } else {
-            nome
-        };
+        let nome = nome_per_il_piano(Some(nome), predefinito);
         let esito = con_libreria(&stato, |libreria| {
             import_playlist::import(&mut libreria.connection, &letta, &nome, cartella.as_deref())
         })
@@ -688,6 +708,24 @@ pub struct PlaylistEsportata {
 mod prove {
     use super::*;
     use std::time::{Duration, Instant};
+
+    // ── il piano di un file di playlist ─────────────────────────────────────
+
+    #[test]
+    fn il_piano_di_un_file_si_fa_per_il_nome_chiesto() {
+        // R13c-2: il piano si faceva sempre sul nome di serie, e cambiare il
+        // campo non lo rifaceva. Il nome chiesto vince; uno vuoto, o di soli
+        // spazi, ripiega su quello di serie come fa l'importazione.
+        assert_eq!(
+            nome_per_il_piano(Some("Rock 2".to_owned()), "Rock".to_owned()),
+            "Rock 2"
+        );
+        assert_eq!(nome_per_il_piano(None, "Rock".to_owned()), "Rock");
+        assert_eq!(
+            nome_per_il_piano(Some("   ".to_owned()), "Rock".to_owned()),
+            "Rock"
+        );
+    }
 
     // ── l'«Annulla» delle cancellazioni ─────────────────────────────────────
 

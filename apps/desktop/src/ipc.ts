@@ -498,10 +498,11 @@ export const ipc = {
 
   // ── i file di playlist ────────────────────────────────────────────────
   // Il piano prima, come ogni altra cosa che scrive: reimportare un file
-  // **sostituisce** la playlist con lo stesso nome, e cancellare va detto
-  // prima di farlo.
-  playlistFilePiano: (percorso: string) =>
-    invoke<PianoFilePlaylist>("playlist_file_piano", { percorso }),
+  // **sostituisce** la playlist che quel file aveva creato con lo stesso nome,
+  // e cancellare va detto prima di farlo. Il piano si fa per il nome che si
+  // importerà: `nome` nullo è quello proposto dal file (R13c-2).
+  playlistFilePiano: (percorso: string, nome: string | null = null) =>
+    invoke<PianoFilePlaylist>("playlist_file_piano", { percorso, nome }),
   playlistFileImporta: (percorso: string, nome: string) =>
     invoke<EsitoFilePlaylist>("playlist_file_importa", { percorso, nome }),
   // Il formato lo decide l'estensione del file scelto: chiederlo una seconda

@@ -3,10 +3,18 @@
  *
  * # Perché c'è un piano prima
  *
- * Perché reimportare **sostituisce**: una playlist con lo stesso nome viene
- * svuotata e riscritta, che è l'unica delle tre scelte possibili — accodare,
- * rinominare, sostituire — che si può fare due volte senza pentirsene. Ma
- * cancella, e quel che cancella va detto prima di farlo, non dopo.
+ * Perché reimportare **sostituisce**: la playlist che un file aveva creato con
+ * lo stesso nome viene svuotata e riscritta, che è l'unica delle tre scelte
+ * possibili — accodare, rinominare, sostituire — che si può fare due volte
+ * senza pentirsene. Ma cancella, e quel che cancella va detto prima di farlo,
+ * non dopo. Una playlist fatta qui con quel nome invece non si tocca mai: il
+ * file le entra accanto, «Serata (file)», e il piano lo dice (D-11).
+ *
+ * # Il piano è quello del nome nel campo
+ *
+ * Tutte e due le cose dipendono dal nome, quindi il piano si rifà quando il
+ * campo cambia, e «Importa» resta spento finché il piano a schermo non è quello
+ * del nome scritto (R13c-2, `pianoFilePlaylist.ts`).
  *
  * # I mancanti si dicono con il percorso
  *
@@ -21,6 +29,8 @@
 import { useEffect, useState } from "react";
 
 import { Dialogo } from "./Dialogo";
+import { ATTESA_PIANO_MS, importabile } from "./pianoFilePlaylist";
+import { vinceLUltima } from "./ultima";
 import { ipc, testoErrore, type EsitoFilePlaylist } from "./ipc";
 import { Avviso } from "./parti/Avvisi";
 import { Icona } from "./parti/Icone";
@@ -41,8 +51,15 @@ export function ImportaPlaylist({
 }) {
   const [rapporto, setRapporto] = useState<EsitoFilePlaylist | null>(null);
   const [nome, setNome] = useState("");
+  /** Il nome per cui è stato fatto il piano a schermo: `null` finché non c'è. */
+  const [nomeDelPiano, setNomeDelPiano] = useState<string | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(true);
+  /** Si sta rifacendo il piano per un nome nuovo. */
+  const [ripianificando, setRipianificando] = useState(false);
+  // Fra due piani chiesti a pochi tasti di distanza conta l'ultimo chiesto, non
+  // l'ultimo arrivato: vedi `ultima.ts`.
+  const [turno] = useState(vinceLUltima);
   // Si apre con tutti i comandi spenti, perché il piano non è ancora arrivato:
   // il fuoco va sulla radice, che è l'unico posto che c'è in quell'istante, e
   // l'Escape funziona anche durante la lettura del file. Tutto da `Dialogo`.
@@ -56,6 +73,7 @@ export function ImportaPlaylist({
         if (annullato) return;
         setRapporto(piano.rapporto);
         setNome(piano.nome);
+        setNomeDelPiano(piano.nome);
       })
       .catch((e: unknown) => {
         if (!annullato) setErrore(testoErrore(e));
@@ -67,6 +85,38 @@ export function ImportaPlaylist({
       annullato = true;
     };
   }, [percorso]);
+
+  // Il piano si rifà quando il nome cambia, dopo un attimo senza tasti: con il
+  // nome di una playlist che c'è già cambia quel che «Importa» farebbe.
+  useEffect(() => {
+    if (nomeDelPiano === null) return;
+    if (nome === nomeDelPiano || nome.trim().length === 0) {
+      // Una risposta per un nome di prima, ancora in viaggio, non deve più
+      // arrivare a schermo.
+      turno();
+      setRipianificando(false);
+      return;
+    }
+    const mio = turno();
+    setRipianificando(true);
+    const attesa = window.setTimeout(() => {
+      ipc
+        .playlistFilePiano(percorso, nome)
+        .then((piano) => {
+          if (!mio()) return;
+          setRapporto(piano.rapporto);
+          setNomeDelPiano(piano.nome);
+          setErrore(null);
+        })
+        .catch((e: unknown) => {
+          if (mio()) setErrore(testoErrore(e));
+        })
+        .finally(() => {
+          if (mio()) setRipianificando(false);
+        });
+    }, ATTESA_PIANO_MS);
+    return () => window.clearTimeout(attesa);
+  }, [nome, nomeDelPiano, percorso, turno]);
 
   const conferma = () => {
     setInCorso(true);
@@ -85,6 +135,8 @@ export function ImportaPlaylist({
   };
 
   const vuota = rapporto !== null && rapporto.matchedByPath + rapporto.matchedByTags === 0;
+  /** Il piano a schermo è quello del nome nel campo. */
+  const pianoDelNome = nomeDelPiano !== null && nomeDelPiano === nome;
 
   return (
     // Il velo resta spento mentre legge e mentre importa, com'era; Escape
@@ -145,16 +197,38 @@ export function ImportaPlaylist({
             </div>
           </dl>
 
+          {/* Finché il piano non è quello del nome scritto, gli avvisi qui
+              sotto parlerebbero di un altro nome: si dice che si sta
+              ricontrollando, e «Importa» aspetta. */}
+          {!pianoDelNome && nome.trim().length > 0 && (
+            <p className="nota">{t("plfile.replanning")}</p>
+          )}
+
           {/* Avviso: qualcosa viene distrutto, e un gesto lo evita. Il gesto
               è cambiare il nome nel campo qui sopra, quindi non c'è un tasto
-              da mettere dentro il riquadro — la frase indica dove. */}
-          {rapporto.replaced && (
+              da mettere dentro il riquadro — la frase indica dove. Il nome è
+              quello del piano, non quello che si sta scrivendo. */}
+          {pianoDelNome && rapporto.replaced && (
             <Avviso livello="avviso">
               <Trans
                 k="plfile.replaced"
                 v={{
-                  nome: <strong>{nome}</strong>,
+                  nome: <strong>{rapporto.name}</strong>,
                   sostituita: <strong>{t("plfile.replaced.word")}</strong>,
+                }}
+              />
+            </Avviso>
+          )}
+
+          {/* Nota: non si distrugge niente. La playlist di qui resta com'è, e
+              il file entra accanto con un nome suo (D-11). */}
+          {pianoDelNome && rapporto.beside !== null && (
+            <Avviso livello="nota">
+              <Trans
+                k="plfile.beside"
+                v={{
+                  esistente: <strong>{rapporto.beside}</strong>,
+                  nome: <strong>{rapporto.name}</strong>,
                 }}
               />
             </Avviso>
@@ -219,9 +293,16 @@ export function ImportaPlaylist({
           className="bottone primario btn-accent"
           // `vuota`: la playlist verrebbe creata e sarebbe vuota, cioè un
           // successo apparente. Il riquadro qui sopra è un blocco e questo
-          // tasto deve dirlo anche lui, o il blocco è solo un colore.
+          // tasto deve dirlo anche lui, o il blocco è solo un colore. E spento
+          // finché il piano non è quello del nome scritto (R13c-2).
           disabled={
-            inCorso || rapporto === null || nome.trim().length === 0 || vuota
+            rapporto === null ||
+            !importabile({
+              inCorso: inCorso || ripianificando,
+              nome,
+              nomeDelPiano,
+              ritrovati: rapporto.matchedByPath + rapporto.matchedByTags,
+            })
           }
           onClick={conferma}
         >

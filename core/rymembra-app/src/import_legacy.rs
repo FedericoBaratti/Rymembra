@@ -31,7 +31,7 @@
 //! **idempotente** (vedi [`rymembra_domain::merge`]). Rifarla non raddoppia
 //! niente, quindi non serve ricordarsi di averla fatta.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension as _, Transaction};
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -39,6 +39,7 @@ use rymembra_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
 use rymembra_domain::merge::{TrackStats, collapse_duplicates, merge_stats};
 
 use crate::library::db_error;
+use crate::playlists::{Destinazione, Provenienza};
 
 /// Una riga del vecchio database, ridotta a ciò che vale la pena portare.
 #[derive(Debug, Clone)]
@@ -61,6 +62,16 @@ struct LegacyPlaylist {
     updated_at: i64,
     is_smart: bool,
     rules: Option<String>,
+}
+
+/// Una playlist del vecchio database entrata accanto a una che qui c'era già.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistBeside {
+    /// Il nome della playlist di qui, rimasta com'era.
+    pub name: String,
+    /// Il nome con cui è entrata quella del vecchio database: «Rock (1.0)».
+    pub imported_as: String,
 }
 
 /// Cosa l'importazione porterebbe, o ha portato.
@@ -90,8 +101,15 @@ pub struct ImportReport {
     pub history_rows: usize,
     /// Righe di cronologia saltate perché il loro brano non c'è più.
     pub history_orphans: usize,
-    /// Playlist create o aggiornate.
+    /// Playlist create o allungate.
     pub playlists: usize,
+    /// Le playlist del vecchio database entrate **accanto** a una con lo stesso
+    /// nome che qui c'era già e che non si è toccata (D-11): il piano le dice.
+    pub playlists_beside: Vec<PlaylistBeside>,
+    /// Le playlist rimaste fuori, per nome: senza un nome che identifichi
+    /// qualcosa, la seconda di due omonime, o un'automatica senza nessuna
+    /// condizione (che sarebbe tutta la libreria, D-22).
+    pub playlists_skipped: Vec<String>,
     /// Voci di playlist inserite.
     pub playlist_entries: usize,
     /// Voci di playlist saltate perché il brano non c'è più.
@@ -613,7 +631,25 @@ fn import_history(
 ///
 /// Le regole si portano come sono, senza interpretarle: chi le valuta è un
 /// altro pezzo, e un importatore che le riscrivesse a modo suo introdurrebbe un
-/// secondo formato da tenere allineato.
+/// secondo formato da tenere allineato. Si guarda solo che ci sia almeno una
+/// condizione valida: un'automatica senza è tutta la libreria (D-22), e resta
+/// fuori, detta in [`ImportReport::playlists_skipped`].
+///
+/// # Una playlist che c'è già (R06-2, D-11)
+///
+/// Chi sia la stessa playlist lo decide [`crate::playlists::destinazione`],
+/// come per ogni importazione. Le due risposte:
+///
+/// - **Portata di qui la volta prima** (la sua provenienza, o per le
+///   importazioni di prima del marchio lo stesso nome nato nello stesso
+///   millisecondo): non si svuota, non cambia natura, non cambia regole né
+///   nome. Riceve in coda i brani che le mancano, ed è quel che serve a chi
+///   rifà l'importazione dopo una scansione, come la finestra suggerisce: i
+///   brani ritrovati arrivano, e quel che l'utente ha aggiunto nel frattempo
+///   resta. La regola è quella del profilo (D-10): si aggiunge, non si toglie.
+/// - **Fatta qui**, o venuta da un'altra fonte: non si tocca. Quella del
+///   vecchio database entra accanto, «Rock (1.0)», e il piano lo dice
+///   ([`ImportReport::playlists_beside`]).
 fn import_playlists(
     legacy: &Connection,
     tx: &Transaction<'_>,
@@ -653,94 +689,224 @@ fn import_playlists(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("lettura delle playlist", &err))?;
 
+    let mut gia_scritte: HashSet<i64> = HashSet::new();
     for playlist in &playlists {
-        // La chiave è il nome normalizzato ed è UNIQUE: una playlist già
-        // importata si aggiorna invece di far fallire l'inserimento. È l'altra
-        // metà dell'idempotenza — senza, la seconda importazione cade qui.
-        tx.prepare_cached(
-            "INSERT INTO playlists (playlist_key, name, description, created_at, updated_at,
-                                    is_smart, rules)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(playlist_key) DO UPDATE SET
-               name = excluded.name, description = excluded.description,
-               updated_at = MAX(playlists.updated_at, excluded.updated_at),
-               is_smart = excluded.is_smart, rules = excluded.rules",
-        )
-        .and_then(|mut s| {
-            s.execute(rusqlite::params![
-                playlist.key,
-                playlist.name,
-                playlist.description,
-                playlist.created_at,
-                playlist.updated_at,
-                i64::from(playlist.is_smart),
-                playlist.rules,
-            ])
-        })
-        .map_err(|err| db_error("scrittura di una playlist", &err))?;
-        report.playlists += 1;
-
-        if playlist.is_smart {
-            continue;
-        }
-
-        let nuovo_id: i64 = tx
-            .query_row(
-                "SELECT id FROM playlists WHERE playlist_key = ?1",
-                [&playlist.key],
-                |row| row.get(0),
-            )
-            .map_err(|err| db_error("identificativo di una playlist", &err))?;
-
-        let mut lettura_voci = legacy
-            .prepare(
-                "SELECT track_id, position FROM playlist_tracks
-                 WHERE playlist_id = ?1 ORDER BY position",
-            )
-            .map_err(|err| db_error("lettura delle voci di playlist", &err))?;
-        let voci = lettura_voci
-            .query_map([playlist.id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(|err| db_error("lettura delle voci di playlist", &err))?;
-
-        // Prima si svuota: è quel che fanno tutti gli altri scrittori di
-        // playlist (`riscrivi_ordine`, il ripristino, la sincronia). Senza, una
-        // playlist omonima già presente con più voci di quante la legacy ne
-        // porti sopravvivrebbe oltre l'ultima riga scritta, e il risultato
-        // sarebbe un ibrido di due fonti che nessuno ha chiesto.
-        tx.execute(
-            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-            [nuovo_id],
-        )
-        .map_err(|err| db_error("svuotamento di una playlist da migrare", &err))?;
-
-        // Le posizioni si rinumerano da zero e non si copiano: saltando i brani
-        // che non ci sono più resterebbero dei buchi, e `position` è parte della
-        // chiave primaria — una playlist con posizioni 0, 3, 7 non è rotta, ma
-        // la prima riordinata dall'utente lo diventerebbe.
-        let mut scrittura = tx
-            .prepare_cached(
-                "INSERT OR REPLACE INTO playlist_tracks (playlist_id, track_id, position)
-                 VALUES (?1, ?2, ?3)",
-            )
-            .map_err(|err| db_error("scrittura di una voce di playlist", &err))?;
-        let mut posizione: i64 = 0;
-        for voce in voci {
-            let (legacy_track_id, _) =
-                voce.map_err(|err| db_error("lettura delle voci di playlist", &err))?;
-            let Some(track_id) = remap.get(&legacy_track_id) else {
-                report.playlist_orphans += 1;
-                continue;
+        let nome = crate::playlists::nome_da_importare(&playlist.name);
+        let identita = format!("rymembra:vecchio-database:{}", playlist.key);
+        let provenienza = Provenienza {
+            servizio: SERVIZIO_VECCHIO,
+            id: &identita,
+            stabile: false,
+            etichetta: ETICHETTA_VECCHIO,
+            nata_il: Some(playlist.created_at),
+        };
+        let destinazione =
+            match crate::playlists::destinazione(tx, &nome, provenienza, &gia_scritte) {
+                Ok(dove) => dove,
+                // Senza un nome che identifichi qualcosa, o la seconda di due
+                // omonime del vecchio database: resta fuori, e si dice.
+                Err(err)
+                    if matches!(
+                        err.code(),
+                        ErrorCode::LibraryPlaylistNameInvalid { .. }
+                            | ErrorCode::LibraryPlaylistExists { .. }
+                    ) =>
+                {
+                    report.playlists_skipped.push(playlist.name.clone());
+                    continue;
+                }
+                Err(err) => return Err(err),
             };
-            scrittura
-                .execute(rusqlite::params![nuovo_id, track_id, posizione])
-                .map_err(|err| db_error("scrittura di una voce di playlist", &err))?;
-            posizione += 1;
-            report.playlist_entries += 1;
+        let voci = voci_ritrovate(legacy, playlist, remap, report)?;
+
+        match destinazione {
+            Destinazione::Sua { id, smart } => {
+                gia_scritte.insert(id);
+                crate::playlists::segna_provenienza(tx, id, provenienza)?;
+                report.playlists += 1;
+                if !smart && !playlist.is_smart {
+                    report.playlist_entries += accoda_le_mancanti(tx, id, &voci)?;
+                }
+            }
+            Destinazione::Nuova { nome, accanto_a } => {
+                if playlist.is_smart && !regole_con_una_condizione(playlist.rules.as_deref()) {
+                    report.playlists_skipped.push(playlist.name.clone());
+                    continue;
+                }
+                tx.prepare_cached(
+                    "INSERT INTO playlists (playlist_key, name, description, created_at,
+                                            updated_at, is_smart, rules)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .and_then(|mut s| {
+                    s.execute(rusqlite::params![
+                        PlaylistKey::compute(Some(&nome)).as_str(),
+                        nome,
+                        playlist.description,
+                        playlist.created_at,
+                        playlist.updated_at,
+                        i64::from(playlist.is_smart),
+                        playlist
+                            .is_smart
+                            .then_some(playlist.rules.as_deref())
+                            .flatten(),
+                    ])
+                })
+                .map_err(|err| db_error("scrittura di una playlist", &err))?;
+                let id = tx.last_insert_rowid();
+                gia_scritte.insert(id);
+                crate::playlists::segna_provenienza(tx, id, provenienza)?;
+                report.playlists += 1;
+                if let Some(qui) = accanto_a {
+                    report.playlists_beside.push(PlaylistBeside {
+                        name: qui,
+                        imported_as: nome,
+                    });
+                }
+                if !playlist.is_smart {
+                    report.playlist_entries += scrivi_voci(tx, id, &voci)?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Il servizio scritto sulle playlist portate dal vecchio database: è quel che
+/// le riconosce alla volta dopo, anche dopo un rinomino del vecchio database.
+const SERVIZIO_VECCHIO: &str = "vecchio-database";
+
+/// Come si chiama il vecchio database nel nome di una playlist messa accanto:
+/// la versione da cui viene, che si legge uguale in ogni lingua.
+const ETICHETTA_VECCHIO: &str = "1.0";
+
+/// Le regole di là si possono portare? Vedi D-22.
+///
+/// Senza regole (nulle o vuote) no: un'automatica senza condizioni è tutta la
+/// libreria. Nella forma di adesso (con `combinazione`) serve almeno una
+/// condizione valida. Una forma che questa versione non riconosce si porta
+/// com'è, come prima: interpretarla non è compito di questo importatore, e non
+/// si sa se sia quella della 1.0 o un guasto.
+fn regole_con_una_condizione(regole: Option<&str>) -> bool {
+    let Some(testo) = regole.map(str::trim).filter(|t| !t.is_empty()) else {
+        return false;
+    };
+    let di_adesso = serde_json::from_str::<serde_json::Value>(testo)
+        .ok()
+        .is_some_and(|valore| valore.get("combinazione").is_some());
+    !di_adesso || !crate::smart::da_json(testo).valide().is_empty()
+}
+
+/// Le voci di una playlist del vecchio database, già nei brani di qui, in
+/// ordine. Quelle il cui brano non c'è più si contano fra gli orfani.
+///
+/// Per le automatiche non si leggono: non portano voci.
+fn voci_ritrovate(
+    legacy: &Connection,
+    playlist: &LegacyPlaylist,
+    remap: &HashMap<i64, i64>,
+    report: &mut ImportReport,
+) -> Result<Vec<i64>, AppError> {
+    if playlist.is_smart {
+        return Ok(Vec::new());
+    }
+    let mut lettura_voci = legacy
+        .prepare(
+            "SELECT track_id, position FROM playlist_tracks
+             WHERE playlist_id = ?1 ORDER BY position",
+        )
+        .map_err(|err| db_error("lettura delle voci di playlist", &err))?;
+    let voci = lettura_voci
+        .query_map([playlist.id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|err| db_error("lettura delle voci di playlist", &err))?;
+    let mut ritrovate = Vec::new();
+    for voce in voci {
+        let (legacy_track_id, _) =
+            voce.map_err(|err| db_error("lettura delle voci di playlist", &err))?;
+        match remap.get(&legacy_track_id) {
+            Some(track_id) => ritrovate.push(*track_id),
+            None => report.playlist_orphans += 1,
+        }
+    }
+    Ok(ritrovate)
+}
+
+/// Scrive le voci di una playlist appena creata.
+///
+/// Le posizioni si rinumerano da zero e non si copiano: saltando i brani che
+/// non ci sono più resterebbero dei buchi, e `position` è parte della chiave
+/// primaria — una playlist con posizioni 0, 3, 7 non è rotta, ma la prima
+/// riordinata dall'utente lo diventerebbe.
+fn scrivi_voci(tx: &Transaction<'_>, id: i64, voci: &[i64]) -> Result<usize, AppError> {
+    let mut scrittura = tx
+        .prepare_cached(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+        )
+        .map_err(|err| db_error("scrittura di una voce di playlist", &err))?;
+    for (posizione, track_id) in voci.iter().enumerate() {
+        scrittura
+            .execute(rusqlite::params![
+                id,
+                track_id,
+                i64::try_from(posizione).unwrap_or(i64::MAX)
+            ])
+            .map_err(|err| db_error("scrittura di una voce di playlist", &err))?;
+    }
+    Ok(voci.len())
+}
+
+/// Mette in coda a una playlist portata la volta prima i brani che le mancano.
+///
+/// «Mancano» per brano, non per posto: un brano che c'è già, dovunque, non si
+/// ripete, e niente di quel che c'è si sposta o si toglie. Se arriva qualcosa la
+/// playlist si dice toccata adesso, perché backup e sincronia la portino.
+fn accoda_le_mancanti(tx: &Transaction<'_>, id: i64, voci: &[i64]) -> Result<usize, AppError> {
+    let mut presenti: HashSet<i64> = {
+        let mut lettura = tx
+            .prepare_cached("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1")
+            .map_err(|err| db_error("voci di una playlist da allungare", &err))?;
+        let righe = lettura
+            .query_map([id], |r| r.get::<_, i64>(0))
+            .map_err(|err| db_error("voci di una playlist da allungare", &err))?;
+        righe
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(|err| db_error("voci di una playlist da allungare", &err))?
+    };
+    let mut posizione: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_tracks WHERE playlist_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error("coda di una playlist da allungare", &err))?;
+    let mut aggiunte = 0_usize;
+    {
+        let mut scrittura = tx
+            .prepare_cached(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+            )
+            .map_err(|err| db_error("scrittura di una voce di playlist", &err))?;
+        for track_id in voci {
+            if !presenti.insert(*track_id) {
+                continue;
+            }
+            scrittura
+                .execute(rusqlite::params![id, track_id, posizione])
+                .map_err(|err| db_error("scrittura di una voce di playlist", &err))?;
+            posizione = posizione.saturating_add(1);
+            aggiunte += 1;
+        }
+    }
+    if aggiunte > 0 {
+        tx.execute(
+            "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+            rusqlite::params![id, crate::library::now_ms()],
+        )
+        .map_err(|err| db_error("aggiornamento di una playlist allungata", &err))?;
+    }
+    Ok(aggiunte)
 }
 
 /// Porta le lapidi: le cancellazioni che l'utente ha deciso davvero.
@@ -857,6 +1023,21 @@ mod tests {
             rusqlite::params![id, path, title, artist, album, play_count],
         )
         .expect("brano vecchio");
+    }
+
+    /// Regole con una condizione vera, nella forma che `smart::da_json` legge:
+    /// un'automatica senza nessuna condizione valida non entra (D-22).
+    fn regole_subsonica() -> String {
+        use rymembra_domain::regole::{Campo, Insieme, Operatore, Regola, Valore};
+        crate::smart::a_json(&Insieme {
+            regole: vec![Regola {
+                campo: Campo::Artista,
+                operatore: Operatore::Contiene,
+                valore: Valore::Testo("subsonica".into()),
+            }],
+            ..Insieme::default()
+        })
+        .expect("regole")
     }
 
     #[test]
@@ -997,7 +1178,8 @@ mod tests {
     #[test]
     fn una_playlist_automatica_porta_le_regole_e_non_le_voci() {
         // Congelarne il contenuto vorrebbe dire una playlist «tutti i
-        // Subsonica» che non mostra i Subsonica aggiunti dopo.
+        // Subsonica» che non mostra i Subsonica aggiunti dopo. Le regole in una
+        // forma che questa versione non riconosce si portano come sono.
         let legacy = vecchio();
         aggiungi_vecchio(&legacy, 1, "x", "T", "Subsonica", "Al", 1);
         let regole = r#"{"combinator":"and","rules":[{"field":"artist","op":"contains","value":"subsonica"}]}"#;
@@ -1269,6 +1451,132 @@ mod tests {
             "il piano dice che il giornale è rimasto fuori"
         );
         drop(scrittore);
+    }
+
+    #[test]
+    fn una_playlist_omonima_non_cambia_natura() {
+        // R06-2 (b), D-11: «Rock» a mano nella libreria nuova, «Rock»
+        // automatica nel vecchio database. Prima diventava automatica con le
+        // regole di là, e le sue voci restavano invisibili. Adesso resta com'è
+        // e quella di là entra accanto.
+        let legacy = vecchio();
+        aggiungi_vecchio(&legacy, 1, "x", "T", "Subsonica", "Al", 1);
+        let regole = regole_subsonica();
+        let regole = regole.as_str();
+        legacy
+            .execute(
+                "INSERT INTO playlists (id, name, created_at, updated_at, is_smart, rules)
+                 VALUES (1, 'Rock', 10, 20, 1, ?1)",
+                [regole],
+            )
+            .expect("playlist");
+        let mut db = nuovo(&[("p", "T", "Subsonica", "Al")]);
+        let mia = crate::playlists::create(&db, "Rock").expect("fatta a mano");
+        crate::playlists::add_tracks(&mut db, mia.id, &[1]).expect("voce");
+
+        import(&legacy, &mut db).expect("importazione");
+        let (smart, regole_qui): (i64, Option<String>) = db
+            .query_row(
+                "SELECT is_smart, rules FROM playlists WHERE id = ?1",
+                [mia.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("la mia");
+        assert_eq!((smart, regole_qui), (0, None), "resta a mano");
+        assert_eq!(
+            crate::playlists::tracks(&db, mia.id).expect("voci").len(),
+            1
+        );
+        let quante: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM playlists WHERE is_smart = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("conteggio");
+        assert_eq!(quante, 1, "quella di là entra accanto");
+    }
+
+    #[test]
+    fn reimportare_non_toglie_le_voci_aggiunte_dopo() {
+        // R06-2 (c): si importa, si aggiunge un brano a una playlist migrata,
+        // e si rifà l'importazione dopo una scansione, come la finestra
+        // suggerisce. Prima le aggiunte se ne andavano; adesso la playlist
+        // portata la volta prima si allunga soltanto dei brani che le mancano.
+        let legacy = vecchio();
+        aggiungi_vecchio(&legacy, 1, "a", "Uno", "A", "Al", 1);
+        aggiungi_vecchio(&legacy, 3, "c", "Tre", "A", "Al", 1);
+        legacy
+            .execute(
+                "INSERT INTO playlists (id, name, created_at, updated_at) VALUES (1, 'Mia', 1, 2)",
+                [],
+            )
+            .expect("playlist");
+        legacy
+            .execute_batch("INSERT INTO playlist_tracks VALUES (1, 1, 0), (1, 3, 1);")
+            .expect("voci");
+        let mut db = nuovo(&[("p1", "Uno", "A", "Al"), ("p2", "Due", "A", "Al")]);
+
+        import(&legacy, &mut db).expect("prima importazione");
+        let mia: i64 = db
+            .query_row("SELECT id FROM playlists WHERE name = 'Mia'", [], |r| {
+                r.get(0)
+            })
+            .expect("la playlist portata");
+        crate::playlists::add_tracks(&mut db, mia, &[2]).expect("aggiunta a mano");
+        // La scansione ritrova «Tre».
+        db.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                 file_size, date_added, date_modified)
+             VALUES (3, 'p3', ?1, 'Tre', 'A', 'Al', 5000000, 1, 1)",
+            [TrackKey::compute(TrackKeyInput {
+                artist: Some("A"),
+                title: Some("Tre"),
+                album: Some("Al"),
+            })
+            .into_string()],
+        )
+        .expect("brano ritrovato");
+
+        import(&legacy, &mut db).expect("seconda importazione");
+        let titoli: Vec<String> = crate::playlists::tracks(&db, mia)
+            .expect("voci")
+            .into_iter()
+            .map(|b| b.title)
+            .collect();
+        assert_eq!(
+            titoli,
+            vec!["Uno", "Due", "Tre"],
+            "l'aggiunta resta, e arriva quel che mancava"
+        );
+        let quante: i64 = db
+            .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(quante, 1, "è la stessa playlist, non una accanto");
+    }
+
+    #[test]
+    fn una_playlist_automatica_senza_regole_non_entra() {
+        // D-22: un'automatica senza nessuna condizione è tutta la libreria:
+        // senza regole, con regole vuote, o nella forma di adesso senza una
+        // condizione valida. Resta fuori, e il piano la nomina.
+        let legacy = vecchio();
+        legacy
+            .execute_batch(
+                r#"INSERT INTO playlists (id, name, created_at, updated_at, is_smart, rules)
+                   VALUES (1, 'Tutto', 10, 20, 1, NULL),
+                          (2, 'Vuota', 10, 20, 1, '  '),
+                          (3, 'Nessuna', 10, 20, 1,
+                           '{"combinazione":"tutte","regole":[],"ordinamento":"scaffale"}');"#,
+            )
+            .expect("playlist");
+        let mut db = nuovo(&[]);
+        let esito = import(&legacy, &mut db).expect("importazione");
+        let quante: i64 = db
+            .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(quante, 0);
+        assert_eq!(esito.playlists_skipped, vec!["Tutto", "Vuota", "Nessuna"]);
     }
 
     #[test]

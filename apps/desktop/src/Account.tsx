@@ -44,6 +44,7 @@ import {
   type StatoAccount,
 } from "./ipc";
 import { useFinestrella, useVeloInerte } from "./finestrella";
+import { accantoAccount, riscritteAccount } from "./pianoAccount";
 import { nuovoVelo } from "./modale";
 import { ComeAvereLArchivio } from "./parti/ArchivioSpotify";
 import { ConfermaGesto } from "./ConfermaGesto";
@@ -270,6 +271,8 @@ export function Account({
 
   const totali = piano ? totaliAccount(piano) : null;
   const mancanti = piano ? mancantiAccount(piano) : [];
+  const accanto = piano ? accantoAccount(piano) : [];
+  const riscritte = piano ? riscritteAccount(piano) : [];
   const niente = anteprima !== null && vuotoAccount(anteprima);
 
   return (
@@ -540,6 +543,32 @@ export function Account({
                             {piano.rejectedPlaylists
                               .map((p) => `«${p.name}»`)
                               .join(" · ")}
+                          </span>
+                        </Avviso>
+                      )}
+
+                      {/* Nota: non si tocca niente di tuo. Una playlist di qui con
+                          lo stesso nome resta com'è, e quella di Spotify le entra
+                          accanto con la fonte fra parentesi (D-11). Detto per
+                          nome, perché su duecento playlist non lo si scopre. */}
+                      {accanto.length > 0 && (
+                        <Avviso livello="nota">
+                          {t("account.beside", { n: accanto.length })}{" "}
+                          <span className="quali">
+                            {accanto.map((p) => `«${p.qui}» → «${p.nuova}»`).join(" · ")}
+                          </span>
+                        </Avviso>
+                      )}
+
+                      {/* Avviso: queste sì si svuotano. Sono le playlist che lo
+                          stesso archivio aveva importato la volta prima, e il
+                          contenuto di adesso prende il posto di quello di allora,
+                          aggiunte fatte qui comprese. */}
+                      {riscritte.length > 0 && (
+                        <Avviso livello="avviso">
+                          {t("account.rewritten", { n: riscritte.length })}{" "}
+                          <span className="quali">
+                            {riscritte.map((nome) => `«${nome}»`).join(" · ")}
                           </span>
                         </Avviso>
                       )}

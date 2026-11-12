@@ -24,6 +24,13 @@ export interface EsitoImportazione {
   playlistOrphans: number;
   tombstones: number;
   /**
+   * Le playlist entrate accanto a una con lo stesso nome che qui c'era già, e
+   * che non si è toccata (D-11).
+   */
+  playlistsBeside: { name: string; importedAs: string }[];
+  /** Le playlist rimaste fuori: senza nome, doppie, o automatiche senza condizioni. */
+  playlistsSkipped: string[];
+  /**
    * Accanto al file c'era un `-wal` con delle modifiche, e non si è letto: il
    * vecchio database si apre `immutable` (R06-11). Di solito vuol dire che la
    * vecchia app è aperta, o si è chiusa male.
@@ -155,8 +162,18 @@ export interface EsitoImport {
   playlistId: number | null;
   playlistName: string | null;
   playlistCreated: boolean;
-  /** Esisteva già e il contenuto è stato sostituito: è ciò che rende idempotente una seconda importazione. */
+  /**
+   * Esisteva già, da un'importazione precedente della stessa fonte, e il
+   * contenuto è stato sostituito: è ciò che rende idempotente una seconda
+   * importazione. Una playlist fatta qui non si sostituisce mai (D-11).
+   */
   playlistReplaced: boolean;
+  /**
+   * C'era già una playlist con lo stesso nome che non viene da qui — di solito
+   * fatta a mano — e questa le sta accanto, con `playlistName`. È il nome di
+   * quella lasciata com'era. `null` nei rapporti salvati prima.
+   */
+  playlistBeside?: string | null;
   playlistEntries: number;
   spotifyAlbumIdsWritten: number;
   /** Oggi sempre 0: Spotify non espone più l'ISRC. Il campo resta perché può tornare. */
@@ -425,8 +442,14 @@ export interface EsitoFilePlaylist {
   /** Righe del file che non si sono capite. */
   unreadable: number;
   playlistId: number | null;
-  /** Ne esisteva una con lo stesso nome ed è stata sostituita. */
+  /** Ne esisteva una importata prima da un file con lo stesso nome, ed è stata sostituita. */
   replaced: boolean;
+  /**
+   * Ne esisteva una con quel nome che non viene da un file — di solito fatta
+   * qui — e questa le sta accanto, con il nome in `name` (D-11). È il nome di
+   * quella lasciata com'era.
+   */
+  beside: string | null;
 }
 
 /** Il piano di un file, più il nome che la finestra propone. */
