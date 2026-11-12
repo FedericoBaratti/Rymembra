@@ -70,6 +70,26 @@ fn cartella_bozze(data_dir: &Path) -> PathBuf {
     data_dir.join("skin").join("bozze")
 }
 
+/// Il file del pacchetto di una skin installata, per chi ne vuole il
+/// **percorso** (la data di modifica, nel backup) e non i byte.
+///
+/// Una forma sola, qui: il backup ne aveva una copia sua, che sarebbe rimasta
+/// indietro il giorno in cui questa cambiava.
+#[must_use]
+pub fn percorso_skin(data_dir: &Path, id: &str) -> PathBuf {
+    cartella_skin(data_dir).join(format!("{id}.ryskin"))
+}
+
+/// Il manifest di una bozza, per chi ne vuole il percorso: vedi
+/// [`percorso_skin`]. Per un nome di dispositivo è quello verbatim, come in
+/// [`leggi_bozza`].
+#[must_use]
+pub fn percorso_bozza(data_dir: &Path, id: &str) -> PathBuf {
+    cartella_della_bozza(data_dir, id)
+        .unwrap_or_else(|| cartella_bozze(data_dir).join(id))
+        .join(MANIFEST)
+}
+
 /// L'identificatore è anche un nome di file: non deve poter uscire dalla
 /// cartella.
 ///
@@ -232,7 +252,7 @@ pub fn leggi_skin(data_dir: &Path, id: &str) -> Result<Vec<u8>, AppError> {
     if !id_sicuro(id) {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
-    let percorso = cartella_skin(data_dir).join(format!("{id}.ryskin"));
+    let percorso = percorso_skin(data_dir, id);
     std::fs::read(&percorso).map_err(|err| {
         AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }).with_cause(err.to_string())
     })
@@ -280,7 +300,7 @@ pub fn scrivi_skin(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, AppE
     if !id_sicuro(id) || id == DI_SERIE {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
-    let percorso = cartella_skin(data_dir).join(format!("{id}.ryskin"));
+    let percorso = percorso_skin(data_dir, id);
     // Un archivio che non si apre nemmeno come archivio non è il lavoro di
     // nessuno: è l'avanzo di una scrittura interrotta, anche se viene da un
     // backup diverso da questo. Vedi [`archivio_rotto`].

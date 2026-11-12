@@ -758,12 +758,21 @@ impl DaDropbox {
                 return Err(AppError::new(ErrorCode::CloudFileChanged)
                     .with_cause("Dropbox ha un'altra versione del file"));
             }
+            // `rev:<rev>` è un `ReadPath` che l'API accetta anche qui
+            // (`(rev:[0-9a-f]{9,})` nella specifica). Se il servizio lo
+            // rifiuta comunque, resta il collegamento per percorso, la cui
+            // versione è appena stata confrontata: si perde il legame per le
+            // ore in cui il collegamento vale, non il brano. Un guasto che
+            // passa da sé (la rete, un limite) invece si dice.
             if let Some(rev) = detto("rev") {
-                let legato = self.api.rpc(
+                match self.api.rpc(
                     "files/get_temporary_link",
                     &json!({ "path": format!("rev:{rev}") }),
-                )?;
-                url = collegamento_di(&legato)?;
+                ) {
+                    Ok(legato) => url = collegamento_di(&legato).unwrap_or(url),
+                    Err(err) if err.is_retryable() => return Err(err),
+                    Err(_) => {}
+                }
             }
         }
         *self.link.lock().unwrap_or_else(PoisonError::into_inner) = Some(Link {
