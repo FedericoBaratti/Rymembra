@@ -1263,6 +1263,16 @@ impl Filo {
                     accesa.rete.conferma_codice(id, uguale);
                 }
             }
+            Effetto::AccettaAssociazione { id } => {
+                if let Some(accesa) = &self.rete {
+                    accesa.rete.accetta_associazione(id);
+                }
+            }
+            Effetto::Chiudi { id, codice } => {
+                if let Some(accesa) = &self.rete {
+                    accesa.rete.chiudi(id, codice);
+                }
+            }
         }
     }
 
@@ -2137,6 +2147,10 @@ pub(super) fn riga_della_rete(
             "[insieme] associazione riuscita sulla connessione #{}",
             id.0
         )),
+        DallaRete::AssociazioneChiesta { id } => Some(format!(
+            "[insieme] richiesta d'associazione sulla connessione #{}",
+            id.0
+        )),
         DallaRete::Codice { id, .. } => Some(format!(
             "[insieme] codice di associazione pronto sulla connessione #{}",
             id.0
@@ -2409,6 +2423,10 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
                 pari: fidato.map(|f| f.id),
                 bloccato: fidato.is_some_and(|f| f.bloccato),
                 via_internet: v.indirizzo.e_lontano(),
+                omonimo: fidato.is_none()
+                    && v.nome
+                        .as_deref()
+                        .is_some_and(|nome| p.fidati.omonimo(nome, None)),
             }
         })
         .collect();
@@ -2421,11 +2439,21 @@ fn vetrina(p: &Parti<'_>) -> StatoInsiemeIpc {
         sessione,
         vicini,
         fidati,
-        associazione: s.associazione.as_ref().map(|a| AssociazioneIpc {
-            id: a.conn.0,
-            nome: nome_conn(&a.conn),
-            codice: a.codice.clone(),
-            confermato: a.confermato,
+        associazione: s.associazione.as_ref().map(|a| {
+            let conn = s.connessioni.get(&a.conn);
+            let pari = conn.and_then(|c| c.pari);
+            let dichiarato = conn.map(|c| c.dichiarato.clone()).unwrap_or_default();
+            AssociazioneIpc {
+                id: a.conn.0,
+                nome: nome_conn(&a.conn),
+                omonimo: pari.is_none() && p.fidati.omonimo(&dichiarato, None),
+                dichiarato,
+                codice: a.codice.clone(),
+                confermato: a.confermato,
+                chiesta: a.chiesta,
+                gia_associato: pari.is_some(),
+                scade_ms: in_epoca(a.scade),
+            }
         }),
         inviti,
         richieste,

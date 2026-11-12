@@ -280,6 +280,9 @@ impl Filo {
                 }
                 self.nutri(Evento::Ricevuto { id, messaggio });
             }
+            DallaRete::AssociazioneChiesta { id } => {
+                self.nutri(Evento::AssociazioneChiesta { id });
+            }
             DallaRete::Codice { id, codice } => self.nutri(Evento::Codice { id, codice }),
             // L'host sta associando un altro PC: niente codice per ora, e la
             // connessione resta. Si dice perché, e «Associa» torna premibile.

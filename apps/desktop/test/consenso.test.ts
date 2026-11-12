@@ -69,10 +69,11 @@ test("i dialoghi di «Ascolta insieme» sono consensi", () => {
   const codice = insieme.slice(insieme.indexOf("function DialogoCodice"), insieme.indexOf("function SceltaOspita"));
   const dialogo = codice.slice(codice.indexOf("<Dialogo"), codice.indexOf("<Annuncio"));
   assert.match(dialogo, /^\s*consenso$/m);
-  // Gli inviti e le richieste d'ingresso, nelle due vesti: sopra la pagina e
-  // dentro il pannello.
+  // Gli inviti e le richieste d'ingresso, e la richiesta d'associazione con
+  // «Mostra il codice» (02-14), nelle due vesti: sopra la pagina e dentro il
+  // pannello.
   const attesa = insieme.slice(insieme.indexOf("function InAttesa"), insieme.indexOf("function AvvisoDiPassaggio"));
-  assert.equal([...attesa.matchAll(/data-consenso=""/g)].length, 2);
+  assert.equal([...attesa.matchAll(/data-consenso=""/g)].length, 4);
   // E la porta che si apre a chi sta sulla stessa rete.
   const firewall = insieme.slice(insieme.indexOf('t("together.firewall.title")'), insieme.indexOf("ospitaDopoIlFirewall(onErrore)"));
   assert.match(firewall, /consenso: true/);

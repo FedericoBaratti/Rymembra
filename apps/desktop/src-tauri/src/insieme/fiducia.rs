@@ -169,6 +169,26 @@ impl Fidati {
         *self = Self::da(elenco);
     }
 
+    /// Un PC associato, diverso da `escluso`, si chiama come `nome` — a meno
+    /// di maiuscole e spazi. Serve a dire, accanto a un estraneo che si
+    /// presenta col nome di un PC associato, che è un altro PC (02-14).
+    #[must_use]
+    pub fn omonimo(&self, nome: &str, escluso: Option<i64>) -> bool {
+        let piano = |testo: &str| {
+            testo
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let cercato = piano(nome);
+        !cercato.is_empty()
+            && self
+                .elenco
+                .iter()
+                .any(|p| Some(p.id) != escluso && piano(&p.nome) == cercato)
+    }
+
     /// I due elenchi per `Rete::pari`: le chiavi fidate e quelle bloccate.
     #[must_use]
     pub fn per_la_rete(&self) -> (Vec<ChiavePubblica>, Vec<ChiavePubblica>) {
@@ -797,6 +817,19 @@ mod prove {
         assert_eq!(fidati.per_chiave(&anna).map(|p| p.id), Some(5));
         assert_eq!(fidati.per_impronta(&anna.impronta()).map(|p| p.id), Some(5));
         assert_eq!(fidati.per_la_rete(), (vec![anna], vec![]));
+    }
+
+    #[test]
+    fn un_nome_come_quello_di_un_associato_si_riconosce_a_meno_di_maiuscole_e_spazi() {
+        let fidati = Fidati::da(vec![Pari {
+            nome: "PC di  Mario".to_owned(),
+            ..pari(1, 1, false)
+        }]);
+        assert!(fidati.omonimo("pc di mario", None));
+        assert!(fidati.omonimo(" PC DI MARIO ", Some(2)));
+        assert!(!fidati.omonimo("PC di Mario", Some(1)), "è proprio lui");
+        assert!(!fidati.omonimo("PC di Maria", None));
+        assert!(!fidati.omonimo("   ", None));
     }
 
     fn addr(porta: u16) -> Dove {

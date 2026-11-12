@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import type { SincroniaInsieme } from "../src/ipc";
+import type { AssociazioneInsieme, SincroniaInsieme } from "../src/ipc";
 import * as insieme from "../src/insieme";
 
 /*
@@ -106,6 +106,57 @@ test("«Invita», una volta premuto, non si spegne con `disabled` e non perde il
   assert.ok(!/\sdisabled=\{/.test(corpo), "«Invita» si spegne con `disabled`");
   assert.ok(corpo.includes("aria-disabled={giaInvitato"));
   assert.ok(corpo.includes("invitati.has(fidato.id)) return"), "il secondo clic si ignora");
+});
+
+// ── l'associazione chiesta da un altro PC (02-14) ─────────────────────────
+
+const associazione = (campi: Partial<AssociazioneInsieme> = {}): AssociazioneInsieme => ({
+  id: 7,
+  nome: "Portatile di Anna",
+  dichiarato: "DESKTOP-7GH2K",
+  codice: null,
+  confermato: false,
+  chiesta: true,
+  giaAssociato: false,
+  omonimo: false,
+  scadeMs: 0,
+  ...campi,
+});
+
+test("la riga di una richiesta dice il nome dichiarato, o quello scelto qui per un associato", () => {
+  const { domandaDiAssociazione, titoloDelCodice } = insieme;
+  assert.deepEqual(domandaDiAssociazione(associazione()), {
+    chiave: "together.pairing.request",
+    nome: "DESKTOP-7GH2K",
+  });
+  assert.deepEqual(domandaDiAssociazione(associazione({ giaAssociato: true })), {
+    chiave: "together.pairing.requestAgain",
+    nome: "Portatile di Anna",
+  });
+  assert.equal(titoloDelCodice(associazione()), "together.code.title");
+  assert.equal(titoloDelCodice(associazione({ giaAssociato: true })), "together.code.titleAgain");
+});
+
+test("un nome scelto da un altro PC si isola dal testo intorno", () => {
+  // R26-7: nel titolo del dialogo e negli avvisi, dove c'è solo testo.
+  assert.equal(insieme.isolato("PC di Marco"), "⁨PC di Marco⁩");
+});
+
+test("una richiesta d'associazione è una riga, non il dialogo, e il nome sta in un <bdi>", () => {
+  // 02-14: il dialogo modale del codice si apriva da solo davanti a chi
+  // ospitava. Adesso è montato solo quando la riga è già stata aperta.
+  assert.ok(
+    PANNELLO.includes("stato?.associazione != null && !stato.associazione.chiesta && ("),
+    "il dialogo del codice si monta anche per una richiesta non aperta",
+  );
+  const riga = corpoDi("RichiestaDiAssociazione");
+  assert.ok(riga.includes("<bdi>{nome}</bdi>"));
+  assert.ok(riga.includes("ipc.insiemeCodice(associazione.id, si)"));
+  assert.ok(corpoDi("InAttesa").includes("<RichiestaDiAssociazione"));
+  // Il dialogo dice il nome isolato, e con un omonimo «No» è il primario.
+  const dialogo = corpoDi("DialogoCodice");
+  assert.ok(dialogo.includes("isolato("));
+  assert.ok(dialogo.includes('daDecidere && omonimo ? "bottone primario" : "bottone"'));
 });
 
 // ── gli indirizzi scritti a mano ──────────────────────────────────────────

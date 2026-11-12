@@ -65,16 +65,19 @@ import {
   codiceDaLeggere,
   codiceLeggibile,
   daInvitare,
+  domandaDiAssociazione,
   fidatiCheOspitano,
   fraseNessunVicino,
   fraseProfiloRete,
   invitiAncoraAperti,
+  isolato,
   mappaProprietari,
   nomePulito,
   ospitanti,
   pezziSegno,
   pezzoSessione,
   secondiRestanti,
+  titoloDelCodice,
   type Pezzo,
 } from "../insieme";
 import {
@@ -731,7 +734,8 @@ export function InsiemeInApp({
           prima, perché il codice, la scelta e il firewall nascono **da** lei —
           premendo «Associa» o «Ospita» — e devono starle sopra. */}
       {vista.pannello === "finestra" && stato !== null && <FinestraInsieme onErrore={onErrore} />}
-      {stato?.associazione != null && (
+      {/* La riga di una richiesta non è il dialogo: vedi `RichiestaDiAssociazione`. */}
+      {stato?.associazione != null && !stato.associazione.chiesta && (
         <DialogoCodice
           // Un'associazione nuova è una domanda nuova: il fuoco riparte dal
           // primo tasto invece di restare dov'era la risposta di prima.
@@ -777,9 +781,14 @@ export function InsiemeInApp({
 /**
  * «Il codice è lo stesso sull'altro PC?»
  *
- * Compare sui **due** PC, anche su quello che non ha premuto niente: è il
- * nucleo a dire che un'associazione è in corso, e chi ospita può non stare
- * guardando il pannello.
+ * Compare sui due PC solo quando l'ha chiesto chi guarda: chi chiede premendo
+ * «Associa», chi ospita premendo «Mostra il codice» sulla riga della richiesta
+ * (`RichiestaDiAssociazione`). Prima su chi ospita si apriva da solo, e la
+ * finestra veniva avanti, per qualunque PC collegato lo chiedesse (02-14).
+ *
+ * Il nome dell'altro PC lo sceglie lui: il titolo lo dice tra virgolette,
+ * isolato (`isolato`), e sotto il codice c'è scritto. Se quel nome è quello di
+ * un PC già associato, una riga lo dice e «No» diventa il tasto primario.
  *
  * Il primo tasto, e quello che prende il fuoco, è «No»: un Invio dato di
  * fretta deve rifiutare, non fidarsi. Lo stesso nodo fa da «Annulla» mentre il
@@ -800,10 +809,13 @@ function DialogoCodice({
   };
   const codice = associazione.codice;
   const daDecidere = codice !== null && !associazione.confermato;
+  const omonimo = associazione.omonimo;
 
   return (
     <Dialogo
-      titolo={t("together.code.title", { nome: associazione.nome })}
+      titolo={t(titoloDelCodice(associazione), {
+        nome: isolato(associazione.giaAssociato ? associazione.nome : associazione.dichiarato),
+      })}
       descrizione={
         codice === null
           ? t("together.code.computing")
@@ -830,17 +842,82 @@ function DialogoCodice({
         </div>
       )}
       {daDecidere && <p>{t("together.code.hint")}</p>}
+      {daDecidere && <p>{t("together.code.trust")}</p>}
+      {daDecidere && omonimo && <p className="nota-insieme">{t("together.code.sameName")}</p>}
       <div className="tasti-finestrella">
-        <button type="button" className="bottone" onClick={() => rispondi(false)}>
+        <button
+          type="button"
+          className={daDecidere && omonimo ? "bottone primario" : "bottone"}
+          onClick={() => rispondi(false)}
+        >
           {daDecidere ? t("together.code.different") : t("common.cancel")}
         </button>
         {daDecidere && (
-          <button type="button" className="bottone primario" onClick={() => rispondi(true)}>
+          <button
+            type="button"
+            className={omonimo ? "bottone" : "bottone primario"}
+            onClick={() => rispondi(true)}
+          >
             {t("together.code.same")}
           </button>
         )}
       </div>
     </Dialogo>
+  );
+}
+
+/**
+ * Chi ospita: un PC chiede di associarsi. Una riga nel pannello (e sopra la
+ * pagina, come gli inviti), con «Mostra il codice» e «No», e niente altro:
+ * nessun dialogo e nessuna finestra davanti finché la persona non la apre.
+ * È il clic su «Mostra il codice» a far partire il codice, e a contare come
+ * tentativo (02-14, R26-2). Il sì e il no passano da `insiemeCodice`, come le
+ * risposte al codice.
+ *
+ * Il nome lo dichiara l'altro PC: si dice tra virgolette, isolato in un
+ * `<bdi>`, e per un PC già associato col nome scelto qui.
+ */
+function RichiestaDiAssociazione({
+  associazione,
+  secondi,
+  onErrore,
+}: {
+  associazione: AssociazioneInsieme;
+  secondi: number;
+  onErrore: (e: unknown) => void;
+}) {
+  const { chiave, nome } = domandaDiAssociazione(associazione);
+  const [prima, dopo] = t(chiave, { nome: "\u0000" }).split("\u0000");
+  const rispondi = (si: boolean) => {
+    ipc.insiemeCodice(associazione.id, si).catch(onErrore);
+  };
+  return (
+    <>
+      <span className="chi-insieme">
+        {prima}
+        <bdi>{nome}</bdi>
+        {dopo}
+      </span>
+      <span className="conto-insieme" title={t("together.countdown.aria", { n: secondi })}>
+        {t("together.countdown", { s: String(secondi) })}
+      </span>
+      <button
+        type="button"
+        className="bottone minuto primario"
+        aria-label={t("together.pairing.show.aria", { nome })}
+        onClick={() => rispondi(true)}
+      >
+        {t("together.pairing.show")}
+      </button>
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        aria-label={t("together.pairing.no.aria", { nome })}
+        onClick={() => rispondi(false)}
+      >
+        {t("together.pairing.no")}
+      </button>
+    </>
   );
 }
 
@@ -1056,21 +1133,30 @@ function InAttesa({
   const stato = useStatoInsieme();
   const inviti = stato?.inviti ?? [];
   const richieste = stato?.richieste ?? [];
-  const adesso = useAdesso(inviti.length + richieste.length > 0);
+  // Chi ospita: la richiesta d'associazione che aspetta «Mostra il codice».
+  const daAprire = stato?.associazione?.chiesta === true ? stato.associazione : null;
+  const adesso = useAdesso(inviti.length + richieste.length > 0 || daAprire !== null);
   const vivi = [
     ...ancoraValidi(inviti, adesso).map((v) => ({ ...v, tipo: "invito" as const })),
     ...ancoraValidi(richieste, adesso).map((v) => ({ ...v, tipo: "richiesta" as const })),
   ];
+  const associazione =
+    daAprire !== null && secondiRestanti(daAprire.scadeMs, adesso) > 0 ? daAprire : null;
 
   // Si annuncia l'arrivo, non il conto: una frase che cambia ogni secondo
   // sarebbe un lettore di schermo che non sta mai zitto. Vedi `Annuncio.tsx`.
   const ultimo = vivi.at(-1);
+  const domanda = associazione === null ? null : domandaDiAssociazione(associazione);
   const annuncio =
-    dove === "fascia" && ultimo !== undefined
-      ? ultimo.tipo === "invito"
-        ? t("together.invite.from", { nome: ultimo.da })
-        : t("together.request.from", { nome: ultimo.da })
-      : null;
+    dove !== "fascia"
+      ? null
+      : domanda !== null
+        ? t(domanda.chiave, { nome: domanda.nome })
+        : ultimo !== undefined
+          ? ultimo.tipo === "invito"
+            ? t("together.invite.from", { nome: ultimo.da })
+            : t("together.request.from", { nome: ultimo.da })
+          : null;
 
   const righe = vivi.map((voce) => {
     const secondi = secondiRestanti(voce.scadeMs, adesso);
@@ -1163,21 +1249,51 @@ function InAttesa({
     );
   });
 
+  // La richiesta d'associazione, nelle stesse due vesti: è un consenso come
+  // gli altri (vedi sopra), e non apre niente da sola (02-14).
+  const rigaAssociazione =
+    associazione === null ? null : dove === "fascia" ? (
+      <div
+        key={`associazione-${associazione.id}`}
+        className="notizia toast-card attesa-insieme"
+        data-consenso=""
+      >
+        <Icona nome="i-insieme" dim={16} />
+        <RichiestaDiAssociazione
+          associazione={associazione}
+          secondi={secondiRestanti(associazione.scadeMs, adesso)}
+          onErrore={onErrore}
+        />
+      </div>
+    ) : (
+      <li key={`associazione-${associazione.id}`} className="riga-insieme" data-consenso="">
+        <RichiestaDiAssociazione
+          associazione={associazione}
+          secondi={secondiRestanti(associazione.scadeMs, adesso)}
+          onErrore={onErrore}
+        />
+      </li>
+    );
+
   // Sopra la pagina la regione c'è sempre, anche senza inviti: deve esistere
   // **prima** che arrivi la frase da dire. Vedi `Annuncio.tsx`.
   if (dove === "fascia") {
     return (
       <>
         <Annuncio testo={annuncio} />
+        {rigaAssociazione}
         {righe}
       </>
     );
   }
-  if (vivi.length === 0) return null;
+  if (vivi.length === 0 && rigaAssociazione === null) return null;
   return (
     <section className="gruppo-insieme">
       <h3>{t("together.pending.title")}</h3>
-      <ul className="elenco-insieme">{righe}</ul>
+      <ul className="elenco-insieme">
+        {rigaAssociazione}
+        {righe}
+      </ul>
     </section>
   );
 }
@@ -1796,6 +1912,11 @@ function Vicini({ stato, onErrore }: { stato: StatoInsieme; onErrore: (e: unknow
                     {vicino.impronta}
                     {vicino.viaInternet ? ` · ${t("together.nearby.internet")}` : ""}
                   </span>
+                  {/* Un estraneo col nome di un PC associato: è un altro PC,
+                      con un'altra chiave (02-14). */}
+                  {vicino.omonimo && (
+                    <span className="percorso">{t("together.nearby.sameName")}</span>
+                  )}
                 </span>
                 {vicino.bloccato ? (
                   <span className="etichetta-insieme">{t("together.nearby.blocked")}</span>

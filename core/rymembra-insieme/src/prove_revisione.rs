@@ -50,8 +50,9 @@ const DUE_MEGA: u64 = 2 * 1024 * 1024;
 fn sull_host_c_e_una_sola_associazione_alla_volta() {
     // La prova A del revisore: dodici membri associano insieme, e l'host
     // mostrava dodici codici. Un intermediario poteva aprire N strette e
-    // rivelare solo dove il codice coincideva.
-    let (_host, eventi_host, indirizzo) = host(Tempi::default());
+    // rivelare solo dove il codice coincideva. Una riga sola, e il codice
+    // solo dopo «Mostra il codice» (02-14).
+    let (host_rete, eventi_host, indirizzo) = host(Tempi::default());
     let mut membri = Vec::new();
     for _ in 0..6 {
         let (membro, eventi) = vera(Tempi::default());
@@ -61,14 +62,20 @@ fn sull_host_c_e_una_sola_associazione_alla_volta() {
     for (membro, _, id) in &membri {
         membro.associa(*id).expect("da chi chiede parte");
     }
-    let mut codici = 0;
+    let (mut righe, mut codici) = (0, 0);
     let fine = Instant::now() + Duration::from_secs(2);
     while let Ok(evento) = eventi_host.recv_timeout(fine.saturating_duration_since(Instant::now()))
     {
-        if matches!(evento, Evento::Codice { .. }) {
-            codici += 1;
+        match evento {
+            Evento::AssociazioneChiesta { id } => {
+                righe += 1;
+                host_rete.accetta_associazione(id);
+            }
+            Evento::Codice { .. } => codici += 1,
+            _ => {}
         }
     }
+    assert_eq!(righe, 1, "una riga sola sull'host");
     assert_eq!(codici, 1, "un codice solo sullo schermo dell'host");
     // Gli altri sentono «occupato», e restano collegati: dalla revisione del
     // 26 ottobre non è più un `Chiudo` con `troppiTentativi`.
@@ -110,14 +117,9 @@ fn un_rifiuto_dell_host_prima_del_nonce_non_conta_sul_membro() {
             Identita::nuova().expect("chiave"),
             Uso::Controllo,
         );
-        let sua = altro.identita.pubblica();
-        altro.manda(&Trasporto::Impegno {
-            impegno: Byte32(crate::codice::impegno(
-                &[1; 32],
-                &sua,
-                &host_rete.pubblica(),
-            )),
-        });
+        impegno_verso(&mut altro, &host_rete.pubblica());
+        // Chi ospita apre la riga: da qui il tentativo conta (02-14).
+        host_rete.accetta_associazione(riga(&eventi_host).expect("la riga"));
         assert!(matches!(altro.leggi(ATTESA), Some(Trasporto::Nonce { .. })));
         altro.manda(&Trasporto::Rivela {
             nonce: Byte32([2; 32]),
@@ -1076,4 +1078,157 @@ fn inoltra_dice_se_il_gettone_era_libero() {
         !host_rete.inoltra(suo, bruno),
         "il gettone di un altro membro"
     );
+}
+
+// ── 11. il sì di chi ospita (02-14, R26-2, R26-3) ──────────────────────────
+
+/// La richiesta d'associazione sull'host, cioè la riga che aspetta «Mostra
+/// il codice»: l'id della sua connessione.
+fn riga(eventi_host: &std::sync::mpsc::Receiver<Evento>) -> Option<IdConnessione> {
+    aspetta(eventi_host, Duration::from_secs(2), |e| match e {
+        Evento::AssociazioneChiesta { id } => Some(*id),
+        _ => None,
+    })
+}
+
+/// Un impegno qualunque, da un capo grezzo verso `host`.
+fn impegno_verso(grezzo: &mut Grezzo, host: &ChiavePubblica) {
+    let sua = grezzo.identita.pubblica();
+    grezzo.manda(&Trasporto::Impegno {
+        impegno: Byte32(crate::codice::impegno(&[1; 32], &sua, host)),
+    });
+}
+
+#[test]
+fn un_impegno_senza_il_si_di_chi_ospita_non_manda_il_nonce_e_non_conta() {
+    // 02-14: chi ospita mandava il nonce appena arrivava l'impegno di chiunque
+    // fosse collegato, e al codice il dialogo si apriva da solo davanti a lui.
+    // Adesso il nonce parte solo dal clic su «Mostra il codice».
+    let (host_rete, eventi_host, indirizzo) = host(Tempi::default());
+    let mut primo = grezzo_verso(
+        indirizzo,
+        Identita::nuova().expect("chiave"),
+        Uso::Controllo,
+    );
+    impegno_verso(&mut primo, &host_rete.pubblica());
+    let sua = riga(&eventi_host).expect("la riga sull'host");
+    assert!(
+        !matches!(
+            primo.leggi(Duration::from_millis(500)),
+            Some(Trasporto::Nonce { .. })
+        ),
+        "il nonce è partito senza il sì di chi ospita"
+    );
+    host_rete.accetta_associazione(sua);
+    assert!(
+        matches!(primo.leggi(ATTESA), Some(Trasporto::Nonce { .. })),
+        "dal clic in poi, come sempre"
+    );
+    drop(primo);
+    aspetta(&eventi_host, ATTESA, |e| match e {
+        Evento::Chiusa { id, .. } if *id == sua => Some(()),
+        _ => None,
+    })
+    .expect("chiusa sull'host");
+
+    // Il no alla riga: si chiude prima del nonce, con «nessuna risposta, o la
+    // risposta è stata no», e quella chiave non fa comparire altre righe.
+    let chiave = Identita::nuova().expect("chiave");
+    let testo = chiave.in_testo();
+    let mut secondo = grezzo_verso(indirizzo, chiave, Uso::Controllo);
+    impegno_verso(&mut secondo, &host_rete.pubblica());
+    let sua = riga(&eventi_host).expect("la seconda riga");
+    host_rete.conferma_codice(sua, false);
+    assert_eq!(secondo.leggi(ATTESA), chiudo("insieme.rifiutato"));
+    drop(secondo);
+    let mut di_nuovo = grezzo_verso(
+        indirizzo,
+        Identita::da_testo(&testo).expect("la stessa chiave"),
+        Uso::Controllo,
+    );
+    impegno_verso(&mut di_nuovo, &host_rete.pubblica());
+    assert_eq!(di_nuovo.leggi(ATTESA), chiudo("insieme.rifiutato"));
+    assert!(
+        riga(&eventi_host).is_none(),
+        "dopo un no, la stessa chiave non fa comparire altre righe"
+    );
+}
+
+#[test]
+fn dieci_impegni_abbandonati_di_un_estraneo_non_bloccano_un_associazione_vera() {
+    // Reperto R26-2: quattro chiavi estranee mandano l'impegno e chiudono,
+    // dieci volte, in meno di un secondo e senza che sull'host compaia
+    // niente. Il conto partiva dall'impegno, e per dieci minuti ogni PC vero
+    // che premeva «Associa» leggeva «troppi tentativi».
+    let (host_rete, eventi_host, indirizzo) = host(Tempi::default());
+    let chiavi: Vec<_> = (0..4)
+        .map(|_| Identita::nuova().expect("chiave").in_testo())
+        .collect();
+    for n in 0..crate::codice::IN_TUTTO {
+        let identita = Identita::da_testo(&chiavi[n % chiavi.len()]).expect("la stessa chiave");
+        let mut estraneo = grezzo_verso(indirizzo, identita, Uso::Controllo);
+        impegno_verso(&mut estraneo, &host_rete.pubblica());
+        let sua = riga(&eventi_host).expect("la riga");
+        drop(estraneo);
+        aspetta(&eventi_host, ATTESA, |e| match e {
+            Evento::Chiusa { id, .. } if *id == sua => Some(()),
+            _ => None,
+        })
+        .expect("chiusa sull'host");
+    }
+    let (membro, eventi) = vera(Tempi::default());
+    let id = aperta(&membro, &eventi, indirizzo);
+    membro.associa(id).expect("da chi chiede parte");
+    let sua = riga(&eventi_host).expect("la riga del PC vero");
+    host_rete.accetta_associazione(sua);
+    let esito = aspetta(&eventi, ATTESA, |e| match e {
+        Evento::Codice { id: suo, .. } if *suo == id => Some(Ok(())),
+        Evento::Chiusa { id: suo, codice } if *suo == id => Some(Err(codice.map(|k| k.code()))),
+        _ => None,
+    });
+    assert_eq!(esito, Some(Ok(())), "il codice arriva");
+    assert!(
+        aspetta(&eventi_host, ATTESA, |e| match e {
+            Evento::Codice { id, .. } if *id == sua => Some(()),
+            _ => None,
+        })
+        .is_some(),
+        "anche sull'host"
+    );
+}
+
+#[test]
+fn annullare_mentre_si_aspetta_il_nonce_chiude_subito_e_non_conta() {
+    // Reperto R26-3: chi ha chiesto preme «Annulla» prima del nonce — un host
+    // che non lo manda, o adesso uno dove nessuno ha ancora premuto «Mostra
+    // il codice». Non succedeva niente fino alla scadenza di due minuti.
+    let ascolto = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("ascolto");
+    let indirizzo = ascolto.local_addr().expect("indirizzo");
+    let (membro, eventi) = vera(Tempi::default());
+    for giro in 0..=crate::codice::PER_CHIAVE {
+        let id = membro.collega(indirizzo);
+        let (presa, _) = ascolto.accept().expect("accetta");
+        let (mut host_grezzo, _) = Grezzo::stringi(presa, false, VERSIONE, Uso::Controllo);
+        aspetta(&eventi, ATTESA, |e| match e {
+            Evento::Aperta { id: aperta, .. } if *aperta == id => Some(()),
+            _ => None,
+        })
+        .expect("aperta");
+        membro
+            .associa(id)
+            .unwrap_or_else(|e| panic!("al giro {giro}: {}", e.code().kind().code()));
+        assert!(matches!(
+            host_grezzo.leggi(ATTESA),
+            Some(Trasporto::Impegno { .. })
+        ));
+        membro.conferma_codice(id, false);
+        let chiusa = aspetta(&eventi, Duration::from_secs(1), |e| match e {
+            Evento::Chiusa { id: chiusa, codice } if *chiusa == id => Some(*codice),
+            _ => None,
+        });
+        assert!(
+            chiusa.is_some(),
+            "al giro {giro} l'annullo non ha chiuso entro un secondo"
+        );
+    }
 }

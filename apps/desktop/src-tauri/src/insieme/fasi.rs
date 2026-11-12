@@ -59,7 +59,10 @@ use rymembra_insieme::messaggi::{AncoraSulFilo, Diritti, Messaggio, Persona, Sta
 use rymembra_insieme::{ChiavePubblica, IdConnessione};
 
 use super::gesti::Secchiello;
-use pezzi::{avviso, chiusa, codice_arrivato, comando, manda, pari_tolto, ricevuto, spegni, tempo};
+use pezzi::{
+    associazione_chiesta, avviso, chiusa, codice_arrivato, comando, manda, pari_tolto, ricevuto,
+    spegni, tempo,
+};
 
 /// Quanto vale un invito, in ms: un minuto, per chi riceve e per chi manda.
 pub const SCADENZA_INVITO_MS: u64 = 60_000;
@@ -78,6 +81,12 @@ pub const ATTESA_AMMISSIONE_MS: u64 = 15_000;
 /// Quanto può durare un'associazione: due minuti, come nel trasporto. Oltre, il
 /// codice sullo schermo non vale più niente e il dialogo si chiude da sé.
 pub const SCADENZA_ASSOCIAZIONE_MS: u64 = 120_000;
+
+/// Quanto vale la riga di una richiesta d'associazione che aspetta «Mostra il
+/// codice»: un minuto, come nel trasporto (`Tempi::richiesta_associazione`).
+/// Il tempo di chi chiede parte dal suo impegno: dopo il clic restano almeno
+/// sessanta secondi per confrontare le cifre.
+pub const SCADENZA_RICHIESTA_ASSOCIAZIONE_MS: u64 = 60_000;
 
 /// Il codice d'errore che un membro allontanato riceve dentro `Fine`. Dalla
 /// sua parte diventa l'avviso [`AVVISO_TI_HA_ALLONTANATO`].
@@ -308,6 +317,10 @@ pub struct Associazione {
     pub confermato: bool,
     /// Quando scade.
     pub scade: u64,
+    /// Chi ospita: l'ha chiesta l'altro PC, e la persona qui non ha ancora
+    /// premuto «Mostra il codice». È una riga del pannello, non il dialogo:
+    /// vedi [`Evento::AssociazioneChiesta`].
+    pub chiesta: bool,
 }
 
 /// Tutto quel che il riduttore sa.
@@ -365,6 +378,15 @@ pub enum Evento {
         id: IdConnessione,
         /// Il messaggio.
         messaggio: Messaggio,
+    },
+    /// Chi ospita: un PC collegato chiede di associarsi. Una riga nel
+    /// pannello, con «Mostra il codice» e «No»: niente dialogo e niente
+    /// finestra davanti finché la persona non la apre (02-14). Prima il
+    /// codice arrivava subito, e con lui il dialogo modale e la finestra
+    /// portata avanti, per chiunque fosse collegato.
+    AssociazioneChiesta {
+        /// Su quale connessione.
+        id: IdConnessione,
     },
     /// Il codice di quattro cifre di un'associazione.
     Codice {
@@ -466,7 +488,10 @@ pub enum Comando {
         /// La connessione.
         id: IdConnessione,
     },
-    /// La risposta della persona al codice.
+    /// La risposta della persona al codice. Su una riga di una richiesta
+    /// d'associazione (`chiesta`), il sì è «Mostra il codice» e il no è «No»:
+    /// la finestra manda tutti e due con `insieme_codice`. Prima del codice, il
+    /// no è «Annulla».
     ConfermaCodice {
         /// Il numero dell'associazione (quello della connessione).
         associazione: u64,
@@ -551,12 +576,26 @@ pub enum Effetto {
         /// Su quale connessione.
         id: IdConnessione,
     },
-    /// Passa al trasporto la risposta al codice.
+    /// Passa al trasporto la risposta al codice; prima del codice, il no
+    /// della riga o l'annullo.
     ConfermaCodice {
         /// Su quale connessione.
         id: IdConnessione,
         /// Coincide.
         uguale: bool,
+    },
+    /// Chi ospita: «Mostra il codice» sulla riga di una richiesta. Il
+    /// trasporto manda il nonce, e da lì il tentativo conta.
+    AccettaAssociazione {
+        /// Su quale connessione.
+        id: IdConnessione,
+    },
+    /// Chiude una connessione, dicendo all'altro capo perché.
+    Chiudi {
+        /// Quale.
+        id: IdConnessione,
+        /// Perché.
+        codice: Option<ErrorCodeKind>,
     },
 }
 
@@ -578,7 +617,10 @@ pub fn passo(situazione: Situazione, evento: Evento, adesso: u64) -> (Situazione
         }
         Evento::Chiusa { id, codice } => chiusa(&mut s, id, codice, &mut fx),
         Evento::Ricevuto { id, messaggio } => ricevuto(&mut s, id, messaggio, adesso, &mut fx),
-        Evento::Codice { id, codice } => codice_arrivato(&mut s, id, codice, adesso, &mut fx),
+        Evento::AssociazioneChiesta { id } => {
+            associazione_chiesta(&mut s, id, adesso, &mut fx);
+        }
+        Evento::Codice { id, codice } => codice_arrivato(&mut s, id, codice, &mut fx),
         Evento::Associato { id, pari } => {
             // Riassociati: se un giorno lo dimentica di nuovo, lo si ridice.
             s.non_riconoscono.remove(&pari);

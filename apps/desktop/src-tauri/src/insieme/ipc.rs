@@ -131,6 +131,10 @@ pub struct VicinoIpc {
     pub bloccato: bool,
     /// Si raggiunge dal collegamento via internet, non dalla rete di casa.
     pub via_internet: bool,
+    /// Non è associato, ma dice di chiamarsi come un PC associato: è un
+    /// altro PC, con un'altra chiave (02-14). Prima due «PC di Mario» si
+    /// distinguevano solo per l'impronta.
+    pub omonimo: bool,
 }
 
 /// Un PC associato.
@@ -163,12 +167,27 @@ pub struct FidatoIpc {
 pub struct AssociazioneIpc {
     /// Il suo numero, per `insieme_codice`.
     pub id: u64,
-    /// Il nome dell'altro PC.
+    /// Il nome dell'altro PC: quello scelto qui, se è già associato, se no
+    /// quello che dichiara.
     pub nome: String,
+    /// Il nome che l'altro PC dichiara, già ripulito: lo sceglie lui, e la
+    /// finestra lo mostra come tale.
+    pub dichiarato: String,
     /// Le quattro cifre, quando ci sono. `None`: si sta ancora calcolando.
     pub codice: Option<String>,
     /// Questo PC ha già detto che coincide, e aspetta l'altro.
     pub confermato: bool,
+    /// Chi ospita: l'ha chiesta l'altro PC, e qui non si è ancora premuto
+    /// «Mostra il codice». È una riga del pannello, non il dialogo; il sì e
+    /// il no passano da `insieme_codice` (02-14).
+    pub chiesta: bool,
+    /// L'altro PC è già associato con questo: chiede di associarsi di nuovo.
+    pub gia_associato: bool,
+    /// Non è associato, ma dichiara il nome di un PC associato: un altro PC,
+    /// con un'altra chiave. La finestra lo dice, e mette «No» davanti.
+    pub omonimo: bool,
+    /// Quando scade, ms dall'epoca su questo PC.
+    pub scade_ms: i64,
 }
 
 /// Un invito ricevuto.

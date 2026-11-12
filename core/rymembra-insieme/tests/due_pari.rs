@@ -361,6 +361,16 @@ fn una_chiave_bloccata_mentre_e_collegata_viene_chiusa() {
 
 // ── associazione ───────────────────────────────────────────────────────────
 
+/// Chi ospita aspetta la richiesta d'associazione su `dall_host` e preme
+/// «Mostra il codice»: il nonce parte solo da lì (02-14).
+fn mostra_il_codice(host: &Capo, dall_host: IdConnessione) {
+    host.aspetta("la richiesta, sull'host", |e| match e {
+        Evento::AssociazioneChiesta { id } if *id == dall_host => Some(()),
+        _ => None,
+    });
+    host.rete.accetta_associazione(dall_host);
+}
+
 /// Collega e associa fino al codice; restituisce gli id e i due codici.
 fn fino_al_codice(
     host: &Capo,
@@ -369,6 +379,7 @@ fn fino_al_codice(
 ) -> (IdConnessione, IdConnessione, String, String) {
     let (id, dall_host) = membro.collega_a(host, indirizzo);
     membro.rete.associa(id).expect("associa");
+    mostra_il_codice(host, dall_host);
     let dal_membro = membro.aspetta("codice, dal membro", |e| match e {
         Evento::Codice { id: suo, codice } if *suo == id => Some(codice.clone()),
         _ => None,
@@ -496,7 +507,7 @@ fn un_host_occupato_rimanda_senza_chiudere_e_senza_contare_il_tentativo() {
     let indirizzo = host.ospita();
     // Anna è al codice: l'host è occupato con lei.
     let (id_anna, dall_host_anna, _, _) = fino_al_codice(&host, &anna, indirizzo);
-    let (id_bruno, _) = bruno.collega_a(&host, indirizzo);
+    let (id_bruno, dall_host_bruno) = bruno.collega_a(&host, indirizzo);
     // Più volte dei tre tentativi per chiave.
     for _ in 0..4 {
         bruno.rete.associa(id_bruno).expect("da chi chiede parte");
@@ -522,6 +533,7 @@ fn un_host_occupato_rimanda_senza_chiudere_e_senza_contare_il_tentativo() {
         .rete
         .associa(id_bruno)
         .expect("nessun tentativo contato");
+    mostra_il_codice(&host, dall_host_bruno);
     bruno.aspetta("codice, Bruno", |e| match e {
         Evento::Codice { id, .. } if *id == id_bruno => Some(()),
         _ => None,

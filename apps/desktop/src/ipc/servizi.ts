@@ -419,6 +419,8 @@ export interface VicinoInsieme {
   bloccato: boolean;
   /** Si raggiunge dal collegamento via internet, non dalla rete di casa. */
   viaInternet: boolean;
+  /** Non associato, ma col nome di un PC associato: un altro PC. */
+  omonimo: boolean;
 }
 
 /** Un PC associato. */
@@ -438,11 +440,25 @@ export interface FidatoInsieme {
 /** L'associazione in corso. */
 export interface AssociazioneInsieme {
   id: number;
+  /** Il nome scelto qui, se è già associato; se no quello che dichiara. */
   nome: string;
+  /** Il nome che l'altro PC dichiara: lo sceglie lui. */
+  dichiarato: string;
   /** Quattro cifre; `null` mentre si calcolano. */
   codice: string | null;
   /** Questo PC ha già confermato e aspetta l'altro. */
   confermato: boolean;
+  /**
+   * Chi ospita: l'ha chiesta l'altro PC e qui non si è ancora premuto «Mostra
+   * il codice». Una riga del pannello, non il dialogo (02-14).
+   */
+  chiesta: boolean;
+  /** Già associato: chiede di associarsi di nuovo. */
+  giaAssociato: boolean;
+  /** Non associato, ma col nome di un PC associato. */
+  omonimo: boolean;
+  /** Quando scade, ms dall'epoca su questo PC. */
+  scadeMs: number;
 }
 
 /** Un invito ricevuto. */

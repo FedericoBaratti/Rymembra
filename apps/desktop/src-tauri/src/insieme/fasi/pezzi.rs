@@ -17,8 +17,8 @@ use super::{
     AVVISO_RICHIESTA_SENZA_RISPOSTA, AVVISO_SEI_DENTRO, AVVISO_SEI_USCITO,
     AVVISO_TI_HA_ALLONTANATO, AVVISO_USCITO, Associazione, CODICE_ALLONTANATO, Comando, Effetto,
     Fase, InvitoMandato, InvitoRicevuto, MembroDiQui, Ospitata, RichiestaRicevuta,
-    SCADENZA_ASSOCIAZIONE_MS, SCADENZA_INVITO_MS, SCADENZA_RICHIESTA_MS, Seguita, Situazione, Via,
-    avviso_dei_diritti, chiave_del_codice,
+    SCADENZA_ASSOCIAZIONE_MS, SCADENZA_INVITO_MS, SCADENZA_RICHIESTA_ASSOCIAZIONE_MS,
+    SCADENZA_RICHIESTA_MS, Seguita, Situazione, Via, avviso_dei_diritti, chiave_del_codice,
 };
 use crate::insieme::gesti::Secchiello;
 use crate::riproduzione::insieme::UID_CALIBRAZIONE;
@@ -591,29 +591,47 @@ pub(super) fn ricevuto(
     }
 }
 
+/// Chi ospita: un PC chiede di associarsi. Diventa la riga del pannello, se
+/// non ce n'è già un'altra (o un'associazione di questo PC) in corso; se c'è,
+/// «sta già associando un altro PC», che dall'altra parte è vero e non lascia
+/// quella chiave respinta. Niente finestra davanti: vedi
+/// [`Evento::AssociazioneChiesta`](super::Evento::AssociazioneChiesta).
+pub(super) fn associazione_chiesta(
+    s: &mut Situazione,
+    id: IdConnessione,
+    adesso: u64,
+    fx: &mut Vec<Effetto>,
+) {
+    if s.associazione.is_some() || !s.connessioni.contains_key(&id) {
+        fx.push(Effetto::Chiudi {
+            id,
+            codice: Some(ErrorCodeKind::InsiemeAssociazioneOccupata),
+        });
+        return;
+    }
+    s.associazione = Some(Associazione {
+        conn: id,
+        codice: None,
+        confermato: false,
+        scade: adesso.saturating_add(SCADENZA_RICHIESTA_ASSOCIAZIONE_MS),
+        chiesta: true,
+    });
+}
+
 pub(super) fn codice_arrivato(
     s: &mut Situazione,
     id: IdConnessione,
     codice: String,
-    adesso: u64,
     fx: &mut Vec<Effetto>,
 ) {
     match &mut s.associazione {
-        Some(a) if a.conn == id => a.codice = Some(codice),
-        // Una per volta: la seconda si chiude con un no, che il trasporto
-        // traduce in `codiceRifiutato` per l'altro capo.
-        Some(_) => fx.push(Effetto::ConfermaCodice { id, uguale: false }),
-        None => {
-            s.associazione = Some(Associazione {
-                conn: id,
-                codice: Some(codice),
-                confermato: false,
-                scade: adesso.saturating_add(SCADENZA_ASSOCIAZIONE_MS),
-            });
-            // Il codice va letto su **tutti e due** gli schermi: chi ospita
-            // può avere la finestra nel vassoio mentre l'altro preme «Associa».
-            fx.push(Effetto::MostraFinestra);
-        }
+        Some(a) if a.conn == id && !a.chiesta => a.codice = Some(codice),
+        // Un codice che nessuno qui ha chiesto («Associa») o aperto («Mostra
+        // il codice»), o uno su un'altra connessione mentre ce n'è già una: un
+        // no, che il trasporto traduce in `codiceRifiutato` per l'altro capo.
+        // Prima un codice non chiesto apriva il dialogo e portava avanti la
+        // finestra, davanti a chi ospitava (02-14).
+        _ => fx.push(Effetto::ConfermaCodice { id, uguale: false }),
     }
 }
 
@@ -980,6 +998,7 @@ pub(super) fn comando(s: &mut Situazione, comando: Comando, adesso: u64, fx: &mu
                 codice: None,
                 confermato: false,
                 scade: adesso.saturating_add(SCADENZA_ASSOCIAZIONE_MS),
+                chiesta: false,
             });
             fx.push(Effetto::AssociaInRete { id });
         }
@@ -987,15 +1006,35 @@ pub(super) fn comando(s: &mut Situazione, comando: Comando, adesso: u64, fx: &mu
             associazione,
             uguale,
         } => {
-            let Some(a) = s
-                .associazione
-                .as_mut()
-                .filter(|a| a.conn.0 == associazione && a.codice.is_some())
-            else {
+            let Some(a) = s.associazione.as_mut().filter(|a| a.conn.0 == associazione) else {
                 fx.push(errore(ErrorCode::InsiemeCodiceRifiutato));
                 return;
             };
             let id = a.conn;
+            // La riga di una richiesta: il sì è «Mostra il codice», e da qui
+            // il dialogo; il no la chiude prima del nonce (02-14).
+            if a.chiesta {
+                if uguale {
+                    a.chiesta = false;
+                    a.scade = adesso.saturating_add(SCADENZA_ASSOCIAZIONE_MS);
+                    fx.push(Effetto::AccettaAssociazione { id });
+                } else {
+                    s.associazione = None;
+                    fx.push(Effetto::ConfermaCodice { id, uguale: false });
+                }
+                return;
+            }
+            // Il codice non c'è ancora: il no è «Annulla», e chiude davvero.
+            // Prima diceva «i codici non coincidevano» e il dialogo restava
+            // fino a due minuti (reperto R26-3). Un sì senza codice non vuol
+            // dire niente.
+            if a.codice.is_none() {
+                if !uguale {
+                    s.associazione = None;
+                    fx.push(Effetto::ConfermaCodice { id, uguale: false });
+                }
+                return;
+            }
             fx.push(Effetto::ConfermaCodice { id, uguale });
             if uguale {
                 a.confermato = true;

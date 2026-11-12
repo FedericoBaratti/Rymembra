@@ -27,6 +27,7 @@
  * — qui servono a dire «no» prima del viaggio, non a decidere.
  */
 import type {
+  AssociazioneInsieme,
   Brano,
   FidatoInsieme,
   InsiemeNelLettore,
@@ -261,6 +262,7 @@ export function ospitanti(stato: StatoInsieme): VicinoInsieme[] {
       pari: f.id,
       bloccato: f.bloccato,
       viaInternet: false,
+      omonimo: false,
     }));
   return ordinaVicini([...vivi, ...daiFidati]);
 }
@@ -631,6 +633,35 @@ export function chiaveAvviso(chiave: string): string | null {
 /** L'avviso è un guasto (rosso, `alert`) e non una notizia. */
 export function avvisoEGuasto(chiave: string): boolean {
   return chiave.startsWith("errors.");
+}
+
+// ── l'associazione chiesta da un altro PC ─────────────────────────────────
+
+/**
+ * Un nome scelto da un altro PC, isolato dal testo intorno (U+2068 … U+2069):
+ * è il `<bdi>` dei posti dove c'è solo testo — il titolo di un dialogo, un
+ * avviso. Un nome che comincia da destra a sinistra, o che porta caratteri di
+ * direzione rimasti, non rovescia la frase che lo contiene (reperto R26-7). Il
+ * nucleo i comandi di direzione li toglie già (`ripulisci_nome`).
+ */
+export function isolato(nome: string): string {
+  return `\u2068${nome}\u2069`;
+}
+
+/**
+ * La riga di una richiesta d'associazione, per chi ospita: la frase e il nome
+ * da metterci (02-14). Un PC già associato col nome scelto qui, «già
+ * associato»; un estraneo col nome che dichiara, «che si presenta come».
+ */
+export function domandaDiAssociazione(a: AssociazioneInsieme): { chiave: Chiave; nome: string } {
+  return a.giaAssociato
+    ? { chiave: "together.pairing.requestAgain", nome: a.nome }
+    : { chiave: "together.pairing.request", nome: a.dichiarato };
+}
+
+/** Il titolo del dialogo del codice: vedi [`domandaDiAssociazione`]. */
+export function titoloDelCodice(a: AssociazioneInsieme): Chiave {
+  return a.giaAssociato ? "together.code.titleAgain" : "together.code.title";
 }
 
 // ── nomi e indirizzi ────────────────────────────────────────────────────────
