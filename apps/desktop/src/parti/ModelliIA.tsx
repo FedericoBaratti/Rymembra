@@ -46,6 +46,13 @@ import { Segmentato } from "./Segmentato";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { t, tSe } from "../lingue";
 import { NIENTE_IN_VOLO, inVoloDopo, profiloSalvato, qualcosaInVolo } from "./profiliIa";
+import {
+  GETTONI_DI_SERIE,
+  GETTONI_MASSIMI,
+  GETTONI_MINIMI,
+  campoDeiGettoni,
+  gettoniDalCampo,
+} from "./gettoniIa";
 import { useStabile } from "../stabile";
 
 /** L'indirizzo che si propone scegliendo un fornitore. */
@@ -93,6 +100,8 @@ type Bozza = {
   fornitore: FornitoreIa;
   urlBase: string;
   modello: string;
+  /** Il tetto dei gettoni com'è scritto: vuoto per quello di serie (D-64). */
+  gettoni: string;
 };
 
 /** Una bozza vuota, col fornitore scelto e il suo indirizzo. */
@@ -103,6 +112,7 @@ function vuota(fornitore: FornitoreIa): Bozza {
     fornitore,
     urlBase: DI_SERIE[fornitore],
     modello: "",
+    gettoni: "",
   };
 }
 
@@ -130,6 +140,7 @@ function da(profilo: ProfiloIa): Bozza {
     fornitore: profilo.fornitore,
     urlBase: profilo.urlBase,
     modello: profilo.modello,
+    gettoni: campoDeiGettoni(profilo.gettoniMassimi),
   };
 }
 
@@ -244,6 +255,7 @@ export function ModelliIA({
           fornitore: bozza.fornitore,
           urlBase: bozza.urlBase,
           modello: bozza.modello,
+          gettoniMassimi: gettoniDalCampo(bozza.gettoni) ?? null,
         },
         // `null` lascia stare la chiave che c'è: chi modifica il modello di un
         // profilo non deve reincollare il segreto.
@@ -315,7 +327,11 @@ export function ModelliIA({
       : modelli;
   // Un profilo senza modello non può chiamare niente, e senza indirizzo
   // nemmeno: il bottone lo dice prima invece di far scoprire un errore dopo.
-  const completa = bozza.urlBase.trim() !== "" && bozza.modello.trim() !== "";
+  // Un tetto dei gettoni che non è un numero dentro i bordi non si salva: il
+  // nucleo lo rifiuterebbe, e la nota sotto il campo dice perché prima.
+  const gettoniValidi = gettoniDalCampo(bozza.gettoni) !== undefined;
+  const completa =
+    bozza.urlBase.trim() !== "" && bozza.modello.trim() !== "" && gettoniValidi;
 
   return (
     <>
@@ -464,6 +480,30 @@ export function ModelliIA({
           onChange={(e) => setChiave(e.target.value)}
         />
       </div>
+
+      {/* Quanto può scrivere il modello in una risposta (D-64): vuoto vale il
+          tetto di serie. È quel che decide il costo di una richiesta, e con
+          OpenRouter anche se parte: col credito basso, un tetto più basso. */}
+      <div className="azioni">
+        <input
+          type="number"
+          inputMode="numeric"
+          className="campo field-input"
+          min={GETTONI_MINIMI}
+          max={GETTONI_MASSIMI}
+          step={1}
+          placeholder={t("ia.tokens.placeholder", { n: GETTONI_DI_SERIE })}
+          aria-label={t("ia.tokens")}
+          aria-invalid={!gettoniValidi || undefined}
+          value={bozza.gettoni}
+          onChange={(e) => setBozza({ ...bozza, gettoni: e.target.value })}
+        />
+      </div>
+      {!gettoniValidi && (
+        <p className="nota">
+          {t("ia.tokens.range", { min: GETTONI_MINIMI, max: GETTONI_MASSIMI })}
+        </p>
+      )}
 
       {/* Prima di salvare, non dopo: la chiave si perde al salvataggio, e
           saperlo mentre si scrive l'indirizzo è il momento in cui si può

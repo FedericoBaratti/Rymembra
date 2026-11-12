@@ -80,9 +80,49 @@ pub struct Profilo {
     /// onesta — vedi [`Self::chiave_vale_per`].
     #[serde(default)]
     pub origine_chiave: Option<String>,
+    /// Quanti gettoni il modello può scrivere in una risposta; `None` per
+    /// [`GETTONI_DI_SERIE`] (D-64).
+    ///
+    /// `default` perché i profili salvati prima della 3.2.1 non l'hanno, e
+    /// devono continuare a leggersi: per loro vale il tetto di serie.
+    #[serde(default)]
+    pub gettoni_massimi: Option<u32>,
 }
 
+/// Quanti gettoni può scrivere il modello, se il profilo non dice altro (D-64).
+///
+/// Quattromila: una patch JSON di una skin, con la spiegazione intorno, ne usa
+/// qualche centinaio, e anche un documento riscritto per intero ci sta. Il
+/// numero serve a due cose che senza tetto andavano storte. La prima è il
+/// costo: un modello che entra in un ciclo scrive fino al massimo **del
+/// modello**, e in modalità assistente un «Invia» fa fino a quattro giri. La
+/// seconda è OpenRouter, che stima il costo di una richiesta dai gettoni
+/// ammessi in uscita e risponde 402 a chi ha poco credito: senza tetto vale il
+/// massimo del modello, e con qualche dollaro non partiva niente.
+pub const GETTONI_DI_SERIE: u32 = 4096;
+
+/// Quanti gettoni un profilo può chiedere, al meno e al più.
+///
+/// Al meno sessantaquattro: sotto, una risposta non contiene nemmeno un blocco
+/// di modifiche. Al più duecentocinquantaseimila, più del massimo d'uscita dei
+/// modelli di oggi: il numero è del profilo, ma un valore oltre non è una
+/// scelta, è un errore di battitura.
+pub const GETTONI_AMMESSI: std::ops::RangeInclusive<u32> = 64..=262_144;
+
 impl Profilo {
+    /// Il tetto dei gettoni che questo profilo manda con ogni richiesta.
+    ///
+    /// Un valore fuori da [`GETTONI_AMMESSI`] non lo salva nessuno — chi salva
+    /// lo rifiuta — ma il profilo sta in `settings`, che si può aprire con
+    /// altri strumenti: qui lo si riporta dentro i bordi, sull'ultimo metro
+    /// prima della rete.
+    #[must_use]
+    pub fn gettoni(&self) -> u32 {
+        self.gettoni_massimi
+            .unwrap_or(GETTONI_DI_SERIE)
+            .clamp(*GETTONI_AMMESSI.start(), *GETTONI_AMMESSI.end())
+    }
+
     /// La voce di portachiavi che tiene la chiave di questo profilo.
     ///
     /// Il formato è `ia.<id>.chiave`, e l'id è l'unica parte variabile: è per
@@ -252,6 +292,7 @@ mod prove {
             modello: "qwen3".to_owned(),
             con_chiave: false,
             origine_chiave: None,
+            gettoni_massimi: None,
         }
     }
 

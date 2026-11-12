@@ -263,6 +263,32 @@ pub struct ProfiloIn {
     pub url_base: String,
     /// Il nome del modello.
     pub modello: String,
+    /// Quanti gettoni il modello può scrivere; `None` per il tetto di serie
+    /// (D-64). `default` perché una finestra di prima non lo manda.
+    #[serde(default)]
+    pub gettoni_massimi: Option<u32>,
+}
+
+/// Il tetto dei gettoni chiesto da chi salva, se sta dentro i bordi.
+///
+/// Fuori da [`rymembra_ia::GETTONI_AMMESSI`] non si salva, e lo si dice: un
+/// numero oltre non è una scelta, è un errore di battitura, e tagliarlo in
+/// silenzio darebbe un profilo diverso da quello scritto. La pagina ha già i
+/// bordi nel campo; questo è il controllo al confine.
+fn gettoni_ammessi(gettoni: Option<u32>) -> Result<Option<u32>, AppError> {
+    match gettoni {
+        Some(n) if !rymembra_ia::GETTONI_AMMESSI.contains(&n) => {
+            Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+                channel: "ia_salva_profilo".to_owned(),
+                detail: Some(format!(
+                    "{n} gettoni: il tetto va da {} a {}",
+                    rymembra_ia::GETTONI_AMMESSI.start(),
+                    rymembra_ia::GETTONI_AMMESSI.end()
+                )),
+            }))
+        }
+        altro => Ok(altro),
+    }
 }
 
 /// Un pezzo di risposta.
@@ -379,6 +405,7 @@ pub fn ia_salva_profilo(
         let url_base = profilo.url_base.trim().to_owned();
         let modello = profilo.modello.trim().to_owned();
         rymembra_ia::controlla_indirizzo(&url_base)?;
+        let gettoni_massimi = gettoni_ammessi(profilo.gettoni_massimi)?;
 
         let mut profili = leggi_profili(&stato)?;
         let quale = profilo
@@ -454,6 +481,7 @@ pub fn ia_salva_profilo(
             modello,
             con_chiave,
             origine_chiave,
+            gettoni_massimi,
         };
         match quale.and_then(|i| profili.get_mut(i)) {
             Some(posto) => *posto = salvato,
@@ -967,5 +995,30 @@ mod prove {
 
         drop(posto);
         assert!(!ia.ferma(numero), "un turno finito non si ferma più");
+    }
+
+    /// Il tetto dei gettoni del profilo si salva solo dentro i bordi: fuori,
+    /// si dice di no invece di tagliarlo in silenzio (D-64).
+    #[test]
+    fn il_tetto_dei_gettoni_si_salva_solo_dentro_i_bordi() {
+        assert_eq!(gettoni_ammessi(None).ok(), Some(None), "di serie");
+        assert_eq!(gettoni_ammessi(Some(8192)).ok(), Some(Some(8192)));
+        for fuori in [0, 63, 262_145, u32::MAX] {
+            let rifiuto = gettoni_ammessi(Some(fuori)).expect_err("fuori dai bordi");
+            assert_eq!(rifiuto.code().kind().code(), "ipc.payloadInvalid");
+        }
+    }
+
+    /// Un profilo salvato prima della 3.2.1 non ha il campo: si legge lo
+    /// stesso, col tetto di serie.
+    #[test]
+    fn un_profilo_di_prima_si_legge_col_tetto_di_serie() {
+        let vecchio: Profilo = serde_json::from_str(
+            r#"{"id":"or","nome":"OpenRouter","fornitore":"openrouter",
+                "urlBase":"https://openrouter.ai/api/v1","modello":"x","conChiave":false}"#,
+        )
+        .expect("un profilo di prima si legge");
+        assert_eq!(vecchio.gettoni_massimi, None);
+        assert_eq!(vecchio.gettoni(), rymembra_ia::GETTONI_DI_SERIE);
     }
 }
