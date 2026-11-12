@@ -47,6 +47,13 @@ pub const EVENTO_SCRIVI: &str = "finestra:scrivi";
 
 /// Il gesto che si è rinviato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    mobile,
+    allow(
+        dead_code,
+        reason = "«Esci» sta nel vassoio, che c'è solo sul computer"
+    )
+)]
 pub enum Gesto {
     /// Chiudere la finestra: Alt+F4, la barra delle applicazioni.
     Chiudi,
@@ -151,6 +158,13 @@ impl Chiusura {
     }
 
     /// Arriva «Esci». `Passa` vuol dire uscire adesso.
+    #[cfg_attr(
+        mobile,
+        allow(
+            dead_code,
+            reason = "«Esci» sta nel vassoio, che c'è solo sul computer"
+        )
+    )]
     pub fn chiede_esci(&self) -> Decisione {
         let mut stato = self.stato();
         if let Some((numero, _)) = stato.in_attesa {
@@ -222,6 +236,13 @@ pub fn alla_richiesta(app: &tauri::AppHandle, nasconde: bool) -> Decisione {
 }
 
 /// «Esci» dal vassoio: adesso, o quando la pagina avrà scritto.
+#[cfg_attr(
+    mobile,
+    allow(
+        dead_code,
+        reason = "«Esci» sta nel vassoio, che c'è solo sul computer"
+    )
+)]
 pub fn esci(app: &tauri::AppHandle) {
     match CHIUSURA.chiede_esci() {
         Decisione::Passa => esci_adesso(app),
