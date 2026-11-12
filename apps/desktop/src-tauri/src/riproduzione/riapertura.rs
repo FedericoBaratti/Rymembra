@@ -518,7 +518,12 @@ fn riapri_davvero(
                 && viva.track_id.is_some()
                 && (!viva.in_pausa || segnato != viva.track_id)
             {
-                let _ = super::annota_ripresa_da(stato, viva);
+                let _ = super::annota_ripresa_da(
+                    stato,
+                    viva,
+                    lettore.pausa_chiesta.0,
+                    super::CausaRipresa::Uscita,
+                );
             }
             // L'ascolto in corso **resta**, fermo: il tempo che passa da qui
             // all'annuncio del motore nuovo non l'ha sentito nessuno, e quel
@@ -617,6 +622,8 @@ fn riapri_davvero(
                 pausa_chiesta: (0, false),
                 in_canna: None,
                 ritirato: None,
+                in_apertura: None,
+                parte_appena_aperto: None,
                 non_aperto: None,
                 annuncio_atteso: None,
                 puntina_a_vuoto: None,
@@ -660,7 +667,7 @@ fn riapri_davvero(
     if modo == Modo::SoloDispositivo {
         return Ok(Riaperta::Vuota);
     }
-    if riprendi_dov_era(app, stato, formato, modo == Modo::Suona) {
+    if riprendi_dov_era(app, stato, formato) {
         Ok(Riaperta::Rimessa)
     } else {
         Ok(Riaperta::Vuota)
@@ -822,6 +829,32 @@ fn apri_con_un_secondo_tentativo(
     }
 }
 
+/// Il brano rimesso nel solco riparte fermo? La regola di [`riprendi_dov_era`],
+/// senza lucchetti: `chiesta` è [`Lettore::pausa_chiesta`] nell'istante della
+/// consegna.
+///
+/// # Il gesto dopo il segno vince
+///
+/// Il bit `suonava` si legge quando ci si accorge del guasto, e fra quel
+/// momento e la consegna passano l'apertura del dispositivo e quella del
+/// brano: secondi. Una pausa premuta lì dentro — le cuffie che si staccano
+/// mandano «pausa», `BECOMING_NOISY` sul telefono — si perdeva: per una
+/// strada la pausa andava al motore vecchio e il bit restava quello di
+/// prima, per l'altra il numero dei gesti si rileggeva **dopo** la pausa e
+/// la consegna non vedeva niente di nuovo. Il brano ripartiva suonando, sul
+/// telefono dall'altoparlante (R23-1). Adesso il numero è quello letto col
+/// segno ([`super::Ripresa::gesti`]) e la decisione si prende alla consegna:
+/// qualunque pausa o ripresa chiesta dopo il segno vale più del bit. Anche
+/// play premuto a dispositivo perso passa di qui: `riprendi_ora` conta il
+/// suo gesto prima di riaprire.
+fn riparte_fermo(ripresa: &super::Ripresa, adesso_ms: i64, chiesta: (u64, bool)) -> bool {
+    if chiesta.0 != ripresa.gesti {
+        return chiesta.1;
+    }
+    let fresca = adesso_ms.saturating_sub(ripresa.quando_ms) < super::RIPRESA_FRESCA;
+    !(ripresa.suonava && fresca)
+}
+
 /// Rimette la puntina dove il dispositivo l'aveva lasciata.
 ///
 /// La chiama [`riapri_su`] a dispositivo già riaperto, e ripercorre la strada
@@ -841,8 +874,9 @@ fn apri_con_un_secondo_tentativo(
 /// non ha chiesto niente, e ritrovare la musica in corso sarebbe un comando che
 /// nessuno ha dato.
 ///
-/// Con due eccezioni. `suona` vero — play premuto a dispositivo perso — vince
-/// sul bit: il gesto è più recente del guasto. E un segno più vecchio di
+/// Con due eccezioni. Una pausa o una ripresa chiesta dopo il segno — play
+/// premuto a dispositivo perso compreso — vince sul bit: il gesto è più
+/// recente del guasto (vedi [`riparte_fermo`]). E un segno più vecchio di
 /// [`RIPRESA_FRESCA`](super::RIPRESA_FRESCA) non riparte da solo anche se la
 /// musica stava andando: l'uscita fissata si aspetta, e aspettarla può voler
 /// dire fino al mattino dopo.
@@ -866,7 +900,6 @@ fn riprendi_dov_era(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
     formato: rymembra_play::FormatoUscita,
-    suona: bool,
 ) -> bool {
     let annotato = *stato
         .ripresa
@@ -878,9 +911,6 @@ fn riprendi_dov_era(
         // vorrebbe dire far partire un brano che nessuno stava ascoltando.
         return false;
     };
-    let fresca =
-        crate::stato::adesso_ms().saturating_sub(ripresa.quando_ms) < super::RIPRESA_FRESCA;
-    let riparte = suona || (ripresa.suonava && fresca);
 
     // Prima di riaprire il file, e non dopo: aprire un brano vuol dire far
     // riconoscere il contenitore a symphonia, cioè far rileggere proprio i byte
@@ -905,11 +935,6 @@ fn riprendi_dov_era(
         return false;
     }
 
-    // Il numero dell'ultima pausa o ripresa chiesta, prima di aprire: vedi
-    // [`super::consegna`].
-    let Ok(gesti_prima) = con_lettore(stato, |lettore| Ok(lettore.pausa_chiesta.0)) else {
-        return false;
-    };
     let brano = match brano_di(app, ripresa.track_id, formato) {
         Ok(brano) => brano,
         Err(err) => {
@@ -927,13 +952,16 @@ fn riprendi_dov_era(
         // di forza il brano di prima sarebbe una musica che riparte da sola,
         // ed è la stessa rinuncia di [`riprova_corrente`].
         if lettore.coda.current() != Some(ripresa.track_id) {
-            return Ok(false);
+            return Ok(None);
         }
         // Fermo o suonando, dal punto annotato, in un comando solo: vedi
         // [`super::consegna`]. Il ramo fermo serve a chi era in pausa — o a
         // chi ha aspettato le cuffie troppo a lungo: per lui partire vorrebbe
-        // dire una musica che non aveva chiesto.
-        let da_ms = super::consegna(lettore, brano, !riparte, ripresa.ms, gesti_prima);
+        // dire una musica che non aveva chiesto. Deciso **qui**, sotto il
+        // lucchetto e nell'istante della consegna: vedi [`riparte_fermo`].
+        let chiesta = lettore.pausa_chiesta;
+        let fermo = riparte_fermo(&ripresa, crate::stato::adesso_ms(), chiesta);
+        let da_ms = super::consegna(lettore, brano, fermo, ripresa.ms, chiesta.0);
         // L'annuncio d'inizio che il motore nuovo manderà per questo brano è
         // la ripresa dell'ascolto di prima, non un ascolto nuovo. Scritto qui,
         // col lucchetto del lettore in mano: l'annuncio ha bisogno dello
@@ -946,26 +974,30 @@ fn riprendi_dov_era(
         // fa il filo della decodifica, e fino ad allora `posizione()` direbbe
         // zero. Stessa ragione di [`riprova_corrente`].
         manda_stato_con_posizione(app, lettore, da_ms);
-        Ok(true)
+        Ok(Some((fermo, chiesta.0 != ripresa.gesti)))
     });
     let Ok(rimessa) = esito else {
         return false;
     };
-    if rimessa {
-        // I tre ingressi della decisione, e non solo l'esito: `suonando=no` da
-        // solo non diceva se la musica era ferma già al guasto (una pausa, o
-        // le cuffie che mandano «pausa» staccandosi), o se il segno era più
-        // vecchio di [`super::RIPRESA_FRESCA`]. Sono due cause con due rimedi.
+    if let Some((fermo, gesto)) = rimessa {
+        // Gli ingressi della decisione, e non solo l'esito: `suonando=no` da
+        // solo non diceva se la musica era ferma già al guasto, se il segno
+        // era più vecchio di [`super::RIPRESA_FRESCA`] o se nel frattempo
+        // qualcuno — le cuffie che mandano «pausa» staccandosi — aveva chiesto
+        // una pausa. Sono tre cause con tre rimedi.
+        let fresca =
+            crate::stato::adesso_ms().saturating_sub(ripresa.quando_ms) < super::RIPRESA_FRESCA;
         nota!(
             "[riproduzione] posizione ripresa dopo la riapertura ms={} suonando={} \
-             suonava={} fresca={} play={}",
+             suonava={} fresca={} gesto_dopo_il_segno={}",
             ripresa.ms,
-            riparte,
+            !fermo,
             ripresa.suonava,
             fresca,
-            suona
+            gesto
         );
     }
+    let rimessa = rimessa.is_some();
 
     // Consumata. Si cancella qui e non prima, come in [`riprova_corrente`]:
     // arrivare fin qui vuol dire o che la puntina è tornata nel solco, o che la
@@ -1101,6 +1133,10 @@ pub fn riprova_corrente_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore
         // finiva su una puntina che nessuno raccoglieva più.
         let da_ms = super::consegna(lettore, brano, false, ripresa.ms, gesti_prima);
         drop(aprendo.take());
+        // Lo stesso ascolto, fermato dalla rete caduta e non chiuso: il suo
+        // annuncio d'inizio lo fa ripartire invece di aprirne uno nuovo, e un
+        // brano lungo non conta due volte (R23-6). Vedi [`fermato`](super::fermato).
+        continua_l_ascolto(ripresa.track_id);
         prepara_prossimo(&app, lettore);
         // Con la posizione richiesta e non con quella del motore: il salto lo
         // fa il filo della decodifica, e fino ad allora `posizione()`
@@ -1199,6 +1235,69 @@ mod prove {
     #[test]
     fn un_altro_brano_si_riprende_anche_dopo_una_caduta() {
         assert_eq!(decidi_ripresa(Some((7, 2)), 8, 3), (true, Some((8, 3))));
+    }
+
+    // ── la puntina rimessa: ferma o suonando, vedi `riparte_fermo` ──
+
+    fn ripresa(suonava: bool, gesti: u64, quando_ms: i64) -> super::super::Ripresa {
+        super::super::Ripresa {
+            track_id: 7,
+            ms: 60_000,
+            suonava,
+            quando_ms,
+            gesti,
+            causa: super::super::CausaRipresa::Uscita,
+        }
+    }
+
+    /// Le cuffie si staccano mentre suona: il segno dice «suonava», e la
+    /// pausa che arriva dopo — `BECOMING_NOISY` sul telefono, un tasto sul
+    /// PC — mentre l'uscita si riapre vince sul bit letto prima. Era il
+    /// difetto: il brano ripartiva suonando, dall'altoparlante (R23-1).
+    #[test]
+    fn una_pausa_durante_la_riapertura_resta_una_pausa() {
+        let adesso = 1_000_000;
+        assert!(riparte_fermo(&ripresa(true, 5, adesso), adesso, (6, true)));
+    }
+
+    /// E al contrario: play premuto mentre l'uscita si riapre fa ripartire
+    /// anche un brano che al guasto era fermo.
+    #[test]
+    fn play_durante_la_riapertura_fa_ripartire() {
+        let adesso = 1_000_000;
+        assert!(!riparte_fermo(
+            &ripresa(false, 5, adesso),
+            adesso,
+            (6, false)
+        ));
+    }
+
+    /// Senza gesti dopo il segno si riparte come si stava.
+    #[test]
+    fn senza_gesti_dopo_il_segno_si_riparte_come_si_stava() {
+        let adesso = 1_000_000;
+        assert!(!riparte_fermo(
+            &ripresa(true, 5, adesso),
+            adesso,
+            (5, false)
+        ));
+        assert!(riparte_fermo(
+            &ripresa(false, 5, adesso),
+            adesso,
+            (5, false)
+        ));
+    }
+
+    /// Un segno più vecchio di `RIPRESA_FRESCA` non riparte da solo.
+    #[test]
+    fn un_segno_vecchio_non_riparte_da_solo() {
+        let adesso = 10 * super::super::RIPRESA_FRESCA;
+        let vecchio = adesso - super::super::RIPRESA_FRESCA - 1;
+        assert!(riparte_fermo(
+            &ripresa(true, 5, vecchio),
+            adesso,
+            (5, false)
+        ));
     }
 
     // ── il motore che il sorvegliante lascia cadere: vedi `rifiuto_automatico` ──

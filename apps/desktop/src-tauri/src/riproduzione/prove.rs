@@ -101,26 +101,105 @@ fn gli_altri_annunci_spostano_la_coda_come_prima() {
 /// per arrivare all'orecchio — B suona, e arriva il suo annuncio con la canna
 /// vuota o già su X. Prima la coda andava avanti di uno: su X, mostrato con la
 /// durata e il cursore di B, e dopo B suonava di nuovo. X non si sentiva mai.
+///
+/// D-59: la coda mostra il brano che suona davvero. Restare su A, com'era,
+/// mostrava A per tutta la durata di B, e alla fine di X — `peek_next` di
+/// nuovo B — B suonava una seconda volta (R04-3).
 #[test]
-fn l_annuncio_del_successivo_ritirato_non_sposta_la_coda() {
+fn l_annuncio_del_successivo_ritirato_porta_la_coda_su_di_lui() {
     const A: i64 = 1;
     const B: i64 = 2;
     const X: i64 = 9;
     assert_eq!(
         dopo_l_annuncio(B, None, Some(A), None, Some(B)),
-        DopoLAnnuncio::Resta,
+        DopoLAnnuncio::PortaAvantiIlRitirato,
         "con la canna vuota"
     );
     assert_eq!(
         dopo_l_annuncio(B, None, Some(A), Some(X), Some(B)),
-        DopoLAnnuncio::Resta,
+        DopoLAnnuncio::PortaAvantiIlRitirato,
         "con il brano nuovo già in canna"
+    );
+    // Il ritirato che è il corrente stesso — «ripeti uno» spento negli ultimi
+    // istanti — è già quello che la coda indica: resta, senza una seconda
+    // copia in coda.
+    assert_eq!(
+        dopo_l_annuncio(A, None, Some(A), None, Some(A)),
+        DopoLAnnuncio::Resta
     );
     // Il brano nuovo in canna, se attacca, fa andare avanti la coda come
     // sempre.
     assert_eq!(
         dopo_l_annuncio(X, None, Some(A), Some(X), Some(B)),
         DopoLAnnuncio::AvanzaDallaCanna
+    );
+}
+
+/// R04-3: dopo un ritiro tardivo la coda va sul brano che suona e il brano
+/// scelto come successivo resta il successivo; il ritirato non suona una
+/// seconda volta, che il gesto sia stato «Riproduci dopo», un riordino o
+/// un «Togli».
+#[test]
+fn un_ritiro_tardivo_non_fa_risentire_il_brano() {
+    const A: i64 = 1;
+    const B: i64 = 2;
+    const C: i64 = 3;
+    const X: i64 = 9;
+    let coda_di = |brani: Vec<i64>| {
+        let mut coda = Queue::new();
+        coda.play_tracks(brani, 0, 7);
+        coda
+    };
+    // «Riproduci dopo» X: [A, X, B, C].
+    let mut coda = coda_di(vec![A, X, B, C]);
+    porta_avanti_il_ritirato(&mut coda, B);
+    assert_eq!(coda.in_play_order(), [A, B, X, C]);
+    assert_eq!(coda.current(), Some(B));
+    assert_eq!(coda.peek_next(), Some(X));
+    // B spostato più in là.
+    let mut coda = coda_di(vec![A, C, B]);
+    porta_avanti_il_ritirato(&mut coda, B);
+    assert_eq!(coda.in_play_order(), [A, B, C]);
+    assert_eq!(coda.current(), Some(B));
+    // B tolto dalla coda: torna, perché suona.
+    let mut coda = coda_di(vec![A, C]);
+    porta_avanti_il_ritirato(&mut coda, B);
+    assert_eq!(coda.in_play_order(), [A, B, C]);
+    assert_eq!(coda.current(), Some(B));
+    assert_eq!(coda.peek_next(), Some(C));
+}
+
+/// R04-5: il `Fermato` arriva mentre il preparatore apre il brano dopo — un
+/// ritiro negli ultimi secondi, un flusso lento ad aprirsi: il brano parte
+/// appena aperto, invece di restare in canna a musica ferma.
+#[test]
+fn un_successivo_in_apertura_parte_appena_aperto() {
+    const X: i64 = 9;
+    assert_eq!(
+        parte_all_apertura(true, false, false, Some(X), Some(X)),
+        Some(X)
+    );
+    // Il preparatore apre un altro brano: la coda è cambiata nel frattempo.
+    assert_eq!(
+        parte_all_apertura(true, false, false, Some(X), Some(3)),
+        None
+    );
+    // Niente in apertura.
+    assert_eq!(parte_all_apertura(true, false, false, None, Some(X)), None);
+    // Chi segue, o lo stop dell'uscita dalla sessione: la coda non si muove.
+    assert_eq!(
+        parte_all_apertura(false, false, false, Some(X), Some(X)),
+        None
+    );
+    // Una rete caduta a metà brano non è una fine: c'è «Riprova».
+    assert_eq!(
+        parte_all_apertura(true, true, false, Some(X), Some(X)),
+        None
+    );
+    // Il timer «alla fine del brano» ha chiesto di fermarsi proprio qui.
+    assert_eq!(
+        parte_all_apertura(true, false, true, Some(X), Some(X)),
+        None
     );
 }
 
@@ -894,6 +973,20 @@ fn il_segno_si_scrive_solo_da_strade_guardate() {
         );
         prima = dove;
     }
+    // R23-7: ogni strada di fili.rs passa dal filo delle scritture, in fila col
+    // segno a zero di `fermato`. L'orologio lo scriveva da sé, con un'attesa
+    // della libreria, e poteva scriverlo **dopo** lo zero: il giorno dopo
+    // «Riprendi» saltava a due secondi dalla fine di un brano finito.
+    let mut prima = 0;
+    for (dove, _) in fili.match_indices("playback::save_posizione(") {
+        let davanti = &fili[prima..dove];
+        let funzione = &davanti[davanti.rfind("\nfn ").unwrap_or(0)..];
+        assert!(
+            funzione.contains("da_scrivere("),
+            "una strada di fili.rs scrive il segno fuori dalla fila delle scritture"
+        );
+        prima = dove;
+    }
     let lettore = senza_prove(include_str!("mod.rs"));
     let fine = &lettore[..lettore.find("playback::save_posizione(").unwrap_or(0)];
     let fine = &fine[fine.rfind("fn fermato(").unwrap_or(0)..];
@@ -928,6 +1021,157 @@ fn un_flusso_interrotto_non_parla_di_cartelle() {
     assert_eq!(
         interruzione_di_flusso(formato).code().kind(),
         ErrorCodeKind::PlaybackFormatUnsupported
+    );
+}
+
+/// R23-5: un brano del cloud che si interrompe a metà parla di un brano che
+/// arriva dalla rete, come all'apertura, e non di una cartella da
+/// ricollegare. Lo stesso criterio di `brano_di_libreria`.
+#[test]
+fn un_brano_del_cloud_interrotto_non_parla_di_cartelle() {
+    let scheda = |percorso: &str| playback::SchedaSorgente {
+        track_id: 1,
+        collocazione: playback::Collocazione::File(percorso.to_owned()),
+        durata_ms: 0,
+        replaygain_db: None,
+        picco: None,
+    };
+    let cloud = format!(
+        "{}onedrive/conto/Musica/brano.flac",
+        rymembra_domain::nuvola::SCHEMA
+    );
+    assert!(arriva_dalla_rete(&scheda(&cloud)), "il cloud è rete");
+    assert!(!arriva_dalla_rete(&scheda(r"\\nas\musica\brano.flac")));
+    assert!(!arriva_dalla_rete(&scheda(r"C:\Musica\brano.flac")));
+}
+
+/// R23-7: il segno di un'uscita che si riapre non è una rete caduta. Restava
+/// dopo una riapertura fallita su un motore sano, e a coda finita `fermato`
+/// non azzerava il segno di «riprendi dov'eri».
+#[test]
+fn il_segno_di_un_uscita_non_e_una_rete_caduta() {
+    let ripresa = |causa| Ripresa {
+        track_id: 7,
+        ms: 1_000,
+        suonava: true,
+        quando_ms: 0,
+        gesti: 0,
+        causa,
+    };
+    assert!(!e_una_rete_caduta(Some(&ripresa(CausaRipresa::Uscita))));
+    assert!(e_una_rete_caduta(Some(&ripresa(CausaRipresa::Rete))));
+    assert!(!e_una_rete_caduta(None));
+}
+
+/// R23-6: a rete caduta l'ascolto si ferma e non si chiude: «Riprova» lo
+/// continua, e un brano lungo non conta due volte.
+#[test]
+fn una_rete_caduta_ferma_l_ascolto_senza_chiuderlo() {
+    assert!(!dopo_il_fermato(false, false, true, Some(7)).chiude_l_ascolto);
+    assert!(dopo_il_fermato(false, false, false, Some(7)).chiude_l_ascolto);
+}
+
+/// R23-6: «Riprova» e il play che riparte dal punto della rete caduta
+/// continuano l'ascolto di prima invece di aprirne uno nuovo.
+#[test]
+fn riprova_continua_l_ascolto_del_brano_interrotto() {
+    let riprova = corpo(include_str!("riapertura.rs"), "riprova_corrente_ora")
+        .expect("riprova_corrente_ora c'è");
+    assert!(
+        riprova.contains("continua_l_ascolto("),
+        "«Riprova» apre un ascolto nuovo"
+    );
+    let riprendi = corpo(include_str!("mod.rs"), "riprendi_ora").expect("riprendi_ora c'è");
+    assert!(
+        riprendi.contains("continua_l_ascolto("),
+        "play dal punto della rete caduta apre un ascolto nuovo"
+    );
+}
+
+/// D-89: un buco fra due giri d'orologio più lungo di quel che l'ascolto
+/// conta è un PC che ha dormito, e al risveglio la musica va in pausa.
+#[test]
+fn un_buco_fra_due_giri_d_orologio_e_un_risveglio() {
+    let salto = i64::try_from(rymembra_domain::listen::SALTO_MASSIMO_MS).unwrap_or(i64::MAX);
+    assert!(fili::e_un_risveglio(Some(1_000), 1_000 + salto + 1));
+    assert!(!fili::e_un_risveglio(Some(1_000), 1_250));
+    assert!(!fili::e_un_risveglio(None, 1_000 + salto + 1));
+}
+
+/// R23-4: una fotografia superata da una più recente non aspetta la
+/// libreria. Con la libreria occupata ogni stato costava fino a un secondo,
+/// e una raffica di gesti — → tenuta premuta — lasciava finestra, scheda di
+/// Windows e vassoio indietro di minuti.
+#[test]
+fn uno_stato_superato_non_aspetta_la_libreria() {
+    assert!(seguito::superato(1, 2));
+    assert!(!seguito::superato(2, 2));
+    let testo = senza_prove(include_str!("seguito.rs"));
+    let pubblica = &testo[testo.find("pub(super) fn pubblica(").unwrap_or(0)..];
+    let pubblica = &pubblica[..pubblica.find("\n}\n").unwrap_or(pubblica.len())];
+    let controllo = pubblica
+        .find("superato(")
+        .expect("pubblica non chiede se è superata");
+    for attesa in ["aspetta_le_scritture(", "completa("] {
+        assert!(
+            pubblica.find(attesa).is_some_and(|dove| dove > controllo),
+            "«{attesa}» viene prima del controllo"
+        );
+    }
+}
+
+/// R23-8: il brano che il motore sta suonando non sparisce dallo stato
+/// quando la sua riga esce dalla libreria — cancellato da Esplora risorse,
+/// tolto con le rimozioni trattenute. La barra spariva, la scheda di Windows
+/// diceva «fermo» e il vassoio tornava a «Rymembra» a musica in corso.
+#[test]
+fn il_brano_che_suona_non_sparisce_dallo_stato() {
+    let mut ricordo = Some((7, "Titolo", None::<u8>));
+    assert_eq!(
+        seguito::dal_ricordo(Some(Ok((None, None))), &mut ricordo, 7, true),
+        (Some("Titolo"), None)
+    );
+    assert_eq!(ricordo, Some((7, "Titolo", None)));
+    // Un brano che non suona più e non c'è più sparisce davvero.
+    assert_eq!(
+        seguito::dal_ricordo(Some(Ok((None, None))), &mut ricordo, 7, false),
+        (None, None)
+    );
+    assert_eq!(ricordo, None);
+    // Una lettura riuscita aggiorna il ricordo; una mancata lo usa.
+    assert_eq!(
+        seguito::dal_ricordo(Some(Ok((Some("Nuovo"), Some(3)))), &mut ricordo, 8, true),
+        (Some("Nuovo"), Some(3))
+    );
+    assert_eq!(
+        seguito::dal_ricordo(None, &mut ricordo, 8, true),
+        (Some("Nuovo"), Some(3))
+    );
+}
+
+/// R23-11: nessun comando sincrono del lettore aspetta la libreria sul filo
+/// della finestra: lì `con_libreria` rinuncia dopo quattro secondi, e la
+/// finestra ferma oltre i cinque Windows la dichiara «Non risponde».
+#[test]
+fn nessun_comando_sincrono_del_lettore_aspetta_la_libreria() {
+    let mut sbagliati = Vec::new();
+    for (file, testo) in SORGENTI {
+        let codice = senza_prove(testo);
+        for (dove, _) in codice.match_indices("\n#[tauri::command]\npub fn ") {
+            let resto = &codice[dove + 1..];
+            let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+            if corpo.contains("con_libreria(") {
+                let nome: String = resto["#[tauri::command]\npub fn ".len()..]
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                sbagliati.push(format!("{file}: {nome}"));
+            }
+        }
+    }
+    assert!(
+        sbagliati.is_empty(),
+        "comandi sincroni che aspettano la libreria: {sbagliati:#?}"
     );
 }
 

@@ -206,6 +206,11 @@ fn passata_dispositivi(
         return Passo::Insisti;
     }
 
+    // Prima di ogni riapertura, e anche quando non se ne farà nessuna — la
+    // fissata si aspetta —: la pausa è un gesto, e la riapertura che segue la
+    // vede (D-88).
+    pausa_se_l_uscita_e_sparita(app, &stato, &adesso);
+
     let Some(perche) = da_riaprire(&stato, &adesso) else {
         return Passo::Riposo;
     };
@@ -224,6 +229,7 @@ fn passata_dispositivi(
             err.code().kind().code(),
             err.cause().unwrap_or("—")
         );
+        togli_il_segno_a_motore_sano(&stato);
         return Passo::Insisti;
     }
 
@@ -243,6 +249,106 @@ fn passata_dispositivi(
         return Passo::Insisti;
     }
     Passo::Riposo
+}
+
+/// L'uscita su cui il motore suona è sparita dall'elenco, con la musica che
+/// andava: va messa in pausa (D-88).
+///
+/// # Perché l'elenco e non la bandiera del guasto
+///
+/// Perché la bandiera dice «il flusso non c'è più», e il flusso se ne va
+/// anche quando l'uscita resta: una frequenza cambiata nelle impostazioni di
+/// Windows, un risveglio. Lì riprendere come si stava è giusto. L'uscita che
+/// manca dall'elenco è invece proprio le cuffie che si staccano, ed è lì che
+/// il telefono si ferma (`BECOMING_NOISY`): il PC adesso fa lo stesso, con o
+/// senza un'uscita fissata, invece di continuare dagli altoparlanti.
+///
+/// Un elenco vuoto non conta: è un'enumerazione che non ha risposto più
+/// spesso che un PC rimasto senza uscite.
+fn uscita_in_uso_sparita(
+    aperta: Option<&str>,
+    suona: bool,
+    adesso: &[rymembra_play::Dispositivo],
+) -> bool {
+    suona
+        && !adesso.is_empty()
+        && aperta.is_some_and(|aperta| !adesso.iter().any(|d| d.id == aperta))
+}
+
+/// Mette in pausa se l'uscita in uso è sparita: vedi [`uscita_in_uso_sparita`].
+///
+/// Con il comando `pausa`, lo stesso del tasto multimediale: la pausa si conta
+/// fra i gesti, e la riapertura che segue la rispetta. Non sul telefono:
+/// lì l'elenco è la sola uscita che Android sta usando, che cambia nome
+/// anche quando le cuffie **arrivano**, e a fermarsi alle cuffie staccate ci
+/// pensa già `BECOMING_NOISY` nella sessione Android.
+fn pausa_se_l_uscita_e_sparita(
+    app: &tauri::AppHandle,
+    stato: &StatoLettore,
+    adesso: &[rymembra_play::Dispositivo],
+) {
+    if cfg!(target_os = "android") {
+        return;
+    }
+    let (aperta, suona) = {
+        let guardia = stato
+            .lettore
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guardia.as_ref().ok().map_or((None, false), |lettore| {
+            let posizione = lettore.motore.posizione();
+            (
+                Some(lettore.motore.dispositivo().to_owned()),
+                posizione.track_id.is_some() && !posizione.in_pausa,
+            )
+        })
+    };
+    if !uscita_in_uso_sparita(aperta.as_deref(), suona, adesso) {
+        return;
+    }
+    nota!(
+        "[riproduzione] l'uscita {} non c'è più: pausa",
+        uscita_nel_diario(aperta.as_deref().unwrap_or_default())
+    );
+    let Some(stato) = app.try_state::<StatoLettore>() else {
+        return;
+    };
+    if let Err(err) = super::pausa(app.clone(), stato) {
+        nota!(
+            "[riproduzione] pausa per l'uscita sparita non riuscita codice={} causa={}",
+            err.code,
+            err.cause.as_deref().unwrap_or_default()
+        );
+    }
+}
+
+/// Una riapertura fallita su un motore che suona ancora non lascia il suo
+/// segno in giro.
+///
+/// Il segno si scrive prima di riaprire, perché il motore nuovo sappia dove
+/// rimettere la puntina. Se però l'uscita nuova non si apre — un predefinito
+/// spostato su un'HDMI senza ricevitore, un'uscita presa in esclusiva da un
+/// altro programma — il motore vecchio continua a suonare, e il segno restava
+/// a parlare di un punto che non vale più: un play a motore vuoto ci saltava
+/// invece di partire dal segno di «riprendi dov'eri» (R23-7). A motore perso
+/// resta, perché la riapertura dopo ne ha bisogno.
+fn togli_il_segno_a_motore_sano(stato: &StatoLettore) {
+    let sano = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_ok_and(|lettore| !lettore.motore.dispositivo_perso());
+    if !sano {
+        return;
+    }
+    let mut ripresa = stato
+        .ripresa
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ripresa.is_some_and(|r| r.causa == super::CausaRipresa::Uscita) {
+        *ripresa = None;
+    }
 }
 
 /// Perché varrebbe la pena riaprire, se ne vale la pena.
@@ -614,6 +720,28 @@ mod prove {
             perche_riaprire(Some(("B", false)), &adesso, Some("B")),
             None
         );
+    }
+
+    /// D-88: l'uscita in uso sparisce mentre suona — le cuffie Bluetooth che
+    /// si staccano — e la musica va in pausa anche sul PC, come sul telefono,
+    /// con o senza un'uscita fissata.
+    #[test]
+    fn l_uscita_in_uso_che_sparisce_mette_in_pausa() {
+        let adesso = [uscita("Altoparlanti", true)];
+        assert!(uscita_in_uso_sparita(Some("Cuffie BT"), true, &adesso));
+        // Già in pausa: niente da fare.
+        assert!(!uscita_in_uso_sparita(Some("Cuffie BT"), false, &adesso));
+        // L'uscita c'è ancora: il predefinito cambiato non è una sparizione.
+        let con_le_cuffie = [uscita("Altoparlanti", true), uscita("Cuffie BT", false)];
+        assert!(!uscita_in_uso_sparita(
+            Some("Cuffie BT"),
+            true,
+            &con_le_cuffie
+        ));
+        // Un elenco vuoto è un'enumerazione che non ha risposto, non un'uscita
+        // sparita; e senza motore non c'è niente da fermare.
+        assert!(!uscita_in_uso_sparita(Some("Cuffie BT"), true, &[]));
+        assert!(!uscita_in_uso_sparita(None, true, &adesso));
     }
 
     /// Il motore mai aperto — avvio senza scheda audio — si apre su quel che

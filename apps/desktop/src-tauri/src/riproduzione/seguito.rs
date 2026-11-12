@@ -239,6 +239,19 @@ pub(super) fn aspetta_le_risposte(
 /// libreria occupata non tiene fermo lo stato più di così. Vedi
 /// [`da_scrivere`].
 pub(super) fn pubblica(app: &tauri::AppHandle, abbozzo: Abbozzo) {
+    // Superata: ne arriva un'altra dietro, e questa non aspetta né le
+    // scritture né la libreria. Vedi [`superato`].
+    if let Some(generazione) = abbozzo.generazione
+        && let Some(stato) = app.try_state::<StatoLettore>()
+        && superato(
+            generazione,
+            stato
+                .stati_spediti
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    {
+        return;
+    }
     let fine = std::time::Instant::now() + ATTESA_SCHEDA;
     if let Some(stato_lettore) = app.try_state::<StatoLettore>() {
         aspetta_le_scritture(&stato_lettore, abbozzo.scritture, fine);
@@ -278,6 +291,78 @@ pub(super) struct Abbozzo {
     /// una scadenza. Letto col lucchetto del lettore in mano, come le
     /// scritture che conta: sono esattamente quelle nate prima di questo stato.
     scritture: u64,
+    /// Il numero della fotografia fra quelle spedite a [`pubblica`], o `None`
+    /// per chi la completa da sé: vedi [`superato`].
+    pub(super) generazione: Option<u64>,
+    /// Il brano che il motore ha in mano: vedi [`dal_ricordo`].
+    nel_motore: Option<i64>,
+}
+
+/// Una fotografia è superata: dopo di lei se n'è spedita un'altra.
+///
+/// Le fotografie si sviluppano nell'ordine in cui sono state scattate, e
+/// una superata si sviluppava lo stesso: ognuna aspettava la libreria fino ad
+/// [`ATTESA_SCHEDA`], e con una scansione in corso una raffica di gesti — →
+/// tenuta premuta, novanta `vai_a` in tre secondi — teneva finestra, scheda
+/// di Windows e vassoio indietro di un minuto e mezzo, con dietro gli eventi
+/// del volume e dell'equalizzatore (R23-4). Lo stato è una fotografia
+/// intera: quella dopo dice tutto quel che diceva questa.
+pub(super) const fn superato(generazione: u64, ultima: u64) -> bool {
+    generazione < ultima
+}
+
+/// Spedisce una fotografia a [`pubblica`], col suo numero.
+///
+/// Si chiama col lucchetto del lettore in mano, come [`in_ordine`]: è quel
+/// che tiene il numero nello stesso ordine della fila.
+pub(super) fn spedisci(app: &tauri::AppHandle, mut abbozzo: Abbozzo) {
+    if let Some(stato) = app.try_state::<StatoLettore>() {
+        abbozzo.generazione = Some(
+            stato
+                .stati_spediti
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                .wrapping_add(1),
+        );
+    }
+    in_ordine(app, move |app| pubblica(app, abbozzo));
+}
+
+/// Quel che la libreria ha risposto per un brano: la scheda, se la riga c'è
+/// ancora, e i suoi dati tecnici. `None` fuori: non ha risposto in tempo.
+pub(super) type Lettura<A, B> = Option<Result<(Option<A>, Option<B>), AppError>>;
+
+/// La scheda da mostrare, da quel che la libreria ha risposto o dal ricordo.
+///
+/// `suona_lui`: il brano è quello che il motore ha in mano.
+pub(super) fn dal_ricordo<A: Clone, B: Clone>(
+    letto: Lettura<A, B>,
+    ricordo: &mut Option<(i64, A, Option<B>)>,
+    id: i64,
+    suona_lui: bool,
+) -> (Option<A>, Option<B>) {
+    match letto {
+        // La riga non c'è più, ma il motore la sta suonando: cancellata da
+        // Esplora risorse — il motore tiene il file aperto — o tolta con le
+        // rimozioni trattenute. La barra spariva, la scheda di Windows diceva
+        // «fermo» e il vassoio «Rymembra», a musica in corso (R23-8). Il
+        // titolo è ancora quello: lo dice il ricordo.
+        Some(Ok((None, _))) if suona_lui => ricordo
+            .as_ref()
+            .filter(|(di, _, _)| *di == id)
+            .map_or((None, None), |(_, scheda, formato)| {
+                (Some(scheda.clone()), formato.clone())
+            }),
+        Some(Ok((brano, formato))) => {
+            *ricordo = brano.clone().map(|scheda| (id, scheda, formato.clone()));
+            (brano, formato)
+        }
+        Some(Err(_)) | None => ricordo
+            .as_ref()
+            .filter(|(di, _, _)| *di == id)
+            .map_or((None, None), |(_, scheda, formato)| {
+                (Some(scheda.clone()), formato.clone())
+            }),
+    }
 }
 
 /// La fotografia del lettore: vedi [`Abbozzo`].
@@ -330,6 +415,8 @@ pub(super) fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
                 .scritture_chieste
                 .load(std::sync::atomic::Ordering::Acquire)
         }),
+        generazione: None,
+        nel_motore: posizione.track_id,
         stato: StatoRiproduzione {
             durata_ms: posizione.durata_ms,
             brano: None,
@@ -396,7 +483,10 @@ pub(super) fn completa(
         corrente,
         suonato,
         scritture: _,
+        generazione: _,
+        nel_motore,
     } = abbozzo;
+    let suona_lui = nel_motore.is_some() && nel_motore == corrente;
     // La riga e i suoi dati tecnici in **una** presa del lucchetto della
     // libreria, non due. Due `con_libreria` di seguito per lo stesso brano
     // sarebbero due attese su un mutex che la riapertura del database e la
@@ -441,20 +531,7 @@ pub(super) fn completa(
             .scheda_corrente
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match letto {
-            Some(Ok((brano, formato))) => {
-                *ricordo = brano
-                    .as_ref()
-                    .map(|scheda| (id, scheda.clone(), formato.clone()));
-                (brano, formato)
-            }
-            Some(Err(_)) | None => ricordo
-                .as_ref()
-                .filter(|(di, _, _)| *di == id)
-                .map_or((None, None), |(_, scheda, formato)| {
-                    (Some(scheda.clone()), formato.clone())
-                }),
-        }
+        dal_ricordo(letto, &mut ricordo, id, suona_lui)
     });
     if let Some(scheda) = brano.as_ref() {
         stato.durata_ms = u64::try_from(scheda.duration_ms).unwrap_or(0);

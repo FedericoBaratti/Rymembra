@@ -164,9 +164,13 @@ fn ascolta_i_gesti(app: &tauri::AppHandle) {
         match sessione::aspetta_gesto(ATTESA) {
             Ok(Some(gesto)) => {
                 ultimo_guasto = None;
-                if let Some(gesto) = traduci(app, gesto) {
-                    premi(app, gesto);
-                }
+                // Dentro `sorvegliato`: un panico nella traduzione lasciava la
+                // notifica con i tasti che non rispondevano più (R23-10).
+                let _ = crate::stato::sorvegliato("rymembra-gesti", || {
+                    if let Some(gesto) = traduci(app, gesto) {
+                        premi(app, gesto);
+                    }
+                });
             }
             Ok(None) => {}
             Err(err) => guasto(&mut ultimo_guasto, "i gesti non arrivano", &err),
@@ -248,7 +252,19 @@ fn rispondi_all_auto(app: &tauri::AppHandle) {
             Ok(Some(domanda)) => {
                 ultimo_guasto = None;
                 let id = domanda.id();
-                let esito = match risposta(app, domanda) {
+                // Dentro `sorvegliato`: un panico nella risposta lasciava
+                // l'auto senza libreria per il resto del processo (R23-10).
+                let risposto =
+                    crate::stato::sorvegliato("rymembra-auto", || risposta(app, domanda))
+                        .unwrap_or_else(|| {
+                            Err(rymembra_domain::AppError::new(
+                                rymembra_domain::ErrorCode::InternalAborted {
+                                    what: Some("risposta all'auto".to_owned()),
+                                },
+                            )
+                            .with_cause("la risposta è caduta"))
+                        });
+                let esito = match risposto {
                     Ok(voci) => rymembra_android::auto::rispondi(id, &voci),
                     Err(err) => {
                         let codice = err.code().kind().code();
@@ -320,42 +336,49 @@ fn componi_la_coda(app: &tauri::AppHandle, ricevi: &Receiver<Tratto>) {
         while let Ok(dopo) = ricevi.try_recv() {
             tratto = dopo;
         }
-        let (inizio, ids) = tratto;
-        let righe = match crate::riproduzione::righe_della_coda(app, &ids) {
-            Ok(righe) => righe,
-            Err(err) => {
-                nota!(
-                    "[media] la coda per l'auto non si legge: {} causa={}",
-                    err.code().kind().code(),
-                    err.cause().unwrap_or_default()
-                );
-                continue;
-            }
-        };
-        let copertine = app
-            .try_state::<Stato>()
-            .and_then(|stato| stato.copertine().ok());
-        let voci = righe
-            .into_iter()
-            .enumerate()
-            .filter_map(|(dove, riga)| {
-                let riga = riga?;
-                Some(VoceCoda {
-                    posto: inizio.saturating_add(dove),
-                    id: riga.id,
-                    titolo: riga.title,
-                    artista: riga.artist,
-                    album: riga.album,
-                    copertina: copertine
-                        .as_ref()
-                        .and_then(|store| auto::copertina(store, riga.cover_art_hash.as_deref())),
-                    durata_ms: u64::try_from(riga.duration_ms).unwrap_or(0),
-                })
-            })
-            .collect();
-        if let Err(err) = sessione::coda(&Coda { voci }) {
-            nota!("[media] la sessione non accetta la coda: {err}");
+        // Dentro `sorvegliato`: un panico qui lasciava l'auto senza coda per
+        // il resto del processo (R23-10).
+        let _ = crate::stato::sorvegliato("rymembra-coda-auto", || componi(app, tratto));
+    }
+}
+
+/// Un tratto di coda per l'auto: le sue righe, alla sessione.
+fn componi(app: &tauri::AppHandle, tratto: Tratto) {
+    let (inizio, ids) = tratto;
+    let righe = match crate::riproduzione::righe_della_coda(app, &ids) {
+        Ok(righe) => righe,
+        Err(err) => {
+            nota!(
+                "[media] la coda per l'auto non si legge: {} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or_default()
+            );
+            return;
         }
+    };
+    let copertine = app
+        .try_state::<Stato>()
+        .and_then(|stato| stato.copertine().ok());
+    let voci = righe
+        .into_iter()
+        .enumerate()
+        .filter_map(|(dove, riga)| {
+            let riga = riga?;
+            Some(VoceCoda {
+                posto: inizio.saturating_add(dove),
+                id: riga.id,
+                titolo: riga.title,
+                artista: riga.artist,
+                album: riga.album,
+                copertina: copertine
+                    .as_ref()
+                    .and_then(|store| auto::copertina(store, riga.cover_art_hash.as_deref())),
+                durata_ms: u64::try_from(riga.duration_ms).unwrap_or(0),
+            })
+        })
+        .collect();
+    if let Err(err) = sessione::coda(&Coda { voci }) {
+        nota!("[media] la sessione non accetta la coda: {err}");
     }
 }
 

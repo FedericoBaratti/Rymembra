@@ -82,7 +82,7 @@ mod sistema;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tauri::Manager as _;
@@ -156,8 +156,9 @@ pub struct StatoMedia {
     /// zero»: con un tetto a zero ogni salto in avanti tornerebbe all'inizio,
     /// che è un difetto peggiore di quello che il tetto viene a togliere.
     durata_ms: AtomicU64,
-    /// Il canale verso il filo che esegue i tasti. Vedi [`premi`].
-    tasti: OnceLock<Sender<Gesto>>,
+    /// Le corsie dei fili che eseguono i tasti, o `None` se non sono partiti.
+    /// Vedi [`premi`].
+    tasti: OnceLock<Option<Corsie>>,
 }
 
 impl StatoMedia {
@@ -266,8 +267,18 @@ pub(crate) enum Gesto {
 /// secondi di scadenza. Per tutto quel tempo il sistema restava con un tasto
 /// in mano, o la finestra ferma.
 ///
-/// Un filo solo, e non uno per gesto: due tasti premuti di fila — pausa e
-/// subito play — devono valere nell'ordine in cui sono stati premuti.
+/// Due fili, e non uno per gesto: due tasti premuti di fila — pausa e subito
+/// play — devono valere nell'ordine in cui sono stati premuti. Uno per i
+/// gesti in fila e uno per la pausa, che non aspetta: vedi [`avvia_corsie`].
+///
+/// # Sorvegliati
+///
+/// Ogni gesto gira dentro `crate::stato::sorvegliato`, come ogni altro filo
+/// del lettore: un panico in un gesto si portava via il filo in silenzio, e
+/// da lì ogni tasto si eseguiva sul filo che l'aveva ricevuto — il callback
+/// delle SMTC, dove un secondo panico abortisce il processo, o la finestra,
+/// ferma su un «successivo» dalla rete (R23-10). Senza fili il gesto si
+/// perde con una riga nel diario.
 ///
 /// Parte al primo gesto, non all'avvio: chi non tocca mai un tasto non paga un
 /// filo.
@@ -275,26 +286,155 @@ pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
     let Some(media) = app.try_state::<StatoMedia>() else {
         return;
     };
-    let tasti = media.tasti.get_or_init(|| {
-        let (manda, ricevi) = std::sync::mpsc::channel::<Gesto>();
+    let corsie = media.tasti.get_or_init(|| {
         let mano = app.clone();
-        let avviato = std::thread::Builder::new()
-            .name("rymembra-tasti".to_owned())
-            .spawn(move || {
-                for gesto in ricevi {
-                    esegui(&mano, gesto);
-                }
-            });
-        if avviato.is_err() {
-            nota!("[media] il filo dei tasti non è partito: i gesti si eseguono sul posto");
+        let chi_suona = app.clone();
+        let corsie = avvia_corsie(
+            move |gesto| {
+                let _ = crate::stato::sorvegliato(FILO_TASTI, || esegui(&mano, gesto));
+            },
+            move || {
+                chi_suona
+                    .try_state::<StatoLettore>()
+                    .is_some_and(|stato| crate::riproduzione::suona_adesso(&stato))
+            },
+        );
+        if corsie.is_none() {
+            nota!("[media] i fili dei tasti non sono partiti: i tasti non comandano niente");
         }
-        manda
+        corsie
     });
-    // Canale chiuso: il filo non è partito. Si esegue qui, lenti come prima ma
-    // non muti.
-    if let Err(respinto) = tasti.send(gesto) {
-        esegui(app, respinto.0);
+    // Senza fili il gesto si perde, con una riga: eseguirlo qui voleva dire
+    // eseguirlo sul filo del sistema — il callback delle SMTC, dove un panico
+    // abortisce il processo — o su quello della finestra, fermo fino a
+    // quindici secondi su un «successivo» dalla rete (R23-10).
+    if !corsie.as_ref().is_some_and(|corsie| corsie.manda(gesto)) {
+        nota!("[media] un tasto si è perso: i fili dei tasti non ci sono");
     }
+}
+
+/// Il nome del filo che esegue i gesti in fila: nel diario dei panici e nella
+/// salute dei fili.
+const FILO_TASTI: &str = "rymembra-tasti";
+
+/// Il nome del filo della corsia che non aspetta: vedi [`Corsie`].
+const FILO_PAUSA: &str = "rymembra-tasti-pausa";
+
+/// Da quale corsia passa un gesto: vedi [`Corsie`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Corsia {
+    /// Non aspetta niente: la pausa, e «alterna» quando la musica va.
+    Subito,
+    /// Dietro ai gesti arrivati prima, nell'ordine in cui sono stati premuti.
+    InFila,
+}
+
+/// La corsia di un gesto.
+const fn corsia(gesto: &Gesto) -> Corsia {
+    match gesto {
+        Gesto::Pausa | Gesto::Alterna => Corsia::Subito,
+        _ => Corsia::InFila,
+    }
+}
+
+/// Le due corsie dei gesti, e il numero che le tiene in ordine.
+pub(crate) struct Corsie {
+    /// Il numero dell'ultimo gesto mandato: cresce a ogni tasto, in tutte e
+    /// due le corsie.
+    numero: AtomicU64,
+    fila: Sender<(u64, Gesto)>,
+    subito: Sender<(u64, Gesto)>,
+}
+
+impl Corsie {
+    /// Manda un gesto nella sua corsia. `false` se il filo non c'è più.
+    fn manda(&self, gesto: Gesto) -> bool {
+        let numero = self.numero.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        let verso = match corsia(&gesto) {
+            Corsia::Subito => &self.subito,
+            Corsia::InFila => &self.fila,
+        };
+        verso.send((numero, gesto)).is_ok()
+    }
+}
+
+/// Fa partire i fili delle corsie. `esegui` fa il gesto; `suona` dice se la
+/// musica sta andando, per «alterna». `None` se un filo non parte.
+///
+/// # Perché due corsie
+///
+/// Perché la pausa non ha niente da aspettare, e in fila aspettava: dietro un
+/// «successivo» che apre un brano da un NAS che dorme, da un catalogo o dal
+/// cloud — fino a quindici secondi, quaranta con un'uscita da riaprire — il
+/// brano di prima continuava a suonare. Sul telefono anche la pausa di
+/// `BECOMING_NOISY`, cioè le cuffie staccate e la musica dall'altoparlante
+/// (R23-3). L'ordine fra una pausa e un brano che si sta aprendo lo tiene già
+/// `Lettore::pausa_chiesta` alla consegna: il brano nuovo parte fermo.
+///
+/// # L'ordine fra le corsie
+///
+/// Ogni gesto porta un numero, e la pausa vince sulle riprese premute
+/// **prima** di lei: una ripresa rimasta in fila dietro al gesto lento, e
+/// arrivata al suo turno dopo la pausa, non la disfa. Pausa e riprese si
+/// eseguono anche una alla volta — sotto `ultima_pausa` — così una ripresa
+/// già cominciata finisce prima che la pausa arrivata dopo la fermi. Gli
+/// altri gesti in fila — «successivo», «precedente», un salto — non
+/// aspettano la pausa né la pausa aspetta loro.
+///
+/// «Alterna» passa dalla corsia veloce: se la musica va è una pausa, e si fa
+/// lì; se no è una ripresa, e torna in fila col suo numero.
+fn avvia_corsie(
+    esegui: impl Fn(Gesto) + Send + Sync + 'static,
+    suona: impl Fn() -> bool + Send + 'static,
+) -> Option<Corsie> {
+    let esegui = Arc::new(esegui);
+    // Il numero dell'ultima pausa fatta dalla corsia veloce, e il turno fra
+    // pause e riprese.
+    let ultima_pausa = Arc::new(Mutex::new(0_u64));
+    let (fila, in_fila) = std::sync::mpsc::channel::<(u64, Gesto)>();
+    let (subito, di_corsa) = std::sync::mpsc::channel::<(u64, Gesto)>();
+    {
+        let esegui = Arc::clone(&esegui);
+        let ultima_pausa = Arc::clone(&ultima_pausa);
+        std::thread::Builder::new()
+            .name(FILO_TASTI.to_owned())
+            .spawn(move || {
+                for (numero, gesto) in in_fila {
+                    if !matches!(gesto, Gesto::Riprendi | Gesto::Alterna) {
+                        esegui(gesto);
+                        continue;
+                    }
+                    let turno = ultima_pausa.lock().unwrap_or_else(PoisonError::into_inner);
+                    if numero < *turno {
+                        continue;
+                    }
+                    esegui(gesto);
+                    drop(turno);
+                }
+            })
+            .ok()?;
+    }
+    let in_fila = fila.clone();
+    std::thread::Builder::new()
+        .name(FILO_PAUSA.to_owned())
+        .spawn(move || {
+            for (numero, gesto) in di_corsa {
+                let mut turno = ultima_pausa.lock().unwrap_or_else(PoisonError::into_inner);
+                if matches!(gesto, Gesto::Pausa) || suona() {
+                    *turno = (*turno).max(numero);
+                    esegui(gesto);
+                } else {
+                    drop(turno);
+                    let _ = in_fila.send((numero, gesto));
+                }
+            }
+        })
+        .ok()?;
+    Some(Corsie {
+        numero: AtomicU64::new(0),
+        fila,
+        subito,
+    })
 }
 
 /// Il gesto, fatto con i comandi che esistono già.
@@ -406,6 +546,141 @@ fn ms_di(durata: Duration) -> u64 {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    use std::sync::mpsc::Receiver;
+
+    /// Quanto una prova aspetta un gesto: largo, perché un gesto che arriva
+    /// lo fa in microsecondi e uno che non arriva non arriva mai.
+    const ENTRO: Duration = Duration::from_secs(5);
+
+    /// Le corsie con un esecutore finto: annota i gesti, e su «prossimo» resta
+    /// fermo — un brano che si apre da un NAS che dorme — finché la prova non
+    /// lo lascia andare.
+    fn banco(suona: bool) -> (Corsie, Receiver<&'static str>, Sender<()>) {
+        let (annota, annotati) = std::sync::mpsc::channel();
+        let (lascia, aspetta) = std::sync::mpsc::channel::<()>();
+        let aspetta = Mutex::new(aspetta);
+        let corsie = avvia_corsie(
+            move |gesto| {
+                let nome = match gesto {
+                    Gesto::Prossimo => {
+                        let _ = annota.send("prossimo:comincia");
+                        let _ = aspetta
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .recv_timeout(ENTRO);
+                        "prossimo:finisce"
+                    }
+                    Gesto::Pausa => "pausa",
+                    Gesto::Riprendi => "riprendi",
+                    Gesto::Alterna => "alterna",
+                    Gesto::Precedente => "precedente",
+                    _ => "altro",
+                };
+                let _ = annota.send(nome);
+            },
+            move || suona,
+        )
+        .expect("i fili delle corsie partono");
+        (corsie, annotati, lascia)
+    }
+
+    /// R23-3: una pausa da un tasto non aspetta un «successivo» lento.
+    /// Restava in fila dietro di lui, e il brano di prima continuava a
+    /// suonare fino a quindici secondi — sul telefono anche la pausa delle
+    /// cuffie staccate, dall'altoparlante.
+    #[test]
+    fn la_pausa_non_aspetta_un_gesto_lento() {
+        let (corsie, annotati, lascia) = banco(true);
+        assert!(corsie.manda(Gesto::Prossimo));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:comincia"));
+        assert!(corsie.manda(Gesto::Pausa));
+        assert_eq!(
+            annotati.recv_timeout(ENTRO),
+            Ok("pausa"),
+            "la pausa ha aspettato il «successivo»"
+        );
+        let _ = lascia.send(());
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:finisce"));
+    }
+
+    /// Una ripresa premuta prima della pausa, e rimasta in fila dietro al
+    /// gesto lento, non la disfa quando il gesto lento finisce: vince l'ultimo
+    /// tasto premuto.
+    #[test]
+    fn una_ripresa_superata_da_una_pausa_non_si_esegue() {
+        let (corsie, annotati, lascia) = banco(true);
+        assert!(corsie.manda(Gesto::Prossimo));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:comincia"));
+        assert!(corsie.manda(Gesto::Riprendi));
+        assert!(corsie.manda(Gesto::Pausa));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("pausa"));
+        let _ = lascia.send(());
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:finisce"));
+        assert!(corsie.manda(Gesto::Precedente));
+        assert_eq!(
+            annotati.recv_timeout(ENTRO),
+            Ok("precedente"),
+            "la ripresa premuta prima della pausa è stata eseguita dopo"
+        );
+    }
+
+    /// «Alterna» mentre suona è una pausa, e non aspetta; a musica ferma è
+    /// una ripresa, e sta in fila con gli altri.
+    #[test]
+    fn alterna_non_aspetta_solo_quando_e_una_pausa() {
+        let (corsie, annotati, lascia) = banco(true);
+        assert!(corsie.manda(Gesto::Prossimo));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:comincia"));
+        assert!(corsie.manda(Gesto::Alterna));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("alterna"));
+        let _ = lascia.send(());
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:finisce"));
+
+        let (corsie, annotati, lascia) = banco(false);
+        assert!(corsie.manda(Gesto::Prossimo));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:comincia"));
+        assert!(corsie.manda(Gesto::Alterna));
+        let _ = lascia.send(());
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("prossimo:finisce"));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("alterna"));
+    }
+
+    /// R23-10: ogni filo dei gesti esegue dentro `sorvegliato`, e senza fili
+    /// un gesto non si esegue sul filo che l'ha ricevuto.
+    #[test]
+    fn i_fili_dei_gesti_sono_sorvegliati() {
+        let senza_prove = |testo: &'static str| {
+            testo
+                .find("#[cfg(test)]\nmod prove")
+                .map_or(testo, |fine| &testo[..fine])
+        };
+        let corpo = |testo: &'static str, firma: &str| {
+            let testo = senza_prove(testo);
+            let inizio = testo.find(firma).unwrap_or_else(|| panic!("manca {firma}"));
+            let resto = &testo[inizio..];
+            resto[..resto.find("\n}\n").unwrap_or(resto.len())].to_owned()
+        };
+        let premi = corpo(include_str!("mod.rs"), "pub(crate) fn premi(");
+        assert!(
+            premi.contains("sorvegliato(FILO_TASTI"),
+            "i tasti si eseguono senza sorveglianza"
+        );
+        assert!(
+            !premi.contains("esegui(app"),
+            "senza filo i tasti si eseguono sul posto"
+        );
+        for firma in [
+            "fn ascolta_i_gesti(",
+            "fn rispondi_all_auto(",
+            "fn componi_la_coda(",
+        ] {
+            assert!(
+                corpo(include_str!("android.rs"), firma).contains("sorvegliato("),
+                "{firma} non è sorvegliato"
+            );
+        }
+    }
     #[test]
     fn una_durata_sconosciuta_non_mette_nessun_tetto() {
         // `0` vuol dire «non si sa», non «lungo zero»: con un tetto a zero ogni

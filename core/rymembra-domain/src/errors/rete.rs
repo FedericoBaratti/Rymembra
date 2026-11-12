@@ -64,51 +64,73 @@
 /// non esiste in questa sessione lo restituisce: lo restituisce anche una
 /// cartella locale cancellata, e lì «Riprova» sarebbe una promessa falsa.
 ///
-/// Fuori da Windows è sempre `false`, e non per pigrizia: il bersaglio di questa
-/// applicazione desktop è Windows, gli errori di rete POSIX (`ENETDOWN`,
-/// `EHOSTUNREACH`, `ESTALE`…) non hanno un chiamante che li produca qui, e un
-/// elenco scritto a occhio per un sistema che nessuno prova sarebbe un elenco
-/// che sbaglia in silenzio. Il ramo resta, dichiarato, per il giorno in cui
-/// servisse.
-#[cfg(windows)]
+/// # Fuori da Windows
+///
+/// Lì valgono soltanto i tre numeri di [`NUMERI_DEI_FLUSSI`], quelli che
+/// `rymembra_net::flusso` dà a un flusso interrotto — su **tutte** le
+/// piattaforme, perché sono il ponte fra il flusso e il decodificatore e non
+/// un guasto del sistema. Qui c'era scritto che fuori da Windows nessuno li
+/// produceva, ed era falso: sul telefono un brano di catalogo, del cloud o di
+/// un altro dispositivo che perdeva la rete a metà arrivava come «questo file
+/// è danneggiato», e la coda andava avanti invece di fermarsi su «Riprova».
+///
+/// Gli altri numeri dell'elenco no: fuori da Windows sono `errno` di
+/// tutt'altro (il 5 è un guasto di I/O, il 2 un file che non c'è), e gli
+/// errori di rete POSIX di una cartella montata (`ENETDOWN`, `EHOSTUNREACH`,
+/// `ESTALE`…) non hanno un chiamante che li produca qui. Dei tre che restano,
+/// su Linux e Android il 64 è `ENONET` e il 121 `EREMOTEIO` — guasti di rete
+/// anche lì — e il 1231 non è un `errno`: un file locale non li restituisce.
 #[must_use]
 pub fn e_di_rete(err: &std::io::Error) -> bool {
-    matches!(
-        err.raw_os_error(),
-        Some(
-            51 | 53
-                | 55
-                | 58
-                | 59
-                | 64
-                | 65
-                | 67
-                | 70
-                | 121
-                | 240
-                | 1201
-                | 1203
-                | 1219
-                | 1222
-                | 1225
-                | 1231
-                | 1232
-                | 1236
-                | 1244
-                | 1256
-                | 1262
-                | 1326
-                | 2250
-        )
-    )
+    err.raw_os_error()
+        .is_some_and(|numero| numero_di_rete(numero, cfg!(windows)))
 }
 
-/// Vedi la versione Windows: qui è sempre `false`.
-#[cfg(not(windows))]
-#[must_use]
-pub fn e_di_rete(err: &std::io::Error) -> bool {
-    let _ = err;
-    false
+/// I numeri che `rymembra_net::flusso` dà a un flusso che si interrompe:
+/// `ERROR_NETNAME_DELETED`, `ERROR_SEM_TIMEOUT` ed `ERROR_NETWORK_UNREACHABLE`.
+///
+/// Sono di rete su ogni piattaforma: vedi «Fuori da Windows» su [`e_di_rete`].
+/// Il `match` di [`numero_di_rete`] li ripete perché una `const fn` non sa
+/// cercare in un vettore; la prova `i_numeri_dei_flussi_sono_di_rete_su_ogni_piattaforma`
+/// tiene d'accordo le due righe.
+pub const NUMERI_DEI_FLUSSI: [i32; 3] = [64, 121, 1231];
+
+/// La regola di [`e_di_rete`] su un numero, con la piattaforma detta da chi
+/// chiama invece che dal `cfg`.
+///
+/// Una funzione a sé perché la regola di tutte e due le piattaforme si possa
+/// provare su una sola: le prove girano su Windows, e un ramo `cfg(not(windows))`
+/// lì non si compila nemmeno.
+const fn numero_di_rete(numero: i32, su_windows: bool) -> bool {
+    if !su_windows {
+        return matches!(numero, 64 | 121 | 1231);
+    }
+    matches!(
+        numero,
+        51 | 53
+            | 55
+            | 58
+            | 59
+            | 64
+            | 65
+            | 67
+            | 70
+            | 121
+            | 240
+            | 1201
+            | 1203
+            | 1219
+            | 1222
+            | 1225
+            | 1231
+            | 1232
+            | 1236
+            | 1244
+            | 1256
+            | 1262
+            | 1326
+            | 2250
+    )
 }
 
 #[cfg(test)]
@@ -139,9 +161,34 @@ mod prove {
         }
     }
 
-    #[cfg(not(windows))]
+    /// I tre numeri che `rymembra_net::flusso` dà a un flusso interrotto sono
+    /// di rete **su ogni piattaforma**: sul telefono un brano di catalogo o del
+    /// cloud che perde la rete a metà diventava «questo file è danneggiato», e
+    /// la coda andava avanti invece di fermarsi su «Riprova» (R23-2).
     #[test]
-    fn fuori_da_windows_non_si_riconosce_niente() {
-        assert!(!e_di_rete(&std::io::Error::from_raw_os_error(64)));
+    fn i_numeri_dei_flussi_sono_di_rete_su_ogni_piattaforma() {
+        for numero in NUMERI_DEI_FLUSSI {
+            assert!(
+                numero_di_rete(numero, false),
+                "fuori da Windows il {numero} di un flusso interrotto non è di rete"
+            );
+            assert!(
+                numero_di_rete(numero, true),
+                "su Windows il {numero} non è di rete"
+            );
+        }
+    }
+
+    /// Fuori da Windows gli altri numeri di Windows non dicono niente: lì sono
+    /// `errno` di tutt'altro (il 2 è «file non trovato», il 5 un guasto di
+    /// I/O), e chiamarli rete vorrebbe dire «Riprova» per un file rotto.
+    #[test]
+    fn fuori_da_windows_gli_altri_numeri_non_sono_di_rete() {
+        for numero in [2, 3, 5, 51, 53, 1222, 1326, 2250] {
+            assert!(
+                !numero_di_rete(numero, false),
+                "fuori da Windows il {numero} non viene da un flusso"
+            );
+        }
     }
 }

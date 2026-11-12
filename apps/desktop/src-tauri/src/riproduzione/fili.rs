@@ -29,8 +29,8 @@ use super::coda::{salva_coda, scegli_da_solo, scrivi_coda};
 use super::{
     AVANZAMENTO_MINIMO_MS, BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO,
     PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Strada, Tempo, annota_ripresa, aspetta_le_file,
-    brano_di, chiudi_ascolto, con_lettore, da_scrivere, guasto_di, insieme, manda_stato, ospiti,
-    presa_spettro_se_libera, strada,
+    avanza_sul_non_aperto, brano_di, chiudi_ascolto, con_lettore, consegna, da_scrivere, guasto_di,
+    insieme, manda_stato, manda_stato_con_posizione, ospiti, presa_spettro_se_libera, strada,
 };
 
 /// Dice al motore quale sarà il brano dopo.
@@ -363,7 +363,10 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             // ed è quel che il suo doc-comment su [`crate::riproduzione::Lettore`]
             // dichiara di servire a sapere.
             Some(id) if lettore.in_canna == Some(id) => Ok(None),
-            Some(id) => Ok(Some((id, formato))),
+            Some(id) => {
+                lettore.in_apertura = Some(id);
+                Ok(Some((id, formato)))
+            }
         }
     });
     let Ok(Some((id, formato))) = scelta else {
@@ -396,9 +399,22 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             // mostrerebbe questo. Vedi `Lettore::non_aperto` per cosa succede
             // quando il corrente finisce.
             let _ = con_lettore(&stato, |lettore| {
+                if lettore.in_apertura == Some(id) {
+                    lettore.in_apertura = None;
+                }
                 if lettore.coda.peek_next() == Some(id) {
                     lettore.prepara(None);
                     lettore.non_aperto = Some(id);
+                    // Doveva partire appena aperto: il `Fermato` è già passato,
+                    // e nessun altro farà andare avanti la coda. Lo fa adesso,
+                    // come a fine brano. Vedi `Lettore::parte_appena_aperto`.
+                    if lettore
+                        .parte_appena_aperto
+                        .take()
+                        .is_some_and(|(quale, _)| quale == id)
+                    {
+                        avanza_sul_non_aperto(app, lettore);
+                    }
                 }
                 Ok(())
             });
@@ -408,6 +424,9 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
 
     // ── 3. la consegna, di nuovo sotto lucchetto ──
     let _ = con_lettore(&stato, |lettore| {
+        if lettore.in_apertura == Some(id) {
+            lettore.in_apertura = None;
+        }
         // Nel frattempo la coda può essere cambiata, e chi l'ha cambiata ha
         // mandato la sua spinta: questo brano non serve più a nessuno. Si lascia
         // cadere invece di metterlo in canna — un successivo sbagliato attaccato
@@ -430,6 +449,25 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         if lettore.motore.formato() != formato {
             sveglia_preparatore(&stato);
             return Ok(());
+        }
+        // Il `Fermato` è arrivato mentre lo si apriva: si parte adesso, invece
+        // di metterlo in canna a motore fermo. Il numero dei gesti è quello del
+        // `Fermato`, così una pausa premuta nel frattempo vince. Vedi
+        // `Lettore::parte_appena_aperto`.
+        if let Some((quale, gesti)) = lettore.parte_appena_aperto.take()
+            && quale == id
+            && lettore.motore.posizione().track_id.is_none()
+        {
+            if lettore.coda.current() != Some(id) {
+                lettore.coda.advance(false);
+            }
+            if lettore.coda.current() == Some(id) {
+                let da_ms = consegna(lettore, brano, false, 0, gesti);
+                prepara_prossimo(app, lettore);
+                salva_coda(app, lettore);
+                manda_stato_con_posizione(app, lettore, da_ms);
+                return Ok(());
+            }
         }
         lettore.prepara(Some(brano));
         Ok(())
@@ -865,6 +903,9 @@ struct Orologio {
     /// Da quanti giri di fila la musica non avanza mentre la callback serve
     /// silenzio.
     giri_a_secco: u8,
+    /// Quando è cominciato il giro di prima, a orologio da parete: vedi
+    /// [`e_un_risveglio`].
+    ultimo_giro_ms: Option<i64>,
 }
 
 impl Default for Orologio {
@@ -875,7 +916,49 @@ impl Default for Orologio {
             gia_perso: false,
             prima: (None, 0, 0),
             giri_a_secco: 0,
+            ultimo_giro_ms: None,
         }
+    }
+}
+
+/// Fra l'ultimo giro d'orologio e questo il PC ha dormito.
+///
+/// Un giro dura un quarto di secondo; un buco più lungo di
+/// `listen::SALTO_MASSIMO_MS` fra due giri è un coperchio chiuso, lo stesso
+/// criterio con cui l'ascolto non conta il tempo della sospensione. A orologio
+/// da parete, che è quello che corre col coperchio chiuso.
+pub(super) fn e_un_risveglio(prima_ms: Option<i64>, adesso_ms: i64) -> bool {
+    let salto = i64::try_from(rymembra_domain::listen::SALTO_MASSIMO_MS).unwrap_or(i64::MAX);
+    prima_ms.is_some_and(|prima| adesso_ms.saturating_sub(prima) > salto)
+}
+
+/// Al risveglio del PC la musica che suonava va in pausa (D-89).
+///
+/// Il flusso o continua da sé o lo rimette in piedi la riapertura automatica,
+/// e in tutti e due i casi la musica ripartiva senza che nessuno l'avesse
+/// chiesto: il segno della riapertura si scrive quando ci si accorge del
+/// guasto, cioè **dopo** il risveglio, ed era quindi sempre «fresco». Con il
+/// comando `pausa`, lo stesso del tasto: è un gesto, e la riapertura che
+/// segue lo rispetta.
+fn pausa_al_risveglio(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
+    let suona = con_lettore(stato_lettore, |lettore| {
+        let posizione = lettore.motore.posizione();
+        Ok(posizione.track_id.is_some() && !posizione.in_pausa)
+    })
+    .unwrap_or(false);
+    if !suona {
+        return;
+    }
+    nota!("[riproduzione] il PC si è risvegliato: pausa");
+    let Some(stato) = app.try_state::<StatoLettore>() else {
+        return;
+    };
+    if let Err(err) = super::pausa(app.clone(), stato) {
+        nota!(
+            "[riproduzione] pausa al risveglio non riuscita codice={} causa={}",
+            err.code,
+            err.cause.as_deref().unwrap_or_default()
+        );
     }
 }
 
@@ -890,6 +973,14 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
         return ControlFlow::Break(());
     };
+
+    // Prima di tutto il resto: se il PC si è appena svegliato, quel che segue
+    // — il guasto da annotare, la posizione da mandare — deve già vedere la
+    // pausa. Vedi [`pausa_al_risveglio`].
+    let adesso = adesso_ms();
+    if e_un_risveglio(memoria.ultimo_giro_ms.replace(adesso), adesso) {
+        pausa_al_risveglio(app, &stato_lettore);
+    }
 
     // Le preferenze audio che i cursori hanno lasciato in sospeso. Quasi sempre
     // non c'è niente da fare: due letture rilassate.
@@ -930,6 +1021,29 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     // pausa.
     scade_il_timer(app, &stato_lettore);
 
+    // Il segno per «riprendi dov'eri», ogni tanto.
+    //
+    // Non a ogni giro: sarebbero quattro scritture al secondo sul database per
+    // un numero che serve una volta sola, alla prossima apertura. Ogni venti
+    // giri sono cinque secondi, che è la peggior imprecisione possibile su una
+    // cosa che si riprende a mano — e chi chiude a metà brano ritrova il segno a
+    // cinque secondi da dove l'aveva lasciato, non all'inizio. Con il brano
+    // accanto: vedi `playback::save_posizione`.
+    //
+    // Sul filo delle scritture, messo in fila **col lucchetto del lettore in
+    // mano** e con la posizione letta sotto lo stesso lucchetto: così sta in fila
+    // col segno a zero che `fermato` scrive a coda finita. L'orologio lo
+    // scriveva da sé, aspettando la libreria, e con una scansione in corso
+    // poteva scrivere l'ultimo segno — due secondi dalla fine — **dopo** lo
+    // zero: il giorno dopo «Riprendi» saltava in fondo a un brano finito
+    // (R23-7). Non col dispositivo perso: lì la posizione è ferma, e la riga
+    // la scrive chi lo riapre.
+    let segna = perso.is_none()
+        && memoria
+            .battiti
+            .wrapping_add(1)
+            .is_multiple_of(BATTITI_PER_SEGNO);
+
     let letto = con_lettore(&stato_lettore, |lettore| {
         // Il battito dell'ascolto: questo filo è vivo e la musica va. Un buco
         // lungo fra due battiti è un PC che dormiva, e non si conta — vedi «Il
@@ -938,6 +1052,25 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
             ascolto.battito(adesso_ms());
         }
         let p = lettore.motore.posizione();
+        // Solo per una riga della libreria: una maniglia domani non vuol dire
+        // niente, e `save_posizione` la rifiuterebbe con una riga nel diario
+        // ogni cinque secondi per tutta la sessione. Con una scadenza dentro il
+        // lavoro, come ogni altra scrittura di questo filo: una libreria
+        // occupata non accumula segni in fila, e uno saltato si riscrive fra
+        // cinque secondi.
+        if segna
+            && !p.in_pausa
+            && let Some(brano) = p.track_id.filter(|id| ospiti::e_di_libreria(*id))
+        {
+            let ms = p.ms;
+            da_scrivere(app, move |app| {
+                if let Some(stato_app) = app.try_state::<Stato>() {
+                    let _ = con_libreria_entro(&stato_app, ATTESA_ORDINARIA, |libreria| {
+                        playback::save_posizione(&libreria.connection, brano, ms)
+                    });
+                }
+            });
+        }
         // In sessione, fra una partenza programmata e il primo campione, il
         // motore dice ancora il punto del brano di prima: alla finestra va
         // quello promesso, con la durata della voce. Vedi
@@ -983,7 +1116,6 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     // Dopo il conto «a secco», che parla del motore e non di quel che si
     // mostra: un punto promesso che non si muove per un quarto di secondo non
     // è una rete che non risponde.
-    let ms_del_motore = tempo.posizione_ms;
     if let Some((ms, durata)) = mostrata {
         tempo.posizione_ms = ms;
         tempo.durata_ms = durata;
@@ -1010,35 +1142,8 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
         app.emetti("riproduzione:tempo", tempo);
     }
     memoria.ultimo_fermo = tempo.in_pausa;
-
-    // Il segno per «riprendi dov'eri», ogni tanto.
-    //
-    // Non a ogni giro: sarebbero quattro scritture al secondo sul database per
-    // un numero che serve una volta sola, alla prossima apertura. Ogni venti
-    // giri sono cinque secondi, che è la peggior imprecisione possibile su una
-    // cosa che si riprende a mano — e chi chiude a metà brano ritrova il segno a
-    // cinque secondi da dove l'aveva lasciato, non all'inizio.
-    //
-    // Con il brano accanto: vedi `playback::save_posizione`.
+    // Il conto dei giri del segno: vedi `segna`, più su.
     memoria.battiti = memoria.battiti.wrapping_add(1);
-    //
-    // Con una scadenza, come ogni altra scrittura di questo filo: senza, una
-    // libreria occupata lo teneva fermo qui, e con lui la posizione, il timer e
-    // la sorveglianza del dispositivo. Un segno saltato si riscrive fra cinque
-    // secondi.
-    //
-    // Solo per una riga della libreria: una maniglia domani non vuol dire
-    // niente, e `save_posizione` la rifiuterebbe con una riga nel diario ogni
-    // cinque secondi per tutta la sessione.
-    if let Some(brano) = di_chi.filter(|id| ospiti::e_di_libreria(*id))
-        && !tempo.in_pausa
-        && memoria.battiti.is_multiple_of(BATTITI_PER_SEGNO)
-        && let Some(stato_app) = app.try_state::<Stato>()
-    {
-        let _ = con_libreria_entro(&stato_app, ATTESA_ORDINARIA, |libreria| {
-            playback::save_posizione(&libreria.connection, brano, ms_del_motore)
-        });
-    }
     ControlFlow::Continue(())
 }
 

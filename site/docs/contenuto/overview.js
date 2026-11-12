@@ -99,7 +99,7 @@
             rows: [
               ["cpal callback", "`rymembra-play::uscita`", "Real time: pops samples, EQ, spectrum tap, gain, limiter"],
               ["`rymembra-uscita`", "`rymembra-play::uscita`", "Owns the stream; sleep/wake policy (1 s awake, 250 ms asleep)"],
-              ["`rymembra-decodifica`", "`rymembra-play::motore`", "Decodes into the ring; idle sleep 4 ms; runs under `catch_unwind`"],
+              ["`rymembra-decodifica`", "`rymembra-play::motore`", "Decodes into the ring; 4 ms steps while playing, blocks on commands when paused or empty; runs under `catch_unwind`"],
               ["`rymembra-eventi`", "`rymembra-play::motore`", "Delivers engine announcements (start, stop, error)"],
               ["`rymembra-seguito`", "`riproduzione::seguito`", "Ordered slow work: state events, SMTC, tray and taskbar buttons"],
               ["`rymembra-scritture`", "`riproduzione::seguito`", "Ordered database writes born under the player lock: finished listens, the resume mark set to zero, the position saved on exit"],
@@ -119,7 +119,7 @@
             ],
           },
         },
-        "Other threads start on demand: `rymembra-scadenza-*` (one open with a deadline), `rymembra-operaio-*` and `rymembra-a-rate-*` (scan reads and walks), `rymembra-volumi-*`, `flusso-anticipo` (HTTP prefetch), `rymembra-procura` (downloads), `rymembra-testi` and `rymembra-testo-dopo` (lyrics), `rymembra-scrobble-adesso`, `rymembra-ia`, `rymembra-aggiornamento` (an install), `rymembra-tasti` (media keys, from the first press), `cartelle-sfratto` (while the Folders tree is in memory), `rymembra-risveglio` (wakes network roots at start).",
+        "Other threads start on demand: `rymembra-scadenza-*` (one open with a deadline), `rymembra-operaio-*` and `rymembra-a-rate-*` (scan reads and walks), `rymembra-volumi-*`, `flusso-anticipo` (HTTP prefetch), `rymembra-procura` (downloads), `rymembra-testi` and `rymembra-testo-dopo` (lyrics), `rymembra-scrobble-adesso`, `rymembra-ia`, `rymembra-aggiornamento` (an install), `rymembra-tasti` and `rymembra-tasti-pausa` (media keys, from the first press), `cartelle-sfratto` (while the Folders tree is in memory), `rymembra-risveglio` (wakes network roots at start).",
         { h: "The periodic-thread template" },
         "`stato::avvia_filo_periodico` is shared by backup, sync, enrichment and maintenance: a start delay, then `recv_timeout(intervallo)` as both the period and the wake-up channel. A wake-up that marks data dirty waits for its `raffica` (burst) to go quiet before the pass; `aspetta_la_raffica` tells «quiet» from «channel closed» so that closing the app never starts a pass. Each pass runs inside `sorvegliato` (`catch_unwind`); a panic is logged, counted in the registry read by the `fili_salute` command, and retried after 5 s, doubling to 10 min.",
       ],

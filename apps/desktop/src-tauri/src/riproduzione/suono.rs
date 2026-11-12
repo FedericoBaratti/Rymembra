@@ -271,7 +271,12 @@ pub fn normalizzazione(
 /// Serve al selettore delle Impostazioni, che è l'unico a chiederlo: per questo
 /// non viaggia nello stato della riproduzione, come la preferenza di
 /// [`super::formato_visibile`].
-#[tauri::command]
+///
+/// `(async)`, come questo comando e i tre delle curve salvate qui sotto: leggono
+/// e scrivono la libreria, e sul filo della finestra `con_libreria` aspetta fino
+/// a quattro secondi (R23-11). I tre che scrivono si mettono in fila sul
+/// lucchetto delle preferenze, come `normalizzazione`.
+#[tauri::command(async)]
 pub fn normalizzazione_modo(stato: State<'_, Stato>) -> Esito<ModoLivello> {
     con_libreria(&stato, |libreria| {
         playback::load_replaygain(&libreria.connection).map(|letta| letta.modo)
@@ -291,12 +296,16 @@ pub fn normalizzazione_modo(stato: State<'_, Stato>) -> Esito<ModoLivello> {
 /// quello che suona — e quello già pronto dietro di lui — se lo tengono: un
 /// cambio a metà canzone sarebbe un salto di volume che nessuno ha chiesto
 /// adesso, e il prossimo brano è fra pochi minuti.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn normalizzazione_modo_scegli(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     modo: ModoLivello,
 ) -> Esito<ModoLivello> {
+    let _in_fila = stato
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let stato_app = super::libreria_di(&app, "modo della normalizzazione").map_err(errore)?;
     let salvata = con_libreria(&stato_app, |libreria| {
         let attuale = playback::load_replaygain(&libreria.connection)?;
@@ -343,7 +352,7 @@ pub fn normalizzazione_avanzamento(stato: State<'_, Stato>) -> Esito<Avanzamento
 /// In quest'ordine perché è quello in cui si guardano: chi apre l'elenco la
 /// prima volta non ha curve sue, e chi ne ha vuole trovarle in fondo, sempre
 /// nello stesso posto, invece che mescolate alfabeticamente alle altre.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn eq_preset_elenco(stato: State<'_, Stato>) -> Esito<Vec<VocePreset>> {
     let mut elenco: Vec<VocePreset> = PRESET_DI_SERIE
         .iter()
@@ -369,12 +378,16 @@ pub fn eq_preset_elenco(stato: State<'_, Stato>) -> Esito<Vec<VocePreset>> {
 ///
 /// `false` se il nome era vuoto. Un nome che c'è già sostituisce quella curva:
 /// la regola sta in `rymembra_app::playback::salva_preset`, con la sua ragione.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn eq_preset_salva(
     stato: State<'_, Stato>,
     stato_lettore: State<'_, StatoLettore>,
     nome: String,
 ) -> Esito<bool> {
+    let _in_fila = stato_lettore
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let guadagni =
         con_lettore(&stato_lettore, |lettore| Ok(lettore.eq.guadagni.clone())).map_err(errore)?;
     con_libreria(&stato, |libreria| {
@@ -387,8 +400,16 @@ pub fn eq_preset_salva(
 ///
 /// Quelle di serie non passano di qui: non stanno nel database, quindi non c'è
 /// niente da togliere e la finestra non ne offre il comando.
-#[tauri::command]
-pub fn eq_preset_cancella(stato: State<'_, Stato>, nome: String) -> Esito<bool> {
+#[tauri::command(async)]
+pub fn eq_preset_cancella(
+    stato: State<'_, Stato>,
+    stato_lettore: State<'_, StatoLettore>,
+    nome: String,
+) -> Esito<bool> {
+    let _in_fila = stato_lettore
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     con_libreria(&stato, |libreria| {
         playback::cancella_preset(&libreria.connection, &nome)
     })
