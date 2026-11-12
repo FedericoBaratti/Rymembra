@@ -16,7 +16,7 @@
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 37"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 40"],
               ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
               ["`skin/`", "Installed `.ryskin` packages and Studio drafts (`skin/bozze/`)"],
@@ -62,7 +62,7 @@
     },
     {
       id: "schema",
-      title: "The schema (version 37)",
+      title: "The schema (version 40)",
       src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql", "core/rymembra-app/src/db/schema/035_insieme.sql", "core/rymembra-app/src/db/schema/036_nuvola.sql", "core/rymembra-app/src/db/schema/037_nuvola_app.sql"],
       body: [
         "Times are milliseconds since the epoch, durations milliseconds. There are no views. The central table is `tracks`; almost everything else hangs off `tracks.id` (with `ON DELETE CASCADE`) or off a stable key.",
@@ -126,7 +126,7 @@
       title: "Migrations and the pre-migration copy",
       src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
-        "`MIGRATIONS` is an ordered list of 37 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
+        "`MIGRATIONS` is an ordered list of 40 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
         "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },
