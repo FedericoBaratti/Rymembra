@@ -529,7 +529,7 @@ export function Cartelle({
       // Si segna **prima** della risposta: due espansioni ravvicinate non
       // devono far partire due sonde da otto secondi ciascuna.
       ultimaSonda.current = adesso;
-      ipc
+      letture
         .cartelleRadiciVive(radici)
         .then((risposte) => {
           ultimaSonda.current = Date.now();
@@ -541,7 +541,7 @@ export function Cartelle({
         })
         .catch(onErrore);
     },
-    [radici, onErrore],
+    [radici, onErrore, letture],
   );
 
   /*
@@ -568,7 +568,7 @@ export function Cartelle({
     chiediFiglie(null, false);
     sonda(false);
     let vivo = true;
-    ipc
+    letture
       .cartelleUi()
       .then((ricordo) => {
         if (!vivo) return;

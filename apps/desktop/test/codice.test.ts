@@ -118,3 +118,41 @@ test("dentro una stringa si completa dopo la virgoletta", () => {
   assert.ok(esito.options.some((o) => o.label === "heart"));
 });
 
+
+
+test("l'editor parla la lingua dell'interfaccia: ogni frase di CodeMirror passa dalle sue (R14-9)", async () => {
+  // CodeMirror non riceveva `EditorState.phrases`: Ctrl+F apriva un pannello
+  // inglese con l'interfaccia in italiano, e il lettore di schermo leggeva
+  // «Completions». Le frasi arrivano da chi monta l'editor (`EditorCodice`,
+  // dal catalogo), come le descrizioni delle `Fonti`.
+  const { estensioni, FRASI_CODEMIRROR } = await import("../src/studio/codice");
+  const frasi = Object.fromEntries(FRASI_CODEMIRROR.map((f) => [f, `«${f}»`]));
+  const stato = EditorState.create({
+    extensions: estensioni({ fonti: () => fonti, onAnnulla: () => undefined, onRipeti: () => undefined, etichetta: "x", frasi }),
+  });
+  assert.equal(stato.phrase("Find"), "«Find»");
+  assert.equal(stato.phrase("Completions"), "«Completions»");
+
+  // Ogni frase che i pacchetti installati chiedono ha la sua voce: un
+  // aggiornamento di CodeMirror che ne porta una nuova fa fallire qui, non
+  // compare in inglese in mezzo all'italiano.
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const radice = new URL("../node_modules/@codemirror/", import.meta.url);
+  const chieste = new Set<string>();
+  for (const pacchetto of readdirSync(radice)) {
+    let testo: string;
+    try {
+      testo = readFileSync(new URL(`${pacchetto}/dist/index.js`, radice), "utf8");
+    } catch {
+      continue;
+    }
+    for (const m of testo.matchAll(/phrase\((?:view, )?"([^"]+)"/g)) chieste.add(m[1] ?? "");
+    for (const m of testo.matchAll(/phrase\([^)"]*\? "([^"]+)" : "([^"]+)"/g)) {
+      chieste.add(m[1] ?? "");
+      chieste.add(m[2] ?? "");
+    }
+  }
+  assert.ok(chieste.has("Find") && chieste.has("Fold line"), "la lettura dei pacchetti non trova niente");
+  const mancanti = [...chieste].filter((f) => !(FRASI_CODEMIRROR as readonly string[]).includes(f));
+  assert.deepEqual(mancanti, [], "frasi di CodeMirror senza traduzione");
+});

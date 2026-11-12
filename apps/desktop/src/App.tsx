@@ -120,6 +120,7 @@ import {
   type RimozioniDaConfermare,
   type Playlist,
   type VistaBrani,
+  type VoceSkin,
 } from "./ipc";
 import { conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
 import { nomeDiFile } from "./nomeDiFile";
@@ -675,8 +676,20 @@ export function App() {
    * vedi `skinAttiva.ts`. Qui, nel punto in cui stava la lettura della skin
    * all'apertura — subito dopo `avvio`, e prima del tema che la legge.
    */
-  const skinFinestra = useSkinAttiva(segnalaErrore);
-  const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin } = skinFinestra;
+  //
+  // Una scelta durante «Prova sull'app» chiude la prova (D-67), e lo si dice:
+  // lo Studio torna a coprire la finestra, e senza una parola sembrerebbe che
+  // la scelta abbia riaperto l'editor da sola. Il nome dall'elenco di adesso,
+  // letto quando l'avviso parte e non quando la funzione nasce.
+  const elencoSkin = useRef<readonly VoceSkin[]>([]);
+  const avvisaProvaChiusa = useCallback(
+    (id: string) =>
+      setNotizia(t("studio3.try.closed", { nome: elencoSkin.current.find((v) => v.id === id)?.nome ?? id })),
+    [setNotizia],
+  );
+  const skinFinestra = useSkinAttiva(segnalaErrore, avvisaProvaChiusa);
+  const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin, finisciProva } = skinFinestra;
+  elencoSkin.current = skin;
   const { daIndossare, setDaIndossare } = skinFinestra;
   const studioInProva = prova !== null;
   /** Lo Studio copre la finestra: l'app non prende né tasti né file. */
@@ -725,11 +738,30 @@ export function App() {
    * deve lasciare la finestra com'è dopo una chiusura normale, prova
    * dimenticata e skin rilette compresi.
    */
+  /**
+   * Il controllo che aveva il fuoco quando lo Studio si è aperto, per
+   * rimettercelo all'uscita (R14-10). Senza, il fuoco cadeva sul `<body>` e
+   * chi usa la tastiera o un lettore di schermo ripartiva dall'inizio della
+   * finestra invece che da Impostazioni › Aspetto.
+   */
+  const fuocoPrimaDelloStudio = useRef<HTMLElement | null>(null);
+  const ricordaIlFuoco = useCallback(() => {
+    const qui = document.activeElement;
+    fuocoPrimaDelloStudio.current = qui instanceof HTMLElement && qui !== document.body ? qui : null;
+  }, []);
   const esciDalloStudio = useCallback(() => {
     setStudioAperto(null);
     skinFinestra.scordaProva();
     // Le skin possono essere cambiate mentre si era là dentro.
     void ricaricaSkin();
+    // Dopo il disegno: finché lo Studio c'è, la finestra sotto è `inert`.
+    const torna = fuocoPrimaDelloStudio.current;
+    fuocoPrimaDelloStudio.current = null;
+    if (torna !== null) {
+      window.requestAnimationFrame(() => {
+        if (torna.isConnected) torna.focus();
+      });
+    }
   }, [skinFinestra, ricaricaSkin]);
 
   /**
@@ -2769,7 +2801,13 @@ export function App() {
         setCreandoTema(true);
       },
       onApriStudio: (id) => {
-        if (!MOBILE) setStudioAperto(id);
+        if (MOBILE) return;
+        // Durante «Prova sull'app» lo Studio è nascosto: aprirne un altro
+        // senza chiudere la prova non mostrava niente, e dopo «Torna» lo
+        // Studio era ancora sulla bozza di prima. Si torna, e si apre.
+        finisciProva();
+        ricordaIlFuoco();
+        setStudioAperto(id);
       },
       onImporta: importaDatabase,
       onImportaLink: () => setImportandoLink(true),
@@ -2792,6 +2830,8 @@ export function App() {
       setImportandoLink,
       setImportandoAccount,
       setRipristinando,
+      finisciProva,
+      ricordaIlFuoco,
     ],
   );
 
@@ -4817,7 +4857,12 @@ export function App() {
                   </div>
                 }
               >
+                {/* `key`: lo Studio legge il documento una volta per montaggio,
+                    e un tema nuovo o «Apri nello Studio» su un'altra skin deve
+                    aprire davvero quella. Quel che aveva in mano lo salva lo
+                    Studio stesso, smontandosi. */}
                 <Studio
+                  key={studioAperto}
                   id={studioAperto}
                   onEsci={esciDalloStudio}
                   // «Salva e usa» ridipinge la finestra intera, non solo

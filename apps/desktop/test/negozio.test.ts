@@ -85,3 +85,53 @@ test("un'istantanea presa fuori dal pannello fa crescere il contatore che il pan
   s = riduci(s, { tipo: "fotografata" });
   assert.equal(s.istantanee, prima + 1);
 });
+
+test("due modifiche nello stesso giro si sommano: la seconda parte dal testo della prima (R14-1)", () => {
+  // Il «+» accanto a un innesco scriveva l'animazione e poi l'assegnazione,
+  // ognuna calcolata fuori dal riduttore sullo stesso testo di partenza: la
+  // seconda disfaceva la prima, e il documento nominava un'animazione che non
+  // c'era. Il testo nuovo si calcola qui, sul presente della storia.
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "{}" });
+  s = riduci(s, {
+    tipo: "modifica",
+    operazioni: [{ togli: false, percorso: ["motion", "animations", "a"], valore: { duration: "1ms" } }],
+    etichetta: "a",
+    gruppo: "a",
+    adesso: 1,
+  });
+  s = riduci(s, {
+    tipo: "modifica",
+    operazioni: [{ togli: false, percorso: ["parts", "card", "motion", "enter"], valore: "a" }],
+    etichetta: "b",
+    gruppo: "b",
+    adesso: 1,
+  });
+  const doc = JSON.parse(testo(s)) as Record<string, Record<string, Record<string, unknown>>>;
+  assert.deepEqual(doc["motion"]?.["animations"]?.["a"], { duration: "1ms" }, "l'animazione si è persa");
+  assert.equal((doc["parts"]?.["card"]?.["motion"] as Record<string, unknown> | undefined)?.["enter"], "a");
+  // E togliere passa dalla stessa strada.
+  s = riduci(s, {
+    tipo: "modifica",
+    operazioni: [{ togli: true, percorso: ["parts", "card", "motion", "enter"], valore: undefined }],
+    etichetta: "c",
+    gruppo: "c",
+    adesso: 1,
+  });
+  assert.equal((JSON.parse(testo(s)) as Record<string, unknown>)["parts"], undefined);
+});
+
+test("il codice di una parte non applicato resta nel negozio finché non torna l'editor (R14-3)", () => {
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "{}" });
+  s = riduci(s, { tipo: "codiceInSospeso", chiave: "base/card", testo: "{ rotto" });
+  assert.equal(s.codiceInSospeso["base/card"], "{ rotto");
+  s = riduci(s, { tipo: "codiceInSospeso", chiave: "base/card", testo: null });
+  assert.equal(s.codiceInSospeso["base/card"], undefined);
+});
+
+test("una bozza che nomina un file che non ha è «rotta», come una con errori (R14-5)", async () => {
+  const { statoBozza } = await import("../src/studio/negozio");
+  let s = riduci(iniziale("prova"), { tipo: "apri", testo: "a" });
+  s = riduci(s, { tipo: "validato", testo: "a", esito: esito(0) });
+  assert.equal(statoBozza(s), "salvata");
+  assert.equal(statoBozza(s, 1), "rotta");
+});

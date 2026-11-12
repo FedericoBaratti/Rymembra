@@ -19,7 +19,7 @@
  * l'hover della base, `variant.parts.card.radius` guardando la variante. Il
  * percorso lo compone `sentieri.ts`, e nessun controllo qui lo sa.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ParteRegistro } from "../ipc";
 import { t, tSe } from "../lingue";
@@ -44,7 +44,15 @@ import { EditorCodice, useFonti } from "./EditorCodice";
 import { Livelli as PilaSfondi } from "./Pila";
 import { radiceParti, sentieroParte } from "./sentieri";
 import { immaginiDi } from "./usaPacchetto";
-import { angoliDopo, angoliTagliati, coloreCosto, costoDi, type Livello } from "./valori";
+import {
+  LIVELLI_PSEUDO_MASSIMI,
+  LIVELLI_SFONDO_MASSIMI,
+  angoliDopo,
+  angoliTagliati,
+  coloreCosto,
+  costoDi,
+  type Livello,
+} from "./valori";
 
 const oggetto = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -53,6 +61,13 @@ const oggetto = (v: unknown): Record<string, unknown> =>
 export function nomeCampo(campo: string): string {
   return tSe(`studio3.field.${campo}`, campo);
 }
+
+/**
+ * Le parti che vestono anche i dialoghi di consenso. Quei dialoghi ignorano
+ * livelli, immagini e caratteri della skin (`data-consenso`), e la tela non
+ * ne mostra uno: l'ispettore lo dice, invece di lasciarlo scoprire (D-70).
+ */
+const PARTI_DEI_CONSENSI = new Set(["glass-modal", "modal-veil"]);
 
 /** Il nome di un innesco del movimento. */
 export function nomeInnesco(nome: string): string {
@@ -135,7 +150,9 @@ export function IspezioneParte({ parte }: { parte: string }) {
         {s.ispettore === "stile" && <Stile def={def} />}
         {s.ispettore === "stati" && <Stati def={def} />}
         {s.ispettore === "movimento" && <Movimento def={def} />}
-        {s.ispettore === "codice" && <CodiceParte parte={def.name} />}
+        {/* `key` col tema: cambiarlo rimonta l'editor, che mette da parte il
+            testo dell'altro tema invece di scriverlo sotto questo. */}
+        {s.ispettore === "codice" && <CodiceParte key={`${s.tema}/${def.name}`} parte={def.name} />}
       </div>
     </div>
   );
@@ -159,6 +176,7 @@ function TestaParte({ def }: { def: ParteRegistro }) {
         </button>
       </div>
       <p className="descrizione">{tSe(`skin.part.${def.name}`, def.description)}</p>
+      {PARTI_DEI_CONSENSI.has(def.name) && <p className="nota-ispezione">{t("studio3.inspector.consentNote")}</p>}
       <div className="chip-parte">
         {def.before && <span className="chip-livello">::before</span>}
         {def.after && <span className="chip-livello">::after</span>}
@@ -275,6 +293,7 @@ function Stile({ def }: { def: ParteRegistro }) {
           motivi={motivi}
           immagini={immagini}
           budget={registro.budget}
+          massimo={LIVELLI_SFONDO_MASSIMI}
           onCambia={(nuovi) => p.scrivi("background", nuovi.length === 0 ? null : nuovi)}
         />
         <Riga che={nomeCampo("opacity")}>
@@ -442,6 +461,7 @@ function Stile({ def }: { def: ParteRegistro }) {
                       motivi={motivi}
                       immagini={immagini}
                       budget={registro.budget}
+                      massimo={LIVELLI_PSEUDO_MASSIMI}
                       titolo={`::${quale}`}
                       onCambia={(nuovi) =>
                         p.scriviBase(
@@ -858,7 +878,7 @@ function Stati({ def }: { def: ParteRegistro }) {
 // ── Movimento ────────────────────────────────────────────────────────────────
 
 function Movimento({ def }: { def: ParteRegistro }) {
-  const { s, manda, registro, documento, scrivi } = useStudio();
+  const { s, manda, registro, documento, scrivi, scriviMolti } = useStudio();
   const radice = ["parts", def.name, "motion"];
   const movimento = oggetto(documento === null ? {} : valoreIn(documento, radice));
   const animazioni = oggetto(oggetto(documento?.["motion"])["animations"]);
@@ -904,8 +924,16 @@ function Movimento({ def }: { def: ParteRegistro }) {
     const base = `${def.name}-${innesco}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
     let nome = base;
     for (let n = 2; presi.includes(nome); n += 1) nome = `${base}-${n}`;
-    scrivi(["motion", "animations", nome], valore, t("studio3.step.animationAdd", { nome }));
-    assegna(innesco, nome);
+    // Un passo solo, e una scrittura sola: l'animazione e chi la richiama
+    // vanno insieme, e un Ctrl+Z che togliesse solo l'assegnazione lascerebbe
+    // un'animazione che nessuno usa — o, al contrario, una che non c'è.
+    scriviMolti(
+      [
+        { togli: false, percorso: ["motion", "animations", nome], valore },
+        { togli: false, percorso: [...radice, innesco], valore: nome },
+      ],
+      t("studio3.step.animationAdd", { nome }),
+    );
     manda({ tipo: "scegli", selezione: { tipo: "animazione", nome } });
     manda({ tipo: "imposta", campi: { dock: "timeline" } });
   };
@@ -1036,17 +1064,64 @@ function Movimento({ def }: { def: ParteRegistro }) {
  * l'ultima battuta, e solo se è JSON: un testo a metà non tocca il documento.
  */
 function CodiceParte({ parte }: { parte: string }) {
-  const { s, manda, documento, scrivi: scriviDoc } = useStudio();
+  const { s, manda, documento, scrivi: scriviDoc, registraSospeso } = useStudio();
   const percorso = [...radiceParti(s.tema), parte];
   const valore = documento === null ? undefined : valoreIn(documento, percorso);
   const scritto = valore === undefined ? "{}\n" : stampa(valore as Record<string, unknown>);
-  const [testo, setTesto] = useState(scritto);
-  const [errore, setErrore] = useState(false);
+  // Un testo lasciato qui e non applicato — l'editor era stato smontato — si
+  // riprende: vedi `codiceInSospeso` nel negozio (R14-3).
+  const chiave = `${s.tema}/${parte}`;
+  const [ripreso] = useState(() => s.codiceInSospeso[chiave]);
+  const [testo, setTesto] = useState(ripreso ?? scritto);
+  const [errore, setErrore] = useState(
+    () => ripreso !== undefined && leggi(ripreso.trim() === "" ? "{}" : ripreso) === null,
+  );
   const fonti = useFonti(percorso);
   useEffect(() => {
+    if (ripreso !== undefined) manda({ tipo: "codiceInSospeso", chiave, testo: null });
+    // Una volta, al montaggio: da qui in poi il testo è di questo editor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Il documento è cambiato da un'altra parte: il testo torna il suo. Non al
+  // montaggio, dove `scritto` è quello di sempre e il testo può essere
+  // quello ripreso.
+  const scrittoVisto = useRef(scritto);
+  useEffect(() => {
+    if (scrittoVisto.current === scritto) return;
+    scrittoVisto.current = scritto;
     setTesto(scritto);
     setErrore(false);
   }, [scritto]);
+
+  /**
+   * Quel che l'editor tiene in mano, subito: nel documento se è JSON,
+   * altrimenti da parte nel negozio. All'uscita dal campo, allo smontaggio
+   * — un'altra parte, un'altra scheda, un altro tema — e quando qualcuno
+   * salva per un gesto (`registraSospeso`). Fino alla 3.2 lo applicava solo
+   * il timer qui sotto, che lo smontaggio spegneva.
+   */
+  const inMano = useRef({ testo, scritto, percorso, chiave });
+  inMano.current = { testo, scritto, percorso, chiave };
+  const svuota = useCallback(() => {
+    const ora = inMano.current;
+    if (ora.testo === ora.scritto) return;
+    const letto = leggi(ora.testo.trim() === "" ? "{}" : ora.testo);
+    if (letto === null) {
+      manda({ tipo: "codiceInSospeso", chiave: ora.chiave, testo: ora.testo });
+      return;
+    }
+    // Segnato come applicato prima della scrittura: chi svuota due volte di
+    // fila — l'uscita dal campo e poi lo smontaggio — scrive una volta.
+    inMano.current = { ...ora, scritto: ora.testo };
+    scriviDoc(ora.percorso, Object.keys(letto).length === 0 ? null : letto, t("studio3.step.partCode", { parte }));
+  }, [manda, scriviDoc, parte]);
+  useEffect(() => {
+    const togli = registraSospeso(svuota);
+    return () => {
+      togli();
+      svuota();
+    };
+  }, [registraSospeso, svuota]);
 
   useEffect(() => {
     if (testo === scritto) return;
@@ -1065,7 +1140,13 @@ function CodiceParte({ parte }: { parte: string }) {
   }, [testo, scritto, parte, s.tema]);
 
   return (
-    <div className="codice-parte">
+    <div
+      className="codice-parte"
+      onBlur={(e) => {
+        // Fuori dal riquadro, non fra i suoi pezzi (il pannello di ricerca).
+        if (!e.currentTarget.contains(e.relatedTarget)) svuota();
+      }}
+    >
       <EditorCodice
         testo={testo}
         onCambia={setTesto}

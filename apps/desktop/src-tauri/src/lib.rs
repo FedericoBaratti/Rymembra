@@ -775,6 +775,8 @@ pub fn run() {
             studio::studio_pacchetto,
             studio::studio_salva,
             studio::studio_scarta,
+            studio::studio_lettere,
+            studio::studio_lettere_imposta,
             studio::studio_esporta,
             studio::studio_istantanee,
             studio::studio_istantanea,

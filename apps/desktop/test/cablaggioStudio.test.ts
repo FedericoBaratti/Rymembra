@@ -52,7 +52,7 @@ test("«Configura un modello» dalla chat esce come «Esci»: solo a salvataggio
   // automatico non aveva ancora scritto andava perso.
   const guscio = sorgente("Guscio.tsx");
   assert.doesNotMatch(guscio, /onVaiAImpostazioni=\{onModelli\}/);
-  assert.match(guscio, /onVaiAImpostazioni=\{\(\) => void poiSeSalvato\(salva, onModelli, onErrore\)\}/);
+  assert.match(guscio, /onVaiAImpostazioni=\{\(\) => \{\s*svuotaSospesi\(\);\s*void poiSeSalvato\(salva, onModelli, onErrore\);\s*\}\}/);
   assert.match(corpo(guscio, "const esci"), /poiSeSalvato\(salva, onEsci, onErrore\)/);
 });
 
@@ -146,4 +146,201 @@ test("ispettore del nodo: le scelte discrete hanno la guardia dello scafale, i c
   assert.match(nodo, /if \(scafaleScrivibile\(s\)\) cambia\(campo, valore\)/);
   assert.match(nodo, /onScegli=\{\(v\) => scegli\("size"/);
   assert.match(nodo, /onCambia=\{\(v\) => v !== null && cambia\("size"/, "il cursore della misura resta senza guardia");
+});
+
+test("le scritture dei controlli si calcolano nel riduttore, non su `attuale` (R14-1)", () => {
+  // `attuale.current` resta indietro finché React non ridisegna: due scritture
+  // nello stesso gestore partivano dallo stesso testo e la seconda disfaceva la
+  // prima. Il «+» di un innesco ne faceva proprio due.
+  const guscio = sorgente("Guscio.tsx");
+  const tratti: readonly (readonly [string, string])[] = [
+    ["const scrivi = useCallback(", "const scriviTesto = useCallback("],
+    ["const scriviMolti = useCallback(", "// ── i file del pacchetto"],
+  ];
+  for (const [nome, fine] of tratti) {
+    const qui = guscio.slice(guscio.indexOf(nome), guscio.indexOf(fine));
+    assert.ok(qui.length > 0, `manca «${nome}»`);
+    assert.doesNotMatch(qui, /attuale\.current/, `${nome} calcola ancora il testo fuori dal riduttore`);
+    assert.match(qui, /tipo: "modifica"/);
+  }
+  // E il gesto è un passo solo: un Ctrl+Z toglie animazione e assegnazione insieme.
+  const crea = corpo(sorgente("IspezioneParte.tsx"), "const crea = (innesco: string, ciclo: boolean)");
+  assert.equal(crea.match(/scriviMolti\(/g)?.length, 1, "crea non scrive in un colpo solo");
+  assert.doesNotMatch(crea, /\bscrivi\(|assegna\(/);
+});
+
+test("«Butta la bozza» chiede prima, rilegge i file e la conversazione (R14-2, D-66)", () => {
+  // Partiva al primo clic, e dopo la finestra mostrava ancora i file che il
+  // nucleo aveva tolto; la chat in memoria riscriveva la conversazione buttata.
+  const variabili = sorgente("Variabili.tsx");
+  const tasto = variabili.slice(variabili.indexOf('className="pillola btn-ghost scarta-bozza"'));
+  const clic = tasto.slice(tasto.indexOf("onClick="), tasto.indexOf("</button>"));
+  assert.doesNotMatch(clic, /onClick=\{\(\) => void scarta\(\)\}/, "il tasto butta la bozza senza chiedere");
+  assert.match(clic, /setDomanda\(\{[\s\S]*fai: \(\) => void scarta\(\)/);
+  const scarta = corpo(variabili, "const scarta = async");
+  assert.match(scarta, /ipc\.studioScarta\(s\.id, testo\(s\)\)/, "l'istantanea dello scarto la prende il nucleo");
+  assert.match(scarta, /rileggiFile\(\)/);
+  assert.match(scarta, /tipo: "chatSulDisco"/);
+  const ripristina = corpo(variabili, "const ripristina = async");
+  assert.match(ripristina, /rileggiFile\(\)/);
+  assert.match(ripristina, /tipo: "chatSulDisco"/);
+  // La chat rilegge il disco quando lo Studio glielo dice.
+  assert.match(sorgente("Chat.tsx"), /s\.chatSulDisco/);
+});
+
+const dellApp = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+
+test("scegliere un'altra skin durante «Prova sull'app» chiude la prova, e lo dice (R14-4, D-67)", () => {
+  // La finestra indossava la skin scelta con la pillola che diceva ancora
+  // «Stai provando», e «Torna» rimetteva quella di prima della prova.
+  const skin = dellApp("skinAttiva.ts");
+  const scegli = skin.slice(skin.indexOf("const scegliSkin = useCallback("), skin.indexOf("const iniziaProva = useCallback("));
+  assert.match(scegli, /chiudiProva\(\)/, "scegliere non chiude la prova");
+  assert.match(scegli, /provaChiusa\.current\(/, "la prova si chiude senza dirlo");
+  // «Tienila» sceglie anche lei, ma la prova l'ha già chiusa: niente avviso.
+  assert.match(corpo(skin, "const tieniProva = useCallback("), /chiudiProva\(\)/);
+  assert.match(corpo(skin, "const chiudiProva = useCallback("), /provaAdesso\.current = null/);
+
+  const app = dellApp("App.tsx");
+  // «Apri nello Studio» su un'altra skin durante la prova: prima si torna.
+  const apri = app.slice(app.indexOf("onApriStudio: (id) => {"), app.indexOf("onImporta: importaDatabase"));
+  assert.match(apri, /finisciProva\(\)/, "aprire un'altra skin nello Studio lascia la prova accesa");
+  // E lo Studio apre davvero l'altra skin: il documento si legge una volta
+  // per montaggio.
+  assert.match(app, /<Studio\s+key=\{studioAperto\}/);
+});
+
+test("un doppio clic su «Prova» non fa della bozza la skin «di prima» (R14-8)", () => {
+  const skin = dellApp("skinAttiva.ts");
+  const inizia = corpo(skin, "const iniziaProva = useCallback(");
+  assert.match(inizia, /provaAdesso\.current\?\.reale/, "una seconda prova prende la bozza come skin di prima");
+});
+
+test("lo Studio salva quel che ha in mano anche quando lo si smonta (R14-4)", () => {
+  // Con `key` un'altra skin rimonta lo Studio: il respiro degli 800 ms non
+  // arrivava, e l'ultima modifica restava indietro.
+  const guscio = sorgente("Guscio.tsx");
+  assert.match(guscio, /useEffect\(\s*\(\) => \(\) => \{\s*if \(daSalvare\(attuale\.current\)\) void salva\(\)/);
+});
+
+test("il codice di una parte non si perde cambiando parte, scheda o tema, né uscendo (R14-3)", () => {
+  // Il testo viveva solo nello stato del componente, applicato da un timer
+  // che lo smontaggio spegneva: un clic su un'altra parte lo buttava via.
+  const parte = sorgente("IspezioneParte.tsx");
+  const codice = parte.slice(parte.indexOf("function CodiceParte("));
+  assert.match(codice, /registraSospeso\(/, "l'editor non si fa trovare da chi salva");
+  assert.match(codice, /return \(\) => \{[\s\S]*?svuota\(\)/, "allo smontaggio il testo in mano si perde");
+  assert.match(codice, /onBlur=/, "uscendo dal campo non si applica");
+  assert.match(codice, /tipo: "codiceInSospeso"/);
+  // Il tema fa parte della chiave: cambiarlo rimonta l'editor, che mette da parte.
+  assert.match(parte, /<CodiceParte key=\{`\$\{s\.tema\}\/\$\{def\.name\}`\}/);
+
+  const guscio = sorgente("Guscio.tsx");
+  // Chi salva per un gesto svuota prima gli editor, dentro un flushSync.
+  for (const inizio of ["const esci = useCallback(", "const salvaEUsa = useCallback(", "const esporta = useCallback(", "const prova = useCallback("]) {
+    assert.match(corpo(guscio, inizio), /svuotaSospesi\(\)/, `${inizio} salva senza il codice in mano`);
+  }
+  const ctrlS = guscio.slice(guscio.indexOf('tasto === "s"'), guscio.indexOf('tasto === "k"'));
+  assert.match(ctrlS, /svuotaSospesi\(\)/);
+  assert.match(corpo(guscio, "const svuotaSospesi = useCallback("), /flushSync\(/);
+  // Uscire con un codice che non è JSON chiede prima.
+  assert.match(corpo(guscio, "const esci = useCallback("), /codiceInSospeso/);
+});
+
+test("le descrizioni del registro passano dal catalogo, anche nei suggerimenti (R14-9, R17-5)", () => {
+  // `title={tk.description}` e `def.description` mostravano la frase italiana
+  // del crate con l'interfaccia in inglese; i nomi delle animazioni pronte
+  // pure.
+  for (const file of ["Variabili.tsx", "AlberoScafale.tsx", "IspezioneParte.tsx", "Pila.tsx", "Livelli.tsx", "IspezioneVoci.tsx"]) {
+    assert.doesNotMatch(sorgente(file), /\.description\}/, `${file}: una descrizione del registro senza catalogo`);
+  }
+  const variabili = sorgente("Variabili.tsx");
+  assert.doesNotMatch(variabili, /<code>\{p\.nome\}<\/code>/, "il nome dell'animazione pronta arriva com'è dal nucleo");
+  assert.match(variabili, /nomeAnimazionePronta\(p\.id, p\.nome\)/);
+});
+
+test("l'editor del codice riceve le frasi dal catalogo (R14-9)", () => {
+  const editor = sorgente("EditorCodice.tsx");
+  assert.match(editor, /frasi: frasiDellEditor\(\)/, "l'editor nasce senza le sue frasi");
+});
+
+test("«Prova», «Salva e usa» ed «Esporta» non partono due volte (R14-8)", () => {
+  // Un doppio clic su «Prova» con la compilazione non ancora in memoria
+  // arrivava due volte a `iniziaProva`; su «Salva e usa» faceva due
+  // istantanee e due installazioni.
+  const guscio = sorgente("Guscio.tsx");
+  assert.match(guscio, /onProva=\{\(\) => void unoAllaVolta\(prova\)\}/);
+  assert.match(guscio, /onSalvaEUsa=\{\(\) => void unoAllaVolta\(salvaEUsa\)\}/);
+  assert.match(guscio, /onEsporta=\{\(\) => void unoAllaVolta\(esporta\)\}/);
+  assert.match(corpo(guscio, "const unoAllaVolta = useCallback("), /gestoInVolo\.current\) return/);
+  const barra = sorgente("BarraStudio.tsx");
+  assert.equal(barra.match(/disabled=\{[^}]*inVolo/g)?.length, 3, "i tasti restano accesi mentre il gesto è in volo");
+});
+
+test("i problemi e gli avvisi del validatore si mostrano tradotti (D-46)", () => {
+  // `{p.message}` era la frase italiana del nucleo, anche con l'interfaccia
+  // in inglese.
+  for (const file of ["Dock.tsx", "Timeline.tsx", "EditorCodice.tsx"]) {
+    const testo = sorgente(file);
+    assert.doesNotMatch(testo, /\{[pa]\.message\}|messaggio: [pa]\.message/, `${file} mostra la frase del nucleo`);
+    assert.match(testo, /testoProblema\(/, `${file} non traduce`);
+  }
+});
+
+test("l'ispettore delle finestre modali dice che i consensi non si personalizzano (D-70)", () => {
+  // L'autore ridisegna `glass-modal` e i caratteri, ma i dialoghi di consenso
+  // ignorano livelli, immagini e caratteri: lo Studio non lo diceva.
+  const parte = sorgente("IspezioneParte.tsx");
+  assert.match(parte, /PARTI_DEI_CONSENSI\.has\(def\.name\) && <p className="nota-ispezione">\{t\("studio3\.inspector\.consentNote"\)\}<\/p>/);
+  assert.match(parte, /PARTI_DEI_CONSENSI = new Set\(\["glass-modal", "modal-veil"\]\)/);
+});
+
+test("«Aggiungi un livello» ha il tetto del formato (R14-6)", () => {
+  const pila = sorgente("Pila.tsx");
+  const livelli = pila.slice(pila.indexOf("export function Livelli("));
+  assert.match(livelli, /disabled=\{!puoAggiungere\(livelli\.length, massimo\)\}/, "il tasto non ha un tetto");
+  const parte = sorgente("IspezioneParte.tsx");
+  assert.match(parte, /massimo=\{LIVELLI_SFONDO_MASSIMI\}/);
+  assert.match(parte, /massimo=\{LIVELLI_PSEUDO_MASSIMI\}/);
+});
+
+test("i file mancanti spengono «Salva e usa», si vedono fra i Problemi e tornano all'assistente (R14-5)", () => {
+  assert.match(sorgente("BarraStudio.tsx"), /statoBozza\(s, mancanti\.length\)/);
+  assert.match(sorgente("Dock.tsx"), /risorseMancanti\(/);
+  const chat = sorgente("Chat.tsx");
+  assert.match(chat, /const restano = \[\.\.\.controllo\.errori, \.\.\.risorseMancanti\(controllo\.risorse, file\)\.map\(problemaRisorsa\)\]/);
+});
+
+test("le scorciatoie dello Studio tacciono sotto una finestrella, e quelle di una lettera si spengono (R14-10, D-69)", () => {
+  // Con una ConfermaGesto aperta Ctrl+Z annullava un passo del documento che
+  // stava dietro la domanda, e scrivere in un dialogo sopra lo Studio faceva
+  // scattare la sonda; «i», «f» e «1»–«4» non si potevano spegnere (WCAG 2.1.4).
+  const guscio = sorgente("Guscio.tsx");
+  const ascolta = guscio.slice(guscio.indexOf("const ascolta = (e: KeyboardEvent) => {"), guscio.indexOf('window.addEventListener("keydown", ascolta)'));
+  assert.match(ascolta, /if \(modaleAperto\(\)\) return;/, "i tasti passano sotto una finestrella");
+  assert.ok(ascolta.indexOf("modaleAperto()") < ascolta.indexOf('tasto === "z"'), "la guardia viene dopo Ctrl+Z");
+  assert.match(ascolta, /if \(!ora\.lettere\) return;/, "le lettere non si spengono");
+  assert.ok(ascolta.indexOf("!ora.lettere") < ascolta.indexOf('tasto === "i"'));
+  assert.match(guscio, /ipc\s*\.studioLettere\(\)/, "la preferenza non si legge");
+  assert.match(sorgente("IspezioneVoci.tsx"), /ipc\.studioLettereImposta\(/, "manca l'interruttore");
+});
+
+test("uscendo dallo Studio il fuoco torna da dove si era entrati (R14-10)", () => {
+  const app = dellApp("App.tsx");
+  assert.match(corpo(app, "const esciDalloStudio = useCallback("), /fuocoPrimaDelloStudio\.current/);
+  const apri = app.slice(app.indexOf("onApriStudio: (id) => {"), app.indexOf("onImporta: importaDatabase"));
+  assert.match(apri, /ricordaIlFuoco\(\)/);
+});
+
+test("la X della finestra passa dallo Studio prima di chiudere (R14-7)", () => {
+  const barra = readFileSync(new URL("../src/parti/BarraTitolo.tsx", import.meta.url), "utf8");
+  assert.match(barra, /tuttoScritto\(\)\s*\.then\(\(\) => ipc\.finestraChiudi\(\)\)/);
+  assert.match(sorgente("Guscio.tsx"), /primaDiChiudere\(async \(\) => \{\s*svuotaSospesi\(\);\s*await salva\(\);/);
+});
+
+test("gli scarti della chat si mostrano tradotti; al modello torna l'italiano (D-68)", () => {
+  const chat = sorgente("Chat.tsx");
+  assert.match(chat, /proposta\.motivi\.map\(\(m, i\) => \(\s*<li key=\{i\}>\{testoMotivo\(m, traduciMotivo\)\}<\/li>/);
+  assert.doesNotMatch(chat, /proposta\.ragioni\.map\(/, "l'elenco mostra ancora le frasi italiane");
+  assert.match(chat, /correzione\(restano, ragioni\)/, "al modello torna la frase italiana");
 });

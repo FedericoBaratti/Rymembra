@@ -4,7 +4,7 @@
  * # Perché non arrivano già tradotte
  *
  * Perché il registro non è interfaccia: è il **vocabolario** di quel che una
- * skin può ridisegnare, e vive in `rymembra-skin` — cinquantuno parti,
+ * skin può ridisegnare, e vive in `rymembra-skin` — un centinaio di parti,
  * settantatré token, quattordici widget, le loro manopole e i parametri degli
  * effetti. Ogni voce porta una frase che dice a cosa serve, e quelle frasi si
  * leggono nello Studio: nell'albero, nell'ispettore, sulle manopole di un
@@ -29,7 +29,27 @@
  * catalogo ne ha una sua?» — e la risposta sbagliata sarebbe la stessa: un
  * bottone senza scritta.
  */
+import type { Motivo } from "../ipc";
 import { tSe } from "../lingue";
+import { testoMotivo, type Traduci } from "./motivo";
+
+/** Il segno di una chiave che il catalogo non ha: nessuna frase è così. */
+const ASSENTE = "\u0000";
+
+/** Il traduttore di `motivo.ts`, sul catalogo vero. */
+export const traduciMotivo: Traduci = (chiave, valori) => {
+  const frase = tSe(chiave, ASSENTE, valori);
+  return frase === ASSENTE ? null : frase;
+};
+
+/**
+ * La frase di un problema o di un avviso del validatore, nella lingua
+ * dell'interfaccia (D-46). Senza un motivo — un esito di prima — resta la frase
+ * del nucleo.
+ */
+export function testoProblema(problema: { message: string; motivo?: Motivo }): string {
+  return problema.motivo === undefined ? problema.message : testoMotivo(problema.motivo, traduciMotivo);
+}
 
 /** Cosa fa una parte: `skin.part.section-card`. */
 export function descrizioneParte(nome: string, ripiego: string): string {
@@ -56,6 +76,17 @@ export function descrizioneToken(id: string, ripiego: string): string {
  */
 export function descrizionePreset(id: string, ripiego: string): string {
   return tSe(`skin.preset.${id}`, ripiego);
+}
+
+/**
+ * Come si chiama un'animazione pronta: `skin.anim.sobbalzo`.
+ *
+ * Un nome, come quello dei preset e per la stessa ragione: sta in `preset.rs`
+ * accanto ai fotogrammi, e il ripiego lo mostra in italiano il giorno stesso
+ * in cui nasce. Fino alla 3.2 si mostrava solo così (R17-5).
+ */
+export function nomeAnimazionePronta(id: string, ripiego: string): string {
+  return tSe(`skin.anim.${id}`, ripiego);
 }
 
 /** Cos'è un widget dello scafale: `skin.widget.navigation`. */

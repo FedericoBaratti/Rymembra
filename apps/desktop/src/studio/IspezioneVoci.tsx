@@ -1309,7 +1309,7 @@ function CampoTesto({
 // ── niente di scelto ─────────────────────────────────────────────────────────
 
 export function IspezioneVuota() {
-  const { s, registro } = useStudio();
+  const { s, manda, registro, onErrore } = useStudio();
   const valido = s.valido;
   return (
     <div className="ispezione-voce ispezione-vuota">
@@ -1336,6 +1336,22 @@ export function IspezioneVuota() {
           <kbd>Ctrl S</kbd> {t("studio3.keys.snapshot")}
         </li>
       </ul>
+      {/* D-69, WCAG 2.1.4: chi detta o batte una lettera per sbaglio le spegne. */}
+      <label className="spunta">
+        <input
+          type="checkbox"
+          checked={s.lettere}
+          onChange={(e) => {
+            const lettere = e.currentTarget.checked;
+            manda({ tipo: "imposta", campi: { lettere } });
+            ipc.studioLettereImposta(lettere).catch((errore: unknown) => {
+              manda({ tipo: "imposta", campi: { lettere: !lettere } });
+              onErrore(errore);
+            });
+          }}
+        />
+        <span>{t("studio3.keys.letters")}</span>
+      </label>
       {valido !== null && (
         <section className="gruppo-ispezione">
           <h4 className="titolo-gruppo-ispezione">{t("studio3.inspector.summary")}</h4>

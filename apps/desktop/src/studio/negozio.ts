@@ -16,7 +16,8 @@
  * `storia.ts`). Qui non c'è un modello della skin: c'è quel che l'editor sta
  * guardando e come lo sta guardando.
  */
-import type { Validazione } from "../ipc";
+import type { OperazioneIa, Validazione } from "../ipc";
+import { applicaOperazioni } from "./patch";
 import { senzaCaratteriDi } from "./risorse";
 import { DOVE, SCENA_DI_SERIE, scenaPer, type Larghezza, type Scena } from "./scena";
 import { annulla, ripeti, riscritta, scrivi, storiaDa, type Storia } from "./storia";
@@ -74,6 +75,15 @@ export interface StatoStudio {
   chat: boolean;
   /** La sonda: il puntatore sulla tela dice come si chiama quel che tocca. */
   sonda: boolean;
+  /**
+   * Le scorciatoie di una lettera sola — «i», «f», «1»–«4» — sono accese.
+   *
+   * Si possono spegnere (D-69, WCAG 2.1.4): chi usa il riconoscimento vocale,
+   * o batte una lettera col fuoco su un tasto, accendeva la sonda o faceva
+   * ripartire le animazioni senza volerlo. La scelta si ricorda nelle
+   * impostazioni (`studio_lettere`), e arriva dopo l'apertura.
+   */
+  lettere: boolean;
   /** Cresce per far ripartire le animazioni della tela. */
   rigioca: number;
   /** Il trasporto finto della tela: il disco che gira gira solo se suona. */
@@ -86,6 +96,24 @@ export interface StatoStudio {
   riga: { riga: number; colonna: number; volta: number } | null;
   /** Quante istantanee ha preso lo Studio in questa sessione. */
   istantanee: number;
+  /**
+   * Cresce quando la conversazione salvata è cambiata sul disco fuori dalla
+   * chat: «Butta la bozza» la mette da parte, un ripristino la può rimettere.
+   * La chat la rilegge — se tenesse quella in memoria, alla battuta dopo
+   * riscriverebbe la conversazione appena messa da parte.
+   */
+  chatSulDisco: number;
+  /**
+   * Il codice di una parte scritto e non applicato, di un editor che non c'è
+   * più: per `tema/parte`.
+   *
+   * L'editor del codice di una parte applica il suo testo solo quando è JSON,
+   * e fino alla 3.2 un testo a metà viveva nel solo componente: un clic su
+   * un'altra parte, un cambio di scheda o di tema, e spariva — non era mai
+   * arrivato al documento, quindi nemmeno Ctrl+Z lo ritrovava (R14-3). Qui
+   * resta finché l'editor della stessa parte non torna a prenderlo.
+   */
+  codiceInSospeso: Readonly<Record<string, string>>;
 }
 
 /** I campi dell'interfaccia che si impostano così come sono. */
@@ -99,6 +127,7 @@ type CampiUi = Pick<
   | "dock"
   | "chat"
   | "sonda"
+  | "lettere"
   | "forza"
   | "inPausa"
 >;
@@ -108,6 +137,23 @@ export type Azione =
   | { tipo: "apri"; testo: string }
   /** Una modifica: da un controllo, dall'editor di codice, dalla chat. */
   | { tipo: "scrivi"; testo: string; etichetta: string; gruppo: string; adesso: number }
+  /**
+   * Una modifica di un controllo, come operazioni sul documento: il testo
+   * nuovo lo calcola il riduttore, dal presente della storia.
+   *
+   * Non `scrivi` col testo già fatto fuori: chi lo calcolava partiva da
+   * `attuale.current`, che resta indietro finché React non ridisegna, e due
+   * scritture nello stesso gestore partivano dallo stesso testo — la seconda
+   * disfaceva la prima (R14-1, il «+» accanto a un innesco). Qui ogni azione
+   * vede il testo lasciato da quella prima, in qualunque giro arrivi.
+   */
+  | {
+      tipo: "modifica";
+      operazioni: readonly OperazioneIa[];
+      etichetta: string;
+      gruppo: string;
+      adesso: number;
+    }
   | { tipo: "annulla" }
   | { tipo: "ripeti" }
   /** È tornata una validazione: vale solo se è del testo di adesso. */
@@ -131,6 +177,10 @@ export type Azione =
   | { tipo: "risorsaTolta"; nome: string }
   /** È stata presa un'istantanea: Ctrl+S, «Salva e usa», «Esporta», la chat. */
   | { tipo: "fotografata" }
+  /** La conversazione salvata è cambiata sul disco: vedi `chatSulDisco`. */
+  | { tipo: "chatSulDisco" }
+  /** Mette da parte (o riprende, con `null`) il codice di una parte: vedi `codiceInSospeso`. */
+  | { tipo: "codiceInSospeso"; chiave: string; testo: string | null }
   | { tipo: "imposta"; campi: Partial<CampiUi> };
 
 export function iniziale(id: string): StatoStudio {
@@ -155,10 +205,13 @@ export function iniziale(id: string): StatoStudio {
     dock: null,
     chat: false,
     sonda: true,
+    lettere: true,
     rigioca: 0,
     inPausa: false,
     riga: null,
     istantanee: 0,
+    chatSulDisco: 0,
+    codiceInSospeso: {},
   };
 }
 
@@ -188,6 +241,19 @@ export function riduci(stato: StatoStudio, azione: Azione): StatoStudio {
           adesso: azione.adesso,
         }),
       };
+    case "modifica": {
+      // Le ragioni di quel che non si applica si perdono qui, come in
+      // `scriviIn`: un controllo che chiede una cosa impossibile è un difetto
+      // dello Studio, e il documento resta com'era.
+      const { testo: dopo } = applicaOperazioni(testo(stato), azione.operazioni);
+      return riduci(stato, {
+        tipo: "scrivi",
+        testo: dopo,
+        etichetta: azione.etichetta,
+        gruppo: azione.gruppo,
+        adesso: azione.adesso,
+      });
+    }
     case "annulla":
       return { ...stato, storia: annulla(stato.storia) };
     case "ripeti":
@@ -250,6 +316,15 @@ export function riduci(stato: StatoStudio, azione: Azione): StatoStudio {
       // l'ispettore vuoto presenta come «salva e prende un'istantanea» —
       // sembrava non aver fatto niente.
       return { ...stato, istantanee: stato.istantanee + 1 };
+    case "chatSulDisco":
+      return { ...stato, chatSulDisco: stato.chatSulDisco + 1 };
+    case "codiceInSospeso": {
+      const { [azione.chiave]: tolto, ...altri } = stato.codiceInSospeso;
+      if (azione.testo === null) {
+        return tolto === undefined ? stato : { ...stato, codiceInSospeso: altri };
+      }
+      return { ...stato, codiceInSospeso: { ...altri, [azione.chiave]: azione.testo } };
+    }
     case "risorsaTolta":
       // Non un passo: il file non torna con Ctrl+Z, e le dichiarazioni dei
       // caratteri che lo usavano spariscono da ogni versione della storia.
@@ -306,8 +381,11 @@ export function parteScelta(stato: StatoStudio): string | null {
  * errore di un testo già corretto non è più vero, e dirlo mentre la
  * validazione è in volo farebbe lampeggiare la bandierina a ogni battuta.
  */
-export function statoBozza(stato: StatoStudio): "salvata" | "daSalvare" | "rotta" {
-  if (stato.esito !== null && stato.esito.errori.length > 0 && stato.validato === testo(stato))
+export function statoBozza(stato: StatoStudio, mancanti = 0): "salvata" | "daSalvare" | "rotta" {
+  // `mancanti`: i file che il documento nomina e il pacchetto non ha
+  // (`risorseMancanti`). Rompono l'installazione come un errore, e contano
+  // come un errore (R14-5).
+  if (stato.esito !== null && stato.esito.errori.length + mancanti > 0 && stato.validato === testo(stato))
     return "rotta";
   return daSalvare(stato) ? "daSalvare" : "salvata";
 }

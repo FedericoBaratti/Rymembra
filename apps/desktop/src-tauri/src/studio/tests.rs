@@ -1062,7 +1062,7 @@ fn scartare_una_bozza_senza_pacchetto_non_cancella_niente() {
     assert_eq!(esito.id, "mia");
     scrivi_chat(dir.path(), "mia", "{}").expect("chat");
 
-    let err = scarta_bozza(dir.path(), "mia").expect_err("niente a cui tornare");
+    let err = scarta_bozza(dir.path(), "mia", &con_id("mia")).expect_err("niente a cui tornare");
     assert_eq!(err.code().kind().code(), "skin.notFound");
     let bozza = cartella_bozze(dir.path()).join("mia");
     assert!(bozza.join("skin.json").is_file());
@@ -1071,8 +1071,12 @@ fn scartare_una_bozza_senza_pacchetto_non_cancella_niente() {
     // Un pacchetto che non si legge non è un posto a cui tornare.
     let skin = dir.path().join("skin");
     std::fs::write(skin.join("mia.ryskin"), b"non sono uno zip").expect("scritto");
-    assert!(scarta_bozza(dir.path(), "mia").is_err());
+    assert!(scarta_bozza(dir.path(), "mia", &con_id("mia")).is_err());
     assert!(bozza.join("skin.json").is_file());
+    assert!(
+        elenco_istantanee(&istantanee_di(dir.path(), "mia")).is_empty(),
+        "uno scarto rifiutato non lascia istantanee"
+    );
 }
 
 #[test]
@@ -1173,11 +1177,535 @@ fn scartare_la_bozza_di_una_skin_del_formato_1_non_aggiunge_istantanee() {
     let aperta = apri_documento(dir.path(), "scafalatura", true).expect("aperta");
     let serie = || elenco_istantanee(&istantanee_di(dir.path(), "scafalatura")).len();
     assert_eq!(serie(), 1, "la fotografia del testo del formato 1");
-    let riaperta = scarta_bozza(dir.path(), "scafalatura").expect("scartata");
+    let riaperta = scarta_bozza(dir.path(), "scafalatura", &aperta).expect("scartata");
     assert_eq!(riaperta, aperta);
+    // Lo scarto prende la sua istantanea (D-66), ma non rifotografa il testo
+    // del formato 1: quella della migrazione resta una.
+    let migrate = elenco_istantanee(&istantanee_di(dir.path(), "scafalatura"))
+        .into_iter()
+        .filter(|i| i.causa == "migrata")
+        .count();
     assert_eq!(
-        serie(),
-        1,
+        migrate, 1,
         "lo scarto non fotografa di nuovo lo stesso testo"
     );
+    assert_eq!(serie(), 2, "la migrazione e lo scarto");
+}
+
+/// Un file con quel nome, da qualche parte sotto `cartella`.
+fn cerca_sotto(cartella: &Path, nome: &str) -> bool {
+    std::fs::read_dir(cartella).is_ok_and(|voci| {
+        voci.flatten().any(|voce| {
+            let percorso = voce.path();
+            if percorso.is_dir() {
+                cerca_sotto(&percorso, nome)
+            } else {
+                voce.file_name().to_str() == Some(nome)
+            }
+        })
+    })
+}
+
+#[test]
+fn buttare_la_bozza_mette_da_parte_file_e_conversazione() {
+    // R14-2: «Butta la bozza» cancellava `assets/` e `chat.json` con la
+    // cartella, e l'istantanea presa un attimo prima aveva il solo testo: un
+    // carattere aggiunto nello Studio spariva per sempre.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    installa_qui(dir.path(), &con_id("mia"), &[]);
+    apri_documento(dir.path(), "mia", true).expect("aperta");
+    let aggiunto = dir.path().join("aggiunto.woff2");
+    std::fs::write(&aggiunto, WOFF2).expect("scritto");
+    aggiungi_risorsa(dir.path(), "mia", &aggiunto).expect("aggiunta");
+    scrivi_chat(dir.path(), "mia", r#"{"versione":1,"battute":[]}"#).expect("chat");
+
+    let modificata = con_id("mia").replace("\"name\": \"Plain\"", "\"name\": \"Mia\"");
+    scarta_bozza(dir.path(), "mia", &modificata).expect("scartata");
+
+    assert!(
+        !cartella_risorse(dir.path(), "mia")
+            .join("aggiunto.woff2")
+            .exists(),
+        "la bozza torna al pacchetto"
+    );
+    assert_eq!(leggi_chat(dir.path(), "mia").expect("letta"), None);
+    let istantanee = istantanee_di(dir.path(), "mia");
+    assert!(
+        cerca_sotto(&istantanee, "aggiunto.woff2"),
+        "il file aggiunto è sparito invece di andare da parte"
+    );
+    assert!(
+        cerca_sotto(&istantanee, FILE_CHAT),
+        "la conversazione è sparita invece di andare da parte"
+    );
+
+    // E ripristinare l'istantanea dello scarto rimette tutto: il testo, il
+    // file, la conversazione.
+    let presa = elenco_istantanee(&istantanee)
+        .into_iter()
+        .find(|i| i.causa == "scartata")
+        .expect("l'istantanea dello scarto");
+    let testo = ripristina(dir.path(), "mia", presa.quando).expect("ripristinata");
+    assert_eq!(testo, modificata);
+    assert!(
+        cartella_risorse(dir.path(), "mia")
+            .join("aggiunto.woff2")
+            .is_file()
+    );
+    assert!(leggi_chat(dir.path(), "mia").expect("letta").is_some());
+
+    // Potata l'istantanea, quel che le stava accanto se ne va con lei.
+    for giro in 0..QUANTE_ISTANTANEE {
+        prendi_istantanea(
+            &istantanee,
+            &format!("{{ \"giro\": {giro} }}"),
+            Causa::Manuale,
+        )
+        .expect("presa");
+    }
+    assert!(
+        !cerca_sotto(&istantanee, "aggiunto.woff2"),
+        "la cartella da parte è rimasta orfana"
+    );
+}
+
+#[test]
+fn buttare_la_bozza_non_mette_da_parte_i_file_del_pacchetto() {
+    // Tornano comunque col pacchetto: una copia a ogni scarto riempirebbe
+    // le istantanee di caratteri che ci sono già.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    installa_qui(dir.path(), &con_carattere("mia"), &[carattere()]);
+    apri_documento(dir.path(), "mia", true).expect("aperta");
+    scarta_bozza(dir.path(), "mia", &con_carattere("mia")).expect("scartata");
+    let istantanee = istantanee_di(dir.path(), "mia");
+    assert!(!cerca_sotto(&istantanee, "prova.woff2"));
+    assert!(
+        cartella_risorse(dir.path(), "mia")
+            .join("prova.woff2")
+            .is_file()
+    );
+}
+
+/// Il catalogo di una lingua, come chiavi piatte.
+fn catalogo(testo: &str) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::from_str::<serde_json::Value>(testo) {
+        Ok(serde_json::Value::Object(voci)) => voci,
+        _ => panic!("un catalogo delle lingue non è un oggetto JSON"),
+    }
+}
+
+#[test]
+fn ogni_parte_ogni_parametro_e_ogni_animazione_pronta_hanno_la_loro_frase() {
+    // R17-5: metà delle parti e sette parametri degli effetti non avevano una
+    // riga nel catalogo, e lo Studio in inglese ripiegava sulla frase
+    // italiana del crate. Il ripiego resta — una voce nuova si vede subito —
+    // ma una voce senza frase non arriva fino al rilascio.
+    let lingue = [
+        ("it", catalogo(include_str!("../../../src/lingue/it.json"))),
+        ("en", catalogo(include_str!("../../../src/lingue/en.json"))),
+    ];
+    let registro = studio_registro();
+    let mut attese: Vec<String> = Vec::new();
+    attese.extend(
+        registro
+            .parts
+            .iter()
+            .map(|p| format!("skin.part.{}", p.name)),
+    );
+    for effetto in &registro.effects {
+        attese.extend(
+            effetto
+                .params
+                .iter()
+                .map(|p| format!("skin.par.{}.{}", effetto.name, p.name)),
+        );
+    }
+    attese.extend(
+        registro
+            .animazioni_pronte
+            .iter()
+            .map(|a| format!("skin.anim.{}", a.id)),
+    );
+    for (lingua, voci) in &lingue {
+        let mancanti: Vec<&String> = attese.iter().filter(|k| !voci.contains_key(*k)).collect();
+        assert!(
+            mancanti.is_empty(),
+            "{lingua}.json: {} voci del registro senza frase: {mancanti:?}",
+            mancanti.len()
+        );
+    }
+}
+
+// ── Il validatore tradotto (D-46) ───────────────────────────────────────────
+
+/// I sorgenti di `rymembra-skin`, senza le prove.
+fn sorgenti_del_validatore() -> Vec<(String, String)> {
+    fn giu(cartella: &Path, fuori: &mut Vec<(String, String)>) {
+        let Ok(voci) = std::fs::read_dir(cartella) else {
+            return;
+        };
+        for voce in voci.flatten() {
+            let percorso = voce.path();
+            let nome = voce.file_name().to_string_lossy().into_owned();
+            if percorso.is_dir() {
+                if nome != "tests" {
+                    giu(&percorso, fuori);
+                }
+            } else if percorso.extension().is_some_and(|e| e == "rs") && nome != "tests.rs" {
+                let testo = std::fs::read_to_string(&percorso).expect("un sorgente");
+                // Le prove in coda al file non contano: lì i messaggi si leggono.
+                let corpo = testo
+                    .find("#[cfg(test)]")
+                    .map_or(testo.as_str(), |taglio| testo.get(..taglio).unwrap_or(""));
+                fuori.push((nome, corpo.to_owned()));
+            }
+        }
+    }
+    let radice = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../core/rymembra-skin/src");
+    let mut fuori = Vec::new();
+    giu(&radice, &mut fuori);
+    assert!(
+        fuori.len() > 10,
+        "i sorgenti del validatore non si trovano in {}",
+        radice.display()
+    );
+    fuori
+}
+
+/// Il testo fra la parentesi aperta in `da` e quella che la chiude, saltando
+/// le stringhe.
+fn fra_parentesi(testo: &str, da: usize) -> &str {
+    let byte = testo.as_bytes();
+    let mut livello = 1_u32;
+    let mut i = da;
+    let mut in_stringa = false;
+    while let Some(&c) = byte.get(i) {
+        if in_stringa {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_stringa = false;
+            }
+        } else if c == b'"' {
+            in_stringa = true;
+        } else if c == b'(' || c == b'[' || c == b'{' {
+            livello += 1;
+        } else if c == b')' || c == b']' || c == b'}' {
+            livello -= 1;
+            if livello == 0 {
+                return testo.get(da..i).unwrap_or("");
+            }
+        }
+        i += 1;
+    }
+    panic!("parentesi non chiusa");
+}
+
+/// Gli argomenti di primo livello.
+fn argomenti(dentro: &str) -> Vec<String> {
+    let mut fuori = Vec::new();
+    let mut livello = 0_i32;
+    let mut in_stringa = false;
+    let mut salta = false;
+    let mut pezzo = String::new();
+    for c in dentro.chars() {
+        if salta {
+            salta = false;
+            pezzo.push(c);
+            continue;
+        }
+        if in_stringa {
+            if c == '\\' {
+                salta = true;
+            } else if c == '"' {
+                in_stringa = false;
+            }
+            pezzo.push(c);
+            continue;
+        }
+        match c {
+            '"' => in_stringa = true,
+            '(' | '[' | '{' => livello += 1,
+            ')' | ']' | '}' => livello -= 1,
+            ',' if livello == 0 => {
+                fuori.push(pezzo.trim().to_owned());
+                pezzo.clear();
+                continue;
+            }
+            _ => {}
+        }
+        pezzo.push(c);
+    }
+    if !pezzo.trim().is_empty() {
+        fuori.push(pezzo.trim().to_owned());
+    }
+    fuori
+}
+
+/// Il contenuto di un letterale di Rust come lo stampa `format!`: le
+/// continuazioni di riga tolte, le virgolette e le graffe raddoppiate sciolte.
+fn letterale(sorgente: &str) -> String {
+    let dentro = sorgente
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("non è un letterale: {sorgente}"));
+    let mut fuori = String::new();
+    let mut caratteri = dentro.chars().peekable();
+    while let Some(c) = caratteri.next() {
+        match c {
+            '\\' => match caratteri.next() {
+                Some('\n') => {
+                    while caratteri.peek().is_some_and(|c| c.is_whitespace()) {
+                        caratteri.next();
+                    }
+                }
+                Some('"') => fuori.push('"'),
+                Some('\\') => fuori.push('\\'),
+                Some('n') => fuori.push('\n'),
+                altro => panic!("escape inatteso: {altro:?}"),
+            },
+            '{' if caratteri.peek() == Some(&'{') => {
+                caratteri.next();
+                fuori.push('{');
+            }
+            '}' if caratteri.peek() == Some(&'}') => {
+                caratteri.next();
+                fuori.push('}');
+            }
+            altro => fuori.push(altro),
+        }
+    }
+    fuori
+}
+
+/// I segnaposto `{nome}` di un modello.
+fn segnaposto(modello: &str) -> std::collections::BTreeSet<String> {
+    let mut fuori = std::collections::BTreeSet::new();
+    let mut resto = modello;
+    while let Some(da) = resto.find('{') {
+        let dopo = resto.get(da + 1..).unwrap_or("");
+        let nome: String = dopo
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !nome.is_empty()
+            && nome.starts_with(|c: char| c.is_ascii_lowercase())
+            && dopo.get(nome.len()..).is_some_and(|s| s.starts_with('}'))
+        {
+            fuori.insert(nome);
+        }
+        resto = dopo;
+    }
+    fuori
+}
+
+#[test]
+fn ogni_problema_del_validatore_ha_la_sua_frase_nelle_due_lingue() {
+    // D-46: il validatore parlava solo italiano, e lo Studio in inglese
+    // mostrava l'elenco dei problemi in italiano. Ogni messaggio nasce ora da
+    // `motivo!` con una chiave del catalogo; qui si controlla che nessuno ci
+    // sfugga, che la riga italiana del catalogo sia **la stessa** frase del
+    // nucleo (le due non possono divergere), e che l'inglese abbia gli stessi
+    // segnaposto.
+    let it = catalogo(include_str!("../../../src/lingue/it.json"));
+    let en = catalogo(include_str!("../../../src/lingue/en.json"));
+    let mut viste = 0;
+    let mut guasti: Vec<String> = Vec::new();
+    for (file, testo) in sorgenti_del_validatore() {
+        // Nessun messaggio scritto a mano fuori da `motivo!`.
+        for chiamata in ["problema(", "guasto(", "token_non_valido("] {
+            for (da, _) in testo.match_indices(chiamata) {
+                let prima = testo.get(..da).unwrap_or("");
+                if prima.ends_with("fn ")
+                    || prima.ends_with("::")
+                    || prima
+                        .chars()
+                        .last()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                let args = argomenti(fra_parentesi(&testo, da + chiamata.len()));
+                let ultimo = args.last().map_or("", String::as_str);
+                if ultimo.starts_with('"') || ultimo.starts_with("format!") {
+                    guasti.push(format!("{file}: {chiamata}…, {ultimo}) senza motivo!"));
+                }
+            }
+        }
+        if file != "motivo.rs" && testo.contains("message: format!(") {
+            guasti.push(format!("{file}: un `message: format!(` senza motivo!"));
+        }
+        // `motivo.rs` è la macro: i suoi motivi sono gli esempi della documentazione.
+        if file == "motivo.rs" {
+            continue;
+        }
+        for (da, _) in testo.match_indices("motivo!(") {
+            let args = argomenti(fra_parentesi(&testo, da + "motivo!(".len()));
+            let (Some(chiave), Some(modello)) = (args.first(), args.get(1)) else {
+                continue;
+            };
+            if !chiave.starts_with('"') {
+                // La definizione della macro e i suoi esempi.
+                continue;
+            }
+            viste += 1;
+            let chiave = letterale(chiave);
+            let modello = letterale(modello);
+            let nomi: std::collections::BTreeSet<String> = args
+                .iter()
+                .skip(2)
+                .filter_map(|a| a.split_once('=').map(|(n, _)| n.trim().to_owned()))
+                .collect();
+            if segnaposto(&modello) != nomi {
+                guasti.push(format!(
+                    "{file}: «{chiave}» ha segnaposto {:?} e argomenti {nomi:?}",
+                    segnaposto(&modello)
+                ));
+            }
+            let piena = format!("skin.issue.{chiave}");
+            match it.get(&piena).and_then(|v| v.as_str()) {
+                Some(riga) if riga == modello => {}
+                Some(riga) => guasti.push(format!(
+                    "it.json «{piena}» non è la frase del nucleo:\n  {riga}\n  {modello}"
+                )),
+                None => guasti.push(format!("it.json: manca «{piena}»")),
+            }
+            match en.get(&piena).and_then(|v| v.as_str()) {
+                Some(riga) if segnaposto(riga) == segnaposto(&modello) => {}
+                Some(_) => guasti.push(format!("en.json «{piena}»: segnaposto diversi")),
+                None => guasti.push(format!("en.json: manca «{piena}»")),
+            }
+        }
+    }
+    assert!(
+        viste > 150,
+        "pochi motivi trovati ({viste}): la lettura dei sorgenti non funziona"
+    );
+    for chiave in ["skin.issue.forse", "skin.issue.forse.nome"] {
+        assert!(
+            it.contains_key(chiave) && en.contains_key(chiave),
+            "manca «{chiave}»"
+        );
+    }
+    // Le descrizioni che un avviso riprende dal registro (`Motivo::dal_catalogo`).
+    for token in rymembra_skin::TOKENS {
+        let chiave = format!("skin.token.{}", token.id);
+        if !en.contains_key(&chiave) {
+            guasti.push(format!("en.json: manca «{chiave}»"));
+        }
+    }
+    for widget in &studio_registro().widgets {
+        let chiave = format!("skin.widget.{}", widget.name);
+        if !en.contains_key(&chiave) {
+            guasti.push(format!("en.json: manca «{chiave}»"));
+        }
+    }
+    assert!(
+        guasti.is_empty(),
+        "{} guasti:\n{}",
+        guasti.len(),
+        guasti.join("\n")
+    );
+}
+
+#[test]
+fn un_problema_arriva_alla_finestra_con_la_sua_chiave_e_i_suoi_valori() {
+    let esito = studio_valida(
+        rymembra_skin::PLAIN_SOURCE.replacen(
+            "\"tokens\": {",
+            "\"tokens\": { \"color.accentz\": \"#fff\",",
+            1,
+        ),
+        None,
+    );
+    let problema = esito.errori.first().expect("un errore");
+    assert_eq!(problema.motivo.chiave, "skin.issue.tokenInesistente");
+    assert!(
+        matches!(problema.motivo.valori.get("nome"), Some(ValoreIpc::Testo(nome)) if nome == "color.accentz"),
+        "{:?}",
+        problema.motivo
+    );
+    assert!(problema.motivo.forse.iter().any(|n| n == "color.accent"));
+}
+
+#[test]
+fn le_scorciatoie_di_una_lettera_sono_accese_di_serie_e_si_spengono() {
+    // D-69: si spengono, e la scelta resta.
+    let libreria = rymembra_app::db::open_in_memory().expect("un database in memoria");
+    assert!(lettere_accese(&libreria.connection).expect("letta"));
+    rymembra_app::settings::write_json(&libreria.connection, CHIAVE_LETTERE, &false)
+        .expect("scritta");
+    assert!(!lettere_accese(&libreria.connection).expect("riletta"));
+}
+
+#[test]
+fn le_ragioni_della_chat_si_traducono_e_l_italiano_e_il_modello_del_catalogo() {
+    // D-68: le ragioni degli scarti di una risposta della chat arrivavano solo
+    // in italiano. Ogni ragione porta ora la chiave `studio3.reject.ia.*` e i
+    // suoi valori; la frase italiana — quella che torna al modello — è la riga
+    // di `it.json` coi valori al loro posto.
+    let it = catalogo(include_str!("../../../src/lingue/it.json"));
+    let en = catalogo(include_str!("../../../src/lingue/en.json"));
+    fn controlla(
+        motivo: &MotivoIpc,
+        it: &serde_json::Map<String, serde_json::Value>,
+        en: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        let modello = it
+            .get(&motivo.chiave)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("it.json: manca «{}»", motivo.chiave));
+        let inglese = en
+            .get(&motivo.chiave)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("en.json: manca «{}»", motivo.chiave));
+        assert_eq!(
+            segnaposto(modello),
+            segnaposto(inglese),
+            "{}",
+            motivo.chiave
+        );
+        let mut pieno = modello.to_owned();
+        for (nome, valore) in &motivo.valori {
+            let testo = match valore {
+                ValoreIpc::Testo(testo) => testo.clone(),
+                ValoreIpc::Motivo(dentro) => {
+                    controlla(dentro, it, en);
+                    dentro.testo.clone()
+                }
+            };
+            pieno = pieno.replace(&format!("{{{nome}}}"), &testo);
+        }
+        assert_eq!(pieno, motivo.testo, "{}", motivo.chiave);
+    }
+    let lungo: Vec<String> = (0..100).map(|n| format!("\"p{n}\"")).collect();
+    let risposta = format!(
+        "```rymembra-patch\n[{{\"op\":\"push\",\"percorso\":[\"a\"]}},{{\"op\":\"boh\",\"percorso\":[\"a\"]}},\
+         {{\"percorso\":[\"a\"]}},{{\"op\":\"scrivi\",\"percorso\":\"parts.a\"}},\
+         {{\"op\":\"scrivi\",\"percorso\":3}},{{\"op\":\"scrivi\"}},{{\"op\":\"scrivi\",\"percorso\":[]}},\
+         {{\"op\":\"scrivi\",\"percorso\":[{}]}},{{\"op\":\"scrivi\",\"percorso\":[true]}},\
+         {{\"op\":\"scrivi\",\"percorso\":[\"\"]}},{{\"op\":\"scrivi\",\"percorso\":[\"a\"]}},\
+         {{\"op\":\"togli\",\"percorso\":[\"a\"],\"valore\":1}}]\n```\n```rymembra-patch\nnon json\n```",
+        lungo.join(",")
+    );
+    let (_, ragioni) = rymembra_ia::operazioni::estrai_ragionate(&risposta);
+    let chiavi: std::collections::BTreeSet<&str> = ragioni
+        .iter()
+        .flat_map(|r| {
+            std::iter::once(r.chiave).chain(r.valori.iter().filter_map(|(_, p)| match p {
+                rymembra_ia::operazioni::Pezzo::Ragione(dentro) => Some(dentro.chiave),
+                rymembra_ia::operazioni::Pezzo::Testo(_) => None,
+            }))
+        })
+        .collect();
+    assert_eq!(
+        chiavi.len(),
+        15,
+        "non tutte le ragioni sono passate dalla prova: {chiavi:?}"
+    );
+    for ragione in &ragioni {
+        controlla(&motivo_di_ragione(ragione), &it, &en);
+    }
 }

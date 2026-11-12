@@ -36,6 +36,7 @@ import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 
 import { rispondiNoAllaDomandaInCima } from "../finestrella";
 import { ipc } from "../ipc";
+import { tuttoScritto } from "../studio/primaDiChiudere";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
 
@@ -142,7 +143,11 @@ export function BarraTitolo() {
         // Con una domanda aperta la × chiude lei, e vale come «no»: la
         // finestra si chiude al clic dopo. Vedi `cosaFaLaX` in `modale.ts`.
         if (rispondiNoAllaDomandaInCima()) return;
-        void ipc.finestraChiudi().catch(() => {});
+        // Prima lo Studio, se è aperto, scrive quel che ha in mano: vedi
+        // `studio/primaDiChiudere.ts` (R14-7).
+        void tuttoScritto()
+          .then(() => ipc.finestraChiudi())
+          .catch(() => {});
       }}
     />
   );

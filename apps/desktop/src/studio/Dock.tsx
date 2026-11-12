@@ -10,6 +10,8 @@ import { useEffect, useMemo, useState, type PointerEvent as EventoPuntatore } fr
 import type { Avviso, Problema } from "../ipc";
 import { numero } from "../formato";
 import { t, tSe } from "../lingue";
+import { risorseMancanti } from "./risorse";
+import { testoProblema } from "./vocabolario";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useStudio } from "./contesto";
@@ -101,12 +103,17 @@ export function Dock() {
 // ── Problemi ─────────────────────────────────────────────────────────────────
 
 function Problemi() {
-  const { s, manda, documento, scrivi, scriviTesto } = useStudio();
+  const { s, manda, documento, scrivi, scriviTesto, file } = useStudio();
   const vai = useVai();
   const esito = s.esito;
   if (esito === null) return <p className="nota-dock">{t("studio3.canvas.waiting")}</p>;
   const bassi = esito.contrasti.filter((c) => !c.passa);
-  const vuoto = esito.errori.length === 0 && esito.avvisi.length === 0 && bassi.length === 0;
+  // I file che il documento nomina e il pacchetto non ha: la validazione non
+  // li vede (guarda il testo, non il disco), e «Salva e usa» falliva con una
+  // frase che lo Studio non aveva mai detto (R14-5).
+  const mancanti = risorseMancanti(esito.risorse, file);
+  const vuoto =
+    esito.errori.length === 0 && esito.avvisi.length === 0 && bassi.length === 0 && mancanti.length === 0;
 
   /**
    * «Correggi» con un nome suggerito: se il percorso punta a un **valore**
@@ -145,6 +152,24 @@ function Problemi() {
           {t("studio3.problems.none")}
         </p>
       )}
+      {mancanti.length > 0 && (
+        <section>
+          <h4 className="titolo-dock" data-esito="male">
+            {t("studio3.problems.missingFiles", { n: mancanti.length })}
+          </h4>
+          <ul className="elenco-problemi">
+            {mancanti.map((nome) => (
+              <li key={nome} className="problema" data-esito="male">
+                <Icona nome="i-alert" dim={13} />
+                <div className="testo-problema">
+                  <p>{t("studio3.problems.missingFile", { nome })}</p>
+                  <code>{nome}</code>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {esito.errori.length > 0 && (
         <section>
           <h4 className="titolo-dock" data-esito="male">
@@ -155,7 +180,7 @@ function Problemi() {
               <li key={`${p.path}:${i}`} className="problema" data-esito="male">
                 <Icona nome="i-alert" dim={13} />
                 <div className="testo-problema">
-                  <p>{p.message}</p>
+                  <p>{testoProblema(p)}</p>
                   <code>{p.path || "—"}</code>
                 </div>
                 <div className="azioni-problema">
@@ -191,7 +216,7 @@ function Problemi() {
                   {tSe(`studio3.warning.${a.kind}`, a.kind)}
                 </span>
                 <div className="testo-problema">
-                  <p>{a.message}</p>
+                  <p>{testoProblema(a)}</p>
                   <code>{a.path || "—"}</code>
                 </div>
                 <div className="azioni-problema">

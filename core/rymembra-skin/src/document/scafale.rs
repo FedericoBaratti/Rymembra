@@ -15,7 +15,7 @@ use crate::layout::{
 };
 use crate::tokens::is_local_name;
 use crate::values::parse_length;
-use crate::vicini::{forse, vicini};
+use crate::vicini::vicini;
 
 pub(super) fn impaginazione(
     value: &Value,
@@ -27,8 +27,10 @@ pub(super) fn impaginazione(
         if map.contains_key(chiave) {
             return Err(problema(
                 &giu(path, chiave),
-                "nel formato 2 non c'è più: dove stanno il lettore e la barra lo dice lo \
-                 scafale, `layout.shell`, scritto per esteso",
+                motivo!(
+                    "scafaleFormato2",
+                    "nel formato 2 non c'è più: dove stanno il lettore e la barra lo dice lo scafale, `layout.shell`, scritto per esteso"
+                ),
             ));
         }
     }
@@ -101,7 +103,10 @@ fn modelli(
         if !is_local_name(nome) {
             return Err(problema(
                 &percorso,
-                "il nome di un prefab ammette minuscole, cifre e trattini",
+                motivo!(
+                    "nomePrefab",
+                    "il nome di un prefab ammette minuscole, cifre e trattini"
+                ),
             ));
         }
         let mut restanti = MAX_SHELL_NODES.saturating_sub(1);
@@ -134,14 +139,14 @@ fn problema_scafale(prefisso: &str, guasto: &crate::layout::ShellIssue) -> SkinI
         format!("{base}.{}", guasto.path)
     };
     let Some(widget) = guasto.missing.as_ref() else {
-        return problema(&percorso, guasto.message.clone());
+        return problema(&percorso, guasto.motivo.clone());
     };
     SkinIssue {
         code: ErrorCode::SkinLayoutIncomplete {
             widget: widget.clone(),
         },
         path: percorso,
-        message: guasto.message.clone(),
+        motivo: Box::new(guasto.motivo.clone()),
         punto: None,
     }
 }
@@ -154,7 +159,11 @@ fn misura_traccia(value: &Value, path: &str) -> Esito<TrackSize> {
         _ => parse_length(scritto).map(TrackSize::Fixed).ok_or_else(|| {
             problema(
                 path,
-                format!("«{scritto}» non è una misura: «hug», «fill», o una lunghezza in px o rem"),
+                motivo!(
+                    "misura",
+                    "«{scritto}» non è una misura: «hug», «fill», o una lunghezza in px o rem",
+                    scritto = scritto.to_string()
+                ),
             )
         }),
     }
@@ -176,11 +185,13 @@ fn opzioni_widget(
             let candidati = def.nearest_options(nome);
             return Err(problema(
                 &percorso,
-                format!(
-                    "«{}» non ha una manopola «{nome}».{}",
-                    def.name,
-                    forse(&candidati)
-                ),
+                motivo!(
+                    "manopolaInesistente",
+                    "«{widget}» non ha una manopola «{nome}».",
+                    widget = def.name,
+                    nome = nome.to_string()
+                )
+                .forse(&candidati),
             ));
         };
         let valore = match opzione.kind {
@@ -196,7 +207,15 @@ fn opzioni_widget(
                     .and_then(|n| u32::try_from(n).ok())
                     .filter(|n| (min..=max).contains(n))
                     .ok_or_else(|| {
-                        problema(&percorso, format!("qui ci va un intero da {min} a {max}"))
+                        problema(
+                            &percorso,
+                            motivo!(
+                                "intero",
+                                "qui ci va un intero da {min} a {max}",
+                                min = min.to_string(),
+                                max = max.to_string()
+                            ),
+                        )
                     })?;
                 OptionValue::Count(quanti)
             }
@@ -217,7 +236,12 @@ fn foglia_scafale(map: &Map<String, Value>, path: &str) -> Esito<WidgetInstance>
         let candidati = crate::layout::nearest_widgets(nome);
         return Err(problema(
             &percorso,
-            format!("widget inesistente: «{nome}».{}", forse(&candidati)),
+            motivo!(
+                "widgetInesistente",
+                "widget inesistente: «{nome}».",
+                nome = nome.to_string()
+            )
+            .forse(&candidati),
         ));
     };
 
@@ -237,7 +261,11 @@ fn foglia_scafale(map: &Map<String, Value>, path: &str) -> Esito<WidgetInstance>
 fn troppi_nodi(path: &str) -> SkinIssue {
     problema(
         path,
-        format!("lo scafale supera i {MAX_SHELL_NODES} nodi, che è il massimo"),
+        motivo!(
+            "troppiNodi",
+            "lo scafale supera i {massimo} nodi, che è il massimo",
+            massimo = MAX_SHELL_NODES.to_string()
+        ),
     )
 }
 
@@ -292,7 +320,12 @@ fn zona_scafale(
                     let candidati = crate::parts::nearest_parts(nome);
                     return Err(problema(
                         &percorso,
-                        format!("parte inesistente: «{nome}».{}", forse(&candidati)),
+                        motivo!(
+                            "parteInesistente",
+                            "parte inesistente: «{nome}».",
+                            nome = nome.to_string()
+                        )
+                        .forse(&candidati),
                     ));
                 }
             }
@@ -373,8 +406,10 @@ fn nodo_scafale(
     }
     Err(problema(
         path,
-        "un nodo dello scafale è una zona («zone»), un widget («widget») o un \
-         prefab («prefab»), e questo non dichiara nessuno dei tre",
+        motivo!(
+            "nodo",
+            "un nodo dello scafale è una zona («zone»), un widget («widget») o un prefab («prefab»), e questo non dichiara nessuno dei tre"
+        ),
     ))
 }
 
@@ -396,24 +431,32 @@ fn modello_richiamato(
     let Some(prefabs) = prefabs else {
         return Err(problema(
             &percorso,
-            "un prefab non può contenerne un altro: sarebbe un linguaggio, \
-             e i cicli non si riconoscerebbero senza visitare il grafo",
+            motivo!(
+                "prefabAnnidato",
+                "un prefab non può contenerne un altro: sarebbe un linguaggio, e i cicli non si riconoscerebbero senza visitare il grafo"
+            ),
         ));
     };
     let Some((_, corpo)) = prefabs.iter().find(|(n, _)| n == nome) else {
         if prefabs.is_empty() {
             return Err(problema(
                 &percorso,
-                format!(
-                    "prefab inesistente: «{nome}». I prefab si dichiarano in `layout.prefabs`, \
-                     e questa skin non ne dichiara"
+                motivo!(
+                    "prefabNessuno",
+                    "prefab inesistente: «{nome}». I prefab si dichiarano in `layout.prefabs`, e questa skin non ne dichiara",
+                    nome = nome.to_string()
                 ),
             ));
         }
         let candidati = vicini(nome, prefabs.iter().map(|(n, _)| n.as_str()));
         return Err(problema(
             &percorso,
-            format!("prefab inesistente: «{nome}».{}", forse(&candidati)),
+            motivo!(
+                "prefabInesistente",
+                "prefab inesistente: «{nome}».",
+                nome = nome.to_string()
+            )
+            .forse(&candidati),
         ));
     };
 

@@ -714,13 +714,13 @@ fn un_immagine_nomina_una_voce_del_pacchetto_e_niente_altro() {
 fn una_chiave_di_troppo_dentro_un_effetto_riceve_un_suggerimento() {
     let coda = effetto_storto(r##"{ "effect": "solid", "color": "#fff", "colors": "#000" }"##);
     assert_eq!(coda.path, "prova.colors");
-    assert!(coda.message.contains("«color»"), "{}", coda.message);
+    assert!(coda.message().contains("«color»"), "{}", coda.message());
 }
 
 #[test]
 fn quel_che_manca_a_un_effetto_si_dice_col_percorso() {
     assert_eq!(
-        effetto_storto(r##""solid""##).message,
+        effetto_storto(r##""solid""##).message(),
         "qui ci va un oggetto"
     );
     let vuoto = effetto_storto("{}");
@@ -733,7 +733,7 @@ fn quel_che_manca_a_un_effetto_si_dice_col_percorso() {
 #[test]
 fn un_numero_fuori_scala_dice_fra_quali_estremi_sta() {
     let guaio = effetto_storto(r##"{ "effect": "vignette", "color": "#000", "start": 120 }"##);
-    assert_eq!(guaio.message, "va fra 0 e 100, non 120");
+    assert_eq!(guaio.message(), "va fra 0 e 100, non 120");
 }
 
 // ── I caratteri ─────────────────────────────────────────────────────────────

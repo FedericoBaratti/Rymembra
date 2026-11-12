@@ -20,7 +20,7 @@ use crate::values::{
     Duration, Easing, EasingKeyword, Length, LengthUnit, LengthValue, Rgba, StepPosition,
     is_font_family, parse_color, parse_duration, parse_length,
 };
-use crate::vicini::{forse, vicini};
+use crate::vicini::vicini;
 
 // ── I valori ────────────────────────────────────────────────────────────────
 
@@ -29,9 +29,7 @@ pub(super) fn colore_letterale(value: &Value, path: &str) -> Esito<Rgba> {
     parse_color(scritto).ok_or_else(|| {
         problema(
             path,
-            format!(
-                "«{scritto}» non è un colore. Ammessi #rgb, #rgba, #rrggbb, #rrggbbaa, rgb() e rgba()"
-            ),
+            motivo!("colore", "«{scritto}» non è un colore. Ammessi #rgb, #rgba, #rrggbb, #rrggbbaa, rgb() e rgba()", scritto = scritto.to_string()),
         )
     })
 }
@@ -58,7 +56,10 @@ pub(super) fn colore(value: &Value, path: &str) -> Esito<ColorValue> {
         if !is_local_name(nome) {
             return Err(problema(
                 &giu(path, "$palette"),
-                "il nome di un colore della tavolozza ammette minuscole, cifre e trattini",
+                motivo!(
+                    "nomeColore",
+                    "il nome di un colore della tavolozza ammette minuscole, cifre e trattini"
+                ),
             ));
         }
         return Ok(ColorValue::Palette {
@@ -85,17 +86,21 @@ pub(super) fn colore(value: &Value, path: &str) -> Esito<ColorValue> {
             Some(def) if def.kind == TokenKind::Color => Ok(ColorValue::Token(def)),
             Some(_) => Err(problema(
                 &percorso,
-                format!(
-                    "«{nome}» non è un token di colore: qui ci va un colore.{}",
-                    forse(&vicini(nome, colori()))
-                ),
+                motivo!(
+                    "nonTokenColore",
+                    "«{nome}» non è un token di colore: qui ci va un colore.",
+                    nome = nome.to_string()
+                )
+                .forse(&vicini(nome, colori())),
             )),
             None => Err(problema(
                 &percorso,
-                format!(
-                    "«{nome}» non è un token del registro.{}",
-                    forse(&vicini(nome, colori()))
-                ),
+                motivo!(
+                    "tokenInesistenteQui",
+                    "«{nome}» non è un token del registro.",
+                    nome = nome.to_string()
+                )
+                .forse(&vicini(nome, colori())),
             )),
         };
     }
@@ -108,7 +113,11 @@ pub(super) fn colore(value: &Value, path: &str) -> Esito<ColorValue> {
             let nomi: Vec<&str> = DynamicSource::ALL.iter().map(|s| s.as_str()).collect();
             problema(
                 &percorso,
-                format!("sorgente sconosciuta. Ammesse: {}", nomi.join(", ")),
+                motivo!(
+                    "sorgente",
+                    "sorgente sconosciuta. Ammesse: {nomi}",
+                    nomi = nomi.join(", ")
+                ),
             )
         })?;
         return Ok(ColorValue::Source {
@@ -119,7 +128,10 @@ pub(super) fn colore(value: &Value, path: &str) -> Esito<ColorValue> {
 
     Err(problema(
         path,
-        "un colore va scritto come stringa (#rrggbb, rgba(…)), o come { \"$token\": … }, { \"$palette\": … }, { \"$source\": … }",
+        motivo!(
+            "coloreForma",
+            "un colore va scritto come stringa (#rrggbb, rgba(…)), o come {{ \"$token\": … }}, {{ \"$palette\": … }}, {{ \"$source\": … }}"
+        ),
     ))
 }
 
@@ -128,9 +140,11 @@ pub(super) fn lunghezza(value: &Value, path: &str) -> Esito<Length> {
     parse_length(scritto).ok_or_else(|| {
         problema(
             path,
-            format!(
-                "«{scritto}» non è una lunghezza: ci vuole un numero più un'unità fra {}",
-                LengthUnit::elenco()
+            motivo!(
+                "lunghezza",
+                "«{scritto}» non è una lunghezza: ci vuole un numero più un'unità fra {unita}",
+                scritto = scritto.to_string(),
+                unita = LengthUnit::elenco().to_string()
             ),
         )
     })
@@ -150,10 +164,10 @@ pub(super) fn lunghezza_non_negativa(value: &Value, path: &str) -> Esito<Length>
     if letta.value < 0.0 {
         return Err(problema(
             path,
-            format!(
-                "«{}» non può essere negativa: il motore scarterebbe la dichiarazione, e la \
-                 parte resterebbe com'era",
-                crate::values::format_length(letta)
+            motivo!(
+                "negativa",
+                "«{scritto}» non può essere negativa: il motore scarterebbe la dichiarazione, e la parte resterebbe com'era",
+                scritto = crate::values::format_length(letta)
             ),
         ));
     }
@@ -178,10 +192,11 @@ fn lunghezza_in(value: &Value, path: &str, unita: &[LengthUnit]) -> Esito<Length
         let nomi: Vec<&str> = unita.iter().map(|u| u.as_str()).collect();
         return Err(problema(
             path,
-            format!(
-                "qui l'unità va scelta fra {}, non {}",
-                nomi.join(", "),
-                letta.unit.as_str()
+            motivo!(
+                "unita",
+                "qui l'unità va scelta fra {nomi}, non {unita}",
+                nomi = nomi.join(", "),
+                unita = letta.unit.as_str()
             ),
         ));
     }
@@ -198,7 +213,13 @@ pub(super) fn misura_fra(value: &Value, path: &str, min: f64, max: f64) -> Esito
     if px < min || px > max {
         return Err(problema(
             path,
-            format!("va fra {min}px e {max}px, non {px}px"),
+            motivo!(
+                "fraPx",
+                "va fra {min}px e {max}px, non {px}px",
+                min = min.to_string(),
+                max = max.to_string(),
+                px = px.to_string()
+            ),
         ));
     }
     Ok(letta)
@@ -232,7 +253,12 @@ pub(super) fn spostamento(value: &Value, path: &str) -> Esito<Length> {
     if letta.value.abs() > estremo {
         return Err(problema(
             path,
-            format!("va fra -{estremo}{unita} e {estremo}{unita}"),
+            motivo!(
+                "fraEstremi",
+                "va fra -{estremo}{unita} e {estremo}{unita}",
+                estremo = estremo.to_string(),
+                unita = unita.to_string()
+            ),
         ));
     }
     Ok(letta)
@@ -255,9 +281,11 @@ pub(super) fn durata(value: &Value, path: &str) -> Esito<Duration> {
     parse_duration(scritto).ok_or_else(|| {
         problema(
             path,
-            format!(
-                "«{scritto}» non è una durata: un numero in ms o s, al massimo {}ms",
-                crate::values::MAX_DURATION_MS
+            motivo!(
+                "durata",
+                "«{scritto}» non è una durata: un numero in ms o s, al massimo {massimo}ms",
+                scritto = scritto.to_string(),
+                massimo = crate::values::MAX_DURATION_MS.to_string()
             ),
         )
     })
@@ -275,7 +303,14 @@ pub(super) fn easing(value: &Value, path: &str) -> Esito<Easing> {
                 .map(Easing::Keyword)
                 .ok_or_else(|| {
                     let nomi: Vec<&str> = EasingKeyword::ALL.iter().map(|k| k.as_str()).collect();
-                    problema(&percorso, format!("ammesse soltanto: {}", nomi.join(", ")))
+                    problema(
+                        &percorso,
+                        motivo!(
+                            "ammesse",
+                            "ammesse soltanto: {nomi}",
+                            nomi = nomi.join(", ")
+                        ),
+                    )
                 })
         }
         "cubicBezier" => {
@@ -285,7 +320,10 @@ pub(super) fn easing(value: &Value, path: &str) -> Esito<Easing> {
             let mut valori = [0.0_f64; 4];
             for (indice, atteso) in valori.iter_mut().enumerate() {
                 let Some(grezzo) = punti.get(indice) else {
-                    return Err(problema(&percorso, "ci vogliono quattro numeri"));
+                    return Err(problema(
+                        &percorso,
+                        motivo!("quattroNumeri", "ci vogliono quattro numeri"),
+                    ));
                 };
                 let dentro = giu(&percorso, &indice.to_string());
                 // La x sta in [0,1] per definizione della curva; la y può
@@ -325,7 +363,11 @@ pub(super) fn easing(value: &Value, path: &str) -> Esito<Easing> {
         }
         altro => Err(problema(
             &giu(path, "kind"),
-            format!("«{altro}» non è una curva: ammessi keyword, cubicBezier, steps"),
+            motivo!(
+                "curvaGenere",
+                "«{altro}» non è una curva: ammessi keyword, cubicBezier, steps",
+                altro = altro.to_string()
+            ),
         )),
     }
 }
@@ -350,16 +392,7 @@ pub(super) fn curva(value: &Value, path: &str, dichiarate: &[(String, Easing)]) 
     let candidati = vicini(scritto, dichiarate.iter().map(|(n, _)| n.as_str()));
     Err(problema(
         path,
-        format!(
-            "«{scritto}» non è una curva: né una parola chiave ({}), né una curva dichiarata in \
-             `motion.easings`.{}",
-            EasingKeyword::ALL
-                .iter()
-                .map(|k| k.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-            forse(&candidati)
-        ),
+        motivo!("curva", "«{scritto}» non è una curva: né una parola chiave ({parole}), né una curva dichiarata in `motion.easings`.", scritto = scritto.to_string(), parole = EasingKeyword::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")).forse(&candidati),
     ))
 }
 
@@ -411,7 +444,11 @@ pub(super) fn ombra_parte(value: &Value, path: &str) -> Esito<Ombra> {
         Some(def) if def.kind == TokenKind::Shadow => Ok(Ombra::Token(def)),
         Some(_) => Err(problema(
             &percorso,
-            format!("«{nome}» non è un token d'ombra: qui ci va uno fra shadow.* e glow.*"),
+            motivo!(
+                "nonTokenOmbra",
+                "«{nome}» non è un token d'ombra: qui ci va uno fra shadow.* e glow.*",
+                nome = nome.to_string()
+            ),
         )),
         None => {
             let candidati = vicini(
@@ -423,7 +460,12 @@ pub(super) fn ombra_parte(value: &Value, path: &str) -> Esito<Ombra> {
             );
             Err(problema(
                 &percorso,
-                format!("«{nome}» non è un token del registro.{}", forse(&candidati)),
+                motivo!(
+                    "tokenInesistenteQui",
+                    "«{nome}» non è un token del registro.",
+                    nome = nome.to_string()
+                )
+                .forse(&candidati),
             ))
         }
     }
@@ -438,7 +480,10 @@ fn pila_caratteri(value: &Value, path: &str) -> Esito<Vec<String>> {
         if !is_font_family(nome) {
             return Err(problema(
                 &dentro,
-                "nome del carattere non valido: ammessi lettere, cifre, spazi, - e _",
+                motivo!(
+                    "nomeCarattere",
+                    "nome del carattere non valido: ammessi lettere, cifre, spazi, - e _"
+                ),
             ));
         }
         famiglie.push(nome.to_owned());
@@ -452,18 +497,21 @@ pub(super) fn risorsa(value: &Value, path: &str, mime_ammessi: &[&str]) -> Esito
     let Some(mime) = crate::package::tipo_risorsa(nome) else {
         return Err(problema(
             path,
-            format!(
-                "«{nome}» non è il nome di una risorsa del pacchetto: minuscole, cifre, `_` e \
-                 `-`, poi un'estensione fra png, jpg, webp e woff2 — senza cartelle"
+            motivo!(
+                "nomeRisorsa",
+                "«{nome}» non è il nome di una risorsa del pacchetto: minuscole, cifre, `_` e `-`, poi un'estensione fra png, jpg, webp e woff2 — senza cartelle",
+                nome = nome.to_string()
             ),
         ));
     };
     if !mime_ammessi.contains(&mime) {
         return Err(problema(
             path,
-            format!(
-                "«{nome}» non è del tipo che serve qui ({})",
-                mime_ammessi.join(", ")
+            motivo!(
+                "tipoRisorsa",
+                "«{nome}» non è del tipo che serve qui ({tipi})",
+                nome = nome.to_string(),
+                tipi = mime_ammessi.join(", ")
             ),
         ));
     }
@@ -492,7 +540,10 @@ fn fermate(value: &Value, path: &str) -> Esito<Vec<Stop>> {
 pub(super) fn coppia(value: &Value, path: &str) -> Esito<(Length, Length)> {
     let voci = lista_fra(value, path, 2, 2)?;
     let (Some(x), Some(y)) = (voci.first(), voci.get(1)) else {
-        return Err(problema(path, "ci vogliono due lunghezze"));
+        return Err(problema(
+            path,
+            motivo!("dueLunghezze", "ci vogliono due lunghezze"),
+        ));
     };
     Ok((
         lunghezza(x, &giu(path, "0"))?,
@@ -646,7 +697,7 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                         ImageSize::Misura(lunghezza(grezzo, &giu(path, "size")).map_err(|_| {
                             problema(
                                 &giu(path, "size"),
-                                "ammessi cover, contain, auto, o una lunghezza per le mattonelle",
+                                motivo!("dimensioneImmagine", "ammessi cover, contain, auto, o una lunghezza per le mattonelle"),
                             )
                         })?)
                     }
@@ -662,12 +713,18 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
         }),
         altro => {
             let candidati = vicini(altro, Effect::NAMES.iter().copied());
+            let motivo = motivo!(
+                "effettoSconosciuto",
+                "effetto sconosciuto: «{nome}».",
+                nome = altro
+            )
+            .forse(&candidati);
             Err(SkinIssue {
                 code: ErrorCode::SkinUnknownEffect {
                     effect_type: altro.to_owned(),
                 },
                 path: percorso.clone(),
-                message: format!("effetto sconosciuto: «{altro}».{}", forse(&candidati)),
+                motivo: Box::new(motivo),
                 punto: None,
             })
         }
@@ -695,12 +752,10 @@ fn sorgente_su_se_stessa(def: &TokenDef, colore: &ColorValue, path: &str) -> Esi
     }
     Err(problema(
         &giu(path, "$source"),
-        format!(
-            "«{}» non può seguire la copertina con `$source`: la copertina arriva proprio \
-             in «{}», e l'accento che rimanda a sé stesso resta senza colore. Scrivi qui il \
-             colore di partenza, e lascia `capabilities.dynamicAccent` a true: è lui a far \
-             seguire la copertina all'accento.",
-            def.id, def.id
+        motivo!(
+            "sorgenteSuSe",
+            "«{token}» non può seguire la copertina con `$source`: la copertina arriva proprio in «{token}», e l'accento che rimanda a sé stesso resta senza colore. Scrivi qui il colore di partenza, e lascia `capabilities.dynamicAccent` a true: è lui a far seguire la copertina all'accento.",
+            token = def.id
         ),
     ))
 }
@@ -721,7 +776,7 @@ fn valore_token(def: &TokenDef, value: &Value, path: &str) -> Esito<TokenValue> 
     // Il messaggio preciso viene da sotto; qui si aggiunge soltanto il codice
     // che nomina il token, che è ciò che serve a chi legge un log invece del
     // documento.
-    esito.map_err(|dentro| token_non_valido(&dentro.path, def.id, value, dentro.message))
+    esito.map_err(|dentro| token_non_valido(&dentro.path, def.id, value, *dentro.motivo))
 }
 
 /// Gli estremi di [`TokenDef::limiti`], quando ci sono.
@@ -734,7 +789,18 @@ fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<(
         return Ok(());
     };
 
-    let fuori = |n: f64| problema(path, format!("va fra {min} e {max}, non {n}"));
+    let fuori = |n: f64| {
+        problema(
+            path,
+            motivo!(
+                "fraMinMax",
+                "va fra {min} e {max}, non {n}",
+                min = min.to_string(),
+                max = max.to_string(),
+                n = n.to_string()
+            ),
+        )
+    };
 
     match *valore {
         TokenValue::Number(n) => {
@@ -758,9 +824,10 @@ fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<(
                     altra => {
                         return Err(problema(
                             path,
-                            format!(
-                                "qui ci va una misura assoluta, in px o rem, non in {}",
-                                altra.as_str()
+                            motivo!(
+                                "misuraAssoluta",
+                                "qui ci va una misura assoluta, in px o rem, non in {unita}",
+                                unita = altra.as_str()
                             ),
                         ));
                     }
@@ -789,7 +856,12 @@ pub(super) fn insieme_token(
             let candidati = vicini(chiave, TOKENS.iter().map(|d| d.id));
             problemi.push(problema(
                 &percorso,
-                format!("token inesistente: «{chiave}».{}", forse(&candidati)),
+                motivo!(
+                    "tokenInesistente",
+                    "token inesistente: «{nome}».",
+                    nome = chiave.to_string()
+                )
+                .forse(&candidati),
             ));
             continue;
         };

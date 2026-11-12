@@ -328,6 +328,14 @@ export function latoCambiato(lati: readonly unknown[], indice: number, numero: n
 export const FERMATE_MASSIME = 8;
 /** Quanti livelli al massimo in un'ombra: `document.rs`, `lista_fra(…, 0, 6)`. */
 export const LIVELLI_OMBRA_MASSIMI = 6;
+/**
+ * Quanti sfondi al massimo su una parte: `parti.rs`, `livelli(…, 0, 4, …)`.
+ * Fino alla 3.2 «Aggiungi un livello» non aveva tetto, e il quinto rompeva il
+ * documento (R14-6).
+ */
+export const LIVELLI_SFONDO_MASSIMI = 4;
+/** E su `::before` o `::after`: `parti.rs`, `livelli(…, 1, 3, …)`. */
+export const LIVELLI_PSEUDO_MASSIMI = 3;
 
 /** Se ne può aggiungere un altro, con `quanti` già scritti e quel tetto. */
 export function puoAggiungere(quanti: number, tetto: number): boolean {

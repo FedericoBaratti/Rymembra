@@ -55,7 +55,7 @@
  * alfabetico produrrebbe un diff che tocca tutto il file a ogni modifica, e il
  * documento è testo apposta perché git ci lavori sopra.
  */
-import type { OperazioneIa } from "../ipc";
+import type { Motivo, OperazioneIa } from "../ipc";
 
 /** Un contenitore del documento: un oggetto, oppure un elenco. */
 type Contenitore = Record<string, unknown> | unknown[];
@@ -70,7 +70,18 @@ type Contenitore = Record<string, unknown> | unknown[];
  */
 type Esito =
   | { readonly fatto: true; readonly documento: Contenitore }
-  | { readonly fatto: false; readonly perche: string };
+  | { readonly fatto: false; readonly perche: Motivo };
+
+/**
+ * Una ragione: la frase italiana, che torna al modello in modalità assistente,
+ * e la chiave `studio3.reject.*` per chi legge, nella lingua dell'interfaccia
+ * (D-68). Fino alla 3.2 l'elenco «scartate» sotto una proposta era sempre in
+ * italiano. Il modello di ogni chiave in `it.json` è questa stessa frase coi
+ * suoi segnaposto: lo controlla `test/patch.test.ts`.
+ */
+function ragione(chiave: string, testo: string, valori: Motivo["valori"] = {}): Motivo {
+  return { chiave: `studio3.reject.${chiave}`, testo, valori, forse: [] };
+}
 
 /** Il documento come oggetto, o `null` se il testo non è JSON. */
 export function leggi(sorgente: string): Record<string, unknown> | null {
@@ -207,17 +218,23 @@ function poniIn(
   valore: unknown,
   percorso: readonly string[],
   fino: number,
-): string | null {
+): Motivo | null {
   if (!Array.isArray(dove)) {
     poni(dove, passo, valore);
     return null;
   }
   const dritto = posizione(passo);
+  const qui = via(percorso, fino);
   if (dritto === null) {
-    return `${via(percorso, fino)} è un elenco, e «${passo}» non è una posizione`;
+    return ragione("notPosition", `${qui} è un elenco, e «${passo}» non è una posizione`, { via: qui, passo });
   }
   if (dritto > dove.length) {
-    return `${via(percorso, fino)} ha ${dove.length} voci: alla posizione ${dritto} resterebbe un buco (per aggiungere in fondo, scrivi alla ${dove.length})`;
+    const n = String(dove.length);
+    return ragione(
+      "gap",
+      `${qui} ha ${n} voci: alla posizione ${dritto} resterebbe un buco (per aggiungere in fondo, scrivi alla ${n})`,
+      { via: qui, n, posto: String(dritto) },
+    );
   }
   dove[dritto] = valore;
   return null;
@@ -235,20 +252,26 @@ function togliIn(
   passo: string,
   percorso: readonly string[],
   fino: number,
-): string | null {
+): Motivo | null {
+  const qui = via(percorso, fino);
   if (!Array.isArray(dove)) {
     if (!Object.prototype.hasOwnProperty.call(dove, passo)) {
-      return `${via(percorso, fino)} non ha «${passo}»`;
+      return ragione("missingKey", `${qui} non ha «${passo}»`, { via: qui, passo });
     }
     delete dove[passo];
     return null;
   }
   const dritto = posizione(passo);
   if (dritto === null) {
-    return `${via(percorso, fino)} è un elenco, e «${passo}» non è una posizione`;
+    return ragione("notPosition", `${qui} è un elenco, e «${passo}» non è una posizione`, { via: qui, passo });
   }
   if (dritto >= dove.length) {
-    return `${via(percorso, fino)} ha ${dove.length} voci: la posizione ${dritto} non c'è`;
+    const n = String(dove.length);
+    return ragione("noPosition", `${qui} ha ${n} voci: la posizione ${dritto} non c'è`, {
+      via: qui,
+      n,
+      posto: String(dritto),
+    });
   }
   dove.splice(dritto, 1);
   return null;
@@ -275,7 +298,7 @@ function scriviNel(
   valore: unknown,
 ): Esito {
   const ultimo = percorso[percorso.length - 1];
-  if (ultimo === undefined) return { fatto: false, perche: "il percorso è vuoto" };
+  if (ultimo === undefined) return { fatto: false, perche: ragione("emptyPath", "il percorso è vuoto") };
 
   const radice = copiaDi(documento);
   let dove: Contenitore = radice;
@@ -284,7 +307,11 @@ function scriviNel(
     if (dentro !== undefined && !contenitore(dentro)) {
       return {
         fatto: false,
-        perche: `${via(percorso, quanti + 1)} è un valore, non un contenitore: non ci si può scrivere dentro`,
+        perche: ragione(
+          "notContainer",
+          `${via(percorso, quanti + 1)} è un valore, non un contenitore: non ci si può scrivere dentro`,
+          { via: via(percorso, quanti + 1) },
+        ),
       };
     }
     const passa: Contenitore = dentro === undefined ? {} : copiaDi(dentro);
@@ -321,7 +348,7 @@ function togliNel(
   fino = 0,
 ): Esito {
   const testa = percorso[fino];
-  if (testa === undefined) return { fatto: false, perche: "il percorso è vuoto" };
+  if (testa === undefined) return { fatto: false, perche: ragione("emptyPath", "il percorso è vuoto") };
 
   const copia = copiaDi(documento);
   if (fino < percorso.length - 1) {
@@ -329,7 +356,9 @@ function togliNel(
     if (!contenitore(sotto)) {
       return {
         fatto: false,
-        perche: `${via(percorso, fino + 1)} non c'è, o non è un contenitore`,
+        perche: ragione("missingContainer", `${via(percorso, fino + 1)} non c'è, o non è un contenitore`, {
+          via: via(percorso, fino + 1),
+        }),
       };
     }
     const dentro = togliNel(sotto, percorso, fino + 1);
@@ -436,7 +465,7 @@ export function togliDa(sorgente: string, percorso: readonly string[]): string {
 export function applicaOperazioni(
   sorgente: string,
   operazioni: readonly OperazioneIa[],
-): { testo: string; scartate: string[] } {
+): { testo: string; scartate: string[]; motivi: Motivo[] } {
   const documento = leggi(sorgente);
   if (documento === null) {
     // Prima lo si scopriva applicando, e non lo si scopriva: `scriviIn`
@@ -444,15 +473,15 @@ export function applicaOperazioni(
     // mostrava «N modifiche» con un «Applica» che non faceva niente. In
     // modalità agent erano quattro giri a rimandare lo stesso documento
     // immutato.
-    return {
-      testo: sorgente,
-      scartate: [
-        "il documento non è JSON valido: non si è applicato niente. Chiudi la parentesi che manca e riprova.",
-      ],
-    };
+    const nonJson = ragione(
+      "notJson",
+      "il documento non è JSON valido: non si è applicato niente. Chiudi la parentesi che manca e riprova.",
+    );
+    return { testo: sorgente, scartate: [nonJson.testo], motivi: [nonJson] };
   }
 
   const scartate: string[] = [];
+  const motivi: Motivo[] = [];
   let dove: Contenitore = documento;
   let qualcosa = false;
   for (const op of operazioni) {
@@ -463,9 +492,17 @@ export function applicaOperazioni(
       ? togliNel(dove, op.percorso)
       : scriviNel(dove, op.percorso, op.valore);
     if (!esito.fatto) {
-      scartate.push(
-        `«${op.togli ? "togli" : "scrivi"} ${via(op.percorso)}»: ${esito.perche}`,
-      );
+      // «scrivi» e «togli» sono le parole del protocollo col modello, non
+      // frasi: restano tali e quali in tutte e due le lingue.
+      const nome = op.togli ? "togli" : "scrivi";
+      const dove = via(op.percorso);
+      const scarto = ragione("operation", `«${nome} ${dove}»: ${esito.perche.testo}`, {
+        op: nome,
+        via: dove,
+        perche: esito.perche,
+      });
+      scartate.push(scarto.testo);
+      motivi.push(scarto);
       continue;
     }
     dove = esito.documento;
@@ -475,7 +512,7 @@ export function applicaOperazioni(
   // La sorgente intatta, e non una ristampa identica: `scrivi` normalizza il
   // rientro, e un testo riscritto senza che nessuna modifica sia passata
   // aprirebbe un passo di annullo che non annulla niente.
-  return { testo: qualcosa ? scrivi(dove) : sorgente, scartate };
+  return { testo: qualcosa ? scrivi(dove) : sorgente, scartate, motivi };
 }
 
 /**

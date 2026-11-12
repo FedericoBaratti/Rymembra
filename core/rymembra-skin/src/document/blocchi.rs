@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use super::parti::{Richiamabili, nome_destinazione, superfici};
+use super::parti::{Richiamabili, superfici};
 use super::valori::{
     colore, colore_letterale, coppia, curva, durata, easing, effetto, insieme_token, lunghezza,
     misura_fra, ombra_parte, risorsa, spostamento,
@@ -23,12 +23,20 @@ use crate::movimento::{
 use crate::parts::PartStyle;
 use crate::tokens::{TokenSet, is_local_name};
 use crate::values::{Duration, Easing, EasingKeyword, Length, LengthUnit, Rgba, is_font_family};
-use crate::vicini::{forse, vicini};
+use crate::vicini::vicini;
 
 fn stringa_lunga(value: &Value, path: &str, min: usize, max: usize) -> Esito<String> {
     let scritto = testo(value, path)?.trim();
     if scritto.chars().count() < min || scritto.chars().count() > max {
-        return Err(problema(path, format!("va da {min} a {max} caratteri")));
+        return Err(problema(
+            path,
+            motivo!(
+                "caratteri",
+                "va da {min} a {max} caratteri",
+                min = min.to_string(),
+                max = max.to_string()
+            ),
+        ));
     }
     Ok(scritto.to_owned())
 }
@@ -41,7 +49,10 @@ fn versione(value: &Value, path: &str) -> Esito<String> {
             .iter()
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
     if !ammessa {
-        return Err(problema(path, "la versione va scritta come 1.0.0"));
+        return Err(problema(
+            path,
+            motivo!("versione", "la versione va scritta come 1.0.0"),
+        ));
     }
     Ok(scritto.to_owned())
 }
@@ -57,7 +68,10 @@ fn anteprima(value: &Value, path: &str) -> Esito<[Rgba; 3]> {
     }; 3];
     for (indice, atteso) in colori.iter_mut().enumerate() {
         let Some(grezzo) = voci.get(indice) else {
-            return Err(problema(path, "ci vogliono tre colori"));
+            return Err(problema(
+                path,
+                motivo!("treColori", "ci vogliono tre colori"),
+            ));
         };
         *atteso = colore_letterale(grezzo, &giu(path, &indice.to_string()))?;
     }
@@ -93,11 +107,17 @@ pub(super) fn capacita(value: &Value, path: &str) -> Esito<SkinCapabilities> {
             return Err(problema(
                 &giu(path, chiave),
                 if chiave == "light" {
-                    "nel formato 2 il tema opposto si dichiara scrivendolo, in `variant`: una \
-                     capacità vuota non può più promettere quel che non c'è"
+                    motivo!(
+                        "capacitaLight",
+                        "nel formato 2 il tema opposto si dichiara scrivendolo, in `variant`: una \
+                         capacità vuota non può più promettere quel che non c'è"
+                    )
                 } else {
-                    "nel formato 2 non c'è più: le sovrascritture per telefono stanno in \
-                     `platforms.mobile`, e la loro presenza è la dichiarazione"
+                    motivo!(
+                        "capacitaMobile",
+                        "nel formato 2 non c'è più: le sovrascritture per telefono stanno in \
+                         `platforms.mobile`, e la loro presenza è la dichiarazione"
+                    )
                 },
             ));
         }
@@ -115,7 +135,10 @@ pub(super) fn capacita(value: &Value, path: &str) -> Esito<SkinCapabilities> {
 pub(super) fn caratteri(value: &Value, path: &str) -> Esito<Vec<FontFace>> {
     let map = oggetto(value, path)?;
     if map.len() > 8 {
-        return Err(problema(path, "al massimo otto caratteri per skin"));
+        return Err(problema(
+            path,
+            motivo!("ottoCaratteri", "al massimo otto caratteri per skin"),
+        ));
     }
     let mut elenco = Vec::with_capacity(map.len());
     for (famiglia, grezzo) in map {
@@ -123,7 +146,10 @@ pub(super) fn caratteri(value: &Value, path: &str) -> Esito<Vec<FontFace>> {
         if !is_font_family(famiglia) {
             return Err(problema(
                 &dentro,
-                "il nome di una famiglia ammette lettere, cifre, spazi, - e _",
+                motivo!(
+                    "nomeFamiglia",
+                    "il nome di una famiglia ammette lettere, cifre, spazi, - e _"
+                ),
             ));
         }
         let voce = oggetto(grezzo, &dentro)?;
@@ -147,7 +173,10 @@ pub(super) fn caratteri(value: &Value, path: &str) -> Esito<Vec<FontFace>> {
                 if a > b {
                     return Err(problema(
                         &giu(&dentro, "weight"),
-                        "l'intervallo dei pesi va dal più leggero al più pesante",
+                        motivo!(
+                            "pesi",
+                            "l'intervallo dei pesi va dal più leggero al più pesante"
+                        ),
                     ));
                 }
                 (peso_intero(a), peso_intero(b))
@@ -191,10 +220,12 @@ pub(super) fn caratteri(value: &Value, path: &str) -> Esito<Vec<FontFace>> {
         if let Some((_, prima)) = viste.iter().find(|(r, _)| *r == ridotta) {
             return Err(problema(
                 &giu(path, &faccia.family),
-                format!(
-                    "«{}» e «{prima}» nel foglio diventano lo stesso nome, «{ridotta}»: due \
-                     caratteri diversi si prenderebbero a vicenda il file. Cambia uno dei due nomi.",
-                    faccia.family
+                motivo!(
+                    "famiglieUguali",
+                    "«{famiglia}» e «{prima}» nel foglio diventano lo stesso nome, «{ridotta}»: due caratteri diversi si prenderebbero a vicenda il file. Cambia uno dei due nomi.",
+                    famiglia = faccia.family.to_string(),
+                    prima = prima.to_string(),
+                    ridotta = ridotta.to_string()
                 ),
             ));
         }
@@ -240,7 +271,10 @@ pub(super) fn tavolozza(value: &Value, path: &str) -> Esito<Vec<(String, Rgba)>>
         if !is_local_name(nome) {
             return Err(problema(
                 &percorso,
-                "il nome di un colore della tavolozza ammette minuscole, cifre e trattini",
+                motivo!(
+                    "nomeColore",
+                    "il nome di un colore della tavolozza ammette minuscole, cifre e trattini"
+                ),
             ));
         }
         // Solo colori letterali: una tavolozza che può riferire sé stessa può
@@ -290,12 +324,19 @@ fn iterazioni(value: &Value, path: &str) -> Esito<Iterazioni> {
         .ok_or_else(|| {
             problema(
                 path,
-                format!("va da 1 a {MAX_ITERAZIONI}, o \"infinite\" per un ciclo"),
+                motivo!(
+                    "iterazioni",
+                    "va da 1 a {massimo}, o \"infinite\" per un ciclo",
+                    massimo = MAX_ITERAZIONI.to_string()
+                ),
             )
         })?;
-    u32::try_from(quante)
-        .map(Iterazioni::Volte)
-        .map_err(|_| problema(path, "iterazioni fuori scala"))
+    u32::try_from(quante).map(Iterazioni::Volte).map_err(|_| {
+        problema(
+            path,
+            motivo!("iterazioniFuoriScala", "iterazioni fuori scala"),
+        )
+    })
 }
 
 /// Una durata con un tetto suo.
@@ -304,7 +345,12 @@ fn durata_fino_a(value: &Value, path: &str, massimo: f64) -> Esito<Duration> {
     if letta.ms > massimo {
         return Err(problema(
             path,
-            format!("al massimo {massimo}ms, non {}ms", letta.ms),
+            motivo!(
+                "massimoMs",
+                "al massimo {massimo}ms, non {ms}ms",
+                massimo = massimo.to_string(),
+                ms = letta.ms.to_string()
+            ),
         ));
     }
     Ok(letta)
@@ -332,7 +378,10 @@ fn origine(value: &Value, path: &str) -> Esito<(Length, Length)> {
         _ => {
             return Err(problema(
                 path,
-                "ammessi center, top, bottom, left, right, i quattro angoli come «top left», o due lunghezze",
+                motivo!(
+                    "posizione",
+                    "ammessi center, top, bottom, left, right, i quattro angoli come «top left», o due lunghezze"
+                ),
             ));
         }
     };
@@ -345,7 +394,10 @@ fn ritaglio(value: &Value, path: &str) -> Esito<Ritaglio> {
     let (Some(forma), None) = (chiavi.next(), chiavi.next()) else {
         return Err(problema(
             path,
-            "un ritaglio è un oggetto con una chiave sola: inset, circle o polygon",
+            motivo!(
+                "ritaglio",
+                "un ritaglio è un oggetto con una chiave sola: inset, circle o polygon"
+            ),
         ));
     };
     let valore = map.get(forma).unwrap_or(&Value::Null);
@@ -396,7 +448,11 @@ fn ritaglio(value: &Value, path: &str) -> Esito<Ritaglio> {
         }
         altro => Err(problema(
             &qui,
-            format!("«{altro}» non è una forma di ritaglio: ammessi inset, circle, polygon"),
+            motivo!(
+                "formaRitaglio",
+                "«{altro}» non è una forma di ritaglio: ammessi inset, circle, polygon",
+                altro = altro.to_string()
+            ),
         )),
     }
 }
@@ -462,23 +518,29 @@ fn fotogrammi_animazione(value: &Value, path: &str) -> Esito<Vec<AnimFrame>> {
         if fermata.is_empty() {
             return Err(problema(
                 &dentro,
-                "un fotogramma che non dichiara niente non è una fermata: \
-                 togli la voce, o scrivi che cosa cambia qui",
+                motivo!(
+                    "fotogrammaVuoto",
+                    "un fotogramma che non dichiara niente non è una fermata: togli la voce, o scrivi che cosa cambia qui"
+                ),
             ));
         }
         if indice == 0 && fermata.at != 0.0 {
             return Err(problema(
                 &giu(&dentro, "at"),
-                "il primo fotogramma sta a 0: senza, il motore lo ricava dallo stato in cui \
-                 la parte si trova, e l'animazione parte da un punto diverso ogni volta",
+                motivo!(
+                    "primoFotogramma",
+                    "il primo fotogramma sta a 0: senza, il motore lo ricava dallo stato in cui la parte si trova, e l'animazione parte da un punto diverso ogni volta"
+                ),
             ));
         }
         if let Some(precedente) = fermate.last().filter(|p| p.at >= fermata.at) {
             return Err(problema(
                 &giu(&dentro, "at"),
-                format!(
-                    "i fotogrammi vanno in ordine crescente: {} non viene dopo {}",
-                    fermata.at, precedente.at
+                motivo!(
+                    "fotogrammiInOrdine",
+                    "i fotogrammi vanno in ordine crescente: {ora} non viene dopo {prima}",
+                    ora = fermata.at.to_string(),
+                    prima = precedente.at.to_string()
                 ),
             ));
         }
@@ -541,9 +603,11 @@ fn animazioni(
     if map.len() > MAX_ANIMAZIONI {
         return Err(problema(
             path,
-            format!(
-                "al massimo {MAX_ANIMAZIONI} animazioni dichiarate, non {}",
-                map.len()
+            motivo!(
+                "troppeAnimazioni",
+                "al massimo {massimo} animazioni dichiarate, non {n}",
+                massimo = MAX_ANIMAZIONI.to_string(),
+                n = map.len()
             ),
         ));
     }
@@ -553,7 +617,10 @@ fn animazioni(
         if !is_local_name(nome) {
             return Err(problema(
                 &percorso,
-                "il nome di un'animazione ammette minuscole, cifre e trattini",
+                motivo!(
+                    "nomeAnimazione",
+                    "il nome di un'animazione ammette minuscole, cifre e trattini"
+                ),
             ));
         }
         elenco.push((nome.clone(), animazione(grezzo, &percorso, curve)?));
@@ -567,7 +634,10 @@ pub(super) fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
     if map.contains_key("routeTransition") {
         return Err(problema(
             &giu(path, "routeTransition"),
-            "nel formato 2 si chiama `route`, e oltre a `out` e `in` accetta `duration` ed `easing`",
+            motivo!(
+                "routeTransition",
+                "nel formato 2 si chiama `route`, e oltre a `out` e `in` accetta `duration` ed `easing`"
+            ),
         ));
     }
     solo_chiavi(map, path, CHIAVI_MOVIMENTO)?;
@@ -591,14 +661,19 @@ pub(super) fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
             if !is_easing_name(nome) {
                 return Err(problema(
                     &percorso,
-                    "il nome di una curva ammette minuscole, cifre e lettere, e comincia con una minuscola",
+                    motivo!(
+                        "nomeCurva",
+                        "il nome di una curva ammette minuscole, cifre e lettere, e comincia con una minuscola"
+                    ),
                 ));
             }
             if EasingKeyword::parse(nome).is_some() {
                 return Err(problema(
                     &percorso,
-                    format!(
-                        "«{nome}» è una parola chiave del CSS: una curva della skin non può chiamarsi così"
+                    motivo!(
+                        "curvaRiservata",
+                        "«{nome}» è una parola chiave del CSS: una curva della skin non può chiamarsi così",
+                        nome = nome.to_string()
                     ),
                 ));
             }
@@ -651,7 +726,10 @@ pub(super) fn motivi(value: &Value, path: &str) -> Esito<Vec<(String, Effect)>> 
         if !is_local_name(nome) {
             return Err(problema(
                 &percorso,
-                "il nome di un motivo ammette minuscole, cifre e trattini",
+                motivo!(
+                    "nomeMotivo",
+                    "il nome di un motivo ammette minuscole, cifre e trattini"
+                ),
             ));
         }
         elenco.push((nome.clone(), effetto(grezzo, &percorso)?));
@@ -693,9 +771,10 @@ pub(super) fn variante(
                 if !tavolozza_base.iter().any(|(n, _)| n == nome) {
                     return Err(problema(
                         &giu(&giu(path, "palette"), nome),
-                        format!(
-                            "«{nome}» non è nella tavolozza della skin: la variante ridefinisce \
-                             i colori che ci sono, non ne aggiunge"
+                        motivo!(
+                            "varianteColoreNuovo",
+                            "«{nome}» non è nella tavolozza della skin: la variante ridefinisce i colori che ci sono, non ne aggiunge",
+                            nome = nome.to_string()
                         ),
                     ));
                 }
@@ -713,18 +792,21 @@ pub(super) fn variante(
                 let Some((_, originale)) = motivi_base.iter().find(|(n, _)| n == nome) else {
                     return Err(problema(
                         &dove,
-                        format!(
-                            "«{nome}» non è fra i motivi della skin: la variante ridefinisce i \
-                             motivi che ci sono, non ne aggiunge"
+                        motivo!(
+                            "varianteMotivoNuovo",
+                            "«{nome}» non è fra i motivi della skin: la variante ridefinisce i motivi che ci sono, non ne aggiunge",
+                            nome = nome.to_string()
                         ),
                     ));
                 };
                 if originale.target() != effetto.target() {
                     return Err(problema(
                         &dove,
-                        format!(
-                            "«{nome}» nella skin è un {}, e nella variante deve restarlo",
-                            nome_destinazione(originale.target())
+                        motivo!(
+                            "varianteDestinazione",
+                            "«{nome}» nella skin è un {dove}, e nella variante deve restarlo",
+                            nome = nome.to_string(),
+                            dove = super::parti::motivo_destinazione(originale.target())
                         ),
                     ));
                 }
@@ -807,19 +889,25 @@ pub(super) fn tinte_che_cambiano(
                     let Some((_, era_tinta)) = cambiati.iter().find(|(n, _)| *n == nome) else {
                         continue;
                     };
+                    let tinta = || motivo!("genere.tinta", "una tinta");
+                    let gradiente = || motivo!("genere.gradiente", "un gradiente o un'immagine");
                     let (prima, dopo) = if *era_tinta {
-                        ("una tinta", "un gradiente o un'immagine")
+                        (tinta(), gradiente())
                     } else {
-                        ("un gradiente o un'immagine", "una tinta")
+                        (gradiente(), tinta())
                     };
                     problemi.push(problema(
                         &giu(&giu(&percorso, &posto.to_string()), "$pattern"),
-                        format!(
+                        motivo!(
+                            "genereCambiato",
                             "«{nome}» è {prima} nella skin e {dopo} nella variante, e qui sta \
                              sopra un altro strato: in CSS una tinta sta solo nell'ultimo \
                              strato di un fondo, e il foglio non può scrivere lo stesso strato \
                              nei due modi. Mettilo in fondo alla pila, o tienilo dello stesso \
-                             genere nei due temi."
+                             genere nei due temi.",
+                            nome = nome.to_string(),
+                            prima = prima,
+                            dopo = dopo
                         ),
                     ));
                 }
@@ -858,10 +946,12 @@ pub(super) fn tavolozza_mancante(
                 let candidati = vicini(nome, palette.iter().map(|(n, _)| n.as_str()));
                 problemi.push(problema(
                     &giu(path, "$palette"),
-                    format!(
-                        "colore della tavolozza inesistente: «{nome}».{}",
-                        forse(&candidati)
-                    ),
+                    motivo!(
+                        "coloreInesistente",
+                        "colore della tavolozza inesistente: «{nome}».",
+                        nome = nome.to_string()
+                    )
+                    .forse(&candidati),
                 ));
             }
             for (chiave, dentro) in map {

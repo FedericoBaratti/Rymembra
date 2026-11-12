@@ -48,7 +48,7 @@ fn lampeggio(json: &str) -> SkinIssue {
     let problemi = leggi_skin(json).expect_err("doveva essere respinta");
     problemi
         .into_iter()
-        .find(|p| p.message.contains("lampeggia"))
+        .find(|p| p.message().contains("lampeggia"))
         .expect("respinta, ma non per il lampeggio")
 }
 
@@ -62,10 +62,22 @@ fn una_luminosita_che_va_e_viene_in_quaranta_millisecondi_non_passa() {
     ));
     // Sulla durata, che è la cosa da cambiare, e con le parole per cambiarla.
     assert_eq!(detto.path, "motion.animations.lampo.duration");
-    assert!(detto.message.contains("la luminosità"), "{}", detto.message);
-    assert!(detto.message.contains("40 ms"), "{}", detto.message);
-    assert!(detto.message.contains("WCAG 2.3.1"), "{}", detto.message);
-    assert!(detto.message.contains("all'infinito"), "{}", detto.message);
+    assert!(
+        detto.message().contains("la luminosità"),
+        "{}",
+        detto.message()
+    );
+    assert!(detto.message().contains("40 ms"), "{}", detto.message());
+    assert!(
+        detto.message().contains("WCAG 2.3.1"),
+        "{}",
+        detto.message()
+    );
+    assert!(
+        detto.message().contains("all'infinito"),
+        "{}",
+        detto.message()
+    );
 }
 
 #[test]
@@ -111,9 +123,9 @@ fn tre_ripetizioni_non_sono_un_lampeggio_e_quattro_si() {
     valida(&volte(3));
     let detto = lampeggio(&volte(4));
     assert!(
-        detto.message.contains("si ripete 4 volte"),
+        detto.message().contains("si ripete 4 volte"),
         "{}",
-        detto.message
+        detto.message()
     );
 }
 
@@ -137,7 +149,7 @@ fn un_giro_solo_con_dieci_cambi_di_luce_non_passa() {
     for volte in [1, 3] {
         let detto = lampeggio(&strobo(volte));
         assert_eq!(detto.path, "motion.animations.lampo.duration", "{volte}");
-        assert!(detto.message.contains("l'opacità"), "{}", detto.message);
+        assert!(detto.message().contains("l'opacità"), "{}", detto.message());
     }
 }
 
@@ -169,7 +181,7 @@ fn una_curva_che_rimbalza_non_nasconde_un_lampeggio() {
         r##"{ "kind": "cubicBezier", "points": [0.5, 5, 0.5, -4] }"##,
     ));
     assert_eq!(detto.path, "motion.animations.lampo.duration");
-    assert!(detto.message.contains("l'opacità"), "{}", detto.message);
+    assert!(detto.message().contains("l'opacità"), "{}", detto.message());
     // La stessa animazione con una curva che non rimbalza resta valida.
     valida(&rimbalza(r##""linear""##));
 }
@@ -224,7 +236,7 @@ fn una_raffica_in_un_giro_lungo_lampeggia_comunque() {
                          { "at": 2, "opacity": 1 }, { "at": 3, "opacity": 0 },
                          { "at": 4, "opacity": 1 }, { "at": 100, "opacity": 1 }] }"##,
     ));
-    assert!(detto.message.contains("l'opacità"), "{}", detto.message);
+    assert!(detto.message().contains("l'opacità"), "{}", detto.message());
 }
 
 #[test]
@@ -240,11 +252,11 @@ fn il_salto_di_fine_giro_conta() {
     };
     let detto = lampeggio(&giro("normal"));
     assert!(
-        detto.message.contains("il colore del testo"),
+        detto.message().contains("il colore del testo"),
         "{}",
-        detto.message
+        detto.message()
     );
-    assert!(detto.message.contains("300 ms"), "{}", detto.message);
+    assert!(detto.message().contains("300 ms"), "{}", detto.message());
     // Con `alternate` ridiscende in altri 600 ms invece che di colpo.
     const { assert!(MEZZO_CICLO_MINIMO_MS < 600.0) };
     valida(&giro("alternate"));
@@ -257,8 +269,8 @@ fn l_intensita_essential_dimezza_le_durate_e_il_conto_lo_sa() {
     let parti = r##"{ "column-art": { "motion": { "playing": "lampo" } } }"##;
     valida(&documento("full", lento, parti));
     let detto = lampeggio(&documento("essential", lento, parti));
-    assert!(detto.message.contains("250 ms"), "{}", detto.message);
-    assert!(detto.message.contains("essential"), "{}", detto.message);
+    assert!(detto.message().contains("250 ms"), "{}", detto.message());
+    assert!(detto.message().contains("essential"), "{}", detto.message());
 }
 
 #[test]
@@ -277,7 +289,7 @@ fn le_skin_di_serie_e_le_animazioni_pronte_non_lampeggiano() {
         if let Err(problemi) = leggi_skin(&json) {
             let lampi: Vec<&SkinIssue> = problemi
                 .iter()
-                .filter(|p| p.message.contains("lampeggia"))
+                .filter(|p| p.message().contains("lampeggia"))
                 .collect();
             assert!(lampi.is_empty(), "{}: {lampi:#?}", pronta.id);
         }
