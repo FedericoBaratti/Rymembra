@@ -120,6 +120,13 @@ fn l_annuncio_del_successivo_ritirato_porta_la_coda_su_di_lui() {
         DopoLAnnuncio::PortaAvantiIlRitirato,
         "con il brano nuovo già in canna"
     );
+    // Il ritirato che è il corrente stesso — «ripeti uno» spento negli ultimi
+    // istanti — è già quello che la coda indica: resta, senza una seconda
+    // copia in coda.
+    assert_eq!(
+        dopo_l_annuncio(A, None, Some(A), None, Some(A)),
+        DopoLAnnuncio::Resta
+    );
     // Il brano nuovo in canna, se attacca, fa andare avanti la coda come
     // sempre.
     assert_eq!(

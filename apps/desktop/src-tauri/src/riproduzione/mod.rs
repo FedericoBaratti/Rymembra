@@ -831,7 +831,9 @@ fn dopo_l_annuncio(
         DopoLAnnuncio::Resta
     } else if in_canna == Some(brano) {
         DopoLAnnuncio::AvanzaDallaCanna
-    } else if ritirato == Some(brano) {
+    } else if ritirato == Some(brano) && corrente != Some(brano) {
+        // Ma non il corrente stesso — «ripeti uno» spento a un soffio dalla
+        // fine, col brano già riattaccato a sé stesso: la coda lo indica già.
         DopoLAnnuncio::PortaAvantiIlRitirato
     } else if corrente != Some(brano) {
         DopoLAnnuncio::Avanza
