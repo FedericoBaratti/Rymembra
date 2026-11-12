@@ -2663,37 +2663,6 @@ mod prove {
     }
 
     #[test]
-    fn due_dispositivi_con_skin_attive_diverse_si_fermano() {
-        // R08-2: la skin attiva vinceva per chi fondeva, e un fisso e un
-        // portatile con due skin diverse — il caso normale — riscrivevano il
-        // file a ogni passata. La skin attiva resta di ciascuno (decisione 17).
-        let dati = tempfile::tempdir().expect("cartella");
-        let a = StatoLocale {
-            active_skin: Some("notte".to_owned()),
-            ..qui()
-        };
-        let b = StatoLocale {
-            active_skin: Some("giorno".to_owned()),
-            ..qui()
-        };
-        let finto = Finto::default();
-        let mut caricati = Vec::new();
-        for giro in 0..3 {
-            caricati.push(
-                salva(&finto, dati.path(), &a, "a", 10 + giro, |_| {})
-                    .expect("a")
-                    .caricati,
-            );
-            caricati.push(
-                salva(&finto, dati.path(), &b, "b", 20 + giro, |_| {})
-                    .expect("b")
-                    .caricati,
-            );
-        }
-        assert_eq!(&caricati[1..], &[0, 0, 0, 0, 0], "{caricati:?}");
-    }
-
-    #[test]
     fn i_doppioni_di_un_pacchetto_si_tolgono() {
         // R08-9: una creazione ritentata dopo una scadenza di rete può lasciare
         // due file con lo stesso nome e la stessa impronta. Per il file della

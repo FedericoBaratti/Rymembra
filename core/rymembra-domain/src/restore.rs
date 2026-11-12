@@ -145,10 +145,6 @@ pub struct RestoreInput<'a> {
     pub local_drafts: &'a [String],
     /// Le bozze dello Studio nel backup.
     pub backup_drafts: &'a [String],
-    /// La skin attiva qui.
-    pub local_active_skin: Option<&'a str>,
-    /// La skin attiva nel backup.
-    pub backup_active_skin: Option<&'a str>,
     /// Come si confrontano i percorsi su questo sistema.
     pub path_rules: PathRules,
 }
@@ -183,8 +179,6 @@ pub struct RestorePlan {
     pub drafts_to_write: Vec<String>,
     /// Quante bozze del backup ci sono già.
     pub drafts_present: usize,
-    /// La skin da rendere attiva, se cambia ed è una che resterà installata.
-    pub active_skin: Option<String>,
 }
 
 impl RestorePlan {
@@ -200,7 +194,6 @@ impl RestorePlan {
             && self.roots_to_add.is_empty()
             && self.skins_to_install.is_empty()
             && self.drafts_to_write.is_empty()
-            && self.active_skin.is_none()
     }
 }
 
@@ -395,19 +388,6 @@ pub fn plan_restore(input: &RestoreInput<'_>) -> RestorePlan {
     let (skins_to_install, skins_present) = da_aggiungere(input.backup_skins, input.local_skins);
     let (drafts_to_write, drafts_present) = da_aggiungere(input.backup_drafts, input.local_drafts);
 
-    // La skin attiva si propone solo se **cambia** e se resterà installabile:
-    // scrivere l'identificatore di una skin che non c'è renderebbe illeggibile
-    // l'applicazione al riavvio, e non da un posto da cui si possa rimediare.
-    let disponibile = |id: &str| {
-        input.local_skins.iter().any(|altro| altro == id)
-            || skins_to_install.iter().any(|altro| altro == id)
-    };
-    let active_skin = input
-        .backup_active_skin
-        .filter(|id| input.local_active_skin != Some(id))
-        .filter(|id| disponibile(id))
-        .map(ToOwned::to_owned);
-
     RestorePlan {
         tracks: tracks.into_values().collect(),
         tracks_unchanged,
@@ -419,7 +399,6 @@ pub fn plan_restore(input: &RestoreInput<'_>) -> RestorePlan {
         skins_present,
         drafts_to_write,
         drafts_present,
-        active_skin,
     }
 }
 
@@ -489,8 +468,6 @@ mod tests {
             backup_skins: &[],
             local_drafts: &[],
             backup_drafts: &[],
-            local_active_skin: None,
-            backup_active_skin: None,
             path_rules: PathRules {
                 case_insensitive: true,
             },
@@ -703,43 +680,6 @@ mod tests {
         });
         assert!(piano.drafts_to_write.is_empty());
         assert_eq!(piano.drafts_present, 1);
-    }
-
-    #[test]
-    fn una_skin_attiva_che_non_sara_installabile_non_si_scrive() {
-        // Scriverla renderebbe l'applicazione illeggibile al riavvio.
-        let piano = plan_restore(&RestoreInput {
-            local_skins: &["plain".to_owned()],
-            backup_active_skin: Some("mai-vista"),
-            ..vuoto()
-        });
-        assert_eq!(piano.active_skin, None);
-    }
-
-    #[test]
-    fn una_skin_attiva_che_sta_per_arrivare_si_scrive() {
-        let piano = plan_restore(&RestoreInput {
-            local_skins: &["plain".to_owned()],
-            backup_skins: &["notte".to_owned()],
-            local_active_skin: Some("plain"),
-            backup_active_skin: Some("notte"),
-            ..vuoto()
-        });
-        assert_eq!(piano.active_skin.as_deref(), Some("notte"));
-        assert_eq!(piano.skins_to_install, vec!["notte".to_owned()]);
-    }
-
-    #[test]
-    fn la_skin_attiva_gia_giusta_non_e_una_modifica() {
-        let piano = plan_restore(&RestoreInput {
-            local_skins: &["notte".to_owned()],
-            backup_skins: &["notte".to_owned()],
-            local_active_skin: Some("notte"),
-            backup_active_skin: Some("notte"),
-            ..vuoto()
-        });
-        assert_eq!(piano.active_skin, None);
-        assert!(piano.is_empty());
     }
 
     #[test]

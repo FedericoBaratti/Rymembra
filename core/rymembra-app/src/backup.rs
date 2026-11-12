@@ -62,7 +62,7 @@ use rymembra_domain::restore::{
 };
 
 use crate::library::db_error;
-use crate::settings::{self, CHIAVE_CARTELLE, CHIAVE_SKIN};
+use crate::settings::{self, CHIAVE_CARTELLE};
 
 /// La versione del formato scritta nei file nuovi.
 ///
@@ -286,10 +286,6 @@ pub struct StatoLocale {
     /// Quando ogni cartella è stata accesa, dalla mappa datata delle cartelle
     /// (vedi [`allinea`]). Una che manca vale zero.
     pub roots_at: BTreeMap<String, i64>,
-    /// La skin attiva, se ne è stata scelta una.
-    ///
-    /// Di questo dispositivo: nel backup non va (decisione 17).
-    pub active_skin: Option<String>,
     /// Le cancellazioni registrate qui, cartelle tolte comprese. Quelle di
     /// skin e bozze le vede chi guarda il disco: vedi [`PacchettiVisti`].
     pub tombstones: Lapidi,
@@ -349,9 +345,6 @@ pub struct DalBackup {
     pub skins: Vec<String>,
     /// Le bozze dello Studio del backup, ordinate.
     pub drafts: Vec<String>,
-    /// La skin attiva nel backup: sempre `None`, perché la skin attiva non
-    /// viaggia (decisione 17). Il campo resta per chi legge già questa forma.
-    pub active_skin: Option<String>,
 }
 
 /// Quel che il ripristino ha davvero scritto nel database.
@@ -366,8 +359,6 @@ pub struct Applicato {
     pub playlists: usize,
     /// Quante cartelle sorvegliate sono state aggiunte.
     pub roots: usize,
-    /// La skin attiva è stata cambiata.
-    pub active_skin: bool,
 }
 
 // ── serializzazione ─────────────────────────────────────────────────────────
@@ -588,7 +579,6 @@ pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
         playlists: leggi_playlist(connection)?,
         roots,
         roots_at,
-        active_skin: settings::read(connection, CHIAVE_SKIN)?,
         tombstones,
         host_noti: crate::profilo::host_di_questo_pc(connection)?,
         pacchetti_visti: settings::read_json(connection, CHIAVE_PACCHETTI_VISTI)?
@@ -1093,7 +1083,6 @@ pub fn dal_salvataggio(contenuto: &Contenuto, lapidi_locali: &Lapidi) -> DalBack
             })
             .cloned()
             .collect(),
-        active_skin: None,
     }
 }
 
@@ -1287,13 +1276,6 @@ pub fn applica(connection: &mut Connection, piano: &RestorePlan) -> Result<Appli
         tracks: applica_brani(&tx, &piano.tracks)?,
         playlists: applica_playlist(&tx, &piano.playlists)?,
         roots: applica_cartelle(&tx, &piano.roots_to_add)?,
-        active_skin: match &piano.active_skin {
-            Some(id) => {
-                settings::write(&tx, CHIAVE_SKIN, id)?;
-                true
-            }
-            None => false,
-        },
     };
 
     tx.commit().map_err(|err| db_error("ripristino", &err))?;
@@ -1552,8 +1534,6 @@ mod prove {
             backup_skins: &dal_backup.skins,
             local_drafts: &[],
             backup_drafts: &dal_backup.drafts,
-            local_active_skin: qui.active_skin.as_deref(),
-            backup_active_skin: dal_backup.active_skin.as_deref(),
             path_rules: REGOLE,
         })
     }
@@ -1588,7 +1568,7 @@ mod prove {
             "liked = 1, liked_at = 700, stats_updated_at = 700",
         );
         settings::write_json(&connection, CHIAVE_CARTELLE, &vec!["C:\\Musica"]).expect("cartelle");
-        settings::write(&connection, CHIAVE_SKIN, "plain").expect("skin");
+        settings::write(&connection, crate::settings::CHIAVE_SKIN, "plain").expect("skin");
         connection
             .execute_batch(
                 "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at, is_smart)
@@ -2443,7 +2423,7 @@ mod prove {
         // chi aveva scritto per ultimo. Resta di ciascuno: non si scrive, e
         // quella di un backup di prima non si rimette.
         let connection = libreria();
-        settings::write(&connection, CHIAVE_SKIN, "notte").expect("skin");
+        settings::write(&connection, crate::settings::CHIAVE_SKIN, "notte").expect("skin");
         let contenuto = snapshot(
             &stato_locale(&connection).expect("stato"),
             BTreeMap::new(),
@@ -2454,11 +2434,6 @@ mod prove {
 
         let di_prima =
             interpreta(br#"{"version":1,"content":{"activeSkin":"notte"}}"#).expect("letto");
-        let qui = stato_locale(&libreria()).expect("stato");
-        assert_eq!(
-            dal_salvataggio(&di_prima.content, &qui.tombstones).active_skin,
-            None
-        );
         let fuso = fondi(&contenuto, &di_prima.content);
         let testo = String::from_utf8(canonico(&fuso).expect("canonico")).expect("JSON");
         assert!(!testo.contains("notte"), "{testo}");
