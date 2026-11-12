@@ -380,6 +380,26 @@
 .finestrella.larga {
   width: min(900px, calc(100vw - var(--spazio-4) * 2));
 }
+/* Un documento pubblico letto dalla copia che viaggia con l'app (D-10d): il
+   testo com'è nel repository, che va a capo e si scorre dentro la
+   finestrella. Si seleziona e si copia, come un messaggio di guasto: è un
+   testo da citare. */
+.documento-locale .testo-documento {
+  margin: 0 0 var(--spazio-3);
+  max-height: min(60vh, 640px);
+  overflow-y: auto;
+  padding: var(--spazio-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 /*
  * La misura di mezzo: un modulo, non un elenco.
  *

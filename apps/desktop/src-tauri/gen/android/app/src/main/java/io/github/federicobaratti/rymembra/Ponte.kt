@@ -102,6 +102,33 @@ object Ponte {
       ?.trim()?.takeIf { it.isNotEmpty() }
       ?: Build.MODEL
 
+  /**
+   * Gli avvisi legali che viaggiano nell'APK, in `assets/legale/`: li mette lì
+   * il compito Gradle `avvisiLegali` (`build.gradle.kts`). Un elenco chiuso:
+   * il nome arriva dalla pagina, e un percorso qualunque negli asset non è
+   * affar suo.
+   */
+  private val AVVISI_LEGALI = setOf(
+    "LICENSE.txt",
+    "THIRD-PARTY-NOTICES.md",
+    "PRIVACY.md",
+    "TERMS.md",
+    "font-OFL.txt",
+  )
+
+  /**
+   * Il testo di un avviso legale, per leggerlo senza rete (D-10d): `null` se
+   * l'APK non lo porta, e allora la pagina apre il sito.
+   */
+  private fun avvisoLegale(nome: String): String? {
+    require(nome in AVVISI_LEGALI) { "«$nome» non è un avviso legale dell'app" }
+    return try {
+      contesto().assets.open("legale/$nome").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    } catch (_: java.io.FileNotFoundException) {
+      null
+    }
+  }
+
   private fun testi(a: JSONObject, nome: String): List<String> {
     val elenco = a.optJSONArray(nome) ?: return emptyList()
     return (0 until elenco.length()).map { elenco.getString(it) }
@@ -152,6 +179,7 @@ object Ponte {
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
       "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }
+      "legale.leggi" -> avvisoLegale(a.getString("nome"))
       "sistema.attesaConsenso" -> {
         val acceso = a.getBoolean("acceso")
         // Prima di aprire il browser, che coprirebbe il dialogo: vedi

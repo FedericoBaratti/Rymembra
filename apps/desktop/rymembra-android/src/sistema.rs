@@ -329,6 +329,24 @@ pub fn apri_indirizzo(indirizzo: &str) -> Result<(), Errore> {
 }
 
 #[derive(Serialize)]
+struct Nome<'a> {
+    nome: &'a str,
+}
+
+/// Il testo di un avviso legale che viaggia nell'APK, in `assets/legale/`:
+/// `LICENSE.txt`, `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`, `TERMS.md`,
+/// `font-OFL.txt` (li mette lì il compito Gradle `avvisiLegali`). `None` se
+/// l'APK non lo porta. Kotlin accetta solo quei cinque nomi.
+///
+/// # Errori
+///
+/// Se il ponte non risponde, se il nome non è uno dei cinque, o se il file
+/// c'è e non si legge.
+pub fn avviso_legale(nome: &str) -> Result<Option<String>, Errore> {
+    chiama("legale.leggi", &Nome { nome })
+}
+
+#[derive(Serialize)]
 struct Condivisione<'a> {
     percorso: &'a str,
     tipo: &'a str,

@@ -1000,6 +1000,7 @@ pub fn run() {
             manutenzione::store_copia_libreria_di_prima,
             manutenzione::store_rifiuta_libreria_di_prima,
             comandi::apri_documento,
+            comandi::documento_locale,
             comandi::apri_guida,
             // Solo sul telefono: altrove rispondono `internal.aborted`. Vedi
             // `telefono`.

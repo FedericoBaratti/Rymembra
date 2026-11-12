@@ -32,12 +32,14 @@
 import { useCallback, useEffect, useReducer, useState } from "react";
 
 import type { AvanzamentoAggiornamento, StatoAggiornamenti } from "../ipc";
+import { conCopiaLocale, type ConCopiaLocale } from "../documentoLocale";
 import { ipc, testoErrore } from "../ipc";
 import { dataOra, numero } from "../formato";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
 import { Annuncio } from "./Annuncio";
+import { DocumentoLocale } from "./DocumentoLocale";
 import { Interruttore } from "./Interruttore";
 import { avanzamentoDopo } from "./avanzamentoAggiornamento";
 
@@ -340,9 +342,26 @@ export function Aggiornamenti({
     ipc.diarioApri().catch(onErrore);
   }, [onErrore]);
 
+  /*
+   * I quattro testi legali si leggono dalla copia che viaggia con l'app, nella
+   * finestra e senza rete (D-10d); se questa installazione non la porta, il
+   * sito come prima. Gli altri documenti sono pagine, e vanno al browser.
+   */
+  const [letto, setLetto] = useState<{ quale: ConCopiaLocale; titolo: string; testo: string } | null>(
+    null,
+  );
   const apriDocumento = useCallback(
-    (quale: Parameters<typeof ipc.apriDocumento>[0]) => {
-      ipc.apriDocumento(quale).catch(onErrore);
+    (quale: Parameters<typeof ipc.apriDocumento>[0], titolo: string) => {
+      if (!conCopiaLocale(quale)) {
+        ipc.apriDocumento(quale).catch(onErrore);
+        return;
+      }
+      ipc
+        .documentoLocale(quale)
+        .then((testo) =>
+          testo === null ? ipc.apriDocumento(quale) : setLetto({ quale, titolo, testo }),
+        )
+        .catch(onErrore);
     },
     [onErrore],
   );
@@ -436,12 +455,22 @@ export function Aggiornamenti({
             key={quale}
             type="button"
             className="bottone btn-ghost"
-            onClick={() => apriDocumento(quale)}
+            onClick={() => apriDocumento(quale, t(chiave))}
           >
             {t(chiave)}
           </button>
         ))}
       </div>
+      {letto !== null && (
+        <DocumentoLocale
+          titolo={letto.titolo}
+          testo={letto.testo}
+          onSito={() => {
+            ipc.apriDocumento(letto.quale).catch(onErrore);
+          }}
+          onChiudi={() => setLetto(null)}
+        />
+      )}
     </>
   );
 }

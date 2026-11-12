@@ -1148,6 +1148,11 @@ export const ipc = {
       // `parti/AppServizio.tsx`.
       | `console-${ChiavePiattaforma}`,
   ) => invoke<void>("apri_documento", { quale }),
+  // Il testo della copia che viaggia con l'app, per leggerlo senza rete
+  // (D-10d); `null` se questa installazione non la porta. Vedi
+  // `documentoLocale.ts`.
+  documentoLocale: (quale: "licenza" | "terze" | "privacy" | "condizioni") =>
+    invoke<string | null>("documento_locale", { quale }),
 
   // La documentazione tecnica sul sito, alla voce di una scheda delle
   // Impostazioni. L'ancora e non l'indirizzo, per la stessa ragione di sopra:
