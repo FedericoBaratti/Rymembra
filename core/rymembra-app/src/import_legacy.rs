@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{Connection, OpenFlags, Transaction};
+use rusqlite::{Connection, OpenFlags, OptionalExtension as _, Transaction};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
 use rymembra_domain::merge::{TrackStats, collapse_duplicates, merge_stats};
@@ -98,20 +98,148 @@ pub struct ImportReport {
     pub playlist_orphans: usize,
     /// Lapidi di sincronizzazione portate.
     pub tombstones: usize,
+    /// Accanto al file c'è un giornale `-wal` con delle pagine, e non si è
+    /// letto: il vecchio database si apre `immutable` (vedi [`open_legacy`]).
+    ///
+    /// Di solito vuol dire che la vecchia app è aperta, o si è chiusa male, e
+    /// le sue ultime modifiche stanno ancora lì. Si dice nel piano perché il
+    /// gesto che ripara — chiuderla e riaprire l'importazione — è dell'utente.
+    pub journal_ignored: bool,
 }
 
-/// Apre il vecchio database in sola lettura.
+/// Le tabelle che l'importazione legge dal vecchio database.
+///
+/// Tutte e cinque devono essere **tabelle vere** se ci sono: vedi
+/// [`open_legacy`].
+const TABELLE_LETTE: [&str; 5] = [
+    "tracks",
+    "play_history",
+    "playlists",
+    "playlist_tracks",
+    "sync_tombstones",
+];
+
+/// Apre il vecchio database in sola lettura, e solo il suo file principale.
+///
+/// # Perché come un file che arriva da fuori
+///
+/// Perché lo è. Il percorso viene da un selettore che accetta qualunque `.db`,
+/// `.sqlite` o `.sqlite3`, e «ecco la mia libreria della 1.0» può essere un file
+/// ricevuto da qualcuno (R06-11). Le tre difese, in quest'ordine:
+///
+/// - **`immutable=1`**: SQLite legge il file principale e basta, senza mai
+///   guardare `-wal` e `-shm`. Un giornale costruito ad arte accanto al file è
+///   il caso di RUSTSEC-2026-0459 (memoria non inizializzata nei risultati,
+///   SQLite prima della 3.54), e così non si apre nemmeno. Il prezzo: le
+///   modifiche che la vecchia app tiene ancora nel giornale — perché è aperta, o
+///   si è chiusa male — non si vedono. Il piano lo dice (vedi
+///   [`ImportReport::journal_ignored`]).
+/// - **`trusted_schema=OFF`** e **`query_only`**: niente funzioni con effetti
+///   dentro lo schema, e nessuna scrittura per nessuna strada.
+/// - **Tabelle vere**: le cinque che si leggono, se ci sono, devono essere
+///   tabelle con le loro pagine (`type = 'table'`, `rootpage > 0`). Una vista
+///   farebbe girare la sua interrogazione — anche una costosa — mentre il
+///   lucchetto della libreria è preso; una tabella virtuale porterebbe il
+///   codice del suo modulo.
+///
+/// # Errori
+///
+/// `db.openFailed` se il file non si apre, o se non ha la forma di un vecchio
+/// database.
 pub fn open_legacy(path: &std::path::Path) -> Result<Connection, AppError> {
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .map_err(|err| {
+    let fallito = |causa: String| {
         AppError::new(ErrorCode::DbOpenFailed {
             path: Some(path.display().to_string()),
         })
-        .with_cause(err.to_string())
-    })
+        .with_cause(causa)
+    };
+    let connection = Connection::open_with_flags(
+        uri_immutabile(path),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|err| fallito(err.to_string()))?;
+    connection
+        .execute_batch("PRAGMA trusted_schema = OFF; PRAGMA query_only = 1;")
+        .map_err(|err| fallito(err.to_string()))?;
+    for tabella in TABELLE_LETTE {
+        let forma: Option<(String, i64)> = connection
+            .query_row(
+                "SELECT type, rootpage FROM sqlite_master WHERE name = ?1 COLLATE NOCASE",
+                [tabella],
+                |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+            )
+            .optional()
+            .map_err(|err| fallito(err.to_string()))?;
+        if let Some((tipo, pagina)) = forma
+            && (tipo != "table" || pagina <= 0)
+        {
+            return Err(fallito(format!(
+                "«{tabella}» non è una tabella ({tipo}): non è un database della versione di prima"
+            )));
+        }
+    }
+    Ok(connection)
+}
+
+/// L'indirizzo `file:` con cui SQLite apre `path` senza il suo giornale.
+///
+/// SQLite accetta `immutable` solo dentro un URI, e un URI vuole le barre
+/// dritte e tre caratteri scritti in percentuale: `%`, `?` e `#` (il resto,
+/// spazi e lettere accentate comprese, passa così com'è in UTF-8). Su Windows
+/// un disco diventa `file:///C:/…` e una condivisione `file:////server/…`: due
+/// barre dopo `file:` aprirebbero un'autorità, e SQLite accetta solo
+/// `localhost`. Il prefisso esteso `\\?\` si toglie: dentro un URI non vuol
+/// dire niente.
+fn uri_immutabile(path: &std::path::Path) -> String {
+    let grezzo = path.to_string_lossy();
+    let senza_prefisso = grezzo
+        .strip_prefix(r"\\?\UNC\")
+        .map(|resto| format!(r"\\{resto}"))
+        .unwrap_or_else(|| grezzo.strip_prefix(r"\\?\").unwrap_or(&grezzo).to_owned());
+    let dritto = if cfg!(windows) {
+        senza_prefisso.replace('\\', "/")
+    } else {
+        senza_prefisso
+    };
+    let mut scritto = String::with_capacity(dritto.len() + 24);
+    for c in dritto.chars() {
+        match c {
+            '%' => scritto.push_str("%25"),
+            '?' => scritto.push_str("%3F"),
+            '#' => scritto.push_str("%23"),
+            altro => scritto.push(altro),
+        }
+    }
+    let disco = scritto.as_bytes().get(1).is_some_and(|b| *b == b':')
+        && scritto
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
+    let davanti = if scritto.starts_with("//") {
+        // Una condivisione: l'autorità vuota, e il percorso che comincia con
+        // le sue due barre.
+        "file://"
+    } else if disco {
+        "file:///"
+    } else if scritto.starts_with('/') {
+        "file://"
+    } else {
+        "file:"
+    };
+    format!("{davanti}{scritto}?immutable=1")
+}
+
+/// C'è un giornale `-wal` non vuoto accanto al file?
+///
+/// Un `-wal` di zero byte è quel che resta di una chiusura pulita con il
+/// giornale `TRUNCATE`: non porta niente, e dirlo sarebbe un falso allarme.
+fn giornale_in_sospeso(file: &std::path::Path) -> bool {
+    if file.as_os_str().is_empty() {
+        return false;
+    }
+    let mut giornale = file.as_os_str().to_owned();
+    giornale.push("-wal");
+    std::fs::metadata(&giornale).is_ok_and(|m| m.len() > 0)
 }
 
 /// Una colonna che nel vecchio database può non esserci.
@@ -316,6 +444,9 @@ fn run(
 
     let mut report = ImportReport {
         legacy_tracks: legacy_tracks.len(),
+        journal_ignored: legacy
+            .path()
+            .is_some_and(|file| giornale_in_sospeso(std::path::Path::new(file))),
         ..ImportReport::default()
     };
 
@@ -990,6 +1121,154 @@ mod tests {
             .expect("riga");
         assert_eq!(ascolti, 9);
         assert_eq!(voto, 4);
+    }
+
+    #[test]
+    fn l_indirizzo_del_vecchio_database_e_un_uri_che_sqlite_capisce() {
+        use std::path::Path;
+        // I tre caratteri che in un URI vogliono dire altro si scrivono in
+        // percentuale; spazi e lettere accentate passano così come sono.
+        assert_eq!(
+            uri_immutabile(Path::new("vecchio %20 #1?.db")),
+            "file:vecchio %2520 %231%3F.db?immutable=1"
+        );
+        assert_eq!(
+            uri_immutabile(Path::new("/home/io/Città/vecchio.db")),
+            "file:///home/io/Città/vecchio.db?immutable=1"
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                uri_immutabile(Path::new(r"C:\Users\Io\Musica vecchia\aether#2.db")),
+                "file:///C:/Users/Io/Musica vecchia/aether%232.db?immutable=1"
+            );
+            assert_eq!(
+                uri_immutabile(Path::new(r"\\nas\musica\aether.db")),
+                "file:////nas/musica/aether.db?immutable=1",
+                "una condivisione: l'autorità resta vuota"
+            );
+            assert_eq!(
+                uri_immutabile(Path::new(r"\\?\C:\dati\aether.db")),
+                "file:///C:/dati/aether.db?immutable=1"
+            );
+            assert_eq!(
+                uri_immutabile(Path::new(r"\\?\UNC\nas\musica\aether.db")),
+                "file:////nas/musica/aether.db?immutable=1"
+            );
+        }
+    }
+
+    #[test]
+    fn un_vecchio_database_con_un_nome_strano_si_apre() {
+        // L'indirizzo `file:` non deve rompere quel che prima si apriva: spazi,
+        // `#`, `%` e lettere accentate nel percorso.
+        let cartella = tempfile::tempdir().expect("cartella di prova");
+        let percorso = cartella.path().join("Città vecchia #1 100%.db");
+        let c = Connection::open(&percorso).expect("file");
+        c.execute_batch(SCHEMA_VECCHIO).expect("schema");
+        c.execute(
+            "INSERT INTO tracks (id, title, artist, album, play_count) VALUES (1, 'T', 'A', 'Al', 3)",
+            [],
+        )
+        .expect("riga");
+        drop(c);
+        let legacy = open_legacy(&percorso).expect("si apre");
+        let righe: i64 = legacy
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(righe, 1);
+        let mut db = nuovo(&[("p", "T", "A", "Al")]);
+        let piano = plan_import(&legacy, &mut db).expect("piano");
+        assert!(!piano.journal_ignored, "nessun giornale, niente da dire");
+    }
+
+    /// Lo schema di [`vecchio`], per un file vero su disco.
+    const SCHEMA_VECCHIO: &str = "CREATE TABLE tracks (
+           id INTEGER PRIMARY KEY, path TEXT, title TEXT, artist TEXT, album TEXT,
+           play_count INTEGER DEFAULT 0, last_played INTEGER, rating INTEGER DEFAULT 0,
+           liked INTEGER DEFAULT 0, liked_at INTEGER, stats_updated_at INTEGER DEFAULT 0);
+         CREATE TABLE play_history (
+           id INTEGER PRIMARY KEY, track_id INTEGER, played_at INTEGER, ms_played INTEGER);
+         CREATE TABLE playlists (
+           id INTEGER PRIMARY KEY, name TEXT, description TEXT, created_at INTEGER,
+           updated_at INTEGER, is_smart INTEGER DEFAULT 0, rules TEXT);
+         CREATE TABLE playlist_tracks (
+           playlist_id INTEGER, track_id INTEGER, position INTEGER);
+         CREATE TABLE sync_tombstones (kind TEXT, key TEXT, deleted_at INTEGER);";
+
+    #[test]
+    fn un_vecchio_database_con_una_vista_al_posto_della_tabella_si_rifiuta() {
+        // R06-11: il file lo sceglie l'utente da un selettore che accetta
+        // qualunque `.db`, e può arrivare da chiunque. Una vista al posto di
+        // `tracks` farebbe girare la sua interrogazione — anche una costosa —
+        // con il lucchetto della libreria preso. Un database della versione di
+        // prima ha tabelle vere, e quel che non lo è si rifiuta prima di leggere.
+        let cartella = tempfile::tempdir().expect("cartella di prova");
+        let percorso = cartella.path().join("vecchio.db");
+        let c = Connection::open(&percorso).expect("file");
+        c.execute_batch(
+            &SCHEMA_VECCHIO.replace("CREATE TABLE tracks (", "CREATE TABLE brani_veri ("),
+        )
+        .expect("schema");
+        c.execute_batch(
+            "CREATE VIEW tracks AS
+               SELECT id, path, title, artist, album, play_count, last_played, rating,
+                      liked, liked_at, stats_updated_at FROM brani_veri;",
+        )
+        .expect("vista");
+        drop(c);
+
+        let esito = open_legacy(&percorso);
+        assert!(
+            matches!(
+                esito.as_ref().map(|_| ()).map_err(|e| e.code().clone()),
+                Err(ErrorCode::DbOpenFailed { .. })
+            ),
+            "una vista non è la tabella di un vecchio database: {:?}",
+            esito.map(|_| ())
+        );
+    }
+
+    #[test]
+    fn il_giornale_accanto_al_vecchio_database_non_si_legge() {
+        // R06-11: un `-wal` (con il suo `-shm`) costruito da altri accanto al
+        // file è il caso di RUSTSEC-2026-0459. Il vecchio database si apre
+        // `immutable`: solo il file principale. Quel che sta soltanto nel
+        // giornale non si legge, e il piano lo dice, perché un giornale vero lo
+        // lascia la vecchia app ancora aperta (o caduta).
+        let cartella = tempfile::tempdir().expect("cartella di prova");
+        let percorso = cartella.path().join("vecchio.db");
+        let scrittore = Connection::open(&percorso).expect("file");
+        scrittore
+            .pragma_update(None, "journal_mode", "WAL")
+            .expect("giornale WAL");
+        scrittore.execute_batch(SCHEMA_VECCHIO).expect("schema");
+        scrittore
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("lo schema nel file principale");
+        scrittore
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .expect("niente travaso automatico");
+        scrittore
+            .execute(
+                "INSERT INTO tracks (id, title, artist, album, play_count, last_played)
+                 VALUES (1, 'T', 'A', 'Al', 7, 1000)",
+                [],
+            )
+            .expect("una riga che sta solo nel giornale");
+
+        let legacy = open_legacy(&percorso).expect("il file principale si apre");
+        let righe: i64 = legacy
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(righe, 0, "le righe che stanno solo nel -wal non si leggono");
+
+        let mut db = nuovo(&[("p", "T", "A", "Al")]);
+        let piano = plan_import(&legacy, &mut db).expect("piano");
+        assert!(
+            piano.journal_ignored,
+            "il piano dice che il giornale è rimasto fuori"
+        );
+        drop(scrittore);
     }
 
     #[test]

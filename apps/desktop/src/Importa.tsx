@@ -150,6 +150,12 @@ export function Importa({
 
       {rapporto && (
         <>
+          {/* Nota e non avviso: il file principale si è letto per intero, e
+              quel che manca sta in un giornale che la vecchia app non ha ancora
+              travasato. Il gesto che ripara è chiuderla e riaprire qui. */}
+          {rapporto.journalIgnored && (
+            <Avviso livello="nota">{t("legacy.journalIgnored")}</Avviso>
+          )}
           <div className="rapporto">
             <Voce etichetta={t("legacy.found")} valore={rapporto.matched} />
             <Voce

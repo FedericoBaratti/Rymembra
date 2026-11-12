@@ -2176,6 +2176,7 @@
   "legacy.done": "Import finished",
   "legacy.preview": "What would be imported",
   "legacy.reading": "Reading the old database…",
+  "legacy.journalIgnored": "Next to the old database there’s a “-wal” file with changes that aren’t in the main file yet, and Rymembra doesn’t read it. If the old app is open, close it and open this window again.",
   "legacy.found": "Tracks found",
   "legacy.plays": "Plays",
   "legacy.plays.note": "counts merged, never lowered",

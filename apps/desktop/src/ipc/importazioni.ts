@@ -23,6 +23,12 @@ export interface EsitoImportazione {
   playlistEntries: number;
   playlistOrphans: number;
   tombstones: number;
+  /**
+   * Accanto al file c'era un `-wal` con delle modifiche, e non si è letto: il
+   * vecchio database si apre `immutable` (R06-11). Di solito vuol dire che la
+   * vecchia app è aperta, o si è chiusa male.
+   */
+  journalIgnored: boolean;
 }
 
 // ── importazione da un catalogo ────────────────────────────────────────────

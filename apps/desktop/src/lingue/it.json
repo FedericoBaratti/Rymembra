@@ -2176,6 +2176,7 @@
   "legacy.done": "Importazione conclusa",
   "legacy.preview": "Cosa verrebbe importato",
   "legacy.reading": "Lettura del vecchio database…",
+  "legacy.journalIgnored": "Accanto al vecchio database c'è un file «-wal» con delle modifiche che non sono ancora entrate nel file principale, e non lo leggo. Se la vecchia app è aperta, chiudila e riapri questa finestra.",
   "legacy.found": "Brani ritrovati",
   "legacy.plays": "Ascolti",
   "legacy.plays.note": "conteggi fusi, mai abbassati",
