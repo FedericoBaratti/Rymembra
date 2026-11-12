@@ -1353,7 +1353,16 @@ fn applica_brani(tx: &Transaction<'_>, cambi: &[TrackChange]) -> Result<usize, A
     Ok(cambi.len())
 }
 
+/// Il servizio scritto sulle playlist che un ripristino mette accanto a una di
+/// qui con lo stesso nome (D-11): vedi `segna_provenienza`.
+const SERVIZIO_RIPRISTINO: &str = "backup-drive";
+
 /// Crea o riscrive le playlist del piano.
+///
+/// Una playlist che il piano mette **accanto** a una di qui
+/// ([`PlaylistChange::beside_of`]) ha già nome e chiave suoi: si scrive come
+/// le altre, e porta la provenienza del ripristino. Quella di qui non compare
+/// nel piano, quindi non si tocca.
 fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<usize, AppError> {
     if cambi.is_empty() {
         return Ok(0);
@@ -1413,15 +1422,32 @@ fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<us
             .execute([chiave])
             .map_err(|err| db_error("playlist ripristinata", &err))?;
 
+        let id: i64 = identifica
+            .query_row([chiave], |row| row.get(0))
+            .map_err(|err| db_error("playlist ripristinata", &err))?;
+        if let Some(qui) = &cambio.beside_of {
+            let identita = format!(
+                "rymembra:drive:{}",
+                rymembra_domain::keys::PlaylistKey::compute(Some(qui))
+            );
+            crate::playlists::segna_provenienza(
+                tx,
+                id,
+                crate::playlists::Provenienza {
+                    servizio: SERVIZIO_RIPRISTINO,
+                    id: &identita,
+                    stabile: false,
+                    etichetta: rymembra_domain::restore::ETICHETTA_ACCANTO,
+                    nata_il: Some(playlist.created_at),
+                },
+            )?;
+        }
+
         // Le playlist automatiche ricevono la riga e le regole, mai
         // l'appartenenza: ogni dispositivo la ricalcola.
         if playlist.is_smart {
             continue;
         }
-
-        let id: i64 = identifica
-            .query_row([chiave], |row| row.get(0))
-            .map_err(|err| db_error("playlist ripristinata", &err))?;
 
         let mut brani = Vec::with_capacity(playlist.members.len());
         for membro in &playlist.members {
@@ -1921,6 +1947,55 @@ mod prove {
             .query_row("SELECT COUNT(*) FROM playlist_orfane", [], |r| r.get(0))
             .expect("conteggio");
         assert_eq!(posti, 0);
+    }
+
+    #[test]
+    fn una_playlist_fatta_qui_non_si_sostituisce_con_quella_del_backup() {
+        // D-11: «Serata» fatta qui (nata a 500) e «Serata» del backup, un'altra
+        // playlist (nata a 10) e più recente. Prima il ripristino svuotava
+        // quella di qui e ci metteva i brani del backup; adesso resta com'è, e
+        // quella del backup entra accanto. Ripianificare dopo non propone più
+        // niente, e la data di nascita del backup arriva intatta.
+        let mut connection = libreria();
+        connection
+            .execute_batch(
+                "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at, is_smart)
+                 VALUES (7, 'serata', 'Serata', 500, 600, 0);
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (7, 4, 0);",
+            )
+            .expect("la playlist fatta qui");
+        let contenuto = Contenuto {
+            playlists: vec![PlaylistSalvata {
+                key: "serata".to_owned(),
+                name: "Serata".to_owned(),
+                created_at: 10,
+                updated_at: 900,
+                members: vec!["art|due|al".to_owned(), "art|uno|al".to_owned()],
+                ..PlaylistSalvata::default()
+            }],
+            ..Contenuto::default()
+        };
+        let qui = stato_locale(&connection).expect("stato");
+        let dal_backup = dal_salvataggio(&contenuto, &qui.tombstones);
+        assert_eq!(dal_backup.playlists[0].created_at, 10, "la nascita viaggia");
+        let piano = pianifica(&qui, &dal_backup);
+        applica(&mut connection, &piano).expect("applicato");
+
+        let mia: Vec<i64> = connection
+            .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = 7 ORDER BY position")
+            .and_then(|mut s| s.query_map([], |r| r.get(0)).and_then(Iterator::collect))
+            .expect("voci");
+        assert_eq!(mia, vec![4], "la playlist fatta qui tiene le sue voci");
+        let quante: i64 = connection
+            .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(quante, 2, "quella del backup entra accanto");
+
+        let di_nuovo = pianifica(
+            &stato_locale(&connection).expect("stato"),
+            &dal_salvataggio(&contenuto, &qui.tombstones),
+        );
+        assert!(di_nuovo.playlists.is_empty(), "{:?}", di_nuovo.playlists);
     }
 
     #[test]

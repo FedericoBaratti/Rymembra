@@ -1139,6 +1139,10 @@ pub struct Piano {
     pub brani_gia_presenti: usize,
     /// Quante cose la parte di libreria porterebbe.
     pub portati: Portati,
+    /// Le playlist del profilo entrate **accanto** a una di qui con lo stesso
+    /// nome, che è un'altra playlist e non si è toccata (D-11). Contate anche
+    /// in [`Portati::playlist`]; qui per nome, perché il piano lo dica.
+    pub playlist_accanto: Vec<crate::playlists::PlaylistBeside>,
 }
 
 impl Piano {
@@ -1443,6 +1447,11 @@ fn esegui(
                 )?,
                 ambiente.adesso_ms,
             );
+            // Le omonime **diverse** prima del dono: una playlist del profilo
+            // con il nome di una di qui ma nata in un altro momento è un'altra
+            // playlist, e le va accanto invece di versarle dentro i suoi brani
+            // (D-11). Le condivise restano al dono (D-10).
+            let accanto = accanto_le_omonime(&tx, &mut suo.content, &mio.content)?;
             dono_nelle_playlist(
                 &mut suo.content,
                 &mio.content,
@@ -1467,6 +1476,7 @@ fn esegui(
                 }
             }
             let cambiamenti = crate::sincronia::applica_in(&tx, &fuso, ambiente.adesso_ms)?;
+            piano.playlist_accanto = arrivate_accanto(&tx, accanto)?;
             piano.portati.ascolti = cambiamenti.ascolti;
             piano.portati.voti = cambiamenti.voti;
             piano.portati.preferiti = cambiamenti.preferiti;
@@ -1627,6 +1637,159 @@ fn dono_nelle_playlist(
         }
         *sua = tenuta;
     }
+}
+
+/// Il servizio scritto sulle playlist che un profilo mette accanto a una di
+/// qui (vedi [`accanto_le_omonime`]).
+const SERVIZIO_PROFILO: &str = "profilo";
+
+/// Come si chiama il profilo nel nome di una playlist messa accanto: «Chill
+/// (.ryprofile)». L'estensione del file che si è appena aperto, che si legge
+/// uguale in ogni lingua: il nome finisce nel database e sopravvive a un
+/// cambio di lingua.
+const ETICHETTA_PROFILO: &str = ".ryprofile";
+
+/// Una playlist del profilo spostata accanto: la chiave nuova nel documento,
+/// il nome con cui entra, quella di qui lasciata stare, e la provenienza da
+/// scrivere quando la riga c'è.
+struct Spostata {
+    chiave: String,
+    nome: String,
+    qui: String,
+    identita: String,
+    nata_il: i64,
+}
+
+/// La provenienza di una playlist che un profilo mette accanto.
+fn provenienza_del_profilo(identita: &str, nata_il: i64) -> crate::playlists::Provenienza<'_> {
+    crate::playlists::Provenienza {
+        servizio: SERVIZIO_PROFILO,
+        id: identita,
+        stabile: false,
+        etichetta: ETICHETTA_PROFILO,
+        nata_il: Some(nata_il),
+    }
+}
+
+/// Le playlist del profilo che hanno il nome di una di qui ma **non sono la
+/// stessa**: spostate, nel documento del profilo, sotto un nome accanto (D-11).
+///
+/// «La stessa» la dice la data di nascita ([`rymembra_domain::omonime::stessa_nascita`]):
+/// fra due copie della stessa playlist — sincronizzate, o portate da un
+/// profilo di prima — la sincronia tiene la più antica, quindi coincide. Una
+/// «Chill» fatta qui e una «Chill» fatta sull'altro computer no: prima il dono
+/// versava i brani dell'una nell'altra, un ibrido che nessuno aveva chiesto.
+/// Adesso quella del profilo entra come «Chill (.ryprofile)», e la fusione la
+/// scrive come una playlist nuova. Il nome lo sceglie
+/// [`crate::playlists::destinazione_con`], la funzione di tutte le
+/// importazioni: se la copia accanto c'è già da un profilo di prima, il posto
+/// è quello, e [`dono_nelle_playlist`] le accoda soltanto quel che le manca.
+/// Un nome accanto non prende mai quello di un'altra playlist dello stesso
+/// profilo.
+///
+/// Quando il posto non si trova — un nome che non identifica niente, cento
+/// copie, o la copia accanto già occupata da un'altra playlist del profilo —
+/// la playlist resta dov'era, e vale il dono di sempre.
+fn accanto_le_omonime(
+    tx: &rusqlite::Transaction<'_>,
+    suo: &mut rymembra_sync::Contenuto,
+    mio: &rymembra_sync::Contenuto,
+) -> Result<Vec<Spostata>, AppError> {
+    let mut spostate = Vec::new();
+    let chiavi: Vec<String> = suo.playlist.keys().cloned().collect();
+    for chiave in chiavi {
+        let (Some(qui), Some(sua)) = (mio.playlist.get(&chiave), suo.playlist.get(&chiave)) else {
+            continue;
+        };
+        if rymembra_domain::omonime::stessa_nascita(qui.creata_at, sua.creata_at) {
+            continue;
+        }
+        // Le omonime si cercano per nome, con la chiave che il nome dà. Una
+        // chiave che dal nome non viene — scritta a mano, o da chissà chi — non
+        // dice dove guardare: vale il dono di sempre.
+        if rymembra_domain::keys::PlaylistKey::compute(Some(&sua.nome)).as_str() != chiave {
+            continue;
+        }
+        let identita = format!(
+            "rymembra:profilo:{}",
+            rymembra_domain::keys::PlaylistKey::compute(Some(&sua.nome))
+        );
+        let nata_il = sua.creata_at;
+        let posto = crate::playlists::destinazione_con(
+            tx,
+            &sua.nome,
+            provenienza_del_profilo(&identita, nata_il),
+            &std::collections::HashSet::new(),
+            |altra| altra.as_str() != chiave && suo.playlist.contains_key(altra.as_str()),
+        );
+        let (nuova, nome, qui_resta) = match posto {
+            Ok(crate::playlists::Destinazione::Nuova { nome, accanto_a }) => {
+                let nuova = rymembra_domain::keys::PlaylistKey::compute(Some(&nome)).into_string();
+                (nuova, nome, accanto_a.unwrap_or_else(|| qui.nome.clone()))
+            }
+            Ok(crate::playlists::Destinazione::Sua { id, .. }) => {
+                let (nuova, nome): (String, String) = tx
+                    .query_row(
+                        "SELECT playlist_key, name FROM playlists WHERE id = ?1",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|err| db_error("copia accanto di un profilo di prima", &err))?;
+                (nuova, nome, qui.nome.clone())
+            }
+            Err(_) => continue,
+        };
+        if nuova == chiave || suo.playlist.contains_key(&nuova) {
+            continue;
+        }
+        let Some(mut spostata) = suo.playlist.remove(&chiave) else {
+            continue;
+        };
+        spostata.nome.clone_from(&nome);
+        suo.playlist.insert(nuova.clone(), spostata);
+        spostate.push(Spostata {
+            chiave: nuova,
+            nome,
+            qui: qui_resta,
+            identita,
+            nata_il,
+        });
+    }
+    Ok(spostate)
+}
+
+/// Dopo la scrittura: la provenienza sulle playlist entrate accanto, e il loro
+/// elenco per il piano.
+///
+/// Solo quelle che ci sono davvero: una lapide di qui sul nome accanto (una
+/// copia di un profilo di prima, cancellata a mano) la tiene fuori nella
+/// fusione, e il piano non deve promettere una playlist che non arriva.
+fn arrivate_accanto(
+    tx: &rusqlite::Transaction<'_>,
+    spostate: Vec<Spostata>,
+) -> Result<Vec<crate::playlists::PlaylistBeside>, AppError> {
+    let mut arrivate = Vec::new();
+    for spostata in spostate {
+        let id: Option<i64> = rusqlite::OptionalExtension::optional(tx.query_row(
+            "SELECT id FROM playlists WHERE playlist_key = ?1",
+            [&spostata.chiave],
+            |r| r.get(0),
+        ))
+        .map_err(|err| db_error("playlist entrata accanto", &err))?;
+        let Some(id) = id else {
+            continue;
+        };
+        crate::playlists::segna_provenienza(
+            tx,
+            id,
+            provenienza_del_profilo(&spostata.identita, spostata.nata_il),
+        )?;
+        arrivate.push(crate::playlists::PlaylistBeside {
+            name: spostata.qui,
+            imported_as: spostata.nome,
+        });
+    }
+    Ok(arrivate)
 }
 
 /// L'elenco di qui più le cartelle del profilo che qui non ci sono già.

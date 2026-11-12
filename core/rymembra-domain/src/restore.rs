@@ -40,6 +40,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::keys::{PlaylistKey, TrackKey};
 use crate::merge::{TrackStats, merge_stats};
+use crate::omonime::{Occupato, Posto, stessa_nascita, trova_posto};
+
+/// Come si chiama il backup nel nome di una playlist messa accanto a una di
+/// qui: «Serata (Drive)». Un nome proprio, che si legge uguale in ogni lingua.
+pub const ETICHETTA_ACCANTO: &str = "Drive";
 use crate::paths::{PathRules, path_key};
 
 /// Una playlist, come la conoscono sia il database sia il backup.
@@ -97,6 +102,10 @@ pub struct PlaylistChange {
     /// Serve a dire «22 brani su 30 presenti qui» invece di far sparire otto
     /// righe senza spiegazione.
     pub members_in_backup: usize,
+    /// Qui c'è già una playlist con il nome di quella del backup, ma è
+    /// un'altra (D-11): resta com'è, e questa le entra accanto col nome in
+    /// `playlist.name`. È il nome di quella lasciata stare.
+    pub beside_of: Option<String>,
 }
 
 /// Una cartella sorvegliata che il ripristino aggiungerebbe.
@@ -151,6 +160,76 @@ pub struct RestoreInput<'a> {
     pub backup_active_skin: Option<&'a str>,
     /// Come si confrontano i percorsi su questo sistema.
     pub path_rules: PathRules,
+}
+
+/// Dove va una playlist del backup, e accanto a quale playlist di qui.
+///
+/// La playlist stessa, se qui non ce n'è una con quel nome o se quella di qui
+/// è la stessa ([`stessa_nascita`]). Altrimenti la stessa playlist con il
+/// nome e la chiave del posto che [`trova_posto`] sceglie: il primo nome
+/// libero — né di una playlist di qui né di un'altra del backup — o la copia
+/// accanto di un ripristino di prima, di cui si prendono nome e chiave così
+/// come sono, perché il confronto dell'idempotenza la ritrovi uguale.
+///
+/// `None` oltre cento nomi «(Drive n)» occupati: la playlist si salta.
+fn posto_nel_ripristino(
+    dal_backup: &PlaylistState,
+    qui: &BTreeMap<&PlaylistKey, &PlaylistState>,
+    chiavi_dal_backup: &BTreeSet<&PlaylistKey>,
+) -> Option<(PlaylistState, Option<String>)> {
+    match qui.get(&dal_backup.key) {
+        Some(locale) if !stessa_nascita(locale.created_at, dal_backup.created_at) => {}
+        _ => return Some((dal_backup.clone(), None)),
+    }
+    let scelto = trova_posto::<&PlaylistState, std::convert::Infallible>(
+        &dal_backup.name,
+        ETICHETTA_ACCANTO,
+        |nome| {
+            let chiave = PlaylistKey::compute(Some(nome));
+            // Il primo nome è quello di là: la sua chiave è quella del
+            // backup, che qui porta l'altra playlist.
+            let chiave = if nome == dal_backup.name.trim() {
+                dal_backup.key.clone()
+            } else {
+                chiave
+            };
+            if let Some(locale) = qui.get(&chiave) {
+                return Ok(
+                    if chiave != dal_backup.key
+                        && stessa_nascita(locale.created_at, dal_backup.created_at)
+                    {
+                        Occupato::Suo(*locale)
+                    } else {
+                        Occupato::Altrui(locale.name.clone())
+                    },
+                );
+            }
+            if chiave != dal_backup.key && chiavi_dal_backup.contains(&chiave) {
+                return Ok(Occupato::Altrui(nome.to_owned()));
+            }
+            Ok(Occupato::Libero)
+        },
+    );
+    match scelto {
+        Ok(Some(Posto::Suo(locale))) => Some((
+            PlaylistState {
+                key: locale.key.clone(),
+                name: locale.name.clone(),
+                ..dal_backup.clone()
+            },
+            None,
+        )),
+        Ok(Some(Posto::Nuovo { nome, accanto_a })) => Some((
+            PlaylistState {
+                key: PlaylistKey::compute(Some(&nome)),
+                name: nome,
+                ..dal_backup.clone()
+            },
+            accanto_a,
+        )),
+        Ok(None) => None,
+        Err(mai) => match mai {},
+    }
 }
 
 /// Quel che il ripristino farebbe, senza averlo fatto.
@@ -301,9 +380,22 @@ pub fn plan_restore(input: &RestoreInput<'_>) -> RestorePlan {
         .iter()
         .map(|playlist| (&playlist.key, playlist))
         .collect();
-    let mut playlists: BTreeMap<&PlaylistKey, PlaylistChange> = BTreeMap::new();
+    let chiavi_dal_backup: BTreeSet<&PlaylistKey> =
+        input.backup_playlists.iter().map(|p| &p.key).collect();
+    let mut playlists: BTreeMap<PlaylistKey, PlaylistChange> = BTreeMap::new();
     let mut playlists_unchanged = 0usize;
-    for dal_backup in input.backup_playlists {
+    for originale in input.backup_playlists {
+        // Una playlist di qui con lo stesso nome ma nata in un altro momento
+        // è un'altra playlist (D-11): non si riscrive. Quella del backup va
+        // accanto, «Serata (Drive)», o nella sua copia accanto di un
+        // ripristino di prima, che si ritrova dalla data di nascita. Da lì in
+        // giù valgono le regole di sempre, sul posto scelto.
+        let Some((posto, beside_of)) =
+            posto_nel_ripristino(originale, &qui_playlist, &chiavi_dal_backup)
+        else {
+            continue;
+        };
+        let dal_backup = &posto;
         let esistente = qui_playlist.get(&dal_backup.key).copied();
         // A parità esatta di data vince quel che c'è già: è la direzione che
         // non riscrive, e rende il piano vuoto quando si rifà un ripristino.
@@ -359,11 +451,12 @@ pub fn plan_restore(input: &RestoreInput<'_>) -> RestorePlan {
             }
         }
         playlists.insert(
-            &dal_backup.key,
+            dal_backup.key.clone(),
             PlaylistChange {
                 playlist: dopo,
                 is_new: esistente.is_none(),
                 members_in_backup,
+                beside_of,
             },
         );
     }
@@ -601,6 +694,94 @@ mod tests {
         assert_eq!(cambio.playlist.members, vec![chiave("a"), chiave("c")]);
         assert_eq!(cambio.members_in_backup, 3, "per poter dire «2 su 3»");
         assert!(cambio.is_new);
+    }
+
+    fn nata(nome: &str, created_at: i64, updated_at: i64, membri: &[&str]) -> PlaylistState {
+        PlaylistState {
+            key: PlaylistKey::compute(Some(nome)),
+            created_at,
+            ..playlist(nome, updated_at, membri)
+        }
+    }
+
+    #[test]
+    fn una_playlist_omonima_diversa_entra_accanto() {
+        // D-11: «Serata» di qui è nata a 500, quella del backup a 10: sono due
+        // playlist con lo stesso nome. Quella di qui non si riscrive; quella del
+        // backup si crea accanto, intera.
+        let brani = [
+            (chiave("a"), statistiche(1, 0)),
+            (chiave("b"), statistiche(1, 0)),
+        ];
+        let locali = [nata("serata", 500, 600, &["a"])];
+        let dal_backup = [nata("serata", 10, 900, &["b", "a"])];
+        let piano = plan_restore(&RestoreInput {
+            local_tracks: &brani,
+            backup_tracks: &brani,
+            local_playlists: &locali,
+            backup_playlists: &dal_backup,
+            ..vuoto()
+        });
+        assert_eq!(piano.playlists.len(), 1, "{:?}", piano.playlists);
+        let cambio = &piano.playlists[0];
+        assert_eq!(cambio.playlist.name, "serata (Drive)");
+        assert!(cambio.is_new);
+        assert_eq!(cambio.playlist.members, vec![chiave("b"), chiave("a")]);
+    }
+
+    #[test]
+    fn la_stessa_playlist_si_riconosce_dalla_nascita() {
+        // Nata nello stesso istante (o senza una data, che vale «non si sa»):
+        // è la stessa, e valgono le regole di sempre — il backup più recente
+        // la riscrive.
+        for nascita in [10, 0] {
+            let brani = [
+                (chiave("a"), statistiche(1, 0)),
+                (chiave("b"), statistiche(1, 0)),
+            ];
+            let locali = [nata("serata", nascita, 600, &["a"])];
+            let dal_backup = [nata("serata", 10, 900, &["b", "a"])];
+            let piano = plan_restore(&RestoreInput {
+                local_tracks: &brani,
+                backup_tracks: &brani,
+                local_playlists: &locali,
+                backup_playlists: &dal_backup,
+                ..vuoto()
+            });
+            assert_eq!(piano.playlists.len(), 1);
+            assert_eq!(
+                piano.playlists[0].playlist.name, "serata",
+                "nascita {nascita}"
+            );
+            assert!(!piano.playlists[0].is_new);
+        }
+    }
+
+    #[test]
+    fn la_copia_accanto_non_si_scontra_con_un_altra_del_backup() {
+        // Il backup porta già una «serata (Drive)»: quella che va accanto
+        // prende il nome dopo, e le due non si confondono.
+        let brani = [(chiave("a"), statistiche(1, 0))];
+        let locali = [nata("serata", 500, 600, &["a"])];
+        let dal_backup = [
+            nata("serata", 10, 900, &["a"]),
+            nata("serata (Drive)", 20, 900, &["a"]),
+        ];
+        let piano = plan_restore(&RestoreInput {
+            local_tracks: &brani,
+            backup_tracks: &brani,
+            local_playlists: &locali,
+            backup_playlists: &dal_backup,
+            ..vuoto()
+        });
+        let nomi: Vec<&str> = piano
+            .playlists
+            .iter()
+            .map(|c| c.playlist.name.as_str())
+            .collect();
+        assert_eq!(nomi.len(), 2, "{nomi:?}");
+        assert!(nomi.contains(&"serata (Drive 2)"), "{nomi:?}");
+        assert!(nomi.contains(&"serata (Drive)"), "{nomi:?}");
     }
 
     #[test]

@@ -472,6 +472,12 @@ export interface PianoProfilo {
   stima?: boolean;
   portati: PortatiProfilo;
   /**
+   * Le playlist del profilo che entrano accanto a una di qui con lo stesso
+   * nome, che è un'altra playlist e resta com'è (D-11). Assente nella
+   * risposta dell'annullamento.
+   */
+  playlistAccanto?: { name: string; importedAs: string }[];
+  /**
    * La skin che il profilo avrebbe reso attiva e che non ha passato l'esame:
    * arriva installata, ma qui resta quella di prima. Assente nella risposta
    * dell'annullamento.

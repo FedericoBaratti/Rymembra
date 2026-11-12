@@ -851,6 +851,12 @@ export interface CambioPlaylist {
   automatica: boolean;
   braniQui: number;
   braniNelBackup: number;
+  /**
+   * Qui c'è già una playlist con lo stesso nome, ma è un'altra (D-11): resta
+   * com'è, e questa le entra accanto, col nome in `nome`. È il nome di quella
+   * lasciata stare.
+   */
+  accantoA: string | null;
 }
 
 /** Una cartella sorvegliata che il ripristino aggiungerebbe. */
