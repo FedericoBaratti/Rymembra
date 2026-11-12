@@ -52,6 +52,19 @@ pub(super) fn totale_da(intestazioni: &ureq::http::HeaderMap, parziale: bool) ->
         .and_then(|v| v.parse::<u64>().ok())
 }
 
+/// Da dove comincia il pezzo di una risposta parziale: la `X` di
+/// `Content-Range: bytes X-Y/N`. `None` se l'intestazione non c'è o non si
+/// legge.
+pub(super) fn inizio_da(intestazioni: &ureq::http::HeaderMap) -> Option<u64> {
+    let intervallo = intestazioni.get("content-range")?.to_str().ok()?;
+    let (unita, resto) = intervallo.trim().split_once(' ')?;
+    if !unita.eq_ignore_ascii_case("bytes") {
+        return None;
+    }
+    let (inizio, _) = resto.trim().split_once('-')?;
+    inizio.trim().parse::<u64>().ok()
+}
+
 /// Legge un corpo fino a `quanti` byte, un blocco per volta.
 ///
 /// Il tetto non è una prudenza: un servizio che ignora `Range` e risponde `200`
@@ -605,17 +618,32 @@ impl Rete {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(err) => {
-                    return Err(AppError::new(ErrorCode::NetHttp {
-                        status: stato,
-                        url: Some(url.to_owned()),
-                    })
-                    .with_cause(format!("lettura interrotta: {err}")));
-                }
+                Err(err) => return Err(self.a_meta(err, stato, url)),
             };
             pezzo(blocco.get(..quanti).unwrap_or(&[]))?;
         }
         Ok(())
+    }
+
+    /// Una lettura caduta a metà di un flusso, detta per quel che è.
+    ///
+    /// `ureq` consegna dentro l'`io::Error` il suo errore — la scadenza
+    /// complessiva, una connessione chiusa —, e la traduzione è quella di ogni
+    /// guasto di trasporto ([`Self::trasporto`]): una scadenza è `net.timeout`,
+    /// che si ritenta, e non «il server ha risposto con un errore» con lo stato
+    /// `200` di una risposta che stava arrivando (R08-3). Resta `net.http` solo
+    /// quel che il trasporto non sa nominare, col suo stato.
+    fn a_meta(&self, err: std::io::Error, stato: u16, url: &str) -> AppError {
+        let detto = err.to_string();
+        let tradotto = self.trasporto(&ureq::Error::from(err), url);
+        if matches!(tradotto.code(), ErrorCode::NetBadSchema { .. }) {
+            return AppError::new(ErrorCode::NetHttp {
+                status: stato,
+                url: Some(url.to_owned()),
+            })
+            .with_cause(format!("lettura interrotta: {detto}"));
+        }
+        tradotto.with_cause(format!("lettura interrotta: {detto}"))
     }
 
     /// Un pezzo di un file, chiesto per intervallo.
@@ -935,6 +963,21 @@ impl Rete {
                 )),
             );
         }
+        // Un `206` che dice di cominciare altrove: un intermediario che allinea
+        // gli intervalli, o un server scritto male. Sono byte veri, ma di un
+        // altro punto, e chi li riceve li metterebbe al posto chiesto — la
+        // cache li scriverebbe lì, e un riascolto li servirebbe così (R28-6).
+        // Un `206` senza `Content-Range` non dice niente e passa com'era.
+        if stato == 206
+            && let Some(inizio) = inizio_da(risposta.headers())
+            && inizio != da
+        {
+            return Err(
+                AppError::new(ErrorCode::DownloadBadResponse).with_cause(format!(
+                    "l'intervallo risposto comincia da {inizio}, chiesto da {da}"
+                )),
+            );
+        }
 
         let totale = totale_da(risposta.headers(), stato == 206);
         let byte = leggi_fino_a(&mut risposta.body_mut().as_reader(), quanti, avanti)?;
@@ -962,7 +1005,7 @@ impl Rete {
     /// La distinzione fra «non c'è rete» e «la rete c'è ma è lenta» non è
     /// pignoleria: la prima si dice all'utente («sei senza connessione»), la
     /// seconda si ritenta da sola.
-    fn trasporto(&self, err: &ureq::Error, url: &str) -> AppError {
+    pub(super) fn trasporto(&self, err: &ureq::Error, url: &str) -> AppError {
         let host = ospite(url).map(ToOwned::to_owned);
         let url = Some(url.to_owned());
         match err {
@@ -988,6 +1031,15 @@ impl Rete {
                 })
             }
             ureq::Error::BodyExceedsLimit(tetto) => self.oltre_il_tetto(*tetto),
+            // Il certificato che il sistema non riconosce: il NAS di casa col
+            // certificato di serie, un proxy aziendale che ispeziona TLS. Si
+            // rifiuta come prima — nessuna accettazione silenziosa —, ma con
+            // un codice suo: «la risposta non ha la forma attesa, è cambiato
+            // qualcosa dalla loro parte» mandava a cercare il guasto dove non
+            // c'era (R28-2, D-109).
+            altro if certificato_rifiutato(altro) => {
+                AppError::new(ErrorCode::NetUntrustedCertificate { host })
+            }
             // Un guasto TLS, un'intestazione mostruosa, un corpo oltre il
             // limite: non sono «offline», e chiamarli così manderebbe l'utente a
             // controllare il cavo di rete per un certificato scaduto.
@@ -1137,13 +1189,23 @@ impl Rete {
             match operazione() {
                 Ok(valore) => return Ok(valore),
                 Err(err) if ritentabile(&err) => {
+                    // Il servizio chiede di aspettare più di quel che questo
+                    // ciclo si concede: lo si racconta subito, col suo tempo
+                    // dentro l'errore. Ad aspettarlo per intero ci pensa chi ha
+                    // un filo che può aspettare — il conto del cloud, la
+                    // scansione (D-110). Prima si aspettava trenta secondi e si
+                    // ritentava: un `Retry-After` rispettato a metà vale un
+                    // altro `429`, e la finestra che il servizio aveva chiesto
+                    // di lasciare libera si riempiva di richieste (R28-4).
+                    if chiesto(&err).is_some_and(|tempo| tempo > ATTESA_MASSIMA) {
+                        return Err(err);
+                    }
                     let pausa = quanto_aspettare(&err, attesa);
                     // La scadenza si guarda con la pausa dentro: un tentativo
                     // che potrebbe partire solo dopo la scadenza non parte, e
                     // il guasto si racconta adesso invece che dopo un'attesa
-                    // che non porta a niente. La pausa non si accorcia: un
-                    // `Retry-After` chiesto dal servizio, rispettato a metà,
-                    // vale un altro `429`.
+                    // che non porta a niente. La pausa non si accorcia, per la
+                    // stessa ragione di qui sopra.
                     if scadenza.is_some_and(|fine| std::time::Instant::now() + pausa >= fine) {
                         return Err(err);
                     }
@@ -1263,10 +1325,39 @@ impl DiFila {
                 }
             }
         }
-        let byte = leggi_fino_a(&mut self.lettore, quanti, avanti)?;
-        self.letti = self
-            .letti
-            .saturating_add(u64::try_from(byte.len()).unwrap_or(0));
+        // Un blocco per volta, e ognuno si conta appena è arrivato: `letti`
+        // deve dire sempre quanti byte il socket ha consegnato. Con la lettura
+        // intera di `leggi_fino_a` un'interruzione a metà — la finestra
+        // anticipata che chi ascolta ha scavalcato con un salto — buttava i
+        // blocchi già letti senza contarli, e il pezzo dopo arrivava spostato
+        // di quel tanto: un salto più lungo del chiesto, e una copia in cache
+        // sbagliata (R28-1). I byte di una lettura interrotta si lasciano
+        // andare: chi li voleva non li aspetta più.
+        let tetto = usize::try_from(quanti).unwrap_or(usize::MAX);
+        let mut byte = Vec::with_capacity(tetto.min(4 * 1024 * 1024));
+        while byte.len() < tetto {
+            if !avanti() {
+                return Err(AppError::new(ErrorCode::InternalAborted {
+                    what: Some("lettura di fila".to_owned()),
+                }));
+            }
+            let resta = tetto.saturating_sub(byte.len()).min(blocco.len());
+            let Some(dove) = blocco.get_mut(..resta) else {
+                break;
+            };
+            match self.lettore.read(dove) {
+                Ok(0) => break,
+                Ok(n) => {
+                    byte.extend_from_slice(dove.get(..n).unwrap_or(&[]));
+                    self.letti = self.letti.saturating_add(u64::try_from(n).unwrap_or(0));
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(err) => {
+                    return Err(AppError::new(ErrorCode::DownloadNetwork)
+                        .with_cause(format!("lettura di fila interrotta: {err}")));
+                }
+            }
+        }
         Ok(byte)
     }
 }
@@ -1291,9 +1382,17 @@ fn intestazione(intestazioni: &ureq::http::HeaderMap, nome: &str) -> Option<Stri
 /// che decide un numero: tutto il resto lì è chiamare l'operazione e dormire.
 /// Estratta, la si mette alla prova con un errore costruito a mano — senza una
 /// richiesta vera e senza aspettare davvero i secondi che risponde.
+///
+/// Il tetto [`ATTESA_MASSIMA`] qui non taglia un tempo chiesto: un tempo più
+/// lungo [`Rete::ripeti`] non lo aspetta affatto, e lo racconta (R28-4).
 #[must_use]
 pub(super) fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duration {
-    let chiesto = match err.code() {
+    chiesto(err).unwrap_or(predefinita).min(ATTESA_MASSIMA)
+}
+
+/// Il tempo che il servizio ha chiesto di aspettare, se l'errore lo porta.
+fn chiesto(err: &AppError) -> Option<Duration> {
+    match err.code() {
         ErrorCode::NetRateLimited {
             retry_after_ms: Some(ms),
             ..
@@ -1307,8 +1406,7 @@ pub(super) fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duratio
             ..
         } => Some(Duration::from_millis(*ms)),
         _ => None,
-    };
-    chiesto.unwrap_or(predefinita).min(ATTESA_MASSIMA)
+    }
 }
 
 /// Quanto il servizio ha chiesto di aspettare, in millisecondi.
@@ -1383,6 +1481,34 @@ pub(super) fn dns_fallito(err: &std::io::Error) -> bool {
     testo.contains("failed to lookup")
         || testo.contains("name or service not known")
         || testo.contains("nodename nor servname")
+}
+
+/// Un guasto di trasporto che è un certificato rifiutato.
+///
+/// # Perché si legge il testo
+///
+/// Perché `rustls` non è una dipendenza di questo crate, e non lo diventa per
+/// una domanda sola: arriva attraverso `ureq`, che consegna il rifiuto durante
+/// la stretta di mano come `io::Error` di genere `InvalidData` con dentro il
+/// `rustls::Error` — il cui testo comincia con «invalid peer certificate». Il
+/// genere da solo non basta (un corpo non UTF-8 è anche lui `InvalidData`):
+/// serve la parola. Le forme che `ureq` ha di suo (`Error::Tls`,
+/// `Error::Rustls`) si riconoscono allo stesso modo.
+pub(super) fn certificato_rifiutato(err: &ureq::Error) -> bool {
+    let parla_di_certificato = |testo: &str| testo.to_lowercase().contains("certificate");
+    match err {
+        ureq::Error::Io(io) => {
+            io.kind() == std::io::ErrorKind::InvalidData
+                && io
+                    .get_ref()
+                    .is_some_and(|dentro| parla_di_certificato(&dentro.to_string()))
+        }
+        ureq::Error::Tls(testo) => parla_di_certificato(testo),
+        altro => {
+            let testo = altro.to_string();
+            testo.starts_with("rustls:") && parla_di_certificato(&testo)
+        }
+    }
 }
 
 /// I guasti di I/O che significano «la rete non c'è».

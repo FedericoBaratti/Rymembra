@@ -391,6 +391,7 @@
   "errors.net.unavailable": "Il servizio è momentaneamente fuori uso e ha detto quando riprovare. Rymembra aspetta e riprova da sé.",
   "errors.net.http": "Il server ha risposto con un errore.",
   "errors.net.badSchema": "La risposta del servizio non ha la forma attesa. Se resta così, è cambiato qualcosa dalla loro parte.",
+  "errors.net.untrustedCertificate": "Il server presenta un certificato che questo dispositivo non riconosce, e Rymembra non ci si collega. Dai al server un certificato riconosciuto (per esempio Let's Encrypt, o il servizio di chi ha fatto il NAS) oppure, per un NAS di casa, aggiungilo come cartella di rete.",
   "errors.net.circuitOpen": "Questo servizio ha sbagliato troppe volte di fila, e Rymembra ha smesso di insistere per un po'. Riprende da sé.",
   "errors.net.localNetwork": "Android non lascia vedere a Rymembra la rete di casa. Concedi «Dispositivi nelle vicinanze» quando Android lo chiede, oppure in Impostazioni › App › Rymembra › Autorizzazioni.",
   "errors.playback.engineUnavailable": "Il motore audio non è partito. Controlla che il computer abbia una scheda audio attiva, poi riavvia Rymembra.",

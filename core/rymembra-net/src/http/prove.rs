@@ -1624,3 +1624,231 @@ fn l_origine_e_schema_ospite_e_porta() {
     assert!(stessa_origine("https://u@x.it/a", "https://x.it/b"));
     assert!(!stessa_origine("non un indirizzo", "non un indirizzo"));
 }
+
+/// Un servizio che chiede di aspettare due minuti: sempre, a ogni richiesta.
+fn aspetta_due_minuti(_: &str) -> String {
+    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 0\r\n\
+     Connection: close\r\n\r\n"
+        .to_owned()
+}
+
+/// Un `Retry-After` oltre `ATTESA_MASSIMA` non si rispetta per trenta secondi
+/// e poi si ritenta: si racconta subito, col suo tempo, e ad aspettarlo ci
+/// pensa chi ha un filo che può aspettare (il conto del cloud, la scansione).
+/// Ritentare prima vuol dire riempire di richieste la finestra che il servizio
+/// aveva chiesto di lasciare libera (R28-4, D-110).
+#[test]
+fn un_retry_after_lungo_non_si_ritenta_prima() {
+    let servitore = Servitore::avvia(aspetta_due_minuti);
+    let rete = servitore.cliente(Rimandi::Nessuno);
+    let url = format!("{}/elenco", servitore.base);
+    let (manda, ricevi) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let esito = rete.ritenta(3, || {
+            let risposta = rete.esegui(Richiesta {
+                metodo: Metodo::Get,
+                url: &url,
+                intestazioni: &[],
+                corpo: Corpo::Niente,
+            })?;
+            if risposta.e_andata() {
+                Ok(())
+            } else {
+                Err(rete.stato_a_errore(&risposta, &url))
+            }
+        });
+        let _ = manda.send(esito);
+    });
+    let esito = ricevi
+        .recv_timeout(Duration::from_secs(5))
+        .expect("un'attesa più lunga del tetto si racconta subito, senza dormire");
+    let guasto = esito.expect_err("il servizio dice sempre di no");
+    assert!(
+        matches!(
+            guasto.code(),
+            ErrorCode::NetRateLimited {
+                retry_after_ms: Some(120_000),
+                ..
+            }
+        ),
+        "{guasto:?}"
+    );
+    assert_eq!(servitore.richieste().len(), 1, "una richiesta, non tre");
+}
+
+/// Un `206` che comincia da un altro punto: un intermediario che allinea gli
+/// intervalli, o un server scritto male. I suoi byte non sono quelli chiesti,
+/// e la cache li scriverebbe al punto chiesto (R28-6).
+fn da_capo_comunque(_: &str) -> String {
+    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/1000\r\nContent-Length: 4\r\n\
+     Connection: close\r\n\r\nciao"
+        .to_owned()
+}
+
+#[test]
+fn una_206_da_un_altro_punto_non_passa() {
+    let servitore = Servitore::avvia(da_capo_comunque);
+    let rete = servitore.cliente(Rimandi::Nessuno);
+    let guasto = rete
+        .intervallo(&format!("{}/brano", servitore.base), 100, 4)
+        .expect_err("i byte da 0 non sono i byte da 100");
+    assert_eq!(guasto.code().kind().code(), "download.badResponse");
+    assert_eq!(servitore.richieste().len(), 1, "non si ritenta");
+    // Da dove si è chiesto, invece, passa.
+    let pezzo = rete
+        .intervallo(&format!("{}/brano", servitore.base), 0, 4)
+        .expect("da 0 a 3 è quel che si è chiesto");
+    assert_eq!(pezzo.byte, b"ciao");
+}
+
+/// Un file di 300 KiB in cui ogni gruppo di otto byte dice il proprio numero:
+/// un pezzo spostato si vede.
+fn file_numerato(_: &str) -> String {
+    let corpo: String = (0..38_400).map(|n| format!("{n:07}\n")).collect();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corpo}",
+        corpo.len()
+    )
+}
+
+/// I byte da `da`, come li ha il file di [`file_numerato`].
+fn numerati(da: usize, quanti: usize) -> Vec<u8> {
+    let corpo: String = (0..38_400).map(|n| format!("{n:07}\n")).collect();
+    corpo.as_bytes()[da..da + quanti].to_vec()
+}
+
+/// Una lettura di fila lasciata a metà — la finestra anticipata che chi
+/// ascolta ha scavalcato con un salto — ha già consumato dei byte dal socket.
+/// Il conto dei letti deve dirlo, o il pezzo dopo arriva spostato di quel che
+/// la lettura interrotta aveva preso, e la cache lo salva così (R28-1).
+#[test]
+fn una_lettura_lasciata_a_meta_non_sposta_i_byte_dopo() {
+    let servitore = Servitore::avvia(file_numerato);
+    let rete = servitore.cliente(Rimandi::Nessuno);
+    let mut di_fila = rete
+        .di_fila(&format!("{}/senza.flac", servitore.base), &[])
+        .expect("la risposta intera");
+    assert_eq!(
+        di_fila.pezzo(10, 4, &|| true).expect("la testa"),
+        numerati(10, 4)
+    );
+    let volte = std::sync::atomic::AtomicUsize::new(0);
+    let una_volta_sola = || volte.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+    let lasciata = di_fila
+        .pezzo(14, 256 * 1024, &una_volta_sola)
+        .expect_err("chi ascolta è saltato via");
+    assert_eq!(lasciata.code().kind().code(), "internal.aborted");
+    assert!(
+        di_fila.letti() > 14,
+        "i letti contano quel che il socket ha già dato: {}",
+        di_fila.letti()
+    );
+    let byte = di_fila
+        .pezzo(200_000, 4, &|| true)
+        .expect("200 000 è ancora davanti");
+    assert_eq!(
+        byte,
+        numerati(200_000, 4),
+        "il pezzo dopo comincia dove si è chiesto"
+    );
+}
+
+/// Un errore che si comporta da `rustls::Error`: lo stesso testo, sotto un
+/// `io::Error` di genere `InvalidData`, che è la forma in cui `ureq` consegna
+/// un certificato rifiutato durante la stretta di mano.
+#[derive(Debug)]
+struct RifiutoTls(&'static str);
+
+impl std::fmt::Display for RifiutoTls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for RifiutoTls {}
+
+/// Il NAS di casa col certificato di serie: un certificato che il sistema non
+/// riconosce non è «una risposta con una forma inattesa, è cambiato qualcosa
+/// dalla loro parte», è un codice suo, con la via d'uscita (R28-2, D-109).
+#[test]
+fn un_certificato_rifiutato_non_e_una_risposta_malformata() {
+    let rete = Rete::nuova("webdav", Duration::from_secs(5));
+    let rifiuto = ureq::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        RifiutoTls("invalid peer certificate: UnknownIssuer"),
+    ));
+    let codice = rete.trasporto(&rifiuto, "https://nas.local:5006/Musica");
+    assert_eq!(
+        codice.code().kind().code(),
+        "net.untrustedCertificate",
+        "{codice:?}"
+    );
+    assert!(
+        !codice.is_retryable(),
+        "un certificato non cambia riprovando"
+    );
+
+    // Un `InvalidData` che non parla di certificati resta quel che era.
+    let altro = ureq::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        RifiutoTls("stream did not contain valid UTF-8"),
+    ));
+    assert_eq!(
+        rete.trasporto(&altro, "https://nas.local:5006/Musica")
+            .code()
+            .kind()
+            .code(),
+        "net.badSchema"
+    );
+}
+
+/// Un servitore che risponde `200` a un flusso, manda un blocco, e poi tace.
+fn servitore_che_tace() -> String {
+    use std::io::{Read as _, Write as _};
+    let ascolto = std::net::TcpListener::bind("127.0.0.1:0").expect("una porta");
+    let porta = ascolto.local_addr().expect("la porta").port();
+    std::thread::spawn(move || {
+        let Ok((mut connessione, _)) = ascolto.accept() else {
+            return;
+        };
+        let mut testa = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !testa.ends_with(b"\r\n\r\n") {
+            match connessione.read(&mut byte) {
+                Ok(1) => testa.push(byte[0]),
+                _ => return,
+            }
+        }
+        let _ = connessione.write_all(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+              5\r\nciao!\r\n",
+        );
+        let _ = connessione.flush();
+        std::thread::sleep(Duration::from_secs(30));
+    });
+    format!("http://127.0.0.1:{porta}")
+}
+
+/// Una scadenza che scatta a metà flusso è una scadenza: `net.timeout`, che si
+/// può ritentare, e non `net.http` con lo stato `200` — «il server ha risposto
+/// con un errore» per una risposta che stava arrivando (R08-3).
+#[test]
+fn una_scadenza_a_meta_flusso_e_una_scadenza() {
+    let base = servitore_che_tace();
+    let rete = Rete::verso("ia", Duration::from_millis(600), &base).expect("casa");
+    let mut arrivati = Vec::new();
+    let guasto = rete
+        .flusso(
+            &format!("{base}/chat"),
+            &[],
+            Corpo::Niente,
+            &|| false,
+            &mut |pezzo| {
+                arrivati.extend_from_slice(pezzo);
+                Ok(())
+            },
+        )
+        .expect_err("il servitore tace oltre la scadenza");
+    assert_eq!(arrivati, b"ciao!");
+    assert_eq!(guasto.code().kind().code(), "net.timeout", "{guasto:?}");
+}

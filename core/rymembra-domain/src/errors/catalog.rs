@@ -235,6 +235,17 @@ catalogo! {
     NetUnavailable = "net.unavailable", Net, Warning, Always, None, { service: Option<String>, retry_after_ms: Option<u64> };
     /// La risposta non ha la forma attesa.
     NetBadSchema = "net.badSchema", Net, Error, Never, None, { service: Option<String>, detail: Option<String> };
+    /// Il server presenta un certificato che questo dispositivo non riconosce:
+    /// il NAS di casa col certificato di serie, una CA privata che il telefono
+    /// non conosce, un proxy che ispeziona TLS.
+    ///
+    /// Si rifiuta, come sempre (D-109): nessuna accettazione silenziosa e, per
+    /// ora, nessun consenso per impronta. Un codice suo e non
+    /// [`ErrorCode::NetBadSchema`], perché il rimedio è dalla parte di chi
+    /// legge — un certificato riconosciuto, o la cartella di rete — e non
+    /// «è cambiato qualcosa dalla loro parte». Mai ritentabile: lo stesso
+    /// certificato dà lo stesso rifiuto.
+    NetUntrustedCertificate = "net.untrustedCertificate", Net, Warning, Never, None, { host: Option<String> };
     /// Interruttore aperto: il servizio ha fallito troppe volte di seguito.
     NetCircuitOpen = "net.circuitOpen", Net, Warning, Always, None, { service: String, retry_after_ms: Option<u64> };
     /// Android non lascia vedere la rete di casa: da Android 17 serve il

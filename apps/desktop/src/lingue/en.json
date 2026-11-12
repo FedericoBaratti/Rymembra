@@ -391,6 +391,7 @@
   "errors.net.unavailable": "The service is temporarily down and said when to try again. Rymembra waits and retries by itself.",
   "errors.net.http": "The server replied with an error.",
   "errors.net.badSchema": "The service's reply does not have the expected shape. If it stays this way, something changed on their side.",
+  "errors.net.untrustedCertificate": "The server presents a certificate this device doesn’t recognize, so Rymembra won’t connect to it. Give the server a recognized certificate (for example Let’s Encrypt, or your NAS maker’s service), or, for a NAS at home, add it as a network folder instead.",
   "errors.net.circuitOpen": "This service failed too many times in a row, and Rymembra stopped insisting for a while. It resumes by itself.",
   "errors.net.localNetwork": "Android doesn’t let Rymembra see your home network. Allow “Nearby devices” when Android asks, or in Settings › Apps › Rymembra › Permissions.",
   "errors.playback.engineUnavailable": "The audio engine did not start. Check that the computer has an active sound card, then restart Rymembra.",
