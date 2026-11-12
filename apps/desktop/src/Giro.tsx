@@ -514,6 +514,13 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       if (r.width === 0 || r.height === 0) return;
       const buco = { top: r.top, left: r.left, width: r.width, height: r.height };
       const suo = radice.current?.getBoundingClientRect();
+      // Quel che il passo descrive dentro il bersaglio, e che il fumetto non
+      // deve coprire quando gli sta sopra: i tasti del testo e dello spettro
+      // a tutto schermo (R18-12). Vedi «I punti da non coprire» in `guida.ts`.
+      const evita = Array.from(
+        bersaglio.querySelectorAll<HTMLElement>("[data-giro-interesse]"),
+        (punto) => punto.getBoundingClientRect(),
+      ).filter((p) => p.width > 0 && p.height > 0);
       setPosa({
         buco,
         raggio: window.getComputedStyle(bersaglio).borderRadius,
@@ -521,6 +528,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
           buco,
           { width: suo?.width ?? 0, height: suo?.height ?? 0 },
           schermo(),
+          evita,
         ),
       });
     };

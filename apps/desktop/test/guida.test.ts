@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   ATTESA_ANCORA_MS,
@@ -113,6 +114,52 @@ test("grande quanto tutto lo schermo: in alto, sovrapposto, dentro la finestra",
   const posto = posaFumetto(tutto, FUMETTO, SCHERMO);
   assert.equal(posto.top, DISTACCO);
   assert.equal(posto.left, 640 - 190);
+});
+
+test("a schermo intero il fumetto non copre i tasti che il passo descrive (R18-12)", () => {
+  // Il passo «A tutto schermo» a 1280×820, dal vivo: il bersaglio è il posto
+  // del contenuto, il fumetto stava a x 570–950 e y 12–227, e sotto c'erano
+  // proprio «testo» (x 881) e «spettro» (x 917).
+  const schermo = { larghezza: 1280, altezza: 820 };
+  const contenuto = { top: 0, left: 240, width: 1040, height: 820 };
+  const fumetto = { width: 380, height: 215 };
+  const tasti = [
+    { top: 16, left: 867, width: 28, height: 28 },
+    { top: 16, left: 903, width: 28, height: 28 },
+  ];
+  const posto = posaFumetto(contenuto, fumetto, schermo, tasti);
+  for (const tasto of tasti) {
+    const fuori =
+      posto.left + fumetto.width <= tasto.left ||
+      tasto.left + tasto.width <= posto.left ||
+      posto.top + fumetto.height <= tasto.top ||
+      tasto.top + tasto.height <= posto.top;
+    assert.ok(fuori, `il fumetto in ${JSON.stringify(posto)} copre il tasto in ${tasto.left}`);
+  }
+  // Dentro la finestra, come sempre.
+  assert.ok(posto.top >= DISTACCO && posto.top + fumetto.height <= schermo.altezza - DISTACCO);
+  assert.ok(posto.left >= DISTACCO && posto.left + fumetto.width <= schermo.larghezza - DISTACCO);
+  // Senza punti da evitare, il posto di sempre.
+  assert.deepEqual(posaFumetto(contenuto, fumetto, schermo), { top: DISTACCO, left: 760 - 190 });
+  // E un punto che non dà fastidio non sposta niente.
+  assert.deepEqual(posaFumetto(contenuto, fumetto, schermo, [{ top: 700, left: 300, width: 20, height: 20 }]), {
+    top: DISTACCO,
+    left: 760 - 190,
+  });
+});
+
+test("il giro passa a posaFumetto i punti del passo, e «A tutto schermo» ne ha due", () => {
+  const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+  const giro = sorgente("Giro.tsx");
+  assert.match(giro, /bersaglio\.querySelectorAll<HTMLElement>\("\[data-giro-interesse\]"\)/);
+  assert.match(giro, /schermo\(\),\s+evita,\s+\)/);
+  const grande = sorgente("schermate/InRiproduzione.tsx");
+  assert.equal(grande.match(/data-giro-interesse=""/g)?.length, 2);
+  for (const chiave of ["np.lyrics.toggle", "np.spectrum.toggle"]) {
+    const prima = grande.slice(0, grande.indexOf(`aria-label={t("${chiave}")}`));
+    const tasto = prima.slice(prima.lastIndexOf("<button"));
+    assert.match(tasto, /data-giro-interesse=""/, chiave);
+  }
 });
 
 test("il fumetto non esce mai dalla finestra", () => {

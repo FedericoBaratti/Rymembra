@@ -405,6 +405,9 @@ export function InRiproduzione({
             <button
               type="button"
               className="tasto icon-btn"
+              // Il passo «A tutto schermo» del giro parla di questo tasto e di
+              // quello dello spettro: il fumetto non ci si posa sopra.
+              data-giro-interesse=""
               aria-pressed={testoVisibile}
               aria-label={t("np.lyrics.toggle")}
               onClick={alternaTesto}
@@ -420,6 +423,7 @@ export function InRiproduzione({
             <button
               type="button"
               className="tasto icon-btn"
+              data-giro-interesse=""
               aria-pressed={spettroVisibile}
               aria-busy={spettroOccupato}
               aria-label={t("np.spectrum.toggle")}
