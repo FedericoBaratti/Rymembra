@@ -60,6 +60,17 @@ class MainActivity : TauriActivity() {
   override val handleBackNavigation: Boolean = false
 
   override fun onWebViewCreate(webView: WebView) {
+    // Quel che la pagina non usa, spento: un indirizzo `content://` nella
+    // pagina (le copertine passano da uno schema nostro, non da lì), la
+    // posizione, e le finestre aperte da uno script. Uno script che girasse
+    // nella pagina — metadati, testi, una skin — non trova queste porte aperte;
+    // i permessi che chiede (fotocamera, microfono) li nega Rust, con il
+    // gestore della finestra (`telefono::crea_la_finestra`). Qui gira dopo le
+    // impostazioni di wry, che quindi non le rimette.
+    webView.settings.allowContentAccess = false
+    webView.settings.setGeolocationEnabled(false)
+    webView.settings.javaScriptCanOpenWindowsAutomatically = false
+
     // Le barre di sistema, il ritaglio della fotocamera e la tastiera: la
     // pagina disegna fin sotto di loro (edge-to-edge) e deve sapere quanto
     // stare lontana dai bordi. `env(safe-area-inset-*)` nella WebView non lo

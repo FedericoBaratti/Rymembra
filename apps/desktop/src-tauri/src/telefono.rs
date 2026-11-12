@@ -499,13 +499,8 @@ pub fn riapri_la_finestra(app: &tauri::AppHandle) {
     if !rymembra_android::sistema::attivita_aperta().unwrap_or(false) {
         return;
     }
-    let Some(configurazione) = app.config().app.windows.first() else {
-        return;
-    };
-    match tauri::WebviewWindowBuilder::from_config(app, configurazione)
-        .and_then(tauri::WebviewWindowBuilder::build)
-    {
-        Ok(_) => {
+    match crea_la_finestra(app) {
+        Ok(()) => {
             FINESTRA_PERSA.store(false, Relaxed);
             RINASCITA_FALLITA.store(false, Relaxed);
             crate::nota!("[finestra] l'attività è tornata: la finestra rinasce");
@@ -516,6 +511,44 @@ pub fn riapri_la_finestra(app: &tauri::AppHandle) {
             }
         }
     }
+}
+
+/// Crea la finestra dalla configurazione, col gestore che nega ogni permesso
+/// che la pagina chiede ([`risposta_ai_permessi`]).
+///
+/// Su Android la finestra non la crea Tauri da sé (`"create": false` in
+/// `tauri.android.conf.json`): una finestra creata dalla configurazione non ha
+/// gestore dei permessi, e allora wry risponde «decidi tu» e Android concede
+/// da solo quel che l'app ha già — la fotocamera, dopo il primo QR — a uno
+/// script nella pagina, senza nessun dialogo. La creano il `setup` di `lib.rs`
+/// e [`riapri_la_finestra`], tutti e due da qui, così una finestra rinata non
+/// perde il gestore. Senza una finestra nella configurazione non fa niente.
+///
+/// # Errori
+///
+/// Quelli di Tauri, se la finestra non si costruisce.
+#[cfg(mobile)]
+pub fn crea_la_finestra(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let Some(configurazione) = app.config().app.windows.first() else {
+        return Ok(());
+    };
+    tauri::WebviewWindowBuilder::from_config(app, configurazione)?
+        .on_permission_request(|_, tipo| risposta_ai_permessi(&tipo))
+        .build()
+        .map(|_| ())
+}
+
+/// Che cosa rispondere a un permesso che la pagina chiede — fotocamera,
+/// microfono, posizione, notifiche web, contenuti protetti: no, sempre.
+///
+/// La pagina di Rymembra non ne usa nessuno: il QR lo legge lo scanner nativo
+/// (`ScansioneQr`), le notifiche sono quelle di Android. Una richiesta che
+/// arriva viene quindi da uno script che non è nostro — un metadato, un testo,
+/// una skin —, e con «decidi tu» Android gli dava senza domande quel che
+/// Rymembra aveva già ottenuto per sé.
+#[cfg(any(mobile, test))]
+fn risposta_ai_permessi(_: &tauri::webview::PermissionKind) -> tauri::webview::PermissionResponse {
+    tauri::webview::PermissionResponse::Deny
 }
 
 /// Il Keystore di Android, come portachiavi del sistema.
@@ -691,6 +724,38 @@ pub fn installa_l_uscita_audio() {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// La pagina non ottiene nessun permesso, e sul telefono la finestra la crea
+    /// Rymembra — col gestore — e non Tauri dalla configurazione (R11-3).
+    #[test]
+    fn la_pagina_non_ottiene_i_permessi() {
+        use tauri::webview::{PermissionKind, PermissionResponse};
+        for tipo in [
+            PermissionKind::Camera,
+            PermissionKind::Microphone,
+            PermissionKind::Geolocation,
+            PermissionKind::Notifications,
+        ] {
+            assert!(matches!(
+                risposta_ai_permessi(&tipo),
+                PermissionResponse::Deny
+            ));
+        }
+        let android: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.android.conf.json"))
+                .expect("la configurazione");
+        assert_eq!(
+            android["app"]["windows"][0]["create"],
+            serde_json::Value::Bool(false),
+            "su Android Tauri creerebbe la finestra senza il gestore dei permessi"
+        );
+        let lib = include_str!("lib.rs");
+        let setup = lib.find(".setup(|app| {").expect("il setup");
+        let crea = lib
+            .find("telefono::crea_la_finestra(")
+            .expect("il setup non crea la finestra");
+        assert!(crea > setup, "la finestra va creata nel setup");
+    }
 
     /// «Download» o un'app cloud scelti nel selettore: un percorso che non si
     /// può usare, con la frase che dice dove sceglierne uno, e non un guasto da
