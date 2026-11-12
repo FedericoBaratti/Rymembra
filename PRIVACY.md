@@ -22,11 +22,16 @@ that isn't written here, that's a defect: report it.
 Everything Rymembra knows about you:
 
 - **The library**, in an SQLite database in the application's data folder
-  (`%APPDATA%\io.github.federicobaratti.rymembra` on Windows): tracks, playlists,
+  (`%APPDATA%\io.github.federicobaratti.rymembra` on Windows, or
+  `…rymembra.store` for the Microsoft Store copy, § 6): tracks, playlists,
   ratings, favorites, listening history, play counts. Before each upgrade
   that changes the database, Rymembra also keeps a full copy of it beside
   it — `rymembra.db.schema-NNN.bak`, the last two — with everything the
-  library held at that moment.
+  library held at that moment. If you use “Go back to the copy from before
+  the update” (*Settings › Library and data*), the library you had until
+  then stays beside it too, as another full copy,
+  `rymembra.db.messa-da-parte.bak` (then `…messa-da-parte-2.bak` and on),
+  until you delete it yourself.
 - **The settings**, in the same folder.
 - **The cover art**, in a file cache next to the database.
 - **Your skins and Skin Studio drafts**, in the `skin` folder beside it —
@@ -96,7 +101,7 @@ with `/P` or `/S`, never show it and never delete data.
 
 | What | Without the box | With the box |
 |---|---|---|
-| The library, settings, covers, skins and drafts, the log and the copies of the database taken before a migration (`%APPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
+| The library, settings, covers, skins and drafts, the log, the copies of the database taken before a migration and a library set aside by “Go back to the copy from before the update” (`%APPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
 | The window’s own data, the cache of tracks played from cloud folders and the cache of your linked devices’ covers (`%LOCALAPPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
 | The installer's registry key (`HKCU\Software\Federico Baratti\Rymembra`) | stays | removed |
 | The secrets in Windows Credential Manager — account tokens, API keys, the keys that identify this PC in «Listen together» and to your devices | **stay** | **stay** |
@@ -108,8 +113,10 @@ The uninstaller never touches Credential Manager. To take the secrets away too,
 disconnect the accounts in Rymembra before uninstalling; or, afterwards, delete
 in *Credential Manager → Windows Credentials* the entries whose name ends with
 `io.github.federicobaratti.rymembra`. A copy from the Microsoft Store keeps its
-files in its own folder under `%LOCALAPPDATA%\Packages\`, which Windows removes
-with the app; its secrets in Credential Manager stay the same way.
+files — its data folder is `…rymembra.store` — in its own folder under
+`%LOCALAPPDATA%\Packages\`, which Windows removes with the app; a library it
+copied from the installer’s copy (§ 6) stays where it was, and its secrets
+in Credential Manager stay the same way.
 
 ### On an Android phone
 
@@ -134,9 +141,9 @@ What the app asks Android for, and why:
 
 | Permission | Why |
 | --- | --- |
-| Music and audio | Reading your tracks, and the covers inside their tags. Asked at first start, with Android's dialog. Rymembra does not ask for *Photos and videos*. |
+| Music and audio | Reading your tracks, and the covers inside their tags. Asked at first start, with Android’s dialog; if you put it off, the empty library and Settings › Folders and scanning offer it again. Rymembra does not ask for *Photos and videos*. |
 | All files access | Reading the covers, the lyrics (`.lrc`) and the `.cue` files next to your tracks, writing an `.lrc` beside a track if you switch that on (§ 8), and deleting a track when you ask. It is not used to write the tags of your files: Rymembra writes tags only into the files it downloaded itself (§ 8). Granted in Android's settings page; Rymembra works without it, with those things left out. |
-| Notifications | The player's notification. The music plays without it. |
+| Notifications | The notifications of a “Download here” in progress and of the wait for a service’s consent in the browser. Asked the first time one of the two starts, not at first start, and once per launch at most; without it both still work, with no notification you can see. The player’s notification does not need it: Android exempts the notifications of music sessions. |
 | Foreground service (media playback) | Keeping the music playing with the screen off. Android allows it only together with the player's notification. |
 | Foreground service (data sync) | Finishing a «Download here» from another linked device with the screen off (§ 4-quinquies): only while tracks are downloading, with a notification that says which one, stopped at the end of the queue. Nothing is sent anywhere for it. |
 | Internet, network state | The same requests as on the computer, described in the rest of this document, except the update check, which on the phone is a different request, to GitHub’s API (§ 6). |
@@ -164,9 +171,10 @@ Auto app does with what it shows is in Google's privacy statement.
 **No other app on the phone can browse the library.** Android's media session
 is open only to Rymembra itself, to the system — the notification, the lock
 screen, quick settings, Bluetooth, and an app you allowed to read your
-notifications, such as a watch's — to Android Auto, recognised by its package
-and by Google's certificate, and to the media centre of a car that runs
-Android. Any other app is turned away: it cannot browse the library, the
+notifications, such as a watch’s or a music remote’s — to Android Auto and to
+Google Assistant, each recognised by its package and by Google’s
+certificate, and to the media centre of a car that runs Android. Any other
+app is turned away: it cannot browse the library, the
 history or the playlists, see what is playing, control playback or change
 favourites.
 
@@ -177,6 +185,14 @@ Rymembra's private storage, and they ask without a permission of
 Rymembra's. It answers only for a file in the cover cache, whose names are
 hashes of the cover's bytes, and refuses any other path; the library, the
 settings and the secrets are not reachable from it.
+
+**The window** is Android System WebView, the browser engine of the phone.
+That WebView can send Google usage and diagnostic data for the apps that use
+it, when you agreed to share usage data with Google; Rymembra tells it not
+to, with the `android.webkit.WebView.MetricsOptOut` setting of its manifest.
+The page inside the window gets no Android permission of its own: a request
+for the camera, the microphone or the location is always refused, and the
+QR code is read by Rymembra’s own scanner, outside the page.
 
 **Deleting a track** (§ 8) sends the file to Android's trash, after Android's
 confirmation: the Files app restores it for 30 days, then Android deletes it.
@@ -527,27 +543,42 @@ cover art, not the lyrics:
   something to say, its play count, last play, rating and favorite (not the
   dated history of each listen, which only the profile archive of § 4-bis
   carries); your playlists, with their names, descriptions, rules and
-  tracks; the tracks you removed from the library and the playlists you
-  deleted, so that they do not come back from another computer; the
-  **paths of your watched folders**, as you chose them — which often contain
-  your Windows user name, as in `C:\Users\<name>\Music`; the skin in use;
-  and this computer’s random device identifier, which says which copy wrote
-  it;
+  tracks; the **paths of your watched folders**, as you chose them — which
+  often contain your Windows user name, as in `C:\Users\<name>\Music` — each
+  with the moment it was added; the list of installed skins and Studio
+  drafts, each with the date it last changed; what you removed — tracks taken
+  out of the library, deleted playlists, removed watched folders,
+  uninstalled skins, discarded drafts — with the moment you removed it, so
+  that it does not come back from another computer or from a restore; and
+  this computer’s random device identifier, which says which copy wrote it.
+  The skin you wear is not in it: that stays each computer’s own;
 - **each installed skin**, as its package (`rymembra-skin-<id>.ryskin`, up
-  to 20 MB), uploaded again only when it changes;
+  to 20 MB). When two computers have different versions of the same skin,
+  the more recently changed one wins, and a package goes up only when this
+  computer’s version is the one that wins;
 - **each Skin Studio draft**, as its `skin.json` alone
-  (`rymembra-bozza-<id>.json.gz`): not its undo history, and not the
-  conversation with the chat (§ 2-quater).
+  (`rymembra-bozza-<id>.json.gz`), by the same rule: not its undo history,
+  and not the conversation with the chat (§ 2-quater).
 
 It all ends up in the application-reserved folder of **your** Drive, which
-belongs to your app: no other program sees it. Up there Rymembra deletes only
-extra copies of the library file — two computers saving for the first time
-at the same moment can create two — once they are merged into the one just
-written; a library file that cannot be read is renamed
-(`….corrotto-<time>`) and kept, not overwritten. The backup files that the
-previous version left there are recognised and renamed in place the next
-time it runs, so nothing is uploaded twice; the rename is one more request to
-Google Drive, of the same kind as the backup itself.
+belongs to your app: no other program sees it. Up there Rymembra deletes
+three things only: extra copies of the library file — two computers saving
+for the first time at the same moment can create two — once they are merged
+into the one just written; extra copies of the same skin or draft package;
+and the package of a skin or draft you removed, once the merged list no
+longer has it and its removal is recorded. A library file that cannot be
+read is renamed (`….corrotto-<time>`) and kept, not overwritten. The backup
+files that the previous version left there are recognised and renamed in
+place the next time it runs, so nothing is uploaded twice; the rename is one
+more request to Google Drive, of the same kind as the backup itself.
+
+**A restore** shows its plan first. To build it, Rymembra looks on the disk
+only for the backup’s folders on a drive letter, on this computer, or on a
+network host this PC already uses for its watched folders or downloads: a
+folder on any other network host is listed as not looked for, because
+asking whether `\\host\share` exists means opening a connection to that
+host, and it is added — and later scanned — only if you go on with the
+restore.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
 account first sends it to Google's revocation address, which withdraws the
@@ -629,11 +660,18 @@ What is **not** inside, and cannot be:
 - **Similarity data and the weekly picks**, which are derived and are
   recomputed from whatever library they land in.
 
-Importing one **adds and never removes**: listens are summed, playlists merged,
-covers and skins written only where none exist, and a lyric you synced by hand
-is never overwritten. It never deletes a playlist, switches off a watched
-folder, removes a like or clears a rating, and a date from the future becomes
-the moment of the import. While it prepares the plan, Rymembra checks on the
+Importing one **adds and never removes**: listens are summed, playlists that
+exist only in the profile arrive as they are, covers and skins are written
+only where none exist, and a lyric you synced by hand is never overwritten.
+In a playlist both libraries have, it only appends at the end the tracks
+missing here, once each and in the profile’s order: it does not remove or
+reorder anything, does not bring back a track you took out of it here, and
+does not change its name, description, type or rules. It never deletes a
+playlist, switches off a watched folder, removes a like or clears a rating,
+and a date from the future becomes the moment of the import. A skin the
+profile would make the one you wear goes through the same review as an
+installed `.ryskin` first; if it does not pass, it is installed but not
+worn, and the plan says so. While it prepares the plan, Rymembra checks on the
 disk only the folders the profile names on a drive letter or on a network host
 this computer already uses; any other is listed as missing and proposed for
 remapping without being looked up, and the scan reaches it only if you keep it
@@ -1053,14 +1091,19 @@ GitHub for `latest.json`, the table above doesn't apply to it, and the switch in
 *Settings → Updates* says so instead of turning anything on. The Store, for its
 part, is Microsoft's service, with Microsoft's privacy statement: what it learns
 when you install or update an app is between you and it, and Rymembra doesn't see
-any of it. The same copy writes the files it creates in the application's
-private folder under `%LOCALAPPDATA%\Packages\` instead of `%APPDATA%`, which
-Windows arranges by itself; uninstalling it from Windows removes that folder.
-Files that already exist in `%APPDATA%` — the library of a copy installed with
-the installer on the same PC — Windows, from version 1903 on, lets it use where
-they are, and the connected accounts in the Windows Credential Manager are the
-same for both copies. The two have not been tried side by side: keep one of
-them per PC.
+any of it. The same copy keeps a library of its own, in
+`%APPDATA%\io.github.federicobaratti.rymembra.store` (and its cache in
+`%LOCALAPPDATA%\io.github.federicobaratti.rymembra.store`), which Windows
+places in the application’s private folder under `%LOCALAPPDATA%\Packages\`;
+uninstalling it from Windows removes that folder. It does not open the
+library of a copy installed with the installer on the same PC: two copies
+opening the same database would damage it. The first time it starts, once
+and only while its own library is still empty, it offers to **copy** the
+library it finds in the folder without the suffix — the installer copy’s,
+or its own from before this version — with its covers and skins, writing
+over nothing; then it closes. The original stays where it was, untouched,
+and no request is made for it. The connected accounts in the Windows
+Credential Manager are the same for both copies.
 
 **On Android it is a different request.** An app cannot replace itself on
 Android, and Tauri's updater does not exist there, so the phone asks GitHub's
@@ -1069,7 +1112,7 @@ API for the latest release of the same project instead of `latest.json`:
 | Host | When | What reaches it |
 | --- | --- | --- |
 | `api.github.com` | Ten seconds after the app is ready, if the last successful check is more than six hours old, then every six hours while the app stays alive; after a failure for lack of network, again after one, five and fifteen minutes | A GET to the public description of the latest release, with Rymembra's `User-Agent` |
-| `github.com`, and the GitHub file host it redirects to (`release-assets.githubusercontent.com` or `objects.githubusercontent.com`; no other host is followed) | Only if you press «Update» | The request for the APK file |
+| `github.com`, and the GitHub file host it redirects to (`release-assets.githubusercontent.com` or `objects.githubusercontent.com`; no other host is followed) | When a newer release carries an APK for the phone: its `latest.json`, for the notes. If you press «Update»: the APK’s signature (`<apk>.sig`), then the APK | GET requests for those public files, with Rymembra’s `User-Agent` |
 
 Two things differ from the computer, and both are written here so that the
 section above stays true for it. The request goes through Rymembra's HTTP
@@ -1077,14 +1120,18 @@ client, so it carries the `User-Agent` of every other request,
 `Rymembra/<version> (+https://github.com/federicobaratti/rymembra)`: GitHub
 learns which version is asking. GitHub's API refuses requests without a
 `User-Agent`, and that string is a constant for the reason given in § 1. And
-the APK is not checked against a key compiled into Rymembra, but against the
-app already installed. It is offered only if it is an asset of the project's
-GitHub release, and downloaded over `https` following redirects only to
-`github.com` and the two file hosts in the table. Before Android's installer
-sees it, Rymembra opens it and refuses it — deleting it, and saying so in the
-update banner — unless
-it is this same app (the same package) signed with the same certificate as
-the installed Rymembra, or with a key that proves it rotated from it. Then
+the APK is checked twice: against the same key the computer's updater uses,
+and against the app already installed. It is offered only if it is an asset
+of the project's GitHub release with its minisign signature beside it, and
+downloaded over `https` following redirects only to `github.com` and the two
+file hosts in the table. Before Android's installer sees it, Rymembra
+verifies it against that signature, for the version announced, and then
+opens it; it refuses it — deleting it, and saying so in the update banner —
+unless the signature holds and it is this same app (the same package) signed
+with the same certificate as the installed Rymembra, or with a key that
+proves it rotated from it. A copy signed with another key, such as a test
+build, does not download the APK at all, since Android would refuse it, and
+the banner says so. Then
 Android checks again: it installs an APK **over** Rymembra only if it is
 signed with the same key as the one already installed.
 
@@ -1192,8 +1239,9 @@ What Rymembra writes, and where:
 - **The application's data folder** —
   `%APPDATA%\io.github.federicobaratti.rymembra` — which holds the library
   database with the copies taken before the last two upgrades of it
-  (`rymembra.db.schema-NNN.bak`), the cover art cache, the installed skins
-  and the ones you replaced, and the log described
+  (`rymembra.db.schema-NNN.bak`) and, if you went back to one of them, the
+  library set aside (`rymembra.db.messa-da-parte.bak`), the cover art cache,
+  the installed skins and the ones you replaced, and the log described
   below. On the first start after an upgrade, Rymembra also renames the data
   folder of the previous version into this one (and the files inside to the
   new names), without overwriting or deleting anything.

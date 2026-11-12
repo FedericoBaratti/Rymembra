@@ -147,7 +147,7 @@
       "titolo": "From the Microsoft Store",
       "sotto": "Updates come from the Store, with no SmartScreen warning.",
       "azione": "Download",
-      "nota": "Pick one per PC: the two copies haven't been tested side by side, and they would share the same connected accounts."
+      "nota": "Best keep one per PC. The Store copy keeps a library of its own and, the first time it starts, offers to copy the installer copy’s; the connected accounts, though, are the same for both."
     },
     "file": "The file is `{file}`, released {data}. [What's new]({note}), [all versions]({tutte}).",
     "impronta": {

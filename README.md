@@ -290,9 +290,20 @@ a longer listening history than the public API offers.
   memory; importing shows you the plan first and proposes a remapping for every
   root that does not exist on this machine, and it only adds: it never deletes
   a playlist, switches off a watched folder, removes a like or clears a
-  rating. The old seventeen-line JSON is
+  rating, and in a playlist both libraries have it only appends the tracks
+  missing here, without reordering it or changing its rules. A skin the
+  profile would make the one worn passes the same review as an installed
+  `.ryskin`, or stays installed but not worn. The old seventeen-line JSON is
   still read, and no longer written. Profiles and skin packages written by the
   previous version can still be imported.
+
+  A restore from Drive shows its plan first, and does not even look for the
+  folders on network hosts this PC does not use (it lists them as not
+  checked). Restoring before the music is scanned brings back the folders and
+  the playlists; the statistics of tracks whose files are not here yet, and
+  their places in the playlists, come with a second restore after the scan,
+  and the plan says so. The skin you wear is not in the backup: each computer
+  keeps its own.
 
   **Google Drive needs a Google project of your own, and Rymembra has none
   built in — on purpose.** A desktop program cannot keep an OAuth client
@@ -351,8 +362,9 @@ a longer listening history than the public API offers.
 
 ## Interface
 
-On first run a guided tour runs once, in fourteen steps — the context menu of a
-track, the Folders view and the keyboard shortcuts among them. It is not a
+On a computer’s first run a guided tour runs once, in fourteen steps — the
+context menu of a track, the Folders view and the keyboard shortcuts among
+them. It is not a
 carousel of pictures: each step finds the real element in the window, cuts a
 hole in the veil over it and puts the bubble beside it, so what you are shown
 is the program at the size and in the skin you are running it in. To show the
@@ -533,15 +545,43 @@ database, and never passes through the window.
 
 ## Installation
 
-Two ways, the same program:
+On a computer, two ways, the same program:
 
 - **the installer**, among the assets of the [latest
   release](https://github.com/FedericoBaratti/Rymembra/releases/latest): an NSIS
   executable, which updates itself;
 - **the [Microsoft Store](https://apps.microsoft.com/detail/9NW2F2PW2B91)**,
-  signed by Microsoft and updated by the Store. Keep one of the two per PC: they
-  can read the same library, and side by side they have not been tried — see
-  [`PRIVACY.md`](PRIVACY.md) § 6.
+  signed by Microsoft and updated by the Store. The Store copy keeps a library
+  of its own, separate from the installer copy’s
+  (`%APPDATA%\io.github.federicobaratti.rymembra.store`, which Windows keeps
+  inside the package), because two copies opening the same database would
+  damage it. The first time it starts, while its library is still empty, it
+  offers once to copy the library of an installer copy on the same PC — the
+  original stays as it was — and then closes; the accounts in Windows’
+  Credential Manager are shared by the two. See [`PRIVACY.md`](PRIVACY.md) § 6.
+
+On a phone, **the APK**, Android 8 or later, 64-bit (ARM):
+
+- it is among the assets of the same release, as
+  `Rymembra_<version>_android-arm64.apk`. Download it on the phone and open
+  it: the first time, Android asks you to allow installing apps from the
+  browser or the file manager you opened it with;
+- every release APK is signed with the same key. Its certificate’s SHA-256
+  fingerprint is
+  `24:85:94:2C:0F:5D:73:42:97:CD:96:A6:65:19:C7:2E:49:22:C7:05:37:E8:F3:9A:B2:D9:80:60:24:18:2A:C1`
+  (also in `strumenti/android-certificato.sha256`); on a computer with the
+  Android SDK, `apksigner verify --print-certs <apk>` prints it on the line
+  `Signer #1 certificate SHA-256 digest`, with or without the colons;
+- after that, Rymembra itself offers the updates, from the same release (see
+  [Known limits](#known-limits-and-planned-work) → Android → Updates);
+- **a test build**, signed with another key, cannot be updated to the public
+  APK: Android refuses to install one over the other, and Rymembra says so
+  instead of offering the update. To move to the public version without
+  losing your library, export the profile (*Settings › Library and data ›
+  “Export the profile…”*), uninstall Rymembra, install the APK and, there,
+  “Read a profile…”. Your music files stay where they are; the connected
+  accounts and the linked devices have to be connected again, because their
+  secrets never leave the phone and the profile does not carry them.
 
 **Windows SmartScreen warning.** The installer is not signed with a code
 signing certificate, so SmartScreen blocks it on first launch (the Store copy
@@ -584,11 +624,16 @@ version refuses to open a newer database rather than guessing at it. 2.3.1
 migrates twice, `019_identita_e_metadati.sql` and `020_cronologia_unica.sql`,
 and it is a patch. From 3.0 Rymembra takes that copy itself before every
 migration — `rymembra.db.schema-NNN.bak`, beside the database, the last two
-kept. Going back by hand means quitting Rymembra, also from its icon next to
-the clock, moving `rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm`
-aside together — the last two belong to the newer database, and next to the
-copy SQLite would read them as its own — and copying the `.bak` to
-`rymembra.db`, not moving it, so that the `.bak` stays as a fallback.
+kept. On the computer, “Go back to the copy from before the update”, in
+*Settings › Library and data*, puts it back: it sets the current library
+aside as `rymembra.db.messa-da-parte.bak`, puts the copy in its place inside
+the open database, and closes Rymembra, so that you can install the previous
+version. It works even when the library does not open. Going back by hand
+means quitting Rymembra, also from its icon next to the clock, moving
+`rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm` aside together — the
+last two belong to the newer database, and next to the copy SQLite would
+read them as its own — and copying the `.bak` to `rymembra.db`, not moving
+it, so that the `.bak` stays as a fallback.
 
 ---
 
@@ -744,7 +789,9 @@ The dependencies use different licenses: the `symphonia` family is **MPL-2.0**,
 `cpal` is **Apache-2.0**. The complete list with the full texts is in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), regenerable with the script
 given in [Building](#building). The Geist and Bricolage Grotesque fonts are
-distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`).
+distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`). The APK
+carries copies of `LICENSE`, `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`,
+`TERMS.md` and the fonts’ license in `assets/legale/`.
 
 The music in `site/audio/` — the website’s soundtrack, `machina.mp3`, which
 two Rust tests also play, and the twelve seconds of it in the site’s sound
@@ -903,11 +950,18 @@ constraint is stated explicitly in the terms of use.
   - **Updates** are checked on GitHub, every six hours while the app is
     running (on the computer, every thirty minutes), and the APK for the
     phone's architecture is downloaded by Rymembra, only from an asset of the
-    project's GitHub release. Before Android's installer sees it, Rymembra
-    checks that it is this same app signed with the same certificate as the
-    installed one; if not, it deletes it and says so. Installing it is then up
+    project's GitHub release, and only if the release carries its minisign
+    signature too (`<apk>.sig`). Before Android's installer sees it, Rymembra
+    checks that signature with the same key as the computer’s updater, for
+    the version announced, then that it is this same app signed with the same
+    certificate as the installed one; if not, it deletes it and says so. A
+    copy signed with another key — a test build — is not offered the update
+    at all (see [Installation](#installation)). Installing it is then up
     to Android, which asks the person using the phone to confirm every time —
     and, the first time, to allow Rymembra to install apps. It is never silent.
+  - **The screen** stays upright: the phone interface is locked to portrait
+    in this version. The guided tour of the computer is not offered on the
+    phone.
   - **Deleting a track from disk** sends it to Android's trash, from which the
     Files app restores it for 30 days, after Android's own confirmation. That
     trash exists from Android 11 and only for files Android's media index
@@ -938,9 +992,15 @@ constraint is stated explicitly in the terms of use.
   - **The TLS roots** are the Mozilla list compiled into the app
     (`webpki-roots`) and not the system's: a certificate installed by hand on
     the phone is not trusted.
-  - **Signing**: a release APK needs a keystore of your own (see
-    `apps/desktop/src-tauri/gen/android/keystore.properties`, not versioned).
-    Losing it means the next APK cannot be installed over the previous one.
+  - **Signing**: the release APK is built without a key and signed by the
+    release workflow, in the protected `release` environment; it must carry
+    the certificate whose fingerprint is in
+    `strumenti/android-certificato.sha256`, and losing that key means no
+    later APK can be installed over the copies already out. A build of your
+    own needs a keystore of your own (see
+    `apps/desktop/src-tauri/gen/android/keystore.properties`, not versioned),
+    and Android then refuses to install the public APK over it, or it over
+    the public one.
 
 Two questions require a written clarification before publication: whether
 **donations** constitute commercial use for the purposes of Jamendo's terms

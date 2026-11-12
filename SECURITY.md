@@ -51,12 +51,18 @@ and, before copying the new files, silently uninstalls the previous version of t
 program (never its data); a way to make that step remove or run something it
 shouldn't is a report too.
 
-On the phone there is no minisign: Rymembra takes the APK only from an asset of
-the project's GitHub release, follows redirects only to GitHub's own hosts, and
-before handing it to Android's installer opens it and refuses it unless it is
-the same package signed with the same certificate as the installed Rymembra (or
-a key that proves it rotated from it). Getting another package or another
-signer past that check is as important a report as the minisign one. If
+On the phone the APK goes through the same minisign key and more. Rymembra
+announces an APK only if it is an asset of the project’s GitHub release with
+its signature beside it (`<apk>.sig`, read first and capped at 16 KiB), and
+follows redirects only to GitHub’s own hosts. Before every handoff to
+Android’s installer — a copy already in the cache included — it verifies the
+file on disk against that signature with the updater’s public key, and the
+version in the signature must be the one announced; then it opens the APK and
+refuses it unless it is the same package signed with the same certificate as
+the installed Rymembra (or a key that proves it rotated from it). A file that
+fails either check is deleted. Getting a file past the signature, or another
+package or another signer past the certificate check, is as important a
+report as the one about the installer. If
 Windows refuses to start the installer (AppLocker, WDAC, an antivirus), Rymembra
 says so and closes; it must never stay alive without a window.
 
@@ -216,10 +222,18 @@ profile entry is read at most up to its declared size within a budget for the
 whole archive, and the JSON of the Spotify archive and of sync documents is
 value-counted before it is parsed. Windows device names (`con`, `nul`…) are
 refused as ids and file names. A profile only **adds** to the library: it
-never deletes, switches off or clears anything, and a cover hash that is not
-lowercase hex never becomes a path. Sync documents are validated value by value
-and cannot add folders on network hosts this PC does not already use — but they
-are not signed yet: the sync folder must be writable by you alone. Catalog
+never deletes, switches off or clears anything — in a playlist both libraries
+have it only appends the tracks missing here, never removing, reordering or
+turning it into a smart one — a skin it would make the one worn passes the
+same review as an installed `.ryskin` first, and a cover hash that is not
+lowercase hex never becomes a path. Sync documents are validated value by
+value and cannot add folders on network hosts this PC does not already use,
+however the path is written (`\\host`, `//host`, mixed separators,
+`\??\UNC\host`); the plan of a Drive restore does not even look for such
+folders, it lists them as not checked. A sync device waiting to be accepted
+is trusted only through “Accept”: renaming it does not trust it. Sync
+documents are not signed yet: the sync folder must be writable by you
+alone. Catalog
 downloads start only from the catalog's own addresses, follow redirects only
 inside it, and must be audio. Error messages of AI services are cleaned of the
 API key.
@@ -265,11 +279,17 @@ to the system browser are always `https` pages with a host and no credentials.
 
 **On the phone, other apps are the other side.** The music service accepts
 only trusted controllers — the app itself, the system (notification, lock
-screen, Bluetooth), Android Auto and the car's media centre, checked by uid and
-certificate; the cover provider serves only files of the cover folder, read-only;
-the file provider shares only two cache folders; the main activity has an empty
-task affinity. Another app browsing the library, controlling playback or
-reading a file it was not given: all problems.
+screen, Bluetooth), an app the user allowed to read notifications (a watch’s,
+a music remote), Android Auto, the car’s media centre and Google Assistant,
+checked by uid and, for Android Auto, the car and the Assistant, by package
+and certificate; the cover provider serves only files of the cover folder,
+read-only; the file provider shares only two cache folders; the main activity
+has an empty task affinity. The page in the window gets no Android permission
+of its own: a request for the camera, the microphone, the location or
+anything else is always denied (`telefono::crea_la_finestra`), and the
+WebView has content access, geolocation and windows opened by scripts off.
+Another app browsing the library, controlling playback or reading a file it
+was not given, or the page obtaining a permission: all problems.
 
 ## What isn't one
 

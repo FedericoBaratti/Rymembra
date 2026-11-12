@@ -63,7 +63,7 @@
     },
     {
       id: "schema",
-      title: "The schema (version 40)",
+      title: "The schema (version 41)",
       src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql", "core/rymembra-app/src/db/schema/035_insieme.sql", "core/rymembra-app/src/db/schema/036_nuvola.sql", "core/rymembra-app/src/db/schema/037_nuvola_app.sql"],
       body: [
         "Times are milliseconds since the epoch, durations milliseconds. There are no views. The central table is `tracks`; almost everything else hangs off `tracks.id` (with `ON DELETE CASCADE`) or off a stable key.",

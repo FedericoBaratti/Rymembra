@@ -147,7 +147,7 @@
       "titolo": "Aus dem Microsoft Store",
       "sotto": "Updates kommen über den Store, ohne SmartScreen-Warnung.",
       "azione": "Herunterladen",
-      "nota": "Nimm pro PC nur eine: Beide Versionen zusammen sind nicht getestet, und sie würden dieselben verbundenen Konten nutzen."
+      "nota": "Am besten nur eine pro PC. Die Store-Version hat eine eigene Bibliothek und bietet beim ersten Start an, die der Installer-Version zu kopieren; die verbundenen Konten sind aber für beide dieselben."
     },
     "file": "Die Datei heißt `{file}`, erschienen am {data}. [Was ist neu]({note}), [alle Versionen]({tutte}).",
     "impronta": {

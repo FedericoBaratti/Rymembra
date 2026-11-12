@@ -774,7 +774,7 @@ signing the sync documents is planned work (`SECURITY.md`).
 
 ### Database
 
-Two migrations, schema 38 → 40, both additive.
+Three migrations, schema 38 → 41, all additive.
 
 - `039_dispositivi` — three tables, none of which travels in a profile, in the
   Drive backup or in sync: `dispositivi` (each linked device: its public key,
@@ -786,21 +786,39 @@ Two migrations, schema 38 → 40, both additive.
 - `040_insieme_indirizzi` — one table, `insieme_indirizzi`: the last
   `ip:port` at which each paired «Listen together» PC answered, by its key.
   It does not travel either.
+- `041_indici_musicbrainz` — two partial indexes, on `tracks.mb_recording_id`
+  and `artists.mb_artist_id` (`idx_tracks_mb_recording`, `idx_artists_mb`),
+  for the rows that have one. Each ListenBrainz neighbour was written with a
+  query that read the whole table, inside a transaction holding the library
+  lock, so a heart, a rating or a playlist edit made during that pass could
+  give up as “busy”. No row changes.
 
-**Going back to 3.2.0.** The first way is the copy Rymembra takes before it
-migrates, `rymembra.db.schema-038.bak`, beside the database. Quit Rymembra —
-from its icon next to the clock too — and move `rymembra.db`,
-`rymembra.db-wal` and `rymembra.db-shm` aside together: the last two belong
-to the new database, and next to the copy SQLite would read them as the
-copy’s own and spoil it. Then copy the `.bak` to `rymembra.db` — copy, not
-move, so that the `.bak` stays as a fallback. By hand instead, both
-migrations in one go and in this order — undoing only 039 leaves
-`insieme_indirizzi` behind, and the next update to this version then fails
-on it: `DROP TABLE insieme_indirizzi; DROP TABLE
-dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
-PRAGMA user_version = 38;`. The links are lost (made again with a QR code),
-and so are the listens not yet sent; the “Listen together” addresses come
-back at the next connection.
+**Going back.** A version that stops at an earlier migration refuses schema
+41 (`db.versionAhead`). The first way is the copy Rymembra takes before it
+migrates, beside the database: `rymembra.db.schema-040.bak`, or
+`rymembra.db.schema-038.bak` coming from 3.2.0. On the computer, “Go back to
+the copy from before the update”, in *Settings › Library and data*, puts it
+back: it sets the current library aside as `rymembra.db.messa-da-parte.bak`,
+puts the copy in its place with SQLite’s backup API and closes Rymembra, so
+that you can install the previous version. By hand: quit Rymembra — from its
+icon next to the clock too — and move `rymembra.db`, `rymembra.db-wal` and
+`rymembra.db-shm` aside together: the last two belong to the new database,
+and next to the copy SQLite would read them as the copy’s own and spoil it.
+Then copy the `.bak` to `rymembra.db` — copy, not move, so that the `.bak`
+stays as a fallback — and open the previous version, because this one would
+update the copy again at once.
+
+Without the copy, going back to 040 loses only the indexes: `DROP INDEX
+idx_artists_mb; DROP INDEX idx_tracks_mb_recording; PRAGMA user_version =
+40;`. Going back to 3.2.0 (schema 38) by hand takes one block, in this order:
+`DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording; DROP TABLE
+insieme_indirizzi; DROP TABLE dispositivi_ricevuti; DROP TABLE
+dispositivi_ascolti; DROP TABLE dispositivi; PRAGMA user_version = 38;`.
+The step written at the top of `039_dispositivi.sql`, applied alone, leaves
+`insieme_indirizzi` behind: 3.2.0 opens all the same, but the next upgrade
+stops at 040, which finds it already there. The devices linked over the internet are
+lost (made again with a QR code), and so are their listens not yet
+delivered; the “Listen together” addresses come back at the next connection.
 
 ### Known limits
 
@@ -1420,6 +1438,16 @@ connection. Rows of cloud tracks already in the library would then be tracks of
 folders that 3.1.0 cannot reach: kept, not played. If you typed the Google
 client secret again in 3.2, it has moved to the app's own keychain entry, and
 3.1 needs it typed again in the backup's settings.
+
+> **Corrected in 3.2.1.** «Putting that copy in place of `rymembra.db`», as
+> written above, spoils the copy if it is done the way it reads. 3.2.0 left
+> its journal full on exit, and next to the copy SQLite reads
+> `rymembra.db-wal` as the copy’s own. Quit Rymembra — from its icon next to
+> the clock too — move `rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm`
+> aside together, then copy the `.bak` to `rymembra.db`, without renaming it,
+> so that it stays as a fallback. From 3.2.1 a clean exit leaves the journal
+> empty, and “Go back to the copy from before the update”, in *Settings ›
+> Library and data*, does it for you.
 
 ## [3.1.0] — 2026-10-26
 
