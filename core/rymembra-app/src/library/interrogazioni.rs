@@ -213,7 +213,16 @@ impl TrackOrder {
                 "t.artist COLLATE NOCASE, t.album COLLATE NOCASE,
                  t.disc_number, t.track_number, t.title COLLATE NOCASE"
             }
-            Self::RecentlyAdded => "t.date_added DESC, t.id DESC",
+            // A parità d'ingresso l'ordine del disco, non l'identificativo: una
+            // scansione scrive un lotto intero con lo stesso istante, e con
+            // `t.id DESC` decideva l'ordine di lettura **rovesciato** — «Ascolta»
+            // del primo avvio partiva dall'ultima traccia dell'ultimo disco, e un
+            // album senza pause suonava all'indietro. Qui lo prendono tutti:
+            // l'ordinamento dei Brani, le viste, il giro guidato, Sfoglia da un
+            // altro dispositivo.
+            Self::RecentlyAdded => {
+                "t.date_added DESC, t.album_key, t.disc_number, t.track_number, t.path, t.id"
+            }
             Self::MostPlayed => "t.play_count DESC, t.last_played_at DESC, t.title COLLATE NOCASE",
             // In SQLite `NULL` è più piccolo di tutto, quindi un `DESC` mette
             // già i mai ascoltati in fondo, per regola documentata. `IS NULL`
@@ -1148,3 +1157,7 @@ pub fn search_count(connection: &Connection, query: &str) -> Result<i64, AppErro
         .and_then(|mut statement| statement.query_row([&expression], |row| row.get(0)))
         .map_err(|err| db_error("conteggio della ricerca", &err))
 }
+
+#[cfg(test)]
+#[path = "prove_interrogazioni.rs"]
+mod prove;
