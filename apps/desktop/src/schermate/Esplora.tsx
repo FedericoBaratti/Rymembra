@@ -299,23 +299,46 @@ export function Esplora({
    * effetto collaterale nascosto: il brano compare in libreria, ed è quel che
    * chi ha premuto «ascolta» si aspetta di ritrovare domani.
    */
+  /**
+   * L'identificativo del brano di una riga, mettendolo in libreria se serve.
+   *
+   * «In libreria» è la fotografia della ricerca (o dell'ultimo gesto sulla
+   * riga): i risultati sopravvivono al cambio di schermata, e un brano tolto
+   * dai Brani nel frattempo restava «in libreria» qui. «Ascolta» e «In coda»
+   * chiedevano l'identificativo, ricevevano `null` e non facevano niente, in
+   * silenzio (R13b-10). Adesso la riga si rimette in libreria, una volta, e si
+   * chiede di nuovo; `null` anche così lo dice chi chiama.
+   */
+  const idInLibreria = useCallback(
+    async (riga: RisultatoEsplora): Promise<number | null> => {
+      if (!riga.inLibreria) {
+        await ipc.esploraAggiungi(riga.url);
+        aggiorna(riga.url, true);
+      }
+      const id = await ipc.esploraIdentificativo(riga.url);
+      if (id !== null || !riga.inLibreria) return id;
+      aggiorna(riga.url, false);
+      await ipc.esploraAggiungi(riga.url);
+      aggiorna(riga.url, true);
+      return ipc.esploraIdentificativo(riga.url);
+    },
+    [aggiorna],
+  );
+
   const ascolta = useCallback(
     async (riga: RisultatoEsplora) => {
       segna(riga.url, true);
       try {
-        if (!riga.inLibreria) {
-          await ipc.esploraAggiungi(riga.url);
-          aggiorna(riga.url, true);
-        }
-        const id = await ipc.esploraIdentificativo(riga.url);
+        const id = await idInLibreria(riga);
         if (id !== null) onSuona(id);
+        else onNotizia(t("explore.gone"));
       } catch (e) {
         onErrore(e);
       } finally {
         segna(riga.url, false);
       }
     },
-    [segna, aggiorna, onSuona, onErrore],
+    [segna, idInLibreria, onSuona, onNotizia, onErrore],
   );
 
   /**
@@ -332,14 +355,12 @@ export function Esplora({
     async (riga: RisultatoEsplora) => {
       segna(riga.url, true);
       try {
-        if (!riga.inLibreria) {
-          await ipc.esploraAggiungi(riga.url);
-          aggiorna(riga.url, true);
-        }
-        const id = await ipc.esploraIdentificativo(riga.url);
+        const id = await idInLibreria(riga);
         if (id !== null) {
           onAccoda(id);
           onNotizia(t("explore.enqueued"));
+        } else {
+          onNotizia(t("explore.gone"));
         }
       } catch (e) {
         onErrore(e);
@@ -347,7 +368,7 @@ export function Esplora({
         segna(riga.url, false);
       }
     },
-    [segna, aggiorna, onAccoda, onNotizia, onErrore],
+    [segna, idInLibreria, onAccoda, onNotizia, onErrore],
   );
 
   /**
@@ -445,6 +466,24 @@ export function Esplora({
   const daAggiungere = risultati.filter(
     (r) => !r.inLibreria && r.disponibilita !== "soloAcquisto",
   ).length;
+  /*
+   * Quel che il lettore di schermo deve sentire della ricerca, in una regione
+   * sola e sempre montata. La regione viva era il «Sto cercando…», che spariva
+   * invece di cambiare testo: dopo si sentiva il silenzio, né «24 risultati»
+   * né «Nessun risultato» né «I cataloghi non rispondono» (R13b-11).
+   */
+  const annuncio =
+    fase.tipo === "cerca"
+      ? t("explore.searching")
+      : fase.tipo === "guasto"
+        ? t("explore.down.title")
+        : fase.tipo === "esito"
+          ? fase.esito.annullata
+            ? t("explore.cancelled")
+            : risultati.length === 0
+              ? t("explore.empty.title")
+              : t("explore.results", { n: risultati.length })
+          : "";
 
   return (
     <div className="esplora">
@@ -510,11 +549,12 @@ export function Esplora({
         />
       )}
 
-      {fase.tipo === "cerca" && (
-        <p className="nota" role="status">
-          {t("explore.searching")}
-        </p>
-      )}
+      {/* La sola regione viva della schermata: vedi `annuncio`. */}
+      <p className="solo-lettori" role="status">
+        {annuncio}
+      </p>
+
+      {fase.tipo === "cerca" && <p className="nota">{t("explore.searching")}</p>}
 
       {fase.tipo === "guasto" && (
         <StatoVuoto

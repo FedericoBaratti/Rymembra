@@ -112,6 +112,14 @@ export interface Libreria {
    * libreria stessa aveva messo: vedi `dopoLaLettura`.
    */
   rileggi: () => Promise<void>;
+  /**
+   * Rilegge `avvio` mentre una scansione scrive i suoi lotti, perché i numeri
+   * salgano (R21-2). Vince l'ultima, insieme alle altre due. Un guasto non si
+   * dice: con il database occupato dal lotto in scrittura la lettura può non
+   * passare, il prossimo avanzamento riprova, e alla fine della scansione la
+   * `ricarica` di sempre dice com'è andata.
+   */
+  rileggiInSilenzio: () => Promise<void>;
   /** Rilegge le playlist. Vince l'ultima. */
   ricaricaPlaylist: () => Promise<void>;
 }
@@ -130,15 +138,15 @@ export function creaLibreria(domande: Domande, avvisi: Avvisi): Libreria {
    * scriverla rimetterebbe a schermo la libreria di un istante prima. Un turno
    * solo per le due strade, `ricarica` e `rileggi`: sono la stessa lettura.
    */
-  const leggiAvvio = async (tutto: boolean) => {
+  const leggiAvvio = async (tutto: boolean, inSilenzio = false) => {
     const mio = turnoAvvio();
     try {
       const arrivato = await domande.avvio();
       if (!mio()) return;
       avvio.scrivi(arrivato);
-      avvisi.onLetta(tutto);
+      if (!inSilenzio) avvisi.onLetta(tutto);
     } catch (e) {
-      if (mio()) avvisi.onErrore(e);
+      if (mio() && !inSilenzio) avvisi.onErrore(e);
     }
   };
   return {
@@ -148,6 +156,7 @@ export function creaLibreria(domande: Domande, avvisi: Avvisi): Libreria {
     esito: creaArchivio<EsitoScansione | null>(null),
     ricarica: () => leggiAvvio(true),
     rileggi: () => leggiAvvio(false),
+    rileggiInSilenzio: () => leggiAvvio(false, true),
     /*
      * Vince l'ultima anche qui: la chiamano gli eventi della libreria e i
      * gesti sulle playlist, e due risposte possono incrociarsi — una playlist

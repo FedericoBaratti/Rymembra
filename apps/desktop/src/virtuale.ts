@@ -233,15 +233,84 @@ export interface Virtuale extends Finestra {
    * (`comeScorrere` in `transizione.ts`).
    */
   scorriA: (indice: number, comportamento?: ScrollBehavior) => void;
+  /**
+   * Dove comincia una riga, in pixel dalla cima dell'elenco: le righe sopra,
+   * misurate o stimate. Serve a chi spezza una paglia (`pezziDellaFinestra`)
+   * in un elenco con le altezze diverse; in uno ad altezza unica è
+   * `indice * altezza`. Solo per gli elenchi, non per le griglie.
+   */
+  inizioDi: (indice: number) => number;
+}
+
+/**
+ * La riserva che il foglio dichiara in cima allo scorrevole
+ * (`scroll-padding-top`), in pixel: zero se non ce n'è.
+ *
+ * Il browser la rispetta da sé quando porta il fuoco su una riga disegnata; il
+ * salto a una riga che non lo è ancora (`scorriA`) scrive `scrollTop` da sé, e
+ * senza leggerla metteva la riga sotto chi galleggia in cima allo scorrevole —
+ * gli avvisi aderenti della pagina (R14b-4).
+ */
+export function riservaDiScorrimento(valore: string): number {
+  const n = Number.parseFloat(valore);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Un pezzo di un elenco finestrato: una riga da disegnare, o il posto di quelle che non si disegnano. */
+export type PezzoFinestra = { riga: number } | { paglia: string; da: number; a: number };
+
+/**
+ * Che cosa disegnare: la finestra, le due paglie, e la riga col fuoco anche
+ * quando è fuori dalla finestra.
+ *
+ * Una riga che esce dalla finestra si smonta, e se aveva il fuoco il fuoco
+ * cadeva sul `<body>`: un colpo di rotella e le frecce non muovevano più
+ * niente, e nell'albero delle Cartelle le lettere della digitazione finivano
+ * alle scorciatoie della finestra (R13b-7). La riga attiva si disegna quindi
+ * **al suo posto**: la paglia di quel lato si spezza in due attorno a lei, e
+ * le altezze tornano. È la regola che l'elenco dei brani aveva già
+ * («La riga col fuoco resta montata» in `schermate/Elenco.tsx`).
+ *
+ * Le paglie vanno dalla riga `da` alla `a` esclusa; chi disegna le misura:
+ * `(a - da) * altezza` in un elenco ad altezza unica, `inizioDi(a) -
+ * inizioDi(da)` con le altezze diverse. Le chiavi sono fisse, così React
+ * sposta i nodi invece di rifarli.
+ */
+export function pezziDellaFinestra(
+  primo: number,
+  ultimo: number,
+  totale: number,
+  attivo: number | null,
+): PezzoFinestra[] {
+  const fuori =
+    attivo !== null && attivo >= 0 && attivo < totale && (attivo < primo || attivo >= ultimo)
+      ? attivo
+      : null;
+  const pezzi: PezzoFinestra[] = [];
+  if (fuori !== null && fuori < primo) {
+    pezzi.push({ paglia: "sopra", da: 0, a: fuori }, { riga: fuori });
+    pezzi.push({ paglia: "sopra-dopo", da: fuori + 1, a: primo });
+  } else {
+    pezzi.push({ paglia: "sopra", da: 0, a: primo });
+  }
+  for (let i = primo; i < ultimo; i += 1) pezzi.push({ riga: i });
+  if (fuori !== null && fuori >= ultimo) {
+    pezzi.push({ paglia: "sotto", da: ultimo, a: fuori }, { riga: fuori });
+    pezzi.push({ paglia: "sotto-dopo", da: fuori + 1, a: totale });
+  } else {
+    pezzi.push({ paglia: "sotto", da: ultimo, a: totale });
+  }
+  return pezzi;
 }
 
 /**
  * L'indice scritto su un nodo (`data-indice`), o il ripiego.
  *
- * Chi lo scrive può disegnare righe fuori ordine — l'elenco dei brani tiene
- * montata la riga col fuoco anche quando esce dalla finestra — e allora la
- * posizione nel DOM non dice più quale riga sia. Chi non lo scrive (la coda, le
- * cartelle) disegna solo la finestra, e la posizione basta.
+ * Chi lo scrive può disegnare righe fuori ordine — l'elenco dei brani, la coda
+ * e l'albero delle Cartelle tengono montata la riga col fuoco anche quando esce
+ * dalla finestra (`pezziDellaFinestra`) — e allora la posizione nel DOM non
+ * dice più quale riga sia. Chi non lo scrive disegna solo la finestra, e la
+ * posizione basta.
  */
 export function indiceDi(nodo: HTMLElement, ripiego: number): number {
   const scritto = nodo.dataset.indice;
@@ -725,7 +794,11 @@ export function useVirtuale(opzioni: {
         scala === null
           ? Math.floor(indice / colonne) * altezza
           : (scala[Math.min(Math.max(indice, 0), scala.length - 1)] ?? 0);
-      const alto = Math.max(cima.current + sopraLei, 0);
+      // La riga va sotto la riserva in cima, come la mette il browser quando la
+      // riga c'è: vedi `riservaDiScorrimento`. Letta adesso e non misurata una
+      // volta, perché la riserva cambia con quel che galleggia.
+      const riserva = riservaDiScorrimento(getComputedStyle(scorrevole).scrollPaddingTop);
+      const alto = Math.max(cima.current + sopraLei - riserva, 0);
       if (comportamento === undefined) scorrevole.scrollTop = alto;
       else scorrevole.scrollTo({ top: alto, behavior: comeScorrere(comportamento) });
     },
@@ -748,6 +821,9 @@ export function useVirtuale(opzioni: {
     const scala = stato.scala;
     const a = (indice: number) =>
       scala === null ? 0 : (scala[Math.min(indice, scala.length - 1)] ?? 0);
+    const altezzaRiga = stato.altezza;
+    const inizioDi = (indice: number) =>
+      scala === null ? Math.floor(indice / colonne) * altezzaRiga : a(Math.max(indice, 0));
     return {
       primo,
       ultimo,
@@ -765,6 +841,7 @@ export function useVirtuale(opzioni: {
       visibili: stato.visibili,
       scorso: stato.scorso,
       scorriA,
+      inizioDi,
     };
   }, [stato, totale, scorriA]);
 }

@@ -120,9 +120,16 @@ export function ConfermaEliminazione({
   const perSempre = dalDisco && senza !== null && senza.file.length > 0;
   const quantiPerSempre = senza?.brani ?? 0;
   const tuttiInRete = perSempre && quantiPerSempre >= quanti;
-  const titolo = dalDisco
-    ? t("delete.disk.title", { brani: brani_(quanti) })
-    : t("delete.library.title", { brani: brani_(quanti) });
+  // Un rifiuto non è una domanda: il brano di un'immagine CD scelto da solo
+  // apriva «Eliminare 1 brano dal disco?» col testo sul Cestino, e sotto la
+  // spiegazione che non si poteva, col solo «Annulla» (R18-16). Il titolo
+  // dice il fatto, e il testo è il perché.
+  const titolo =
+    dalDisco && rifiuto !== null
+      ? t("delete.disk.refused.title")
+      : dalDisco
+        ? t("delete.disk.title", { brani: brani_(quanti) })
+        : t("delete.library.title", { brani: brani_(quanti) });
   return (
     <Dialogo
       titolo={titolo}
@@ -131,9 +138,11 @@ export function ConfermaEliminazione({
       descrizione={
         !dalDisco
           ? t("delete.library.body")
-          : tuttiInRete
-            ? t("delete.disk.bodyNetwork")
-            : t("delete.disk.body")
+          : rifiuto !== null
+            ? rifiuto
+            : tuttiInRete
+              ? t("delete.disk.bodyNetwork")
+              : t("delete.disk.body")
       }
       ruolo="alertdialog"
       classe="finestrella stretta glass-modal"
@@ -165,7 +174,7 @@ export function ConfermaEliminazione({
           </details>
         </>
       )}
-      {rifiuto !== null && <p className="nota">{rifiuto}</p>}
+      {rifiuto !== null && !dalDisco && <p className="nota">{rifiuto}</p>}
       <div className="tasti-finestrella">
         <button type="button" className="bottone primario" onClick={onChiudi}>
           {t("common.cancel")}

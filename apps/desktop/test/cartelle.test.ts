@@ -22,8 +22,10 @@ import {
   codaDaFile,
   conFigli,
   fratelliDi,
+  conAncora,
   lente,
   ordinaFile,
+  radiceSpenta,
   seleziona,
   type RigaAlbero,
   type StatoAlbero,
@@ -183,7 +185,7 @@ test("Maiusc prende l'intervallo dall'àncora, Ctrl aggiunge e toglie", () => {
   // Il clic semplice sul primo file: niente scelto, àncora lì.
   let sel = seleziona(NESSUNA, righe, 3, "azzera");
   assert.equal(sel.chiavi.size, 0);
-  assert.equal(sel.ancora, 3);
+  assert.equal(sel.ancora, chiaveRiga(righe[3] as RigaAlbero));
   // Maiusc sull'ultimo: i tre file.
   sel = seleziona(sel, righe, 5, "intervallo");
   assert.deepEqual(
@@ -196,7 +198,7 @@ test("Maiusc prende l'intervallo dall'àncora, Ctrl aggiunge e toglie", () => {
     righe.filter((r) => sel.chiavi.has(chiaveRiga(r))).map((r) => r.brano),
     [1, 10],
   );
-  assert.equal(sel.ancora, 4);
+  assert.equal(sel.ancora, chiaveRiga(righe[4] as RigaAlbero));
   // Maiusc verso l'alto da lì: l'intervallo si rifà da capo, non si somma.
   sel = seleziona(sel, righe, 2, "intervallo");
   assert.deepEqual(
@@ -337,4 +339,48 @@ test("sotto il filtro i brani d'immagine tengono lo stesso ordine", () => {
     filtro.file.get(chiave("C:\\M"))?.map((f) => f.brano),
     [9, 10],
   );
+});
+
+// ── R13b-8: l'àncora è una riga, non un posto ──────────────────────────────
+
+test("l'àncora segue la sua riga quando sopra se ne aprono altre", () => {
+  const stato = apri(apri(libreria(), "C:\\M"), "C:\\M\\Album");
+  const prima = appiattisci(stato);
+  // Clic su «Due», poi si apre «CD2» sopra di lui: la sua figlia lo spinge giù.
+  const due = prima.findIndex((r) => r.nome === "Due");
+  let sel = seleziona(NESSUNA, prima, due, "azzera");
+  const dopo = appiattisci(apri(stato, "C:\\M\\Album\\CD2"));
+  assert.ok(dopo.findIndex((r) => r.nome === "Due") > due, "Due è sceso");
+  // Maiusc+clic su «Dieci»: l'intervallo parte da «Due», non dalla riga che
+  // adesso sta dove stava lui («1 - Uno.mp3»).
+  sel = seleziona(sel, dopo, dopo.findIndex((r) => r.nome === "Dieci"), "intervallo");
+  assert.deepEqual(
+    dopo.filter((r) => sel.chiavi.has(chiaveRiga(r))).map((r) => r.nome),
+    ["Due", "Dieci"],
+  );
+});
+
+test("Maiusc+↑↓ senza un'àncora visibile parte dalla riga da cui ci si muove", () => {
+  const righe = appiattisci(apri(apri(libreria(), "C:\\M"), "C:\\M\\Album"));
+  const nascosta = { chiavi: new Set<string>(), ancora: chiave("C:/Altrove") };
+  assert.equal(conAncora(nascosta, righe, 3).ancora, chiaveRiga(righe[3] as RigaAlbero));
+  const vista = { chiavi: new Set<string>(), ancora: chiaveRiga(righe[1] as RigaAlbero) };
+  assert.equal(conAncora(vista, righe, 3).ancora, chiaveRiga(righe[1] as RigaAlbero));
+});
+
+// ── R18-11: una cartella sotto una radice che non risponde ─────────────────
+
+test("una cartella sta sotto una radice che non risponde", () => {
+  const vive = new Map([
+    [chiave("D:/Musica"), false],
+    [chiave("//nas/musica"), true],
+  ]);
+  const radici = ["D:\\Musica", "\\\\nas\\musica"];
+  assert.equal(radiceSpenta("D:\\Musica\\Rock\\1977", radici, vive), true);
+  assert.equal(radiceSpenta("D:/Musica", radici, vive), true);
+  // Un nome che comincia allo stesso modo non è dentro.
+  assert.equal(radiceSpenta("D:/Musica vecchia", radici, vive), false);
+  assert.equal(radiceSpenta("//nas/musica/Jazz", radici, vive), false);
+  // Non ancora sondata: non si dà per morta.
+  assert.equal(radiceSpenta("E:/Altro", ["E:/Altro"], vive), false);
 });

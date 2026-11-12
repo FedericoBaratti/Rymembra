@@ -22,6 +22,13 @@ import { useAscolto } from "./pagine";
 import { eventiEFotografia } from "./ultima";
 
 /** Le due maniglie della scansione per chi ne chiede una. */
+/**
+ * Ogni quanto, al più, si rileggono i numeri della libreria mentre una
+ * scansione scrive: abbastanza spesso perché si vedano salire, abbastanza di
+ * rado da non mettersi in fila al lucchetto della libreria dietro ogni lotto.
+ */
+const RILETTURA_IN_SCANSIONE_MS = 3_000;
+
 export interface AvanzamentoScansione {
   /** Scrive l'avanzamento subito, buttando quello in sospeso. */
   posaScansione: (valore: Avanzamento | null) => void;
@@ -65,8 +72,26 @@ export function useAvanzamentoScansione(libreria: Libreria): AvanzamentoScansion
    * arrivato né un avanzamento né la fine. Vedi in fondo.
    */
   const [conto] = useState(eventiEFotografia);
+  /**
+   * Quando si sono riletti i numeri della libreria l'ultima volta, durante una
+   * scansione.
+   *
+   * La scansione scrive a lotti mentre legge, ma i numeri si rileggevano solo
+   * alla sua fine: al primo avvio, per tutto il tempo della lettura — minuti,
+   * su un disco di rete con cinquantamila brani — la barra laterale diceva
+   * «Brani 0», la Home proponeva di aggiungere una cartella, e il benvenuto non
+   * mostrava mai «Ascolta» prima della fine (R21-2). Adesso a ogni avanzamento,
+   * al più ogni {@link RILETTURA_IN_SCANSIONE_MS}: le viste si riempiono, e
+   * «Ascolta» si accende col primo lotto scritto.
+   */
+  const rilettaAlle = useRef(Number.NEGATIVE_INFINITY);
   useAscolto<Avanzamento>("scansione:avanzamento", (carico) => {
     conto.evento();
+    const adesso = performance.now();
+    if (adesso - rilettaAlle.current >= RILETTURA_IN_SCANSIONE_MS) {
+      rilettaAlle.current = adesso;
+      void libreria.rileggiInSilenzio();
+    }
     const r = strozzaScansione.current;
     r.valore = carico;
     const passato = performance.now() - r.ultimo;

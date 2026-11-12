@@ -16,17 +16,19 @@
 //!
 //! # Lo stesso ordine delle pagine, per costruzione
 //!
-//! Non c'è una seconda query scritta qui: si chiamano le stesse funzioni di
-//! `rymembra_app::library` che servono le pagine (`list_tracks`, `list_liked`,
-//! `search`), senza limite. Un ordine scritto due volte è un ordine che prima o
-//! poi diverge, e «Seleziona tutto» seguito da «Riproduci» suonerebbe un ordine
-//! diverso da quello che si vede.
+//! Non c'è una seconda query scritta qui: le domande stanno in
+//! `rymembra_app::library` accanto a quelle delle pagine (`id_dei_brani`,
+//! `id_dei_preferiti`, `id_della_ricerca`), con la **stessa** clausola d'ordine
+//! di `list_tracks`, `list_liked` e `search`. Un ordine scritto due volte è un
+//! ordine che prima o poi diverge, e «Seleziona tutto» seguito da «Riproduci»
+//! suonerebbe un ordine diverso da quello che si vede: le prove qui sotto lo
+//! confrontano con le pagine.
 //!
-//! Il prezzo è che si leggono le righe intere per tenerne il numero: su
-//! cinquantamila brani qualche decina di millisecondi, fuori dal filo della
-//! finestra. È il gesto di un clic, non di uno scorrimento.
+//! Si legge il solo identificativo. Prima si chiedevano le pagine senza fondo e
+//! si buttava tutto il resto: diciassette colonne di ogni riga, col lucchetto
+//! della libreria in mano, fra il doppio clic e il suono (R21-6).
 
-use rymembra_app::library::{TrackOrder, TrackSummary, list_liked, list_tracks, search};
+use rymembra_app::library::{TrackOrder, id_dei_brani, id_dei_preferiti, id_della_ricerca};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Deserialize;
 use tauri::Manager as _;
@@ -69,9 +71,6 @@ fn ordine_da(nome: &str) -> TrackOrder {
 
 /// Gli identificativi della vista, nell'ordine delle sue pagine.
 ///
-/// `-1` come limite è il «nessun limite» di SQLite: le funzioni sono quelle
-/// delle pagine, e una pagina senza fondo è la vista intera.
-///
 /// # Errori
 ///
 /// `db.*` dalla lettura.
@@ -79,12 +78,11 @@ fn identificativi(
     connection: &rusqlite::Connection,
     vista: &VistaBrani,
 ) -> Result<Vec<i64>, AppError> {
-    let righe: Vec<TrackSummary> = match vista {
-        VistaBrani::Brani { ordine } => list_tracks(connection, ordine_da(ordine), 0, -1)?,
-        VistaBrani::Preferiti => list_liked(connection, 0, -1)?,
-        VistaBrani::Ricerca { query } => search(connection, query, 0, -1)?,
-    };
-    Ok(righe.into_iter().map(|brano| brano.id).collect())
+    match vista {
+        VistaBrani::Brani { ordine } => id_dei_brani(connection, ordine_da(ordine)),
+        VistaBrani::Preferiti => id_dei_preferiti(connection),
+        VistaBrani::Ricerca { query } => id_della_ricerca(connection, query),
+    }
 }
 
 /// Gli identificativi di tutta la vista, per «Seleziona tutto» e per suonare
@@ -117,6 +115,7 @@ pub async fn vista_brani_id(app: tauri::AppHandle, vista: VistaBrani) -> Esito<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rymembra_app::library::{TrackSummary, list_liked, list_tracks, search};
 
     /// Una libreria in memoria con `n` brani, uno su tre fra i preferiti.
     fn libreria(n: i64) -> rusqlite::Connection {

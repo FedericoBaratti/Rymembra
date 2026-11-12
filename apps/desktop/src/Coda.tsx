@@ -21,7 +21,7 @@
  * difetto del riordino. Quindi: un gancio che tiene le righe, un elenco che le
  * disegna, e un pannello che è solo la cornice.
  */
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
 import { durata, nomeArtista, numero, titoloAlbum } from "./formato";
@@ -31,8 +31,16 @@ import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
 import { useProprietari } from "./parti/Insieme";
 import { usePresaPerRiordino } from "./riordino";
+import {
+  ATTESA_RIORDINO_MS,
+  prossimoRiordino,
+  sparizioniDaTogliere,
+  statoRiga,
+  type MappaRigheCoda,
+  type RiordinoInVolo,
+} from "./righeCoda";
 import { t, tSe, useLingua } from "./lingue";
-import { useVirtuale } from "./virtuale";
+import { pezziDellaFinestra, useVirtuale } from "./virtuale";
 import { conIndice, statoSuono } from "./segnali";
 import { useDati } from "./dati";
 import { Presenza } from "./presenza";
@@ -74,13 +82,26 @@ const TASTI_SENZA_PARTENZA = ".tasto, .tasto-altro";
  * fuori sessione; quando cambia, le voci si richiedono (`righeDaChiedere`).
  * Anche entrando e uscendo da una sessione: le maniglie sono della sessione, e
  * la `-3` di quella di prima non è la `-3` di questa.
+ *
+ * # Chiesta e non trovata
+ *
+ * Un brano chiesto che la risposta non porta è sparito dalla libreria mentre
+ * stava in coda: la mappa lo segna con `null`, ed è l'unico caso in cui la
+ * riga dice «non più in libreria» (`statoRiga`). Una riga che la mappa non ha
+ * ancora è in viaggio, e si disegna come uno scheletro: prima le due cose
+ * erano la stessa, e all'avvio con una coda grande ogni riga si dava per persa
+ * finché la risposta non arrivava (R13b-5).
+ *
+ * Una lettura fallita (il database occupato da una scansione) si riprova dopo
+ * {@link RIPROVA_RIGHE_MS}: senza, le righe restavano scheletri finché la coda
+ * non cambiava. L'errore si dice una volta, non a ogni tentativo.
  */
 export function useRigheCoda(
   coda: readonly number[],
   onErrore: (e: unknown) => void,
   voci: number | null,
-): Map<number, Brano> {
-  const [righe, setRighe] = useState<Map<number, Brano>>(new Map());
+): MappaRigheCoda {
+  const [righe, setRighe] = useState<Map<number, Brano | null>>(new Map());
   const letture = useDati().ipc;
   const chiave = coda.join(",");
   // Le righe già in mano, lette dall'effetto senza farne una dipendenza: una
@@ -92,6 +113,10 @@ export function useRigheCoda(
   // solo a lettura riuscita: un cambio di coda che annulla la richiesta a metà
   // la lascia da rifare al giro dopo, invece di darla per fatta.
   const vociLette = useRef<number | null | undefined>(undefined);
+  /** Cresce per rifare una lettura fallita. */
+  const [riprova, setRiprova] = useState(0);
+  /** La coda per cui l'errore è già stato detto: i tentativi dopo tacciono. */
+  const erroreDetto = useRef<string | null>(null);
 
   useEffect(() => {
     const ids = chiave.length > 0 ? chiave.split(",").map(Number) : [];
@@ -104,7 +129,7 @@ export function useRigheCoda(
     const prima = inMano.current;
     const stantie = vociLette.current !== undefined && vociLette.current !== voci;
     const mancanti = righeDaChiedere(ids, (id) => prima.has(id), stantie);
-    const restano = (mappa: Map<number, Brano>) =>
+    const restano = (mappa: Map<number, Brano | null>) =>
       new Map([...mappa].filter(([id]) => nominati.has(id)));
     if (mancanti.length === 0) {
       vociLette.current = voci;
@@ -112,25 +137,56 @@ export function useRigheCoda(
       return;
     }
     let annullato = false;
+    let attesa: number | undefined;
     letture
       .braniPerId(mancanti)
       .then((trovate) => {
         if (annullato) return;
         vociLette.current = voci;
+        erroreDetto.current = null;
         setRighe((adesso) => {
           const fusa = restano(adesso);
+          // Chieste e non trovate: sparite. Solo i brani della libreria; una
+          // voce di «Ascolta insieme» che non torna è una voce che la sessione
+          // non descrive più, non un brano tolto.
+          for (const id of mancanti) if (idDiLibreria(id)) fusa.set(id, null);
           for (const brano of trovate) fusa.set(brano.id, brano);
           return fusa;
         });
       })
-      .catch(onErrore);
+      .catch((e: unknown) => {
+        if (annullato) return;
+        if (erroreDetto.current !== chiave) {
+          erroreDetto.current = chiave;
+          onErrore(e);
+        }
+        attesa = window.setTimeout(() => setRiprova((n) => n + 1), RIPROVA_RIGHE_MS);
+      });
     return () => {
       annullato = true;
+      if (attesa !== undefined) window.clearTimeout(attesa);
     };
-  }, [chiave, onErrore, letture, voci]);
+  }, [chiave, onErrore, letture, voci, riprova]);
 
   return righe;
 }
+
+/** Dopo quanto riprovare le righe della coda, se la lettura è fallita. */
+const RIPROVA_RIGHE_MS = 2_000;
+
+/**
+ * Il menù di una riga della coda, da chi lo sa aprire: `App`.
+ *
+ * Un contesto e non una prop, perché la coda si disegna in quattro posti — la
+ * colonna, il pannello, lo schermo intero, il telefono — e il menù della riga
+ * deve esserci in tutti: è lì che stanno «Sposta su / giù / in cima», l'unico
+ * modo di riordinare la coda senza trascinare né usare la tastiera (R16-6,
+ * D-72). Fuori dalla finestra (lo Studio) nessuno lo fornisce, e la riga resta
+ * senza menù.
+ */
+export const MenuDellaCoda = createContext<
+  ((e: React.MouseEvent, indice: number, brano: Brano) => void) | null
+>(null);
 
 /**
  * L'elenco della coda, riordinabile.
@@ -166,7 +222,7 @@ export function RigheCoda({
   onMenu,
 }: {
   stato: StatoRiproduzione;
-  righe: Map<number, Brano>;
+  righe: MappaRigheCoda;
   onErrore: (e: unknown) => void;
   /** Nella terza colonna: niente durata, la larghezza non c'è. */
   compatta?: boolean | undefined;
@@ -178,6 +234,11 @@ export function RigheCoda({
    */
   onMenu?: ((e: React.MouseEvent, indice: number, brano: Brano) => void) | undefined;
 }) {
+  /* Il menù della riga: quello passato, o quello della finestra (`MenuDellaCoda`).
+     Sul computer si apre col tasto destro, sul telefono anche dal ⋮. */
+  const menuDellaFinestra = useContext(MenuDellaCoda);
+  const apriMenu = onMenu ?? menuDellaFinestra ?? undefined;
+  const { anteprima } = useDati();
   const [trascinato, setTrascinato] = useState<number | null>(null);
   /**
    * Su quale riga cadrebbe il rilascio adesso.
@@ -269,7 +330,7 @@ export function RigheCoda({
   const vai = useCallback(
     (indice: number) => {
       const id = coda[indice];
-      if (!codaLibera || id === undefined || !righe.has(id)) return;
+      if (!codaLibera || id === undefined || !righe.get(id)) return;
       ipc.codaVai(indice, id).catch(onErrore);
     },
     [coda, righe, onErrore, codaLibera],
@@ -296,11 +357,24 @@ export function RigheCoda({
    * al secondo con una coda nuova anche quando è la stessa, e solo il brano al
    * suo posto dice che il riordino è arrivato.
    */
-  const seguire = useRef<{ dove: number; id: number } | null>(null);
+  const seguire = useRef<(RiordinoInVolo & { entro: number }) | null>(null);
+  /** Il riordino in volo, se non è scaduto: vedi `ATTESA_RIORDINO_MS`. */
+  const inVolo = (): RiordinoInVolo | null => {
+    const atteso = seguire.current;
+    if (atteso !== null && Date.now() > atteso.entro) seguire.current = null;
+    return seguire.current;
+  };
   const vaiA = fuoco.vaiA;
   useEffect(() => {
     const atteso = seguire.current;
-    if (atteso === null || coda[atteso.dove] !== atteso.id) return;
+    if (atteso === null) return;
+    // Scaduto: il riordino non è arrivato, e un'attesa appesa porterebbe il
+    // fuoco qui più tardi, da dovunque sia.
+    if (Date.now() > atteso.entro) {
+      seguire.current = null;
+      return;
+    }
+    if (coda[atteso.dove] !== atteso.id) return;
     seguire.current = null;
     vaiA(atteso.dove);
     /* E poi dentro la vista, col minimo di scorrimento. Le due righe scambiate
@@ -327,9 +401,16 @@ export function RigheCoda({
         e.target instanceof HTMLElement ? e.target.closest<HTMLElement>(".riga-coda") : null;
       const indice = Number(riga?.dataset.indice);
       if (riga === null || !Number.isInteger(indice)) return;
-      const a = indice + (e.key === "ArrowDown" ? 1 : -1);
-      const id = coda[indice];
-      if (a < 0 || a >= coda.length || id === undefined) return;
+      // Col colpo di prima ancora in viaggio, si continua a portare il suo
+      // brano: vedi `prossimoRiordino`.
+      const colpo = prossimoRiordino(
+        coda,
+        inVolo(),
+        indice,
+        e.key === "ArrowDown" ? "giu" : "su",
+      );
+      if (colpo === null) return;
+      const { da, a, id } = colpo;
       e.preventDefault();
       e.stopPropagation();
       // Il fuoco segue la riga spostata invece di restare sulla posizione: chi
@@ -337,9 +418,9 @@ export function RigheCoda({
       // fuoco fermo farebbe scendere quella dopo al colpo successivo. Subito
       // sulla posizione d'arrivo — `vaiA` sa scorrere se è fuori dalla
       // finestra — e di nuovo quando la coda nuova arriva: vedi `seguire`.
-      seguire.current = { dove: a, id };
+      seguire.current = { dove: a, id, entro: Date.now() + ATTESA_RIORDINO_MS };
       fuoco.vaiA(a);
-      ipc.codaRiordina(indice, a, id).catch((errore: unknown) => {
+      ipc.codaRiordina(da, a, id).catch((errore: unknown) => {
         seguire.current = null;
         onErrore(errore);
       });
@@ -347,6 +428,36 @@ export function RigheCoda({
     }
     fuoco.daTastiera(e);
   };
+
+  /*
+   * Le righe sparite dalla libreria si tolgono dalla coda da sole (decisione G
+   * su R13b-5): una riga che non si può far partire e dice solo «non più in
+   * libreria» non serve a nessuno. Una volta per riga, dalla più in fondo e
+   * ognuna col suo brano (`sparizioniDaTogliere`), quindi se la coda cambia nel
+   * frattempo il nucleo non toglie un'altra riga. Non dallo Studio, che
+   * disegna una coda finta, e non in una sessione di «Ascolta insieme»: lì la
+   * coda è anche degli altri, e una voce che non si trova può essere una voce
+   * della sessione e non un brano tolto. La riga resta, col suo nome.
+   */
+  const chiesteVia = useRef(new Set<string>());
+  const inSessione = stato.insieme !== null;
+  useEffect(() => {
+    if (anteprima || !codaLibera || inSessione) return;
+    const via = sparizioniDaTogliere(coda, righe);
+    const chiavi = new Set(via.map((v) => `${v.indice}-${v.id}`));
+    // Si dimentica quel che non è più da togliere: una riga tolta lascia la
+    // coda, e il suo posto può tornare a essere di un altro.
+    for (const k of chiesteVia.current) if (!chiavi.has(k)) chiesteVia.current.delete(k);
+    const nuove = via.filter((v) => !chiesteVia.current.has(`${v.indice}-${v.id}`));
+    if (nuove.length === 0) return;
+    for (const v of nuove) chiesteVia.current.add(`${v.indice}-${v.id}`);
+    void nuove
+      .reduce<Promise<void>>(
+        (prima, v) => prima.then(() => ipc.codaTogli(v.indice, v.id)),
+        Promise.resolve(),
+      )
+      .catch(onErrore);
+  }, [coda, righe, codaLibera, anteprima, inSessione, onErrore]);
 
   if (stato.coda.length === 0) {
     return <p className="vuota-coda empty-state">{t("queue.empty")}</p>;
@@ -361,14 +472,27 @@ export function RigheCoda({
       /* Un gestore solo per tutte le righe, come nell'elenco dei brani. */
       onKeyDown={daTastiera}
     >
-      <li
-        className="paglia"
-        style={{ height: finestra.pagliaSopra }}
-        role="presentation"
-      />
-      {stato.coda.slice(finestra.primo, finestra.ultimo).map((id, k) => {
-        const indice = finestra.primo + k;
-        const brano = righe.get(id);
+      {/* La finestra, le paglie, e la riga col fuoco anche quando una rotellata
+          l'ha portata fuori: smontata, il fuoco cadeva sul `<body>` (R13b-7).
+          Vedi `pezziDellaFinestra`. */}
+      {pezziDellaFinestra(finestra.primo, finestra.ultimo, coda.length, fuoco.attivo).map((pezzo) => {
+        if ("paglia" in pezzo) {
+          return (
+            <li
+              key={pezzo.paglia}
+              className="paglia"
+              style={{
+                height: Math.max(finestra.inizioDi(pezzo.a) - finestra.inizioDi(pezzo.da), 0),
+              }}
+              role="presentation"
+            />
+          );
+        }
+        const indice = pezzo.riga;
+        const id = coda[indice];
+        if (id === undefined) return null;
+        const brano = righe.get(id) ?? undefined;
+        const comeSta = statoRiga(id, righe);
         const inAscolto = indice === stato.posizioneCoda;
         /* Il perché sta solo sul brano **subito dopo** quello in ascolto, ed è
            l'unico che ce l'ha: il nucleo spiega la scelta che ha appena fatto,
@@ -399,6 +523,12 @@ export function RigheCoda({
             {...statoSuono(inAscolto, stato.inPausa)}
             style={conIndice(indice)}
             data-indice={indice}
+            /* La posizione nella coda intera: la finestra ne disegna una
+               trentina, e senza questi il lettore di schermo diceva «7 di 32»
+               su una coda di diciottomila (R13b-6). */
+            aria-posinset={indice + 1}
+            aria-setsize={stato.coda.length}
+            aria-busy={comeSta === "attesa" || undefined}
             aria-current={inAscolto}
             data-active={inAscolto || undefined}
             data-sopra={(mirato === indice && trascinato !== indice) || undefined}
@@ -429,8 +559,8 @@ export function RigheCoda({
                 : undefined
             }
             onContextMenu={
-              MOBILE && onMenu !== undefined && brano !== undefined && idDiLibreria(id)
-                ? (e) => onMenu(e, indice, brano)
+              apriMenu !== undefined && brano !== undefined && idDiLibreria(id)
+                ? (e) => apriMenu(e, indice, brano)
                 : undefined
             }
           >
@@ -447,15 +577,26 @@ export function RigheCoda({
                  deve poter togliere: il tasto si spegne, la riga no. */
               disabled={!brano || !codaLibera}
             >
-              {/* `dir="auto"`: un titolo arabo o ebraico si legge da destra. */}
-              <span className="nome" dir="auto">
-                {brano ? brano.title : t("queue.goneTrack")}
-              </span>
-              <span className="autore" dir="auto">
-                {brano
-                  ? `${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`
-                  : `id ${id}`}
-              </span>
+              {/* `dir="auto"`: un titolo arabo o ebraico si legge da destra.
+                  Una riga in viaggio è uno scheletro, una sparita lo dice e
+                  basta: un «id 40213» non è un nome da mostrare a una persona. */}
+              {comeSta === "attesa" ? (
+                <>
+                  <span className="nome riga-finta skeleton" />
+                  <span className="autore riga-finta corta skeleton" />
+                </>
+              ) : (
+                <>
+                  <span className="nome" dir="auto">
+                    {brano ? brano.title : t("queue.goneTrack")}
+                  </span>
+                  {brano && (
+                    <span className="autore" dir="auto">
+                      {`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
+                    </span>
+                  )}
+                </>
+              )}
               {perche !== "" && !compatta && (
                 <span className="perche">{perche}</span>
               )}
@@ -476,13 +617,13 @@ export function RigheCoda({
                 {brano ? durata(brano.durationMs) : "—"}
               </span>
             )}
-            {MOBILE && onMenu !== undefined && brano !== undefined && idDiLibreria(id) ? (
+            {MOBILE && apriMenu !== undefined && brano !== undefined && idDiLibreria(id) ? (
               <button
                 type="button"
                 className="tasto-altro"
                 aria-label={t("row.more.aria", { titolo: brano.title })}
                 tabIndex={-1}
-                onClick={(e) => onMenu(e, indice, brano)}
+                onClick={(e) => apriMenu(e, indice, brano)}
               >
                 <Icona nome="i-dots-v" dim={20} />
               </button>
@@ -496,9 +637,13 @@ export function RigheCoda({
                    cosa senza sapere quale brano stava per perdere. Il brano non più
                    in libreria si nomina come si nomina nella riga — non c'è altro
                    nome da dargli. */
-                aria-label={t("queue.remove.aria", {
-                  titolo: brano ? brano.title : t("queue.goneTrack"),
-                })}
+                aria-label={
+                  comeSta === "attesa"
+                    ? t("queue.remove")
+                    : t("queue.remove.aria", {
+                        titolo: brano ? brano.title : t("queue.goneTrack"),
+                      })
+                }
                 /* Il `title` resta la frase corta: al passaggio del mouse il titolo
                    del brano è già scritto accanto, a due centimetri dal puntatore. */
                 title={codaLibera ? t("queue.remove") : t("together.gestures.off.title")}
@@ -519,11 +664,6 @@ export function RigheCoda({
           </li>
         );
       })}
-      <li
-        className="paglia"
-        style={{ height: finestra.pagliaSotto }}
-        role="presentation"
-      />
     </ol>
   );
 }

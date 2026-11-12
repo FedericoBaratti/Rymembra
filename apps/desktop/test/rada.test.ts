@@ -347,3 +347,82 @@ test("l'intervallo non chiede tutte le pagine insieme", async () => {
   assert.equal(righe.length, 1000);
   assert.ok(righe.every((r, i) => r === i));
 });
+
+// ── R13b-14: un intervallo con una pagina fallita non è un intervallo ──────
+
+test("l'intervallo riprova una pagina fallita da poco, e senza di lei non risponde", async () => {
+  const { a, richieste } = archivio(10);
+  a.imposta("v", 30);
+  // La pagina 1 fallisce: per due secondi la finestra non la richiede.
+  a.richiedi(10, 15);
+  for (const r of richieste) r.rifiuta(new Error("occupato"));
+  await giro();
+  const prima = richieste.length;
+  // Maiusc+clic da sopra a sotto quella pagina, subito dopo: è un gesto, e la
+  // pagina si richiede anche se è fallita da poco.
+  const promessa = a.intervallo(5, 24);
+  await giro();
+  const nuove = richieste.slice(prima);
+  assert.ok(
+    nuove.some((r) => r.offset === 10),
+    "la pagina fallita si richiede per l'intervallo",
+  );
+  // Fallisce ancora: l'intervallo avrebbe un buco, e non si restituisce.
+  for (const r of nuove) {
+    if (r.offset === 10) r.rifiuta(new Error("occupato"));
+    else r.risolvi(pagina(r.offset, r.limite, 30));
+  }
+  assert.equal(await promessa, null);
+});
+
+// ── R13b-2: chi possiede la lista la rinnova anche a totale uguale ─────────
+
+test("rinnova riporta il totale detto, anche uguale a quello di prima", async () => {
+  const { a, richieste } = archivio(10);
+  a.imposta("v", 30);
+  a.richiedi(0, 5);
+  // Gli identificativi erano vecchi: la pagina torna con un buco, e la lista
+  // la legge come la fine dell'elenco.
+  richieste[0]?.risolvi(pagina(0, 9, 30));
+  await giro();
+  assert.equal(a.totale, 9);
+  // Chi la possiede rilegge gli identificativi: sono di nuovo trenta (uno
+  // tolto, uno arrivato). `imposta` con lo stesso numero non direbbe niente.
+  a.rinnova(30);
+  assert.equal(a.totale, 30);
+});
+
+// ── R04b-1: un'àncora non si verifica su una pagina vecchia ────────────────
+
+import { ancoraUsabile } from "../src/selezione";
+
+test("rigaFresca non risponde da una pagina invalidata, e l'àncora non ci si appoggia", async () => {
+  const { a, richieste } = archivio(10);
+  a.imposta("v", 30);
+  a.richiedi(0, 5);
+  richieste[0]?.risolvi(pagina(0, 10, 30));
+  await giro();
+  // Clic sulla riga 3: l'àncora è il brano 3 in quella generazione.
+  const ancora = { indice: 3, id: 3, generazione: a.generazione };
+  // Le righe di questo archivio sono numeri: il brano è il numero stesso.
+  const ora = () => ({
+    generazione: a.generazione,
+    riga: (i: number) => {
+      const r = a.rigaFresca(i);
+      return r === undefined ? undefined : { id: r };
+    },
+  });
+  assert.equal(ancoraUsabile(ancora, ora()), 3);
+  // Una scansione cambia l'elenco: la pagina resta in mano (vecchia) e
+  // `riga` la mostra ancora, ma non dice più cosa c'è al posto 3 adesso.
+  a.invalida();
+  assert.equal(a.riga(3), 3, "la riga vecchia resta a schermo");
+  assert.equal(a.rigaFresca(3), undefined);
+  assert.equal(ancoraUsabile(ancora, ora()), null);
+  // Riletta, e con lo stesso brano al suo posto, l'àncora torna buona.
+  const prima = richieste.length;
+  a.richiedi(0, 5);
+  for (const r of richieste.slice(prima)) r.risolvi(pagina(r.offset, r.limite, 30));
+  await giro();
+  assert.equal(ancoraUsabile(ancora, ora()), 3);
+});
