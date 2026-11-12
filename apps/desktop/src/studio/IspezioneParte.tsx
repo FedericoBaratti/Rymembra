@@ -44,7 +44,15 @@ import { EditorCodice, useFonti } from "./EditorCodice";
 import { Livelli as PilaSfondi } from "./Pila";
 import { radiceParti, sentieroParte } from "./sentieri";
 import { immaginiDi } from "./usaPacchetto";
-import { angoliDopo, angoliTagliati, coloreCosto, costoDi, type Livello } from "./valori";
+import {
+  LIVELLI_PSEUDO_MASSIMI,
+  LIVELLI_SFONDO_MASSIMI,
+  angoliDopo,
+  angoliTagliati,
+  coloreCosto,
+  costoDi,
+  type Livello,
+} from "./valori";
 
 const oggetto = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -53,6 +61,13 @@ const oggetto = (v: unknown): Record<string, unknown> =>
 export function nomeCampo(campo: string): string {
   return tSe(`studio3.field.${campo}`, campo);
 }
+
+/**
+ * Le parti che vestono anche i dialoghi di consenso. Quei dialoghi ignorano
+ * livelli, immagini e caratteri della skin (`data-consenso`), e la tela non
+ * ne mostra uno: l'ispettore lo dice, invece di lasciarlo scoprire (D-70).
+ */
+const PARTI_DEI_CONSENSI = new Set(["glass-modal", "modal-veil"]);
 
 /** Il nome di un innesco del movimento. */
 export function nomeInnesco(nome: string): string {
@@ -161,6 +176,7 @@ function TestaParte({ def }: { def: ParteRegistro }) {
         </button>
       </div>
       <p className="descrizione">{tSe(`skin.part.${def.name}`, def.description)}</p>
+      {PARTI_DEI_CONSENSI.has(def.name) && <p className="nota-ispezione">{t("studio3.inspector.consentNote")}</p>}
       <div className="chip-parte">
         {def.before && <span className="chip-livello">::before</span>}
         {def.after && <span className="chip-livello">::after</span>}
@@ -277,6 +293,7 @@ function Stile({ def }: { def: ParteRegistro }) {
           motivi={motivi}
           immagini={immagini}
           budget={registro.budget}
+          massimo={LIVELLI_SFONDO_MASSIMI}
           onCambia={(nuovi) => p.scrivi("background", nuovi.length === 0 ? null : nuovi)}
         />
         <Riga che={nomeCampo("opacity")}>
@@ -444,6 +461,7 @@ function Stile({ def }: { def: ParteRegistro }) {
                       motivi={motivi}
                       immagini={immagini}
                       budget={registro.budget}
+                      massimo={LIVELLI_PSEUDO_MASSIMI}
                       titolo={`::${quale}`}
                       onCambia={(nuovi) =>
                         p.scriviBase(

@@ -1051,6 +1051,36 @@ pub fn studio_crea(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+// ── Le scorciatoie di una lettera ───────────────────────────────────────────
+
+/// La chiave delle impostazioni: le scorciatoie di una lettera dello Studio.
+const CHIAVE_LETTERE: &str = "studio.shortcuts.letters";
+
+/// Se le scorciatoie di una lettera dello Studio — «i», «f», «1»–«4» — sono
+/// accese. Di serie sì: erano così fino alla 3.2.
+///
+/// Si possono spegnere (D-69, WCAG 2.1.4 *Character Key Shortcuts*): chi usa
+/// il riconoscimento vocale, o batte una lettera col fuoco su un tasto,
+/// accendeva la sonda o faceva ripartire le animazioni senza volerlo.
+fn lettere_accese(connessione: &rusqlite::Connection) -> Result<bool, AppError> {
+    Ok(rymembra_app::settings::read_json::<bool>(connessione, CHIAVE_LETTERE)?.unwrap_or(true))
+}
+
+/// Le scorciatoie di una lettera dello Studio: accese o spente.
+#[tauri::command(async)]
+pub fn studio_lettere(stato: State<'_, Stato>) -> Esito<bool> {
+    con_libreria(&stato, |libreria| lettere_accese(&libreria.connection)).map_err(errore)
+}
+
+/// Accende o spegne le scorciatoie di una lettera dello Studio.
+#[tauri::command(async)]
+pub fn studio_lettere_imposta(stato: State<'_, Stato>, attive: bool) -> Esito<()> {
+    con_libreria(&stato, |libreria| {
+        rymembra_app::settings::write_json(&libreria.connection, CHIAVE_LETTERE, &attive)
+    })
+    .map_err(errore)
+}
+
 // ── La conversazione con la chat ────────────────────────────────────────────
 
 /// Il nome del file della conversazione, dentro la cartella della bozza.

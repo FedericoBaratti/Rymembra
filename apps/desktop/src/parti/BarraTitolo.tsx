@@ -35,6 +35,7 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 
 import { ipc } from "../ipc";
+import { tuttoScritto } from "../studio/primaDiChiudere";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
 
@@ -137,7 +138,13 @@ export function BarraTitolo() {
       onIngrandisci={() => {
         ipc.finestraIngrandisci().then(setIngrandita).catch(chiediStato);
       }}
-      onChiudi={() => void ipc.finestraChiudi().catch(() => {})}
+      // Prima lo Studio, se è aperto, scrive quel che ha in mano: vedi
+      // `studio/primaDiChiudere.ts` (R14-7).
+      onChiudi={() =>
+        void tuttoScritto()
+          .then(() => ipc.finestraChiudi())
+          .catch(() => {})
+      }
     />
   );
 }

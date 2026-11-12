@@ -413,6 +413,10 @@ export const ipc = {
   // è il testo dell'editor: il nucleo ne prende l'istantanea «scartata» e ci
   // mette accanto i file aggiunti e la conversazione.
   studioScarta: (id: string, sorgente: string) => invoke<string>("studio_scarta", { id, sorgente }),
+  // Le scorciatoie di una lettera dello Studio («i», «f», «1»–«4»): accese di
+  // serie, si spengono (D-69).
+  studioLettere: () => invoke<boolean>("studio_lettere"),
+  studioLettereImposta: (attive: boolean) => invoke<void>("studio_lettere_imposta", { attive }),
   // Vuole l'`id` perché il manifest è quello dell'editor ma le risorse sono
   // quelle del pacchetto: senza, una skin col suo carattere dentro lo perdeva
   // ogni volta che usciva da qui.

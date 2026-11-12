@@ -33,6 +33,7 @@ import { Activity, useCallback, useEffect, useMemo, useReducer, useRef, useState
 import { flushSync } from "react-dom";
 
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
+import { modaleAperto } from "../modale";
 import { ipc, testoErrore, type OperazioneIa, type Registro, type Skin } from "../ipc";
 import { t } from "../lingue";
 import { Avviso } from "../parti/Avvisi";
@@ -53,6 +54,7 @@ import { Livelli } from "./Livelli";
 import { creaMittente, type Mittente } from "./mittente";
 import { daSalvare, iniziale, riduci, testo, type SchedaSinistra } from "./negozio";
 import { leggi } from "./patch";
+import { primaDiChiudere } from "./primaDiChiudere";
 import { daFotografare, poiSeSalvato } from "./salvataggio";
 import { Schede } from "./Schede";
 import { usePacchetto } from "./usaPacchetto";
@@ -156,6 +158,21 @@ export function Studio({
       vivo = false;
     };
   }, [id, onErrore, tentativo]);
+
+  // Le scorciatoie di una lettera, accese o spente: una volta, all'apertura.
+  // Un guasto le lascia accese, com'erano fino alla 3.2, e si dice.
+  useEffect(() => {
+    let vivo = true;
+    ipc
+      .studioLettere()
+      .then((lettere) => {
+        if (vivo) manda({ tipo: "imposta", campi: { lettere } });
+      })
+      .catch(onErrore);
+    return () => {
+      vivo = false;
+    };
+  }, [onErrore]);
 
   // ── la validazione: l'ultimo vince ─────────────────────────────────────
   //
@@ -266,6 +283,17 @@ export function Studio({
       for (const svuota of sospesi.current) svuota();
     });
   }, []);
+  // La X della finestra aspetta che lo Studio abbia scritto quel che ha in
+  // mano: il respiro degli 800 ms non sopravvive alla chiusura (R14-7).
+  useEffect(
+    () =>
+      primaDiChiudere(async () => {
+        svuotaSospesi();
+        await salva();
+      }),
+    [salva, svuotaSospesi],
+  );
+
   /** La domanda di «Esci» con un codice che non si è potuto applicare. */
   const [domandaUscita, setDomandaUscita] = useState<Domanda | null>(null);
 
@@ -441,6 +469,10 @@ export function Studio({
   // ── la tastiera ─────────────────────────────────────────────────────────
   useEffect(() => {
     const ascolta = (e: KeyboardEvent) => {
+      // Una finestrella aperta sopra lo Studio — una conferma, un dialogo —
+      // ha la tastiera: fino alla 3.2 Ctrl+Z annullava un passo del documento
+      // dietro la domanda, e scrivere nel dialogo accendeva la sonda.
+      if (modaleAperto()) return;
       const ora = attuale.current;
       const mod = e.ctrlKey || e.metaKey;
       const tasto = e.key.toLowerCase();
@@ -486,6 +518,8 @@ export function Studio({
         manda({ tipo: "scegli", selezione: null });
         return;
       }
+      // Le scorciatoie di una lettera, se chi lavora non le ha spente (D-69).
+      if (!ora.lettere) return;
       if (tasto === "i") {
         e.preventDefault();
         manda({ tipo: "imposta", campi: { sonda: !ora.sonda } });

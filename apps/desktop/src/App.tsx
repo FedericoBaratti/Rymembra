@@ -652,11 +652,30 @@ export function App() {
    * deve lasciare la finestra com'è dopo una chiusura normale, prova
    * dimenticata e skin rilette compresi.
    */
+  /**
+   * Il controllo che aveva il fuoco quando lo Studio si è aperto, per
+   * rimettercelo all'uscita (R14-10). Senza, il fuoco cadeva sul `<body>` e
+   * chi usa la tastiera o un lettore di schermo ripartiva dall'inizio della
+   * finestra invece che da Impostazioni › Aspetto.
+   */
+  const fuocoPrimaDelloStudio = useRef<HTMLElement | null>(null);
+  const ricordaIlFuoco = useCallback(() => {
+    const qui = document.activeElement;
+    fuocoPrimaDelloStudio.current = qui instanceof HTMLElement && qui !== document.body ? qui : null;
+  }, []);
   const esciDalloStudio = useCallback(() => {
     setStudioAperto(null);
     skinFinestra.scordaProva();
     // Le skin possono essere cambiate mentre si era là dentro.
     void ricaricaSkin();
+    // Dopo il disegno: finché lo Studio c'è, la finestra sotto è `inert`.
+    const torna = fuocoPrimaDelloStudio.current;
+    fuocoPrimaDelloStudio.current = null;
+    if (torna !== null) {
+      window.requestAnimationFrame(() => {
+        if (torna.isConnected) torna.focus();
+      });
+    }
   }, [skinFinestra, ricaricaSkin]);
 
   /**
@@ -2676,6 +2695,7 @@ export function App() {
         // senza chiudere la prova non mostrava niente, e dopo «Torna» lo
         // Studio era ancora sulla bozza di prima. Si torna, e si apre.
         finisciProva();
+        ricordaIlFuoco();
         setStudioAperto(id);
       },
       onImporta: importaDatabase,
@@ -2700,6 +2720,7 @@ export function App() {
       setImportandoAccount,
       setRipristinando,
       finisciProva,
+      ricordaIlFuoco,
     ],
   );
 

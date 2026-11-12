@@ -287,11 +287,55 @@ test("i problemi e gli avvisi del validatore si mostrano tradotti (D-46)", () =>
   }
 });
 
+test("l'ispettore delle finestre modali dice che i consensi non si personalizzano (D-70)", () => {
+  // L'autore ridisegna `glass-modal` e i caratteri, ma i dialoghi di consenso
+  // ignorano livelli, immagini e caratteri: lo Studio non lo diceva.
+  const parte = sorgente("IspezioneParte.tsx");
+  assert.match(parte, /PARTI_DEI_CONSENSI\.has\(def\.name\) && <p className="nota-ispezione">\{t\("studio3\.inspector\.consentNote"\)\}<\/p>/);
+  assert.match(parte, /PARTI_DEI_CONSENSI = new Set\(\["glass-modal", "modal-veil"\]\)/);
+});
+
+test("«Aggiungi un livello» ha il tetto del formato (R14-6)", () => {
+  const pila = sorgente("Pila.tsx");
+  const livelli = pila.slice(pila.indexOf("export function Livelli("));
+  assert.match(livelli, /disabled=\{!puoAggiungere\(livelli\.length, massimo\)\}/, "il tasto non ha un tetto");
+  const parte = sorgente("IspezioneParte.tsx");
+  assert.match(parte, /massimo=\{LIVELLI_SFONDO_MASSIMI\}/);
+  assert.match(parte, /massimo=\{LIVELLI_PSEUDO_MASSIMI\}/);
+});
+
 test("i file mancanti spengono «Salva e usa», si vedono fra i Problemi e tornano all'assistente (R14-5)", () => {
   assert.match(sorgente("BarraStudio.tsx"), /statoBozza\(s, mancanti\.length\)/);
   assert.match(sorgente("Dock.tsx"), /risorseMancanti\(/);
   const chat = sorgente("Chat.tsx");
   assert.match(chat, /const restano = \[\.\.\.controllo\.errori, \.\.\.risorseMancanti\(controllo\.risorse, file\)\.map\(problemaRisorsa\)\]/);
+});
+
+test("le scorciatoie dello Studio tacciono sotto una finestrella, e quelle di una lettera si spengono (R14-10, D-69)", () => {
+  // Con una ConfermaGesto aperta Ctrl+Z annullava un passo del documento che
+  // stava dietro la domanda, e scrivere in un dialogo sopra lo Studio faceva
+  // scattare la sonda; «i», «f» e «1»–«4» non si potevano spegnere (WCAG 2.1.4).
+  const guscio = sorgente("Guscio.tsx");
+  const ascolta = guscio.slice(guscio.indexOf("const ascolta = (e: KeyboardEvent) => {"), guscio.indexOf('window.addEventListener("keydown", ascolta)'));
+  assert.match(ascolta, /if \(modaleAperto\(\)\) return;/, "i tasti passano sotto una finestrella");
+  assert.ok(ascolta.indexOf("modaleAperto()") < ascolta.indexOf('tasto === "z"'), "la guardia viene dopo Ctrl+Z");
+  assert.match(ascolta, /if \(!ora\.lettere\) return;/, "le lettere non si spengono");
+  assert.ok(ascolta.indexOf("!ora.lettere") < ascolta.indexOf('tasto === "i"'));
+  assert.match(guscio, /ipc\s*\.studioLettere\(\)/, "la preferenza non si legge");
+  assert.match(sorgente("IspezioneVoci.tsx"), /ipc\.studioLettereImposta\(/, "manca l'interruttore");
+});
+
+test("uscendo dallo Studio il fuoco torna da dove si era entrati (R14-10)", () => {
+  const app = dellApp("App.tsx");
+  assert.match(corpo(app, "const esciDalloStudio = useCallback("), /fuocoPrimaDelloStudio\.current/);
+  const apri = app.slice(app.indexOf("onApriStudio: (id) => {"), app.indexOf("onImporta: importaDatabase"));
+  assert.match(apri, /ricordaIlFuoco\(\)/);
+});
+
+test("la X della finestra passa dallo Studio prima di chiudere (R14-7)", () => {
+  const barra = readFileSync(new URL("../src/parti/BarraTitolo.tsx", import.meta.url), "utf8");
+  assert.match(barra, /tuttoScritto\(\)\s*\.then\(\(\) => ipc\.finestraChiudi\(\)\)/);
+  assert.match(sorgente("Guscio.tsx"), /primaDiChiudere\(async \(\) => \{\s*svuotaSospesi\(\);\s*await salva\(\);/);
 });
 
 test("gli scarti della chat si mostrano tradotti; al modello torna l'italiano (D-68)", () => {

@@ -1631,6 +1631,16 @@ fn un_problema_arriva_alla_finestra_con_la_sua_chiave_e_i_suoi_valori() {
 }
 
 #[test]
+fn le_scorciatoie_di_una_lettera_sono_accese_di_serie_e_si_spengono() {
+    // D-69: si spengono, e la scelta resta.
+    let libreria = rymembra_app::db::open_in_memory().expect("un database in memoria");
+    assert!(lettere_accese(&libreria.connection).expect("letta"));
+    rymembra_app::settings::write_json(&libreria.connection, CHIAVE_LETTERE, &false)
+        .expect("scritta");
+    assert!(!lettere_accese(&libreria.connection).expect("riletta"));
+}
+
+#[test]
 fn le_ragioni_della_chat_si_traducono_e_l_italiano_e_il_modello_del_catalogo() {
     // D-68: le ragioni degli scarti di una risposta della chat arrivavano solo
     // in italiano. Ogni ragione porta ora la chiave `studio3.reject.ia.*` e i

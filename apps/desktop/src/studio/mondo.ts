@@ -334,6 +334,11 @@ const LETTURE: LettureDati = {
   cartelleFile: (_radici, percorso) => subito(fileDi(percorso)),
   cartelleBrani: () => subito(BRANI.slice(0, 8).map((b) => b.id)),
   impostaCartelleUi: () => subito(undefined),
+  // Le radici finte rispondono sempre, e il pannello non ha un ricordo: la
+  // sonda vera interrogava il disco di chi disegna, e il ricordo vero lo
+  // lasciava su una cartella che l'albero finto non ha (R13b-12).
+  cartelleRadiciVive: (radici) => subito(radici.map(() => true)),
+  cartelleUi: () => subito({ aperte: [], scelta: null }),
   esploraCerca: () => subito(ESITO_ESPLORA),
   // Già cercato e niente da chiedere: il pannello del testo, nell'anteprima,
   // non va in rete e non legge la libreria vera.

@@ -75,6 +75,15 @@ export interface StatoStudio {
   chat: boolean;
   /** La sonda: il puntatore sulla tela dice come si chiama quel che tocca. */
   sonda: boolean;
+  /**
+   * Le scorciatoie di una lettera sola — «i», «f», «1»–«4» — sono accese.
+   *
+   * Si possono spegnere (D-69, WCAG 2.1.4): chi usa il riconoscimento vocale,
+   * o batte una lettera col fuoco su un tasto, accendeva la sonda o faceva
+   * ripartire le animazioni senza volerlo. La scelta si ricorda nelle
+   * impostazioni (`studio_lettere`), e arriva dopo l'apertura.
+   */
+  lettere: boolean;
   /** Cresce per far ripartire le animazioni della tela. */
   rigioca: number;
   /** Il trasporto finto della tela: il disco che gira gira solo se suona. */
@@ -118,6 +127,7 @@ type CampiUi = Pick<
   | "dock"
   | "chat"
   | "sonda"
+  | "lettere"
   | "forza"
   | "inPausa"
 >;
@@ -195,6 +205,7 @@ export function iniziale(id: string): StatoStudio {
     dock: null,
     chat: false,
     sonda: true,
+    lettere: true,
     rigioca: 0,
     inPausa: false,
     riga: null,
