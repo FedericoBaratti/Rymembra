@@ -26,6 +26,8 @@ const {
   problemiMapping,
   problemiFirma,
   problemiSig,
+  problemiRisorse,
+  iconeDellAuto,
 } = require("./apk.js");
 
 const IMPRONTA = "24:85:94:2C:0F:5D:73:42:97:CD:96:A6:65:19:C7:2E:49:22:C7:05:37:E8:F3:9A:B2:D9:80:60:24:18:2A:C1";
@@ -265,4 +267,62 @@ test("il .apk.sig è della chiave dell'updater, per quella versione e quel file"
   assert.match(problemiSig(senzaVersione.sig, { pubkey: senzaVersione.pubkey, versione: "3.2.1", file }).join("\n"), /\(nessuna\)/);
   const altroFile = sig("timestamp:1790000000\tfile:app-arm64-release-unsigned.apk\tversion:3.2.1");
   assert.match(problemiSig(altroFile.sig, { pubkey: altroFile.pubkey, versione: "3.2.1", file }).join("\n"), /un altro file/);
+});
+
+/* ── aapt2 dump resources ─────────────────────────────────────────────── */
+
+/**
+ * L'uscita vera di `aapt2 dump resources` (build-tools 36.1.0) sulla release di
+ * prova di R11, quella senza `keep.xml`: dopo `abc_vector_test` (0x76) viene
+ * `avd_hide_password` (0x7d), e i sei identificativi in mezzo sono le icone di
+ * Android Auto che la riduzione delle risorse ha tolto. Accorciata.
+ */
+const RISORSE_SENZA = [
+  "Binary APK",
+  "Package name=io.github.federicobaratti.rymembra id=7f",
+  "  type drawable id=07 entryCount=262",
+  "    resource 0x7f070075 drawable/abc_textfield_search_material",
+  "      () (file) res/4u.xml type=XML",
+  "    resource 0x7f070076 drawable/abc_vector_test",
+  "      () (file) res/hq.xml type=XML",
+  "    resource 0x7f07007d drawable/avd_hide_password",
+  "      () (file) res/Tf.xml type=XML",
+  "  type string id=0f entryCount=121",
+  "    resource 0x7f0f0010 string/auto_album",
+  "      () \"Album\"",
+  "",
+].join("\n");
+
+/** La stessa, con le sei icone tenute: i nomi restano, i file hanno il nome corto di R8. */
+function risorseCon(nomi) {
+  const righe = RISORSE_SENZA.split("\n");
+  const dopo = righe.indexOf("      () (file) res/hq.xml type=XML") + 1;
+  const icone = nomi.flatMap((nome, i) => [
+    `    resource 0x7f07007${(7 + i).toString(16)} drawable/${nome}`,
+    `      () (file) res/a${i}.xml type=XML`,
+  ]);
+  return [...righe.slice(0, dopo), ...icone, ...righe.slice(dopo)].join("\n");
+}
+
+test("le icone di Android Auto sono le sei auto_* del progetto", () => {
+  assert.deepEqual(iconeDellAuto(), ["auto_album", "auto_artisti", "auto_playlist", "auto_preferiti", "auto_recenti", "auto_suona"]);
+});
+
+test("un APK con le sei icone di Android Auto passa", () => {
+  assert.deepEqual(problemiRisorse(risorseCon(iconeDellAuto()), iconeDellAuto()), []);
+});
+
+test("un APK senza le icone di Android Auto ferma la release (R11-5)", () => {
+  // Nella release di prova R8 le aveva tolte tutte: l'auto mostrava le
+  // schede senza icona, e nessun controllo se ne accorgeva.
+  const problemi = problemiRisorse(RISORSE_SENZA, iconeDellAuto());
+  assert.equal(problemi.length, 6, problemi.join("\n"));
+  assert.match(problemi[0], /drawable\/auto_album/);
+  // Una stringa con lo stesso nome non è l'icona.
+  assert.match(problemi.join("\n"), /auto_album/);
+  // Ne basta una che manca.
+  const cinque = iconeDellAuto().filter((n) => n !== "auto_suona");
+  assert.deepEqual(problemiRisorse(risorseCon(cinque), iconeDellAuto()).length, 1);
+  // Un'uscita che non è quella di aapt2 non passa per buona.
+  assert.match(problemiRisorse("", iconeDellAuto()).join("\n"), /non ha descritto/);
 });
