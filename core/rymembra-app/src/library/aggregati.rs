@@ -78,6 +78,12 @@ pub(super) const ARTISTA_EFFETTIVO: &str = "TRIM(COALESCE(NULLIF(TRIM(album_arti
 pub fn rebuild_aggregates(tx: &Transaction<'_>) -> Result<Aggregates, AppError> {
     #[cfg(test)]
     INTERE_IN_QUESTO_FILO.with(|n| n.set(n.get().saturating_add(1)));
+    // Prima di raggruppare: una libreria costruita con una regola delle chiavi
+    // di base più vecchia si rimette sulla regola di adesso. Vedi
+    // [`PRIMA_DELLE_CHIAVI_NUOVE`].
+    if versione_degli_aggregati(tx)?.is_some_and(|v| (1..PRIMA_DELLE_CHIAVI_NUOVE).contains(&v)) {
+        rifai_le_chiavi_di_base(tx)?;
+    }
     let members = {
         let mut statement = tx
             .prepare(
@@ -173,7 +179,93 @@ thread_local! {
 ///   vecchi, e le chiavi toccate perse con la transazione. Una libreria che a
 ///   quel punto diceva già 1 restava «in regola» senza esserlo, e nessuna
 ///   passata per chiavi l'avrebbe rimessa a posto.
-pub const VERSIONE_AGGREGATI: i64 = 2;
+///
+/// - **3** — cambiano le chiavi di base e l'artista di un album: due cartelle
+///   «The Wall (CD1)» e «The Wall (CD2)» sono un disco solo, «(Vol. 2)» non è
+///   più una coda d'edizione, e una raccolta di molti interpreti senza
+///   maggioranza è di «Various Artists» invece che dell'interprete dal nome più
+///   corto (R07-2, R07-3, R07-4). Le chiavi di base stanno scritte sui brani,
+///   quindi alzare il numero non basta: la prima ricostruzione intera di una
+///   libreria alla 1 o alla 2 le ricalcola tutte, vedi
+///   [`PRIMA_DELLE_CHIAVI_NUOVE`].
+pub const VERSIONE_AGGREGATI: i64 = 3;
+
+/// La prima versione degli aggregati con le chiavi di base di adesso.
+///
+/// # Perché le chiavi si rifanno, e quando
+///
+/// `tracks.album_key` la scrive chi scrive il brano — la scansione, il
+/// catalogo, l'arricchimento, una correzione — con
+/// [`rymembra_domain::album::album_group_key`], e poi la ricostruzione la
+/// riscrive sulla chiave canonica. Una regola nuova la usano solo i brani
+/// scritti da lì in poi: senza ricalcolare le altre, il primo file riletto di
+/// una cartella «The Wall (CD1)» finiva sotto la chiave nuova e i suoi
+/// compagni sotto quella vecchia, cioè un album spezzato proprio da chi doveva
+/// riunirlo.
+///
+/// Si rifanno quindi una volta, alla prima ricostruzione intera di una
+/// libreria costruita da una versione fra la 1 e questa esclusa: per ogni brano
+/// la chiave di base dal suo `album` e dal suo percorso (l'indirizzo, per un
+/// brano di catalogo, che un file non ce l'ha), e la ricostruzione che segue la
+/// riporta sulla canonica. Lo zero non si tocca: è «non si sa» — un database
+/// appena creato, o «Rileggi tutti i tag», che le chiavi le riscrive comunque
+/// rileggendo i file.
+const PRIMA_DELLE_CHIAVI_NUOVE: i64 = 3;
+
+/// La versione con cui sono stati costruiti gli aggregati, se c'è la riga di
+/// stato.
+fn versione_degli_aggregati(connection: &Connection) -> Result<Option<i64>, AppError> {
+    use rusqlite::OptionalExtension as _;
+    connection
+        .query_row(
+            "SELECT aggregati FROM libreria_stato WHERE id = 1",
+            [],
+            |riga| riga.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|err| db_error("versione degli aggregati", &err))
+}
+
+/// Ricalcola la chiave di base di ogni brano che ne ha una: vedi
+/// [`PRIMA_DELLE_CHIAVI_NUOVE`].
+///
+/// Anche i brani sotto una chiave canonica (`mbrg:`, `mbr:`, `sp:`) tornano
+/// alla loro chiave di base, e non è lavoro buttato: la regola nuova può
+/// mettere nello stesso gruppo un disco identificato e uno che non lo è — i
+/// due «CD» della stessa uscita — e solo dalla chiave di base la
+/// ricostruzione lo vede. Chi aveva la canonica la ritrova subito dopo.
+fn rifai_le_chiavi_di_base(tx: &Transaction<'_>) -> Result<(), AppError> {
+    let fallito = |err: &rusqlite::Error| db_error("ricalcolo delle chiavi d'album", err);
+    let righe: Vec<(i64, String, String, String)> = {
+        let mut statement = tx
+            .prepare(
+                "SELECT id, album, COALESCE(path, fonte_url), album_key FROM tracks
+                 WHERE album_key IS NOT NULL AND album_key <> ''
+                   AND COALESCE(path, fonte_url) IS NOT NULL",
+            )
+            .map_err(|err| fallito(&err))?;
+        let lette = statement
+            .query_map([], |riga| {
+                Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?, riga.get(3)?))
+            })
+            .map_err(|err| fallito(&err))?;
+        lette
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| fallito(&err))?
+    };
+    let mut scrivi = tx
+        .prepare_cached("UPDATE tracks SET album_key = ?2 WHERE id = ?1")
+        .map_err(|err| fallito(&err))?;
+    for (id, album, dove, adesso) in righe {
+        let di_base = album_group_key(&album, &dove);
+        if di_base != adesso {
+            scrivi
+                .execute(rusqlite::params![id, di_base])
+                .map_err(|err| fallito(&err))?;
+        }
+    }
+    Ok(())
+}
 
 /// Oltre quante chiavi d'album toccate conviene rifare tutto.
 ///
@@ -870,3 +962,7 @@ pub(super) fn ricostruisci_gli_artisti(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "prove_aggregati.rs"]
+mod prove;

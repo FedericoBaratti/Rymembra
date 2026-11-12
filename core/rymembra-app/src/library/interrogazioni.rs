@@ -203,17 +203,94 @@ pub enum TrackOrder {
     Title,
 }
 
+/// Il nome della funzione SQL che dà la chiave d'ordine di un nome: vedi
+/// [`assicura_ordine`].
+const ORDINE: &str = "rymembra_ordine";
+
+/// Registra sulla connessione la chiave d'ordine dei nomi, se manca.
+///
+/// # Perché una funzione e non `COLLATE NOCASE`
+///
+/// `NOCASE` piega solo l'ASCII e confronta per byte il resto: «È la pioggia
+/// che va», «Ça plane pour moi» ed «Édith Piaf» finivano dopo la Z, e «The
+/// Beatles» stava sotto T negli Album e sotto B negli Artisti, che si ordinano
+/// in Rust con [`rymembra_domain::keys::sort_name`]. Gli Album seguono ora
+/// la stessa chiave degli Artisti — senza accenti, senza l'articolo in testa
+/// (D-104) —, e la regola resta una sola, nel dominio: SQLite la chiama.
+///
+/// Una funzione e non una collazione: una funzione SQLite la calcola una volta
+/// per riga e ordina le chiavi, una collazione la richiamerebbe a ogni
+/// confronto. Il prezzo è che nessun indice serve l'ordinamento, e ogni pagina
+/// ordina la tabella in un B-tree temporaneo. Per gli album — un ordine di
+/// grandezza meno dei brani — è un prezzo che si paga; per i brani no, vedi
+/// [`TrackOrder::sql`].
+///
+/// # Perché qui e non all'apertura del database
+///
+/// La stessa ragione di `smart::assicura_piegatura`: la usano solo le domande
+/// della libreria, e registrarla qui la rende indipendente da chi ha aperto la
+/// connessione. Si prova con una `SELECT` preparata una volta sola e si registra
+/// solo se manca: ridefinirla scadrebbe tutte le istruzioni preparate.
+///
+/// # Errori
+///
+/// `db.queryFailed` se SQLite non accetta la funzione.
+pub(super) fn assicura_ordine(connection: &Connection) -> Result<(), AppError> {
+    use rusqlite::functions::FunctionFlags;
+    use rusqlite::types::{Value as SqlValue, ValueRef};
+    if connection
+        .prepare_cached(&format!("SELECT {ORDINE}('')"))
+        .is_ok()
+    {
+        return Ok(());
+    }
+    connection
+        .create_scalar_function(
+            ORDINE,
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |contesto| {
+                Ok(match contesto.get_raw(0) {
+                    ValueRef::Text(byte) => SqlValue::Text(rymembra_domain::keys::sort_name(
+                        &String::from_utf8_lossy(byte),
+                    )),
+                    ValueRef::Null => SqlValue::Null,
+                    ValueRef::Integer(n) => SqlValue::Integer(n),
+                    ValueRef::Real(x) => SqlValue::Real(x),
+                    ValueRef::Blob(byte) => SqlValue::Blob(byte.to_vec()),
+                })
+            },
+        )
+        .map_err(|err| db_error("chiave d'ordine dei nomi", &err))
+}
+
 impl TrackOrder {
     /// La clausola `ORDER BY`. Chiusa in un `match`, mai composta da stringhe
     /// che arrivano da fuori: un ordinamento scelto dall'interfaccia non deve
     /// poter diventare un'iniezione.
+    ///
+    /// Scaffale e Titolo restano su `NOCASE`, e non seguono ancora la chiave
+    /// degli Artisti come gli Album (D-104): li servono `idx_tracks_scaffale` e
+    /// `idx_tracks_titolo`, e con [`assicura_ordine`] ogni pagina ordinava tutta
+    /// la libreria — su cinquantamila brani, in debug, la prima pagina per
+    /// scaffale passava da 1,4 a 1.210 ms. Per farlo bene ci vuole la chiave
+    /// scritta in una colonna, con il suo indice: una migrazione.
     pub(super) const fn sql(self) -> &'static str {
         match self {
             Self::Shelf => {
                 "t.artist COLLATE NOCASE, t.album COLLATE NOCASE,
                  t.disc_number, t.track_number, t.title COLLATE NOCASE"
             }
-            Self::RecentlyAdded => "t.date_added DESC, t.id DESC",
+            // A parità d'ingresso l'ordine del disco, non l'identificativo: una
+            // scansione scrive un lotto intero con lo stesso istante, e con
+            // `t.id DESC` decideva l'ordine di lettura **rovesciato** — «Ascolta»
+            // del primo avvio partiva dall'ultima traccia dell'ultimo disco, e un
+            // album senza pause suonava all'indietro. Qui lo prendono tutti:
+            // l'ordinamento dei Brani, le viste, il giro guidato, Sfoglia da un
+            // altro dispositivo.
+            Self::RecentlyAdded => {
+                "t.date_added DESC, t.album_key, t.disc_number, t.track_number, t.path, t.id"
+            }
             Self::MostPlayed => "t.play_count DESC, t.last_played_at DESC, t.title COLLATE NOCASE",
             // In SQLite `NULL` è più piccolo di tutto, quindi un `DESC` mette
             // già i mai ascoltati in fondo, per regola documentata. `IS NULL`
@@ -280,6 +357,65 @@ pub fn ascoltati_di_recente(
         .map_err(|err| db_error("ascoltati di recente", &err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("ascoltati di recente", &err))
+}
+
+/// Da quanti giorni un brano dev'essere fermo per contare come «trascurato».
+///
+/// Sei mesi. Trenta giorni sarebbero «non di questo mese», che su una libreria
+/// vera comprende quasi tutto e non racconta niente.
+pub const GIORNI_TRASCURATO: i64 = 180;
+
+/// Da quanti giorni un brano dev'essere in libreria per poter essere
+/// «trascurato».
+///
+/// Trenta (D-63). «Non negli ultimi sei mesi» comprende anche chi non è mai
+/// stato ascoltato — è la playlist delle canzoni dimenticate, e la regola lo
+/// vuole —, ma un brano entrato cinque minuti fa non è dimenticato, è nuovo: al
+/// primo avvio il ripiano si riempiva di dodici brani appena scansionati, gli
+/// stessi di «Aggiunti di recente».
+pub const GIORNI_NUOVO: i64 = 30;
+
+/// I brani che non ascolti da un po', a caso: il ripiano «Non li ascolti da un
+/// po'» della Home.
+///
+/// Passa dal motore delle regole invece che da una query scritta a mano: è la
+/// stessa domanda che una playlist intelligente sa già fare, e scriverla due
+/// volte vorrebbe dire due idee di cosa significhi «non di recente». Sta qui e
+/// non nel comando della Home perché è una regola sulla libreria, e la Home del
+/// telefono la chiede uguale.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn trascurati(
+    connection: &Connection,
+    adesso_ms: i64,
+    quanti: u32,
+) -> Result<Vec<TrackSummary>, AppError> {
+    use rymembra_domain::regole::{
+        Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
+    };
+    crate::smart::brani(
+        connection,
+        &Insieme {
+            combinazione: Combinazione::Tutte,
+            regole: vec![
+                Regola {
+                    campo: Campo::UltimoAscolto,
+                    operatore: Operatore::NonNegliUltimi,
+                    valore: Valore::Numero(GIORNI_TRASCURATO),
+                },
+                Regola {
+                    campo: Campo::Aggiunto,
+                    operatore: Operatore::NonNegliUltimi,
+                    valore: Valore::Numero(GIORNI_NUOVO),
+                },
+            ],
+            limite: Some(quanti),
+            ordinamento: Ordinamento::Casuale,
+        },
+        adesso_ms,
+    )
 }
 
 /// La domanda di [`ascoltati_di_recente`], a parte perché la prova ne guardi
@@ -837,9 +973,11 @@ pub fn list_albums(
     offset: i64,
     limit: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
+    // La chiave degli Artisti anche qui (D-104): vedi `assicura_ordine`.
+    assicura_ordine(connection)?;
     let sql = format!(
         "SELECT {COLONNE_ALBUM} FROM albums a
-         ORDER BY a.artist COLLATE NOCASE, a.year, a.title COLLATE NOCASE
+         ORDER BY {ORDINE_DEGLI_ALBUM}
          LIMIT ?1 OFFSET ?2"
     );
     let mut statement = connection
@@ -851,6 +989,11 @@ pub fn list_albums(
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("elenco degli album", &err))
 }
+
+/// L'ordine della griglia degli album: artista, anno, titolo, con la chiave
+/// degli Artisti. Lo stesso per Sfoglia da un altro dispositivo.
+pub(super) const ORDINE_DEGLI_ALBUM: &str =
+    "rymembra_ordine(a.artist), a.year, rymembra_ordine(a.title), a.album_key";
 
 /// I dischi entrati in libreria per ultimi.
 ///
@@ -1154,3 +1297,7 @@ pub fn search_count(connection: &Connection, query: &str) -> Result<i64, AppErro
         .and_then(|mut statement| statement.query_row([&expression], |row| row.get(0)))
         .map_err(|err| db_error("conteggio della ricerca", &err))
 }
+
+#[cfg(test)]
+#[path = "prove_interrogazioni.rs"]
+mod prove;

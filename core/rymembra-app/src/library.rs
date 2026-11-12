@@ -155,6 +155,7 @@ pub use interrogazioni::{
     album_tracks, albums_by_artist, ascoltati_di_recente, count_history, counts, etichetta_codec,
     fts_query, ids_by_path, list_albums, list_artists, list_history, list_liked, list_tracks,
     read_formato, read_summary, recently_added_albums, search, search_count, summaries_by_id,
+    trascurati,
 };
 pub use righe::{
     Cancellazione, TrackRow, applica_rimozioni, cancella_brani, known_tracks, read_track,

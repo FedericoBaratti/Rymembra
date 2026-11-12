@@ -21,11 +21,19 @@
 
 use std::collections::HashMap;
 
+use crate::abbinamento::primo_artista;
+use crate::keys::normalize_key;
 use crate::text::{collapse_whitespace, fold_text, is_js_whitespace};
 
 /// Parole che rendono una coda fra parentesi un'indicazione di edizione o di
 /// disco, invece che una parte del titolo.
-const EDITION_KEYWORDS: [&str; 21] = [
+///
+/// `vol` e `volume` non ci sono più, e non per dimenticanza: un volume è
+/// un'altra pubblicazione, non un'altra edizione della stessa. Con loro
+/// nell'elenco «Kill Bill (Vol. 1)» e «Kill Bill (Vol. 2)» nella stessa
+/// cartella diventavano un disco solo, e «Greatest Hits (Volume 2)» si fondeva
+/// con «Greatest Hits».
+const EDITION_KEYWORDS: [&str; 19] = [
     "deluxe",
     "remaster",
     "remastered",
@@ -45,8 +53,6 @@ const EDITION_KEYWORDS: [&str; 21] = [
     "disco",
     "disk",
     "cd",
-    "vol",
-    "volume",
 ];
 
 /// Le cifre che un indicatore di disco porta in coda, già piegato in minuscolo.
@@ -67,6 +73,77 @@ fn cifre_del_disco(folded: &str) -> Option<&str> {
 /// `cd 1`, `disc2`, `disco 3`… già piegato in minuscolo.
 fn looks_like_disc_marker(folded: &str) -> bool {
     cifre_del_disco(folded).is_some()
+}
+
+/// Il numero di disco che il nome di una cartella d'album porta attaccato al
+/// titolo, e il titolo senza.
+///
+/// `The Wall (CD1)`, `The Wall [Disc 2]`, `The Wall - CD1`, `The Wall CD2` e
+/// `Disc 1 - The Wall` sono lo stesso disco scritto da programmi diversi. È la
+/// domanda che [`album_folder`] si fa per raggruppare — due cartelle «(CD1)» e
+/// «(CD2)» sono una pubblicazione sola — e che [`crate::indizi`] si fa per
+/// scrivere il campo «disco» di un brano senza tag: una regola sola, perché due
+/// elenchi di forme direbbero un giorno due cose diverse.
+///
+/// Nella forma nuda, col solo spazio davanti, «disco» non vale: «Italo Disco 2»
+/// è il secondo volume di una raccolta, non il secondo disco di «Italo».
+///
+/// `None` quando il nome non porta un indicatore, e quando toglierlo lascerebbe
+/// il titolo vuoto: una cartella che è **solo** `CD1` è un'altra forma, quella
+/// che [`album_folder`] risolve nella cartella superiore.
+#[must_use]
+pub fn separa_disco(nome: &str) -> Option<(u32, &str)> {
+    let nome = nome.trim_matches(is_js_whitespace);
+    // Il titolo che resta, senza i separatori che lo legavano al disco.
+    fn pulisci(testa: &str) -> Option<&str> {
+        let testa = testa.trim_matches(|c: char| {
+            is_js_whitespace(c) || matches!(c, '-' | '\u{2013}' | '\u{2014}' | '_' | '.' | ',')
+        });
+        (!testa.is_empty()).then_some(testa)
+    }
+
+    // Fra parentesi in coda: `The Wall (CD1)`, `The Wall [Disc 2]`.
+    if let Some((apertura, dentro)) = trailing_group(nome)
+        && let Some(numero) = numero_disco(dentro)
+        && let Some(testa) = nome.get(..apertura).and_then(pulisci)
+    {
+        return Some((numero, testa));
+    }
+    // Dopo un trattino isolato in coda: `The Wall - CD1`.
+    if let Some((testa, coda)) = nome.rsplit_once(" - ")
+        && let Some(numero) = numero_disco(coda)
+        && let Some(testa) = pulisci(testa)
+    {
+        return Some((numero, testa));
+    }
+    // Prima di un trattino isolato in testa: `Disc 1 - The Wall`.
+    if let Some((testa, coda)) = nome.split_once(" - ")
+        && let Some(numero) = numero_disco(testa)
+        && let Some(titolo) = pulisci(coda)
+    {
+        return Some((numero, titolo));
+    }
+    // Nuda in coda, dopo uno spazio: `The Wall CD2`, `The Wall Disc 2`. Al più
+    // le ultime due parole, perché `Disc 2` ne ha due.
+    for (posto, carattere) in nome
+        .char_indices()
+        .rev()
+        .filter(|(_, c)| is_js_whitespace(*c))
+        .take(2)
+    {
+        let Some(coda) = nome.get(posto.saturating_add(carattere.len_utf8())..) else {
+            continue;
+        };
+        if fold_text(coda).starts_with("disco") {
+            continue;
+        }
+        if let Some(numero) = numero_disco(coda)
+            && let Some(testa) = nome.get(..posto).and_then(pulisci)
+        {
+            return Some((numero, testa));
+        }
+    }
+    None
 }
 
 /// Il numero che un indicatore di disco porta con sé: `CD1` → 1, `Disc 2` → 2.
@@ -206,6 +283,11 @@ pub fn normalize_key_text(input: &str) -> String {
 /// entrambi una cartella `Greatest Hits`. E una cartella finale che è un
 /// indicatore di disco (`CD1`, `Disc 2`, `Disco 1`) si risolve nella cartella
 /// superiore, così un album su più dischi resta una pubblicazione sola.
+///
+/// Lo stesso quando l'indicatore sta attaccato al titolo — `The Wall (CD1)` e
+/// `The Wall (CD2)` —: la foglia diventa il titolo senza ([`separa_disco`]), e
+/// le due cartelle sono una. Fino a qui restavano due album dello stesso
+/// artista, e «riproduci album» ne suonava metà.
 #[must_use]
 pub fn album_folder(path: &str) -> String {
     let mut parts: Vec<&str> = path.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
@@ -216,6 +298,10 @@ pub fn album_folder(path: &str) -> String {
             .is_some_and(|leaf| looks_like_disc_marker(&fold_text(leaf)));
     if collapse {
         parts.pop();
+    } else if let Some(foglia) = parts.last_mut()
+        && let Some((_, titolo)) = separa_disco(foglia)
+    {
+        *foglia = titolo;
     }
     parts.join("/")
 }
@@ -288,6 +374,44 @@ pub struct AlbumRow {
 pub const UNKNOWN_ALBUM: &str = "Album sconosciuto";
 /// Il ripiego quando l'artista manca del tutto.
 pub const UNKNOWN_ARTIST: &str = "Artista sconosciuto";
+/// L'artista di una raccolta di molti interpreti che non dichiara il suo.
+///
+/// In inglese, a differenza degli altri due segnaposti, e di proposito: è il
+/// nome che MusicBrainz dà all'interprete delle compilation e quello che i
+/// taggatori scrivono nel tag dell'artista del disco, quindi l'arricchimento,
+/// che cerca l'album col suo artista, cerca la cosa giusta. Non entra in
+/// nessuna chiave: la finestra lo traduce al disegno, come fa con gli altri.
+pub const VARIOUS_ARTISTS: &str = "Various Artists";
+
+/// Quanti interpreti diversi, al minimo, fanno di un album senza maggioranza
+/// una raccolta (D-63). Due a metà sono uno split, non una compilation.
+const INTERPRETI_DI_UNA_RACCOLTA: usize = 3;
+
+/// Un album di molti interpreti che non dice di chi è: almeno
+/// [`INTERPRETI_DI_UNA_RACCOLTA`] nomi diversi e nessuno con la maggioranza.
+///
+/// I nomi si contano dopo [`primo_artista`] e piegati: «A feat. B» vale «A», e
+/// un disco con un paio di ospiti resta del suo artista. Il segnaposto di un
+/// tag mancante non conta né come nome né come brano.
+fn e_una_raccolta(members: &[AlbumMember]) -> bool {
+    let mut conti: HashMap<String, usize> = HashMap::new();
+    let mut brani = 0_usize;
+    for member in members {
+        let nome = effective_artist(member);
+        if nome.is_empty() || nome == UNKNOWN_ARTIST {
+            continue;
+        }
+        let chiave = normalize_key(Some(primo_artista(nome)));
+        if chiave.is_empty() {
+            continue;
+        }
+        brani = brani.saturating_add(1);
+        let conto = conti.entry(chiave).or_insert(0);
+        *conto = conto.saturating_add(1);
+    }
+    let piu_frequente = conti.values().copied().max().unwrap_or(0);
+    conti.len() >= INTERPRETI_DI_UNA_RACCOLTA && piu_frequente.saturating_mul(2) <= brani
+}
 
 fn effective_artist(member: &AlbumMember) -> &str {
     member
@@ -415,7 +539,15 @@ fn aggregate_group(album_key: String, members: &[AlbumMember]) -> AlbumRow {
         })
         .map_or_else(|| UNKNOWN_ALBUM.to_owned(), |(title, _)| title.to_owned());
 
-    let artist = pick_canonical_artist(members);
+    // Una raccolta senza artista del disco non è un disco dell'interprete dal
+    // nome più corto: «Now 80s — Muse» era il risultato di quella regola, che
+    // serve a togliere un `feat.` e non sa distinguere un ospite da diciotto
+    // interpreti diversi.
+    let artist = if e_una_raccolta(members) {
+        VARIOUS_ARTISTS.to_owned()
+    } else {
+        pick_canonical_artist(members)
+    };
 
     AlbumRow {
         album_key,
@@ -995,5 +1127,124 @@ mod tests {
             },
         ];
         assert_eq!(pick_canonical_artist(&rows), "A");
+    }
+
+    #[test]
+    fn un_disco_col_numero_in_coda_alla_cartella_resta_uno() {
+        // Due cartelle per i due dischi, il numero scritto nel nome: senza la
+        // regola erano due schede «The Wall» e «riproduci album» suonava metà
+        // disco. Sono le forme che `indizi` riconosce già per il campo disco.
+        for (uno, due) in [
+            ("The Wall (CD1)", "The Wall (CD2)"),
+            ("The Wall [Disc 1]", "The Wall [Disc 2]"),
+            ("The Wall - CD1", "The Wall - CD2"),
+            ("The Wall CD1", "The Wall CD2"),
+            ("The Wall Disc 1", "The Wall Disc 2"),
+            ("Disc 1 - The Wall", "Disc 2 - The Wall"),
+        ] {
+            let a = album_group_key("The Wall", &format!("C:/M/Pink Floyd/{uno}/01.flac"));
+            let b = album_group_key("The Wall", &format!("C:/M/Pink Floyd/{due}/01.flac"));
+            assert_eq!(a, b, "{uno} / {due}");
+            assert_eq!(
+                a,
+                album_group_key("The Wall", "C:/M/Pink Floyd/The Wall/01.flac")
+            );
+        }
+        // Un «Disco» attaccato a un nome è una parola, non un disco: è
+        // «Italo Disco 2», il secondo volume di una raccolta.
+        assert_eq!(
+            album_folder("C:/M/Varie/Italo Disco 2/01.mp3"),
+            "C:/M/Varie/Italo Disco 2"
+        );
+        // E una parentesi che non è un disco resta dov'è.
+        assert_eq!(
+            album_folder("C:/M/Adele/25 (Deluxe Edition)/01.mp3"),
+            "C:/M/Adele/25 (Deluxe Edition)"
+        );
+    }
+
+    #[test]
+    fn due_volumi_restano_due() {
+        // Un volume è un'altra pubblicazione, non un'edizione della stessa: con
+        // «vol» fra le parole d'edizione «Kill Bill (Vol. 1)» e «(Vol. 2)»
+        // nella stessa cartella diventavano un disco solo.
+        assert_ne!(
+            strip_edition_suffix("Kill Bill (Vol. 1)"),
+            strip_edition_suffix("Kill Bill (Vol. 2)")
+        );
+        assert_ne!(
+            strip_edition_suffix("Greatest Hits (Volume 2)"),
+            strip_edition_suffix("Greatest Hits")
+        );
+        assert_eq!(
+            strip_edition_suffix("Greatest Hits (Volume 2) (Remastered)"),
+            "Greatest Hits (Volume 2)"
+        );
+    }
+
+    #[test]
+    fn una_raccolta_senza_artista_del_disco_non_prende_il_nome_piu_corto() {
+        // Diciotto interpreti, uno per brano, nessun ALBUMARTIST: vinceva il
+        // nome più corto, e la compilation diventava un disco dei Muse (D-63).
+        let interpreti = [
+            "Muse", "Coldplay", "Blur", "Oasis", "Pulp", "Suede", "Elastica", "Keane", "Travis",
+            "Embrace",
+        ];
+        let rows: Vec<AlbumMember> = interpreti
+            .iter()
+            .map(|nome| AlbumMember {
+                artist: Some((*nome).to_owned()),
+                ..member("k", "Now 90s")
+            })
+            .collect();
+        let out = build_album_groups(&rows);
+        assert_eq!(
+            out.albums.first().map(|a| a.artist.as_str()),
+            Some(VARIOUS_ARTISTS)
+        );
+
+        // Con una maggioranza no: un disco con due ospiti resta del suo
+        // artista, e un «A feat. B» conta come A.
+        let mut rows: Vec<AlbumMember> = (0..6)
+            .map(|_| AlbumMember {
+                artist: Some("Daft Punk".to_owned()),
+                ..member("k", "Disco")
+            })
+            .collect();
+        for ospite in [
+            "Daft Punk feat. Pharrell",
+            "Julian Casablancas",
+            "Todd Edwards",
+        ] {
+            rows.push(AlbumMember {
+                artist: Some(ospite.to_owned()),
+                ..member("k", "Disco")
+            });
+        }
+        let out = build_album_groups(&rows);
+        assert_eq!(
+            out.albums.first().map(|a| a.artist.as_str()),
+            Some("Daft Punk")
+        );
+
+        // Due soli interpreti a metà non sono una raccolta: resta la regola di
+        // sempre.
+        let rows = vec![
+            AlbumMember {
+                artist: Some("Simon".to_owned()),
+                ..member("k", "Split")
+            },
+            AlbumMember {
+                artist: Some("Garfunkel".to_owned()),
+                ..member("k", "Split")
+            },
+        ];
+        assert_eq!(
+            build_album_groups(&rows)
+                .albums
+                .first()
+                .map(|a| a.artist.as_str()),
+            Some("Simon")
+        );
     }
 }

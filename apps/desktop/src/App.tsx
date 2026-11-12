@@ -943,7 +943,7 @@ export function App() {
    * La Home: i ripiani e le raccolte del lunedì, entrando e restando. Vedi
    * `casa.ts`.
    */
-  const { casa, settimana, setSettimana, rileggiCasa } = useCasa({
+  const { casa, guasto: guastoCasa, settimana, setSettimana, rileggiCasa } = useCasa({
     vista,
     cercando,
     lettore: riproduzione.archivio,
@@ -3857,6 +3857,8 @@ export function App() {
       return (
         <Home
           casa={casa}
+          guasto={guastoCasa}
+          onRiprova={rileggiCasa}
           settimana={settimana}
           onAggiungiCartella={aggiungiCartella}
           onSuona={(elenco, indice) => void suonaDa(elenco, indice).catch(segnalaErrore)}

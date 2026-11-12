@@ -250,7 +250,7 @@ impl<'a> Indice<'a> {
             normalize_key(Some(&brano.title)),
         );
         if let Some(candidati) = self.per_artista_titolo.get(&secondo)
-            && let Some(id) = scegli(candidati, brano.duration_ms)
+            && let Some(id) = scegli(candidati, brano.duration_ms, |_| true)
         {
             return Some((id, Gradino::ArtistaTitolo));
         }
@@ -259,8 +259,14 @@ impl<'a> Indice<'a> {
             normalize_key(brano.artist.as_deref().map(primo_artista)),
             normalize_key(Some(&senza_decorazioni(&brano.title))),
         );
+        // Qui la ripulitura ha tolto proprio le parole che distinguono due
+        // registrazioni: quando la durata non può fare da guardia, il
+        // candidato unico deve dichiarare la stessa registrazione del brano.
+        let del_brano = registrazione(&brano.title);
         if let Some(candidati) = self.per_ripulito.get(&terzo)
-            && let Some(id) = scegli(candidati, brano.duration_ms)
+            && let Some(id) = scegli(candidati, brano.duration_ms, |candidato| {
+                registrazione(&candidato.title) == del_brano
+            })
         {
             return Some((id, Gradino::Ripulito));
         }
@@ -274,7 +280,18 @@ impl<'a> Indice<'a> {
 /// Restituisce `None` quando la durata non basta a decidere: è la regola
 /// spiegata in testa al modulo, e il caso in cui un abbinamento sbagliato
 /// costerebbe più di un mancante in più.
-fn scegli(candidati: &[&LibraryTrack], durata: Option<u64>) -> Option<i64> {
+///
+/// `senza_durata` è quel che deve valere del candidato unico quando nessuna
+/// durata lo ha confermato. Il secondo gradino non chiede niente (il titolo è
+/// già lo stesso); il terzo chiede che sia la stessa registrazione, perché la
+/// sua ripulitura toglie proprio «(Acoustic)» e «- Live»: senza, l'archivio di
+/// Spotify — che la durata non la porta mai — abbinava lo studio all'unica
+/// versione acustica in libreria.
+fn scegli(
+    candidati: &[&LibraryTrack],
+    durata: Option<u64>,
+    senza_durata: impl Fn(&LibraryTrack) -> bool,
+) -> Option<i64> {
     if candidati.is_empty() {
         return None;
     }
@@ -315,11 +332,62 @@ fn scegli(candidati: &[&LibraryTrack], durata: Option<u64>) -> Option<i64> {
     }
 
     // Nessuna durata utile da una delle due parti: resta solo l'assenza di
-    // ambiguità. Un candidato unico è lui; due no, e non si indovina.
+    // ambiguità. Un candidato unico è lui, se il gradino lo ammette; due no, e
+    // non si indovina.
     match candidati {
-        [solo] => Some(solo.id),
+        [solo] if senza_durata(solo) => Some(solo.id),
         _ => None,
     }
+}
+
+/// Le parole che fanno di un titolo **un'altra registrazione**, e non un'altra
+/// edizione della stessa: dal vivo, acustica, remix, provino, strumentale.
+///
+/// Un sottoinsieme di [`PAROLE_EDIZIONE`]: «2009 Remaster» o «Radio Edit»
+/// sono lo stesso nastro ripubblicato o accorciato, «Live» e «Acoustic» no.
+/// Ognuna col nome sotto cui si confronta, così «acustic» e «acoustic», o
+/// «strumentale» e «instrumental», sono la stessa cosa.
+const PAROLE_REGISTRAZIONE: &[(&str, &str)] = &[
+    ("live", "live"),
+    ("acoustic", "acoustic"),
+    ("acustic", "acoustic"),
+    ("remix", "remix"),
+    ("demo", "demo"),
+    ("instrumental", "instrumental"),
+    ("strumentale", "instrumental"),
+];
+
+/// Quali registrazioni dichiara un titolo, con tutte le sue parentesi e code.
+fn registrazione(titolo: &str) -> Vec<&'static str> {
+    let minuscolo = titolo.to_lowercase();
+    let mut dichiarate: Vec<&'static str> = minuscolo
+        .split(|c: char| !c.is_alphanumeric())
+        .filter_map(|parola| {
+            PAROLE_REGISTRAZIONE
+                .iter()
+                .find(|(radice, _)| e_la_parola(parola, radice))
+                .map(|(_, nome)| *nome)
+        })
+        .collect();
+    dichiarate.sort_unstable();
+    dichiarate.dedup();
+    dichiarate
+}
+
+/// `parola` è `radice`, o una sua forma flessa?
+///
+/// Per parola intera e non per sottostringa: «live» sta dentro «deliverance»
+/// e «demo» dentro «demons». Le forme flesse contano — «Remastered»,
+/// «Remixes», «Versions» sono code d'edizione quanto la radice — e si
+/// riconoscono così: una radice corta ammette solo le desinenze del plurale e
+/// del participio (`s`, `es`, `d`, `ed`), perché «mix» davanti a «tape» fa
+/// un'altra parola; una radice di sette lettere o più ammette ogni desinenza
+/// («rimaster» → «rimasterizzato»), perché a quella lunghezza la parola è lei.
+fn e_la_parola(parola: &str, radice: &str) -> bool {
+    let Some(resto) = parola.strip_prefix(radice) else {
+        return false;
+    };
+    radice.len() >= 7 || matches!(resto, "" | "s" | "es" | "d" | "ed")
 }
 
 /// L'ISRC ridotto alla sua forma confrontabile, se è un ISRC.
@@ -393,15 +461,28 @@ fn indicizza<C: Fn(&LibraryTrack) -> (String, String)>(
 
 /// I separatori dopo i quali comincia un artista che non è il principale.
 ///
-/// Lo spazio davanti a `feat` e `ft` fa da confine di parola senza bisogno di
-/// un'espressione regolare: `feat` catturato così non può essere la fine di
-/// un'altra parola, e `featuring` comincia per `feat` quindi è già coperto.
+/// Ognuno ha un confine **ai due lati**: lo spazio davanti, e dopo un punto,
+/// uno spazio o il resto della parola intera (`featuring`). Senza il confine
+/// dopo, ` feat` tagliava dentro una parola — «Little Feat» diventava
+/// «Little», «The Featherz» «The» — e l'abbinamento cercava in libreria un
+/// artista che non c'è.
 ///
-/// Gli stessi separatori dicono a [`crate::scelta`] dove finisce un interprete
-/// e comincia il successivo, quando confronta chi pubblica con chi è chiesto:
-/// due elenchi diversi vorrebbero dire due idee diverse di «artista».
-pub(crate) const SEPARATORI_ARTISTA: &[&str] =
-    &[",", " & ", " feat", " ft.", " ft ", " with ", " vs "];
+/// Sono i separatori dell'abbinamento con la libreria, dove il taglio largo
+/// (anche a `&`) è il prezzo per ritrovare «A» quando Spotify scrive «A & B»: a
+/// decidere resta poi la durata. La scelta fra i candidati di un catalogo
+/// ([`crate::scelta`]) ha i suoi, più stretti, perché lì un pezzo del nome
+/// preso per l'interprete scarica il brano di qualcun altro.
+pub(crate) const SEPARATORI_ARTISTA: &[&str] = &[
+    ",",
+    " & ",
+    " feat.",
+    " feat ",
+    " featuring ",
+    " ft.",
+    " ft ",
+    " with ",
+    " vs ",
+];
 
 /// Solo il primo interprete.
 ///
@@ -515,8 +596,15 @@ fn togli_coda_edizione(titolo: &str) -> String {
         let Some(coda) = titolo.get(*posizione..) else {
             continue;
         };
+        // Per parola intera, come `album::looks_like_edition`: per sottostringa
+        // «Act II - The Deliverance» perdeva la coda per via di «live».
         let coda = coda.to_lowercase();
-        if PAROLE_EDIZIONE.iter().any(|parola| coda.contains(parola)) {
+        let d_edizione = coda.split(|c: char| !c.is_alphanumeric()).any(|parola| {
+            PAROLE_EDIZIONE
+                .iter()
+                .any(|radice| e_la_parola(parola, radice))
+        });
+        if d_edizione {
             return titolo.get(..*posizione).unwrap_or(titolo).trim().to_owned();
         }
     }
@@ -771,6 +859,73 @@ mod prove {
     }
 
     #[test]
+    fn senza_durata_il_terzo_gradino_non_prende_un_altra_registrazione() {
+        // L'archivio di Spotify non porta mai la durata. In libreria c'è solo la
+        // versione acustica: ripulita, ha lo stesso titolo dello studio, ed è
+        // l'unico candidato — ma è un'altra registrazione, e nessuna durata
+        // può dirlo. Resta mancante invece di finire in playlist.
+        let libreria = [lib(1, "Radiohead", "Creep (Acoustic)", "X", 250_000)];
+        let brani = [sp("Radiohead", "Creep", "Pablo Honey", None)];
+        let piano = plan_abbinamento(&brani, &libreria);
+        assert_eq!(piano.mancanti, vec![0], "{piano:?}");
+
+        // Lo stesso con un dal vivo e una coda dopo il trattino.
+        let libreria = [lib(1, "Radiohead", "Creep - Live", "X", 250_000)];
+        let piano = plan_abbinamento(&brani, &libreria);
+        assert_eq!(piano.mancanti, vec![0], "{piano:?}");
+
+        // Ma una coda d'edizione non è un'altra registrazione: il remaster di
+        // Spotify ritrova il brano in libreria anche senza durata.
+        let libreria = [lib(
+            11,
+            "Radiohead",
+            "Everything In Its Right Place",
+            "Kid A",
+            271_000,
+        )];
+        let brani = [sp(
+            "Radiohead",
+            "Everything In Its Right Place - 2009 Remaster",
+            "Kid A",
+            None,
+        )];
+        let piano = plan_abbinamento(&brani, &libreria);
+        assert_eq!(piano.per_gradino(Gradino::Ripulito), 1, "{piano:?}");
+
+        // E la stessa registrazione scritta in due modi resta la stessa.
+        let libreria = [lib(3, "Tizio", "Canzone (Acoustic)", "Uno", 200_000)];
+        let brani = [sp("Tizio", "Canzone - Acoustic Version", "Uno", None)];
+        let piano = plan_abbinamento(&brani, &libreria);
+        assert_eq!(piano.per_gradino(Gradino::Ripulito), 1, "{piano:?}");
+    }
+
+    #[test]
+    fn la_coda_d_edizione_si_riconosce_per_parola_intera() {
+        // «live» sta dentro «deLIVErance», «edit» dentro «crEDITs», «demo»
+        // dentro «DEMOns», «mix» dentro «MIXtape»: per sottostringa questi
+        // titoli perdevano metà del nome.
+        for titolo in [
+            "Act II - The Deliverance",
+            "Opening - Credits",
+            "Inner - Demons",
+            "Summer - Mixtape",
+        ] {
+            assert_eq!(senza_decorazioni(titolo), titolo);
+        }
+        // Le forme flesse di una parola d'edizione restano code d'edizione.
+        for (titolo, atteso) in [
+            ("Canzone - Remastered 2011", "Canzone"),
+            ("Canzone - Remixes", "Canzone"),
+            ("Canzone - Radio Edit", "Canzone"),
+            ("Canzone - Rimasterizzato", "Canzone"),
+            ("Canzone - Single Version", "Canzone"),
+            ("Canzone - Live at Wembley", "Canzone"),
+        ] {
+            assert_eq!(senza_decorazioni(titolo), atteso, "{titolo}");
+        }
+    }
+
+    #[test]
     fn una_durata_troppo_lontana_non_abbina() {
         let libreria = [lib(1, "Tizio", "Canzone (Live)", "Uno", 600_000)];
         let brani = [sp("Tizio", "Canzone - Radio Edit", "Due", Some(180_000))];
@@ -882,6 +1037,17 @@ mod prove {
             "Canzone (senza chiusura",
             "una parentesi non chiusa lascia il titolo intero"
         );
+    }
+
+    #[test]
+    fn il_feat_si_riconosce_come_parola_intera() {
+        // « feat» senza confine dopo tagliava dentro una parola: «Little Feat»
+        // diventava «Little», «The Featherz» diventava «The».
+        assert_eq!(primo_artista("Little Feat"), "Little Feat");
+        assert_eq!(primo_artista("The Featherz"), "The Featherz");
+        assert_eq!(primo_artista("Eminem feat. Rihanna"), "Eminem");
+        assert_eq!(primo_artista("Eminem Feat Rihanna"), "Eminem");
+        assert_eq!(primo_artista("Eminem featuring Rihanna"), "Eminem");
     }
 
     #[test]

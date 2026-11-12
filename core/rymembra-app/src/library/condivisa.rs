@@ -280,10 +280,13 @@ pub fn brano(connection: &Connection, id: i64) -> Result<Option<BranoRemoto>, Ap
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn album(connection: &Connection, da: i64, quanti: i64) -> Result<Vec<AlbumSummary>, AppError> {
+    // Lo stesso ordine della griglia di qui (D-104).
+    super::interrogazioni::assicura_ordine(connection)?;
+    let ordine = super::interrogazioni::ORDINE_DEGLI_ALBUM;
     let sql = format!(
         "SELECT {COLONNE_ALBUM} FROM albums a
          WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND {CONDIVISO})
-         ORDER BY a.artist COLLATE NOCASE, a.year, a.title COLLATE NOCASE
+         ORDER BY {ordine}
          LIMIT ?1 OFFSET ?2"
     );
     righe_di_album(

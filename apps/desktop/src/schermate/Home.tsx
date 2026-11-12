@@ -449,6 +449,8 @@ function CasaFinta() {
 
 export function Home({
   casa,
+  guasto = null,
+  onRiprova,
   settimana,
   onSuona,
   onApriRaccolta,
@@ -459,6 +461,15 @@ export function Home({
   onAggiungiCartella,
 }: {
   casa: Casa | null;
+  /**
+   * Il guasto della lettura dei ripiani, o `null`. Conta solo senza ripiani in
+   * mano: vedi `CasaDellaFinestra.guasto` in `casa.ts`. Facoltativo perché la
+   * tela dello Studio disegna la Home con dei ripiani d'esempio, che non
+   * falliscono.
+   */
+  guasto?: unknown;
+  /** Richiede i ripiani dopo un guasto. */
+  onRiprova?: () => void;
   /** Le raccolte di questa settimana. Vuoto finché non arrivano. */
   settimana: Raccolta[];
   /** Fa partire un ripiano a partire da uno dei suoi brani. */
@@ -477,6 +488,18 @@ export function Home({
   onAggiungiCartella: () => void;
 }) {
   const ora = useQuelCheSuona();
+  // Una prima lettura fallita non è un caricamento senza fine: lo scheletro
+  // diceva «Caricamento…» per sempre, e si ritentava solo uscendo e rientrando.
+  if (casa === null && guasto !== null) {
+    return (
+      <StatoVuoto
+        icona="i-alert"
+        titolo={t("home.error.title")}
+        testo={t("home.error.hint")}
+        azione={onRiprova && { etichetta: t("common.retry"), fai: onRiprova }}
+      />
+    );
+  }
   if (casa === null) return <CasaFinta />;
 
   const vuota =

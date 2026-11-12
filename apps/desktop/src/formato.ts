@@ -113,15 +113,24 @@ export function data(ms: number): string {
  */
 const SENZA_ALBUM = "Album sconosciuto";
 const SENZA_ARTISTA = "Artista sconosciuto";
+/**
+ * L'artista di una raccolta di molti interpreti che non dichiara il suo
+ * (`VARIOUS_ARTISTS` in `album.rs`). In inglese anche nel nucleo, e non per
+ * svista: è il nome che MusicBrainz dà alle compilation, e quello che i
+ * taggatori scrivono nell'artista del disco — l'arricchimento lo cerca così.
+ */
+const ARTISTI_VARI = "Various Artists";
 
 /** Il titolo di un album, con la sentinella tradotta. */
 export function titoloAlbum(nome: string): string {
   return nome === SENZA_ALBUM ? t("format.unknownAlbum") : nome;
 }
 
-/** Il nome di un artista, con la sentinella tradotta. */
+/** Il nome di un artista, con le sentinelle tradotte. */
 export function nomeArtista(nome: string): string {
-  return nome === SENZA_ARTISTA ? t("format.unknownArtist") : nome;
+  if (nome === SENZA_ARTISTA) return t("format.unknownArtist");
+  if (nome === ARTISTI_VARI) return t("format.variousArtists");
+  return nome;
 }
 
 /**

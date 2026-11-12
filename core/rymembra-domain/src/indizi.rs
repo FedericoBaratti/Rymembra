@@ -33,7 +33,7 @@
 //! quando no. La separazione conta: qui si può sbagliare senza fare danni,
 //! perché il confronto con quel che il file dichiara avviene dopo.
 
-use crate::album::numero_disco;
+use crate::album::{numero_disco, separa_disco};
 use crate::paths::{PathRules, extension_of, file_stem, is_under};
 use crate::text::{collapse_whitespace, fold_text, is_js_whitespace};
 use crate::titolo::{concorda_con_autore, senza_ciarpame, spezza};
@@ -328,12 +328,14 @@ fn stacca_anno(nome: &str) -> (Option<i32>, String) {
     (None, pulito)
 }
 
-/// Il numero di disco che il nome di una cartella d'album porta in coda, e il
-/// nome senza.
+/// Il numero di disco che il nome di una cartella d'album porta attaccato al
+/// titolo, e il nome senza.
 ///
 /// `The Wall (CD1)` e `The Wall - Disc 2` sono lo stesso disco scritto da due
 /// programmi diversi. Toglierlo dal titolo non è cosmesi: senza, la libreria
-/// mostra due album che si chiamano quasi uguale.
+/// mostra due album che si chiamano quasi uguale. Le forme le riconosce
+/// [`crate::album::separa_disco`], la stessa regola con cui
+/// [`crate::album::album_folder`] raggruppa.
 ///
 /// Le altre code fra parentesi restano dove sono. `(Deluxe Edition)` **fa parte**
 /// del titolo che l'utente si aspetta di leggere — è
@@ -342,32 +344,12 @@ fn stacca_anno(nome: &str) -> (Option<i32>, String) {
 /// quel modulo.
 fn stacca_disco(nome: &str) -> (Option<u32>, String) {
     let pulito = collapse_whitespace(nome);
-
-    // Una coda fra parentesi: `(CD1)`, `[Disc 2]`.
-    if let Some(chiusura) = pulito.chars().next_back()
-        && matches!(chiusura, ')' | ']')
-        && let Some(senza) = pulito.get(..pulito.len().saturating_sub(chiusura.len_utf8()))
-        && let Some(apertura) = senza.rfind(['(', '['])
-        && let Some(dentro) = senza.get(apertura.saturating_add(1)..)
-        && let Some(numero) = numero_disco(dentro)
-        && let Some(testa) = senza.get(..apertura)
-    {
+    if let Some((numero, testa)) = separa_disco(&pulito) {
         let testa = rifila(testa);
         if !testa.is_empty() {
             return (Some(numero), testa.to_owned());
         }
     }
-
-    // Una coda dopo un trattino isolato: `The Wall - CD1`.
-    if let Some((testa, coda)) = pulito.rsplit_once(" - ")
-        && let Some(numero) = numero_disco(coda)
-    {
-        let testa = rifila(testa);
-        if !testa.is_empty() {
-            return (Some(numero), testa.to_owned());
-        }
-    }
-
     (None, pulito)
 }
 
@@ -827,10 +809,21 @@ mod prove {
             assert_eq!(i.album.as_deref(), Some("The Wall"), "{coda}");
             assert_eq!(i.artista.as_deref(), Some("Pink Floyd"), "{coda}");
         }
-        // …e lo stesso quando il numero sta in coda al nome dell'album.
-        let i = indizi("D:/Musica/Pink Floyd/The Wall (CD1)/03 - Hey You.flac");
-        assert_eq!(i.disco, Some(1));
-        assert_eq!(i.album.as_deref(), Some("The Wall"));
+        // …e lo stesso quando il numero sta in coda al nome dell'album, o in
+        // testa: le stesse forme con cui `album::album_folder` raggruppa.
+        for cartella in [
+            "The Wall (CD1)",
+            "The Wall [Disc 1]",
+            "The Wall - CD1",
+            "The Wall CD1",
+            "Disc 1 - The Wall",
+        ] {
+            let i = indizi(&format!(
+                "D:/Musica/Pink Floyd/{cartella}/03 - Hey You.flac"
+            ));
+            assert_eq!(i.disco, Some(1), "{cartella}");
+            assert_eq!(i.album.as_deref(), Some("The Wall"), "{cartella}");
+        }
     }
 
     #[test]
