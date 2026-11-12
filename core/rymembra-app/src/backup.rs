@@ -1381,9 +1381,6 @@ fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<us
     let mut cerca_brano = tx
         .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1")
         .map_err(|err| db_error("playlist ripristinata", &err))?;
-    let mut svuota = tx
-        .prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?1")
-        .map_err(|err| db_error("playlist ripristinata", &err))?;
     let mut accoda = tx
         .prepare(
             "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
@@ -1444,9 +1441,11 @@ fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<us
         // `PRIMARY KEY (playlist_id, position)` e il vincolo si controlla a ogni
         // istruzione, non alla COMMIT. Le posizioni escono `0..n` senza buchi,
         // che è la forma che la finestra si aspetta di poter usare come indici.
-        svuota
-            .execute([id])
-            .map_err(|err| db_error("playlist ripristinata", &err))?;
+        // Con le voci se ne vanno i posti tenuti da parte in `playlist_orfane`
+        // (03-11): erano del contenuto di prima, e un brano tornato sul disco
+        // rientrerebbe nella playlist appena ripristinata. Quelli del backup
+        // che qui mancano tornano con un ripristino dopo la scansione (D-14).
+        crate::playlists::svuota_per_riscrivere(tx, id)?;
         for (posizione, track_id) in brani.iter().enumerate() {
             let posizione = i64::try_from(posizione).unwrap_or(i64::MAX);
             accoda
@@ -1885,6 +1884,43 @@ mod prove {
             [(0, "Tre".to_owned()), (1, "Uno".to_owned())],
             "nessun buco dove stava il brano che manca"
         );
+    }
+
+    #[test]
+    fn ripristinare_una_playlist_toglie_i_posti_tenuti_da_parte() {
+        // 03-11: i posti di `playlist_orfane` sono del contenuto di prima. Un
+        // brano tornato sul disco rientrava nella playlist appena ripristinata,
+        // al posto che aveva nella versione sostituita.
+        let mut connection = libreria();
+        connection
+            .execute_batch(
+                "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at, is_smart)
+                 VALUES (7, 'serata', 'Serata', 10, 20, 0);
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (7, 1, 0);
+                 INSERT INTO brani_orfani (content_key, orfano_at) VALUES ('via', 1);
+                 INSERT INTO playlist_orfane (content_key, playlist_id, position)
+                      VALUES ('via', 7, 1);",
+            )
+            .expect("playlist con un posto tenuto da parte");
+        let contenuto = Contenuto {
+            playlists: vec![PlaylistSalvata {
+                key: "serata".to_owned(),
+                name: "Serata".to_owned(),
+                created_at: 10,
+                updated_at: 30,
+                members: vec!["art|due|al".to_owned()],
+                ..PlaylistSalvata::default()
+            }],
+            ..Contenuto::default()
+        };
+        let qui = stato_locale(&connection).expect("stato");
+        let piano = pianifica(&qui, &dal_salvataggio(&contenuto, &qui.tombstones));
+        assert_eq!(piano.playlists.len(), 1, "{piano:?}");
+        applica(&mut connection, &piano).expect("applicato");
+        let posti: i64 = connection
+            .query_row("SELECT COUNT(*) FROM playlist_orfane", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(posti, 0);
     }
 
     #[test]
