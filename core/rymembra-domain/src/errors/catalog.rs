@@ -1011,6 +1011,20 @@ catalogo! {
     /// `Info` e non `Warning`: non è un guasto, è la condizione di chiunque non
     /// sia mai passato da Impostazioni › Modelli IA — cioè quella normale.
     IaNotConfigured = "ia.notConfigured", Ia, Info, Never, None;
+    /// Il profilo c'è, ma manca l'indirizzo o il nome del modello.
+    ///
+    /// I quattro codici che seguono erano tutti [`ErrorCode::IaNotConfigured`],
+    /// cioè «nessun modello è configurato» a schermo anche quando il modello
+    /// c'era e la pagina dei modelli lo mostrava (R10-6): il motivo vero stava
+    /// solo nel messaggio tecnico, che non si traduce.
+    IaProfileIncomplete = "ia.profileIncomplete", Ia, Info, Never, None;
+    /// Il fornitore vuole una chiave, e il profilo non ce l'ha.
+    IaKeyMissing = "ia.keyMissing", Ia, Info, Never, None;
+    /// La chiave del profilo è stata scritta per un altro indirizzo: dopo un
+    /// cambio d'origine non parte verso quello nuovo, e va scritta di nuovo.
+    IaKeyForOtherOrigin = "ia.keyForOtherOrigin", Ia, Info, Never, None;
+    /// I profili salvati sono già quanti se ne possono tenere.
+    IaTooManyProfiles = "ia.tooManyProfiles", Ia, Info, Never, None;
     /// Il fornitore ha rifiutato la chiave.
     ///
     /// Un codice suo invece del `net.http` con dentro un 401, perché è l'unico

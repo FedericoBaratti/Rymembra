@@ -260,29 +260,33 @@ impl Cliente {
     ///
     /// # Errori
     ///
-    /// `ia.notConfigured` se manca l'indirizzo, il modello, o la chiave di un
-    /// fornitore che la vuole, e se la chiave è stata scritta per un'altra
-    /// origine. `ia.notLoopback` per un indirizzo in chiaro che non è questa
-    /// macchina.
+    /// `ia.profileIncomplete` se manca l'indirizzo o il modello,
+    /// `ia.keyMissing` se manca la chiave di un fornitore che la vuole,
+    /// `ia.keyForOtherOrigin` se la chiave è stata scritta per un'altra
+    /// origine: tre codici e non uno, perché «nessun modello è configurato»
+    /// era falso per tutti e tre (R10-6). `ia.notLoopback` per un indirizzo in
+    /// chiaro che non è questa macchina.
     pub fn nuovo(profilo: &Profilo, chiave: Option<String>) -> Result<Self, AppError> {
-        let manca = |cosa: &str| {
-            Err(AppError::new(ErrorCode::IaNotConfigured)
-                .with_message(format!("il profilo «{}» non ha {cosa}", profilo.id)))
+        // Il dettaglio va nella causa, cioè nel diario: la frase la dà il
+        // codice, nella lingua di chi legge.
+        let manca = |codice: ErrorCode, cosa: &str| {
+            Err(AppError::new(codice)
+                .with_cause(format!("il profilo «{}» non ha {cosa}", profilo.id)))
         };
         if profilo.url_base.trim().is_empty() {
-            return manca("un indirizzo");
+            return manca(ErrorCode::IaProfileIncomplete, "un indirizzo");
         }
         if profilo.modello.trim().is_empty() {
-            return manca("un modello");
+            return manca(ErrorCode::IaProfileIncomplete, "un modello");
         }
         let chiave = chiave.filter(|k| !k.trim().is_empty());
         if profilo.fornitore.vuole_chiave() && chiave.is_none() {
-            return manca("una chiave");
+            return manca(ErrorCode::IaKeyMissing, "una chiave");
         }
         if chiave.is_some() && !profilo.chiave_vale_per(&profilo.url_base) {
             // Si nomina l'origine per cui era scritta, non la chiave: è quel che
             // serve a capire perché, e non è un segreto.
-            return Err(AppError::new(ErrorCode::IaNotConfigured).with_message(format!(
+            return Err(AppError::new(ErrorCode::IaKeyForOtherOrigin).with_cause(format!(
                 "la chiave del profilo «{}» è stata scritta per {}, non per l'indirizzo di adesso: \
                  va scritta di nuovo",
                 profilo.id,
@@ -1345,7 +1349,9 @@ mod prove {
         spostato.con_chiave = true;
         spostato.origine_chiave = Some("https://openrouter.ai:443".to_owned());
         let err = Cliente::nuovo(&spostato, Some("sk-prova".to_owned())).unwrap_err();
-        assert!(matches!(err.code(), ErrorCode::IaNotConfigured));
+        // Il suo codice, non «nessun modello è configurato»: il modello c'è, e
+        // la pagina dei modelli lo mostra (R10-6).
+        assert_eq!(err.code().kind().code(), "ia.keyForOtherOrigin");
         assert!(
             !format!("{err:?}").contains("sk-prova"),
             "la chiave non finisce nell'errore"
@@ -1363,7 +1369,25 @@ mod prove {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err.code(), ErrorCode::IaNotConfigured));
+        assert_eq!(
+            err.code().kind().code(),
+            "ia.keyMissing",
+            "una chiave mancante non è un modello mancante (R10-6)"
+        );
+    }
+
+    /// Senza indirizzo o senza modello il profilo è incompleto: un codice suo,
+    /// e non quello di chi non ha mai configurato niente (R10-6).
+    #[test]
+    fn un_profilo_senza_modello_e_incompleto() {
+        let mut senza_modello = profilo(Fornitore::Ollama, "http://localhost:11434/v1");
+        senza_modello.modello = "  ".to_owned();
+        let err = Cliente::nuovo(&senza_modello, None).unwrap_err();
+        assert_eq!(err.code().kind().code(), "ia.profileIncomplete");
+
+        let senza_indirizzo = profilo(Fornitore::Ollama, "");
+        let err = Cliente::nuovo(&senza_indirizzo, None).unwrap_err();
+        assert_eq!(err.code().kind().code(), "ia.profileIncomplete");
     }
 
     #[test]
