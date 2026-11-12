@@ -39,6 +39,12 @@
 /// Millisecondi in un giorno.
 const MS_AL_GIORNO: i64 = 86_400_000;
 
+/// Il primo anno che [`istante_ms`] accetta.
+const ANNO_MINIMO: i64 = 1;
+
+/// L'ultimo anno che [`istante_ms`] accetta: il più grande di quattro cifre.
+const ANNO_MASSIMO: i64 = 9_999;
+
 /// Legge un istante di Spotify, nell'uno o nell'altro formato.
 ///
 /// `None` quando la stringa non è nessuno dei due. Non è un errore: un archivio
@@ -59,6 +65,14 @@ pub fn istante_ms(testo: &str) -> Option<i64> {
     let mese: u32 = pezzi_data.next()?.parse().ok()?;
     let giorno: u32 = pezzi_data.next()?.parse().ok()?;
     if pezzi_data.next().is_some() || !(1..=12).contains(&mese) || !(1..=31).contains(&giorno) {
+        return None;
+    }
+    // Quattro cifre, come le scrive chiunque scriva una data: senza un limite
+    // l'anno è un `i64` qualunque, e l'aritmetica delle ere qui sotto va in
+    // overflow (un panico nelle prove e nel fuzzing, un istante assurdo in
+    // rilascio, dove i controlli d'overflow sono spenti). E un «20200» scritto
+    // per sbaglio è un ascolto di diciottomila anni nel futuro, non una data.
+    if !(ANNO_MINIMO..=ANNO_MASSIMO).contains(&anno) {
         return None;
     }
 
@@ -224,6 +238,20 @@ mod prove {
     fn l_epoca_e_zero() {
         assert_eq!(giorni_dall_epoca(1970, 1, 1), 0);
         assert_eq!(istante_ms("1970-01-01T00:00:00Z"), Some(0));
+    }
+
+    #[test]
+    fn un_anno_assurdo_non_fa_cadere_la_lettura() {
+        // Una riga di cronologia storta o fatta apposta: l'anno più grande che
+        // un `i64` contiene mandava in overflow l'aritmetica delle ere (un
+        // panico nelle prove, un istante a caso in rilascio), e un anno di
+        // cinque cifre scritto per sbaglio diventava un ascolto nel futuro.
+        assert_eq!(istante_ms("9223372036854775807-01-01T00:00:00Z"), None);
+        assert_eq!(istante_ms("20200-01-01T00:00:00Z"), None);
+        assert_eq!(istante_ms("0000-01-01T00:00:00Z"), None);
+        // Il primo e l'ultimo anno di quattro cifre restano date.
+        assert!(istante_ms("0001-01-01T00:00:00Z").is_some());
+        assert!(istante_ms("9999-12-31T23:59:59Z").is_some());
     }
 
     #[test]
