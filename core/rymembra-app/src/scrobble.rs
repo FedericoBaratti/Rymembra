@@ -259,9 +259,9 @@ fn album_utile(valore: Option<String>) -> Option<String> {
 /// niente, e un brano ritoccato nel frattempo — l'arricchimento, «Rileggi i
 /// tag» — diventava su ListenBrainz un ascolto doppio per sempre.
 ///
-/// Per questo ogni servizio ricorda in `settings`, per provenienza e per «tutta»,
-/// fino a quale riga di `play_history` il gesto è già arrivato
-/// ([`chiave_segno`]): `id` cresce con l'inserimento, quindi un archivio
+/// Per questo ogni servizio ricorda in `settings`, per l'account collegato, per
+/// provenienza e per «tutta», fino a quale riga di `play_history` il gesto è già
+/// arrivato ([`prefisso_segni`]): `id` cresce con l'inserimento, quindi un archivio
 /// arrivato dopo, anche con ascolti più vecchi, sta oltre il segno e parte.
 /// «Tutta» salta quel che «solo Spotify» ha già mandato, e il contrario. Il segno
 /// avanza solo per la cronologia intera (`da_ms <= 0`) e nella stessa
@@ -282,8 +282,8 @@ pub fn accoda_cronologia(
     let transazione = connection
         .unchecked_transaction()
         .map_err(|err| db_error("apertura dell'accodamento della cronologia", &err))?;
-    let prefisso = prefisso_segni(servizio);
-    let segno_tutta = segno(&transazione, &chiave_segno(servizio, None))?;
+    let prefisso = prefisso_segni(&transazione, servizio)?;
+    let segno_tutta = segno(&transazione, &format!("{prefisso}{TUTTA}"))?;
     let accodati = transazione
         .execute(
             "INSERT OR IGNORE INTO scrobble_queue
@@ -328,7 +328,7 @@ pub fn accoda_cronologia(
             .map_err(|err| db_error("segno della cronologia accodata", &err))?;
         crate::settings::write(
             &transazione,
-            &chiave_segno(servizio, sorgente),
+            &format!("{prefisso}{}", sorgente.unwrap_or(TUTTA)),
             &fin_qui.to_string(),
         )?;
     }
@@ -338,18 +338,31 @@ pub fn accoda_cronologia(
     Ok(accodati)
 }
 
-/// Dove un servizio ricorda fin dove la cronologia è già stata accodata: una
-/// chiave per provenienza, e `…tutta` per il gesto senza provenienza.
+/// L'inizio delle chiavi con cui un servizio ricorda fin dove la cronologia è
+/// già stata accodata: `scrobble.<servizio>.cronologia.<account>.`, poi una
+/// chiave per provenienza e `tutta` per il gesto senza provenienza.
+///
+/// # Perché l'account dentro la chiave
+///
+/// Perché il segno dice che cosa ha ricevuto **qualcuno**. Chi scollega
+/// ListenBrainz e collega un altro account si sarebbe ritrovato con un tasto
+/// che non manda niente, e nessuna frase a dirlo; ricollegando lo stesso, i
+/// segni sono ancora lì. Senza un account collegato la chiave dice `-`.
 ///
 /// Non entra nel profilo (non sta in `profilo::CATALOGO`): è la storia di
 /// quel che **questa** installazione ha mandato, non un gusto.
-fn chiave_segno(servizio: Servizio, sorgente: Option<&str>) -> String {
-    format!("{}{}", prefisso_segni(servizio), sorgente.unwrap_or(TUTTA))
-}
-
-/// L'inizio delle chiavi di [`chiave_segno`] di un servizio.
-fn prefisso_segni(servizio: Servizio) -> String {
-    format!("scrobble.{}.cronologia.", servizio.chiave())
+fn prefisso_segni(connection: &Connection, servizio: Servizio) -> Result<String, AppError> {
+    let chiave_utente = match servizio {
+        Servizio::ListenBrainz => CHIAVE_LB_UTENTE,
+        Servizio::LastFm => CHIAVE_LFM_UTENTE,
+    };
+    let utente = crate::settings::read(connection, chiave_utente)?
+        .filter(|nome| !nome.trim().is_empty())
+        .unwrap_or_else(|| "-".to_owned());
+    Ok(format!(
+        "scrobble.{}.cronologia.{utente}.",
+        servizio.chiave()
+    ))
 }
 
 /// Il nome del segno della cronologia intera. Non è una provenienza di
@@ -962,6 +975,40 @@ mod prove {
             accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
             Ok(2),
             "le righe nuove partono anche se riprendono numeri già usati"
+        );
+    }
+
+    #[test]
+    fn un_altro_account_riceve_tutta_la_cronologia() {
+        // Il segno di «Manda anche la cronologia» è di chi l'ha ricevuta: chi
+        // scollega ListenBrainz e collega un altro account deve poterla mandare
+        // anche a lui. Tornando al primo, quel che ha già ricevuto non riparte.
+        let c = libreria();
+        c.execute_batch(
+            "INSERT INTO play_history (track_id, played_at, ms_played, source) VALUES
+               (1, 1000, 200000, 'spotify'),
+               (1, 2000, 200000, 'spotify');",
+        )
+        .expect("cronologia");
+        crate::settings::write(&c, CHIAVE_LB_UTENTE, "anna").expect("account");
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(2)
+        );
+        consegna_tutto(&c);
+
+        crate::settings::write(&c, CHIAVE_LB_UTENTE, "bruno").expect("un altro account");
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(2),
+            "il secondo account non ha ricevuto niente"
+        );
+        consegna_tutto(&c);
+
+        crate::settings::write(&c, CHIAVE_LB_UTENTE, "anna").expect("di nuovo il primo");
+        assert_eq!(
+            accoda_cronologia(&c, Servizio::ListenBrainz, Some("spotify"), 0),
+            Ok(0)
         );
     }
 
