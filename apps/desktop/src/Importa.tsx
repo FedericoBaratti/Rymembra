@@ -35,7 +35,7 @@ import { nomeSorgente } from "./parti/Importazioni";
 import { fiduciaDi, nomeFonte, PastigliaGradino, Tacche } from "./parti/Incertezza";
 import { nomeGenere, numero } from "./formato";
 import { LetturaLink, useLetturaLink } from "./parti/LetturaLink";
-import { erroriDopo, fuocoSulPrimario, NESSUN_ERRORE } from "./statoImportaLink";
+import { erroriDopo, etichettaImporta, fuocoSulPrimario, NESSUN_ERRORE } from "./statoImportaLink";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 
@@ -980,7 +980,8 @@ export function ImportaLink({
             disabled={inCorso || piano === null || degradato}
             onClick={() => void esegui()}
           >
-            {inCorso ? t("legacy.importing") : t("legacy.import")}
+            {/* «Importazione…» solo mentre si scrive: vedi `etichettaImporta`. */}
+            {t(etichettaImporta({ inCorso, scrivendo, leggendo }))}
           </button>
         ) : (
           <button

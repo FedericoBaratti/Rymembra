@@ -2282,6 +2282,7 @@
   "link.allDown.telefono": "Nobody is responding: it is almost always the phone, not them. Check the connection.",
   "link.someUp": "The ones that respond are working: the problem is in the link, or in this item. An Internet Archive item can exist and have restricted access — in that case you listen on the site and do not take it away, and Rymembra respects that instead of trying.",
   "link.retrying": "Reading…",
+  "link.planning": "Calculating…",
   "link.aria": "Import from a link",
   "link.title": "Import from a catalog",
   "link.intro": "Paste the link of a track, an album or a collection from a free catalog. No account and no key needed: Rymembra reads what is inside, looks in the library for the tracks you already have, and {solo}.",

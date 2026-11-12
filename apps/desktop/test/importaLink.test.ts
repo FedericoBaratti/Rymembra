@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
-import { erroriDopo, fuocoSulPrimario, NESSUN_ERRORE, type ErroriLink } from "../src/statoImportaLink";
+import { erroriDopo, etichettaImporta, fuocoSulPrimario, NESSUN_ERRORE, type ErroriLink } from "../src/statoImportaLink";
 
 const AUTOMATICA = { code: "library.playlistIsSmart", domain: "library", severity: "error" };
 const RETE = { code: "net.timeout", domain: "net", severity: "error" };
@@ -48,4 +49,21 @@ test("il fuoco va su «Importa» quando il tasto si accende, una volta per antep
   // «Riprova» porta un'anteprima nuova, e il fuoco torna.
   assert.equal(fuocoSulPrimario({ anteprima: { titolo: "Rock" }, servita: anteprima, acceso: true }), true);
   assert.equal(fuocoSulPrimario({ anteprima: null, servita: null, acceso: true }), false);
+});
+
+test("mentre si rifà il piano il tasto dice «Calcolo…», non «Importazione…» (R13c-14)", () => {
+  // La casella «Crea la playlist» rifà il piano, e `inCorso` vale anche
+  // allora: il tasto diceva «Importazione…» per un'importazione che nessuno
+  // aveva chiesto.
+  assert.equal(etichettaImporta({ inCorso: true, scrivendo: false, leggendo: false }), "link.planning");
+  assert.equal(etichettaImporta({ inCorso: true, scrivendo: true, leggendo: false }), "legacy.importing");
+  // «Riprova» con l'anteprima già a schermo rilegge il link.
+  assert.equal(etichettaImporta({ inCorso: true, scrivendo: false, leggendo: true }), "link.retrying");
+  assert.equal(etichettaImporta({ inCorso: false, scrivendo: false, leggendo: false }), "legacy.import");
+});
+
+test("Importa.tsx scrive l'etichetta del tasto con etichettaImporta", () => {
+  const sorgente = readFileSync(new URL("../src/Importa.tsx", import.meta.url), "utf8");
+  const link = sorgente.slice(sorgente.indexOf("export function ImportaLink"));
+  assert.match(link, /\{t\(etichettaImporta\(\{ inCorso, scrivendo, leggendo \}\)\)\}/);
 });

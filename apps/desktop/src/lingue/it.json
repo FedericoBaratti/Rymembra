@@ -2282,6 +2282,7 @@
   "link.allDown.telefono": "Non risponde nessuno: è quasi sempre il telefono, non loro. Controlla la connessione.",
   "link.someUp": "Chi risponde funziona: il problema è nel link, o in questo contenuto. Un item dell'Internet Archive può esistere e avere l'accesso limitato — in quel caso si ascolta sul sito e non si porta via, e Rymembra lo rispetta invece di provarci.",
   "link.retrying": "Lettura…",
+  "link.planning": "Calcolo…",
   "link.aria": "Importa da un link",
   "link.title": "Importa da un catalogo",
   "link.intro": "Incolla il link di un brano, di un album o di una collezione da un catalogo libero. Non serve un account e non serve una chiave: Rymembra legge cosa c'è dentro, cerca in libreria i brani che hai già, e {solo}.",

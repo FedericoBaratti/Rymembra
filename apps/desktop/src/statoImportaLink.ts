@@ -71,3 +71,27 @@ export function fuocoSulPrimario<T>({
 }): boolean {
   return anteprima !== null && anteprima !== servita && acceso;
 }
+
+/**
+ * La chiave dell'etichetta di «Importa».
+ *
+ * `inCorso` vale per tutti e tre i tempi della finestrella: la lettura del
+ * link, il piano che la casella «Crea la playlist» rifà da sé, la scrittura.
+ * Il tasto diceva «Importazione…» per tutti e tre, cioè anche per
+ * un'importazione che nessuno aveva chiesto (R13c-14). Adesso «Importazione…»
+ * solo mentre si scrive davvero, «Lettura…» mentre si rilegge il link, e
+ * «Calcolo…» mentre si rifà il piano.
+ */
+export function etichettaImporta({
+  inCorso,
+  scrivendo,
+  leggendo,
+}: {
+  inCorso: boolean;
+  scrivendo: boolean;
+  leggendo: boolean;
+}): "legacy.importing" | "link.retrying" | "link.planning" | "legacy.import" {
+  if (scrivendo) return "legacy.importing";
+  if (leggendo) return "link.retrying";
+  return inCorso ? "link.planning" : "legacy.import";
+}
