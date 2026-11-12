@@ -311,7 +311,8 @@ a longer listening history than the public API offers.
   root that does not exist on this machine, and it only adds: it never deletes
   a playlist, switches off a watched folder, removes a like or clears a
   rating, and in a playlist both libraries have it only appends the tracks
-  missing here, without reordering it or changing its rules. A skin the
+  missing here, without reordering it or changing its rules (a different
+  playlist that only shares the name enters beside it). A skin the
   profile would make the one worn passes the same review as an installed
   `.ryskin`, or stays installed but not worn. The old seventeen-line JSON is
   still read, and no longer written. Profiles and skin packages written by the

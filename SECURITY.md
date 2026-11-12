@@ -237,7 +237,8 @@ virtual tables. Windows device names (`con`, `nul`…) are
 refused as ids and file names. A profile only **adds** to the library: it
 never deletes, switches off or clears anything — in a playlist both libraries
 have it only appends the tracks missing here, never removing, reordering or
-turning it into a smart one — a skin it would make the one worn passes the
+turning it into a smart one, and a different playlist with the same name
+enters beside yours — a skin it would make the one worn passes the
 same review as an installed `.ryskin` first, and a cover hash that is not
 lowercase hex never becomes a path. Sync documents are validated value by
 value and cannot add folders on network hosts this PC does not already use,

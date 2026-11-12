@@ -593,7 +593,8 @@ network host this PC already uses for its watched folders or downloads: a
 folder on any other network host is listed as not looked for, because
 asking whether `\\host\share` exists means opening a connection to that
 host, and it is added — and later scanned — only if you go on with the
-restore.
+restore. A playlist of the backup that only has the same name as one made
+here enters beside it, as “Name (Drive)”, and yours is left as it is.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
 account first sends it to Google's revocation address, which withdraws the
@@ -678,10 +679,12 @@ What is **not** inside, and cannot be:
 Importing one **adds and never removes**: listens are summed, playlists that
 exist only in the profile arrive as they are, covers and skins are written
 only where none exist, and a lyric you synced by hand is never overwritten.
-In a playlist both libraries have, it only appends at the end the tracks
-missing here, once each and in the profile’s order: it does not remove or
+In a playlist both libraries have — the same playlist, carried from one to the
+other — it only appends at the end the tracks missing here, once each and in the profile’s order: it does not remove or
 reorder anything, does not bring back a track you took out of it here, and
-does not change its name, description, type or rules. It never deletes a
+does not change its name, description, type or rules. A different playlist
+that only has the same name as one of yours enters beside it, as
+“Name (.ryprofile)”. It never deletes a
 playlist, switches off a watched folder, removes a like or clears a rating,
 and a date from the future becomes the moment of the import. A skin the
 profile would make the one you wear goes through the same review as an
