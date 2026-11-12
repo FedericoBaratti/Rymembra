@@ -782,9 +782,9 @@ const RETE_IRRAGGIUNGIBILE: i32 = 1231;
 /// richiesta è andata male ce l'ha ancora davanti al motore — l'apertura del
 /// flusso restituisce l'[`AppError`] intero, con il suo codice e la sua causa.
 ///
-/// Fuori da Windows `e_di_rete` risponde sempre `false` — la ragione sta scritta
-/// nel suo modulo — e il numero resta lì senza che nessuno lo interroghi. È il
-/// limite dichiarato di quel modulo, non uno nuovo di questo.
+/// I tre numeri valgono come guasto di rete su **ogni** piattaforma, telefono
+/// compreso: sono `rymembra_domain::errors::rete::NUMERI_DEI_FLUSSI`, e la
+/// ragione per cui fuori da Windows non dicono altro sta scritta là.
 fn da_app(err: AppError) -> std::io::Error {
     std::io::Error::from_raw_os_error(match err.code().kind().code() {
         "net.offline" => RETE_IRRAGGIUNGIBILE,
