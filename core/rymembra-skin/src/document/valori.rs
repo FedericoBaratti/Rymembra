@@ -582,9 +582,8 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
 
     let colore_di =
         |name: &str| -> Esito<ColorValue> { colore(richiesto(map, path, name)?, &giu(path, name)) };
-    let lunghezza_di =
-        |name: &str| -> Esito<Length> { lunghezza(richiesto(map, path, name)?, &giu(path, name)) };
-    // Le misure di un motivo e il raggio del vetro: negative, il CSS le scarta.
+    // Le misure di un motivo, il raggio del vetro e il taglio d'angolo: negative,
+    // il CSS le scarta (o, per il taglio, il poligono si rovescia).
     let misura_di = |name: &str| -> Esito<Length> {
         lunghezza_non_negativa(richiesto(map, path, name)?, &giu(path, name))
     };
@@ -593,6 +592,36 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
 
     if Effect::NAMES.contains(&nome) {
         solo_chiavi(map, path, chiavi_effetto(nome))?;
+    }
+    // Gli estremi dei parametri, gli stessi dei cursori dello Studio: vedi
+    // `ESTREMI_DEI_PARAMETRI`. Un valore che non si legge lo dice dopo il
+    // lettore del suo campo, col messaggio giusto.
+    for (_, parametro, min, max) in crate::effects::ESTREMI_DEI_PARAMETRI
+        .iter()
+        .filter(|(effetto, ..)| *effetto == nome)
+    {
+        let scritto = match campo(map, parametro) {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) => crate::values::parse_length(s).map(|l| l.value),
+            _ => None,
+        };
+        // Un negativo dove il CSS non lo ammette lo dice il lettore del campo,
+        // con la sua frase: è un altro errore, non una misura fuori scala.
+        if let Some(quanto) = scritto
+            && !(quanto < 0.0 && *min >= 0.0)
+            && (quanto < *min || quanto > *max)
+        {
+            return Err(problema(
+                &giu(path, parametro),
+                motivo!(
+                    "fraMinMax",
+                    "va fra {min} e {max}, non {n}",
+                    min = min.to_string(),
+                    max = max.to_string(),
+                    n = quanto.to_string()
+                ),
+            ));
+        }
     }
 
     match nome {
@@ -603,8 +632,8 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
             angle: angolo(map, path, "angle", 180.0)?,
             stops: fermate_di()?,
         }),
-        "radialGradient" => Ok(Effect::RadialGradient {
-            shape: campo(map, "shape")
+        "radialGradient" => {
+            let shape = campo(map, "shape")
                 .map(|v| {
                     parola(
                         v,
@@ -616,11 +645,31 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                     )
                 })
                 .transpose()?
-                .unwrap_or(RadialShape::Ellipse),
-            at: centro(map, path)?,
-            size: lunghezza_facoltativa(map, path, "size")?,
-            stops: fermate_di()?,
-        }),
+                .unwrap_or(RadialShape::Ellipse);
+            // Un raggio negativo il motore lo scarta, e un cerchio in
+            // percentuale anche: la percentuale di che cosa, con due lati
+            // diversi? Scartato il gradiente, cade l'intero `background` della
+            // parte, e la parte resta trasparente.
+            let size = non_negativa_facoltativa(map, path, "size")?;
+            if shape == RadialShape::Circle
+                && size.is_some_and(|s| s.unit == crate::values::LengthUnit::Percent)
+            {
+                return Err(problema(
+                    &giu(path, "size"),
+                    motivo!(
+                        "cerchioInPercentuale",
+                        "il raggio di un cerchio non può essere una percentuale: scrivilo in px \
+                         o rem, o usa la forma «ellipse»"
+                    ),
+                ));
+            }
+            Ok(Effect::RadialGradient {
+                shape,
+                at: centro(map, path)?,
+                size,
+                stops: fermate_di()?,
+            })
+        }
         "conicGradient" => Ok(Effect::ConicGradient {
             from: angolo(map, path, "from", 0.0)?,
             at: centro(map, path)?,
@@ -671,7 +720,7 @@ pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                 }
             };
             Ok(Effect::Chamfer {
-                size: lunghezza_di("size")?,
+                size: misura_di("size")?,
                 corners,
             })
         }
@@ -809,13 +858,14 @@ fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<(
             }
         }
         TokenValue::Length(lunghezza) => {
+            // Di un'adattiva contano i due capi: `clamp(min, preferito, max)`
+            // non esce mai da lì, qualunque cosa valga il preferito. È ciò che
+            // lascia il preferito in `cqw` — il margine del contenuto delle
+            // skin di serie, `clamp(16px, 3cqw, 48px)` — dentro un estremo che
+            // è in pixel.
             let misure = match lunghezza {
                 LengthValue::Fixed(l) => vec![l],
-                LengthValue::Adaptive {
-                    min: a,
-                    preferred: b,
-                    max: c,
-                } => vec![a, b, c],
+                LengthValue::Adaptive { min: a, max: c, .. } => vec![a, c],
             };
             for misura in misure {
                 let px = match misura.unit {

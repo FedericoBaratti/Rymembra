@@ -968,7 +968,7 @@ const COMPLETA: &str = r##"{
     "patterns": { "griglia": { "effect": "hairlineGrid", "color": "#000000", "cell": "40px" } },
     "parts": { "card": { "radius": "2px" } }
   },
-  "platforms": { "mobile": { "layout.rail": "56px" } },
+  "platforms": { "mobile": { "radius.panel": "12px", "layout.contentX": "12px" } },
   "motion": {
     "intensity": "full",
     "easings": { "molla": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] } },
@@ -1651,6 +1651,201 @@ fn una_skin_non_raggiunge_un_dialogo_di_consenso() {
         assert!(
             parti > 20,
             "{ambito:?}: le regole delle parti non si sono viste"
+        );
+    }
+}
+
+/// Le misure di ogni `radial-gradient(` di un foglio, come le legge il motore:
+/// la forma, e le parole fra la forma e `at` (o la prima virgola).
+fn radiali(css: &str) -> Vec<(String, Vec<String>)> {
+    css.match_indices("radial-gradient(")
+        .filter_map(|(i, aperta)| {
+            let dentro = css.get(i + aperta.len()..)?;
+            let fine = dentro.find(',')?;
+            let testa = dentro.get(..fine)?;
+            let testa = testa.split(" at ").next().unwrap_or(testa);
+            let mut parole = testa.split_whitespace().map(ToOwned::to_owned);
+            let forma = parole.next()?;
+            Some((forma, parole.collect()))
+        })
+        .collect()
+}
+
+/// Una misura di un radiale è CSS valido per il motore: un'ellisse ne vuole
+/// due (o nessuna), un cerchio una sola e non in percentuale.
+fn radiale_valido(forma: &str, misure: &[String]) -> bool {
+    match forma {
+        "ellipse" => misure.is_empty() || misure.len() == 2,
+        "circle" => {
+            misure.is_empty() || (misure.len() == 1 && misure.iter().all(|m| !m.ends_with('%')))
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn un_radiale_ellittico_con_una_misura_e_css_valido() {
+    let css = compila_documento(&con(
+        r##", "patterns": { "luce": { "effect": "radialGradient", "shape": "ellipse", "size": "90%", "at": ["50%", "100%"], "stops": [{ "color": "#ff00ff", "at": "0%" }, { "color": "#00000000", "at": "80%" }] } },
+            "parts": { "app-shell": { "background": [{ "$pattern": "luce" }] } }"##,
+    ))
+    .css;
+    assert!(
+        css.contains("radial-gradient(ellipse 90% 90% at 50% 100%,"),
+        "{css}"
+    );
+    for (forma, misure) in radiali(&css) {
+        assert!(radiale_valido(&forma, &misure), "{forma} {misure:?}\n{css}");
+    }
+}
+
+#[test]
+fn un_cerchio_non_si_misura_in_percentuale_ne_in_negativo() {
+    for (forma, misura) in [("circle", "40%"), ("circle", "-4px"), ("ellipse", "-10%")] {
+        let json = con(&format!(
+            r##", "patterns": {{ "luce": {{ "effect": "radialGradient", "shape": "{forma}", "size": "{misura}", "stops": [{{ "color": "#ff00ff" }}, {{ "color": "#000000" }}] }} }}"##
+        ));
+        let problemi = crate::leggi_skin(&json).expect_err(&format!("{forma} {misura} passa"));
+        assert!(
+            problemi.iter().any(|p| p.path == "patterns.luce.size"),
+            "{forma} {misura}: {problemi:?}"
+        );
+    }
+}
+
+#[test]
+fn i_radiali_delle_skin_di_serie_sono_css_valido() {
+    for (nome, testo) in documenti_veri() {
+        let skin = crate::leggi_skin(testo).unwrap_or_else(|p| panic!("{nome}: {p:?}"));
+        for ambito in ambiti(&skin.id) {
+            let css = super::compila(&skin, &ambito).css;
+            for (forma, misure) in radiali(&css) {
+                assert!(
+                    radiale_valido(&forma, &misure),
+                    "{nome}, {ambito:?}: radial-gradient({forma} {})",
+                    misure.join(" ")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn un_nome_di_voce_scritto_a_mano_non_esce_dalla_cartella_della_skin() {
+    // Solo un documento costruito a mano ci arriva: i campi sono pubblici, e
+    // nessuno obbliga a passare da `parse_skin`, che pretende la grammatica del
+    // pacchetto (R15-2).
+    for src in ["..", ".", ""] {
+        let mut skin = crate::plain().expect("plain");
+        skin.patterns.push((
+            "sfondo".to_owned(),
+            Effect::Image {
+                src: src.to_owned(),
+                size: ImageSize::Cover,
+                repeat: false,
+                position: None,
+            },
+        ));
+        skin.fonts.push(crate::document::FontFace {
+            family: "Mia".to_owned(),
+            src: src.to_owned(),
+            weight: (400, 400),
+            italic: false,
+        });
+        for ambito in ambiti(&skin.id) {
+            let css = super::compila(&skin, &ambito).css;
+            for (i, _) in css.match_indices("url(\"") {
+                let resto = css.get(i + 5..).unwrap_or_default();
+                let indirizzo = resto
+                    .get(..resto.find('"').expect("chiuso"))
+                    .unwrap_or_default();
+                let percorso = indirizzo
+                    .strip_prefix(ORIGINE_RISORSE)
+                    .expect("schema locale");
+                assert!(
+                    percorso
+                        .trim_start_matches('/')
+                        .split('/')
+                        .all(|s| !s.is_empty() && s != "." && s != ".."),
+                    "src {src:?} → {indirizzo}"
+                );
+            }
+            assert!(
+                css.contains("--skin-sfondo: none center / cover no-repeat;"),
+                "{css}"
+            );
+        }
+    }
+}
+
+/// Le misure che sul telefono sono del motore (`stile/telefono.css`), come
+/// proprietà del foglio.
+const MISURE_DEL_TELEFONO: &[&str] = &[
+    "--rail-w",
+    "--player-h",
+    "--player-gap",
+    "--shell-left",
+    "--player-clearance",
+];
+
+#[test]
+fn il_blocco_del_telefono_usa_l_attributo_della_finestra() {
+    // `main.tsx` scrive `data-forma="telefono"` sulla radice: `[data-mobile]`
+    // non lo mette nessuno, e `platforms.mobile` non valeva mai (R09-2).
+    let css = compila_documento(&con(
+        r##", "platforms": { "mobile": { "color.surface.0": "#000000", "layout.contentX": "12px" } }"##,
+    ))
+    .css;
+    assert!(!css.contains("[data-mobile]"), "{css}");
+    let telefono = corpo(&css, ":root[data-skin='prova'][data-forma='telefono']");
+    assert!(
+        telefono.contains("--color-surface-0: rgb(0 0 0);"),
+        "{telefono}"
+    );
+    assert!(telefono.contains("--content-x: 12px;"), "{telefono}");
+}
+
+#[test]
+fn sul_telefono_le_misure_del_lettore_sono_del_motore() {
+    // Il foglio della skin viene dopo `telefono.css` e ha la stessa
+    // specificità: le misure del computer vincevano anche sul telefono, con un
+    // lettore da 92 pixel e 120 di vuoto in fondo a ogni pagina (R09-3).
+    let plain = compile_skin(&crate::plain().expect("plain")).css;
+    let base = corpo(&plain, ":root[data-skin='plain']");
+    let computer = corpo(
+        &plain,
+        ":root[data-skin='plain']:where(:not([data-forma='telefono']))",
+    );
+    for misura in MISURE_DEL_TELEFONO {
+        assert!(
+            !base.contains(&format!("{misura}:")),
+            "{misura} nel blocco di base:\n{base}"
+        );
+        assert!(
+            computer.contains(&format!("{misura}:")),
+            "{misura} manca sul computer:\n{computer}"
+        );
+    }
+    // E `platforms.mobile` non le riprende: lo dice un avviso.
+    let json = con(
+        r##", "platforms": { "mobile": { "layout.playerHeight": "64px", "layout.rail": "56px", "color.surface.0": "#000000" } }"##,
+    );
+    let css = compila_documento(&json).css;
+    let telefono = corpo(&css, ":root[data-skin='prova'][data-forma='telefono']");
+    for misura in MISURE_DEL_TELEFONO {
+        assert!(
+            !telefono.contains(&format!("{misura}:")),
+            "{misura}:\n{telefono}"
+        );
+    }
+    let skin = parse_skin_json(&json).expect("valida");
+    let avvisi = crate::check_skin(&skin);
+    for token in ["layout.playerHeight", "layout.rail"] {
+        assert!(
+            avvisi
+                .iter()
+                .any(|a| a.path == format!("platforms.mobile.{token}")),
+            "{token}: {avvisi:?}"
         );
     }
 }

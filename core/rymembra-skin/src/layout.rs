@@ -175,7 +175,7 @@ pub const FIXED_MAX: f64 = 480.0;
 /// È la misura del guscio, non una preferenza dell'utente: `html` non cambia
 /// dimensione carattere in questa finestra. Serve solo alla validazione — il
 /// CSS emesso conserva il `rem`, che è il motivo per cui accettarlo ha senso.
-const REM_IN_PX: f64 = 16.0;
+pub(crate) const REM_IN_PX: f64 = 16.0;
 
 // ── Il vocabolario ──────────────────────────────────────────────────────────
 
@@ -1148,6 +1148,38 @@ fn giu(path: &str, figlio: usize) -> String {
 /// proseguono.
 #[must_use]
 pub fn verifica(radice: &LayoutZone) -> Vec<ShellIssue> {
+    verifica_con_la_barra(radice, Barra::DI_SERIE)
+}
+
+/// Le due larghezze della barra laterale con cui lo scafale fa i conti.
+///
+/// Sono i token `layout.rail` e `layout.railExpanded` della skin, quando li
+/// scrive in una misura assoluta; altrimenti quelli di serie. Vedi
+/// [`BARRA_CHIUSA`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Barra {
+    /// Chiusa, in pixel.
+    pub chiusa: f64,
+    /// Aperta, in pixel.
+    pub aperta: f64,
+}
+
+impl Barra {
+    /// Quella che la barra prende quando la skin non la tocca.
+    pub const DI_SERIE: Self = Self {
+        chiusa: BARRA_CHIUSA,
+        aperta: BARRA_APERTA,
+    };
+}
+
+/// Come [`verifica`], con la barra laterale larga quanto la skin la dichiara.
+///
+/// Fino alla 3.2.0 lo scafale la contava sempre 68 e 240 pixel, qualunque cosa
+/// dicessero i token: una barra da 120 chiusa e da 320 aperta — gli estremi
+/// che il formato ammette — lasciava al contenuto 52 o 80 pixel meno di quel
+/// che il conto prometteva (R09-4).
+#[must_use]
+pub fn verifica_con_la_barra(radice: &LayoutZone, barra: Barra) -> Vec<ShellIssue> {
     let mut problemi = Vec::new();
 
     let nodi = radice.conta_nodi();
@@ -1167,7 +1199,7 @@ pub fn verifica(radice: &LayoutZone) -> Vec<ShellIssue> {
     }
 
     let mut visti: Vec<&'static str> = Vec::new();
-    zona(radice, "", None, 1, &mut visti, &mut problemi);
+    zona(radice, "", None, 1, barra, &mut visti, &mut problemi);
     essenziali(&visti, &mut problemi);
 
     // Un prefab montato in tre punti produce tre volte gli stessi problemi:
@@ -1193,6 +1225,7 @@ fn zona(
     path: &str,
     prefab: Option<&str>,
     profondita: usize,
+    barra: Barra,
     visti: &mut Vec<&'static str>,
     problemi: &mut Vec<ShellIssue>,
 ) {
@@ -1278,17 +1311,27 @@ fn zona(
     // sicuro. Gli altri `hug` no: la loro misura dipende dal contenuto e non la
     // si sa prima di disegnare, e i tre che galleggiano — `player`, `queue`,
     // `selection-bar` — e `ambient` non occupano il flusso.
+    //
+    // Una zona figlia che non ha una misura sua conta per quel che contiene di
+    // sicuro: una zona `hug` fatta di fissi non cresce col contenuto, è grande
+    // quanto i suoi fissi. Fino alla 3.2.0 non contava niente, e due zone `hug`
+    // da una copertina di 480 pixel ciascuna stavano nel budget di una riga che
+    // ne aveva 640 (R09-5). Vedi [`minimo_sull_asse`].
     let riga = corrente.kind.is_row();
     let somma: f64 = corrente
         .children
         .iter()
-        .filter_map(|figlio| figlio.size().in_px())
+        .map(|figlio| match (figlio.size().in_px(), figlio) {
+            (Some(px), _) => px,
+            (None, LayoutNode::Zone(sotto)) => minimo_sull_asse(sotto, riga, barra),
+            (None, LayoutNode::Widget(_)) => 0.0,
+        })
         .sum();
-    let barra: f64 = if riga {
+    let della_barra: f64 = if riga {
         corrente
             .children
             .iter()
-            .filter_map(larghezza_della_barra)
+            .filter_map(|figlio| larghezza_della_barra(figlio, barra))
             .sum()
     } else {
         0.0
@@ -1298,7 +1341,7 @@ fn zona(
     } else {
         SHELL_FIXED_BUDGET_COLONNA
     };
-    if somma + barra > budget {
+    if somma + della_barra > budget {
         let asse = if riga {
             motivo!("scafale.asse.larghezza", "in larghezza")
         } else {
@@ -1307,14 +1350,14 @@ fn zona(
                 "in altezza, contro i 560px della finestra più bassa"
             )
         };
-        let motivo = if barra > 0.0 {
+        let motivo = if della_barra > 0.0 {
             motivo!(
                 "scafale.misureFisseBarra",
                 "le misure fisse di questa zona sommano {somma}px, più {barra}px della barra \
                  laterale, sul budget di {budget}px {asse}: al «fill» resterebbe meno di quanto \
                  serve a un elenco di brani",
                 somma = num(somma),
-                barra = num(barra),
+                barra = num(della_barra),
                 budget = num(budget),
                 asse = asse
             )
@@ -1352,6 +1395,7 @@ fn zona(
                 &giu(path, indice),
                 prefab,
                 profondita + 1,
+                barra,
                 visti,
                 problemi,
             );
@@ -1361,7 +1405,7 @@ fn zona(
 
 /// La larghezza che la barra laterale prende in una riga quando è montata a
 /// `hug`, o `None` per ogni altro figlio. Vedi [`BARRA_CHIUSA`].
-fn larghezza_della_barra(figlio: &LayoutNode) -> Option<f64> {
+fn larghezza_della_barra(figlio: &LayoutNode, barra: Barra) -> Option<f64> {
     let LayoutNode::Widget(istanza) = figlio else {
         return None;
     };
@@ -1369,9 +1413,39 @@ fn larghezza_della_barra(figlio: &LayoutNode) -> Option<f64> {
         return None;
     }
     Some(match istanza.option("wide") {
-        Some(OptionValue::Flag(true)) => BARRA_APERTA,
-        _ => BARRA_CHIUSA,
+        Some(OptionValue::Flag(true)) => barra.aperta,
+        _ => barra.chiusa,
     })
+}
+
+/// Quanto prende di sicuro una zona senza misura sua, sull'asse di una riga
+/// (`riga`) o di una colonna: la sua misura minima nota prima di disegnare.
+///
+/// Sullo stesso asse della zona i figli si mettono uno dopo l'altro, e si
+/// sommano — i fissi, la barra laterale in una riga, e le zone figlie per quel
+/// che contengono loro. Sull'asse di traverso i figli stanno affiancati, e
+/// conta il più grande; di un widget lì si sa soltanto la misura sull'altro
+/// asse, quindi non conta. La ricorsione è quella dell'albero, che ha già il
+/// suo tetto di profondità.
+fn minimo_sull_asse(zona: &LayoutZone, riga: bool, barra: Barra) -> f64 {
+    let in_fila = zona.kind.is_row() == riga;
+    let misure = zona.children.iter().map(|figlio| match figlio {
+        LayoutNode::Widget(_) if !in_fila => 0.0,
+        LayoutNode::Widget(_) => figlio
+            .size()
+            .in_px()
+            .or_else(|| riga.then(|| larghezza_della_barra(figlio, barra)).flatten())
+            .unwrap_or(0.0),
+        LayoutNode::Zone(sotto) => match figlio.size().in_px() {
+            Some(px) if in_fila => px,
+            _ => minimo_sull_asse(sotto, riga, barra),
+        },
+    });
+    if in_fila {
+        misure.sum()
+    } else {
+        misure.fold(0.0, f64::max)
+    }
 }
 
 fn misura(size: TrackSize, path: &str, problemi: &mut Vec<ShellIssue>) {
@@ -1887,6 +1961,69 @@ mod tests {
         let mut chiusa = radice.clone();
         chiusa.children[0] = LayoutNode::Widget(WidgetInstance::nuovo(atteso("navigation")));
         assert!(messaggi(&chiusa).contains("68px"), "{}", messaggi(&chiusa));
+    }
+
+    #[test]
+    fn una_zona_hug_di_fissi_conta_nel_budget_del_genitore() {
+        // Due zone «hug» fatte di fissi: ognuna sta nel budget, la radice
+        // contava solo la barra, e in una finestra da 880 pixel le due copertine
+        // prendevano 960 pixel rigidi — il contenuto a zero, le copertine fuori
+        // a destra (R09-5).
+        let gruppo = || {
+            LayoutNode::Zone(LayoutZone::nuova(ZoneKind::Row, TrackSize::Hug).con(vec![
+                fisso("cover-large", 480.0),
+                LayoutNode::Widget(WidgetInstance {
+                    size: TrackSize::Fill,
+                    ..WidgetInstance::nuovo(atteso("rating"))
+                }),
+            ]))
+        };
+        let radice = LayoutZone::nuova(ZoneKind::Row, TrackSize::Fill).con(vec![
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("navigation"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("content"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("player"))),
+            gruppo(),
+            gruppo(),
+        ]);
+        let detto = messaggi(&radice);
+        assert!(detto.contains("960px"), "{detto}");
+        // Una colonna «hug» in una riga è larga quanto il suo figlio più largo
+        // di cui si sa la larghezza: la riga di fissi dentro conta, una volta.
+        let colonna = LayoutNode::Zone(
+            LayoutZone::nuova(ZoneKind::Column, TrackSize::Hug).con(vec![gruppo(), gruppo()]),
+        );
+        let radice = LayoutZone::nuova(ZoneKind::Row, TrackSize::Fill).con(vec![
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("navigation"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("content"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("player"))),
+            colonna,
+            fisso("column", 200.0),
+        ]);
+        let detto = messaggi(&radice);
+        assert!(detto.contains("680px"), "{detto}");
+    }
+
+    #[test]
+    fn la_barra_si_conta_con_la_misura_della_skin() {
+        // La barra laterale di una skin può essere larga fino a 120 pixel
+        // chiusa e 320 aperta (R09-4): lo scafale conta quella, non 68 e 240.
+        let radice = LayoutZone::nuova(ZoneKind::Row, TrackSize::Fill).con(vec![
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("navigation"))),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("content"))),
+            fisso("cover-large", 480.0),
+            fisso("rating", 60.0),
+            LayoutNode::Widget(WidgetInstance::nuovo(atteso("player"))),
+        ]);
+        assert!(verifica(&radice).is_empty(), "{}", messaggi(&radice));
+        let larga = Barra {
+            chiusa: 120.0,
+            aperta: 320.0,
+        };
+        let problemi = verifica_con_la_barra(&radice, larga);
+        assert!(
+            problemi.iter().any(|p| p.message.contains("120px")),
+            "{problemi:?}"
+        );
     }
 
     #[test]

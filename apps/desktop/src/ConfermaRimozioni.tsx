@@ -81,6 +81,8 @@ export function ConfermaRimozioni({
       descrizione={t("scan.confirm.body")}
       ruolo="alertdialog"
       classe="finestrella media glass-modal"
+      // Toglie righe dalla libreria: una skin non la ridisegna (D-51).
+      consenso
       onChiudi={lascia}
     >
       {/* Una voce per cartella sorvegliata, aperta: chi deve decidere

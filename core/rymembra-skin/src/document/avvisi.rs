@@ -3,13 +3,13 @@
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 
-use super::{MotionIntensity, SkinDocument, SkinIssue, Variante, in_errore};
+use super::{MotionIntensity, Scheme, SkinDocument, SkinIssue, Variante, in_errore};
 use crate::effects::{Effect, Paint, Stop};
 use crate::layout::shell_di_serie;
 use crate::motivo::Motivo;
 use crate::movimento::{AnimFrame, AnimTrigger, CASCATA_VOCI, Iterazioni};
 use crate::parts::PartStyle;
-use crate::tokens::{ColorValue, TokenSet, TokenValue};
+use crate::tokens::{ColorValue, TokenDef, TokenKind, TokenSet, TokenValue};
 use crate::values::{Length, Rgba};
 
 // ── Gli avvisi ──────────────────────────────────────────────────────────────
@@ -140,25 +140,73 @@ pub(crate) fn colore_di(
 
 /// Un tema da misurare: il nome, i suoi token, quelli su cui ricade, la sua
 /// tavolozza.
-struct Tema<'a> {
+///
+/// I token sono **riempiti** con quelli di Plain nello stesso tema, dove la
+/// skin tace: è quel che la finestra disegna, perché `stile.css` porta sotto
+/// `:root` (e `:root[data-theme='light']`) i blocchi di Plain, e un token che
+/// la skin non dichiara ricade lì. Fino alla 3.2.0 un token non dichiarato
+/// «semplicemente non compariva»: superfici bianche e nessun `color.text.*`
+/// davano testo quasi bianco su bianco, e il contrasto diceva zero coppie
+/// cattive (R09-8).
+struct Tema {
     nome: &'static str,
-    tokens: &'a TokenSet,
-    base: Option<&'a TokenSet>,
+    tokens: TokenSet,
+    base: Option<TokenSet>,
     palette: Vec<(String, Rgba)>,
 }
 
-fn temi(skin: &SkinDocument) -> Vec<Tema<'_>> {
+/// I colori di Plain nel tema dato, già risolti: quel che vede chi indossa una
+/// skin che non li dichiara.
+fn plain_nel_tema(scheme: Scheme) -> Vec<(&'static TokenDef, TokenValue)> {
+    let Some(plain) = crate::compile::di_serie() else {
+        return Vec::new();
+    };
+    let (tokens, base, palette) = match (scheme, plain.variant.as_ref()) {
+        (Scheme::Light, Some(chiara)) => (
+            &chiara.tokens,
+            Some(&plain.tokens),
+            plain.tavolozza_variante(),
+        ),
+        _ => (&plain.tokens, None, plain.palette.clone()),
+    };
+    crate::tokens::TOKENS
+        .iter()
+        .filter(|def| def.kind == TokenKind::Color)
+        .filter_map(|def| {
+            let colore = colore_di(def.id, tokens, base, &palette)?;
+            Some((def, TokenValue::Color(ColorValue::Literal(colore))))
+        })
+        .collect()
+}
+
+/// `dichiarati` col ripiego di Plain per quel che non dichiarano. Vedi [`Tema`].
+fn riempito(dichiarati: &TokenSet, ripiego: &[(&'static TokenDef, TokenValue)]) -> TokenSet {
+    let mut voci: Vec<(&'static TokenDef, TokenValue)> = dichiarati
+        .iter()
+        .map(|(def, valore)| (def, valore.clone()))
+        .collect();
+    voci.extend(
+        ripiego
+            .iter()
+            .filter(|(def, _)| !dichiarati.contains(def.id))
+            .cloned(),
+    );
+    TokenSet::new(voci)
+}
+
+fn temi(skin: &SkinDocument) -> Vec<Tema> {
     let mut temi = vec![Tema {
         nome: skin.scheme.nome(),
-        tokens: &skin.tokens,
+        tokens: riempito(&skin.tokens, &plain_nel_tema(skin.scheme)),
         base: None,
         palette: skin.palette.clone(),
     }];
     if let Some(variante) = skin.variant.as_ref() {
+        let opposto = skin.scheme.opposto();
         temi.push(Tema {
-            nome: skin.scheme.opposto().nome(),
-            tokens: &variante.tokens,
-            base: Some(&skin.tokens),
+            nome: opposto.nome(),
+            tokens: variante.tokens.clone(),
+            base: Some(riempito(&skin.tokens, &plain_nel_tema(opposto))),
             palette: skin.tavolozza_variante(),
         });
     }
@@ -172,9 +220,9 @@ fn temi(skin: &SkinDocument) -> Vec<Tema<'_>> {
 #[must_use]
 pub fn contrast_pairs(skin: &SkinDocument) -> Vec<ContrastPair> {
     let temi = temi(skin);
-    let misura = |davanti: &str, dietro: &str, tema: &Tema<'_>| -> Option<f64> {
-        let f = colore_di(davanti, tema.tokens, tema.base, &tema.palette)?;
-        let b = colore_di(dietro, tema.tokens, tema.base, &tema.palette)?;
+    let misura = |davanti: &str, dietro: &str, tema: &Tema| -> Option<f64> {
+        let f = colore_di(davanti, &tema.tokens, tema.base.as_ref(), &tema.palette)?;
+        let b = colore_di(dietro, &tema.tokens, tema.base.as_ref(), &tema.palette)?;
         Some(crate::values::contrast_ratio(f, b))
     };
     let mut coppie = Vec::new();
@@ -295,16 +343,27 @@ fn avvisi_superfici(skin: &SkinDocument) -> Vec<SkinWarning> {
             if fondo_scritto.is_empty() {
                 continue;
             }
-            let Some(fondo) = fondo_dipinto(fondo_scritto, tema.tokens, tema.base, &tema.palette)
-            else {
+            let Some(fondo) = fondo_dipinto(
+                fondo_scritto,
+                &tema.tokens,
+                tema.base.as_ref(),
+                &tema.palette,
+            ) else {
                 continue;
             };
             let testo_scritto = sovrascritta
                 .and_then(|p| p.appearance.text_color.as_ref())
                 .or(base.appearance.text_color.as_ref());
             let testo = testo_scritto
-                .and_then(|c| risolvi(c, tema.tokens, tema.base, &tema.palette, 8))
-                .or_else(|| colore_di("color.text.1", tema.tokens, tema.base, &tema.palette));
+                .and_then(|c| risolvi(c, &tema.tokens, tema.base.as_ref(), &tema.palette, 8))
+                .or_else(|| {
+                    colore_di(
+                        "color.text.1",
+                        &tema.tokens,
+                        tema.base.as_ref(),
+                        &tema.palette,
+                    )
+                });
             let Some(testo) = testo else { continue };
             let rapporto = crate::values::contrast_ratio(testo, fondo);
             if rapporto >= CONTRASTO_MINIMO {
@@ -378,7 +437,9 @@ pub fn focus_ring_pairs(skin: &SkinDocument) -> Vec<AnelloMisurato> {
     for (indice, tema) in temi(skin).iter().enumerate() {
         let superfici: Vec<(&'static str, Rgba)> = DIETRO
             .iter()
-            .filter_map(|id| colore_di(id, tema.tokens, tema.base, &tema.palette).map(|c| (*id, c)))
+            .filter_map(|id| {
+                colore_di(id, &tema.tokens, tema.base.as_ref(), &tema.palette).map(|c| (*id, c))
+            })
             .collect();
         if superfici.is_empty() {
             continue;
@@ -398,7 +459,12 @@ pub fn focus_ring_pairs(skin: &SkinDocument) -> Vec<AnelloMisurato> {
             }
         };
 
-        if let Some(accento) = colore_di("color.accent", tema.tokens, tema.base, &tema.palette) {
+        if let Some(accento) = colore_di(
+            "color.accent",
+            &tema.tokens,
+            tema.base.as_ref(),
+            &tema.palette,
+        ) {
             misura("tokens.color.accent".to_owned(), accento);
         }
 
@@ -425,7 +491,9 @@ pub fn focus_ring_pairs(skin: &SkinDocument) -> Vec<AnelloMisurato> {
                 }
             }
             for (path, colore) in scritti {
-                if let Some(colore) = risolvi(colore, tema.tokens, tema.base, &tema.palette, 8) {
+                if let Some(colore) =
+                    risolvi(colore, &tema.tokens, tema.base.as_ref(), &tema.palette, 8)
+                {
                     misura(path, colore);
                 }
             }
@@ -610,6 +678,28 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         ));
     }
 
+    // Sul telefono le misure del lettore e della barra sono del motore (D-50):
+    // `platforms.mobile` che le scrive scrive una cosa che non si vedrà.
+    if let Some(telefono) = skin.mobile.as_ref() {
+        for def in crate::tokens::TOKENS
+            .iter()
+            .filter(|d| crate::compile::MISURE_DEL_TELEFONO.contains(&d.css))
+            .filter(|d| telefono.contains(d.id))
+        {
+            avvisi.push(SkinWarning::nuovo(
+                WarningKind::UnkeptCapability,
+                format!("platforms.mobile.{}", def.id),
+                motivo!(
+                    "telefonoMisuraDelMotore",
+                    "Sul telefono «{token}» lo decide il motore: il lettore e la barra hanno le \
+                     misure di Android, e questo valore non si usa. Sul telefono si possono \
+                     cambiare i colori, i caratteri e le altre misure.",
+                    token = def.id
+                ),
+            ));
+        }
+    }
+
     // Una variante dichiarata e vuota è una promessa non mantenuta:
     // l'interruttore del tema apparirebbe e non farebbe niente.
     if skin.variant.as_ref().is_some_and(Variante::is_empty) {
@@ -656,6 +746,16 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
 
     avvisi.extend(avvisi_superfici(skin));
     avvisi.extend(avvisi_anelli(skin));
+    avvisi.extend(anelli_spenti(skin).into_iter().map(|path| {
+        let motivo = motivo!(
+            "anelloLargoZero",
+            "L'anello del fuoco scritto in «{dove}» è largo zero: chi naviga con la tastiera non \
+             vede dove si trova, e sopra l'anello del motore vince questo. Dagli almeno 2px, o \
+             togli il campo per tenere quello di serie.",
+            dove = path.as_str()
+        );
+        SkinWarning::nuovo(WarningKind::Contrast, path, motivo)
+    }));
 
     if let Some(layout) = skin.layout.as_ref() {
         let usati = layout.shell.prefabs_used();
@@ -1051,18 +1151,32 @@ pub struct Esame {
     /// Quante coppie di testo e superficie stanno sotto [`CONTRASTO_MINIMO`],
     /// contando le superfici che la skin si ridipinge.
     pub contrasti: usize,
-    /// Quanti anelli del fuoco stanno sotto [`CONTRASTO_ANELLO`], tema per
-    /// tema: vedi [`focus_ring_pairs`].
+    /// Quanti anelli del fuoco non si vedono: sotto [`CONTRASTO_ANELLO`], tema
+    /// per tema (vedi [`focus_ring_pairs`]), o larghi zero ([`anelli_spenti`]).
     pub anelli: usize,
+    /// Quanti token di testo obbligatori la skin non dichiara: il testo ricade
+    /// su quello di Plain, che su superfici scelte per un altro testo può
+    /// sparire (D-49).
+    pub testi_mancanti: usize,
+    /// Le parti essenziali che la skin rende trasparenti o ritaglia, coi
+    /// percorsi in cui lo scrive: vedi [`parti_nascoste`].
+    pub nascoste: Vec<String>,
+    /// Le animazioni che fanno apparire e sparire una parte troppo in fretta,
+    /// con la scala, il ritaglio o lo spostamento invece che con la luce: vedi
+    /// «Il lampeggio della forma» in `lampeggio.rs`.
+    pub lampi: Vec<String>,
 }
 
 impl Esame {
     /// C'è qualcosa da chiedere prima di indossarla: un budget sforato, un
-    /// testo che non si legge, o un anello del fuoco che non si vede.
+    /// testo che non si legge o che manca, un anello del fuoco che non si vede,
+    /// una parte essenziale nascosta, una parte che appare e sparisce.
     ///
     /// L'anello sta con il testo e non con i cicli: chi naviga con la tastiera e
     /// indossa una skin il cui fuoco non si vede resta senza sapere dove si
     /// trova, ed è una cosa da dire **prima** — non un rifiuto, una domanda.
+    /// Così le parti essenziali: una cornice a opacità zero è una finestra vuota,
+    /// e chi la indossa deve saperlo prima, non scoprirlo (D-49).
     ///
     /// I cicli **non** bastano: sono ammessi, si fermano con «Riduci il
     /// movimento», e una skin che fa girare il disco mentre suona non merita una
@@ -1071,6 +1185,9 @@ impl Esame {
     pub fn da_confermare(&self) -> bool {
         self.contrasti > 0
             || self.anelli > 0
+            || self.testi_mancanti > 0
+            || !self.nascoste.is_empty()
+            || !self.lampi.is_empty()
             || [
                 self.superficie,
                 self.movimento_parte,
@@ -1150,6 +1267,148 @@ pub fn esamina(skin: &SkinDocument) -> Esame {
         cicli,
         contrasti: contrast_pairs(skin).iter().filter(|c| !c.passa()).count()
             + avvisi_superfici(skin).len(),
-        anelli: focus_ring_pairs(skin).iter().filter(|a| !a.passa()).count(),
+        anelli: focus_ring_pairs(skin).iter().filter(|a| !a.passa()).count()
+            + anelli_spenti(skin).len(),
+        testi_mancanti: testi_mancanti(skin).len(),
+        nascoste: parti_nascoste(skin),
+        lampi: skin
+            .motion
+            .as_ref()
+            .map(super::lampeggio::lampi_di_forma)
+            .unwrap_or_default(),
     }
+}
+
+/// I token di testo obbligatori che la skin non dichiara.
+fn testi_mancanti(skin: &SkinDocument) -> Vec<&'static str> {
+    crate::tokens::required_tokens()
+        .into_iter()
+        .filter(|def| def.id.starts_with("color.text."))
+        .filter(|def| !skin.tokens.contains(def.id))
+        .map(|def| def.id)
+        .collect()
+}
+
+/// Gli anelli del fuoco larghi zero, coi percorsi in cui sono scritti.
+///
+/// Il contrasto di [`focus_ring_pairs`] guarda il colore: un anello bianco su
+/// nero largo `0px` fa 21:1 e non si vede, e nella finestra `outline: 0px`
+/// vince sull'anello del motore, anche col contrasto elevato di Windows
+/// (R09-7). Non è un errore — il formato ammette zero, e lo Studio lo usa per
+/// spegnere l'anello di una parte che ne disegna un altro — ma è una domanda.
+#[must_use]
+pub fn anelli_spenti(skin: &SkinDocument) -> Vec<String> {
+    let mut spenti = Vec::new();
+    for (prefisso, parti) in [("parts", &skin.parts)]
+        .into_iter()
+        .chain(skin.variant.iter().map(|v| ("variant.parts", &v.parts)))
+    {
+        for stile in parti {
+            let nome = stile.def.name;
+            let mut scritti = vec![(format!("{prefisso}.{nome}.focusRing"), &stile.appearance)];
+            scritti.extend(stile.states.iter().map(|(stato, aspetto)| {
+                (
+                    format!("{prefisso}.{nome}.states.{}.focusRing", stato.as_str()),
+                    aspetto,
+                )
+            }));
+            for (path, aspetto) in scritti {
+                if aspetto
+                    .focus_ring
+                    .as_ref()
+                    .is_some_and(|anello| anello.width.value <= 0.0)
+                {
+                    spenti.push(path);
+                }
+            }
+        }
+    }
+    spenti
+}
+
+/// Le parti senza le quali la finestra non si usa: la cornice, la pagina, la
+/// navigazione, il lettore coi suoi comandi, la schermata grande, i tasti della
+/// finestra, le finestrelle.
+///
+/// È lo stesso principio che rende un errore togliere `transport` dallo
+/// scafale («una skin che nasconde il tasto pausa è un'app rotta»), che
+/// un'opacità a zero aggirava: `"app-shell": {"opacity": 0}` era una finestra
+/// vuota a ogni avvio, valida e senza domande (R09-6).
+pub const PARTI_ESSENZIALI: &[&str] = &[
+    "app-shell",
+    "page-content",
+    "sidebar",
+    "bottom-nav",
+    "player-shell",
+    "np-screen",
+    "np-transport",
+    "play-btn-primary",
+    "window-controls",
+    "glass-modal",
+];
+
+/// Sotto questa opacità una parte essenziale non si vede abbastanza.
+pub const OPACITA_MINIMA_ESSENZIALI: f64 = 0.5;
+
+/// Il taglio d'angolo più grande, in pixel, che una parte essenziale porta
+/// senza perdere quel che contiene: oltre, o in un'unità relativa alla parte o
+/// alla finestra, si chiede.
+pub const TAGLIO_MASSIMO_ESSENZIALI: f64 = 16.0;
+
+/// Le parti essenziali che la skin rende trasparenti o ritaglia, coi percorsi.
+///
+/// Alla base e in ogni stato, tranne `disabled`: un comando spento sbiadito è
+/// un comando spento, e dice quel che è. Vedi [`PARTI_ESSENZIALI`].
+#[must_use]
+pub fn parti_nascoste(skin: &SkinDocument) -> Vec<String> {
+    let taglia = |paint: &Paint| match paint.effect() {
+        Effect::Chamfer { size, .. } => match size.unit {
+            crate::values::LengthUnit::Px => size.value > TAGLIO_MASSIMO_ESSENZIALI,
+            crate::values::LengthUnit::Rem | crate::values::LengthUnit::Em => {
+                size.value * 16.0 > TAGLIO_MASSIMO_ESSENZIALI
+            }
+            _ => size.value > 0.0,
+        },
+        // Il ritaglio è un effetto `clipPath`, e oggi lo è solo il taglio
+        // d'angolo: un altro, quando ci sarà, si chiede finché non ha la sua
+        // misura.
+        _ => true,
+    };
+    let mut nascoste = Vec::new();
+    for (prefisso, parti) in [("parts", &skin.parts)]
+        .into_iter()
+        .chain(skin.variant.iter().map(|v| ("variant.parts", &v.parts)))
+    {
+        for stile in parti
+            .iter()
+            .filter(|s| PARTI_ESSENZIALI.contains(&s.def.name))
+        {
+            let nome = stile.def.name;
+            let mut scritti = vec![(format!("{prefisso}.{nome}"), &stile.appearance)];
+            scritti.extend(
+                stile
+                    .states
+                    .iter()
+                    .filter(|(stato, _)| *stato != crate::stati::PartState::Disabled)
+                    .map(|(stato, aspetto)| {
+                        (
+                            format!("{prefisso}.{nome}.states.{}", stato.as_str()),
+                            aspetto,
+                        )
+                    }),
+            );
+            for (path, aspetto) in scritti {
+                if aspetto
+                    .opacity
+                    .is_some_and(|o| o < OPACITA_MINIMA_ESSENZIALI)
+                {
+                    nascoste.push(format!("{path}.opacity"));
+                }
+                if aspetto.clip.as_ref().is_some_and(taglia) {
+                    nascoste.push(format!("{path}.clip"));
+                }
+            }
+        }
+    }
+    nascoste
 }

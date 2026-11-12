@@ -29,10 +29,21 @@
 //!   (`compile.rs`, «I consensi», 06-1);
 //! - una parte con un livello è il blocco contenitore del livello:
 //!   `position: relative` a specificità zero, che perde dove il motore la
-//!   posiziona già (06-2).
+//!   posiziona già (06-2);
+//! - un radiale con un raggio solo si scrive come il motore lo legge: l'ellisse
+//!   con lo stesso raggio sui due assi, e un cerchio in percentuale diventa
+//!   quell'ellisse. Prima tutti e due erano CSS non valido e il motore buttava
+//!   l'intero fondo — «In riproduzione» di Neon e Vinile restava trasparente —
+//!   quindi anche qui l'aspetto cambia perché prima non c'era (3.2.1, R18-1);
+//! - il blocco del telefono si chiama con l'attributo che la finestra scrive,
+//!   `[data-forma='telefono']` e non `[data-mobile]`, che non metteva nessuno; e
+//!   le misure della cornice che sul telefono decide il motore stanno in un
+//!   blocco della radice che sul telefono non vale. Sul computer non cambia
+//!   niente (3.2.1, R09-2, R09-3).
 
 use std::collections::BTreeSet;
 
+use rymembra_skin::compile::MISURE_DEL_TELEFONO;
 use rymembra_skin::migrazione::COPIE;
 use rymembra_skin::{compile_skin, migra_testo, parse_skin_json};
 
@@ -143,6 +154,22 @@ fn rinomina(regola: &str) -> String {
             ":where([data-active], .is-active)",
             ":where([aria-current]:not([aria-current=\"false\"]), [data-active], .is-active)",
         )
+        .replace("[data-mobile]", "[data-forma='telefono']")
+}
+
+/// Le misure della cornice com'è scritte oggi: in un blocco della radice che
+/// sul telefono non vale. Vedi il `//!`.
+fn ripara_telefono(terna: Terna) -> Terna {
+    let della_radice = terna.regola.starts_with(":root[data-skin='")
+        && !terna.regola.contains(' ')
+        && !terna.regola.contains("[data-forma=");
+    if della_radice && MISURE_DEL_TELEFONO.contains(&terna.proprieta.as_str()) {
+        return Terna {
+            regola: format!("{}:where(:not([data-forma='telefono']))", terna.regola),
+            ..terna
+        };
+    }
+    terna
 }
 
 /// I pezzi di una lista CSS separati dalle virgole di primo livello.
@@ -191,6 +218,31 @@ fn ripara_sfondo(terna: Terna) -> Terna {
         })
         .collect::<Vec<_>>()
         .join(", ");
+    Terna { valore, ..terna }
+}
+
+/// I radiali com'è scritti oggi: `ellipse R` diventa `ellipse R R`, e
+/// `circle P%` diventa `ellipse P% P%`. Vedi il `//!`.
+fn ripara_radiali(terna: Terna) -> Terna {
+    const APERTURA: &str = "radial-gradient(";
+    let mut valore = String::new();
+    let mut resto = terna.valore.as_str();
+    while let Some(posto) = resto.find(APERTURA) {
+        let (prima, dopo) = resto.split_at(posto + APERTURA.len());
+        valore.push_str(prima);
+        let fine = dopo
+            .find([',', ')'])
+            .map_or(dopo.len(), |f| dopo[..f].find(" at ").unwrap_or(f));
+        let parole: Vec<&str> = dopo[..fine].split_whitespace().collect();
+        let scritta = match parole.as_slice() {
+            ["ellipse", raggio] => format!("ellipse {raggio} {raggio}"),
+            ["circle", raggio] if raggio.ends_with('%') => format!("ellipse {raggio} {raggio}"),
+            _ => dopo[..fine].to_owned(),
+        };
+        valore.push_str(&scritta);
+        resto = &dopo[fine..];
+    }
+    valore.push_str(resto);
     Terna { valore, ..terna }
 }
 
@@ -299,11 +351,11 @@ fn la_migrazione_non_cambia_l_aspetto() {
         let prima: BTreeSet<Terna> = prima
             .into_iter()
             .map(|terna| {
-                let terna = ripara_tripla(terna, &accenti);
-                ripara_sfondo(Terna {
+                let terna = ripara_radiali(ripara_tripla(terna, &accenti));
+                ripara_telefono(ripara_sfondo(Terna {
                     regola: rinomina(&terna.regola),
                     ..terna
-                })
+                }))
             })
             .collect();
         let (dopo, ordine_dopo) = terne(&oggi);

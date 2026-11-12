@@ -215,6 +215,9 @@ export function Ripristino({
             role="dialog"
             aria-modal="true"
             aria-label={t("restore.aria")}
+            // Riscrive la libreria: una skin non la ridisegna (D-51). Vedi
+            // `consenso` in `Dialogo.tsx`.
+            data-consenso=""
             onClick={(e) => e.stopPropagation()}
           >
             <h2>{esito ? t("restore.done.title") : t("restore.aria")}</h2>

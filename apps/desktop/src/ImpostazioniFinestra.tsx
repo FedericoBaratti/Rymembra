@@ -174,6 +174,7 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
       esito={esito}
       skin={skin.skin}
       ripiego={skinAttiva?.ripiego ?? null}
+      ripiegoGuasto={skinAttiva?.ripiegoGuasto ?? null}
       accentoPermesso={skinAttiva?.dynamicAccent ?? false}
       accentoDinamico={aspetto.accentoDinamico}
       onAccentoDinamico={(attivo) => void aspetto.cambiaAccentoDinamico(attivo)}

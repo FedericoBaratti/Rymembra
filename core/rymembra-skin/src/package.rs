@@ -732,7 +732,30 @@ fn manifest_da(bytes: Vec<u8>) -> Result<String, AppError> {
 /// ammessa, `skin.packageCorrupt` se l'archivio non si legge, e i codici della
 /// validazione se il manifest non è valido.
 pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
-    let grezzo = leggi_pacchetto_grezzo(archive)?;
+    pacchetto(leggi_grezzo(archive, Pixel::AlTetto)?)
+}
+
+/// Legge un pacchetto **già installato**, per indossarlo: tutte le guardie di
+/// [`read_skin_package`] meno il tetto dei pixel delle immagini.
+///
+/// # Perché il tetto vale per installare e non per indossare
+///
+/// Il tetto dei pixel è nato dopo che la 3.2.0 di prova aveva già installato
+/// skin con uno sfondo 8K: applicato a ogni lettura, le rifiutava a ogni avvio,
+/// la finestra ripiegava su quella di serie e diceva che il pacchetto non c'era
+/// (R06b-4). Quel che è installato resta indossato; il tetto ferma quel che
+/// arriva — un file aperto, un profilo, un ripristino — e quel che lo Studio
+/// impacchetta (D-53).
+///
+/// # Errori
+///
+/// Quelli di [`read_skin_package`], tranne l'immagine oltre il tetto.
+pub fn leggi_installato(archive: &[u8]) -> Result<SkinPackage, AppError> {
+    pacchetto(leggi_grezzo(archive, Pixel::Liberi)?)
+}
+
+/// Il documento e le sue voci, da un pacchetto letto.
+fn pacchetto(grezzo: PacchettoGrezzo) -> Result<SkinPackage, AppError> {
     let document = parse_skin_json(&grezzo.source)?;
     nominate_presenti(&document, grezzo.assets.iter().map(|a| a.name.as_str()))?;
     Ok(SkinPackage {
@@ -751,6 +774,29 @@ pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
 /// Quelli di [`read_skin_package`] meno quelli della validazione: un manifest
 /// che non è testo UTF-8 resta un errore, perché non c'è niente da aprire.
 pub fn leggi_pacchetto_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppError> {
+    leggi_grezzo(archive, Pixel::AlTetto)
+}
+
+/// Come [`leggi_pacchetto_grezzo`], per un pacchetto già installato: senza il
+/// tetto dei pixel. Vedi [`leggi_installato`].
+///
+/// # Errori
+///
+/// Quelli di [`leggi_pacchetto_grezzo`], tranne l'immagine oltre il tetto.
+pub fn leggi_installato_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppError> {
+    leggi_grezzo(archive, Pixel::Liberi)
+}
+
+/// Se le immagini del pacchetto passano dal tetto dei pixel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pixel {
+    /// Per quel che arriva: vedi [`limits::MAX_IMAGE_PIXELS`].
+    AlTetto,
+    /// Per quel che è già installato: vedi [`leggi_installato`].
+    Liberi,
+}
+
+fn leggi_grezzo(archive: &[u8], pixel: Pixel) -> Result<PacchettoGrezzo, AppError> {
     let (mut archivio, ammesse) = apri_archivio(archive)?;
 
     let mut source: Option<String> = None;
@@ -770,7 +816,9 @@ pub fn leggi_pacchetto_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppErro
                 };
                 // La miniatura la disegna l'elenco delle skin: è un'immagine
                 // come le altre, e una bomba lì fa cadere le Impostazioni.
-                nei_pixel(PREVIEW_NAME, png, &bytes)?;
+                if pixel == Pixel::AlTetto {
+                    nei_pixel(PREVIEW_NAME, png, &bytes)?;
+                }
                 preview = Some(bytes);
             }
             Voce::Risorsa(tipo) => {
@@ -785,7 +833,9 @@ pub fn leggi_pacchetto_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppErro
                         ),
                     ));
                 }
-                nei_pixel(&ammessa.nome, tipo, &bytes)?;
+                if pixel == Pixel::AlTetto {
+                    nei_pixel(&ammessa.nome, tipo, &bytes)?;
+                }
                 assets.push(SkinAsset {
                     name: ammessa
                         .nome

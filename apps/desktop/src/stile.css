@@ -137,10 +137,7 @@
   --hairline: rgb(255 255 255 / 0.07);
   --ambient-1: rgb(139 124 246 / 0.1);
   --ambient-2: rgb(76 60 180 / 0.06);
-  --rail-w: 68px;
   --rail-w-expanded: 240px;
-  --player-h: 92px;
-  --player-gap: 14px;
   --content-x: clamp(16px, 3cqw, 48px);
   --radius-panel: 20px;
   --radius-card: 14px;
@@ -174,12 +171,17 @@
   --viz-floor: -70;
   --scrubber-glow: 6;
   --scrubber-rest: rgb(255 255 255 / 0.18);
-  --shell-left: var(--rail-w);
-  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
   --surface-0-rgb: 9 9 13;
   --transition-fast: calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo);
   --transition-med: calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo);
   color-scheme: dark;
+}
+:root:where(:not([data-forma='telefono'])) {
+  --rail-w: 68px;
+  --player-h: 92px;
+  --player-gap: 14px;
+  --shell-left: var(--rail-w);
+  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
 }
 :root[data-theme='light'] {
   --color-surface-0: rgb(251 251 253);
@@ -193,12 +195,12 @@
   --accent-rgb: 96 74 206;
   --accent-soft: rgb(96 74 206 / 0.14);
   --accent-glow: rgb(96 74 206 / 0.28);
-  --danger: rgb(196 31 38);
-  --danger-soft: rgb(196 31 38 / 0.12);
-  --success: rgb(10 112 64);
-  --success-soft: rgb(10 112 64 / 0.12);
-  --warning: rgb(125 98 0);
-  --warning-soft: rgb(125 98 0 / 0.14);
+  --danger: rgb(176 27 34);
+  --danger-soft: rgb(176 27 34 / 0.12);
+  --success: rgb(8 102 59);
+  --success-soft: rgb(8 102 59 / 0.12);
+  --warning: rgb(110 87 0);
+  --warning-soft: rgb(110 87 0 / 0.14);
   --sidebar-bg: rgb(0 0 0 / 0.04);
   --hairline: rgb(0 0 0 / 0.08);
   --ambient-1: rgb(103 82 214 / 0.08);
@@ -274,6 +276,13 @@
      la pastiglia, perché le linguette spente della finestrella hanno la loro
      ragione da mostrare sopra di lei. Vedi `.sopra-primo`. */
   --strato-sopraprimo: 65;
+  /* Il velo di una domanda di consenso (`data-consenso`): sopra i toast e i
+     menù, che una skin può ridisegnare grandi quanto vuole e che stanno fuori
+     dal recinto dei consensi — un toast gonfiato copriva i tasti della domanda
+     (R04b-2). Anche sopra il primo avvio, perché una domanda aperta da lì non
+     resti sotto. Sotto la pastiglia, il giro e i comandi della finestra, per le
+     loro ragioni. Vedi `.velo:has(> [data-consenso])`. */
+  --strato-consenso: 66;
   /* La pastiglia che spiega perché un comando è spento: sopra qualunque cosa la
      possa sollevare, altrimenti spiega a metà. */
   --strato-pastiglia: 70;

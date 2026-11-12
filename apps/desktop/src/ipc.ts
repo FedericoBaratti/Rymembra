@@ -361,8 +361,11 @@ export const ipc = {
   // Senza `sostituisci`, un file con l'id di una skin installata e diversa non
   // scrive niente e risponde `daSostituire`: la finestra chiede, e richiama
   // con `true`. La skin di prima resta da parte (`VoceSkin.sostituita`).
-  skinInstalla: (percorso: string, sostituisci = false) =>
-    invoke<InstallazioneSkin>("skin_installa", { percorso, sostituisci }),
+  // `attesa` è l'impronta della skin installata che il gesto vuole togliere —
+  // quella che la domanda ha mostrato, o quella che «Rimettila» ha messo da
+  // parte: se nel frattempo è un'altra, il nucleo non scrive e chiede di nuovo.
+  skinInstalla: (percorso: string, sostituisci = false, attesa: string | null = null) =>
+    invoke<InstallazioneSkin>("skin_installa", { percorso, sostituisci, attesa }),
   // Installa un manifest senza passare da un file sul disco: è quel che serve
   // a un tema fatto qui dentro, che altrimenti dovrebbe uscire come `.ryskin`
   // e rientrare dalla stessa finestra di dialogo per essere usato.

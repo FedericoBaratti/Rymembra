@@ -76,6 +76,22 @@ fn id_sicuro(id: &str) -> bool {
     rymembra_domain::paths::id_di_file(id)
 }
 
+/// Il nome di una skin **già installata**: non esce dalla cartella, ma può
+/// essere il nome di un dispositivo di Windows.
+///
+/// `aux`, `con` e compagni non si installano più ([`id_sicuro`]), ma fino alla
+/// 3.2.0 si installavano — su Android e su Windows 11 il file si scrive — e
+/// dopo l'aggiornamento sparivano dall'elenco in silenzio, senza un modo di
+/// toglierli (R04b-6). Per leggere, elencare e disinstallare quel che c'è già
+/// basta che il nome non porti altrove: lettere e cifre ASCII, trattini.
+fn nome_installato(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Il manifest di una skin: quella di serie, o una installata.
 ///
 /// Restituisce una `String` e non un `&'static str` perché ora le due sorgenti
@@ -86,17 +102,30 @@ fn sorgente(data_dir: &Path, id: &str) -> Result<String, AppError> {
     if let Some(testo) = rymembra_skin::di_serie(id) {
         return Ok(testo.to_owned());
     }
-    if !id_sicuro(id) {
+    if !nome_installato(id) {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
+    }
+    // Un nome di dispositivo non si indossa — il formato lo rifiuta — e non si
+    // apre nemmeno: su Windows 10 `skin\com1.ryskin` è la porta seriale, e
+    // leggerla può bloccare il comando che dà alla finestra la sua
+    // impaginazione. Si dice che non si legge prima di toccare il disco, e la
+    // finestra ripiega col suo perché (R04b-6).
+    if rymembra_domain::paths::riservato_da_windows(id) {
+        return Err(AppError::new(ErrorCode::SkinManifestInvalid {
+            detail: Some(format!(
+                "«{id}» è il nome di un dispositivo di Windows: la skin va rinominata"
+            )),
+        }));
     }
     let percorso = cartella_skin(data_dir).join(format!("{id}.ryskin"));
     let bytes = std::fs::read(&percorso)
         .map_err(|_| AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }))?;
-    // `read_skin_package` porta le guardie dell'archivio non fidato — traversal
-    // del percorso, zip bomb, tipo mentito — e sono le stesse anche quando il
-    // file l'ha messo lì l'utente: una skin scaricata da internet e copiata a
-    // mano nella cartella non è più fidata di una arrivata dalla rete.
-    let pacchetto = rymembra_skin::read_skin_package(&bytes)?;
+    // Le guardie dell'archivio non fidato — traversal del percorso, zip bomb,
+    // tipo mentito — sono le stesse anche quando il file l'ha messo lì
+    // l'utente: una skin scaricata da internet e copiata a mano nella cartella
+    // non è più fidata di una arrivata dalla rete. Il tetto dei pixel no: vale
+    // per installare, e una skin già installata resta indossata (D-53).
+    let pacchetto = rymembra_skin::package::leggi_installato(&bytes)?;
     Ok(pacchetto.source)
 }
 
@@ -320,6 +349,12 @@ pub struct SkinIpc {
     /// quindi questo campo è l'unico modo che la finestra ha di sapere che
     /// quel che vede non è quel che ha chiesto, e di dirlo.
     pub ripiego: Option<String>,
+    /// Perché la skin di [`Self::ripiego`] non si è indossata: il codice del
+    /// guasto. `skin.notFound` è il pacchetto che non c'è, e torna da sé se il
+    /// pacchetto torna; ogni altro codice è un pacchetto che c'è e non si legge
+    /// più, e non torna da sé. Fino alla 3.2.0 la finestra diceva sempre la
+    /// prima cosa (R06b-4).
+    pub ripiego_guasto: Option<String>,
 }
 
 /// Una parte con una transizione di vista, e quali inneschi dichiara.
@@ -506,6 +541,11 @@ pub struct SostituzioneIpc {
     pub presente: VersioneIpc,
     /// Quella che arriva.
     pub nuova: VersioneIpc,
+    /// L'impronta di quella installata adesso, cioè di quella che la domanda
+    /// mostra. Il sì la riporta (`skin_installa` con `attesa`): se intanto è
+    /// cambiata, si chiede di nuovo invece di sostituire una skin che nessuno ha
+    /// visto (R04b-5).
+    pub impronta: String,
 }
 
 /// Quel che risponde l'installazione di un file `.ryskin`.
@@ -520,6 +560,10 @@ pub struct InstallazioneIpc {
     pub installata: Option<VoceSkin>,
     /// La skin che l'installazione sostituirebbe.
     pub da_sostituire: Option<SostituzioneIpc>,
+    /// L'impronta del pacchetto appena installato, quando c'è. È quella che
+    /// «Rimettila» porta come `attesa`: un secondo clic trova installata
+    /// un'altra skin, e non scambia di nuovo (R04b-4).
+    pub impronta: Option<String>,
 }
 
 /// Un costo e il budget su cui si misura.
@@ -584,8 +628,14 @@ pub struct EsameIpc {
     /// Quante coppie di testo e superficie non si leggono.
     pub contrasti: usize,
     /// Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici,
-    /// tema per tema (`rymembra_skin::focus_ring_pairs`).
+    /// tema per tema (`rymembra_skin::focus_ring_pairs`), o larghi zero.
     pub anelli: usize,
+    /// Quanti token di testo obbligatori la skin non dichiara.
+    pub testi_mancanti: usize,
+    /// Le parti essenziali trasparenti o ritagliate, coi percorsi.
+    pub nascoste: Vec<String>,
+    /// Le animazioni che fanno apparire e sparire una parte troppo in fretta.
+    pub lampi: Vec<String>,
     /// C'è qualcosa da chiedere prima di indossarla.
     pub da_confermare: bool,
 }
@@ -610,6 +660,9 @@ impl From<rymembra_skin::document::Esame> for EsameIpc {
                 .collect(),
             contrasti: esame.contrasti,
             anelli: esame.anelli,
+            testi_mancanti: esame.testi_mancanti,
+            nascoste: esame.nascoste,
+            lampi: esame.lampi,
         }
     }
 }
@@ -675,6 +728,7 @@ pub fn skin_ipc(
         // Compilare è riuscito, quindi non si è ripiegato su niente: lo mette
         // chi ha dovuto ripiegare, che è l'unico a saperlo.
         ripiego: None,
+        ripiego_guasto: None,
     }
 }
 
@@ -720,7 +774,7 @@ fn skin_scelta(connection: &rusqlite::Connection) -> String {
         .flatten()
         // Un valore assente o illeggibile vale «quella di serie»: una skin
         // scelta e poi cancellata a mano dal disco non deve impedire l'avvio.
-        .filter(|id| di_serie(id) || id_sicuro(id))
+        .filter(|id| di_serie(id) || nome_installato(id))
         .unwrap_or_else(|| DI_SERIE.to_owned())
 }
 
@@ -838,6 +892,7 @@ fn compila_o_ripiega(
                 guasto.code().kind().code()
             );
             serie.ripiego = Some(scelta.to_owned());
+            serie.ripiego_guasto = Some(guasto.code().kind().code().to_owned());
             Ok(serie)
         }
         Err(guasto) => Err(guasto),
@@ -899,7 +954,9 @@ fn elenco(data_dir: &Path, scelta: &str) -> Result<Vec<VoceSkin>, AppError> {
                     let attiva = scelta == documento.id;
                     Some(VoceSkin::di(documento, false, attiva))
                 }
-                Err(_) if di_serie(&nome_file) || !id_sicuro(&nome_file) => None,
+                // Un nome di dispositivo di Windows invece resta, rotto: c'era
+                // prima che il formato lo rifiutasse, e da qui lo si toglie.
+                Err(_) if di_serie(&nome_file) || !nome_installato(&nome_file) => None,
                 Err(guasto) => {
                     let attiva = scelta == nome_file;
                     Some(VoceSkin::rotta(
@@ -989,28 +1046,115 @@ fn posa(
     })
 }
 
-/// Dove sta la copia dell'ultima skin sostituita, una per id.
+/// Dove stanno le copie delle skin sostituite.
 ///
 /// Dentro la cartella delle skin e non accanto ai pacchetti: l'elenco, il
-/// backup e il profilo leggono solo i `.ryskin` della cartella, quindi la
+/// backup e il profilo leggono solo i `.ryskin` della cartella, quindi una
 /// copia non diventa una seconda skin con lo stesso id, non va su Drive e non
 /// entra in un `.ryprofile`. È di questo computer, come un cestino.
 fn cartella_sostituite(data_dir: &Path) -> PathBuf {
     cartella_skin(data_dir).join("sostituite")
 }
 
-/// La copia tenuta da parte per questo id, se c'è.
+/// Quante copie si tengono per id.
+///
+/// Fino alla 3.2.0 era una: la seconda sostituzione della stessa skin
+/// cancellava la prima per sempre, miniatura compresa, e la domanda non lo
+/// diceva (R04b-5). Tre bastano a tornare indietro di qualche passo senza far
+/// crescere la cartella con ogni versione mai provata (D-52).
+const COPIE_PER_ID: usize = 3;
+
+/// Le copie di questo id, una per file: `sostituite/<id>/<ms>-<impronta>.ryskin`.
+fn cartella_copie(data_dir: &Path, id: &str) -> PathBuf {
+    cartella_sostituite(data_dir).join(id)
+}
+
+/// La copia unica della 3.2.0, `sostituite/<id>.ryskin`: si legge come la più
+/// vecchia delle copie, e se ne va quando le copie sono più di tre.
+fn copia_di_prima(data_dir: &Path, id: &str) -> PathBuf {
+    cartella_sostituite(data_dir).join(format!("{id}.ryskin"))
+}
+
+/// Le copie tenute da parte per questo id, dalla più recente.
+///
+/// Il nome comincia coi millisecondi scritti a venti cifre, quindi l'ordine dei
+/// nomi è l'ordine del tempo e non serve leggere i metadati del disco.
+fn copie(data_dir: &Path, id: &str) -> Vec<PathBuf> {
+    let mut nuove: Vec<PathBuf> = std::fs::read_dir(cartella_copie(data_dir, id))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|voce| voce.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ryskin"))
+        .collect();
+    nuove.sort();
+    nuove.reverse();
+    let vecchia = copia_di_prima(data_dir, id);
+    if vecchia.is_file() {
+        nuove.push(vecchia);
+    }
+    nuove
+}
+
+/// I byte di una copia, al più quanti ne ha un pacchetto.
+fn leggi_copia(file: &Path) -> Option<Vec<u8>> {
+    leggi_al_piu(std::fs::File::open(file).ok()?, &file.display().to_string()).ok()
+}
+
+/// L'ultima copia tenuta da parte per questo id, se c'è.
 fn sostituita_di(data_dir: &Path, id: &str) -> Option<SostituitaIpc> {
-    let file = cartella_sostituite(data_dir).join(format!("{id}.ryskin"));
-    let bytes = leggi_al_piu(
-        std::fs::File::open(&file).ok()?,
-        &file.display().to_string(),
-    )
-    .ok()?;
-    Some(SostituitaIpc {
-        skin: VersioneIpc::del_pacchetto(id, &bytes),
-        percorso: file.display().to_string(),
+    copie(data_dir, id).into_iter().find_map(|file| {
+        let bytes = leggi_copia(&file)?;
+        Some(SostituitaIpc {
+            skin: VersioneIpc::del_pacchetto(id, &bytes),
+            percorso: file.display().to_string(),
+        })
     })
+}
+
+/// Mette da parte il pacchetto che sta per essere sostituito, e tiene le
+/// ultime [`COPIE_PER_ID`].
+///
+/// Gli stessi byte già da parte non si copiano due volte: due skin che si
+/// scambiano il posto avanti e indietro non devono riempire le tre copie della
+/// stessa versione.
+fn metti_da_parte(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<(), AppError> {
+    let gia = copie(data_dir, id)
+        .iter()
+        .any(|file| leggi_copia(file).is_some_and(|c| c == bytes));
+    if !gia {
+        let cartella = cartella_copie(data_dir, id);
+        std::fs::create_dir_all(&cartella)
+            .map_err(|err| rymembra_app::files::io_error(&cartella.display().to_string(), &err))?;
+        let adesso = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let impronta = rymembra_app::backup::impronta(bytes);
+        let breve = impronta.get(..16).unwrap_or(&impronta);
+        rymembra_app::scrittura::scrivi_atomico(
+            &cartella.join(format!("{adesso:020}-{breve}.ryskin")),
+            bytes,
+        )?;
+    }
+    for di_troppo in copie(data_dir, id).into_iter().skip(COPIE_PER_ID) {
+        if let Err(err) = std::fs::remove_file(&di_troppo) {
+            crate::nota!(
+                "[skin] una copia vecchia di «{id}» non si toglie ({}): resta",
+                err.kind()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Toglie dalle copie quella che è appena tornata installata: è la skin di
+/// adesso, e tenerla anche da parte la mostrerebbe due volte.
+fn togli_dalle_copie(data_dir: &Path, id: &str, bytes: &[u8]) {
+    for file in copie(data_dir, id) {
+        if leggi_copia(&file).is_some_and(|c| c == bytes) {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
 }
 
 /// Installa un pacchetto scelto dall'utente: dal selettore, o trascinato sulla
@@ -1025,9 +1169,20 @@ fn sostituita_di(data_dir: &Path, id: &str) -> Option<SostituitaIpc> {
 /// finestra. Adesso, se c'è già una skin **diversa** con quell'id:
 ///
 /// - senza `sostituisci` non si scrive niente, e la risposta porta le due —
-///   nome, versione, autore — perché la finestra chieda;
-/// - con `sostituisci` quella di prima va in [`cartella_sostituite`], e da lì
-///   si rimette reinstallandola: le due si scambiano il posto.
+///   nome, versione, autore — e l'impronta di quella installata, perché la
+///   finestra chieda;
+/// - con `sostituisci` quella di prima va fra le copie ([`metti_da_parte`],
+///   le ultime tre), e da lì si rimette reinstallandola: le due si scambiano
+///   il posto.
+///
+/// # Il sì vale per quel che si è visto
+///
+/// `attesa` è l'impronta della skin installata che il gesto vuole togliere:
+/// quella che la domanda ha mostrato, o quella che «Rimettila» sa di aver
+/// messo al suo posto. Se adesso ce n'è un'altra — un secondo clic sulla
+/// stessa notizia, un altro file arrivato fra la domanda e il sì — non si
+/// scrive niente e la risposta è una domanda nuova, con la skin che c'è
+/// davvero (R04b-4, R04b-5).
 ///
 /// Lo stesso pacchetto un'altra volta non è una sostituzione, e non chiede.
 /// Le skin di serie non si sostituiscono mai: le ferma [`da_installare`].
@@ -1038,6 +1193,7 @@ fn installa_file(
     data_dir: &Path,
     bytes: &[u8],
     sostituisci: bool,
+    attesa: Option<&str>,
 ) -> Result<InstallazioneIpc, AppError> {
     let documento = da_installare(bytes)?;
     let file = cartella_skin(data_dir).join(format!("{}.ryskin", documento.id));
@@ -1051,13 +1207,17 @@ fn installa_file(
             ));
         }
     };
+    let impronta = rymembra_app::backup::impronta(bytes);
     let Some(presente) = presente.filter(|prima| prima.as_slice() != bytes) else {
         return Ok(InstallazioneIpc {
             installata: Some(posa(data_dir, documento, bytes)?),
             da_sostituire: None,
+            impronta: Some(impronta),
         });
     };
-    if !sostituisci {
+    let di_adesso = rymembra_app::backup::impronta(&presente);
+    let visto = attesa.is_none_or(|attesa| attesa == di_adesso);
+    if !sostituisci || !visto {
         let nuova = VoceSkin::di(documento, false, false);
         return Ok(InstallazioneIpc {
             installata: None,
@@ -1065,31 +1225,38 @@ fn installa_file(
                 presente: VersioneIpc::del_pacchetto(&nuova.id, &presente),
                 nuova: VersioneIpc::della_voce(&nuova),
                 id: nuova.id,
+                impronta: di_adesso,
             }),
+            impronta: None,
         });
     }
     // La copia prima del pacchetto nuovo: se la scrittura della copia non
     // riesce, quella di prima resta dov'era.
-    let riserva = cartella_sostituite(data_dir);
-    std::fs::create_dir_all(&riserva)
-        .map_err(|err| rymembra_app::files::io_error(&riserva.display().to_string(), &err))?;
-    rymembra_app::scrittura::scrivi_atomico(
-        &riserva.join(format!("{}.ryskin", documento.id)),
-        &presente,
-    )?;
+    let id = documento.id.clone();
+    metti_da_parte(data_dir, &id, &presente)?;
+    let installata = posa(data_dir, documento, bytes)?;
+    togli_dalle_copie(data_dir, &id, bytes);
     Ok(InstallazioneIpc {
-        installata: Some(posa(data_dir, documento, bytes)?),
+        installata: Some(VoceSkin {
+            sostituita: sostituita_di(data_dir, &id),
+            ..installata
+        }),
         da_sostituire: None,
+        impronta: Some(impronta),
     })
 }
 
 /// Installa una skin da un file `.ryskin`.
+///
+/// `attesa` è l'impronta della skin installata che il gesto vuole togliere:
+/// vedi [`installa_file`].
 #[tauri::command(async)]
 pub fn skin_installa(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
     percorso: String,
     sostituisci: Option<bool>,
+    attesa: Option<String>,
 ) -> Esito<InstallazioneIpc> {
     // Senza il lucchetto della libreria: installare è leggere un file e
     // scriverne un altro, e il database non c'entra.
@@ -1109,7 +1276,12 @@ pub fn skin_installa(
                 return Err(troppo_grande(bytes));
             }
             let bytes = leggi_al_piu(file, &percorso)?;
-            installa_file(&dati, &bytes, sostituisci.unwrap_or(false))
+            installa_file(
+                &dati,
+                &bytes,
+                sostituisci.unwrap_or(false),
+                attesa.as_deref(),
+            )
         })
         .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
@@ -1259,24 +1431,59 @@ pub fn skin_disinstalla(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
-/// Quel che fa [`skin_disinstalla`]. Il lucchetto della libreria si prende per
-/// le due domande al database e per nient'altro: togliere un file e compilare
-/// la skin che resta sono disco e processore.
-fn disinstalla(stato: &Stato, id: &str) -> Result<SkinIpc, AppError> {
-    if di_serie(id) || !id_sicuro(id) {
+/// Toglie dal disco il pacchetto di una skin installata e le sue copie.
+///
+/// Le copie delle versioni sostituite se ne vanno con lei: fino alla 3.2.0
+/// restavano in `sostituite/`, fino a venti megabyte l'una, e nessun elenco le
+/// mostrava più (R04b-5, D-52). Un nome di dispositivo di Windows si toglie
+/// come gli altri: è installato da prima che il formato lo rifiutasse
+/// ([`nome_installato`]).
+fn togli_dal_disco(data_dir: &Path, id: &str) -> Result<(), AppError> {
+    if di_serie(id) || !nome_installato(id) {
         return Err(
             AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }).with_cause(
                 "le skin di serie sono compilate dentro e non si disinstallano".to_owned(),
             ),
         );
     }
-    let dati = crate::studio::cartella_dati(stato)?;
-    let file = cartella_skin(&dati).join(format!("{id}.ryskin"));
-    if !file.exists() {
+    // Per un nome di dispositivo si passa dal percorso verbatim (`\\?\` su
+    // Windows), che apre il file e non il dispositivo: su Windows 10
+    // `skin\com1.ryskin` «esiste» sempre, ed è la porta seriale.
+    let dove = if rymembra_domain::paths::riservato_da_windows(id) {
+        std::fs::canonicalize(cartella_skin(data_dir))
+            .map_err(|_| AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }))?
+    } else {
+        cartella_skin(data_dir)
+    };
+    let file = dove.join(format!("{id}.ryskin"));
+    if !file.is_file() {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
     std::fs::remove_file(&file)
         .map_err(|err| rymembra_app::files::io_error(&file.display().to_string(), &err))?;
+    // Le copie dopo il pacchetto: se una non si toglie, la skin è comunque
+    // disinstallata, e lo si dice nel diario invece di fallire il gesto.
+    let cartella = cartella_copie(data_dir, id);
+    if cartella.exists()
+        && let Err(err) = std::fs::remove_dir_all(&cartella)
+    {
+        crate::nota!("[skin] le copie di «{id}» non si tolgono ({})", err.kind());
+    }
+    let vecchia = copia_di_prima(data_dir, id);
+    if vecchia.exists()
+        && let Err(err) = std::fs::remove_file(&vecchia)
+    {
+        crate::nota!("[skin] la copia di «{id}» non si toglie ({})", err.kind());
+    }
+    Ok(())
+}
+
+/// Quel che fa [`skin_disinstalla`]. Il lucchetto della libreria si prende per
+/// le due domande al database e per nient'altro: togliere un file e compilare
+/// la skin che resta sono disco e processore.
+fn disinstalla(stato: &Stato, id: &str) -> Result<SkinIpc, AppError> {
+    let dati = crate::studio::cartella_dati(stato)?;
+    togli_dal_disco(&dati, id)?;
 
     // Se era quella indossata, la finestra resterebbe con un foglio che non
     // ha più una sorgente: si torna a quella di serie prima di rispondere,
@@ -1677,9 +1884,11 @@ fn risorsa(dati: &Path, percorso: &str, gia: Option<&str>) -> Result<Servita, u1
     // dello stesso pacchetto al peggio lo aprono due volte. Le guardie
     // dell'archivio ci sono tutte; la validazione del documento no, perché qui
     // si servono byte che il pacchetto contiene, non si decide di indossarlo.
+    // Il tetto dei pixel nemmeno: vale per installare, e una skin installata
+    // prima del tetto resta indossata con le sue immagini (D-53).
     let archivio = std::fs::read(&file).map_err(|_| 404_u16)?;
     let pacchetto =
-        rymembra_skin::package::leggi_pacchetto_grezzo(&archivio).map_err(|_| 404_u16)?;
+        rymembra_skin::package::leggi_installato_grezzo(&archivio).map_err(|_| 404_u16)?;
     let scaffale = Scaffale {
         file: file.clone(),
         impronta: impronta.clone(),
@@ -1883,6 +2092,53 @@ mod tests {
             generato, atteso,
             "\nrigenera con: cargo run -p rymembra-skin --example compila\n"
         );
+        // E le misure della cornice, che sul telefono sono del motore
+        // (`rymembra_skin::compile::MISURE_DEL_TELEFONO`): stanno in un blocco
+        // che sul telefono non vale, anche qui.
+        let generato = corpo(STILE, ":root:where(:not([data-forma='telefono'])) {");
+        let atteso = corpo(
+            &compilata().css,
+            ":root[data-skin='plain']:where(:not([data-forma='telefono'])) {",
+        );
+        assert_eq!(
+            generato, atteso,
+            "\nrigenera con: cargo run -p rymembra-skin --example compila\n"
+        );
+    }
+
+    #[test]
+    fn il_telefono_del_foglio_e_quello_della_finestra() {
+        // Il compilatore scrive le sovrascritture del telefono e la guardia
+        // delle misure su `data-forma='telefono'`: è la parola che `main.tsx`
+        // mette sulla radice. Fino alla 3.2.0 il compilatore scriveva
+        // `[data-mobile]`, che non metteva nessuno (R09-2).
+        let main = include_str!("../../src/main.tsx");
+        assert!(
+            main.contains(r#"dataset["forma"] = MOBILE ? "telefono" : "computer""#),
+            "l'attributo della forma in `main.tsx` è cambiato"
+        );
+        let documento = rymembra_skin::parse_skin_json(&rymembra_skin::PLAIN_SOURCE.replacen(
+            "\"tokens\": {",
+            "\"platforms\": { \"mobile\": { \"radius.panel\": \"12px\" } },\n  \"tokens\": {",
+            1,
+        ))
+        .expect("plain col telefono");
+        let css = rymembra_skin::compile_skin(&documento).css;
+        assert!(
+            css.contains(":root[data-skin='plain'][data-forma='telefono'] {"),
+            "{css}"
+        );
+        assert!(!css.contains("data-mobile"));
+        // E il foglio del motore per il telefono riscrive le stesse misure che
+        // il compilatore gli lascia.
+        let telefono = include_str!("../../src/stile/telefono.css");
+        let radice = corpo(telefono, ":root[data-forma=\"telefono\"] {");
+        for misura in rymembra_skin::compile::MISURE_DEL_TELEFONO {
+            assert!(
+                radice.contains(&format!("{misura}:")),
+                "{misura} manca in telefono.css"
+            );
+        }
     }
 
     #[test]
@@ -2073,7 +2329,6 @@ mod tests {
             "../../../../windows/system32/config/sam",
             "..\\..\\altrove",
             "c:/assoluto",
-            "con",
             "",
         ] {
             let err = compila(vuota(), cattivo).expect_err("respinta");
@@ -2084,9 +2339,17 @@ mod tests {
             );
         }
         // Né un dispositivo di Windows: `skin/con.ryskin` su Windows 10 non è
-        // un file.
+        // un file. Non si installa, e una scelta col suo nome non si apre: si
+        // respinge col guasto del manifest, perché un pacchetto così può
+        // esserci, installato prima che il formato lo rifiutasse (R04b-6).
         for dispositivo in ["con", "nul", "COM1", "lpt9"] {
             assert!(!id_sicuro(dispositivo), "«{dispositivo}»");
+            let err = compila(vuota(), dispositivo).expect_err("respinta");
+            assert_eq!(
+                err.code().kind().code(),
+                "skin.manifestInvalid",
+                "«{dispositivo}»"
+            );
         }
         // E gli identificatori legittimi passano il controllo — se non
         // passassero, il guardiano avrebbe chiuso anche la porta d'ingresso.
@@ -2223,11 +2486,11 @@ mod tests {
         let file = dir.path().join("skin").join("notte.ryskin");
         let mia = notte("La mia notte", "2.1.0", 1);
         let altrui = notte("Notte", "1.0.0", 2);
-        let prima = installa_file(dir.path(), &mia, false).expect("installata");
+        let prima = installa_file(dir.path(), &mia, false, None).expect("installata");
         assert!(prima.installata.is_some() && prima.da_sostituire.is_none());
 
         // Senza conferma non si scrive niente, e la domanda dice chi è chi.
-        let domanda = installa_file(dir.path(), &altrui, false).expect("risposta");
+        let domanda = installa_file(dir.path(), &altrui, false, None).expect("risposta");
         assert!(domanda.installata.is_none(), "{domanda:?}");
         assert_eq!(
             domanda.da_sostituire,
@@ -2243,16 +2506,17 @@ mod tests {
                     versione: "1.0.0".to_owned(),
                     autore: "Rymembra".to_owned(),
                 },
+                impronta: rymembra_app::backup::impronta(&mia),
             })
         );
         assert_eq!(std::fs::read(&file).expect("letta"), mia);
 
         // Lo stesso pacchetto un'altra volta non sostituisce niente, e non chiede.
-        let uguale = installa_file(dir.path(), &mia, false).expect("installata");
+        let uguale = installa_file(dir.path(), &mia, false, None).expect("installata");
         assert!(uguale.installata.is_some() && uguale.da_sostituire.is_none());
 
         // Con la conferma si sostituisce, e quella di prima resta da parte.
-        let fatta = installa_file(dir.path(), &altrui, true).expect("sostituita");
+        let fatta = installa_file(dir.path(), &altrui, true, None).expect("sostituita");
         let voce = fatta.installata.expect("installata");
         assert_eq!(std::fs::read(&file).expect("letta"), altrui);
         let copia = voce.sostituita.clone().expect("la copia");
@@ -2276,13 +2540,21 @@ mod tests {
 
         // Rimetterla è reinstallare la copia: le due si scambiano il posto.
         let copiata = std::fs::read(&copia.percorso).expect("la copia");
-        let tornata = installa_file(dir.path(), &copiata, true).expect("rimessa");
+        let tornata = installa_file(dir.path(), &copiata, true, None).expect("rimessa");
         assert!(tornata.installata.is_some());
         assert_eq!(std::fs::read(&file).expect("letta"), mia);
-        assert_eq!(std::fs::read(&copia.percorso).expect("la copia"), altrui);
+        // Quella rimessa non è più fra le copie, quella tolta sì.
+        assert!(!std::path::Path::new(&copia.percorso).exists());
+        let ora = sostituita_di(dir.path(), "notte").expect("la copia nuova");
+        assert_eq!(std::fs::read(&ora.percorso).expect("la copia"), altrui);
 
         // E una skin di serie resta fuori, come prima.
-        let serie = installa_file(dir.path(), &pacchetto(rymembra_skin::PLAIN_SOURCE), true);
+        let serie = installa_file(
+            dir.path(),
+            &pacchetto(rymembra_skin::PLAIN_SOURCE),
+            true,
+            None,
+        );
         assert!(serie.is_err());
     }
 
@@ -2654,6 +2926,249 @@ mod tests {
                     "{chiave}: {direttiva} non ammette le risorse delle skin"
                 );
             }
+        }
+    }
+
+    // ── F10: copie, impronte, ripiego, nomi di dispositivo, tetto dei pixel ──
+
+    /// Una PNG che dice di essere grande quanto si chiede: firma e `IHDR`.
+    fn png_di(larghezza: u32, altezza: u32) -> Vec<u8> {
+        let mut png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&larghezza.to_be_bytes());
+        png.extend_from_slice(&altezza.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        png
+    }
+
+    /// `notte` con una versione che la distingue.
+    fn notte_v(versione: &str) -> Vec<u8> {
+        notte("Notte", versione, 1)
+    }
+
+    #[test]
+    fn una_skin_installata_oltre_i_pixel_resta_indossata() {
+        // Con la 3.2.0 di prova si installava una skin con uno sfondo 8K; il tetto
+        // dei pixel nato dopo la rifiutava a ogni avvio, e la finestra diceva
+        // che il pacchetto non c'era (R06b-4). Il tetto vale per installare e
+        // nello Studio; quel che è già installato resta indossato (D-53).
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        let sorgente = sorgente_con_id("grande");
+        let archivio = zip_a_mano(&[
+            ("skin.json", sorgente.as_bytes()),
+            ("assets/sfondo.png", &png_di(7680, 4320)),
+        ]);
+        std::fs::write(cartella.join("grande.ryskin"), &archivio).expect("scritta");
+
+        let compilata = compila(dir.path(), "grande").expect("si indossa ancora");
+        assert_eq!(compilata.id, "grande");
+        assert!(matches!(
+            risorsa(dir.path(), "grande/sfondo.png", None),
+            Ok(Servita::Piena { .. })
+        ));
+        // Installarla di nuovo invece no: il tetto vale lì.
+        let err = da_installare(&archivio).expect_err("oltre il tetto");
+        assert_eq!(err.code().kind().code(), "skin.assetRejected");
+    }
+
+    #[test]
+    fn il_ripiego_dice_perche() {
+        // «Il pacchetto non è nella cartella dei dati» era la frase per ogni
+        // guasto: anche per un pacchetto che c'è e non si legge più (R06b-4).
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let assente = compila_o_ripiega(dir.path(), None, "sparita").expect("ripiegata");
+        assert_eq!(assente.ripiego.as_deref(), Some("sparita"));
+        assert_eq!(assente.ripiego_guasto.as_deref(), Some("skin.notFound"));
+
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        let rotta = sorgente_con_id("vecchia").replacen(
+            "\"tokens\": {",
+            "\"tokens\": { \"color.accents\": \"#ff0000\",",
+            1,
+        );
+        std::fs::write(
+            cartella.join("vecchia.ryskin"),
+            zip_a_mano(&[("skin.json", rotta.as_bytes())]),
+        )
+        .expect("scritta");
+        let rotta = compila_o_ripiega(dir.path(), None, "vecchia").expect("ripiegata");
+        let guasto = rotta.ripiego_guasto.expect("il codice del guasto");
+        assert_ne!(guasto, "skin.notFound");
+        assert!(guasto.starts_with("skin."), "{guasto}");
+    }
+
+    #[test]
+    fn una_skin_aux_installata_prima_si_vede_ancora() {
+        // `aux` si installava e funzionava; dopo che il formato ha cominciato a
+        // rifiutare i nomi dei dispositivi di Windows spariva dall'elenco in
+        // silenzio, e non si poteva nemmeno togliere (R04b-6). Il percorso
+        // verbatim (`\\?\` su Windows) scrive un file vero col nome del
+        // dispositivo, come ci sarebbe arrivato installandolo su Android.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let dati = std::fs::canonicalize(dir.path()).expect("percorso");
+        let cartella = dati.join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        let sorgente = sorgente_con_id("aux");
+        std::fs::write(
+            cartella.join("aux.ryskin"),
+            zip_a_mano(&[("skin.json", sorgente.as_bytes())]),
+        )
+        .expect("scritta");
+
+        let voci = elenco(&dati, "aux").expect("l'elenco");
+        let aux = voci.iter().find(|v| v.id == "aux").expect("in elenco");
+        assert!(aux.attiva);
+        assert!(aux.guasto.is_some(), "{aux:?}");
+        let indossata = compila_o_ripiega(&dati, None, "aux").expect("ripiegata");
+        assert_eq!(indossata.ripiego.as_deref(), Some("aux"));
+        togli_dal_disco(&dati, "aux").expect("tolta");
+        assert!(!cartella.join("aux.ryskin").exists());
+        // Quel che esce dalla cartella resta fuori, come sempre.
+        assert!(togli_dal_disco(&dati, "../aux").is_err());
+    }
+
+    #[test]
+    fn le_sostituzioni_tengono_tre_copie_per_id() {
+        // Fino alla 3.2.0 la copia era una per id: la seconda sostituzione
+        // cancellava la prima per sempre, miniatura compresa (R04b-5, D-52).
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let versioni: Vec<Vec<u8>> = ["1.0.0", "2.0.0", "3.0.0", "4.0.0", "5.0.0"]
+            .iter()
+            .map(|v| notte_v(v))
+            .collect();
+        installa_file(dir.path(), &versioni[0], false, None).expect("installata");
+        for nuova in &versioni[1..] {
+            let fatta = installa_file(dir.path(), nuova, true, None).expect("sostituita");
+            assert!(fatta.installata.is_some());
+        }
+        let tenute: Vec<Vec<u8>> = copie(dir.path(), "notte")
+            .iter()
+            .map(|c| std::fs::read(c).expect("copia"))
+            .collect();
+        // Le ultime tre sostituite, dalla più recente.
+        assert_eq!(
+            tenute,
+            [
+                versioni[3].clone(),
+                versioni[2].clone(),
+                versioni[1].clone()
+            ]
+        );
+        let ultima = sostituita_di(dir.path(), "notte").expect("l'ultima");
+        assert_eq!(ultima.skin.versione, "4.0.0");
+
+        // Una copia di prima, `sostituite/<id>.ryskin`, si ritrova come le altre.
+        let altra = dir
+            .path()
+            .join("skin")
+            .join("sostituite")
+            .join("alba.ryskin");
+        std::fs::write(&altra, notte_v("0.1.0")).expect("scritta");
+        assert_eq!(copie(dir.path(), "alba"), [altra]);
+    }
+
+    #[test]
+    fn disinstallare_toglie_anche_le_copie() {
+        // Una copia per ogni id disinstallato restava nella cartella, fino a
+        // venti megabyte l'una, e nessun elenco la mostrava (R04b-5, D-52).
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        installa_file(dir.path(), &notte_v("1.0.0"), false, None).expect("installata");
+        installa_file(dir.path(), &notte_v("2.0.0"), true, None).expect("sostituita");
+        let vecchia = dir
+            .path()
+            .join("skin")
+            .join("sostituite")
+            .join("notte.ryskin");
+        std::fs::write(&vecchia, notte_v("0.1.0")).expect("la copia di prima");
+        assert_eq!(copie(dir.path(), "notte").len(), 2);
+
+        togli_dal_disco(dir.path(), "notte").expect("tolta");
+        assert!(!dir.path().join("skin").join("notte.ryskin").exists());
+        assert!(copie(dir.path(), "notte").is_empty());
+        assert!(!vecchia.exists());
+    }
+
+    #[test]
+    fn rimettere_due_volte_non_torna_indietro() {
+        // «Rimettila» con un doppio clic: la seconda chiamata trovava installata
+        // quella appena rimessa, la scambiava di nuovo, e lasciava addosso la
+        // skin che si voleva togliere (R04b-4).
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let file = dir.path().join("skin").join("notte.ryskin");
+        let mia = notte_v("1.0.0");
+        let altrui = notte_v("2.0.0");
+        installa_file(dir.path(), &mia, false, None).expect("installata");
+        let fatta = installa_file(dir.path(), &altrui, true, None).expect("sostituita");
+        let impronta = fatta.impronta.expect("l'impronta di quella installata");
+        let copia = fatta
+            .installata
+            .and_then(|v| v.sostituita)
+            .expect("la copia");
+
+        let rimessa = std::fs::read(&copia.percorso).expect("la copia");
+        let prima = installa_file(dir.path(), &rimessa, true, Some(&impronta)).expect("rimessa");
+        assert!(prima.installata.is_some());
+        assert_eq!(std::fs::read(&file).expect("letta"), mia);
+        // Il secondo clic rilegge il file della copia, come fa la notizia. La
+        // copia di quella rimessa non c'è più — è installata — e se ci fosse,
+        // l'impronta direbbe che l'installata non è quella da togliere.
+        if let Ok(di_nuovo) = std::fs::read(&copia.percorso) {
+            let seconda =
+                installa_file(dir.path(), &di_nuovo, true, Some(&impronta)).expect("risposta");
+            assert!(seconda.installata.is_none(), "{seconda:?}");
+        }
+        let seconda = installa_file(dir.path(), &altrui, true, Some(&impronta)).expect("risposta");
+        assert!(seconda.installata.is_none(), "{seconda:?}");
+        assert_eq!(std::fs::read(&file).expect("letta"), mia);
+        // E la copia di quella tolta resta, per rimetterla.
+        assert_eq!(
+            sostituita_di(dir.path(), "notte").map(|s| s.skin.versione),
+            Some("2.0.0".to_owned())
+        );
+    }
+
+    #[test]
+    fn il_si_vale_per_la_skin_che_la_domanda_ha_mostrato() {
+        // La domanda mostra «Installata: A». Prima del sì un'altra installazione
+        // mette B: il sì sostituiva B, che nessuno aveva visto (R04b-5).
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let a = notte_v("1.0.0");
+        let b = notte_v("2.0.0");
+        let c = notte_v("3.0.0");
+        installa_file(dir.path(), &a, false, None).expect("installata");
+        let domanda = installa_file(dir.path(), &c, false, None)
+            .expect("risposta")
+            .da_sostituire
+            .expect("la domanda");
+        installa_file(dir.path(), &b, true, None).expect("sostituita nel frattempo");
+        let risposta =
+            installa_file(dir.path(), &c, true, Some(&domanda.impronta)).expect("risposta");
+        let nuova = risposta.da_sostituire.expect("una domanda nuova");
+        assert_eq!(nuova.presente.versione, "2.0.0");
+        assert_eq!(
+            std::fs::read(dir.path().join("skin").join("notte.ryskin")).expect("letta"),
+            b
+        );
+    }
+
+    #[test]
+    fn una_scelta_che_e_un_dispositivo_non_apre_il_dispositivo() {
+        // Una scelta `com1` arriva da un profilo: su Windows 10
+        // `skin\com1.ryskin` è la porta seriale, e leggerla poteva bloccare il
+        // comando che dà alla finestra la sua impaginazione. Si ripiega prima
+        // di toccare il disco, col perché.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for dispositivo in ["com1", "con", "nul"] {
+            let indossata = compila_o_ripiega(dir.path(), None, dispositivo).expect("ripiegata");
+            assert_eq!(indossata.ripiego.as_deref(), Some(dispositivo));
+            assert_eq!(
+                indossata.ripiego_guasto.as_deref(),
+                Some("skin.manifestInvalid"),
+                "{dispositivo}"
+            );
         }
     }
 }

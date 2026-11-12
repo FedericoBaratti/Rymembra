@@ -477,3 +477,134 @@ fn un_testo_che_non_si_legge_si_chiede_prima_di_indossarla() {
     // Il contrasto è un avviso, non un budget: si installa.
     controlla_installazione(&skin).expect("si installa");
 }
+
+// ── L'esame chiede anche questo (D-49) ──────────────────────────────────────
+
+/// Una skin con i token e le parti dati, senza movimento.
+fn con_parti(tokens: &str, parti: &str) -> SkinDocument {
+    valida(&format!(
+        r##"{{
+          "format": 2,
+          "id": "ostile",
+          "meta": {{ "name": "Ostile", "author": "Prova", "version": "1.0.0" }},
+          "tokens": {tokens},
+          "parts": {parti}
+        }}"##
+    ))
+}
+
+/// I token di una skin sana, che non chiede niente da sé.
+const SANI: &str = r##"{ "color.surface.0": "#09090d", "color.surface.1": "#0e0e14",
+    "color.surface.2": "#16161f", "color.text.1": "#ffffff", "color.text.2": "#d0d0d0",
+    "color.text.3": "#b0b0b0", "color.accent": "#8b7cf6" }"##;
+
+#[test]
+fn la_skin_sana_delle_prove_non_chiede_niente() {
+    let esame = esamina(&con_parti(SANI, "{}"));
+    assert!(!esame.da_confermare(), "{esame:#?}");
+}
+
+#[test]
+fn una_cornice_trasparente_o_ritagliata_si_chiede_prima() {
+    // `app-shell` a opacità zero è una finestra vuota a ogni avvio; un taglio
+    // d'angolo da 40 pixel sul lettore gli porta via i comandi (R09-6). Valide
+    // tutte e due, e senza domande fino alla 3.2.0.
+    for (parti, dove) in [
+        (
+            r##"{ "app-shell": { "opacity": 0 } }"##,
+            "parts.app-shell.opacity",
+        ),
+        (
+            r##"{ "np-transport": { "states": { "hover": { "opacity": 0.1 } } } }"##,
+            "parts.np-transport.states.hover.opacity",
+        ),
+        (
+            r##"{ "player-shell": { "clip": { "effect": "chamfer", "size": "40px",
+                 "corners": ["topLeft", "topRight", "bottomRight", "bottomLeft"] } } }"##,
+            "parts.player-shell.clip",
+        ),
+        (
+            r##"{ "page-content": { "clip": { "effect": "chamfer", "size": "20%" } } }"##,
+            "parts.page-content.clip",
+        ),
+    ] {
+        let esame = esamina(&con_parti(SANI, parti));
+        assert_eq!(esame.nascoste, [dove], "{parti}");
+        assert!(esame.da_confermare(), "{parti}");
+    }
+    // Uno spento sbiadito resta uno spento, e un taglio piccolo è uno stile.
+    let esame = esamina(&con_parti(
+        SANI,
+        r##"{ "play-btn-primary": { "states": { "disabled": { "opacity": 0.4 } } },
+             "player-shell": { "clip": { "effect": "chamfer", "size": "10px" } } }"##,
+    ));
+    assert!(esame.nascoste.is_empty(), "{esame:#?}");
+}
+
+#[test]
+fn un_anello_largo_zero_si_chiede_prima() {
+    // Bianco su nero fa 21:1 e non si vede: è largo zero (R09-7).
+    let skin = con_parti(
+        SANI,
+        r##"{ "nav-pill": { "focusRing": { "color": "#ffffff", "width": "0px" } } }"##,
+    );
+    let esame = esamina(&skin);
+    assert_eq!(esame.anelli, 1, "{esame:#?}");
+    assert!(esame.da_confermare());
+    assert!(
+        check_skin(&skin)
+            .iter()
+            .any(|a| a.path == "parts.nav-pill.focusRing" && a.message.contains("zero")),
+        "{:?}",
+        check_skin(&skin)
+    );
+}
+
+#[test]
+fn il_testo_che_manca_si_misura_e_si_chiede() {
+    // Superfici bianche e nessun `color.text.*`: nella finestra il testo è
+    // quello di Plain, quasi bianco. Il contrasto misurava zero coppie (R09-8).
+    let skin = con_parti(
+        r##"{ "color.surface.0": "#ffffff", "color.surface.1": "#ffffff",
+             "color.surface.2": "#ffffff", "color.accent": "#5b4bd6" }"##,
+        "{}",
+    );
+    let esame = esamina(&skin);
+    assert_eq!(esame.testi_mancanti, 3, "{esame:#?}");
+    assert!(esame.contrasti >= 3, "{esame:#?}");
+    assert!(esame.da_confermare());
+}
+
+#[test]
+fn una_parte_che_appare_e_sparisce_in_fretta_si_chiede_prima() {
+    // La pagina intera che sparisce e ricompare cinque volte al secondo finché
+    // il puntatore ci sta sopra: per chi guarda è un lampo d'area grande, ma la
+    // regola del lampeggio guardava solo la luce (R09-9). Lo stesso col
+    // ritaglio che si chiude e con lo spostamento fuori dalla parte.
+    for frames in [
+        r##"[{"at":0,"scale":0},{"at":49,"scale":0},{"at":50,"scale":1},{"at":100,"scale":1}]"##,
+        r##"[{"at":0,"clip":{"inset":["0%","0%","0%","0%"]}},{"at":49,"clip":{"inset":["0%","0%","0%","0%"]}},
+             {"at":50,"clip":{"inset":["50%","0%","50%","0%"]}},{"at":100,"clip":{"inset":["50%","0%","50%","0%"]}}]"##,
+        r##"[{"at":0,"translateX":"0%"},{"at":49,"translateX":"0%"},{"at":50,"translateX":"-200%"},{"at":100,"translateX":"-200%"}]"##,
+    ] {
+        let json = documento(
+            "full",
+            &format!(
+                r##"{{ "lampo": {{ "duration": "200ms", "iterations": "infinite", "easing": "linear",
+                     "frames": {frames} }} }}"##
+            ),
+            r##"{ "page-content": { "motion": { "hover": "lampo" } } }"##,
+        );
+        // Non è un errore: la skin si legge.
+        let esame = esamina(&valida(&json));
+        assert_eq!(esame.lampi, ["lampo"], "{frames}");
+        assert!(esame.da_confermare());
+    }
+    // Un'entrata che scala da zero una volta sola non è un lampo.
+    let json = documento(
+        "full",
+        r##"{ "sbuca": { "duration": "200ms", "frames": [{"at":0,"scale":0},{"at":100,"scale":1}] } }"##,
+        r##"{ "page-content": { "motion": { "enter": "sbuca" } } }"##,
+    );
+    assert!(esamina(&valida(&json)).lampi.is_empty());
+}

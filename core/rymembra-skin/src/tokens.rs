@@ -134,14 +134,14 @@ macro_rules! token {
 /// Come [`token!`], per i token che hanno estremi.
 ///
 /// È una macro a parte e non un ottavo argomento di `token!` perché gli estremi
-/// riguardano ventisette voci su settantatré: aggiungere un `None` alle altre
-/// quarantasei metterebbe due `None` di fila su ogni riga della tabella, e da lì
+/// riguardano trentadue voci su settantatré: aggiungere un `None` alle altre
+/// quarantuno metterebbe due `None` di fila su ogni riga della tabella, e da lì
 /// in poi nessuno saprebbe più a vista quale dei due è la tripla.
 ///
 /// Le voci limitate erano undici, ed erano davvero «poche». Sono diventate
 /// ventisette con il blocco dei canvas, dove ogni numero ha estremi per una
 /// ragione che non è la difesa del motore ma l'usabilità del cursore — sta
-/// scritta lì.
+/// scritta lì — e trentadue con le cinque misure della cornice (R09-4).
 macro_rules! token_limitato {
     ($id:literal, $css:literal, $kind:ident, $group:ident, $min:literal, $max:literal, $desc:literal) => {
         TokenDef {
@@ -207,7 +207,7 @@ pub static TOKENS: &[TokenDef] = &[
     token!("color.accent.glow", "--accent-glow", Color, Accent, false, None,
         "Accento per gli aloni."),
     token!("color.accent.like", "--accent-like", Color, Accent, false, None,
-        "Riempimento del cuore. Nothing lo porta al rosso, il suo unico rosso."),
+        "Riempimento del cuore. Una skin che lo porta al rosso può farne il suo unico rosso."),
     // Solo tripla: i gradienti degli hero la usano dentro `rgba()` calcolate a
     // runtime dalla copertina, quindi emettere `--hero-rgb: rgb(...)` le
     // romperebbe tutte.
@@ -239,15 +239,25 @@ pub static TOKENS: &[TokenDef] = &[
         "Secondo alone dello sfondo ambientale."),
 
     // ── Layout ──────────────────────────────────────────────────────────────
-    token!("layout.rail", "--rail-w", Length, Layout, false, None,
+    // Le misure della cornice, con estremi per la stessa ragione del ritmo qui
+    // sotto. Fino alla 3.2.0 non ne avevano: `"layout.playerGap": "-400px"`
+    // portava il lettore, e con lui la pausa, quattrocento pixel sotto il bordo
+    // della finestra; `"layout.railExpanded": "4000px"` schiacciava la pagina a
+    // zero, Impostazioni comprese; `"100vh"` d'altezza copriva tutto (R09-4).
+    // Gli estremi stanno larghi attorno ai valori di serie (68, 240, 92, 14 e
+    // 16–48): spostano la cornice, non la rompono. In px o rem, perché `30vh`
+    // starebbe dentro qualunque numero. Il margine del contenuto delle skin di
+    // serie è un'adattiva col preferito in `cqw`: lì contano il minimo e il
+    // massimo, che sono quel che il `clamp()` può dare.
+    token_limitato!("layout.rail", "--rail-w", Length, Layout, 48.0, 120.0,
         "Larghezza della barra laterale chiusa."),
-    token!("layout.railExpanded", "--rail-w-expanded", Length, Layout, false, None,
+    token_limitato!("layout.railExpanded", "--rail-w-expanded", Length, Layout, 160.0, 320.0,
         "Larghezza della barra laterale aperta."),
-    token!("layout.playerHeight", "--player-h", Length, Layout, false, None,
+    token_limitato!("layout.playerHeight", "--player-h", Length, Layout, 56.0, 140.0,
         "Altezza della barra del player."),
-    token!("layout.playerGap", "--player-gap", Length, Layout, false, None,
+    token_limitato!("layout.playerGap", "--player-gap", Length, Layout, 0.0, 32.0,
         "Margine attorno al player flottante."),
-    token!("layout.contentX", "--content-x", Length, Layout, false, None,
+    token_limitato!("layout.contentX", "--content-x", Length, Layout, 0.0, 96.0,
         "Margine orizzontale del contenuto."),
 
     // ── Ritmo ───────────────────────────────────────────────────────────────
@@ -273,7 +283,7 @@ pub static TOKENS: &[TokenDef] = &[
 
     // ── Geometria ───────────────────────────────────────────────────────────
     token!("radius.panel", "--radius-panel", Length, Geometry, true, None,
-        "Raggio dei pannelli. Cyberpunk lo porta a 4px, ed è metà della sua identità."),
+        "Raggio dei pannelli: a 4px dà un'aria tecnica, a 24px morbida."),
     token!("radius.card", "--radius-card", Length, Geometry, true, None,
         "Raggio delle schede."),
     // Fattori e non misure: erano `calc(var(--radius-card) * 0.6)` scritti nel

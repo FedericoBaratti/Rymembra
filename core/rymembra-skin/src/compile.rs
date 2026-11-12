@@ -102,7 +102,9 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 use crate::document::{RouteFrame, Scheme, SkinDocument, SkinMotion};
-use crate::effects::{Effect, EffectTarget, FiltroElemento, ImageSize, Paint, stack_cost};
+use crate::effects::{
+    Effect, EffectTarget, FiltroElemento, ImageSize, Paint, RadialShape, stack_cost,
+};
 use crate::movimento::{
     AnimFrame, AnimTrigger, Animation, AnimationRef, CASCATA_VOCI, Curva, Ritaglio,
 };
@@ -298,8 +300,15 @@ impl Ambito {
         format!("{}[data-theme='{}']", self.radice(), scheme.as_str())
     }
 
+    /// Le sovrascritture di `platforms.mobile`.
+    ///
+    /// L'attributo è quello che la finestra scrive davvero: `main.tsx` mette
+    /// `data-forma="telefono"` sulla radice della pagina costruita per Android.
+    /// Fino alla 3.2.0 qui c'era `[data-mobile]`, che non metteva nessuno, e il
+    /// blocco non valeva mai (R09-2). Una regola più pesante di
+    /// `stile/telefono.css` (0,2,0), quindi sul telefono vince lei.
     fn telefono(&self) -> String {
-        format!("{}[data-mobile]", self.radice())
+        format!("{}[data-forma='telefono']", self.radice())
     }
 
     /// La radice sotto cui la preferenza di Rymembra ferma il movimento.
@@ -355,17 +364,30 @@ impl Ambito {
     /// Nella finestra serve la skin installata; nell'anteprima — e nella prova
     /// sull'app — la bozza, che è dove lo Studio mette le voci nuove prima che
     /// la skin si installi.
-    fn url_risorsa(&self, nome: &str) -> String {
+    ///
+    /// `None` per un nome che non è una voce del pacchetto: chi chiama non
+    /// scrive l'`url()`. Vedi sotto.
+    fn url_risorsa(&self, nome: &str) -> Option<String> {
         // Il nome di una voce sta fra virgolette dentro `url("…")`: una
         // virgoletta o una barra inversa lo chiuderebbero, una barra lo
         // manderebbe in un'altra cartella. L'alfabeto del pacchetto non ha
         // nessuno dei tre.
+        //
+        // Il punto però ci sta, e `..` è fatto solo di punti: un documento
+        // costruito a mano con `src: ".."` diventava `…/plain/..`, che il
+        // motore risolve nella radice dell'origine delle risorse (R15-2). Il
+        // filtro dei caratteri non basta: il nome ripulito deve essere una
+        // voce che il pacchetto ammette — un nome con la sua estensione — e
+        // `.`, `..` e il vuoto non lo sono. Su un documento letto da
+        // `parse_skin` non cambia niente: la validazione pretende già la
+        // stessa grammatica.
         let nome = nel_suo_alfabeto(nome, &['-', '_', '.']);
-        if self.bozza {
+        crate::package::tipo_risorsa(&nome)?;
+        Some(if self.bozza {
             format!("{ORIGINE_RISORSE}/bozza/{}/{nome}", self.id)
         } else {
             format!("{ORIGINE_RISORSE}/{}/{nome}", self.id)
-        }
+        })
     }
 
     /// Il selettore di uno stato.
@@ -396,6 +418,40 @@ fn dichiara(property: impl Into<String>, value: impl Into<String>) -> Dichiarazi
         property: property.into(),
         value: value.into(),
     }
+}
+
+/// Le proprietà della cornice che sul telefono decide il motore.
+///
+/// `stile/telefono.css` le riscrive sotto `:root[data-forma="telefono"]` — la
+/// barra laterale che non c'è, il mini lettore da 64 pixel nel flusso — e il
+/// foglio della skin, che arriva dopo con la stessa specificità, le batteva:
+/// anche Plain portava sul telefono il lettore da 92 pixel del computer e 120
+/// pixel di vuoto in fondo a ogni pagina (R09-3). Sono i token `layout.rail`,
+/// `layout.playerHeight`, `layout.playerGap` e le due misure che il compilatore
+/// ne ricava ([`calcolati`]).
+pub const MISURE_DEL_TELEFONO: &[&str] = &[
+    "--rail-w",
+    "--player-h",
+    "--player-gap",
+    "--shell-left",
+    "--player-clearance",
+];
+
+/// Il blocco di una radice, con le [`MISURE_DEL_TELEFONO`] in un blocco a
+/// parte che sul telefono non vale.
+///
+/// La guardia sta in un `:where()`: sul computer la specificità resta quella
+/// della radice, e la cascata contro `stile.css` non cambia.
+fn blocchi_della_radice(selector: &str, dichiarazioni: Vec<Dichiarazione>) -> String {
+    let (computer, ovunque): (Vec<Dichiarazione>, Vec<Dichiarazione>) = dichiarazioni
+        .into_iter()
+        .partition(|d| MISURE_DEL_TELEFONO.contains(&d.property.as_str()));
+    let mut css = blocco(selector, &ovunque);
+    css.push_str(&blocco(
+        &format!("{selector}:where(:not([data-forma='telefono']))"),
+        &computer,
+    ));
+    css
 }
 
 fn blocco(selector: &str, dichiarazioni: &[Dichiarazione]) -> String {
@@ -539,8 +595,18 @@ fn compile_effect(effect: &Effect, ambito: &Ambito) -> String {
             size,
             ref stops,
         } => {
+            // Il documento dice **un** raggio. Per il cerchio è la sua scrittura;
+            // per l'ellisse il motore ne vuole due, orizzontale e verticale, e
+            // con uno solo scarta il gradiente — e con lui, perché arriva in una
+            // `var()`, l'intera dichiarazione `background` che lo usa: fino alla
+            // 3.2.0 «In riproduzione» di Neon e Vinile restava senza fondo,
+            // trasparente sulla pagina sotto. Lo stesso raggio sui due assi è
+            // quel che l'autore ha scritto.
             let misura = size
-                .map(|s| format!(" {}", format_length(s)))
+                .map(|s| match shape {
+                    RadialShape::Circle => format!(" {}", format_length(s)),
+                    RadialShape::Ellipse => format!(" {0} {0}", format_length(s)),
+                })
                 .unwrap_or_default();
             format!(
                 "radial-gradient({}{misura}{}, {})",
@@ -694,9 +760,14 @@ fn compile_effect(effect: &Effect, ambito: &Ambito) -> String {
                 || "center".to_owned(),
                 |(x, y)| format!("{} {}", format_length(x), format_length(y)),
             );
+            // Un nome che non è una voce del pacchetto non diventa un
+            // indirizzo: lo strato resta, vuoto (`none` è un'immagine valida),
+            // così la lista dei fondi non cambia lunghezza.
+            let immagine = ambito
+                .url_risorsa(src)
+                .map_or_else(|| "none".to_owned(), |url| format!("url(\"{url}\")"));
             format!(
-                "url(\"{}\") {dove} / {misura} {}",
-                ambito.url_risorsa(src),
+                "{immagine} {dove} / {misura} {}",
                 if repeat { "repeat" } else { "no-repeat" }
             )
         }
@@ -990,7 +1061,7 @@ fn calcolati(tokens: &TokenSet, tutti: bool) -> Vec<Dichiarazione> {
 /// Il compilatore non fallisce, e la skin di riferimento è compilata dentro il
 /// binario e provata dai test: se non si leggesse, l'anteprima semplicemente
 /// non avrebbe il blocco di serie — che è il comportamento di prima.
-fn di_serie() -> Option<&'static SkinDocument> {
+pub(crate) fn di_serie() -> Option<&'static SkinDocument> {
     static PLAIN: OnceLock<Option<SkinDocument>> = OnceLock::new();
     PLAIN.get_or_init(|| crate::plain().ok()).as_ref()
 }
@@ -2193,15 +2264,18 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
     );
 
     for font in &skin.fonts {
+        // Un carattere senza una voce del pacchetto da cui leggerlo non si
+        // dichiara: la pila ricade sulle famiglie che seguono. Vedi
+        // `url_risorsa`.
+        let Some(url) = ambito.url_risorsa(&font.src) else {
+            continue;
+        };
         let mut dichiarazioni = vec![
             dichiara(
                 "font-family",
                 format!("'{}'", ambito.famiglia(&font.family)),
             ),
-            dichiara(
-                "src",
-                format!("url(\"{}\") format('woff2')", ambito.url_risorsa(&font.src)),
-            ),
+            dichiara("src", format!("url(\"{url}\") format('woff2')")),
             dichiara(
                 "font-weight",
                 if font.weight.0 == font.weight.1 {
@@ -2228,7 +2302,7 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
     // `color-scheme` non è un token: dice al motore come disegnare le barre di
     // scorrimento e i controlli nativi, e segue il tema di base.
     dichiarazioni.push(dichiara("color-scheme", skin.scheme.as_str()));
-    css.push_str(&blocco(&ambito.radice(), &dichiarazioni));
+    css.push_str(&blocchi_della_radice(&ambito.radice(), dichiarazioni));
 
     let tema_variante = ambito.tema(skin.scheme.opposto());
     if let Some(variante) = skin.variant.as_ref() {
@@ -2238,12 +2312,16 @@ pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
         dichiarazioni.extend(compila_tavolozza(&variante.palette));
         dichiarazioni.extend(compila_motivi(&variante.patterns, ambito));
         dichiarazioni.push(dichiara("color-scheme", skin.scheme.opposto().as_str()));
-        css.push_str(&blocco(&tema_variante, &dichiarazioni));
+        css.push_str(&blocchi_della_radice(&tema_variante, dichiarazioni));
     }
 
     if let Some(telefono) = skin.mobile.as_ref() {
         let (mut dichiarazioni, _) = compila_token(telefono, Some(&skin.tokens), &famiglia);
         dichiarazioni.extend(calcolati(telefono, false));
+        // Le misure del lettore e della barra sul telefono sono del motore
+        // (D-50): `platforms.mobile` non le riprende, e l'avviso lo dice a chi
+        // le scrive (`document/avvisi.rs`).
+        dichiarazioni.retain(|d| !MISURE_DEL_TELEFONO.contains(&d.property.as_str()));
         css.push_str(&blocco(&ambito.telefono(), &dichiarazioni));
     }
 

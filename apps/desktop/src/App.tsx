@@ -83,7 +83,13 @@ import { MenuDellaCoda } from "./Coda";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
 import { ConfermaGesto } from "./ConfermaGesto";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
-import { AvvisoSostituita, ConfermaSkin, ConfermaSostituzione } from "./ConfermaSkin";
+import {
+  AvvisoMaiusc,
+  AvvisoSostituita,
+  ConfermaSkin,
+  ConfermaSostituzione,
+  TieniSkin,
+} from "./ConfermaSkin";
 import { ConfermaTrasloco } from "./ConfermaTrasloco";
 import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
@@ -691,7 +697,7 @@ export function App() {
   const skinFinestra = useSkinAttiva(segnalaErrore, avvisaProvaChiusa);
   const { skin, skinAttiva, prova, scegliSkin, ricaricaSkin, finisciProva } = skinFinestra;
   elencoSkin.current = skin;
-  const { daIndossare, setDaIndossare } = skinFinestra;
+  const { daIndossare } = skinFinestra;
   const studioInProva = prova !== null;
   /** Lo Studio copre la finestra: l'app non prende né tasti né file. */
   const studioVisibile = studioAperto !== null && !studioInProva;
@@ -4251,12 +4257,26 @@ export function App() {
    * playlist, e per la stessa ragione. Vedi `AvvisoSostituita`.
    */
   const sostituitaOra = skinFinestra.sostituita;
-  const avvisoSostituita = sostituitaOra !== null && (
-    <AvvisoSostituita
-      sostituita={sostituitaOra}
-      onRimetti={() => void skinFinestra.rimettiSostituita(sostituitaOra.percorso)}
-      onChiudi={skinFinestra.chiudiSostituita}
-    />
+  const tornataOra = skinFinestra.tornataAPlain;
+  const avvisoSostituita = (
+    <>
+      {sostituitaOra !== null && (
+        <AvvisoSostituita
+          sostituita={sostituitaOra}
+          onRimetti={() => void skinFinestra.rimettiSostituita()}
+          onChiudi={skinFinestra.chiudiSostituita}
+        />
+      )}
+      {/* Maiusc tenuto all'avvio ha rimesso Plain: la stessa notizia, lo
+          stesso gesto per tornare indietro. Vedi `tieniSkin.ts`. */}
+      {tornataOra !== null && (
+        <AvvisoMaiusc
+          nome={tornataOra.nome}
+          onRimetti={() => void skinFinestra.rimettiDopoMaiusc()}
+          onChiudi={skinFinestra.chiudiTornataAPlain}
+        />
+      )}
+    </>
   );
 
   /**
@@ -4656,19 +4676,27 @@ export function App() {
             key={daIndossare.id}
             nome={daIndossare.nome}
             esame={daIndossare.esame}
-            onChiudi={() => setDaIndossare(null)}
-            onIndossa={() => {
-              const quale = daIndossare;
-              setDaIndossare(null);
-              void scegliSkin(quale.id);
-            }}
+            onChiudi={skinFinestra.nonOraEsaminata}
+            onIndossa={skinFinestra.indossaEsaminata}
+          />
+        )}
+
+        {skinFinestra.daTenere !== null && (
+          <TieniSkin
+            // Una skin nuova, una domanda nuova col suo conto da quindici.
+            key={chiaveDellApertura(skinFinestra.daTenere)}
+            daTenere={skinFinestra.daTenere}
+            onTieni={skinFinestra.tieniSkin}
+            onTorna={() => void skinFinestra.tornaIndietro()}
           />
         )}
 
         {skinFinestra.daSostituire !== null && (
           <ConfermaSostituzione
-            // Un altro file, un'altra domanda.
-            key={skinFinestra.daSostituire.percorso}
+            // Un'altra domanda, anche sullo stesso file: col percorso come chiave
+            // la stessa domanda rifatta in fretta riusava la finestrella col
+            // cancello già consumato, e non rispondeva più (R04b-7).
+            key={chiaveDellApertura(skinFinestra.daSostituire)}
             domanda={skinFinestra.daSostituire.domanda}
             onChiudi={skinFinestra.annullaSostituzione}
             onSostituisci={() => void skinFinestra.confermaSostituzione()}

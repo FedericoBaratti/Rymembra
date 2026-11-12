@@ -56,12 +56,12 @@
     "color.accent.like": { "$palette": "etichetta" },
     "color.hero": { "$token": "color.accent" },
 
-    "color.danger": "#a61b1b",
-    "color.danger.soft": "rgba(166, 27, 27, 0.12)",
-    "color.success": "#1b6334",
-    "color.success.soft": "rgba(27, 99, 52, 0.12)",
-    "color.warning": "#6e5100",
-    "color.warning.soft": "rgba(110, 81, 0, 0.14)",
+    "color.danger": "#981818",
+    "color.danger.soft": "rgba(152, 24, 24, 0.12)",
+    "color.success": "#175b2f",
+    "color.success.soft": "rgba(23, 91, 47, 0.12)",
+    "color.warning": "#634900",
+    "color.warning.soft": "rgba(99, 73, 0, 0.14)",
 
     "color.ambient.1": "rgba(185, 138, 62, 0.1)",
     "color.ambient.2": "rgba(163, 48, 28, 0.05)",

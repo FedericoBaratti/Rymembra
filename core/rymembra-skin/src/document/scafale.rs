@@ -20,6 +20,7 @@ use crate::vicini::vicini;
 pub(super) fn impaginazione(
     value: &Value,
     path: &str,
+    barra: crate::layout::Barra,
     problemi: &mut Vec<SkinIssue>,
 ) -> Esito<SkinLayout> {
     let map = oggetto(value, path)?;
@@ -75,7 +76,7 @@ pub(super) fn impaginazione(
     // che non si è letto lascia un buco, e un buco produce errori veri
     // dell'albero mutilato e falsi di quello scritto.
     if problemi.len() == prima {
-        for guasto in crate::layout::verifica(&albero) {
+        for guasto in crate::layout::verifica_con_la_barra(&albero, barra) {
             problemi.push(problema_scafale(&dentro, &guasto));
         }
     }

@@ -47,8 +47,8 @@ use crate::layout::{Align, GapStep, LayoutZone, Spread, ZoneKind, shell_di_serie
 use crate::motivo::Motivo;
 use crate::movimento::{AnimDirection, Animation, Curva, Riempimento};
 use crate::parts::{BorderStyle, PartStyle, TextTransform};
-use crate::tokens::TokenSet;
-use crate::values::{Duration, Easing, EasingKeyword, Rgba};
+use crate::tokens::{TokenSet, TokenValue};
+use crate::values::{Duration, Easing, EasingKeyword, LengthValue, Rgba};
 use crate::vicini::vicini;
 
 mod avvisi;
@@ -69,8 +69,8 @@ pub(crate) use avvisi::{DIETRO, colore_di};
 pub(crate) use blocchi::famiglia_ridotta;
 
 use blocchi::{
-    capacita, caratteri, meta, motivi, movimento, tavolozza, tavolozza_mancante,
-    tinte_che_cambiano, variante,
+    capacita, caratteri, meta, motivi, movimento, nomi_che_si_scontrano, tavolozza,
+    tavolozza_mancante, tinte_che_cambiano, variante,
 };
 use lampeggio::lampeggi;
 use parti::{Richiamabili, superfici};
@@ -940,6 +940,29 @@ fn identificatore(value: &Value, path: &str) -> Esito<String> {
     Ok(scritto.to_owned())
 }
 
+/// La barra laterale con cui lo scafale fa i conti: quella dei token della
+/// skin quando la scrivono in una misura assoluta, altrimenti quella di serie.
+/// Un'adattiva conta col suo massimo, che è quel che può prendere.
+fn barra_dei_token(tokens: &TokenSet) -> crate::layout::Barra {
+    let in_px = |id: &str| -> Option<f64> {
+        let lunghezza = match tokens.get(id)? {
+            TokenValue::Length(LengthValue::Fixed(l)) => *l,
+            TokenValue::Length(LengthValue::Adaptive { max, .. }) => *max,
+            _ => return None,
+        };
+        match lunghezza.unit {
+            crate::values::LengthUnit::Px => Some(lunghezza.value),
+            crate::values::LengthUnit::Rem => Some(lunghezza.value * crate::layout::REM_IN_PX),
+            _ => None,
+        }
+    };
+    let serie = crate::layout::Barra::DI_SERIE;
+    crate::layout::Barra {
+        chiusa: in_px("layout.rail").unwrap_or(serie.chiusa),
+        aperta: in_px("layout.railExpanded").unwrap_or(serie.aperta),
+    }
+}
+
 /// Un problema che ferma la lettura, invece di aggiungersi all'elenco.
 fn solo(guasto: SkinIssue) -> Vec<SkinIssue> {
     vec![guasto]
@@ -1018,7 +1041,7 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         problemi.extend(lampeggi(blocco));
     }
     let layout = campo(map, "layout")
-        .map(|grezzo| impaginazione(grezzo, "layout", &mut problemi))
+        .map(|grezzo| impaginazione(grezzo, "layout", barra_dei_token(&tokens), &mut problemi))
         .transpose()
         .map_err(solo)?;
     let patterns = match campo(map, "patterns") {
@@ -1032,6 +1055,7 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         motion.as_ref().map_or(&[], |blocco| &blocco.animations);
     let curve_dichiarate: &[(String, Easing)] =
         motion.as_ref().map_or(&[], |blocco| &blocco.easings);
+    problemi.extend(nomi_che_si_scontrano(&palette, &patterns, curve_dichiarate));
     let richiamabili = Richiamabili {
         motivi: &patterns,
         animazioni: animazioni_dichiarate,

@@ -289,6 +289,12 @@
   place-items: center;
   background: rgb(var(--surface-0-rgb) / 0.72);
 }
+/* Il velo di un consenso sale sopra toast e menù: sono parti che la skin
+   ridisegna e che non stanno dentro il consenso, quindi le guardie del
+   compilatore non le toccano. Vedi `--strato-consenso`. */
+.velo:has(> [data-consenso]) {
+  z-index: var(--strato-consenso);
+}
 
 /* ── finestrelle ─────────────────────────────────────────────────────────── */
 .finestrella {
@@ -323,7 +329,9 @@
 
    Un dialogo che chiede un sì — collegare un dispositivo, associarsi per
    «Ascolta insieme» e confrontare il codice, ammettere qualcuno, togliere file
-   dal disco, sostituire una skin — porta `data-consenso` sulla radice
+   dal disco o righe dalla libreria, spostare la cartella dei dati, applicare
+   un profilo o un ripristino, sostituire o tenere una skin — porta
+   `data-consenso` sulla radice
    (`consenso` di `Dialogo`), e lì dentro la skin non ridisegna niente: né
    livelli, né immagini, né pseudo-elementi suoi, né caratteri. Restano i suoi
    colori, che arrivano coi token. Due metà, e servono tutte e due:

@@ -110,6 +110,12 @@ export interface Skin {
    * l'assenza.
    */
   ripiego: string | null;
+  /**
+   * Perché la skin di `ripiego` non si è indossata: il codice del guasto.
+   * `skin.notFound` è il pacchetto che non c'è; ogni altro codice è un
+   * pacchetto che c'è e non si legge più, e allora non torna da sé.
+   */
+  ripiegoGuasto: string | null;
 }
 
 /** Il tema di base di una skin, nella parola del formato. */
@@ -164,7 +170,8 @@ export interface VoceSkin {
   /**
    * La skin che un'installazione ha sostituito, tenuta da parte su questo
    * computer: `skinInstalla(percorso, true)` la rimette, e tiene da parte
-   * quella di adesso. Assente se non ce n'è.
+   * quella di adesso. È la più recente delle copie: il nucleo ne tiene tre per
+   * id. Assente se non ce n'è.
    */
   sostituita?: SostituitaSkin;
 }
@@ -188,6 +195,13 @@ export interface SostituzioneSkin {
   id: string;
   presente: VersioneSkin;
   nuova: VersioneSkin;
+  /**
+   * L'impronta della skin installata che la domanda mostra: il sì la porta
+   * con sé (`skinInstalla(percorso, true, impronta)`), e se nel frattempo è
+   * cambiata il nucleo chiede di nuovo invece di sostituire quel che nessuno
+   * ha visto.
+   */
+  impronta: string;
 }
 
 /**
@@ -197,6 +211,11 @@ export interface SostituzioneSkin {
 export interface InstallazioneSkin {
   installata: VoceSkin | null;
   daSostituire: SostituzioneSkin | null;
+  /**
+   * L'impronta del pacchetto appena installato, quando c'è: è quella che
+   * «Rimettila» deve trovare installata per scambiare le due.
+   */
+  impronta: string | null;
 }
 
 /** Un costo, e il budget su cui il nucleo lo misura. */
@@ -236,8 +255,14 @@ export interface EsameSkin {
   cicli: CicloSkin[];
   /** Quante coppie di testo e superficie non si leggono. */
   contrasti: number;
-  /** Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici. */
+  /** Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici, o larghi zero. */
   anelli: number;
+  /** Quanti token di testo obbligatori la skin non dichiara: il testo ricade su quello di Plain. */
+  testiMancanti: number;
+  /** Le parti essenziali che la skin rende trasparenti o ritaglia, coi percorsi nel documento. */
+  nascoste: string[];
+  /** Le animazioni che fanno apparire e sparire una parte più volte al secondo. */
+  lampi: string[];
   /** C'è qualcosa da chiedere prima di indossarla. */
   daConfermare: boolean;
 }

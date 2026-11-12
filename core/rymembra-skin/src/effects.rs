@@ -366,6 +366,49 @@ impl FiltroElemento {
     ];
 }
 
+/// Gli estremi dei parametri numerici degli effetti: `(effetto, parametro,
+/// minimo, massimo)`.
+///
+/// Stavano soltanto nel registro dello Studio, come capi dei cursori, e il
+/// validatore chiedeva al più «non negativo»: `chamfer.size: "5000px"` ritagliava
+/// via la parte intera, `blurBehind.radius: "900px"` sfocava a ogni fotogramma,
+/// `hairlineGrid.cell: "0px"` era una griglia senza passo — skin valide, e lo
+/// Studio al primo tocco del cursore riscriveva il valore col suo massimo
+/// (R09-10). Adesso il numero è uno, e sta qui accanto agli effetti: il
+/// validatore rifiuta fuori da qui, e il registro dello Studio deve leggere gli
+/// stessi numeri.
+///
+/// Si confronta il numero scritto, qualunque sia l'unità, come fa il cursore
+/// dello Studio: `90%` di un radiale sta fra 0 e 400 come `90px`.
+#[rustfmt::skip]
+pub const ESTREMI_DEI_PARAMETRI: &[(&str, &str, f64, f64)] = &[
+    ("linearGradient", "angle", -360.0, 360.0),
+    ("radialGradient", "size", 0.0, 400.0),
+    ("conicGradient", "from", -360.0, 360.0),
+    ("hairlineGrid", "cell", 1.0, 200.0),
+    ("hairlineGrid", "cellY", 1.0, 200.0),
+    ("hairlineGrid", "thickness", 0.0, 8.0),
+    ("scanlines", "line", 0.0, 32.0),
+    ("scanlines", "gap", 0.0, 64.0),
+    ("stripes", "angle", -360.0, 360.0),
+    ("stripes", "width", 1.0, 96.0),
+    ("dotGrid", "spacing", 2.0, 96.0),
+    ("dotGrid", "dot", 0.0, 16.0),
+    ("vignette", "start", 0.0, 100.0),
+    ("chamfer", "size", 0.0, 64.0),
+    ("blurBehind", "radius", 0.0, 64.0),
+    ("blurBehind", "saturate", 0.0, 400.0),
+];
+
+/// Gli estremi di un parametro di un effetto, se ne ha.
+#[must_use]
+pub fn estremi_del_parametro(effetto: &str, parametro: &str) -> Option<(f64, f64)> {
+    ESTREMI_DEI_PARAMETRI
+        .iter()
+        .find(|(e, p, _, _)| *e == effetto && *p == parametro)
+        .map(|(_, _, min, max)| (*min, *max))
+}
+
 impl Effect {
     /// Il nome nel documento.
     #[must_use]
