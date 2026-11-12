@@ -2303,6 +2303,9 @@ enum Documento {
     Privacy,
     /// Cosa si può fare della musica.
     Condizioni,
+    /// La licenza dei caratteri dell'interfaccia (SIL OFL 1.1), che gli
+    /// avvisi delle terze parti nominano senza riportarla.
+    Caratteri,
     /// Dove sostenere il lavoro.
     ///
     /// Non è un documento e sta fra i documenti: quel che questo elenco tiene
@@ -2328,6 +2331,7 @@ impl Documento {
             "terze" => Some(Self::Terze),
             "privacy" => Some(Self::Privacy),
             "condizioni" => Some(Self::Condizioni),
+            "caratteri" => Some(Self::Caratteri),
             "donazioni" => Some(Self::Donazioni),
             _ => grezzo
                 .strip_prefix("console-")
@@ -2346,6 +2350,7 @@ impl Documento {
             Self::Terze => Some("THIRD-PARTY-NOTICES.md"),
             Self::Privacy => Some("PRIVACY.md"),
             Self::Condizioni => Some("TERMS.md"),
+            Self::Caratteri => Some("font-OFL.txt"),
             Self::Repository | Self::Segnalazioni | Self::Donazioni | Self::Console(_) => None,
         }
     }
@@ -2363,6 +2368,7 @@ impl Documento {
             Self::Terze => format!("{radice}/blob/main/THIRD-PARTY-NOTICES.md"),
             Self::Privacy => format!("{radice}/blob/main/PRIVACY.md"),
             Self::Condizioni => format!("{radice}/blob/main/TERMS.md"),
+            Self::Caratteri => format!("{radice}/blob/main/apps/desktop/src/font/OFL.txt"),
             // Le donazioni non stanno **dentro** il repository: stanno accanto,
             // sotto il profilo di chi lo tiene — `github.com/OWNER/REPO` diventa
             // `github.com/sponsors/OWNER`. Il proprietario si ricava da quella
@@ -2651,6 +2657,7 @@ mod prove {
         "terze",
         "privacy",
         "condizioni",
+        "caratteri",
         "donazioni",
         "console-google",
         "console-microsoft",
@@ -2709,8 +2716,9 @@ mod prove {
         assert_eq!(sparite(&righe, &[]), vec![1, 2, 3]);
     }
 
-    /// D-10d: licenza, avvisi delle terze parti, privacy e condizioni si
-    /// leggono anche senza rete, dalla copia che viaggia con l'app. Gli altri
+    /// D-10d: licenza, avvisi delle terze parti, privacy, condizioni e la
+    /// licenza dei caratteri (OFL) si leggono anche senza rete, dalla copia che
+    /// viaggia con l'app. Gli altri
     /// nomi non ne hanno una, e un file che non c'è non è un guasto.
     #[test]
     fn i_testi_legali_si_leggono_dalla_copia_locale() {
@@ -2720,6 +2728,7 @@ mod prove {
             ("terze", "THIRD-PARTY-NOTICES.md"),
             ("privacy", "PRIVACY.md"),
             ("condizioni", "TERMS.md"),
+            ("caratteri", "font-OFL.txt"),
         ];
         for (nome, file) in attesi {
             let documento = Documento::da_nome(nome).expect("un nome dell'elenco");

@@ -449,6 +449,7 @@ export function Aggiornamenti({
             ["terze", "settings.docs.thirdParty"],
             ["privacy", "settings.docs.privacy"],
             ["condizioni", "settings.docs.terms"],
+            ["caratteri", "settings.docs.fonts"],
           ] as const
         ).map(([quale, chiave]) => (
           <button

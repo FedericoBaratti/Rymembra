@@ -1933,6 +1933,7 @@
   "settings.docs.thirdParty": "Dependency licenses",
   "settings.docs.privacy": "What travels over the network",
   "settings.docs.terms": "What you may do with the music",
+  "settings.docs.fonts": "Font license (OFL)",
   "settings.docs.online": "Open the latest version online",
   "settings.background.title": "Closing and background",
   "settings.background.toggle": "The X hides instead of closing",

@@ -1140,6 +1140,7 @@ export const ipc = {
       | "terze"
       | "privacy"
       | "condizioni"
+      | "caratteri"
       // Non un documento, ma la stessa serratura: l'elenco di là non tiene «i
       // testi legali», tiene gli indirizzi che questa finestra ha il permesso
       // di far aprire.
@@ -1151,7 +1152,7 @@ export const ipc = {
   // Il testo della copia che viaggia con l'app, per leggerlo senza rete
   // (D-10d); `null` se questa installazione non la porta. Vedi
   // `documentoLocale.ts`.
-  documentoLocale: (quale: "licenza" | "terze" | "privacy" | "condizioni") =>
+  documentoLocale: (quale: "licenza" | "terze" | "privacy" | "condizioni" | "caratteri") =>
     invoke<string | null>("documento_locale", { quale }),
 
   // La documentazione tecnica sul sito, alla voce di una scheda delle

@@ -14,11 +14,15 @@ import { conCopiaLocale } from "../src/documentoLocale";
  */
 const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 
-test("i quattro testi legali passano dalla copia locale, gli altri no", () => {
+test("i testi legali passano dalla copia locale, gli altri no", () => {
   assert.deepEqual(
-    (["repository", "segnalazioni", "licenza", "terze", "privacy", "condizioni"] as const).filter(conCopiaLocale),
-    ["licenza", "terze", "privacy", "condizioni"],
+    (["repository", "segnalazioni", "licenza", "terze", "privacy", "condizioni", "caratteri"] as const).filter(
+      conCopiaLocale,
+    ),
+    ["licenza", "terze", "privacy", "condizioni", "caratteri"],
   );
+  // D-10d nomina anche la licenza dei caratteri: c'è un tasto per lei.
+  assert.match(sorgente("parti/Aggiornamenti.tsx"), /\["caratteri", "settings\.docs\.fonts"\]/);
 });
 
 test("le Impostazioni chiedono la copia locale prima di aprire il sito", () => {
@@ -35,7 +39,10 @@ test("le Impostazioni chiedono la copia locale prima di aprire il sito", () => {
   assert.match(vista, /<pre className="testo-documento"/);
   assert.match(vista, /t\("settings\.docs\.online"\)/);
   const ipc = sorgente("ipc.ts");
-  assert.match(ipc, /documentoLocale: \(quale: "licenza" \| "terze" \| "privacy" \| "condizioni"\) =>\s+invoke<string \| null>\("documento_locale", \{ quale \}\)/);
+  assert.match(
+    ipc,
+    /documentoLocale: \(quale: "licenza" \| "terze" \| "privacy" \| "condizioni" \| "caratteri"\) =>\s+invoke<string \| null>\("documento_locale", \{ quale \}\)/,
+  );
   const it = JSON.parse(sorgente("lingue/it.json")) as Record<string, string>;
   const en = JSON.parse(sorgente("lingue/en.json")) as Record<string, string>;
   assert.equal(it["settings.docs.online"], "Apri la versione aggiornata sul sito");
