@@ -19,6 +19,12 @@ import java.util.concurrent.TimeUnit
  *
  * Aspetta che il sistema abbia accettato, così un telefono senza browser è un
  * errore che arriva a chi ha toccato il tasto, non un tocco che non fa niente.
+ *
+ * Il motivo di un rifiuto non ripete l'indirizzo: finisce nel diario come
+ * causa, e l'indirizzo può portare un gettone (il consenso di Last.fm) o lo
+ * `state` di un consenso OAuth. Per la stessa ragione un'eccezione del sistema
+ * non passa col suo testo, che può citare l'intento: solo il suo tipo. Rust
+ * toglie comunque ogni indirizzo dalla causa (`browser::apri`).
  */
 object Browser {
   fun apri(attivita: MainActivity, indirizzo: String) {
@@ -33,9 +39,11 @@ object Browser {
         attivita.startActivity(intento)
         esito.complete(Unit)
       } catch (e: ActivityNotFoundException) {
-        esito.completeExceptionally(IllegalStateException("sul telefono non c'è un browser che apra $indirizzo"))
+        esito.completeExceptionally(
+          IllegalStateException("sul telefono non c'è un browser che apra le pagine ${uri.scheme}")
+        )
       } catch (e: Exception) {
-        esito.completeExceptionally(e)
+        esito.completeExceptionally(IllegalStateException("il sistema non apre il browser: ${e.javaClass.simpleName}"))
       }
     }
     esito.get(ATTESA_SECONDI, TimeUnit.SECONDS)
