@@ -1076,6 +1076,7 @@
   "cloud.phase.skin": "Skin",
   "cloud.phase.bozze": "Bozze dello Studio",
   "settings.roots.title": "Cartelle sorvegliate",
+  "settings.roots.offline": "Non risponde",
   "settings.roots.forget": "Smetti di sorvegliare {percorso}",
   "settings.roots.forget.title": "Togli",
   "settings.roots.forget.confirm.title": "Smettere di sorvegliare questa cartella?",

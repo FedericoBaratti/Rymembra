@@ -179,6 +179,7 @@ import {
 } from "./presenza";
 import { Primo } from "./Primo";
 import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
+import { fasciaDaRitirare, quandoRispondonoLeRadici } from "./radiciVive";
 import { RecintoErrori } from "./Recinto";
 import { indietro } from "./indietro";
 import { Regole } from "./Regole";
@@ -4106,6 +4107,21 @@ export function App() {
     setErrore(null);
     riproduzione.scartaErrore();
   };
+  /*
+   * «Il file di questo brano non si raggiunge», nato con una radice staccata,
+   * restava in fascia anche dopo che la radice era tornata e «Ricontrolla» lo
+   * aveva visto (R18-11). La sonda delle radici si annuncia (`radiciVive.ts`):
+   * quando tutte rispondono, la fascia non descrive più niente e se ne va. Un
+   * riferimento, perché l'ascolto è uno solo e il guasto cambia a ogni disegno.
+   */
+  const ritiraSeTornate = useRef<(vive: readonly boolean[]) => void>(() => undefined);
+  ritiraSeTornate.current = (vive) => {
+    if (fasciaDaRitirare(guasto?.codice, vive)) chiudiErrore();
+  };
+  useEffect(
+    () => quandoRispondonoLeRadici((_radici, vive) => ritiraSeTornate.current(vive)),
+    [],
+  );
   /**
    * Il gesto che porta alla soluzione del guasto in fascia, quando la frase ne
    * nomina una.

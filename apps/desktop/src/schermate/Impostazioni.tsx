@@ -57,6 +57,8 @@ import {
   testoErrore,
 } from "../ipc";
 import { RicollegaConto } from "../AggiungiCartella";
+import { useDati } from "../dati";
+import { radiciSpente } from "../radiciVive";
 import {
   NOMI_SERVIZI,
   eNuvola,
@@ -1700,6 +1702,44 @@ function etichettaTetto(mb: number): string {
 }
 
 /**
+ * Le cartelle sorvegliate che non rispondono, adesso.
+ *
+ * Lo stato «non risponde» lo vedeva solo l'albero delle Cartelle: le
+ * Impostazioni elencavano un disco staccato come gli altri (R18-11). La sonda
+ * si chiede quando la scheda delle cartelle si apre e da capo quando le
+ * cartelle cambiano, non a ogni disegno: una share morta costa otto secondi, e
+ * la scheda si disegna subito coi percorsi. Passa dalle letture della finestra
+ * (`useDati`), che annunciano la risposta (`radiciVive.ts`); nell'anteprima
+ * dello Studio rispondono tutte.
+ */
+function useRadiciSpente(
+  cartelle: readonly string[],
+  onErrore: (e: unknown) => void,
+): ReadonlySet<string> {
+  const { ipc: letture } = useDati();
+  const [spente, setSpente] = useState<ReadonlySet<string>>(() => new Set());
+  // Il contenuto e non l'identità: l'elenco arriva nuovo a ogni disegno di `App`.
+  const firma = cartelle.join("\n");
+  useEffect(() => {
+    if (firma === "") return;
+    const radici = firma.split("\n");
+    let vivo = true;
+    letture
+      .cartelleRadiciVive(radici)
+      .then((vive) => {
+        if (vivo) setSpente(radiciSpente(radici, vive));
+      })
+      .catch((e: unknown) => {
+        if (vivo) onErrore(e);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [firma, letture, onErrore]);
+  return spente;
+}
+
+/**
  * La cache dei brani del cloud: accesa o no, quanto spazio, quanto ne usa.
  *
  * Si gestisce da sé come `SchedaManutenzione`, per la stessa ragione: nessun
@@ -2152,6 +2192,8 @@ export function Impostazioni({
   /** Il filtro sopra l'indice. Tredici sezioni sono oltre il punto in cui si scorre. */
   const [filtro, setFiltro] = useState("");
   const trovate = cerca(filtro);
+  /** Le cartelle sorvegliate che non rispondono, quando la loro scheda è aperta: vedi `useRadiciSpente`. */
+  const spente = useRadiciSpente(sezione === "cartelle" ? (avvio?.cartelle ?? []) : [], onErrore);
   /**
    * Apre una voce trovata: la sezione, il filtro vuoto e la scheda, che scorre
    * in vista e lampeggia. Una funzione sola per il clic e per Invio: il ramo
@@ -2291,7 +2333,12 @@ export function Impostazioni({
               {avvio && avvio.cartelle.length > 0 ? (
                 <ul className="cartelle">
                   {avvio.cartelle.map((c) => (
-                    <li className="cartella" key={c} data-nuvola={eNuvola(c) || undefined}>
+                    <li
+                      className="cartella"
+                      key={c}
+                      data-nuvola={eNuvola(c) || undefined}
+                      data-spenta={spente.has(c) || undefined}
+                    >
                       {/* `unicode-bidi: plaintext` accanto a `direction: rtl` sta
                           nel foglio: senza, un percorso UNC che comincia con due
                           barre rovesciate si disegnava con quelle in fondo.
@@ -2307,6 +2354,11 @@ export function Impostazioni({
                       <span className="percorso" title={nomeRadice(c)}>
                         {nomeRadice(c)}
                       </span>
+                      {/* Come nell'albero delle Cartelle: una radice che non
+                          risponde si dice anche qui, dove la si toglie (R18-11). */}
+                      {spente.has(c) && (
+                        <span className="stato-radice">{t("settings.roots.offline")}</span>
+                      )}
                       <button
                         type="button"
                         className="tasto icon-btn"

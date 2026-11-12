@@ -1076,6 +1076,7 @@
   "cloud.phase.skin": "Skins",
   "cloud.phase.bozze": "Studio drafts",
   "settings.roots.title": "Watched folders",
+  "settings.roots.offline": "Not responding",
   "settings.roots.forget": "Stop watching {percorso}",
   "settings.roots.forget.title": "Remove",
   "settings.roots.forget.confirm.title": "Stop watching this folder?",

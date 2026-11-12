@@ -28,6 +28,7 @@ import { createContext, useContext } from "react";
 import { urlCopertina } from "./aspetto";
 import { ipc } from "./ipc";
 import { ARCHIVIO_FINESTRA, type ArchivioPosizione } from "./posizione";
+import { conAnnuncio } from "./radiciVive";
 
 /** Le domande al nucleo che una pagina fa da sé. */
 export type LettureDati = Pick<
@@ -90,7 +91,10 @@ function ascoltaIlNucleo<T>(evento: string, gestore: (carico: T) => void) {
 /** La finestra: il nucleo, il disco, la riproduzione vera. */
 export const DATI_FINESTRA: Dati = {
   anteprima: false,
-  ipc,
+  // La sonda delle radici, in più, si annuncia a chi non l'ha chiesta: la
+  // fascia rossa di un file irraggiungibile se ne va quando tutte rispondono
+  // (R18-11). Vedi `radiciVive.ts`.
+  ipc: { ...ipc, cartelleRadiciVive: conAnnuncio(ipc.cartelleRadiciVive) },
   copertina: urlCopertina,
   posizione: ARCHIVIO_FINESTRA,
   ascolta: ascoltaIlNucleo,
