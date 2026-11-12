@@ -453,6 +453,7 @@
   "errors.cloud.clientMissing": "There's no app for this service: Rymembra uses the one you register yourself, for free, with Microsoft, Google or Dropbox. Set it up in Settings › Folders and scanning › Your apps, then connect the account.",
   "errors.cloud.readOnly": "The track is in the cloud, and Rymembra is only allowed to read it: deleting it or rewriting its tags is done on the service.",
   "errors.cloud.notFound": "The file is no longer on the service: it was moved or deleted. The library updates itself at the next check.",
+  "errors.cloud.fileChanged": "The file changed on the service while it was playing, so the rest of it would be a different version. The library picks up the new one at the next check: play it again then.",
   "errors.cloud.quotaExceeded": "The service has used up its transfer quota: this account's or, on Google Drive, this file's. It comes back by itself over time: try again later.",
   "errors.cloud.downloadForbidden": "This file cannot be downloaded: whoever shares it turned downloading off, or the service blocked it. Retrying will not help.",
   "errors.cloud.wrongCredentials": "The service did not accept the user name and password. Check them and try again; Nextcloud and similar services often need an “app password”.",

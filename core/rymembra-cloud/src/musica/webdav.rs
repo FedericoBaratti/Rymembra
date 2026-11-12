@@ -159,6 +159,11 @@ impl WebDav {
             senza_intervalli: AtomicBool::new(false),
             di_fila: Mutex::new(None),
             tetto_di_salto,
+            versione: voce
+                .versione
+                .as_deref()
+                .filter(|v| !v.is_empty() && !v.starts_with("W/"))
+                .map(|v| format!("\"{v}\"")),
         }
     }
 
@@ -547,6 +552,13 @@ pub struct DaWebDav {
     /// rinuncia alla coda invece di scaricare il file intero (R28-3,
     /// D-112). `None` per chi suona, che il brano lo legge comunque tutto.
     tetto_di_salto: Option<u64>,
+    /// La versione che la chiave della cache nomina, come `ETag` forte fra
+    /// virgolette: ogni richiesta la porta in `If-Match`, e un file cambiato
+    /// sul server dopo che lo specchio l'ha visto risponde `412` invece di
+    /// consegnare i byte di un'altra versione sotto la chiave di questa
+    /// (R28-5, D-111). `None` senza versione, o con un `ETag` debole (`W/`),
+    /// che `If-Match` non confronta mai come uguale: lì resta lo specchio.
+    versione: Option<String>,
     /// La risposta letta di fila, aperta fra un pezzo e l'altro.
     di_fila: Mutex<Option<DiFila>>,
 }
@@ -563,6 +575,15 @@ impl std::fmt::Debug for DaWebDav {
 }
 
 impl DaWebDav {
+    /// Le intestazioni di ogni richiesta: la password, e la versione se c'è.
+    fn intestazioni(&self) -> Vec<(&str, &str)> {
+        let mut tutte = vec![("authorization", self.autorizzazione.as_str())];
+        if let Some(versione) = &self.versione {
+            tutte.push(("if-match", versione.as_str()));
+        }
+        tutte
+    }
+
     /// I byte da `da` dalla risposta di fila: la stessa finché si va avanti,
     /// una nuova per un salto indietro o dopo una lettura caduta (una sola
     /// volta: la seconda caduta si dice).
@@ -589,9 +610,7 @@ impl DaWebDav {
         loop {
             let lettura = match aperta.take() {
                 Some(lettura) if lettura.letti() <= da => lettura,
-                _ => self
-                    .rete_di_fila
-                    .di_fila(&self.url, &[("authorization", &self.autorizzazione)])?,
+                _ => self.rete_di_fila.di_fila(&self.url, &self.intestazioni())?,
             };
             let lettura = aperta.insert(lettura);
             match lettura.pezzo(da, quanti, avanti) {
@@ -633,16 +652,17 @@ impl Sorgente for DaWebDav {
             ErrorCode::NetHttp { status: 401, .. } => AppError::new(ErrorCode::CloudAuthExpired {
                 servizio: Servizio::WebDav.nome().to_owned(),
             }),
+            // La versione che la chiave nomina non è più quella del server: vedi
+            // [`DaWebDav::versione`].
+            ErrorCode::NetHttp { status: 412, .. } => AppError::new(ErrorCode::CloudFileChanged)
+                .with_cause("il server ha un'altra versione del file (412 su If-Match)"),
             _ => err,
         };
         if !self.senza_intervalli.load(Ordering::Acquire) {
-            match self.flusso.intervallo_con(
-                &self.url,
-                da,
-                quanti,
-                avanti,
-                &[("authorization", &self.autorizzazione)],
-            ) {
+            match self
+                .flusso
+                .intervallo_con(&self.url, da, quanti, avanti, &self.intestazioni())
+            {
                 // Un `200` a una richiesta da metà file: il server ignora
                 // `Range`, e il brano si legge di fila da qui in poi.
                 Err(err) if da > 0 && matches!(err.code(), ErrorCode::DownloadBadResponse) => {

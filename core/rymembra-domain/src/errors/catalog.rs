@@ -929,6 +929,13 @@ catalogo! {
     CloudReadOnly = "cloud.readOnly", Cloud, Info, Never, None;
     /// Il file non c'è più sul servizio.
     CloudNotFound = "cloud.notFound", Cloud, Warning, Never, None;
+    /// Il file è cambiato sul servizio dopo che lo specchio l'ha visto: i byte
+    /// che arriverebbero sono di un'altra versione, e sotto la chiave di quella
+    /// vecchia la cache mescolerebbe le due (R28-5, D-111). Non si servono: il
+    /// brano si ferma invece di finire con l'altra versione, e il prossimo
+    /// giro del conto porta la versione nuova. Non ritentabile: fino ad allora
+    /// la stessa domanda dà lo stesso rifiuto.
+    CloudFileChanged = "cloud.fileChanged", Cloud, Warning, Never, None;
     /// Il servizio ha finito la quota di trasferimento dell'account (MEGA lo
     /// fa a ore). Non si ritenta da soli: passa col tempo, non con un secondo
     /// tentativo.
