@@ -105,6 +105,18 @@ fn sorgente(data_dir: &Path, id: &str) -> Result<String, AppError> {
     if !nome_installato(id) {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
+    // Un nome di dispositivo non si indossa — il formato lo rifiuta — e non si
+    // apre nemmeno: su Windows 10 `skin\com1.ryskin` è la porta seriale, e
+    // leggerla può bloccare il comando che dà alla finestra la sua
+    // impaginazione. Si dice che non si legge prima di toccare il disco, e la
+    // finestra ripiega col suo perché (R04b-6).
+    if rymembra_domain::paths::riservato_da_windows(id) {
+        return Err(AppError::new(ErrorCode::SkinManifestInvalid {
+            detail: Some(format!(
+                "«{id}» è il nome di un dispositivo di Windows: la skin va rinominata"
+            )),
+        }));
+    }
     let percorso = cartella_skin(data_dir).join(format!("{id}.ryskin"));
     let bytes = std::fs::read(&percorso)
         .map_err(|_| AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }))?;
@@ -1434,8 +1446,17 @@ fn togli_dal_disco(data_dir: &Path, id: &str) -> Result<(), AppError> {
             ),
         );
     }
-    let file = cartella_skin(data_dir).join(format!("{id}.ryskin"));
-    if !file.exists() {
+    // Per un nome di dispositivo si passa dal percorso verbatim (`\\?\` su
+    // Windows), che apre il file e non il dispositivo: su Windows 10
+    // `skin\com1.ryskin` «esiste» sempre, ed è la porta seriale.
+    let dove = if rymembra_domain::paths::riservato_da_windows(id) {
+        std::fs::canonicalize(cartella_skin(data_dir))
+            .map_err(|_| AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }))?
+    } else {
+        cartella_skin(data_dir)
+    };
+    let file = dove.join(format!("{id}.ryskin"));
+    if !file.is_file() {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
     std::fs::remove_file(&file)
@@ -2308,7 +2329,6 @@ mod tests {
             "../../../../windows/system32/config/sam",
             "..\\..\\altrove",
             "c:/assoluto",
-            "con",
             "",
         ] {
             let err = compila(vuota(), cattivo).expect_err("respinta");
@@ -2319,9 +2339,17 @@ mod tests {
             );
         }
         // Né un dispositivo di Windows: `skin/con.ryskin` su Windows 10 non è
-        // un file.
+        // un file. Non si installa, e una scelta col suo nome non si apre: si
+        // respinge col guasto del manifest, perché un pacchetto così può
+        // esserci, installato prima che il formato lo rifiutasse (R04b-6).
         for dispositivo in ["con", "nul", "COM1", "lpt9"] {
             assert!(!id_sicuro(dispositivo), "«{dispositivo}»");
+            let err = compila(vuota(), dispositivo).expect_err("respinta");
+            assert_eq!(
+                err.code().kind().code(),
+                "skin.manifestInvalid",
+                "«{dispositivo}»"
+            );
         }
         // E gli identificatori legittimi passano il controllo — se non
         // passassero, il guardiano avrebbe chiuso anche la porta d'ingresso.
@@ -3124,5 +3152,23 @@ mod tests {
             std::fs::read(dir.path().join("skin").join("notte.ryskin")).expect("letta"),
             b
         );
+    }
+
+    #[test]
+    fn una_scelta_che_e_un_dispositivo_non_apre_il_dispositivo() {
+        // Una scelta `com1` arriva da un profilo: su Windows 10
+        // `skin\com1.ryskin` è la porta seriale, e leggerla poteva bloccare il
+        // comando che dà alla finestra la sua impaginazione. Si ripiega prima
+        // di toccare il disco, col perché.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for dispositivo in ["com1", "con", "nul"] {
+            let indossata = compila_o_ripiega(dir.path(), None, dispositivo).expect("ripiegata");
+            assert_eq!(indossata.ripiego.as_deref(), Some(dispositivo));
+            assert_eq!(
+                indossata.ripiego_guasto.as_deref(),
+                Some("skin.manifestInvalid"),
+                "{dispositivo}"
+            );
+        }
     }
 }
