@@ -51,7 +51,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::AppError;
@@ -999,14 +999,15 @@ fn compatta(lotto: &mut Vec<Comando>) {
 
 fn filo(ctx: &mut Contesto) {
     // Fuori dal giro: la stessa scatola serve tutte le passate, e dopo la prima
-    // non chiede più memoria a nessuno.
+    // non chiede più memoria a nessuno. Si svuota eseguendo; quel che resta
+    // dentro fra un giro e l'altro è il comando che ha svegliato il filo a
+    // riposo, e va nel lotto con gli altri.
     let mut lotto: Vec<Comando> = Vec::new();
     loop {
         // I comandi in attesa, tutti, prima di lavorare: fra un «pausa» e un
         // «riprendi» arrivati insieme deve vincere il secondo, non il primo.
         // Si raccolgono e **poi** si eseguono, perché per dire quali contano
         // bisogna averli visti tutti — vedi [`compatta`].
-        lotto.clear();
         loop {
             match ctx.comandi.try_recv() {
                 Ok(Comando::Chiudi) | Err(TryRecvError::Disconnected) => return,
@@ -1023,10 +1024,93 @@ fn filo(ctx: &mut Contesto) {
         ctx.avanza_sfumatura();
         ctx.aggiorna();
         if !lavorato {
-            // Niente da decodificare, o anello pieno: quattro millisecondi sono
-            // molto meno della riserva e molto più di un giro a vuoto.
-            std::thread::sleep(Duration::from_millis(4));
+            match ctx.attesa() {
+                // Niente da decodificare, o anello pieno: quattro millisecondi
+                // sono molto meno della riserva e molto più di un giro a vuoto.
+                Attesa::Passo => std::thread::sleep(PASSO_DEL_FILO),
+                Attesa::Comando => match ctx.comandi.recv_timeout(ATTESA_A_RIPOSO) {
+                    Ok(Comando::Chiudi) | Err(RecvTimeoutError::Disconnected) => return,
+                    Ok(comando) => lotto.push(comando),
+                    Err(RecvTimeoutError::Timeout) => {}
+                },
+            }
         }
+    }
+}
+
+/// Il sonno del filo della decodifica fra due giri in cui c'è qualcosa che
+/// avanza da sé: l'anello che la callback svuota, una curva
+/// dell'equalizzatore, una sfumatura.
+const PASSO_DEL_FILO: Duration = Duration::from_millis(4);
+
+/// Quanto il filo a riposo aspetta un comando prima di fare comunque un giro.
+///
+/// Un quarto di secondo: il giro tiene vive le cose che non arrivano da un
+/// comando — la fine dichiarata di un brano messo in pausa a pochi
+/// millisecondi dalla fine, una curva che l'anello delle curve non aveva
+/// accettato, uno svuotamento a cui la callback ha risposto tardi — e quattro
+/// risvegli al secondo sono quelli dell'orologio dell'applicazione, non i
+/// duecentocinquanta di prima.
+const ATTESA_A_RIPOSO: Duration = Duration::from_millis(250);
+
+/// Come il filo della decodifica aspetta, a fine giro, quando non ha lavorato.
+///
+/// # Il difetto che chiude
+///
+/// Il filo dormiva [`PASSO_DEL_FILO`] a ogni giro senza lavoro, **sempre**:
+/// anche senza nessun brano, in pausa, a finestra ridotta. Misurato a riposo:
+/// 226 risvegli al secondo e 1,6 s di CPU ogni 30 per una musica che non c'era,
+/// dieci volte tutti gli altri fili del processo messi insieme (R21-1). Su un
+/// portatile tiene il processore fuori dagli stati di riposo profondi, e lo
+/// stesso motore suona sul telefono.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Attesa {
+    /// Il passo di [`PASSO_DEL_FILO`]: qualcosa avanza da sé, e il filo deve
+    /// tornare presto a guardarlo.
+    Passo,
+    /// Niente avanza da sé: il primo lavoro utile lo porta un comando, e il
+    /// filo lo aspetta bloccato sul canale — al più [`ATTESA_A_RIPOSO`].
+    Comando,
+}
+
+impl Contesto {
+    /// Come aspettare a fine giro: vedi [`Attesa`].
+    ///
+    /// # Quando niente avanza da sé
+    ///
+    /// **In pausa** — quella in corso, `Condiviso::in_pausa`, che è quella che
+    /// la callback guarda: la callback non consuma l'anello, e l'anello pieno
+    /// non chiede niente. Anche una curva dell'equalizzatore o una sfumatura
+    /// a metà aspettano: in pausa non le sente nessuno, e ogni ripresa manda
+    /// un comando (`AnnullaSfuma`) che sveglia il filo e le rimette al passo.
+    ///
+    /// **A motore vuoto** — niente da decodificare, niente in canna, niente in
+    /// sovrapposizione, niente in `resto`, e la fine già dichiarata. Anche
+    /// fuori pausa: una ripresa chiesta a motore vuoto abbassa la pausa in
+    /// corso, e niente la rialza finché non arriva un brano; guardare solo la
+    /// pausa avrebbe tenuto il filo al passo per sempre. Qui però una curva o
+    /// una sfumatura a metà tengono il passo: la callback gira, e le consuma.
+    ///
+    /// Mentre suona l'anello si svuota da sé, e il passo resta quello di
+    /// sempre: è lui che tiene l'anello pieno e gli annunci puntuali, cioè il
+    /// gapless.
+    fn attesa(&self) -> Attesa {
+        if self.condiviso.in_pausa.load(Ordering::SeqCst) {
+            return Attesa::Comando;
+        }
+        let vuoto = self.fine_dichiarata
+            && self.corrente.is_none()
+            && self.prossimo.is_none()
+            && self.entrante.is_none()
+            && self.resto.is_empty();
+        if !vuoto {
+            return Attesa::Passo;
+        }
+        let sfuma = self.sfumatura.is_some_and(|sfumatura| !sfumatura.finita);
+        if self.eq_passi > 0 || self.eq_in_attesa.is_some() || sfuma {
+            return Attesa::Passo;
+        }
+        Attesa::Comando
     }
 }
 

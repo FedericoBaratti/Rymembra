@@ -457,6 +457,86 @@ fn banco_con_voce(frequenza: u32, campioni: usize, voce: Voce) -> Banco {
     }
 }
 
+// ── il filo a riposo (R21-1) ────────────────────────────────────────────
+//
+// Il filo della decodifica dormiva quattro millisecondi a ogni giro senza
+// lavoro, anche senza nessun brano e in pausa: 226 risvegli al secondo
+// misurati a riposo, per sempre, sul PC e sul telefono. Le prove chiedono la
+// decisione — [`Contesto::attesa`] — sul contesto vero, senza il filo.
+
+/// Il banco con un brano avviato, lasciato suonare finché l'anello è pieno.
+fn banco_che_suona() -> Banco {
+    let mut banco = banco(48_000);
+    let brano = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+    banco.ctx.esegui(suona(brano));
+    banco.ctx.intese.riprendi(&banco.condiviso);
+    // L'anello del banco è un terzo di secondo: si riempie, e nessuno lo
+    // svuota.
+    while banco.ctx.riempi() {}
+    banco
+}
+
+#[test]
+fn il_filo_della_decodifica_dorme_senza_brano() {
+    let banco = banco(48_000);
+    assert_eq!(
+        banco.ctx.attesa(),
+        Attesa::Comando,
+        "senza nessun brano il filo non ha niente che avanzi da sé"
+    );
+}
+
+#[test]
+fn in_pausa_il_filo_aspetta_un_comando() {
+    let banco = banco_che_suona();
+    banco.ctx.intese.pausa(&banco.condiviso);
+    assert_eq!(banco.ctx.attesa(), Attesa::Comando);
+}
+
+/// In pausa anche una curva dell'equalizzatore a metà strada aspetta: non la
+/// sente nessuno, e la ripresa manda un comando che la rimette al passo.
+#[test]
+fn in_pausa_una_curva_a_meta_non_tiene_sveglio_il_filo() {
+    let mut banco = banco_che_suona();
+    banco.ctx.intese.pausa(&banco.condiviso);
+    banco.ctx.esegui(Comando::Equalizzatore {
+        guadagni: [6.0; BANDE],
+        attivo: true,
+    });
+    assert_eq!(banco.ctx.attesa(), Attesa::Comando);
+}
+
+/// Una ripresa chiesta a motore vuoto abbassa la pausa, e niente la rialza:
+/// il filo non deve restare al passo per questo.
+#[test]
+fn una_ripresa_a_motore_vuoto_non_tiene_sveglio_il_filo() {
+    let banco = banco(48_000);
+    banco.ctx.intese.riprendi(&banco.condiviso);
+    assert!(!banco.condiviso.in_pausa.load(Ordering::SeqCst));
+    assert_eq!(banco.ctx.attesa(), Attesa::Comando);
+}
+
+/// Mentre suona, l'anello pieno si svuota da sé: il filo resta al passo, ed è
+/// quel che tiene il gapless.
+#[test]
+fn mentre_suona_il_filo_resta_al_passo() {
+    let banco = banco_che_suona();
+    assert_eq!(banco.ctx.attesa(), Attesa::Passo);
+}
+
+/// Senza brano e fuori pausa, una curva che sta andando verso la sua forma va
+/// a passi: la callback li sta consumando.
+#[test]
+fn una_curva_a_meta_fuori_pausa_resta_al_passo() {
+    let mut banco = banco(48_000);
+    banco.ctx.intese.riprendi(&banco.condiviso);
+    banco.ctx.esegui(Comando::Equalizzatore {
+        guadagni: [6.0; BANDE],
+        attivo: true,
+    });
+    assert_eq!(banco.ctx.attesa(), Attesa::Passo);
+}
+
 /// Quanti campioni stanno a un livello, entro un errore che copre la
 /// quantizzazione a 16 bit e il ricampionatore.
 fn quanti_a(campioni: &[f32], livello: f32) -> usize {
