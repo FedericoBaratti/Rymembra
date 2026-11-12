@@ -68,6 +68,9 @@ Poi si apre Rymembra dal menu Start e si controlla:
   mostra nessun interruttore;
 - la libreria si apre, la musica suona, e dopo una chiusura e una riapertura la
   libreria e le impostazioni ci sono ancora;
+- con una copia NSIS e la sua libreria sullo stesso PC, al primo avvio la
+  proposta di copiare quella libreria compare una volta sola, la copia riesce
+  e la cartella della copia NSIS resta com'era;
 - Esplora, backup su Drive e scrobbling si collegano (i segreti vanno nel
   portachiavi di Windows, che il pacchetto non isola).
 
@@ -97,15 +100,27 @@ a zero (`3.0.3.0`). La versione viene da `tauri.conf.json`, cioè da
 Dentro un pacchetto MSIX, da Windows 10 1903 in poi, i file **nuovi** che il
 programma crea in `%APPDATA%` e `%LOCALAPPDATA%` vanno in una cartella privata
 sotto `%LOCALAPPDATA%\Packages\<nome del pacchetto>\`; quelli che esistono già
-si usano dove sono. Per Rymembra è trasparente, con tre conseguenze:
+si usano dove sono. Per Rymembra è trasparente, con queste conseguenze:
 
 - su un PC senza la copia NSIS, la libreria della copia del Store è sua e basta,
   e disinstallare il pacchetto da Windows cancella quella cartella;
-- su un PC dove l'installer NSIS ha già creato la libreria, la copia del Store
-  aprirebbe quella, ma i file nuovi — il `-wal` e lo `-shm` del database
-  compresi — finirebbero nella cartella privata, lontano dal database. **Non è
-  stato provato**, e due copie aperte insieme non vedrebbero l'una i lucchetti
-  dell'altra: per questo il sito e `PRIVACY.md` dicono di tenerne una per PC;
+- dalla 3.2.1 la copia del Store tiene la libreria in una cartella sua, col
+  suffisso `.store`: `%APPDATA%\io.github.federicobaratti.rymembra.store`, e la
+  cache in `%LOCALAPPDATA%\io.github.federicobaratti.rymembra.store`
+  (`cartella_di_serie` in `lib.rs`, col marcatore `rymembra-store.txt`). Dal
+  pacchetto quella cartella è nuova, quindi finisce tutta nella cartella
+  privata. Prima la copia del Store apriva la libreria della copia NSIS dov'era,
+  e il `-wal` e lo `-shm`, file nuovi, finivano nella cartella privata, lontano
+  dal database;
+- al primo avvio, una volta sola e solo se la sua libreria è ancora vuota
+  (niente brani e niente playlist), la copia del Store propone di **copiare**
+  quella che trova nella cartella senza suffisso: della copia NSIS, o sua di
+  prima della 3.2.1, che dal pacchetto si vedono nello stesso posto
+  (`trasloco::copia_la_libreria_di`). Il database si copia coi suoi file in una
+  cartella di passaggio, si porta alla versione di questa build ed entra nella
+  libreria; copertine e skin si copiano senza sovrascrivere niente; poi
+  Rymembra si chiude. L'originale resta com'era. Se la proposta si rifiuta, non
+  torna. La copia del Store non fa il trasloco dalla cartella di Aether;
 - il Gestore credenziali di Windows non è virtualizzato: gli account collegati
   (servizio `io.github.federicobaratti.rymembra`) sono gli stessi per le due
   copie.
