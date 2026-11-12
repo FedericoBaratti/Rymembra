@@ -29,8 +29,8 @@ use super::coda::{salva_coda, scegli_da_solo, scrivi_coda};
 use super::{
     AVANZAMENTO_MINIMO_MS, BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO,
     PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Strada, Tempo, annota_ripresa, aspetta_le_file,
-    brano_di, chiudi_ascolto, con_lettore, da_scrivere, guasto_di, insieme, manda_stato, ospiti,
-    presa_spettro_se_libera, strada,
+    avanza_sul_non_aperto, brano_di, chiudi_ascolto, con_lettore, consegna, da_scrivere, guasto_di,
+    insieme, manda_stato, manda_stato_con_posizione, ospiti, presa_spettro_se_libera, strada,
 };
 
 /// Dice al motore quale sarà il brano dopo.
@@ -363,7 +363,10 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             // ed è quel che il suo doc-comment su [`crate::riproduzione::Lettore`]
             // dichiara di servire a sapere.
             Some(id) if lettore.in_canna == Some(id) => Ok(None),
-            Some(id) => Ok(Some((id, formato))),
+            Some(id) => {
+                lettore.in_apertura = Some(id);
+                Ok(Some((id, formato)))
+            }
         }
     });
     let Ok(Some((id, formato))) = scelta else {
@@ -396,9 +399,22 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             // mostrerebbe questo. Vedi `Lettore::non_aperto` per cosa succede
             // quando il corrente finisce.
             let _ = con_lettore(&stato, |lettore| {
+                if lettore.in_apertura == Some(id) {
+                    lettore.in_apertura = None;
+                }
                 if lettore.coda.peek_next() == Some(id) {
                     lettore.prepara(None);
                     lettore.non_aperto = Some(id);
+                    // Doveva partire appena aperto: il `Fermato` è già passato,
+                    // e nessun altro farà andare avanti la coda. Lo fa adesso,
+                    // come a fine brano. Vedi `Lettore::parte_appena_aperto`.
+                    if lettore
+                        .parte_appena_aperto
+                        .take()
+                        .is_some_and(|(quale, _)| quale == id)
+                    {
+                        avanza_sul_non_aperto(app, lettore);
+                    }
                 }
                 Ok(())
             });
@@ -408,6 +424,9 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
 
     // ── 3. la consegna, di nuovo sotto lucchetto ──
     let _ = con_lettore(&stato, |lettore| {
+        if lettore.in_apertura == Some(id) {
+            lettore.in_apertura = None;
+        }
         // Nel frattempo la coda può essere cambiata, e chi l'ha cambiata ha
         // mandato la sua spinta: questo brano non serve più a nessuno. Si lascia
         // cadere invece di metterlo in canna — un successivo sbagliato attaccato
@@ -430,6 +449,25 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         if lettore.motore.formato() != formato {
             sveglia_preparatore(&stato);
             return Ok(());
+        }
+        // Il `Fermato` è arrivato mentre lo si apriva: si parte adesso, invece
+        // di metterlo in canna a motore fermo. Il numero dei gesti è quello del
+        // `Fermato`, così una pausa premuta nel frattempo vince. Vedi
+        // `Lettore::parte_appena_aperto`.
+        if let Some((quale, gesti)) = lettore.parte_appena_aperto.take()
+            && quale == id
+            && lettore.motore.posizione().track_id.is_none()
+        {
+            if lettore.coda.current() != Some(id) {
+                lettore.coda.advance(false);
+            }
+            if lettore.coda.current() == Some(id) {
+                let da_ms = consegna(lettore, brano, false, 0, gesti);
+                prepara_prossimo(app, lettore);
+                salva_coda(app, lettore);
+                manda_stato_con_posizione(app, lettore, da_ms);
+                return Ok(());
+            }
         }
         lettore.prepara(Some(brano));
         Ok(())

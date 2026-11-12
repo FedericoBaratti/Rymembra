@@ -101,19 +101,23 @@ fn gli_altri_annunci_spostano_la_coda_come_prima() {
 /// per arrivare all'orecchio — B suona, e arriva il suo annuncio con la canna
 /// vuota o già su X. Prima la coda andava avanti di uno: su X, mostrato con la
 /// durata e il cursore di B, e dopo B suonava di nuovo. X non si sentiva mai.
+///
+/// D-59: la coda mostra il brano che suona davvero. Restare su A, com'era,
+/// mostrava A per tutta la durata di B, e alla fine di X — `peek_next` di
+/// nuovo B — B suonava una seconda volta (R04-3).
 #[test]
-fn l_annuncio_del_successivo_ritirato_non_sposta_la_coda() {
+fn l_annuncio_del_successivo_ritirato_porta_la_coda_su_di_lui() {
     const A: i64 = 1;
     const B: i64 = 2;
     const X: i64 = 9;
     assert_eq!(
         dopo_l_annuncio(B, None, Some(A), None, Some(B)),
-        DopoLAnnuncio::Resta,
+        DopoLAnnuncio::PortaAvantiIlRitirato,
         "con la canna vuota"
     );
     assert_eq!(
         dopo_l_annuncio(B, None, Some(A), Some(X), Some(B)),
-        DopoLAnnuncio::Resta,
+        DopoLAnnuncio::PortaAvantiIlRitirato,
         "con il brano nuovo già in canna"
     );
     // Il brano nuovo in canna, se attacca, fa andare avanti la coda come
@@ -121,6 +125,74 @@ fn l_annuncio_del_successivo_ritirato_non_sposta_la_coda() {
     assert_eq!(
         dopo_l_annuncio(X, None, Some(A), Some(X), Some(B)),
         DopoLAnnuncio::AvanzaDallaCanna
+    );
+}
+
+/// R04-3: dopo un ritiro tardivo la coda va sul brano che suona e il brano
+/// scelto come successivo resta il successivo; il ritirato non suona una
+/// seconda volta, che il gesto sia stato «Riproduci dopo», un riordino o
+/// un «Togli».
+#[test]
+fn un_ritiro_tardivo_non_fa_risentire_il_brano() {
+    const A: i64 = 1;
+    const B: i64 = 2;
+    const C: i64 = 3;
+    const X: i64 = 9;
+    let coda_di = |brani: Vec<i64>| {
+        let mut coda = Queue::new();
+        coda.play_tracks(brani, 0, 7);
+        coda
+    };
+    // «Riproduci dopo» X: [A, X, B, C].
+    let mut coda = coda_di(vec![A, X, B, C]);
+    porta_avanti_il_ritirato(&mut coda, B);
+    assert_eq!(coda.in_play_order(), [A, B, X, C]);
+    assert_eq!(coda.current(), Some(B));
+    assert_eq!(coda.peek_next(), Some(X));
+    // B spostato più in là.
+    let mut coda = coda_di(vec![A, C, B]);
+    porta_avanti_il_ritirato(&mut coda, B);
+    assert_eq!(coda.in_play_order(), [A, B, C]);
+    assert_eq!(coda.current(), Some(B));
+    // B tolto dalla coda: torna, perché suona.
+    let mut coda = coda_di(vec![A, C]);
+    porta_avanti_il_ritirato(&mut coda, B);
+    assert_eq!(coda.in_play_order(), [A, B, C]);
+    assert_eq!(coda.current(), Some(B));
+    assert_eq!(coda.peek_next(), Some(C));
+}
+
+/// R04-5: il `Fermato` arriva mentre il preparatore apre il brano dopo — un
+/// ritiro negli ultimi secondi, un flusso lento ad aprirsi: il brano parte
+/// appena aperto, invece di restare in canna a musica ferma.
+#[test]
+fn un_successivo_in_apertura_parte_appena_aperto() {
+    const X: i64 = 9;
+    assert_eq!(
+        parte_all_apertura(true, false, false, Some(X), Some(X)),
+        Some(X)
+    );
+    // Il preparatore apre un altro brano: la coda è cambiata nel frattempo.
+    assert_eq!(
+        parte_all_apertura(true, false, false, Some(X), Some(3)),
+        None
+    );
+    // Niente in apertura.
+    assert_eq!(parte_all_apertura(true, false, false, None, Some(X)), None);
+    // Chi segue, o lo stop dell'uscita dalla sessione: la coda non si muove.
+    assert_eq!(
+        parte_all_apertura(false, false, false, Some(X), Some(X)),
+        None
+    );
+    // Una rete caduta a metà brano non è una fine: c'è «Riprova».
+    assert_eq!(
+        parte_all_apertura(true, true, false, Some(X), Some(X)),
+        None
+    );
+    // Il timer «alla fine del brano» ha chiesto di fermarsi proprio qui.
+    assert_eq!(
+        parte_all_apertura(true, false, true, Some(X), Some(X)),
+        None
     );
 }
 

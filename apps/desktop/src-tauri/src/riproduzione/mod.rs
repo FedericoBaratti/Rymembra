@@ -640,6 +640,23 @@ pub struct Lettore {
     /// mentre suonava l'altro, e dopo di lui il ritirato suonava di nuovo. Vedi
     /// [`dopo_l_annuncio`].
     ritirato: Option<i64>,
+    /// Il brano che il preparatore sta aprendo adesso, fra il primo e il terzo
+    /// tempo: vedi [`Lettore::parte_appena_aperto`].
+    in_apertura: Option<i64>,
+    /// Il brano che deve partire appena il preparatore l'ha aperto, e il numero
+    /// di [`Lettore::pausa_chiesta`] in quell'istante.
+    ///
+    /// # Il difetto che chiude
+    ///
+    /// Un ritiro negli ultimi secondi — «Riproduci dopo» su un flusso, un file
+    /// del cloud, una share lenta — mette in canna un brano che si apre più
+    /// lentamente di quanto resti del corrente. Il corrente finisce, il motore
+    /// annuncia `Fermato` con la canna vuota, e il brano nuovo, quando
+    /// arrivava, restava in canna a motore fermo: la musica si fermava (R04-5).
+    /// Lo stesso per l'autoplay che sceglie più lentamente di un ultimo brano
+    /// corto. Adesso [`fermato`] lo segna qui, e il terzo tempo del preparatore
+    /// lo fa partire invece di metterlo in canna.
+    parte_appena_aperto: Option<(i64, u64)>,
     /// Il brano dopo che il preparatore non è riuscito ad aprire.
     ///
     /// Quando il corrente finisce il motore si ferma, perché in canna non c'è
@@ -735,6 +752,7 @@ impl Lettore {
         self.in_canna = None;
         self.ritirato = None;
         self.non_aperto = None;
+        self.parte_appena_aperto = None;
         self.annuncio_atteso = Some(avviato);
         self.fermato_della_sessione = false;
         insieme::dopo_un_avvio(self);
@@ -758,6 +776,7 @@ impl Lettore {
         self.in_canna = None;
         self.ritirato = None;
         self.non_aperto = None;
+        self.parte_appena_aperto = None;
         self.annuncio_atteso = None;
         insieme::dopo_un_avvio(self);
     }
@@ -775,6 +794,9 @@ enum DopoLAnnuncio {
     /// dalla canna — un entrante rimesso in canna da un salto a metà
     /// dissolvenza: la coda va avanti di uno.
     Avanza,
+    /// Il motore non ha fatto in tempo a ritirare il successivo: la coda va su
+    /// di lui. Vedi [`porta_avanti_il_ritirato`].
+    PortaAvantiIlRitirato,
 }
 
 /// La decisione di [`iniziato`], senza il lettore intorno.
@@ -792,9 +814,12 @@ enum DopoLAnnuncio {
 /// che il motore ha saltato — e l'annuncio si legge come gli altri.
 ///
 /// L'annuncio del successivo che si era chiesto di ritirare (`ritirato`, vedi
-/// [`Lettore::ritirato`]) non sposta la coda: il motore non ha fatto in tempo a
-/// toglierlo, e la coda è già dove il gesto l'ha messa — col brano scelto come
-/// successivo, che suonerà quando questo finisce.
+/// [`Lettore::ritirato`]) porta la coda su di lui: il motore non ha fatto in
+/// tempo a toglierlo, e la coda mostra il brano che suona davvero (D-59), col
+/// brano scelto dal gesto subito dopo. Restare dov'era mostrava il brano di
+/// prima per tutta la durata del ritirato, e dopo il successivo nuovo il
+/// ritirato suonava una seconda volta (R04-3). Vedi
+/// [`porta_avanti_il_ritirato`].
 fn dopo_l_annuncio(
     brano: i64,
     atteso: Option<i64>,
@@ -807,12 +832,44 @@ fn dopo_l_annuncio(
     } else if in_canna == Some(brano) {
         DopoLAnnuncio::AvanzaDallaCanna
     } else if ritirato == Some(brano) {
-        DopoLAnnuncio::Resta
+        DopoLAnnuncio::PortaAvantiIlRitirato
     } else if corrente != Some(brano) {
         DopoLAnnuncio::Avanza
     } else {
         DopoLAnnuncio::Resta
     }
+}
+
+/// La coda passa sul successivo ritirato tardi, che sta suonando.
+///
+/// Il ritirato va **subito dopo** il brano di prima, prima di quel che il
+/// gesto ci aveva messo, e la coda avanza su di lui: «Riproduci dopo» X su
+/// `[A, X, B, C]` diventa `[A, B, X, C]` con B corrente, così X suona dopo B
+/// e B non torna una seconda volta. Se il gesto lo aveva tolto dalla coda ci
+/// torna: sta suonando, e una coda che non mostra il brano che suona è la
+/// bugia da togliere.
+///
+/// Si cerca solo **dopo** il corrente: con «ripeti tutto» lo stesso brano più
+/// indietro è un altro ascolto, e spostarlo vorrebbe dire togliere un brano
+/// dal giro dopo.
+fn porta_avanti_il_ritirato(coda: &mut Queue, brano: i64) {
+    let Some(qui) = coda.position() else {
+        return;
+    };
+    let dopo = qui.saturating_add(1);
+    let fra_quanti = coda
+        .in_play_order()
+        .iter()
+        .skip(dopo)
+        .position(|id| *id == brano);
+    match fra_quanti {
+        Some(0) => {}
+        Some(quanti) => coda.reorder(dopo.saturating_add(quanti), dopo),
+        None => coda.play_next(&[brano]),
+    }
+    // `true`: con «ripeti uno» il brano di prima resterebbe corrente, e il
+    // ritirato sta già suonando.
+    coda.advance(true);
 }
 
 /// Il lettore, o il motivo per cui non c'è.
@@ -1218,6 +1275,8 @@ impl StatoLettore {
             pausa_chiesta: (0, false),
             in_canna: None,
             ritirato: None,
+            in_apertura: None,
+            parte_appena_aperto: None,
             non_aperto: None,
             annuncio_atteso: None,
             puntina_a_vuoto: None,
@@ -2198,6 +2257,9 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
             DopoLAnnuncio::Avanza => {
                 lettore.coda.advance(false);
             }
+            DopoLAnnuncio::PortaAvantiIlRitirato => {
+                porta_avanti_il_ritirato(&mut lettore.coda, track_id);
+            }
         }
     }
 
@@ -2272,6 +2334,10 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
         manda_stato(app, lettore);
         return;
     }
+    let fine_del_brano = stato_lettore
+        .spegnimento
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == FINE_DEL_BRANO;
     if da_fare.chiude_l_ascolto {
         chiudi_ascolto(app, lettore);
     } else if let Some(ascolto) = lettore.ascolto.as_mut() {
@@ -2299,21 +2365,34 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     //
     // E da lì si riprova ad aprirlo, e se non si apre si passa oltre: vedi
     // [`riprova_o_salta`]. Su un filo suo, perché qui il lucchetto è in mano.
-    if da_fare.avanza_sul_non_aperto
-        && lettore.non_aperto.is_some()
-        && lettore.non_aperto == lettore.coda.peek_next()
-        && lettore.motore.posizione().track_id.is_none()
+    if da_fare.avanza_sul_non_aperto {
+        avanza_sul_non_aperto(app, lettore);
+    }
+    // Il brano dopo si sta ancora aprendo: parte appena è aperto, dal terzo
+    // tempo del preparatore. Vedi `Lettore::parte_appena_aperto`.
+    if let Some(id) = parte_all_apertura(
+        da_fare.avanza_sul_non_aperto,
+        rete_caduta,
+        fine_del_brano,
+        lettore.in_apertura,
+        lettore.coda.peek_next(),
+    ) && lettore.motore.posizione().track_id.is_none()
     {
-        lettore.non_aperto = None;
-        lettore.coda.advance(false);
-        salva_coda(app, lettore);
-        let mano = app.clone();
-        let avviato = std::thread::Builder::new()
-            .name("rymembra-riprova".to_owned())
-            .spawn(move || riprova_o_salta(&mano));
-        if avviato.is_err() {
-            nota!("[riproduzione] il filo che riprova il brano dopo non è partito");
-        }
+        lettore.parte_appena_aperto = Some((id, lettore.pausa_chiesta.0));
+    } else if let Some(id) = parte_all_apertura(
+        da_fare.avanza_sul_non_aperto,
+        rete_caduta,
+        fine_del_brano,
+        lettore.in_canna,
+        lettore.coda.peek_next(),
+    ) && lettore.motore.posizione().track_id.is_none()
+    {
+        // O il preparatore l'ha consegnato un istante dopo la fine: il motore,
+        // a fine dichiarata, lo tiene in canna e non lo attacca. Il `Fermato`
+        // con un successivo in canna c'è solo così. Si riapre e si parte come
+        // per un brano dopo che non si era aperto, invece di restare fermi.
+        lettore.non_aperto = Some(id);
+        avanza_sul_non_aperto(app, lettore);
     }
     // Il segno di «riprendi dov'eri» torna all'inizio del brano su cui la coda
     // si è fermata. Era quello di cinque secondi prima della fine, e
@@ -2345,11 +2424,60 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     manda_stato(app, lettore);
 }
 
+/// Il `Fermato` è arrivato mentre il preparatore apriva il brano dopo: quel
+/// brano parte appena è aperto. `Some` col brano, `None` se no.
+///
+/// `avanza` è [`DopoIlFermato::avanza_sul_non_aperto`]: chi segue non muove la
+/// sua coda specchio, e lo stop dell'uscita da una sessione non tocca la coda
+/// dell'utente. Una rete caduta non è una fine — c'è «Riprova» — e il timer
+/// «alla fine del brano» ha chiesto proprio di fermarsi qui.
+const fn parte_all_apertura(
+    avanza: bool,
+    rete_caduta: bool,
+    fine_del_brano: bool,
+    in_apertura: Option<i64>,
+    dopo: Option<i64>,
+) -> Option<i64> {
+    if !avanza || rete_caduta || fine_del_brano {
+        return None;
+    }
+    match (in_apertura, dopo) {
+        (Some(aprendo), Some(dopo)) if aprendo == dopo => Some(aprendo),
+        _ => None,
+    }
+}
+
 /// La fermata viene da una rete caduta: c'è un punto di «Riprova».
 ///
 /// Dalla causa del segno e non dalla sua sola presenza: vedi [`CausaRipresa`].
 fn e_una_rete_caduta(ripresa: Option<&Ripresa>) -> bool {
     ripresa.is_some_and(|ripresa| ripresa.causa == CausaRipresa::Rete)
+}
+
+/// La coda va sul brano dopo che non si è aperto, e da lì si riprova ad aprirlo:
+/// vedi [`riprova_o_salta`]. Solo se è ancora il brano dopo e il motore non ha
+/// niente in mano. Dice se l'ha fatto.
+///
+/// La chiamano [`fermato`] — il corrente è finito con la canna vuota — e il
+/// preparatore, quando il brano che doveva partire appena aperto non si apre.
+pub(super) fn avanza_sul_non_aperto(app: &tauri::AppHandle, lettore: &mut Lettore) -> bool {
+    if lettore.non_aperto.is_none()
+        || lettore.non_aperto != lettore.coda.peek_next()
+        || lettore.motore.posizione().track_id.is_some()
+    {
+        return false;
+    }
+    lettore.non_aperto = None;
+    lettore.coda.advance(false);
+    salva_coda(app, lettore);
+    let mano = app.clone();
+    let avviato = std::thread::Builder::new()
+        .name("rymembra-riprova".to_owned())
+        .spawn(move || riprova_o_salta(&mano));
+    if avviato.is_err() {
+        nota!("[riproduzione] il filo che riprova il brano dopo non è partito");
+    }
+    true
 }
 
 /// Che cosa fa un `Fermato`, deciso senza motore: vedi [`fermato`].

@@ -622,6 +622,8 @@ fn riapri_davvero(
                 pausa_chiesta: (0, false),
                 in_canna: None,
                 ritirato: None,
+                in_apertura: None,
+                parte_appena_aperto: None,
                 non_aperto: None,
                 annuncio_atteso: None,
                 puntina_a_vuoto: None,
