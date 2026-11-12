@@ -1092,3 +1092,45 @@ fn a_sorveglianza_spenta_niente_si_riprova_da_se() {
     motore.dopo_la_riscansione(l_album, passata(&[&album], &[], &[]), pronto);
     assert_eq!(motore.attesa.manca(pronto), Some(SONDAGGIO));
 }
+
+/// Un brano che la sorveglianza toglie dalla libreria mentre suona esce anche
+/// dalla coda, come per «Togli» (`cancellazione::sgombera`): il lettore tiene
+/// la scheda del brano in corso (F07, `dal_ricordo`) e la coda non lo
+/// ripropone. Dopo la scansione e fuori dal lucchetto della libreria, perché
+/// sgomberare la coda la salva, e salvarla prende quel lucchetto (R23-8,
+/// seconda parte).
+#[test]
+fn la_sorveglianza_sgombera_la_coda_dei_brani_tolti() {
+    let sorgente = include_str!("filo.rs");
+    let esegui = sorgente
+        .split("fn esegui(")
+        .nth(1)
+        .and_then(|resto| resto.split("\n}\n").next())
+        .unwrap_or_default();
+    let scansione = esegui.find(".run_su(");
+    let sgombero = esegui.find("crate::cancellazione::sgombera(");
+    assert!(
+        scansione.is_some() && sgombero > scansione,
+        "la passata della sorveglianza non sgombera la coda dei brani tolti"
+    );
+}
+
+/// Dalla coda esce solo quel che dalla libreria è uscito davvero: un id che
+/// c'è ancora (trattenuto dalla guardia, o rimesso da un'altra scrittura)
+/// resta.
+#[test]
+fn spariti_sono_solo_le_righe_che_non_ci_sono_piu() {
+    let connection = rymembra_app::db::open_in_memory()
+        .expect("database")
+        .connection;
+    assert_eq!(
+        super::filo::spariti(&connection, &[7, 9]).expect("domanda"),
+        vec![7, 9],
+        "una libreria vuota non ha nessuno dei due"
+    );
+    assert!(
+        super::filo::spariti(&connection, &[])
+            .expect("domanda")
+            .is_empty()
+    );
+}
