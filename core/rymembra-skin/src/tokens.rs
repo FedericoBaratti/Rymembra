@@ -239,15 +239,25 @@ pub static TOKENS: &[TokenDef] = &[
         "Secondo alone dello sfondo ambientale."),
 
     // ── Layout ──────────────────────────────────────────────────────────────
-    token!("layout.rail", "--rail-w", Length, Layout, false, None,
+    // Le misure della cornice, con estremi per la stessa ragione del ritmo qui
+    // sotto. Fino alla 3.2.0 non ne avevano: `"layout.playerGap": "-400px"`
+    // portava il lettore, e con lui la pausa, quattrocento pixel sotto il bordo
+    // della finestra; `"layout.railExpanded": "4000px"` schiacciava la pagina a
+    // zero, Impostazioni comprese; `"100vh"` d'altezza copriva tutto (R09-4).
+    // Gli estremi stanno larghi attorno ai valori di serie (68, 240, 92, 14 e
+    // 16–48): spostano la cornice, non la rompono. In px o rem, perché `30vh`
+    // starebbe dentro qualunque numero. Il margine del contenuto delle skin di
+    // serie è un'adattiva col preferito in `cqw`: lì contano il minimo e il
+    // massimo, che sono quel che il `clamp()` può dare.
+    token_limitato!("layout.rail", "--rail-w", Length, Layout, 48.0, 120.0,
         "Larghezza della barra laterale chiusa."),
-    token!("layout.railExpanded", "--rail-w-expanded", Length, Layout, false, None,
+    token_limitato!("layout.railExpanded", "--rail-w-expanded", Length, Layout, 160.0, 320.0,
         "Larghezza della barra laterale aperta."),
-    token!("layout.playerHeight", "--player-h", Length, Layout, false, None,
+    token_limitato!("layout.playerHeight", "--player-h", Length, Layout, 56.0, 140.0,
         "Altezza della barra del player."),
-    token!("layout.playerGap", "--player-gap", Length, Layout, false, None,
+    token_limitato!("layout.playerGap", "--player-gap", Length, Layout, 0.0, 32.0,
         "Margine attorno al player flottante."),
-    token!("layout.contentX", "--content-x", Length, Layout, false, None,
+    token_limitato!("layout.contentX", "--content-x", Length, Layout, 0.0, 96.0,
         "Margine orizzontale del contenuto."),
 
     // ── Ritmo ───────────────────────────────────────────────────────────────

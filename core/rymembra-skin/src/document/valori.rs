@@ -760,13 +760,14 @@ fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<(
             }
         }
         TokenValue::Length(lunghezza) => {
+            // Di un'adattiva contano i due capi: `clamp(min, preferito, max)`
+            // non esce mai da lì, qualunque cosa valga il preferito. È ciò che
+            // lascia il preferito in `cqw` — il margine del contenuto delle
+            // skin di serie, `clamp(16px, 3cqw, 48px)` — dentro un estremo che
+            // è in pixel.
             let misure = match lunghezza {
                 LengthValue::Fixed(l) => vec![l],
-                LengthValue::Adaptive {
-                    min: a,
-                    preferred: b,
-                    max: c,
-                } => vec![a, b, c],
+                LengthValue::Adaptive { min: a, max: c, .. } => vec![a, c],
             };
             for misura in misure {
                 let px = match misura.unit {

@@ -1447,3 +1447,35 @@ fn un_accento_spento_e_anche_un_anello_che_non_si_vede() {
     );
     assert_eq!(esamina(&skin).anelli, 1);
 }
+
+#[test]
+fn le_misure_della_cornice_hanno_estremi() {
+    // Il lettore 400 pixel sotto il bordo, la navigazione larga quattromila, il
+    // lettore che copre la finestra: tre skin valide fino alla 3.2.0 (R09-4).
+    for (token, valore) in [
+        ("layout.playerGap", r#""-400px""#),
+        ("layout.railExpanded", r#""4000px""#),
+        ("layout.playerHeight", r#""100vh""#),
+        ("layout.rail", r#""2px""#),
+        (
+            "layout.contentX",
+            r#"{ "min": "0px", "preferred": "3cqw", "max": "900px" }"#,
+        ),
+    ] {
+        let json = minima(&format!(
+            r##", "tokens": {{ "color.accent": "#8b7cf6", "{token}": {valore} }}"##
+        ));
+        let detto = messaggio(&json);
+        assert!(
+            detto.contains(&format!("tokens.{token}")),
+            "{token}: {detto}"
+        );
+    }
+    // L'adattiva delle skin di serie resta valida: il preferito in `cqw` sta
+    // fra un minimo e un massimo assoluti, ed è quel che decide la misura.
+    let json = minima(
+        r##", "tokens": { "color.accent": "#8b7cf6",
+             "layout.contentX": { "min": "16px", "preferred": "3cqw", "max": "48px" } }"##,
+    );
+    parse_skin_json(&json).expect("l'adattiva di serie passa");
+}
