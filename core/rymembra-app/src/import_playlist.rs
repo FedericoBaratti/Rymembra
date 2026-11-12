@@ -30,9 +30,12 @@ use rusqlite::Connection;
 use rymembra_domain::BranoEsterno;
 use rymembra_domain::abbinamento::Indice;
 use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::esterno::Fonte;
+use rymembra_domain::keys::PlaylistKey;
 use rymembra_domain::playlist_file::{FormatoPlaylist, PlaylistLetta, VocePlaylist};
 
 use crate::library::db_error;
+use crate::playlists::Provenienza;
 
 /// Cosa ha prodotto — o produrrebbe — l'importazione di un file di playlist.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -53,7 +56,13 @@ pub struct PlaylistFileReport {
     /// La playlist creata, quando l'importazione è stata eseguita davvero.
     pub playlist_id: Option<i64>,
     /// La playlist c'era già ed è stata sostituita.
+    ///
+    /// Solo una playlist importata prima da un file con lo stesso nome (D-11).
     pub replaced: bool,
+    /// C'era già una playlist con quel nome che non viene da un file — di
+    /// solito fatta qui — e questa le sta accanto, col nome in [`Self::name`].
+    /// È il nome di quella lasciata stare.
+    pub beside: Option<String>,
 }
 
 impl PlaylistFileReport {
@@ -136,6 +145,7 @@ fn esegui(
         unreadable: letta.illeggibili,
         playlist_id: None,
         replaced: false,
+        beside: None,
     };
 
     let mut ordine: Vec<i64> = Vec::with_capacity(letta.voci.len());
@@ -212,9 +222,34 @@ fn esegui(
         }
     }
 
-    let (id, _creata, sostituita) = crate::import_esterno::prepara_playlist(&tx, nome, None, None)?;
+    // La provenienza di un file è il nome scelto: un file importato di nuovo
+    // con lo stesso nome riscrive la sua playlist, uno importato con un nome
+    // nuovo ne crea un'altra (è il gesto che la finestra suggerisce per tenerle
+    // tutte e due), e una playlist fatta qui con quel nome non si tocca mai —
+    // il file le sta accanto, «Serata (file)» (D-11). Fabbricata dal nome, non
+    // `stabile`: una playlist importata e poi rinominata qui è diventata
+    // dell'utente, e nessun file la ritrova più.
+    let identita = format!(
+        "rymembra:file:{}",
+        PlaylistKey::compute(Some(&crate::playlists::nome_da_importare(nome)))
+    );
+    let fatta = crate::import_esterno::prepara_playlist(
+        &tx,
+        nome,
+        Provenienza {
+            servizio: Fonte::FilePlaylist.nome(),
+            id: &identita,
+            stabile: false,
+            etichetta: crate::import_esterno::etichetta_accanto(Fonte::FilePlaylist),
+            nata_il: None,
+        },
+        None,
+    )?;
+    let id = fatta.id;
     rapporto.playlist_id = Some(id);
-    rapporto.replaced = sostituita;
+    rapporto.name = fatta.nome;
+    rapporto.replaced = fatta.sostituita;
+    rapporto.beside = fatta.accanto_a;
     crate::playlists::riscrivi_ordine(&tx, id, &ordine)?;
 
     if commit {
@@ -1022,6 +1057,40 @@ mod prove {
         let dopo = import(&mut c, &letta, "Serata", None).expect("seconda");
         assert!(dopo.replaced, "la seconda deve sostituire, non affiancare");
         assert_eq!(crate::playlists::list(&c).expect("elenco").len(), 1);
+    }
+
+    #[test]
+    fn una_playlist_fatta_a_mano_non_si_sostituisce_con_un_file() {
+        // D-11: «Serata» fatta qui e un M3U importato col nome «Serata». La
+        // playlist fatta qui resta com'è, e il file entra accanto; reimportare
+        // il file riscrive la sua, non quella fatta a mano.
+        let mut c = libreria();
+        let mia = crate::playlists::create(&c, "Serata").expect("fatta a mano");
+        let un_brano = c
+            .query_row("SELECT id FROM tracks ORDER BY id LIMIT 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .expect("un brano");
+        crate::playlists::add_tracks(&mut c, mia.id, &[un_brano, un_brano, un_brano])
+            .expect("voci");
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![voce("C:\\Musica\\Bjork\\01 Joga.flac", None, None)],
+            illeggibili: 0,
+        };
+        for giro in 0..2 {
+            import(&mut c, &letta, "Serata", None).expect("importazione");
+            assert_eq!(
+                crate::playlists::tracks(&c, mia.id).expect("voci").len(),
+                3,
+                "giro {giro}: le voci fatte a mano restano"
+            );
+            assert_eq!(
+                crate::playlists::list(&c).expect("elenco").len(),
+                2,
+                "giro {giro}"
+            );
+        }
     }
 
     #[test]

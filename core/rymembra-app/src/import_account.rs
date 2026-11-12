@@ -27,7 +27,9 @@
 //! un caso:
 //!
 //! - le playlist si **sostituiscono** (`prepara_playlist`), quindi la seconda
-//!   passata non accoda;
+//!   passata non accoda — ma solo quelle che questa importazione aveva scritto:
+//!   una playlist fatta qui con lo stesso nome resta com'è, e quella di Spotify
+//!   le sta accanto (D-11);
 //! - la cronologia ha `WHERE NOT EXISTS (track_id, played_at)`, la stessa
 //!   guardia di `import_legacy`, servita dall'indice che `005_account.sql` ha
 //!   messo lì apposta;
@@ -55,10 +57,12 @@ use rymembra_domain::spotify_account::{
 };
 
 use crate::import_esterno::{
-    MissingTrack, RapportoImport, Sorgente, Truncation, leggi_libreria,
+    MissingTrack, RapportoImport, Sorgente, Truncation, etichetta_accanto, leggi_libreria,
     prepara_playlist_escludendo, riempi_playlist, scrivi_desiderati, scrivi_identificativi,
+    togli_superati,
 };
 use crate::library::{db_error, now_ms, rebuild_aggregates};
+use crate::playlists::Provenienza;
 
 /// Una playlist che si è rifiutato di importare, e perché.
 ///
@@ -130,6 +134,12 @@ pub struct AccountImportReport {
     /// Meno di `liked.matched` alla seconda passata, e zero alla terza: chi era
     /// già segnato non si conta due volte.
     pub liked_marked: usize,
+    /// Quanti preferiti di Spotify restano **senza** cuore, perché qui il cuore
+    /// è stato tolto (D-12: vince la scelta fatta qui).
+    ///
+    /// Contati a parte perché altrimenti la differenza fra «preferiti ritrovati»
+    /// e «segnati adesso» sembrerebbe un guasto: sono decisioni, e si dicono.
+    pub liked_kept_off: usize,
     /// Un rapporto per album salvato che portava le proprie tracce.
     pub albums: Vec<RapportoImport>,
     /// Quanti album salvati si sono visti.
@@ -150,6 +160,14 @@ pub struct AccountImportReport {
     pub playlist_restored: usize,
     /// Quante righe di «desiderati» si sono chiuse perché il brano ormai c'è.
     pub wanted_closed: usize,
+    /// Quanti brani **distinti** della libreria sono stati ritrovati, in tutti
+    /// gli elenchi scritti.
+    ///
+    /// [`Self::matched`] somma per elenco: lo stesso brano fra i preferiti e in
+    /// tre playlist conta quattro volte, e «Brani ritrovati» poteva superare la
+    /// libreria (R13c-12). Il rapporto non porta gli identificativi, quindi il
+    /// conto distinto si fa qui, dove ci sono.
+    pub matched_distinct: usize,
 }
 
 impl AccountImportReport {
@@ -253,6 +271,9 @@ fn run(
 
     let ordinali = ordinali_degli_omonimi(&snapshot.playlist);
     let mut gia_scritte: HashSet<i64> = HashSet::new();
+    // I brani ritrovati negli elenchi scritti davvero: una playlist rifiutata
+    // non porta niente, e non conta.
+    let mut ritrovati: HashSet<i64> = HashSet::new();
     for voce in &piano.playlist {
         let Some(playlist) = snapshot.playlist.get(voce.indice) else {
             continue;
@@ -268,6 +289,7 @@ fn run(
         ) {
             Ok(fatto) => {
                 scritti_album = scritti_album.saturating_add(fatto.spotify_album_ids_written);
+                ritrovati.extend(voce.piano.abbinati.iter().map(|a| a.track_id));
                 rapporto.playlists.push(fatto);
             }
             Err(err) if e_rifiuto(&err) => rapporto.rejected_playlists.push(RejectedPlaylist {
@@ -291,9 +313,12 @@ fn run(
             },
             snapshot.provenienza.nome(),
             None,
+            true,
         )?;
         scritti_album = scritti_album.saturating_add(rapporto.liked.spotify_album_ids_written);
-        rapporto.liked_marked = segna_preferiti(&tx, &piano.preferiti, adesso)?;
+        ritrovati.extend(piano.preferiti.abbinati.iter().map(|a| a.track_id));
+        (rapporto.liked_marked, rapporto.liked_kept_off) =
+            segna_preferiti(&tx, &piano.preferiti, adesso)?;
     }
 
     for voce in &piano.album {
@@ -317,11 +342,14 @@ fn run(
             },
             snapshot.provenienza.nome(),
             None,
+            true,
         )?;
         scritti_album = scritti_album.saturating_add(fatto.spotify_album_ids_written);
+        ritrovati.extend(voce.piano.abbinati.iter().map(|a| a.track_id));
         rapporto.albums.push(fatto);
     }
     rapporto.album_ids_written = scritti_album;
+    rapporto.matched_distinct = ritrovati.len();
 
     if scelte.artisti {
         rapporto.artists_linked = lega_artisti(&tx, &snapshot.artisti)?;
@@ -460,16 +488,26 @@ fn scrivi_playlist(
     gia_scritte: &mut HashSet<i64>,
 ) -> Result<RapportoImport, AppError> {
     let identita = identita_playlist(playlist, ordinale);
-    let (id, creata, sostituita) = prepara_playlist_escludendo(
+    // La provenienza si scrive **anche** dall'archivio, con l'identificativo
+    // fabbricato dal nome: è quel che rende riconoscibile alla volta dopo una
+    // playlist importata, che fino alla 3.2.0 era indistinguibile da una fatta
+    // a mano con lo stesso nome — e quella veniva svuotata (R06-3, D-11).
+    let fatta = prepara_playlist_escludendo(
         tx,
         &playlist.nome,
+        Provenienza {
+            servizio: Fonte::ArchivioSpotify.nome(),
+            id: &identita,
+            stabile: playlist.spotify_id.is_some(),
+            etichetta: etichetta_accanto(Fonte::ArchivioSpotify),
+            nata_il: None,
+        },
         playlist
-            .spotify_id
-            .as_deref()
-            .map(|id| (Fonte::ArchivioSpotify, id)),
-        playlist.troncatura(),
+            .troncatura()
+            .map(|(letti, attesi)| (Fonte::ArchivioSpotify, letti, attesi)),
         gia_scritte,
     )?;
+    let id = fatta.id;
     gia_scritte.insert(id);
     let voci = riempi_playlist(
         tx,
@@ -493,11 +531,14 @@ fn scrivi_playlist(
         },
         provenienza,
         Some(id),
+        playlist.troncatura().is_none(),
     )?;
     rapporto.playlist_id = Some(id);
-    rapporto.playlist_name = Some(playlist.nome.trim().to_owned());
-    rapporto.playlist_created = creata;
-    rapporto.playlist_replaced = sostituita;
+    // Il nome che ha in libreria: troncato, o «(Spotify)» se sta accanto.
+    rapporto.playlist_name = Some(fatta.nome);
+    rapporto.playlist_created = fatta.creata;
+    rapporto.playlist_replaced = fatta.sostituita;
+    rapporto.playlist_beside = fatta.accanto_a;
     rapporto.playlist_entries = voci;
     rapporto.truncated = playlist
         .troncatura()
@@ -507,6 +548,10 @@ fn scrivi_playlist(
 
 /// Il rapporto di un elenco, e le due scritture che ogni elenco fa: gli
 /// identificativi esterni sui brani ritrovati, i desiderati su quelli no.
+///
+/// `completo` dice che l'elenco è intero: solo allora le righe di coda dei
+/// brani che non ci sono più se ne vanno (D-13, vedi
+/// [`crate::import_esterno::togli_superati`]).
 fn scrivi_elenco(
     tx: &Transaction<'_>,
     brani: &[BranoEsterno],
@@ -514,6 +559,7 @@ fn scrivi_elenco(
     sorgente: Sorgente<'_>,
     provenienza: &str,
     playlist_id: Option<i64>,
+    completo: bool,
 ) -> Result<RapportoImport, AppError> {
     let mut rapporto = RapportoImport {
         kind: sorgente.kind.to_owned(),
@@ -559,15 +605,30 @@ fn scrivi_elenco(
     rapporto.isrc_written = isrc;
 
     rapporto.wanted_rows = scrivi_desiderati(tx, brani, sorgente, &piano.mancanti, playlist_id)?;
+    if completo {
+        togli_superati(tx, sorgente.id, brani)?;
+    }
     Ok(rapporto)
 }
 
-/// Segna come preferiti i brani ritrovati.
+/// Segna come preferiti i brani ritrovati, e dice quanti ne ha lasciati stare
+/// perché qui il cuore è stato tolto.
 ///
 /// `liked = 0` nel `WHERE` fa due cose insieme: rende la scrittura idempotente e
 /// fa sì che il conteggio dica quanti brani sono stati segnati **adesso**, non
 /// quanti risultano preferiti. Alla seconda passata è zero, ed è la risposta
 /// giusta.
+///
+/// # Un cuore tolto qui non torna
+///
+/// `liked = 0` da solo non distingueva «mai espresso» da «tolto apposta»: chi
+/// importava l'archivio, toglieva trenta cuori e reimportava se li ritrovava
+/// tutti, con un `liked_at` più nuovo della sua decisione — e quell'istante è
+/// quello con cui [`merge_stats`] fa vincere la scelta su ogni altro
+/// dispositivo. D-12: vince la scelta fatta qui. Togliere il cuore scrive
+/// `liked_at` (il comando della finestra lo data adesso, la sincronia con la
+/// data dell'altro), quindi «mai espresso» è `liked_at IS NULL`, e solo quello
+/// si segna.
 ///
 /// `liked_at` prende l'ora di adesso perché Spotify, per un brano salvato, la
 /// data non la dà da nessuna delle due strade: `YourLibrary.json` non ha un
@@ -580,22 +641,38 @@ fn segna_preferiti(
     tx: &Transaction<'_>,
     piano: &PianoAbbinamento,
     adesso: i64,
-) -> Result<usize, AppError> {
+) -> Result<(usize, usize), AppError> {
     let mut segna = tx
         .prepare_cached(
             "UPDATE tracks SET liked = 1, liked_at = ?2, stats_updated_at = ?2
-              WHERE id = ?1 AND liked = 0",
+              WHERE id = ?1 AND liked = 0 AND liked_at IS NULL",
         )
         .map_err(|err| db_error("segnatura dei preferiti", &err))?;
+    let mut tolto_qui = tx
+        .prepare_cached("SELECT 1 FROM tracks WHERE id = ?1 AND liked = 0 AND liked_at IS NOT NULL")
+        .map_err(|err| db_error("segnatura dei preferiti", &err))?;
     let mut quanti = 0_usize;
+    let mut lasciati = 0_usize;
+    // Un brano può stare due volte fra i preferiti di Spotify (lo stesso
+    // abbinamento da due righe): si conta una volta.
+    let mut visti: HashSet<i64> = HashSet::new();
     for abbinato in &piano.abbinati {
-        quanti = quanti.saturating_add(
-            segna
-                .execute(rusqlite::params![abbinato.track_id, adesso])
-                .map_err(|err| db_error("segnatura dei preferiti", &err))?,
-        );
+        if !visti.insert(abbinato.track_id) {
+            continue;
+        }
+        let scritti = segna
+            .execute(rusqlite::params![abbinato.track_id, adesso])
+            .map_err(|err| db_error("segnatura dei preferiti", &err))?;
+        quanti = quanti.saturating_add(scritti);
+        if scritti == 0
+            && tolto_qui
+                .exists([abbinato.track_id])
+                .map_err(|err| db_error("segnatura dei preferiti", &err))?
+        {
+            lasciati = lasciati.saturating_add(1);
+        }
     }
-    Ok(quanti)
+    Ok((quanti, lasciati))
 }
 
 /// Lega un album salvato ai brani che in libreria portano quel titolo.
@@ -980,6 +1057,10 @@ pub fn dimentica_importati(connection: &mut Connection) -> Result<usize, AppErro
         [],
     )
     .map_err(|err| db_error("riallineamento degli ultimi ascolti", &err))?;
+    // Le righe tolte sono quasi sempre le più alte, e le prossime ne
+    // riprenderanno i numeri: i segni di «Manda anche la cronologia» non
+    // devono restare oltre (vedi `scrobble::dopo_una_cronologia_tolta`).
+    crate::scrobble::dopo_una_cronologia_tolta(&tx)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della cancellazione", &err))?;
     Ok(quante)
@@ -1797,6 +1878,150 @@ mod prove {
             conta(&db, "SELECT liked_at FROM tracks WHERE title = 'Song 2'"),
             12_345
         );
+    }
+
+    #[test]
+    fn un_cuore_tolto_dopo_l_importazione_non_torna_reimportando() {
+        // D-12: vince la scelta fatta qui. Un cuore tolto in Rymembra ha
+        // `liked = 0` e la data della decisione; reimportare lo stesso archivio
+        // lo rimetteva con una data più nuova, che backup e sincronia avrebbero
+        // portato ovunque. «Mai espresso» (`liked_at` nullo) resta da segnare.
+        let mut db = database();
+        libreria_di_prova(&db);
+        let Ok(primo) = import(&mut db, &snapshot_completo(), &Scelte::default()) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        assert_eq!(primo.liked_marked, 1);
+        assert_eq!(primo.liked_kept_off, 0);
+        let Ok(_) = db.execute(
+            "UPDATE tracks SET liked = 0, liked_at = 99999, stats_updated_at = 99999
+              WHERE title = 'Song 2'",
+            [],
+        ) else {
+            panic!("il cuore tolto di prova si deve scrivere");
+        };
+
+        let Ok(secondo) = import(&mut db, &snapshot_completo(), &Scelte::default()) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(secondo.liked_marked, 0, "il cuore tolto qui non torna");
+        assert_eq!(secondo.liked_kept_off, 1, "e il piano lo dice");
+        assert_eq!(
+            conta(&db, "SELECT liked FROM tracks WHERE title = 'Song 2'"),
+            0
+        );
+        assert_eq!(
+            conta(&db, "SELECT liked_at FROM tracks WHERE title = 'Song 2'"),
+            99_999,
+            "la data della decisione resta quella di qui"
+        );
+    }
+
+    #[test]
+    fn una_playlist_fatta_a_mano_con_lo_stesso_nome_non_si_svuota() {
+        // R06-3, D-11: «Corsa» messa insieme qui, brano per brano, e la
+        // «Corsa» dell'account. Dall'archivio (senza identificativo) e dall'API
+        // (con): la playlist fatta qui resta com'è, con le sue voci e senza
+        // provenienza, e quella di Spotify entra accanto.
+        for spotify_id in [None, Some("37i9dQZF1DXcBWIGoYBM5M")] {
+            let mut db = database();
+            libreria_di_prova(&db);
+            let Ok(mia) = crate::playlists::create(&db, "Corsa") else {
+                panic!("la playlist fatta a mano si deve creare");
+            };
+            let feel_good = conta(&db, "SELECT id FROM tracks WHERE title = 'Feel Good Inc'");
+            let Ok(_) = crate::playlists::add_tracks(&mut db, mia.id, &[feel_good]) else {
+                panic!("la voce fatta a mano si deve scrivere");
+            };
+            let mut snapshot = snapshot_completo();
+            if let Some(p) = snapshot.playlist.first_mut() {
+                p.spotify_id = spotify_id.map(str::to_owned);
+            }
+
+            for giro in 0..2 {
+                let Ok(_) = import(&mut db, &snapshot, &Scelte::default()) else {
+                    panic!("l'importazione deve riuscire");
+                };
+                assert_eq!(
+                    conta(
+                        &db,
+                        &format!(
+                            "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = {}",
+                            mia.id
+                        )
+                    ),
+                    1,
+                    "{spotify_id:?}, giro {giro}: la playlist fatta a mano tiene le sue voci"
+                );
+                assert_eq!(
+                    conta(
+                        &db,
+                        &format!(
+                            "SELECT COUNT(*) FROM playlists WHERE id = {} AND source_service IS NULL",
+                            mia.id
+                        )
+                    ),
+                    1,
+                    "{spotify_id:?}, giro {giro}: e non diventa di Spotify"
+                );
+                assert_eq!(
+                    conta(&db, "SELECT COUNT(*) FROM playlists"),
+                    2,
+                    "{spotify_id:?}, giro {giro}: quella di Spotify sta accanto, una volta sola"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reimportare_l_archivio_toglie_dalla_coda_quel_che_la_playlist_non_ha_piu() {
+        // R06-7, D-13, per l'account: «Mai Sentita» manca ed entra in coda;
+        // un archivio dopo, la «Corsa» non ce l'ha più. La sua riga se ne va.
+        let mut db = database();
+        libreria_di_prova(&db);
+        let mut snapshot = snapshot_completo();
+        snapshot.preferiti.clear();
+        let Ok(_) = import(&mut db, &snapshot, &Scelte::default()) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE title = 'Mai Sentita'"
+            ),
+            1
+        );
+        if let Some(corsa) = snapshot.playlist.first_mut() {
+            corsa.brani.retain(|b| b.title != "Mai Sentita");
+        }
+        let Ok(_) = import(&mut db, &snapshot, &Scelte::default()) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE title = 'Mai Sentita'"
+            ),
+            0,
+            "non ha più motivo di essere scaricato"
+        );
+    }
+
+    #[test]
+    fn i_brani_ritrovati_si_contano_una_volta() {
+        // R13c-12: «Song 2» sta nella «Corsa» e fra i preferiti. La somma per
+        // elenco lo conta due volte; il conto che la finestra mostra no.
+        let mut db = database();
+        libreria_di_prova(&db);
+        let Ok(piano) = plan(&mut db, &snapshot_completo(), &Scelte::default()) else {
+            panic!("il piano deve riuscire");
+        };
+        assert_eq!(
+            piano.matched(),
+            3,
+            "due nella playlist, uno fra i preferiti"
+        );
+        assert_eq!(piano.matched_distinct, 2, "Song 2 e Feel Good Inc");
     }
 
     #[test]

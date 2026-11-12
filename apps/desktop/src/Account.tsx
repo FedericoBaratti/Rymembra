@@ -44,6 +44,7 @@ import {
   type StatoAccount,
 } from "./ipc";
 import { useFinestrella, useVeloInerte } from "./finestrella";
+import { accantoAccount, riscritteAccount } from "./pianoAccount";
 import { nuovoVelo } from "./modale";
 import { ComeAvereLArchivio } from "./parti/ArchivioSpotify";
 import { ConfermaGesto } from "./ConfermaGesto";
@@ -155,7 +156,12 @@ export function Account({
    * quel che `chiudibile` fa in `Dialogo` per le altre.
    */
   const [scrivendo, setScrivendo] = useState(false);
-  const finestrella = useFinestrella<HTMLDivElement>(scrivendo ? restaAperta : onChiudi);
+  // `chiudibile` dice alla × della finestra che adesso questa finestrella non
+  // si chiude: la × allora chiude la finestra, come Alt+F4, invece di chiamare
+  // `restaAperta` e non fare niente (D-41).
+  const finestrella = useFinestrella<HTMLDivElement>(scrivendo ? restaAperta : onChiudi, {
+    chiudibile: !scrivendo,
+  });
   // Il resto della finestra inerte, e il velo che chiude solo un clic nato **e**
   // finito su di lui: una selezione trascinata fuori dal pannello chiudeva
   // tutto. È quel che `Dialogo.tsx` fa per le altre.
@@ -189,6 +195,11 @@ export function Account({
     if (!anteprima) return;
     let annullato = false;
     setInCorso(true);
+    // Il piano e l'errore di prima descrivono altre scelte: lasciati a schermo,
+    // un piano nuovo fallito mostrava i numeri di prima con «Importa» acceso,
+    // che avrebbe importato con le scelte di adesso (R13c-12).
+    setPiano(null);
+    setErrore(null);
     ipc
       .accountPiano(scelte)
       .then((p) => {
@@ -265,6 +276,8 @@ export function Account({
 
   const totali = piano ? totaliAccount(piano) : null;
   const mancanti = piano ? mancantiAccount(piano) : [];
+  const accanto = piano ? accantoAccount(piano) : [];
+  const riscritte = piano ? riscritteAccount(piano) : [];
   const niente = anteprima !== null && vuotoAccount(anteprima);
 
   return (
@@ -341,7 +354,11 @@ export function Account({
 
               {inCorso && !anteprima && <p>{t("account.opening")}</p>}
 
-              {errore && <div className="errore">{errore}</div>}
+              {errore && (
+                <div className="errore" role="alert">
+                  {errore}
+                </div>
+              )}
 
               {anteprima && (
                 <>
@@ -463,9 +480,12 @@ export function Account({
                   {piano && totali && (
                     <>
                       <div className="rapporto">
+                        {/* Distinti, contati dal nucleo: lo stesso brano fra i
+                            preferiti e in tre playlist è un brano ritrovato, non
+                            quattro. */}
                         <Voce
                           etichetta={t("account.found")}
-                          valore={totali.ritrovati}
+                          valore={piano.matchedDistinct}
                         />
                         {/* Il conteggio **distinto**, non la somma per elenco: lo
                             stesso brano che manca da tre playlist è un brano che non
@@ -484,7 +504,14 @@ export function Account({
                         <Voce
                           etichetta={t("account.toLike")}
                           valore={piano.likedMarked}
-                          nota={t("account.toLike.note")}
+                          nota={
+                            // Il cuore tolto qui vince su quello di Spotify
+                            // (D-12): si dice quanti, perché la differenza con
+                            // i preferiti dell'archivio non sembri un guasto.
+                            piano.likedKeptOff > 0
+                              ? t("account.toLike.keptOff", { n: piano.likedKeptOff })
+                              : t("account.toLike.note")
+                          }
                         />
                         <Voce
                           etichetta={t("account.toWrite")}
@@ -524,6 +551,32 @@ export function Account({
                             {piano.rejectedPlaylists
                               .map((p) => `«${p.name}»`)
                               .join(" · ")}
+                          </span>
+                        </Avviso>
+                      )}
+
+                      {/* Nota: non si tocca niente di tuo. Una playlist di qui con
+                          lo stesso nome resta com'è, e quella di Spotify le entra
+                          accanto con la fonte fra parentesi (D-11). Detto per
+                          nome, perché su duecento playlist non lo si scopre. */}
+                      {accanto.length > 0 && (
+                        <Avviso livello="nota">
+                          {t("account.beside", { n: accanto.length })}{" "}
+                          <span className="quali">
+                            {accanto.map((p) => `«${p.qui}» → «${p.nuova}»`).join(" · ")}
+                          </span>
+                        </Avviso>
+                      )}
+
+                      {/* Avviso: queste sì si svuotano. Sono le playlist che lo
+                          stesso archivio aveva importato la volta prima, e il
+                          contenuto di adesso prende il posto di quello di allora,
+                          aggiunte fatte qui comprese. */}
+                      {riscritte.length > 0 && (
+                        <Avviso livello="avviso">
+                          {t("account.rewritten", { n: riscritte.length })}{" "}
+                          <span className="quali">
+                            {riscritte.map((nome) => `«${nome}»`).join(" · ")}
                           </span>
                         </Avviso>
                       )}

@@ -48,7 +48,7 @@ use rymembra_domain::tempo::istante_ms;
 pub struct Letti {
     /// Gli ascolti riconosciuti.
     pub ascolti: Vec<AscoltoSpotify>,
-    /// Quante righe erano di podcast.
+    /// Quante righe erano di podcast o di audiolibri: quel che non è musica.
     pub podcast: usize,
     /// Quante righe non si sono potute leggere: senza data, senza titolo, o
     /// con una data che non è una data.
@@ -110,12 +110,28 @@ enum Esito {
     Illeggibile,
 }
 
+/// I campi che fanno di una riga della cronologia estesa un capitolo di
+/// audiolibro. Basta uno: Spotify non li valorizza tutti insieme in ogni file.
+const AUDIOLIBRO: [&str; 4] = [
+    "audiobook_title",
+    "audiobook_uri",
+    "audiobook_chapter_uri",
+    "audiobook_chapter_title",
+];
+
 fn riga_ad_ascolto(riga: &Value) -> Esito {
     // Un episodio nominato è un podcast, e lo si riconosce prima di tutto il
     // resto: nella cronologia estesa un episodio ha i campi della musica tutti
     // a `null`, quindi senza questo controllo finirebbe fra gli illeggibili — e
     // «3.400 righe illeggibili» manda a cercare un guasto che non c'è.
     if testo(riga, "episode_name").is_some() || testo(riga, "spotify_episode_uri").is_some() {
+        return Esito::Podcast;
+    }
+    // Lo stesso per un capitolo di audiolibro, che Spotify offre dal 2023: i
+    // campi della musica e quelli delle puntate restano a `null`, e i suoi sono
+    // `audiobook_*`. Non è musica, e si conta con i podcast invece di finire
+    // fra le righe illeggibili.
+    if AUDIOLIBRO.iter().any(|campo| testo(riga, campo).is_some()) {
         return Esito::Podcast;
     }
 
@@ -225,6 +241,28 @@ mod prove {
             a.brano.spotify_track_id.as_deref(),
             Some("4iV5W9uYEdYUVa79Axb7Rh")
         );
+    }
+
+    #[test]
+    fn un_capitolo_di_audiolibro_non_e_una_riga_illeggibile() {
+        // Gli audiolibri di Spotify finiscono nella cronologia estesa con i
+        // campi della musica e quelli delle puntate a `null`, e i loro al
+        // posto. Non sono musica, come i podcast: si contano con loro.
+        let corpo = json!([
+            {"ts": "2024-01-01T12:00:00Z", "ms_played": 60_000,
+             "master_metadata_track_name": null, "episode_name": null,
+             "audiobook_title": "Libro", "audiobook_chapter_uri": "spotify:episode:x"},
+            {"ts": "2024-01-01T13:00:00Z", "ms_played": 60_000,
+             "master_metadata_track_name": null, "episode_name": null,
+             "audiobook_uri": "spotify:audiobook:y"},
+            {"ts": "2024-01-01T14:00:00Z", "ms_played": 60_000,
+             "master_metadata_track_name": null, "episode_name": null,
+             "audiobook_chapter_title": "Capitolo 1"}
+        ]);
+        let letti = leggi(&corpo);
+        assert_eq!(letti.illeggibili, 0, "un audiolibro non è un guasto");
+        assert_eq!(letti.podcast, 3, "si conta fra quel che non è musica");
+        assert!(letti.ascolti.is_empty());
     }
 
     #[test]

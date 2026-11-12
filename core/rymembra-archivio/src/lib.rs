@@ -86,7 +86,7 @@ pub struct Lettura {
     pub ignorati: Vec<String>,
     /// I file che erano per noi e non si sono letti.
     pub illeggibili: Vec<Illeggibile>,
-    /// Quante righe erano podcast, in tutto l'archivio.
+    /// Quante righe erano podcast o audiolibri, in tutto l'archivio.
     pub podcast: usize,
     /// Quante righe erano per noi e non si sono capite.
     pub righe_illeggibili: usize,

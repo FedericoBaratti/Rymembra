@@ -30,6 +30,7 @@ use rymembra_domain::esterno::{BranoEsterno, ContenutoEsterno, Fonte, GenereCont
 use rymembra_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
 
 use crate::library::{db_error, now_ms, rebuild_aggregates, transazione_di_scrittura};
+use crate::playlists::{Destinazione, Provenienza};
 
 /// Un brano che su Spotify c'era e in libreria no.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -115,7 +116,17 @@ pub struct RapportoImport {
     /// È stata creata adesso.
     pub playlist_created: bool,
     /// Esisteva già, e il suo contenuto è stato sostituito.
+    ///
+    /// Solo una playlist della stessa provenienza — un'importazione precedente
+    /// dello stesso contenuto — si sostituisce (D-11).
     pub playlist_replaced: bool,
+    /// C'era già una playlist con quel nome, che non è di questa provenienza —
+    /// di solito fatta qui — e la nuova le sta accanto, col nome in
+    /// [`Self::playlist_name`]. È il nome di quella lasciata stare.
+    ///
+    /// `serde(default)`: i rapporti salvati prima non lo portano.
+    #[serde(default)]
+    pub playlist_beside: Option<String>,
     /// Quante voci ha adesso.
     pub playlist_entries: usize,
     /// Su quanti brani si è scritto l'identificativo dell'album Spotify.
@@ -180,6 +191,24 @@ pub fn import(
     run(connection, contenuto, crea_playlist, true)
 }
 
+/// L'identificativo con cui un contenuto riconosce la sua playlist.
+///
+/// Per una playlist o una collezione è il suo: `Collezione` sta accanto a
+/// `Playlist` perché un item dell'Internet Archive è un concerto o un disco con
+/// i suoi brani in ordine, cioè precisamente ciò che una playlist è in questa
+/// libreria. Per un album, un brano o un artista importati «con la playlist»
+/// si dice anche il genere — `album:…` — perché scrivere in
+/// `playlists.source_playlist_id` l'identificativo di un album farebbe
+/// riconoscere come «la stessa playlist» due cose che non lo sono. Senza un
+/// identificativo, però, una playlist importata è indistinguibile da una fatta
+/// qui, e reimportare ne creerebbe un'altra accanto ogni volta (D-11).
+fn identita_della_playlist(contenuto: &ContenutoEsterno) -> String {
+    match contenuto.kind {
+        GenereContenuto::Playlist | GenereContenuto::Collezione => contenuto.id.clone(),
+        altro => format!("{}:{}", altro.nome(), contenuto.id),
+    }
+}
+
 /// L'importazione. `commit` decide se resta.
 fn run(
     connection: &mut Connection,
@@ -225,37 +254,34 @@ fn run(
         .map_err(|err| db_error("apertura della transazione", &err))?;
 
     if crea_playlist {
-        // L'identificativo si passa **solo** quando è davvero quello di una
-        // playlist. `contenuto.id` è l'identificativo di quel che si sta
-        // importando: per un album è un album, e scriverlo in
-        // `playlists.source_playlist_id` farebbe riconoscere come «la stessa
-        // playlist» due cose che non lo sono.
-        // `Collezione` sta accanto a `Playlist` e non è un caso: un item
-        // dell'Internet Archive è un concerto o un disco con i suoi brani in
-        // ordine, cioè precisamente ciò che una playlist è in questa libreria.
-        // Trattarlo diversamente vorrebbe dire importare venti brani sciolti e
-        // perdere l'unica cosa che li teneva insieme.
-        let identificativo = matches!(
-            contenuto.kind,
-            GenereContenuto::Playlist | GenereContenuto::Collezione
-        )
-        .then_some((contenuto.fonte, contenuto.id.as_str()));
-        let (id, creata, sostituita) = prepara_playlist(
+        let identita = identita_della_playlist(contenuto);
+        let fatta = prepara_playlist(
             &tx,
             &contenuto.title,
-            identificativo,
-            contenuto.truncation(),
+            Provenienza {
+                servizio: contenuto.fonte.nome(),
+                id: &identita,
+                // L'identificativo di un catalogo resta lo stesso se lassù il
+                // titolo cambia: si ritrova anche rinominata.
+                stabile: true,
+                etichetta: etichetta_accanto(contenuto.fonte),
+                nata_il: None,
+            },
+            contenuto
+                .truncation()
+                .map(|(letti, attesi)| (contenuto.fonte, letti, attesi)),
         )?;
-        rapporto.playlist_id = Some(id);
-        // Il nome che la playlist ha davvero, troncato come l'ha troncato
-        // `prepara_playlist`: il rapporto deve nominare quel che si trova in
-        // libreria, non il titolo che non ci è entrato.
-        rapporto.playlist_name = Some(crate::playlists::nome_da_importare(&contenuto.title));
-        rapporto.playlist_created = creata;
-        rapporto.playlist_replaced = sostituita;
+        rapporto.playlist_id = Some(fatta.id);
+        // Il nome che la playlist ha davvero: troncato al tetto, o con la
+        // fonte fra parentesi se sta accanto a un'altra. Il rapporto deve
+        // nominare quel che si trova in libreria, non il titolo di là.
+        rapporto.playlist_name = Some(fatta.nome);
+        rapporto.playlist_created = fatta.creata;
+        rapporto.playlist_replaced = fatta.sostituita;
+        rapporto.playlist_beside = fatta.accanto_a;
         rapporto.playlist_entries = riempi_playlist(
             &tx,
-            id,
+            fatta.id,
             &piano
                 .abbinati
                 .iter()
@@ -293,6 +319,12 @@ fn run(
         &piano.mancanti,
         rapporto.playlist_id,
     )?;
+    // Quel che la fonte non ha più esce dalla coda (D-13), ma solo se l'elenco
+    // è intero: da uno monco, un brano che manca è nella pagina che non è
+    // arrivata, non tolto lassù.
+    if contenuto.truncation().is_none() {
+        togli_superati(&tx, &contenuto.id, &contenuto.tracks)?;
+    }
 
     // Il viaggio di ritorno, ristretto a **questa** importazione: quel che è
     // successo alle altre playlist non è affar suo e non deve comparire nel suo
@@ -445,36 +477,71 @@ pub(crate) fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack
         .map_err(|err| db_error("lettura della libreria", &err))
 }
 
-/// Trova o crea la playlist, svuotandola se esisteva.
+/// Com'è andata la scelta della playlist in cui un'importazione scrive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Preparata {
+    /// La riga.
+    pub id: i64,
+    /// Il nome che ha in libreria adesso: quello di là, troncato al tetto, o
+    /// quello con la fonte fra parentesi quando sta accanto a un'altra.
+    pub nome: String,
+    /// È stata creata adesso.
+    pub creata: bool,
+    /// Era di un'importazione precedente della stessa fonte, ed è stata
+    /// svuotata per essere riscritta.
+    pub sostituita: bool,
+    /// Il nome della playlist che c'era già con quel nome e che si è lasciata
+    /// com'era: la nuova le sta accanto (D-11).
+    pub accanto_a: Option<String>,
+}
+
+/// Come si chiama una fonte nel nome di una playlist messa accanto a un'altra:
+/// «Chill (Spotify)».
 ///
-/// Restituisce `(id, creata, sostituita)`.
+/// Nomi propri, e «file» per i file di playlist: il nome finisce nel database e
+/// sopravvive a un cambio di lingua, quindi non deve essere una parola di una
+/// lingua sola.
+pub(crate) const fn etichetta_accanto(fonte: Fonte) -> &'static str {
+    match fonte {
+        Fonte::ArchivioSpotify => "Spotify",
+        Fonte::FilePlaylist => "file",
+        Fonte::InternetArchive => "Internet Archive",
+        Fonte::Jamendo => "Jamendo",
+        Fonte::Audius => "Audius",
+    }
+}
+
+/// Trova o crea la playlist in cui scrive un'importazione, svuotandola se era
+/// sua.
 ///
-/// # I due modi di riconoscere una playlist già importata
+/// # Mai una playlist fatta qui (D-11)
 ///
-/// L'identificativo prima, `playlist_key` poi. L'ordine è tutto: la chiave nasce
-/// dal **nome** (vedi [`PlaylistKey`]), quindi chi rinomina «Corsa» in «Corsa
-/// 2026» lassù, senza l'identificativo, alla reimportazione si ritroverebbe due
-/// playlist — la vecchia col nome vecchio e i suoi brani, e una nuova identica
-/// accanto. È il difetto per cui `005_account.sql` ha aggiunto quella colonna, e
-/// riconoscere per identificativo è il solo modo di ripagarla.
+/// Chi sia «sua» lo decide [`crate::playlists::destinazione`], la funzione sola
+/// per tutte le importazioni: la playlist con la stessa provenienza — la stessa
+/// coppia servizio e identificativo, che ogni importazione scrive sulla playlist
+/// che crea. Una playlist con lo stesso nome e **senza** quella provenienza —
+/// fatta qui a mano, arrivata da un'altra fonte, o importata da una versione che
+/// la provenienza non la scriveva — non si tocca: la nuova le sta accanto,
+/// «Chill (Spotify)», e il rapporto lo dice ([`Preparata::accanto_a`]).
+///
+/// Prima di questa regola la si ritrovava per nome, la si svuotava e ci si
+/// scrivevano i brani di Spotify: quaranta brani messi uno per uno in «Chill»
+/// sparivano senza che il piano lo dicesse (R06-3).
 ///
 /// # Perché l'identificativo si accompagna al servizio
 ///
-/// Perché da solo è ambiguo. Gli identificativi di Spotify e quelli di YouTube
-/// vivono in due spazi di nomi che non si parlano, e nessuno garantisce che non
-/// si incrocino: due playlist diverse verrebbero riconosciute come la stessa, e
-/// la seconda importazione **cancellerebbe il contenuto della prima** — che è
-/// il danno peggiore che questa funzione possa fare. Il costo di renderlo
-/// impossibile è una colonna e una clausola.
+/// Perché da solo è ambiguo. Gli identificativi di Spotify e quelli
+/// dell'Internet Archive vivono in due spazi di nomi che non si parlano, e
+/// nessuno garantisce che non si incrocino: due playlist diverse verrebbero
+/// riconosciute come la stessa, e la seconda importazione **cancellerebbe il
+/// contenuto della prima**. Il costo di renderlo impossibile è una colonna e
+/// una clausola.
 ///
-/// `None` vuol dire «questa playlist non viene da nessun servizio»: la fa
-/// l'utente qui dentro, o arriva da un file M3U ([`crate::import_playlist`]).
-///
-/// Quando l'identificativo ritrova una playlist che nel frattempo ha cambiato
-/// nome, il nome **si aggiorna**: è quel che l'utente ha deciso su Spotify. Non
-/// si aggiorna in un solo caso — se quel nome è già di un'altra playlist — e lì
-/// si tiene il vecchio: rifiutare l'importazione intera per un nome occupato
-/// sarebbe una punizione sproporzionata rispetto ai brani che sta portando.
+/// Quando un identificativo stabile ritrova una playlist che nel frattempo ha
+/// cambiato nome, il nome **si aggiorna**: è quel che l'utente ha deciso lassù.
+/// Non si aggiorna in un solo caso — se quel nome è già di un'altra playlist —
+/// e lì si tiene il vecchio: rifiutare l'importazione intera per un nome
+/// occupato sarebbe una punizione sproporzionata rispetto ai brani che porta.
 ///
 /// # Perché sostituire e non accodare
 ///
@@ -482,20 +549,18 @@ pub(crate) fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack
 /// seconda importazione raddoppierebbe ogni brano; creando un nome nuovo,
 /// lascerebbe una scia di «Playlist (2)». Sostituire è l'unica delle tre che si
 /// può fare due volte senza pentirsene — e siccome cancella, l'utente lo vede
-/// scritto nel piano prima di confermare.
+/// scritto nel piano prima di confermare. I posti tenuti da parte in
+/// `playlist_orfane` se ne vanno con le voci (03-11).
 ///
 /// # Tranne quando l'elenco è arrivato monco
 ///
 /// «Sostituire si può fare due volte senza pentirsene» vale finché le due volte
 /// leggono la stessa cosa. Una playlist di trecento brani letta a duecento —
-/// perché una pagina di Pathfinder ha preso un `429`, o perché la rete ha
-/// singhiozzato a metà — cancellerebbe le trecento voci buone e ne rimetterebbe
-/// duecento. L'utente non se ne accorge: la playlist c'è, ha un nome giusto, ed
-/// è più corta di cento brani che nessuno gli dirà mai.
-///
-/// Quindi in quel caso non si sostituisce: si rifiuta con
-/// `spotify.tracklistTruncated`, che porta i due numeri perché il messaggio
-/// possa dire «duecento su trecento». Il piano lo scopre esattamente come
+/// perché una pagina ha preso un `429`, o perché la rete ha singhiozzato a metà
+/// — cancellerebbe le trecento voci buone e ne rimetterebbe duecento. Quindi in
+/// quel caso non si sostituisce: si rifiuta con `spotify.tracklistTruncated` (o
+/// `catalogo.listTruncated`), che porta i due numeri perché il messaggio possa
+/// dire «duecento su trecento». Il piano lo scopre esattamente come
 /// l'importazione, quindi il tasto «Importa» lo dice **prima**.
 ///
 /// **Solo** la sostituzione, però. Un elenco monco che crea una playlist nuova
@@ -504,10 +569,10 @@ pub(crate) fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack
 pub(crate) fn prepara_playlist(
     tx: &Transaction<'_>,
     titolo: &str,
-    sorgente: Option<(Fonte, &str)>,
-    troncatura: Option<(u32, u32)>,
-) -> Result<(i64, bool, bool), AppError> {
-    prepara_playlist_escludendo(tx, titolo, sorgente, troncatura, &HashSet::new())
+    provenienza: Provenienza<'_>,
+    troncatura: Option<(Fonte, u32, u32)>,
+) -> Result<Preparata, AppError> {
+    prepara_playlist_escludendo(tx, titolo, provenienza, troncatura, &HashSet::new())
 }
 
 /// [`prepara_playlist`], ma senza mai adottare una delle playlist `gia_scritte`.
@@ -516,118 +581,88 @@ pub(crate) fn prepara_playlist(
 ///
 /// Un'importazione che scrive **più** playlist nella stessa transazione — un
 /// account intero — può incontrare due playlist con lo stesso nome: Spotify le
-/// ammette. La seconda ritrovava per chiave la riga appena creata dalla prima,
-/// e «sostituire» voleva dire cancellarle le voci e metterci le proprie: una
-/// playlist sola, e un rapporto che diceva «creata» con voci che non c'erano
-/// più. Una riga già scritta in questa esecuzione non si adotta: si rifiuta con
-/// `library.playlistExists`, che chi chiama tratta già come rifiuto (la
+/// ammette. Una riga già scritta in questa esecuzione non si adotta: si rifiuta
+/// con `library.playlistExists`, che chi chiama tratta già come rifiuto (la
 /// playlist finisce fra quelle rifiutate con il suo codice). Niente
-/// «Chill (2)»: reimportare darebbe una scia di nomi nuovi, e il rifiuto invece
-/// è lo stesso a ogni passata. Il controllo sta **prima** dello svuotamento.
+/// «Chill (2)»: il rifiuto è lo stesso a ogni passata. Il controllo sta
+/// **prima** dello svuotamento.
 pub(crate) fn prepara_playlist_escludendo(
     tx: &Transaction<'_>,
     titolo: &str,
-    sorgente: Option<(Fonte, &str)>,
-    troncatura: Option<(u32, u32)>,
+    provenienza: Provenienza<'_>,
+    troncatura: Option<(Fonte, u32, u32)>,
     gia_scritte: &HashSet<i64>,
-) -> Result<(i64, bool, bool), AppError> {
+) -> Result<Preparata, AppError> {
     // Il titolo che arriva da fuori si **tronca** al tetto dei nomi invece di
     // farsi rifiutare: vedi `playlists::nome_da_importare`. Da qui in giù è
     // l'unico titolo che esiste — la chiave, il rinomino, la riga nuova — così
     // nessuna delle tre strade scrive un nome che la creazione a mano
     // rifiuterebbe.
-    let integro = titolo.trim();
-    let nome = crate::playlists::nome_da_importare(integro);
-    let titolo = nome.as_str();
-    let chiave = PlaylistKey::compute(Some(titolo));
-    if chiave.as_str().is_empty() {
-        return Err(AppError::new(ErrorCode::LibraryPlaylistNameInvalid {
-            name: titolo.to_owned(),
-        }));
-    }
-    // La chiave del titolo **intero**, per ritrovare una playlist importata
-    // prima della 3.0, quando il tetto non c'era e il nome lungo è entrato
-    // così com'era. Senza, reimportarla senza identificativo — un M3U — ne
-    // creerebbe una seconda accanto, col nome troncato e la storia vuota.
-    let chiave_intera = (titolo != integro).then(|| PlaylistKey::compute(Some(integro)));
+    let nome = crate::playlists::nome_da_importare(titolo.trim());
+    let chiave = PlaylistKey::compute(Some(&nome));
 
-    let per_identificativo = match sorgente {
-        Some((servizio, id)) => tx
-            .query_row(
-                "SELECT id, is_smart FROM playlists
-                  WHERE source_playlist_id = ?1 AND source_service = ?2",
-                rusqlite::params![id, servizio.nome()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0)),
-            )
-            .ok(),
-        None => None,
-    };
-    let per_chiave = |chiave: &PlaylistKey| {
-        tx.query_row(
-            "SELECT id, is_smart FROM playlists WHERE playlist_key = ?1",
-            [chiave.as_str()],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0)),
-        )
-        .ok()
-    };
-    let esistente: Option<(i64, bool)> = per_identificativo
-        .or_else(|| per_chiave(&chiave))
-        .or_else(|| chiave_intera.as_ref().and_then(per_chiave));
-
-    match esistente {
-        Some((id, _)) if gia_scritte.contains(&id) => Err(AppError::new(
-            ErrorCode::LibraryPlaylistExists {
-                name: titolo.to_owned(),
-            },
-        )
-        .with_cause(
-            "un'altra playlist con lo stesso nome è appena stata scritta da questa importazione",
-        )),
-        Some((_, true)) => Err(AppError::new(ErrorCode::LibraryPlaylistIsSmart {
-            playlist_id: esistente.map(|(id, _)| id),
-        })),
-        Some((id, false)) => {
-            if let Some((letti, attesi)) = troncatura {
-                return Err(AppError::new(monco(sorgente, letti, attesi)));
-            }
-            tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])
-                .map_err(|err| db_error("svuotamento della playlist", &err))?;
-            rinomina_se_libero(tx, id, titolo, &chiave)?;
-            segna_identificativo(tx, id, sorgente)?;
-            Ok((id, false, true))
+    match crate::playlists::destinazione(tx, &nome, provenienza, gia_scritte)? {
+        Destinazione::Sua { id, smart: true } => {
+            Err(AppError::new(ErrorCode::LibraryPlaylistIsSmart {
+                playlist_id: Some(id),
+            }))
         }
-        None => {
-            let id = crate::playlists::crea_riga(tx, titolo)?;
-            segna_identificativo(tx, id, sorgente)?;
-            Ok((id, true, false))
+        Destinazione::Sua { id, smart: false } => {
+            if let Some((fonte, letti, attesi)) = troncatura {
+                return Err(AppError::new(monco(fonte, letti, attesi)));
+            }
+            crate::playlists::svuota_per_riscrivere(tx, id)?;
+            rinomina_se_libero(tx, id, &nome, &chiave)?;
+            crate::playlists::segna_provenienza(tx, id, provenienza)?;
+            let nome: String = tx
+                .query_row("SELECT name FROM playlists WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .map_err(|err| db_error("nome della playlist riscritta", &err))?;
+            Ok(Preparata {
+                id,
+                nome,
+                creata: false,
+                sostituita: true,
+                accanto_a: None,
+            })
+        }
+        Destinazione::Nuova { nome, accanto_a } => {
+            let id = crate::playlists::crea_riga(tx, &nome)?;
+            crate::playlists::segna_provenienza(tx, id, provenienza)?;
+            Ok(Preparata {
+                id,
+                nome,
+                creata: true,
+                sostituita: false,
+                accanto_a,
+            })
         }
     }
 }
 
-/// Il codice che dice «l'elenco è arrivato monco», nel vocabolario del servizio
+/// Il codice che dice «l'elenco è arrivato monco», nel vocabolario della fonte
 /// che lo ha mandato.
 ///
 /// Due codici e non uno perché sono due frasi diverse davanti a chi guarda — una
 /// nomina l'archivio, l'altra il catalogo — e perché le cause non coincidono: là
 /// è uno zip che contiene meno di quel che dichiara, qui è una paginazione che
-/// si è interrotta. Senza fonte si tiene quello dell'archivio, che è il caso da
-/// cui questa guardia è nata.
-fn monco(sorgente: Option<(Fonte, &str)>, letti: u32, attesi: u32) -> ErrorCode {
-    match sorgente.map(|(fonte, _)| fonte) {
-        Some(Fonte::ArchivioSpotify) | None => {
-            ErrorCode::SpotifyTracklistTruncated { letti, attesi }
-        }
-        Some(_) => ErrorCode::CatalogoListTruncated { letti, attesi },
+/// si è interrotta.
+fn monco(fonte: Fonte, letti: u32, attesi: u32) -> ErrorCode {
+    match fonte {
+        Fonte::ArchivioSpotify => ErrorCode::SpotifyTracklistTruncated { letti, attesi },
+        _ => ErrorCode::CatalogoListTruncated { letti, attesi },
     }
 }
 
-/// Allinea il nome a quello che la playlist ha adesso su Spotify.
+/// Allinea il nome a quello che la playlist ha adesso alla fonte.
 ///
 /// `WHERE NOT EXISTS` invece di un `UPDATE` nudo: `playlist_key` è unica, e una
 /// collisione qui alzerebbe un errore che farebbe fallire l'importazione intera
 /// per un nome occupato. Il `WHERE` la trasforma in «zero righe cambiate», che è
 /// la decisione giusta — la playlist resta col nome vecchio e i suoi brani sono
-/// comunque arrivati.
+/// comunque arrivati. È anche quel che tiene «Chill (Spotify)» accanto a una
+/// «Chill» fatta qui: il nome di là è occupato, e si resta accanto.
 fn rinomina_se_libero(
     tx: &Transaction<'_>,
     id: i64,
@@ -641,27 +676,6 @@ fn rinomina_se_libero(
         rusqlite::params![id, nome, chiave.as_str()],
     )
     .map_err(|err| db_error("aggiornamento del nome della playlist", &err))?;
-    Ok(())
-}
-
-/// Scrive `source_service` e `source_playlist_id`, se c'è una sorgente.
-///
-/// Le due colonne si scrivono **insieme**: un identificativo senza servizio non
-/// si può più cercare (la clausola di `prepara_playlist` li vuole tutti e due),
-/// e un servizio senza identificativo non dice niente.
-fn segna_identificativo(
-    tx: &Transaction<'_>,
-    id: i64,
-    sorgente: Option<(Fonte, &str)>,
-) -> Result<(), AppError> {
-    let Some((servizio, identificativo)) = sorgente else {
-        return Ok(());
-    };
-    tx.execute(
-        "UPDATE playlists SET source_playlist_id = ?2, source_service = ?3 WHERE id = ?1",
-        rusqlite::params![id, identificativo, servizio.nome()],
-    )
-    .map_err(|err| db_error("scrittura dell'identificativo della playlist", &err))?;
     Ok(())
 }
 
@@ -779,6 +793,72 @@ pub(crate) struct Sorgente<'a> {
     pub titolo: &'a str,
 }
 
+/// La chiave con cui un brano di fuori sta in `desiderati`: metà
+/// dell'identità `(track_key, source_id)`.
+fn chiave_desiderato(brano: &BranoEsterno) -> TrackKey {
+    TrackKey::compute(TrackKeyInput {
+        artist: brano.artist.as_deref(),
+        title: Some(&brano.title),
+        album: brano.album.as_deref(),
+    })
+}
+
+/// Toglie dalla coda i brani che la fonte non ha più (R06-7, D-13).
+///
+/// Si importa una playlist con quaranta brani che mancano, lassù se ne tolgono
+/// dieci, si reimporta: le voci della playlist si sostituiscono, e quei dieci
+/// non ci sono più. Le loro righe però restavano in attesa, la coda li
+/// scaricava lo stesso, e [`crate::desiderati::riconcilia`] poteva rimetterli
+/// nella playlist appena sostituita quando il loro vecchio posto era libero.
+/// L'importazione era una sostituzione per le voci e un «solo aggiunte» per i
+/// desiderati: le due metà non dicevano la stessa cosa.
+///
+/// `brani` è **tutto** il contenuto di adesso, ritrovati e mancanti: una riga
+/// il cui brano oggi si ritrova in libreria la chiude `riconcilia` come
+/// `fatto`, e non va tolta. Si tolgono le righe di questa sorgente non ancora
+/// prese — in attesa, fallite, introvabili — e mai quelle `fatto`: quelle sono
+/// la storia di un file che c'è, e niente di questa funzione tocca la
+/// libreria. Fallite e introvabili comprese perché sono anche loro una
+/// richiesta: «Riprova i falliti» le rimetterebbe in coda, e «Da comprare»
+/// proporrebbe di comprare un brano che la playlist non vuole più.
+///
+/// Chi chiama la salta per un elenco monco.
+pub(crate) fn togli_superati(
+    tx: &Transaction<'_>,
+    source_id: &str,
+    brani: &[BranoEsterno],
+) -> Result<usize, AppError> {
+    let ancora: HashSet<String> = brani
+        .iter()
+        .map(|brano| chiave_desiderato(brano).into_string())
+        .collect();
+    let righe: Vec<(i64, String)> = {
+        let mut lettura = tx
+            .prepare(
+                "SELECT id, track_key FROM desiderati
+                  WHERE source_id = ?1 AND download_state <> 'fatto'",
+            )
+            .map_err(|err| db_error("desiderati di una sorgente", &err))?;
+        let righe = lettura
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|err| db_error("desiderati di una sorgente", &err))?;
+        righe
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error("desiderati di una sorgente", &err))?
+    };
+    let mut tolte = 0_usize;
+    for (id, chiave) in righe {
+        if ancora.contains(&chiave) {
+            continue;
+        }
+        tolte = tolte.saturating_add(
+            tx.execute("DELETE FROM desiderati WHERE id = ?1", [id])
+                .map_err(|err| db_error("un desiderato che la fonte non ha più", &err))?,
+        );
+    }
+    Ok(tolte)
+}
+
 /// Registra i brani che in libreria non ci sono.
 pub(crate) fn scrivi_desiderati(
     tx: &Transaction<'_>,
@@ -856,11 +936,7 @@ pub(crate) fn scrivi_desiderati(
         let Some(brano) = brani.get(*indice) else {
             continue;
         };
-        let chiave = TrackKey::compute(TrackKeyInput {
-            artist: brano.artist.as_deref(),
-            title: Some(&brano.title),
-            album: brano.album.as_deref(),
-        });
+        let chiave = chiave_desiderato(brano);
         if viste.contains_key(chiave.as_str()) {
             continue;
         }
@@ -1395,10 +1471,12 @@ mod prove {
     #[test]
     fn un_album_non_si_spaccia_per_una_playlist() {
         // `contenuto.id` è l'identificativo di quel che si sta importando: per
-        // un album è un album, e scriverlo in `playlists.source_playlist_id`
+        // un album è un album, e scriverlo nudo in `playlists.source_playlist_id`
         // farebbe riconoscere come «la stessa playlist» due cose che non lo
         // sono — bastano un album e una playlist con lo stesso identificativo
-        // dentro due spazi di nomi diversi.
+        // dentro due spazi di nomi diversi. Ci va col genere davanti: senza
+        // nessuna provenienza la playlist sarebbe «fatta qui», e reimportare
+        // l'album ne metterebbe un'altra accanto ogni volta (D-11).
         let mut db = database();
         aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
         let mut c = contenuto(vec![brano(
@@ -1415,7 +1493,12 @@ mod prove {
         let scritto: Option<String> = db
             .query_row("SELECT source_playlist_id FROM playlists", [], |r| r.get(0))
             .unwrap_or(None);
-        assert_eq!(scritto, None);
+        assert_eq!(scritto.as_deref(), Some("album:37i9dQZF1DXcBWIGoYBM5M"));
+        let Ok(di_nuovo) = import(&mut db, &c, true) else {
+            panic!("la reimportazione deve riuscire");
+        };
+        assert!(di_nuovo.playlist_replaced, "si ritrova, non si affianca");
+        assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 1);
     }
 
     #[test]
@@ -1460,6 +1543,9 @@ mod prove {
 
     #[test]
     fn una_playlist_automatica_non_si_tocca() {
+        // Fatta qui con lo stesso nome: non la si riempie (ricalcola da sé) e
+        // non si rifiuta più l'importazione — le si mette accanto quella di
+        // Spotify (D-11).
         let mut db = database();
         let _ = db.execute(
             "INSERT INTO playlists (playlist_key, name, created_at, updated_at, is_smart, rules)
@@ -1467,8 +1553,23 @@ mod prove {
             [],
         );
         let c = contenuto(vec![brano("Tizio", "Canzone", "Album", 200_000)]);
-        let esito = import(&mut db, &c, true);
-        assert!(esito.is_err(), "una playlist automatica ricalcola da sé");
+        let Ok(rapporto) = import(&mut db, &c, true) else {
+            panic!("l'importazione entra accanto");
+        };
+        assert_eq!(rapporto.playlist_beside.as_deref(), Some("La mia playlist"));
+        assert_eq!(
+            rapporto.playlist_name.as_deref(),
+            Some("La mia playlist (Spotify)")
+        );
+        assert_eq!(
+            testo(
+                &db,
+                "SELECT rules FROM playlists WHERE playlist_key = 'la mia playlist'"
+            )
+            .as_deref(),
+            Some("{}"),
+            "l'automatica resta com'era"
+        );
     }
 
     #[test]
@@ -1502,6 +1603,176 @@ mod prove {
             conta(&db, "SELECT COUNT(*) FROM playlist_tracks"),
             1,
             "e soprattutto non deve aver cancellato niente"
+        );
+    }
+
+    #[test]
+    fn una_playlist_fatta_a_mano_con_lo_stesso_nome_resta_com_e() {
+        // D-11: il titolo di un item dell'Internet Archive coincide con una
+        // playlist fatta qui. Prima la si svuotava e riempiva; adesso resta
+        // com'è, e l'importazione entra accanto, una volta sola anche
+        // reimportando.
+        let mut db = database();
+        aggiungi(&db, "Grateful Dead", "Scarlet Begonias", "Cornell", 600_000);
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let Ok(mia) = crate::playlists::create(&db, "La mia playlist") else {
+            panic!("la playlist fatta a mano si deve creare");
+        };
+        let karma = conta(&db, "SELECT id FROM tracks WHERE title = 'Karma Police'");
+        let Ok(_) = crate::playlists::add_tracks(&mut db, mia.id, &[karma, karma]) else {
+            panic!("le voci fatte a mano si devono scrivere");
+        };
+        let c = contenuto_catalogo(vec![brano(
+            "Grateful Dead",
+            "Scarlet Begonias",
+            "Cornell",
+            600_000,
+        )]);
+        for giro in 0..2 {
+            let Ok(_) = import(&mut db, &c, true) else {
+                panic!("l'importazione deve riuscire");
+            };
+            assert_eq!(
+                conta(
+                    &db,
+                    &format!(
+                        "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = {}",
+                        mia.id
+                    )
+                ),
+                2,
+                "giro {giro}: le voci fatte a mano restano"
+            );
+            assert_eq!(
+                conta(&db, "SELECT COUNT(*) FROM playlists"),
+                2,
+                "giro {giro}"
+            );
+        }
+    }
+
+    #[test]
+    fn riscrivere_una_playlist_toglie_i_posti_tenuti_da_parte() {
+        // 03-11: i posti di `playlist_orfane` sono del contenuto di prima. Un
+        // brano tornato sul disco rientrava nella playlist appena sostituita.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let c = contenuto(vec![brano(
+            "Radiohead",
+            "Karma Police",
+            "OK Computer",
+            264_066,
+        )]);
+        let Ok(primo) = import(&mut db, &c, true) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        let Some(id) = primo.playlist_id else {
+            panic!("la playlist c'è");
+        };
+        let Ok(()) = db.execute_batch(&format!(
+            "INSERT INTO brani_orfani (content_key, orfano_at) VALUES ('via', 1);
+             INSERT INTO playlist_orfane (content_key, playlist_id, position) VALUES ('via', {id}, 5);"
+        )) else {
+            panic!("il posto tenuto da parte si deve scrivere");
+        };
+        let Ok(_) = import(&mut db, &c, true) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                &format!("SELECT COUNT(*) FROM playlist_orfane WHERE playlist_id = {id}")
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn reimportare_toglie_dalla_coda_i_brani_che_la_playlist_non_ha_piu() {
+        // R06-7, D-13: due brani mancano, e lassù uno dei due viene tolto.
+        // Reimportando, la sua riga non aspetta più: non ha più motivo di
+        // essere scaricato. Quella del brano che c'è ancora resta, e niente
+        // si toglie dalla libreria.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let resta = brano("Nessuno", "Resta", "Ignoto", 200_000);
+        let tolto = brano("Nessuno", "Tolto", "Ignoto", 200_000);
+        let tutti = contenuto(vec![
+            brano("Radiohead", "Karma Police", "OK Computer", 264_066),
+            resta.clone(),
+            tolto,
+        ]);
+        let Ok(primo) = import(&mut db, &tutti, true) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        assert_eq!(primo.wanted_rows, 2);
+        // Un brano scaricato in passato da questa stessa importazione: la sua
+        // riga è storia, e resta anche se la playlist non lo vuole più.
+        let Ok(_) = db.execute(
+            "INSERT INTO desiderati (track_key, title, source_kind, source_id, source_title,
+                                     added_at, download_state)
+             VALUES ('k-preso', 'Preso', 'playlist', ?1, 'La mia playlist', 1, 'fatto')",
+            [&tutti.id],
+        ) else {
+            panic!("la riga fatta si deve scrivere");
+        };
+
+        let dopo = contenuto(vec![
+            brano("Radiohead", "Karma Police", "OK Computer", 264_066),
+            resta,
+        ]);
+        let Ok(_) = import(&mut db, &dopo, true) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'attesa'"
+            ),
+            1,
+            "il brano tolto lassù non aspetta più"
+        );
+        assert_eq!(
+            testo(
+                &db,
+                "SELECT title FROM desiderati WHERE download_state = 'attesa'"
+            )
+            .as_deref(),
+            Some("Resta")
+        );
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'fatto'"
+            ),
+            1,
+            "quel che è già stato preso resta"
+        );
+    }
+
+    #[test]
+    fn un_elenco_monco_non_toglie_niente_dalla_coda() {
+        // Duecento brani letti su trecento: quelli che mancano all'elenco non
+        // sono stati tolti lassù, sono rimasti nella pagina che non è arrivata.
+        let mut db = database();
+        let tutti = contenuto(vec![
+            brano("Nessuno", "Uno", "Ignoto", 200_000),
+            brano("Nessuno", "Due", "Ignoto", 200_000),
+        ]);
+        let Ok(_) = import(&mut db, &tutti, false) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        let mut monco = contenuto(vec![brano("Nessuno", "Uno", "Ignoto", 200_000)]);
+        monco.declared_total = Some(2);
+        let Ok(_) = import(&mut db, &monco, false) else {
+            panic!("la seconda importazione, senza playlist, deve riuscire");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM desiderati WHERE download_state = 'attesa'"
+            ),
+            2
         );
     }
 
@@ -1796,11 +2067,12 @@ mod prove {
     }
 
     #[test]
-    fn una_playlist_dal_nome_lungo_di_prima_della_tre_si_ritrova() {
-        // Prima della 3.0 il tetto non c'era, e un nome lungo è entrato intero
-        // con la chiave del nome intero. Reimportarla senza identificativo — il
-        // caso di un M3U — deve sostituirla, non crearne una seconda col nome
-        // troncato e la storia vuota accanto.
+    fn una_playlist_dal_nome_lungo_di_prima_della_tre_resta_com_e() {
+        // Prima della 3.0 il tetto non c'era, e un nome lungo è entrato intero.
+        // Fino alla 3.2.0 la si ritrovava per la chiave del nome intero e la si
+        // sostituiva; senza una provenienza scritta è indistinguibile da una
+        // fatta qui, quindi resta com'è e l'importazione ne crea una sua, col
+        // nome troncato (D-11).
         let mut db = database();
         aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
         let lungo = "Una serata lunghissima con gli amici di sempre, ".repeat(6);
@@ -1816,13 +2088,18 @@ mod prove {
         let Ok(tx) = tx else {
             panic!("la transazione di prova si deve aprire");
         };
-        let Ok((_, creata, sostituita)) = prepara_playlist(&tx, &lungo, None, None) else {
-            panic!("la playlist di prima si deve ritrovare");
+        let provenienza = Provenienza {
+            servizio: Fonte::FilePlaylist.nome(),
+            id: "rymembra:file:prova",
+            stabile: false,
+            etichetta: etichetta_accanto(Fonte::FilePlaylist),
+            nata_il: None,
         };
-        assert!(
-            !creata && sostituita,
-            "ritrovata e sostituita, non duplicata"
-        );
+        let Ok(fatta) = prepara_playlist(&tx, &lungo, provenienza, None) else {
+            panic!("l'importazione deve trovare dove scrivere");
+        };
+        assert!(fatta.creata && !fatta.sostituita, "{fatta:?}");
+        assert!(fatta.nome.chars().count() <= crate::playlists::NOME_MASSIMO);
         drop(tx);
     }
 }

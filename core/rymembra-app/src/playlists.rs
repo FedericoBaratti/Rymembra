@@ -31,7 +31,9 @@
 //! [`add_tracks`] resta un accodamento: scrive oltre `MAX(position)`, dove non
 //! c'è niente con cui scontrarsi.
 
-use rusqlite::{Connection, Transaction};
+use std::collections::HashSet;
+
+use rusqlite::{Connection, OptionalExtension as _, Transaction};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::keys::PlaylistKey;
 use rymembra_domain::regole::Insieme;
@@ -484,6 +486,292 @@ fn e_conflitto(err: &rusqlite::Error) -> bool {
     )
 }
 
+// ── le playlist che scrive un'importazione ────────────────────────────────
+
+/// Da dove viene una playlist che un'importazione scrive: la coppia
+/// `source_service`/`source_playlist_id` con cui la si riconosce la volta dopo.
+///
+/// # Perché ogni importazione ne mette una
+///
+/// Perché una playlist senza provenienza è **fatta qui** (D-11), e una playlist
+/// fatta qui un'importazione non la sostituisce mai. Fino alla 3.2.0
+/// l'archivio di Spotify e i file M3U non ne scrivevano nessuna, e alla
+/// reimportazione si ritrovava la playlist per nome soltanto: una «Chill» messa
+/// insieme a mano, brano per brano, era indistinguibile dalla «Chill» importata
+/// la settimana prima, e si svuotava per far posto a quella di Spotify. Con la
+/// provenienza scritta la distinzione c'è, e chi non ce l'ha è dell'utente.
+///
+/// Non dipende da [`rymembra_domain::esterno::Fonte`] apposta: il servizio è il
+/// testo che finisce in colonna, e lo può scrivere anche chi non viene da un
+/// catalogo — il vecchio database, un profilo, un ripristino.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Provenienza<'a> {
+    /// `source_service`: `archivio-spotify`, `internet-archive`,
+    /// `file-playlist`, `vecchio-database`…
+    pub servizio: &'a str,
+    /// `source_playlist_id`.
+    pub id: &'a str,
+    /// L'identificativo è del servizio, e resta lo stesso se lassù la playlist
+    /// cambia nome (Spotify dall'API, l'Internet Archive, Audius)?
+    ///
+    /// Solo un identificativo così si cerca **ovunque**: è il caso per cui
+    /// `005_account.sql` ha aggiunto la colonna. Uno fabbricato dal nome — quello
+    /// dell'archivio di Spotify, di un M3U, del vecchio database — si cerca solo
+    /// fra le playlist che portano il nome giusto: cercato ovunque, ritroverebbe
+    /// anche la playlist che l'utente ha rinominato qui per farla sua, e la
+    /// riscriverebbe col nome di prima.
+    pub stabile: bool,
+    /// Come si chiama la fonte nel nome di una playlist messa accanto:
+    /// «Chill (Spotify)». Un nome proprio, o comunque una parola che si legge
+    /// uguale in ogni lingua: il nome finisce nel database, e la lingua
+    /// dell'interfaccia può cambiare dopo.
+    pub etichetta: &'a str,
+    /// Per le importazioni scritte prima che la provenienza ci fosse: una
+    /// playlist con questo nome **nata in questo istante** è la stessa.
+    ///
+    /// Lo usa il vecchio database, che ha sempre copiato `created_at` della
+    /// playlist di là: un istante al millisecondo che una playlist fatta qui non
+    /// ha modo di ripetere.
+    pub nata_il: Option<i64>,
+}
+
+/// Dove scrive un'importazione, deciso da [`destinazione`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Destinazione {
+    /// Una playlist che questa stessa provenienza aveva già scritto.
+    Sua {
+        /// La riga.
+        id: i64,
+        /// È automatica.
+        smart: bool,
+    },
+    /// Non c'è: va creata con questo nome.
+    Nuova {
+        /// Il nome libero: quello di là, o quello con la fonte fra parentesi.
+        nome: String,
+        /// Il nome della playlist che c'era già e che si è lasciata stare,
+        /// quando la nuova le sta accanto. È quel che il piano deve dire.
+        accanto_a: Option<String>,
+    },
+}
+
+/// Quanti nomi «(Fonte n)» si provano prima di arrendersi.
+///
+/// Arrivarci vuol dire cento playlist con lo stesso nome e la stessa fonte: un
+/// rifiuto con il suo codice è meglio di un ciclo che non finisce.
+const ACCANTO_MASSIMI: usize = 100;
+
+/// Il nome di una playlist messa accanto a un'altra: «Chill (Spotify)»,
+/// «Chill (Spotify 2)»…, troncato davanti perché la fonte resti leggibile.
+fn nome_accanto(base: &str, etichetta: &str, numero: usize) -> String {
+    let coda = if numero <= 1 {
+        format!(" ({etichetta})")
+    } else {
+        format!(" ({etichetta} {numero})")
+    };
+    let spazio = NOME_MASSIMO.saturating_sub(coda.chars().count());
+    let testa = if base.chars().count() <= spazio {
+        base.to_owned()
+    } else {
+        let corta: String = base.chars().take(spazio.saturating_sub(1)).collect();
+        format!("{}…", corta.trim_end())
+    };
+    format!("{testa}{coda}")
+}
+
+/// Una riga che porta già un nome.
+struct Occupante {
+    id: i64,
+    nome: String,
+    smart: bool,
+    servizio: Option<String>,
+    sorgente: Option<String>,
+    nata_il: i64,
+}
+
+fn occupante(tx: &Transaction<'_>, chiave: &PlaylistKey) -> Result<Option<Occupante>, AppError> {
+    tx.query_row(
+        "SELECT id, name, is_smart, source_service, source_playlist_id, created_at
+           FROM playlists WHERE playlist_key = ?1",
+        [chiave.as_str()],
+        |r| {
+            Ok(Occupante {
+                id: r.get(0)?,
+                nome: r.get(1)?,
+                smart: r.get::<_, i64>(2)? != 0,
+                servizio: r.get(3)?,
+                sorgente: r.get(4)?,
+                nata_il: r.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|err| db_error("ricerca di una playlist per nome", &err))
+}
+
+/// Dove scrive un'importazione che porta la playlist `titolo` da `provenienza`.
+///
+/// La funzione sola per tutte le importazioni (D-11): il link di un catalogo,
+/// l'archivio di Spotify, un file M3U, il vecchio database. Decide e non scrive
+/// niente: chi chiama sa se una playlist «sua» va riscritta (un link, un
+/// archivio) o allungata (il vecchio database), e crea la nuova con il nome che
+/// riceve.
+///
+/// # L'ordine
+///
+/// 1. Se l'identificativo è [`Provenienza::stabile`], la playlist che lo porta,
+///    dovunque sia e comunque si chiami adesso.
+/// 2. Poi i nomi, uno dopo l'altro: `titolo`, «titolo (Fonte)», «titolo (Fonte
+///    2)»… Il primo libero è quello della playlist nuova. Uno occupato da una
+///    playlist con la **stessa** provenienza è quella da riscrivere — è lì che
+///    si ritrova la copia messa accanto alla volta prima. Uno occupato da
+///    qualunque altra, fatta qui o venuta da un'altra fonte, **si lascia
+///    stare** e si passa al nome dopo: mai sostituire una playlist fatta qui.
+///
+/// # Due omonime nella stessa importazione
+///
+/// Un nome occupato da una playlist che questa stessa esecuzione ha appena
+/// scritto (`gia_scritte`) non porta al nome dopo: si rifiuta con
+/// `library.playlistExists`, come prima. Spotify ammette due playlist con lo
+/// stesso nome, e la seconda resta fuori a ogni passata, invece di diventare
+/// «(Spotify)» una volta e chissà cosa la volta dopo.
+///
+/// # Errori
+///
+/// `library.playlistNameInvalid` se il nome non identifica niente;
+/// `library.playlistExists` per la seconda omonima, o oltre
+/// [`ACCANTO_MASSIMI`]; `db.queryFailed`.
+pub(crate) fn destinazione(
+    tx: &Transaction<'_>,
+    titolo: &str,
+    provenienza: Provenienza<'_>,
+    gia_scritte: &HashSet<i64>,
+) -> Result<Destinazione, AppError> {
+    let titolo = titolo.trim();
+    if PlaylistKey::compute(Some(titolo)).as_str().is_empty() {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistNameInvalid {
+            name: titolo.to_owned(),
+        }));
+    }
+    let omonima = || {
+        AppError::new(ErrorCode::LibraryPlaylistExists {
+            name: titolo.to_owned(),
+        })
+        .with_cause(
+            "un'altra playlist con lo stesso nome è appena stata scritta da questa importazione",
+        )
+    };
+
+    if provenienza.stabile {
+        let trovata: Option<(i64, bool)> = tx
+            .query_row(
+                "SELECT id, is_smart FROM playlists
+                  WHERE source_service = ?1 AND source_playlist_id = ?2
+                  ORDER BY id LIMIT 1",
+                rusqlite::params![provenienza.servizio, provenienza.id],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
+            )
+            .optional()
+            .map_err(|err| db_error("ricerca di una playlist importata", &err))?;
+        if let Some((id, smart)) = trovata {
+            if gia_scritte.contains(&id) {
+                return Err(omonima());
+            }
+            return Ok(Destinazione::Sua { id, smart });
+        }
+    }
+
+    let mut accanto_a: Option<String> = None;
+    for numero in 0..=ACCANTO_MASSIMI {
+        let nome = if numero == 0 {
+            titolo.to_owned()
+        } else {
+            nome_accanto(titolo, provenienza.etichetta, numero)
+        };
+        let Some(chi) = occupante(tx, &PlaylistKey::compute(Some(&nome)))? else {
+            return Ok(Destinazione::Nuova { nome, accanto_a });
+        };
+        if gia_scritte.contains(&chi.id) {
+            return Err(omonima());
+        }
+        let stessa_provenienza = chi.servizio.as_deref() == Some(provenienza.servizio)
+            && chi.sorgente.as_deref() == Some(provenienza.id);
+        // Senza provenienza scritta, e nata nello stesso millisecondo: è la
+        // stessa playlist, portata da un'importazione di prima del marchio.
+        // Zero non conta: è quel che resta di un istante che il vecchio
+        // database non aveva.
+        let di_prima = chi.servizio.is_none()
+            && provenienza
+                .nata_il
+                .is_some_and(|quando| quando > 0 && quando == chi.nata_il);
+        if stessa_provenienza || di_prima {
+            return Ok(Destinazione::Sua {
+                id: chi.id,
+                smart: chi.smart,
+            });
+        }
+        accanto_a.get_or_insert(chi.nome);
+    }
+    Err(AppError::new(ErrorCode::LibraryPlaylistExists {
+        name: titolo.to_owned(),
+    })
+    .with_cause(format!(
+        "{ACCANTO_MASSIMI} playlist «{titolo} ({})» ci sono già",
+        provenienza.etichetta
+    )))
+}
+
+/// Scrive la provenienza su una playlist: le due colonne **insieme**, perché un
+/// identificativo senza servizio non si ritrova più, e un servizio senza
+/// identificativo non dice niente.
+pub(crate) fn segna_provenienza(
+    tx: &Transaction<'_>,
+    id: i64,
+    provenienza: Provenienza<'_>,
+) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE playlists SET source_service = ?2, source_playlist_id = ?3 WHERE id = ?1",
+        rusqlite::params![id, provenienza.servizio, provenienza.id],
+    )
+    .map_err(|err| db_error("scrittura della provenienza di una playlist", &err))?;
+    Ok(())
+}
+
+/// Svuota una playlist che un'importazione sta per riscrivere.
+///
+/// Le voci **e** i posti tenuti da parte in `playlist_orfane` (03-11): sono i
+/// posti del contenuto di prima, e un brano che torna sul disco entro i
+/// novanta giorni rientrerebbe nella playlist nuova, al suo vecchio posto o in
+/// coda. È la stessa funzione per ogni importazione che sostituisce — e per
+/// chiunque un giorno riscriva una playlist da una fonte.
+pub(crate) fn svuota_per_riscrivere(tx: &Transaction<'_>, id: i64) -> Result<(), AppError> {
+    tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])
+        .map_err(|err| db_error("svuotamento della playlist", &err))?;
+    tx.execute("DELETE FROM playlist_orfane WHERE playlist_id = ?1", [id])
+        .map_err(|err| db_error("svuotamento dei posti tenuti da parte", &err))?;
+    Ok(())
+}
+
+/// Le regole di una playlist intelligente si possono scrivere?
+///
+/// Serve **almeno una condizione valida** (D-22). Nessuna condizione con
+/// `Tutte` è «tutta la libreria» sotto un nome che promette altro, e con
+/// `Qualsiasi` è una playlist che non prende mai niente: tutte e due nascono da
+/// un editor che non aveva ancora le regole in mano, o da un salvataggio a
+/// righe vuote, non da una scelta. Le righe storte contano come assenti, perché
+/// [`Insieme::valide`] le salta anche quando valuta. Si rifiuta qui, nel nucleo,
+/// come un nome vuoto: l'editor può spegnere il tasto, ma ogni altra porta che
+/// scrive regole passa di qui.
+fn regole_utilizzabili(insieme: &Insieme) -> Result<(), AppError> {
+    if insieme.valide().is_empty() {
+        return Err(AppError::new(ErrorCode::LibrarySmartRulesInvalid).with_cause(format!(
+            "nessuna condizione valida su {} righe: la playlist prenderebbe tutta la              libreria, o niente",
+            insieme.regole.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Crea una playlist intelligente.
 ///
 /// # Perché è una funzione a parte e non un parametro di [`create`]
@@ -496,12 +784,15 @@ fn e_conflitto(err: &rusqlite::Error) -> bool {
 ///
 /// # Errori
 ///
-/// `library.playlistNameInvalid`, `library.playlistExists`, `db.queryFailed`.
+/// `library.smartRulesInvalid` senza nessuna condizione valida (vedi
+/// [`regole_utilizzabili`]), `library.playlistNameInvalid`,
+/// `library.playlistExists`, `db.queryFailed`.
 pub fn create_smart(
     connection: &Connection,
     name: &str,
     insieme: &Insieme,
 ) -> Result<PlaylistSummary, AppError> {
+    regole_utilizzabili(insieme)?;
     let regole = crate::smart::a_json(insieme)?;
     // Un savepoint tiene insieme i due passi: se la scrittura delle regole
     // fallisse dopo la creazione della riga, resterebbe una playlist A MANO
@@ -577,11 +868,15 @@ fn disfa_savepoint(connection: &Connection, nome: &str, nostra: bool) {
 /// non è intelligente: cambiare le regole di una playlist a mano vorrebbe dire
 /// convertirla, e una conversione butta via delle righe che qualcuno ha messo
 /// lì a una a una. Se serve, si crea una playlist nuova.
+///
+/// `library.smartRulesInvalid` se l'insieme nuovo non ha nessuna condizione
+/// valida: le regole di prima restano com'erano (vedi [`regole_utilizzabili`]).
 pub fn set_rules(
     connection: &Connection,
     id: i64,
     insieme: &Insieme,
 ) -> Result<PlaylistSummary, AppError> {
+    regole_utilizzabili(insieme)?;
     if regole_di(connection, id)?.is_none() {
         return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
             playlist_id: Some(id),
@@ -1356,12 +1651,273 @@ mod prove {
         // Il controllo c'era da sempre — `modificabile` — e fino a oggi non
         // c'era modo di creare una playlist che lo facesse scattare.
         let mut c = libreria();
-        let creata = create_smart(&c, "Tutto", &Insieme::default()).expect("creata");
+        let creata = create_smart(&c, "I lunghi", &una_condizione()).expect("creata");
         let esito = add_tracks(&mut c, creata.id, &[1]);
         assert!(matches!(
             esito.map_err(|e| e.code().clone()),
             Err(ErrorCode::LibraryPlaylistIsSmart { .. })
         ));
+    }
+
+    /// Una regola che prende qualcosa: i brani più lunghi di due secondi e
+    /// mezzo.
+    fn una_condizione() -> Insieme {
+        use rymembra_domain::regole::{Campo, Operatore, Regola, Valore};
+        Insieme {
+            regole: vec![Regola {
+                campo: Campo::Durata,
+                operatore: Operatore::Maggiore,
+                valore: Valore::Numero(2500),
+            }],
+            ..Insieme::default()
+        }
+    }
+
+    #[test]
+    fn una_playlist_intelligente_senza_condizioni_non_nasce() {
+        // D-22: nessuna condizione vuol dire tutta la libreria, sotto un nome
+        // che promette altro. Il nucleo la rifiuta come un nome vuoto, e non
+        // lascia una riga a metà.
+        use rymembra_domain::regole::{Campo, Operatore, Regola, Valore};
+        let c = libreria();
+        let esito = create_smart(&c, "Tutto", &Insieme::default());
+        assert!(
+            matches!(
+                esito.as_ref().map_err(|e| e.code().clone()),
+                Err(ErrorCode::LibrarySmartRulesInvalid)
+            ),
+            "{esito:?}"
+        );
+        // Solo righe storte vale lo stesso: si saltano, e resta «nessuna».
+        let storte = Insieme {
+            regole: vec![Regola {
+                campo: Campo::Titolo,
+                operatore: Operatore::Contiene,
+                valore: Valore::Nessuno,
+            }],
+            ..Insieme::default()
+        };
+        assert!(create_smart(&c, "Storta", &storte).is_err());
+        assert_eq!(conta(&c, "SELECT COUNT(*) FROM playlists"), 0);
+    }
+
+    #[test]
+    fn le_regole_di_una_playlist_intelligente_non_si_svuotano() {
+        // R13b-1: l'editor che non ha ancora le regole in mano mandava `[]`, e
+        // la playlist diventava tutta la libreria, anche sugli altri
+        // dispositivi. Il rifiuto non tocca né le regole né `updated_at`.
+        let c = libreria();
+        let creata = create_smart(&c, "I lunghi", &una_condizione()).expect("creata");
+        let prima: (String, i64) = c
+            .query_row(
+                "SELECT rules, updated_at FROM playlists WHERE id = ?1",
+                [creata.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("riga");
+        let esito = set_rules(&c, creata.id, &Insieme::default());
+        assert!(
+            matches!(
+                esito.as_ref().map_err(|e| e.code().clone()),
+                Err(ErrorCode::LibrarySmartRulesInvalid)
+            ),
+            "{esito:?}"
+        );
+        let dopo: (String, i64) = c
+            .query_row(
+                "SELECT rules, updated_at FROM playlists WHERE id = ?1",
+                [creata.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("riga");
+        assert_eq!(prima, dopo);
+    }
+
+    /// Una provenienza di prova.
+    fn da_spotify(id: &str, stabile: bool) -> Provenienza<'_> {
+        Provenienza {
+            servizio: "archivio-spotify",
+            id,
+            stabile,
+            etichetta: "Spotify",
+            nata_il: None,
+        }
+    }
+
+    fn con_provenienza(c: &Connection, nome: &str, servizio: &str, id: &str) -> i64 {
+        let fatta = create(c, nome).expect("creata");
+        c.execute(
+            "UPDATE playlists SET source_service = ?2, source_playlist_id = ?3 WHERE id = ?1",
+            rusqlite::params![fatta.id, servizio, id],
+        )
+        .expect("provenienza");
+        fatta.id
+    }
+
+    #[test]
+    fn la_destinazione_di_un_identificativo_stabile_si_ritrova_anche_rinominata() {
+        let mut c = libreria();
+        let sua = con_provenienza(&c, "Corsa 2026", "archivio-spotify", "abc");
+        let tx = c.transaction().expect("transazione");
+        assert_eq!(
+            destinazione(&tx, "Corsa", da_spotify("abc", true), &HashSet::new()),
+            Ok(Destinazione::Sua {
+                id: sua,
+                smart: false
+            })
+        );
+        // Lo stesso identificativo di un altro servizio non è lei.
+        let altro = Provenienza {
+            servizio: "audius",
+            ..da_spotify("abc", true)
+        };
+        assert!(matches!(
+            destinazione(&tx, "Corsa", altro, &HashSet::new()),
+            Ok(Destinazione::Nuova { .. })
+        ));
+    }
+
+    #[test]
+    fn la_destinazione_non_prende_mai_una_playlist_fatta_qui() {
+        // D-11: il nome è occupato da una playlist senza provenienza. Non è
+        // sua: si va accanto, e si dice accanto a chi.
+        let mut c = libreria();
+        create(&c, "Chill").expect("fatta a mano");
+        // E il primo nome accanto è già di un'altra fonte: si va oltre.
+        con_provenienza(&c, "Chill (Spotify)", "internet-archive", "x");
+        let tx = c.transaction().expect("transazione");
+        assert_eq!(
+            destinazione(
+                &tx,
+                "Chill",
+                da_spotify("rymembra:archivio:playlist:chill", false),
+                &HashSet::new()
+            ),
+            Ok(Destinazione::Nuova {
+                nome: "Chill (Spotify 2)".to_owned(),
+                accanto_a: Some("Chill".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn la_destinazione_ritrova_la_sua_copia_messa_accanto() {
+        // Fabbricato dal nome: si cerca fra i nomi, e «Chill (Spotify)» con la
+        // stessa provenienza è quella da riscrivere. Una copia rinominata qui
+        // («Chill d'estate») non è fra i nomi, e non si tocca.
+        let mut c = libreria();
+        create(&c, "Chill").expect("fatta a mano");
+        let id = "rymembra:archivio:playlist:chill";
+        let accanto = con_provenienza(&c, "Chill (Spotify)", "archivio-spotify", id);
+        con_provenienza(&c, "Chill d'estate", "archivio-spotify", id);
+        let tx = c.transaction().expect("transazione");
+        assert_eq!(
+            destinazione(&tx, "Chill", da_spotify(id, false), &HashSet::new()),
+            Ok(Destinazione::Sua {
+                id: accanto,
+                smart: false
+            })
+        );
+    }
+
+    #[test]
+    fn la_destinazione_rifiuta_la_seconda_omonima_della_stessa_importazione() {
+        let mut c = libreria();
+        let prima = con_provenienza(&c, "Chill", "archivio-spotify", "rymembra:a");
+        let tx = c.transaction().expect("transazione");
+        let gia: HashSet<i64> = [prima].into_iter().collect();
+        let esito = destinazione(&tx, "Chill", da_spotify("rymembra:b", false), &gia);
+        assert!(
+            matches!(
+                esito.as_ref().map_err(|e| e.code().clone()),
+                Err(ErrorCode::LibraryPlaylistExists { .. })
+            ),
+            "{esito:?}"
+        );
+        // Ritrovata per identificativo, ma già scritta in questa esecuzione: lo
+        // stesso rifiuto.
+        let esito = destinazione(&tx, "Altro", da_spotify("rymembra:a", true), &gia);
+        assert!(esito.is_err(), "{esito:?}");
+    }
+
+    #[test]
+    fn la_destinazione_dice_se_la_sua_e_automatica() {
+        let mut c = libreria();
+        let sua = con_provenienza(&c, "Regole", "archivio-spotify", "abc");
+        c.execute("UPDATE playlists SET is_smart = 1 WHERE id = ?1", [sua])
+            .expect("automatica");
+        let tx = c.transaction().expect("transazione");
+        assert_eq!(
+            destinazione(&tx, "Regole", da_spotify("abc", true), &HashSet::new()),
+            Ok(Destinazione::Sua {
+                id: sua,
+                smart: true
+            })
+        );
+    }
+
+    #[test]
+    fn la_destinazione_riconosce_una_playlist_portata_prima_del_marchio() {
+        // Il vecchio database copiava `created_at`: lo stesso nome nato nello
+        // stesso millisecondo è la stessa playlist, anche senza provenienza.
+        let mut c = libreria();
+        let vecchia = create(&c, "Mia").expect("portata la volta prima");
+        c.execute(
+            "UPDATE playlists SET created_at = 1234 WHERE id = ?1",
+            [vecchia.id],
+        )
+        .expect("data");
+        let tx = c.transaction().expect("transazione");
+        let dal_vecchio = |nata_il| Provenienza {
+            servizio: "vecchio-database",
+            id: "rymembra:vecchio-database:mia",
+            stabile: false,
+            etichetta: "1.0",
+            nata_il,
+        };
+        assert_eq!(
+            destinazione(&tx, "Mia", dal_vecchio(Some(1234)), &HashSet::new()),
+            Ok(Destinazione::Sua {
+                id: vecchia.id,
+                smart: false
+            })
+        );
+        assert!(matches!(
+            destinazione(&tx, "Mia", dal_vecchio(Some(99)), &HashSet::new()),
+            Ok(Destinazione::Nuova { .. })
+        ));
+    }
+
+    #[test]
+    fn il_nome_accanto_tiene_la_fonte_anche_oltre_il_tetto() {
+        let lungo = "x".repeat(NOME_MASSIMO);
+        let nome = nome_accanto(&lungo, "Spotify", 1);
+        assert!(
+            nome.chars().count() <= NOME_MASSIMO,
+            "{}",
+            nome.chars().count()
+        );
+        assert!(nome.ends_with("… (Spotify)"), "{nome}");
+        assert_eq!(nome_accanto("Chill", "Spotify", 3), "Chill (Spotify 3)");
+    }
+
+    #[test]
+    fn svuotare_per_riscrivere_toglie_anche_i_posti_tenuti_da_parte() {
+        // 03-11.
+        let mut c = libreria();
+        let p = create(&c, "Da rifare").expect("creata");
+        add_tracks(&mut c, p.id, &[1, 2]).expect("voci");
+        c.execute_batch(&format!(
+            "INSERT INTO brani_orfani (content_key, orfano_at) VALUES ('via', 1);
+             INSERT INTO playlist_orfane (content_key, playlist_id, position) VALUES ('via', {}, 1);",
+            p.id
+        ))
+        .expect("posto tenuto da parte");
+        let tx = c.transaction().expect("transazione");
+        svuota_per_riscrivere(&tx, p.id).expect("svuotata");
+        tx.commit().expect("chiusa");
+        assert_eq!(conta(&c, "SELECT COUNT(*) FROM playlist_tracks"), 0);
+        assert_eq!(conta(&c, "SELECT COUNT(*) FROM playlist_orfane"), 0);
     }
 
     #[test]
@@ -1370,7 +1926,7 @@ mod prove {
         // e una conversione butta via righe messe lì a una a una.
         let c = libreria();
         let creata = create(&c, "A mano").expect("creata");
-        assert!(set_rules(&c, creata.id, &Insieme::default()).is_err());
+        assert!(set_rules(&c, creata.id, &una_condizione()).is_err());
         assert_eq!(regole_di(&c, creata.id), Ok(None));
     }
 
@@ -2001,7 +2557,9 @@ mod prove {
             .query_row("SELECT COUNT(*) FROM playlists", [], |riga| riga.get(0))
             .expect("il lettore prende il lucchetto condiviso");
 
-        let esito = create_smart(&connection, "Mai nata", &Insieme::default());
+        // Con una condizione vera: senza, il rifiuto di D-22 arriverebbe prima
+        // del commit, e la prova passerebbe per la ragione sbagliata.
+        let esito = create_smart(&connection, "Mai nata", &una_condizione());
         assert!(esito.is_err(), "il commit non può passare: {esito:?}");
         assert!(
             connection.is_autocommit(),

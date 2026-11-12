@@ -13,7 +13,7 @@ const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import
 
 test("Account: mentre importa, Escape, il velo e «Annulla» non chiudono", () => {
   const account = sorgente("Account.tsx");
-  assert.match(account, /useFinestrella<HTMLDivElement>\(scrivendo \? restaAperta : onChiudi\)/);
+  assert.match(account, /useFinestrella<HTMLDivElement>\(scrivendo \? restaAperta : onChiudi,/);
   assert.match(account, /gesto\.clic\(e\.target, e\.currentTarget\) && !scrivendo\) onChiudi\(\)/);
   assert.match(account, /onClick=\{onChiudi\}\s+disabled=\{scrivendo\}/);
   // Si alza solo per la scrittura, non per l'apertura dell'archivio o il piano.

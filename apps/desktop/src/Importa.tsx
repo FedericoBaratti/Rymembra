@@ -141,11 +141,21 @@ export function Importa({
     >
       <div className="percorso">{percorso}</div>
 
-      {errore && <div className="errore">{errore}</div>}
+      {errore && (
+        <div className="errore" role="alert">
+          {errore}
+        </div>
+      )}
       {inCorso && !rapporto && <p>{t("legacy.reading")}</p>}
 
       {rapporto && (
         <>
+          {/* Nota e non avviso: il file principale si è letto per intero, e
+              quel che manca sta in un giornale che la vecchia app non ha ancora
+              travasato. Il gesto che ripara è chiuderla e riaprire qui. */}
+          {rapporto.journalIgnored && (
+            <Avviso livello="nota">{t("legacy.journalIgnored")}</Avviso>
+          )}
           <div className="rapporto">
             <Voce etichetta={t("legacy.found")} valore={rapporto.matched} />
             <Voce
@@ -179,6 +189,29 @@ export function Importa({
               }
             />
           </div>
+
+          {/* Nota: le playlist di qui con lo stesso nome restano come sono, e
+              quelle del vecchio database entrano accanto (D-11). Detto per
+              nome: prima la playlist di qui si svuotava, o diventava
+              automatica, senza che il piano lo dicesse. */}
+          {rapporto.playlistsBeside.length > 0 && (
+            <Avviso livello="nota">
+              {t("legacy.beside", { n: rapporto.playlistsBeside.length })}{" "}
+              <span className="quali">
+                {rapporto.playlistsBeside
+                  .map((p) => `«${p.name}» → «${p.importedAs}»`)
+                  .join(" · ")}
+              </span>
+            </Avviso>
+          )}
+          {rapporto.playlistsSkipped.length > 0 && (
+            <Avviso livello="nota">
+              {t("legacy.skipped", { n: rapporto.playlistsSkipped.length })}{" "}
+              <span className="quali">
+                {rapporto.playlistsSkipped.map((nome) => `«${nome}»`).join(" · ")}
+              </span>
+            </Avviso>
+          )}
 
           {rapporto.unmatched.length > 0 && (
             <details className="non-ritrovati">
@@ -287,7 +320,11 @@ function Diagnosi() {
   return (
     <details className="diagnosi-servizio" onToggle={chiedi}>
       <summary>{t("link.why")}</summary>
-      {errore && <div className="errore">{errore}</div>}
+      {errore && (
+        <div className="errore" role="alert">
+          {errore}
+        </div>
+      )}
       {dati && (
         <>
           <ul className="cataloghi-stato">
@@ -753,6 +790,17 @@ export function ImportaLink({
             <span>
               {t("link.createPlaylist", { nome: anteprima.titolo })}
               {piano?.playlistReplaced && <em>{t("link.replaces")}</em>}
+              {/* Una playlist con lo stesso nome che non viene da questo link —
+                  di solito fatta qui — non si tocca: questa le sta accanto
+                  (D-11). */}
+              {piano?.playlistBeside != null && (
+                <em>
+                  {t("link.beside", {
+                    esistente: piano.playlistBeside,
+                    nome: piano.playlistName ?? "",
+                  })}
+                </em>
+              )}
             </span>
           </label>
           {/* Attaccato alla casella, e con l'unica uscita che esiste davvero:
