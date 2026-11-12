@@ -34,7 +34,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use rymembra_app::files::{Archivi, LocalFiles, MusicFiles};
+use rymembra_app::files::{Archivi, LocalFiles, MusicFiles, SenzaScaricare};
 use rymembra_app::nuvola::{
     self as specchio, ContoSalvato, RadiceSalvata, Specchio, SpecchioCondiviso,
 };
@@ -212,6 +212,15 @@ pub fn archivi(app: &AppHandle) -> Arc<dyn MusicFiles> {
     })
 }
 
+/// Le sorgenti per la scansione: come [`archivi`], ma un file «solo online»
+/// di una cartella sincronizzata (OneDrive, Dropbox, Google Drive per
+/// desktop) non si apre, per non farlo scaricare (D-101, R25-2). La
+/// riproduzione no: chi suona un brano lo vuole, e lo scarica.
+#[must_use]
+pub fn archivi_per_la_scansione(app: &AppHandle) -> Arc<dyn MusicFiles> {
+    Arc::new(SenzaScaricare(archivi(app)))
+}
+
 /// Una scansione che ha rimandato delle letture (`ScanReport::rimasti`) cede
 /// il turno: le sue cartelle del cloud tornano in fila **dietro** a quel che
 /// la sorveglianza ha già in mano, e le letture riprendono al giro dopo.
@@ -233,16 +242,18 @@ pub fn rimetti_in_fila(app: &AppHandle, cartelle: &[String], rimasti: usize) {
 }
 
 /// Le sorgenti per l'analisi: il disco, e del cloud solo le copie complete.
+/// Un file «solo online» del disco non si apre: l'analisi lo salta senza
+/// segnarlo, e lo misura quando è sul PC (D-101, R25-2).
 #[must_use]
 pub fn archivi_per_l_analisi(app: &AppHandle) -> Arc<dyn MusicFiles> {
     let nuvola = app
         .try_state::<StatoMusicaNuvola>()
         .and_then(|stato| stato.archivio.clone())
         .map(|archivio| Arc::new(CopieComplete::di(archivio)) as Arc<dyn MusicFiles>);
-    Arc::new(Archivi {
+    Arc::new(SenzaScaricare(Arc::new(Archivi {
         locali: LocalFiles,
         nuvola,
-    })
+    })))
 }
 
 /// Il percorso del file di una copia della cache, dallo specchio.
@@ -297,6 +308,17 @@ pub fn avvia(app: &AppHandle) {
     let specchio_condiviso: SpecchioCondiviso = Arc::new(RwLock::new(specchio_caricato));
     let depositi: Depositi = Arc::default();
     let aperta = cartella_cache(app).map(|cartella| Cache::apri(cartella, tetto, cache_attiva));
+    // Due avvii con la stessa cartella dei dati: la cache è dell'altro, e
+    // questa resta spenta (R28-8). Lo si dice, perché da fuori sembrerebbe
+    // una cache che non tiene niente.
+    if let Some(Ok(cache)) = &aperta
+        && cache.condivisa()
+    {
+        nota!(
+            "[nuvola] la cartella della cache dei brani è in uso da un altro processo di \
+             Rymembra: qui resta spenta"
+        );
+    }
     let archivio = match aperta {
         // Nessuna cartella per la cache: la cartella dei dati l'ha scelta una
         // variabile e la libreria non si è aperta. Quella locale è dell'istanza
@@ -350,10 +372,15 @@ pub fn avvia(app: &AppHandle) {
             }
             // Il motivo vero, non un «scaduto» per tutti: un conto senza app
             // si rimedia registrandola, uno con l'app cambiata ricollegandolo.
-            Err(guasto) => nuvola.andamento(&conto.conto, |a| {
-                a.guasto = Some(guasto);
-                a.ultimo_ms = conto.ultimo_ms;
-            }),
+            Err(guasto) => {
+                nuvola.andamento(&conto.conto, |a| {
+                    a.guasto = Some(guasto);
+                    a.ultimo_ms = conto.ultimo_ms;
+                });
+                // Il suo filo non parte, e con lui la potatura del giro:
+                // si fa qui, senza rete (D-19).
+                pota_senza_deposito(&stato, &nuvola, &conto.conto);
+            }
         }
     }
     app.manage(nuvola);
@@ -567,8 +594,44 @@ fn rimetti(stato: &Stato, nuvola: &StatoMusicaNuvola, conto: &ContoSalvato) -> b
                 deposito.spegni();
             }
             nuvola.andamento(&conto.conto, |a| a.guasto = Some(guasto));
+            pota_senza_deposito(stato, nuvola, &conto.conto);
             nuvola.sveglia(&conto.conto);
             false
+        }
+    }
+}
+
+/// La potatura di un conto il cui deposito non c'è (da ricollegare: consenso
+/// scaduto, app tolta o cambiata).
+///
+/// Il filo del conto non gira, e la pulizia di `nuvola_voci` stava solo nel
+/// suo giro: le voci di una radice tolta, e quelle che le versioni di prova
+/// salvavano da tutto il drive, restavano finché il conto non si
+/// ricollegava, mentre `PRIVACY.md` e `SECURITY.md` promettono che se ne
+/// vanno alla prossima passata (R02-5, D-19). Qui si fa la stessa cosa del
+/// giro, senza rete: le radici tolte dalla libreria escono, e quel che sta
+/// fuori dalle cartelle scelte si pota. Un guasto si dice e non ferma niente.
+fn pota_senza_deposito(stato: &Stato, nuvola: &StatoMusicaNuvola, conto: &str) {
+    if let Err(guasto) = dimentica_le_radici_tolte(stato, nuvola, conto) {
+        nota!("[nuvola] {conto}: le radici tolte non si dimenticano: {guasto}");
+        return;
+    }
+    let potate = nuvola
+        .specchio
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pota(conto);
+    if potate.tolte.is_empty() {
+        return;
+    }
+    match con_libreria(stato, |l| Specchio::salva(&l.connection, &potate)) {
+        Ok(()) => nota!(
+            "[nuvola] {conto}: {} voci fuori dalle cartelle scelte tolte, senza ricollegarlo",
+            potate.tolte.len()
+        ),
+        Err(guasto) => {
+            nota!("[nuvola] {conto}: la potatura non si scrive: {guasto}");
+            rileggi_il_conto(stato, nuvola, conto);
         }
     }
 }
@@ -645,7 +708,16 @@ fn filo(app: &AppHandle, conto: &str, orecchio: &Receiver<()>) {
             continue;
         }
         let attesa = match giro {
-            Ok(()) => {
+            // Nessuna cartella scelta: niente rete, e si aspetta la sveglia di
+            // chi ne aggiunge una (`nuvola_aggiungi`) o lo scollegamento. Non
+            // un «giro riuscito»: il servizio non l'ha sentito nessuno, e
+            // l'ultima volta che ha risposto resta quella che era (R24-4).
+            Ok(Giro::Fermo) => {
+                guasti_di_fila = 0;
+                nuvola.andamento(conto, |a| a.guasto = None);
+                PAUSA_MASSIMA
+            }
+            Ok(Giro::Fatto) => {
                 guasti_di_fila = 0;
                 if !ripreso {
                     ripreso = true;
@@ -871,6 +943,61 @@ fn rileggi_il_conto(stato: &Stato, nuvola: &StatoMusicaNuvola, conto: &str) -> b
     }
 }
 
+/// Com'è andato un giro riuscito.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Giro {
+    /// Il servizio ha risposto (o il conto non è più di questo filo).
+    Fatto,
+    /// Il conto non ha cartelle scelte: nessuna domanda al servizio. Vedi
+    /// [`senza_cartelle`].
+    Fermo,
+}
+
+/// Il conto non ha cartelle scelte.
+///
+/// Allora il giro non chiede niente al servizio (D-91, R24-4): senza cartelle
+/// lo specchio non tiene niente, e il flusso dei cambiamenti — di **tutto** il
+/// drive, ogni 45 secondi o in long-poll — non serviva a nessuno. È il caso di
+/// chi collega un conto e chiude senza scegliere, o toglie l'ultima cartella:
+/// `PRIVACY.md` promette che si parla col servizio solo per le cartelle
+/// scelte.
+///
+/// Una cartella che si sta scegliendo in quel momento (annunciata e non
+/// ancora registrata) non conta: il giro si ferma, la potatura la rispetta
+/// (vedi `Specchio::annuncia_radice`), e `nuvola_aggiungi` sveglia il filo
+/// appena la radice c'è.
+fn senza_cartelle(specchio: &Specchio, conto: &str) -> bool {
+    specchio.radici(conto).is_empty()
+}
+
+/// Il giro di un conto senza cartelle: nessuna rete. Si pota quel che lo
+/// specchio tiene ancora (le voci dell'ultima radice tolta) e si dimentica il
+/// cursore, così la prossima cartella riparte da uno fresco invece che da uno
+/// vecchio di mesi, che il servizio non accetterebbe più.
+fn fermo_senza_cartelle(
+    stato: &Stato,
+    nuvola: &StatoMusicaNuvola,
+    conto: &str,
+    deposito: &dyn Deposito,
+    salvato: &ContoSalvato,
+) -> Result<Giro, AppError> {
+    let Some(potate) = nello_specchio(nuvola, conto, deposito, |s| s.pota(conto)) else {
+        return Ok(Giro::Fatto);
+    };
+    if !potate.tolte.is_empty() && !salva_toccate(stato, nuvola, conto, deposito, &potate)? {
+        return Ok(Giro::Fatto);
+    }
+    if salvato.cursore.is_some() {
+        con_libreria(stato, |l| {
+            if !ancora_mio(nuvola, conto, deposito) {
+                return Ok(false);
+            }
+            specchio::salva_cursore(&l.connection, conto, None, salvato.ultimo_ms)
+        })?;
+    }
+    Ok(Giro::Fermo)
+}
+
 /// Un giro: le radici non ancora complete, poi i cambiamenti.
 ///
 /// Ogni scrittura passa da [`ancora_mio`]: un conto scollegato a metà giro
@@ -881,7 +1008,7 @@ fn un_giro(
     nuvola: &StatoMusicaNuvola,
     conto: &str,
     deposito: &dyn Deposito,
-) -> Result<(), AppError> {
+) -> Result<Giro, AppError> {
     let da_rileggere = nuvola
         .andamenti
         .lock()
@@ -894,26 +1021,38 @@ fn un_giro(
         })
         .with_cause("lo specchio del conto non si rilegge dal database"));
     }
+    // Le radici tolte dalla libreria escono **prima** di qualunque domanda al
+    // servizio: un conto che ha appena perso l'ultima cartella non deve
+    // chiedere il cursore per poi scoprirlo.
+    dimentica_le_radici_tolte(stato, nuvola, conto)?;
+    let mut salvato = conto_salvato(stato, conto)?;
+    if senza_cartelle(
+        &nuvola
+            .specchio
+            .read()
+            .unwrap_or_else(PoisonError::into_inner),
+        conto,
+    ) {
+        return fermo_senza_cartelle(stato, nuvola, conto, deposito, &salvato);
+    }
     // Il cursore **prima** di ogni elenco: quel che cambia mentre l'elenco
     // scorre arriva poi coi cambiamenti, al peggio due volte, mai zero.
-    let mut salvato = conto_salvato(stato, conto)?;
     if salvato.cursore.is_none() {
         let primo = deposito.cursore_adesso()?;
         if !salva_cursore(stato, nuvola, conto, deposito, &primo, salvato.ultimo_ms)? {
-            return Ok(());
+            return Ok(Giro::Fatto);
         }
         salvato.cursore = Some(primo);
     }
-    dimentica_le_radici_tolte(stato, nuvola, conto)?;
     // Fuori dalle cartelle scelte lo specchio non tiene niente: le voci di una
     // radice appena tolta, e quelle che le versioni di prima salvavano dai
     // cambiamenti di tutto il drive, se ne vanno qui. Prima della rete, così
     // succede anche senza.
     let Some(potate) = nello_specchio(nuvola, conto, deposito, |s| s.pota(conto)) else {
-        return Ok(());
+        return Ok(Giro::Fatto);
     };
     if !potate.tolte.is_empty() && !salva_toccate(stato, nuvola, conto, deposito, &potate)? {
-        return Ok(());
+        return Ok(Giro::Fatto);
     }
     let da_elencare: Vec<RadiceSalvata> = nuvola
         .specchio
@@ -954,7 +1093,7 @@ fn un_giro(
             let Some(riaperte) =
                 nello_specchio(nuvola, conto, deposito, |s| s.riapri_radici(conto))
             else {
-                return Ok(());
+                return Ok(Giro::Fatto);
             };
             let scritto = con_libreria(stato, |l| {
                 if !ancora_mio(nuvola, conto, deposito) {
@@ -969,7 +1108,7 @@ fn un_giro(
                 elenca_le_radici(app, stato, nuvola, conto, deposito, &riaperte)?;
                 segui_le_radici_traslocate(app, stato, nuvola, conto, deposito);
             }
-            return Ok(());
+            return Ok(Giro::Fatto);
         }
         Err(guasto) => return Err(guasto),
     };
@@ -978,23 +1117,30 @@ fn un_giro(
     } else {
         let Some(toccate) = nello_specchio(nuvola, conto, deposito, |s| s.applica(conto, cambi))
         else {
-            return Ok(());
+            return Ok(Giro::Fatto);
         };
         toccate
     };
     // Le cartelle entrate in una radice prima del cursore nuovo: vedi
     // `elenca_le_entrate`.
-    if !salva_toccate(stato, nuvola, conto, deposito, &toccate)?
+    //
+    // E con le radici del conto segnate incomplete **nello stesso commit** dei
+    // cambiamenti, fino al cursore nuovo. Una morte del processo fra i due
+    // lasciava la cartella entrata nota e vuota: gli stessi cambiamenti riletti
+    // non la riportano (lo specchio la conosce già), e restava vuota fino al
+    // ripasso (R02-4). Segnate incomplete, al riavvio il giro le rielenca.
+    let sospese = radici_sospese(nuvola, conto, &toccate);
+    if !salva_toccate_sospese(stato, nuvola, conto, deposito, &toccate, &sospese)?
         || !elenca_le_entrate(app, stato, nuvola, conto, deposito, &toccate.da_elencare)?
-        || !salva_cursore(stato, nuvola, conto, deposito, &nuovo, Some(adesso_ms()))?
+        || !salva_cursore_e_radici(stato, nuvola, conto, deposito, &nuovo, &sospese)?
     {
-        return Ok(());
+        return Ok(Giro::Fatto);
     }
     if !toccate.cartelle.is_empty() {
         crate::sorveglia::riguarda(app, toccate.cartelle.into_iter().collect());
     }
     segui_le_radici_traslocate(app, stato, nuvola, conto, deposito);
-    Ok(())
+    Ok(Giro::Fatto)
 }
 
 /// Elenca le cartelle che i cambiamenti hanno portato dentro una radice
@@ -1117,6 +1263,124 @@ fn salva_cursore(
         }
         specchio::salva_cursore(&l.connection, conto, Some(cursore), ultimo_ms)
     })
+}
+
+/// Le radici del conto da tenere incomplete nel database finché le cartelle
+/// entrate con questi cambiamenti non sono elencate: quelle complete, e solo
+/// se qualcosa è entrato. Vedi «R02-4» in `un_giro`.
+fn radici_sospese(
+    nuvola: &StatoMusicaNuvola,
+    conto: &str,
+    toccate: &specchio::Toccate,
+) -> Vec<RadiceSalvata> {
+    if toccate.da_elencare.is_empty() {
+        return Vec::new();
+    }
+    nuvola
+        .specchio
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .radici(conto)
+        .into_iter()
+        .filter(|radice| radice.completa)
+        .collect()
+}
+
+/// Come [`salva_toccate`], e nello stesso commit le radici `sospese` segnate
+/// incomplete nel database (la memoria resta com'è).
+fn salva_toccate_sospese(
+    stato: &Stato,
+    nuvola: &StatoMusicaNuvola,
+    conto: &str,
+    deposito: &dyn Deposito,
+    toccate: &specchio::Toccate,
+    sospese: &[RadiceSalvata],
+) -> Result<bool, AppError> {
+    if sospese.is_empty() {
+        return salva_toccate(stato, nuvola, conto, deposito, toccate);
+    }
+    let esito = con_libreria(stato, |l| {
+        if !ancora_mio(nuvola, conto, deposito) {
+            return Ok(false);
+        }
+        scrivi_sospese(&l.connection, toccate, sospese).map(|()| true)
+    });
+    if esito.is_err() {
+        rileggi_il_conto(stato, nuvola, conto);
+    }
+    esito
+}
+
+/// I cambiamenti e le radici sospese in una transazione sola: o tutti e due, o
+/// niente.
+fn scrivi_sospese(
+    conn: &rusqlite::Connection,
+    toccate: &specchio::Toccate,
+    sospese: &[RadiceSalvata],
+) -> Result<(), AppError> {
+    let errore =
+        |err: rusqlite::Error| rymembra_app::db::codice_da_sqlite("radici sospese del cloud", &err);
+    let tx = conn.unchecked_transaction().map_err(errore)?;
+    Specchio::salva(&tx, toccate)?;
+    for radice in sospese {
+        specchio::salva_radice(
+            &tx,
+            &RadiceSalvata {
+                completa: false,
+                ..radice.clone()
+            },
+        )?;
+    }
+    tx.commit().map_err(errore)
+}
+
+/// Il cursore nuovo, e le radici sospese di nuovo complete, in una transazione
+/// sola: è il punto in cui le cartelle entrate sono elencate. `false` se il
+/// conto non è più di questo filo.
+fn salva_cursore_e_radici(
+    stato: &Stato,
+    nuvola: &StatoMusicaNuvola,
+    conto: &str,
+    deposito: &dyn Deposito,
+    cursore: &str,
+    sospese: &[RadiceSalvata],
+) -> Result<bool, AppError> {
+    // Solo quelle che ci sono ancora, e complete come adesso le sa la memoria:
+    // una radice tolta dalla libreria mentre si elencava non deve rientrare
+    // nel database da qui.
+    let complete: Vec<RadiceSalvata> = nuvola
+        .specchio
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .radici(conto)
+        .into_iter()
+        .filter(|radice| radice.completa && sospese.iter().any(|s| s.percorso == radice.percorso))
+        .collect();
+    con_libreria(stato, |l| {
+        if !ancora_mio(nuvola, conto, deposito) {
+            return Ok(false);
+        }
+        scrivi_cursore_e_complete(&l.connection, conto, cursore, Some(adesso_ms()), &complete)
+    })
+}
+
+/// Vedi [`salva_cursore_e_radici`]: la parte sul database.
+fn scrivi_cursore_e_complete(
+    conn: &rusqlite::Connection,
+    conto: &str,
+    cursore: &str,
+    ultimo_ms: Option<i64>,
+    complete: &[RadiceSalvata],
+) -> Result<bool, AppError> {
+    let errore =
+        |err: rusqlite::Error| rymembra_app::db::codice_da_sqlite("cursore del cloud", &err);
+    let tx = conn.unchecked_transaction().map_err(errore)?;
+    let scritto = specchio::salva_cursore(&tx, conto, Some(cursore), ultimo_ms)?;
+    for radice in complete {
+        specchio::salva_radice(&tx, radice)?;
+    }
+    tx.commit().map_err(errore)?;
+    Ok(scritto)
 }
 
 /// Elenca delle radici, una dopo l'altra.
@@ -1705,19 +1969,80 @@ pub async fn nuvola_conti(app: AppHandle) -> Esito<Vec<ContoNuvola>> {
 /// Può durare fino a tre minuti (l'attesa del consenso). Un collegamento
 /// annullato con [`nuvola_conto_annulla`] non è un guasto: torna
 /// `internal.aborted`, che la finestra ignora.
+///
+/// `atteso` è il conto che si sta **ricollegando**, se è un «Ricollega»: un
+/// consenso dato con un altro account si rifiuta, nominando i due
+/// (`cloud.otherAccount`), senza salvare niente e senza toccare il conto di
+/// prima (D-92). Prima la finestrella si chiudeva come riuscita, nasceva un
+/// secondo conto vuoto e il primo restava «da ricollegare».
 #[tauri::command]
 pub async fn nuvola_conto_collega(
     app: AppHandle,
     servizio: String,
     app_id: Option<String>,
     modulo: Option<ModuloCollega>,
+    atteso: Option<String>,
 ) -> Esito<ContoNuvola> {
     in_disparte("collegamento di un conto", move || {
-        collega(&app, &servizio, app_id.as_deref(), modulo)
+        collega(
+            &app,
+            &servizio,
+            app_id.as_deref(),
+            modulo,
+            atteso.as_deref(),
+        )
     })
     .await
     .and_then(|esito| esito)
     .map_err(errore)
+}
+
+/// Il conto ottenuto dal consenso è quello che si stava ricollegando?
+///
+/// # Errori
+///
+/// `cloud.otherAccount` se si ricollegava `atteso` e l'accesso è di un altro
+/// account. Il messaggio porta il nome dell'account con cui si è entrati —
+/// un dato, non una frase: la finestrella lo mette nella sua accanto a quello
+/// atteso (R24-5, D-92). Nella causa vanno solo gli identificativi dei conti.
+fn controlla_il_conto(
+    atteso: Option<&ContoSalvato>,
+    ottenuto: &str,
+    nome_ottenuto: &str,
+) -> Result<(), AppError> {
+    match atteso {
+        Some(atteso) if atteso.conto != ottenuto => {
+            Err(AppError::new(ErrorCode::CloudOtherAccount {
+                servizio: atteso.servizio.nome().to_owned(),
+            })
+            .with_message(nome_ottenuto.to_owned())
+            .with_cause(format!(
+                "si ricollegava {}, e il consenso è di {ottenuto}",
+                atteso.conto
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Chi guardava vuole ancora questo collegamento?
+///
+/// Si chiede prima di ogni passo che non si disfa da sé: scrivere un segreto
+/// nel portachiavi, spegnere il permesso del conto di prima, salvare il conto.
+/// Fino alla 3.2.0 «Annulla» lo leggeva solo l'attesa del browser: un WebDAV
+/// lento, o un consenso dato un istante prima di chiudere, finivano lo stesso
+/// con la password nel portachiavi e un conto in Impostazioni (R12-8).
+///
+/// # Errori
+///
+/// `internal.aborted`, che la finestra ignora.
+fn ancora_voluto(nuvola: &StatoMusicaNuvola) -> Result<(), AppError> {
+    if nuvola.annulla.load(Ordering::Acquire) || crate::spegnimento::in_uscita() {
+        return Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("collegamento di un conto".to_owned()),
+        }));
+    }
+    Ok(())
 }
 
 fn collega(
@@ -1725,6 +2050,7 @@ fn collega(
     servizio: &str,
     app_id: Option<&str>,
     modulo: Option<ModuloCollega>,
+    atteso: Option<&str>,
 ) -> Result<ContoNuvola, AppError> {
     let (stato, nuvola) = stati(app)?;
     let servizio = Servizio::da_chiave(servizio).ok_or_else(|| {
@@ -1740,11 +2066,19 @@ fn collega(
         Turno::prendi(&nuvola.collegando).ok_or_else(|| AppError::new(ErrorCode::SyncBusy))?;
     let esito = (|| -> Result<String, AppError> {
         nuvola.annulla.store(false, Ordering::Release);
+        // Il conto che si ricollega, se c'è ancora: uno tolto nel frattempo
+        // non ha più niente da confrontare.
+        let atteso = atteso.and_then(|id| conto_salvato(&stato, id).ok());
         let collegato = match servizio {
             Servizio::OneDrive | Servizio::Dropbox | Servizio::GoogleDrive => {
-                collega_col_browser(&stato, &nuvola, servizio, app_id)?
+                collega_col_browser(&stato, &nuvola, servizio, app_id, atteso.as_ref())?
             }
-            Servizio::WebDav => collega_webdav(modulo.unwrap_or_default())?,
+            Servizio::WebDav => collega_webdav(
+                modulo.unwrap_or_default(),
+                &nuvola,
+                atteso.as_ref(),
+                &DiSistema,
+            )?,
             Servizio::Mega | Servizio::MegaLink => {
                 return Err(AppError::new(ErrorCode::CloudClientMissing {
                     servizio: servizio.nome().to_owned(),
@@ -1755,7 +2089,20 @@ fn collega(
         let conto = collegato.conto;
         // Un conto che c'era già (ricollegato) tiene il suo cursore: quel che
         // è cambiato nel frattempo arriva coi cambiamenti.
-        let cursore = conto_salvato(&stato, &conto).ok().and_then(|c| c.cursore);
+        let di_prima = conto_salvato(&stato, &conto).ok();
+        // Annullato fra il segreto e il salvataggio: un conto **nuovo** non
+        // nasce, e il segreto appena scritto se ne va con lui. Un conto che
+        // c'era invece si completa: il suo segreto di prima è già sostituito,
+        // e lasciarlo a metà vorrebbe dire lasciarlo spento (R12-8).
+        if di_prima.is_none()
+            && let Err(fermato) = ancora_voluto(&nuvola)
+        {
+            collegato.deposito.spegni();
+            let _ = DiSistema.cancella(&portachiavi::nuvola_refresh(&conto));
+            let _ = DiSistema.cancella(&portachiavi::nuvola_password(&conto));
+            return Err(fermato);
+        }
+        let cursore = di_prima.and_then(|c| c.cursore);
         let (app_del_conto, client) = collegato.legame.unzip();
         salva_conto(
             &stato,
@@ -1826,6 +2173,7 @@ fn collega_col_browser(
     nuvola: &StatoMusicaNuvola,
     servizio: Servizio,
     app_id: Option<&str>,
+    atteso: Option<&ContoSalvato>,
 ) -> Result<Collegato, AppError> {
     let manca = || {
         AppError::new(ErrorCode::CloudClientMissing {
@@ -1881,6 +2229,11 @@ fn collega_col_browser(
     })?;
     let chi = deposito.chi()?;
     let conto = conto_di(servizio, &chi.id_stabile);
+    // Prima di toccare il conto di prima e il portachiavi: un altro account
+    // non è un ricollegamento (D-92), e un collegamento annullato non
+    // scrive niente (R12-8).
+    controlla_il_conto(atteso, &conto, &chi.nome)?;
+    ancora_voluto(nuvola)?;
     // Un conto che si ricollega: il permesso di prima si spegne **prima** che
     // il nuovo refresh token vada nel portachiavi. Un suo rinfresco in volo,
     // finito dopo, ci riscriverebbe sopra quello del consenso di prima.
@@ -1910,7 +2263,12 @@ fn collega_col_browser(
 
 /// Il modulo di WebDAV: indirizzo, utente, password per app. La password va
 /// nel portachiavi e solo lì; indirizzo e utente nei dettagli del conto.
-fn collega_webdav(modulo: ModuloCollega) -> Result<Collegato, AppError> {
+fn collega_webdav(
+    modulo: ModuloCollega,
+    nuvola: &StatoMusicaNuvola,
+    atteso: Option<&ContoSalvato>,
+    chiavi: &dyn Portachiavi,
+) -> Result<Collegato, AppError> {
     let indirizzo = modulo.indirizzo.unwrap_or_default();
     let utente = modulo.utente.unwrap_or_default();
     let password = modulo.password.unwrap_or_default();
@@ -1923,7 +2281,10 @@ fn collega_webdav(modulo: ModuloCollega) -> Result<Collegato, AppError> {
     let server = WebDav::nuovo(&indirizzo, utente.trim(), &password)?;
     let chi = server.chi()?;
     let conto = conto_di(Servizio::WebDav, &chi.id_stabile);
-    DiSistema.scrivi(&portachiavi::nuvola_password(&conto), &password)?;
+    // Vedi `collega_col_browser`: prima della password nel portachiavi.
+    controlla_il_conto(atteso, &conto, &chi.nome)?;
+    ancora_voluto(nuvola)?;
+    chiavi.scrivi(&portachiavi::nuvola_password(&conto), &password)?;
     Ok(Collegato {
         conto,
         nome: chi.nome,
@@ -2770,5 +3131,212 @@ mod prove {
             scollega.contains("\"nuvola:cache\""),
             "la scheda della cache non lo sa"
         );
+    }
+
+    // ── R24-4, R24-5, R12-8, R02-4, R02-5 ──────────────────────────────────
+
+    /// Un conto collegato senza cartelle (chiuso senza sceglierne una, o dopo
+    /// aver tolto l'ultima) non chiede niente al servizio: niente cursore e
+    /// niente cambiamenti di tutto il drive ogni 45 secondi (R24-4, D-91). Il
+    /// cancello sta prima della prima domanda di rete del giro.
+    #[test]
+    fn un_conto_senza_cartelle_non_va_in_rete() {
+        let giro = corpo_di("fn un_giro(");
+        let cancello = giro.find("senza_cartelle(");
+        let cursore = giro.find(".cursore_adesso()");
+        let cambiamenti = giro.find(".cambiamenti(");
+        assert!(
+            cancello.is_some() && cancello < cursore && cancello < cambiamenti,
+            "il giro chiede al servizio prima di guardare se ci sono cartelle"
+        );
+        let filo = corpo_di("fn filo(app: &AppHandle, conto: &str, orecchio: &Receiver<()>) {");
+        assert!(
+            filo.contains("Ok(Giro::Fermo) =>") && filo.contains("PAUSA_MASSIMA"),
+            "un conto fermo aspetta la sveglia, non riparte subito"
+        );
+    }
+
+    /// La regola del cancello: senza radici del conto, fermo; con una, no.
+    #[test]
+    fn senza_radici_il_conto_e_fermo() {
+        let mut specchio = Specchio::default();
+        assert!(senza_cartelle(&specchio, "onedrive-abcdefgh"));
+        specchio.aggiungi_radice(RadiceSalvata {
+            percorso: "nuvola://onedrive-abcdefgh/Musica".to_owned(),
+            conto: "onedrive-abcdefgh".to_owned(),
+            cima: "musica".to_owned(),
+            completa: true,
+        });
+        assert!(!senza_cartelle(&specchio, "onedrive-abcdefgh"));
+        assert!(
+            senza_cartelle(&specchio, "dropbox-zzzzzzzz"),
+            "le radici di un altro conto non contano"
+        );
+    }
+
+    fn conto_salvato_di(conto: &str, nome: &str) -> ContoSalvato {
+        ContoSalvato {
+            conto: conto.to_owned(),
+            servizio: Servizio::OneDrive,
+            nome: nome.to_owned(),
+            dettagli: None,
+            cursore: None,
+            ultimo_ms: None,
+            app: None,
+            client: None,
+        }
+    }
+
+    /// «Ricollega» con un altro account: rifiutato, e il messaggio porta il
+    /// nome dell'account con cui si è entrati, che la finestrella mette
+    /// accanto a quello atteso (R24-5, D-92).
+    #[test]
+    fn ricollegare_un_altro_account_non_e_un_successo() {
+        let atteso = conto_salvato_di("onedrive-aaaaaaaa", "lavoro@esempio.it");
+        let rifiuto = controlla_il_conto(Some(&atteso), "onedrive-bbbbbbbb", "casa@esempio.it")
+            .expect_err("un altro account non è un ricollegamento");
+        assert_eq!(rifiuto.code().kind().code(), "cloud.otherAccount");
+        assert_eq!(rifiuto.message(), Some("casa@esempio.it"));
+        assert!(
+            rifiuto
+                .cause()
+                .is_some_and(|c| !c.contains('@') && c.contains("onedrive-aaaaaaaa")),
+            "nella causa, che va nel diario, solo gli identificativi: {rifiuto:?}"
+        );
+        assert!(
+            controlla_il_conto(Some(&atteso), "onedrive-aaaaaaaa", "lavoro@esempio.it").is_ok()
+        );
+        assert!(controlla_il_conto(None, "onedrive-bbbbbbbb", "casa@esempio.it").is_ok());
+    }
+
+    /// Il controllo dell'account e quello dell'annullo stanno prima di ogni
+    /// passo che non si disfa: spegnere il conto di prima, scrivere il
+    /// segreto, salvare il conto (R24-5, R12-8).
+    #[test]
+    fn un_collegamento_annullato_o_di_un_altro_non_scrive_niente() {
+        let browser = corpo_di("fn collega_col_browser(");
+        for passo in ["di_prima.spegni()", ".battezza("] {
+            let dove = browser.find(passo);
+            for controllo in ["controlla_il_conto(", "ancora_voluto("] {
+                assert!(
+                    browser.find(controllo).is_some_and(|c| Some(c) < dove),
+                    "collega_col_browser: {controllo} dopo {passo}"
+                );
+            }
+        }
+        let webdav = corpo_di("fn collega_webdav(");
+        let scrittura = webdav.find("chiavi.scrivi(");
+        for controllo in ["controlla_il_conto(", "ancora_voluto("] {
+            assert!(
+                webdav.find(controllo).is_some_and(|c| Some(c) < scrittura),
+                "collega_webdav: {controllo} dopo la password nel portachiavi"
+            );
+        }
+        let collega = corpo_di("fn collega(\n");
+        assert!(
+            collega
+                .find("ancora_voluto(&nuvola)")
+                .is_some_and(|c| Some(c) < collega.find("salva_conto(")),
+            "collega: l'annullo si guarda prima di salvare il conto"
+        );
+        assert!(
+            collega.contains("nuvola_refresh(&conto)")
+                && collega.contains("nuvola_password(&conto)"),
+            "un conto nuovo annullato porta via il segreto appena scritto"
+        );
+    }
+
+    /// «Annulla» alzato vale per il collegamento in corso.
+    #[test]
+    fn annullare_ferma_il_collegamento() {
+        let nuvola = StatoMusicaNuvola {
+            specchio: Arc::default(),
+            depositi: Arc::default(),
+            archivio: None,
+            andamenti: Mutex::new(HashMap::new()),
+            sveglie: Mutex::new(HashMap::new()),
+            annulla: AtomicBool::new(false),
+            collegando: AtomicBool::new(false),
+        };
+        assert!(ancora_voluto(&nuvola).is_ok());
+        nuvola.annulla.store(true, Ordering::Release);
+        assert_eq!(
+            ancora_voluto(&nuvola).map_err(|e| e.code().kind().code()),
+            Err("internal.aborted")
+        );
+    }
+
+    /// Le radici del conto restano incomplete nel database dallo stesso
+    /// commit dei cambiamenti fino al cursore nuovo: un processo che muore in
+    /// mezzo le ritrova da rielencare, e la cartella entrata non resta vuota
+    /// fino al ripasso (R02-4).
+    #[test]
+    fn le_radici_restano_sospese_fino_al_cursore_nuovo() {
+        let connection = rymembra_app::db::open_in_memory()
+            .expect("database")
+            .connection;
+        let conto = "onedrive-abcdefgh";
+        specchio::salva_conto(&connection, &conto_salvato_di(conto, "io")).expect("conto");
+        let radice = RadiceSalvata {
+            percorso: format!("nuvola://{conto}/Musica"),
+            conto: conto.to_owned(),
+            cima: "musica".to_owned(),
+            completa: true,
+        };
+        specchio::salva_radice(&connection, &radice).expect("radice");
+        let completa = |connection: &rusqlite::Connection| {
+            Specchio::carica(connection)
+                .expect("specchio")
+                .radici(conto)
+                .first()
+                .is_some_and(|r| r.completa)
+        };
+
+        scrivi_sospese(
+            &connection,
+            &specchio::Toccate::default(),
+            std::slice::from_ref(&radice),
+        )
+        .expect("cambiamenti e radici");
+        assert!(
+            !completa(&connection),
+            "dopo i cambiamenti, la radice è da rielencare"
+        );
+
+        let scritto = scrivi_cursore_e_complete(
+            &connection,
+            conto,
+            "nuovo",
+            Some(1),
+            std::slice::from_ref(&radice),
+        )
+        .expect("cursore");
+        assert!(scritto);
+        assert!(
+            completa(&connection),
+            "col cursore nuovo, di nuovo completa"
+        );
+        let salvato = specchio::conti(&connection)
+            .expect("conti")
+            .into_iter()
+            .find(|c| c.conto == conto)
+            .and_then(|c| c.cursore);
+        assert_eq!(salvato.as_deref(), Some("nuovo"));
+    }
+
+    /// Un conto che all'avvio non si riapre (consenso scaduto, app tolta)
+    /// non ha filo, e la potatura di `nuvola_voci` stava solo nel giro del
+    /// filo: si fa all'avvio, e quando un conto si spegne (R02-5, D-19).
+    #[test]
+    fn un_conto_da_ricollegare_si_pota_lo_stesso() {
+        let avvia = corpo_di("pub fn avvia(app: &AppHandle) {");
+        assert!(
+            avvia.contains("pota_senza_deposito(&stato, &nuvola, &conto.conto)"),
+            "all'avvio un conto senza deposito non si pota"
+        );
+        let rimetti = corpo_di(
+            "fn rimetti(stato: &Stato, nuvola: &StatoMusicaNuvola, conto: &ContoSalvato) -> bool {",
+        );
+        assert!(rimetti.contains("pota_senza_deposito("));
     }
 }

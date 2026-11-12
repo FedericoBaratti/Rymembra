@@ -855,6 +855,17 @@ impl Rete {
             permesso_in_casa: false,
         })
     }
+
+    /// Per le prove degli altri moduli del crate: un client verso un servitore
+    /// su questa macchina che segue i rimandi con questa politica. Fuori dalle
+    /// prove non esiste: lì un client in chiaro resta a zero salti (vedi
+    /// [`Self::con_rimandi`]).
+    #[cfg(test)]
+    pub(crate) fn in_casa_con_rimandi(url: &str, rimandi: Rimandi) -> Self {
+        let base = Self::verso("prova", Duration::from_secs(5), url)
+            .unwrap_or_else(|_| Self::nuova("prova", Duration::from_secs(5)));
+        Self { rimandi, ..base }
+    }
 }
 
 /// Taglia un testo a una lunghezza massima, senza spaccare un carattere.

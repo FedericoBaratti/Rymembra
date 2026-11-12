@@ -85,6 +85,34 @@ enum Arrivo {
     Fine(Result<(), AppError>),
 }
 
+/// Come una richiesta di [`Cliente::conversa`] è andata male.
+enum Guasto {
+    /// Il servizio ha rifiutato il nome del tetto dei gettoni, prima di
+    /// rispondere: si riprova con l'altro. L'errore è quello della rete, non
+    /// ancora tradotto.
+    TettoRifiutato(AppError),
+    /// Qualunque altra cosa, già tradotta.
+    Altro(AppError),
+}
+
+/// Il nome del tetto dei gettoni che parlano tutti.
+const CAMPO_DEL_TETTO: &str = "max_tokens";
+
+/// Il nome che OpenAI vuole al suo posto per i modelli che ragionano.
+const CAMPO_DEL_TETTO_NUOVO: &str = "max_completion_tokens";
+
+/// Il servizio ha rifiutato `campo` come nome del tetto: un 400 che nomina il
+/// campo, e che porta l'altro nome come rimedio — è la frase di OpenAI
+/// («Unsupported parameter: 'max_tokens' … Use 'max_completion_tokens'
+/// instead»). Si guarda la causa, che porta il corpo della risposta.
+fn tetto_rifiutato(err: &AppError, campo: &str) -> bool {
+    let ErrorCode::NetHttp { status: 400, .. } = err.code() else {
+        return false;
+    };
+    let causa = err.cause().unwrap_or_default();
+    causa.contains(campo) && causa.contains(CAMPO_DEL_TETTO_NUOVO)
+}
+
 /// Quanto si aspetta per l'elenco dei modelli.
 ///
 /// Quindici secondi. È una richiesta che serve a **sapere se il servizio c'è**:
@@ -95,6 +123,38 @@ const SCADENZA_CORTA: Duration = Duration::from_secs(15);
 
 /// Quanto di un corpo di errore si tiene per raccontarlo.
 const DETTAGLIO_MASSIMO: usize = 300;
+
+/// Quanto testo — risposta e ragionamento insieme — una risposta può
+/// consegnare (D-64).
+///
+/// Quattro mebibyte: più di quel che il tetto dei gettoni lascia scrivere a
+/// qualunque modello vero, e quindi un tetto che scatta solo davanti a un
+/// servizio rotto od ostile. Senza, la finestra riceveva e ricomponeva una
+/// stringa che cresceva per dieci minuti. Arrivati qui la risposta si ferma
+/// come [`Motivo::Tagliato`]: quel che c'è resta leggibile, e un blocco di
+/// modifiche a metà non si applica.
+const TESTO_MASSIMO: usize = 4 * 1024 * 1024;
+
+/// Quanti byte si leggono dalla rete per una risposta, battiti e righe che non
+/// si capiscono compresi.
+///
+/// Sessantaquattro mebibyte. Un evento porta qualche carattere dentro un
+/// centinaio di byte di JSON, quindi il conto grezzo cresce molto più del
+/// testo: duecentomila gettoni ne fanno una trentina. Un servizio che manda
+/// solo `: keep-alive` o righe che non sono eventi non consegna testo, e
+/// [`TESTO_MASSIMO`] non lo fermerebbe mai.
+const GREZZO_MASSIMO: usize = 64 * 1024 * 1024;
+
+/// Quanto può tacere un servizio **dopo** aver cominciato a rispondere.
+///
+/// Due minuti. Prima del primo byte vale solo [`SCADENZA_LUNGA`]: un modello
+/// locale che valuta un prompt lungo su CPU può metterci minuti, e non manda
+/// niente mentre lo fa. Dopo, un modello che scrive manda qualcosa di
+/// continuo, e i servizi remoti mandano un `: keep-alive` ogni pochi secondi:
+/// due minuti senza un byte sono una connessione che non porterà più niente,
+/// e aspettare gli otto minuti che restano della scadenza voleva dire una chat
+/// occupata per niente.
+const SILENZIO_MASSIMO: Duration = Duration::from_secs(120);
 
 /// Quanto si tiene di una risposta che non è un flusso.
 ///
@@ -159,6 +219,10 @@ pub struct Cliente {
     profilo: Profilo,
     /// Il segreto, per il tempo di una richiesta.
     chiave: Option<String>,
+    /// Quanto può tacere il servizio a risposta cominciata: vedi
+    /// [`SILENZIO_MASSIMO`]. Un campo e non la costante, perché le prove lo
+    /// accorciano.
+    silenzio: Duration,
 }
 
 /// Scritto a mano: un `derive` stamperebbe la chiave.
@@ -196,29 +260,33 @@ impl Cliente {
     ///
     /// # Errori
     ///
-    /// `ia.notConfigured` se manca l'indirizzo, il modello, o la chiave di un
-    /// fornitore che la vuole, e se la chiave è stata scritta per un'altra
-    /// origine. `ia.notLoopback` per un indirizzo in chiaro che non è questa
-    /// macchina.
+    /// `ia.profileIncomplete` se manca l'indirizzo o il modello,
+    /// `ia.keyMissing` se manca la chiave di un fornitore che la vuole,
+    /// `ia.keyForOtherOrigin` se la chiave è stata scritta per un'altra
+    /// origine: tre codici e non uno, perché «nessun modello è configurato»
+    /// era falso per tutti e tre (R10-6). `ia.notLoopback` per un indirizzo in
+    /// chiaro che non è questa macchina.
     pub fn nuovo(profilo: &Profilo, chiave: Option<String>) -> Result<Self, AppError> {
-        let manca = |cosa: &str| {
-            Err(AppError::new(ErrorCode::IaNotConfigured)
-                .with_message(format!("il profilo «{}» non ha {cosa}", profilo.id)))
+        // Il dettaglio va nella causa, cioè nel diario: la frase la dà il
+        // codice, nella lingua di chi legge.
+        let manca = |codice: ErrorCode, cosa: &str| {
+            Err(AppError::new(codice)
+                .with_cause(format!("il profilo «{}» non ha {cosa}", profilo.id)))
         };
         if profilo.url_base.trim().is_empty() {
-            return manca("un indirizzo");
+            return manca(ErrorCode::IaProfileIncomplete, "un indirizzo");
         }
         if profilo.modello.trim().is_empty() {
-            return manca("un modello");
+            return manca(ErrorCode::IaProfileIncomplete, "un modello");
         }
         let chiave = chiave.filter(|k| !k.trim().is_empty());
         if profilo.fornitore.vuole_chiave() && chiave.is_none() {
-            return manca("una chiave");
+            return manca(ErrorCode::IaKeyMissing, "una chiave");
         }
         if chiave.is_some() && !profilo.chiave_vale_per(&profilo.url_base) {
             // Si nomina l'origine per cui era scritta, non la chiave: è quel che
             // serve a capire perché, e non è un segreto.
-            return Err(AppError::new(ErrorCode::IaNotConfigured).with_message(format!(
+            return Err(AppError::new(ErrorCode::IaKeyForOtherOrigin).with_cause(format!(
                 "la chiave del profilo «{}» è stata scritta per {}, non per l'indirizzo di adesso: \
                  va scritta di nuovo",
                 profilo.id,
@@ -232,6 +300,7 @@ impl Cliente {
             rete_corta: Rete::verso(SERVIZIO, SCADENZA_CORTA, &profilo.url_base)?,
             profilo: profilo.clone(),
             chiave,
+            silenzio: SILENZIO_MASSIMO,
         })
     }
 
@@ -324,6 +393,21 @@ impl Cliente {
     /// parallelismo di serie — continua intanto a lavorare su quella, e la
     /// domanda dopo gli aspetta dietro: «Ferma» libera la chat, non il modello.
     ///
+    /// # Ogni risposta ha una misura
+    ///
+    /// Tre tetti, perché fino alla 3.2.0 l'unico limite era la scadenza di
+    /// dieci minuti (R08-3):
+    ///
+    /// - la richiesta dice quanti gettoni il modello può scrivere
+    ///   ([`crate::GETTONI_DI_SERIE`], o quel che chiede il profilo): è quel che
+    ///   decide il costo, e con OpenRouter anche **se** la richiesta parte;
+    /// - il testo consegnato si ferma a [`TESTO_MASSIMO`], e i byte letti a
+    ///   [`GREZZO_MASSIMO`]: un servizio rotto od ostile che scrive senza fine
+    ///   non riempie la finestra, e la risposta esce come
+    ///   [`Motivo::Tagliato`];
+    /// - a risposta cominciata, un silenzio oltre [`SILENZIO_MASSIMO`] è una
+    ///   scadenza (`net.timeout`), e non dieci minuti di chat occupata.
+    ///
     /// # Errori
     ///
     /// `ia.unauthorized`, `ia.modelUnknown`, `ia.localServerDown`,
@@ -335,8 +419,29 @@ impl Cliente {
         annullato: &dyn Fn() -> bool,
         pezzo: &mut dyn FnMut(Voce, &str),
     ) -> Result<Fine, AppError> {
-        let url = self.profilo.punto("/chat/completions");
-        let intestazioni = self.intestazioni();
+        // `max_tokens` è il nome che parlano tutti: OpenRouter, Ollama, LM
+        // Studio. OpenAI lo rifiuta coi modelli che ragionano, con un 400 che
+        // chiede `max_completion_tokens`; un profilo personalizzato verso di
+        // loro funzionava prima che il tetto ci fosse, e deve continuare. Il
+        // rifiuto arriva prima di un solo byte di risposta, e non si paga:
+        // ripetere la richiesta con l'altro nome costa un giro e basta.
+        let mut campo = CAMPO_DEL_TETTO;
+        loop {
+            match self.ascolta(messaggi, campo, annullato, pezzo) {
+                Ok(fine) => return Ok(fine),
+                Err(Guasto::TettoRifiutato(err)) => {
+                    if campo == CAMPO_DEL_TETTO_NUOVO {
+                        return Err(self.traduci(err));
+                    }
+                    campo = CAMPO_DEL_TETTO_NUOVO;
+                }
+                Err(Guasto::Altro(err)) => return Err(err),
+            }
+        }
+    }
+
+    /// Il corpo della richiesta, col tetto dei gettoni sotto il nome `campo`.
+    fn richiesta(&self, messaggi: &[Messaggio], campo: &str) -> Result<Vec<u8>, AppError> {
         let mut richiesta = json!({
             "model": self.profilo.modello,
             "messages": messaggi
@@ -345,6 +450,9 @@ impl Cliente {
                 .collect::<Vec<_>>(),
             "stream": true,
         });
+        if let Some(oggetto) = richiesta.as_object_mut() {
+            oggetto.insert(campo.to_owned(), json!(self.profilo.gettoni()));
+        }
         // I gettoni, in streaming, li manda solo chi li chiede. OpenRouter ha
         // la sua forma; gli altri quella del protocollo, `stream_options`, che
         // Ollama e LM Studio documentano. Senza, il conto resta `None` — e la
@@ -359,12 +467,38 @@ impl Cliente {
                 );
             }
         }
-        let corpo = serde_json::to_vec(&richiesta)
-            .map_err(|err| self.forma_sbagliata(&format!("la richiesta: {err}")))?;
+        serde_json::to_vec(&richiesta)
+            .map_err(|err| self.forma_sbagliata(&format!("la richiesta: {err}")))
+    }
+
+    /// Una richiesta di [`Self::conversa`], col tetto dei gettoni chiamato
+    /// `campo`, e la sua risposta fino in fondo.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::conversa`], già tradotti in [`Guasto::Altro`];
+    /// [`Guasto::TettoRifiutato`], non tradotto, se il servizio rifiuta il
+    /// nome del tetto prima di rispondere.
+    fn ascolta(
+        &self,
+        messaggi: &[Messaggio],
+        campo: &str,
+        annullato: &dyn Fn() -> bool,
+        pezzo: &mut dyn FnMut(Voce, &str),
+    ) -> Result<Fine, Guasto> {
+        let url = self.profilo.punto("/chat/completions");
+        let intestazioni = self.intestazioni();
+        let corpo = self.richiesta(messaggi, campo).map_err(Guasto::Altro)?;
 
         let mut sse = Sse::nuovo();
         let mut fine = Fine::per(Motivo::Finito);
         let mut visto_qualcosa = false;
+        // Il testo consegnato finora, e se il tetto l'ha fermato: vedi
+        // [`TESTO_MASSIMO`].
+        let mut consegnati = 0_usize;
+        let tagliato = std::cell::Cell::new(false);
+        // I byte letti dalla rete finora: vedi [`GREZZO_MASSIMO`].
+        let mut grezzi = 0_usize;
         // I byte com'erano, finché il flusso non ha detto niente.
         //
         // Serve a due cose che l'avanzo del decodificatore non può fare. La
@@ -379,11 +513,48 @@ impl Cliente {
         // vera questo `Vec` resta di zero byte.
         let mut crudo: Vec<u8> = Vec::new();
 
-        let mut mangia = |blocco: &[u8]| -> Result<(), AppError> {
+        // Quel che arriva a `pezzo`, dentro il tetto del testo. L'ultimo pezzo
+        // si taglia al tetto, su un confine di carattere; da lì niente più.
+        let mut consegna = |voce: Voce, testo: &str| {
+            if tagliato.get() {
+                return;
+            }
+            let resta = TESTO_MASSIMO.saturating_sub(consegnati);
+            if testo.len() <= resta {
+                consegnati = consegnati.saturating_add(testo.len());
+                pezzo(voce, testo);
+                return;
+            }
+            let mut taglio = resta;
+            while taglio > 0 && !testo.is_char_boundary(taglio) {
+                taglio -= 1;
+            }
+            if let Some(entra) = testo.get(..taglio).filter(|t| !t.is_empty()) {
+                pezzo(voce, entra);
+            }
+            consegnati = TESTO_MASSIMO;
+            tagliato.set(true);
+        };
+
+        // `Ok(true)` se si va avanti, `Ok(false)` se un tetto ha detto basta.
+        let mut mangia = |blocco: &[u8]| -> Result<bool, AppError> {
+            grezzi = grezzi.saturating_add(blocco.len());
             if !visto_qualcosa && crudo.len() < CRUDO_MASSIMO {
                 crudo.extend_from_slice(blocco);
             }
-            for evento in sse.mangia(blocco) {
+            let eventi = sse.mangia(blocco);
+            // Il decodificatore ha rinunciato: una riga oltre il mebibyte non è
+            // un evento, è una pagina o un file arrivati con lo stato giusto.
+            // Da qui non uscirebbe più niente, e aspettare la fine del corpo
+            // voleva dire leggere la rete per dieci minuti buttando tutto
+            // (R08-5).
+            if sse.sfondato() {
+                return Err(self.forma_sbagliata(&format!(
+                    "una riga di più di un mebibyte, non un flusso di eventi: {}",
+                    accorcia(&String::from_utf8_lossy(&crudo), DETTAGLIO_MASSIMO)
+                )));
+            }
+            for evento in eventi {
                 // Anche un `[DONE]` senza contenuto conta: una risposta
                 // vuota è una risposta, e trattarla come «non era un
                 // flusso» direbbe che il servizio è rotto quando ha solo
@@ -403,9 +574,25 @@ impl Cliente {
                 if let Some(guasto) = documento.get("error") {
                     return Err(self.dal_documento(guasto));
                 }
-                leggi_evento(&documento, &mut fine, pezzo);
+                leggi_evento(&documento, &mut fine, &mut consegna);
+                if tagliato.get() {
+                    return Ok(false);
+                }
             }
-            Ok(())
+            // Tanti byte e poco testo: battiti, righe che non sono eventi. Se
+            // del testo è arrivato, la risposta è quella, tagliata; se non è
+            // arrivato niente, dall'altra parte non c'era un flusso.
+            if grezzi > GREZZO_MASSIMO {
+                if !visto_qualcosa {
+                    return Err(self.forma_sbagliata(&format!(
+                        "più di {} MiB senza un evento",
+                        GREZZO_MASSIMO >> 20
+                    )));
+                }
+                tagliato.set(true);
+                return Ok(false);
+            }
+            Ok(true)
         };
 
         // Il flusso gira su un filo suo, e qui si aspetta a respiri brevi: vedi
@@ -413,19 +600,38 @@ impl Cliente {
         // flusso, o con `None` se chi guarda ha smesso di volerlo.
         let (manda, ricevi) = mpsc::sync_channel(BLOCCHI_IN_VOLO);
         let smesso = Arc::new(AtomicBool::new(false));
-        self.avvia_flusso(url, intestazioni, corpo, manda, Arc::clone(&smesso))?;
+        let indirizzo = url.clone();
+        self.avvia_flusso(url, intestazioni, corpo, manda, Arc::clone(&smesso))
+            .map_err(Guasto::Altro)?;
+        // Quando è arrivato l'ultimo blocco; `None` finché non ne è arrivato
+        // nessuno. Vedi [`SILENZIO_MASSIMO`].
+        let mut ultimo: Option<std::time::Instant> = None;
         let esito = loop {
             if annullato() {
                 break None;
             }
             match ricevi.recv_timeout(RESPIRO) {
                 Ok(Arrivo::Blocco(blocco)) => {
-                    if let Err(err) = mangia(&blocco) {
-                        break Some(Err(err));
+                    ultimo = Some(std::time::Instant::now());
+                    match mangia(&blocco) {
+                        Ok(true) => {}
+                        Ok(false) => break Some(Ok(())),
+                        Err(err) => break Some(Err(err)),
                     }
                 }
                 Ok(Arrivo::Fine(esito)) => break Some(esito),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if ultimo.is_some_and(|quando| quando.elapsed() >= self.silenzio) {
+                        break Some(Err(AppError::new(ErrorCode::NetTimeout {
+                            url: Some(indirizzo),
+                            timeout_ms: u64::try_from(self.silenzio.as_millis()).ok(),
+                        })
+                        .with_cause(format!(
+                            "a risposta cominciata, nessun byte da {} s",
+                            self.silenzio.as_secs()
+                        ))));
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     break Some(Err(AppError::new(ErrorCode::InternalUnexpected {
                         detail: Some("il filo del flusso è finito senza dire come".to_owned()),
@@ -456,9 +662,34 @@ impl Cliente {
                     ..fine
                 });
             }
-            Some(Err(err)) => return Err(self.traduci(err)),
+            Some(Err(err)) if !visto_qualcosa && tetto_rifiutato(&err, campo) => {
+                return Err(Guasto::TettoRifiutato(err));
+            }
+            Some(Err(err)) => return Err(Guasto::Altro(self.traduci(err))),
+        }
+        // Un tetto ha detto basta: quel che è arrivato resta, e dice perché si
+        // è fermato. Un blocco di modifiche a metà non si applica.
+        if tagliato.get() {
+            return Ok(Fine {
+                motivo: Motivo::Tagliato,
+                ..fine
+            });
         }
 
+        self.senza_un_flusso(visto_qualcosa, &sse, &crudo, fine, pezzo)
+            .map_err(Guasto::Altro)
+    }
+
+    /// Com'è finita una risposta arrivata in fondo, o perché non era una
+    /// risposta: il seguito di [`Self::ascolta`].
+    fn senza_un_flusso(
+        &self,
+        visto_qualcosa: bool,
+        sse: &Sse,
+        crudo: &[u8],
+        mut fine: Fine,
+        pezzo: &mut dyn FnMut(Voce, &str),
+    ) -> Result<Fine, AppError> {
         if !visto_qualcosa {
             // Prima di dare la colpa a qualcuno: forse la risposta c'è, e non è
             // un flusso. Un servizio che ignora `stream: true` risponde con il
@@ -466,7 +697,7 @@ impl Cliente {
             // di una sequenza di `delta`. È la stessa risposta, arrivata tutta
             // in una volta: leggerla costa dieci righe, e l'alternativa è
             // rifiutare qualcosa che ha funzionato.
-            if let Ok(documento) = serde_json::from_slice::<Value>(&crudo) {
+            if let Ok(documento) = serde_json::from_slice::<Value>(crudo) {
                 if let Some(guasto) = documento.get("error") {
                     return Err(self.dal_documento(guasto));
                 }
@@ -489,7 +720,7 @@ impl Cliente {
             if sse.righe() == 0 {
                 return Err(self.forma_sbagliata(&format!(
                     "la risposta non era un flusso di eventi: {}",
-                    accorcia(&String::from_utf8_lossy(&crudo), DETTAGLIO_MASSIMO)
+                    accorcia(&String::from_utf8_lossy(crudo), DETTAGLIO_MASSIMO)
                 )));
             }
             return Err(AppError::new(ErrorCode::IaNoAnswer)
@@ -1087,6 +1318,7 @@ mod prove {
             modello: "qwen3".to_owned(),
             con_chiave: false,
             origine_chiave: None,
+            gettoni_massimi: None,
         }
     }
 
@@ -1117,7 +1349,9 @@ mod prove {
         spostato.con_chiave = true;
         spostato.origine_chiave = Some("https://openrouter.ai:443".to_owned());
         let err = Cliente::nuovo(&spostato, Some("sk-prova".to_owned())).unwrap_err();
-        assert!(matches!(err.code(), ErrorCode::IaNotConfigured));
+        // Il suo codice, non «nessun modello è configurato»: il modello c'è, e
+        // la pagina dei modelli lo mostra (R10-6).
+        assert_eq!(err.code().kind().code(), "ia.keyForOtherOrigin");
         assert!(
             !format!("{err:?}").contains("sk-prova"),
             "la chiave non finisce nell'errore"
@@ -1135,7 +1369,25 @@ mod prove {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err.code(), ErrorCode::IaNotConfigured));
+        assert_eq!(
+            err.code().kind().code(),
+            "ia.keyMissing",
+            "una chiave mancante non è un modello mancante (R10-6)"
+        );
+    }
+
+    /// Senza indirizzo o senza modello il profilo è incompleto: un codice suo,
+    /// e non quello di chi non ha mai configurato niente (R10-6).
+    #[test]
+    fn un_profilo_senza_modello_e_incompleto() {
+        let mut senza_modello = profilo(Fornitore::Ollama, "http://localhost:11434/v1");
+        senza_modello.modello = "  ".to_owned();
+        let err = Cliente::nuovo(&senza_modello, None).unwrap_err();
+        assert_eq!(err.code().kind().code(), "ia.profileIncomplete");
+
+        let senza_indirizzo = profilo(Fornitore::Ollama, "");
+        let err = Cliente::nuovo(&senza_indirizzo, None).unwrap_err();
+        assert_eq!(err.code().kind().code(), "ia.profileIncomplete");
     }
 
     #[test]
@@ -1704,39 +1956,276 @@ mod prove {
     /// chiuso con byte ancora da leggere manda un RST, e il client perderebbe la
     /// risposta.
     fn servitore(poi: impl FnOnce(&mut std::net::TcpStream) + Send + 'static) -> u16 {
+        let poi = std::sync::Mutex::new(Some(poi));
+        servitore_per(1, move |connessione, _| {
+            if let Some(poi) = poi.lock().ok().and_then(|mut p| p.take()) {
+                poi(connessione);
+            }
+        })
+    }
+
+    /// Come [`servitore`], per `volte` connessioni una dopo l'altra, e `poi`
+    /// riceve anche il corpo della richiesta: per guardare cosa il client ha
+    /// chiesto.
+    fn servitore_per(
+        volte: usize,
+        poi: impl Fn(&mut std::net::TcpStream, &[u8]) + Send + 'static,
+    ) -> u16 {
         use std::io::Read as _;
         let ascolto =
             std::net::TcpListener::bind("127.0.0.1:0").expect("una porta su questa macchina");
         let porta = ascolto.local_addr().expect("la porta scelta").port();
         std::thread::spawn(move || {
-            let Ok((mut connessione, _)) = ascolto.accept() else {
-                return;
-            };
-            let mut testa = Vec::new();
-            let mut byte = [0_u8; 1];
-            while !testa.ends_with(b"\r\n\r\n") {
-                match connessione.read(&mut byte) {
-                    Ok(1) => testa.push(byte[0]),
-                    _ => return,
+            for _ in 0..volte {
+                let Ok((mut connessione, _)) = ascolto.accept() else {
+                    return;
+                };
+                let mut testa = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !testa.ends_with(b"\r\n\r\n") {
+                    match connessione.read(&mut byte) {
+                        Ok(1) => testa.push(byte[0]),
+                        _ => return,
+                    }
                 }
+                let lunghezza = String::from_utf8_lossy(&testa)
+                    .lines()
+                    .find_map(|riga| {
+                        let (nome, valore) = riga.split_once(':')?;
+                        nome.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| valore.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let mut corpo = vec![0_u8; lunghezza];
+                if connessione.read_exact(&mut corpo).is_err() {
+                    return;
+                }
+                poi(&mut connessione, &corpo);
             }
-            let lunghezza = String::from_utf8_lossy(&testa)
-                .lines()
-                .find_map(|riga| {
-                    let (nome, valore) = riga.split_once(':')?;
-                    nome.trim()
-                        .eq_ignore_ascii_case("content-length")
-                        .then(|| valore.trim().parse::<usize>().ok())
-                        .flatten()
-                })
-                .unwrap_or(0);
-            let mut corpo = vec![0_u8; lunghezza];
-            if connessione.read_exact(&mut corpo).is_err() {
-                return;
-            }
-            poi(&mut connessione);
         });
         porta
+    }
+
+    /// Le intestazioni di un flusso di eventi che finisce con la connessione.
+    const TESTA_FLUSSO: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+
+    /// `conversa` su un altro filo, con al più `entro` di attesa: le prove dei
+    /// tetti non devono poter restare appese a un servitore che tace.
+    fn conversa_entro(cliente: Cliente, entro: Duration) -> (Result<Fine, AppError>, usize) {
+        let (esito_tx, esito_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut arrivati = 0_usize;
+            let esito = cliente.conversa(&[Messaggio::utente("ciao")], &|| false, &mut |_, t| {
+                arrivati += t.len();
+            });
+            let _ = esito_tx.send((esito, arrivati));
+        });
+        esito_rx
+            .recv_timeout(entro)
+            .expect("la conversazione deve finire senza aspettare il servitore")
+    }
+
+    /// Un corpo enorme senza un a capo — un file, una pagina, un servizio che
+    /// sgocciola byte — fa rinunciare il decodificatore al primo mebibyte: da
+    /// lì la conversazione finisce subito, e non quando il servitore chiude o
+    /// fra dieci minuti (R08-5).
+    #[test]
+    fn un_flusso_senza_a_capo_si_chiude_subito() {
+        let porta = servitore(|connessione| {
+            use std::io::Write as _;
+            let _ = connessione.write_all(TESTA_FLUSSO);
+            let blocco = vec![b'x'; 64 * 1024];
+            for _ in 0..32 {
+                if connessione.write_all(&blocco).is_err() {
+                    return;
+                }
+            }
+            let _ = connessione.flush();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let (esito, _) = conversa_entro(cliente, Duration::from_secs(5));
+        let guasto = esito.expect_err("due mebibyte senza a capo non sono una risposta");
+        assert_eq!(guasto.code().kind().code(), "ia.badResponse");
+    }
+
+    /// La richiesta dice quanti gettoni può scrivere il modello: di serie
+    /// [`crate::GETTONI_DI_SERIE`], o quel che il profilo chiede (R08-3, D-64). Senza,
+    /// un modello che entra in un ciclo scrive fino al massimo del modello, e
+    /// OpenRouter rifiuta la richiesta a chi ha poco credito.
+    #[test]
+    fn la_richiesta_porta_un_tetto_di_gettoni() {
+        let (corpo_tx, corpo_rx) = std::sync::mpsc::channel();
+        let porta = servitore_per(1, move |connessione, corpo| {
+            use std::io::Write as _;
+            let _ = corpo_tx.send(corpo.to_vec());
+            let _ = connessione.write_all(TESTA_FLUSSO);
+            let _ = connessione.write_all(b"data: [DONE]\n\n");
+        });
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let _ = conversa_entro(cliente, Duration::from_secs(5));
+        let corpo = corpo_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("il servitore ha ricevuto la richiesta");
+        let richiesta: Value = serde_json::from_slice(&corpo).expect("un JSON");
+        assert_eq!(
+            richiesta.get("max_tokens").and_then(Value::as_u64),
+            Some(4096),
+            "{richiesta}"
+        );
+
+        // Il numero del profilo, quando c'è; dentro i bordi anche se qualcuno
+        // ha scritto `settings` a mano.
+        let mut suo = profilo(Fornitore::Ollama, "http://localhost:11434/v1");
+        suo.gettoni_massimi = Some(1000);
+        let cliente = Cliente::nuovo(&suo, None).expect("un profilo locale costruisce");
+        let corpo = cliente
+            .richiesta(&[Messaggio::utente("ciao")], CAMPO_DEL_TETTO)
+            .expect("il corpo");
+        let richiesta: Value = serde_json::from_slice(&corpo).expect("un JSON");
+        assert_eq!(
+            richiesta.get("max_tokens").and_then(Value::as_u64),
+            Some(1000)
+        );
+        suo.gettoni_massimi = Some(3);
+        let cliente = Cliente::nuovo(&suo, None).expect("un profilo locale costruisce");
+        let corpo = cliente
+            .richiesta(&[Messaggio::utente("ciao")], CAMPO_DEL_TETTO)
+            .expect("il corpo");
+        let richiesta: Value = serde_json::from_slice(&corpo).expect("un JSON");
+        assert_eq!(
+            richiesta.get("max_tokens").and_then(Value::as_u64),
+            Some(64)
+        );
+    }
+
+    /// Una risposta che non finisce — un servizio rotto o ostile che manda
+    /// testo a raffica, senza `[DONE]` — si ferma al tetto del testo,
+    /// [`TESTO_MASSIMO`], come «tagliata», senza aspettare che il servitore
+    /// chiuda (R08-3).
+    #[test]
+    fn una_risposta_oltre_il_tetto_si_ferma_tagliata() {
+        let porta = servitore(|connessione| {
+            use std::io::Write as _;
+            let _ = connessione.write_all(TESTA_FLUSSO);
+            let parola = "x".repeat(4000);
+            let evento =
+                format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{parola}\"}}}}]}}\n\n");
+            // Più di cinque mebibyte di testo.
+            for _ in 0..1400 {
+                if connessione.write_all(evento.as_bytes()).is_err() {
+                    return;
+                }
+            }
+            let _ = connessione.flush();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let (esito, arrivati) = conversa_entro(cliente, Duration::from_secs(10));
+        let fine = esito.expect("una risposta tagliata non è un guasto");
+        assert_eq!(fine.motivo, Motivo::Tagliato);
+        assert_eq!(
+            arrivati,
+            4 * 1024 * 1024,
+            "si consegna il tetto, non di più"
+        );
+    }
+
+    /// Un servizio che a metà risposta smette di mandare — il modello a valle
+    /// che si pianta, una connessione mezza morta — non tiene la chat occupata
+    /// per i dieci minuti della scadenza: dopo [`SILENZIO_MASSIMO`] senza un
+    /// byte è una scadenza, e lo si dice come tale, non come «il server ha
+    /// risposto con un errore» (R08-3).
+    #[test]
+    fn un_silenzio_a_meta_risposta_e_una_scadenza() {
+        let porta = servitore(|connessione| {
+            use std::io::Write as _;
+            let _ = connessione.write_all(TESTA_FLUSSO);
+            let _ = connessione
+                .write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"Ci\"}}]}\n\n");
+            let _ = connessione.flush();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        let mut cliente = Cliente::nuovo(
+            &profilo(Fornitore::Ollama, &format!("http://127.0.0.1:{porta}/v1")),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        cliente.silenzio = Duration::from_millis(400);
+        let (esito, arrivati) = conversa_entro(cliente, Duration::from_secs(5));
+        let guasto = esito.expect_err("un servizio muto a metà non ha finito");
+        assert_eq!(guasto.code().kind().code(), "net.timeout");
+        assert_eq!(arrivati, 2, "quel che era arrivato è arrivato");
+    }
+
+    /// Un endpoint che parla come OpenAI e vuole `max_completion_tokens` (i
+    /// modelli che ragionano, su `api.openai.com`) risponde 400 a
+    /// `max_tokens`: si richiede una volta con l'altro nome, invece di rompere
+    /// un profilo che prima del tetto funzionava.
+    #[test]
+    fn chi_rifiuta_max_tokens_riceve_max_completion_tokens() {
+        let (corpo_tx, corpo_rx) = std::sync::mpsc::channel();
+        let porta = servitore_per(2, move |connessione, corpo| {
+            use std::io::Write as _;
+            let richiesta: Value = serde_json::from_slice(corpo).unwrap_or_default();
+            let _ = corpo_tx.send(richiesta.clone());
+            if richiesta.get("max_tokens").is_some() {
+                let rifiuto = r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
+                let _ = connessione.write_all(
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{rifiuto}",
+                        rifiuto.len()
+                    )
+                    .as_bytes(),
+                );
+                return;
+            }
+            let _ = connessione.write_all(TESTA_FLUSSO);
+            let _ = connessione.write_all(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            );
+        });
+        let cliente = Cliente::nuovo(
+            &profilo(
+                Fornitore::Personalizzato,
+                &format!("http://127.0.0.1:{porta}/v1"),
+            ),
+            None,
+        )
+        .expect("un profilo locale costruisce");
+        let (esito, arrivati) = conversa_entro(cliente, Duration::from_secs(5));
+        let fine = esito.expect("la seconda richiesta passa");
+        assert_eq!(fine.motivo, Motivo::Finito);
+        assert_eq!(arrivati, 2);
+        let prima = corpo_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("la prima richiesta");
+        let seconda = corpo_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("la seconda richiesta");
+        assert!(prima.get("max_tokens").is_some(), "{prima}");
+        assert_eq!(
+            seconda.get("max_completion_tokens").and_then(Value::as_u64),
+            Some(4096),
+            "{seconda}"
+        );
+        assert!(seconda.get("max_tokens").is_none(), "{seconda}");
     }
 
     /// Il servizio che non manda un byte — un modello che si carica, un prompt

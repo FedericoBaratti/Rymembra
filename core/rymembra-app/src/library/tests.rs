@@ -6889,3 +6889,54 @@ fn una_riga_rinominata_fra_il_piano_e_la_scrittura_non_torna_al_file_di_prima() 
     );
     assert_eq!(report.updated, 0, "una riga saltata non si conta");
 }
+
+/// Un file «solo online» di una cartella sincronizzata (OneDrive con «File su
+/// richiesta») non si legge: leggerlo lo farebbe scaricare. Si conta, e non
+/// toglie niente: qui è il brano di prima, spostato sul servizio mentre stava
+/// solo in rete, e la sua riga — con gli ascolti — resta finché il file non si
+/// può leggere (D-101, R25-2).
+#[test]
+fn un_file_solo_in_rete_non_si_legge_e_non_toglie_il_brano_spostato() {
+    let (_dir, store, mut connection) = banco();
+    let mut cloud = FintoCloud::nuovo(Limiti::DISCO)
+        .con_brano("Vecchia/01.wav", "Uno", "Tale", "Disco")
+        .con_brano("Vecchia/02.wav", "Due", "Tale", "Disco");
+    let primo = scansiona_nuvola(
+        &mut connection,
+        &store,
+        &Arc::new(FintoCloud {
+            file: cloud.file.clone(),
+            ..FintoCloud::nuovo(Limiti::DISCO)
+        }),
+    );
+    assert_eq!(primo.inserted, 2);
+    connection
+        .execute(
+            "UPDATE tracks SET play_count = 7 WHERE path = ?1",
+            [format!("{NUVOLA}/Vecchia/01.wav")],
+        )
+        .expect("ascolti");
+    let (id, _) = ascolti_di(&connection, &format!("{NUVOLA}/Vecchia/01.wav")).expect("riga");
+
+    // Il primo spostato e ancora solo in rete; il secondo spostato e qui.
+    cloud.rinomina("Vecchia", "Nuova");
+    let cloud = Arc::new(cloud);
+    cloud.sbaglia(
+        "Nuova/01.wav",
+        ErrorCode::CloudOnlineOnly {
+            path: format!("{NUVOLA}/Nuova/01.wav"),
+        },
+    );
+    let esito = scansiona_nuvola(&mut connection, &store, &cloud);
+    assert!(esito.unreadable.is_empty(), "{:?}", esito.unreadable);
+    assert_eq!(esito.solo_in_rete, 1, "il file solo in rete si conta");
+    assert_eq!(
+        ascolti_di(&connection, &format!("{NUVOLA}/Vecchia/01.wav")),
+        Some((id, 7)),
+        "la riga del brano spostato e solo in rete resta, con gli ascolti"
+    );
+    let ricordati: i64 = connection
+        .query_row("SELECT COUNT(*) FROM file_illeggibili", [], |r| r.get(0))
+        .expect("conteggio");
+    assert_eq!(ricordati, 0, "non è un file illeggibile");
+}

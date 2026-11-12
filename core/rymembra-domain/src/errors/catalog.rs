@@ -235,6 +235,17 @@ catalogo! {
     NetUnavailable = "net.unavailable", Net, Warning, Always, None, { service: Option<String>, retry_after_ms: Option<u64> };
     /// La risposta non ha la forma attesa.
     NetBadSchema = "net.badSchema", Net, Error, Never, None, { service: Option<String>, detail: Option<String> };
+    /// Il server presenta un certificato che questo dispositivo non riconosce:
+    /// il NAS di casa col certificato di serie, una CA privata che il telefono
+    /// non conosce, un proxy che ispeziona TLS.
+    ///
+    /// Si rifiuta, come sempre (D-109): nessuna accettazione silenziosa e, per
+    /// ora, nessun consenso per impronta. Un codice suo e non
+    /// [`ErrorCode::NetBadSchema`], perché il rimedio è dalla parte di chi
+    /// legge — un certificato riconosciuto, o la cartella di rete — e non
+    /// «è cambiato qualcosa dalla loro parte». Mai ritentabile: lo stesso
+    /// certificato dà lo stesso rifiuto.
+    NetUntrustedCertificate = "net.untrustedCertificate", Net, Warning, Never, None, { host: Option<String> };
     /// Interruttore aperto: il servizio ha fallito troppe volte di seguito.
     NetCircuitOpen = "net.circuitOpen", Net, Warning, Always, None, { service: String, retry_after_ms: Option<u64> };
     /// Android non lascia vedere la rete di casa: da Android 17 serve il
@@ -909,6 +920,11 @@ catalogo! {
     /// identificativo: il suo consenso appartiene all'app di prima. Si
     /// ricollega, e cartelle e brani restano dove sono.
     CloudAppChanged = "cloud.appChanged", Cloud, Info, Never, None, { servizio: String };
+    /// «Ricollega» con un altro account dello stesso servizio: il consenso è
+    /// di un account diverso da quello che si ricollegava. Non si salva
+    /// niente e il conto di prima resta com'era (D-92): nominare i due
+    /// account è compito della finestrella, che li ha tutti e due.
+    CloudOtherAccount = "cloud.otherAccount", Cloud, Warning, Never, None, { servizio: String };
     /// L'identificativo dell'app scritto a mano non ha la forma che la
     /// piattaforma gli dà (o il nome dell'app è vuoto o troppo lungo).
     CloudAppIdInvalid = "cloud.appIdInvalid", Cloud, Info, Never, None;
@@ -923,6 +939,13 @@ catalogo! {
     CloudReadOnly = "cloud.readOnly", Cloud, Info, Never, None;
     /// Il file non c'è più sul servizio.
     CloudNotFound = "cloud.notFound", Cloud, Warning, Never, None;
+    /// Il file è cambiato sul servizio dopo che lo specchio l'ha visto: i byte
+    /// che arriverebbero sono di un'altra versione, e sotto la chiave di quella
+    /// vecchia la cache mescolerebbe le due (R28-5, D-111). Non si servono: il
+    /// brano si ferma invece di finire con l'altra versione, e il prossimo
+    /// giro del conto porta la versione nuova. Non ritentabile: fino ad allora
+    /// la stessa domanda dà lo stesso rifiuto.
+    CloudFileChanged = "cloud.fileChanged", Cloud, Warning, Never, None;
     /// Il servizio ha finito la quota di trasferimento dell'account (MEGA lo
     /// fa a ore). Non si ritenta da soli: passa col tempo, non con un secondo
     /// tentativo.
@@ -951,6 +974,13 @@ catalogo! {
     /// scarica niente apposta. Non è un guasto del file: si misura dopo un
     /// ascolto.
     CloudNotInCache = "cloud.notInCache", Cloud, Info, Never, None;
+    /// Un file di una cartella sincronizzata (OneDrive, Dropbox, Google Drive per
+    /// desktop) che sta solo in rete: un segnaposto, col contenuto sul server.
+    /// Leggerlo lo farebbe scaricare dal client di sincronizzazione — e la
+    /// scansione e l'analisi lo farebbero per ogni brano della cartella. Non lo
+    /// leggono, e lo dicono (D-101, R25-2). Chi lo suona lo scarica: è il
+    /// gesto di chi ascolta.
+    CloudOnlineOnly = "cloud.onlineOnly", Cloud, Info, Never, None, { path: String };
 
     // ── settings ────────────────────────────────────────────────────────────
     /// Le impostazioni salvate sono illeggibili.
@@ -1005,6 +1035,20 @@ catalogo! {
     /// `Info` e non `Warning`: non è un guasto, è la condizione di chiunque non
     /// sia mai passato da Impostazioni › Modelli IA — cioè quella normale.
     IaNotConfigured = "ia.notConfigured", Ia, Info, Never, None;
+    /// Il profilo c'è, ma manca l'indirizzo o il nome del modello.
+    ///
+    /// I quattro codici che seguono erano tutti [`ErrorCode::IaNotConfigured`],
+    /// cioè «nessun modello è configurato» a schermo anche quando il modello
+    /// c'era e la pagina dei modelli lo mostrava (R10-6): il motivo vero stava
+    /// solo nel messaggio tecnico, che non si traduce.
+    IaProfileIncomplete = "ia.profileIncomplete", Ia, Info, Never, None;
+    /// Il fornitore vuole una chiave, e il profilo non ce l'ha.
+    IaKeyMissing = "ia.keyMissing", Ia, Info, Never, None;
+    /// La chiave del profilo è stata scritta per un altro indirizzo: dopo un
+    /// cambio d'origine non parte verso quello nuovo, e va scritta di nuovo.
+    IaKeyForOtherOrigin = "ia.keyForOtherOrigin", Ia, Info, Never, None;
+    /// I profili salvati sono già quanti se ne possono tenere.
+    IaTooManyProfiles = "ia.tooManyProfiles", Ia, Info, Never, None;
     /// Il fornitore ha rifiutato la chiave.
     ///
     /// Un codice suo invece del `net.http` con dentro un 401, perché è l'unico

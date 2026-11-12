@@ -62,6 +62,7 @@ import {
   rimedioDi,
   serveLApp,
 } from "./appNuvola";
+import { contiDaNominare } from "./altroConto";
 import { NOMI_SERVIZI, iconaServizio, schedaDi, type Scheda } from "./cartelleNuvola";
 import { ConfermaGesto, type Domanda } from "./ConfermaGesto";
 import { useContiNuvolaDellaFinestra } from "./contiNuvola";
@@ -158,7 +159,11 @@ function chiedeIlCodice(guasto: unknown): boolean {
  * decide; e uscire di scena con un'attesa in corso la ferma anche nel nucleo,
  * che altrimenti terrebbe aperta la porta del consenso fino alla sua scadenza.
  */
-function useCollegamento(onCollegato: (conto: ContoNuvola) => void) {
+function useCollegamento(
+  onCollegato: (conto: ContoNuvola) => void,
+  /** Il conto che si sta ricollegando: il nucleo rifiuta un altro account (D-92). */
+  daRicollegare: ContoNuvola | null = null,
+) {
   const [inAttesa, setInAttesa] = useState(false);
   const [guasto, setGuasto] = useState<unknown>(null);
   const vivo = useRef(true);
@@ -194,7 +199,12 @@ function useCollegamento(onCollegato: (conto: ContoNuvola) => void) {
     setInAttesa(true);
     setGuasto(null);
     try {
-      const conto = await ipc.nuvolaContoCollega(servizio, appId, modulo);
+      const conto = await ipc.nuvolaContoCollega(
+        servizio,
+        appId,
+        modulo,
+        daRicollegare?.conto ?? null,
+      );
       if (!vivo.current || tentativo.current !== questo) return null;
       tentativo.current = 0;
       setInAttesa(false);
@@ -220,6 +230,16 @@ function useCollegamento(onCollegato: (conto: ContoNuvola) => void) {
   };
 
   return { inAttesa, guasto, prova, annulla };
+}
+
+/**
+ * La frase di un collegamento andato male. Un «Ricollega» fatto con un altro
+ * account nomina i due — quello con cui si è entrati e quello atteso (D-92) —;
+ * il resto è la frase del catalogo.
+ */
+function fraseDelGuasto(guasto: unknown, daRicollegare: ContoNuvola | null): string {
+  const conti = contiDaNominare(guasto, daRicollegare);
+  return conti !== null ? t("folders.reconnect.otherAccount", conti) : testoErrore(guasto);
 }
 
 /** Il nome e l'icona del servizio, in testa al pannello che lo collega. */
@@ -280,7 +300,7 @@ interface Collegare {
  * - **il consenso**: «Collega», con la scelta dell'app se ce n'è più d'una.
  */
 function PerBrowser({ linguetta, daRicollegare, onCollegato, onChiedi }: Collegare) {
-  const { inAttesa, guasto, prova, annulla } = useCollegamento(onCollegato);
+  const { inAttesa, guasto, prova, annulla } = useCollegamento(onCollegato, daRicollegare);
   const { app: registro, accogliApp } = useContiNuvolaDellaFinestra();
   const servizio = linguetta.offerto.servizio;
   const nome = linguetta.offerto.nome;
@@ -423,7 +443,7 @@ function PerBrowser({ linguetta, daRicollegare, onCollegato, onChiedi }: Collega
       )}
       {guasto !== null && (
         <div className="errore" role="alert">
-          {testoErrore(guasto)}
+          {fraseDelGuasto(guasto, daRicollegare)}
         </div>
       )}
       <div className="tasti-collega">
@@ -514,7 +534,7 @@ function fraseDifetto(difetto: DifettoIndirizzo): string {
  * nome utente nel percorso lo mette il modulo, da quello scritto sotto.
  */
 function PerWebdav({ linguetta, daRicollegare, onCollegato, onAttesa }: Collegare) {
-  const { inAttesa, guasto, prova } = useCollegamento(onCollegato);
+  const { inAttesa, guasto, prova } = useCollegamento(onCollegato, daRicollegare);
   // Il tentativo non si può fermare: l'annullo del nucleo lo legge solo
   // l'attesa del browser, e un WebDAV che risponde dopo un «Annulla» scriveva
   // lo stesso la password nel portachiavi e salvava il conto. Allora finché
@@ -648,7 +668,7 @@ function PerWebdav({ linguetta, daRicollegare, onCollegato, onAttesa }: Collegar
       <p className="nota-collega">{t("folders.add.webdav.note")}</p>
       {guasto !== null && (
         <div className="errore" role="alert">
-          {testoErrore(guasto)}
+          {fraseDelGuasto(guasto, daRicollegare)}
         </div>
       )}
       <div className="tasti-collega">

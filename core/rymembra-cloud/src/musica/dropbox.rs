@@ -664,6 +664,7 @@ impl Deposito for Dropbox {
             api: self.api.clone(),
             flusso: self.flusso.clone(),
             percorso: voce.id.clone(),
+            versione: voce.versione.clone(),
             link: Mutex::new(None),
         }))
     }
@@ -713,21 +714,67 @@ pub struct DaDropbox {
     api: Api,
     flusso: Rete,
     percorso: String,
+    /// La versione che lo specchio ha visto (`content_hash`, o `rev`), cioè
+    /// quella che la chiave della cache nomina: vedi [`Self::nuovo_link`].
+    versione: Option<String>,
     link: Mutex<Option<Link>>,
 }
 
 impl DaDropbox {
+    /// Un collegamento temporaneo nuovo, legato alla versione della chiave.
+    ///
+    /// # La versione
+    ///
+    /// Un collegamento chiesto per percorso serve il file com'è sul servizio,
+    /// e la cache mette quei byte sotto la chiave della versione che lo
+    /// specchio aveva visto: un file riscritto nel frattempo ne usciva
+    /// mescolato (R28-5, D-111). Allora: se il servizio dice un'altra
+    /// versione, i byte non si servono (`cloud.fileChanged`); se dice la
+    /// stessa, il collegamento si richiede per quella revisione (`rev:`), e
+    /// resta suo per le quattro ore in cui vale. Senza versione nella chiave
+    /// la cache non tiene niente, e basta il collegamento per percorso.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di `files/get_temporary_link`, e `cloud.fileChanged`.
     fn nuovo_link(&self) -> Result<String, AppError> {
         let corpo = self.api.rpc(
             "files/get_temporary_link",
             &json!({ "path": self.percorso }),
         )?;
-        let url = corpo
-            .get("link")
-            .and_then(Value::as_str)
-            .filter(|u| collegamento_ammesso(u))
-            .ok_or_else(|| forma("niente collegamento temporaneo"))?
-            .to_owned();
+        let mut url = collegamento_di(&corpo)?;
+        let detto = |campo: &str| {
+            corpo
+                .get("metadata")
+                .and_then(|m| m.get(campo))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        if let Some(attesa) = &self.versione {
+            if detto("content_hash")
+                .or_else(|| detto("rev"))
+                .is_some_and(|adesso| adesso != *attesa)
+            {
+                return Err(AppError::new(ErrorCode::CloudFileChanged)
+                    .with_cause("Dropbox ha un'altra versione del file"));
+            }
+            // `rev:<rev>` è un `ReadPath` che l'API accetta anche qui
+            // (`(rev:[0-9a-f]{9,})` nella specifica). Se il servizio lo
+            // rifiuta comunque, resta il collegamento per percorso, la cui
+            // versione è appena stata confrontata: si perde il legame per le
+            // ore in cui il collegamento vale, non il brano. Un guasto che
+            // passa da sé (la rete, un limite) invece si dice.
+            if let Some(rev) = detto("rev") {
+                match self.api.rpc(
+                    "files/get_temporary_link",
+                    &json!({ "path": format!("rev:{rev}") }),
+                ) {
+                    Ok(legato) => url = collegamento_di(&legato).unwrap_or(url),
+                    Err(err) if err.is_retryable() => return Err(err),
+                    Err(_) => {}
+                }
+            }
+        }
         *self.link.lock().unwrap_or_else(PoisonError::into_inner) = Some(Link {
             url: url.clone(),
             da: Instant::now(),
@@ -800,6 +847,17 @@ impl Sorgente for DaDropbox {
                 pulito
             })
     }
+}
+
+/// Il collegamento di una risposta di `files/get_temporary_link`, se è uno
+/// che si può seguire.
+fn collegamento_di(corpo: &Value) -> Result<String, AppError> {
+    corpo
+        .get("link")
+        .and_then(Value::as_str)
+        .filter(|u| collegamento_ammesso(u))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| forma("niente collegamento temporaneo"))
 }
 
 /// Un collegamento temporaneo si segue solo in `https`: porta il brano, e su

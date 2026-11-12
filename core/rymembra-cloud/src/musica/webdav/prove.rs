@@ -560,3 +560,126 @@ fn l_indirizzo_web_di_nextcloud() {
         Some("https://cloud.it/index.php/apps/files/?dir=%2FMusica")
     );
 }
+
+/// Un server che ignora `Range`: per i tag in coda (ID3v1, APE) il lettore
+/// dei tag scaricava il file intero, letto e buttato fino a sedici kilobyte
+/// dalla fine, fuori dal tetto di otto megabyte. Adesso si rinuncia alla coda:
+/// vale vuota, e il file non si scarica (R28-3, D-112).
+#[test]
+fn i_tag_di_un_server_senza_range_non_scaricano_il_file() {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    use crate::musica::lettura::{LettoreTag, TETTO_LETTURA};
+
+    const GRANDE: usize = 20 * 1024 * 1024;
+    let finto = Finto::avvia(|vista: &Vista, _: &str| match vista.percorso.as_str() {
+        "/remote.php/dav/files/mario/grande.mp3" => {
+            risposta(200, "audio/mpeg", &vec![b'x'; GRANDE])
+        }
+        _ => risposta(404, "text/plain", b""),
+    });
+    let server = server(&finto);
+    let voce = VoceRemota {
+        id: "/remote.php/dav/files/mario/grande.mp3".to_owned(),
+        genitore: Some("/remote.php/dav/files/mario".to_owned()),
+        nome: "grande.mp3".to_owned(),
+        cartella: false,
+        dimensione: GRANDE as u64,
+        modificato_ms: 0,
+        versione: None,
+        tag: None,
+    };
+    let mut lettore = LettoreTag::nuovo(
+        server.sorgente_per_i_tag(&voce).expect("sorgente"),
+        Some(GRANDE as u64),
+    );
+    let mut testa = [0_u8; 10];
+    lettore.read_exact(&mut testa).expect("la testa arriva");
+    assert_eq!(testa, [b'x'; 10]);
+    lettore.seek(SeekFrom::End(-128)).expect("in coda");
+    let mut coda = [1_u8; 128];
+    lettore.read_exact(&mut coda).expect("la coda vale vuota");
+    assert_eq!(coda, [0_u8; 128], "una coda che non si legge non ha tag");
+    assert!(lettore.letti() < TETTO_LETTURA, "letti {}", lettore.letti());
+    assert_eq!(
+        finto
+            .viste_a("/remote.php/dav/files/mario/grande.mp3")
+            .len(),
+        2,
+        "la testa e la domanda col `Range` ignorato: niente lettura di fila del file intero"
+    );
+}
+
+/// Un brano cambiato sul server dopo che lo specchio l'ha visto: fino al
+/// ripasso la chiave è quella vecchia, e la cache metteva sotto di lei la
+/// testa vecchia e il resto nuovo. Ogni richiesta porta la versione che la
+/// chiave nomina (`If-Match`), e un `412` è `cloud.fileChanged`: il brano si
+/// ferma invece di finire mescolato (R28-5, D-111).
+#[test]
+fn un_file_cambiato_sotto_la_stessa_chiave_non_si_mescola() {
+    let volte = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let contate = std::sync::Arc::clone(&volte);
+    let finto = Finto::avvia(move |vista: &Vista, _: &str| {
+        // Alla seconda domanda il file è già la versione «b».
+        let n = contate.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let attuale = if n == 0 { "\"a\"" } else { "\"b\"" };
+        match vista.intestazione("if-match") {
+            Some(chiesta) if chiesta != attuale => risposta(412, "text/plain", b""),
+            _ => pezzo_di(vista, 40),
+        }
+    });
+    let server = server(&finto);
+    let voce = |versione: &str| VoceRemota {
+        id: "/remote.php/dav/files/mario/a.flac".to_owned(),
+        genitore: Some("/remote.php/dav/files/mario".to_owned()),
+        nome: "a.flac".to_owned(),
+        cartella: false,
+        dimensione: 40,
+        modificato_ms: 0,
+        versione: Some(versione.to_owned()),
+        tag: None,
+    };
+    let sorgente = server.sorgente(&voce("a")).expect("sorgente");
+    assert_eq!(
+        sorgente.pezzo(0, 10).expect("la versione «a»").byte,
+        (0..10).map(byte_finto).collect::<Vec<_>>()
+    );
+    let guasto = sorgente
+        .pezzo(10, 10)
+        .expect_err("i byte della versione «b» non sono della chiave «a»");
+    assert_eq!(guasto.code().kind().code(), "cloud.fileChanged");
+    assert_eq!(
+        finto
+            .viste()
+            .first()
+            .and_then(|v| v.intestazione("if-match").map(str::to_owned)),
+        Some("\"a\"".to_owned())
+    );
+}
+
+/// Un `ETag` debole non si confronta con `If-Match` (la RFC vuole il confronto
+/// forte, e un debole non passerebbe mai): senza, ogni brano di quel server
+/// darebbe `412`. Lì la versione la controlla solo lo specchio, come prima.
+#[test]
+fn con_un_etag_debole_non_si_chiede_la_versione() {
+    let finto = Finto::avvia(|vista: &Vista, _: &str| pezzo_di(vista, 40));
+    let server = server(&finto);
+    let voce = VoceRemota {
+        id: "/remote.php/dav/files/mario/a.flac".to_owned(),
+        genitore: Some("/remote.php/dav/files/mario".to_owned()),
+        nome: "a.flac".to_owned(),
+        cartella: false,
+        dimensione: 40,
+        modificato_ms: 0,
+        versione: Some("W/\"a".to_owned()),
+        tag: None,
+    };
+    let sorgente = server.sorgente(&voce).expect("sorgente");
+    assert!(sorgente.pezzo(0, 10).is_ok());
+    assert!(
+        finto
+            .viste()
+            .iter()
+            .all(|v| v.intestazione("if-match").is_none())
+    );
+}

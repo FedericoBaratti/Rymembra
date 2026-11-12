@@ -154,6 +154,20 @@ const INDICE: &str = "indice";
 /// L'estensione di quel che si sta scrivendo e non è ancora al suo posto.
 const PROVVISORIO: &str = "tmp";
 
+/// Il nome del file che dice di chi è la cartella: vedi [`Cache::condivisa`].
+const BLOCCO: &str = "blocco";
+
+/// La forma dell'indice che questa versione scrive.
+///
+/// Un indice senza `formato` è della 3.2.0, e di quelli non ci si fida: un
+/// crash fra la rinomina della copia in ordine e la scrittura del nuovo
+/// indice lasciava l'indice dei pezzi in fila sopra il file già in ordine, e
+/// ricomposto di nuovo ne usciva un brano mescolato, servito e misurato così
+/// (R06b-8). Il difetto è corretto, ma un indice di allora non si distingue
+/// da uno buono: alla prima apertura si butta con la sua copia, una volta
+/// sola. È una cache: il peggio che costa è riscaricare.
+const FORMATO_INDICE: u32 = 2;
+
 /// Quale copia di quale brano.
 ///
 /// La versione è nella chiave: un brano cambiato sul servizio è un'altra
@@ -224,6 +238,10 @@ struct Indice {
     segmenti: Vec<Segmento>,
     usato_ms: i64,
     da_misurare: bool,
+    /// [`FORMATO_INDICE`] negli indici di adesso; zero, cioè assente, in
+    /// quelli della 3.2.0.
+    #[serde(default)]
+    formato: u32,
 }
 
 /// Una copia, in memoria.
@@ -359,6 +377,7 @@ impl Copia {
             segmenti: self.segmenti.clone(),
             usato_ms: self.usato.0,
             da_misurare: self.da_misurare,
+            formato: FORMATO_INDICE,
         }
     }
 }
@@ -426,6 +445,13 @@ struct Dentro {
     /// La coda del filo. `None` se il filo non è partito o la cache si sta
     /// chiudendo: allora un lavoro lo fa subito chi lo chiede.
     lavori: Mutex<Option<mpsc::Sender<Lavoro>>>,
+    /// Un altro processo tiene la cartella (vedi [`Cache::condivisa`]): la
+    /// cache resta spenta, e non si riaccende.
+    condivisa: bool,
+    /// Il file di [`BLOCCO`], col lucchetto preso: tenuto aperto finché la
+    /// cache vive, che è quel che tiene il lucchetto. `None` se è di un
+    /// altro, o se il sistema non sa dare lucchetti.
+    _blocco: Option<File>,
 }
 
 /// La cache: una cartella, e quel che ci sta dentro. Vedi il `//!`.
@@ -479,11 +505,22 @@ impl Cache {
         let cartella = cartella.into();
         let nome_cartella = cartella.to_string_lossy().into_owned();
         std::fs::create_dir_all(&cartella).map_err(|err| io_error(&nome_cartella, &err))?;
+        // Prima di guardare cosa c'è: se la cartella la tiene un altro
+        // processo, le sue copie a metà non sono orfane, e non si toccano.
+        let (blocco, condivisa) = prendi_la_cartella(&cartella);
+        let attiva = attiva && !condivisa;
         let mut copie = HashMap::new();
         let mut usati = 0_u64;
-        let voci = std::fs::read_dir(&cartella).map_err(|err| io_error(&nome_cartella, &err))?;
+        let voci = if condivisa {
+            Vec::new()
+        } else {
+            std::fs::read_dir(&cartella)
+                .map_err(|err| io_error(&nome_cartella, &err))?
+                .flatten()
+                .collect()
+        };
         let mut da_buttare = Vec::new();
-        for voce in voci.flatten() {
+        for voce in voci {
             let percorso = voce.path();
             let (Some(nome), Some(estensione)) = (
                 percorso
@@ -515,7 +552,7 @@ impl Cache {
             butta_file(&cartella, &nome);
         }
         // Un `.dati` che nessun indice nomina è byte che nessuno ritroverà.
-        if let Ok(voci) = std::fs::read_dir(&cartella) {
+        if !condivisa && let Ok(voci) = std::fs::read_dir(&cartella) {
             for voce in voci.flatten() {
                 let percorso = voce.path();
                 let orfano = percorso.extension().and_then(|e| e.to_str()) == Some(DATI)
@@ -542,6 +579,8 @@ impl Cache {
             libera: Condvar::new(),
             avviso: Mutex::new(None),
             lavori: Mutex::new(None),
+            condivisa,
+            _blocco: blocco,
         });
         let (coda, arrivi) = mpsc::channel::<Lavoro>();
         let filo = std::thread::Builder::new()
@@ -625,6 +664,18 @@ impl Cache {
         (stato.vivi(), stato.tetto, stato.attiva)
     }
 
+    /// Un altro processo tiene la stessa cartella: due avvii con la stessa
+    /// `RYMEMBRA_DATI`, che spengono l'istanza unica. Allora questa cache
+    /// si è aperta spenta, senza guardare né toccare i file dell'altra, e
+    /// resta spenta: le sorgenti passano dirette (R28-8). Fino alla 3.2.0
+    /// la seconda apertura cancellava il `.dati` che la prima stava
+    /// scrivendo e non aveva ancora indicizzato, e due processi scrivevano
+    /// nello stesso file a posti diversi.
+    #[must_use]
+    pub fn condivisa(&self) -> bool {
+        self.dentro.condivisa
+    }
+
     /// Cambia il tetto e l'interruttore.
     ///
     /// Spenta, la cache non legge e non scrive: le sorgenti passano dirette.
@@ -633,7 +684,7 @@ impl Cache {
         let mut guardia = self.dentro.blocca();
         let stato = &mut *guardia;
         stato.tetto = tetto;
-        stato.attiva = attiva;
+        stato.attiva = attiva && !self.dentro.condivisa;
         self.dentro.fai_posto(stato, None);
     }
 
@@ -649,6 +700,10 @@ impl Cache {
     /// `fs.*` se la cartella non si legge; i file che non si cancellano si
     /// lasciano, e la prossima apertura li riconosce come orfani.
     pub fn svuota(&self) -> Result<(), AppError> {
+        // La cartella è di un altro processo: i suoi file non sono di qui.
+        if self.dentro.condivisa {
+            return Ok(());
+        }
         let dentro = &self.dentro;
         let mut guardia = dentro.blocca();
         let nomi: Vec<String> = guardia.copie.keys().cloned().collect();
@@ -1658,10 +1713,38 @@ fn scrivi_indice(cartella: &Path, nome: &str, indice: &Indice) -> std::io::Resul
     std::fs::rename(&provvisorio, percorso(cartella, nome, INDICE))
 }
 
+/// Prende la cartella per questo processo: il lucchetto su [`BLOCCO`].
+///
+/// `(Some(file), false)` col lucchetto preso, da tenere aperto finché la
+/// cache vive; `(None, true)` se lo tiene un altro processo. Un sistema che
+/// non sa dare lucchetti (o un file che non si apre) vale come prima, cioè
+/// come se la cartella fosse di questo processo: è il caso normale, e un
+/// lucchetto che manca non deve spegnere la cache a tutti.
+fn prendi_la_cartella(cartella: &Path) -> (Option<File>, bool) {
+    let Ok(file) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(cartella.join(BLOCCO))
+    else {
+        return (None, false);
+    };
+    match file.try_lock() {
+        Ok(()) => (Some(file), false),
+        Err(std::fs::TryLockError::WouldBlock) => (None, true),
+        Err(std::fs::TryLockError::Error(_)) => (None, false),
+    }
+}
+
 /// Una copia dal suo indice su disco, se torna tutto.
 fn ritrova(cartella: &Path, nome: &str) -> Option<Copia> {
     let testo = std::fs::read(percorso(cartella, nome, INDICE)).ok()?;
     let indice: Indice = serde_json::from_slice(&testo).ok()?;
+    // Un indice di prima del formato si butta, con la sua copia: vedi
+    // [`FORMATO_INDICE`].
+    if indice.formato < FORMATO_INDICE {
+        return None;
+    }
     let chiave = Chiave {
         conto: indice.conto,
         id: indice.id,

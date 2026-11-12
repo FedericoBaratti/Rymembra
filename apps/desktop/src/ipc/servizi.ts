@@ -689,6 +689,11 @@ export interface ProfiloIa {
    * senza riscriverla la fa dimenticare — vedi `chiaveDimenticata`.
    */
   origineChiave: string | null;
+  /**
+   * Quanti gettoni il modello può scrivere in una risposta; `null` per il tetto
+   * di serie (D-64), anche per i profili salvati prima della 3.2.1.
+   */
+  gettoniMassimi: number | null;
 }
 
 /** Quanto costa un modello, per quel che il servizio ne dichiara. */
@@ -728,6 +733,8 @@ export interface ProfiloIaDaSalvare {
   fornitore: FornitoreIa;
   urlBase: string;
   modello: string;
+  /** Il tetto dei gettoni; `null` per quello di serie. */
+  gettoniMassimi: number | null;
 }
 
 /** I profili e quale è scelto. */

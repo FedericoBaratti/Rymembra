@@ -1103,7 +1103,7 @@ fn esegui(
     .unwrap_or_else(|| cartelle.to_vec());
     let scan = Scan {
         // Il disco e il cloud: le radici di OneDrive camminano sullo specchio.
-        files: crate::nuvola_musica::archivi(app),
+        files: crate::nuvola_musica::archivi_per_la_scansione(app),
         covers: copertine,
         roots: cartelle,
         radici_della_libreria: &radici_della_libreria,
@@ -1133,6 +1133,20 @@ fn esegui(
         }
     };
     crate::comandi::racconta_scansione(origine, &report);
+    // I brani che questa passata ha tolto escono anche dalla coda, come per
+    // «Togli» (R23-8): il lettore tiene la scheda di quello che suona, e la
+    // coda non lo ripropone. Dopo la scansione, e fuori dal lucchetto della
+    // libreria: sgomberare la coda la salva, e salvarla lo prende.
+    if report.removed > 0 {
+        let candidati: Vec<i64> = report.plan.to_remove.iter().map(|r| r.track.id).collect();
+        match con_libreria(stato, |l| spariti(&l.connection, &candidati)) {
+            Ok(tolti) if !tolti.is_empty() => crate::cancellazione::sgombera(app, &tolti, false),
+            Ok(_) => {}
+            Err(guasto) => {
+                nota!("[sorveglia] i brani tolti non si ritrovano per la coda: {guasto}")
+            }
+        }
+    }
     crate::nuvola_musica::rimetti_in_fila(app, cartelle, report.rimasti);
     // Le vuote stanno anche fra le saltate, ma hanno risposto: le annuncia
     // chi decide se riprovarle.
@@ -1176,6 +1190,31 @@ fn esegui(
         rami_persi: report.rami_persi,
         fermata: report.cancelled,
     }
+}
+
+/// I brani di `candidati` che la libreria non ha più.
+///
+/// Il piano dice quali righe la passata **voleva** togliere; la guardia ne può
+/// aver trattenute, e una riga tolta solo se il percorso era ancora quello. Si
+/// chiede al database, così dalla coda esce solo quel che dalla libreria è
+/// uscito davvero.
+pub(super) fn spariti(
+    conn: &rusqlite::Connection,
+    candidati: &[i64],
+) -> Result<Vec<i64>, AppError> {
+    let errore = |err: rusqlite::Error| {
+        rymembra_app::db::codice_da_sqlite("brani tolti dalla sorveglianza", &err)
+    };
+    let mut c_e = conn
+        .prepare_cached("SELECT 1 FROM tracks WHERE id = ?1")
+        .map_err(errore)?;
+    let mut fuori = Vec::new();
+    for &id in candidati {
+        if !c_e.exists([id]).map_err(errore)? {
+            fuori.push(id);
+        }
+    }
+    Ok(fuori)
 }
 
 /// Quel che si fa quando una scansione automatica ha cambiato la libreria.

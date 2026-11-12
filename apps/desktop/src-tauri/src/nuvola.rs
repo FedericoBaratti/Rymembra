@@ -1364,8 +1364,6 @@ fn pianifica(
         backup_skins: &dal_backup.skins,
         local_drafts: &bozze_locali,
         backup_drafts: &dal_backup.drafts,
-        local_active_skin: qui.active_skin.as_deref(),
-        backup_active_skin: dal_backup.active_skin.as_deref(),
         path_rules: PathRules::for_current_platform(),
     })
 }

@@ -191,7 +191,9 @@ pub struct DaRete {
     /// al nodo che quel file ce l'ha, e misurato quel rimando costa novecento
     /// millisecondi su due secondi di attesa. Un brano che si scorre avanti e
     /// indietro fa decine di richieste: pagarlo ogni volta vuol dire pagarlo
-    /// decine di volte per sapere una cosa che non cambia.
+    /// decine di volte per sapere una cosa che di rado cambia. Quando cambia —
+    /// il nodo va giù, la firma scade — si dimentica al primo guasto, e si
+    /// riparte dall'indirizzo di partenza (vedi [`Sorgente::pezzo_finche`]).
     ///
     /// Un `Mutex` e non un campo riscrivibile perché [`Sorgente::pezzo`] prende
     /// `&self`: il tratto è così apposta, perché la sorgente viene condivisa. È
@@ -246,13 +248,26 @@ impl Sorgente for DaRete {
         quanti: u64,
         avanti: &dyn Fn() -> bool,
     ) -> Result<Pezzo, AppError> {
-        let dove = self
-            .nodo
-            .lock()
-            .map(|n| n.clone())
-            .unwrap_or(None)
-            .unwrap_or_else(|| self.url.clone());
-        let pezzo = self.rete.intervallo_finche(&dove, da, quanti, avanti)?;
+        let ricordato = self.nodo.lock().map(|n| n.clone()).unwrap_or(None);
+        let pezzo = match &ricordato {
+            None => self.rete.intervallo_finche(&self.url, da, quanti, avanti)?,
+            Some(nodo) => match self.rete.intervallo_finche(nodo, da, quanti, avanti) {
+                Ok(pezzo) => pezzo,
+                // Il nodo ricordato non risponde più: un nodo dell'Internet
+                // Archive giù a metà brano, la firma di un nodo Audius scaduta
+                // dopo una pausa lunga. Si dimentica, e si chiede una volta
+                // all'indirizzo di partenza, che rimanda a un nodo vivo: prima
+                // il brano si fermava con un errore di rete (R08-7). Un
+                // annullo no: chi ascolta è solo saltato altrove.
+                Err(err) if !matches!(err.code(), ErrorCode::InternalAborted { .. }) => {
+                    if let Ok(mut ricordo) = self.nodo.lock() {
+                        *ricordo = None;
+                    }
+                    self.rete.intervallo_finche(&self.url, da, quanti, avanti)?
+                }
+                Err(err) => return Err(err),
+            },
+        };
         if let Some(nuovo) = pezzo.url_finale.as_ref()
             && let Ok(mut nodo) = self.nodo.lock()
             && nodo.is_none()
@@ -1102,7 +1117,6 @@ mod prove {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn e_il_numero_lo_riconosce_chi_dovra_leggerlo() {
         // La prova che chiude il giro: non basta che ci sia *un* numero, deve
@@ -1902,6 +1916,127 @@ mod prove {
                 .load(std::sync::atomic::Ordering::SeqCst)
                 >= 1),
             "con cento kilobyte per risposta e otto finestre di file, l'anticipo doveva partire"
+        );
+    }
+
+    /// Un servitore su questa macchina per il nodo ricordato (R08-7): `/a`
+    /// rimanda a `/b` la prima volta e a `/c` dopo; `/b` serve la prima
+    /// finestra e poi risponde `410` (il nodo che va giù, la firma che
+    /// scade); `/c` serve quel che gli si chiede. Il file è `ciaomond`.
+    fn servitore_dei_nodi() -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read as _, Write as _};
+        let ascolto = std::net::TcpListener::bind("127.0.0.1:0").expect("una porta");
+        let porta = ascolto.local_addr().map(|a| a.port()).unwrap_or(0);
+        let visti = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let registro = std::sync::Arc::clone(&visti);
+        std::thread::spawn(move || {
+            let file = b"ciaomond";
+            let mut volte_a = 0;
+            let mut volte_b = 0;
+            for connessione in ascolto.incoming() {
+                let Ok(mut connessione) = connessione else {
+                    continue;
+                };
+                let mut testa = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !testa.ends_with(b"\r\n\r\n") {
+                    match connessione.read(&mut byte) {
+                        Ok(1) => testa.extend_from_slice(&byte),
+                        _ => break,
+                    }
+                }
+                let testa = String::from_utf8_lossy(&testa).to_lowercase();
+                let percorso = testa.split(' ').nth(1).unwrap_or("/").to_owned();
+                registro
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(percorso.clone());
+                let (da, fino) = testa
+                    .lines()
+                    .find_map(|riga| riga.strip_prefix("range: bytes="))
+                    .and_then(|r| r.trim().split_once('-'))
+                    .and_then(|(d, f)| Some((d.parse::<usize>().ok()?, f.parse::<usize>().ok()?)))
+                    .unwrap_or((0, file.len() - 1));
+                let fino = fino.min(file.len() - 1);
+                let parziale = || {
+                    let pezzo = &file[da..=fino];
+                    let mut risposta = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {da}-{fino}/{}\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        file.len(),
+                        pezzo.len()
+                    )
+                    .into_bytes();
+                    risposta.extend_from_slice(pezzo);
+                    risposta
+                };
+                let risposta = match percorso.as_str() {
+                    "/a" => {
+                        volte_a += 1;
+                        let verso = if volte_a == 1 { "/b" } else { "/c" };
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {verso}\r\nContent-Length: 0\r\n\
+                             Connection: close\r\n\r\n"
+                        )
+                        .into_bytes()
+                    }
+                    "/b" => {
+                        volte_b += 1;
+                        if volte_b == 1 {
+                            parziale()
+                        } else {
+                            b"HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .to_vec()
+                        }
+                    }
+                    "/c" => parziale(),
+                    _ => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
+                };
+                let _ = connessione.write_all(&risposta);
+            }
+        });
+        (format!("http://127.0.0.1:{porta}"), visti)
+    }
+
+    /// Il nodo a cui il primo rimando ha portato si ricorda per il brano; ma
+    /// se smette di rispondere — l'Internet Archive con un nodo giù, la firma
+    /// di un nodo Audius scaduta dopo mezz'ora di pausa — si dimentica e si
+    /// richiede dall'indirizzo di partenza, che rimanda a un nodo vivo. Prima
+    /// il brano si fermava con un errore di rete (R08-7).
+    #[test]
+    fn un_nodo_che_non_risponde_piu_si_dimentica() {
+        let (base, visti) = servitore_dei_nodi();
+        // A mano e non con `DaRete::nuova`: verso questa macchina un client in
+        // chiaro resta a zero salti, e qui i salti sono la prova.
+        let sorgente = DaRete {
+            rete: Rete::in_casa_con_rimandi(
+                &base,
+                Rimandi::Sorvegliati {
+                    quanti: RIMANDI_FLUSSO,
+                    cancello: Cancello::nuovo(|_| true),
+                },
+            ),
+            url: format!("{base}/a"),
+            nodo: Mutex::new(None),
+        };
+        let primo = sorgente.pezzo(0, 4).unwrap_or_else(|err| panic!("{err:?}"));
+        assert_eq!(primo.byte, b"ciao");
+        let secondo = sorgente
+            .pezzo(4, 4)
+            .unwrap_or_else(|err| panic!("il nodo vivo c'era: {err:?}"));
+        assert_eq!(secondo.byte, b"mond");
+        let visti = visti
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(visti, ["/a", "/b", "/b", "/a", "/c"], "{visti:?}");
+        // Da qui il nodo ricordato è quello nuovo.
+        assert_eq!(
+            sorgente.pezzo(0, 4).map(|p| p.byte).ok(),
+            Some(b"ciao".to_vec())
         );
     }
 }

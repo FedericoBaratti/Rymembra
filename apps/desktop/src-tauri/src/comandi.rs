@@ -645,7 +645,7 @@ fn riga_della_scansione(origine: &str, esito: &ScanReport) -> String {
     format!(
         "[scansione] origine={origine} cartelle={} file={} letti={} illeggibili={}(+{} noti) \
          immagine={} inseriti={} aggiornati={} spostati={} tolti={} saltate={} rami={} \
-         rinviate={}{} cammino={}ms fogli={}ms piano={}ms lettura={}ms scrittura={}ms \
+         rinviate={}{}{} cammino={}ms fogli={}ms piano={}ms lettura={}ms scrittura={}ms \
          album={}ms totale={}ms",
         esito.cartelle_viste,
         esito.file_visti,
@@ -660,6 +660,12 @@ fn riga_della_scansione(origine: &str, esito: &ScanReport) -> String {
         esito.radici_saltate.len(),
         esito.rami_persi.len(),
         esito.rimozioni_rinviate,
+        // Solo quando ce ne sono: i file «solo online» non letti (R25-2).
+        if esito.solo_in_rete > 0 {
+            format!(" solo_in_rete={}", esito.solo_in_rete)
+        } else {
+            String::new()
+        },
         if esito.cancelled { " annullata" } else { "" },
         tempi.camminata_ms,
         tempi.fogli_ms,
@@ -773,6 +779,9 @@ pub struct EsitoScansione {
     pub cartelle_illeggibili: Vec<String>,
     /// Quante righe stanno sotto quelle cartelle, e sono state lasciate stare.
     pub non_verificati: usize,
+    /// I file «solo online» di una cartella sincronizzata che non si sono letti,
+    /// per non farli scaricare (D-101): la riga dell'esito lo dice.
+    pub solo_in_rete: usize,
     /// I numeri della libreria dopo.
     pub numeri: Counts,
 }
@@ -897,6 +906,7 @@ impl EsitoScansione {
             // cartelle, non file, e di solito una o due.
             cartelle_illeggibili: report.rami_persi.clone(),
             non_verificati: report.non_verificati,
+            solo_in_rete: report.solo_in_rete,
             numeri,
         }
     }
@@ -1077,7 +1087,7 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     let fermati = || fermare.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = Scan {
         // Il disco e il cloud: le radici di OneDrive camminano sullo specchio.
-        files: crate::nuvola_musica::archivi(app),
+        files: crate::nuvola_musica::archivi_per_la_scansione(app),
         covers: copertine,
         roots: &roots,
         // Qui le cartelle guardate sono quelle sorvegliate.

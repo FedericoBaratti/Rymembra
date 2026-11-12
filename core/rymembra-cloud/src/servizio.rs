@@ -319,8 +319,12 @@ pub fn salva<M: Magazzino + ?Sized>(
     // bozza vince la più recente (decisione 15). Un pacchetto ripristinato
     // prende la data del backup (vedi `scarica_pacchetti`), non quella di
     // quando è stato scritto qui.
-    contenuto.skins_at = date_di(skin_locali.keys(), |id| file_skin(data_dir, id));
-    contenuto.drafts_at = date_di(bozze_locali.keys(), |id| file_bozza(data_dir, id));
+    contenuto.skins_at = date_di(skin_locali.keys(), |id| {
+        pacchetti::percorso_skin(data_dir, id)
+    });
+    contenuto.drafts_at = date_di(bozze_locali.keys(), |id| {
+        pacchetti::percorso_bozza(data_dir, id)
+    });
 
     // Le skin e le bozze che c'erano alla passata di prima e adesso non ci
     // sono: sono state tolte, e la lapide va nel backup (decisione 16). Le
@@ -449,24 +453,6 @@ pub fn salva<M: Magazzino + ?Sized>(
         impronta: nostra,
         visti,
     })
-}
-
-/// Dove sta il pacchetto di una skin installata.
-///
-/// La stessa forma di quella di `pacchetti` (e di `skin.rs` e `profilo.rs` del
-/// desktop): qui serve il **percorso**, per la data di modifica, e
-/// `pacchetti` restituisce i byte.
-fn file_skin(data_dir: &Path, id: &str) -> PathBuf {
-    data_dir.join("skin").join(format!("{id}.ryskin"))
-}
-
-/// Dove sta il manifest di una bozza dello Studio. Vedi [`file_skin`].
-fn file_bozza(data_dir: &Path, id: &str) -> PathBuf {
-    data_dir
-        .join("skin")
-        .join("bozze")
-        .join(id)
-        .join("skin.json")
 }
 
 /// Quando è stato modificato l'ultima volta un file, in millisecondi.
@@ -987,7 +973,7 @@ pub fn scarica_pacchetti<M: Magazzino + ?Sized>(
                     Ok(true) => {
                         scritti.skin = scritti.skin.saturating_add(1);
                         scritti.data_del_backup(
-                            &file_skin(data_dir, id),
+                            &pacchetti::percorso_skin(data_dir, id),
                             nome_skin(id),
                             da.contenuto.skins_at.get(id),
                         );
@@ -1020,7 +1006,7 @@ pub fn scarica_pacchetti<M: Magazzino + ?Sized>(
                     Ok(true) => {
                         scritti.bozze = scritti.bozze.saturating_add(1);
                         scritti.data_del_backup(
-                            &file_bozza(data_dir, id),
+                            &pacchetti::percorso_bozza(data_dir, id),
                             nome_bozza(id),
                             da.contenuto.drafts_at.get(id),
                         );
@@ -2674,37 +2660,6 @@ mod prove {
             );
         }
         assert_eq!(&caricati[2..], &[0, 0, 0, 0], "{caricati:?}");
-    }
-
-    #[test]
-    fn due_dispositivi_con_skin_attive_diverse_si_fermano() {
-        // R08-2: la skin attiva vinceva per chi fondeva, e un fisso e un
-        // portatile con due skin diverse — il caso normale — riscrivevano il
-        // file a ogni passata. La skin attiva resta di ciascuno (decisione 17).
-        let dati = tempfile::tempdir().expect("cartella");
-        let a = StatoLocale {
-            active_skin: Some("notte".to_owned()),
-            ..qui()
-        };
-        let b = StatoLocale {
-            active_skin: Some("giorno".to_owned()),
-            ..qui()
-        };
-        let finto = Finto::default();
-        let mut caricati = Vec::new();
-        for giro in 0..3 {
-            caricati.push(
-                salva(&finto, dati.path(), &a, "a", 10 + giro, |_| {})
-                    .expect("a")
-                    .caricati,
-            );
-            caricati.push(
-                salva(&finto, dati.path(), &b, "b", 20 + giro, |_| {})
-                    .expect("b")
-                    .caricati,
-            );
-        }
-        assert_eq!(&caricati[1..], &[0, 0, 0, 0, 0], "{caricati:?}");
     }
 
     #[test]

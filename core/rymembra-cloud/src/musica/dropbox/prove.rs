@@ -429,3 +429,63 @@ fn il_backoff_vale_per_il_long_poll_dopo_e_una_sveglia_lo_interrompe() {
         "durante il backoff nessun long-poll nuovo"
     );
 }
+
+/// Il collegamento temporaneo è legato alla versione che la chiave della cache
+/// nomina (R28-5, D-111): se il file sul servizio non è più quello che lo
+/// specchio ha visto, i suoi byte non si servono (`cloud.fileChanged`); se lo
+/// è, il collegamento si chiede per quella revisione (`rev:`), e un file
+/// riscritto mentre il collegamento vale non mescola le due versioni.
+#[test]
+fn il_collegamento_e_legato_alla_versione_della_chiave() {
+    let finto = Finto::avvia(|vista: &Vista, base: &str| match vista.percorso.as_str() {
+        "/2/files/get_temporary_link" => {
+            let chiesto: Value = serde_json::from_str(&vista.corpo).unwrap_or_default();
+            let percorso = chiesto
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let (nome, hash) = match percorso {
+                "/cambiato.flac" => ("cambiato", "h2"),
+                "rev:015f" => ("legato", "h1"),
+                _ => ("libero", "h1"),
+            };
+            json(
+                200,
+                &json!({
+                    "link": format!("{base}/link/{nome}"),
+                    "metadata": { "rev": "015f", "content_hash": hash }
+                }),
+            )
+        }
+        "/link/legato" => pezzo_di(vista, 100),
+        "/link/libero" | "/link/cambiato" => pezzo_di(vista, 100),
+        _ => json(404, &json!({})),
+    });
+    let dropbox = collegato(&finto);
+
+    let cambiato = dropbox
+        .sorgente(&voce(&file("/cambiato.flac", "cambiato.flac", 100)).expect("voce"))
+        .expect("sorgente");
+    let guasto = cambiato
+        .pezzo(0, 5)
+        .expect_err("l'elenco diceva h1, il servizio dice h2");
+    assert_eq!(guasto.code().kind().code(), "cloud.fileChanged");
+    assert!(
+        finto.viste_a("/link/cambiato").is_empty(),
+        "nessun byte chiesto"
+    );
+
+    let uguale = dropbox
+        .sorgente(&voce(&file("/a.flac", "a.flac", 100)).expect("voce"))
+        .expect("sorgente");
+    assert_eq!(
+        uguale.pezzo(10, 5).expect("pezzo").byte,
+        (10..15).map(byte_finto).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        finto.viste_a("/link/legato").len(),
+        1,
+        "i byte arrivano dal collegamento della revisione"
+    );
+    assert!(finto.viste_a("/link/libero").is_empty());
+}

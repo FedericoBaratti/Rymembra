@@ -162,7 +162,30 @@ impl LettoreTag {
                 ),
             ));
         }
-        let pezzo = self.sorgente.pezzo(da, quanti).map_err(in_io)?;
+        let pezzo = match self.sorgente.pezzo(da, quanti) {
+            Ok(pezzo) => pezzo,
+            // Il server non sa servire la coda senza mandare il file intero
+            // (WebDAV senza `Range`): si rinuncia alla coda, che vale vuota.
+            // Niente ID3v1 né APE, e la durata la scrive il primo ascolto: è
+            // la scelta di D-112, al posto di scaricare il brano per leggerne
+            // i tag (R28-3). Solo in coda: altrove i byte servono al formato,
+            // e il rifiuto risale come tetto — `FileTooLarge` —, cioè una
+            // rilettura senza le proprietà.
+            Err(err)
+                if matches!(err.code(), ErrorCode::CloudRangeUnsupported)
+                    && self
+                        .totale
+                        .is_some_and(|totale| da >= totale.saturating_sub(CODA)) =>
+            {
+                let vuota = usize::try_from(quanti.min(CODA)).unwrap_or(0);
+                self.pezzi.push((da, vec![0; vuota]));
+                return Ok(());
+            }
+            Err(err) if matches!(err.code(), ErrorCode::CloudRangeUnsupported) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, err));
+            }
+            Err(err) => return Err(in_io(err)),
+        };
         self.letti = self
             .letti
             .saturating_add(u64::try_from(pezzo.byte.len()).unwrap_or(u64::MAX));
@@ -472,5 +495,31 @@ mod prove {
     fn un_lettore_dei_tag_va_fra_i_fili() {
         fn richiede<T: Read + Seek + Send + Sync>() {}
         richiede::<LettoreTag>();
+    }
+
+    /// Una sorgente che non sa servire un punto senza mandare il file intero
+    /// (`cloud.rangeUnsupported`, WebDAV senza `Range`): in coda si rinuncia,
+    /// e la coda vale vuota; altrove è il tetto, che fa rileggere senza le
+    /// proprietà (R28-3, D-112).
+    #[test]
+    fn una_coda_che_il_server_non_sa_servire_vale_vuota() {
+        let finta = || Finta {
+            byte: Vec::new(),
+            dichiara: true,
+            richieste: Arc::new(Mutex::new(Vec::new())),
+            guasto: Some(ErrorCode::CloudRangeUnsupported),
+        };
+        let mut lettore = LettoreTag::nuovo(Box::new(finta()), Some(5_000_000));
+        lettore.seek(SeekFrom::End(-128)).unwrap();
+        let mut coda = [1_u8; 128];
+        lettore.read_exact(&mut coda).expect("la coda vale vuota");
+        assert_eq!(coda, [0_u8; 128]);
+        assert_eq!(lettore.letti(), 0, "niente è arrivato dalla rete");
+
+        let mut lettore = LettoreTag::nuovo(Box::new(finta()), Some(5_000_000));
+        lettore.seek(SeekFrom::Start(2_000_000)).unwrap();
+        let mut mezzo = [0_u8; 16];
+        let err = lettore.read(&mut mezzo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::FileTooLarge);
     }
 }

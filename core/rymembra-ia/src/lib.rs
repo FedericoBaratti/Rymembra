@@ -48,5 +48,7 @@ pub use cliente::{Cliente, Modello, Prezzo};
 pub use fornitore::Fornitore;
 pub use messaggi::{Fine, Messaggio, Motivo, Ruolo, Voce};
 pub use operazioni::{Op, Operazione};
-pub use profilo::{Profilo, controlla_indirizzo, id_da_nome, voce_portachiavi};
+pub use profilo::{
+    GETTONI_AMMESSI, GETTONI_DI_SERIE, Profilo, controlla_indirizzo, id_da_nome, voce_portachiavi,
+};
 pub use sse::Sse;
