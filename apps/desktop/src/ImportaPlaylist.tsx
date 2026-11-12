@@ -99,7 +99,11 @@ export function ImportaPlaylist({
     >
       <div className="percorso">{percorso}</div>
 
-      {errore && <div className="errore">{errore}</div>}
+      {errore && (
+        <div className="errore" role="alert">
+          {errore}
+        </div>
+      )}
 
       {rapporto === null ? (
         <p className="nota">

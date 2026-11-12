@@ -155,7 +155,12 @@ export function Account({
    * quel che `chiudibile` fa in `Dialogo` per le altre.
    */
   const [scrivendo, setScrivendo] = useState(false);
-  const finestrella = useFinestrella<HTMLDivElement>(scrivendo ? restaAperta : onChiudi);
+  // `chiudibile` dice alla × della finestra che adesso questa finestrella non
+  // si chiude: la × allora chiude la finestra, come Alt+F4, invece di chiamare
+  // `restaAperta` e non fare niente (D-41).
+  const finestrella = useFinestrella<HTMLDivElement>(scrivendo ? restaAperta : onChiudi, {
+    chiudibile: !scrivendo,
+  });
   // Il resto della finestra inerte, e il velo che chiude solo un clic nato **e**
   // finito su di lui: una selezione trascinata fuori dal pannello chiudeva
   // tutto. È quel che `Dialogo.tsx` fa per le altre.
@@ -341,7 +346,11 @@ export function Account({
 
               {inCorso && !anteprima && <p>{t("account.opening")}</p>}
 
-              {errore && <div className="errore">{errore}</div>}
+              {errore && (
+                <div className="errore" role="alert">
+                  {errore}
+                </div>
+              )}
 
               {anteprima && (
                 <>

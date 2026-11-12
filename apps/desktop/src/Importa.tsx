@@ -141,7 +141,11 @@ export function Importa({
     >
       <div className="percorso">{percorso}</div>
 
-      {errore && <div className="errore">{errore}</div>}
+      {errore && (
+        <div className="errore" role="alert">
+          {errore}
+        </div>
+      )}
       {inCorso && !rapporto && <p>{t("legacy.reading")}</p>}
 
       {rapporto && (
@@ -287,7 +291,11 @@ function Diagnosi() {
   return (
     <details className="diagnosi-servizio" onToggle={chiedi}>
       <summary>{t("link.why")}</summary>
-      {errore && <div className="errore">{errore}</div>}
+      {errore && (
+        <div className="errore" role="alert">
+          {errore}
+        </div>
+      )}
       {dati && (
         <>
           <ul className="cataloghi-stato">
