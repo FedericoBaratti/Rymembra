@@ -1188,6 +1188,7 @@ mod prove {
         }
         let istantanea = Istantanea {
             coda: (1..=1_200).collect(),
+            maniglie: Vec::new(),
             corrente: Some(600),
             in_pausa: false,
             ripeti: RepeatMode::All,
@@ -1220,6 +1221,7 @@ mod prove {
         }
         let istantanea = Istantanea {
             coda: (1..=1_000).collect(),
+            maniglie: Vec::new(),
             corrente: Some(900),
             in_pausa: false,
             ripeti: RepeatMode::All,
@@ -1561,6 +1563,7 @@ mod prove {
             vec![],
             &Istantanea {
                 coda: vec![1, 2],
+                maniglie: Vec::new(),
                 corrente: Some(1),
                 in_pausa: false,
                 ripeti: RepeatMode::Off,

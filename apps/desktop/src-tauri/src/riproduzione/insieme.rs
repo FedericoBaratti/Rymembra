@@ -99,6 +99,10 @@ pub const UID_CALIBRAZIONE: u64 = u64::MAX;
 pub struct Istantanea {
     /// Gli `uid`, nell'ordine in cui suoneranno.
     pub coda: Vec<u64>,
+    /// Le maniglie delle stesse voci, nello stesso ordine: gli id che la
+    /// finestra ha in coda. Servono a controllare che una riga sia ancora
+    /// quella che la finestra vedeva (vedi `gesti::traduci`).
+    pub maniglie: Vec<i64>,
     /// La voce corrente.
     pub corrente: Option<u64>,
     /// In pausa.
@@ -611,14 +615,21 @@ pub fn istantanea(app: &tauri::AppHandle) -> Option<Istantanea> {
         // Le maniglie diventano `uid` col registro in mano per un attimo: è un
         // lucchetto foglia, e prenderlo qui dentro tiene la coda e la sua
         // traduzione nello stesso istante.
-        let (coda, corrente) = ospiti::con_registro(app, |registro| {
-            let uid = |maniglia: i64| registro.voce(maniglia).map(|voce| voce.uid);
-            (
-                ordine.iter().filter_map(|m| uid(*m)).collect(),
-                corrente.and_then(uid),
-            )
-        })
-        .unwrap_or_default();
+        //
+        // Le maniglie nello stesso giro degli `uid`: una maniglia senza voce
+        // si salta in tutti e due, e le posizioni restano le stesse.
+        let ((coda, maniglie), corrente): ((Vec<u64>, Vec<i64>), _) =
+            ospiti::con_registro(app, |registro| {
+                let uid = |maniglia: i64| registro.voce(maniglia).map(|voce| voce.uid);
+                (
+                    ordine
+                        .iter()
+                        .filter_map(|m| uid(*m).map(|u| (u, *m)))
+                        .unzip(),
+                    corrente.and_then(uid),
+                )
+            })
+            .unwrap_or_default();
         let in_pausa = lettore
             .sessione
             .as_ref()
@@ -626,6 +637,7 @@ pub fn istantanea(app: &tauri::AppHandle) -> Option<Istantanea> {
             .unwrap_or_else(|| lettore.motore.posizione().in_pausa);
         Ok(Some(Istantanea {
             coda,
+            maniglie,
             corrente,
             in_pausa,
             ripeti: lettore.coda.repeat(),

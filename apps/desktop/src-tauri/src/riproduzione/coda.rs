@@ -715,7 +715,7 @@ pub fn coda_vai_ora(
     indice: usize,
     atteso: Option<i64>,
 ) -> Esito<()> {
-    if let Strada::Fatto = strada(&app, &Gesto::CodaVai { indice }).map_err(errore)? {
+    if let Strada::Fatto = strada(&app, &Gesto::CodaVai { indice, atteso }).map_err(errore)? {
         return Ok(());
     }
     gesto_di_coda(&app, &stato, |lettore| {
@@ -787,6 +787,7 @@ pub fn coda_togli_ora(
 ) -> Esito<()> {
     let gesto = Gesto::CodaTogli {
         indici: vec![indice],
+        attesi: atteso.into_iter().collect(),
     };
     if let Strada::Fatto = strada(&app, &gesto).map_err(errore)? {
         return Ok(());
@@ -961,7 +962,7 @@ pub fn coda_riordina_ora(
     a: usize,
     atteso: Option<i64>,
 ) -> Esito<()> {
-    if let Strada::Fatto = strada(&app, &Gesto::CodaRiordina { da, a }).map_err(errore)? {
+    if let Strada::Fatto = strada(&app, &Gesto::CodaRiordina { da, a, atteso }).map_err(errore)? {
         return Ok(());
     }
     con_lettore(&stato, |lettore| {

@@ -971,9 +971,15 @@ fn fai(app: &AppHandle, azione: &Azione) -> Option<String> {
         Passo::Prossimo => dalla_finestra(r::prossimo_ora(app.clone(), stato)),
         Passo::Precedente => dalla_finestra(r::precedente_ora(app.clone(), stato)),
         Passo::VaiA(ms) => dalla_finestra(r::vai_a(app.clone(), stato, ms)),
-        Passo::Riordina { da, a } => {
-            dalla_finestra(r::coda_riordina_ora(app.clone(), stato, da, a, None))
-        }
+        // Col brano che l'istantanea ha in `da`: se la coda cambia fra
+        // l'istantanea e il lucchetto, non si sposta un'altra voce (R04-4).
+        Passo::Riordina { da, a } => dalla_finestra(r::coda_riordina_ora(
+            app.clone(),
+            stato,
+            da,
+            a,
+            adesso.maniglie.get(da).copied(),
+        )),
     };
     esito.err().map(|codice| codice_sul_filo(&codice))
 }
