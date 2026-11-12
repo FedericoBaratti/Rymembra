@@ -36,6 +36,7 @@ use std::collections::HashSet;
 use rusqlite::{Connection, OptionalExtension as _, Transaction};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::keys::PlaylistKey;
+use rymembra_domain::omonime::{Occupato, Posto, trova_posto};
 use rymembra_domain::regole::Insieme;
 
 use crate::library::{
@@ -71,7 +72,7 @@ pub struct PlaylistSummary {
 /// molto meno di quel che ci si incolla dentro per sbaglio. Il tetto è in
 /// caratteri e non in byte: contare i byte darebbe a un nome in giapponese un
 /// terzo dello spazio di uno in inglese.
-pub const NOME_MASSIMO: usize = 200;
+pub const NOME_MASSIMO: usize = rymembra_domain::omonime::NOME_MASSIMO;
 
 /// Il nome di una playlist che arriva **da fuori**, ridotto a [`NOME_MASSIMO`].
 ///
@@ -535,6 +536,18 @@ pub(crate) struct Provenienza<'a> {
     pub nata_il: Option<i64>,
 }
 
+/// Una playlist entrata accanto a una che qui c'era già con lo stesso nome, e
+/// che non si è toccata (D-11): la forma con cui il piano di ogni importazione
+/// lo dice — il vecchio database, il profilo.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistBeside {
+    /// Il nome della playlist di qui, rimasta com'era.
+    pub name: String,
+    /// Il nome con cui è entrata quella che arrivava: «Rock (1.0)».
+    pub imported_as: String,
+}
+
 /// Dove scrive un'importazione, deciso da [`destinazione`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Destinazione {
@@ -553,30 +566,6 @@ pub(crate) enum Destinazione {
         /// quando la nuova le sta accanto. È quel che il piano deve dire.
         accanto_a: Option<String>,
     },
-}
-
-/// Quanti nomi «(Fonte n)» si provano prima di arrendersi.
-///
-/// Arrivarci vuol dire cento playlist con lo stesso nome e la stessa fonte: un
-/// rifiuto con il suo codice è meglio di un ciclo che non finisce.
-const ACCANTO_MASSIMI: usize = 100;
-
-/// Il nome di una playlist messa accanto a un'altra: «Chill (Spotify)»,
-/// «Chill (Spotify 2)»…, troncato davanti perché la fonte resti leggibile.
-fn nome_accanto(base: &str, etichetta: &str, numero: usize) -> String {
-    let coda = if numero <= 1 {
-        format!(" ({etichetta})")
-    } else {
-        format!(" ({etichetta} {numero})")
-    };
-    let spazio = NOME_MASSIMO.saturating_sub(coda.chars().count());
-    let testa = if base.chars().count() <= spazio {
-        base.to_owned()
-    } else {
-        let corta: String = base.chars().take(spazio.saturating_sub(1)).collect();
-        format!("{}…", corta.trim_end())
-    };
-    format!("{testa}{coda}")
 }
 
 /// Una riga che porta già un nome.
@@ -636,16 +625,41 @@ fn occupante(tx: &Transaction<'_>, chiave: &PlaylistKey) -> Result<Option<Occupa
 /// stesso nome, e la seconda resta fuori a ogni passata, invece di diventare
 /// «(Spotify)» una volta e chissà cosa la volta dopo.
 ///
+/// Il nome accanto e la scelta del primo posto stanno nel dominio
+/// ([`rymembra_domain::omonime::trova_posto`]), dove li usa anche il piano del
+/// ripristino: qui si dice soltanto chi porta un nome, chiedendolo al database.
+///
 /// # Errori
 ///
 /// `library.playlistNameInvalid` se il nome non identifica niente;
 /// `library.playlistExists` per la seconda omonima, o oltre
-/// [`ACCANTO_MASSIMI`]; `db.queryFailed`.
+/// [`rymembra_domain::omonime::ACCANTO_MASSIMI`]; `db.queryFailed`.
 pub(crate) fn destinazione(
     tx: &Transaction<'_>,
     titolo: &str,
     provenienza: Provenienza<'_>,
     gia_scritte: &HashSet<i64>,
+) -> Result<Destinazione, AppError> {
+    destinazione_con(tx, titolo, provenienza, gia_scritte, |_| false)
+}
+
+/// [`destinazione`], con dei nomi occupati da playlist che nel database non ci
+/// sono **ancora**: `altrove` risponde per una chiave.
+///
+/// Serve a chi scrive più playlist insieme fuori da questa funzione — il
+/// profilo, che le scrive tutte dopo, con la fusione della sincronia: una
+/// playlist che entra accanto non deve prendere il nome di un'altra dello
+/// stesso profilo.
+///
+/// # Errori
+///
+/// Quelli di [`destinazione`].
+pub(crate) fn destinazione_con(
+    tx: &Transaction<'_>,
+    titolo: &str,
+    provenienza: Provenienza<'_>,
+    gia_scritte: &HashSet<i64>,
+    altrove: impl Fn(&PlaylistKey) -> bool,
 ) -> Result<Destinazione, AppError> {
     let titolo = titolo.trim();
     if PlaylistKey::compute(Some(titolo)).as_str().is_empty() {
@@ -681,15 +695,14 @@ pub(crate) fn destinazione(
         }
     }
 
-    let mut accanto_a: Option<String> = None;
-    for numero in 0..=ACCANTO_MASSIMI {
-        let nome = if numero == 0 {
-            titolo.to_owned()
-        } else {
-            nome_accanto(titolo, provenienza.etichetta, numero)
-        };
-        let Some(chi) = occupante(tx, &PlaylistKey::compute(Some(&nome)))? else {
-            return Ok(Destinazione::Nuova { nome, accanto_a });
+    let posto = trova_posto(titolo, provenienza.etichetta, |nome| {
+        let chiave = PlaylistKey::compute(Some(nome));
+        let Some(chi) = occupante(tx, &chiave)? else {
+            return Ok(if altrove(&chiave) {
+                Occupato::Altrui(nome.to_owned())
+            } else {
+                Occupato::Libero
+            });
         };
         if gia_scritte.contains(&chi.id) {
             return Err(omonima());
@@ -704,21 +717,24 @@ pub(crate) fn destinazione(
             && provenienza
                 .nata_il
                 .is_some_and(|quando| quando > 0 && quando == chi.nata_il);
-        if stessa_provenienza || di_prima {
-            return Ok(Destinazione::Sua {
-                id: chi.id,
-                smart: chi.smart,
-            });
-        }
-        accanto_a.get_or_insert(chi.nome);
+        Ok(if stessa_provenienza || di_prima {
+            Occupato::Suo((chi.id, chi.smart))
+        } else {
+            Occupato::Altrui(chi.nome)
+        })
+    })?;
+    match posto {
+        Some(Posto::Suo((id, smart))) => Ok(Destinazione::Sua { id, smart }),
+        Some(Posto::Nuovo { nome, accanto_a }) => Ok(Destinazione::Nuova { nome, accanto_a }),
+        None => Err(AppError::new(ErrorCode::LibraryPlaylistExists {
+            name: titolo.to_owned(),
+        })
+        .with_cause(format!(
+            "{} playlist «{titolo} ({})» ci sono già",
+            rymembra_domain::omonime::ACCANTO_MASSIMI,
+            provenienza.etichetta
+        ))),
     }
-    Err(AppError::new(ErrorCode::LibraryPlaylistExists {
-        name: titolo.to_owned(),
-    })
-    .with_cause(format!(
-        "{ACCANTO_MASSIMI} playlist «{titolo} ({})» ci sono già",
-        provenienza.etichetta
-    )))
 }
 
 /// Scrive la provenienza su una playlist: le due colonne **insieme**, perché un
@@ -1886,19 +1902,6 @@ mod prove {
             destinazione(&tx, "Mia", dal_vecchio(Some(99)), &HashSet::new()),
             Ok(Destinazione::Nuova { .. })
         ));
-    }
-
-    #[test]
-    fn il_nome_accanto_tiene_la_fonte_anche_oltre_il_tetto() {
-        let lungo = "x".repeat(NOME_MASSIMO);
-        let nome = nome_accanto(&lungo, "Spotify", 1);
-        assert!(
-            nome.chars().count() <= NOME_MASSIMO,
-            "{}",
-            nome.chars().count()
-        );
-        assert!(nome.ends_with("… (Spotify)"), "{nome}");
-        assert_eq!(nome_accanto("Chill", "Spotify", 3), "Chill (Spotify 3)");
     }
 
     #[test]

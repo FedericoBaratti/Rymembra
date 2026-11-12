@@ -39,6 +39,7 @@ use rymembra_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
 use rymembra_domain::merge::{TrackStats, collapse_duplicates, merge_stats};
 
 use crate::library::db_error;
+pub use crate::playlists::PlaylistBeside;
 use crate::playlists::{Destinazione, Provenienza};
 
 /// Una riga del vecchio database, ridotta a ciò che vale la pena portare.
@@ -62,16 +63,6 @@ struct LegacyPlaylist {
     updated_at: i64,
     is_smart: bool,
     rules: Option<String>,
-}
-
-/// Una playlist del vecchio database entrata accanto a una che qui c'era già.
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaylistBeside {
-    /// Il nome della playlist di qui, rimasta com'era.
-    pub name: String,
-    /// Il nome con cui è entrata quella del vecchio database: «Rock (1.0)».
-    pub imported_as: String,
 }
 
 /// Cosa l'importazione porterebbe, o ha portato.

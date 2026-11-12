@@ -44,6 +44,7 @@ pub mod listen;
 pub mod merge;
 pub mod nuvola;
 pub mod nuvola_app;
+pub mod omonime;
 pub mod paths;
 pub mod playlist_file;
 pub mod queue;
