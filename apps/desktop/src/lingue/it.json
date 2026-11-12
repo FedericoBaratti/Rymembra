@@ -363,7 +363,7 @@
   "errors.library.playlistExists": "C'è già una playlist con questo nome. Scegline un altro, o rinomina quella di prima.",
   "errors.library.playlistNameInvalid": "Questo nome non si può usare: serve almeno una lettera o una cifra, e non più di 200 caratteri.",
   "errors.library.playlistIsSmart": "Questa playlist è automatica: il suo contenuto lo decidono le regole, e le righe aggiunte a mano sparirebbero al primo ricalcolo.",
-  "errors.library.smartRulesInvalid": "Queste regole non si possono applicare così come sono. Controlla che ogni riga abbia un campo, un confronto e un valore.",
+  "errors.library.smartRulesInvalid": "Queste regole non si possono applicare così come sono: serve almeno una condizione, e ogni riga deve avere un campo, un confronto e un valore.",
   "errors.library.smartFieldInvalid": "Una delle regole nomina un campo che non esiste. Riscegli il campo dall'elenco.",
   "errors.library.smartOpInvalid": "Una delle regole usa un confronto che quel campo non accetta — «contiene» su un numero, per esempio.",
   "errors.library.scanFailed": "La scansione si è fermata. Le cartelle già lette restano: riprova, e se si ferma sempre nello stesso punto guarda quel percorso.",

@@ -484,6 +484,26 @@ fn e_conflitto(err: &rusqlite::Error) -> bool {
     )
 }
 
+/// Le regole di una playlist intelligente si possono scrivere?
+///
+/// Serve **almeno una condizione valida** (D-22). Nessuna condizione con
+/// `Tutte` è «tutta la libreria» sotto un nome che promette altro, e con
+/// `Qualsiasi` è una playlist che non prende mai niente: tutte e due nascono da
+/// un editor che non aveva ancora le regole in mano, o da un salvataggio a
+/// righe vuote, non da una scelta. Le righe storte contano come assenti, perché
+/// [`Insieme::valide`] le salta anche quando valuta. Si rifiuta qui, nel nucleo,
+/// come un nome vuoto: l'editor può spegnere il tasto, ma ogni altra porta che
+/// scrive regole passa di qui.
+fn regole_utilizzabili(insieme: &Insieme) -> Result<(), AppError> {
+    if insieme.valide().is_empty() {
+        return Err(AppError::new(ErrorCode::LibrarySmartRulesInvalid).with_cause(format!(
+            "nessuna condizione valida su {} righe: la playlist prenderebbe tutta la              libreria, o niente",
+            insieme.regole.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Crea una playlist intelligente.
 ///
 /// # Perché è una funzione a parte e non un parametro di [`create`]
@@ -496,12 +516,15 @@ fn e_conflitto(err: &rusqlite::Error) -> bool {
 ///
 /// # Errori
 ///
-/// `library.playlistNameInvalid`, `library.playlistExists`, `db.queryFailed`.
+/// `library.smartRulesInvalid` senza nessuna condizione valida (vedi
+/// [`regole_utilizzabili`]), `library.playlistNameInvalid`,
+/// `library.playlistExists`, `db.queryFailed`.
 pub fn create_smart(
     connection: &Connection,
     name: &str,
     insieme: &Insieme,
 ) -> Result<PlaylistSummary, AppError> {
+    regole_utilizzabili(insieme)?;
     let regole = crate::smart::a_json(insieme)?;
     // Un savepoint tiene insieme i due passi: se la scrittura delle regole
     // fallisse dopo la creazione della riga, resterebbe una playlist A MANO
@@ -577,11 +600,15 @@ fn disfa_savepoint(connection: &Connection, nome: &str, nostra: bool) {
 /// non è intelligente: cambiare le regole di una playlist a mano vorrebbe dire
 /// convertirla, e una conversione butta via delle righe che qualcuno ha messo
 /// lì a una a una. Se serve, si crea una playlist nuova.
+///
+/// `library.smartRulesInvalid` se l'insieme nuovo non ha nessuna condizione
+/// valida: le regole di prima restano com'erano (vedi [`regole_utilizzabili`]).
 pub fn set_rules(
     connection: &Connection,
     id: i64,
     insieme: &Insieme,
 ) -> Result<PlaylistSummary, AppError> {
+    regole_utilizzabili(insieme)?;
     if regole_di(connection, id)?.is_none() {
         return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
             playlist_id: Some(id),
@@ -1356,12 +1383,86 @@ mod prove {
         // Il controllo c'era da sempre — `modificabile` — e fino a oggi non
         // c'era modo di creare una playlist che lo facesse scattare.
         let mut c = libreria();
-        let creata = create_smart(&c, "Tutto", &Insieme::default()).expect("creata");
+        let creata = create_smart(&c, "I lunghi", &una_condizione()).expect("creata");
         let esito = add_tracks(&mut c, creata.id, &[1]);
         assert!(matches!(
             esito.map_err(|e| e.code().clone()),
             Err(ErrorCode::LibraryPlaylistIsSmart { .. })
         ));
+    }
+
+    /// Una regola che prende qualcosa: i brani più lunghi di due secondi e
+    /// mezzo.
+    fn una_condizione() -> Insieme {
+        use rymembra_domain::regole::{Campo, Operatore, Regola, Valore};
+        Insieme {
+            regole: vec![Regola {
+                campo: Campo::Durata,
+                operatore: Operatore::Maggiore,
+                valore: Valore::Numero(2500),
+            }],
+            ..Insieme::default()
+        }
+    }
+
+    #[test]
+    fn una_playlist_intelligente_senza_condizioni_non_nasce() {
+        // D-22: nessuna condizione vuol dire tutta la libreria, sotto un nome
+        // che promette altro. Il nucleo la rifiuta come un nome vuoto, e non
+        // lascia una riga a metà.
+        use rymembra_domain::regole::{Campo, Operatore, Regola, Valore};
+        let c = libreria();
+        let esito = create_smart(&c, "Tutto", &Insieme::default());
+        assert!(
+            matches!(
+                esito.as_ref().map_err(|e| e.code().clone()),
+                Err(ErrorCode::LibrarySmartRulesInvalid)
+            ),
+            "{esito:?}"
+        );
+        // Solo righe storte vale lo stesso: si saltano, e resta «nessuna».
+        let storte = Insieme {
+            regole: vec![Regola {
+                campo: Campo::Titolo,
+                operatore: Operatore::Contiene,
+                valore: Valore::Nessuno,
+            }],
+            ..Insieme::default()
+        };
+        assert!(create_smart(&c, "Storta", &storte).is_err());
+        assert_eq!(conta(&c, "SELECT COUNT(*) FROM playlists"), 0);
+    }
+
+    #[test]
+    fn le_regole_di_una_playlist_intelligente_non_si_svuotano() {
+        // R13b-1: l'editor che non ha ancora le regole in mano mandava `[]`, e
+        // la playlist diventava tutta la libreria, anche sugli altri
+        // dispositivi. Il rifiuto non tocca né le regole né `updated_at`.
+        let c = libreria();
+        let creata = create_smart(&c, "I lunghi", &una_condizione()).expect("creata");
+        let prima: (String, i64) = c
+            .query_row(
+                "SELECT rules, updated_at FROM playlists WHERE id = ?1",
+                [creata.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("riga");
+        let esito = set_rules(&c, creata.id, &Insieme::default());
+        assert!(
+            matches!(
+                esito.as_ref().map_err(|e| e.code().clone()),
+                Err(ErrorCode::LibrarySmartRulesInvalid)
+            ),
+            "{esito:?}"
+        );
+        let dopo: (String, i64) = c
+            .query_row(
+                "SELECT rules, updated_at FROM playlists WHERE id = ?1",
+                [creata.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("riga");
+        assert_eq!(prima, dopo);
     }
 
     #[test]
@@ -1370,7 +1471,7 @@ mod prove {
         // e una conversione butta via righe messe lì a una a una.
         let c = libreria();
         let creata = create(&c, "A mano").expect("creata");
-        assert!(set_rules(&c, creata.id, &Insieme::default()).is_err());
+        assert!(set_rules(&c, creata.id, &una_condizione()).is_err());
         assert_eq!(regole_di(&c, creata.id), Ok(None));
     }
 
@@ -2001,7 +2102,9 @@ mod prove {
             .query_row("SELECT COUNT(*) FROM playlists", [], |riga| riga.get(0))
             .expect("il lettore prende il lucchetto condiviso");
 
-        let esito = create_smart(&connection, "Mai nata", &Insieme::default());
+        // Con una condizione vera: senza, il rifiuto di D-22 arriverebbe prima
+        // del commit, e la prova passerebbe per la ragione sbagliata.
+        let esito = create_smart(&connection, "Mai nata", &una_condizione());
         assert!(esito.is_err(), "il commit non può passare: {esito:?}");
         assert!(
             connection.is_autocommit(),

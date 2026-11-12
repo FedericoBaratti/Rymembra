@@ -363,7 +363,7 @@
   "errors.library.playlistExists": "There is already a playlist with this name. Pick another, or rename the earlier one.",
   "errors.library.playlistNameInvalid": "This name cannot be used: it needs at least one letter or one digit, and no more than 200 characters.",
   "errors.library.playlistIsSmart": "This playlist is automatic: its rules decide what is in it, and rows added by hand would vanish at the first recalculation.",
-  "errors.library.smartRulesInvalid": "These rules cannot be applied as they are. Check that every row has a field, a comparison and a value.",
+  "errors.library.smartRulesInvalid": "These rules can’t be applied as they are: you need at least one condition, and every row needs a field, a comparison and a value.",
   "errors.library.smartFieldInvalid": "One of the rules names a field that does not exist. Pick the field again from the list.",
   "errors.library.smartOpInvalid": "One of the rules uses a comparison that field does not accept — “contains” on a number, for instance.",
   "errors.library.scanFailed": "The scan stopped. The folders already read are kept: try again, and if it always stops at the same point look at that path.",
