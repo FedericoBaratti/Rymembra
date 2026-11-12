@@ -581,10 +581,24 @@ fn id3v1<R: Read + Seek>(reader: &mut R) -> Option<TrackTags> {
         title: campo(3, 33),
         artist: campo(33, 63),
         album: campo(63, 93),
-        year: campo(93, 97).and_then(|anno| anno.parse::<i32>().ok()),
+        year: campo(93, 97)
+            .and_then(|anno| anno.parse::<i32>().ok())
+            .and_then(anno_vero),
         track_number: traccia,
         ..TrackTags::default()
     })
+}
+
+/// Un anno letto dai tag, se è un anno.
+///
+/// «0000» è come certi rip e certi taggatori scrivono «non lo so», e `lofty` in
+/// modalità rilassata lo legge come l'anno 0 (non convalida la data). Lasciato
+/// passare finiva in `tracks.year` e in `albums.year`: «0» scritto sotto la
+/// copertina e l'album in testa all'ordine per anno. Il lettore è il punto che
+/// possiede l'invariante «un anno è un anno», e lo tiene per tutti e due i suoi
+/// rami, il tag ricco e il ripiego sull'ID3v1.
+fn anno_vero(anno: i32) -> Option<i32> {
+    (anno != 0).then_some(anno)
 }
 
 /// Legge i tag di un file attraverso il fornitore di file dato.
@@ -676,7 +690,11 @@ pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppErr
     tags.musical_key = clean(tag.get_string(ItemKey::InitialKey));
     // `date()` legge la data di registrazione e, se manca, ripiega da sola sul
     // vecchio campo `Year`: i due convivono nei file taggati in epoche diverse.
-    tags.year = tag.date().map(|date| i32::from(date.year));
+    // Un anno zero non è un anno: vedi [`anno_vero`].
+    tags.year = tag
+        .date()
+        .map(|date| i32::from(date.year))
+        .and_then(anno_vero);
     tags.track_number = tag.track();
     tags.disc_number = tag.disk();
     tags.bpm = tag
@@ -739,7 +757,43 @@ mod tests {
         // Non un panico e non una stringa opaca: un codice che la scansione sa
         // trattare come «salta questo file e prosegui».
         assert_eq!(errore.code().kind(), ErrorCodeKind::MetadataTagReadFailed);
-        assert!(!errore.is_retryable() || errore.is_retryable());
+        // E non si ritenta: il lettore ridirebbe di no allo stesso file, che è
+        // la ragione per cui la scansione lo ricorda in `file_illeggibili`.
+        assert!(!errore.is_retryable());
+    }
+
+    #[test]
+    fn un_anno_zero_nel_tag_non_e_un_anno() {
+        use crate::files::LocalFiles;
+
+        // «0000» è come certi rip e certi taggatori scrivono «sconosciuto», e
+        // `lofty` in modalità rilassata lo legge come l'anno 0: finiva sotto la
+        // copertina dell'album e in testa all'ordine per anno.
+        let dir = tempfile::tempdir().expect("cartella");
+        let mut byte = id3v23(&[(b"TIT2", b"\x00Titolo"), (b"TYER", b"\x000000")]);
+        byte.extend(fotogrammi_mp3());
+        let mp3 = dir.path().join("zero.mp3");
+        std::fs::write(&mp3, &byte).expect("scrittura");
+        let letti = read_tags(&LocalFiles, &mp3.to_string_lossy()).expect("si legge");
+        assert_eq!(letti.title.as_deref(), Some("Titolo"));
+        assert_eq!(letti.year, None, "dal tag ID3v2");
+
+        // Lo stesso nel ripiego sul vecchio ID3v1, che l'anno lo scrive a mano.
+        let mut byte = id3v23(&[
+            (b"TIT2", b"\x00Titolo ricco"),
+            (b"TRCK", b"\x01\x41\x00\x42\x00"),
+        ]);
+        byte.extend(fotogrammi_mp3());
+        let mut coda = id3v1_di("Titolo povero", "Artista");
+        if let Some(anno) = coda.get_mut(93..97) {
+            anno.copy_from_slice(b"0000");
+        }
+        byte.extend(coda);
+        let rotto = dir.path().join("zero-v1.mp3");
+        std::fs::write(&rotto, &byte).expect("scrittura");
+        let letti = read_tags(&LocalFiles, &rotto.to_string_lossy()).expect("si legge");
+        assert_eq!(letti.title.as_deref(), Some("Titolo povero"));
+        assert_eq!(letti.year, None, "dal ripiego ID3v1");
     }
 
     /// Quaranta fotogrammi MPEG-1 Layer III, 128 kbit/s a 44,1 kHz: quanto basta

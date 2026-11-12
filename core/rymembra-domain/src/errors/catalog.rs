@@ -480,7 +480,12 @@ catalogo! {
 
     // ── metadata ────────────────────────────────────────────────────────────
     /// I tag non si leggono.
-    MetadataTagReadFailed = "metadata.tagReadFailed", Metadata, Warning, Always, None, { path: Option<String> };
+    ///
+    /// `Never`: il lettore ha avuto i byte e ha detto di no, e lo ridirà finché
+    /// il file non cambia — è la regola con cui la scansione lo ricorda in
+    /// `file_illeggibili`. Ritentarlo non è un rimedio, e un «Riprova» qui
+    /// prometterebbe una lettura diversa che non arriverà.
+    MetadataTagReadFailed = "metadata.tagReadFailed", Metadata, Warning, Never, None, { path: Option<String> };
     /// I tag non si scrivono.
     MetadataTagWriteFailed = "metadata.tagWriteFailed", Metadata, Error, Always, None, { path: Option<String>, detail: Option<String> };
     /// Riletti dopo la scrittura, i tag non corrispondono.
@@ -1192,6 +1197,22 @@ mod prove {
         assert_eq!(troppo.kind().severity(), Severity::Warning);
         assert_eq!(troppo.kind().code(), "profile.tooLarge");
         assert_eq!(troppo.i18n_key(), "errors.profile.tooLarge");
+    }
+
+    #[test]
+    fn un_rifiuto_del_lettore_non_si_riprova() {
+        // La scansione tratta `metadata.tagReadFailed` come un rifiuto **del
+        // file** — lo ricorda in `file_illeggibili` e non riapre il file finché
+        // non cambia — e il catalogo lo diceva ritentabile. La regola della
+        // finestra è «avviso ritentabile = tasto Riprova»: il primo comando che
+        // lo mostrasse offrirebbe di rileggere un file che il lettore rifiuterà
+        // identico. Un lettore che cade invece è un'altra cosa, e la scansione
+        // lo tratta a parte (`Mancato::Caduto`), non da questa regola.
+        assert!(!ErrorCode::MetadataTagReadFailed { path: None }.is_retryable());
+        assert_eq!(
+            ErrorCodeKind::MetadataTagReadFailed.severity(),
+            Severity::Warning
+        );
     }
 
     #[test]
