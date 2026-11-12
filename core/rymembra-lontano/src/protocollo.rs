@@ -604,6 +604,42 @@ mod prove {
     }
 
     #[test]
+    fn un_associazione_di_un_tipo_sconosciuto_non_si_apre_oltre_il_tetto() {
+        // Reperto R15-1, la seconda forma: con `"tipo":"futuro"` la cornice
+        // diventa `Associa::Sconosciuta`, e `associa` esce **prima** di
+        // `consuma`. Non brucia il QR e non conta fra i fallimenti: chi bussa
+        // può rimandarla dieci volte al minuto finché il QR è a schermo, e
+        // ognuna valeva gli stessi ~200 MiB di `Content` della forma `chiedo`.
+        let mut grande = String::from(r#"{"tipo":"futuro","x":["#);
+        grande.push_str(&"0,".repeat((4 << 20) - 200));
+        grande.push_str("0]}");
+        assert!(grande.len() < 8 << 20);
+        let mut compressore =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        compressore.write_all(grande.as_bytes()).unwrap();
+        let bomba = compressore.finish().unwrap();
+        assert!(bomba.len() < 16 * 1024, "{}", bomba.len());
+        assert!(
+            valore_entro::<Associa>(&bomba, true, MASSIMA_ASSOCIA).is_err(),
+            "{} byte sul filo, {} aperti: si leggono",
+            bomba.len(),
+            grande.len()
+        );
+        // In chiaro, appena oltre il tetto, nemmeno.
+        let mut oltre = String::from(r#"{"tipo":"futuro","x":""#);
+        oltre.push_str(&"x".repeat(MASSIMA_ASSOCIA));
+        oltre.push_str(r#""}"#);
+        assert!(valore_entro::<Associa>(oltre.as_bytes(), false, MASSIMA_ASSOCIA).is_err());
+        // Una variante di domani, piccola, resta quel che era: sconosciuta,
+        // e non un guasto.
+        let piccola = br#"{"tipo":"futuro","x":[0,0,0]}"#;
+        assert_eq!(
+            valore_entro::<Associa>(piccola, false, MASSIMA_ASSOCIA).unwrap(),
+            Associa::Sconosciuta
+        );
+    }
+
+    #[test]
     fn una_domanda_oltre_il_tetto_non_parte_e_non_si_apre() {
         // Chi chiede lo sa prima di mandarla; chi risponde non la apre.
         let lunga = Domanda::Cerca {
