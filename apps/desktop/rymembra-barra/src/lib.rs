@@ -14,8 +14,9 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in due posti, il modulo `finestra` e una
-//! funzione di [`unita`](crate::unita_di), dentro un crate che dichiara
+//! Così il codice `unsafe` sta tutto in tre posti, il modulo `finestra`, una
+//! funzione di [`unita`](crate::unita_di) e le tre chiamate di
+//! [`sottofondo`](crate::Sottofondo), dentro un crate che dichiara
 //! l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della radice. Il resto
 //! di questo crate, e tutto il resto di Rymembra, resta senza.
 //!
@@ -30,13 +31,21 @@
 //! portarne dentro una per una chiamata sola costerebbe più di questa
 //! funzione: vedi [`unita_di`].
 //!
+//! # La terza: il lavoro di sottofondo, e la batteria
+//!
+//! Le passate dopo la scansione — impronte e volume di tutta la libreria —
+//! girano a priorità di sottofondo, e a batteria più piano. La modalità la
+//! mette `SetThreadPriority(…, THREAD_MODE_BACKGROUND_BEGIN)`, la batteria la
+//! dice `GetSystemPowerStatus`: vedi [`Sottofondo`] e [`a_batteria`].
+//!
 //! # Cosa si vede da fuori
 //!
 //! Per i pulsanti, due cose: [`aggancia`], una volta, sul filo della finestra;
 //! e [`Barra::mostra`], da qualunque filo, ogni volta che lo stato del lettore
 //! cambia. Quel che succede quando si preme un pulsante lo decide chi aggancia,
 //! con la chiusura che passa: questo crate non sa niente della musica. Per le
-//! unità, [`unita_di`] e il suo [`Unita`].
+//! unità, [`unita_di`] e il suo [`Unita`]. Per il sottofondo, la guardia
+//! [`Sottofondo`] e la domanda [`a_batteria`].
 
 // Fuori da Windows i pulsanti non si disegnano, e quel che serve a disegnarli
 // — gli identificativi, i suggerimenti, i glifi — non lo legge nessuno. Resta
@@ -60,9 +69,11 @@ mod finestra;
     )
 )]
 mod glifi;
+mod sottofondo;
 mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
+pub use sottofondo::{Sottofondo, a_batteria};
 pub use unita::{Unita, unita_di};
 
 /// Un pulsante premuto.

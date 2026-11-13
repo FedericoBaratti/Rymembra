@@ -145,6 +145,52 @@ const SCADENZA_NOME: &str = "impronta";
 /// libero il resto del processore.
 const FILI_INTENSITA: usize = 2;
 
+/// Come gira una passata: su quanti fili, e se a priorità di sottofondo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Andatura {
+    /// Quanti brani si misurano insieme.
+    fili: usize,
+    /// Il lavoro di ogni brano gira a priorità di sottofondo.
+    sottofondo: bool,
+}
+
+/// L'andatura di una passata che di serie va su `di_serie` fili, a batteria o
+/// no.
+///
+/// # Il difetto che chiude
+///
+/// Le passate giravano a priorità normale, a corrente come a batteria: dopo la
+/// prima scansione impronte e volume hanno tenuto due processori occupati per
+/// sei minuti su brani da tre secondi — su una libreria vera sono ore — anche
+/// col portatile staccato (R21-5). La passata cedeva alla musica, non al resto
+/// del sistema.
+///
+/// Adesso il lavoro di ogni brano gira **sempre** a priorità di sottofondo —
+/// processore, disco e memoria: cede a qualunque programma in primo piano, e a
+/// computer libero va veloce come prima — e a batteria su un filo solo: la
+/// libreria si finisce lo stesso, più piano, senza tenere sveglio più di un
+/// processore. Il telefono non ha passate; fuori da Windows la batteria non si
+/// sa, e vale quel che valeva prima.
+const fn andatura(di_serie: usize, a_batteria: bool) -> Andatura {
+    Andatura {
+        fili: if a_batteria { 1 } else { di_serie },
+        sottofondo: true,
+    }
+}
+
+/// Si va a batteria adesso? Quando non si sa — fuori da Windows, o Windows
+/// non lo dice — si fa come a corrente, cioè come sempre.
+fn a_batteria() -> bool {
+    rymembra_barra::a_batteria().unwrap_or(false)
+}
+
+/// Il filo che chiama passa a priorità di sottofondo finché la guardia vive:
+/// vedi `rymembra_barra::Sottofondo`. Solo il lavoro delle passate la chiede;
+/// il filo audio e quello della decodifica mai.
+fn in_sottofondo() -> rymembra_barra::Sottofondo {
+    rymembra_barra::Sottofondo::entra()
+}
+
 /// Il minimo che si concede a un brano da misurare, prima di contare la sua
 /// durata.
 ///
@@ -767,8 +813,13 @@ fn misura_la_copia(app: &AppHandle, operaio: &mut Operaio, chiave: &DaMisurare) 
         };
         if let Some(scheda) = impronta {
             let files = std::sync::Arc::clone(&files);
+            // In sottofondo come le passate: la si misura mentre la musica
+            // suona, e il lettore non deve contendersi il processore con lei.
             let misurato = operaio
-                .esegui(SCADENZA_BRANO, move || sonora::misura(&*files, &scheda))
+                .esegui(SCADENZA_BRANO, move || {
+                    let _sottofondo = in_sottofondo();
+                    sonora::misura(&*files, &scheda)
+                })
                 .unwrap_or(Misurato::NonRaggiungibile);
             if !matches!(misurato, Misurato::NonRaggiungibile) && scrivi(app, &[misurato]).is_ok() {
                 misurati = misurati.saturating_add(1);
@@ -787,6 +838,7 @@ fn misura_la_copia(app: &AppHandle, operaio: &mut Operaio, chiave: &DaMisurare) 
                 scadenza,
                 non_in_uscita,
                 move |scheda, continua| volume::misura_finche(&*files, &scheda, continua),
+                true,
             );
             if !matches!(
                 misurato,
@@ -862,6 +914,7 @@ fn misura_lotto(schede: &[SchedaSorgente], morte: &RadiciMorte) -> Vec<(i64, Mis
         si_puo_continuare,
         |scheda| sonora::misura(&rymembra_app::files::LocalFiles, &scheda),
         morte,
+        andatura(FILI, a_batteria()),
     )
 }
 
@@ -902,11 +955,12 @@ fn misura_lotto_con(
     continua: fn() -> bool,
     misura: fn(SchedaSorgente) -> Misurato,
     morte: &RadiciMorte,
+    andatura: Andatura,
 ) -> Vec<(i64, Misurato)> {
     if schede.is_empty() {
         return Vec::new();
     }
-    let per_filo = schede.len().div_ceil(FILI).max(1);
+    let per_filo = schede.len().div_ceil(andatura.fili).max(1);
     std::thread::scope(|ambito| {
         let mani: Vec<_> = schede
             .chunks(per_filo)
@@ -923,7 +977,13 @@ fn misura_lotto_con(
                             if morte.e_morta(&radice) {
                                 return (scheda.track_id, Misurato::NonRaggiungibile);
                             }
-                            let misurato = misura_uno(&mut operaio, scheda, scadenza, misura);
+                            let misurato = misura_uno(
+                                &mut operaio,
+                                scheda,
+                                scadenza,
+                                misura,
+                                andatura.sottofondo,
+                            );
                             if matches!(misurato, Misurato::NonRaggiungibile) {
                                 morte.segna(radice);
                             }
@@ -967,9 +1027,15 @@ fn misura_uno(
     scheda: &SchedaSorgente,
     scadenza: Duration,
     misura: fn(SchedaSorgente) -> Misurato,
+    sottofondo: bool,
 ) -> Misurato {
     let copia = scheda.clone();
-    match operaio.esegui(scadenza, move || misura(copia)) {
+    // La guardia sul filo dell'operaio, che è quello che decodifica: vedi
+    // [`andatura`].
+    match operaio.esegui(scadenza, move || {
+        let _sottofondo = sottofondo.then(in_sottofondo);
+        misura(copia)
+    }) {
         Ok(misurato) => misurato,
         Err(Mancato::Caduto { messaggio }) => {
             nota!(
@@ -1122,6 +1188,7 @@ fn misura_intensita(
             volume::misura_finche(&rymembra_app::files::LocalFiles, &scheda, continua)
         },
         morte,
+        andatura(FILI_INTENSITA, a_batteria()),
     )
 }
 
@@ -1137,11 +1204,12 @@ fn misura_intensita_con(
     continua: fn() -> bool,
     misura: MisuraVolume,
     morte: &RadiciMorte,
+    andatura: Andatura,
 ) -> Vec<(i64, volume::Misurato)> {
     if schede.is_empty() {
         return Vec::new();
     }
-    let per_filo = schede.len().div_ceil(FILI_INTENSITA).max(1);
+    let per_filo = schede.len().div_ceil(andatura.fili).max(1);
     std::thread::scope(|ambito| {
         let mani: Vec<_> = schede
             .chunks(per_filo)
@@ -1162,6 +1230,7 @@ fn misura_intensita_con(
                                 scadenza(scheda),
                                 continua,
                                 misura,
+                                andatura.sottofondo,
                             );
                             if matches!(misurato, volume::Misurato::NonRaggiungibile) {
                                 morte.segna(radice);
@@ -1218,6 +1287,7 @@ fn misura_volume(
     scadenza: Duration,
     continua: fn() -> bool,
     misura: impl FnOnce(SchedaSorgente, &dyn Fn() -> bool) -> volume::Misurato + Send + 'static,
+    sottofondo: bool,
 ) -> volume::Misurato {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU8;
@@ -1232,6 +1302,8 @@ fn misura_volume(
     let entro = std::time::Instant::now() + scadenza.saturating_sub(scadenza / 10);
     let (dentro_abbandonata, dentro_perche) = (Arc::clone(&abbandonata), Arc::clone(&perche));
     let esito = operaio.esegui(scadenza, move || {
+        // Sul filo dell'operaio, che è quello che decodifica: vedi [`andatura`].
+        let _sottofondo = sottofondo.then(in_sottofondo);
         let ancora = || {
             if dentro_abbandonata.load(Ordering::Relaxed) {
                 return false;
@@ -1325,6 +1397,69 @@ mod prove {
         );
     }
 
+    /// R21-5: le passate girano a priorità di sottofondo, sempre, e a batteria
+    /// su un filo solo. Prima due o tre fili a priorità normale, a corrente
+    /// come a batteria: due processori occupati per ore su una libreria vera.
+    #[test]
+    fn a_batteria_la_passata_va_piano_e_sempre_in_sottofondo() {
+        assert_eq!(
+            andatura(FILI, false),
+            Andatura {
+                fili: FILI,
+                sottofondo: true
+            }
+        );
+        assert_eq!(
+            andatura(FILI, true),
+            Andatura {
+                fili: 1,
+                sottofondo: true
+            }
+        );
+        assert_eq!(andatura(FILI_INTENSITA, true).fili, 1);
+        assert_eq!(andatura(FILI_INTENSITA, false).fili, FILI_INTENSITA);
+    }
+
+    /// Il cablaggio: le due passate chiedono l'andatura all'alimentazione di
+    /// adesso, i lotti si dividono su quanti fili lei dice, e il lavoro di ogni
+    /// brano — anche quello delle copie del cloud — gira dentro la guardia di
+    /// sottofondo. Il filo audio e la decodifica non la chiedono mai.
+    #[test]
+    fn le_passate_girano_con_l_andatura_e_in_sottofondo() {
+        let testo = include_str!("analisi.rs");
+        let codice = &testo[..testo.find("#[cfg(test)]\nmod prove").unwrap_or(testo.len())];
+        let corpo = |firma: &str| {
+            let inizio = codice
+                .find(firma)
+                .unwrap_or_else(|| panic!("manca {firma}"));
+            let resto = &codice[inizio..];
+            resto[..resto.find("\n}\n").unwrap_or(resto.len())].to_owned()
+        };
+        assert!(corpo("fn misura_lotto(").contains("andatura(FILI, a_batteria())"));
+        assert!(corpo("fn misura_intensita(").contains("andatura(FILI_INTENSITA, a_batteria())"));
+        for firma in ["fn misura_lotto_con(", "fn misura_intensita_con("] {
+            assert!(
+                corpo(firma).contains("div_ceil(andatura.fili)"),
+                "{firma} non divide il lotto secondo l'andatura"
+            );
+        }
+        for firma in ["fn misura_uno(", "fn misura_volume(", "fn misura_la_copia("] {
+            assert!(
+                corpo(firma).contains("in_sottofondo"),
+                "{firma} non mette il lavoro in sottofondo"
+            );
+        }
+        for altrove in [
+            include_str!("riproduzione/mod.rs"),
+            include_str!("riproduzione/fili.rs"),
+        ] {
+            assert!(
+                !altrove.contains("Sottofondo"),
+                "il lettore chiede il sottofondo"
+            );
+        }
+    }
+
     /// Una scheda finta: le prove della misura non aprono nessun file.
     fn scheda(track_id: i64) -> SchedaSorgente {
         SchedaSorgente {
@@ -1362,6 +1497,7 @@ mod prove {
                 }
             },
             &RadiciMorte::default(),
+            andatura(FILI, false),
         )
         .into_iter()
         .map(|(_, m)| m)
@@ -1432,6 +1568,7 @@ mod prove {
                 }
             },
             &RadiciMorte::default(),
+            andatura(FILI, false),
         );
         let tentati = TENTATI_IMPRONTE.load(Ordering::Relaxed);
         assert!(
@@ -1466,6 +1603,7 @@ mod prove {
                 }
             },
             &RadiciMorte::default(),
+            andatura(FILI_INTENSITA, false),
         );
         let tentati = TENTATI_VOLUME.load(Ordering::Relaxed);
         assert!(
@@ -1527,6 +1665,7 @@ mod prove {
             || true,
             dal_nas_non_torna,
             &morte,
+            andatura(FILI, false),
         );
         assert_eq!(
             fatti(&misurati),
@@ -1566,6 +1705,7 @@ mod prove {
                 }
             },
             &RadiciMorte::default(),
+            andatura(FILI_INTENSITA, false),
         );
         let mut misurati_locali: Vec<i64> = misurati
             .iter()
@@ -1711,6 +1851,7 @@ mod prove {
             || true,
             |scheda, continua| legge_a_lungo(scheda, continua, &BLOCCHI_SCADUTA),
             &RadiciMorte::default(),
+            andatura(FILI_INTENSITA, false),
         );
         let subito = BLOCCHI_SCADUTA.load(Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(200));
@@ -1749,6 +1890,7 @@ mod prove {
             || !MUSICA_PROVA.load(Ordering::Relaxed),
             |scheda, continua| legge_a_lungo(scheda, continua, &BLOCCHI_MUSICA),
             &RadiciMorte::default(),
+            andatura(FILI_INTENSITA, false),
         );
         let _ = sveglia.join();
         assert!(
@@ -1790,6 +1932,7 @@ mod prove {
                 vettore: vec![1.0],
             },
             &RadiciMorte::default(),
+            andatura(FILI, false),
         );
         assert!(misurati.is_empty(), "{misurati:?}");
     }
