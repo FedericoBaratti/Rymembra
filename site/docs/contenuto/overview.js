@@ -33,7 +33,7 @@
       title: "Workspace and crates",
       src: ["Cargo.toml", "core", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/rymembra-barra/Cargo.toml", "apps/desktop/package.json"],
       body: [
-        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.91\"`, version `3.2.0`) with 18 members — fifteen in `core/`, the desktop app, and the two crates that talk to the operating system by hand — plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
+        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.91\"`, one version for every member, kept in step by `npm run check:version`) with 18 members — fifteen in `core/`, the desktop app, and the two crates that talk to the operating system by hand — plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
         {
           table: {
             head: ["Crate", "Role", "Internal dependencies"],

@@ -1297,8 +1297,8 @@ are not on it.
 Opening a file can still make something else write it: in a folder that the
 OneDrive, Dropbox or Google Drive app on your PC keeps with its files on
 demand, a file that exists only as a placeholder is downloaded by that app as
-soon as anything reads it. So a scan, and the analysis, do not open those
-files: they count them (“N online-only files not downloaded”) and go on, and
+soon as anything reads it. So a scan, and the analysis, do not read those
+files, only ask for their attributes: they count them (“N online-only files not downloaded”) and go on, and
 the tracks come in once the files are on the PC. Playing one opens it, and so
 downloads it.
 

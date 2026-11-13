@@ -111,8 +111,8 @@ system does not recognize is refused (`net.untrustedCertificate`): there is no
 has a lock per process, on a `blocco` file in its folder: a second process on
 the same data folder runs without a cache and leaves the first one’s copies
 alone. A file that Windows keeps only online (a placeholder of OneDrive,
-Dropbox or Google Drive on the PC) is not opened by a scan or by the analysis,
-since opening it would make the sync app download it.
+Dropbox or Google Drive on the PC) is not read by a scan or by the analysis,
+since reading it would make the sync app download it.
 
 **«Listen together», while a PC hosts.** From 3.1 a PC that **hosts** a
 listening session listens on the local network, on TCP and UDP port 47811 (or

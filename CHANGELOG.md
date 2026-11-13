@@ -778,7 +778,7 @@ The rest of what the two reviews fixed, by area.
   its files on demand, a file that exists only as a placeholder was opened to
   read its tags or to be measured, which made the app download it: a whole
   library, over a metered connection. A scan — by hand, by folder watching or
-  after a download — and the analysis no longer open such a file. The scan
+  after a download — and the analysis no longer read such a file. The scan
   counts them (“N online-only files not downloaded”), does not flag them as
   unreadable or remember them, so the next scan reads them once they are on
   the PC, and a folder holding some removes no track in that pass, since the

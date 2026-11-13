@@ -225,7 +225,7 @@ a longer listening history than the public API offers.
   `\\server\share` path are recognized as the same place.
 - **Folders kept by a sync app.** A folder that the OneDrive, Dropbox or
   Google Drive app on your PC keeps with its files on demand can be added like
-  any other. A file that exists only as a placeholder is not opened by a scan
+  any other. A file that exists only as a placeholder is not read by a scan
   or by the analysis, because reading it would make the app download it: the
   scan says “N online-only files not downloaded”, they come in at the next
   scan once the files are on the PC, and a folder holding some removes no
