@@ -6940,3 +6940,107 @@ fn un_file_solo_in_rete_non_si_legge_e_non_toglie_il_brano_spostato() {
         .expect("conteggio");
     assert_eq!(ricordati, 0, "non è un file illeggibile");
 }
+
+/// Le tre chiavi d'ordine di un brano: titolo, artista, album (migrazione 042).
+fn chiavi_d_ordine(lib: &Libreria, id: i64) -> (Option<String>, Option<String>, Option<String>) {
+    lib.connection
+        .query_row(
+            "SELECT ordine_titolo, ordine_artista, ordine_album FROM tracks WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("chiavi d'ordine")
+}
+
+fn chiavi_attese(
+    titolo: &str,
+    artista: &str,
+    album: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let k = |nome: &str| Some(rymembra_domain::keys::sort_name(nome));
+    (k(titolo), k(artista), k(album))
+}
+
+#[test]
+fn le_chiavi_d_ordine_seguono_ogni_scrittura_dei_nomi() {
+    // Le chiavi con cui i Brani si ordinano per nome stanno in tre colonne
+    // (042): chi scrive titolo, artista o album non le calcola, il trigger le
+    // rimette a NULL e la ricostruzione degli aggregati le rifà. Qui si
+    // passano tutte le strade che scrivono i nomi, e dopo ognuna le chiavi
+    // devono essere quelle di `sort_name` sui nomi di adesso.
+    let mut lib = Libreria::nuova();
+
+    // La scansione: un brano nuovo.
+    let file = lib.brano("Edith/Disco/01.wav", "È sera", "The Beatles", "L'Album");
+    assert_eq!(lib.scansiona().inserted, 1);
+    let id: i64 = lib
+        .connection
+        .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+        .expect("identificativo");
+    assert_eq!(
+        chiavi_d_ordine(&lib, id),
+        chiavi_attese("È sera", "The Beatles", "L'Album"),
+        "dopo l'inserimento"
+    );
+
+    // La rilettura di un file ritaggato.
+    tagga(&file, "Ça plane pour moi", "I Cani", "Il Disco");
+    lib.connection
+        .execute("UPDATE tracks SET date_modified = 0 WHERE id = ?1", [id])
+        .expect("data di modifica");
+    assert_eq!(lib.scansiona().updated, 1, "la riga si rilegge");
+    assert_eq!(
+        chiavi_d_ordine(&lib, id),
+        chiavi_attese("Ça plane pour moi", "I Cani", "Il Disco"),
+        "dopo la rilettura"
+    );
+
+    // La correzione a mano.
+    crate::incerti::correggi(
+        &mut lib.connection,
+        id,
+        &crate::provenienza::Correzioni {
+            titolo: Some("Édith".to_owned()),
+            artista: Some("Les Rita Mitsouko".to_owned()),
+            album: Some("The Best".to_owned()),
+            ..crate::provenienza::Correzioni::default()
+        },
+    )
+    .expect("correzione");
+    assert_eq!(
+        chiavi_d_ordine(&lib, id),
+        chiavi_attese("Édith", "Les Rita Mitsouko", "The Best"),
+        "dopo la correzione"
+    );
+
+    // Chiunque altro scriva un nome, da qualunque modulo: il trigger rimette a
+    // NULL, e la prima ricostruzione rifà.
+    lib.connection
+        .execute(
+            "UPDATE tracks SET artist = 'Ólafur Arnalds' WHERE id = ?1",
+            [id],
+        )
+        .expect("un'altra scrittura");
+    assert_eq!(chiavi_d_ordine(&lib, id), (None, None, None), "il trigger");
+    let tx = transazione_di_scrittura(&mut lib.connection).expect("transazione");
+    ricostruisci_aggregati(&tx, &Toccati::nessuno()).expect("ricostruzione");
+    tx.commit().expect("commit");
+    assert_eq!(
+        chiavi_d_ordine(&lib, id),
+        chiavi_attese("Édith", "Ólafur Arnalds", "The Best"),
+        "dopo la ricostruzione"
+    );
+
+    // E una scrittura che non tocca i nomi non le butta.
+    lib.connection
+        .execute(
+            "UPDATE tracks SET play_count = 3, title = title WHERE id = ?1",
+            [id],
+        )
+        .expect("un ascolto");
+    assert_eq!(
+        chiavi_d_ordine(&lib, id),
+        chiavi_attese("Édith", "Ólafur Arnalds", "The Best"),
+        "un ascolto non cambia i nomi"
+    );
+}

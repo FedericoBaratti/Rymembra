@@ -143,7 +143,8 @@ mod scansione;
 
 pub use aggregati::{
     Aggregates, Toccati, VERSIONE_AGGREGATI, chiedi_ricostruzione_intera, generazione,
-    rebuild_aggregates, ricostruisci_aggregati,
+    rebuild_aggregates, ricostruisci_aggregati, riempi_le_chiavi_d_ordine,
+    riempi_le_chiavi_d_ordine_all_apertura,
 };
 pub use camminata::{
     Cambiamento, Natura, Ricognizione, cammina, cartelle_da_riguardare, dentro_le_radici,

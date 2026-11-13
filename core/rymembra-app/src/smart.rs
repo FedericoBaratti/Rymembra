@@ -407,13 +407,20 @@ fn protetto(testo: &str) -> String {
 /// La clausola `ORDER BY`. Chiusa in un `match`, come `TrackOrder::sql`.
 const fn ordine(ordinamento: Ordinamento) -> &'static str {
     match ordinamento {
+        // Lo stesso scaffale della vista Brani, con la chiave degli Artisti
+        // (D-104, migrazione 042): una playlist intelligente «per scaffale» e la
+        // libreria non mettono gli stessi brani in due ordini diversi.
         Ordinamento::Scaffale => {
-            "t.artist COLLATE NOCASE, t.album COLLATE NOCASE,
-             t.disc_number, t.track_number, t.title COLLATE NOCASE"
+            "t.ordine_artista, t.ordine_album,
+             t.disc_number, t.track_number, t.ordine_titolo, t.id"
         }
         Ordinamento::PiuAscoltati => "t.play_count DESC, t.last_played_at DESC",
         Ordinamento::MenoAscoltati => "t.play_count ASC, t.last_played_at IS NOT NULL, t.title",
-        Ordinamento::Recenti => "t.date_added DESC, t.id DESC",
+        // Come «Aggiunti di recente» della libreria: a parità d'ingresso
+        // l'ordine del disco, non l'identificativo rovesciato (R18-2).
+        Ordinamento::Recenti => {
+            "t.date_added DESC, t.album_key, t.disc_number, t.track_number, t.path, t.id"
+        }
         // `RANDOM()` di SQLite e non un mescolamento nostro: mescolare qui
         // vorrebbe dire tirare su tutti i brani che passano il filtro per
         // tenerne cinquanta. Il seme non si può fissare, e va bene — una
@@ -688,7 +695,8 @@ mod prove {
                 year INTEGER, cover_art_hash TEXT, play_count INTEGER NOT NULL DEFAULT 0,
                 liked INTEGER NOT NULL DEFAULT 0, rating INTEGER NOT NULL DEFAULT 0,
                 genre TEXT, date_added INTEGER NOT NULL DEFAULT 0, last_played_at INTEGER,
-                source_service TEXT, fonte_pagina TEXT, licenza TEXT)",
+                source_service TEXT, fonte_pagina TEXT, licenza TEXT,
+                ordine_titolo TEXT, ordine_artista TEXT, ordine_album TEXT)",
         )
         .expect("schema");
         c
@@ -708,6 +716,9 @@ mod prove {
             rusqlite::params![id, format!("/m/{id}.mp3"), titolo, artista, 1],
         )
         .expect("brano");
+        // Le chiavi d'ordine per nome (042), come le lascia la ricostruzione
+        // che segue ogni scrittura vera dei brani.
+        crate::library::riempi_le_chiavi_d_ordine(c).expect("chiavi d'ordine");
     }
 
     #[test]

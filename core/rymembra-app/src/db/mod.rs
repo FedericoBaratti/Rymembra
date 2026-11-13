@@ -462,6 +462,15 @@ fn open_connection(connection: Connection, percorso: Option<&Path>) -> Result<Op
         .filter(|_| version_before > 0 && version_before < LATEST_VERSION)
         .map(|percorso| manutenzione::prima_di_migrare(&connection, percorso, version_before));
     let applied = migrate(&connection)?;
+    // Le chiavi d'ordine dei brani che non le hanno ancora: dopo la 042 tutte
+    // quelle di prima. Solo quando si è appena migrato, che è anche la prova
+    // che il file si scrive: una libreria aperta da un disco in sola lettura
+    // si apre come prima, e le chiavi che una caduta avesse lasciato a NULL le
+    // rifà la prossima scrittura dei brani (`Toccati::segna_brani`). Vedi
+    // `library::riempi_le_chiavi_d_ordine_all_apertura`.
+    if applied > 0 {
+        crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection)?;
+    }
     if percorso.is_some() {
         // Dopo le migrazioni e non prima: SQLite chiede un `optimize` dopo ogni
         // cambio di schema, e un indice appena creato è precisamente la cosa
@@ -2043,9 +2052,14 @@ mod tests {
             assert_eq!(quante(&connection, tabella), 1, "{tabella}");
         }
         // Solo righe in più nello schema: nessuna tabella di prima è cambiata.
+        // Il testo di `tracks` lo riscrive la 042 (`ADD COLUMN`): le sue
+        // colonne di prima le guarda `la_quarantadue_…`.
         let dopo = schema(&connection);
         assert!(
-            prima.iter().all(|riga| dopo.contains(riga)),
+            prima
+                .iter()
+                .filter(|riga| !riga.starts_with("table tracks "))
+                .all(|riga| dopo.contains(riga)),
             "la 35 ha toccato qualcosa che c'era già"
         );
         // E nessuna chiave esterna, in nessuno dei due versi: è quel che rende
@@ -2189,9 +2203,13 @@ mod tests {
         ] {
             assert_eq!(quante(&connection, tabella), 1, "{tabella}");
         }
+        // Il testo di `tracks` lo riscrive la 042: vedi la prova della 35.
         let dopo = schema(&connection);
         assert!(
-            prima.iter().all(|riga| dopo.contains(riga)),
+            prima
+                .iter()
+                .filter(|riga| !riga.starts_with("table tracks "))
+                .all(|riga| dopo.contains(riga)),
             "la 36 ha toccato qualcosa che c'era già"
         );
         // Una cache: nessuna chiave esterna, in nessuno dei due versi, così
@@ -2369,11 +2387,12 @@ mod tests {
         ] {
             assert_eq!(quante(&connection, tabella), 1, "{tabella}");
         }
+        // Il testo di `tracks` lo riscrive la 042: vedi la prova della 35.
         let dopo = schema(&connection);
         assert!(
             prima
                 .iter()
-                .filter(|riga| !riga.contains("nuvola_conti"))
+                .filter(|riga| !riga.contains("nuvola_conti") && !riga.starts_with("table tracks "))
                 .all(|riga| dopo.contains(riga)),
             "la 37 ha toccato qualcosa che c'era già"
         );
@@ -2468,6 +2487,9 @@ mod tests {
         // `migrate` porta all'ultima: prima si toglie quel che è venuto dopo
         // la 037, col ritorno indietro scritto in testa a ciascuna.
         tornata
+            .execute_batch(RITORNO_DALLA_42)
+            .expect("ritorno a mano dalla 42");
+        tornata
             .execute_batch(RITORNO_DALLA_41)
             .expect("ritorno a mano dalla 41");
         tornata
@@ -2495,10 +2517,16 @@ mod tests {
         let senza_conti = |c: &Connection| -> Vec<String> {
             schema(c)
                 .into_iter()
-                .filter(|riga| !riga.starts_with("table nuvola_conti "))
+                .filter(|riga| {
+                    !riga.starts_with("table nuvola_conti ") && !riga.starts_with("table tracks ")
+                })
                 .collect()
         };
         assert_eq!(senza_conti(&tornata), senza_conti(&alla_36));
+        assert_eq!(
+            colonne_di(&tornata, "tracks"),
+            colonne_di(&alla_36, "tracks")
+        );
         let colonne = |c: &Connection| {
             colonna(
                 c,
@@ -3093,8 +3121,12 @@ mod tests {
         };
         let prima = conti(&connection);
 
-        assert_eq!(migrate(&connection).expect("la 41"), 1);
-        assert_eq!(user_version(&connection).expect("versione"), 41);
+        // `migrate` porta all'ultima: la 41 e quelle che vengono dopo.
+        assert_eq!(
+            u32::try_from(migrate(&connection).expect("la 41")).expect("conto"),
+            LATEST_VERSION - 40
+        );
+        assert_eq!(user_version(&connection).expect("versione"), LATEST_VERSION);
         assert_eq!(conti(&connection), prima, "nessuna riga è cambiata");
         assert_eq!(
             colonna(
@@ -3160,12 +3192,14 @@ mod tests {
     }
 
     #[test]
-    fn la_ricetta_dalla_quarantuno_alla_trentotto_lascia_riaggiornare() {
+    fn la_ricetta_dalla_quarantadue_alla_trentotto_lascia_riaggiornare() {
         // Il guasto di R06b-6: chi applicava da solo il ritorno della 039 a un
         // database alla 40 lasciava `insieme_indirizzi`, la 3.2.0 lo apriva lo
         // stesso, e al riaggiornamento la 040 cadeva su una tabella che c'era
         // già — `db.migrationFailed`, libreria chiusa. La ricetta composta,
-        // invece, riporta lo schema della 38 e lascia ripartire la catena.
+        // invece, riporta lo schema della 38 e lascia ripartire la catena. Dalla
+        // 042 la ricetta è quella scritta in testa alla 042, che comincia
+        // togliendo le chiavi d'ordine.
         let alla_38 = Connection::open_in_memory().expect("apertura in memoria");
         fino_alla(&alla_38, 38);
 
@@ -3180,9 +3214,16 @@ mod tests {
             .expect("un dispositivo");
         tornata
             .connection
-            .execute_batch(RITORNO_ALLA_38)
+            .execute_batch(RITORNO_DA_42_ALLA_38)
             .expect("ritorno a mano");
-        assert_eq!(schema(&tornata.connection), schema(&alla_38));
+        assert_eq!(
+            schema_senza_i_brani(&tornata.connection),
+            schema_senza_i_brani(&alla_38)
+        );
+        assert_eq!(
+            colonne_di(&tornata.connection, "tracks"),
+            colonne_di(&alla_38, "tracks")
+        );
         assert_eq!(user_version(&tornata.connection).expect("versione"), 38);
 
         assert_eq!(
@@ -3194,6 +3235,261 @@ mod tests {
             quante(&tornata.connection, "play_history"),
             1,
             "gli ascolti restano"
+        );
+    }
+
+    // ── la 042: le chiavi d'ordine dei brani ────────────────────────────────
+
+    /// Lo schema senza la riga di `tracks`, che `ALTER TABLE … DROP COLUMN`
+    /// riscrive a modo suo: quella tabella si confronta con [`colonne_di`].
+    fn schema_senza_i_brani(connection: &Connection) -> Vec<String> {
+        schema(connection)
+            .into_iter()
+            .filter(|riga| !riga.starts_with("table tracks "))
+            .collect()
+    }
+
+    /// Le colonne di una tabella: nome, tipo, `NOT NULL`, chiave, ripiego.
+    fn colonne_di(connection: &Connection, tabella: &str) -> Vec<String> {
+        colonna(
+            connection,
+            &format!(
+                "SELECT name || ' ' || type || ' ' || \"notnull\" || ' ' || pk || ' '
+                        || COALESCE(dflt_value, '-')
+                   FROM pragma_table_info('{tabella}') ORDER BY cid"
+            ),
+        )
+    }
+
+    /// Il ritorno indietro a mano scritto in testa alla 042.
+    const RITORNO_DALLA_42: &str = "DROP TRIGGER chiavi_d_ordine_da_rifare;
+         DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
+         ALTER TABLE tracks DROP COLUMN ordine_album; ALTER TABLE tracks DROP COLUMN ordine_artista;
+         ALTER TABLE tracks DROP COLUMN ordine_titolo;
+         PRAGMA user_version = 41;";
+
+    /// Il ritorno a mano dalla 42 alla 38 — la 3.2.0 — in un blocco solo, come
+    /// lo scrive la testa della 042: prima quel che ha aggiunto l'ultima.
+    const RITORNO_DA_42_ALLA_38: &str = "DROP TRIGGER chiavi_d_ordine_da_rifare;
+         DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
+         ALTER TABLE tracks DROP COLUMN ordine_album; ALTER TABLE tracks DROP COLUMN ordine_artista;
+         ALTER TABLE tracks DROP COLUMN ordine_titolo;
+         DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording;
+         DROP TABLE insieme_indirizzi;
+         DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+         PRAGMA user_version = 38;";
+
+    /// Brani veri per le chiavi: accenti, articoli, un nome che è solo
+    /// punteggiatura, dischi e tracce che mancano.
+    fn brani_coi_nomi(connection: &Connection) {
+        for (id, titolo, artista, album, disco) in [
+            (11, "È sera", "Édith Piaf", "L'Accordéon", Some(1)),
+            (12, "The Wall", "The Beatles", "Abbey Road", None),
+            (
+                13,
+                "I giardini di marzo",
+                "I Cani",
+                "Il Sorprendente Album",
+                Some(2),
+            ),
+            (14, "I Will Survive", "I Prevail", "Ça plane", None),
+            (15, "!!!", "Ólafur Arnalds", "", None),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, disc_number,
+                                         file_size, date_added, date_modified)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 4000000, 1, 1)",
+                    rusqlite::params![
+                        id,
+                        format!("C:/M/{id}.flac"),
+                        format!("k{id}"),
+                        titolo,
+                        artista,
+                        album,
+                        disco
+                    ],
+                )
+                .expect("un brano");
+        }
+    }
+
+    /// Le righe di `tracks`, colonne di prima della 042 comprese tutte.
+    fn brani_come_sono(connection: &Connection) -> Vec<String> {
+        colonna(
+            connection,
+            "SELECT id || '|' || COALESCE(path, '-') || '|' || track_key || '|' || title
+                    || '|' || artist || '|' || album || '|' || COALESCE(disc_number, '-')
+                    || '|' || play_count || '|' || rating || '|' || date_added
+               FROM tracks ORDER BY id",
+        )
+    }
+
+    #[test]
+    fn la_quarantadue_aggiunge_le_chiavi_e_non_tocca_il_resto() {
+        // Una libreria alla 41 con le righe che si perderebbero e dei nomi con
+        // accenti, articoli e punteggiatura; poi l'apertura vera, che migra e
+        // riempie le chiavi delle righe che c'erano.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 41);
+        libreria_da_perdere(&connection);
+        brani_coi_nomi(&connection);
+        let conti = |c: &Connection| {
+            [
+                "tracks",
+                "artists",
+                "playlist_tracks",
+                "play_history",
+                "track_overrides",
+            ]
+            .map(|tabella| quante(c, tabella))
+        };
+        let prima_conti = conti(&connection);
+        let prima_brani = brani_come_sono(&connection);
+        let prima_schema = schema_senza_i_brani(&connection);
+
+        let aperta = open_connection(connection, None).expect("apertura");
+        assert_eq!(aperta.applied, 1);
+        let c = &aperta.connection;
+        assert_eq!(user_version(c).expect("versione"), 42);
+        assert_eq!(conti(c), prima_conti, "nessuna riga è cambiata");
+        assert_eq!(brani_come_sono(c), prima_brani, "nessun valore è cambiato");
+        let dopo_schema = schema_senza_i_brani(c);
+        assert!(
+            prima_schema.iter().all(|riga| dopo_schema.contains(riga)),
+            "la 42 ha toccato qualcosa che c'era già"
+        );
+
+        // Ogni riga che c'era ha le sue chiavi, e sono quelle di `sort_name`.
+        let mut letta = c
+            .prepare("SELECT title, artist, album, ordine_titolo, ordine_artista, ordine_album FROM tracks")
+            .expect("chiavi");
+        /// I tre nomi e le tre chiavi di un brano.
+        type NomiEChiavi = (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let righe: Vec<NomiEChiavi> = letta
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .expect("lettura")
+            .collect::<Result<_, _>>()
+            .expect("righe");
+        assert_eq!(righe.len(), 6);
+        for (titolo, artista, album, k_titolo, k_artista, k_album) in righe {
+            let sn = |nome: &str| Some(rymembra_domain::keys::sort_name(nome));
+            assert_eq!(k_titolo, sn(&titolo), "{titolo}");
+            assert_eq!(k_artista, sn(&artista), "{artista}");
+            assert_eq!(k_album, sn(&album), "{album}");
+        }
+        assert_eq!(
+            colonna(
+                c,
+                "SELECT ordine_artista FROM tracks WHERE id >= 11 ORDER BY id"
+            ),
+            [
+                "edith piaf",
+                "beatles",
+                "cani",
+                "i prevail",
+                "olafur arnalds"
+            ]
+        );
+    }
+
+    #[test]
+    fn le_ricette_di_ritorno_stanno_in_testa_alla_quarantadue() {
+        let testa = spazi_compressi(
+            &include_str!("schema/042_chiavi_d_ordine.sql")
+                .lines()
+                .filter_map(|riga| riga.strip_prefix("--"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        for ricetta in [RITORNO_DALLA_42, RITORNO_DA_42_ALLA_38] {
+            assert!(
+                testa.contains(&spazi_compressi(ricetta)),
+                "la testa della 042 non porta la ricetta: {ricetta}"
+            );
+        }
+    }
+
+    #[test]
+    fn togliere_la_quarantadue_a_mano_riporta_la_quarantuno() {
+        let alla_41 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_41, 41);
+        let tornata = open_in_memory().expect("database");
+        libreria_da_perdere(&tornata.connection);
+        brani_coi_nomi(&tornata.connection);
+        let prima_brani = brani_come_sono(&tornata.connection);
+        tornata
+            .connection
+            .execute_batch(RITORNO_DALLA_42)
+            .expect("ritorno a mano");
+        assert_eq!(
+            schema_senza_i_brani(&tornata.connection),
+            schema_senza_i_brani(&alla_41)
+        );
+        assert_eq!(
+            colonne_di(&tornata.connection, "tracks"),
+            colonne_di(&alla_41, "tracks")
+        );
+        assert_eq!(user_version(&tornata.connection).expect("versione"), 41);
+        assert_eq!(
+            brani_come_sono(&tornata.connection),
+            prima_brani,
+            "i brani restano com'erano"
+        );
+        assert_eq!(quante(&tornata.connection, "play_history"), 1);
+        // E la 42 si riapplica: le colonne tornano, vuote, e l'apertura le
+        // riempie.
+        assert_eq!(migrate(&tornata.connection).expect("di nuovo la 42"), 1);
+    }
+
+    #[test]
+    fn la_chiave_d_ordine_si_cerca_per_indice() {
+        // I due ordinamenti per nome dei Brani scorrono un indice, e quello
+        // per titolo trova anche le righe da riempire.
+        let db = open_in_memory().expect("database");
+        let leggi = |sql: &str| -> Vec<String> {
+            let mut query = db
+                .connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("piano");
+            query
+                .query_map([], |r| r.get::<_, String>(3))
+                .expect("lettura")
+                .collect::<Result<_, _>>()
+                .expect("righe del piano")
+        };
+        let scaffale = leggi(
+            "SELECT id FROM tracks ORDER BY ordine_artista, ordine_album, disc_number,
+                                         track_number, ordine_titolo",
+        );
+        assert!(
+            scaffale
+                .iter()
+                .any(|r| r.contains("idx_tracks_scaffale_per_nome")),
+            "{scaffale:?}"
+        );
+        let da_riempire = leggi("SELECT id FROM tracks WHERE ordine_titolo IS NULL");
+        assert!(
+            da_riempire
+                .iter()
+                .any(|r| r.contains("idx_tracks_titolo_per_nome")),
+            "{da_riempire:?}"
         );
     }
 }

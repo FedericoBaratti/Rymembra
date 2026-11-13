@@ -176,20 +176,24 @@ mod prove {
         // il solo `t.id` la lettura non tocca la tabella. Se un giorno
         // l'indice cambia (una collazione nuova), la prova va riguardata con
         // lui: Ã¨ lei che dice se Â«Suona da quiÂ» Ã¨ tornato a leggere tutto.
+        // Dalla 042 l'ordine per nome sta nelle colonne `ordine_*`, con un
+        // indice per lo scaffale e uno per il titolo: tutti e due coprono.
         let c = libreria();
-        let sql = format!(
-            "EXPLAIN QUERY PLAN SELECT t.id FROM tracks t ORDER BY {}",
-            TrackOrder::Shelf.sql()
-        );
-        let mut s = c.prepare(&sql).expect("piano");
-        let piano: Vec<String> = s
-            .query_map([], |r| r.get::<_, String>(3))
-            .expect("piano")
-            .collect::<Result<_, _>>()
-            .expect("righe del piano");
-        assert!(
-            piano.iter().any(|riga| riga.contains("COVERING INDEX")),
-            "{piano:?}"
-        );
+        for ordine in [TrackOrder::Shelf, TrackOrder::Title] {
+            let sql = format!(
+                "EXPLAIN QUERY PLAN SELECT t.id FROM tracks t ORDER BY {}",
+                ordine.sql()
+            );
+            let mut s = c.prepare(&sql).expect("piano");
+            let piano: Vec<String> = s
+                .query_map([], |r| r.get::<_, String>(3))
+                .expect("piano")
+                .collect::<Result<_, _>>()
+                .expect("righe del piano");
+            assert!(
+                piano.iter().any(|riga| riga.contains("COVERING INDEX")),
+                "{ordine:?}: {piano:?}"
+            );
+        }
     }
 }

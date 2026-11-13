@@ -1090,6 +1090,21 @@ fn misure_su_cinquantamila_brani() {
         numeri.albums, numeri.artists, numeri.tracks
     );
 
+    // ── le chiavi d'ordine (042): quel che paga la prima apertura dopo ──
+    connection
+        .execute(
+            "UPDATE tracks SET ordine_titolo = NULL, ordine_artista = NULL, ordine_album = NULL",
+            [],
+        )
+        .expect("chiavi a NULL");
+    let chiavi = cronometra(|| {
+        let tx = connection.transaction().expect("transazione");
+        riempi_le_chiavi_d_ordine(&tx).expect("chiavi");
+        drop(tx);
+    });
+    println!("chiavi d'ordine di tutta la libreria (prima apertura dopo la 042): {chiavi:.1} ms");
+    riempi_le_chiavi_d_ordine_all_apertura(&connection).expect("chiavi");
+
     // ── gli aggregati: prima (sempre intera) e dopo (per chiavi) ──
     let intera = cronometra(|| {
         let tx = connection.transaction().expect("transazione");

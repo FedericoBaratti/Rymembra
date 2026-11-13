@@ -16,7 +16,7 @@
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 41"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 42"],
               ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
               ["`rymembra.db.messa-da-parte.bak`", "The library set aside by “Go back to the copy from before the update” (kept until removed by hand)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
@@ -27,7 +27,7 @@
           },
         },
         { h: "Opening" },
-        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason: with no library the `skin` command wears the built-in skin (`skin::da_indossare`, it needs nothing on disk), the error band shows the error of `avvio`, and for database errors it offers “Open the data folder” (`manutenzione_apri_cartella_dati`, not on the phone). `Stato` keeps the folder it looked in even when opening failed (`cartella_della_libreria`).",
+        "`db::open` runs, in order: connection pragmas, an FTS5 probe (create and drop a temporary FTS5 table), `PRAGMA user_version`, the pre-migration snapshot when `0 < version < LATEST_VERSION`, the migrations, the missing track sort keys after a migration (one transaction, only if some are NULL), and `PRAGMA optimize=0x10002`. Paths longer than 240 characters are opened in their `\\\\?\\` verbatim form (`files::percorso_lungo`). If opening fails, `Stato` keeps the `AppError` instead of the connection, and every command returns it — the window still opens and can show the path and the reason: with no library the `skin` command wears the built-in skin (`skin::da_indossare`, it needs nothing on disk), the error band shows the error of `avvio`, and for database errors it offers “Open the data folder” (`manutenzione_apri_cartella_dati`, not on the phone). `Stato` keeps the folder it looked in even when opening failed (`cartella_della_libreria`).",
         { h: "Pragmas and the journal" },
         {
           ol: [
@@ -63,7 +63,7 @@
     },
     {
       id: "schema",
-      title: "The schema (version 41)",
+      title: "The schema (version 42)",
       src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql", "core/rymembra-app/src/db/schema/035_insieme.sql", "core/rymembra-app/src/db/schema/036_nuvola.sql", "core/rymembra-app/src/db/schema/037_nuvola_app.sql"],
       body: [
         "Times are milliseconds since the epoch, durations milliseconds. There are no views. The central table is `tracks`; almost everything else hangs off `tracks.id` (with `ON DELETE CASCADE`) or off a stable key.",
@@ -84,11 +84,13 @@
               ["`enrich_status`, `enrich_attempted_at`, `enrich_source`, `enrich_confidence`", "Enrichment state — see [Enrichment](#enrich)"],
               ["`source`, `meta_salute`, `meta_origine`, `meta_problemi`", "Origin of the row and provenance of each field"],
               ["`source_service`, `fonte_url`, `fonte_pagina`, `licenza`, `disponibilita`", "Catalog streams only"],
+              ["`ordine_titolo`, `ordine_artista`, `ordine_album`", "Sort keys (migration 042): the names through `keys::sort_name`, no accents, no leading article"],
             ],
           },
         },
         "Triggers on `tracks`: the three `tracks_fts_*` keep the FTS index current; `statistiche_restano_orfane` / `correzioni_restano_orfane` (BEFORE DELETE) and `statistiche_tornano` / `correzioni_tornano` (AFTER INSERT) park and restore statistics and corrections by `content_key` for 90 days — see [Removal](#removal); `lyrics_segue_track_key` moves lyrics when the key changes; the three `generazione_dopo_*` write a new `random()` into `libreria_stato.generazione` on every write.",
         "Migration 041 adds two partial indexes, `idx_tracks_mb_recording` on `tracks(mb_recording_id)` and `idx_artists_mb` on `artists(mb_artist_id)` (both `WHERE … IS NOT NULL`): the ListenBrainz neighbours are written with one `INSERT … SELECT` per neighbour inside a transaction holding the library lock, and without them each one read the whole table.",
+        "Migration 042 adds `ordine_titolo`, `ordine_artista` and `ordine_album` with two indexes shaped like the Tracks orders, `idx_tracks_scaffale_per_nome` (artist, album, disc, track, title) and `idx_tracks_titolo_per_nome` (title, artist), so Tracks by shelf and by title sort like Artists and Albums and still read a page from an index. The keys are computed in Rust (`library::riempi_le_chiavi_d_ordine`): a new row starts with NULL keys, and the trigger `chiavi_d_ordine_da_rifare` sets them back to NULL when title, artist or album change, from any writer; the NULL ones are filled, through the title index, inside the writing transaction: `Toccati::segna_brani` (which every transaction writing tracks calls before committing), every aggregates rebuild, and the first open after a migration. No trigger or generated column calls the function, so a connection without it — an integrity check, an external tool — can still write `tracks`. The old `idx_tracks_scaffale`/`idx_tracks_titolo` stay, unused.",
         { h: "Everything else" },
         {
           table: {
@@ -128,7 +130,7 @@
       title: "Migrations and the pre-migration copy",
       src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
-        "`MIGRATIONS` is an ordered list of 41 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
+        "`MIGRATIONS` is an ordered list of 42 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
         "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },

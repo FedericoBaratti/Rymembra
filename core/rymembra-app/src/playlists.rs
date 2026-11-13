@@ -1625,6 +1625,9 @@ mod prove {
                         (4, 'd.mp3', 'k4', 'Quattro','Art', 'Al', 4000, 1, 1, 1);",
             )
             .expect("brani");
+        // Le chiavi d'ordine per nome (042), come le lascia la ricostruzione
+        // che segue ogni scrittura vera dei brani.
+        crate::library::riempi_le_chiavi_d_ordine(&connection).expect("chiavi d'ordine");
         connection
     }
 

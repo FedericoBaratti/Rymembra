@@ -222,7 +222,8 @@ const ORDINE: &str = "rymembra_ordine";
 /// per riga e ordina le chiavi, una collazione la richiamerebbe a ogni
 /// confronto. Il prezzo è che nessun indice serve l'ordinamento, e ogni pagina
 /// ordina la tabella in un B-tree temporaneo. Per gli album — un ordine di
-/// grandezza meno dei brani — è un prezzo che si paga; per i brani no, vedi
+/// grandezza meno dei brani — è un prezzo che si paga; i brani invece hanno la
+/// chiave scritta in tre colonne con i loro indici (migrazione 042), vedi
 /// [`TrackOrder::sql`].
 ///
 /// # Perché qui e non all'apertura del database
@@ -269,17 +270,18 @@ impl TrackOrder {
     /// che arrivano da fuori: un ordinamento scelto dall'interfaccia non deve
     /// poter diventare un'iniezione.
     ///
-    /// Scaffale e Titolo restano su `NOCASE`, e non seguono ancora la chiave
-    /// degli Artisti come gli Album (D-104): li servono `idx_tracks_scaffale` e
-    /// `idx_tracks_titolo`, e con [`assicura_ordine`] ogni pagina ordinava tutta
-    /// la libreria — su cinquantamila brani, in debug, la prima pagina per
-    /// scaffale passava da 1,4 a 1.210 ms. Per farlo bene ci vuole la chiave
-    /// scritta in una colonna, con il suo indice: una migrazione.
+    /// Scaffale e Titolo ordinano con la chiave degli Artisti e degli Album —
+    /// senza accenti, senza l'articolo in testa (D-104) — scritta nelle colonne
+    /// `ordine_*` della migrazione 042 e servita dai suoi due indici: una
+    /// pagina scorre l'indice e non ordina la libreria. L'identificativo in coda
+    /// perché due nomi diversi possono dare la stessa chiave, e una pagina dopo
+    /// l'altra deve restare lo stesso elenco; nell'indice c'è già, in fondo a
+    /// ogni voce.
     pub(super) const fn sql(self) -> &'static str {
         match self {
             Self::Shelf => {
-                "t.artist COLLATE NOCASE, t.album COLLATE NOCASE,
-                 t.disc_number, t.track_number, t.title COLLATE NOCASE"
+                "t.ordine_artista, t.ordine_album,
+                 t.disc_number, t.track_number, t.ordine_titolo, t.id"
             }
             // A parità d'ingresso l'ordine del disco, non l'identificativo: una
             // scansione scrive un lotto intero con lo stesso istante, e con
@@ -301,7 +303,7 @@ impl TrackOrder {
             Self::RecentlyPlayed => {
                 "t.last_played_at IS NULL, t.last_played_at DESC, t.title COLLATE NOCASE"
             }
-            Self::Title => "t.title COLLATE NOCASE, t.artist COLLATE NOCASE",
+            Self::Title => "t.ordine_titolo, t.ordine_artista, t.id",
         }
     }
 }
