@@ -397,6 +397,23 @@ migrations, is named under Database, with what going back costs.
   browser’s shortcuts — F5, Ctrl+R, Ctrl+P, Ctrl+S, Ctrl+F, F3… — no longer
   reload, print, save or search the page. Text fields keep Cut, Copy and
   Paste, and Rymembra’s own shortcuts are unchanged.
+- **The window no longer waits for the library.** The library opens in the
+  background, and a migration with it: the window appears at once and says
+  “Opening the library…” or, when the library has to be updated, “Updating the
+  library…”, with the name of the copy made first
+  (`rymembra.db.schema-NNN.bak`) and a note that on a large library it can
+  take a few minutes. Before, nothing appeared until the library was open, so
+  a long update ran invisibly, and opening Rymembra a second time meanwhile
+  hung.
+- **The analysis after a scan stays out of your way.** The fingerprint and
+  loudness passes run in Windows background mode — lower processor, disk and
+  memory priority, so a program in the foreground gets the processor first —
+  and on battery they use a single thread, where they used three
+  (fingerprints) and two (loudness) and kept two or three cores busy for as
+  long as the analysis lasted. The work is the same and takes longer on
+  battery; the player’s own audio and decoding threads are never put in
+  background mode. Elsewhere than Windows the battery is not known, and the
+  passes go as they did.
 
 ### Changed — Listen together
 
@@ -473,7 +490,10 @@ migrations, is named under Database, with what going back costs.
 - **A `503` with `Retry-After` is waited for as asked.** It becomes the new
   `net.unavailable`, which carries the wait, and every retry — the network
   layer's and the account thread's pause — honours it, instead of doubling
-  from one second. A `503` without the header stays `net.http`.
+  from one second. A `503` without the header stays `net.http`. A wait of
+  more than 30 seconds is not cut to 30 and retried — which earned another
+  `429` — but reported at once, with its wait inside the error, for whoever
+  can afford to wait (the account’s thread, the scan) to honor in full.
 - **WebDAV follows redirects** for a track's bytes: up to five, `https`
   only. The password follows a redirect only while it stays on the same
   server (scheme, host and port: `Rete::con_permesso_in_casa`); a CDN with a
@@ -640,9 +660,15 @@ are still open, and signing the sync documents is planned work
 - **Only the chosen folders are kept.** The change feeds of OneDrive, Google
   Drive and Dropbox cover the whole drive, and every change anywhere in it was
   written to the database and never removed; those rows go at the account’s
-  next pass. The log no longer names cloud folders, and the WebDAV password,
-  Dropbox temporary links and Drive upload sessions no longer appear in debug
-  output or errors.
+  next pass, or when Rymembra starts for an account that is waiting to be
+  reconnected, which has no pass of its own. The log no longer names cloud
+  folders, and the WebDAV password, Dropbox temporary links and Drive upload
+  sessions no longer appear in debug output or errors.
+- **A connected account with no folder chosen contacts nothing.** Its pass
+  asks the service no question — no change check, no listing — until you add
+  a folder, which wakes it at once; what the mirror still held of the last
+  folder removed is deleted, and the stale change cursor is forgotten, so the
+  next folder starts from a fresh one.
 
 **Skins and the Skin Studio.**
 
@@ -739,6 +765,17 @@ The rest of what the two reviews fixed, by area.
   is disabled with the reason instead of filling the queue with unreachable
   tracks; in a “Listen together” session without the right to the queue it is
   disabled like “Add to queue”.
+- **Scanning and analysis no longer download “online-only” files.** In a
+  folder kept by the OneDrive, Dropbox or Google Drive app on your PC with
+  its files on demand, a file that exists only as a placeholder was opened to
+  read its tags or to be measured, which made the app download it: a whole
+  library, over a metered connection. A scan — by hand, by folder watching or
+  after a download — and the analysis no longer open such a file. The scan
+  counts them (“N online-only files not downloaded”), does not flag them as
+  unreadable or remember them, so the next scan reads them once they are on
+  the PC, and a folder holding some removes no track in that pass, since the
+  file may be a track that was moved. The analysis skips them and measures
+  them when they are there. Playing a track still downloads it.
 - **The first scan shows itself**: library counts, the Home and the welcome
   screen’s “Listen” update while the folder is being read, instead of staying
   at zero until the end, and a folder picked by hand on the first-run screen
@@ -750,12 +787,18 @@ The rest of what the two reviews fixed, by area.
   trigger this). A scan no longer writes a track back with the file and tags
   it had planned on if another change moved that track or reused its number in
   the meantime: the track is skipped, and the next scan looks at it again.
-- **Albums.** A compilation with no album artist shows “Various artists”, not
-  the guest with the shortest name. The album grid sorts like Artists, here
-  and in Browse: accents and a leading article are ignored (“Édith Piaf” under
-  E, “The Beatles” under B), and a leading “I” is an article only in Italian
-  names — “I Cani” under C, “I Prevail” under I. A tag year of “0000” is no
-  year: no “0” under the cover, and the album no longer sorts first.
+- **Albums and tracks.** A compilation with no album artist shows “Various
+  artists”, not the guest with the shortest name. The album grid sorts like
+  Artists, here and in Browse: accents and a leading article are ignored
+  (“Édith Piaf” under E, “The Beatles” under B), and a leading “I” is an
+  article only in Italian names — “I Cani” under C, “I Prevail” under I. The
+  Tracks list sorts the same way, by title and by shelf order (artist, album,
+  disc, track), here and in Browse from another device: “È sera” and “Ça plane
+  pour moi” no longer come after Z, at the same speed as before (this needed
+  migration 042, see Database). Smart playlists ordered by shelf follow that
+  order, and “recently added” ones keep disc order on ties. A tag year of
+  “0000” is no year: no “0” under the cover, and the album no longer sorts
+  first.
 - **On first launch “Play” no longer plays the library backwards**: tracks
   added in the same instant keep album, disc and track order in “Recently
   added”, the Tracks view and Browse from another device.
@@ -789,8 +832,10 @@ The rest of what the two reviews fixed, by area.
   no longer pulls the focus into the queue later. Rows still loading show a
   placeholder instead of “track no longer in library · id 12345”; tracks that
   left the library are removed from the queue (outside a “Listen together”
-  session), and a failed read is retried. Screen readers hear each row’s real
-  position in the whole queue.
+  session), and a failed read is retried. The tracks that leave it through
+  the “Remove” you confirm after a scan, and through folder watching, leave
+  the queue too, without stopping the one that is playing. Screen readers
+  hear each row’s real position in the whole queue.
 - **Reordering without dragging.** Queue rows and the rows of a manual
   playlist have “Move up”, “Move down” and “Move to top” in their menu (right
   click, or ⋮ on the phone); in the queue “to top” means right after the
@@ -847,6 +892,12 @@ The rest of what the two reviews fixed, by area.
 - When the audio engine cannot start, the notice says what to check — an
   active sound card, or on the phone a free audio output — instead of a
   technical cause in Italian.
+- **A slow audio output no longer holds the window up.** Opening the output
+  used to happen before the window existed: Bluetooth headphones still
+  connecting or a USB DAC restarting could delay it by up to 20 seconds, and
+  on the phone risk an “app not responding”. The output now opens in the
+  background, with yesterday’s queue put back as before; if it cannot open,
+  the error band says so.
 
 **Listen together.**
 
@@ -957,7 +1008,9 @@ The rest of what the two reviews fixed, by area.
   account already has: only listens added since are queued.
 - Errors in the import dialogs are announced to screen readers, and while a
   Spotify archive is being written the window’s × closes the window instead of
-  doing nothing.
+  doing nothing. Importing from a link, the button says “Importing…” only
+  while it writes, “Reading…” while the link is read again and “Calculating…”
+  while the plan is recomputed.
 
 **Explore, catalogs and metadata.**
 
@@ -998,12 +1051,22 @@ The rest of what the two reviews fixed, by area.
   the enrichment” asks first, and afterwards says how many tracks went back to
   their files’ tags and how many files could not be read (a sleeping NAS,
   say).
+- **A streamed Internet Archive or Audius track recovers when its storage
+  node stops answering.** The node the first redirect led to is remembered for
+  the track, and a node that went down halfway, or an Audius signature that
+  expired during a long pause, failed the track for good; now the remembered
+  node is forgotten at the first failure that is not a cancel, and the
+  original address — which redirects to a live node — is asked once.
 
 **Cloud folders.**
 
 - **WebDAV listings can no longer run forever** on a server that lists an
   ancestor or loops through symbolic links; a cloud folder moved into a chosen
-  folder is listed at once instead of staying empty.
+  folder is listed at once instead of staying empty, and a crash right after
+  the move no longer leaves it empty until the next full listing: the
+  account’s folders are marked incomplete in the same transaction that records
+  the change, and complete again only with the new cursor, so after a crash
+  the next pass lists them in full.
 
 **Skins.**
 
@@ -1050,8 +1113,11 @@ The rest of what the two reviews fixed, by area.
   snapshot, which brings them back.
 - Code typed in a part’s Code tab is applied when you leave the field or
   switch part, tab or theme; code that isn’t valid JSON is kept until you come
-  back, and leaving the Studio asks first. Closing Rymembra with the title
-  bar’s × waits for the Studio to save your last edits.
+  back, and leaving the Studio asks first. Closing Rymembra waits for the
+  Studio to save your last edits — with the title bar’s ×, and also with
+  Alt+F4, the taskbar’s “Close window” and “Quit” in the tray — for a few
+  seconds at most if the page does not answer. Without the Studio open
+  nothing waits.
 - Choosing or creating another skin during “Try on the app” ends the trial
   with a notice, and “Open in the Studio” on another skin really opens it.
   Double clicks on “Try on the app”, “Save and use”, “Export” and “Keep it” no
@@ -1070,9 +1136,28 @@ The rest of what the two reviews fixed, by area.
   canvas no longer redraws the whole preview at every validation when the
   layout has not changed, and its Folders page no longer probes your real
   drives or reads your saved panel state.
+- **The assistant’s requests have limits, and its errors say what is wrong.**
+  Every request carries a `max_tokens` ceiling: 4096, or what the profile’s
+  “Longest reply, in tokens” says (64 to 262,144; a value outside is refused,
+  not trimmed). A reply stops at 4 MiB of text, or at 64 MiB read from the
+  network, and keeps what has arrived, but a half-finished block of changes is
+  not applied; a service that goes quiet for two minutes after it began
+  answering ends the turn as a timeout, and an endpoint that sends one huge
+  line is rejected at once — before, the only limit was ten minutes. A stream
+  cut off midway is reported as a timeout, not as “the server replied with an
+  error”. A custom profile whose service wants `max_completion_tokens`
+  (OpenAI’s reasoning models) keeps working: the request is repeated once
+  under that name. And the errors name the cause — a missing key, a key
+  written for another address, an incomplete profile, the limit of 16
+  profiles — instead of “No model is configured”.
 
 **Settings.**
 
+- *Folders and scanning* checks the watched folders when its tab opens and
+  marks one that is not responding (“Not responding”). The red
+  “This track’s file cannot be reached” banner, born when a folder was
+  unplugged, now goes away by itself once every folder responds again — after
+  “Re-check” on the Folders page, or after that tab’s own check.
 - If the lyrics status cannot be read, its card says so with “Try again”
   instead of leaving “Fill the library” off for good. The import card shows
   why “Accept different recordings” did not change, and no longer shows it on
@@ -1124,9 +1209,26 @@ The rest of what the two reviews fixed, by area.
 - **Screen readers.** Live announcements are no longer silenced while a dialog
   is open; the track that starts playing is announced, automatic advances
   included, and so are retryable warnings and “sound moved to another output”.
-  The first-run screen and the phone’s menu sheet make the rest of the app
-  inert; the content area is a main landmark; opening an album or an artist
-  moves the focus to its title, and closing it returns the focus to the card.
+  The first-run screen, the phone’s menu sheet, the guided tour, the
+  equalizer panel and the “Listen together” panel of the player bar make the
+  rest of the app inert; the content area is a main landmark, and on a computer
+  a “Skip to content” button — the window’s first control, shown only while it
+  has the focus — moves the focus to it, past the whole navigation; opening an
+  album or an artist moves the focus to its title, and closing it returns the
+  focus to the card.
+- **Notices and error banners no longer push the page down.** On a computer
+  they float in the stack at the bottom right, above the player, on a solid
+  background; there is one copy at a time (full screen, the first-run screen
+  and the Studio show their own), and on the first-run screen they sit at the
+  top, under the title bar, so the buttons no longer move while you reach for
+  them. The phone is as it was. Jumping to a far row of a list no longer
+  leaves it under the sticky notices, the rows of the queue that are still
+  loading show placeholders of the right height, and “Re-check” on the Folders
+  page no longer sits glued to its text.
+- On the guided tour’s “Full screen” step the bubble no longer covers the
+  lyrics and spectrum buttons it describes: it tries the top center, then the
+  top corners, then the bottom, and takes the first place that leaves them
+  free.
 - **Buttons.** The heart and mute buttons have a fixed name with their pressed
   state, and every column header of a track list has a name. Transport buttons
   disabled in a session stay focusable and say why, and buttons and switches
@@ -1222,11 +1324,24 @@ The rest of what the two reviews fixed, by area.
   `avvio.log`.
 - A missing or failing update download (HTTP 404, 429, 5xx) is no longer
   reported as “No internet connection”, and its progress bar is visible again.
+  A release the update server cannot find, or one that does not include the
+  update, is no longer reported as “the service’s reply does not have the
+  expected shape”: the message says the server answered, that the published
+  release can’t be found or doesn’t include the update, and that it isn’t your
+  connection (`net.releaseMissing`).
   Update notes list the Security sections first, skip “Known limits”, and end
   with “… and N more in the changelog.” in English.
 
 **Installer, website and documents.**
 
+- **The license, the third-party notices, the privacy policy, the terms and
+  the font license can be read offline.** *Settings › Updates › Documents*
+  opens each in a small window from the copy that travels with the app — next
+  to the executable, in the installer and in the Store package; in
+  `assets/legale/` of the APK — and “Open the latest version online” opens the
+  up-to-date one in the browser. Where the copy is not there, the website
+  opens as before. The font license (SIL OFL), which the notices name without
+  reproducing, is the fifth.
 - The installer and the uninstaller speak Italian on an Italian Windows and
   English elsewhere, and their messages about Aether say it is Rymembra’s
   previous name.
@@ -1254,6 +1369,40 @@ The rest of what the two reviews fixed, by area.
   bytes from one point of the track in place of another. The old index is
   now deleted first; a crash in between leaves a file no index names, which
   the next start throws away.
+- **A file changed on the service while its copy is being made is no longer
+  stored as a mix of two versions.** WebDAV sends `If-Match` with the file’s
+  strong ETag, and a `412` becomes `cloud.fileChanged`; Dropbox compares the
+  `content_hash` and `rev` it knew and then asks for the link tied to
+  `rev:<rev>`, so a track takes two `get_temporary_link` requests. Playback
+  then stops with “The file changed on the service while it was playing…”, and
+  the library picks the new version up at the next check. OneDrive and Google
+  Drive requests are not tied to a version yet.
+- **Two Rymembra processes on the same data folder no longer delete each
+  other’s cloud cache.** A lock on the cache folder (the `blocco` file) goes
+  to the first; the second runs with the cache off, leaves its files alone,
+  and says so in the log. Cache indexes written by 3.2.0 are discarded once,
+  with their copy, so a copy that a 3.2.0 crash had mixed is downloaded again.
+- **A WebDAV server that ignores `Range` no longer costs shifted bytes or
+  whole downloads.** A read-ahead cut short by a seek left the in-order read
+  behind by the bytes it had already taken, so the next piece arrived
+  shifted — and was cached that way; every block is now counted as it
+  arrives. Reading a file’s tags there no longer reads and throws away whole
+  files to reach the end: a jump of more than 8 MiB is refused
+  (`cloud.rangeUnsupported`), so the trailing ID3v1 or APE tag of a large
+  file is skipped.
+- **A `206` answer that starts at another byte than the one asked for is
+  refused** (`download.badResponse`), and a file whose size the service does
+  not declare — a WebDAV server without `getcontentlength`, a OneDrive item
+  without `size` — is no longer taken for an empty one.
+- **A server certificate the system does not recognize says so.** A home NAS
+  with its factory certificate is still refused, and now the message says why
+  (`net.untrustedCertificate`) and the way out: a recognized certificate
+  (Let’s Encrypt, or your NAS maker’s service), or adding the NAS as a
+  network folder instead.
+- **“Reconnect” with another account is refused**, naming both accounts
+  (“You signed in as … not as …: nothing was changed”). Cancelling a cloud
+  connection no longer saves the account or its password, and a new account
+  cancelled midway takes its password back out of the keychain.
 
 ### Fixed — the phone
 
@@ -1395,6 +1544,12 @@ The rest of what the two reviews fixed, by area.
 - **Gradle 9.8.2** (from 9.6.1, affected by GHSA-xwqc-3h47-hg64,
   GHSA-mvvg-497x-hmj8 and GHSA-j5m7-59rp-24f5), with the distribution's
   SHA-256 checked by the wrapper; vite 7.3.8.
+- **The release workflow checks the APK’s Android Auto icons.**
+  `strumenti/apk.js controlla` runs `aapt2 dump resources` and stops the
+  release if one of the project’s `auto_*.xml` drawables is missing from the
+  resource table: Android Auto asks for them by name, and R8’s resource
+  shrinking had removed all of them in a test release (`res/raw/keep.xml`
+  keeps them).
 - **Releases start from the tag**, a manual run from a branch stops at once,
   and a release already published is never uploaded to again. The
   `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
@@ -1492,8 +1647,8 @@ delivered; the “Listen together” addresses come back at the next connection.
 
 ### Known limits
 
-See README, «Known limits and planned work» → Android, and → «Your devices
-over the internet».
+See README, «Known limits and planned work» → Android, → «Cloud folders»,
+→ «Your devices over the internet» and → «The window’s engine on Windows».
 
 ## [3.2.0] — 2026-10-27
 
