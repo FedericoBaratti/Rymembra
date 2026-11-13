@@ -443,7 +443,7 @@
   "errors.skin.layoutIncomplete": "This skin does not declare every zone needed to draw the window. The Studio lists which ones are missing.",
   "errors.skin.layoutIncomplete.telefono": "This skin does not declare every zone needed to draw the window. The Studio on a computer lists which ones are missing.",
   "errors.skin.unknownEffect": "This skin asks for an effect this version of Rymembra does not know. Update the application.",
-  "errors.skin.assetRejected": "A file inside this skin was rejected: skins may contain only images, fonts and text.",
+  "errors.skin.assetRejected": "A file inside this skin was rejected: skins may contain only PNG, JPEG or WebP images (up to 4096×4096 pixels, with the size declared in the header), WOFF2 fonts and text. The log says which one.",
   "errors.skin.tooLarge": "This package is too large. Skins stay under the limit because a skin is not a photo album.",
   "errors.spotify.archiveUnreadable": "This file will not open as an archive: it may have been downloaded halfway. Download it again from Spotify.",
   "errors.spotify.archiveEmpty": "The archive opens but holds nothing Rymembra can read. Spotify sends more than one: look for the one containing “Playlist1.json” or “Streaming_History_Audio”.",

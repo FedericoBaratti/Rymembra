@@ -257,3 +257,33 @@ test("«nessun modello» nomina i fornitori come le impostazioni, e dice dove sc
     assert.ok(testo.includes(d["settings.models.title"] ?? "?"), `${lingua}: la scheda dei modelli`);
   }
 });
+
+test("la frase di «file rifiutato» dice i limiti veri delle immagini e dei tipi (R10 A, R17-20)", () => {
+  // Il nome e la misura del file stanno nel diario (`with_detail`), non più sotto la frase: la frase
+  // non può dire «solo immagini» a chi ha un'immagine troppo grande o senza misura dichiarata.
+  const pacchetto = leggi("../../../core/rymembra-skin/src/package.rs");
+  const lato = /pub const MAX_IMAGE_SIDE: u64 = (\d+);/.exec(pacchetto)?.[1];
+  assert.ok(lato !== undefined, "MAX_IMAGE_SIDE: la prova va aggiornata");
+  const tipi = [...pacchetto.matchAll(/estensione: "(\w+)",/g)].map((m) => m[1]);
+  assert.deepEqual(tipi, ["png", "jpg", "webp", "woff2"], "i tipi ammessi sono cambiati: la frase va riscritta");
+  for (const [lingua, d] of LINGUE) {
+    const testo = d["errors.skin.assetRejected"] ?? "";
+    assert.ok(testo.includes(`${lato}×${lato}`), `${lingua}: il limite dei pixel`);
+    for (const nome of ["PNG", "JPEG", "WebP", "WOFF2"]) assert.ok(testo.includes(nome), `${lingua}: ${nome}`);
+  }
+});
+
+test("le righe di stato sono nomi di azione, senza narratore (D-82)", () => {
+  // «Salvo…», «Cerco il testo…», «Sto controllando…»: in prima persona l'app ha una voce che la
+  // decisione non vuole (terza persona, «Rymembra»). «Salvataggio…», «Ricerca del testo…» non ne hanno.
+  // «Cerca» è un imperativo (un tasto), «Cerco» è la voce dell'app; «Aspetto» e «Controllo» sono anche nomi
+  // (la scheda «Aspetto», «Controllo aggiornamenti») e non si giudicano da soli.
+  const IN_PRIMA = /^(Sto|Cerco|Carico|Provo|Salvo|Applico|Scarico|Leggo|Verifico|Sposto|Aggiungo|Mando|Apro|Aggiorno|Elaboro)/i;
+  const trovate: string[] = [];
+  for (const [chiave, testo] of frasi(IT)) {
+    if (IN_PRIMA.test(testo)) trovate.push(`${chiave}: ${testo}`);
+  }
+  assert.deepEqual(trovate, []);
+  assert.equal(IT["rules.saving"], "Salvataggio…");
+  assert.equal(IT["settings.update.checking"], "Controllo in corso…");
+});
