@@ -1049,7 +1049,16 @@ fn applica_ascolti(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError>
         )
         .map_err(|err| db_error("ascolti ricevuti", &err))?;
 
+    // Gli ascolti di un brano che qui non c'è si **tengono** — `sync_ascolti`
+    // è per chiave, e il giorno che la scansione porta il brano la somma lo
+    // raggiunge — ma non sono «brani il cui conteggio è cambiato»: nessun
+    // brano è cambiato. Contarli faceva dire al piano di un profilo «3 brani
+    // con conteggi nuovi» su una libreria vuota (T3-3).
+    let mut ha_il_brano = tx
+        .prepare("SELECT EXISTS(SELECT 1 FROM tracks WHERE track_key = ?1)")
+        .map_err(|err| db_error("ascolti ricevuti", &err))?;
     let mut toccati = 0;
+    let mut scritti = false;
     for (brano, contatore) in &fuso.ascolti {
         let mut cambiato = false;
         for (dispositivo, quanti) in contatore.dispositivi() {
@@ -1061,12 +1070,19 @@ fn applica_ascolti(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError>
                 .map_err(|err| db_error("ascolti ricevuti", &err))?;
             cambiato |= scritte > 0;
         }
-        if cambiato {
+        if !cambiato {
+            continue;
+        }
+        scritti = true;
+        let c_e: bool = ha_il_brano
+            .query_row([brano], |row| row.get(0))
+            .map_err(|err| db_error("ascolti ricevuti", &err))?;
+        if c_e {
             toccati += 1;
         }
     }
 
-    if toccati > 0 {
+    if scritti {
         tx.execute(
             "UPDATE tracks
                 SET play_count = COALESCE((SELECT SUM(a.quanti) FROM sync_ascolti a

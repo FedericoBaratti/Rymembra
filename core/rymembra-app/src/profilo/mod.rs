@@ -448,7 +448,7 @@ pub struct Raccolto {
     pub creato_ms: i64,
 }
 
-/// Legge dal database tutto quel che il profilo porta.
+/// Legge dal database tutto quel che un profilo da portare altrove porta.
 ///
 /// **Sotto il lucchetto**, e in una finestra sola: `allinea`, `contenuto` e la
 /// raccolta della biblioteca devono descrivere la stessa libreria, non tre
@@ -457,6 +457,11 @@ pub struct Raccolto {
 /// `skin` e `bozze` sono le impronte dei pacchetti su disco, e arrivano da
 /// fuori come già fa `sincronia::contenuto`: i pacchetti stanno in una cartella
 /// e questo crate non la apre.
+///
+/// **Scrive l'identità** della libreria se non ne ha una: è il momento in cui
+/// nasce, perché un profilo che esce deve poter dire di quale libreria è. Una
+/// copia di sicurezza non è un profilo che esce, e passa da
+/// [`raccogli_copia`].
 ///
 /// # Errori
 ///
@@ -471,6 +476,48 @@ pub fn raccogli(
     genera_identita: &dyn Fn() -> Result<String, AppError>,
 ) -> Result<Raccolto, AppError> {
     let identita = identita(connection, genera_identita)?;
+    raccogli_con(connection, dispositivo, skin, bozze, adesso_ms, identita)
+}
+
+/// Legge dal database quel che serve a una **copia di sicurezza**.
+///
+/// Una copia è una fotografia, e una fotografia non cambia quel che fotografa:
+/// l'identità non si crea. Una libreria che non ne ha — la reinstallazione, il
+/// secondo computer — la ritrova nel profilo che sta per leggere (vedi
+/// [`esegui`]); se la copia gliene scrivesse una a caso, subito prima, quel
+/// profilo vedrebbe «un'altra libreria» e ne rifiuterebbe la parte di libreria
+/// (T3-1). Il manifesto della copia porta allora un'identità vuota, che è la
+/// verità: quella libreria non ne aveva. [`annulla`] non se ne accorge, perché
+/// butta via la parte di libreria prima di confrontarla.
+///
+/// Per il resto è [`raccogli`]: `allinea` mette le tabelle della sincronia in
+/// pari, ed è la stessa scrittura che l'importazione fa un attimo dopo.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una lettura o l'allineamento falliscono.
+pub fn raccogli_copia(
+    connection: &mut Connection,
+    dispositivo: &str,
+    skin: BTreeMap<String, String>,
+    bozze: BTreeMap<String, String>,
+    adesso_ms: i64,
+) -> Result<Raccolto, AppError> {
+    let identita = settings::read(connection, CHIAVE_IDENTITA)?
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_default();
+    raccogli_con(connection, dispositivo, skin, bozze, adesso_ms, identita)
+}
+
+/// Il corpo di [`raccogli`] e [`raccogli_copia`], con l'identità già decisa.
+fn raccogli_con(
+    connection: &mut Connection,
+    dispositivo: &str,
+    skin: BTreeMap<String, String>,
+    bozze: BTreeMap<String, String>,
+    adesso_ms: i64,
+    identita: String,
+) -> Result<Raccolto, AppError> {
     crate::sincronia::allinea(connection, dispositivo, adesso_ms)?;
 
     let contenuto = crate::sincronia::contenuto(connection, dispositivo, skin, bozze)?;
@@ -1103,6 +1150,50 @@ impl Portati {
     }
 }
 
+/// Quel che il profilo porta e che questa libreria non può attaccare **adesso**,
+/// perché non ha i brani a cui appartiene (T3-3).
+///
+/// Il caso normale è «leggi il profilo, poi scansiona»: a libreria vuota non
+/// c'è un brano a cui dare un voto, un cuore o una riga di cronologia. Il piano
+/// lo dice **prima** di «Applica», col numero, perché dopo — con il file ancora
+/// lì, su una chiavetta — basta scansionare le cartelle e leggere di nuovo il
+/// profilo: i dati ci sono ancora, e lo stesso file li completa.
+///
+/// Contati sul profilo come l'importazione lo leggerebbe — dopo `in_dono`, e
+/// dopo le correzioni, che cambiano la chiave di un brano — e sugli stessi
+/// brani che l'importazione cerca. Sono numeri di **cose**, non di brani:
+/// righe di cronologia, voci di playlist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NonAttaccati {
+    /// Brani, che qui non ci sono, con conteggi d'ascolto.
+    pub ascolti: usize,
+    /// Voti di brani che qui non ci sono.
+    pub voti: usize,
+    /// Preferiti di brani che qui non ci sono.
+    pub preferiti: usize,
+    /// Righe di cronologia di brani che qui non ci sono.
+    pub cronologia: usize,
+    /// Correzioni ai metadati di brani che qui non ci sono.
+    pub correzioni: usize,
+    /// Voci di playlist che nominano brani che qui non ci sono: si lasciano
+    /// fuori, e la lettura dopo la scansione le accoda nell'ordine del profilo.
+    pub playlist: usize,
+}
+
+impl NonAttaccati {
+    /// Il profilo non porta niente che qui manchi di un brano.
+    #[must_use]
+    pub const fn e_vuoto(&self) -> bool {
+        self.ascolti == 0
+            && self.voti == 0
+            && self.preferiti == 0
+            && self.cronologia == 0
+            && self.correzioni == 0
+            && self.playlist == 0
+    }
+}
+
 /// Cosa farebbe l'importazione.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1118,6 +1209,16 @@ pub struct Piano {
     /// brano di là nominano canzoni che qui non ci sono. Preferenze, copertine
     /// e pacchetti skin passano lo stesso, perché non parlano di brani.
     pub identita_diversa: bool,
+    /// La parte di libreria del profilo **non** si è applicata: porta una
+    /// libreria, e il confronto delle identità l'ha rifiutata senza che chi
+    /// importa abbia detto «è la mia» (`unisci_comunque`).
+    ///
+    /// È `identita_diversa` e non è la stessa domanda: quella dice che il
+    /// confronto ha trovato due identità, questa che a causa sua qualcosa non è
+    /// entrato. Serve all'**esito** dell'applicazione: il piano, che gira senza
+    /// copia di sicurezza, può aver promesso il contrario (T3-1), e un esito
+    /// che dice solo «3 impostazioni applicate» nasconde il rifiuto.
+    pub libreria_rifiutata: bool,
     /// Le chiavi che cambierebbero.
     pub cambi: Vec<Cambio>,
     /// Le chiavi del file che questa versione non porta.
@@ -1139,6 +1240,8 @@ pub struct Piano {
     pub brani_gia_presenti: usize,
     /// Quante cose la parte di libreria porterebbe.
     pub portati: Portati,
+    /// Quel che il profilo porta e che qui non ha un brano a cui attaccarsi.
+    pub non_attaccati: NonAttaccati,
     /// Le playlist del profilo entrate **accanto** a una di qui con lo stesso
     /// nome, che è un'altra playlist e non si è toccata (D-11). Contate anche
     /// in [`Portati::playlist`]; qui per nome, perché il piano lo dica.
@@ -1267,6 +1370,10 @@ fn esegui(
         creato_ms: letto.manifesto.creato_ms,
         versione: letto.manifesto.versione,
         identita_diversa,
+        // Lo stesso confronto che decide, più sotto, se la parte di libreria
+        // entra: scritto una volta sola, perché l'esito non dica una cosa e la
+        // scrittura ne faccia un'altra.
+        libreria_rifiutata: identita_diversa && !ambiente.unisci_comunque,
         ..Piano::default()
     };
 
@@ -1399,7 +1506,7 @@ fn esegui(
 
     // ── la libreria, se le due identità si riconoscono — o se chi importa ha
     // detto di procedere lo stesso: vedi `Ambiente::unisci_comunque` ──
-    if !identita_diversa || ambiente.unisci_comunque {
+    if !piano.libreria_rifiutata {
         // Un dono: niente dal futuro, niente fuori scala. Qui, nel corpo che il
         // piano e l'importazione condividono, perché il piano resti quel che
         // l'importazione fa. Vedi [`biblioteca::Biblioteca::in_dono`].
@@ -1409,7 +1516,25 @@ fn esegui(
         // testi di un brano corretto stanno sotto la chiave corretta, e su un
         // computer nuovo nessun brano la porta finché la correzione non è
         // scritta. Vedi il `//!` di `biblioteca`.
-        piano.portati.correzioni = biblioteca::applica_correzioni_in(&tx, &biblioteca)?;
+        let corrette = biblioteca::applica_correzioni_in(&tx, &biblioteca)?;
+        piano.portati.correzioni = corrette.brani;
+
+        // Quel che qui non ha un brano a cui attaccarsi, contato **dopo** le
+        // correzioni — che cambiano la chiave di un brano — e sugli stessi
+        // brani che le scritture qui sotto cercheranno (T3-3).
+        // Solo se il profilo porta una libreria: un v1, o l'annullamento che la
+        // butta via prima di applicare, non hanno niente da cercare.
+        let brani_di_qui = if letto.ha_libreria() {
+            chiavi_dei_brani(&tx)?
+        } else {
+            std::collections::HashSet::new()
+        };
+        piano.non_attaccati.correzioni = corrette.senza_brano;
+        piano.non_attaccati.cronologia = biblioteca
+            .cronologia
+            .iter()
+            .filter(|riga| !brani_di_qui.contains(riga.chiave.as_str()))
+            .count();
 
         if let Some(originale) = &letto.sincronia {
             // Le cartelle sorvegliate del documento sono percorsi di quella
@@ -1421,6 +1546,19 @@ fn esegui(
             // confuso possibile di non funzionare.
             let mut suo = originale.clone();
             suo.content = in_dono(suo.content, ambiente.adesso_ms);
+            // Quel che il documento porta di brani che qui non ci sono: si
+            // conta per il piano, e le playlist si riducono ai brani di qui.
+            conta_i_non_attaccati(
+                &suo.content,
+                &biblioteca,
+                &brani_di_qui,
+                &mut piano.non_attaccati,
+            );
+            solo_i_brani_di_qui(
+                &mut suo.content,
+                &brani_di_qui,
+                crate::sincronia::nome_delle_aggiunte(ambiente.dispositivo),
+            );
             if !ambiente.rimappature.is_empty() {
                 suo.content.cartelle = std::mem::take(&mut suo.content.cartelle)
                     .into_iter()
@@ -1584,6 +1722,128 @@ fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync
     contenuto.preferiti.retain(|_, stato| stato.on);
     contenuto.voti.retain(|_, voto| voto.v > 0);
     contenuto
+}
+
+/// Le chiavi di tutti i brani di questa libreria.
+///
+/// Una volta per piano o per importazione, **dopo** le correzioni: una
+/// correzione cambia la `track_key` di un brano, e quel che il profilo porta
+/// sta sotto la chiave corretta. È l'unico posto che dice «qui questo brano
+/// c'è» — per contare quel che non si può attaccare e per tenere fuori dalle
+/// playlist i brani che mancano (T3-3).
+fn chiavi_dei_brani(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    let mut istruzione = tx
+        .prepare("SELECT DISTINCT track_key FROM tracks")
+        .map_err(|err| db_error("chiavi dei brani di qui", &err))?;
+    let righe = istruzione
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(|err| db_error("chiavi dei brani di qui", &err))?;
+    righe
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error("chiavi dei brani di qui", &err))
+}
+
+/// Conta, nel documento di sincronia del profilo, quel che nomina brani che
+/// qui non ci sono: ascolti (per brano, di qualunque dispositivo), voti,
+/// preferiti e voci di playlist. Cronologia e correzioni sono della biblioteca
+/// e le conta il chiamante.
+///
+/// Il documento è già passato da [`in_dono`]: vale quel che l'importazione
+/// scriverebbe — un voto cancellato o un cuore tolto non sono «dati non
+/// attaccabili», perché non sono dati.
+fn conta_i_non_attaccati(
+    contenuto: &rymembra_sync::Contenuto,
+    biblioteca: &biblioteca::Biblioteca,
+    brani_di_qui: &std::collections::HashSet<String>,
+    conti: &mut NonAttaccati,
+) {
+    let manca = |chiave: &str| !brani_di_qui.contains(chiave);
+
+    // Per brano e non per riga: «3 brani con conteggi d'ascolto», come dice il
+    // piano per quelli che arrivano.
+    let mut con_ascolti: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (chiave, quanti) in contenuto.ascolti.iter().chain(&contenuto.ereditati) {
+        if *quanti > 0 && manca(chiave) {
+            con_ascolti.insert(chiave);
+        }
+    }
+    for (chiave, per_dispositivo) in &biblioteca.ascolti_altrui {
+        let di_un_altro = per_dispositivo.iter().any(|(chi, quanti)| {
+            *quanti > 0 && !chi.is_empty() && chi != rymembra_sync::contatore::IMPORTAZIONE
+        });
+        if di_un_altro && manca(chiave) {
+            con_ascolti.insert(chiave);
+        }
+    }
+    conti.ascolti = con_ascolti.len();
+    conti.voti = contenuto.voti.keys().filter(|chiave| manca(chiave)).count();
+    conti.preferiti = contenuto
+        .preferiti
+        .keys()
+        .filter(|chiave| manca(chiave))
+        .count();
+    conti.playlist = contenuto
+        .playlist
+        .values()
+        .filter(|playlist| !playlist.smart)
+        .map(|playlist| {
+            playlist
+                .sequenza
+                .ordine()
+                .into_iter()
+                .filter(|brano| manca(brano))
+                .count()
+        })
+        .sum();
+}
+
+/// Riduce le playlist del profilo ai brani che questa libreria ha.
+///
+/// Una voce che nomina un brano di cui qui non c'è la riga non entra nella
+/// playlist, **nemmeno nella sua sequenza**. La sequenza è lo stato che la
+/// sincronia tiene e allinea a `playlist_tracks` a ogni passata: una voce che
+/// c'è lì e non c'è nella playlist è, per `allinea_sequenze`, un brano tolto
+/// qui apposta — e una lapide fa dire a `dono_nelle_playlist` che «un brano
+/// tolto qui non torna». Era questo che lasciava le playlist a zero brani anche
+/// rileggendo il profilo dopo la scansione (T3-3): la prima lettura scriveva
+/// voci per brani che non c'erano, il primo allineamento le sotterrava, la
+/// lettura dopo non le riaccodava. Così invece la prima lettura crea la
+/// playlist con quel che c'è, e ogni lettura successiva accoda in fondo, una
+/// volta sola, quel che nel frattempo è arrivato — nell'ordine del profilo.
+///
+/// Una playlist che non perde niente resta com'è, con le sue identità: sono
+/// quelle che due dispositivi sincronizzati riconoscono come lo stesso
+/// elemento. Una che perde qualcosa si rifà come catena col nome di questo
+/// dispositivo — lo stesso che `dono_nelle_playlist` dà a quel che accoda — e
+/// perde le identità del profilo: i numeri di una sequenza devono restare sotto
+/// il conto degli elementi, e togliere elementi senza rinumerare li farebbe
+/// scartare alla lettura dopo.
+fn solo_i_brani_di_qui(
+    contenuto: &mut rymembra_sync::Contenuto,
+    brani_di_qui: &std::collections::HashSet<String>,
+    nome: &str,
+) {
+    for playlist in contenuto.playlist.values_mut() {
+        if playlist.smart {
+            continue;
+        }
+        let (tutti, tenuti): (usize, Vec<String>) = {
+            let ordine = playlist.sequenza.ordine();
+            (
+                ordine.len(),
+                ordine
+                    .into_iter()
+                    .filter(|brano| brani_di_qui.contains(*brano))
+                    .map(str::to_owned)
+                    .collect(),
+            )
+        };
+        if tenuti.len() < tutti {
+            playlist.sequenza = rymembra_sync::Sequenza::dalla_lista(nome, &tenuti);
+        }
+    }
 }
 
 /// Le playlist che il profilo e questa libreria hanno tutte e due, ridotte a

@@ -587,16 +587,14 @@ fn copia_di_sicurezza(app: &AppHandle) -> Result<(), AppError> {
     let (data_dir, dispositivo) = preludio(&stato)?;
     let (skin, bozze, percorsi_skin, percorsi_bozze) = pacchetti(&data_dir);
 
+    // `raccogli_copia` e non `raccogli`: una copia è una fotografia, e non crea
+    // l'identità della libreria che fotografa. Era `raccogli` — che la scrive
+    // — e una libreria nuova se la trovava addosso un attimo prima di leggere
+    // il profilo, che ne vedeva «un'altra» e rifiutava la parte di libreria
+    // (T3-1). Il piano, che gira senza copia, prometteva tutto.
     let adesso = adesso_ms();
     let raccolto = con_libreria(&stato, |libreria| {
-        profilo::raccogli(
-            &mut libreria.connection,
-            &dispositivo,
-            skin,
-            bozze,
-            adesso,
-            &genera_identita,
-        )
+        profilo::raccogli_copia(&mut libreria.connection, &dispositivo, skin, bozze, adesso)
     })?;
 
     let store = stato.copertine()?;
@@ -775,5 +773,32 @@ mod prove {
                 "{id}"
             );
         }
+    }
+
+    /// Il corpo di una funzione di questo file, dalla firma alla graffa che
+    /// la chiude a inizio riga.
+    fn corpo_di<'a>(sorgente: &'a str, firma: &str) -> &'a str {
+        let inizio = sorgente
+            .find(firma)
+            .unwrap_or_else(|| panic!("la funzione «{firma}» non c'è più"));
+        let resto = &sorgente[inizio..];
+        let fine = resto.find("\n}\n").expect("la fine della funzione");
+        &resto[..fine]
+    }
+
+    #[test]
+    fn la_copia_di_sicurezza_non_crea_l_identita_della_libreria() {
+        // T3-1: la copia passa da `raccogli_copia`, che non scrive l'identità.
+        // Con `raccogli` — che la crea — una libreria nuova se la trovava
+        // addosso un attimo prima di leggere il profilo, e ne rifiutava la
+        // parte di libreria. L'esportazione invece la crea, ed è giusto.
+        let sorgente = include_str!("profilo.rs");
+        let copia = corpo_di(sorgente, "fn copia_di_sicurezza(app: &AppHandle)");
+        assert!(copia.contains("profilo::raccogli_copia("), "{copia}");
+        assert!(!copia.contains("genera_identita"), "{copia}");
+        assert!(!copia.contains("profilo::raccogli("), "{copia}");
+        let esporta = corpo_di(sorgente, "fn esporta_ora(app: &AppHandle");
+        assert!(esporta.contains("profilo::raccogli("), "{esporta}");
+        assert!(esporta.contains("&genera_identita"), "{esporta}");
     }
 }
