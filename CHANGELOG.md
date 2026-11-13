@@ -19,8 +19,10 @@ from different files. Independent numbers are chances to diverge; in the old
 tree's `release/` folder there are still `Rymembra Setup 0.9.13.7.26.2.exe` and
 `0.9.14.7.26.2.exe` sitting next to `0.9.14.7.26.3.exe`, which is this problem
 in the form of artifacts. (That tree also had a phone app, which read the
-version to decide whether the protocol was compatible; it has not been
-rewritten yet.)
+version to decide whether the protocol was compatible. The phone app of this
+repository is the same application and carries the same number: what two
+devices need in order to understand each other is decided by the numbers of
+the protocols themselves — the “major” item below — not by this one.)
 
 What increments what:
 
@@ -32,9 +34,12 @@ What increments what:
   what separates this from a major;
 - **major** — an incompatible change to the skin format
   (`SKIN_FORMAT_VERSION`), to the transport protocol
-  (`SKIN_TRANSFER_PROTOCOL`) or, since 3.1.0, to the «Listen together»
-  protocol (`rymembra_insieme::messaggi::VERSIONE`), that is, the three points
-  at which an updated device would stop understanding one that stayed put.
+  (`SKIN_TRANSFER_PROTOCOL`, the old phone app's, which this repository does
+  not have) or, since 3.1.0, to the «Listen together» protocol
+  (`rymembra_insieme::messaggi::VERSIONE`) — and, once it ships, to those of
+  the device link, the `/1` of `rymembra/lontano/1`, `rymembra/associa/1` and
+  `rymembra/insieme/1` — that is, the points at which an updated device would
+  stop understanding one that stayed put.
 
 ### Migrations and the number — amended in 2.3.1
 
@@ -95,8 +100,11 @@ were, not restated.
 **Rymembra on Android.** The same application, from the same code: the
 fifteen core crates build for `aarch64-linux-android` and
 `x86_64-linux-android` unchanged, and the window becomes an Android activity.
-The number will be decided when it ships; nothing outside Rymembra has to keep
-up with a phone that did not exist before.
+It ships as **3.2.1**, a patch by the rules above: the skin format is still 2
+and the «Listen together» protocol still 1, so nothing outside Rymembra has to
+keep up — not with a phone that did not exist before, nor with the device link,
+which is new on both ends. What stops an older copy opening the library, the
+migrations, is named under Database, with what going back costs.
 
 ### New — the phone
 
@@ -1413,7 +1421,7 @@ The rest of what the two reviews fixed, by area.
 
 ### Database
 
-Three migrations, schema 38 → 41, all additive.
+Four migrations, schema 38 → 42, all additive.
 
 - `039_dispositivi` — three tables, none of which travels in a profile, in the
   Drive backup or in sync: `dispositivi` (each linked device: its public key,
@@ -1431,11 +1439,26 @@ Three migrations, schema 38 → 41, all additive.
   query that read the whole table, inside a transaction holding the library
   lock, so a heart, a rating or a playlist edit made during that pass could
   give up as “busy”. No row changes.
+- `042_chiavi_d_ordine` — three columns added at the end of `tracks`
+  (`ordine_titolo`, `ordine_artista`, `ordine_album`: the title, artist and
+  album without accents or a leading article, the way Artists and Albums
+  sort), two indexes shaped like the Tracks orders
+  (`idx_tracks_scaffale_per_nome` and `idx_tracks_titolo_per_nome`) and a
+  trigger, `chiavi_d_ordine_da_rifare`, that clears the keys when a title,
+  artist or album changes. No table is rebuilt and no row changes; the keys
+  are written by Rymembra, not by the migration. Every transaction that
+  writes tracks fills them before it closes, and the open that migrates fills
+  them for the tracks already in the library: 1.7 seconds for 50,000 tracks
+  in a debug build, which is the only build it was measured in. The two
+  indexes of migration 024 (`idx_tracks_scaffale`, `idx_tracks_titolo`) stay,
+  unused, and are still kept up to date at every scan until a later migration
+  removes them.
 
 **Going back.** A version that stops at an earlier migration refuses schema
-41 (`db.versionAhead`). The first way is the copy Rymembra takes before it
-migrates, beside the database: `rymembra.db.schema-040.bak`, or
-`rymembra.db.schema-038.bak` coming from 3.2.0. On the computer, “Go back to
+42 (`db.versionAhead`). The first way is the copy Rymembra takes before it
+migrates, beside the database, named after the schema it holds:
+`rymembra.db.schema-038.bak` coming from 3.2.0, `rymembra.db.schema-041.bak`
+from a build of this release made before 042. On the computer, “Go back to
 the copy from before the update”, in *Settings › Library and data*, puts it
 back: it sets the current library aside as `rymembra.db.messa-da-parte.bak`,
 puts the copy in its place with SQLite’s backup API and closes Rymembra, so
@@ -1447,13 +1470,21 @@ Then copy the `.bak` to `rymembra.db` — copy, not move, so that the `.bak`
 stays as a fallback — and open the previous version, because this one would
 update the copy again at once.
 
-Without the copy, going back to 040 loses only the indexes: `DROP INDEX
-idx_artists_mb; DROP INDEX idx_tracks_mb_recording; PRAGMA user_version =
-40;`. Going back to 3.2.0 (schema 38) by hand takes one block, in this order:
-`DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording; DROP TABLE
+Without the copy, going back to 041 loses no row, only the sort keys, which
+are made again at the next update: `DROP TRIGGER chiavi_d_ordine_da_rifare;
+DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX
+idx_tracks_scaffale_per_nome; ALTER TABLE tracks DROP COLUMN ordine_album;
+ALTER TABLE tracks DROP COLUMN ordine_artista; ALTER TABLE tracks DROP COLUMN
+ordine_titolo; PRAGMA user_version = 41;`. `DROP COLUMN` rewrites the tracks
+table, so on a large library it takes a few seconds and needs room for a
+second copy of the table while it works, and by hand it needs SQLite 3.35 or
+later. Going back to 3.2.0 (schema 38) by hand takes one block, in this
+order: the statements above up to the last `DROP COLUMN`, then `DROP INDEX
+idx_artists_mb; DROP INDEX idx_tracks_mb_recording; DROP TABLE
 insieme_indirizzi; DROP TABLE dispositivi_ricevuti; DROP TABLE
 dispositivi_ascolti; DROP TABLE dispositivi; PRAGMA user_version = 38;`.
-The step written at the top of `039_dispositivi.sql`, applied alone, leaves
+The step written at the top of `042_chiavi_d_ordine.sql`, applied alone, only
+reaches 041, and the one at the top of `039_dispositivi.sql` leaves
 `insieme_indirizzi` behind: 3.2.0 opens all the same, but the next upgrade
 stops at 040, which finds it already there. The devices linked over the internet are
 lost (made again with a QR code), and so are their listens not yet
