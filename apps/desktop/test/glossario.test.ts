@@ -1,0 +1,126 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+/*
+ * Un nome solo per ogni cosa (R17).
+ *
+ * Il catalogo delle lingue è scritto in tempi e moduli diversi, e ogni frase è
+ * nata col nome che il suo modulo usava: «tema» per una skin, «portachiavi di
+ * Windows» per Gestione credenziali, «il collegamento via internet attivo» per
+ * l'interruttore «Raggiungibile da internet». Nessun compilatore vede un nome
+ * che non coincide con quello dello schermo, e la persona che segue il rimando
+ * di un errore cerca una parola che non trova. Le prove qui sotto tengono
+ * fermi i nomi decisi (D-79, D-80, D-81, D-82) e i rimandi alle schede.
+ */
+const leggi = (percorso: string) => readFileSync(new URL(percorso, import.meta.url), "utf8");
+type Dizionario = Record<string, string>;
+const IT = JSON.parse(leggi("../src/lingue/it.json")) as Dizionario;
+const EN = JSON.parse(leggi("../src/lingue/en.json")) as Dizionario;
+const LINGUE: [string, Dizionario][] = [
+  ["it", IT],
+  ["en", EN],
+];
+
+/** Le chiavi che si leggono come frase: fuori dai sinonimi della ricerca, che tengono tutte le parole. */
+const frasi = (d: Dizionario) => Object.entries(d).filter(([k]) => !k.endsWith(".syn") && !k.includes(".syn."));
+
+test("«Crea una skin…» crea una skin: «tema» resta per chiaro e scuro (D-80, R17-11)", () => {
+  for (const chiave of ["settings.skin.create", "newtheme.aria", "theme.new.unreadableBase", "tour.step.studio.body"]) {
+    assert.doesNotMatch(IT[chiave] ?? "", /\btema\b/i, `it ${chiave}`);
+    assert.doesNotMatch(EN[chiave] ?? "", /\btheme\b/i, `en ${chiave}`);
+  }
+  assert.equal(IT["settings.skin.create"], "Crea una skin…");
+  assert.equal(EN["settings.skin.create"], "Create a skin…");
+  // Il giro cita il tasto con le sue parole.
+  assert.match(IT["tour.step.studio.body"] ?? "", /«Crea una skin…?»/);
+  assert.match(EN["tour.step.studio.body"] ?? "", /“Create a skin…?”/);
+});
+
+test("il portachiavi del sistema ha un nome solo per piattaforma (R17-12)", () => {
+  for (const [chiave, testo] of frasi(EN)) {
+    assert.doesNotMatch(testo, /Windows keychain|system keychain|credential store|keyring/i, `en ${chiave}`);
+  }
+  for (const [chiave, testo] of frasi(IT)) {
+    assert.doesNotMatch(testo, /portachiavi di Windows|portachiavi del sistema/i, `it ${chiave}`);
+  }
+  // Sul telefono è il portachiavi di Android, e le frasi del computer non lo dicono.
+  for (const chiave of ["errors.insieme.identitaPersa", "errors.lontano.identitaPersa", "folders.add.mega.note"]) {
+    assert.match(IT[chiave] ?? "", /Gestione credenziali di Windows/, `it ${chiave}`);
+    assert.match(EN[chiave] ?? "", /Windows Credential Manager/, `en ${chiave}`);
+    assert.match(IT[`${chiave}.telefono`] ?? "", /Android Keystore/, `it ${chiave}.telefono`);
+    assert.match(EN[`${chiave}.telefono`] ?? "", /Android Keystore/, `en ${chiave}.telefono`);
+  }
+});
+
+test("l'identità persa dice cosa fare, sul computer e sul telefono (R17-20)", () => {
+  for (const chiave of ["errors.insieme.identitaPersa", "errors.lontano.identitaPersa"]) {
+    assert.match(IT[chiave] ?? "", /riavvia Windows/, `it ${chiave}`);
+    assert.match(EN[chiave] ?? "", /restart Windows/, `en ${chiave}`);
+    assert.match(IT[`${chiave}.telefono`] ?? "", /riavvia il telefono/, `it ${chiave}.telefono`);
+    assert.match(EN[`${chiave}.telefono`] ?? "", /restart the phone/, `en ${chiave}.telefono`);
+  }
+});
+
+test("l'interruttore e le schede degli errori si chiamano come sullo schermo (R17-13)", () => {
+  for (const [lingua, d] of LINGUE) {
+    const interruttore = d["settings.devices.reachable"];
+    assert.ok(interruttore !== undefined, lingua);
+    for (const chiave of ["errors.lontano.irraggiungibile", "errors.lontano.spento"]) {
+      assert.ok((d[chiave] ?? "").includes(interruttore), `${lingua} ${chiave} nomina «${interruttore}»`);
+    }
+    // La scheda «Account cloud» e il bottone che la apre.
+    assert.equal(
+      (d["errors.action.cloudAccounts"] ?? "").toLowerCase().endsWith(d["settings.cloudAccounts.title"]?.toLowerCase() ?? "?"),
+      true,
+      `${lingua} errors.action.cloudAccounts`,
+    );
+    // Il diario: la frase cita il tasto che lo apre, sul computer e sul telefono.
+    assert.ok((d["settings.together.unavailable"] ?? "").includes(d["settings.diary.open"] ?? "?"), lingua);
+    assert.ok(
+      (d["settings.together.unavailable.telefono"] ?? "").includes(d["settings.diary.open.telefono"] ?? "?"),
+      `${lingua} .telefono`,
+    );
+    // E il gesto per i dispositivi della sincronia è «accetta», non «accoppia».
+    assert.doesNotMatch(d["errors.sync.remoteCorrupt"] ?? "", /accoppia|pair it again/i, lingua);
+  }
+});
+
+test("un PC associato si dimentica in Dispositivi (R17-8)", () => {
+  for (const [lingua, d] of LINGUE) {
+    for (const chiave of ["together.notice.forgottenBy", "together.notice.forgottenBy.telefono"]) {
+      const testo = d[chiave] ?? "";
+      assert.ok(testo.includes(` › ${d["settings.section.dispositivi"]}`), `${lingua} ${chiave}`);
+      assert.doesNotMatch(testo, /Ascolta insieme ›|Listen together ›/, `${lingua} ${chiave}`);
+    }
+  }
+});
+
+/** Frasi che mandano alle impostazioni del sistema, non a quelle di Rymembra. */
+const DI_ANDROID = ["errors.net.localNetwork"];
+
+test("i percorsi «Impostazioni › …» cominciano da una sezione che c'è", () => {
+  for (const [lingua, d] of LINGUE) {
+    const radice = lingua === "it" ? "Impostazioni" : "Settings";
+    const sezioni = Object.entries(d)
+      .filter(([k]) => /^settings\.section\.[a-z]+$/.test(k))
+      .map(([, v]) => v)
+      .sort((a, b) => b.length - a.length);
+    assert.ok(sezioni.length >= 10, `${lingua}: le sezioni non si trovano`);
+    let visti = 0;
+    for (const [chiave, testo] of frasi(d)) {
+      // Le impostazioni di **Android** (Impostazioni › App › Rymembra › Autorizzazioni):
+      // non sono quelle di Rymembra.
+      if (DI_ANDROID.includes(chiave)) continue;
+      for (const m of testo.matchAll(new RegExp(`${radice} › ([^.;:()“”«»—]+)`, "g"))) {
+        visti += 1;
+        const dopo = (m[1] ?? "").trim();
+        assert.ok(
+          sezioni.some((s) => dopo === s || dopo.startsWith(`${s} ›`) || dopo.startsWith(`${s},`) || dopo.startsWith(`${s} `)),
+          `${lingua} ${chiave}: «${radice} › ${dopo}» non comincia da una sezione`,
+        );
+      }
+    }
+    assert.ok(visti > 15, `${lingua}: pochi percorsi trovati (${visti})`);
+  }
+});

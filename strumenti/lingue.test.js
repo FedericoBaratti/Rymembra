@@ -233,3 +233,26 @@ test("un commento che cita la chiave non la disegna, e un'eccezione scritta sì"
   const esatta = chiaviMorte({ riferimento, testoCodice: "", codici: [], eccezioni: { chiaviVive: { "settings.sync.rename": "motivo" } } });
   assert.deepEqual(esatta, ["«cloudApp.google.step1» non è usata da nessun punto del codice"]);
 });
+
+test("una frase che cita un tasto lo cita con le parole che ha sullo schermo", () => {
+  const en = {
+    "action.addToPlaylist": "Add to a playlist…",
+    "playlist.empty.body": "From a track: ⋮ and then “Add to playlist…”.",
+    "ok.body": "Press “Add to a playlist” to start one.",
+    "ext.body": "In the console choose “Desktop app”, and write {nome} as “{titolo}”.",
+    "cloudApp.google.step4": "Press “Create client”.",
+    "lungo": "He said “this quote is much longer than forty-five characters, so it is a sentence”.",
+  };
+  const trovati = etichetteCitate("en", en, {
+    etichetteEsterne: { "Desktop app": "Il tipo di client della console di Google." },
+    etichetteInChiavi: { "cloudApp.": "I passi della console di un servizio." },
+  });
+  // «Add to playlist…» non è «Add to a playlist…»: la frase manda a un tasto che non c'è.
+  assert.deepEqual(trovati, [
+    "en.json: «playlist.empty.body» cita «Add to playlist…», che non è il testo di nessuna chiave",
+  ]);
+  // Il finale («…», «.») e i segnaposto non contano; in italiano valgono le «».
+  const it = { "a.b": "Aggiungi a playlist…", c: "Premi «Aggiungi a playlist» o “Annulla”" };
+  assert.deepEqual(etichetteCitate("it", it), []);
+  assert.equal(etichetteCitate("it", { c: "Premi «Aggiungi alla coda»" }).length, 1);
+});

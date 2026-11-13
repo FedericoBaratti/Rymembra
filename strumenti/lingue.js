@@ -749,6 +749,11 @@ function controlliSuiTesti(dizionari) {
   aggiungi("Segnaposto diversi fra le lingue", segnapostiDiversi(dizionari));
   perOgniLingua("Virgolette o apostrofi di un'altra lingua", (c, d) => virgoletteSbagliate(c, d, eccezioni));
   if (dizionari.en) aggiungi("Grafie britanniche in en.json", grafiaBritannica(dizionari.en));
+  perOgniLingua(
+    "Etichette citate che non esistono",
+    (c, d) => etichetteCitate(c, d, eccezioni),
+    "Se non è un'etichetta di Rymembra (la console di un servizio, un nome di file), va in lingue-eccezioni.json con il motivo.",
+  );
   const sorgentiTs = filesSotto(path.join(REPO, "apps/desktop/src"), [".ts", ".tsx"], ["lingue"]);
   const sorgentiRs = [
     ...filesSotto(path.join(REPO, "apps/desktop/src-tauri/src"), [".rs"]),
