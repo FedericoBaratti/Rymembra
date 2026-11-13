@@ -124,3 +124,104 @@ test("i percorsi «Impostazioni › …» cominciano da una sezione che c'è", (
     assert.ok(visti > 15, `${lingua}: pochi percorsi trovati (${visti})`);
   }
 });
+
+test("una lista sola per i brani da comprare: «Da comprare» / «To buy» (D-79, R17-10)", () => {
+  for (const [lingua, d] of LINGUE) {
+    for (const [chiave, testo] of frasi(d)) {
+      assert.doesNotMatch(testo, /lista della spesa|shopping list|lista acquisti/i, `${lingua} ${chiave}`);
+    }
+  }
+  assert.equal(IT["explore.wanted"], IT["settings.import.how.p2.toBuy"]);
+  assert.equal(EN["explore.wanted"], EN["settings.import.how.p2.toBuy"]);
+});
+
+test("«scafale» è un nome del formato delle skin: nell'interfaccia si dice «struttura» (D-81)", () => {
+  for (const [chiave, testo] of frasi(IT)) {
+    // Il nome del campo del formato (`layout.shell`) e quelli dei registri restano; la prosa no.
+    assert.doesNotMatch(testo.replace(/\{\w+\}/g, ""), /\bscafale\b/i, `it ${chiave}`);
+  }
+  assert.equal(IT["studio3.shell.section"], "Struttura");
+});
+
+test("l'app parla di sé in terza persona e dà del tu (D-82, R17-17)", () => {
+  // Nessun «Ho guardato», «non l'ho trovato», «ti chiediamo», «glielo diciamo», «vostra».
+  const PRIMA_PERSONA = /\b(ho (guardato|letto|aperto|trovato|chiesto|potuto)|non (l'|le |li )?ho\b|ti chiediamo|glielo diciamo|indicami|vostr[aeio])\b/i;
+  for (const [chiave, testo] of frasi(IT)) {
+    // «Ho autorizzato, completa» e «Ho un link» sono quel che dice chi preme il tasto.
+    if (["scrobble.lfm.done", "folders.add.mega.link", "explore.down.sub"].includes(chiave)) continue;
+    assert.doesNotMatch(testo, PRIMA_PERSONA, `it ${chiave}`);
+  }
+  for (const chiave of ["primo.body", "primo.nessuna.title", "primo.vuota.title", "primo.vuota.body", "primo.saltate"]) {
+    assert.match(IT[chiave] ?? "", /Rymembra/, `it ${chiave}`);
+    assert.match(EN[chiave] ?? "", /Rymembra/, `en ${chiave}`);
+    assert.doesNotMatch(EN[chiave] ?? "", /\b(I|me)\b/, `en ${chiave}`);
+  }
+});
+
+test("lettore, spettro e brano: i termini italiani dell'interfaccia (R17-17)", () => {
+  for (const [chiave, testo] of frasi(IT)) {
+    assert.doesNotMatch(testo, /\b(player|visualizer)\b/i, `it ${chiave}`);
+    // «traccia» è il numero di traccia di un CD (`folders.imageTrack`) o la traccia di una griglia
+    // CSS (le frasi del validatore, `skin.issue.*`): in nessun'altra frase.
+    if (chiave !== "folders.imageTrack" && !chiave.startsWith("skin.issue.")) {
+      assert.doesNotMatch(testo, /\btracc(ia|e)\b/i, `it ${chiave}`);
+    }
+  }
+  assert.match(IT["settings.update.store"] ?? "", /è lo Store/);
+  assert.doesNotMatch(IT["skin.token.canvas.viz.attack"] ?? "", /vúmetro/);
+  assert.doesNotMatch(IT["drift.title"] ?? "", /video/);
+});
+
+test("le frasi con più numeri non scrivono «1 righe» (R17-18)", () => {
+  // Le tre che più si vedono: la chat dello Studio, il codice, la variante.
+  for (const chiave of ["studio.chat.proposed", "studio.chat.proposed.uno", "studio3.code.lines", "studio3.vars.variant.some"]) {
+    assert.doesNotMatch(IT[chiave] ?? "", /\{(piu|meno|token|colori|motivi|parti)\} (righe|token|colori|motivi|parti)/, `it ${chiave}`);
+    assert.doesNotMatch(EN[chiave] ?? "", /\{(piu|meno|token|colori|motivi|parti)\} (lines|tokens|colors|patterns|parts)/, `en ${chiave}`);
+  }
+});
+
+test("le frasi da computer che il telefono disegna hanno la loro variante (R17-19)", () => {
+  // Le frasi che un componente disegna anche sul telefono e che dicono «PC», «clic»
+  // o mandano a una cartella di rete: sul telefono la variante `.telefono` dice il vero.
+  const DA_VARIARE = [
+    "queue.empty",
+    "settings.together.trusted.moved",
+    "settings.together.trusted.moved.uno",
+    "errors.cloud.insecureServer",
+    "errors.db.ioFailed",
+    "errors.db.readOnly",
+    "errors.fs.permissionDenied",
+    "db.damaged.how",
+    // Le stringhe dell'associazione dei dispositivi (F02): «PC» non è il telefono.
+    "more.devices.link.sub",
+    "settings.devices.reachable.sub",
+    "devices.reachable.sub",
+    "devices.kind.together",
+    "together.nearby.sameName",
+    "together.code.title",
+    "together.code.computing",
+    "together.code.trust",
+    "together.code.sameName",
+    "together.pairing.request",
+  ];
+  for (const [lingua, d] of LINGUE) {
+    for (const chiave of DA_VARIARE) {
+      // Il plurale di una variante sta in `<chiave>.telefono.uno`, non in `<chiave>.uno.telefono`.
+      const variante = chiave.endsWith(".uno")
+        ? `${chiave.slice(0, -4)}.telefono.uno`
+        : `${chiave}.telefono`;
+      const testo = d[variante];
+      assert.ok(testo !== undefined, `${lingua}: manca «${variante}»`);
+      assert.doesNotMatch(testo, /\bPCs?\b|\bclic\b|\bclick|trascina|drag|rete\b.*cartella|network folder/i, `${lingua} ${variante}`);
+    }
+  }
+  // La strada dei documenti: i tre file del database si spostano insieme, e così la libreria
+  // più nuova resta recuperabile (R06b-2).
+  for (const [lingua, d] of LINGUE) {
+    const how = d["db.damaged.how"] ?? "";
+    assert.match(how, /rymembra\.db-wal/, lingua);
+    assert.match(how, /rymembra\.db-shm/, lingua);
+    assert.match(how, lingua === "it" ? /sposta insieme/ : /together to another folder/, lingua);
+    assert.doesNotMatch(how, lingua === "it" ? /\btogli\b/ : /\bdelete\b/, lingua);
+  }
+});

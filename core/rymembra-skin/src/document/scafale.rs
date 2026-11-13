@@ -30,7 +30,7 @@ pub(super) fn impaginazione(
                 &giu(path, chiave),
                 motivo!(
                     "scafaleFormato2",
-                    "nel formato 2 non c'è più: dove stanno il lettore e la barra lo dice lo scafale, `layout.shell`, scritto per esteso"
+                    "nel formato 2 non c'è più: dove stanno il lettore e la barra lo dice la struttura, `layout.shell`, scritta per esteso"
                 ),
             ));
         }
@@ -264,7 +264,7 @@ fn troppi_nodi(path: &str) -> SkinIssue {
         path,
         motivo!(
             "troppiNodi",
-            "lo scafale supera i {massimo} nodi, che è il massimo",
+            "la struttura supera i {massimo} nodi, che è il massimo",
             massimo = MAX_SHELL_NODES.to_string()
         ),
     )
@@ -409,7 +409,7 @@ fn nodo_scafale(
         path,
         motivo!(
             "nodo",
-            "un nodo dello scafale è una zona («zone»), un widget («widget») o un prefab («prefab»), e questo non dichiara nessuno dei tre"
+            "un nodo della struttura è una zona («zone»), un widget («widget») o un prefab («prefab»), e questo non dichiara nessuno dei tre"
         ),
     ))
 }

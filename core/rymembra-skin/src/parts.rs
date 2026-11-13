@@ -297,7 +297,7 @@ pub static PARTS: &[PartDef] = &[
     PartDef::nuova("lyric-line", NowPlaying, "La riga di testo, accesa e non."),
     PartDef::nuova("lyric-word", NowPlaying, "La parola del testo, quando i tempi ci sono."),
     PartDef::nuova("lyric-breath", NowPlaying, "La pausa fra due righe del testo."),
-    PartDef::nuova("viz-screen", NowPlaying, "La schermata del visualizer.").livelli(),
+    PartDef::nuova("viz-screen", NowPlaying, "La schermata dello spettro.").livelli(),
     PartDef::nuova("eq-bars", NowPlaying, "Le barre dell'equalizzatore."),
     PartDef::nuova("eq-slider", NowPlaying, "Il cursore di una banda dell'equalizzatore."),
 

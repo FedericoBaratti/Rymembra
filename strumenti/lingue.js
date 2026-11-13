@@ -509,8 +509,8 @@ function etichetteCitate(codice, dizionario, eccezioni = {}) {
  * sostantivo che manca (si aggiunge qui quando se ne scopre uno).
  */
 const SOSTANTIVI_PLURALI = {
-  it: "righe|brani|bozze|colori|motivi|parti|token|elementi|dischi|gettoni|voci|caratteri|pezzi|cartelle|animazioni|doppioni|playlist|preferiti|ascolti|file|secondi|minuti|passi|punti|modifiche|errori|risultati|livelli|modelli",
-  en: "lines|drafts|tracks|colors|patterns|parts|tokens|items|skins|discs|records|steps|seconds|minutes|files|folders|playlists|changes|errors|results|levels|models|animations|keyframes|rows",
+  it: "righe|brani|bozze|colori|motivi|parti|token|elementi|dischi|gettoni|voci|caratteri|pezzi|cartelle|animazioni|doppioni|playlist|preferiti|ascolti|file|secondi|minuti|passi|punti|modifiche|errori|risultati|livelli|modelli|aggiunti|aggiornati|applicati|spostati|tolti|lasciati|falliti|scartati|riusciti|non riusciti",
+  en: "lines|drafts|tracks|colors|patterns|parts|tokens|items|skins|discs|records|steps|seconds|minutes|files|folders|playlists|errors|results|levels|models|animations|keyframes|rows",
 };
 
 function contatoriFuoriDaN(codice, dizionario, eccezioni = {}) {
@@ -753,6 +753,11 @@ function controlliSuiTesti(dizionari) {
     "Etichette citate che non esistono",
     (c, d) => etichetteCitate(c, d, eccezioni),
     "Se non è un'etichetta di Rymembra (la console di un servizio, un nome di file), va in lingue-eccezioni.json con il motivo.",
+  );
+  perOgniLingua(
+    "Contatori che non sono `n` davanti a un plurale",
+    (c, d) => contatoriFuoriDaN(c, d, eccezioni),
+    "Scrivi la frase con `n` e le sue forme, o in una forma che non concorda («aggiunte: {piu}»).",
   );
   const sorgentiTs = filesSotto(path.join(REPO, "apps/desktop/src"), [".ts", ".tsx"], ["lingue"]);
   const sorgentiRs = [

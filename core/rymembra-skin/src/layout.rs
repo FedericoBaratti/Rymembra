@@ -1188,7 +1188,7 @@ pub fn verifica_con_la_barra(radice: &LayoutZone, barra: Barra) -> Vec<ShellIssu
             "",
             motivo!(
                 "scafale.nodi",
-                "lo scafale ha {nodi} nodi, e il massimo è {massimo}",
+                "la struttura ha {nodi} nodi, e il massimo è {massimo}",
                 nodi = nodi,
                 massimo = MAX_SHELL_NODES
             ),
@@ -1252,7 +1252,7 @@ fn zona(
             motivo!(
                 "scafale.profondita",
                 "questa zona è annidata a {profondita}, e il massimo è {massimo}: \
-                 lo scafale vero è profondo 4",
+                 la struttura vera è profonda 4",
                 profondita = profondita,
                 massimo = MAX_SHELL_DEPTH
             ),
@@ -1557,7 +1557,7 @@ fn essenziali(visti: &[&'static str], problemi: &mut Vec<ShellIssue>) {
         }
         let motivo = motivo!(
             "scafale.nessunoDelGruppo",
-            "lo scafale non monta nessuno fra {nomi}: senza, non c'è modo di \
+            "la struttura non monta nessuno fra {nomi}: senza, non c'è modo di \
              comandare la riproduzione o di cambiare vista",
             nomi = membri.join(", ")
         );

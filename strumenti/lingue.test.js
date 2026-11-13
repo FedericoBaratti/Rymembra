@@ -256,3 +256,28 @@ test("una frase che cita un tasto lo cita con le parole che ha sullo schermo", (
   assert.deepEqual(etichetteCitate("it", it), []);
   assert.equal(etichetteCitate("it", { c: "Premi «Aggiungi alla coda»" }).length, 1);
 });
+
+test("solo `n` sceglie il plurale: un altro contatore davanti a un sostantivo plurale è un errore", () => {
+  const it = {
+    "studio.chat.proposed": "{n} modifiche: {piu} righe aggiunte, {meno} tolte.",
+    "studio.chat.proposed.uno": "1 modifica: {piu} righe aggiunte.",
+    ok: "{n} modifiche — righe aggiunte: {piu}, tolte: {meno}.",
+    // Un participio plurale dopo un altro contatore.
+    "devices.download.doneWithErrors": "Scaricati {n} brani, {falliti} non riusciti.",
+    // Un verbo dopo un nome non è un plurale: nessun falso allarme.
+    "together.notice.left": "{nome} chiede, {servizio} esce e {nome} ha deciso",
+    "skin.issue.voci": "la lista va da {min} a {max} voci",
+  };
+  const trovati = contatoriFuoriDaN("it", it, { contatori: { "skin.issue.": "limiti del formato" } });
+  assert.deepEqual(trovati.map((t) => t.match(/«([^»]+)» scrive «([^»]+)»/).slice(1).join(" → ")), [
+    "studio.chat.proposed → {piu} righe",
+    "studio.chat.proposed.uno → {piu} righe",
+    "devices.download.doneWithErrors → {falliti} non riusciti",
+  ]);
+  // `{n}` è il contatore che sceglie la forma: va sempre bene.
+  assert.deepEqual(contatoriFuoriDaN("en", { a: "{n} lines added", b: "1 line" }), []);
+  // In inglese, lo stesso difetto di «1 lines added».
+  assert.equal(contatoriFuoriDaN("en", { a: "{piu} lines added, {meno} removed" }).length, 1);
+  // Un'eccezione per chiave esatta, con il motivo.
+  assert.deepEqual(contatoriFuoriDaN("en", { a: "{max} items" }, { contatori: { a: "un limite" } }), []);
+});

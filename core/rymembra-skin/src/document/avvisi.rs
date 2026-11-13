@@ -768,7 +768,7 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
                 format!("layout.prefabs.{nome}"),
                 motivo!(
                     "prefabInutile",
-                    "il prefab «{nome}» non è richiamato da nessuna parte dello scafale: \
+                    "il prefab «{nome}» non è richiamato da nessuna parte della struttura: \
                      scrivi {{\"prefab\": \"{nome}\"}} dove serve, o toglilo.",
                     nome = nome.as_str()
                 ),
@@ -986,7 +986,7 @@ fn sfori_scafale(skin: &SkinDocument) -> Option<Sforo> {
             misura,
             motivo!(
                 "sforoScafale",
-                "lo scafale monta {costo} sul budget di {budget}: \
+                "la struttura monta {costo} sul budget di {budget}: \
                  tanti pezzi insieme sono una finestra in cui non si trova niente.",
                 costo = misura.costo,
                 budget = misura.budget

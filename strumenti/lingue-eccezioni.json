@@ -32,7 +32,17 @@
     "_": "Un carattere del nome di un carattere tipografico.",
     "-": "Un carattere del nome di un carattere tipografico."
   },
-  "contatori": {},
+  "contatori": {
+    "folders.confirm.": "La variante `.selection` si usa solo con più di una riga selezionata (`una = righe <= 1`): «I {righe} elementi scelti» non è mai «1 elementi».",
+    "ia.tokens.range": "I limiti di contesto di un modello: mai 1.",
+    "imports.back": "`{quanti}` è il numero in grassetto di `n` (`n={{ n: vociRimesse }}`): il plurale lo sceglie `n`, e `.uno` c'è.",
+    "skin.issue.": "Limiti e conteggi del formato delle skin (voci, caratteri, animazioni, cambi per secondo): sempre almeno 2, e il limite è una costante.",
+    "skin.keep.body": "I secondi di un conto alla rovescia fisso, mai 1.",
+    "skin.review.shell": "Il costo della struttura sopra il suo budget: sempre molto più di 1.",
+    "studio.chat.size": "I gettoni del contesto di una conversazione: il solo prompt di sistema ne ha migliaia.",
+    "studio.chat.tokens": "I gettoni in entrata di una conversazione: il solo prompt di sistema ne ha migliaia.",
+    "studio.chat.spent": "I gettoni in entrata di una conversazione: il solo prompt di sistema ne ha migliaia."
+  },
   "chiaviVive": {},
   "valoriUguali": {}
 }
