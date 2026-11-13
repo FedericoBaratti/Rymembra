@@ -287,3 +287,22 @@ test("le righe di stato sono nomi di azione, senza narratore (D-82)", () => {
   assert.equal(IT["rules.saving"], "Salvataggio…");
   assert.equal(IT["settings.update.checking"], "Controllo in corso…");
 });
+
+test("le frasi degli errori dicono cosa fare e non promettono quel che non c'è (R17-3, R17-9, R17-20)", () => {
+  for (const [lingua, d] of LINGUE) {
+    // `internal.unexpected` rimandava a «il dettaglio qui sotto», che la finestra non mostra più
+    // (e non mostrava nemmeno prima): adesso dice di riprovare, di riavviare e dove sta il diario.
+    for (const chiave of ["errors.internal.unexpected", "errors.internal.unexpected.telefono"]) {
+      const testo = d[chiave] ?? "";
+      assert.doesNotMatch(testo, /dettaglio qui sotto|detail below/i, `${lingua} ${chiave}`);
+      assert.ok(testo.includes(d["settings.update.title"] ?? "?"), `${lingua} ${chiave}: dove sta il diario`);
+    }
+    assert.ok((d["errors.internal.unexpected"] ?? "").includes(d["settings.diary.open"] ?? "?"), lingua);
+    assert.ok((d["errors.internal.unexpected.telefono"] ?? "").includes(d["settings.diary.open.telefono"] ?? "?"), lingua);
+    // `net.unavailable` vale anche dove nessuno ritenta (la chat dello Studio, lo scambio OAuth).
+    assert.doesNotMatch(d["errors.net.unavailable"] ?? "", lingua === "it" ? /^[^:]*Rymembra aspetta e riprova da sé\.?$/ : /^[^:]*Rymembra waits and retries by itself\.?$/, lingua);
+    assert.match(d["errors.net.unavailable"] ?? "", lingua === "it" ? /Riprova fra poco/ : /Try again shortly/, lingua);
+    // `net.http` non è mai «il server ha risposto con un errore» e basta.
+    assert.match(d["errors.net.http"] ?? "", lingua === "it" ? /Riprova fra poco/ : /Try again shortly/, lingua);
+  }
+});
