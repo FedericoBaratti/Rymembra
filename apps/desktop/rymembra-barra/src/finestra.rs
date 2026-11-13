@@ -26,6 +26,17 @@
 //! Tutto il lavoro con la barra avviene sul filo della finestra: l'oggetto COM
 //! vive lì, le icone nascono e muoiono lì, e i clic arrivano lì.
 //!
+//! # Un quarto messaggio, che non è dei pulsanti
+//!
+//! La sottoclasse è anche l'unico posto che vede i messaggi della finestra
+//! prima di `tao`, e ne usa uno per una cosa che con la barra non c'entra: un
+//! **Alt da solo** — o F10 — arriva come `WM_SYSCOMMAND` con `SC_KEYMENU`, e
+//! la finestra, che non ha né titolo né menu ma ha il menu di sistema, ci
+//! entrerebbe in un ciclo modale invisibile che si mangia il tasto seguente.
+//! Si ferma qui: vedi [`alt_da_solo`]. Fuori da questa finestra non c'è un
+//! altro posto con l'eccezione `unsafe` e la procedura in mano, ed è per
+//! questo che sta in questo file e non in un altro.
+//!
 //! # Cosa vive quanto
 //!
 //! Il [`Contesto`] nasce in [`aggancia`], diventa un puntatore consegnato a
@@ -61,7 +72,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateIcon, DestroyIcon, GetWindowThreadProcessId, HICON,
     IsWindowVisible, MSGFLT_ALLOW, PostMessageW, RegisterWindowMessageW, SM_CXSMICON, WM_COMMAND,
-    WM_DPICHANGED, WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW,
+    WM_DPICHANGED, WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SYSCOMMAND,
 };
 use windows::core::w;
 
@@ -517,6 +528,10 @@ unsafe extern "system" fn sottoclasse(
             contesto.premi(tasto);
             return LRESULT(0);
         }
+    } else if messaggio == WM_SYSCOMMAND && alt_da_solo(wparam.0, lparam.0) {
+        // Alt (o F10) da solo: niente menu di sistema invisibile. Vedi
+        // `alt_da_solo`. Non arriva a `tao`: non gli serve.
+        return LRESULT(0);
     } else if messaggio == WM_SHOWWINDOW && wparam.0 == 0 {
         // La finestra si nasconde — nel vassoio — e la sua icona sparisce con
         // i pulsanti. Fino al prossimo `TaskbarButtonCreated` non c'è niente
@@ -537,6 +552,29 @@ unsafe extern "system" fn sottoclasse(
     // SAFETY: ogni messaggio prosegue verso la procedura di `tao`, con gli
     // argomenti ricevuti.
     unsafe { DefSubclassProc(finestra, messaggio, wparam, lparam) }
+}
+
+/// Il comando `SC_KEYMENU` di `WM_SYSCOMMAND`: «attiva il menu da tastiera».
+const COMANDO_MENU_DA_TASTIERA: usize = 0xF100;
+
+/// Il `WM_SYSCOMMAND` che Windows manda quando si preme e si rilascia **Alt da
+/// solo** (o F10): la sottoclasse lo tiene per sé.
+///
+/// La finestra non ha una barra del titolo né un menu, ma ha ancora il menu di
+/// sistema — `tao` le dà `WS_SYSMENU` — e `DefWindowProc`, davanti a
+/// `SC_KEYMENU`, ci entra: un ciclo modale **invisibile**, dentro la procedura
+/// della finestra, in cui il tasto che segue (uno Spazio per mettere in pausa,
+/// una freccia) è «una voce del menu» e non arriva alla pagina, finché un
+/// secondo Alt, un Esc o un clic non lo chiudono. Il filo della finestra ne
+/// risulta in modalità menu (`GUI_INMENUMODE`, misurato dal vivo con
+/// `GetGUIThreadInfo`) e la pila lo mostra dentro `DefWindowProcW`.
+///
+/// Il menu che serve davvero resta: Alt+Spazio manda lo stesso comando con lo
+/// spazio come carattere (`lParam` 0x20), e apre il menu di sistema per chi
+/// muove o chiude la finestra senza il mouse. Anche i quattro bit bassi del
+/// comando, che sono del sistema, non cambiano quale comando è.
+const fn alt_da_solo(wparam: usize, lparam: isize) -> bool {
+    (wparam & 0xFFF0) == COMANDO_MENU_DA_TASTIERA && lparam == 0
 }
 
 /// La parola alta e la parola bassa di un `WPARAM`.
@@ -613,6 +651,29 @@ mod prove {
         // I bit oltre i trentadue, su 64 bit, non arrivano nelle due parole.
         #[cfg(target_pointer_width = "64")]
         assert_eq!(parole(WPARAM(0xFFFF_FFFF_0003_0004)), (3, 4));
+    }
+
+    /// Un Alt da solo (e F10) non entra nel menu di sistema invisibile; Alt+Spazio,
+    /// che apre quello vero, e ogni altro comando di sistema passano.
+    #[test]
+    fn solo_l_alt_da_solo_non_arriva_al_menu_di_sistema() {
+        const SC_KEYMENU: usize = 0xF100;
+        // Alt (o F10) da solo: `lParam` zero. I quattro bit bassi del comando
+        // sono del sistema: non cambiano quale comando è.
+        assert!(alt_da_solo(SC_KEYMENU, 0));
+        assert!(alt_da_solo(SC_KEYMENU | 0xF, 0));
+        // Alt+Spazio: il carattere è lo spazio, e il menu di sistema serve a
+        // chi muove o chiude la finestra senza il mouse.
+        assert!(!alt_da_solo(SC_KEYMENU, 0x20));
+        // Alt+lettera, o il menu chiesto con un clic: c'è un carattere o una
+        // posizione.
+        assert!(!alt_da_solo(SC_KEYMENU, isize::from(b'f')));
+        assert!(!alt_da_solo(SC_KEYMENU, 0x0040_0010));
+        // Gli altri comandi di sistema non sono affare nostro: ridurre,
+        // ingrandire, ripristinare, muovere, chiudere.
+        for comando in [0xF020, 0xF030, 0xF120, 0xF010, 0xF000, 0xF060] {
+            assert!(!alt_da_solo(comando, 0), "{comando:#X}");
+        }
     }
 
     #[test]
