@@ -132,7 +132,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useDati } from "./dati";
-import { useFinestrella } from "./finestrella";
+import { useFinestrella, useVeloInerte } from "./finestrella";
 import { ATTESA_ANCORA_MS, DISTACCO, posaFumetto } from "./guida";
 import { t } from "./lingue";
 import { Presenza } from "./presenza";
@@ -411,6 +411,13 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
   chiudi.current = onChiudi;
 
   const radice = useFinestrella<HTMLDivElement>(onChiudi);
+  // Il resto della finestra `inert` finché il giro è aperto (R16-3): il velo
+  // prende i clic, ma un lettore di schermo usciva dal fumetto e leggeva — e
+  // attivava — la libreria che il velo copre. Il fumetto è fratello del velo,
+  // quindi resta vivo accanto a lui; dopo `useFinestrella`, che deve leggere
+  // chi aveva il fuoco prima che diventi inerte. Vedi `useVeloInerte`.
+  const velo = useRef<HTMLDivElement>(null);
+  useVeloInerte(velo, radice);
 
   /*
    * Il fuoco che esce dal fumetto ci torna: vedi «Il fuoco resta nel fumetto»
@@ -507,6 +514,13 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       if (r.width === 0 || r.height === 0) return;
       const buco = { top: r.top, left: r.left, width: r.width, height: r.height };
       const suo = radice.current?.getBoundingClientRect();
+      // Quel che il passo descrive dentro il bersaglio, e che il fumetto non
+      // deve coprire quando gli sta sopra: i tasti del testo e dello spettro
+      // a tutto schermo (R18-12). Vedi «I punti da non coprire» in `guida.ts`.
+      const evita = Array.from(
+        bersaglio.querySelectorAll<HTMLElement>("[data-giro-interesse]"),
+        (punto) => punto.getBoundingClientRect(),
+      ).filter((p) => p.width > 0 && p.height > 0);
       setPosa({
         buco,
         raggio: window.getComputedStyle(bersaglio).borderRadius,
@@ -514,6 +528,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
           buco,
           { width: suo?.width ?? 0, height: suo?.height ?? 0 },
           schermo(),
+          evita,
         ),
       });
     };
@@ -608,7 +623,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
           perché non ha niente da dire — quel che c'è da leggere sta nel
           fumetto, che è il dialogo. */}
       <Presenza parte="tour-veil">
-        <div className="giro-velo tour-veil" aria-hidden="true">
+        <div ref={velo} className="giro-velo tour-veil" aria-hidden="true">
           {posa !== null && posa.buco !== null && (
             <div
               className="giro-buco"

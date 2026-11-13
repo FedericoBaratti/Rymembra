@@ -166,6 +166,7 @@ import { BarraCerca } from "./parti/BarraCerca";
 import { PilloleLibreria } from "./parti/PilloleLibreria";
 import type { Vista } from "./parti/Navigazione";
 import { PilaToast } from "./parti/PilaToast";
+import { SaltaAlContenuto } from "./parti/SaltaAlContenuto";
 import { ToastImportazioni } from "./parti/ToastImportazioni";
 import { usePlaylistAperta } from "./playlistAperta";
 import {
@@ -178,6 +179,7 @@ import {
 } from "./presenza";
 import { Primo } from "./Primo";
 import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
+import { fasciaDaRitirare, quandoRispondonoLeRadici } from "./radiciVive";
 import { RecintoErrori } from "./Recinto";
 import { indietro } from "./indietro";
 import { Regole } from "./Regole";
@@ -4109,6 +4111,21 @@ export function App() {
     setErrore(null);
     riproduzione.scartaErrore();
   };
+  /*
+   * «Il file di questo brano non si raggiunge», nato con una radice staccata,
+   * restava in fascia anche dopo che la radice era tornata e «Ricontrolla» lo
+   * aveva visto (R18-11). La sonda delle radici si annuncia (`radiciVive.ts`):
+   * quando tutte rispondono, la fascia non descrive più niente e se ne va. Un
+   * riferimento, perché l'ascolto è uno solo e il guasto cambia a ogni disegno.
+   */
+  const ritiraSeTornate = useRef<(vive: readonly boolean[]) => void>(() => undefined);
+  ritiraSeTornate.current = (vive) => {
+    if (fasciaDaRitirare(guasto?.codice, vive)) chiudiErrore();
+  };
+  useEffect(
+    () => quandoRispondonoLeRadici((_radici, vive) => ritiraSeTornate.current(vive)),
+    [],
+  );
   /**
    * Il gesto che porta alla soluzione del guasto in fascia, quando la frase ne
    * nomina una.
@@ -4320,6 +4337,10 @@ export function App() {
           finestra vera su cui provare. `inert` la toglie dal fuoco e dai clic
           finché lo Studio la copre. */}
       <div className="finestra-app" inert={studioVisibile}>
+        {/* Il primo comando della finestra: «Salta al contenuto», che si vede
+            solo col fuoco e porta oltre la navigazione (R16-10). Sul telefono
+            no: la si percorre col dito o con TalkBack, che ha i suoi salti. */}
+        {!MOBILE && <SaltaAlContenuto />}
        {/* Il menù delle righe della coda, per tutti i posti dove la coda si
            disegna: vedi `MenuDellaCoda` in `Coda.tsx`. */}
        <MenuDellaCoda value={menuDellaCoda}>
@@ -4477,8 +4498,12 @@ export function App() {
                     <AvvisiInsieme onErrore={segnalaErrore} />
                     {/* Col primo avvio aperto le notizie le mostra lui: qui
                         sarebbero sotto la sua schermata, e due copie della stessa
-                        fascia d'errore si annuncerebbero due volte. */}
-                    {!primoVisibile && notizieDiFascia}
+                        fascia d'errore si annuncerebbero due volte.
+                        Qui solo sul telefono: sul computer stanno nella pila
+                        dei toast (più sotto), perché nel flusso spingevano giù
+                        la pagina — titolo, indice, filtro — proprio mentre si
+                        stava per cliccarci (R18-17). */}
+                    {!primoVisibile && MOBILE && notizieDiFascia}
                     {corpo()}
                   </div>
                 </PresenzaPagina>
@@ -4827,6 +4852,14 @@ export function App() {
                   ipc.annullaScansione().catch(segnalaErrore);
                 }}
               >
+                {/* Le fasce di notizia e d'errore, sul computer: galleggiano
+                    qui sopra il lettore invece di entrare nel flusso della
+                    pagina, che spingevano giù di una fascia (R18-17). Una copia
+                    viva sola: non col primo avvio, che le mostra da sé, né a
+                    schermo intero, che ha la sua (`avvisiGrande`); con lo
+                    Studio aperto questa è sotto di lui e inerte, e parla la
+                    sua. */}
+                {!MOBILE && !primoVisibile && !(grande && conBrano) && notizieDiFascia}
                 {/* La coda segue chi se ne va, per la ragione scritta sopra — e a
                     maggior ragione: la scansione dura venti secondi, questa un'ora, e
                     sopravvive alla chiusura dell'applicazione. Sulla pagina stessa il

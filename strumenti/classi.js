@@ -307,6 +307,36 @@ function testiDeiFogli(radice = REPO) {
   }));
 }
 
+/**
+ * I token della scala degli strati, nell'ordine in cui il foglio li dichiara.
+ *
+ * Contati dal foglio e non scritti nel messaggio: il messaggio diceva «dodici
+ * token» quando erano già quindici, cioè mandava a cercare una scala che non
+ * c'era più (report-f12b). Il foglio va passato senza commenti: lì dentro la
+ * scala si cita per spiegarla.
+ */
+function stratiDellaScala(css) {
+  const nomi = [];
+  for (const trovato of css.matchAll(/(?<![-\w(])(--strato-[a-z]+)\s*:/g)) {
+    if (!nomi.includes(trovato[1])) nomi.push(trovato[1]);
+  }
+  return nomi;
+}
+
+/** Quel che si dice dopo l'elenco degli `z-index` fuori scala: dove sta la scala, e quanto è lunga. */
+function consiglioDegliStrati(scala) {
+  const quanti = scala.length;
+  const estremi = quanti > 0 ? `, da ${scala[0]} a ${scala[quanti - 1]}` : "";
+  return (
+    "\n  La scala sta in apps/desktop/src/stile.css, nel primo :root dopo la riga\n" +
+    `  «fine blocco generato»: ${quanti} token --strato-*${estremi}.\n` +
+    "  Un numero scritto qui non si può confrontare con gli altri senza aprire\n" +
+    "  il foglio, ed è così che il menù contestuale è finito dietro la barra\n" +
+    "  della selezione. Scegli il token che dice il ruolo; se nessuno lo dice,\n" +
+    "  il posto dove aggiungerne uno è la scala, non qui."
+  );
+}
+
 const APRE_BUCO = "$" + "{";
 
 /**
@@ -681,14 +711,8 @@ function main() {
     guai += strati.length;
     console.log(`\n${strati.length} z-index non vengono dalla scala degli strati:\n`);
     for (const riga of strati) console.log(riga);
-    console.log(
-      "\n  La scala sta in apps/desktop/src/stile.css, nel primo :root dopo la riga\n" +
-        "  «fine blocco generato»: dodici token --strato-*, dal decoro alla finestra.\n" +
-        "  Un numero scritto qui non si può confrontare con gli altri undici senza\n" +
-        "  aprire il foglio, ed è così che il menù contestuale è finito dietro la\n" +
-        "  barra della selezione. Scegli il token che dice il ruolo; se nessuno\n" +
-        "  dei dodici lo dice, il posto dove aggiungerne uno è la scala, non qui.",
-    );
+    const primo = fogliPuliti.find((f) => f.nome === "stile.css");
+    console.log(consiglioDegliStrati(stratiDellaScala(primo ? primo.pulito : "")));
   }
 
   // 7. Nessuna durata sfugge a `--motion-scale`.
@@ -846,4 +870,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { fogliDi, testiDeiFogli, classiDelFoglio, classiDi };
+module.exports = { fogliDi, testiDeiFogli, classiDelFoglio, classiDi, stratiDellaScala, consiglioDegliStrati };

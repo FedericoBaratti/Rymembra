@@ -1722,6 +1722,68 @@ mod prove_connessioni;
 mod prove {
     use super::*;
 
+    /// Reperto R15-1, dalla parte di chi legge: ogni cornice si legge col
+    /// tetto di quel che ci si aspetta, e un'associazione — da uno che non si
+    /// conosce ancora, prima del gettone — con quello dell'associazione.
+    /// `leggi` vuole il tetto per firma; questa prova guarda **quale**: un
+    /// `MASSIMA_TESTA` messo lì per sbaglio ridarebbe otto mebibyte aperti a
+    /// un estraneo.
+    #[test]
+    fn chi_legge_un_associazione_usa_il_tetto_dell_associazione() {
+        let sorgente = include_str!("nodo.rs");
+        let codice = &sorgente[..sorgente
+            .find("mod prove_connessioni;")
+            .expect("le prove in fondo")];
+        // Gli argomenti di una chiamata, dalla parentesi che la apre a quella
+        // che la chiude.
+        let argomenti = |da: usize| -> &str {
+            let mut profondita = 0_usize;
+            for (i, c) in codice[da..].char_indices() {
+                match c {
+                    '(' => profondita += 1,
+                    ')' if profondita == 1 => return &codice[da..=da + i],
+                    ')' => profondita -= 1,
+                    _ => {}
+                }
+            }
+            panic!("chiamata non chiusa a {da}");
+        };
+        let tetti = ["MASSIMA_ASSOCIA", "MASSIMA_DOMANDA", "MASSIMA_TESTA"];
+        let mut letture = 0;
+        for (dove, _) in codice.match_indices("leggi") {
+            let dopo = dove + "leggi".len();
+            let Some(apre) = codice[dopo..].find('(') else {
+                continue;
+            };
+            // `leggi(` o `leggi::<T>(`: non `leggi_risposta`, non la definizione.
+            let tipo = &codice[dopo..dopo + apre];
+            let chiamata_di_leggi =
+                tipo.is_empty() || (tipo.starts_with("::<") && tipo.ends_with('>'));
+            if !chiamata_di_leggi || codice[..dove].ends_with("fn ") {
+                continue;
+            }
+            letture += 1;
+            let chiamata = argomenti(dopo + apre);
+            let tetto = tetti
+                .into_iter()
+                .find(|t| chiamata.contains(t))
+                .unwrap_or_else(|| panic!("leggi{tipo}{chiamata}: senza uno dei tre tetti"));
+            if tipo.contains("Associa") {
+                assert_eq!(tetto, "MASSIMA_ASSOCIA", "leggi{tipo}{chiamata}");
+            }
+        }
+        assert!(letture >= 4, "{letture} letture: la prova non le trova più");
+        // La domanda di chi bussa col QR prende il tipo dalla variabile, non
+        // dalla chiamata: la si guarda a parte.
+        let associa = codice.find("async fn associa(").expect("associa");
+        let prima = associa + codice[associa..].find("leggi(").expect("associa legge");
+        assert!(codice[associa..prima].contains("let domanda: Associa ="));
+        assert!(
+            argomenti(prima + "leggi".len()).contains("MASSIMA_ASSOCIA"),
+            "associa legge la domanda con un altro tetto"
+        );
+    }
+
     #[test]
     fn esadecimale_avanti_e_indietro() {
         let byte = [0_u8, 1, 0xab, 0xff];

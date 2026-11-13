@@ -26,6 +26,12 @@
  *     attraverso JNI devono esserci, col loro nome. Senza `Ponte.chiama` ogni
  *     ponte verso Kotlin (portachiavi, sessione multimediale, selettore delle
  *     cartelle) fallisce; senza i costruttori di wry la finestra non nasce.
+ *   - **Le icone di Android Auto** (`aapt2 dump resources`): ogni
+ *     `res/drawable/auto_*.xml` del progetto c'è ancora nella tabella delle
+ *     risorse. Arrivano all'auto per nome, come stringa, e la riduzione delle
+ *     risorse di R8 non le vede: nella release di prova le aveva tolte tutte, e
+ *     l'auto mostrava le schede senza icona (R11-5). `res/raw/keep.xml` le
+ *     tiene; questo controllo si accorge del giorno in cui non le tiene più.
  *
  * # E dopo la firma (lavoro `firma-apk`, nell'ambiente `release`)
  *
@@ -59,6 +65,8 @@ const { codiceAndroid } = require("./versione.js");
 const REPO = path.dirname(__dirname);
 const PACCHETTO = path.join(REPO, "apps/desktop/package.json");
 const TAURI = path.join(REPO, "apps/desktop/src-tauri/tauri.conf.json");
+/** Dove stanno le icone del progetto Android: vedi [`iconeDellAuto`]. */
+const DISEGNI = path.join(REPO, "apps/desktop/src-tauri/gen/android/app/src/main/res/drawable");
 
 /**
  * L'impronta SHA-256 del certificato di firma dei rilasci Android, nella forma
@@ -269,6 +277,33 @@ function problemiMapping(testo, tenuti = TENUTI) {
   return problemi;
 }
 
+/**
+ * Le icone che Android Auto chiede per nome: ogni `auto_*.xml` di
+ * `res/drawable`, in ordine. Lette dal progetto e non scritte qui, così
+ * un'icona nuova presa per nome (che `keep.xml` tiene se comincia con
+ * `auto_`) entra nel controllo da sé.
+ */
+function iconeDellAuto(cartella = DISEGNI) {
+  return fs
+    .readdirSync(cartella)
+    .filter((f) => /^auto_[a-z0-9_]+\.xml$/.test(f))
+    .map((f) => f.slice(0, -".xml".length))
+    .sort();
+}
+
+/**
+ * `aapt2 dump resources`: ogni icona di `nomi` è ancora nella tabella, come
+ * `drawable/<nome>`. Una stringa con lo stesso nome (`string/auto_album`)
+ * non conta: all'auto arriva l'indirizzo del disegno.
+ */
+function problemiRisorse(testo, nomi) {
+  if (!/^Package name=/m.test(testo)) return ["aapt2 non ha descritto le risorse dell'APK"];
+  const disegni = new Set([...testo.matchAll(/^\s*resource 0x[0-9a-f]+ drawable\/(\S+)\s*$/gm)].map((m) => m[1]));
+  return nomi
+    .filter((nome) => !disegni.has(nome))
+    .map((nome) => `drawable/${nome} non c'è più: la riduzione delle risorse l'ha tolta, e Android Auto mostrerebbe la scheda senza icona (res/raw/keep.xml)`);
+}
+
 /** `apksigner verify --verbose --print-certs`: chi ha firmato, e come. */
 function problemiFirma(testo, impronta) {
   const problemi = [];
@@ -367,6 +402,9 @@ function main() {
     const badging = lancia("aapt2", ["dump", "badging", a.file]);
     if (badging.codice !== 0) problemi.push(`aapt2 dump badging non è riuscito:\n${badging.uscita}`);
     else problemi.push(...problemiBadging(badging.uscita, { pacchetto: configurazione().identifier, versione: v }));
+    const risorse = lancia("aapt2", ["dump", "resources", a.file]);
+    if (risorse.codice !== 0) problemi.push(`aapt2 dump resources non è riuscito:\n${risorse.uscita}`);
+    else problemi.push(...problemiRisorse(risorse.uscita, iconeDellAuto()));
     problemi.push(...problemiMapping(fs.readFileSync(a.mapping, "utf8")));
   } else {
     const firma = lancia("apksigner", ["verify", "--verbose", "--print-certs", a.file]);
@@ -383,7 +421,7 @@ function main() {
     console.error(`${path.basename(a.file)}: ${problemi.length} problemi\n` + problemi.map((p) => `  - ${p}`).join("\n"));
     process.exit(1);
   }
-  console.log(`${path.basename(a.file)}: ${a.comando === "controlla" ? "pagine, manifesto e R8" : "allineamento, certificato e .sig"} in ordine.`);
+  console.log(`${path.basename(a.file)}: ${a.comando === "controlla" ? "pagine, manifesto, icone di Android Auto e R8" : "allineamento, certificato e .sig"} in ordine.`);
 }
 
 if (require.main === module) main();
@@ -400,6 +438,8 @@ module.exports = {
   problemiPagine,
   problemiBadging,
   problemiMapping,
+  problemiRisorse,
+  iconeDellAuto,
   problemiFirma,
   problemiSig,
   argomenti,

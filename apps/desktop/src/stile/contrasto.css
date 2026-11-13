@@ -83,7 +83,8 @@
   .finestrella[role='dialog']:focus-visible,
   .finestrella[role='alertdialog']:focus-visible,
   .primo[role='dialog']:focus-visible,
-  .in-riproduzione:focus-visible {
+  .in-riproduzione:focus-visible,
+  main.posto-content:focus-visible {
     outline: none;
   }
   /* I comandi senza cursore di testo — i menu a tendina dell'editor delle

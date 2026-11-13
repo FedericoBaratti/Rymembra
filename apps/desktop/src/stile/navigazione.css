@@ -1,6 +1,39 @@
 /* La navigazione, l'intestazione di pagina, le linguette e i bottoni di base.
    Tale e quale da `stile.css`; l'ordine degli import di `main.tsx` è la cascata. */
 
+/* ── «Salta al contenuto» ─────────────────────────────────────────────────
+
+   Il primo comando della finestra, e si vede solo col fuoco: chi usa il mouse
+   non lo incontra mai, chi usa la tastiera lo trova al primo Tab (R16-10). In
+   alto a sinistra, sopra la navigazione: i tre comandi della finestra stanno
+   dall'altra parte. Nascosto come `.solo-lettori` e non con `display: none`,
+   che lo toglierebbe anche al Tab. */
+.salta-al-contenuto {
+  position: fixed;
+  top: var(--spazio-2);
+  left: var(--spazio-2);
+  z-index: var(--strato-salto);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-1);
+  color: var(--color-text-1);
+  box-shadow: var(--shadow-3);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.salta-al-contenuto:not(:focus) {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ── navigazione ─────────────────────────────────────────────────────────── */
 .navigazione {
   width: var(--rail-w-expanded);

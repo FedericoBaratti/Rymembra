@@ -49,7 +49,7 @@ import { creaArchivio, ugualiInSuperficie, useArchivio } from "../archivio";
 import { ConfermaGesto } from "../ConfermaGesto";
 import { useDati } from "../dati";
 import { Dialogo } from "../Dialogo";
-import { inCima, useFinestrella, useQuandoSiRitira } from "../finestrella";
+import { inCima, useFinestrella, useQuandoSiRitira, useVeloInerte } from "../finestrella";
 import { dataOraBreve, numero } from "../formato";
 import {
   LIMITE_CALIBRAZIONE_MS,
@@ -1648,6 +1648,10 @@ function PannelloInsieme({
 }) {
   const { anteprima } = useDati();
   const radice = useFinestrella<HTMLDivElement>(onChiudi);
+  // Il resto della finestra `inert` finché è aperto, come l'equalizzatore che
+  // ne presta la forma (R16-3). Il pannello è fratello del velo.
+  const velo = useRef<HTMLDivElement>(null);
+  useVeloInerte(velo, radice);
   const idTitolo = useId();
   useEffect(() => {
     if (anteprima) return;
@@ -1668,7 +1672,7 @@ function PannelloInsieme({
 
   return (
     <>
-      <div className="velo" onClick={onChiudi} />
+      <div ref={velo} className="velo" onClick={onChiudi} />
       <Presenza parte="eq-panel">
         <div
           ref={radice}

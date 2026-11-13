@@ -268,6 +268,11 @@
      un toast racconta una cosa già avvenuta e non si può richiedere, un menù lo
      si è appena aperto e si chiude con Esc. */
   --strato-toast: 50;
+  /* «Salta al contenuto», che compare solo col fuoco in cima alla finestra:
+     sopra la pagina, i menù e i toast, che non devono coprirlo. Sotto il primo
+     avvio, le finestrelle e il giro, che lo rendono inerte — quando ci sono
+     loro, il salto non si raggiunge. */
+  --strato-salto: 55;
   /* Il primo avvio, che copre la finestra intera perché dietro non c'è ancora
      niente da guardare. */
   --strato-primo: 60;
@@ -608,7 +613,9 @@ body {
  *
  * `.in-riproduzione` non è un dialogo ma ha la stessa ragione: il fuoco ci entra
  * dal programma all'apertura, sulla radice, e l'anello attorno allo schermo
- * intero diceva soltanto che la schermata si era aperta.
+ * intero diceva soltanto che la schermata si era aperta. Lo stesso per il posto
+ * del contenuto, dove porta «Salta al contenuto»: un anello attorno a tutta la
+ * pagina direbbe soltanto che il salto è avvenuto.
  *
  * Vale anche in contrasto elevato: il blocco `forced-colors` di
  * `stile/contrasto.css` ripete l'esclusione accanto al suo anello `Highlight`.
@@ -620,7 +627,8 @@ body {
 .finestrella[role='dialog']:focus-visible,
 .finestrella[role='alertdialog']:focus-visible,
 .primo[role='dialog']:focus-visible,
-.in-riproduzione:focus-visible {
+.in-riproduzione:focus-visible,
+main.posto-content:focus-visible {
   outline: none;
 }
 

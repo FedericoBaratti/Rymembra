@@ -41,7 +41,7 @@ import {
 } from "../eq";
 import { MOBILE } from "../piattaforma";
 import { numero } from "../formato";
-import { useFinestrella } from "../finestrella";
+import { useFinestrella, useVeloInerte } from "../finestrella";
 import { Presenza } from "../presenza";
 import { useStabile } from "../stabile";
 
@@ -372,6 +372,11 @@ export function PannelloEq({
   // restava sul tasto della barra, e il Tab usciva nella pagina dietro.
   // L'Escape resta quello qui sotto, che arriva prima di quello dell'hook.
   const radice = useFinestrella<HTMLDivElement>(onChiudi);
+  // E il resto della finestra `inert` finché è aperto (R16-3): la trappola del
+  // Tab non ferma un lettore di schermo, che dietro il velo trovava la pagina
+  // intera. Il pannello è fratello del velo, e resta vivo accanto a lui.
+  const velo = useRef<HTMLDivElement>(null);
+  useVeloInerte(velo, radice);
   useEffect(() => {
     // Nell'anteprima dello Studio il pannello è un disegno, e i tasti sono
     // dello Studio: vedi lo stesso ramo in `Menu.tsx`.
@@ -394,7 +399,7 @@ export function PannelloEq({
     <>
       {/* Lo stesso velo del menù contestuale: prende il clic di chiusura, così
           il pannello si chiude cliccando ovunque e non solo su un tasto. */}
-      <div className="velo" onClick={onChiudi} />
+      <div ref={velo} className="velo" onClick={onChiudi} />
       <Presenza parte="eq-panel">
         <div
           ref={radice}

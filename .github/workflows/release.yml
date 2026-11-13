@@ -508,9 +508,11 @@ jobs:
         run: git diff --exit-code -- Cargo.lock apps/desktop/package-lock.json
 
       # Prima della firma, senza chiave: pagine da 16 KB, solo arm64, il
-      # manifesto (pacchetto, versione, versionCode, niente debug) e R8, che
-      # deve aver lasciato `Ponte.chiama` e gli altri nomi che Rust chiama per
-      # nome (`strumenti/apk.js`). Il nome è quello che l'app cerca
+      # manifesto (pacchetto, versione, versionCode, niente debug), le sei
+      # icone `drawable/auto_*` di Android Auto ancora nelle risorse
+      # (`aapt2 dump resources`: la riduzione delle risorse le toglieva, R11-5)
+      # e R8, che deve aver lasciato `Ponte.chiama` e gli altri nomi che Rust
+      # chiama per nome (`strumenti/apk.js`). Il nome è quello che l'app cerca
       # (`rilasci.rs::apk_per`).
       - name: L'APK, controllato
         shell: bash

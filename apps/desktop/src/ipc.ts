@@ -60,6 +60,12 @@ export const ipc = {
   // desktop. Torna com'è rimasta, come `finestraIngrandisci`.
   finestraSchermoIntero: () => invoke<boolean>("finestra_schermo_intero"),
   finestraChiudi: () => invoke<void>("finestra_chiudi"),
+  // La chiusura che arriva dal nucleo — Alt+F4, la barra delle applicazioni,
+  // «Esci» dal vassoio — aspetta lo Studio come la X: la pagina dice quando ha
+  // qualcosa da scrivere, e risponde a `finestra:scrivi` quando ha scritto.
+  // Vedi `src-tauri/src/chiusura.rs` e `studio/primaDiChiudere.ts`.
+  chiusuraDaScrivere: (si: boolean) => invoke<void>("chiusura_da_scrivere", { si }),
+  chiusuraScritto: () => invoke<void>("chiusura_scritto"),
 
   // ── il secondo piano ──────────────────────────────────────────────────────
   // Se `finestraChiudi` spenga il programma o nasconda soltanto la finestra. La
@@ -1138,6 +1144,7 @@ export const ipc = {
       | "terze"
       | "privacy"
       | "condizioni"
+      | "caratteri"
       // Non un documento, ma la stessa serratura: l'elenco di là non tiene «i
       // testi legali», tiene gli indirizzi che questa finestra ha il permesso
       // di far aprire.
@@ -1146,6 +1153,11 @@ export const ipc = {
       // `parti/AppServizio.tsx`.
       | `console-${ChiavePiattaforma}`,
   ) => invoke<void>("apri_documento", { quale }),
+  // Il testo della copia che viaggia con l'app, per leggerlo senza rete
+  // (D-10d); `null` se questa installazione non la porta. Vedi
+  // `documentoLocale.ts`.
+  documentoLocale: (quale: "licenza" | "terze" | "privacy" | "condizioni" | "caratteri") =>
+    invoke<string | null>("documento_locale", { quale }),
 
   // La documentazione tecnica sul sito, alla voce di una scheda delle
   // Impostazioni. L'ancora e non l'indirizzo, per la stessa ragione di sopra:

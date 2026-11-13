@@ -1303,14 +1303,20 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         // Si prende l'elenco solo se è quello confermato; resta in mano fino a
         // scrittura riuscita, e se la scrittura fallisce torna al suo posto.
         let elenco = in_attesa().take_if(|(atteso, _)| *atteso == gettone);
-        let tolti = match elenco {
-            None => 0,
+        let (tolti, via) = match elenco {
+            None => (0, Vec::new()),
             Some((segno, righe)) => {
                 let fatto = con_libreria(&stato, |libreria| {
-                    applica_rimozioni(&mut libreria.connection, &righe)
+                    let tolti = applica_rimozioni(&mut libreria.connection, &righe)?;
+                    let ids: Vec<i64> = righe.iter().map(|riga| riga.id).collect();
+                    let rimaste: Vec<i64> = summaries_by_id(&libreria.connection, &ids)?
+                        .iter()
+                        .map(|brano| brano.id)
+                        .collect();
+                    Ok((tolti, sparite(&righe, &rimaste)))
                 });
                 match fatto {
-                    Ok(tolti) => tolti,
+                    Ok(fatto) => fatto,
                     Err(guasto) => {
                         *in_attesa() = Some((segno, righe));
                         return Err(guasto);
@@ -1322,6 +1328,18 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         // manutenzione va svegliata come dopo una scansione che toglie.
         if tolti > 0 {
             turno.segna_cambiamenti();
+        }
+        // La scrittura è finita: il turno delle scansioni si lascia qui, e la
+        // coda non lo tiene occupato.
+        drop(turno);
+        // E brani che la coda non deve più tenere, come dopo «Togli dalla
+        // libreria» (R23-8): il brano che suonava restava in coda col suo id,
+        // e con «ripeti tutto» tornava per essere saltato con un avviso. Dopo
+        // la scrittura riuscita, e solo le righe sparite davvero. Senza
+        // fermare: i file sono già spariti dal disco, e togliere dalla coda
+        // vuol dire «non risuonarlo», come in `brani_togli`.
+        if !via.is_empty() {
+            crate::cancellazione::sgombera(&mano, &via, false);
         }
         let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection))?;
         Ok(EsitoRimozioni { tolti, numeri })
@@ -1335,6 +1353,19 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         crate::cartelle::cambiate(&app);
     }
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Le righe di un elenco di rimozioni che dopo la scrittura non ci sono più.
+///
+/// `applica_rimozioni` toglie una riga solo se ha ancora il percorso con cui la
+/// si era giudicata sparita: una riga che un'altra scansione ha ritrovato
+/// altrove resta, e con lei il suo posto nella coda.
+fn sparite(righe: &[RimozioneInAttesa], rimaste: &[i64]) -> Vec<i64> {
+    righe
+        .iter()
+        .map(|riga| riga.id)
+        .filter(|id| !rimaste.contains(id))
+        .collect()
 }
 
 /// Lascia cadere le rimozioni in attesa: la risposta è stata no.
@@ -2256,15 +2287,18 @@ pub fn settimana_apri(stato: State<'_, Stato>, raccolta: i64) -> Esito<()> {
 /// dall'interno di un programma di cui ci si fida. Con un elenco chiuso il
 /// peggio che può fare è aprire la licenza.
 ///
-/// # Perché sul sito e non i file impacchettati
+/// # Il sito, e la copia che viaggia con l'app
 ///
-/// I file ci sono — `bundle.resources` mette `LICENSE.txt`,
-/// `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`, `TERMS.md` e `font-OFL.txt` accanto
-/// all'eseguibile — ma un `.md` aperto col gestore file finisce in un editor di
-/// testo o in niente, a seconda di cosa è associato su quella macchina. Il
-/// documento sul repository è lo stesso testo, impaginato, e soprattutto è
-/// quello **aggiornato**: chi apre la licenza da una versione di un anno fa non
-/// ha motivo di leggere la licenza di un anno fa.
+/// Il documento sul repository è lo stesso testo, impaginato, ed è quello
+/// **aggiornato**. Ma la licenza e gli avvisi si devono poter leggere anche
+/// senza rete (D-10d), e i file ci sono: `bundle.resources` mette
+/// `LICENSE.txt`, `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`, `TERMS.md` e
+/// `font-OFL.txt` accanto all'eseguibile (l'installer e il pacchetto dello
+/// Store), e Gradle li mette in `assets/legale/` dell'APK. Aprirli col gestore
+/// file non va — un `.md` finisce in un editor di testo o in niente, a seconda
+/// di cosa è associato su quella macchina — quindi la finestra li mostra lei:
+/// [`documento_locale`] ne legge il testo, e la versione sul sito resta a un
+/// tasto di distanza.
 #[derive(Debug, Clone, Copy)]
 enum Documento {
     /// Il repository.
@@ -2279,6 +2313,9 @@ enum Documento {
     Privacy,
     /// Cosa si può fare della musica.
     Condizioni,
+    /// La licenza dei caratteri dell'interfaccia (SIL OFL 1.1), che gli
+    /// avvisi delle terze parti nominano senza riportarla.
+    Caratteri,
     /// Dove sostenere il lavoro.
     ///
     /// Non è un documento e sta fra i documenti: quel che questo elenco tiene
@@ -2304,11 +2341,27 @@ impl Documento {
             "terze" => Some(Self::Terze),
             "privacy" => Some(Self::Privacy),
             "condizioni" => Some(Self::Condizioni),
+            "caratteri" => Some(Self::Caratteri),
             "donazioni" => Some(Self::Donazioni),
             _ => grezzo
                 .strip_prefix("console-")
                 .and_then(rymembra_domain::nuvola_app::Piattaforma::da_chiave)
                 .map(Self::Console),
+        }
+    }
+
+    /// Il nome della copia che viaggia con l'app, per i quattro testi che ne
+    /// hanno una: accanto all'eseguibile sul computer, in `assets/legale/`
+    /// nell'APK. Gli stessi nomi in tutti e due (`tauri.conf.json`,
+    /// `build.gradle.kts`).
+    fn copia_locale(self) -> Option<&'static str> {
+        match self {
+            Self::Licenza => Some("LICENSE.txt"),
+            Self::Terze => Some("THIRD-PARTY-NOTICES.md"),
+            Self::Privacy => Some("PRIVACY.md"),
+            Self::Condizioni => Some("TERMS.md"),
+            Self::Caratteri => Some("font-OFL.txt"),
+            Self::Repository | Self::Segnalazioni | Self::Donazioni | Self::Console(_) => None,
         }
     }
 
@@ -2325,6 +2378,7 @@ impl Documento {
             Self::Terze => format!("{radice}/blob/main/THIRD-PARTY-NOTICES.md"),
             Self::Privacy => format!("{radice}/blob/main/PRIVACY.md"),
             Self::Condizioni => format!("{radice}/blob/main/TERMS.md"),
+            Self::Caratteri => format!("{radice}/blob/main/apps/desktop/src/font/OFL.txt"),
             // Le donazioni non stanno **dentro** il repository: stanno accanto,
             // sotto il profilo di chi lo tiene — `github.com/OWNER/REPO` diventa
             // `github.com/sponsors/OWNER`. Il proprietario si ricava da quella
@@ -2379,6 +2433,104 @@ pub fn apri_documento(quale: String) -> Esito<()> {
             .with_cause(err.to_string()),
         )
     })
+}
+
+/// Quanto può pesare la copia locale di un documento per leggerla in memoria.
+/// Il più lungo, gli avvisi delle terze parti, è sopra il mebibyte; otto
+/// lasciano crescere l'elenco delle dipendenze senza dare alla finestra un
+/// file qualunque.
+#[cfg_attr(
+    target_os = "android",
+    allow(dead_code, reason = "sul telefono legge Kotlin dagli asset dell'APK")
+)]
+const TETTO_DOCUMENTO: u64 = 8 * 1024 * 1024;
+
+/// Il testo di `nome` dentro `cartella`, se c'è.
+///
+/// # Errori
+///
+/// `fs.readFailed` se il file c'è e non si legge, se supera
+/// [`TETTO_DOCUMENTO`] o se non è testo UTF-8. Un file che non c'è non è un
+/// errore: `None`, e la finestra apre il sito.
+#[cfg_attr(
+    target_os = "android",
+    allow(dead_code, reason = "sul telefono legge Kotlin dagli asset dell'APK")
+)]
+fn testo_locale(cartella: &std::path::Path, nome: &str) -> Result<Option<String>, AppError> {
+    use std::io::Read as _;
+    let percorso = cartella.join(nome);
+    let guasto = |detail: String| {
+        AppError::new(ErrorCode::FsReadFailed {
+            path: percorso.display().to_string(),
+            detail: Some(detail.clone()),
+        })
+        .with_cause(detail)
+    };
+    let file = match std::fs::File::open(&percorso) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(guasto(err.to_string())),
+    };
+    let mut byte = Vec::new();
+    file.take(TETTO_DOCUMENTO + 1)
+        .read_to_end(&mut byte)
+        .map_err(|err| guasto(err.to_string()))?;
+    if u64::try_from(byte.len()).unwrap_or(u64::MAX) > TETTO_DOCUMENTO {
+        return Err(guasto(format!("più di {TETTO_DOCUMENTO} byte")));
+    }
+    String::from_utf8(byte)
+        .map(Some)
+        .map_err(|err| guasto(format!("non è testo UTF-8: {err}")))
+}
+
+/// Il testo della copia locale di un documento pubblico, per leggerlo senza
+/// rete (D-10d).
+///
+/// `None` se il documento non ne ha una (il repository, le donazioni, le
+/// console) o se questa installazione non la porta: allora la finestra apre il
+/// sito con [`apri_documento`]. Sul computer i file stanno accanto
+/// all'eseguibile, nella cartella delle risorse; sul telefono nell'APK, e li
+/// legge Kotlin (`Ponte`, `legale.leggi`).
+///
+/// # Errori
+///
+/// `internal.aborted` per un nome fuori elenco; `fs.readFailed` se la copia
+/// c'è e non si legge.
+#[tauri::command(async)]
+pub fn documento_locale(app: tauri::AppHandle, quale: String) -> Esito<Option<String>> {
+    let Some(documento) = Documento::da_nome(&quale) else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("lettura di un documento".to_owned()),
+            })
+            .with_cause(format!("«{quale}» non è uno dei documenti pubblici")),
+        ));
+    };
+    let Some(nome) = documento.copia_locale() else {
+        return Ok(None);
+    };
+    #[cfg(target_os = "android")]
+    {
+        let _ = &app;
+        rymembra_android::sistema::avviso_legale(nome).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::FsReadFailed {
+                    path: format!("assets/legale/{nome}"),
+                    detail: Some(err.to_string()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // Senza la cartella delle risorse non c'è una copia da leggere: si
+        // apre il sito, come prima.
+        let Ok(cartella) = app.path().resource_dir() else {
+            return Ok(None);
+        };
+        testo_locale(&cartella, nome).map_err(errore)
+    }
 }
 
 /// Le voci della documentazione tecnica a cui le Impostazioni rimandano.
@@ -2515,6 +2667,7 @@ mod prove {
         "terze",
         "privacy",
         "condizioni",
+        "caratteri",
         "donazioni",
         "console-google",
         "console-microsoft",
@@ -2538,6 +2691,89 @@ mod prove {
                 "«{nome}» apre «{indirizzo}», che non è un indirizzo"
             );
         }
+    }
+
+    /// R23-8, la seconda metà: le rimozioni confermate tolgono righe dalla
+    /// libreria, e la coda le deve perdere come dopo «Togli dalla libreria».
+    /// Prima la coda teneva l'id del brano che suonava: con «ripeti tutto»
+    /// tornava, e veniva saltato con un avviso. Dopo la scrittura riuscita, e
+    /// non prima: se fallisce, le righe ci sono ancora.
+    #[test]
+    fn le_rimozioni_confermate_sgomberano_la_coda() {
+        let sorgente = include_str!("comandi.rs");
+        let corpo = &sorgente[sorgente
+            .find("pub async fn rimozioni_conferma(")
+            .expect("il comando")..];
+        let corpo = &corpo[..corpo.find("\n}\n").expect("la fine del comando")];
+        let scrive = corpo.find("applica_rimozioni(").expect("la scrittura");
+        let sgombera = corpo
+            .find("crate::cancellazione::sgombera(&mano, &via, false)")
+            .expect("rimozioni_conferma non sgombera la coda");
+        assert!(sgombera > scrive, "la coda si sgombera dopo la scrittura");
+    }
+
+    /// Solo le righe sparite davvero: una che nel frattempo ha un altro
+    /// percorso resta in libreria, e il suo posto nella coda con lei.
+    #[test]
+    fn la_coda_perde_solo_le_righe_sparite_davvero() {
+        let riga = |id: i64| RimozioneInAttesa {
+            id,
+            path: format!(r"D:\Musica\{id}.flac"),
+        };
+        let righe = [riga(1), riga(2), riga(3)];
+        assert_eq!(sparite(&righe, &[2]), vec![1, 3]);
+        assert!(sparite(&righe, &[1, 2, 3]).is_empty());
+        assert_eq!(sparite(&righe, &[]), vec![1, 2, 3]);
+    }
+
+    /// D-10d: licenza, avvisi delle terze parti, privacy, condizioni e la
+    /// licenza dei caratteri (OFL) si leggono anche senza rete, dalla copia che
+    /// viaggia con l'app. Gli altri
+    /// nomi non ne hanno una, e un file che non c'è non è un guasto.
+    #[test]
+    fn i_testi_legali_si_leggono_dalla_copia_locale() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let attesi = [
+            ("licenza", "LICENSE.txt"),
+            ("terze", "THIRD-PARTY-NOTICES.md"),
+            ("privacy", "PRIVACY.md"),
+            ("condizioni", "TERMS.md"),
+            ("caratteri", "font-OFL.txt"),
+        ];
+        for (nome, file) in attesi {
+            let documento = Documento::da_nome(nome).expect("un nome dell'elenco");
+            assert_eq!(documento.copia_locale(), Some(file), "{nome}");
+            // Non c'è: la finestra apre il sito.
+            assert_eq!(
+                testo_locale(dir.path(), file).expect("niente"),
+                None,
+                "{nome}"
+            );
+            std::fs::write(
+                dir.path().join(file),
+                format!("Il testo di {nome} — «così»"),
+            )
+            .expect("scrivo");
+            assert_eq!(
+                testo_locale(dir.path(), file).expect("letto").as_deref(),
+                Some(format!("Il testo di {nome} — «così»").as_str())
+            );
+        }
+        for nome in ["repository", "segnalazioni", "donazioni", "console-google"] {
+            let documento = Documento::da_nome(nome).expect("un nome dell'elenco");
+            assert_eq!(documento.copia_locale(), None, "{nome}");
+        }
+        // Un file oltre il tetto non si legge in memoria: è un guasto detto.
+        let grande = dir.path().join("grande.md");
+        std::fs::write(
+            &grande,
+            vec![b'x'; usize::try_from(TETTO_DOCUMENTO).unwrap() + 1],
+        )
+        .expect("scrivo");
+        assert!(testo_locale(dir.path(), "grande.md").is_err());
+        // E dei byte che non sono testo nemmeno.
+        std::fs::write(dir.path().join("rotto.md"), [0xff, 0xfe, 0x00]).expect("scrivo");
+        assert!(testo_locale(dir.path(), "rotto.md").is_err());
     }
 
     /// Un nome fuori elenco non ha un indirizzo, e non lo inventa.

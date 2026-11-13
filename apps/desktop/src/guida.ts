@@ -67,11 +67,26 @@ export interface Schermo {
  * copre niente che il passo stia mostrando. La sovrapposizione resta l'ultima
  * risorsa, per il bersaglio grande quanto tutta la finestra — lo schermo
  * intero — dove non c'è un fuori in cui stare.
+ *
+ * # I punti da non coprire
+ *
+ * Sovrapposto vuol dire sopra **qualcosa** del bersaglio, e non tutto vale lo
+ * stesso. Il passo «A tutto schermo» parla dei tasti del testo e dello
+ * spettro, e il fumetto in alto al centro ci stava proprio sopra (R18-12).
+ * `evita` sono i rettangoli che il passo descrive: in quel caso il fumetto
+ * prova, in quest'ordine, in alto al centro, nei due angoli in alto, in basso
+ * al centro e nei due angoli in basso, e si ferma al primo posto che non ne
+ * tocca nessuno, col suo distacco. Prima in alto, dove l'occhio lo cercava
+ * già; in basso per ultimo, perché a schermo intero lì ci sono la barra e i
+ * tasti del lettore. Se li toccano tutti, resta in alto al centro come prima.
+ * Quando il fumetto sta fuori dal bersaglio i punti non contano: stanno
+ * dentro di lui.
  */
 export function posaFumetto(
   buco: Rettangolo,
   misura: { width: number; height: number },
   schermo: Schermo,
+  evita: readonly Rettangolo[] = [],
 ): { top: number; left: number } {
   const stretta = (valore: number, minimo: number, massimo: number) =>
     Math.max(minimo, Math.min(valore, Math.max(minimo, massimo)));
@@ -94,9 +109,29 @@ export function posaFumetto(
   const sinistra = buco.left - DISTACCO - misura.width;
   if (sinistra >= DISTACCO) return rientra({ top: alCentroY, left: sinistra });
 
-  // Non ci sta da nessuna parte: si appoggia in alto e si accetta la
-  // sovrapposizione, che è meno peggio di un fumetto mezzo fuori dallo schermo.
-  return rientra({ top: DISTACCO, left: alCentroX });
+  // Non ci sta da nessuna parte: si appoggia sopra il bersaglio e si accetta
+  // la sovrapposizione, che è meno peggio di un fumetto mezzo fuori dallo
+  // schermo — ma non sopra i punti che il passo descrive, se c'è un altro posto.
+  const inAlto = rientra({ top: DISTACCO, left: alCentroX });
+  const tocca = (posto: { top: number; left: number }) =>
+    evita.some(
+      (punto) =>
+        posto.left < punto.left + punto.width + DISTACCO &&
+        punto.left - DISTACCO < posto.left + misura.width &&
+        posto.top < punto.top + punto.height + DISTACCO &&
+        punto.top - DISTACCO < posto.top + misura.height,
+    );
+  const inBasso = schermo.altezza - misura.height - DISTACCO;
+  const aDestra = schermo.larghezza - misura.width - DISTACCO;
+  const posti = [
+    inAlto,
+    rientra({ top: DISTACCO, left: DISTACCO }),
+    rientra({ top: DISTACCO, left: aDestra }),
+    rientra({ top: inBasso, left: alCentroX }),
+    rientra({ top: inBasso, left: DISTACCO }),
+    rientra({ top: inBasso, left: aDestra }),
+  ];
+  return posti.find((posto) => !tocca(posto)) ?? inAlto;
 }
 
 /** Quel che serve sapere per decidere se il giro parte. */

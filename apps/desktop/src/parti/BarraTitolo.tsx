@@ -32,11 +32,12 @@
  * alto quanto lei: è la stessa regola per cui nessun componente di questa
  * cartella calcola geometria.
  */
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 
 import { rispondiNoAllaDomandaInCima } from "../finestrella";
 import { ipc } from "../ipc";
-import { tuttoScritto } from "../studio/primaDiChiudere";
+import { quandoCambiaDaScrivere, tuttoScritto } from "../studio/primaDiChiudere";
 import { Icona } from "./Icone";
 import { t, useLingua } from "../lingue";
 
@@ -47,6 +48,9 @@ import { t, useLingua } from "../lingue";
  * velo *è* un bersaglio: prende il clic per chiudere, e trascinarci la finestra
  * avrebbe chiuso la finestrella sotto le dita a fine trascinamento.
  */
+/** L'evento con cui il nucleo chiede di scrivere prima di chiudere: `chiusura.rs`. */
+const EVENTO_SCRIVI = "finestra:scrivi";
+
 const NON_SI_AFFERRA = [
   "button",
   "a[href]",
@@ -104,6 +108,37 @@ export function BarraTitolo() {
       window.removeEventListener("resize", dopo);
     };
   }, [chiediStato]);
+
+  /*
+   * Le chiusure che non passano da qui — Alt+F4, la barra delle applicazioni,
+   * «Esci» dal vassoio — le decide il nucleo, che per aspettare lo Studio come
+   * la X deve sapere quando c'è qualcosa da scrivere, e chiederlo (R14-7).
+   * Qui e non nello Studio: la barra è montata per tutta la vita della
+   * finestra, anche quando lo Studio si apre e si chiude. Un'iscrizione che
+   * non arriva lascia il nucleo com'era prima: chiude senza aspettare.
+   */
+  useEffect(() => {
+    const smetti = quandoCambiaDaScrivere((si) => {
+      ipc.chiusuraDaScrivere(si).catch(() => {});
+    });
+    let smettiDiAscoltare: (() => void) | null = null;
+    let vivo = true;
+    void listen(EVENTO_SCRIVI, () => {
+      // Il nucleo ha già un tetto suo: se questa risposta non arriva, chiude
+      // lo stesso.
+      void tuttoScritto()
+        .then(() => ipc.chiusuraScritto())
+        .catch(() => {});
+    }).then((togli) => {
+      if (vivo) smettiDiAscoltare = togli;
+      else togli();
+    });
+    return () => {
+      vivo = false;
+      smetti();
+      smettiDiAscoltare?.();
+    };
+  }, []);
 
   useEffect(() => {
     const premuto = (e: MouseEvent) => {

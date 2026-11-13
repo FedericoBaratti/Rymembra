@@ -327,6 +327,17 @@
 .cartella[data-nuvola] .percorso {
   direction: ltr;
 }
+/* Una cartella sorvegliata che non risponde: in corsivo e più quieta, come
+   nell'albero delle Cartelle, con la parola accanto (R18-11). */
+.cartella[data-spenta] .percorso {
+  font-style: italic;
+  color: var(--color-text-3);
+}
+.cartella .stato-radice {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-2);
+}
 .conti-nuvola {
   display: flex;
   flex-direction: column;

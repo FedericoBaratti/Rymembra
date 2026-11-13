@@ -246,6 +246,16 @@ catalogo! {
     /// «è cambiato qualcosa dalla loro parte». Mai ritentabile: lo stesso
     /// certificato dà lo stesso rifiuto.
     NetUntrustedCertificate = "net.untrustedCertificate", Net, Warning, Never, None, { host: Option<String> };
+    /// Il server degli aggiornamenti ha risposto con un errore, e non si sa
+    /// quale: la release non c'è, o non ha il manifesto (`latest.json`).
+    ///
+    /// È il `ReleaseNotFound` di `tauri-plugin-updater`, che lo stato non lo
+    /// dice. Non è [`ErrorCode::NetHttp`], che lo vuole; non è
+    /// [`ErrorCode::NetBadSchema`], perché una risposta da leggere non c'era;
+    /// non è [`ErrorCode::NetOffline`], perché il server ha risposto (R20-10).
+    /// Non si ritenta presto: quasi sempre è chi pubblica, e il controllo
+    /// dopo lo rivede da sé.
+    NetReleaseMissing = "net.releaseMissing", Net, Warning, Never, None, { service: Option<String> };
     /// Interruttore aperto: il servizio ha fallito troppe volte di seguito.
     NetCircuitOpen = "net.circuitOpen", Net, Warning, Always, None, { service: String, retry_after_ms: Option<u64> };
     /// Android non lascia vedere la rete di casa: da Android 17 serve il
