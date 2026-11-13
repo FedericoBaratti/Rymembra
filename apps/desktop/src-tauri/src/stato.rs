@@ -37,7 +37,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::nota;
@@ -106,16 +106,20 @@ pub struct Stato {
     /// ogni immagine della griglia, sul filo della finestra, mentre una
     /// scansione lo teneva.
     ///
-    /// `None` quando l'apertura è fallita: allora l'errore è nel mutex, e
-    /// [`Stato::copertine`] va a prenderlo lì.
-    store_copertine: Option<CoverStore>,
+    /// Vuoto finché la libreria non è aperta, e per sempre se l'apertura è
+    /// fallita: allora l'errore è nel mutex, e [`Stato::copertine`] va a
+    /// prenderlo lì. Un `OnceLock` perché la libreria si apre su un filo suo,
+    /// dopo che lo stato è già fra quelli gestiti: si scrive una volta, prima
+    /// che la libreria entri nel mutex, e da lì non cambia.
+    store_copertine: OnceLock<CoverStore>,
 
     /// La cartella dati, senza chiedere il lucchetto.
     ///
     /// La stessa ragione di `store_copertine`: la chiede il protocollo delle
     /// risorse delle skin, che sta sul filo della finestra, e un percorso che
-    /// non cambia mai non vale una coda dietro una scansione.
-    cartella_dati: Option<PathBuf>,
+    /// non cambia mai non vale una coda dietro una scansione. Vuota finché la
+    /// libreria non è aperta, come `store_copertine`.
+    cartella_dati: OnceLock<PathBuf>,
 
     /// La cartella in cui la libreria sta, o doveva stare: c'è anche quando
     /// l'apertura è fallita.
@@ -133,8 +137,30 @@ pub struct Stato {
     /// Lo guarda [`leggi_a_parte`], e sta fuori dal mutex per la stessa ragione
     /// di `cartella_dati`: chiedere il lucchetto per sapere se si può fare a
     /// meno di chiederlo sarebbe il difetto da capo. Il giornale non cambia
-    /// dopo l'apertura.
-    in_wal: bool,
+    /// dopo l'apertura; prima dell'apertura non c'è.
+    in_wal: OnceLock<bool>,
+
+    /// A che punto è l'apertura della libreria, e chi aspetta che finisca.
+    ///
+    /// # Perché la libreria si apre dopo
+    ///
+    /// Si apriva nel `setup`, sul filo della finestra, prima che una finestra
+    /// esistesse: una migrazione lunga — la copia di prima, gli schemi nuovi
+    /// su un database grande — era un processo invisibile, e un secondo doppio
+    /// clic finiva all'istanza unica, ferma sullo stesso filo (R06b-5). Adesso
+    /// lo stato nasce [`Stato::in_apertura`], si registra, e la libreria si
+    /// apre su un filo suo (`lib.rs`, `apri_e_avvia`).
+    ///
+    /// # Un modo solo di dire «non ancora»
+    ///
+    /// Finché l'apertura non è finita il mutex tiene `library.opening`, e chi
+    /// chiede la libreria da un filo di sottofondo **aspetta** che finisca
+    /// (`Stato::aspetta_l_apertura`): per lui niente cambia rispetto a quando
+    /// il `setup` la apriva prima di tutto. Chi non può aspettare — il filo
+    /// della finestra, chi ha una scadenza — riceve `library.opening`, che è
+    /// ritentabile. La finestra, dal canto suo, monta l'applicazione solo ad
+    /// apertura finita (`AttesaDellaLibreria.tsx`): i comandi non devono imparare niente.
+    apertura: Apertura,
 
     /// Qualcuno ha chiesto di fermare la scansione in corso.
     ///
@@ -191,9 +217,25 @@ pub struct Stato {
 }
 
 impl Stato {
-    /// Apre la libreria nella cartella dati data.
+    /// Apre la libreria nella cartella dati data, adesso, su questo filo.
+    ///
+    /// L'apertura in un colpo solo: [`Stato::in_apertura`], la libreria, il
+    /// cancello aperto. Per le prove, che vogliono una libreria pronta; l'avvio
+    /// passa da `lib.rs`, `apri_e_avvia`.
+    #[cfg(test)]
     pub fn apri(data_dir: PathBuf) -> Self {
-        Self::da_libreria(apri_libreria(data_dir.clone()), Some(data_dir))
+        let stato = Self::in_apertura(data_dir.clone());
+        stato.completa(apri_libreria(data_dir));
+        stato.apri_il_cancello();
+        stato
+    }
+
+    /// Lo stato di una libreria che si sta aprendo in `data_dir`: il mutex
+    /// tiene `library.opening`, le scorciatoie senza lucchetto sono vuote, e
+    /// chi chiede la libreria da un filo di sottofondo aspetta. La aprono
+    /// [`apri_libreria`], [`Stato::completa`] e [`Stato::apri_il_cancello`].
+    pub fn in_apertura(data_dir: PathBuf) -> Self {
+        Self::da_libreria(Err(in_apertura()), Some(data_dir), FaseLibreria::Apertura)
     }
 
     /// Lo stato di un avvio che non ha aperto niente, perché il trasloco dei
@@ -208,21 +250,134 @@ impl Stato {
     /// esattamente come l'applicazione tratta da sempre un database che non si
     /// è aperto: non c'è un secondo percorso d'errore da imparare.
     pub fn rifiutato(errore: AppError) -> Self {
-        Self::da_libreria(Err(errore), None)
+        Self::da_libreria(Err(errore), None, FaseLibreria::Guasto)
     }
 
-    /// Lo stato attorno a una libreria già aperta, o all'errore che la
-    /// sostituisce, e alla cartella in cui la si è cercata.
-    fn da_libreria(libreria: Result<Libreria, AppError>, cartella: Option<PathBuf>) -> Self {
-        Self {
-            store_copertine: libreria.as_ref().ok().map(|l| l.covers.clone()),
-            cartella_dati: libreria.as_ref().ok().map(|l| l.data_dir.clone()),
+    /// Lo stato attorno all'errore che sostituisce la libreria — quello di
+    /// un'apertura in corso, o di un rifiuto —, alla cartella in cui la si
+    /// cerca, e alla fase da cui si parte.
+    fn da_libreria(
+        libreria: Result<Libreria, AppError>,
+        cartella: Option<PathBuf>,
+        fase: FaseLibreria,
+    ) -> Self {
+        let stato = Self {
+            store_copertine: OnceLock::new(),
+            cartella_dati: OnceLock::new(),
             cartella_scelta: cartella,
-            in_wal: libreria.as_ref().is_ok_and(|l| l.giornale == "wal"),
-            libreria: Mutex::new(libreria),
+            in_wal: OnceLock::new(),
+            apertura: Apertura {
+                fase: Mutex::new(fase),
+                finita: Condvar::new(),
+            },
+            libreria: Mutex::new(Err(in_apertura())),
             scansione_da_fermare: AtomicBool::new(false),
             scansione_in_corso: AtomicBool::new(false),
             fine_scansione: OnceLock::new(),
+        };
+        stato.completa(libreria);
+        stato
+    }
+
+    /// Mette al suo posto la libreria appena aperta, o l'errore con cui non si
+    /// è aperta. Il cancello resta chiuso: lo apre [`Stato::apri_il_cancello`],
+    /// quando anche il resto dell'avvio è al suo posto.
+    ///
+    /// Le scorciatoie senza lucchetto si scrivono **prima** che la libreria
+    /// entri nel mutex: chi le legge — il protocollo delle copertine, la
+    /// lettura a parte — non deve mai vedere una libreria aperta senza la sua
+    /// cartella.
+    pub fn completa(&self, libreria: Result<Libreria, AppError>) {
+        if let Ok(aperta) = &libreria {
+            let _ = self.store_copertine.set(aperta.covers.clone());
+            let _ = self.cartella_dati.set(aperta.data_dir.clone());
+            let _ = self.in_wal.set(aperta.giornale == "wal");
+        }
+        *self.libreria.lock().unwrap_or_else(PoisonError::into_inner) = libreria;
+    }
+
+    /// Dice che la libreria si sta aggiornando dalla versione `da`: la finestra
+    /// scrive «Aggiorno la libreria…» invece di «Apro la libreria…».
+    pub fn in_aggiornamento(&self, da: u32) {
+        let mut fase = self
+            .apertura
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !fase.finita() {
+            *fase = FaseLibreria::Aggiornamento { da };
+        }
+    }
+
+    /// L'avvio è finito: si apre il cancello, e chi aspettava la libreria la
+    /// trova — aperta, o con l'errore con cui non si è aperta. Restituisce la
+    /// fase a cui si è arrivati.
+    pub fn apri_il_cancello(&self) -> FaseLibreria {
+        let aperta = self
+            .libreria
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_ok();
+        let arrivata = if aperta {
+            FaseLibreria::Pronta
+        } else {
+            FaseLibreria::Guasto
+        };
+        *self
+            .apertura
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = arrivata;
+        self.apertura.finita.notify_all();
+        arrivata
+    }
+
+    /// A che punto è l'apertura della libreria.
+    pub fn fase(&self) -> FaseLibreria {
+        *self
+            .apertura
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Aspetta che l'apertura della libreria finisca, ma non oltre `entro`
+    /// (`None`: senza scadenza) e non mentre l'applicazione esce.
+    ///
+    /// L'uscita conta: chi chiude Rymembra durante una migrazione lunga non
+    /// deve trovarlo fermo ad aspettare la fine della migrazione — la
+    /// posizione da salvare, l'ultimo `optimize` rinunciano, e la migrazione
+    /// interrotta si rifà al giro dopo, un passo alla volta come sempre.
+    fn aspetta_l_apertura(&self, entro: Option<Duration>) {
+        self.aspetta_l_apertura_se(entro, crate::spegnimento::in_uscita);
+    }
+
+    /// [`Stato::aspetta_l_apertura`] con la domanda «si sta uscendo?» passata
+    /// da fuori: la bandiera vera è una per processo, e le prove non la
+    /// possono abbassare.
+    fn aspetta_l_apertura_se(&self, entro: Option<Duration>, uscendo: impl Fn() -> bool) {
+        /// Ogni quanto chi aspetta guarda se si sta uscendo.
+        const PASSO: Duration = Duration::from_millis(100);
+        let inizio = Instant::now();
+        let mut fase = self
+            .apertura
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while !fase.finita() && !uscendo() {
+            let passo = match entro {
+                Some(entro) => match entro.checked_sub(inizio.elapsed()) {
+                    Some(resta) if !resta.is_zero() => resta.min(PASSO),
+                    _ => return,
+                },
+                None => PASSO,
+            };
+            fase = self
+                .apertura
+                .finita
+                .wait_timeout(fase, passo)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     }
 
@@ -240,7 +395,7 @@ impl Stato {
     /// questa funzione tocca il mutex, e lì aspettare non costa: senza libreria
     /// non c'è nessuna scansione che possa tenerlo.
     pub fn copertine(&self) -> Result<CoverStore, AppError> {
-        if let Some(store) = &self.store_copertine {
+        if let Some(store) = self.store_copertine.get() {
             return Ok(store.clone());
         }
         let guardia = prendi_la_libreria(self);
@@ -251,9 +406,9 @@ impl Stato {
     }
 
     /// La cartella dati, senza chiedere il lucchetto. `None` se la libreria
-    /// non si è aperta.
+    /// non si è aperta, o non ancora.
     pub fn cartella_dati(&self) -> Option<&Path> {
-        self.cartella_dati.as_deref()
+        self.cartella_dati.get().map(PathBuf::as_path)
     }
 
     /// La cartella in cui la libreria sta o doveva stare, anche se non si è
@@ -774,7 +929,85 @@ pub fn avvia_filo_periodico<S: Send + 'static>(
         .map(|_filo| ())
 }
 
-fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
+/// L'errore della libreria che si sta ancora aprendo: vedi [`Stato::in_apertura`].
+fn in_apertura() -> AppError {
+    AppError::new(ErrorCode::LibraryOpening)
+}
+
+/// A che punto è l'apertura della libreria, come la riceve la finestra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "fase", rename_all = "camelCase")]
+pub enum FaseLibreria {
+    /// Si sta aprendo.
+    Apertura,
+    /// Si sta aggiornando: c'è da migrare, e prima la copia
+    /// `rymembra.db.schema-<da>.bak`.
+    Aggiornamento {
+        /// La versione dello schema da cui si parte.
+        da: u32,
+    },
+    /// Aperta, e l'avvio è finito.
+    Pronta,
+    /// Non si è aperta: il perché è l'errore della libreria. Anche dopo un
+    /// rifiuto del trasloco.
+    Guasto,
+}
+
+impl FaseLibreria {
+    /// L'avvio è finito, in un modo o nell'altro.
+    fn finita(self) -> bool {
+        matches!(self, Self::Pronta | Self::Guasto)
+    }
+}
+
+/// La fase dell'apertura, e la condizione su cui chi la aspetta dorme.
+struct Apertura {
+    /// A che punto è.
+    fase: Mutex<FaseLibreria>,
+    /// Suona quando la fase diventa una fine: vedi [`Stato::apri_il_cancello`].
+    finita: Condvar,
+}
+
+/// A che punto è l'apertura della libreria.
+///
+/// Sincrono, e senza il lucchetto della libreria: lo chiede la finestra appena
+/// nata, mentre la libreria si apre su un altro filo, e non deve aspettarla.
+/// Le fasi successive arrivano con l'evento `libreria:stato`.
+#[tauri::command]
+pub fn libreria_fase(stato: tauri::State<'_, Stato>) -> FaseLibreria {
+    stato.fase()
+}
+
+/// La versione dello schema da cui l'apertura di `percorso` migrerà, se
+/// migrerà: `Some(da)` con `0 < da < LATEST_VERSION`.
+///
+/// Si legge con una connessione sua, senza creare il file, senza migrare e
+/// con `query_only`, chiusa prima che [`apri_libreria`] apra la sua: `PRAGMA
+/// user_version` passa dal giornale, quindi dice la versione vera anche dopo
+/// un'uscita senza checkpoint. Non in sola lettura: un lettore WAL senza lo
+/// `-shm` non sempre si apre, e la domanda è troppo piccola per un ripiego.
+/// Un file che non c'è, che non si apre o che non risponde vale `None`: la
+/// finestra dirà «Apro la libreria…», e l'apertura vera racconterà il guasto.
+pub fn versione_da_aggiornare(percorso: &Path) -> Option<u32> {
+    let connessione = Connection::open_with_flags(
+        rymembra_app::files::percorso_lungo(percorso),
+        OpenFlags::default().difference(OpenFlags::SQLITE_OPEN_CREATE),
+    )
+    .ok()?;
+    let _ = connessione.pragma_update(None, "query_only", "ON");
+    let versione: i64 = connessione
+        .query_row("PRAGMA user_version", [], |riga| riga.get(0))
+        .ok()?;
+    drop(connessione);
+    u32::try_from(versione)
+        .ok()
+        .filter(|da| *da > 0 && *da < rymembra_app::db::LATEST_VERSION)
+}
+
+/// Apre la libreria in `data_dir`: la cartella, le copertine, il database con
+/// le sue migrazioni. È il lavoro lungo dell'avvio, e gira sul filo
+/// dell'apertura (`lib.rs`, `apri_e_avvia`).
+pub fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|err| rymembra_app::files::io_error(&data_dir.display().to_string(), &err))?;
     let covers = CoverStore::open(data_dir.join("copertine"))?;
@@ -822,6 +1055,19 @@ pub fn riga_di_avvio(stato: &Stato) {
             errore.code().kind().code(),
             errore.cause().unwrap_or("—")
         ),
+    }
+}
+
+/// La riga del diario che dice che la libreria si apre su un filo suo, e se
+/// c'è da aggiornare: la riga di avvio vera arriva quando l'apertura è finita,
+/// e fra le due il tempo dell'apertura si legge dai loro orari.
+pub fn riga_dell_apertura(da: Option<u32>) {
+    match da {
+        Some(da) => nota!(
+            "[avvio] la libreria si apre in disparte: da aggiornare dallo schema {da} al {}",
+            rymembra_app::db::LATEST_VERSION
+        ),
+        None => nota!("[avvio] la libreria si apre in disparte"),
     }
 }
 
@@ -1121,6 +1367,9 @@ fn con_libreria_per<T>(
     if sul_filo_della_finestra() {
         return con_libreria_dalla_finestra(stato, azione);
     }
+    // Un filo di sottofondo aspetta che la libreria si apra: per lui è come
+    // quando il `setup` la apriva prima di farlo partire. Vedi `apertura`.
+    stato.aspetta_l_apertura(None);
     let mut guardia = prendi_la_libreria(stato);
     let preso = Instant::now();
     let esito = match guardia.as_mut() {
@@ -1306,7 +1555,14 @@ pub fn con_libreria_entro<T>(
     entro: Duration,
     azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,
 ) -> Option<Result<T, AppError>> {
-    let mut guardia = lucchetto_entro(&stato.libreria, entro)?;
+    // L'apertura si aspetta anche qui, ma dentro la stessa scadenza; e non sul
+    // filo della finestra, che non aspetta mai: lì l'errore `library.opening`
+    // è la risposta giusta.
+    let inizio = Instant::now();
+    if !sul_filo_della_finestra() {
+        stato.aspetta_l_apertura(Some(entro));
+    }
+    let mut guardia = lucchetto_entro(&stato.libreria, entro.saturating_sub(inizio.elapsed()))?;
     Some(match guardia.as_mut() {
         Ok(libreria) => azione(libreria),
         Err(errore) => Err(errore.clone()),
@@ -1354,7 +1610,7 @@ pub fn leggi_a_parte<T>(
 ) -> Option<Result<T, AppError>> {
     let lettore = stato
         .cartella_dati()
-        .filter(|_| stato.in_wal)
+        .filter(|_| stato.in_wal.get().copied().unwrap_or(false))
         .map(|cartella| apri_un_lettore(&cartella.join(NOME_DATABASE), entro));
     match lettore {
         Some(Ok(connessione)) => Some(azione(&connessione)),
@@ -1789,6 +2045,138 @@ mod prove {
         assert!(matches!(esito, Some(Err(_))));
         // E la riga di avvio la racconta senza cadere.
         riga_di_avvio(&stato);
+    }
+
+    // ── l'apertura fuori dal `setup` (R06b-5) ───────────────────────────
+
+    #[test]
+    fn una_libreria_in_apertura_fa_aspettare_e_poi_si_apre() {
+        // La cucitura dell'apertura: lo stato nasce «in apertura» e si
+        // registra, la libreria arriva da un altro filo. Chi non può aspettare
+        // riceve `library.opening`, ritentabile; chi lavora in sottofondo
+        // aspetta, e trova la libreria aperta; le scorciatoie senza lucchetto
+        // si riempiono solo allora.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        assert_eq!(stato.fase(), FaseLibreria::Apertura);
+        assert!(stato.cartella_dati().is_none(), "niente scorciatoie prima");
+        assert_eq!(
+            stato.cartella_della_libreria(),
+            Some(dir.path()),
+            "la cartella in cui la si cerca si sa da subito"
+        );
+        let copertine = stato.copertine().expect_err("nessuna copertina prima");
+        assert_eq!(copertine.code().kind().code(), "library.opening");
+
+        let scaduta = con_libreria_entro(&stato, Duration::from_millis(50), |_| Ok(()))
+            .expect("il lucchetto è libero")
+            .expect_err("la libreria non c'è ancora");
+        assert_eq!(scaduta.code().kind().code(), "library.opening");
+        assert!(scaduta.is_retryable());
+
+        // Chi lavora in sottofondo aspetta. La domanda «si sta uscendo?» è
+        // passata a mano: la bandiera vera è una per tutto il binario delle
+        // prove, e un'altra prova la alza (`spegnimento`).
+        std::thread::scope(|filo| {
+            let in_attesa = filo.spawn(|| {
+                stato.aspetta_l_apertura_se(None, || false);
+                con_libreria(&stato, |l| Ok(l.data_dir.clone()))
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!in_attesa.is_finished(), "chi lavora in sottofondo aspetta");
+            stato.completa(apri_libreria(dir.path().to_path_buf()));
+            assert_eq!(stato.apri_il_cancello(), FaseLibreria::Pronta);
+            let trovata = in_attesa.join().expect("il filo").expect("la libreria");
+            assert_eq!(trovata, dir.path());
+        });
+        assert_eq!(stato.fase(), FaseLibreria::Pronta);
+        assert_eq!(stato.cartella_dati(), Some(dir.path()));
+        // E chi aspetta mentre l'applicazione esce non resta appeso a una
+        // migrazione: rinuncia subito.
+        let ancora = Stato::in_apertura(dir.path().to_path_buf());
+        let inizio = Instant::now();
+        ancora.aspetta_l_apertura_se(None, || true);
+        assert!(inizio.elapsed() < Duration::from_secs(1));
+        assert!(stato.copertine().is_ok());
+        assert_eq!(stato.in_wal.get().copied(), Some(true));
+    }
+
+    #[test]
+    fn una_libreria_che_non_si_apre_finisce_in_guasto() {
+        // L'apertura che fallisce non lascia nessuno ad aspettare: il cancello
+        // si apre col guasto, e chi chiede la libreria riceve quello, come
+        // quando il `setup` la apriva da sé.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        stato.completa(Err(AppError::new(ErrorCode::DbVersionAhead {
+            db_version: 99,
+            app_version: rymembra_app::db::LATEST_VERSION,
+        })));
+        assert_eq!(stato.apri_il_cancello(), FaseLibreria::Guasto);
+        let errore = con_libreria(&stato, |_| Ok(())).expect_err("non si è aperta");
+        assert_eq!(errore.code().kind().code(), "db.versionAhead");
+        assert!(stato.cartella_dati().is_none());
+        // Un rifiuto del trasloco è un guasto da subito: nessuno aspetta.
+        assert_eq!(
+            Stato::rifiutato(rifiuto_di_prova()).fase(),
+            FaseLibreria::Guasto
+        );
+    }
+
+    #[test]
+    fn uno_schema_vecchio_si_annuncia_come_aggiornamento() {
+        // «Aggiorno la libreria…» solo quando c'è da migrare: un file di uno
+        // schema di prima. Uno nuovo, uno già aggiornato e uno che non c'è
+        // dicono «Apro la libreria…», e nessuno viene creato.
+        let dir = tempfile::tempdir().expect("cartella");
+        let vecchio = dir.path().join("vecchio.db");
+        {
+            let connessione = Connection::open(&vecchio).expect("apertura");
+            for migrazione in rymembra_app::db::MIGRATIONS
+                .iter()
+                .filter(|m| m.version <= 38)
+            {
+                connessione
+                    .execute_batch(migrazione.sql)
+                    .expect("migrazione");
+            }
+            connessione
+                .execute_batch("PRAGMA user_version = 38;")
+                .expect("versione");
+        }
+        assert_eq!(versione_da_aggiornare(&vecchio), Some(38));
+        let aggiornato = dir.path().join("aggiornato.db");
+        drop(rymembra_app::db::open(&aggiornato).expect("apertura"));
+        assert_eq!(versione_da_aggiornare(&aggiornato), None);
+        let mancante = dir.path().join("mancante.db");
+        assert_eq!(versione_da_aggiornare(&mancante), None);
+        assert!(!mancante.exists(), "la domanda non crea niente");
+
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        stato.in_aggiornamento(38);
+        assert_eq!(stato.fase(), FaseLibreria::Aggiornamento { da: 38 });
+    }
+
+    #[test]
+    fn la_fase_si_scrive_come_la_legge_la_finestra() {
+        // `FaseLibreria` in `ipc/libreria.ts`.
+        let scritta = |fase| serde_json::to_value(fase).expect("serializzata");
+        assert_eq!(
+            scritta(FaseLibreria::Apertura),
+            serde_json::json!({ "fase": "apertura" })
+        );
+        assert_eq!(
+            scritta(FaseLibreria::Aggiornamento { da: 38 }),
+            serde_json::json!({ "fase": "aggiornamento", "da": 38 })
+        );
+        assert_eq!(
+            scritta(FaseLibreria::Pronta),
+            serde_json::json!({ "fase": "pronta" })
+        );
+        assert_eq!(
+            scritta(FaseLibreria::Guasto),
+            serde_json::json!({ "fase": "guasto" })
+        );
     }
 }
 

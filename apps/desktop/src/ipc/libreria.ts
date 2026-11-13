@@ -313,6 +313,21 @@ export interface Trascinati {
   ignorati: number;
 }
 
+/**
+ * A che punto è l'apertura della libreria (`stato::FaseLibreria`).
+ *
+ * La libreria si apre su un filo suo, fuori dal `setup`: la finestra compare
+ * subito e aspetta qui. `aggiornamento` porta la versione dello schema di
+ * prima, che è anche il nome della copia fatta prima di migrare. `pronta` e
+ * `guasto` sono le due fini: in tutte e due l'avvio è finito, e la finestra
+ * vera si disegna — col guasto nella fascia, nel secondo caso.
+ */
+export type FaseLibreria =
+  | { fase: "apertura" }
+  | { fase: "aggiornamento"; da: number }
+  | { fase: "pronta" }
+  | { fase: "guasto" };
+
 export interface Avvio {
   dataDir: string;
   migrazioni: number;

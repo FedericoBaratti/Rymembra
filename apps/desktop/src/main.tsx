@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { AttesaDellaLibreria } from "./AttesaDellaLibreria";
 import { spegniIlBrowser } from "./browserSpento";
 import { conDove, rigaDelRifiuto } from "./diarioDellaFinestra";
 import { ipc } from "./ipc";
@@ -130,7 +131,14 @@ if (radice) {
        * raccontando — è la stessa ragione scritta qui sotto per `BarraTitolo`.
        */}
       <RecintoErrori>
-        <App />
+        {/*
+         * L'applicazione si monta quando la libreria è aperta, o quando si sa
+         * che non si aprirà; fino ad allora «Apro la libreria…». Vedi
+         * `AttesaDellaLibreria.tsx`.
+         */}
+        <AttesaDellaLibreria>
+          <App />
+        </AttesaDellaLibreria>
       </RecintoErrori>
       {/*
        * I tre comandi della finestra **fuori** dall'applicazione, e non per

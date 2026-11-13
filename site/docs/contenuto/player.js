@@ -36,7 +36,7 @@
           },
         },
         "The clock thread `rymembra-orologio` (250 ms) also saves what is dirty (queue, volume, EQ; 2 s lock budget — on exit `salva_uscendo` makes the last pass, 400 ms per lock wait), detects device loss, fires the sleep timer, saves the resume position every 20 beats (5 s) in `player.position`, and sets `in_attesa` after two «dry» beats in which a stream did not advance — the window then says «Waiting for data…». The window interpolates the playhead between beats ([Frontend](#frontend)).",
-        "`riprendi_coda` restores yesterday's queue and position at startup without playing; `primo_stato_fuori` then shows it in SMTC, tray and taskbar.",
+        "At startup the output device opens off the UI thread (`apri_il_primo_motore`, on `rymembra-audio-avvio`), after the library: the player is `playback.engineOpening` until then, and the never-opened-engine path of `riapri_davvero` builds it complete with yesterday's queue and position (`leggi_il_salvato`, `rimetti_il_salvato`, the same functions as `riprendi_coda`), without playing, and sends the first state to the window, SMTC, tray and taskbar.",
       ],
       see: ["queue", "engine", "output", "listens", "together"],
     },

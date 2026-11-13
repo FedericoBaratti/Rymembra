@@ -27,6 +27,7 @@ import {
 } from "./ipc";
 import { ETA, FINESTRA, SALTO, creaOrologio } from "./orologio";
 import { useAscolto } from "./pagine";
+import { apreAncora } from "./apertura";
 import { useDati } from "./dati";
 import { ARCHIVIO_FINESTRA } from "./posizione";
 import { eventiEFotografia } from "./ultima";
@@ -505,7 +506,9 @@ export function useRiproduzione(): Riproduzione {
       .catch((e: unknown) => {
         if (!vivo.current) return;
         setDisponibile(false);
-        setErrore(e);
+        // L'uscita audio che si sta ancora aprendo non è un guasto: lo stato
+        // arriva da sé appena c'è. Vedi `apertura.ts`.
+        if (!apreAncora(e)) setErrore(e);
       });
   };
 
@@ -513,6 +516,10 @@ export function useRiproduzione(): Riproduzione {
     "riproduzione:stato",
     (carico) => {
       conto.evento();
+      // Uno stato intero vuol dire un lettore: anche quello che all'avvio non
+      // c'era, e che il nucleo ha aperto dopo — il dispositivo audio si apre
+      // fuori dal `setup`, e una scheda attaccata più tardi pure.
+      setDisponibile(true);
       setStato(carico);
       accogli(carico);
     },
