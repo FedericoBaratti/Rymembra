@@ -872,8 +872,9 @@ distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`). The APK
 carries copies of `LICENSE`, `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`,
 `TERMS.md` and the fonts’ license in `assets/legale/`, and the Windows
 installer and the Store package put the same five files next to the
-executable: *Settings › Updates › Documents* opens them with no network, and
-“Open the latest version online” opens the up-to-date one in the browser.
+executable: *Settings › Updates › Documents* opens them as plain text with no
+network, and “Open the latest version online” opens the up-to-date one in the
+browser.
 
 The music in `site/audio/` — the website’s soundtrack, `machina.mp3`, which
 two Rust tests also play, and the twelve seconds of it in the site’s sound

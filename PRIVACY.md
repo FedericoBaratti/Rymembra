@@ -488,7 +488,15 @@ request and drops it afterwards.
 
 **A whole conversation is one request per turn.** There is no background thread,
 nothing periodic, and nothing that starts on its own — every request is one you
-made by pressing Send. Closing the window stops a generation in progress.
+made by pressing Send. Closing the window stops a generation in progress. Each
+request asks the model for at most the profile’s “Longest reply, in tokens” — 4096
+unless you changed it — in a `max_tokens` field, which is a number and nothing
+about you. One service wants that field under another name: when it answers a
+custom profile with a 400 that asks for `max_completion_tokens` (OpenAI’s
+reasoning models do), the same request is sent once more under that name, so
+for such a service a turn costs two requests with the same content. A reply is
+read up to 4 MiB of text, and a service that stays silent for two minutes after
+it began answering is dropped.
 
 The one other request is the list of models. Saving a profile in Settings › AI
 Models, and pressing «Test and read the models» there, ask the service for the
@@ -838,7 +846,10 @@ long the session's own thread was busy.
 ## 4-quater. Folders in the cloud
 
 This starts **only if you add a folder from a service**. Nothing is sent to a
-service you have not connected.
+service you have not connected, and an account you connected but have chosen
+no folder in is left alone too: no listing and no change check until you add
+one. (Connecting, and browsing the account to pick a folder, do talk to the
+service, as the table says.)
 
 | Host | When | What reaches it |
 | --- | --- | --- |
@@ -848,10 +859,10 @@ service you have not connected.
 | `accounts.google.com`, `oauth2.googleapis.com` | Connecting Google Drive, and on renewals | As for the backup, with the `drive.readonly` scope |
 | `www.googleapis.com` | Browsing, listing, change checks, tracks | As for OneDrive |
 | Google's content servers (`*.googleusercontent.com`) | Every track you play, or whose tags are read, when Drive redirects the bytes there | Range requests on the address Drive redirects to; the token does not follow the redirect |
-| `www.dropbox.com`, `api.dropboxapi.com` | Connecting Dropbox, renewals, browsing, listing, temporary links | As for OneDrive |
+| `www.dropbox.com`, `api.dropboxapi.com` | Connecting Dropbox, renewals, browsing, listing, temporary links — two per track opened, when its version is known, the second tied to the file’s revision | As for OneDrive |
 | `notify.dropboxapi.com` | Waiting for changes | Only the change cursor: no token |
 | Dropbox's content servers (`*.dl.dropboxusercontent.com`) | Every track you play, or whose tags are read | Range requests on a four-hour temporary link |
-| The WebDAV server you typed | Connecting, browsing, listing, change checks, tracks | Your user name and app password, in every request, over `https` only |
+| The WebDAV server you typed | Connecting, browsing, listing, change checks, tracks | Your user name and app password, in every request, over `https` only; with the track bytes, the file’s own ETag in an `If-Match` header, so that a file changed meanwhile is refused instead of served |
 
 What these requests carry is the folder you chose, its file names, sizes and
 dates, and the byte ranges of the tracks being read. **Nothing about your
@@ -860,16 +871,20 @@ read-only everywhere: Rymembra never writes, moves or deletes a file on a
 service.
 
 The tracks' tags are read from the service in the background, a few hundred
-kilobytes per track, from the beginning and the end of each file. That is the
-one piece of traffic you did not start by pressing play, and it happens once
-per file (again only if the file changes).
+kilobytes per track, from the beginning and the end of each file, and never
+more than 8 MiB for one. A WebDAV server that ignores `Range` cannot serve the
+end of a file without sending what comes before it, so there Rymembra reads
+through at most 8 MiB to reach a spot, and the tag at the end of a larger file
+is skipped. That is the one piece of traffic you did not start by pressing play,
+and it happens once per file (again only if the file changes).
 
 **What is kept of the drive.** The change feeds of OneDrive, Google Drive and
 Dropbox report changes anywhere on the drive. Rymembra keeps in its database
 only the folders you chose, what is under them and the folders above them that
 make up their paths; the other changes are dropped. Rows that an earlier
 version kept from elsewhere on the drive, and those of a folder you removed
-from the library, are deleted at the account's next pass. The tracks of a
+from the library, are deleted at the account's next pass — or, for an account
+that is waiting to be reconnected and so has no pass, when Rymembra starts. The tracks of a
 removed folder stay in the library, but do not open until you choose the
 folder again.
 
@@ -878,7 +893,12 @@ client secret of a Google app live in the operating system's keychain, never in
 the database. (A secret you typed for the backup in 3.1 stays under the entry
 3.1 used until you type it again; then it moves to the app's own entry and the
 old one is removed.) Disconnecting an account deletes its token or password,
-together with its listing and its cached tracks.
+together with its listing and its cached tracks. For a cloud folder that is
+all it does: it does not send the service a revocation, as disconnecting the
+Drive backup does (§ 4), so the permission you gave your app stays valid on the
+service’s side until you withdraw it there. Reconnecting with a different
+account than the one being reconnected is refused, and cancelling a connection
+saves neither the account nor its password.
 
 **The cache.** The tracks you play are kept on the disk, in the local
 application data folder (not the roaming one), up to a ceiling you choose
@@ -1042,6 +1062,13 @@ links, there's no tracking, and the address is built by the program from a
 closed list of three domains written in the code — deliberately, so nothing else
 can be slipped in, not even by mistake. What those sites know about you from
 there on is between you, them and their own policies.
+
+*Settings › Updates › Documents* is the same kind of thing. The license, the
+third-party notices, this document, the terms and the fonts’ license are read
+from the copy installed with Rymembra, with no request at all; “Open the latest
+version online” and the buttons for the source code and for reporting a
+problem open a GitHub page in the system browser, and only when you press
+them.
 
 ---
 
@@ -1266,6 +1293,14 @@ scan them, to decode them, to measure them — and never to write. Up to 2.3.0
 that was not true, and this section used to say so; from 2.3.1 the complete
 list of what Rymembra writes is the one below, and your `.flac` and `.mp3` files
 are not on it.
+
+Opening a file can still make something else write it: in a folder that the
+OneDrive, Dropbox or Google Drive app on your PC keeps with its files on
+demand, a file that exists only as a placeholder is downloaded by that app as
+soon as anything reads it. So a scan, and the analysis, do not open those
+files: they count them (“N online-only files not downloaded”) and go on, and
+the tracks come in once the files are on the PC. Playing one opens it, and so
+downloads it.
 
 What Rymembra writes, and where:
 

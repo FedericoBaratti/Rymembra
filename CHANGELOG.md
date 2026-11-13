@@ -1339,8 +1339,8 @@ The rest of what the two reviews fixed, by area.
   opens each in a small window from the copy that travels with the app — next
   to the executable, in the installer and in the Store package; in
   `assets/legale/` of the APK — and “Open the latest version online” opens the
-  up-to-date one in the browser. Where the copy is not there, the website
-  opens as before. The font license (SIL OFL), which the notices name without
+  up-to-date one, on GitHub, in the system browser. Where the copy is not
+  there, that page opens at once, as before. The font license (SIL OFL), which the notices name without
   reproducing, is the fifth.
 - The installer and the uninstaller speak Italian on an Italian Windows and
   English elsewhere, and their messages about Aether say it is Rymembra’s
