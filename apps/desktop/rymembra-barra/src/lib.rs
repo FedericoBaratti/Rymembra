@@ -14,9 +14,10 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in tre posti, il modulo `finestra`, una
-//! funzione di [`unita`](crate::unita_di) e le tre chiamate di
-//! [`sottofondo`](crate::Sottofondo), dentro un crate che dichiara
+//! Così il codice `unsafe` sta tutto in quattro posti, il modulo `finestra`, una
+//! funzione di [`unita`](crate::unita_di), le tre chiamate di
+//! [`sottofondo`](crate::Sottofondo) e le quattro di
+//! [`espulsione`](crate::osserva_volume), dentro un crate che dichiara
 //! l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della radice. Il resto
 //! di questo crate, e tutto il resto di Rymembra, resta senza.
 //!
@@ -38,6 +39,15 @@
 //! mette `SetThreadPriority(…, THREAD_MODE_BACKGROUND_BEGIN)`, la batteria la
 //! dice `GetSystemPowerStatus`: vedi [`Sottofondo`] e [`a_batteria`].
 //!
+//! # La quarta: il volume che Windows sta per espellere
+//!
+//! La sorveglianza delle cartelle tiene aperto un handle su ogni cartella
+//! della libreria, e su una chiavetta o un disco USB «Espelli» di Esplora
+//! risorse risponde «Il dispositivo è in uso» finché Rymembra è aperto
+//! (R24-1). Windows chiede a chi ha il dispositivo aperto di lasciarlo con una
+//! notifica di dispositivo, `CM_Register_Notification`, che non si fa senza
+//! `unsafe`: vedi [`osserva_volume`], [`volume_di`] e [`Avviso`].
+//!
 //! # Cosa si vede da fuori
 //!
 //! Per i pulsanti, due cose: [`aggancia`], una volta, sul filo della finestra;
@@ -45,7 +55,10 @@
 //! cambia. Quel che succede quando si preme un pulsante lo decide chi aggancia,
 //! con la chiusura che passa: questo crate non sa niente della musica. Per le
 //! unità, [`unita_di`] e il suo [`Unita`]. Per il sottofondo, la guardia
-//! [`Sottofondo`] e la domanda [`a_batteria`].
+//! [`Sottofondo`] e la domanda [`a_batteria`]. Per l'espulsione, [`volume_di`]
+//! dice su quale volume sta un percorso e [`osserva_volume`] avvisa quando
+//! Windows vuole toglierlo: quel che si lascia e quando si riprende lo decide
+//! chi chiama.
 
 // Fuori da Windows i pulsanti non si disegnano, e quel che serve a disegnarli
 // — gli identificativi, i suggerimenti, i glifi — non lo legge nessuno. Resta
@@ -59,6 +72,7 @@
     )
 )]
 mod aspetto;
+mod espulsione;
 #[cfg(windows)]
 mod finestra;
 #[cfg_attr(
@@ -73,6 +87,7 @@ mod sottofondo;
 mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
+pub use espulsione::{Avviso, Registrazione, osserva_volume, volume_di};
 pub use sottofondo::{Sottofondo, a_batteria};
 pub use unita::{Unita, unita_di};
 

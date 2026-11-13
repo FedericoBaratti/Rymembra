@@ -1,5 +1,6 @@
 //! La parte che parla con Windows: il modulo di Rymembra con quasi tutto
-//! l'`unsafe` (l'altra chiamata è `GetDriveTypeW`, in `unita.rs`).
+//! l'`unsafe` dei pulsanti nell'anteprima (le altre chiamate stanno in
+//! `unita.rs`, `sottofondo.rs` e `espulsione.rs`).
 //!
 //! # Come funziona
 //!

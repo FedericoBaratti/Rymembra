@@ -20,8 +20,15 @@ publish = false
 # `GetVolumePathNameW` (vedi `src/unita.rs`), `Win32_System_Power` per
 # `GetSystemPowerStatus` (vedi `src/sottofondo.rs`, con `SetThreadPriority` di
 # `Win32_System_Threading`): nessuna delle due porta pacchetti nuovi.
+# `Win32_Devices_DeviceAndDriverInstallation` è per `CM_Register_Notification`
+# (vedi `src/espulsione.rs`: Windows avvisa quando una chiavetta o un disco USB
+# sta per essere espulso, perché la sorveglianza delle cartelle lo lasci), e
+# `GetVolumeNameForVolumeMountPointW`, che serve alla stessa cosa, sta già in
+# `Win32_Storage_FileSystem`. È una feature del `windows` che c'è già: nel
+# `Cargo.lock` non entra niente.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
@@ -39,8 +46,10 @@ windows = { version = "0.62", features = [
 # workspace e cambiarne una riga, quindi la si ricopia: i lint di clippy sono
 # gli stessi, parola per parola, e `unsafe_code` scende da `forbid` a `deny` —
 # vietato ovunque in questo crate tranne dove lo si dichiara: il modulo
-# `src/finestra.rs`, la funzione `chiedi_a_windows` di `src/unita.rs` e le tre
-# funzioni di sistema di `src/sottofondo.rs`.
+# `src/finestra.rs`, la funzione `chiedi_a_windows` di `src/unita.rs`, le tre
+# funzioni di sistema di `src/sottofondo.rs` e le quattro di `src/espulsione.rs`
+# (il nome del volume, la registrazione degli avvisi di espulsione, la callback
+# che Windows chiama e la registrazione tolta).
 #
 # In cambio, tre regole che il resto del workspace non ha bisogno di avere: ogni
 # blocco `unsafe` spiega perché è giusto (`undocumented_unsafe_blocks`), e dentro

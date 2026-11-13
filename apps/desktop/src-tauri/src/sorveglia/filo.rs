@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use notify::Watcher as _;
 use rymembra_app::library::{Cambiamento, Deposito, Natura, Scadenze, Scan, piu_esterne};
 use rymembra_app::volumi::{Collocazione, Esistenza};
+use rymembra_barra::{Avviso, Registrazione};
 use rymembra_domain::errors::AppError;
 use rymembra_domain::paths::{PathRules, is_under, path_key};
 use tauri::{AppHandle, Manager as _};
@@ -20,9 +21,10 @@ use crate::stato::{DepositoStato, Stato, TurnoDiScansione, con_libreria};
 
 use super::accorpamento::{cartelle_da_guardare, natura_di};
 use super::{
-    Accorpatore, CHIAVE_SORVEGLIANZA, CONTROLLO, CartellaSorvegliata, Come, MANCATE_PER_TORNARE,
-    Messaggio, Modo, Pianificatore, QuadroSorveglianza, RAMO_PERSO_TENTATIVI, Riallineamento,
-    Ritmo, SONDAGGIO, StatoSorveglianza, UltimaPassata, cambiamenti_dell_avviso, come_sorvegliare,
+    Accorpatore, CHIAVE_SORVEGLIANZA, CHIUSURA_ATTESA, CONTROLLO, CartellaSorvegliata, Come,
+    MANCATE_PER_TORNARE, Messaggio, Modo, PARTENZA_MASSIMA, Pianificatore, QuadroSorveglianza,
+    RAMO_PERSO_TENTATIVI, RISPOSTA_AL_VOLUME, Riallineamento, Ritmo, SONDAGGIO, StatoSorveglianza,
+    UltimaPassata, cambiamenti_dell_avviso, come_sorvegliare,
 };
 
 // ── il filo ─────────────────────────────────────────────────────────────────
@@ -229,17 +231,73 @@ pub fn forse_in_rete(app: &AppHandle, percorso: &str) -> bool {
 /// comunque tutto.
 const ATTESA_AVVIO: Duration = Duration::from_secs(10);
 
+/// Un osservatore di `notify` che sa dire quando ha lasciato la cartella
+/// davvero.
+///
+/// Su Windows lasciar cadere il `RecommendedWatcher` non chiude la cartella:
+/// manda un «fermati» al filo di `notify`, che chiude l'handle un attimo dopo,
+/// su di sé. Per rispondere a Windows «ho lasciato» serve la chiusura vera, e
+/// `notify` non la annuncia. La si legge dalla funzione che gli si è data: la
+/// tiene lui, e la lascia cadere **dopo** aver chiuso l'handle — quando il filo
+/// e l'ultima richiesta in corso hanno finito. La guardia che sta dentro la
+/// funzione cade con lei, e il ricevitore che la aspetta lo vede.
+pub(super) struct Osservatore {
+    /// Cadendo smette.
+    dentro: notify::RecommendedWatcher,
+    /// Il lato che aspetta: non riceve mai niente, si disconnette quando la
+    /// funzione di `notify` — e con lei la guardia — è caduta.
+    pub(super) chiuso: Receiver<()>,
+}
+
+impl Osservatore {
+    /// Lo lascia cadere, e restituisce il ricevitore che dirà quando `notify`
+    /// ha chiuso la cartella: vedi [`aspetta_la_chiusura`].
+    pub(super) fn lascia(self) -> Receiver<()> {
+        let Self { dentro, chiuso } = self;
+        drop(dentro);
+        chiuso
+    }
+}
+
+/// Quante delle `chiusure` non sono state confermate entro `fino`.
+///
+/// Una chiusura è confermata quando il ricevitore si disconnette. Non confermata
+/// vuol dire che `notify` non ha finito in tempo — o non finirà, se l'annullo
+/// della sua richiesta è fallito — e chi risponde a Windows lo dice nel
+/// diario: la richiesta ritorna lo stesso, perché non può aspettare per
+/// sempre.
+pub(super) fn aspetta_la_chiusura(chiusure: Vec<Receiver<()>>, fino: Instant) -> usize {
+    chiusure
+        .into_iter()
+        .filter(|chiuso| {
+            loop {
+                match chiuso.recv_timeout(fino.saturating_duration_since(Instant::now())) {
+                    Err(RecvTimeoutError::Disconnected) => break false,
+                    Err(RecvTimeoutError::Timeout) => break true,
+                    // Nessuno manda mai niente: se arrivasse, si riaspetta.
+                    Ok(()) => {}
+                }
+            }
+        })
+        .count()
+}
+
 /// Una cartella sorvegliata, dal lato del filo.
-struct Sorvegliata {
+pub(super) struct Sorvegliata {
     /// Come la si guarda.
-    come: Come,
+    pub(super) come: Come,
     /// Dove sta, quando la si è armata.
-    dove: Collocazione,
+    pub(super) dove: Collocazione,
     /// L'osservatore, quando la si guarda con gli avvisi. Cadendo smette.
-    osservatore: Option<notify::RecommendedWatcher>,
+    pub(super) osservatore: Option<Osservatore>,
+    /// Il volume su cui sta (`rymembra_barra::volume_di`), quando la si è armata
+    /// con gli avvisi e Windows lo sa dire: è quello che Windows nomina quando
+    /// chiede di espellerlo. `None` per le cartelle di rete e di altri
+    /// sistemi, e per quelle senza osservatore. Vedi `Motore::volume_in_partenza`.
+    pub(super) volume: Option<String>,
     /// Le domande «c'è ancora?» di fila rimaste senza risposta. Conta solo per
     /// le cartelle di rete con gli avvisi: vedi [`lascia_cadere_le_morte`].
-    senza_risposta: u32,
+    pub(super) senza_risposta: u32,
 }
 
 impl Sorvegliata {
@@ -257,6 +315,15 @@ impl Sorvegliata {
 /// perso — vedi [`MANCATE_PER_TORNARE`].
 const VIVA_SCADENZA: Duration = Duration::from_secs(2);
 
+/// Quel che si è lasciato quando Windows ha chiesto di espellere un volume.
+pub(super) struct Lasciate {
+    /// Le cartelle del volume, con o senza osservatore.
+    pub(super) cartelle: usize,
+    /// Quanti osservatori non hanno confermato in tempo la chiusura della loro
+    /// cartella: vedi [`aspetta_la_chiusura`].
+    pub(super) non_confermate: usize,
+}
+
 /// Lo stato del filo fra un giro e l'altro.
 pub(super) struct Motore {
     /// La scelta in vigore.
@@ -265,7 +332,15 @@ pub(super) struct Motore {
     /// mostra.
     pub(super) elenco: Vec<String>,
     /// Le cartelle, con la grafia con cui stanno nell'elenco.
-    cartelle: BTreeMap<String, Sorvegliata>,
+    pub(super) cartelle: BTreeMap<String, Sorvegliata>,
+    /// Le registrazioni a Windows per «il volume se ne va», una per volume, per
+    /// chiave. Esistono finché una cartella del volume ha il suo osservatore, o
+    /// il volume sta partendo: vedi [`Motore::pota_le_registrazioni`].
+    registrazioni: BTreeMap<String, Registrazione>,
+    /// I volumi che Windows ha chiesto di espellere e di cui non si è ancora
+    /// saputo se se ne sono andati o no, con la scadenza di questa attesa.
+    /// Le loro cartelle non si riarmano: vedi [`Motore::volume_in_partenza`].
+    in_partenza: BTreeMap<String, Instant>,
     /// Gli avvisi in attesa.
     pub(super) attesa: Accorpatore,
     /// Quando riallineare.
@@ -302,6 +377,8 @@ impl Motore {
             modo: Modo::default(),
             elenco: Vec::new(),
             cartelle: BTreeMap::new(),
+            registrazioni: BTreeMap::new(),
+            in_partenza: BTreeMap::new(),
             attesa: Accorpatore::default(),
             piano: Pianificatore::default(),
             // Il primo controllo dopo `ATTESA_AVVIO`; una riconfigurazione lo
@@ -332,6 +409,175 @@ impl Motore {
             }
         }
         cambiato
+    }
+
+    /// Il volume di `radice` è uno che Windows sta per espellere?
+    pub(super) fn e_in_partenza(&self, radice: &str) -> bool {
+        self.cartelle
+            .get(radice)
+            .and_then(|sorvegliata| sorvegliata.volume.as_deref())
+            .is_some_and(|volume| self.in_partenza.contains_key(volume))
+    }
+
+    /// Windows chiede di espellere `volume`: le sue cartelle si lasciano.
+    ///
+    /// Gli osservatori cadono, e si aspetta che `notify` abbia chiuso davvero le
+    /// cartelle (vedi [`Osservatore`]): chi risponde a Windows lo fa solo dopo,
+    /// altrimenti l'espulsione verrebbe rifiutata lo stesso. Le cartelle
+    /// diventano «non raggiungibili» come quelle di un disco staccato, e il volume
+    /// resta «in partenza» fino a [`Self::volume_rifiutato`],
+    /// [`Self::volume_andato`] o [`PARTENZA_MASSIMA`]: intanto il controllo non le
+    /// riarma, che vorrebbe dire riaprire la cartella dietro le spalle di Windows.
+    ///
+    /// Il passo dei riallineamenti **non** cambia. Se l'espulsione è rifiutata, un
+    /// cambio di passo vorrebbe dire una camminata dell'intero volume al
+    /// riarmo, che terrebbe aperte le cartelle proprio quando l'utente riprova a
+    /// espellerlo; il periodico, che c'è comunque, copre quel che è passato nel
+    /// frattempo. La registrazione resta: Windows continua a mandarle
+    /// «rifiutato» e «andato».
+    pub(super) fn volume_in_partenza(&mut self, volume: &str, adesso: Instant) -> Lasciate {
+        self.in_partenza
+            .insert(volume.to_owned(), adesso + PARTENZA_MASSIMA);
+        let mut cartelle = 0_usize;
+        let mut chiusure = Vec::new();
+        for sorvegliata in self
+            .cartelle
+            .values_mut()
+            .filter(|sorvegliata| sorvegliata.volume.as_deref() == Some(volume))
+        {
+            cartelle = cartelle.saturating_add(1);
+            sorvegliata.come = Come::NonRaggiungibile;
+            sorvegliata.senza_risposta = 0;
+            if let Some(osservatore) = sorvegliata.osservatore.take() {
+                chiusure.push(osservatore.lascia());
+            }
+        }
+        // Prima si lasciano cadere tutti, poi si aspetta: le chiusure di un
+        // volume con molte cartelle corrono insieme.
+        let non_confermate = aspetta_la_chiusura(chiusure, Instant::now() + CHIUSURA_ATTESA);
+        Lasciate {
+            cartelle,
+            non_confermate,
+        }
+    }
+
+    /// Un altro programma ha rifiutato l'espulsione di `volume`: si riprende.
+    ///
+    /// Il controllo corre subito, e riarma le cartelle come per un osservatore
+    /// guastato. La registrazione c'è ancora e vale ancora. `true` se il volume
+    /// era davvero in partenza: un rifiuto di cui non si sapeva niente non muove
+    /// nulla.
+    pub(super) fn volume_rifiutato(&mut self, volume: &str, adesso: Instant) -> bool {
+        let era = self.in_partenza.remove(volume).is_some();
+        if era {
+            self.prossimo_controllo = adesso;
+        }
+        era
+    }
+
+    /// `volume` non c'è più: le sue cartelle sono assenti. Quante.
+    ///
+    /// Come per un disco staccato che si scopre da sé (vedi
+    /// [`lascia_cadere_le_morte`]): niente osservatore, niente riallineamenti —
+    /// il passo si azzera —, e quando il volume torna il controllo di ogni minuto
+    /// le riarma, il cambio di passo le riallinea, e una registrazione nuova
+    /// prende il posto di quella che qui cade: Windows non la rivedrà.
+    pub(super) fn volume_andato(&mut self, volume: &str, adesso: Instant) -> usize {
+        self.in_partenza.remove(volume);
+        self.registrazioni.remove(volume);
+        let mut radici = Vec::new();
+        for (radice, sorvegliata) in self
+            .cartelle
+            .iter_mut()
+            .filter(|(_, sorvegliata)| sorvegliata.volume.as_deref() == Some(volume))
+        {
+            sorvegliata.osservatore = None;
+            sorvegliata.come = Come::NonRaggiungibile;
+            sorvegliata.senza_risposta = 0;
+            radici.push(radice.clone());
+        }
+        for radice in &radici {
+            self.piano.imposta(radice, Ritmo::Nessuno, adesso);
+        }
+        radici.len()
+    }
+
+    /// I volumi «in partenza» senza notizie da [`PARTENZA_MASSIMA`] tornano
+    /// com'erano: si riarmano come ogni altra cartella, con una registrazione
+    /// nuova — di quella vecchia non ci si fida più. Quanti.
+    pub(super) fn scadute_le_partenze(&mut self, adesso: Instant) -> usize {
+        let scadute: Vec<String> = self
+            .in_partenza
+            .iter()
+            .filter(|(_, fino)| **fino <= adesso)
+            .map(|(volume, _)| volume.clone())
+            .collect();
+        for volume in &scadute {
+            self.in_partenza.remove(volume);
+            self.registrazioni.remove(volume);
+        }
+        scadute.len()
+    }
+
+    /// Toglie le registrazioni che non servono più: quelle di un volume senza
+    /// cartelle con l'osservatore, che non sia in partenza.
+    ///
+    /// Cade così anche la registrazione di una cartella tolta dall'elenco, di
+    /// una sorveglianza spenta, di un osservatore morto con il suo disco: senza
+    /// osservatore non c'è niente da lasciare. Quando il volume torna, la
+    /// registrazione la rifà [`Self::registra_il_volume`] dopo il riarmo.
+    fn pota_le_registrazioni(&mut self) {
+        let cartelle = &self.cartelle;
+        let in_partenza = &self.in_partenza;
+        self.registrazioni.retain(|volume, _| {
+            in_partenza.contains_key(volume)
+                || cartelle.values().any(|sorvegliata| {
+                    sorvegliata.osservatore.is_some()
+                        && sorvegliata.volume.as_deref() == Some(volume.as_str())
+                })
+        });
+    }
+
+    /// Dopo che `radice` è stata armata con gli avvisi: se il suo volume non
+    /// ha ancora una registrazione a Windows, la si fa.
+    ///
+    /// Non la si fa per un volume che sta partendo, né per una cartella senza
+    /// osservatore o senza volume (di rete, del cloud, spenta: niente da
+    /// lasciare). Se Windows non la accetta la sorveglianza resta com'era:
+    /// niente va perso, solo l'espulsione sarà rifiutata come prima.
+    fn registra_il_volume(&mut self, radice: &str, posta: &Sender<Messaggio>, elenco: &[String]) {
+        let Some(sorvegliata) = self.cartelle.get(radice) else {
+            return;
+        };
+        let Some(volume) = sorvegliata
+            .volume
+            .clone()
+            .filter(|_| sorvegliata.osservatore.is_some())
+        else {
+            return;
+        };
+        if self.registrazioni.contains_key(&volume) || self.in_partenza.contains_key(&volume) {
+            return;
+        }
+        let chi_risponde = chi_avvisa(volume.clone(), posta.clone(), RISPOSTA_AL_VOLUME);
+        match rymembra_barra::osserva_volume(&volume, chi_risponde) {
+            Ok(registrazione) => {
+                self.registrazioni.insert(volume, registrazione);
+                // Una riga anche quando va bene, senza il nome del volume:
+                // se un'espulsione viene rifiutata, il diario deve poter dire
+                // se la registrazione non c'è mai stata o se è Windows che non
+                // ha avvisato.
+                nota!(
+                    "[sorveglia] {} avviserà quando il suo volume sta per essere espulso ({} volumi registrati)",
+                    nel_diario(radice, elenco),
+                    self.registrazioni.len()
+                );
+            }
+            Err(guasto) => nota!(
+                "[sorveglia] {} non avviserà quando il suo volume sta per essere espulso: {guasto}",
+                nel_diario(radice, elenco)
+            ),
+        }
     }
 
     /// Rimanda `cartelle` di `quanto` — se la sorveglianza non è spenta.
@@ -653,7 +899,71 @@ fn ricevi(motore: &mut Motore, messaggio: Messaggio, adesso: Instant) {
             motore.prossimo_controllo = adesso;
         }
         Messaggio::Svegliate => motore.piano.avvio(),
+        Messaggio::VolumeVaVia { volume, risposta } => {
+            let lasciate = motore.volume_in_partenza(&volume, adesso);
+            nota!(
+                "[sorveglia] Windows chiede di espellere un volume: {} cartelle lasciate",
+                lasciate.cartelle
+            );
+            if lasciate.non_confermate > 0 {
+                nota!(
+                    "[sorveglia] la chiusura di {} cartelle non è stata confermata in {} secondi: l'espulsione potrebbe essere rifiutata",
+                    lasciate.non_confermate,
+                    CHIUSURA_ATTESA.as_secs()
+                );
+            }
+            // Solo ora Windows può andare avanti. Chi aspettava può essersene
+            // andato — la sua scadenza è passata — e non è un guasto.
+            let _ = risposta.send(());
+        }
+        Messaggio::VolumeRifiutato(volume) => {
+            if motore.volume_rifiutato(&volume, adesso) {
+                nota!(
+                    "[sorveglia] l'espulsione del volume è stata rifiutata: si riprende a guardarne le cartelle"
+                );
+            }
+        }
+        Messaggio::VolumeAndato(volume) => {
+            let assenti = motore.volume_andato(&volume, adesso);
+            nota!(
+                "[sorveglia] il volume è stato espulso o staccato: {assenti} cartelle assenti, si riarmano quando torna"
+            );
+        }
         Messaggio::Fermati => {}
+    }
+}
+
+/// Quel che si risponde a Windows quando ci avvisa di un volume: i messaggi
+/// per il filo, e — per «sta per andarsene» — l'attesa della sua risposta.
+///
+/// Gira su un filo del sistema, e Windows aspetta il suo ritorno: l'attesa ha
+/// la sua `scadenza`, e il filo — che può essere in mezzo a una scansione — non
+/// può trattenerlo per sempre. Se il filo non c'è più (si esce) il messaggio
+/// non parte, o cade senza risposta: la richiesta ritorna subito.
+pub(super) fn chi_avvisa(
+    volume: String,
+    posta: Sender<Messaggio>,
+    scadenza: Duration,
+) -> impl Fn(Avviso) + Send + Sync + 'static {
+    move |avviso| match avviso {
+        Avviso::StaPerAndarsene => {
+            let (risposto, aspetta) = channel();
+            let messaggio = Messaggio::VolumeVaVia {
+                volume: volume.clone(),
+                risposta: risposto,
+            };
+            if posta.send(messaggio).is_ok() {
+                // Scaduta, o con il lato che risponde caduto: si ritorna lo
+                // stesso, vedi `RISPOSTA_AL_VOLUME`.
+                let _ = aspetta.recv_timeout(scadenza);
+            }
+        }
+        Avviso::Rifiutato => {
+            let _ = posta.send(Messaggio::VolumeRifiutato(volume.clone()));
+        }
+        Avviso::Andato => {
+            let _ = posta.send(Messaggio::VolumeAndato(volume.clone()));
+        }
     }
 }
 
@@ -683,7 +993,16 @@ fn lavora(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
     // secondo fino al risveglio.
     let adesso = Instant::now();
     if motore.piano.fra_quanto_libero(adesso).is_zero() && motore.attesa.pronto(adesso) {
-        riscansiona(app, motore);
+        if motore.in_partenza.is_empty() {
+            riscansiona(app, motore);
+        } else {
+            // Windows sta espellendo un volume, e una camminata delle sue
+            // cartelle — non si sa quali: gli avvisi in attesa sono percorsi —
+            // le terrebbe aperte. L'espulsione dura un secondo o due, e si
+            // aspetta un respiro alla volta come col turno occupato; il tetto
+            // è `PARTENZA_MASSIMA`.
+            motore.piano.aspetta_un_respiro(adesso);
+        }
     }
 }
 
@@ -709,6 +1028,12 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
         }
     };
     let modo_cambiato = motore.imposta_modo(modo);
+    let scadute = motore.scadute_le_partenze(Instant::now());
+    if scadute > 0 {
+        nota!(
+            "[sorveglia] {scadute} volumi non hanno dato notizie dopo la richiesta di espulsione: si riprende a guardarne le cartelle"
+        );
+    }
     // Gli osservatori e i riallineamenti sono per le cartelle del disco e
     // della rete di casa. Una cartella del cloud non ha un `notify` da
     // armare né un `canonicalize` da chiedere: i suoi cambiamenti li porta il
@@ -726,6 +1051,12 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
     }
     lascia_cadere_le_morte(motore);
     for radice in &locali {
+        // Un volume che Windows sta per espellere non si riarma: riaprire la
+        // cartella adesso farebbe rifiutare l'espulsione. Lo si riprende al
+        // «rifiutato», o al ritorno del volume, o alla scadenza.
+        if motore.e_in_partenza(radice) {
+            continue;
+        }
         // Si rifà quel che è nuovo, quel che non si è potuto guardare, e — con
         // la scelta cambiata — tutto. Una cartella col solo riallineamento
         // ritenta l'osservatore a ogni controllo: senza, una cartella che
@@ -746,7 +1077,9 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
             .piano
             .imposta(radice, sorvegliata.ritmo(), Instant::now());
         motore.cartelle.insert(radice.clone(), sorvegliata);
+        motore.registra_il_volume(radice, posta, &radici);
     }
+    motore.pota_le_registrazioni();
     motore.elenco = radici;
     motore.configurata = true;
     motore.piano.elenco_letto();
@@ -773,9 +1106,13 @@ fn arma(
     let dove =
         rymembra_app::volumi::collocazione(radice, rymembra_app::volumi::SCADENZA_RISOLUZIONE);
     ricorda_dove(app, radice, dove);
-    let (come, osservatore) = match come_sorvegliare(modo, dove) {
-        Come::Avvisi => match osserva_entro(radice, posta) {
-            Ok(osservatore) => (Come::Avvisi, Some(osservatore)),
+    // Il volume si chiede solo per un disco di questo computer: per una
+    // condivisione, una lettera che non risponde o il cloud non c'è un
+    // volume da lasciare, e la registrazione a Windows non si fa.
+    let con_volume = dove == Collocazione::Locale;
+    let (come, osservatore, volume) = match come_sorvegliare(modo, dove) {
+        Come::Avvisi => match osserva_entro(radice, posta, con_volume) {
+            Ok((osservatore, volume)) => (Come::Avvisi, Some(osservatore), volume),
             Err(guasto) => {
                 // Con «tutte» resta il solo riallineamento: è la strada che
                 // funziona anche dove gli avvisi no. Con «locali», dove questa
@@ -792,15 +1129,16 @@ fn arma(
                         nel_diario(radice, elenco)
                     );
                 }
-                (ripiego, None)
+                (ripiego, None, None)
             }
         },
-        altro => (altro, None),
+        altro => (altro, None, None),
     };
     Sorvegliata {
         come,
         dove,
         osservatore,
+        volume,
         senza_risposta: 0,
     }
 }
@@ -905,10 +1243,16 @@ fn lascia_cadere_le_morte(motore: &mut Motore) {
 /// NAS restava giù. Scaduto il tempo, la risposta che arriva dopo trova il
 /// canale chiuso: l'osservatore nato tardi cade col filo che l'aspettava, e il
 /// suo `Drop` chiude la sorveglianza. Niente resta appeso.
+///
+/// Con `con_volume` chiede anche a Windows il volume della cartella, sullo stesso
+/// filo e con la stessa scadenza: per trovarlo Windows guarda le cartelle del
+/// percorso, cioè il disco. `None` per una cartella di cui non si sa il volume:
+/// resta sorvegliata, senza la registrazione.
 fn osserva_entro(
     radice: &str,
     posta: &Sender<Messaggio>,
-) -> Result<notify::RecommendedWatcher, String> {
+    con_volume: bool,
+) -> Result<(Osservatore, Option<String>), String> {
     let percorso = radice.to_owned();
     let posta = posta.clone();
     rymembra_app::scadenza::con_scadenza(
@@ -918,7 +1262,14 @@ fn osserva_entro(
         // aggiunge in coda («… about ["D:\\Musica\\…"]»), e questa frase
         // finisce nel diario. Vedi [`nel_diario`].
         move || {
-            osserva(&percorso, &posta).map_err(|guasto| notify::Error::new(guasto.kind).to_string())
+            let osservatore = osserva(&percorso, &posta)
+                .map_err(|guasto| notify::Error::new(guasto.kind).to_string())?;
+            let volume = if con_volume {
+                rymembra_barra::volume_di(Path::new(&percorso))
+            } else {
+                None
+            };
+            Ok((osservatore, volume))
         },
     )
     .unwrap_or_else(|| {
@@ -930,14 +1281,17 @@ fn osserva_entro(
 }
 
 /// Mette un osservatore ricorsivo su una cartella, che scrive al filo.
-pub(super) fn osserva(
-    radice: &str,
-    posta: &Sender<Messaggio>,
-) -> notify::Result<notify::RecommendedWatcher> {
+pub(super) fn osserva(radice: &str, posta: &Sender<Messaggio>) -> notify::Result<Osservatore> {
     let posta = posta.clone();
     let nome = radice.to_owned();
+    // La guardia sta dentro la funzione che `notify` tiene: cade quando `notify`
+    // ha finito con la cartella, e il ricevitore se ne accorge. Vedi
+    // [`Osservatore`].
+    let (guardia, chiuso) = channel::<()>();
     let mut osservatore =
         notify::recommended_watcher(move |esito: notify::Result<notify::Event>| {
+            // Letta, perché la funzione la catturi: non serve a altro.
+            let _guardia = &guardia;
             let messaggio = match esito {
                 // Il sistema ha perso degli avvisi — il suo buffer si è
                 // riempito durante una copia enorme — e lo dice: non si sa più
@@ -960,7 +1314,10 @@ pub(super) fn osserva(
             let _ = posta.send(messaggio);
         })?;
     osservatore.watch(Path::new(radice), notify::RecursiveMode::Recursive)?;
-    Ok(osservatore)
+    Ok(Osservatore {
+        dentro: osservatore,
+        chiuso,
+    })
 }
 
 /// Un riallineamento: l'osservatore rifatto se serve, e la cartella intera
@@ -975,6 +1332,14 @@ fn riallinea(
         return;
     };
     let radice = voce.radice;
+    if motore.e_in_partenza(&radice) {
+        // Windows sta per espellere il volume: né riarmare né camminare, che
+        // riaprirebbe le sue cartelle. La cartella resta dovuta, e si riprova
+        // dopo un respiro — se l'espulsione è rifiutata la si trova ancora
+        // lì, se è riuscita è assente.
+        motore.piano.aspetta_un_respiro(Instant::now());
+        return;
+    }
     if voce.riarma && motore.cartelle.contains_key(&radice) {
         // Il nuovo prima della camminata — vedi `Riallineamento::riarma` — e
         // il vecchio cade quando il nuovo prende il suo posto. Se il nuovo non
@@ -989,6 +1354,8 @@ fn riallinea(
             .get(&radice)
             .is_none_or(|vecchia| vecchia.come != nuova.come);
         motore.cartelle.insert(radice.clone(), nuova);
+        let elenco = motore.elenco.clone();
+        motore.registra_il_volume(&radice, posta, &elenco);
         if cambiata {
             pubblica_quadro(app, motore);
         }
