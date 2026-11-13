@@ -27,7 +27,7 @@
  * dell'ombra (sempre `px`) e del ritaglio della timeline (sempre `%`): adesso
  * passano anche loro da `conUnita` (`valori.ts`).
  */
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import type { TipoToken, TokenRegistro } from "../ipc";
 import { Icona } from "../parti/Icone";
@@ -43,6 +43,7 @@ import {
 } from "./colore";
 import { conUnita, LIVELLI_OMBRA_MASSIMI, puntoDaCasella, puoAggiungere, tinta, UNITA, unitaDi } from "./valori";
 import { sorgentiPer } from "./sorgentiColore";
+import { useScriviAllaChiusura } from "./sospeso";
 import { t } from "../lingue";
 
 /**
@@ -132,6 +133,27 @@ function numeroDi(valore: unknown): number {
 }
 
 /**
+ * La casella dell'esadecimale di un colore letterale.
+ *
+ * Non controllata — il colore cambia anche dai cursori, e la casella si riscrive
+ * da fuori con la `key` — e si conferma all'uscita. Quel che c'è scritto, e non
+ * è ancora uscito, si scrive anche quando qualcuno salva o chiude (L-PC 8): si
+ * legge dal nodo, perché lo stato di React non lo conosce. Restituisce il
+ * riferimento da dare all'`<input>`.
+ */
+function useCasellaEsadecimale(valore: unknown, onCambia: (valore: string) => void) {
+  const casella = useRef<HTMLInputElement>(null);
+  useScriviAllaChiusura(() => {
+    const scritto = casella.current?.value.trim();
+    // Solo se è cambiato e si legge: il gancio lo chiamano anche Ctrl+S e
+    // «Prova», e un colore uguale a quello del documento non è una modifica.
+    if (scritto === undefined || scritto === String(valore) || leggiColore(scritto) === null) return;
+    onCambia(scritto);
+  });
+  return casella;
+}
+
+/**
  * Un colore, in una delle tre forme che il documento accetta.
  *
  * Cambiare modo non conserva il valore: passare da un token a un letterale
@@ -175,6 +197,7 @@ export function ValoreColore({
   onCambia: (valore: unknown) => void;
 }) {
   const [aperto, setAperto] = useState(false);
+  const casellaEsadecimale = useCasellaEsadecimale(valore, onCambia);
   // `escluso` è il token che si sta scrivendo: se è l'accento, `$source`
   // rimanderebbe a sé stesso e il validatore lo rifiuta. Il modo non si offre.
   const ammesse = sorgentiPer(escluso, sorgenti);
@@ -294,6 +317,7 @@ export function ValoreColore({
           type="text"
           spellCheck={false}
           aria-label={t("studio.ctl.hex")}
+          ref={casellaEsadecimale}
           // Una chiave per valore: il campo si riscrive da fuori quando il
           // colore cambia dai cursori, e resta libero mentre ci si scrive.
           key={String(valore)}
@@ -355,6 +379,7 @@ export function ColoreLetterale({
   onCambia: (valore: string) => void;
 }) {
   const letto = typeof valore === "string" ? leggiColore(valore) : null;
+  const casella = useCasellaEsadecimale(valore, onCambia);
   return (
     <div className="colore-letterale">
       <div className="valore-colore">
@@ -369,6 +394,7 @@ export function ColoreLetterale({
           type="text"
           spellCheck={false}
           aria-label={etichetta}
+          ref={casella}
           key={String(valore)}
           defaultValue={typeof valore === "string" ? valore : ""}
           aria-invalid={letto === null || undefined}

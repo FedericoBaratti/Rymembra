@@ -46,6 +46,7 @@ import {
 } from "./riferimenti";
 import { problemaNomeFamiglia, usiDellaRisorsa } from "./risorse";
 import { sentieroColore, sentieroMotivo, sentieroToken } from "./sentieri";
+import { useScriviAllaChiusura } from "./sospeso";
 import { caratteriDi, immaginiDi, nomeRisorsa } from "./usaPacchetto";
 import { useVai } from "./vai";
 import { sorgentiPer } from "./sorgentiColore";
@@ -138,6 +139,9 @@ function Rinomina({
     scriviTesto(stampa(nuovo), t("studio3.step.rename", { da: nome, a: scritto }), `rinomina:${nome}`);
     onFatto(scritto);
   };
+  // Il nome scritto e non ancora confermato arriva alla bozza anche se chi
+  // scrive salva o chiude senza uscire dal campo.
+  useScriviAllaChiusura(applica);
   return (
     <Riga che={t("studio3.rename")}>
       <div className="rinomina">
@@ -213,6 +217,18 @@ function CampoJson({ valore, onCambia }: { valore: unknown; onCambia: (v: unknow
     setTesto(scritto);
     setRotto(false);
   }, [scritto]);
+  const applica = () => {
+    if (testo === scritto) return;
+    try {
+      onCambia(JSON.parse(testo));
+      setRotto(false);
+    } catch {
+      setRotto(true);
+    }
+  };
+  // Un JSON valido scritto e non ancora confermato si scrive anche salvando o
+  // chiudendo; uno rotto resta com'è, e `aria-invalid` lo dice.
+  useScriviAllaChiusura(applica);
   return (
     <textarea
       className="field-input codice-frammento corto"
@@ -221,15 +237,7 @@ function CampoJson({ valore, onCambia }: { valore: unknown; onCambia: (v: unknow
       aria-invalid={rotto || undefined}
       value={testo}
       onChange={(e) => setTesto(e.target.value)}
-      onBlur={() => {
-        if (testo === scritto) return;
-        try {
-          onCambia(JSON.parse(testo));
-          setRotto(false);
-        } catch {
-          setRotto(true);
-        }
-      }}
+      onBlur={applica}
     />
   );
 }
@@ -886,6 +894,9 @@ export function IspezioneCarattere({ nome }: { nome: string }) {
     scriviTesto(stampa(copia), t("studio3.step.rename", { da: nome, a: nuovo }), `rinomina:${nome}`);
     manda({ tipo: "scegli", selezione: { tipo: "carattere", nome: nuovo } });
   };
+  // Come per le altre voci: il nome in corso si scrive anche se si salva o si
+  // chiude senza uscire dal campo.
+  useScriviAllaChiusura(rinomina);
 
   return (
     <div className="ispezione-voce">
@@ -1201,6 +1212,11 @@ export function IspezioneDocumento() {
   // formato rifiuta non arriva nel documento, e quindi non sposta la bozza.
   // Vedi `bozza.ts`.
   const idValido = idDelFormato(id);
+  const applicaId = () => {
+    if (idValido && id !== documento?.["id"]) scrivi(["id"], id, t("studio3.step.meta", { campo: t("studio3.doc.id") }));
+  };
+  // L'id scritto e non confermato arriva alla bozza anche chiudendo (L-PC 8).
+  useScriviAllaChiusura(applicaId);
 
   return (
     <div className="ispezione-voce">
@@ -1227,9 +1243,7 @@ export function IspezioneDocumento() {
               aria-invalid={!idValido || undefined}
               value={id}
               onChange={(e) => setId(e.target.value)}
-              onBlur={() => {
-                if (idValido && id !== documento?.["id"]) scrivi(["id"], id, t("studio3.step.meta", { campo: t("studio3.doc.id") }));
-              }}
+              onBlur={applicaId}
             />
             {/* Il perché, accanto al campo rosso: prima lo diceva la
                 validazione, quando l'id sbagliato era già nel documento. */}
@@ -1278,6 +1292,10 @@ function CampoTesto({
   const applica = () => {
     if (scritto !== valore) onCambia(scritto);
   };
+  // Il Nome, l'autore, la descrizione scritti e non confermati (senza Tab né
+  // Invio) arrivano alla bozza anche se si salva o si chiude: è il difetto
+  // L-PC 8, «Alt+F4 0,7 s dopo e la bozza resta quella della creazione».
+  useScriviAllaChiusura(applica);
   return (
     <Riga che={etichetta}>
       {lungo ? (

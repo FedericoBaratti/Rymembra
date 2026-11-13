@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 /*
  * Come sono collegati i pezzi dello Studio, letto nei sorgenti.
@@ -343,4 +343,52 @@ test("gli scarti della chat si mostrano tradotti; al modello torna l'italiano (D
   assert.match(chat, /proposta\.motivi\.map\(\(m, i\) => \(\s*<li key=\{i\}>\{testoMotivo\(m, traduciMotivo\)\}<\/li>/);
   assert.doesNotMatch(chat, /proposta\.ragioni\.map\(/, "l'elenco mostra ancora le frasi italiane");
   assert.match(chat, /correzione\(restano, ragioni\)/, "al modello torna la frase italiana");
+});
+
+test("i campi di testo che scrivono solo all'uscita si fanno trovare da chi salva e da chi chiude (L-PC 8)", () => {
+  // Scritto nel campo Nome senza Tab né Invio, e subito Alt+F4: la bozza
+  // restava quella della creazione, perché il testo stava ancora nel campo —
+  // l'uscita dal campo, che lo scrive, non era mai avvenuta. Con Tab prima, sì.
+  // `svuotaSospesi` (Guscio) chiama chi si è registrato con `registraSospeso`:
+  // ogni campo che si conferma solo all'uscita deve farlo, come l'editor del
+  // codice di una parte (R14-3).
+  const voci = sorgente("IspezioneVoci.tsx");
+  for (const campo of [
+    "function Rinomina(",
+    "function CampoJson(",
+    "export function IspezioneCarattere(",
+    "export function IspezioneDocumento(",
+    "function CampoTesto(",
+  ]) {
+    assert.match(corpo(voci, campo), /useScriviAllaChiusura\(/, `${campo} non si fa trovare da chi chiude`);
+  }
+  const controlli = sorgente("controlli.tsx");
+  assert.match(corpo(controlli, "export function ValoreColore("), /useCasellaEsadecimale\(/);
+  assert.match(corpo(controlli, "export function ColoreLetterale("), /useCasellaEsadecimale\(/);
+  assert.match(corpo(controlli, "function useCasellaEsadecimale("), /useScriviAllaChiusura\(/);
+
+  // E il gancio è quello che `svuotaSospesi` chiama: `registraSospeso`, non un secondo meccanismo.
+  assert.match(sorgente("sospeso.ts"), /registraSospeso\(\(\) => ultima\.current\(\)\)/);
+  assert.match(sorgente("Guscio.tsx"), /for \(const svuota of sospesi\.current\) svuota\(\);/);
+});
+
+test("nessun campo dello Studio che scrive all'uscita resta fuori dal gancio", () => {
+  // Ogni `onBlur` nei file dello Studio è o di un campo coperto, o dichiarato qui
+  // con il perché: un campo nuovo con la stessa abitudine fa fallire questa prova
+  // invece di perdere il testo in silenzio.
+  const attesi: Record<string, number> = {
+    // Rinomina, CampoJson, IspezioneCarattere, id del documento, CampoTesto (×2: input e textarea).
+    "IspezioneVoci.tsx": 6,
+    // I due esadecimali, e la casella di un punto della curva (scrive a ogni cifra: l'uscita rimette solo il testo).
+    "controlli.tsx": 3,
+    // Il riquadro del codice di una parte: ha il suo gancio (`registraSospeso` in `IspezioneParte`).
+    "IspezioneParte.tsx": 1,
+  };
+  const attuali: Record<string, number> = {};
+  for (const file of readdirSync(new URL("../src/studio/", import.meta.url))) {
+    if (!file.endsWith(".tsx")) continue;
+    const n = (sorgente(file).match(/\bonBlur=/g) ?? []).length;
+    if (n > 0) attuali[file] = n;
+  }
+  assert.deepEqual(attuali, attesi);
 });
