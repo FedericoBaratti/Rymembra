@@ -308,7 +308,7 @@ pub fn modifica_con_riserva(
         }
         Err(err) => match guardia.ripristina() {
             Ok(()) => Err(err),
-            Err(rimasta) => Err(rimasta.with_message(err.to_string())),
+            Err(rimasta) => Err(rimasta.with_detail(err.to_string())),
         },
     }
 }

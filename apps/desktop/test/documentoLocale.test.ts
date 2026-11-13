@@ -45,8 +45,10 @@ test("le Impostazioni chiedono la copia locale prima di aprire il sito", () => {
   );
   const it = JSON.parse(sorgente("lingue/it.json")) as Record<string, string>;
   const en = JSON.parse(sorgente("lingue/en.json")) as Record<string, string>;
-  assert.equal(it["settings.docs.online"], "Apri la versione aggiornata sul sito");
-  assert.equal(en["settings.docs.online"], "Open the latest version online");
+  // Il tasto apre `github.com/…/blob/main/…` (`Documento::indirizzo`): non c'è un sito
+  // a parte con le stesse pagine, e il testo dice dove porta davvero.
+  assert.equal(it["settings.docs.online"], "Apri la versione aggiornata su GitHub");
+  assert.equal(en["settings.docs.online"], "Open the latest version on GitHub");
 });
 
 test("il testo si legge e si copia, e la finestrella è larga", () => {

@@ -120,3 +120,215 @@ test("le categorie mai scritte sono il ripiego dichiarato, e si dicono", () => {
   assert.equal(esito.note.length, 1);
   assert.match(esito.note[0], /many/);
 });
+
+/*
+ * I testi, non solo le chiavi (R17-24).
+ *
+ * Ogni controllo è una funzione pura: qui la si prova con tre righe di fixture,
+ * al rosso e al verde. Sull'albero vero girano in `npm run check:lingue`.
+ */
+const {
+  chiaviMorte,
+  contatoriFuoriDaN,
+  etichetteCitate,
+  grafiaBritannica,
+  segnaposti,
+  segnapostiDiversi,
+  valoriUguali,
+  virgoletteSbagliate,
+  vociDeiRegistri,
+  vociMancanti,
+} = require("./lingue.js");
+
+test("i segnaposto sono gli stessi in ogni lingua", () => {
+  const dizionari = {
+    it: { a: "{nome} ha {n} brani", b: "ciao" },
+    en: { a: "{nome} has {n} tracks", b: "hi" },
+    de: { a: "{name} hat {n} Titel", b: "hallo" },
+  };
+  const trovati = segnapostiDiversi(dizionari);
+  assert.equal(trovati.length, 1);
+  assert.match(trovati[0], /de\.json: «a» ha \{n, name\} dove it\.json ha \{n, nome\}/);
+  assert.deepEqual(segnapostiDiversi({ it: dizionari.it, en: dizionari.en }), []);
+  assert.deepEqual(segnaposti("{b} {a} {b}"), ["a", "b"]);
+});
+
+test("le virgolette e gli apostrofi sono quelli della lingua", () => {
+  // L'inglese con le «» dell'italiano e l'apostrofo dritto: due difetti, una chiave.
+  const en = { "a.b": "Turn on «Listen together»? It isn't on.", ok: "Turn on “Listen together”? It isn’t on." };
+  const trovati = virgoletteSbagliate("en", en);
+  assert.equal(trovati.length, 2);
+  assert.ok(trovati.every((t) => t.includes("«a.b»")));
+  // Le virgolette dritte sono quelle del codice citato, e passano; i `.syn` anche.
+  assert.deepEqual(virgoletteSbagliate("en", { c: "Written as {\"$token\": …}", "x.syn": "don't" }), []);
+  // E l'italiano con le “” dell'inglese.
+  assert.equal(virgoletteSbagliate("it", { a: "Accendi “Ascolta insieme”" }).length, 1);
+  assert.deepEqual(virgoletteSbagliate("it", { a: "Accendi «Ascolta insieme» dell'altro PC" }), []);
+  // Un'eccezione dichiarata (con il suo motivo, nel file accanto) passa.
+  assert.deepEqual(virgoletteSbagliate("en", { a: "x's" }, { apostrofiDritti: { a: "motivo" } }), []);
+});
+
+test("l'inglese ha una grafia sola: l'americano", () => {
+  const en = {
+    a: "Ask the catalogue for your favourite colour",
+    b: "We recognise it; the licence is the analyser's",
+    "c.syn": "visualiser,colour,catalogue",
+    ok: "Ask the catalog for your favorite color",
+    // `color` e `centers` non sono britannici: nessun falso allarme.
+    ok2: "The color of the center, the colors of the centers; Spectrum analyzer",
+  };
+  const trovati = grafiaBritannica(en);
+  const parole = trovati.map((t) => t.match(/«(\w+)», in americano (\w+)/).slice(1).join(">"));
+  assert.deepEqual(parole.sort(), [
+    "analyser>analyzer",
+    "catalogue>catalog",
+    "colour>color",
+    "favourite>favorite",
+    "licence>license",
+    "recognise>recognize",
+  ]);
+  assert.ok(trovati.every((t) => !t.includes("«c.syn»") && !t.includes("«ok")));
+});
+
+test("una chiave che nessun punto del codice nomina è morta", () => {
+  const riferimento = {
+    "queue.remove": "Togli",
+    "queue.remove.telefono": "Togli dalla coda",
+    "settings.sync.rename": "Rinomina",
+    "settings.entry.audio": "Audio",
+    "skin.issue.oggetto": "qui ci va un oggetto",
+    "errors.fs.notFound": "Il file non c'è più.",
+    "errors.transfer.pinInvalid": "Questo codice non è quello giusto.",
+    "errors.action.folders": "Apri le cartelle",
+    "nav.close": "Chiudi il menu",
+    "format.tracks": "{n} brani",
+    "format.tracks.uno": "1 brano",
+  };
+  const testoCodice = [
+    't("queue.remove")',
+    // Costruita: `settings.entry.${id}`.
+    "const chiave = `settings.entry.${id}`;",
+    'motivo!("oggetto", "qui ci va un oggetto")',
+    'tSe("errors.action.folders", "")',
+    'const f = t("format.tracks", { n });',
+  ].join("\n");
+  const trovati = chiaviMorte({ riferimento, testoCodice, codici: ["fs.notFound"] });
+  assert.deepEqual(trovati.sort(), [
+    // Un codice che il catalogo ha tolto si porta dietro la sua frase: si dice com'è.
+    "«errors.transfer.pinInvalid» è la frase di un codice che il catalogo del nucleo non ha più: togli la frase",
+    "«nav.close» non è usata da nessun punto del codice",
+    "«settings.sync.rename» non è usata da nessun punto del codice",
+  ].sort());
+  // Le forme del plurale e la variante del telefono non sono chiavi a sé.
+  assert.ok(!trovati.some((t) => t.includes("format.tracks") || t.includes("queue.remove")));
+});
+
+test("un commento che cita la chiave non la disegna, e un'eccezione scritta sì", () => {
+  const riferimento = { "settings.sync.rename": "Rinomina", "cloudApp.google.step1": "Vai in «API»" };
+  // Il commento sta già fuori dal testo che `main` passa: `leggiTutti` lo toglie.
+  const eccezioni = { chiaviVive: { "cloudApp.": "le passi della console di un servizio, composte per nome" } };
+  const trovati = chiaviMorte({ riferimento, testoCodice: "", codici: [], eccezioni });
+  assert.deepEqual(trovati, ["«settings.sync.rename» non è usata da nessun punto del codice"]);
+  // Una chiave esatta, senza il punto finale, vale solo per sé.
+  const esatta = chiaviMorte({ riferimento, testoCodice: "", codici: [], eccezioni: { chiaviVive: { "settings.sync.rename": "motivo" } } });
+  assert.deepEqual(esatta, ["«cloudApp.google.step1» non è usata da nessun punto del codice"]);
+});
+
+test("una frase che cita un tasto lo cita con le parole che ha sullo schermo", () => {
+  const en = {
+    "action.addToPlaylist": "Add to a playlist…",
+    "playlist.empty.body": "From a track: ⋮ and then “Add to playlist…”.",
+    "ok.body": "Press “Add to a playlist” to start one.",
+    "ext.body": "In the console choose “Desktop app”, and write {nome} as “{titolo}”.",
+    "cloudApp.google.step4": "Press “Create client”.",
+    "lungo": "He said “this quote is much longer than forty-five characters, so it is a sentence”.",
+  };
+  const trovati = etichetteCitate("en", en, {
+    etichetteEsterne: { "Desktop app": "Il tipo di client della console di Google." },
+    etichetteInChiavi: { "cloudApp.": "I passi della console di un servizio." },
+  });
+  // «Add to playlist…» non è «Add to a playlist…»: la frase manda a un tasto che non c'è.
+  assert.deepEqual(trovati, [
+    "en.json: «playlist.empty.body» cita «Add to playlist…», che non è il testo di nessuna chiave",
+  ]);
+  // Il finale («…», «.») e i segnaposto non contano; in italiano valgono le «».
+  const it = { "a.b": "Aggiungi a playlist…", c: "Premi «Aggiungi a playlist» o “Annulla”" };
+  assert.deepEqual(etichetteCitate("it", it), []);
+  assert.equal(etichetteCitate("it", { c: "Premi «Aggiungi alla coda»" }).length, 1);
+});
+
+test("solo `n` sceglie il plurale: un altro contatore davanti a un sostantivo plurale è un errore", () => {
+  const it = {
+    "studio.chat.proposed": "{n} modifiche: {piu} righe aggiunte, {meno} tolte.",
+    "studio.chat.proposed.uno": "1 modifica: {piu} righe aggiunte.",
+    ok: "{n} modifiche — righe aggiunte: {piu}, tolte: {meno}.",
+    // Un participio plurale dopo un altro contatore.
+    "devices.download.doneWithErrors": "Scaricati {n} brani, {falliti} non riusciti.",
+    // Un verbo dopo un nome non è un plurale: nessun falso allarme.
+    "together.notice.left": "{nome} chiede, {servizio} esce e {nome} ha deciso",
+    "skin.issue.voci": "la lista va da {min} a {max} voci",
+  };
+  const trovati = contatoriFuoriDaN("it", it, { contatori: { "skin.issue.": "limiti del formato" } });
+  assert.deepEqual(trovati.map((t) => t.match(/«([^»]+)» scrive «([^»]+)»/).slice(1).join(" → ")), [
+    "studio.chat.proposed → {piu} righe",
+    "studio.chat.proposed.uno → {piu} righe",
+    "devices.download.doneWithErrors → {falliti} non riusciti",
+  ]);
+  // `{n}` è il contatore che sceglie la forma: va sempre bene.
+  assert.deepEqual(contatoriFuoriDaN("en", { a: "{n} lines added", b: "1 line" }), []);
+  // In inglese, lo stesso difetto di «1 lines added».
+  assert.equal(contatoriFuoriDaN("en", { a: "{piu} lines added, {meno} removed" }).length, 1);
+  // Un'eccezione per chiave esatta, con il motivo.
+  assert.deepEqual(contatoriFuoriDaN("en", { a: "{max} items" }, { contatori: { a: "un limite" } }), []);
+});
+
+test("i valori uguali in italiano e in inglese sono dichiarati", () => {
+  const it = { a: "Album", b: "Agente", c: "{n} kB", d: "…", e: "Rock", f: "5.1" };
+  const en = { a: "Album", b: "Agente", c: "{n} kB", d: "…", e: "Rock", f: "5.1" };
+  // «Agente» è una traduzione che non è stata fatta: salta fuori. Le unità, i
+  // simboli e i numeri non hanno lettere da tradurre; «Album» e «Rock» si dichiarano.
+  const eccezioni = { valoriUguali: { "Termine uguale in tutte e due": ["a", "e"] } };
+  const trovati = valoriUguali(it, en, eccezioni);
+  assert.equal(trovati.length, 1);
+  assert.match(trovati[0], /«b» è identico/);
+  // Quel che è diverso non è un caso.
+  assert.deepEqual(valoriUguali({ x: "Mostra" }, { x: "Show" }), []);
+});
+
+test("ogni voce dei registri ha la sua frase in ogni lingua", () => {
+  const registri = vociDeiRegistri({
+    parti: 'PartDef::nuova("app-shell", Shell, "x"), PartDef::nuova(\n  "heart", Card, "y")',
+    token: 'token!("color.accent", "--accent", Color)\n token!(\n  "radius.panel", "--r", Length)',
+    autoplay: [
+      "    pub const fn codice(self) -> &'static str {",
+      "        match self {",
+      '            Self::Album => "album",',
+      '            Self::DaTanto => "datanto",',
+      "        }",
+      "    }",
+      "}",
+    ].join("\n"),
+    avvisi: "pub enum WarningKind {\n    /// x\n    MissingRequiredToken,\n    /// y\n    RestingLoop,\n}\n",
+    parametri: 'par!("at", "pos", false, "x"), par!("stops", "stops", false, "y")',
+  });
+  const dizionario = {
+    "skin.part.app-shell": "x",
+    "skin.token.color.accent": "x",
+    "skin.token.radius.panel": "x",
+    "queue.why.album": "x",
+    "queue.why.datanto": "x",
+    "studio3.warning.missingRequiredToken": "x",
+    "skin.par.radialGradient.at": "x",
+    "skin.par.radialGradient.stops": "x",
+  };
+  // Manca la parte `heart` e il genere `restingLoop`.
+  assert.deepEqual(vociMancanti("en", dizionario, registri), [
+    "en.json: manca «skin.part.heart» (parts.rs)",
+    "en.json: manca «studio3.warning.restingLoop» (avvisi.rs (WarningKind))",
+  ]);
+  // Un sorgente la cui forma è cambiata non passa in silenzio.
+  assert.throws(
+    () => vociDeiRegistri({ parti: "", token: "x", autoplay: "x", avvisi: "x", parametri: "x" }),
+    /nessuna voce riconosciuta/,
+  );
+});

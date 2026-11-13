@@ -152,7 +152,7 @@ fn decodifica(byte: &[u8], hash: &str) -> Result<image::DynamicImage, AppError> 
         // copertina — ed è voluta.
         ImageError::Limits(limite) => {
             AppError::new(ErrorCode::MetadataTagReadFailed { path: None })
-                .with_message(format!(
+                .with_detail(format!(
                     "copertina {hash} non decodificabile: oltre i limiti di decodifica"
                 ))
                 .with_cause(limite.to_string())
@@ -948,7 +948,7 @@ pub fn pulisci(
 /// dentro qualcosa che non è un'immagine, e va saltato riportando il perché.
 fn decode_error(hash: &str, detail: &str) -> AppError {
     AppError::new(ErrorCode::MetadataTagReadFailed { path: None })
-        .with_message(format!("copertina {hash} non decodificabile"))
+        .with_detail(format!("copertina {hash} non decodificabile"))
         .with_cause(detail.to_owned())
 }
 

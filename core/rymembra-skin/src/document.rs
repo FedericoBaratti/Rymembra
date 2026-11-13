@@ -1113,13 +1113,17 @@ fn in_errore(problemi: &[SkinIssue]) -> AppError {
         .map(|guasto| format!("{}: {}", guasto.path, guasto.message()))
         .collect();
     // Il codice è quello del primo problema, perché è quello che nomina il punto
-    // esatto; il messaggio li elenca tutti.
+    // esatto; il dettaglio li elenca tutti, in italiano, **per il diario**. A
+    // chi guarda non arriva: la frase del codice dice di aprire la skin nello
+    // Studio, che elenca i problemi riga per riga nella lingua dell'interfaccia
+    // (D-46) con i loro `motivo`, e una riga italiana sotto la frase inglese
+    // era il testo tecnico nella lingua sbagliata (R10).
     let codice = problemi
         .first()
         .map_or(ErrorCode::SkinManifestInvalid { detail: None }, |guasto| {
             guasto.code.clone()
         });
-    AppError::new(codice).with_message(elenco.join("; "))
+    AppError::new(codice).with_detail(elenco.join("; "))
 }
 
 pub(crate) fn versione_formato(raw: &Value) -> Option<u64> {

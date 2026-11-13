@@ -2002,9 +2002,10 @@ pub async fn nuvola_conto_collega(
 /// # Errori
 ///
 /// `cloud.otherAccount` se si ricollegava `atteso` e l'accesso è di un altro
-/// account. Il messaggio porta il nome dell'account con cui si è entrati —
-/// un dato, non una frase: la finestrella lo mette nella sua accanto a quello
-/// atteso (R24-5, D-92). Nella causa vanno solo gli identificativi dei conti.
+/// account. Il codice porta il nome dell'account con cui si è entrati — un
+/// dato, non una frase (`valori_della_frase`): la finestrella lo mette nella
+/// sua accanto a quello atteso (R24-5, D-92). Nella causa, che va nel diario,
+/// solo gli identificativi dei conti.
 fn controlla_il_conto(
     atteso: Option<&ContoSalvato>,
     ottenuto: &str,
@@ -2014,8 +2015,8 @@ fn controlla_il_conto(
         Some(atteso) if atteso.conto != ottenuto => {
             Err(AppError::new(ErrorCode::CloudOtherAccount {
                 servizio: atteso.servizio.nome().to_owned(),
+                account: nome_ottenuto.to_owned(),
             })
-            .with_message(nome_ottenuto.to_owned())
             .with_cause(format!(
                 "si ricollegava {}, e il consenso è di {ottenuto}",
                 atteso.conto
@@ -3196,7 +3197,10 @@ mod prove {
         let rifiuto = controlla_il_conto(Some(&atteso), "onedrive-bbbbbbbb", "casa@esempio.it")
             .expect_err("un altro account non è un ricollegamento");
         assert_eq!(rifiuto.code().kind().code(), "cloud.otherAccount");
-        assert_eq!(rifiuto.message(), Some("casa@esempio.it"));
+        assert_eq!(
+            rifiuto.code().valori_della_frase(),
+            vec![("ottenuto", "casa@esempio.it".to_owned())]
+        );
         assert!(
             rifiuto
                 .cause()

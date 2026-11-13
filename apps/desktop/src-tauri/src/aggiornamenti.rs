@@ -1153,15 +1153,18 @@ fn esci_dicendolo(err: &AppError) -> ! {
 /// (`diario::testo_dell_avvio_fallito`): le traduzioni della finestra qui non
 /// ci sono.
 fn testo_dell_installer_fermo(causa: &str) -> String {
+    // Dove si scarica a mano: l'indirizzo viene da `Cargo.toml`, come quello dei
+    // documenti, e non è scritto qui una seconda volta.
+    let release = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases");
     format!(
         "L'aggiornamento di Rymembra è stato scaricato e verificato, ma Windows non ha avviato \
          il programma d'installazione. Spesso lo blocca un criterio aziendale o un antivirus \
          che non lascia eseguire programmi dalla cartella temporanea. Rymembra si chiude: \
-         riaprilo e riprova, oppure installa l'aggiornamento dalla pagina del progetto.\n\n\
+         riaprilo e riprova, oppure installa l'aggiornamento da {release}\n\n\
          The Rymembra update was downloaded and verified, but Windows did not start the \
          installer. Often a company policy or an antivirus does not let programs run from the \
          temporary folder. Rymembra will now close: open it again and retry, or install the \
-         update from the project page.\n\n{causa}"
+         update from {release}\n\n{causa}"
     )
 }
 
@@ -1970,5 +1973,11 @@ mod prove {
         assert!(parti[0].contains("Rymembra si chiude"), "{testo}");
         assert!(parti[1].contains("Rymembra will now close"), "{testo}");
         assert_eq!(parti[2], "Accesso negato. (os error 5)");
+        // E dice **dove** si installa a mano, con lo stesso indirizzo nelle due lingue.
+        let release = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases");
+        assert!(
+            parti[0].contains(release) && parti[1].contains(release),
+            "{testo}"
+        );
     }
 }

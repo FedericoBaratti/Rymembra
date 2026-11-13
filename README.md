@@ -37,7 +37,7 @@ from the freely accessible catalogs: Internet Archive and Audius. Since 2.4.0
 those catalogs can also be searched directly, a phrase at a time, from
 **Explore** — and a track found there can be listened to without ever being
 written to disk. Every track it acquires keeps the license of the source it
-came from. Tracks that no free catalog has end up in a shopping list, with
+came from. Tracks that no free catalog has end up in the “To buy” list, with
 links to the shops that pay the artists.
 
 The program does not download content from YouTube, does not scrape Spotify and
@@ -121,7 +121,7 @@ picture. What the rows do:
   cover by someone else. When one is taken, the track says so with a «dal
   vivo» (*live*) badge. With the switch off, the search is strict and finds
   much less. Either way a catalog file is taken only when its title and artist
-  match the track you want; what matches nothing goes to the shopping list.
+  match the track you want; what matches nothing goes to “To buy”.
 
 The imports themselves run in the «Importazioni» (*Imports*) page: the queue
 goes on with the screen closed, and the reports can be opened again from
@@ -617,7 +617,7 @@ conversation stays next to the draft, on this computer, with the tokens each
 turn cost; each answer lists the values it changed, and each value is a link to
 the thing it names.
 
-You configure the model in Settings › AI Models. Several named profiles can
+You configure the model in Settings › AI models. Several named profiles can
 coexist; each key lives in the operating system's keychain, never in the library
 database, and never passes through the window. Each profile also has a ceiling
 on the reply, “Longest reply, in tokens” — 4096 unless you change it, from 64
@@ -878,7 +878,7 @@ carries copies of `LICENSE`, `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`,
 `TERMS.md` and the fonts’ license in `assets/legale/`, and the Windows
 installer and the Store package put the same five files next to the
 executable: *Settings › Updates › Documents* opens them as plain text with no
-network, and “Open the latest version online” opens the up-to-date one in the
+network, and “Open the latest version on GitHub” opens the up-to-date one in the
 browser.
 
 The music in `site/audio/` — the website’s soundtrack, `machina.mp3`, which

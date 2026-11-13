@@ -8,7 +8,14 @@ export interface ErroreIpc {
   severity: "info" | "warning" | "error" | "fatal";
   retryable: boolean;
   i18nKey: string;
-  message: string | null;
+  /**
+   * Quel che ha scritto un servizio remoto (OpenRouter, OpenAI…), com'è. Mai
+   * testo di Rymembra: il dettaglio di chi sviluppa resta nel diario e non
+   * arriva qui (`errore.rs`).
+   */
+  serviceText: string | null;
+  /** I dati che la frase del codice nomina (`{nome}`), sicuri da mostrare. */
+  values: Record<string, string>;
   cause: string | null;
 }
 
@@ -59,16 +66,20 @@ export function eRitentabile(value: unknown): boolean {
  *
  * # Perché la chiave viene prima di `message`
  *
- * Perché `message` è il dettaglio tecnico che il nucleo aggiunge per chi legge
- * i registri — lo dice `AppError::with_message`: «per chi sviluppa, non per chi
- * ascolta musica». Quando ci sono tutti e due, quello scritto per una persona è
- * il primo.
+ * Perché il testo libero che il nucleo aggiunge — quello del servizio remoto — è
+ * una riga in più, non la frase: quella la dice il catalogo, nella lingua di chi
+ * legge. I dati che la frase nomina (`{ottenuto}`) arrivano in `values`.
  */
 export function testoErrore(value: unknown): string {
   if (eErroreIpc(value)) {
-    return tSe(value.i18nKey, value.message ?? value.cause ?? value.code);
+    return tSe(value.i18nKey, value.serviceText ?? value.cause ?? value.code, valoriDi(value));
   }
   return value instanceof Error ? value.message : String(value);
+}
+
+/** I dati dei segnaposto, o niente: un errore fabbricato a mano può non averli. */
+function valoriDi(errore: ErroreIpc): Record<string, string> | undefined {
+  return typeof errore.values === "object" && errore.values !== null ? errore.values : undefined;
 }
 
 /**
@@ -77,9 +88,12 @@ export function testoErrore(value: unknown): string {
  * # Perché `testoErrore` da sola non bastava
  *
  * Perché `tSe` usa il ripiego **solo quando la chiave manca**, e per un codice
- * del catalogo la chiave c'è sempre. Quindi `message` — l'unico campo che porta
- * qualcosa di specifico a questo guasto — non arrivava mai a schermo: restava
- * scritto in un record che l'interfaccia riceveva e non leggeva.
+ * del catalogo la chiave c'è sempre. Quindi il testo del servizio — l'unico campo
+ * che porta qualcosa di specifico a questo guasto — non arrivava mai a schermo:
+ * restava scritto in un record che l'interfaccia riceveva e non leggeva.
+ *
+ * È solo il testo di un **servizio remoto**: il nucleo non manda più una riga
+ * sua sotto la frase (era in italiano anche con l'interfaccia in inglese, R10).
  *
  * Il caso che lo rendeva evidente è OpenRouter. La frase del catalogo dice
  * «questo fornitore non conosce quel modello», che è vero e non serve; il
@@ -92,8 +106,8 @@ export function testoErrore(value: unknown): string {
  * insegna a non leggere il secondo.
  */
 export function dettaglioErrore(value: unknown): string | null {
-  if (!eErroreIpc(value) || value.message === null) return null;
-  const dettaglio = value.message.trim();
+  if (!eErroreIpc(value) || typeof value.serviceText !== "string") return null;
+  const dettaglio = value.serviceText.trim();
   if (dettaglio === "" || dettaglio === testoErrore(value)) return null;
   return dettaglio;
 }

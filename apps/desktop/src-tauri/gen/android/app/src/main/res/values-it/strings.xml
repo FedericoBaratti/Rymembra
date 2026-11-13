@@ -8,7 +8,7 @@
     <string name="auto_preferiti">Preferiti</string>
     <string name="auto_gruppo_ascoltati">Ascoltati di recente</string>
     <string name="auto_gruppo_aggiunti">Aggiunti di recente</string>
-    <string name="auto_suona_tutto">Suona tutto</string>
+    <string name="auto_suona_tutto">Riproduci tutto</string>
     <plurals name="auto_n_brani">
         <item quantity="one">%d brano</item>
         <item quantity="other">%d brani</item>
@@ -23,8 +23,8 @@
     </plurals>
     <string name="auto_piace">Aggiungi ai preferiti</string>
     <string name="auto_non_piace">Togli dai preferiti</string>
-    <string name="auto_mescola">Riproduzione casuale</string>
-    <string name="auto_mescola_spento">Spegni la riproduzione casuale</string>
+    <string name="auto_mescola">Ordine casuale</string>
+    <string name="auto_mescola_spento">Togli l\'ordine casuale</string>
     <string name="auto_ripeti_spento">Ripetizione spenta</string>
     <string name="auto_ripeti_tutto">Ripeti tutta la coda</string>
     <string name="auto_ripeti_uno">Ripeti questo brano</string>
@@ -40,14 +40,14 @@
     <string name="uscita_altra">Uscita audio</string>
 
     <string name="consenso_canale">Collegamento di un servizio</string>
-    <string name="consenso_titolo">Aspetto il tuo consenso</string>
+    <string name="consenso_titolo">Rymembra aspetta il tuo consenso</string>
     <string name="consenso_testo">Consenti l\'accesso nel browser, poi torna a Rymembra.</string>
 
     <string name="scarico_canale">Scaricamenti dai tuoi dispositivi</string>
     <string name="scarico_titolo">Rymembra sta scaricando</string>
     <string name="scarico_testo">%1$d di %2$d · %3$s</string>
 
-    <string name="qr_istruzioni">Inquadra il QR mostrato da Rymembra sul computer.</string>
+    <string name="qr_istruzioni">Inquadra il QR mostrato da Rymembra sull\'altro dispositivo.</string>
     <string name="qr_torcia">Torcia</string>
     <string name="qr_annulla">Annulla</string>
 </resources>

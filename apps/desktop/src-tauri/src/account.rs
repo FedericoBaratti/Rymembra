@@ -390,7 +390,7 @@ fn con_cella<T>(
             path: String::new(),
             detail: None,
         })
-        .with_message("non c'è nessun archivio aperto da importare".to_owned())
+        .with_detail("non c'è nessun archivio aperto da importare")
     })?;
     cosa(caricato)
 }

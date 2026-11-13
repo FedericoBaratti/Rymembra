@@ -136,7 +136,7 @@ test("si sfogliano solo i dispositivi online e non revocati", () => {
 });
 
 test("la rete a consumo chiede solo con «Chiedi»", () => {
-  const errore = { code: "lontano.reteAConsumo", message: "" };
+  const errore = { code: "lontano.reteAConsumo", serviceText: null };
   assert.equal(chiedeIDatiMobili(errore, stato()), true);
   assert.equal(chiedeIDatiMobili(errore, stato({ datiMobili: "no" })), false);
   assert.equal(chiedeIDatiMobili({ code: "lontano.spento" }, stato()), false);
@@ -151,7 +151,7 @@ test("un gesto sui dati mobili si mette da parte invece di fallire", async () =>
   let tentativi = 0;
   const fai = () => {
     tentativi += 1;
-    return Promise.reject({ code: "lontano.reteAConsumo", message: "" });
+    return Promise.reject({ code: "lontano.reteAConsumo", serviceText: null });
   };
   await gestoLontano(fai, (e) => errori.push(e));
   assert.equal(errori.length, 0);

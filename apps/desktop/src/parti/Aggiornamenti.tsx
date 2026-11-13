@@ -466,7 +466,7 @@ export function Aggiornamenti({
         <DocumentoLocale
           titolo={letto.titolo}
           testo={letto.testo}
-          onSito={() => {
+          onOnline={() => {
             ipc.apriDocumento(letto.quale).catch(onErrore);
           }}
           onChiudi={() => setLetto(null)}

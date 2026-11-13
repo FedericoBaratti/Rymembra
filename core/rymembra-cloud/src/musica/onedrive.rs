@@ -729,18 +729,15 @@ impl DaOneDrive {
             },
             altro => altro.clone(),
         };
-        let mut pulito = AppError::new(codice);
-        if let Some(causa) = err.cause() {
-            let mut causa = causa.to_owned();
+        // Il codice nuovo e **tutti** i testi senza gli indirizzi firmati:
+        // dettaglio, testo del servizio e causa.
+        err.with_code(codice).map_texts(|testo| {
+            let mut pulito = testo.to_owned();
             for firmato in firmati {
-                causa = causa.replace(firmato.as_str(), &self.contenuto);
+                pulito = pulito.replace(firmato.as_str(), &self.contenuto);
             }
-            pulito = pulito.with_cause(causa);
-        }
-        if let Some(messaggio) = err.message() {
-            pulito = pulito.with_message(messaggio.to_owned());
-        }
-        pulito
+            pulito
+        })
     }
 }
 

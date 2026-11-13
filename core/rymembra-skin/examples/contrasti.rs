@@ -22,10 +22,7 @@ fn main() {
     let skin = match rymembra_skin::parse_skin_json(&sorgente) {
         Ok(skin) => skin,
         Err(err) => {
-            eprintln!(
-                "documento non valido: {}",
-                err.message().unwrap_or_default()
-            );
+            eprintln!("documento non valido: {}", err.detail().unwrap_or_default());
             std::process::exit(1);
         }
     };

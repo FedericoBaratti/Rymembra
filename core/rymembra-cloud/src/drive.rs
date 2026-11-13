@@ -571,14 +571,9 @@ impl Drive {
             },
             altro => altro.clone(),
         };
-        let mut pulito = AppError::new(codice);
-        if let Some(causa) = err.cause() {
-            pulito = pulito.with_cause(pulisci(causa));
-        }
-        if let Some(messaggio) = err.message() {
-            pulito = pulito.with_message(pulisci(messaggio));
-        }
-        pulito
+        // Il codice nuovo e **tutti** i testi ripuliti: dettaglio, testo del
+        // servizio e causa.
+        err.with_code(codice).map_texts(pulisci)
     }
 
     /// Un pezzo di un caricamento ripartibile, da `da` in poi.

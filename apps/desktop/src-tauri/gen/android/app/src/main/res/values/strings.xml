@@ -58,7 +58,7 @@
     <string name="scarico_testo">%1$d of %2$d · %3$s</string>
 
     <!-- Lo scanner del QR di «Collega un dispositivo» (vedi `ScansioneQr`). -->
-    <string name="qr_istruzioni">Point the camera at the QR code shown by Rymembra on your computer.</string>
+    <string name="qr_istruzioni">Point the camera at the QR code shown by Rymembra on your other device.</string>
     <string name="qr_torcia">Flashlight</string>
     <string name="qr_annulla">Cancel</string>
 </resources>

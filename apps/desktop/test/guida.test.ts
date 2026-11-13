@@ -215,3 +215,21 @@ test("se il giro non ha messo niente in coda, non si svuota niente", () => {
   assert.equal(codaDaSvuotare(null, ferma), false);
   assert.equal(codaDaSvuotare([], { ...ferma, coda: [] }), false);
 });
+
+test("il benvenuto conta i passi veri: il numero non è scritto a parole (R17-7)", () => {
+  const it = JSON.parse(readFileSync(new URL("../src/lingue/it.json", import.meta.url), "utf8")) as Record<string, string>;
+  const en = JSON.parse(readFileSync(new URL("../src/lingue/en.json", import.meta.url), "utf8")) as Record<string, string>;
+  // «In tredici passi» restava così quando i passi erano quattordici.
+  assert.match(it["tour.step.benvenuto.body"] ?? "", /In \{n\} passi/);
+  assert.match(en["tour.step.benvenuto.body"] ?? "", /In \{n\} steps/);
+  for (const [chiave, testo] of [...Object.entries(it), ...Object.entries(en)]) {
+    if (chiave.startsWith("tour.")) {
+      assert.doesNotMatch(testo, /\b(tredici|quattordici|quindici|thirteen|fourteen|fifteen)\b/i, chiave);
+    }
+  }
+  // E il numero è lo stesso del contatore («3 di 14»): una sola espressione, `totale`.
+  const giro = readFileSync(new URL("../src/Giro.tsx", import.meta.url), "utf8");
+  assert.match(giro, /const totale = COPIONE\.length - saltati\.size;/);
+  assert.match(giro, /t\("tour\.progress", \{[^}]*\btotale,/s);
+  assert.match(giro, /t\(`tour\.step\.\$\{passo\[0\]\}\.body`, \{ n: totale \}\)/);
+});

@@ -1345,14 +1345,53 @@ The rest of what the two reviews fixed, by area.
   Update notes list the Security sections first, skip “Known limits”, and end
   with “… and N more in the changelog.” in English.
 
+**Words and error messages.**
+
+- **Error messages no longer show a line of Italian under the translated
+  sentence** in the English interface. The developer detail stays in the
+  diary; the window receives only the sentence of the error code, the few
+  values it names, and, for AI providers, what the provider itself wrote.
+  Installing a broken `.ryskin` no longer lists the validator’s Italian
+  messages under the error (the Studio lists them, translated), and “file
+  rejected” says the real limits: PNG, JPEG or WebP up to 4096×4096 pixels,
+  WOFF2 fonts, text. An AI profile whose address answers with a redirect says
+  to correct the address instead of “the server replied with an error”.
+- **Errors say what to do.** “Something went wrong in a way that wasn’t
+  expected” no longer points to a detail that was never shown: it says to try
+  again, to restart, and where the diary is. “The service replied with an
+  error” says what to do, and “The service is temporarily down” no longer
+  promises an automatic retry where nothing retries. The damaged-database
+  instructions move `rymembra.db`, `-wal` and `-shm` together before copying
+  the `.bak`.
+- **The English interface uses American spelling, curly quotes “ ” and the ’
+  apostrophe everywhere**, and no longer has calques such as “Redo the last
+  one”.
+- **One name for each thing**: “Create a skin…” (not “theme”), “To buy”,
+  Windows Credential Manager, “Reachable from the internet”, and “structure” in
+  the Studio. Rymembra speaks about itself in the third person, and progress
+  lines are action names (“Saving…”, “Searching the catalogs…”).
+- The guided tour says “In 14 steps” with the real number; “Open the latest
+  version” says it opens GitHub; the migration screen no longer promises a
+  copy that can be skipped. Singular slips such as “1 lines added” are gone,
+  and texts that said “PC”, “click” or “network folder” have the phone’s
+  wording on the phone.
+- Native dialogs introduce “Aether” as Rymembra’s previous name, and the
+  “installer did not start” dialog says where to download the update. Android
+  Auto says “Play all” and “Shuffle”, and the QR scanner says “your other
+  device”.
+- For whoever builds Rymembra: `npm run check:lingue` now reads the texts, not
+  only the keys (placeholders, quotes, spelling, dead keys, quoted labels,
+  counters), and `test/segnaposto.test.ts` checks the values every `t()` call
+  passes.
+
 **Installer, website and documents.**
 
 - **The license, the third-party notices, the privacy policy, the terms and
   the font license can be read offline.** *Settings › Updates › Documents*
   opens each in a small window from the copy that travels with the app — next
   to the executable, in the installer and in the Store package; in
-  `assets/legale/` of the APK — and “Open the latest version online” opens the
-  up-to-date one, on GitHub, in the system browser. Where the copy is not
+  `assets/legale/` of the APK — and “Open the latest version on GitHub” opens
+  the up-to-date one in the system browser. Where the copy is not
   there, that page opens at once, as before. The font license (SIL OFL), which the notices name without
   reproducing, is the fifth.
 - The installer and the uninstaller speak Italian on an Italian Windows and

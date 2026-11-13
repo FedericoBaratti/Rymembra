@@ -418,7 +418,7 @@ completely anonymously, because there's no account for it to lean on.
 
 ## 2-quater. The language model in the Skin Studio
 
-This starts **only if you configure one**, in Settings › AI Models. Until you
+This starts **only if you configure one**, in Settings › AI models. Until you
 do, the Skin Studio chat talks to nobody: there is no default provider, no
 built-in key, and no request.
 
