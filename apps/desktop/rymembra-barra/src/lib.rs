@@ -48,6 +48,14 @@
 //! notifica di dispositivo, `CM_Register_Notification`, che non si fa senza
 //! `unsafe`: vedi [`osserva_volume`], [`volume_di`] e [`Avviso`].
 //!
+//! # La quinta: dove sta la cartella privata del pacchetto MSIX
+//!
+//! Nella copia del Microsoft Store i file che l'app crea in `%APPDATA%` e in
+//! `%LOCALAPPDATA%` stanno nella cartella privata del pacchetto, che Esplora
+//! risorse non vede dove l'app la vede. Non serve `unsafe` — è l'API WinRT
+//! sicura del `windows` — ma è un'altra domanda al sistema, e sta con le
+//! altre: vedi [`cartella_cache_del_pacchetto`].
+//!
 //! # Cosa si vede da fuori
 //!
 //! Per i pulsanti, due cose: [`aggancia`], una volta, sul filo della finestra;
@@ -83,11 +91,13 @@ mod finestra;
     )
 )]
 mod glifi;
+mod pacchetto;
 mod sottofondo;
 mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
 pub use espulsione::{Avviso, Registrazione, osserva_volume, volume_di};
+pub use pacchetto::cartella_cache_del_pacchetto;
 pub use sottofondo::{Sottofondo, a_batteria};
 pub use unita::{Unita, unita_di};
 

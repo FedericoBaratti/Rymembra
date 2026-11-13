@@ -108,21 +108,73 @@ pub type Esito<T> = Result<T, Box<ErroreIpc>>;
 pub fn errore(err: AppError) -> Box<ErroreIpc> {
     let dettaglio = err.detail().map(ToOwned::to_owned);
     let ipc = ErroreIpc::from(err);
-    nota!(
-        "[errore] {} gravita={} ritentabile={} causa={} dettaglio={}",
+    nota!("{}", riga_del_diario(&ipc, dettaglio.as_deref()));
+    Box::new(ipc)
+}
+
+/// La riga che [`errore`] scrive nel diario.
+///
+/// Pura, perché è la riga che decide cosa chi legge il diario prende per un
+/// guasto. Un codice di gravità `info` è, per il catalogo, un «esito atteso,
+/// non un guasto» — «nessun risultato», «annullato», e l'uscita audio ancora in
+/// apertura, che a ogni avvio con la coda ripristinata riempiva il diario di
+/// `[errore] playback.engineOpening`: la riga resta, con tutti i suoi campi, ma
+/// come `[esito]`. Vale per ogni codice `info` del catalogo, non per uno solo.
+fn riga_del_diario(ipc: &ErroreIpc, dettaglio: Option<&str>) -> String {
+    let etichetta = if ipc.severity == "info" {
+        "[esito]"
+    } else {
+        "[errore]"
+    };
+    format!(
+        "{etichetta} {} gravita={} ritentabile={} causa={} dettaglio={}",
         ipc.code,
         ipc.severity,
         ipc.retryable,
         ipc.cause.as_deref().unwrap_or("—"),
-        dettaglio.as_deref().unwrap_or("—")
-    );
-    Box::new(ipc)
+        dettaglio.unwrap_or("—")
+    )
 }
 
 #[cfg(test)]
 mod prove {
     use super::*;
     use rymembra_domain::errors::ErrorCode;
+
+    /// Un esito atteso non è un `[errore]` nel diario.
+    ///
+    /// `playback.engineOpening` ha gravità `info` («esito atteso, non un
+    /// guasto»): l'uscita audio si apre in disparte, dopo la libreria, e la
+    /// domanda di stato che arriva prima ha quella risposta. La finestra la
+    /// tratta da stato passeggero (`apreAncora`), ma il diario la scriveva come
+    /// `[errore] playback.engineOpening gravita=info ritentabile=true` a ogni
+    /// avvio con la coda ripristinata (collaudo in Windows Sandbox). Il diario
+    /// «contiene esattamente ciò di cui qualcuno potrebbe lamentarsi»: un
+    /// `[errore]` che non è un errore fa cercare un guasto dove non c'è.
+    #[test]
+    fn un_esito_atteso_non_e_scritto_come_errore() {
+        let atteso = ErroreIpc::from(AppError::new(ErrorCode::PlaybackEngineOpening));
+        assert_eq!(atteso.severity, "info", "il catalogo lo dice un esito");
+        let riga = riga_del_diario(&atteso, None);
+        assert!(
+            !riga.starts_with("[errore]"),
+            "un esito di gravità info non è un errore: {riga}"
+        );
+        assert!(
+            riga.starts_with("[esito] playback.engineOpening gravita=info ritentabile=true"),
+            "la riga resta nel diario, col suo codice: {riga}"
+        );
+
+        // Un guasto vero resta com'era: stessa etichetta, stessi campi.
+        let guasto = ErroreIpc::from(
+            AppError::new(ErrorCode::PlaybackDeviceLost).with_cause("cuffie staccate".to_owned()),
+        );
+        assert_eq!(guasto.severity, "error");
+        assert_eq!(
+            riga_del_diario(&guasto, Some("dopo cinque secondi")),
+            "[errore] playback.deviceLost gravita=error ritentabile=true causa=cuffie staccate dettaglio=dopo cinque secondi"
+        );
+    }
 
     /// I file `.rs` sotto una cartella della radice del repository, col loro
     /// percorso relativo alla radice.

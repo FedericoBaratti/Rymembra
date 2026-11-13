@@ -276,10 +276,13 @@
   /* Il primo avvio, che copre la finestra intera perché dietro non c'è ancora
      niente da guardare. */
   --strato-primo: 60;
-  /* Una finestrella aperta **dal** primo avvio: «Aggiungi una cartella» col
-     suo velo, che dentro lo strato dei veli si aprirebbe sotto `.primo`. Sotto
-     la pastiglia, perché le linguette spente della finestrella hanno la loro
-     ragione da mostrare sopra di lei. Vedi `.sopra-primo`. */
+  /* Una finestrella aperta **dal** primo avvio, o mentre c'è: «Aggiungi una
+     cartella» col suo velo, la libreria che la copia del Store propone, una
+     skin o una playlist lasciate cadere — che dentro lo strato dei veli si
+     aprirebbero sotto `.primo`. Sotto la pastiglia, perché le linguette spente
+     della finestrella hanno la loro ragione da mostrare sopra di lei. Vedi
+     `.sopra-primo` e, per tutte le altre, `.velo.scuro` accanto a `.primo` in
+     `stile/finestrelle.css`. */
   --strato-sopraprimo: 65;
   /* Il velo di una domanda di consenso (`data-consenso`): sopra i toast e i
      menù, che una skin può ridisegnare grandi quanto vuole e che stanno fuori

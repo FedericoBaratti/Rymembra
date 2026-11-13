@@ -16,6 +16,19 @@
  *
  * Copiare lascia l'originale dov'è, e chiude Rymembra: riaperto, trova la
  * libreria al suo posto.
+ *
+ * # Come si chiude
+ *
+ * Due gesti, e non valgono lo stesso. «Comincia da capo» è la risposta: la
+ * proposta non si rifà mai più (`store_rifiuta_libreria_di_prima`). Escape, la
+ * × della finestra e un clic sul velo sono solo «non adesso»: chiudono la
+ * finestrella e basta, e la domanda torna al prossimo avvio — finché la
+ * libreria di qui è vuota, che è quando il nucleo la fa
+ * (`store_libreria_di_prima`). Una proposta che si fa una volta sola e che
+ * salva una libreria intera non si perde per un clic fuori posto, e nel collaudo
+ * in Windows Sandbox il primo clic sulla scheda del primo avvio è caduto proprio
+ * sul velo e l'ha chiusa. (Il velo non era visibile per un altro motivo, che sta
+ * in `finestrelle.css`: `.velo.scuro` accanto a `.primo`.)
  */
 import { useEffect, useState } from "react";
 
@@ -43,7 +56,11 @@ export function LibreriaDiPrima({ onErrore }: { onErrore: (e: unknown) => void }
 
   if (libreria === null) return null;
 
-  /** «Comincia da capo», e anche Escape: la domanda non torna. */
+  /** Escape, la × e il velo: non adesso. La domanda torna al prossimo avvio. */
+  const chiudiPerOra = () => {
+    setLibreria(null);
+  };
+  /** «Comincia da capo», e soltanto lui: la domanda non torna. */
   const rifiuta = () => {
     setLibreria(null);
     ipc.storeRifiutaLibreriaDiPrima().catch(onErrore);
@@ -64,7 +81,7 @@ export function LibreriaDiPrima({ onErrore }: { onErrore: (e: unknown) => void }
       titolo={t("store.previous.title")}
       descrizione={t("store.previous.what", { cartella: libreria.cartella })}
       classe="finestrella stretta glass-modal"
-      onChiudi={rifiuta}
+      onChiudi={chiudiPerOra}
       chiudibile={!copiando}
       occupato={copiando}
     >

@@ -4369,7 +4369,13 @@ export function App() {
             lui: `.primo` copre la finestra a uno strato più alto del velo delle
             finestrelle, e senza il guscio si aprirebbe dietro. Fuori dal
             primo avvio il guscio non c'è, e la finestrella resta sotto i toast
-            come tutte le altre. */}
+            come tutte le altre.
+
+            Il guscio resta com'era, ed è provato dal vivo. Per tutte le altre
+            finestrelle — la libreria di prima qui sotto, una skin o una playlist
+            lasciate cadere sul primo avvio — non ce n'è uno per ognuna: le alza
+            una regola sola, `.velo.scuro` accanto a `.primo` in
+            `finestrelle.css`. */}
         {aggiunta !== null &&
           (aggiunta === "primo" ? (
             <div className="sopra-primo">
@@ -4396,6 +4402,21 @@ export function App() {
               onChiudi={() => setAggiunta(null)}
             />
           ))}
+        {/* La copia del Microsoft Store, al primo avvio, propone la libreria
+            che c'era: vedi `parti/LibreriaDiPrima.tsx`.
+
+            Proprio al primo avvio serve, e proprio allora `.primo` copre la
+            finestra. Qui e non dentro `.dentro.page-content`, dove stava: la
+            finestrella dev'essere **fratella** di `.primo`, perché la regola di
+            `.velo.scuro` in `finestrelle.css` la alza sopra di lui guardando i
+            fratelli, e dalla pagina non la raggiungeva — il velo restava a
+            `--strato-velo`, sotto `--strato-primo`, e un clic sulla scheda del
+            primo avvio cadeva sul velo invisibile e la chiudeva (D-97). La
+            pagina poi si smonta e `inert` la spegne a schermo intero: una
+            proposta che si fa una volta sola non dipende da lei. Fuori dal
+            primo avvio la regola non c'è, e la finestrella resta sotto i toast
+            come tutte le altre. */}
+        {!MOBILE && <LibreriaDiPrima onErrore={segnalaErrore} />}
         <Impaginazione
           // Sul telefono lo scafale è uno solo, per tutte le skin: vedi
           // `scafaleTelefono.ts`.
@@ -4451,9 +4472,6 @@ export function App() {
                         guasto che dura finché qualcuno non fa qualcosa. Vedi
                         `parti/AvvisoConti.tsx`. */}
                     <AvvisoConti onNotizia={setNotizia} />
-                    {/* La copia del Microsoft Store, al primo avvio, propone la
-                        libreria che c'era: vedi `parti/LibreriaDiPrima.tsx`. */}
-                    {!MOBILE && <LibreriaDiPrima onErrore={segnalaErrore} />}
                     {/* Qui e non solo nella terza colonna: la colonna si può
                         chiudere, e il lettore flottante sparisce quando non c'è un
                         brano — cioè proprio nei due casi in cui il dispositivo

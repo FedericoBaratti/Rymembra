@@ -1113,18 +1113,19 @@ fn riga_dell_istantanea(istantanea: Option<&rymembra_app::db::Istantanea>) {
 const ATTESA_OTTIMIZZAZIONE_USCITA: Duration = Duration::from_millis(250);
 
 /// L'ultimo `PRAGMA optimize` della sessione, quello che la documentazione di
-/// SQLite chiede prima di chiudere una connessione.
+/// SQLite chiede prima di chiudere una connessione, e il giornale riportato nel
+/// database.
 ///
-/// # Una volta sola
+/// # L'ottimizzazione, una volta sola
 ///
 /// La sequenza di spegnimento in `main` gira per ognuno dei tre eventi che
 /// dicono «si chiude», e di solito ne arrivano due o tre. La prima volta si
 /// ottimizza, le altre no: una bandiera di processo, alzata **prima** di
 /// provare, perché anche un tentativo che rinuncia al lucchetto non va
-/// ripetuto — la seconda attesa costerebbe un altro quarto di secondo a
-/// un'uscita che sta già aspettando.
+/// ripetuto — l'ottimizzazione costa quasi nulla, ma le statistiche di un
+/// secondo giro non dicono niente di più.
 ///
-/// # E il giornale, riportato nel database
+/// # E il giornale, a ogni chiamata
 ///
 /// Dopo l'ottimizzazione, nella stessa presa, `wal_checkpoint(TRUNCATE)`
 /// ([`rymembra_app::db::svuota_il_giornale`]): il processo esce con
@@ -1132,19 +1133,34 @@ const ATTESA_OTTIMIZZAZIONE_USCITA: Duration = Duration::from_millis(250);
 /// `rymembra.db-wal` restava pieno dopo ogni uscita — ed era quel giornale a
 /// rovinare la copia di prima dell'aggiornamento rimessa a mano. Uno fallito
 /// non toglie l'altro: sono due righe di diario diverse.
+///
+/// Il giornale **non** ha la bandiera, ed è il punto: dev'essere l'ultima
+/// scrittura della sessione, e la sequenza che lo precede si ripete. Con un
+/// brano in riproduzione ogni giro riscrive la posizione di ripresa
+/// (`fili::salva_uscendo`) e, se ne ha, le preferenze audio: un giornale
+/// svuotato solo al primo giro restava con l'ultima riscrittura — nel
+/// collaudo in Windows Sandbox 4.152 o 8.272 byte, uno o due frame —, mentre
+/// senza riproduzione non c'è niente da riscrivere e restava vuoto. Svuotarlo
+/// a ogni chiamata, dopo i salvataggi della stessa chiamata, rende l'ultima
+/// scrittura sempre lui; a giornale già vuoto il checkpoint non ha niente da
+/// fare.
 pub fn ottimizza_uscendo(stato: &Stato) {
-    static FATTA: AtomicBool = AtomicBool::new(false);
-    if FATTA.swap(true, Ordering::AcqRel) {
-        return;
-    }
+    static OTTIMIZZATO: AtomicBool = AtomicBool::new(false);
+    uscendo_con(stato, &OTTIMIZZATO);
+}
+
+/// Il corpo di [`ottimizza_uscendo`], con la bandiera dell'ottimizzazione
+/// passata da fuori: quella di processo non permette due prove indipendenti.
+fn uscendo_con(stato: &Stato, ottimizzato: &AtomicBool) {
+    let ottimizza = !ottimizzato.swap(true, Ordering::AcqRel);
     match con_libreria_entro(stato, ATTESA_OTTIMIZZAZIONE_USCITA, |libreria| {
         Ok((
-            rymembra_app::db::ottimizza(&libreria.connection),
+            ottimizza.then(|| rymembra_app::db::ottimizza(&libreria.connection)),
             rymembra_app::db::svuota_il_giornale(&libreria.connection),
         ))
     }) {
         Some(Ok((ottimizzato, giornale))) => {
-            if let Err(err) = ottimizzato {
+            if let Some(Err(err)) = ottimizzato {
                 nota!(
                     "[uscita] ottimizzazione del database non riuscita codice={} causa={}",
                     err.code().kind().code(),
@@ -1168,8 +1184,14 @@ pub fn ottimizza_uscendo(stato: &Stato) {
             err.code().kind().code(),
             err.cause().unwrap_or("—")
         ),
-        None => nota!(
+        // Alle chiamate dopo la prima non si tentava nessuna ottimizzazione:
+        // quel che resta da dire è il giornale.
+        None if ottimizza => nota!(
             "[uscita] ottimizzazione del database saltata: lucchetto non preso in {} ms",
+            ATTESA_OTTIMIZZAZIONE_USCITA.as_millis()
+        ),
+        None => nota!(
+            "[uscita] giornale del database non svuotato: lucchetto non preso in {} ms",
             ATTESA_OTTIMIZZAZIONE_USCITA.as_millis()
         ),
     }
@@ -1655,12 +1677,15 @@ fn apri_un_lettore(percorso: &Path, attesa: Duration) -> Result<Connection, AppE
 mod prove {
     use super::*;
 
-    /// L'unica prova che chiama [`ottimizza_uscendo`]: fa il suo lavoro una
-    /// volta per processo.
+    /// Il giornale svuotato è l'ultima scrittura di ogni chiamata dell'uscita.
+    ///
+    /// Con la bandiera dell'ottimizzazione sua e non quella di processo
+    /// ([`ottimizza_uscendo`]): così non dipende da chi altro l'ha già alzata.
     #[test]
     fn uscendo_il_giornale_resta_vuoto() {
+        let ottimizzato = AtomicBool::new(false);
         // Il processo esce con `process::exit`, senza chiudere la connessione:
-        // quel che `ottimizza_uscendo` lascia sul disco è quel che resta. Un
+        // quel che `uscendo_con` lascia sul disco è quel che resta. Un
         // `-wal` pieno accanto a `rymembra.db` è quello che rovinava la copia
         // di prima dell'aggiornamento rimessa a mano (R06b-2).
         let dir = tempfile::tempdir().expect("cartella");
@@ -1675,12 +1700,40 @@ mod prove {
             "la scrittura sta nel giornale"
         );
 
-        ottimizza_uscendo(&stato);
+        uscendo_con(&stato, &ottimizzato);
 
+        assert!(
+            ottimizzato.load(Ordering::Acquire),
+            "la prima chiamata ottimizza"
+        );
         assert_eq!(
             std::fs::metadata(&giornale).map_or(0, |dati| dati.len()),
             0,
             "uscendo il giornale torna nel database"
+        );
+
+        // La sequenza di spegnimento gira due o tre volte di fila — alla
+        // chiusura della finestra, a `ExitRequested`, a `Exit` — e con un brano
+        // in riproduzione la seconda riscrive la posizione (`chiudi_uscendo`) un
+        // attimo dopo il giornale svuotato. Nel collaudo in Windows Sandbox
+        // restavano 4.152 o 8.272 byte nel `-wal`: 32 di intestazione più uno o
+        // due frame da 24 + 4.096. Il giornale svuotato dev'essere l'ultima
+        // scrittura di **ogni** chiamata, non solo della prima (D-55).
+        con_libreria(&stato, |libreria| {
+            rymembra_app::settings::write(&libreria.connection, "player.position", "43")
+        })
+        .expect("la scrittura della seconda chiamata");
+        assert!(
+            std::fs::metadata(&giornale).is_ok_and(|dati| dati.len() > 0),
+            "la scrittura arrivata dopo l'uscita sta di nuovo nel giornale"
+        );
+
+        uscendo_con(&stato, &ottimizzato);
+
+        assert_eq!(
+            std::fs::metadata(&giornale).map_or(0, |dati| dati.len()),
+            0,
+            "anche alla seconda chiamata il giornale torna nel database"
         );
     }
 
