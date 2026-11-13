@@ -1224,12 +1224,12 @@ pub fn messaggio_di_rifiuto(errore: &Errore) -> String {
             )
         }
         Errore::InUso { .. } => concat!(
-            "Rymembra non è riuscito a prendere i dati di Aether: i suoi file sono in uso da un altro programma. ",
+            "Rymembra non è riuscito a prendere i dati di Aether (il nome di prima di Rymembra): i suoi file sono in uso da un altro programma. ",
             "Di solito è Aether ancora aperto, anche solo dall'icona vicino all'orologio; ",
             "a volte è un antivirus o un programma di backup che li sta leggendo. ",
             "Chiudi Aether se è aperto, aspetta qualche secondo e riapri Rymembra: riprenderà da dove si era fermato. ",
             "Nessun dato è stato cancellato.\n\n",
-            "Rymembra could not take over Aether's data: its files are in use by another program. ",
+            "Rymembra could not take over the data of Aether (Rymembra’s previous name): its files are in use by another program. ",
             "Usually it is Aether still running, even if only from the icon next to the clock; ",
             "sometimes it is an antivirus or a backup program that is reading them. ",
             "Close Aether if it is running, wait a few seconds and open Rymembra again: it will pick up where it left off. ",
@@ -1239,10 +1239,10 @@ pub fn messaggio_di_rifiuto(errore: &Errore) -> String {
         Errore::Io { percorso, causa } => {
             let dove = percorso.display();
             format!(
-                "Rymembra non è riuscito a prendere i dati di Aether: {dove} non si lascia spostare ({causa}). \
+                "Rymembra non è riuscito a prendere i dati di Aether (il nome di prima di Rymembra): {dove} non si lascia spostare ({causa}). \
                  Nessun dato è stato cancellato. Chiudi gli altri programmi che potrebbero usare quei file \
                  e riapri Rymembra: riprenderà da dove si era fermato.\n\n\
-                 Rymembra could not take over Aether's data: {dove} could not be moved ({causa}). \
+                 Rymembra could not take over the data of Aether (Rymembra’s previous name): {dove} could not be moved ({causa}). \
                  No data has been deleted. Close any other program that may be using those files \
                  and open Rymembra again: it will pick up where it left off."
             )
@@ -1251,12 +1251,12 @@ pub fn messaggio_di_rifiuto(errore: &Errore) -> String {
             let database = database.display();
             let occupati = elenco_di(occupati);
             format!(
-                "Rymembra non ha aperto nessuna libreria: la libreria di Aether, {database}, non può \
+                "Rymembra non ha aperto nessuna libreria: la libreria di Aether (il nome di prima di Rymembra), {database}, non può \
                  prendere il suo posto, perché nella cartella dei dati nuova c'è già {occupati}. Aprire \
                  adesso vorrebbe dire una libreria vuota al posto della tua. Nessun dato è stato \
                  cancellato. Se quei file vengono da un trasloco interrotto, rimettili accanto alla \
                  libreria di Aether; altrimenti spostali in un'altra cartella. Poi riapri Rymembra.\n\n\
-                 Rymembra did not open any library: Aether's library, {database}, cannot take its \
+                 Rymembra did not open any library: the library of Aether (Rymembra’s previous name), {database}, cannot take its \
                  place, because the new data folder already holds {occupati}. Opening now would mean \
                  an empty library instead of yours. No data has been deleted. If those files come \
                  from an interrupted move, put them back next to Aether's library; otherwise move \
@@ -1630,6 +1630,43 @@ mod prove {
         assert!(io.contains("Nessun dato è stato cancellato"));
         assert!(io.contains("No data has been deleted"));
         assert!(!io.contains("toccat"));
+    }
+
+    /// «Aether» si spiega dove compare: chi lo installò da tempo, o da un'altra
+    /// persona, non collega il nome di prima a Rymembra (R17-22). Il resto dei tre
+    /// dialoghi nativi è chiaro e coerente nelle due lingue.
+    #[test]
+    fn il_rifiuto_spiega_chi_e_aether() {
+        let percorso = || PathBuf::from("x.db");
+        for errore in [
+            Errore::InUso {
+                percorso: percorso(),
+            },
+            Errore::Io {
+                percorso: percorso(),
+                causa: "accesso negato".to_owned(),
+            },
+            Errore::DatabaseInConflitto {
+                database: percorso(),
+                occupati: vec![PathBuf::from("rymembra.db-wal")],
+            },
+        ] {
+            let testo = messaggio_di_rifiuto(&errore);
+            let (italiano, inglese) = testo.split_once("\n\n").expect("due lingue");
+            // La prima occorrenza, in ogni lingua, porta la spiegazione accanto.
+            let accanto = |lingua: &str, gloss: &str| {
+                let dopo = lingua
+                    .find("Aether")
+                    .map(|i| &lingua[i..])
+                    .unwrap_or_default();
+                assert!(
+                    dopo.starts_with(&format!("Aether ({gloss})")),
+                    "la prima occorrenza di «Aether» non dice chi è: {lingua}"
+                );
+            };
+            accanto(italiano, "il nome di prima di Rymembra");
+            accanto(inglese, "Rymembra’s previous name");
+        }
     }
 
     #[test]

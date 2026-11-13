@@ -247,3 +247,13 @@ test("lo stato dell'apertura è la voce di Rymembra, non una prima persona (D-82
     assert.match(IT[chiave] ?? "", /^(Fatto\. )?Rymembra /, `it ${chiave}`);
   }
 });
+
+test("«nessun modello» nomina i fornitori come le impostazioni, e dice dove sceglierli (R17-20)", () => {
+  for (const [lingua, d] of LINGUE) {
+    const testo = d["studio.chat.noModel"] ?? "";
+    for (const nome of ["Ollama", "LM Studio", "OpenRouter"]) assert.ok(testo.includes(nome), `${lingua}: ${nome}`);
+    // Il fornitore si chiama «Bionic / LM Studio» nel selettore: la frase non lo spezza in due nomi.
+    assert.ok((d["ia.provider.bionic"] ?? "").includes("LM Studio"), lingua);
+    assert.ok(testo.includes(d["settings.models.title"] ?? "?"), `${lingua}: la scheda dei modelli`);
+  }
+});

@@ -109,7 +109,7 @@
           ul: [
             "**Choice**: saved `ui.language`, else the system language reduced to its root (`de-DE` → `de`), else English (`RIPIEGO` = `en`). A key missing in a language falls back to English, not to the key; a missing key in dev renders the key and warns.",
             "**`t(key, values)`**: `{name}` placeholders, numbers formatted with `toLocaleString`; a numeric `n` selects the plural: `key.uno` when n = 1, then the CLDR category (`Intl.PluralRules`), then `key.other`, then the bare key — never mixing languages in one sentence. `tSe` resolves runtime keys (error `i18nKey`s). `<Trans>` lets placeholders be React nodes so translators see the whole sentence.",
-            "**Checks**: `strumenti/lingue.js` compares every language with `it.json` both ways, checks plural forms per CLDR category, and fails if an error code of the catalog lacks its `errors.<code>` sentence.",
+            "**Checks**: `strumenti/lingue.js` compares every language with `it.json` both ways, checks plural forms per CLDR category, and fails if an error code of the catalog lacks its `errors.<code>` sentence. It also reads the values: the same `{placeholders}` in every language, «» only in Italian and “” and ’ only in English (American spelling), every quoted label is the text of some key, only `n` picks a plural, no dead keys, and every part, token and queue reason of the Rust registries has its sentence. `apps/desktop/test/segnaposto.test.ts` checks, with the TypeScript compiler, that each `t(...)` call fills the placeholders of its sentence.",
           ],
         },
         "The language is stored in the core (`ui.language`, ISO code checked for shape only), so backup and profile carry it.",

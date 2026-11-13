@@ -2669,7 +2669,7 @@
   "studio.chat.noChange": "Il documento è già così: quelle modifiche non cambierebbero niente.",
   "studio.chat.apply": "Applica",
   "studio.chat.discard": "Lascia stare",
-  "studio.chat.noModel": "Nessun modello configurato. La chat parla con un modello che gira su questo computer — Ollama o Bionic — oppure con OpenRouter: si sceglie in Impostazioni.",
+  "studio.chat.noModel": "Nessun modello configurato. La chat parla con un modello che gira su questo computer (Ollama, Bionic, LM Studio) o con un servizio compatibile con OpenAI, come OpenRouter: si sceglie in Impostazioni › Modelli IA.",
   "studio.chat.configure": "Vai a Modelli IA",
   "studio.chat.reasoning": "Ragionamento",
   "studio.chat.reasoningNow": "Sta ragionando…",
