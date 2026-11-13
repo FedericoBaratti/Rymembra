@@ -436,6 +436,9 @@ function RigaBrano({
         : null;
   const sotto =
     accanto === null ? nomeArtista(brano.artist) : `${nomeArtista(brano.artist)} · ${accanto}`;
+  // Il numero che si vede dentro il suo disco, e che il nome del tasto deve
+  // contenere (WCAG 2.5.3): come nell'elenco dei brani.
+  const numero = brano.trackNumber ?? indice + 1;
   return (
     <li
       className="riga-lontana"
@@ -447,14 +450,18 @@ function RigaBrano({
         type="button"
         className="avvia-lontana"
         data-numero={nelDisco || undefined}
-        aria-label={t("list.play", { titolo: brano.title })}
+        aria-label={
+          nelDisco
+            ? t("list.playNumbered", { n: numero, titolo: brano.title })
+            : t("list.play", { titolo: brano.title })
+        }
         onClick={(e) => {
           e.stopPropagation();
           suona();
         }}
       >
         {nelDisco ? (
-          <span className="numero-lontana">{brano.trackNumber ?? indice + 1}</span>
+          <span className="numero-lontana">{numero}</span>
         ) : (
           <Copertina
             hash={brano.coverArtHash}

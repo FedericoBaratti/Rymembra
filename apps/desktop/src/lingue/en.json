@@ -610,6 +610,7 @@
   "list.removeFromPlaylist": "Remove {titolo} from the playlist",
   "list.grid": "Track list",
   "list.play": "Play {titolo}",
+  "list.playNumbered": "{n}, Play {titolo}",
   "row.more": "More actions for “{titolo}”",
   "row.more.aria": "More for {titolo}",
   "menu.open": "Open",
