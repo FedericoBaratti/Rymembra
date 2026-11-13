@@ -1052,9 +1052,14 @@ fn preleva_si_ferma_al_tetto() {
         "niente oltre il tetto arriva a chi riceve: {} byte",
         preso.len()
     );
+    // La destinazione è un `dyn Write`: un `Vec` cresce per raddoppi, quindi
+    // un pezzo che sta ancora sotto il tetto può portarne la capacità fino a
+    // poco meno del doppio, secondo come cadono le letture (una volta su molte,
+    // con i test in parallelo). Il tetto della memoria è quello: mai il corpo
+    // intero, che qui è otto volte tanto.
     assert!(
-        preso.capacity() as u64 <= TETTO,
-        "e niente si alloca oltre: {} byte",
+        preso.capacity() as u64 <= 2 * TETTO,
+        "e non si alloca oltre il doppio del tetto: {} byte",
         preso.capacity()
     );
 }
