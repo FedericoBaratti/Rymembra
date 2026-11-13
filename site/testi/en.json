@@ -218,7 +218,7 @@
       },
       {
         "d": "Does it send my data anywhere?",
-        "r": "There's no telemetry and no Rymembra server. The program only talks to the services you use — the catalogs, MusicBrainz for tags, Cover Art Archive for cover art, LRCLIB for lyrics, GitHub to check for updates (not the Store copy), and whatever you connect yourself, such as cloud folders, scrobbling or an AI model. iTunes and Deezer are used for cover art only if you turn them on. If you link your devices to reach them from afar, they find each other through public relays and a distributed address table, which can see that two devices connect but not what passes between them. [PRIVACY.md]({privacy}) lists every request and what it sends."
+        "r": "There's no telemetry and no Rymembra server. The program only talks to the services you use — the catalogs, MusicBrainz for tags, Cover Art Archive for cover art, LRCLIB for lyrics, GitHub to check for updates (not the Store copy), and whatever you connect yourself, such as cloud folders, scrobbling or an AI model. iTunes and Deezer, for a second opinion on a track, its cover and, from iTunes, its genre, are used only if you turn them on. If you link your devices to reach them from afar, they find each other through public relays and a distributed address table, which can see that two devices connect but not what passes between them. [PRIVACY.md]({privacy}) lists every request and what it sends."
       }
     ]
   },

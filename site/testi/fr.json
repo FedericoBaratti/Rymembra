@@ -218,7 +218,7 @@
       },
       {
         "d": "Envoie-t-il mes données quelque part ?",
-        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, Cover Art Archive pour les pochettes, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour (pas la copie du Store), et ce que vous connectez vous-même, comme des dossiers cloud, le scrobbling ou un modèle d'IA. iTunes et Deezer ne servent aux pochettes que si vous les activez. Si vous reliez vos appareils pour les joindre à distance, ils se trouvent par des relais publics et une table d'adresses distribuée, qui peuvent voir que deux appareils se connectent, mais pas ce qui passe entre eux. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
+        "r": "Il n'y a pas de télémétrie ni de serveur Rymembra. Le programme ne parle qu'aux services que vous utilisez — les catalogues, MusicBrainz pour les tags, Cover Art Archive pour les pochettes, LRCLIB pour les paroles, GitHub pour vérifier les mises à jour (pas la copie du Store), et ce que vous connectez vous-même, comme des dossiers cloud, le scrobbling ou un modèle d'IA. iTunes et Deezer, pour un second avis sur un morceau, la pochette et, avec iTunes, le genre, ne servent que si vous les activez. Si vous reliez vos appareils pour les joindre à distance, ils se trouvent par des relais publics et une table d'adresses distribuée, qui peuvent voir que deux appareils se connectent, mais pas ce qui passe entre eux. [PRIVACY.md]({privacy}) liste chaque requête et ce qu'elle envoie."
       }
     ]
   },

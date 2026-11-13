@@ -218,7 +218,7 @@
       },
       {
         "d": "Schickt er meine Daten irgendwohin?",
-        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, Cover Art Archive für Cover, LRCLIB für Songtexte, GitHub für die Update-Prüfung (nicht die Store-Version) und allem, was du selbst verbindest, etwa Cloud-Ordner, Scrobbling oder ein KI-Modell. iTunes und Deezer werden für Cover nur genutzt, wenn du sie einschaltest. Wenn du deine Geräte verbindest, um sie aus der Ferne zu erreichen, finden sie sich über öffentliche Relays und eine verteilte Adresstabelle, die sehen können, dass sich zwei Geräte verbinden, aber nicht, was zwischen ihnen läuft. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
+        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, Cover Art Archive für Cover, LRCLIB für Songtexte, GitHub für die Update-Prüfung (nicht die Store-Version) und allem, was du selbst verbindest, etwa Cloud-Ordner, Scrobbling oder ein KI-Modell. iTunes und Deezer werden für eine zweite Meinung zu einem Titel, für das Cover und, von iTunes, für das Genre nur genutzt, wenn du sie einschaltest. Wenn du deine Geräte verbindest, um sie aus der Ferne zu erreichen, finden sie sich über öffentliche Relays und eine verteilte Adresstabelle, die sehen können, dass sich zwei Geräte verbinden, aber nicht, was zwischen ihnen läuft. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
       }
     ]
   },
