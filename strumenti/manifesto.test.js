@@ -110,7 +110,13 @@ test("le sezioni Security vengono prima, ovunque siano nel changelog", () => {
 
 test("le note della prossima versione mostrano le sezioni Security del changelog vero", () => {
   const changelog = require("node:fs").readFileSync(require("node:path").join(__dirname, "../CHANGELOG.md"), "utf8");
-  const testo = noteDa(changelog, "999.0.0");
+  // Fra un rilascio e l'altro le note sono quelle di «[Unreleased]» (una
+  // versione che non c'è ci ripiega); nel commit del numero «[Unreleased]»
+  // diventa la voce della versione dei file, e sono le note che l'updater
+  // mostrerà davvero.
+  const aperta = /^## \[Unreleased\]/m.test(changelog);
+  const versione = aperta ? "999.0.0" : require("../apps/desktop/package.json").version;
+  const testo = noteDa(changelog, versione);
   const titoli = testo.split("\n");
   const security = titoli.filter((t) => t.startsWith("• Security"));
   assert.ok(security.length >= 1, testo);
