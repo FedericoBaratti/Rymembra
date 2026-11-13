@@ -241,8 +241,9 @@ pub fn avvia(app: &AppHandle) {
 /// Quel che va fatto all'uscita: l'ultimo `PRAGMA optimize`.
 ///
 /// Una riga nella sequenza di spegnimento di `main`, e `try_state` perché lì
-/// si sta smontando tutto. Il resto — il lucchetto a scadenza, il «una volta
-/// sola» — sta in [`crate::stato::ottimizza_uscendo`].
+/// si sta smontando tutto. Il resto — il lucchetto a scadenza, l'ottimizzazione
+/// «una volta sola» e il giornale svuotato a ogni chiamata — sta in
+/// [`crate::stato::ottimizza_uscendo`].
 pub fn uscendo(app: &AppHandle) {
     if let Some(stato) = app.try_state::<Stato>() {
         crate::stato::ottimizza_uscendo(&stato);

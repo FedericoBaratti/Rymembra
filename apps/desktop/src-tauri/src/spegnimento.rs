@@ -84,8 +84,10 @@ pub fn in_uscita() -> bool {
 /// # Ripetibile
 ///
 /// Ogni passo regge la seconda chiamata — la bandiera resta alzata, la
-/// scansione resta fermata, l'ottimizzazione si fa una volta sola, la scheda e
-/// l'icona già staccate non ci sono più — perché il `RunEvent` la chiama più
+/// scansione resta fermata, l'ottimizzazione si fa una volta sola e il giornale
+/// si svuota a ogni chiamata, dopo i salvataggi di quella chiamata (è l'ultima
+/// scrittura: vedi [`crate::stato::ottimizza_uscendo`]), la scheda e l'icona
+/// già staccate non ci sono più — perché il `RunEvent` la chiama più
 /// volte di fila.
 pub fn spegni(mano: &tauri::AppHandle) {
     use tauri::Manager as _;
@@ -192,6 +194,43 @@ impl<R: tauri::Runtime, T: tauri::Emitter<R>> Emette<R> for T {}
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// Il giornale svuotato viene dopo i salvataggi, e non sta dietro la
+    /// bandiera della prima volta.
+    ///
+    /// La sequenza gira due o tre volte, e ogni giro riscrive la posizione di
+    /// ripresa con un brano in riproduzione: se il checkpoint stesse sotto
+    /// `prima_volta`, o prima di `salva_uscendo`, l'ultima riscrittura lo
+    /// seguirebbe e il `-wal` resterebbe pieno (collaudo in Windows Sandbox:
+    /// 4.152 byte dopo ogni uscita con un brano in riproduzione). Il
+    /// comportamento sul disco lo prova `stato::prove::uscendo_il_giornale_resta_vuoto`;
+    /// qui l'ordine, che un'`AppHandle` finta non permette di far girare.
+    #[test]
+    fn il_giornale_si_svuota_dopo_i_salvataggi_e_a_ogni_giro() {
+        let sorgente = include_str!("spegnimento.rs");
+        let da = sorgente.find("pub fn spegni(").expect("la sequenza c'è");
+        let a = sorgente
+            .find("pub trait Emette")
+            .expect("il tratto che segue c'è");
+        let corpo = sorgente.get(da..a).expect("il corpo della sequenza");
+        let salva = corpo
+            .find("crate::riproduzione::salva_uscendo(mano)")
+            .expect("i salvataggi dell'ascolto");
+        let svuota = corpo
+            .find("crate::manutenzione::uscendo(mano)")
+            .expect("l'uscita del database");
+        let stacca = corpo
+            .find("crate::media::stacca(mano)")
+            .expect("il distacco della scheda");
+        assert!(salva < svuota, "il giornale si svuota dopo i salvataggi");
+        assert!(svuota < stacca, "e prima di staccare la scheda e l'icona");
+        let in_mezzo = corpo.get(salva..svuota).expect("il tratto fra i due");
+        assert!(
+            !in_mezzo.contains("if prima_volta"),
+            "né i salvataggi né il giornale stanno dietro la prima volta: il giornale \
+             dev'essere l'ultima scrittura di ogni giro"
+        );
+    }
 
     /// La bandiera è statica e le prove girano tutte nello stesso processo:
     /// una sola prova la alza, e verifica entrambi i versi in ordine. Due prove
