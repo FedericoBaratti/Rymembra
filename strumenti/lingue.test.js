@@ -281,3 +281,54 @@ test("solo `n` sceglie il plurale: un altro contatore davanti a un sostantivo pl
   // Un'eccezione per chiave esatta, con il motivo.
   assert.deepEqual(contatoriFuoriDaN("en", { a: "{max} items" }, { contatori: { a: "un limite" } }), []);
 });
+
+test("i valori uguali in italiano e in inglese sono dichiarati", () => {
+  const it = { a: "Album", b: "Agente", c: "{n} kB", d: "…", e: "Rock", f: "5.1" };
+  const en = { a: "Album", b: "Agente", c: "{n} kB", d: "…", e: "Rock", f: "5.1" };
+  // «Agente» è una traduzione che non è stata fatta: salta fuori. Le unità, i
+  // simboli e i numeri non hanno lettere da tradurre; «Album» e «Rock» si dichiarano.
+  const eccezioni = { valoriUguali: { "Termine uguale in tutte e due": ["a", "e"] } };
+  const trovati = valoriUguali(it, en, eccezioni);
+  assert.equal(trovati.length, 1);
+  assert.match(trovati[0], /«b» è identico/);
+  // Quel che è diverso non è un caso.
+  assert.deepEqual(valoriUguali({ x: "Mostra" }, { x: "Show" }), []);
+});
+
+test("ogni voce dei registri ha la sua frase in ogni lingua", () => {
+  const registri = vociDeiRegistri({
+    parti: 'PartDef::nuova("app-shell", Shell, "x"), PartDef::nuova(\n  "heart", Card, "y")',
+    token: 'token!("color.accent", "--accent", Color)\n token!(\n  "radius.panel", "--r", Length)',
+    autoplay: [
+      "    pub const fn codice(self) -> &'static str {",
+      "        match self {",
+      '            Self::Album => "album",',
+      '            Self::DaTanto => "datanto",',
+      "        }",
+      "    }",
+      "}",
+    ].join("\n"),
+    avvisi: "pub enum WarningKind {\n    /// x\n    MissingRequiredToken,\n    /// y\n    RestingLoop,\n}\n",
+    parametri: 'par!("at", "pos", false, "x"), par!("stops", "stops", false, "y")',
+  });
+  const dizionario = {
+    "skin.part.app-shell": "x",
+    "skin.token.color.accent": "x",
+    "skin.token.radius.panel": "x",
+    "queue.why.album": "x",
+    "queue.why.datanto": "x",
+    "studio3.warning.missingRequiredToken": "x",
+    "skin.par.radialGradient.at": "x",
+    "skin.par.radialGradient.stops": "x",
+  };
+  // Manca la parte `heart` e il genere `restingLoop`.
+  assert.deepEqual(vociMancanti("en", dizionario, registri), [
+    "en.json: manca «skin.part.heart» (parts.rs)",
+    "en.json: manca «studio3.warning.restingLoop» (avvisi.rs (WarningKind))",
+  ]);
+  // Un sorgente la cui forma è cambiata non passa in silenzio.
+  assert.throws(
+    () => vociDeiRegistri({ parti: "", token: "x", autoplay: "x", avvisi: "x", parametri: "x" }),
+    /nessuna voce riconosciuta/,
+  );
+});

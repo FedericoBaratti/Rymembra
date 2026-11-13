@@ -759,6 +759,8 @@ function controlliSuiTesti(dizionari) {
     (c, d) => contatoriFuoriDaN(c, d, eccezioni),
     "Scrivi la frase con `n` e le sue forme, o in una forma che non concorda («aggiunte: {piu}»).",
   );
+  if (dizionari.en) aggiungi("Valori uguali in it.json e en.json", valoriUguali(it, dizionari.en, eccezioni));
+
   const sorgentiTs = filesSotto(path.join(REPO, "apps/desktop/src"), [".ts", ".tsx"], ["lingue"]);
   const sorgentiRs = [
     ...filesSotto(path.join(REPO, "apps/desktop/src-tauri/src"), [".rs"]),
@@ -772,6 +774,18 @@ function controlliSuiTesti(dizionari) {
     "Si tolgono (da tutte le lingue), o se si disegnano in un modo che il codice non mostra vanno in lingue-eccezioni.json con il motivo.",
   );
 
+  try {
+    const registri = vociDeiRegistri({
+      parti: fs.readFileSync(path.join(REPO, "core/rymembra-skin/src/parts.rs"), "utf8"),
+      token: fs.readFileSync(path.join(REPO, "core/rymembra-skin/src/tokens.rs"), "utf8"),
+      autoplay: fs.readFileSync(path.join(REPO, "core/rymembra-app/src/autoplay.rs"), "utf8"),
+      avvisi: fs.readFileSync(path.join(REPO, "core/rymembra-skin/src/document/avvisi.rs"), "utf8"),
+      parametri: fs.readFileSync(path.join(REPO, "apps/desktop/src-tauri/src/studio/registro.rs"), "utf8"),
+    });
+    perOgniLingua("Voci dei registri senza frase", (c, d) => vociMancanti(c, d, registri));
+  } catch (err) {
+    errori.push(`Registri: ${err.message}`);
+  }
   return errori;
 }
 

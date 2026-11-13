@@ -44,5 +44,74 @@
     "studio.chat.spent": "I gettoni in entrata di una conversazione: il solo prompt di sistema ne ha migliaia."
   },
   "chiaviVive": {},
-  "valoriUguali": {}
+  "valoriUguali": {
+    "Unità di misura: lo stesso simbolo in ogni lingua.": [
+      "format.khz",
+      "format.kbps",
+      "settings.sleep.minutes"
+    ],
+    "Marchio, nome di un servizio o di un prodotto, o termine del loro vocabolario (Scrobbling è di Last.fm): non si traduce.": [
+      "settings.section.scrobbling",
+      "settings.entry.scrobbling",
+      "settings.scrobbling.title",
+      "settings.sync.where.drive",
+      "ia.provider.openrouter",
+      "ia.provider.ollama",
+      "ia.provider.bionic",
+      "eq.preset.Rock",
+      "eq.preset.Pop",
+      "skin.anim.pop",
+      "license.openMusic"
+    ],
+    "Parola di uso comune in informatica e in musica, scritta allo stesso modo in italiano e in inglese (menù, generi, tipi di file, nomi di schede).": [
+      "format.channels.mono",
+      "format.channels.stereo",
+      "player.volume",
+      "keys.esc",
+      "selection.bar.playlist",
+      "nav.home",
+      "more.group.app",
+      "smart.field.album",
+      "list.album",
+      "file.playlist",
+      "file.database",
+      "page.playlist",
+      "page.album",
+      "folders.add.account",
+      "folders.add.mega.email",
+      "folders.add.mega.password",
+      "cloudApp.id.dropbox",
+      "settings.cloud.account",
+      "settings.devices.relay",
+      "devices.kind.computer",
+      "devices.via.relay",
+      "link.label",
+      "scrobble.account",
+      "grade.isrc",
+      "studio.group.widget",
+      "studio3.scene.page.home",
+      "studio3.scene.zoom",
+      "studio3.state.base",
+      "studio3.kind.document",
+      "studio3.font.file",
+      "studio3.dock.timeline",
+      "track.stream.badge",
+      "link.kind.album",
+      "link.kind.playlist",
+      "link.attribution",
+      "link.attribution.by",
+      "studio.chat.sel.token",
+      "studio.chat.sel.file"
+    ],
+    "Forma di un plurale o di un conto che in italiano e in inglese si scrive uguale («1 album», «1 playlist», «1 file», «{n} skin», «decibel»).": [
+      "artists.albums.uno",
+      "page.library.playlists.uno",
+      "scan.files.uno",
+      "sync.count.playlists.uno",
+      "profile.brings.skins.uno",
+      "profile.brings.playlists.uno",
+      "restore.playlists.n.uno",
+      "eq.band.value.uno"
+    ]
+  }
 }
