@@ -579,7 +579,7 @@ fn una_risorsa_si_aggiunge_si_rinomina_se_occupato_e_si_rifiuta_se_mente() {
     std::fs::write(&enorme, &byte).expect("scritto");
     let err = aggiungi_risorsa(dir.path(), DI_SERIE, &enorme).expect_err("respinta");
     assert!(
-        err.message()
+        err.detail()
             .is_some_and(|m| m.contains("30000×30000") && m.contains("4096×4096")),
         "{err:?}"
     );

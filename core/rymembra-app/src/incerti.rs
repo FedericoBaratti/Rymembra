@@ -262,7 +262,7 @@ fn non_trovato(track_id: i64) -> AppError {
     AppError::new(ErrorCode::LibraryTrackNotFound {
         track_id: Some(track_id),
     })
-    .with_message(format!("il brano {track_id} non è in libreria"))
+    .with_detail(format!("il brano {track_id} non è in libreria"))
 }
 
 /// Applica una correzione dell'utente a un brano.

@@ -49,7 +49,7 @@ export function conDove(evento: ErroreDellaFinestra): string {
  */
 function delNucleo(
   motivo: unknown,
-): motivo is { code: string; message?: unknown; cause?: unknown } {
+): motivo is { code: string; serviceText?: unknown; cause?: unknown } {
   return (
     typeof motivo === "object" &&
     motivo !== null &&
@@ -87,7 +87,7 @@ function comeTesto(motivo: unknown): string {
  */
 export function rigaDelRifiuto(motivo: unknown): string {
   if (delNucleo(motivo)) {
-    const parti = [motivo.message, motivo.cause]
+    const parti = [motivo.serviceText, motivo.cause]
       .filter((parte): parte is string => typeof parte === "string" && parte.trim() !== "")
       .filter((parte, i, tutte) => tutte.indexOf(parte) === i);
     return parti.length > 0 ? `${motivo.code}: ${parti.join(" · ")}` : motivo.code;

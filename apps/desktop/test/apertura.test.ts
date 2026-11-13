@@ -53,7 +53,8 @@ test("l'uscita audio che si apre non è un guasto, gli altri errori sì", () => 
     severity: "info",
     retryable: true,
     i18nKey: `errors.${code}`,
-    message: null,
+    serviceText: null,
+    values: {},
     cause: null,
   });
   assert.equal(apertura.apreAncora(errore("playback.engineOpening")), true);

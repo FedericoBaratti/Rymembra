@@ -233,7 +233,7 @@ fn risolvi(
 ) -> Result<(), AppError> {
     let Some(riferimento) = rymembra_catalogo::riconosci(url) else {
         return Err(AppError::new(ErrorCode::DownloadUnrecognizedUrl)
-            .with_message("non è un link di un catalogo che Rymembra sappia leggere".to_owned()));
+            .with_detail("non è un link di un catalogo che Rymembra sappia leggere"));
     };
 
     let chiave = chiave(riferimento.fonte, &riferimento.id);

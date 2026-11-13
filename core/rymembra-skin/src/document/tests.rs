@@ -30,7 +30,7 @@ fn rifiuta(json: &str) -> AppError {
 }
 
 fn messaggio(json: &str) -> String {
-    rifiuta(json).message().unwrap_or_default().to_owned()
+    rifiuta(json).detail().unwrap_or_default().to_owned()
 }
 
 #[test]
@@ -276,11 +276,7 @@ fn un_valore_di_token_sbagliato_nomina_il_token() {
             value: "\"blu\"".to_owned(),
         }
     );
-    assert!(
-        err.message()
-            .unwrap_or_default()
-            .contains("non è un colore")
-    );
+    assert!(err.detail().unwrap_or_default().contains("non è un colore"));
 }
 
 #[test]
@@ -359,7 +355,7 @@ fn un_effetto_sconosciuto_ha_il_suo_codice() {
             effect_type: "hairlineGrids".to_owned()
         }
     );
-    assert!(err.message().unwrap_or_default().contains("«hairlineGrid»"));
+    assert!(err.detail().unwrap_or_default().contains("«hairlineGrid»"));
 }
 
 #[test]

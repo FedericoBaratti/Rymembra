@@ -32,7 +32,7 @@ fn main() -> ExitCode {
         Ok(skin) => skin,
         Err(err) => {
             eprintln!("skin non valida [{}]", err.code().kind().code());
-            if let Some(messaggio) = err.message() {
+            if let Some(messaggio) = err.detail() {
                 eprintln!("{messaggio}");
             }
             return ExitCode::FAILURE;

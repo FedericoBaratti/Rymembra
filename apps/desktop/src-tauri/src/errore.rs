@@ -14,6 +14,18 @@
 //! Quel che passa di qui è quindi il record intero: codice, dominio, gravità,
 //! ritentabilità e chiave i18n. L'interfaccia decide cosa mostrare guardando
 //! quelli, non facendo `indexOf` su una frase.
+//!
+//! # Cosa NON passa di qui
+//!
+//! Il **dettaglio** di un errore (`AppError::with_detail`) è per chi sviluppa e
+//! resta nel diario: la finestra non lo riceve. Un testo scritto in italiano dal
+//! nucleo, mostrato sotto la frase tradotta in un'interfaccia inglese, è un
+//! testo tecnico nella lingua sbagliata (R10, R17). A chi guarda arrivano la
+//! frase del codice, i **dati** che quella frase nomina
+//! (`ErrorCode::valori_della_frase`) e, solo per i servizi remoti, quel che il
+//! servizio ha scritto. Le prove in fondo lo tengono fermo.
+
+use std::collections::BTreeMap;
 
 use rymembra_domain::errors::AppError;
 use serde::Serialize;
@@ -34,8 +46,12 @@ pub struct ErroreIpc {
     pub retryable: bool,
     /// La chiave per la traduzione.
     pub i18n_key: String,
-    /// Il messaggio per l'utente, quando ce n'è uno.
-    pub message: Option<String>,
+    /// Quel che ha scritto un servizio remoto (OpenRouter, OpenAI…), mostrato
+    /// com'è sotto la frase del codice. Mai testo di Rymembra.
+    pub service_text: Option<String>,
+    /// I dati che la frase del codice nomina (`{nome}`), i soli sicuri da
+    /// mostrare: vedi `ErrorCode::valori_della_frase`. Vuoto quasi sempre.
+    pub values: BTreeMap<String, String>,
     /// La causa tecnica, per il log e la diagnostica.
     pub cause: Option<String>,
 }
@@ -52,7 +68,13 @@ impl From<AppError> for ErroreIpc {
             severity: format!("{:?}", error.severity()).to_lowercase(),
             retryable: error.is_retryable(),
             i18n_key: kind.i18n_key().to_owned(),
-            message: error.message().map(ToOwned::to_owned),
+            service_text: error.service_text().map(ToOwned::to_owned),
+            values: error
+                .code()
+                .valori_della_frase()
+                .into_iter()
+                .map(|(nome, valore)| (nome.to_owned(), valore))
+                .collect(),
             cause: error.cause().map(ToOwned::to_owned),
         }
     }
@@ -77,18 +99,160 @@ pub type Esito<T> = Result<T, Box<ErroreIpc>>;
 /// segnalazione che dice «non funziona» e vedere quale comando ha risposto
 /// male, con che codice, tre secondi prima.
 ///
-/// Nel diario va il **codice**, non il messaggio: il messaggio è tradotto e
-/// scritto per chi ascolta, mentre `db.openFailed` è la stessa parola in ogni
-/// lingua. La causa tecnica invece sì, perché è l'unica metà che dice *quale*
-/// apertura è fallita.
+/// Nel diario va il **codice**, non la frase: la frase è tradotta e scritta per
+/// chi ascolta, mentre `db.openFailed` è la stessa parola in ogni lingua. La
+/// causa tecnica invece sì, perché è l'unica metà che dice *quale* apertura è
+/// fallita, e con lei il **dettaglio** di chi ha scritto il punto: è per questo
+/// che non serve alla finestra. I `valori` no: un account è un indirizzo di
+/// posta, e il diario si allega alle segnalazioni.
 pub fn errore(err: AppError) -> Box<ErroreIpc> {
+    let dettaglio = err.detail().map(ToOwned::to_owned);
     let ipc = ErroreIpc::from(err);
     nota!(
-        "[errore] {} gravita={} ritentabile={} causa={}",
+        "[errore] {} gravita={} ritentabile={} causa={} dettaglio={}",
         ipc.code,
         ipc.severity,
         ipc.retryable,
-        ipc.cause.as_deref().unwrap_or("—")
+        ipc.cause.as_deref().unwrap_or("—"),
+        dettaglio.as_deref().unwrap_or("—")
     );
     Box::new(ipc)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use rymembra_domain::errors::ErrorCode;
+
+    /// I file `.rs` sotto una cartella della radice del repository, col loro
+    /// percorso relativo alla radice.
+    fn sorgenti(cartella: &str) -> Vec<(String, String)> {
+        fn visita(
+            cartella: &std::path::Path,
+            radice: &std::path::Path,
+            tutti: &mut Vec<(String, String)>,
+        ) {
+            let Ok(voci) = std::fs::read_dir(cartella) else {
+                return;
+            };
+            for voce in voci.flatten() {
+                let percorso = voce.path();
+                if percorso.is_dir() {
+                    if !matches!(voce.file_name().to_str(), Some("target" | "node_modules")) {
+                        visita(&percorso, radice, tutti);
+                    }
+                } else if percorso.extension().is_some_and(|e| e == "rs")
+                    && let Ok(testo) = std::fs::read_to_string(&percorso)
+                {
+                    let relativo = percorso
+                        .strip_prefix(radice)
+                        .unwrap_or(&percorso)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    tutti.push((relativo, testo));
+                }
+            }
+        }
+        let radice = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let mut tutti = Vec::new();
+        visita(&radice.join(cartella), &radice, &mut tutti);
+        tutti
+    }
+
+    /// Chi può scrivere un testo di un servizio remoto nell'errore.
+    ///
+    /// `rymembra-ia` è il solo che ne produce: il testo che OpenRouter o un
+    /// server compatibile scrive nel corpo della risposta, mostrato com'è
+    /// perché contiene la correzione («use this slug instead»). Gli altri due
+    /// file sono la definizione e questa prova.
+    const PUNTI_DEI_SERVIZI: [&str; 3] = [
+        "core/rymembra-domain/src/errors/mod.rs",
+        "core/rymembra-ia/src/cliente.rs",
+        "apps/desktop/src-tauri/src/errore.rs",
+    ];
+
+    /// Nessun testo scritto dal nucleo viaggia verso la finestra (R10, R17).
+    ///
+    /// `with_message` non esiste più: il testo di un errore era un secondo
+    /// canale di frasi italiane sotto quelle del catalogo, e con l'app in
+    /// inglese si leggeva una riga italiana sotto la frase tradotta. Resta
+    /// `with_detail` (diario) e `with_service_text` (le parole di un servizio),
+    /// quest'ultimo solo nei punti dei servizi.
+    #[test]
+    fn il_testo_di_un_errore_non_e_un_secondo_canale_di_frasi() {
+        let vecchio = concat!("with_", "message(");
+        let servizio = concat!("with_service_", "text(");
+        let mut tutti = sorgenti("core");
+        tutti.extend(sorgenti("apps"));
+        assert!(tutti.len() > 200, "i sorgenti non si sono trovati");
+
+        let mut vecchi = Vec::new();
+        let mut fuori_posto = Vec::new();
+        for (file, testo) in &tutti {
+            // `cpal::Error::with_message` è di un'altra libreria (le prove del motore audio).
+            if testo.contains(vecchio) && !file.starts_with("core/rymembra-play/") {
+                vecchi.push(file.as_str());
+            }
+            if testo.contains(servizio) && !PUNTI_DEI_SERVIZI.contains(&file.as_str()) {
+                fuori_posto.push(file.as_str());
+            }
+        }
+        assert!(
+            vecchi.is_empty(),
+            "`with_message` non esiste più: un dettaglio per chi sviluppa è `with_detail` \
+             (solo nel diario), un dato per la frase è un campo del codice in \
+             `valori_della_frase`: {vecchi:?}"
+        );
+        assert!(
+            fuori_posto.is_empty(),
+            "`with_service_text` è solo per le parole di un servizio remoto: {fuori_posto:?}"
+        );
+    }
+
+    /// Quel che il nucleo scrive per sé non arriva alla finestra, e quel che
+    /// un servizio ha scritto sì.
+    #[test]
+    fn la_finestra_riceve_il_testo_del_servizio_e_non_il_dettaglio() {
+        let ipc = ErroreIpc::from(
+            AppError::new(ErrorCode::NetHttp {
+                status: 400,
+                url: None,
+            })
+            .with_detail("il profilo «openrouter» non risponde")
+            .with_service_text("use this slug instead: minimax/minimax-m3")
+            .with_cause("HTTP 400"),
+        );
+        let json = serde_json::to_string(&ipc).expect("si serializza");
+        assert!(
+            !json.contains("openrouter"),
+            "il dettaglio è partito: {json}"
+        );
+        assert!(
+            !json.contains("detail") && !json.contains("\"message\""),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""serviceText":"use this slug instead: minimax/minimax-m3""#),
+            "{json}"
+        );
+        assert!(ipc.values.is_empty(), "nessun dato per questo codice");
+    }
+
+    /// I soli dati che partono sono quelli che il codice dichiara.
+    #[test]
+    fn i_valori_sono_quelli_che_il_codice_dichiara() {
+        let ipc = ErroreIpc::from(AppError::new(ErrorCode::CloudOtherAccount {
+            servizio: "OneDrive".to_owned(),
+            account: "casa@esempio.it".to_owned(),
+        }));
+        assert_eq!(
+            ipc.values.get("ottenuto").map(String::as_str),
+            Some("casa@esempio.it")
+        );
+        // Un percorso, un indirizzo: parametri del codice, non dati della frase.
+        let altro = ErroreIpc::from(AppError::new(ErrorCode::FsNotFound {
+            path: r"C:\Musica\a.flac".to_owned(),
+        }));
+        assert!(altro.values.is_empty(), "{:?}", altro.values);
+    }
 }

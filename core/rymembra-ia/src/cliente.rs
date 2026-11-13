@@ -724,7 +724,7 @@ impl Cliente {
                 )));
             }
             return Err(AppError::new(ErrorCode::IaNoAnswer)
-                .with_message(format!("da «{}»", self.profilo.id))
+                .with_detail(format!("profilo «{}»", self.profilo.id))
                 .with_cause(format!(
                     "flusso ben formato, {} righe, nessun dato: modello «{}»",
                     sse.righe(),
@@ -837,29 +837,20 @@ impl Cliente {
         self.senza_segreti(self.tradotto(self.senza_segreti(err)))
     }
 
-    /// Un errore con il messaggio e la causa ripuliti dai segreti.
+    /// Un errore con tutti i suoi testi ripuliti dai segreti.
     ///
-    /// # Perché qui, e su tutti e due i campi
+    /// # Perché qui, e su tutti i campi
     ///
-    /// Le parole che un servizio scrive arrivano in `message`, che va a schermo,
-    /// e in `cause`, che va nel diario — e il diario l'utente lo allega alle
-    /// segnalazioni. Un proxy compatibile con OpenAI che risponde 401 con
-    /// «Invalid API key: sk-or-v1-…» ci metteva la chiave, intera o mascherata
-    /// a metà. Questo oggetto è l'unico che la conosce, quindi è il posto in cui
-    /// toglierla: ogni errore che esce dalla rete passa da [`Self::traduci`] o
-    /// da [`Self::forma_sbagliata`], e tutti e due passano di qui.
+    /// Le parole che un servizio scrive arrivano nel testo del servizio, che va
+    /// a schermo, e nella causa e nel dettaglio, che vanno nel diario — e il
+    /// diario l'utente lo allega alle segnalazioni. Un proxy compatibile con
+    /// OpenAI che risponde 401 con «Invalid API key: sk-or-v1-…» ci metteva la
+    /// chiave, intera o mascherata a metà. Questo oggetto è l'unico che la
+    /// conosce, quindi è il posto in cui toglierla: ogni errore che esce dalla
+    /// rete passa da [`Self::traduci`] o da [`Self::forma_sbagliata`], e tutti e
+    /// due passano di qui.
     fn senza_segreti(&self, err: AppError) -> AppError {
-        let pulisci = |testo: &str| senza_segreti(testo, self.chiave.as_deref());
-        let messaggio = err.message().map(pulisci);
-        let causa = err.cause().map(pulisci);
-        let mut pulito = err;
-        if let Some(messaggio) = messaggio {
-            pulito = pulito.with_message(messaggio);
-        }
-        if let Some(causa) = causa {
-            pulito = pulito.with_cause(causa);
-        }
-        pulito
+        err.map_texts(|testo| senza_segreti(testo, self.chiave.as_deref()))
     }
 
     /// Quel che fa [`Self::traduci`], prima di togliere i segreti.
@@ -873,14 +864,15 @@ impl Cliente {
             || causa.to_lowercase().contains("model");
 
         // Un rimando che questo client non segue (vedi `Rete::verso`). Il
-        // corpo di un 3xx non dice niente di utile; la causa che
-        // `stato_a_errore` ha scritto sì — dove il servizio voleva mandare la
-        // richiesta — ed è la frase da mostrare, perché quel che va corretto è
-        // l'indirizzo di base che l'utente ha scritto nel profilo.
+        // corpo di un 3xx non dice niente di utile, e la causa che
+        // `stato_a_errore` ha scritto — dove il servizio voleva mandare la
+        // richiesta — è italiano per il diario, dove resta. A chi guarda va il
+        // rimedio, che è un codice suo: quel che si corregge è l'indirizzo di
+        // base che l'utente ha scritto nel profilo.
         if let ErrorCode::NetHttp { status, .. } = err.code()
             && (300..400).contains(status)
         {
-            return err.with_message(causa);
+            return AppError::new(ErrorCode::IaAddressMoved).with_cause(causa);
         }
 
         let nuovo = match err.code() {
@@ -911,7 +903,7 @@ impl Cliente {
             _ => {
                 return match detto {
                     None => err,
-                    Some(frase) => err.with_message(frase),
+                    Some(frase) => err.with_service_text(frase),
                 };
             }
         }
@@ -919,7 +911,7 @@ impl Cliente {
 
         match detto {
             None => nuovo,
-            Some(frase) => nuovo.with_message(frase),
+            Some(frase) => nuovo.with_service_text(frase),
         }
     }
 
@@ -943,7 +935,7 @@ impl Cliente {
         AppError::new(ErrorCode::IaBadResponse {
             detail: Some(corto.clone()),
         })
-        .with_message(format!("da «{}»", self.profilo.id))
+        .with_detail(format!("profilo «{}»", self.profilo.id))
         .with_cause(corto)
     }
 
@@ -1628,7 +1620,7 @@ mod prove {
             cliente.forma_sbagliata(&format!("la risposta non era un flusso: {corpo}")),
         ];
         for err in &guasti {
-            let tutto = format!("{err:?} {:?} {:?}", err.message(), err.cause());
+            let tutto = format!("{err:?} {err}");
             for segreto in [chiave, "0123456789abcdef", altra, "abc.def-ghi_jkl"] {
                 assert!(!tutto.contains(segreto), "«{segreto}» in {tutto}");
             }
@@ -1636,7 +1628,7 @@ mod prove {
         // La frase resta, senza il segreto: è quella che dice cosa fare.
         assert!(
             guasti[0]
-                .message()
+                .service_text()
                 .is_some_and(|m| m.contains("Invalid API key: ‹chiave›")),
             "{:?}",
             guasti[0]
@@ -1681,7 +1673,7 @@ mod prove {
             cliente.traduci(http(corpo)),
             cliente.traduci(http(tagliato)),
         ] {
-            let tutto = format!("{err:?} {:?} {:?}", err.message(), err.cause());
+            let tutto = format!("{err:?} {err}");
             // Nemmeno la metà: i primi sedici caratteri di una chiave sono
             // già quasi tutta la chiave per chi la cerca.
             assert!(!tutto.contains(&chiave[..16]), "{tutto}");
@@ -1707,7 +1699,7 @@ mod prove {
             matches!(scaduta.code(), ErrorCode::IaUnauthorized { .. }),
             "{scaduta:?}"
         );
-        assert_eq!(scaduta.message(), Some("API key expired."));
+        assert_eq!(scaduta.service_text(), Some("API key expired."));
 
         // Il 404 del diario: dice **quale** slug usare al posto di quello.
         let a_pagamento = cliente.traduci(
@@ -1725,7 +1717,7 @@ mod prove {
         );
         assert!(
             a_pagamento
-                .message()
+                .service_text()
                 .is_some_and(|m| m.contains("minimax/minimax-m3")),
             "{a_pagamento:?}"
         );
@@ -1781,7 +1773,7 @@ mod prove {
             "{altro:?}"
         );
         assert_eq!(
-            altro.message(),
+            altro.service_text(),
             Some("messages: field required"),
             "anche quel che tiene il suo codice porta via la frase"
         );
@@ -1922,8 +1914,9 @@ mod prove {
         assert!(matches!(intatto.code(), ErrorCode::NetOffline { .. }));
     }
 
-    /// Un rimando non seguito si dice con la frase che nomina dove portava:
-    /// è l'indirizzo di base del profilo quel che va corretto.
+    /// Un rimando non seguito ha un codice suo, e il diario nomina dove
+    /// portava: è l'indirizzo di base del profilo quel che va corretto, e la
+    /// frase sta nel catalogo (tradotta), non in una riga italiana sotto.
     #[test]
     fn un_rimando_non_seguito_dice_dove_portava() {
         let cliente = Cliente::nuovo(
@@ -1942,11 +1935,14 @@ mod prove {
         };
         let tradotto =
             cliente.traduci(rete.stato_a_errore(&rimando, "https://proxy.esempio/v1/models"));
-        assert_eq!(tradotto.code().kind().code(), "net.http");
+        assert_eq!(tradotto.code().kind().code(), "ia.addressMoved");
         assert!(!tradotto.is_retryable());
-        let frase = tradotto.message().unwrap_or_default();
-        assert!(frase.contains("nuovo.esempio/v1/models"), "{frase}");
-        assert!(!frase.contains("firma"), "la query non si mostra: {frase}");
+        // Il diario sa dove portava, senza la query.
+        let causa = tradotto.cause().unwrap_or_default();
+        assert!(causa.contains("nuovo.esempio/v1/models"), "{causa}");
+        assert!(!causa.contains("firma"), "la query non si mostra: {causa}");
+        // E a chi guarda non arriva nessuna riga italiana.
+        assert_eq!(tradotto.service_text(), None);
     }
 
     /// Un servitore su questa macchina che accetta una connessione, legge la

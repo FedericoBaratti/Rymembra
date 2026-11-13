@@ -17,7 +17,8 @@ const altro = {
   severity: "warning",
   retryable: false,
   i18nKey: "errors.cloud.otherAccount",
-  message: "casa@esempio.it",
+  serviceText: null,
+  values: { ottenuto: "casa@esempio.it" },
   cause: null,
 };
 
@@ -31,7 +32,8 @@ test("un altro account si nomina accanto a quello atteso", () => {
 test("fuori da un «Ricollega», o per un altro guasto, la frase è quella del catalogo", () => {
   assert.equal(contiDaNominare(altro, null), null);
   assert.equal(contiDaNominare({ ...altro, code: "cloud.authExpired" }, { nome: "x" }), null);
-  assert.equal(contiDaNominare({ ...altro, message: "  " }, { nome: "x" }), null);
+  assert.equal(contiDaNominare({ ...altro, values: { ottenuto: "  " } }, { nome: "x" }), null);
+  assert.equal(contiDaNominare({ ...altro, values: {} }, { nome: "x" }), null);
   assert.equal(contiDaNominare(new Error("rete"), { nome: "x" }), null);
 });
 

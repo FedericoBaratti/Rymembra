@@ -78,11 +78,40 @@ fn una_riga_sola(causa: &str) -> String {
 
 /// Un errore di Rymembra: cosa è andato storto, e tutto ciò che serve per
 /// deciderne il seguito.
+///
+/// # Tre testi, e uno solo arriva a chi guarda
+///
+/// Il testo che si legge a schermo nasce dal **codice**: la sua chiave
+/// ([`ErrorCode::i18n_key`]) si traduce, e i pochi dati che la frase può
+/// nominare sono quelli di [`ErrorCode::valori_della_frase`]. Il resto sono
+/// parole, e le parole di un errore sono di tre specie:
+///
+/// - il **dettaglio** ([`Self::with_detail`]) è scritto da chi sviluppa, per chi
+///   legge il diario. Non esce mai dal processo: `ErroreIpc` non lo porta. Era
+///   `with_message`, e viaggiava fino alla finestra: in italiano, sotto la frase
+///   tradotta, anche con l'app in inglese (R10, R17);
+/// - il **testo del servizio** ([`Self::with_service_text`]) è quello che un
+///   servizio remoto ha scritto di suo — OpenRouter, OpenAI — e si mostra così
+///   com'è, perché è la correzione da copiare («use this slug instead»). È
+///   l'unico testo libero che attraversa il confine, e per questo ha un nome che
+///   lo dice;
+/// - la **causa** ([`Self::with_cause`]) è l'errore sottostante, per il diario.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppError {
     code: ErrorCode,
-    message: Option<String>,
+    /// Le due specie di parole, dietro un `Box`: quasi nessun errore le ha, e
+    /// `AppError` sta nell'`Err` di ogni funzione fallibile. Con due stringhe
+    /// in più nel corpo supera i 128 byte oltre i quali `clippy::result_large_err`
+    /// avvisa, in più di mille punti.
+    parole: Option<Box<Parole>>,
     cause: Option<String>,
+}
+
+/// Il dettaglio e il testo del servizio di un errore: vedi [`AppError`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Parole {
+    detail: Option<String>,
+    service_text: Option<String>,
 }
 
 impl AppError {
@@ -91,20 +120,61 @@ impl AppError {
     pub const fn new(code: ErrorCode) -> Self {
         Self {
             code,
-            message: None,
+            parole: None,
             cause: None,
         }
     }
 
-    /// Aggiunge un messaggio **per chi sviluppa**, non per chi ascolta musica.
+    /// Aggiunge un dettaglio **per chi sviluppa**, che resta nel diario.
     ///
-    /// Il testo mostrato all'utente si ottiene traducendo [`ErrorCode::i18n_key`]
-    /// con i parametri del codice: un messaggio scritto qui in italiano
-    /// resterebbe in italiano anche con l'app in inglese, ed è precisamente il
-    /// modo in cui i messaggi d'errore smettono di essere tradotti.
+    /// Non arriva alla finestra, e non per distrazione: un testo scritto qui in
+    /// italiano resterebbe in italiano anche con l'app in inglese, ed è
+    /// precisamente il modo in cui i messaggi d'errore smettono di essere
+    /// tradotti. Quel che serve a chi guarda è un codice con la sua frase.
     #[must_use]
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.parole.get_or_insert_with(Box::default).detail = Some(detail.into());
+        self
+    }
+
+    /// Aggiunge quel che un **servizio remoto** ha scritto, per mostrarlo com'è.
+    ///
+    /// Solo per le parole di un altro — il messaggio d'errore di OpenRouter, di
+    /// OpenAI, di un server compatibile —, mai per una frase di Rymembra: quelle
+    /// sono del catalogo, e si traducono. Una prova di sorgente (`errore.rs`)
+    /// tiene l'elenco dei punti che lo possono chiamare.
+    #[must_use]
+    pub fn with_service_text(mut self, text: impl Into<String>) -> Self {
+        self.parole.get_or_insert_with(Box::default).service_text = Some(text.into());
+        self
+    }
+
+    /// Lo stesso errore con un altro codice, e le stesse parole.
+    ///
+    /// Per chi riscrive un guasto in un altro senza perdere quel che gli stava
+    /// attaccato.
+    #[must_use]
+    pub fn with_code(mut self, code: ErrorCode) -> Self {
+        self.code = code;
+        self
+    }
+
+    /// Lo stesso errore con ogni testo passato da `ripulisci`.
+    ///
+    /// Per chi toglie qualcosa — un segreto, un indirizzo firmato — da **tutti**
+    /// i testi che l'errore porta: il dettaglio e la causa vanno nel diario, che
+    /// si allega alle segnalazioni, e il testo del servizio va a schermo. Pulire
+    /// solo la causa lascia il segreto negli altri due.
+    #[must_use]
+    pub fn map_texts(mut self, ripulisci: impl Fn(&str) -> String) -> Self {
+        if let Some(parole) = self.parole.as_deref_mut() {
+            parole.detail = parole.detail.as_deref().map(&ripulisci);
+            parole.service_text = parole.service_text.as_deref().map(&ripulisci);
+        }
+        self.cause = self
+            .cause
+            .as_deref()
+            .map(|causa| una_riga_sola(&ripulisci(causa)));
         self
     }
 
@@ -124,10 +194,16 @@ impl AppError {
         &self.code
     }
 
-    /// Il messaggio per chi sviluppa, se c'è.
+    /// Il dettaglio per chi sviluppa, se c'è: va solo nel diario.
     #[must_use]
-    pub fn message(&self) -> Option<&str> {
-        self.message.as_deref()
+    pub fn detail(&self) -> Option<&str> {
+        self.parole.as_deref()?.detail.as_deref()
+    }
+
+    /// Quel che ha scritto il servizio remoto, se c'è: si mostra com'è.
+    #[must_use]
+    pub fn service_text(&self) -> Option<&str> {
+        self.parole.as_deref()?.service_text.as_deref()
     }
 
     /// La causa sottostante, se c'è.
@@ -152,8 +228,11 @@ impl AppError {
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{}]", self.code.kind().code())?;
-        if let Some(message) = &self.message {
-            write!(f, " {message}")?;
+        if let Some(detail) = self.detail() {
+            write!(f, " {detail}")?;
+        }
+        if let Some(testo) = self.service_text() {
+            write!(f, " (il servizio dice: «{testo}»)")?;
         }
         if let Some(cause) = &self.cause {
             write!(f, " (causa: {cause})")?;
@@ -276,11 +355,11 @@ mod tests {
     }
 
     #[test]
-    fn il_messaggio_mostra_il_codice_e_la_causa() {
+    fn il_dettaglio_e_la_causa_stanno_nella_riga_del_diario() {
         let e = AppError::new(ErrorCode::FsNotFound {
             path: "C:/Music/a.mp3".into(),
         })
-        .with_message("scansione interrotta")
+        .with_detail("scansione interrotta")
         .with_cause("ENOENT");
         assert_eq!(
             e.to_string(),

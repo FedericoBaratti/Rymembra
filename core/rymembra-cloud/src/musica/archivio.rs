@@ -173,7 +173,7 @@ impl ArchivioNuvola {
         };
         let Some((conto, voce)) = self.voce_di(percorso) else {
             return Err(AppError::new(ErrorCode::CloudNotFound)
-                .with_message(format!("lo specchio non conosce {percorso}")));
+                .with_detail(format!("lo specchio non conosce {percorso}")));
         };
         Ok(Trovato {
             conto,

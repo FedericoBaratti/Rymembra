@@ -236,9 +236,9 @@ fn dimensioni_webp(byte: &[u8]) -> Option<(u32, u32)> {
 /// pignoleria: il motore la decodificherebbe a una misura che nessuno ha
 /// controllato. Quel che non è un'immagine — un carattere — passa.
 ///
-/// L'errore porta il nome e la misura nel messaggio: è l'unico campo che
-/// arriva a schermo, e «un file è stato rifiutato» senza dire quale né perché
-/// manda a cercare nel posto sbagliato.
+/// L'errore porta il nome e la misura nel dettaglio e nella causa, cioè nel
+/// diario: «un file è stato rifiutato» senza dire quale né perché manda a
+/// cercare nel posto sbagliato, e il posto dove cercare è il diario.
 fn nei_pixel(nome: &str, tipo: &TipoRisorsa, byte: &[u8]) -> Result<(), AppError> {
     if !tipo.immagine {
         return Ok(());
@@ -262,9 +262,12 @@ fn nei_pixel(nome: &str, tipo: &TipoRisorsa, byte: &[u8]) -> Result<(), AppError
         }
         Some(_) => return Ok(()),
     };
+    // Il nome e la misura vanno nel diario, in italiano: la frase del codice
+    // (`skin.assetRejected`) dice a chi guarda che un file è stato rifiutato e
+    // quali sono i tipi ammessi.
     let detto = format!("«{nome}»: {motivo}");
     Err(rifiutata(nome, motivo)
-        .with_message(detto.clone())
+        .with_detail(detto.clone())
         .with_cause(detto))
 }
 
@@ -1297,9 +1300,8 @@ mod tests {
                 "{nome}: {:?}",
                 err.code()
             );
-            // Un errore che si legge: il nome, la misura e il tetto, nel
-            // messaggio che arriva a schermo.
-            let messaggio = err.message().unwrap_or_default();
+            // Un errore che si legge nel diario: il nome, la misura e il tetto.
+            let messaggio = err.detail().unwrap_or_default();
             assert!(messaggio.contains(nome), "{messaggio}");
             assert!(messaggio.contains("4096×4096"), "{messaggio}");
             // E fuori da un archivio: le risorse della bozza dello Studio.

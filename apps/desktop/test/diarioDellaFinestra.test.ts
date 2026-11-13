@@ -12,14 +12,15 @@ import { rigaDelRifiuto } from "../src/diarioDellaFinestra";
  * guasti inattesi che il gestore esiste per registrare.
  */
 
-test("un errore del nucleo dice il suo codice, il messaggio e la causa", () => {
+test("un errore del nucleo dice il suo codice, il testo del servizio e la causa", () => {
   const riga = rigaDelRifiuto({
     code: "net.timeout",
     domain: "net",
     severity: "warning",
     retryable: true,
     i18nKey: "errors.net.timeout",
-    message: "lrclib non ha risposto",
+    serviceText: "lrclib non ha risposto",
+    values: {},
     cause: "operation timed out",
   });
   assert.ok(!riga.includes("[object Object]"), riga);
@@ -28,14 +29,15 @@ test("un errore del nucleo dice il suo codice, il messaggio e la causa", () => {
   assert.ok(riga.includes("operation timed out"), riga);
 });
 
-test("senza messaggio né causa resta il codice", () => {
+test("senza testo del servizio né causa resta il codice", () => {
   const riga = rigaDelRifiuto({
     code: "fs.noRecycleBin",
     domain: "fs",
     severity: "error",
     retryable: false,
     i18nKey: "errors.fs.noRecycleBin",
-    message: null,
+    serviceText: null,
+    values: {},
     cause: null,
   });
   assert.equal(riga, "fs.noRecycleBin");

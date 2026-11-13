@@ -796,7 +796,7 @@ fn migrate(connection: &Connection) -> Result<usize, AppError> {
             db_version: current,
             app_version: LATEST_VERSION,
         })
-        .with_message(
+        .with_detail(
             "il database è stato scritto da una versione più nuova di Rymembra: \
              ripristina un backup invece di aprirlo con questa",
         ));

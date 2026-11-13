@@ -34,15 +34,11 @@ pub enum Domain {
     Catalogo,
     /// Skin.
     Skin,
-    /// Trasferimento diretto PC↔telefono.
-    Transfer,
     /// «Ascolta insieme»: la sessione d'ascolto fra PC della stessa rete.
     ///
-    /// Non `Transfer`, benché anche lì ci siano due macchine, un codice da
-    /// confrontare e una rete locale: là si accoppia un telefono per
-    /// spostare file, qui si associa un PC per sentire la stessa musica, e le
-    /// frasi che rimediano — «controlla il firewall del PC che ospita», «chiedi
-    /// a chi ospita di invitarti di nuovo» — non hanno niente in comune.
+    /// Le frasi che rimediano — «controlla il firewall del PC che ospita»,
+    /// «chiedi a chi ospita di invitarti di nuovo» — sono di questa sessione, e
+    /// non somigliano a quelle del collegamento via internet ([`Self::Lontano`]).
     Insieme,
     /// Il collegamento via internet fra i propri dispositivi
     /// (`rymembra-lontano`): associazione col QR, «Sfoglia», i brani
@@ -419,8 +415,6 @@ catalogo! {
     PlaybackFormatUnsupported = "playback.formatUnsupported", Playback, Warning, Never, None, { format: Option<String> };
     /// Il dispositivo audio è sparito (cuffie staccate, scheda cambiata).
     PlaybackDeviceLost = "playback.deviceLost", Playback, Error, Always, None;
-    /// Il sistema ha impedito l'avvio automatico.
-    PlaybackAutoplayBlocked = "playback.autoplayBlocked", Playback, Info, Always, None;
     /// La riproduzione si è impantanata.
     PlaybackStalled = "playback.stalled", Playback, Warning, Always, None, { track_id: Option<i64>, position_ms: Option<u64> };
     /// Un brano che arriva dalla rete si è interrotto a metà: la connessione
@@ -729,26 +723,6 @@ catalogo! {
     /// si apre nello Studio e si prova; è troppo caro per indossarlo.
     SkinOverBudget = "skin.overBudget", Skin, Warning, Never, None, { costo: u32, budget: u32 };
 
-    // ── transfer ────────────────────────────────────────────────────────────
-    /// L'accoppiamento è scaduto.
-    TransferPairingExpired = "transfer.pairingExpired", Transfer, Info, Never, None;
-    /// PIN sbagliato.
-    TransferPinInvalid = "transfer.pinInvalid", Transfer, Warning, Never, None, { attempts_left: Option<u32> };
-    /// Troppi tentativi di accoppiamento.
-    TransferPairingRateLimited = "transfer.pairingRateLimited", Transfer, Warning, Always, None, { retry_after_ms: Option<u64> };
-    /// L'altro dispositivo non risponde.
-    TransferPeerUnreachable = "transfer.peerUnreachable", Transfer, Warning, Always, None, { host: Option<String> };
-    /// L'altro dispositivo non è accoppiato.
-    TransferPeerNotPaired = "transfer.peerNotPaired", Transfer, Warning, Never, None;
-    /// C'è già un trasferimento in corso.
-    TransferSessionBusy = "transfer.sessionBusy", Transfer, Info, Always, None;
-    /// Trasferimento interrotto.
-    TransferAborted = "transfer.aborted", Transfer, Warning, Always, None, { reason: Option<String> };
-    /// I dati ricevuti non corrispondono all'impronta attesa.
-    TransferIntegrityMismatch = "transfer.integrityMismatch", Transfer, Error, Always, None, { expected: String, actual: String };
-    /// Metodo non supportato dall'altra estremità.
-    TransferMethodNotSupported = "transfer.methodNotSupported", Transfer, Info, Never, Some("LAN_METHOD_NOT_SUPPORTED"), { method: String };
-
     // ── insieme ─────────────────────────────────────────────────────────────
     //
     // Sono anche i soli codici che attraversano la rete fra due PC: in un
@@ -893,7 +867,7 @@ catalogo! {
     SyncConflict = "sync.conflict", Sync, Warning, Never, None, { detail: Option<String> };
     /// C'è già un salvataggio o un ripristino in corso.
     ///
-    /// `Info` e ritentabile, come `TransferSessionBusy`: non è un guasto, è che
+    /// `Info` e ritentabile, come `IaBusy`: non è un guasto, è che
     /// due operazioni che parlano con Drive non devono intrecciarsi. Chi la
     /// riceve riprova fra poco e trova il turno libero.
     SyncBusy = "sync.busy", Sync, Info, Always, None;
@@ -949,8 +923,10 @@ catalogo! {
     /// «Ricollega» con un altro account dello stesso servizio: il consenso è
     /// di un account diverso da quello che si ricollegava. Non si salva
     /// niente e il conto di prima resta com'era (D-92): nominare i due
-    /// account è compito della finestrella, che li ha tutti e due.
-    CloudOtherAccount = "cloud.otherAccount", Cloud, Warning, Never, None, { servizio: String };
+    /// account è compito della finestrella, che li ha tutti e due. Quello con
+    /// cui si è entrati arriva come dato (`account`, vedi
+    /// [`ErrorCode::valori_della_frase`]), non come una frase.
+    CloudOtherAccount = "cloud.otherAccount", Cloud, Warning, Never, None, { servizio: String, account: String };
     /// L'identificativo dell'app scritto a mano non ha la forma che la
     /// piattaforma gli dà (o il nome dell'app è vuoto o troppo lungo).
     CloudAppIdInvalid = "cloud.appIdInvalid", Cloud, Info, Never, None;
@@ -1123,6 +1099,16 @@ catalogo! {
     /// fornitore a valle scade, e la stessa richiesta un minuto dopo funziona.
     /// `Always`, quindi: è la differenza fra «riprova» e «cambia indirizzo».
     IaNoAnswer = "ia.noAnswer", Ia, Warning, Always, None;
+    /// Il servizio ha risposto con un rimando (`3xx`), e il client non lo segue.
+    ///
+    /// Il profilo manda la chiave e la conversazione all'indirizzo che l'utente
+    /// ha scritto, e a nessun altro: un rimando che portasse altrove porterebbe
+    /// altrove la chiave. Quel che si corregge è l'indirizzo di base — scritto
+    /// senza la barra, o col dominio di prima —, e il posto dove il servizio
+    /// voleva mandare la richiesta sta nella causa, per il diario. Prima usciva
+    /// come `net.http`: «il server ha risposto con un errore», con una riga
+    /// italiana sotto. Mai ritentabile: lo stesso indirizzo dà lo stesso rimando.
+    IaAddressMoved = "ia.addressMoved", Ia, Warning, Never, None;
 
     // ── ipc ─────────────────────────────────────────────────────────────────
     /// Nessun gestore registrato per questo canale.
@@ -1139,8 +1125,6 @@ catalogo! {
     /// rappresentazione valida. Se compare nei log, è un candidato a diventare
     /// un codice proprio.
     InternalUnexpected = "internal.unexpected", Internal, Error, Never, None, { detail: Option<String> };
-    /// Non ancora implementato.
-    InternalNotImplemented = "internal.notImplemented", Internal, Error, Never, None, { what: String };
     /// Un'invariante è stata violata: da qui in poi lo stato non è affidabile.
     InternalInvariantViolated = "internal.invariantViolated", Internal, Fatal, Never, None, { what: String };
     /// Operazione annullata.
@@ -1177,6 +1161,30 @@ impl ErrorCode {
     #[must_use]
     pub const fn i18n_key(&self) -> &'static str {
         self.kind().i18n_key()
+    }
+
+    /// I dati del codice che la sua frase, o la finestra, possono nominare.
+    ///
+    /// # Perché un elenco scritto a mano
+    ///
+    /// Un errore porta molti parametri (un percorso, un indirizzo, due
+    /// versioni) e quasi tutti sono per il diario: un indirizzo firmato, il nome
+    /// di un file dell'utente. Quel che attraversa il confine verso la finestra
+    /// è solo quel che questo elenco dice, codice per codice — gli altri non
+    /// partono, e un codice nuovo non fa partire niente finché qualcuno non lo
+    /// scrive qui. I nomi sono quelli dei segnaposto `{nome}` delle frasi, e
+    /// la finestra li passa a `tSe`.
+    ///
+    /// Mai nel diario: un dato che ha un posto qui può essere l'indirizzo di
+    /// posta di un account, e il diario si allega alle segnalazioni.
+    #[must_use]
+    pub fn valori_della_frase(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::CloudOtherAccount { account, .. } if !account.trim().is_empty() => {
+                vec![("ottenuto", account.trim().to_owned())]
+            }
+            _ => Vec::new(),
+        }
     }
 }
 
