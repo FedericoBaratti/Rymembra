@@ -302,10 +302,12 @@ fn un_collegamento_che_non_risponde_non_finisce_nell_errore() {
     // legge in un diario ascolta il brano. Prima la pulizia dell'errore lo
     // toglieva solo da `net.http`, e un `net.offline` o un `net.timeout` lo
     // portavano nel campo `url`.
-    let morta = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|ascolto| ascolto.local_addr())
-        .map(|indirizzo| indirizzo.port())
-        .expect("una porta presa e lasciata");
+    // La porta 1: nessuno ci ascolta, e il sistema non la dà mai a chi chiede
+    // una porta qualunque. Prima era una porta presa e lasciata, e il `Finto`
+    // qui sotto, che si apre subito dopo, poteva riceverla lui: il collegamento
+    // portava allora al finto, che rispondeva 404 (`net.http`), e la prova
+    // falliva per un caso, una volta su molte.
+    let morta: u16 = 1;
     let finto = Finto::avvia(move |vista: &Vista, _: &str| {
         if vista.percorso == "/2/files/get_temporary_link" {
             json(
