@@ -883,7 +883,7 @@ Dropbox report changes anywhere on the drive. Rymembra keeps in its database
 only the folders you chose, what is under them and the folders above them that
 make up their paths; the other changes are dropped. Rows that an earlier
 version kept from elsewhere on the drive, and those of a folder you removed
-from the library, are deleted at the account's next pass — or, for an account
+from the library, are deleted at the account’s next pass — or, for an account
 that is waiting to be reconnected and so has no pass, when Rymembra starts. The tracks of a
 removed folder stay in the library, but do not open until you choose the
 folder again.
