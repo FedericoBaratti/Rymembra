@@ -110,12 +110,12 @@ migrations, is named under Database, with what going back costs.
 
 - **An interface of its own.** On a phone the shell is a column — a top bar,
   the page, a mini player, four tabs — and the shapes, sizes and motion are
-  the phone's; the colours and fonts are still the active skin's, and the
+  the phone's; the colors and fonts are still the active skin's, and the
   accent still comes from the cover. Skins can be chosen, installed and
   removed; their layout tree is for windows of 880 pixels and up, and on a
   phone it is replaced by `scafaleTelefono.ts`.
   - **Four tabs: Home, Library, Search, More.** Library is one page with
-    pills — Playlists, Albums, Artists, Tracks, Folders, Favourites — and
+    pills — Playlists, Albums, Artists, Tracks, Folders, Favorites — and
     remembers the last one. Search has two segments, «In library» and
     «Explore», and keeps what was typed. More is a page, not a drawer:
     Listen together, Imports, Paste a link, Folders, Settings, Donate.
@@ -328,7 +328,7 @@ migrations, is named under Database, with what going back costs.
 - **The Wi-Fi stays awake on the phone** during a «Listen together» session
   and while a track of another device plays or downloads (Android's Wi-Fi
   lock: low latency on screen, high performance with the screen off where
-  Android still honours it).
+  Android still honors it).
 - **A «Devices» section in Settings**, next to sync, with the switch, the QR
   code and **one list of all your devices**: the ones linked over the
   internet, the PCs paired for «Listen together» and the devices in sync,
@@ -489,7 +489,7 @@ migrations, is named under Database, with what going back costs.
   `cloud.downloadForbidden`. Both were a bare `net.http 403` before.
 - **A `503` with `Retry-After` is waited for as asked.** It becomes the new
   `net.unavailable`, which carries the wait, and every retry — the network
-  layer's and the account thread's pause — honours it, instead of doubling
+  layer's and the account thread's pause — honors it, instead of doubling
   from one second. A `503` without the header stays `net.http`. A wait of
   more than 30 seconds is not cut to 30 and retried — which earned another
   `429` — but reported at once, with its wait inside the error, for whoever
@@ -1460,7 +1460,7 @@ The rest of what the two reviews fixed, by area.
   phone's width cut the operator to «conta…».
 - **The clock and the battery were black on black** with Rymembra dark on a
   light phone (and white on white the other way round): Android picks the
-  colour of the system bars' icons from the phone's theme. The page now tells
+  color of the system bars' icons from the phone's theme. The page now tells
   Android which theme it shows (`barreDiSistema.ts`, bridge `sistema.barre`),
   and an activity reborn after a swipe from the recents keeps it. The first
   frame no longer flashes the dark base under a light theme: until the skin
@@ -1490,13 +1490,13 @@ The rest of what the two reviews fixed, by area.
   «Music folders») went to the list of sections, which nobody had seen: it
   goes back to «More».
 - The Artists' alphabet fits the screen (the Z was under the player), and the
-  page no longer scrolls by one pixel — enough for Android to draw its grey
+  page no longer scrolls by one pixel — enough for Android to draw its gray
   scrollbar down the whole right edge at the first drag.
 - **Words left untranslated**: the skin's motion level («full») and the
   descriptions of Vinile and Neon in English; «Listen together» in «More» no
   longer says «on the same network», now that linked devices listen together
   over the internet.
-- «Relay» and «Send the history you already have too» are grey like any
+- «Relay» and «Send the history you already have too» are gray like any
   advanced panel, not yellow like a warning (on the computer too).
 - Touch sizes: the first run's «I will do it later» is a full-height text
   button instead of a 27-pixel pill; small buttons are 34 pixels; the six
@@ -1590,7 +1590,7 @@ Four migrations, schema 38 → 42, all additive.
   It does not travel either.
 - `041_indici_musicbrainz` — two partial indexes, on `tracks.mb_recording_id`
   and `artists.mb_artist_id` (`idx_tracks_mb_recording`, `idx_artists_mb`),
-  for the rows that have one. Each ListenBrainz neighbour was written with a
+  for the rows that have one. Each ListenBrainz neighbor was written with a
   query that read the whole table, inside a transaction holding the library
   lock, so a heart, a rating or a playlist edit made during that pass could
   give up as “busy”. No row changes.

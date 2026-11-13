@@ -14,7 +14,7 @@
         { h: "Opening a track" },
         {
           ol: [
-            "`brano_di` reads the row under the library lock (`playback::scheda_da_suonare`, which also picks the gain level from the queue neighbours) and releases it.",
+            "`brano_di` reads the row under the library lock (`playback::scheda_da_suonare`, which also picks the gain level from the queue neighbors) and releases it.",
             "On a deadline thread (`rymembra-scadenza-apertura-brano`) it opens the bytes: a file through `MusicFiles`, or an HTTP stream for catalog rows — see [Streaming](#streaming) — then probes the codec (`BranoAperto::apri`). Deadline: `APERTURA_BRANO` = 5 s, or `APERTURA_FLUSSO` = 15 s for streams and for paths that may be on the network.",
             "Back under the player lock, if the queue and output format did not change meanwhile, **one** engine command opens the track at its point: `apri_fermo(brano, da_ms)` if it should stay paused, otherwise `insieme::parti`, which is `suona_da` (or, while hosting a session, `apri_fermo` plus a start scheduled for everyone — [sync](#together-sync)). The state goes out at once with the requested position (`manda_stato_con_posizione`), because the engine reports zero until the decoder has seeked. `Aprendo` deduplicates concurrent opens of the same track and is released at that hand-off; `avvia_corrente` tries twice.",
           ],
@@ -95,11 +95,11 @@
         },
         "From rung 2 down, up to 200 candidates are **re-ranked** by affinity; the first rung that yields something wins. The reason (`Motivo`: album, artist, genre, liked, random, sound, listens, taste, long-unplayed) crosses IPC as a code and the queue shows it.",
         { h: "Affinity" },
-        "`rymembra_domain::affinita::punteggio` combines three layers with default weights sound 0.40, neighbours 0.25, taste 0.35, minus a repetition penalty 0.50:",
+        "`rymembra_domain::affinita::punteggio` combines three layers with default weights sound 0.40, neighbors 0.25, taste 0.35, minus a repetition penalty 0.50:",
         {
           ul: [
             "**Sound** — distance between 47-number fingerprints, normalized by the library's own scale (needs at least `MINIMO_BRANI` = 50 measured tracks).",
-            "**Neighbours** — `brano_vicino`, filled by the enrichment thread from ListenBrainz Labs «similar recordings/artists», with their own switch (`enrich.vicini`; never touched, it follows `enrich.auto`) and also on passes with no album to enrich (25 MBIDs per request, at most 20 kept per track, artist-level neighbours ×0.7, refreshed every 90 days); only neighbours already in your library are stored.",
+            "**Neighbors** — `brano_vicino`, filled by the enrichment thread from ListenBrainz Labs «similar recordings/artists», with their own switch (`enrich.vicini`; never touched, it follows `enrich.auto`) and also on passes with no album to enrich (25 MBIDs per request, at most 20 kept per track, artist-level neighbors ×0.7, refreshed every 90 days); only neighbors already in your library are stored.",
             "**Taste** — play count and likes with a half-life of 180 days; **repetition** — a penalty with a 7-day half-life, so something heard an hour ago cannot win.",
           ],
         },
@@ -139,7 +139,7 @@
             "`FlussoHttp` (in `rymembra-net`) is a `Read + Seek` over HTTP Range requests with no disk cache: the window starts at `FINESTRA` = 256 KiB and doubles on sequential reads up to 2 MiB; after 64 KiB of sequential reading the next window is prefetched on `flusso-anticipo` (failed prefetch backs off 1 → 16 s). The first request learns the total length (needed to seek) and the node a redirect pointed to, which is then reused.",
           ],
         },
-        "**Redirects** go through a gate (`cancello_di`): at most `RIMANDI_FLUSSO` = 5, `https` only, and the target host must still be recognised by `riconosci` for the same catalog (so `archive.org/download/…` → `ia800305.us.archive.org` passes, `evilarchive.org` does not). Audius nodes cannot be allow-listed, so a redirect must at least go to a **public DNS name** — never an IP literal, `localhost` or a home-network suffix.",
+        "**Redirects** go through a gate (`cancello_di`): at most `RIMANDI_FLUSSO` = 5, `https` only, and the target host must still be recognized by `riconosci` for the same catalog (so `archive.org/download/…` → `ia800305.us.archive.org` passes, `evilarchive.org` does not). Audius nodes cannot be allow-listed, so a redirect must at least go to a **public DNS name** — never an IP literal, `localhost` or a home-network suffix.",
         "**Seeking** in a stream uses symphonia's coarse mode and `riallinea_segno` corrects the shown position from the first decoded block. An MP3 without a seek table must be scanned, i.e. downloaded up to the target; while that lasts the scrubber says so. A seek or a new command raises the cancel flag of the read in progress, so it stops waiting for the network (`internal.aborted`, silent). Network errors are mapped to raw Windows codes 64/121/1231 so the decoder classifies them as network failures and playback stops with «Retry».",
       ],
       see: ["http-streams", "catalogs", "player"],

@@ -200,7 +200,7 @@ feature off nothing listens. What is supposed to hold:
   fifth closes the oldest;
 - the device's secret key lives in the system keychain
   (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
-  of «Listen together» exchanged when linking is used only to recognise that
+  of «Listen together» exchanged when linking is used only to recognize that
   device in a session.
 - the gate is checked before **every** request, not only when a connection
   opens: forgetting a device — on either side — or removing it from the list
@@ -281,7 +281,7 @@ Drive restore and the plan of a profile import. The skin compiler emits
 nothing that reaches them (no layers, images, pseudo-elements, part styling or
 fonts; view transitions pause while one is on screen), and the engine's own
 stylesheet sets the system font in an `@layer` a skin cannot override; the
-skin's colours still apply. The veil of a consent dialog sits above
+skin's colors still apply. The veil of a consent dialog sits above
 notifications and menus, which a skin redraws. Questions that arrive on their
 own — a link or «Listen together» request — open above the Skin Studio too.
 A skin that makes a consent dialog say something else than what it asks is a
@@ -345,7 +345,7 @@ through either is a problem.
 **On the phone, other apps are the other side.** The music service accepts
 only trusted controllers — the app itself, the system (notification, lock
 screen, Bluetooth), an app the user allowed to read notifications (a watch’s,
-a music remote), Android Auto, the car’s media centre and Google Assistant,
+a music remote), Android Auto, the car’s media center and Google Assistant,
 checked by uid and, for Android Auto, the car and the Assistant, by package
 and certificate; the cover provider serves only files of the cover folder,
 read-only; the file provider shares only two cache folders; the main activity

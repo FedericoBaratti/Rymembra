@@ -166,7 +166,7 @@ library through Android's media session: the recent tracks, the playlists,
 the albums, the artists, the queue and the search results — titles, artists,
 albums, durations and covers — go from Rymembra to the Android Auto app on the
 same phone, which draws them on the car's screen. A search spoken in the car is
-recognised by Android, not by Rymembra, which receives only the words. Nothing
+recognized by Android, not by Rymembra, which receives only the words. Nothing
 of this goes through a server of Rymembra's, which has none; what the Android
 Auto app does with what it shows is in Google's privacy statement.
 
@@ -174,11 +174,11 @@ Auto app does with what it shows is in Google's privacy statement.
 is open only to Rymembra itself, to the system — the notification, the lock
 screen, quick settings, Bluetooth, and an app you allowed to read your
 notifications, such as a watch’s or a music remote’s — to Android Auto and to
-Google Assistant, each recognised by its package and by Google’s
-certificate, and to the media centre of a car that runs Android. Any other
+Google Assistant, each recognized by its package and by Google’s
+certificate, and to the media center of a car that runs Android. Any other
 app is turned away: it cannot browse the library, the
 history or the playlists, see what is playing, control playback or change
-favourites.
+favorites.
 
 **The covers** are served to the system — the car, the lock screen, the
 playback-resumption card — by a read-only content provider that any app on
@@ -443,7 +443,7 @@ case — see the rewritten point in § 7.
   effects, animations, layout. It is a design file, not your data. From 3.0 a
   large document goes out in part: the sections your question, your selection
   and the open errors name, and a list of the names left out;
-- **what is selected in the Studio** — the name of a part, a token, a colour or
+- **what is selected in the Studio** — the name of a part, a token, a color or
   an animation, with the state and theme you are looking at — as one line in
   front of your message, so that «this» means something;
 - **what you type in the chat**, and what the model has already answered in the
@@ -591,7 +591,7 @@ into the one just written; extra copies of the same skin or draft package;
 and the package of a skin or draft you removed, once the merged list no
 longer has it and its removal is recorded. A library file that cannot be
 read is renamed (`….corrotto-<time>`) and kept, not overwritten. The backup
-files that the previous version left there are recognised and renamed in
+files that the previous version left there are recognized and renamed in
 place the next time it runs, so nothing is uploaded twice; the rename is one
 more request to Google Drive, of the same kind as the backup itself.
 
@@ -659,7 +659,7 @@ holds:
 | --- | --- |
 | `manifesto.json` | What the archive claims to be, and an explicit list of what it left out |
 | `preferenze.json` | Your settings — theme, skin, equalizer, shortcuts, watched folders |
-| `sincronia/rymembra-<device>.v1.json.gz` | Play counts, ratings, favourites, resume positions, playlists |
+| `sincronia/rymembra-<device>.v1.json.gz` | Play counts, ratings, favorites, resume positions, playlists |
 | `biblioteca.v1.json` | Listening history, your metadata corrections, lyrics, the "to buy" list |
 | `copertine/…` | The cover art cache |
 | `skin/…` | Installed skins and Skin Studio drafts |
@@ -784,7 +784,7 @@ Only between PCs that are paired, and only inside the encrypted connection:
 | For a catalog track, only its reference: each PC fetches it from the catalog by itself, as in § 1 | the host, to every member |
 | Pause, seek, skip, and the timing that keeps everyone in sync | between host and members |
 | The gestures of a member, and the tracks a member adds to the queue, which then travel like the host's | a member, to the host, which passes them on |
-| To recognise a copy a member already has: the file's size, its modification date, a hash of its first and last 64 KiB, the library's content key — and its path **only** when it is a network share (`\\server\…`), never a path on a local disk | the owner of the track, to every member |
+| To recognize a copy a member already has: the file's size, its modification date, a hash of its first and last 64 KiB, the library's content key — and its path **only** when it is a network share (`\\server\…`), never a path on a local disk | the owner of the track, to every member |
 
 A member can read **only** the files of the tracks in the session queue, each
 through a random 16-byte permission that ends with the session, when the track
@@ -1368,7 +1368,7 @@ your copy; and when a file will not go, the row stays, because a library that
 claims a file is gone while it is still on disk is worse than one that claims
 too much.
 
-Its neighbour in that menu, **«Remove from library»**, does not touch the disk
+Its neighbor in that menu, **«Remove from library»**, does not touch the disk
 at all: it takes the row out and leaves the file exactly where it is.
 
 ### Why there is no "write the tags into my files" button

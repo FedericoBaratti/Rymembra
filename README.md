@@ -222,7 +222,7 @@ a longer listening history than the public API offers.
 - **Music on a NAS or a mapped drive.** A folder the share would not list for
   a moment makes its tracks *unverified*, never *gone*; a scan that would
   remove many tracks shows them and asks first; a drive letter and its
-  `\\server\share` path are recognised as the same place.
+  `\\server\share` path are recognized as the same place.
 - **Folders kept by a sync app.** A folder that the OneDrive, Dropbox or
   Google Drive app on your PC keeps with its files on demand can be added like
   any other. A file that exists only as a placeholder is not opened by a scan
@@ -261,7 +261,7 @@ a longer listening history than the public API offers.
 - **Explore**: a free-text search across the Internet Archive and Audius, from
   which a track can be listened to without ever being written to disk. A track
   kept this way lives in the library like any other — it is searchable, it sits
-  under its album and its artist, it can be queued, rated and favourited — and
+  under its album and its artist, it can be queued, rated and favorited — and
   carries the license it was published under and a link to its public page.
   The search runs when you press Enter, not on every keystroke: on the other
   side are public archives that host the project for free.
@@ -274,7 +274,7 @@ a longer listening history than the public API offers.
   constant drift is corrected with two buttons that are **always** reachable,
   not only when the fit is judged poor: a text that sits inside the right
   duration can still be half a second early.
-  When the catalogue holds more than one answer, «Other lyrics» lists them all
+  When the catalog holds more than one answer, «Other lyrics» lists them all
   with their first lines, and what you choose stays chosen — «none of these»
   included, which is remembered rather than asked again.
 - **Affinity**: what plays after a record ends is chosen from three independent
@@ -353,7 +353,7 @@ a longer listening history than the public API offers.
   folder (Syncthing, OneDrive, Dropbox) needs no account, and an exported
   profile keeps a copy of everything. A client you typed in 3.1 is carried over
   by itself. Backup and sync files that the previous version left in that
-  folder are recognised and renamed in place at the next pass, without
+  folder are recognized and renamed in place at the next pass, without
   uploading them again.
 - **Listen together** on your own network. One device hosts — a PC or a
   phone — and colleagues or family with Rymembra on the same network follow,
@@ -522,7 +522,7 @@ One thing a skin cannot redraw: the dialogs that ask for a yes — linking a
 device, the «Listen together» code, invitations, the firewall question,
 deleting from disk, reviewing or replacing a skin. There a skin's layers,
 images and fonts do not apply, the text is in the system font, and only its
-colours remain. A skin's images may have at most as many pixels as 4096 ×
+colors remain. A skin's images may have at most as many pixels as 4096 ×
 4096 — checked when the skin is installed, so a skin already installed with
 larger ones keeps working — and its id cannot be a Windows device name
 (`con`, `nul`, `com1`…). The frame’s measures and every effect’s parameters
@@ -733,7 +733,7 @@ it, so that the `.bak` stays as a fallback.
 ```bash
 # Most of what CI's main job checks, in one go: versions, translations, CSS
 # classes, the docs and the website, the interface's build and tests, the
-# release tools' tests, formatting, clippy and about 4,000 Rust tests — all
+# release tools' tests, formatting, clippy and more than 4,000 Rust tests — all
 # runnable with no network connection. The Android build, the dependency
 # checks below, the check of the license notices and the checks for bundled
 # binaries and forbidden tools run in CI only (.github/workflows/verify.yml)
@@ -1038,7 +1038,7 @@ constraint is stated explicitly in the terms of use.
   shared, and the window becomes an interface of its own — four tabs (Home,
   Library, Search, More), a mini player, menus as sheets from the bottom,
   «Now playing» full screen, a long press for multiple selection. The
-  colours and fonts are the active skin's. What only a computer has is not
+  colors and fonts are the active skin's. What only a computer has is not
   there: the tray icon, the taskbar buttons, the window zoom, the keyboard
   shortcuts, the 3D spectrum and the Skin Studio (skins can still be chosen,
   installed and removed, not edited). Specific limits:
@@ -1082,7 +1082,7 @@ constraint is stated explicitly in the terms of use.
     app open itself from the background: if Rymembra is not running at all,
     the car says «Open Rymembra on your phone» with a button that opens it,
     and the library appears as soon as it has started once. Only trusted
-    controllers reach the music session — Android Auto is recognised by its
+    controllers reach the music session — Android Auto is recognized by its
     package and Google's certificate — and that check has yet to be tried
     with Android Auto on a real phone (with Google's Desktop Head Unit): if
     the car stops showing Rymembra, it is the first thing to look at.

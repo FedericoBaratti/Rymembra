@@ -43,7 +43,7 @@
               ["`rymembra-app`", "The library on SQLite: migrations, scan, enrichment, playlists, lyrics, backup/sync bridges, profile", "domain, play, meta, sync"],
               ["`rymembra-net`", "Blocking HTTP (`ureq`): retries, redirect policy, seekable HTTP streams", "domain"],
               ["`rymembra-meta`", "MusicBrainz, Cover Art Archive, iTunes and Deezer (off by default), LRCLIB, ListenBrainz; rate limiting and circuit breaker", "domain, net"],
-              ["`rymembra-catalogo`", "Free catalogs (Internet Archive, Audius, Jamendo behind a feature): search, resolve, licence-checked download", "domain, net"],
+              ["`rymembra-catalogo`", "Free catalogs (Internet Archive, Audius, Jamendo behind a feature): search, resolve, license-checked download", "domain, net"],
               ["`rymembra-archivio`", "Reads the Spotify GDPR zip into an `AccountSnapshot`", "domain"],
               ["`rymembra-sync`", "Per-device documents and the merge that makes them converge", "domain"],
               ["`rymembra-cloud`", "Google Drive backup in the app-data folder; the cloud music folders (OneDrive, Google Drive, Dropbox, WebDAV): listing, changes, streaming, the cache; the OAuth providers", "app, domain, net, oauth, skin, sync"],
@@ -81,7 +81,7 @@
         "Order rule: **player first, then library, never the reverse.** Next to the library mutex, never behind it, sit values that never change or are single bits: the cover-store path, the data folder, `scansione_da_fermare` (cancel) and `scansione_in_corso` (one scan at a time).",
         {
           table: {
-            head: ["Helper", "Behaviour"],
+            head: ["Helper", "Behavior"],
             rows: [
               ["`con_libreria`", "Waits as long as needed; logs the waiting thread after `ATTESA_DA_NOTARE` = 2 s. On the UI thread it gives up after `ATTESA_DELLA_FINESTRA` = 4 s with `db.locked` (Windows marks a window «not responding» after 5 s)."],
               ["`con_libreria_entro`", "Bounded wait; `None` means «not executed». Used on exit (250 ms for the last `PRAGMA optimize`)."],
@@ -147,7 +147,7 @@
             ],
           },
         },
-        "`Severity` is `Info` (an expected outcome: «no match», «cancelled»), `Warning`, `Error` or `Fatal`. `RetryRule` is `Always`, `Never` or `HttpStatus`, which retries only 408, 429 and ≥ 500. Retryability drives automatic retries in `rymembra-net` and the «Retry» buttons in the window.",
+        "`Severity` is `Info` (an expected outcome: «no match», «canceled»), `Warning`, `Error` or `Fatal`. `RetryRule` is `Always`, `Never` or `HttpStatus`, which retries only 408, 429 and ≥ 500. Retryability drives automatic retries in `rymembra-net` and the «Retry» buttons in the window.",
         { h: "AppError" },
         "`AppError { code, message, cause }`. `message` is for developers and never shown; the user-facing sentence is the translation of the i18n key with the code's parameters. `with_cause` flattens the cause to one line and truncates it at `CAUSA_MASSIMA` = 500 characters (an HTML error page from a catalog would otherwise flood the log). `Display` prints `[code] message (causa: …)`.",
         "`errors::rete::e_di_rete` classifies an `io::Error` as «network» from the raw Windows error number (51, 53, 64 `ERROR_NETNAME_DELETED`, 121, 1231, 2250 `ERROR_NOT_CONNECTED`, …). It is in the domain crate because both `rymembra-app` (opening a file) and `rymembra-play` (reading it mid-stream) must answer the same way.",
@@ -203,7 +203,7 @@
               ["`ripresa`", "resume point"],
               ["`impronta`", "sonic fingerprint (`rymembra-play`); content hash (sync, backup)"],
               ["`intensità`", "measured loudness (R128) and true peak"],
-              ["`vicinanza`, `affinità`", "neighbours from ListenBrainz, similarity scoring"],
+              ["`vicinanza`, `affinità`", "neighbors from ListenBrainz, similarity scoring"],
               ["`settimana`", "the weekly («Monday») collections"],
               ["`catalogo`, `cataloghi`", "free online catalogs"],
               ["`esplora`", "free-text catalog search"],
@@ -262,7 +262,7 @@
         { h: "Conventions" },
         {
           ul: [
-            "Files open with a doc block whose `# Perché …` sections record the reason, the rejected alternative and, often, the bug that led to the current shape. Read them before changing behaviour.",
+            "Files open with a doc block whose `# Perché …` sections record the reason, the rejected alternative and, often, the bug that led to the current shape. Read them before changing behavior.",
             "Constants carry names and units in the identifier (`ATTESA_AVVIO`, `RIPOSO_MS`) and a comment with the reasoning behind the number.",
             "Pure rules are extracted into DOM-free modules on the frontend (`selezione.ts`, `rada.ts`, `modale.ts`…) so `node --test` can load them.",
             "Line endings are LF everywhere (`.gitattributes`: `* text=auto eol=lf`).",
