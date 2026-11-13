@@ -120,3 +120,72 @@ test("le categorie mai scritte sono il ripiego dichiarato, e si dicono", () => {
   assert.equal(esito.note.length, 1);
   assert.match(esito.note[0], /many/);
 });
+
+/*
+ * I testi, non solo le chiavi (R17-24).
+ *
+ * Ogni controllo è una funzione pura: qui la si prova con tre righe di fixture,
+ * al rosso e al verde. Sull'albero vero girano in `npm run check:lingue`.
+ */
+const {
+  chiaviMorte,
+  contatoriFuoriDaN,
+  etichetteCitate,
+  grafiaBritannica,
+  segnaposti,
+  segnapostiDiversi,
+  valoriUguali,
+  virgoletteSbagliate,
+  vociDeiRegistri,
+  vociMancanti,
+} = require("./lingue.js");
+
+test("i segnaposto sono gli stessi in ogni lingua", () => {
+  const dizionari = {
+    it: { a: "{nome} ha {n} brani", b: "ciao" },
+    en: { a: "{nome} has {n} tracks", b: "hi" },
+    de: { a: "{name} hat {n} Titel", b: "hallo" },
+  };
+  const trovati = segnapostiDiversi(dizionari);
+  assert.equal(trovati.length, 1);
+  assert.match(trovati[0], /de\.json: «a» ha \{n, name\} dove it\.json ha \{n, nome\}/);
+  assert.deepEqual(segnapostiDiversi({ it: dizionari.it, en: dizionari.en }), []);
+  assert.deepEqual(segnaposti("{b} {a} {b}"), ["a", "b"]);
+});
+
+test("le virgolette e gli apostrofi sono quelli della lingua", () => {
+  // L'inglese con le «» dell'italiano e l'apostrofo dritto: due difetti, una chiave.
+  const en = { "a.b": "Turn on «Listen together»? It isn't on.", ok: "Turn on “Listen together”? It isn’t on." };
+  const trovati = virgoletteSbagliate("en", en);
+  assert.equal(trovati.length, 2);
+  assert.ok(trovati.every((t) => t.includes("«a.b»")));
+  // Le virgolette dritte sono quelle del codice citato, e passano; i `.syn` anche.
+  assert.deepEqual(virgoletteSbagliate("en", { c: "Written as {\"$token\": …}", "x.syn": "don't" }), []);
+  // E l'italiano con le “” dell'inglese.
+  assert.equal(virgoletteSbagliate("it", { a: "Accendi “Ascolta insieme”" }).length, 1);
+  assert.deepEqual(virgoletteSbagliate("it", { a: "Accendi «Ascolta insieme» dell'altro PC" }), []);
+  // Un'eccezione dichiarata (con il suo motivo, nel file accanto) passa.
+  assert.deepEqual(virgoletteSbagliate("en", { a: "x's" }, { apostrofiDritti: { a: "motivo" } }), []);
+});
+
+test("l'inglese ha una grafia sola: l'americano", () => {
+  const en = {
+    a: "Ask the catalogue for your favourite colour",
+    b: "We recognise it; the licence is the analyser's",
+    "c.syn": "visualiser,colour,catalogue",
+    ok: "Ask the catalog for your favorite color",
+    // `color` e `centers` non sono britannici: nessun falso allarme.
+    ok2: "The color of the center, the colors of the centers; Spectrum analyzer",
+  };
+  const trovati = grafiaBritannica(en);
+  const parole = trovati.map((t) => t.match(/«(\w+)», in americano (\w+)/).slice(1).join(">"));
+  assert.deepEqual(parole.sort(), [
+    "analyser>analyzer",
+    "catalogue>catalog",
+    "colour>color",
+    "favourite>favorite",
+    "licence>license",
+    "recognise>recognize",
+  ]);
+  assert.ok(trovati.every((t) => !t.includes("«c.syn»") && !t.includes("«ok")));
+});
