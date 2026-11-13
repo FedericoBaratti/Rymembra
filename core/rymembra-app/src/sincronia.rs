@@ -1050,10 +1050,11 @@ fn applica_ascolti(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError>
         .map_err(|err| db_error("ascolti ricevuti", &err))?;
 
     // Gli ascolti di un brano che qui non c'è si **tengono** — `sync_ascolti`
-    // è per chiave, e il giorno che la scansione porta il brano la somma lo
-    // raggiunge — ma non sono «brani il cui conteggio è cambiato»: nessun
-    // brano è cambiato. Contarli faceva dire al piano di un profilo «3 brani
-    // con conteggi nuovi» su una libreria vuota (T3-3).
+    // è per chiave, e `tracks.play_count` lo raggiunge al primo `allinea` dopo
+    // che la scansione ha portato il brano: la scansione da sola non lo fa — ma
+    // non sono «brani il cui conteggio è cambiato»: nessun brano è cambiato.
+    // Contarli faceva dire al piano di un profilo «3 brani con conteggi nuovi»
+    // su una libreria vuota (T3-3).
     let mut ha_il_brano = tx
         .prepare("SELECT EXISTS(SELECT 1 FROM tracks WHERE track_key = ?1)")
         .map_err(|err| db_error("ascolti ricevuti", &err))?;
