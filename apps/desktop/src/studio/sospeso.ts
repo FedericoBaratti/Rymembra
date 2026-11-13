@@ -21,7 +21,7 @@
  */
 import { useEffect, useRef } from "react";
 
-import { useStudio } from "./contesto";
+import { useAzioniStudio } from "./contesto";
 
 /**
  * Registra `applica` fra le cose da scrivere prima di salvare o chiudere.
@@ -36,7 +36,9 @@ import { useStudio } from "./contesto";
  * scriverebbe quello di quando il campo è nato.
  */
 export function useScriviAllaChiusura(applica: () => void): void {
-  const { registraSospeso } = useStudio();
+  // Le sole azioni: `registraSospeso` non cambia, e un campo che si registra non deve
+  // ridisegnarsi a ogni battuta dello Studio (`useStudio` dà anche lo stato).
+  const { registraSospeso } = useAzioniStudio();
   const ultima = useRef(applica);
   ultima.current = applica;
   useEffect(() => registraSospeso(() => ultima.current()), [registraSospeso]);
