@@ -4,6 +4,7 @@
 use super::*;
 
 use std::path::Path;
+use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime};
 
 use rymembra_app::library::Natura;
@@ -1133,4 +1134,271 @@ fn spariti_sono_solo_le_righe_che_non_ci_sono_piu() {
             .expect("domanda")
             .is_empty()
     );
+}
+
+// ── il volume che Windows sta per espellere (R24-1, D-90) ──
+
+/// Una cartella con un osservatore vero, che Windows direbbe stare sul volume
+/// `volume`: il nome del volume è quello che le prove vogliono, perché il
+/// sistema vero non ha una chiavetta da offrire.
+fn sorvegliata_sul_volume(
+    radice: &str,
+    volume: &str,
+    posta: &Sender<Messaggio>,
+) -> super::filo::Sorvegliata {
+    super::filo::Sorvegliata {
+        come: Come::Avvisi,
+        dove: Collocazione::Locale,
+        osservatore: Some(osserva(radice, posta).expect("osservatore")),
+        volume: Some(volume.to_owned()),
+        senza_risposta: 0,
+    }
+}
+
+/// Tre cartelle vere con il loro osservatore: le prime due «su X», la terza
+/// «su Y». Le cartelle temporanee vivono quanto il valore restituito.
+struct TreCartelle {
+    _cartelle: [tempfile::TempDir; 3],
+    radici: [String; 3],
+    motore: Motore,
+    _orecchio: Receiver<Messaggio>,
+}
+
+fn tre_cartelle(zero: Instant) -> TreCartelle {
+    let cartelle = [(); 3].map(|()| tempfile::tempdir().expect("cartella"));
+    let radici = cartelle
+        .each_ref()
+        .map(|cartella| cartella.path().to_string_lossy().into_owned());
+    let (posta, orecchio) = channel();
+    let mut motore = motore_con(
+        &[
+            (&radici[0], Ritmo::Locale),
+            (&radici[1], Ritmo::Locale),
+            (&radici[2], Ritmo::Locale),
+        ],
+        zero,
+    );
+    for (radice, volume) in radici.iter().zip(["X", "X", "Y"]) {
+        motore.cartelle.insert(
+            radice.clone(),
+            sorvegliata_sul_volume(radice, volume, &posta),
+        );
+    }
+    TreCartelle {
+        _cartelle: cartelle,
+        radici,
+        motore,
+        _orecchio: orecchio,
+    }
+}
+
+#[test]
+fn il_volume_che_se_ne_va_fa_cadere_gli_osservatori_di_quel_volume_e_solo_quelli() {
+    let zero = Instant::now();
+    let TreCartelle {
+        radici, mut motore, ..
+    } = tre_cartelle(zero);
+    // I riallineamenti dell'avvio sono fatti: da qui conta solo il passo.
+    for radice in &radici {
+        motore.piano.fatto(radice, true, zero);
+    }
+    // Due cartelle sullo stesso volume (anche la radice del volume, o una
+    // cartella montata altrove, hanno la stessa chiave): cadono insieme.
+    let lasciate = motore.volume_in_partenza("X", zero);
+    assert_eq!(lasciate.cartelle, 2, "le due cartelle del volume");
+    if cfg!(windows) {
+        // Su Windows `notify` chiude la cartella su un filo suo, dopo che
+        // l'osservatore è caduto: chi risponde a Windows deve aspettare quella
+        // chiusura, non solo la caduta.
+        assert_eq!(
+            lasciate.non_confermate, 0,
+            "la chiusura delle cartelle non è stata confermata"
+        );
+    }
+    for radice in &radici[..2] {
+        let lasciata = &motore.cartelle[radice];
+        assert!(lasciata.osservatore.is_none(), "{radice}");
+        assert_eq!(lasciata.come, Come::NonRaggiungibile, "{radice}");
+        assert!(motore.e_in_partenza(radice), "{radice}");
+    }
+    // L'altro volume non lo riguarda.
+    let altra = &motore.cartelle[&radici[2]];
+    assert!(altra.osservatore.is_some());
+    assert_eq!(altra.come, Come::Avvisi);
+    assert!(!motore.e_in_partenza(&radici[2]));
+    // E il passo dei riallineamenti non cambia: un rifiuto non deve costare
+    // una camminata intera del volume, che terrebbe aperte le sue cartelle
+    // proprio quando l'utente riprova a espellerlo. Nessun riallineamento in
+    // più, e il periodico di tutte e tre c'è ancora (se «sta per andarsene»
+    // azzerasse il passo, due delle tre sparirebbero).
+    assert_eq!(motore.piano.prossima(zero + SONDAGGIO), None);
+    let periodici = fai_tutti(&mut motore.piano, zero + RIALLINEAMENTO_LOCALE);
+    assert_eq!(periodici.len(), 3, "{periodici:?}");
+}
+
+#[test]
+fn se_l_espulsione_e_rifiutata_si_riprende_a_guardare() {
+    let zero = Instant::now();
+    let TreCartelle { mut motore, .. } = tre_cartelle(zero);
+    motore.volume_in_partenza("X", zero);
+    // Fino al rifiuto, il controllo periodico non riarma quel che sta
+    // partendo (`controlla` e `riallinea` guardano `e_in_partenza`): farebbe
+    // riaprire la cartella, e l'espulsione fallirebbe.
+    let su_x = motore.elenco[0].clone();
+    assert!(motore.e_in_partenza(&su_x));
+    motore.prossimo_controllo = zero + CONTROLLO;
+    let poi = zero + Duration::from_secs(5);
+    assert!(motore.volume_rifiutato("X", poi));
+    assert_eq!(
+        motore.prossimo_controllo, poi,
+        "il controllo che riarma è subito"
+    );
+    for radice in motore.elenco.clone() {
+        assert!(!motore.e_in_partenza(&radice), "{radice}");
+    }
+    // Un rifiuto di cui non si sapeva niente non muove nulla.
+    motore.prossimo_controllo = zero + CONTROLLO;
+    assert!(!motore.volume_rifiutato("X", poi));
+    assert_eq!(motore.prossimo_controllo, zero + CONTROLLO);
+}
+
+#[test]
+fn un_volume_in_partenza_senza_notizie_non_resta_cieco_per_sempre() {
+    let zero = Instant::now();
+    let TreCartelle {
+        radici, mut motore, ..
+    } = tre_cartelle(zero);
+    motore.volume_in_partenza("X", zero);
+    assert_eq!(motore.scadute_le_partenze(zero + PARTENZA_MASSIMA / 2), 0);
+    assert!(motore.e_in_partenza(&radici[0]));
+    assert_eq!(motore.scadute_le_partenze(zero + PARTENZA_MASSIMA), 1);
+    assert!(!motore.e_in_partenza(&radici[0]));
+}
+
+#[test]
+fn il_volume_andato_lascia_le_cartelle_assenti_e_le_riprende_il_riarmo_di_sempre() {
+    let zero = Instant::now();
+    let TreCartelle {
+        radici, mut motore, ..
+    } = tre_cartelle(zero);
+    motore.volume_in_partenza("X", zero);
+    assert_eq!(motore.volume_andato("X", zero), 2);
+    for radice in &radici[..2] {
+        let assente = &motore.cartelle[radice];
+        assert!(assente.osservatore.is_none(), "{radice}");
+        assert_eq!(assente.come, Come::NonRaggiungibile, "{radice}");
+        // Non è più «in partenza»: se la chiavetta torna, il controllo di ogni
+        // minuto la riarma come un disco che ricompare, e il cambio di passo la
+        // riallinea (vedi `lascia_cadere_le_morte`).
+        assert!(!motore.e_in_partenza(radice), "{radice}");
+    }
+    assert_eq!(motore.cartelle[&radici[2]].come, Come::Avvisi);
+    // E con le cartelle assenti niente si riallinea da sé.
+    let adesso = zero + RIALLINEAMENTO_LOCALE * 2;
+    assert!(
+        motore
+            .piano
+            .prossima(adesso)
+            .is_none_or(|voce| voce.radice == radici[2]),
+        "una cartella assente si è riallineata"
+    );
+}
+
+/// La guardia sta davvero dentro la funzione che `notify` tiene: finché
+/// l'osservatore vive la ricevuta non si disconnette, e dopo la caduta sì.
+/// Senza la guardia catturata — `let _guardia = &guardia;` in `osserva` — il
+/// ricevitore sarebbe disconnesso subito, e la risposta a Windows non
+/// aspetterebbe niente.
+#[test]
+fn la_ricevuta_di_un_osservatore_vero_si_disconnette_solo_dopo_la_caduta() {
+    use std::sync::mpsc::TryRecvError;
+
+    let cartella = tempfile::tempdir().expect("cartella");
+    let radice = cartella.path().to_string_lossy().into_owned();
+    let (posta, _orecchio) = channel();
+    let osservatore = osserva(&radice, &posta).expect("osservatore");
+    assert!(
+        matches!(osservatore.chiuso.try_recv(), Err(TryRecvError::Empty)),
+        "la ricevuta è disconnessa con l'osservatore vivo: la guardia non è catturata"
+    );
+    let ricevuta = osservatore.lascia();
+    let non_confermate =
+        super::filo::aspetta_la_chiusura(vec![ricevuta], Instant::now() + CHIUSURA_ATTESA);
+    if cfg!(windows) {
+        assert_eq!(non_confermate, 0, "notify non ha confermato la chiusura");
+    }
+}
+
+#[test]
+fn la_chiusura_si_conferma_solo_quando_la_guardia_e_caduta() {
+    // La ricevuta dell'osservatore: finché la guardia è viva non è confermata,
+    // e la risposta a Windows non la dà per fatta.
+    let (guardia, chiuso) = channel::<()>();
+    let inizio = Instant::now();
+    assert_eq!(
+        super::filo::aspetta_la_chiusura(vec![chiuso], Instant::now() + Duration::from_millis(100)),
+        1
+    );
+    assert!(inizio.elapsed() >= Duration::from_millis(90));
+    // Caduta, sì — e subito, senza aspettare la scadenza.
+    let (guardia_caduta, chiuso_caduto) = channel::<()>();
+    drop(guardia_caduta);
+    let inizio = Instant::now();
+    assert_eq!(
+        super::filo::aspetta_la_chiusura(
+            vec![chiuso_caduto],
+            Instant::now() + Duration::from_secs(5)
+        ),
+        0
+    );
+    assert!(inizio.elapsed() < Duration::from_secs(1));
+    drop(guardia);
+}
+
+#[test]
+fn chi_risponde_a_windows_aspetta_il_filo_ma_non_per_sempre() {
+    let (posta, orecchio) = channel();
+    let avvisa = super::filo::chi_avvisa("X".to_owned(), posta, Duration::from_millis(400));
+    // «Sta per andarsene»: il messaggio parte, e la richiesta di Windows resta
+    // sospesa finché il filo non risponde...
+    std::thread::scope(|filo| {
+        let sospesa = filo.spawn(|| {
+            let inizio = Instant::now();
+            avvisa(rymembra_barra::Avviso::StaPerAndarsene);
+            inizio.elapsed()
+        });
+        let Ok(Messaggio::VolumeVaVia { volume, risposta }) =
+            orecchio.recv_timeout(Duration::from_secs(5))
+        else {
+            panic!("il messaggio non è arrivato");
+        };
+        assert_eq!(volume, "X");
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !sospesa.is_finished(),
+            "ha risposto a Windows senza il filo"
+        );
+        risposta.send(()).expect("la richiesta aspetta");
+        let quanto = sospesa.join().expect("il filo di Windows");
+        assert!(quanto < Duration::from_millis(390), "{quanto:?}");
+    });
+    // ...e se il filo non risponde — è dentro una scansione — scade.
+    let inizio = Instant::now();
+    avvisa(rymembra_barra::Avviso::StaPerAndarsene);
+    assert!(inizio.elapsed() >= Duration::from_millis(350));
+    assert!(matches!(
+        orecchio.recv_timeout(Duration::from_secs(1)),
+        Ok(Messaggio::VolumeVaVia { .. })
+    ));
+    // Rifiutato e andato non aspettano nessuno.
+    avvisa(rymembra_barra::Avviso::Rifiutato);
+    avvisa(rymembra_barra::Avviso::Andato);
+    assert!(matches!(
+        orecchio.recv_timeout(Duration::from_secs(1)),
+        Ok(Messaggio::VolumeRifiutato(volume)) if volume == "X"
+    ));
+    assert!(matches!(
+        orecchio.recv_timeout(Duration::from_secs(1)),
+        Ok(Messaggio::VolumeAndato(volume)) if volume == "X"
+    ));
 }
