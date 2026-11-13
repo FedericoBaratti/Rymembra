@@ -64,11 +64,12 @@ Add-AppxPackage -Register target\msix\cartella\AppxManifest.xml
 
 Poi si apre Rymembra dal menu Start e si controlla:
 
-- Impostazioni → Aggiornamenti dice che a tenerla aggiornata è il Store, e non
-  mostra nessun interruttore; sotto «I documenti», la licenza, le licenze delle
-  dipendenze, la privacy, le condizioni e la licenza dei caratteri si aprono
-  anche senza rete, perché `msix.js` mette accanto all'eseguibile le stesse
-  risorse dell'installer (`bundle.resources`);
+- Impostazioni → Aggiornamenti dice che a tenerla aggiornata è il Store, e
+  l'interruttore e «Controlla adesso» ci sono ma non si possono usare;
+  sotto «I documenti», la licenza, le licenze delle dipendenze, la privacy, le
+  condizioni e la licenza dei caratteri si aprono anche senza rete, perché
+  `msix.js` mette accanto all'eseguibile le stesse risorse dell'installer
+  (`bundle.resources`);
 - la libreria si apre, la musica suona, e dopo una chiusura e una riapertura la
   libreria e le impostazioni ci sono ancora;
 - con una copia NSIS e la sua libreria sullo stesso PC, al primo avvio la

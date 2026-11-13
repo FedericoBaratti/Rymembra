@@ -109,6 +109,7 @@ with `/P` or `/S`, never show it and never delete data.
 | The secrets in Windows Credential Manager — account tokens, API keys, the keys that identify this PC in «Listen together» and to your devices | **stay** | **stay** |
 | The previous version's window data (`%LOCALAPPDATA%\io.github.federicobaratti.aether`) | stays | stays |
 | The installers downloaded by updates (`%TEMP%\Rymembra-<version>-updater-*`, about 15 MB each) | stay | stay |
+| The picture Windows shows in its media controls for a track without cover art (`%TEMP%\rymembra-scheda-senza-copertina.png`, a few KB, the same for everyone) | stays | stays |
 | Your music, lyrics files, exported profiles, and the backup and sync files on your Google Drive | never touched | never touched |
 
 The uninstaller never touches Credential Manager. To take the secrets away too,
