@@ -119,13 +119,17 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # COM con la barra e mettersi in mezzo ai messaggi della finestra, e nessuna
 # dipendenza seria lo fa al posto nostro — come invece fanno `souvlaki` e
 # `trash`. Quel crate non eredita questa tabella: ne ha una sua, uguale tranne
-# `unsafe_code = "deny"`, e l'`unsafe` sta in tre posti dichiarati: il modulo
+# `unsafe_code = "deny"`, e l'`unsafe` sta in quattro posti dichiarati: il modulo
 # `finestra.rs`, la funzione di `unita.rs` che chiede a Windows il genere di
 # un'unità (`GetDriveTypeW`: una chiavetta o un CD non hanno il Cestino, e
-# «Elimina dal disco» lo deve sapere) e le tre funzioni di `sottofondo.rs` che
+# «Elimina dal disco» lo deve sapere), le tre funzioni di `sottofondo.rs` che
 # mettono le passate dopo la scansione a priorità di sottofondo e chiedono se
-# si va a batteria; ogni blocco dice perché è corretto. Qui sotto non cambia niente, e per tutti gli altri crate resta
-# `forbid`.
+# si va a batteria, e le quattro funzioni di `espulsione.rs` che si registrano
+# a Windows per sapere quando una chiavetta o un disco USB sta per essere
+# espulso (`CM_Register_Notification`: senza, la sorveglianza delle cartelle lo
+# tiene aperto e «Espelli» risponde «dispositivo in uso»); ogni blocco dice
+# perché è corretto. Qui sotto non cambia niente, e per tutti gli altri crate
+# resta `forbid`.
 unsafe_code = "forbid"
 missing_docs = "warn"
 

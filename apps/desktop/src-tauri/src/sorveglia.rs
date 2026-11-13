@@ -54,6 +54,37 @@
 //! fotografie, che camminava comunque ogni cartella, non vedeva un file
 //! riscritto sul posto, e perdeva quel che non riusciva a guardare.
 //!
+//! # I dischi che si espellono (R24-1)
+//!
+//! Un osservatore tiene aperta la sua cartella, e su una chiavetta o un disco
+//! USB «Espelli» di Esplora risorse rispondeva «Il dispositivo è in uso» finché
+//! Rymembra era aperto — anche chiuso nel vassoio. Su Windows, per ogni volume
+//! locale che ha cartelle con gli avvisi, il filo si registra a Windows
+//! (`rymembra_barra::osserva_volume`: una notifica di dispositivo, un volume
+//! una registrazione, qualunque lettera o cartella montata lo raggiunga) e
+//! quando Windows chiede di espellerlo **lascia** quelle cartelle: ne chiude gli
+//! osservatori e aspetta che `notify` abbia chiuso davvero la cartella, e solo
+//! allora risponde. Vedi [`RISPOSTA_AL_VOLUME`].
+//!
+//! Poi succede una di due cose. Se un altro programma rifiuta l'espulsione
+//! (`VolumeRifiutato`), il controllo corre subito e riarma le cartelle: niente
+//! riallineamento per questo, perché la camminata dell'intero volume terrebbe
+//! aperte proprio le cartelle che l'utente riprova a espellere. Se il volume se
+//! ne va (`VolumeAndato`), le sue cartelle diventano assenti come quelle di un
+//! disco staccato — niente riallineamenti — e il controllo di ogni minuto le
+//! riprende da sé quando il volume torna, con una registrazione nuova. Fra le
+//! due cose un volume è «in partenza» e **non** si riarma, per non riaprire la
+//! cartella dietro le spalle di Windows; ma non per più di [`PARTENZA_MASSIMA`].
+//!
+//! Non registrano niente la sorveglianza spenta, il solo riallineamento, le
+//! cartelle di rete e quelle del cloud: niente osservatore, niente da lasciare.
+//!
+//! Quel che resta fuori: i file che altri tengono aperti. Una scansione o un
+//! riallineamento del volume in corso, un brano che suona da lì, una passata di
+//! analisi (impronta, volume) leggono file e cartelle, e Windows rifiuta
+//! l'espulsione finché non finiscono; chi la chiede riprova. Le cartelle
+//! sorvegliate, almeno, non sono più la ragione.
+//!
 //! # Le scansioni che ne escono sono prudenti
 //!
 //! Nessuno le sta guardando: vale tutto quel che vale per la scansione
@@ -255,6 +286,37 @@ const PASSO_DEL_TURNO: Duration = Duration::from_millis(500);
 /// Due, cioè due minuti: una risposta sola che arriva tardi è un NAS che fa
 /// girare i dischi, e costerebbe una camminata intera per niente.
 const MANCATE_PER_TORNARE: u32 = 2;
+
+/// Quanto la richiesta di Windows aspetta, al più, che il filo abbia lasciato le
+/// cartelle di un volume che sta per essere espulso.
+///
+/// Tre secondi: lasciare un osservatore è questione di millisecondi — il filo
+/// ne aspetta la chiusura vera, vedi [`CHIUSURA_ATTESA`] — e Windows non vuole
+/// che chi risponde si prenda il suo tempo. Se il filo è in mezzo a una
+/// scansione di quel volume non risponde in tempo, e la richiesta ritorna lo
+/// stesso: l'espulsione fallirà per le cartelle che la scansione tiene aperte,
+/// come per ogni altro programma che legge un file, e il filo — che non può
+/// restare bloccato da Windows — ha comunque la sua risposta: quando arriva al
+/// messaggio, lascia il volume lo stesso, e se intanto l'espulsione è fallita
+/// il «rifiutato» che segue lo rimette com'era.
+pub const RISPOSTA_AL_VOLUME: Duration = Duration::from_secs(3);
+
+/// Quanto il filo aspetta, per **tutte** le cartelle di un volume insieme, che
+/// `notify` abbia chiuso davvero la cartella: meno di [`RISPOSTA_AL_VOLUME`],
+/// perché la risposta a Windows parte dopo.
+///
+/// Un osservatore che cade non chiude la cartella subito: `notify` lo fa sul
+/// suo filo, un attimo dopo. Rispondere a Windows prima di quell'attimo
+/// vorrebbe dire dirgli «ho lasciato» con la cartella ancora aperta.
+const CHIUSURA_ATTESA: Duration = Duration::from_secs(2);
+
+/// Per quanto un volume resta «in partenza» senza notizie di Windows.
+///
+/// Due minuti: l'espulsione finisce in uno o due secondi — «rifiutato» o
+/// «andato» arrivano subito — e un volume non deve restare senza sorveglianza
+/// per sempre perché una notifica non è arrivata. Scaduti, il controllo di ogni
+/// [`CONTROLLO`] riarma le cartelle come per qualunque altra.
+const PARTENZA_MASSIMA: Duration = Duration::from_secs(2 * 60);
 
 // ── la scelta ───────────────────────────────────────────────────────────────
 
@@ -506,6 +568,20 @@ enum Messaggio {
     /// Il risveglio delle cartelle di rete all'avvio è finito: si può
     /// riallineare.
     Svegliate,
+    /// Windows chiede di espellere un volume: le cartelle che stanno lì si
+    /// lasciano, e `risposta` dice a Windows che è fatto. Vedi
+    /// [`RISPOSTA_AL_VOLUME`].
+    VolumeVaVia {
+        /// Il nome unico del volume (`rymembra_barra::volume_di`).
+        volume: String,
+        /// Chi aspetta: la richiesta di Windows, che ha una scadenza.
+        risposta: Sender<()>,
+    },
+    /// Un altro programma ha rifiutato l'espulsione: il volume resta e le sue
+    /// cartelle si riprendono.
+    VolumeRifiutato(String),
+    /// Il volume non c'è più.
+    VolumeAndato(String),
     /// Si esce.
     Fermati,
 }
