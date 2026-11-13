@@ -13,7 +13,7 @@
  * possono contare due cose diverse.
  */
 import type { Chiave } from "../lingue";
-import type { PortatiProfilo } from "../ipc";
+import type { NonAttaccatiProfilo, PortatiProfilo } from "../ipc";
 
 /**
  * Le voci del riepilogo della libreria che hanno un numero diverso da zero.
@@ -42,10 +42,32 @@ export function vociPortate(portati: PortatiProfilo): [Chiave, number][] {
   return voci.filter(([, quanti]) => quanti > 0);
 }
 
+/**
+ * Le voci di quel che il profilo porta e che qui non ha un brano a cui
+ * attaccarsi (T3-3): il piano le dice prima di «Applica», la notizia dopo.
+ *
+ * Come [`vociPortate`]: solo quelle diverse da zero, e la **chiave** invece
+ * della frase, perché il numero entra dentro `t()` e sceglie la forma singolare.
+ */
+export function vociNonAttaccate(non: NonAttaccatiProfilo | undefined): [Chiave, number][] {
+  if (!non) return [];
+  const voci: [Chiave, number][] = [
+    ["profile.unattached.listens", non.ascolti],
+    ["profile.unattached.ratings", non.voti],
+    ["profile.unattached.loved", non.preferiti],
+    ["profile.unattached.history", non.cronologia],
+    ["profile.unattached.fixes", non.correzioni],
+    ["profile.unattached.playlists", non.playlist],
+  ];
+  return voci.filter(([, quanti]) => quanti > 0);
+}
+
 /** Un pezzo della notizia: una chiave del catalogo, con quel che le serve. */
 export type PezzoNotizia =
   | { chiave: "profile.applied"; n: number }
   | { chiave: "profile.applied.library"; voci: [Chiave, number][] }
+  | { chiave: "profile.applied.unattached"; voci: [Chiave, number][] }
+  | { chiave: "profile.applied.refused" }
   | { chiave: "profile.skinNotWorn"; nome: string }
   | { chiave: "profile.nothingChanged" };
 
@@ -54,6 +76,12 @@ export type PezzoNotizia =
  * è arrivato nella libreria. «Non ha cambiato niente» solo quando non è
  * cambiato davvero niente, né di qua né di là.
  *
+ * E quel che **non** è entrato, perché è altrettanto vero di quel che è
+ * entrato (T3-1, T3-3): la parte di libreria rifiutata per l'identità — che il
+ * piano, senza copia di sicurezza, può aver promesso — e le cose rimaste senza
+ * un brano a cui attaccarsi. Un «3 impostazioni applicate» che tace il resto
+ * lascia credere a chi legge che il resto sia arrivato.
+ *
  * E la skin che il profilo avrebbe indossato e che non ha passato l'esame:
  * è installata, ma non indossata, e va detto (decisione 21).
  */
@@ -61,6 +89,8 @@ export function notiziaDelProfilo(fatto: {
   cambi: readonly unknown[];
   portati: PortatiProfilo;
   skinNonIndossata?: string | null;
+  libreriaRifiutata?: boolean;
+  nonAttaccati?: NonAttaccatiProfilo;
 }): PezzoNotizia[] {
   const pezzi: PezzoNotizia[] = [];
   if (fatto.cambi.length > 0) {
@@ -68,6 +98,11 @@ export function notiziaDelProfilo(fatto: {
   }
   const voci = vociPortate(fatto.portati);
   if (voci.length > 0) pezzi.push({ chiave: "profile.applied.library", voci });
+  const senzaBrano = vociNonAttaccate(fatto.nonAttaccati);
+  if (senzaBrano.length > 0) {
+    pezzi.push({ chiave: "profile.applied.unattached", voci: senzaBrano });
+  }
+  if (fatto.libreriaRifiutata) pezzi.push({ chiave: "profile.applied.refused" });
   if (fatto.skinNonIndossata) {
     pezzi.push({ chiave: "profile.skinNotWorn", nome: fatto.skinNonIndossata });
   }

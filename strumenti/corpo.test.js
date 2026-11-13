@@ -26,16 +26,38 @@ test("la prima sezione è per chi ha una build di prova del telefono", () => {
   assert.ok(testo.indexOf("This installer is not signed") < testo.indexOf("### Android"));
 });
 
-test("la procedura è esporta, disinstalla, installa, importa, e dice che cosa non passa", () => {
+test("la procedura è esporta, disinstalla, installa, scansiona, importa, e dice che cosa non passa", () => {
   const prova = testo.slice(testo.indexOf("### If you have a test build"), testo.indexOf("### Windows"));
   const passi = [...prova.matchAll(/^\d\. (.+)$/gm)].map((m) => m[1]);
-  assert.equal(passi.length, 4);
+  assert.equal(passi.length, 5);
   assert.match(passi[0], /Export the profile/);
   assert.match(passi[1], /Uninstall/);
   assert.match(passi[2], new RegExp(nomeAsset(versione).replace(/\./g, "\\.")));
-  assert.match(passi[3], /Read a profile/);
+  // T3-3: la musica prima, il profilo dopo. Il permesso alla musica sta nel
+  // passo della scansione, prima di leggere il profilo.
+  assert.match(passi[3], /Allow access/);
+  assert.match(passi[3], /Continue/);
+  assert.match(passi[3], /Add a folder/);
+  assert.match(passi[3], /scan has finished/);
+  assert.match(passi[4], /Read a profile/);
   assert.match(prova, /connected accounts/);
   assert.match(prova, /linked devices/);
+});
+
+test("il profilo si legge dopo la scansione, e il testo dice perché (T3-3)", () => {
+  const prova = testo.slice(testo.indexOf("### If you have a test build"), testo.indexOf("### Windows"));
+  assert.match(prova, /Read the profile after the scan, not before/);
+  assert.match(prova, /scan, then read the same file again/);
+  // Il testo di prima mandava a scansionare **dopo** il profilo.
+  assert.ok(!/after reading the profile, scan/i.test(prova), "l'ordine sbagliato è ancora nel corpo");
+});
+
+test("il corpo promette solo quel che il profilo porta davvero (T3-4)", () => {
+  const prova = testo.slice(testo.indexOf("### If you have a test build"), testo.indexOf("### Windows"));
+  // `sincronia::segna_posizione` non ha chiamanti e `player.position` resta
+  // fuori dal catalogo: il profilo non porta posizioni di ripresa.
+  assert.ok(!/resume position/i.test(prova), "«resume positions» non sono nel profilo");
+  assert.match(prova, /playback queue/);
 });
 
 test("i nomi dei menù sono quelli dell'app in inglese", () => {

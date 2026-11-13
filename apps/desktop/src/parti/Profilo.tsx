@@ -55,7 +55,12 @@ import { Trans } from "../lingue/Trans";
 import { dataOra, numero } from "../formato";
 import { vinceLUltima } from "../ultima";
 import { pesoInMegabyte } from "./pesoProfilo";
-import { notiziaDelProfilo, vociPortate, type PezzoNotizia } from "./notiziaProfilo";
+import {
+  notiziaDelProfilo,
+  vociNonAttaccate,
+  vociPortate,
+  type PezzoNotizia,
+} from "./notiziaProfilo";
 
 /** Come si legge una data del profilo. */
 function quandoScritto(ms: number): string {
@@ -106,6 +111,12 @@ function frase(pezzo: PezzoNotizia): string {
       return t("profile.applied.library", {
         cosa: pezzo.voci.map(([cosa, quanti]) => t(cosa, { n: quanti })).join(", "),
       });
+    case "profile.applied.unattached":
+      return t("profile.applied.unattached", {
+        cosa: pezzo.voci.map(([cosa, quanti]) => t(cosa, { n: quanti })).join(", "),
+      });
+    case "profile.applied.refused":
+      return t("profile.applied.refused");
     case "profile.skinNotWorn":
       return t("profile.skinNotWorn", { nome: pezzo.nome });
     case "profile.nothingChanged":
@@ -314,6 +325,7 @@ export function Profilo({
 
   const piano = daApplicare?.piano;
   const portati = piano ? vociPortate(piano.portati) : [];
+  const senzaBrano = piano ? vociNonAttaccate(piano.nonAttaccati) : [];
 
   return (
     <>
@@ -506,6 +518,19 @@ export function Profilo({
                 </li>
               ))}
             </ul>
+          )}
+
+          {/* Quel che il profilo porta di brani che qui non ci sono: non si
+              può attaccare adesso, e si dice **prima** di «Applica» insieme a
+              cosa fare — scansionare, poi leggere di nuovo lo stesso file
+              (T3-3). Senza, chi legge il profilo a libreria vuota applica e
+              scopre dopo che voti e playlist non sono arrivati. */}
+          {senzaBrano.length > 0 && (
+            <p className="nota avviso-profilo">
+              {t("profile.unattached", {
+                cosa: senzaBrano.map(([cosa, quanti]) => t(cosa, { n: quanti })).join(", "),
+              })}
+            </p>
           )}
 
           {/* Le omonime diverse: la playlist di qui resta com'è, e quella del

@@ -328,6 +328,15 @@ impl Portato {
     }
 }
 
+/// L'esito di [`applica_correzioni_in`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Corrette {
+    /// Brani che hanno ricevuto una correzione.
+    pub brani: usize,
+    /// Correzioni del profilo che non hanno trovato nessun brano.
+    pub senza_brano: usize,
+}
+
 // ── dal database al documento ───────────────────────────────────────────────
 
 /// Legge dal database tutto ciò che il documento di sincronia non copre.
@@ -709,7 +718,9 @@ fn applica_cronologia(tx: &Transaction<'_>, righe: &[Ascoltato]) -> Result<usize
 ///
 /// Da chiamare **prima** della sincronia e di [`applica_in`]: tutto quel che
 /// arriva dopo cerca i brani per la chiave corretta, e questa è la funzione che
-/// gliela dà. Restituisce quanti brani hanno ricevuto una correzione.
+/// gliela dà. Restituisce quanti brani hanno ricevuto una correzione, e quante
+/// correzioni del profilo non hanno trovato nessun brano (né per chiave né per
+/// chiave di contenuto): sono quelle che il piano dice di non poter attaccare.
 ///
 /// # Errori
 ///
@@ -717,11 +728,12 @@ fn applica_cronologia(tx: &Transaction<'_>, righe: &[Ascoltato]) -> Result<usize
 pub fn applica_correzioni_in(
     tx: &Transaction<'_>,
     biblioteca: &Biblioteca,
-) -> Result<usize, AppError> {
+) -> Result<Corrette, AppError> {
     let correzioni = &biblioteca.correzioni;
     if correzioni.is_empty() {
-        return Ok(0);
+        return Ok(Corrette::default());
     }
+    let mut senza_brano = 0;
     let mut toccati: BTreeSet<i64> = BTreeSet::new();
     {
         // Per la chiave corretta — il brano che qui è già stato corretto, o i
@@ -756,6 +768,9 @@ pub fn applica_correzioni_in(
                     .map_err(|err| db_error("correzioni dal profilo", &err))?;
                 identificativi.extend(altri);
             }
+            if identificativi.is_empty() {
+                senza_brano += 1;
+            }
             for track_id in identificativi {
                 let scritte = scrivi
                     .execute(rusqlite::params![
@@ -781,7 +796,10 @@ pub fn applica_correzioni_in(
     if !toccati.is_empty() {
         crate::library::rebuild_aggregates(tx)?;
     }
-    Ok(toccati.len())
+    Ok(Corrette {
+        brani: toccati.len(),
+        senza_brano,
+    })
 }
 
 /// I testi: vince il più recente, e **mai** su un `source = 'mano'` locale.

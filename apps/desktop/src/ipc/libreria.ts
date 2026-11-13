@@ -448,6 +448,22 @@ export interface PortatiProfilo {
   fileCopertine: number;
 }
 
+/**
+ * Quel che il profilo porta e che questa libreria non può attaccare adesso,
+ * perché non ha i brani a cui appartiene (T3-3).
+ *
+ * Cose e non brani: righe di cronologia, voci di playlist. Si risolve
+ * scansionando le cartelle e leggendo di nuovo lo stesso profilo.
+ */
+export interface NonAttaccatiProfilo {
+  ascolti: number;
+  voti: number;
+  preferiti: number;
+  cronologia: number;
+  correzioni: number;
+  playlist: number;
+}
+
 /** Cosa farebbe importare un profilo. */
 export interface PianoProfilo {
   /** Quando il profilo è stato scritto. */
@@ -462,6 +478,14 @@ export interface PianoProfilo {
    * skin passano lo stesso, perché non parlano di brani.
    */
   identitaDiversa: boolean;
+  /**
+   * La parte di libreria del profilo **non** si è applicata, perché le due
+   * identità non si riconoscono e chi importa non ha detto «è la mia». Nel
+   * piano dice cosa succederebbe; nell'esito, cosa è successo: se il piano ha
+   * promesso il contrario, la finestra non può restare a «3 impostazioni
+   * applicate».
+   */
+  libreriaRifiutata: boolean;
   cambi: CambioProfilo[];
   /** Le chiavi del file che questa versione non porta. Non è un guasto. */
   sconosciute: string[];
@@ -486,6 +510,8 @@ export interface PianoProfilo {
   /** I numeri della rimappatura vengono da un campione: è il piano. */
   stima?: boolean;
   portati: PortatiProfilo;
+  /** Quel che il profilo porta e che qui non ha un brano a cui attaccarsi. */
+  nonAttaccati: NonAttaccatiProfilo;
   /**
    * Le playlist del profilo che entrano accanto a una di qui con lo stesso
    * nome, che è un'altra playlist e resta com'è (D-11). Assente nella

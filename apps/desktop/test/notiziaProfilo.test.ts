@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { notiziaDelProfilo, vociPortate } from "../src/parti/notiziaProfilo";
+import { notiziaDelProfilo, vociNonAttaccate, vociPortate } from "../src/parti/notiziaProfilo";
 
 /*
  * Il profilo, dopo «Applica» e accanto a «Torna com'era prima»: dire quel che
@@ -92,4 +92,67 @@ test("una skin del profilo che non passa l'esame si dice, nel piano e dopo", () 
   );
   assert.match(sorgente, /piano\.skinNonIndossata && \(/);
   assert.match(sorgente, /t\("profile\.skinNotWorn", \{ nome: piano\.skinNonIndossata \}\)/);
+});
+
+const SENZA_BRANI = {
+  ascolti: 1,
+  voti: 1,
+  preferiti: 1,
+  cronologia: 1,
+  correzioni: 1,
+  playlist: 5,
+};
+
+test("un profilo letto a libreria vuota dice cosa non ha potuto attaccare (T3-3)", () => {
+  // Il piano lo dice prima di «Applica», la notizia dopo: stesse voci, e solo
+  // quelle diverse da zero.
+  assert.deepEqual(vociNonAttaccate({ ...SENZA_BRANI, ascolti: 0, correzioni: 0 }), [
+    ["profile.unattached.ratings", 1],
+    ["profile.unattached.loved", 1],
+    ["profile.unattached.history", 1],
+    ["profile.unattached.playlists", 5],
+  ]);
+  assert.deepEqual(vociNonAttaccate(undefined), []);
+  assert.deepEqual(
+    notiziaDelProfilo({ cambi: [1, 2, 3], portati: NIENTE, nonAttaccati: SENZA_BRANI }).map(
+      (p) => p.chiave,
+    ),
+    ["profile.applied", "profile.applied.unattached"],
+  );
+});
+
+test("la parte di libreria rifiutata si dice, e non si scambia per «niente» (T3-1)", () => {
+  // «3 impostazioni applicate» e basta nascondeva il rifiuto: il piano, senza
+  // copia di sicurezza, aveva promesso tutto.
+  assert.deepEqual(
+    notiziaDelProfilo({ cambi: [1, 2, 3], portati: NIENTE, libreriaRifiutata: true }),
+    [{ chiave: "profile.applied", n: 3 }, { chiave: "profile.applied.refused" }],
+  );
+  assert.deepEqual(notiziaDelProfilo({ cambi: [], portati: NIENTE, libreriaRifiutata: true }), [
+    { chiave: "profile.applied.refused" },
+  ]);
+});
+
+test("il piano mostra quel che non si attacca prima di «Applica», in tutte e due le lingue", () => {
+  const avviso = sorgente.indexOf('t("profile.unattached"');
+  const applica = sorgente.indexOf('t("profile.apply")');
+  assert.ok(avviso >= 0, "l'avviso nel piano");
+  assert.ok(avviso < applica, "prima del tasto che applica");
+  assert.match(sorgente, /vociNonAttaccate\(piano\.nonAttaccati\)/);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    for (const chiave of [
+      "profile.unattached",
+      "profile.unattached.telefono",
+      "profile.applied.unattached",
+      "profile.applied.refused",
+    ]) {
+      assert.ok(testi[chiave], `${chiave} in ${lingua}`);
+    }
+    // Dice cosa fare: scansionare, poi leggere di nuovo.
+    assert.match(testi["profile.unattached"] ?? "", lingua === "it" ? /leggi di nuovo il profilo/ : /read the profile again/);
+    assert.match(testi["profile.unattached.telefono"] ?? "", lingua === "it" ? /accesso alla musica/ : /access to your music/);
+  }
 });

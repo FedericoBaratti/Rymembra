@@ -2716,3 +2716,457 @@ fn una_playlist_condivisa_non_cambia_natura_ne_regole_dal_profilo() {
     assert_eq!((automatica, regole, descrizione), (0, None, None));
     assert_eq!(in_ordine(&qui, "Preferite"), vec!["a", "b", "c"]);
 }
+
+// ── una libreria nuova: la copia di sicurezza e l'identità (T3-1) ───────────
+
+/// Scrive la copia di sicurezza di `qui`, come fa il comando prima di importare.
+fn copia_di_sicurezza_di(qui: &mut Connection, dati: &Path) -> PathBuf {
+    let store = CoverStore::open(dati.join("copertine")).expect("store");
+    let raccolto =
+        raccogli_copia(qui, "qui", BTreeMap::new(), BTreeMap::new(), 1).expect("raccolta");
+    let copia = copia_di_sicurezza(dati, 1);
+    scrivi(
+        &raccolto,
+        &Sorgenti {
+            copertine: &store,
+            skin: BTreeMap::new(),
+            bozze: BTreeMap::new(),
+        },
+        &copia,
+        &|_| {},
+    )
+    .expect("copia");
+    copia
+}
+
+/// I tag di «Hey You» come li legge la scansione di qui.
+const CHIAVE_DEI_TAG: &str = "unknown artist|traccia 01|al";
+/// La chiave che il brano ha là, dove qualcuno lo ha corretto a mano.
+const CHIAVE_CORRETTA: &str = "pink floyd|hey you|al";
+
+/// La libreria «di là»: quattro brani, e di ognuno qualcosa che un profilo porta.
+///
+/// Serata = c, a, b · Dal vivo = b, c · un voto su «a», un cuore su «b», quattro
+/// ascolti e una riga di cronologia su «c», una correzione su «d» (che là sta
+/// sotto la chiave corretta, e che la scansione di qui trova coi suoi tag).
+fn libreria_di_la() -> Connection {
+    let la = libreria();
+    for (id, chiave) in [(1, "a"), (2, "b"), (3, "c")] {
+        brano(&la, id, &format!(r"D:\M\{chiave}.flac"), chiave);
+    }
+    brano(&la, 4, r"D:\M\01.flac", CHIAVE_CORRETTA);
+    la.execute(
+        "UPDATE tracks SET title = 'Hey You', artist = 'Pink Floyd', album = 'Al',
+                content_key = ?1 WHERE id = 4",
+        [CHIAVE_DEI_TAG],
+    )
+    .expect("il brano corretto");
+    let campi = serde_json::to_string(&crate::provenienza::Correzioni {
+        titolo: Some("Hey You".to_owned()),
+        artista: Some("Pink Floyd".to_owned()),
+        ..crate::provenienza::Correzioni::default()
+    })
+    .expect("correzione");
+    la.execute(
+        "INSERT INTO track_overrides (track_id, campi, set_at) VALUES (4, ?1, 50)",
+        [&campi],
+    )
+    .expect("la correzione");
+    la.execute_batch(
+        "UPDATE tracks SET rating = 5, rating_at = 100 WHERE id = 1;
+         UPDATE tracks SET liked = 1, liked_at = 200 WHERE id = 2;
+         UPDATE tracks SET play_count = 4, last_played_at = 900 WHERE id = 3;
+         INSERT INTO play_history (track_id, played_at, ms_played) VALUES (3, 900, 200000);
+         INSERT INTO lyrics (track_key, plain, source, updated_at) VALUES ('c', 'la la', 'lrclib', 10);",
+    )
+    .expect("i dati di là");
+    for (chiave, valore) in [
+        ("player.volume", "0.7"),
+        ("skin.active", "sala"),
+        ("library.roots", r#"["D:\\M"]"#),
+    ] {
+        settings::write(&la, chiave, valore).expect("scrittura");
+    }
+    playlist(&la, "Serata", &[3, 1, 2]);
+    playlist(&la, "Dal vivo", &[2, 3]);
+    la
+}
+
+/// La scansione di una libreria nuova, che trova gli stessi quattro file.
+fn scansione_simulata(qui: &Connection) {
+    for (id, chiave) in [(1, "a"), (2, "b"), (3, "c")] {
+        brano(qui, id, &format!(r"E:\M\{chiave}.flac"), chiave);
+    }
+    brano(qui, 4, r"E:\M\01.flac", CHIAVE_DEI_TAG);
+    qui.execute(
+        "UPDATE tracks SET title = 'Traccia 01', artist = 'Unknown Artist', album = 'Al',
+                content_key = ?1 WHERE id = 4",
+        [CHIAVE_DEI_TAG],
+    )
+    .expect("il brano coi suoi tag");
+}
+
+#[test]
+fn la_copia_di_sicurezza_non_da_un_identita_alla_libreria_che_fotografa() {
+    // T3-1: una copia di sicurezza è una fotografia, e non cambia quel che
+    // fotografa. `raccogli` scriveva `profilo.identita` in una libreria che
+    // non ne aveva — l'effetto collaterale che faceva rifiutare, subito dopo,
+    // la parte di libreria del profilo.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut qui = libreria();
+    copia_di_sicurezza_di(&mut qui, &dir.path().join("dati"));
+    assert_eq!(
+        settings::read(&qui, CHIAVE_IDENTITA),
+        Ok(None),
+        "la copia non scrive niente nella libreria"
+    );
+}
+
+#[test]
+fn l_esportazione_crea_l_identita_e_la_copia_la_porta_se_c_e() {
+    // Il rovescio: un profilo che esce **deve** poter dire di quale libreria è,
+    // e l'identità nasce lì. Una copia di una libreria che ne ha già una la
+    // porta nel manifesto, come prima.
+    let mut esce = libreria();
+    let raccolto = raccogli(
+        &mut esce,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        1,
+        &identita_fissa,
+    )
+    .expect("raccolta");
+    assert_eq!(raccolto.identita, "libreria-di-prova");
+    assert_eq!(
+        settings::read(&esce, CHIAVE_IDENTITA),
+        Ok(Some("libreria-di-prova".to_owned()))
+    );
+
+    let copia = raccogli_copia(&mut esce, "qui", BTreeMap::new(), BTreeMap::new(), 1)
+        .expect("raccolta della copia");
+    assert_eq!(copia.identita, "libreria-di-prova");
+
+    let mut senza = libreria();
+    let copia = raccogli_copia(&mut senza, "qui", BTreeMap::new(), BTreeMap::new(), 1)
+        .expect("raccolta della copia");
+    assert_eq!(copia.identita, "", "quella libreria non ne aveva");
+}
+
+#[test]
+fn una_libreria_nuova_con_la_copia_di_sicurezza_riceve_la_parte_di_libreria() {
+    // T3-1, il percorso intero: libreria senza identità → copia di sicurezza →
+    // profilo con l'identità X. La libreria adotta X e la parte di libreria
+    // passa, senza bisogno di «unisci comunque».
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    settings::write(&la, "player.volume", "0.7").expect("scrittura");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_altrui);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    scansione_simulata(&qui);
+    // Il piano gira senza copia, e dice cosa succederebbe.
+    let previsto = piano(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("piano");
+    assert!(!previsto.identita_diversa, "{previsto:?}");
+
+    let copia = copia_di_sicurezza_di(&mut qui, &dir.path().join("dati"));
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+
+    assert!(
+        !fatto.identita_diversa,
+        "con la copia di sicurezza l'applicazione non deve vedere un'altra libreria: {fatto:?}"
+    );
+    assert_eq!(
+        previsto.portati, fatto.portati,
+        "il piano è quel che succede"
+    );
+    assert_eq!(
+        settings::read(&qui, CHIAVE_IDENTITA),
+        Ok(Some("un-altra-libreria".to_owned())),
+        "la libreria senza identità adotta quella del profilo"
+    );
+    assert_eq!(fatto.portati.voti, 1, "{fatto:?}");
+    assert_eq!(fatto.portati.preferiti, 1, "{fatto:?}");
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["c", "a", "b"]);
+
+    // E una copia scritta da una libreria senza identità si legge e si annulla:
+    // il suo manifesto ha l'identità vuota, che è la verità.
+    annulla(&mut qui, &copia, &ambiente(&c_e_tutto)).expect("annullamento");
+    assert_eq!(
+        settings::read(&qui, "player.volume"),
+        Ok(None),
+        "le preferenze tornano com'erano"
+    );
+}
+
+#[test]
+fn l_esito_dice_quando_la_parte_di_libreria_non_si_e_applicata() {
+    // T3-1: se il piano e l'applicazione divergono — qualunque ne sia la
+    // causa — l'esito lo dice, invece di un «3 impostazioni applicate» che
+    // nasconde il rifiuto.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_altrui);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    scansione_simulata(&qui);
+    identita(&qui, &identita_fissa).expect("un'altra identità, già qui");
+
+    let rifiutato = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    let json = serde_json::to_value(&rifiutato).expect("in JSON");
+    assert_eq!(
+        json["libreriaRifiutata"],
+        serde_json::json!(true),
+        "la parte di libreria è stata rifiutata, e l'esito lo dice: {json}"
+    );
+
+    let mut con_unisci = ambiente(&c_e_tutto);
+    con_unisci.unisci_comunque = true;
+    let unito = importa(&mut qui, &letto, &con_unisci).expect("importazione");
+    let json = serde_json::to_value(&unito).expect("in JSON");
+    assert_eq!(
+        json["libreriaRifiutata"],
+        serde_json::json!(false),
+        "{json}"
+    );
+}
+
+// ── l'ordine «leggi il profilo, poi scansiona» (T3-3) ───────────────────────
+
+#[test]
+fn il_piano_a_libreria_vuota_conta_quel_che_non_potra_attaccare() {
+    // T3-3 (c): una libreria senza brani non può attaccare voti, preferiti,
+    // ascolti, cronologia, correzioni e i brani delle playlist. Il piano lo
+    // dice **prima** di «Applica», col numero.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    let previsto = piano(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("piano");
+    let json = serde_json::to_value(&previsto).expect("in JSON");
+    let non_attaccati = &json["nonAttaccati"];
+    for (voce, quanti) in [
+        ("ascolti", 1),
+        ("voti", 1),
+        ("preferiti", 1),
+        ("cronologia", 1),
+        ("correzioni", 1),
+        ("playlist", 5),
+    ] {
+        assert_eq!(
+            non_attaccati[voce],
+            serde_json::json!(quanti),
+            "«{voce}»: {non_attaccati}"
+        );
+    }
+    // E il piano non promette quel che non può mantenere: i brani con
+    // conteggi nuovi, i voti e i cuori sono zero, perché non c'è un brano.
+    assert_eq!(previsto.portati.ascolti, 0, "{previsto:?}");
+    assert_eq!(previsto.portati.voti, 0, "{previsto:?}");
+    assert_eq!(previsto.portati.preferiti, 0, "{previsto:?}");
+    assert_eq!(previsto.portati.cronologia, 0, "{previsto:?}");
+    assert_eq!(previsto.portati.correzioni, 0, "{previsto:?}");
+
+    // L'applicazione dice le stesse cose del piano.
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(
+        json["nonAttaccati"],
+        serde_json::to_value(&fatto).expect("in JSON")["nonAttaccati"]
+    );
+}
+
+#[test]
+fn un_profilo_letto_a_libreria_vuota_si_completa_alla_seconda_lettura() {
+    // T3-3 (a): l'ordine che il corpo della release suggeriva — leggi il
+    // profilo, poi scansiona. La prima lettura crea le playlist vuote, la
+    // scansione porta i brani, la seconda lettura deve dare alle playlist i
+    // loro brani, nell'ordine del profilo, e attaccare il resto.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    let prima = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("prima lettura");
+    assert_eq!(prima.portati.playlist, 2, "{prima:?}");
+    assert!(in_ordine(&qui, "Serata").is_empty());
+
+    scansione_simulata(&qui);
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("seconda lettura");
+
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["c", "a", "b"]);
+    assert_eq!(in_ordine(&qui, "Dal vivo"), vec!["b", "c"]);
+    let (voto, cuore, ascolti): (i64, i64, i64) = qui
+        .query_row(
+            "SELECT (SELECT rating FROM tracks WHERE track_key = 'a'),
+                    (SELECT liked FROM tracks WHERE track_key = 'b'),
+                    (SELECT play_count FROM tracks WHERE track_key = 'c')",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+        )
+        .expect("rilettura");
+    assert_eq!((voto, cuore, ascolti), (5, 1, 4));
+    let cronologia: i64 = qui
+        .query_row("SELECT COUNT(*) FROM play_history", [], |r| r.get(0))
+        .expect("conteggio");
+    assert_eq!(cronologia, 1);
+    let corretto: String = qui
+        .query_row("SELECT title FROM tracks WHERE id = 4", [], |r| r.get(0))
+        .expect("titolo");
+    assert_eq!(corretto, "Hey You", "la correzione è arrivata");
+}
+
+/// Quel che non deve crescere rileggendo: ascolti, cronologia, voti, cuori,
+/// righe di playlist e l'ordine di «Serata».
+fn impronta_della_libreria(c: &Connection) -> (i64, i64, i64, i64, i64, Vec<String>) {
+    let numeri = c
+        .query_row(
+            "SELECT (SELECT COALESCE(SUM(play_count), 0) FROM tracks),
+                    (SELECT COUNT(*) FROM play_history),
+                    (SELECT COALESCE(SUM(rating), 0) FROM tracks),
+                    (SELECT COALESCE(SUM(liked), 0) FROM tracks),
+                    (SELECT COUNT(*) FROM playlist_tracks)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .expect("impronta");
+    (
+        numeri.0,
+        numeri.1,
+        numeri.2,
+        numeri.3,
+        numeri.4,
+        in_ordine(c, "Serata"),
+    )
+}
+
+#[test]
+fn rileggere_lo_stesso_profilo_a_libreria_piena_non_raddoppia_niente() {
+    // T3-3 (b): ascolti, cronologia, voti, preferiti e playlist non crescono
+    // alla seconda e alla terza lettura dello stesso file.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    scansione_simulata(&qui);
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("prima");
+    let dopo_la_prima = impronta_della_libreria(&qui);
+    assert_eq!(
+        dopo_la_prima,
+        (4, 1, 5, 1, 5, vec!["c".into(), "a".into(), "b".into()])
+    );
+    for giro in 2..=3 {
+        let ancora = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("di nuovo");
+        assert_eq!(
+            impronta_della_libreria(&qui),
+            dopo_la_prima,
+            "lettura {giro}"
+        );
+        assert!(ancora.portati.e_vuoto(), "lettura {giro}: {ancora:?}");
+    }
+}
+
+#[test]
+fn con_la_scansione_prima_passa_tutto_quel_che_il_profilo_porta() {
+    // L'elenco di quel che passa nell'ordine «aggiungi le cartelle, aspetta la
+    // scansione, poi leggi il profilo» (T3-3): ogni voce, una per una, perché
+    // l'elenco che si scrive nelle note è questo.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    scansione_simulata(&qui);
+    let piano_letto = piano(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("piano");
+    assert!(
+        piano_letto.non_attaccati.e_vuoto(),
+        "con i brani al loro posto il piano non ha niente da dire: {piano_letto:?}"
+    );
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(piano_letto.portati, fatto.portati);
+    assert!(fatto.non_attaccati.e_vuoto(), "{fatto:?}");
+    assert!(!fatto.libreria_rifiutata);
+
+    // Le impostazioni, la skin, il volume e le cartelle sorvegliate.
+    assert_eq!(
+        settings::read(&qui, "player.volume"),
+        Ok(Some("0.7".to_owned()))
+    );
+    assert_eq!(
+        settings::read(&qui, "skin.active"),
+        Ok(Some("sala".to_owned()))
+    );
+    assert_eq!(
+        settings::read(&qui, "library.roots"),
+        Ok(Some(r#"["D:\\M"]"#.to_owned()))
+    );
+    // Ascolti (con la somma sul brano), voti, preferiti.
+    let (ascolti, voto, cuore): (i64, i64, i64) = qui
+        .query_row(
+            "SELECT (SELECT play_count FROM tracks WHERE track_key = 'c'),
+                    (SELECT rating FROM tracks WHERE track_key = 'a'),
+                    (SELECT liked FROM tracks WHERE track_key = 'b')",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+        )
+        .expect("rilettura");
+    assert_eq!((ascolti, voto, cuore), (4, 5, 1));
+    // Cronologia, correzione, testo.
+    let (cronologia, titolo, testi): (i64, String, i64) = qui
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM play_history),
+                    (SELECT title FROM tracks WHERE id = 4),
+                    (SELECT COUNT(*) FROM lyrics WHERE track_key = 'c')",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+        )
+        .expect("rilettura");
+    assert_eq!((cronologia, titolo.as_str(), testi), (1, "Hey You", 1));
+    // Le playlist, complete e nell'ordine del profilo.
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["c", "a", "b"]);
+    assert_eq!(in_ordine(&qui, "Dal vivo"), vec!["b", "c"]);
+}
+
+#[test]
+fn con_il_profilo_prima_passano_solo_le_cose_che_non_hanno_bisogno_di_un_brano() {
+    // Il rovescio, e la ragione per cui il piano lo dice: a libreria vuota
+    // passano le impostazioni, i testi (stanno per chiave), le cartelle e le
+    // playlist (vuote); gli ascolti si tengono da parte per chiave; voti,
+    // preferiti, cronologia e correzioni no, e il file li ha ancora.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    let fatto = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(
+        settings::read(&qui, "player.volume"),
+        Ok(Some("0.7".to_owned()))
+    );
+    assert_eq!(fatto.portati.testi, 1, "{fatto:?}");
+    assert_eq!(fatto.portati.cartelle, 1, "{fatto:?}");
+    assert_eq!(fatto.portati.playlist, 2, "{fatto:?}");
+    let (tenuti, cronologia, voti): (i64, i64, i64) = qui
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM sync_ascolti WHERE track_key = 'c'),
+                    (SELECT COUNT(*) FROM play_history),
+                    (SELECT COUNT(*) FROM tracks)",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+        )
+        .expect("rilettura");
+    assert_eq!(tenuti, 1, "gli ascolti si tengono da parte, per chiave");
+    assert_eq!((cronologia, voti), (0, 0));
+    assert!(
+        !fatto.non_attaccati.e_vuoto(),
+        "e il piano lo ha detto: {fatto:?}"
+    );
+}

@@ -35,6 +35,13 @@ const ETICHETTE = {
   scheda: "settings.profile.title",
   esporta: "profile.export",
   leggi: "profile.read",
+  // Il primo avvio sul telefono e le cartelle: l'ordine della procedura è
+  // «prima la musica, poi il profilo» (T3-3), e i nomi sono quelli che si leggono.
+  consenti: "telefono.accesso.consenti",
+  dove: "primo.title",
+  continua: "primo.continua",
+  cartelle: "settings.section.cartelle",
+  aggiungi: "settings.roots.add",
 };
 
 function leggi(rel) {
@@ -52,26 +59,31 @@ function deposito() {
 /** Il testo, dati versione, repository, nomi dei file, impronta ed etichette. */
 function corpo({ versione, repo, installer, apk, impronta, etichette }) {
   const menu = (azione) => `**Settings → ${etichette.sezione} → ${etichette.scheda} → ${etichette[azione]}**`;
+  const menuCartelle = `**Settings → ${etichette.cartelle} → ${etichette.aggiungi}**`;
   return `## Rymembra ${versione}
 
 What changed is in [CHANGELOG.md](https://github.com/${repo}/blob/v${versione}/CHANGELOG.md).
 
 ### If you have a test build of the Android app
 
-Test builds were signed with a different key: Android won’t install this version over them, and updating from inside the app fails every time. To move to this version without losing your library:
+Test builds were signed with a different key: Android won’t install this version over them, and updating from inside the app fails every time. To move to this version without losing your library, do it in this order:
 
 1. In Rymembra on the phone: ${menu("esporta")}, and save the file outside the app — in Downloads, or in a cloud folder.
 2. Uninstall Rymembra.
 3. Install \`${apk}\` from this page.
-4. ${menu("leggi")}, and choose the file you saved.
+4. Open Rymembra and let it find your music **first**: tap **${etichette.consenti}** when it asks, tick your music folders on the **${etichette.dove}** screen and tap **${etichette.continua}**. If your music is in a folder that isn’t listed, add it with ${menuCartelle}. Then wait until the scan has finished.
+5. Only now: ${menu("leggi")}, and choose the file you saved.
 
-The profile carries your settings, play counts, ratings, favorites, resume positions, playlists, listening history, metadata corrections, lyrics, the tracks to buy, covers, skins and watched folders. It does **not** carry:
+Read the profile after the scan, not before. What the profile says about a track — its play count, rating, favorite, history, correction, its place in a playlist — can only attach to a track the library already has, and a profile read into an empty library has none to attach it to. If you read it too early, the plan lists what it can’t attach before you apply it: scan, then read the same file again, and it completes what was left.
+
+The profile carries your settings, play counts, ratings, favorites, playlists, listening history, metadata corrections, lyrics, the tracks to buy, covers, skins and watched folders. It does **not** carry:
 
 - the **connected accounts** — Google Drive, OneDrive, Dropbox, Last.fm, ListenBrainz and the keys of AI models: sign in again;
 - the **linked devices**: on each computer, forget the old phone and link the phone again; the same for the devices you listen together with;
-- the permissions Android gave the old app: Rymembra asks for them again.
+- the permissions Android gave the old app: Rymembra asks for them again (step 4);
+- the playback queue and where you were in the track that was playing.
 
-Your music stays where it is on the phone: after reading the profile, scan your folders again.
+Your music stays where it is on the phone.
 
 ### Windows
 

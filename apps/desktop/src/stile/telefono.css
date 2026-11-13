@@ -402,6 +402,41 @@
   font-size: 15px;
 }
 
+/* Il piano del profilo (`parti/Profilo.tsx`): non sborda a destra.
+
+   Il riquadro è una griglia a una colonna `1fr`, cioè `minmax(auto, 1fr)`: la
+   colonna non scende sotto la larghezza minima del suo contenuto, e il
+   contenuto più largo è il prefisso vecchio di una rimappatura
+   (`.rimappatura-da`: `nowrap`, fino a sessanta caratteri a spaziatura fissa,
+   quattrocento pixel e passa). In una finestra di 412 la colonna saliva a 462: il
+   titoletto, il campo «La cartella su questo telefono» e «0 brani di qui»
+   restavano tagliati dal bordo della scheda, e i percorsi lunghi illeggibili
+   (T3-2). Con `minmax(0, 1fr)` la colonna sta nella scheda e a cedere è la riga.
+
+   Qui e non nel foglio di base (`casa.css`, `navigazione.css`): sul computer le
+   righe restano come sono, col percorso accorciato dall'ellissi. Sul telefono un
+   percorso accorciato non si può leggere né spostare con il mouse sopra, e a
+   carattere grande ancora meno: si spezza, in qualunque punto. Vale per due
+   posti: il prefisso vecchio della rimappatura, che resta in linea col conteggio
+   finché ci sta e altrimenti prende la riga e va a capo da sé; e l'elenco di
+   quel che il profilo cambierebbe (`library.roots: — → ["/storage/…"]`), dove
+   il valore era l'unica cosa da leggere e usciva dalla scheda. Il campo di
+   destinazione prende la riga intera. */
+:root[data-forma="telefono"] .scheda-anteprima:has(> .titoletto),
+:root[data-forma="telefono"] .scheda-anteprima .rimappature {
+  grid-template-columns: minmax(0, 1fr);
+}
+:root[data-forma="telefono"] .rimappatura-da,
+:root[data-forma="telefono"] .scheda-anteprima .cartella .percorso {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+:root[data-forma="telefono"] .rimappatura .campo {
+  flex-basis: 100%;
+}
+
 /* I titoletti dentro una scheda («Latenza d'uscita»): la classe è quella dei
    gruppi della barra laterale, col suo rientro di dodici pixel, che qui li
    staccava dal bordo di tutto il resto della scheda. */
