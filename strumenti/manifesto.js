@@ -90,10 +90,12 @@ const DI_SERVIZIO = /^(The number|Database|Known limits)\b/;
  *
  * Le sezioni di sicurezza sono quelle per cui una persona deve sapere che
  * conviene aggiornare, e con otto posti e il changelog in ordine di argomento
- * finivano oltre il taglio: nella sezione `[Unreleased]` del novembre 2026
- * «Security» e «Security — the review of 2026-11-10» erano le voci undici e
- * dodici, cioè fuori dalle note. L'ordine del file resta quello per chi lo
- * legge per intero.
+ * finivano oltre il taglio: nella sezione `[Unreleased]` del novembre 2026,
+ * prima che si chiamassero «Security — your devices over the internet» e
+ * «Security — the reviews of November 2026» e stessero davanti, «Security» e
+ * «Security — the review of 2026-11-10» erano le voci undici e dodici, cioè
+ * fuori dalle note. Il nome non conta (basta che cominci per `Security`) e il
+ * posto nemmeno: l'ordine del file resta quello per chi lo legge per intero.
  */
 const IN_TESTA = /^Security\b/;
 
