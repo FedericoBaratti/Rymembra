@@ -289,6 +289,26 @@
   place-items: center;
   background: rgb(var(--surface-0-rgb) / 0.72);
 }
+/* Col primo avvio aperto, una finestrella sale sopra di lui (D-97).
+
+   `.primo` copre la finestra a `--strato-primo`, più su del velo di una
+   finestrella (`--strato-velo`): quella che si apre mentre il primo avvio c'è
+   — la libreria che la copia del Microsoft Store propone proprio allora, una
+   skin o una playlist lasciate cadere sulla finestra — si apriva dietro di lui,
+   nell'albero di accessibilità ma non sullo schermo, e il primo avvio, reso
+   `inert` dalla finestrella, lasciava passare i clic al suo velo invisibile.
+
+   Una regola per tutte, invece di un guscio a ogni punto di montaggio
+   (`.sopra-primo`, che resta per «Aggiungi una cartella»): vale per i veli che
+   sono **fratelli** di `.primo` dentro `.finestra-app`, cioè quelli montati da
+   `App` fuori dalla pagina. `:where` toglie peso al selettore, così il velo di
+   un consenso, qui sotto e un gradino più su, vince come sempre; solo `.scuro`,
+   perché il velo trasparente di un menù sta un gradino sotto il suo menù e
+   alzarlo lo metterebbe davanti. Fuori dal primo avvio `.primo` non c'è e la
+   regola non si applica: le finestrelle restano sotto i toast. */
+:where(.finestra-app:has(> .primo)) > .velo.scuro {
+  z-index: var(--strato-sopraprimo);
+}
 /* Il velo di un consenso sale sopra toast e menù: sono parti che la skin
    ridisegna e che non stanno dentro il consenso, quindi le guardie del
    compilatore non le toccano. Vedi `--strato-consenso`. */
