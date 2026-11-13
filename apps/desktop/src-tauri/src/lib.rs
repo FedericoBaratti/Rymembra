@@ -59,6 +59,7 @@ mod metadati;
 mod nuvola;
 mod nuvola_app;
 mod nuvola_musica;
+mod pacchetto;
 mod pagina;
 mod playlist;
 mod procura;

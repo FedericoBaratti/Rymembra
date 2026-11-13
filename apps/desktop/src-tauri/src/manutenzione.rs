@@ -605,7 +605,13 @@ pub fn manutenzione_apri_cartella_dati(app: AppHandle) -> Esito<()> {
         ))
     }
     #[cfg(not(target_os = "android"))]
-    tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| guasto(err.to_string()))
+    {
+        // Esplora risorse gira fuori dal pacchetto: nella copia del Store la
+        // cartella dei dati sta nella cartella privata del pacchetto, e il
+        // percorso visto da dentro lì non c'è (R20-4). Vedi `pacchetto`.
+        let dove = crate::pacchetto::per_esplora(&dove);
+        tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| guasto(err.to_string()))
+    }
 }
 
 /// La copia di prima dell'aggiornamento che «Torna alla copia» rimetterebbe.
@@ -771,8 +777,14 @@ pub async fn store_libreria_di_prima(app: AppHandle) -> Esito<Option<LibreriaDiP
                 .map_err(|err| db::codice_da_sqlite("la libreria è vuota?", &err))?;
             Ok(!chiesta && vuota)
         })?;
+        // Il posto si **mostra**: dove Esplora lo trova, che nella copia del
+        // Store di prima dell'aggiornamento è la cartella privata del pacchetto
+        // — ma solo se il database è lì: con il solo giornale accanto a un
+        // database rimasto fuori, la libreria sta fuori.
         Ok(da_proporre.then(|| LibreriaDiPrimaIpc {
-            cartella: cartella.display().to_string(),
+            cartella: crate::pacchetto::per_esplora_se_contiene(&cartella, NOME_DATABASE)
+                .display()
+                .to_string(),
         }))
     })
     .await

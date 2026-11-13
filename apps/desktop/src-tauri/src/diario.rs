@@ -584,8 +584,11 @@ fn e_l_avvio_fallito(messaggio: Option<&str>, filo: &str) -> bool {
 /// `%LOCALAPPDATA%\…` si incolla così com'è nella barra di Esplora risorse.
 #[must_use]
 pub fn testo_dell_avvio_fallito(motivo: &str, scritta: Option<&Path>) -> String {
+    // Il posto si **dice** a chi guarda: dove lo trova lui. Nella copia del
+    // Store il file sta nella cartella privata del pacchetto (R20-4).
     let dove = scritta.map(|percorso| {
-        senza_utente(&percorso.display().to_string(), cartelle_dell_utente()).into_owned()
+        let visibile = crate::pacchetto::per_esplora(percorso);
+        senza_utente(&visibile.display().to_string(), cartelle_dell_utente()).into_owned()
     });
     let (dove_it, dove_en) = dove.map_or_else(
         || (String::new(), String::new()),
@@ -838,14 +841,20 @@ pub fn diario_apri() -> Esito<()> {
     #[cfg(target_os = "android")]
     return condividi_sul_telefono(&dove);
     #[cfg(not(target_os = "android"))]
-    tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura della cartella del diario".to_owned()),
-            })
-            .with_cause(err.to_string()),
-        )
-    })
+    {
+        // Nella copia del Store la cartella del diario è nuova, quindi sta
+        // nella cartella privata del pacchetto, e Esplora risorse — che gira
+        // fuori — non vede il percorso di dentro (R20-4). Vedi `pacchetto`.
+        let dove = crate::pacchetto::per_esplora(&dove);
+        tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura della cartella del diario".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
+    }
 }
 
 /// [`diario_apri`] sul telefono: una cartella non c'è nessuno che la apra —

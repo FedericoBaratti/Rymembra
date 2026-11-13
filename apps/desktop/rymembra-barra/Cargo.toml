@@ -20,6 +20,11 @@ publish = false
 # `GetVolumePathNameW` (vedi `src/unita.rs`), `Win32_System_Power` per
 # `GetSystemPowerStatus` (vedi `src/sottofondo.rs`, con `SetThreadPriority` di
 # `Win32_System_Threading`): nessuna delle due porta pacchetti nuovi.
+# `Storage_Search` è la parte WinRT di `Windows.Storage` che nomina `StorageFolder`,
+# per un'unica domanda e senza nessun `unsafe`: dove sta la cartella privata del
+# pacchetto MSIX (`ApplicationData::LocalCacheFolder`, vedi `src/pacchetto.rs`).
+# È una feature del `windows` che c'è già, come le altre: nel `Cargo.lock` non
+# entra niente.
 # `Win32_Devices_DeviceAndDriverInstallation` è per `CM_Register_Notification`
 # (vedi `src/espulsione.rs`: Windows avvisa quando una chiavetta o un disco USB
 # sta per essere espulso, perché la sorveglianza delle cartelle lo lasci), e
@@ -38,6 +43,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "Storage_Search",
 ] }
 
 # Una tabella sua e non `workspace = true`, ed è tutta la ragione per cui questo
