@@ -749,6 +749,19 @@ function controlliSuiTesti(dizionari) {
   aggiungi("Segnaposto diversi fra le lingue", segnapostiDiversi(dizionari));
   perOgniLingua("Virgolette o apostrofi di un'altra lingua", (c, d) => virgoletteSbagliate(c, d, eccezioni));
   if (dizionari.en) aggiungi("Grafie britanniche in en.json", grafiaBritannica(dizionari.en));
+  const sorgentiTs = filesSotto(path.join(REPO, "apps/desktop/src"), [".ts", ".tsx"], ["lingue"]);
+  const sorgentiRs = [
+    ...filesSotto(path.join(REPO, "apps/desktop/src-tauri/src"), [".rs"]),
+    ...filesSotto(path.join(REPO, "apps/desktop/rymembra-android"), [".rs"]),
+    ...filesSotto(path.join(REPO, "core"), [".rs"]),
+  ];
+  const testoCodice = leggiTutti([...sorgentiTs, ...sorgentiRs]);
+  aggiungi(
+    "Chiavi morte in it.json",
+    chiaviMorte({ riferimento: it, testoCodice, codici: codiciDelNucleo(), eccezioni }),
+    "Si tolgono (da tutte le lingue), o se si disegnano in un modo che il codice non mostra vanno in lingue-eccezioni.json con il motivo.",
+  );
+
   return errori;
 }
 
@@ -874,7 +887,7 @@ function main() {
     const errori = controlliSuiTesti(dizionari);
     for (const e of errori) console.error(e);
     if (errori.length > 0) storto = true;
-    else console.log("testi: virgolette, grafia, etichette, contatori, chiavi vive e registri a posto");
+    else console.log("testi: virgolette, grafia, etichette, contatori, chiavi vive e registri: a posto");
   }
 
   process.exit(storto ? 1 : 0);

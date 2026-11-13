@@ -189,3 +189,47 @@ test("l'inglese ha una grafia sola: l'americano", () => {
   ]);
   assert.ok(trovati.every((t) => !t.includes("«c.syn»") && !t.includes("«ok")));
 });
+
+test("una chiave che nessun punto del codice nomina è morta", () => {
+  const riferimento = {
+    "queue.remove": "Togli",
+    "queue.remove.telefono": "Togli dalla coda",
+    "settings.sync.rename": "Rinomina",
+    "settings.entry.audio": "Audio",
+    "skin.issue.oggetto": "qui ci va un oggetto",
+    "errors.fs.notFound": "Il file non c'è più.",
+    "errors.transfer.pinInvalid": "Questo codice non è quello giusto.",
+    "errors.action.folders": "Apri le cartelle",
+    "nav.close": "Chiudi il menu",
+    "format.tracks": "{n} brani",
+    "format.tracks.uno": "1 brano",
+  };
+  const testoCodice = [
+    't("queue.remove")',
+    // Costruita: `settings.entry.${id}`.
+    "const chiave = `settings.entry.${id}`;",
+    'motivo!("oggetto", "qui ci va un oggetto")',
+    'tSe("errors.action.folders", "")',
+    'const f = t("format.tracks", { n });',
+  ].join("\n");
+  const trovati = chiaviMorte({ riferimento, testoCodice, codici: ["fs.notFound"] });
+  assert.deepEqual(trovati.sort(), [
+    // Un codice che il catalogo ha tolto si porta dietro la sua frase: si dice com'è.
+    "«errors.transfer.pinInvalid» è la frase di un codice che il catalogo del nucleo non ha più: togli la frase",
+    "«nav.close» non è usata da nessun punto del codice",
+    "«settings.sync.rename» non è usata da nessun punto del codice",
+  ].sort());
+  // Le forme del plurale e la variante del telefono non sono chiavi a sé.
+  assert.ok(!trovati.some((t) => t.includes("format.tracks") || t.includes("queue.remove")));
+});
+
+test("un commento che cita la chiave non la disegna, e un'eccezione scritta sì", () => {
+  const riferimento = { "settings.sync.rename": "Rinomina", "cloudApp.google.step1": "Vai in «API»" };
+  // Il commento sta già fuori dal testo che `main` passa: `leggiTutti` lo toglie.
+  const eccezioni = { chiaviVive: { "cloudApp.": "le passi della console di un servizio, composte per nome" } };
+  const trovati = chiaviMorte({ riferimento, testoCodice: "", codici: [], eccezioni });
+  assert.deepEqual(trovati, ["«settings.sync.rename» non è usata da nessun punto del codice"]);
+  // Una chiave esatta, senza il punto finale, vale solo per sé.
+  const esatta = chiaviMorte({ riferimento, testoCodice: "", codici: [], eccezioni: { chiaviVive: { "settings.sync.rename": "motivo" } } });
+  assert.deepEqual(esatta, ["«cloudApp.google.step1» non è usata da nessun punto del codice"]);
+});
