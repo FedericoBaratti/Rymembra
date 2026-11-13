@@ -258,6 +258,11 @@ a longer listening history than the public API offers.
   comes back and every 30 minutes; where it cannot, a realignment every five
   minutes. It can be limited to the folders on this computer, or switched
   off, in Settings → Folders and scanning (a NAS that must sleep wants that).
+  On Windows, ejecting a USB stick or a USB disk that holds a watched folder
+  works: Rymembra lets go of the folders on that volume when Windows asks, and
+  takes them up again if the eject is refused or the drive comes back. While
+  a track from it plays, or a scan or the analysis reads it, Windows still
+  says the device is in use.
 - **Explore**: a free-text search across the Internet Archive and Audius, from
   which a track can be listened to without ever being written to disk. A track
   kept this way lives in the library like any other — it is searchable, it sits

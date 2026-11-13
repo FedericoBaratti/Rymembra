@@ -765,6 +765,14 @@ The rest of what the two reviews fixed, by area.
   is disabled with the reason instead of filling the queue with unreachable
   tracks; in a “Listen together” session without the right to the queue it is
   disabled like “Add to queue”.
+- **Ejecting a USB stick or a USB disk no longer answers “The device is in
+  use” because of Rymembra.** A watched folder on it kept a handle open for as
+  long as Rymembra ran, even in the tray. On Windows, when you eject the
+  volume, Rymembra now lets go of its folders on that volume — and only
+  those — and picks them up again if another program refuses the eject or
+  when the volume comes back. A track from the stick that is playing, or a
+  scan or an analysis pass reading it, still holds files open, and then
+  Windows still answers that the device is in use.
 - **Scanning and analysis no longer download “online-only” files.** In a
   folder kept by the OneDrive, Dropbox or Google Drive app on your PC with
   its files on demand, a file that exists only as a placeholder was opened to
