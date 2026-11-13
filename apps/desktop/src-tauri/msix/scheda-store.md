@@ -52,6 +52,11 @@ Un lettore musicale per Windows per la musica che possiedi: riproduzione senza p
 ```
 Collega i tuoi dispositivi via internet: il PC mostra un codice QR, il telefono lo legge con Rymembra per Android, e da lì i due si ritrovano da soli, a casa e fuori, senza nessun server di Rymembra. Dal telefono sfogli la libreria del PC, la ascolti o ne scarichi i brani, e viceversa. È spento finché non accendi «Raggiungibile da internet» in Impostazioni › Dispositivi.
 «Ascolta insieme» funziona anche fuori casa, fra i dispositivi collegati.
+La finestra compare subito, anche quando la libreria va aggiornata, e dice cosa sta facendo.
+I Brani si ordinano senza accenti né articoli, come Artisti e Album.
+Dopo una scansione, l'analisi cede il passo agli altri programmi e, a batteria, usa un solo filo.
+iTunes e Deezer sono spenti di serie, ognuno col suo interruttore.
+Licenza, avvisi delle dipendenze, privacy e condizioni si leggono anche senza rete, dalle Impostazioni.
 Le correzioni di una revisione completa del codice e della sua sicurezza.
 ```
 
@@ -143,6 +148,11 @@ A music player for Windows for the music you own: gapless playback, even loudnes
 ```
 Link your devices over the internet: the PC shows a QR code, your phone reads it with Rymembra for Android, and from then on the two find each other on their own, at home or away, with no Rymembra server. From the phone you browse the PC’s library, play it or download its tracks, and the other way round. It stays off until you turn on “Reachable from the internet” in Settings › Devices.
 “Listen together” works away from home too, between linked devices.
+The window appears right away, even when the library has to be updated, and says what it is doing.
+Tracks sort without accents or leading articles, like Artists and Albums.
+After a scan, the analysis yields to other programs and, on battery, uses a single thread.
+iTunes and Deezer are off by default, each with its own switch.
+The license, the dependency notices, the privacy policy and the terms can be read without a network, from Settings.
 The fixes of a full review of the code and of its security.
 ```
 

@@ -89,7 +89,7 @@
           },
         },
         "Triggers on `tracks`: the three `tracks_fts_*` keep the FTS index current; `statistiche_restano_orfane` / `correzioni_restano_orfane` (BEFORE DELETE) and `statistiche_tornano` / `correzioni_tornano` (AFTER INSERT) park and restore statistics and corrections by `content_key` for 90 days — see [Removal](#removal); `lyrics_segue_track_key` moves lyrics when the key changes; the three `generazione_dopo_*` write a new `random()` into `libreria_stato.generazione` on every write.",
-        "Migration 041 adds two partial indexes, `idx_tracks_mb_recording` on `tracks(mb_recording_id)` and `idx_artists_mb` on `artists(mb_artist_id)` (both `WHERE … IS NOT NULL`): the ListenBrainz neighbours are written with one `INSERT … SELECT` per neighbour inside a transaction holding the library lock, and without them each one read the whole table.",
+        "Migration 041 adds two partial indexes, `idx_tracks_mb_recording` on `tracks(mb_recording_id)` and `idx_artists_mb` on `artists(mb_artist_id)` (both `WHERE … IS NOT NULL`): the ListenBrainz neighbors are written with one `INSERT … SELECT` per neighbor inside a transaction holding the library lock, and without them each one read the whole table.",
         "Migration 042 adds `ordine_titolo`, `ordine_artista` and `ordine_album` with two indexes shaped like the Tracks orders, `idx_tracks_scaffale_per_nome` (artist, album, disc, track, title) and `idx_tracks_titolo_per_nome` (title, artist), so Tracks by shelf and by title sort like Artists and Albums and still read a page from an index. The keys are computed in Rust (`library::riempi_le_chiavi_d_ordine`): a new row starts with NULL keys, and the trigger `chiavi_d_ordine_da_rifare` sets them back to NULL when title, artist or album change, from any writer; the NULL ones are filled, through the title index, inside the writing transaction: `Toccati::segna_brani` (which every transaction writing tracks calls before committing), every aggregates rebuild, and the first open after a migration. No trigger or generated column calls the function, so a connection without it — an integrity check, an external tool — can still write `tracks`. The old `idx_tracks_scaffale`/`idx_tracks_titolo` stay, unused.",
         { h: "Everything else" },
         {
@@ -114,7 +114,7 @@
               ["`enrich_cache`, `enrich_undo`, `track_meta_arricchita`", "HTTP cache, legacy undo, fields set by enrichment"],
               ["`track_overrides`, `correzioni_orfane`", "Your corrections, and corrections waiting for their file"],
               ["`lyrics`", "Lyrics by `track_key`, with source, offset, chosen and rejected candidates"],
-              ["`track_impronta`, `impronta_scala`, `brano_vicino`, `brano_vicino_stato`", "Sonic fingerprints and neighbours — see [Analysis](#analysis)"],
+              ["`track_impronta`, `impronta_scala`, `brano_vicino`, `brano_vicino_stato`", "Sonic fingerprints and neighbors — see [Analysis](#analysis)"],
               ["`track_intensita`", "Measured loudness and true peak"],
               ["`settimana_raccolta`, `settimana_brano`", "Weekly collections"],
               ["`brani_orfani`, `ascolti_orfani`, `playlist_orfane`", "Statistics of removed files, kept 90 days"],
@@ -202,7 +202,7 @@
               ["`ui.zoom`", "One of the steps 0.9–2.0", "1.0", "no (depends on this monitor)"],
               ["`ui.folders.open`, `ui.folders.selected`", "Folders tree state (≤ 200 open nodes)", "—", "no"],
               ["`ui.tour.seenVersion`", "Tour script version already seen", "—", "yes"],
-              ["`player.volume`, `player.eq`, `player.eq.presets`, `player.replaygain`, `player.crossfade`, `player.autoplay`", "Sound and behaviour", "see [Playback](#playback)", "yes"],
+              ["`player.volume`, `player.eq`, `player.eq.presets`, `player.replaygain`, `player.crossfade`, `player.autoplay`", "Sound and behavior", "see [Playback](#playback)", "yes"],
               ["`player.spectrum.bands`, `player.spectrum.visible`, `player.fileFormat.visible`", "Display choices", "—", "yes"],
               ["`player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`", "Facts about this machine's hardware (the last one: latency per output device)", "system default / auto / 0 / none", "no"],
               ["`insieme.attivo`, `insieme.nome`, `insieme.indirizzi`, `insieme.firewall_spiegato`", "Listen together: on/off, this PC's name, hand-typed addresses, firewall dialog seen", "off / computer name / none / no", "no"],
@@ -224,7 +224,7 @@
       body: [
         "A profile is a single file you carry by hand: preferences **and** the library's irreplaceable data. It overlaps with the Drive backup on purpose — the backup is automatic and needs an account; the profile is a gesture and needs nothing.",
         { h: "Format" },
-        "A zip with signature `rymembra.profilo`, format version 2, extension `.ryprofile`. Format 1 (a JSON of preferences) is still read — recognised by its first byte `{` against `PK\\x03\\x04` — and no longer written. Entry names form a **closed list**; any other name rejects the whole archive (no path ever needs normalizing, so `../` cannot exist).",
+        "A zip with signature `rymembra.profilo`, format version 2, extension `.ryprofile`. Format 1 (a JSON of preferences) is still read — recognized by its first byte `{` against `PK\\x03\\x04` — and no longer written. Entry names form a **closed list**; any other name rejects the whole archive (no path ever needs normalizing, so `../` cannot exist).",
         {
           table: {
             head: ["Entry", "Contents"],

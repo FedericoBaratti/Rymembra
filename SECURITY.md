@@ -90,12 +90,29 @@ is not the service's own (for example by following a `nextLink` or a
 redirect), or to read outside the folder the user chose, is a problem.
 
 Only the chosen folders, what is under them and the parents that make up their
-paths are kept in the database; changes elsewhere on the drive are dropped. A
-WebDAV listing takes only the direct children of each folder, visits each
-folder once and stops at 32 levels. Every download has a byte cap chosen by its
-caller, checked against the declared length and before each block is written.
+paths are kept in the database; changes elsewhere on the drive are dropped, and
+what an earlier version kept from elsewhere is deleted at the account’s next
+pass — or at the next start, for an account waiting to be reconnected. A
+connected account with no folder chosen asks the service nothing. A WebDAV
+listing takes only the direct children of each folder, visits each folder once
+and stops at 32 levels. Every download has a byte cap chosen by its caller,
+checked against the declared length and before each block is written.
 Passwords, temporary links and upload sessions do not appear in debug output
 or in errors.
+
+What is read is tied to the version the library knew. WebDAV sends the file’s
+strong ETag as `If-Match`, and Dropbox compares the content hash and the
+revision, so a file changed on the service while it is being cached stops with
+`cloud.fileChanged` instead of being stored as a mix of two versions; a `206`
+that starts at a byte other than the one asked for is refused. OneDrive and
+Google Drive requests are not tied to a version yet. A server certificate the
+system does not recognize is refused (`net.untrustedCertificate`): there is no
+“continue anyway” and no consent by fingerprint. The cache of the tracks played
+has a lock per process, on a `blocco` file in its folder: a second process on
+the same data folder runs without a cache and leaves the first one’s copies
+alone. A file that Windows keeps only online (a placeholder of OneDrive,
+Dropbox or Google Drive on the PC) is not read by a scan or by the analysis,
+since reading it would make the sync app download it.
 
 **«Listen together», while a PC hosts.** From 3.1 a PC that **hosts** a
 listening session listens on the local network, on TCP and UDP port 47811 (or
@@ -183,7 +200,7 @@ feature off nothing listens. What is supposed to hold:
   fifth closes the oldest;
 - the device's secret key lives in the system keychain
   (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
-  of «Listen together» exchanged when linking is used only to recognise that
+  of «Listen together» exchanged when linking is used only to recognize that
   device in a session.
 - the gate is checked before **every** request, not only when a connection
   opens: forgetting a device — on either side — or removing it from the list
@@ -250,7 +267,10 @@ documents are not signed yet: the sync folder must be writable by you
 alone. Catalog
 downloads start only from the catalog's own addresses, follow redirects only
 inside it, and must be audio. Error messages of AI services are cleaned of the
-API key.
+API key, and what a service sends back is capped: 4 MiB of text and 64 MiB read
+from the network for a reply, two minutes of silence once it has begun, and a
+line of more than 1 MiB without a line break is refused as not being a stream
+at all.
 
 **A skin cannot redraw a consent dialog.** The dialogs that ask for a yes are
 marked `data-consenso` — linking a device, the «Listen together» code, invites
@@ -261,7 +281,7 @@ Drive restore and the plan of a profile import. The skin compiler emits
 nothing that reaches them (no layers, images, pseudo-elements, part styling or
 fonts; view transitions pause while one is on screen), and the engine's own
 stylesheet sets the system font in an `@layer` a skin cannot override; the
-skin's colours still apply. The veil of a consent dialog sits above
+skin's colors still apply. The veil of a consent dialog sits above
 notifications and menus, which a skin redraws. Questions that arrive on their
 own — a link or «Listen together» request — open above the Skin Studio too.
 A skin that makes a consent dialog say something else than what it asks is a
@@ -285,6 +305,11 @@ can be emptied. If a secret ends up anywhere else
 stays one even if it's «only» in the clear on the user's own disk. The entries
 saved by the previous version are moved to the current ones the first time they
 are read, and the old one is removed only after the copy succeeded.
+Disconnecting a cloud folder’s account deletes its secrets from the keychain
+and does not send the service a revocation (disconnecting the Drive backup
+does, unless a Drive folder goes through the same app): the token it forgets
+stays valid on the service’s side until the user withdraws the app’s access
+there.
 
 The log (`PRIVACY.md` § 8) is written so as to contain nothing personal, and it
 isn't sent to anyone. If something ends up in there that shouldn't, say so: it's
@@ -305,10 +330,22 @@ off outside text fields, and so are its keys for reloading, printing, saving,
 viewing the source and going back and forward. A way to load another page in
 the window, or to keep one there, is a problem.
 
+**The documents the window reads are a closed list of five.** *Settings ›
+Updates › Documents* shows the license, the third-party notices, the privacy
+policy, the terms and the fonts’ license from the copy installed with the app
+(`documento_locale`, `src-tauri/src/comandi.rs`): the window sends one of those
+names, never a path, and the core reads the file of that name next to the
+executable — UTF-8 text, at most 8 MiB, shown as plain text. On the phone
+Kotlin reads them from `assets/legale/` of the APK (`Ponte`, `legale.leggi`)
+and accepts the same five names only. The buttons that open the same documents
+on the web go through a closed list of their own (`apri_documento`), whose
+addresses are built in Rust from the repository’s. A way to read any other file
+through either is a problem.
+
 **On the phone, other apps are the other side.** The music service accepts
 only trusted controllers — the app itself, the system (notification, lock
 screen, Bluetooth), an app the user allowed to read notifications (a watch’s,
-a music remote), Android Auto, the car’s media centre and Google Assistant,
+a music remote), Android Auto, the car’s media center and Google Assistant,
 checked by uid and, for Android Auto, the car and the Assistant, by package
 and certificate; the cover provider serves only files of the cover folder,
 read-only; the file provider shares only two cache folders; the main activity

@@ -187,9 +187,13 @@ a longer listening history than the public API offers.
   the music starts again; it uses ReplayGain or R128 tags where the file has
   them. A network folder that is offline skips only its own tracks, and a
   track on a share too slow to measure in time is marked slow and tried again
-  a day later. Track, album or automatic mode; a track is never raised past
-  its own peak, and a soft limiter catches the rest. The volume slider follows
-  a perceptual curve.
+  a day later. The measuring, like the fingerprint pass that follows a scan,
+  runs in Windows background mode — lower processor, disk and memory
+  priority, so a program in the foreground gets the processor first — and on
+  battery on a single thread instead of two or three: the library gets
+  finished all the same, more slowly. Track, album or automatic mode; a track
+  is never raised past its own peak, and a soft limiter catches the rest. The
+  volume slider follows a perceptual curve.
 - **Gapless playback**, gapless across sample rates too (a 44.1 kHz album on a
   48 kHz output joins without a click), with an equalizer, crossfade and a
   persistent queue. A single audio engine (`cpal` + `symphonia`) spread over
@@ -218,7 +222,15 @@ a longer listening history than the public API offers.
 - **Music on a NAS or a mapped drive.** A folder the share would not list for
   a moment makes its tracks *unverified*, never *gone*; a scan that would
   remove many tracks shows them and asks first; a drive letter and its
-  `\\server\share` path are recognised as the same place.
+  `\\server\share` path are recognized as the same place.
+- **Folders kept by a sync app.** A folder that the OneDrive, Dropbox or
+  Google Drive app on your PC keeps with its files on demand can be added like
+  any other. A file that exists only as a placeholder is not read by a scan
+  or by the analysis, because reading it would make the app download it: the
+  scan says “N online-only files not downloaded”, they come in at the next
+  scan once the files are on the PC, and a folder holding some removes no
+  track in that pass. Playing a track downloads it. To have such music in the
+  library without downloading it, add the service itself as a cloud folder.
 - **Metadata enrichment** from MusicBrainz, written **into the library and
   never into your files**. The search is carried out on the complete album
   rather than on the individual track; in the absence of matches that are
@@ -246,10 +258,15 @@ a longer listening history than the public API offers.
   comes back and every 30 minutes; where it cannot, a realignment every five
   minutes. It can be limited to the folders on this computer, or switched
   off, in Settings → Folders and scanning (a NAS that must sleep wants that).
+  On Windows, ejecting a USB stick or a USB disk that holds a watched folder
+  works: Rymembra lets go of the folders on that volume when Windows asks, and
+  takes them up again if the eject is refused or the drive comes back. While
+  a track from it plays, or a scan or the analysis reads it, Windows still
+  says the device is in use.
 - **Explore**: a free-text search across the Internet Archive and Audius, from
   which a track can be listened to without ever being written to disk. A track
   kept this way lives in the library like any other — it is searchable, it sits
-  under its album and its artist, it can be queued, rated and favourited — and
+  under its album and its artist, it can be queued, rated and favorited — and
   carries the license it was published under and a link to its public page.
   The search runs when you press Enter, not on every keystroke: on the other
   side are public archives that host the project for free.
@@ -262,7 +279,7 @@ a longer listening history than the public API offers.
   constant drift is corrected with two buttons that are **always** reachable,
   not only when the fit is judged poor: a text that sits inside the right
   duration can still be half a second early.
-  When the catalogue holds more than one answer, «Other lyrics» lists them all
+  When the catalog holds more than one answer, «Other lyrics» lists them all
   with their first lines, and what you choose stays chosen — «none of these»
   included, which is remembered rather than asked again.
 - **Affinity**: what plays after a record ends is chosen from three independent
@@ -341,7 +358,7 @@ a longer listening history than the public API offers.
   folder (Syncthing, OneDrive, Dropbox) needs no account, and an exported
   profile keeps a copy of everything. A client you typed in 3.1 is carried over
   by itself. Backup and sync files that the previous version left in that
-  folder are recognised and renamed in place at the next pass, without
+  folder are recognized and renamed in place at the next pass, without
   uploading them again.
 - **Listen together** on your own network. One device hosts — a PC or a
   phone — and colleagues or family with Rymembra on the same network follow,
@@ -400,8 +417,10 @@ brings it back.
 
 The track list, «Brani» (*Tracks*): cover, title and artists, album, rating,
 duration and the heart of the favorites, here in «Per scaffale» order (*Shelf
-order*), with the search field beside it — `/` or `Ctrl+F` jumps to it. There
-are no pages, numbered or endless: the scrollbar is as long as the whole list
+order*), with the search field beside it — `/` or `Ctrl+F` jumps to it. By
+title and by shelf order (artist, album, disc, track) the list sorts like the
+Albums and Artists grids, ignoring accents and a leading article: “The
+Beatles” sits under B and “Édith Piaf” under E. There are no pages, numbered or endless: the scrollbar is as long as the whole list
 from the first moment, only the rows on screen are fetched — dragging to the
 bottom of fifty thousand tracks asks for the last rows and nothing in between —
 and a view you leave keeps its scroll position, focus and selection for when you
@@ -440,6 +459,15 @@ focus is, except inside a text field, where it stays the field's own undo (the
 key can be changed in *Settings → Keyboard shortcuts*). Deleting a playlist
 also asks first. With a dialog open, the window's × closes the dialog first,
 as Esc does.
+
+The notices and the red error banners float, on a computer, in the stack at
+the bottom right above the player, instead of pushing the page down; on the
+first-run screen they sit at the top, under the title bar. From the first Tab
+a “Skip to content” button appears — it is the window’s first control and
+shows only while it has the focus — and moves the focus past the navigation to
+the page. A dialog, the first-run screen, the guided tour, the equalizer and
+the “Listen together” panel make the rest of the window inert, for the keyboard
+and for screen readers alike.
 
 In the lists, Space selects the focused row and Shift+↑/↓ extends the
 selection, as in the Folders tree. A row of the queue or of a playlist you
@@ -499,7 +527,7 @@ One thing a skin cannot redraw: the dialogs that ask for a yes — linking a
 device, the «Listen together» code, invitations, the firewall question,
 deleting from disk, reviewing or replacing a skin. There a skin's layers,
 images and fonts do not apply, the text is in the system font, and only its
-colours remain. A skin's images may have at most as many pixels as 4096 ×
+colors remain. A skin's images may have at most as many pixels as 4096 ×
 4096 — checked when the skin is installed, so a skin already installed with
 larger ones keeps working — and its id cannot be a Windows device name
 (`con`, `nul`, `com1`…). The frame’s measures and every effect’s parameters
@@ -559,6 +587,11 @@ list of problems with «go» and «fix», and the whole document in a code edito
 that completes from the format's own vocabulary. A palette generator builds a
 legible set of colors from one color or from the cover that is playing.
 
+The Studio saves the draft 800 ms after your last edit, and closing Rymembra
+waits for it, whichever way you close it — the title bar’s ×, Alt+F4, the
+taskbar’s “Close window”, “Quit” in the tray — for a few seconds at most if
+the window does not answer.
+
 ### Asking instead of writing
 
 The Studio also has a chat, and it works because of three properties the skin
@@ -586,7 +619,11 @@ the thing it names.
 
 You configure the model in Settings › AI Models. Several named profiles can
 coexist; each key lives in the operating system's keychain, never in the library
-database, and never passes through the window.
+database, and never passes through the window. Each profile also has a ceiling
+on the reply, “Longest reply, in tokens” — 4096 unless you change it, from 64
+to 262,144. Whatever the ceiling, a reply stops at 4 MiB of text, and a
+service that goes quiet for two minutes after it began answering ends the turn
+as a timeout.
 
 ---
 
@@ -701,7 +738,7 @@ it, so that the `.bak` stays as a fallback.
 ```bash
 # Most of what CI's main job checks, in one go: versions, translations, CSS
 # classes, the docs and the website, the interface's build and tests, the
-# release tools' tests, formatting, clippy and about 4,000 Rust tests — all
+# release tools' tests, formatting, clippy and more than 4,000 Rust tests — all
 # runnable with no network connection. The Android build, the dependency
 # checks below, the check of the license notices and the checks for bundled
 # binaries and forbidden tools run in CI only (.github/workflows/verify.yml)
@@ -838,7 +875,11 @@ The dependencies use different licenses: the `symphonia` family is **MPL-2.0**,
 given in [Building](#building). The Geist and Bricolage Grotesque fonts are
 distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`). The APK
 carries copies of `LICENSE`, `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`,
-`TERMS.md` and the fonts’ license in `assets/legale/`.
+`TERMS.md` and the fonts’ license in `assets/legale/`, and the Windows
+installer and the Store package put the same five files next to the
+executable: *Settings › Updates › Documents* opens them as plain text with no
+network, and “Open the latest version online” opens the up-to-date one in the
+browser.
 
 The music in `site/audio/` — the website’s soundtrack, `machina.mp3`, which
 two Rust tests also play, and the twelve seconds of it in the site’s sound
@@ -952,7 +993,15 @@ constraint is stated explicitly in the terms of use.
   again. On a WebDAV server whose symbolic links loop back to a parent folder,
   listing stops at 32 levels of subfolders — the copies down to that depth
   come in as duplicate paths — and the log says so at each full re-listing,
-  every half hour.
+  every half hour. A WebDAV server that ignores `Range` plays anyway, read in
+  order, but its tags are read with at most 8 MiB per file, so the ID3v1 or
+  APE tag at the end of a large file is skipped there. A file that changes on
+  a WebDAV server or on Dropbox while it is being cached stops with “The file
+  changed on the service”: the next check picks the new version up, and you
+  play it again; OneDrive and Google Drive requests are not tied to a version.
+  A server whose certificate this PC does not recognize — a home NAS with its
+  factory certificate, say — is refused, and the message says so: give it a
+  certificate the system trusts, or add the NAS as a network folder instead.
 - **Your devices over the internet.** It needs no server of Rymembra's, and
   so it leans on public ones: n0's relays and DNS are free, rate-limited and
   without guarantees, and when both devices sit behind a carrier's NAT — two
@@ -976,11 +1025,6 @@ constraint is stated explicitly in the terms of use.
   can hold the titles on screen. Turning the minidumps off needs an option of
   the WebView2 environment that Tauri does not expose yet; see
   [`PRIVACY.md`](PRIVACY.md) § 6-bis.
-- **Sorting by title.** The Albums and Artists grids sort ignoring accents and
-  a leading article (“The Beatles” under B, “Édith Piaf” under E); the Tracks
-  list sorted by title or by shelf still puts accented initials after Z,
-  because doing it there at the same speed needs a new indexed column in the
-  database, which is planned.
 - **Proxies.** Rymembra follows the proxy set in Windows Settings
   (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
   NAS, a computer at home — and this computer itself always go direct. It does
@@ -999,7 +1043,7 @@ constraint is stated explicitly in the terms of use.
   shared, and the window becomes an interface of its own — four tabs (Home,
   Library, Search, More), a mini player, menus as sheets from the bottom,
   «Now playing» full screen, a long press for multiple selection. The
-  colours and fonts are the active skin's. What only a computer has is not
+  colors and fonts are the active skin's. What only a computer has is not
   there: the tray icon, the taskbar buttons, the window zoom, the keyboard
   shortcuts, the 3D spectrum and the Skin Studio (skins can still be chosen,
   installed and removed, not edited). Specific limits:
@@ -1043,7 +1087,7 @@ constraint is stated explicitly in the terms of use.
     app open itself from the background: if Rymembra is not running at all,
     the car says «Open Rymembra on your phone» with a button that opens it,
     and the library appears as soon as it has started once. Only trusted
-    controllers reach the music session — Android Auto is recognised by its
+    controllers reach the music session — Android Auto is recognized by its
     package and Google's certificate — and that check has yet to be tried
     with Android Auto on a real phone (with Google's Desktop Head Unit): if
     the car stops showing Rymembra, it is the first thing to look at.
