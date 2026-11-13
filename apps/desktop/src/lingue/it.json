@@ -610,7 +610,7 @@
   "list.removeFromPlaylist": "Togli {titolo} dalla playlist",
   "list.grid": "Elenco dei brani",
   "list.play": "Riproduci {titolo}",
-  "list.playNumbered": "{n}, Riproduci {titolo}",
+  "list.playNumbered": "{numero}, Riproduci {titolo}",
   "row.more": "Altre azioni per «{titolo}»",
   "row.more.aria": "Altro su {titolo}",
   "menu.open": "Apri",

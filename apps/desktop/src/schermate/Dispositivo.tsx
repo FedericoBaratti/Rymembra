@@ -452,7 +452,7 @@ function RigaBrano({
         data-numero={nelDisco || undefined}
         aria-label={
           nelDisco
-            ? t("list.playNumbered", { n: numero, titolo: brano.title })
+            ? t("list.playNumbered", { numero: String(numero), titolo: brano.title })
             : t("list.play", { titolo: brano.title })
         }
         onClick={(e) => {

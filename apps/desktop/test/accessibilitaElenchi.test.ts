@@ -67,13 +67,25 @@ test("il nome del tasto della riga contiene il numero che la riga mostra, in tut
   for (const nome of ["it", "en"] as const) {
     const testo = lingua(nome)["list.playNumbered"];
     assert.ok(testo !== undefined, `${nome}: manca list.playNumbered`);
-    assert.match(testo, /\{n\}/, `${nome}: il numero non c'è`);
+    // `{numero}` e non `{n}`: `t` formatta i numeri con la lingua attiva e
+    // sceglie il plurale su `n`, mentre il numero che la riga mostra è la cifra
+    // nuda (il chiamante passa `String(numero)`).
+    assert.match(testo, /\{numero\}/, `${nome}: il numero non c'è`);
+    assert.doesNotMatch(testo, /\{n\}/, `${nome}: «{n}» sarebbe formattato e scelto per plurale`);
     assert.match(testo, /\{titolo\}/, `${nome}: il titolo non c'è`);
-    const detto = testo.replace("{n}", "3").replace("{titolo}", "Terzo");
+    const detto = testo.replace("{numero}", "3").replace("{titolo}", "Terzo");
     assert.ok(contenuto("3", detto), `${nome}: «${detto}» non contiene il 3 che si vede`);
-    // Una riga col numero 3 e un titolo qualunque, non solo uno senza cifre.
-    const conCifre = testo.replace("{n}", "12").replace("{titolo}", "Track 7");
+    // Una riga col numero 12 e un titolo con delle cifre, non solo uno senza.
+    const conCifre = testo.replace("{numero}", "12").replace("{titolo}", "Track 7");
     assert.ok(contenuto("12", conCifre), `${nome}: «${conCifre}» non contiene il 12 che si vede`);
+    // Una libreria grande: la riga 12345 mostra «12345», e il nome deve dirlo
+    // così, non «12.345» o «12,345» (due parole per axe, nessuna delle quali è 12345).
+    const grande = testo.replace("{numero}", String(12345)).replace("{titolo}", "Mille");
+    assert.ok(contenuto("12345", grande), `${nome}: «${grande}» non contiene il 12345 che si vede`);
+    assert.ok(
+      !contenuto("12345", `${(12345).toLocaleString(nome)}, Mille`),
+      `${nome}: la prova non distingue il numero formattato`,
+    );
   }
   // E la forma senza numero, quella di prima, non lo contiene: il difetto.
   assert.ok(!contenuto("3", lingua("en")["list.play"]!.replace("{titolo}", "Terzo")));
@@ -83,7 +95,7 @@ test("la riga dei brani chiama il numero che mostra, e lo stesso valore va nel n
   const elenco = sorgente("schermate/Elenco.tsx");
   const tasto = elementoDi(elenco, 'className="indice track-index"');
   // Il nome viene dalla chiave col numero, non da quella senza.
-  assert.match(tasto, /aria-label=\{t\("list\.playNumbered", \{ n: numero, titolo: brano\.title \}\)\}/);
+  assert.match(tasto, /aria-label=\{t\("list\.playNumbered", \{ numero: String\(numero\), titolo: brano\.title \}\)\}/);
   // E il numero è quello che il `span.numero` disegna: una costante sola, non due espressioni da tenere d'accordo.
   assert.match(elenco, /const numero = numeroTraccia \? \(brano\.trackNumber \?\? indice \+ 1\) : indice \+ 1;/);
   assert.match(elenco, /<span className="numero">\{numero\}<\/span>/);
@@ -93,7 +105,7 @@ test("anche la lista dei brani di un altro dispositivo, dove il numero si vede, 
   const lontana = sorgente("schermate/Dispositivo.tsx");
   const tasto = elementoDi(lontana, 'className="avvia-lontana"');
   // Con la copertina al posto del numero il nome resta «Play <titolo>»: non c'è testo visibile da contenere.
-  assert.match(tasto, /nelDisco\s*\?\s*t\("list\.playNumbered", \{ n: numero, titolo: brano\.title \}\)\s*:\s*t\("list\.play", \{ titolo: brano\.title \}\)/);
+  assert.match(tasto, /nelDisco\s*\?\s*t\("list\.playNumbered", \{ numero: String\(numero\), titolo: brano\.title \}\)\s*:\s*t\("list\.play", \{ titolo: brano\.title \}\)/);
   assert.match(lontana, /const numero = brano\.trackNumber \?\? indice \+ 1;/);
   assert.match(lontana, /<span className="numero-lontana">\{numero\}<\/span>/);
 });

@@ -335,7 +335,7 @@ const RigaBrano = memo(function RigaBrano({
              Col numero davanti: il tasto mostra il numero della riga, e il
              nome accessibile deve contenere quel che si vede (WCAG 2.5.3, axe
              `label-content-name-mismatch`) — chi comanda a voce dice «clic 3». */
-          aria-label={t("list.playNumbered", { n: numero, titolo: brano.title })}
+          aria-label={t("list.playNumbered", { numero: String(numero), titolo: brano.title })}
           /* Il fuoco arriva con ←→ dalla riga, non con Tab: vedi `fuoco.ts`. */
           tabIndex={-1}
           /* Senza dispositivo audio il comando fallirebbe a ogni clic: meglio un
