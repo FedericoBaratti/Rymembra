@@ -199,9 +199,9 @@ const SELETTORE: Record<Ancora, string> = {
 };
 
 /**
- * I tredici passi, ognuno con le ancore che gli vanno bene in ordine di scelta.
+ * I passi del giro, ognuno con le ancore che gli vanno bene in ordine di scelta.
  *
- * Quindici ancore e tredici passi, perché due passi parlano di due cose che sono la
+ * Più ancore che passi, perché due passi parlano di due cose che sono la
  * stessa cosa vista da due posti: la colonna di destra e il pannello della
  * coda, la schermata a tutto schermo e il testo che ci sta dentro. Si illumina
  * la prima che c'è, e il testo nomina tutte e due — la seconda è dove si
@@ -616,6 +616,11 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
 
   const primo = indice === 0;
   const ultimo = indice === COPIONE.length - 1;
+  // Quanti passi ha **questo** giro: gli stessi che dice il contatore («3 di
+  // 14»). Il benvenuto li nomina («In {n} passi…») con questo numero, non con
+  // un numero scritto a parole nella frase, che restava «tredici» quando i
+  // passi erano quattordici (R17-7).
+  const totale = COPIONE.length - saltati.size;
 
   return (
     <>
@@ -663,11 +668,11 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
             <span className="giro-passi">
               {t("tour.progress", {
                 n: indice + 1 - [...saltati].filter((saltato) => saltato < indice).length,
-                totale: COPIONE.length - saltati.size,
+                totale,
               })}
             </span>
           </div>
-          <p>{t(`tour.step.${passo[0]}.body`)}</p>
+          <p>{t(`tour.step.${passo[0]}.body`, { n: totale })}</p>
           <div className="giro-tasti">
             {/* Primo nell'ordine del tabulatore e ultimo per importanza: chi
                 vuole uscire lo trova subito, chi vuole andare avanti ha già il

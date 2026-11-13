@@ -225,3 +225,25 @@ test("le frasi da computer che il telefono disegna hanno la loro variante (R17-1
     assert.doesNotMatch(how, lingua === "it" ? /\btogli\b/ : /\bdelete\b/, lingua);
   }
 });
+
+test("l'avviso dell'aggiornamento non promette una copia che può essere saltata (R06b-2)", () => {
+  // `Istantanea::Saltata`: senza spazio la copia di prima della migrazione non si fa, e
+  // l'aggiornamento procede. La fase che la finestra riceve («aggiornamento») è annunciata
+  // **prima** della copia: non sa ancora com'è andata, e la frase non lo dice per lei.
+  for (const [lingua, d] of LINGUE) {
+    for (const chiave of ["startup.updating.detail", "startup.updating.detail.telefono"]) {
+      const testo = d[chiave] ?? "";
+      assert.match(testo, lingua === "it" ? /prova prima a farne una copia/ : /first tries to make a copy/, `${lingua} ${chiave}`);
+      assert.match(testo, lingua === "it" ? /se non c'è abbastanza spazio libero la salta/ : /if there isn’t enough free space it skips/, `${lingua} ${chiave}`);
+    }
+  }
+  // Il nome della copia, che è un dato, sta solo nella frase del computer.
+  assert.match(IT["startup.updating.detail"] ?? "", /\{copia\}/);
+  assert.doesNotMatch(IT["startup.updating.detail.telefono"] ?? "", /\{copia\}/);
+});
+
+test("lo stato dell'apertura è la voce di Rymembra, non una prima persona (D-82)", () => {
+  for (const chiave of ["startup.opening", "startup.updating", "primo.cercando", "primo.scansione", "together.code.waiting", "devices.link.waiting", "folders.add.waiting", "settings.cloud.waiting", "together.code.computing"]) {
+    assert.match(IT[chiave] ?? "", /^(Fatto\. )?Rymembra /, `it ${chiave}`);
+  }
+});

@@ -6,7 +6,7 @@
  * repository, e un `<pre>` che va a capo lo legge chiunque — gli avvisi delle
  * terze parti sono più di un mebibyte di elenchi, e impaginarli costerebbe una
  * dipendenza per un testo che si scorre e si copia. La versione impaginata, e
- * più nuova, è a un tasto.
+ * più nuova, è a un tasto: sta su GitHub, accanto al codice, non su un sito a parte.
  */
 import { Dialogo } from "../Dialogo";
 import { t } from "../lingue";
@@ -14,13 +14,13 @@ import { t } from "../lingue";
 export function DocumentoLocale({
   titolo,
   testo,
-  onSito,
+  onOnline,
   onChiudi,
 }: {
   titolo: string;
   testo: string;
-  /** Apre la versione sul sito, nel browser. */
-  onSito: () => void;
+  /** Apre la versione aggiornata su GitHub, nel browser. */
+  onOnline: () => void;
   onChiudi: () => void;
 }) {
   return (
@@ -30,7 +30,7 @@ export function DocumentoLocale({
         {testo}
       </pre>
       <div className="tasti-finestrella">
-        <button type="button" className="bottone" onClick={onSito}>
+        <button type="button" className="bottone" onClick={onOnline}>
           {t("settings.docs.online")}
         </button>
         <button type="button" className="bottone primario" onClick={onChiudi} data-fuoco-iniziale>
