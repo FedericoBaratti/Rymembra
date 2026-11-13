@@ -1158,6 +1158,11 @@ The rest of what the two reviews fixed, by area.
   under that name. And the errors name the cause — a missing key, a key
   written for another address, an incomplete profile, the limit of 16
   profiles — instead of “No model is configured”.
+- **Drafts that travel.** A Studio draft arriving from a profile or from Drive
+  with a manifest over 512 KiB (`MAX_MANIFEST_BYTES`, the cap a skin package
+  already had) is not written, and the restore says so; and a draft whose id
+  is a Windows device name (`aux`, `con`…) no longer drops out of the backup:
+  it is listed, and read from its verbatim path.
 
 **Settings.**
 
