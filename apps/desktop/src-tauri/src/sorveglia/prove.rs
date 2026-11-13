@@ -1304,6 +1304,31 @@ fn il_volume_andato_lascia_le_cartelle_assenti_e_le_riprende_il_riarmo_di_sempre
     );
 }
 
+/// La guardia sta davvero dentro la funzione che `notify` tiene: finché
+/// l'osservatore vive la ricevuta non si disconnette, e dopo la caduta sì.
+/// Senza la guardia catturata — `let _guardia = &guardia;` in `osserva` — il
+/// ricevitore sarebbe disconnesso subito, e la risposta a Windows non
+/// aspetterebbe niente.
+#[test]
+fn la_ricevuta_di_un_osservatore_vero_si_disconnette_solo_dopo_la_caduta() {
+    use std::sync::mpsc::TryRecvError;
+
+    let cartella = tempfile::tempdir().expect("cartella");
+    let radice = cartella.path().to_string_lossy().into_owned();
+    let (posta, _orecchio) = channel();
+    let osservatore = osserva(&radice, &posta).expect("osservatore");
+    assert!(
+        matches!(osservatore.chiuso.try_recv(), Err(TryRecvError::Empty)),
+        "la ricevuta è disconnessa con l'osservatore vivo: la guardia non è catturata"
+    );
+    let ricevuta = osservatore.lascia();
+    let non_confermate =
+        super::filo::aspetta_la_chiusura(vec![ricevuta], Instant::now() + CHIUSURA_ATTESA);
+    if cfg!(windows) {
+        assert_eq!(non_confermate, 0, "notify non ha confermato la chiusura");
+    }
+}
+
 #[test]
 fn la_chiusura_si_conferma_solo_quando_la_guardia_e_caduta() {
     // La ricevuta dell'osservatore: finché la guardia è viva non è confermata,

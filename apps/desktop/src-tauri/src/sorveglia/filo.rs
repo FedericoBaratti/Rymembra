@@ -246,13 +246,13 @@ pub(super) struct Osservatore {
     dentro: notify::RecommendedWatcher,
     /// Il lato che aspetta: non riceve mai niente, si disconnette quando la
     /// funzione di `notify` — e con lei la guardia — è caduta.
-    chiuso: Receiver<()>,
+    pub(super) chiuso: Receiver<()>,
 }
 
 impl Osservatore {
     /// Lo lascia cadere, e restituisce il ricevitore che dirà quando `notify`
     /// ha chiuso la cartella: vedi [`aspetta_la_chiusura`].
-    fn lascia(self) -> Receiver<()> {
+    pub(super) fn lascia(self) -> Receiver<()> {
         let Self { dentro, chiuso } = self;
         drop(dentro);
         chiuso
@@ -545,7 +545,7 @@ impl Motore {
     /// osservatore o senza volume (di rete, del cloud, spenta: niente da
     /// lasciare). Se Windows non la accetta la sorveglianza resta com'era:
     /// niente va perso, solo l'espulsione sarà rifiutata come prima.
-    fn registra_il_volume(&mut self, radice: &str, posta: &Sender<Messaggio>) {
+    fn registra_il_volume(&mut self, radice: &str, posta: &Sender<Messaggio>, elenco: &[String]) {
         let Some(sorvegliata) = self.cartelle.get(radice) else {
             return;
         };
@@ -563,10 +563,19 @@ impl Motore {
         match rymembra_barra::osserva_volume(&volume, chi_risponde) {
             Ok(registrazione) => {
                 self.registrazioni.insert(volume, registrazione);
+                // Una riga anche quando va bene, senza il nome del volume:
+                // se un'espulsione viene rifiutata, il diario deve poter dire
+                // se la registrazione non c'è mai stata o se è Windows che non
+                // ha avvisato.
+                nota!(
+                    "[sorveglia] {} avviserà quando il suo volume sta per essere espulso ({} volumi registrati)",
+                    nel_diario(radice, elenco),
+                    self.registrazioni.len()
+                );
             }
             Err(guasto) => nota!(
                 "[sorveglia] {} non avviserà quando il suo volume sta per essere espulso: {guasto}",
-                nel_diario(radice, &self.elenco)
+                nel_diario(radice, elenco)
             ),
         }
     }
@@ -1068,7 +1077,7 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
             .piano
             .imposta(radice, sorvegliata.ritmo(), Instant::now());
         motore.cartelle.insert(radice.clone(), sorvegliata);
-        motore.registra_il_volume(radice, posta);
+        motore.registra_il_volume(radice, posta, &radici);
     }
     motore.pota_le_registrazioni();
     motore.elenco = radici;
@@ -1345,7 +1354,8 @@ fn riallinea(
             .get(&radice)
             .is_none_or(|vecchia| vecchia.come != nuova.come);
         motore.cartelle.insert(radice.clone(), nuova);
-        motore.registra_il_volume(&radice, posta);
+        let elenco = motore.elenco.clone();
+        motore.registra_il_volume(&radice, posta, &elenco);
         if cambiata {
             pubblica_quadro(app, motore);
         }
