@@ -413,16 +413,21 @@
    restavano tagliati dal bordo della scheda, e i percorsi lunghi illeggibili
    (T3-2). Con `minmax(0, 1fr)` la colonna sta nella scheda e a cedere è la riga.
 
-   Qui e non nel foglio di base (`casa.css`): sul computer la riga resta com'è,
-   col prefisso accorciato dall'ellissi. Sul telefono un percorso accorciato
-   non si può leggere né spostare con il mouse sopra, e a carattere grande ancora
-   meno: si spezza, in qualunque punto, e il campo prende la riga intera. */
+   Qui e non nel foglio di base (`casa.css`, `navigazione.css`): sul computer le
+   righe restano come sono, col percorso accorciato dall'ellissi. Sul telefono un
+   percorso accorciato non si può leggere né spostare con il mouse sopra, e a
+   carattere grande ancora meno: si spezza, in qualunque punto. Vale per due
+   posti: il prefisso vecchio della rimappatura, che resta in linea col conteggio
+   finché ci sta e altrimenti prende la riga e va a capo da sé; e l'elenco di
+   quel che il profilo cambierebbe (`library.roots: — → ["/storage/…"]`), dove
+   il valore era l'unica cosa da leggere e usciva dalla scheda. Il campo di
+   destinazione prende la riga intera. */
 :root[data-forma="telefono"] .scheda-anteprima:has(> .titoletto),
 :root[data-forma="telefono"] .scheda-anteprima .rimappature {
   grid-template-columns: minmax(0, 1fr);
 }
-:root[data-forma="telefono"] .rimappatura-da {
-  flex-basis: 100%;
+:root[data-forma="telefono"] .rimappatura-da,
+:root[data-forma="telefono"] .scheda-anteprima .cartella .percorso {
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
