@@ -660,7 +660,7 @@ holds:
 | --- | --- |
 | `manifesto.json` | What the archive claims to be, and an explicit list of what it left out |
 | `preferenze.json` | Your settings — theme, skin, equalizer, shortcuts, watched folders |
-| `sincronia/rymembra-<device>.v1.json.gz` | Play counts, ratings, favorites, resume positions, playlists |
+| `sincronia/rymembra-<device>.v1.json.gz` | Play counts, ratings, favorites, playlists |
 | `biblioteca.v1.json` | Listening history, your metadata corrections, lyrics, the "to buy" list |
 | `copertine/…` | The cover art cache |
 | `skin/…` | Installed skins and Skin Studio drafts |
@@ -1146,8 +1146,8 @@ any of it. The same copy keeps a library of its own, in
 places in the application’s private folder under `%LOCALAPPDATA%\Packages\`;
 uninstalling it from Windows removes that folder. It does not open the
 library of a copy installed with the installer on the same PC: two copies
-opening the same database would damage it. The first time it starts, once
-and only while its own library is still empty, it offers to **copy** the
+opening the same database would damage it. While its own library is still
+empty, it offers to **copy** the
 library it finds in the folder without the suffix — the installer copy’s,
 or its own from before this version — with its covers and skins, writing
 over nothing; then it closes. The original stays where it was, untouched,

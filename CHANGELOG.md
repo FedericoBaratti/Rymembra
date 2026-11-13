@@ -377,9 +377,12 @@ migrations, is named under Database, with what going back costs.
   and removes with the app). Opening the installer copy’s library from inside
   the package split the database from its `-wal` and `-shm`, which went to the
   package’s private folder. On first start, while its library is still empty,
-  the Store copy offers once to copy the library it finds — the installer
-  copy’s, or its own from before this version — leaves the original untouched,
-  and closes; it no longer moves Aether’s data folder. The Store package
+  the Store copy offers to copy the library it finds — the installer copy’s,
+  or its own from before this version — leaves the original untouched, and
+  closes. “Start fresh” turns the offer down for good; Escape or a click
+  outside only puts it off to the next start. It no longer moves Aether’s data
+  folder, and its “Open the data folder” and “Open the log folder” open the
+  package’s private folder, where Windows really keeps the files. The Store package
   requires Windows 10 2004 (build 19041).
 - **On the phone, for this release,** the app stays in portrait, and the
   guided tour is not offered: it started out of sight and filled the queue.
@@ -1019,6 +1022,21 @@ The rest of what the two reviews fixed, by area.
   doing nothing. Importing from a link, the button says “Importing…” only
   while it writes, “Reading…” while the link is read again and “Calculating…”
   while the plan is recomputed.
+- **Reading a profile into a new library applies all of it.** On a library
+  that had no identity yet (a reinstall, a second computer), the safety copy
+  taken just before the import gave it one, so the import saw “another
+  library” and dropped play counts, ratings, favorites, history and playlists
+  while reporting only “3 settings applied”. If the library part of a profile
+  is ever refused, the result now says so.
+- **A profile read before the music is scanned says what it can’t attach
+  yet** — play counts, ratings, favorites, history, corrections and playlist
+  entries for tracks the library doesn’t have — before you apply it. Scan,
+  read the same file again, and it completes what was left: playlists get
+  their tracks in the profile’s order, once, and nothing is counted twice.
+  The release notes now say to scan first, and no longer list “resume
+  positions” among what a profile carries.
+- On the phone, the plan of a profile no longer runs off the right edge: the
+  folder field and the track count are whole, and long paths wrap.
 
 **Explore, catalogs and metadata.**
 
@@ -1316,7 +1334,8 @@ The rest of what the two reviews fixed, by area.
   Rymembra closed without folding its journal back into the database, so
   `rymembra.db-wal` stayed full, and a copy put in place of `rymembra.db` as
   the README said took that journal as its own and came back as the new
-  schema, or malformed. A clean exit now leaves the journal empty, and
+  schema, or malformed. A clean exit now leaves the journal empty, also when
+  it happens with a track playing, and
   *Settings › Library and data* has “Go back to the copy from before the
   update” (see Database).
 - The message for a database update that stopped partway no longer says the
@@ -1363,6 +1382,10 @@ The rest of what the two reviews fixed, by area.
   promises an automatic retry where nothing retries. The damaged-database
   instructions move `rymembra.db`, `-wal` and `-shm` together before copying
   the `.bak`.
+- **The diary no longer calls an expected outcome an error.** Codes of
+  severity “info” — the audio output still opening at start-up, which showed
+  up at every start with a restored queue, “no results”, “canceled” — are
+  written as `[esito]`, not `[errore]`.
 - **The English interface uses American spelling, curly quotes “ ” and the ’
   apostrophe everywhere**, and no longer has calques such as “Redo the last
   one”.

@@ -123,8 +123,9 @@ si usano dove sono. Per Rymembra è trasparente, con queste conseguenze:
   (`trasloco::copia_la_libreria_di`). Il database si copia coi suoi file in una
   cartella di passaggio, si porta alla versione di questa build ed entra nella
   libreria; copertine e skin si copiano senza sovrascrivere niente; poi
-  Rymembra si chiude. L'originale resta com'era. Se la proposta si rifiuta, non
-  torna. La copia del Store non fa il trasloco dalla cartella di Aether;
+  Rymembra si chiude. L'originale resta com'era. «Comincia da capo» la rifiuta
+  per sempre; Escape, la × o un clic fuori la rimandano al prossimo avvio,
+  finché la libreria è vuota. La copia del Store non fa il trasloco dalla cartella di Aether;
 - il Gestore credenziali di Windows non è virtualizzato: gli account collegati
   (servizio `io.github.federicobaratti.rymembra`) sono gli stessi per le due
   copie.

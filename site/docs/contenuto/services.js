@@ -49,7 +49,7 @@
             head: ["Data", "Shape", "Rule"],
             rows: [
               ["Play counts", "`Contatore`", "Each device only increments its own counter; per device take the max, total = sum (5 plays on the laptop + 3 on the phone = 8). Imported history is the pseudo-device `importazione`"],
-              ["Rating, like, last played, resume position, active skin", "`Registro` (`Voto`, `Interruttore`, `Momento`, `Scelta`)", "Newest timestamp wins; deterministic tie-breaks (higher rating, liked = OR, max ms, larger id)"],
+              ["Rating, like, last played, active skin", "`Registro` (`Voto`, `Interruttore`, `Momento`, `Scelta`)", "Newest timestamp wins; deterministic tie-breaks (higher rating, liked = OR, max ms, larger id)"],
               ["Playlist order", "`Sequenza`", "Each element has an identity `<device>:<n>` and an «after» pointer; order is a traversal with children by descending identity; concurrent inserts are both kept; removals are tombstones"],
               ["Deletions", "lapidi", "A playlist tombstone removes the playlist only if it is newer than the playlist's last change; track tombstones never delete rows"],
             ],

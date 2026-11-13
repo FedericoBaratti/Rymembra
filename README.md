@@ -329,7 +329,9 @@ a longer listening history than the public API offers.
   a playlist, switches off a watched folder, removes a like or clears a
   rating, and in a playlist both libraries have it only appends the tracks
   missing here, without reordering it or changing its rules (a different
-  playlist that only shares the name enters beside it). A skin the
+  playlist that only shares the name enters beside it). If the music is not
+  scanned yet, the plan lists what it can’t attach yet; scan, then read the
+  same file again, and it completes what was left. A skin the
   profile would make the one worn passes the same review as an installed
   `.ryskin`, or stays installed but not worn. The old seventeen-line JSON is
   still read, and no longer written. Profiles and skin packages written by the
@@ -639,9 +641,10 @@ On a computer, two ways, the same program:
   of its own, separate from the installer copy’s
   (`%APPDATA%\io.github.federicobaratti.rymembra.store`, which Windows keeps
   inside the package), because two copies opening the same database would
-  damage it. The first time it starts, while its library is still empty, it
-  offers once to copy the library of an installer copy on the same PC — the
-  original stays as it was — and then closes; the accounts in Windows’
+  damage it. While its library is still empty, it offers to copy the library
+  of an installer copy on the same PC — the original stays as it was — and
+  then closes; “Start fresh” turns the offer down for good, while Escape only
+  puts it off to the next start; the accounts in Windows’
   Credential Manager are shared by the two. See [`PRIVACY.md`](PRIVACY.md) § 6.
 
 On a phone, **the APK**, Android 8 or later, 64-bit (ARM):
@@ -662,8 +665,11 @@ On a phone, **the APK**, Android 8 or later, 64-bit (ARM):
   APK: Android refuses to install one over the other, and Rymembra says so
   instead of offering the update. To move to the public version without
   losing your library, export the profile (*Settings › Library and data ›
-  “Export the profile…”*), uninstall Rymembra, install the APK and, there,
-  “Read a profile…”. Your music files stay where they are; the connected
+  “Export the profile…”*), uninstall Rymembra and install the APK; there,
+  allow access to your music, add your folders and let the scan finish, and
+  only then “Read a profile…” — ratings, favorites, history and playlists
+  attach to the tracks the library has found. Your music files stay where they
+  are; the connected
   accounts and the linked devices have to be connected again, because their
   secrets never leave the phone and the profile does not carry them.
 
