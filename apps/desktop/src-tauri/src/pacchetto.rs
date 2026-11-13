@@ -135,13 +135,6 @@ pub(crate) fn per_esplora_se_contiene(percorso: &Path, file: &str) -> PathBuf {
 /// da dentro il pacchetto, tradotto nella cartella privata se è lì che sta.
 ///
 /// Fuori dal Store torna `percorso` com'è, senza chiedere niente a WinRT.
-#[cfg_attr(
-    target_os = "android",
-    allow(
-        dead_code,
-        reason = "sul telefono la cartella non si apre, si condivide il diario: `diario_apri`"
-    )
-)]
 pub(crate) fn per_esplora(percorso: &Path) -> PathBuf {
     visto_da_fuori(percorso, None)
 }

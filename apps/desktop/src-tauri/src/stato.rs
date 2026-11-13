@@ -1184,8 +1184,14 @@ fn uscendo_con(stato: &Stato, ottimizzato: &AtomicBool) {
             err.code().kind().code(),
             err.cause().unwrap_or("—")
         ),
-        None => nota!(
+        // Alle chiamate dopo la prima non si tentava nessuna ottimizzazione:
+        // quel che resta da dire è il giornale.
+        None if ottimizza => nota!(
             "[uscita] ottimizzazione del database saltata: lucchetto non preso in {} ms",
+            ATTESA_OTTIMIZZAZIONE_USCITA.as_millis()
+        ),
+        None => nota!(
+            "[uscita] giornale del database non svuotato: lucchetto non preso in {} ms",
             ATTESA_OTTIMIZZAZIONE_USCITA.as_millis()
         ),
     }
