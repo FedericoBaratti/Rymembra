@@ -26,6 +26,7 @@ import type {
 } from "./ipc/lontano";
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
+import type { EsitoMaiusc } from "./tieniSkin";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
 import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
 
@@ -369,6 +370,12 @@ export const ipc = {
   // scelta vive in `settings`, e la finestra non deve ricordarsela.
   skin: (id?: string) => invoke<Skin>("skin", { id: id ?? null }),
   skinElenco: () => invoke<VoceSkin[]>("skin_elenco"),
+  // Maiusc tenuto mentre Rymembra si apriva (D-48, F10-2): lo guarda il nucleo
+  // dal sistema, dalla comparsa della finestra, perché la pagina non può — la
+  // finestra compare prima di lei, e un tasto arriva solo a una pagina col
+  // fuoco. Si richiede finché risponde `inCorso`; `tenuto` si dice una volta
+  // sola. Vedi `maiuscTenutoAllAvvio` in `tieniSkin.ts`.
+  maiuscAllAvvio: () => invoke<EsitoMaiusc>("maiusc_all_avvio"),
   // Senza `sostituisci`, un file con l'id di una skin installata e diversa non
   // scrive niente e risponde `daSostituire`: la finestra chiede, e richiama
   // con `true`. La skin di prima resta da parte (`VoceSkin.sostituita`).

@@ -53,6 +53,7 @@ mod ia;
 mod importa;
 mod insieme;
 mod lontano;
+mod maiusc;
 mod manutenzione;
 mod media;
 mod metadati;
@@ -642,6 +643,9 @@ pub fn run() {
             // solo punto in cui lo si può riconoscere. Vedi
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
+            // Maiusc tenuto mentre ci si apre (D-48): l'ascolto parte subito,
+            // perché la pressione che conta può cominciare prima della finestra.
+            maiusc::avvia(app.handle());
             // Sul telefono la finestra la crea Rymembra, col gestore che nega i
             // permessi alla pagina: vedi `telefono::crea_la_finestra`. Subito,
             // dove prima la creava Tauri, perché quel che segue la trovi.
@@ -801,6 +805,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pronto,
             finestra_mostra,
+            maiusc::maiusc_all_avvio,
             stato::libreria_fase,
             finestra_trascina,
             finestra_riduci,

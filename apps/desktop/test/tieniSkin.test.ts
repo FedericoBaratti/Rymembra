@@ -2,7 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { FINESTRA_MAIUSC_MS, SECONDI_PER_TENERE, maiuscAllAvvio, secondiRimasti } from "../src/tieniSkin.ts";
+import {
+  ATTESA_MAIUSC_MS,
+  PASSO_MAIUSC_MS,
+  SECONDI_PER_TENERE,
+  maiuscTenutoAllAvvio,
+  nomeDellaSkin,
+  secondiRimasti,
+  type EsitoMaiusc,
+} from "../src/tieniSkin.ts";
 
 /*
  * Le vie d'uscita da una skin che rende la finestra inservibile (D-48), e le
@@ -15,14 +23,93 @@ import { FINESTRA_MAIUSC_MS, SECONDI_PER_TENERE, maiuscAllAvvio, secondiRimasti 
  */
 const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 
-test("Maiusc vale solo tenuto, e solo nei primi secondi", () => {
-  assert.equal(maiuscAllAvvio({ key: "Shift", repeat: true }, 200), true);
-  assert.equal(maiuscAllAvvio({ key: "Shift", repeat: true }, FINESTRA_MAIUSC_MS), true);
-  // Una pressione breve, per una scorciatoia, non ripete.
-  assert.equal(maiuscAllAvvio({ key: "Shift", repeat: false }, 200), false);
-  // Dopo la finestra d'avvio, Maiusc è Maiusc.
-  assert.equal(maiuscAllAvvio({ key: "Shift", repeat: true }, FINESTRA_MAIUSC_MS + 1), false);
-  assert.equal(maiuscAllAvvio({ key: "a", repeat: true }, 200), false);
+/** Un nucleo finto: risponde alla pagina con la sequenza data, e un orologio che avanza solo se la pagina aspetta. */
+function scena(risposte: EsitoMaiusc[]) {
+  let ora = 0;
+  const chiamate: number[] = [];
+  const attese: number[] = [];
+  return {
+    chiedi: () => {
+      chiamate.push(ora);
+      return Promise.resolve(risposte[Math.min(chiamate.length - 1, risposte.length - 1)]);
+    },
+    attendi: (ms: number) => {
+      attese.push(ms);
+      ora += ms;
+      return Promise.resolve();
+    },
+    adesso: () => ora,
+    chiamate,
+    attese,
+  };
+}
+
+test("la pagina chiede al nucleo se Maiusc era tenuto, e richiede finché non è deciso", async () => {
+  // F10-2: la decisione non è della pagina — la finestra compare prima che la
+  // skin sia pronta, e un keydown arriva solo a una pagina col fuoco. Il nucleo
+  // misura dalla comparsa della finestra e la pagina chiede com'è andata.
+  let s = scena(["tenuto"]);
+  assert.equal(await maiuscTenutoAllAvvio(s.chiedi, s.attendi, s.adesso), true);
+  assert.deepEqual(s.attese, []);
+
+  s = scena(["no"]);
+  assert.equal(await maiuscTenutoAllAvvio(s.chiedi, s.attendi, s.adesso), false);
+  assert.deepEqual(s.attese, []);
+
+  // La finestra non si vede ancora, o i cinque secondi non sono finiti.
+  s = scena(["inCorso", "inCorso", "inCorso", "tenuto"]);
+  assert.equal(await maiuscTenutoAllAvvio(s.chiedi, s.attendi, s.adesso), true);
+  assert.deepEqual(s.attese, [PASSO_MAIUSC_MS, PASSO_MAIUSC_MS, PASSO_MAIUSC_MS]);
+
+  s = scena(["inCorso", "no"]);
+  assert.equal(await maiuscTenutoAllAvvio(s.chiedi, s.attendi, s.adesso), false);
+});
+
+test("un nucleo che non decide mai non tiene la pagina in attesa per sempre", async () => {
+  const s = scena(["inCorso"]);
+  assert.equal(await maiuscTenutoAllAvvio(s.chiedi, s.attendi, s.adesso), false);
+  assert.ok(s.adesso() >= ATTESA_MAIUSC_MS, "ha rinunciato prima del tetto");
+  assert.ok(s.adesso() < ATTESA_MAIUSC_MS + PASSO_MAIUSC_MS * 2, "ha aspettato oltre il tetto");
+});
+
+test("un errore del nucleo non si nasconde", async () => {
+  await assert.rejects(
+    maiuscTenutoAllAvvio(
+      () => Promise.reject(new Error("guasto")),
+      () => Promise.resolve(),
+      () => 0,
+    ),
+    /guasto/,
+  );
+});
+
+test("il nome della skin per la notizia: quello dell'elenco, e niente al suo posto se l'elenco non c'è", () => {
+  // F10-2 (Bassa): la notizia diceva «“neon”» (l'id) perché l'elenco delle
+  // skin non era ancora arrivato; chi cerca il nome deve saper dire «non c'è».
+  const elenco = [
+    { id: "plain", nome: "Plain" },
+    { id: "neon", nome: "Neon" },
+  ];
+  assert.equal(nomeDellaSkin(elenco, "neon"), "Neon");
+  assert.equal(nomeDellaSkin(elenco, "vinile"), undefined);
+  assert.equal(nomeDellaSkin([], "neon"), undefined);
+});
+
+test("Maiusc all'avvio lo decide il nucleo: la pagina non ascolta i tasti e non conta cinque secondi dalla skin", () => {
+  const skin = sorgente("skinAttiva.ts");
+  // Niente più keydown, e niente `avvio.current = performance.now()` quando la
+  // skin risponde: era quel conto, a partire da dopo la finestra.
+  assert.doesNotMatch(skin, /addEventListener\("keydown", sente/);
+  assert.doesNotMatch(skin, /avvio\.current = performance\.now\(\)/);
+  assert.match(skin, /maiuscTenutoAllAvvio\(ipc\.maiuscAllAvvio,/);
+  // La domanda parte dopo aver indossato la skin che arriva, e non prima.
+  const apertura = skin.slice(skin.indexOf("ipc\n      .skin()"), skin.indexOf("// Una volta sola, all'apertura"));
+  assert.match(apertura, /applicaSkin\(s\);[\s\S]*setSkinAttiva\(s\);[\s\S]*controllaMaiusc\(s\)/);
+  // E il nome della skin di prima si cerca anche quando l'elenco non è ancora arrivato.
+  assert.match(skin, /nomeDellaSkin\(skinAdesso\.current, prima\.id\)/);
+  assert.match(skin, /nomeDellaSkin\(await ipc\.skinElenco\(\), prima\.id\)/);
+  // Il comando del nucleo ha il suo passaggio in `ipc`.
+  assert.match(sorgente("ipc.ts"), /maiuscAllAvvio: \(\) => invoke<EsitoMaiusc>\("maiusc_all_avvio"\)/);
 });
 
 test("il conto della domanda va da quindici a zero, e non sotto", () => {
@@ -59,10 +146,10 @@ test("la domanda nasce dai file, e non da «Rimettila» né da Maiusc", () => {
   assert.match(copia, /await scegliSkin\(risposta\.installata\.id\)/);
   assert.doesNotMatch(copia, /indossaDaFile|setDaTenere\(\{/);
   // Maiusc all'avvio sceglie Plain e lo dice; non chiede di tenerla.
-  const maiusc = skin.slice(skin.indexOf("const sente = (e: KeyboardEvent)"), skin.indexOf("window.addEventListener(\"keydown\", sente, true)"));
-  assert.match(maiusc, /maiuscAllAvvio\(e, trascorsi\)/);
+  const maiusc = skin.slice(skin.indexOf("const controllaMaiusc = async"), skin.indexOf("const [turnoSkin] = useState(vinceLUltima)"));
   assert.match(maiusc, /scegliSkinRef\.current\(DI_SERIE\)/);
   assert.match(maiusc, /setTornataAPlain/);
+  assert.doesNotMatch(maiusc, /setDaTenere/);
 });
 
 test("«Non ora» su una skin che ha sostituito quella indossata rimette la versione di prima", () => {

@@ -14,10 +14,11 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in quattro posti, il modulo `finestra`, una
+//! Così il codice `unsafe` sta tutto in cinque posti, il modulo `finestra`, una
 //! funzione di [`unita`](crate::unita_di), le tre chiamate di
-//! [`sottofondo`](crate::Sottofondo) e le quattro di
-//! [`espulsione`](crate::osserva_volume), dentro un crate che dichiara
+//! [`sottofondo`](crate::Sottofondo), le quattro di
+//! [`espulsione`](crate::osserva_volume) e la lettura di Maiusc di
+//! [`maiusc`](crate::maiusc_giu), dentro un crate che dichiara
 //! l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della radice. Il resto
 //! di questo crate, e tutto il resto di Rymembra, resta senza.
 //!
@@ -47,6 +48,15 @@
 //! (R24-1). Windows chiede a chi ha il dispositivo aperto di lasciarlo con una
 //! notifica di dispositivo, `CM_Register_Notification`, che non si fa senza
 //! `unsafe`: vedi [`osserva_volume`], [`volume_di`] e [`Avviso`].
+//!
+//! # La quinta: Maiusc tenuto mentre l'applicazione si apre
+//!
+//! L'uscita d'emergenza da una skin che rende la finestra inservibile (D-48)
+//! non può dipendere dalla pagina: la finestra compare prima che la pagina sia
+//! pronta, e un tasto arriva alla pagina solo se ha il fuoco. Lo stato del tasto
+//! lo dice `GetAsyncKeyState`, una chiamata sola, e la regola che lo usa — quanto
+//! tenuto, entro quanto dalla comparsa della finestra — è pura: vedi [`Ascolto`]
+//! e [`maiusc_giu`].
 //!
 //! # Cosa si vede da fuori
 //!
@@ -83,11 +93,13 @@ mod finestra;
     )
 )]
 mod glifi;
+mod maiusc;
 mod sottofondo;
 mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
 pub use espulsione::{Avviso, Registrazione, osserva_volume, volume_di};
+pub use maiusc::{Ascolto, Esito, FINESTRA, PASSO, TENUTO, maiusc_giu};
 pub use sottofondo::{Sottofondo, a_batteria};
 pub use unita::{Unita, unita_di};
 
