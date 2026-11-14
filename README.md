@@ -545,8 +545,9 @@ follows offers «Put it back».
 Two ways out stay open whatever a skin does to the window. A new skin from a
 file, once worn, asks “Keep “name”?”: without an answer, the previous skin
 comes back by itself after fifteen seconds, for a window that cannot be read
-or does not respond. And holding Shift while Rymembra starts opens the
-window with Plain; a notice says so and offers “Put it back”.
+or does not respond. And holding Shift for half a second as Rymembra’s
+window appears — you can let go once you see it — opens the window with
+Plain; a notice says so and offers “Put it back”.
 
 ![The Studio, the skin editor](immagini/studio.webp)
 

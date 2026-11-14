@@ -388,8 +388,10 @@ migrations, is named under Database, with what going back costs.
   guided tour is not offered: it started out of sight and filled the queue.
 - **A skin you can always get out of.** After you wear a skin from a file, the
   “Keep …?” question goes back to the previous skin by itself after 15 seconds
-  without an answer, and holding Shift while Rymembra starts switches back to
-  Plain.
+  without an answer, and holding Shift for half a second as Rymembra’s window
+  appears switches back to Plain: Rymembra asks Windows about that one key, in
+  the first seconds after its window shows, so it works before the page has
+  loaded and even when the window opens behind another.
 - **A folder you add is read at once** — from Settings, by dropping it on the
   window or from the empty Home: its tracks appear a few seconds later,
   without pressing “Scan”.
@@ -1285,6 +1287,13 @@ The rest of what the two reviews fixed, by area.
   the spectrum on and a light theme, the playback controls get a light halo
   over the bars. The missing tracks of an import report are listed one per
   line again.
+- **Alt on its own no longer freezes the window.** Pressing Alt (or F10) by
+  itself sent the frameless window into an invisible system menu that
+  swallowed the next key and, while Rymembra was starting, could leave the
+  window black and unresponsive; Alt+Space still opens the system menu.
+- **A minimized window stops drawing.** A frameless window reports a 144×19
+  area when minimized, which was taken for a visible window, so animations and
+  the spectrum kept drawing at 60 frames per second behind the taskbar.
 
 **Phone.**
 

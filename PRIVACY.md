@@ -1284,6 +1284,11 @@ Google; Rymembra’s manifest tells it not to (see “On an Android phone”).
 - **No writing outside the folders you pointed at**, apart from the
   application's data folder and its local counterpart in `%LOCALAPPDATA%`
   (§ 8).
+- **One key, for a few seconds.** On Windows, in the first seconds after its
+  window appears, Rymembra asks the system whether Shift is held down — the
+  way out of a skin that makes the window unusable (README, Customization) —
+  and nothing else: it does not read what you type, keeps nothing, and writes
+  a line in the log only when Shift was held.
 
 ---
 
