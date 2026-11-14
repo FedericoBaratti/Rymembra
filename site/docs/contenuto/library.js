@@ -16,6 +16,7 @@
           ul: [
             "paths are compared through `path_key` (unified slashes, trailing separators trimmed, case-folded on Windows); `is_under` matches on a segment boundary, so `C:\\Musica` is not inside `C:\\Music`;",
             "a file is skipped if it sits in a `.trash` folder, has an extension outside the 12 supported (mp3, flac, m4a, aac, ogg, oga, wav, aiff, aif, opus, wma, ape) or is smaller than `MIN_TRACK_BYTES` = 32 KiB — checked in that order; a track of a CD image (below) counts as audio;",
+            "the `TooSmall` skips are not silent: the file is dropped before it is read (a truncated conversion, an interrupted download, an empty file), so it can never be among the unreadable, and `ScanReport::troppo_piccoli()` counts them — `piccoli=N` on the `[scansione]` diary line (only when above zero) and `troppoPiccoli` in the result, which Settings › Folders and scanning shows next to the unreadable count;",
             "**unchanged** means same mtime (truncated ms) **and** same size **and** same spelling under the root — the size catches taggers that preserve the mtime, the spelling catches case-only renames;",
             "a known row is removed only if it lies under a root this pass actually walked; rows elsewhere are `untouched`;",
             "duplicate rows with the same `path_key` keep the lowest id (the one history and playlists point to).",

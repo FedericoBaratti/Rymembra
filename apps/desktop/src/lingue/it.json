@@ -1178,6 +1178,8 @@
   "settings.scan.result": "aggiunti: {inseriti} · aggiornati: {aggiornati} · spostati: {spostati} · tolti: {tolti}, in {secondi} s",
   "settings.scan.unreadable": " · {n} illeggibili",
   "settings.scan.unreadable.uno": " · 1 illeggibile",
+  "settings.scan.tooSmall": " · {n} saltati: troppo piccoli per essere brani",
+  "settings.scan.tooSmall.uno": " · 1 saltato: troppo piccolo per essere un brano",
   "settings.scan.stopped.strong": "fermata a metà",
   "settings.scan.stopped.rest": ": una nuova scansione riprende da qui senza rileggere quel che c'è già.",
   "settings.scan.skipped.strong": "{n} cartelle non hanno risposto",

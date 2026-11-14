@@ -2470,6 +2470,11 @@ export function Impostazioni({
                   })}
                   {esito.illeggibili > 0 &&
                     t("settings.scan.unreadable", { n: esito.illeggibili })}
+                  {/* I file audio sotto la soglia di un brano non entrano e non
+                      sono illeggibili: l'esclusione è voluta, ma un file rotto
+                      piccolo era indistinguibile da uno sparito (L-PC 5). */}
+                  {esito.troppoPiccoli > 0 &&
+                    t("settings.scan.tooSmall", { n: esito.troppoPiccoli })}
                   {/* Chi ha premuto Annulla deve leggere che si è fermata, non
                       «completata»: la libreria è giusta ma incompleta, e il modo
                       di finirla è rifarla. */}

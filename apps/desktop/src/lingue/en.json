@@ -1178,6 +1178,8 @@
   "settings.scan.result": "{inseriti} added · {aggiornati} updated · {spostati} moved · {tolti} removed, in {secondi} s",
   "settings.scan.unreadable": " · {n} unreadable",
   "settings.scan.unreadable.uno": " · 1 unreadable",
+  "settings.scan.tooSmall": " · {n} skipped: too small to be tracks",
+  "settings.scan.tooSmall.uno": " · 1 skipped: too small to be a track",
   "settings.scan.stopped.strong": "stopped halfway",
   "settings.scan.stopped.rest": ": a new scan resumes from here without rereading what is already there.",
   "settings.scan.skipped.strong": "{n} folders did not answer",

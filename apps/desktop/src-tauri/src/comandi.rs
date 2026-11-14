@@ -645,7 +645,7 @@ fn riga_della_scansione(origine: &str, esito: &ScanReport) -> String {
     format!(
         "[scansione] origine={origine} cartelle={} file={} letti={} illeggibili={}(+{} noti) \
          immagine={} inseriti={} aggiornati={} spostati={} tolti={} saltate={} rami={} \
-         rinviate={}{}{} cammino={}ms fogli={}ms piano={}ms lettura={}ms scrittura={}ms \
+         rinviate={}{}{}{} cammino={}ms fogli={}ms piano={}ms lettura={}ms scrittura={}ms \
          album={}ms totale={}ms",
         esito.cartelle_viste,
         esito.file_visti,
@@ -665,6 +665,13 @@ fn riga_della_scansione(origine: &str, esito: &ScanReport) -> String {
             format!(" solo_in_rete={}", esito.solo_in_rete)
         } else {
             String::new()
+        },
+        // Solo quando ce ne sono: i file audio sotto la soglia di un brano, che
+        // non entrano e non sono illeggibili (L-PC 5). Senza, `file=6 letti=1
+        // illeggibili=1` taceva su quattro file rotti.
+        match esito.troppo_piccoli() {
+            0 => String::new(),
+            quanti => format!(" piccoli={quanti}"),
         },
         if esito.cancelled { " annullata" } else { "" },
         tempi.camminata_ms,
@@ -743,6 +750,14 @@ pub struct EsitoScansione {
     /// `SkipReason::as_str` è documentato «per l'interfaccia» dal giorno in cui
     /// è stato scritto, e nessuna interfaccia lo leggeva.
     pub saltati: Vec<FileSaltato>,
+    /// Quanti file audio sono rimasti fuori perché troppo piccoli per essere un
+    /// brano (`tooSmall`): per intero, a differenza di [`Self::saltati`], che
+    /// ne porta cinquanta di ogni genere.
+    ///
+    /// È il numero che mancava: quei file non entrano e non sono illeggibili,
+    /// quindi un file audio rotto e piccolo non lasciava traccia (L-PC 5).
+    /// Vedi [`ScanReport::troppo_piccoli`].
+    pub troppo_piccoli: usize,
     /// Copertine ricodificate ora.
     pub copertine_nuove: usize,
     /// Quanto è durata, in millisecondi.
@@ -893,6 +908,7 @@ impl EsitoScansione {
                     motivo: salto.reason.as_str().to_owned(),
                 })
                 .collect(),
+            troppo_piccoli: report.troppo_piccoli(),
             copertine_nuove: report.covers_stored,
             durata_ms: report.elapsed_ms,
             annullata: report.cancelled,
@@ -3044,6 +3060,73 @@ mod prove_della_scansione {
             moved: 1,
             ..ScanReport::default()
         }));
+    }
+
+    /// Il piano di `musica-rotta\Rotti` del collaudo del 13/11 (L-PC 5), come lo
+    /// lascia la scansione vera su quei file (vedi
+    /// `ogni_file_audio_trovato_entra_o_si_dice_perche_no` nel nucleo): quattro
+    /// file sotto la soglia e un foglio che non è musica.
+    fn rapporto_dei_file_rotti() -> ScanReport {
+        use rymembra_domain::scan_plan::{DiscoveredFile, ScanPlan, SkipReason, SkippedFile};
+        let saltato = |nome: &str, byte: u64, motivo: SkipReason| SkippedFile {
+            file: DiscoveredFile {
+                path: format!(r"D:\musica-rotta\Rotti\{nome}"),
+                size_bytes: byte,
+                modified_ms: 1,
+            },
+            reason: motivo,
+        };
+        ScanReport {
+            plan: ScanPlan {
+                skipped: vec![
+                    saltato("cue-maligno.cue", 119, SkipReason::NonAudio),
+                    saltato("id3-enorme.mp3", 4_106, SkipReason::TooSmall),
+                    saltato("troncato.flac", 10_240, SkipReason::TooSmall),
+                    saltato("vuoto.flac", 0, SkipReason::TooSmall),
+                    saltato("wav-dimensione-falsa.wav", 20_001, SkipReason::TooSmall),
+                ],
+                ..ScanPlan::default()
+            },
+            cartelle_viste: 2,
+            file_visti: 6,
+            letti: 1,
+            unreadable: vec![rymembra_app::library::Unreadable {
+                path: r"D:\musica-rotta\Rotti\spazzatura.mp3".to_owned(),
+                error: AppError::new(ErrorCode::MetadataTagReadFailed {
+                    path: Some(r"D:\musica-rotta\Rotti\spazzatura.mp3".to_owned()),
+                }),
+            }],
+            ..ScanReport::default()
+        }
+    }
+
+    #[test]
+    fn i_file_troppo_piccoli_si_contano_nel_diario_e_si_dicono_alla_finestra() {
+        // Il difetto: `file=6 letti=1 illeggibili=1` — cinque file audio rotti,
+        // uno dichiarato. Gli altri quattro sono sotto la soglia di un brano, e
+        // l'esclusione è voluta, ma senza un numero non si distingue da un
+        // file che è sparito.
+        let esito = rapporto_dei_file_rotti();
+        assert!(
+            riga_della_scansione("sorveglianza", &esito).contains(" piccoli=4 "),
+            "{}",
+            riga_della_scansione("sorveglianza", &esito)
+        );
+        let json = serde_json::to_value(EsitoScansione::da(&esito, Counts::default(), None))
+            .expect("json");
+        assert_eq!(json["troppoPiccoli"], 4);
+        // Il foglio non è musica: non è «troppo piccolo». E i motivi restano
+        // quelli di prima.
+        assert_eq!(json["saltati"].as_array().map(Vec::len), Some(5));
+
+        // Senza file piccoli la riga non cambia: `la_riga_del_diario_ha_un_formato_solo`.
+        let niente = ScanReport::default();
+        assert!(!riga_della_scansione("a mano", &niente).contains("piccoli"));
+        assert_eq!(
+            serde_json::to_value(EsitoScansione::da(&niente, Counts::default(), None))
+                .expect("json")["troppoPiccoli"],
+            0
+        );
     }
 
     #[test]

@@ -530,6 +530,34 @@ pub struct ScanReport {
     pub rimasti: usize,
 }
 
+impl ScanReport {
+    /// I file audio che il piano ha lasciato fuori perché sotto
+    /// [`rymembra_domain::paths::MIN_TRACK_BYTES`]: un avanzo troncato, un
+    /// download interrotto, un file vuoto.
+    ///
+    /// # Perché si contano
+    ///
+    /// Perché l'esclusione è voluta — i lettori di tag riescono spesso a leggere
+    /// un avanzo, e il guasto si scoprirebbe premendo play — ma avviene **prima**
+    /// della lettura: un file così non entra in libreria e non finisce fra gli
+    /// [`ScanReport::unreadable`], quindi senza questo numero era
+    /// indistinguibile da un file sparito (collaudo del 13/11: cinque file
+    /// audio rotti, uno dichiarato). Dentro ci sono anche le righe già in
+    /// libreria il cui file è sceso sotto la soglia: la loro riga resta, e il
+    /// file non si rilegge.
+    ///
+    /// Non comprende i file che non sono musica (`NonAudio`) né quelli nel
+    /// cestino dei doppioni (`InTrash`): quelli non sono «brani mancati».
+    #[must_use]
+    pub fn troppo_piccoli(&self) -> usize {
+        self.plan
+            .skipped
+            .iter()
+            .filter(|saltato| saltato.reason == SkipReason::TooSmall)
+            .count()
+    }
+}
+
 /// Quanto è durata ogni fase di una scansione, in millisecondi.
 ///
 /// Per chi vuole sapere **dove** va il tempo: la riga del diario sul desktop,

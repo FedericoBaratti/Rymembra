@@ -5187,6 +5187,83 @@ fn spazzatura(path: &Path, quanti: usize) {
     std::fs::write(path, vec![b'x'; quanti]).expect("scrittura");
 }
 
+/// I sei file di `musica-rotta\Rotti` del collaudo del 13/11 (L-PC 5), ricreati
+/// con le loro dimensioni vere: sono piccoli, ed è proprio la dimensione che
+/// decideva.
+///
+/// Il difetto: la scansione dava `file=6 letti=1 illeggibili=1`, e dei cinque
+/// file audio rotti ne dichiarava uno solo. Gli altri quattro — 0, 4.106,
+/// 10.240 e 20.001 byte — stanno sotto [`MIN_TRACK_BYTES`] e il piano li lascia
+/// fuori **prima** di leggerli (`SkipReason::TooSmall`): niente in libreria,
+/// niente fra gli illeggibili, e nessun numero che lo dicesse. Il test sui file
+/// rotti (`tre_file_malformati_di_fila…`) passa da un disco finto con file
+/// dichiarati da pochi byte ma dimensionati sopra la soglia, cioè dal gradino
+/// che il piano non applica mai a un file di quella misura.
+///
+/// Il contratto è: ogni file audio che la camminata trova **entra**, o finisce
+/// fra gli illeggibili, o — se l'esclusione è voluta, come la soglia — si
+/// **conta** e si dice.
+#[test]
+fn ogni_file_audio_trovato_entra_o_si_dice_perche_no() {
+    let mut lib = Libreria::nuova();
+    let cartella = lib.musica().join("Rotti");
+    std::fs::create_dir_all(&cartella).expect("cartella");
+    std::fs::write(cartella.join("vuoto.flac"), b"").expect("vuoto");
+    // Un FLAC troncato: l'intestazione, poi niente che somigli a un frame.
+    let mut troncato = b"fLaC".to_vec();
+    troncato.resize(10_240, 0);
+    std::fs::write(cartella.join("troncato.flac"), troncato).expect("troncato");
+    // Un ID3v2 che dichiara una dimensione enorme del tag.
+    let mut id3 = b"ID3\x04\x00\x00\x7f\x7f\x7f\x7f".to_vec();
+    id3.resize(4_106, b'x');
+    std::fs::write(cartella.join("id3-enorme.mp3"), id3).expect("id3");
+    // Un WAV che dichiara un `data` molto più lungo del file.
+    let mut wav_falso = b"RIFF\xf0\xff\xff\xffWAVEfmt ".to_vec();
+    wav_falso.extend_from_slice(&16u32.to_le_bytes());
+    wav_falso.extend_from_slice(&[1, 0, 1, 0, 0x44, 0xac, 0, 0, 0x88, 0x58, 1, 0, 2, 0, 16, 0]);
+    wav_falso.extend_from_slice(b"data\xf0\xff\xff\xff");
+    wav_falso.resize(20_001, 0);
+    std::fs::write(cartella.join("wav-dimensione-falsa.wav"), wav_falso).expect("wav");
+    // Il solo che arriva al lettore, e che il lettore rifiuta.
+    spazzatura(&cartella.join("spazzatura.mp3"), 65_536);
+    // E un foglio che non è musica: non conta fra i cinque.
+    std::fs::write(
+        cartella.join("cue-maligno.cue"),
+        b"FILE \"../../../x.wav\" WAVE\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
+    )
+    .expect("cue");
+
+    let esito = lib.scansiona();
+
+    assert_eq!(esito.file_visti, 6, "la camminata li trova tutti");
+    assert_eq!(
+        lib.conta("tracks"),
+        0,
+        "nessuno dei cinque è un brano leggibile"
+    );
+    assert_eq!(
+        esito.unreadable.len(),
+        1,
+        "spazzatura.mp3 arriva al lettore e cade"
+    );
+    // Il contratto, nella sua forma contabile: cinque file audio, e nessuno
+    // sparisce senza un numero. La soglia è un'esclusione voluta, ma si conta.
+    assert_eq!(esito.troppo_piccoli(), 4, "{:?}", esito.plan.skipped);
+    assert_eq!(
+        esito.inserted + esito.unreadable.len() + esito.illeggibili_noti + esito.troppo_piccoli(),
+        5,
+        "ogni file audio entra, è illeggibile o si conta fra i troppo piccoli: {:?}",
+        esito.plan.skipped
+    );
+
+    // Un secondo giro uguale al primo dà gli stessi numeri: i piccoli non si
+    // ricordano in `file_illeggibili` — non si leggono mai — e si ricontano.
+    let secondo = lib.scansiona();
+    assert_eq!(secondo.troppo_piccoli(), 4);
+    assert_eq!(secondo.illeggibili_noti, 1, "spazzatura.mp3 è già nota");
+    assert_eq!(lib.conta("file_illeggibili"), 1);
+}
+
 #[test]
 fn un_file_rifiutato_non_si_riapre_finche_non_cambia() {
     let mut lib = Libreria::nuova();
