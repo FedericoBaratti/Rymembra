@@ -14,10 +14,11 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in quattro posti, il modulo `finestra`, una
+//! Così il codice `unsafe` sta tutto in cinque posti, il modulo `finestra`, una
 //! funzione di [`unita`](crate::unita_di), le tre chiamate di
-//! [`sottofondo`](crate::Sottofondo) e le quattro di
-//! [`espulsione`](crate::osserva_volume), dentro un crate che dichiara
+//! [`sottofondo`](crate::Sottofondo), le quattro di
+//! [`espulsione`](crate::osserva_volume) e la lettura di Maiusc di
+//! [`maiusc`](crate::maiusc_giu), dentro un crate che dichiara
 //! l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della radice. Il resto
 //! di questo crate, e tutto il resto di Rymembra, resta senza.
 //!
@@ -48,7 +49,16 @@
 //! notifica di dispositivo, `CM_Register_Notification`, che non si fa senza
 //! `unsafe`: vedi [`osserva_volume`], [`volume_di`] e [`Avviso`].
 //!
-//! # La quinta: dove sta la cartella privata del pacchetto MSIX
+//! # La quinta: Maiusc tenuto mentre l'applicazione si apre
+//!
+//! L'uscita d'emergenza da una skin che rende la finestra inservibile (D-48)
+//! non può dipendere dalla pagina: la finestra compare prima che la pagina sia
+//! pronta, e un tasto arriva alla pagina solo se ha il fuoco. Lo stato del tasto
+//! lo dice `GetAsyncKeyState`, una chiamata sola, e la regola che lo usa — quanto
+//! tenuto, entro quanto dalla comparsa della finestra — è pura: vedi [`Ascolto`]
+//! e [`maiusc_giu`].
+//!
+//! # La sesta: dove sta la cartella privata del pacchetto MSIX
 //!
 //! Nella copia del Microsoft Store i file che l'app crea in `%APPDATA%` e in
 //! `%LOCALAPPDATA%` stanno nella cartella privata del pacchetto, che Esplora
@@ -91,12 +101,14 @@ mod finestra;
     )
 )]
 mod glifi;
+mod maiusc;
 mod pacchetto;
 mod sottofondo;
 mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
 pub use espulsione::{Avviso, Registrazione, osserva_volume, volume_di};
+pub use maiusc::{Ascolto, Esito, FINESTRA, PASSO, TENUTO, maiusc_giu};
 pub use pacchetto::cartella_cache_del_pacchetto;
 pub use sottofondo::{Sottofondo, a_batteria};
 pub use unita::{Unita, unita_di};
@@ -137,6 +149,32 @@ impl Barra {
         self.dentro.mostra(aspetto);
         #[cfg(not(windows))]
         let _ = aspetto;
+    }
+}
+
+/// Fa in modo che un **Alt da solo** (o F10) non mandi la finestra `hwnd` in un
+/// menu di sistema invisibile, che si mangia il tasto seguente e con una
+/// WebView2 dentro si blocca (reperto 1 di FALT). Alt+Spazio, che apre il menu
+/// di sistema vero, resta com'era.
+///
+/// Va chiamata **sul filo che ha creato la finestra**, e una volta sola, il
+/// prima possibile — dal `setup`: non dipende dai pulsanti, che si agganciano
+/// solo quando la libreria è aperta, e la finestra può comparire prima. Vedi
+/// `finestra.rs`.
+///
+/// # Errors
+///
+/// Una frase che dice perché non si è montata: la finestra non c'è, è di un
+/// altro filo, è già montata, o non si è su Windows.
+pub fn ferma_alt_da_solo(hwnd: *mut std::ffi::c_void) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        finestra::ferma_alt_da_solo(hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        Err("l'Alt da solo non è un problema fuori da Windows".to_owned())
     }
 }
 

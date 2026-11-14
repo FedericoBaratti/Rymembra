@@ -53,6 +53,7 @@ mod ia;
 mod importa;
 mod insieme;
 mod lontano;
+mod maiusc;
 mod manutenzione;
 mod media;
 mod metadati;
@@ -643,6 +644,13 @@ pub fn run() {
             // solo punto in cui lo si può riconoscere. Vedi
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
+            // Un Alt da solo non deve mandare la finestra in un menu di sistema
+            // invisibile (reperto 1 di FALT): la guardia si monta ora, e non con i
+            // pulsanti della miniatura, che aspettano la libreria.
+            barra::ferma_alt(app.handle());
+            // Maiusc tenuto mentre ci si apre (D-48): l'ascolto parte subito,
+            // perché la pressione che conta può cominciare prima della finestra.
+            maiusc::avvia(app.handle());
             // Sul telefono la finestra la crea Rymembra, col gestore che nega i
             // permessi alla pagina: vedi `telefono::crea_la_finestra`. Subito,
             // dove prima la creava Tauri, perché quel che segue la trovi.
@@ -802,6 +810,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pronto,
             finestra_mostra,
+            maiusc::maiusc_all_avvio,
             stato::libreria_fase,
             finestra_trascina,
             finestra_riduci,
@@ -2032,6 +2041,39 @@ mod prove {
         );
         assert!(setup.contains("Stato::in_apertura("));
         assert!(setup.contains("apri_e_avvia("));
+    }
+
+    /// Un Alt da solo non deve mandare la finestra in un menu di sistema
+    /// invisibile (reperto 1 di FALT), e la guardia va montata nel `setup`: i
+    /// pulsanti della miniatura si agganciano solo dopo l'apertura della
+    /// libreria — `avvia_dopo_la_libreria` — e la finestra può comparire prima
+    /// (`finestra_mostra` durante una migrazione, la rete di sicurezza dopo due
+    /// secondi). Con la guardia là, un Alt dato in quel tempo non avrebbe niente a
+    /// fermarlo.
+    #[test]
+    fn la_guardia_dell_alt_si_monta_nel_setup_e_non_dopo_la_libreria() {
+        let setup = corpo_del_setup();
+        assert!(
+            setup.contains("barra::ferma_alt(app.handle())"),
+            "il setup non monta la guardia dell'Alt"
+        );
+        let dopo = include_str!("lib.rs")
+            .split("fn avvia_dopo_la_libreria(")
+            .nth(1)
+            .and_then(|resto| {
+                resto
+                    .split(
+                        "
+}
+",
+                    )
+                    .next()
+            })
+            .unwrap_or_default();
+        assert!(
+            !dopo.contains("ferma_alt("),
+            "la guardia dell'Alt aspetta la libreria"
+        );
     }
 
     /// Il resto dell'avvio non riprende la coda da sé e non apre il

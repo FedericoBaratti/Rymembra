@@ -57,6 +57,12 @@
 //! `requestAnimationFrame` e animazioni si fermano da sé, qualunque sia la loro
 //! origine e senza ricordarlo in ogni componente. Solo sul computer: sul
 //! telefono l'attività in secondo piano lo fa già il sistema.
+//!
+//! Che la finestra sia ridotta lo dice Windows (`IsIconic`, in Tauri
+//! `is_minimized`), non la misura del `Resized`: la prima versione deduceva
+//! «ridotta» da un'area client a zero, e il collaudo dal vivo ha mostrato che
+//! una finestra senza decorazioni ridotta a icona riporta 144×19 — la pagina
+//! restava `visible` e disegnava a 60 fotogrammi al secondo (vedi [`si_vede`]).
 
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -101,7 +107,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
         } = evento
             && label == FINESTRA
         {
-            regola_il_disegno(app, si_vede(misura.width, misura.height));
+            regola_il_disegno(app, misura.width, misura.height);
         }
     });
     costruttore.build()
@@ -153,11 +159,21 @@ fn pagina_nuova(app: &AppHandle) {
 #[cfg(desktop)]
 static NASCOSTA: AtomicBool = AtomicBool::new(false);
 
-/// La finestra si vede, con questa misura? Ridotta a icona, `tao` manda
-/// `Resized` con l'area client a zero.
+/// La finestra si vede? Non se Windows la dice ridotta a icona, e non se
+/// l'area client non c'è.
+///
+/// La misura da sola **non** basta, ed è il difetto che il collaudo dal vivo ha
+/// trovato nella prima versione (R21-3): una finestra senza decorazioni ridotta
+/// a icona non ha un'area client a zero — `GetClientRect` risponde 144×19,
+/// la miniatura che Windows disegna — e `tao` porta nel `Resized` proprio quella
+/// misura. `si_vede(144, 19)` era vero, la pagina restava `visible` e
+/// disegnava a 60 fotogrammi al secondo dietro una finestra che nessuno
+/// guardava. Chi sa se la finestra è ridotta è `IsIconic`, che Tauri espone come
+/// `is_minimized`: la si chiede a lui, e la misura resta solo come seconda
+/// guardia.
 #[cfg(desktop)]
-const fn si_vede(larghezza: u32, altezza: u32) -> bool {
-    larghezza > 0 && altezza > 0
+const fn si_vede(ridotta: bool, larghezza: u32, altezza: u32) -> bool {
+    !ridotta && larghezza > 0 && altezza > 0
 }
 
 /// Quel che va detto alla webview, dato com'era: `Some(true)` mostrala,
@@ -173,11 +189,22 @@ const fn cambio(nascosta: bool, si_vede: bool) -> Option<bool> {
 
 /// Nasconde la pagina a finestra ridotta, e la rimostra al ripristino.
 #[cfg(desktop)]
-fn regola_il_disegno(app: &AppHandle, si_vede: bool) {
-    let Some(mostra) = cambio(NASCOSTA.load(Ordering::Acquire), si_vede) else {
+fn regola_il_disegno(app: &AppHandle, larghezza: u32, altezza: u32) {
+    let Some(finestra) = app.get_webview_window(FINESTRA) else {
         return;
     };
-    let Some(finestra) = app.get_webview_window(FINESTRA) else {
+    // Dal sistema, non dedotta dalla misura: vedi `si_vede`.
+    let ridotta = match finestra.is_minimized() {
+        Ok(ridotta) => ridotta,
+        Err(err) => {
+            crate::nota!("[finestra] non so se la finestra è ridotta a icona: {err}");
+            return;
+        }
+    };
+    let Some(mostra) = cambio(
+        NASCOSTA.load(Ordering::Acquire),
+        si_vede(ridotta, larghezza, altezza),
+    ) else {
         return;
     };
     let pagina: &tauri::Webview = finestra.as_ref();
@@ -275,15 +302,25 @@ mod prove {
     #[cfg(desktop)]
     #[test]
     fn a_finestra_ridotta_la_pagina_non_disegna() {
-        assert!(!si_vede(0, 0), "ridotta a icona");
-        assert!(si_vede(1280, 820));
+        // Quel che `tao` ha davvero consegnato, misurato dal vivo: la finestra
+        // senza cornice ridotta a icona ha un'area client di 144×19, non zero,
+        // e `IsIconic` vero. Dedurlo dalla misura lasciava la pagina `visible`.
+        assert!(
+            !si_vede(true, 144, 19),
+            "ridotta a icona, area client 144×19"
+        );
+        assert!(!si_vede(true, 0, 0), "ridotta a icona, area client a zero");
+        assert!(si_vede(false, 1280, 820));
+        // Non ridotta ma senza area client (non succede, ma se succede non c'è
+        // niente da guardare).
+        assert!(!si_vede(false, 0, 0));
         // Visibile e ridotta: si nasconde.
-        assert_eq!(cambio(false, si_vede(0, 0)), Some(false));
+        assert_eq!(cambio(false, si_vede(true, 144, 19)), Some(false));
         // Nascosta e ripristinata: si mostra.
-        assert_eq!(cambio(true, si_vede(1280, 820)), Some(true));
+        assert_eq!(cambio(true, si_vede(false, 1280, 820)), Some(true));
         // Visibile e ridimensionata, nascosta e ancora ridotta: niente.
-        assert_eq!(cambio(false, si_vede(1000, 700)), None);
-        assert_eq!(cambio(true, si_vede(0, 0)), None);
+        assert_eq!(cambio(false, si_vede(false, 1000, 700)), None);
+        assert_eq!(cambio(true, si_vede(true, 144, 19)), None);
     }
 
     /// Il cablaggio: il guardiano risponde con [`navigazione_ammessa`], a ogni
@@ -306,6 +343,10 @@ mod prove {
         assert!(costruttore.contains("pagina_nuova("));
         assert!(costruttore.contains("WindowEvent::Resized"));
         assert!(costruttore.contains("regola_il_disegno("));
+        // Se la finestra è ridotta lo chiede a Windows: dedurlo dalla misura
+        // del `Resized` non ha mai funzionato (R21-3, 144×19).
+        let regola = corpo("fn regola_il_disegno(");
+        assert!(regola.contains("finestra.is_minimized()"));
         let nuova = corpo("fn pagina_nuova(");
         for pulizia in [
             "testi.pagina_nuova()",

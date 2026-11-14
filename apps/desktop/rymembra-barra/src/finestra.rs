@@ -26,6 +26,20 @@
 //! Tutto il lavoro con la barra avviene sul filo della finestra: l'oggetto COM
 //! vive lì, le icone nascono e muoiono lì, e i clic arrivano lì.
 //!
+//! # Una seconda sottoclasse, che non è dei pulsanti
+//!
+//! Un **Alt da solo** — o F10 — arriva alla finestra come `WM_SYSCOMMAND` con
+//! `SC_KEYMENU`, e la finestra, che non ha né titolo né menu ma ha il menu di
+//! sistema, ci entrerebbe in un ciclo modale invisibile che si mangia il tasto
+//! seguente, e con una WebView2 in mezzo si blocca (reperto 1 di FALT). Si
+//! ferma prima di `tao`: vedi [`alt_da_solo`].
+//!
+//! Sta in una sottoclasse **sua**, con un altro identificativo e senza dati, e
+//! non in quella dei pulsanti, perché le due vite sono diverse: i pulsanti si
+//! agganciano dopo l'apertura della libreria — una migrazione lunga la fa
+//! durare minuti, con la finestra già visibile — e la guardia deve esserci
+//! dal `setup`, prima che la finestra compaia. Vedi [`ferma_alt_da_solo`].
+//!
 //! # Cosa vive quanto
 //!
 //! Il [`Contesto`] nasce in [`aggancia`], diventa un puntatore consegnato a
@@ -61,7 +75,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateIcon, DestroyIcon, GetWindowThreadProcessId, HICON,
     IsWindowVisible, MSGFLT_ALLOW, PostMessageW, RegisterWindowMessageW, SM_CXSMICON, WM_COMMAND,
-    WM_DPICHANGED, WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW,
+    WM_DPICHANGED, WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SYSCOMMAND,
 };
 use windows::core::w;
 
@@ -539,6 +553,96 @@ unsafe extern "system" fn sottoclasse(
     unsafe { DefSubclassProc(finestra, messaggio, wparam, lparam) }
 }
 
+/// L'identificativo della sottoclasse che ferma l'Alt da solo: un altro da
+/// quello dei pulsanti, perché sono due cose con due vite.
+const ID_SOTTOCLASSE_ALT: usize = 0xAE7F;
+
+/// Vedi [`crate::ferma_alt_da_solo`].
+pub(crate) fn ferma_alt_da_solo(hwnd: *mut c_void) -> Result<(), String> {
+    let finestra = HWND(hwnd);
+    // SAFETY: due letture; su un `HWND` che non è una finestra la prima
+    // risponde zero.
+    let (proprietario, io) = unsafe {
+        (
+            GetWindowThreadProcessId(finestra, None),
+            GetCurrentThreadId(),
+        )
+    };
+    if proprietario == 0 {
+        return Err("la finestra non esiste".to_owned());
+    }
+    if proprietario != io {
+        return Err("non si è sul filo della finestra".to_owned());
+    }
+    // SAFETY: legge soltanto; `None` come destinazione del dato.
+    if unsafe { GetWindowSubclass(finestra, Some(sottoclasse_alt), ID_SOTTOCLASSE_ALT, None) }
+        .as_bool()
+    {
+        return Err("la guardia dell'Alt è già montata".to_owned());
+    }
+    // SAFETY: si è sul filo della finestra (controllato sopra), come
+    // `SetWindowSubclass` pretende. Nessun dato (zero): la procedura non ne
+    // ha bisogno, e quindi non c'è niente da liberare.
+    let montata =
+        unsafe { SetWindowSubclass(finestra, Some(sottoclasse_alt), ID_SOTTOCLASSE_ALT, 0) };
+    if !montata.as_bool() {
+        return Err("Windows non accetta la sottoclasse della guardia dell'Alt".to_owned());
+    }
+    Ok(())
+}
+
+/// La procedura della guardia: tiene per sé l'Alt da solo (vedi
+/// [`alt_da_solo`]) e lascia passare tutto il resto.
+///
+/// # Safety
+///
+/// La chiama soltanto Windows, per la sottoclasse installata in
+/// [`ferma_alt_da_solo`].
+unsafe extern "system" fn sottoclasse_alt(
+    finestra: HWND,
+    messaggio: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _dati: usize,
+) -> LRESULT {
+    if messaggio == WM_SYSCOMMAND && alt_da_solo(wparam.0, lparam.0) {
+        return LRESULT(0);
+    }
+    if messaggio == WM_NCDESTROY {
+        // SAFETY: la stessa finestra, procedura e identificativo installati.
+        // Non c'è un contesto da liberare: la sottoclasse non ne ha.
+        let _ =
+            unsafe { RemoveWindowSubclass(finestra, Some(sottoclasse_alt), ID_SOTTOCLASSE_ALT) };
+    }
+    // SAFETY: ogni altro messaggio prosegue verso la procedura che c'era, con
+    // gli argomenti ricevuti.
+    unsafe { DefSubclassProc(finestra, messaggio, wparam, lparam) }
+}
+
+/// Il comando `SC_KEYMENU` di `WM_SYSCOMMAND`: «attiva il menu da tastiera».
+const COMANDO_MENU_DA_TASTIERA: usize = 0xF100;
+
+/// Il `WM_SYSCOMMAND` che Windows manda quando si preme e si rilascia **Alt da
+/// solo** (o F10): la sottoclasse lo tiene per sé.
+///
+/// La finestra non ha una barra del titolo né un menu, ma ha ancora il menu di
+/// sistema — `tao` le dà `WS_SYSMENU` — e `DefWindowProc`, davanti a
+/// `SC_KEYMENU`, ci entra: un ciclo modale **invisibile**, dentro la procedura
+/// della finestra, in cui il tasto che segue (uno Spazio per mettere in pausa,
+/// una freccia) è «una voce del menu» e non arriva alla pagina, finché un
+/// secondo Alt, un Esc o un clic non lo chiudono. Il filo della finestra ne
+/// risulta in modalità menu (`GUI_INMENUMODE`, misurato dal vivo con
+/// `GetGUIThreadInfo`) e la pila lo mostra dentro `DefWindowProcW`.
+///
+/// Il menu che serve davvero resta: Alt+Spazio manda lo stesso comando con lo
+/// spazio come carattere (`lParam` 0x20), e apre il menu di sistema per chi
+/// muove o chiude la finestra senza il mouse. Anche i quattro bit bassi del
+/// comando, che sono del sistema, non cambiano quale comando è.
+const fn alt_da_solo(wparam: usize, lparam: isize) -> bool {
+    (wparam & 0xFFF0) == COMANDO_MENU_DA_TASTIERA && lparam == 0
+}
+
 /// La parola alta e la parola bassa di un `WPARAM`.
 fn parole(wparam: WPARAM) -> (u32, u32) {
     let alta = u32::try_from((wparam.0 >> 16) & 0xFFFF).unwrap_or(0);
@@ -613,6 +717,29 @@ mod prove {
         // I bit oltre i trentadue, su 64 bit, non arrivano nelle due parole.
         #[cfg(target_pointer_width = "64")]
         assert_eq!(parole(WPARAM(0xFFFF_FFFF_0003_0004)), (3, 4));
+    }
+
+    /// Un Alt da solo (e F10) non entra nel menu di sistema invisibile; Alt+Spazio,
+    /// che apre quello vero, e ogni altro comando di sistema passano.
+    #[test]
+    fn solo_l_alt_da_solo_non_arriva_al_menu_di_sistema() {
+        const SC_KEYMENU: usize = 0xF100;
+        // Alt (o F10) da solo: `lParam` zero. I quattro bit bassi del comando
+        // sono del sistema: non cambiano quale comando è.
+        assert!(alt_da_solo(SC_KEYMENU, 0));
+        assert!(alt_da_solo(SC_KEYMENU | 0xF, 0));
+        // Alt+Spazio: il carattere è lo spazio, e il menu di sistema serve a
+        // chi muove o chiude la finestra senza il mouse.
+        assert!(!alt_da_solo(SC_KEYMENU, 0x20));
+        // Alt+lettera, o il menu chiesto con un clic: c'è un carattere o una
+        // posizione.
+        assert!(!alt_da_solo(SC_KEYMENU, isize::from(b'f')));
+        assert!(!alt_da_solo(SC_KEYMENU, 0x0040_0010));
+        // Gli altri comandi di sistema non sono affare nostro: ridurre,
+        // ingrandire, ripristinare, muovere, chiudere.
+        for comando in [0xF020, 0xF030, 0xF120, 0xF010, 0xF000, 0xF060] {
+            assert!(!alt_da_solo(comando, 0), "{comando:#X}");
+        }
     }
 
     #[test]

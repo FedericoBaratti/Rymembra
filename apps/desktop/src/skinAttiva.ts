@@ -41,11 +41,14 @@ import {
 import { t } from "./lingue";
 import { useStatoPresente } from "./presenza";
 import { segnoAccento } from "./segnoAccento";
-import { FINESTRA_MAIUSC_MS, maiuscAllAvvio } from "./tieniSkin";
+import { maiuscTenutoAllAvvio, nomeDellaSkin } from "./tieniSkin";
 import { vinceLUltima } from "./ultima";
 
 /** La skin di serie: quella a cui riporta Maiusc tenuto all'avvio. */
 const DI_SERIE = "plain";
+
+/** Un'attesa, per chi richiede a intervalli. */
+const pausa = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms));
 
 /**
  * Un file `.ryskin` con l'id di una skin installata e diversa: la domanda
@@ -244,6 +247,45 @@ export function useSkinAttiva(
    */
   const [bozzaIndossata, setBozzaIndossata] = useState<Skin | null>(null);
 
+  /**
+   * Maiusc tenuto all'avvio: la finestra si rimette Plain (D-48, F10-2).
+   *
+   * È l'uscita da una skin che rende la finestra inservibile, e per questo non
+   * passa da niente che la skin disegni: un tasto tenuto mentre l'app si apre.
+   * La scelta si scrive — al riavvio dopo resta Plain — e la notizia offre di
+   * rimettere quella di prima.
+   *
+   * Il tasto lo guarda il nucleo, dalla comparsa della finestra, e qui si
+   * chiede com'è andata: la prima versione ascoltava i `keydown` della pagina per
+   * cinque secondi da quando la skin arrivava, ma la finestra compare prima
+   * della skin, e un tasto arriva solo a una pagina caricata e col fuoco — chi
+   * lo teneva fino alla comparsa e poi lo lasciava non scattava. Vedi
+   * `maiuscTenutoAllAvvio` in `tieniSkin.ts`.
+   */
+  const [tornataAPlain, setTornataAPlain] = useStatoPresente<{ id: string; nome: string } | null>(
+    null,
+  );
+  const controllaMaiusc = async (indossata: Skin) => {
+    const tenuto = await maiuscTenutoAllAvvio(ipc.maiuscAllAvvio, pausa, () => performance.now());
+    if (!tenuto) return;
+    const prima = skinAttivaAdesso.current ?? indossata;
+    if (prima.id === DI_SERIE) return;
+    // Il nome per la notizia: dall'elenco, e se l'elenco non è ancora arrivato
+    // lo si chiede (la prima versione scriveva l'id, «“neon”» invece di «Neon»).
+    // Un elenco che non si legge lo dice già `ricaricaSkin`, qui sotto: la
+    // notizia, in quel caso, ripiega sull'id e l'uscita d'emergenza non aspetta.
+    let nome = nomeDellaSkin(skinAdesso.current, prima.id);
+    if (nome === undefined) {
+      try {
+        nome = nomeDellaSkin(await ipc.skinElenco(), prima.id);
+      } catch {
+        // Vedi sopra.
+      }
+    }
+    await scegliSkinRef.current(DI_SERIE);
+    setTornataAPlain({ id: prima.id, nome: nome ?? prima.id });
+  };
+
   // La skin, appena si può. Fino a quando non arriva valgono i token che
   // `stile.css` porta sotto `:root`, che sono gli stessi della skin di serie —
   // quindi non c'è un fotogramma del colore sbagliato.
@@ -260,46 +302,13 @@ export function useSkinAttiva(
       .then((s) => {
         applicaSkin(s);
         setSkinAttiva(s);
-        avvio.current = performance.now();
+        // Adesso che la skin è indossata si chiede se Maiusc era tenuto.
+        controllaMaiusc(s).catch((e: unknown) => segnalaErrore(e));
       })
       .catch((e: unknown) => segnalaErrore(e));
     // Una volta sola, all'apertura: `segnalaErrore` è stabile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  /**
-   * Maiusc tenuto all'avvio: la finestra si rimette Plain (D-48).
-   *
-   * È l'uscita da una skin che rende la finestra inservibile, e per questo non
-   * passa da niente che la skin disegni: un tasto tenuto mentre l'app si apre.
-   * La scelta si scrive — al riavvio dopo resta Plain — e la notizia offre di
-   * rimettere quella di prima. Vedi `maiuscAllAvvio` in `tieniSkin.ts`.
-   */
-  const avvio = useRef<number | null>(null);
-  const [tornataAPlain, setTornataAPlain] = useStatoPresente<{ id: string; nome: string } | null>(
-    null,
-  );
-  const scattato = useRef(false);
-  useEffect(() => {
-    const sente = (e: KeyboardEvent) => {
-      const quando = avvio.current;
-      if (quando === null || scattato.current) return;
-      const trascorsi = performance.now() - quando;
-      if (trascorsi > FINESTRA_MAIUSC_MS) {
-        window.removeEventListener("keydown", sente, true);
-        return;
-      }
-      if (!maiuscAllAvvio(e, trascorsi)) return;
-      scattato.current = true;
-      window.removeEventListener("keydown", sente, true);
-      const prima = skinAttivaAdesso.current;
-      if (prima === null || prima.id === DI_SERIE) return;
-      const nome = skinAdesso.current.find((v) => v.id === prima.id)?.nome ?? prima.id;
-      void scegliSkinRef.current(DI_SERIE).then(() => setTornataAPlain({ id: prima.id, nome }));
-    };
-    window.addEventListener("keydown", sente, true);
-    return () => window.removeEventListener("keydown", sente, true);
-  }, [setTornataAPlain]);
 
   /** Rilegge le skin installate. Vince l'ultima, come `ricarica` in `libreria.ts`. */
   const [turnoSkin] = useState(vinceLUltima);
