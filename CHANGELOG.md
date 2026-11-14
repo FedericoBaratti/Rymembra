@@ -824,6 +824,13 @@ The rest of what the two reviews fixed, by area.
   the last 30 days; a Home that fails to load says so, with “Try again”,
   instead of an endless skeleton.
 - A file whose tags cannot be read is no longer offered “Try again”.
+- **Files too small to be tracks are counted.** Audio files under 32 KB —
+  empty, truncated, half downloaded — were skipped by a scan without a word;
+  Settings › Folders and scanning now says “N skipped: too small to be
+  tracks”, and the log counts them.
+- After a USB drive is ejected, its folders are no longer walked every five
+  minutes: their absence is noted once when they go and once when they come
+  back.
 
 **Playlists, the queue and selection.**
 
@@ -863,6 +870,9 @@ The rest of what the two reviews fixed, by area.
 - Scrolling away from the focused row of the queue or of the Folders tree no
   longer drops the keyboard focus, and the playlist menu says “Delete…”, since
   it asks first.
+- Importing a very large playlist file no longer holds the library for
+  seconds: the matching runs outside the lock, which is taken only to read the
+  indexes and to write.
 
 **Playback.**
 
@@ -1183,6 +1193,9 @@ The rest of what the two reviews fixed, by area.
   already had) is not written, and the restore says so; and a draft whose id
   is a Windows device name (`aux`, `con`…) no longer drops out of the backup:
   it is listed, and read from its verbatim path.
+- Studio: text typed into a field and not yet confirmed — name, author,
+  description, id, a rename, a JSON value, a hex color — now reaches the draft
+  when you close the window or save.
 
 **Settings.**
 
@@ -1294,6 +1307,9 @@ The rest of what the two reviews fixed, by area.
 - **A minimized window stops drawing.** A frameless window reports a 144×19
   area when minimized, which was taken for a visible window, so animations and
   the spectrum kept drawing at 60 frames per second behind the taskbar.
+- Screen readers: the queue list no longer contains an invalid placeholder
+  item, and each track row’s play button says the row number it shows
+  (“3, Play …”), as WCAG 2.5.3 asks.
 
 **Phone.**
 
