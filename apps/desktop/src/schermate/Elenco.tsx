@@ -227,6 +227,10 @@ const RigaBrano = memo(function RigaBrano({
   // Quando è arrivato l'ultimo tocco lungo: vedi `DOPO_LA_TENUTA_MS`.
   const tenuta = useRef(0);
   const suono = statoSuono(attivo, inPausa);
+  // Il numero che la riga mostra, e che il nome del suo tasto deve contenere
+  // (WCAG 2.5.3): una costante sola, perché due espressioni da tenere
+  // d'accordo erano il modo di farle divergere.
+  const numero = numeroTraccia ? (brano.trackNumber ?? indice + 1) : indice + 1;
   return (
     <div
       className="riga list-row"
@@ -326,8 +330,12 @@ const RigaBrano = memo(function RigaBrano({
              accessibilità dell'albero scritta a mano in italiano: in interfaccia
              inglese lo screen reader diceva «Riproduci …» su ognuna delle
              diciottomila righe, e il difetto non si vedeva perché un'etichetta
-             non si guarda. */
-          aria-label={t("list.play", { titolo: brano.title })}
+             non si guarda.
+
+             Col numero davanti: il tasto mostra il numero della riga, e il
+             nome accessibile deve contenere quel che si vede (WCAG 2.5.3, axe
+             `label-content-name-mismatch`) — chi comanda a voce dice «clic 3». */
+          aria-label={t("list.playNumbered", { numero: String(numero), titolo: brano.title })}
           /* Il fuoco arriva con ←→ dalla riga, non con Tab: vedi `fuoco.ts`. */
           tabIndex={-1}
           /* Senza dispositivo audio il comando fallirebbe a ogni clic: meglio un
@@ -336,9 +344,7 @@ const RigaBrano = memo(function RigaBrano({
           disabled={!suonabile}
           onClick={() => onSuona(indice)}
         >
-          <span className="numero">
-            {numeroTraccia ? (brano.trackNumber ?? indice + 1) : indice + 1}
-          </span>
+          <span className="numero">{numero}</span>
           <span className="via" aria-hidden="true">
             <Icona nome="i-play" dim={13} />
           </span>

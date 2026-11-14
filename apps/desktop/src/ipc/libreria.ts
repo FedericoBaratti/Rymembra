@@ -559,12 +559,25 @@ export interface EsitoScansione {
   /**
    * Quanti file non si sono potuti leggere.
    *
-   * Entrano comunque in libreria, marcati «degradato»: si vedono, si sa perché
-   * sono messi male, e la scansione dopo non ci ritorna.
+   * **Non** entrano in libreria: il lettore li ha rifiutati, e il nucleo se li
+   * ricorda (`file_illeggibili`, con la dimensione e la data di quel momento)
+   * perché la scansione dopo non li riapra finché non cambiano. Il perché sta
+   * nel codice di `illeggibiliQuali`.
    */
   illeggibili: number;
   /** Quali, fino a cinquanta. Il numero intero resta in `illeggibili`. */
   illeggibiliQuali: FileSaltato[];
+  /**
+   * Quanti file audio sono stati lasciati fuori perché troppo piccoli per
+   * essere un brano (`tooSmall`, sotto la soglia del nucleo): un avanzo
+   * troncato, un download interrotto, un file vuoto.
+   *
+   * Un'esclusione voluta, ma che non deve passare in silenzio: senza questo
+   * numero un file rotto piccolo era indistinguibile da uno sparito. Non
+   * include i file che non sono musica (`nonAudio`) né quelli nel cestino dei
+   * doppioni; l'elenco dei primi cinquanta, con tutti i motivi, è `saltati`.
+   */
+  troppoPiccoli: number;
   /** Copertine che non si sono potute salvare: il brano c'è, l'immagine no. */
   copertineFallite: FileSaltato[];
   /** File che il piano ha lasciato fuori, e perché. */

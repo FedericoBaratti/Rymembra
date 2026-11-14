@@ -120,6 +120,10 @@ pub fn import(
 /// è l'unico modo perché quel che l'utente vede nell'anteprima sia esattamente
 /// quel che succederà — comprese le collisioni di nome, che una simulazione
 /// scritta a parte non troverebbe.
+///
+/// Le tre fasi di [`leggi_gli_indici`], [`abbina`] e [`scrivi`] una dopo
+/// l'altra sulla stessa connessione: chi tiene il lucchetto della libreria le
+/// chiama a una a una (vedi `playlist.rs` nel desktop).
 fn esegui(
     connection: &mut Connection,
     letta: &PlaylistLetta,
@@ -127,17 +131,71 @@ fn esegui(
     accanto_a: Option<&Path>,
     commit: bool,
 ) -> Result<PlaylistFileReport, AppError> {
-    let per_percorso = indice_percorsi(connection)?;
-    let per_foglio = con_i_nomi(fogli_della_libreria(connection)?);
-    let per_immagine = con_i_nomi(immagini_della_libreria(connection)?);
-    let libreria = crate::import_esterno::leggi_libreria(connection)?;
-    let indice = Indice::nuovo(&libreria);
+    let indici = leggi_gli_indici(connection)?;
+    let abbinata = abbina(letta, accanto_a, &indici);
+    scrivi(connection, abbinata, nome, commit)
+}
 
-    let tx = crate::library::transazione_di_scrittura(connection)
-        .map_err(|err| db_error("apertura dell'importazione di una playlist", &err))?;
+/// Quel che la libreria dice di sé per abbinarle un file di playlist, letto in
+/// un colpo solo.
+///
+/// Sono **dati**, non una connessione: chi li ha letti può lasciare il
+/// lucchetto della libreria e abbinare con calma ([`abbina`]).
+#[derive(Debug)]
+pub struct IndiciDellaLibreria {
+    per_percorso: HashMap<String, i64>,
+    per_foglio: HashMap<String, Vec<i64>>,
+    per_immagine: HashMap<String, Vec<i64>>,
+    libreria: Vec<rymembra_domain::abbinamento::LibraryTrack>,
+}
+
+/// La prima fase: legge dalla libreria i percorsi, i fogli, le immagini e i
+/// brani. Letture e basta, un millisecondo su una libreria piccola e meno di
+/// un secondo su diciottomila brani.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la libreria non risponde.
+pub fn leggi_gli_indici(connection: &Connection) -> Result<IndiciDellaLibreria, AppError> {
+    Ok(IndiciDellaLibreria {
+        per_percorso: indice_percorsi(connection)?,
+        per_foglio: con_i_nomi(fogli_della_libreria(connection)?),
+        per_immagine: con_i_nomi(immagini_della_libreria(connection)?),
+        libreria: crate::import_esterno::leggi_libreria(connection)?,
+    })
+}
+
+/// Quel che l'abbinamento ha deciso, in attesa di essere scritto o mostrato.
+#[derive(Debug)]
+pub struct Abbinata {
+    rapporto: PlaylistFileReport,
+    ordine: Vec<i64>,
+}
+
+/// La seconda fase: abbina ogni voce del file a un brano della libreria.
+///
+/// Pura: non prende una connessione e non ne ha bisogno, ed è il punto. È la
+/// parte lunga — su un M3U da centocinquantamila righe, debug, sono due secondi
+/// e mezzo, e il resto dell'importazione è un millisecondo e qualche scrittura
+/// (collaudo L-PC, difetto 6) — e fatta sotto il lucchetto della libreria lo
+/// teneva per otto secondi, con la sorveglianza ferma ad aspettare. Fatta qui,
+/// fuori, il lucchetto serve solo per leggere gli indici e per scrivere.
+///
+/// Il percorso conta più dei tag, e i gradini sono quelli di sempre: vedi il
+/// preambolo del modulo.
+#[must_use]
+pub fn abbina(
+    letta: &PlaylistLetta,
+    accanto_a: Option<&Path>,
+    indici: &IndiciDellaLibreria,
+) -> Abbinata {
+    let per_percorso = &indici.per_percorso;
+    let per_foglio = &indici.per_foglio;
+    let per_immagine = &indici.per_immagine;
+    let indice = Indice::nuovo(&indici.libreria);
 
     let mut rapporto = PlaylistFileReport {
-        name: nome.trim().to_owned(),
+        name: String::new(),
         entries: letta.voci.len(),
         matched_by_path: 0,
         matched_by_tags: 0,
@@ -221,6 +279,36 @@ fn esegui(
             }),
         }
     }
+    Abbinata { rapporto, ordine }
+}
+
+/// La terza fase: scrive la playlist con l'ordine che [`abbina`] ha deciso, o
+/// — con `commit` a `false` — la scrive e la abbandona, che è il piano.
+///
+/// # Un brano che esce dalla libreria fra la prima fase e questa
+///
+/// Se una scansione toglie un brano abbinato mentre l'abbinamento è in corso,
+/// l'inserimento in `playlist_tracks` viola la chiave esterna e tutto si
+/// annulla con `library.trackNotFound`: nessuna playlist a metà, e chi importa riprova.
+/// È la finestra di un secondo su un file enorme, e un errore detto vale più di
+/// una riconciliazione che nessuno vedrebbe.
+///
+/// # Errori
+///
+/// `library.playlistNameInvalid` se il nome non identifica niente;
+/// `db.queryFailed` se la scrittura fallisce.
+pub fn scrivi(
+    connection: &mut Connection,
+    abbinata: Abbinata,
+    nome: &str,
+    commit: bool,
+) -> Result<PlaylistFileReport, AppError> {
+    let Abbinata {
+        mut rapporto,
+        ordine,
+    } = abbinata;
+    let tx = crate::library::transazione_di_scrittura(connection)
+        .map_err(|err| db_error("apertura dell'importazione di una playlist", &err))?;
 
     // La provenienza di un file è il nome scelto: un file importato di nuovo
     // con lo stesso nome riscrive la sua playlist, uno importato con un nome
@@ -1474,5 +1562,91 @@ mod prove {
             "la riga di rete deve trovare il suo brano"
         );
         assert!(r.missing.is_empty());
+    }
+
+    // ── le tre fasi, e il lucchetto che fra una e l'altra si può lasciare ─────
+
+    /// Un file con un brano per percorso, uno per tag e uno che non c'è.
+    fn file_misto() -> PlaylistLetta {
+        PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce(r"C:\Musica\Bjork\01 Joga.flac", None, None),
+                voce(r"D:\altrove\x.mp3", Some("Tale"), Some("Pezzo")),
+                voce(r"D:\altrove\y.mp3", Some("Nessuno"), Some("Introvabile")),
+            ],
+            illeggibili: 1,
+        }
+    }
+
+    #[test]
+    fn le_tre_fasi_danno_lo_stesso_piano_e_la_stessa_importazione_di_sempre() {
+        // L-PC 6: l'abbinamento esce dal lucchetto, e quel che l'utente vede
+        // — il piano, la playlist scritta — non cambia di una virgola.
+        let letta = file_misto();
+        let mut intero = libreria();
+        let atteso = plan(&mut intero, &letta, "Prova", None).expect("piano");
+        let mut a_fasi = libreria();
+        let indici = leggi_gli_indici(&a_fasi).expect("indici");
+        let abbinata = abbina(&letta, None, &indici);
+        let fatto = scrivi(&mut a_fasi, abbinata, "Prova", false).expect("piano a fasi");
+        assert_eq!(fatto, atteso);
+        assert_eq!((atteso.matched_by_path, atteso.matched_by_tags), (1, 1));
+        assert_eq!((atteso.missing.len(), atteso.unreadable), (1, 1));
+        assert_eq!(
+            crate::playlists::list(&a_fasi).expect("elenco").len(),
+            0,
+            "il piano non scrive"
+        );
+
+        let vero = import(&mut intero, &letta, "Prova", None).expect("importazione");
+        let indici = leggi_gli_indici(&a_fasi).expect("indici");
+        let abbinata = abbina(&letta, None, &indici);
+        let a_pezzi = scrivi(&mut a_fasi, abbinata, "Prova", true).expect("importazione a fasi");
+        assert_eq!(a_pezzi, vero);
+        assert_eq!(
+            crate::playlists::tracks(&a_fasi, a_pezzi.playlist_id.expect("id"))
+                .expect("voci")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn il_nome_si_decide_alla_scrittura_non_all_abbinamento() {
+        // Fra la lettura degli indici e la scrittura il lucchetto è libero, e
+        // qualcuno può fare una playlist con quel nome: la collisione si vede
+        // dove si scrive (D-11), non dove si abbina.
+        let letta = file_misto();
+        let mut c = libreria();
+        let indici = leggi_gli_indici(&c).expect("indici");
+        let abbinata = abbina(&letta, None, &indici);
+        let mia = crate::playlists::create(&c, "Serata").expect("fatta nel frattempo");
+        let r = scrivi(&mut c, abbinata, "Serata", true).expect("importata");
+        assert!(
+            r.beside.is_some(),
+            "la playlist di mezzo non si tocca: {r:?}"
+        );
+        assert_ne!(r.playlist_id, Some(mia.id));
+        assert_eq!(crate::playlists::list(&c).expect("elenco").len(), 2);
+    }
+
+    #[test]
+    fn un_brano_tolto_fra_l_abbinamento_e_la_scrittura_annulla_tutto_e_si_dice() {
+        // La finestra che il lucchetto lasciato apre: una scansione toglie un
+        // brano già abbinato. La chiave esterna rifiuta l'inserimento, la
+        // transazione si annulla, e l'errore è detto — niente playlist a metà.
+        let letta = file_misto();
+        let mut c = libreria();
+        let indici = leggi_gli_indici(&c).expect("indici");
+        let abbinata = abbina(&letta, None, &indici);
+        c.execute("DELETE FROM tracks WHERE id = 1", [])
+            .expect("tolto");
+        let guasto = scrivi(&mut c, abbinata, "Prova", true).expect_err("deve dirlo");
+        assert_eq!(
+            guasto.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound
+        );
+        assert_eq!(crate::playlists::list(&c).expect("elenco").len(), 0);
     }
 }

@@ -478,13 +478,18 @@ export function RigheCoda({
       {pezziDellaFinestra(finestra.primo, finestra.ultimo, coda.length, fuoco.attivo).map((pezzo) => {
         if ("paglia" in pezzo) {
           return (
+            /* `aria-hidden` e non `role="presentation"`: un `li` con un ruolo
+               che non è `listitem` non è un figlio valido di un `ol` (axe
+               `list`, serious), mentre uno nascosto ai lettori di schermo non
+               conta né come voce né come errore. La paglia non è una riga: è
+               il posto che le righe assenti occuperebbero. */
             <li
               key={pezzo.paglia}
               className="paglia"
               style={{
                 height: Math.max(finestra.inizioDi(pezzo.a) - finestra.inizioDi(pezzo.da), 0),
               }}
-              role="presentation"
+              aria-hidden="true"
             />
           );
         }

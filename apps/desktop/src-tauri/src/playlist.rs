@@ -554,14 +554,42 @@ pub async fn playlist_file_piano(
         let stato = gestito::<Stato>(&app, "piano di un file di playlist").map_err(errore)?;
         let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
         let nome = nome_per_il_piano(nome, predefinito);
-        let rapporto = con_libreria(&stato, |libreria| {
-            import_playlist::plan(&mut libreria.connection, &letta, &nome, cartella.as_deref())
-        })
-        .map_err(errore)?;
+        let rapporto =
+            abbina_e_scrivi(&stato, &letta, &nome, cartella.as_deref(), false).map_err(errore)?;
         Ok(PianoFile { nome, rapporto })
     })
     .await
     .map_err(errore)?
+}
+
+/// Il piano o l'importazione di un file di playlist, con il lucchetto della
+/// libreria preso **due volte, brevi**: per leggere gli indici e per scrivere.
+/// L'abbinamento di ogni voce alla libreria — la parte lunga — sta in mezzo,
+/// fuori.
+///
+/// Fino alla 3.2.1 `plan` e `import` abbinavano dentro `con_libreria`: un M3U da
+/// centocinquantamila righe teneva la libreria otto secondi, e la sorveglianza
+/// aspettava dodici (L-PC 6). Lettura e analisi del file stavano già fuori
+/// ([`leggi_file`]); era l'abbinamento che costava, e due volte — per il piano e
+/// per l'importazione.
+///
+/// Se un brano abbinato esce dalla libreria fra le due prese, la scrittura fallisce
+/// per intero con `library.trackNotFound` e chi importa riprova: vedi
+/// [`import_playlist::scrivi`].
+fn abbina_e_scrivi(
+    stato: &Stato,
+    letta: &PlaylistLetta,
+    nome: &str,
+    cartella: Option<&Path>,
+    commit: bool,
+) -> Result<PlaylistFileReport, AppError> {
+    let indici = con_libreria(stato, |libreria| {
+        import_playlist::leggi_gli_indici(&libreria.connection)
+    })?;
+    let abbinata = import_playlist::abbina(letta, cartella, &indici);
+    con_libreria(stato, |libreria| {
+        import_playlist::scrivi(&mut libreria.connection, abbinata, nome, commit)
+    })
 }
 
 /// Il nome per cui si fa il piano: quello chiesto, o quello di serie se non ne
@@ -604,10 +632,8 @@ pub async fn playlist_file_importa(
             gestito::<Stato>(&app, "importazione di un file di playlist").map_err(errore)?;
         let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
         let nome = nome_per_il_piano(Some(nome), predefinito);
-        let esito = con_libreria(&stato, |libreria| {
-            import_playlist::import(&mut libreria.connection, &letta, &nome, cartella.as_deref())
-        })
-        .map_err(errore);
+        let esito =
+            abbina_e_scrivi(&stato, &letta, &nome, cartella.as_deref(), true).map_err(errore);
         crate::nuvola::se_riuscito(&app, esito)
     })
     .await
@@ -728,6 +754,63 @@ pub struct PlaylistEsportata {
 mod prove {
     use super::*;
     use std::time::{Duration, Instant};
+
+    // ── il lucchetto durante l'importazione di un file ──────────────────────
+
+    /// Il corpo di una funzione di questo file, dal suo nome alla graffa che
+    /// chiude a margine.
+    fn corpo_di(nome: &str) -> &'static str {
+        let sorgente = include_str!("playlist.rs");
+        let da = sorgente
+            .find(nome)
+            .unwrap_or_else(|| panic!("manca «{nome}»"));
+        let fine = sorgente[da..]
+            .find("\n}\n")
+            .map_or(sorgente.len(), |f| da + f);
+        &sorgente[da..fine]
+    }
+
+    #[test]
+    fn l_abbinamento_di_un_file_di_playlist_non_tiene_il_lucchetto_della_libreria() {
+        // L-PC 6: un M3U da centocinquantamila righe teneva il lucchetto della
+        // libreria otto secondi (`lucchetto tenuto 8540 ms dal filo
+        // «tokio-rt-worker»`, la sorveglianza ad aspettare dodici). La lettura e
+        // l'analisi del file stavano già fuori: il tempo era in
+        // `import_playlist::plan`/`import`, che abbinavano ogni voce alla
+        // libreria **dentro** `con_libreria`. Il lucchetto serve per leggere gli
+        // indici e per scrivere; in mezzo, fuori, si abbina.
+        for comando in [
+            "pub async fn playlist_file_piano(",
+            "pub async fn playlist_file_importa(",
+        ] {
+            let corpo = corpo_di(comando);
+            assert!(
+                corpo.contains("abbina_e_scrivi("),
+                "{comando} non passa dalle tre fasi"
+            );
+            assert!(
+                !corpo.contains("import_playlist::plan(")
+                    && !corpo.contains("import_playlist::import("),
+                "{comando} abbina ancora dentro il lucchetto"
+            );
+        }
+        let tre_fasi = corpo_di("fn abbina_e_scrivi(");
+        let prese: Vec<usize> = tre_fasi
+            .match_indices("con_libreria(")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(prese.len(), 2, "due prese: gli indici e la scrittura");
+        let abbina = tre_fasi
+            .find("import_playlist::abbina(")
+            .expect("manca l'abbinamento");
+        assert!(
+            prese[0] < abbina && abbina < prese[1],
+            "l'abbinamento sta fra le due prese, non dentro una"
+        );
+        // E le due chiusure fanno solo la loro fase.
+        assert!(tre_fasi.contains("import_playlist::leggi_gli_indici("));
+        assert!(tre_fasi.contains("import_playlist::scrivi("));
+    }
 
     // ── il piano di un file di playlist ─────────────────────────────────────
 
