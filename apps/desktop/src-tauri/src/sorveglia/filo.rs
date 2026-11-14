@@ -1112,18 +1112,22 @@ fn arma(
     let con_volume = dove == Collocazione::Locale;
     let (come, osservatore, volume) = match come_sorvegliare(modo, dove) {
         Come::Avvisi => match osserva_entro(radice, posta, con_volume) {
-            Ok((osservatore, volume)) => (Come::Avvisi, Some(osservatore), volume),
+            Ok((osservatore, volume)) => {
+                if e_tornata(prima, Come::Avvisi) {
+                    nota!(
+                        "[sorveglia] {} si osserva di nuovo",
+                        nel_diario(radice, elenco)
+                    );
+                }
+                (Come::Avvisi, Some(osservatore), volume)
+            }
             Err(guasto) => {
-                // Con «tutte» resta il solo riallineamento: è la strada che
-                // funziona anche dove gli avvisi no. Con «locali», dove questa
-                // è per forza un disco di questo computer, si riprova al
-                // prossimo controllo.
-                let ripiego = if modo == Modo::Tutte {
-                    Come::Sondaggio
-                } else {
-                    Come::NonRaggiungibile
-                };
-                if prima != Some(ripiego) {
+                // Se la cartella c'è o no, a parte: l'osservatore che non si
+                // arma su una cartella che non c'è non è un guasto da
+                // riprovare con un sondaggio ogni cinque minuti.
+                let esistenza = rymembra_app::volumi::esistenza_entro(radice, VIVA_SCADENZA);
+                let (ripiego, da_dire) = dopo_l_osservatore_mancato(modo, prima, esistenza);
+                if da_dire {
                     nota!(
                         "[sorveglia] {} non si può osservare: {guasto}",
                         nel_diario(radice, elenco)
@@ -1141,6 +1145,60 @@ fn arma(
         volume,
         senza_risposta: 0,
     }
+}
+
+/// Com'è guardata una cartella il cui osservatore non si è potuto armare, e se
+/// la cosa va scritta nel diario. Pura, per provarla.
+///
+/// # Il ripiego
+///
+/// Con «tutte» resta il solo riallineamento, ogni [`SONDAGGIO`]: è la strada
+/// che funziona anche dove gli avvisi no — un NAS che non risponde, una cartella
+/// che c'è e rifiuta l'osservatore. Con «locali», dove questa è per forza un
+/// disco di questo computer, si riprova al prossimo controllo.
+///
+/// # Una cartella che non c'è
+///
+/// Se `esistenza` dice [`Esistenza::Assente`] — il sistema ha risposto «non
+/// c'è», e non per un guasto di rete — non c'è niente da riallineare: la
+/// cartella resta [`Come::NonRaggiungibile`], senza passo, e la riarma il
+/// controllo di ogni minuto quando torna (vedi `controlla`). Il `Sondaggio` che
+/// c'era prima la camminava a vuoto ogni cinque minuti — una riga di scansione e
+/// due di diario per giro, per una cartella che il diario aveva già detto
+/// assente («il volume è stato espulso o staccato», «non c'è più») — ed era una
+/// seconda riga sulla stessa notizia (L-PC 7).
+///
+/// # Quando si scrive
+///
+/// Solo quando lo stato cambia: una cartella assente si scrive una volta
+/// quando sparisce, non a ogni giro di controllo. Chi arriva già
+/// `NonRaggiungibile` — `volume_andato`, `lascia_cadere_le_morte`, un
+/// osservatore guastato — l'ha già detto da sé.
+pub(super) fn dopo_l_osservatore_mancato(
+    modo: Modo,
+    prima: Option<Come>,
+    esistenza: Esistenza,
+) -> (Come, bool) {
+    let ripiego = if modo == Modo::Tutte {
+        Come::Sondaggio
+    } else {
+        Come::NonRaggiungibile
+    };
+    let come = if esistenza == Esistenza::Assente {
+        Come::NonRaggiungibile
+    } else {
+        ripiego
+    };
+    (come, prima != Some(come))
+}
+
+/// Una cartella che era assente e adesso si osserva di nuovo: da dire, una
+/// volta, perché la riga di quando è sparita non resti senza la sua metà.
+///
+/// Solo da `NonRaggiungibile`: il `Sondaggio` è una cartella che c'era e non si
+/// riusciva a osservare, non una che era sparita.
+pub(super) fn e_tornata(prima: Option<Come>, adesso: Come) -> bool {
+    prima == Some(Come::NonRaggiungibile) && adesso == Come::Avvisi
 }
 
 /// Scrive il quadro per la finestra.

@@ -8,10 +8,13 @@ use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime};
 
 use rymembra_app::library::Natura;
+use rymembra_app::volumi::Esistenza;
 use rymembra_domain::paths::PathRules;
 
 use super::accorpamento::{cartelle_da_guardare, conta, natura_di};
-use super::filo::{Motore, Passata, nel_diario, osserva, prossima_attesa};
+use super::filo::{
+    Motore, Passata, dopo_l_osservatore_mancato, e_tornata, nel_diario, osserva, prossima_attesa,
+};
 
 #[test]
 fn la_riga_del_ramo_perso_non_porta_il_percorso() {
@@ -1401,4 +1404,115 @@ fn chi_risponde_a_windows_aspetta_il_filo_ma_non_per_sempre() {
         orecchio.recv_timeout(Duration::from_secs(1)),
         Ok(Messaggio::VolumeAndato(volume)) if volume == "X"
     ));
+}
+
+// ── una cartella che non c'è più si scrive una volta ────────────────────────
+
+/// Quel che il controllo di ogni minuto fa di una cartella il cui osservatore
+/// non si arma: lo stato in cui resta e, per ogni giro, se ha scritto.
+fn giri_di_controllo(
+    modo: Modo,
+    mut prima: Option<Come>,
+    esistenza: Esistenza,
+    giri: usize,
+) -> (Vec<Come>, usize) {
+    let mut scritte = 0;
+    let mut stati = Vec::new();
+    for _ in 0..giri {
+        let (come, da_dire) = dopo_l_osservatore_mancato(modo, prima, esistenza);
+        scritte += usize::from(da_dire);
+        stati.push(come);
+        prima = Some(come);
+    }
+    (stati, scritte)
+}
+
+#[test]
+fn una_cartella_assente_dopo_l_espulsione_non_diventa_un_sondaggio_ne_si_riscrive() {
+    // L-PC 7. Dopo «il volume è stato espulso o staccato: 1 cartelle assenti,
+    // si riarmano quando torna» (`volume_andato`: `NonRaggiungibile`, nessun
+    // riallineamento), il controllo di ogni minuto la riarma e l'osservatore
+    // non si arma — «Input watch path is neither a file nor a directory». Con
+    // «tutte» il ripiego era `Sondaggio`: cambiava lo stato (e scriveva una
+    // seconda riga sulla stessa cartella) e la metteva sul riallineamento ogni
+    // cinque minuti, tre righe di diario a ogni giro per una cartella che il
+    // diario aveva già detto assente.
+    let (stati, scritte) = giri_di_controllo(
+        Modo::Tutte,
+        Some(Come::NonRaggiungibile),
+        Esistenza::Assente,
+        10,
+    );
+    assert!(
+        stati.iter().all(|stato| *stato == Come::NonRaggiungibile),
+        "{stati:?}"
+    );
+    assert_eq!(scritte, 0, "già detta dal volume espulso");
+    // E senza riallineamenti: `NonRaggiungibile` è `Ritmo::Nessuno`, mentre il
+    // `Sondaggio` che c'era prima era `SoloRiallineamento`, ogni cinque minuti.
+    assert_eq!(
+        Ritmo::di(stati[0], Collocazione::Ignota),
+        Ritmo::Nessuno,
+        "una cartella assente non si riallinea"
+    );
+}
+
+#[test]
+fn una_cartella_assente_si_scrive_una_volta_quando_sparisce_o_quando_la_sessione_comincia() {
+    for modo in [Modo::Tutte, Modo::Locali] {
+        // La sessione comincia e la cartella non c'è: una riga sola, poi niente.
+        let (_, scritte) = giri_di_controllo(modo, None, Esistenza::Assente, 30);
+        assert_eq!(scritte, 1, "{modo:?}");
+        // Un osservatore che muore con la cartella (`lascia_cadere_le_morte`
+        // ha già scritto «non c'è più», o è partito dagli avvisi): una riga
+        // sola per il passaggio, anche se il guasto si ripresenta ogni minuto.
+        let (stati, scritte) = giri_di_controllo(modo, Some(Come::Avvisi), Esistenza::Assente, 30);
+        assert_eq!(scritte, 1, "{modo:?}");
+        assert_eq!(stati[0], Come::NonRaggiungibile, "{modo:?}");
+    }
+}
+
+#[test]
+fn una_cartella_che_c_e_o_non_si_sa_resta_com_era() {
+    // Una condivisione che non risponde (`Ignota`) o una cartella che c'è e
+    // rifiuta l'osservatore (`Presente`) non sono «assenti»: con «tutte» si
+    // guardano col solo riallineamento e si riprovano — la strada di un NAS —,
+    // con «locali» si riprova l'osservatore a ogni controllo.
+    for esistenza in [Esistenza::Presente, Esistenza::Ignota] {
+        let (stati, scritte) = giri_di_controllo(Modo::Tutte, None, esistenza, 10);
+        assert!(
+            stati.iter().all(|stato| *stato == Come::Sondaggio),
+            "{esistenza:?}"
+        );
+        assert_eq!(scritte, 1, "{esistenza:?}: una volta, non a ogni giro");
+        let (stati, scritte) = giri_di_controllo(Modo::Locali, None, esistenza, 10);
+        assert!(
+            stati.iter().all(|stato| *stato == Come::NonRaggiungibile),
+            "{esistenza:?}"
+        );
+        assert_eq!(scritte, 1);
+    }
+    // Una cartella che era assente e adesso c'è ma non si osserva è una notizia nuova.
+    let (stati, scritte) = giri_di_controllo(
+        Modo::Tutte,
+        Some(Come::NonRaggiungibile),
+        Esistenza::Presente,
+        3,
+    );
+    assert_eq!(stati[0], Come::Sondaggio);
+    assert_eq!(scritte, 1);
+}
+
+#[test]
+fn il_ritorno_di_una_cartella_assente_si_dice_una_volta() {
+    // La metà che mancava a «non c'è più»: si dice quando da assente torna a
+    // osservarsi, e non dopo (una cartella con gli avvisi che resta con gli
+    // avvisi, o che parte da zero a inizio sessione, non è un ritorno).
+    assert!(e_tornata(Some(Come::NonRaggiungibile), Come::Avvisi));
+    assert!(!e_tornata(Some(Come::Avvisi), Come::Avvisi));
+    assert!(!e_tornata(None, Come::Avvisi));
+    // Il sondaggio era una cartella che c'era e non si osservava, non una sparita.
+    assert!(!e_tornata(Some(Come::Sondaggio), Come::Avvisi));
+    // E finché non si osserva di nuovo non c'è niente da dire.
+    assert!(!e_tornata(Some(Come::NonRaggiungibile), Come::Sondaggio));
 }
