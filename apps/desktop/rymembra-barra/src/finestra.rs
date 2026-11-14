@@ -26,16 +26,19 @@
 //! Tutto il lavoro con la barra avviene sul filo della finestra: l'oggetto COM
 //! vive lì, le icone nascono e muoiono lì, e i clic arrivano lì.
 //!
-//! # Un quarto messaggio, che non è dei pulsanti
+//! # Una seconda sottoclasse, che non è dei pulsanti
 //!
-//! La sottoclasse è anche l'unico posto che vede i messaggi della finestra
-//! prima di `tao`, e ne usa uno per una cosa che con la barra non c'entra: un
-//! **Alt da solo** — o F10 — arriva come `WM_SYSCOMMAND` con `SC_KEYMENU`, e
-//! la finestra, che non ha né titolo né menu ma ha il menu di sistema, ci
-//! entrerebbe in un ciclo modale invisibile che si mangia il tasto seguente.
-//! Si ferma qui: vedi [`alt_da_solo`]. Fuori da questa finestra non c'è un
-//! altro posto con l'eccezione `unsafe` e la procedura in mano, ed è per
-//! questo che sta in questo file e non in un altro.
+//! Un **Alt da solo** — o F10 — arriva alla finestra come `WM_SYSCOMMAND` con
+//! `SC_KEYMENU`, e la finestra, che non ha né titolo né menu ma ha il menu di
+//! sistema, ci entrerebbe in un ciclo modale invisibile che si mangia il tasto
+//! seguente, e con una WebView2 in mezzo si blocca (reperto 1 di FALT). Si
+//! ferma prima di `tao`: vedi [`alt_da_solo`].
+//!
+//! Sta in una sottoclasse **sua**, con un altro identificativo e senza dati, e
+//! non in quella dei pulsanti, perché le due vite sono diverse: i pulsanti si
+//! agganciano dopo l'apertura della libreria — una migrazione lunga la fa
+//! durare minuti, con la finestra già visibile — e la guardia deve esserci
+//! dal `setup`, prima che la finestra compaia. Vedi [`ferma_alt_da_solo`].
 //!
 //! # Cosa vive quanto
 //!
@@ -528,10 +531,6 @@ unsafe extern "system" fn sottoclasse(
             contesto.premi(tasto);
             return LRESULT(0);
         }
-    } else if messaggio == WM_SYSCOMMAND && alt_da_solo(wparam.0, lparam.0) {
-        // Alt (o F10) da solo: niente menu di sistema invisibile. Vedi
-        // `alt_da_solo`. Non arriva a `tao`: non gli serve.
-        return LRESULT(0);
     } else if messaggio == WM_SHOWWINDOW && wparam.0 == 0 {
         // La finestra si nasconde — nel vassoio — e la sua icona sparisce con
         // i pulsanti. Fino al prossimo `TaskbarButtonCreated` non c'è niente
@@ -551,6 +550,73 @@ unsafe extern "system" fn sottoclasse(
 
     // SAFETY: ogni messaggio prosegue verso la procedura di `tao`, con gli
     // argomenti ricevuti.
+    unsafe { DefSubclassProc(finestra, messaggio, wparam, lparam) }
+}
+
+/// L'identificativo della sottoclasse che ferma l'Alt da solo: un altro da
+/// quello dei pulsanti, perché sono due cose con due vite.
+const ID_SOTTOCLASSE_ALT: usize = 0xAE7F;
+
+/// Vedi [`crate::ferma_alt_da_solo`].
+pub(crate) fn ferma_alt_da_solo(hwnd: *mut c_void) -> Result<(), String> {
+    let finestra = HWND(hwnd);
+    // SAFETY: due letture; su un `HWND` che non è una finestra la prima
+    // risponde zero.
+    let (proprietario, io) = unsafe {
+        (
+            GetWindowThreadProcessId(finestra, None),
+            GetCurrentThreadId(),
+        )
+    };
+    if proprietario == 0 {
+        return Err("la finestra non esiste".to_owned());
+    }
+    if proprietario != io {
+        return Err("non si è sul filo della finestra".to_owned());
+    }
+    // SAFETY: legge soltanto; `None` come destinazione del dato.
+    if unsafe { GetWindowSubclass(finestra, Some(sottoclasse_alt), ID_SOTTOCLASSE_ALT, None) }
+        .as_bool()
+    {
+        return Err("la guardia dell'Alt è già montata".to_owned());
+    }
+    // SAFETY: si è sul filo della finestra (controllato sopra), come
+    // `SetWindowSubclass` pretende. Nessun dato (zero): la procedura non ne
+    // ha bisogno, e quindi non c'è niente da liberare.
+    let montata =
+        unsafe { SetWindowSubclass(finestra, Some(sottoclasse_alt), ID_SOTTOCLASSE_ALT, 0) };
+    if !montata.as_bool() {
+        return Err("Windows non accetta la sottoclasse della guardia dell'Alt".to_owned());
+    }
+    Ok(())
+}
+
+/// La procedura della guardia: tiene per sé l'Alt da solo (vedi
+/// [`alt_da_solo`]) e lascia passare tutto il resto.
+///
+/// # Safety
+///
+/// La chiama soltanto Windows, per la sottoclasse installata in
+/// [`ferma_alt_da_solo`].
+unsafe extern "system" fn sottoclasse_alt(
+    finestra: HWND,
+    messaggio: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _dati: usize,
+) -> LRESULT {
+    if messaggio == WM_SYSCOMMAND && alt_da_solo(wparam.0, lparam.0) {
+        return LRESULT(0);
+    }
+    if messaggio == WM_NCDESTROY {
+        // SAFETY: la stessa finestra, procedura e identificativo installati.
+        // Non c'è un contesto da liberare: la sottoclasse non ne ha.
+        let _ =
+            unsafe { RemoveWindowSubclass(finestra, Some(sottoclasse_alt), ID_SOTTOCLASSE_ALT) };
+    }
+    // SAFETY: ogni altro messaggio prosegue verso la procedura che c'era, con
+    // gli argomenti ricevuti.
     unsafe { DefSubclassProc(finestra, messaggio, wparam, lparam) }
 }
 

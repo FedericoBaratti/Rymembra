@@ -88,6 +88,50 @@ pub fn avvia(app: &tauri::AppHandle) {
     let _ = app;
 }
 
+/// Monta la guardia dell'Alt da solo sulla finestra principale, dal `setup`.
+///
+/// Un Alt da solo manda la finestra in un menu di sistema invisibile e, con la
+/// WebView2 dentro, la blocca (reperto 1 di FALT): vedi
+/// `rymembra_barra::ferma_alt_da_solo`. Sta qui e non in [`avvia`] perché
+/// `avvia` aspetta la libreria — una migrazione lunga la fa durare minuti, con
+/// la finestra già visibile — e la guardia no. Sul filo della finestra, come
+/// `avvia`; fuori da Windows non c'è niente da fermare.
+pub fn ferma_alt(app: &tauri::AppHandle) {
+    #[cfg(windows)]
+    {
+        let mano = app.clone();
+        if let Err(err) = app.run_on_main_thread(move || monta_la_guardia(&mano)) {
+            nota!("[barra] il filo della finestra non risponde: {err}");
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+/// Il lavoro di [`ferma_alt`], sul filo della finestra.
+#[cfg(windows)]
+fn monta_la_guardia(app: &tauri::AppHandle) {
+    let Some(finestra) = app.get_webview_window("main") else {
+        nota!("[barra] nessuna finestra: la guardia dell'Alt non si monta");
+        return;
+    };
+    let hwnd = match finestra.hwnd() {
+        Ok(hwnd) => hwnd.0.cast(),
+        Err(err) => {
+            nota!(
+                "[barra] la finestra non ha un puntatore: la guardia dell'Alt non si monta ({err})"
+            );
+            return;
+        }
+    };
+    match rymembra_barra::ferma_alt_da_solo(hwnd) {
+        Ok(()) => {
+            nota!("[barra] guardia dell'Alt montata: un Alt da solo non apre il menu di sistema")
+        }
+        Err(err) => nota!("[barra] la guardia dell'Alt non si monta: {err}"),
+    }
+}
+
 /// Il lavoro di [`avvia`], sul filo della finestra.
 #[cfg(windows)]
 fn aggancia(app: &tauri::AppHandle) {

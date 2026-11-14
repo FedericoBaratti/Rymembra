@@ -142,6 +142,32 @@ impl Barra {
     }
 }
 
+/// Fa in modo che un **Alt da solo** (o F10) non mandi la finestra `hwnd` in un
+/// menu di sistema invisibile, che si mangia il tasto seguente e con una
+/// WebView2 dentro si blocca (reperto 1 di FALT). Alt+Spazio, che apre il menu
+/// di sistema vero, resta com'era.
+///
+/// Va chiamata **sul filo che ha creato la finestra**, e una volta sola, il
+/// prima possibile — dal `setup`: non dipende dai pulsanti, che si agganciano
+/// solo quando la libreria è aperta, e la finestra può comparire prima. Vedi
+/// `finestra.rs`.
+///
+/// # Errors
+///
+/// Una frase che dice perché non si è montata: la finestra non c'è, è di un
+/// altro filo, è già montata, o non si è su Windows.
+pub fn ferma_alt_da_solo(hwnd: *mut std::ffi::c_void) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        finestra::ferma_alt_da_solo(hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        Err("l'Alt da solo non è un problema fuori da Windows".to_owned())
+    }
+}
+
 /// Mette i tre pulsanti sotto l'anteprima della finestra `hwnd`.
 ///
 /// Va chiamata **sul filo che ha creato la finestra**, e una volta sola: è lì
