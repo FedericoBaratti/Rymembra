@@ -51,6 +51,7 @@
               ["Play counts", "`Contatore`", "Each device only increments its own counter; per device take the max, total = sum (5 plays on the laptop + 3 on the phone = 8). Imported history is the pseudo-device `importazione`"],
               ["Rating, like, last played, active skin", "`Registro` (`Voto`, `Interruttore`, `Momento`, `Scelta`)", "Newest timestamp wins; deterministic tie-breaks (higher rating, liked = OR, max ms, larger id)"],
               ["Playlist order", "`Sequenza`", "Each element has an identity `<device>:<n>` and an «after» pointer; order is a traversal with children by descending identity; concurrent inserts are both kept; removals are tombstones"],
+              ["A track this device does not have", "`Sequenza::riordina_lasciando`", "An entry whose track is not in this library is **invisible** here, not removed: `allinea` leaves it alive, in its place, and the document still carries it, so devices that have the track keep it in their playlist (the phone with part of the computer's music, a file deleted or moved out of the folders on one machine). When the track arrives — scan, watcher, «Download here», a correction that changes its key — the next `allinea` (the first step of every pass and of every profile read) puts its entry into `playlist_tracks` at its place, in its own transaction; with sync off that waits for the next profile read or the next time sync is turned on. `allinea` tells «removed by the user» from «not arrived yet» with the keys that were missing at its last run (setting `sincronia.brani_assenti`, rewritten by `allinea` and `applica_in`). Really removing a track from a playlist is still a gesture that travels as a tombstone"],
               ["Deletions", "lapidi", "A playlist tombstone removes the playlist only if it is newer than the playlist's last change; track tombstones never delete rows"],
             ],
           },
@@ -61,7 +62,7 @@
         { h: "A pass" },
         {
           ol: [
-            "Lock window 1: `sincronia::allinea` brings `sync_ascolti`, `sync_sequenza` and `sync.roots` in step with the library; `contenuto` builds this device's document.",
+            "Lock window 1: `sincronia::allinea` brings `sync_ascolti`, `sync_sequenza` and `sync.roots` in step with the library — and puts into `playlist_tracks`, at their place, the tracks that arrived after their playlist entry; `contenuto` builds this device's document.",
             "No lock: `Motore::passata` lists the store (`Magazzino`: list, read, write, rename, delete), reads only documents whose hash changed (remembered in `Memoria`), merges with `fusione::fondi`, and rewrites its own document only if its hash changed.",
             "Lock window 2: `sincronia::applica_se_ferma` re-checks that playlists and roots did not change meanwhile (otherwise it rolls back and retries later) and writes counters, registers, playlists (sequence → `playlist_tracks`), roots and tombstones.",
           ],

@@ -3020,6 +3020,66 @@ fn un_profilo_letto_a_libreria_vuota_si_completa_alla_seconda_lettura() {
     assert_eq!(corretto, "Hey You", "la correzione è arrivata");
 }
 
+#[test]
+fn un_profilo_letto_su_una_libreria_parziale_porta_le_playlist_intere_e_non_raddoppia_con_la_sincronia()
+ {
+    // FSYNC: prima, `solo_i_brani_di_qui` riduceva le playlist del profilo ai
+    // brani presenti e rifaceva con le identità di questo dispositivo quella che
+    // perdeva voci. Se poi la sincronia incontrava la playlist originale, le
+    // voci raddoppiavano. Ora una voce di un brano assente è invisibile qui, non
+    // tolta: la playlist entra intera, con le identità di là.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    // Un telefono con una parte della musica: «a» e «b», non «c».
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "a");
+    brano(&qui, 2, r"E:\M\b.flac", "b");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["a", "b"], "«c» qui non c'è");
+
+    // Il primo `allinea` della passata dopo non seppellisce la voce di «c».
+    crate::sincronia::allinea(&mut qui, "qui", 2_000).expect("allineamento");
+    let documento = |connection: &Connection, chi: &str| {
+        crate::sincronia::contenuto(connection, chi, BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto")
+    };
+    let di_la = documento(&la, "la");
+    let di_qui = documento(&qui, "qui");
+    let chiave_di = |contenuto: &rymembra_sync::Contenuto| {
+        contenuto
+            .playlist
+            .iter()
+            .find(|(_, playlist)| playlist.nome == "Serata")
+            .map(|(chiave, _)| chiave.clone())
+            .expect("la playlist è nel documento")
+    };
+    let chiave = chiave_di(&di_la);
+    assert_eq!(
+        di_qui.playlist[&chiave].sequenza, di_la.playlist[&chiave].sequenza,
+        "stesse voci, stesse identità, nessuna lapide"
+    );
+
+    // E la sincronia che poi incontra l'originale non raddoppia niente.
+    let fuso = rymembra_sync::fondi(&[
+        rymembra_sync::Documento::nuovo("la", di_la, 3_000),
+        rymembra_sync::Documento::nuovo("qui", di_qui, 3_000),
+    ]);
+    assert_eq!(
+        fuso.playlist[&chiave].sequenza.ordine(),
+        vec!["c", "a", "b"]
+    );
+    assert_eq!(fuso.playlist[&chiave].sequenza.quanti(), 3);
+
+    // Quando «c» arriva — per qualunque via — la sua voce rientra al suo posto.
+    brano(&qui, 3, r"E:\M\c.flac", "c");
+    crate::sincronia::allinea(&mut qui, "qui", 4_000).expect("allineamento");
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["c", "a", "b"]);
+    assert_eq!(in_ordine(&qui, "Dal vivo"), vec!["b", "c"]);
+}
+
 /// Quel che non deve crescere rileggendo: ascolti, cronologia, voti, cuori,
 /// righe di playlist e l'ordine di «Serata».
 fn impronta_della_libreria(c: &Connection) -> (i64, i64, i64, i64, i64, Vec<String>) {

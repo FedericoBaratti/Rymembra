@@ -387,6 +387,44 @@ impl Sequenza {
     /// trascinamento — su una playlist da trecento brani, trecento lapidi per aver
     /// spostato una canzone di un posto.
     pub fn riordina(&mut self, dispositivo: &str, voluto: &[String], quando: i64) {
+        self.riordina_lasciando(dispositivo, voluto, quando, |_| false);
+    }
+
+    /// Come [`Sequenza::riordina`], ma lascia stare certi brani.
+    ///
+    /// # Perché esiste
+    ///
+    /// `voluto` è l'elenco di una libreria, e una libreria nomina solo i brani
+    /// che ha. Un elemento della sequenza il cui brano **qui non c'è** non è
+    /// stato tolto da nessuno: è un brano che l'altro dispositivo ha e questo no,
+    /// e `riordina` lo leggerebbe come «non più voluto» e lo sotterrerebbe. La
+    /// lapide viaggerebbe, e per la regola della fusione («la più vecchia
+    /// vince») i dispositivi che il brano ce l'hanno lo toglierebbero dalla loro
+    /// playlist. Dire quali brani qui non si vedono, e quindi non si toccano, è
+    /// quello che fa `da_lasciare`.
+    ///
+    /// # Cosa vuol dire «lasciare»
+    ///
+    /// Un elemento il cui brano `da_lasciare` accetta, e che `voluto` non
+    /// richiede (o non richiede più volte di quante ne ha già), resta com'è: vivo,
+    /// con la sua identità e il suo ancoraggio, né sepolto né spostato. Non fa
+    /// parte dell'ordine che si confronta con `voluto`, e i nuovi elementi non si
+    /// ancorano mai a lui — ma quelli che erano ancorati a lui restano dove sono.
+    /// Il risultato è che l'elenco della sequenza, **tolti i brani lasciati**, è
+    /// esattamente `voluto`, e che questi si ritrovano al loro posto il giorno
+    /// che qualcuno li guarda.
+    ///
+    /// Se `voluto` nomina un brano che `da_lasciare` accetta, il brano conta per
+    /// quel che `voluto` ne chiede (le prime occorrenze, nell'ordine della
+    /// sequenza) e solo l'eccedenza si lascia: una libreria che ha già messo da sé
+    /// il brano nella playlist non ne ottiene un secondo.
+    pub fn riordina_lasciando(
+        &mut self,
+        dispositivo: &str,
+        voluto: &[String],
+        quando: i64,
+        da_lasciare: impl Fn(&str) -> bool,
+    ) {
         let attuale = self.identita_in_ordine();
 
         // Quel che non è più voluto se ne va. Si contano le occorrenze, perché lo
@@ -407,6 +445,8 @@ impl Sequenza {
                     *quanti -= 1;
                     sopravvissuti.push(identita.clone());
                 }
+                // Né voluto né da seppellire: resta dov'è.
+                _ if da_lasciare(brano.as_str()) => {}
                 _ => {
                     if let Some(elemento) = self.elementi.get_mut(identita) {
                         elemento.tolto = Some(quando);
@@ -633,6 +673,158 @@ mod prove {
         riordinata.riordina("uno", &lista(&["c", "a"]), 100);
         assert_eq!(riordinata.fondi(&base).ordine(), vec!["c", "a"]);
         assert_eq!(base.fondi(&riordinata).ordine(), vec!["c", "a"]);
+    }
+
+    /// Gli elementi vivi di una sequenza per un brano, con la loro identità.
+    fn vivi_di<'a>(sequenza: &'a Sequenza, brano: &str) -> Vec<&'a Identita> {
+        sequenza
+            .elementi()
+            .filter(|(_, elemento)| elemento.brano == brano && elemento.tolto.is_none())
+            .map(|(identita, _)| identita)
+            .collect()
+    }
+
+    #[test]
+    fn riordinare_lasciando_non_seppellisce_i_brani_che_qui_non_si_vedono() {
+        // Una libreria che ha solo a, b, c, d riceve la sequenza di un'altra che
+        // ha anche x e y. `riordina` leggerebbe x e y come «non più voluti».
+        let base = Sequenza::dalla_lista("altro", &lista(&["a", "x", "b", "y", "c", "d"]));
+        let voluto = lista(&["a", "b", "c", "d"]);
+
+        let mut a_secco = base.clone();
+        a_secco.riordina("qui", &voluto, 100);
+        assert_eq!(
+            a_secco.ordine(),
+            vec!["a", "b", "c", "d"],
+            "il comportamento di `riordina` non cambia: x e y sono sepolti"
+        );
+
+        let mut lasciando = base.clone();
+        lasciando.riordina_lasciando("qui", &voluto, 100, |brano| brano == "x" || brano == "y");
+        assert_eq!(
+            lasciando, base,
+            "niente da cambiare: né elementi nuovi né lapidi"
+        );
+        assert_eq!(lasciando.ordine(), vec!["a", "x", "b", "y", "c", "d"]);
+    }
+
+    #[test]
+    fn riordinare_lasciando_riordina_il_resto_e_i_lasciati_restano_vivi_con_la_loro_identita() {
+        let base = Sequenza::dalla_lista("altro", &lista(&["a", "x", "b", "y", "c"]));
+        let mut sequenza = base.clone();
+        // L'utente di qui ha messo c in testa e tolto b.
+        sequenza.riordina_lasciando("qui", &lista(&["c", "a"]), 100, |brano| {
+            brano == "x" || brano == "y"
+        });
+
+        let ordine = sequenza.ordine();
+        let visibili: Vec<&str> = ordine
+            .iter()
+            .copied()
+            .filter(|brano| *brano != "x" && *brano != "y")
+            .collect();
+        assert_eq!(visibili, vec!["c", "a"], "{ordine:?}");
+        for lasciato in ["x", "y"] {
+            assert_eq!(
+                vivi_di(&sequenza, lasciato),
+                vivi_di(&base, lasciato),
+                "{lasciato}: stessa identità, ancora vivo"
+            );
+        }
+        // E b, che non era da lasciare, è tolto davvero.
+        assert!(vivi_di(&sequenza, "b").is_empty());
+    }
+
+    #[test]
+    fn riordinare_lasciando_conta_quel_che_il_voluto_chiede_e_lascia_il_resto() {
+        // Un brano che il voluto nomina una volta e la sequenza ha due: la
+        // prima occorrenza vale come voluta, la seconda — se è da lasciare —
+        // resta viva invece di essere sepolta.
+        let base = Sequenza::dalla_lista("altro", &lista(&["a", "k", "b", "k"]));
+        let mut sequenza = base.clone();
+        sequenza.riordina_lasciando("qui", &lista(&["a", "b", "k"]), 100, |brano| brano == "k");
+        let ordine = sequenza.ordine();
+        assert_eq!(ordine.iter().filter(|brano| **brano == "k").count(), 2);
+        assert_eq!(
+            ordine
+                .iter()
+                .copied()
+                .filter(|brano| *brano != "k")
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            sequenza
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_some())
+                .count(),
+            // Solo lo spostamento di `b` prima di `k`: una lapide, non due.
+            1,
+            "{sequenza:?}"
+        );
+    }
+
+    #[test]
+    fn riordinare_lasciando_toglie_l_ordine_dei_lasciati_dal_conto_in_ogni_caso() {
+        // Per una piccola famiglia di casi, tutti: sequenze di cinque brani con
+        // due da lasciare, e un elenco voluto qualunque fatto di quelli che si
+        // vedono (togliendone, mescolandoli, aggiungendone di nuovi).
+        let brani = ["a", "b", "c", "d", "e"];
+        let da_lasciare = |brano: &str| brano == "b" || brano == "d";
+        let mut seme: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut prossimo = move || {
+            seme ^= seme << 13;
+            seme ^= seme >> 7;
+            seme ^= seme << 17;
+            seme
+        };
+        for giro in 0..400_u64 {
+            let base = Sequenza::dalla_lista("altro", &lista(&brani));
+            let mut voluto: Vec<String> = brani
+                .iter()
+                .filter(|b| !da_lasciare(b))
+                .map(|b| (*b).to_owned())
+                .collect();
+            // Mescola.
+            for i in (1..voluto.len()).rev() {
+                let j =
+                    usize::try_from(prossimo() % (u64::try_from(i).unwrap_or(0) + 1)).unwrap_or(0);
+                voluto.swap(i, j);
+            }
+            // Toglie qualcuno.
+            if prossimo() % 3 == 0 && !voluto.is_empty() {
+                let i = usize::try_from(prossimo()).unwrap_or(0) % voluto.len();
+                voluto.remove(i);
+            }
+            // Ne aggiunge uno nuovo, in un posto qualunque.
+            if prossimo() % 2 == 0 {
+                let i = usize::try_from(prossimo()).unwrap_or(0) % (voluto.len() + 1);
+                voluto.insert(i, "nuovo".to_owned());
+            }
+
+            let mut sequenza = base.clone();
+            sequenza.riordina_lasciando(
+                "qui",
+                &voluto,
+                100 + i64::try_from(giro).unwrap_or(0),
+                da_lasciare,
+            );
+
+            let visibili: Vec<String> = sequenza
+                .ordine()
+                .into_iter()
+                .filter(|brano| !da_lasciare(brano))
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(visibili, voluto, "giro {giro}: {sequenza:?}");
+            for lasciato in ["b", "d"] {
+                assert_eq!(
+                    vivi_di(&sequenza, lasciato),
+                    vivi_di(&base, lasciato),
+                    "giro {giro}: {lasciato} resta vivo, con la sua identità"
+                );
+            }
+        }
     }
 
     #[test]
