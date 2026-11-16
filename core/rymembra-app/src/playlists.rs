@@ -975,6 +975,17 @@ fn rinomina_in(
         )
         .map_err(|err| db_error("lapide del nome vecchio di una playlist", &err))?;
 
+    // La chiave di prima, per la sequenza. Dopo la scrittura della lapide (il
+    // primo passo è una scrittura apposta) e prima dell'`UPDATE` che la cambia.
+    let chiave_di_prima: Option<String> = connection
+        .query_row(
+            "SELECT playlist_key FROM playlists WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| db_error("chiave di una playlist da rinominare", &err))?;
+
     let esito = connection.execute(
         "UPDATE playlists SET playlist_key = ?2, name = ?3, updated_at = ?4 WHERE id = ?1",
         rusqlite::params![id, key, name, adesso],
@@ -985,7 +996,13 @@ fn rinomina_in(
                 playlist_id: Some(id),
             }));
         }
-        Ok(_) => {}
+        Ok(_) => {
+            // La sequenza segue la playlist: vedi `sincronia::sposta_la_sequenza`.
+            // Senza, gli altri dispositivi perdono i brani che questo non ha.
+            if let Some(chiave_di_prima) = chiave_di_prima {
+                crate::sincronia::sposta_la_sequenza(connection, &chiave_di_prima, key)?;
+            }
+        }
         Err(err) if e_conflitto(&err) => {
             return Err(AppError::new(ErrorCode::LibraryPlaylistExists {
                 name: name.to_owned(),
@@ -1068,6 +1085,12 @@ pub struct Cancellata {
     desiderati: Vec<i64>,
     /// La data della lapide che c'era già per questa chiave, se c'era.
     lapide_di_prima: Option<i64>,
+    /// Gli elementi della sequenza della sincronia che la cancellazione ha
+    /// sepolto, e quando: «Annulla» li rimette vivi (vedi
+    /// `sincronia::seppellisci_la_sequenza`).
+    sequenza_sepolta: Vec<String>,
+    /// Quando.
+    sepolta_il: i64,
 }
 
 impl Cancellata {
@@ -1102,16 +1125,25 @@ pub fn cancella(connection: &mut Connection, id: i64) -> Result<Cancellata, AppE
     let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("cancellazione di una playlist", &err))?;
 
-    let fotografia = fotografa(&tx, id)?;
+    let mut fotografia = fotografa(&tx, id)?;
+    let adesso = now_ms();
 
     tx.execute("DELETE FROM playlists WHERE id = ?1", [id])
         .map_err(|err| db_error("cancellazione di una playlist", &err))?;
     tx.execute(
         "INSERT INTO sync_tombstones (kind, key, deleted_at) VALUES ('playlist', ?1, ?2)
          ON CONFLICT(kind, key) DO UPDATE SET deleted_at = MAX(sync_tombstones.deleted_at, excluded.deleted_at)",
-        rusqlite::params![fotografia.chiave, now_ms()],
+        rusqlite::params![fotografia.chiave, adesso],
     )
     .map_err(|err| db_error("lapide di una playlist", &err))?;
+    // La sequenza della sincronia muore con la playlist, qui e subito: una
+    // playlist rifatta con lo stesso nome prima del prossimo `allinea` ritrova
+    // sotto la stessa chiave le voci di quella di prima — anche quelle dei
+    // brani che qui mancano — e non deve farle sue. Vedi
+    // `sincronia::seppellisci_la_sequenza`.
+    fotografia.sequenza_sepolta =
+        crate::sincronia::seppellisci_la_sequenza(&tx, &fotografia.chiave, adesso)?;
+    fotografia.sepolta_il = adesso;
 
     tx.commit()
         .map_err(|err| db_error("cancellazione di una playlist", &err))?;
@@ -1199,6 +1231,9 @@ fn fotografa(tx: &Transaction<'_>, id: i64) -> Result<Cancellata, AppError> {
         posti_orfani,
         desiderati,
         lapide_di_prima,
+        // Le scrive `cancella`, dopo aver sepolto la sequenza.
+        sequenza_sepolta: Vec::new(),
+        sepolta_il: 0,
     })
 }
 
@@ -1335,6 +1370,15 @@ pub fn ripristina(
         ),
     }
     .map_err(guasto)?;
+
+    // Le voci della sequenza che la cancellazione aveva sepolto tornano vive,
+    // quelle dei brani che qui mancano comprese: com'era, appunto.
+    crate::sincronia::rianima_la_sequenza(
+        &tx,
+        &cancellata.chiave,
+        &cancellata.sequenza_sepolta,
+        cancellata.sepolta_il,
+    )?;
 
     tx.commit().map_err(guasto)?;
     read_one(connection, id)

@@ -3020,6 +3020,66 @@ fn un_profilo_letto_a_libreria_vuota_si_completa_alla_seconda_lettura() {
     assert_eq!(corretto, "Hey You", "la correzione è arrivata");
 }
 
+#[test]
+fn un_profilo_letto_su_una_libreria_parziale_porta_le_playlist_intere_e_non_raddoppia_con_la_sincronia()
+ {
+    // FSYNC: prima, `solo_i_brani_di_qui` riduceva le playlist del profilo ai
+    // brani presenti e rifaceva con le identità di questo dispositivo quella che
+    // perdeva voci. Se poi la sincronia incontrava la playlist originale, le
+    // voci raddoppiavano. Ora una voce di un brano assente è invisibile qui, non
+    // tolta: la playlist entra intera, con le identità di là.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    // Un telefono con una parte della musica: «a» e «b», non «c».
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "a");
+    brano(&qui, 2, r"E:\M\b.flac", "b");
+    importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["a", "b"], "«c» qui non c'è");
+
+    // Il primo `allinea` della passata dopo non seppellisce la voce di «c».
+    crate::sincronia::allinea(&mut qui, "qui", 2_000).expect("allineamento");
+    let documento = |connection: &Connection, chi: &str| {
+        crate::sincronia::contenuto(connection, chi, BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto")
+    };
+    let di_la = documento(&la, "la");
+    let di_qui = documento(&qui, "qui");
+    let chiave_di = |contenuto: &rymembra_sync::Contenuto| {
+        contenuto
+            .playlist
+            .iter()
+            .find(|(_, playlist)| playlist.nome == "Serata")
+            .map(|(chiave, _)| chiave.clone())
+            .expect("la playlist è nel documento")
+    };
+    let chiave = chiave_di(&di_la);
+    assert_eq!(
+        di_qui.playlist[&chiave].sequenza, di_la.playlist[&chiave].sequenza,
+        "stesse voci, stesse identità, nessuna lapide"
+    );
+
+    // E la sincronia che poi incontra l'originale non raddoppia niente.
+    let fuso = rymembra_sync::fondi(&[
+        rymembra_sync::Documento::nuovo("la", di_la, 3_000),
+        rymembra_sync::Documento::nuovo("qui", di_qui, 3_000),
+    ]);
+    assert_eq!(
+        fuso.playlist[&chiave].sequenza.ordine(),
+        vec!["c", "a", "b"]
+    );
+    assert_eq!(fuso.playlist[&chiave].sequenza.quanti(), 3);
+
+    // Quando «c» arriva — per qualunque via — la sua voce rientra al suo posto.
+    brano(&qui, 3, r"E:\M\c.flac", "c");
+    crate::sincronia::allinea(&mut qui, "qui", 4_000).expect("allineamento");
+    assert_eq!(in_ordine(&qui, "Serata"), vec!["c", "a", "b"]);
+    assert_eq!(in_ordine(&qui, "Dal vivo"), vec!["b", "c"]);
+}
+
 /// Quel che non deve crescere rileggendo: ascolti, cronologia, voti, cuori,
 /// righe di playlist e l'ordine di «Serata».
 fn impronta_della_libreria(c: &Connection) -> (i64, i64, i64, i64, i64, Vec<String>) {
@@ -3169,4 +3229,127 @@ fn con_il_profilo_prima_passano_solo_le_cose_che_non_hanno_bisogno_di_un_brano()
         !fatto.non_attaccati.e_vuoto(),
         "e il piano lo ha detto: {fatto:?}"
     );
+}
+
+// ── FSYNC2: il dono su una playlist condivisa porta le identità del profilo ──
+
+/// Un profilo letto due volte su una playlist condivisa: la seconda volta il
+/// profilo porta un brano nuovo (aggiunto sul computer dopo la prima lettura,
+/// e, se `dopo_un_riordino`, dopo che il computer ha anche riordinato la
+/// playlist: là la sequenza ha nuove identità e lapidi, e quella del brano
+/// nuovo ha un numero più alto del conto degli elementi che qui entrano).
+/// `dono_nelle_playlist` lo accoglie; poi la sincronia incontra il computer,
+/// che lo ha con la sua identità. Restituisce quante voci vive ha il brano
+/// dopo la fusione, e quante sono per questo dispositivo.
+fn voci_del_brano_dopo_il_dono(e_presente_qui: bool, dopo_un_riordino: bool) -> (usize, usize) {
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut la = libreria_di_la();
+    let dir1 = dir.path().join("uno");
+    std::fs::create_dir_all(&dir1).expect("cartella");
+    let archivio1 = esporta(&mut la, &dir1, "la", &identita_fissa);
+    let letto1 = leggi(&archivio1).expect("lettura");
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\a.flac", "a");
+    brano(&qui, 2, r"E:\M\b.flac", "b");
+    if e_presente_qui {
+        brano(&qui, 5, r"E:\M\e.flac", "e");
+    }
+    importa(&mut qui, &letto1, &ambiente(&c_e_tutto)).expect("importazione");
+
+    // Sul computer arriva un brano nuovo e finisce in «Serata».
+    brano(&la, 5, r"D:\M\e.flac", "e");
+    if dopo_un_riordino {
+        // «Serata» era c, a, b: il computer la porta a b, c, a, e poi aggiunge
+        // «e». I brani sono per id: a = 1, b = 2, c = 3.
+        la.execute_batch(
+            "DELETE FROM playlist_tracks
+              WHERE playlist_id = (SELECT id FROM playlists WHERE name = 'Serata');
+             INSERT INTO playlist_tracks (playlist_id, track_id, position)
+             SELECT id, 2, 0 FROM playlists WHERE name = 'Serata';
+             INSERT INTO playlist_tracks (playlist_id, track_id, position)
+             SELECT id, 3, 1 FROM playlists WHERE name = 'Serata';
+             INSERT INTO playlist_tracks (playlist_id, track_id, position)
+             SELECT id, 1, 2 FROM playlists WHERE name = 'Serata';
+             INSERT INTO playlist_tracks (playlist_id, track_id, position)
+             SELECT id, 5, 3 FROM playlists WHERE name = 'Serata';",
+        )
+        .expect("riordinata e aggiunta sul computer");
+    } else {
+        la.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+             SELECT id, 5, 3 FROM playlists WHERE name = 'Serata'",
+            [],
+        )
+        .expect("aggiunto sul computer");
+    }
+    let dir2 = dir.path().join("due");
+    std::fs::create_dir_all(&dir2).expect("cartella");
+    let archivio2 = esporta(&mut la, &dir2, "la", &identita_fissa);
+    let letto2 = leggi(&archivio2).expect("lettura");
+    importa(&mut qui, &letto2, &ambiente(&c_e_tutto)).expect("importazione");
+
+    // Adesso la sincronia fra i due, passando dal database: quel che il dono ha
+    // scritto deve sopravvivere alla lettura.
+    crate::sincronia::allinea(&mut qui, "qui", 1_800_000_000_000).expect("allineamento");
+    crate::sincronia::allinea(&mut la, "la", 1_800_000_000_000).expect("allineamento");
+    let documento = |connection: &Connection, chi: &str| {
+        crate::sincronia::contenuto(connection, chi, BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto")
+    };
+    let di_la = documento(&la, "la");
+    let di_qui = documento(&qui, "qui");
+    let chiave = di_la
+        .playlist
+        .iter()
+        .find(|(_, playlist)| playlist.nome == "Serata")
+        .map(|(chiave, _)| chiave.clone())
+        .expect("la playlist è nel documento");
+    let fuso = rymembra_sync::fondi(&[
+        rymembra_sync::Documento::nuovo("la", di_la, 1_800_000_000_001),
+        rymembra_sync::Documento::nuovo("qui", di_qui, 1_800_000_000_001),
+    ]);
+    let nel_fuso = fuso.playlist[&chiave]
+        .sequenza
+        .ordine()
+        .into_iter()
+        .filter(|brano| *brano == "e")
+        .count();
+    let in_tabella = in_ordine(&qui, "Serata")
+        .iter()
+        .filter(|brano| *brano == "e")
+        .count();
+    (nel_fuso, in_tabella)
+}
+
+#[test]
+fn il_dono_di_un_brano_nuovo_non_raddoppia_con_la_sincronia_se_il_brano_qui_c_e() {
+    let (nel_fuso, in_tabella) = voci_del_brano_dopo_il_dono(true, false);
+    assert_eq!(nel_fuso, 1, "una sola voce viva per «e» dopo la fusione");
+    assert_eq!(in_tabella, 1, "e una riga in `playlist_tracks`");
+}
+
+#[test]
+fn il_dono_di_un_brano_nuovo_non_raddoppia_con_la_sincronia_se_il_brano_qui_non_c_e() {
+    let (nel_fuso, _) = voci_del_brano_dopo_il_dono(false, false);
+    assert_eq!(nel_fuso, 1, "una sola voce viva per «e» dopo la fusione");
+}
+
+#[test]
+fn il_dono_di_un_brano_nuovo_dopo_un_riordino_di_la_non_raddoppia_e_non_si_perde() {
+    // Il caso che una voce accolta con la sua identità può sbagliare: là la
+    // playlist è stata riordinata (identità nuove, lapidi) e poi allungata, e la
+    // voce di «e» ha un numero più alto del conto degli elementi che qui
+    // entrano. La lettura dal database la butterebbe, `allinea` la ricreerebbe
+    // con l'identità di qui, e il doppione tornerebbe in silenzio.
+    for e_presente_qui in [true, false] {
+        let (nel_fuso, in_tabella) = voci_del_brano_dopo_il_dono(e_presente_qui, true);
+        assert_eq!(
+            nel_fuso, 1,
+            "una sola voce viva per «e» (presente qui: {e_presente_qui})"
+        );
+        if e_presente_qui {
+            assert_eq!(in_tabella, 1);
+        }
+    }
 }

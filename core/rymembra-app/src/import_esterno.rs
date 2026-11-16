@@ -682,13 +682,31 @@ fn rinomina_se_libero(
     nome: &str,
     chiave: &PlaylistKey,
 ) -> Result<(), AppError> {
-    tx.execute(
-        "UPDATE playlists SET name = ?2, playlist_key = ?3
-          WHERE id = ?1 AND playlist_key <> ?3
-            AND NOT EXISTS (SELECT 1 FROM playlists WHERE playlist_key = ?3)",
-        rusqlite::params![id, nome, chiave.as_str()],
-    )
-    .map_err(|err| db_error("aggiornamento del nome della playlist", &err))?;
+    let chiave_di_prima: Option<String> = tx
+        .query_row(
+            "SELECT playlist_key FROM playlists WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| db_error("aggiornamento del nome della playlist", &err))?;
+    let cambiate = tx
+        .execute(
+            "UPDATE playlists SET name = ?2, playlist_key = ?3
+              WHERE id = ?1 AND playlist_key <> ?3
+                AND NOT EXISTS (SELECT 1 FROM playlists WHERE playlist_key = ?3)",
+            rusqlite::params![id, nome, chiave.as_str()],
+        )
+        .map_err(|err| db_error("aggiornamento del nome della playlist", &err))?;
+    // Una playlist che cambia chiave si porta dietro la sequenza della
+    // sincronia, o la sua voce per ogni brano che qui manca muore col nome
+    // vecchio (FSYNC2). Qui non c'è nessuna lapide per la chiave di prima: è un
+    // difetto a sé, vecchio quanto questa funzione, che non si tocca qui.
+    if cambiate > 0
+        && let Some(chiave_di_prima) = chiave_di_prima
+    {
+        crate::sincronia::sposta_la_sequenza(tx, &chiave_di_prima, chiave.as_str())?;
+    }
     Ok(())
 }
 
@@ -1512,6 +1530,48 @@ mod prove {
         };
         assert!(di_nuovo.playlist_replaced, "si ritrova, non si affianca");
         assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 1);
+    }
+
+    #[test]
+    fn rinominare_una_playlist_importata_si_porta_dietro_la_sequenza() {
+        // FSYNC2: la chiave cambia col nome, e la sequenza della sincronia sta
+        // sotto la chiave. Se non la segue, le voci dei brani che qui mancano
+        // muoiono col nome vecchio.
+        let mut db = database();
+        let Ok(_) = db.execute_batch(
+            "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at, is_smart)
+               VALUES (7, 'chill', 'Chill', 0, 0, 0);
+             INSERT INTO sync_sequenza (playlist_key, elemento, dopo, track_key, tolto_ms)
+               VALUES ('chill', 'origine:0', NULL, 'a', NULL),
+                      ('chill', 'origine:1', 'origine:0', 'x', NULL);",
+        ) else {
+            panic!("la playlist di prova si deve inserire");
+        };
+        let Ok(tx) = db.transaction() else {
+            panic!("la transazione si deve aprire");
+        };
+        let nuova = PlaylistKey::compute(Some("Chill (Spotify)"));
+        assert!(rinomina_se_libero(&tx, 7, "Chill (Spotify)", &nuova).is_ok());
+        let Ok(()) = tx.commit() else {
+            panic!("la transazione si deve chiudere");
+        };
+        assert_eq!(
+            conta(
+                &db,
+                &format!(
+                    "SELECT COUNT(*) FROM sync_sequenza WHERE playlist_key = '{}'",
+                    nuova.as_str()
+                )
+            ),
+            2
+        );
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM sync_sequenza WHERE playlist_key = 'chill'"
+            ),
+            0
+        );
     }
 
     #[test]

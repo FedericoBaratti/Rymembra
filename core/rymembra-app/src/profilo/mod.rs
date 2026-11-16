@@ -124,8 +124,11 @@
 //! l'unica ragione per cui [`crate::sincronia::applica_in`] esiste.
 //!
 //! **La sola scrittura che il piano fa** è [`crate::sincronia::allinea`], e va
-//! detta: mette le tabelle della sincronia in pari con la libreria, non dipende
-//! dal profilo, e la passata automatica la farebbe comunque entro pochi minuti.
+//! detta: mette le tabelle della sincronia in pari con la libreria — e, se un
+//! brano nominato da una playlist è arrivato dopo la sua voce (una scansione
+//! fatta dopo una lettura precedente), rimette quel brano in `playlist_tracks`
+//! al suo posto. Non dipende dal profilo, e la passata automatica la farebbe
+//! comunque entro pochi minuti, a sincronia accesa.
 //! Sta fuori dalla transazione perché apre la sua, e ci sta di proposito: senza,
 //! il piano confronterebbe l'archivio con uno stato che l'esecuzione non
 //! userebbe, e i suoi numeri smetterebbero di essere quelli veri.
@@ -1547,17 +1550,16 @@ fn esegui(
             let mut suo = originale.clone();
             suo.content = in_dono(suo.content, ambiente.adesso_ms);
             // Quel che il documento porta di brani che qui non ci sono: si
-            // conta per il piano, e le playlist si riducono ai brani di qui.
+            // conta per il piano. Le playlist entrano **intere**, con le voci
+            // di quei brani e le identità del profilo: una voce di un brano
+            // assente è invisibile qui, non tolta (vedi
+            // `sincronia::allinea_sequenze`), resta nella sequenza ed entra in
+            // `playlist_tracks` quando il brano arriva.
             conta_i_non_attaccati(
                 &suo.content,
                 &biblioteca,
                 &brani_di_qui,
                 &mut piano.non_attaccati,
-            );
-            solo_i_brani_di_qui(
-                &mut suo.content,
-                &brani_di_qui,
-                crate::sincronia::nome_delle_aggiunte(ambiente.dispositivo),
             );
             if !ambiente.rimappature.is_empty() {
                 suo.content.cartelle = std::mem::take(&mut suo.content.cartelle)
@@ -1729,8 +1731,9 @@ fn in_dono(contenuto: rymembra_sync::Contenuto, adesso_ms: i64) -> rymembra_sync
 /// Una volta per piano o per importazione, **dopo** le correzioni: una
 /// correzione cambia la `track_key` di un brano, e quel che il profilo porta
 /// sta sotto la chiave corretta. È l'unico posto che dice «qui questo brano
-/// c'è» — per contare quel che non si può attaccare e per tenere fuori dalle
-/// playlist i brani che mancano (T3-3).
+/// c'è» — per contare quel che non si può attaccare (T3-3). Le playlist non lo
+/// usano più per tenere fuori i brani che mancano: una voce di un brano assente
+/// resta nella sequenza, invisibile (FSYNC).
 fn chiavi_dei_brani(
     tx: &rusqlite::Transaction<'_>,
 ) -> Result<std::collections::HashSet<String>, AppError> {
@@ -1799,53 +1802,6 @@ fn conta_i_non_attaccati(
         .sum();
 }
 
-/// Riduce le playlist del profilo ai brani che questa libreria ha.
-///
-/// Una voce che nomina un brano di cui qui non c'è la riga non entra nella
-/// playlist, **nemmeno nella sua sequenza**. La sequenza è lo stato che la
-/// sincronia tiene e allinea a `playlist_tracks` a ogni passata: una voce che
-/// c'è lì e non c'è nella playlist è, per `allinea_sequenze`, un brano tolto
-/// qui apposta — e una lapide fa dire a `dono_nelle_playlist` che «un brano
-/// tolto qui non torna». Era questo che lasciava le playlist a zero brani anche
-/// rileggendo il profilo dopo la scansione (T3-3): la prima lettura scriveva
-/// voci per brani che non c'erano, il primo allineamento le sotterrava, la
-/// lettura dopo non le riaccodava. Così invece la prima lettura crea la
-/// playlist con quel che c'è, e ogni lettura successiva accoda in fondo, una
-/// volta sola, quel che nel frattempo è arrivato — nell'ordine del profilo.
-///
-/// Una playlist che non perde niente resta com'è, con le sue identità: sono
-/// quelle che due dispositivi sincronizzati riconoscono come lo stesso
-/// elemento. Una che perde qualcosa si rifà come catena col nome di questo
-/// dispositivo — lo stesso che `dono_nelle_playlist` dà a quel che accoda — e
-/// perde le identità del profilo: i numeri di una sequenza devono restare sotto
-/// il conto degli elementi, e togliere elementi senza rinumerare li farebbe
-/// scartare alla lettura dopo.
-fn solo_i_brani_di_qui(
-    contenuto: &mut rymembra_sync::Contenuto,
-    brani_di_qui: &std::collections::HashSet<String>,
-    nome: &str,
-) {
-    for playlist in contenuto.playlist.values_mut() {
-        if playlist.smart {
-            continue;
-        }
-        let (tutti, tenuti): (usize, Vec<String>) = {
-            let ordine = playlist.sequenza.ordine();
-            (
-                ordine.len(),
-                ordine
-                    .into_iter()
-                    .filter(|brano| brani_di_qui.contains(*brano))
-                    .map(str::to_owned)
-                    .collect(),
-            )
-        };
-        if tenuti.len() < tutti {
-            playlist.sequenza = rymembra_sync::Sequenza::dalla_lista(nome, &tenuti);
-        }
-    }
-}
-
 /// Le playlist che il profilo e questa libreria hanno tutte e due, ridotte a
 /// quel che un dono porta: i brani che qui mancano, in coda.
 ///
@@ -1861,10 +1817,26 @@ fn solo_i_brani_di_qui(
 ///
 /// Un brano che qui si è **tolto** da quella playlist non torna: la sequenza
 /// di qui lo ricorda come lapide, e il dono rispetta la scelta fatta qui come
-/// [`in_dono`] rispetta i cuori tolti. Una playlist automatica di qui resta
-/// com'è: la sua appartenenza la decidono le regole.
+/// [`in_dono`] rispetta i cuori tolti. Nemmeno si accoda una seconda volta un
+/// brano che la sequenza di qui nomina e che questa libreria non ha: la voce
+/// c'è, viva e invisibile, e rientra in `playlist_tracks` quando il file
+/// arriva (vedi `sincronia::allinea_sequenze`), per questo il confronto è con
+/// le voci della sequenza e non con la sola appartenenza. Una playlist
+/// automatica di qui resta com'è: la sua appartenenza la decidono le regole.
 ///
-/// Se qualcosa si accoda la playlist è cambiata adesso, su questo computer, e
+/// # Con l'identità che il brano ha nel profilo
+///
+/// I brani che si accolgono entrano **con l'identità della sequenza del
+/// profilo** ([`rymembra_sync::Sequenza::accogli_in_coda`]) e non con una di
+/// questo dispositivo. Il profilo di un computer che poi si sincronizza con
+/// questo porta le stesse voci che il computer pubblica: se qui avessero
+/// un'identità diversa, alla prima fusione la playlist avrebbe il brano due
+/// volte, sia che il brano qui ci sia sia che manchi (FSYNC2). Con la stessa
+/// identità è lo stesso elemento, e se ne tiene uno. È il solo pezzo del
+/// profilo che entra nella sequenza: le lapidi e le posizioni di là non
+/// passano, come prima.
+///
+/// Se qualcosa si accoglie la playlist è cambiata adesso, su questo computer, e
 /// la data lo dice: è quel che fa vedere la modifica al backup e agli altri
 /// dispositivi. Le playlist che qui non ci sono arrivano come sono.
 fn dono_nelle_playlist(
@@ -1885,13 +1857,10 @@ fn dono_nelle_playlist(
                 .elementi()
                 .map(|(_, elemento)| elemento.brano.as_str())
                 .collect();
-            let mut accodati = std::collections::BTreeSet::new();
-            for brano in sua.sequenza.ordine() {
-                if !gia.contains(brano) && accodati.insert(brano) {
-                    tenuta.sequenza.accoda(nome, brano);
-                }
-            }
-            if !accodati.is_empty() {
+            let accolti = tenuta
+                .sequenza
+                .accogli_in_coda(&sua.sequenza, nome, adesso_ms, &gia);
+            if accolti > 0 {
                 tenuta.at = tenuta.at.max(adesso_ms);
             }
         }

@@ -345,6 +345,118 @@ impl Sequenza {
         self.metti(dispositivo, ultimo, brano);
     }
 
+    /// Accoglie in coda i brani che `altra` ha vivi e questa sequenza non nomina,
+    /// **con l'identità che hanno là**. Restituisce quanti ne ha accolti.
+    ///
+    /// # Perché non basta `accoda`
+    ///
+    /// `accoda` dà al brano un'identità di chi lo accoda. Se il brano arriva da
+    /// una sequenza che lo ha già — un profilo esportato dall'altro computer,
+    /// che poi si sincronizza — la voce c'è due volte: quella di là, con la sua
+    /// identità, e questa, con la nostra. Per la fusione sono due elementi, e la
+    /// playlist ha il brano doppio su tutti e due i dispositivi. Un elemento
+    /// accolto con la **stessa identità** è, alla prima fusione, lo stesso
+    /// elemento: se ne tiene uno.
+    ///
+    /// # Cosa si accoglie, e cosa mai
+    ///
+    /// - Gli elementi **vivi** di `altra` il cui brano non sta in `gia`, uno per
+    ///   brano, nell'ordine di `altra`. `gia` dice i brani che questa sequenza
+    ///   nomina già, **vivi o tolti**: uno tolto qui non torna, e uno vivo qui
+    ///   non si raddoppia.
+    /// - Ogni elemento entra dopo l'ultimo di questa sequenza (e quelli accolti
+    ///   uno dopo l'altro): la posizione che aveva là non vale, perché `altra`
+    ///   può averla riordinata e un dono non sposta niente.
+    /// - Mai le lapidi di `altra`, e mai un elemento la cui identità c'è già qui:
+    ///   resta quello di qui, com'è. Se il brano dell'elemento di là non c'è qui
+    ///   sotto quell'identità (due liste battezzate per conto loro con lo stesso
+    ///   nome), entra con un'identità di `dispositivo`, come con `accoda`.
+    ///
+    /// # Il conto degli elementi
+    ///
+    /// Un numero nasce come il massimo più uno, e [`senza_numeri_impossibili`]
+    /// butta alla lettura ogni elemento il cui numero non sta sotto il conto
+    /// degli elementi. Accogliere solo alcuni elementi di `altra` lascia dei
+    /// buchi — quelli che `altra` ha spostato, o che non si accolgono — e
+    /// l'elemento accolto, con un numero alto in una sequenza più corta,
+    /// sparirebbe alla lettura dopo: la passata dopo lo ricreerebbe con
+    /// un'identità nostra, e il doppione tornerebbe in silenzio. Per questo, se
+    /// serve, si aggiungono elementi **tolti** nello spazio di nomi
+    /// `<dispositivo>.posto` (che nessun inserimento vero produce) e con un
+    /// brano qualunque: non si vedono, non cambiano l'ordine, non possono
+    /// coincidere con un elemento vivo di nessuno, e fanno stare il conto sopra
+    /// il massimo.
+    pub fn accogli_in_coda(
+        &mut self,
+        altra: &Self,
+        dispositivo: &str,
+        quando: i64,
+        gia: &BTreeSet<&str>,
+    ) -> usize {
+        let mut accolti: BTreeSet<&str> = BTreeSet::new();
+        let mut ultimo = self.identita_in_ordine().pop();
+        for identita in altra.identita_in_ordine() {
+            let Some(elemento) = altra.elementi.get(&identita) else {
+                continue;
+            };
+            let brano = elemento.brano.as_str();
+            if gia.contains(brano) || !accolti.insert(brano) {
+                continue;
+            }
+            if self.elementi.contains_key(&identita) {
+                ultimo = Some(self.metti(dispositivo, ultimo, brano));
+            } else {
+                self.elementi.insert(
+                    identita.clone(),
+                    Elemento {
+                        dopo: ultimo,
+                        brano: brano.to_owned(),
+                        tolto: None,
+                    },
+                );
+                ultimo = Some(identita);
+            }
+        }
+        if let Some(brano) = accolti.first() {
+            self.fa_posto_ai_numeri(dispositivo, brano, quando);
+        }
+        accolti.len()
+    }
+
+    /// Aggiunge elementi tolti finché il conto degli elementi sta sopra il numero
+    /// più alto: vedi [`Sequenza::accogli_in_coda`].
+    ///
+    /// I riempitivi stanno in uno spazio di nomi che `metti` non produce mai,
+    /// `<dispositivo>.posto`. Con le identità vere di `dispositivo` avrebbero
+    /// potuto coincidere con un elemento **vivo** che questo dispositivo ha
+    /// scritto in passato e che qui, per un database ripristinato da un file di
+    /// prima, non c'è più: la lapide del riempitivo, alla prima fusione, lo
+    /// avrebbe sepolto sull'altro dispositivo. Così gli unici elementi che
+    /// possono avere l'identità di un riempitivo sono altri riempitivi, tolti
+    /// anche loro: tolto contro tolto non cambia niente.
+    fn fa_posto_ai_numeri(&mut self, dispositivo: &str, brano: &str, quando: i64) {
+        let Some(massimo) = self.elementi.keys().map(|identita| identita.n).max() else {
+            return;
+        };
+        let servono = usize::try_from(massimo)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
+        let spazio = format!("{dispositivo}.posto");
+        let mut numero = massimo;
+        while self.elementi.len() < servono {
+            let identita = Identita::nuova(&spazio, numero);
+            self.elementi.entry(identita).or_insert_with(|| Elemento {
+                dopo: None,
+                brano: brano.to_owned(),
+                tolto: Some(quando),
+            });
+            if numero == 0 {
+                break;
+            }
+            numero -= 1;
+        }
+    }
+
     /// Inserisce un brano a una posizione dell'elenco.
     ///
     /// Una posizione oltre la fine accoda: è quel che si aspetta chi trascina un
@@ -387,6 +499,44 @@ impl Sequenza {
     /// trascinamento — su una playlist da trecento brani, trecento lapidi per aver
     /// spostato una canzone di un posto.
     pub fn riordina(&mut self, dispositivo: &str, voluto: &[String], quando: i64) {
+        self.riordina_lasciando(dispositivo, voluto, quando, |_| false);
+    }
+
+    /// Come [`Sequenza::riordina`], ma lascia stare certi brani.
+    ///
+    /// # Perché esiste
+    ///
+    /// `voluto` è l'elenco di una libreria, e una libreria nomina solo i brani
+    /// che ha. Un elemento della sequenza il cui brano **qui non c'è** non è
+    /// stato tolto da nessuno: è un brano che l'altro dispositivo ha e questo no,
+    /// e `riordina` lo leggerebbe come «non più voluto» e lo sotterrerebbe. La
+    /// lapide viaggerebbe, e per la regola della fusione («la più vecchia
+    /// vince») i dispositivi che il brano ce l'hanno lo toglierebbero dalla loro
+    /// playlist. Dire quali brani qui non si vedono, e quindi non si toccano, è
+    /// quello che fa `da_lasciare`.
+    ///
+    /// # Cosa vuol dire «lasciare»
+    ///
+    /// Un elemento il cui brano `da_lasciare` accetta, e che `voluto` non
+    /// richiede (o non richiede più volte di quante ne ha già), resta com'è: vivo,
+    /// con la sua identità e il suo ancoraggio, né sepolto né spostato. Non fa
+    /// parte dell'ordine che si confronta con `voluto`, e i nuovi elementi non si
+    /// ancorano mai a lui — ma quelli che erano ancorati a lui restano dove sono.
+    /// Il risultato è che l'elenco della sequenza, **tolti i brani lasciati**, è
+    /// esattamente `voluto`, e che questi si ritrovano al loro posto il giorno
+    /// che qualcuno li guarda.
+    ///
+    /// Se `voluto` nomina un brano che `da_lasciare` accetta, il brano conta per
+    /// quel che `voluto` ne chiede (le prime occorrenze, nell'ordine della
+    /// sequenza) e solo l'eccedenza si lascia: una libreria che ha già messo da sé
+    /// il brano nella playlist non ne ottiene un secondo.
+    pub fn riordina_lasciando(
+        &mut self,
+        dispositivo: &str,
+        voluto: &[String],
+        quando: i64,
+        da_lasciare: impl Fn(&str) -> bool,
+    ) {
         let attuale = self.identita_in_ordine();
 
         // Quel che non è più voluto se ne va. Si contano le occorrenze, perché lo
@@ -407,6 +557,8 @@ impl Sequenza {
                     *quanti -= 1;
                     sopravvissuti.push(identita.clone());
                 }
+                // Né voluto né da seppellire: resta dov'è.
+                _ if da_lasciare(brano.as_str()) => {}
                 _ => {
                     if let Some(elemento) = self.elementi.get_mut(identita) {
                         elemento.tolto = Some(quando);
@@ -635,6 +787,158 @@ mod prove {
         assert_eq!(base.fondi(&riordinata).ordine(), vec!["c", "a"]);
     }
 
+    /// Gli elementi vivi di una sequenza per un brano, con la loro identità.
+    fn vivi_di<'a>(sequenza: &'a Sequenza, brano: &str) -> Vec<&'a Identita> {
+        sequenza
+            .elementi()
+            .filter(|(_, elemento)| elemento.brano == brano && elemento.tolto.is_none())
+            .map(|(identita, _)| identita)
+            .collect()
+    }
+
+    #[test]
+    fn riordinare_lasciando_non_seppellisce_i_brani_che_qui_non_si_vedono() {
+        // Una libreria che ha solo a, b, c, d riceve la sequenza di un'altra che
+        // ha anche x e y. `riordina` leggerebbe x e y come «non più voluti».
+        let base = Sequenza::dalla_lista("altro", &lista(&["a", "x", "b", "y", "c", "d"]));
+        let voluto = lista(&["a", "b", "c", "d"]);
+
+        let mut a_secco = base.clone();
+        a_secco.riordina("qui", &voluto, 100);
+        assert_eq!(
+            a_secco.ordine(),
+            vec!["a", "b", "c", "d"],
+            "il comportamento di `riordina` non cambia: x e y sono sepolti"
+        );
+
+        let mut lasciando = base.clone();
+        lasciando.riordina_lasciando("qui", &voluto, 100, |brano| brano == "x" || brano == "y");
+        assert_eq!(
+            lasciando, base,
+            "niente da cambiare: né elementi nuovi né lapidi"
+        );
+        assert_eq!(lasciando.ordine(), vec!["a", "x", "b", "y", "c", "d"]);
+    }
+
+    #[test]
+    fn riordinare_lasciando_riordina_il_resto_e_i_lasciati_restano_vivi_con_la_loro_identita() {
+        let base = Sequenza::dalla_lista("altro", &lista(&["a", "x", "b", "y", "c"]));
+        let mut sequenza = base.clone();
+        // L'utente di qui ha messo c in testa e tolto b.
+        sequenza.riordina_lasciando("qui", &lista(&["c", "a"]), 100, |brano| {
+            brano == "x" || brano == "y"
+        });
+
+        let ordine = sequenza.ordine();
+        let visibili: Vec<&str> = ordine
+            .iter()
+            .copied()
+            .filter(|brano| *brano != "x" && *brano != "y")
+            .collect();
+        assert_eq!(visibili, vec!["c", "a"], "{ordine:?}");
+        for lasciato in ["x", "y"] {
+            assert_eq!(
+                vivi_di(&sequenza, lasciato),
+                vivi_di(&base, lasciato),
+                "{lasciato}: stessa identità, ancora vivo"
+            );
+        }
+        // E b, che non era da lasciare, è tolto davvero.
+        assert!(vivi_di(&sequenza, "b").is_empty());
+    }
+
+    #[test]
+    fn riordinare_lasciando_conta_quel_che_il_voluto_chiede_e_lascia_il_resto() {
+        // Un brano che il voluto nomina una volta e la sequenza ha due: la
+        // prima occorrenza vale come voluta, la seconda — se è da lasciare —
+        // resta viva invece di essere sepolta.
+        let base = Sequenza::dalla_lista("altro", &lista(&["a", "k", "b", "k"]));
+        let mut sequenza = base.clone();
+        sequenza.riordina_lasciando("qui", &lista(&["a", "b", "k"]), 100, |brano| brano == "k");
+        let ordine = sequenza.ordine();
+        assert_eq!(ordine.iter().filter(|brano| **brano == "k").count(), 2);
+        assert_eq!(
+            ordine
+                .iter()
+                .copied()
+                .filter(|brano| *brano != "k")
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            sequenza
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_some())
+                .count(),
+            // Solo lo spostamento di `b` prima di `k`: una lapide, non due.
+            1,
+            "{sequenza:?}"
+        );
+    }
+
+    #[test]
+    fn riordinare_lasciando_toglie_l_ordine_dei_lasciati_dal_conto_in_ogni_caso() {
+        // Per una piccola famiglia di casi, tutti: sequenze di cinque brani con
+        // due da lasciare, e un elenco voluto qualunque fatto di quelli che si
+        // vedono (togliendone, mescolandoli, aggiungendone di nuovi).
+        let brani = ["a", "b", "c", "d", "e"];
+        let da_lasciare = |brano: &str| brano == "b" || brano == "d";
+        let mut seme: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut prossimo = move || {
+            seme ^= seme << 13;
+            seme ^= seme >> 7;
+            seme ^= seme << 17;
+            seme
+        };
+        for giro in 0..400_u64 {
+            let base = Sequenza::dalla_lista("altro", &lista(&brani));
+            let mut voluto: Vec<String> = brani
+                .iter()
+                .filter(|b| !da_lasciare(b))
+                .map(|b| (*b).to_owned())
+                .collect();
+            // Mescola.
+            for i in (1..voluto.len()).rev() {
+                let j =
+                    usize::try_from(prossimo() % (u64::try_from(i).unwrap_or(0) + 1)).unwrap_or(0);
+                voluto.swap(i, j);
+            }
+            // Toglie qualcuno.
+            if prossimo() % 3 == 0 && !voluto.is_empty() {
+                let i = usize::try_from(prossimo()).unwrap_or(0) % voluto.len();
+                voluto.remove(i);
+            }
+            // Ne aggiunge uno nuovo, in un posto qualunque.
+            if prossimo() % 2 == 0 {
+                let i = usize::try_from(prossimo()).unwrap_or(0) % (voluto.len() + 1);
+                voluto.insert(i, "nuovo".to_owned());
+            }
+
+            let mut sequenza = base.clone();
+            sequenza.riordina_lasciando(
+                "qui",
+                &voluto,
+                100 + i64::try_from(giro).unwrap_or(0),
+                da_lasciare,
+            );
+
+            let visibili: Vec<String> = sequenza
+                .ordine()
+                .into_iter()
+                .filter(|brano| !da_lasciare(brano))
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(visibili, voluto, "giro {giro}: {sequenza:?}");
+            for lasciato in ["b", "d"] {
+                assert_eq!(
+                    vivi_di(&sequenza, lasciato),
+                    vivi_di(&base, lasciato),
+                    "giro {giro}: {lasciato} resta vivo, con la sua identità"
+                );
+            }
+        }
+    }
+
     #[test]
     fn inserire_in_testa_e_in_mezzo() {
         let mut sequenza = Sequenza::dalla_lista("uno", &lista(&["b", "d"]));
@@ -836,5 +1140,163 @@ mod prove {
             testo,
             "il giro deve essere stabile byte per byte, o l'impronta cambia da sola"
         );
+    }
+
+    /// I brani che una sequenza nomina, vivi o tolti.
+    fn nominati(sequenza: &Sequenza) -> BTreeSet<&str> {
+        sequenza
+            .elementi()
+            .map(|(_, elemento)| elemento.brano.as_str())
+            .collect()
+    }
+
+    /// La sequenza com'è dopo il giro dal database: `dagli_elementi` butta i
+    /// numeri che il conto non giustifica.
+    fn riletta(sequenza: &Sequenza) -> Sequenza {
+        Sequenza::dagli_elementi(
+            sequenza
+                .elementi()
+                .map(|(identita, elemento)| (identita.clone(), elemento.clone())),
+        )
+    }
+
+    #[test]
+    fn accogliere_in_coda_tiene_l_identita_di_la_e_non_ne_inventa_una() {
+        let mut la = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        let qui = la.clone();
+        la.accoda("la", "e");
+        let identita_di_e = la
+            .elementi()
+            .find(|(_, elemento)| elemento.brano == "e")
+            .map(|(identita, _)| identita.clone())
+            .expect("e c'è");
+
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "b", "e"]);
+        assert_eq!(vivi_di(&mia, "e"), vec![&identita_di_e]);
+        // E il giro dal database non lo butta.
+        assert_eq!(riletta(&mia), mia);
+        // La fusione con l'origine non raddoppia: è lo stesso elemento.
+        assert_eq!(mia.fondi(&la).ordine().len(), 3);
+        assert_eq!(la.fondi(&mia).ordine().len(), 3);
+    }
+
+    #[test]
+    fn accogliere_in_coda_non_porta_lapidi_ne_posizioni_di_la() {
+        // `altra` ha tolto b, spostato c in testa e aggiunto d: qui si accoglie
+        // solo d, in coda, e niente di quel che qui c'è si muove o si toglie.
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let mut la = qui.clone();
+        la.riordina("la", &lista(&["c", "a", "d"]), 500);
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 600, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "b", "c", "d"]);
+        // Nessuna lapide di là: l'unica lapide che può esserci è un riempitivo.
+        for (identita, elemento) in mia.elementi() {
+            if elemento.tolto.is_some() {
+                assert_eq!(identita.dispositivo, "qui.posto", "{identita:?}");
+                assert_eq!(elemento.tolto, Some(600));
+            }
+        }
+        // Il giro dal database non butta la voce accolta anche se là l'avevano
+        // numerata dopo un riordino (un numero alto in una sequenza più corta).
+        assert_eq!(riletta(&mia), mia);
+        assert_eq!(riletta(&mia).ordine(), vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn accogliere_in_coda_dopo_un_riordino_e_poi_fondere_non_raddoppia_e_non_perde() {
+        // Il caso che non sta nella sequenza di qui: là hanno riordinato (nuove
+        // identità, lapidi) e poi aggiunto. Accolto il solo brano nuovo, e
+        // fusi i due documenti in tutti e due i versi, il brano è uno solo.
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let mut la = qui.clone();
+        la.riordina("la", &lista(&["c", "b", "a", "d"]), 500);
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        mia.accogli_in_coda(&la, "qui", 600, &gia);
+        let mia = riletta(&mia);
+
+        for fusa in [mia.fondi(&la), la.fondi(&mia)] {
+            let ordine = fusa.ordine();
+            assert_eq!(
+                ordine.iter().filter(|b| **b == "d").count(),
+                1,
+                "{ordine:?}"
+            );
+            assert_eq!(ordine.len(), 4, "{ordine:?}");
+        }
+        assert_eq!(mia.fondi(&la), la.fondi(&mia), "commutativa");
+    }
+
+    #[test]
+    fn accogliere_in_coda_non_raddoppia_un_brano_che_qui_c_e_gia_e_non_resuscita_un_tolto() {
+        let mut qui = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        qui.togli(1, 50);
+        let la = Sequenza::dalla_lista("la", &lista(&["a", "b", "c", "c"]));
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        // `b` è tolto qui e non torna, `a` c'è già, `c` entra una volta sola.
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn accogliere_in_coda_con_la_stessa_identita_ma_un_altro_brano_ne_da_una_nuova() {
+        // Due liste battezzate per conto loro con lo stesso nome: `origine:1` è
+        // `b` qui e `y` là. Quella di qui resta, e `y` entra con un'identità di
+        // chi accoglie, come con `accoda`.
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        let la = Sequenza::dalla_lista("origine", &lista(&["a", "y"]));
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "b", "y"]);
+        assert_eq!(vivi_di(&mia, "b"), vivi_di(&qui, "b"));
+        assert_eq!(riletta(&mia), mia);
+    }
+
+    #[test]
+    fn i_riempitivi_non_hanno_mai_l_identita_di_un_elemento_vivo_di_chi_accoglie() {
+        // Un dispositivo ha scritto `qui:3` (vivo, «d») e poi ha perso quel
+        // pezzo del suo database (un ripristino da un file di prima): qui non
+        // c'è, ma l'altra sequenza lo ha ancora, vivo. Se un riempitivo avesse
+        // l'identità `qui:3` e fosse tolto, la fusione seppellirebbe «d» anche
+        // di là.
+        let mut altra = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        altra.accoda("qui", "d"); // qui:3, vivo, e già nominato da `gia`
+        altra.accoda("qui", "e"); // qui:4, vivo, il solo da accogliere
+        let mut mia = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let gia: BTreeSet<&str> = ["a", "b", "c", "d"].into_iter().collect();
+
+        assert_eq!(mia.accogli_in_coda(&altra, "qui", 100, &gia), 1);
+        // Il riempitivo serve (un numero alto in una sequenza corta)…
+        assert!(
+            mia.elementi()
+                .any(|(identita, elemento)| identita.dispositivo == "qui.posto"
+                    && elemento.tolto.is_some())
+        );
+        // …ma nessun elemento tolto ha un'identità di `qui`, e la fusione tiene «d».
+        for (identita, elemento) in mia.elementi() {
+            if identita.dispositivo == "qui" {
+                assert!(elemento.tolto.is_none(), "{identita:?}");
+            }
+        }
+        assert!(mia.fondi(&altra).ordine().contains(&"d"));
+        assert!(altra.fondi(&mia).ordine().contains(&"d"));
+        assert_eq!(riletta(&mia), mia);
+    }
+
+    #[test]
+    fn accogliere_in_coda_senza_niente_da_accogliere_non_tocca_la_sequenza() {
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        let la = Sequenza::dalla_lista("la", &lista(&["a", "b"]));
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 0);
+        assert_eq!(mia, qui, "nemmeno un riempitivo");
     }
 }

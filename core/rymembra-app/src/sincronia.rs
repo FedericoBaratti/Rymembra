@@ -11,7 +11,10 @@
 //!    l'unica scrittura che avviene *prima* di guardare fuori, e serve perché il
 //!    resto dell'applicazione continua a scrivere dove ha sempre scritto: chi
 //!    aggiunge un brano a una playlist tocca `playlist_tracks`, non
-//!    `sync_sequenza`, e ha ragione a farlo.
+//!    `sync_sequenza`, e ha ragione a farlo. Fa anche il percorso inverso in un
+//!    solo caso: un brano che la sequenza nomina da prima e che qui è arrivato
+//!    dopo rientra in `playlist_tracks` al suo posto (vedi
+//!    [`allinea_sequenze`]: un brano che qui non c'è è invisibile, non tolto).
 //! 2. [`contenuto`] costruisce il documento da pubblicare. Sola lettura.
 //! 3. [`applica`] scrive quel che la fusione ha deciso.
 //!
@@ -57,7 +60,7 @@
 //! nei documenti di chi scrive nello stesso Drive, un'altra domanda con
 //! un'altra tabella. Una prova in fondo tiene vere tutte e due le cose.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rusqlite::{Connection, Transaction};
 use rymembra_domain::errors::AppError;
@@ -95,13 +98,68 @@ use crate::settings::{
 /// differiscono [`Sequenza`] ne tiene uno solo (la coppia minore): `[x, y]` e
 /// `[z, w]` diventano due brani, non quattro. Vale fra due dispositivi che si
 /// sincronizzano, e la prova qui in fondo fissa il caso; il profilo non ci
-/// passa, perché dentro una playlist che c'è già accoda soltanto (vedi
+/// passa, perché dentro una playlist che c'è già accoglie soltanto in coda i
+/// brani che le mancano, con l'identità che hanno nel profilo (vedi
 /// `profilo::dono_nelle_playlist`).
 ///
 /// Vale **solo per il primo battesimo** ([`Sequenza::dalla_lista`]). Ciò che si
 /// aggiunge o si sposta dopo porta il nome del dispositivo: vedi
 /// [`allinea_sequenze`].
 const ORIGINE: &str = "origine";
+
+/// Dove si ricorda quali brani le sequenze nominavano senza che qui ci fossero.
+///
+/// È la memoria che permette a [`allinea_sequenze`] di distinguere due cose che
+/// nel database sono identiche. Una voce viva di sequenza il cui brano è in
+/// `tracks` ma non è in `playlist_tracks` può essere
+///
+/// - un brano che l'utente ha **tolto** dalla playlist, e allora si seppellisce
+///   e la lapide viaggia;
+/// - un brano che l'altro dispositivo aveva messo nella playlist e che qui è
+///   **arrivato dopo** (una scansione, la sorveglianza, «Scarica qui», una
+///   correzione che ne ha cambiato la chiave): nessuno l'ha tolto, e va messo in
+///   `playlist_tracks` al suo posto.
+///
+/// Fra i due non c'è nessuna traccia nelle tabelle, e non ce ne può essere una
+/// senza una migrazione. C'è questa: le chiavi che, all'ultima volta che una
+/// sequenza è stata allineata o ha ricevuto voci, qualche voce — viva **o
+/// tolta**, vedi [`brani_assenti`] — nominava e `tracks` non aveva. Una voce di
+/// quelle chiavi che oggi ha il brano è «da agganciare»; una voce di una chiave
+/// che non ci stava, no.
+///
+/// Serve anche al caso opposto, per lo stesso motivo: se una chiave della
+/// memoria è tornata e `playlist_tracks` la nomina senza che la sequenza abbia
+/// una voce viva per lei, a rimetterla è stato il trigger della migrazione 28,
+/// e la voce era stata tolta altrove mentre il file non c'era. Non è
+/// un'aggiunta: la riga si toglie (vedi [`senza_i_ritorni_di_voci_tolte`]).
+///
+/// Si riscrive in coda a [`allinea_in`] e a [`applica_in`], cioè in ogni punto
+/// in cui `sync_sequenza` cambia o `tracks` viene confrontata con lei, e nella
+/// stessa transazione: un piano di profilo che si abbandona, o una passata che
+/// non si applica, non lasciano una memoria che non corrisponde ai dati.
+///
+/// Sta in `settings` e non in una tabella: stato di questo dispositivo, che non
+/// viaggia (il profilo porta un elenco di chiavi, e questa non c'è) e si
+/// ricostruisce da sé.
+///
+/// # Assente e illeggibile sono due cose
+///
+/// Se **manca** (nessun ricordo: è lo stato normale di chi ha tutta la musica, e
+/// della prima passata dopo l'aggiornamento) vale «niente da agganciare»: un
+/// brano arrivato prima del primo `allinea` che la riscrive si legge come
+/// tolto, che è il comportamento di prima. Succede una volta sola, e non a
+/// regime.
+///
+/// Se **c'è e non si legge** (un valore guasto, un ripristino del database da
+/// un file di prima) non si sa niente, e non sapere non è sapere che niente è
+/// arrivato: [`Ricordo::Illeggibile`]. In quella passata non si seppellisce
+/// nessuna voce — una lapide che parte per un brano che un altro dispositivo
+/// ha è la perdita che tutto questo esiste per evitare — e i brani che qui ci
+/// sono, hanno una voce viva e non stanno in `playlist_tracks` si riagganciano
+/// tutti, anche quelli che l'utente aveva appena tolto: l'errore sicuro è una
+/// voce che torna, non un brano che sparisce dagli altri dispositivi. La
+/// memoria si rifà in coda alla passata, e dalla successiva si torna a sapere.
+const CHIAVE_BRANI_ASSENTI: &str = "sincronia.brani_assenti";
 
 // ── il conteggio d'ascolto ──────────────────────────────────────────────────
 
@@ -209,6 +267,11 @@ pub struct Allineato {
     pub ascolti: usize,
     /// Playlist la cui sequenza è stata rifatta.
     pub sequenze: usize,
+    /// Playlist in cui sono rientrati brani che qui sono arrivati dopo la loro
+    /// voce, o da cui è uscita la riga di un brano tornato che la sequenza non
+    /// giustificava: la sequenza è rimasta com'era, è `playlist_tracks` che si
+    /// è messa d'accordo con lei. Vedi [`allinea_sequenze`].
+    pub agganciate: usize,
     /// Cartelle accese o spente da qui.
     pub cartelle: usize,
 }
@@ -217,14 +280,17 @@ impl Allineato {
     /// Non c'era niente da mettere in pari.
     #[must_use]
     pub const fn e_vuoto(&self) -> bool {
-        self.ascolti == 0 && self.sequenze == 0 && self.cartelle == 0
+        self.ascolti == 0 && self.sequenze == 0 && self.agganciate == 0 && self.cartelle == 0
     }
 }
 
 /// Porta le tabelle della sincronia in pari con la libreria.
 ///
 /// Da chiamare all'inizio di una passata, prima di [`contenuto`]. Su una
-/// libreria ferma non scrive niente e costa tre interrogazioni.
+/// libreria ferma non scrive niente e costa nove interrogazioni: due sugli
+/// ascolti, cinque sulle sequenze (i membri delle playlist in due, le
+/// sequenze salvate, i brani assenti e la loro memoria, una per una) e due
+/// sulle cartelle.
 ///
 /// # Errori
 ///
@@ -254,13 +320,16 @@ fn allinea_in(
     dispositivo: &str,
     adesso_ms: i64,
 ) -> Result<Allineato, AppError> {
-    let mut fatto = Allineato {
-        ascolti: allinea_ascolti(tx)?,
-        sequenze: allinea_sequenze(tx, dispositivo, adesso_ms)?,
-        cartelle: 0,
-    };
-    fatto.cartelle = allinea_cartelle(tx, adesso_ms)?;
-    Ok(fatto)
+    let ascolti = allinea_ascolti(tx)?;
+    // La memoria dei brani assenti la riscrive `allinea_sequenze` in coda, con
+    // quel che ha già calcolato: vedi [`CHIAVE_BRANI_ASSENTI`].
+    let (sequenze, agganciate) = allinea_sequenze(tx, dispositivo, adesso_ms)?;
+    Ok(Allineato {
+        ascolti,
+        sequenze,
+        agganciate,
+        cartelle: allinea_cartelle(tx, adesso_ms)?,
+    })
 }
 
 /// Riporta sotto `importazione` tutto lo storico che nessun dispositivo rivendica.
@@ -316,8 +385,9 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
 /// Chi aggiunge o sposta un brano scrive `playlist_tracks` e non sa che esista
 /// una sequenza; qui si guarda la differenza fra l'ordine che la sequenza
 /// produce e quello che la tabella dice, e la si riversa con
-/// [`Sequenza::riordina`] — che tocca solo ciò che si è mosso davvero invece di
-/// rifare tutto, e quindi non lascia una lapide per brano a ogni trascinamento.
+/// [`Sequenza::riordina_lasciando`] — che tocca solo ciò che si è mosso davvero
+/// invece di rifare tutto, e quindi non lascia una lapide per brano a ogni
+/// trascinamento.
 ///
 /// # Due nomi, per due momenti diversi
 ///
@@ -333,40 +403,144 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
 /// tiene entrambi; il prezzo è che la stessa aggiunta fatta in due posti
 /// scollegati resta due volte, che è ciò che [`Sequenza`] promette per gli
 /// inserimenti concorrenti ed è meglio di una perdita.
+///
+/// # Un brano che qui non c'è è invisibile, non tolto
+///
+/// `playlist_tracks` nomina solo brani che questa libreria ha: ogni riga punta a
+/// `tracks`, e [`membri_per_playlist`] lo ripete con il `JOIN`. La sequenza,
+/// invece, è lo stato che si **scambia** con gli altri dispositivi, e nomina
+/// anche i brani che solo loro hanno: il telefono con una parte della musica del
+/// computer, un file cancellato o spostato fuori dalle cartelle su una macchina
+/// sola. Confrontare i due elenchi e riversare la differenza come faceva
+/// `riordina` voleva dire leggere ogni voce di un brano assente come «l'utente
+/// l'ha tolto»: la voce veniva sepolta, la lapide partiva col documento
+/// successivo, e per la regola di fusione («la più vecchia vince») i
+/// dispositivi che il brano ce l'hanno lo toglievano dalla **loro** playlist.
+///
+/// Quindi qui una voce il cui brano non c'è in `tracks` si **lascia stare**:
+/// viva, con la sua identità, al suo posto nell'ordine che si pubblica. E il
+/// giorno che il brano arriva, per qualunque via (la scansione, la
+/// sorveglianza, «Scarica qui», una correzione che ne cambia la chiave, un
+/// profilo), la voce ha già il suo posto e basta agganciarlo.
+///
+/// Agganciarlo è la parte difficile: al primo `allinea` dopo l'arrivo il brano
+/// c'è, la voce è viva e `playlist_tracks` non lo nomina, cioè è identico a un
+/// brano che l'utente ha appena tolto. Si distingue con
+/// [`CHIAVE_BRANI_ASSENTI`]: se la chiave era fra quelle che non c'erano
+/// all'ultimo allineamento è arrivata, se no è stata tolta. Le voci arrivate
+/// rientrano in `playlist_tracks` al loro posto (quello che la sequenza dà loro,
+/// con l'ordine che l'utente ha fatto qui già riversato) nella stessa
+/// transazione, e un brano già messo a mano non si raddoppia: le voci si
+/// contano per brano, come fa [`Sequenza::riordina_lasciando`].
+///
+/// Il limite, dichiarato: un brano tolto da una playlist fra il suo arrivo e il
+/// primo `allinea` dopo ricompare. Non è un percorso comune (finché
+/// l'`allinea` non lo aggancia, il brano non sta nella playlist e l'utente non
+/// lo vede da togliere; fa eccezione il trigger della migrazione 28, che rimette
+/// il posto di un file tornato), ed è l'errore sicuro: una voce che torna, non
+/// un brano che sparisce dagli altri dispositivi.
+///
+/// Il rovescio dell'aggancio: un file che torna e ha un posto in `playlist_tracks`
+/// per via del trigger, mentre la sequenza ne ha solo lapidi (la voce è stata
+/// tolta su un altro dispositivo mentre il file non c'era), non è un'aggiunta
+/// ma il ritorno di una voce tolta, e la riga si toglie invece di diventare una
+/// voce nuova. Il rischio inverso e la scelta stanno in
+/// [`senza_i_ritorni_di_voci_tolte`].
+///
+/// Se la memoria c'è e non si legge ([`Ricordo::Illeggibile`]) non si sa quali
+/// brani sono arrivati, e per quella passata non si seppellisce niente: tutte
+/// le voci vive di brani che qui ci sono e non stanno in `playlist_tracks`
+/// rientrano, anche quelle che l'utente aveva tolto un attimo prima. Stessa
+/// scelta, stesso lato dell'errore.
+///
+/// Restituisce quante sequenze si sono rifatte e in quante playlist sono
+/// rientrati dei brani.
 fn allinea_sequenze(
     tx: &Transaction<'_>,
     dispositivo: &str,
     adesso_ms: i64,
-) -> Result<usize, AppError> {
+) -> Result<(usize, usize), AppError> {
     let dispositivo = nome_delle_aggiunte(dispositivo);
     let membri = membri_per_playlist(tx)?;
     let mut sequenze = sequenze_salvate(tx)?;
+    let assenti = brani_assenti(tx)?;
+    let ricordo = ricordo_dei_brani_assenti(tx)?;
+    // Un ricordo illeggibile non dice niente: vedi [`Ricordo::Illeggibile`].
+    let illeggibile = ricordo == Ricordo::Illeggibile;
+    let nessuno = BTreeSet::new();
+    let ricordati = match &ricordo {
+        Ricordo::Chiavi(chiavi) => chiavi,
+        Ricordo::Nessuno | Ricordo::Illeggibile => &nessuno,
+    };
+
+    // Da non seppellire: quelli che qui non ci sono, quelli che erano assenti
+    // all'ultimo allineamento e adesso ci sono (da agganciare), e — se la
+    // memoria non si legge — tutti.
+    let da_lasciare =
+        |brano: &str| illeggibile || assenti.contains(brano) || ricordati.contains(brano);
+    let visibile = |brano: &&str| !assenti.contains(*brano);
 
     let mut rifatte = 0;
-    for (chiave, brani) in &membri {
+    let mut agganciate = 0;
+    for (chiave, appartenenza) in &membri {
+        let voluto: Vec<String> = appartenenza
+            .brani
+            .iter()
+            .map(|(_, brano)| brano.clone())
+            .collect();
+        let atteso: Vec<&str> = voluto.iter().map(String::as_str).collect();
         let sequenza = sequenze.remove(chiave).unwrap_or_else(Sequenza::vuota);
         let mut aggiornata = sequenza.clone();
         if aggiornata.e_vuota() {
             // Il primo battesimo. Vedi [`ORIGINE`] sul perché non porta il nome
             // di questo dispositivo.
-            aggiornata = Sequenza::dalla_lista(ORIGINE, brani);
+            aggiornata = Sequenza::dalla_lista(ORIGINE, &voluto);
         } else {
-            let atteso: Vec<&str> = brani.iter().map(String::as_str).collect();
-            if aggiornata.ordine() == atteso {
-                continue;
+            // Un brano tornato con il suo file, rimesso in `playlist_tracks` dal
+            // trigger della 28 mentre la sequenza ne ha solo lapidi, non è
+            // un'aggiunta: vedi [`senza_i_ritorni_di_voci_tolte`].
+            let tagliato = if illeggibile {
+                None
+            } else {
+                senza_i_ritorni_di_voci_tolte(&voluto, &sequenza, ricordati)
+            };
+            let desiderato: &[String] = tagliato.as_deref().unwrap_or(&voluto);
+            let qui: Vec<&str> = aggiornata.ordine().into_iter().filter(visibile).collect();
+            if !qui
+                .iter()
+                .copied()
+                .eq(desiderato.iter().map(String::as_str))
+            {
+                aggiornata.riordina_lasciando(dispositivo, desiderato, adesso_ms, da_lasciare);
             }
-            aggiornata.riordina(dispositivo, brani, adesso_ms);
         }
-        if aggiornata == sequenza {
+        if aggiornata != sequenza {
+            scrivi_sequenza(tx, chiave, &aggiornata)?;
+            rifatte += 1;
+        }
+
+        // Quel che resta in più rispetto a `playlist_tracks` sono le voci dei
+        // brani arrivati: la sequenza li ha già al loro posto, e qui entrano.
+        // Solo se c'è qualcosa di ricordato (o se il ricordo non si legge, e
+        // allora si riaggancia tutto): senza, la differenza non può essere
+        // altro che un guasto, e `playlist_tracks` non si riscrive per un
+        // sospetto.
+        if ricordati.is_empty() && !illeggibile {
             continue;
         }
-        scrivi_sequenza(tx, chiave, &aggiornata)?;
-        rifatte += 1;
+        let finale: Vec<&str> = aggiornata.ordine().into_iter().filter(visibile).collect();
+        if finale != atteso {
+            riscrivi_appartenenza(tx, appartenenza, &finale)?;
+            agganciate += 1;
+        }
     }
 
-    // Le sequenze rimaste sono di playlist che non hanno più membri: o sono state
-    // svuotate, o la playlist non c'è più. Nel primo caso vanno sepolti tutti gli
-    // elementi, o al prossimo giro i brani tornerebbero da soli.
+    // Le sequenze rimaste sono di playlist che non ci sono più (o che sono
+    // diventate automatiche): `membri` comprende anche le playlist vuote, quindi
+    // una playlist svuotata a mano è già passata di sopra. Vanno sepolti tutti
+    // gli elementi, quelli dei brani che qui mancano compresi (una playlist
+    // cancellata qui è una decisione, a differenza di un brano che non c'è), o
+    // al prossimo giro tornerebbero da soli.
     for (chiave, sequenza) in sequenze {
         if sequenza.ordine().is_empty() {
             continue;
@@ -377,7 +551,243 @@ fn allinea_sequenze(
         scrivi_sequenza(tx, &chiave, &vuotata)?;
         rifatte += 1;
     }
-    Ok(rifatte)
+
+    // La memoria si riscrive qui, con `assenti` e `ricordo` che servivano già a
+    // decidere: rifarli da capo costava un'interrogazione sulle sequenze e una
+    // lettura in più, a ogni passata. Valgono ancora anche dopo aver sepolto le
+    // sequenze rimaste, perché `assenti` nomina i brani di **tutti** gli
+    // elementi, vivi o tolti, e una lapide non ne cambia la chiave.
+    scrivi_il_ricordo(tx, &assenti, &ricordo)?;
+    Ok((rifatte, agganciate))
+}
+
+/// Toglie dall'elenco voluto le righe di un brano **tornato** che la sequenza
+/// non giustifica.
+///
+/// `ricordati` sono le chiavi che all'ultima passata qui mancavano; se una di
+/// loro sta in `playlist_tracks` adesso, il file è tornato e a rimettercela è
+/// stato il trigger della migrazione 28, che ridà a un brano il posto che aveva
+/// quando è uscito dalla libreria. Se la sequenza di questa playlist per quel
+/// brano ha ancora una voce viva, la riga è quella voce e va bene. Se ha solo
+/// lapidi, la voce è stata tolta altrove mentre il file non c'era: è il ritorno
+/// di una voce tolta, non un'aggiunta, e tenerla come tale ne farebbe un
+/// elemento nuovo che la sincronia pubblica — la rimozione vera, fatta
+/// sull'altro dispositivo, risorgerebbe ovunque. Per ogni brano tornato **che
+/// questa sequenza ha avuto e ha tolto** valgono al più tante righe quante sono
+/// le sue voci vive: le ultime sono quelle che si tolgono.
+///
+/// # Il rischio inverso, scelto e scritto
+///
+/// Un'aggiunta vera dell'utente non si può distinguere, nelle tabelle, dalla
+/// riga che ha rimesso il trigger: stessa tabella, stessa forma. Si limita il
+/// danno in due modi.
+///
+/// - Solo per i brani **tornati** (la chiave era assente all'ultima passata) e
+///   solo nella passata in cui tornano: da quella dopo il brano non è più nella
+///   memoria, e una riga messa dall'utente è una voce nuova come qualunque altra.
+/// - Solo dove la sequenza **ha lapidi per quel brano**. Se non ne ha — la
+///   playlist non ha mai nominato il brano, o lo nomina vivo — la riga è
+///   un'aggiunta e si lascia: è il caso comune, e il gesto «aggiungi alla
+///   playlist» un brano appena arrivato non si perde.
+///
+/// Quel che resta è un'aggiunta fatta in una finestra di pochi minuti, di un
+/// brano che era stato in quella playlist, tolto altrove, e che è appena
+/// tornato: viene tolta anche lei e va rifatta. È l'errore sicuro: un gesto da
+/// ripetere costa un clic, una rimozione che risorge su tutti i dispositivi no.
+///
+/// `None` se non c'è niente da togliere (quasi sempre).
+fn senza_i_ritorni_di_voci_tolte(
+    voluto: &[String],
+    sequenza: &Sequenza,
+    ricordati: &BTreeSet<String>,
+) -> Option<Vec<String>> {
+    if !voluto.iter().any(|brano| ricordati.contains(brano)) {
+        return None;
+    }
+    // Per ogni brano tornato: quante voci vive ha questa sequenza, e se ha
+    // anche delle lapidi.
+    let mut vive: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut con_lapidi: BTreeSet<&str> = BTreeSet::new();
+    for (_, elemento) in sequenza.elementi() {
+        let brano = elemento.brano.as_str();
+        if !ricordati.contains(brano) {
+            continue;
+        }
+        if elemento.tolto.is_some() {
+            con_lapidi.insert(brano);
+        } else {
+            *vive.entry(brano).or_insert(0) += 1;
+        }
+    }
+    let mut viste: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut tolto_qualcosa = false;
+    let tenute: Vec<String> = voluto
+        .iter()
+        .filter(|brano| {
+            if !con_lapidi.contains(brano.as_str()) {
+                return true;
+            }
+            let viste_finora = viste.entry(brano.as_str()).or_insert(0);
+            *viste_finora += 1;
+            let tenuta = *viste_finora <= vive.get(brano.as_str()).copied().unwrap_or(0);
+            tolto_qualcosa |= !tenuta;
+            tenuta
+        })
+        .cloned()
+        .collect();
+    tolto_qualcosa.then_some(tenute)
+}
+
+/// Le chiavi dei brani che qualche voce di una sequenza nomina e che questa
+/// libreria non ha.
+///
+/// **Vive o tolte**: una voce tolta altrove mentre il file non c'era continua a
+/// nominare il brano, e il brano continua a mancare. Così la memoria di
+/// [`CHIAVE_BRANI_ASSENTI`] è «appiccicosa» — una chiave ne esce solo quando il
+/// suo brano è tornato — e la passata che vede tornare un file sa che era
+/// assente anche se la voce, nel frattempo, è stata sepolta (vedi
+/// [`senza_i_ritorni_di_voci_tolte`]). Se la limitassimo alle voci vive, la
+/// lapide arrivata dall'altro dispositivo la farebbe uscire prima del ritorno.
+///
+/// Su tutte le sequenze insieme e non playlist per playlist: è
+/// un'interrogazione sola, e usa `idx_tracks_track_key`.
+fn brani_assenti(connection: &Connection) -> Result<BTreeSet<String>, AppError> {
+    #[cfg(test)]
+    LETTURE.with(|letture| letture.set((letture.get().0 + 1, letture.get().1)));
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT s.track_key FROM sync_sequenza s
+              WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.track_key = s.track_key)",
+        )
+        .map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
+    let chiavi = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
+    chiavi
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error("brani delle playlist che qui mancano", &err))
+}
+
+/// Come si presenta la memoria dei brani assenti quando la si legge: vedi
+/// [`CHIAVE_BRANI_ASSENTI`].
+#[derive(Debug, PartialEq, Eq)]
+enum Ricordo {
+    /// Non c'è: nessun ricordo. È lo stato normale di chi ha tutta la musica.
+    Nessuno,
+    /// C'è un valore e non si legge. Non è «niente è arrivato»: non si sa, e in
+    /// quella passata non si seppellisce niente.
+    Illeggibile,
+    /// Le chiavi che l'ultimo allineamento ha trovato assenti.
+    Chiavi(BTreeSet<String>),
+}
+
+/// Legge la memoria dei brani assenti, distinguendo «manca» da «non si legge».
+///
+/// `settings::read_json` non lo permette: un JSON storto vale per lei come un
+/// valore assente, ed è proprio quel che qui non si può fare.
+fn ricordo_dei_brani_assenti(connection: &Connection) -> Result<Ricordo, AppError> {
+    #[cfg(test)]
+    LETTURE.with(|letture| letture.set((letture.get().0, letture.get().1 + 1)));
+    let Some(grezzo) = settings::read(connection, CHIAVE_BRANI_ASSENTI)? else {
+        return Ok(Ricordo::Nessuno);
+    };
+    Ok(serde_json::from_str(&grezzo).map_or(Ricordo::Illeggibile, Ricordo::Chiavi))
+}
+
+/// Ricorda quali brani le sequenze nominano e qui non ci sono, adesso.
+///
+/// Da chiamare dopo ogni scrittura di `sync_sequenza` e dopo ogni confronto fra
+/// lei e `tracks`: [`allinea_in`] e [`applica_in`]. Non scrive se la memoria è
+/// già quella (la libreria di chi ha tutta la musica non ne ha mai una), e la
+/// toglie quando non c'è più niente da ricordare. Una memoria illeggibile si
+/// rifà sempre, anche se quella di adesso è vuota: lasciarla lì vorrebbe dire
+/// che la passata dopo la ritrova guasta, e non seppellisce niente neanche lei.
+fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
+    let adesso = brani_assenti(connection)?;
+    let ricordo = ricordo_dei_brani_assenti(connection)?;
+    scrivi_il_ricordo(connection, &adesso, &ricordo)
+}
+
+/// Il corpo di [`ricorda_i_brani_assenti`], per chi ha già letto i brani assenti
+/// e la memoria com'era: [`allinea_sequenze`] li ha in mano per decidere, e non
+/// li rilegge.
+fn scrivi_il_ricordo(
+    connection: &Connection,
+    adesso: &BTreeSet<String>,
+    ricordo: &Ricordo,
+) -> Result<(), AppError> {
+    match ricordo {
+        Ricordo::Nessuno if adesso.is_empty() => return Ok(()),
+        Ricordo::Chiavi(ricordati) if ricordati == adesso => return Ok(()),
+        Ricordo::Nessuno | Ricordo::Illeggibile | Ricordo::Chiavi(_) => {}
+    }
+    if adesso.is_empty() {
+        settings::forget(connection, CHIAVE_BRANI_ASSENTI)?;
+        return Ok(());
+    }
+    settings::write_json(connection, CHIAVE_BRANI_ASSENTI, adesso)
+}
+
+// Quante volte questo filo ha interrogato i brani assenti e letto la memoria:
+// la prova del costo di una passata ferma. Solo nei test.
+#[cfg(test)]
+thread_local! {
+    static LETTURE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Riscrive l'appartenenza di una playlist con questo ordine.
+///
+/// Le righe che ci sono già mantengono il brano che nominano: il file è quello
+/// che l'utente vede, e due file con la stessa chiave non si scambiano di posto
+/// per averne cercato uno per chiave (`applica_playlist` lo fa, perché lì la
+/// playlist si rifà da una sequenza). Chi non ha una riga la prende da
+/// `tracks`. Si svuota e si riscrive come là: la chiave `(playlist_id,
+/// position)` si verifica a ogni istruzione, e le posizioni escono `0..n`.
+fn riscrivi_appartenenza(
+    tx: &Transaction<'_>,
+    appartenenza: &Appartenenza,
+    ordine: &[&str],
+) -> Result<(), AppError> {
+    let mut gia: BTreeMap<&str, VecDeque<i64>> = BTreeMap::new();
+    for (track_id, brano) in &appartenenza.brani {
+        gia.entry(brano.as_str()).or_default().push_back(*track_id);
+    }
+    let mut cerca = tx
+        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1")
+        .map_err(|err| db_error("brani da agganciare", &err))?;
+    let mut brani = Vec::with_capacity(ordine.len());
+    for brano in ordine {
+        let riusato = gia.get_mut(brano).and_then(VecDeque::pop_front);
+        let track_id = match riusato {
+            Some(track_id) => track_id,
+            None => match cerca.query_row([brano], |row| row.get::<_, i64>(0)) {
+                Ok(track_id) => track_id,
+                // Sparito fra la lettura e la scrittura: nella stessa transazione
+                // non succede, ma se succede il posto si salta, non si inventa.
+                Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                Err(err) => return Err(db_error("brani da agganciare", &err)),
+            },
+        };
+        brani.push(track_id);
+    }
+
+    tx.execute(
+        "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+        [appartenenza.id],
+    )
+    .map_err(|err| db_error("brani da agganciare", &err))?;
+    let mut accoda = tx
+        .prepare(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+        )
+        .map_err(|err| db_error("brani da agganciare", &err))?;
+    for (posizione, track_id) in brani.iter().enumerate() {
+        let posizione = i64::try_from(posizione).unwrap_or(i64::MAX);
+        accoda
+            .execute(rusqlite::params![appartenenza.id, track_id, posizione])
+            .map_err(|err| db_error("brani da agganciare", &err))?;
+    }
+    Ok(())
 }
 
 /// Il nome con cui si battezzano gli elementi che si aggiungono qui a una
@@ -729,15 +1139,56 @@ fn lapidi(connection: &Connection) -> Result<Lapidi, AppError> {
 
 // ── le sequenze su disco ────────────────────────────────────────────────────
 
+/// Una playlist non automatica com'è in `playlist_tracks`.
+struct Appartenenza {
+    /// L'identificativo della riga di `playlists`.
+    id: i64,
+    /// Le righe, nell'ordine: l'identificativo del brano e la sua chiave.
+    brani: Vec<(i64, String)>,
+}
+
 /// I membri di ogni playlist non automatica, nell'ordine.
 ///
 /// Una interrogazione per tutte e non una per ciascuna: su quaranta playlist la
 /// differenza fra le due forme è quaranta andate e ritorno, e questo codice gira
 /// con il lucchetto della libreria in mano.
-fn membri_per_playlist(connection: &Connection) -> Result<BTreeMap<String, Vec<String>>, AppError> {
+///
+/// # Il `JOIN` su `tracks` dice cosa vuol dire «membro»
+///
+/// Un membro è un brano **che questa libreria ha**: `playlist_tracks` punta a
+/// `tracks(id)` e un brano senza riga non può starci. Quel che la sequenza
+/// nomina e qui manca non è qui un membro, ma non per questo è stato tolto: lo
+/// dice [`allinea_sequenze`], che confronta questo elenco soltanto con le voci
+/// dei brani che qui ci sono.
+fn membri_per_playlist(
+    connection: &Connection,
+) -> Result<BTreeMap<String, Appartenenza>, AppError> {
+    // Prima tutte le playlist, anche le vuote: senza, una playlist svuotata non
+    // verrebbe mai confrontata e i suoi elementi resterebbero vivi nella
+    // sequenza.
+    let mut mappa: BTreeMap<String, Appartenenza> = BTreeMap::new();
+    let mut tutte = connection
+        .prepare("SELECT playlist_key, id FROM playlists WHERE is_smart = 0")
+        .map_err(|err| db_error("playlist", &err))?;
+    let righe = tutte
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|err| db_error("playlist", &err))?;
+    for riga in righe {
+        let (chiave, id) = riga.map_err(|err| db_error("playlist", &err))?;
+        mappa.insert(
+            chiave,
+            Appartenenza {
+                id,
+                brani: Vec::new(),
+            },
+        );
+    }
+
     let mut statement = connection
         .prepare(
-            "SELECT p.playlist_key, t.track_key
+            "SELECT p.playlist_key, t.id, t.track_key
                FROM playlist_tracks pt
                JOIN playlists p ON p.id = pt.playlist_id
                JOIN tracks t    ON t.id = pt.track_id
@@ -747,27 +1198,19 @@ fn membri_per_playlist(connection: &Connection) -> Result<BTreeMap<String, Vec<S
         .map_err(|err| db_error("membri delle playlist", &err))?;
     let righe = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })
         .map_err(|err| db_error("membri delle playlist", &err))?;
-    let mut mappa: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for riga in righe {
-        let (playlist, brano) = riga.map_err(|err| db_error("membri delle playlist", &err))?;
-        mappa.entry(playlist).or_default().push(brano);
-    }
-
-    // Anche le playlist vuote: senza, una playlist svuotata non verrebbe mai
-    // confrontata e i suoi elementi resterebbero vivi nella sequenza.
-    let mut vuote = connection
-        .prepare("SELECT playlist_key FROM playlists WHERE is_smart = 0")
-        .map_err(|err| db_error("playlist vuote", &err))?;
-    let chiavi = vuote
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|err| db_error("playlist vuote", &err))?;
-    for chiave in chiavi {
-        mappa
-            .entry(chiave.map_err(|err| db_error("playlist vuote", &err))?)
-            .or_default();
+        let (playlist, track_id, brano) =
+            riga.map_err(|err| db_error("membri delle playlist", &err))?;
+        if let Some(appartenenza) = mappa.get_mut(&playlist) {
+            appartenenza.brani.push((track_id, brano));
+        }
     }
     Ok(mappa)
 }
@@ -851,6 +1294,130 @@ fn scrivi_sequenza(
                 elemento.tolto,
             ])
             .map_err(|err| db_error("sequenza", &err))?;
+    }
+    Ok(())
+}
+
+/// Fa seguire la sequenza a una playlist che cambia chiave.
+///
+/// La chiave **è** il nome, e un rinomino la cambia. La sequenza sta sotto la
+/// chiave: se non la si sposta, la playlist col nome nuovo non ne ha una, e
+/// `allinea_sequenze` la battezza da zero con i soli brani che qui ci sono;
+/// quella sotto il nome vecchio, che non appartiene più a nessuna playlist,
+/// viene sepolta intera. Su una libreria completa si vede poco, ma su un
+/// telefono con una parte della musica la voce di ogni brano che qui manca
+/// muore con il nome vecchio, e gli altri dispositivi — per i quali la
+/// playlist col nome nuovo nasce senza quel brano — lo perdono (FSYNC2).
+///
+/// Va chiamata **dopo** che l'`UPDATE` della chiave è andato a buon fine, nella
+/// stessa transazione, con la chiave di prima e quella di adesso.
+///
+/// # Perché si svuota prima la chiave nuova, e non si fonde
+///
+/// La chiave è unica: una riga di sequenza sotto la chiave nuova può essere
+/// solo il resto di una playlist con quel nome **cancellata qui**. Le sue
+/// identità (`origine:0`…) sono quelle di qualunque sequenza battezzata da una
+/// lista, e fondere significherebbe stampare le lapidi di una playlist che non
+/// c'è più sulle voci vive di quella che arriva. Si butta il resto.
+///
+/// Restituisce quante righe di sequenza si sono spostate.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una scrittura fallisce.
+pub(crate) fn sposta_la_sequenza(
+    connection: &Connection,
+    vecchia: &str,
+    nuova: &str,
+) -> Result<usize, AppError> {
+    if vecchia == nuova {
+        return Ok(0);
+    }
+    connection
+        .execute("DELETE FROM sync_sequenza WHERE playlist_key = ?1", [nuova])
+        .map_err(|err| db_error("sequenza sotto il nome nuovo di una playlist", &err))?;
+    connection
+        .execute(
+            "UPDATE sync_sequenza SET playlist_key = ?2 WHERE playlist_key = ?1",
+            [vecchia, nuova],
+        )
+        .map_err(|err| db_error("sequenza di una playlist rinominata", &err))
+}
+
+/// Seppellisce la sequenza di una playlist che viene cancellata, **subito**.
+///
+/// Una playlist cancellata e rifatta con lo stesso nome prima di un `allinea`
+/// ritrova sotto la sua chiave la sequenza di quella di prima: voci vive
+/// comprese, e fra queste quelle dei brani che qui mancano, che
+/// `allinea_sequenze` lascia stare e che resterebbero vive nella playlist nuova
+/// (FSYNC2). Dall'`allinea` non si può riconoscere che la playlist è un'altra —
+/// la lapide della vecchia e la riga della nuova convivono fino alla passata che
+/// le applica, e rifarlo a ogni `allinea` seppellirebbe anche le voci appena
+/// battezzate di quella nuova, e la passata che le applica cadrebbe — quindi si
+/// fa nell'unico posto in cui una playlist si cancella,
+/// [`crate::playlists::cancella`], nella sua transazione: è quel che farebbe il
+/// primo `allinea` dopo (il ramo delle «sequenze rimaste»), solo prima.
+///
+/// Restituisce gli elementi che erano vivi, per [`rianima_la_sequenza`]:
+/// «Annulla» li deve poter rimettere come stavano.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una lettura o una scrittura fallisce.
+pub(crate) fn seppellisci_la_sequenza(
+    connection: &Connection,
+    playlist_key: &str,
+    adesso_ms: i64,
+) -> Result<Vec<String>, AppError> {
+    let vive: Vec<String> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT elemento FROM sync_sequenza
+                  WHERE playlist_key = ?1 AND tolto_ms IS NULL",
+            )
+            .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?;
+        statement
+            .query_map([playlist_key], |row| row.get::<_, String>(0))
+            .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?
+    };
+    connection
+        .execute(
+            "UPDATE sync_sequenza SET tolto_ms = ?2
+              WHERE playlist_key = ?1 AND tolto_ms IS NULL",
+            rusqlite::params![playlist_key, adesso_ms],
+        )
+        .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?;
+    Ok(vive)
+}
+
+/// Rimette vive le voci che [`seppellisci_la_sequenza`] aveva sepolto, se sono
+/// ancora com'erano: «Annulla» una cancellazione.
+///
+/// Solo gli elementi nominati **e** con la data di sepoltura scritta da lei: una
+/// voce che nel frattempo è stata sepolta per un'altra ragione ha un'altra data,
+/// e non si tocca.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+pub(crate) fn rianima_la_sequenza(
+    connection: &Connection,
+    playlist_key: &str,
+    elementi: &[String],
+    sepolti_il: i64,
+) -> Result<(), AppError> {
+    let mut statement = connection
+        .prepare(
+            "UPDATE sync_sequenza SET tolto_ms = NULL
+              WHERE playlist_key = ?1 AND elemento = ?2 AND tolto_ms = ?3",
+        )
+        .map_err(|err| db_error("sequenza di una playlist ripristinata", &err))?;
+    for elemento in elementi {
+        statement
+            .execute(rusqlite::params![playlist_key, elemento, sepolti_il])
+            .map_err(|err| db_error("sequenza di una playlist ripristinata", &err))?;
     }
     Ok(())
 }
@@ -978,6 +1545,14 @@ pub fn applica_se_ferma(
     // `partenza`, e la transazione cadrebbe senza `commit` — il nome con cui
     // l'avrebbe battezzato non arriva mai nel database. Gli elementi veri li
     // battezza l'`allinea` della passata dopo, col nome giusto.
+    //
+    // Per lo stesso motivo, una voce di un brano che qui manca non è un
+    // cambiamento: `allinea_sequenze` la lascia viva e non tocca la sequenza,
+    // quindi non ferma l'applicazione: una voce sepolta qui, come succedeva,
+    // avrebbe cambiato `playlist` sotto e fatto cadere la passata di un brano
+    // arrivato durante la rete. Quel brano si aggancia qui, nella stessa
+    // transazione che scrive il fuso, e `applica_playlist` lo trova già al suo
+    // posto quando rifà `playlist_tracks` dalla sequenza.
     allinea_in(&tx, ORIGINE, adesso_ms)?;
     let cartelle: BTreeMap<String, Interruttore> =
         settings::read_json(&tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
@@ -1026,6 +1601,11 @@ pub fn applica_in(
     applica_lapidi(tx, fuso)?;
     cambiamenti.playlist_tolte = togli_playlist(tx, fuso)?;
     cambiamenti.playlist = applica_playlist(tx, fuso)?;
+    // Le sequenze sono appena cambiate (o sono state tolte), e con loro i brani
+    // che nominano senza che qui ci siano: vedi [`CHIAVE_BRANI_ASSENTI`]. Nella
+    // stessa transazione, perché il piano di un profilo che si abbandona non
+    // lasci una memoria che non corrisponde ai dati.
+    ricorda_i_brani_assenti(tx)?;
     (cambiamenti.cartelle, cambiamenti.cartelle_di_rete) = applica_cartelle(tx, fuso)?;
     applica_skin(tx, fuso)?;
     cambiamenti.dispositivi = applica_dispositivi(tx, fuso, adesso_ms)?;
@@ -2145,6 +2725,20 @@ mod prove {
             "il brano assente si salta"
         );
 
+        // Una passata dopo, prima che il file arrivi: l'`allinea` con cui
+        // comincia ogni passata (e che gira anche dentro `applica_se_ferma`).
+        // Per `playlist_tracks` il brano non c'è, ma non è stato **tolto**: la
+        // sua voce non si seppellisce. Il test passava solo perché fra
+        // l'applicazione e l'arrivo del file non chiamava mai `allinea`, che è
+        // ciò che fa ogni passata vera.
+        allinea(&mut connection, "portatile", 2_500).expect("allineamento");
+        assert_eq!(ordine(&connection, "sera"), vec!["a", "b"]);
+        assert_eq!(
+            sequenza_di(&connection, "sera").ordine(),
+            vec!["a", "sconosciuto", "b"],
+            "la voce resta viva nella sequenza"
+        );
+
         // Arriva il file.
         connection
             .execute(
@@ -2165,6 +2759,47 @@ mod prove {
             vec!["a", "sconosciuto", "b"],
             "torna al suo posto, non in fondo"
         );
+
+        // E con un `allinea` in mezzo anche fra l'arrivo e l'applicazione: lo
+        // stesso brano, arrivato per un'altra via, sta già al suo posto e un
+        // altro allineamento non lo muove.
+        allinea(&mut connection, "portatile", 3_500).expect("allineamento");
+        assert_eq!(ordine(&connection, "sera"), vec!["a", "sconosciuto", "b"]);
+    }
+
+    #[test]
+    fn un_brano_che_qui_non_c_e_torna_al_suo_posto_anche_se_arriva_dopo_un_allinea() {
+        // Come sopra, ma senza l'`applica` dopo l'arrivo: a riportare il brano
+        // nella playlist è l'`allinea` della passata dopo.
+        let mut connection = libreria();
+        playlist_con(&connection, "sera", &[1]);
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        let mio = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let mut suo = mio.clone();
+        if let Some(playlist) = suo.playlist.get_mut("sera") {
+            playlist.sequenza.accoda("telefono", "sconosciuto");
+            playlist.sequenza.accoda("telefono", "b");
+            playlist.at = 1_500;
+        }
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio, 2_000),
+            Documento::nuovo("telefono", suo, 2_000),
+        ]);
+        applica(&mut connection, &fuso, 2_000).expect("applicazione");
+        allinea(&mut connection, "portatile", 2_500).expect("allineamento");
+
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES (9, '/musica/x.flac', 'sconosciuto', 'x', 'chi', 'dove', 0, 0, 0)",
+                [],
+            )
+            .expect("brano arrivato");
+        allinea(&mut connection, "portatile", 3_000).expect("allineamento");
+
+        assert_eq!(ordine(&connection, "sera"), vec!["a", "sconosciuto", "b"]);
     }
 
     #[test]
@@ -2690,5 +3325,1736 @@ mod prove {
             )
             .expect("cuore");
         assert_eq!((cuore, quando), (1, 1_000), "il cuore di qui resta");
+    }
+
+    // ── i brani che un dispositivo non ha (FSYNC) ──
+    //
+    // Una voce di sequenza il cui brano qui non c'è è invisibile qui, non
+    // tolta: non si seppellisce, non si pubblica come lapide, e torna in
+    // `playlist_tracks` al suo posto quando il brano arriva.
+
+    /// Un brano di prova. `content_key` solo dove serve il trigger della 028.
+    fn brano_di_prova(connection: &Connection, id: i64, chiave: &str, content_key: Option<&str>) {
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album,
+                                     file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?3, ?4, ?3, 'chi', 'dove', 0, 0, 0)",
+                rusqlite::params![id, format!("/musica/{chiave}.flac"), chiave, content_key],
+            )
+            .expect("brano");
+    }
+
+    /// Una libreria con questi brani, numerati da 1 nell'ordine dato.
+    fn libreria_con(chiavi: &[&str]) -> Connection {
+        let connection = db::open_in_memory()
+            .expect("database in memoria")
+            .connection;
+        for (indice, chiave) in chiavi.iter().enumerate() {
+            let id = i64::try_from(indice).expect("indice") + 1;
+            brano_di_prova(&connection, id, chiave, None);
+        }
+        connection
+    }
+
+    fn id_del_brano(connection: &Connection, chiave: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT id FROM tracks WHERE track_key = ?1",
+                [chiave],
+                |row| row.get(0),
+            )
+            .expect("brano")
+    }
+
+    /// La sequenza di una playlist com'è scritta nel database.
+    fn sequenza_di(connection: &Connection, chiave: &str) -> Sequenza {
+        sequenze_salvate(connection)
+            .expect("sequenze")
+            .remove(chiave)
+            .unwrap_or_else(Sequenza::vuota)
+    }
+
+    fn documento_di(connection: &Connection, chi: &str) -> Contenuto {
+        contenuto(connection, chi, BTreeMap::new(), BTreeMap::new()).expect("contenuto")
+    }
+
+    /// Una passata vera fra `qui` e il documento di un altro: allinea, legge,
+    /// fonde, applica solo se la libreria è rimasta ferma.
+    fn passata_con_altro(
+        qui: &mut Connection,
+        io: &str,
+        altro: (&str, Contenuto),
+        adesso_ms: i64,
+    ) -> Cambiamenti {
+        allinea(qui, io, adesso_ms).expect("allineamento");
+        let mio = documento_di(qui, io);
+        let fuso = fondi(&[
+            Documento::nuovo(io, mio.clone(), adesso_ms),
+            Documento::nuovo(altro.0, altro.1, adesso_ms),
+        ]);
+        applica_se_ferma(qui, &mio, &fuso, adesso_ms)
+            .expect("applicazione")
+            .expect("la libreria era ferma")
+    }
+
+    /// Il computer ha `a`, `x`, `b` e la playlist «sera» con tutti e tre; il
+    /// telefono ha solo `a` e `b`, e ha ricevuto «sera» dal computer.
+    fn computer_e_telefono() -> (Connection, Connection) {
+        let mut computer = libreria_con(&["a", "x", "b"]);
+        let mut telefono = libreria_con(&["a", "b"]);
+        playlist_con(&computer, "sera", &[1, 2, 3]);
+        allinea(&mut computer, "computer", 1_000).expect("allineamento");
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), 2_000);
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "b"],
+            "il punto di partenza"
+        );
+        (computer, telefono)
+    }
+
+    #[test]
+    fn il_giro_fra_due_librerie_non_toglie_agli_altri_il_brano_che_qui_manca() {
+        // Il reperto di FPROF. Il telefono riceve «sera» = a, x, b dal computer
+        // e `x` non ce l'ha: la voce non sta in `playlist_tracks` (il `JOIN` su
+        // `tracks` la lascia fuori), e il primo `allinea` dopo la sotterrava
+        // come «tolto qui». La lapide partiva col documento successivo, e per
+        // la regola di fusione («la più vecchia vince») il computer toglieva `x`
+        // dalla **sua** playlist.
+        let (mut computer, mut telefono) = computer_e_telefono();
+
+        // Un'altra passata sul telefono: l'`allinea` di apertura.
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        let di_ritorno = documento_di(&telefono, "telefono");
+
+        // E il documento del telefono torna al computer.
+        let del_computer = documento_di(&computer, "computer");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", del_computer, 4_000),
+            Documento::nuovo("telefono", di_ritorno.clone(), 4_000),
+        ]);
+        applica(&mut computer, &fuso, 4_000).expect("applicazione");
+        assert_eq!(
+            ordine(&computer, "sera"),
+            vec!["a", "x", "b"],
+            "la playlist del computer non perde un brano che il telefono non ha"
+        );
+        assert_eq!(
+            di_ritorno.playlist["sera"].sequenza.ordine(),
+            vec!["a", "x", "b"],
+            "il telefono pubblica la voce di `x` ancora viva"
+        );
+    }
+
+    #[test]
+    fn il_brano_che_arriva_dopo_torna_al_suo_posto_con_l_allineamento() {
+        let (_computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+
+        // Arriva il file (la scansione, la sorveglianza, «Scarica qui»: da
+        // qualunque via entri in `tracks`), e la passata dopo parte.
+        brano_di_prova(&telefono, 9, "x", None);
+        allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "x", "b"],
+            "torna al suo posto, non in fondo e non sepolto"
+        );
+        let viva = sequenza_di(&telefono, "sera");
+        assert_eq!(viva.ordine(), vec!["a", "x", "b"]);
+        assert_eq!(
+            viva.elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_some())
+                .count(),
+            0,
+            "nessuna lapide: il brano non è mai stato tolto"
+        );
+    }
+
+    #[test]
+    fn la_memoria_dei_brani_assenti_si_scrive_solo_se_serve_e_si_svuota_quando_arrivano() {
+        // Chi ha tutta la musica non ha mai la chiave.
+        let mut completa = libreria_con(&["a", "b"]);
+        playlist_con(&completa, "sera", &[1, 2]);
+        allinea(&mut completa, "portatile", 1_000).expect("allineamento");
+        assert_eq!(settings::read(&completa, CHIAVE_BRANI_ASSENTI), Ok(None));
+
+        // Il telefono ha ricevuto «sera» con `x`, che non ha.
+        let (_computer, mut telefono) = computer_e_telefono();
+        assert_eq!(
+            settings::read_json::<BTreeSet<String>>(&telefono, CHIAVE_BRANI_ASSENTI),
+            Ok(Some(BTreeSet::from(["x".to_owned()])))
+        );
+
+        // Arriva, e la prima passata lo aggancia e lo toglie dalla memoria.
+        brano_di_prova(&telefono, 9, "x", None);
+        let fatto = allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        assert_eq!(fatto.agganciate, 1);
+        assert!(!fatto.e_vuoto());
+        assert_eq!(settings::read(&telefono, CHIAVE_BRANI_ASSENTI), Ok(None));
+
+        // E la passata dopo non ha più niente da fare.
+        let ancora = allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert!(ancora.e_vuoto(), "{ancora:?}");
+    }
+
+    #[test]
+    fn la_voce_invisibile_sopravvive_a_piu_allineamenti_di_fila() {
+        let (_computer, mut telefono) = computer_e_telefono();
+        let prima = sequenza_di(&telefono, "sera");
+        assert_eq!(prima.ordine(), vec!["a", "x", "b"]);
+
+        for volta in 0..4 {
+            let fatto = allinea(&mut telefono, "telefono", 3_000 + volta).expect("allineamento");
+            assert_eq!(
+                fatto.sequenze, 0,
+                "la {volta}ª passata non ha niente da rifare"
+            );
+            assert_eq!(
+                sequenza_di(&telefono, "sera"),
+                prima,
+                "la sequenza resta identica: né elementi nuovi né lapidi ({volta})"
+            );
+            assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+        }
+    }
+
+    #[test]
+    fn un_brano_tolto_davvero_dalla_playlist_si_seppellisce_e_si_propaga() {
+        // La guardia: la regola nuova non deve far tornare un brano che
+        // l'utente ha tolto. `b` c'è nella libreria e non c'è più nella
+        // playlist: è una decisione, e viaggia come lapide.
+        let mut qui = libreria_con(&["a", "b", "c"]);
+        playlist_con(&qui, "sera", &[1, 2, 3]);
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        let vecchio = documento_di(&qui, "portatile");
+
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto dalla playlist");
+        allinea(&mut qui, "portatile", 2_000).expect("allineamento");
+
+        let sequenza = sequenza_di(&qui, "sera");
+        assert_eq!(sequenza.ordine(), vec!["a", "c"]);
+        assert_eq!(
+            sequenza
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto == Some(2_000))
+                .map(|(_, elemento)| elemento.brano.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b"]
+        );
+
+        // L'altro dispositivo aveva ancora i tre: la lapide vince.
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", documento_di(&qui, "portatile"), 3_000),
+            Documento::nuovo("telefono", vecchio, 3_000),
+        ]);
+        assert_eq!(fuso.playlist["sera"].sequenza.ordine(), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn un_file_cancellato_qui_non_toglie_il_brano_dalle_playlist_degli_altri() {
+        // Due librerie con gli stessi tre brani e la stessa playlist, già in
+        // pari. Su una il file di `x` sparisce (disco staccato, cartella
+        // spostata, «Togli dalla libreria»): la cascata porta via la riga di
+        // `playlist_tracks`, ma è un fatto locale, non una decisione.
+        let mut computer = libreria_con(&["a", "x", "b"]);
+        let mut telefono = libreria_con(&["a", "x", "b"]);
+        playlist_con(&computer, "sera", &[1, 2, 3]);
+        allinea(&mut computer, "computer", 1_000).expect("allineamento");
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), 2_000);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+
+        telefono
+            .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+            .expect("file cancellato");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        allinea(&mut telefono, "telefono", 3_500).expect("allineamento");
+        let del_telefono = documento_di(&telefono, "telefono");
+        assert_eq!(
+            del_telefono.playlist["sera"].sequenza.ordine(),
+            vec!["a", "x", "b"],
+            "il telefono non pubblica una lapide per un file che non ha più"
+        );
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), 4_000),
+            Documento::nuovo("telefono", del_telefono, 4_000),
+        ]);
+        applica(&mut computer, &fuso, 4_000).expect("applicazione");
+        assert_eq!(ordine(&computer, "sera"), vec!["a", "x", "b"]);
+
+        // Il file torna (la scansione lo reinserisce, con un id nuovo).
+        brano_di_prova(&telefono, 20, "x", None);
+        allinea(&mut telefono, "telefono", 5_000).expect("allineamento");
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "x", "b"],
+            "e con lui torna al suo posto"
+        );
+    }
+
+    #[test]
+    fn un_file_che_torna_con_la_sua_chiave_di_contenuto_non_si_raddoppia() {
+        // Il trigger della 028 rimette il posto in `playlist_tracks` quando
+        // torna un file con la stessa `content_key`. L'aggancio non deve
+        // aggiungerne un secondo.
+        let mut telefono = libreria_con(&[]);
+        for (id, chiave) in [(1, "a"), (2, "x"), (3, "b")] {
+            brano_di_prova(&telefono, id, chiave, Some(&format!("c-{chiave}")));
+        }
+        playlist_con(&telefono, "sera", &[1, 2, 3]);
+        allinea(&mut telefono, "telefono", 1_000).expect("allineamento");
+
+        telefono
+            .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+            .expect("file cancellato");
+        allinea(&mut telefono, "telefono", 2_000).expect("allineamento");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+
+        brano_di_prova(&telefono, 30, "x", Some("c-x"));
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "x", "b"],
+            "il trigger ha già rimesso il brano"
+        );
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+        assert_eq!(
+            sequenza_di(&telefono, "sera")
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_none())
+                .count(),
+            3,
+            "tre voci vive, una per posto"
+        );
+    }
+
+    #[test]
+    fn un_brano_arrivato_e_aggiunto_a_mano_prima_dell_allineamento_non_si_raddoppia() {
+        let (_computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+
+        brano_di_prova(&telefono, 9, "x", None);
+        // L'utente lo aggiunge in fondo, per conto suo, prima che passi
+        // l'allineamento.
+        telefono
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 SELECT id, 9, 2 FROM playlists WHERE playlist_key = 'sera'",
+                [],
+            )
+            .expect("aggiunta a mano");
+        allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "b", "x"],
+            "l'ordine che l'utente ha fatto qui vale, e `x` c'è una volta"
+        );
+        assert_eq!(sequenza_di(&telefono, "sera").ordine(), vec!["a", "b", "x"]);
+    }
+
+    #[test]
+    fn un_riordino_fatto_qui_non_tocca_la_voce_di_un_brano_che_qui_manca() {
+        let (_computer, mut telefono) = computer_e_telefono();
+        let id_a = id_del_brano(&telefono, "a");
+        let id_b = id_del_brano(&telefono, "b");
+        // L'utente mette `b` prima di `a`.
+        telefono
+            .execute_batch(&format!(
+                "DELETE FROM playlist_tracks;
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 SELECT id, {id_b}, 0 FROM playlists WHERE playlist_key = 'sera';
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 SELECT id, {id_a}, 1 FROM playlists WHERE playlist_key = 'sera';"
+            ))
+            .expect("riordino");
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+
+        let sequenza = sequenza_di(&telefono, "sera");
+        let visibili: Vec<&str> = sequenza
+            .ordine()
+            .into_iter()
+            .filter(|brano| *brano != "x")
+            .collect();
+        assert_eq!(visibili, vec!["b", "a"], "l'ordine di qui si pubblica");
+        assert_eq!(
+            sequenza.ordine().iter().filter(|b| **b == "x").count(),
+            1,
+            "la voce di `x` è ancora lì, una volta, viva"
+        );
+        assert_eq!(ordine(&telefono, "sera"), vec!["b", "a"]);
+
+        // Il file arriva: `x` compare, e `b`, `a` restano come li ha voluti
+        // l'utente.
+        brano_di_prova(&telefono, 9, "x", None);
+        allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        let dopo = ordine(&telefono, "sera");
+        assert_eq!(dopo.len(), 3, "{dopo:?}");
+        let senza_x: Vec<&String> = dopo.iter().filter(|b| *b != "x").collect();
+        assert_eq!(senza_x, vec!["b", "a"], "{dopo:?}");
+    }
+
+    #[test]
+    fn la_playlist_cancellata_qui_seppellisce_tutta_la_sua_sequenza() {
+        // La guardia del ramo «sequenze rimaste»: una playlist che non c'è più
+        // non lascia voci vive, nemmeno quelle dei brani che qui mancano.
+        let (_computer, mut telefono) = computer_e_telefono();
+        telefono
+            .execute("DELETE FROM playlists WHERE playlist_key = 'sera'", [])
+            .expect("playlist cancellata");
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        let sequenza = sequenza_di(&telefono, "sera");
+        assert!(sequenza.ordine().is_empty(), "{sequenza:?}");
+        assert_eq!(sequenza.quanti(), 3, "le lapidi restano");
+    }
+
+    #[test]
+    fn applica_se_ferma_si_comporta_come_allinea_e_applica() {
+        // Due telefoni identici. Su uno la passata di sempre (allinea, legge,
+        // fonde, applica_se_ferma); sull'altro lo stesso ma con `allinea` e
+        // `applica` separati. Il brano `x` arriva fra la lettura e
+        // l'applicazione, come in una passata che sta due minuti in rete.
+        let (computer, telefono_uno) = computer_e_telefono();
+        let (_, telefono_due) = computer_e_telefono();
+        let (mut uno, mut due) = (telefono_uno, telefono_due);
+        let del_computer = documento_di(&computer, "computer");
+
+        let mio_uno = documento_di(&uno, "telefono");
+        let mio_due = documento_di(&due, "telefono");
+        let fuso_uno = fondi(&[
+            Documento::nuovo("computer", del_computer.clone(), 3_000),
+            Documento::nuovo("telefono", mio_uno.clone(), 3_000),
+        ]);
+        let fuso_due = fondi(&[
+            Documento::nuovo("computer", del_computer, 3_000),
+            Documento::nuovo("telefono", mio_due, 3_000),
+        ]);
+        brano_di_prova(&uno, 9, "x", None);
+        brano_di_prova(&due, 9, "x", None);
+
+        let esito = applica_se_ferma(&mut uno, &mio_uno, &fuso_uno, 3_000).expect("applicazione");
+        assert!(
+            esito.is_some(),
+            "una sequenza rimasta com'era non ferma l'applicazione"
+        );
+
+        allinea(&mut due, "telefono", 3_000).expect("allineamento");
+        applica(&mut due, &fuso_due, 3_000).expect("applicazione");
+
+        assert_eq!(ordine(&uno, "sera"), vec!["a", "x", "b"]);
+        assert_eq!(ordine(&uno, "sera"), ordine(&due, "sera"));
+        assert_eq!(sequenza_di(&uno, "sera"), sequenza_di(&due, "sera"));
+    }
+
+    #[test]
+    fn una_passata_che_non_si_applica_non_fa_perdere_l_aggancio_alla_passata_dopo() {
+        // Il brano arriva mentre la passata è in rete e, nello stesso tempo,
+        // l'utente cambia un'altra playlist: `applica_se_ferma` non scrive e la
+        // sua transazione cade, aggancio compreso. La passata dopo deve
+        // agganciare comunque, non sotterrare.
+        let (computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        let mio = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), 3_500),
+            Documento::nuovo("telefono", mio.clone(), 3_500),
+        ]);
+
+        brano_di_prova(&telefono, 9, "x", None);
+        playlist_con(&telefono, "corsa", &[1]);
+        let esito = applica_se_ferma(&mut telefono, &mio, &fuso, 3_500).expect("applicazione");
+        assert_eq!(esito, None, "la libreria è cambiata: non si scrive");
+
+        allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "x", "b"],
+            "agganciato, non sepolto"
+        );
+        assert_eq!(
+            sequenza_di(&telefono, "sera")
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_some())
+                .count(),
+            0
+        );
+    }
+
+    // ── FSYNC2: la sequenza segue la playlist ──
+
+    fn id_playlist(connection: &Connection, chiave: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT id FROM playlists WHERE playlist_key = ?1",
+                [chiave],
+                |row| row.get(0),
+            )
+            .expect("playlist")
+    }
+
+    /// Un istante dopo ogni ora vera: le funzioni delle playlist datano con
+    /// l'orologio, e una passata fatta «prima» vedrebbe quelle date dal futuro.
+    const DOPO: i64 = 4_000_000_000_000;
+
+    #[test]
+    fn rinominare_la_playlist_su_un_telefono_non_toglie_al_computer_il_brano_che_il_telefono_non_ha()
+     {
+        // Il telefono (che non ha `x`) rinomina «sera». La chiave cambia, e la
+        // sequenza — con la voce viva di `x` — deve seguirla: prima nasceva
+        // da zero coi soli brani di qui, la vecchia partiva con le lapidi, e il
+        // computer perdeva `x` dalla playlist col nome nuovo.
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let id = id_playlist(&telefono, "sera");
+        crate::playlists::rename(&telefono, id, "sera2").expect("rinomino");
+
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), DOPO);
+        assert_eq!(
+            sequenza_di(&telefono, "sera2").ordine(),
+            vec!["a", "x", "b"],
+            "la voce di `x` ha seguito la playlist"
+        );
+        assert!(
+            sequenza_di(&telefono, "sera").e_vuota(),
+            "e non è rimasta sotto il nome vecchio"
+        );
+        let dal_telefono = documento_di(&telefono, "telefono");
+
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), DOPO + 1),
+            Documento::nuovo("telefono", dal_telefono, DOPO + 1),
+        ]);
+        applica(&mut computer, &fuso, DOPO + 1).expect("applicazione");
+        assert_eq!(
+            ordine(&computer, "sera2"),
+            vec!["a", "x", "b"],
+            "il computer ha ancora `x` nella playlist rinominata dal telefono"
+        );
+        assert_eq!(ordine(&telefono, "sera2"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn rinominare_su_un_nome_cancellato_qui_non_stampa_le_vecchie_lapidi_sulla_playlist_che_arriva()
+    {
+        // La chiave nuova è libera perché una playlist con quel nome è stata
+        // cancellata qui, e di lei restano le righe di sequenza (sepolte da un
+        // `allinea`). Le identità sono quelle di ogni sequenza battezzata da una
+        // lista: fondere quelle righe con la sequenza che arriva stamperebbe le
+        // lapidi di una playlist che non c'è più sulle voci vive di quella
+        // rinominata.
+        let (_computer, mut telefono) = computer_e_telefono();
+        playlist_con(&telefono, "altra", &[1]);
+        allinea(&mut telefono, "telefono", DOPO).expect("allineamento");
+        let vecchia = id_playlist(&telefono, "altra");
+        crate::playlists::delete(&mut telefono, vecchia).expect("cancellata");
+        allinea(&mut telefono, "telefono", DOPO + 1).expect("allineamento");
+        assert!(
+            sequenza_di(&telefono, "altra").ordine().is_empty(),
+            "la vecchia è sepolta"
+        );
+
+        let id = id_playlist(&telefono, "sera");
+        crate::playlists::rename(&telefono, id, "altra").expect("rinomino");
+
+        let seguita = sequenza_di(&telefono, "altra");
+        assert_eq!(seguita.ordine(), vec!["a", "x", "b"]);
+        assert_eq!(
+            seguita
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_some())
+                .count(),
+            0,
+            "nessuna lapide delle voci della playlist cancellata"
+        );
+    }
+
+    // ── FSYNC2: tolto dalla playlist e poi dalla libreria, prima di un allinea ──
+
+    /// Quel che un `allinea` può vedere di una libreria, come testo: le tabelle
+    /// che la sincronia legge più quelle del trigger della 28.
+    fn quel_che_si_vede(connection: &Connection) -> String {
+        let mut fuori = String::new();
+        for interrogazione in [
+            "SELECT track_key FROM tracks ORDER BY track_key",
+            "SELECT p.playlist_key, t.track_key, pt.position FROM playlist_tracks pt
+               JOIN playlists p ON p.id = pt.playlist_id
+               JOIN tracks t ON t.id = pt.track_id ORDER BY 1, 3",
+            "SELECT playlist_key, elemento, track_key, tolto_ms FROM sync_sequenza ORDER BY 1, 2",
+            "SELECT content_key, playlist_id, position FROM playlist_orfane ORDER BY 1, 2, 3",
+        ] {
+            let mut statement = connection.prepare(interrogazione).expect("interrogazione");
+            let colonne = statement.column_count();
+            let righe = statement
+                .query_map([], |riga| {
+                    (0..colonne)
+                        .map(|i| {
+                            riga.get::<_, rusqlite::types::Value>(i)
+                                .map(|v| format!("{v:?}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .expect("righe");
+            for riga in righe {
+                fuori.push_str(&riga.expect("riga").join("|"));
+                fuori.push('\n');
+            }
+            fuori.push_str("--\n");
+        }
+        fuori
+    }
+
+    /// Un telefono con `a`, `x`, `b` e «sera», già allineato; `con_chiave_di_contenuto`
+    /// dice se i brani hanno la `content_key` che il trigger della 28 pretende.
+    fn telefono_con_sera(con_chiave_di_contenuto: bool) -> Connection {
+        let mut telefono = libreria_con(&[]);
+        for (id, chiave) in [(1, "a"), (2, "x"), (3, "b")] {
+            let ck = con_chiave_di_contenuto.then(|| format!("c-{chiave}"));
+            brano_di_prova(&telefono, id, chiave, ck.as_deref());
+        }
+        playlist_con(&telefono, "sera", &[1, 2, 3]);
+        allinea(&mut telefono, "telefono", 1_000).expect("allineamento");
+        telefono
+    }
+
+    #[test]
+    fn senza_chiave_di_contenuto_tolto_e_poi_cancellato_non_si_distingue_dal_solo_cancellato() {
+        // Il limite, provato. Il padre di FSYNC seppelliva la voce di un brano
+        // tolto dalla playlist e poi sparito dalla libreria prima di un
+        // `allinea`, e il giro dopo lasciava invisibile quella di un brano che
+        // sparisce soltanto — perdendo i brani agli altri dispositivi. Le due
+        // storie lasciano lo STESSO stato nelle tabelle quando il trigger della
+        // 28 non scrive niente (brano senza `content_key`, o senza percorso: un
+        // brano di catalogo, una riga provvisoria del cloud): nessuna regola può
+        // seppellire l'una senza seppellire l'altra, e l'errore che si sceglie
+        // è la voce che resta.
+        let tolto_e_poi_cancellato = {
+            let telefono = telefono_con_sera(false);
+            telefono
+                .execute("DELETE FROM playlist_tracks WHERE track_id = 2", [])
+                .expect("tolto dalla playlist");
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        let solo_cancellato = {
+            let telefono = telefono_con_sera(false);
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        assert_eq!(
+            quel_che_si_vede(&tolto_e_poi_cancellato),
+            quel_che_si_vede(&solo_cancellato),
+            "stesse tabelle: l'`allinea` non può dire quale delle due storie è la sua"
+        );
+        for mut telefono in [tolto_e_poi_cancellato, solo_cancellato] {
+            allinea(&mut telefono, "telefono", 2_000).expect("allineamento");
+            assert_eq!(lapidi_di(&telefono, "sera"), 0);
+            assert_eq!(
+                sequenza_di(&telefono, "sera").ordine(),
+                vec!["a", "x", "b"],
+                "la voce resta, invisibile: non parte nessuna lapide"
+            );
+        }
+    }
+
+    #[test]
+    fn con_la_chiave_di_contenuto_il_trigger_lascia_un_segno_solo_a_chi_e_stato_cancellato_dentro_la_playlist()
+     {
+        // L'informazione che mancava sopra, quando c'è: `playlist_orfane` ha una
+        // riga per il brano uscito mentre stava nella playlist, e niente per
+        // quello tolto prima. Ma è per `content_key`, e del brano sparito non
+        // resta la chiave: si sa solo che la playlist ha un posto tenuto.
+        let tolto_e_poi_cancellato = {
+            let telefono = telefono_con_sera(true);
+            telefono
+                .execute("DELETE FROM playlist_tracks WHERE track_id = 2", [])
+                .expect("tolto dalla playlist");
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        let solo_cancellato = {
+            let telefono = telefono_con_sera(true);
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        let posti_tenuti = |telefono: &Connection| -> i64 {
+            telefono
+                .query_row("SELECT COUNT(*) FROM playlist_orfane", [], |riga| {
+                    riga.get(0)
+                })
+                .expect("conteggio")
+        };
+        assert_eq!(posti_tenuti(&tolto_e_poi_cancellato), 0);
+        assert_eq!(posti_tenuti(&solo_cancellato), 1);
+    }
+
+    // ── FSYNC2: una playlist cancellata porta con sé la sua sequenza ──
+
+    #[test]
+    fn una_playlist_cancellata_e_rifatta_prima_di_un_allinea_non_porta_le_voci_della_vecchia() {
+        // Il telefono cancella «sera» (a, x, b: `x` è un brano che non ha) e la
+        // rifà con lo stesso nome e il solo `a`, senza che passi un `allinea`.
+        // La voce invisibile di `x` apparteneva alla vecchia: nella nuova non
+        // deve vivere, né qui né sul computer.
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let id = id_playlist(&telefono, "sera");
+        crate::playlists::delete(&mut telefono, id).expect("cancellata");
+        // La lapide e la riga nuova devono avere date diverse: una playlist
+        // rifatta nello stesso millisecondo non sopravvive alla propria lapide.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let a = id_del_brano(&telefono, "a");
+        crate::playlists::crea_e_aggiungi(&mut telefono, "sera", &[a]).expect("rifatta");
+
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), DOPO);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a"]);
+        assert_eq!(
+            sequenza_di(&telefono, "sera").ordine(),
+            vec!["a"],
+            "la voce invisibile della vecchia non vive nella nuova"
+        );
+
+        let dal_telefono = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), DOPO + 1),
+            Documento::nuovo("telefono", dal_telefono, DOPO + 1),
+        ]);
+        applica(&mut computer, &fuso, DOPO + 1).expect("applicazione");
+        assert_eq!(
+            ordine(&computer, "sera"),
+            vec!["a"],
+            "la playlist rifatta col solo `a` non porta la voce di `x` della vecchia"
+        );
+    }
+
+    #[test]
+    fn annullare_la_cancellazione_rida_vive_le_voci_dei_brani_che_qui_mancano() {
+        // «Annulla» rimette la playlist com'era, e com'era aveva la voce
+        // invisibile di `x`: sepolta dalla cancellazione, deve tornare viva, o
+        // la passata dopo vedrebbe una playlist senza `x` e lo toglierebbe agli
+        // altri dispositivi.
+        let (_computer, mut telefono) = computer_e_telefono();
+        let id = id_playlist(&telefono, "sera");
+        let cancellata = crate::playlists::cancella(&mut telefono, id).expect("cancellata");
+        assert!(
+            sequenza_di(&telefono, "sera").ordine().is_empty(),
+            "la sequenza muore con la playlist"
+        );
+        // Una passata in mezzo non cambia niente: la sequenza è già sepolta.
+        let in_mezzo = allinea(&mut telefono, "telefono", DOPO).expect("allineamento");
+        assert_eq!(in_mezzo.sequenze, 0, "{in_mezzo:?}");
+
+        crate::playlists::ripristina(&mut telefono, &cancellata).expect("ripristinata");
+        assert_eq!(
+            sequenza_di(&telefono, "sera").ordine(),
+            vec!["a", "x", "b"],
+            "tornano vive, la voce invisibile compresa"
+        );
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+
+        let dopo = allinea(&mut telefono, "telefono", DOPO + 1).expect("allineamento");
+        assert!(dopo.e_vuoto(), "{dopo:?}");
+        assert_eq!(lapidi_di(&telefono, "sera"), 0);
+    }
+
+    // ── FSYNC2: la memoria che manca e quella che non si legge ──
+
+    fn lapidi_di(connection: &Connection, chiave: &str) -> usize {
+        sequenza_di(connection, chiave)
+            .elementi()
+            .filter(|(_, elemento)| elemento.tolto.is_some())
+            .count()
+    }
+
+    #[test]
+    fn una_memoria_illeggibile_non_fa_seppellire_il_brano_arrivato() {
+        // Il telefono ha `a` e `b`, la voce di `x` è viva e invisibile. La
+        // memoria dei brani assenti si guasta (un valore storto, un database
+        // ripristinato da un file di prima) e `x` arriva: leggerla come «niente
+        // di ricordato» vuol dire seppellire `x` e far partire la lapide.
+        let (_computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        settings::write(&telefono, CHIAVE_BRANI_ASSENTI, "{non json").expect("guasta");
+        brano_di_prova(&telefono, 9, "x", None);
+
+        let fatto = allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert_eq!(
+            lapidi_di(&telefono, "sera"),
+            0,
+            "nessuna voce sepolta: {fatto:?}"
+        );
+        assert_eq!(sequenza_di(&telefono, "sera").ordine(), vec!["a", "x", "b"]);
+        // L'errore sicuro è una voce che torna: `x` rientra al suo posto.
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+        assert_eq!(fatto.agganciate, 1);
+        // E la memoria si è rifatta: quel che era guasto non resta lì.
+        assert_eq!(settings::read(&telefono, CHIAVE_BRANI_ASSENTI), Ok(None));
+
+        // La passata dopo non ha niente da fare, e non seppellisce niente.
+        let ancora = allinea(&mut telefono, "telefono", 5_000).expect("allineamento");
+        assert!(ancora.e_vuoto(), "{ancora:?}");
+        assert_eq!(lapidi_di(&telefono, "sera"), 0);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+    }
+
+    #[test]
+    fn una_memoria_illeggibile_riporta_il_brano_tolto_invece_di_seppellirlo() {
+        // L'errore che si sceglie, scritto: se la memoria non si legge e
+        // l'utente ha tolto `b` proprio in quella finestra, `b` torna nella
+        // playlist. Una voce che torna si toglie un'altra volta; una lapide
+        // che parte per sbaglio toglie un brano agli altri dispositivi.
+        let mut qui = libreria_con(&["a", "b", "c"]);
+        playlist_con(&qui, "sera", &[1, 2, 3]);
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto");
+        settings::write(&qui, CHIAVE_BRANI_ASSENTI, "[1, 2").expect("guasta");
+
+        allinea(&mut qui, "portatile", 2_000).expect("allineamento");
+        assert_eq!(lapidi_di(&qui, "sera"), 0);
+        assert_eq!(ordine(&qui, "sera"), vec!["a", "b", "c"]);
+
+        // Con la memoria a posto, lo stesso gesto è una rimozione vera.
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto");
+        allinea(&mut qui, "portatile", 3_000).expect("allineamento");
+        assert_eq!(lapidi_di(&qui, "sera"), 1);
+        assert_eq!(ordine(&qui, "sera"), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn una_memoria_che_manca_non_e_una_memoria_illeggibile() {
+        // «Nessun ricordo» è lo stato normale: un brano tolto si seppellisce,
+        // come ha sempre fatto, e non si riaggancia niente.
+        let mut qui = libreria_con(&["a", "b", "c"]);
+        playlist_con(&qui, "sera", &[1, 2, 3]);
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        assert_eq!(settings::read(&qui, CHIAVE_BRANI_ASSENTI), Ok(None));
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto");
+        let fatto = allinea(&mut qui, "portatile", 2_000).expect("allineamento");
+        assert_eq!(fatto.agganciate, 0);
+        assert_eq!(lapidi_di(&qui, "sera"), 1);
+        assert_eq!(ordine(&qui, "sera"), vec!["a", "c"]);
+
+        // Una memoria con un insieme vuoto è un ricordo valido: legge e basta.
+        settings::write(&qui, CHIAVE_BRANI_ASSENTI, "[]").expect("vuota");
+        assert_eq!(
+            ricordo_dei_brani_assenti(&qui),
+            Ok(Ricordo::Chiavi(BTreeSet::new()))
+        );
+        settings::write(&qui, CHIAVE_BRANI_ASSENTI, "{non json").expect("guasta");
+        assert_eq!(ricordo_dei_brani_assenti(&qui), Ok(Ricordo::Illeggibile));
+    }
+
+    // ── FSYNC2: il costo di una passata ferma ──
+
+    fn azzera_le_letture() {
+        LETTURE.with(|letture| letture.set((0, 0)));
+    }
+
+    fn letture() -> (usize, usize) {
+        LETTURE.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn una_passata_ferma_interroga_una_volta_sola_i_brani_assenti_e_la_memoria() {
+        // Prima li ricalcolava due volte ciascuno: una per decidere e una per
+        // riscrivere la memoria, tutto col lucchetto della libreria in mano.
+        let (_computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+
+        azzera_le_letture();
+        let fatto = allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert!(fatto.e_vuoto(), "{fatto:?}");
+        assert_eq!(
+            letture(),
+            (1, 1),
+            "una interrogazione dei brani assenti e una lettura della memoria"
+        );
+    }
+
+    #[test]
+    fn la_memoria_nomina_ancora_il_brano_assente_dopo_che_una_playlist_ne_ha_sepolto_la_voce() {
+        // Il riuso dei brani assenti calcolati a inizio passata vale anche
+        // dopo che la passata ha sepolto una playlist intera, voci dei brani
+        // che mancano comprese: la memoria nomina i brani di tutti gli
+        // elementi, vivi o tolti, e una lapide non ne cambia la chiave. È anche
+        // quel che la tiene «appiccicosa» fino al ritorno del file.
+        let (_computer, mut telefono) = computer_e_telefono();
+        let con_x = Ok(Some(BTreeSet::from(["x".to_owned()])));
+        assert_eq!(
+            settings::read_json::<BTreeSet<String>>(&telefono, CHIAVE_BRANI_ASSENTI),
+            con_x
+        );
+        telefono
+            .execute("DELETE FROM playlists WHERE playlist_key = 'sera'", [])
+            .expect("playlist cancellata");
+
+        azzera_le_letture();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        assert_eq!(letture(), (1, 1));
+        assert_eq!(
+            sequenza_di(&telefono, "sera").ordine(),
+            Vec::<&str>::new(),
+            "la voce di `x` è sepolta con la playlist"
+        );
+        assert_eq!(
+            settings::read_json::<BTreeSet<String>>(&telefono, CHIAVE_BRANI_ASSENTI),
+            con_x,
+            "ma `x` manca ancora, e lo ricorda finché non torna"
+        );
+    }
+
+    /// Una misura, non una prova: `cargo test -p rymembra-app --release --lib
+    /// -- --ignored --nocapture costo_di_una_passata`. Un telefono con il 5%
+    /// della musica di un computer da 50 000 brani, 200 playlist da 100 voci.
+    #[test]
+    #[ignore = "misura: si lancia a mano con --ignored --nocapture"]
+    fn costo_di_una_passata_ferma_su_un_telefono_con_il_cinque_per_cento() {
+        use std::time::Instant;
+        let mut telefono = db::open_in_memory()
+            .expect("database in memoria")
+            .connection;
+        {
+            let tx = telefono.transaction().expect("transazione");
+            for i in 0..2_500_i64 {
+                let chiave = format!("artista {i}|titolo {i}|album dove");
+                tx.execute(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                         date_added, date_modified)
+                     VALUES (?1, ?2, ?3, ?3, 'chi', 'dove', 0, 0, 0)",
+                    rusqlite::params![i + 1, format!("/musica/{i}.flac"), chiave],
+                )
+                .expect("brano");
+            }
+            tx.commit().expect("chiusura");
+        }
+        let mut contenuto = Contenuto::default();
+        let mut seme: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut prossimo = move || {
+            seme ^= seme << 13;
+            seme ^= seme >> 7;
+            seme ^= seme << 17;
+            seme
+        };
+        for p in 0..200 {
+            let brani: Vec<String> = (0..100)
+                .map(|_| {
+                    let i = prossimo() % 50_000;
+                    format!("artista {i}|titolo {i}|album dove")
+                })
+                .collect();
+            let nome = format!("playlist {p}");
+            contenuto.playlist.insert(
+                nome.clone(),
+                PlaylistSincronizzata {
+                    nome,
+                    descrizione: None,
+                    creata_at: 100,
+                    at: 100,
+                    smart: false,
+                    regole: None,
+                    sequenza: Sequenza::dalla_lista("computer", &brani),
+                },
+            );
+        }
+        let fuso = fondi(&[Documento::nuovo("computer", contenuto.clone(), 1_000)]);
+        let t0 = Instant::now();
+        applica(&mut telefono, &fuso, 1_000).expect("applicazione");
+        eprintln!(
+            "COSTO applica (200 playlist, 20000 voci): {:?}",
+            t0.elapsed()
+        );
+        let grezzo = settings::read(&telefono, CHIAVE_BRANI_ASSENTI)
+            .expect("lettura")
+            .unwrap_or_default();
+        eprintln!("COSTO memoria: {} byte di JSON", grezzo.len());
+
+        allinea(&mut telefono, "telefono", 2_000).expect("allineamento");
+        let prima = telefono.total_changes();
+        let t0 = Instant::now();
+        for giro in 0..5 {
+            let fatto = allinea(&mut telefono, "telefono", 3_000 + giro).expect("allineamento");
+            assert!(fatto.e_vuoto(), "{fatto:?}");
+        }
+        eprintln!(
+            "COSTO allinea su libreria ferma: {:?} a giro, righe scritte: {}",
+            t0.elapsed() / 5,
+            telefono.total_changes() - prima
+        );
+
+        let mio = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", contenuto, 4_000),
+            Documento::nuovo("telefono", mio.clone(), 4_000),
+        ]);
+        let t0 = Instant::now();
+        let esito = applica_se_ferma(&mut telefono, &mio, &fuso, 4_000).expect("applicazione");
+        eprintln!(
+            "COSTO applica_se_ferma (niente da cambiare): {:?}, applicata: {}",
+            t0.elapsed(),
+            esito.is_some()
+        );
+    }
+
+    // ── FSYNC2: il ritorno di una voce tolta altrove ──
+
+    /// Due dispositivi con `a`, `x`, `b` (`content_key` per il trigger della
+    /// 28) e «sera» già uguale su tutti e due. Il disco del telefono si stacca
+    /// e `x` sparisce; sul computer l'utente toglie `x` dalla playlist, e la
+    /// rimozione arriva al telefono. Restituisce (computer, telefono).
+    fn rimozione_vera_con_il_disco_staccato() -> (Connection, Connection) {
+        let mut computer = libreria_con(&[]);
+        let mut telefono = libreria_con(&[]);
+        for connection in [&computer, &telefono] {
+            for (id, chiave) in [(1, "a"), (2, "x"), (3, "b")] {
+                brano_di_prova(connection, id, chiave, Some(&format!("c-{chiave}")));
+            }
+        }
+        playlist_con(&computer, "sera", &[1, 2, 3]);
+        allinea(&mut computer, "computer", 1_000).expect("allineamento");
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), 2_000);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+
+        // Il disco del telefono si stacca: `x` parte (e il trigger ne ricorda il
+        // posto).
+        telefono
+            .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+            .expect("file sparito");
+
+        // Sul computer l'utente toglie `x` dalla playlist, per davvero.
+        computer
+            .execute(
+                "DELETE FROM playlist_tracks WHERE track_id = ?1",
+                [id_del_brano(&computer, "x")],
+            )
+            .expect("tolto");
+        allinea(&mut computer, "computer", 3_000).expect("allineamento");
+
+        // Una passata: la rimozione arriva al telefono.
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), 4_000);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+        (computer, telefono)
+    }
+
+    #[test]
+    fn una_rimozione_fatta_altrove_non_risorge_se_il_file_torna_dove_era_partito() {
+        let (mut computer, mut telefono) = rimozione_vera_con_il_disco_staccato();
+
+        // Il disco torna: la scansione reinserisce `x` e il trigger rimette il
+        // posto da `playlist_orfane`. La sequenza, di `x`, ha solo lapidi.
+        brano_di_prova(&telefono, 20, "x", Some("c-x"));
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+        allinea(&mut telefono, "telefono", 5_000).expect("allineamento");
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "b"],
+            "il ritorno di una voce tolta altrove non è un'aggiunta"
+        );
+        assert_eq!(
+            sequenza_di(&telefono, "sera").ordine(),
+            vec!["a", "b"],
+            "e non è diventato una voce nuova"
+        );
+
+        let del_telefono = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), 6_000),
+            Documento::nuovo("telefono", del_telefono, 6_000),
+        ]);
+        applica(&mut computer, &fuso, 6_000).expect("applicazione");
+        assert_eq!(
+            ordine(&computer, "sera"),
+            vec!["a", "b"],
+            "il brano che l'utente ha tolto sul computer non è risorto"
+        );
+    }
+
+    #[test]
+    fn dopo_il_ritorno_una_aggiunta_vera_del_brano_tolto_altrove_vale() {
+        // Il rischio inverso ha una finestra sola: la passata che vede tornare
+        // il file. Da quella dopo il brano non è più «tornato», e se l'utente lo
+        // rimette nella playlist è una voce nuova come qualunque altra.
+        let (_computer, mut telefono) = rimozione_vera_con_il_disco_staccato();
+        brano_di_prova(&telefono, 20, "x", Some("c-x"));
+        allinea(&mut telefono, "telefono", 5_000).expect("allineamento");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+        assert_eq!(
+            settings::read(&telefono, CHIAVE_BRANI_ASSENTI),
+            Ok(None),
+            "il brano non manca più, e la memoria lo sa"
+        );
+
+        // L'utente lo rimette in fondo.
+        telefono
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 SELECT id, 20, 2 FROM playlists WHERE playlist_key = 'sera'",
+                [],
+            )
+            .expect("aggiunta a mano");
+        allinea(&mut telefono, "telefono", 6_000).expect("allineamento");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b", "x"]);
+        assert_eq!(sequenza_di(&telefono, "sera").ordine(), vec!["a", "b", "x"]);
+    }
+
+    #[test]
+    fn l_aggiunta_di_un_brano_appena_arrivato_a_una_playlist_che_non_lo_ha_mai_avuto_non_si_perde()
+    {
+        // La memoria è dei brani che mancavano, per tutte le playlist: `x` è
+        // nella memoria perché «sera» lo nomina. L'utente lo mette anche in
+        // «corsa», che non ha mai avuto né una voce né una lapide per lui, un
+        // attimo dopo che il file è arrivato e prima della passata: è un gesto
+        // vero, e non è il ritorno di una voce tolta.
+        let (_computer, mut telefono) = computer_e_telefono();
+        playlist_con(&telefono, "corsa", &[1]);
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        brano_di_prova(&telefono, 9, "x", None);
+        telefono
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 SELECT id, 9, 1 FROM playlists WHERE playlist_key = 'corsa'",
+                [],
+            )
+            .expect("aggiunta a mano");
+
+        let fatto = allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert_eq!(ordine(&telefono, "corsa"), vec!["a", "x"], "{fatto:?}");
+        assert_eq!(sequenza_di(&telefono, "corsa").ordine(), vec!["a", "x"]);
+        // E in «sera», dove la voce c'era da prima, `x` rientra al suo posto.
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+    }
+
+    struct Sim {
+        nomi: [&'static str; 3],
+        db: Vec<Connection>,
+        pubblicato: Vec<Option<Contenuto>>,
+        prossimo_id: Vec<i64>,
+        adds: BTreeMap<(String, String), usize>,
+        adesso: i64,
+        log: Vec<String>,
+        con_trigger: bool,
+        seme: u64,
+    }
+
+    impl Sim {
+        fn r(&mut self, n: usize) -> usize {
+            self.seme ^= self.seme << 13;
+            self.seme ^= self.seme >> 7;
+            self.seme ^= self.seme << 17;
+            usize::try_from(self.seme % u64::try_from(n.max(1)).unwrap_or(1)).unwrap_or(0)
+        }
+
+        fn nuovo(seme: u64, con_trigger: bool) -> Self {
+            let chiavi: Vec<String> = (0..10).map(|i| format!("k{i}")).collect();
+            let mut sim = Self {
+                nomi: ["pc", "tel", "tab"],
+                db: Vec::new(),
+                pubblicato: vec![None, None, None],
+                prossimo_id: vec![100, 100, 100],
+                adds: BTreeMap::new(),
+                adesso: 10_000,
+                log: Vec::new(),
+                con_trigger,
+                seme: seme.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            };
+            for d in 0..3 {
+                let connection = db::open_in_memory()
+                    .expect("database in memoria")
+                    .connection;
+                let mut quali: Vec<usize> = (0..10).collect();
+                if d > 0 {
+                    // sottoinsieme casuale da 3 a 6 brani
+                    let quanti = 3 + sim.r(4);
+                    for i in (1..quali.len()).rev() {
+                        let j = sim.r(i + 1);
+                        quali.swap(i, j);
+                    }
+                    quali.truncate(quanti);
+                    quali.sort_unstable();
+                }
+                for i in quali {
+                    let id = sim.prossimo_id[d];
+                    sim.prossimo_id[d] += 1;
+                    let ck = format!("c-{}-{}", sim.nomi[d], chiavi[i]);
+                    // content_key uguale fra dispositivi per lo stesso brano: è del file
+                    let ck = if con_trigger {
+                        Some(format!("c-{}", chiavi[i]))
+                    } else {
+                        let _ = ck;
+                        None
+                    };
+                    brano_di_prova(&connection, id, &chiavi[i], ck.as_deref());
+                }
+                sim.db.push(connection);
+            }
+            sim
+        }
+
+        fn tick(&mut self) -> i64 {
+            self.adesso += 10;
+            self.adesso
+        }
+
+        fn presenti(&self, d: usize) -> Vec<String> {
+            let mut s = self.db[d]
+                .prepare("SELECT track_key FROM tracks ORDER BY id")
+                .expect("presenti");
+            s.query_map([], |r| r.get::<_, String>(0))
+                .expect("presenti")
+                .map(|r| r.expect("riga"))
+                .collect()
+        }
+
+        fn playlist_di(&self, d: usize) -> Vec<String> {
+            let mut s = self.db[d]
+                .prepare("SELECT playlist_key FROM playlists ORDER BY playlist_key")
+                .expect("playlist");
+            s.query_map([], |r| r.get::<_, String>(0))
+                .expect("playlist")
+                .map(|r| r.expect("riga"))
+                .collect()
+        }
+
+        fn pt(&self, d: usize, playlist: &str) -> Vec<(i64, String)> {
+            let mut s = self.db[d]
+                .prepare(
+                    "SELECT t.id, t.track_key FROM playlist_tracks pt
+                       JOIN playlists p ON p.id = pt.playlist_id
+                       JOIN tracks t ON t.id = pt.track_id
+                      WHERE p.playlist_key = ?1 ORDER BY pt.position",
+                )
+                .expect("pt");
+            s.query_map([playlist], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .expect("pt")
+            .map(|r| r.expect("riga"))
+            .collect()
+        }
+
+        fn scrivi_pt(&mut self, d: usize, playlist: &str, ids: &[i64]) {
+            let t = self.tick();
+            let pid = id_playlist(&self.db[d], playlist);
+            self.db[d]
+                .execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [pid])
+                .expect("svuota");
+            for (i, id) in ids.iter().enumerate() {
+                self.db[d]
+                    .execute(
+                        "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                         VALUES (?1, ?2, ?3)",
+                        rusqlite::params![pid, id, i64::try_from(i).expect("i")],
+                    )
+                    .expect("inserisce");
+            }
+            self.db[d]
+                .execute(
+                    "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+                    rusqlite::params![pid, t],
+                )
+                .expect("aggiorna");
+        }
+
+        fn sync(&mut self, d: usize) {
+            let t = self.tick();
+            let nome = self.nomi[d];
+            allinea(&mut self.db[d], nome, t).expect("allineamento");
+            let mio = documento_di(&self.db[d], nome);
+            self.pubblicato[d] = Some(mio.clone());
+            let documenti: Vec<Documento> = (0..3)
+                .filter_map(|i| {
+                    self.pubblicato[i]
+                        .clone()
+                        .map(|c| Documento::nuovo(self.nomi[i], c, t))
+                })
+                .collect();
+            let fuso = fondi(&documenti);
+            let esito = applica_se_ferma(&mut self.db[d], &mio, &fuso, t).expect("applicazione");
+            assert!(esito.is_some(), "la libreria era ferma");
+            self.log.push(format!("sync {nome}"));
+        }
+
+        fn istantanea(&self) -> Vec<String> {
+            let mut v = Vec::new();
+            for d in 0..3 {
+                for p in self.playlist_di(d) {
+                    let pt: Vec<String> = self.pt(d, &p).into_iter().map(|(_, k)| k).collect();
+                    v.push(format!("{} {} pt={}", self.nomi[d], p, pt.join(",")));
+                    let seq = sequenza_di(&self.db[d], &p);
+                    let el: Vec<String> = seq
+                        .elementi()
+                        .map(|(i, e)| {
+                            format!(
+                                "{}:{}>{}{}",
+                                i.testo(),
+                                e.brano,
+                                e.dopo.as_ref().map_or("-".to_owned(), Identita::testo),
+                                if e.tolto.is_some() { "†" } else { "" }
+                            )
+                        })
+                        .collect();
+                    v.push(format!("{} {} seq={}", self.nomi[d], p, el.join(" ")));
+                    v.push(format!("{} {} ordine={:?}", self.nomi[d], p, seq.ordine()));
+                }
+            }
+            v
+        }
+
+        fn dettaglio(&self) -> String {
+            if std::env::var("SIM_DETTAGLIO").is_ok() {
+                format!(
+                    "\nLOG {}\n{}",
+                    self.log.join(" | "),
+                    self.istantanea().join("\n")
+                )
+            } else {
+                String::new()
+            }
+        }
+
+        fn converge(&mut self) {
+            for _ in 0..4 {
+                for d in 0..3 {
+                    self.sync(d);
+                }
+            }
+            let prima = self.istantanea();
+            for d in 0..3 {
+                self.sync(d);
+            }
+            let dopo = self.istantanea();
+            assert_eq!(prima, dopo, "non converge{}", self.dettaglio());
+        }
+
+        /// Il documento fuso di tutti, dopo la convergenza.
+        fn fuso_finale(&mut self) -> Fuso {
+            let t = self.tick();
+            let mut docs = Vec::new();
+            for d in 0..3 {
+                docs.push(Documento::nuovo(
+                    self.nomi[d],
+                    documento_di(&self.db[d], self.nomi[d]),
+                    t,
+                ));
+            }
+            fondi(&docs)
+        }
+
+        fn op_aggiungi(&mut self, middle: bool) {
+            let d = self.r(3);
+            let playlists = self.playlist_di(d);
+            if playlists.is_empty() {
+                return;
+            }
+            let p = playlists[self.r(playlists.len())].clone();
+            let presenti = self.presenti(d);
+            if presenti.is_empty() {
+                return;
+            }
+            let k = presenti[self.r(presenti.len())].clone();
+            let id = id_del_brano(&self.db[d], &k);
+            let mut ids: Vec<i64> = self.pt(d, &p).into_iter().map(|(i, _)| i).collect();
+            let pos = if middle {
+                self.r(ids.len() + 1)
+            } else {
+                ids.len()
+            };
+            ids.insert(pos, id);
+            self.scrivi_pt(d, &p, &ids);
+            *self.adds.entry((p.clone(), k.clone())).or_insert(0) += 1;
+            self.log
+                .push(format!("aggiungi {} {p} {k} @{pos}", self.nomi[d]));
+        }
+
+        fn op_sposta(&mut self) {
+            let d = self.r(3);
+            let playlists = self.playlist_di(d);
+            if playlists.is_empty() {
+                return;
+            }
+            let p = playlists[self.r(playlists.len())].clone();
+            let mut ids: Vec<i64> = self.pt(d, &p).into_iter().map(|(i, _)| i).collect();
+            if ids.len() < 2 {
+                return;
+            }
+            let da = self.r(ids.len());
+            let x = ids.remove(da);
+            let a = self.r(ids.len() + 1);
+            ids.insert(a, x);
+            self.scrivi_pt(d, &p, &ids);
+            self.log
+                .push(format!("sposta {} {p} {da}->{a}", self.nomi[d]));
+        }
+
+        fn op_sparisce(&mut self) {
+            let d = self.r(3);
+            let presenti = self.presenti(d);
+            if presenti.len() <= 2 {
+                return;
+            }
+            let k = presenti[self.r(presenti.len())].clone();
+            // Una passata ha visto quel che c'era prima che il file sparisse.
+            let t0 = self.tick();
+            let nome0 = self.nomi[d];
+            allinea(&mut self.db[d], nome0, t0).expect("allineamento");
+            self.db[d]
+                .execute("DELETE FROM tracks WHERE track_key = ?1", [&k])
+                .expect("sparisce");
+            self.log.push(format!("sparisce {} {k}", self.nomi[d]));
+            if !self.con_trigger {
+                // Una passata che se ne accorge.
+                let t = self.tick();
+                let nome = self.nomi[d];
+                allinea(&mut self.db[d], nome, t).expect("allineamento");
+                self.log.push(format!("allinea-dopo-sparisce {nome}"));
+            }
+        }
+
+        fn op_arriva(&mut self) {
+            let d = self.r(3);
+            let presenti = self.presenti(d);
+            let mancanti: Vec<usize> = (0..10)
+                .filter(|i| !presenti.contains(&format!("k{i}")))
+                .collect();
+            if mancanti.is_empty() {
+                return;
+            }
+            let i = mancanti[self.r(mancanti.len())];
+            let id = self.prossimo_id[d];
+            self.prossimo_id[d] += 1;
+            let ck = self.con_trigger.then(|| format!("c-k{i}"));
+            brano_di_prova(&self.db[d], id, &format!("k{i}"), ck.as_deref());
+            self.log.push(format!("arriva {} k{i}", self.nomi[d]));
+        }
+
+        fn controlla(&mut self, dopo_rimozioni: bool) {
+            let fuso = self.fuso_finale();
+            let adds = self.adds.clone();
+            for (chiave_pl, pl) in &fuso.playlist {
+                let mut vivi: BTreeMap<&str, usize> = BTreeMap::new();
+                for brano in pl.sequenza.ordine() {
+                    *vivi.entry(brano).or_insert(0) += 1;
+                }
+                for ((p, k), quante) in &adds {
+                    if p != chiave_pl {
+                        continue;
+                    }
+                    let v = vivi.get(k.as_str()).copied().unwrap_or(0);
+                    if !dopo_rimozioni {
+                        assert!(
+                            v >= 1,
+                            "PERDITA: {p}/{k} aggiunto {quante} volte, vivo {v}{}",
+                            self.dettaglio()
+                        );
+                        assert!(
+                            v <= *quante,
+                            "DOPPIONE: {p}/{k} aggiunto {quante} volte, vivo {v}{}",
+                            self.dettaglio()
+                        );
+                    }
+                }
+                // Coerenza dispositivo per dispositivo.
+                for d in 0..3 {
+                    let presenti = self.presenti(d);
+                    let mut attesi: BTreeMap<String, usize> = BTreeMap::new();
+                    for (k, n) in &vivi {
+                        if presenti.iter().any(|p| p == k) {
+                            attesi.insert((*k).to_owned(), *n);
+                        }
+                    }
+                    let mut visti: BTreeMap<String, usize> = BTreeMap::new();
+                    for (_, k) in self.pt(d, chiave_pl) {
+                        *visti.entry(k).or_insert(0) += 1;
+                    }
+                    assert_eq!(
+                        visti,
+                        attesi,
+                        "INCOERENTE su {} per {chiave_pl}{}",
+                        self.nomi[d],
+                        self.dettaglio()
+                    );
+                    // E anche l'ordine: quello della sequenza, tolti i brani che qui non ci sono.
+                    let in_ordine_atteso: Vec<String> = pl
+                        .sequenza
+                        .ordine()
+                        .into_iter()
+                        .filter(|b| presenti.iter().any(|p| p == b))
+                        .map(str::to_owned)
+                        .collect();
+                    let in_ordine_visto: Vec<String> =
+                        self.pt(d, chiave_pl).into_iter().map(|(_, k)| k).collect();
+                    assert_eq!(
+                        in_ordine_visto,
+                        in_ordine_atteso,
+                        "ORDINE su {} per {chiave_pl}{}",
+                        self.nomi[d],
+                        self.dettaglio()
+                    );
+                }
+            }
+        }
+    }
+
+    fn una_simulazione(seme: u64, con_trigger: bool, con_arrivi_e_partenze: bool) {
+        let mut sim = Sim::nuovo(seme, con_trigger);
+        // Il computer crea due playlist.
+        for p in ["P", "Q"] {
+            let presenti = sim.presenti(0);
+            let quanti = 3 + sim.r(4);
+            let mut ids = Vec::new();
+            let mut chiavi = Vec::new();
+            for _ in 0..quanti {
+                let k = presenti[sim.r(presenti.len())].clone();
+                ids.push(id_del_brano(&sim.db[0], &k));
+                chiavi.push(k);
+            }
+            sim.db[0]
+                .execute(
+                    "INSERT INTO playlists (playlist_key, name, created_at, updated_at)
+                     VALUES (?1, ?1, 100, 100)",
+                    [p],
+                )
+                .expect("playlist");
+            sim.scrivi_pt(0, p, &ids);
+            for k in chiavi {
+                *sim.adds.entry((p.to_owned(), k)).or_insert(0) += 1;
+            }
+        }
+        sim.converge();
+        let passi = 20 + sim.r(25);
+        for _ in 0..passi {
+            match sim.r(10) {
+                0 | 1 => sim.op_aggiungi(false),
+                2 => {
+                    // un riordino per volta, a libreria ferma
+                    sim.converge();
+                    sim.op_sposta();
+                    sim.converge();
+                }
+                9 => {
+                    // un inserimento a metà, a libreria ferma
+                    sim.converge();
+                    sim.op_aggiungi(true);
+                    sim.converge();
+                }
+                3 if con_arrivi_e_partenze => sim.op_sparisce(),
+                4 | 5 if con_arrivi_e_partenze => sim.op_arriva(),
+                _ => {
+                    let d = sim.r(3);
+                    sim.sync(d);
+                }
+            }
+        }
+        sim.converge();
+        sim.controlla(false);
+    }
+
+    /// Quanti semi provare: pochi nella suite di tutti i giorni, tanti con
+    /// `SIM_SEMI=150 cargo test -p rymembra-app --lib -- sincronia::prove::simulazione`
+    /// (il ciclo completo, quello della revisione, dura qualche minuto in debug).
+    fn quanti_semi(di_serie: u64) -> u64 {
+        std::env::var("SIM_SEMI")
+            .ok()
+            .and_then(|valore| valore.parse().ok())
+            .unwrap_or(di_serie)
+    }
+
+    fn tutti(con_trigger: bool, arrivi: bool, di_serie: u64) {
+        for seme in 0..quanti_semi(di_serie) {
+            let esito = std::panic::catch_unwind(|| una_simulazione(seme, con_trigger, arrivi));
+            if let Err(e) = esito {
+                eprintln!("SEME {seme} (trigger {con_trigger}, arrivi {arrivi})");
+                std::panic::resume_unwind(e);
+            }
+        }
+    }
+
+    #[test]
+    fn simulazione_senza_arrivi_ne_partenze() {
+        tutti(false, false, 10);
+    }
+
+    #[test]
+    fn simulazione_con_arrivi_e_partenze_senza_trigger() {
+        tutti(false, true, 15);
+    }
+
+    #[test]
+    fn simulazione_con_arrivi_e_partenze_con_trigger() {
+        tutti(true, true, 15);
+    }
+
+    #[test]
+    fn un_seme_della_simulazione() {
+        let Ok(seme) = std::env::var("SIM_SEME") else {
+            return;
+        };
+        let seme: u64 = seme.parse().expect("seme");
+        let trigger = std::env::var("SIM_TRIGGER").is_ok_and(|v| v == "1");
+        let arrivi = std::env::var("SIM_ARRIVI").is_ok_and(|v| v == "1");
+        una_simulazione(seme, trigger, arrivi);
+    }
+
+    /// Dopo la convergenza: toglie una riga da una playlist su un dispositivo, converge, poi fa
+    /// arrivare il brano dove manca: la rimozione deve restare.
+    fn rimozione_e_arrivi_tardivi(seme: u64, con_trigger: bool) {
+        let mut sim = Sim::nuovo(seme, con_trigger);
+        for p in ["P", "Q"] {
+            let presenti = sim.presenti(0);
+            let quanti = 3 + sim.r(4);
+            let mut ids = Vec::new();
+            let mut chiavi = Vec::new();
+            for _ in 0..quanti {
+                let k = presenti[sim.r(presenti.len())].clone();
+                if chiavi.contains(&k) {
+                    continue;
+                }
+                ids.push(id_del_brano(&sim.db[0], &k));
+                chiavi.push(k);
+            }
+            sim.db[0]
+                .execute(
+                    "INSERT INTO playlists (playlist_key, name, created_at, updated_at)
+                     VALUES (?1, ?1, 100, 100)",
+                    [p],
+                )
+                .expect("playlist");
+            sim.scrivi_pt(0, p, &ids);
+        }
+        sim.converge();
+        // Qualche partenza e arrivo prima, per avere memoria e orfani in giro.
+        for _ in 0..(2 + sim.r(6)) {
+            match sim.r(4) {
+                0 => sim.op_sparisce(),
+                1 => sim.op_arriva(),
+                _ => {
+                    let d = sim.r(3);
+                    sim.sync(d);
+                }
+            }
+        }
+        sim.converge();
+        // Un gesto di rimozione su un dispositivo, di una riga che c'è.
+        let mut fatto = None;
+        for _ in 0..20 {
+            let d = sim.r(3);
+            let playlists = sim.playlist_di(d);
+            let p = playlists[sim.r(playlists.len())].clone();
+            let righe = sim.pt(d, &p);
+            if righe.is_empty() {
+                continue;
+            }
+            let i = sim.r(righe.len());
+            let k = righe[i].1.clone();
+            let mut ids: Vec<i64> = righe.iter().map(|(id, _)| *id).collect();
+            ids.remove(i);
+            sim.scrivi_pt(d, &p, &ids);
+            sim.log.push(format!("RIMUOVE {} {p} {k}", sim.nomi[d]));
+            fatto = Some((p, k));
+            break;
+        }
+        let Some((p, k)) = fatto else {
+            return;
+        };
+        sim.converge();
+        // Dove il brano manca, arriva adesso.
+        for d in 0..3 {
+            if !sim.presenti(d).contains(&k) {
+                let id = sim.prossimo_id[d];
+                sim.prossimo_id[d] += 1;
+                let ck = sim.con_trigger.then(|| format!("c-{k}"));
+                brano_di_prova(&sim.db[d], id, &k, ck.as_deref());
+                sim.log.push(format!("arriva-dopo {} {k}", sim.nomi[d]));
+            }
+        }
+        sim.converge();
+        // Il brano non deve essere tornato in `p` in più di quanti ne restavano.
+        let fuso = sim.fuso_finale();
+        let vivi = fuso.playlist[&p]
+            .sequenza
+            .ordine()
+            .into_iter()
+            .filter(|b| *b == k)
+            .count();
+        for d in 0..3 {
+            let qui = sim.pt(d, &p).into_iter().filter(|(_, b)| *b == k).count();
+            assert_eq!(
+                qui,
+                vivi,
+                "INCOERENTE dopo la rimozione su {} per {p}/{k}{}",
+                sim.nomi[d],
+                sim.dettaglio()
+            );
+        }
+        // Prima della rimozione `k` stava in `p` una volta sola (le playlist
+        // iniziali non hanno doppioni e non si aggiungono brani): ora zero.
+        assert_eq!(
+            vivi,
+            0,
+            "RISORTO: {p}/{k} è tornato dopo una rimozione{}",
+            sim.dettaglio()
+        );
+    }
+
+    fn tutti_rimozione(con_trigger: bool, di_serie: u64) {
+        for seme in 0..quanti_semi(di_serie) {
+            let esito = std::panic::catch_unwind(|| rimozione_e_arrivi_tardivi(seme, con_trigger));
+            if let Err(e) = esito {
+                eprintln!("SEME {seme} (rimozione, trigger {con_trigger})");
+                std::panic::resume_unwind(e);
+            }
+        }
+    }
+
+    #[test]
+    fn simulazione_di_rimozione_senza_trigger() {
+        tutti_rimozione(false, 15);
+    }
+
+    /// Il seme 8 era quello rosso: una rimozione vera risorgeva quando il file
+    /// tornava e il trigger rimetteva il posto.
+    #[test]
+    fn simulazione_di_rimozione_con_trigger() {
+        tutti_rimozione(true, 15);
+    }
+
+    #[test]
+    fn un_seme_della_simulazione_di_rimozione() {
+        let Ok(seme) = std::env::var("SIM_SEME_RIMOZIONE") else {
+            return;
+        };
+        let seme: u64 = seme.parse().expect("seme");
+        let trigger = std::env::var("SIM_TRIGGER").is_ok_and(|v| v == "1");
+        rimozione_e_arrivi_tardivi(seme, trigger);
     }
 }

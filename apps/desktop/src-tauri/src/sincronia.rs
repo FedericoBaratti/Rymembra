@@ -717,8 +717,8 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
         ))
     })?;
 
-    let (mio, fidati) = con_libreria(&stato, |libreria| {
-        sincronia::allinea(&mut libreria.connection, &io, adesso)?;
+    let (mio, fidati, allineato) = con_libreria(&stato, |libreria| {
+        let allineato = sincronia::allinea(&mut libreria.connection, &io, adesso)?;
         let skin = pacchetti::elenca_skin(&libreria.data_dir);
         let bozze = pacchetti::elenca_bozze(&libreria.data_dir);
         let fidati: Vec<String> = sincronia::dispositivi(&libreria.connection)?
@@ -729,6 +729,7 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
         Ok((
             sincronia::contenuto(&libreria.connection, &io, skin, bozze)?,
             fidati,
+            allineato,
         ))
     })?;
 
@@ -811,6 +812,9 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
         sporca(app);
         sincronia::Cambiamenti::default()
     });
+    // I brani rientrati in playlist dall'`allinea` di apertura sono già nella
+    // libreria, e vanno detti anche se l'applicazione qui sopra non è andata.
+    let cambiamenti = con_gli_agganci(cambiamenti, allineato);
     if cambiamenti.cartelle_di_rete > 0 {
         // Dette e non taciute: chi si chiede perché una cartella accesa
         // sull'altro computer qui non c'è trova il perché nel diario.
@@ -829,6 +833,25 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
         guasti: esito.passata.guasti.len(),
         cambiamenti,
     })
+}
+
+/// Aggiunge al resoconto le playlist in cui l'`allinea` di apertura ha
+/// riagganciato dei brani arrivati dopo la loro voce.
+///
+/// Quell'aggancio scrive `playlist_tracks` — e non `playlists.updated_at`, che
+/// una data rinfrescata farebbe vincere su un rinomino fatto altrove — quindi
+/// non passa dalla fusione né dall'applicazione, e senza questa somma la
+/// finestra non saprebbe che una playlist è cambiata: «N playlist» del
+/// resoconto è il segnale che ha per le altre modifiche della sincronia.
+///
+/// L'aggancio dentro `applica_se_ferma` (un brano arrivato mentre la passata
+/// era in rete) non è contato qui: quella funzione restituisce solo i
+/// [`Cambiamenti`], e la passata dopo lo trova già a posto.
+const fn con_gli_agganci(cambiamenti: Cambiamenti, allineato: sincronia::Allineato) -> Cambiamenti {
+    Cambiamenti {
+        playlist: cambiamenti.playlist + allineato.agganciate,
+        ..cambiamenti
+    }
 }
 
 /// Il deposito scelto, pronto all'uso.
@@ -1034,6 +1057,50 @@ mod prove {
                 "{firma}: la passata non butta il token rifiutato"
             );
         }
+    }
+
+    #[test]
+    fn i_brani_agganciati_dall_allinea_si_contano_fra_le_playlist_cambiate() {
+        // FSYNC2: `allinea` rimette in `playlist_tracks` i brani arrivati dopo
+        // la loro voce senza ridatare la playlist, e il suo risultato era
+        // scartato: la finestra non lo sapeva.
+        let allineato = sincronia::Allineato {
+            agganciate: 2,
+            ..sincronia::Allineato::default()
+        };
+        let resoconto = Cambiamenti {
+            playlist: 1,
+            voti: 4,
+            ..Cambiamenti::default()
+        };
+        let somma = con_gli_agganci(resoconto, allineato);
+        assert_eq!((somma.playlist, somma.voti), (3, 4));
+        assert!(!con_gli_agganci(Cambiamenti::default(), allineato).e_vuoto());
+        assert!(
+            con_gli_agganci(Cambiamenti::default(), sincronia::Allineato::default()).e_vuoto(),
+            "senza agganci il resoconto non cambia"
+        );
+
+        // E la passata lo usa su ogni strada, anche quando non si applica.
+        let sorgente = include_str!("sincronia.rs");
+        let passata = sorgente
+            .split("fn passata_vera(")
+            .nth(1)
+            .and_then(|resto| {
+                resto
+                    .split(
+                        "
+}
+",
+                    )
+                    .next()
+            })
+            .unwrap_or_default();
+        assert!(
+            passata.contains("let allineato = sincronia::allinea(")
+                && passata.contains("con_gli_agganci(cambiamenti, allineato)"),
+            "la passata scarta il risultato dell'allineamento"
+        );
     }
 
     #[test]
