@@ -1383,7 +1383,9 @@ The rest of what the two reviews fixed, by area.
   query, instead of reading and skipping them batch by batch under the library
   lock.
 - Only the interface language in use is loaded at start, and the other one
-  when you pick it: the main script goes from 1.46 MB to 0.90 MB. The window
+  when you pick it: the main script goes from 1.46 MB to 0.90 MB. On the
+  phone, the first frame is in the language you chose, not for a moment in
+  the phone’s. The window
   no longer redraws on every state of a linked device, and the rows of Browse
   are not redrawn on every new page.
 

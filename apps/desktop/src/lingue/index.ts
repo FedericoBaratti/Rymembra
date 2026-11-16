@@ -256,6 +256,7 @@ export function applicaLingua(codice: string): void {
     return;
   }
   document.documentElement.lang = codice;
+  ricordaLaLingua(codice);
   if (codice === attiva) return;
   attiva = codice;
   avvisa();
@@ -274,12 +275,48 @@ export const impostaLingua: (codice: string) => Promise<void> = creaCambioLingua
 );
 
 /**
- * La lingua del sistema, o l'inglese: la prima che si carica, prima del primo
- * disegno. Se nemmeno quella si legge, l'interfaccia mostra le chiavi — e il
- * guasto arriva a chi ha chiesto.
+ * Dove si ricorda l'ultima lingua applicata, per il primo disegno dell'avvio
+ * dopo (L2-1, collaudo sugli emulatori).
+ *
+ * La lingua scelta sta nel database e arriva con `avvio()`, che è una chiamata:
+ * prima, la finestra può disegnare soltanto con quel che il browser sa già. Sul
+ * computer non si vede, perché la finestra resta nascosta finché la lingua non è
+ * pronta (`pronto` in `aspettoFinestra.ts`); sul telefono la WebView si vede da
+ * subito, e un telefono in inglese con Rymembra in italiano mostrava per tre o
+ * quattro decimi di secondo la Home in inglese. Il ricordo è solo un indizio per
+ * quel primo disegno: la lingua vera resta quella del database, che `avvio()`
+ * applica subito dopo come prima. Non è un dato personale, e non viaggia né nel
+ * backup né nel profilo (la scelta li ha già, in `settings`).
  */
-export async function impostaLinguaIniziale(sistema: string): Promise<void> {
-  const scelta = scegli(null, sistema);
+const CHIAVE_RICORDATA = "rymembra.linguaRicordata";
+
+function ricordaLaLingua(codice: string): void {
+  try {
+    globalThis.localStorage?.setItem(CHIAVE_RICORDATA, codice);
+  } catch {
+    // Un archivio pieno o spento: al prossimo avvio si parte dal sistema.
+  }
+}
+
+/** L'ultima lingua applicata, se c'è: vedi `CHIAVE_RICORDATA`. */
+export function linguaRicordata(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(CHIAVE_RICORDATA) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * La lingua del primo disegno: l'ultima applicata (`ricordata`), se il suo file
+ * c'è; altrimenti quella del sistema, o l'inglese. Se nemmeno quella si legge,
+ * l'interfaccia mostra le chiavi — e il guasto arriva a chi ha chiesto.
+ */
+export async function impostaLinguaIniziale(
+  sistema: string,
+  ricordata: string | null = null,
+): Promise<void> {
+  const scelta = scegli(ricordata, sistema);
   try {
     await impostaLingua(scelta);
   } catch (errore) {

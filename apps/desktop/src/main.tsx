@@ -7,7 +7,7 @@ import { spegniIlBrowser } from "./browserSpento";
 import { conDove, rigaDelRifiuto } from "./diarioDellaFinestra";
 import { ipc } from "./ipc";
 import { leggiLaMemoriaCome } from "./cartelleNuvola";
-import { impostaLinguaIniziale, t } from "./lingue";
+import { impostaLinguaIniziale, linguaRicordata, t } from "./lingue";
 import { RecintoErrori } from "./Recinto";
 import { BarraTitolo } from "./parti/BarraTitolo";
 import { ANDROID, MOBILE } from "./piattaforma";
@@ -120,7 +120,11 @@ if (ANDROID) {
  * prima che ci sia un'attesa — un errore nel varco fra il primo `import` e il
  * primo disegno non troverebbe nessuno ad ascoltarlo.
  */
-await impostaLinguaIniziale(navigator.language).catch((errore: unknown) => {
+// L'ultima lingua applicata, ricordata dalla WebView, prima di quella del
+// sistema: sul telefono la finestra si vede da subito, e una lingua scelta
+// diversa da quella del telefono non deve comparire dopo un istante dell'altra
+// (L2-1). Vedi `linguaRicordata` in `lingue/index.ts`.
+await impostaLinguaIniziale(navigator.language, linguaRicordata()).catch((errore: unknown) => {
   ipc.diarioAnnota("finestra", `lingua: ${errore instanceof Error ? errore.message : String(errore)}`);
 });
 

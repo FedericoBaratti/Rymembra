@@ -151,3 +151,19 @@ test("la lingua si carica prima del primo disegno, e la finestra non si mostra p
   assert.match(gate, /linguaPronta/, "la finestra aspetta anche la lingua salvata: niente fotogramma nella lingua sbagliata");
   assert.doesNotMatch(aspetto, /\bapplicaLingua\(/, "il cambio a caldo carica e poi applica: non si applica un dizionario che non c'è");
 });
+
+test("il primo disegno parte dall'ultima lingua applicata, non solo da quella del sistema (cablaggio, L2-1)", () => {
+  // Sul telefono la WebView si vede da subito: un telefono in inglese con
+  // Rymembra in italiano mostrava qualche decimo di secondo d'inglese prima che
+  // `avvio()` portasse la lingua salvata (collaudo sugli emulatori, 16/11/2026).
+  const principale = sorgente("main.tsx");
+  assert.match(principale, /await impostaLinguaIniziale\(navigator\.language, linguaRicordata\(\)\)/);
+  const indice = sorgente("lingue/index.ts");
+  assert.match(indice, /export async function impostaLinguaIniziale\(\s*sistema: string,\s*ricordata: string \| null = null,?\s*\)/);
+  assert.match(indice, /const scelta = scegli\(ricordata, sistema\);/, "una lingua ricordata senza file ricade sul sistema");
+  // Si ricorda a ogni lingua applicata: quella del database, che `avvio()`
+  // applica subito dopo, resta la vera.
+  const applica = indice.slice(indice.indexOf("export function applicaLingua("), indice.indexOf("export const impostaLingua"));
+  assert.match(applica, /ricordaLaLingua\(codice\);/);
+  assert.match(indice, /globalThis\.localStorage\?\.setItem\(CHIAVE_RICORDATA, codice\)/);
+});
