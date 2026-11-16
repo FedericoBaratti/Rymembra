@@ -914,6 +914,7 @@
   "primo.pronto.annuncio": "I primi brani sono pronti: puoi già ascoltare.",
   "primo.vuota.title": "Rymembra non ha trovato brani",
   "primo.vuota.body": "Rymembra ha letto le cartelle spuntate e non c'era niente da ascoltare. Controlla di aver scelto quelle giuste, o indicane un'altra.",
+  "primo.nuvola": "Rymembra sta ancora leggendo {servizio}: i brani compaiono mentre arrivano.",
   "primo.saltate": "Queste cartelle non hanno risposto, e Rymembra non ha potuto leggerle:",
   "tour.progress": "{n} di {totale}",
   "tour.back": "Indietro",

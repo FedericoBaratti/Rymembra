@@ -58,7 +58,8 @@ import { Annuncio } from "./parti/Annuncio";
 import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
 import { useDati } from "./dati";
-import { tastoDelPrimo } from "./tastoPrimo";
+import { lettaVuota, servizioInArrivo, tastoDelPrimo } from "./tastoPrimo";
+import { useContiNuvolaDellaFinestra } from "./contiNuvola";
 import { AccessoTelefono, useAccessoTelefono } from "./parti/AccessoTelefono";
 
 /**
@@ -269,7 +270,19 @@ export function Primo({
     tastoDelPrimo({ brani, spuntate: [...scelte], scritte, confermato }) === "ascolta";
   // Letto tutto, e non c'era niente. Si dice, e si dice perché se lo si sa: le
   // cartelle che non hanno risposto sono il caso del NAS spento.
-  const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
+  // Una cartella del cloud che sta ancora arrivando non è una lettura vuota: la
+  // camminata sullo specchio non ancora pieno torna con zero brani (R12-9).
+  const { conti } = useContiNuvolaDellaFinestra();
+  const nuvolaInArrivo = servizioInArrivo(scritte, conti);
+  const vuota = lettaVuota({
+    scansionando,
+    inCorso,
+    haEsito: esito !== null,
+    brani,
+    nuvolaInArrivo,
+  });
+  const staArrivando =
+    !scansionando && !inCorso && esito !== null && brani === 0 && nuvolaInArrivo !== null;
   /*
    * Quel che si dice a chi ascolta lo schermo: i due passaggi che contano, e
    * non lo stato. Una regione sola, montata con la schermata (`Annuncio`), e
@@ -279,7 +292,7 @@ export function Primo({
    * della lettura lo dice già `AnnuncioScansione`, che resta viva anche sotto
    * questa schermata.
    */
-  const daDire = lettaVuota
+  const daDire = vuota
     ? t("primo.vuota.title")
     : brani > 0
       ? t("primo.pronto.annuncio")
@@ -377,7 +390,11 @@ export function Primo({
 
           {brani > 0 && <p className="primo-pronto">{t("primo.pronto", { n: brani })}</p>}
 
-          {lettaVuota && (
+          {staArrivando && (
+            <p className="primo-attesa">{t("primo.nuvola", { servizio: nuvolaInArrivo })}</p>
+          )}
+
+          {vuota && esito !== null && (
             <div>
               <h2 className="primo-sotto">{t("primo.vuota.title")}</h2>
               <p>{t("primo.vuota.body")}</p>

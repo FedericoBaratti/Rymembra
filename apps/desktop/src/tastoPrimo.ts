@@ -17,6 +17,8 @@
  * andato a buon fine, o ogni cartella spuntata sta già fra le sorvegliate.
  */
 
+import { contoDi, NOMI_SERVIZI, servizioDelConto } from "./cartelleNuvola";
+
 export type TastoPrimo = "continua" | "ascolta";
 
 export interface StatoPrimo {
@@ -35,4 +37,54 @@ export function tastoDelPrimo({ brani, spuntate, scritte, confermato }: StatoPri
   if (confermato) return "ascolta";
   const daScrivere = spuntate.some((p) => !scritte.includes(p));
   return daScrivere ? "continua" : "ascolta";
+}
+
+/**
+ * Il servizio del cloud che sta ancora elencando una delle cartelle scritte, o
+ * `null`: il suo nome («OneDrive»), per dire «sta ancora leggendo».
+ *
+ * Una cartella del cloud si legge dallo specchio dei file del servizio, e la
+ * prima lettura di un drive grande dura un minuto: finché il conto è in
+ * `"elenco"` i brani stanno arrivando, e una scansione finita a zero non
+ * dice «vuota». Contano i conti delle cartelle **scritte**: un altro conto che
+ * elenca non riguarda questa libreria.
+ */
+export function servizioInArrivo(
+  scritte: readonly string[],
+  conti: readonly { conto: string; stato: string }[] | null,
+): string | null {
+  if (conti === null) return null;
+  for (const percorso of scritte) {
+    const delConto = contoDi(percorso);
+    if (delConto === null) continue;
+    if (!conti.some((c) => c.conto === delConto && c.stato === "elenco")) continue;
+    const servizio = servizioDelConto(delConto);
+    return servizio === null ? null : NOMI_SERVIZI[servizio];
+  }
+  return null;
+}
+
+/**
+ * La lettura è finita senza brani: «Rymembra non ha trovato brani».
+ *
+ * Non vale mentre un servizio del cloud sta ancora arrivando (`nuvolaInArrivo`,
+ * da [`servizioInArrivo`]): la camminata sullo specchio ancora vuoto torna con
+ * zero brani, e dirlo vuoto, con «controlla di aver scelto le cartelle giuste»,
+ * sarebbe falso (R12-9).
+ */
+export function lettaVuota(stato: {
+  scansionando: boolean;
+  inCorso: boolean;
+  /** Una lettura è finita, e ha un esito. */
+  haEsito: boolean;
+  brani: number;
+  nuvolaInArrivo: string | null;
+}): boolean {
+  return (
+    !stato.scansionando &&
+    !stato.inCorso &&
+    stato.haEsito &&
+    stato.brani === 0 &&
+    stato.nuvolaInArrivo === null
+  );
 }
