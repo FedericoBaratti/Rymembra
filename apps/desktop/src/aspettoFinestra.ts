@@ -37,7 +37,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applicaAccento, applicaMovimento, type MovimentoUtente } from "./aspetto";
 import { ipc, type Avvio, type Skin } from "./ipc";
 import { MOBILE } from "./piattaforma";
-import { applicaLingua, scegli, t, useLingua } from "./lingue";
+import { impostaLingua, scegli, t, useLingua } from "./lingue";
 import type { ArchivioLettore } from "./riproduzione";
 import { leggiAssociazioni, scriviAssociazioni, type Associazioni } from "./tastiera";
 import {
@@ -162,6 +162,13 @@ export function useAspetto({
   const lingua = useLingua();
   /** La lingua è già stata decisa in questa sessione. Come il tema. */
   const linguaDecisa = useRef(false);
+  /**
+   * La lingua salvata è caricata e applicata (o non si è potuta caricare): la
+   * finestra può mostrarsi. I dizionari si caricano a richiesta (R21-4), e
+   * mostrare la finestra prima vorrebbe dire far leggere a chi ha scelto
+   * un'altra lingua un fotogramma in quella del sistema.
+   */
+  const [linguaPronta, setLinguaPronta] = useState(false);
   /**
    * Le scorciatoie in uso.
    *
@@ -360,8 +367,13 @@ export function useAspetto({
   useEffect(() => {
     if (avvio === null || linguaDecisa.current) return;
     linguaDecisa.current = true;
-    applicaLingua(scegli(avvio.lingua, navigator.language));
-  }, [avvio]);
+    // Si carica e poi si applica: se è quella del sistema, già in mano, è un
+    // istante. Un guasto si dice, e la finestra si mostra lo stesso, nella
+    // lingua che c'è: una finestra che non si apre sarebbe peggio.
+    impostaLingua(scegli(avvio.lingua, navigator.language))
+      .catch(segnalaErrore)
+      .finally(() => setLinguaPronta(true));
+  }, [avvio, segnalaErrore]);
 
   /**
    * Le voci del menù dell'icona nell'area di notifica.
@@ -405,7 +417,10 @@ export function useAspetto({
    */
   const cambiaLingua = useCallback(
     (scelta: string) => {
-      applicaLingua(scelta);
+      // Prima si carica, poi si applica: il dizionario è un pezzo a parte, e
+      // applicarlo prima di averlo lascerebbe a schermo le chiavi. Vince l'ultima
+      // scelta, e un guasto del caricamento non cambia la lingua.
+      impostaLingua(scelta).catch(segnalaErrore);
       ipc.impostaLingua(scelta).catch(segnalaErrore);
     },
     [segnalaErrore],
@@ -555,7 +570,8 @@ export function useAspetto({
       mostrata.current ||
       skinAttiva === null ||
       avvio === null ||
-      zoom === null
+      zoom === null ||
+      !linguaPronta
     )
       return;
     mostrata.current = true;
@@ -564,7 +580,7 @@ export function useAspetto({
         ipc.pronto().catch(segnalaErrore);
       }),
     );
-  }, [skinAttiva, avvio, zoom, segnalaErrore]);
+  }, [skinAttiva, avvio, zoom, linguaPronta, segnalaErrore]);
 
   /*
    * Un profilo è appena stato applicato. `temaDeciso` torna falso apposta — è

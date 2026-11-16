@@ -181,7 +181,7 @@ import { Primo } from "./Primo";
 import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
 import { fasciaDaRitirare, quandoRispondonoLeRadici } from "./radiciVive";
 import { RecintoErrori } from "./Recinto";
-import { indietro } from "./indietro";
+import { indietro, indietroSulComputer } from "./indietro";
 import { Regole } from "./Regole";
 import { useRicerca } from "./ricerca";
 import { Ripristino } from "./Ripristino";
@@ -2611,6 +2611,10 @@ export function App() {
           ultimaRicerca.current = "";
           return true;
         }
+        // I livelli di «Sfoglia» (il disco, l'artista, la ricerca) si chiudono
+        // con Escape come l'album in libreria. Sul telefono li chiude Indietro,
+        // che li trova da sé nella pila prima di arrivare qui (R13-5).
+        if (!MOBILE && indietroSulComputer()) return true;
         // Sul telefono un disco o un artista aperto da un risultato stanno
         // sopra la ricerca, e chiudendoli si torna ai risultati, come si
         // risale una pila: `vaiAlDisco` ha svuotato il campo per mostrarli, e

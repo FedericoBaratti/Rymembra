@@ -10,19 +10,24 @@
  * un album, terza colonna, schermo intero — perché `Copertina` emette `foto`
  * accanto alla classe del posto in cui sta.
  *
- * Entrano in dissolvenza. Con `loading="lazy"` una griglia le riceve **mentre**
- * si scorre, e quaranta comparse istantanee di file diversi sono uno
- * sfarfallio; con una dissolvenza da `--dur-2` diventano un arrivo. Chi ha già
- * l'immagine in cache non vede niente di tutto questo: `load` scatta prima del
- * primo disegno, quindi l'attributo c'è già e la regola di partenza non si
- * applica mai.
+ * Finché l'immagine non è pronta si vede il segnaposto, non un buco. Con
+ * `loading="lazy"` una griglia le riceve **mentre** si scorre, e prima era
+ * `opacity: 0` sull'`<img>` intero: spariva anche il suo fondo, l'ombra e il
+ * filo che fanno da segnaposto, e per qualche secondo la griglia aveva dei buchi
+ * col solo titolo sotto (R18-15). Il segnaposto è proprio il riquadro
+ * dell'elemento; quel che non c'è ancora sono i suoi pixel, e quelli si
+ * mandano fuori dal riquadro, dove il ritaglio dell'immagine li taglia.
+ * `foto.foto` perché la regola deve battere un `object-fit` più specifico di
+ * una classe sola; il testo alternativo e l'icona d'immagine rotta non si
+ * vedono (`color`). Pronta, l'immagine compare al posto del segnaposto senza
+ * dissolvenza: non si può dissolvere il solo contenuto di un `<img>` lasciando
+ * il suo fondo, e un guscio attorno a ognuna delle sei misure toccherebbe ogni
+ * regola delle skin che nomina quelle classi.
  */
-.foto {
-  opacity: 0;
-  transition: opacity var(--transition-med);
-}
-.foto[data-pronta] {
-  opacity: 1;
+.foto.foto:not([data-pronta]) {
+  object-fit: none;
+  object-position: 100000px 100000px;
+  color: transparent;
 }
 
 /* Il filo attorno a una copertina.

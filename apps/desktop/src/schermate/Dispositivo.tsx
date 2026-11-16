@@ -57,13 +57,16 @@
  */
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 
@@ -90,7 +93,9 @@ import {
   durataTotale,
   eTelefono,
   gestoLontano,
+  passoIndietroSfoglia,
   percentualeScarico,
+  sceltaDelDispositivo,
 } from "../lontano";
 import type { Apertura, TestataMenu, Voce } from "../Menu";
 import { mescolato } from "../mescolato";
@@ -101,6 +106,7 @@ import { TestataDettaglio } from "../parti/TestataDettaglio";
 import { MOBILE } from "../piattaforma";
 import { scorrevoleDi } from "../riordino";
 import { conIndice } from "../segnali";
+import { useStabile } from "../stabile";
 import { StatoVuoto } from "./Libreria";
 
 /** Quante voci per domanda: il protocollo ne ammette fino a 500. */
@@ -396,7 +402,7 @@ function StrisciaScarico({ onErrore }: { onErrore: (errore: unknown) => void }) 
  * sulla riga, come in libreria; sul computer il doppio clic, perché il clic
  * da solo in un elenco si aspetta di scegliere, non di far partire.
  */
-function RigaBrano({
+const RigaBrano = memo(function RigaBrano({
   brano,
   indice,
   elenco,
@@ -405,8 +411,11 @@ function RigaBrano({
 }: {
   brano: BranoRemoto;
   indice: number;
-  /** L'elenco intero: Riproduci lo suona da qui. */
-  elenco: readonly BranoRemoto[];
+  /**
+   * L'elenco intero, che Riproduci suona da qui: un riferimento e non l'array,
+   * che è nuovo a ogni pagina e ridisegnerebbe tutte le righe (R13-11).
+   */
+  elenco: { readonly current: readonly BranoRemoto[] };
   /** Dentro il suo disco: il numero al posto della copertina, e niente nome del disco. */
   nelDisco: boolean;
   /**
@@ -416,7 +425,7 @@ function RigaBrano({
   conAscolti: boolean;
 }) {
   const sfoglia = useSfoglia();
-  const suona = () => gesti(sfoglia).suona(inMano(elenco), indice);
+  const suona = () => gesti(sfoglia).suona(inMano(elenco.current), indice);
   const menu = (e: React.MouseEvent) =>
     apriMenu(
       e,
@@ -426,7 +435,7 @@ function RigaBrano({
         sottotitolo: `${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`,
         copertina: brano.coverArtHash,
       },
-      vociBrano(sfoglia, brano, elenco, indice, nelDisco),
+      vociBrano(sfoglia, brano, elenco.current, indice, nelDisco),
     );
   const accanto =
     conAscolti && brano.playCount > 0
@@ -443,7 +452,18 @@ function RigaBrano({
     <li
       className="riga-lontana"
       onClick={MOBILE ? suona : undefined}
-      onDoubleClick={MOBILE ? undefined : suona}
+      onDoubleClick={
+        MOBILE
+          ? undefined
+          : (e) => {
+              // Sulla riga, non sui suoi comandi: `stopPropagation` sul `click`
+              // non ferma il `dblclick`, e un doppio clic sul ⋮ apriva il menù
+              // e sostituiva la coda con l'elenco dell'altro (R13-8). Come in
+              // `Elenco.tsx`.
+              if ((e.target as Element).closest("button")) return;
+              suona();
+            }
+      }
       onContextMenu={menu}
     >
       <button
@@ -457,6 +477,10 @@ function RigaBrano({
         }
         onClick={(e) => {
           e.stopPropagation();
+          // Il secondo clic di un doppio clic è già stato servito dal primo:
+          // la copertina suona da sé, e senza questo partiva due volte (con la
+          // tastiera `detail` è 0 e il tasto suona sempre).
+          if (e.detail > 1) return;
           suona();
         }}
       >
@@ -505,7 +529,7 @@ function RigaBrano({
       </button>
     </li>
   );
-}
+});
 
 /** I brani dell'altro, una riga ciascuno. */
 function ElencoBrani({
@@ -517,6 +541,11 @@ function ElencoBrani({
   nelDisco?: boolean;
   conAscolti?: boolean;
 }) {
+  // L'elenco intero scende alle righe come riferimento: l'array è nuovo a ogni
+  // pagina, e passato com'è ridisegnerebbe tutte le righe a ogni «Mostra altri»
+  // (R13-11). Lo si legge al gesto, e allora è quello di quel momento.
+  const dellElenco = useRef(brani);
+  dellElenco.current = brani;
   if (brani.length === 0) return null;
   return (
     <ul className="righe-lontane">
@@ -525,7 +554,7 @@ function ElencoBrani({
           key={`${brano.id}-${indice}`}
           brano={brano}
           indice={indice}
-          elenco={brani}
+          elenco={dellElenco}
           nelDisco={nelDisco}
           conAscolti={conAscolti}
         />
@@ -1041,16 +1070,23 @@ function Risultati({ testo }: { testo: string }) {
   const brani = usePagine(`${chiave}:cerca:${testo}`, (da, quanti) =>
     ipc.lontanoCerca(chiave, testo, da, quanti),
   );
-  const [quanti, setQuanti] = useState<number | null>(null);
+  // «Caricamento…» finché il conteggio non risponde; se la domanda fallisce
+  // (un dispositivo raggiunto via relay, una risposta che scade) non si scrive
+  // niente: il conteggio è un di più, l'elenco sotto ha la sua riga d'errore, e
+  // un «Caricamento…» che non finisce mai — annunciato dal lettore di schermo —
+  // direbbe il falso (R13-7).
+  const [quanti, setQuanti] = useState<number | "attesa" | "mancante">("attesa");
   useEffect(() => {
     let vivo = true;
-    setQuanti(null);
+    setQuanti("attesa");
     ipc
       .lontanoCercaConteggio(chiave, testo)
       .then((n) => {
         if (vivo) setQuanti(n);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (vivo) setQuanti("mancante");
+      });
     return () => {
       vivo = false;
     };
@@ -1058,8 +1094,14 @@ function Risultati({ testo }: { testo: string }) {
   const nessuno = !brani.caricando && brani.errore === null && brani.voci.length === 0;
   return (
     <>
+      {/* Montata sempre, e cambia solo il testo: una regione di stato che nasce
+          già piena spesso non viene annunciata. */}
       <p className="nota" role="status">
-        {quanti === null ? t("common.loading") : t("page.search.results", { n: quanti })}
+        {quanti === "attesa"
+          ? t("common.loading")
+          : quanti === "mancante"
+            ? ""
+            : t("page.search.results", { n: quanti })}
       </p>
       {nessuno ? (
         <StatoVuoto
@@ -1086,9 +1128,12 @@ function Piano({ nascosto, children }: { nascosto: boolean; children: ReactNode 
 
 /** Il nome e lo stato di un dispositivo, per le testate di `App`. */
 export function useDispositivo(chiave: string | null) {
-  const stato = useArchivio(archivioLontano);
-  if (chiave === null || stato === null) return null;
-  return stato.dispositivi.find((d) => d.chiave === chiave) ?? null;
+  // Il dispositivo per chiave, non l'archivio intero: `App` lo chiama anche con
+  // nessun dispositivo aperto, e a ogni `lontano:stato` si ridisegnava per
+  // niente (R13-11). La scelta si rifà con la chiave.
+  const scegli = useMemo(() => sceltaDelDispositivo(chiave), [chiave]);
+  const leggi = useCallback(() => scegli(archivioLontano.leggi()), [scegli]);
+  return useSyncExternalStore(archivioLontano.iscrivi, leggi, leggi);
 }
 
 /** La riga sotto il nome: telefono o computer, se risponde, e se dal relay. */
@@ -1172,8 +1217,14 @@ export function Dispositivo({
     daRimettere.current = posizioni.current.pop() ?? 0;
     chiudi();
   };
-  const apriAlbum = (scelto: Album) => apriLivello(() => setAlbum(scelto));
-  const apriArtista = (scelto: Artista) => apriLivello(() => setArtista(scelto));
+  // Con un'identità sola: stanno nel valore del contesto, e un valore nuovo a
+  // ogni disegno ridisegnerebbe ogni riga che lo legge (R13-11).
+  const apriAlbum = useStabile((scelto: Album) => apriLivello(() => setAlbum(scelto)));
+  const apriArtista = useStabile((scelto: Artista) => apriLivello(() => setArtista(scelto)));
+  const sfoglia = useMemo<Sfoglia>(
+    () => ({ chiave, onErrore, onMenu, apriAlbum, apriArtista }),
+    [chiave, onErrore, onMenu, apriAlbum, apriArtista],
+  );
   const chiudiAlbum = () => chiudiLivello(() => setAlbum(null));
   const chiudiArtista = () => chiudiLivello(() => setArtista(null));
   /** Fuori da ogni livello e dalla ricerca, sulla scheda di sotto dov'era. */
@@ -1209,22 +1260,38 @@ export function Dispositivo({
     return () => window.clearTimeout(attesa);
   }, [testo]);
 
-  // Sul telefono Indietro chiude prima il disco, poi l'artista, poi la
-  // ricerca, poi torna su «In evidenza», e solo dopo esce dalla pagina
-  // (`passoIndietroTelefono`).
-  const aperto = album !== null || artista !== null || testo !== "" || scheda !== "evidenza";
+  // Indietro chiude prima il disco, poi l'artista, poi la ricerca; sul
+  // telefono poi torna su «In evidenza», e solo dopo esce dalla pagina
+  // (`passoIndietroTelefono`). Sul computer è Escape (e `Alt+←`, e il tasto
+  // indietro del mouse) a fare lo stesso, come nella libreria — ma senza
+  // cambiare scheda (R13-5). Con il dispositivo che non risponde la pagina è lo
+  // stato vuoto, i livelli non si vedono, e il gesto non li chiude (R13-6):
+  // `passoIndietroSfoglia` sceglie da quel che si vede.
+  const passo = passoIndietroSfoglia({
+    online,
+    album: album !== null,
+    artista: artista !== null,
+    ricerca: testo !== "",
+    altraScheda: scheda !== "evidenza",
+    sulComputer: !MOBILE,
+  });
   useEffect(() => {
-    if (!aperto) return;
-    return suIndietro(() => {
-      if (album !== null) chiudiAlbum();
-      else if (artista !== null) chiudiArtista();
-      else if (testo !== "") chiudiTutto();
-      else scegli("evidenza");
-      return true;
-    });
+    if (passo === null) return;
+    return suIndietro(
+      () => {
+        if (passo === "album") chiudiAlbum();
+        else if (passo === "artista") chiudiArtista();
+        else if (passo === "ricerca") chiudiTutto();
+        else scegli("evidenza");
+        return true;
+      },
+      // Anche per Escape, sul computer: gli altri gestori della pila (la coda,
+      // la terza colonna) sono del solo telefono, qui no.
+      { sulComputer: true },
+    );
     // Le funzioni qui sopra cambiano a ogni disegno, ma leggono solo ref,
     // setter stabili e lo stato elencato: rinnovare il gesto per loro non serve.
-  }, [aperto, album, artista, testo, scheda]);
+  }, [passo, album, artista, testo, scheda]);
 
   if (dispositivo === null || dispositivo.revocato) {
     return (
@@ -1263,7 +1330,6 @@ export function Dispositivo({
     );
   }
 
-  const sfoglia: Sfoglia = { chiave, onErrore, onMenu, apriAlbum, apriArtista };
   // I piani uno sopra l'altro: sotto le schede (o la ricerca), sopra
   // l'artista, in cima il disco. Quel che è coperto resta montato, nascosto.
   const livello = album !== null || artista !== null;
@@ -1315,8 +1381,12 @@ export function Dispositivo({
         {inScheda("brani", () => (
           <TuttiIBrani ordine={ordine} onOrdine={cambiaOrdine} />
         ))}
-        {cercato !== "" && !livello && (
-          <Piano nascosto={false}>
+        {/* I risultati restano montati sotto un disco o un artista aperti
+            dal menù «Vai all'album», come le schede: tornando indietro si
+            ritrovano con le loro pagine e il loro punto, e non si chiedono da
+            capo all'altro dispositivo (R13-7). */}
+        {cercato !== "" && (
+          <Piano nascosto={livello}>
             <Risultati testo={cercato} />
           </Piano>
         )}

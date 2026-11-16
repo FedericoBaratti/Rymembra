@@ -19,8 +19,10 @@
  * Senza React a runtime oltre agli hook in fondo: le prove di `test/` lo
  * caricano con `node --test`.
  */
-import { creaArchivio } from "./archivio";
+import { creaArchivio, sceltaRicordata, ugualiInSuperficie } from "./archivio";
 import { ordinaFidati } from "./insieme";
+import { eventiEFotografia } from "./ultima";
+import type { Chiave, Valori } from "./lingue";
 import type {
   Album,
   BranoRemoto,
@@ -35,6 +37,59 @@ import type {
 
 /** Il pannello, `null` finché il nucleo non ha risposto. */
 export const archivioLontano = creaArchivio<StatoLontano | null>(null);
+
+/**
+ * Gli eventi `lontano:stato` contro le risposte dei comandi (`ultima.ts`).
+ *
+ * L'archivio è uno solo per tutta la finestra, e il contatore sta accanto a
+ * lui, a livello di modulo: lo scrivono l'ascolto di `LontanoInApp`, la scheda
+ * dei dispositivi e `LontanoInApp` stesso, e nessuno dei tre deve ricoprire un
+ * evento più nuovo con una risposta chiesta prima di lui (R13-10).
+ */
+const eventiDelPannello = eventiEFotografia();
+
+/**
+ * Un `lontano:stato` mandato dal nucleo: il pannello com'è adesso. Si scrive e
+ * si conta, e le risposte dei comandi partiti prima non lo ricoprono più.
+ */
+export function eventoDelPannello(stato: StatoLontano): void {
+  eventiDelPannello.evento();
+  archivioLontano.scrivi(stato);
+}
+
+/**
+ * Chiamala **prima** di mandare un comando che risponde col pannello: restituisce
+ * chi adotta la risposta, che si scrive solo se nel frattempo non è arrivato un
+ * evento. Per chi deve fare altro fra il comando e la scrittura (`fai`, in
+ * `parti/Dispositivi.tsx`); gli altri usano [`comandoDelPannello`].
+ *
+ * Perché scartarla è giusto: il nucleo pubblica l'evento a ogni cambio del
+ * pannello (`lontano/filo.rs`, `pubblica`, solo se il testo è cambiato), e un
+ * comando che lo cambia ha il suo evento. Quello arrivato in mezzo è dunque
+ * fresco quanto la risposta o più; la risposta è il passato di un istante fa, e
+ * posata sopra di lui lo rimetterebbe a schermo fino al cambio dopo — che può
+ * essere a un minuto (`SCRIVI_VISTO_OGNI`).
+ */
+export function chiediIlPannello(): (risposta: StatoLontano) => void {
+  const vale = eventiDelPannello.chiedi();
+  return (risposta) => {
+    if (vale()) archivioLontano.scrivi(risposta);
+  };
+}
+
+/**
+ * Manda un comando che risponde col pannello, e ne adotta la risposta se non è
+ * arrivato un evento nel frattempo. La risposta si restituisce sempre: chi ha
+ * chiesto la usa per altro (un collegamento che parte, un invito).
+ */
+export async function comandoDelPannello(
+  comando: () => Promise<StatoLontano>,
+): Promise<StatoLontano> {
+  const adotta = chiediIlPannello();
+  const risposta = await comando();
+  adotta(risposta);
+  return risposta;
+}
 
 /**
  * Il link di collegamento che aspetta il sì della persona, con chi ci si
@@ -146,6 +201,30 @@ export function unisciDispositivi(
   return righe;
 }
 
+/**
+ * La scelta «il dispositivo con questa chiave» sul pannello, ricordata: chi la
+ * legge si ridisegna solo quando **quel** dispositivo cambia (R13-11).
+ *
+ * `null` come chiave non sceglie niente, e il risultato è `null` per qualunque
+ * pannello: `App` segue il dispositivo aperto anche quando non ce n'è nessuno, e
+ * non deve ridisegnarsi a ogni `lontano:stato` — uno al minuto per dispositivo,
+ * più i cambi di via e di presenza. Un oggetto nuovo con gli stessi campi tiene
+ * l'identità di prima (`ugualiInSuperficie`: i campi sono tutti valori semplici).
+ * Va rifatta quando cambia la chiave: la scelta ricordata guarda solo la
+ * sorgente.
+ */
+export function sceltaDelDispositivo(
+  chiave: string | null,
+): (stato: StatoLontano | null) => DispositivoLontano | null {
+  return sceltaRicordata(
+    (stato: StatoLontano | null) =>
+      chiave === null || stato === null
+        ? null
+        : (stato.dispositivi.find((d) => d.chiave === chiave) ?? null),
+    (a, b) => a === b || (a !== null && b !== null && ugualiInSuperficie(a, b)),
+  );
+}
+
 /** I dispositivi che si possono sfogliare adesso: online e non revocati. */
 export function sfogliabili(stato: StatoLontano | null): DispositivoLontano[] {
   if (stato === null) return [];
@@ -174,6 +253,26 @@ export const NON_AUDIO = "fs.extensionRefused";
 /** La coda è finita con un file rifiutato perché non era musica. */
 export function scaricoConNonAudio(stato: ScaricoLontano): boolean {
   return stato.falliti > 0 && stato.errore === NON_AUDIO;
+}
+
+/**
+ * La frase di fine coda di «Scarica qui»: la chiave e i valori, da dare a `t`.
+ *
+ * Il plurale lo sceglie solo `n`, e un secondo numero (`falliti`) non lo
+ * sceglie: per questo con i brani arrivati il conto dei non riusciti sta in
+ * coda alla frase («…; non riusciti: 2»), e con **nessun** brano arrivato la
+ * frase è un'altra, il cui `n` sono proprio i non riusciti — non «Scaricati 0
+ * brani» seguito da un conto che non accorda (R13-12).
+ */
+export function fraseScaricoFinito(
+  adesso: Pick<ScaricoLontano, "fatti" | "falliti">,
+): { chiave: Chiave; valori: Valori } {
+  if (adesso.falliti === 0) return { chiave: "devices.download.done", valori: { n: adesso.fatti } };
+  if (adesso.fatti === 0) return { chiave: "devices.download.allFailed", valori: { n: adesso.falliti } };
+  return {
+    chiave: "devices.download.doneWithErrors",
+    valori: { n: adesso.fatti, falliti: adesso.falliti },
+  };
 }
 
 /** Quanto del brano in corso è sceso, da 0 a 100. */
@@ -249,8 +348,7 @@ export function qrSoloInVista(annulla: () => Promise<StatoLontano>): {
   // `lontano:stato` che segue, e la scheda può andarsene prima.
   let creato = false;
   const togli = () => {
-    annulla()
-      .then((pannello) => archivioLontano.scrivi(pannello))
+    comandoDelPannello(annulla)
       .catch(() => {
         /* Il nucleo lo toglie comunque alla scadenza: qui non c'è più una
            scheda a cui dire l'errore. */
@@ -311,8 +409,7 @@ export async function accendiPoiCollega(passi: {
   collega: () => void;
   annullato: () => boolean;
 }): Promise<boolean> {
-  const nuovo = await passi.attiva();
-  archivioLontano.scrivi(nuovo);
+  await comandoDelPannello(passi.attiva);
   if (passi.annullato()) return false;
   passi.collega();
   return true;
@@ -328,6 +425,44 @@ export function annullatoDaQui(errore: unknown): boolean {
     errore !== null &&
     (errore as Partial<ErroreIpc>).code === "internal.aborted"
   );
+}
+
+/** Che cosa chiude Indietro (o Escape) in «Sfoglia»: vedi [`passoIndietroSfoglia`]. */
+export type PassoIndietroSfoglia = "album" | "artista" | "ricerca" | "scheda";
+
+/**
+ * Il prossimo livello di «Sfoglia» che Indietro chiude, o `null` se la pagina
+ * non ha niente da chiudere e il gesto deve passare alla scala di `App`.
+ *
+ * Si chiude quel che **si vede**, un livello per volta, nell'ordine in cui ci
+ * si è entrati: il disco, l'artista, la ricerca.
+ *
+ * - **Dispositivo che non risponde** (`online` falso): la pagina è lo stato
+ *   vuoto «non risponde», i livelli non si disegnano, e chiuderli uno alla
+ *   volta sarebbe un Indietro che a schermo non cambia niente (R13-6). Si esce.
+ * - **Telefono**: dopo la ricerca si torna anche su «In evidenza» (`altraScheda`),
+ *   e solo dopo si esce dalla pagina.
+ * - **Computer** (`sulComputer`): Escape fa come nella libreria, che chiude il
+ *   disco, l'artista e la ricerca ma non cambia mai la vista; la scheda non è un
+ *   livello che si chiude con un tasto (R13-5).
+ *
+ * Pura, perché la scelta sta in un posto solo e si prova da sola; la pagina la
+ * chiama a ogni disegno e si iscrive a `indietro.ts` solo se c'è un passo.
+ */
+export function passoIndietroSfoglia(stato: {
+  online: boolean;
+  album: boolean;
+  artista: boolean;
+  ricerca: boolean;
+  altraScheda: boolean;
+  sulComputer: boolean;
+}): PassoIndietroSfoglia | null {
+  if (!stato.online) return null;
+  if (stato.album) return "album";
+  if (stato.artista) return "artista";
+  if (stato.ricerca) return "ricerca";
+  if (stato.altraScheda && !stato.sulComputer) return "scheda";
+  return null;
 }
 
 /** Il nome di una piattaforma, per l'icona e il testo. */

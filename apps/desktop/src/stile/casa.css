@@ -58,12 +58,9 @@
   height: auto;
   aspect-ratio: 1;
   border-radius: var(--radius-card);
-  /* L'opacità resta nell'elenco: è la dissolvenza d'arrivo di `.foto`, che
-     questa regola, più pesante, altrimenti cancellerebbe. */
   transition:
     transform var(--transition-fast),
-    box-shadow var(--transition-fast),
-    opacity var(--transition-med);
+    box-shadow var(--transition-fast);
 }
 
 /* Il sorvolo alza la copertina, non la cinge: un anello d'accento di 2 px a 2
@@ -256,12 +253,9 @@
   height: auto;
   aspect-ratio: 1;
   border-radius: var(--radius-card);
-  /* L'opacità resta nell'elenco: è la dissolvenza d'arrivo di `.foto`, che
-     questa regola, più pesante, altrimenti cancellerebbe. */
   transition:
     transform var(--transition-fast),
-    box-shadow var(--transition-fast),
-    opacity var(--transition-med);
+    box-shadow var(--transition-fast);
 }
 
 /* Come per `.scheda-brano`: il sorvolo alza, l'anello resta del fuoco. */

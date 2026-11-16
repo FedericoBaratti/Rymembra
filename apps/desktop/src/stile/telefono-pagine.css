@@ -910,6 +910,10 @@
 }
 
 :root[data-forma="telefono"] .arte-dettaglio .copertina-dettaglio.vuota {
+  /* Il segnaposto al centro: la regola qui sopra gli rimetteva `display: block`
+     (R18-7). */
+  display: grid;
+  place-items: center;
   font-size: 56px;
 }
 

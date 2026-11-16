@@ -23,6 +23,9 @@
 //! e all'altro arriva al suo posto un'impronta ([`impronta_album`]), stabile
 //! finché non cambia la chiave, che solo chi serve sa ritradurre.
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+
 use rusqlite::OptionalExtension as _;
 
 use super::interrogazioni::{COLONNE_ALBUM, album_from_row};
@@ -218,12 +221,191 @@ fn righe_di_album(
     Ok(album)
 }
 
+/// Quel che Sfoglia ricorda fra una pagina e l'altra, a nome della generazione
+/// della libreria in cui l'ha calcolato: vedi [`brani`] e [`artisti`].
+///
+/// # Perché
+///
+/// Un altro dispositivo che sfoglia questa libreria chiede una pagina dopo
+/// l'altra, e due pagine costavano quanto tutta la libreria, col lucchetto in
+/// mano sul computer che magari sta suonando (R21-7). I brani: il filtro dei
+/// brani condivisi non sta nell'indice, e una pagina a offset 29 000 faceva
+/// leggere a SQLite le 29 000 righe che la precedono — 150 ms a pagina.
+/// Gli artisti: ogni pagina rifaceva il conto di tutti (30 ms) per
+/// restituirne una fetta. Qui si ricorda l'elenco intero, una volta.
+///
+/// # Perché non può restare indietro
+///
+/// La chiave è la generazione della libreria ([`generazione`]): la cambiano i
+/// trigger della migrazione 030 a ogni scrittura su `tracks`, da qualunque
+/// modulo e da qualunque connessione, e i filtri e gli ordinamenti di qui
+/// leggono soltanto colonne di `tracks`. Si legge **prima** di calcolare, non
+/// dopo: una scrittura nel mezzo lascia l'elenco sotto un segno che nessuno
+/// rivedrà, e costa al massimo un calcolo in più. È lo schema di
+/// `smart::conteggi_ricordati`, e come lui sta nel processo e non nel database:
+/// è una scorciatoia, e una che sopravvive al riavvio è un dato in più da tenere
+/// d'accordo.
+#[derive(Default)]
+pub(super) struct Ricordate {
+    /// Gli id dei brani condivisi, nell'ordine di un ordinamento.
+    brani: HashMap<(i64, &'static str), Arc<Vec<i64>>>,
+    /// Gli artisti condivisi, tutti, senza le copertine.
+    artisti: HashMap<i64, Arc<Vec<ArtistSummary>>>,
+    /// Quante volte si è calcolato un elenco intero: lo guardano le prove.
+    #[cfg(test)]
+    costruiti: usize,
+}
+
+#[cfg(test)]
+impl Ricordate {
+    /// Quante volte si è calcolato un elenco intero.
+    pub(super) fn costruiti(&self) -> usize {
+        self.costruiti
+    }
+}
+
+/// Le cose ricordate dal processo: una libreria sola è aperta, e le sue pagine
+/// le chiedono a turno tutti i dispositivi collegati.
+fn ricordate() -> &'static Mutex<Ricordate> {
+    static RICORDATE: LazyLock<Mutex<Ricordate>> =
+        LazyLock::new(|| Mutex::new(Ricordate::default()));
+    &RICORDATE
+}
+
+/// La cache, anche se un filo è caduto tenendola: dentro ci sono mappe intere, e
+/// ogni voce porta la sua generazione.
+fn presa(cache: &Mutex<Ricordate>) -> MutexGuard<'_, Ricordate> {
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Una pagina di brani condivisi.
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn brani(
+    connection: &Connection,
+    ordine: TrackOrder,
+    da: i64,
+    quanti: i64,
+) -> Result<Vec<BranoRemoto>, AppError> {
+    brani_con_scarto(
+        connection,
+        ricordate(),
+        ordine,
+        da,
+        quanti,
+        SCARTO_DA_RICORDARE,
+    )
+}
+
+/// Da quanti brani prima di una pagina conviene ricordare l'elenco degli id
+/// dell'ordinamento: sotto, l'`OFFSET` di SQLite costa pochi millisecondi — la
+/// cima si serve com'era, e non paga un elenco intero a chi guarda solo la
+/// prima pagina.
+const SCARTO_DA_RICORDARE: i64 = 2_000;
+
+/// Quanti elenchi di id si tengono: quattro ordinamenti, per due generazioni.
+/// Otto numeri da otto byte per brano: cento mila brani sono sei megabyte al
+/// massimo, e oltre si ricomincia da vuoti invece di tenere ogni generazione
+/// che una sessione ha visto.
+const ELENCHI_RICORDATI: usize = 8;
+
+/// Quanti elenchi di artisti si tengono: la generazione di adesso, e una.
+const ARTISTI_RICORDATI: usize = 2;
+
+/// [`brani`] con la sua cache e il suo scarto: per le prove.
+///
+/// Dallo `scarto` in poi (o quando l'elenco di questo ordinamento c'è già, per
+/// questa generazione) la pagina è una fetta degli id ricordati, riletta per id.
+/// Se le righe lette non sono quante gli id — una scrittura fra l'elenco e la
+/// lettura — si ripiega sulla pagina diretta: una pagina corta direbbe all'altro
+/// che non ce n'è altre.
+pub(super) fn brani_con_scarto(
+    connection: &Connection,
+    cache: &Mutex<Ricordate>,
+    ordine: TrackOrder,
+    da: i64,
+    quanti: i64,
+    scarto: i64,
+) -> Result<Vec<BranoRemoto>, AppError> {
+    // Prima di leggere, non dopo: vedi `Ricordate`.
+    let chiave = (generazione(connection)?, ordine.sql());
+    let ricordato = presa(cache).brani.get(&chiave).cloned();
+    let id = match ricordato {
+        Some(id) => id,
+        None if da < scarto => return brani_diretti(connection, ordine, da, quanti),
+        None => {
+            let id = Arc::new(id_dei_brani(connection, ordine)?);
+            let mut ricordate = presa(cache);
+            if ricordate.brani.len() >= ELENCHI_RICORDATI && !ricordate.brani.contains_key(&chiave)
+            {
+                ricordate.brani.clear();
+            }
+            ricordate.brani.insert(chiave, Arc::clone(&id));
+            #[cfg(test)]
+            {
+                ricordate.costruiti += 1;
+            }
+            id
+        }
+    };
+    let fetta: Vec<i64> = id
+        .iter()
+        .skip(usize::try_from(da).unwrap_or(0))
+        .take(usize::try_from(quanti).unwrap_or(0))
+        .copied()
+        .collect();
+    if fetta.is_empty() {
+        return Ok(Vec::new());
+    }
+    let letti = brani_per_id(connection, &fetta)?;
+    if letti.len() == fetta.len() {
+        Ok(letti)
+    } else {
+        brani_diretti(connection, ordine, da, quanti)
+    }
+}
+
+/// Gli id dei brani condivisi, nell'ordine dell'ordinamento.
+fn id_dei_brani(connection: &Connection, ordine: TrackOrder) -> Result<Vec<i64>, AppError> {
+    let cosa = "elenco dei brani condivisi";
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT t.id FROM tracks t WHERE {CONDIVISO} ORDER BY {}",
+            ordine.sql()
+        ))
+        .map_err(|err| db_error(cosa, &err))?;
+    statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error(cosa, &err))
+}
+
+/// I brani condivisi con questi id, nell'ordine degli id: quelli che non lo
+/// sono più, o non ci sono più, mancano.
+fn brani_per_id(connection: &Connection, id: &[i64]) -> Result<Vec<BranoRemoto>, AppError> {
+    let segnaposti = vec!["?"; id.len()].join(",");
+    let sql = format!(
+        "SELECT {COLONNE_REMOTO} FROM tracks t WHERE t.id IN ({segnaposti}) AND {CONDIVISO}"
+    );
+    let mut per_id: HashMap<i64, BranoRemoto> = righe_di_brani(
+        connection,
+        &sql,
+        rusqlite::params_from_iter(id),
+        "brani condivisi per id",
+    )?
+    .into_iter()
+    .map(|brano| (brano.id, brano))
+    .collect();
+    Ok(id.iter().filter_map(|id| per_id.remove(id)).collect())
+}
+
+/// Una pagina di brani condivisi, con l'`OFFSET` di SQLite.
+pub(super) fn brani_diretti(
     connection: &Connection,
     ordine: TrackOrder,
     da: i64,
@@ -335,35 +517,39 @@ pub fn artisti(
     da: usize,
     quanti: usize,
 ) -> Result<Vec<ArtistSummary>, AppError> {
+    artisti_con(connection, ricordate(), da, quanti)
+}
+
+/// [`artisti`] con la sua cache a parte: per le prove.
+pub(super) fn artisti_con(
+    connection: &Connection,
+    cache: &Mutex<Ricordate>,
+    da: usize,
+    quanti: usize,
+) -> Result<Vec<ArtistSummary>, AppError> {
     let cosa = "artisti condivisi";
-    let mut statement = connection
-        .prepare_cached(&format!(
-            "SELECT {ARTISTA_EFFETTIVO} AS nome, COUNT(DISTINCT album_key), COUNT(*)
-             FROM tracks
-             WHERE {ARTISTA_EFFETTIVO} <> '' AND {CONDIVISO_SENZA_ALIAS}
-             GROUP BY nome"
-        ))
-        .map_err(|err| db_error(cosa, &err))?;
-    let mut artisti: Vec<ArtistSummary> = statement
-        .query_map([], |row| {
-            let name: String = row.get(0)?;
-            Ok(ArtistSummary {
-                sort_name: rymembra_domain::keys::sort_name(&name),
-                name,
-                albums: row.get(1)?,
-                tracks: row.get(2)?,
-                covers: Vec::new(),
-            })
-        })
-        .map_err(|err| db_error(cosa, &err))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error(cosa, &err))?;
-    artisti.sort_by(|a, b| {
-        a.sort_name
-            .cmp(&b.sort_name)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    let mut pagina: Vec<ArtistSummary> = artisti.into_iter().skip(da).take(quanti).collect();
+    // Prima di contare, non dopo: vedi `Ricordate`.
+    let generazione = generazione(connection)?;
+    let ricordati = presa(cache).artisti.get(&generazione).cloned();
+    let tutti = match ricordati {
+        Some(tutti) => tutti,
+        None => {
+            let tutti = Arc::new(artisti_ordinati(connection)?);
+            let mut ricordate = presa(cache);
+            if ricordate.artisti.len() >= ARTISTI_RICORDATI
+                && !ricordate.artisti.contains_key(&generazione)
+            {
+                ricordate.artisti.clear();
+            }
+            ricordate.artisti.insert(generazione, Arc::clone(&tutti));
+            #[cfg(test)]
+            {
+                ricordate.costruiti += 1;
+            }
+            tutti
+        }
+    };
+    let mut pagina: Vec<ArtistSummary> = tutti.iter().skip(da).take(quanti).cloned().collect();
     if pagina.is_empty() {
         return Ok(pagina);
     }
@@ -392,6 +578,39 @@ pub fn artisti(
         }
     }
     Ok(pagina)
+}
+
+/// Tutti gli artisti con almeno un brano condiviso, in ordine, senza copertine.
+fn artisti_ordinati(connection: &Connection) -> Result<Vec<ArtistSummary>, AppError> {
+    let cosa = "artisti condivisi";
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT {ARTISTA_EFFETTIVO} AS nome, COUNT(DISTINCT album_key), COUNT(*)
+             FROM tracks
+             WHERE {ARTISTA_EFFETTIVO} <> '' AND {CONDIVISO_SENZA_ALIAS}
+             GROUP BY nome"
+        ))
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut artisti: Vec<ArtistSummary> = statement
+        .query_map([], |row| {
+            let name: String = row.get(0)?;
+            Ok(ArtistSummary {
+                sort_name: rymembra_domain::keys::sort_name(&name),
+                name,
+                albums: row.get(1)?,
+                tracks: row.get(2)?,
+                covers: Vec::new(),
+            })
+        })
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error(cosa, &err))?;
+    artisti.sort_by(|a, b| {
+        a.sort_name
+            .cmp(&b.sort_name)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(artisti)
 }
 
 /// Cerca fra i brani condivisi, con la stessa traduzione della ricerca di

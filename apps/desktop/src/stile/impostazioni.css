@@ -199,6 +199,10 @@
   flex-direction: column;
   gap: var(--spazio-3);
   min-width: 0;
+  /* Un tetto alla colonna delle schede: a 1920 px l'interruttore di una riga
+     stava a mille pixel dalla sua etichetta, e a 2560 la fascia era larga
+     1 650. Le note hanno già il loro (`72ch`); qui la colonna intera (R18-19). */
+  max-width: 760px;
 }
 
 .scheda.section-card {
