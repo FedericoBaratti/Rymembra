@@ -1101,6 +1101,52 @@ fn scrivi_sequenza(
     Ok(())
 }
 
+/// Fa seguire la sequenza a una playlist che cambia chiave.
+///
+/// La chiave **è** il nome, e un rinomino la cambia. La sequenza sta sotto la
+/// chiave: se non la si sposta, la playlist col nome nuovo non ne ha una, e
+/// `allinea_sequenze` la battezza da zero con i soli brani che qui ci sono;
+/// quella sotto il nome vecchio, che non appartiene più a nessuna playlist,
+/// viene sepolta intera. Su una libreria completa si vede poco, ma su un
+/// telefono con una parte della musica la voce di ogni brano che qui manca
+/// muore con il nome vecchio, e gli altri dispositivi — per i quali la
+/// playlist col nome nuovo nasce senza quel brano — lo perdono (FSYNC2).
+///
+/// Va chiamata **dopo** che l'`UPDATE` della chiave è andato a buon fine, nella
+/// stessa transazione, con la chiave di prima e quella di adesso.
+///
+/// # Perché si svuota prima la chiave nuova, e non si fonde
+///
+/// La chiave è unica: una riga di sequenza sotto la chiave nuova può essere
+/// solo il resto di una playlist con quel nome **cancellata qui**. Le sue
+/// identità (`origine:0`…) sono quelle di qualunque sequenza battezzata da una
+/// lista, e fondere significherebbe stampare le lapidi di una playlist che non
+/// c'è più sulle voci vive di quella che arriva. Si butta il resto.
+///
+/// Restituisce quante righe di sequenza si sono spostate.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una scrittura fallisce.
+pub(crate) fn sposta_la_sequenza(
+    connection: &Connection,
+    vecchia: &str,
+    nuova: &str,
+) -> Result<usize, AppError> {
+    if vecchia == nuova {
+        return Ok(0);
+    }
+    connection
+        .execute("DELETE FROM sync_sequenza WHERE playlist_key = ?1", [nuova])
+        .map_err(|err| db_error("sequenza sotto il nome nuovo di una playlist", &err))?;
+    connection
+        .execute(
+            "UPDATE sync_sequenza SET playlist_key = ?2 WHERE playlist_key = ?1",
+            [vecchia, nuova],
+        )
+        .map_err(|err| db_error("sequenza di una playlist rinominata", &err))
+}
+
 // ── dal fuso al database ────────────────────────────────────────────────────
 
 /// Cosa la sincronia ha cambiato, da raccontare a chi guarda.
@@ -3466,6 +3512,94 @@ mod prove {
                 .filter(|(_, elemento)| elemento.tolto.is_some())
                 .count(),
             0
+        );
+    }
+
+    // ── FSYNC2: la sequenza segue la playlist ──
+
+    fn id_playlist(connection: &Connection, chiave: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT id FROM playlists WHERE playlist_key = ?1",
+                [chiave],
+                |row| row.get(0),
+            )
+            .expect("playlist")
+    }
+
+    /// Un istante dopo ogni ora vera: le funzioni delle playlist datano con
+    /// l'orologio, e una passata fatta «prima» vedrebbe quelle date dal futuro.
+    const DOPO: i64 = 4_000_000_000_000;
+
+    #[test]
+    fn rinominare_la_playlist_su_un_telefono_non_toglie_al_computer_il_brano_che_il_telefono_non_ha()
+     {
+        // Il telefono (che non ha `x`) rinomina «sera». La chiave cambia, e la
+        // sequenza — con la voce viva di `x` — deve seguirla: prima nasceva
+        // da zero coi soli brani di qui, la vecchia partiva con le lapidi, e il
+        // computer perdeva `x` dalla playlist col nome nuovo.
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let id = id_playlist(&telefono, "sera");
+        crate::playlists::rename(&telefono, id, "sera2").expect("rinomino");
+
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), DOPO);
+        assert_eq!(
+            sequenza_di(&telefono, "sera2").ordine(),
+            vec!["a", "x", "b"],
+            "la voce di `x` ha seguito la playlist"
+        );
+        assert!(
+            sequenza_di(&telefono, "sera").e_vuota(),
+            "e non è rimasta sotto il nome vecchio"
+        );
+        let dal_telefono = documento_di(&telefono, "telefono");
+
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), DOPO + 1),
+            Documento::nuovo("telefono", dal_telefono, DOPO + 1),
+        ]);
+        applica(&mut computer, &fuso, DOPO + 1).expect("applicazione");
+        assert_eq!(
+            ordine(&computer, "sera2"),
+            vec!["a", "x", "b"],
+            "il computer ha ancora `x` nella playlist rinominata dal telefono"
+        );
+        assert_eq!(ordine(&telefono, "sera2"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn rinominare_su_un_nome_cancellato_qui_non_stampa_le_vecchie_lapidi_sulla_playlist_che_arriva()
+    {
+        // La chiave nuova è libera perché una playlist con quel nome è stata
+        // cancellata qui, e di lei restano le righe di sequenza (sepolte da un
+        // `allinea`). Le identità sono quelle di ogni sequenza battezzata da una
+        // lista: fondere quelle righe con la sequenza che arriva stamperebbe le
+        // lapidi di una playlist che non c'è più sulle voci vive di quella
+        // rinominata.
+        let (_computer, mut telefono) = computer_e_telefono();
+        playlist_con(&telefono, "altra", &[1]);
+        allinea(&mut telefono, "telefono", DOPO).expect("allineamento");
+        let vecchia = id_playlist(&telefono, "altra");
+        crate::playlists::delete(&mut telefono, vecchia).expect("cancellata");
+        allinea(&mut telefono, "telefono", DOPO + 1).expect("allineamento");
+        assert!(
+            sequenza_di(&telefono, "altra").ordine().is_empty(),
+            "la vecchia è sepolta"
+        );
+
+        let id = id_playlist(&telefono, "sera");
+        crate::playlists::rename(&telefono, id, "altra").expect("rinomino");
+
+        let seguita = sequenza_di(&telefono, "altra");
+        assert_eq!(seguita.ordine(), vec!["a", "x", "b"]);
+        assert_eq!(
+            seguita
+                .elementi()
+                .filter(|(_, elemento)| elemento.tolto.is_some())
+                .count(),
+            0,
+            "nessuna lapide delle voci della playlist cancellata"
         );
     }
 }

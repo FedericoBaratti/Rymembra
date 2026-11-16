@@ -975,6 +975,17 @@ fn rinomina_in(
         )
         .map_err(|err| db_error("lapide del nome vecchio di una playlist", &err))?;
 
+    // La chiave di prima, per la sequenza. Dopo la scrittura della lapide (il
+    // primo passo è una scrittura apposta) e prima dell'`UPDATE` che la cambia.
+    let chiave_di_prima: Option<String> = connection
+        .query_row(
+            "SELECT playlist_key FROM playlists WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| db_error("chiave di una playlist da rinominare", &err))?;
+
     let esito = connection.execute(
         "UPDATE playlists SET playlist_key = ?2, name = ?3, updated_at = ?4 WHERE id = ?1",
         rusqlite::params![id, key, name, adesso],
@@ -985,7 +996,13 @@ fn rinomina_in(
                 playlist_id: Some(id),
             }));
         }
-        Ok(_) => {}
+        Ok(_) => {
+            // La sequenza segue la playlist: vedi `sincronia::sposta_la_sequenza`.
+            // Senza, gli altri dispositivi perdono i brani che questo non ha.
+            if let Some(chiave_di_prima) = chiave_di_prima {
+                crate::sincronia::sposta_la_sequenza(connection, &chiave_di_prima, key)?;
+            }
+        }
         Err(err) if e_conflitto(&err) => {
             return Err(AppError::new(ErrorCode::LibraryPlaylistExists {
                 name: name.to_owned(),
