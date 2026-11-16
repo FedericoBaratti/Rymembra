@@ -345,6 +345,14 @@ a longer listening history than the public API offers.
   and the plan says so. The skin you wear is not in the backup: each computer
   keeps its own.
 
+  Sync between devices keeps a playlist whole even where some of its tracks
+  are missing: a phone with only part of the music shows the tracks it has,
+  and the others stay in the playlist on every other device and come back in
+  their place when the file arrives. **Every device that syncs together has to
+  be on 3.2.1:** a 3.2.0 device with only part of the music still removes
+  those tracks from the other devices’ playlists, and what it already removed
+  does not come back.
+
   **Google Drive needs a Google project of your own, and Rymembra has none
   built in — on purpose.** A desktop program cannot keep an OAuth client
   secret: anything compiled into the executable can be read out of it, and a
@@ -1027,6 +1035,13 @@ constraint is stated explicitly in the terms of use.
   several members can stall, and over a jittery link the members stay in
   step less tightly than at home (clock samples are kept up to a 400 ms round
   trip instead of 100 ms).
+- **Sync between devices.** A track taken out of a playlist and, before the
+  next sync pass, also out of the library (or whose file disappears in the
+  meantime) stays in that playlist on the other devices: Rymembra cannot tell
+  that removal from a file that is only missing here, and keeps the track
+  rather than risk removing it everywhere. Taking it out of the playlist again
+  on another device settles it. A playlist open on screen shows a track that
+  sync brings back only when it is opened again.
 - **The window’s engine on Windows.** WebView2 sends Microsoft its required
   diagnostic data, and a minidump when one of its processes crashes, which
   can hold the titles on screen. Turning the minidumps off needs an option of
@@ -1108,6 +1123,11 @@ constraint is stated explicitly in the terms of use.
     Rymembra asks for it when the function is turned on. The audio output is
     always the one Android chooses — speaker, cable, Bluetooth — and changes
     from Android's own output picker, not from Rymembra's settings.
+  - **A crash of the page's renderer** — Android's WebView process, which
+    Android can stop under memory pressure — takes the whole app down with it,
+    music included, instead of redrawing the window: the WebView glue that
+    Tauri generates does not handle it yet (`onRenderProcessGone`), and the fix
+    belongs there. Reopening Rymembra brings back the library and the queue.
   - **The TLS roots** are the Mozilla list compiled into the app
     (`webpki-roots`) and not the system's: a certificate installed by hand on
     the phone is not trusted.

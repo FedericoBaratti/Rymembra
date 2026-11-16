@@ -831,6 +831,9 @@ The rest of what the two reviews fixed, by area.
 - After a USB drive is ejected, its folders are no longer walked every five
   minutes: their absence is noted once when they go and once when they come
   back.
+- The big cover placeholder — side column, an album on the phone, “Now
+  playing” on the phone — is centered again, and a cover that is still loading
+  shows its frame instead of a hole (it no longer fades in).
 
 **Playlists, the queue and selection.**
 
@@ -966,6 +969,18 @@ The rest of what the two reviews fixed, by area.
   asks first.
 - Pairing and link requests that arrive while the Skin Studio is open appear
   above it instead of freezing the window.
+- Browse, on the computer: Esc, Alt+← and the mouse’s back button close an
+  open album, artist or search, as in the library. On the phone, Back no
+  longer closes levels you can no longer see when the other device stops
+  answering. A search count that never arrives no longer leaves “Loading…”,
+  results stay loaded under an album opened from them, and double-clicking
+  the ⋮ or the cover of a row no longer starts the other device’s list.
+- A command’s reply no longer overwrites a newer state of a linked device that
+  arrived while it was in flight; when no track could be downloaded, the
+  notice says so instead of “Downloaded 0 tracks”, and the relay field’s hint
+  is translated.
+- Deep pages of Tracks and the pages of Artists that a linked device browses
+  no longer cost as much as reading the whole library each time.
 
 **Imports, profiles and backup.**
 
@@ -1049,6 +1064,20 @@ The rest of what the two reviews fixed, by area.
   positions” among what a profile carries.
 - On the phone, the plan of a profile no longer runs off the right edge: the
   folder field and the track count are whole, and long paths wrap.
+- **With device sync on, a playlist no longer loses tracks that another
+  device doesn’t have.** An entry for a track missing on one device — a phone
+  with only part of the computer’s music, a file deleted or moved out of the
+  watched folders — was taken as removed there, and the removal reached every
+  device. It now stays in the playlist everywhere else and comes back in its
+  place when the file arrives. Renaming a playlist, or deleting it and
+  creating one with the same name before the next sync (and undoing a
+  delete), no longer drops those entries; a removal made on another device
+  while a file was missing no longer comes back when the file returns (an
+  external drive reconnected); a profile read before the music is scanned
+  keeps each playlist whole, with the identities it came with, and reading a
+  newer profile of the same playlist no longer adds a track twice after the
+  next sync. Removing a track from a playlist still syncs as before. Every
+  device that syncs together has to be on 3.2.1 (see README).
 
 **Explore, catalogs and metadata.**
 
@@ -1105,6 +1134,8 @@ The rest of what the two reviews fixed, by area.
   account’s folders are marked incomplete in the same transaction that records
   the change, and complete again only with the new cursor, so after a crash
   the next pass lists them in full.
+- On the first start, a cloud folder whose tracks are still arriving no
+  longer says that Rymembra found no tracks.
 
 **Skins.**
 
@@ -1238,6 +1269,8 @@ The rest of what the two reviews fixed, by area.
 - Texts: no “or drop it here” on the phone and no leading space in the Google
   Drive note; restore and Spotify archive texts no longer say “1 skins and 1
   drafts” or “1 duplicates”, nor the Italian ones «1 brani» or «1 aggiunti».
+- The cards of Settings have a maximum width, so on a wide screen a switch no
+  longer sits a thousand pixels from its label.
 
 **The window, keyboard and screen readers.**
 
@@ -1347,6 +1380,10 @@ The rest of what the two reviews fixed, by area.
   passes leave out the tracks of a network share that is off in a single
   query, instead of reading and skipping them batch by batch under the library
   lock.
+- Only the interface language in use is loaded at start, and the other one
+  when you pick it: the main script goes from 1.46 MB to 0.90 MB. The window
+  no longer redraws on every state of a linked device, and the rows of Browse
+  are not redrawn on every new page.
 
 **Updates and the library’s data.**
 
