@@ -7,7 +7,7 @@ import { spegniIlBrowser } from "./browserSpento";
 import { conDove, rigaDelRifiuto } from "./diarioDellaFinestra";
 import { ipc } from "./ipc";
 import { leggiLaMemoriaCome } from "./cartelleNuvola";
-import { applicaLingua, scegli, t } from "./lingue";
+import { impostaLinguaIniziale, t } from "./lingue";
 import { RecintoErrori } from "./Recinto";
 import { BarraTitolo } from "./parti/BarraTitolo";
 import { ANDROID, MOBILE } from "./piattaforma";
@@ -55,8 +55,15 @@ import "./barreDiSistema";
  * Farlo dentro un effetto vorrebbe dire un fotogramma nella lingua sbagliata per
  * chiunque non parli inglese, e per chi ha una lingua di sistema senza file
  * vorrebbe dire vederla comparire e sparire.
+ *
+ * I dizionari non stanno nel pacchetto principale (R21-4): si carica quello della
+ * lingua del sistema, e si aspetta — è un file dell'applicazione, non la rete —
+ * prima di disegnare. Se nemmeno quello si legge, l'interfaccia nasce con le
+ * chiavi e il guasto va nel diario: meglio di una finestra che non si apre.
  */
-applicaLingua(scegli(null, navigator.language));
+await impostaLinguaIniziale(navigator.language).catch((errore: unknown) => {
+  ipc.diarioAnnota("finestra", `lingua: ${errore instanceof Error ? errore.message : String(errore)}`);
+});
 
 /*
  * I due guasti che il recinto non può prendere.

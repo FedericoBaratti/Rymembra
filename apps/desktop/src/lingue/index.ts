@@ -18,7 +18,20 @@
  * una mappa qui, aggiungere una lingua costerebbe due posti invece di uno, e la
  * promessa sarebbe falsa proprio nel punto in cui si vede.
  *
- * # Perché non una libreria
+ * # A richiesta, non in anticipo
+
+I dizionari non stanno nel pacchetto principale: erano un terzo del JavaScript
+(≈454 KB su 1 288 KB), analizzati a ogni avvio anche se se ne usa uno per
+volta (R21-4). `import.meta.glob` ne fa un pezzo per lingua, e `caricamento.ts`
+li legge a richiesta: `main.tsx` carica la lingua del sistema prima del primo
+disegno, `aspettoFinestra.ts` quella salvata prima di mostrare la finestra, e
+[`impostaLingua`] carica e poi applica — così nemmeno il cambio a caldo passa
+dalle chiavi nude. L'altra lingua si carica quando serve: scelta, o come
+ripiego per una chiave che manca in una lingua incompleta. I nomi delle lingue
+(`_nome`) non si leggono dai dizionari: li raccoglie a build time il modulo
+virtuale `virtual:lingue-nomi` (`vite.config.ts`), dagli stessi file.
+
+# Perché non una libreria
  *
  * Il progetto ha quattro dipendenze runtime in tutto, e la CI ne vieta
  * esplicitamente altre. Quel che serve qui è ricerca per chiave, interpolazione
@@ -40,13 +53,15 @@
  */
 import { useSyncExternalStore } from "react";
 
-import it from "./it.json";
+import NOMI from "virtual:lingue-nomi";
+import { creaCambioLingua, creaCaricatore, type Dizionario } from "./caricamento";
+// Solo il tipo: le chiavi che esistono davvero. Il dizionario non entra nel pacchetto.
+import type it from "./it.json";
 import { formaPlurale } from "./plurali";
 import { regioneDelleDate } from "./regione";
 import { MOBILE } from "../piattaforma";
 
-/** Un dizionario, come sta sul disco: chiave piatta → testo. */
-export type Dizionario = Record<string, string>;
+export type { Dizionario };
 
 /**
  * Le chiavi che esistono davvero.
@@ -62,14 +77,14 @@ export type Dizionario = Record<string, string>;
  */
 export type Chiave = keyof typeof it;
 
-/**
- * La chiave riservata al nome della lingua nella sua lingua.
+/*
+ * La chiave riservata `_nome` è il nome della lingua nella sua lingua.
  *
  * Non è un testo dell'interfaccia: è l'etichetta che il selettore mostra, e
  * viaggia col file perché è l'unico modo di non avere una seconda tabella da
- * aggiornare.
+ * aggiornare. La legge `vite.config.ts` a build time (`virtual:lingue-nomi`), e
+ * non questo modulo: i dizionari qui non si caricano per scrivere il selettore.
  */
-const CHIAVE_NOME = "_nome";
 
 /**
  * La lingua di ripiego, per due mestieri diversi.
@@ -91,41 +106,43 @@ export interface Lingua {
 }
 
 /**
- * I file, come Vite li trova.
+ * I file, come Vite li trova: per ognuno, chi lo carica.
  *
- * `eager` perché sono qualche decina di kilobyte in tutto e servono al primo
- * fotogramma: caricarli a richiesta vorrebbe dire un `await` prima di poter
- * disegnare una sola etichetta.
+ * Non `eager`: ogni lingua è un pezzo a parte, che si legge quando serve
+ * (`caricamento.ts`). Quel che qui si sa subito è **quali** lingue ci sono: i
+ * codici sono i nomi dei file.
  */
 const FILE = import.meta.glob("./*.json", {
-  eager: true,
   import: "default",
-}) as Record<string, Dizionario>;
+}) as Record<string, () => Promise<Dizionario>>;
 
-/** I dizionari, per codice. */
-const DIZIONARI: Record<string, Dizionario> = {};
-for (const [percorso, dizionario] of Object.entries(FILE)) {
+/** I caricatori, per codice. */
+const CARICATORI: Record<string, () => Promise<Dizionario>> = {};
+for (const [percorso, carica] of Object.entries(FILE)) {
   const codice = percorso.replace(/^\.\//, "").replace(/\.json$/, "");
-  DIZIONARI[codice] = dizionario;
+  CARICATORI[codice] = carica;
 }
+const caricatore = creaCaricatore(CARICATORI);
 
 /**
  * Le lingue disponibili, in ordine di codice.
  *
  * In ordine e non nell'ordine in cui `glob` le restituisce: quello dipende dal
  * filesystem, e un selettore che cambia ordine fra una macchina e l'altra è una
- * differenza che nessuno sa spiegare.
+ * differenza che nessuno sa spiegare. Il nome viene da `_nome` dentro il file,
+ * raccolto a build time (`virtual:lingue-nomi`): non serve caricare un
+ * dizionario per scrivere il selettore.
  */
-export const DISPONIBILI: Lingua[] = Object.keys(DIZIONARI)
+export const DISPONIBILI: Lingua[] = Object.keys(CARICATORI)
   .sort()
   .map((codice) => ({
     codice,
-    nome: DIZIONARI[codice]?.[CHIAVE_NOME] ?? codice,
+    nome: NOMI[codice] ?? codice,
   }));
 
 /** C'è un file per questa lingua? */
 export function esiste(codice: string): boolean {
-  return codice in DIZIONARI;
+  return Object.hasOwn(CARICATORI, codice);
 }
 
 /**
@@ -163,6 +180,12 @@ let attiva: string = esiste(RIPIEGO)
   ? RIPIEGO
   : (DISPONIBILI[0]?.codice ?? RIPIEGO);
 const ascoltatori = new Set<() => void>();
+/**
+ * Cambia quando cambia quel che si legge: la lingua attiva, o — per una lingua
+ * incompleta — l'arrivo del ripiego. È lo stato che `useLingua` segue, e non il
+ * solo codice: il codice non cambia quando arriva il ripiego, e il testo sì.
+ */
+let versione = 0;
 
 function iscrivi(avvisa: () => void): () => void {
   ascoltatori.add(avvisa);
@@ -171,8 +194,13 @@ function iscrivi(avvisa: () => void): () => void {
   };
 }
 
-function leggi(): string {
-  return attiva;
+function leggi(): number {
+  return versione;
+}
+
+function avvisa(): void {
+  versione += 1;
+  for (const chi of ascoltatori) chi();
 }
 
 /**
@@ -209,7 +237,8 @@ export function localeDate(): string {
 }
 
 /**
- * Cambia la lingua, e lo dice al documento.
+ * Cambia la lingua, e lo dice al documento. Il dizionario deve essere già in
+ * mano: chi parte da un codice usa [`impostaLingua`], che prima lo carica.
  *
  * `document.documentElement.lang` non è una formalità: da lì passano la
  * sillabazione, la sintesi vocale e il correttore. `index.html` lo nasce
@@ -220,13 +249,43 @@ export function localeDate(): string {
  * lascerebbe a schermo le chiavi, che è peggio della lingua sbagliata.
  */
 export function applicaLingua(codice: string): void {
-  if (!esiste(codice) || codice === attiva) {
-    if (esiste(codice)) document.documentElement.lang = codice;
+  if (!esiste(codice)) return;
+  // Applicare un dizionario che non c'è lascerebbe a schermo le chiavi nude.
+  if (caricatore.caricato(codice) === undefined) {
+    if (import.meta.env.DEV) console.warn(`[lingue] «${codice}» non è ancora caricata`);
     return;
   }
-  attiva = codice;
   document.documentElement.lang = codice;
-  for (const avvisa of ascoltatori) avvisa();
+  if (codice === attiva) return;
+  attiva = codice;
+  avvisa();
+}
+
+/**
+ * Carica una lingua e poi la applica: è il modo di cambiarla.
+ *
+ * Se mentre si carica ne viene chiesta un'altra, vince l'ultima. Un guasto del
+ * caricamento arriva a chi ha chiesto e la lingua resta com'era: mai le chiavi
+ * nude. Una lingua senza file si ignora, come con [`applicaLingua`].
+ */
+export const impostaLingua: (codice: string) => Promise<void> = creaCambioLingua(
+  caricatore,
+  applicaLingua,
+);
+
+/**
+ * La lingua del sistema, o l'inglese: la prima che si carica, prima del primo
+ * disegno. Se nemmeno quella si legge, l'interfaccia mostra le chiavi — e il
+ * guasto arriva a chi ha chiesto.
+ */
+export async function impostaLinguaIniziale(sistema: string): Promise<void> {
+  const scelta = scegli(null, sistema);
+  try {
+    await impostaLingua(scelta);
+  } catch (errore) {
+    if (scelta === RIPIEGO) throw errore;
+    await impostaLingua(RIPIEGO);
+  }
 }
 
 /**
@@ -236,7 +295,8 @@ export function applicaLingua(codice: string): void {
  * passarlo a `Intl` non deve richiederlo a parte.
  */
 export function useLingua(): string {
-  return useSyncExternalStore(iscrivi, leggi, leggi);
+  useSyncExternalStore(iscrivi, leggi, leggi);
+  return attiva;
 }
 
 // ── I testi ────────────────────────────────────────────────────────────────
@@ -251,9 +311,40 @@ export type Valori = Record<string, string | number>;
  * farne, e [`t`] mostra la chiave apposta — a schermo è brutta abbastanza da
  * essere segnalata, che è esattamente il servizio che deve rendere.
  */
-function cerca(chiave: string): string | null {
-  return DIZIONARI[attiva]?.[chiave] ?? DIZIONARI[RIPIEGO]?.[chiave] ?? null;
+function cerca(chiave: string, chiediIlRipiego = true): string | null {
+  const trovato = caricatore.caricato(attiva)?.[chiave];
+  if (trovato !== undefined) return trovato;
+  const ripiego = ripiegoPerChiave(chiediIlRipiego);
+  return ripiego?.[chiave] ?? null;
 }
+
+/**
+ * Il dizionario di ripiego, se è in mano; altrimenti si comincia a caricarlo,
+ * e quando arriva chi disegna si ridisegna (`avvisa`).
+ *
+ * Serve solo a una lingua incompleta: l'italiano e l'inglese hanno le stesse
+ * chiavi (`check:lingue`), e per loro il ripiego non si carica mai. Una lingua
+ * con dei buchi mostra la chiave per il tempo della lettura, poi l'inglese.
+ * `chiedi` falso per [`tSe`]: le sue chiavi vengono dal nucleo, e una che non
+ * c'è è prevista — non vale una lettura.
+ */
+function ripiegoPerChiave(chiedi: boolean): Dizionario | undefined {
+  if (attiva === RIPIEGO) return undefined;
+  const ripiego = caricatore.caricato(RIPIEGO);
+  if (ripiego !== undefined || !chiedi || !esiste(RIPIEGO) || ripiegoInArrivo) return ripiego;
+  ripiegoInArrivo = true;
+  caricatore
+    .carica(RIPIEGO)
+    .then(avvisa)
+    .catch(() => undefined)
+    .finally(() => {
+      ripiegoInArrivo = false;
+    });
+  return undefined;
+}
+
+/** Il ripiego è già stato chiesto: una lettura sola, qualunque numero di chiavi manchi. */
+let ripiegoInArrivo = false;
 
 /**
  * Come [`cerca`], ma la forma giusta per il numero `n`.
@@ -263,14 +354,16 @@ function cerca(chiave: string): string | null {
  * nell'inglese, e solo dopo la chiave nuda tedesca, metterebbe una parola
  * inglese in mezzo a una frase tedesca che c'era tutta.
  */
-function cercaPer(chiave: string, n: number): string | null {
-  for (const codice of attiva === RIPIEGO ? [attiva] : [attiva, RIPIEGO]) {
-    const dizionario = DIZIONARI[codice];
-    if (dizionario === undefined) continue;
-    const trovato = formaPlurale((k) => dizionario[k] ?? null, codice, chiave, n);
+function cercaPer(chiave: string, n: number, chiediIlRipiego = true): string | null {
+  const suo = caricatore.caricato(attiva);
+  if (suo !== undefined) {
+    const trovato = formaPlurale((k) => suo[k] ?? null, attiva, chiave, n);
     if (trovato !== null) return trovato;
   }
-  return null;
+  if (attiva === RIPIEGO) return null;
+  const ripiego = ripiegoPerChiave(chiediIlRipiego);
+  if (ripiego === undefined) return null;
+  return formaPlurale((k) => ripiego[k] ?? null, RIPIEGO, chiave, n);
 }
 
 /**
@@ -280,12 +373,18 @@ function cercaPer(chiave: string, n: number): string | null {
  * milleduecentotrentaquattro in italiano e uno virgola due in inglese. Chi
  * vuole il plurale passa il numero, e la formattazione la fa [`riempi`].
  */
-function testoDi(chiave: string, valori: Valori | undefined): string | null {
+function testoDi(
+  chiave: string,
+  valori: Valori | undefined,
+  chiediIlRipiego: boolean,
+): string | null {
   if (MOBILE) {
-    const delTelefono = testoDiChiave(`${chiave}${SUL_TELEFONO}`, valori);
+    // La variante del telefono quasi sempre non c'è: la sua assenza non è un
+    // buco, e non vale la lettura del ripiego.
+    const delTelefono = testoDiChiave(`${chiave}${SUL_TELEFONO}`, valori, false);
     if (delTelefono !== null) return delTelefono;
   }
-  return testoDiChiave(chiave, valori);
+  return testoDiChiave(chiave, valori, chiediIlRipiego);
 }
 
 /**
@@ -306,9 +405,15 @@ function testoDi(chiave: string, valori: Valori | undefined): string | null {
 const SUL_TELEFONO = ".telefono";
 
 /** [`testoDi`] per una chiave sola, senza la variante del telefono. */
-function testoDiChiave(chiave: string, valori: Valori | undefined): string | null {
+function testoDiChiave(
+  chiave: string,
+  valori: Valori | undefined,
+  chiediIlRipiego: boolean,
+): string | null {
   const n = valori?.["n"];
-  return typeof n === "number" ? cercaPer(chiave, n) : cerca(chiave);
+  return typeof n === "number"
+    ? cercaPer(chiave, n, chiediIlRipiego)
+    : cerca(chiave, chiediIlRipiego);
 }
 
 /**
@@ -347,7 +452,7 @@ function riempi(testo: string, valori: Valori | undefined): string {
  * sembra un difetto di grafica, non una traduzione mancante.
  */
 export function t(chiave: Chiave, valori?: Valori): string {
-  const testo = testoDi(chiave, valori);
+  const testo = testoDi(chiave, valori, true);
   if (testo === null) {
     if (import.meta.env.DEV)
       console.warn(`[lingue] manca «${chiave}» in «${attiva}»`);
@@ -366,7 +471,7 @@ export function t(chiave: Chiave, valori?: Valori): string {
  * obbligatorio, ed è quel che rende accettabile la chiave non verificata.
  */
 export function tSe(chiave: string, ripiego: string, valori?: Valori): string {
-  const testo = testoDi(chiave, valori);
+  const testo = testoDi(chiave, valori, false);
   if (testo === null) {
     if (import.meta.env.DEV)
       console.warn(`[lingue] manca «${chiave}» in «${attiva}»`);
