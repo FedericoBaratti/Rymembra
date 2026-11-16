@@ -21,6 +21,7 @@
  */
 import { creaArchivio } from "./archivio";
 import { ordinaFidati } from "./insieme";
+import { eventiEFotografia } from "./ultima";
 import type {
   Album,
   BranoRemoto,
@@ -35,6 +36,59 @@ import type {
 
 /** Il pannello, `null` finché il nucleo non ha risposto. */
 export const archivioLontano = creaArchivio<StatoLontano | null>(null);
+
+/**
+ * Gli eventi `lontano:stato` contro le risposte dei comandi (`ultima.ts`).
+ *
+ * L'archivio è uno solo per tutta la finestra, e il contatore sta accanto a
+ * lui, a livello di modulo: lo scrivono l'ascolto di `LontanoInApp`, la scheda
+ * dei dispositivi e `LontanoInApp` stesso, e nessuno dei tre deve ricoprire un
+ * evento più nuovo con una risposta chiesta prima di lui (R13-10).
+ */
+const eventiDelPannello = eventiEFotografia();
+
+/**
+ * Un `lontano:stato` mandato dal nucleo: il pannello com'è adesso. Si scrive e
+ * si conta, e le risposte dei comandi partiti prima non lo ricoprono più.
+ */
+export function eventoDelPannello(stato: StatoLontano): void {
+  eventiDelPannello.evento();
+  archivioLontano.scrivi(stato);
+}
+
+/**
+ * Chiamala **prima** di mandare un comando che risponde col pannello: restituisce
+ * chi adotta la risposta, che si scrive solo se nel frattempo non è arrivato un
+ * evento. Per chi deve fare altro fra il comando e la scrittura (`fai`, in
+ * `parti/Dispositivi.tsx`); gli altri usano [`comandoDelPannello`].
+ *
+ * Perché scartarla è giusto: il nucleo pubblica l'evento a ogni cambio del
+ * pannello (`lontano/filo.rs`, `pubblica`, solo se il testo è cambiato), e un
+ * comando che lo cambia ha il suo evento. Quello arrivato in mezzo è dunque
+ * fresco quanto la risposta o più; la risposta è il passato di un istante fa, e
+ * posata sopra di lui lo rimetterebbe a schermo fino al cambio dopo — che può
+ * essere a un minuto (`SCRIVI_VISTO_OGNI`).
+ */
+export function chiediIlPannello(): (risposta: StatoLontano) => void {
+  const vale = eventiDelPannello.chiedi();
+  return (risposta) => {
+    if (vale()) archivioLontano.scrivi(risposta);
+  };
+}
+
+/**
+ * Manda un comando che risponde col pannello, e ne adotta la risposta se non è
+ * arrivato un evento nel frattempo. La risposta si restituisce sempre: chi ha
+ * chiesto la usa per altro (un collegamento che parte, un invito).
+ */
+export async function comandoDelPannello(
+  comando: () => Promise<StatoLontano>,
+): Promise<StatoLontano> {
+  const adotta = chiediIlPannello();
+  const risposta = await comando();
+  adotta(risposta);
+  return risposta;
+}
 
 /**
  * Il link di collegamento che aspetta il sì della persona, con chi ci si
@@ -249,8 +303,7 @@ export function qrSoloInVista(annulla: () => Promise<StatoLontano>): {
   // `lontano:stato` che segue, e la scheda può andarsene prima.
   let creato = false;
   const togli = () => {
-    annulla()
-      .then((pannello) => archivioLontano.scrivi(pannello))
+    comandoDelPannello(annulla)
       .catch(() => {
         /* Il nucleo lo toglie comunque alla scadenza: qui non c'è più una
            scheda a cui dire l'errore. */
@@ -311,8 +364,7 @@ export async function accendiPoiCollega(passi: {
   collega: () => void;
   annullato: () => boolean;
 }): Promise<boolean> {
-  const nuovo = await passi.attiva();
-  archivioLontano.scrivi(nuovo);
+  await comandoDelPannello(passi.attiva);
   if (passi.annullato()) return false;
   passi.collega();
   return true;

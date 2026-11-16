@@ -48,7 +48,10 @@ import {
   archivioLink,
   archivioLontano,
   archivioScarico,
+  chiediIlPannello,
+  comandoDelPannello,
   eTelefono,
+  eventoDelPannello,
   linkDa,
   percorsoQr,
   qrScaduto,
@@ -153,17 +156,11 @@ export function LontanoInApp({
   // «Smetti di aspettare» vale anche mentre il collegamento si accende.
   const [tentativi] = useState(tentativiDiCollegamento);
 
-  useAscolto<StatoLontano>(
-    "lontano:stato",
-    (nuovo) => archivioLontano.scrivi(nuovo),
-    true,
-    () => {
-      ipc
-        .lontanoStato()
-        .then((nuovo) => archivioLontano.scrivi(nuovo))
-        .catch(() => undefined);
-    },
-  );
+  useAscolto<StatoLontano>("lontano:stato", eventoDelPannello, true, () => {
+    // La fotografia dopo l'apertura dell'ascolto: se nel frattempo è arrivato
+    // un evento, quello è più nuovo e la fotografia si butta (R13-10).
+    comandoDelPannello(() => ipc.lontanoStato()).catch(() => undefined);
+  });
 
   // Il link aperto da fuori: dall'evento, o — a freddo, con l'app partita
   // proprio per lui — da quello rimasto in attesa. Preso una volta sola, e
@@ -210,10 +207,8 @@ export function LontanoInApp({
 
   const collega = (daCollegare: LinkLontano) => {
     setCollegando(true);
-    ipc
-      .lontanoCollega(daCollegare.link)
-      .then((nuovo) => {
-        archivioLontano.scrivi(nuovo);
+    comandoDelPannello(() => ipc.lontanoCollega(daCollegare.link))
+      .then(() => {
         onNotizia(t("devices.linked"));
         archivioLink.scrivi(null);
       })
@@ -268,10 +263,8 @@ export function LontanoInApp({
   const datiMobili = (scelta: DatiMobili) => {
     const gesto = riprova;
     archivioDatiMobili.scrivi(null);
-    ipc
-      .lontanoDatiMobili(scelta)
-      .then((nuovo) => {
-        archivioLontano.scrivi(nuovo);
+    comandoDelPannello(() => ipc.lontanoDatiMobili(scelta))
+      .then(() => {
         if (scelta === "si" && gesto !== null) return gesto();
         return undefined;
       })
@@ -554,10 +547,9 @@ function RigaDispositivo({
           onFine={(nuovo) => {
             setRinomina(false);
             if (nuovo === null) return;
-            ipc
-              .lontanoRinomina(dispositivo.chiave, nuovo)
-              .then((pannello) => archivioLontano.scrivi(pannello))
-              .catch(onErrore);
+            comandoDelPannello(() => ipc.lontanoRinomina(dispositivo.chiave, nuovo)).catch(
+              onErrore,
+            );
           }}
         />
         <Etichette parti={parti} />
@@ -592,10 +584,7 @@ function RigaDispositivo({
               conferma: t("devices.forget"),
               consenso: true,
               fai: () => {
-                ipc
-                  .lontanoDimentica(dispositivo.chiave)
-                  .then((pannello) => archivioLontano.scrivi(pannello))
-                  .catch(onErrore);
+                comandoDelPannello(() => ipc.lontanoDimentica(dispositivo.chiave)).catch(onErrore);
               },
             })
           }
@@ -819,9 +808,12 @@ export function SchedaDispositivi({
   /** Un comando che risponde col pannello, uno alla volta. */
   const fai = (comando: () => Promise<StatoLontano | InvitoLontano | void>) => {
     setOccupato(true);
+    // La risposta si adotta solo se nel frattempo non è arrivato un evento più
+    // nuovo (R13-10): il conto parte prima del comando.
+    const adotta = chiediIlPannello();
     comando()
       .then((nuovo) => {
-        if (nuovo !== undefined && "dispositivi" in nuovo) archivioLontano.scrivi(nuovo);
+        if (nuovo !== undefined && "dispositivi" in nuovo) adotta(nuovo);
       })
       .catch(onErrore)
       .finally(() => setOccupato(false));
@@ -856,7 +848,7 @@ export function SchedaDispositivi({
   const accendiEMostraQr = () => {
     setAccendiPerQr(false);
     fai(async () => {
-      archivioLontano.scrivi(await ipc.lontanoAttiva(true));
+      await comandoDelPannello(() => ipc.lontanoAttiva(true));
       return qr.crea(ipc.lontanoQrCrea);
     });
   };
