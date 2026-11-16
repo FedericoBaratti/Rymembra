@@ -1912,6 +1912,24 @@ fn applica_playlist(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
             }
             continue;
         }
+        // Una playlist che arriva e qui non c'è — nuova, o rifatta altrove
+        // dopo una cancellazione, o tenuta in vita da chi l'ha ritoccata dopo
+        // la lapide — non eredita le righe che stavano sotto la sua chiave.
+        // `scrivi_sequenza` le fonderebbe con `min(tolto)`, e le lapidi della
+        // playlist di prima (una cancellazione fatta qui seppellisce tutto, e
+        // i battesimi `origine:*` danno le stesse identità a playlist diverse
+        // con lo stesso nome) ucciderebbero gli elementi vivi di quella che
+        // arriva: proprio quelli dei brani che qui non ci sono, che nessun
+        // `allinea` di qui può ricreare. La playlist che il fuso tiene ha già
+        // vinto sulla lapide di playlist: torna intera (revisione di FSYNC2,
+        // R1 e R2).
+        if locale.is_none() {
+            tx.execute(
+                "DELETE FROM sync_sequenza WHERE playlist_key = ?1",
+                [chiave],
+            )
+            .map_err(|err| db_error("sequenza di una playlist di prima", &err))?;
+        }
         // La sequenza intera, lapidi comprese, e non solo l'ordine che ne
         // esce: elementi tolti ed elementi di brani che qui non ci sono vanno
         // salvati lo stesso (vedi `Sequenza::elementi`).
@@ -5056,5 +5074,657 @@ mod prove {
         let seme: u64 = seme.parse().expect("seme");
         let trigger = std::env::var("SIM_TRIGGER").is_ok_and(|v| v == "1");
         rimozione_e_arrivi_tardivi(seme, trigger);
+    }
+
+    // ── Dalla seconda revisione indipendente della sincronia (FSYNC2): cancella e rifai fra
+    // dispositivi, «Annulla», rinomine incrociate, e tre simulazioni a tre dispositivi. ──
+
+    fn ora_vera() -> i64 {
+        crate::library::now_ms()
+    }
+
+    // ---- #8: Annulla dopo una passata, con un brano invisibile che altrove è vivo ----
+    #[test]
+    fn annulla_dopo_una_passata_rida_al_computer_il_brano_che_il_telefono_non_ha() {
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let base = ora_vera();
+        let id = id_playlist(&telefono, "sera");
+        let cancellata = crate::playlists::cancella(&mut telefono, id).expect("cancella");
+
+        // Una passata fra la cancellazione e l'«Annulla».
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(
+            &mut telefono,
+            "telefono",
+            ("computer", del_computer),
+            base + 10,
+        );
+        let del_telefono = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), base + 20),
+            Documento::nuovo("telefono", del_telefono, base + 20),
+        ]);
+        applica(&mut computer, &fuso, base + 20).expect("applicazione");
+        assert!(
+            ordine(&computer, "sera").is_empty(),
+            "la cancellazione è arrivata"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        crate::playlists::ripristina(&mut telefono, &cancellata).expect("ripristina");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+
+        // Un giro completo dopo l'«Annulla».
+        for t in 0..4 {
+            let del_computer = documento_di(&computer, "computer");
+            passata_con_altro(
+                &mut telefono,
+                "telefono",
+                ("computer", del_computer),
+                base + 100 + t * 10,
+            );
+            allinea(&mut computer, "computer", base + 105 + t * 10).expect("allinea");
+            let del_telefono = documento_di(&telefono, "telefono");
+            let fuso = fondi(&[
+                Documento::nuovo(
+                    "computer",
+                    documento_di(&computer, "computer"),
+                    base + 106 + t * 10,
+                ),
+                Documento::nuovo("telefono", del_telefono, base + 106 + t * 10),
+            ]);
+            applica(&mut computer, &fuso, base + 106 + t * 10).expect("applicazione");
+        }
+        assert_eq!(
+            ordine(&computer, "sera"),
+            vec!["a", "x", "b"],
+            "dopo «Annulla» il computer ha di nuovo tutta la playlist, x compreso"
+        );
+        assert_eq!(sequenza_di(&telefono, "sera").ordine(), vec!["a", "x", "b"]);
+    }
+
+    // ---- #1: rinomina incrociata fra due dispositivi ----
+    #[test]
+    fn rinomine_diverse_su_due_dispositivi_non_perdono_x() {
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let base = ora_vera();
+        let id_t = id_playlist(&telefono, "sera");
+        crate::playlists::rename(&telefono, id_t, "notte").expect("rinomina");
+        let id_c = id_playlist(&computer, "sera");
+        crate::playlists::rename(&computer, id_c, "alba").expect("rinomina");
+        for t in 0..5 {
+            let tt = base + 100 + t * 50;
+            allinea(&mut computer, "computer", tt).expect("allinea");
+            let dc = documento_di(&computer, "computer");
+            passata_con_altro(&mut telefono, "telefono", ("computer", dc), tt + 10);
+            let dt = documento_di(&telefono, "telefono");
+            let fuso = fondi(&[
+                Documento::nuovo("computer", documento_di(&computer, "computer"), tt + 20),
+                Documento::nuovo("telefono", dt, tt + 20),
+            ]);
+            applica(&mut computer, &fuso, tt + 20).expect("applicazione");
+        }
+        let mut nomi_c: Vec<String> = computer
+            .prepare("SELECT playlist_key FROM playlists ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        nomi_c.sort();
+        eprintln!("computer: {nomi_c:?}");
+        for k in &nomi_c {
+            assert_eq!(ordine(&computer, k), vec!["a", "x", "b"], "computer {k}");
+            assert_eq!(ordine(&telefono, k), vec!["a", "b"], "telefono {k}");
+        }
+        assert!(!nomi_c.is_empty());
+    }
+
+    // ---- #1: rinomina e subito di nuovo il nome di prima, con una passata nel mezzo ----
+    #[test]
+    fn rinomina_avanti_e_indietro_con_una_passata_nel_mezzo() {
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let base = ora_vera();
+        let id_t = id_playlist(&telefono, "sera");
+        crate::playlists::rename(&telefono, id_t, "notte").expect("rinomina");
+        let dc = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", dc), base + 10);
+        let dt = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), base + 20),
+            Documento::nuovo("telefono", dt, base + 20),
+        ]);
+        applica(&mut computer, &fuso, base + 20).expect("applicazione");
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let id_t = id_playlist(&telefono, "notte");
+        crate::playlists::rename(&telefono, id_t, "sera").expect("rinomina indietro");
+        for t in 0..5 {
+            let tt = base + 100 + t * 50;
+            allinea(&mut computer, "computer", tt).expect("allinea");
+            let dc = documento_di(&computer, "computer");
+            passata_con_altro(&mut telefono, "telefono", ("computer", dc), tt + 10);
+            let dt = documento_di(&telefono, "telefono");
+            let fuso = fondi(&[
+                Documento::nuovo("computer", documento_di(&computer, "computer"), tt + 20),
+                Documento::nuovo("telefono", dt, tt + 20),
+            ]);
+            applica(&mut computer, &fuso, tt + 20).expect("applicazione");
+        }
+        let nomi_c: Vec<String> = computer
+            .prepare("SELECT playlist_key FROM playlists ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        eprintln!("computer: {nomi_c:?}");
+        for k in &nomi_c {
+            assert_eq!(ordine(&computer, k), vec!["a", "x", "b"], "computer {k}");
+        }
+        assert_eq!(ordine(&computer, "sera"), vec!["a", "x", "b"]);
+    }
+
+    // ---- simulazioni estese: rimozioni e riaggiunte miste ad arrivi e partenze ----
+    impl Sim {
+        fn op_togli_riga(&mut self, toccati: &mut BTreeSet<(String, String)>) {
+            let d = self.r(3);
+            let playlists = self.playlist_di(d);
+            if playlists.is_empty() {
+                return;
+            }
+            let p = playlists[self.r(playlists.len())].clone();
+            let righe = self.pt(d, &p);
+            if righe.is_empty() {
+                return;
+            }
+            let i = self.r(righe.len());
+            let k = righe[i].1.clone();
+            let mut ids: Vec<i64> = righe.iter().map(|(id, _)| *id).collect();
+            ids.remove(i);
+            self.scrivi_pt(d, &p, &ids);
+            toccati.insert((p.clone(), k.clone()));
+            self.log.push(format!("RIMUOVE {} {p} {k}", self.nomi[d]));
+        }
+
+        /// Coerenza fra i dispositivi: stessi elementi vivi e stesso ordine.
+        fn coerenza(&mut self) {
+            let fuso = self.fuso_finale();
+            for (chiave_pl, pl) in &fuso.playlist {
+                for d in 0..3 {
+                    let presenti = self.presenti(d);
+                    let atteso: Vec<String> = pl
+                        .sequenza
+                        .ordine()
+                        .into_iter()
+                        .filter(|b| presenti.iter().any(|p| p == b))
+                        .map(str::to_owned)
+                        .collect();
+                    let visto: Vec<String> =
+                        self.pt(d, chiave_pl).into_iter().map(|(_, k)| k).collect();
+                    assert_eq!(
+                        visto,
+                        atteso,
+                        "INCOERENTE su {} per {chiave_pl}{}",
+                        self.nomi[d],
+                        self.dettaglio()
+                    );
+                }
+            }
+        }
+    }
+
+    fn crea_le_due(sim: &mut Sim) {
+        for p in ["P", "Q"] {
+            let presenti = sim.presenti(0);
+            let quanti = 3 + sim.r(4);
+            let mut ids = Vec::new();
+            let mut chiavi = Vec::new();
+            for _ in 0..quanti {
+                let k = presenti[sim.r(presenti.len())].clone();
+                ids.push(id_del_brano(&sim.db[0], &k));
+                chiavi.push(k);
+            }
+            sim.db[0]
+                .execute(
+                    "INSERT INTO playlists (playlist_key, name, created_at, updated_at)
+                     VALUES (?1, ?1, 100, 100)",
+                    [p],
+                )
+                .expect("playlist");
+            sim.scrivi_pt(0, p, &ids);
+            for k in chiavi {
+                *sim.adds.entry((p.to_owned(), k)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn sim_mista(seme: u64, con_trigger: bool) {
+        let mut sim = Sim::nuovo(seme, con_trigger);
+        crea_le_due(&mut sim);
+        sim.converge();
+        let mut toccati: BTreeSet<(String, String)> = BTreeSet::new();
+        let passi = 25 + sim.r(30);
+        for _ in 0..passi {
+            match sim.r(12) {
+                0 | 1 => sim.op_aggiungi(false),
+                2 => {
+                    sim.converge();
+                    sim.op_sposta();
+                    sim.converge();
+                }
+                3 => sim.op_sparisce(),
+                4 | 5 => sim.op_arriva(),
+                6 => sim.op_togli_riga(&mut toccati),
+                7 => {
+                    sim.converge();
+                    sim.op_aggiungi(true);
+                    sim.converge();
+                }
+                _ => {
+                    let d = sim.r(3);
+                    sim.sync(d);
+                }
+            }
+        }
+        sim.converge();
+        sim.coerenza();
+        // Niente perso fra quel che nessuno ha toccato.
+        let fuso = sim.fuso_finale();
+        for ((p, k), quante) in sim.adds.clone() {
+            if toccati.contains(&(p.clone(), k.clone())) {
+                continue;
+            }
+            let Some(pl) = fuso.playlist.get(&p) else {
+                continue;
+            };
+            let v = pl.sequenza.ordine().into_iter().filter(|b| *b == k).count();
+            assert!(
+                v >= 1,
+                "PERDITA {p}/{k} (aggiunto {quante}){}",
+                sim.dettaglio()
+            );
+        }
+    }
+
+    #[test]
+    fn simulazione_mista_a_tre_dispositivi() {
+        for trigger in [false, true] {
+            for seme in 0..quanti_semi(40) {
+                let esito = std::panic::catch_unwind(|| sim_mista(seme, trigger));
+                if let Err(e) = esito {
+                    eprintln!("SEME {seme} (mista, trigger {trigger})");
+                    std::panic::resume_unwind(e);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn un_seme_sim_mista() {
+        let Ok(seme) = std::env::var("REV2_SEME") else {
+            return;
+        };
+        let trigger = std::env::var("SIM_TRIGGER").is_ok_and(|v| v == "1");
+        sim_mista(seme.parse().expect("seme"), trigger);
+    }
+
+    // ---- simulazione: rinomine e cancellazioni con «Annulla», sempre a libreria ferma ----
+    impl Sim {
+        fn chiave_di(&self, d: usize, id: i64) -> String {
+            self.db[d]
+                .query_row(
+                    "SELECT playlist_key FROM playlists WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .expect("chiave")
+        }
+
+        fn op_rinomina(&mut self) {
+            self.converge();
+            let d = self.r(3);
+            let playlists = self.playlist_di(d);
+            if playlists.is_empty() {
+                return;
+            }
+            let p = playlists[self.r(playlists.len())].clone();
+            let nuovo = format!("{p}x");
+            let id = id_playlist(&self.db[d], &p);
+            if crate::playlists::rename(&self.db[d], id, &nuovo).is_err() {
+                return;
+            }
+            let nuova_chiave = self.chiave_di(d, id);
+            let voci: Vec<((String, String), usize)> = self
+                .adds
+                .iter()
+                .filter(|((pp, _), _)| *pp == p)
+                .map(|(k, n)| (k.clone(), *n))
+                .collect();
+            for ((_, k), n) in voci {
+                self.adds.remove(&(p.clone(), k.clone()));
+                self.adds.insert((nuova_chiave.clone(), k), n);
+            }
+            self.log
+                .push(format!("RINOMINA {} {p} -> {nuova_chiave}", self.nomi[d]));
+            self.converge();
+        }
+
+        fn op_cancella_annulla(&mut self, con_passata: bool, converge_prima: bool) {
+            if converge_prima {
+                self.converge();
+            }
+            let d = self.r(3);
+            let playlists = self.playlist_di(d);
+            if playlists.is_empty() {
+                return;
+            }
+            let p = playlists[self.r(playlists.len())].clone();
+            let id = id_playlist(&self.db[d], &p);
+            let c = crate::playlists::cancella(&mut self.db[d], id).expect("cancella");
+            self.log.push(format!(
+                "CANCELLA {} {p} (passata {con_passata})",
+                self.nomi[d]
+            ));
+            if con_passata {
+                for e in 0..3 {
+                    self.sync(e);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            crate::playlists::ripristina(&mut self.db[d], &c).expect("ripristina");
+            self.log.push(format!("ANNULLA {} {p}", self.nomi[d]));
+            self.converge();
+        }
+    }
+
+    fn sim_rinomina(seme: u64, con_trigger: bool) {
+        let mut sim = Sim::nuovo(seme, con_trigger);
+        crea_le_due(&mut sim);
+        sim.converge();
+        let passi = 15 + sim.r(20);
+        for _ in 0..passi {
+            match sim.r(12) {
+                0 | 1 => sim.op_aggiungi(false),
+                2 => {
+                    sim.converge();
+                    sim.op_sposta();
+                    sim.converge();
+                }
+                3 => sim.op_sparisce(),
+                4 | 5 => sim.op_arriva(),
+                6 => sim.op_rinomina(),
+                7 => {
+                    let con_passata = sim.r(2) == 0;
+                    sim.op_cancella_annulla(con_passata, true);
+                }
+                _ => {
+                    let d = sim.r(3);
+                    sim.sync(d);
+                }
+            }
+        }
+        sim.converge();
+        sim.controlla(false);
+    }
+
+    #[test]
+    fn simulazione_rinomina_e_annulla() {
+        for trigger in [false, true] {
+            for seme in 0..quanti_semi(40) {
+                let esito = std::panic::catch_unwind(|| sim_rinomina(seme, trigger));
+                if let Err(e) = esito {
+                    eprintln!("SEME {seme} (rinomina, trigger {trigger})");
+                    std::panic::resume_unwind(e);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn un_seme_sim_rinomina() {
+        let Ok(seme) = std::env::var("REV2_SEME") else {
+            return;
+        };
+        let trigger = std::env::var("SIM_TRIGGER").is_ok_and(|v| v == "1");
+        sim_rinomina(seme.parse().expect("seme"), trigger);
+    }
+
+    // ---- a regime, `allinea` non scrive e non riaggancia niente ----
+    fn sim_idempotenza(seme: u64, con_trigger: bool) {
+        let mut sim = Sim::nuovo(seme, con_trigger);
+        crea_le_due(&mut sim);
+        sim.converge();
+        let mut toccati: BTreeSet<(String, String)> = BTreeSet::new();
+        let passi = 25 + sim.r(30);
+        for _ in 0..passi {
+            match sim.r(12) {
+                0 | 1 => sim.op_aggiungi(false),
+                3 => sim.op_sparisce(),
+                4 | 5 => sim.op_arriva(),
+                6 => sim.op_togli_riga(&mut toccati),
+                _ => {
+                    let d = sim.r(3);
+                    sim.sync(d);
+                }
+            }
+        }
+        sim.converge();
+        for d in 0..3 {
+            let t = sim.tick();
+            let nome = sim.nomi[d];
+            let fatto = allinea(&mut sim.db[d], nome, t).expect("allinea");
+            assert!(
+                fatto.e_vuoto(),
+                "NON A REGIME su {nome}: {fatto:?}{}",
+                sim.dettaglio()
+            );
+        }
+    }
+
+    #[test]
+    fn simulazione_allinea_a_regime_non_scrive() {
+        for trigger in [false, true] {
+            for seme in 0..quanti_semi(40) {
+                let esito = std::panic::catch_unwind(|| sim_idempotenza(seme, trigger));
+                if let Err(e) = esito {
+                    eprintln!("SEME {seme} (idempotenza, trigger {trigger})");
+                    std::panic::resume_unwind(e);
+                }
+            }
+        }
+    }
+
+    // ---- playlist cancellata su un dispositivo e rifatta con lo stesso nome su un altro ----
+    #[test]
+    fn cancellata_sul_computer_e_rifatta_sul_telefono_con_un_brano_solo_suo() {
+        // Il computer ha a, x, b; il telefono a, b, y (y solo suo).
+        let mut computer = libreria_con(&["a", "x", "b"]);
+        let mut telefono = libreria_con(&["a", "b", "y"]);
+        let base = ora_vera();
+        playlist_con(&computer, "sera", &[1, 2, 3]);
+        let giro = |computer: &mut Connection, telefono: &mut Connection, da: i64, volte: i64| {
+            for t in 0..volte {
+                let tt = da + t * 100;
+                allinea(computer, "computer", tt).expect("allinea");
+                let dc = documento_di(computer, "computer");
+                passata_con_altro(telefono, "telefono", ("computer", dc), tt + 10);
+                let dt = documento_di(telefono, "telefono");
+                let fuso = fondi(&[
+                    Documento::nuovo("computer", documento_di(computer, "computer"), tt + 20),
+                    Documento::nuovo("telefono", dt, tt + 20),
+                ]);
+                applica(computer, &fuso, tt + 20).expect("applicazione");
+            }
+        };
+        giro(&mut computer, &mut telefono, base + 100, 3);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+
+        // Il computer cancella «sera»; la cancellazione arriva al telefono.
+        let id = id_playlist(&computer, "sera");
+        crate::playlists::cancella(&mut computer, id).expect("cancella");
+        giro(&mut computer, &mut telefono, base + 1_000, 3);
+        assert!(
+            ordine(&telefono, "sera").is_empty(),
+            "la cancellazione è arrivata"
+        );
+
+        // Il telefono rifà una «sera» sua, con un brano solo suo.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        playlist_con(&telefono, "sera", &[1, 3, 2]); // a, y, b? ids: telefono a=1 b=2 y=3
+        let adesso = ora_vera();
+        telefono
+            .execute(
+                "UPDATE playlists SET created_at = ?1, updated_at = ?1 WHERE playlist_key = 'sera'",
+                [adesso],
+            )
+            .expect("data");
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "y", "b"]);
+        giro(&mut computer, &mut telefono, base + 10_000, 5);
+        eprintln!(
+            "telefono: {:?}  computer: {:?}",
+            ordine(&telefono, "sera"),
+            ordine(&computer, "sera")
+        );
+        for (i, e) in sequenza_di(&telefono, "sera").elementi() {
+            eprintln!(
+                "  telefono seq {} {} tolto={:?}",
+                i.testo(),
+                e.brano,
+                e.tolto.is_some()
+            );
+        }
+        assert_eq!(
+            ordine(&telefono, "sera"),
+            vec!["a", "y", "b"],
+            "il telefono perde un brano che aveva messo lui"
+        );
+    }
+
+    // ---- #8 (+ radice di #1): playlist cancellata dal telefono, e il computer la tocca DOPO la lapide ----
+    #[test]
+    fn cancellata_dal_telefono_e_ritoccata_dal_computer_dopo_la_lapide_x_resta() {
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let base = crate::library::now_ms();
+        let id: i64 = telefono
+            .query_row(
+                "SELECT id FROM playlists WHERE playlist_key = 'sera'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("id");
+        crate::playlists::cancella(&mut telefono, id).expect("cancella");
+        // Una passata del telefono: la lapide parte. Non si applica ancora al computer.
+        let dc = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", dc), base + 10);
+
+        // Il computer, scollegato, aggiunge `z` a «sera» DOPO la lapide.
+        brano_di_prova(&computer, 4, "z", None);
+        computer
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 SELECT id, 4, 3 FROM playlists WHERE playlist_key = 'sera'",
+                [],
+            )
+            .expect("aggiunta");
+        computer
+            .execute(
+                "UPDATE playlists SET updated_at = ?1 WHERE playlist_key = 'sera'",
+                [base + 500],
+            )
+            .expect("data");
+
+        for t in 0..6 {
+            let tt = base + 1_000 + t * 100;
+            allinea(&mut computer, "computer", tt).expect("allinea");
+            let dc = documento_di(&computer, "computer");
+            passata_con_altro(&mut telefono, "telefono", ("computer", dc), tt + 10);
+            let dt = documento_di(&telefono, "telefono");
+            let fuso = fondi(&[
+                Documento::nuovo("computer", documento_di(&computer, "computer"), tt + 20),
+                Documento::nuovo("telefono", dt, tt + 20),
+            ]);
+            applica(&mut computer, &fuso, tt + 20).expect("applicazione");
+        }
+        eprintln!("computer: {:?}", ordine(&computer, "sera"));
+        eprintln!("telefono: {:?}", ordine(&telefono, "sera"));
+        let seq = sequenza_di(&computer, "sera");
+        for (i, e) in seq.elementi() {
+            eprintln!(
+                "  computer seq {} {} dopo={:?} tolto={:?}",
+                i.testo(),
+                e.brano,
+                e.dopo.as_ref().map(Identita::testo),
+                e.tolto.is_some()
+            );
+        }
+        assert!(
+            ordine(&computer, "sera").contains(&"x".to_owned()),
+            "x (il brano che il telefono non ha) è sparito dalla playlist del computer"
+        );
+    }
+
+    /// Misura (ignorata): la query dei brani assenti con tante lapidi.
+    #[test]
+    #[ignore = "misura"]
+    fn misura_brani_assenti_con_le_lapidi() {
+        use std::time::Instant;
+        let telefono = db::open_in_memory().expect("db").connection;
+        {
+            let tx = telefono.unchecked_transaction().expect("tx");
+            for i in 0..2_500_i64 {
+                let chiave = format!("artista {i}|titolo {i}|album dove");
+                tx.execute(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size, date_added, date_modified)
+                     VALUES (?1, ?2, ?3, ?3, 'chi', 'dove', 0, 0, 0)",
+                    rusqlite::params![i + 1, format!("/musica/{i}.flac"), chiave],
+                ).expect("brano");
+            }
+            // 200 playlist, 100 vive e 900 lapidi ciascuna: 200 000 righe.
+            let mut seme: u64 = 0x2545_F491_4F6C_DD1D;
+            for p in 0..200 {
+                for e in 0..1000 {
+                    seme ^= seme << 13;
+                    seme ^= seme >> 7;
+                    seme ^= seme << 17;
+                    let k = seme % 50_000;
+                    let tolto: Option<i64> = if e < 100 { None } else { Some(5) };
+                    tx.execute(
+                        "INSERT INTO sync_sequenza (playlist_key, elemento, dopo, track_key, tolto_ms) VALUES (?1, ?2, NULL, ?3, ?4)",
+                        rusqlite::params![format!("p{p}"), format!("d:{e}"), format!("artista {k}|titolo {k}|album dove"), tolto],
+                    ).expect("riga");
+                }
+            }
+            tx.commit().expect("commit");
+        }
+        let t0 = Instant::now();
+        let tutte = brani_assenti(&telefono).expect("assenti");
+        eprintln!(
+            "MISURA nuova (tutte le righe): {:?}, {} chiavi",
+            t0.elapsed(),
+            tutte.len()
+        );
+        let t0 = Instant::now();
+        let mut st = telefono
+            .prepare(
+                "SELECT DISTINCT s.track_key FROM sync_sequenza s WHERE s.tolto_ms IS NULL
+              AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.track_key = s.track_key)",
+            )
+            .expect("p");
+        let vive: BTreeSet<String> = st
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("q")
+            .map(|r| r.expect("r"))
+            .collect();
+        eprintln!(
+            "MISURA vecchia (solo vive): {:?}, {} chiavi",
+            t0.elapsed(),
+            vive.len()
+        );
+        let json = serde_json::to_string(&tutte).expect("json");
+        eprintln!(
+            "MISURA memoria: {} byte di JSON (solo vive: {} byte)",
+            json.len(),
+            serde_json::to_string(&vive).expect("json").len()
+        );
     }
 }
