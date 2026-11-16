@@ -381,9 +381,11 @@ impl Sequenza {
     /// l'elemento accolto, con un numero alto in una sequenza più corta,
     /// sparirebbe alla lettura dopo: la passata dopo lo ricreerebbe con
     /// un'identità nostra, e il doppione tornerebbe in silenzio. Per questo, se
-    /// serve, si aggiungono elementi **tolti** con un'identità di `dispositivo`
-    /// e un brano qualunque: non si vedono, non cambiano l'ordine, e fanno stare
-    /// il conto sopra il massimo.
+    /// serve, si aggiungono elementi **tolti** nello spazio di nomi
+    /// `<dispositivo>.posto` (che nessun inserimento vero produce) e con un
+    /// brano qualunque: non si vedono, non cambiano l'ordine, non possono
+    /// coincidere con un elemento vivo di nessuno, e fanno stare il conto sopra
+    /// il massimo.
     pub fn accogli_in_coda(
         &mut self,
         altra: &Self,
@@ -421,9 +423,17 @@ impl Sequenza {
         accolti.len()
     }
 
-    /// Aggiunge elementi tolti, con identità di `dispositivo`, finché il conto
-    /// degli elementi sta sopra il numero più alto: vedi
-    /// [`Sequenza::accogli_in_coda`].
+    /// Aggiunge elementi tolti finché il conto degli elementi sta sopra il numero
+    /// più alto: vedi [`Sequenza::accogli_in_coda`].
+    ///
+    /// I riempitivi stanno in uno spazio di nomi che `metti` non produce mai,
+    /// `<dispositivo>.posto`. Con le identità vere di `dispositivo` avrebbero
+    /// potuto coincidere con un elemento **vivo** che questo dispositivo ha
+    /// scritto in passato e che qui, per un database ripristinato da un file di
+    /// prima, non c'è più: la lapide del riempitivo, alla prima fusione, lo
+    /// avrebbe sepolto sull'altro dispositivo. Così gli unici elementi che
+    /// possono avere l'identità di un riempitivo sono altri riempitivi, tolti
+    /// anche loro: tolto contro tolto non cambia niente.
     fn fa_posto_ai_numeri(&mut self, dispositivo: &str, brano: &str, quando: i64) {
         let Some(massimo) = self.elementi.keys().map(|identita| identita.n).max() else {
             return;
@@ -431,9 +441,10 @@ impl Sequenza {
         let servono = usize::try_from(massimo)
             .unwrap_or(usize::MAX)
             .saturating_add(1);
+        let spazio = format!("{dispositivo}.posto");
         let mut numero = massimo;
         while self.elementi.len() < servono {
-            let identita = Identita::nuova(dispositivo, numero);
+            let identita = Identita::nuova(&spazio, numero);
             self.elementi.entry(identita).or_insert_with(|| Elemento {
                 dopo: None,
                 brano: brano.to_owned(),
@@ -1186,7 +1197,7 @@ mod prove {
         // Nessuna lapide di là: l'unica lapide che può esserci è un riempitivo.
         for (identita, elemento) in mia.elementi() {
             if elemento.tolto.is_some() {
-                assert_eq!(identita.dispositivo, "qui", "{identita:?}");
+                assert_eq!(identita.dispositivo, "qui.posto", "{identita:?}");
                 assert_eq!(elemento.tolto, Some(600));
             }
         }
@@ -1245,6 +1256,37 @@ mod prove {
         assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
         assert_eq!(mia.ordine(), vec!["a", "b", "y"]);
         assert_eq!(vivi_di(&mia, "b"), vivi_di(&qui, "b"));
+        assert_eq!(riletta(&mia), mia);
+    }
+
+    #[test]
+    fn i_riempitivi_non_hanno_mai_l_identita_di_un_elemento_vivo_di_chi_accoglie() {
+        // Un dispositivo ha scritto `qui:3` (vivo, «d») e poi ha perso quel
+        // pezzo del suo database (un ripristino da un file di prima): qui non
+        // c'è, ma l'altra sequenza lo ha ancora, vivo. Se un riempitivo avesse
+        // l'identità `qui:3` e fosse tolto, la fusione seppellirebbe «d» anche
+        // di là.
+        let mut altra = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        altra.accoda("qui", "d"); // qui:3, vivo, e già nominato da `gia`
+        altra.accoda("qui", "e"); // qui:4, vivo, il solo da accogliere
+        let mut mia = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let gia: BTreeSet<&str> = ["a", "b", "c", "d"].into_iter().collect();
+
+        assert_eq!(mia.accogli_in_coda(&altra, "qui", 100, &gia), 1);
+        // Il riempitivo serve (un numero alto in una sequenza corta)…
+        assert!(
+            mia.elementi()
+                .any(|(identita, elemento)| identita.dispositivo == "qui.posto"
+                    && elemento.tolto.is_some())
+        );
+        // …ma nessun elemento tolto ha un'identità di `qui`, e la fusione tiene «d».
+        for (identita, elemento) in mia.elementi() {
+            if identita.dispositivo == "qui" {
+                assert!(elemento.tolto.is_none(), "{identita:?}");
+            }
+        }
+        assert!(mia.fondi(&altra).ordine().contains(&"d"));
+        assert!(altra.fondi(&mia).ordine().contains(&"d"));
         assert_eq!(riletta(&mia), mia);
     }
 
