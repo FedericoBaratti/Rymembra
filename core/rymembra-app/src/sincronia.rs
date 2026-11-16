@@ -278,7 +278,10 @@ impl Allineato {
 /// Porta le tabelle della sincronia in pari con la libreria.
 ///
 /// Da chiamare all'inizio di una passata, prima di [`contenuto`]. Su una
-/// libreria ferma non scrive niente e costa tre interrogazioni.
+/// libreria ferma non scrive niente e costa nove interrogazioni: due sugli
+/// ascolti, cinque sulle sequenze (i membri delle playlist in due, le
+/// sequenze salvate, i brani assenti e la loro memoria, una per una) e due
+/// sulle cartelle.
 ///
 /// # Errori
 ///
@@ -309,9 +312,9 @@ fn allinea_in(
     adesso_ms: i64,
 ) -> Result<Allineato, AppError> {
     let ascolti = allinea_ascolti(tx)?;
+    // La memoria dei brani assenti la riscrive `allinea_sequenze` in coda, con
+    // quel che ha già calcolato: vedi [`CHIAVE_BRANI_ASSENTI`].
     let (sequenze, agganciate) = allinea_sequenze(tx, dispositivo, adesso_ms)?;
-    // Per ultima fra le sequenze: vedi [`CHIAVE_BRANI_ASSENTI`].
-    ricorda_i_brani_assenti(tx)?;
     Ok(Allineato {
         ascolti,
         sequenze,
@@ -510,6 +513,7 @@ fn allinea_sequenze(
     // gli elementi, quelli dei brani che qui mancano compresi (una playlist
     // cancellata qui è una decisione, a differenza di un brano che non c'è), o
     // al prossimo giro tornerebbero da soli.
+    let mut sepolte_del_tutto = false;
     for (chiave, sequenza) in sequenze {
         if sequenza.ordine().is_empty() {
             continue;
@@ -519,7 +523,20 @@ fn allinea_sequenze(
         vuotata.riordina(dispositivo, &[], adesso_ms);
         scrivi_sequenza(tx, &chiave, &vuotata)?;
         rifatte += 1;
+        sepolte_del_tutto = true;
     }
+
+    // La memoria si riscrive qui, con `assenti` e `ricordo` che servivano già a
+    // decidere: rifarli da capo costava un'interrogazione sulle sequenze e una
+    // lettura in più, a ogni passata. Valgono ancora, salvo una cosa: le
+    // playlist sparite hanno sepolto anche le voci dei brani assenti, e
+    // `assenti` le nomina ancora. Solo allora si rifà.
+    let assenti = if sepolte_del_tutto {
+        brani_assenti(tx)?
+    } else {
+        assenti
+    };
+    scrivi_il_ricordo(tx, &assenti, &ricordo)?;
     Ok((rifatte, agganciate))
 }
 
@@ -530,6 +547,8 @@ fn allinea_sequenze(
 /// un'interrogazione sola, e usa `idx_sync_sequenza_vivi` e
 /// `idx_tracks_track_key`.
 fn brani_assenti(connection: &Connection) -> Result<BTreeSet<String>, AppError> {
+    #[cfg(test)]
+    LETTURE.with(|letture| letture.set((letture.get().0 + 1, letture.get().1)));
     let mut statement = connection
         .prepare(
             "SELECT DISTINCT s.track_key FROM sync_sequenza s
@@ -563,6 +582,8 @@ enum Ricordo {
 /// `settings::read_json` non lo permette: un JSON storto vale per lei come un
 /// valore assente, ed è proprio quel che qui non si può fare.
 fn ricordo_dei_brani_assenti(connection: &Connection) -> Result<Ricordo, AppError> {
+    #[cfg(test)]
+    LETTURE.with(|letture| letture.set((letture.get().0, letture.get().1 + 1)));
     let Some(grezzo) = settings::read(connection, CHIAVE_BRANI_ASSENTI)? else {
         return Ok(Ricordo::Nessuno);
     };
@@ -579,7 +600,19 @@ fn ricordo_dei_brani_assenti(connection: &Connection) -> Result<Ricordo, AppErro
 /// che la passata dopo la ritrova guasta, e non seppellisce niente neanche lei.
 fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
     let adesso = brani_assenti(connection)?;
-    match ricordo_dei_brani_assenti(connection)? {
+    let ricordo = ricordo_dei_brani_assenti(connection)?;
+    scrivi_il_ricordo(connection, &adesso, &ricordo)
+}
+
+/// Il corpo di [`ricorda_i_brani_assenti`], per chi ha già letto i brani assenti
+/// e la memoria com'era: [`allinea_sequenze`] li ha in mano per decidere, e non
+/// li rilegge.
+fn scrivi_il_ricordo(
+    connection: &Connection,
+    adesso: &BTreeSet<String>,
+    ricordo: &Ricordo,
+) -> Result<(), AppError> {
+    match ricordo {
         Ricordo::Nessuno if adesso.is_empty() => return Ok(()),
         Ricordo::Chiavi(ricordati) if ricordati == adesso => return Ok(()),
         Ricordo::Nessuno | Ricordo::Illeggibile | Ricordo::Chiavi(_) => {}
@@ -588,7 +621,14 @@ fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
         settings::forget(connection, CHIAVE_BRANI_ASSENTI)?;
         return Ok(());
     }
-    settings::write_json(connection, CHIAVE_BRANI_ASSENTI, &adesso)
+    settings::write_json(connection, CHIAVE_BRANI_ASSENTI, adesso)
+}
+
+// Quante volte questo filo ha interrogato i brani assenti e letto la memoria:
+// la prova del costo di una passata ferma. Solo nei test.
+#[cfg(test)]
+thread_local! {
+    static LETTURE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 /// Riscrive l'appartenenza di una playlist con questo ordine.
@@ -3753,5 +3793,149 @@ mod prove {
         );
         settings::write(&qui, CHIAVE_BRANI_ASSENTI, "{non json").expect("guasta");
         assert_eq!(ricordo_dei_brani_assenti(&qui), Ok(Ricordo::Illeggibile));
+    }
+
+    // ── FSYNC2: il costo di una passata ferma ──
+
+    fn azzera_le_letture() {
+        LETTURE.with(|letture| letture.set((0, 0)));
+    }
+
+    fn letture() -> (usize, usize) {
+        LETTURE.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn una_passata_ferma_interroga_una_volta_sola_i_brani_assenti_e_la_memoria() {
+        // Prima li ricalcolava due volte ciascuno: una per decidere e una per
+        // riscrivere la memoria, tutto col lucchetto della libreria in mano.
+        let (_computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+
+        azzera_le_letture();
+        let fatto = allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert!(fatto.e_vuoto(), "{fatto:?}");
+        assert_eq!(
+            letture(),
+            (1, 1),
+            "una interrogazione dei brani assenti e una lettura della memoria"
+        );
+    }
+
+    #[test]
+    fn la_memoria_si_rifa_se_una_playlist_sparita_ha_sepolto_le_voci_dei_brani_assenti() {
+        // Il riuso dei brani assenti calcolati a inizio passata vale finché la
+        // passata non li seppellisce: una playlist cancellata qui sotterra
+        // tutte le sue voci, quelle dei brani che mancano comprese, e la
+        // memoria non può più nominarli.
+        let (_computer, mut telefono) = computer_e_telefono();
+        assert_eq!(
+            settings::read_json::<BTreeSet<String>>(&telefono, CHIAVE_BRANI_ASSENTI),
+            Ok(Some(BTreeSet::from(["x".to_owned()])))
+        );
+        telefono
+            .execute("DELETE FROM playlists WHERE playlist_key = 'sera'", [])
+            .expect("playlist cancellata");
+
+        azzera_le_letture();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        assert_eq!(letture(), (2, 1), "qui si rifà, e solo qui");
+        assert_eq!(
+            settings::read(&telefono, CHIAVE_BRANI_ASSENTI),
+            Ok(None),
+            "nessuna voce viva nomina più `x`"
+        );
+    }
+
+    /// Una misura, non una prova: `cargo test -p rymembra-app --release --lib
+    /// -- --ignored --nocapture costo_di_una_passata`. Un telefono con il 5%
+    /// della musica di un computer da 50 000 brani, 200 playlist da 100 voci.
+    #[test]
+    #[ignore = "misura: si lancia a mano con --ignored --nocapture"]
+    fn costo_di_una_passata_ferma_su_un_telefono_con_il_cinque_per_cento() {
+        use std::time::Instant;
+        let mut telefono = db::open_in_memory()
+            .expect("database in memoria")
+            .connection;
+        {
+            let tx = telefono.transaction().expect("transazione");
+            for i in 0..2_500_i64 {
+                let chiave = format!("artista {i}|titolo {i}|album dove");
+                tx.execute(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                         date_added, date_modified)
+                     VALUES (?1, ?2, ?3, ?3, 'chi', 'dove', 0, 0, 0)",
+                    rusqlite::params![i + 1, format!("/musica/{i}.flac"), chiave],
+                )
+                .expect("brano");
+            }
+            tx.commit().expect("chiusura");
+        }
+        let mut contenuto = Contenuto::default();
+        let mut seme: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut prossimo = move || {
+            seme ^= seme << 13;
+            seme ^= seme >> 7;
+            seme ^= seme << 17;
+            seme
+        };
+        for p in 0..200 {
+            let brani: Vec<String> = (0..100)
+                .map(|_| {
+                    let i = prossimo() % 50_000;
+                    format!("artista {i}|titolo {i}|album dove")
+                })
+                .collect();
+            let nome = format!("playlist {p}");
+            contenuto.playlist.insert(
+                nome.clone(),
+                PlaylistSincronizzata {
+                    nome,
+                    descrizione: None,
+                    creata_at: 100,
+                    at: 100,
+                    smart: false,
+                    regole: None,
+                    sequenza: Sequenza::dalla_lista("computer", &brani),
+                },
+            );
+        }
+        let fuso = fondi(&[Documento::nuovo("computer", contenuto.clone(), 1_000)]);
+        let t0 = Instant::now();
+        applica(&mut telefono, &fuso, 1_000).expect("applicazione");
+        eprintln!(
+            "COSTO applica (200 playlist, 20000 voci): {:?}",
+            t0.elapsed()
+        );
+        let grezzo = settings::read(&telefono, CHIAVE_BRANI_ASSENTI)
+            .expect("lettura")
+            .unwrap_or_default();
+        eprintln!("COSTO memoria: {} byte di JSON", grezzo.len());
+
+        allinea(&mut telefono, "telefono", 2_000).expect("allineamento");
+        let prima = telefono.total_changes();
+        let t0 = Instant::now();
+        for giro in 0..5 {
+            let fatto = allinea(&mut telefono, "telefono", 3_000 + giro).expect("allineamento");
+            assert!(fatto.e_vuoto(), "{fatto:?}");
+        }
+        eprintln!(
+            "COSTO allinea su libreria ferma: {:?} a giro, righe scritte: {}",
+            t0.elapsed() / 5,
+            telefono.total_changes() - prima
+        );
+
+        let mio = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", contenuto, 4_000),
+            Documento::nuovo("telefono", mio.clone(), 4_000),
+        ]);
+        let t0 = Instant::now();
+        let esito = applica_se_ferma(&mut telefono, &mio, &fuso, 4_000).expect("applicazione");
+        eprintln!(
+            "COSTO applica_se_ferma (niente da cambiare): {:?}, applicata: {}",
+            t0.elapsed(),
+            esito.is_some()
+        );
     }
 }
