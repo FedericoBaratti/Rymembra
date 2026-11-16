@@ -98,7 +98,8 @@ use crate::settings::{
 /// differiscono [`Sequenza`] ne tiene uno solo (la coppia minore): `[x, y]` e
 /// `[z, w]` diventano due brani, non quattro. Vale fra due dispositivi che si
 /// sincronizzano, e la prova qui in fondo fissa il caso; il profilo non ci
-/// passa, perché dentro una playlist che c'è già accoda soltanto (vedi
+/// passa, perché dentro una playlist che c'è già accoglie soltanto in coda i
+/// brani che le mancano, con l'identità che hanno nel profilo (vedi
 /// `profilo::dono_nelle_playlist`).
 ///
 /// Vale **solo per il primo battesimo** ([`Sequenza::dalla_lista`]). Ciò che si

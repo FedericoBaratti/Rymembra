@@ -1824,7 +1824,19 @@ fn conta_i_non_attaccati(
 /// le voci della sequenza e non con la sola appartenenza. Una playlist
 /// automatica di qui resta com'è: la sua appartenenza la decidono le regole.
 ///
-/// Se qualcosa si accoda la playlist è cambiata adesso, su questo computer, e
+/// # Con l'identità che il brano ha nel profilo
+///
+/// I brani che si accolgono entrano **con l'identità della sequenza del
+/// profilo** ([`rymembra_sync::Sequenza::accogli_in_coda`]) e non con una di
+/// questo dispositivo. Il profilo di un computer che poi si sincronizza con
+/// questo porta le stesse voci che il computer pubblica: se qui avessero
+/// un'identità diversa, alla prima fusione la playlist avrebbe il brano due
+/// volte, sia che il brano qui ci sia sia che manchi (FSYNC2). Con la stessa
+/// identità è lo stesso elemento, e se ne tiene uno. È il solo pezzo del
+/// profilo che entra nella sequenza: le lapidi e le posizioni di là non
+/// passano, come prima.
+///
+/// Se qualcosa si accoglie la playlist è cambiata adesso, su questo computer, e
 /// la data lo dice: è quel che fa vedere la modifica al backup e agli altri
 /// dispositivi. Le playlist che qui non ci sono arrivano come sono.
 fn dono_nelle_playlist(
@@ -1845,13 +1857,10 @@ fn dono_nelle_playlist(
                 .elementi()
                 .map(|(_, elemento)| elemento.brano.as_str())
                 .collect();
-            let mut accodati = std::collections::BTreeSet::new();
-            for brano in sua.sequenza.ordine() {
-                if !gia.contains(brano) && accodati.insert(brano) {
-                    tenuta.sequenza.accoda(nome, brano);
-                }
-            }
-            if !accodati.is_empty() {
+            let accolti = tenuta
+                .sequenza
+                .accogli_in_coda(&sua.sequenza, nome, adesso_ms, &gia);
+            if accolti > 0 {
                 tenuta.at = tenuta.at.max(adesso_ms);
             }
         }

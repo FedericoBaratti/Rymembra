@@ -345,6 +345,107 @@ impl Sequenza {
         self.metti(dispositivo, ultimo, brano);
     }
 
+    /// Accoglie in coda i brani che `altra` ha vivi e questa sequenza non nomina,
+    /// **con l'identità che hanno là**. Restituisce quanti ne ha accolti.
+    ///
+    /// # Perché non basta `accoda`
+    ///
+    /// `accoda` dà al brano un'identità di chi lo accoda. Se il brano arriva da
+    /// una sequenza che lo ha già — un profilo esportato dall'altro computer,
+    /// che poi si sincronizza — la voce c'è due volte: quella di là, con la sua
+    /// identità, e questa, con la nostra. Per la fusione sono due elementi, e la
+    /// playlist ha il brano doppio su tutti e due i dispositivi. Un elemento
+    /// accolto con la **stessa identità** è, alla prima fusione, lo stesso
+    /// elemento: se ne tiene uno.
+    ///
+    /// # Cosa si accoglie, e cosa mai
+    ///
+    /// - Gli elementi **vivi** di `altra` il cui brano non sta in `gia`, uno per
+    ///   brano, nell'ordine di `altra`. `gia` dice i brani che questa sequenza
+    ///   nomina già, **vivi o tolti**: uno tolto qui non torna, e uno vivo qui
+    ///   non si raddoppia.
+    /// - Ogni elemento entra dopo l'ultimo di questa sequenza (e quelli accolti
+    ///   uno dopo l'altro): la posizione che aveva là non vale, perché `altra`
+    ///   può averla riordinata e un dono non sposta niente.
+    /// - Mai le lapidi di `altra`, e mai un elemento la cui identità c'è già qui:
+    ///   resta quello di qui, com'è. Se il brano dell'elemento di là non c'è qui
+    ///   sotto quell'identità (due liste battezzate per conto loro con lo stesso
+    ///   nome), entra con un'identità di `dispositivo`, come con `accoda`.
+    ///
+    /// # Il conto degli elementi
+    ///
+    /// Un numero nasce come il massimo più uno, e [`senza_numeri_impossibili`]
+    /// butta alla lettura ogni elemento il cui numero non sta sotto il conto
+    /// degli elementi. Accogliere solo alcuni elementi di `altra` lascia dei
+    /// buchi — quelli che `altra` ha spostato, o che non si accolgono — e
+    /// l'elemento accolto, con un numero alto in una sequenza più corta,
+    /// sparirebbe alla lettura dopo: la passata dopo lo ricreerebbe con
+    /// un'identità nostra, e il doppione tornerebbe in silenzio. Per questo, se
+    /// serve, si aggiungono elementi **tolti** con un'identità di `dispositivo`
+    /// e un brano qualunque: non si vedono, non cambiano l'ordine, e fanno stare
+    /// il conto sopra il massimo.
+    pub fn accogli_in_coda(
+        &mut self,
+        altra: &Self,
+        dispositivo: &str,
+        quando: i64,
+        gia: &BTreeSet<&str>,
+    ) -> usize {
+        let mut accolti: BTreeSet<&str> = BTreeSet::new();
+        let mut ultimo = self.identita_in_ordine().pop();
+        for identita in altra.identita_in_ordine() {
+            let Some(elemento) = altra.elementi.get(&identita) else {
+                continue;
+            };
+            let brano = elemento.brano.as_str();
+            if gia.contains(brano) || !accolti.insert(brano) {
+                continue;
+            }
+            if self.elementi.contains_key(&identita) {
+                ultimo = Some(self.metti(dispositivo, ultimo, brano));
+            } else {
+                self.elementi.insert(
+                    identita.clone(),
+                    Elemento {
+                        dopo: ultimo,
+                        brano: brano.to_owned(),
+                        tolto: None,
+                    },
+                );
+                ultimo = Some(identita);
+            }
+        }
+        if let Some(brano) = accolti.first() {
+            self.fa_posto_ai_numeri(dispositivo, brano, quando);
+        }
+        accolti.len()
+    }
+
+    /// Aggiunge elementi tolti, con identità di `dispositivo`, finché il conto
+    /// degli elementi sta sopra il numero più alto: vedi
+    /// [`Sequenza::accogli_in_coda`].
+    fn fa_posto_ai_numeri(&mut self, dispositivo: &str, brano: &str, quando: i64) {
+        let Some(massimo) = self.elementi.keys().map(|identita| identita.n).max() else {
+            return;
+        };
+        let servono = usize::try_from(massimo)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
+        let mut numero = massimo;
+        while self.elementi.len() < servono {
+            let identita = Identita::nuova(dispositivo, numero);
+            self.elementi.entry(identita).or_insert_with(|| Elemento {
+                dopo: None,
+                brano: brano.to_owned(),
+                tolto: Some(quando),
+            });
+            if numero == 0 {
+                break;
+            }
+            numero -= 1;
+        }
+    }
+
     /// Inserisce un brano a una posizione dell'elenco.
     ///
     /// Una posizione oltre la fine accoda: è quel che si aspetta chi trascina un
@@ -1028,5 +1129,132 @@ mod prove {
             testo,
             "il giro deve essere stabile byte per byte, o l'impronta cambia da sola"
         );
+    }
+
+    /// I brani che una sequenza nomina, vivi o tolti.
+    fn nominati(sequenza: &Sequenza) -> BTreeSet<&str> {
+        sequenza
+            .elementi()
+            .map(|(_, elemento)| elemento.brano.as_str())
+            .collect()
+    }
+
+    /// La sequenza com'è dopo il giro dal database: `dagli_elementi` butta i
+    /// numeri che il conto non giustifica.
+    fn riletta(sequenza: &Sequenza) -> Sequenza {
+        Sequenza::dagli_elementi(
+            sequenza
+                .elementi()
+                .map(|(identita, elemento)| (identita.clone(), elemento.clone())),
+        )
+    }
+
+    #[test]
+    fn accogliere_in_coda_tiene_l_identita_di_la_e_non_ne_inventa_una() {
+        let mut la = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        let qui = la.clone();
+        la.accoda("la", "e");
+        let identita_di_e = la
+            .elementi()
+            .find(|(_, elemento)| elemento.brano == "e")
+            .map(|(identita, _)| identita.clone())
+            .expect("e c'è");
+
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "b", "e"]);
+        assert_eq!(vivi_di(&mia, "e"), vec![&identita_di_e]);
+        // E il giro dal database non lo butta.
+        assert_eq!(riletta(&mia), mia);
+        // La fusione con l'origine non raddoppia: è lo stesso elemento.
+        assert_eq!(mia.fondi(&la).ordine().len(), 3);
+        assert_eq!(la.fondi(&mia).ordine().len(), 3);
+    }
+
+    #[test]
+    fn accogliere_in_coda_non_porta_lapidi_ne_posizioni_di_la() {
+        // `altra` ha tolto b, spostato c in testa e aggiunto d: qui si accoglie
+        // solo d, in coda, e niente di quel che qui c'è si muove o si toglie.
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let mut la = qui.clone();
+        la.riordina("la", &lista(&["c", "a", "d"]), 500);
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 600, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "b", "c", "d"]);
+        // Nessuna lapide di là: l'unica lapide che può esserci è un riempitivo.
+        for (identita, elemento) in mia.elementi() {
+            if elemento.tolto.is_some() {
+                assert_eq!(identita.dispositivo, "qui", "{identita:?}");
+                assert_eq!(elemento.tolto, Some(600));
+            }
+        }
+        // Il giro dal database non butta la voce accolta anche se là l'avevano
+        // numerata dopo un riordino (un numero alto in una sequenza più corta).
+        assert_eq!(riletta(&mia), mia);
+        assert_eq!(riletta(&mia).ordine(), vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn accogliere_in_coda_dopo_un_riordino_e_poi_fondere_non_raddoppia_e_non_perde() {
+        // Il caso che non sta nella sequenza di qui: là hanno riordinato (nuove
+        // identità, lapidi) e poi aggiunto. Accolto il solo brano nuovo, e
+        // fusi i due documenti in tutti e due i versi, il brano è uno solo.
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b", "c"]));
+        let mut la = qui.clone();
+        la.riordina("la", &lista(&["c", "b", "a", "d"]), 500);
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        mia.accogli_in_coda(&la, "qui", 600, &gia);
+        let mia = riletta(&mia);
+
+        for fusa in [mia.fondi(&la), la.fondi(&mia)] {
+            let ordine = fusa.ordine();
+            assert_eq!(
+                ordine.iter().filter(|b| **b == "d").count(),
+                1,
+                "{ordine:?}"
+            );
+            assert_eq!(ordine.len(), 4, "{ordine:?}");
+        }
+        assert_eq!(mia.fondi(&la), la.fondi(&mia), "commutativa");
+    }
+
+    #[test]
+    fn accogliere_in_coda_non_raddoppia_un_brano_che_qui_c_e_gia_e_non_resuscita_un_tolto() {
+        let mut qui = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        qui.togli(1, 50);
+        let la = Sequenza::dalla_lista("la", &lista(&["a", "b", "c", "c"]));
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        // `b` è tolto qui e non torna, `a` c'è già, `c` entra una volta sola.
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn accogliere_in_coda_con_la_stessa_identita_ma_un_altro_brano_ne_da_una_nuova() {
+        // Due liste battezzate per conto loro con lo stesso nome: `origine:1` è
+        // `b` qui e `y` là. Quella di qui resta, e `y` entra con un'identità di
+        // chi accoglie, come con `accoda`.
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        let la = Sequenza::dalla_lista("origine", &lista(&["a", "y"]));
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 1);
+        assert_eq!(mia.ordine(), vec!["a", "b", "y"]);
+        assert_eq!(vivi_di(&mia, "b"), vivi_di(&qui, "b"));
+        assert_eq!(riletta(&mia), mia);
+    }
+
+    #[test]
+    fn accogliere_in_coda_senza_niente_da_accogliere_non_tocca_la_sequenza() {
+        let qui = Sequenza::dalla_lista("origine", &lista(&["a", "b"]));
+        let la = Sequenza::dalla_lista("la", &lista(&["a", "b"]));
+        let mut mia = qui.clone();
+        let gia = nominati(&qui);
+        assert_eq!(mia.accogli_in_coda(&la, "qui", 100, &gia), 0);
+        assert_eq!(mia, qui, "nemmeno un riempitivo");
     }
 }
