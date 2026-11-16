@@ -81,6 +81,13 @@
   box-shadow: var(--shadow-3);
   display: block;
 }
+/* Senza immagine il segnaposto sta al centro del quadrato: `.vuota` lo mette
+   con `display: grid`, ma la regola qui sopra, più specifica, gli rimetteva
+   `block` e la nota restava a 25 px dal bordo alto (R18-7). */
+.colonna .column-art.vuota {
+  display: grid;
+  place-items: center;
+}
 .colonna .apri-grande:focus-visible .column-art {
   outline: 2px solid var(--accent);
   outline-offset: 3px;

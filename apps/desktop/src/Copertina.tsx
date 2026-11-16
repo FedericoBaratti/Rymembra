@@ -39,7 +39,11 @@
  * dell'album accanto — si vedeva nella terza colonna — cioè un guasto dove c'era
  * soltanto un disco senza immagine.
  *
- * # Perché la dissolvenza è uno stato e non un attributo
+ * # Perché «pronta» è uno stato e non un attributo
+ *
+ * (Finché non è pronta l'immagine non mostra i suoi pixel ma tiene il fondo e
+ * il filo del segnaposto: vedi `.foto` in `stile/libreria.css`. Una volta c'era
+ * una dissolvenza, e il nome di questa sezione la ricordava: R18-15.)
  *
  * Perché l'attributo non si cancellava. `data-pronta` lo scriveva `onLoad` con
  * un `setAttribute`, cioè a mano, fuori dal modello di React: il nodo restava lo
