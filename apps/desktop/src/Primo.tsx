@@ -188,7 +188,13 @@ export function Primo({
    * il primo avvio invece di chiudere il programma toglierebbe a chi apre per
    * la prima volta la sua strada d'ingresso. Vedi `cosaFaLaX` in `modale.ts`.
    */
-  const finestrella = useFinestrella<HTMLDivElement>(onSalta, "nonEUnaDomanda");
+  // `sotto`: il primo avvio sta in fondo alla pila delle finestrelle e dei
+  // veli. Una domanda che arriva prima che lui sia montato — la proposta della
+  // copia del Microsoft Store, D-97 — resta sopra e operabile; vedi
+  // `mettiInPila` in `finestrella.ts`.
+  const finestrella = useFinestrella<HTMLDivElement>(onSalta, "nonEUnaDomanda", {
+    sotto: true,
+  });
   // E il resto della finestra inerte, con la radice che fa da velo: la
   // trappola del Tab tiene dentro il tabulatore e basta, e un lettore di
   // schermo in modalità navigazione usciva da qui e leggeva — e poteva
@@ -196,7 +202,7 @@ export function Primo({
   // come in `Dialogo`: chi aveva il fuoco si legge prima dell'inerzia. Le due
   // forme qui sotto disegnano la stessa radice, che React tiene: il velo non
   // cambia quando arriva il permesso del telefono.
-  useVeloInerte(finestrella);
+  useVeloInerte(finestrella, undefined, { sotto: true });
   // Sul telefono si cerca solo dopo il permesso: prima, le cartelle della
   // musica risultano vuote. Altrove `pronto` è vero da subito.
   const accesso = useAccessoTelefono();

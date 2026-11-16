@@ -1064,14 +1064,15 @@ The rest of what the two reviews fixed, by area.
   positions” among what a profile carries.
 - On the phone, the plan of a profile no longer runs off the right edge: the
   folder field and the track count are whole, and long paths wrap.
-- **With device sync on, a playlist no longer loses tracks that another
-  device doesn’t have.** An entry for a track missing on one device — a phone
-  with only part of the computer’s music, a file deleted or moved out of the
+- **With device sync on, a playlist no longer loses tracks that another device
+  doesn’t have.** An entry for a track missing on one device — a phone with
+  only part of the computer’s music, a file deleted or moved out of the
   watched folders — was taken as removed there, and the removal reached every
   device. It now stays in the playlist everywhere else and comes back in its
   place when the file arrives. Renaming a playlist, or deleting it and
-  creating one with the same name before the next sync (and undoing a
-  delete), no longer drops those entries; a removal made on another device
+  creating one with the same name before the next sync (and undoing a delete),
+  no longer drops those entries, and neither does a playlist deleted on one
+  device and recreated or edited on another; a removal made on another device
   while a file was missing no longer comes back when the file returns (an
   external drive reconnected); a profile read before the music is scanned
   keeps each playlist whole, with the identities it came with, and reading a
@@ -1342,7 +1343,8 @@ The rest of what the two reviews fixed, by area.
   the spectrum kept drawing at 60 frames per second behind the taskbar.
 - Screen readers: the queue list no longer contains an invalid placeholder
   item, and each track row’s play button says the row number it shows
-  (“3, Play …”), as WCAG 2.5.3 asks.
+  (“3, Play …”), as WCAG 2.5.3 asks; so does “Put it back” after a skin is
+  replaced or left with Shift (“Put it back: “Neon””).
 
 **Phone.**
 

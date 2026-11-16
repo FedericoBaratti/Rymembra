@@ -168,6 +168,7 @@ import {
   daRendereInerti,
   fuocoDopoTab,
   fuocoIniziale,
+  mettiInPila,
   type CimaPerLaX,
 } from "./modale";
 
@@ -305,10 +306,15 @@ export function rispondiNoAllaDomandaInCima(): boolean {
  * cima (`rispondiNoAllaDomandaInCima`): di serie è una domanda che si chiude
  * come con Escape; `Dialogo` dice se adesso si può chiudere; il primo avvio
  * passa `"nonEUnaDomanda"`, e la × chiude la finestra.
+ *
+ * `sotto`: questa finestrella sta sempre in fondo alla pila, sotto quelle che
+ * si aprono prima o dopo di lei, e non prende il fuoco a chi è già aperta
+ * sopra. È il primo avvio: vedi `mettiInPila`.
  */
 export function useFinestrella<E extends HTMLElement>(
   onChiudi: () => void,
   domanda: { chiudibile: boolean } | "nonEUnaDomanda" = { chiudibile: true },
+  { sotto = false }: { sotto?: boolean } = {},
 ): RefObject<E | null> {
   const radice = useRef<E | null>(null);
   const chiudi = useRef(onChiudi);
@@ -343,15 +349,21 @@ export function useFinestrella<E extends HTMLElement>(
 
     if (!dentro.hasAttribute("tabindex")) dentro.tabIndex = -1;
 
-    // Il marchio si cerca fra i fuochi veri e non nel DOM nudo: `focus()` su un
-    // comando spento o non disegnato non fa niente, e lascerebbe il fuoco dietro
-    // al velo senza dirlo. La radice può portarlo addosso lei, e allora il fuoco
-    // si ferma lì: lo chiede `Primo`. La regola sta in `modale.ts`.
-    const dove = fuocoIniziale(fuochiDi(dentro), dentro, (nodo) =>
-      nodo.hasAttribute("data-fuoco-iniziale"),
-    );
-    dove.focus();
-    if (eUnCampoDaSostituire(dove)) dove.select();
+    // Una finestrella che va in fondo sotto un'altra già aperta non le toglie il
+    // fuoco: chi risponde è quella sopra (vedi `mettiInPila`).
+    const coperta = sotto && aperte.length > 0;
+    if (!coperta) {
+      // Il marchio si cerca fra i fuochi veri e non nel DOM nudo: `focus()` su
+      // un comando spento o non disegnato non fa niente, e lascerebbe il fuoco
+      // dietro al velo senza dirlo. La radice può portarlo addosso lei, e
+      // allora il fuoco si ferma lì: lo chiede `Primo`. La regola sta in
+      // `modale.ts`.
+      const dove = fuocoIniziale(fuochiDi(dentro), dentro, (nodo) =>
+        nodo.hasAttribute("data-fuoco-iniziale"),
+      );
+      dove.focus();
+      if (eUnCampoDaSostituire(dove)) dove.select();
+    }
 
     const suTasto = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -377,7 +389,7 @@ export function useFinestrella<E extends HTMLElement>(
     dentro.addEventListener("keydown", suTasto);
 
     const questa: Aperta = { radice: dentro, chiudi, domanda: laDomanda };
-    aperte.push(questa);
+    mettiInPila(aperte, questa, sotto);
     // Il nodo col fuoco è sparito o si è spento: il fuoco torna alla radice.
     // Solo in cima, e solo se è proprio caduto — un fuoco spostato altrove da
     // chi disegna la finestrella è una scelta sua. `preventScroll` perché la
@@ -414,7 +426,7 @@ export function useFinestrella<E extends HTMLElement>(
         sotto.radice.focus({ preventScroll: true });
       }
     };
-  }, [anteprima]);
+  }, [anteprima, sotto]);
 
   return radice;
 }
@@ -541,18 +553,21 @@ function riapplicaInerzia(): void {
  * così per il foglio del menù del telefono, dove velo e pannello sono
  * fratelli — il velo è `aria-hidden`, e un pannello dentro sparirebbe con lui
  * — e allora il pannello si passa come `accanto`. Il primo avvio invece non ha
- * un velo: è una schermata piena, e la sua radice fa da velo.
+ * un velo: è una schermata piena, e la sua radice fa da velo — in fondo alla
+ * pila (`sotto`), perché una finestrella aperta prima o dopo di lui sta sopra
+ * e non deve diventare inerte per colpa sua: vedi `mettiInPila`.
  */
 export function useVeloInerte(
   velo: RefObject<HTMLElement | null>,
   accanto?: RefObject<HTMLElement | null>,
+  { sotto = false }: { sotto?: boolean } = {},
 ): void {
   const { anteprima } = useDati();
   useLayoutEffect(() => {
     const nodo = velo.current;
     if (nodo === null || anteprima) return;
     const aperto = { velo: nodo, accanto: accanto?.current ?? null };
-    veliAperti.push(aperto);
+    mettiInPila(veliAperti, aperto, sotto);
     riapplicaInerzia();
     return () => {
       const dove = veliAperti.indexOf(aperto);
@@ -561,5 +576,5 @@ export function useVeloInerte(
     };
     // `velo` e `accanto` sono riferimenti: la loro identità non cambia, e i
     // nodi si leggono dentro l'effetto, dove sono già appesi.
-  }, [velo, accanto, anteprima]);
+  }, [velo, accanto, anteprima, sotto]);
 }

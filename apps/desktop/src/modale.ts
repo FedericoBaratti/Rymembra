@@ -386,3 +386,26 @@ export function daRendereInerti<N extends NodoDiAlbero>(
   }
   return inerti;
 }
+
+/**
+ * Mette `elemento` in una pila di finestrelle o di veli: in cima, oppure — se
+ * `sotto` — in fondo.
+ *
+ * # Perché il fondo
+ *
+ * Il primo avvio (`Primo`) copre la finestra intera come una finestrella, ma
+ * non è una domanda fra le altre: è la pagina su cui le domande si aprono. E
+ * l'ordine in cui si monta non è quello in cui si vede: la proposta della copia
+ * del Microsoft Store («La libreria che hai già», D-97) chiede la sua risposta
+ * al nucleo e arriva spesso **prima** che il primo avvio sia montato. In cima
+ * alla pila finiva allora il primo avvio, e la finestrella — visibile, sopra di
+ * lui per lo strato del CSS — diventava inerte: i clic cadevano sulla scheda
+ * di sotto (uno sul velo premeva «Continua» e consumava la proposta), Escape
+ * chiudeva la scheda, il lettore di schermo non la vedeva (collaudo in Windows
+ * Sandbox). Una pila con un fondo dice la cosa vera: qualunque finestrella,
+ * aperta prima o dopo, sta sopra il primo avvio.
+ */
+export function mettiInPila<T>(pila: T[], elemento: T, sotto: boolean): void {
+  if (sotto) pila.unshift(elemento);
+  else pila.push(elemento);
+}

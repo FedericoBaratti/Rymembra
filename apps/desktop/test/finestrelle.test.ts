@@ -107,7 +107,7 @@ test("i tasti della finestra non diventano mai inerti, e la × chiude prima la d
   // `Dialogo` dice se adesso si può, e il primo avvio non è una domanda.
   assert.match(finestrella, /domanda: \{ chiudibile: boolean \} \| "nonEUnaDomanda" = \{ chiudibile: true \}/);
   assert.match(sorgente("Dialogo.tsx"), /useFinestrella<HTMLElement>\([^;]*\{ chiudibile \}\)/);
-  assert.match(sorgente("Primo.tsx"), /useFinestrella<HTMLDivElement>\(onSalta, "nonEUnaDomanda"\)/);
+  assert.match(sorgente("Primo.tsx"), /useFinestrella<HTMLDivElement>\(onSalta, "nonEUnaDomanda", \{/);
 });
 
 test("le regioni d'annuncio portano il loro marchio, e restano vive sotto un velo", () => {
@@ -156,7 +156,7 @@ test("ogni superficie aria-modal rende inerte il resto della finestra", () => {
   // Il primo avvio: la radice fa da velo, dopo `useFinestrella`.
   const primo = sorgente("Primo.tsx");
   assert.ok(
-    primo.indexOf("useVeloInerte(finestrella)") > primo.indexOf("useFinestrella<HTMLDivElement>("),
+    primo.indexOf("useVeloInerte(finestrella") > primo.indexOf("useFinestrella<HTMLDivElement>("),
     "Primo: useVeloInerte dopo useFinestrella",
   );
   // Il giro, l'equalizzatore e il pannello di «Ascolta insieme» nella barra
