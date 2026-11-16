@@ -444,7 +444,18 @@ function RigaBrano({
     <li
       className="riga-lontana"
       onClick={MOBILE ? suona : undefined}
-      onDoubleClick={MOBILE ? undefined : suona}
+      onDoubleClick={
+        MOBILE
+          ? undefined
+          : (e) => {
+              // Sulla riga, non sui suoi comandi: `stopPropagation` sul `click`
+              // non ferma il `dblclick`, e un doppio clic sul ⋮ apriva il menù
+              // e sostituiva la coda con l'elenco dell'altro (R13-8). Come in
+              // `Elenco.tsx`.
+              if ((e.target as Element).closest("button")) return;
+              suona();
+            }
+      }
       onContextMenu={menu}
     >
       <button
@@ -458,6 +469,10 @@ function RigaBrano({
         }
         onClick={(e) => {
           e.stopPropagation();
+          // Il secondo clic di un doppio clic è già stato servito dal primo:
+          // la copertina suona da sé, e senza questo partiva due volte (con la
+          // tastiera `detail` è 0 e il tasto suona sempre).
+          if (e.detail > 1) return;
           suona();
         }}
       >
@@ -1042,16 +1057,23 @@ function Risultati({ testo }: { testo: string }) {
   const brani = usePagine(`${chiave}:cerca:${testo}`, (da, quanti) =>
     ipc.lontanoCerca(chiave, testo, da, quanti),
   );
-  const [quanti, setQuanti] = useState<number | null>(null);
+  // «Caricamento…» finché il conteggio non risponde; se la domanda fallisce
+  // (un dispositivo raggiunto via relay, una risposta che scade) non si scrive
+  // niente: il conteggio è un di più, l'elenco sotto ha la sua riga d'errore, e
+  // un «Caricamento…» che non finisce mai — annunciato dal lettore di schermo —
+  // direbbe il falso (R13-7).
+  const [quanti, setQuanti] = useState<number | "attesa" | "mancante">("attesa");
   useEffect(() => {
     let vivo = true;
-    setQuanti(null);
+    setQuanti("attesa");
     ipc
       .lontanoCercaConteggio(chiave, testo)
       .then((n) => {
         if (vivo) setQuanti(n);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (vivo) setQuanti("mancante");
+      });
     return () => {
       vivo = false;
     };
@@ -1059,8 +1081,14 @@ function Risultati({ testo }: { testo: string }) {
   const nessuno = !brani.caricando && brani.errore === null && brani.voci.length === 0;
   return (
     <>
+      {/* Montata sempre, e cambia solo il testo: una regione di stato che nasce
+          già piena spesso non viene annunciata. */}
       <p className="nota" role="status">
-        {quanti === null ? t("common.loading") : t("page.search.results", { n: quanti })}
+        {quanti === "attesa"
+          ? t("common.loading")
+          : quanti === "mancante"
+            ? ""
+            : t("page.search.results", { n: quanti })}
       </p>
       {nessuno ? (
         <StatoVuoto
@@ -1332,8 +1360,12 @@ export function Dispositivo({
         {inScheda("brani", () => (
           <TuttiIBrani ordine={ordine} onOrdine={cambiaOrdine} />
         ))}
-        {cercato !== "" && !livello && (
-          <Piano nascosto={false}>
+        {/* I risultati restano montati sotto un disco o un artista aperti
+            dal menù «Vai all'album», come le schede: tornando indietro si
+            ritrovano con le loro pagine e il loro punto, e non si chiedono da
+            capo all'altro dispositivo (R13-7). */}
+        {cercato !== "" && (
+          <Piano nascosto={livello}>
             <Risultati testo={cercato} />
           </Piano>
         )}
