@@ -132,10 +132,25 @@ const ORIGINE: &str = "origine";
 ///
 /// Sta in `settings` e non in una tabella: stato di questo dispositivo, che non
 /// viaggia (il profilo porta un elenco di chiavi, e questa non c'è) e si
-/// ricostruisce da sé. Se manca o non si legge, vale «niente da agganciare»: un
+/// ricostruisce da sé.
+///
+/// # Assente e illeggibile sono due cose
+///
+/// Se **manca** (nessun ricordo: è lo stato normale di chi ha tutta la musica, e
+/// della prima passata dopo l'aggiornamento) vale «niente da agganciare»: un
 /// brano arrivato prima del primo `allinea` che la riscrive si legge come
-/// tolto, che è il comportamento di prima. Succede una volta sola, la prima
-/// dopo l'aggiornamento, e non a regime.
+/// tolto, che è il comportamento di prima. Succede una volta sola, e non a
+/// regime.
+///
+/// Se **c'è e non si legge** (un valore guasto, un ripristino del database da
+/// un file di prima) non si sa niente, e non sapere non è sapere che niente è
+/// arrivato: [`Ricordo::Illeggibile`]. In quella passata non si seppellisce
+/// nessuna voce — una lapide che parte per un brano che un altro dispositivo
+/// ha è la perdita che tutto questo esiste per evitare — e i brani che qui ci
+/// sono, hanno una voce viva e non stanno in `playlist_tracks` si riagganciano
+/// tutti, anche quelli che l'utente aveva appena tolto: l'errore sicuro è una
+/// voce che torna, non un brano che sparisce dagli altri dispositivi. La
+/// memoria si rifà in coda alla passata, e dalla successiva si torna a sapere.
 const CHIAVE_BRANI_ASSENTI: &str = "sincronia.brani_assenti";
 
 // ── il conteggio d'ascolto ──────────────────────────────────────────────────
@@ -413,6 +428,12 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
 /// il posto di un file tornato), ed è l'errore sicuro: una voce che torna, non
 /// un brano che sparisce dagli altri dispositivi.
 ///
+/// Se la memoria c'è e non si legge ([`Ricordo::Illeggibile`]) non si sa quali
+/// brani sono arrivati, e per quella passata non si seppellisce niente: tutte
+/// le voci vive di brani che qui ci sono e non stanno in `playlist_tracks`
+/// rientrano, anche quelle che l'utente aveva tolto un attimo prima. Stessa
+/// scelta, stesso lato dell'errore.
+///
 /// Restituisce quante sequenze si sono rifatte e in quante playlist sono
 /// rientrati dei brani.
 fn allinea_sequenze(
@@ -424,11 +445,20 @@ fn allinea_sequenze(
     let membri = membri_per_playlist(tx)?;
     let mut sequenze = sequenze_salvate(tx)?;
     let assenti = brani_assenti(tx)?;
-    let ricordati = brani_assenti_ricordati(tx)?;
+    let ricordo = ricordo_dei_brani_assenti(tx)?;
+    // Un ricordo illeggibile non dice niente: vedi [`Ricordo::Illeggibile`].
+    let illeggibile = ricordo == Ricordo::Illeggibile;
+    let nessuno = BTreeSet::new();
+    let ricordati = match &ricordo {
+        Ricordo::Chiavi(chiavi) => chiavi,
+        Ricordo::Nessuno | Ricordo::Illeggibile => &nessuno,
+    };
 
-    // Da non seppellire: quelli che qui non ci sono, e quelli che erano assenti
-    // all'ultimo allineamento e adesso ci sono (da agganciare).
-    let da_lasciare = |brano: &str| assenti.contains(brano) || ricordati.contains(brano);
+    // Da non seppellire: quelli che qui non ci sono, quelli che erano assenti
+    // all'ultimo allineamento e adesso ci sono (da agganciare), e — se la
+    // memoria non si legge — tutti.
+    let da_lasciare =
+        |brano: &str| illeggibile || assenti.contains(brano) || ricordati.contains(brano);
     let visibile = |brano: &&str| !assenti.contains(*brano);
 
     let mut rifatte = 0;
@@ -460,10 +490,11 @@ fn allinea_sequenze(
 
         // Quel che resta in più rispetto a `playlist_tracks` sono le voci dei
         // brani arrivati: la sequenza li ha già al loro posto, e qui entrano.
-        // Solo se c'è qualcosa di ricordato: senza, la differenza non può essere
+        // Solo se c'è qualcosa di ricordato (o se il ricordo non si legge, e
+        // allora si riaggancia tutto): senza, la differenza non può essere
         // altro che un guasto, e `playlist_tracks` non si riscrive per un
         // sospetto.
-        if ricordati.is_empty() {
+        if ricordati.is_empty() && !illeggibile {
             continue;
         }
         let finale: Vec<&str> = aggiornata.ordine().into_iter().filter(visibile).collect();
@@ -514,10 +545,28 @@ fn brani_assenti(connection: &Connection) -> Result<BTreeSet<String>, AppError> 
         .map_err(|err| db_error("brani delle playlist che qui mancano", &err))
 }
 
-/// Le chiavi che l'ultimo allineamento ha trovato assenti: vedi
+/// Come si presenta la memoria dei brani assenti quando la si legge: vedi
 /// [`CHIAVE_BRANI_ASSENTI`].
-fn brani_assenti_ricordati(connection: &Connection) -> Result<BTreeSet<String>, AppError> {
-    Ok(settings::read_json(connection, CHIAVE_BRANI_ASSENTI)?.unwrap_or_default())
+#[derive(Debug, PartialEq, Eq)]
+enum Ricordo {
+    /// Non c'è: nessun ricordo. È lo stato normale di chi ha tutta la musica.
+    Nessuno,
+    /// C'è un valore e non si legge. Non è «niente è arrivato»: non si sa, e in
+    /// quella passata non si seppellisce niente.
+    Illeggibile,
+    /// Le chiavi che l'ultimo allineamento ha trovato assenti.
+    Chiavi(BTreeSet<String>),
+}
+
+/// Legge la memoria dei brani assenti, distinguendo «manca» da «non si legge».
+///
+/// `settings::read_json` non lo permette: un JSON storto vale per lei come un
+/// valore assente, ed è proprio quel che qui non si può fare.
+fn ricordo_dei_brani_assenti(connection: &Connection) -> Result<Ricordo, AppError> {
+    let Some(grezzo) = settings::read(connection, CHIAVE_BRANI_ASSENTI)? else {
+        return Ok(Ricordo::Nessuno);
+    };
+    Ok(serde_json::from_str(&grezzo).map_or(Ricordo::Illeggibile, Ricordo::Chiavi))
 }
 
 /// Ricorda quali brani le sequenze nominano e qui non ci sono, adesso.
@@ -525,11 +574,15 @@ fn brani_assenti_ricordati(connection: &Connection) -> Result<BTreeSet<String>, 
 /// Da chiamare dopo ogni scrittura di `sync_sequenza` e dopo ogni confronto fra
 /// lei e `tracks`: [`allinea_in`] e [`applica_in`]. Non scrive se la memoria è
 /// già quella (la libreria di chi ha tutta la musica non ne ha mai una), e la
-/// toglie quando non c'è più niente da ricordare.
+/// toglie quando non c'è più niente da ricordare. Una memoria illeggibile si
+/// rifà sempre, anche se quella di adesso è vuota: lasciarla lì vorrebbe dire
+/// che la passata dopo la ritrova guasta, e non seppellisce niente neanche lei.
 fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
     let adesso = brani_assenti(connection)?;
-    if adesso == brani_assenti_ricordati(connection)? {
-        return Ok(());
+    match ricordo_dei_brani_assenti(connection)? {
+        Ricordo::Nessuno if adesso.is_empty() => return Ok(()),
+        Ricordo::Chiavi(ricordati) if ricordati == adesso => return Ok(()),
+        Ricordo::Nessuno | Ricordo::Illeggibile | Ricordo::Chiavi(_) => {}
     }
     if adesso.is_empty() {
         settings::forget(connection, CHIAVE_BRANI_ASSENTI)?;
@@ -3601,5 +3654,104 @@ mod prove {
             0,
             "nessuna lapide delle voci della playlist cancellata"
         );
+    }
+
+    // ── FSYNC2: la memoria che manca e quella che non si legge ──
+
+    fn lapidi_di(connection: &Connection, chiave: &str) -> usize {
+        sequenza_di(connection, chiave)
+            .elementi()
+            .filter(|(_, elemento)| elemento.tolto.is_some())
+            .count()
+    }
+
+    #[test]
+    fn una_memoria_illeggibile_non_fa_seppellire_il_brano_arrivato() {
+        // Il telefono ha `a` e `b`, la voce di `x` è viva e invisibile. La
+        // memoria dei brani assenti si guasta (un valore storto, un database
+        // ripristinato da un file di prima) e `x` arriva: leggerla come «niente
+        // di ricordato» vuol dire seppellire `x` e far partire la lapide.
+        let (_computer, mut telefono) = computer_e_telefono();
+        allinea(&mut telefono, "telefono", 3_000).expect("allineamento");
+        settings::write(&telefono, CHIAVE_BRANI_ASSENTI, "{non json").expect("guasta");
+        brano_di_prova(&telefono, 9, "x", None);
+
+        let fatto = allinea(&mut telefono, "telefono", 4_000).expect("allineamento");
+        assert_eq!(
+            lapidi_di(&telefono, "sera"),
+            0,
+            "nessuna voce sepolta: {fatto:?}"
+        );
+        assert_eq!(sequenza_di(&telefono, "sera").ordine(), vec!["a", "x", "b"]);
+        // L'errore sicuro è una voce che torna: `x` rientra al suo posto.
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+        assert_eq!(fatto.agganciate, 1);
+        // E la memoria si è rifatta: quel che era guasto non resta lì.
+        assert_eq!(settings::read(&telefono, CHIAVE_BRANI_ASSENTI), Ok(None));
+
+        // La passata dopo non ha niente da fare, e non seppellisce niente.
+        let ancora = allinea(&mut telefono, "telefono", 5_000).expect("allineamento");
+        assert!(ancora.e_vuoto(), "{ancora:?}");
+        assert_eq!(lapidi_di(&telefono, "sera"), 0);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "x", "b"]);
+    }
+
+    #[test]
+    fn una_memoria_illeggibile_riporta_il_brano_tolto_invece_di_seppellirlo() {
+        // L'errore che si sceglie, scritto: se la memoria non si legge e
+        // l'utente ha tolto `b` proprio in quella finestra, `b` torna nella
+        // playlist. Una voce che torna si toglie un'altra volta; una lapide
+        // che parte per sbaglio toglie un brano agli altri dispositivi.
+        let mut qui = libreria_con(&["a", "b", "c"]);
+        playlist_con(&qui, "sera", &[1, 2, 3]);
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto");
+        settings::write(&qui, CHIAVE_BRANI_ASSENTI, "[1, 2").expect("guasta");
+
+        allinea(&mut qui, "portatile", 2_000).expect("allineamento");
+        assert_eq!(lapidi_di(&qui, "sera"), 0);
+        assert_eq!(ordine(&qui, "sera"), vec!["a", "b", "c"]);
+
+        // Con la memoria a posto, lo stesso gesto è una rimozione vera.
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto");
+        allinea(&mut qui, "portatile", 3_000).expect("allineamento");
+        assert_eq!(lapidi_di(&qui, "sera"), 1);
+        assert_eq!(ordine(&qui, "sera"), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn una_memoria_che_manca_non_e_una_memoria_illeggibile() {
+        // «Nessun ricordo» è lo stato normale: un brano tolto si seppellisce,
+        // come ha sempre fatto, e non si riaggancia niente.
+        let mut qui = libreria_con(&["a", "b", "c"]);
+        playlist_con(&qui, "sera", &[1, 2, 3]);
+        allinea(&mut qui, "portatile", 1_000).expect("allineamento");
+        assert_eq!(settings::read(&qui, CHIAVE_BRANI_ASSENTI), Ok(None));
+        qui.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ?1",
+            [id_del_brano(&qui, "b")],
+        )
+        .expect("tolto");
+        let fatto = allinea(&mut qui, "portatile", 2_000).expect("allineamento");
+        assert_eq!(fatto.agganciate, 0);
+        assert_eq!(lapidi_di(&qui, "sera"), 1);
+        assert_eq!(ordine(&qui, "sera"), vec!["a", "c"]);
+
+        // Una memoria con un insieme vuoto è un ricordo valido: legge e basta.
+        settings::write(&qui, CHIAVE_BRANI_ASSENTI, "[]").expect("vuota");
+        assert_eq!(
+            ricordo_dei_brani_assenti(&qui),
+            Ok(Ricordo::Chiavi(BTreeSet::new()))
+        );
+        settings::write(&qui, CHIAVE_BRANI_ASSENTI, "{non json").expect("guasta");
+        assert_eq!(ricordo_dei_brani_assenti(&qui), Ok(Ricordo::Illeggibile));
     }
 }
