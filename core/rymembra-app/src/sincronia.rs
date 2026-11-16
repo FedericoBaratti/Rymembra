@@ -1343,6 +1343,84 @@ pub(crate) fn sposta_la_sequenza(
         .map_err(|err| db_error("sequenza di una playlist rinominata", &err))
 }
 
+/// Seppellisce la sequenza di una playlist che viene cancellata, **subito**.
+///
+/// Una playlist cancellata e rifatta con lo stesso nome prima di un `allinea`
+/// ritrova sotto la sua chiave la sequenza di quella di prima: voci vive
+/// comprese, e fra queste quelle dei brani che qui mancano, che
+/// `allinea_sequenze` lascia stare e che resterebbero vive nella playlist nuova
+/// (FSYNC2). Dall'`allinea` non si può riconoscere che la playlist è un'altra —
+/// la lapide della vecchia e la riga della nuova convivono fino alla passata che
+/// le applica, e rifarlo a ogni `allinea` seppellirebbe anche le voci appena
+/// battezzate di quella nuova, e la passata che le applica cadrebbe — quindi si
+/// fa nell'unico posto in cui una playlist si cancella,
+/// [`crate::playlists::cancella`], nella sua transazione: è quel che farebbe il
+/// primo `allinea` dopo (il ramo delle «sequenze rimaste»), solo prima.
+///
+/// Restituisce gli elementi che erano vivi, per [`rianima_la_sequenza`]:
+/// «Annulla» li deve poter rimettere come stavano.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una lettura o una scrittura fallisce.
+pub(crate) fn seppellisci_la_sequenza(
+    connection: &Connection,
+    playlist_key: &str,
+    adesso_ms: i64,
+) -> Result<Vec<String>, AppError> {
+    let vive: Vec<String> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT elemento FROM sync_sequenza
+                  WHERE playlist_key = ?1 AND tolto_ms IS NULL",
+            )
+            .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?;
+        statement
+            .query_map([playlist_key], |row| row.get::<_, String>(0))
+            .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?
+    };
+    connection
+        .execute(
+            "UPDATE sync_sequenza SET tolto_ms = ?2
+              WHERE playlist_key = ?1 AND tolto_ms IS NULL",
+            rusqlite::params![playlist_key, adesso_ms],
+        )
+        .map_err(|err| db_error("sequenza di una playlist cancellata", &err))?;
+    Ok(vive)
+}
+
+/// Rimette vive le voci che [`seppellisci_la_sequenza`] aveva sepolto, se sono
+/// ancora com'erano: «Annulla» una cancellazione.
+///
+/// Solo gli elementi nominati **e** con la data di sepoltura scritta da lei: una
+/// voce che nel frattempo è stata sepolta per un'altra ragione ha un'altra data,
+/// e non si tocca.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+pub(crate) fn rianima_la_sequenza(
+    connection: &Connection,
+    playlist_key: &str,
+    elementi: &[String],
+    sepolti_il: i64,
+) -> Result<(), AppError> {
+    let mut statement = connection
+        .prepare(
+            "UPDATE sync_sequenza SET tolto_ms = NULL
+              WHERE playlist_key = ?1 AND elemento = ?2 AND tolto_ms = ?3",
+        )
+        .map_err(|err| db_error("sequenza di una playlist ripristinata", &err))?;
+    for elemento in elementi {
+        statement
+            .execute(rusqlite::params![playlist_key, elemento, sepolti_il])
+            .map_err(|err| db_error("sequenza di una playlist ripristinata", &err))?;
+    }
+    Ok(())
+}
+
 // ── dal fuso al database ────────────────────────────────────────────────────
 
 /// Cosa la sincronia ha cambiato, da raccontare a chi guarda.
@@ -3797,6 +3875,75 @@ mod prove {
             0,
             "nessuna lapide delle voci della playlist cancellata"
         );
+    }
+
+    // ── FSYNC2: una playlist cancellata porta con sé la sua sequenza ──
+
+    #[test]
+    fn una_playlist_cancellata_e_rifatta_prima_di_un_allinea_non_porta_le_voci_della_vecchia() {
+        // Il telefono cancella «sera» (a, x, b: `x` è un brano che non ha) e la
+        // rifà con lo stesso nome e il solo `a`, senza che passi un `allinea`.
+        // La voce invisibile di `x` apparteneva alla vecchia: nella nuova non
+        // deve vivere, né qui né sul computer.
+        let (mut computer, mut telefono) = computer_e_telefono();
+        let id = id_playlist(&telefono, "sera");
+        crate::playlists::delete(&mut telefono, id).expect("cancellata");
+        // La lapide e la riga nuova devono avere date diverse: una playlist
+        // rifatta nello stesso millisecondo non sopravvive alla propria lapide.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let a = id_del_brano(&telefono, "a");
+        crate::playlists::crea_e_aggiungi(&mut telefono, "sera", &[a]).expect("rifatta");
+
+        let del_computer = documento_di(&computer, "computer");
+        passata_con_altro(&mut telefono, "telefono", ("computer", del_computer), DOPO);
+        assert_eq!(ordine(&telefono, "sera"), vec!["a"]);
+        assert_eq!(
+            sequenza_di(&telefono, "sera").ordine(),
+            vec!["a"],
+            "la voce invisibile della vecchia non vive nella nuova"
+        );
+
+        let dal_telefono = documento_di(&telefono, "telefono");
+        let fuso = fondi(&[
+            Documento::nuovo("computer", documento_di(&computer, "computer"), DOPO + 1),
+            Documento::nuovo("telefono", dal_telefono, DOPO + 1),
+        ]);
+        applica(&mut computer, &fuso, DOPO + 1).expect("applicazione");
+        assert_eq!(
+            ordine(&computer, "sera"),
+            vec!["a"],
+            "la playlist rifatta col solo `a` non porta la voce di `x` della vecchia"
+        );
+    }
+
+    #[test]
+    fn annullare_la_cancellazione_rida_vive_le_voci_dei_brani_che_qui_mancano() {
+        // «Annulla» rimette la playlist com'era, e com'era aveva la voce
+        // invisibile di `x`: sepolta dalla cancellazione, deve tornare viva, o
+        // la passata dopo vedrebbe una playlist senza `x` e lo toglierebbe agli
+        // altri dispositivi.
+        let (_computer, mut telefono) = computer_e_telefono();
+        let id = id_playlist(&telefono, "sera");
+        let cancellata = crate::playlists::cancella(&mut telefono, id).expect("cancellata");
+        assert!(
+            sequenza_di(&telefono, "sera").ordine().is_empty(),
+            "la sequenza muore con la playlist"
+        );
+        // Una passata in mezzo non cambia niente: la sequenza è già sepolta.
+        let in_mezzo = allinea(&mut telefono, "telefono", DOPO).expect("allineamento");
+        assert_eq!(in_mezzo.sequenze, 0, "{in_mezzo:?}");
+
+        crate::playlists::ripristina(&mut telefono, &cancellata).expect("ripristinata");
+        assert_eq!(
+            sequenza_di(&telefono, "sera").ordine(),
+            vec!["a", "x", "b"],
+            "tornano vive, la voce invisibile compresa"
+        );
+        assert_eq!(ordine(&telefono, "sera"), vec!["a", "b"]);
+
+        let dopo = allinea(&mut telefono, "telefono", DOPO + 1).expect("allineamento");
+        assert!(dopo.e_vuoto(), "{dopo:?}");
+        assert_eq!(lapidi_di(&telefono, "sera"), 0);
     }
 
     // ── FSYNC2: la memoria che manca e quella che non si legge ──
