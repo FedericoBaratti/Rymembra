@@ -95,7 +95,7 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
-## [3.2.1] — 2026-11-13
+## [3.2.1] — 2026-11-17
 
 **Rymembra on Android.** The same application, from the same code: the
 fifteen core crates build for `aarch64-linux-android` and
