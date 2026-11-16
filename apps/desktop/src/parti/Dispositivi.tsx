@@ -52,6 +52,7 @@ import {
   comandoDelPannello,
   eTelefono,
   eventoDelPannello,
+  fraseScaricoFinito,
   linkDa,
   percorsoQr,
   qrScaduto,
@@ -77,11 +78,8 @@ import { Segmentato } from "./Segmentato";
  * musica — perché non è sceso. Il conto dei non riusciti da solo non lo dice.
  */
 function testoScaricoFinito(adesso: ScaricoLontano): string {
-  if (adesso.falliti === 0) return t("devices.download.done", { n: adesso.fatti });
-  const conto = t("devices.download.doneWithErrors", {
-    n: adesso.fatti,
-    falliti: adesso.falliti,
-  });
+  const { chiave, valori } = fraseScaricoFinito(adesso);
+  const conto = t(chiave, valori);
   return scaricoConNonAudio(adesso) ? `${conto} ${t("devices.download.notAudio")}` : conto;
 }
 
@@ -1067,7 +1065,7 @@ export function SchedaDispositivi({
           <input
             type="url"
             className="campo field-input"
-            placeholder="https://relay.esempio.it"
+            placeholder={t("settings.devices.relay.placeholder")}
             aria-label={t("settings.devices.relay")}
             value={relay ?? stato.relay ?? ""}
             onChange={(e) => setRelay(e.target.value)}

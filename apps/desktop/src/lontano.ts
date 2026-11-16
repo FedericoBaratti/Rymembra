@@ -22,6 +22,7 @@
 import { creaArchivio, sceltaRicordata, ugualiInSuperficie } from "./archivio";
 import { ordinaFidati } from "./insieme";
 import { eventiEFotografia } from "./ultima";
+import type { Chiave, Valori } from "./lingue";
 import type {
   Album,
   BranoRemoto,
@@ -252,6 +253,26 @@ export const NON_AUDIO = "fs.extensionRefused";
 /** La coda è finita con un file rifiutato perché non era musica. */
 export function scaricoConNonAudio(stato: ScaricoLontano): boolean {
   return stato.falliti > 0 && stato.errore === NON_AUDIO;
+}
+
+/**
+ * La frase di fine coda di «Scarica qui»: la chiave e i valori, da dare a `t`.
+ *
+ * Il plurale lo sceglie solo `n`, e un secondo numero (`falliti`) non lo
+ * sceglie: per questo con i brani arrivati il conto dei non riusciti sta in
+ * coda alla frase («…; non riusciti: 2»), e con **nessun** brano arrivato la
+ * frase è un'altra, il cui `n` sono proprio i non riusciti — non «Scaricati 0
+ * brani» seguito da un conto che non accorda (R13-12).
+ */
+export function fraseScaricoFinito(
+  adesso: Pick<ScaricoLontano, "fatti" | "falliti">,
+): { chiave: Chiave; valori: Valori } {
+  if (adesso.falliti === 0) return { chiave: "devices.download.done", valori: { n: adesso.fatti } };
+  if (adesso.fatti === 0) return { chiave: "devices.download.allFailed", valori: { n: adesso.falliti } };
+  return {
+    chiave: "devices.download.doneWithErrors",
+    valori: { n: adesso.fatti, falliti: adesso.falliti },
+  };
 }
 
 /** Quanto del brano in corso è sceso, da 0 a 100. */
