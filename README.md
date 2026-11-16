@@ -866,7 +866,7 @@ to hold the library lock for the whole duration of a download.
 
 How every part works — threads and locks, the schema, the scan, the audio
 engine, the skin compiler, the IPC surface — is described in the [technical
-documentation](https://federicobaratti.github.io/Rymembra/docs/), whose source is
+documentation](https://rymembra.com/docs/), whose source is
 in `site/docs/`.
 
 ---
@@ -1133,7 +1133,7 @@ default and turned on only by whoever uses it.
 
 | Document | Content |
 | --- | --- |
-| [Technical documentation](https://federicobaratti.github.io/Rymembra/docs/) | How the code works, subsystem by subsystem (`site/docs/`) |
+| [Technical documentation](https://rymembra.com/docs/) | How the code works, subsystem by subsystem (`site/docs/`) |
 | [`CHANGELOG.md`](CHANGELOG.md) | The changes in each version and the numbering rule |
 | [`PRIVACY.md`](PRIVACY.md) | How data is handled and every network request |
 | [`TERMS.md`](TERMS.md) | Terms of use and the licenses of acquired content |
