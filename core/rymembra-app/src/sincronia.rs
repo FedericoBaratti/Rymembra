@@ -3878,6 +3878,133 @@ mod prove {
         );
     }
 
+    // ── FSYNC2: tolto dalla playlist e poi dalla libreria, prima di un allinea ──
+
+    /// Quel che un `allinea` può vedere di una libreria, come testo: le tabelle
+    /// che la sincronia legge più quelle del trigger della 28.
+    fn quel_che_si_vede(connection: &Connection) -> String {
+        let mut fuori = String::new();
+        for interrogazione in [
+            "SELECT track_key FROM tracks ORDER BY track_key",
+            "SELECT p.playlist_key, t.track_key, pt.position FROM playlist_tracks pt
+               JOIN playlists p ON p.id = pt.playlist_id
+               JOIN tracks t ON t.id = pt.track_id ORDER BY 1, 3",
+            "SELECT playlist_key, elemento, track_key, tolto_ms FROM sync_sequenza ORDER BY 1, 2",
+            "SELECT content_key, playlist_id, position FROM playlist_orfane ORDER BY 1, 2, 3",
+        ] {
+            let mut statement = connection.prepare(interrogazione).expect("interrogazione");
+            let colonne = statement.column_count();
+            let righe = statement
+                .query_map([], |riga| {
+                    (0..colonne)
+                        .map(|i| {
+                            riga.get::<_, rusqlite::types::Value>(i)
+                                .map(|v| format!("{v:?}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .expect("righe");
+            for riga in righe {
+                fuori.push_str(&riga.expect("riga").join("|"));
+                fuori.push('\n');
+            }
+            fuori.push_str("--\n");
+        }
+        fuori
+    }
+
+    /// Un telefono con `a`, `x`, `b` e «sera», già allineato; `con_chiave_di_contenuto`
+    /// dice se i brani hanno la `content_key` che il trigger della 28 pretende.
+    fn telefono_con_sera(con_chiave_di_contenuto: bool) -> Connection {
+        let mut telefono = libreria_con(&[]);
+        for (id, chiave) in [(1, "a"), (2, "x"), (3, "b")] {
+            let ck = con_chiave_di_contenuto.then(|| format!("c-{chiave}"));
+            brano_di_prova(&telefono, id, chiave, ck.as_deref());
+        }
+        playlist_con(&telefono, "sera", &[1, 2, 3]);
+        allinea(&mut telefono, "telefono", 1_000).expect("allineamento");
+        telefono
+    }
+
+    #[test]
+    fn senza_chiave_di_contenuto_tolto_e_poi_cancellato_non_si_distingue_dal_solo_cancellato() {
+        // Il limite, provato. Il padre di FSYNC seppelliva la voce di un brano
+        // tolto dalla playlist e poi sparito dalla libreria prima di un
+        // `allinea`, e il giro dopo lasciava invisibile quella di un brano che
+        // sparisce soltanto — perdendo i brani agli altri dispositivi. Le due
+        // storie lasciano lo STESSO stato nelle tabelle quando il trigger della
+        // 28 non scrive niente (brano senza `content_key`, o senza percorso: un
+        // brano di catalogo, una riga provvisoria del cloud): nessuna regola può
+        // seppellire l'una senza seppellire l'altra, e l'errore che si sceglie
+        // è la voce che resta.
+        let tolto_e_poi_cancellato = {
+            let telefono = telefono_con_sera(false);
+            telefono
+                .execute("DELETE FROM playlist_tracks WHERE track_id = 2", [])
+                .expect("tolto dalla playlist");
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        let solo_cancellato = {
+            let telefono = telefono_con_sera(false);
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        assert_eq!(
+            quel_che_si_vede(&tolto_e_poi_cancellato),
+            quel_che_si_vede(&solo_cancellato),
+            "stesse tabelle: l'`allinea` non può dire quale delle due storie è la sua"
+        );
+        for mut telefono in [tolto_e_poi_cancellato, solo_cancellato] {
+            allinea(&mut telefono, "telefono", 2_000).expect("allineamento");
+            assert_eq!(lapidi_di(&telefono, "sera"), 0);
+            assert_eq!(
+                sequenza_di(&telefono, "sera").ordine(),
+                vec!["a", "x", "b"],
+                "la voce resta, invisibile: non parte nessuna lapide"
+            );
+        }
+    }
+
+    #[test]
+    fn con_la_chiave_di_contenuto_il_trigger_lascia_un_segno_solo_a_chi_e_stato_cancellato_dentro_la_playlist()
+     {
+        // L'informazione che mancava sopra, quando c'è: `playlist_orfane` ha una
+        // riga per il brano uscito mentre stava nella playlist, e niente per
+        // quello tolto prima. Ma è per `content_key`, e del brano sparito non
+        // resta la chiave: si sa solo che la playlist ha un posto tenuto.
+        let tolto_e_poi_cancellato = {
+            let telefono = telefono_con_sera(true);
+            telefono
+                .execute("DELETE FROM playlist_tracks WHERE track_id = 2", [])
+                .expect("tolto dalla playlist");
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        let solo_cancellato = {
+            let telefono = telefono_con_sera(true);
+            telefono
+                .execute("DELETE FROM tracks WHERE track_key = 'x'", [])
+                .expect("cancellato");
+            telefono
+        };
+        let posti_tenuti = |telefono: &Connection| -> i64 {
+            telefono
+                .query_row("SELECT COUNT(*) FROM playlist_orfane", [], |riga| {
+                    riga.get(0)
+                })
+                .expect("conteggio")
+        };
+        assert_eq!(posti_tenuti(&tolto_e_poi_cancellato), 0);
+        assert_eq!(posti_tenuti(&solo_cancellato), 1);
+    }
+
     // ── FSYNC2: una playlist cancellata porta con sé la sua sequenza ──
 
     #[test]
