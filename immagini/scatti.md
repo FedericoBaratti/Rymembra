@@ -1,5 +1,18 @@
 # Screenshot da rifare con musica libera
 
+**Da rifare per la 3.2.1.** Confrontate con l'interfaccia della 3.2.1 (16/11/2026), le immagini di adesso sono
+indietro in questi punti:
+
+- `fonti`: la scheda si chiama «Importa da un servizio» (nell'immagine «Da dove arriva la musica»), e nel menu delle
+  Impostazioni c'è la voce nuova «Dispositivi»; sono cambiate le icone di «Chiusura e secondo piano», «Movimento e
+  accesso», «Sincronia fra dispositivi», «Libreria e dati» e «Aggiornamenti». È quella da rifare per prima.
+- tutte quelle col pannello di destra (`casa`, `brani`, `album`, `skin`, `fonti`): c'è l'icona nuova di «Ascolta
+  insieme» accanto a «schermo intero», e l'icona di «Esplora» nel menu è una bussola.
+- `studio`: da ricontrollare con una skin che abbia degli effetti (l'ispettore mostra «Superficie» e «Movimento»).
+
+La forma del resto (pagine, griglie, In riproduzione, la skin Neon) è la stessa. Gli scatti si fanno sulla libreria
+inventata delle immagini di adesso, che su questo PC non c'è più.
+
 **A che punto è (3.2.0).** Le immagini di adesso vengono già da una libreria
 inventata — 88 brani, 16 album, 10 artisti con nomi, copertine e suono inventati
 (vedi il README) — ma sono un set solo, con l'app in italiano (lo Studio in
