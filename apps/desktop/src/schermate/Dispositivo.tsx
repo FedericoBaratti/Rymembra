@@ -90,6 +90,7 @@ import {
   durataTotale,
   eTelefono,
   gestoLontano,
+  passoIndietroSfoglia,
   percentualeScarico,
 } from "../lontano";
 import type { Apertura, TestataMenu, Voce } from "../Menu";
@@ -1209,22 +1210,38 @@ export function Dispositivo({
     return () => window.clearTimeout(attesa);
   }, [testo]);
 
-  // Sul telefono Indietro chiude prima il disco, poi l'artista, poi la
-  // ricerca, poi torna su «In evidenza», e solo dopo esce dalla pagina
-  // (`passoIndietroTelefono`).
-  const aperto = album !== null || artista !== null || testo !== "" || scheda !== "evidenza";
+  // Indietro chiude prima il disco, poi l'artista, poi la ricerca; sul
+  // telefono poi torna su «In evidenza», e solo dopo esce dalla pagina
+  // (`passoIndietroTelefono`). Sul computer è Escape (e `Alt+←`, e il tasto
+  // indietro del mouse) a fare lo stesso, come nella libreria — ma senza
+  // cambiare scheda (R13-5). Con il dispositivo che non risponde la pagina è lo
+  // stato vuoto, i livelli non si vedono, e il gesto non li chiude (R13-6):
+  // `passoIndietroSfoglia` sceglie da quel che si vede.
+  const passo = passoIndietroSfoglia({
+    online,
+    album: album !== null,
+    artista: artista !== null,
+    ricerca: testo !== "",
+    altraScheda: scheda !== "evidenza",
+    sulComputer: !MOBILE,
+  });
   useEffect(() => {
-    if (!aperto) return;
-    return suIndietro(() => {
-      if (album !== null) chiudiAlbum();
-      else if (artista !== null) chiudiArtista();
-      else if (testo !== "") chiudiTutto();
-      else scegli("evidenza");
-      return true;
-    });
+    if (passo === null) return;
+    return suIndietro(
+      () => {
+        if (passo === "album") chiudiAlbum();
+        else if (passo === "artista") chiudiArtista();
+        else if (passo === "ricerca") chiudiTutto();
+        else scegli("evidenza");
+        return true;
+      },
+      // Anche per Escape, sul computer: gli altri gestori della pila (la coda,
+      // la terza colonna) sono del solo telefono, qui no.
+      { sulComputer: true },
+    );
     // Le funzioni qui sopra cambiano a ogni disegno, ma leggono solo ref,
     // setter stabili e lo stato elencato: rinnovare il gesto per loro non serve.
-  }, [aperto, album, artista, testo, scheda]);
+  }, [passo, album, artista, testo, scheda]);
 
   if (dispositivo === null || dispositivo.revocato) {
     return (

@@ -330,6 +330,44 @@ export function annullatoDaQui(errore: unknown): boolean {
   );
 }
 
+/** Che cosa chiude Indietro (o Escape) in «Sfoglia»: vedi [`passoIndietroSfoglia`]. */
+export type PassoIndietroSfoglia = "album" | "artista" | "ricerca" | "scheda";
+
+/**
+ * Il prossimo livello di «Sfoglia» che Indietro chiude, o `null` se la pagina
+ * non ha niente da chiudere e il gesto deve passare alla scala di `App`.
+ *
+ * Si chiude quel che **si vede**, un livello per volta, nell'ordine in cui ci
+ * si è entrati: il disco, l'artista, la ricerca.
+ *
+ * - **Dispositivo che non risponde** (`online` falso): la pagina è lo stato
+ *   vuoto «non risponde», i livelli non si disegnano, e chiuderli uno alla
+ *   volta sarebbe un Indietro che a schermo non cambia niente (R13-6). Si esce.
+ * - **Telefono**: dopo la ricerca si torna anche su «In evidenza» (`altraScheda`),
+ *   e solo dopo si esce dalla pagina.
+ * - **Computer** (`sulComputer`): Escape fa come nella libreria, che chiude il
+ *   disco, l'artista e la ricerca ma non cambia mai la vista; la scheda non è un
+ *   livello che si chiude con un tasto (R13-5).
+ *
+ * Pura, perché la scelta sta in un posto solo e si prova da sola; la pagina la
+ * chiama a ogni disegno e si iscrive a `indietro.ts` solo se c'è un passo.
+ */
+export function passoIndietroSfoglia(stato: {
+  online: boolean;
+  album: boolean;
+  artista: boolean;
+  ricerca: boolean;
+  altraScheda: boolean;
+  sulComputer: boolean;
+}): PassoIndietroSfoglia | null {
+  if (!stato.online) return null;
+  if (stato.album) return "album";
+  if (stato.artista) return "artista";
+  if (stato.ricerca) return "ricerca";
+  if (stato.altraScheda && !stato.sulComputer) return "scheda";
+  return null;
+}
+
 /** Il nome di una piattaforma, per l'icona e il testo. */
 export function eTelefono(piattaforma: string): boolean {
   return piattaforma === "android";

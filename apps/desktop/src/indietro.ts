@@ -18,18 +18,34 @@ import { useEffect, useRef } from "react";
 /** Chi sa chiudere qualcosa: `true` se l'ha chiuso. */
 type Gestore = () => boolean;
 
-const pila: Gestore[] = [];
+/** Un gestore in pila, e se Escape sul computer lo scende anche lui. */
+interface Voce {
+  gestore: Gestore;
+  sulComputer: boolean;
+}
+
+const pila: Voce[] = [];
 let sopra: Gestore = () => false;
 let scala: Gestore = () => false;
 
 /**
  * Mette un gestore in cima, davanti alla scala, finché resta aperto quel che
  * chiude. Restituisce la funzione che lo toglie.
+ *
+ * `sulComputer`: chiudere quel gestore è anche quel che fa Escape (e `Alt+←`,
+ * e il tasto indietro del mouse) sul computer — i livelli di una pagina che sul
+ * telefono e sul computer si aprono nello stesso modo, come i dischi di
+ * «Sfoglia». Senza, il gestore è del solo telefono: sul computer la coda e la
+ * terza colonna stanno accanto alla pagina, e Escape non deve chiuderle.
  */
-export function suIndietro(gestore: Gestore): () => void {
-  pila.push(gestore);
+export function suIndietro(
+  gestore: Gestore,
+  opzioni: { sulComputer?: boolean } = {},
+): () => void {
+  const voce: Voce = { gestore, sulComputer: opzioni.sulComputer === true };
+  pila.push(voce);
   return () => {
-    const dove = pila.lastIndexOf(gestore);
+    const dove = pila.lastIndexOf(voce);
     if (dove >= 0) pila.splice(dove, 1);
   };
 }
@@ -49,9 +65,25 @@ export function impostaScala(prima: Gestore, poi: Gestore): void {
 export function indietro(): boolean {
   if (sopra()) return true;
   for (let i = pila.length - 1; i >= 0; i--) {
-    if (pila[i]?.()) return true;
+    if (pila[i]?.gestore()) return true;
   }
   return scala();
+}
+
+/**
+ * Escape, `Alt+←` e il tasto indietro del mouse, sul computer: i soli gestori
+ * che si sono dichiarati anche per lui, dal più recente.
+ *
+ * La chiama la scala di `App` (`chiudi`), al suo posto fra i gradini — dopo il
+ * menù e la selezione, che stanno sopra la pagina — e **non** chiama la scala:
+ * `indietro()` la chiama lei, e il giro sarebbe senza fine.
+ */
+export function indietroSulComputer(): boolean {
+  for (let i = pila.length - 1; i >= 0; i--) {
+    const voce = pila[i];
+    if (voce?.sulComputer === true && voce.gestore()) return true;
+  }
+  return false;
 }
 
 /**
