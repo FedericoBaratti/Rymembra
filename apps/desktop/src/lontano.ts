@@ -19,7 +19,7 @@
  * Senza React a runtime oltre agli hook in fondo: le prove di `test/` lo
  * caricano con `node --test`.
  */
-import { creaArchivio } from "./archivio";
+import { creaArchivio, sceltaRicordata, ugualiInSuperficie } from "./archivio";
 import { ordinaFidati } from "./insieme";
 import { eventiEFotografia } from "./ultima";
 import type {
@@ -198,6 +198,30 @@ export function unisciDispositivi(
     if (!sincroniaUsata.has(suo.id)) righe.push({ tipo: "sincronia", sincronia: suo });
   }
   return righe;
+}
+
+/**
+ * La scelta «il dispositivo con questa chiave» sul pannello, ricordata: chi la
+ * legge si ridisegna solo quando **quel** dispositivo cambia (R13-11).
+ *
+ * `null` come chiave non sceglie niente, e il risultato è `null` per qualunque
+ * pannello: `App` segue il dispositivo aperto anche quando non ce n'è nessuno, e
+ * non deve ridisegnarsi a ogni `lontano:stato` — uno al minuto per dispositivo,
+ * più i cambi di via e di presenza. Un oggetto nuovo con gli stessi campi tiene
+ * l'identità di prima (`ugualiInSuperficie`: i campi sono tutti valori semplici).
+ * Va rifatta quando cambia la chiave: la scelta ricordata guarda solo la
+ * sorgente.
+ */
+export function sceltaDelDispositivo(
+  chiave: string | null,
+): (stato: StatoLontano | null) => DispositivoLontano | null {
+  return sceltaRicordata(
+    (stato: StatoLontano | null) =>
+      chiave === null || stato === null
+        ? null
+        : (stato.dispositivi.find((d) => d.chiave === chiave) ?? null),
+    (a, b) => a === b || (a !== null && b !== null && ugualiInSuperficie(a, b)),
+  );
 }
 
 /** I dispositivi che si possono sfogliare adesso: online e non revocati. */

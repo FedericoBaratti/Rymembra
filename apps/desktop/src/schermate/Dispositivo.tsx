@@ -57,13 +57,16 @@
  */
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 
@@ -92,6 +95,7 @@ import {
   gestoLontano,
   passoIndietroSfoglia,
   percentualeScarico,
+  sceltaDelDispositivo,
 } from "../lontano";
 import type { Apertura, TestataMenu, Voce } from "../Menu";
 import { mescolato } from "../mescolato";
@@ -102,6 +106,7 @@ import { TestataDettaglio } from "../parti/TestataDettaglio";
 import { MOBILE } from "../piattaforma";
 import { scorrevoleDi } from "../riordino";
 import { conIndice } from "../segnali";
+import { useStabile } from "../stabile";
 import { StatoVuoto } from "./Libreria";
 
 /** Quante voci per domanda: il protocollo ne ammette fino a 500. */
@@ -397,7 +402,7 @@ function StrisciaScarico({ onErrore }: { onErrore: (errore: unknown) => void }) 
  * sulla riga, come in libreria; sul computer il doppio clic, perché il clic
  * da solo in un elenco si aspetta di scegliere, non di far partire.
  */
-function RigaBrano({
+const RigaBrano = memo(function RigaBrano({
   brano,
   indice,
   elenco,
@@ -406,8 +411,11 @@ function RigaBrano({
 }: {
   brano: BranoRemoto;
   indice: number;
-  /** L'elenco intero: Riproduci lo suona da qui. */
-  elenco: readonly BranoRemoto[];
+  /**
+   * L'elenco intero, che Riproduci suona da qui: un riferimento e non l'array,
+   * che è nuovo a ogni pagina e ridisegnerebbe tutte le righe (R13-11).
+   */
+  elenco: { readonly current: readonly BranoRemoto[] };
   /** Dentro il suo disco: il numero al posto della copertina, e niente nome del disco. */
   nelDisco: boolean;
   /**
@@ -417,7 +425,7 @@ function RigaBrano({
   conAscolti: boolean;
 }) {
   const sfoglia = useSfoglia();
-  const suona = () => gesti(sfoglia).suona(inMano(elenco), indice);
+  const suona = () => gesti(sfoglia).suona(inMano(elenco.current), indice);
   const menu = (e: React.MouseEvent) =>
     apriMenu(
       e,
@@ -427,7 +435,7 @@ function RigaBrano({
         sottotitolo: `${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`,
         copertina: brano.coverArtHash,
       },
-      vociBrano(sfoglia, brano, elenco, indice, nelDisco),
+      vociBrano(sfoglia, brano, elenco.current, indice, nelDisco),
     );
   const accanto =
     conAscolti && brano.playCount > 0
@@ -521,7 +529,7 @@ function RigaBrano({
       </button>
     </li>
   );
-}
+});
 
 /** I brani dell'altro, una riga ciascuno. */
 function ElencoBrani({
@@ -533,6 +541,11 @@ function ElencoBrani({
   nelDisco?: boolean;
   conAscolti?: boolean;
 }) {
+  // L'elenco intero scende alle righe come riferimento: l'array è nuovo a ogni
+  // pagina, e passato com'è ridisegnerebbe tutte le righe a ogni «Mostra altri»
+  // (R13-11). Lo si legge al gesto, e allora è quello di quel momento.
+  const dellElenco = useRef(brani);
+  dellElenco.current = brani;
   if (brani.length === 0) return null;
   return (
     <ul className="righe-lontane">
@@ -541,7 +554,7 @@ function ElencoBrani({
           key={`${brano.id}-${indice}`}
           brano={brano}
           indice={indice}
-          elenco={brani}
+          elenco={dellElenco}
           nelDisco={nelDisco}
           conAscolti={conAscolti}
         />
@@ -1115,9 +1128,12 @@ function Piano({ nascosto, children }: { nascosto: boolean; children: ReactNode 
 
 /** Il nome e lo stato di un dispositivo, per le testate di `App`. */
 export function useDispositivo(chiave: string | null) {
-  const stato = useArchivio(archivioLontano);
-  if (chiave === null || stato === null) return null;
-  return stato.dispositivi.find((d) => d.chiave === chiave) ?? null;
+  // Il dispositivo per chiave, non l'archivio intero: `App` lo chiama anche con
+  // nessun dispositivo aperto, e a ogni `lontano:stato` si ridisegnava per
+  // niente (R13-11). La scelta si rifà con la chiave.
+  const scegli = useMemo(() => sceltaDelDispositivo(chiave), [chiave]);
+  const leggi = useCallback(() => scegli(archivioLontano.leggi()), [scegli]);
+  return useSyncExternalStore(archivioLontano.iscrivi, leggi, leggi);
 }
 
 /** La riga sotto il nome: telefono o computer, se risponde, e se dal relay. */
@@ -1201,8 +1217,14 @@ export function Dispositivo({
     daRimettere.current = posizioni.current.pop() ?? 0;
     chiudi();
   };
-  const apriAlbum = (scelto: Album) => apriLivello(() => setAlbum(scelto));
-  const apriArtista = (scelto: Artista) => apriLivello(() => setArtista(scelto));
+  // Con un'identità sola: stanno nel valore del contesto, e un valore nuovo a
+  // ogni disegno ridisegnerebbe ogni riga che lo legge (R13-11).
+  const apriAlbum = useStabile((scelto: Album) => apriLivello(() => setAlbum(scelto)));
+  const apriArtista = useStabile((scelto: Artista) => apriLivello(() => setArtista(scelto)));
+  const sfoglia = useMemo<Sfoglia>(
+    () => ({ chiave, onErrore, onMenu, apriAlbum, apriArtista }),
+    [chiave, onErrore, onMenu, apriAlbum, apriArtista],
+  );
   const chiudiAlbum = () => chiudiLivello(() => setAlbum(null));
   const chiudiArtista = () => chiudiLivello(() => setArtista(null));
   /** Fuori da ogni livello e dalla ricerca, sulla scheda di sotto dov'era. */
@@ -1308,7 +1330,6 @@ export function Dispositivo({
     );
   }
 
-  const sfoglia: Sfoglia = { chiave, onErrore, onMenu, apriAlbum, apriArtista };
   // I piani uno sopra l'altro: sotto le schede (o la ricerca), sopra
   // l'artista, in cima il disco. Quel che è coperto resta montato, nascosto.
   const livello = album !== null || artista !== null;
