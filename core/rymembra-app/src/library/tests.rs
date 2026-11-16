@@ -6697,6 +6697,153 @@ fn agli_altri_dispositivi_si_mostrano_solo_i_file() {
     );
 }
 
+/// Una libreria di `n` brani-file senza file veri: sette artisti, in ordine di
+/// titolo. Per le prove delle pagine che Sfoglia chiede agli altri dispositivi.
+fn libreria_da_sfogliare(n: i64) -> (tempfile::TempDir, CoverStore, Connection) {
+    let (dir, store, connection) = banco();
+    for id in 1..=n {
+        connection
+            .execute(
+                "INSERT INTO tracks
+                     (id, path, track_key, content_key, title, artist, album, duration_ms,
+                      file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Al', 1000, 65536, 0, 10)",
+                rusqlite::params![
+                    id,
+                    format!("/musica/{id:04}.flac"),
+                    format!("a|t{id}|al"),
+                    format!("c{id}"),
+                    format!("Titolo {id:04}"),
+                    format!("Artista {}", id % 7),
+                ],
+            )
+            .expect("riga di brano");
+    }
+    (dir, store, connection)
+}
+
+#[test]
+fn le_pagine_degli_artisti_per_gli_altri_dispositivi_non_rifanno_l_aggregato_di_tutta_la_libreria()
+{
+    // R21-7: ogni pagina di artisti rifaceva il conto di tutta la libreria (30 ms
+    // su 29 000 brani) per restituirne una fetta, col lucchetto della libreria
+    // in mano. Lo stesso elenco serve a tutte le pagine finché la libreria non
+    // cambia: lo dice la generazione.
+    let (_dir, _store, connection) = libreria_da_sfogliare(70);
+    let cache = std::sync::Mutex::new(condivisa::Ricordate::default());
+
+    let prima = condivisa::artisti_con(&connection, &cache, 0, 3).expect("prima pagina");
+    let seconda = condivisa::artisti_con(&connection, &cache, 3, 3).expect("seconda pagina");
+    let terza = condivisa::artisti_con(&connection, &cache, 6, 3).expect("terza pagina");
+    assert_eq!(prima.len(), 3);
+    assert_eq!(seconda.len(), 3);
+    assert_eq!(terza.len(), 1, "sette artisti in tutto");
+    let nomi: Vec<&str> = prima
+        .iter()
+        .chain(&seconda)
+        .chain(&terza)
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(
+        nomi,
+        [
+            "Artista 0",
+            "Artista 1",
+            "Artista 2",
+            "Artista 3",
+            "Artista 4",
+            "Artista 5",
+            "Artista 6"
+        ]
+    );
+    assert_eq!(prima[0].tracks, 10);
+    assert_eq!(
+        cache.lock().expect("cache").costruiti(),
+        1,
+        "tre pagine, un aggregato solo"
+    );
+
+    // Una scrittura qualunque su `tracks` cambia la generazione (migrazione 030):
+    // l'elenco ricordato non si serve più, e quello nuovo vede la modifica.
+    connection
+        .execute("UPDATE tracks SET artist = 'Zero' WHERE id = 1", [])
+        .expect("modifica");
+    let dopo = condivisa::artisti_con(&connection, &cache, 0, 50).expect("dopo la modifica");
+    assert_eq!(dopo.last().map(|a| a.name.as_str()), Some("Zero"));
+    assert_eq!(cache.lock().expect("cache").costruiti(), 2);
+    let ancora = condivisa::artisti_con(&connection, &cache, 0, 50).expect("ancora");
+    assert_eq!(ancora, dopo);
+    assert_eq!(
+        cache.lock().expect("cache").costruiti(),
+        2,
+        "stessa generazione, nessun conto nuovo"
+    );
+}
+
+#[test]
+fn le_pagine_profonde_dei_brani_per_gli_altri_dispositivi_non_leggono_tutta_la_libreria() {
+    // R21-7: il filtro dei brani condivisi non sta nell'indice, e una pagina a
+    // offset 29 000 faceva leggere a SQLite le 29 000 righe prima di lei (150 ms
+    // col lucchetto in mano) — a ogni pagina profonda. Da un certo scarto in poi
+    // l'elenco degli id si calcola una volta per generazione, e le pagine sono
+    // fette di lui.
+    let (_dir, _store, connection) = libreria_da_sfogliare(40);
+    let cache = std::sync::Mutex::new(condivisa::Ricordate::default());
+    let ordini = [
+        TrackOrder::Title,
+        TrackOrder::Shelf,
+        TrackOrder::RecentlyAdded,
+        TrackOrder::MostPlayed,
+    ];
+
+    for ordine in ordini {
+        for (da, quanti) in [
+            (0, 7),
+            (5, 7),
+            (12, 5),
+            (30, 7),
+            (36, 10),
+            (39, 3),
+            (40, 5),
+            (90, 5),
+        ] {
+            let atteso =
+                condivisa::brani_diretti(&connection, ordine, da, quanti).expect("diretta");
+            // Scarto 10: le pagine da lì in poi passano dall'elenco ricordato.
+            let avuto = condivisa::brani_con_scarto(&connection, &cache, ordine, da, quanti, 10)
+                .expect("ricordata");
+            assert_eq!(avuto, atteso, "{ordine:?} da {da} per {quanti}");
+        }
+    }
+    // Un elenco per ordinamento, calcolato la prima volta che una pagina profonda lo chiede.
+    assert_eq!(cache.lock().expect("cache").costruiti(), ordini.len());
+
+    // Le pagine in cima non costano un elenco intero: finché non c'è, vanno dritte.
+    let (_dir, _store, connection) = libreria_da_sfogliare(40);
+    let cache = std::sync::Mutex::new(condivisa::Ricordate::default());
+    condivisa::brani_con_scarto(&connection, &cache, TrackOrder::Title, 0, 7, 10).expect("cima");
+    assert_eq!(
+        cache.lock().expect("cache").costruiti(),
+        0,
+        "una pagina sotto lo scarto, senza elenco già pronto, non lo costruisce"
+    );
+
+    // Una scrittura cambia la generazione: l'elenco di prima non si serve, e la
+    // pagina nuova vede il brano tolto.
+    condivisa::brani_con_scarto(&connection, &cache, TrackOrder::Title, 20, 5, 10)
+        .expect("profonda");
+    assert_eq!(cache.lock().expect("cache").costruiti(), 1);
+    connection
+        .execute("DELETE FROM tracks WHERE id = 25", [])
+        .expect("tolto");
+    let dopo = condivisa::brani_con_scarto(&connection, &cache, TrackOrder::Title, 20, 5, 10)
+        .expect("dopo");
+    let atteso = condivisa::brani_diretti(&connection, TrackOrder::Title, 20, 5).expect("diretta");
+    assert_eq!(dopo, atteso);
+    assert!(dopo.iter().all(|b| b.id != 25));
+    assert_eq!(cache.lock().expect("cache").costruiti(), 2);
+}
+
 /// Una riga di `tracks` con un file, e il marchio d'origine scelto.
 fn file_con_origine(connection: &Connection, id: i64, path: &str, origine: &str) {
     connection
