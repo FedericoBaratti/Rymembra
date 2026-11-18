@@ -412,6 +412,31 @@ test("Rust dice a Kotlin la seconda radice in sessione.pronta, e Kotlin la ricor
   assert.match(COPERTINE_KT, /\.putString\("lontane", lontane\)/);
 });
 
+test("le copertine di sessione «Ascolta insieme» passano dal fornitore di prima, che non si è allargato", () => {
+  // Rust le scrive in `lontane/<64 zeri>/<impronta del gettone>.jpg`
+  // (`insieme/su_file.rs`): la cartella riservata non è la chiave di nessun
+  // dispositivo, e il nome sta dentro quel che il fornitore già accetta.
+  const suFile = leggi("../src-tauri/src/insieme/su_file.rs");
+  const cartella = /pub\(super\) const CARTELLA: &str =\s*"([0-9a-f]+)";/.exec(suFile)?.[1];
+  assert.ok(cartella, "su_file.rs non ha più la cartella riservata");
+  assert.equal(cartella, "0".repeat(64));
+  assert.ok(regolaKotlin("DISPOSITIVO").test(cartella), "Kotlin non apre la cartella riservata");
+  assert.ok(suFile.includes('format!("lontane/{CARTELLA}/{nome}")'), "Rust non scrive più lontane/<zeri>/<nome>");
+  assert.ok(suFile.includes('format!("{}.jpg", gettone.impronta())'), "il nome non viene più dall'impronta");
+  // L'impronta del gettone: gli otto byte di blake3, sedici cifre esadecimali.
+  const messaggi = leggi("../../../core/rymembra-insieme/src/messaggi.rs");
+  assert.match(messaggi, /pub fn impronta\(&self\) -> String \{[\s\S]*?let mut byte = \[0_u8; 8\];/);
+  assert.ok(regolaKotlin("IMPRONTA_LONTANA").test("0123456789abcdef.jpg"));
+  // Il fornitore è quello di F1: le due regole, parola per parola.
+  assert.match(COPERTINE_KT, /private val DISPOSITIVO = Regex\("\[0-9a-f\]\{64\}"\)/);
+  assert.match(COPERTINE_KT, /private val IMPRONTA_LONTANA = Regex\("\[0-9a-f\]\{2,128\}\\\\\.jpg"\)/);
+  // E le schede del sistema la chiedono prima dello store, da un posto solo.
+  const android = leggi("../src-tauri/src/media/android.rs");
+  assert.match(android, /if crate::insieme::e_una_chiave_di_sessione\(hash\) \{\s*let file = crate::insieme::copertina_su_file\(app, hash\)\?;\s*return crate::insieme::percorso_per_android\(&file\);/);
+  const smtc = leggi("../src-tauri/src/media/smtc.rs");
+  assert.match(smtc, /if crate::insieme::e_una_chiave_di_sessione\(hash\) \{\s*return crate::insieme::copertina_su_file\(app, hash\);/);
+});
+
 test("il ricordo dell'ultimo brano si riscrive anche quando cambia solo la copertina", () => {
   // La copertina di un brano di un altro dispositivo arriva dopo il brano: con
   // l'id uguale e la copertina nuova il ricordo restava senza immagine.

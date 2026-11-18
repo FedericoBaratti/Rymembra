@@ -515,6 +515,12 @@ fn tratto_di(coda: &[i64], posto: Option<usize>) -> Tratto {
 /// (`lontane/<dispositivo>/<impronta>.jpg`). Se in cache non c'è ancora,
 /// `chiedi` la fa venire in disparte, e quando arriva si ripubblica la scheda
 /// e si ricompone la coda: vedi [`super::lontane`].
+///
+/// Per una voce di «Ascolta insieme» (`insieme-<uid>`) i byte stanno in
+/// memoria, e la prima volta si scrivono in una cartella riservata della stessa
+/// cache (`lontane/<64 zeri>/<nome>.jpg`, vedi `crate::insieme::su_file`): non
+/// c'è niente da chiedere alla rete, e la scheda si ripubblica da sé quando la
+/// copertina arriva.
 fn copertina_di(
     app: &tauri::AppHandle,
     store: &CoverStore,
@@ -523,6 +529,10 @@ fn copertina_di(
     chiedi: bool,
 ) -> Option<String> {
     let hash = hash?;
+    if crate::insieme::e_una_chiave_di_sessione(hash) {
+        let file = crate::insieme::copertina_su_file(app, hash)?;
+        return crate::insieme::percorso_per_android(&file);
+    }
     if !crate::lontano::e_una_copertina(hash) {
         return if grande {
             auto::copertina_grande(store, Some(hash))

@@ -161,8 +161,10 @@ const PREFISSO_SESSIONE: &str = "insieme-";
 /// Lo stesso principio di [`e_un_impronta`] — l'alfabeto permesso, non i
 /// caratteri vietati — con un alfabeto ancora più stretto: solo cifre. La
 /// chiave non diventa mai un percorso (le copertine di sessione stanno in
-/// memoria, vedi `crate::insieme::copertina`), ma una regola stretta costa
-/// niente e toglie la domanda.
+/// memoria, vedi `crate::insieme::copertina`; il file che le schede del sistema
+/// aprono ha un nome che viene dal gettone, non da questa chiave: vedi
+/// `crate::insieme::copertina_su_file`), ma una regola stretta costa niente e
+/// toglie la domanda.
 fn e_una_chiave_di_sessione(chiave: &str) -> bool {
     chiave
         .strip_prefix(PREFISSO_SESSIONE)

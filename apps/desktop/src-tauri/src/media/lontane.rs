@@ -18,6 +18,12 @@
 //! arrivata si ripubblica la scheda: chi chiama dice come. Fra le due cose la
 //! scheda esce senza copertina, com'era, e non aspetta la rete.
 //!
+//! Le voci di «Ascolta insieme» (`insieme-<uid>`) avevano lo stesso difetto, ma
+//! non passano di qui: la loro copertina arriva con la voce e sta già in
+//! memoria, quindi non c'è niente da chiedere. La prima volta che una scheda la
+//! vuole come file si scrive in una cartella riservata della stessa cache
+//! (`crate::insieme::copertina_su_file`), e alla fine della sessione se ne va.
+//!
 //! # Tre cose che non devono succedere
 //!
 //! - **Due richieste per la stessa copertina.** Lo stato del lettore parte a
