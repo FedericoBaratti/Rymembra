@@ -183,6 +183,33 @@ pub fn record_play(
     Ok(true)
 }
 
+/// Un ascolto di una riga della libreria unica — un brano di un altro
+/// dispositivo — fatto qui: va in cronologia, per la Home, e **basta**.
+///
+/// Gli ascolti di quel brano li conta il proprietario (`Domanda::Ascoltato`,
+/// che parte dalla posta in uscita) e li scrobbla lui: qui non cresce
+/// `play_count`, non si muove `last_played_at` né `stats_updated_at` — sono una
+/// copia delle sue — e niente va nei contatori della sincronia. `true` se
+/// l'ascolto contava ed è entrato in cronologia.
+///
+/// # Errori
+///
+/// `library.trackNotFound` per un identificativo ≤ 0, come [`record_play`].
+pub fn record_play_specchio(connection: &Connection, ascolto: &Listen) -> Result<bool, AppError> {
+    riga_della_libreria(ascolto.track_id)?;
+    if !ascolto.counts {
+        return Ok(false);
+    }
+    let ms_played = i64::try_from(ascolto.listened_ms).unwrap_or(i64::MAX);
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO play_history (track_id, played_at, ms_played) VALUES (?1, ?2, ?3)",
+            rusqlite::params![ascolto.track_id, ascolto.started_at, ms_played],
+        )
+        .map_err(|err| db_error("cronologia d'ascolto di una riga lontana", &err))?;
+    Ok(true)
+}
+
 /// La coda, nella forma che va sul disco.
 ///
 /// Un tipo a parte invece di serializzare `QueueSnapshot` direttamente: il

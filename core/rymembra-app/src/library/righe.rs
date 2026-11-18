@@ -477,18 +477,28 @@ pub(super) fn content_keys_of(
 
 /// Registra la copertina di una riga, se ce n'è una.
 ///
-/// `INSERT OR IGNORE`: la stessa impronta arriva da dodici brani dello stesso
-/// album, e la seconda volta non c'è niente da registrare. Va fatto **prima**
+/// La stessa impronta arriva da dodici brani dello stesso album, e la seconda
+/// volta non c'è niente da registrare: l'inserimento non fa niente se la riga c'è
+/// già — salvo quella nata da un altro dispositivo, che la copertina vera
+/// sostituisce. Va fatto **prima**
 /// della riga di `tracks` che la riferisce, altrimenti la chiave esterna cade.
 fn insert_cover(tx: &Transaction<'_>, row: &TrackRow, now: i64) -> Result<(), AppError> {
     let Some(cover) = row.cover.as_ref() else {
         return Ok(());
     };
+    // Una riga nata da un altro dispositivo (`source = 'lontano'`, senza misure
+    // o con quelle della sua media) cede il posto alla copertina vera di questa
+    // macchina: è la scansione dello stesso originale. Le altre non si toccano.
     let mut statement = tx
         .prepare_cached(
-            "INSERT OR IGNORE INTO cover_art
+            "INSERT INTO cover_art
                (hash, mime_type, width, height, byte_size, source, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'tag', ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, 'tag', ?6)
+             ON CONFLICT(hash) DO UPDATE SET
+               mime_type = excluded.mime_type, width = excluded.width,
+               height = excluded.height, byte_size = excluded.byte_size,
+               source = excluded.source, created_at = excluded.created_at
+             WHERE cover_art.source = 'lontano'",
         )
         .map_err(|err| db_error("registrazione di una copertina", &err))?;
     statement
