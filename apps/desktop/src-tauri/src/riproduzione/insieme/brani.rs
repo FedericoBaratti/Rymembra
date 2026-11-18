@@ -103,6 +103,7 @@ pub(super) fn voci_allineate(
     } else {
         let stato = super::libreria_di(app, "voci di sessione")?;
         con_libreria(&stato, |libreria| {
+            rifiuta_le_righe_lontane(&libreria.connection, &righe)?;
             leggi_schede(&libreria.connection, &righe)
         })?
     };
@@ -126,6 +127,29 @@ pub(super) fn voci_allineate(
             what: Some("voci di sessione".to_owned()),
         })
     })
+}
+
+/// Una sessione non porta righe della libreria unica (`lontano://…`): chi
+/// ospita offrirebbe agli altri `Apertura::Libreria` per un file che raggiunge
+/// solo attraverso un terzo dispositivo. La restrizione di sempre — le voci di
+/// un altro dispositivo non entrano in una sessione — resta, controllata sullo
+/// schema del percorso: con le righe specchio, che hanno un id positivo, il
+/// cancello sulle maniglie non le vedrebbe.
+///
+/// # Errori
+///
+/// `insieme.gestoNonDisponibile` se una delle righe è una riga specchio; quelli
+/// della libreria.
+pub(super) fn rifiuta_le_righe_lontane(
+    connection: &rusqlite::Connection,
+    righe: &[i64],
+) -> Result<(), AppError> {
+    if rymembra_app::specchio::archivio::tra_le_righe_specchio(connection, righe)? {
+        return Err(AppError::new(ErrorCode::InsiemeGestoNonDisponibile {
+            gesto: "lontano".to_owned(),
+        }));
+    }
+    Ok(())
 }
 
 /// Le schede di alcune righe, dal database, con un'occhiata sola per tutte

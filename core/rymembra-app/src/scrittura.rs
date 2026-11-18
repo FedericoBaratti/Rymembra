@@ -134,6 +134,15 @@ pub fn sola_lettura(percorso: &Path) -> Result<(), AppError> {
             percorso.display()
         )));
     }
+    // Una riga specchio (`lontano://…`) è un brano di un altro dispositivo: non
+    // ha un file qui, e un percorso così passato a `std::fs` sarebbe una
+    // cartella relativa `lontano:` creata dove capita.
+    if percorso.to_str().is_some_and(crate::specchio::e_specchio) {
+        return Err(AppError::new(ErrorCode::LontanoNonQui).with_cause(format!(
+            "{}: il file sta su un altro dispositivo",
+            percorso.display()
+        )));
+    }
     Ok(())
 }
 

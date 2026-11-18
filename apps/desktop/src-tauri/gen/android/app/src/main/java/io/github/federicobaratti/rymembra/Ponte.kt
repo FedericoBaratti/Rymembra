@@ -207,8 +207,17 @@ object Ponte {
         // Le notifiche si chiedono quando chi accende l'interruttore sa perché
         // arriva la domanda, e non a ogni giro del nucleo.
         if (acceso && dallaPersona) Permessi.notificheAlBisogno(attivita.get(), aspetta = false)
-        Presenza.imposta(contesto(), acceso, testi(a, "collegati"), dallaPersona).let { null }
+        Presenza.imposta(
+          contesto(),
+          acceso,
+          testi(a, "collegati"),
+          dallaPersona,
+          a.optBoolean("partiConAuto", false),
+        ).let { null }
       }
+      // Questa build offre «Parti con l'auto»? La costante di build che la
+      // toglie dalla variante per Google Play: la finestra non disegna la riga.
+      "sistema.partenzaConAuto" -> BuildConfig.PARTENZA_CON_AUTO
       "sistema.sottofondoSpento" -> Presenza.prendiLoSpegnimentoDellaNotifica(contesto())
       "sistema.senzaRisparmio" -> Presenza.senzaRisparmio(contesto())
       "sistema.apriRisparmio" -> {

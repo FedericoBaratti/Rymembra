@@ -1613,32 +1613,59 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
     da_scrivere(app, move |app| scrivi_ascolto(app, &ascolto));
 }
 
+/// Dove è andato un ascolto scritto: vedi [`scrivi_ascolto`].
+enum Scritto {
+    /// Una riga di questo computer: `true` se il conteggio è cresciuto.
+    Contato(bool),
+    /// Una riga della libreria unica: l'ascolto è di quel dispositivo, col
+    /// suo id.
+    AlProprietario((String, i64)),
+}
+
 /// Scrive un ascolto finito, e avvisa chi ne deve sapere. Gira sul filo delle
 /// scritture, senza il lucchetto del lettore: qui l'attesa della libreria non
 /// fa aspettare nessuno stato.
 fn scrivi_ascolto(app: &tauri::AppHandle, ascolto: &Listen) {
     let scritto = libreria_di(app, "ascolto").and_then(|stato| {
         con_libreria(&stato, |libreria| {
+            // Una riga della libreria unica — un brano di un altro dispositivo
+            // — non si conta qui: l'ascolto va in cronologia (per la Home) e in
+            // posta, e lo conta il proprietario, che ne fa anche lo scrobble.
+            // `play_count` non cresce, e niente va nei contatori della
+            // sincronia: sono suoi.
+            if let Some(proprietario) = rymembra_app::specchio::scelta::proprietario_di(
+                &libreria.connection,
+                ascolto.track_id,
+            )? {
+                playback::record_play_specchio(&libreria.connection, ascolto)?;
+                return Ok(Scritto::AlProprietario(proprietario));
+            }
             // L'ascolto si intesta a questo computer. Non è contabilità: il
             // conteggio è la somma dei contatori di tutti i dispositivi, e un
             // ascolto senza mittente non saprebbe in quale sommarsi.
             let dispositivo = crate::nuvola::dispositivo(&libreria.connection)?;
             playback::record_play(&mut libreria.connection, ascolto, &dispositivo)
+                .map(Scritto::Contato)
         })
     });
     match scritto {
+        Ok(Scritto::AlProprietario((dispositivo, brano))) => {
+            // Non è un ascolto da contare qui, e non va allo scrobble: lo
+            // manda il filo del collegamento quando quel dispositivo risponde.
+            crate::lontano::ascoltato_qui(app, &dispositivo, brano, ascolto);
+        }
         // `true` vuol dire che il conteggio è cresciuto davvero. Segnalarlo
         // anche quando l'ascolto non contava riempirebbe il canale del backup
         // di sveglie a vuoto: chi salta un brano dopo tre secondi non ha
         // cambiato niente da salvare.
-        Ok(true) => {
+        Ok(Scritto::Contato(true)) => {
             crate::nuvola::sporca(app);
             // Dopo `record_play` e solo se ha scritto: la coda degli scrobble
             // deve contenere le stesse righe della cronologia, non un insieme
             // suo. Non va in rete da qui — accoda e sveglia il filo.
             crate::scrobble::dopo_un_ascolto(app, ascolto);
         }
-        Ok(false) => {}
+        Ok(Scritto::Contato(false)) => {}
         Err(err) => nota!(
             "[riproduzione] ascolto non registrato codice={} causa={}",
             err.code().kind().code(),
@@ -1828,6 +1855,11 @@ fn brano_di_libreria(
     formato: rymembra_play::FormatoUscita,
 ) -> Result<rymembra_play::BranoAperto, AppError> {
     let stato = libreria_di(app, "apertura del brano")?;
+    // Un brano che c'è più volte — qui e su un altro dispositivo — è una voce
+    // sola, e si suona la copia migliore fra quelle che adesso si possono
+    // usare: se il PC non risponde, o i dati mobili non lo consentono, quella
+    // di qui. Chi non ha dispositivi collegati non paga niente.
+    let track_id = crate::lontano::scegli_la_copia(app, &stato, track_id)?;
     let intorno = intorno_di(app, maniglia);
     let mut scheda = con_libreria(&stato, |libreria| {
         playback::scheda_da_suonare(&libreria.connection, track_id, intorno)
@@ -1844,6 +1876,14 @@ fn brano_di_libreria(
     // che `percorso()` giustamente non dà: senza, un brano d'immagine sul NAS
     // avrebbe preso la scadenza corta di un disco locale.
     let percorso = scheda.collocazione.file_audio().map(str::to_owned);
+    // Una riga della libreria unica non ha un file qui: i byte stanno sul
+    // dispositivo che la possiede, e si aprono come quelli di Sfoglia.
+    if percorso
+        .as_deref()
+        .is_some_and(rymembra_app::specchio::e_specchio)
+    {
+        return apri_riga_lontana(app, &stato, track_id, maniglia, &scheda, formato);
+    }
     let cataloghi = cataloghi_di(app, "apertura del brano")?;
     let riferimento = remoto.clone();
     // Un file su una cartella di rete aspetta quanto un flusso: un NAS che
@@ -1924,6 +1964,68 @@ fn brano_di_libreria(
         crate::nota!("[riproduzione] la durata di {track_id} non si scrive: {guasto}");
     }
     aperto
+}
+
+/// Dei decibel dal database (`f64`, perché SQLite non ha i float a 32 bit) al
+/// motore (`f32`).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "decibel e picchi: la precisione di un f32 è largamente sufficiente"
+)]
+const fn a_f32(valore: f64) -> f32 {
+    valore as f32
+}
+
+/// Apre una riga della libreria unica dal dispositivo che la possiede: la
+/// stessa sorgente a blocchi di Sfoglia, con la scadenza dei flussi.
+///
+/// # Errori
+///
+/// `lontano.nonAssociato` se il dispositivo non c'è più; quelli della rete e
+/// dell'apertura come per ogni flusso (`net.timeout`, `lontano.*`).
+fn apri_riga_lontana(
+    app: &tauri::AppHandle,
+    stato: &Stato,
+    track_id: i64,
+    maniglia: i64,
+    scheda: &playback::SchedaSorgente,
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
+    let riga = con_libreria(stato, |libreria| {
+        rymembra_app::specchio::scelta::riga_remota(&libreria.connection, track_id)
+    })?
+    .ok_or_else(|| {
+        AppError::new(ErrorCode::PlaybackSourceUnavailable {
+            track_id: None,
+            path: None,
+        })
+        .with_cause("una riga lontana senza i dati per aprirla")
+    })?;
+    let apri = crate::lontano::apri_riga(app, &riga)?;
+    // Un brano d'immagine CD: il pezzo, con la stessa stringa per tutti i brani
+    // dello stesso disco, perché il motore li riconosca contigui.
+    let segmento = riga.inizio_cd.map(|inizio| rymembra_play::Segmento {
+        immagine: format!(
+            "lontano:{}:{}:{}",
+            riga.dispositivo,
+            riga.album_impronta.as_deref().unwrap_or(""),
+            riga.versione
+        ),
+        inizio_cd: u32::try_from(inizio).unwrap_or(0),
+        fine_cd: riga.fine_cd.and_then(|fine| u32::try_from(fine).ok()),
+    });
+    flusso::apri_da_pari(
+        apri,
+        flusso::DaPari {
+            maniglia,
+            estensione: Some(riga.estensione).filter(|e| !e.is_empty()),
+            durata_ms: u64::try_from(scheda.durata_ms).unwrap_or(0),
+            replaygain_db: scheda.replaygain_db.map(a_f32),
+            picco: scheda.picco.map(a_f32),
+            segmento,
+        },
+        formato,
+    )
 }
 
 /// Perché un brano non si è aperto, quando l'apertura non ha nemmeno risposto.

@@ -1152,7 +1152,7 @@ fn righe_per_id(connection: &Connection, ids: &[i64]) -> Result<Vec<FileCartella
         let mut statement = connection
             .prepare(&format!(
                 "SELECT id, path, title, duration_ms FROM tracks
-                 WHERE path IS NOT NULL AND id IN ({segnaposto})"
+                 WHERE path IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0') AND id IN ({segnaposto})"
             ))
             .map_err(|err| guasto(&err))?;
         let mappate = statement
@@ -1172,7 +1172,10 @@ fn righe_per_id(connection: &Connection, ids: &[i64]) -> Result<Vec<FileCartella
 fn leggi_file(connection: &Connection) -> Result<Vec<RigaFile>, AppError> {
     let guasto = |err: &rusqlite::Error| crate::db::codice_da_sqlite("i file delle cartelle", err);
     let mut statement = connection
-        .prepare("SELECT id, path, title, duration_ms FROM tracks WHERE path IS NOT NULL")
+        .prepare(
+            "SELECT id, path, title, duration_ms FROM tracks
+              WHERE path IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
+        )
         .map_err(|err| guasto(&err))?;
     let mappate = statement
         .query_map([], riga_file)
@@ -1207,7 +1210,10 @@ fn leggi_righe(connection: &Connection) -> Result<Vec<Riga>, AppError> {
         // cartella, e metterlo in questo albero vorrebbe dire inventargli una
         // cartella di nome «https:» — che è quel che si vedrebbe, perché è
         // questa query a decidere cosa appare nella schermata Cartelle.
-        .prepare("SELECT id, path, disc_number, track_number FROM tracks WHERE path IS NOT NULL")
+        .prepare(
+            "SELECT id, path, disc_number, track_number FROM tracks
+              WHERE path IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
+        )
         .map_err(|err| guasto(&err))?;
     let mappate = statement
         .query_map([], |riga| {

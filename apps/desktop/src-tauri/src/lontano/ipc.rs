@@ -31,6 +31,14 @@ pub struct StatoLontanoIpc {
     /// «Resta attiva in sottofondo» (solo il telefono): il servizio in primo
     /// piano che tiene il nodo acceso. Indipendente da `attivo`.
     pub sottofondo: bool,
+    /// «Parti con l'auto» (solo il telefono): quando l'auto si collega,
+    /// Rymembra riprende da sola la coda salvata. Vera solo col sottofondo
+    /// acceso, e con lui si spegne.
+    pub parti_con_auto: bool,
+    /// Questa build offre «Parti con l'auto»: la costante di build
+    /// `PARTENZA_CON_AUTO`. Falsa nella variante per Google Play e fuori da
+    /// Android: la finestra non disegna l'interruttore.
+    pub partenza_con_auto: bool,
     /// Perché il nodo non si accende: la chiave del testo (`errors.…`).
     pub errore: Option<String>,
     /// I dispositivi collegati.

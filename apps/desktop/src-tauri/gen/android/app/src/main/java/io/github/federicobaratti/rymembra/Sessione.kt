@@ -587,43 +587,76 @@ object Sessione {
     if (suona) {
       riprendiDopo = false
       if (richiesta != null) return
-      val nuova = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-        .setAudioAttributes(
-          AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build()
-        )
-        .setOnAudioFocusChangeListener({ cambio ->
-          when (cambio) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-              Log.i(PAUSA, "pausa: il fuoco audio è passato a un'altra app, per sempre")
-              riprendiDopo = false
-              gesto("pausa")
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-              Log.i(PAUSA, "pausa: il fuoco audio è passato a un'altra app, per poco")
-              riprendiDopo = true
-              gesto("pausa")
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> if (riprendiDopo) {
-              riprendiDopo = false
-              gesto("riprendi")
-            }
-          }
-        }, principale)
-        .build()
-      val esito = audio.requestAudioFocus(nuova)
-      if (esito == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-        richiesta = nuova
-      } else {
-        Log.i(PAUSA, "il fuoco audio non è stato concesso (esito $esito): si suona senza")
-      }
+      if (!chiediIlFuoco(audio)) Log.i(PAUSA, "si suona senza il fuoco audio")
     } else if (!riprendiDopo) {
-      richiesta?.let { audio.abandonAudioFocusRequest(it) }
-      richiesta = null
+      lasciaIlFuoco(audio)
     }
   }
+
+  /** Chiede il fuoco audio, e lo tiene in [richiesta] se glielo danno. */
+  private fun chiediIlFuoco(audio: AudioManager): Boolean {
+    val nuova = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+      .setAudioAttributes(
+        AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_MEDIA)
+          .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+          .build()
+      )
+      .setOnAudioFocusChangeListener({ cambio ->
+        when (cambio) {
+          AudioManager.AUDIOFOCUS_LOSS -> {
+            Log.i(PAUSA, "pausa: il fuoco audio è passato a un'altra app, per sempre")
+            riprendiDopo = false
+            gesto("pausa")
+          }
+          AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+            Log.i(PAUSA, "pausa: il fuoco audio è passato a un'altra app, per poco")
+            riprendiDopo = true
+            gesto("pausa")
+          }
+          AudioManager.AUDIOFOCUS_GAIN -> if (riprendiDopo) {
+            riprendiDopo = false
+            gesto("riprendi")
+          }
+        }
+      }, principale)
+      .build()
+    val esito = audio.requestAudioFocus(nuova)
+    if (esito != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+      Log.i(PAUSA, "il fuoco audio non è stato concesso (esito $esito)")
+      return false
+    }
+    richiesta = nuova
+    return true
+  }
+
+  private fun lasciaIlFuoco(audio: AudioManager) {
+    richiesta?.let { audio.abandonAudioFocusRequest(it) }
+    richiesta = null
+  }
+
+  /**
+   * Il fuoco audio per **far partire** la musica da soli — «Parti con l'auto»,
+   * vedi [Presenza] —: lo si chiede prima del «riprendi», come vuole Android
+   * per chi suona, invece di prenderlo quando la scheda dice che suona. Se un'altra
+   * app lo tiene e non lo cede, `false`: non si parte.
+   *
+   * Se poi la musica non parte — un errore in Rust, una coda che non si apre —
+   * nessuna scheda con «suona» arriva a dire che il fuoco serve ancora, e
+   * tenerlo vorrebbe dire zittire per sempre l'app che prima parlava: dopo
+   * [ATTESA_PARTENZA_MS] lo si lascia se ancora non suona. Sul filo principale.
+   */
+  fun fuocoPerPartire(contesto: Context): Boolean {
+    val audio = contesto.getSystemService(AudioManager::class.java) ?: return false
+    if (richiesta == null && !chiediIlFuoco(audio)) return false
+    principale.postDelayed({
+      if (!suonaOra && !riprendiDopo) lasciaIlFuoco(audio)
+    }, ATTESA_PARTENZA_MS)
+    return true
+  }
+
+  /** Quanto si aspetta che la musica parta, dopo aver preso il fuoco per partire. */
+  private const val ATTESA_PARTENZA_MS = 15_000L
 
   private val rumore = object : BroadcastReceiver() {
     override fun onReceive(contesto: Context, intento: Intent) {

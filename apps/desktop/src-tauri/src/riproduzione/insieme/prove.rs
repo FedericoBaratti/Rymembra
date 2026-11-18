@@ -692,3 +692,40 @@ fn nella_coda_di_sessione_entra_solo_quel_che_sta_sotto_il_tetto() {
     let aggiunta = rymembra_insieme::messaggi::MASSIMO_AGGIUNTE;
     assert_eq!(quante_entrano(true, 0, aggiunta), aggiunta);
 }
+
+#[test]
+fn una_riga_della_libreria_unica_non_entra_in_una_sessione() {
+    // §4.7: oggi le voci remote sono rifiutate durante una sessione perché le
+    // maniglie hanno id negativi. Una riga specchio ha un id positivo, e quel
+    // cancello non la vedrebbe: il rifiuto sta sullo schema del percorso.
+    use super::brani::rifiuta_le_righe_lontane;
+    let libreria = rymembra_app::db::open_in_memory()
+        .expect("database")
+        .connection;
+    let chiave = "ab".repeat(32);
+    for (id, percorso) in [
+        (1, "C:/Musica/a.flac".to_owned()),
+        (2, "nuvola://onedrive-abcdefgh/Musica/b.flac".to_owned()),
+        (3, format!("lontano://{chiave}/77")),
+    ] {
+        libreria
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES (?1, ?2, ?3, 'T', 'A', 'B', 1, 1, 1)",
+                rusqlite::params![id, percorso, format!("k{id}")],
+            )
+            .expect("brano");
+    }
+    rifiuta_le_righe_lontane(&libreria, &[1, 2]).expect("le righe di qui passano");
+    for ids in [&[3][..], &[1, 3][..], &[2, 1, 3][..]] {
+        let errore = rifiuta_le_righe_lontane(&libreria, ids).expect_err("una riga lontana");
+        assert_eq!(
+            errore.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::InsiemeGestoNonDisponibile,
+            "{ids:?}"
+        );
+    }
+    // Un id che non c'è non è una riga lontana.
+    rifiuta_le_righe_lontane(&libreria, &[99]).expect("un brano che non c'è");
+}

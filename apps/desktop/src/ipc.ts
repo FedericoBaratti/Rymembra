@@ -15,6 +15,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { ErroreIpc } from "./ipc/errori";
 import type {
+  AnteprimaDimentica,
+  AvanzamentoSpecchio,
   BranoRemoto,
   DatiMobili,
   InvitoLontano,
@@ -24,7 +26,7 @@ import type {
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
@@ -350,13 +352,15 @@ export const ipc = {
   rimozioniConferma: (gettone: number) =>
     invoke<EsitoRimozioni>("rimozioni_conferma", { gettone }),
   rimozioniScarta: () => invoke<void>("rimozioni_scarta"),
-  cerca: (query: string, offset: number, limite: number) =>
-    invoke<Brano[]>("cerca", { query, offset, limite }),
+  // Le liste della libreria prendono `origine` per ultima: assente vale «tutti»
+  // (la libreria unica), vedi `OrigineLibreria`.
+  cerca: (query: string, offset: number, limite: number, origine?: OrigineLibreria) =>
+    invoke<Brano[]>("cerca", { query, offset, limite, origine }),
   // Separato dalla pagina: la pagina si chiede a ogni scorrimento, il conteggio
   // una volta per query. Serve perché «N risultati» dica un numero vero invece
   // della lunghezza della prima pagina.
-  cercaConteggio: (query: string) =>
-    invoke<number>("cerca_conteggio", { query }),
+  cercaConteggio: (query: string, origine?: OrigineLibreria) =>
+    invoke<number>("cerca_conteggio", { query, origine }),
   casa: () => invoke<Casa>("casa"),
   // Il fuso lo sa solo la finestra: il nucleo tiene il tempo in millisecondi
   // universali, e il lunedì comincia sette ore prima a Roma che a Los Angeles.
@@ -368,27 +372,30 @@ export const ipc = {
     }),
   settimanaApri: (raccolta: number) =>
     invoke<void>("settimana_apri", { raccolta }),
-  brani: (ordine: Ordine, offset: number, limite: number) =>
-    invoke<Brano[]>("brani", { ordine, offset, limite }),
+  brani: (ordine: Ordine, offset: number, limite: number, origine?: OrigineLibreria) =>
+    invoke<Brano[]>("brani", { ordine, offset, limite, origine }),
   // Gli identificativi di tutta la vista, nello stesso ordine delle pagine.
-  vistaBraniId: (vista: VistaBrani) =>
-    invoke<number[]>("vista_brani_id", { vista }),
-  album: (offset: number, limite: number) =>
-    invoke<Album[]>("album", { offset, limite }),
+  vistaBraniId: (vista: VistaBrani, origine?: OrigineLibreria) =>
+    invoke<number[]>("vista_brani_id", { vista, origine }),
+  album: (offset: number, limite: number, origine?: OrigineLibreria) =>
+    invoke<Album[]>("album", { offset, limite, origine }),
   // Una query vera e non un filtro sull'elenco dei brani: prima se ne
   // chiedevano duemila e si tenevano quelli col cuore, cioè tutta la libreria
   // letta a ogni visita e i preferiti oltre il duemillesimo invisibili.
-  preferiti: (offset: number, limite: number) =>
-    invoke<Brano[]>("preferiti", { offset, limite }),
+  preferiti: (offset: number, limite: number, origine?: OrigineLibreria) =>
+    invoke<Brano[]>("preferiti", { offset, limite, origine }),
   // Anche questi al database: filtrare qui la pagina di album già scaricata
   // dava una pagina vuota agli artisti che stavano oltre.
-  albumArtista: (nome: string, offset: number, limite: number) =>
-    invoke<Album[]>("album_artista", { nome, offset, limite }),
+  albumArtista: (nome: string, offset: number, limite: number, origine?: OrigineLibreria) =>
+    invoke<Album[]>("album_artista", { nome, offset, limite, origine }),
   // Senza offset né limite: gli artisti sono pochi e la vista li mostra tutti
   // con un indice alfabetico invece che a pagine.
-  artisti: () => invoke<Artista[]>("artisti"),
-  braniAlbum: (chiave: string) =>
-    invoke<Brano[]>("brani_album", { chiave }),
+  artisti: (origine?: OrigineLibreria) =>
+    invoke<Artista[]>("artisti", { origine }),
+  // Senza `origine` l'album si apre da dove viene: un disco che «Tutti»
+  // nasconde dietro una copia migliore resta apribile.
+  braniAlbum: (chiave: string, origine?: OrigineLibreria) =>
+    invoke<Brano[]>("brani_album", { chiave, origine }),
   preferito: (id: number, valore: boolean) =>
     invoke<void>("preferito", { id, valore }),
   valutazione: (id: number, stelle: number) =>
@@ -1489,6 +1496,11 @@ export const ipc = {
   // da internet», che è un sì a parte.
   lontanoSottofondo: (attivo: boolean) =>
     invoke<StatoLontano>("lontano_sottofondo", { attivo }),
+  // «Parti con l'auto» (solo il telefono, e solo con il sottofondo acceso): al
+  // collegamento dell'auto Rymembra riprende da sola la coda salvata. Con il
+  // sottofondo spento è `lontano.sottofondoSpento`.
+  lontanoPartiConAuto: (attivo: boolean) =>
+    invoke<StatoLontano>("lontano_parti_con_auto", { attivo }),
   // Un QR nuovo: quello di prima non vale più. Con «Raggiungibile da
   // internet» spento è `lontano.spento`: lo si accende prima, con un sì a
   // parte (`lontanoAttiva`).
@@ -1547,4 +1559,15 @@ export const ipc = {
     invoke<ScaricoLontano>("lontano_scarica", { chiave, brani }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
   lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
+  // La libreria unica: il catalogo dei dispositivi collegati come righe di
+  // `tracks`. Lo stato di ciascuno arriva con `lontano:specchio`.
+  lontanoSpecchioStato: () => invoke<AvanzamentoSpecchio[]>("lontano_specchio_stato"),
+  // Rilegge adesso il catalogo di un dispositivo, senza aspettare il giro.
+  lontanoSpecchioOra: (chiave: string) => invoke<void>("lontano_specchio_ora", { chiave }),
+  // Il sì alle righe che il dispositivo non manda più: se ne vanno. Quante.
+  lontanoSpecchioConferma: (chiave: string) =>
+    invoke<number>("lontano_specchio_conferma", { chiave }),
+  // Prima di dimenticare un dispositivo: quante playlist perdono brani.
+  lontanoDimenticaAnteprima: (chiave: string) =>
+    invoke<AnteprimaDimentica>("lontano_dimentica_anteprima", { chiave }),
 };

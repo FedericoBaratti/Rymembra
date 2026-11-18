@@ -857,6 +857,12 @@ pub fn esporta(
             lasciati_fuori = lasciati_fuori.saturating_add(1);
             continue;
         }
+        // E una riga specchio: `lontano://…` è un brano di un altro
+        // dispositivo, e un altro lettore non saprebbe aprirlo.
+        if crate::specchio::e_specchio(&percorso) {
+            lasciati_fuori = lasciati_fuori.saturating_add(1);
+            continue;
+        }
         scritti = scritti.saturating_add(1);
         let durata_ms = u64::try_from(b.duration_ms).ok();
         let Some((cue, _)) = rymembra_domain::cue::brano_d_immagine(&percorso) else {

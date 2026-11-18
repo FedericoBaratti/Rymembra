@@ -91,6 +91,19 @@ export interface StatoLontano {
   datiMobili: DatiMobili;
   /** «Resta attiva in sottofondo» (solo il telefono): il servizio che tiene il nodo acceso. */
   sottofondo: boolean;
+  /**
+   * «Parti con l'auto» (solo il telefono): quando l'auto si collega, Rymembra
+   * riprende da sola la coda salvata. Si accende solo col sottofondo acceso, e
+   * con lui si spegne.
+   */
+  partiConAuto: boolean;
+  /**
+   * Questa build offre «Parti con l'auto». Falso dove la costante di build
+   * `PARTENZA_CON_AUTO` lo toglie — la variante per Google Play, che chiede alle
+   * app per l'auto di non partire da sole — e sul computer: lì la riga non si
+   * disegna.
+   */
+  partenzaConAuto: boolean;
   /** Perché il nodo non si accende: la chiave del testo. */
   errore: string | null;
   dispositivi: DispositivoLontano[];
@@ -152,6 +165,42 @@ export interface ScaricoLontano {
   falliti: number;
   /** Il codice dell'ultimo guasto. */
   errore: string | null;
+}
+
+/** In che punto è la lettura del catalogo di un dispositivo. */
+export type FaseSpecchio = "inattivo" | "leggo" | "fine" | "errore" | "nonSupportato";
+
+/**
+ * Quel che la finestra sa del catalogo di un dispositivo collegato
+ * (`lontano/specchio.rs`, `AvanzamentoSpecchio`). Arriva con l'evento
+ * `lontano:specchio` a ogni passo, e `lontanoSpecchioStato` dà l'ultimo di
+ * ciascuno a chi arriva dopo.
+ */
+export interface AvanzamentoSpecchio {
+  /** La chiave del dispositivo. */
+  dispositivo: string;
+  fase: FaseSpecchio;
+  /** Righe lette in questo giro, su `totali`. */
+  fatti: number;
+  totali: number;
+  /** Righe di questo dispositivo in libreria, a giro finito. */
+  righe: number;
+  /** Righe che il dispositivo non manda più, in attesa di una conferma per sparire. */
+  inAttesa: number;
+  /** Quando è finito l'ultimo giro riuscito, in millisecondi. */
+  ultimoMs: number | null;
+  /** Il codice dell'errore, se il giro non è riuscito. */
+  errore: string | null;
+}
+
+/** Cosa succederebbe alle playlist dimenticando un dispositivo. */
+export interface AnteprimaDimentica {
+  righe: number;
+  voci: number;
+  rimappabili: number;
+  perse: number;
+  /** In quante playlist si perde qualcosa: il numero da dire a chi conferma. */
+  playlistChePerdono: number;
 }
 
 /** L'esito dello scanner del QR (solo telefono). */

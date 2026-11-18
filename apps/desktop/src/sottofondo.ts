@@ -1,7 +1,25 @@
 /**
  * «Resta attiva in sottofondo», sul telefono: la regola delle note sotto
- * l'interruttore, senza interfaccia (`parti/SottofondoTelefono.tsx`).
+ * l'interruttore, senza interfaccia (`parti/SottofondoTelefono.tsx`). E la
+ * riga di «Parti con l'auto», che sta sotto di lui.
  */
+
+/**
+ * Come si mostra la riga «Parti con l'auto»:
+ *
+ * - `nascosta` dove la build non la offre (`PARTENZA_CON_AUTO` falsa: la
+ *   variante per Google Play): non compare, né spenta né impedita;
+ * - `serveIlSottofondo` se si può offrire ma il sottofondo è spento: senza
+ *   il servizio acceso nessuno guarda l'auto, e la riga lo dice invece di
+ *   accendersi senza effetto;
+ * - `libera` altrimenti.
+ */
+export type RigaDellAuto = "nascosta" | "serveIlSottofondo" | "libera";
+
+export function rigaDellAuto(offerta: boolean, sottofondo: boolean): RigaDellAuto {
+  if (!offerta) return "nascosta";
+  return sottofondo ? "libera" : "serveIlSottofondo";
+}
 
 /** Lo stato del risparmio batteria; `null` finché non si sa. */
 export type SenzaRisparmio = boolean | null;

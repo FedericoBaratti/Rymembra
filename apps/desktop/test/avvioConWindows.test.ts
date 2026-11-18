@@ -108,8 +108,10 @@ test("la proposta non compare durante Primo né durante il giro", () => {
   for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto"]) {
     assert.ok(riga.includes(`!${motivo}`), `la proposta non aspetta «${motivo}»`);
   }
-  // Una volta sola, e sul computer: il telefono ha un'altra proposta.
-  assert.match(APP, /\{!MOBILE && \(\s*<PropostaSottofondo\s+pronta=\{propostaPuoMostrarsi\}/);
+  // Una volta sola, sul computer e sul telefono: il componente ha le parole di
+  // tutti e due (F7), e il punto di montaggio non li distingue.
+  assert.match(APP, /<PropostaSottofondo\s+pronta=\{propostaPuoMostrarsi\}/);
+  assert.doesNotMatch(APP, /\{!MOBILE && \(\s*<PropostaSottofondo/);
   // Il punto di montaggio sta nella pila delle notifiche, come le altre schede.
   const pila = APP.slice(APP.indexOf("<PilaToast"), APP.indexOf("</PilaToast>"));
   assert.ok(pila.includes("<PropostaSottofondo"));
@@ -124,7 +126,8 @@ test("la proposta ha due risposte e nessuna via d'uscita fra le due", () => {
   // Si decide quando mostrarla solo dopo `pronta`, e il nucleo dice se c'è da farla.
   assert.match(PROPOSTA, /if \(!pronta\) return;/);
   assert.match(PROPOSTA, /propostaSottofondoDaFare\(\)/);
-  // I testi sono del computer: la parte del telefono ha altre chiavi e altro nome.
+  // I testi del computer hanno le loro chiavi; quelle del telefono, sotto
+  // `background.proposal.phone.*`, le prova `sottofondoTelefono.test.ts`.
   for (const chiave of [
     "background.proposal.desktop.text",
     "background.proposal.desktop.yes",

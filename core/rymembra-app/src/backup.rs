@@ -553,7 +553,11 @@ fn testi(valore: Option<&serde_json::Value>) -> Vec<String> {
 ///
 /// `db.queryFailed` se una lettura fallisce.
 pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
-    let roots: Vec<String> = settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
+    let mut roots: Vec<String> =
+        settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
+    // Una riga `lontano://…` non è una cartella (e non esce da qui, qualunque
+    // cosa ci sia scritta): vedi `profilo::radici::ordina_cartelle`.
+    roots.retain(|radice| !crate::specchio::e_specchio(radice));
     // La mappa datata delle cartelle del backup: dice quando ognuna è stata
     // accesa e quando una è stata tolta. Una tolta che è di nuovo nell'elenco
     // (la mappa non ancora allineata) non è una lapide.
@@ -680,7 +684,7 @@ fn leggi_brani(connection: &Connection) -> Result<Vec<(TrackKey, TrackStats)>, A
         .prepare(
             "SELECT track_key, play_count, last_played_at, rating, liked, liked_at,
                     stats_updated_at
-             FROM tracks",
+             FROM tracks WHERE NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("brani da salvare", &err))?;
     let righe = statement
@@ -1316,7 +1320,7 @@ fn applica_brani(tx: &Transaction<'_>, cambi: &[TrackChange]) -> Result<usize, A
                  liked_at = ?6, stats_updated_at = ?7,
                  rating_at = CASE WHEN rating <> ?4 OR (rating_at IS NULL AND ?4 > 0)
                                   THEN ?7 ELSE rating_at END
-             WHERE track_key = ?1",
+             WHERE track_key = ?1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("statistiche ripristinate", &err))?;
     for cambio in cambi {
@@ -1370,7 +1374,7 @@ fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<us
         .prepare("SELECT id FROM playlists WHERE playlist_key = ?1")
         .map_err(|err| db_error("playlist ripristinata", &err))?;
     let mut cerca_brano = tx
-        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1")
+        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY (path >= 'lontano://' AND path < 'lontano:/0'), id LIMIT 1")
         .map_err(|err| db_error("playlist ripristinata", &err))?;
     let mut accoda = tx
         .prepare(
@@ -1792,6 +1796,45 @@ mod prove {
         let qui = stato_locale(&vuoto).expect("stato");
         let secondo = pianifica(&qui, &dal_salvataggio(&contenuto, &qui.tombstones));
         assert!(secondo.is_empty(), "il secondo piano deve essere vuoto");
+    }
+
+    #[test]
+    fn una_riga_specchio_non_riceve_le_statistiche_di_un_ripristino() {
+        // Le statistiche di una riga specchio sono una copia di quelle del
+        // proprietario, e il suo giro le riscrive solo se il suo catalogo
+        // cambia: un valore ripristinato lì sopra resterebbe sbagliato a lungo.
+        let mut connection = libreria();
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                     file_size, date_added, date_modified, source)
+                 VALUES (5, 'lontano://{}/9', 'art|uno|al', 'Uno', 'Art', 'Al', 1000, 1, 1, 1,
+                         'lontano');",
+                "ab".repeat(32)
+            ))
+            .expect("riga specchio");
+        let contenuto = Contenuto {
+            tracks: vec![BranoSalvato {
+                key: "art|uno|al".to_owned(),
+                play_count: 11,
+                rating: 4,
+                ..BranoSalvato::default()
+            }],
+            ..Contenuto::default()
+        };
+        let qui = stato_locale(&connection).expect("stato");
+        let piano = pianifica(&qui, &dal_salvataggio(&contenuto, &qui.tombstones));
+        applica(&mut connection, &piano).expect("applicato");
+        let (locale, specchio): (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT play_count FROM tracks WHERE id = 1),
+                        (SELECT play_count + rating FROM tracks WHERE id = 5)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("conteggi");
+        assert_eq!(locale, 11, "la riga di qui riceve il valore ripristinato");
+        assert_eq!(specchio, 0, "la riga specchio no");
     }
 
     #[test]

@@ -817,6 +817,30 @@ export type VistaBrani =
   | { tipo: "preferiti" }
   | { tipo: "ricerca"; query: string };
 
+/**
+ * Da dove si guarda la libreria, detto al nucleo (`rymembra_app::specchio::Origine`).
+ *
+ * - `tutti`: la libreria unica, una voce per brano (le copie che un altro
+ *   dispositivo ha in qualità migliore restano nascoste);
+ * - `locale`: tutte le righe di questa macchina, anche quelle che «Tutti»
+ *   nasconde;
+ * - `dispositivo`: tutte le righe di un dispositivo collegato, dalla sua chiave
+ *   di 64 cifre esadecimali.
+ *
+ * Assente vale `tutti`. Il nome non è `Origine`: quello è già la provenienza di
+ * un campo dei tag.
+ */
+export type OrigineLibreria =
+  | { tipo: "tutti" }
+  | { tipo: "locale" }
+  | { tipo: "dispositivo"; chiave: string };
+
+/** La chiave di un dispositivo dal percorso di una riga della libreria unica. */
+export function dispositivoDellaRiga(percorso: string | null | undefined): string | null {
+  const trovato = /^lontano:\/\/([0-9a-f]{64})\/[1-9][0-9]*$/.exec(percorso ?? "");
+  return trovato?.[1] ?? null;
+}
+
 /** Come si ripete: niente, questo brano, tutta la coda. */
 export type Ripetizione = "off" | "one" | "all";
 

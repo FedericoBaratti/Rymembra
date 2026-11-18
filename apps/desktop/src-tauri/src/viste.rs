@@ -29,6 +29,7 @@
 //! della libreria in mano, fra il doppio clic e il suono (R21-6).
 
 use rymembra_app::library::{TrackOrder, id_dei_brani, id_dei_preferiti, id_della_ricerca};
+use rymembra_app::specchio::Origine;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Deserialize;
 use tauri::Manager as _;
@@ -76,12 +77,13 @@ fn ordine_da(nome: &str) -> TrackOrder {
 /// `db.*` dalla lettura.
 fn identificativi(
     connection: &rusqlite::Connection,
+    origine: &Origine,
     vista: &VistaBrani,
 ) -> Result<Vec<i64>, AppError> {
     match vista {
-        VistaBrani::Brani { ordine } => id_dei_brani(connection, ordine_da(ordine)),
-        VistaBrani::Preferiti => id_dei_preferiti(connection),
-        VistaBrani::Ricerca { query } => id_della_ricerca(connection, query),
+        VistaBrani::Brani { ordine } => id_dei_brani(connection, origine, ordine_da(ordine)),
+        VistaBrani::Preferiti => id_dei_preferiti(connection, origine),
+        VistaBrani::Ricerca { query } => id_della_ricerca(connection, origine, query),
     }
 }
 
@@ -95,7 +97,12 @@ fn identificativi(
 ///
 /// `internal.aborted` se la libreria non c'è più; `db.*` dalla lettura.
 #[tauri::command]
-pub async fn vista_brani_id(app: tauri::AppHandle, vista: VistaBrani) -> Esito<Vec<i64>> {
+pub async fn vista_brani_id(
+    app: tauri::AppHandle,
+    vista: VistaBrani,
+    origine: Option<Origine>,
+) -> Esito<Vec<i64>> {
+    let origine = origine.unwrap_or_default();
     in_disparte("identificativi di una vista", move || {
         let stato = app.try_state::<Stato>().ok_or_else(|| {
             AppError::new(ErrorCode::InternalAborted {
@@ -104,7 +111,7 @@ pub async fn vista_brani_id(app: tauri::AppHandle, vista: VistaBrani) -> Esito<V
             .with_cause("la libreria non è più fra gli stati gestiti")
         })?;
         con_libreria(&stato, |libreria| {
-            identificativi(&libreria.connection, &vista)
+            identificativi(&libreria.connection, &origine, &vista)
         })
     })
     .await
@@ -171,13 +178,19 @@ mod tests {
             let vista = VistaBrani::Brani {
                 ordine: ordine.to_owned(),
             };
-            let tutti = identificativi(&connection, &vista).expect("identificativi");
-            let pagine = a_pagine(|o, l| list_tracks(&connection, ordine_da(ordine), o, l));
+            let tutti =
+                identificativi(&connection, &Origine::Tutti, &vista).expect("identificativi");
+            let pagine =
+                a_pagine(|o, l| list_tracks(&connection, &Origine::Tutti, ordine_da(ordine), o, l));
             assert_eq!(tutti.len(), 40, "{ordine}");
             assert_eq!(tutti, pagine, "{ordine}: lo stesso ordine delle pagine");
         }
-        let preferiti = identificativi(&connection, &VistaBrani::Preferiti).expect("preferiti");
-        assert_eq!(preferiti, a_pagine(|o, l| list_liked(&connection, o, l)));
+        let preferiti = identificativi(&connection, &Origine::Tutti, &VistaBrani::Preferiti)
+            .expect("preferiti");
+        assert_eq!(
+            preferiti,
+            a_pagine(|o, l| list_liked(&connection, &Origine::Tutti, o, l))
+        );
         assert_eq!(preferiti.len(), 14, "uno su tre, da zero a trentanove");
     }
 
@@ -187,8 +200,8 @@ mod tests {
         let vista = VistaBrani::Ricerca {
             query: "artista 3".to_owned(),
         };
-        let mut tutti = identificativi(&connection, &vista).expect("ricerca");
-        let mut pagine = a_pagine(|o, l| search(&connection, "artista 3", o, l));
+        let mut tutti = identificativi(&connection, &Origine::Tutti, &vista).expect("ricerca");
+        let mut pagine = a_pagine(|o, l| search(&connection, &Origine::Tutti, "artista 3", o, l));
         assert!(!tutti.is_empty());
         // Come insiemi: `bm25` dà lo stesso punteggio a righe che si somigliano,
         // e fra due pari SQLite non promette un ordine. Chi suona dalla vista
@@ -201,7 +214,7 @@ mod tests {
             query: "   ".to_owned(),
         };
         assert!(
-            identificativi(&connection, &vuota)
+            identificativi(&connection, &Origine::Tutti, &vuota)
                 .expect("vuota")
                 .is_empty()
         );

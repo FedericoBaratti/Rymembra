@@ -15,14 +15,19 @@
  * pulsante apre la pagina di sistema, dove lo si sceglie. Lo stato si rilegge
  * quando l'app torna in vista, perché lo si cambia fuori di qui.
  *
- * Il posto per «Parti con l'auto» è sotto di questo: sono due righe di una
- * stessa famiglia — quel che il telefono fa da solo, in secondo piano.
+ * «Parti con l'auto» sta sotto di lui: sono due righe di una stessa famiglia —
+ * quel che il telefono fa da solo, in secondo piano. Spenta di serie, funziona
+ * solo col sottofondo acceso (è il servizio a guardare quando l'auto si
+ * collega, e con lui si spegne), e non compare dove la build non la offre: la
+ * variante per Google Play chiede alle app per l'auto di non partire da sole
+ * (`rigaDellAuto`). Il testo dice la cosa com'è: Rymembra riparte da sola al
+ * posto dell'ultima app usata, con la coda che aveva salvato.
  */
 import { useCallback, useEffect, useState } from "react";
 
 import { ipc, type InvitoLontano, type StatoLontano } from "../ipc";
 import { t } from "../lingue";
-import { noteDelSottofondo, type SenzaRisparmio } from "../sottofondo";
+import { noteDelSottofondo, rigaDellAuto, type SenzaRisparmio } from "../sottofondo";
 import { Interruttore } from "./Interruttore";
 
 /** Il comando di `SchedaDispositivi` che risponde col pannello. */
@@ -67,6 +72,7 @@ export function SottofondoTelefono({
   }, [rileggi]);
 
   const note = noteDelSottofondo(stato.sottofondo, stato.attivo, senzaRisparmio);
+  const auto = rigaDellAuto(stato.partenzaConAuto, stato.sottofondo);
 
   return (
     <>
@@ -100,6 +106,15 @@ export function SottofondoTelefono({
           </div>
           <p className="nota">{t("settings.devices.background.makers")}</p>
         </>
+      )}
+      {auto !== "nascosta" && (
+        <Interruttore
+          etichetta={t("settings.devices.car")}
+          spiegazione={t("settings.devices.car.sub")}
+          acceso={stato.partiConAuto}
+          impedito={auto === "serveIlSottofondo" ? t("settings.devices.car.needsBackground") : undefined}
+          onCambia={(acceso) => fai(() => ipc.lontanoPartiConAuto(acceso))}
+        />
       )}
     </>
   );

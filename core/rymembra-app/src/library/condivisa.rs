@@ -10,6 +10,25 @@
 //! che l'altro trova nel catalogo da sé. Un album o un artista c'è se ha
 //! almeno un brano condiviso.
 //!
+//! # Mai ricondivise
+//!
+//! Le righe specchio (`lontano://…`, vedi [`crate::specchio`]) sono la musica
+//! di **un altro** dispositivo, e non si condividono: un terzo dispositivo che
+//! le vedesse attraverso questo avrebbe catene, doppioni e ascolti contati al
+//! proprietario sbagliato. Lo dice [`CONDIVISO`], che vale per **ogni**
+//! domanda, vecchia o nuova.
+//!
+//! # Il catalogo
+//!
+//! Per la libreria unica un dispositivo chiede il catalogo intero all'altro,
+//! una volta e poi per differenze. [`riassunto_catalogo`] divide le righe
+//! condivise in **secchi di 500 id** (`id / 500`, quindi stabili: una riga
+//! tolta o aggiunta in mezzo non sposta le altre) e dà l'impronta di ognuno;
+//! [`pagina_catalogo`] ne serve le righe, [`BranoCatalogo`]. Chi chiede
+//! rilegge solo i secchi la cui impronta è cambiata, e un brano ascoltato
+//! cambia un secchio solo. Il riassunto si ricorda per generazione, come gli
+//! elenchi di Sfoglia (vedi [`Ricordate`]).
+//!
 //! # Niente percorsi
 //!
 //! [`BranoRemoto`] è un [`super::TrackSummary`] senza il percorso: all'altro
@@ -33,13 +52,17 @@ use super::*;
 
 /// La condizione dei brani condivisi, per `tracks` con l'alias `t`. Il cloud
 /// per intervallo di prefisso, come in `enrich`: `'/' + 1` è `'0'`.
-const CONDIVISO: &str = "t.path IS NOT NULL AND t.source_service IS NULL \
-     AND NOT (t.path >= 'nuvola://' AND t.path < 'nuvola:/0')";
+///
+/// Le righe specchio (`lontano://`) ne stanno fuori: vedi il `//!`.
+pub(crate) const CONDIVISO: &str = "t.path IS NOT NULL AND t.source_service IS NULL \
+     AND NOT (t.path >= 'nuvola://' AND t.path < 'nuvola:/0') \
+     AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')";
 
 /// La stessa per `tracks` senza alias, dove l'espressione dell'artista deve
 /// restare quella dell'indice.
 const CONDIVISO_SENZA_ALIAS: &str = "path IS NOT NULL AND source_service IS NULL \
-     AND NOT (path >= 'nuvola://' AND path < 'nuvola:/0')";
+     AND NOT (path >= 'nuvola://' AND path < 'nuvola:/0') \
+     AND NOT (path >= 'lontano://' AND path < 'lontano:/0')";
 
 /// Il pezzo di un'immagine CD da suonare, in fotogrammi da 1/75 di secondo
 /// dall'inizio del file. Vedi la migrazione 034.
@@ -251,6 +274,8 @@ pub(super) struct Ricordate {
     brani: HashMap<(i64, &'static str), Arc<Vec<i64>>>,
     /// Gli artisti condivisi, tutti, senza le copertine.
     artisti: HashMap<i64, Arc<Vec<ArtistSummary>>>,
+    /// Il riassunto del catalogo condiviso: vedi [`riassunto_catalogo`].
+    catalogo: HashMap<i64, Arc<RiassuntoCatalogo>>,
     /// Quante volte si è calcolato un elenco intero: lo guardano le prove.
     #[cfg(test)]
     costruiti: usize,
@@ -261,6 +286,11 @@ impl Ricordate {
     /// Quante volte si è calcolato un elenco intero.
     pub(super) fn costruiti(&self) -> usize {
         self.costruiti
+    }
+
+    /// Quanti riassunti del catalogo si tengono.
+    pub(super) fn catalogo_ricordati(&self) -> usize {
+        self.catalogo.len()
     }
 }
 
@@ -703,4 +733,370 @@ pub fn file_del_brano(connection: &Connection, id: i64) -> Result<Option<FileCon
         .filter(|r| !r.starts_with("nuvola://"))
         .any(|r| is_under(&file.percorso, r, regole));
     Ok(dentro.then_some(file))
+}
+
+// ── il catalogo ─────────────────────────────────────────────────────────────
+
+/// Quanti id sta un secchio del catalogo: `id / 500` dice il secchio di una
+/// riga, e il secchio `k` va da `k * 500` a `k * 500 + 499`.
+pub const ID_PER_SECCHIO: i64 = 500;
+
+/// Una riga del catalogo: un [`BranoRemoto`] con quel che serve a farne una
+/// riga di libreria di un altro dispositivo — e a riconoscerla come lo stesso
+/// brano di un'altra copia.
+///
+/// Tutto quel che porta sta nei tetti di [`crate::specchio::convalida`]: le
+/// stringhe lunghe si tagliano **prima** di partire, perché cinquecento righe
+/// stiano nella cornice del protocollo.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranoCatalogo {
+    /// L'id nella libreria **dell'altro**.
+    pub id: i64,
+    /// Il titolo.
+    pub title: String,
+    /// L'interprete.
+    pub artist: String,
+    /// L'album.
+    pub album: String,
+    /// L'artista dell'album.
+    pub album_artist: Option<String>,
+    /// Il genere.
+    pub genre: Option<String>,
+    /// L'impronta dell'album ([`impronta_album`]).
+    pub album_key: Option<String>,
+    /// Numero di traccia.
+    pub track_number: Option<i64>,
+    /// Numero di disco.
+    pub disc_number: Option<i64>,
+    /// L'anno.
+    pub year: Option<i64>,
+    /// Durata in millisecondi.
+    pub duration_ms: i64,
+    /// L'impronta della copertina, da chiedere all'altro.
+    pub cover_art_hash: Option<String>,
+    /// Quante volte l'ha ascoltato il proprietario.
+    pub play_count: i64,
+    /// È fra i suoi preferiti.
+    pub liked: bool,
+    /// Il suo voto.
+    pub rating: i64,
+    /// Quando ha deciso il preferito.
+    pub liked_at: Option<i64>,
+    /// Quando ha deciso il voto.
+    pub rating_at: Option<i64>,
+    /// Quando l'ha aggiunto.
+    pub date_added: i64,
+    /// L'ultimo ascolto.
+    pub last_played_at: Option<i64>,
+    /// L'orologio delle sue statistiche.
+    pub stats_updated_at: i64,
+    /// Bitrate in kbps.
+    pub bitrate: Option<i64>,
+    /// Frequenza di campionamento.
+    pub sample_rate: Option<i64>,
+    /// Canali.
+    pub channels: Option<i64>,
+    /// Il formato.
+    pub codec: Option<String>,
+    /// L'identità fra dispositivi, com'è scritta nella sua libreria.
+    pub track_key: String,
+    /// La sua chiave di contenuto, se ce l'ha.
+    pub content_key: Option<String>,
+    /// Identificativo MusicBrainz della registrazione.
+    pub mb_recording_id: Option<String>,
+    /// Identificativo MusicBrainz del gruppo di pubblicazione.
+    pub mb_release_group_id: Option<String>,
+    /// Identificativo MusicBrainz della pubblicazione.
+    pub mb_release_id: Option<String>,
+    /// L'estensione del file da leggere, minuscola e senza punto.
+    pub estensione: String,
+    /// Quanti byte.
+    pub dimensione: i64,
+    /// Cambia se il file cambia: dimensione e data.
+    pub versione: String,
+    /// Per un brano d'immagine CD, il pezzo.
+    pub segmento: Option<Segmento>,
+}
+
+/// Un secchio nel riassunto del catalogo.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecchioCatalogo {
+    /// Il primo id del secchio (`k * 500`).
+    pub da_id: i64,
+    /// L'ultimo (`k * 500 + 499`).
+    pub a_id: i64,
+    /// Cambia se cambia una sola riga del secchio, o una sua statistica.
+    pub impronta: String,
+    /// Quante righe ha.
+    pub righe: i64,
+}
+
+/// Il catalogo condiviso in riassunto: vedi [`riassunto_catalogo`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RiassuntoCatalogo {
+    /// La generazione della libreria in cui è stato calcolato.
+    pub generazione: i64,
+    /// I secchi, per id crescente; quelli vuoti non ci sono.
+    pub secchi: Vec<SecchioCatalogo>,
+}
+
+/// Le righe di un secchio: vedi [`pagina_catalogo`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaginaCatalogo {
+    /// La generazione in cui sono state lette.
+    pub generazione: i64,
+    /// Il secchio chiesto.
+    pub da_id: i64,
+    /// Idem.
+    pub a_id: i64,
+    /// Le righe condivise con un id fra i due, per id crescente.
+    pub brani: Vec<BranoCatalogo>,
+}
+
+const COLONNE_CATALOGO: &str = "t.id, t.title, t.artist, t.album, t.album_key, t.track_number,
+     t.disc_number, t.duration_ms, t.year, t.cover_art_hash, t.play_count, t.liked, t.rating,
+     COALESCE(t.immagine, t.path), t.file_size, t.date_modified, t.inizio_cd, t.fine_cd,
+     t.album_artist, t.genre, t.liked_at, t.rating_at, t.date_added, t.last_played_at,
+     t.stats_updated_at, t.bitrate, t.sample_rate, t.channels, t.codec, t.track_key,
+     t.content_key, t.mb_recording_id, t.mb_release_group_id, t.mb_release_id";
+
+/// Le colonne di [`COLONNE_REMOTO`] seguite da quelle del catalogo, nei limiti
+/// della cornice.
+fn catalogo_da_riga(row: &Row<'_>) -> rusqlite::Result<BranoCatalogo> {
+    use crate::specchio::convalida::{
+        MAX_CHIAVE, MAX_CODEC, MAX_GENERE, MAX_ID_MB, MAX_NOME, tronca, tronca_opz,
+    };
+    let remoto = brano_da_riga(row)?;
+    Ok(BranoCatalogo {
+        id: remoto.id,
+        title: tronca(&remoto.title, MAX_NOME),
+        artist: tronca(&remoto.artist, MAX_NOME),
+        album: tronca(&remoto.album, MAX_NOME),
+        album_artist: tronca_opz(row.get(18)?, MAX_NOME),
+        genre: tronca_opz(row.get(19)?, MAX_GENERE),
+        album_key: remoto.album_key,
+        track_number: remoto.track_number,
+        disc_number: remoto.disc_number,
+        year: remoto.year,
+        duration_ms: remoto.duration_ms,
+        cover_art_hash: remoto.cover_art_hash,
+        play_count: remoto.play_count,
+        liked: remoto.liked,
+        rating: remoto.rating,
+        liked_at: row.get(20)?,
+        rating_at: row.get(21)?,
+        date_added: row.get(22)?,
+        last_played_at: row.get(23)?,
+        stats_updated_at: row.get(24)?,
+        bitrate: row.get(25)?,
+        sample_rate: row.get(26)?,
+        channels: row.get(27)?,
+        codec: tronca_opz(row.get(28)?, MAX_CODEC),
+        track_key: tronca(&row.get::<_, String>(29)?, MAX_CHIAVE),
+        content_key: tronca_opz(row.get(30)?, MAX_CHIAVE),
+        mb_recording_id: tronca_opz(row.get(31)?, MAX_ID_MB),
+        mb_release_group_id: tronca_opz(row.get(32)?, MAX_ID_MB),
+        mb_release_id: tronca_opz(row.get(33)?, MAX_ID_MB),
+        estensione: remoto.estensione,
+        dimensione: remoto.dimensione,
+        versione: remoto.versione,
+        segmento: remoto.segmento,
+    })
+}
+
+/// Il catalogo condiviso in riassunto, calcolato una volta per generazione
+/// della libreria: vedi [`Ricordate`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn riassunto_catalogo(connection: &Connection) -> Result<Arc<RiassuntoCatalogo>, AppError> {
+    riassunto_con(connection, ricordate())
+}
+
+/// Quanti riassunti si tengono: la generazione di adesso, e una.
+const RIASSUNTI_RICORDATI: usize = 2;
+
+/// [`riassunto_catalogo`] con la sua cache a parte: per le prove.
+pub(super) fn riassunto_con(
+    connection: &Connection,
+    cache: &Mutex<Ricordate>,
+) -> Result<Arc<RiassuntoCatalogo>, AppError> {
+    // Prima di calcolare, non dopo: vedi `Ricordate`.
+    let generazione = generazione(connection)?;
+    if let Some(ricordato) = presa(cache).catalogo.get(&generazione).cloned() {
+        return Ok(ricordato);
+    }
+    let calcolato = Arc::new(calcola_il_riassunto(connection, generazione)?);
+    let mut ricordate = presa(cache);
+    if ricordate.catalogo.len() >= RIASSUNTI_RICORDATI
+        && !ricordate.catalogo.contains_key(&generazione)
+    {
+        ricordate.catalogo.clear();
+    }
+    ricordate
+        .catalogo
+        .insert(generazione, Arc::clone(&calcolato));
+    #[cfg(test)]
+    {
+        ricordate.costruiti += 1;
+    }
+    Ok(calcolato)
+}
+
+/// Il riassunto, dalle righe: una passata sola, per id, con l'impronta di ogni
+/// secchio che cresce riga per riga.
+fn calcola_il_riassunto(
+    connection: &Connection,
+    generazione: i64,
+) -> Result<RiassuntoCatalogo, AppError> {
+    let cosa = "riassunto del catalogo condiviso";
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT {COLONNE_CATALOGO} FROM tracks t WHERE {CONDIVISO} ORDER BY t.id"
+        ))
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut righe = statement.query([]).map_err(|err| db_error(cosa, &err))?;
+    let mut secchi: Vec<SecchioCatalogo> = Vec::new();
+    let mut corrente: Option<(i64, blake3::Hasher, i64)> = None;
+    while let Some(riga) = righe.next().map_err(|err| db_error(cosa, &err))? {
+        let brano = catalogo_da_riga(riga).map_err(|err| db_error(cosa, &err))?;
+        let secchio = brano.id.div_euclid(ID_PER_SECCHIO);
+        if corrente.as_ref().is_some_and(|(k, _, _)| *k != secchio) {
+            chiudi_il_secchio(&mut secchi, corrente.take());
+        }
+        let (_, hasher, quante) =
+            corrente.get_or_insert_with(|| (secchio, blake3::Hasher::new(), 0));
+        // Il JSON della riga com'è partirebbe: se cambia una cifra, cambia.
+        let json = serde_json::to_vec(&brano).map_err(|err| {
+            AppError::new(ErrorCode::InternalUnexpected { detail: None })
+                .with_cause(err.to_string())
+        })?;
+        hasher.update(&json);
+        hasher.update(b"\n");
+        *quante += 1;
+    }
+    chiudi_il_secchio(&mut secchi, corrente.take());
+    Ok(RiassuntoCatalogo {
+        generazione,
+        secchi,
+    })
+}
+
+fn chiudi_il_secchio(
+    secchi: &mut Vec<SecchioCatalogo>,
+    corrente: Option<(i64, blake3::Hasher, i64)>,
+) {
+    let Some((k, hasher, righe)) = corrente else {
+        return;
+    };
+    secchi.push(SecchioCatalogo {
+        da_id: k.saturating_mul(ID_PER_SECCHIO),
+        a_id: k
+            .saturating_mul(ID_PER_SECCHIO)
+            .saturating_add(ID_PER_SECCHIO - 1),
+        impronta: hasher.finalize().to_hex().chars().take(32).collect(),
+        righe,
+    });
+}
+
+/// Le righe condivise di un secchio, per id: da `da_id` a `a_id` compresi.
+///
+/// # Errori
+///
+/// `lontano.protocollo` per un secchio più largo di [`ID_PER_SECCHIO`] id o
+/// con gli estremi al contrario; `db.queryFailed` se il database non risponde.
+pub fn pagina_catalogo(
+    connection: &Connection,
+    da_id: i64,
+    a_id: i64,
+) -> Result<PaginaCatalogo, AppError> {
+    if da_id < 0 || a_id < da_id || a_id - da_id >= ID_PER_SECCHIO {
+        return Err(AppError::new(ErrorCode::LontanoProtocollo)
+            .with_cause("un secchio del catalogo più largo di quanto si serve"));
+    }
+    let cosa = "righe di un secchio del catalogo";
+    // Prima di leggere, non dopo: vedi `Ricordate`.
+    let generazione = generazione(connection)?;
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT {COLONNE_CATALOGO} FROM tracks t
+              WHERE t.id BETWEEN ?1 AND ?2 AND {CONDIVISO}
+              ORDER BY t.id LIMIT ?3"
+        ))
+        .map_err(|err| db_error(cosa, &err))?;
+    let brani = statement
+        .query_map(
+            rusqlite::params![da_id, a_id, ID_PER_SECCHIO],
+            catalogo_da_riga,
+        )
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error(cosa, &err))?;
+    Ok(PaginaCatalogo {
+        generazione,
+        da_id,
+        a_id,
+        brani,
+    })
+}
+
+/// Un mi piace o un voto arrivato da un altro dispositivo per un brano di qui:
+/// vince l'orologio più recente, **per campo** — con `liked_at` e `rating_at`,
+/// gli stessi di un gesto fatto qui — e quello che non cambia non si tocca.
+/// `true` se qualcosa è cambiato davvero.
+///
+/// `liked` e `rating` sono `None` quando chi manda non li ha cambiati: un
+/// voto dato altrove non deve riscrivere il preferito con quel che là era
+/// rimasto indietro. Innocuo se arriva due volte: la seconda ha lo stesso
+/// orologio e non è più recente.
+///
+/// # Errori
+///
+/// `lontano.fileCambiato` per un brano che non c'è o non è più condiviso;
+/// `lontano.protocollo` per un voto fuori da 0–5 o un orologio che non è un
+/// istante; `db.queryFailed` se il database non risponde.
+pub fn valuta(
+    connection: &Connection,
+    brano: i64,
+    liked: Option<bool>,
+    rating: Option<i64>,
+    quando_ms: i64,
+    adesso_ms: i64,
+) -> Result<bool, AppError> {
+    if quando_ms <= 0 || rating.is_some_and(|r| !(0..=5).contains(&r)) {
+        return Err(AppError::new(ErrorCode::LontanoProtocollo)
+            .with_cause("una valutazione con un voto o un orologio che non stanno"));
+    }
+    if self::brano(connection, brano)?.is_none() {
+        return Err(AppError::new(ErrorCode::LontanoFileCambiato)
+            .with_cause("il brano non è più condiviso"));
+    }
+    // Un orologio avanti non fissa un voto che nessun gesto vero scavalcherebbe.
+    let quando = quando_ms.min(adesso_ms);
+    let toccate = connection
+        .execute(
+            &format!(
+                "UPDATE tracks SET
+                   liked = CASE WHEN ?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1)
+                                THEN ?2 ELSE liked END,
+                   liked_at = CASE WHEN ?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1)
+                                   THEN ?4 ELSE liked_at END,
+                   rating = CASE WHEN ?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)
+                                 THEN ?3 ELSE rating END,
+                   rating_at = CASE WHEN ?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)
+                                    THEN ?4 ELSE rating_at END,
+                   stats_updated_at = MAX(stats_updated_at, ?4)
+                 WHERE id = ?1 AND {CONDIVISO_SENZA_ALIAS}
+                   AND ((?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1))
+                     OR (?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)))"
+            ),
+            rusqlite::params![brano, liked, rating, quando],
+        )
+        .map_err(|err| db_error("valutazione di un brano condiviso", &err))?;
+    Ok(toccate > 0)
 }

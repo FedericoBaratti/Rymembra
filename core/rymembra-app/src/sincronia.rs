@@ -205,6 +205,7 @@ pub fn conta_ascolto(
                   ), 0) AS eccedenza
              FROM tracks t
             WHERE t.track_key = (SELECT track_key FROM tracks WHERE id = ?1)
+              AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')
             GROUP BY t.track_key
          )
          WHERE eccedenza > 0
@@ -226,7 +227,8 @@ pub fn conta_ascolto(
         "UPDATE tracks
             SET play_count = COALESCE((SELECT SUM(a.quanti) FROM sync_ascolti a
                                         WHERE a.track_key = tracks.track_key), 0)
-          WHERE track_key = (SELECT track_key FROM tracks WHERE id = ?1)",
+          WHERE track_key = (SELECT track_key FROM tracks WHERE id = ?1)
+            AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         rusqlite::params![track_id],
     )
     .map_err(|err| db_error("somma degli ascolti", &err))?;
@@ -355,6 +357,7 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
                          WHERE a.track_key = t.track_key AND a.dispositivo <> ?1
                       ), 0) AS eccedenza
                  FROM tracks t
+                WHERE NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')
                 GROUP BY t.track_key
              )
              WHERE eccedenza > 0
@@ -373,7 +376,8 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
             SET play_count = COALESCE((SELECT SUM(a.quanti) FROM sync_ascolti a
                                         WHERE a.track_key = tracks.track_key), 0)
           WHERE play_count <> COALESCE((SELECT SUM(a.quanti) FROM sync_ascolti a
-                                         WHERE a.track_key = tracks.track_key), 0)",
+                                         WHERE a.track_key = tracks.track_key), 0)
+            AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         [],
     )
     .map_err(|err| db_error("somma degli ascolti", &err))?;
@@ -702,7 +706,7 @@ fn ricordo_dei_brani_assenti(connection: &Connection) -> Result<Ricordo, AppErro
 /// toglie quando non c'è più niente da ricordare. Una memoria illeggibile si
 /// rifà sempre, anche se quella di adesso è vuota: lasciarla lì vorrebbe dire
 /// che la passata dopo la ritrova guasta, e non seppellisce niente neanche lei.
-fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
+pub(crate) fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
     let adesso = brani_assenti(connection)?;
     let ricordo = ricordo_dei_brani_assenti(connection)?;
     scrivi_il_ricordo(connection, &adesso, &ricordo)
@@ -753,7 +757,7 @@ fn riscrivi_appartenenza(
         gia.entry(brano.as_str()).or_default().push_back(*track_id);
     }
     let mut cerca = tx
-        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1")
+        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY (path >= 'lontano://' AND path < 'lontano:/0'), id LIMIT 1")
         .map_err(|err| db_error("brani da agganciare", &err))?;
     let mut brani = Vec::with_capacity(ordine.len());
     for brano in ordine {
@@ -947,7 +951,7 @@ fn ultimi_ascolti(connection: &Connection) -> Result<BTreeMap<String, i64>, AppE
     let mut statement = connection
         .prepare(
             "SELECT track_key, MAX(last_played_at) FROM tracks
-              WHERE last_played_at IS NOT NULL GROUP BY track_key",
+              WHERE last_played_at IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0') GROUP BY track_key",
         )
         .map_err(|err| db_error("ultimi ascolti", &err))?;
     let righe = statement
@@ -972,7 +976,10 @@ fn ultimi_ascolti(connection: &Connection) -> Result<BTreeMap<String, i64>, AppE
 /// lo zero come assenza.
 fn voti(connection: &Connection) -> Result<BTreeMap<String, Voto>, AppError> {
     let mut statement = connection
-        .prepare("SELECT track_key, rating, rating_at FROM tracks WHERE rating_at IS NOT NULL")
+        .prepare(
+            "SELECT track_key, rating, rating_at FROM tracks
+              WHERE rating_at IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
+        )
         .map_err(|err| db_error("voti da pubblicare", &err))?;
     let righe = statement
         .query_map([], |row| {
@@ -1011,7 +1018,10 @@ fn voti(connection: &Connection) -> Result<BTreeMap<String, Voto>, AppError> {
 /// cuoricino più vecchio dell'altro dispositivo.
 fn preferiti(connection: &Connection) -> Result<BTreeMap<String, Interruttore>, AppError> {
     let mut statement = connection
-        .prepare("SELECT track_key, liked, liked_at FROM tracks WHERE liked_at IS NOT NULL")
+        .prepare(
+            "SELECT track_key, liked, liked_at FROM tracks
+              WHERE liked_at IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
+        )
         .map_err(|err| db_error("preferiti da pubblicare", &err))?;
     let righe = statement
         .query_map([], |row| {
@@ -1669,7 +1679,8 @@ fn applica_ascolti(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError>
                 SET play_count = COALESCE((SELECT SUM(a.quanti) FROM sync_ascolti a
                                             WHERE a.track_key = tracks.track_key), 0)
               WHERE play_count <> COALESCE((SELECT SUM(a.quanti) FROM sync_ascolti a
-                                             WHERE a.track_key = tracks.track_key), 0)",
+                                             WHERE a.track_key = tracks.track_key), 0)
+                AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
             [],
         )
         .map_err(|err| db_error("somma degli ascolti", &err))?;
@@ -1682,7 +1693,7 @@ fn applica_ultimi(tx: &Transaction<'_>, fuso: &Fuso) -> Result<(), AppError> {
     let mut scrivi = tx
         .prepare(
             "UPDATE tracks SET last_played_at = ?2
-              WHERE track_key = ?1 AND COALESCE(last_played_at, 0) < ?2",
+              WHERE track_key = ?1 AND COALESCE(last_played_at, 0) < ?2 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("ultimi ascolti ricevuti", &err))?;
     for (brano, quando) in &fuso.ultimo {
@@ -1699,7 +1710,7 @@ fn applica_voti(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError> {
         .prepare(
             "UPDATE tracks
                 SET rating = ?2, rating_at = ?3, stats_updated_at = max(stats_updated_at, ?3)
-              WHERE track_key = ?1 AND COALESCE(rating_at, -1) < ?3",
+              WHERE track_key = ?1 AND COALESCE(rating_at, -1) < ?3 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("voti ricevuti", &err))?;
     let mut cambiati = 0;
@@ -1720,7 +1731,7 @@ fn applica_preferiti(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppErro
         .prepare(
             "UPDATE tracks
                 SET liked = ?2, liked_at = ?3, stats_updated_at = max(stats_updated_at, ?3)
-              WHERE track_key = ?1 AND COALESCE(liked_at, -1) < ?3",
+              WHERE track_key = ?1 AND COALESCE(liked_at, -1) < ?3 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("preferiti ricevuti", &err))?;
     let mut cambiati = 0;
@@ -1848,7 +1859,7 @@ fn applica_playlist(tx: &Transaction<'_>, fuso: &Fuso) -> Result<usize, AppError
         .prepare("SELECT id FROM playlists WHERE playlist_key = ?1")
         .map_err(|err| db_error("playlist ricevute", &err))?;
     let mut cerca_brano = tx
-        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1")
+        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY (path >= 'lontano://' AND path < 'lontano:/0'), id LIMIT 1")
         .map_err(|err| db_error("playlist ricevute", &err))?;
     let mut svuota = tx
         .prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?1")

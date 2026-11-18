@@ -339,6 +339,15 @@ impl CoverStore {
         self.percorso(hash, "m.jpg")
     }
 
+    /// Il segno di una copertina presa da un altro dispositivo:
+    /// `<impronta>.lontano`, un file vuoto accanto alla piena. Dice che la
+    /// «piena» è la media che l'altro serve (320 pixel, ricodificata) e non la
+    /// copertina di questa macchina: finché c'è, [`CoverStore::store`] non si
+    /// fida del file e lo rifà dall'originale.
+    fn percorso_segno(&self, hash: &str) -> PathBuf {
+        self.percorso(hash, "lontano")
+    }
+
     /// L'unico posto in cui un'impronta diventa un percorso.
     ///
     /// Un'impronta che non è un'impronta ([`e_un_impronta`]) arriva da fuori —
@@ -429,8 +438,13 @@ impl CoverStore {
         let _ = source; // la provenienza la registra il database, non lo store
         let hash = blake3::hash(original).to_hex().to_string();
         let full = self.path_for(&hash);
+        let segno = self.percorso_segno(&hash);
 
-        if let Ok(meta) = std::fs::metadata(&full) {
+        // Una «piena» presa da un altro dispositivo (vedi `salva_estranea`) non
+        // vale come quella già salvata: la scansione dell'originale la rifà.
+        if let Ok(meta) = std::fs::metadata(&full)
+            && !segno.exists()
+        {
             // Già presente: si legge la dimensione senza decodificare. È il
             // caso normale di una riscansione, e deve costare quanto uno `stat`
             // — due, con quello della miniatura.
@@ -501,12 +515,102 @@ impl CoverStore {
         // scansione di quel file.
         scrivi_atomico(&self.thumbnail_path_for(&hash), &bytes_miniatura)?;
         scrivi_atomico(&full, &bytes_piena)?;
+        // Per ultimo: se si cade prima, il segno resta e la prossima volta si
+        // rifà.
+        let _ = std::fs::remove_file(&segno);
 
         Ok(StoredCover {
             hash,
             width,
             height,
             byte_size,
+            mime_type: "image/jpeg",
+            already_present: false,
+        })
+    }
+
+    /// Salva la copertina che un altro dispositivo ha servito, **sotto
+    /// l'impronta che lui dice**.
+    ///
+    /// # Perché non [`CoverStore::store`]
+    ///
+    /// Perché `Domanda::Copertina` non restituisce l'originale: restituisce la
+    /// «media» (320 pixel, ricodificata, [`CoverStore::media`]). L'impronta di
+    /// quei byte non è quella dell'originale, che è il nome con cui la
+    /// libreria dell'altro — e, per lo stesso disco, quella di qui — chiama la
+    /// copertina; e `store` darebbe un nome diverso da quello che la riga
+    /// specchio porta. Qui il nome lo dà chi chiama, **dopo** aver controllato
+    /// che sia un'impronta ([`e_un_impronta`]).
+    ///
+    /// # Cosa si fida
+    ///
+    /// Niente dei byte: passano da [`decodifica`] dentro i [`limiti`], con il
+    /// tetto di [`MASSIMO_ESTRANEA`], e si ricodificano come JPEG nostra. Se
+    /// qui c'è già una copertina con quell'impronta — locale, o presa prima —
+    /// non si tocca: un dispositivo collegato non decide cosa c'è sullo store
+    /// di chi l'ha collegato.
+    ///
+    /// # Il segno
+    ///
+    /// La piena che nasce da qui è la media di un altro, non l'originale: ne
+    /// resta un segno ([`CoverStore::percorso_segno`]), scritto **per
+    /// primo**, e la scansione di un file con quello stesso originale la rifà
+    /// a 640 pixel invece di fidarsi di lei.
+    ///
+    /// # Errori
+    ///
+    /// `metadata.tagReadFailed` per un'impronta che non lo è, per byte che non
+    /// sono un'immagine nei limiti, o più di [`MASSIMO_ESTRANEA`]; `fs.*` se
+    /// non si scrive.
+    pub fn salva_estranea(&self, hash: &str, byte: &[u8]) -> Result<StoredCover, AppError> {
+        const ETICHETTA: &str = "estranea";
+        if !e_un_impronta(hash) {
+            return Err(decode_error(ETICHETTA, "un'impronta che non lo è"));
+        }
+        let piena = self.path_for(hash);
+        if let Ok(meta) = std::fs::metadata(&piena) {
+            let (width, height) = imagesize::size(&piena)
+                .map(|s| {
+                    (
+                        u32::try_from(s.width).unwrap_or(0),
+                        u32::try_from(s.height).unwrap_or(0),
+                    )
+                })
+                .unwrap_or((0, 0));
+            return Ok(StoredCover {
+                hash: hash.to_owned(),
+                width,
+                height,
+                byte_size: meta.len(),
+                mime_type: "image/jpeg",
+                already_present: true,
+            });
+        }
+        if byte.len() > MASSIMO_ESTRANEA {
+            return Err(decode_error(
+                ETICHETTA,
+                &format!(
+                    "{} byte in ingresso, il tetto è {MASSIMO_ESTRANEA}",
+                    byte.len()
+                ),
+            ));
+        }
+        let immagine = decodifica(byte, ETICHETTA)?;
+        let grande = fit(&immagine, MAX_LATO);
+        let miniatura = fit(&grande, MAX_LATO_MINIATURA);
+        let bytes_piena = encode_jpeg(&grande, QUALITA, ETICHETTA)?;
+        let bytes_miniatura = encode_jpeg(&miniatura, QUALITA_MINIATURA, ETICHETTA)?;
+        // Il segno prima, la miniatura poi, la piena per ultima: la stessa
+        // regola di `store` («piena ⇒ miniatura»), con il segno davanti a
+        // tutto, perché una piena senza segno sembrerebbe quella vera.
+        scrivi_atomico(&self.percorso_segno(hash), b"")?;
+        scrivi_atomico(&self.thumbnail_path_for(hash), &bytes_miniatura)?;
+        scrivi_atomico(&piena, &bytes_piena)?;
+        Ok(StoredCover {
+            hash: hash.to_owned(),
+            width: grande.width(),
+            height: grande.height(),
+            byte_size: bytes_piena.len() as u64,
             mime_type: "image/jpeg",
             already_present: false,
         })
@@ -568,6 +672,9 @@ impl CoverStore {
             for percorso in [self.percorso_media(hash), self.thumbnail_path_for(hash)] {
                 liberato.aggiungi(togli_file(&percorso));
             }
+            // Il segno di una copertina presa da fuori non ha peso e non si
+            // conta, ma non deve restare.
+            let _ = std::fs::remove_file(self.percorso_segno(hash));
         }
         liberato
     }
@@ -1905,5 +2012,165 @@ mod tests {
         let mut al_tetto = png(64, 64);
         al_tetto.resize(MASSIMO_ESTRANEA, 0);
         assert!(ricodifica_estranea(&al_tetto).is_ok());
+    }
+
+    // ── le copertine che arrivano da un altro dispositivo (libreria unica) ──
+
+    /// Una JPEG come la manda un altro dispositivo: la «media» da 320 pixel.
+    fn media_di_un_altro(lato: u32) -> Vec<u8> {
+        let immagine =
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(lato, lato, |x, y| {
+                image::Rgb([
+                    u8::try_from(x % 251).unwrap_or(0),
+                    u8::try_from(y % 251).unwrap_or(0),
+                    77,
+                ])
+            }));
+        encode_jpeg(&immagine, QUALITA_MEDIA, "prova").expect("jpeg")
+    }
+
+    #[test]
+    fn una_copertina_estranea_sta_nello_store_sotto_l_impronta_data() {
+        // `Domanda::Copertina` serve la media ricodificata, non l'originale:
+        // l'impronta dei suoi byte non è quella dell'originale, che è quella
+        // che la libreria di chi la manda e di chi la riceve usa come nome.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let impronta = "ab".repeat(32);
+        let byte = media_di_un_altro(320);
+        assert_ne!(blake3::hash(&byte).to_hex().to_string(), impronta);
+        let salvata = store.salva_estranea(&impronta, &byte).expect("salvataggio");
+        assert_eq!(salvata.hash, impronta);
+        assert!(!salvata.already_present);
+        assert!(
+            store.path_for(&impronta).exists(),
+            "la piena, dove la cerca il provider"
+        );
+        assert!(store.thumbnail_path_for(&impronta).exists());
+        assert!(store.media(&impronta).expect("media").is_some());
+        // Una seconda volta non rifà niente.
+        assert!(
+            store
+                .salva_estranea(&impronta, &byte)
+                .expect("di nuovo")
+                .already_present
+        );
+    }
+
+    #[test]
+    fn una_copertina_estranea_non_prende_il_posto_di_una_che_c_e_gia() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let locale = store
+            .store(&png(900, 900), CoverSource::Tag)
+            .expect("locale");
+        let prima = std::fs::read(store.path_for(&locale.hash)).expect("file");
+        let salvata = store
+            .salva_estranea(&locale.hash, &media_di_un_altro(320))
+            .expect("estranea");
+        assert!(salvata.already_present);
+        assert_eq!(
+            std::fs::read(store.path_for(&locale.hash)).expect("file"),
+            prima
+        );
+    }
+
+    #[test]
+    fn una_copertina_estranea_non_esce_dallo_store_ne_e_un_estranea_qualunque() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        for storta in [
+            "",
+            "x",
+            "../../fuori",
+            "AB".repeat(32).as_str(),
+            "a/b",
+            r"ab\cd",
+        ] {
+            assert!(
+                store
+                    .salva_estranea(storta, &media_di_un_altro(64))
+                    .is_err(),
+                "{storta:?}"
+            );
+        }
+        let impronta = "cd".repeat(32);
+        assert!(
+            store
+                .salva_estranea(&impronta, b"non sono un'immagine")
+                .is_err()
+        );
+        assert!(
+            store
+                .salva_estranea(&impronta, &vec![0_u8; MASSIMO_ESTRANEA + 1])
+                .is_err(),
+            "oltre il tetto non si guarda nemmeno"
+        );
+        assert!(
+            !store.path_for(&impronta).exists(),
+            "un errore non lascia niente"
+        );
+    }
+
+    #[test]
+    fn la_copertina_di_un_altro_dispositivo_cede_il_posto_all_originale_di_una_scansione() {
+        // Guasto da evitare (advisor, punto 4): la media da 320 pixel preso da
+        // fuori sta nello store come «piena»; una scansione dello stesso
+        // originale, vedendo la piena, non farebbe niente, e la copertina
+        // resterebbe a 320 pixel per sempre.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let originale = png(900, 900);
+        let impronta = blake3::hash(&originale).to_hex().to_string();
+        store
+            .salva_estranea(&impronta, &media_di_un_altro(320))
+            .expect("da fuori");
+        let (l, _) = imagesize::size(store.path_for(&impronta))
+            .map(|s| (s.width, s.height))
+            .expect("misure");
+        assert_eq!(l, 320, "quella di prima");
+        // La scansione dello stesso originale.
+        let salvata = store
+            .store(&originale, CoverSource::Tag)
+            .expect("scansione");
+        assert_eq!(salvata.hash, impronta);
+        assert!(
+            !salvata.already_present,
+            "non si fida di quella presa da fuori"
+        );
+        assert_eq!((salvata.width, salvata.height), (MAX_LATO, MAX_LATO));
+        let (l, _) = imagesize::size(store.path_for(&impronta))
+            .map(|s| (s.width, s.height))
+            .expect("misure");
+        assert_eq!(l, 640, "la piena vera");
+        // E la volta dopo è presente, e rapida.
+        assert!(
+            store
+                .store(&originale, CoverSource::Tag)
+                .expect("ancora")
+                .already_present
+        );
+        // Nessun segno rimane: una copertina tolta se ne va tutta.
+        let _ = store.togli_tutte(std::slice::from_ref(&impronta));
+        assert!(!store.path_for(&impronta).exists());
+        let vuota = std::fs::read_dir(dir.path().join(&impronta[..2]))
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
+        assert!(vuota, "neanche il segno del file preso da fuori");
+    }
+
+    #[test]
+    fn togliere_una_copertina_estranea_toglie_anche_il_suo_segno() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let impronta = "ef".repeat(32);
+        store
+            .salva_estranea(&impronta, &media_di_un_altro(100))
+            .expect("da fuori");
+        let _ = store.togli_tutte(std::slice::from_ref(&impronta));
+        let resta: Vec<_> = std::fs::read_dir(dir.path().join(&impronta[..2]))
+            .map(|d| d.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        assert!(resta.is_empty(), "{resta:?}");
     }
 }
