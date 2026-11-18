@@ -281,7 +281,11 @@ a longer listening history than the public API offers.
   duration can still be half a second early.
   When the catalog holds more than one answer, «Other lyrics» lists them all
   with their first lines, and what you choose stays chosen — «none of these»
-  included, which is remembered rather than asked again.
+  included, which is remembered rather than asked again. For a track that lives
+  on another of your devices the panel asks that device first — it answers with
+  its own text, timed or plain, and the offset it keeps — and falls back to
+  LRCLIB only if it is off, older or has none; what you correct or time there
+  is applied here and sent to the owner.
 - **Affinity**: what plays after a record ends is chosen from three independent
   layers — the sound of your files, analyzed locally; what you have listened to;
   and the cultural proximity read from ListenBrainz. Each missing layer removes
@@ -393,20 +397,71 @@ a longer listening history than the public API offers.
   the internet, directly or through a relay that sees only encrypted bytes,
   with no Rymembra server. Before linking, the phone shows the name the PC
   gives itself and a short fingerprint of its key, to compare with the one
-  next to the QR code. «Browse <device>» opens the other library — albums,
-  artists, tracks, search — to play its tracks here, streamed, or to download
-  them («Download here»); a listen counts on the device that owns the track,
-  which scrobbles it. On mobile data the phone asks first. Off by default; what
-  it sends is in [`PRIVACY.md`](PRIVACY.md) § 4-quinquies.
+  next to the QR code. Two PCs link with «Copy link» on one and «Paste link» on
+  the other; a new QR code or link replaces the previous one. A listen counts on
+  the device that owns the track, which scrobbles it. On mobile data the phone
+  asks first. Off by default; what it sends is in
+  [`PRIVACY.md`](PRIVACY.md) § 4-quinquies.
+- **One library across your devices.** The tracks of the devices you linked are
+  rows of this device’s library, read once and then by differences, so Albums,
+  Artists, Tracks, Favorites, Search and playlists show your phone’s and your
+  PCs’ music together, each row with the icon of its device. A track that
+  exists on several devices is one row and plays the best copy — lossless first,
+  then sample rate, then bitrate, on a tie the one on this device — while the
+  setting «Other devices’ music on mobile data» (Ask, Yes, Wi-Fi only) is
+  respected: with Wi-Fi only, on mobile data, the copy on this device plays. A
+  pill filter, «All · This device · <name>», limits any view to one
+  device. A device that is off stays in the list, greyed out: its tracks come
+  back playable when it is on, and if another copy exists that one plays.
+  Playlists, hearts and stars work on them — hearts, stars and listens are sent
+  to the device that owns the track — and «Download here», from the menu of a
+  row, an album, an artist page or a selection, copies them to this device
+  (from 50 tracks it asks first). The artist’s name in Now playing opens a page
+  with the albums, all the tracks (those with no album too) and the
+  appearances on other artists’ albums. Nothing of another device enters the
+  profile, the Drive backup, sync, an exported playlist or a scrobble; what
+  stays is in [`PRIVACY.md`](PRIVACY.md) § 4-ter and § 4-quinquies. A device
+  that has not updated to this version cannot show its music here.
+- **Start with Windows, and the tray.** *Settings › Startup and closing* has a
+  switch that starts Rymembra when you sign in, minimized to the taskbar. It
+  shows what Windows says — if you turned the entry off in Task Manager, it
+  tells you and does not override you — and works on the installer copy (an
+  entry in Windows’ startup list) and on the Store copy (a startup task). With
+  «The X closes the window and Rymembra stays in the tray» on, the X really
+  closes the window: the music, the media keys and the tray icon go on and the
+  window’s WebView2 processes are gone, until you ask for the window again.
+  A one-time question offers both. `rymembra://collega/…` links open Rymembra
+  and ask you to confirm before linking.
+- **The phone stays reachable, and Android Auto finds it ready.** *Settings ›
+  Devices* has «Stay active in the background» (off by default): a foreground
+  service keeps Rymembra running after you swipe it away, so your PCs can reach
+  the phone whenever they like — it costs battery, a notification stays
+  visible, and a button opens Android’s battery-optimization page, because
+  Android suspends the network of an app that is not excluded from it. Under it,
+  «Start with the car» (off by default; not in the Google Play build) makes
+  Rymembra resume the saved queue by itself when the phone connects to Android
+  Auto, in place of the last app you used. With the service on, the system’s
+  resume card and the play key of a headset or a car also restart the music
+  after you swiped Rymembra away. The tracks of another device show their cover
+  in Android Auto, in the notification and on the lock screen.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Automatic updates**: a check for releases on GitHub at every start, ten
   seconds after the window is ready, then every thirty minutes; without a
   network it tries again after one, five and fifteen minutes. Installing always
   requires an explicit confirmation, and the installer's signature — bound to
-  the version it announces — is verified before it runs. The feature can be
-  switched off in the settings; the traffic it generates is documented in
+  the version it announces — is verified before it runs. A card in the
+  notification stack shows each step: downloading (percentage, size, speed,
+  time left), verifying the signature, installing, restarting. On the computer
+  you choose «Update» or «At close»: the second downloads and verifies at once and
+  installs, without reopening Rymembra, when you really exit — never while
+  Windows shuts down — and the verified package waits in memory, not on disk.
+  On the phone the update is downloaded and verified first and you tap
+  «Install». After an update a «What’s new» window of a few illustrated steps
+  opens once, not on a fresh install. The feature can be switched off in the
+  settings; the traffic it generates is documented in
   [`PRIVACY.md`](PRIVACY.md) § 6. The Microsoft Store package doesn't have it:
-  there the Store does the updating.
+  there the Store does the updating, and so does Google Play for its Android
+  build (see [Installation](#installation)).
 
 ---
 
@@ -670,6 +725,15 @@ On a phone, **the APK**, Android 8 or later, 64-bit (ARM):
   `Signer #1 certificate SHA-256 digest`, with or without the colons;
 - after that, Rymembra itself offers the updates, from the same release (see
   [Known limits](#known-limits-and-planned-work) → Android → Updates);
+- **two builds of the app exist**. The APK above is the `github` one, with the
+  updater. The `play` one, made for Google Play, is built with
+  `-Pdistribuzione=play`: it has no updater and no permission to install apps,
+  it never contacts GitHub to look for updates and it does not offer «Start
+  with the car» — Google Play updates it, and Google’s rules for media apps in
+  cars forbid starting playback by itself. The release workflow builds and
+  publishes only the `github` one, and the `play` one still declares
+  «All files access», which Google may refuse a music player (see
+  [Known limits](#known-limits-and-planned-work) → Android → Google Play);
 - **a test build**, signed with another key, cannot be updated to the public
   APK: Android refuses to install one over the other, and Rymembra says so
   instead of offering the update. To move to the public version without
@@ -872,6 +936,19 @@ The direction of the dependencies is binding. `rymembra-catalogo` has no access 
 `rusqlite`: it is therefore structurally impossible, and not merely inadvisable,
 to hold the library lock for the whole duration of a download.
 
+`unsafe` is forbidden in the workspace (`unsafe_code = "forbid"`), with two
+declared exceptions that each have a lint table of their own, `deny` instead of
+`forbid`, and a `// SAFETY:` comment on every block.
+`apps/desktop/rymembra-barra` has it in seven places: the taskbar thumbnail
+buttons (`finestra.rs`), the type of a drive (`unita.rs`), background mode and
+the battery (`sottofondo.rs`), USB eject notifications (`espulsione.rs`), the
+Shift key held at startup (`maiusc.rs`), the three registry calls of Start with
+Windows (`registro.rs`) and the never-shown window that the media keys hang on
+(`messaggi.rs`). `apps/desktop/rymembra-android` has it in one, `src/jvm.rs`,
+where the two pointers `tao` hands over become `jni` objects. The lists are
+kept in the comments of the `Cargo.toml` files, and a new `unsafe` goes in one
+of those places and nowhere else.
+
 How every part works — threads and locks, the schema, the scan, the audio
 engine, the skin compiler, the IPC surface — is described in the [technical
 documentation](https://rymembra.com/docs/), whose source is
@@ -918,7 +995,9 @@ Archive, for metadata and cover art, and ListenBrainz, for similarity — on by
 default, each with a switch; iTunes and Deezer, only if you switch them on
 (they are off by default, because their terms do not clearly cover this use);
 LRCLIB for lyrics, only while the
-lyrics panel is open or when you fill the library; the music catalogs, when you
+lyrics panel is open or when you fill the library — and for a track of another
+of your devices only with the panel open, when that device has no text or does
+not answer; the music catalogs, when you
 search or import; and, only if you connect them, Google Drive, the cloud
 services whose folders you add, the scrobbling service and the language model
 configured for the Skin Studio — the last one possibly not a server at all,
@@ -929,9 +1008,12 @@ Linking your devices over the internet, if you switch it on, is the one
 feature that reaches beyond your network and your accounts: your devices find
 each other through n0's public DNS and the BitTorrent DHT, and talk directly
 or through a public relay (n0's, or one you run) that sees only encrypted
-bytes; they share music only with the devices you linked with a QR code. A
-«Listen together» session between two linked devices away from home travels
-inside that same link, encrypted twice.
+bytes; they share music only with the devices you linked with a QR code — and
+what they share now includes the catalog (titles, artists, albums, durations,
+play counts, likes and ratings) of the tracks they hold, which each device
+keeps as rows in its own library database. A «Listen together» session
+between two linked devices away from home travels inside the encrypted
+connection between the two devices, encrypted twice.
 
 [`PRIVACY.md`](PRIVACY.md) lists every single network request the program can
 make and the data each one transmits, and what the system’s own browser
@@ -1025,16 +1107,35 @@ constraint is stated explicitly in the terms of use.
   and supports on them only the latest stable release of iroh: a copy of
   Rymembra left without updates can one day lose the relay, and with it the
   link away from home. A relay of your own (`iroh-relay`) does not depend on
-  that. A phone is reachable only while Rymembra is on screen or
-  playing, and for two minutes after. Only tracks in local and network
+  that. A phone is reachable while Rymembra is on screen or
+  playing, and for two minutes after — or all the time with «Stay active in the
+  background» on (see Android below), which does not by itself turn on
+  «Reachable from the internet». Only tracks in local and network
   folders are shared, not cloud folders or catalog tracks; a track of a CD
   image (one file with its `.cue`) plays but is not downloaded. Seeking in a
-  remote track is approximate, as in any streamed track. «Listen together»
+  remote track is approximate, as in any streamed track. A device that has not
+  updated cannot send its catalog: on this version it shows «Update Rymembra on
+  <name>» and none of its music in the library, while the older device can
+  still browse this one — update both. A copy of another device’s cover is the
+  320-pixel one until the same file is scanned here. «Listen together»
   away from home is as good as the path: the host sends each track to each
   member, so through a relay — or from a phone on mobile data — a session of
   several members can stall, and over a jittery link the members stay in
   step less tightly than at home (clock samples are kept up to a 400 ms round
   trip instead of 100 ms).
+- **One library across your devices.** Two files are the same track when their
+  content keys match, and only across different devices: two copies on one
+  device stay two rows. The quality a device declares is checked against the
+  file’s size and duration, not proved — an MP3 at 192 kbps passed off as a
+  44.1 kHz FLAC is not caught. Playing a selection or a whole view that includes
+  tracks of a device that is off skips them one by one, each with a «was
+  skipped» notice. If the device holding the best copy goes off a moment before
+  Rymembra notices, only the copy on this device is tried as a fallback. A
+  corrected tag can make a track appear twice in a playlist, which loses
+  nothing. Corrections to another device’s lyrics have no clock: the last to
+  arrive wins. After you forget a device its covers stay among the unused covers
+  until the next cleanup (*Settings › Covers and database health*, which also
+  runs by itself after a scan).
 - **Sync between devices.** A track taken out of a playlist and, before the
   next sync pass, also out of the library (or whose file disappears in the
   meantime) stays in that playlist on the other devices: Rymembra cannot tell
@@ -1046,7 +1147,11 @@ constraint is stated explicitly in the terms of use.
   diagnostic data, and a minidump when one of its processes crashes, which
   can hold the titles on screen. Turning the minidumps off needs an option of
   the WebView2 environment that Tauri does not expose yet; see
-  [`PRIVACY.md`](PRIVACY.md) § 6-bis.
+  [`PRIVACY.md`](PRIVACY.md) § 6-bis. With the X set to close the window and
+  keep Rymembra in the tray, events sent while there is no window are lost (a
+  notice that was shown and missed does not come back), and if the tray icon is
+  not there — Windows refused it, or its menu labels have not been remembered
+  yet, as on a very first start — the X closes the program, as it always did.
 - **Proxies.** Rymembra follows the proxy set in Windows Settings
   (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
   NAS, a computer at home — and this computer itself always go direct. It does
@@ -1089,6 +1194,30 @@ constraint is stated explicitly in the terms of use.
     at all (see [Installation](#installation)). Installing it is then up
     to Android, which asks the person using the phone to confirm every time —
     and, the first time, to allow Rymembra to install apps. It is never silent.
+    The update is downloaded and verified first, and Android’s screen opens
+    only when you tap «Install»; if that happened while Rymembra was out of
+    view, a low-importance «Update ready to install» notification brings you
+    back — only if notifications are already allowed, because Rymembra does not
+    ask for the permission for it.
+  - **Google Play.** The `play` build has no updater and no
+    «Install apps» permission, and it never contacts GitHub. It still declares
+    «All files access» (`MANAGE_EXTERNAL_STORAGE`), which Google’s policy
+    reserves for file managers, backups and the like: if Google refuses it for a
+    music player, the app works with the tracks only — no `.lrc`, `.cue` or
+    covers next to them, and no deleting files that are not audio. There is no
+    In-App Update, and the release workflow does not build this variant.
+  - **Staying active in the background.** The foreground service
+    (`connectedDevice`) does not exempt Rymembra from Doze: with the screen off
+    and the phone still, Android suspends the network of an app that is not
+    excluded from battery optimization, and some manufacturers (Xiaomi, Huawei,
+    Samsung, Nothing, OnePlus, Oppo) close background apps on their own, so
+    your PCs may not find the phone. Rymembra does not request the exemption
+    itself, which Google Play reserves for other apps: the setting opens
+    Android’s page instead. Nothing restarts the service after a reboot yet,
+    and one that Android brings back by itself shows «Rymembra is resting» and
+    has no core until you open the app. Whether Google Play accepts this service
+    type for linking to PCs over the internet is not settled, and the battery
+    cost is not measured.
   - **The screen** stays upright: the phone interface is locked to portrait
     in this version. The guided tour of the computer is not offered on the
     phone.
@@ -1108,7 +1237,16 @@ constraint is stated explicitly in the terms of use.
     settings → Unknown sources* is switched on. And Android does not let an
     app open itself from the background: if Rymembra is not running at all,
     the car says «Open Rymembra on your phone» with a button that opens it,
-    and the library appears as soon as it has started once. Only trusted
+    and the library appears as soon as it has started once — with «Stay active
+    in the background» on, Rymembra stays running and the car should find it
+    ready, which has not been tried with a real car. The car lists only what
+    can be played now: tracks of a device that is off are left out, and a
+    track stays if another device that answers has a copy. «Start with the
+    car» is only as reliable as Android Auto’s own connection report: a loose
+    cable makes the music start again each time, and Google’s rule for media
+    apps in cars (MA-1) forbids starting by itself, which is why the Google
+    Play build lacks it. The car’s queue has no covers for a «Listen together»
+    voice, which has no row in the library. Only trusted
     controllers reach the music session — Android Auto is recognized by its
     package and Google's certificate — and that check has yet to be tried
     with Android Auto on a real phone (with Google's Desktop Head Unit): if
