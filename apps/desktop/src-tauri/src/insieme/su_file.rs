@@ -97,7 +97,10 @@ pub(super) fn scrivi_se_manca(
         std::fs::write(&provvisorio, byte).and_then(|()| std::fs::rename(&provvisorio, &file));
     if let Err(err) = scritto {
         let _ = std::fs::remove_file(&provvisorio);
-        return Err(err);
+        // Due schede che scrivono la stessa copertina nello stesso momento
+        // dividono il nome provvisorio: una delle due rinomina, l'altra non
+        // trova più il file. Quel che conta è che adesso ci sia.
+        return if file.is_file() { Ok(file) } else { Err(err) };
     }
     Ok(file)
 }
