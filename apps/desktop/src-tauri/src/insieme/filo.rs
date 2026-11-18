@@ -97,6 +97,7 @@ use super::fiducia::{self, Fidati, Vicinato};
 use super::preparazione::Preparazione;
 use super::segui::{Aggancio, Condivisa};
 use super::strada::Ruolo;
+use super::su_file;
 use super::voci::{self, Copertine, Servite};
 use super::{
     AssociazioneIpc, AvvisoIpc, FaseIpc, FidatoIpc, InsiemeNelLettore, InvitoIpc, PersonaIpc,
@@ -1475,11 +1476,22 @@ impl Filo {
         self.locale = false;
         self.proprietari.clear();
         self.uid_dei_membri = 0;
-        self.comune
-            .copertine
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .svuota();
+        {
+            // Le copertine in memoria e quelle su file (le schede del sistema le
+            // aprono da lì: `su_file`) se ne vanno insieme, e sotto lo stesso
+            // lucchetto: chi sta scrivendone una proprio adesso, finita la
+            // scrittura, non trova più il suo gettone e la toglie da sé
+            // (`copertina_su_file`).
+            let mut copertine = self
+                .comune
+                .copertine
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            copertine.svuota();
+            if let Some(cache) = crate::lontano::sfoglia::cartella_copertine(&self.app) {
+                su_file::svuota(&cache);
+            }
+        }
         // Dopo `esci`, che ha già ridisegnato col campo vecchio: senza questa
         // riga chi è appena uscito vedrebbe ancora i tasti della sessione
         // spenti (shuffle, radio, autoplay, timer).

@@ -734,14 +734,25 @@ pub fn imposta_novita_viste(connection: &Connection, versione: &str) -> Result<(
 /// né l'uno né l'altro non ha mai usato Rymembra, e non c'è un «prima» di cui
 /// raccontare le novità.
 ///
+/// Le righe specchio (`lontano://…`, la musica di un altro dispositivo: vedi
+/// [`crate::specchio`]) **non contano**: non sono brani di questa macchina, e
+/// un'installazione nuova collegata subito a un PC ne riceve migliaia prima di
+/// aver aggiunto una sola cartella. Un brano di catalogo, che un percorso non
+/// ce l'ha, conta.
+///
 /// # Errori
 ///
 /// `db.queryFailed`.
 pub fn libreria_vuota(connection: &Connection) -> Result<bool, AppError> {
     let brani: bool = connection
-        .query_row("SELECT EXISTS(SELECT 1 FROM tracks)", [], |riga| {
-            riga.get(0)
-        })
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM tracks WHERE {})",
+                crate::specchio::SQL_NON_SPECCHIO_SENZA_ALIAS
+            ),
+            [],
+            |riga| riga.get(0),
+        )
         .map_err(|err| crate::library::db_error("la libreria è vuota?", &err))?;
     if brani {
         return Ok(false);
@@ -902,6 +913,57 @@ mod prove {
         )
         .expect("un brano");
         assert_eq!(libreria_vuota(&c), Ok(false), "con un brano non è nuova");
+    }
+
+    /// Le righe specchio (`lontano://…`, la musica di un altro dispositivo)
+    /// non fanno di una libreria nuova una libreria usata: un'installazione
+    /// appena fatta, collegata subito a un PC, ne riceve migliaia prima di
+    /// avere un solo brano suo, e non deve vedere le Novità di un «prima» che
+    /// non ha avuto.
+    #[test]
+    fn le_righe_specchio_non_rendono_usata_una_libreria_nuova() {
+        let c = libreria();
+        let inserisci = |id: i64, percorso: &str, sorgente: &str| {
+            c.execute(
+                "INSERT INTO tracks (id, path, source, track_key, title, artist, album, album_key,
+                                     genre, duration_ms, file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?3, 'k' || ?1, 'x', 'x', 'x', 'x|x', 'x', 1000, 1, 1, 1)",
+                rusqlite::params![id, percorso, sorgente],
+            )
+            .expect("una riga");
+        };
+        inserisci(1, &format!("lontano://{}/7", "a".repeat(64)), "lontano");
+        inserisci(2, &format!("lontano://{}/8", "b".repeat(64)), "lontano");
+        assert_eq!(
+            libreria_vuota(&c),
+            Ok(true),
+            "solo righe specchio: nessun brano di questa macchina"
+        );
+        // Un brano di catalogo non ha un percorso (ha un flusso), ed è
+        // comunque un brano suo.
+        c.execute(
+            "INSERT INTO tracks (id, path, source, track_key, title, artist, album, album_key,
+                                 genre, duration_ms, date_added, source_service, fonte_url,
+                                 licenza, disponibilita)
+             VALUES (3, NULL, 'catalogo', 'k3', 'x', 'x', 'x', 'x|x', 'x', 1000, 1,
+                     'audius', '/v1/tracks/3/stream', 'ccBy', 'soloAscolto')",
+            [],
+        )
+        .expect("un brano di catalogo");
+        assert_eq!(
+            libreria_vuota(&c),
+            Ok(false),
+            "un brano senza percorso non è una riga specchio"
+        );
+        c.execute("DELETE FROM tracks WHERE id = 3", [])
+            .expect("via");
+        assert_eq!(libreria_vuota(&c), Ok(true));
+        inserisci(4, "C:/Musica/a.flac", "scan");
+        assert_eq!(
+            libreria_vuota(&c),
+            Ok(false),
+            "un brano vero, accanto alle righe specchio, la fa usata"
+        );
     }
 
     #[test]

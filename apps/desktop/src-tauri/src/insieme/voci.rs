@@ -868,6 +868,12 @@ pub fn voce_propria(v: &VoceSulFilo, track_id: i64, copertina: Option<String>) -
 /// **Mai** nell'archivio delle copertine della libreria: la pulizia delle
 /// orfane le cancellerebbe, e intanto sporcherebbero la libreria con immagini
 /// di brani che non ha.
+///
+/// Le schede del sistema (l'auto, la notifica, le SMTC) vogliono però un file:
+/// per loro la copertina si copia, la prima volta che serve, in una cartella
+/// riservata della cache delle copertine lontane, col nome del suo [`Gettone`]
+/// ([`Copertine::gettone`], `su_file`). Quella copia sta sul disco finché dura
+/// la sessione, e se ne va con questa memoria.
 #[derive(Debug, Default)]
 pub struct Copertine {
     per_gettone: HashMap<Gettone, Arc<[u8]>>,
@@ -882,6 +888,17 @@ impl Copertine {
         let uid = uid_della_chiave(chiave)?;
         let gettone = self.per_voce.get(&uid)?;
         self.per_gettone.get(gettone).cloned()
+    }
+
+    /// Il gettone della copertina di una chiave `insieme-<uid>`, se i suoi
+    /// byte sono qui: è il nome stabile, per questa sessione, del file che le
+    /// schede del sistema aprono (`su_file`). Vuoto per un'impronta della
+    /// libreria, per una chiave storta e per una voce senza byte.
+    #[must_use]
+    pub fn gettone(&self, chiave: &str) -> Option<Gettone> {
+        let uid = uid_della_chiave(chiave)?;
+        let gettone = *self.per_voce.get(&uid)?;
+        self.per_gettone.contains_key(&gettone).then_some(gettone)
     }
 
     /// I byte di quel gettone ci sono già.
@@ -1375,6 +1392,30 @@ mod prove {
         c.tieni(&HashSet::new());
         assert_eq!(c.byte("insieme-5"), None);
         assert_eq!(c.occupati, 0);
+    }
+
+    #[test]
+    fn il_gettone_di_una_chiave_c_e_solo_se_ci_sono_i_byte() {
+        let mut c = Copertine::default();
+        let (g1, g2) = (Gettone([1; 16]), Gettone([2; 16]));
+        assert_eq!(c.gettone("insieme-5"), None, "nessuna voce");
+        // La voce è collegata, i byte non sono ancora arrivati.
+        c.collega(5, g1);
+        assert_eq!(c.gettone("insieme-5"), None, "senza byte non c'è un file");
+        assert!(c.metti(g1, Arc::from(vec![0_u8; 10])));
+        assert_eq!(c.gettone("insieme-5"), Some(g1));
+        // Due voci con la stessa copertina hanno lo stesso gettone: uno stesso file.
+        c.collega(6, g1);
+        assert_eq!(c.gettone("insieme-6"), Some(g1));
+        c.collega(7, g2);
+        assert_eq!(c.gettone("insieme-7"), None, "g2 non è arrivato");
+        // Le chiavi che non sono di sessione, e quelle storte, non hanno gettone.
+        for chiave in ["3fa2c0", "lontano-abc-def", "insieme-+5", "insieme-", ""] {
+            assert_eq!(c.gettone(chiave), None, "{chiave:?}");
+        }
+        // Finita la sessione non resta niente da cui fare un nome.
+        c.svuota();
+        assert_eq!(c.gettone("insieme-5"), None);
     }
 
     #[test]

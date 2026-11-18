@@ -63,6 +63,28 @@ test("il manifesto per il Play toglie REQUEST_INSTALL_PACKAGES, da una cartella 
   }
 });
 
+test("il commento di «Accesso a tutti i file» non dice più che Rymembra sta fuori dal Play", () => {
+  // Dal commento in poi, con i commenti: è proprio quello che si controlla.
+  const grezzo = leggi(`${base}src/main/AndroidManifest.xml`);
+  const commento = /<!--((?:(?!-->)[\s\S])*Accesso a tutti i file(?:(?!-->)[\s\S])*)-->/.exec(grezzo)?.[1] ?? "";
+  assert.ok(commento.includes("`Permessi.kt`"), "non trovo il commento della libreria");
+  // La frase di prima: falsa da quando c'è la distribuzione `play`.
+  assert.doesNotMatch(commento, /fuori dal Play/);
+  // Dice che il manifesto è di tutte e due, e che il permesso resta anche sul
+  // Play (la scelta di toglierlo è di chi pubblica, e non si prende qui).
+  assert.match(commento, /`github`/);
+  assert.match(commento, /`play`/);
+  // Nessun commento di Kotlin, Rust o finestra ripete la frase.
+  for (const file of ["Permessi.kt", "Installatore.kt", "Ponte.kt"]) {
+    assert.doesNotMatch(kotlin(file), /fuori dal Play/, `${file}: la stessa frase`);
+  }
+  // E il permesso non si è mosso: c'è in `main`, e la sovrapposizione del Play
+  // toglie solo `REQUEST_INSTALL_PACKAGES`.
+  assert.match(grezzo, /android\.permission\.MANAGE_EXTERNAL_STORAGE/);
+  const sovrapposto = leggi(`${base}src/distribuzione-play/AndroidManifest.xml`);
+  assert.doesNotMatch(sovrapposto.replace(/<!--[\s\S]*?-->/g, ""), /MANAGE_EXTERNAL_STORAGE/);
+});
+
 test("sul Play «Parti con l'auto» è spenta: la costante di F7 va a false, e solo lì", () => {
   const play = CODICE.slice(CODICE.indexOf("if (distribuzionePlay) {"));
   assert.match(play, /buildConfigField\("boolean", "PARTENZA_CON_AUTO", "false"\)/);

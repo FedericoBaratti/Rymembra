@@ -599,12 +599,51 @@ pub fn aggiornamenti_annulla(
 
 /// Butta l'APK in attesa, se c'è. `true` se c'era.
 fn scarta_pronto(aggiornamenti: &StatoAggiornamenti) -> bool {
-    aggiornamenti
-        .pronto
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-        .is_some()
+    scarta_pronto_se(aggiornamenti, |_| true)
+}
+
+/// Butta l'APK in attesa se `da_buttare` lo vuole, e con lui la notifica
+/// «Pronto da installare». `true` se l'ha buttato.
+///
+/// È **l'unico** posto che toglie il pacchetto pronto — «Non installare», «Non
+/// ora», un APK che Android rifiuterebbe, una versione più nuova, un guasto —,
+/// così la notifica non resta a offrire un «Installa» che non c'è più. La
+/// scelta e il gesto stanno sotto lo stesso lucchetto, perché fra l'una e
+/// l'altro un altro filo può aver messo un pacchetto che va tenuto; la
+/// notifica si spegne dopo, a lucchetto lasciato: il ponte è una chiamata a
+/// Kotlin.
+fn scarta_pronto_se(
+    aggiornamenti: &StatoAggiornamenti,
+    da_buttare: impl FnOnce(&Pronto) -> bool,
+) -> bool {
+    let buttato = {
+        let mut pronto = aggiornamenti
+            .pronto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let buttare = pronto.as_ref().is_some_and(da_buttare);
+        if buttare {
+            *pronto = None;
+        }
+        buttare
+    };
+    if buttato {
+        notifica_pronto(false, "");
+    }
+    buttato
+}
+
+/// Accende, o spegne, la notifica di sistema «Pronto da installare»: vedi
+/// [`rymembra_android::sistema::aggiornamento_pronto`], che dice quando Kotlin
+/// la mostra. Una notifica che non si può dare non ferma l'aggiornamento — la
+/// scheda dell'app c'è comunque — ma si scrive nel diario.
+fn notifica_pronto(acceso: bool, versione: &str) {
+    if let Err(err) = rymembra_android::sistema::aggiornamento_pronto(acceso, versione) {
+        nota!(
+            "[aggiornamenti] la notifica «pronto da installare» non si {}: {err}",
+            if acceso { "accende" } else { "spegne" }
+        );
+    }
 }
 
 // ── il filo di sottofondo ───────────────────────────────────────────────────
@@ -788,17 +827,10 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
                     .unwrap_or_else(PoisonError::into_inner) = trovato;
                 // Un APK in attesa di una versione che il controllo non annuncia
                 // più — è uscita la successiva, o la release è stata ritirata — non
-                // si offre da installare.
-                let mut pronto = aggiornamenti
-                    .pronto
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                if pronto
-                    .as_ref()
-                    .is_some_and(|pronto| versione.as_deref() != Some(pronto.versione.as_str()))
-                {
-                    *pronto = None;
-                }
+                // si offre da installare, e la sua notifica se ne va.
+                scarta_pronto_se(&aggiornamenti, |pronto| {
+                    versione.as_deref() != Some(pronto.versione.as_str())
+                });
             }
             *aggiornamenti
                 .ultimo_errore
@@ -975,6 +1007,9 @@ fn lavora(app: &AppHandle, trovato: &Trovato, pronto: Option<std::path::PathBuf>
                 ControlloApk::AltraChiave => Ok(Consegnato::AltraChiave),
                 ControlloApk::Buono => {
                     tieni_per_installa(&aggiornamenti, trovato, percorso);
+                    // Chi ha toccato «Aggiorna» può essere già altrove: gli si dice
+                    // che c'è da installare.
+                    notifica_pronto(true, &trovato.versione);
                     Ok(Consegnato::InAttesa)
                 }
             }

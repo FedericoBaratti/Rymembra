@@ -24,7 +24,12 @@ import java.io.FileNotFoundException
  *   che suona dal PC): `lontane/<dispositivo>/<impronta>.jpg`, con il
  *   dispositivo di 64 cifre esadecimali minuscole e l'impronta di 2-128. Qui
  *   `lontane` non è una sottocartella: è il nome della seconda radice, e il
- *   resto sta dentro di lei, come lo scrive `lontano::sfoglia` in Rust.
+ *   resto sta dentro di lei, come lo scrive `lontano::sfoglia` in Rust. Le
+ *   copertine di una sessione «Ascolta insieme» (la voce di un altro PC) stanno
+ *   nella stessa forma, in una cartella «dispositivo» riservata di
+ *   sessantaquattro zeri — non è la chiave di nessuno — e con un'impronta
+ *   casuale per sessione come nome (`insieme/su_file.rs`): il controllo non è
+ *   cambiato, e Rust le toglie alla fine della sessione.
  *
  * Un percorso che esce dalla sua radice — `..`, un collegamento — non si apre
  * (il controllo è sul percorso canonico, e la radice si canonicalizza ogni

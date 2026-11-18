@@ -183,6 +183,10 @@ object Ponte {
       // tiene vivo il processo e nessuna attività. Solo «Installa» ne ha bisogno.
       "sistema.controllaApk" -> Installatore.controlla(contesto(), a.getString("percorso"))
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
+      // La notifica «Pronto da installare»: col contesto, perché l'APK è pronto
+      // anche con l'app in tasca. Non chiede le notifiche (vedi `AggiornamentoPronto`).
+      "sistema.aggiornamentoPronto" ->
+        AggiornamentoPronto.imposta(contesto(), a.getBoolean("acceso"), a.optString("versione")).let { null }
       "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }
       "legale.leggi" -> avvisoLegale(a.getString("nome"))

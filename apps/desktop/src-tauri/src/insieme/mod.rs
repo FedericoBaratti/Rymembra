@@ -19,7 +19,8 @@
 //!
 //! Le funzioni di questo modulo sono le sole che il resto del programma
 //! chiama: `riproduzione` ([`ruolo`], [`instrada`], [`lettore_cambiato`],
-//! [`copertina`], [`nel_lettore`], [`uscita_cambiata`]), `main`
+//! [`copertina`], [`nel_lettore`], [`uscita_cambiata`]), `media` (le schede del
+//! sistema: [`e_una_chiave_di_sessione`], [`copertina_su_file`]), `main`
 //! ([`StatoInsieme`], [`avvia_filo`], i comandi) e `spegnimento` ([`ferma`]).
 //! Nessuna aspetta la rete, e nessuna prende il lucchetto del lettore: chi le
 //! chiama può averlo in mano.
@@ -41,9 +42,11 @@ mod ipc;
 mod preparazione;
 mod segui;
 pub mod strada;
+mod su_file;
 mod voci;
 
-use std::sync::atomic::Ordering;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -53,6 +56,7 @@ use rymembra_insieme::messaggi::Diritti;
 use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
+use crate::nota;
 use filo::{Comune, Posta, Richiesta};
 
 pub(crate) use filo::nome_del_dispositivo;
@@ -345,7 +349,8 @@ pub fn uscita_cambiata(app: &AppHandle) {
 
 /// I byte di una copertina di sessione, per il protocollo `rymembra-cover`.
 /// Solo le chiavi `insieme-<uid>`, e solo da chi segue: sono in memoria, mai
-/// nell'archivio delle copertine.
+/// nell'archivio delle copertine. Per chi vuole un file — le schede del
+/// sistema — c'è [`copertina_su_file`].
 #[must_use]
 pub fn copertina(app: &AppHandle, chiave: &str) -> Option<Arc<[u8]>> {
     voci::uid_della_chiave(chiave)?;
@@ -356,6 +361,88 @@ pub fn copertina(app: &AppHandle, chiave: &str) -> Option<Arc<[u8]>> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .byte(chiave)
+}
+
+/// È la chiave di una copertina di sessione (`insieme-<uid>`)? Le schede del
+/// sistema la guardano **prima** dello store della libreria, dove una chiave così
+/// non è un'impronta e il percorso verrebbe sbagliato.
+#[must_use]
+pub fn e_una_chiave_di_sessione(chiave: &str) -> bool {
+    voci::uid_della_chiave(chiave).is_some()
+}
+
+/// La copertina di una chiave `insieme-<uid>` **come file**, per le schede del
+/// sistema che non parlano `rymembra-cover`: Android Auto, la notifica, la
+/// schermata di blocco, le SMTC di Windows. Vedi [`su_file`].
+///
+/// I byte stanno in memoria, e la prima volta si scrivono nella cartella
+/// riservata della cache delle copertine lontane; le volte dopo c'è già. `None`
+/// se la chiave non è di sessione, se i byte non sono ancora arrivati (la voce
+/// resta senza copertina finché non arrivano, e quando arrivano la finestra si
+/// ridisegna da sola), se la sessione è finita, o se il disco non risponde —
+/// e allora lo si scrive nel diario, una volta.
+///
+/// Non aspetta la rete e non prende il lucchetto del lettore: chi la chiama può
+/// avere in mano quello dei controlli multimediali. Il lucchetto delle copertine
+/// si prende solo per leggere, mai per scrivere il file: l'handler di
+/// `rymembra-cover` lo prende sul filo della finestra, e un disco lento non
+/// deve tenerlo fermo.
+#[must_use]
+pub fn copertina_su_file(app: &AppHandle, chiave: &str) -> Option<PathBuf> {
+    voci::uid_della_chiave(chiave)?;
+    let stato = app.try_state::<StatoInsieme>()?;
+    let cache = crate::lontano::sfoglia::cartella_copertine(app)?;
+    let (gettone, byte) = {
+        let copertine = stato
+            .comune
+            .copertine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (copertine.gettone(chiave)?, copertine.byte(chiave)?)
+    };
+    let file = match su_file::scrivi_se_manca(&cache, &gettone, &byte) {
+        Ok(file) => {
+            SCRITTURA_FALLITA.store(false, Ordering::Relaxed);
+            file
+        }
+        Err(err) => {
+            // Una volta sola: la scheda si ricompone a ogni stato del lettore, e
+            // un disco pieno scriverebbe la stessa riga a ogni colpo.
+            if !SCRITTURA_FALLITA.swap(true, Ordering::Relaxed) {
+                nota!(
+                    "[insieme] la copertina di sessione non si scrive su file: {}",
+                    err.kind()
+                );
+            }
+            return None;
+        }
+    };
+    // La sessione può essere finita mentre si scriveva (`esci_dal_lettore` toglie
+    // le copertine e la cartella insieme, sotto il lucchetto): allora il file
+    // appena scritto è un avanzo, e se ne va. Se invece la voce è uscita dalla
+    // coda ma un'altra usa ancora quella copertina, il gettone c'è e il file resta.
+    let ancora = stato
+        .comune
+        .copertine
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .ha(&gettone);
+    if !ancora {
+        let _ = std::fs::remove_file(&file);
+        return None;
+    }
+    Some(file)
+}
+
+/// L'ultima scrittura di [`copertina_su_file`] è fallita, e si è già detto.
+static SCRITTURA_FALLITA: AtomicBool = AtomicBool::new(false);
+
+/// Lo stesso file come lo chiede Android (`lontane/<64 zeri>/<nome>.jpg`), dal
+/// percorso di [`copertina_su_file`]. Solo sul telefono.
+#[cfg(mobile)]
+#[must_use]
+pub fn percorso_per_android(file: &std::path::Path) -> Option<String> {
+    su_file::per_android(file)
 }
 
 /// Il campo `insieme` di `StatoRiproduzione`: una fotografia che il filo
@@ -652,6 +739,45 @@ pub async fn insieme_calibra(app: AppHandle, attiva: bool) -> Esito<()> {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// Il file di una copertina di sessione non si scrive sotto il lucchetto
+    /// delle copertine (l'handler di `rymembra-cover` lo prende sul filo della
+    /// finestra), e a scrittura finita si controlla che la sessione sia ancora
+    /// quella: se è finita, l'avanzo si toglie.
+    #[test]
+    fn la_copertina_su_file_si_scrive_a_lucchetto_lasciato_e_poi_si_ricontrolla() {
+        let sorgente = include_str!("mod.rs");
+        let sorgente = sorgente
+            .split("\n#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let da = sorgente
+            .find("pub fn copertina_su_file(")
+            .expect("copertina_su_file");
+        let corpo = &sorgente[da..];
+        let corpo = &corpo[..corpo.find("\n}\n").unwrap_or(corpo.len())];
+        let lettura = corpo.find("(copertine.gettone(chiave)?, copertine.byte(chiave)?)");
+        let scrittura = corpo.find("su_file::scrivi_se_manca(");
+        let ricontrollo = corpo.find(".ha(&gettone)");
+        let via = corpo.find("std::fs::remove_file(&file)");
+        assert!(
+            lettura < scrittura && scrittura < ricontrollo && ricontrollo < via,
+            "lettura, scrittura, ricontrollo, rimozione dell'avanzo, in quest'ordine"
+        );
+        assert!(lettura.is_some() && via.is_some());
+        // Il lucchetto della lettura sta in un blocco suo, chiuso prima di scrivere.
+        assert!(corpo.contains("let (gettone, byte) = {"));
+        let chiusura = corpo
+            .find("};\n    let file = match su_file::scrivi_se_manca(")
+            .expect("il blocco della lettura si chiude prima di scrivere");
+        assert!(lettura < Some(chiusura) && Some(chiusura) < scrittura);
+        // Il ricontrollo è la domanda e basta, senza ripieghi: `.ha(..)` dice se
+        // qualche voce usa ancora quel gettone, e `!ancora` toglie l'avanzo.
+        assert!(
+            corpo.contains(".ha(&gettone);\n    if !ancora {\n        let _ = std::fs::remove_file(&file);\n        return None;"),
+            "il ricontrollo non è più «ancora = ha(gettone); se no, via»"
+        );
+    }
 
     #[test]
     fn il_nome_del_gesto_non_porta_id_ne_posizioni() {

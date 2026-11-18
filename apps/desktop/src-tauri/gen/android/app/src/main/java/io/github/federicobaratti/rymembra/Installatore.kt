@@ -60,9 +60,10 @@ object Installatore {
    * aggiornamenti passano dal Play, e il manifesto non ha nemmeno il permesso
    * `REQUEST_INSTALL_PACKAGES` (`app/build.gradle.kts`, la proprietà
    * `distribuzione`). Rust non lo chiama, e qui se arrivasse è un errore, non
-   * un'installazione.
+   * un'installazione. Lo stesso controllo lo fa la notifica «Pronto da
+   * installare» ([AggiornamentoPronto]).
    */
-  private fun soloFuoriDalPlay() {
+  internal fun soloFuoriDalPlay() {
     check(BuildConfig.AGGIORNATORE_APK) { "l'aggiornatore APK non c'è nella distribuzione play" }
   }
 

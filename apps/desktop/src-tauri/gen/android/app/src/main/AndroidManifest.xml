@@ -40,8 +40,13 @@
          ai `.lrc` e ai `.cue` accanto (e ai `.lrc` dei testi sincronizzati) e
          ai file da eliminare (vedi `Permessi.kt`). Niente «foto e video»: per un lettore
          sarebbe una domanda sospetta, e quel che darebbe lo dà già l'accesso a
-         tutti i file. Rymembra si distribuisce fuori dal Play Store, che quel
-         permesso a un lettore non lo concederebbe. -->
+         tutti i file. Questo manifesto è di tutte e due le distribuzioni
+         (`github` e `play`, vedi `app/build.gradle.kts`), e «Accesso a tutti i
+         file» sta in tutte e due: la policy di Google Play lo riserva ai
+         gestori di file, ai backup, agli antivirus e simili, e per un lettore
+         di musica la revisione può non concederlo. Se tenerlo sul Play lo
+         decide chi pubblica, non questo file; senza, l'app lavora con i soli
+         brani (vedi `permessoMusica.ts`). -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -53,10 +58,12 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
-    <!-- Gli aggiornamenti: l'APK nuovo, scaricato dalle release di GitHub, si
-         consegna all'installatore di Android, che chiede conferma; prima si
-         verifica che sia questa app, firmata come questa app (vedi
-         `Installatore.kt`). -->
+    <!-- Gli aggiornamenti, solo nella distribuzione `github`: l'APK nuovo,
+         scaricato dalle release di GitHub, si consegna all'installatore di
+         Android, che chiede conferma; prima si verifica che sia questa app,
+         firmata come questa app (vedi `Installatore.kt`). La distribuzione
+         `play` toglie questa riga (`src/distribuzione-play`): lì aggiorna il
+         Play. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- «Collega un dispositivo»: la fotocamera legge il QR mostrato dal PC
