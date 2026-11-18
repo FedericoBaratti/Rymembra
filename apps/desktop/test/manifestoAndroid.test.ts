@@ -228,6 +228,96 @@ test("solo il sottofondo accende il ricevitore, da un posto solo, e Biblioteca n
   assert.match(biblioteca, /`RicevitoreTasti`/);
 });
 
+// ── «Parti con l'auto» (F7, #5) ─────────────────────────────────────────────
+
+const GRADLE = leggi(`${APP}build.gradle.kts`);
+
+test("CarConnection viene dalla Car App Library stabile, con la sua voce negli avvisi di licenza", () => {
+  // La 1.7.0 è l'ultima stabile (la 1.8.0 è in release candidate): il suo
+  // minSdk è 21, e il nostro 26.
+  assert.match(GRADLE, /implementation\("androidx\.car\.app:app:1\.7\.0"\)/);
+  assert.match(GRADLE, /minSdk = 26/);
+  // Apache-2.0 vuole l'avviso: l'elenco generato da `strumenti/licenze.js` e il
+  // file che esce da lì (la CI li confronta) nominano la libreria.
+  const generatore = leggi("../../../strumenti/licenze.js");
+  const avvisi = leggi("../../../THIRD-PARTY-NOTICES.md");
+  for (const testo of [generatore, avvisi]) {
+    assert.match(testo, /\*\*Car App Library\*\* \(`app`: only/);
+    assert.match(testo, /`CarConnection`, to know when the phone is connected to Android Auto\)/);
+  }
+});
+
+test("una sola costante di build toglie «Parti con l'auto», di serie accesa, e Kotlin la passa alla finestra", () => {
+  const costanti = [...GRADLE.matchAll(/buildConfigField\("boolean", "PARTENZA_CON_AUTO", "(true|false)"\)/g)];
+  assert.equal(costanti.length, 1, "la costante dev'essere dichiarata una volta sola (la variante per Play la riscrive)");
+  assert.equal(costanti[0]?.[1], "true");
+  // Nel `defaultConfig`, dove la variante per Play la sovrascrive.
+  const config = /defaultConfig \{([\s\S]*?)\n    \}/.exec(GRADLE)?.[1] ?? "";
+  assert.ok(config.includes("PARTENZA_CON_AUTO"), "la costante non sta nel defaultConfig");
+  assert.match(GRADLE, /buildConfig = true/);
+  // La guida e la ragione stanno scritte accanto: le linee guida di Google.
+  assert.match(GRADLE, /MA-1/);
+
+  // Kotlin la legge in due punti soli: la scelta (e con lei l'osservazione
+  // dell'auto) e la risposta alla finestra.
+  assert.match(kotlin("Presenza.kt"), /BuildConfig\.PARTENZA_CON_AUTO && preferenze\(contesto\)\.getBoolean\(PARTI_CON_AUTO, false\)/);
+  assert.match(kotlin("Ponte.kt"), /"sistema\.partenzaConAuto" -> BuildConfig\.PARTENZA_CON_AUTO/);
+  for (const nome of ["Biblioteca.kt", "Sessione.kt", "Nucleo.kt", "MainActivity.kt", "ServizioMusica.kt"]) {
+    assert.ok(!kotlin(nome).includes("PARTENZA_CON_AUTO"), `${nome} legge la costante da sé`);
+  }
+  // E Rust la chiede col nome che Kotlin risponde.
+  assert.ok(leggi("../rymembra-android/src/sistema.rs").includes('chiama("sistema.partenzaConAuto", &())'));
+});
+
+test("Presenza guarda l'auto solo se serve, parte solo quando diventa collegata, e prende il fuoco prima", () => {
+  const presenza = kotlin("Presenza.kt");
+  assert.match(presenza, /val serve = voluto\(this\) && partiConAuto\(this\)/);
+  assert.match(presenza, /CarConnection\(this\)\.also \{ it\.type\.observeForever\(osservatore\) \}/);
+  assert.match(presenza, /tipo == CarConnection\.CONNECTION_TYPE_PROJECTION/);
+  // La prima notizia è un punto di partenza: parte solo chi vede l'auto
+  // **diventare** collegata, mai con l'auto già lì.
+  assert.match(presenza, /autoCollegata = null/);
+  assert.match(presenza, /if \(prima == false\) riprendiConLAuto\(\)/);
+  // L'osservatore si toglie quando non serve più e quando il servizio muore.
+  assert.match(presenza, /collegamentoAuto\?\.type\?\.removeObserver\(it\)/);
+  const distruzione = presenza.slice(presenza.indexOf("override fun onDestroy"));
+  assert.ok(
+    distruzione.indexOf("smettiDiGuardareLAuto()") >= 0 &&
+      distruzione.indexOf("smettiDiGuardareLAuto()") < distruzione.indexOf("super.onDestroy()"),
+    "onDestroy non smette di guardare l'auto",
+  );
+  // Le ragioni per non partire, e l'ordine: prima il fuoco, poi il gesto.
+  const corpo = presenza.slice(presenza.indexOf("private fun riprendiConLAuto()"));
+  for (const ragione of ["!Nucleo.pronto", "Sessione.suonaOra", "Ricordo.voce(this) == null"]) {
+    assert.ok(corpo.includes(ragione), `manca il controllo «${ragione}»`);
+  }
+  const fuoco = corpo.indexOf("Sessione.fuocoPerPartire(this)");
+  const gesto = corpo.indexOf('Sessione.gesto("riprendi")');
+  assert.ok(fuoco >= 0 && gesto > fuoco, "il «riprendi» parte prima di aver chiesto il fuoco audio");
+  // Il Bluetooth dell'auto non si fa: né il permesso né l'intento.
+  assert.doesNotMatch(manifesto, /BLUETOOTH/);
+  assert.doesNotMatch(presenza, /BluetoothA2dp|ACTION_CONNECTION_STATE_CHANGED/);
+});
+
+test("il fuoco per partire si lascia se la musica non parte, e il nome del gesto è quello che Rust legge", () => {
+  const sessione = kotlin("Sessione.kt");
+  assert.match(sessione, /fun fuocoPerPartire\(contesto: Context\): Boolean/);
+  assert.match(sessione, /if \(!suonaOra && !riprendiDopo\) lasciaIlFuoco\(audio\)/);
+  // Il fuoco di sempre e quello per partire passano dalla stessa richiesta: una
+  // sola `AudioFocusRequest` nel sorgente.
+  assert.equal([...sessione.matchAll(/AudioFocusRequest\.Builder\(/g)].length, 1);
+  // «riprendi» è il nome che il filo dei gesti conosce (`rymembra-android`).
+  assert.match(leggi("../rymembra-android/src/sessione.rs"), /"riprendi"/);
+});
+
+test("Ponte passa a Presenza se «Parti con l'auto» è accesa, e Rust la porta a ogni chiamata", () => {
+  assert.match(kotlin("Ponte.kt"), /a\.optBoolean\("partiConAuto", false\)/);
+  assert.match(kotlin("Presenza.kt"), /dallaPersona: Boolean,\s*partiConAuto: Boolean,/);
+  // Vera solo col sottofondo: lo scrive `imposta`, e «Spegni» la porta giù.
+  assert.match(kotlin("Presenza.kt"), /val guardare = acceso && partiConAuto/);
+  assert.match(kotlin("Presenza.kt"), /\.putBoolean\(PARTI_CON_AUTO, false\)\s*\.putBoolean\(SPENTO_DALLA_NOTIFICA, true\)/);
+});
+
 // ── il fornitore delle copertine (F1, #1) ───────────────────────────────────
 
 const COPERTINE_KT = leggi(`${KOTLIN}Copertine.kt`);
