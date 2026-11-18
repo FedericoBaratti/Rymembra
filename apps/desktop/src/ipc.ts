@@ -26,7 +26,7 @@ import type {
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { Numeri, OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
@@ -384,6 +384,10 @@ export const ipc = {
   // con un indice alfabetico invece che a pagine.
   artisti: (origine?: OrigineLibreria) =>
     invoke<Artista[]>("artisti", { origine }),
+  // Quanto c'è in libreria da questa origine: la lunghezza degli elenchi filtrati
+  // per dispositivo. «Tutti» sono i `numeri` di `avvio`.
+  conteggi: (origine?: OrigineLibreria) =>
+    invoke<Numeri>("conteggi", { origine }),
   // Senza `origine` l'album si apre da dove viene: un disco che «Tutti»
   // nasconde dietro una copia migliore resta apribile.
   braniAlbum: (chiave: string, origine?: OrigineLibreria) =>
@@ -1535,8 +1539,12 @@ export const ipc = {
     invoke<void>("lontano_accoda", { chiave, brani }),
   lontanoDopo: (chiave: string, brani: BranoRemoto[]) =>
     invoke<void>("lontano_dopo", { chiave, brani }),
-  // «Scarica qui»: in coda nella cartella dei download, a un brano per volta.
-  // L'avanzamento arriva con `lontano:scarico`.
+  // «Scarica qui» le righe della libreria che stanno su un altro dispositivo: in coda
+  // nella cartella dei download, un dispositivo alla volta ciascuno. Le righe di
+  // qui si saltano. L'avanzamento arriva con `lontano:scarico`.
+  lontanoScaricaRighe: (righe: number[]) =>
+    invoke<ScaricoLontano>("lontano_scarica_righe", { righe }),
+  // Di «Sfoglia», che se ne va col prossimo passo: il comando non c'è più.
   lontanoScarica: (chiave: string, brani: BranoRemoto[]) =>
     invoke<ScaricoLontano>("lontano_scarica", { chiave, brani }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),

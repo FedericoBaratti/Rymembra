@@ -36,13 +36,14 @@
 //! file, perché il Wi-Fi può andarsene a metà coda), e finché scende qualcosa
 //! il nodo del telefono non va a dormire (`InVolo`).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rymembra_app::library::condivisa::BranoRemoto;
+use rymembra_app::specchio::scarico::righe_da_scaricare;
 use rymembra_domain::destinazione::segmento_sicuro;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::paths::SUPPORTED_EXTENSIONS;
@@ -50,7 +51,7 @@ use rymembra_lontano::protocollo::MASSIMO_PEZZO;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use super::filo::prendi;
+use super::filo::{leggi_a_parte, prendi};
 use super::sfoglia::{InVolo, Pezzi, ViaNodo, dati_permessi, estensione_buona};
 use super::{comune, in_disparte};
 use crate::errore::Esito;
@@ -102,23 +103,208 @@ struct Lavoro {
     brano: BranoRemoto,
 }
 
-/// La coda, e il filo che la svuota.
+/// Le code di «Scarica qui»: una per dispositivo, ognuna col suo filo.
+///
+/// # Perché una per dispositivo
+///
+/// Con un filo solo per tutti, un PC lento — o raggiunto via relay — con un
+/// album in coda faceva aspettare ogni altro dispositivo finché non finiva
+/// (§7.2.5). Adesso ogni dispositivo ha il suo posto: un filo, una coda. Quel
+/// che è comune sta qui — lo stato che la finestra vede, «Annulla», i conti, e
+/// la scansione finale dei download, che tocca all'ultimo filo che finisce.
+///
+/// La parte pura sta in questi metodi, e si prova da sola.
 struct Coda {
-    lavori: VecDeque<Lavoro>,
-    /// Il filo gira.
-    filo: bool,
+    /// I lavori in attesa, per dispositivo.
+    attese: BTreeMap<String, VecDeque<Lavoro>>,
+    /// I dispositivi che hanno un filo che gira.
+    fili: BTreeSet<String>,
+    /// Il titolo del brano che ogni filo sta scaricando.
+    in_corso: BTreeMap<String, String>,
+    /// Di quale dispositivo la finestra vede il brano e i byte: uno solo alla
+    /// volta, perché una barra che ballasse fra due brani non direbbe niente.
+    primo_piano: Option<String>,
     /// Cresce a ogni «Annulla»: il brano in corso lo confronta fra una finestra
     /// e l'altra, e si ferma.
     giro: u64,
+    /// Brani scritti da quando la coda è ripartita: se ce ne sono, alla fine si
+    /// scansiona la cartella dei download.
+    scritti: u32,
     stato: StatoScaricoIpc,
 }
 
-static CODA: Mutex<Coda> = Mutex::new(Coda {
-    lavori: VecDeque::new(),
-    filo: false,
-    giro: 0,
-    stato: StatoScaricoIpc::FERMO,
-});
+/// Cosa fa un filo dopo aver finito un brano.
+enum Prossimo {
+    /// Un altro brano del suo dispositivo.
+    Lavoro {
+        lavoro: Lavoro,
+        giro: u64,
+        /// Il numero del brano nella coda e quanti sono in tutto, per la notifica.
+        numero: u32,
+        di: u32,
+    },
+    /// Il suo dispositivo non ha altro: il filo si ferma. `ultimo` se non ne
+    /// gira nessun altro, e allora la coda è finita; `scritti` sono i brani
+    /// scesi da quando è ripartita.
+    Finito { ultimo: bool, scritti: u32 },
+}
+
+impl Coda {
+    const fn nuova() -> Self {
+        Self {
+            attese: BTreeMap::new(),
+            fili: BTreeSet::new(),
+            in_corso: BTreeMap::new(),
+            primo_piano: None,
+            giro: 0,
+            scritti: 0,
+            stato: StatoScaricoIpc::FERMO,
+        }
+    }
+
+    /// Quanti brani aspettano, di tutti i dispositivi.
+    fn in_attesa(&self) -> usize {
+        self.attese.values().map(VecDeque::len).sum()
+    }
+
+    /// Mette in coda i brani di `dispositivo`. `true` se per lui serve un filo
+    /// nuovo: ce l'ha già se uno ne gira, e quello di un altro non conta.
+    fn aggiungi(&mut self, dispositivo: &str, brani: Vec<BranoRemoto>) -> bool {
+        if self.fili.is_empty() {
+            // Una coda nuova: i conti ricominciano.
+            self.stato = StatoScaricoIpc::FERMO;
+            self.scritti = 0;
+            self.in_corso.clear();
+            self.primo_piano = None;
+        }
+        for brano in brani {
+            if brano.segmento.is_some() {
+                self.stato.saltati = self.stato.saltati.saturating_add(1);
+                continue;
+            }
+            self.attese
+                .entry(dispositivo.to_owned())
+                .or_default()
+                .push_back(Lavoro {
+                    dispositivo: dispositivo.to_owned(),
+                    brano,
+                });
+        }
+        self.stato.in_coda = self.in_attesa();
+        let ha_lavori = self.attese.get(dispositivo).is_some_and(|c| !c.is_empty());
+        let parte = ha_lavori && !self.fili.contains(dispositivo);
+        if parte {
+            self.fili.insert(dispositivo.to_owned());
+        }
+        parte
+    }
+
+    /// Il prossimo brano di `dispositivo`, o la fine del suo filo.
+    ///
+    /// Il filo esce dall'elenco nello stesso passo in cui vede la sua coda
+    /// vuota: un `aggiungi` che arriva un istante dopo ne apre uno nuovo, e uno
+    /// che arriva un istante prima è già in coda per questo.
+    fn prendi(&mut self, dispositivo: &str) -> Prossimo {
+        let Some(lavoro) = self
+            .attese
+            .get_mut(dispositivo)
+            .and_then(VecDeque::pop_front)
+        else {
+            self.attese.remove(dispositivo);
+            self.fili.remove(dispositivo);
+            let ultimo = self.fili.is_empty();
+            if ultimo {
+                self.stato.titolo = None;
+                self.stato.byte = 0;
+                self.stato.totale = 0;
+                self.stato.in_coda = 0;
+                self.primo_piano = None;
+                self.in_corso.clear();
+            }
+            return Prossimo::Finito {
+                ultimo,
+                scritti: self.scritti,
+            };
+        };
+        self.stato.in_coda = self.in_attesa();
+        self.in_corso
+            .insert(dispositivo.to_owned(), lavoro.brano.title.clone());
+        if self.primo_piano.is_none() {
+            self.primo_piano = Some(dispositivo.to_owned());
+        }
+        if self.primo_piano.as_deref() == Some(dispositivo) {
+            self.stato.titolo = Some(lavoro.brano.title.clone());
+            self.stato.byte = 0;
+            self.stato.totale = u64::try_from(lavoro.brano.dimensione).unwrap_or(0);
+        }
+        let numero = self
+            .stato
+            .fatti
+            .saturating_add(self.stato.saltati)
+            .saturating_add(self.stato.falliti)
+            .saturating_add(1);
+        let di = numero.saturating_add(u32::try_from(self.in_attesa()).unwrap_or(u32::MAX));
+        Prossimo::Lavoro {
+            lavoro,
+            giro: self.giro,
+            numero,
+            di,
+        }
+    }
+
+    /// Il brano di `dispositivo` è arrivato a `byte` su `totale`. `true` se la
+    /// finestra deve saperlo: solo il brano in primo piano muove la barra.
+    fn avanza(&mut self, dispositivo: &str, byte: u64, totale: u64) -> bool {
+        if self.primo_piano.is_none()
+            && let Some(titolo) = self.in_corso.get(dispositivo)
+        {
+            self.stato.titolo = Some(titolo.clone());
+            self.primo_piano = Some(dispositivo.to_owned());
+        }
+        if self.primo_piano.as_deref() != Some(dispositivo) {
+            return false;
+        }
+        self.stato.byte = byte;
+        self.stato.totale = totale;
+        true
+    }
+
+    /// Il brano di `dispositivo` è finito, comunque sia andata: se era in
+    /// primo piano, la barra passa a un altro brano che sta scendendo.
+    fn finito(&mut self, dispositivo: &str) {
+        self.in_corso.remove(dispositivo);
+        if self.primo_piano.as_deref() == Some(dispositivo) {
+            self.primo_piano = self.in_corso.keys().next().cloned();
+            self.stato.titolo = self
+                .primo_piano
+                .as_ref()
+                .and_then(|d| self.in_corso.get(d))
+                .cloned();
+            self.stato.byte = 0;
+            self.stato.totale = 0;
+        }
+    }
+
+    /// Un brano è stato scritto.
+    fn scritto(&mut self, _dispositivo: &str) {
+        self.stato.fatti = self.stato.fatti.saturating_add(1);
+        self.scritti = self.scritti.saturating_add(1);
+    }
+
+    /// Svuota ogni coda: «Annulla», o l'uscita dal programma.
+    fn svuota(&mut self) {
+        self.attese.clear();
+        self.stato.in_coda = 0;
+    }
+
+    /// «Annulla»: svuota ogni coda, e ferma i brani in corso.
+    fn annulla(&mut self) {
+        self.svuota();
+        self.giro = self.giro.wrapping_add(1);
+    }
+}
+
+static CODA: Mutex<Coda> = Mutex::new(Coda::nuova());
 
 /// Com'è finito un brano.
 #[derive(Debug, PartialEq, Eq)]
@@ -332,13 +518,9 @@ fn scarica_uno(app: &AppHandle, lavoro: &Lavoro, giro: u64) -> Result<Fatto, App
     };
     let mut ultimo = 0_u64;
     let mut avanza = |byte: u64, totale: u64| {
-        {
-            let mut coda = prendi(&CODA);
-            coda.stato.byte = byte;
-            coda.stato.totale = totale;
-        }
+        let in_primo_piano = prendi(&CODA).avanza(&lavoro.dispositivo, byte, totale);
         // Ogni finestra è 2 MiB: abbastanza di rado per un evento ciascuna.
-        if byte != ultimo {
+        if in_primo_piano && byte != ultimo {
             ultimo = byte;
             annuncia(app);
         }
@@ -367,43 +549,26 @@ fn notifica(acceso: bool, numero: u32, di: u32, titolo: &str) {
 #[cfg(not(target_os = "android"))]
 const fn notifica(_: bool, _: u32, _: u32, _: &str) {}
 
-/// Il filo: svuota la coda, poi scansiona quel che è arrivato.
-fn gira(app: &AppHandle) {
-    let mut scritti = 0_u32;
-    loop {
-        let (lavoro, giro, numero, di) = {
-            let mut coda = prendi(&CODA);
-            let Some(lavoro) = coda.lavori.pop_front() else {
-                coda.filo = false;
-                coda.stato.titolo = None;
-                coda.stato.byte = 0;
-                coda.stato.totale = 0;
-                coda.stato.in_coda = 0;
-                break;
-            };
-            coda.stato.in_coda = coda.lavori.len();
-            coda.stato.titolo = Some(lavoro.brano.title.clone());
-            coda.stato.byte = 0;
-            coda.stato.totale = u64::try_from(lavoro.brano.dimensione).unwrap_or(0);
-            let giro = coda.giro;
-            let numero = coda
-                .stato
-                .fatti
-                .saturating_add(coda.stato.saltati)
-                .saturating_add(coda.stato.falliti)
-                .saturating_add(1);
-            let di = numero.saturating_add(u32::try_from(coda.lavori.len()).unwrap_or(u32::MAX));
-            (lavoro, giro, numero, di)
+/// Il filo di un dispositivo: svuota la sua coda. L'ultimo che finisce
+/// scansiona quel che è arrivato.
+fn gira(app: &AppHandle, dispositivo: &str) {
+    let (ultimo, scritti) = loop {
+        let (lavoro, giro, numero, di) = match prendi(&CODA).prendi(dispositivo) {
+            Prossimo::Finito { ultimo, scritti } => break (ultimo, scritti),
+            Prossimo::Lavoro {
+                lavoro,
+                giro,
+                numero,
+                di,
+            } => (lavoro, giro, numero, di),
         };
         notifica(true, numero, di, &lavoro.brano.title);
         annuncia(app);
         let esito = scarica_uno(app, &lavoro, giro);
         let mut coda = prendi(&CODA);
+        coda.finito(dispositivo);
         match esito {
-            Ok(Fatto::Scritto(_)) => {
-                coda.stato.fatti = coda.stato.fatti.saturating_add(1);
-                scritti = scritti.saturating_add(1);
-            }
+            Ok(Fatto::Scritto(_)) => coda.scritto(dispositivo),
             Ok(Fatto::Uguale) => coda.stato.saltati = coda.stato.saltati.saturating_add(1),
             // Annullato: non è un guasto, e il resto della coda è già vuoto.
             Err(_) if coda.giro != giro => {}
@@ -416,29 +581,27 @@ fn gira(app: &AppHandle) {
         }
         drop(coda);
         if crate::spegnimento::in_uscita() {
-            prendi(&CODA).lavori.clear();
+            prendi(&CODA).svuota();
         }
+    };
+    annuncia(app);
+    if !ultimo {
+        return;
     }
     notifica(false, 0, 0, "");
-    annuncia(app);
     if scritti > 0 && !crate::spegnimento::in_uscita() {
         nota!("[lontano] scesi {scritti} brani: si scansiona la cartella dei download");
         crate::procura::scansiona_i_download(app);
     }
 }
 
-/// Mette in coda i brani di `chiave`, e fa partire il filo se è fermo.
+/// Mette in coda i brani di `chiave`, e fa partire il filo del suo dispositivo
+/// se non gira già.
 fn accoda(
     app: &AppHandle,
     chiave: &str,
     brani: Vec<BranoRemoto>,
 ) -> Result<StatoScaricoIpc, AppError> {
-    if brani.len() > MASSIMI_PER_VOLTA {
-        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
-            channel: "lontano".to_owned(),
-            detail: Some(format!("al più {MASSIMI_PER_VOLTA} brani per volta")),
-        }));
-    }
     let comune = comune(app)?;
     if !comune.associato(chiave) {
         return Err(AppError::new(ErrorCode::LontanoNonAssociato));
@@ -453,40 +616,24 @@ fn accoda(
         }));
     }
 
-    let mut coda = prendi(&CODA);
-    let parte = !coda.filo;
-    if parte {
-        // Una coda nuova: i conti ricominciano.
-        coda.stato = StatoScaricoIpc::FERMO;
-    }
-    for brano in brani {
-        if brano.segmento.is_some() {
-            coda.stato.saltati = coda.stato.saltati.saturating_add(1);
-            continue;
-        }
-        coda.lavori.push_back(Lavoro {
-            dispositivo: chiave.to_owned(),
-            brano,
-        });
-    }
-    coda.stato.in_coda = coda.lavori.len();
-    let parte = parte && !coda.lavori.is_empty();
-    if parte {
-        coda.filo = true;
-    }
-    let stato = coda.stato.clone();
-    drop(coda);
+    let (parte, stato) = {
+        let mut coda = prendi(&CODA);
+        let parte = coda.aggiungi(chiave, brani);
+        (parte, coda.stato.clone())
+    };
 
     if parte {
         let per_il_filo = app.clone();
+        let del_dispositivo = chiave.to_owned();
         let partito = std::thread::Builder::new()
             .name("rymembra-lontano-scarico".to_owned())
-            .spawn(move || gira(&per_il_filo));
+            .spawn(move || gira(&per_il_filo, &del_dispositivo));
         if let Err(err) = partito {
+            // Il filo non c'è: la sua coda non ha chi la svuoti.
             let mut coda = prendi(&CODA);
-            coda.filo = false;
-            coda.lavori.clear();
-            coda.stato.in_coda = 0;
+            coda.fili.remove(chiave);
+            coda.attese.remove(chiave);
+            coda.stato.in_coda = coda.in_attesa();
             return Err(AppError::new(ErrorCode::InternalUnexpected {
                 detail: Some("il filo dello scaricamento non parte".to_owned()),
             })
@@ -497,31 +644,54 @@ fn accoda(
     Ok(stato)
 }
 
-/// «Scarica qui»: i brani nella cartella dei download di questo dispositivo.
+/// «Scarica qui»: le righe della libreria che stanno su un altro dispositivo,
+/// copiate nella cartella dei download di questo.
+///
+/// Le righe di questa macchina e quelle che il proprietario non manda più si
+/// saltano: la finestra offre il gesto su una selezione, e una selezione può
+/// essere mista. Ogni dispositivo ha la sua coda e il suo filo (vedi [`Coda`]).
 ///
 /// # Errori
 ///
 /// `lontano.nonAssociato`, `lontano.spento`, `lontano.reteAConsumo`,
 /// `fs.notFound` senza una cartella dove scrivere, `ipc.payloadInvalid` per
-/// una lista troppo lunga. I guasti dei singoli brani arrivano con
-/// `lontano:scarico`.
+/// una lista troppo lunga. Se un dispositivo non si può chiedere e un altro sì,
+/// questo scende e l'errore è quello del primo: il resto lo dice la finestra
+/// con `lontano:scarico`. I guasti dei singoli brani arrivano lì.
 #[tauri::command]
-pub async fn lontano_scarica(
-    app: AppHandle,
-    chiave: String,
-    brani: Vec<BranoRemoto>,
-) -> Esito<StatoScaricoIpc> {
-    in_disparte(move || accoda(&app, &chiave, brani)).await
+pub async fn lontano_scarica_righe(app: AppHandle, righe: Vec<i64>) -> Esito<StatoScaricoIpc> {
+    in_disparte(move || {
+        if righe.len() > MASSIMI_PER_VOLTA {
+            return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+                channel: "lontano".to_owned(),
+                detail: Some(format!("al più {MASSIMI_PER_VOLTA} brani per volta")),
+            }));
+        }
+        let gruppi = leggi_a_parte(&app, |c| righe_da_scaricare(c, &righe))?;
+        let mut primo_errore: Option<AppError> = None;
+        let mut partito = false;
+        for (dispositivo, brani) in gruppi {
+            match accoda(&app, &dispositivo, brani) {
+                Ok(_) => partito = true,
+                Err(err) => {
+                    primo_errore.get_or_insert(err);
+                }
+            }
+        }
+        match primo_errore {
+            Some(err) if !partito => Err(err),
+            _ => Ok(prendi(&CODA).stato.clone()),
+        }
+    })
+    .await
 }
 
-/// Svuota la coda e ferma il brano in corso, il cui `.part` si cancella.
+/// Svuota le code e ferma i brani in corso, i cui `.part` si cancellano.
 #[tauri::command]
 pub fn lontano_scarico_annulla(app: AppHandle) -> Esito<StatoScaricoIpc> {
     let stato = {
         let mut coda = prendi(&CODA);
-        coda.lavori.clear();
-        coda.giro = coda.giro.wrapping_add(1);
-        coda.stato.in_coda = 0;
+        coda.annulla();
         coda.stato.clone()
     };
     annuncia(&app);
@@ -688,5 +858,128 @@ mod prove {
         let err = copia(&pezzi, &b, &parte, giro, &mut |_, _| {}).unwrap_err();
         assert_eq!(err.code().kind().code(), "lontano.fileCambiato");
         assert_eq!(pezzi.domande.load(Ordering::Relaxed), 2);
+    }
+    // ── una coda per dispositivo ────────────────────────────────────────────
+
+    /// Il titolo del lavoro preso, o `None` se il filo è finito.
+    fn preso(coda: &mut Coda, dispositivo: &str) -> Option<String> {
+        match coda.prendi(dispositivo) {
+            Prossimo::Lavoro { lavoro, .. } => Some(lavoro.brano.title),
+            Prossimo::Finito { .. } => None,
+        }
+    }
+
+    /// §7.2.5: ogni dispositivo ha il suo posto. Un PC lento — o via relay — con
+    /// tre brani in coda non fa aspettare un altro dispositivo: il filo del
+    /// secondo parte subito e prende il suo brano, mentre quello del primo è
+    /// ancora in mezzo ai suoi.
+    #[test]
+    fn un_dispositivo_lento_non_fa_aspettare_gli_altri() {
+        let mut coda = Coda::nuova();
+        assert!(coda.aggiungi("lento", vec![brano("a1"), brano("a2"), brano("a3")]));
+        assert_eq!(preso(&mut coda, "lento").as_deref(), Some("a1"));
+        // Il filo di «lento» è occupato col suo primo brano: l'altro parte lo stesso.
+        assert!(
+            coda.aggiungi("svelto", vec![brano("b1")]),
+            "il secondo dispositivo ha il suo filo"
+        );
+        assert_eq!(preso(&mut coda, "svelto").as_deref(), Some("b1"));
+        // Un brano in più per il primo non apre un secondo filo: ce l'ha già.
+        assert!(!coda.aggiungi("lento", vec![brano("a4")]));
+        assert_eq!(coda.stato.in_coda, 3, "a2, a3 e a4 aspettano");
+        // Ognuno finisce la sua coda, e nessuna prende il lavoro dell'altra.
+        assert_eq!(preso(&mut coda, "svelto"), None);
+        assert_eq!(preso(&mut coda, "lento").as_deref(), Some("a2"));
+        assert_eq!(preso(&mut coda, "lento").as_deref(), Some("a3"));
+        assert_eq!(preso(&mut coda, "lento").as_deref(), Some("a4"));
+    }
+
+    /// La scansione dei download e la notifica toccano all'ultimo filo che
+    /// finisce, non al primo: finché uno scende, la coda non è finita.
+    #[test]
+    fn solo_l_ultimo_filo_dice_che_la_coda_e_finita() {
+        let mut coda = Coda::nuova();
+        coda.aggiungi("a", vec![brano("a1")]);
+        coda.aggiungi("b", vec![brano("b1")]);
+        assert_eq!(preso(&mut coda, "a").as_deref(), Some("a1"));
+        assert_eq!(preso(&mut coda, "b").as_deref(), Some("b1"));
+        coda.scritto("a");
+        coda.finito("a");
+        coda.scritto("b");
+        coda.finito("b");
+        assert!(matches!(
+            coda.prendi("a"),
+            Prossimo::Finito {
+                ultimo: false,
+                scritti: 2
+            }
+        ));
+        assert!(matches!(
+            coda.prendi("b"),
+            Prossimo::Finito {
+                ultimo: true,
+                scritti: 2
+            }
+        ));
+        assert_eq!(coda.stato.titolo, None);
+        assert_eq!(coda.stato.in_coda, 0);
+        // Una coda nuova ricomincia i conti.
+        assert!(coda.aggiungi("a", vec![brano("a2")]));
+        assert_eq!(coda.stato.fatti, 0);
+    }
+
+    /// Lo stato che la finestra vede è uno solo: il byte in corso è di un brano
+    /// solo, e quando quello finisce lo prende l'altro filo, invece di far
+    /// ballare la barra fra due brani.
+    #[test]
+    fn la_barra_segue_un_brano_alla_volta() {
+        let mut coda = Coda::nuova();
+        coda.aggiungi("a", vec![brano("a1")]);
+        coda.aggiungi("b", vec![brano("b1")]);
+        assert_eq!(preso(&mut coda, "a").as_deref(), Some("a1"));
+        assert_eq!(preso(&mut coda, "b").as_deref(), Some("b1"));
+        assert_eq!(
+            coda.stato.titolo.as_deref(),
+            Some("a1"),
+            "il primo in primo piano"
+        );
+        assert!(coda.avanza("a", 5, 10));
+        assert!(
+            !coda.avanza("b", 9, 10),
+            "b va avanti, ma la barra non è sua"
+        );
+        assert_eq!((coda.stato.byte, coda.stato.totale), (5, 10));
+        coda.finito("a");
+        assert_eq!(coda.stato.titolo.as_deref(), Some("b1"), "adesso tocca a b");
+        assert!(coda.avanza("b", 9, 10));
+        assert_eq!(coda.stato.byte, 9);
+    }
+
+    /// «Annulla» svuota **tutte** le code e ferma i brani in corso.
+    #[test]
+    fn annullare_svuota_ogni_coda() {
+        let mut coda = Coda::nuova();
+        coda.aggiungi("a", vec![brano("a1"), brano("a2")]);
+        coda.aggiungi("b", vec![brano("b1"), brano("b2")]);
+        let giro = coda.giro;
+        coda.annulla();
+        assert_ne!(coda.giro, giro, "i brani in corso se ne accorgono");
+        assert_eq!(coda.stato.in_coda, 0);
+        assert_eq!(preso(&mut coda, "a"), None);
+        assert_eq!(preso(&mut coda, "b"), None);
+    }
+
+    /// Un brano d'immagine CD non scende: si conta fra i saltati e non apre un
+    /// filo che non avrebbe niente da fare.
+    #[test]
+    fn un_brano_d_immagine_non_apre_un_filo() {
+        let mut coda = Coda::nuova();
+        let mut cd = brano("cd");
+        cd.segmento = Some(rymembra_app::library::condivisa::Segmento {
+            inizio_cd: 0,
+            fine_cd: None,
+        });
+        assert!(!coda.aggiungi("a", vec![cd]));
+        assert_eq!(coda.stato.saltati, 1);
     }
 }
