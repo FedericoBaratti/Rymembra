@@ -462,8 +462,9 @@ release:
   the tracks only (no `.lrc`, `.cue` or covers next to them, no deleting
   non-audio files).
 - **The window on Windows.** Events sent while there is no window are lost (a
-  notice that was shown and missed does not come back); if the window was never
-  opened — a first start, a database error — the X closes the program.
+  notice that was shown and missed does not come back). If the tray icon is not
+  there — Windows refused it, or its menu labels have not been remembered yet, as
+  on a very first start — the X closes the program, as it always did.
 
 ## [3.2.1] — 2026-11-17
 
