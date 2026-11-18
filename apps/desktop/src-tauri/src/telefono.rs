@@ -448,6 +448,42 @@ pub fn telefono_secondo_piano() -> Esito<()> {
     solo_su_android()
 }
 
+/// Se Rymembra è fuori dal risparmio batteria di Android: il servizio del
+/// sottofondo non esenta dal Doze, e senza questo, con lo schermo spento e il
+/// telefono fermo, il sistema sospende la rete e i PC non lo raggiungono. Non
+/// apre niente: la finestra lo rilegge quando torna in vista.
+///
+/// # Errori
+///
+/// Come [`telefono_permessi`].
+#[tauri::command]
+pub fn telefono_senza_risparmio_batteria() -> Esito<bool> {
+    #[cfg(target_os = "android")]
+    return rymembra_android::sistema::senza_risparmio_batteria()
+        .map_err(|err| guasto("risparmio batteria", &err));
+    #[cfg(not(target_os = "android"))]
+    solo_su_android()
+}
+
+/// Apre la pagina di sistema in cui si toglie il risparmio batteria a
+/// Rymembra. Non la richiesta diretta, che la policy di Google Play riserva
+/// ad altre app: vedi `Presenza.apriRisparmio`.
+///
+/// # Errori
+///
+/// Come [`telefono_permessi`], e se nessuna delle due pagine si apre.
+#[tauri::command]
+pub async fn telefono_apri_risparmio_batteria() -> Esito<()> {
+    #[cfg(target_os = "android")]
+    return in_attesa(
+        "risparmio batteria",
+        rymembra_android::sistema::apri_risparmio_batteria,
+    )
+    .await;
+    #[cfg(not(target_os = "android"))]
+    solo_su_android()
+}
+
 /// # La finestra che rinasce con l'attività
 ///
 /// Sul telefono la finestra è l'attività, e l'attività muore senza che muoia
