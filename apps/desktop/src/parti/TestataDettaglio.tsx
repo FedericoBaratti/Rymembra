@@ -60,7 +60,7 @@ export function TestataDettaglio({
   sotto?: ReactNode;
   /**
    * Il nome è il titolo di questa parte della pagina, non lo stesso della
-   * barra: in «Sfoglia» la barra dice il dispositivo, e il disco aperto dentro
+   * barra: la barra dice dove si è, e il disco aperto dentro
    * la pagina ha il suo `h2`, che chi ascolta lo schermo deve sentire.
    */
   conTitolo?: boolean | undefined;

@@ -11,6 +11,7 @@ import { memo, useCallback, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 
 import { Copertina } from "../Copertina";
+import { etichettaDellaRiga, useStatoDellaRiga } from "../dispositivoLontano";
 import { durata, nomeArtista, nomeFonte, titoloAlbum } from "../formato";
 import { useFuoco } from "../fuoco";
 import type { Brano } from "../ipc";
@@ -197,6 +198,10 @@ const RigaBrano = memo(function RigaBrano({
    */
   useLingua();
 
+  // Di un altro dispositivo, e se risponde: l'icona accanto al titolo e, se non
+  // risponde, la riga in grigio. Una riga di qui non iscrive niente a niente.
+  const lontana = useStatoDellaRiga(brano.path);
+
   /**
    * `Alt+↑↓` sposta la riga.
    *
@@ -257,6 +262,11 @@ const RigaBrano = memo(function RigaBrano({
       onFocus={() => onFuocoPreso(indice)}
       aria-current={attivo}
       aria-selected={selezionato}
+      /* Un dispositivo che non risponde: la riga resta, in grigio. Sta nell'albero
+         come «non disponibile» ma tiene il fuoco e il menù: i preferiti e le stelle
+         partono lo stesso, e il tocco dice chi non risponde invece di suonare. */
+      aria-disabled={lontana?.spenta === true ? true : undefined}
+      data-spenta={lontana?.spenta === true ? true : undefined}
       data-active={attivo || undefined}
       data-scelta={selezionato || undefined}
       data-sopra={sopra || undefined}
@@ -393,6 +403,19 @@ const RigaBrano = memo(function RigaBrano({
               title={t("track.stream.title", { fonte: nomeFonte(brano.fonte) })}
             >
               {t("track.stream.badge")}
+            </span>
+          )}
+          {/* L'icona del dispositivo da cui arriva, con il nome per chi non la
+              vede: sentirlo nel titolo è dove serve, come per la pastiglia qui
+              sopra. */}
+          {lontana !== null && (
+            <span
+              className="dispositivo-riga"
+              role="img"
+              aria-label={etichettaDellaRiga(lontana)}
+              title={etichettaDellaRiga(lontana)}
+            >
+              <Icona nome={lontana.telefono ? "i-telefono" : "i-computer"} dim={13} />
             </span>
           )}
         </div>

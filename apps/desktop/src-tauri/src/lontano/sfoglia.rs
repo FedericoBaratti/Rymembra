@@ -1,26 +1,21 @@
-//! «Sfoglia <dispositivo>»: la libreria di un altro dispositivo collegato,
-//! vista e ascoltata da qui.
+//! La rete delle righe di un altro dispositivo: la sorgente a blocchi con cui si
+//! suonano, «Solo Wi-Fi», gli ascolti mandati al proprietario, e le copertine
+//! che una versione di prima teneva in cache.
 //!
-//! # Gli elenchi
-//!
-//! Album, artisti, brani e ricerca si chiedono all'altro a pagine, e
-//! arrivano nella forma che la finestra disegna già per la libreria di qui:
-//! [`AlbumSummary`], [`ArtistSummary`], e per i brani [`BranoRemoto`], che è
-//! una scheda di brano senza il percorso. Le copertine cambiano nome per la
-//! strada: l'impronta dell'altro diventa `lontano-<dispositivo>-<impronta>`,
-//! che il protocollo `rymembra-cover` riconosce e serve da [`copertina`].
+//! «Sfoglia <dispositivo>» era qui: la pagina della finestra e i comandi con cui
+//! chiedeva gli elenchi all'altro. Con la libreria unica (`specchio.rs`) i brani
+//! dell'altro sono righe di `tracks`, e quella pagina è un filtro: non c'è più
+//! niente da chiedere a pagine, e le voci «lontane» del registro del lettore se
+//! ne sono andate con lei. Il server (`servizio.rs`) risponde ancora alle
+//! domande di elenco: un dispositivo con una versione di prima sfoglia **questo**
+//! con quelle.
 //!
 //! # L'ascolto
 //!
-//! Un brano dell'altro diventa una voce «lontana» del registro del lettore
-//! (`riproduzione::registra_lontana`), che si apre in rete con [`DaLontano`]:
-//! una sorgente a blocchi, come quella d'«Ascolta insieme», sotto la stessa
-//! finestra scorrevole dei cataloghi. Niente cache dei brani: si è scelto
-//! così, e un brano riascoltato si richiede.
-//!
-//! La finestra rimanda indietro le schede che ha ricevuto: qui non si tiene
-//! nessun elenco, e il comando registra quel che gli arriva. Una scheda
-//! alterata non fa danni — l'altro serve solo i suoi file condivisi, per id.
+//! Una riga di un altro dispositivo si apre in rete con [`DaLontano`], una
+//! sorgente a blocchi come quella d'«Ascolta insieme» sotto la stessa finestra
+//! scorrevole dei cataloghi (`apri_in_rete`, usato da `specchio::apri_riga`).
+//! Niente cache dei brani: si è scelto così, e un brano riascoltato si richiede.
 //!
 //! # Gli ascolti
 //!
@@ -45,8 +40,6 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use rymembra_app::dispositivi::{self, AscoltoLontano, DatiMobili};
-use rymembra_app::library::condivisa::BranoRemoto;
-use rymembra_app::library::{AlbumSummary, ArtistSummary};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::listen::Listen;
 use rymembra_lontano::protocollo::MASSIMO_PEZZO;
@@ -55,11 +48,10 @@ use rymembra_net::flusso::Sorgente;
 use rymembra_net::http::Pezzo;
 use tauri::AppHandle;
 
+use super::comune;
 use super::filo::{ATTESA_LIBRERIA, Comune, Posta, in_libreria, prendi};
-use super::{comune, in_disparte};
-use crate::errore::Esito;
 use crate::nota;
-use crate::riproduzione::insieme::{Apertura, ApriInRete, SchedaVoce, Voce};
+use crate::riproduzione::insieme::ApriInRete;
 
 /// Quanto si chiede all'altro per volta, e quanto si aspetta un salto: vedi
 /// `crate::insieme::flusso`, che fa lo stesso per la stessa ragione.
@@ -69,18 +61,11 @@ const BLOCCO: u64 = 256 * 1024;
 /// mebibyte può chiedere qualche secondo; oltre, la rete non c'è.
 const ATTESA_BLOCCO: Duration = Duration::from_secs(20);
 
-/// Quanto si aspetta una pagina di un elenco.
-const ATTESA_ELENCO: Duration = Duration::from_secs(20);
-
 /// Quanto si aspetta una copertina.
 const ATTESA_COPERTINA: Duration = Duration::from_secs(15);
 
 /// Quanto si aspetta l'altro per un ascolto.
 const ATTESA_ASCOLTO: Duration = Duration::from_secs(10);
-
-/// Quanti brani entrano in coda con un gesto solo: una coda di sessantamila
-/// voci lontane non la vuole nessuno, e il registro le terrebbe tutte.
-const MASSIMI_BRANI: usize = 5000;
 
 /// Quante copertine si chiedono all'altro insieme: una griglia ne chiede
 /// trenta per schermata, e trenta richieste insieme su un relay rallentano il
@@ -207,7 +192,7 @@ struct DaLontano<P: Pezzi = ViaNodo> {
     /// aperture della stessa voce: un file cambiato nel frattempo non si cuce
     /// con quello di prima.
     ///
-    /// Non quella dell'elenco ([`BranoRemoto::versione`]): viene dal database
+    /// Non quella dell'elenco (`BranoRemoto::versione`): viene dal database
     /// dell'altro, che può essere indietro rispetto al disco — dopo «Rileggi
     /// tutti i tag» (`date_modified = -1`), o con un file ritoccato da fuori
     /// dopo l'ultima scansione — e ogni lettura sarebbe `fileCambiato`.
@@ -320,18 +305,6 @@ pub(super) fn rete_di_adesso(comune: &Comune) -> rymembra_app::specchio::scelta:
     }
 }
 
-// ── le voci ─────────────────────────────────────────────────────────────────
-
-/// I millisecondi di un fotogramma del CD (1/75 s), arrotondati: lo stesso
-/// giro che `riproduzione::ospiti::tratto` fa all'indietro.
-fn ms_da_cd(cd: i64) -> u64 {
-    let cd = u64::try_from(cd).unwrap_or(0);
-    cd.saturating_mul(40)
-        .saturating_add(1)
-        .checked_div(3)
-        .unwrap_or(0)
-}
-
 /// L'estensione di un brano dell'altro, se ha la forma di un'estensione.
 pub(super) fn estensione_buona(estensione: &str) -> Option<String> {
     let estensione = estensione
@@ -358,20 +331,6 @@ fn e_una_chiave(chiave: &str) -> bool {
         && chiave
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-}
-
-/// La chiave di copertina per la finestra: `lontano-<dispositivo>-<impronta>`.
-/// Accetta l'impronta dell'altro, o una chiave già tradotta per lo stesso
-/// dispositivo (la scheda che la finestra rimanda indietro).
-fn chiave_copertina(dispositivo: &str, impronta: Option<&str>) -> Option<String> {
-    let impronta = impronta?;
-    let impronta = impronta
-        .strip_prefix(PREFISSO_COPERTINA)
-        .and_then(|resto| resto.strip_prefix(dispositivo))
-        .and_then(|resto| resto.strip_prefix('-'))
-        .unwrap_or(impronta);
-    (e_una_chiave(dispositivo) && e_un_impronta(impronta))
-        .then(|| format!("{PREFISSO_COPERTINA}{dispositivo}-{impronta}"))
 }
 
 /// Il dispositivo e l'impronta di una chiave di copertina lontana.
@@ -436,330 +395,6 @@ pub(super) fn apri_in_rete(comune: &Arc<Comune>, dispositivo: &str, brano: i64) 
             _in_volo: Some(InVolo::nuovo(Arc::clone(&per_aprire))),
         }) as Box<dyn Sorgente>)
     })
-}
-
-/// La voce di un brano dell'altro, con l'`uid` che le dà il registro.
-fn voce_da(
-    comune: &Arc<Comune>,
-    dispositivo: &str,
-    nome: &str,
-    brano: &BranoRemoto,
-    uid: u64,
-) -> Voce {
-    let apri: ApriInRete = apri_in_rete(comune, dispositivo, brano.id);
-    Voce {
-        uid,
-        proprietario: Some(nome.to_owned()),
-        scheda: SchedaVoce {
-            titolo: brano.title.clone(),
-            artista: brano.artist.clone(),
-            album: brano.album.clone(),
-            durata_ms: u64::try_from(brano.duration_ms).unwrap_or(0),
-            numero: brano.track_number.and_then(|n| u32::try_from(n).ok()),
-            anno: brano.year.and_then(|a| i32::try_from(a).ok()),
-            copertina: chiave_copertina(dispositivo, brano.cover_art_hash.as_deref()),
-            replaygain_db: None,
-            picco: None,
-        },
-        apertura: Apertura::Rete {
-            apri,
-            estensione: estensione_buona(&brano.estensione),
-            segmento: brano
-                .segmento
-                .map(|s| (ms_da_cd(s.inizio_cd), s.fine_cd.map(ms_da_cd))),
-            // Due brani della stessa immagine CD devono portare la stessa
-            // stringa, perché il motore li riconosca contigui: l'album e la
-            // versione del file la danno.
-            immagine: brano.segmento.map(|_| {
-                format!(
-                    "lontano:{dispositivo}:{}:{}",
-                    brano.album_key.as_deref().unwrap_or(""),
-                    brano.versione
-                )
-            }),
-            copia: None,
-        },
-        da_contare: None,
-    }
-}
-
-/// Le maniglie dei brani dell'altro, registrati come voci lontane.
-///
-/// # Errori
-///
-/// `insieme.gestoNonDisponibile` durante una sessione (una voce lontana non
-/// entra in una sessione), `lontano.nonAssociato`, `lontano.spento`,
-/// `lontano.reteAConsumo` (vedi il `//!`), `ipc.payloadInvalid` per una lista
-/// troppo lunga.
-fn voci_lontane(
-    app: &AppHandle,
-    chiave: &str,
-    brani: &[BranoRemoto],
-) -> Result<Vec<i64>, AppError> {
-    if !matches!(crate::insieme::ruolo(app), crate::insieme::Ruolo::Fuori) {
-        return Err(AppError::new(ErrorCode::InsiemeGestoNonDisponibile {
-            gesto: "lontano".to_owned(),
-        }));
-    }
-    if brani.len() > MASSIMI_BRANI {
-        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
-            channel: "lontano".to_owned(),
-            detail: Some(format!("al più {MASSIMI_BRANI} brani per volta")),
-        }));
-    }
-    let comune = comune(app)?;
-    if !comune.associato(chiave) {
-        return Err(AppError::new(ErrorCode::LontanoNonAssociato));
-    }
-    if comune.nodo().is_none() {
-        return Err(AppError::new(ErrorCode::LontanoSpento));
-    }
-    dati_permessi(&comune)?;
-    let nome = prendi(&comune.vetrina)
-        .dispositivi
-        .iter()
-        .find(|d| d.chiave == chiave)
-        .map_or_else(|| "?".to_owned(), |d| d.nome.clone());
-    brani
-        .iter()
-        .map(|brano| {
-            let descrittore = serde_json::to_value(VoceSalvata {
-                dispositivo: chiave.to_owned(),
-                nome: nome.clone(),
-                brano: brano.clone(),
-            })
-            .unwrap_or_default();
-            crate::riproduzione::registra_lontana(app, chiave, brano.id, descrittore, |uid| {
-                voce_da(&comune, chiave, &nome, brano, uid)
-            })
-            .ok_or_else(|| {
-                AppError::new(ErrorCode::InternalAborted {
-                    what: Some("lontano".to_owned()),
-                })
-            })
-        })
-        .collect()
-}
-
-/// Come si conserva una voce lontana nella coda (`playback::CHIAVE_CODA_LONTANA`):
-/// di chi è, come si chiama il proprietario, e la scheda del brano — quel che
-/// serve a rifarne la voce senza chiedere niente all'altro.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct VoceSalvata {
-    dispositivo: String,
-    nome: String,
-    brano: BranoRemoto,
-}
-
-/// Una voce lontana conservata nella coda, riaperta all'avvio: la sua maniglia
-/// nuova, o `None` se il dispositivo non è più fra gli `associati` (presi dal
-/// database: il filo del collegamento all'avvio non li ha ancora letti) o il
-/// descrittore non si legge. Non guarda il nodo né «Solo Wi-Fi»: si guardano
-/// quando la voce si apre, come per una messa in coda adesso.
-pub(crate) fn voce_salvata(
-    app: &AppHandle,
-    descrittore: &serde_json::Value,
-    associati: &std::collections::HashSet<String>,
-) -> Option<i64> {
-    let salvata = serde_json::from_value::<VoceSalvata>(descrittore.clone()).ok()?;
-    if !e_una_chiave(&salvata.dispositivo) || !associati.contains(&salvata.dispositivo) {
-        return None;
-    }
-    let comune = comune(app).ok()?;
-    crate::riproduzione::registra_lontana(
-        app,
-        &salvata.dispositivo,
-        salvata.brano.id,
-        descrittore.clone(),
-        |uid| {
-            voce_da(
-                &comune,
-                &salvata.dispositivo,
-                &salvata.nome,
-                &salvata.brano,
-                uid,
-            )
-        },
-    )
-}
-
-// ── gli elenchi ─────────────────────────────────────────────────────────────
-
-/// Una domanda di dati all'altro, letta nella forma `T`.
-fn elenco<T: serde::de::DeserializeOwned>(
-    app: &AppHandle,
-    chiave: &str,
-    domanda: Domanda,
-) -> Result<T, AppError> {
-    let comune = comune(app)?;
-    if !comune.associato(chiave) {
-        return Err(AppError::new(ErrorCode::LontanoNonAssociato));
-    }
-    let nodo = comune
-        .nodo()
-        .ok_or_else(|| AppError::new(ErrorCode::LontanoSpento))?;
-    match nodo.chiedi(chiave, domanda, ATTESA_ELENCO)? {
-        Risposta::Dati(dati) => serde_json::from_value(dati)
-            .map_err(|err| AppError::new(ErrorCode::LontanoProtocollo).with_cause(err.to_string())),
-        _ => Err(AppError::new(ErrorCode::LontanoProtocollo)
-            .with_cause("a un elenco non si risponde con dei dati")),
-    }
-}
-
-fn album_tradotti(chiave: &str, mut album: Vec<AlbumSummary>) -> Vec<AlbumSummary> {
-    for a in &mut album {
-        a.cover_art_hash = chiave_copertina(chiave, a.cover_art_hash.as_deref());
-    }
-    album
-}
-
-fn brani_tradotti(chiave: &str, mut brani: Vec<BranoRemoto>) -> Vec<BranoRemoto> {
-    for b in &mut brani {
-        b.cover_art_hash = chiave_copertina(chiave, b.cover_art_hash.as_deref());
-    }
-    brani
-}
-
-/// Gli album dell'altro, a pagine.
-#[tauri::command]
-pub async fn lontano_album(
-    app: AppHandle,
-    chiave: String,
-    da: u32,
-    quanti: u32,
-) -> Esito<Vec<AlbumSummary>> {
-    in_disparte(move || {
-        let album = elenco(&app, &chiave, Domanda::Album { da, quanti })?;
-        Ok(album_tradotti(&chiave, album))
-    })
-    .await
-}
-
-/// Gli album di un artista dell'altro.
-#[tauri::command]
-pub async fn lontano_album_artista(
-    app: AppHandle,
-    chiave: String,
-    artista: String,
-) -> Esito<Vec<AlbumSummary>> {
-    in_disparte(move || {
-        let album = elenco(&app, &chiave, Domanda::AlbumArtista { artista })?;
-        Ok(album_tradotti(&chiave, album))
-    })
-    .await
-}
-
-/// Gli artisti dell'altro, a pagine.
-#[tauri::command]
-pub async fn lontano_artisti(
-    app: AppHandle,
-    chiave: String,
-    da: u32,
-    quanti: u32,
-) -> Esito<Vec<ArtistSummary>> {
-    in_disparte(move || {
-        let mut artisti: Vec<ArtistSummary> =
-            elenco(&app, &chiave, Domanda::Artisti { da, quanti })?;
-        for a in &mut artisti {
-            a.covers = a
-                .covers
-                .iter()
-                .filter_map(|c| chiave_copertina(&chiave, Some(c)))
-                .collect();
-        }
-        Ok(artisti)
-    })
-    .await
-}
-
-/// I brani dell'altro, a pagine, in un ordine (`recenti`, `ascoltati`,
-/// `titolo`, o lo scaffale).
-#[tauri::command]
-pub async fn lontano_brani(
-    app: AppHandle,
-    chiave: String,
-    ordine: String,
-    da: u32,
-    quanti: u32,
-) -> Esito<Vec<BranoRemoto>> {
-    in_disparte(move || {
-        let brani = elenco(&app, &chiave, Domanda::Brani { ordine, da, quanti })?;
-        Ok(brani_tradotti(&chiave, brani))
-    })
-    .await
-}
-
-/// I brani di un album dell'altro, dalla sua impronta.
-#[tauri::command]
-pub async fn lontano_brani_album(
-    app: AppHandle,
-    chiave: String,
-    album: String,
-) -> Esito<Vec<BranoRemoto>> {
-    in_disparte(move || {
-        let brani = elenco(&app, &chiave, Domanda::BraniAlbum { album })?;
-        Ok(brani_tradotti(&chiave, brani))
-    })
-    .await
-}
-
-/// La ricerca nella libreria dell'altro.
-#[tauri::command]
-pub async fn lontano_cerca(
-    app: AppHandle,
-    chiave: String,
-    testo: String,
-    da: u32,
-    quanti: u32,
-) -> Esito<Vec<BranoRemoto>> {
-    in_disparte(move || {
-        let brani = elenco(&app, &chiave, Domanda::Cerca { testo, da, quanti })?;
-        Ok(brani_tradotti(&chiave, brani))
-    })
-    .await
-}
-
-/// Quanti risultati ha una ricerca nella libreria dell'altro.
-#[tauri::command]
-pub async fn lontano_cerca_conteggio(app: AppHandle, chiave: String, testo: String) -> Esito<i64> {
-    in_disparte(move || elenco(&app, &chiave, Domanda::CercaConteggio { testo })).await
-}
-
-// ── i gesti ─────────────────────────────────────────────────────────────────
-
-/// Suona i brani dell'altro, a partire da `indice`.
-#[tauri::command]
-pub async fn lontano_suona(
-    app: AppHandle,
-    chiave: String,
-    brani: Vec<BranoRemoto>,
-    indice: usize,
-) -> Esito<()> {
-    let maniglie = {
-        let app = app.clone();
-        in_disparte(move || voci_lontane(&app, &chiave, &brani)).await?
-    };
-    crate::riproduzione::suona(app, maniglie, indice).await
-}
-
-/// Accoda i brani dell'altro in fondo.
-#[tauri::command]
-pub async fn lontano_accoda(app: AppHandle, chiave: String, brani: Vec<BranoRemoto>) -> Esito<()> {
-    let maniglie = {
-        let app = app.clone();
-        in_disparte(move || voci_lontane(&app, &chiave, &brani)).await?
-    };
-    crate::riproduzione::coda_accoda(app, maniglie).await
-}
-
-/// Mette i brani dell'altro subito dopo il corrente.
-#[tauri::command]
-pub async fn lontano_dopo(app: AppHandle, chiave: String, brani: Vec<BranoRemoto>) -> Esito<()> {
-    let maniglie = {
-        let app = app.clone();
-        in_disparte(move || voci_lontane(&app, &chiave, &brani)).await?
-    };
-    crate::riproduzione::coda_dopo(app, maniglie).await
 }
 
 // ── gli ascolti ─────────────────────────────────────────────────────────────
@@ -975,6 +610,36 @@ pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>
     };
     let comune = comune(app)?;
     copertina_in(&cartella, &comune, dispositivo, impronta)
+}
+
+/// Toglie dalla cache le copertine di un dispositivo: la sua cartella
+/// `copertine-lontane/<dispositivo>/`.
+///
+/// Per «Dimentica» e «Dimenticami». Il cancello (`copertina_in`,
+/// `file_in_cache`) già non le serve più, ma restavano su disco fino alla
+/// potatura, e le leggeva ancora chi non passa dal cancello: la scheda di
+/// ripresa e il fornitore di Android (reperto di F1).
+pub(crate) fn togli_le_copertine_di(app: &AppHandle, dispositivo: &str) {
+    if let Some(cartella) = cartella_copertine(app) {
+        togli_la_cartella_di(&cartella, dispositivo);
+    }
+}
+
+/// [`togli_le_copertine_di`] dentro `cartella`. `true` se c'era e se n'è
+/// andata. La chiave dev'essere di 64 cifre esadecimali minuscole, e solo
+/// allora diventa un nome di cartella: niente `..`, niente separatori.
+fn togli_la_cartella_di(cartella: &Path, dispositivo: &str) -> bool {
+    if !e_una_chiave(dispositivo) {
+        return false;
+    }
+    match std::fs::remove_dir_all(cartella.join(dispositivo)) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => {
+            nota!("[lontano] le copertine di un dispositivo dimenticato non si tolgono: {err}");
+            false
+        }
+    }
 }
 
 /// Il file di una copertina dell'altro nella cache:
@@ -1285,33 +950,10 @@ mod prove {
     }
 
     #[test]
-    fn i_fotogrammi_del_cd_tornano_indietro() {
-        assert_eq!(ms_da_cd(0), 0);
-        assert_eq!(ms_da_cd(75), 1000);
-        assert_eq!(ms_da_cd(-5), 0);
-        // Andata e ritorno come in `ospiti::tratto`.
-        for cd in [1_i64, 2, 3, 74, 76, 13_337, 330_000] {
-            let ms = ms_da_cd(cd);
-            let indietro = ms
-                .saturating_mul(3)
-                .saturating_add(20)
-                .checked_div(40)
-                .unwrap();
-            assert_eq!(indietro, u64::try_from(cd).unwrap(), "fotogramma {cd}");
-        }
-    }
-
-    #[test]
     fn le_chiavi_di_copertina() {
         let dispositivo = "a".repeat(64);
         let impronta = "0123456789abcdef";
-        let chiave = chiave_copertina(&dispositivo, Some(impronta)).unwrap();
-        assert_eq!(chiave, format!("lontano-{dispositivo}-{impronta}"));
-        // Già tradotta: resta com'è.
-        assert_eq!(
-            chiave_copertina(&dispositivo, Some(&chiave)),
-            Some(chiave.clone())
-        );
+        let chiave = format!("lontano-{dispositivo}-{impronta}");
         assert!(e_una_copertina(&chiave));
         assert_eq!(
             parti_della_copertina(&chiave),
@@ -1319,13 +961,11 @@ mod prove {
         );
         // Quel che non è un'impronta non passa.
         for brutta in ["", "abc", "../../x", "0123456789ABCDEF", "0123456789abcdeg"] {
-            assert_eq!(
-                chiave_copertina(&dispositivo, Some(brutta)),
-                None,
+            assert!(
+                !e_una_copertina(&format!("lontano-{dispositivo}-{brutta}")),
                 "{brutta}"
             );
         }
-        assert_eq!(chiave_copertina("corta", Some(impronta)), None);
         assert!(!e_una_copertina("lontano-x-0123456789abcdef"));
         assert!(!e_una_copertina(&format!(
             "lontano-{dispositivo}-{impronta}/../x"
@@ -1648,6 +1288,42 @@ mod prove {
         assert_eq!(rimasti.len(), 40);
         assert!(!rimasti.contains(&format!("{:016x}.jpg", 0)));
         assert!(rimasti.contains(&format!("{:016x}.jpg", 54)));
+        let _ = std::fs::remove_dir_all(&cartella);
+    }
+    /// «Dimentica» e «Dimenticami» tolgono la cartella delle copertine del
+    /// dispositivo, e solo la sua.
+    #[test]
+    fn dimenticare_un_dispositivo_toglie_le_sue_copertine_e_solo_quelle() {
+        let cartella = std::env::temp_dir().join(format!(
+            "rymembra-prova-togli-copertine-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cartella);
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        for dispositivo in [&a, &b] {
+            let dentro = cartella.join(dispositivo);
+            std::fs::create_dir_all(&dentro).unwrap();
+            std::fs::write(dentro.join("0123456789abcdef.jpg"), b"x").unwrap();
+        }
+        std::fs::write(cartella.join("vecchia.jpg"), b"x").unwrap();
+
+        assert!(togli_la_cartella_di(&cartella, &a));
+        assert!(!cartella.join(&a).exists(), "le sue copertine se ne vanno");
+        assert!(
+            cartella.join(&b).join("0123456789abcdef.jpg").exists(),
+            "quelle di un altro restano"
+        );
+        assert!(cartella.join("vecchia.jpg").exists());
+        assert!(
+            !togli_la_cartella_di(&cartella, &a),
+            "due volte è una volta"
+        );
+
+        // Una chiave che non è una chiave non diventa un percorso.
+        for storta in ["", "..", "../b", &b.to_uppercase(), &"b".repeat(63)] {
+            assert!(!togli_la_cartella_di(&cartella, storta), "{storta:?}");
+        }
+        assert!(cartella.join(&b).exists());
         let _ = std::fs::remove_dir_all(&cartella);
     }
 }

@@ -32,6 +32,7 @@ pub mod convalida;
 pub mod doppioni;
 #[cfg(test)]
 mod invarianti;
+pub mod scarico;
 pub mod scelta;
 pub mod valutazioni;
 
@@ -229,6 +230,23 @@ impl Origine {
     #[must_use]
     pub const fn e_tutti(&self) -> bool {
         matches!(self, Self::Tutti)
+    }
+
+    /// La riga di questo `percorso` si può suonare adesso?
+    ///
+    /// Per chi ha già una lista in mano — le righe di una playlist, che la
+    /// nomina una per una — e non può mettere la condizione nell'SQL. Una riga
+    /// di questa macchina vale sempre; una riga specchio vale se il suo
+    /// dispositivo è fra le [`Origine::Raggiungibili`]. Le altre origini non
+    /// parlano di rete, e ammettono tutto.
+    #[must_use]
+    pub fn raggiunge(&self, percorso: Option<&str>) -> bool {
+        match self {
+            Self::Raggiungibili(chiavi) => percorso
+                .and_then(parti)
+                .is_none_or(|(dispositivo, _)| chiavi.iter().any(|c| c == dispositivo)),
+            _ => true,
+        }
     }
 }
 

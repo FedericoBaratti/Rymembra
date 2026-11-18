@@ -1715,6 +1715,22 @@ pub async fn artisti(app: tauri::AppHandle, origine: Option<Origine>) -> Esito<V
     .map_err(errore)
 }
 
+/// Quanto c'è in libreria da questa origine: i brani, gli album, gli artisti, i
+/// preferiti.
+///
+/// `avvio` dà quelli di «Tutti»; qui servono gli altri, per la lunghezza degli
+/// elenchi filtrati per dispositivo: una lista rada vuole il totale prima delle
+/// righe (`useRada`).
+#[tauri::command]
+pub async fn conteggi(app: tauri::AppHandle, origine: Option<Origine>) -> Esito<Counts> {
+    let origine = origine.unwrap_or_default();
+    leggi_la_libreria(app, "conteggi della libreria", move |libreria| {
+        counts(&libreria.connection, &origine)
+    })
+    .await
+    .map_err(errore)
+}
+
 /// I brani di un album.
 ///
 /// `origine` assente vuol dire «da dove viene l'album»: vedi

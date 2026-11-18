@@ -49,8 +49,11 @@ pub async fn playlist_elenco(app: tauri::AppHandle) -> Esito<Vec<PlaylistSummary
 /// libreria, fino a cinquemila righe.
 #[tauri::command]
 pub async fn playlist_brani(app: tauri::AppHandle, id: i64) -> Esito<Vec<TrackSummary>> {
+    // Una playlist intelligente non mette in vista un brano che non parte: salta
+    // i dispositivi che adesso non rispondono (§4.6). Una a mano le dà tutte.
+    let origine = crate::lontano::origine_che_suona(&app);
     leggi_la_libreria(app, "brani di una playlist", move |libreria| {
-        playlists::tracks(&libreria.connection, id)
+        playlists::tracks_da(&libreria.connection, id, &origine)
     })
     .await
     .map_err(errore)

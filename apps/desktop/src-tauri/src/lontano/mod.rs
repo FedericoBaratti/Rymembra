@@ -63,8 +63,10 @@ use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::rete_a_consumo;
-pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
-pub(crate) use specchio::{apri_riga, copertina_di_una_riga, posta_nuova, scegli_la_copia};
+pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina};
+pub(crate) use specchio::{
+    apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, scegli_la_copia,
+};
 pub(crate) use testo::dal_proprietario;
 
 /// Quanto un comando aspetta che il filo abbia riletto: accendere il nodo
@@ -600,9 +602,13 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
         if let Some(nodo) = comune.nodo() {
             nodo.revoca(&chiave);
         }
-        // I suoi brani in coda non si aprono più.
-        crate::riproduzione::togli_lontane(&app, &chiave);
+        // Le sue righe in coda non si aprono più: le righe se ne vanno con lui
+        // (`specchio::archivio::dimentica_dispositivo`), e `apri_riga` rifiuta
+        // un dispositivo che non è più collegato.
         specchio::dimenticato(&chiave);
+        // E le sue copertine in cache: non devono restare su disco, né uscire
+        // da una scheda di sistema, finché la potatura non le trova.
+        sfoglia::togli_le_copertine_di(&app, &chiave);
         // Nella libreria appena si può, con la sua chiave di «Ascolta
         // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
         // rete di «Ascolta insieme», che chiude le sue connessioni.

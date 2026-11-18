@@ -517,18 +517,9 @@ fn lettere<T>(elenco: &[T], nome: impl Fn(&T) -> &str) -> Vec<(String, usize)> {
 /// non risponde — il PC spento — non parte: nell'auto sarebbe un brano che
 /// si salta al volante. Con le altre origini la lista resta com'è.
 fn raggiungibili(origine: &Origine, brani: Vec<TrackSummary>) -> Vec<TrackSummary> {
-    let Origine::Raggiungibili(chiavi) = origine else {
-        return brani;
-    };
     brani
         .into_iter()
-        .filter(|brano| {
-            brano
-                .path
-                .as_deref()
-                .and_then(rymembra_app::specchio::parti)
-                .is_none_or(|(dispositivo, _)| chiavi.iter().any(|c| c == dispositivo))
-        })
+        .filter(|brano| origine.raggiunge(brano.path.as_deref()))
         .collect()
 }
 
@@ -963,7 +954,7 @@ pub fn leggi<T>(
     let store = stato.copertine()?;
     // Nell'auto non c'è una riga grigia: un brano che non parte è un guasto al
     // volante. Le righe dei dispositivi che adesso non rispondono non si mostrano.
-    let origine = Origine::Raggiungibili(crate::lontano::specchio::dispositivi_raggiungibili(app));
+    let origine = crate::lontano::origine_che_suona(app);
     con_libreria(&stato, |libreria| {
         lettura(&libreria.connection, &origine, &store)
     })

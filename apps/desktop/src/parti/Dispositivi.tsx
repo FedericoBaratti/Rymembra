@@ -207,7 +207,7 @@ export function LontanoInApp({
     return () => window.clearTimeout(fine);
   }, [attesaNome]);
 
-  // «Scarica qui»: l'avanzamento per la pagina «Sfoglia», e una notizia quando
+  // «Scarica qui»: l'avanzamento per la striscia delle notifiche, e una notizia quando
   // la coda finisce — la pagina può non essere più aperta.
   useAscolto<ScaricoLontano>(
     "lontano:scarico",
@@ -558,14 +558,14 @@ function RigaDispositivo({
   dispositivo,
   insieme,
   sincronia,
-  onSfoglia,
+  onMostra,
   onErrore,
   onDomanda,
 }: {
   dispositivo: DispositivoLontano;
   insieme: FidatoInsieme | null;
   sincronia: DispositivoSincronia | null;
-  onSfoglia: (chiave: string) => void;
+  onMostra: (chiave: string) => void;
   onErrore: (errore: unknown) => void;
   onDomanda: (domanda: Domanda) => void;
 }) {
@@ -606,14 +606,15 @@ function RigaDispositivo({
         <Etichette parti={parti} />
       </span>
       <span className="azioni">
-        {dispositivo.online && !dispositivo.revocato && (
+        {/* Anche spento: le sue righe restano in libreria, in grigio. */}
+        {!dispositivo.revocato && (
           <button
             type="button"
             className="bottone minuto btn-ghost"
             aria-describedby={idNome}
-            onClick={() => onSfoglia(dispositivo.chiave)}
+            onClick={() => onMostra(dispositivo.chiave)}
           >
-            {t("devices.browse")}
+            {t("devices.mirror.open")}
           </button>
         )}
         <button
@@ -628,17 +629,32 @@ function RigaDispositivo({
           type="button"
           className="bottone minuto btn-ghost"
           aria-describedby={idNome}
-          onClick={() =>
-            onDomanda({
-              titolo: t("devices.forget.title", { nome: dispositivo.nome }),
-              descrizione: t("devices.forget.sub"),
-              conferma: t("devices.forget"),
-              consenso: true,
-              fai: () => {
-                comandoDelPannello(() => ipc.lontanoDimentica(dispositivo.chiave)).catch(onErrore);
-              },
-            })
-          }
+          onClick={() => {
+            // Prima di dimenticare, quante playlist perderebbero dei brani: le
+            // loro voci passano a un'altra copia se ce n'è una, e dove non c'è
+            // spariscono. Se il conto non arriva si chiede lo stesso — dimenticare
+            // non dipende da lui — ma si dice che non lo si è potuto fare: tacere
+            // direbbe «nessuna playlist perde niente».
+            const chiedi = (perse: number | null) =>
+              onDomanda({
+                titolo: t("devices.forget.title", { nome: dispositivo.nome }),
+                descrizione:
+                  perse === null
+                    ? `${t("devices.forget.sub")} ${t("devices.mirror.forget.unknown")}`
+                    : perse > 0
+                      ? `${t("devices.forget.sub")} ${t("devices.mirror.forget.loses", { n: perse })}`
+                      : t("devices.forget.sub"),
+                conferma: t("devices.forget"),
+                consenso: true,
+                fai: () => {
+                  comandoDelPannello(() => ipc.lontanoDimentica(dispositivo.chiave)).catch(onErrore);
+                },
+              });
+            ipc
+              .lontanoDimenticaAnteprima(dispositivo.chiave)
+              .then((anteprima) => chiedi(anteprima.playlistChePerdono))
+              .catch(() => chiedi(null));
+          }}
         >
           {t("devices.forget")}
         </button>
@@ -817,14 +833,14 @@ function RigaSincronia({
 export function SchedaDispositivi({
   onErrore,
   onNotizia,
-  onSfoglia,
+  onMostra,
   sincronia,
   onSincroniaAccoppia,
   onSincroniaDimentica,
 }: {
   onErrore: (errore: unknown) => void;
   onNotizia: (testo: string) => void;
-  onSfoglia: (chiave: string) => void;
+  onMostra: (chiave: string) => void;
   /** La sincronia, per i suoi dispositivi nell'elenco unico. */
   sincronia: StatoSincronia | null;
   onSincroniaAccoppia: (id: string, nome: string | null) => void;
@@ -1089,7 +1105,7 @@ export function SchedaDispositivi({
                     dispositivo={riga.lontano}
                     insieme={riga.insieme}
                     sincronia={riga.sincronia}
-                    onSfoglia={onSfoglia}
+                    onMostra={onMostra}
                     onErrore={onErrore}
                     onDomanda={setDomanda}
                   />

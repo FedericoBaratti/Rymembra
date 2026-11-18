@@ -131,7 +131,7 @@ export type NomeIcona =
   | "i-radio"
   | "i-dopo"
   // I dispositivi collegati via internet: il telefono e il computer, per la
-  // barra laterale e la pagina «Sfoglia». Due sagome e non un'icona sola,
+  // barra laterale, Altro e le righe della libreria. Due sagome e non un'icona sola,
   // perché quel che si cerca nell'elenco è proprio «il telefono» o «il PC».
   | "i-telefono"
   | "i-computer"

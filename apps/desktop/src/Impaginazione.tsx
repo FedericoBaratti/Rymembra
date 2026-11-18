@@ -74,6 +74,7 @@ import { Copertina } from "./Copertina";
 import type {
   Brano,
   NodoScafale,
+  OrigineLibreria,
   Playlist,
   StatoRiproduzione,
   ValoreOpzione,
@@ -152,11 +153,11 @@ export interface ContestoScafale {
   /** Apre la pagina delle donazioni nel browser di sistema. */
   onDona: () => void;
   /**
-   * Il dispositivo collegato che si sfoglia, e il gesto che ne apre uno: per
+   * Il filtro per dispositivo della libreria, e il gesto che ne sceglie uno: per
    * il gruppo «Dispositivi» della barra laterale. Facoltativi: lo Studio non
    * ha dispositivi, e senza il gesto il gruppo non si disegna.
    */
-  dispositivoAperto?: string | null | undefined;
+  origine?: OrigineLibreria | undefined;
   onDispositivo?: ((chiave: string) => void) | undefined;
   onColonna: (aperta: boolean) => void;
   onCoda: (aperta: boolean) => void;
@@ -303,7 +304,7 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onNuovaSmart={ctx.onNuovaSmart}
         onImportaFile={ctx.onImportaFile}
         onDona={ctx.onDona}
-        dispositivoAperto={ctx.dispositivoAperto}
+        origine={ctx.origine}
         onDispositivo={ctx.onDispositivo}
       />
     ),

@@ -35,22 +35,18 @@ export type PaginaDiServizio =
   | "esplora"
   | "importazioni"
   | "impostazioni"
-  | "altro"
-  // La musica di un altro dispositivo: non cerca in questa libreria — ha la sua
-  // casella — e quel che apre lo apre dentro di sé.
-  | "dispositivo";
+  | "altro";
 
 /** Le viste della libreria, quando niente è aperto sopra di loro. */
 export type VistaLibreria = Exclude<Vista, PaginaDiServizio | "home" | "cerca">;
 
-// Le tre di servizio una per una e non `{ tipo: PaginaDiServizio }`: così
+// Le di servizio una per una e non `{ tipo: PaginaDiServizio }`: così
 // ogni confronto su `tipo` ne toglie una, e dopo le tre resta la libreria.
 export type Pagina =
   | { tipo: "esplora" }
   | { tipo: "importazioni" }
   | { tipo: "impostazioni" }
   | { tipo: "altro" }
-  | { tipo: "dispositivo" }
   | { tipo: "ricerca" }
   | { tipo: "playlist"; playlist: Playlist }
   | { tipo: "album"; album: Album }
@@ -78,8 +74,7 @@ function diServizio(vista: Vista): vista is PaginaDiServizio {
     vista === "esplora" ||
     vista === "importazioni" ||
     vista === "impostazioni" ||
-    vista === "altro" ||
-    vista === "dispositivo"
+    vista === "altro"
   );
 }
 

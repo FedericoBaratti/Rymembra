@@ -17,16 +17,14 @@ import type { ErroreIpc } from "./ipc/errori";
 import type {
   AnteprimaDimentica,
   AvanzamentoSpecchio,
-  BranoRemoto,
   DatiMobili,
   InvitoLontano,
   LinkLontano,
-  OrdineRemoto,
   Scansione,
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { Numeri, OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
@@ -392,6 +390,10 @@ export const ipc = {
   // con un indice alfabetico invece che a pagine.
   artisti: (origine?: OrigineLibreria) =>
     invoke<Artista[]>("artisti", { origine }),
+  // Quanto c'è in libreria da questa origine: la lunghezza degli elenchi filtrati
+  // per dispositivo. «Tutti» sono i `numeri` di `avvio`.
+  conteggi: (origine?: OrigineLibreria) =>
+    invoke<Numeri>("conteggi", { origine }),
   // Senza `origine` l'album si apre da dove viene: un disco che «Tutti»
   // nasconde dietro una copia migliore resta apribile.
   braniAlbum: (chiave: string, origine?: OrigineLibreria) =>
@@ -1526,37 +1528,12 @@ export const ipc = {
   // ancora preso: una volta sola.
   lontanoLinkInAttesa: () => invoke<string | null>("lontano_link_in_attesa"),
 
-  // ── «Sfoglia <dispositivo>» ───────────────────────────────────────────────
-  // Gli elenchi dell'altro, nella forma di quelli di qui. Le copertine hanno
-  // già la chiave del protocollo (`lontano-…`): `Copertina` le disegna come
-  // le altre.
-  lontanoAlbum: (chiave: string, da: number, quanti: number) =>
-    invoke<Album[]>("lontano_album", { chiave, da, quanti }),
-  lontanoAlbumArtista: (chiave: string, artista: string) =>
-    invoke<Album[]>("lontano_album_artista", { chiave, artista }),
-  lontanoArtisti: (chiave: string, da: number, quanti: number) =>
-    invoke<Artista[]>("lontano_artisti", { chiave, da, quanti }),
-  lontanoBrani: (chiave: string, ordine: OrdineRemoto, da: number, quanti: number) =>
-    invoke<BranoRemoto[]>("lontano_brani", { chiave, ordine, da, quanti }),
-  lontanoBraniAlbum: (chiave: string, album: string) =>
-    invoke<BranoRemoto[]>("lontano_brani_album", { chiave, album }),
-  lontanoCerca: (chiave: string, testo: string, da: number, quanti: number) =>
-    invoke<BranoRemoto[]>("lontano_cerca", { chiave, testo, da, quanti }),
-  lontanoCercaConteggio: (chiave: string, testo: string) =>
-    invoke<number>("lontano_cerca_conteggio", { chiave, testo }),
-  // I gesti: le schede tornano indietro intere, il nucleo non tiene elenchi.
-  // Sui dati mobili con «Chiedi» rispondono `lontano.reteAConsumo`, e la
-  // finestra chiede (`lontano.ts`).
-  lontanoSuona: (chiave: string, brani: BranoRemoto[], indice: number) =>
-    invoke<void>("lontano_suona", { chiave, brani, indice }),
-  lontanoAccoda: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<void>("lontano_accoda", { chiave, brani }),
-  lontanoDopo: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<void>("lontano_dopo", { chiave, brani }),
-  // «Scarica qui»: in coda nella cartella dei download, a un brano per volta.
-  // L'avanzamento arriva con `lontano:scarico`.
-  lontanoScarica: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<ScaricoLontano>("lontano_scarica", { chiave, brani }),
+  // La libreria unica e «Scarica qui».
+  // «Scarica qui» le righe della libreria che stanno su un altro dispositivo: in coda
+  // nella cartella dei download, un dispositivo alla volta ciascuno. Le righe di
+  // qui si saltano. L'avanzamento arriva con `lontano:scarico`.
+  lontanoScaricaRighe: (righe: number[]) =>
+    invoke<ScaricoLontano>("lontano_scarica_righe", { righe }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
   lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
   // La libreria unica: il catalogo dei dispositivi collegati come righe di
