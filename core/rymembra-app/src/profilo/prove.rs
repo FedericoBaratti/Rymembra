@@ -214,6 +214,32 @@ fn niente_di_audio_viaggia_nel_profilo() {
 }
 
 #[test]
+fn il_sottofondo_del_computer_non_viaggia_nel_profilo() {
+    // Le etichette del vassoio sono nella lingua dell'ultima finestra di questa
+    // macchina, e la risposta alla proposta di partire con Windows è la storia
+    // di questa installazione: portarla su un altro computer vorrebbe dire
+    // arrivare lì con la domanda già risposta. `ui.closeToTray`, invece, è
+    // un'abitudine e viaggia: sta nel catalogo di proposito.
+    for chiave in [
+        crate::preferenze::CHIAVE_ETICHETTE_VASSOIO,
+        crate::preferenze::CHIAVE_PROPOSTA_SOTTOFONDO,
+    ] {
+        assert!(
+            CATALOGO
+                .iter()
+                .all(|(nel_catalogo, _)| *nel_catalogo != chiave),
+            "«{chiave}» è un fatto di questa macchina e non deve viaggiare"
+        );
+    }
+    assert!(
+        FUORI
+            .iter()
+            .any(|riga| riga.contains("etichette del vassoio")),
+        "il manifesto del profilo non dichiara che il sottofondo resta fuori"
+    );
+}
+
+#[test]
 fn le_cartelle_aperte_non_escono() {
     // La prova è scritta sul **prefisso** e non sui due nomi, e la differenza
     // non è cosmetica: un confronto sui nomi passa anche se la chiave viene

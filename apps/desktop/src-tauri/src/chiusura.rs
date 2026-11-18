@@ -69,8 +69,10 @@ pub enum Gesto {
 pub enum Decisione {
     /// Passa: la finestra si chiude.
     Passa,
-    /// La si impedisce e la finestra si nasconde: il secondo piano è acceso.
-    /// La pagina resta viva, e lo Studio finisce di scrivere da sé.
+    /// Il secondo piano è acceso: la finestra si chiude — non si impedisce — e
+    /// il programma resta, nel vassoio. Lo Studio ha già scritto, o non aveva
+    /// niente da scrivere. Il nome è quello di quando la finestra si nascondeva
+    /// soltanto.
     Nascondi,
     /// La si impedisce, e si chiede alla pagina di scrivere. Il numero è
     /// quello del ripiego.
@@ -136,6 +138,12 @@ impl Chiusura {
 
     /// Arriva una richiesta di chiusura della finestra. `nasconde` è il
     /// secondo piano (`vassoio::nasconde`).
+    ///
+    /// Con il secondo piano la finestra si chiude e il programma resta, ma
+    /// **dopo** aver aspettato lo Studio come ogni altra chiusura: una volta la
+    /// finestra solo nascosta teneva viva la pagina, e quel che aveva da
+    /// scrivere lo scriveva da sé; adesso la pagina viene distrutta, e una
+    /// scrittura a metà andrebbe persa.
     pub fn chiede_chiudi(&self, nasconde: bool) -> Decisione {
         let mut stato = self.stato();
         // Si consuma comunque: una concessione rimasta lì salterebbe l'attesa
@@ -144,11 +152,12 @@ impl Chiusura {
         if stato.in_attesa.is_some() {
             return Decisione::Aspetta;
         }
-        if nasconde {
-            return Decisione::Nascondi;
-        }
         if concessa || !stato.da_scrivere {
-            return Decisione::Passa;
+            return if nasconde {
+                Decisione::Nascondi
+            } else {
+                Decisione::Passa
+            };
         }
         stato.giro += 1;
         stato.in_attesa = Some((stato.giro, Gesto::Chiudi));
@@ -387,6 +396,29 @@ mod prove {
         );
         assert!(c.rinviata());
         assert_eq!(c.scaduto(secondo), Some(Gesto::Chiudi));
+    }
+
+    /// Col vassoio la X **distrugge** la pagina: lo Studio che ha ancora da
+    /// scrivere (800 ms dopo l'ultima modifica) non può più finire da sé, come
+    /// faceva con la finestra solo nascosta. Scrive prima, come per ogni altra
+    /// chiusura, e solo dopo la finestra si chiude.
+    #[test]
+    fn con_il_vassoio_la_x_aspetta_lo_studio_prima_di_distruggere_la_pagina() {
+        let c = con_lo_studio();
+        let Decisione::Rinvia(_) = c.chiede_chiudi(true) else {
+            panic!("la pagina si distruggeva con lo Studio a metà di una scrittura");
+        };
+        assert!(c.rinviata());
+        assert_eq!(c.chiede_chiudi(true), Decisione::Aspetta);
+        assert_eq!(c.scritto(), Some(Gesto::Chiudi));
+        // Scritto: ora la finestra si chiude, e il programma resta.
+        assert_eq!(c.chiede_chiudi(true), Decisione::Nascondi);
+        // Una pagina che non risponde non tiene aperta la finestra nemmeno qui.
+        let Decisione::Rinvia(numero) = c.chiede_chiudi(true) else {
+            panic!("rinvio atteso");
+        };
+        assert_eq!(c.scaduto(numero), Some(Gesto::Chiudi));
+        assert_eq!(c.chiede_chiudi(true), Decisione::Nascondi);
     }
 
     #[test]

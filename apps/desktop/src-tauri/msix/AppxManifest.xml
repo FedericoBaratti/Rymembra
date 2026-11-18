@@ -17,12 +17,32 @@
 
   Non ha `internetClient`: quella capacità serve alle app isolate, e un
   programma a piena fiducia non è soggetto a quell'isolamento.
+
+  # L'avvio con Windows: `windows.startupTask`
+
+  L'attività dichiara che il programma può partire al login, spenta di serie
+  (`Enabled="false"`): la accende l'interruttore «Avvia con Windows» delle
+  Impostazioni, con l'API `StartupTask`, e l'utente la può spegnere da Gestione
+  attività. Il `TaskId` è fisso e lo stesso di `rymembra-barra/src/avvio.rs`
+  (`ID_ATTIVITA_STORE`): una prova in `strumenti/msix.test.js` li tiene uguali.
+  Lo schema non ha un attributo per gli argomenti: il programma riconosce di
+  essere partito dall'attività da `AppInstance.GetActivatedEventArgs`, non da
+  una riga di comando.
+
+  # Il protocollo `rymembra:`
+
+  Un link di collegamento cliccato in una chat arriva al programma come un
+  argomento solo, fra virgolette (`Parameters` e `%1`). I parametri sono
+  ammessi solo per i programmi a piena fiducia, come questo. Il programma lo
+  tratta come un input non suo: vedi `apps/desktop/src-tauri/src/argomenti.rs`.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  IgnorableNamespaces="uap uap3 desktop rescap">
 
   <Identity
     Name="{{NOME}}"
@@ -58,6 +78,20 @@
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <desktop:Extension
+          Category="windows.startupTask"
+          Executable="rymembra.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="RymembraAvvio"
+            Enabled="false"
+            DisplayName="Rymembra" />
+        </desktop:Extension>
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="rymembra" Parameters="&quot;%1&quot;" />
+        </uap3:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

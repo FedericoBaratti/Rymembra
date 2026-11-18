@@ -367,6 +367,7 @@ const FUORI: &[&str] = &[
     "l'arricchimento in database (ri-derivabile da una passata)",
     "«Ascolta insieme»: i PC associati, il nome di questo PC e gli indirizzi (fatti di questa macchina)",
     "le cartelle dal cloud: gli account collegati, le app registrate presso Google, Microsoft e Dropbox, e lo specchio dei servizi (fatti di questa macchina; le cartelle scelte viaggiano)",
+    "il sottofondo del computer: le etichette del vassoio e la risposta alla proposta di partire con Windows (fatti di questa macchina e di questa installazione; «Avvia con Windows» sta nel registro di Windows, non nella libreria)",
 ];
 
 /// Il file v1, come sta sul disco.

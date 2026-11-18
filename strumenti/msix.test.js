@@ -17,9 +17,11 @@ const path = require("node:path");
 const {
   MARCATORE,
   SEGNAPOSTI,
+  controllaEstensioni,
   controllaIdentita,
   dallaMaggiore,
   escapiXml,
+  idAttivitaDiAvvio,
   riempi,
   segnapostiDel,
   senzaPacchettiDiRisorse,
@@ -28,6 +30,56 @@ const {
 
 const MSIX = path.join(__dirname, "..", "apps/desktop/src-tauri/msix");
 const MODELLO = fs.readFileSync(path.join(MSIX, "AppxManifest.xml"), "utf8");
+
+test("il manifesto dichiara l'avvio con Windows e il protocollo, e il codice li cerca col nome giusto", () => {
+  // L'identificativo dell'attività sta nel codice (`ID_ATTIVITA_STORE`), e
+  // nessun compilatore guarda dentro un manifesto: lo legge questa prova.
+  assert.equal(idAttivitaDiAvvio(), "RymembraAvvio");
+  assert.deepEqual(controllaEstensioni(MODELLO, idAttivitaDiAvvio()), []);
+  // L'attività è spenta di serie: la accende l'interruttore, non l'installazione.
+  assert.match(MODELLO, /<desktop:StartupTask[^>]*Enabled="false"/);
+});
+
+test("le estensioni del manifesto che mancano o sono storte si dicono per nome", () => {
+  const id = idAttivitaDiAvvio();
+  const senza = (da) => MODELLO.replace(da, "");
+  // L'attività di avvio tolta, o con un altro TaskId, o accesa di serie.
+  assert.ok(
+    controllaEstensioni(senza(/<desktop:Extension[\s\S]*?<\/desktop:Extension>/), id).some((g) =>
+      g.includes("windows.startupTask"),
+    ),
+  );
+  assert.ok(controllaEstensioni(MODELLO.replace('TaskId="RymembraAvvio"', 'TaskId="Altro"'), id).some((g) => g.includes("TaskId")));
+  const accesa = MODELLO.replace(/(<desktop:StartupTask[^>]*?)Enabled="false"/, '$1Enabled="true"');
+  assert.notEqual(accesa, MODELLO);
+  assert.ok(controllaEstensioni(accesa, id).some((g) => g.includes("spenta di serie")));
+  // Lo schema di `StartupTask` non ha gli argomenti: un attributo in più è un rifiuto del Store.
+  assert.ok(
+    controllaEstensioni(MODELLO.replace('DisplayName="Rymembra" />', 'DisplayName="Rymembra" Arguments="x" />'), id).some((g) =>
+      g.includes("Arguments"),
+    ),
+  );
+  // Il protocollo senza parametri: il link non arriverebbe da nessuna parte.
+  assert.ok(
+    controllaEstensioni(MODELLO.replace(' Parameters="&quot;%1&quot;"', ""), id).some((g) => g.includes("argomento")),
+  );
+  assert.ok(controllaEstensioni(MODELLO.replace('Name="rymembra"', 'Name="altro"'), id).some((g) => g.includes("rymembra")));
+  // I due spazi di nomi devono essere dichiarati e ignorabili.
+  assert.ok(controllaEstensioni(MODELLO.replace(' uap3 desktop', ""), id).length >= 2);
+});
+
+test("il protocollo del Store è quello dell'installer, e lo stesso che il programma legge", () => {
+  // `rymembra://collega/…`: il nome del protocollo sta in tre posti — il
+  // manifesto, il gancio NSIS e `rymembra-lontano` — e devono dire lo stesso.
+  assert.match(MODELLO, /<uap3:Protocol Name="rymembra"/);
+  const gancio = fs.readFileSync(path.join(MSIX, "..", "installer", "precedente.nsh"), "utf8");
+  assert.ok(gancio.includes('"Software\\Classes\\rymembra"'));
+  const collegamento = fs.readFileSync(
+    path.join(__dirname, "..", "core/rymembra-lontano/src/collegamento.rs"),
+    "utf8",
+  );
+  assert.match(collegamento, /pub const PREFISSO: &str = "rymembra:\/\/collega\/";/);
+});
 
 test("la versione del pacchetto è quella di Tauri con uno zero in coda", () => {
   assert.equal(versioneMsix("3.0.2"), "3.0.2.0");

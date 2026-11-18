@@ -163,6 +163,60 @@ function senzaPacchettiDiRisorse(xml) {
   return xml.replace(/[ \t]*<packaging>[\s\S]*?<\/packaging>\s*\n?/, "");
 }
 
+/**
+ * Le due estensioni che il manifesto deve dichiarare perché il programma faccia
+ * quel che promette, e i guasti di quelle che mancano (vuoto: tutto a posto).
+ *
+ * - **L'attività di avvio** (`windows.startupTask`): spenta di serie, col
+ *   `TaskId` che il codice cerca — `ID_ATTIVITA_STORE` in
+ *   `rymembra-barra/src/avvio.rs`, che questa funzione legge perché nessun
+ *   compilatore guarda dentro un manifesto. Lo schema non ha un attributo per
+ *   gli argomenti, e un `Arguments` qui sarebbe un attributo che il Store
+ *   rifiuta.
+ * - **Il protocollo** `rymembra:`, con `Parameters="&quot;%1&quot;"`: il link
+ *   arriva come un argomento solo. Senza i parametri, per un programma a piena
+ *   fiducia, il link non arriva da nessuna parte.
+ *
+ * Il Store li scopre dopo il caricamento, e con un messaggio che non nomina
+ * il campo.
+ */
+function controllaEstensioni(modello, idAttivita) {
+  const guasti = [];
+  for (const prefisso of ["desktop", "uap3"]) {
+    if (!new RegExp(`xmlns:${prefisso}="`).test(modello)) {
+      guasti.push(`manca xmlns:${prefisso}`);
+    }
+    const ignorabili = /IgnorableNamespaces="([^"]*)"/.exec(modello)?.[1].split(/\s+/) ?? [];
+    if (!ignorabili.includes(prefisso)) guasti.push(`${prefisso} non è in IgnorableNamespaces`);
+  }
+  const attivita = /<desktop:Extension\s+Category="windows\.startupTask"[^>]*>\s*<desktop:StartupTask([^>]*)\/>/.exec(modello);
+  if (!attivita) {
+    guasti.push("manca l'attività di avvio (windows.startupTask)");
+  } else {
+    if (!attivita[1].includes(`TaskId="${idAttivita}"`)) guasti.push(`il TaskId non è «${idAttivita}»`);
+    if (!/Enabled="false"/.test(attivita[1])) guasti.push("l'attività di avvio non è spenta di serie");
+    if (/Arguments=/.test(attivita[1])) guasti.push("lo schema non ha un attributo Arguments");
+  }
+  const protocollo = /<uap3:Extension\s+Category="windows\.protocol"[^>]*>\s*<uap3:Protocol([^>]*)\/>/.exec(modello);
+  if (!protocollo) {
+    guasti.push("manca il protocollo (windows.protocol)");
+  } else {
+    if (!protocollo[1].includes('Name="rymembra"')) guasti.push("il protocollo non si chiama «rymembra»");
+    if (!protocollo[1].includes('Parameters="&quot;%1&quot;"')) {
+      guasti.push("il protocollo non passa il link come un argomento fra virgolette");
+    }
+  }
+  return guasti;
+}
+
+/** L'identificativo dell'attività di avvio che il codice cerca, letto dal suo sorgente. */
+function idAttivitaDiAvvio() {
+  const sorgente = fs.readFileSync(path.join(REPO, "apps/desktop/rymembra-barra/src/avvio.rs"), "utf8");
+  const trovato = /pub const ID_ATTIVITA_STORE: &str = "([^"]+)";/.exec(sorgente);
+  if (!trovato) basta("ID_ATTIVITA_STORE non si trova in rymembra-barra/src/avvio.rs");
+  return trovato[1];
+}
+
 /** I segnaposto che un modello usa, senza ripetizioni. */
 function segnapostiDel(modello) {
   return [...new Set([...modello.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))];
@@ -302,6 +356,10 @@ function main() {
   if (attesi !== trovati) {
     basta(`il modello usa {{${trovati}}}, lo script ne riempie {{${attesi}}}`);
   }
+  const guastiDelleEstensioni = controllaEstensioni(modello, idAttivitaDiAvvio());
+  if (guastiDelleEstensioni.length > 0) {
+    basta(`il manifesto non dichiara quel che il programma si aspetta: ${guastiDelleEstensioni.join("; ")}`);
+  }
   const manifesto = riempi(modello, {
     NOME: escapiXml(identita.nome),
     EDITORE: escapiXml(identita.editore),
@@ -355,9 +413,11 @@ if (require.main === module) main();
 module.exports = {
   MARCATORE,
   SEGNAPOSTI,
+  controllaEstensioni,
   controllaIdentita,
   dallaMaggiore,
   escapiXml,
+  idAttivitaDiAvvio,
   riempi,
   segnapostiDel,
   senzaPacchettiDiRisorse,
