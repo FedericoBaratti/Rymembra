@@ -16,8 +16,11 @@
  *
  * # Sul telefono
  *
- * «Vuoi che Rymembra resti attiva in sottofondo, così i tuoi PC la raggiungono
- * sempre?»
+ * «Vuoi che Rymembra resti attiva in sottofondo? Così Android Auto la trova
+ * sempre pronta e i dispositivi che colleghi la raggiungono sempre. Costa
+ * batteria: …» Le due ragioni valgono anche per chi non ha nessun PC collegato
+ * — la scheda la vedono tutti —, e il costo sta nella frase, come
+ * nell'interruttore delle Impostazioni.
  *
  * - **«Sì»** accende il sottofondo con **lo stesso comando dell'interruttore**
  *   delle Impostazioni (`lontanoSottofondo`): è quello che chiede anche le

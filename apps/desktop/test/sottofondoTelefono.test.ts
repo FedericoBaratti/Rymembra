@@ -197,9 +197,22 @@ test("la proposta del telefono dice quel che la guida promette, in italiano e in
   const en = JSON.parse(sorgente("../src/lingue/en.json")) as Record<string, string>;
   assert.equal(
     it["background.proposal.phone.text"],
-    "Vuoi che Rymembra resti attiva in sottofondo, così i tuoi PC la raggiungono sempre?",
+    "Vuoi che Rymembra resti attiva in sottofondo? Così Android Auto la trova sempre pronta e i dispositivi che colleghi la raggiungono sempre. Costa batteria: il telefono tiene aperta la connessione con i tuoi dispositivi invece di chiuderla due minuti dopo l'ultimo uso, e una notifica resta sempre visibile.",
   );
   assert.equal(it["background.proposal.phone.no"], "No, grazie");
+  // Vera per tutti: la scheda la vede anche chi non ha nessun PC collegato, e a
+  // lui «i tuoi PC la raggiungono» prometteva una cosa che non ha. Le ragioni
+  // sono due, valide da subito (l'auto e i dispositivi che si collegheranno), e
+  // il costo in batteria sta nella stessa scheda, come nell'interruttore.
+  for (const chiave of ["background.proposal.phone.text", "background.proposal.phone.needsInternet"]) {
+    for (const [lingua, testi] of [["it", it], ["en", en]] as const) {
+      assert.doesNotMatch(testi[chiave] ?? "", /\bPCs?\b/, `${lingua} ${chiave}: parla di PC a chi non ne ha`);
+    }
+  }
+  assert.match(it["background.proposal.phone.text"] ?? "", /Android Auto/);
+  assert.match(en["background.proposal.phone.text"] ?? "", /Android Auto/);
+  assert.match(it["background.proposal.phone.text"] ?? "", /Costa batteria/);
+  assert.match(en["background.proposal.phone.text"] ?? "", /costs battery/i);
   for (const chiave of [
     "background.proposal.phone.text",
     "background.proposal.phone.yes",
