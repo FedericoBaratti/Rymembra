@@ -39,6 +39,9 @@ mod invarianti;
 #[cfg(test)]
 #[path = "specchio/prove_revisione.rs"]
 mod revisione;
+#[cfg(test)]
+#[path = "specchio/prove_rev3.rs"]
+mod rev3;
 pub mod scarico;
 pub mod scelta;
 pub mod valutazioni;
