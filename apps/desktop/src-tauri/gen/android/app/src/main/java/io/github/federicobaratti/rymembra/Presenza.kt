@@ -5,9 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.net.Uri
@@ -77,6 +79,14 @@ import java.util.concurrent.TimeUnit
  * solo se cambia la frase. «Spegni» sulla notifica fa da sé quel che può — ferma
  * il servizio e ricorda la scelta — e la dice al nucleo alla prima occasione
  * ([prendiLoSpegnimentoDellaNotifica]), che la scrive nelle impostazioni.
+ *
+ * # Il ricevitore dei tasti
+ *
+ * Il sottofondo acceso accende anche [RicevitoreTasti] (vedi [ricevitoreTasti]):
+ * il play di una cuffia o dell'auto, e la scheda di ripresa del sistema, che
+ * riaccendono la musica quando l'app non suona. Spento il sottofondo si spegne
+ * anche lui, e torna la ragione per cui non c'era: a nucleo spento il tasto
+ * farebbe cadere l'app.
  */
 class Presenza : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
@@ -91,6 +101,7 @@ class Presenza : Service() {
         .putBoolean(VOLUTO, false)
         .putBoolean(SPENTO_DALLA_NOTIFICA, true)
         .commit()
+      ricevitoreTasti(this, false)
       ferma()
       return START_NOT_STICKY
     }
@@ -193,6 +204,7 @@ class Presenza : Service() {
         return
       }
       p.edit().putBoolean(VOLUTO, acceso).apply()
+      ricevitoreTasti(app, acceso)
       this.collegati = collegati
       if (acceso) {
         val servizio = vivo
@@ -214,6 +226,30 @@ class Presenza : Service() {
         // chiudere l'app. Se non è ancora partito, si ferma da sé appena parte.
         val servizio = vivo ?: return
         Handler(Looper.getMainLooper()).post { servizio.ferma() }
+      }
+    }
+
+    /**
+     * Accende o spegne il ricevitore dei tasti multimediali ([RicevitoreTasti]):
+     * acceso solo col sottofondo, perché a nucleo spento un tasto play farebbe
+     * nascere il servizio della musica senza che niente suoni, e Android
+     * chiuderebbe l'app. Lo stato di serie è quello del manifesto, spento.
+     *
+     * Idempotente, e si chiama a ogni giro del nucleo: il sistema si cambia
+     * solo se lo stato è diverso. Con `DONT_KILL_APP`: senza, il processo — e
+     * con lui il nucleo — morirebbe a ogni cambio. Non lancia mai.
+     */
+    private fun ricevitoreTasti(contesto: Context, acceso: Boolean) {
+      try {
+        val gestore = contesto.packageManager
+        val nome = ComponentName(contesto, RicevitoreTasti::class.java)
+        val voluto =
+          if (acceso) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+          else PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+        if (gestore.getComponentEnabledSetting(nome) == voluto) return
+        gestore.setComponentEnabledSetting(nome, voluto, PackageManager.DONT_KILL_APP)
+      } catch (e: Exception) {
+        Log.w(ETICHETTA, "il ricevitore dei tasti non cambia stato", e)
       }
     }
 

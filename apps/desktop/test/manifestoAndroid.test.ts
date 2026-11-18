@@ -183,6 +183,51 @@ test("la notifica del sottofondo ha le sue frasi in inglese e in italiano, e la 
   assert.match(icona, /<vector\b/);
 });
 
+// ── il ricevitore dei tasti multimediali (F7, #5) ───────────────────────────
+
+test("il ricevitore dei tasti è dichiarato, spento di serie, e fa partire il servizio solo col nucleo", () => {
+  const ricevitore =
+    /<receiver\b[^>]*android:name="\.RicevitoreTasti"[^>]*>[\s\S]*?<\/receiver>/.exec(manifesto)?.[0] ?? "";
+  assert.ok(ricevitore, "il ricevitore .RicevitoreTasti non c'è nel manifesto");
+  // Spento di serie: a nucleo spento il play farebbe nascere il servizio in
+  // primo piano senza che suoni niente, e Android chiude l'app.
+  assert.match(ricevitore, /android:enabled="false"/);
+  // Esportato: il tasto lo manda il sistema.
+  assert.match(ricevitore, /android:exported="true"/);
+  assert.match(ricevitore, /<action\s+android:name="android\.intent\.action\.MEDIA_BUTTON"\s*\/>/);
+
+  // È quello di Media3, con un solo punto cambiato: il guardiano. Lo stato di
+  // un componente sopravvive al riavvio e il sottofondo no.
+  const classe = kotlin("RicevitoreTasti.kt");
+  assert.match(classe, /import androidx\.media3\.session\.MediaButtonReceiver/);
+  assert.match(classe, /class RicevitoreTasti : MediaButtonReceiver\(\)/);
+  assert.match(
+    classe,
+    /override fun shouldStartForegroundService\(context: Context, intent: Intent\): Boolean =\s*Nucleo\.pronto && Presenza\.voluto\(context\)/,
+  );
+});
+
+test("solo il sottofondo accende il ricevitore, da un posto solo, e Biblioteca non dice più che manca", () => {
+  const presenza = kotlin("Presenza.kt");
+  // Un solo punto in tutto il codice che cambia lo stato del componente.
+  assert.equal([...presenza.matchAll(/setComponentEnabledSetting\(/g)].length, 1);
+  assert.match(presenza, /setComponentEnabledSetting\(nome, voluto, PackageManager\.DONT_KILL_APP\)/);
+  assert.match(presenza, /if \(acceso\) PackageManager\.COMPONENT_ENABLED_STATE_ENABLED/);
+  // Spento torna a quello del manifesto, non a «disabilitato per sempre».
+  assert.match(presenza, /else PackageManager\.COMPONENT_ENABLED_STATE_DEFAULT/);
+  // Si chiama da dove il sottofondo cambia: l'interruttore e «Spegni».
+  assert.ok(presenza.includes("ricevitoreTasti(app, acceso)"), "imposta non lo allinea");
+  assert.ok(presenza.includes("ricevitoreTasti(this, false)"), "«Spegni» non lo spegne");
+  for (const nome of ["Ponte.kt", "MainActivity.kt", "ServizioMusica.kt", "Sessione.kt", "Biblioteca.kt"]) {
+    assert.ok(!kotlin(nome).includes("setComponentEnabledSetting"), `${nome} cambia il ricevitore`);
+  }
+  // Il commento di Biblioteca raccontava un ricevitore «non dichiarato apposta»:
+  // adesso c'è, e il commento dice quando.
+  const biblioteca = leggi(`${KOTLIN}Biblioteca.kt`);
+  assert.doesNotMatch(biblioteca, /Rymembra non lo dichiara apposta/);
+  assert.match(biblioteca, /`RicevitoreTasti`/);
+});
+
 // ── il fornitore delle copertine (F1, #1) ───────────────────────────────────
 
 const COPERTINE_KT = leggi(`${KOTLIN}Copertine.kt`);
