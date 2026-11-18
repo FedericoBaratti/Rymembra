@@ -1,6 +1,6 @@
 //! La rete delle righe di un altro dispositivo: la sorgente a blocchi con cui si
-//! suonano, «Solo Wi-Fi», gli ascolti mandati al proprietario, e le copertine
-//! che una versione di prima teneva in cache.
+//! suonano, «Solo Wi-Fi», gli ascolti mandati al proprietario, e la cartella delle
+//! copertine che una versione di prima teneva in cache.
 //!
 //! «Sfoglia <dispositivo>» era qui: la pagina della finestra e i comandi con cui
 //! chiedeva gli elenchi all'altro. Con la libreria unica (`specchio.rs`) i brani
@@ -29,15 +29,16 @@
 //! si apre solo con «Usa i dati mobili» acceso. Con «Chiedi», il comando
 //! risponde `lontano.reteAConsumo` e la finestra chiede; la risposta diventa
 //! l'impostazione. Gli elenchi e le copertine passano sempre: pesano poco, e
-//! senza non si saprebbe cosa scegliere. Su Windows la rete non è mai a
+//! senza non si saprebbe cosa scegliere (le copertine si chiedono in
+//! `specchio::copertina_di_una_riga`). Su Windows la rete non è mai a
 //! consumo. La stessa regola vale per «Ascolta insieme» via internet
 //! (`lontano::insieme::dati_permessi`): entrare, accettare, invitare e
 //! ammettere su una connessione del collegamento.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rymembra_app::dispositivi::{self, AscoltoLontano, DatiMobili};
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -61,31 +62,8 @@ const BLOCCO: u64 = 256 * 1024;
 /// mebibyte può chiedere qualche secondo; oltre, la rete non c'è.
 const ATTESA_BLOCCO: Duration = Duration::from_secs(20);
 
-/// Quanto si aspetta una copertina.
-const ATTESA_COPERTINA: Duration = Duration::from_secs(15);
-
 /// Quanto si aspetta l'altro per un ascolto.
 const ATTESA_ASCOLTO: Duration = Duration::from_secs(10);
-
-/// Quante copertine si chiedono all'altro insieme: una griglia ne chiede
-/// trenta per schermata, e trenta richieste insieme su un relay rallentano il
-/// brano che suona.
-const COPERTINE_INSIEME: usize = 6;
-
-/// Quanto può pesare una copertina dell'altro: la media è di qualche
-/// centinaio di KB.
-const MASSIMA_COPERTINA: usize = 4 * 1024 * 1024;
-
-/// La cache delle copertine lontane: oltre [`CACHE_MASSIMA`] si scende a
-/// [`CACHE_DOPO`], togliendo le meno usate.
-const CACHE_MASSIMA: u64 = 50 * 1024 * 1024;
-const CACHE_DOPO: u64 = 40 * 1024 * 1024;
-
-/// Ogni quante copertine scritte si guarda quanto pesa la cache.
-const POTA_OGNI: usize = 32;
-
-/// Il prefisso delle chiavi di copertina lontane.
-const PREFISSO_COPERTINA: &str = "lontano-";
 
 // ── la sorgente ─────────────────────────────────────────────────────────────
 
@@ -317,59 +295,12 @@ pub(super) fn estensione_buona(estensione: &str) -> Option<String> {
     .then_some(estensione)
 }
 
-/// Un'impronta di copertina dell'altro: le stesse regole di chi la serve.
-fn e_un_impronta(impronta: &str) -> bool {
-    (16..=128).contains(&impronta.len())
-        && impronta
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-}
-
 /// Una chiave di dispositivo: sessantaquattro cifre esadecimali minuscole.
 fn e_una_chiave(chiave: &str) -> bool {
     chiave.len() == 64
         && chiave
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-}
-
-/// Il dispositivo e l'impronta di una chiave di copertina lontana.
-fn parti_della_copertina(chiave: &str) -> Option<(&str, &str)> {
-    let resto = chiave.strip_prefix(PREFISSO_COPERTINA)?;
-    let (dispositivo, impronta) = resto.split_once('-')?;
-    (e_una_chiave(dispositivo) && e_un_impronta(impronta)).then_some((dispositivo, impronta))
-}
-
-/// È una chiave di copertina lontana: per `crate::copertine`.
-#[must_use]
-pub(crate) fn e_una_copertina(chiave: &str) -> bool {
-    parti_della_copertina(chiave).is_some()
-}
-
-/// Il file, nella cache delle copertine lontane in `cartella`, di una chiave
-/// lontana: `<cartella>/<dispositivo>/<impronta>.jpg`. `None` se la chiave non
-/// è una chiave lontana intera.
-///
-/// È **l'unico** posto dove una chiave diventa un nome di file: la validazione
-/// ([`parti_della_copertina`]) lascia passare solo cifre esadecimali minuscole,
-/// quindi niente `..`, niente separatori, niente nomi di Windows. Da qui il
-/// nome arriva a un `file://` (le SMTC di Windows) e al `ContentProvider` di
-/// Android: nessuno dei due deve rifare la validazione per fidarsi.
-#[must_use]
-pub(crate) fn percorso_in_cache(cartella: &Path, chiave: &str) -> Option<PathBuf> {
-    let (dispositivo, impronta) = parti_della_copertina(chiave)?;
-    Some(file_della_copertina(cartella, dispositivo, impronta))
-}
-
-/// Lo stesso file come lo chiede Android: `lontane/<dispositivo>/<impronta>.jpg`,
-/// con `lontane` al posto della cartella della cache, che Rust dice a Kotlin
-/// una volta sola (`sessione.pronta`). Kotlin accetta solo questa forma: vedi
-/// `Copertine.kt`.
-#[cfg(any(mobile, test))]
-#[must_use]
-pub(crate) fn percorso_per_android(chiave: &str) -> Option<String> {
-    let (dispositivo, impronta) = parti_della_copertina(chiave)?;
-    Some(format!("lontane/{dispositivo}/{impronta}.jpg"))
 }
 
 /// Come si aprono i byte di un brano di un altro dispositivo: la sorgente a
@@ -530,39 +461,15 @@ fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
 }
 
 // ── le copertine ────────────────────────────────────────────────────────────
-
-/// Quante copertine si stanno chiedendo, e chi aspetta un posto.
-static IN_CORSO: Mutex<usize> = Mutex::new(0);
-static UN_POSTO: Condvar = Condvar::new();
-
-/// Un posto fra le [`COPERTINE_INSIEME`]: lasciato, sveglia chi aspetta.
-struct Posto;
-
-impl Posto {
-    /// Un posto, aspettato al più `entro`.
-    fn prendi(entro: Duration) -> Option<Self> {
-        let in_corso = IN_CORSO.lock().unwrap_or_else(PoisonError::into_inner);
-        let (mut in_corso, _) = UN_POSTO
-            .wait_timeout_while(in_corso, entro, |n| *n >= COPERTINE_INSIEME)
-            .unwrap_or_else(PoisonError::into_inner);
-        if *in_corso >= COPERTINE_INSIEME {
-            return None;
-        }
-        *in_corso = in_corso.saturating_add(1);
-        Some(Self)
-    }
-}
-
-impl Drop for Posto {
-    fn drop(&mut self) {
-        let mut in_corso = IN_CORSO.lock().unwrap_or_else(PoisonError::into_inner);
-        *in_corso = in_corso.saturating_sub(1);
-        UN_POSTO.notify_one();
-    }
-}
-
-/// Quante copertine si sono scritte nella cache: vedi [`POTA_OGNI`].
-static SCRITTE: AtomicUsize = AtomicUsize::new(0);
+//
+// Di copertine, qui, resta poco: la cartella dove stanno e il modo di toglierle.
+// Le copertine di un altro dispositivo non passano più di qui: per le righe della
+// libreria unica si chiedono all'altro una volta e si tengono nello store, sotto
+// la loro impronta (`specchio::copertina_di_una_riga`). La cartella
+// `copertine-lontane` serve adesso alle copertine delle voci di una sessione di
+// «Ascolta insieme» (`insieme/su_file.rs`) — che Android serve da una seconda
+// radice, `Copertine.kt` — e a ripulire quel che una versione di prima, con
+// «Sfoglia», vi aveva lasciato: una cartella per dispositivo.
 
 /// Dove stanno le copertine lontane: accanto alla cache dei brani del cloud,
 /// e per la stessa ragione fuori dai dati che vanno in giro coi profili. La
@@ -572,53 +479,13 @@ pub(crate) fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
     crate::cartella_di_cache(app, "copertine-lontane")
 }
 
-/// Il file di una copertina lontana, per chi la vuole **come file** — le
-/// schede del sistema, che non parlano `rymembra-cover` — se è già in cache e
-/// il dispositivo è ancora collegato. Non chiede niente alla rete: vedi
-/// `media::lontane`, che la richiede quando manca.
-///
-/// Il cancello prima della cache, come in [`copertina_in`]: le copertine di un
-/// dispositivo dimenticato non escono più nemmeno da lì, e non restano sulla
-/// schermata di blocco.
-#[must_use]
-pub(crate) fn file_in_cache(app: &AppHandle, chiave: &str) -> Option<PathBuf> {
-    let (dispositivo, _) = parti_della_copertina(chiave)?;
-    let file = percorso_in_cache(&cartella_copertine(app)?, chiave)?;
-    if !comune(app).ok()?.associato(dispositivo) {
-        return None;
-    }
-    file.is_file().then_some(file)
-}
-
-/// Una copertina dell'altro, per il protocollo `rymembra-cover`: solo di un
-/// dispositivo ancora collegato, dalla sua parte della cache o chiesta a lui
-/// e messa lì. `Ok(None)` se l'altro non ce l'ha. Si chiama su un filo del
-/// pool bloccante.
-///
-/// # Errori
-///
-/// `lontano.spento`, `lontano.nonAssociato`, quelli della rete, e
-/// `net.timeout` se i posti sono tutti presi troppo a lungo.
-pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>, AppError> {
-    let Some((dispositivo, impronta)) = parti_della_copertina(chiave) else {
-        return Ok(None);
-    };
-    // Senza una cartella per la cache non c'è dove tenerla, né dove cercarla:
-    // vedi `crate::cartella_di_cache`.
-    let Some(cartella) = cartella_copertine(app) else {
-        return Ok(None);
-    };
-    let comune = comune(app)?;
-    copertina_in(&cartella, &comune, dispositivo, impronta)
-}
-
 /// Toglie dalla cache le copertine di un dispositivo: la sua cartella
-/// `copertine-lontane/<dispositivo>/`.
+/// `copertine-lontane/<dispositivo>/`, quella che «Sfoglia» riempiva.
 ///
-/// Per «Dimentica» e «Dimenticami». Il cancello (`copertina_in`,
-/// `file_in_cache`) già non le serve più, ma restavano su disco fino alla
-/// potatura, e le leggeva ancora chi non passa dal cancello: la scheda di
-/// ripresa e il fornitore di Android (reperto di F1).
+/// Per «Dimentica» e «Dimenticami». Con la libreria unica nessuno ci scrive più,
+/// ma una cartella lasciata da prima può esserci ancora, e chi non passa da un
+/// cancello — la scheda di ripresa, il fornitore di Android (reperto di F1) — la
+/// leggerebbe: dimenticato il dispositivo, non deve più uscirne niente.
 pub(crate) fn togli_le_copertine_di(app: &AppHandle, dispositivo: &str) {
     if let Some(cartella) = cartella_copertine(app) {
         togli_la_cartella_di(&cartella, dispositivo);
@@ -642,193 +509,10 @@ fn togli_la_cartella_di(cartella: &Path, dispositivo: &str) -> bool {
     }
 }
 
-/// Il file di una copertina dell'altro nella cache:
-/// `<dispositivo>/<impronta>.jpg`, tutti e due già controllati
-/// ([`parti_della_copertina`]: solo cifre esadecimali).
-///
-/// Per dispositivo, e non per sola impronta: l'impronta la dice chi risponde,
-/// e con una cache comune un dispositivo che rispondeva a `Copertina{H}` con
-/// byte qualunque decideva la copertina di ogni album con l'impronta H, anche
-/// di un altro (reperto 02-10).
-///
-/// In una cartella per dispositivo, e non più `<dispositivo>-<impronta>.jpg`
-/// nella cartella della cache: il nome di prima, con i suoi 64 + 1 + 16
-/// caratteri, non passava dal `ContentProvider` di Android (che accetta nomi
-/// fino a 128 e senza trattini), e con la cartella il percorso è
-/// `lontane/<dispositivo>/<impronta>.jpg`, tre segmenti che Kotlin controlla
-/// uno per uno. È una cache: cambiare forma non chiede una migrazione. I file
-/// di prima, `<dispositivo>-<impronta>.jpg` e `<impronta>.jpg`, non si leggono
-/// più e se ne vanno con la potatura ([`pota`]).
-fn file_della_copertina(cartella: &Path, dispositivo: &str, impronta: &str) -> PathBuf {
-    cartella.join(dispositivo).join(format!("{impronta}.jpg"))
-}
-
-/// [`copertina`], con la cache in `cartella`.
-fn copertina_in(
-    cartella: &Path,
-    comune: &Comune,
-    dispositivo: &str,
-    impronta: &str,
-) -> Result<Option<Vec<u8>>, AppError> {
-    // Il cancello prima della cache: le copertine di un dispositivo
-    // dimenticato non escono più nemmeno da lì. Un dispositivo collegato e
-    // spento invece sì, dalla cache, prima di guardare se risponde.
-    if !comune.associato(dispositivo) {
-        return Err(AppError::new(ErrorCode::LontanoNonAssociato));
-    }
-    let file = file_della_copertina(cartella, dispositivo, impronta);
-    if let Some(byte) = dalla_cache(&file) {
-        return Ok(Some(byte));
-    }
-    // Un dispositivo che non risponde non tiene un posto per quindici
-    // secondi a copertina: una griglia intera aspetterebbe minuti. La
-    // finestra la richiede quando torna (503 non resta in cache).
-    if !prendi(&comune.presenze).contains_key(dispositivo) {
-        return Err(AppError::new(ErrorCode::LontanoIrraggiungibile));
-    }
-    let _posto = Posto::prendi(ATTESA_COPERTINA).ok_or_else(|| {
-        AppError::new(ErrorCode::NetTimeout {
-            url: None,
-            timeout_ms: u64::try_from(ATTESA_COPERTINA.as_millis()).ok(),
-        })
-    })?;
-    // Mentre si aspettava il posto, un'altra richiesta può averla portata.
-    if let Some(byte) = dalla_cache(&file) {
-        return Ok(Some(byte));
-    }
-    let nodo = comune
-        .nodo()
-        .ok_or_else(|| AppError::new(ErrorCode::LontanoSpento))?;
-    let risposta = nodo.chiedi(
-        dispositivo,
-        Domanda::Copertina {
-            impronta: impronta.to_owned(),
-        },
-        ATTESA_COPERTINA,
-    );
-    drop(nodo);
-    match risposta? {
-        Risposta::Byte { byte, .. } if !byte.is_empty() && byte.len() <= MASSIMA_COPERTINA => {
-            // Solo un'immagine, riconosciuta dai suoi byte: prima un
-            // dispositivo collegato metteva qui fino a 4 MiB di byte qualunque
-            // col nome di una copertina, e la finestra li riceveva come
-            // `image/jpeg` (reperto R10-1, decisione D-32).
-            if crate::copertine::tipo_immagine(&byte).is_none() {
-                nota!(
-                    "[lontano] una copertina di un altro dispositivo non è un'immagine: non si tiene"
-                );
-                return Err(AppError::new(ErrorCode::LontanoProtocollo)
-                    .with_cause("una copertina che non è un'immagine"));
-            }
-            in_cache(cartella, &file, &byte);
-            Ok(Some(byte))
-        }
-        Risposta::Byte { .. } | Risposta::Fatto => Ok(None),
-        _ => Err(AppError::new(ErrorCode::LontanoProtocollo)
-            .with_cause("a una copertina non si risponde con dei byte")),
-    }
-}
-
-/// Una copertina dalla cache, segnata come usata adesso. Un file che non è
-/// un'immagine — messo da una versione di prima, che non guardava — si toglie,
-/// e vale come assente.
-fn dalla_cache(file: &Path) -> Option<Vec<u8>> {
-    let byte = std::fs::read(file).ok()?;
-    if crate::copertine::tipo_immagine(&byte).is_none() {
-        let _ = std::fs::remove_file(file);
-        return None;
-    }
-    if let Ok(aperto) = std::fs::File::options().write(true).open(file) {
-        let _ = aperto.set_modified(SystemTime::now());
-    }
-    Some(byte)
-}
-
-/// Mette una copertina in cache: un file temporaneo rinominato, così una
-/// lettura non trova mai un file a metà. Ogni tanto pota.
-///
-/// La cartella del dispositivo, dove sta `file`, la fa lei (e con lei quella
-/// della cache): [`file_della_copertina`] la mette sotto `cartella`.
-fn in_cache(cartella: &Path, file: &Path, byte: &[u8]) {
-    if std::fs::create_dir_all(file.parent().unwrap_or(cartella)).is_err() {
-        return;
-    }
-    let provvisorio = file.with_extension("part");
-    let scritto =
-        std::fs::write(&provvisorio, byte).and_then(|()| std::fs::rename(&provvisorio, file));
-    if scritto.is_err() {
-        let _ = std::fs::remove_file(&provvisorio);
-        return;
-    }
-    if SCRITTE
-        .fetch_add(1, Ordering::Relaxed)
-        .is_multiple_of(POTA_OGNI)
-    {
-        pota(cartella);
-    }
-}
-
-/// Un file della cache: quando è stato usato l'ultima volta, quanto pesa, dov'è.
-type FileDellaCache = (SystemTime, u64, PathBuf);
-
-/// I file di `cartella`, e quelli delle sue sottocartelle (una per
-/// dispositivo, [`file_della_copertina`]): anche i file di prima della
-/// sottocartella e i `.part` lasciati a metà, perché pesano allo stesso modo e
-/// vanno via con le altre. Non scende oltre: la cache ha due livelli.
-fn file_della_cache(cartella: &Path) -> Vec<FileDellaCache> {
-    let (mut file, sottocartelle) = un_livello(cartella);
-    for sottocartella in sottocartelle {
-        file.extend(un_livello(&sottocartella).0);
-    }
-    file
-}
-
-/// I file e le sottocartelle direttamente dentro `cartella`.
-fn un_livello(cartella: &Path) -> (Vec<FileDellaCache>, Vec<PathBuf>) {
-    let mut file = Vec::new();
-    let mut sottocartelle = Vec::new();
-    let Ok(voci) = std::fs::read_dir(cartella) else {
-        return (file, sottocartelle);
-    };
-    for voce in voci.filter_map(Result::ok) {
-        let Ok(metadati) = voce.metadata() else {
-            continue;
-        };
-        if metadati.is_file() {
-            file.push((
-                metadati.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                metadati.len(),
-                voce.path(),
-            ));
-        } else if metadati.is_dir() {
-            sottocartelle.push(voce.path());
-        }
-    }
-    (file, sottocartelle)
-}
-
-/// Toglie le copertine meno usate finché la cache non scende a
-/// [`CACHE_DOPO`], se ha passato [`CACHE_MASSIMA`]. Le cartelle dei dispositivi
-/// restano (vuote, se hanno perso tutto): costano un nome.
-fn pota(cartella: &Path) {
-    let mut file = file_della_cache(cartella);
-    let mut totale: u64 = file.iter().map(|(_, peso, _)| *peso).sum();
-    if totale <= CACHE_MASSIMA {
-        return;
-    }
-    file.sort_by_key(|(quando, _, _)| *quando);
-    for (_, peso, percorso) in file {
-        if totale <= CACHE_DOPO {
-            break;
-        }
-        if std::fs::remove_file(&percorso).is_ok() {
-            totale = totale.saturating_sub(peso);
-        }
-    }
-}
-
 #[cfg(test)]
 mod prove {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
 
     /// Un file finto in memoria, con la sua versione.
@@ -950,169 +634,12 @@ mod prove {
     }
 
     #[test]
-    fn le_chiavi_di_copertina() {
-        let dispositivo = "a".repeat(64);
-        let impronta = "0123456789abcdef";
-        let chiave = format!("lontano-{dispositivo}-{impronta}");
-        assert!(e_una_copertina(&chiave));
-        assert_eq!(
-            parti_della_copertina(&chiave),
-            Some((dispositivo.as_str(), impronta))
-        );
-        // Quel che non è un'impronta non passa.
-        for brutta in ["", "abc", "../../x", "0123456789ABCDEF", "0123456789abcdeg"] {
-            assert!(
-                !e_una_copertina(&format!("lontano-{dispositivo}-{brutta}")),
-                "{brutta}"
-            );
-        }
-        assert!(!e_una_copertina("lontano-x-0123456789abcdef"));
-        assert!(!e_una_copertina(&format!(
-            "lontano-{dispositivo}-{impronta}/../x"
-        )));
-        assert!(!e_una_copertina(&format!(
-            "insieme-{dispositivo}-{impronta}"
-        )));
-    }
-
-    /// Da una chiave lontana al file della cache, e al percorso che Android
-    /// serve (F1, #1): la validazione sta qui, perché da qui il nome passa a
-    /// un `ContentProvider` e a un `file://`.
-    #[test]
-    fn da_chiave_a_percorso_in_cache() {
-        let dispositivo = "a".repeat(64);
-        let impronta = "0123456789abcdef";
-        let chiave = format!("lontano-{dispositivo}-{impronta}");
-        let cartella = Path::new("cache").join("copertine-lontane");
-
-        // Valida: `<dispositivo>/<impronta>.jpg`, una sottocartella per
-        // dispositivo (si dimentica d'un colpo, e le cartelle non crescono).
-        assert_eq!(
-            percorso_in_cache(&cartella, &chiave),
-            Some(cartella.join(&dispositivo).join(format!("{impronta}.jpg")))
-        );
-        assert_eq!(
-            percorso_per_android(&chiave).as_deref(),
-            Some(format!("lontane/{dispositivo}/{impronta}.jpg").as_str())
-        );
-        // Lo stesso nome, dall'una e dall'altra parte: Kotlin apre dentro la
-        // cartella della cache quel che Rust ci ha scritto.
-        let relativo = percorso_per_android(&chiave).unwrap();
-        assert_eq!(
-            percorso_in_cache(&cartella, &chiave),
-            Some(cartella.join(relativo.strip_prefix("lontane/").unwrap()))
-        );
-
-        // Malformate: niente percorso, né da una parte né dall'altra.
-        let brutte = [
-            String::new(),
-            "lontano-".to_owned(),
-            format!("lontano-{dispositivo}"),
-            format!("lontano-{dispositivo}-"),
-            // La chiave del dispositivo: corta, maiuscola, non esadecimale.
-            format!("lontano-{}-{impronta}", "a".repeat(63)),
-            format!("lontano-{}-{impronta}", "A".repeat(64)),
-            format!("lontano-{}-{impronta}", "g".repeat(64)),
-            // L'impronta: troppo corta o lunga, maiuscola, non esadecimale.
-            format!("lontano-{dispositivo}-abc"),
-            format!("lontano-{dispositivo}-{}", "a".repeat(129)),
-            format!("lontano-{dispositivo}-0123456789ABCDEF"),
-            format!("lontano-{dispositivo}-0123456789abcdeg"),
-            // Un'altra famiglia di chiavi.
-            format!("insieme-{dispositivo}-{impronta}"),
-            "insieme-7".to_owned(),
-        ];
-        for brutta in &brutte {
-            assert_eq!(percorso_in_cache(&cartella, brutta), None, "{brutta}");
-            assert_eq!(percorso_per_android(brutta), None, "{brutta}");
-        }
-
-        // `..`, separatori e nomi di Windows: mai un percorso, comunque li si
-        // metta (nel dispositivo, nell'impronta, in fondo alla chiave).
-        let fuggitive = [
-            format!("lontano-{dispositivo}-../../../x"),
-            format!("lontano-{dispositivo}-{impronta}/../x"),
-            format!("lontano-{dispositivo}-{impronta}/.."),
-            format!("lontano-{dispositivo}-..{impronta}"),
-            format!("lontano-{dispositivo}-{impronta}\\..\\x"),
-            format!("lontano-..-{impronta}"),
-            format!("lontano-{}..-{impronta}", "a".repeat(62)),
-            format!("lontano-{dispositivo}/../{impronta}-{impronta}"),
-            format!("lontano-C:\\x-{impronta}"),
-            format!("lontano-{dispositivo}-{impronta}\0"),
-        ];
-        for fuggitiva in &fuggitive {
-            assert_eq!(
-                percorso_in_cache(&cartella, fuggitiva),
-                None,
-                "{fuggitiva:?}"
-            );
-            assert_eq!(percorso_per_android(fuggitiva), None, "{fuggitiva:?}");
-        }
-    }
-
-    #[test]
     fn le_estensioni() {
         assert_eq!(estensione_buona("FLAC").as_deref(), Some("flac"));
         assert_eq!(estensione_buona(".mp3").as_deref(), Some("mp3"));
         assert_eq!(estensione_buona(""), None);
         assert_eq!(estensione_buona("a/b"), None);
         assert_eq!(estensione_buona("lunghissima"), None);
-    }
-
-    #[test]
-    fn la_cache_delle_copertine_e_per_dispositivo_e_dietro_il_cancello() {
-        // Reperto 02-10: la cache era per sola impronta, e si leggeva prima
-        // del cancello. L'impronta la sceglie chi risponde: un dispositivo
-        // che rispondeva a `Copertina{H}` con byte qualunque decideva la
-        // copertina di ogni album con l'impronta H, anche di un altro
-        // dispositivo; e le copertine di un dispositivo dimenticato
-        // continuavano ad arrivare alla finestra dalla cache.
-        let cartella = std::env::temp_dir().join(format!(
-            "rymembra-prova-copertine-dispositivi-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&cartella);
-        let (posta, _cassetta) = std::sync::mpsc::channel();
-        let comune = Comune::nuovo(posta);
-        let a = "a".repeat(64);
-        let b = "b".repeat(64);
-        let impronta = "0123456789abcdef";
-        comune.ammetti(&a, true);
-        comune.ammetti(&b, true);
-        // La copertina H di A è arrivata, ed è in cache (un JPEG: vedi
-        // `una_copertina_che_non_e_un_immagine_non_si_serve`).
-        let di_a = b"\xFF\xD8\xFFdi A".to_vec();
-        in_cache(
-            &cartella,
-            &file_della_copertina(&cartella, &a, impronta),
-            &di_a,
-        );
-        assert_eq!(
-            copertina_in(&cartella, &comune, &a, impronta).unwrap(),
-            Some(di_a.clone())
-        );
-
-        // B ha un album con la stessa impronta: la sua copertina la dice B,
-        // non A (qui B non risponde, e lo si dice).
-        let di_b = copertina_in(&cartella, &comune, &b, impronta);
-        assert!(
-            !matches!(&di_b, Ok(Some(byte)) if *byte == di_a),
-            "la copertina di A per l'album di B: {di_b:?}"
-        );
-        assert_eq!(
-            di_b.unwrap_err().code().kind(),
-            rymembra_domain::errors::ErrorCodeKind::LontanoIrraggiungibile
-        );
-
-        // A dimenticato: dalla cache non esce più niente.
-        comune.ammetti(&a, false);
-        let dimenticato = copertina_in(&cartella, &comune, &a, impronta);
-        assert_eq!(
-            dimenticato.map_err(|err| err.code().kind()),
-            Err(rymembra_domain::errors::ErrorCodeKind::LontanoNonAssociato)
-        );
-        let _ = std::fs::remove_dir_all(&cartella);
     }
 
     #[test]
@@ -1134,162 +661,6 @@ mod prove {
         );
     }
 
-    #[test]
-    fn una_copertina_che_non_e_un_immagine_non_si_serve() {
-        // Decisione D-32: dagli altri dispositivi arrivavano fino a 4 MiB di
-        // byte qualunque, messi nella cache come `.jpg` e serviti alla
-        // finestra come `image/jpeg`.
-        let cartella = std::env::temp_dir().join(format!(
-            "rymembra-prova-copertine-non-immagini-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&cartella);
-        let (posta, _cassetta) = std::sync::mpsc::channel();
-        let comune = Comune::nuovo(posta);
-        let a = "a".repeat(64);
-        comune.ammetti(&a, true);
-        let impronta = "0123456789abcdef";
-        // Una pagina HTML in cache al posto di una copertina (da un
-        // dispositivo di prima della correzione).
-        let file = file_della_copertina(&cartella, &a, impronta);
-        in_cache(&cartella, &file, b"<html><script>x</script></html>");
-        let servita = copertina_in(&cartella, &comune, &a, impronta);
-        assert!(
-            !matches!(&servita, Ok(Some(_))),
-            "byte che non sono un'immagine: {servita:?}"
-        );
-        assert!(!file.exists(), "e dalla cache se ne va");
-        // Un'immagine vera sì.
-        let png = b"\x89PNG\r\n\x1a\n....".to_vec();
-        in_cache(&cartella, &file, &png);
-        assert_eq!(
-            copertina_in(&cartella, &comune, &a, impronta).unwrap(),
-            Some(png)
-        );
-        let _ = std::fs::remove_dir_all(&cartella);
-    }
-
-    /// F1 (#1): la cache ha una cartella per dispositivo, e `in_cache` la crea.
-    #[test]
-    fn la_copertina_arrivata_sta_in_una_cartella_per_dispositivo() {
-        let cartella = std::env::temp_dir().join(format!(
-            "rymembra-prova-copertine-sottocartelle-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&cartella);
-        let dispositivo = "d".repeat(64);
-        let impronta = "0123456789abcdef";
-        let chiave = format!("lontano-{dispositivo}-{impronta}");
-        let file = file_della_copertina(&cartella, &dispositivo, impronta);
-        // La cartella della cache non c'è ancora, e nemmeno quella del
-        // dispositivo: `in_cache` le fa tutte e due.
-        in_cache(&cartella, &file, b"\xFF\xD8\xFFcopertina");
-        assert_eq!(
-            percorso_in_cache(&cartella, &chiave).as_deref(),
-            Some(file.as_path())
-        );
-        assert_eq!(std::fs::read(&file).unwrap(), b"\xFF\xD8\xFFcopertina");
-        let nella_cartella: Vec<_> = std::fs::read_dir(cartella.join(&dispositivo))
-            .unwrap()
-            .map(|v| v.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            nella_cartella,
-            vec![format!("{impronta}.jpg")],
-            "niente .part rimasti"
-        );
-        let _ = std::fs::remove_dir_all(&cartella);
-    }
-
-    /// F1 (#1): la potatura guarda anche dentro le cartelle dei dispositivi, e
-    /// porta via con le altre i file di prima della sottocartella
-    /// (`<dispositivo>-<impronta>.jpg`) e quelli lasciati a metà (`.part`).
-    /// Prima guardava solo il livello alto, e con la forma nuova la cache non
-    /// scendeva mai.
-    #[test]
-    fn la_cache_si_pota_anche_nelle_cartelle_dei_dispositivi() {
-        let cartella = std::env::temp_dir().join(format!(
-            "rymembra-prova-copertine-potatura-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&cartella);
-        let mega = vec![0_u8; 1024 * 1024];
-        let adesso = SystemTime::now();
-        let scrivi = |file: &Path, secondi_fa: u64| {
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(file, &mega).unwrap();
-            let aperto = std::fs::File::options().write(true).open(file).unwrap();
-            aperto
-                .set_modified(adesso - Duration::from_secs(secondi_fa))
-                .unwrap();
-        };
-        let a = "a".repeat(64);
-        let b = "b".repeat(64);
-        // Il più vecchio di tutti: un file di prima, al livello alto.
-        let vecchio = cartella.join(format!("{a}-0123456789abcdef.jpg"));
-        scrivi(&vecchio, 5000);
-        // Un `.part` rimasto a metà, in una cartella di dispositivo.
-        let a_meta = cartella.join(&a).join("0123456789abcdef.part");
-        scrivi(&a_meta, 4000);
-        // Cinquanta copertine nuove, due dispositivi.
-        for i in 0..50_u64 {
-            let di = if i % 2 == 0 { &a } else { &b };
-            scrivi(&cartella.join(di).join(format!("{i:016x}.jpg")), 1000 - i);
-        }
-        // 52 MiB in tutto: sopra i 50 della soglia, quindi si scende a 40.
-        pota(&cartella);
-        let mut rimasti = 0;
-        let mut peso = 0;
-        for voce in std::fs::read_dir(&cartella).unwrap() {
-            let voce = voce.unwrap().path();
-            if voce.is_file() {
-                rimasti += 1;
-                peso += voce.metadata().unwrap().len();
-                continue;
-            }
-            for file in std::fs::read_dir(&voce).unwrap() {
-                rimasti += 1;
-                peso += file.unwrap().metadata().unwrap().len();
-            }
-        }
-        assert_eq!(rimasti, 40, "si scende a 40 MiB");
-        assert_eq!(peso, 40 * 1024 * 1024);
-        assert!(!vecchio.exists(), "il file di prima se ne va per primo");
-        assert!(!a_meta.exists(), "e il .part, che è il secondo");
-        assert!(
-            cartella.join(&b).join(format!("{:016x}.jpg", 49)).exists(),
-            "le più recenti restano"
-        );
-        let _ = std::fs::remove_dir_all(&cartella);
-    }
-
-    /// La cache scende sotto la soglia togliendo le meno usate.
-    #[test]
-    fn la_cache_si_pota_dalle_piu_vecchie() {
-        let cartella =
-            std::env::temp_dir().join(format!("rymembra-prova-copertine-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cartella);
-        std::fs::create_dir_all(&cartella).unwrap();
-        let mega = vec![0_u8; 1024 * 1024];
-        let adesso = SystemTime::now();
-        for i in 0..55_u64 {
-            let file = cartella.join(format!("{i:016x}.jpg"));
-            std::fs::write(&file, &mega).unwrap();
-            let aperto = std::fs::File::options().write(true).open(&file).unwrap();
-            aperto
-                .set_modified(adesso - Duration::from_secs(1000 - i))
-                .unwrap();
-        }
-        pota(&cartella);
-        let rimasti: Vec<String> = std::fs::read_dir(&cartella)
-            .unwrap()
-            .map(|v| v.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(rimasti.len(), 40);
-        assert!(!rimasti.contains(&format!("{:016x}.jpg", 0)));
-        assert!(rimasti.contains(&format!("{:016x}.jpg", 54)));
-        let _ = std::fs::remove_dir_all(&cartella);
-    }
     /// «Dimentica» e «Dimenticami» tolgono la cartella delle copertine del
     /// dispositivo, e solo la sua.
     #[test]

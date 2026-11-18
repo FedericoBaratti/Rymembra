@@ -35,7 +35,6 @@
         "core/rymembra-insieme/src/presa.rs",
         "core/rymembra-insieme/src/tempi.rs",
         "apps/desktop/src-tauri/src/lontano/insieme.rs",
-        "apps/desktop/src-tauri/src/media/lontane.rs",
         "apps/desktop/src-tauri/gen/android/app/src/main/java/io/github/federicobaratti/rymembra/Copertine.kt",
       ],
       body: [

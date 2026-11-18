@@ -325,7 +325,6 @@ test("Ponte passa a Presenza se «Parti con l'auto» è accesa, e Rust la porta 
 // ── il fornitore delle copertine (F1, #1) ───────────────────────────────────
 
 const COPERTINE_KT = leggi(`${KOTLIN}Copertine.kt`);
-const SFOGLIA_RS = leggi("../src-tauri/src/lontano/sfoglia.rs");
 
 /**
  * Un `Regex("…")` di `Copertine.kt`, come espressione di JavaScript che deve
@@ -341,14 +340,12 @@ function regolaKotlin(nome: string): RegExp {
 
 const DISPOSITIVO = "a".repeat(64);
 
-test("il fornitore apre le copertine degli altri dispositivi solo nella forma lontane/<64 hex>/<hex 2-128>.jpg", () => {
-  // Rust scrive `lontane/<dispositivo>/<impronta>.jpg` (`percorso_per_android`),
-  // e Kotlin riconosce lo stesso nome: i due non si parlano, e un disaccordo
-  // si scopre solo sul telefono, con un'auto senza immagine.
-  assert.ok(
-    SFOGLIA_RS.includes('format!("lontane/{dispositivo}/{impronta}.jpg")'),
-    "Rust non scrive più lontane/<dispositivo>/<impronta>.jpg",
-  );
+test("il fornitore apre le copertine della cache dei dispositivi solo nella forma lontane/<64 hex>/<hex 2-128>.jpg", () => {
+  // Kotlin riconosce la forma che Rust scrive: i due non si parlano, e un
+  // disaccordo si scopre solo sul telefono, con un'auto senza immagine. Dopo
+  // la fine di «Sfoglia» (FR2) l'unica che Rust scrive è quella delle copertine
+  // di sessione, `insieme/su_file.rs`: la prova qui sotto la guarda per intero.
+  // Le copertine dei dispositivi collegati stanno nello store, e passano di lì.
   assert.match(COPERTINE_KT, /private const val LONTANE = "lontane"/);
   const dispositivo = regolaKotlin("DISPOSITIVO");
   const impronta = regolaKotlin("IMPRONTA_LONTANA");

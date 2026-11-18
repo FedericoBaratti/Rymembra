@@ -110,28 +110,6 @@ fn cache_per(status: u16) -> &'static str {
     }
 }
 
-/// La risposta per una copertina di un altro dispositivo collegato.
-///
-/// Mai in cache nella finestra, nemmeno quando c'è: la copertina si serve solo
-/// dietro il cancello del collegamento (vedi `lontano::copertina`), e una
-/// WebView che la tenesse per un anno («immutable», come le copertine di qui)
-/// continuerebbe a mostrarla dopo «Dimentica», senza ripassare dal cancello.
-/// La cache che conta sta nel nucleo, per dispositivo e dietro il cancello:
-/// rifare la domanda costa una lettura dal disco.
-fn risposta_lontana(esito: Result<Option<Vec<u8>>, ()>) -> http::Response<Vec<u8>> {
-    let senza_cache = "no-store";
-    match esito {
-        // Il tipo dai byte, che `lontano::copertina` ha già riconosciuto come
-        // un'immagine: con `nosniff` la finestra crede a quel che si dice.
-        Ok(Some(byte)) => {
-            let tipo = tipo_immagine(&byte).unwrap_or("application/octet-stream");
-            risposta_con(200, tipo, byte, senza_cache)
-        }
-        Ok(None) => risposta_con(404, "text/plain", Vec::new(), senza_cache),
-        Err(()) => risposta_con(503, "text/plain", Vec::new(), senza_cache),
-    }
-}
-
 /// L'unico costruttore delle risposte del protocollo. `nosniff` su ognuna,
 /// come `skin::risposta_risorsa`: la finestra non indovina un tipo diverso da
 /// quello detto, nemmeno il giorno in cui un ramo restituisse un tipo che
@@ -206,18 +184,6 @@ pub fn servi(
             }
             None => responder.respond(risposta_con(404, "text/plain", Vec::new(), senza_cache)),
         }
-        return;
-    }
-
-    if crate::lontano::e_una_copertina(&impronta) {
-        // Da un altro dispositivo collegato: la rete, quindi il pool
-        // bloccante, mai il filo della finestra. Le tre misure sono la media
-        // dell'altro. Niente cache nella finestra: vedi [`risposta_lontana`].
-        let app = ctx.app_handle().clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let esito = crate::lontano::copertina(&app, &impronta).map_err(|_| ());
-            responder.respond(risposta_lontana(esito));
-        });
         return;
     }
 
@@ -350,28 +316,10 @@ mod tests {
             assert!(!e_una_chiave_di_sessione(falsa), "{falsa}");
         }
         assert!(!e_un_impronta("insieme-1"));
-        // Le copertine degli altri dispositivi hanno la loro porta, e il
-        // controllo dell'impronta non le lascerebbe passare.
+        // Una chiave di un altro dispositivo non è un'impronta: dal tempo di
+        // «Sfoglia» non c'è più una porta per lei, e il controllo la rifiuta.
         let lontana = format!("lontano-{}-0123456789abcdef", "a".repeat(64));
-        assert!(crate::lontano::e_una_copertina(&lontana));
         assert!(!e_un_impronta(&lontana));
-    }
-
-    #[test]
-    fn la_copertina_di_un_altro_dispositivo_non_resta_nella_finestra() {
-        // Si serve solo dietro il cancello del collegamento: una WebView che la
-        // tenesse per un anno la mostrerebbe anche dopo «Dimentica».
-        let cache = |r: &http::Response<Vec<u8>>| {
-            r.headers()
-                .get(http::header::CACHE_CONTROL)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_owned()
-        };
-        for esito in [Ok(Some(vec![1, 2, 3])), Ok(None), Err(())] {
-            let r = risposta_lontana(esito);
-            assert_eq!(cache(&r), "no-store", "stato {}", r.status());
-        }
     }
 
     #[test]
@@ -387,9 +335,6 @@ mod tests {
         let mut risposte = Vec::new();
         for status in [200, 400, 404, 503] {
             risposte.push(risposta(status, "text/plain", Vec::new()));
-        }
-        for esito in [Ok(Some(vec![0xFF, 0xD8, 0xFF, 0xE0])), Ok(None), Err(())] {
-            risposte.push(risposta_lontana(esito));
         }
         risposte.push(risposta_con(200, "image/jpeg", vec![1], "no-store"));
         for r in &risposte {
@@ -417,14 +362,6 @@ mod tests {
         ] {
             assert_eq!(tipo_immagine(altro), None, "{altro:?}");
         }
-        // E la risposta dice il tipo vero.
-        let png = risposta_lontana(Ok(Some(b"\x89PNG\r\n\x1a\n".to_vec())));
-        assert_eq!(
-            png.headers()
-                .get(http::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok()),
-            Some("image/png")
-        );
     }
 
     #[test]

@@ -89,3 +89,45 @@ test("le maniglie e la coda salvata di «Sfoglia» sono tolte dal nucleo", () =>
   const lib = leggi("src-tauri/src/lib.rs");
   assert.doesNotMatch(lib, /sfoglia::lontano_/);
 });
+
+test("il codice delle copertine di «Sfoglia» è tolto (FR2), e restano i pezzi che servono ancora", () => {
+  // Le voci di «Sfoglia» portavano come copertina la chiave `lontano-<dispositivo>-<impronta>`,
+  // che si scaricava e si teneva in `copertine-lontane/<dispositivo>/`. Con la libreria unica le
+  // copertine di un altro dispositivo stanno nello store (`copertina_di_una_riga`), sotto la loro
+  // impronta, e quella chiave non la scrive più nessuno.
+  const sfoglia = leggi("src-tauri/src/lontano/sfoglia.rs");
+  for (const morto of [
+    /PREFISSO_COPERTINA/,
+    /fn e_una_copertina/,
+    /fn parti_della_copertina/,
+    /fn percorso_in_cache/,
+    /fn percorso_per_android/,
+    /fn file_in_cache/,
+    /fn copertina_in\b/,
+    /fn pota\b/,
+    /static IN_CORSO/,
+    /struct Posto\b/,
+    /COPERTINE_INSIEME/,
+  ]) {
+    assert.doesNotMatch(sfoglia, morto, `sfoglia.rs ha ancora ${morto}`);
+  }
+  assert.ok(!existsSync(join(RADICE, "src-tauri/src/media/lontane.rs")), "media/lontane.rs c'è ancora");
+  assert.doesNotMatch(leggi("src-tauri/src/media/mod.rs"), /mod lontane;/);
+  for (const file of ["media/android.rs", "media/smtc.rs", "copertine.rs", "lontano/mod.rs"]) {
+    const testo = leggi(`src-tauri/src/${file}`);
+    assert.doesNotMatch(testo, /e_una_copertina|lontane::file_di|sfoglia::percorso_per_android/, file);
+  }
+  assert.doesNotMatch(leggi("src-tauri/src/copertine.rs"), /risposta_lontana/);
+
+  // Restano: la cartella `copertine-lontane` e la seconda radice di Kotlin servono alle copertine
+  // di sessione (`insieme/su_file.rs`), e `togli_le_copertine_di` toglie i file di prima.
+  assert.match(sfoglia, /pub\(crate\) fn cartella_copertine/);
+  assert.match(sfoglia, /pub\(crate\) fn togli_le_copertine_di/);
+  assert.match(leggi("src-tauri/src/insieme/su_file.rs"), /lontane\/\{CARTELLA\}\/\{nome\}/);
+  assert.match(
+    leggi("src-tauri/gen/android/app/src/main/java/io/github/federicobaratti/rymembra/Copertine.kt"),
+    /private const val LONTANE = "lontane"/,
+  );
+  // E il server: la domanda `Copertina` serve anche l'APK vecchio che sfoglia questo dispositivo.
+  assert.match(leggi("src-tauri/src/lontano/servizio.rs"), /Domanda::Copertina/);
+});

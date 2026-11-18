@@ -62,8 +62,8 @@ use crate::stato::adesso_ms;
 use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
+pub(crate) use sfoglia::ascoltato_qui;
 pub(crate) use sfoglia::rete_a_consumo;
-pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina};
 pub(crate) use specchio::{
     apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, scegli_la_copia,
 };
@@ -606,8 +606,8 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
         // (`specchio::archivio::dimentica_dispositivo`), e `apri_riga` rifiuta
         // un dispositivo che non è più collegato.
         specchio::dimenticato(&chiave);
-        // E le sue copertine in cache: non devono restare su disco, né uscire
-        // da una scheda di sistema, finché la potatura non le trova.
+        // E le copertine che una versione di prima gli teneva in cache: non
+        // devono restare su disco, né uscire da una scheda di sistema.
         sfoglia::togli_le_copertine_di(&app, &chiave);
         // Nella libreria appena si può, con la sua chiave di «Ascolta
         // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la

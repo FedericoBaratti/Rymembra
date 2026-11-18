@@ -249,16 +249,14 @@ fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &Cove
 
 /// Il file della copertina di un brano, se c'è.
 ///
-/// Un brano di questo PC la ha nello store, sotto la sua impronta. Un brano
-/// che suona da un altro dispositivo ha invece una chiave
-/// (`lontano-<dispositivo>-<impronta>`) e la sua copertina sta nella cache
-/// delle copertine lontane: dove non c'è ancora la si chiede in disparte, e
-/// quando arriva la scheda si ripubblica, con lei. Vedi `lontane`.
+/// Un brano della libreria la ha nello store, sotto la sua impronta: anche una
+/// riga di un altro dispositivo, se la sua copertina c'è già
+/// (`specchio::copertina_di_una_riga` la mette lì quando la finestra la chiede).
 ///
 /// Una voce di «Ascolta insieme» (`insieme-<uid>`) ha i byte in memoria: la
-/// prima volta si scrivono in una cartella riservata della stessa cache
-/// (`crate::insieme::su_file`). Niente da chiedere alla rete: la copertina
-/// arriva con la voce, e la finestra si ridisegna da sé.
+/// prima volta si scrivono in una cartella riservata della cache delle
+/// copertine lontane (`crate::insieme::su_file`). Niente da chiedere alla rete:
+/// la copertina arriva con la voce, e la finestra si ridisegna da sé.
 fn file_della_copertina(
     app: &tauri::AppHandle,
     copertine: &CoverStore,
@@ -266,14 +264,6 @@ fn file_della_copertina(
 ) -> Option<PathBuf> {
     if crate::insieme::e_una_chiave_di_sessione(hash) {
         return crate::insieme::copertina_su_file(app, hash);
-    }
-    if crate::lontano::e_una_copertina(hash) {
-        return super::lontane::file_di(
-            app,
-            hash,
-            true,
-            crate::riproduzione::insieme::aggiorna_finestra,
-        );
     }
     Some(copertine.path_for(hash)).filter(|percorso| percorso.exists())
 }
