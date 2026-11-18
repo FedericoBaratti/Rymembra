@@ -110,6 +110,23 @@ pub const CHIAVE_SOTTOFONDO: &str = "daemon.attivo";
 /// quando l'auto si collega — e col sottofondo si spegne: vedi [`sottofondo`].
 pub const CHIAVE_PARTI_CON_AUTO: &str = "daemon.auto";
 
+/// Le risposte «Lasciali» alla domanda sulle righe che un dispositivo non manda
+/// più: un oggetto JSON `{ "<chiave del dispositivo>": <quante righe> }`.
+///
+/// Quando un dispositivo smette di condividere molte righe (almeno
+/// `SOGLIA_RIMOZIONI` e un quinto del catalogo) il nucleo le tiene e aspetta un
+/// sì per toglierle (`specchio::archivio`). «Lasciali» non toglie niente, ma il
+/// nucleo rifà il conto a ogni giro e la stessa domanda alla stessa cifra
+/// tornerebbe — a ogni giro, e a ogni riavvio, finché la finestra la ricordava
+/// solo in memoria. Si ricorda **il numero**: la domanda torna quando cambia.
+///
+/// Fuori dal profilo e dal backup, come `lontano.*`: è la storia di questa
+/// macchina con quei dispositivi, e su un altro computer nasconderebbe la
+/// domanda per un catalogo che lì nessuno ha mai visto. Una chiave sola e non
+/// una per dispositivo: si legge tutta all'apertura, e «Dimentica» la tocca nella
+/// stessa transazione che toglie il dispositivo.
+pub const CHIAVE_LASCIATI: &str = "lontano.lasciati";
+
 /// Il relay più lungo che si accetta: un indirizzo, non un testo.
 pub const MASSIMO_RELAY: usize = 300;
 
@@ -251,6 +268,66 @@ pub fn scegli_relay(connection: &Connection, relay: Option<&str>) -> Result<(), 
 /// Quelli del database.
 pub fn scegli_dati_mobili(connection: &Connection, scelta: DatiMobili) -> Result<(), AppError> {
     crate::settings::write_json(connection, CHIAVE_DATI_MOBILI, &scelta)
+}
+
+/// Di quante righe la persona ha detto «Lasciali», per dispositivo
+/// ([`CHIAVE_LASCIATI`]). Un valore illeggibile vale nessun ricordo: è
+/// un'impostazione, e al peggio la domanda torna una volta.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn righe_lasciate(
+    connection: &Connection,
+) -> Result<std::collections::BTreeMap<String, usize>, AppError> {
+    Ok(
+        crate::settings::read_json::<std::collections::BTreeMap<String, usize>>(
+            connection,
+            CHIAVE_LASCIATI,
+        )?
+        .unwrap_or_default(),
+    )
+}
+
+/// Ricorda che la persona ha detto «Lasciali» a `quante` righe di `chiave`, o —
+/// con `None` — dimentica la sua risposta («Togli»: le righe non ci sono più, e
+/// se un giorno ne aspetteranno altrettante è un'altra domanda).
+///
+/// Legge e riscrive la chiave intera: chi chiama lo fa sotto il lucchetto della
+/// libreria, come per ogni scrittura di un comando.
+///
+/// # Errori
+///
+/// `lontano.protocollo` per una chiave che non è di 64 cifre esadecimali; quelli
+/// del database.
+pub fn ricorda_lasciati(
+    connection: &Connection,
+    chiave: &str,
+    quante: Option<usize>,
+) -> Result<(), AppError> {
+    let chiave = chiave_valida(chiave)?;
+    let mut lasciate = righe_lasciate(connection)?;
+    match quante {
+        Some(quante) => {
+            lasciate.insert(chiave, quante);
+        }
+        None => {
+            lasciate.remove(&chiave);
+        }
+    }
+    salva_lasciati(connection, &lasciate)
+}
+
+/// Scrive le risposte «Lasciali»; senza nessuna, toglie la chiave invece di
+/// lasciarci un oggetto vuoto.
+fn salva_lasciati(
+    connection: &Connection,
+    lasciate: &std::collections::BTreeMap<String, usize>,
+) -> Result<(), AppError> {
+    if lasciate.is_empty() {
+        return crate::settings::forget(connection, CHIAVE_LASCIATI).map(|_| ());
+    }
+    crate::settings::write_json(connection, CHIAVE_LASCIATI, lasciate)
 }
 
 /// Un relay è un indirizzo `https://` con un host, senza spazi. Il resto lo
@@ -420,7 +497,8 @@ pub fn revoca(connection: &Connection, chiave: &str) -> Result<(), AppError> {
         .map_err(|err| db_error("revoca di un dispositivo", &err))
 }
 
-/// Dimentica un dispositivo, gli ascolti che aspettavano di arrivargli, e la
+/// Dimentica un dispositivo, gli ascolti che aspettavano di arrivargli, il suo
+/// «Lasciali» ([`CHIAVE_LASCIATI`]), e la
 /// fiducia che il QR aveva dato in «Ascolta insieme» alla chiave che il
 /// dispositivo aveva portato: un telefono perso e dimenticato non deve poter
 /// entrare nelle sessioni di casa senza codice. Un PC che la persona aveva
@@ -459,6 +537,13 @@ pub fn dimentica(connection: &Connection, chiave: &str) -> Result<bool, AppError
     )
     .map_err(guasto)?;
     let cambiata = senza_fiducia_insieme(&tx, insieme.as_deref()).map_err(guasto)?;
+    // E la sua risposta «Lasciali»: un dispositivo dimenticato che si riassocia è
+    // un dispositivo nuovo, e la domanda torna da capo. Senza controllare la
+    // forma della chiave, come il resto di qui: dimenticare non deve fallire.
+    let mut lasciate = righe_lasciate(&tx)?;
+    if lasciate.remove(&chiave).is_some() {
+        salva_lasciati(&tx, &lasciate)?;
+    }
     tx.commit().map_err(guasto)?;
     Ok(cambiata)
 }
@@ -1141,5 +1226,119 @@ mod prove {
         assert_eq!(ricevuti_da(c, &uno, 150).unwrap(), 1, "solo da allora");
         assert_eq!(ricevuti_da(c, &altro, 0).unwrap(), 1);
         assert_eq!(ricevuti_da(c, &"1c".repeat(32), 0).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod prove_dei_lasciali {
+    //! «Lasciali» ricordato dopo un riavvio (FR2): per dispositivo, col numero di
+    //! righe che la persona ha lasciato.
+
+    use super::*;
+    use crate::db::open_in_memory;
+
+    #[test]
+    fn i_lasciali_si_ricordano_per_dispositivo_col_numero_lasciato() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let (pc, portatile) = ("aa".repeat(32), "bb".repeat(32));
+        assert!(righe_lasciate(c).unwrap().is_empty(), "niente di serie");
+
+        ricorda_lasciati(c, &pc, Some(120)).unwrap();
+        ricorda_lasciati(c, &portatile, Some(7000)).unwrap();
+        let lasciate = righe_lasciate(c).unwrap();
+        assert_eq!(lasciate.get(&pc), Some(&120));
+        assert_eq!(lasciate.get(&portatile), Some(&7000));
+
+        // La chiave scritta in maiuscolo è la stessa, e il numero nuovo prende il posto.
+        ricorda_lasciati(c, &pc.to_ascii_uppercase(), Some(130)).unwrap();
+        let lasciate = righe_lasciate(c).unwrap();
+        assert_eq!(lasciate.len(), 2, "non una chiave in più");
+        assert_eq!(lasciate.get(&pc), Some(&130));
+
+        // `None` dimentica quello di un dispositivo e lascia stare gli altri.
+        ricorda_lasciati(c, &pc, None).unwrap();
+        ricorda_lasciati(c, &pc, None).unwrap();
+        let lasciate = righe_lasciate(c).unwrap();
+        assert_eq!(lasciate.get(&pc), None);
+        assert_eq!(lasciate.get(&portatile), Some(&7000));
+    }
+
+    #[test]
+    fn una_chiave_che_non_e_di_un_dispositivo_non_si_scrive() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let (non_esadecimale, troppo_lunga) = ("g".repeat(64), "a".repeat(65));
+        for cattiva in ["", "corta", non_esadecimale.as_str(), troppo_lunga.as_str()] {
+            let errore = ricorda_lasciati(c, cattiva, Some(1)).expect_err(cattiva);
+            assert_eq!(
+                errore.code().kind().code(),
+                "lontano.protocollo",
+                "{cattiva}"
+            );
+        }
+        assert!(righe_lasciate(c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn un_valore_illeggibile_vale_nessun_lasciali_e_si_riscrive() {
+        // È un'impostazione, non un dato da difendere: al peggio la domanda
+        // torna una volta, che è il comportamento di prima.
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        crate::settings::write(c, CHIAVE_LASCIATI, "{ non json").unwrap();
+        assert!(righe_lasciate(c).unwrap().is_empty());
+        let pc = "aa".repeat(32);
+        ricorda_lasciati(c, &pc, Some(5)).unwrap();
+        assert_eq!(righe_lasciate(c).unwrap().get(&pc), Some(&5));
+    }
+
+    #[test]
+    fn dimenticare_un_dispositivo_toglie_il_suo_lasciali_e_non_quello_degli_altri() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let (pc, portatile) = ("aa".repeat(32), "bb".repeat(32));
+        for chiave in [&pc, &portatile] {
+            associa(
+                c,
+                Nuovo {
+                    chiave,
+                    nome: "Dispositivo",
+                    piattaforma: "windows",
+                    dispositivo: "d-1",
+                    chiave_insieme: None,
+                    indirizzi: &[],
+                },
+                1000,
+            )
+            .unwrap();
+        }
+        ricorda_lasciati(c, &pc, Some(120)).unwrap();
+        ricorda_lasciati(c, &portatile, Some(60)).unwrap();
+
+        dimentica(c, &pc).unwrap();
+        let lasciate = righe_lasciate(c).unwrap();
+        assert_eq!(
+            lasciate.get(&pc),
+            None,
+            "un dispositivo dimenticato non lascia ricordi"
+        );
+        assert_eq!(lasciate.get(&portatile), Some(&60));
+
+        // Riassociarsi dopo è un dispositivo nuovo: la domanda torna da capo.
+        associa(
+            c,
+            Nuovo {
+                chiave: &pc,
+                nome: "Dispositivo",
+                piattaforma: "windows",
+                dispositivo: "d-1",
+                chiave_insieme: None,
+                indirizzi: &[],
+            },
+            2000,
+        )
+        .unwrap();
+        assert_eq!(righe_lasciate(c).unwrap().get(&pc), None);
     }
 }

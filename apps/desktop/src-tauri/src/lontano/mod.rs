@@ -618,6 +618,42 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
     .await
 }
 
+/// Le risposte «Lasciali» ricordate: per dispositivo, di quante righe (FR2).
+///
+/// La finestra le legge una volta all'apertura, per non rifare la domanda sulle
+/// righe che un dispositivo non manda più alla stessa cifra dopo un riavvio.
+/// Sola lettura, su una connessione a parte: all'avvio la libreria può essere
+/// occupata da una scansione, e una domanda già risolta non deve aspettarla.
+#[tauri::command]
+pub async fn lontano_specchio_lasciati(
+    app: AppHandle,
+) -> Esito<std::collections::BTreeMap<String, usize>> {
+    in_disparte(move || leggi_a_parte(&app, dispositivi::righe_lasciate)).await
+}
+
+/// Ricorda che la persona ha detto «Lasciali» a `quante` righe di `chiave`; senza
+/// un numero (`None`: «Togli») dimentica la sua risposta (FR2).
+///
+/// Sta qui e non in `specchio.rs` perché il ricordo è una chiave delle
+/// impostazioni del collegamento (`dispositivi::CHIAVE_LASCIATI`), non una
+/// regola dello specchio: le regole e la loro conferma (`lontano_specchio_conferma`)
+/// restano dove sono.
+///
+/// # Errori
+///
+/// `lontano.protocollo` per una chiave che non è di 64 cifre esadecimali.
+#[tauri::command]
+pub async fn lontano_specchio_lascia(
+    app: AppHandle,
+    chiave: String,
+    quante: Option<usize>,
+) -> Esito<()> {
+    in_disparte(move || {
+        scrivi_in_libreria(&app, |c| dispositivi::ricorda_lasciati(c, &chiave, quante))
+    })
+    .await
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;

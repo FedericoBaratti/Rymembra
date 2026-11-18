@@ -370,6 +370,7 @@ const FUORI: &[&str] = &[
     "il sottofondo del telefono: «Resta attiva in sottofondo» e «Parti con l'auto» (fatti di questo telefono: la sua batteria, il produttore che lo lascia vivere o no, e l'auto in cui lo si collega: su un altro telefono farebbero partire la musica da sola)",
     "il sottofondo del computer: le etichette del vassoio e la risposta alla proposta di partire con Windows (fatti di questa macchina e di questa installazione; «Avvia con Windows» sta nel registro di Windows, non nella libreria)",
     "le Novità già viste: la versione di cui si è letta la finestra delle Novità (la storia di questa installazione: portata su un altro computer nasconderebbe le novità che lì sono nuove)",
+    "le risposte «Lasciali» alle righe che un dispositivo collegato non manda più (la storia di questa macchina con quei dispositivi: su un altro computer nasconderebbero la domanda per cataloghi che lì nessuno ha mai visto)",
 ];
 
 /// Il file v1, come sta sul disco.

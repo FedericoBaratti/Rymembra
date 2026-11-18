@@ -339,6 +339,46 @@ fn niente_di_insieme_viaggia_nel_profilo() {
 }
 
 #[test]
+fn i_lasciali_restano_qui_e_il_manifesto_lo_dichiara() {
+    // Le risposte «Lasciali» alla domanda sulle righe che un dispositivo
+    // collegato non manda più (FR2) sono la storia di **questa** macchina con
+    // **quei** dispositivi: portate su un altro computer nasconderebbero la
+    // domanda per cataloghi che lì nessuno ha mai visto. Sotto `lontano.` come il
+    // resto del collegamento via internet, quindi fuori dal catalogo; il
+    // manifesto lo dichiara.
+    let mut c = libreria();
+    crate::dispositivi::ricorda_lasciati(&c, &"ab".repeat(32), Some(1340)).expect("lasciati");
+    let raccolto = raccogli(
+        &mut c,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        0,
+        &identita_fissa,
+    )
+    .expect("raccolta");
+    assert!(
+        !raccolto
+            .preferenze
+            .voci
+            .contains_key(crate::dispositivi::CHIAVE_LASCIATI),
+        "i «Lasciali» non entrano nel profilo"
+    );
+    assert!(
+        raccolto
+            .lasciate
+            .contains(&crate::dispositivi::CHIAVE_LASCIATI.to_owned()),
+        "e il profilo dice che li ha lasciati qui"
+    );
+    assert!(
+        super::FUORI
+            .iter()
+            .any(|riga| riga.contains("«Lasciali»") && riga.contains("righe che un dispositivo")),
+        "il manifesto dice che le risposte «Lasciali» sono rimaste fuori, e perché"
+    );
+}
+
+#[test]
 fn il_sottofondo_del_telefono_resta_qui_e_il_manifesto_lo_dichiara() {
     let mut c = libreria();
     crate::dispositivi::sottofondo(&c, true).expect("acceso");

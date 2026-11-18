@@ -605,6 +605,49 @@ export function daConfermare(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecc
   return Object.values(avanzamenti).filter((a) => a.fase === "fine" && a.inAttesa > 0);
 }
 
+/**
+ * Il dispositivo di cui chiedere adesso «toglierli?», se ce n'è uno.
+ *
+ * `lasciate` è quel che il nucleo ricorda: per dispositivo, di quante righe la
+ * persona ha detto «Lasciali». Il nucleo rifà il conto a ogni giro — ogni cinque
+ * minuti — e la stessa domanda alla stessa cifra tornerebbe ogni cinque minuti,
+ * e a ogni riavvio: si ricorda finché il numero non cambia, e un numero diverso
+ * è una situazione diversa che si chiede di nuovo.
+ *
+ * `null` è «il nucleo non ha ancora risposto»: non si chiede niente. Partire da
+ * una mappa vuota farebbe lampeggiare, a ogni avvio, una domanda già risolta.
+ */
+export function domandaSullePerdite(
+  avanzamenti: AvanzamentiSpecchio,
+  nomi: ReadonlyMap<string, string>,
+  lasciate: ReadonlyMap<string, number> | null,
+): AvanzamentoSpecchio | undefined {
+  if (lasciate === null) return undefined;
+  return daConfermare(avanzamenti).find(
+    (a) => nomi.has(a.dispositivo) && lasciate.get(a.dispositivo) !== a.inAttesa,
+  );
+}
+
+/**
+ * I «Lasciali» da dimenticare: quelli dei dispositivi che a giro finito non hanno
+ * più righe in attesa.
+ *
+ * Le righe sono tornate — il disco riattaccato, la cartella rimessa —, e un
+ * ricordo vecchio resterebbe lì a nascondere la domanda se un giorno ne
+ * mancassero altrettante: sarebbe un'altra situazione, a cui si risponde da capo.
+ * Si guarda solo a giro finito (`fine`): in lettura o dopo un errore il conto non
+ * è quello vero, e un dispositivo di cui non si sa ancora niente non si tocca.
+ */
+export function ricordiDaDimenticare(
+  avanzamenti: AvanzamentiSpecchio,
+  lasciate: ReadonlyMap<string, number>,
+): string[] {
+  return [...lasciate.keys()].filter((chiave) => {
+    const adesso = avanzamenti[chiave];
+    return adesso?.fase === "fine" && adesso.inAttesa === 0;
+  });
+}
+
 /** Ogni quanto, al più, la libreria si rilegge mentre un catalogo sta arrivando. */
 export const RILEGGI_DURANTE_LA_LETTURA_MS = 3_000;
 

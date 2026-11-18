@@ -1085,6 +1085,8 @@ pub fn run() {
             lontano::lontano_rispondi,
             lontano::lontano_rinomina,
             lontano::lontano_dimentica,
+            lontano::lontano_specchio_lasciati,
+            lontano::lontano_specchio_lascia,
             lontano::specchio::lontano_dimentica_anteprima,
             lontano::specchio::lontano_specchio_conferma,
             lontano::specchio::lontano_specchio_ora,

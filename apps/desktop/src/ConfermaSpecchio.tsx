@@ -18,14 +18,20 @@
  * `Dialogo` dà il fuoco che entra, la trappola del Tab, Escape (che vale
  * «Lasciali») e la pagina dietro inerte.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useArchivio } from "./archivio";
 import { Dialogo } from "./Dialogo";
 import { brani_ } from "./formato";
 import { ipc } from "./ipc";
 import { t } from "./lingue";
-import { archivioLontano, archivioSpecchio, daConfermare, daFotografia } from "./lontano";
+import {
+  archivioLontano,
+  archivioSpecchio,
+  daFotografia,
+  domandaSullePerdite,
+  ricordiDaDimenticare,
+} from "./lontano";
 import { unaVolta } from "./modale";
 import { dispositiviDiLibreria } from "./origine";
 
@@ -80,7 +86,10 @@ export function ConfermaSpecchio({
  * «Lasciali» si ricorda finché il numero non cambia: il nucleo rifà il conto a
  * ogni giro — ogni cinque minuti — e la stessa domanda alla stessa cifra
  * tornerebbe ogni cinque minuti. Un numero diverso è una situazione diversa, e si
- * chiede di nuovo. Uno solo in tutto il programma, in `App`.
+ * chiede di nuovo. Il ricordo sta nel nucleo (`dispositivi::ricorda_lasciati`):
+ * prima era solo qui, in memoria, e il riavvio lo scordava — la domanda tornava
+ * alla stessa cifra. Finché il nucleo non ha risposto non si chiede niente
+ * (`domandaSullePerdite`). Uno solo in tutto il programma, in `App`.
  */
 export function DomandaSpecchio({
   onErrore,
@@ -94,11 +103,50 @@ export function DomandaSpecchio({
 }) {
   const avanzamenti = useArchivio(archivioSpecchio);
   const stato = useArchivio(archivioLontano);
-  const [lasciate, setLasciate] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // `null` è «il nucleo non ha ancora detto»: vedi `domandaSullePerdite`.
+  const [lasciate, setLasciate] = useState<ReadonlyMap<string, number> | null>(null);
+  useEffect(() => {
+    let superata = false;
+    ipc
+      .lontanoSpecchioLasciati()
+      .then((ricordate) => {
+        // Quel che si è lasciato nel frattempo vince su quel che il nucleo aveva.
+        if (!superata) {
+          setLasciate((prima) => new Map([...Object.entries(ricordate), ...(prima ?? [])]));
+        }
+      })
+      .catch((errore: unknown) => {
+        // Si dice, e si va avanti: senza il ricordo la domanda torna, che è il
+        // comportamento di prima e non toglie niente a nessuno.
+        if (superata) return;
+        onErrore(errore);
+        setLasciate((prima) => prima ?? new Map());
+      });
+    return () => {
+      superata = true;
+    };
+    // Una lettura sola, all'apertura: dopo, il ricordo lo scrive questo componente.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Le righe tornate: il ricordo non serve più, e se un giorno ne mancassero
+  // altrettante sarebbe un'altra domanda (`ricordiDaDimenticare`).
+  useEffect(() => {
+    if (lasciate === null) return;
+    const vecchi = ricordiDaDimenticare(avanzamenti, lasciate);
+    if (vecchi.length === 0) return;
+    setLasciate((prima) => {
+      const resto = new Map(prima);
+      for (const chiave of vecchi) resto.delete(chiave);
+      return resto;
+    });
+    for (const chiave of vecchi) {
+      ipc.lontanoSpecchioLascia(chiave, null).catch(onErrore);
+    }
+    // `onErrore` è quello di sempre: non è una ragione per rifare il conto.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avanzamenti, lasciate]);
   const nomi = new Map(dispositiviDiLibreria(stato).map((d) => [d.chiave, d.nome]));
-  const domanda = daConfermare(avanzamenti).find(
-    (a) => nomi.has(a.dispositivo) && lasciate.get(a.dispositivo) !== a.inAttesa,
-  );
+  const domanda = domandaSullePerdite(avanzamenti, nomi, lasciate);
   if (domanda === undefined) return null;
   const nome = nomi.get(domanda.dispositivo) ?? "";
   const ricorda = () =>
@@ -108,9 +156,17 @@ export function DomandaSpecchio({
       key={`${domanda.dispositivo}:${domanda.inAttesa}`}
       nome={nome}
       quante={domanda.inAttesa}
-      onLascia={ricorda}
-      onTogli={() => {
+      onLascia={() => {
         ricorda();
+        ipc.lontanoSpecchioLascia(domanda.dispositivo, domanda.inAttesa).catch(onErrore);
+      }}
+      onTogli={() => {
+        // In memoria resta fino alla rilettura: il conto in attesa si azzera
+        // quando il nucleo ha finito, e nel frattempo la domanda non torna. Nel
+        // nucleo si dimentica: le righe non ci sono più, e se un giorno ne
+        // aspetteranno altrettante è un'altra domanda.
+        ricorda();
+        ipc.lontanoSpecchioLascia(domanda.dispositivo, null).catch(onErrore);
         ipc
           .lontanoSpecchioConferma(domanda.dispositivo)
           .then((tolte) => {
