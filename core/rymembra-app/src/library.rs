@@ -134,6 +134,7 @@ use crate::scadenza::Mancato;
 use crate::specchio::Origine;
 
 mod aggregati;
+mod artista;
 mod camminata;
 pub mod condivisa;
 mod identificativi;
@@ -146,6 +147,10 @@ pub use aggregati::{
     Aggregates, Toccati, VERSIONE_AGGREGATI, chiedi_ricostruzione_intera, generazione,
     rebuild_aggregates, ricostruisci_aggregati, riempi_le_chiavi_d_ordine,
     riempi_le_chiavi_d_ordine_all_apertura,
+};
+pub use artista::{
+    ContoPartecipazioni, OrdineBraniArtista, Partecipazione, brani_artista, id_dei_brani_artista,
+    id_delle_partecipazioni, partecipazioni, partecipazioni_conta,
 };
 pub use camminata::{
     Cambiamento, Natura, Ricognizione, cammina, cartelle_da_riguardare, dentro_le_radici,

@@ -562,6 +562,7 @@ fn la_scheda_di_una_riga_porta_il_livello_del_brano() {
         fonte: None,
         fonte_pagina: None,
         licenza: None,
+        album_artist: None,
     };
     let livello = SchedaSorgente {
         track_id: 9,

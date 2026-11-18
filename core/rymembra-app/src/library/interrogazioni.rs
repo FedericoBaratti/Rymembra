@@ -60,12 +60,20 @@ pub struct TrackSummary {
     /// Per un file preso da un catalogo la porta solo [`read_summary`], che la
     /// legge da `desiderati`: negli elenchi quel file ha `None`.
     pub licenza: Option<String>,
+    /// L'artista del disco, se il tag c'è.
+    ///
+    /// Con `artist` fa l'artista **effettivo** sotto cui il brano sta negli
+    /// elenchi (`ARTISTA_EFFETTIVO`): il nome del pulsante di «In riproduzione»
+    /// apre la pagina di quello. Senza, una raccolta porterebbe alla pagina
+    /// dell'interprete del brano, che nella griglia degli artisti non c'è.
+    pub album_artist: Option<String>,
 }
 
 /// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
 pub(crate) const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album, t.album_key,
      t.track_number, t.disc_number, t.duration_ms, t.year, t.cover_art_hash,
-     t.play_count, t.liked, t.rating, t.source_service, t.fonte_pagina, t.licenza";
+     t.play_count, t.liked, t.rating, t.source_service, t.fonte_pagina, t.licenza,
+     t.album_artist";
 
 /// Quante sono le colonne di [`COLONNE_BRANO`].
 ///
@@ -75,7 +83,7 @@ pub(crate) const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album
 /// resta un cambiamento in un posto solo; scritto a mano in ogni chiamante,
 /// sarebbe il genere di disallineamento che si manifesta come «l'ora
 /// dell'ascolto è diventata il voto».
-pub(crate) const COLONNE_BRANO_QUANTE: usize = 17;
+pub(crate) const COLONNE_BRANO_QUANTE: usize = 18;
 
 pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
     Ok(TrackSummary {
@@ -96,6 +104,7 @@ pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
         fonte: row.get(14)?,
         fonte_pagina: row.get(15)?,
         licenza: row.get(16)?,
+        album_artist: row.get(17)?,
     })
 }
 

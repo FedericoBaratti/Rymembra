@@ -1641,6 +1641,84 @@ pub async fn album_artista(
     .map_err(errore)
 }
 
+/// Una pagina dei brani di un artista: la sezione «Brani» della sua pagina.
+///
+/// L'ordinamento è un nome della finestra tradotto in un valore chiuso
+/// (`viste::ordine_artista_da`): non raggiunge mai una clausola SQL.
+#[tauri::command]
+pub async fn brani_artista(
+    app: tauri::AppHandle,
+    nome: String,
+    ordine: String,
+    offset: i64,
+    limite: i64,
+    origine: Option<Origine>,
+) -> Esito<Vec<TrackSummary>> {
+    let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
+    let ordine = crate::viste::ordine_artista_da(&ordine);
+    leggi_la_libreria(app, "brani di un artista", move |libreria| {
+        rymembra_app::library::brani_artista(
+            &libreria.connection,
+            &origine,
+            &nome,
+            ordine,
+            offset,
+            limite,
+        )
+    })
+    .await
+    .map_err(errore)
+}
+
+/// Una pagina delle partecipazioni di un artista: «Compare anche in».
+///
+/// `tipo` è `esatte` (i brani con il suo nome in un disco di un altro: le
+/// raccolte) o `euristiche` (il suo nome fra i crediti di un brano di un altro:
+/// i «feat.»). Un altro valore è un errore di chi chiama, non un ripiego: le due
+/// specie non vanno mai confuse.
+#[tauri::command]
+pub async fn partecipazioni(
+    app: tauri::AppHandle,
+    nome: String,
+    tipo: String,
+    offset: i64,
+    limite: i64,
+    origine: Option<Origine>,
+) -> Esito<Vec<TrackSummary>> {
+    let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
+    let tipo = crate::viste::specie_di_partecipazione(&tipo).map_err(errore)?;
+    leggi_la_libreria(app, "partecipazioni di un artista", move |libreria| {
+        rymembra_app::library::partecipazioni(
+            &libreria.connection,
+            &origine,
+            &nome,
+            tipo,
+            offset,
+            limite,
+        )
+    })
+    .await
+    .map_err(errore)
+}
+
+/// Quante partecipazioni ha un artista, per specie: la lunghezza dei due elenchi
+/// di «Compare anche in».
+#[tauri::command]
+pub async fn partecipazioni_conta(
+    app: tauri::AppHandle,
+    nome: String,
+    origine: Option<Origine>,
+) -> Esito<rymembra_app::library::ContoPartecipazioni> {
+    let origine = origine.unwrap_or_default();
+    leggi_la_libreria(app, "conteggio delle partecipazioni", move |libreria| {
+        rymembra_app::library::partecipazioni_conta(&libreria.connection, &origine, &nome)
+    })
+    .await
+    .map_err(errore)
+}
+
 /// Una pagina di brani.
 #[tauri::command]
 pub async fn brani(

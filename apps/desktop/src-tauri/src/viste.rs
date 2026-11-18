@@ -28,7 +28,10 @@
 //! si buttava tutto il resto: diciassette colonne di ogni riga, col lucchetto
 //! della libreria in mano, fra il doppio clic e il suono (R21-6).
 
-use rymembra_app::library::{TrackOrder, id_dei_brani, id_dei_preferiti, id_della_ricerca};
+use rymembra_app::library::{
+    OrdineBraniArtista, Partecipazione, TrackOrder, id_dei_brani, id_dei_brani_artista,
+    id_dei_preferiti, id_della_ricerca, id_delle_partecipazioni,
+};
 use rymembra_app::specchio::Origine;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Deserialize;
@@ -54,6 +57,50 @@ pub enum VistaBrani {
         /// Quel che si cerca, come lo scrive chi cerca.
         query: String,
     },
+    /// I brani di un artista: la sezione «Brani» della sua pagina.
+    Artista {
+        /// L'artista effettivo, come lo dà la griglia degli artisti.
+        nome: String,
+        /// Il nome dell'ordinamento: vedi [`ordine_artista_da`].
+        ordine: String,
+    },
+    /// Le partecipazioni di un artista: «Compare anche in».
+    Partecipazioni {
+        /// L'artista effettivo, come lo dà la griglia degli artisti.
+        nome: String,
+        /// `esatte` o `euristiche`: le due specie non si confondono mai.
+        specie: String,
+    },
+}
+
+/// Il nome di un ordinamento dei brani di un artista, in un valore chiuso.
+///
+/// I quattro nomi di `OrdineArtista` in `ipc/libreria.ts`. Un nome sconosciuto
+/// vale «album», come per `ordine_da`: l'insieme è chiuso e lo scrive solo
+/// questa applicazione.
+pub(crate) fn ordine_artista_da(nome: &str) -> OrdineBraniArtista {
+    match nome {
+        "anno" => OrdineBraniArtista::Anno,
+        "titolo" => OrdineBraniArtista::Titolo,
+        "ascoltati" => OrdineBraniArtista::PiuAscoltati,
+        _ => OrdineBraniArtista::Album,
+    }
+}
+
+/// La specie di partecipazione di un nome della finestra: `esatte` o `euristiche`.
+///
+/// Un altro valore è un errore di chi chiama e non un ripiego: tradurre un
+/// refuso in «esatte» direbbe fatti di quel che è una ricerca. Ci passano anche i
+/// comandi `partecipazioni` e `partecipazioni_conta`.
+pub(crate) fn specie_di_partecipazione(nome: &str) -> Result<Partecipazione, AppError> {
+    match nome {
+        "esatte" => Ok(Partecipazione::Esatta),
+        "euristiche" => Ok(Partecipazione::Euristica),
+        altro => Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "partecipazioni".to_owned(),
+            detail: Some(format!("la specie «{altro}» non esiste")),
+        })),
+    }
 }
 
 /// Il nome di un ordinamento, in un valore chiuso.
@@ -84,6 +131,12 @@ fn identificativi(
         VistaBrani::Brani { ordine } => id_dei_brani(connection, origine, ordine_da(ordine)),
         VistaBrani::Preferiti => id_dei_preferiti(connection, origine),
         VistaBrani::Ricerca { query } => id_della_ricerca(connection, origine, query),
+        VistaBrani::Artista { nome, ordine } => {
+            id_dei_brani_artista(connection, origine, nome, ordine_artista_da(ordine))
+        }
+        VistaBrani::Partecipazioni { nome, specie } => {
+            id_delle_partecipazioni(connection, origine, nome, specie_di_partecipazione(specie)?)
+        }
     }
 }
 
@@ -122,7 +175,7 @@ pub async fn vista_brani_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rymembra_app::library::{TrackSummary, list_liked, list_tracks, search};
+    use rymembra_app::library::{TrackSummary, brani_artista, list_liked, list_tracks, search};
 
     /// Una libreria in memoria con `n` brani, uno su tre fra i preferiti.
     fn libreria(n: i64) -> rusqlite::Connection {
@@ -169,6 +222,132 @@ mod tests {
             offset += 7;
             tutti.extend(righe.into_iter().map(|b| b.id));
         }
+    }
+
+    /// Una libreria con un artista che ha dischi, raccolte e brani senza disco.
+    fn libreria_con_un_artista() -> rusqlite::Connection {
+        let connection = rymembra_app::db::open_in_memory()
+            .expect("database")
+            .connection;
+        for (i, (titolo, artista, artista_album, album_key, anno, ascolti)) in [
+            ("Zeta", "Tale", Some("Tale"), Some("primo"), Some(2001), 5),
+            ("Beta", "Tale", Some("Tale"), Some("primo"), Some(2001), 9),
+            ("Singolo", "Tale", None, None, None, 20),
+            (
+                "Raccolta",
+                "Tale",
+                Some("Vari"),
+                Some("raccolta"),
+                Some(2005),
+                1,
+            ),
+            (
+                "Altrui",
+                "Altro",
+                Some("Vari"),
+                Some("raccolta"),
+                Some(2005),
+                0,
+            ),
+            ("Mista", "Tale", None, Some("mista"), Some(2003), 2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            connection
+                .execute(
+                    "INSERT INTO tracks
+                         (path, track_key, title, artist, album, album_artist, album_key, year,
+                          play_count, duration_ms, file_size, date_added, date_modified)
+                     VALUES (?1, ?2, ?3, ?4, 'Disco', ?5, ?6, ?7, ?8, 1000, 1, 1, 0)",
+                    rusqlite::params![
+                        format!(r"C:\M\{i}.mp3"),
+                        format!("k{i}"),
+                        titolo,
+                        artista,
+                        artista_album,
+                        album_key,
+                        anno,
+                        ascolti
+                    ],
+                )
+                .expect("riga di brano");
+        }
+        let mut connection = connection;
+        let tx = connection.transaction().expect("transazione");
+        rymembra_app::library::rebuild_aggregates(&tx).expect("aggregati");
+        tx.commit().expect("commit");
+        connection
+    }
+
+    #[test]
+    fn la_vista_di_un_artista_ha_l_ordine_delle_pagine_e_solo_i_suoi_brani() {
+        let connection = libreria_con_un_artista();
+        for ordine in ["album", "anno", "titolo", "ascoltati"] {
+            let vista = VistaBrani::Artista {
+                nome: "Tale".to_owned(),
+                ordine: ordine.to_owned(),
+            };
+            let tutti =
+                identificativi(&connection, &Origine::Tutti, &vista).expect("identificativi");
+            let pagine = a_pagine(|o, l| {
+                brani_artista(
+                    &connection,
+                    &Origine::Tutti,
+                    "Tale",
+                    ordine_artista_da(ordine),
+                    o,
+                    l,
+                )
+            });
+            // I suoi: i due del disco, quello senza disco, quello della raccolta
+            // senza artista del disco... e non quelli di «Vari» né di «Altro».
+            assert_eq!(tutti.len(), 4, "{ordine}");
+            assert_eq!(tutti, pagine, "{ordine}: lo stesso ordine delle pagine");
+        }
+    }
+
+    #[test]
+    fn la_vista_di_un_artista_arriva_dalla_finestra_nella_forma_di_ipc_ts() {
+        let vista: VistaBrani =
+            serde_json::from_str(r#"{"tipo":"artista","nome":"Tale","ordine":"anno"}"#)
+                .expect("artista");
+        assert_eq!(
+            vista,
+            VistaBrani::Artista {
+                nome: "Tale".to_owned(),
+                ordine: "anno".to_owned()
+            }
+        );
+        let compare: VistaBrani =
+            serde_json::from_str(r#"{"tipo":"partecipazioni","nome":"Tale","specie":"esatte"}"#)
+                .expect("partecipazioni");
+        assert_eq!(
+            compare,
+            VistaBrani::Partecipazioni {
+                nome: "Tale".to_owned(),
+                specie: "esatte".to_owned()
+            }
+        );
+        assert_eq!(
+            specie_di_partecipazione("esatte").expect("esatte"),
+            Partecipazione::Esatta
+        );
+        assert_eq!(
+            specie_di_partecipazione("euristiche").expect("euristiche"),
+            Partecipazione::Euristica
+        );
+        // Un refuso non diventa «esatte»: le due specie non si confondono.
+        assert!(specie_di_partecipazione("esatta").is_err());
+        // I quattro nomi di `OrdineArtista` in `ipc/libreria.ts`, e il ripiego.
+        assert_eq!(ordine_artista_da("album"), OrdineBraniArtista::Album);
+        assert_eq!(ordine_artista_da("anno"), OrdineBraniArtista::Anno);
+        assert_eq!(ordine_artista_da("titolo"), OrdineBraniArtista::Titolo);
+        assert_eq!(
+            ordine_artista_da("ascoltati"),
+            OrdineBraniArtista::PiuAscoltati
+        );
+        assert_eq!(ordine_artista_da("boh"), OrdineBraniArtista::Album);
     }
 
     #[test]
