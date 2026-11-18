@@ -358,12 +358,14 @@ device that has not updated is under Known limits.
   Store package) for the current user only.
 - **The startup entry** is never written by a test copy (one with a custom data
   folder), and an entry turned off in Windows is never overridden.
-- **Eight places of `unsafe`**, all declared: seven in `rymembra-barra` —
-  the taskbar buttons (`finestra`), the drive type (`unita`), background mode and
-  battery (`sottofondo`), USB eject (`espulsione`), the Shift key at startup
-  (`maiusc`), three registry calls for the startup entry (`registro`) and the
-  never-shown window that hangs the media keys (`messaggi`) — and `jvm.rs` in
-  `rymembra-android`. The last two are new; each block says why it is correct.
+- **Two new places of `unsafe`**, both declared in `rymembra-barra` and each
+  block saying why it is correct: three registry calls for the startup entry
+  (`registro`) and the never-shown native window that hangs the media keys
+  (`messaggi`). With the five of 3.2.1 — the taskbar buttons (`finestra`), the
+  drive type (`unita`), background mode and battery (`sottofondo`), USB eject
+  (`espulsione`) and the Shift key at startup (`maiusc`) — that makes seven in
+  that crate, plus `jvm.rs` in `rymembra-android`, eight in all. The lists in the
+  `Cargo.toml` comments agree.
 - **Android.** The background service is not exported and has the new
   `FOREGROUND_SERVICE_CONNECTED_DEVICE` permission. The media-button receiver is
   exported, because the system sends the key, but disabled by default: it is
