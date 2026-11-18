@@ -153,7 +153,8 @@ object Ponte {
       "sessione.stacca" -> Sessione.stacca(contesto()).let { null }
       "sessione.gesto" -> Sessione.prossimoGesto(a.optLong("entroMs", 5_000))
       "sessione.coda" -> Sessione.coda(contesto(), VoceCoda.elenco(a)).let { null }
-      "sessione.pronta" -> Nucleo.pronta(contesto(), a.getString("copertine")).let { null }
+      "sessione.pronta" ->
+        Nucleo.pronta(contesto(), a.getString("copertine"), a.optString("lontane", "").ifEmpty { null }).let { null }
       "sessione.errore" -> Sessione.errore(contesto(), a.optString("codice")).let { null }
       "sessione.libreria" -> Sessione.nucleoPronto().let { null }
 
