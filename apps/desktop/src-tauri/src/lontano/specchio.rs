@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use rymembra_app::dispositivi::{self, POSTA_TESTO, POSTA_VALUTA, SCADENZA_POSTA_MS};
 use rymembra_app::library::condivisa::{PaginaCatalogo, RiassuntoCatalogo};
-use rymembra_app::specchio::archivio::{self, Anteprima, Giro};
+use rymembra_app::specchio::archivio::{self, Anteprima, Giro, TETTO_RIMOZIONI_PER_GIRO};
 use rymembra_app::specchio::convalida::convalida_secchio;
 use rymembra_app::specchio::valutazioni::Valutazione;
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
@@ -71,6 +71,15 @@ const ATTESA_POSTA: Duration = Duration::from_secs(10);
 
 /// Quanto si aspetta una copertina.
 const ATTESA_COPERTINA: Duration = Duration::from_secs(15);
+
+/// Quanti secchi si leggono in un giro, al massimo: un pari ostile può dichiararne
+/// tanti quanti il tetto delle righe permette, e un giro non deve poterlo seguire
+/// fino in fondo. Il resto si legge al giro dopo (il giro si chiude incompleto, e
+/// riprende dal punto in cui era).
+const MAX_SECCHI_PER_GIRO: usize = 2_000;
+
+/// Quanto dura un giro, al massimo: oltre, si chiude incompleto e si riprende.
+const DURATA_MASSIMA_GIRO: Duration = Duration::from_secs(10 * 60);
 
 /// Quanto si ricorda che l'altro non ha una copertina, prima di richiederla.
 const MEMORIA_ASSENTI: Duration = Duration::from_secs(10 * 60);
@@ -287,14 +296,16 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
     }
     let lavoro = archivio::lavoro(&riassunto, &stato);
     if lavoro.niente {
+        // Il catalogo non è cambiato, ma le righe che il proprietario non manda
+        // più scadono lo stesso (la grazia): senza questo, una riga sparita
+        // resterebbe nascosta finché il catalogo non cambia.
+        let (righe, in_attesa) = togli_le_scadute(dati, chiave, 0, 0, false, true);
         avanza(
             dati,
             AvanzamentoSpecchio {
                 fase: Fase::Fine,
-                righe: stato.righe,
-                in_attesa: dati
-                    .leggi(|c| archivio::sparite_in_attesa(c, chiave))
-                    .unwrap_or(0),
+                righe,
+                in_attesa,
                 ultimo_ms: Some(stato.ultimo_ms),
                 ..base
             },
@@ -302,7 +313,7 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
         return Ok(EsitoGiro {
             lavorato: false,
             completo: true,
-            righe: stato.righe,
+            righe,
             in_attesa: 0,
         });
     }
@@ -311,6 +322,7 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
     let mut fatti = 0_i64;
     let mut completo = true;
     let mut guasto: Option<AppError> = None;
+    let partenza = Instant::now();
     avanza(
         dati,
         AvanzamentoSpecchio {
@@ -321,7 +333,20 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
             ..base.clone()
         },
     );
-    for secchio in &lavoro.da_leggere {
+    for (letti, secchio) in lavoro.da_leggere.iter().enumerate() {
+        // Un tetto di richieste e di tempo: un pari ostile che dichiara migliaia
+        // di secchi, o che risponde a goccia, non tiene occupato il filo per
+        // sempre. Il giro si chiude incompleto e riprende dal punto in cui era
+        // (i secchi già scritti restano scritti).
+        if letti >= MAX_SECCHI_PER_GIRO || partenza.elapsed() > DURATA_MASSIMA_GIRO {
+            nota!("[lontano] un giro troppo lungo si ferma: si riprende al giro dopo");
+            completo = false;
+            guasto = Some(AppError::new(ErrorCode::NetTimeout {
+                url: None,
+                timeout_ms: u64::try_from(DURATA_MASSIMA_GIRO.as_millis()).ok(),
+            }));
+            break;
+        }
         // Il cancello a ogni secchio: un dispositivo dimenticato nel frattempo
         // non si legge più.
         if !dati.associato(chiave) {
@@ -385,9 +410,17 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
             return Err(err);
         }
     };
-    let righe = dati
-        .leggi(|c| archivio::stato(c, chiave))
-        .map_or(0, |s| s.righe);
+    // Le righe da togliere che non sono entrate nel primo blocco, a blocchi:
+    // ognuno in una presa sua del lucchetto, e non oltre il tetto per giro.
+    let (righe, in_attesa_dopo) = togli_le_scadute(
+        dati,
+        chiave,
+        chiusura.tolte,
+        chiusura.da_togliere,
+        chiusura.da_nascondere,
+        false,
+    );
+    let in_attesa = chiusura.in_attesa.max(in_attesa_dopo);
     avanza(
         dati,
         AvanzamentoSpecchio {
@@ -395,7 +428,7 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
             fatti,
             totali,
             righe,
-            in_attesa: chiusura.in_attesa,
+            in_attesa,
             ultimo_ms: completo.then_some(quando),
             errore: guasto.as_ref().map(codice),
             ..base
@@ -405,8 +438,65 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
         lavorato: true,
         completo,
         righe,
-        in_attesa: chiusura.in_attesa,
+        in_attesa,
     })
+}
+
+/// Toglie, a blocchi, le righe che il proprietario non manda più e la cui grazia
+/// è finita, e nasconde quelle appena sparite che la chiusura non ha fatto in
+/// tempo a nascondere: ogni blocco in una presa sua del lucchetto, e non oltre
+/// [`TETTO_RIMOZIONI_PER_GIRO`] righe tolte per giro. `tolte` sono quelle già
+/// tolte da questo giro, `restano` quelle da togliere che il primo blocco ha
+/// lasciato e `da_nascondere` dice se restano righe da nascondere. Con
+/// `guarda_lo_stesso` si guarda una volta anche se non resta niente, per il giro
+/// che non ha niente da leggere: le righe scadono anche se il catalogo non è
+/// cambiato.
+///
+/// Restituisce quante righe ha adesso il dispositivo e quante aspettano una
+/// conferma. Un guasto non rompe il giro: le righe restano segnate e al giro
+/// dopo si riprova.
+fn togli_le_scadute<D: Dati>(
+    dati: &D,
+    chiave: &str,
+    mut tolte: usize,
+    mut restano: usize,
+    mut da_nascondere: bool,
+    guarda_lo_stesso: bool,
+) -> (usize, usize) {
+    let mut in_attesa = 0;
+    // Nessuna riga sparita — il caso comune, a ogni giro — non prende il
+    // lucchetto di scrittura per niente: una lettura basta a saperlo.
+    let mut da_guardare = guarda_lo_stesso
+        && dati
+            .leggi(|c| archivio::sparite_in_attesa(c, chiave))
+            .is_ok_and(|n| n > 0);
+    while (restano > 0 || da_nascondere || da_guardare) && tolte < TETTO_RIMOZIONI_PER_GIRO {
+        da_guardare = false;
+        match dati.scrivi(|c| archivio::togli_un_blocco(c, chiave, adesso_ms())) {
+            Ok(blocco) => {
+                tolte = tolte.saturating_add(blocco.tolte);
+                restano = blocco.restano;
+                da_nascondere = blocco.da_nascondere;
+                in_attesa = blocco.in_attesa;
+                // Un blocco che non ha tolto né nascosto niente non è un
+                // blocco che servirà ripetere.
+                if blocco.tolte == 0 && blocco.nascoste == 0 {
+                    break;
+                }
+            }
+            Err(err) => {
+                nota!(
+                    "[lontano] un blocco di righe scadute non si toglie codice={}: si riprova al giro dopo",
+                    err.code().kind().code()
+                );
+                break;
+            }
+        }
+    }
+    let righe = dati
+        .leggi(|c| archivio::stato(c, chiave))
+        .map_or(0, |s| s.righe);
+    (righe, in_attesa)
 }
 
 /// Il riassunto del catalogo di `chiave`.
@@ -806,13 +896,15 @@ pub(crate) fn scegli_la_copia(
         .keys()
         .cloned()
         .collect();
-    let rete = super::sfoglia::rete_di_adesso(&comune);
     crate::stato::con_libreria(stato, |libreria| {
-        rymembra_app::specchio::scelta::scegli_con_la_rete(
+        // La rete si chiede solo se serve, dopo la `EXISTS` sulle righe di altri
+        // dispositivi: su Android è una chiamata JNI, e quasi ogni brano non ne ha
+        // bisogno.
+        rymembra_app::specchio::scelta::scegli_con_la_rete_pigra(
             &libreria.connection,
             track_id,
             &presenti,
-            rete,
+            || super::sfoglia::rete_di_adesso(&comune),
         )
     })
 }
@@ -900,7 +992,16 @@ pub fn lontano_specchio_ora(app: AppHandle, chiave: String) -> Esito<()> {
 #[tauri::command]
 pub async fn lontano_specchio_conferma(app: AppHandle, chiave: String) -> Esito<usize> {
     in_disparte(move || {
-        let tolte = scrivi_in_libreria(&app, |c| archivio::conferma_rimozioni(c, &chiave))?;
+        // A blocchi, e ogni blocco in una presa sua del lucchetto: la conferma di
+        // centomila righe non deve tenerlo fermo per quanto dura.
+        let mut tolte = 0_usize;
+        loop {
+            let blocco = scrivi_in_libreria(&app, |c| archivio::conferma_un_blocco(c, &chiave))?;
+            tolte = tolte.saturating_add(blocco.tolte);
+            if blocco.restano == 0 || blocco.tolte == 0 {
+                break;
+            }
+        }
         let dati = DallApp::nuovo(&app)?;
         let mut a = avanzamenti().get(&chiave).cloned().unwrap_or_default();
         a.dispositivo = chiave.clone();
@@ -1112,7 +1213,7 @@ mod prove {
                 "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album,
                                      album_key, duration_ms, file_size, date_added, date_modified,
                                      codec, bitrate, sample_rate)
-                 VALUES (?1, ?2, ?3, ?3, ?4, 'Artista', 'Album', 'album-del-pc', 180000, 1000,
+                 VALUES (?1, ?2, ?3, ?3, ?4, 'Artista', 'Album', 'album-del-pc', 180000, 20250000,
                          1, 1, 'Flac', 900, 96000)",
                 rusqlite::params![
                     id,
@@ -1165,6 +1266,17 @@ mod prove {
             db: Mutex::new(libreria()),
             emessi: Mutex::new(Vec::new()),
         };
+        // Il PC è un dispositivo collegato anche per il database: il nucleo
+        // controlla `dispositivi` nella transazione che scrive un secchio.
+        telefono
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                [&telefono.pc],
+            )
+            .unwrap();
         (nodo_pc, pc, telefono)
     }
 
@@ -1373,6 +1485,36 @@ mod prove {
             scegli_con_la_rete(&db, locale, &HashSet::new(), ReteProva::Libera).unwrap(),
             locale
         );
+    }
+
+    #[test]
+    fn un_dispositivo_dimenticato_mentre_il_giro_e_in_volo_non_riporta_le_sue_righe() {
+        // La corsa del difetto 05: il filo dice «collegato» (`associato`, qui il
+        // confronto con la chiave del PC), il database no — la persona ha appena
+        // premuto «Dimentica». I cancelli del guscio non se ne accorgono; il
+        // nucleo controlla `dispositivi` nella transazione che scrive il secchio e
+        // quella che chiude il giro, e non scrive niente.
+        let (_nodo_pc, _pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        telefono
+            .db
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM dispositivi WHERE chiave = ?1", [&chiave])
+            .unwrap();
+        let esito = giro(&telefono, &chiave);
+        assert!(esito.is_err(), "il giro non riesce: {esito:?}");
+        let db = telefono.db.lock().unwrap();
+        assert_eq!(
+            quante(
+                &db,
+                "SELECT COUNT(*) FROM tracks WHERE path LIKE 'lontano://%'"
+            ),
+            0,
+            "nessuna riga del dispositivo dimenticato entra in libreria"
+        );
+        assert_eq!(quante(&db, "SELECT COUNT(*) FROM lontano_cataloghi"), 0);
+        assert_eq!(quante(&db, "SELECT COUNT(*) FROM lontano_secchi"), 0);
     }
 
     #[test]

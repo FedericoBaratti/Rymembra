@@ -150,7 +150,7 @@ pub fn copia_da_suonare(
         let mut st = connection
             .prepare_cached(
                 "SELECT t.id, l.dispositivo, l.sparito_ms IS NOT NULL,
-                        t.codec, t.sample_rate, t.bitrate
+                        t.codec, t.sample_rate, t.bitrate, t.file_size, t.duration_ms
                    FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
                   WHERE (t.id = ?1 OR t.copia_di = ?1) AND t.path IS NOT NULL",
             )
@@ -161,10 +161,12 @@ pub fn copia_da_suonare(
                     id: r.get(0)?,
                     dispositivo: r.get(1)?,
                     sparita: r.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0,
-                    qualita: Qualita::da_colonne(
+                    qualita: Qualita::da_riga(
                         r.get::<_, Option<String>>(3)?.as_deref(),
                         r.get(4)?,
                         r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
                     ),
                 })
             })
@@ -223,6 +225,34 @@ pub fn scegli_con_la_rete(
     presenti: &HashSet<String>,
     rete: Rete,
 ) -> Result<i64, AppError> {
+    scegli_con_la_rete_pigra(connection, id, presenti, || rete)
+}
+
+/// [`scegli_con_la_rete`], con la rete **chiesta solo se serve**.
+///
+/// Sapere su che rete si è può costare — su Android è una chiamata JNI — e per
+/// quasi ogni brano non serve: senza righe di altri dispositivi, o con la copia
+/// migliore di qui, la risposta non dipende dalla rete. `rete` si chiama dopo
+/// la `EXISTS` che dice che di righe remote ce ne sono, e solo se la copia scelta
+/// è in rete.
+///
+/// # Errori
+///
+/// Come [`scegli_con_la_rete`].
+pub fn scegli_con_la_rete_pigra(
+    connection: &Connection,
+    id: i64,
+    presenti: &HashSet<String>,
+    rete: impl FnOnce() -> Rete,
+) -> Result<i64, AppError> {
+    let ci_sono_righe_remote: bool = connection
+        .query_row("SELECT EXISTS (SELECT 1 FROM lontano_brani)", [], |r| {
+            r.get(0)
+        })
+        .map_err(|err| db_error("copia da suonare", &err))?;
+    if !ci_sono_righe_remote {
+        return Ok(id);
+    }
     let migliore = match copia_da_suonare(connection, id, &|d| presenti.contains(d))? {
         Scelta::Suona(riga) => riga,
         Scelta::NonRaggiungibile(_) => {
@@ -230,10 +260,13 @@ pub fn scegli_con_la_rete(
                 .with_cause("tutte le copie del brano stanno su dispositivi che non rispondono"));
         }
     };
-    let Rete::AConsumo(scelta) = rete else {
+    if riga_remota(connection, migliore)?.is_none() {
+        return Ok(migliore);
+    }
+    let Rete::AConsumo(scelta) = rete() else {
         return Ok(migliore);
     };
-    if scelta == DatiMobili::Si || riga_remota(connection, migliore)?.is_none() {
+    if scelta == DatiMobili::Si {
         return Ok(migliore);
     }
     // Una copia in rete su dati mobili che non si possono usare.
@@ -244,6 +277,28 @@ pub fn scegli_con_la_rete(
             Scelta::Suona(locale) => Ok(locale),
             Scelta::NonRaggiungibile(_) => Err(a_consumo()),
         },
+    }
+}
+
+/// La copia **di qui** del gruppo di `id`, se c'è: il ripiego quando la copia
+/// scelta — in rete — non si apre.
+///
+/// `scegli_con_la_rete` ha deciso con quel che sapeva: la presenza di un
+/// dispositivo, che può essere vecchia (il PC si è spento da un momento e il
+/// filo non se n'è ancora accorto). Se la copia in rete non si apre, il brano
+/// non deve restare muto con una copia di qui nel gruppo. Non passa dalla
+/// scelta: ripeterla sceglierebbe di nuovo la copia in rete.
+///
+/// Una riga di questa macchina, mai una riga specchio: `None` se il gruppo non
+/// ne ha.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn copia_di_qui(connection: &Connection, id: i64) -> Result<Option<i64>, AppError> {
+    match copia_da_suonare(connection, id, &|_| false)? {
+        Scelta::Suona(riga) if riga_remota(connection, riga)?.is_none() => Ok(Some(riga)),
+        Scelta::Suona(_) | Scelta::NonRaggiungibile(_) => Ok(None),
     }
 }
 
@@ -494,5 +549,86 @@ mod prove {
             err.code().kind(),
             rymembra_domain::errors::ErrorCodeKind::LontanoIrraggiungibile
         );
+    }
+
+    #[test]
+    fn la_rete_si_chiede_solo_se_la_copia_scelta_e_in_rete() {
+        use std::cell::Cell;
+        let pc = chiave('a');
+        let chiamata = Cell::new(0);
+        let rete = || {
+            chiamata.set(chiamata.get() + 1);
+            Rete::Libera
+        };
+        // Senza righe di altri dispositivi: nessuna domanda alla rete.
+        let c = libreria();
+        riga_locale(&c, 1, "Mpeg", None);
+        assert_eq!(
+            scegli_con_la_rete_pigra(&c, 1, &HashSet::new(), rete).unwrap(),
+            1
+        );
+        assert_eq!(chiamata.get(), 0, "su Android è una chiamata JNI");
+        // Con righe remote, ma la copia migliore è di qui: nemmeno.
+        let d = libreria();
+        riga_locale(&d, 1, "Flac", None);
+        riga_remota_di(&d, 2, &pc, "Mpeg", Some(1), false);
+        assert_eq!(
+            scegli_con_la_rete_pigra(&d, 2, &presenti('a'), rete).unwrap(),
+            1
+        );
+        assert_eq!(chiamata.get(), 0);
+        // La copia migliore è in rete: si guarda su che rete si è.
+        let e = libreria();
+        riga_locale(&e, 1, "Mpeg", Some(2));
+        riga_remota_di(&e, 2, &pc, "Flac", None, false);
+        assert_eq!(
+            scegli_con_la_rete_pigra(&e, 1, &presenti('a'), rete).unwrap(),
+            2
+        );
+        assert_eq!(chiamata.get(), 1);
+    }
+
+    #[test]
+    fn il_ripiego_e_la_copia_di_qui_del_gruppo_e_non_passa_dalla_scelta() {
+        // Il rappresentante è remoto e la presenza è vecchia: la scelta dice
+        // «suona la riga del PC», e l'apertura, se fallisce, deve poter ripiegare
+        // sulla copia di qui. Ripetere la scelta ridarebbe la copia in rete.
+        let pc = chiave('a');
+        let c = libreria();
+        riga_locale(&c, 1, "Mpeg", Some(2));
+        riga_remota_di(&c, 2, &pc, "Flac", None, false);
+        assert_eq!(
+            scegli_con_la_rete(&c, 1, &presenti('a'), Rete::Libera).unwrap(),
+            2,
+            "la scelta, con la presenza vecchia, è la copia in rete"
+        );
+        assert_eq!(copia_di_qui(&c, 2).unwrap(), Some(1), "dal rappresentante");
+        assert_eq!(copia_di_qui(&c, 1).unwrap(), Some(1), "dalla copia di qui");
+        // Un gruppo senza una copia di qui: niente ripiego.
+        let d = libreria();
+        riga_remota_di(&d, 2, &pc, "Flac", None, false);
+        assert_eq!(copia_di_qui(&d, 2).unwrap(), None);
+        // Un brano senza dispositivi di mezzo è la sua copia di qui.
+        let e = libreria();
+        riga_locale(&e, 1, "Mpeg", None);
+        assert_eq!(copia_di_qui(&e, 1).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn una_riga_in_grazia_da_sola_non_si_suona() {
+        // La voce di una playlist può stare su una riga che il proprietario non
+        // manda più (in grazia, `copia_di` = id), senza un'altra copia del brano
+        // (se c'è, la voce è già passata a lei: `archivio::nascondi_le_sparite`).
+        // Da sola non si suona, e dice di quale dispositivo si tratta.
+        let pc = chiave('a');
+        let c = libreria();
+        riga_locale(&c, 1, "Mpeg", None);
+        riga_remota_di(&c, 2, &pc, "Flac", Some(2), true);
+        assert_eq!(
+            copia_da_suonare(&c, 2, &|_| true).unwrap(),
+            Scelta::NonRaggiungibile(pc.clone()),
+            "da sola, una riga in grazia non si suona"
+        );
+        assert_eq!(copia_di_qui(&c, 2).unwrap(), None);
     }
 }

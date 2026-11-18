@@ -33,12 +33,38 @@ pub fn id_dei_brani(
     origine: &Origine,
     order: TrackOrder,
 ) -> Result<Vec<i64>, AppError> {
+    // «Tutti» con righe nascoste (dietro una copia migliore, o in grazia): l'ordine
+    // si legge dal solo indice, senza il filtro riga per riga — che costringeva a
+    // leggere ogni riga, tre volte più lento —, e i nascosti, pochi, che
+    // l'indice parziale di `copia_di` dà da solo, si tolgono dopo.
+    if origine.e_tutti() {
+        let nascosti = id_dei_nascosti(connection)?;
+        if !nascosti.is_empty() {
+            let sql = format!("SELECT t.id FROM tracks t ORDER BY {}", order.sql());
+            let mut ids = leggi(connection, &sql, &[], "identificativi dei brani")?;
+            ids.retain(|id| !nascosti.contains(id));
+            return Ok(ids);
+        }
+    }
     let sql = format!(
         "SELECT t.id FROM tracks t WHERE {} ORDER BY {}",
         dove(connection, origine, "t.")?,
         order.sql()
     );
     leggi(connection, &sql, &[], "identificativi dei brani")
+}
+
+/// Le righe che «Tutti» nasconde: dietro una copia migliore di un altro
+/// dispositivo, o in grazia (`copia_di` valorizzato). Dall'indice parziale.
+fn id_dei_nascosti(connection: &Connection) -> Result<std::collections::HashSet<i64>, AppError> {
+    let mut statement = connection
+        .prepare_cached("SELECT id FROM tracks WHERE copia_di IS NOT NULL")
+        .map_err(|err| db_error("righe nascoste", &err))?;
+    statement
+        .query_map([], |riga| riga.get::<_, i64>(0))
+        .map_err(|err| db_error("righe nascoste", &err))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error("righe nascoste", &err))
 }
 
 /// Gli identificativi dei preferiti, nell'ordine di [`super::list_liked`].

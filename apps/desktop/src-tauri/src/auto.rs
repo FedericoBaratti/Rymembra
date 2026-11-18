@@ -515,12 +515,23 @@ fn lettere<T>(elenco: &[T], nome: impl Fn(&T) -> &str) -> Vec<(String, usize)> {
 ///
 /// Una playlist nomina le righe una per una, e una riga di un dispositivo che
 /// non risponde — il PC spento — non parte: nell'auto sarebbe un brano che
-/// si salta al volante. Con le altre origini la lista resta com'è.
-fn raggiungibili(origine: &Origine, brani: Vec<TrackSummary>) -> Vec<TrackSummary> {
-    brani
+/// si salta al volante. Lo stesso per una riga che il proprietario non manda
+/// più e che resta in libreria per la grazia, nascosta: la sua voce sta ancora
+/// nella playlist, ma non si suona. Con le altre origini la lista resta com'è.
+fn raggiungibili(
+    connessione: &Connection,
+    origine: &Origine,
+    brani: Vec<TrackSummary>,
+) -> Result<Vec<TrackSummary>, AppError> {
+    if !matches!(origine, Origine::Raggiungibili(_)) {
+        return Ok(brani);
+    }
+    let ids: Vec<i64> = brani.iter().map(|brano| brano.id).collect();
+    let in_grazia = rymembra_app::specchio::archivio::in_grazia(connessione, &ids)?;
+    Ok(brani
         .into_iter()
-        .filter(|brano| origine.raggiunge(brano.path.as_deref()))
-        .collect()
+        .filter(|brano| !in_grazia.contains(&brano.id) && origine.raggiunge(brano.path.as_deref()))
+        .collect())
 }
 
 /// Gli artisti ordinati come nella finestra: per chiave d'ordinamento.
@@ -658,7 +669,7 @@ pub fn figli(
             con_tutto(genitore, numero, None, voci)
         }
         Nodo::PlaylistDi(id) => {
-            let brani = raggiungibili(origine, playlists::tracks(connessione, *id)?);
+            let brani = raggiungibili(connessione, origine, playlists::tracks(connessione, *id)?)?;
             let quanti = brani.len();
             let voci = pagina(brani, numero, quante)
                 .iter()
@@ -737,7 +748,11 @@ fn elenco(connessione: &Connection, origine: &Origine, nodo: &Nodo) -> Result<Ve
         Nodo::Recenti => righe(ascoltati_di_recente(connessione, origine, RECENTI)?),
         Nodo::Preferiti => righe(list_liked(connessione, origine, 0, TETTO_CODA)?),
         Nodo::AlbumDi(chiave) => righe(album_tracks(connessione, origine, chiave)?),
-        Nodo::PlaylistDi(id) => righe(raggiungibili(origine, playlists::tracks(connessione, *id)?)),
+        Nodo::PlaylistDi(id) => righe(raggiungibili(
+            connessione,
+            origine,
+            playlists::tracks(connessione, *id)?,
+        )?),
         Nodo::Cerca(testo) => righe(search(connessione, origine, testo, 0, TETTO_CODA)?),
         Nodo::ArtistaDi(nome) => brani_di_artista(connessione, origine, nome)?,
         Nodo::Brano { id, .. } => vec![*id],

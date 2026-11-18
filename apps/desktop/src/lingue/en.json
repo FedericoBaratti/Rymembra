@@ -1614,6 +1614,7 @@
   "library.origin.local": "This device",
   "library.origin.from": "From “{nome}”",
   "library.origin.offline": "“{nome}” is not reachable",
+  "library.origin.faded": "“{nome}” no longer shares this track",
   "library.origin.offline.sub": "When the device is reachable again, its music shows up here. For now the list stays, but you can’t play it.",
   "library.origin.gone": "Device no longer linked",
   "library.origin.empty.title": "Nothing to show",

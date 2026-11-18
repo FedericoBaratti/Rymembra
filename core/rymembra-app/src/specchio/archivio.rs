@@ -26,9 +26,43 @@
 //!   ricostruita — è un brano spostato, e si aggiorna **sul posto**, con le sue
 //!   playlist;
 //! - le altre, **sotto la soglia** di `SOGLIA_RIMOZIONI` righe e di un quinto di
-//!   quelle del dispositivo, si tolgono;
+//!   quelle del dispositivo, si tolgono — ma solo dopo la grazia;
 //! - **oltre**, restano segnate e aspettano una conferma
-//!   ([`conferma_rimozioni`]).
+//!   ([`conferma_rimozioni`]), che non aspetta la grazia.
+//!
+//! # La grazia, e la riga nascosta
+//!
+//! Una riga che il proprietario non manda più resta per sette giorni
+//! ([`GRAZIA_MS`]) prima di essere tolta: un disco esterno staccato un weekend,
+//! una libreria rifatta con id nuovi. Per una riga specchio nessun trigger
+//! ricorda il suo posto nelle playlist (`content_key` resta NULL), quindi è la
+//! grazia che permette a `Giro::riabbina`, anche fra giri diversi, di
+//! agganciarla a una riga nuova. In quei giorni la riga è **nascosta**
+//! (`nascondi_le_sparite`: `copia_di` uguale al proprio `id`) e **non si
+//! suona e non si conta da nessuna parte** — «Tutti», autoplay, playlist
+//! intelligenti, Android Auto, Cerca, conteggi —: la grazia protegge la voce di
+//! playlist, non un brano fantasma. E la voce passa subito a un'altra copia del
+//! brano, se c'è (`sposta_le_voci`), prima di ogni rimozione e quando la riga
+//! entra in grazia.
+//!
+//! # A blocchi, con un tetto
+//!
+//! Le righe che scadono si tolgono a blocchi di [`BLOCCO_RIMOZIONI`], ognuno in
+//! una transazione sua e — per chi tiene il lucchetto — in una presa sua
+//! ([`togli_un_blocco`], [`conferma_un_blocco`]), e non oltre
+//! [`TETTO_RIMOZIONI_PER_GIRO`] per giro: un pari che ritira un quinto di un
+//! catalogo da centomila righe non tiene fermo il lettore per venti secondi.
+//! Anche **nascondere** le righe che il pari non manda più è a blocchi della
+//! stessa grandezza: la chiusura del giro ne nasconde un blocco, e
+//! [`togli_un_blocco`] i blocchi dopo, ognuno in una presa sua. Nascondere non
+//! costringe a rifare né i doppioni né gli aggregati: la scelta dei doppioni
+//! lascia fuori le righe segnate sparite (lo sono già dal giro che le ha
+//! segnate) e gli aggregati contano le righe di `tracks` senza guardare
+//! `copia_di`. Si fanno una volta sola, nella chiusura del giro.
+//! Le righe nuove che un giro tiene per riabbinarle sono al più
+//! [`TETTO_RIABBINAMENTO`]. E ogni scrittura controlla, nella sua transazione,
+//! che il dispositivo sia ancora collegato: un secchio che arriva dopo
+//! «Dimentica» non riporta le sue righe.
 //!
 //! # Le statistiche
 //!
@@ -38,11 +72,11 @@
 //! voce in `dispositivi_posta`): finché aspetta, il riconciliatore non lo
 //! riscrive con quel che l'altro aveva prima.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use rymembra_domain::album::album_group_key;
-use rymembra_domain::errors::AppError;
+use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::scan_plan::{RemovedIdentity, match_moved_tracks};
 
 use super::convalida::MAX_RIGHE_PER_DISPOSITIVO;
@@ -60,6 +94,32 @@ pub const SOGLIA_RIMOZIONI: usize = 50;
 /// Oltre quale frazione delle righe di un dispositivo una rimozione è sospetta:
 /// un quinto, come per la scansione.
 pub const FRAZIONE_SOSPETTA: usize = 5;
+
+/// Quanto resta, prima di essere tolta, una riga che il proprietario non manda
+/// più: sette giorni.
+///
+/// È la grazia di [`Giro`]: una riga tolta sotto soglia e tornata con un id
+/// nuovo — un disco esterno staccato un weekend, la libreria del proprietario
+/// rifatta — deve ritrovare il suo posto nelle playlist, e per una riga
+/// specchio nessun trigger lo fa (`content_key` resta NULL, vedi la 043). In
+/// quei giorni la riga è **nascosta e non si suona da nessuna parte**: vedi
+/// [`nascondi_le_sparite`].
+pub const GRAZIA_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Quante righe si tolgono in una transazione sola. Il lucchetto della libreria
+/// è quello del lettore: un pari ostile che ritira un quinto di un catalogo di
+/// centomila righe lo teneva per venti secondi.
+pub const BLOCCO_RIMOZIONI: usize = 2_000;
+
+/// Quante righe di un dispositivo si tolgono, al massimo, in un giro: il resto
+/// aspetta il giro dopo.
+pub const TETTO_RIMOZIONI_PER_GIRO: usize = 10_000;
+
+/// Quante righe nuove di un giro si tengono in memoria per riabbinare un id
+/// cambiato. Oltre, le righe entrano lo stesso e non si riabbinano: un pari che
+/// manda duecentomila righe al tetto dei testi faceva tenere mezzo gigabyte
+/// (su Android è un'uccisione).
+pub const TETTO_RIABBINAMENTO: usize = 20_000;
 
 /// Una transazione di scrittura su una connessione che si ha in prestito:
 /// `Immediate`, perché legge e poi scrive.
@@ -437,6 +497,19 @@ fn aggiorna(
     adesso_ms: i64,
 ) -> Result<(), AppError> {
     let cosa = "aggiornamento di una riga specchio";
+    // Il proprietario ha corretto un tag e la chiave del brano è cambiata. Le voci
+    // di playlist di questa riga portavano la chiave vecchia, e se la chiave
+    // vecchia c'è ancora su un'altra riga — il file di qui, il caso comune —
+    // restano lì: per la sincronia la voce che avesse seguito la riga alla
+    // chiave nuova sarebbe una voce **tolta** dalla playlist (la chiave vecchia
+    // ha un file, non è assente e non è solo specchio), e la lapide partirebbe
+    // verso chi quel brano ce l'ha, senza che nessuno abbia toccato niente.
+    // Senza un'altra riga con la chiave vecchia non si sposta niente: la chiave
+    // vecchia non ha più righe, e per la sincronia è un brano assente,
+    // invisibile e non tolto. È la regola di quando una riga se ne va.
+    if cambia_la_chiave_di_una_riga_con_voci(tx, track_id, &riga.track_key)? {
+        sposta_le_voci(tx, &[track_id])?;
+    }
     let cover = registra_la_copertina(tx, riga.cover_art_hash.as_deref(), adesso_ms)?;
     tx.execute(
         "UPDATE tracks SET
@@ -539,6 +612,8 @@ pub struct Giro {
     /// cinquantamila righe in memoria non servono a nessuno).
     nuove: Vec<(i64, BranoCatalogo)>,
     tieni_le_nuove: bool,
+    /// Quante righe nuove si tengono, al massimo: [`TETTO_RIABBINAMENTO`].
+    tetto_riabbinamento: usize,
     righe_adesso: usize,
     /// Quel che si è fatto.
     pub conti: Conti,
@@ -553,9 +628,26 @@ impl Giro {
             toccati: Toccati::nessuno(),
             nuove: Vec::new(),
             tieni_le_nuove: righe_adesso > 0,
+            tetto_riabbinamento: TETTO_RIABBINAMENTO,
             righe_adesso,
             conti: Conti::default(),
         }
+    }
+
+    /// Un tetto più basso per le righe da riabbinare: per le prove, che non
+    /// vogliono scrivere ventimila righe per vedere che il tetto c'è.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn con_tetto_di_riabbinamento(mut self, tetto: usize) -> Self {
+        self.tetto_riabbinamento = tetto;
+        self
+    }
+
+    /// Quante righe nuove tiene per riabbinarle.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn da_riabbinare(&self) -> usize {
+        self.nuove.len()
     }
 
     /// Quante righe ha adesso il dispositivo, con quelle di questo giro.
@@ -580,6 +672,11 @@ impl Giro {
         adesso_ms: i64,
     ) -> Result<(), AppError> {
         let tx = transazione(connection)?;
+        // Il cancello nella transazione, non prima della domanda: fra la
+        // domanda (fino a trenta secondi) e questa scrittura la persona può
+        // aver dimenticato il dispositivo, e un secchio in volo non deve
+        // riportarne le righe.
+        controlla_che_sia_associato(&tx, &self.dispositivo)?;
         let esistenti = leggi_esistenti(&tx, &self.dispositivo, secchio.da_id, secchio.a_id)?;
         let in_posta = brani_in_posta(&tx, &self.dispositivo)?;
         let prima: Vec<i64> = esistenti.values().map(|e| e.track_id).collect();
@@ -602,7 +699,10 @@ impl Giro {
                     righe_adesso += 1;
                     toccate.push(id);
                     conti.inserite += 1;
-                    if self.tieni_le_nuove {
+                    // Con un tetto: oltre non si riabbina, vedi `TETTO_RIABBINAMENTO`.
+                    if self.tieni_le_nuove
+                        && self.nuove.len().saturating_add(nuove.len()) < self.tetto_riabbinamento
+                    {
                         nuove.push((id, riga));
                     }
                 }
@@ -679,6 +779,7 @@ impl Giro {
         adesso_ms: i64,
     ) -> Result<Chiusura, AppError> {
         let tx = transazione(connection)?;
+        controlla_che_sia_associato(&tx, &self.dispositivo)?;
         let mut chiusura = Chiusura::default();
         for (da_id, a_id) in da_svuotare {
             let ids = segna_sparite_in(&tx, &self.dispositivo, *da_id, *a_id, adesso_ms)?;
@@ -691,12 +792,30 @@ impl Giro {
         }
         if completo {
             chiusura.riabbinate = self.riabbina(&tx, adesso_ms)?;
-            let (tolte, in_attesa) = self.togli_le_sparite(&tx)?;
-            chiusura.tolte = tolte;
-            chiusura.in_attesa = in_attesa;
+            // Un blocco solo: gli altri, se ce ne sono, li chiede chi chiama
+            // (`togli_un_blocco`), ognuno nella sua presa del lucchetto.
+            let blocco = togli_un_blocco_in(
+                &tx,
+                &self.dispositivo,
+                adesso_ms,
+                &mut self.toccati,
+                BLOCCO_RIMOZIONI,
+            )?;
+            chiusura.tolte = blocco.tolte;
+            chiusura.in_attesa = blocco.in_attesa;
+            chiusura.in_grazia = blocco.in_grazia;
+            chiusura.da_togliere = blocco.restano;
         } else {
             chiusura.in_attesa = sparite_in_attesa(&tx, &self.dispositivo)?;
         }
+        // Le righe che il proprietario non manda più, e che restano per la
+        // grazia o per la conferma, non si suonano né si contano da nessuna
+        // parte: vedi `nascondi_le_sparite`. Un blocco solo: se ce ne sono di
+        // più, `da_nascondere` lo dice e li chiede chi chiama, ognuno in una
+        // presa sua del lucchetto (`togli_un_blocco`).
+        let nascoste = nascondi_le_sparite(&tx, &self.dispositivo, BLOCCO_RIMOZIONI)?;
+        chiusura.spostate = nascoste.spostate;
+        chiusura.da_nascondere = nascoste.restano;
         chiusura.copie_cambiate = ricalcola_doppioni_in(&tx)?;
         ricostruisci_aggregati(&tx, &self.toccati)?;
         tx.execute(
@@ -777,30 +896,6 @@ impl Giro {
         }
         Ok(fatte)
     }
-
-    /// Toglie le righe ancora sparite, se sono poche; se no le lascia segnate e
-    /// dice quante aspettano. `(tolte, in_attesa)`.
-    fn togli_le_sparite(&mut self, tx: &Connection) -> Result<(usize, usize), AppError> {
-        let sparite = sparite_con_percorso(tx, &self.dispositivo)?;
-        if sparite.is_empty() {
-            return Ok((0, 0));
-        }
-        let totali = usize::try_from(
-            tx.query_row(
-                "SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = ?1",
-                [&self.dispositivo],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|err| db_error("righe di un dispositivo", &err))?,
-        )
-        .unwrap_or(0);
-        let strage = sparite.len() > SOGLIA_RIMOZIONI
-            && sparite.len().saturating_mul(FRAZIONE_SOSPETTA) > totali;
-        if strage {
-            return Ok((0, sparite.len()));
-        }
-        Ok((togli(tx, &sparite, &mut self.toccati)?, 0))
-    }
 }
 
 /// Com'è andato il giro.
@@ -808,10 +903,25 @@ impl Giro {
 pub struct Chiusura {
     /// Righe riabbinate a un id nuovo, sul posto.
     pub riabbinate: usize,
-    /// Righe tolte.
+    /// Righe tolte (in questa presa: i blocchi dopo il primo li conta chi li
+    /// chiede).
     pub tolte: usize,
-    /// Righe sparite che aspettano una conferma.
+    /// Righe sparite che aspettano una conferma: una rimozione di massa, sopra
+    /// la soglia.
     pub in_attesa: usize,
+    /// Righe sparite che restano per la grazia ([`GRAZIA_MS`]): nascoste, e
+    /// non c'è niente da confermare.
+    pub in_grazia: usize,
+    /// Righe scadute e da togliere che non sono entrate nel blocco di questa
+    /// presa: si chiedono con [`togli_un_blocco`], finché non sono zero.
+    pub da_togliere: usize,
+    /// Restano righe sparite da nascondere, oltre il blocco di questa presa: si
+    /// chiedono con [`togli_un_blocco`], finché non lo dice più. Intanto restano
+    /// visibili com'erano, con le loro voci.
+    pub da_nascondere: bool,
+    /// Voci di playlist passate a un'altra copia dello stesso brano perché la
+    /// riga che le aveva è entrata in grazia.
+    pub spostate: usize,
     /// Righe sparite segnate chiudendo (secchi svuotati).
     pub segnate_sparite: usize,
     /// Righe il cui `copia_di` è cambiato.
@@ -844,26 +954,6 @@ fn sparite_con_chiave(tx: &Connection, dispositivo: &str) -> Result<Vec<(i64, St
                FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
               WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL
               ORDER BY l.track_id",
-        )
-        .map_err(|err| db_error(cosa, &err))?;
-    let righe = st
-        .query_map([dispositivo], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|err| db_error(cosa, &err))?;
-    righe
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error(cosa, &err))
-}
-
-/// Le righe segnate sparite di un dispositivo, col loro percorso.
-fn sparite_con_percorso(
-    tx: &Connection,
-    dispositivo: &str,
-) -> Result<Vec<(i64, String)>, AppError> {
-    let cosa = "righe specchio sparite";
-    let mut st = tx
-        .prepare_cached(
-            "SELECT t.id, t.path FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
-              WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL ORDER BY t.id",
         )
         .map_err(|err| db_error(cosa, &err))?;
     let righe = st
@@ -927,8 +1017,95 @@ pub fn sparite_in_attesa(connection: &Connection, dispositivo: &str) -> Result<u
         .map_err(|err| db_error("righe specchio sparite", &err))
 }
 
+/// La riga ha delle voci di playlist e sta per cambiare `track_key`.
+fn cambia_la_chiave_di_una_riga_con_voci(
+    tx: &Connection,
+    track_id: i64,
+    nuova: &str,
+) -> Result<bool, AppError> {
+    tx.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM tracks WHERE id = ?1 AND track_key <> ?2)
+            AND EXISTS (SELECT 1 FROM playlist_tracks WHERE track_id = ?1)",
+    )
+    .and_then(|mut st| st.query_row(params![track_id, nuova], |r| r.get(0)))
+    .map_err(|err| db_error("chiave di una riga specchio", &err))
+}
+
+/// Prima di togliere delle righe specchio: le loro voci di playlist passano a
+/// un'altra riga dello stesso brano — stessa `track_key` — se ce n'è una.
+///
+/// `playlist_tracks` ha `ON DELETE CASCADE`: togliere una riga con le sue voci
+/// le svuoterebbe, e se la `track_key` c'è ancora su un'altra riga, per la
+/// sincronia la voce che manca non è un brano assente ma un brano **tolto
+/// dalla playlist**, e la lapide partirebbe verso il dispositivo che il brano
+/// ce l'ha. Il caso comune: lo stesso brano su due dispositivi, e quello che si
+/// ritira. È lo stesso gesto che `remove_tracks` fa nel verso opposto, per la
+/// copia di qui che se ne va.
+///
+/// L'altra riga è, nell'ordine: una di questa macchina; poi quella di un altro
+/// dispositivo che il proprietario manda ancora. **Mai** una riga segnata
+/// sparita (la voce ci morirebbe alla conferma) né una delle righe che si stanno
+/// togliendo. Se non c'è, la voce se ne va con la riga, e la sua chiave resta
+/// nella sequenza della sincronia: invisibile, non tolta.
+///
+/// Quante voci ha spostato.
+pub(crate) fn sposta_le_voci(tx: &Connection, da_togliere: &[i64]) -> Result<usize, AppError> {
+    let cosa = "voci di playlist verso un'altra copia";
+    if da_togliere.is_empty() {
+        return Ok(0);
+    }
+    // Un elenco di interi si scrive sempre: `json_each` lo legge per intero in
+    // una condizione sola, senza il tetto dei parametri di SQLite.
+    let insieme = serde_json::to_string(da_togliere).unwrap_or_else(|_| "[]".to_owned());
+    // Solo le righe che hanno delle voci: sono poche, e per le altre non c'è
+    // niente da cercare.
+    let con_voci: Vec<i64> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT DISTINCT track_id FROM playlist_tracks
+                  WHERE track_id IN (SELECT value FROM json_each(?1))",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        st.query_map([&insieme], |r| r.get(0))
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    if con_voci.is_empty() {
+        return Ok(0);
+    }
+    let in_corso: HashSet<i64> = da_togliere.iter().copied().collect();
+    let mut cerca = tx
+        .prepare_cached(
+            "SELECT m.id FROM tracks m LEFT JOIN lontano_brani lm ON lm.track_id = m.id
+              WHERE m.track_key = (SELECT track_key FROM tracks WHERE id = ?1)
+                AND m.id <> ?1
+                AND (lm.track_id IS NULL OR lm.sparito_ms IS NULL)
+              ORDER BY (lm.track_id IS NOT NULL), m.id",
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut sposta = tx
+        .prepare_cached("UPDATE playlist_tracks SET track_id = ?2 WHERE track_id = ?1")
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut spostate = 0;
+    for da in con_voci {
+        let candidate: Vec<i64> = cerca
+            .query_map([da], |r| r.get(0))
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error(cosa, &err))?;
+        if let Some(a) = candidate.into_iter().find(|id| !in_corso.contains(id)) {
+            spostate += sposta
+                .execute(params![da, a])
+                .map_err(|err| db_error(cosa, &err))?;
+        }
+    }
+    Ok(spostate)
+}
+
 /// Toglie le righe date, con la guardia del percorso come per la scansione: se
-/// la riga nel frattempo è un'altra, non si tocca.
+/// la riga nel frattempo è un'altra, non si tocca. Prima, le voci di playlist
+/// passano a un'altra copia del brano, se c'è ([`sposta_le_voci`]).
 fn togli(
     tx: &Connection,
     righe: &[(i64, String)],
@@ -936,6 +1113,7 @@ fn togli(
 ) -> Result<usize, AppError> {
     let ids: Vec<i64> = righe.iter().map(|(id, _)| *id).collect();
     toccati.segna_brani(tx, &ids)?;
+    sposta_le_voci(tx, &ids)?;
     let mut st = tx
         .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND path = ?2")
         .map_err(|err| db_error("rimozione di una riga specchio", &err))?;
@@ -955,22 +1133,397 @@ fn togli(
     Ok(tolte)
 }
 
+/// Il dispositivo si può ancora leggere?
+///
+/// Dentro la transazione che scrive, e non prima: fra la domanda e la scrittura
+/// passano fino a trenta secondi, e la persona può aver «Dimenticato» il
+/// dispositivo (la riga di `dispositivi` se ne va) o averlo revocato. Un secchio
+/// che arriva dopo non deve riportare le sue righe in libreria, né la sua riga
+/// di `lontano_cataloghi`.
+///
+/// # Errori
+///
+/// `lontano.nonAssociato` se non lo è più; quelli del database.
+fn controlla_che_sia_associato(tx: &Connection, dispositivo: &str) -> Result<(), AppError> {
+    if crate::dispositivi::associato(tx, dispositivo)? {
+        Ok(())
+    } else {
+        Err(AppError::new(ErrorCode::LontanoNonAssociato)
+            .with_cause("il dispositivo è stato dimenticato mentre si leggeva il suo catalogo"))
+    }
+}
+
+/// Quali di queste righe sono in grazia: segnate sparite e nascoste. Per chi
+/// mostra una playlist — le sue voci restano sulla riga — e non può mostrare
+/// una riga che non si suona (Android Auto).
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn in_grazia(connection: &Connection, ids: &[i64]) -> Result<HashSet<i64>, AppError> {
+    let cosa = "righe in grazia";
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let insieme = serde_json::to_string(ids).unwrap_or_else(|_| "[]".to_owned());
+    let mut st = connection
+        .prepare_cached(
+            "SELECT id FROM tracks
+              WHERE copia_di = id AND id IN (SELECT value FROM json_each(?1))",
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    st.query_map([&insieme], |r| r.get::<_, i64>(0))
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error(cosa, &err))
+}
+
+/// Nasconde le righe che il proprietario non manda più, e porta le loro voci di
+/// playlist su un'altra copia del brano.
+///
+/// Una riga segnata sparita resta in libreria per la grazia ([`GRAZIA_MS`]) o
+/// finché qualcuno non conferma: serve a tenerle le voci di playlist, se il
+/// brano non ha altre copie. Ma **non si suona e non si conta da nessuna parte**
+/// — «Tutti», l'autoplay, le playlist intelligenti, Android Auto, Cerca, i
+/// conteggi —, altrimenti la perdita di dati diventa un brano fantasma che non
+/// parte. Per tutte quelle strade vale già `copia_di IS NULL`, e non c'è un
+/// rappresentante che una riga sparita possa avere: `copia_di` uguale al proprio
+/// `id` vuol dire «nascosta» (il resto, `Origine::Dispositivo`, lo controlla da
+/// sé). Quando la riga ritorna ([`aggiorna`] toglie il segno) il ricalcolo dei
+/// doppioni le rida il suo posto.
+///
+/// Le voci passano subito alla copia di qui, se c'è ([`sposta_le_voci`]): così
+/// la grazia protegge solo le voci che non hanno un'altra strada, e una voce
+/// non resta su una riga che nessuno suona mentre il brano sta sul telefono.
+///
+/// **Un blocco**, di al più `grandezza` righe: chi ne ritira quarantamila non
+/// tiene il lucchetto della libreria per quanto ci mette a nasconderle tutte.
+/// Non rifà né i doppioni né gli aggregati — vedi il `//!` —, quindi un blocco
+/// costa quel che nasconde.
+fn nascondi_le_sparite(
+    tx: &Connection,
+    dispositivo: &str,
+    grandezza: usize,
+) -> Result<Nascoste, AppError> {
+    let cosa = "righe specchio sparite da nascondere";
+    // Solo quelle che non lo sono già: chi non ha niente da nascondere non
+    // riscrive una riga. Una in più del blocco, per sapere se ne restano.
+    let mut da_nascondere: Vec<i64> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT l.track_id FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
+                  WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL
+                    AND t.copia_di IS NOT t.id
+                  ORDER BY l.track_id LIMIT ?2",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        st.query_map(
+            params![
+                dispositivo,
+                i64::try_from(grandezza.saturating_add(1)).unwrap_or(i64::MAX)
+            ],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error(cosa, &err))?
+    };
+    let restano = da_nascondere.len() > grandezza;
+    da_nascondere.truncate(grandezza);
+    if da_nascondere.is_empty() {
+        return Ok(Nascoste::default());
+    }
+    // Le voci prima di nasconderle: una riga sparita non è più un'alternativa
+    // per nessuno, e `sposta_le_voci` la scarta già dalle candidate.
+    let spostate = sposta_le_voci(tx, &da_nascondere)?;
+    let mut nascondi = tx
+        .prepare_cached("UPDATE tracks SET copia_di = id WHERE id = ?1")
+        .map_err(|err| db_error(cosa, &err))?;
+    for id in &da_nascondere {
+        nascondi.execute([id]).map_err(|err| db_error(cosa, &err))?;
+    }
+    Ok(Nascoste {
+        nascoste: da_nascondere.len(),
+        spostate,
+        restano,
+    })
+}
+
+/// Quel che un blocco di [`nascondi_le_sparite`] ha fatto.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Nascoste {
+    /// Righe nascoste in questo blocco.
+    nascoste: usize,
+    /// Voci di playlist passate a un'altra copia dello stesso brano.
+    spostate: usize,
+    /// Restano righe sparite da nascondere.
+    restano: bool,
+}
+
+/// Quel che un blocco di rimozioni ha fatto.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Blocco {
+    /// Righe tolte in questo blocco.
+    pub tolte: usize,
+    /// Righe da togliere che restano: se non sono zero, si chiede un altro
+    /// blocco, in un'altra presa del lucchetto.
+    pub restano: usize,
+    /// Righe sparite che aspettano una conferma.
+    pub in_attesa: usize,
+    /// Righe sparite che restano per la grazia.
+    pub in_grazia: usize,
+    /// Fra le righe tolte ce n'era una non ancora nascosta: i doppioni si
+    /// rifanno. Le righe sparite sono già nascoste — e fuori dalla scelta dei
+    /// doppioni — dal giro che le ha segnate, e toglierle non cambia quel che
+    /// resta: rifare ogni volta la scelta su tutta la libreria costava, a ogni
+    /// blocco, quanto il blocco.
+    pub doppioni_da_rifare: bool,
+    /// Righe sparite nascoste in questo blocco ([`togli_un_blocco`]).
+    pub nascoste: usize,
+    /// Restano righe sparite da nascondere: si chiede un altro blocco.
+    pub da_nascondere: bool,
+}
+
+/// Toglie un blocco di righe sparite, in una transazione già aperta.
+///
+/// - **Rimozione di massa** (più di [`SOGLIA_RIMOZIONI`] righe, e più di un
+///   quinto di quelle del dispositivo): non si toglie niente, e le righe
+///   aspettano la conferma ([`Blocco::in_attesa`]). Si conta su **tutte** le
+///   sparite, anche quelle ancora in grazia: la domanda non deve aspettare.
+/// - **Altrimenti**: solo le righe scadute, cioè sparite da più di
+///   [`GRAZIA_MS`], al massimo [`BLOCCO_RIMOZIONI`] per volta. Le altre
+///   ([`Blocco::in_grazia`]) restano com'è.
+///
+/// Si ricalcola a ogni blocco, e non può che allontanarsi da «troppe»: con ogni
+/// riga tolta calano le sparite e le righe del dispositivo, e il loro rapporto
+/// scende.
+fn togli_un_blocco_in(
+    tx: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+    toccati: &mut Toccati,
+    blocco: usize,
+) -> Result<Blocco, AppError> {
+    let cosa = "righe specchio da togliere";
+    // Le sparite dall'indice parziale (poche): se non ce n'è nessuna, e il
+    // caso comune lo è, non si legge niente d'altro.
+    let (sparite, scadute): (i64, i64) = tx
+        .query_row(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE sparito_ms <= ?2)
+               FROM lontano_brani WHERE dispositivo = ?1 AND sparito_ms IS NOT NULL",
+            params![dispositivo, adesso_ms.saturating_sub(GRAZIA_MS)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    let (sparite, scadute) = (
+        usize::try_from(sparite).unwrap_or(0),
+        usize::try_from(scadute).unwrap_or(0),
+    );
+    if sparite == 0 {
+        return Ok(Blocco::default());
+    }
+    // Le righe del dispositivo, per il rapporto della rimozione di massa: dal
+    // solo indice (dispositivo, id remoto).
+    let totali = usize::try_from(
+        tx.query_row(
+            "SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = ?1",
+            [dispositivo],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?,
+    )
+    .unwrap_or(0);
+    let strage = sparite > SOGLIA_RIMOZIONI && sparite.saturating_mul(FRAZIONE_SOSPETTA) > totali;
+    if strage {
+        return Ok(Blocco {
+            in_attesa: sparite,
+            ..Blocco::default()
+        });
+    }
+    let (da_togliere, non_nascoste): (Vec<(i64, String)>, bool) = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT t.id, t.path, t.copia_di IS NOT t.id
+                   FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
+                  WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL AND l.sparito_ms <= ?2
+                  ORDER BY t.id LIMIT ?3",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let righe = st
+            .query_map(
+                params![
+                    dispositivo,
+                    adesso_ms.saturating_sub(GRAZIA_MS),
+                    i64::try_from(blocco).unwrap_or(i64::MAX)
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, bool>(2)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error(cosa, &err))?;
+        let non_nascoste = righe.iter().any(|(_, _, visibile)| *visibile);
+        (
+            righe.into_iter().map(|(id, path, _)| (id, path)).collect(),
+            non_nascoste,
+        )
+    };
+    let tolte = togli(tx, &da_togliere, toccati)?;
+    Ok(Blocco {
+        tolte,
+        restano: scadute.saturating_sub(tolte),
+        in_attesa: 0,
+        in_grazia: sparite.saturating_sub(scadute),
+        doppioni_da_rifare: non_nascoste,
+        ..Blocco::default()
+    })
+}
+
+/// Un blocco di rimozioni, in una presa sua del lucchetto: le righe sparite da
+/// più della grazia, se non sono troppe. Doppioni e aggregati si rifanno. Con
+/// lui, un blocco di righe sparite da nascondere
+/// ([`Chiusura::da_nascondere`]).
+///
+/// È quel che chiude il giro quando restano righe da togliere
+/// ([`Chiusura::da_togliere`]) o da nascondere, e quel che fa il giro che non ha
+/// niente da leggere: le righe scadono anche se il catalogo non è cambiato. Chi
+/// chiama ripete finché `restano` è zero e `da_nascondere` è falso, ma non oltre
+/// [`TETTO_RIMOZIONI_PER_GIRO`] righe tolte per giro, e si ferma se un blocco non
+/// ha tolto né nascosto niente.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn togli_un_blocco(
+    connection: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+) -> Result<Blocco, AppError> {
+    togli_un_blocco_di(connection, dispositivo, adesso_ms, BLOCCO_RIMOZIONI)
+}
+
+/// [`togli_un_blocco`] con la grandezza del blocco scelta da chi chiama: le
+/// prove la tengono piccola.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn togli_un_blocco_di(
+    connection: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+    grandezza: usize,
+) -> Result<Blocco, AppError> {
+    // Chi non ha righe sparite — il caso comune, a ogni giro — non apre una
+    // transazione di scrittura per niente.
+    if sparite_in_attesa(connection, dispositivo)? == 0 {
+        return Ok(Blocco::default());
+    }
+    let tx = transazione(connection)?;
+    let mut toccati = Toccati::nessuno();
+    let mut blocco = togli_un_blocco_in(&tx, dispositivo, adesso_ms, &mut toccati, grandezza)?;
+    // E un blocco di righe sparite da nascondere, se ne restano dalla chiusura
+    // del giro: il lucchetto si libera fra un blocco e l'altro.
+    let nascoste = nascondi_le_sparite(&tx, dispositivo, grandezza)?;
+    blocco.nascoste = nascoste.nascoste;
+    blocco.da_nascondere = nascoste.restano;
+    if blocco.tolte > 0 {
+        if blocco.doppioni_da_rifare {
+            ricalcola_doppioni_in(&tx)?;
+        }
+        ricostruisci_aggregati(&tx, &toccati)?;
+    }
+    tx.commit()
+        .map_err(|err| db_error("chiusura della transazione dello specchio", &err))?;
+    Ok(blocco)
+}
+
+/// La persona ha detto di sì: un blocco delle righe segnate sparite di
+/// `dispositivo` se ne va, **tutte** — la grazia non conta più —, e doppioni e
+/// aggregati si rifanno. Chi chiama ripete finché `restano` è zero, ogni volta
+/// in una presa sua del lucchetto.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn conferma_un_blocco(connection: &Connection, dispositivo: &str) -> Result<Blocco, AppError> {
+    conferma_un_blocco_di(connection, dispositivo, BLOCCO_RIMOZIONI)
+}
+
+/// [`conferma_un_blocco`] con la grandezza del blocco scelta da chi chiama.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn conferma_un_blocco_di(
+    connection: &Connection,
+    dispositivo: &str,
+    grandezza: usize,
+) -> Result<Blocco, AppError> {
+    let cosa = "righe specchio da togliere";
+    let tx = transazione(connection)?;
+    let (da_togliere, non_nascoste): (Vec<(i64, String)>, bool) = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT t.id, t.path, t.copia_di IS NOT t.id
+                   FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
+                  WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL
+                  ORDER BY t.id LIMIT ?2",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let righe = st
+            .query_map(
+                params![dispositivo, i64::try_from(grandezza).unwrap_or(i64::MAX)],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, bool>(2)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error(cosa, &err))?;
+        let non_nascoste = righe.iter().any(|(_, _, visibile)| *visibile);
+        (
+            righe.into_iter().map(|(id, path, _)| (id, path)).collect(),
+            non_nascoste,
+        )
+    };
+    let mut toccati = Toccati::nessuno();
+    let tolte = togli(&tx, &da_togliere, &mut toccati)?;
+    if tolte > 0 {
+        // Le righe segnate sparite sono nascoste dal giro che le ha segnate, e
+        // fuori dalla scelta dei doppioni: se lo sono tutte, non c'è niente da
+        // rifare (vedi `Blocco::doppioni_da_rifare`).
+        if non_nascoste {
+            ricalcola_doppioni_in(&tx)?;
+        }
+        ricostruisci_aggregati(&tx, &toccati)?;
+    }
+    let restano = sparite_in_attesa(&tx, dispositivo)?;
+    tx.commit()
+        .map_err(|err| db_error("chiusura della transazione dello specchio", &err))?;
+    Ok(Blocco {
+        tolte,
+        restano,
+        doppioni_da_rifare: non_nascoste,
+        ..Blocco::default()
+    })
+}
+
 /// La persona ha detto di sì: le righe segnate sparite di `dispositivo` se ne
 /// vanno, e doppioni e aggregati si rifanno. Quante righe sono sparite.
+///
+/// A blocchi ([`conferma_un_blocco`]), uno per transazione: chi tiene il
+/// lucchetto fra un blocco e l'altro e vuole liberarlo chiama il blocco da sé.
 ///
 /// # Errori
 ///
 /// Quelli del database.
 pub fn conferma_rimozioni(connection: &Connection, dispositivo: &str) -> Result<usize, AppError> {
-    let tx = transazione(connection)?;
-    let sparite = sparite_con_percorso(&tx, dispositivo)?;
-    let mut toccati = Toccati::nessuno();
-    let tolte = togli(&tx, &sparite, &mut toccati)?;
-    ricalcola_doppioni_in(&tx)?;
-    ricostruisci_aggregati(&tx, &toccati)?;
-    tx.commit()
-        .map_err(|err| db_error("chiusura della transazione dello specchio", &err))?;
-    Ok(tolte)
+    let mut tolte = 0;
+    loop {
+        let blocco = conferma_un_blocco(connection, dispositivo)?;
+        tolte += blocco.tolte;
+        if blocco.restano == 0 || blocco.tolte == 0 {
+            return Ok(tolte);
+        }
+    }
 }
 
 /// Rifà la scelta dei doppioni, in una transazione sua: dopo una scansione, o
@@ -1018,7 +1571,7 @@ pub(crate) fn ricalcola_doppioni_in(tx: &Connection) -> Result<usize, AppError> 
             .prepare(
                 "SELECT t.id, COALESCE(t.content_key, l.content_key, t.track_key), l.dispositivo,
                         t.codec, t.sample_rate, t.bitrate, t.album, t.album_artist, t.artist,
-                        t.copia_di
+                        t.copia_di, t.file_size, t.duration_ms
                    FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
                   WHERE t.path IS NOT NULL AND l.sparito_ms IS NULL",
             )
@@ -1032,10 +1585,12 @@ pub(crate) fn ricalcola_doppioni_in(tx: &Connection) -> Result<usize, AppError> 
                     id: r.get(0)?,
                     gruppo: r.get(1)?,
                     dispositivo: r.get(2)?,
-                    qualita: Qualita::da_colonne(
+                    qualita: Qualita::da_riga(
                         r.get::<_, Option<String>>(3)?.as_deref(),
                         r.get(4)?,
                         r.get(5)?,
+                        r.get(10)?,
+                        r.get(11)?,
                     ),
                     album: identita_album(&album, album_artist.as_deref(), &artist),
                     copia_di: r.get(9)?,
@@ -1139,17 +1694,30 @@ pub struct Anteprima {
     pub playlist_che_perdono: usize,
 }
 
-/// Per ogni voce di playlist su una riga di `dispositivo`: la riga di un altro
-/// dispositivo — questo, di preferenza — con lo stesso brano, se c'è.
+/// Per ogni voce di playlist su una riga di `dispositivo`: la riga con lo
+/// stesso brano che resterebbe, se c'è.
+///
+/// Si cerca per **`track_key`**, come tutto il resto — la sincronia, il
+/// riaggancio, `remove_tracks` —, e solo per le voci che così non trovano
+/// niente per **`content_key`**: la chiave di contenuto del proprietario
+/// quando ha corretto un tag e le due chiavi divergono. Prima la chiave di
+/// contenuto era la sola, e una copia di qui con la stessa `track_key` non si
+/// trovava: l'anteprima diceva «perde», e la voce si buttava.
+///
+/// L'altra riga è una di questa macchina, di preferenza, o la riga di un altro
+/// dispositivo che il proprietario manda ancora. Le chiavi si passano tutte
+/// insieme, in un solo parametro JSON (`json_each`): su tremila voci una
+/// scansione per chiave, col lucchetto preso, costava minuti (indici sulla
+/// `track_key` e, per la ricerca per contenuto, `idx_lontano_brani_content_key`).
 fn voci_con_alternativa(
     tx: &Connection,
     dispositivo: &str,
 ) -> Result<Vec<(i64, i64, Option<i64>)>, AppError> {
     let cosa = "voci di playlist su un dispositivo";
-    let voci: Vec<(i64, i64, String)> = {
+    let voci: Vec<(i64, i64, String, Option<String>)> = {
         let mut st = tx
             .prepare(
-                "SELECT pt.playlist_id, pt.track_id, COALESCE(l.content_key, t.track_key)
+                "SELECT pt.playlist_id, pt.track_id, t.track_key, l.content_key
                    FROM playlist_tracks pt
                    JOIN lontano_brani l ON l.track_id = pt.track_id
                    JOIN tracks t ON t.id = pt.track_id
@@ -1157,40 +1725,95 @@ fn voci_con_alternativa(
             )
             .map_err(|err| db_error(cosa, &err))?;
         let lette = st
-            .query_map([dispositivo], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_map([dispositivo], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
             .map_err(|err| db_error(cosa, &err))?;
         lette
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| db_error(cosa, &err))?
     };
-    // Per ogni chiave, una volta sola: la riga di un altro dispositivo, questo
-    // per primo.
-    let mut alternativa: HashMap<String, Option<i64>> = HashMap::new();
-    let mut cerca = tx
-        .prepare_cached(
-            "SELECT t.id FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
-              WHERE (t.content_key = ?1 OR t.track_key = ?1 OR l.content_key = ?1)
-                AND t.path IS NOT NULL
-                AND (l.dispositivo IS NULL OR (l.dispositivo <> ?2 AND l.sparito_ms IS NULL))
-              ORDER BY (l.dispositivo IS NULL) DESC, t.id LIMIT 1",
-        )
-        .map_err(|err| db_error(cosa, &err))?;
-    let mut fuori = Vec::with_capacity(voci.len());
-    for (playlist, brano, chiave) in voci {
-        let altra = match alternativa.get(&chiave) {
-            Some(a) => *a,
-            None => {
-                let trovata: Option<i64> = cerca
-                    .query_row(params![chiave, dispositivo], |r| r.get(0))
-                    .optional()
-                    .map_err(|err| db_error(cosa, &err))?;
-                alternativa.insert(chiave, trovata);
-                trovata
-            }
-        };
-        fuori.push((playlist, brano, altra));
+    if voci.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(fuori)
+    let json = |chiavi: &BTreeSet<&str>| -> String {
+        serde_json::to_string(chiavi).unwrap_or_else(|_| "[]".to_owned())
+    };
+
+    // Per `track_key`: di qui per prima, poi la riga di un altro dispositivo.
+    let per_chiave: HashMap<String, i64> = {
+        let chiavi: BTreeSet<&str> = voci.iter().map(|(_, _, k, _)| k.as_str()).collect();
+        let mut st = tx
+            .prepare_cached(
+                "SELECT t.track_key, t.id
+                   FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
+                  WHERE t.track_key IN (SELECT value FROM json_each(?1))
+                    AND (l.track_id IS NULL OR (l.dispositivo <> ?2 AND l.sparito_ms IS NULL))
+                  ORDER BY (l.track_id IS NOT NULL), t.id",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map(params![json(&chiavi), dispositivo], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .map_err(|err| db_error(cosa, &err))?;
+        let mut mappa = HashMap::new();
+        for riga in lette {
+            let (chiave, id) = riga.map_err(|err| db_error(cosa, &err))?;
+            mappa.entry(chiave).or_insert(id);
+        }
+        mappa
+    };
+
+    // Per `content_key`, solo per chi non ha trovato niente.
+    let senza: BTreeSet<&str> = voci
+        .iter()
+        .filter(|(_, _, k, _)| !per_chiave.contains_key(k))
+        .filter_map(|(_, _, _, c)| c.as_deref())
+        .collect();
+    let per_contenuto: HashMap<String, i64> = if senza.is_empty() {
+        HashMap::new()
+    } else {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT k, id FROM (
+                   SELECT t.content_key AS k, t.id AS id, 0 AS fuori
+                     FROM tracks t
+                    WHERE t.content_key IN (SELECT value FROM json_each(?1))
+                      AND (t.path IS NULL OR t.path < 'lontano://' OR t.path >= 'lontano:/0')
+                   UNION ALL
+                   SELECT l.content_key, l.track_id, 1
+                     FROM lontano_brani l
+                    WHERE l.content_key IN (SELECT value FROM json_each(?1))
+                      AND l.dispositivo <> ?2 AND l.sparito_ms IS NULL
+                 ) ORDER BY fuori, id",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map(params![json(&senza), dispositivo], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .map_err(|err| db_error(cosa, &err))?;
+        let mut mappa = HashMap::new();
+        for riga in lette {
+            let (chiave, id) = riga.map_err(|err| db_error(cosa, &err))?;
+            mappa.entry(chiave).or_insert(id);
+        }
+        mappa
+    };
+
+    Ok(voci
+        .into_iter()
+        .map(|(playlist, brano, chiave, contenuto)| {
+            let altra = per_chiave.get(&chiave).copied().or_else(|| {
+                contenuto
+                    .as_deref()
+                    .and_then(|c| per_contenuto.get(c))
+                    .copied()
+            });
+            (playlist, brano, altra)
+        })
+        .collect())
 }
 
 /// Cosa succederebbe alle playlist se si dimenticasse `dispositivo`: per
@@ -1396,7 +2019,7 @@ mod prove {
             "la copia delle sue statistiche"
         );
         assert_eq!(copia, None);
-        assert_eq!(size, 5_000_000);
+        assert_eq!(size, 8_000_000);
         assert_eq!(
             cover,
             Some("cd".repeat(32)),
@@ -1605,6 +2228,11 @@ mod prove {
     fn oltre_il_tetto_di_righe_per_dispositivo_le_nuove_non_entrano() {
         let c = libreria();
         let pc = chiave(PC);
+        c.execute(
+            "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+            [&pc],
+        )
+        .unwrap();
         let mut giro = Giro::nuovo(&pc, MAX_RIGHE_PER_DISPOSITIVO);
         let secchio = SecchioCatalogo {
             da_id: 0,
@@ -1630,8 +2258,20 @@ mod prove {
             [id],
         )
         .unwrap();
-        // Il PC toglie l'ultimo brano.
+        // Il PC toglie l'ultimo brano: la riga entra in grazia — resta, nascosta,
+        // con la sua voce di playlist, e non c'è niente da confermare.
         let chiusura = giro(&c, &pc, &catalogo(1, 99), ADESSO + 1000);
+        assert_eq!((chiusura.tolte, chiusura.in_attesa), (0, 0));
+        assert_eq!(chiusura.in_grazia, 1);
+        assert_eq!(n(&c, "SELECT COUNT(*) FROM tracks"), 100);
+        assert_eq!(
+            n(&c, "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL"),
+            1,
+            "nascosta da «Tutti» e da tutto quel che lo imita"
+        );
+        assert_eq!(n(&c, "SELECT COUNT(*) FROM playlist_tracks"), 1);
+        // Passata la grazia se ne va.
+        let chiusura = giro(&c, &pc, &catalogo(1, 99), ADESSO + 1000 + GRAZIA_MS + 1000);
         assert_eq!(chiusura.tolte, 1);
         assert_eq!(chiusura.in_attesa, 0);
         assert_eq!(n(&c, "SELECT COUNT(*) FROM tracks"), 99);

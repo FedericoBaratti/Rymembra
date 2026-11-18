@@ -208,3 +208,38 @@ test("scegliere un dispositivo apre la libreria dov'era, se il filtro la riguard
   assert.ok(!eFiltrabile("cartelle"), "le cartelle sono di questa macchina");
   assert.ok(!eFiltrabile("playlist"), "una playlist nomina le sue righe una per una");
 });
+
+test("una riga in grazia è grigia anche col PC acceso, e dice che non la condivide più", () => {
+  // Il PC non manda più il brano, e la sua voce resta nella playlist per la
+  // grazia: non è un dispositivo che non risponde, e l'avviso non lo deve dire.
+  const acceso = stato(dispositivo(PC, "Casa", "windows", true));
+  assert.deepEqual(statoDellaRiga(riga(PC, 7).path, acceso, true), {
+    chiave: PC,
+    nome: "Casa",
+    telefono: false,
+    spenta: true,
+    inGrazia: true,
+  });
+  // Senza il pannello non si sa il nome, ma si sa che non si suona.
+  assert.equal(statoDellaRiga(riga(PC, 7).path, null, true)?.spenta, true);
+  assert.equal(statoDellaRiga(riga(PC, 7).path, null, true)?.nome, "");
+  // Una riga di qui non è mai in grazia.
+  assert.equal(statoDellaRiga(locale(1).path, acceso, true), null);
+  // Senza il segno, niente cambia.
+  assert.equal(statoDellaRiga(riga(PC, 7).path, acceso, false)?.spenta, false);
+  assert.equal(statoDellaRiga(riga(PC, 7).path, acceso)?.inGrazia, undefined);
+});
+
+test("una lista suonata da una playlist salta le righe in grazia, e le dice", () => {
+  const acceso = stato(dispositivo(PC, "Casa", "windows", true));
+  const lista = [
+    { ...locale(1), inGrazia: false },
+    { ...riga(PC, 2), inGrazia: true },
+    { ...riga(PC, 3) },
+  ];
+  const tutto = suonabili(lista, 0, acceso);
+  assert.deepEqual(tutto.brani, [lista[0], lista[2]]);
+  assert.equal(primoSpento(lista, acceso)?.inGrazia, true);
+  assert.equal(primoSpento(lista, acceso)?.nome, "Casa");
+  assert.equal(primoSpento([lista[0], lista[2]], acceso), null);
+});

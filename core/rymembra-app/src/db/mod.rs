@@ -939,6 +939,47 @@ fn verifica_le_chiavi(connection: &Connection, serve: bool) -> Result<(), rusqli
     Ok(())
 }
 
+/// Il ritorno indietro a mano scritto in testa alla 043. Sta qui e non nelle
+/// prove di `db` perché lo usano anche quelle del riconciliatore
+/// (`specchio::revisione`): una ricetta sola, e `le_ricette_di_ritorno_stanno_in_testa_alla_quarantatre`
+/// dice che è quella che la migrazione porta scritta.
+///
+/// Comincia col `PRAGMA foreign_keys = ON`, che va eseguito **fuori da una
+/// transazione**: dentro, SQLite lo ignora senza dire niente, e la cascata che
+/// porta via le voci di playlist e la cronologia delle righe cancellate resta
+/// spenta. `execute_batch` non apre nessuna transazione, e va bene; chi la
+/// lancia a mano non deve metterci un `BEGIN` davanti.
+#[cfg(test)]
+pub(crate) const RITORNO_DALLA_43: &str = "PRAGMA foreign_keys = ON;
+         DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+         DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
+         DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+         DELETE FROM albums WHERE album_key NOT IN (SELECT album_key FROM tracks WHERE album_key IS NOT NULL);
+         DELETE FROM artists WHERE name NOT IN (SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) FROM tracks);
+         UPDATE libreria_stato SET aggregati = 0;
+         DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
+         PRAGMA user_version = 42;";
+
+/// Il ritorno a mano dalla 43 alla 38 — la 3.2.0 — in un blocco solo, come lo
+/// scrive la testa della 043.
+#[cfg(test)]
+pub(crate) const RITORNO_DA_43_ALLA_38: &str = "PRAGMA foreign_keys = ON;
+         DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+         DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
+         DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+         DELETE FROM albums WHERE album_key NOT IN (SELECT album_key FROM tracks WHERE album_key IS NOT NULL);
+         DELETE FROM artists WHERE name NOT IN (SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) FROM tracks);
+         UPDATE libreria_stato SET aggregati = 0;
+         DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
+         DROP TRIGGER chiavi_d_ordine_da_rifare;
+         DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
+         ALTER TABLE tracks DROP COLUMN ordine_album; ALTER TABLE tracks DROP COLUMN ordine_artista;
+         ALTER TABLE tracks DROP COLUMN ordine_titolo;
+         DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording;
+         DROP TABLE insieme_indirizzi;
+         DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+         PRAGMA user_version = 38;";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3516,28 +3557,6 @@ mod tests {
 
     // ── la 043: la libreria unica ───────────────────────────────────────────
 
-    /// Il ritorno indietro a mano scritto in testa alla 043.
-    const RITORNO_DALLA_43: &str = "DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
-         DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
-         DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
-         DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
-         PRAGMA user_version = 42;";
-
-    /// Il ritorno a mano dalla 43 alla 38 — la 3.2.0 — in un blocco solo, come
-    /// lo scrive la testa della 043.
-    const RITORNO_DA_43_ALLA_38: &str = "DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
-         DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
-         DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
-         DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
-         DROP TRIGGER chiavi_d_ordine_da_rifare;
-         DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
-         ALTER TABLE tracks DROP COLUMN ordine_album; ALTER TABLE tracks DROP COLUMN ordine_artista;
-         ALTER TABLE tracks DROP COLUMN ordine_titolo;
-         DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording;
-         DROP TABLE insieme_indirizzi;
-         DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
-         PRAGMA user_version = 38;";
-
     /// Una riga specchio, con la sua riga di `lontano_brani`, e un posto in una
     /// playlist: quel che la ricetta di ritorno deve portare via.
     fn riga_specchio(connection: &Connection, id: i64) {
@@ -3637,6 +3656,83 @@ mod tests {
                 "SELECT COUNT(*) FROM pragma_foreign_key_list('tracks') WHERE \"from\" = 'copia_di'"
             ),
             0
+        );
+    }
+
+    #[test]
+    fn la_quarantatre_ha_gli_indici_che_servono_a_dimentica_e_alle_copertine() {
+        // Senza `content_key` indicizzata «Dimentica» fa una scansione di
+        // `lontano_brani` per ogni voce di playlist, col lucchetto preso; senza
+        // `cover_remota`, chiedere a chi appartiene una copertina è lo stesso.
+        let db = open_in_memory().expect("database");
+        let c = &db.connection;
+        for (condizione, indice, campo) in [
+            (
+                "content_key = 'x'",
+                "idx_lontano_brani_content_key",
+                "content_key",
+            ),
+            (
+                "cover_remota = 'x'",
+                "idx_lontano_brani_cover",
+                "cover_remota",
+            ),
+            // Com'è scritta da «Dimentica»: tutte le chiavi in un parametro solo.
+            (
+                "content_key IN (SELECT value FROM json_each('[\"a\"]'))",
+                "idx_lontano_brani_content_key",
+                "content_key",
+            ),
+        ] {
+            assert_eq!(
+                colonna(
+                    c,
+                    &format!("SELECT name FROM pragma_index_info('{indice}')")
+                ),
+                [campo],
+                "indice {indice}"
+            );
+            // E il piano li usa davvero.
+            let mut piano = c
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT track_id FROM lontano_brani WHERE {condizione}"
+                ))
+                .expect("piano");
+            let dettagli: Vec<String> = piano
+                .query_map([], |r| r.get::<_, String>(3))
+                .expect("lettura")
+                .collect::<Result<_, _>>()
+                .expect("righe del piano");
+            assert!(
+                dettagli.iter().any(|d| d.contains(indice)),
+                "{condizione}: {dettagli:?}"
+            );
+        }
+        // L'indice parziale delle righe sparite: ogni giro le conta, e il caso
+        // comune — nessuna — non deve leggere le righe di un catalogo.
+        assert_eq!(
+            colonna(
+                c,
+                "SELECT name FROM pragma_index_info('idx_lontano_brani_sparite')"
+            ),
+            ["dispositivo", "sparito_ms"]
+        );
+        let mut piano = c
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM lontano_brani
+                  WHERE dispositivo = 'x' AND sparito_ms IS NOT NULL",
+            )
+            .expect("piano");
+        let dettagli: Vec<String> = piano
+            .query_map([], |r| r.get::<_, String>(3))
+            .expect("lettura")
+            .collect::<Result<_, _>>()
+            .expect("righe del piano");
+        assert!(
+            dettagli
+                .iter()
+                .any(|d| d.contains("idx_lontano_brani_sparite")),
+            "{dettagli:?}"
         );
     }
 

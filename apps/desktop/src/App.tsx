@@ -1995,12 +1995,14 @@ export function App() {
    * `null`: la riga è di un dispositivo che non c'è più.
    */
   const avvisaNonRaggiungibile = useCallback(
-    (riga: Pick<StatoDellaRiga, "nome" | "telefono"> | null) => {
+    (riga: (Pick<StatoDellaRiga, "nome" | "telefono"> & { inGrazia?: true }) | null) => {
       setAvviso({
         testo:
           riga === null || riga.nome === ""
             ? t("library.origin.gone")
-            : t("library.origin.offline", { nome: riga.nome }),
+            : riga.inGrazia === true
+              ? t("library.origin.faded", { nome: riga.nome })
+              : t("library.origin.offline", { nome: riga.nome }),
         icona: riga?.telefono === true ? "i-telefono" : "i-computer",
       });
     },
@@ -2022,7 +2024,7 @@ export function App() {
       const pannello = archivioLontano.leggi();
       const toccata = elenco[indice];
       if (daUnaRiga && toccata !== undefined) {
-        const riga = statoDellaRiga(toccata.path, pannello);
+        const riga = statoDellaRiga(toccata.path, pannello, toccata.inGrazia === true);
         if (riga?.spenta === true) {
           avvisaNonRaggiungibile(riga);
           return;
@@ -2050,12 +2052,16 @@ export function App() {
   const scaricaQui = useCallback(
     async (brani: readonly Brano[]) => {
       const pannello = archivioLontano.leggi();
-      const lontani = brani.filter((b) => statoDellaRiga(b.path, pannello) !== null);
+      const lontani = brani.filter(
+        (b) => statoDellaRiga(b.path, pannello, b.inGrazia === true) !== null,
+      );
       if (lontani.length === 0) {
         setNotizia(t("devices.download.nothing"));
         return;
       }
-      const accesi = lontani.filter((b) => statoDellaRiga(b.path, pannello)?.spenta !== true);
+      const accesi = lontani.filter(
+        (b) => statoDellaRiga(b.path, pannello, b.inGrazia === true)?.spenta !== true,
+      );
       if (accesi.length === 0) {
         avvisaNonRaggiungibile(primoSpento(lontani, pannello));
         return;
@@ -2857,7 +2863,11 @@ export function App() {
     (rada: ArchivioRado<Brano>, vista: VistaBrani, indice: number) => {
       const premuto = rada.riga(indice);
       // Una riga grigia non suona: lo dice, come negli elenchi interi.
-      const grigia = statoDellaRiga(premuto?.path, archivioLontano.leggi());
+      const grigia = statoDellaRiga(
+        premuto?.path,
+        archivioLontano.leggi(),
+        premuto?.inGrazia === true,
+      );
       if (grigia?.spenta === true) {
         avvisaNonRaggiungibile(grigia);
         return;

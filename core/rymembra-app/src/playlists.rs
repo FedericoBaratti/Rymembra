@@ -336,8 +336,21 @@ fn brani_a_mano(connection: &Connection, id: i64) -> Result<Vec<TrackSummary>, A
     let rows = statement
         .query_map([id], track_from_row)
         .map_err(|err| db_error("brani di una playlist", &err))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error("brani di una playlist", &err))
+    let mut brani = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("brani di una playlist", &err))?;
+    // Una voce può stare su una riga che il proprietario non manda più e che
+    // resta, nascosta, per la grazia: la playlist la mostra — nasconderla
+    // sposterebbe gli indici che «Togli» e «Sposta» rimandano indietro — ma la
+    // dice, perché la finestra la mostri grigia e non la suoni.
+    let ids: Vec<i64> = brani.iter().map(|brano| brano.id).collect();
+    let in_grazia = crate::specchio::archivio::in_grazia(connection, &ids)?;
+    if !in_grazia.is_empty() {
+        for brano in &mut brani {
+            brano.in_grazia = in_grazia.contains(&brano.id);
+        }
+    }
+    Ok(brani)
 }
 
 /// Controlla che una playlist esista e si possa modificare a mano.
@@ -1619,8 +1632,15 @@ pub fn remove_at(
         drop(tx);
         return read_one(connection, id);
     };
+    // Una voce il cui brano qui c'è solo come riga specchio — il brano di un
+    // altro dispositivo — non ha, per la sincronia, una rimozione deducibile
+    // dalla differenza: un brano che manca è invisibile, non tolto. Questo è un
+    // gesto, e la sua lapide la scrive il gesto, qui e adesso: vedi
+    // `sincronia::seppellisci_le_voci_tolte`.
+    let solo_specchio_di_prima = crate::sincronia::voci_solo_specchio(&tx, id)?;
     ordine.remove(indice);
     riscrivi_ordine(&tx, id, &ordine)?;
+    crate::sincronia::seppellisci_le_voci_tolte(&tx, id, &solo_specchio_di_prima, now_ms())?;
     tx.commit()
         .map_err(|err| db_error("rimozione da una playlist", &err))?;
     tocca(connection, id)?;
